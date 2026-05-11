@@ -1,0 +1,25 @@
+{
+  "version": "0.1.0",
+  "name": "_example_extract",
+  "description": "Stub schema — copy this when adding a new workstream extraction schema.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "field_a": {
+        "type": "string",
+        "description": "Example string field."
+      },
+      "field_b": {
+        "type": "number",
+        "description": "Example numeric field with confidence."
+      },
+      "confidence": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1,
+        "description": "Model self-rated confidence in the extraction overall."
+      }
+    },
+    "required": ["field_a", "field_b", "confidence"]
+  }
+}
