@@ -18,7 +18,6 @@ import pytest
 
 from shared.keychain import KeychainError, get_secret
 
-
 # ---- Happy path ------------------------------------------------------------
 
 def test_returns_secret_value(mocker):
