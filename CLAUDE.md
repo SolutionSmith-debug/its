@@ -44,8 +44,8 @@ first, not invented locally.
 
 | Module | State | Notes |
 |--------|-------|-------|
-| `shared/keychain.py` | Working | macOS-only; uses `security` CLI. |
-| `shared/error_log.py` | Local-file only | Smartsheet `ITS_Errors` write is TODO — gated on Smartsheet creds. |
+| `shared/keychain.py` | Working, tested | macOS-only; uses `security` CLI. |
+| `shared/error_log.py` | Local-file only, tested | Smartsheet `ITS_Errors` write is TODO — gated on Smartsheet creds. |
 | `shared/kill_switch.py` | Stub | Returns ACTIVE if config sheet unreachable (fail-open). Wire after Smartsheet creds + sheet ID land. |
 | `shared/anthropic_client.py` | Working | Reads `ITS_ANTHROPIC_KEY` from Keychain. Lazy-loads. |
 | `shared/smartsheet_client.py` | Stub | Awaits credentials and sheet IDs. |
@@ -61,8 +61,9 @@ first, not invented locally.
 2. Draft an engineering brief in the planning project.
 3. Create `<workstream>/` directory here. Mirror the `safety_reports/` shape.
 4. Schemas go in `schemas/`. Prompts go in `prompts/`. Reuse `shared/` helpers.
-5. launchd plist or Mail.app rule lives outside this repo (system-level config); document
-   the trigger config in the workstream's brief.
+5. launchd plists live in `scripts/launchd/` as templates; `scripts/launchd/install.sh`
+   copies them to `~/Library/LaunchAgents/` and loads them. Mail.app rules and Shortcuts
+   remain system-level config — document those triggers in the workstream's brief.
 
 ## Model selection
 
@@ -85,8 +86,11 @@ Revisit model selection quarterly — Anthropic ships new models on a roughly si
 ## Useful references in this repo
 
 - `shared/` — start here when implementing a new workstream.
-- `tests/test_helpers.py` — the test pattern.
+- `tests/test_keychain.py` — canonical pattern for mocking an external CLI (`security`).
+  `tests/test_error_log.py` covers the CRITICAL email/SMS surfacing path. `tests/test_helpers.py`
+  is the lightest example.
 - `scripts/watchdog.py` — the daily watchdog skeleton.
+- `scripts/launchd/template.plist` + `install.sh` — launchd trigger pattern.
 - `safety_reports/intake.py` — the canonical workstream-intake shape.
 
 If something here contradicts the planning project's canonical docs (Foundation Mission v3,
