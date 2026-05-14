@@ -1,6 +1,6 @@
 """ITS_Review_Queue helpers — write to the queue, update statuses.
 
-Status enum (per Operational Standards v4):
+Status enum (per Operational Standards v5):
     PENDING / IN_REVIEW / APPROVED / REJECTED / ESCALATED
 
 SLA tiers:
@@ -9,6 +9,10 @@ SLA tiers:
     subcontract drafts:   48 hours
 
 Items past 2x SLA auto-escalate (mechanism TBD — gated on Smartsheet sheet schema).
+
+Security flag: items routed here because of an anomaly_logger sentinel (per Foundation
+Mission v4 Invariant 2) set security_flag=True. The owner is notified separately for
+security-flagged items.
 """
 from __future__ import annotations
 
@@ -37,6 +41,7 @@ def add(
     payload: dict[str, Any],
     sla_tier: SlaTier,
     reason: str = "",
+    security_flag: bool = False,
 ):
     """Add an item to the review queue.
 
@@ -44,8 +49,10 @@ def add(
         workstream: e.g., "safety_reports", "po_materials".
         summary: One-line human-readable description.
         payload: Structured data the reviewer needs to make the decision.
-        sla_tier: SLA tier per Operational Standards.
+        sla_tier: SLA tier per Operational Standards v5.
         reason: Why this is in the queue (e.g., "low confidence on job match").
+        security_flag: True if this item is here because a `shared.anomaly_logger`
+            sentinel fired. Triggers separate owner notification per Op Stds v5 §9.
     """
     raise NotImplementedError("Awaiting ITS_Review_Queue sheet schema.")
 
