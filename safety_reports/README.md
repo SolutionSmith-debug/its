@@ -1,31 +1,88 @@
 # Safety Reports — Phase 1 Active Build Target
 
-This workstream is **blocked on 9 owner decisions** documented in the planning project's
-`ITS_Safety_Reports_Mission_v3.docx`. Code below is structural skeleton only; do not run
-against production data until blockers resolve.
+Reference docs: **Safety Reports Mission v4** and **Safety Reports Brief v5** in the
+planning project.
 
-## Two scripts
+## Decision state (as of 2026-05-13)
 
-- `intake.py` — fires per inbound email to the dedicated safety mailbox. Reads the email,
-  extracts structured fields, looks up the job in Smartsheet, files in Box, writes tracking row.
-- `weekly_summary.py` — launchd-scheduled. Reads the past week's tracking rows, drafts a
-  Weekly Project Report (WPR) per active job, queues for human review before customer send.
+- **5 resolved**: three intake document types (Q1), Outlook inbox addresses (Q3),
+  ambiguous-report review surface routes to Teala Paradise (Q7), weekly cadence + gated send
+  architecture (Q9), and WPR canonical template resolved-in-principle (Q2 — drafting deferred
+  until inspection of mirror templates).
+- **4 deferred, now resolvable** from sandbox mirror inspection: Smartsheet job lookup schema
+  (Q4), Smartsheet tracking row schema (Q5), Box folder taxonomy (Q6), customer recipient
+  list location (Q8).
 
-## Workflow shape (mission v3)
+The four deferred decisions must be locked **before** `intake.py` writes code that touches
+Smartsheet or Box, or those calls will be rewritten when the real schema lands.
 
-```
-intake.py:
-  Mail.app rule → hot-folder → script
-    → read email
-    → Anthropic extract (job number, date, hazards, crew size, flags) + confidence
-    → if high confidence: upload to Box, tracking row in Smartsheet
-    → if low confidence: ITS_Review_Queue with email + extracted fields
+## Three scripts — External Send Gate two-process model
 
-weekly_summary.py:
-  launchd (day/time TBD) → script
-    → read week's tracking rows grouped by job
-    → for each job: read Master WPR template from Box
-    → Anthropic populates WPR draft from week's data
-    → queue draft for review (SLA end-of-day Friday)
-    → on approval (separate script): email customer, file sent copy in Box
-```
+Per Foundation Mission v4 Invariant 1, generation and send live in separate scripts:
+
+- **`intake.py`** — fires per inbound email to `safety@evergreenmirror.com` (sandbox) /
+  `safety@evergreenrenewables.com` (production). Sender allowlist enforced at the Mail.app
+  rule level; non-allowlist mail goes to Quarantine. Classifies one of three intake document
+  types, extracts structured fields, looks up the job, files in Box, writes tracking row.
+  **No send capability.**
+- **`weekly_generate.py`** — launchd-scheduled Friday 2:00 PM ET. Reads the week's tracking
+  rows, drafts a Weekly Project Report (WPR) per active job, writes drafts to
+  `WPR_Pending_Review` Smartsheet with `Approved for Send` unchecked. **No send capability.**
+- **`weekly_send.py`** — launchd-scheduled Monday 6:00 AM ET. Reads `WPR_Pending_Review` rows
+  where `Approved for Send` is checked and `Sent At` is empty. Sends customer email via Graph
+  API. Updates `Sent At` + `Send Status`. Files sent copy in Box. **No Anthropic API capability** —
+  only reads already-approved structured data.
+
+A separate `wpr_notify.py` runs at Friday 6:00 PM, Saturday 12:00 PM, Sunday 12:00 PM, and
+Monday 6:00 AM ET to nag approvers about unapproved WPRs.
+
+## Three intake document types
+
+Field PMs submit three categories of safety-related documents:
+
+1. **Daily safety brief + Daily Job Site Safety Worksheet (JSS).** Most frequent — every active
+   workday.
+2. **Machine pre-inspections.** Skid steer, lifts, other equipment. Per-machine, per-shift.
+3. **Weekly toolbox talks.** Fridays. Documents attendance and topic; one per crew per week.
+
+The intake script first classifies the inbound document by type, then runs the type-specific
+extraction prompt. Misclassification routes to `ITS_Review_Queue` for human resolution
+(reviewer: Teala Paradise).
+
+## Adversarial Input Handling
+
+Every Anthropic API call processing inbound mail:
+
+- Email content wrapped in `<untrusted_content source="email-body">…</untrusted_content>` via
+  `shared.untrusted_content.wrap()`.
+- System prompt includes `shared.untrusted_content.system_boilerplate()`.
+- Sender allowlist enforced at Mail.app rule level; non-allowlist routes to Quarantine.
+  `shared.quarantine.is_allowlisted()` is the helper for any post-rule checks.
+- Extraction output runs through `shared.anomaly_logger.check()`; anomalies route to
+  `ITS_Review_Queue` with `security_flag=True`.
+
+## Weekly cadence (Q9 resolved)
+
+- **Generate**: Friday 2:00 PM ET. Drafts written to `WPR_Pending_Review` unchecked.
+- **Approval deadline**: Friday 6:00 PM ET. Approver checks `Approved for Send`.
+- **Notification cadence**: Friday 6:00 PM, Saturday 12:00 PM, Sunday 12:00 PM, Monday 6:00 AM
+  ET. Recipients: Jacob Stephens + Teala Paradise (configurable in
+  `ITS_Config.notification_recipients`).
+- **Send**: Monday 6:00 AM ET. Idempotent — rows with non-empty `Sent At` never re-sent.
+- **Late approval**: row approved after Monday 6:00 AM sends next business day with
+  `Late Send` flag set; owner notified.
+- **Unapproved Monday morning**: row held indefinitely. Never auto-sent unreviewed.
+
+## WPR_Pending_Review sheet columns
+
+`Customer`, `Job`, `Week`, `Draft Body`, `Recipients`, `Approved for Send` (checkbox),
+`Approved By` (contact), `Approved At`, `Sent At`, `Send Status`, `Late Send` (checkbox), `Notes`.
+
+## What's blocked
+
+- `intake.py` — needs Q4/Q5/Q6/Q8 from mirror inspection.
+- `weekly_generate.py` — needs Q4/Q5/Q6/Q8 + WPR canonical template (Q2 deferred drafting).
+- `weekly_send.py` — needs Q4/Q5/Q6/Q8 + `WPR_Pending_Review` sheet provisioned.
+
+Current `intake.py` and `weekly_summary.py` are pre-cascade scaffolds. They get refactored to
+the three-script two-process model after sandbox mirror inspection.
