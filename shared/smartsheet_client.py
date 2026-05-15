@@ -4,8 +4,8 @@ Lazy-loads the API token from Keychain. Use this for every read/write to Smartsh
 than instantiating the SDK directly — gives us a single place to add retry, rate-limiting,
 and logging later.
 
-Awaiting Smartsheet credentials and sheet IDs (Phase 1 open question). Stubbed import-safe so
-modules can import this without exploding before credentials land.
+Awaiting sandbox Smartsheet provisioning — Daniel Stephens completing as of 2026-05-14.
+Stubbed import-safe so modules can import this without exploding before credentials land.
 """
 from __future__ import annotations
 

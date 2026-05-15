@@ -3,8 +3,8 @@
 Uses MSAL for OAuth client-credentials flow against an Entra ID app registration. The app's
 client ID and secret come from Keychain.
 
-Awaiting Microsoft 365 admin access + app registration (Phase 1 open question).
-Stubbed import-safe.
+Sandbox M365 tenant provisioned (evergreenmirror.com) as of 2026-05-12; sandbox Entra app
+registration pending. Stubbed import-safe until the app registration lands.
 """
 from __future__ import annotations
 

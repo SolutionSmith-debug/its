@@ -1,5 +1,7 @@
 # ITS — Integrated Technical System (Execution Layer)
 
+[![ci](https://github.com/SolutionSmith-debug/its/actions/workflows/ci.yml/badge.svg)](https://github.com/SolutionSmith-debug/its/actions/workflows/ci.yml)
+
 This is the execution layer of ITS — a Claude-powered computer employee being built for
 construction and renewables firms. Productized partnership with Evergreen Renewables as
 Customer 0. Solution Smith owns all IP.
@@ -56,7 +58,7 @@ specifications (Foundation Mission v4, Operational Standards v5).
 | Phase | State |
 |-------|-------|
 | 0 — Scaffold | ✓ committed; framework defaults landing |
-| 1 — Safety Reports | sandbox build active; 5 of 9 owner decisions resolved, 4 deferred-now-resolvable from sandbox mirror inspection |
+| 1 — Safety Reports | sandbox build active; 5 of 9 owner decisions resolved; 4 deferred-now-resolvable, Box sandbox data uploaded 2026-05-14, Smartsheet sandbox provisioning in progress |
 | 1.5 — Hardware Handover (Florida → Customer) | scheduled after Phase 1 stable |
 | 1.6 — Multi-Tenancy Framework | scheduled before Customer 2 |
 | 2 — POs / Subcontracts | not started |

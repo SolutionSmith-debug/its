@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  ITS daily watchdog. Per Operational Standards v4 §2.
+  ITS daily watchdog. Per Operational Standards v5 §2.
   Runs scripts/watchdog.py at 7:00 AM local time. launchd's
   StartCalendarInterval catches up on wake, so if the laptop was
   asleep at 7:00 AM the job runs as soon as it wakes.
