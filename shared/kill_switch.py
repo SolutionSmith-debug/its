@@ -30,7 +30,8 @@ def check_system_state() -> SystemState:
     Fail-open: if the config sheet is unreachable, returns ACTIVE. The watchdog catches
     the underlying config-read failure separately, so we don't double-fail here.
 
-    TODO: implement once ITS_Config sheet ID and Smartsheet credentials are decided.
+    TODO: Awaiting sandbox ITS_Config sheet provisioning and Smartsheet credentials in
+    Keychain.
     """
     # Stub until Smartsheet credentials + sheet ID are in place.
     return SystemState.ACTIVE

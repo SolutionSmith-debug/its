@@ -2,7 +2,8 @@
 
 Uses Box JWT auth (server-to-server) — credentials come from Keychain as a JSON blob.
 
-Awaiting Box credentials (Phase 1 open question). Stubbed import-safe.
+Awaiting sandbox Box JWT config — mirror tenant provisioned, sandbox data uploaded by
+Daniel Stephens as of 2026-05-14.
 """
 from __future__ import annotations
 

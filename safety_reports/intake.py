@@ -1,6 +1,6 @@
 """Safety Reports intake — fires per inbound email to the dedicated safety mailbox.
 
-BLOCKED on 9 owner decisions (see planning project's Safety Reports Mission v3). Skeleton
+BLOCKED on 9 owner decisions (see planning project's Safety Reports Mission v4). Skeleton
 only.
 """
 from __future__ import annotations
