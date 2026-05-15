@@ -109,6 +109,7 @@ shipment.
 | `shared/untrusted_content.py` | Working, tested | Invariant 2 — XML tagging + system boilerplate. |
 | `shared/anomaly_logger.py` | Working, tested | Invariant 2 — sentinel pattern checks. |
 | `shared/quarantine.py` | `is_allowlisted` working; logger stub | Invariant 2 — sender-allowlist quarantine. |
+| `shared/scheduling.py` | Holiday shifts + reviewer chain working, tested. PTO lookup stubbed (default fetcher returns []). | Real ITS_Time_Off + ITS_Config reads land when those sheets are provisioned; fetchers are injectable. Default chain composition lives in `shared/defaults.py`. |
 | `scripts/watchdog.py` | Stub | Awaits Smartsheet + alert path. |
 | `safety_reports/intake.py` | Stub | Awaits Q4/Q5/Q6/Q8 mirror inspection. |
 | `safety_reports/weekly_generate.py` | Not yet created | Replaces `weekly_summary.py` per Invariant 1 two-process model. |
