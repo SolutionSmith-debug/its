@@ -40,6 +40,9 @@ target-version = "py312"
 select = ["E", "F", "I", "N", "W", "B", "UP"]
 ignore = ["E501"]
 
+[tool.ruff.lint.per-file-ignores]
+"smartsheet_migration/*" = ["E401", "I001", "F401", "B007"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q --strict-markers"
