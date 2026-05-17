@@ -21,14 +21,14 @@ Two layers, deliberately separated:
 
 1. **Planning & Foundation** (Claude.ai project, not in this repo). Mission files, architectural
    decisions, owner-facing artifacts, prompt designs, schemas. Canonical docs: Foundation Mission
-   v4, Operational Standards v5, Vision & Roadmap v5, Handover Plan v3.
+   v5, Operational Standards v7, Vision & Roadmap v6, Handover Plan v4.
 2. **Execution** (this repo). Claude Code scripts on a MacBook, triggered by launchd, Mail.app
    rules, and Shortcuts. Reads/writes Smartsheet (structured data), Box (documents), Outlook
    (communication) via APIs. Calls Anthropic API for reasoning steps.
 
 Smartsheet, Box, Outlook are systems of record — unchanged by ITS.
 
-## System-wide invariants (Foundation Mission v4)
+## System-wide invariants (Foundation Mission v5)
 
 These are non-negotiable. Every workstream inherits both.
 
@@ -174,5 +174,5 @@ LangChain, Kubernetes.
 - `scripts/watchdog.py` — the daily watchdog skeleton.
 - `scripts/launchd/template.plist` + `install.sh` — launchd trigger pattern.
 
-If something here contradicts the planning project's canonical docs (Foundation Mission v4,
-Operational Standards v5), the planning project wins. Flag the inconsistency.
+If something here contradicts the planning project's canonical docs (Foundation Mission v5,
+Operational Standards v7), the planning project wins. Flag the inconsistency.

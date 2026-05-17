@@ -39,7 +39,7 @@ pytest -q
 
 Everything below is normative. See `CLAUDE.md` for the conversational version Claude Code
 reads on every launch. See the Claude.ai planning project for the full canonical
-specifications (Foundation Mission v4, Operational Standards v5).
+specifications (Foundation Mission v5, Operational Standards v7).
 
 - **Kill switch first.** Every script's entry point starts with `check_system_state()`.
 - **Error log decorator.** Every script's main function is wrapped in `@its_error_log`.

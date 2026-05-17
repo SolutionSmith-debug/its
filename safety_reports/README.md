@@ -1,6 +1,6 @@
 # Safety Reports — Phase 1 Active Build Target
 
-Reference docs: **Safety Reports Mission v4** and **Safety Reports Brief v5** in the
+Reference docs: **Safety Reports Mission v5** and **Safety Reports Brief v6** in the
 planning project.
 
 ## Decision state (as of 2026-05-13)
@@ -18,7 +18,7 @@ Smartsheet or Box, or those calls will be rewritten when the real schema lands.
 
 ## Three scripts — External Send Gate two-process model
 
-Per Foundation Mission v4 Invariant 1, generation and send live in separate scripts:
+Per Foundation Mission v5 Invariant 1, generation and send live in separate scripts:
 
 - **`intake.py`** — fires per inbound email to `safety@evergreenmirror.com` (sandbox) /
   `safety@evergreenrenewables.com` (production). Sender allowlist enforced at the Mail.app

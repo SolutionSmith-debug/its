@@ -1,7 +1,7 @@
 # Smartsheet Migration Toolkit
 
 Pulls Evergreen Renewables' existing chaos-workspace data into the canonical
-ITS Smartsheet filing structure (Forefront IL Portfolio — ITS Demo,
+ITS Smartsheet filing structure (Forefront Portfolio — ITS Demo,
 workspace `4129485730670468`). Built and proved against Bradley 1 in a
 2026-05-16 session; this is the canonical pattern Customer 2+ will reuse.
 
@@ -79,10 +79,9 @@ python3 build_human_review.py
 
 ## Reference
 
-See [`ITS_Smartsheet_Handoff_v2_2026-05-17.docx`](./ITS_Smartsheet_Handoff_v2_2026-05-17.docx)
-for the full handoff: workspace map, column-ID resolution story, per-sheet
-mapping decisions, and the Q1–Q5 normalization rules used in
-`migrate_closeout.py`.
+See **ITS Smartsheet Handoff v4** in the Claude.ai planning project for the
+full handoff: workspace map, column-ID resolution story, per-sheet mapping
+decisions, and the Q1–Q5 normalization rules used in `migrate_closeout.py`.
 
 ## Future
 
