@@ -11,9 +11,9 @@ workspace `4129485730670468`). Built and proved against Bradley 1 in a
 |----------------------------------------|--------|------|
 | Bradley 1 / Schedule                   | ✓      |   53 |
 | Bradley 1 / Closeout — Exhibit K-1     | ✓      |   92 |
-| Bradley 1 / Financial Ledger           | pending |     |
+| Bradley 1 / Financial Ledger           | ✓      |  292 |
 | Bradley 1 / Buyouts (Subs / Materials / Equipment) | pending | |
-| Ops DB seed                            | pending |     |
+| Ops DB seed                            | ✓      | 28 + 10 |
 | DFR backfill                           | pending |     |
 
 ## Pattern
@@ -49,6 +49,15 @@ python3 inspect_closeout.py
 python3 classify_closeout.py
 python3 migrate_closeout.py          # idempotency-guarded real write
 
+# Financial Ledger migration (Bradley 1).
+python3 migrate_fl.py --mode dry     # parse + emit, no writes
+python3 migrate_fl.py --mode sample  # write Valmont block only
+python3 migrate_fl.py --mode full    # write all of Bradley 1
+
+# Vendor DB + Subcontractor DB seeding from Bradley 1 FL parse.
+python3 seed_ops_dbs.py --mode dry
+python3 seed_ops_dbs.py --mode seed  # idempotency-guarded real write
+
 # Create the human-review sheets in 06 — Human Review.
 python3 build_human_review.py
 ```
@@ -64,6 +73,8 @@ python3 build_human_review.py
 | `inspect_closeout.py`             | Survey Portfolio Closeout source, Bradley rows + picklists. |
 | `classify_closeout.py`            | Classify each source row: master / section / subsection / deliverable. |
 | `migrate_closeout.py`             | Closeout K-1 transform — real write, 3-level hierarchy + 6 normalization rules. |
+| `migrate_fl.py`                   | Financial Ledger transform — flat one-row-per-event ledger; unfolds overloaded source rows (Contract/CO/Invoice/Payment). `--mode dry|sample|full`. |
+| `seed_ops_dbs.py`                 | Seed Vendor DB + Subcontractor DB from the Bradley 1 FL parse. Reuses `migrate_fl.find_blocks()`. `--mode dry|seed`. |
 | `build_human_review.py`           | Provision `WPR_Pending_Review` and `ITS_Review_Queue` in 06 — Human Review. |
 
 ## Reference

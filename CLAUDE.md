@@ -104,7 +104,7 @@ shipment.
 | `shared/anthropic_client.py` | Working | Reads `ITS_ANTHROPIC_KEY` from Keychain. |
 | `shared/smartsheet_client.py` | Stub | Sandbox creds pending in Keychain. |
 | `shared/box_client.py` | Stub | Sandbox JWT config pending. |
-| `shared/graph_client.py` | Stub | Sandbox Entra app registration pending. |
+| `shared/graph_client.py` | Working, tested | MSAL client-credentials + Mail API wrappers (`list_inbox`, `get_message`, `list_attachments`, `download_attachment`, `mark_read`, `move_message`, `send_mail`). Sandbox tenant `evergreenmirror.com` verified 2026-05-17 via `scripts/smoke_test_graph.py`. |
 | `shared/review_queue.py` | Stub (with `security_flag`) | Awaits `ITS_Review_Queue` schema. |
 | `shared/untrusted_content.py` | Working, tested | Invariant 2 — XML tagging + system boilerplate. |
 | `shared/anomaly_logger.py` | Working, tested | Invariant 2 — sentinel pattern checks. |
