@@ -8,6 +8,7 @@ Run with: pytest -q tests/test_smartsheet_client.py
 """
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -347,3 +348,96 @@ def test_write_error_translated(mocker):
 
     with pytest.raises(SmartsheetPermissionError, match="no write here"):
         smartsheet_client.add_rows(42, [{"Error": "x"}])
+
+
+# ---- SDK 404 noise filter ------------------------------------------------
+
+
+def _sdk_log_record(level: int, status_code: int) -> logging.LogRecord:
+    """Build a LogRecord shaped exactly like the SDK's _log_request emission.
+
+    The SDK calls `self._log.error('{...}', status_code, reason, content)` —
+    the format-string's first positional arg is the status code. The filter
+    inspects `record.args[0]`, so the record we build here is the minimum
+    fixture that exercises that path.
+    """
+    return logging.LogRecord(
+        name=smartsheet_client.SDK_LOGGER_NAME,
+        level=level,
+        pathname=__file__,
+        lineno=0,
+        msg='{"response": {"statusCode": %d, "reason": "%s", "content": %s}}',
+        args=(status_code, "Not Found", '{"errorCode": 1006, "message": "Not Found"}'),
+        exc_info=None,
+    )
+
+
+def test_404_filter_installed_on_sdk_logger():
+    sdk_logger = logging.getLogger(smartsheet_client.SDK_LOGGER_NAME)
+    assert any(
+        isinstance(f, smartsheet_client._Suppress404JSON) for f in sdk_logger.filters
+    ), "_Suppress404JSON filter was not installed at module-import time"
+
+
+def test_404_filter_drops_404_error_record():
+    filt = smartsheet_client._Suppress404JSON()
+    record = _sdk_log_record(logging.ERROR, 404)
+
+    assert filt.filter(record) is False
+
+
+@pytest.mark.parametrize("status", [401, 403, 429, 500, 503])
+def test_404_filter_passes_other_status_codes(status):
+    filt = smartsheet_client._Suppress404JSON()
+    record = _sdk_log_record(logging.ERROR, status)
+
+    assert filt.filter(record) is True
+
+
+def test_404_filter_passes_non_error_levels():
+    # INFO/DEBUG/WARN records pass through even when args[0] would match —
+    # only ERROR is the noise we care about.
+    filt = smartsheet_client._Suppress404JSON()
+    for level in (logging.DEBUG, logging.INFO, logging.WARNING, logging.CRITICAL):
+        record = _sdk_log_record(level, 404)
+        assert filt.filter(record) is True, f"level {level} was unexpectedly dropped"
+
+
+def test_404_filter_passes_records_with_no_args():
+    # Defensive: an ERROR record with no formatting args has nothing to inspect.
+    filt = smartsheet_client._Suppress404JSON()
+    record = logging.LogRecord(
+        name=smartsheet_client.SDK_LOGGER_NAME,
+        level=logging.ERROR,
+        pathname=__file__,
+        lineno=0,
+        msg="some bare string",
+        args=None,
+        exc_info=None,
+    )
+    assert filt.filter(record) is True
+
+
+def test_404_filter_suppresses_emission_through_real_logger(caplog):
+    # End-to-end via the actual logger: emit through the installed pipeline
+    # and confirm caplog never sees the 404 record. caplog hooks into the
+    # logger's filter chain, so a filter-dropped record stays out.
+    with caplog.at_level(logging.ERROR, logger=smartsheet_client.SDK_LOGGER_NAME):
+        sdk_logger = logging.getLogger(smartsheet_client.SDK_LOGGER_NAME)
+        sdk_logger.error(
+            '{"response": {"statusCode": %d, "reason": "%s", "content": %s}}',
+            404,
+            "Not Found",
+            '{"errorCode": 1006}',
+        )
+        sdk_logger.error(
+            '{"response": {"statusCode": %d, "reason": "%s", "content": %s}}',
+            500,
+            "Server Error",
+            '{"errorCode": 9999}',
+        )
+
+    # The 500 record should pass; the 404 record should not.
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("500" in m for m in messages)
+    assert not any('"statusCode": 404' in m for m in messages)

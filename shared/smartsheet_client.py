@@ -18,18 +18,30 @@ Column-name cache:
     than fast-failing on a stale title. Long-lived processes that need to
     survive a rename must restart or call `invalidate_column_cache()`.
 
-External Send Gate (Foundation Mission v5, Invariant 1):
+External Send Gate (Foundation Mission v6, Invariant 1):
     Smartsheet writes are not external sends. This module is freely
     importable by both generation and send scripts.
+
+SDK 404 noise:
+    The Smartsheet SDK's central request/response logger emits the full
+    response body at ERROR on the `smartsheet.smartsheet` logger for every
+    non-2xx response, before our `_translate` raises a typed exception. We
+    suppress that emission for 404 only — see `_Suppress404JSON` at the
+    bottom of this module — because 404 covers the *expected* "row not yet
+    seeded" case via `get_setting`. Other status codes (401 / 403 / 429 /
+    500) are NOT suppressed; an operator should see them on stderr.
 """
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import smartsheet  # type: ignore[import-untyped]
 import smartsheet.exceptions as sdk_exc  # type: ignore[import-untyped]
 
 from . import keychain, sheet_ids
+
+SDK_LOGGER_NAME = "smartsheet.smartsheet"
 
 
 class SmartsheetError(Exception):
@@ -265,3 +277,31 @@ def delete_rows(sheet_id: int, row_ids: list[int]) -> None:
         get_client().Sheets.delete_rows(sheet_id, row_ids)
     except sdk_exc.SmartsheetException as e:
         raise _translate(e) from e
+
+
+# ---- SDK 404 noise suppression ------------------------------------------
+
+
+class _Suppress404JSON(logging.Filter):
+    """Drop the SDK's ERROR-level emission of the raw 404 response body.
+
+    Inspects `record.args` (unformatted; first positional is the status
+    code passed to the SDK's `_log_request` ERROR call) so the filter
+    survives format-string changes in future SDK versions. Non-tuple or
+    empty args, or any non-ERROR record, passes through untouched. The
+    set is parameterized so additional status codes can be silenced later
+    without re-architecting the filter.
+    """
+
+    _QUIET_STATUS_CODES = frozenset({404})
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.levelno != logging.ERROR:
+            return True
+        args = record.args
+        if not isinstance(args, tuple) or not args:
+            return True
+        return args[0] not in self._QUIET_STATUS_CODES
+
+
+logging.getLogger(SDK_LOGGER_NAME).addFilter(_Suppress404JSON())
