@@ -21,14 +21,14 @@ Two layers, deliberately separated:
 
 1. **Planning & Foundation** (Claude.ai project, not in this repo). Mission files, architectural
    decisions, owner-facing artifacts, prompt designs, schemas. Canonical docs: Foundation Mission
-   v5, Operational Standards v7, Vision & Roadmap v6, Handover Plan v4.
+   v6, Operational Standards v8, Vision & Roadmap v6.1, Handover Plan v5.
 2. **Execution** (this repo). Claude Code scripts on a MacBook, triggered by launchd, Mail.app
    rules, and Shortcuts. Reads/writes Smartsheet (structured data), Box (documents), Outlook
    (communication) via APIs. Calls Anthropic API for reasoning steps.
 
 Smartsheet, Box, Outlook are systems of record — unchanged by ITS.
 
-## System-wide invariants (Foundation Mission v5)
+## System-wide invariants (Foundation Mission v6)
 
 These are non-negotiable. Every workstream inherits both.
 
@@ -100,9 +100,9 @@ shipment.
 |--------|-------|-------|
 | `shared/keychain.py` | Working, tested | macOS-only; uses `security` CLI. |
 | `shared/error_log.py` | Local file + decorator working, tested | Smartsheet `ITS_Errors` write pending. Sentry hook pending. |
-| `shared/kill_switch.py` | Stub (returns ACTIVE) | `ITS_Config` sheet provisioned 2026-05-17 (id in `shared/sheet_ids.py`); read-by-Setting refactor lands with smartsheet_client.py wiring. |
+| `shared/kill_switch.py` | Working, tested | Reads `system.state` from ITS_Config via `smartsheet_client.get_setting`; fail-open on three modes (sheet unreachable / row missing / invalid value) with distinguishable WARN. Wired 2026-05-18. |
 | `shared/anthropic_client.py` | Working | Reads `ITS_ANTHROPIC_KEY` from Keychain. |
-| `shared/smartsheet_client.py` | Stub | Sandbox sheets provisioned; awaiting `ITS_SMARTSHEET_TOKEN` in Keychain. |
+| `shared/smartsheet_client.py` | Working, tested | SDK wrapper with title-keyed reads/writes, typed exception hierarchy, lazy keychain-backed client. Wired 2026-05-18. |
 | `shared/box_client.py` | Stub | Sandbox JWT config pending. |
 | `shared/graph_client.py` | Working, tested | MSAL client-credentials + Mail API wrappers (`list_inbox`, `get_message`, `list_attachments`, `download_attachment`, `mark_read`, `move_message`, `send_mail`). Sandbox tenant `evergreenmirror.com` verified 2026-05-17 via `scripts/smoke_test_graph.py`. |
 | `shared/review_queue.py` | Stub (with `security_flag`) | `ITS_Review_Queue` sheet provisioned 2026-05-17 (id in `shared/sheet_ids.py`); wire alongside smartsheet_client.py. |
@@ -176,5 +176,5 @@ LangChain, Kubernetes.
 - `scripts/launchd/template.plist` + `install.sh` — launchd trigger pattern.
 - `docs/session_logs/` — durable narrative log of during-execution decisions. Write one at end of any session that lands ≥1 commit and involves a non-obvious decision. See `docs/session_logs/README.md` for the convention.
 
-If something here contradicts the planning project's canonical docs (Foundation Mission v5,
-Operational Standards v7), the planning project wins. Flag the inconsistency.
+If something here contradicts the planning project's canonical docs (Foundation Mission v6,
+Operational Standards v8), the planning project wins. Flag the inconsistency.
