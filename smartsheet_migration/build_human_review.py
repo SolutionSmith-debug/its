@@ -1,9 +1,23 @@
-"""Create the two PM-facing sheets inside 06 — Human Review.
+"""[ARCHIVED 2026-05-17] — provisioning script. Sheets created, then moved.
 
-WPR_Pending_Review: schema from Safety Reports Mission v4 (Q9 — gated send architecture).
-ITS_Review_Queue:   best-inference schema from shared/review_queue.py stub + Op Stds v5.
+This script was run on 2026-05-17 ~01:26 UTC and provisioned two sheets in
+folder 210126402545540 (06 — Human Review of Forefront Portfolio — ITS Demo):
+  - WPR_Pending_Review (id 3096105695793028)
+  - ITS_Review_Queue   (id 7243317526876036)
 
-Both live inside folder 210126402545540 (06 — Human Review).
+Same-day evening session restructured the workspace topology:
+  - WPR_Pending_Review moved → ITS — Human Review / 01 — Safety Reports
+    (folder 2486957285631876, workspace 8561891980142468)
+  - ITS_Review_Queue   moved → ITS — System / 03 — Queues
+    (folder 7201663145535364, workspace 680592632244100)
+  - 06 — Human Review folder (210126402545540) deleted
+
+This script is no longer runnable as written. HR_FOLDER is invalid; sheets
+already exist at their new homes. Preserved in-tree per Op Stds v7 §14
+(preservation-over-refactor); git history is the diff reference.
+
+For the current provisioning record, see shared/sheet_ids.py and
+docs/session_logs/2026-05-17_smartsheet_workspace_restructure.md.
 """
 import os, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -69,9 +83,6 @@ def create(sheet_def):
     return res
 
 if __name__ == "__main__":
-    wpr = create(WPR_SHEET)
-    rq = create(RQ_SHEET)
-    print()
-    print("06 — Human Review now contains:")
-    print(f"  - WPR_Pending_Review  ({wpr['id']})")
-    print(f"  - ITS_Review_Queue    ({rq['id']})")
+    print("ARCHIVED — see docstring at top of file.", file=sys.stderr)
+    print("Sheets already provisioned and moved. See shared/sheet_ids.py.", file=sys.stderr)
+    sys.exit(1)
