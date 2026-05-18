@@ -11,13 +11,13 @@ left for follow-on PRs.
 
 | SHA | Title | Purpose |
 |---|---|---|
-| _(this PR)_ | feat(shared): wire smartsheet_client over the SDK | New module + tests + smoke test + this log |
+| `8b32da1` | feat(shared): wire smartsheet_client over the SDK | New module + tests + smoke test + this log |
 
 ## CI runs
 
 | Run | Commit | Result |
 |---|---|---|
-| _(pending after push)_ | | |
+| [26055115455](https://github.com/SolutionSmith-debug/its/actions/runs/26055115455) | `8b32da1` | green (31s) | |
 
 Local: `ruff check` clean on the three new/edited files. Full `pytest -q`
 green (137 passed, 2 skipped — the same 2 skips as prior sessions).
