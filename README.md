@@ -58,7 +58,7 @@ specifications (Foundation Mission v5, Operational Standards v7).
 | Phase | State |
 |-------|-------|
 | 0 — Scaffold | ✓ committed; framework defaults landing |
-| 1 — Safety Reports | sandbox build active; 5 of 9 owner decisions resolved; 4 deferred-now-resolvable, Box sandbox data uploaded 2026-05-14, Smartsheet sandbox provisioning in progress, M365 Graph mail wired 2026-05-17 |
+| 1 — Safety Reports | sandbox build active; 5 of 9 owner decisions resolved; 4 deferred-now-resolvable; Box sandbox data uploaded 2026-05-14; Smartsheet system + human-review workspaces fully provisioned 2026-05-17 (6 system/queue sheets, 2 workspaces created tonight); M365 Graph mail wired 2026-05-17 |
 | 1.5 — Hardware Handover (Florida → Customer) | scheduled after Phase 1 stable |
 | 1.6 — Multi-Tenancy Framework | scheduled before Customer 2 |
 | 2 — POs / Subcontracts | not started |
