@@ -652,14 +652,10 @@ def parse_folder(raw: str, parent: str = 'unknown') -> ParsedFolder:
             )
             was_unrecognized = False
 
-    # Step 3: v3 chaos detection
+    # Step 3: v3 chaos detection. detect_chaos already includes v2 flags, which
+    # parse_folder_v2 may have appended via its own detect_chaos_v2 call.
+    # De-dupe by full message string; v2 and v3 use the same format.
     chaos = detect_chaos(raw)
-    # detect_chaos already includes v2 flags; replace any v2 flags v2 itself
-    # appended via parse_folder_v2 (those will dup). De-dupe by (pattern, match).
-    existing_keys = {
-        (w.split(': ', 1)[-1] if w.startswith('[') else None)
-        for w in result.warnings
-    }
     for flag in chaos:
         msg = f'[{flag.severity}] {flag.pattern}: {flag.description}'
         if msg not in result.warnings:

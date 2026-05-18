@@ -42,7 +42,7 @@ ignore = ["E501"]
 
 [tool.ruff.lint.per-file-ignores]
 "smartsheet_migration/*" = ["E401", "I001", "F401", "B007", "UP035"]
-"box_migration/*"        = ["I001", "F401", "F841", "UP042", "UP045"]
+"box_migration/*"        = ["I001", "F401", "UP042", "UP045"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
