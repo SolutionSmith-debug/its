@@ -12,7 +12,13 @@ import pytest
 from shared.kill_switch import SystemState, check_system_state, require_active
 
 
-def test_check_system_state_returns_enum():
+def test_check_system_state_returns_enum(mocker):
+    # check_system_state now reads from Smartsheet; mock the boundary so this
+    # stays a unit test. Full fail-open and happy-path coverage lives in
+    # tests/test_kill_switch.py.
+    mocker.patch(
+        "shared.kill_switch.smartsheet_client.get_setting", return_value="ACTIVE"
+    )
     state = check_system_state()
     assert isinstance(state, SystemState)
 
