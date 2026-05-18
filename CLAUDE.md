@@ -174,6 +174,7 @@ LangChain, Kubernetes.
 - `tests/test_capability_gating.py` — enforces Invariant 1 at the import level.
 - `scripts/watchdog.py` — the daily watchdog skeleton.
 - `scripts/launchd/template.plist` + `install.sh` — launchd trigger pattern.
+- `docs/session_logs/` — durable narrative log of during-execution decisions. Write one at end of any session that lands ≥1 commit and involves a non-obvious decision. See `docs/session_logs/README.md` for the convention.
 
 If something here contradicts the planning project's canonical docs (Foundation Mission v5,
 Operational Standards v7), the planning project wins. Flag the inconsistency.
