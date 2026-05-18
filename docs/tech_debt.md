@@ -29,3 +29,66 @@ Discovered same session. `systemColumnType: AUTO_NUMBER` is rejected at the "Cre
 **Mitigation:** Code-side row references use the Smartsheet row ID (returned in every API response). The human-readable primary column gives operators a meaningful label in the UI without needing auto-numbering.
 
 **Revisit when:** A workstream requires user-visible auto-IDs (e.g., a customer-facing ticket number) and the code-populated label pattern is insufficient. Likely never — the intrinsic row IDs cover the technical need and labels cover the human need.
+
+## parse_job_v3: V/S vendor-sub enumeration unclaimed [OPEN]
+
+Surfaced 2026-05-18 during the box_migration reconcile sanity check after `parse_subsubject` landed. See `docs/session_logs/2026-05-18_box_migration_reconcile.md` "Sanity check findings" for context.
+
+**Pattern:** `^(V|S)\d{1,2}\.\s+.+`. `V` = Vendor, `S` = Sub. Two-digit enumeration is the unmatched case; the existing `SUBJOB_LETTER_UC` (`[A-Z]\d?\.`) caps at one digit, so `V1.` matches but `V12.` falls through.
+
+**Examples observed:** `V12. EPEC`, `V17. CAB`, `V22. Chint`, `V31. Cable Markers`, `S10. Well Demo`, `S11. Erosion Control Consulting INC`, `S12. Helm`, `S13. Peerless`.
+
+**Concentration / volume:** ~30 unique names, 2–3 portfolios (Forefront-heavy by appearance based on the equipment-vendor name mix). Not universal across the 10.
+
+**Suggested entry point:** new `parse_vendor_sub(raw) -> Optional[VendorSubParse]` in `box_migration/parse_job_v3.py`. Fields: `raw`, `kind` ('vendor' | 'sub'), `index` (str), `name` (str). Mirror the shape of `parse_subsubject`. Insert in the reconcile harness's claim chain between `subsubject` and `canonical_non_job`.
+
+**Test corpus snippets** (drop directly into a new `tests/test_parse_vendor_sub.py`):
+
+```python
+# Positive
+("V12. EPEC",                                 "vendor", "12", "EPEC"),
+("V31. Cable Markers",                        "vendor", "31", "Cable Markers"),
+("S11. Erosion Control Consulting INC",       "sub",    "11", "Erosion Control Consulting INC"),
+("S12. Helm",                                 "sub",    "12", "Helm"),
+# Negative — must not steal from SUBJOB_LETTER_UC's domain
+("V1. Single Digit",                          None),    # SUBJOB_LETTER_UC owns this
+("A1. Kiwi",                                  None),    # not V or S
+("V100. Three Digit",                         None),    # cap at 2 digits
+```
+
+**Expected coverage delta:** small — single-digit name count across the full corpus. Roughly 30 unique × 2–3 occurrences each = ~60–90 unclaimed-occurrences moved into a new `vendor_sub` claim. Trivially measurable by re-running `box_migration/reconcile_box_listings.py` before and after.
+
+**Status:** scheduled for a focused follow-up PR; no date promised; revisit when other `box_migration/` work is in the same area.
+
+## parse_job_v3: ISO date prefix (YYYY-MM-DD) unclaimed [OPEN]
+
+Surfaced 2026-05-18 in the same sanity check.
+
+**Pattern:** `^\d{4}-\d{2}-\d{2}\s+.+`. ISO 8601 date prefix followed by a descriptive name.
+
+**Examples observed:** `2024-12-04 Brimfield 1 IFC CAD`, `2024-12-13 Brimfield 1 IFC CAD - V2`, `2025-09-15 BBCHS PBASE`, `2024-08-13 - Bonacci Solar - Base Map - Standard`, `2025-08-26 Roxbury IFC CAD Files`.
+
+**Concentration / volume:** ~13 unique names, low volume, consistent shape. Likely concentrated in CAD-versioning workflows (most observed names end in `IFC CAD` or `CAD Files`).
+
+**Why existing parser misses it:** `parse_date_prefix` handles only `R. M.D.YY <topic>` and `S. M.D.YY <topic>` (Received/Sent-tagged American-format dates). ISO has no direction prefix, uses dashes instead of dots, and uses 4-digit years.
+
+**Suggested entry point:** extend `parse_date_prefix` **in-place** rather than creating a new function. Add an `ISO_DATE_PREFIX` regex; on match, return a `DatePrefixParse` with a new `direction='ISO'` discriminator (or refactor the field to `Optional[str]` and leave it None for ISO matches — designer's choice). Do not create a new function — same domain.
+
+**Test corpus snippets** (drop into existing `tests/` location, or `tests/test_parse_date_prefix.py` if a dedicated file becomes warranted):
+
+```python
+# Positive
+("2024-12-04 Brimfield 1 IFC CAD",       "ISO", "2024-12-04", "Brimfield 1 IFC CAD"),
+("2025-09-15 BBCHS PBASE",                "ISO", "2025-09-15", "BBCHS PBASE"),
+# Existing R./S. forms must continue to match (regression check)
+("R. 5.6.25 Permit response",             "R",   "5.6.25",     "Permit response"),
+("S. 11.22.24 to Luminace",               "S",   "11.22.24",   "to Luminace"),
+# Negative
+("2025 Some Project",                     None),  # no MM-DD
+("2024-12 Partial Date",                  None),  # no DD
+("2024-12-04Brimfield",                   None),  # no space separator
+```
+
+**Expected coverage delta:** very small — ~13 unique × 1 occurrence each = ~13 unclaimed-occurrences moved. The ISO pattern is rare enough that the value is in correctness of the parser surface, not volume of reclassified names.
+
+**Status:** scheduled for a focused follow-up PR; no date promised; revisit when other `box_migration/` work is in the same area. Could naturally bundle with the V/S vendor-sub follow-up since both are parser-extension work of similar scope.

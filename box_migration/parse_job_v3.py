@@ -235,6 +235,32 @@ ARCHIVE_LETTER_Z = re.compile(
 
 
 # =============================================================================
+# Sub-subject patterns (N.M, N.M.K, Na.) — added from 2026-05-18 reconcile
+# =============================================================================
+# Sub-subjects live one or two levels inside a canonical "N. Subject" folder
+# and use the parent's number as a prefix. Three observed variants:
+#
+#   N.M  <Name>   — "7.1 Equipment", "7.10 IFC Redlines", "6.1 Zoning"
+#   N.M.K <Name>  — "6.1.1 Land Use Approvals", "6.1.2 Other"
+#   Na. <Name>    — "1a. Lum Review of IFC ELEC Drawings"  (digit-letter,
+#                   parallel to v2's lowercase-letter sub-job but with a digit
+#                   binding it to its parent subject)
+#
+# Bounded to \d{1,2} on each numeric segment so they cannot collide with
+# job-ID patterns (which are \d{4}.\d{2,3} or \d{3,4}-\d{3,4}).
+
+SUBSUBJECT_NUMERIC_2 = re.compile(
+    r'^(?P<parent>\d{1,2})\.(?P<sub>\d{1,2})\s+(?P<name>.+?)\s*$'
+)
+SUBSUBJECT_NUMERIC_3 = re.compile(
+    r'^(?P<parent>\d{1,2})\.(?P<mid>\d{1,2})\.(?P<sub>\d{1,2})\s+(?P<name>.+?)\s*$'
+)
+SUBSUBJECT_DIGIT_LETTER = re.compile(
+    r'^(?P<parent>\d{1,2})(?P<letter>[a-z])\.\s+(?P<name>.+?)\s*$'
+)
+
+
+# =============================================================================
 # Canonical subject allowlists (parallel to TEMPLATE_1111A_*)
 # =============================================================================
 
@@ -469,6 +495,55 @@ def parse_date_prefix(raw: str) -> Optional[DatePrefixParse]:
             raw=raw, direction=m.group('dir').upper(),
             date_raw=m.group('date'),
             warnings=['lowercase R./S. prefix — convention is uppercase'],
+        )
+    return None
+
+
+@dataclass
+class SubsubjectParse:
+    raw: str
+    kind: str                              # 'numeric_two' | 'numeric_three' | 'digit_letter'
+    parent: str                            # parent subject number/letter binding
+    sub_index: str                         # sub-level index (e.g., "1", "10", "1.1")
+    name: str
+
+
+def parse_subsubject(raw: str) -> Optional[SubsubjectParse]:
+    """
+    Parse a sub-subject folder name living inside a canonical "N. Subject"
+    parent. Three observed variants in the 2026-05-18 reconcile corpus:
+
+      "7.1 Equipment"            → kind='numeric_two',   parent='7',  sub_index='1'
+      "6.1.1 Land Use Approvals" → kind='numeric_three', parent='6',  sub_index='1.1'
+      "1a. Lum Review ..."       → kind='digit_letter',  parent='1',  sub_index='a'
+
+    Returns None if `raw` doesn't match any of the three. Try the 3-numeric
+    form before the 2-numeric form so "6.1.1 Foo" doesn't half-match as
+    "6.1 .1 Foo".
+    """
+    m = SUBSUBJECT_NUMERIC_3.match(raw)
+    if m:
+        return SubsubjectParse(
+            raw=raw, kind='numeric_three',
+            parent=m.group('parent'),
+            sub_index=f"{m.group('mid')}.{m.group('sub')}",
+            name=m.group('name').strip(),
+        )
+    m = SUBSUBJECT_NUMERIC_2.match(raw)
+    if m:
+        return SubsubjectParse(
+            raw=raw, kind='numeric_two',
+            parent=m.group('parent'),
+            sub_index=m.group('sub'),
+            name=m.group('name').strip(),
+        )
+    m = SUBSUBJECT_DIGIT_LETTER.match(raw)
+    if m:
+        return SubsubjectParse(
+            raw=raw, kind='digit_letter',
+            parent=m.group('parent'),
+            sub_index=m.group('letter'),
+            name=m.group('name').strip(),
         )
     return None
 
