@@ -45,22 +45,39 @@ recognition, or the schema classifier.
 These are the substantive observations from the reconcile, beyond the
 numeric delta. They drive what comes next outside this repo.
 
-### 1. `subsubject` is concentrated in subjects 5 (Engineering) and 8 (Permitting)
+### 1. `subsubject` claims concentrate in subjects 5 (Engineering) and 8 (Permitting), but actual usage varies portfolio-by-portfolio
 
 Of the 471 claimed names, the vast majority sit under `5. Engineering`
 or `8. Permitting` parent subjects. Portfolios that use the N.M layer
 under those parents — KSI 4 IL, Forefront, Almon, Steger & Roxbury,
-Keystone — show movement in the 45–82 range. Portfolios that do NOT
-use the layer show movement of 0–10:
+Keystone, Oregon-Kendall, Kendall CSP — show movement in the 45–82
+range. Three portfolios show near-zero movement, and the reasons
+differ:
 
-- Bonacci 1&2 (single-project schema): 6 claims. Single-project layouts
-  don't have the elaborate sub-subject taxonomy.
-- Dolphin and Shoestring (development-phase schema): 10 claims. Dev-phase
-  taxonomy uses different organizational primitives.
+- Bonacci 1&2 (`active_single_project` schema): 10 claims. The single-
+  project schema's two top-levels (`A. Bonacci Office`, `B. Bonacci
+  Field`) carry only a thin sub-subject taxonomy underneath.
+- SPI Portfolio (`active_portfolio_modern` schema): 6 claims. Schema-
+  wise belongs with the high-usage group, but the underlying folder
+  tree doesn't use the N.M layer the way the other portfolio_modern
+  projects do. Pre-N.M-convention origin date is the likely
+  explanation; not confirmed.
+- Dolphin and Shoestring (`active_portfolio_modern` schema): 1 claim.
+  Same observation as SPI but more extreme. v3's module docstring
+  describes Dolphin as the "development-phase taxonomy" example, but
+  the schema classifier put it in `active_portfolio_modern` because
+  its top-level uses Portfolio-prefixed subjects. Either Dolphin
+  migrated to portfolio_modern after the v3 deep-dive, or the
+  `ACTIVE_DEVELOPMENT` schema signature is under-detected in real data.
+  Worth noting: zero portfolios in this 10-portfolio set classified as
+  `active_development`. Carry-over for the Box ↔ Smartsheet
+  Reconciliation v1 addendum.
 
-Distribution matches the schema model — confirming the patch is
-schema-aware in the sense that it claims things where they exist, and
-appropriately produces nothing where they don't.
+Distribution is *partially* schema-driven: schema is necessary but not
+sufficient. Two `active_portfolio_modern` portfolios (SPI, Dolphin)
+don't behave like the rest of their schema cohort. The patch is
+appropriately conservative — it claims names where the pattern
+exists, and produces no false-positive claims where it doesn't.
 
 ### 2. N.M and N.M.K shift the Box ↔ Smartsheet Reconciliation v1 questions
 
@@ -201,22 +218,23 @@ top-level-claim tables and chaos-flag tallies live in the report.
 | # | Portfolio | Schema | active_subjob | subsubject | unclaimed |
 |---:|---|---|---:|---:|---:|
 | 1 | 2025.201 KSI 4 IL | active_portfolio_modern | 139 | 70 | 510 → 440 |
-| 2 | 2024.335 Forefront - Luminace | active_portfolio_modern | 148 | 82 | (see report) |
-| 3 | 2023.126 Oregon - Kendall | active_modern | 112 | 59 | (see report) |
-| 4 | 2025.358 Keystone (Coast) | active_portfolio_modern | 83 | 45 | (see report) |
-| 5 | 2025.108 Bonacci 1&2 (Generate) | active_single_project | 119 | 10 | (see report) |
-| 6 | 2025.364 Steger & Roxbury | active_portfolio_modern | 130 | 76 | (see report) |
-| 7 | 20171-20176 OR Portfolio (SPI) | active_modern | 52 | 6 | (see report) |
-| 12 | 2024.112 Almon, Lomaside, Perrydale (Hawthorne) | active_portfolio_modern | 87 | 67 | (see report) |
-| 13 | 2025.112 Kendall CSP Portfolio 5 | active_portfolio_modern | 87 | 55 | (see report) |
-| 15 | 2025.127 Dolphin and Shoestring | active_portfolio_modern | — | — | (see report) |
+| 2 | 2024.335 Forefront - Luminace | active_modern | 148 | 82 | 883 → 801 |
+| 3 | 2023.126 Oregon - Kendall | active_modern | 112 | 59 | 257 → 198 |
+| 4 | 2025.358 Keystone (Coast) | active_portfolio_modern | 83 | 45 | 246 → 201 |
+| 5 | 2025.108 Bonacci 1&2 (Generate) | active_single_project | 119 | 10 | 450 → 440 |
+| 6 | 2025.364 Steger & Roxbury | active_portfolio_modern | 130 | 76 | 440 → 364 |
+| 7 | 20171-20176 OR Portfolio (SPI) | active_portfolio_modern | 52 | 6 | 268 → 262 |
+| 12 | 2024.112 Almon, Lomaside, Perrydale (Hawthorne) | active_portfolio_modern | 87 | 67 | 172 → 105 |
+| 13 | 2025.112 Kendall CSP Portfolio 5 | active_portfolio_modern | 87 | 55 | 192 → 137 |
+| 15 | 2025.127 Dolphin and Shoestring | active_portfolio_modern | — | 1 | 59 → 58 |
 
-Schema classification reproduces the v3 deep-dive expectations exactly:
+Schema classification reproduces the v3 deep-dive expectations:
 7 `active_portfolio_modern`, 2 `active_modern`, 1 `active_single_project`.
-No portfolio fell into `UNKNOWN`. The schema classifier didn't need a
-patch — it was already correctly identifying the schemas; the gap was
-purely in the recognition of folders one layer deeper than the schema
-classifier looks.
+Zero portfolios classified as `active_development` (see Strategic
+Findings §1 for the Dolphin observation). No portfolio fell into
+`UNKNOWN`. The schema classifier didn't need a patch — it was already
+correctly identifying the schemas; the gap was purely in the
+recognition of folders one layer deeper than the schema classifier looks.
 
 ## Why a new entry point rather than extending parse_folder
 

@@ -92,3 +92,33 @@ Surfaced 2026-05-18 in the same sanity check.
 **Expected coverage delta:** very small — ~13 unique × 1 occurrence each = ~13 unclaimed-occurrences moved. The ISO pattern is rare enough that the value is in correctness of the parser surface, not volume of reclassified names.
 
 **Status:** scheduled for a focused follow-up PR; no date promised; revisit when other `box_migration/` work is in the same area. Could naturally bundle with the V/S vendor-sub follow-up since both are parser-extension work of similar scope.
+
+## parse_job_v3: person_tag_in_subject chaos over-match [OPEN]
+
+Surfaced 2026-05-18 in the box_migration reconcile. See `docs/session_logs/2026-05-18_box_migration_reconcile.md` "Chaos detection" section for the raw count.
+
+**Pattern (existing regex):** `PERSON_TAG_IN_SUBJECT` in `box_migration/parse_job_v3.py`:
+
+```
+r'(\bfor\s+[A-Z]{3,}\b|'                                  # "for ZACK"
+r'^[A-Z][a-z]+\s+(Organize|Cleanup|Notes|Files)\b|'       # "Teala Organize folder"
+r'-\s*[A-Z][a-z]+\s*$)'                                    # "Budget- Jason"
+```
+
+**Why existing parser misses it:** It doesn't miss — it over-matches. The third alternation (`-\s*[A-Z][a-z]+\s*$`) flags any `<something>-<Capitalized Word>` ending, which catches legitimate dash-customer-paren naming conventions where the trailing capitalized word is a customer label, not a person tag. Example false positive shape: `14130.1 Dooley (Mortenson) Field` — `Mortenson` here is the customer (Invenergy operating company), not a person.
+
+**Concentration / volume:** **138 unique names flagged across the 10-portfolio reconcile.** Highest count of any chaos pattern by 4x (next is `pre_canonical_zero` at 35). Concentration not yet measured per-portfolio.
+
+**Suggested entry point:** no new entry point. Refinement happens in-place on the existing `PERSON_TAG_IN_SUBJECT` regex in v3 — narrow the third alternation to require a stronger person-name signal than "trailing capitalized word." Candidates: known-first-name allowlist, two-word person form (`First Last`), or contextual position requirement (only flag when not preceded by a customer-name pattern). Decision belongs in the follow-up, after the corpus inspection step below.
+
+**Test snippets:** intentionally not provided yet. The work starts with corpus inspection, not a code change. Adding test snippets now would prescribe the fix shape before we know what shape is right.
+
+**Suggested first step (before any regex change):** spot-check 20 flagged names from the live reconcile output. For each, decide:
+- True positive — actual person name encoded as a folder tag.
+- False positive — capitalized trailing word that is a customer name, vendor name, location name, or other non-person reference.
+
+Categorize the 20. If false-positive rate is >50%, the third alternation needs to be narrowed or removed. If it's <20%, the pattern is mostly working and only edge cases need attention. Reconcile output to mine: `docs/reports/2026-05-18_reconcile_full.md`, search for `person_tag_in_subject` in the per-portfolio chaos sections.
+
+**Expected coverage delta:** unknown until the corpus inspection runs. Could be substantial (138 names is a lot) or modest (some portion is genuinely person-tagged content), depending on the false-positive ratio.
+
+**Status:** scheduled for a focused follow-up PR; no date promised; revisit before any workstream depends on `person_tag_in_subject` as a high-signal hygiene indicator. Until then, treat the flag as noisy and don't surface it to operators as actionable. Pairs naturally with a broader "chaos pattern false-positive audit" if other patterns turn out to over-match too.
