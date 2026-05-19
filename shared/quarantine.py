@@ -8,9 +8,28 @@ sender allowlist reaches Anthropic).
 
 `is_allowlisted()` is the in-code helper used by any script that needs to double-check a
 sender after Mail.app has already done the routing. `log_quarantined_message()` is the
-sheet-writer used by the quarantine-walk script.
+sheet-writer used by the quarantine-walk script (wired to the live ITS_Quarantine
+sheet 2026-05-18).
+
+Failure isolation: `log_quarantined_message()` propagates SmartsheetError. The quarantine-
+walk script is expected to catch and log CRITICAL via `error_log` so the triple-fire
+alert path fires — silent failure of quarantine logging is itself a security-relevant
+incident (we lose the audit record of who got quarantined).
 """
 from __future__ import annotations
+
+from . import sheet_ids, smartsheet_client
+
+# Live ITS_Quarantine.Workstream picklist (verified 2026-05-18). Note that
+# the catch-all is `other`, NOT `global` — differs from ITS_Review_Queue.
+VALID_WORKSTREAMS = frozenset({
+    "safety_reports",
+    "po_materials",
+    "subcontracts",
+    "email_triage",
+    "ai_employee",
+    "other",
+})
 
 
 def is_allowlisted(sender: str, allowlist: list[str]) -> bool:
@@ -49,7 +68,7 @@ def log_quarantined_message(
     timestamp: str,
     summary: str,
     workstream: str,
-) -> None:
+) -> int:
     """Log a quarantined message to ITS_Quarantine Smartsheet.
 
     The summary should be a short snippet of the body (e.g., first 200 chars) — no AI
@@ -59,11 +78,37 @@ def log_quarantined_message(
     Args:
         sender: The sender's email address.
         subject: Message subject (truncated if long).
-        timestamp: ISO 8601 timestamp of receipt.
+        timestamp: ISO 8601 timestamp of receipt — lands in the `Received At` cell.
         summary: Brief content summary — first ~200 chars of body. No AI call.
-        workstream: Which workstream's allowlist rejected this (e.g., "safety_reports").
+        workstream: Which workstream's allowlist rejected this. Must be one of
+            `VALID_WORKSTREAMS`.
+
+    Returns:
+        Smartsheet row ID of the newly-added row.
+
+    Raises:
+        ValueError: workstream is not in `VALID_WORKSTREAMS`.
+        SmartsheetError: from `smartsheet_client.add_rows`. Propagated — the
+            quarantine-walk script must catch and log CRITICAL so the triple-fire
+            alert fires; silent failure here means we lose the audit record of
+            who got quarantined.
     """
-    raise NotImplementedError(
-        "Quarantine logging not yet wired. "
-        "Awaiting ITS_Quarantine Smartsheet provisioning."
-    )
+    if workstream not in VALID_WORKSTREAMS:
+        raise ValueError(
+            f"workstream={workstream!r} not in {sorted(VALID_WORKSTREAMS)}"
+        )
+
+    row = {
+        # Primary column — short operator-facing label. Format mirrors
+        # ITS_Errors' "Error" column convention (short stable string).
+        "Quarantined Message": f"quarantined: {sender}",
+        "Received At": timestamp,
+        "Sender": sender,
+        "Subject": subject,
+        "Summary": summary,
+        "Workstream": workstream,
+        # Reviewed / Added to Allowlist / Reviewed By / Reviewed At / Notes
+        # are operator-workflow cells left blank at write time.
+    }
+    [row_id] = smartsheet_client.add_rows(sheet_ids.SHEET_QUARANTINE, [row])
+    return row_id
