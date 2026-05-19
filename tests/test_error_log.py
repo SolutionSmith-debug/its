@@ -63,6 +63,21 @@ def send_alert_mock(mocker):
     error_log_module._in_resend_alert = False
 
 
+@pytest.fixture(autouse=True)
+def sentry_capture_mock(mocker):
+    """Autouse: mock the lazy-imported `sentry_client.capture_exception` so no
+    test triggers a live Sentry event. Mirrors the `send_alert_mock` pattern.
+
+    Without this, the decorator-CRITICAL tests would fire real events into the
+    operator's Sentry project — polluting the dashboard with test noise. Also
+    resets the module-level `_in_sentry_capture` recursion guard between tests.
+    """
+    error_log_module._in_sentry_capture = False
+    mock = mocker.patch("shared.sentry_client.capture_exception")
+    yield mock
+    error_log_module._in_sentry_capture = False
+
+
 # ---- Severity enum --------------------------------------------------------
 
 def test_severity_enum_values():
@@ -502,3 +517,142 @@ def test_alert_critical_recursion_guard_blocks_reentry(log_dir, send_alert_mock)
     # send_alert again.
     assert send_alert_mock.call_count == 1
     assert inner_call_count["value"] == 1
+
+
+# ---- _alert_critical → Sentry leg + dual-leg independence ----------------
+
+
+def test_alert_critical_calls_both_resend_and_sentry(
+    log_dir, send_alert_mock, sentry_capture_mock
+):
+    @its_error_log("test.script")
+    def boom():
+        raise ValueError("kaboom")
+
+    with pytest.raises(ValueError):
+        boom()
+
+    send_alert_mock.assert_called_once()
+    sentry_capture_mock.assert_called_once()
+    # Sentry receives the structured fields (script, message, exc_info)
+    # rather than the email subject + body.
+    script, message, exc_info = sentry_capture_mock.call_args.args
+    assert script == "test.script"
+    assert "kaboom" in message
+    assert "ValueError" in exc_info
+
+
+def test_sentry_called_even_when_resend_fails(
+    log_dir, send_alert_mock, sentry_capture_mock
+):
+    # Resend failing must not prevent Sentry from being called.
+    send_alert_mock.side_effect = RuntimeError("resend down")
+
+    @its_error_log("test.script")
+    def boom():
+        raise ValueError("kaboom")
+
+    with pytest.raises(ValueError):
+        boom()
+
+    send_alert_mock.assert_called_once()
+    sentry_capture_mock.assert_called_once()  # ← key assertion
+
+    # Both the original CRITICAL and the resend-failure marker are
+    # in the local log.
+    contents = _today_log(log_dir).read_text()
+    assert "kaboom" in contents
+    assert "[resend-alert-failed]" in contents
+
+
+def test_resend_called_even_when_sentry_fails(
+    log_dir, send_alert_mock, sentry_capture_mock
+):
+    # Sentry failing must not prevent Resend from being called.
+    sentry_capture_mock.side_effect = RuntimeError("sentry down")
+
+    @its_error_log("test.script")
+    def boom():
+        raise ValueError("kaboom")
+
+    with pytest.raises(ValueError):
+        boom()
+
+    send_alert_mock.assert_called_once()  # ← Resend still ran
+    sentry_capture_mock.assert_called_once()
+
+    contents = _today_log(log_dir).read_text()
+    assert "[sentry-capture-failed]" in contents
+
+
+def test_both_legs_failing_still_does_not_raise(
+    log_dir, send_alert_mock, sentry_capture_mock
+):
+    send_alert_mock.side_effect = RuntimeError("resend down")
+    sentry_capture_mock.side_effect = RuntimeError("sentry down")
+
+    @its_error_log("test.script")
+    def boom():
+        raise ValueError("the real bug")
+
+    # Must STILL re-raise the original ValueError — not any of the
+    # side-channel failures.
+    with pytest.raises(ValueError, match="the real bug"):
+        boom()
+
+    contents = _today_log(log_dir).read_text()
+    # Both marker lines present so operator can see both legs failed.
+    assert "[resend-alert-failed]" in contents
+    assert "[sentry-capture-failed]" in contents
+
+
+def test_sentry_recursion_guard_blocks_reentry(
+    log_dir, send_alert_mock, sentry_capture_mock
+):
+    # If sentry_client.capture_exception somehow triggered another log()
+    # call that hit CRITICAL, the inner _alert_critical's Sentry leg
+    # must see the guard and skip.
+    inner_call_count = {"value": 0}
+
+    def reentrant_capture(script, message, exc_info):
+        inner_call_count["value"] += 1
+        log(Severity.CRITICAL, "inner", "reentered")
+
+    sentry_capture_mock.side_effect = reentrant_capture
+
+    @its_error_log("test.script")
+    def boom():
+        raise ValueError("outer")
+
+    with pytest.raises(ValueError):
+        boom()
+
+    # Outer call fires Sentry once; inner log()'s CRITICAL path tries
+    # to fire Sentry but the guard skips it. Net: 1 call.
+    assert sentry_capture_mock.call_count == 1
+    assert inner_call_count["value"] == 1
+
+
+def test_sentry_guard_and_resend_guard_are_independent(
+    log_dir, send_alert_mock, sentry_capture_mock
+):
+    # Sentry's guard being set shouldn't block Resend from firing on
+    # the SAME _alert_critical call, and vice versa. The two guards are
+    # leg-specific.
+    import shared.error_log as el
+
+    # Force Sentry's guard "on" before the call.
+    el._in_sentry_capture = True
+    try:
+        @its_error_log("test.script")
+        def boom():
+            raise ValueError("kaboom")
+
+        with pytest.raises(ValueError):
+            boom()
+
+        # Sentry skipped (guard was set); Resend still fired.
+        sentry_capture_mock.assert_not_called()
+        send_alert_mock.assert_called_once()
+    finally:
+        el._in_sentry_capture = False
