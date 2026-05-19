@@ -162,3 +162,88 @@ def test_module_imports_without_smartsheet_token(name, monkeypatch):
 **Expected coverage delta:** none for the structural-claim chain (these aren't user-facing structures). The benefit is import safety for any future tooling.
 
 **Status:** scheduled for a focused follow-up PR; no date promised; low priority since the scripts are one-off migration tools. Worth bundling with any other `smartsheet_migration/` touch.
+
+## mypy: import-untyped noise from vendor SDKs without stubs [OPEN]
+
+Surfaced 2026-05-18 in the mypy baseline reconciliation. See `docs/reports/2026-05-18_mypy_baseline.md` for the full inventory.
+
+**Pattern:** four `mypy .` errors of the form `Skipping analyzing "X": module is installed, but missing library stubs or py.typed marker [import-untyped]` or `Library stubs not installed for "X"`.
+
+**Affected imports:**
+- `msal` in `scripts/smoke_test_graph.py:32` — MSAL Python SDK lacks py.typed marker.
+- `requests` in `scripts/smoke_test_graph.py:33` — installable as `types-requests`.
+- `smartsheet` and `smartsheet.exceptions` in `tests/test_smartsheet_client.py:16` — smartsheet-python-sdk lacks py.typed marker.
+
+**Why existing code misses it:** not a code bug. The vendor SDKs simply don't ship type information. Mypy is correctly flagging the gap.
+
+**Concentration / volume:** 4 errors, 2 files. Constant across all commits in 2026-05-18 — these have been in the baseline since well before today.
+
+**Suggested fix:** add a `[[tool.mypy.overrides]]` block in `pyproject.toml`:
+
+```toml
+[[tool.mypy.overrides]]
+module = ["msal", "msal.*", "smartsheet", "smartsheet.*"]
+ignore_missing_imports = true
+```
+
+For `requests`, install the stubs: add `types-requests` to the dev dependencies in `pyproject.toml`, then `uv sync` or `pip install`. Stubs maintained by the typeshed project.
+
+**Test snippets:** N/A — this is mypy config, not tested code.
+
+**Expected coverage delta:** 4 errors drop from `mypy .` baseline. Brings remaining `mypy .` count from 8 → 4 (post-PR-#15 baseline) if applied. The remaining 4 are all real type issues in `box_migration/` + `smartsheet_migration/`.
+
+**Status:** scheduled for a focused follow-up PR; should land BEFORE any mypy-in-CI integration so the signal-to-noise ratio is acceptable. Otherwise persistent vendor-SDK warnings will train operators to ignore mypy output.
+
+## parse_job_v3.py: matched needs type annotation [OPEN]
+
+Surfaced 2026-05-18 in the mypy baseline reconciliation. See `docs/reports/2026-05-18_mypy_baseline.md`.
+
+**Pattern:** `box_migration/parse_job_v3.py:767: error: Need type annotation for "matched" [var-annotated]`. Line shifted from 692 (pre-PR-#13) to 767 (post-PR-#13) when `parse_subsubject` and its regex constants were added above; same error, same variable.
+
+**Why existing code misses it:** the variable `matched` is initialized as an empty container without an explicit type annotation that mypy can infer. The function works at runtime; mypy is asking for an annotation.
+
+**Concentration / volume:** 1 error, 1 location.
+
+**Suggested fix:** add the explicit type annotation. Inspect line 767 with `git blame box_migration/parse_job_v3.py | sed -n '765,770p'` to see the original author's intent. Likely a `dict[Type, bool]` or similar based on adjacent code.
+
+**Test snippets:** N/A — annotation fix; existing tests cover the function's behavior.
+
+**Expected coverage delta:** 1 error drops from `mypy .` baseline.
+
+**Status:** scheduled for a focused follow-up PR; preservation-over-refactor (Op Stds v8 §14) holds for `box_migration/*`, so fold this into the next `parse_job_v3` touch rather than a standalone PR if possible. Standalone PR is acceptable if no other touch is planned in the near term.
+
+## smartsheet_migration/ss_api.py: api body arg type mismatch [OPEN]
+
+Surfaced 2026-05-18 in the mypy baseline reconciliation. See `docs/reports/2026-05-18_mypy_baseline.md`.
+
+**Pattern:** `smartsheet_migration/ss_api.py:79: error: Argument "body" to "api" has incompatible type "list[dict[Any, Any]]"; expected "dict[Any, Any] | None" [arg-type]`. The `api()` function's `body` parameter is annotated as `dict | None` but a caller passes a `list[dict]` — common for Smartsheet bulk-add endpoints that accept arrays.
+
+**Why existing code misses it:** the `api()` helper was written when Smartsheet calls were dict-only; bulk endpoints were added without widening the annotation.
+
+**Concentration / volume:** 1 error, 1 location. Other call sites in `smartsheet_migration/` likely pass through correctly.
+
+**Suggested fix:** widen the `body` parameter annotation in `api()` to `dict | list | None` and verify all call sites still type-check. Roughly 3 lines.
+
+**Test snippets:** N/A — `smartsheet_migration/` has no test files; would need to add a minimal `tests/test_ss_api_type.py` if testing is desired.
+
+**Expected coverage delta:** 1 error drops from `mypy .` baseline.
+
+**Status:** scheduled for a focused follow-up PR. Worth bundling with the import-time-side-effects entry above since both touch `smartsheet_migration/`. Preservation-over-refactor applies but this is a real type bug, not a stylistic issue — refactor permitted under §14's "real bug" carve-out.
+
+## smartsheet_migration/migrate_fl.py: warnings list type annotation [OPEN]
+
+Surfaced 2026-05-18 in the mypy baseline reconciliation. See `docs/reports/2026-05-18_mypy_baseline.md`.
+
+**Pattern:** `smartsheet_migration/migrate_fl.py:176: error: Need type annotation for "warnings" (hint: "warnings: list[<type>] = ...") [var-annotated]`. The `warnings` variable is initialized as `[]` without an element type annotation.
+
+**Why existing code misses it:** mypy can't infer the element type from `warnings = []` followed by conditional `warnings.append(...)` calls. Annotation needed.
+
+**Concentration / volume:** 1 error, 1 location.
+
+**Suggested fix:** add the explicit annotation `warnings: list[str] = []` (or whatever element type the appends produce — likely `str`). Inspect with `git blame smartsheet_migration/migrate_fl.py | sed -n '174,180p'`.
+
+**Test snippets:** N/A — annotation fix.
+
+**Expected coverage delta:** 1 error drops from `mypy .` baseline.
+
+**Status:** scheduled for a focused follow-up PR; preservation-over-refactor holds. Same bundling rationale as the `ss_api` entry above — touch the migration directory once when convenient.
