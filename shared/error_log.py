@@ -6,13 +6,16 @@ Behavior:
   are gated by env var `ITS_ERROR_LOG_INFO=1` (default off) to keep cron-job
   startup latency clean — production scripts run with it unset and pay zero
   Smartsheet round-trips on `started` / `completed` lines.
-- CRITICAL severity triggers immediate email + SMS to maintainer.
-  TODO: Resend wiring deferred to the alert-routing PR (Op Stds v8 §3
-  triple-fire path).
+- CRITICAL severity additionally triggers an out-of-band Resend email to
+  the operator (`system.operator_email` from ITS_Config). Failure-isolated:
+  if Resend is down, the underlying CRITICAL event is still captured in the
+  local log and ITS_Errors. Sentry hook + alert-routing dedupe are separate
+  PRs per Op Stds v8 §3 triple-fire.
 
-The Smartsheet write path is recursion-guarded and failure-isolated: any
-`SmartsheetError` is caught and reduced to a `[smartsheet-write-failed]`
-marker line in the local log; it never raises and never re-enters `log()`.
+Both side-channel write paths (Smartsheet + Resend) are recursion-guarded
+and failure-isolated: any module-specific exception is caught and reduced
+to a marker line in the local log; neither path raises, neither path
+re-enters `log()`.
 
 Use the decorator:
     @its_error_log("safety_reports.intake")
@@ -35,6 +38,12 @@ from .smartsheet_client import SmartsheetError
 
 LOG_DIR = Path.home() / "its" / "logs"
 
+# CRITICAL alert subject prefix and message truncation. 80-char truncation
+# keeps subjects readable in mobile mail clients and aligns with most SMS
+# preview widths if/when SMS is wired later.
+_ALERT_SUBJECT_PREFIX = "[ITS CRITICAL]"
+_ALERT_SUBJECT_TRUNCATE = 80
+
 
 class Severity(StrEnum):
     INFO = "INFO"
@@ -43,11 +52,12 @@ class Severity(StrEnum):
     CRITICAL = "CRITICAL"
 
 
-# Module-level recursion guard. Belt-and-suspenders against any future
+# Module-level recursion guards. Belt-and-suspenders against any future
 # caller path that lands back inside log() while we're writing — e.g. if
-# add_rows ever grows a callback that emits a log line, the inner call
-# must NOT attempt another Smartsheet write.
+# add_rows or send_alert ever grow callbacks that emit log lines, the
+# inner call must NOT attempt another side-channel write.
 _in_smartsheet_write = False
+_in_resend_alert = False
 
 
 def _local_log(severity: Severity, script: str, message: str, exc_info: str | None = None) -> None:
@@ -138,13 +148,67 @@ def log(
 
 
 def _alert_critical(script: str, message: str, exc_info: str) -> None:
-    """Send immediate email + SMS for CRITICAL events.
+    """Send out-of-band Resend email for CRITICAL events.
 
-    TODO: Resend wiring deferred to the alert-routing PR (Op Stds v8 §3
-    triple-fire path). Until that lands, CRITICALs land in the local log
-    and ITS_Errors but do not push out-of-band.
+    Third leg of the Op Stds v8 §3 triple-fire (Sentry + Smartsheet
+    `ITS_Errors` + Resend). Sentry hook + alert-routing dedupe are
+    separate PRs; this function handles Resend only.
+
+    Failure-isolated: a `ResendError` is caught and reduced to a
+    `[resend-alert-failed]` marker line in the local log. The underlying
+    CRITICAL event is captured by `_local_log` and `_smartsheet_log`
+    before this function runs, so an out-of-band failure here cannot
+    drop the underlying signal.
+
+    Recursion-guarded via `_in_resend_alert` against the (unlikely but
+    defensible) scenario where the Resend path triggers another log()
+    call. Mirrors `_smartsheet_log`'s guard pattern.
     """
-    pass
+    global _in_resend_alert
+    if _in_resend_alert:
+        return
+
+    _in_resend_alert = True
+    try:
+        # Lazy import to keep this module's boot-time deps minimal and
+        # avoid a circular if resend_client ever needs to log.
+        from . import resend_client
+
+        # Subject: prefix + script + truncated message. Truncation keeps
+        # subjects readable in mobile mail clients.
+        truncated = message
+        if len(truncated) > _ALERT_SUBJECT_TRUNCATE:
+            truncated = truncated[: _ALERT_SUBJECT_TRUNCATE - 1] + "…"
+        subject = f"{_ALERT_SUBJECT_PREFIX} {script}: {truncated}"
+
+        # Body: full message + traceback + timestamp + script. Plain text.
+        ts = datetime.now(UTC).isoformat()
+        body_parts = [
+            f"Script:    {script}",
+            f"Timestamp: {ts}",
+            f"Message:   {message}",
+            "",
+            "Traceback:",
+            exc_info or "(none)",
+        ]
+        body = "\n".join(body_parts)
+
+        try:
+            resend_client.send_alert(subject, body)
+        except Exception as e:
+            # Intentionally broad. A missing keychain entry raises
+            # `KeychainError` (not a `ResendError`); ditto network errors
+            # that aren't routed through `ResendError`. The brief mandates
+            # "must NOT raise...anything," so widening to `Exception`
+            # preserves the bulletproof-alert-path contract. The marker
+            # line records the exception type so operators can triage.
+            _local_log(
+                Severity.ERROR,
+                "shared.error_log",
+                f"[resend-alert-failed] {e!r}",
+            )
+    finally:
+        _in_resend_alert = False
 
 
 F = TypeVar("F", bound=Callable)
@@ -162,14 +226,18 @@ def its_error_log(script_name: str) -> Callable[[F], F]:
                 return result
             except Exception as e:
                 tb = traceback.format_exc()
+                # Use the same prefixed message for both Smartsheet row and
+                # Resend alert email so operator sees consistent text across
+                # the triple-fire channels.
+                msg = f"unhandled: {e}"
                 log(
                     Severity.CRITICAL,
                     script_name,
-                    f"unhandled: {e}",
+                    msg,
                     error_code="uncaught_exception",
                     exc_info=tb,
                 )
-                _alert_critical(script_name, str(e), tb)
+                _alert_critical(script_name, msg, tb)
                 raise
         return wrapper  # type: ignore[return-value]
     return decorator
