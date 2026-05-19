@@ -145,6 +145,7 @@ CLAIM_LABELS: tuple[str, ...] = (
     "development_subject",     # parse_development_subject matched
     "subsubject",              # parse_subsubject matched (N.M, N.M.K, Na.)
     "vendor_sub",              # parse_vendor_sub matched (V12., S10., etc.)
+    "date_prefix",             # parse_date_prefix matched (R./S./ISO)
     "canonical_non_job",       # parse_folder kind == SUBJECT | UTILITY | SHARED
     "identifiable_job",        # parse_folder kind == JOB w/ recognized job_id
     "unclaimed",               # nothing matched
@@ -179,6 +180,10 @@ def resolve_claim(name: str) -> Claim:
     vendor_sub = p.parse_vendor_sub(name)
     if vendor_sub is not None:
         return Claim(name=name, label="vendor_sub", detail=vendor_sub.kind)
+
+    date_prefix = p.parse_date_prefix(name)
+    if date_prefix is not None:
+        return Claim(name=name, label="date_prefix", detail=date_prefix.direction)
 
     parsed = p.parse_folder(name)
     kind = parsed.folder_kind.value
