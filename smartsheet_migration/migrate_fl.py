@@ -173,7 +173,7 @@ def find_blocks(rows: list[dict]) -> list[dict]:
 
 def derive_payment_method(check: Any, eft: Any) -> tuple[str, str, list[str]]:
     """Return (method, reference, warnings). Method may be '' if undeterminable."""
-    warnings = []
+    warnings: list[str] = []
     # c10 first
     if check is not None:
         sv = str(check).strip()

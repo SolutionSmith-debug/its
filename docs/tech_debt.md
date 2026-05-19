@@ -210,20 +210,10 @@ Resolution: see commit on the `fix/ss-api-body-arg-type` branch (squash-merged),
 
 Originally surfaced 2026-05-18 in the mypy baseline reconciliation; see `docs/reports/2026-05-18_mypy_baseline.md` for the lifecycle context.
 
-## smartsheet_migration/migrate_fl.py: warnings list type annotation [OPEN]
+## smartsheet_migration/migrate_fl.py: warnings list type annotation [CLOSED 2026-05-18]
 
-Surfaced 2026-05-18 in the mypy baseline reconciliation. See `docs/reports/2026-05-18_mypy_baseline.md`.
+Resolved by adding the explicit annotation `warnings: list[str] = []` in `derive_payment_method()`. Element type inferred from the `.append(...)` call sites which pass string literals describing payment-method derivation warnings. One-line annotation change; zero behavior change.
 
-**Pattern:** `smartsheet_migration/migrate_fl.py:176: error: Need type annotation for "warnings" (hint: "warnings: list[<type>] = ...") [var-annotated]`. The `warnings` variable is initialized as `[]` without an element type annotation.
+Resolution: see commit on the `fix/migrate-fl-warnings-annotation` branch (squash-merged), and `docs/session_logs/2026-05-18_alert_critical_and_mypy_closure.md`.
 
-**Why existing code misses it:** mypy can't infer the element type from `warnings = []` followed by conditional `warnings.append(...)` calls. Annotation needed.
-
-**Concentration / volume:** 1 error, 1 location.
-
-**Suggested fix:** add the explicit annotation `warnings: list[str] = []` (or whatever element type the appends produce — likely `str`). Inspect with `git blame smartsheet_migration/migrate_fl.py | sed -n '174,180p'`.
-
-**Test snippets:** N/A — annotation fix.
-
-**Expected coverage delta:** 1 error drops from `mypy .` baseline.
-
-**Status:** scheduled for a focused follow-up PR; preservation-over-refactor holds. Same bundling rationale as the `ss_api` entry above — touch the migration directory once when convenient.
+Originally surfaced 2026-05-18 in the mypy baseline reconciliation; see `docs/reports/2026-05-18_mypy_baseline.md` for the lifecycle context.
