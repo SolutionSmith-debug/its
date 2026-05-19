@@ -1,0 +1,308 @@
+"""Tests for shared/review_queue.py.
+
+All Smartsheet calls are mocked at the boundary — these tests never
+hit the live ITS_Review_Queue. Run with:
+    pytest -q tests/test_review_queue.py
+"""
+from __future__ import annotations
+
+import json
+from datetime import UTC, date, datetime
+
+import pytest
+
+from shared import review_queue, sheet_ids
+from shared.error_log import Severity
+from shared.review_queue import (
+    VALID_WORKSTREAMS,
+    ItemNotFoundError,
+    ReviewQueueError,
+    ReviewReason,
+    ReviewStatus,
+    SlaTier,
+)
+
+
+@pytest.fixture
+def add_rows_mock(mocker):
+    """Mock the Smartsheet write boundary. Returns row IDs in input order."""
+    mock = mocker.patch(
+        "shared.review_queue.smartsheet_client.add_rows",
+        return_value=[9001],
+    )
+    return mock
+
+
+@pytest.fixture
+def get_rows_mock(mocker):
+    """Mock the Smartsheet read boundary."""
+    return mocker.patch("shared.review_queue.smartsheet_client.get_rows")
+
+
+# ---- Enum / picklist parity ----------------------------------------------
+
+
+def test_review_status_values_match_live_picklist():
+    # Values must match the ITS_Review_Queue.Status picklist exactly
+    # (verified live 2026-05-18). Symbolic guard against drift.
+    expected = {"PENDING", "IN_REVIEW", "APPROVED", "REJECTED", "ESCALATED"}
+    assert {s.value for s in ReviewStatus} == expected
+
+
+def test_review_reason_values_match_live_picklist():
+    expected = {
+        "low-confidence-extraction", "ambiguous-classification",
+        "structured-output-edge", "zero-data-window", "mismatched-reference",
+        "security-trigger", "policy-edge", "manual", "other",
+    }
+    assert {r.value for r in ReviewReason} == expected
+
+
+def test_sla_tier_values_match_live_picklist():
+    expected = {"4h", "24h", "48h"}
+    assert {t.value for t in SlaTier} == expected
+
+
+def test_valid_workstreams_match_live_picklist():
+    expected = {
+        "safety_reports", "po_materials", "subcontracts",
+        "email_triage", "ai_employee", "global",
+    }
+    assert set(VALID_WORKSTREAMS) == expected
+
+
+# ---- add() payload + write -----------------------------------------------
+
+
+def test_add_writes_correct_cell_payload(add_rows_mock):
+    row_id = review_queue.add(
+        workstream="safety_reports",
+        summary="WPR extraction had two job-ID matches",
+        payload={"candidates": ["2025.201.a", "2025.201.b"]},
+        sla_tier=SlaTier.SAFETY_INTAKE,
+        reason=ReviewReason.AMBIGUOUS_CLASSIFICATION,
+        severity=Severity.WARN,
+        source_file="box://reports/2026-05-18-WPR-001.pdf",
+        security_flag=False,
+    )
+
+    assert row_id == 9001
+    add_rows_mock.assert_called_once()
+    sheet_id, rows = add_rows_mock.call_args.args
+    assert sheet_id == sheet_ids.SHEET_REVIEW_QUEUE
+    assert len(rows) == 1
+
+    row = rows[0]
+    assert row["Workstream"] == "safety_reports"
+    assert row["Summary"] == "WPR extraction had two job-ID matches"
+    assert row["Reason"] == "ambiguous-classification"
+    assert row["Severity"] == "WARN"
+    assert row["SLA Tier"] == "4h"
+    assert row["Source File"] == "box://reports/2026-05-18-WPR-001.pdf"
+    assert row["Status"] == "PENDING"
+    assert row["Security Flag"] is False
+    assert row["Created At"] == date.today().isoformat()
+
+    # Item ID: <workstream>-<YYYYMMDD>-<HHMMSS>
+    assert row["Item ID"].startswith("safety_reports-")
+    parts = row["Item ID"].split("-")
+    assert len(parts) == 3
+    assert len(parts[1]) == 8   # YYYYMMDD
+    assert len(parts[2]) == 6   # HHMMSS
+
+    # Payload: compact JSON encoding.
+    parsed = json.loads(row["Payload"])
+    assert parsed == {"candidates": ["2025.201.a", "2025.201.b"]}
+    assert " " not in row["Payload"]  # compact separators=(",", ":")
+
+
+def test_add_security_flag_true_sets_checkbox(add_rows_mock):
+    review_queue.add(
+        workstream="safety_reports",
+        summary="anomaly_logger sentinel: instructions-in-pdf",
+        payload={"sentinel": "instructions-in-pdf", "match": "Ignore previous"},
+        sla_tier=SlaTier.SAFETY_INTAKE,
+        reason=ReviewReason.SECURITY_TRIGGER,
+        severity=Severity.CRITICAL,
+        security_flag=True,
+    )
+
+    row = add_rows_mock.call_args.args[1][0]
+    assert row["Security Flag"] is True
+    assert row["Severity"] == "CRITICAL"
+    assert row["Reason"] == "security-trigger"
+
+
+def test_add_defaults_reason_to_other_and_severity_to_warn(add_rows_mock):
+    review_queue.add(
+        workstream="po_materials",
+        summary="x",
+        payload={},
+        sla_tier=SlaTier.RFQ_DRAFT,
+    )
+
+    row = add_rows_mock.call_args.args[1][0]
+    assert row["Reason"] == "other"
+    assert row["Severity"] == "WARN"
+    assert row["Source File"] == ""
+
+
+@pytest.mark.parametrize("sla", list(SlaTier))
+def test_add_accepts_all_sla_tiers(add_rows_mock, sla):
+    review_queue.add(
+        workstream="subcontracts",
+        summary="s", payload={}, sla_tier=sla,
+    )
+    row = add_rows_mock.call_args.args[1][0]
+    assert row["SLA Tier"] == sla.value
+
+
+@pytest.mark.parametrize("reason", list(ReviewReason))
+def test_add_accepts_all_reasons(add_rows_mock, reason):
+    review_queue.add(
+        workstream="safety_reports",
+        summary="s", payload={}, sla_tier=SlaTier.SAFETY_INTAKE,
+        reason=reason,
+    )
+    row = add_rows_mock.call_args.args[1][0]
+    assert row["Reason"] == reason.value
+
+
+@pytest.mark.parametrize("severity", list(Severity))
+def test_add_accepts_all_severities(add_rows_mock, severity):
+    review_queue.add(
+        workstream="safety_reports",
+        summary="s", payload={}, sla_tier=SlaTier.SAFETY_INTAKE,
+        severity=severity,
+    )
+    row = add_rows_mock.call_args.args[1][0]
+    assert row["Severity"] == severity.value
+
+
+@pytest.mark.parametrize("ws", sorted(VALID_WORKSTREAMS))
+def test_add_accepts_all_workstreams(add_rows_mock, ws):
+    review_queue.add(
+        workstream=ws,
+        summary="s", payload={}, sla_tier=SlaTier.SAFETY_INTAKE,
+    )
+    row = add_rows_mock.call_args.args[1][0]
+    assert row["Workstream"] == ws
+
+
+def test_add_rejects_invalid_workstream(add_rows_mock):
+    with pytest.raises(ValueError, match="not in"):
+        review_queue.add(
+            workstream="not_a_real_workstream",
+            summary="s", payload={}, sla_tier=SlaTier.SAFETY_INTAKE,
+        )
+    add_rows_mock.assert_not_called()
+
+
+def test_add_handles_nested_payload_structures(add_rows_mock):
+    nested = {
+        "candidates": [
+            {"job_id": "2025.201.a", "confidence": 0.62},
+            {"job_id": "2025.201.b", "confidence": 0.55},
+        ],
+        "extracted_text": "first 300 chars...",
+        "metadata": {"document_hash": "abc123"},
+    }
+    review_queue.add(
+        workstream="safety_reports",
+        summary="nested test", payload=nested,
+        sla_tier=SlaTier.SAFETY_INTAKE,
+    )
+    row = add_rows_mock.call_args.args[1][0]
+    assert json.loads(row["Payload"]) == nested
+
+
+def test_add_propagates_smartsheet_errors(add_rows_mock):
+    # The brief mandates failure propagation — workstream callers need to
+    # know the queue write failed so they can fire the triple-fire CRITICAL.
+    from shared.smartsheet_client import SmartsheetError
+    add_rows_mock.side_effect = SmartsheetError("HTTP 503: unavailable")
+
+    with pytest.raises(SmartsheetError, match="503"):
+        review_queue.add(
+            workstream="safety_reports",
+            summary="s", payload={}, sla_tier=SlaTier.SAFETY_INTAKE,
+        )
+
+
+# ---- get_status() --------------------------------------------------------
+
+
+def test_get_status_returns_enum_from_matching_row(get_rows_mock):
+    get_rows_mock.return_value = [
+        {"_row_id": 1, "Item ID": "safety_reports-20260518-153022",
+         "Status": "IN_REVIEW"},
+    ]
+
+    status = review_queue.get_status("safety_reports-20260518-153022")
+
+    assert status is ReviewStatus.IN_REVIEW
+    get_rows_mock.assert_called_once_with(
+        sheet_ids.SHEET_REVIEW_QUEUE,
+        filters={"Item ID": "safety_reports-20260518-153022"},
+    )
+
+
+@pytest.mark.parametrize("status_str,expected", [
+    ("PENDING", ReviewStatus.PENDING),
+    ("IN_REVIEW", ReviewStatus.IN_REVIEW),
+    ("APPROVED", ReviewStatus.APPROVED),
+    ("REJECTED", ReviewStatus.REJECTED),
+    ("ESCALATED", ReviewStatus.ESCALATED),
+])
+def test_get_status_parses_all_picklist_values(get_rows_mock, status_str, expected):
+    get_rows_mock.return_value = [
+        {"_row_id": 1, "Item ID": "x", "Status": status_str},
+    ]
+    assert review_queue.get_status("x") is expected
+
+
+def test_get_status_raises_item_not_found(get_rows_mock):
+    get_rows_mock.return_value = []
+
+    with pytest.raises(ItemNotFoundError, match="no ITS_Review_Queue row"):
+        review_queue.get_status("does-not-exist")
+
+
+def test_get_status_raises_when_status_cell_is_non_string(get_rows_mock):
+    get_rows_mock.return_value = [
+        {"_row_id": 1, "Item ID": "x", "Status": None},
+    ]
+
+    with pytest.raises(ReviewQueueError, match="non-string Status"):
+        review_queue.get_status("x")
+
+
+def test_get_status_propagates_smartsheet_errors(get_rows_mock):
+    from shared.smartsheet_client import SmartsheetError
+    get_rows_mock.side_effect = SmartsheetError("HTTP 500: server error")
+
+    with pytest.raises(SmartsheetError, match="500"):
+        review_queue.get_status("x")
+
+
+# ---- Item ID generation --------------------------------------------------
+
+
+def test_item_id_format_is_workstream_yyyymmdd_hhmmss():
+    item_id = review_queue._generate_item_id("safety_reports")
+    parts = item_id.split("-")
+    assert parts[0] == "safety_reports"
+    assert len(parts) == 3
+    # YYYYMMDD
+    assert datetime.strptime(parts[1], "%Y%m%d")
+    # HHMMSS
+    assert datetime.strptime(parts[2], "%H%M%S")
+
+
+def test_item_id_uses_utc(mocker):
+    # Lock the time and verify the formatted Item ID matches UTC.
+    fake_now = datetime(2026, 5, 18, 23, 45, 7, tzinfo=UTC)
+    mocker.patch("shared.review_queue.datetime").now.return_value = fake_now
+
+    item_id = review_queue._generate_item_id("po_materials")
+    assert item_id == "po_materials-20260518-234507"
