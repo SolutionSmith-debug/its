@@ -204,11 +204,16 @@ def get_rows(
     return out
 
 
-def get_setting(key: str, *, workstream: str) -> str:
+def get_setting(key: str, *, workstream: str) -> str | None:
     """Read one Setting from ITS_Config, scoped to a workstream.
 
     Workstream is required — `ITS_Config` rows are keyed on (Setting,
     Workstream), and silently defaulting hides config misses.
+
+    Returns the cell value as a string, or `None` if the row exists but
+    the Value cell is empty / non-string. Raises `SmartsheetNotFoundError`
+    if no row matches at all — callers distinguish "row missing" from
+    "row found but blank Value" by which path triggers.
     """
     rows = get_rows(
         sheet_ids.SHEET_CONFIG,
@@ -218,7 +223,8 @@ def get_setting(key: str, *, workstream: str) -> str:
         raise SmartsheetNotFoundError(
             f"ITS_Config has no row for Setting={key!r} Workstream={workstream!r}"
         )
-    return rows[0].get("Value")
+    value = rows[0].get("Value")
+    return value if isinstance(value, str) else None
 
 
 # ---- Writes --------------------------------------------------------------
