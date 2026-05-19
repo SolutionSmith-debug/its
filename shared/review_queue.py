@@ -1,6 +1,6 @@
 """ITS_Review_Queue helpers — write to the queue, update statuses.
 
-Status enum (per Operational Standards v5):
+Status enum (per Operational Standards v8):
     PENDING / IN_REVIEW / APPROVED / REJECTED / ESCALATED
 
 SLA tiers:
@@ -49,10 +49,10 @@ def add(
         workstream: e.g., "safety_reports", "po_materials".
         summary: One-line human-readable description.
         payload: Structured data the reviewer needs to make the decision.
-        sla_tier: SLA tier per Operational Standards v5.
+        sla_tier: SLA tier per Operational Standards v8.
         reason: Why this is in the queue (e.g., "low confidence on job match").
         security_flag: True if this item is here because a `shared.anomaly_logger`
-            sentinel fired. Triggers separate owner notification per Op Stds v5 §9.
+            sentinel fired. Triggers separate owner notification per Op Stds v8 §9.
     """
     raise NotImplementedError("Awaiting ITS_Review_Queue sheet schema.")
 

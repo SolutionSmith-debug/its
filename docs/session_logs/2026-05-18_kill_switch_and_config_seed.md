@@ -17,7 +17,9 @@ session.
 
 ## CI runs
 
-Pending push.
+| Run | Commit | Result |
+|---|---|---|
+| [26059482891](https://github.com/SolutionSmith-debug/its/actions/runs/26059482891) | `1dc8cbb` | green (28s) |
 
 Local gates:
 - `ruff check` clean on all five new/edited files.

@@ -81,7 +81,7 @@ def _build_seed_rows() -> list[dict[str, str]]:
             "Workstream": "safety_reports",
             "Description": (
                 "External send gate mode. MANUAL = human approval required "
-                "for every send (Foundation Mission v5 Invariant 1)."
+                "for every send (Foundation Mission v6 Invariant 1)."
             ),
         },
     ]

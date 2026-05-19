@@ -103,6 +103,12 @@ No code changes — pytest is a regression check only.
 - `pytest -q` — expected to remain 160 passed / 2 skipped (no behavior
   changed; only `CLAUDE.md` edited).
 
+## CI runs
+
+| Run | Commit | Result |
+|---|---|---|
+| [26060825031](https://github.com/SolutionSmith-debug/its/actions/runs/26060825031) | `babd69f` | green (33s) |
+
 ## Open items handed off
 
 - **CLAUDE.md doc-version coverage gap.** The 5 doc families listed in

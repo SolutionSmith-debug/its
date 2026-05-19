@@ -1,4 +1,4 @@
-"""Capability-gating tests for Foundation Mission v4 Invariant 1 (External Send Gate).
+"""Capability-gating tests for Foundation Mission v6 Invariant 1 (External Send Gate).
 
 The architectural invariant: scripts that call the Anthropic API to generate customer-facing
 content MUST NOT have the capability to send externally. Scripts that send externally MUST
