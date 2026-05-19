@@ -35,7 +35,7 @@ def _token() -> str:
     return tok
 
 
-def api(method: str, path: str, body: dict | None = None, query: dict | None = None) -> Any:
+def api(method: str, path: str, body: dict | list | None = None, query: dict | None = None) -> Any:
     url = BASE + path
     if query:
         from urllib.parse import urlencode

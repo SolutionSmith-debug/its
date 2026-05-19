@@ -202,23 +202,13 @@ Resolution: see commit on the `fix/parse-job-v3-matched-annotation` branch (squa
 
 Originally surfaced 2026-05-18 in the mypy baseline reconciliation; see `docs/reports/2026-05-18_mypy_baseline.md` for the lifecycle context.
 
-## smartsheet_migration/ss_api.py: api body arg type mismatch [OPEN]
+## smartsheet_migration/ss_api.py: api body arg type mismatch [CLOSED 2026-05-18]
 
-Surfaced 2026-05-18 in the mypy baseline reconciliation. See `docs/reports/2026-05-18_mypy_baseline.md`.
+Resolved by widening the `body` parameter annotation on `api()` from `dict | None` to `dict | list | None`. Single-character-class edit on the signature line; all existing call sites continue to type-check (the `add_rows()` caller that passed `list[dict]` now matches). Real-bug carve-out under Op Stds v8 §14.
 
-**Pattern:** `smartsheet_migration/ss_api.py:79: error: Argument "body" to "api" has incompatible type "list[dict[Any, Any]]"; expected "dict[Any, Any] | None" [arg-type]`. The `api()` function's `body` parameter is annotated as `dict | None` but a caller passes a `list[dict]` — common for Smartsheet bulk-add endpoints that accept arrays.
+Resolution: see commit on the `fix/ss-api-body-arg-type` branch (squash-merged), and `docs/session_logs/2026-05-18_alert_critical_and_mypy_closure.md`.
 
-**Why existing code misses it:** the `api()` helper was written when Smartsheet calls were dict-only; bulk endpoints were added without widening the annotation.
-
-**Concentration / volume:** 1 error, 1 location. Other call sites in `smartsheet_migration/` likely pass through correctly.
-
-**Suggested fix:** widen the `body` parameter annotation in `api()` to `dict | list | None` and verify all call sites still type-check. Roughly 3 lines.
-
-**Test snippets:** N/A — `smartsheet_migration/` has no test files; would need to add a minimal `tests/test_ss_api_type.py` if testing is desired.
-
-**Expected coverage delta:** 1 error drops from `mypy .` baseline.
-
-**Status:** scheduled for a focused follow-up PR. Worth bundling with the import-time-side-effects entry above since both touch `smartsheet_migration/`. Preservation-over-refactor applies but this is a real type bug, not a stylistic issue — refactor permitted under §14's "real bug" carve-out.
+Originally surfaced 2026-05-18 in the mypy baseline reconciliation; see `docs/reports/2026-05-18_mypy_baseline.md` for the lifecycle context.
 
 ## smartsheet_migration/migrate_fl.py: warnings list type annotation [OPEN]
 
