@@ -23,5 +23,8 @@ jobs:
       - name: Lint (ruff)
         run: ruff check .
 
+      - name: Type-check (mypy, blocking)
+        run: mypy .
+
       - name: Tests (pytest + coverage)
         run: pytest --cov=shared --cov=safety_reports --cov-report=term-missing -q

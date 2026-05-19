@@ -91,36 +91,15 @@ The per-file-ignores `["E401", "I001", "F401", "B007", "UP035"]` in `pyproject.t
 
 Resolution: see commit on the `fix/smartsheet-migration-import-time` branch (squash-merged), and `docs/session_logs/2026-05-19_chore_sweep_and_mypy_lockdown.md`.
 
-## mypy: import-untyped noise from vendor SDKs without stubs [OPEN]
+## mypy: import-untyped noise from vendor SDKs without stubs [CLOSED 2026-05-19]
 
-Surfaced 2026-05-18 in the mypy baseline reconciliation. See `docs/reports/2026-05-18_mypy_baseline.md` for the full inventory.
+Resolved by adding the proper stub package for `requests` (`types-requests` added to dev dependencies in `pyproject.toml`) and a `[[tool.mypy.overrides]]` block silencing missing-stub errors for `msal` and `smartsheet` (neither publishes type information upstream as of 2026-05).
 
-**Pattern:** four `mypy .` errors of the form `Skipping analyzing "X": module is installed, but missing library stubs or py.typed marker [import-untyped]` or `Library stubs not installed for "X"`.
+After applying, `mypy .` reports **zero errors** across all 64 source files. Brought the baseline from 4 → 0.
 
-**Affected imports:**
-- `msal` in `scripts/smoke_test_graph.py:32` — MSAL Python SDK lacks py.typed marker.
-- `requests` in `scripts/smoke_test_graph.py:33` — installable as `types-requests`.
-- `smartsheet` and `smartsheet.exceptions` in `tests/test_smartsheet_client.py:16` — smartsheet-python-sdk lacks py.typed marker.
+Locked in by adding mypy as a **blocking CI step** in `.github/workflows/ci.yml` — silent type drift across PRs is no longer possible. Mypy now runs in parallel with ruff and pytest; failure of any step blocks merge.
 
-**Why existing code misses it:** not a code bug. The vendor SDKs simply don't ship type information. Mypy is correctly flagging the gap.
-
-**Concentration / volume:** 4 errors, 2 files. Constant across all commits in 2026-05-18 — these have been in the baseline since well before today.
-
-**Suggested fix:** add a `[[tool.mypy.overrides]]` block in `pyproject.toml`:
-
-```toml
-[[tool.mypy.overrides]]
-module = ["msal", "msal.*", "smartsheet", "smartsheet.*"]
-ignore_missing_imports = true
-```
-
-For `requests`, install the stubs: add `types-requests` to the dev dependencies in `pyproject.toml`, then `uv sync` or `pip install`. Stubs maintained by the typeshed project.
-
-**Test snippets:** N/A — this is mypy config, not tested code.
-
-**Expected coverage delta:** 4 errors drop from `mypy .` baseline. Brings remaining `mypy .` count from 8 → 4 (post-PR-#15 baseline) if applied. The remaining 4 are all real type issues in `box_migration/` + `smartsheet_migration/`.
-
-**Status:** scheduled for a focused follow-up PR; should land BEFORE any mypy-in-CI integration so the signal-to-noise ratio is acceptable. Otherwise persistent vendor-SDK warnings will train operators to ignore mypy output.
+Resolution: see commit on the `feature/mypy-zero-and-ci` branch (squash-merged), and `docs/session_logs/2026-05-19_chore_sweep_and_mypy_lockdown.md`.
 
 ## parse_job_v3.py: matched needs type annotation [CLOSED 2026-05-18]
 

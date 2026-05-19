@@ -1,5 +1,7 @@
 # mypy baseline inventory — post-PR-#15 (2026-05-18)
 
+> **2026-05-19 update:** baseline is now **zero**. All eight errors documented below have been resolved — PRs #16 / #18 / #19 / #20 closed the four code-fix entries (`reconcile_box_listings:127`, `parse_job_v3 matched`, `ss_api body arg`, `migrate_fl warnings`), and the 2026-05-19 chore-sweep PR added `types-requests` to dev deps + a `[[tool.mypy.overrides]]` block for `msal` / `smartsheet` to silence the four vendor-SDK import-untyped notes. Mypy is now a blocking step in `.github/workflows/ci.yml`; silent type drift across future PRs is no longer possible. This inventory is preserved as a historical record of the cleanup path.
+
 Eight `mypy .` errors at `HEAD = 3a97061`. This report classifies each
 against historical snapshots so the next mypy-related decision (in-CI
 vs local-only) starts from a complete inventory rather than the
