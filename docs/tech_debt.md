@@ -194,23 +194,13 @@ For `requests`, install the stubs: add `types-requests` to the dev dependencies 
 
 **Status:** scheduled for a focused follow-up PR; should land BEFORE any mypy-in-CI integration so the signal-to-noise ratio is acceptable. Otherwise persistent vendor-SDK warnings will train operators to ignore mypy output.
 
-## parse_job_v3.py: matched needs type annotation [OPEN]
+## parse_job_v3.py: matched needs type annotation [CLOSED 2026-05-18]
 
-Surfaced 2026-05-18 in the mypy baseline reconciliation. See `docs/reports/2026-05-18_mypy_baseline.md`.
+Resolved by adding the explicit annotation `matched: dict[Schema, list[str]] = {...}` in `classify_schema()`. Inferred type from `_V3_SIGNATURES` keys (Schema enum members) and the `.append(name)` call site where `name` is a `str`. One-line annotation change; zero behavior change. Preservation-over-refactor §14 honored — only the annotation line was modified.
 
-**Pattern:** `box_migration/parse_job_v3.py:767: error: Need type annotation for "matched" [var-annotated]`. Line shifted from 692 (pre-PR-#13) to 767 (post-PR-#13) when `parse_subsubject` and its regex constants were added above; same error, same variable.
+Resolution: see commit on the `fix/parse-job-v3-matched-annotation` branch (squash-merged), and `docs/session_logs/2026-05-18_alert_critical_and_mypy_closure.md`.
 
-**Why existing code misses it:** the variable `matched` is initialized as an empty container without an explicit type annotation that mypy can infer. The function works at runtime; mypy is asking for an annotation.
-
-**Concentration / volume:** 1 error, 1 location.
-
-**Suggested fix:** add the explicit type annotation. Inspect line 767 with `git blame box_migration/parse_job_v3.py | sed -n '765,770p'` to see the original author's intent. Likely a `dict[Type, bool]` or similar based on adjacent code.
-
-**Test snippets:** N/A — annotation fix; existing tests cover the function's behavior.
-
-**Expected coverage delta:** 1 error drops from `mypy .` baseline.
-
-**Status:** scheduled for a focused follow-up PR; preservation-over-refactor (Op Stds v8 §14) holds for `box_migration/*`, so fold this into the next `parse_job_v3` touch rather than a standalone PR if possible. Standalone PR is acceptable if no other touch is planned in the near term.
+Originally surfaced 2026-05-18 in the mypy baseline reconciliation; see `docs/reports/2026-05-18_mypy_baseline.md` for the lifecycle context.
 
 ## smartsheet_migration/ss_api.py: api body arg type mismatch [OPEN]
 
