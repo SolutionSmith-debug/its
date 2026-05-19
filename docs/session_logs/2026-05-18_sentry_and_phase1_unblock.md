@@ -12,7 +12,7 @@ that workstream code has been waiting on.
 |---|---|---|
 | #23 | `a86840c` | feat(shared): wire _alert_critical to Sentry — triple-fire complete |
 | #24 | `e0186095` | feat(shared): wire review_queue to ITS_Review_Queue |
-| _(this PR)_ | _t.b.d._ | feat(shared): wire quarantine logger to ITS_Quarantine |
+| #25 | `e5a02a6` | feat(shared): wire quarantine logger to ITS_Quarantine |
 
 ## CI runs
 
@@ -20,9 +20,7 @@ that workstream code has been waiting on.
 |---|---|---|
 | [26072739141](https://github.com/SolutionSmith-debug/its/actions/runs/26072739141) | `a86840c` (PR #23) | green (29s) |
 | [26072950046](https://github.com/SolutionSmith-debug/its/actions/runs/26072950046) | `e0186095` (PR #24) | green (28s) |
-
-This PR's run lands when it's pushed; URL to be backfilled on a future
-chore touch per the established convention.
+| [26073236389](https://github.com/SolutionSmith-debug/its/actions/runs/26073236389) | `e5a02a6` (PR #25) | green (34s) |
 
 ## Decisions made during session
 

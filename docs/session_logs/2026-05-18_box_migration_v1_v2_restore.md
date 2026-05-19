@@ -77,6 +77,12 @@ Default to #1 (the reconcile harness lives in `box_migration/`).
   work; v3 in particular leans on `Optional[T]` in older-style
   annotations.
 
+## CI runs
+
+| Run | Commit | Result |
+|---|---|---|
+| [26063440645](https://github.com/SolutionSmith-debug/its/actions/runs/26063440645) | `9b5cbfd` (PR #12) | green (33s) |
+
 ## What's NOT in this PR
 
 - Reconcile harness — separate feature branch, lands after this merges.

@@ -21,6 +21,12 @@ Out-of-band (no commit):
 - Task 3 — live `ITS_Config` row sync for the
   `safety_reports.external_send_gate` Description.
 
+## CI runs
+
+| Run | Commit | Result |
+|---|---|---|
+| [26068666872](https://github.com/SolutionSmith-debug/its/actions/runs/26068666872) | `3a97061` (PR #15 squash) | green (30s) |
+
 ## Verify-before-fix findings
 
 Brief premise vs. reality, surfaced during preflight per Op Stds v8 §13.
