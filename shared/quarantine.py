@@ -1,6 +1,6 @@
 """Sender-allowlist quarantine logging.
 
-Per Foundation Mission v4 Invariant 2, non-allowlisted email is routed by Mail.app rule to
+Per Foundation Mission v6 Invariant 2, non-allowlisted email is routed by Mail.app rule to
 a Quarantine folder, not to the workstream's hot folder. A scheduled script walks the
 Quarantine folder and logs each quarantined message to ITS_Quarantine Smartsheet — no
 Anthropic API call on quarantined content (defense-in-depth: nothing that didn't pass the

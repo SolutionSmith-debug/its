@@ -18,7 +18,7 @@ Smartsheet or Box, or those calls will be rewritten when the real schema lands.
 
 ## Three scripts — External Send Gate two-process model
 
-Per Foundation Mission v5 Invariant 1, generation and send live in separate scripts:
+Per Foundation Mission v6 Invariant 1, generation and send live in separate scripts:
 
 - **`intake.py`** — fires per inbound email to `safety@evergreenmirror.com` (sandbox) /
   `safety@evergreenrenewables.com` (production). Sender allowlist enforced at the Mail.app

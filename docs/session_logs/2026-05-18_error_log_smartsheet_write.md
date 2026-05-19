@@ -235,6 +235,12 @@ All three pre-existing smoke scripts still pass — no regressions.
   the filter docstring and `SDK_LOGGER_NAME` constant. Same error, not
   introduced here.
 
+### CI runs
+
+| Run | Commit | Result |
+|---|---|---|
+| [26062128291](https://github.com/SolutionSmith-debug/its/actions/runs/26062128291) | `343b84b` | green (32s) |
+
 ### Items deferred
 
 - **`_alert_critical` Resend wiring.** Stub remains; CRITICAL events land

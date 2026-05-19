@@ -1,6 +1,6 @@
 """Safety Reports weekly summary — launchd-scheduled. BLOCKED on owner decisions.
 
-Pre-cascade scaffold. Per Foundation Mission v4 Invariant 1 (External Send Gate, permanent),
+Pre-cascade scaffold. Per Foundation Mission v6 Invariant 1 (External Send Gate, permanent),
 this file is superseded by the two-process refactor: `weekly_generate.py` (AI step, no send
 capability) + `weekly_send.py` (transmission, no AI step). The file stays in-tree as a
 reference for the launchd plist wiring until that refactor lands.

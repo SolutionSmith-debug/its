@@ -13,7 +13,7 @@ Same-day evening session restructured the workspace topology:
   - 06 — Human Review folder (210126402545540) deleted
 
 This script is no longer runnable as written. HR_FOLDER is invalid; sheets
-already exist at their new homes. Preserved in-tree per Op Stds v7 §14
+already exist at their new homes. Preserved in-tree per Op Stds v8 §14
 (preservation-over-refactor); git history is the diff reference.
 
 For the current provisioning record, see shared/sheet_ids.py and

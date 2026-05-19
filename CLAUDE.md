@@ -99,9 +99,9 @@ shipment.
 | Module | State | Notes |
 |--------|-------|-------|
 | `shared/keychain.py` | Working, tested | macOS-only; uses `security` CLI. |
-| `shared/error_log.py` | Local file + decorator working, tested | Smartsheet `ITS_Errors` write pending. Sentry hook pending. |
+| `shared/error_log.py` | Working, tested | Local file + Smartsheet `ITS_Errors` write (recursion-guarded; INFO env-gated via `ITS_ERROR_LOG_INFO=1`). Sentry hook + Resend out-of-band path pending alert-routing PR. |
 | `shared/kill_switch.py` | Working, tested | Reads `system.state` from ITS_Config via `smartsheet_client.get_setting`; fail-open on three modes (sheet unreachable / row missing / invalid value) with distinguishable WARN. Wired 2026-05-18. |
-| `shared/anthropic_client.py` | Working | Reads `ITS_ANTHROPIC_KEY` from Keychain. |
+| `shared/anthropic_client.py` | Working, unconsumed | Reads `ITS_ANTHROPIC_KEY` from Keychain. No production consumers yet — first generation script (`safety_reports/weekly_generate.py`) will be the integration test. No dedicated test file. |
 | `shared/smartsheet_client.py` | Working, tested | SDK wrapper with title-keyed reads/writes, typed exception hierarchy, lazy keychain-backed client. Wired 2026-05-18. |
 | `shared/box_client.py` | Stub | Sandbox JWT config pending. |
 | `shared/graph_client.py` | Working, tested | MSAL client-credentials + Mail API wrappers (`list_inbox`, `get_message`, `list_attachments`, `download_attachment`, `mark_read`, `move_message`, `send_mail`). Sandbox tenant `evergreenmirror.com` verified 2026-05-17 via `scripts/smoke_test_graph.py`. |
@@ -109,7 +109,7 @@ shipment.
 | `shared/untrusted_content.py` | Working, tested | Invariant 2 — XML tagging + system boilerplate. |
 | `shared/anomaly_logger.py` | Working, tested | Invariant 2 — sentinel pattern checks. |
 | `shared/quarantine.py` | `is_allowlisted` working; logger stub | Invariant 2 — sender-allowlist quarantine. |
-| `shared/scheduling.py` | Holiday shifts + reviewer chain working, tested. PTO lookup stubbed (default fetcher returns []). | `ITS_Time_Off` + `ITS_Config` sheets provisioned 2026-05-17 (ids in `shared/sheet_ids.py`); real-fetcher implementations land with smartsheet_client.py. |
+| `shared/scheduling.py` | Holiday shifts + reviewer chain working, tested. PTO lookup stubbed (default fetcher returns []). | `ITS_Time_Off` + `ITS_Config` sheets provisioned 2026-05-17; `smartsheet_client.py` wired 2026-05-18. PTO fetcher (`_empty_fetcher`) and chain override fetcher (`_no_override`) both still stubs. Real-fetcher PR queued. |
 | `shared/sheet_ids.py` | Working | New bootstrap module landed 2026-05-17 evening. Holds workspace/folder/sheet IDs for the three workspaces. |
 | `scripts/watchdog.py` | Stub | Awaits Smartsheet + alert path. |
 | `safety_reports/intake.py` | Stub | Awaits Q4/Q5/Q6/Q8 mirror inspection. |

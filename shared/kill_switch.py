@@ -64,7 +64,10 @@ def check_system_state() -> SystemState:
         return SystemState.ACTIVE
 
     try:
-        return SystemState(raw)
+        # Normalize None (blank cell) → "" so SystemState() consistently raises
+        # ValueError and we land in the single fail-open branch below.
+        # `get_setting` may return None when the row exists but Value is blank.
+        return SystemState(raw if isinstance(raw, str) else "")
     except ValueError:
         log(
             Severity.WARN,
