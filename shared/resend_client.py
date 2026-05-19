@@ -43,11 +43,12 @@ from . import keychain
 RESEND_BASE = "https://api.resend.com"
 MAX_RETRIES = 3
 
-# Sender — placeholder. Update to the operator's verified Resend domain
-# (or store in ITS_Config as a follow-up if multi-tenant addressing is
-# ever needed). Recipients see this address; it must resolve to a
-# verified domain in the Resend dashboard or sends are rejected.
-DEFAULT_FROM = "ITS Alerts <alerts@its.solutionsmith.org>"
+# Sender — Resend's sandbox `onboarding@resend.dev`, which is pre-verified
+# on every Resend account and accepts any recipient. Right address for
+# sandbox / dev / smoke testing. Swap to the operator's verified Resend
+# domain at Phase 1.5 live-tenant cutover; the same `DEFAULT_FROM`
+# constant is the only touchpoint.
+DEFAULT_FROM = "onboarding@resend.dev"
 
 
 class ResendError(Exception):
