@@ -30,35 +30,13 @@ Discovered same session. `systemColumnType: AUTO_NUMBER` is rejected at the "Cre
 
 **Revisit when:** A workstream requires user-visible auto-IDs (e.g., a customer-facing ticket number) and the code-populated label pattern is insufficient. Likely never — the intrinsic row IDs cover the technical need and labels cover the human need.
 
-## parse_job_v3: V/S vendor-sub enumeration unclaimed [OPEN]
+## parse_job_v3: V/S vendor-sub enumeration unclaimed [CLOSED 2026-05-19]
 
-Surfaced 2026-05-18 during the box_migration reconcile sanity check after `parse_subsubject` landed. See `docs/session_logs/2026-05-18_box_migration_reconcile.md` "Sanity check findings" for context.
+Resolved by adding `parse_vendor_sub(raw) -> Optional[VendorSubParse]` to `box_migration/parse_job_v3.py` and inserting it into the reconcile harness's claim chain between `subsubject` and `canonical_non_job`. Regex shape `^(?P<letter>[VS])(?P<index>\d{2})\.\s+(?P<name>.+?)\s*$` — capped at two digits so single-digit V1./S1. stay in `SUBJOB_LETTER_UC`'s domain.
 
-**Pattern:** `^(V|S)\d{1,2}\.\s+.+`. `V` = Vendor, `S` = Sub. Two-digit enumeration is the unmatched case; the existing `SUBJOB_LETTER_UC` (`[A-Z]\d?\.`) caps at one digit, so `V1.` matches but `V12.` falls through.
+Coverage delta when re-running the reconcile against the live 10-portfolio listings: **212 unique names** moved from unclaimed to `vendor_sub` (the original tech_debt estimate of 60–90 was an under-count; estimate was based on unique-occurrence math but the actual unique-name count is higher). Unclaimed share dropped 54.9% → 51.1%. Full 33-test coverage in `tests/test_parse_vendor_sub.py`.
 
-**Examples observed:** `V12. EPEC`, `V17. CAB`, `V22. Chint`, `V31. Cable Markers`, `S10. Well Demo`, `S11. Erosion Control Consulting INC`, `S12. Helm`, `S13. Peerless`.
-
-**Concentration / volume:** ~30 unique names, 2–3 portfolios (Forefront-heavy by appearance based on the equipment-vendor name mix). Not universal across the 10.
-
-**Suggested entry point:** new `parse_vendor_sub(raw) -> Optional[VendorSubParse]` in `box_migration/parse_job_v3.py`. Fields: `raw`, `kind` ('vendor' | 'sub'), `index` (str), `name` (str). Mirror the shape of `parse_subsubject`. Insert in the reconcile harness's claim chain between `subsubject` and `canonical_non_job`.
-
-**Test corpus snippets** (drop directly into a new `tests/test_parse_vendor_sub.py`):
-
-```python
-# Positive
-("V12. EPEC",                                 "vendor", "12", "EPEC"),
-("V31. Cable Markers",                        "vendor", "31", "Cable Markers"),
-("S11. Erosion Control Consulting INC",       "sub",    "11", "Erosion Control Consulting INC"),
-("S12. Helm",                                 "sub",    "12", "Helm"),
-# Negative — must not steal from SUBJOB_LETTER_UC's domain
-("V1. Single Digit",                          None),    # SUBJOB_LETTER_UC owns this
-("A1. Kiwi",                                  None),    # not V or S
-("V100. Three Digit",                         None),    # cap at 2 digits
-```
-
-**Expected coverage delta:** small — single-digit name count across the full corpus. Roughly 30 unique × 2–3 occurrences each = ~60–90 unclaimed-occurrences moved into a new `vendor_sub` claim. Trivially measurable by re-running `box_migration/reconcile_box_listings.py` before and after.
-
-**Status:** scheduled for a focused follow-up PR; no date promised; revisit when other `box_migration/` work is in the same area.
+Resolution: see commit on the `feature/vendor-sub-parser` branch (squash-merged), and `docs/session_logs/2026-05-19_chore_sweep_and_mypy_lockdown.md`.
 
 ## parse_job_v3: ISO date prefix (YYYY-MM-DD) unclaimed [OPEN]
 
