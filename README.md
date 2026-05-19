@@ -3,8 +3,11 @@
 [![ci](https://github.com/SolutionSmith-debug/its/actions/workflows/ci.yml/badge.svg)](https://github.com/SolutionSmith-debug/its/actions/workflows/ci.yml)
 
 This is the execution layer of ITS — a Claude-powered computer employee being built for
-construction and renewables firms. Productized partnership with Evergreen Renewables as
-Customer 0. Solution Smith owns all IP.
+construction and renewables firms. ITS is a **white-glove custom-development practice**:
+each customer gets a fully-customized build forked from the ITS blueprint and maintained in
+their own private repository. Evergreen Renewables is **Customer 0** — the first deployment
+and design partner. This repo is Evergreen-specific; future customer forks live in their
+own repos.
 
 ITS runs as Claude Code scripts on a MacBook, triggered by Apple-native automation primitives
 (launchd, Mail.app rules, Shortcuts).
@@ -39,7 +42,7 @@ pytest -q
 
 Everything below is normative. See `CLAUDE.md` for the conversational version Claude Code
 reads on every launch. See the Claude.ai planning project for the full canonical
-specifications (Foundation Mission v6, Operational Standards v8).
+specifications (Foundation Mission v7, Operational Standards v9).
 
 - **Kill switch first.** Every script's entry point starts with `check_system_state()`.
 - **Error log decorator.** Every script's main function is wrapped in `@its_error_log`.
@@ -57,10 +60,10 @@ specifications (Foundation Mission v6, Operational Standards v8).
 
 | Phase | State |
 |-------|-------|
-| 0 — Scaffold | ✓ committed; framework defaults landing |
-| 1 — Safety Reports | sandbox build active; 5 of 9 owner decisions resolved; 4 deferred-now-resolvable; Box sandbox data uploaded 2026-05-14; Smartsheet system + human-review workspaces fully provisioned 2026-05-17 (6 system/queue sheets, 2 workspaces created tonight); M365 Graph mail wired 2026-05-17 |
-| 1.5 — Hardware Handover (Florida → Customer) | scheduled after Phase 1 stable |
-| 1.6 — Multi-Tenancy Framework | scheduled before Customer 2 |
+| 0 — Scaffold | ✓ shipped; 23-PR push 2026-05-18/19 wired the remaining shared/* modules (review_queue, quarantine, resend, sentry, error_log Smartsheet write, kill_switch refactor). Tests 137→364, mypy=0 enforced in CI, triple-fire CRITICAL alert path operational. |
+| 1 — Safety Reports + parallel workstreams | sandbox build active; 5 of 9 owner decisions resolved; Box sandbox uploaded 2026-05-14; Smartsheet system + human-review workspaces fully provisioned 2026-05-17; M365 Graph mail wired 2026-05-17. Workstream consumer integration (intake.py + weekly_generate/send) is the next critical-path target. |
+| 1.5 — Combined Cutover + Hardware Handover (Florida → California) | scheduled after Phase 1 stable. 30-day clean-sandbox-operation gate per V&R v7. |
+| 1.6 — Blueprint Generalization | pre-Customer-2 pass. Extracts Customer-0-specific assumptions from shared/* so a Customer 2 fork-and-customize cycle is mechanical. (Renamed from "Multi-Tenancy Framework" per the white-glove business-model commitment.) |
 | 2 — POs / Subcontracts | not started |
 | 3 — Email Triage / AI Employee | not started |
 | 4 — Renewables-specific surfaces | not started |

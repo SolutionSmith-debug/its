@@ -6,10 +6,12 @@ this repo implements what is decided there.
 
 ## Product context
 
-ITS is being built as a productized partnership with **Evergreen Renewables as Customer 0** —
-the first deployment and design partner, receiving the system at no cost during validation.
-Solution Smith owns all IP, with explicit intent to iterate and offer ITS to additional
-construction and renewables customers.
+ITS is a **white-glove custom-development practice**. Each customer gets a fully-customized
+build forked from the ITS blueprint and maintained in their own private repository. Evergreen
+Renewables is **Customer 0** — the first deployment and design partner, receiving the build
+at no cost during validation. Solution Smith retains the right to fork the blueprint for
+additional construction and renewables customers; the blueprint itself is the reusable
+artifact, not a multi-tenant SaaS product. This repo is Evergreen-specific.
 
 This is **production-quality, defensively-built** work. Appropriate for a deployable system
 at 10–50 person construction firm scale. High availability is not required, but failures must
@@ -21,14 +23,14 @@ Two layers, deliberately separated:
 
 1. **Planning & Foundation** (Claude.ai project, not in this repo). Mission files, architectural
    decisions, owner-facing artifacts, prompt designs, schemas. Canonical docs: Foundation Mission
-   v6, Operational Standards v8, Vision & Roadmap v6.1, Handover Plan v5.
+   v7, Operational Standards v9, Vision & Roadmap v7, Handover Plan v6.
 2. **Execution** (this repo). Claude Code scripts on a MacBook, triggered by launchd, Mail.app
    rules, and Shortcuts. Reads/writes Smartsheet (structured data), Box (documents), Outlook
    (communication) via APIs. Calls Anthropic API for reasoning steps.
 
 Smartsheet, Box, Outlook are systems of record — unchanged by ITS.
 
-## System-wide invariants (Foundation Mission v6)
+## System-wide invariants (Foundation Mission v7)
 
 These are non-negotiable. Every workstream inherits both.
 
@@ -99,7 +101,7 @@ shipment.
 | Module | State | Notes |
 |--------|-------|-------|
 | `shared/keychain.py` | Working, tested | macOS-only; uses `security` CLI. |
-| `shared/error_log.py` | Working, tested | Local file + Smartsheet `ITS_Errors` write (recursion-guarded; INFO env-gated via `ITS_ERROR_LOG_INFO=1`) + triple-fire CRITICAL path (Resend operator email + Sentry structured event). Each alert leg has its own recursion guard and broad-except failure isolation — a failure of one leg does NOT prevent the other. Alert-routing dedupe across the three legs is the natural next design question (Op Stds v8 §3 open). |
+| `shared/error_log.py` | Working, tested | Local file + Smartsheet `ITS_Errors` write (recursion-guarded; INFO env-gated via `ITS_ERROR_LOG_INFO=1`) + triple-fire CRITICAL path (Resend operator email + Sentry structured event). Each alert leg has its own recursion guard and broad-except failure isolation — a failure of one leg does NOT prevent the other. Alert-routing dedupe across the three legs is the natural next design question (Op Stds v9 §3 open). |
 | `shared/resend_client.py` | Working, tested | Transactional-email client for operator alerts. API key from Keychain (`ITS_RESEND_API_KEY`). Used by `error_log._alert_critical`. NOT for customer email — that's `graph_client.send_mail` (Invariant 1). Live smoke green 2026-05-18 using Resend's sandbox sender (`onboarding@resend.dev`). |
 | `shared/sentry_client.py` | Working, tested | Sentry SDK wrapper for CRITICAL-event structured capture. DSN from Keychain (`ITS_SENTRY_DSN`). Used by `error_log._alert_critical`. Performance monitoring off (`traces_sample_rate=0.0`); send_default_pii=False. Live smoke green 2026-05-18 — events arrive at the operator's Sentry project. |
 | `shared/kill_switch.py` | Working, tested | Reads `system.state` from ITS_Config via `smartsheet_client.get_setting`; fail-open on three modes (sheet unreachable / row missing / invalid value) with distinguishable WARN. Wired 2026-05-18. |
@@ -159,7 +161,8 @@ LangChain, Kubernetes.
 ## What NOT to do
 
 - Don't add cloud-server execution. The architecture is local-first on MacBook through Phase 4.
-  Multi-tenant SaaS scale = move to PaaS, separate decision.
+  This repo is Evergreen-specific; future customers get their own private repos forked from
+  the blueprint. Multi-tenant SaaS is not the model.
 - Don't add a vector store before Phase 4. Premature.
 - Don't expose SSH or any service to the public internet. Tailscale-only.
 - Don't auto-approve at low confidence. Always route ambiguity to human review.
@@ -178,5 +181,5 @@ LangChain, Kubernetes.
 - `scripts/launchd/template.plist` + `install.sh` — launchd trigger pattern.
 - `docs/session_logs/` — durable narrative log of during-execution decisions. Write one at end of any session that lands ≥1 commit and involves a non-obvious decision. See `docs/session_logs/README.md` for the convention.
 
-If something here contradicts the planning project's canonical docs (Foundation Mission v6,
-Operational Standards v8), the planning project wins. Flag the inconsistency.
+If something here contradicts the planning project's canonical docs (Foundation Mission v7,
+Operational Standards v9), the planning project wins. Flag the inconsistency.
