@@ -1,0 +1,128 @@
+"""Sentry client — exception tracking for the triple-fire CRITICAL path.
+
+Auth: DSN from macOS Keychain. The keychain entry name is held in the
+`ITS_Config` row `system.sentry_dsn_keychain_key` (default `ITS_SENTRY_DSN`
+per the 2026-05-18 seed).
+
+Purpose:
+    Second leg of the Op Stds v8 §3 triple-fire CRITICAL path
+    (Smartsheet `ITS_Errors` + Resend operator email + Sentry).
+    Wired into `shared.error_log._alert_critical`.
+
+    Sentry captures structured exception data — full traceback,
+    environment, tags, breadcrumbs — into a web dashboard. The other
+    legs answer "wake the operator up" (Resend) and "have a durable
+    log of every CRITICAL" (Smartsheet). Sentry answers "give the
+    operator forensic detail when they sit down to triage."
+
+Error model:
+    Every failure raises `SentryError`. Callers decide whether to log,
+    retry, or swallow — this module does not. `error_log._alert_critical`
+    wraps the call in broad-except for failure isolation per the brief.
+
+Initialization:
+    `sentry_sdk.init` is process-scoped; calling it more than once is
+    safe but wasteful. The lazy singleton in `get_client()` makes sure
+    it runs exactly once per process. Idle event-loop calls cost
+    nothing once initialized.
+
+Privacy:
+    `send_default_pii=False` (the SDK default) keeps user IPs and
+    cookies out of payloads. For ITS — single-operator local execution
+    — there is no PII to send anyway, but the explicit default is
+    documented intent.
+"""
+from __future__ import annotations
+
+import sentry_sdk  # type: ignore[import-untyped]
+from sentry_sdk import capture_message
+
+from . import keychain
+
+ENVIRONMENT = "sandbox"
+RELEASE_PREFIX = "its@"
+
+
+class SentryError(Exception):
+    """Base exception for all Sentry-client failures."""
+
+
+class SentryInitError(SentryError):
+    """sentry_sdk.init() raised (bad DSN, etc.)."""
+
+
+class SentryCaptureError(SentryError):
+    """sentry_sdk.capture_message / capture_exception raised."""
+
+
+_initialized = False
+
+
+def get_client() -> None:
+    """Initialize the Sentry SDK exactly once per process.
+
+    Mirrors the `get_client()` accessor shape of resend_client and
+    graph_client. Sentry's SDK is process-globally configured (no
+    per-call client object), so this function's job is just the
+    one-shot init.
+
+    Reads the DSN from Keychain (`ITS_SENTRY_DSN`) on first call.
+    Subsequent calls return immediately.
+
+    Raises:
+        SentryInitError: if the SDK init fails (bad DSN, network
+            unreachable during init handshake, etc.).
+    """
+    global _initialized
+    if _initialized:
+        return
+
+    dsn = keychain.get_secret("ITS_SENTRY_DSN")
+    try:
+        sentry_sdk.init(
+            dsn=dsn,
+            environment=ENVIRONMENT,
+            # Traces / profiling off by default — this client exists for
+            # CRITICAL exception capture, not performance monitoring.
+            traces_sample_rate=0.0,
+            # Default PII is off; we don't send user-identifying data.
+            send_default_pii=False,
+        )
+    except Exception as e:
+        raise SentryInitError(f"sentry_sdk.init failed: {e!r}") from e
+
+    _initialized = True
+
+
+def capture_exception(script: str, message: str, exc_info: str) -> None:
+    """Send one CRITICAL event to Sentry with structured tags.
+
+    Args:
+        script: Logical script name (e.g., `"safety_reports.intake"`).
+            Lands as a Sentry tag for filtering.
+        message: One-line description (typically the `unhandled: <exc>`
+            string from `error_log`).
+        exc_info: Full traceback string from `traceback.format_exc()`.
+
+    Sentry receives:
+        - level=fatal (matches Sentry's "highest" severity; aligned
+          with our `CRITICAL` Severity).
+        - tags: `script`, `severity=CRITICAL`, `source=its-error-log`.
+        - extra: the full traceback string (so the operator sees it
+          in the event detail view).
+
+    Raises:
+        SentryCaptureError: if the SDK's capture call raises. Caller
+            (typically `_alert_critical`) is expected to catch broad
+            exceptions and write a marker line.
+    """
+    get_client()
+    try:
+        with sentry_sdk.push_scope() as scope:
+            scope.set_tag("script", script)
+            scope.set_tag("severity", "CRITICAL")
+            scope.set_tag("source", "its-error-log")
+            scope.set_extra("traceback", exc_info or "(none)")
+            capture_message(message, level="fatal")
+    except Exception as e:
+        raise SentryCaptureError(f"sentry capture failed: {e!r}") from e

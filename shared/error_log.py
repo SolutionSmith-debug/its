@@ -54,10 +54,11 @@ class Severity(StrEnum):
 
 # Module-level recursion guards. Belt-and-suspenders against any future
 # caller path that lands back inside log() while we're writing — e.g. if
-# add_rows or send_alert ever grow callbacks that emit log lines, the
-# inner call must NOT attempt another side-channel write.
+# add_rows / send_alert / sentry capture ever grow callbacks that emit
+# log lines, the inner call must NOT attempt another side-channel write.
 _in_smartsheet_write = False
 _in_resend_alert = False
+_in_sentry_capture = False
 
 
 def _local_log(severity: Severity, script: str, message: str, exc_info: str | None = None) -> None:
@@ -147,22 +148,12 @@ def log(
     )
 
 
-def _alert_critical(script: str, message: str, exc_info: str) -> None:
-    """Send out-of-band Resend email for CRITICAL events.
+def _fire_resend_leg(script: str, subject: str, body: str) -> None:
+    """Resend leg of the triple-fire. Recursion-guarded; failure-isolated.
 
-    Third leg of the Op Stds v8 §3 triple-fire (Sentry + Smartsheet
-    `ITS_Errors` + Resend). Sentry hook + alert-routing dedupe are
-    separate PRs; this function handles Resend only.
-
-    Failure-isolated: a `ResendError` is caught and reduced to a
-    `[resend-alert-failed]` marker line in the local log. The underlying
-    CRITICAL event is captured by `_local_log` and `_smartsheet_log`
-    before this function runs, so an out-of-band failure here cannot
-    drop the underlying signal.
-
-    Recursion-guarded via `_in_resend_alert` against the (unlikely but
-    defensible) scenario where the Resend path triggers another log()
-    call. Mirrors `_smartsheet_log`'s guard pattern.
+    The guard + broad-except + marker-line pattern matches `_smartsheet_log`.
+    Sister of `_fire_sentry_leg`; the two are independent — one failing
+    does NOT prevent the other from running (see `_alert_critical`).
     """
     global _in_resend_alert
     if _in_resend_alert:
@@ -173,25 +164,6 @@ def _alert_critical(script: str, message: str, exc_info: str) -> None:
         # Lazy import to keep this module's boot-time deps minimal and
         # avoid a circular if resend_client ever needs to log.
         from . import resend_client
-
-        # Subject: prefix + script + truncated message. Truncation keeps
-        # subjects readable in mobile mail clients.
-        truncated = message
-        if len(truncated) > _ALERT_SUBJECT_TRUNCATE:
-            truncated = truncated[: _ALERT_SUBJECT_TRUNCATE - 1] + "…"
-        subject = f"{_ALERT_SUBJECT_PREFIX} {script}: {truncated}"
-
-        # Body: full message + traceback + timestamp + script. Plain text.
-        ts = datetime.now(UTC).isoformat()
-        body_parts = [
-            f"Script:    {script}",
-            f"Timestamp: {ts}",
-            f"Message:   {message}",
-            "",
-            "Traceback:",
-            exc_info or "(none)",
-        ]
-        body = "\n".join(body_parts)
 
         try:
             resend_client.send_alert(subject, body)
@@ -209,6 +181,85 @@ def _alert_critical(script: str, message: str, exc_info: str) -> None:
             )
     finally:
         _in_resend_alert = False
+
+
+def _fire_sentry_leg(script: str, message: str, exc_info: str) -> None:
+    """Sentry leg of the triple-fire. Recursion-guarded; failure-isolated.
+
+    Same shape as `_fire_resend_leg`. Sentry needs the structured
+    (script / message / traceback) fields rather than the already-
+    composed email subject + body, so this helper takes the raw args.
+    """
+    global _in_sentry_capture
+    if _in_sentry_capture:
+        return
+
+    _in_sentry_capture = True
+    try:
+        from . import sentry_client
+
+        try:
+            sentry_client.capture_exception(script, message, exc_info)
+        except Exception as e:
+            # Broad catch for the same reason as the Resend leg —
+            # `KeychainError` on missing DSN, network errors during init,
+            # SDK transport failures all need to be swallowed. Marker
+            # line distinguishes Sentry failures from Resend failures.
+            _local_log(
+                Severity.ERROR,
+                "shared.error_log",
+                f"[sentry-capture-failed] {e!r}",
+            )
+    finally:
+        _in_sentry_capture = False
+
+
+def _alert_critical(script: str, message: str, exc_info: str) -> None:
+    """Fire out-of-band CRITICAL alerts on all triple-fire legs.
+
+    Triple-fire per Op Stds v8 §3:
+    - Smartsheet `ITS_Errors` row — written earlier by `log()` →
+      `_smartsheet_log` (NOT here; that path is unconditional on
+      WARN / ERROR / CRITICAL).
+    - Resend operator email — `_fire_resend_leg`.
+    - Sentry structured event — `_fire_sentry_leg`.
+
+    Both side-channel legs are INDEPENDENT: each has its own try/except
+    and its own recursion guard. A failure of either does NOT prevent
+    the other from running. Failure marker lines differ per leg
+    (`[resend-alert-failed]` vs `[sentry-capture-failed]`) so operators
+    can triage which leg(s) are down without grepping the call stack.
+
+    Order is "Resend first, Sentry second" — chosen because Resend
+    delivery is the higher-stakes leg (operator wake-up), and we want
+    that attempt to fire before any Sentry-side latency. If both legs
+    succeed in milliseconds, the order is invisible; if Sentry hangs,
+    Resend has already gone out.
+
+    Alert-routing dedupe across the three legs is a separate design
+    question per Op Stds v8 §3 open items.
+    """
+    # Subject + body composed once and shared with Resend. Sentry uses
+    # the raw structured fields (`_fire_sentry_leg` constructs its own
+    # SDK payload from `message` + `exc_info` directly), so it doesn't
+    # need these.
+    truncated = message
+    if len(truncated) > _ALERT_SUBJECT_TRUNCATE:
+        truncated = truncated[: _ALERT_SUBJECT_TRUNCATE - 1] + "…"
+    subject = f"{_ALERT_SUBJECT_PREFIX} {script}: {truncated}"
+
+    ts = datetime.now(UTC).isoformat()
+    body = "\n".join([
+        f"Script:    {script}",
+        f"Timestamp: {ts}",
+        f"Message:   {message}",
+        "",
+        "Traceback:",
+        exc_info or "(none)",
+    ])
+
+    _fire_resend_leg(script, subject, body)
+    _fire_sentry_leg(script, message, exc_info)
 
 
 F = TypeVar("F", bound=Callable)
