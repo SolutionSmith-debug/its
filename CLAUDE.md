@@ -99,7 +99,8 @@ shipment.
 | Module | State | Notes |
 |--------|-------|-------|
 | `shared/keychain.py` | Working, tested | macOS-only; uses `security` CLI. |
-| `shared/error_log.py` | Working, tested | Local file + Smartsheet `ITS_Errors` write (recursion-guarded; INFO env-gated via `ITS_ERROR_LOG_INFO=1`). Sentry hook + Resend out-of-band path pending alert-routing PR. |
+| `shared/error_log.py` | Working, tested | Local file + Smartsheet `ITS_Errors` write (recursion-guarded; INFO env-gated via `ITS_ERROR_LOG_INFO=1`) + Resend out-of-band alert on CRITICAL (recursion-guarded; failure-isolated). Sentry hook + alert-routing dedupe pending. |
+| `shared/resend_client.py` | Working, tested | Transactional-email client for operator alerts. API key from Keychain (`ITS_RESEND_API_KEY`). Used by `error_log._alert_critical`. NOT for customer email — that's `graph_client.send_mail` (Invariant 1). Smoke test requires operator to seed Keychain entry + verify Resend sender domain. |
 | `shared/kill_switch.py` | Working, tested | Reads `system.state` from ITS_Config via `smartsheet_client.get_setting`; fail-open on three modes (sheet unreachable / row missing / invalid value) with distinguishable WARN. Wired 2026-05-18. |
 | `shared/anthropic_client.py` | Working, unconsumed | Reads `ITS_ANTHROPIC_KEY` from Keychain. No production consumers yet — first generation script (`safety_reports/weekly_generate.py`) will be the integration test. No dedicated test file. |
 | `shared/smartsheet_client.py` | Working, tested | SDK wrapper with title-keyed reads/writes, typed exception hierarchy, lazy keychain-backed client. Wired 2026-05-18. |

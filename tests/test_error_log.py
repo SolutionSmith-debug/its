@@ -45,6 +45,24 @@ def add_rows_mock(mocker, monkeypatch):
     error_log_module._in_smartsheet_write = False
 
 
+@pytest.fixture(autouse=True)
+def send_alert_mock(mocker):
+    """Autouse: mock the lazy-imported `resend_client.send_alert` so no test
+    triggers a live Resend POST. Mirrors the `add_rows_mock` pattern.
+
+    The `_alert_critical` function lazy-imports `shared.resend_client` inside
+    the function body — we patch `shared.resend_client.send_alert` at the
+    module level so the import will resolve to the mocked attribute. Also
+    resets the module-level `_in_resend_alert` recursion guard between tests.
+    """
+    error_log_module._in_resend_alert = False
+    # Patch at the source module so the lazy `from . import resend_client`
+    # inside `_alert_critical` sees the mocked function.
+    mock = mocker.patch("shared.resend_client.send_alert")
+    yield mock
+    error_log_module._in_resend_alert = False
+
+
 # ---- Severity enum --------------------------------------------------------
 
 def test_severity_enum_values():
@@ -365,3 +383,122 @@ def test_recursion_guard_reset_after_smartsheet_error(log_dir, add_rows_mock):
     # reach add_rows.
     log(Severity.WARN, "s", "second")
     assert add_rows_mock.call_count == 2
+
+
+# ---- _alert_critical → Resend wiring -------------------------------------
+
+
+def test_alert_critical_called_on_critical_severity(log_dir, send_alert_mock):
+    @its_error_log("test.script")
+    def boom():
+        raise ValueError("kaboom")
+
+    with pytest.raises(ValueError):
+        boom()
+
+    send_alert_mock.assert_called_once()
+    subject, body = send_alert_mock.call_args.args
+    assert subject.startswith("[ITS CRITICAL] test.script:")
+    assert "kaboom" in subject
+    assert "Script:    test.script" in body
+    assert "Timestamp:" in body
+    assert "Message:   unhandled: kaboom" in body
+    assert "Traceback:" in body
+    assert "ValueError" in body
+
+
+def test_alert_critical_not_called_for_warn_error_info(log_dir, send_alert_mock):
+    # log() with non-CRITICAL severity should never trigger _alert_critical
+    # (the decorator is the only caller of _alert_critical, and only on the
+    # CRITICAL exception path).
+    log(Severity.INFO, "s", "info msg")
+    log(Severity.WARN, "s", "warn msg")
+    log(Severity.ERROR, "s", "error msg")
+    log(Severity.CRITICAL, "s", "critical msg")  # via log() directly, NOT decorator
+
+    # log() doesn't call _alert_critical; only the decorator does.
+    send_alert_mock.assert_not_called()
+
+
+def test_alert_critical_truncates_long_message_in_subject(log_dir, send_alert_mock):
+    long_msg = "x" * 200
+
+    @its_error_log("test.script")
+    def boom():
+        raise ValueError(long_msg)
+
+    with pytest.raises(ValueError):
+        boom()
+
+    subject, _ = send_alert_mock.call_args.args
+    # 80-char limit applies to the message portion of the subject; the
+    # prefix + script name don't count toward truncation. Subject should
+    # contain an ellipsis indicating truncation happened.
+    assert "…" in subject
+
+
+def test_alert_critical_resend_failure_does_not_raise(log_dir, send_alert_mock):
+    # Any exception from the Resend path must be swallowed — the underlying
+    # CRITICAL event was already captured by _local_log + _smartsheet_log.
+    from shared.resend_client import ResendError
+
+    send_alert_mock.side_effect = ResendError("API down")
+
+    @its_error_log("test.script")
+    def boom():
+        raise ValueError("the real bug")
+
+    # Must re-raise the ORIGINAL ValueError, not the ResendError.
+    with pytest.raises(ValueError, match="the real bug"):
+        boom()
+
+    # Marker line written to local log so operators can see the alert path failed.
+    contents = _today_log(log_dir).read_text()
+    assert "[resend-alert-failed]" in contents
+    assert "API down" in contents
+
+
+def test_alert_critical_swallows_non_resend_exceptions_too(log_dir, send_alert_mock):
+    # The brief mandates "must NOT raise ... anything." If send_alert raises
+    # something other than ResendError (e.g., KeychainError when the API key
+    # isn't seeded), _alert_critical must still swallow.
+    send_alert_mock.side_effect = RuntimeError("keychain missing")
+
+    @its_error_log("test.script")
+    def boom():
+        raise ValueError("the real bug")
+
+    with pytest.raises(ValueError, match="the real bug"):
+        boom()
+
+    contents = _today_log(log_dir).read_text()
+    assert "[resend-alert-failed]" in contents
+    assert "RuntimeError" in contents
+    assert "keychain missing" in contents
+
+
+def test_alert_critical_recursion_guard_blocks_reentry(log_dir, send_alert_mock):
+    # If send_alert somehow triggers another log() call that hits CRITICAL,
+    # the inner _alert_critical must see the guard and skip.
+    inner_call_count = {"value": 0}
+
+    def reentrant_send(subject, body, **kwargs):
+        inner_call_count["value"] += 1
+        # Inner CRITICAL log → would trigger _alert_critical → must be skipped
+        # by the recursion guard.
+        log(Severity.CRITICAL, "inner", "reentered")
+
+    send_alert_mock.side_effect = reentrant_send
+
+    @its_error_log("test.script")
+    def boom():
+        raise ValueError("outer")
+
+    with pytest.raises(ValueError):
+        boom()
+
+    # send_alert called exactly once. The inner log()'s _alert_critical
+    # invocation saw _in_resend_alert==True and returned without calling
+    # send_alert again.
+    assert send_alert_mock.call_count == 1
+    assert inner_call_count["value"] == 1
