@@ -122,3 +122,43 @@ Categorize the 20. If false-positive rate is >50%, the third alternation needs t
 **Expected coverage delta:** unknown until the corpus inspection runs. Could be substantial (138 names is a lot) or modest (some portion is genuinely person-tagged content), depending on the false-positive ratio.
 
 **Status:** scheduled for a focused follow-up PR; no date promised; revisit before any workstream depends on `person_tag_in_subject` as a high-signal hygiene indicator. Until then, treat the flag as noisy and don't surface it to operators as actionable. Pairs naturally with a broader "chaos pattern false-positive audit" if other patterns turn out to over-match too.
+
+## smartsheet_migration: import-time side effects in three scripts [OPEN]
+
+Surfaced 2026-05-18 in the sanity-check audit (finding M4). See `docs/session_logs/2026-05-18_sanity_check_sweep.md`.
+
+**Affected files:**
+- `smartsheet_migration/inspect_closeout.py`
+- `smartsheet_migration/inspect_source_schedule.py`
+- `smartsheet_migration/migrate_schedule_dryrun.py`
+
+**Pattern:** module-level code that requires runtime state (the `SMARTSHEET_TOKEN` env var). Specifically, top-level statements call `ss_api._token()` or fetch sheets via `ss_api.get_sheet(...)`. `migrate_schedule_dryrun.py` even prints `"Fetching source + destination sheets..."` and makes live API calls during `import`. Importing any of the three from a context without the env var set raises `RuntimeError`.
+
+**Why existing parser misses it:** not a parser issue — these are one-off migration scripts that work when run with `python script.py SMARTSHEET_TOKEN=...` from the operator's shell. The anti-pattern doesn't bite at runtime; it bites at any future programmatic use (introspection, test collection, batch tooling, IDE static analysis).
+
+**Concentration / volume:** 3 files, all in `smartsheet_migration/`. Same `_token()` call site (`smartsheet_migration/ss_api.py:34`).
+
+**Suggested fix:** wrap each script's top-level work in `if __name__ == "__main__":` and move any module-level constants that don't depend on `_token()` to remain at module scope. ~5-line change per file. No behavior change when invoked from the shell.
+
+**Test snippets:** add a tests/test_migration_import_hygiene.py that does `importlib.import_module(name)` against each of the three modules with the env var unset, asserting no exception. Drop-in:
+
+```python
+import importlib
+import sys
+import os
+from pathlib import Path
+import pytest
+
+MIGRATION_DIR = Path(__file__).resolve().parent.parent / "smartsheet_migration"
+if str(MIGRATION_DIR) not in sys.path:
+    sys.path.insert(0, str(MIGRATION_DIR))
+
+@pytest.mark.parametrize("name", ["inspect_closeout", "inspect_source_schedule", "migrate_schedule_dryrun"])
+def test_module_imports_without_smartsheet_token(name, monkeypatch):
+    monkeypatch.delenv("SMARTSHEET_TOKEN", raising=False)
+    importlib.import_module(name)
+```
+
+**Expected coverage delta:** none for the structural-claim chain (these aren't user-facing structures). The benefit is import safety for any future tooling.
+
+**Status:** scheduled for a focused follow-up PR; no date promised; low priority since the scripts are one-off migration tools. Worth bundling with any other `smartsheet_migration/` touch.
