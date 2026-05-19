@@ -261,6 +261,26 @@ SUBSUBJECT_DIGIT_LETTER = re.compile(
 
 
 # =============================================================================
+# Vendor / Sub enumeration patterns (V12., S10., etc.) — added from
+# 2026-05-18 reconcile sanity check (see docs/tech_debt.md entry).
+# =============================================================================
+# Two-digit V/S enumeration falls through the existing SUBJOB_LETTER_UC
+# pattern, which caps the post-letter digit at one (`[A-Z]\d?\.`). V1./S1.
+# stay in LETTER_UC's domain; V12. / S10. need this new pattern.
+#
+#   V12. EPEC                 → kind='vendor', index='12'
+#   S10. Well Demo            → kind='sub',    index='10'
+#   V31. Cable Markers        → kind='vendor', index='31'
+#
+# Bounded to \d{1,2} so V100. doesn't accidentally match — three-digit
+# vendor IDs aren't a real pattern in the observed corpus.
+
+VENDOR_SUB = re.compile(
+    r'^(?P<letter>[VS])(?P<index>\d{2})\.\s+(?P<name>.+?)\s*$'
+)
+
+
+# =============================================================================
 # Canonical subject allowlists (parallel to TEMPLATE_1111A_*)
 # =============================================================================
 
@@ -546,6 +566,41 @@ def parse_subsubject(raw: str) -> Optional[SubsubjectParse]:
             name=m.group('name').strip(),
         )
     return None
+
+
+@dataclass
+class VendorSubParse:
+    raw: str
+    kind: str                              # 'vendor' | 'sub'
+    index: str                             # two-digit enumeration ("12", "31")
+    name: str
+
+
+def parse_vendor_sub(raw: str) -> Optional[VendorSubParse]:
+    """
+    Parse a V12. / S10. vendor-or-sub enumeration folder name.
+
+      "V12. EPEC"              → kind='vendor', index='12', name='EPEC'
+      "S10. Well Demo"         → kind='sub',    index='10', name='Well Demo'
+
+    V/S single-digit forms (`V1.`, `S1.`) are owned by `SUBJOB_LETTER_UC`
+    in v2 and intentionally NOT claimed here — this function caps at
+    two digits via the regex and returns None on one-digit input so the
+    LETTER_UC pattern keeps its existing domain.
+
+    Returns None on no match. Mirrors the shape of `parse_subsubject`.
+    """
+    m = VENDOR_SUB.match(raw)
+    if not m:
+        return None
+    letter = m.group('letter')
+    kind = 'vendor' if letter == 'V' else 'sub'
+    return VendorSubParse(
+        raw=raw,
+        kind=kind,
+        index=m.group('index'),
+        name=m.group('name').strip(),
+    )
 
 
 # =============================================================================
