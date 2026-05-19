@@ -764,7 +764,7 @@ def classify_schema(top_level_names: list[str]) -> tuple[Schema, list[str]]:
       5. ACTIVE_MODERN             — 3+ pre-Portfolio canonical (Forefront, Kendall 2023.126)
       6. Delegate to v2 classifier for closed-archive schemas
     """
-    matched = {s: [] for s in _V3_SIGNATURES}
+    matched: dict[Schema, list[str]] = {s: [] for s in _V3_SIGNATURES}
     for name in top_level_names:
         for schema, patterns in _V3_SIGNATURES.items():
             for pat in patterns:
