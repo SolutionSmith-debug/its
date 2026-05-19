@@ -122,11 +122,12 @@ def load_listing(path: Path) -> PortfolioListing:
 
 
 def discover_listings(listings_dir: Path) -> list[PortfolioListing]:
+    # Walrus binds the match so mypy narrows from `Match[str] | None` to
+    # `Match[str]` for the truthy branch, AND avoids the double regex call
+    # the previous double-evaluation form had.
     files = sorted(
         listings_dir.glob("folders__*.txt"),
-        key=lambda p: int(PORTFOLIO_FILE_RE.match(p.name).group(1))
-        if PORTFOLIO_FILE_RE.match(p.name)
-        else 9999,
+        key=lambda p: int(m.group(1)) if (m := PORTFOLIO_FILE_RE.match(p.name)) else 9999,
     )
     if not files:
         raise FileNotFoundError(
