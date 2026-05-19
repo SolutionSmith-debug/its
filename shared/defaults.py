@@ -6,7 +6,7 @@ provisioned, and the bootstrap data for first-run seeding.
 
 Why the split: keeping defaults in a separate module satisfies the "no hardcoded emails in
 shared/scheduling.py" constraint and gives planning-layer humans a single file to update when
-the chain composition changes for a new customer tenant.
+the chain composition changes for this customer.
 """
 from __future__ import annotations
 

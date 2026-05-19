@@ -9,9 +9,11 @@ Provisioned 2026-05-17 evening — see
 docs/session_logs/2026-05-17_smartsheet_workspace_restructure.md for the
 full narrative of what was created, moved, and deleted.
 
-At Customer 2 onboarding, this file becomes per-customer configuration
-(e.g., loaded from a customer-specific settings module). Phase 0 keeps it
-flat and static for simplicity.
+These are this customer's workspace/folder/sheet IDs. ITS is a white-glove
+custom-development practice — each customer gets a private repo forked from
+the blueprint and these values are replaced in-place for that customer. The
+module shape (static workspace/folder/sheet identifiers) is the framework
+default; the values are this deployment's reality.
 """
 from __future__ import annotations
 

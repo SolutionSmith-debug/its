@@ -23,6 +23,8 @@ import os, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ss_api import api
 
+sys.exit("Archived script — do not re-run. See module docstring.")
+
 HR_FOLDER = 210126402545540
 
 # ---- WPR_Pending_Review ----

@@ -2,7 +2,7 @@
 
 Items deliberately deferred. Each carries the rationale for deferral and the trigger for revisiting. The repo-side companion to Master Checklist §6 (planning project) — this file holds execution-layer tech debt; the Master Checklist holds owner-decision tech debt.
 
-When to add an entry: a session deliberately chooses preservation-over-refactor (per Op Stds v7 §14), discovers an external-API constraint that forced a workaround, or defers a non-trivial cleanup that's larger than the current session can absorb. When to mark CLOSED: the underlying item is resolved in a commit; preserve the entry with resolution detail rather than deleting (history is cheap, context is expensive).
+When to add an entry: a session deliberately chooses preservation-over-refactor (per Op Stds v9 §14), discovers an external-API constraint that forced a workaround, or defers a non-trivial cleanup that's larger than the current session can absorb. When to mark CLOSED: the underlying item is resolved in a commit; preserve the entry with resolution detail rather than deleting (history is cheap, context is expensive).
 
 ## parse_job_v3.py:656 — `existing_keys` dead code [CLOSED 2026-05-17]
 
@@ -124,3 +124,21 @@ Resolved by adding the explicit annotation `warnings: list[str] = []` in `derive
 Resolution: see commit on the `fix/migrate-fl-warnings-annotation` branch (squash-merged), and `docs/session_logs/2026-05-18_alert_critical_and_mypy_closure.md`.
 
 Originally surfaced 2026-05-18 in the mypy baseline reconciliation; see `docs/reports/2026-05-18_mypy_baseline.md` for the lifecycle context.
+
+## Mail.app rule silent disable on macOS updates [OPEN]
+
+macOS updates have a known pattern of silently disabling Mail.app rules without warning. Affects any workstream whose intake depends on Mail.app rules routing messages to the Claude Code script.
+
+Workaround / mitigation: Watchdog (Op Stds v9 §2) must include an inbound-mail-processed-in-24h check. If watchdog observes no recent intake activity from a given workstream, surface as WARN to operator. Originally captured in Foundation Scaffold v4 "Outstanding Gotchas"; carried forward through v5; re-surfaced via Cascade Audit Errata 2026-05-19.
+
+Resolves when: shared/watchdog.py implements inbound-mail-activity check across all intake-bearing workstreams (Excellence Roadmap v2.1 Track 1 R2).
+
+## PowerShell macOS Gatekeeper deprecation 2026-09-01 [OPEN]
+
+The powershell@preview cask path used for EXO ServicePrincipal management (Connect-ExchangeOnline; New-ServicePrincipal) is scheduled for macOS Gatekeeper deprecation on 2026-09-01. Without intervention, post-deprecation runs will fail Gatekeeper signature verification on the cutover MacBook.
+
+Plan B: Azure Cloud Shell. Same Connect-ExchangeOnline + New-ServicePrincipal commands run in a browser shell instead of local PowerShell. No code change required; runbook change only.
+
+Cutover impact: Handover Plan v6 Step 4 verification currently assumes local PowerShell. If Phase 1.5 cutover lands after 2026-09-01, runbook needs the Azure Cloud Shell variant.
+
+Resolves when: 2026-08-15 calendar check confirms status (still scheduled / postponed / cask alternative emerged). Runbook updated based on findings.
