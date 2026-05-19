@@ -38,38 +38,17 @@ Coverage delta when re-running the reconcile against the live 10-portfolio listi
 
 Resolution: see commit on the `feature/vendor-sub-parser` branch (squash-merged), and `docs/session_logs/2026-05-19_chore_sweep_and_mypy_lockdown.md`.
 
-## parse_job_v3: ISO date prefix (YYYY-MM-DD) unclaimed [OPEN]
+## parse_job_v3: ISO date prefix (YYYY-MM-DD) unclaimed [CLOSED 2026-05-19]
 
-Surfaced 2026-05-18 in the same sanity check.
+Resolved by extending `parse_date_prefix` in-place with a new `DATE_PREFIX_ISO` regex (`^(?P<date>\d{4}-\d{2}-\d{2})\s+(?P<topic>.+?)\s*$`). ISO matches return `DatePrefixParse` with `direction='ISO'`, joining the existing `R` / `S` discriminators in the same `direction` field. R./S. behavior is preserved unchanged; covered by regression tests in `tests/test_parse_date_prefix.py`.
 
-**Pattern:** `^\d{4}-\d{2}-\d{2}\s+.+`. ISO 8601 date prefix followed by a descriptive name.
+Reconcile claim chain extended with a new `date_prefix` claim between `vendor_sub` and `canonical_non_job` — needed because the existing chain had no date-prefix claim at all, so ISO matches wouldn't have shown up in reconcile output otherwise. Side effect: existing uppercase R./S. and chaos-flagged lowercase r./s. forms now also get claimed structurally (chaos detection is orthogonal — same name can be both `date_prefix` claimed AND `date_prefix_lowercase` chaos-flagged).
 
-**Examples observed:** `2024-12-04 Brimfield 1 IFC CAD`, `2024-12-13 Brimfield 1 IFC CAD - V2`, `2025-09-15 BBCHS PBASE`, `2024-08-13 - Bonacci Solar - Base Map - Standard`, `2025-08-26 Roxbury IFC CAD Files`.
+Coverage delta when re-running the reconcile: **11 unique names** in the new `date_prefix` claim (mix of ISO + R./S. + lowercase r./s. forms; tech_debt entry estimated ~13 ISO uniques, close enough). Unclaimed share dropped 51.1% → 50.9%.
 
-**Concentration / volume:** ~13 unique names, low volume, consistent shape. Likely concentrated in CAD-versioning workflows (most observed names end in `IFC CAD` or `CAD Files`).
+24 tests cover the new ISO form, R./S. regression, lowercase r./s. warning preservation, direction discriminator, and negatives. Tests at `tests/test_parse_date_prefix.py`.
 
-**Why existing parser misses it:** `parse_date_prefix` handles only `R. M.D.YY <topic>` and `S. M.D.YY <topic>` (Received/Sent-tagged American-format dates). ISO has no direction prefix, uses dashes instead of dots, and uses 4-digit years.
-
-**Suggested entry point:** extend `parse_date_prefix` **in-place** rather than creating a new function. Add an `ISO_DATE_PREFIX` regex; on match, return a `DatePrefixParse` with a new `direction='ISO'` discriminator (or refactor the field to `Optional[str]` and leave it None for ISO matches — designer's choice). Do not create a new function — same domain.
-
-**Test corpus snippets** (drop into existing `tests/` location, or `tests/test_parse_date_prefix.py` if a dedicated file becomes warranted):
-
-```python
-# Positive
-("2024-12-04 Brimfield 1 IFC CAD",       "ISO", "2024-12-04", "Brimfield 1 IFC CAD"),
-("2025-09-15 BBCHS PBASE",                "ISO", "2025-09-15", "BBCHS PBASE"),
-# Existing R./S. forms must continue to match (regression check)
-("R. 5.6.25 Permit response",             "R",   "5.6.25",     "Permit response"),
-("S. 11.22.24 to Luminace",               "S",   "11.22.24",   "to Luminace"),
-# Negative
-("2025 Some Project",                     None),  # no MM-DD
-("2024-12 Partial Date",                  None),  # no DD
-("2024-12-04Brimfield",                   None),  # no space separator
-```
-
-**Expected coverage delta:** very small — ~13 unique × 1 occurrence each = ~13 unclaimed-occurrences moved. The ISO pattern is rare enough that the value is in correctness of the parser surface, not volume of reclassified names.
-
-**Status:** scheduled for a focused follow-up PR; no date promised; revisit when other `box_migration/` work is in the same area. Could naturally bundle with the V/S vendor-sub follow-up since both are parser-extension work of similar scope.
+Resolution: see commit on the `feature/iso-date-prefix` branch (squash-merged), and `docs/session_logs/2026-05-19_chore_sweep_and_mypy_lockdown.md`.
 
 ## parse_job_v3: person_tag_in_subject chaos over-match [OPEN]
 

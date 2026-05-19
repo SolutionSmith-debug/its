@@ -227,6 +227,15 @@ DATE_PREFIX_RS_LOWER = re.compile(
     r'^(?P<dir>[rs])\.\s+(?P<date>\d{1,2}\.\d{1,2}\.\d{2,4})'
 )
 
+# ISO 8601 date prefix — YYYY-MM-DD <topic>. Added 2026-05-19 from the
+# reconcile sanity check; observed in CAD-versioning workflows
+# ("2024-12-04 Brimfield 1 IFC CAD", "2025-09-15 BBCHS PBASE"). No
+# direction tag (unlike R./S.); we surface direction='ISO' from
+# parse_date_prefix so callers can discriminate.
+DATE_PREFIX_ISO = re.compile(
+    r'^(?P<date>\d{4}-\d{2}-\d{2})\s+(?P<topic>.+?)\s*$'
+)
+
 # z. ARCHIVE PROJ  — cross-portfolio archive marker (Kendall CSP 5)
 ARCHIVE_LETTER_Z = re.compile(
     r'^z\.\s+(?P<label>(ARCHIVE|RETIRED|OLD)\b.*?)\s*$',
@@ -490,17 +499,22 @@ def parse_development_subject(raw: str) -> Optional[DevelopmentSubjectParse]:
 @dataclass
 class DatePrefixParse:
     raw: str
-    direction: str                         # 'R' (Received hypothesis) or 'S' (Sent hypothesis)
-    date_raw: str                          # e.g. '5.6.25'
+    direction: str                         # 'R' / 'S' / 'ISO'
+    date_raw: str                          # e.g. '5.6.25' (R./S.) or '2024-12-04' (ISO)
     topic: Optional[str] = None
     warnings: list = field(default_factory=list)
 
 
 def parse_date_prefix(raw: str) -> Optional[DatePrefixParse]:
     """
-    Parse "R. M.D.YY <topic>" or "S. M.D.YY <topic>". Hypothesis pending owner
-    confirmation: R = Received from external, S = Sent to external. Lowercase
-    variants are accepted but flagged as chaos.
+    Parse one of three date-prefix forms:
+
+      R. M.D.YY <topic>   — Received-from-external hypothesis (direction='R')
+      S. M.D.YY <topic>   — Sent-to-external hypothesis      (direction='S')
+      YYYY-MM-DD <topic>  — ISO 8601, no direction tag       (direction='ISO')
+
+    Direction hypothesis for R./S. forms is pending owner confirmation.
+    Lowercase R./S. variants are accepted but flagged as chaos.
     """
     m = DATE_PREFIX_RS.match(raw)
     if m:
@@ -515,6 +529,13 @@ def parse_date_prefix(raw: str) -> Optional[DatePrefixParse]:
             raw=raw, direction=m.group('dir').upper(),
             date_raw=m.group('date'),
             warnings=['lowercase R./S. prefix — convention is uppercase'],
+        )
+    m = DATE_PREFIX_ISO.match(raw)
+    if m:
+        return DatePrefixParse(
+            raw=raw, direction='ISO',
+            date_raw=m.group('date'),
+            topic=m.group('topic').strip() or None,
         )
     return None
 
