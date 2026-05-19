@@ -70,13 +70,14 @@ r'-\s*[A-Z][a-z]+\s*$)'                                    # "Budget- Jason"
 
 **Test snippets:** intentionally not provided yet. The work starts with corpus inspection, not a code change. Adding test snippets now would prescribe the fix shape before we know what shape is right.
 
-**Suggested first step (before any regex change):** spot-check 20 flagged names from the live reconcile output. For each, decide:
-- True positive — actual person name encoded as a folder tag.
-- False positive — capitalized trailing word that is a customer name, vendor name, location name, or other non-person reference.
+**Audit complete 2026-05-19 — see `docs/person_tag_audit_2026-05-19.md`.** 20-sample categorization across all 10 portfolios produced FP rate of **60–70%** (depending on how ambiguous cases are counted). All confirmed FPs hit the third alternation; the first two alternations correctly catch real TPs. Audit recommends **Direction (A): remove the third alternation entirely** — TP loss is low (2–4 catches across the entire corpus), FP cost is high (138 occurrences flagged, ~95% noise).
 
-Categorize the 20. If false-positive rate is >50%, the third alternation needs to be narrowed or removed. If it's <20%, the pattern is mostly working and only edge cases need attention. Reconcile output to mine: `docs/reports/2026-05-18_reconcile_full.md`, search for `person_tag_in_subject` in the per-portfolio chaos sections.
+**Pending operator decision** between three directions:
+- (A) Remove third alternation — recommended.
+- (B) Allowlist-based refinement — more powerful, higher maintenance.
+- (C) Lower severity to INFO — treats symptom not cause.
 
-**Expected coverage delta:** unknown until the corpus inspection runs. Could be substantial (138 names is a lot) or modest (some portion is genuinely person-tagged content), depending on the false-positive ratio.
+A follow-up PR implements the chosen direction and closes this entry. Tests to add are spelled out in the audit doc (regression coverage for alternations 1+2 + explicit negative cases for the 12 confirmed FPs).
 
 **Status:** scheduled for a focused follow-up PR; no date promised; revisit before any workstream depends on `person_tag_in_subject` as a high-signal hygiene indicator. Until then, treat the flag as noisy and don't surface it to operators as actionable. Pairs naturally with a broader "chaos pattern false-positive audit" if other patterns turn out to over-match too.
 
