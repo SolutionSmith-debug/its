@@ -295,6 +295,12 @@ before treating that pattern as a high-signal hygiene flag.
   from `tests/test_parse_subsubject.py`).
 - `mypy` not run on `box_migration/*` per the repo's current scope.
 
+## CI runs
+
+| Run | Commit | Result |
+|---|---|---|
+| [26065136131](https://github.com/SolutionSmith-debug/its/actions/runs/26065136131) | `54eb001` (PR #13) | green (36s) |
+
 ## What's NOT in this PR
 
 - **V/S and ISO parser patches.** Deferred to focused follow-up PR(s)

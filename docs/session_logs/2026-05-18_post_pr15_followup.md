@@ -27,9 +27,7 @@ Task 1 is intentionally not a commit — it's working memory, not repo content.
 | Run | Commit | Result |
 |---|---|---|
 | [26069320511](https://github.com/SolutionSmith-debug/its/actions/runs/26069320511) | `7b292da` (PR #16, Task 3 merge) | green (35s) |
-
-This PR's run lands when it's pushed; URL to be backfilled on a future
-chore touch per the established convention (PR #15 §"L1 finding").
+| [26069496189](https://github.com/SolutionSmith-debug/its/actions/runs/26069496189) | `2abac1c` (PR #17, Task 2 merge) | green (29s) |
 
 ## Decisions made during session
 

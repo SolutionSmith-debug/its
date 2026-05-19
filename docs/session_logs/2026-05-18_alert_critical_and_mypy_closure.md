@@ -28,9 +28,8 @@ implementing the third leg of the Op Stds v8 §3 triple-fire path.
 | [26070052920](https://github.com/SolutionSmith-debug/its/actions/runs/26070052920) | `3ecbe81` (PR #18) | green (28s) |
 | [26070146344](https://github.com/SolutionSmith-debug/its/actions/runs/26070146344) | `ae36a8a` (PR #19) | green (25s) |
 | [26070235764](https://github.com/SolutionSmith-debug/its/actions/runs/26070235764) | `f5d0acd` (PR #20) | green (27s) |
-
-This PR's run lands when it's pushed; URL to be backfilled on a future
-chore touch per the established convention.
+| [26070663480](https://github.com/SolutionSmith-debug/its/actions/runs/26070663480) | `7c1542c` (PR #21 branch head) | green (29s) |
+| [26070685381](https://github.com/SolutionSmith-debug/its/actions/runs/26070685381) | `a442f7d` (PR #21 squash) | green (25s) |
 
 ## Decisions made during session
 
