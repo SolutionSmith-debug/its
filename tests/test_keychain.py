@@ -16,7 +16,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from shared.keychain import KeychainError, get_secret
+from shared.keychain import KeychainError, get_secret, set_secret
 
 # ---- Happy path ------------------------------------------------------------
 
@@ -99,6 +99,67 @@ def test_missing_security_cli_raises_keychain_error(mocker):
     # not FileNotFoundError, so callers only have one exception type to handle.
     with pytest.raises(KeychainError, match="macOS-only"):
         get_secret("ITS_TEST_KEY")
+
+
+# ---- set_secret -----------------------------------------------------------
+
+
+def test_set_secret_calls_security_with_update_flag(mocker):
+    """The `-U` flag makes add-generic-password idempotent (update if
+    exists, otherwise create). Without it, a second call on the same
+    service raises SecKeychainItemCreate errSecDuplicateItem (-25299).
+    Box OAuth's refresh-token rotation hits the same key on every API
+    call — must not error on the second rotation."""
+    mock_run = mocker.patch("shared.keychain.subprocess.run")
+    mocker.patch("shared.keychain.getpass.getuser", return_value="someuser")
+
+    set_secret("ITS_TEST_KEY", "secret-value")
+
+    cmd = mock_run.call_args.args[0]
+    assert cmd[0] == "security"
+    assert cmd[1] == "add-generic-password"
+    assert cmd[cmd.index("-a") + 1] == "someuser"
+    assert cmd[cmd.index("-s") + 1] == "ITS_TEST_KEY"
+    assert cmd[cmd.index("-w") + 1] == "secret-value"
+    assert "-U" in cmd  # idempotent update
+
+
+def test_set_secret_explicit_account_overrides_default(mocker):
+    mock_run = mocker.patch("shared.keychain.subprocess.run")
+    mocker.patch("shared.keychain.getpass.getuser", return_value="someuser")
+
+    set_secret("ITS_TEST_KEY", "v", account="service-account")
+
+    cmd = mock_run.call_args.args[0]
+    assert cmd[cmd.index("-a") + 1] == "service-account"
+
+
+def test_set_secret_does_not_leak_value_into_error_message(mocker):
+    """If the CLI fails, the exception must NOT contain the secret value —
+    error messages can land in logs / tracebacks / triple-fire alert
+    bodies."""
+    mocker.patch(
+        "shared.keychain.subprocess.run",
+        side_effect=subprocess.CalledProcessError(
+            returncode=1, cmd="security",
+            output="", stderr="errSecAuthFailed",
+        ),
+    )
+
+    secret = "very-sensitive-refresh-token-value"
+    with pytest.raises(KeychainError) as exc:
+        set_secret("ITS_TEST_KEY", secret)
+    # Service name + stderr should appear; value MUST NOT.
+    assert "ITS_TEST_KEY" in str(exc.value)
+    assert "errSecAuthFailed" in str(exc.value)
+    assert secret not in str(exc.value)
+
+
+def test_set_secret_missing_security_cli_raises_keychain_error(mocker):
+    mocker.patch("shared.keychain.subprocess.run", side_effect=FileNotFoundError())
+
+    with pytest.raises(KeychainError, match="macOS-only"):
+        set_secret("ITS_TEST_KEY", "x")
 
 
 # ---- Real CLI integration (macOS only) ------------------------------------
