@@ -35,7 +35,8 @@ Checks shipped:
        workstream `mail_intake.<workstream>.max_idle_hours` threshold
        (per `docs/tech_debt.md` Mail.app entry added 2026-05-19).
 
-Planned (NOT in this file, scheduled for PR #37):
+Planned (NOT in this file, scheduled for a follow-on PR — the Check E
+shipping PR; see `docs/tech_debt.md`):
     E. Anthropic spend trend. Deferred from Session 2 — the Admin API key
        provisioning is the operator's prerequisite, not a code path.
 
@@ -476,12 +477,13 @@ CHECKS: list[Callable[[], CheckResult]] = [
     _check_scheduled_jobs,
     _check_reviewer_chain_forward,
     _check_mail_intake_silent_disable,
-    # Check E (Anthropic spend trend) deferred to PR #37 — requires an
-    # Admin API key (sk-ant-admin01-... prefix) provisioned in Keychain
-    # under ITS_ANTHROPIC_ADMIN_API_KEY. The current key is a workspace
-    # key (sk-ant-api03-...) which /v1/organizations/cost_report rejects
-    # with 401. See docs/session_logs/2026-05-20_watchdog_session_2.md
-    # for the pre-flight finding.
+    # Check E (Anthropic spend trend) deferred to a follow-on PR (the
+    # Check E shipping PR) — requires an Admin API key (sk-ant-admin01-...
+    # prefix) provisioned in Keychain under ITS_ANTHROPIC_ADMIN_API_KEY.
+    # The current key is a workspace key (sk-ant-api03-...) which
+    # /v1/organizations/cost_report rejects with 401. See
+    # docs/session_logs/2026-05-20_watchdog_session_2.md for the
+    # pre-flight finding.
 ]
 
 
