@@ -175,3 +175,82 @@ Captured 2026-05-20 during M365 sandbox re-verification while validating the `IT
 ## Stale Anthropic Service Account `svac_…SR7vDMJ` for archival [OPEN 2026-05-20]
 
 Stale Anthropic Service Account `svac_…SR7vDMJ` (created during R2 Watchdog Check E investigation 2026-05-20) flagged for archival. The associated workspace API key has already been deleted from macOS Keychain. No urgency; clean up when next in the Anthropic Console (Settings → Service Accounts → Archive). Captured here so the cleanup isn't forgotten at the next Anthropic-Console visit.
+
+## Remove unused `[jwt]` extra from boxsdk dependency [OPEN 2026-05-20]
+
+`pyproject.toml` currently pins `boxsdk[jwt]>=3.10.0,<4.0.0`. The `[jwt]` extra pulls in `PyJWT` and `cryptography` transitively. ITS uses OAuth 2.0 User Authentication (per PR #39, commit `2ce6ece`) and never exercises the JWT auth path; the extra dependencies are dead weight in the install tree.
+
+**Action:** change to plain `boxsdk>=3.10.0,<4.0.0`. Run `scripts/smoke_test_box.py` after the change to confirm the OAuth path still works.
+
+**Urgency:** low. No functional impact, just install-tree hygiene.
+
+Surfaced: PR #39 review, 2026-05-20.
+
+## Eventually migrate from legacy boxsdk to `box_sdk_gen` (Gen API) [OPEN 2026-05-20]
+
+The `boxsdk` PyPI package jumped to a renamed Gen API at 10.x (imports as `box_sdk_gen`, with a substantially different surface). PR #39 pins to `<4.0.0` to use the legacy 3.x API. The Gen API is the future direction per Box; legacy 3.x will eventually be deprecated.
+
+**Action:** re-evaluate when (a) Box announces a deprecation timeline for 3.x, (b) the legacy API lacks something the Gen API offers, or (c) annual dependency-hygiene sweep.
+
+**Migration scope:** `shared/box_client.py`, `tests/test_box_client.py`, `scripts/setup_box_oauth.py`, `scripts/smoke_test_box.py`. Probably non-trivial (~half day of work).
+
+**Urgency:** low. Pin holds until Box deprecation pressure or capability gap.
+
+Surfaced: PR #39 review, 2026-05-20.
+
+## Add Box refresh-token age check to R2 Watchdog [OPEN 2026-05-20]
+
+`ITS_BOX_REFRESH_TOKEN` rotates on every Box API call and stays valid as long as ITS makes at least one Box call every 60 days. If ITS goes dark for >60 days (extended outage, post-handover period without activity), the refresh token expires and re-running `scripts/setup_box_oauth.py` is required.
+
+A watchdog check would warn the operator before the token expires:
+- **Warn** at 50 days since last rotation
+- **Critical** at 58 days
+
+**Mechanism:** track last-rotation timestamp via either
+- (a) a sidecar Keychain entry `ITS_BOX_REFRESH_TOKEN_LAST_ROTATED` updated by the `store_tokens` callback in `shared/box_client.py`, or
+- (b) a row in `ITS_Config` (`system.box_refresh_token_last_rotated`).
+
+**Implementation venue:** R2 Watchdog Session 2 (planning pass needed first) or later. Not blocking; absence of this check is documented in the handover runbook as a known operator-touch requirement.
+
+**Urgency:** medium. Real risk if ITS goes dark for an extended period post-handover. Pre-handover is fine because ITS runs daily.
+
+Surfaced: PR #39 brief, 2026-05-20.
+
+## Phase 1.5 — provision dedicated ITS Box user account, re-auth [OPEN 2026-05-20]
+
+ITS currently authenticates to Box as `seths@evergreenmirror.com` (operator account). All API actions attribute to that user in Box audit trails, and all ITS-created files are owned by that user.
+
+At Phase 1.5 cutover, provision a dedicated ITS Box user account (e.g., `its@evergreenrenewables.com` once the production tenant is live) and re-authenticate ITS as that user. No code changes needed — just re-run `scripts/setup_box_oauth.py` while logged into Box as the new user.
+
+**Concerns to handle at migration time:**
+- File ownership of anything ITS created under the operator account may need to be transferred to the new user.
+- Collaborator permissions on existing folders must be granted to the new user before re-auth.
+- Old refresh token under the operator account should be revoked in the Box account settings.
+
+**Urgency:** Phase 1.5 cutover task. Not before.
+
+Surfaced: PR #39 brief, 2026-05-20.
+
+## Confirm `canonical_job_path()` format with owner [OPEN 2026-05-20]
+
+`shared/box_client.py` exposes `canonical_job_path(customer, job_number, job_name, year)` which returns `"/Customer/JobNum — JobName/YYYY/"`. This is the WRITE-path format for new ITS-created content.
+
+Owner confirmation has not happened yet — the format is the legacy-stub placeholder, never validated against owner preference. `box_migration/parse_job_v3.py` handles read-side recognition of the 4 active Box schemas, so this only affects what ITS creates going forward, not what it can recognize.
+
+**Action:** surface to owner at next opportunity, confirm or adjust format, update `shared/box_client.py` + tests if needed.
+
+**Urgency:** low until the first workstream consumes `canonical_job_path`. At that point the decision becomes blocking and locks the format for all future ITS-created content.
+
+Surfaced: PR #39 brief, Open Question Q2, 2026-05-20.
+
+## Seed `system.box_smoke_folder_id` in ITS_Config [OPEN 2026-05-20]
+
+`scripts/smoke_test_box.py` supports a `--write-test` opt-in flag that does a write-read-delete loop against a known sandbox folder. The folder ID comes from an `ITS_Config` row at `system.box_smoke_folder_id`.
+
+The row is not yet seeded. The read-only smoke (default invocation) works without it; only the opt-in write-test path requires it.
+
+**Action:** create a dedicated "ITS Smoke" folder in Box, copy its folder ID, seed the `ITS_Config` row. After seeding, run `python3 scripts/smoke_test_box.py --write-test` once to confirm.
+
+**Urgency:** low. Read-only smoke is sufficient for most operator checks. Write-test is useful only when diagnosing suspected scope or permission issues.
+
+Surfaced: PR #39 brief, Open Question Q4, 2026-05-20.
