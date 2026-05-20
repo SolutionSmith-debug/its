@@ -142,3 +142,42 @@ Plan B: Azure Cloud Shell. Same Connect-ExchangeOnline + New-ServicePrincipal co
 Cutover impact: Handover Plan v6 Step 4 verification currently assumes local PowerShell. If Phase 1.5 cutover lands after 2026-09-01, runbook needs the Azure Cloud Shell variant.
 
 Resolves when: 2026-08-15 calendar check confirms status (still scheduled / postponed / cask alternative emerged). Runbook updated based on findings.
+
+## anomaly_logger: SUSPICIOUS_FIELD_PATTERNS will false-positive on legitimate system_* fields [OPEN 2026-05-20]
+
+`shared/anomaly_logger.py` flags any extraction field name matching `^system_` as a security anomaly (Phase 1 starter sentinel list for prompt-injection detection). The pattern is correct against the threat model — a legitimate workstream extraction schema shouldn't include `system_*` field names, so their presence suggests the AI invented them under injection.
+
+**The risk:** this is a forward-dated FP source. As workstream extraction schemas mature, any legitimate field with a `system_` prefix (e.g., `system_version`, `system_id`, `system_serial_number` on machine pre-inspections) will fire `security_flag=True` on every extraction, polluting `ITS_Review_Queue` with noise and training operators to dismiss the flag.
+
+Tuning belongs to the first 30 days of sandbox operation against real extraction outputs (per Safety Reports Brief v6 — "Phase 1 sentinel list, extend as patterns emerge"). The sentinel list should be re-audited once `safety_reports/weekly_generate.py` has run against the migrated closed-project corpus and produced a representative extraction sample.
+
+**Specific suggested follow-ups when tuning lands:**
+- Narrow `^system_` to specific known-bad names (`system_prompt`, `system_role`, `system_instruction`) rather than the prefix glob.
+- Same audit for `^role_` and `^ignore_` — both have similar FP-on-legitimate-naming risk.
+- Add a `tests/test_anomaly_logger.py` case for any legitimate field name that ends up in a real extraction schema, so the sentinel list and the schemas can't drift apart.
+
+Surfaced 2026-05-20 in a senior-dev audit pass; not yet triggered in practice because no workstream extraction has shipped.
+
+## R2 Watchdog Check E (Anthropic spend trend) deferred to Phase 1.5 / PR #37 [OPEN 2026-05-20]
+
+Check E of R2 Watchdog (Anthropic API spend trend analysis) deferred to PR #37 at Phase 1.5 production cutover. **Architectural choice, not capability gap.** Individual Anthropic orgs DO expose Admin keys once a formal Organization is created (Settings → Organization with business address; verified 2026-05-20). Deferral rationale: sandbox spend signal-to-noise is too low at $5-credit scale for trend analysis to produce meaningful alerts. Re-evaluate at production cutover when spend is real and recurring. Implementation will add `shared/anthropic_billing.py` + `_check_spend_trend` in `scripts/watchdog.py`, seed the 4 `spend.*` `ITS_Config` rows + the `system.anthropic_admin_api_keychain_key` row, and convert the existing smoke runner's Phase E from a SKIPPED placeholder into a real exerciser.
+
+Originally surfaced 2026-05-20 in R2 Session 2 pre-flight (the Keychain `ITS_ANTHROPIC_ADMIN_API_KEY` held a workspace key, `sk-ant-api03-…` prefix, not an Admin key). Session 2 shipped Checks A/B/C/D/F via PR #36; Check E is the only outstanding piece of the R2 Watchdog spec.
+
+## PowerShell `Get-ApplicationAccessPolicy -Identity <friendly-name>` directory lookup fails [OPEN 2026-05-20]
+
+`Get-ApplicationAccessPolicy -Identity <friendly-name>` fails with a directory-object-not-found error in Exchange Online PowerShell, even when the policy exists and is valid.
+
+**Workaround:** call the bare cmdlet (no `-Identity`) and filter the result set client-side. Pattern: `Get-ApplicationAccessPolicy | Where-Object { $_.Description -match '<keyword>' }` or pipe to `Select` and pattern-match the returned rows.
+
+Captured 2026-05-20 during M365 sandbox re-verification while validating the `ITS Scoped Mailboxes` policy for R2 Watchdog Check F. The bare-cmdlet form returned a valid record with `IsValid: True` despite the friendly-name lookup failing seconds earlier on the same policy.
+
+## voice@ mailbox AppAccessPolicy scope addition pending [OPEN 2026-05-20]
+
+`voice@evergreenmirror.com` is one of 5 ITS-intake mailboxes (per the mailbox roster) but is NOT currently in the `ITS Scoped Mailboxes` ApplicationAccessPolicy scope. Confirmed by `Get-ApplicationAccessPolicy` on 2026-05-20 — current scope covers `safety / procurement / subcontracts / its`, no `voice@`.
+
+**Resolves when:** an ITS workstream activates the `voice@` mailbox as an intake source. At that point: add `voice@evergreenmirror.com` to the AppAccessPolicy scope via Exchange Online PowerShell, and register the corresponding `mail_intake.voice.max_idle_hours` row in `ITS_Config` so R2 Watchdog Check F starts monitoring it. No code change required for the policy update; the watchdog already iterates `mail_intake.*` rows via `smartsheet_client.get_settings_with_prefix` (PR #36).
+
+## Stale Anthropic Service Account `svac_…SR7vDMJ` for archival [OPEN 2026-05-20]
+
+Stale Anthropic Service Account `svac_…SR7vDMJ` (created during R2 Watchdog Check E investigation 2026-05-20) flagged for archival. The associated workspace API key has already been deleted from macOS Keychain. No urgency; clean up when next in the Anthropic Console (Settings → Service Accounts → Archive). Captured here so the cleanup isn't forgotten at the next Anthropic-Console visit.
