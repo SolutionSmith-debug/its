@@ -24,6 +24,9 @@ logs/*.log
 .env
 .env.*
 
+# Watchdog last-run markers (scripts/watchdog.py write_last_run_marker)
+.watchdog/
+
 # Credentials must NEVER be committed.
 # All secrets live in macOS Keychain — see shared/keychain.py.
 *_secret*

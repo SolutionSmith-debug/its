@@ -204,6 +204,39 @@ def get_rows(
     return out
 
 
+def get_settings_with_prefix(
+    prefix: str,
+    *,
+    workstream: str | None = None,
+) -> dict[str, str]:
+    """Return all ITS_Config rows whose `Setting` starts with `prefix`.
+
+    Mirrors `get_setting`'s row-shape assumptions but iterates instead of
+    raising. Returns a `{setting_key: value_str}` dict. Rows whose `Value`
+    cell is not a string are skipped (matches `get_setting`'s contract).
+
+    `workstream` narrows results to one workstream when set; default
+    returns all matching rows across workstreams. Used by
+    `scripts/watchdog.py` Check F to enumerate `mail_intake.*` rows
+    without knowing the workstream slugs up front.
+    """
+    filters: dict[str, Any] = {}
+    if workstream is not None:
+        filters["Workstream"] = workstream
+    rows = get_rows(sheet_ids.SHEET_CONFIG, filters=filters)
+    out: dict[str, str] = {}
+    for row in rows:
+        setting = row.get("Setting")
+        value = row.get("Value")
+        if (
+            isinstance(setting, str)
+            and setting.startswith(prefix)
+            and isinstance(value, str)
+        ):
+            out[setting] = value
+    return out
+
+
 def get_setting(key: str, *, workstream: str) -> str | None:
     """Read one Setting from ITS_Config, scoped to a workstream.
 
