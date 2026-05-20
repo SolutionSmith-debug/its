@@ -306,3 +306,102 @@ def test_item_id_uses_utc(mocker):
 
     item_id = review_queue._generate_item_id("po_materials")
     assert item_id == "po_materials-20260518-234507"
+
+
+# ---- get_pending() -------------------------------------------------------
+
+
+def test_get_pending_no_workstream_filter_is_status_only(get_rows_mock):
+    get_rows_mock.return_value = []
+    review_queue.get_pending()
+    get_rows_mock.assert_called_once_with(
+        sheet_ids.SHEET_REVIEW_QUEUE,
+        filters={"Status": "PENDING"},
+    )
+
+
+def test_get_pending_with_workstream_adds_filter(get_rows_mock):
+    get_rows_mock.return_value = []
+    review_queue.get_pending(workstream="safety_reports")
+    get_rows_mock.assert_called_once_with(
+        sheet_ids.SHEET_REVIEW_QUEUE,
+        filters={"Status": "PENDING", "Workstream": "safety_reports"},
+    )
+
+
+def test_get_pending_rejects_invalid_workstream(get_rows_mock):
+    with pytest.raises(ValueError, match="not in"):
+        review_queue.get_pending(workstream="not_a_real_workstream")
+    get_rows_mock.assert_not_called()
+
+
+def test_get_pending_propagates_smartsheet_errors(get_rows_mock):
+    from shared.smartsheet_client import SmartsheetError
+    get_rows_mock.side_effect = SmartsheetError("HTTP 500: server error")
+    with pytest.raises(SmartsheetError, match="500"):
+        review_queue.get_pending()
+
+
+# ---- is_past_sla() -------------------------------------------------------
+
+
+def test_4h_sla_same_day_not_past():
+    today = date(2026, 5, 19)
+    row = {"Created At": today.isoformat(), "SLA Tier": "4h"}
+    assert review_queue.is_past_sla(row, now=today) is False
+
+
+def test_4h_sla_next_day_past():
+    row = {"Created At": "2026-05-18", "SLA Tier": "4h"}
+    assert review_queue.is_past_sla(row, now=date(2026, 5, 19)) is True
+
+
+def test_24h_sla_one_day_not_past():
+    # Threshold is 1 day; need delta > 1 → strictly more than 1.
+    row = {"Created At": "2026-05-18", "SLA Tier": "24h"}
+    assert review_queue.is_past_sla(row, now=date(2026, 5, 19)) is False
+
+
+def test_24h_sla_two_days_past():
+    row = {"Created At": "2026-05-17", "SLA Tier": "24h"}
+    assert review_queue.is_past_sla(row, now=date(2026, 5, 19)) is True
+
+
+def test_48h_sla_three_days_not_past():
+    row = {"Created At": "2026-05-16", "SLA Tier": "48h"}
+    assert review_queue.is_past_sla(row, now=date(2026, 5, 19)) is False
+
+
+def test_48h_sla_four_days_past():
+    row = {"Created At": "2026-05-15", "SLA Tier": "48h"}
+    assert review_queue.is_past_sla(row, now=date(2026, 5, 19)) is True
+
+
+def test_unknown_sla_tier_raises_value_error():
+    row = {"Created At": "2026-05-19", "SLA Tier": "bogus"}
+    with pytest.raises(ValueError, match="unknown SLA tier"):
+        review_queue.is_past_sla(row)
+
+
+def test_missing_created_at_raises_key_error():
+    row = {"SLA Tier": "4h"}
+    with pytest.raises(KeyError, match="Created At"):
+        review_queue.is_past_sla(row)
+
+
+def test_missing_sla_tier_raises_key_error():
+    row = {"Created At": "2026-05-19"}
+    with pytest.raises(KeyError, match="SLA Tier"):
+        review_queue.is_past_sla(row)
+
+
+def test_invalid_iso_date_raises_value_error():
+    row = {"Created At": "not-a-date", "SLA Tier": "4h"}
+    with pytest.raises(ValueError):
+        review_queue.is_past_sla(row)
+
+
+def test_now_override_used():
+    # Brief-specified case: Created At 4 days ago + 24h SLA + now override.
+    row = {"Created At": "2026-05-15", "SLA Tier": "24h"}
+    assert review_queue.is_past_sla(row, now=date(2026, 5, 19)) is True

@@ -49,6 +49,18 @@ from typing import Any
 from . import sheet_ids, smartsheet_client
 from .error_log import Severity
 
+# 2× SLA expressed as days, for date-arithmetic comparison against the
+# Created At DATE column. Threshold "more than N days past creation".
+# Created At is DATE (not DATETIME) per Smartsheet API constraint — see
+# docs/tech_debt.md. Day-level precision is intentional; false-positive
+# cost (operator looks at a borderline row) is higher than missed-late
+# cost.
+_SLA_HOURS_2X_DAYS: dict[str, int] = {
+    "4h": 0,   # 2×SLA = 8h; any partial day past creation date
+    "24h": 1,  # 2×SLA = 48h; 2+ days past creation date
+    "48h": 3,  # 2×SLA = 96h; 4+ days past creation date
+}
+
 
 class ReviewStatus(StrEnum):
     """Values for the `Status` picklist column."""
@@ -215,3 +227,49 @@ def get_status(item_id: str) -> ReviewStatus:
             f"Item ID={item_id!r} has non-string Status cell: {raw!r}"
         )
     return ReviewStatus(raw)
+
+
+def get_pending(workstream: str | None = None) -> list[dict[str, Any]]:
+    """Return PENDING rows from ITS_Review_Queue.
+
+    Optional `workstream` narrows to one workstream's pending items. If
+    provided, must be a valid `VALID_WORKSTREAMS` value — same validation
+    surface as `add()` so callers get a single failure shape.
+
+    Raises:
+        ValueError: workstream is not in `VALID_WORKSTREAMS`.
+        SmartsheetError: propagated from `smartsheet_client.get_rows`.
+    """
+    filters: dict[str, Any] = {"Status": ReviewStatus.PENDING.value}
+    if workstream is not None:
+        if workstream not in VALID_WORKSTREAMS:
+            raise ValueError(
+                f"workstream={workstream!r} not in {sorted(VALID_WORKSTREAMS)}"
+            )
+        filters["Workstream"] = workstream
+    return smartsheet_client.get_rows(sheet_ids.SHEET_REVIEW_QUEUE, filters=filters)
+
+
+def is_past_sla(row: dict[str, Any], *, now: date | None = None) -> bool:
+    """Return True if the row is past 2× its SLA tier.
+
+    Args:
+        row: A ITS_Review_Queue row dict, as returned by `get_pending()`.
+            Must contain `Created At` (ISO date string) and `SLA Tier`
+            (`"4h"` / `"24h"` / `"48h"`).
+        now: Override `date.today()` for test determinism.
+
+    Raises:
+        KeyError: required columns missing from `row`.
+        ValueError: `SLA Tier` not in the SLA tier set, or `Created At`
+            is not a parseable ISO date.
+    """
+    created_str = row["Created At"]
+    sla = row["SLA Tier"]
+    try:
+        threshold_days = _SLA_HOURS_2X_DAYS[sla]
+    except KeyError:
+        raise ValueError(f"unknown SLA tier: {sla!r}") from None
+    created = date.fromisoformat(created_str)
+    current = now if now is not None else date.today()
+    return (current - created).days > threshold_days
