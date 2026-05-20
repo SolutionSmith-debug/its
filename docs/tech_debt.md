@@ -50,36 +50,30 @@ Coverage delta when re-running the reconcile: **11 unique names** in the new `da
 
 Resolution: see commit on the `feature/iso-date-prefix` branch (squash-merged), and `docs/session_logs/2026-05-19_chore_sweep_and_mypy_lockdown.md`.
 
-## parse_job_v3: person_tag_in_subject chaos over-match [OPEN]
+## parse_job_v3: person_tag_in_subject chaos over-match [CLOSED 2026-05-20]
 
-Surfaced 2026-05-18 in the box_migration reconcile. See `docs/session_logs/2026-05-18_box_migration_reconcile.md` "Chaos detection" section for the raw count.
+Resolved by adopting **Direction (A)** from `docs/person_tag_audit_2026-05-19.md`: the third alternation (`-\s*[A-Z][a-z]+\s*$`, "trailing-capitalized-word after dash") was removed from `PERSON_TAG_IN_SUBJECT` in `box_migration/parse_job_v3.py`. The refined regex keeps the two alternations that the audit confirmed as high-precision:
 
-**Pattern (existing regex):** `PERSON_TAG_IN_SUBJECT` in `box_migration/parse_job_v3.py`:
-
+```python
+PERSON_TAG_IN_SUBJECT = re.compile(
+    r'(\bfor\s+[A-Z]{3,}\b|'                            # "for ZACK"
+    r'^[A-Z][a-z]+\s+(Organize|Cleanup|Notes|Files)\b)'  # "Teala Organize folder"
+)
 ```
-r'(\bfor\s+[A-Z]{3,}\b|'                                  # "for ZACK"
-r'^[A-Z][a-z]+\s+(Organize|Cleanup|Notes|Files)\b|'       # "Teala Organize folder"
-r'-\s*[A-Z][a-z]+\s*$)'                                    # "Budget- Jason"
-```
 
-**Why existing parser misses it:** It doesn't miss — it over-matches. The third alternation (`-\s*[A-Z][a-z]+\s*$`) flags any `<something>-<Capitalized Word>` ending, which catches legitimate dash-customer-paren naming conventions where the trailing capitalized word is a customer label, not a person tag. Example false positive shape: `14130.1 Dooley (Mortenson) Field` — `Mortenson` here is the customer (Invenergy operating company), not a person.
+Consumer path (`detect_chaos` in the same file) is unchanged — the chaos flag still surfaces for alt-1 / alt-2 matches; alt-3 over-matches no longer fire. `m.group(0)` is the only match-object accessor downstream, so removing one alternation has no group-index ripple.
 
-**Concentration / volume:** **138 unique names flagged across the 10-portfolio reconcile.** Highest count of any chaos pattern by 4x (next is `pre_canonical_zero` at 35). Concentration not yet measured per-portfolio.
+**Coverage delta (projection from the 2026-05-19 audit; live listings under `~/Downloads/Box_listings_for_Seth/` not present locally to re-measure):** ~138 person_tag chaos hits → ~2–4 hits across the 10-portfolio corpus. The 2–4 retained hits are alt-1 / alt-2 forms only (explicit "for XXX" and "First Organize/Cleanup/Notes/Files"); the ~95% noise from alt 3 is gone. A few real-or-leaning-real person-tag cases from the audit (samples #15–#20: `Structural - Bowman`, `R. Bowman-Pungo`, etc.) lose their flag by design — operator triages those visually in the folder tree. The audit doc has the full FP-vs-TP tradeoff analysis.
 
-**Suggested entry point:** no new entry point. Refinement happens in-place on the existing `PERSON_TAG_IN_SUBJECT` regex in v3 — narrow the third alternation to require a stronger person-name signal than "trailing capitalized word." Candidates: known-first-name allowlist, two-word person form (`First Last`), or contextual position requirement (only flag when not preceded by a customer-name pattern). Decision belongs in the follow-up, after the corpus inspection step below.
+27 tests cover the refinement in `tests/test_person_tag.py`:
+- Group A (7 tests): alt 1 + alt 2 positive-regression coverage across the audit's TPs.
+- Group B (13 tests): every confirmed FP from the audit (rows #1–#12 + sample #19) — negative locks so reintroducing alt 3 fails the suite.
+- Group C (5 tests): `KNOWN_TP_LOSSES_NO_LONGER_FLAGGED` acceptance lock — audit samples #15, #16, #17, #18, #20. The list and its comment block point a future maintainer back to the audit doc before they "re-add the missing coverage."
+- Consumer-path integration (2 tests): `detect_chaos()` surfaces the flag for a TP and skips it for the most-common audit FP (`-Tracking` suffix).
 
-**Test snippets:** intentionally not provided yet. The work starts with corpus inspection, not a code change. Adding test snippets now would prescribe the fix shape before we know what shape is right.
+**Redo history:** an earlier attempt (PR #34) implemented this same change but was closed-without-merge during a 2026-05-20 branch-cleanup pass where the head branch was deleted before verifying the merge had actually landed. The chore PR #37 explicitly preserved this entry's `[OPEN]` status; the present resolution comes from the redo PR. The cleanup-pass mistake is captured as a private feedback memory (`feedback_verify_merge_before_branch_delete`): always `gh pr view <N> --json mergedAt` before `git push origin --delete`, do not infer merge from "I saw CI green."
 
-**Audit complete 2026-05-19 — see `docs/person_tag_audit_2026-05-19.md`.** 20-sample categorization across all 10 portfolios produced FP rate of **60–70%** (depending on how ambiguous cases are counted). All confirmed FPs hit the third alternation; the first two alternations correctly catch real TPs. Audit recommends **Direction (A): remove the third alternation entirely** — TP loss is low (2–4 catches across the entire corpus), FP cost is high (138 occurrences flagged, ~95% noise).
-
-**Pending operator decision** between three directions:
-- (A) Remove third alternation — recommended.
-- (B) Allowlist-based refinement — more powerful, higher maintenance.
-- (C) Lower severity to INFO — treats symptom not cause.
-
-A follow-up PR implements the chosen direction and closes this entry. Tests to add are spelled out in the audit doc (regression coverage for alternations 1+2 + explicit negative cases for the 12 confirmed FPs).
-
-**Status:** scheduled for a focused follow-up PR; no date promised; revisit before any workstream depends on `person_tag_in_subject` as a high-signal hygiene indicator. Until then, treat the flag as noisy and don't surface it to operators as actionable. Pairs naturally with a broader "chaos pattern false-positive audit" if other patterns turn out to over-match too.
+Resolution: see commit on the `feature/person-tag-regex-refinement-redo` branch (squash-merged), and `docs/session_logs/2026-05-20_person_tag_regex_refinement_redo.md`. Audit context preserved at `docs/person_tag_audit_2026-05-19.md` (not modified by this PR).
 
 ## smartsheet_migration: import-time side effects in three scripts [CLOSED 2026-05-19]
 
