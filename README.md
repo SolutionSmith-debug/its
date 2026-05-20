@@ -38,6 +38,23 @@ pip install -e ".[dev]"
 pytest -q
 ```
 
+## Re-installing after dependency changes
+
+When pulling a PR that adds or updates dependencies in `pyproject.toml`,
+re-run the install step before running scripts. A `ModuleNotFoundError:
+No module named '<package>'` after a `git pull` typically means a new
+dependency was added and the install needs re-running.
+
+```bash
+# venv path (matches the First-time setup default above)
+source .venv/bin/activate && pip install -e ".[dev]"
+
+# system Python path
+pip3 install -e ".[dev]" --break-system-packages
+```
+
+PR #39 (boxsdk addition, 2026-05-20) was the canonical case that surfaced this.
+
 ## Operational conventions
 
 Everything below is normative. See `CLAUDE.md` for the conversational version Claude Code
