@@ -6,9 +6,11 @@ Three responsibilities, all foundation-level:
    before the target; send jobs roll forward to the next business day on or after the target.
    Recursive so two-holiday spans (e.g., Christmas Day + Boxing Day in customer calendars
    that adopt it) still land on a real business day.
-2. PTO lookups against ITS_Time_Off. Stubbed today (returns nobody-is-out) until the sandbox
-   sheet is provisioned. The fetcher is injected so tests and the real Smartsheet wiring can
-   both plug in without changing call sites.
+2. PTO lookups against ITS_Time_Off. Wired 2026-05-20 — `_live_fetcher` reads
+   the sandbox sheet via `shared.smartsheet_client.get_rows` and parses each row
+   into a `TimeOffEntry`. The fetcher is still injected so tests (and any future
+   alternate backing store) can plug in without changing call sites. Fail-open
+   on read failure: WARN via error_log, return [], watchdog keeps running.
 3. Three-tier reviewer-chain resolution per workstream. Reads chain composition from
    ITS_Config (also stubbed/injectable) and removes anyone currently out. Remaining members
    "shift up": surviving members take positional offsets [0, delay_to_secondary,
@@ -21,12 +23,18 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from functools import lru_cache
+from typing import Any
 
 import holidays
 
+from shared import sheet_ids, smartsheet_client
 from shared.defaults import DEFAULT_REVIEWER_CHAINS, ReviewerChainConfig
+from shared.error_log import Severity, log
+from shared.smartsheet_client import SmartsheetError
+
+_SCRIPT = "shared.scheduling"
 
 # ---- Holiday calendar ------------------------------------------------------
 
@@ -95,42 +103,144 @@ class TimeOffEntry:
 TimeOffFetcher = Callable[[], list[TimeOffEntry]]
 
 
-def _empty_fetcher() -> list[TimeOffEntry]:
-    """Stub fetcher used until ITS_Time_Off is provisioned. Returns no entries."""
-    return []
+def _extract_email(person_cell: Any) -> str | None:
+    """Pull an email out of an ITS_Time_Off `Person` cell value.
+
+    CONTACT_LIST cells arrive via `smartsheet_client.get_rows` as `cell.value`
+    only — the SDK's structured `cell.object_value` (`{email, name}`) isn't
+    surfaced by the helper. Empirically the value is either:
+      - a plain email string (when the row was written with a bare email)
+      - a dict with an `email` key (when the SDK normalizes a Contact ref)
+      - a display-name string with no `@` (when a Contact was selected
+        without an email backing)
+      - `None` (blank cell)
+
+    Returns the email when one is recoverable, `None` otherwise. Callers
+    skip None rows and WARN — one malformed row must not kill the fetch.
+    """
+    if isinstance(person_cell, dict):
+        email = person_cell.get("email")
+        return email if isinstance(email, str) and "@" in email else None
+    if isinstance(person_cell, str) and "@" in person_cell:
+        return person_cell
+    return None
+
+
+def _coerce_date(raw: Any) -> date | None:
+    """Coerce a Smartsheet DATE cell value into `datetime.date`.
+
+    `get_rows` returns DATE cells as ISO strings (`'YYYY-MM-DD'`) in practice
+    but may return `date` objects depending on SDK version. Anything else is
+    treated as missing.
+    """
+    if isinstance(raw, date) and not isinstance(raw, datetime):
+        return raw
+    if isinstance(raw, datetime):
+        return raw.date()
+    if isinstance(raw, str):
+        try:
+            return date.fromisoformat(raw[:10])
+        except ValueError:
+            return None
+    return None
+
+
+def _live_fetcher() -> list[TimeOffEntry]:
+    """Fetch the live ITS_Time_Off contents and return parsed entries.
+
+    Fail-open: on any failure (Smartsheet unreachable, auth rejected, sheet
+    missing, network down, malformed payload), emit a WARN via
+    `shared.error_log.log` and return []. Downstream callers see "nobody is
+    out" rather than a raised exception — the watchdog's PTO-gap check would
+    rather miss a gap than crash the whole run. The morning log scan reveals
+    which fetch failed and why.
+
+    Per-row malformed data (missing email, unparseable dates) is skipped with
+    a WARN; the rest of the sheet still loads. One bad row must not poison
+    the fetch.
+    """
+    try:
+        rows = smartsheet_client.get_rows(sheet_ids.SHEET_TIME_OFF)
+    except SmartsheetError as e:
+        log(
+            Severity.WARN,
+            _SCRIPT,
+            f"ITS_Time_Off fetch failed (Smartsheet): {e!r} — returning [] (fail-open)",
+        )
+        return []
+    except Exception as e:
+        # Broad catch is deliberate per Op Stds v9 §27 failure-isolation:
+        # the PTO fetch must never crash the watchdog. Keychain misses,
+        # network errors, and unforeseen SDK failures all land here.
+        log(
+            Severity.WARN,
+            _SCRIPT,
+            f"ITS_Time_Off fetch failed (unexpected): {e!r} — returning [] (fail-open)",
+        )
+        return []
+
+    entries: list[TimeOffEntry] = []
+    for row in rows:
+        email = _extract_email(row.get("Person"))
+        start = _coerce_date(row.get("Start Date"))
+        end = _coerce_date(row.get("End Date"))
+        if email is None or start is None or end is None:
+            log(
+                Severity.WARN,
+                _SCRIPT,
+                f"ITS_Time_Off row {row.get('_row_id')!r} skipped: "
+                f"Person={row.get('Person')!r} "
+                f"Start Date={row.get('Start Date')!r} "
+                f"End Date={row.get('End Date')!r}",
+            )
+            continue
+        entries.append(TimeOffEntry(person_email=email, start_date=start, end_date=end))
+    return entries
 
 
 @dataclass
 class TimeOffClient:
-    """PTO lookup wrapper.
+    """PTO lookup wrapper backed by ITS_Time_Off.
 
-    Production wiring will swap `fetcher` for a Smartsheet read against ITS_Time_Off.
-    Until then the default fetcher returns []. Tests inject their own fetcher (or the
-    `entries` shortcut) to exercise the lookup logic.
+    Default `fetcher` is `_live_fetcher` (reads the sandbox sheet). Tests
+    inject their own fetcher via the constructor or `from_entries`.
 
-    No caching: each lookup calls the fetcher. That keeps retroactive PTO entries
-    correct without an explicit refresh, at the cost of one Smartsheet read per query.
-    Callers that need to query many people on the same day should pass a fetcher that
-    closes over a pre-fetched list.
+    Per-instance caching (planning decision D-i.2a): the fetcher is invoked
+    once on first use and the result is reused for the instance's lifetime.
+    A new `TimeOffClient()` re-fetches. Watchdog constructs one client per
+    run, so a 14-day forward scan + multi-reviewer-per-workstream evaluation
+    produces a single Smartsheet read.
+
+    Retroactive PTO is still correctly modelled — when a row is added to
+    ITS_Time_Off for a date in the past, the next client instance sees it.
+    Long-lived clients within a single run will not see edits committed
+    mid-run; that's the intended tradeoff for read amplification.
     """
-    fetcher: TimeOffFetcher = field(default=_empty_fetcher)
+    fetcher: TimeOffFetcher = field(default=_live_fetcher)
+    _cache: list[TimeOffEntry] | None = field(default=None, init=False, repr=False)
 
     @classmethod
     def from_entries(cls, entries: list[TimeOffEntry]) -> TimeOffClient:
         """Build a client backed by a fixed list — convenience for tests."""
         return cls(fetcher=lambda: list(entries))
 
+    def _entries(self) -> list[TimeOffEntry]:
+        """Fetch on first call; reuse the result for this instance's lifetime."""
+        if self._cache is None:
+            self._cache = self.fetcher()
+        return self._cache
+
     def is_out(self, person_email: str, on_date: date) -> bool:
         """True if `person_email` has any PTO entry covering `on_date`."""
         return any(
             e.person_email == person_email and e.covers(on_date)
-            for e in self.fetcher()
+            for e in self._entries()
         )
 
     def who_is_out(self, on_date: date) -> list[str]:
         """All emails with a PTO entry covering `on_date`. Deduplicated; insertion-ordered."""
         seen: dict[str, None] = {}
-        for e in self.fetcher():
+        for e in self._entries():
             if e.covers(on_date):
                 seen.setdefault(e.person_email, None)
         return list(seen)

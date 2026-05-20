@@ -12,17 +12,56 @@ from datetime import date
 import pytest
 
 from shared.defaults import DEFAULT_REVIEWER_CHAINS
+from shared.error_log import Severity
 from shared.scheduling import (
     ChainConfigLoader,
     ReviewerChain,
     ReviewerSlot,
     TimeOffClient,
     TimeOffEntry,
+    _coerce_date,
+    _extract_email,
+    _live_fetcher,
     is_federal_holiday,
     resolve_chain,
     shift_gen_date,
     shift_send_date,
 )
+from shared.smartsheet_client import (
+    SmartsheetAuthError,
+    SmartsheetError,
+    SmartsheetNotFoundError,
+)
+
+# ---- Smartsheet isolation --------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def _stub_pto_smartsheet_get_rows(mocker):
+    """ITS_Time_Off appears empty by default — tests stay offline.
+
+    Existing tests built before the live fetcher was wired assumed
+    `TimeOffClient()`'s default fetcher returned []. Wiring `_live_fetcher`
+    as the new default means an unmocked test run would attempt a real
+    Smartsheet read. Autouse-stubbing `smartsheet_client.get_rows` to []
+    preserves the historical behavior (default client = nobody is out)
+    without rewriting every test. Per-test mocker.patch overrides this
+    fixture's value when a specific behavior is needed.
+    """
+    return mocker.patch(
+        "shared.scheduling.smartsheet_client.get_rows",
+        return_value=[],
+    )
+
+
+@pytest.fixture(autouse=True)
+def _silence_pto_warn_logging(mocker):
+    """Silence `error_log.log` from leaking to ITS_Errors during tests.
+
+    `_live_fetcher` fail-open paths call `log(WARN, ...)` which would otherwise
+    try to write to ITS_Errors via `_smartsheet_log`. Tests that need to
+    verify WARN content patch `shared.scheduling.log` directly to inspect args.
+    """
+    return mocker.patch("shared.scheduling.log")
 
 # Hold the default emails once so we don't repeat them in every assertion. Tests reach into
 # the defaults table on purpose — these are the canonical IDs the chain resolution must
@@ -160,8 +199,13 @@ def test_time_off_entry_covers_inclusive_range():
     assert not entry.covers(date(2026, 5, 16))
 
 
-def test_time_off_client_default_fetcher_returns_nobody_out():
-    """The unwrapped, no-arg client is the production stub: nobody is ever out."""
+def test_time_off_client_default_fetcher_is_live_fetcher():
+    """The default fetcher is `_live_fetcher` (production wiring)."""
+    assert TimeOffClient().fetcher is _live_fetcher
+
+
+def test_time_off_client_default_returns_nobody_out_when_sheet_empty(_stub_pto_smartsheet_get_rows):
+    """Autouse stub returns [] from get_rows — _live_fetcher returns no entries."""
     client = TimeOffClient()
     assert client.is_out(PRIMARY, date(2026, 5, 13)) is False
     assert client.who_is_out(date(2026, 5, 13)) == []
@@ -187,23 +231,35 @@ def test_who_is_out_returns_unique_emails_in_insertion_order():
     assert client.who_is_out(date(2026, 5, 13)) == [SECONDARY, PRIMARY]
 
 
-def test_retroactive_entry_affects_past_date_lookup():
-    """A PTO row added today for a past date must affect who_is_out for that past date.
+def test_retroactive_entry_affects_new_client_instances():
+    """A retroactive PTO row shows up for subsequent client instances.
 
-    Modeled as: build a client whose fetcher snapshot already contains the retroactive row.
-    Since the fetcher is called each lookup, no cache flush is needed.
+    With per-instance caching (planning decision D-i.2a), the original client
+    snapshots entries at first lookup. A fresh client picks up entries added
+    later. The watchdog instantiates one client per run, so retroactive PTO
+    is correctly visible on the next run.
     """
     past = date(2026, 4, 1)
     entries: list[TimeOffEntry] = []
-    client = TimeOffClient(fetcher=lambda: list(entries))
 
-    # Before retroactive entry exists, nobody is out on the past date.
-    assert client.who_is_out(past) == []
+    def fetcher() -> list[TimeOffEntry]:
+        return list(entries)
+
+    # First client: nobody is out yet.
+    client_v1 = TimeOffClient(fetcher=fetcher)
+    assert client_v1.who_is_out(past) == []
 
     # Someone enters PTO retroactively for that past date.
     entries.append(TimeOffEntry(PRIMARY, past, past))
-    assert client.is_out(PRIMARY, past) is True
-    assert client.who_is_out(past) == [PRIMARY]
+
+    # client_v1 still sees the cached empty snapshot (per-instance cache).
+    assert client_v1.who_is_out(past) == []
+
+    # A fresh client picks up the new entry — retroactive PTO is preserved
+    # across instance boundaries even though it's cached within an instance.
+    client_v2 = TimeOffClient(fetcher=fetcher)
+    assert client_v2.is_out(PRIMARY, past) is True
+    assert client_v2.who_is_out(past) == [PRIMARY]
 
 
 # ---- ReviewerChain dataclass behavior --------------------------------------
@@ -335,6 +391,310 @@ def test_resolve_chain_defaults_when_no_dependencies_injected():
     chain = resolve_chain("safety_reports", date(2026, 5, 13))
     assert len(chain) == 3
     assert chain.slots[0].email == PRIMARY
+
+
+# ===========================================================================
+# Group A — Live fetcher parsing (synthetic Smartsheet rows)
+# ===========================================================================
+# All cases inject `smartsheet_client.get_rows` return values rather than
+# hitting the live sheet. The autouse fixture `_stub_pto_smartsheet_get_rows`
+# provides the per-test override target.
+
+
+SMOKE_EMAIL = "alex@evergreenmirror.com"
+
+
+def _row(*, email_cell, start, end, reason="PTO", entry="ITS-SMOKE-row", row_id=1):
+    """Build a get_rows-shaped dict for ITS_Time_Off."""
+    return {
+        "_row_id": row_id,
+        "Entry": entry,
+        "Person": email_cell,
+        "Start Date": start,
+        "End Date": end,
+        "Reason": reason,
+        "Notes": "",
+    }
+
+
+# ---- _extract_email helper -------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "cell,expected",
+    [
+        ("alex@evergreenmirror.com",                              "alex@evergreenmirror.com"),
+        ({"email": "alex@evergreenmirror.com"},                   "alex@evergreenmirror.com"),
+        ({"email": "alex@evergreenmirror.com", "name": "Alex P"}, "alex@evergreenmirror.com"),
+    ],
+)
+def test_extract_email_recovers_email(cell, expected):
+    assert _extract_email(cell) == expected
+
+
+@pytest.mark.parametrize(
+    "cell",
+    [
+        None,
+        "",                       # blank string
+        "Alex P",                 # display name, no '@'
+        {"email": None},          # dict without usable email
+        {"email": "Alex P"},      # email key but value not an email
+        {"name": "Alex P"},       # dict with name but no email key
+        12345,                    # wrong type entirely
+    ],
+)
+def test_extract_email_returns_none_when_unrecoverable(cell):
+    assert _extract_email(cell) is None
+
+
+# ---- _coerce_date helper ---------------------------------------------------
+
+
+def test_coerce_date_accepts_iso_string():
+    assert _coerce_date("2026-05-20") == date(2026, 5, 20)
+
+
+def test_coerce_date_accepts_date_object():
+    d = date(2026, 5, 20)
+    assert _coerce_date(d) is d
+
+
+def test_coerce_date_drops_time_component_from_datetime():
+    from datetime import datetime as dt
+    assert _coerce_date(dt(2026, 5, 20, 13, 45)) == date(2026, 5, 20)
+
+
+@pytest.mark.parametrize("raw", [None, "", "not-a-date", "2026/05/20", 12345])
+def test_coerce_date_returns_none_when_unparseable(raw):
+    assert _coerce_date(raw) is None
+
+
+# ---- _live_fetcher parsing -------------------------------------------------
+
+
+def test_live_fetcher_parses_single_day_pto(_stub_pto_smartsheet_get_rows):
+    _stub_pto_smartsheet_get_rows.return_value = [
+        _row(email_cell=SMOKE_EMAIL, start="2026-05-20", end="2026-05-20"),
+    ]
+    entries = _live_fetcher()
+    assert entries == [
+        TimeOffEntry(SMOKE_EMAIL, date(2026, 5, 20), date(2026, 5, 20)),
+    ]
+
+
+def test_live_fetcher_parses_multi_day_pto(_stub_pto_smartsheet_get_rows):
+    _stub_pto_smartsheet_get_rows.return_value = [
+        _row(email_cell=SMOKE_EMAIL, start="2026-05-20", end="2026-05-24"),
+    ]
+    entries = _live_fetcher()
+    assert entries[0].start_date == date(2026, 5, 20)
+    assert entries[0].end_date == date(2026, 5, 24)
+    assert entries[0].covers(date(2026, 5, 22))
+
+
+def test_live_fetcher_handles_overlapping_entries_for_same_person(_stub_pto_smartsheet_get_rows):
+    """Overlapping rows are returned as two entries; client de-dups in who_is_out."""
+    _stub_pto_smartsheet_get_rows.return_value = [
+        _row(email_cell=SMOKE_EMAIL, start="2026-05-20", end="2026-05-22", row_id=1),
+        _row(email_cell=SMOKE_EMAIL, start="2026-05-21", end="2026-05-25", row_id=2),
+    ]
+    entries = _live_fetcher()
+    assert len(entries) == 2
+    client = TimeOffClient(fetcher=lambda: entries)
+    assert client.is_out(SMOKE_EMAIL, date(2026, 5, 21)) is True
+    assert client.who_is_out(date(2026, 5, 21)) == [SMOKE_EMAIL]
+
+
+def test_live_fetcher_far_future_entry_does_not_cover_today(_stub_pto_smartsheet_get_rows):
+    """An entry months ahead is parsed correctly and covers() returns False for today."""
+    _stub_pto_smartsheet_get_rows.return_value = [
+        _row(email_cell=SMOKE_EMAIL, start="2027-01-15", end="2027-01-20"),
+    ]
+    entries = _live_fetcher()
+    assert entries[0].covers(date(2026, 5, 20)) is False
+    assert entries[0].covers(date(2027, 1, 17)) is True
+
+
+def test_live_fetcher_ended_yesterday_entry_does_not_cover_today(_stub_pto_smartsheet_get_rows):
+    """Yesterday-ended entry parses correctly and excludes today."""
+    _stub_pto_smartsheet_get_rows.return_value = [
+        _row(email_cell=SMOKE_EMAIL, start="2026-05-15", end="2026-05-19"),
+    ]
+    entries = _live_fetcher()
+    assert entries[0].covers(date(2026, 5, 20)) is False
+    assert entries[0].covers(date(2026, 5, 19)) is True
+
+
+def test_live_fetcher_contact_dict_with_email_and_name(_stub_pto_smartsheet_get_rows):
+    """CONTACT_LIST cell that arrives as {email, name} dict — email extracted."""
+    _stub_pto_smartsheet_get_rows.return_value = [
+        _row(
+            email_cell={"email": SMOKE_EMAIL, "name": "Alex Park"},
+            start="2026-05-20",
+            end="2026-05-20",
+        ),
+    ]
+    entries = _live_fetcher()
+    assert entries == [TimeOffEntry(SMOKE_EMAIL, date(2026, 5, 20), date(2026, 5, 20))]
+
+
+def test_live_fetcher_skips_row_with_missing_email_and_warns(
+    _stub_pto_smartsheet_get_rows, _silence_pto_warn_logging,
+):
+    """Row whose Person cell has no recoverable email is skipped and a WARN fires.
+
+    The fetch survives — other rows still parse.
+    """
+    _stub_pto_smartsheet_get_rows.return_value = [
+        _row(email_cell="Alex Park", start="2026-05-20", end="2026-05-20", row_id=11),
+        _row(email_cell=SMOKE_EMAIL, start="2026-05-21", end="2026-05-21", row_id=12),
+    ]
+    entries = _live_fetcher()
+    # Only the valid row survives.
+    assert entries == [TimeOffEntry(SMOKE_EMAIL, date(2026, 5, 21), date(2026, 5, 21))]
+    # A WARN was emitted with the bad row's identity.
+    assert _silence_pto_warn_logging.called
+    warn_call = _silence_pto_warn_logging.call_args_list[0]
+    assert warn_call.args[0] is Severity.WARN
+    assert warn_call.args[1] == "shared.scheduling"
+    assert "11" in warn_call.args[2]  # row_id in the message
+
+
+def test_live_fetcher_accepts_all_canonical_reason_values(_stub_pto_smartsheet_get_rows):
+    """Every canonical Reason value parses without surfacing in TimeOffEntry.
+
+    `TimeOffEntry` deliberately does not carry Reason (out of brief scope);
+    the fetcher must still tolerate every canonical value without skipping
+    or warning. This locks in fixture realism — if Reason ever becomes
+    consumed downstream, the picklist coverage is already documented.
+    """
+    _stub_pto_smartsheet_get_rows.return_value = [
+        _row(email_cell=SMOKE_EMAIL, start="2026-05-20", end="2026-05-20",
+             reason=r, entry=f"ITS-SMOKE-{r}", row_id=i)
+        for i, r in enumerate(("PTO", "Sick", "Holiday", "Personal", "Other"), start=1)
+    ]
+    entries = _live_fetcher()
+    assert len(entries) == 5
+    assert all(e.person_email == SMOKE_EMAIL for e in entries)
+
+
+def test_live_fetcher_skips_row_with_unparseable_dates(
+    _stub_pto_smartsheet_get_rows, _silence_pto_warn_logging,
+):
+    """Row with bad Start Date is skipped; rest of fetch succeeds."""
+    _stub_pto_smartsheet_get_rows.return_value = [
+        _row(email_cell=SMOKE_EMAIL, start="not-a-date", end="2026-05-20", row_id=21),
+        _row(email_cell=SMOKE_EMAIL, start="2026-05-22", end="2026-05-22", row_id=22),
+    ]
+    entries = _live_fetcher()
+    assert entries == [TimeOffEntry(SMOKE_EMAIL, date(2026, 5, 22), date(2026, 5, 22))]
+    assert _silence_pto_warn_logging.called
+
+
+# ===========================================================================
+# Group B — Per-instance caching behavior
+# ===========================================================================
+
+
+def test_caching_two_lookups_one_fetch():
+    """Two lookups on the same client invoke the fetcher exactly once."""
+    call_count = 0
+
+    def fetcher() -> list[TimeOffEntry]:
+        nonlocal call_count
+        call_count += 1
+        return [TimeOffEntry(PRIMARY, date(2026, 5, 20), date(2026, 5, 22))]
+
+    client = TimeOffClient(fetcher=fetcher)
+    assert client.is_out(PRIMARY, date(2026, 5, 21)) is True
+    assert client.who_is_out(date(2026, 5, 21)) == [PRIMARY]
+    assert call_count == 1
+
+
+def test_caching_new_instance_refetches():
+    """A fresh TimeOffClient instance invokes the fetcher again."""
+    call_count = 0
+
+    def fetcher() -> list[TimeOffEntry]:
+        nonlocal call_count
+        call_count += 1
+        return []
+
+    TimeOffClient(fetcher=fetcher).who_is_out(date(2026, 5, 20))
+    TimeOffClient(fetcher=fetcher).who_is_out(date(2026, 5, 20))
+    assert call_count == 2
+
+
+def test_caching_scoped_per_instance_not_shared_across_instances():
+    """Instance A's cache must not be visible to instance B even if B uses
+    a fetcher that would return different data."""
+    a_entries = [TimeOffEntry(PRIMARY, date(2026, 5, 20), date(2026, 5, 20))]
+    b_entries = [TimeOffEntry(SECONDARY, date(2026, 5, 20), date(2026, 5, 20))]
+
+    client_a = TimeOffClient(fetcher=lambda: a_entries)
+    client_b = TimeOffClient(fetcher=lambda: b_entries)
+    assert client_a.who_is_out(date(2026, 5, 20)) == [PRIMARY]
+    assert client_b.who_is_out(date(2026, 5, 20)) == [SECONDARY]
+
+
+# ===========================================================================
+# Group C — Fail-open path
+# ===========================================================================
+
+
+def test_live_fetcher_fail_open_on_smartsheet_auth_error(
+    _stub_pto_smartsheet_get_rows, _silence_pto_warn_logging,
+):
+    """SmartsheetAuthError → WARN logged, [] returned. Watchdog keeps running."""
+    _stub_pto_smartsheet_get_rows.side_effect = SmartsheetAuthError(
+        "HTTP 401 (code 1002): Your Access Token is invalid"
+    )
+    entries = _live_fetcher()
+    assert entries == []
+    assert _silence_pto_warn_logging.called
+    warn_call = _silence_pto_warn_logging.call_args_list[0]
+    assert warn_call.args[0] is Severity.WARN
+    assert "Smartsheet" in warn_call.args[2]
+
+
+def test_live_fetcher_fail_open_on_sheet_not_found(
+    _stub_pto_smartsheet_get_rows, _silence_pto_warn_logging,
+):
+    """SmartsheetNotFoundError → WARN logged, [] returned. Distinguishable in logs."""
+    _stub_pto_smartsheet_get_rows.side_effect = SmartsheetNotFoundError(
+        "HTTP 404 (code 1006): Not Found"
+    )
+    assert _live_fetcher() == []
+    assert _silence_pto_warn_logging.called
+
+
+def test_live_fetcher_fail_open_on_unexpected_exception(
+    _stub_pto_smartsheet_get_rows, _silence_pto_warn_logging,
+):
+    """A non-Smartsheet exception (e.g., network unreachable) still fails open."""
+    _stub_pto_smartsheet_get_rows.side_effect = ConnectionError(
+        "Network is unreachable"
+    )
+    assert _live_fetcher() == []
+    assert _silence_pto_warn_logging.called
+    # The "unexpected" path message is distinguishable from the typed-Smartsheet path.
+    warn_call = _silence_pto_warn_logging.call_args_list[0]
+    assert "unexpected" in warn_call.args[2]
+
+
+def test_live_fetcher_typed_and_unexpected_paths_emit_distinguishable_messages(
+    _stub_pto_smartsheet_get_rows, _silence_pto_warn_logging,
+):
+    """Both fail-open paths must be distinguishable in the morning log scan."""
+    _stub_pto_smartsheet_get_rows.side_effect = SmartsheetError("typed")
+    _live_fetcher()
+    _stub_pto_smartsheet_get_rows.side_effect = RuntimeError("untyped")
+    _live_fetcher()
+    msgs = [call.args[2] for call in _silence_pto_warn_logging.call_args_list]
+    typed_msg = next(m for m in msgs if "Smartsheet" in m and "unexpected" not in m)
+    untyped_msg = next(m for m in msgs if "unexpected" in m)
+    assert typed_msg != untyped_msg
 
 
 # ---- Identity-free invariant ----------------------------------------------
