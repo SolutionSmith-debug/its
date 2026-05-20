@@ -231,3 +231,76 @@ def test_retry_on_429_gives_up_after_max_attempts(mocker):
         graph_client.list_inbox("safety@example.com")
 
     assert req.call_count == 3
+
+
+# ---- fetch_latest_inbound_timestamp ---------------------------------------
+
+
+def test_fetch_latest_inbound_timestamp_parses_iso_z(mocker):
+    _mock_msal(mocker)
+    mocker.patch(
+        "shared.graph_client.requests.request",
+        return_value=_mock_response(
+            status=200,
+            json_body={"value": [{"receivedDateTime": "2026-05-20T13:45:30Z"}]},
+        ),
+    )
+    ts = graph_client.fetch_latest_inbound_timestamp("safety@example.com")
+    assert ts is not None
+    assert ts.year == 2026 and ts.month == 5 and ts.day == 20
+    assert ts.hour == 13 and ts.minute == 45
+    assert ts.tzinfo is not None  # UTC-aware
+
+
+def test_fetch_latest_inbound_timestamp_returns_none_on_empty_mailbox(mocker):
+    _mock_msal(mocker)
+    mocker.patch(
+        "shared.graph_client.requests.request",
+        return_value=_mock_response(status=200, json_body={"value": []}),
+    )
+    assert graph_client.fetch_latest_inbound_timestamp("empty@example.com") is None
+
+
+def test_fetch_latest_inbound_timestamp_sends_top1_orderby(mocker):
+    """Query string must request only the most recent message (no over-fetching)."""
+    _mock_msal(mocker)
+    req = mocker.patch(
+        "shared.graph_client.requests.request",
+        return_value=_mock_response(
+            status=200,
+            json_body={"value": [{"receivedDateTime": "2026-05-20T13:45:30Z"}]},
+        ),
+    )
+    graph_client.fetch_latest_inbound_timestamp("safety@example.com")
+
+    call = req.call_args
+    params = call.kwargs["params"]
+    assert params["$top"] == "1"
+    assert params["$orderby"] == "receivedDateTime desc"
+    assert params["$select"] == "receivedDateTime"
+
+
+def test_fetch_latest_inbound_timestamp_403_propagates_as_permission_error(mocker):
+    _mock_msal(mocker)
+    mocker.patch(
+        "shared.graph_client.requests.request",
+        return_value=_mock_response(
+            status=403,
+            json_body={"error": {"message": "ApplicationAccessPolicy denied"}},
+        ),
+    )
+    with pytest.raises(GraphPermissionError, match="denied"):
+        graph_client.fetch_latest_inbound_timestamp("forbidden@example.com")
+
+
+def test_fetch_latest_inbound_timestamp_404_propagates_as_not_found(mocker):
+    _mock_msal(mocker)
+    mocker.patch(
+        "shared.graph_client.requests.request",
+        return_value=_mock_response(
+            status=404,
+            json_body={"error": {"message": "user not found"}},
+        ),
+    )
+    with pytest.raises(GraphNotFoundError, match="not found"):
+        graph_client.fetch_latest_inbound_timestamp("ghost@example.com")

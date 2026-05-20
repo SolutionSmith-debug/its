@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import base64
 import time
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 import msal  # type: ignore[import-untyped]
@@ -222,6 +223,39 @@ def list_inbox(
     url = f"{GRAPH_BASE}/users/{mailbox}/mailFolders/Inbox/messages"
     response = _request("GET", url, params=params)
     return response.json().get("value", [])
+
+
+def fetch_latest_inbound_timestamp(mailbox: str) -> datetime | None:
+    """Return UTC timestamp of the most recent message in `mailbox`'s Inbox.
+
+    Returns None if the inbox has never received a message (empty `value`
+    list — distinct from an error). Used by `scripts/watchdog.py` Check F
+    to detect mailboxes that have gone silent past their idle threshold
+    (the Mail.app silent-disable pattern documented in `docs/tech_debt.md`).
+
+    Raises:
+        GraphError: any auth / network / policy / not-found failure
+            propagates as the typed exception from `_check_response`.
+    """
+    url = f"{GRAPH_BASE}/users/{mailbox}/mailFolders/Inbox/messages"
+    params: dict[str, Any] = {
+        "$select": "receivedDateTime",
+        "$top": "1",
+        "$orderby": "receivedDateTime desc",
+    }
+    response = _request("GET", url, params=params)
+    messages = response.json().get("value", [])
+    if not messages:
+        return None
+    raw = messages[0].get("receivedDateTime")
+    if not isinstance(raw, str):
+        return None
+    # Graph emits ISO 8601 with a trailing 'Z'; fromisoformat in 3.11+
+    # accepts that natively. Normalize to UTC-aware datetime regardless.
+    parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 def get_message(mailbox: str, message_id: str) -> dict[str, Any]:

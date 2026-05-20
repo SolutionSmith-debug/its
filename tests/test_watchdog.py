@@ -38,8 +38,13 @@ def isolate_error_log(tmp_path, monkeypatch, mocker):
     by default (INFO is env-gated and triple-fire is CRITICAL-only). On
     a CRITICAL path (e.g., main raises), the side channels fire — mock
     those so tests are hermetic.
+
+    Also redirects `watchdog.WATCHDOG_MARKER_DIR` to tmp_path so
+    `write_last_run_marker("watchdog")` at the end of main() doesn't
+    write into the operator's real ~/its/.watchdog/.
     """
     monkeypatch.setattr("shared.error_log.LOG_DIR", tmp_path)
+    monkeypatch.setattr("watchdog.WATCHDOG_MARKER_DIR", tmp_path / ".watchdog")
     mocker.patch("shared.error_log.smartsheet_client.add_rows")
     mocker.patch("shared.resend_client.send_alert")
     mocker.patch("shared.sentry_client.capture_exception")
@@ -86,11 +91,22 @@ def mock_get_rows(mocker):
 # ---- Group A: module shape ----------------------------------------------
 
 
-def test_checks_list_has_session_1_checks():
+def test_checks_list_has_all_session_1_and_2_checks():
+    """CHECKS registry in priority order. Check E is deferred to PR #37
+    (Admin API key prerequisite) and intentionally absent here."""
     assert watchdog.CHECKS == [
         watchdog._check_stale_review_queue,
         watchdog._check_open_criticals,
+        watchdog._check_scheduled_jobs,
+        watchdog._check_reviewer_chain_forward,
+        watchdog._check_mail_intake_silent_disable,
     ]
+
+
+def test_tracked_jobs_empty_by_design():
+    """Planning decision C1: TRACKED_JOBS stays empty until a second
+    scheduled job ships and starts calling write_last_run_marker."""
+    assert watchdog.TRACKED_JOBS == []
 
 
 # ---- Group B: _check_stale_review_queue ---------------------------------
@@ -364,8 +380,9 @@ def test_maintenance_runs_with_alerts_suppressed(mock_check_state, mock_log, moc
 
     watchdog.main()
 
-    # Both checks ran with alerts_suppressed=True.
-    assert run_check_spy.call_count == 2
+    # All registered checks (Session 1 + Session 2 minus Check E) ran
+    # with alerts_suppressed=True.
+    assert run_check_spy.call_count == len(watchdog.CHECKS)
     for call in run_check_spy.call_args_list:
         assert call.kwargs == {"alerts_suppressed": True}
     # Preamble line present.
@@ -379,9 +396,388 @@ def test_active_runs_normally(mock_check_state, mock_log, mocker):
 
     watchdog.main()
 
-    assert run_check_spy.call_count == 2
+    assert run_check_spy.call_count == len(watchdog.CHECKS)
     for call in run_check_spy.call_args_list:
         assert call.kwargs == {"alerts_suppressed": False}
     # No PAUSED/MAINTENANCE preamble line.
     messages = [c.args[2] for c in mock_log.call_args_list]
     assert not any("PAUSED" in m or "MAINTENANCE" in m for m in messages)
+
+
+def test_main_writes_watchdog_marker_at_end(mock_check_state, mocker):
+    """`main()` calls write_last_run_marker('watchdog') after the check loop.
+
+    PAUSED short-circuits before checks AND before the marker, so the
+    marker is only written when state was ACTIVE or MAINTENANCE.
+    """
+    mock_check_state.return_value = SystemState.ACTIVE
+    mocker.patch("watchdog._run_check")
+
+    watchdog.main()
+
+    marker = watchdog.WATCHDOG_MARKER_DIR / "watchdog.last_run"
+    assert marker.exists()
+    # ISO 8601 with tz info.
+    contents = marker.read_text()
+    assert "T" in contents and ("+00:00" in contents or contents.endswith("Z"))
+
+
+def test_main_paused_does_not_write_marker(mock_check_state, mocker):
+    mock_check_state.return_value = SystemState.PAUSED
+    mocker.patch("watchdog._run_check")
+
+    watchdog.main()
+
+    marker = watchdog.WATCHDOG_MARKER_DIR / "watchdog.last_run"
+    assert not marker.exists()
+
+
+# ---- Group F: Check C — scheduled jobs scaffold + marker writes ---------
+
+
+def test_write_last_run_marker_writes_iso_timestamp():
+    watchdog.write_last_run_marker("smoke_test_job")
+    marker = watchdog.WATCHDOG_MARKER_DIR / "smoke_test_job.last_run"
+    assert marker.exists()
+    from datetime import datetime as dt
+    parsed = dt.fromisoformat(marker.read_text())
+    assert parsed.tzinfo is not None
+
+
+def test_write_last_run_marker_creates_dir_on_demand():
+    """Marker dir is created if missing — first scheduled job after fresh
+    install should not crash because ~/its/.watchdog/ doesn't exist."""
+    # The autouse isolate fixture redirects WATCHDOG_MARKER_DIR to a path
+    # under tmp_path that doesn't exist yet.
+    assert not watchdog.WATCHDOG_MARKER_DIR.exists()
+    watchdog.write_last_run_marker("fresh_install_test")
+    assert watchdog.WATCHDOG_MARKER_DIR.is_dir()
+
+
+def test_write_last_run_marker_fail_soft_on_oserror(mocker, mock_log):
+    """Marker write failures WARN, do not raise. A successful job must not
+    fail just because the marker write hit an OS error (full disk, etc.)."""
+    mocker.patch(
+        "watchdog.Path.write_text",
+        side_effect=OSError("No space left on device"),
+    )
+    # Must NOT raise.
+    watchdog.write_last_run_marker("disk_full_job")
+    # Exactly one WARN was logged with the failure detail.
+    severities = [c.args[0] for c in mock_log.call_args_list]
+    assert Severity.WARN in severities
+    warn_msg = next(c.args[2] for c in mock_log.call_args_list if c.args[0] is Severity.WARN)
+    assert "disk_full_job" in warn_msg
+    assert "No space left" in warn_msg
+
+
+def test_check_scheduled_jobs_returns_info_when_tracked_jobs_empty():
+    """TRACKED_JOBS is empty by design — Check C is a no-op."""
+    result = watchdog._check_scheduled_jobs()
+    assert result.severity is Severity.INFO
+    assert "empty by design" in result.summary or "No scheduled jobs" in result.summary
+
+
+def test_check_scheduled_jobs_warns_on_missing_marker(monkeypatch):
+    monkeypatch.setattr("watchdog.TRACKED_JOBS", ["nonexistent_job"])
+    result = watchdog._check_scheduled_jobs()
+    assert result.severity is Severity.WARN
+    assert "nonexistent_job" in result.details
+    assert "no marker" in result.details
+
+
+def test_check_scheduled_jobs_warns_on_stale_marker(monkeypatch):
+    """A marker older than 24 hours is stale."""
+    from datetime import datetime as dt
+    from datetime import timedelta as td
+    monkeypatch.setattr("watchdog.TRACKED_JOBS", ["stale_job"])
+    watchdog.WATCHDOG_MARKER_DIR.mkdir(parents=True, exist_ok=True)
+    stale_marker = watchdog.WATCHDOG_MARKER_DIR / "stale_job.last_run"
+    stale_ts = (dt.now(watchdog.UTC) - td(hours=25)).isoformat()
+    stale_marker.write_text(stale_ts)
+
+    result = watchdog._check_scheduled_jobs()
+
+    assert result.severity is Severity.WARN
+    assert "stale_job" in result.details
+    assert stale_ts in result.details
+
+
+def test_check_scheduled_jobs_ok_when_marker_fresh(monkeypatch):
+    monkeypatch.setattr("watchdog.TRACKED_JOBS", ["fresh_job"])
+    watchdog.write_last_run_marker("fresh_job")
+    result = watchdog._check_scheduled_jobs()
+    assert result.severity is Severity.INFO
+    assert "fresh" in result.summary.lower()
+
+
+# ---- Group G: Check D — reviewer-chain forward scan ---------------------
+
+
+@pytest.fixture
+def mock_review_queue_add(mocker):
+    """review_queue.add as imported into watchdog — captures the row write."""
+    return mocker.patch("watchdog.review_queue.add", return_value=12345)
+
+
+@pytest.fixture
+def mock_resolve_chain(mocker):
+    return mocker.patch("watchdog.resolve_chain")
+
+
+@pytest.fixture
+def mock_is_federal_holiday(mocker):
+    return mocker.patch("watchdog.is_federal_holiday", return_value=False)
+
+
+@pytest.fixture
+def mock_time_off_client(mocker):
+    """Replace TimeOffClient with a no-op factory so Check D doesn't try
+    to hit Smartsheet through _live_fetcher."""
+    instance = mocker.MagicMock()
+    return mocker.patch("watchdog.TimeOffClient", return_value=instance)
+
+
+def _chain(*emails) -> object:
+    """Build a minimal ReviewerChain-shaped object for Check D's needs."""
+    from types import SimpleNamespace
+    return SimpleNamespace(slots=tuple(emails), is_empty=not emails)
+
+
+def test_check_reviewer_chain_no_gaps(
+    mock_resolve_chain, mock_is_federal_holiday, mock_time_off_client,
+    mock_review_queue_add,
+):
+    """All 14 days have a non-empty chain → no anomaly rows written."""
+    mock_resolve_chain.return_value = _chain("p@x", "s@x", "t@x")
+
+    result = watchdog._check_reviewer_chain_forward()
+
+    assert result.severity is Severity.INFO
+    assert "No reviewer-chain gaps" in result.summary
+    mock_review_queue_add.assert_not_called()
+
+
+def test_check_reviewer_chain_single_gap(
+    mock_resolve_chain, mock_is_federal_holiday, mock_time_off_client,
+    mock_review_queue_add,
+):
+    """One day has an empty chain → one anomaly row per workstream."""
+    # First call → empty (gap), rest → full chain.
+    mock_resolve_chain.side_effect = [_chain(), *[_chain("p", "s", "t")] * 13]
+
+    result = watchdog._check_reviewer_chain_forward()
+
+    assert result.severity is Severity.INFO
+    assert "Logged 1 reviewer-chain anomaly row" in result.summary
+    mock_review_queue_add.assert_called_once()
+    kwargs = mock_review_queue_add.call_args.kwargs
+    assert kwargs["workstream"] == "global"  # not "watchdog" — see preflight resolution
+    assert kwargs["reason"] is watchdog.ReviewReason.OTHER
+    assert kwargs["sla_tier"] is watchdog.SlaTier.SUBCONTRACT_DRAFT
+    assert kwargs["severity"] is Severity.INFO
+    assert "reviewer-chain gap" in kwargs["summary"]
+    # The actual workstream name lives in the payload, not the row's workstream cell.
+    assert kwargs["payload"]["workstream"] == "safety_reports"
+    assert len(kwargs["payload"]["gap_dates"]) == 1
+
+
+def test_check_reviewer_chain_multiple_gaps_collapse_into_one_row(
+    mock_resolve_chain, mock_is_federal_holiday, mock_time_off_client,
+    mock_review_queue_add,
+):
+    """3 gap days → 1 anomaly row with 3 dates in payload."""
+    mock_resolve_chain.side_effect = (
+        [_chain()] * 3 + [_chain("p", "s", "t")] * 11
+    )
+
+    watchdog._check_reviewer_chain_forward()
+
+    mock_review_queue_add.assert_called_once()
+    assert len(mock_review_queue_add.call_args.kwargs["payload"]["gap_dates"]) == 3
+
+
+def test_check_reviewer_chain_federal_holiday_skipped(
+    mock_resolve_chain, mock_is_federal_holiday, mock_time_off_client,
+    mock_review_queue_add,
+):
+    """Federal holidays don't count as reviewer gaps."""
+    mock_is_federal_holiday.return_value = True  # every day is a holiday
+    # resolve_chain would return empty if called — but Check D should skip it.
+    mock_resolve_chain.return_value = _chain()
+
+    result = watchdog._check_reviewer_chain_forward()
+
+    assert result.severity is Severity.INFO
+    assert "No reviewer-chain gaps" in result.summary
+    # resolve_chain never called because every day was a holiday.
+    mock_resolve_chain.assert_not_called()
+    mock_review_queue_add.assert_not_called()
+
+
+def test_check_reviewer_chain_constructs_one_time_off_client(
+    mock_resolve_chain, mock_is_federal_holiday, mock_time_off_client,
+    mock_review_queue_add,
+):
+    """Per-instance caching → one TimeOffClient() per check run, which
+    means a single Smartsheet read regardless of how many days scanned."""
+    mock_resolve_chain.return_value = _chain("p", "s", "t")
+
+    watchdog._check_reviewer_chain_forward()
+
+    # One TimeOffClient construction per check run (one workstream × one client).
+    assert mock_time_off_client.call_count == 1
+
+
+def test_check_reviewer_chain_payload_dates_iso_formatted(
+    mock_resolve_chain, mock_is_federal_holiday, mock_time_off_client,
+    mock_review_queue_add,
+):
+    """Gap dates are serialized as ISO 8601 strings (date.isoformat)."""
+    from datetime import date
+    mock_resolve_chain.side_effect = [_chain(), *[_chain("p", "s", "t")] * 13]
+
+    watchdog._check_reviewer_chain_forward()
+
+    payload = mock_review_queue_add.call_args.kwargs["payload"]
+    [gap_str] = payload["gap_dates"]
+    # Round-trips through date.fromisoformat without error.
+    date.fromisoformat(gap_str)
+
+
+# ---- Group H: Check F — mail intake silent-disable ----------------------
+
+
+@pytest.fixture
+def mock_get_settings_with_prefix(mocker):
+    return mocker.patch("watchdog.smartsheet_client.get_settings_with_prefix")
+
+
+@pytest.fixture
+def mock_fetch_latest_inbound(mocker):
+    return mocker.patch("watchdog.graph_client.fetch_latest_inbound_timestamp")
+
+
+def test_check_mail_intake_no_rows(mock_get_settings_with_prefix):
+    mock_get_settings_with_prefix.return_value = {}
+    result = watchdog._check_mail_intake_silent_disable()
+    assert result.severity is Severity.INFO
+    assert "Nothing to check" in result.summary or "No mail_intake" in result.summary
+
+
+def test_check_mail_intake_under_threshold(
+    mock_get_settings_with_prefix, mock_fetch_latest_inbound,
+):
+    from datetime import datetime as dt
+    mock_get_settings_with_prefix.return_value = {
+        "mail_intake.safety.max_idle_hours": "96",
+    }
+    # Last inbound 24h ago — well under 96h threshold.
+    mock_fetch_latest_inbound.return_value = dt.now(watchdog.UTC) - watchdog.timedelta(hours=24)
+
+    result = watchdog._check_mail_intake_silent_disable()
+
+    assert result.severity is Severity.INFO
+    assert "fresh" in result.summary.lower()
+
+
+def test_check_mail_intake_over_threshold_warns(
+    mock_get_settings_with_prefix, mock_fetch_latest_inbound,
+):
+    from datetime import datetime as dt
+    mock_get_settings_with_prefix.return_value = {
+        "mail_intake.safety.max_idle_hours": "96",
+    }
+    # Last inbound 200h ago — well past 96h threshold.
+    mock_fetch_latest_inbound.return_value = dt.now(watchdog.UTC) - watchdog.timedelta(hours=200)
+
+    result = watchdog._check_mail_intake_silent_disable()
+
+    assert result.severity is Severity.WARN
+    assert "safety@evergreenmirror.com" in result.details
+    assert "200" in result.details
+    assert "96" in result.details
+
+
+def test_check_mail_intake_no_inbound_history_does_not_warn(
+    mock_get_settings_with_prefix, mock_fetch_latest_inbound,
+):
+    """Empty mailbox (None from fetch_latest) is informational, not silent-disable."""
+    mock_get_settings_with_prefix.return_value = {
+        "mail_intake.safety.max_idle_hours": "96",
+    }
+    mock_fetch_latest_inbound.return_value = None
+
+    result = watchdog._check_mail_intake_silent_disable()
+
+    assert result.severity is Severity.INFO
+
+
+def test_check_mail_intake_missing_mailbox_config_warns(
+    mock_get_settings_with_prefix, mock_log, mock_fetch_latest_inbound,
+):
+    """Unmapped workstream → WARN about config gap, don't crash."""
+    mock_get_settings_with_prefix.return_value = {
+        "mail_intake.unicorn.max_idle_hours": "96",
+    }
+    result = watchdog._check_mail_intake_silent_disable()
+
+    severities = [c.args[0] for c in mock_log.call_args_list]
+    assert Severity.WARN in severities
+    msg = next(c.args[2] for c in mock_log.call_args_list if c.args[0] is Severity.WARN)
+    assert "unicorn" in msg
+    assert "WORKSTREAM_TO_MAILBOX" in msg or "no mailbox" in msg.lower()
+    # Overall result remains INFO since no actual silent mailbox detected.
+    assert result.severity is Severity.INFO
+    mock_fetch_latest_inbound.assert_not_called()
+
+
+def test_check_mail_intake_graph_failure_warns_and_continues(
+    mock_get_settings_with_prefix, mock_fetch_latest_inbound, mock_log,
+):
+    """Per-mailbox Graph failure WARNs but the check overall still completes."""
+    from shared.graph_client import GraphPermissionError
+    mock_get_settings_with_prefix.return_value = {
+        "mail_intake.safety.max_idle_hours": "96",
+    }
+    mock_fetch_latest_inbound.side_effect = GraphPermissionError(
+        "HTTP 403: ApplicationAccessPolicy denied"
+    )
+
+    result = watchdog._check_mail_intake_silent_disable()
+
+    # Per-mailbox WARN was emitted.
+    severities = [c.args[0] for c in mock_log.call_args_list]
+    assert Severity.WARN in severities
+    msg = next(c.args[2] for c in mock_log.call_args_list if c.args[0] is Severity.WARN)
+    assert "safety@evergreenmirror.com" in msg
+    # Overall check returns INFO (no silent mailbox identified).
+    assert result.severity is Severity.INFO
+
+
+def test_check_mail_intake_non_int_threshold_warns(
+    mock_get_settings_with_prefix, mock_log, mock_fetch_latest_inbound,
+):
+    """Garbage threshold value → WARN about the row, skip the mailbox."""
+    mock_get_settings_with_prefix.return_value = {
+        "mail_intake.safety.max_idle_hours": "not-a-number",
+    }
+    watchdog._check_mail_intake_silent_disable()
+
+    severities = [c.args[0] for c in mock_log.call_args_list]
+    assert Severity.WARN in severities
+    msg = next(c.args[2] for c in mock_log.call_args_list if c.args[0] is Severity.WARN)
+    assert "not-a-number" in msg
+    mock_fetch_latest_inbound.assert_not_called()
+
+
+def test_check_mail_intake_ignores_non_threshold_rows(
+    mock_get_settings_with_prefix, mock_fetch_latest_inbound,
+):
+    """Rows like mail_intake.foo.other_setting are skipped (not max_idle_hours)."""
+    mock_get_settings_with_prefix.return_value = {
+        "mail_intake.safety.notes": "ignore me",
+    }
+    result = watchdog._check_mail_intake_silent_disable()
+    assert result.severity is Severity.INFO
+    mock_fetch_latest_inbound.assert_not_called()

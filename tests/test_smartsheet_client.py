@@ -418,6 +418,74 @@ def test_404_filter_passes_records_with_no_args():
     assert filt.filter(record) is True
 
 
+# ---- get_settings_with_prefix -------------------------------------------
+
+
+def _config_rows_sheet(rows):
+    """Build a fake sheet with the ITS_Config column layout for get_rows."""
+    titles = ["Setting", "Value", "Workstream"]
+    cols = [_column(i + 1, t) for i, t in enumerate(titles)]
+    sheet_rows = []
+    for i, r in enumerate(rows, start=1):
+        cells = [
+            (1, r.get("Setting")),
+            (2, r.get("Value")),
+            (3, r.get("Workstream")),
+        ]
+        sheet_rows.append(_row(i, cells))
+    return SimpleNamespace(columns=cols, rows=sheet_rows)
+
+
+def test_get_settings_with_prefix_filters_by_prefix(mocker):
+    client = _install_client(mocker)
+    client.Sheets.get_sheet.return_value = _config_rows_sheet([
+        {"Setting": "mail_intake.safety.max_idle_hours",
+         "Value": "96", "Workstream": "global"},
+        {"Setting": "mail_intake.procurement.max_idle_hours",
+         "Value": "48", "Workstream": "global"},
+        {"Setting": "system.state", "Value": "ACTIVE", "Workstream": "global"},
+        {"Setting": "spend.absolute_floor_usd",
+         "Value": "5.00", "Workstream": "global"},
+    ])
+    out = smartsheet_client.get_settings_with_prefix("mail_intake.")
+    assert out == {
+        "mail_intake.safety.max_idle_hours": "96",
+        "mail_intake.procurement.max_idle_hours": "48",
+    }
+
+
+def test_get_settings_with_prefix_workstream_filter(mocker):
+    client = _install_client(mocker)
+    client.Sheets.get_sheet.return_value = _config_rows_sheet([
+        {"Setting": "x.key1", "Value": "1", "Workstream": "global"},
+        {"Setting": "x.key2", "Value": "2", "Workstream": "safety_reports"},
+    ])
+    out = smartsheet_client.get_settings_with_prefix(
+        "x.", workstream="safety_reports",
+    )
+    assert out == {"x.key2": "2"}
+
+
+def test_get_settings_with_prefix_skips_non_string_values(mocker):
+    """A row whose Value cell is non-string is dropped (matches get_setting contract)."""
+    client = _install_client(mocker)
+    client.Sheets.get_sheet.return_value = _config_rows_sheet([
+        {"Setting": "x.string", "Value": "good", "Workstream": "global"},
+        {"Setting": "x.numeric", "Value": 42, "Workstream": "global"},
+        {"Setting": "x.none", "Value": None, "Workstream": "global"},
+    ])
+    out = smartsheet_client.get_settings_with_prefix("x.")
+    assert out == {"x.string": "good"}
+
+
+def test_get_settings_with_prefix_empty_when_no_match(mocker):
+    client = _install_client(mocker)
+    client.Sheets.get_sheet.return_value = _config_rows_sheet([
+        {"Setting": "system.state", "Value": "ACTIVE", "Workstream": "global"},
+    ])
+    assert smartsheet_client.get_settings_with_prefix("absent.") == {}
+
+
 def test_404_filter_suppresses_emission_through_real_logger(caplog):
     # End-to-end via the actual logger: emit through the installed pipeline
     # and confirm caplog never sees the 404 record. caplog hooks into the
