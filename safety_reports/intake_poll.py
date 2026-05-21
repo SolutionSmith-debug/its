@@ -76,10 +76,10 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from safety_reports import intake
-from shared import error_log, graph_client, smartsheet_client
+from shared import error_log, graph_client, sheet_ids, smartsheet_client
 from shared.error_log import Severity, its_error_log
 from shared.kill_switch import require_active
 
@@ -110,6 +110,31 @@ SEEN_PATH = STATE_DIR / "safety_intake_processed.json"
 HEARTBEAT_PATH = STATE_DIR / "safety_intake_heartbeat.txt"
 LOCK_PATH = STATE_DIR / "safety_intake.lock"
 SEEN_CAP = 1000
+
+# Heartbeat row state file. JSON object keyed by daemon_name with shape
+# {daemon_name: {"row_id": int, "total_cycles": int}}. Persists the
+# ITS_Daemon_Health row-id (PR #59.5 ARCH-2) so each cycle skips the
+# find_row_by_primary lookup, and the lifetime monotonic total_cycles
+# counter (PR #59.5 ARCH-3) so we don't read-before-write the column
+# per cycle. Survives process restarts (launchd-poll-once architecture);
+# in-memory cache would not.
+HEARTBEAT_ROW_STATE_PATH = STATE_DIR / "heartbeat_row_ids.json"
+
+# Stable daemon-name identifier — primary key in ITS_Daemon_Health and
+# the state-file dict key. Hardcoded here because intake_poll is the only
+# consumer right now. When a second daemon adopts the same pattern
+# (PR #60 territory) this becomes a constructor argument on a shared
+# helper extracted to shared/heartbeat.py.
+DAEMON_NAME = "safety_reports.intake_poll"
+
+# Allowed cycle-status values written to ITS_Daemon_Health.Last_Cycle_Status.
+# OK / WARN / ERROR are the canonical severity ladder; SKIPPED covers the
+# polling_disabled / lock_held early-exit branches if they ever reach the
+# heartbeat write (currently they don't — included for completeness so a
+# future caller can use it without changing the function); skipped_swo_other
+# is a pass-through to surface the SWO/Other category-skip status in
+# operator-facing reports without forcing the operator to grep Notes.
+HeartbeatStatus = Literal["OK", "WARN", "ERROR", "SKIPPED", "skipped_swo_other"]
 
 # Process result statuses that should result in `mark_read`. Mirror of the
 # `success` statuses produced by `intake.process_message`. `error` is the
@@ -239,13 +264,212 @@ def _record_seen(
 def _write_heartbeat() -> None:
     """Overwrite the heartbeat file with the current UTC ISO timestamp.
 
-    Watchdog Check F currently uses mailbox-idle as a proxy for trigger
-    health; a follow-on PR will repurpose it to read this heartbeat
-    instead (cleaner signal — the trigger ITSELF reports its liveness
-    rather than inferring it from inbox activity).
+    Local-filesystem signal of daemon liveness. Cheap, always works (no
+    Smartsheet round trip), survives Smartsheet outages. Pairs with the
+    Smartsheet-row heartbeat written by `_write_heartbeat_row` — the file
+    is the watchdog signal; the row is the operator-visible status.
     """
     HEARTBEAT_PATH.parent.mkdir(parents=True, exist_ok=True)
     HEARTBEAT_PATH.write_text(datetime.now(UTC).isoformat())
+
+
+# ---- Heartbeat-row state cache (ITS_Daemon_Health) ----------------------
+
+
+def _load_heartbeat_row_state(daemon_name: str) -> dict[str, Any] | None:
+    """Read `{daemon_name: {row_id, total_cycles}}` from the state file.
+
+    Returns None if the file is missing, unreadable, or doesn't have an
+    entry for this daemon. Callers handle the None case by re-resolving
+    the row ID via `smartsheet_client.find_row_by_primary` and starting
+    the lifetime counter at 0.
+    """
+    if not HEARTBEAT_ROW_STATE_PATH.exists():
+        return None
+    try:
+        raw = HEARTBEAT_ROW_STATE_PATH.read_text()
+        parsed = json.loads(raw)
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    entry = parsed.get(daemon_name)
+    if not isinstance(entry, dict):
+        return None
+    row_id = entry.get("row_id")
+    total_cycles = entry.get("total_cycles")
+    if not isinstance(row_id, int) or not isinstance(total_cycles, int):
+        return None
+    return {"row_id": row_id, "total_cycles": total_cycles}
+
+
+def _persist_heartbeat_row_state(
+    daemon_name: str, row_id: int, total_cycles: int
+) -> None:
+    """Atomically merge `{daemon_name: {row_id, total_cycles}}` into the state file.
+
+    Read-modify-write under the daemon's existing file lock (the caller
+    runs under LOCK_PATH); no separate lock needed. Preserves entries
+    for other daemons so the same file can be shared by future polling
+    consumers (PR #60 territory).
+    """
+    HEARTBEAT_ROW_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    current: dict[str, Any] = {}
+    if HEARTBEAT_ROW_STATE_PATH.exists():
+        try:
+            parsed = json.loads(HEARTBEAT_ROW_STATE_PATH.read_text())
+            if isinstance(parsed, dict):
+                current = parsed
+        except (OSError, json.JSONDecodeError):
+            current = {}
+    current[daemon_name] = {"row_id": row_id, "total_cycles": total_cycles}
+    HEARTBEAT_ROW_STATE_PATH.write_text(json.dumps(current, indent=2))
+
+
+def _invalidate_heartbeat_row_state(daemon_name: str) -> None:
+    """Remove a daemon's entry from the state file. Used on 404 to force
+    a re-lookup via find_row_by_primary on the next cycle."""
+    if not HEARTBEAT_ROW_STATE_PATH.exists():
+        return
+    try:
+        parsed = json.loads(HEARTBEAT_ROW_STATE_PATH.read_text())
+    except (OSError, json.JSONDecodeError):
+        return
+    if not isinstance(parsed, dict):
+        return
+    parsed.pop(daemon_name, None)
+    HEARTBEAT_ROW_STATE_PATH.write_text(json.dumps(parsed, indent=2))
+
+
+def _resolve_heartbeat_row_id(daemon_name: str) -> int | None:
+    """Return the ITS_Daemon_Health row id for `daemon_name`, looking it
+    up via find_row_by_primary if not in the state cache. None on miss.
+
+    Persists the resolved row_id (with total_cycles=0) on the first
+    successful lookup so subsequent cycles skip the find_row_by_primary
+    round trip — one less Smartsheet call per cycle per the PR #59.5
+    ARCH-2 token-budget refinement.
+    """
+    state = _load_heartbeat_row_state(daemon_name)
+    if state is not None:
+        return state["row_id"]
+    row = smartsheet_client.find_row_by_primary(
+        sheet_ids.SHEET_DAEMON_HEALTH,
+        sheet_ids.DAEMON_HEALTH_COLUMNS["daemon_name"],
+        daemon_name,
+    )
+    if row is None:
+        return None
+    row_id = int(row["_row_id"])
+    _persist_heartbeat_row_state(daemon_name, row_id, total_cycles=0)
+    return row_id
+
+
+def _write_heartbeat_row(
+    *,
+    status: HeartbeatStatus,
+    items_processed: int,
+    error_summary: str | None = None,
+    correlation_id: str | None = None,
+    notes: str | None = None,
+    daemon_name: str = DAEMON_NAME,
+) -> None:
+    """Write one row to ITS_Daemon_Health summarizing this cycle.
+
+    ARCH-1 (PR #59.5): The `Enabled` column on ITS_Daemon_Health is
+    report-filter metadata and is NOT read by this function. The runtime
+    on/off decision lives in ITS_Config (`safety_reports.intake.polling_enabled`).
+    One canonical runtime gate, one operator-facing filter flag, no overlap.
+
+    ARCH-2 (PR #59.5): Row-id is looked up via `_resolve_heartbeat_row_id`
+    which prefers the cache file at `~/its/state/heartbeat_row_ids.json`.
+    On 404 during update (row was deleted / re-seeded), the cache is
+    invalidated and the next cycle re-resolves.
+
+    ARCH-3 (PR #59.5): `total_cycles` is a LIFETIME monotonic counter
+    persisted alongside the row_id in the same state file. Read +
+    incremented + written each cycle without ever reading the column
+    back from Smartsheet. The Smartsheet column title may still read
+    "Total Cycles Today" (UI-only rename is a separate cleanup); the
+    semantics here are lifetime.
+
+    Failure handling: catches SmartsheetError + any other exception
+    internally, logs to ITS_Errors with `error_code='daemon_health_write_failed'`,
+    returns None. Caller's catch-all is defense in depth.
+    """
+    cols = sheet_ids.DAEMON_HEALTH_COLUMNS
+
+    state = _load_heartbeat_row_state(daemon_name)
+    if state is None:
+        try:
+            row_id = _resolve_heartbeat_row_id(daemon_name)
+        except smartsheet_client.SmartsheetError as exc:
+            _log_heartbeat_failure(daemon_name, f"row-id lookup failed: {exc!r}")
+            return
+        if row_id is None:
+            _log_heartbeat_failure(
+                daemon_name,
+                "no ITS_Daemon_Health row with this primary key — seeder needed",
+            )
+            return
+        total_cycles = 0
+    else:
+        row_id = state["row_id"]
+        total_cycles = state["total_cycles"]
+
+    new_total = total_cycles + 1
+
+    cells: dict[int, Any] = {
+        cols["last_heartbeat"]: datetime.now(UTC).isoformat(),
+        cols["last_cycle_status"]: status,
+        cols["last_cycle_items_processed"]: items_processed,
+        cols["total_cycles"]: new_total,
+    }
+    if error_summary is not None:
+        cells[cols["last_error_summary"]] = error_summary
+    if correlation_id is not None:
+        cells[cols["last_error_correlation_id"]] = correlation_id
+    if notes is not None:
+        cells[cols["notes"]] = notes
+
+    try:
+        smartsheet_client.update_row_cells_by_id(
+            sheet_ids.SHEET_DAEMON_HEALTH, row_id, cells
+        )
+    except smartsheet_client.SmartsheetNotFoundError:
+        # Row was deleted / re-seeded; invalidate cache so next cycle
+        # re-resolves via find_row_by_primary. Don't retry inline —
+        # one stale row write per resurrection is acceptable.
+        _invalidate_heartbeat_row_state(daemon_name)
+        _log_heartbeat_failure(
+            daemon_name,
+            f"row {row_id} not found — cache invalidated",
+        )
+        return
+    except smartsheet_client.SmartsheetError as exc:
+        _log_heartbeat_failure(daemon_name, f"SmartsheetError: {exc!r}")
+        return
+    except Exception as exc:  # noqa: BLE001 — heartbeat must never raise
+        _log_heartbeat_failure(daemon_name, f"unexpected: {exc!r}")
+        return
+
+    _persist_heartbeat_row_state(daemon_name, row_id, new_total)
+
+
+def _log_heartbeat_failure(daemon_name: str, detail: str) -> None:
+    """Log a heartbeat-write failure to ITS_Errors with a stable error code.
+
+    Operator search path: grep ITS_Errors for `daemon_health_write_failed`
+    or filter the sheet on that error_code. The detail string carries the
+    underlying exception class + message for triage. Logging itself is
+    failure-isolated by `shared/error_log.py`'s existing guards.
+    """
+    error_log.log(
+        Severity.WARN,
+        SCRIPT_NAME,
+        f"heartbeat write for daemon={daemon_name!r} failed: {detail}",
+        error_code="daemon_health_write_failed",
+    )
 
 
 # ---- Inbox helpers -------------------------------------------------------
@@ -368,6 +592,27 @@ def _poll_inside_lock() -> PollStats:
         messages_marked_read=counters["marked_read"],
         errors=counters["errors"],
     )
+
+    # Heartbeat-row write happens AFTER the local file heartbeat + counters
+    # are finalized so the row reflects the same cycle. Wrapped in a
+    # belt-and-suspenders catch-all: _write_heartbeat_row already swallows
+    # SmartsheetError + Exception internally and logs to ITS_Errors, but
+    # the outer try/except guarantees a heartbeat failure NEVER blocks
+    # the daemon's primary work (the cycle's INFO summary still emits;
+    # the cycle still returns success to launchd).
+    try:
+        _write_heartbeat_row(
+            status="OK" if final.errors == 0 else "WARN",
+            items_processed=final.messages_processed,
+        )
+    except Exception as exc:  # noqa: BLE001 — heartbeat must never block the daemon
+        error_log.log(
+            Severity.WARN,
+            SCRIPT_NAME,
+            f"heartbeat write outer-catch tripped: {exc!r}",
+            error_code="daemon_health_write_failed",
+        )
+
     error_log.log(
         Severity.INFO,
         SCRIPT_NAME,

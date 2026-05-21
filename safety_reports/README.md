@@ -197,3 +197,43 @@ To exercise the review-queue branch, send a smoke email whose project is ambiguo
 | Lock file present but no daemon running | Crash during a previous cycle left a stale lock | Delete `~/its/state/safety_intake.lock` and restart |
 | Same message processed twice | Seen-set state was lost or `mark_read` failed | `~/its/state/safety_intake_processed.json` + the stderr log; delete duplicate row in Daily Reports |
 | Manual rerun needed for one message | Operator-initiated retry | `python -m safety_reports.intake <message_id>` (CLI wrapper around process_message) |
+| `daemon_health_write_failed` entries in ITS_Errors | Heartbeat write to ITS_Daemon_Health failed (PR #59.5) | Check the heartbeat row at `ITS_Daemon_Health`; row may have been deleted or columns renamed. The cache auto-invalidates on 404 — see Operator visibility below |
+
+## Operator visibility — ITS_Daemon_Health (PR #59.5)
+
+Every poll cycle writes a heartbeat row to `ITS_Daemon_Health` (sheet `4529351700729732`,
+under `ITS — System / 04 — Daemons`). The row keyed `safety_reports.intake_poll`
+carries the canonical operator-facing status:
+
+- **Last Heartbeat** — UTC ISO timestamp of the most recent successful poll cycle.
+- **Last Cycle Status** — `OK` (errors=0) or `WARN` (errors>0). `ERROR` / `SKIPPED` are
+  reserved for future failure modes the daemon doesn't currently reach inline.
+- **Last Cycle Items Processed** — message count from the most recent cycle.
+- **Total Cycles Today** — lifetime monotonic counter (despite the column title; see
+  PR #59.5 ARCH-3 — semantics are lifetime, not daily-reset, to avoid a
+  read-before-write round trip per cycle).
+- **Last Error Summary** + **Last Error Correlation ID** — only set when status=WARN or
+  ERROR. Grep ITS_Errors with the correlation ID for the full traceback.
+- **Enabled** — operator-facing filter checkbox. **Read for report filtering only —
+  not as a runtime gate.** The daemon's on/off switch is the `polling_enabled`
+  row in ITS_Config (PR #59.5 ARCH-1: one canonical runtime gate, one operator
+  filter flag, no overlap). Toggling `Enabled` in ITS_Daemon_Health does NOT halt
+  the daemon; toggle `polling_enabled` in ITS_Config instead.
+
+Where to look:
+
+- **Heartbeat fresh?** Operator-view report (Smartsheet) filters
+  `Last Heartbeat < now - 2*Interval Seconds` → those daemons are stale.
+- **Cycle errors?** Filter `Last Cycle Status != OK`. The correlation ID
+  jumps from the row to the matching `ITS_Errors` rows.
+- **Disable the daemon?** Set `safety_reports.intake.polling_enabled=false` in
+  `ITS_Config`. The next poll cycle short-circuits without touching Graph or the
+  heartbeat sheet. The previous heartbeat row stays as-is until the daemon resumes.
+
+Cache files (local, under `~/its/state/`):
+
+- `heartbeat_row_ids.json` — `{daemon_name: {row_id, total_cycles}}`. Persists the
+  ITS_Daemon_Health row ID across launchd-poll-once process restarts (otherwise each
+  cycle would re-resolve via `find_row_by_primary`, adding a Smartsheet read per cycle).
+  Also stores the lifetime `total_cycles` counter. The file auto-recovers from a
+  404 (row deleted/re-seeded) by invalidating the entry; the next cycle re-resolves.

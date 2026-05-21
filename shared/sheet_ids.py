@@ -59,9 +59,10 @@ FOLDER_FIELD_REPORTS_ROCKFORD = 5139030871435140
 
 # ---- ITS — System folders -----------------------------------------------
 
-FOLDER_SYSTEM_CONFIG = 164788727768964   # 01 — Config
-FOLDER_SYSTEM_LOGS   = 5231338308560772  # 02 — Logs
-FOLDER_SYSTEM_QUEUES = 7201663145535364  # 03 — Queues
+FOLDER_SYSTEM_CONFIG  = 164788727768964   # 01 — Config
+FOLDER_SYSTEM_LOGS    = 5231338308560772  # 02 — Logs
+FOLDER_SYSTEM_QUEUES  = 7201663145535364  # 03 — Queues
+FOLDER_SYSTEM_DAEMONS = 2130046845511556  # 04 — Daemons
 
 # ---- ITS — Human Review folders -----------------------------------------
 
@@ -79,6 +80,34 @@ SHEET_PICKLIST_SYNC_CONFIG = 7486553185013636  # ITS — System / 01 — Config 
 SHEET_ERRORS              = 27291433258884    # ITS — System / 02 — Logs / ITS_Errors
 SHEET_QUARANTINE          = 8687740798324612  # ITS — System / 02 — Logs / ITS_Quarantine
 SHEET_REVIEW_QUEUE        = 7243317526876036  # ITS — System / 03 — Queues / ITS_Review_Queue
+SHEET_DAEMON_HEALTH       = 4529351700729732  # ITS — System / 04 — Daemons / ITS_Daemon_Health
+
+# ITS_Daemon_Health column IDs (PR #59.5). Operator-visible heartbeat sheet
+# written per poll cycle by each daemon. Source IDs are stable across column
+# renames, so heartbeat writes pin them here rather than going through
+# title-based resolution. See safety_reports/intake_poll.py:_write_heartbeat_row
+# for the canonical consumer and safety_reports/README.md for the operator
+# read-side runbook. Schema brief (ITS_Daemon_Health_Schema_2026-05-21): 12
+# columns capturing daemon identity, current run state, and last-error context.
+DAEMON_HEALTH_COLUMNS: dict[str, int] = {
+    "daemon_name":                  817803644145540,
+    "workstream":                  5321403271516036,
+    "enabled":                     3069603457830788,
+    "interval_seconds":            7573203085201284,
+    "source_id":                   1943703550988164,
+    "last_heartbeat":              6447303178358660,
+    "last_cycle_status":           4195503364673412,
+    "last_cycle_items_processed":  8699102992043908,
+    # `total_cycles` is the lifetime monotonic counter (PR #59.5 ARCH-3).
+    # The Smartsheet column title is "Total Cycles Today" but the semantics
+    # were changed to lifetime monotonic to avoid a read-before-write round
+    # trip per cycle for an informational field. The column-title rename
+    # is a separate UI-only cleanup; the ID below is stable across that.
+    "total_cycles":                 536328667434884,
+    "last_error_summary":          5039928294805380,
+    "last_error_correlation_id":   2788128481120132,
+    "notes":                       7291728108490628,
+}
 
 # ---- Human-review sheets -------------------------------------------------
 

@@ -998,3 +998,96 @@ def test_translate_smartsheet_error_raises_on_5xx(mocker):
     # Exact subclass: base SmartsheetError, not Auth/Permission/NotFound/RateLimit.
     assert type(exc_info.value) is SmartsheetError
     assert "HTTP 500" in str(exc_info.value)
+
+
+# ---- find_row_by_primary + update_row_cells_by_id (PR #59.5) -------------
+
+
+def test_find_row_by_primary_returns_matching_row_dict(mocker):
+    client = _install_client(mocker)
+    client.Sheets.get_sheet.return_value = SimpleNamespace(
+        columns=[
+            _column(10, "Daemon Name"),
+            _column(20, "Workstream"),
+            _column(30, "Last Heartbeat"),
+        ],
+        rows=[
+            _row(101, [(10, "other"), (20, "other_ws")]),
+            _row(102, [(10, "safety_reports.intake_poll"), (20, "safety_reports"),
+                       (30, "2026-05-21T19:00:00Z")]),
+        ],
+    )
+
+    row = smartsheet_client.find_row_by_primary(
+        sheet_id=4529351700729732,
+        primary_column_id=10,
+        value="safety_reports.intake_poll",
+    )
+    assert row is not None
+    assert row["_row_id"] == 102
+    assert row["Daemon Name"] == "safety_reports.intake_poll"
+    assert row["Workstream"] == "safety_reports"
+    assert row["Last Heartbeat"] == "2026-05-21T19:00:00Z"
+
+
+def test_find_row_by_primary_returns_none_on_miss(mocker):
+    client = _install_client(mocker)
+    client.Sheets.get_sheet.return_value = SimpleNamespace(
+        columns=[_column(10, "Daemon Name")],
+        rows=[_row(101, [(10, "other")])],
+    )
+    assert (
+        smartsheet_client.find_row_by_primary(99, 10, "safety_reports.intake_poll")
+        is None
+    )
+
+
+def test_find_row_by_primary_translates_sdk_error(mocker):
+    client = _install_client(mocker)
+    client.Sheets.get_sheet.side_effect = _api_error(404, message="missing sheet")
+    with pytest.raises(SmartsheetNotFoundError):
+        smartsheet_client.find_row_by_primary(99, 10, "x")
+
+
+def test_update_row_cells_by_id_builds_cell_payload(mocker):
+    client = _install_client(mocker)
+    # update_row_cells_by_id does NOT use the title cache, so no get_sheet call.
+    client.Sheets.update_rows.return_value = SimpleNamespace(result=[])
+
+    smartsheet_client.update_row_cells_by_id(
+        sheet_id=4529351700729732,
+        row_id=7461022174478212,
+        cells_by_column_id={
+            6447303178358660: "2026-05-21T19:00:00Z",  # last_heartbeat
+            4195503364673412: "OK",                     # last_cycle_status
+            536328667434884: 1247,                      # total_cycles
+        },
+    )
+
+    # The SDK Sheets.update_rows call took exactly one Row with three cells.
+    assert client.Sheets.update_rows.call_count == 1
+    sheet_id_arg, rows_arg = client.Sheets.update_rows.call_args.args
+    assert sheet_id_arg == 4529351700729732
+    [row] = rows_arg
+    assert row.id == 7461022174478212
+    by_col = {c.column_id: c.value for c in row.cells}
+    assert by_col == {
+        6447303178358660: "2026-05-21T19:00:00Z",
+        4195503364673412: "OK",
+        536328667434884: 1247,
+    }
+
+
+def test_update_row_cells_by_id_no_op_on_empty_payload(mocker):
+    client = _install_client(mocker)
+    smartsheet_client.update_row_cells_by_id(
+        sheet_id=1, row_id=2, cells_by_column_id={}
+    )
+    client.Sheets.update_rows.assert_not_called()
+
+
+def test_update_row_cells_by_id_translates_404(mocker):
+    client = _install_client(mocker)
+    client.Sheets.update_rows.side_effect = _api_error(404, message="row gone")
+    with pytest.raises(SmartsheetNotFoundError):
+        smartsheet_client.update_row_cells_by_id(1, 2, {3: "x"})
