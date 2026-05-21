@@ -113,7 +113,7 @@ The code can ship before the form-and-clone cascade because `picklist_sync` no-o
 2. For each downstream PICKLIST column, decide: which master DB feeds it?
 3. Insert a `Picklist_Sync_Config` row per mapping; set `enabled=true`.
 4. Run `--smoke-test` once to confirm the harness is healthy.
-5. Manually set the downstream column to "Restrict to dropdown values only" in the Smartsheet UI (this toggle is UI-only — not exposed via API, per `docs/tech_debt.md` Smartsheet UI-only constraints entry).
+5. Manually set the downstream column to "Restrict to dropdown values only" in the Smartsheet UI (this toggle is UI-only — not exposed via API, per the `docs/tech_debt.md` "Smartsheet UI-only constraints (Forms, CF, Filter Views, Restrict-to-dropdown)" entry).
 6. Install the launchd plist:
     ```bash
     cp scripts/launchd/org.solutionsmith.its.picklist-sync.plist ~/Library/LaunchAgents/
@@ -133,8 +133,8 @@ The migration script `scripts/migrations/create_picklist_sync_config.py` is re-r
 ## Cross-references
 
 - `shared/picklist_sync.py` — module docstring + per-function docstrings
-- `shared/smartsheet_client.py` — `list_columns_with_options`, `update_column_options`, `find_sheet_by_name_in_folder`, `create_sheet_in_folder` (added PR #45)
+- `shared/smartsheet_client.py` — `list_columns_with_options`, `update_column_options`, `find_sheet_by_name_in_folder`, `create_sheet_in_folder` (added PR #45; `find_sheet_by_name_in_folder` rewritten to direct REST in PR #51 — SDK's deprecated `Folders.get_folder()` returned stale data within a single session)
 - `shared/review_queue.py` — `ReviewReason.MISMATCHED_REFERENCE`
 - `shared/defaults.py` — `PICKLIST_SIZE_WARN_THRESHOLD`, `PICKLIST_SIZE_HARD_HALT_THRESHOLD`, `PICKLIST_SIZE_THRESHOLD_MAX`
-- `docs/tech_debt.md` — Smartsheet UI-only constraints (Restrict-to-dropdown, Forms, Conditional Formatting, Filter Views)
+- `docs/tech_debt.md` — "Smartsheet UI-only constraints (Forms, CF, Filter Views, Restrict-to-dropdown)" entry
 - Op Stds v9 §3 (push-vs-record), §22 (MCP-gap REST fallback), §27 (failure isolation)

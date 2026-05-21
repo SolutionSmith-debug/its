@@ -257,6 +257,8 @@ Surfaced: PR #39 brief, Open Question Q4, 2026-05-20.
 
 ## Alert-routing dedupe key granularity [OPEN 2026-05-20]
 
+(Naming gloss for this entry and several below: "PR α" = PR #42 — alert-dedupe core; "PR β" = PR #44 — watchdog Check G summary sweep. Greek-letter aliases predate the actual PR numbers landing.)
+
 `shared/alert_dedupe.py` keys dedupe windows on `(script, error_code)` (built at the `_fire_resend_leg` call site). Today's only call path uses `error_code="uncaught_exception"`, so all decorator-driven CRITICALs from a given script collapse into one window. If production shows distinct underlying exception classes inside one script collapsing within a window — and the operator misses the second bug because the first one suppressed its alert — upgrade the key to `(script, error_code, exc_class)`.
 
 **Action:** one-line change at the `dedupe_key = f"{script}::{error_code}"` site in `shared/error_log._fire_resend_leg`. Thread `exc_class` from the decorator's `except Exception as e:` path via `type(e).__name__`.
@@ -285,17 +287,15 @@ Surfaced: PR α (alert-dedupe-core) brief, 2026-05-20.
 
 Surfaced: PR α (alert-dedupe-core) brief, 2026-05-20.
 
-## Alert-dedupe state file grows unboundedly until PR β lands [OPEN 2026-05-20]
+## Alert-dedupe state file grows unboundedly until PR β lands [CLOSED 2026-05-21]
 
-PR α writes one entry per `(script, error_code)` key to `~/its/state/alert_dedupe.json` and never deletes. The follow-up PR β (watchdog summary sweep) will delete entries once their summary email has fired and `summarized=true` has been set. Until PR β lands, the file grows.
+PR α (#42) wrote one entry per `(script, error_code)` key to `~/its/state/alert_dedupe.json` and never deleted. The follow-up PR β (watchdog summary sweep) was queued to delete entries once their summary email had fired and `summarized=true` had been set. Until PR β landed, the file grew (one entry per distinct dedupe key across the ITS lifetime — operationally acceptable bound).
 
-**Bounded blast radius:** one entry per distinct `(script, error_code)` pair across the ITS lifetime. Even pessimistically (every shared module and every workstream each producing a handful of error codes), the file should stay under a few KB. Operationally acceptable but tracked here so a future operator reviewing the state file isn't surprised by the growth pattern.
+**Closed by PR #44 (PR β — watchdog Check G — alert-dedupe summary sweep).** Two-phase deletion landed: phase 1 (sweep N) fires the summary email + `mark_summarized`; phase 2 (sweep N+1) deletes the now-`summarized=true` entry. State-file growth bound improved to ≤1 day per `(script, error_code)` key pair (further detailed in the successor entry below). Crash-safe: a crash between Resend send and `mark_summarized` causes the next sweep to re-fire (duplicate email is acceptable; silent loss is not).
 
-**Resolves with:** PR β landing. Watchdog summary sweep iterates entries with `now >= window_ends_at AND summarized == false`, sends one summary email per entry (containing the `suppressed_count` and time range), sets `summarized=true`, then deletes once the entry is older than some retention threshold.
+Subsequent V1 fix (PR #52) added MAINTENANCE-aware defer behavior — phase-1 fires defer during the MAINTENANCE window, phase-2 deletion proceeds regardless. Bounded delay = MAINTENANCE window + one watchdog cadence.
 
-**Urgency:** none. PR β is queued for the next session.
-
-Surfaced: PR α (alert-dedupe-core) brief, 2026-05-20.
+Surfaced: PR α (alert-dedupe-core) brief, 2026-05-20. Closed by PR #44 + #52, 2026-05-21.
 
 ## Smoke harness pattern divergence between dedupe smoke and Resend/Sentry smokes [OPEN 2026-05-20]
 
@@ -388,6 +388,27 @@ Probed live during the PR #51 integration-test run. Adding the column via a sepa
 **Urgency:** none. Tracked for visibility so a future operator looking at the integration test's missing MULTI_PICKLIST coverage understands why.
 
 Surfaced: PR #51 integration test run, 2026-05-21.
+
+## Smartsheet UI-only constraints (Forms, CF, Filter Views, Restrict-to-dropdown) [OPEN]
+
+Several Smartsheet features are exposed only through the Smartsheet web UI and have NO REST/SDK surface — meaning Claude Code can NOT provision, audit, or sync these per-customer settings during deployment. Operator must configure each manually at deployment time and document the choices.
+
+The known UI-only surfaces (as of 2026-05):
+
+- **Form creation + configuration** — `Smartsheet → Forms` panel. Forms are the primary intake surface for several workstreams; no API equivalent. Form rules (required fields, conditional logic, custom thank-you page, branding) are all UI-only.
+- **Conditional Formatting** (cell-color rules based on cell values or row state) — UI-only.
+- **Filter Views** (saved per-user filter definitions over a sheet) — UI-only.
+- **Restrict to dropdown values only** (PICKLIST column validation toggle) — UI-only. Critical for `shared/picklist_sync.py` activation: the sync writes the option list, but the "reject free-text entries" enforcement toggle must be set manually per column. Without it, picklist sync still works but users can type values that aren't in the master DB (canonical-name drift).
+
+**Impact on `shared/picklist_sync.py`:** the `Restrict to dropdown values only` toggle must be manually set on each downstream PICKLIST column at deployment time. Without it, the sync still works (options stay in sync) but the strict-mode validation that prevents users from typing vendor-name drift is absent. Documented in `docs/picklist_sync.md` activation checklist step 5.
+
+**Impact on form-and-clone cascade:** every form requires manual UI setup. The cascade flow assumes operator builds forms in the UI as the final cutover step.
+
+**Resolves if:** Smartsheet exposes any of these surfaces via API. Worth re-checking annually — Smartsheet's API surface expands slowly. No action item today; this entry exists so future operators / new customer forks know the manual-deployment-step list without rediscovering it.
+
+**Urgency:** none. Operationally accepted; manual deployment steps documented per-customer.
+
+Surfaced: Phase-0 architecture review 2026-05; referenced from `docs/picklist_sync.md` activation checklist.
 
 ## `find_sheet_by_name_in_folder` switched from SDK to REST [CLOSED 2026-05-21]
 

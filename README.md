@@ -18,13 +18,16 @@ implements what is decided there.
 ## Quick orientation
 
 - `shared/` — cross-cutting helpers every workstream uses (kill switch, error log, API
-  clients, untrusted-content tagging, anomaly logging, sender quarantine).
+  clients, untrusted-content tagging, anomaly logging, sender quarantine, alert-routing
+  dedupe, cross-sheet picklist sync).
 - `schemas/` — JSON schemas for Anthropic tool-use / structured output calls.
 - `prompts/` — prompt files, version-controlled in markdown.
-- `scripts/` — top-level scheduled scripts (e.g., watchdog) and launchd plists.
+- `scripts/` — top-level scheduled scripts (watchdog daily; picklist sync hourly) and
+  launchd plists. See `docs/picklist_sync.md` for the picklist sync runbook.
 - `safety_reports/` — Phase 1 active workstream.
 - `logs/` — local backup of error log (also written to Smartsheet ITS_Errors).
-- `tests/` — pytest suite (run with `pytest`).
+- `tests/` — pytest suite (run with `pytest`; integration tests gated behind
+  `pytest -m integration`, require live Smartsheet sandbox credentials).
 
 ## First-time setup
 
@@ -77,8 +80,8 @@ specifications (Foundation Mission v7, Operational Standards v9).
 
 | Phase | State |
 |-------|-------|
-| 0 — Scaffold | ✓ shipped; 23-PR push 2026-05-18/19 wired the remaining shared/* modules (review_queue, quarantine, resend, sentry, error_log Smartsheet write, kill_switch refactor). Tests 137→364, mypy=0 enforced in CI, triple-fire CRITICAL alert path operational. |
-| 1 — Safety Reports + parallel workstreams | sandbox build active; 5 of 9 owner decisions resolved; Box sandbox uploaded 2026-05-14; Smartsheet system + human-review workspaces fully provisioned 2026-05-17; M365 Graph mail wired 2026-05-17. Workstream consumer integration (intake.py + weekly_generate/send) is the next critical-path target. |
+| 0 — Scaffold | ✓ shipped; 23-PR push 2026-05-18/19 wired the remaining shared/* modules (review_queue, quarantine, resend, sentry, error_log Smartsheet write, kill_switch refactor). Tests 137→663 (post-2026-05-21 alert-dedupe + picklist sync), mypy=0 enforced in CI, triple-fire CRITICAL alert path operational. Resend-leg dedupe shipped 2026-05-21 (`shared/alert_dedupe.py` + watchdog Check G summary sweep + MAINTENANCE defer). |
+| 1 — Safety Reports + parallel workstreams | sandbox build active; 5 of 9 owner decisions resolved; Box sandbox uploaded 2026-05-14; Smartsheet system + human-review workspaces fully provisioned 2026-05-17; M365 Graph mail wired 2026-05-17. Cross-sheet picklist sync foundation shipped 2026-05-21 (`shared/picklist_sync.py` + `Picklist_Sync_Config` sheet + hourly cron; activates at form-and-clone cascade time). Workstream consumer integration (intake.py + weekly_generate/send) is the next critical-path target. |
 | 1.5 — Combined Cutover + Hardware Handover (Florida → California) | scheduled after Phase 1 stable. 30-day clean-sandbox-operation gate per V&R v7. |
 | 1.6 — Blueprint Generalization | pre-Customer-2 pass. Extracts Customer-0-specific assumptions from shared/* so a Customer 2 fork-and-customize cycle is mechanical. (Renamed from "Multi-Tenancy Framework" per the white-glove business-model commitment.) |
 | 2 — POs / Subcontracts | not started |
