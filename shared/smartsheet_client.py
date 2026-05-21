@@ -318,6 +318,107 @@ def delete_rows(sheet_id: int, row_ids: list[int]) -> None:
         raise _translate(e) from e
 
 
+# ---- Column + sheet helpers (PICKLIST sync) -----------------------------
+
+
+def list_columns_with_options(sheet_id: int) -> list[dict[str, Any]]:
+    """Return one dict per column with `id`, `title`, `type`, and `options`.
+
+    `options` is the picklist option list when the column is `PICKLIST` /
+    `MULTI_PICKLIST`; an empty list otherwise. Used by
+    `shared.picklist_sync` to read current downstream picklist state
+    before computing a diff against the source master DB.
+
+    Bypasses the column-title cache because picklist sync needs the
+    `options` field (the cache only stores `{title: id}` for cell-write
+    resolution). A direct `get_sheet` is the right shape here.
+    """
+    try:
+        sheet = get_client().Sheets.get_sheet(sheet_id, include="columns")
+    except sdk_exc.SmartsheetException as e:
+        raise _translate(e) from e
+    out: list[dict[str, Any]] = []
+    for col in sheet.columns:
+        opts = getattr(col, "options", None) or []
+        out.append({
+            "id": col.id,
+            "title": col.title,
+            "type": col.type,
+            "options": list(opts),
+        })
+    return out
+
+
+def update_column_options(
+    sheet_id: int, column_id: int, options: list[str]
+) -> None:
+    """Replace a PICKLIST column's options list with `options`.
+
+    Smartsheet's `PUT /sheets/{sheetId}/columns/{columnId}` accepts an
+    `options` array; the server replaces the whole list. Pass an
+    alphabetized list when stable order matters (R5 — Smartsheet does
+    not guarantee API-side preservation otherwise).
+
+    Invalidates the column-title cache for the sheet because picklist
+    edits don't change titles but the cache may be stale if titles were
+    edited in the same UI session.
+    """
+    try:
+        body = smartsheet.models.Column({
+            "id": column_id,
+            "options": list(options),
+        })
+        get_client().Sheets.update_column(sheet_id, column_id, body)
+    except sdk_exc.SmartsheetException as e:
+        raise _translate(e) from e
+    invalidate_column_cache(sheet_id)
+
+
+def find_sheet_by_name_in_folder(folder_id: int, name: str) -> int | None:
+    """Return the sheet ID with title `name` inside `folder_id`, or None.
+
+    Used by migrations + `picklist_sync` to check "does this sheet
+    already exist?" before issuing a `create_sheet_in_folder` POST — the
+    idempotency pattern from the PR α migration generalizes here.
+
+    Matches on exact title equality (Smartsheet folder listings are
+    case-sensitive; titles are unique within a folder by convention but
+    not enforced by the API, so a duplicate returns the first match).
+    """
+    try:
+        folder = get_client().Folders.get_folder(folder_id)
+    except sdk_exc.SmartsheetException as e:
+        raise _translate(e) from e
+    for sheet in getattr(folder, "sheets", []) or []:
+        if sheet.name == name:
+            return int(sheet.id)
+    return None
+
+
+def create_sheet_in_folder(
+    folder_id: int,
+    name: str,
+    columns: list[dict[str, Any]],
+) -> int:
+    """Create a new sheet inside `folder_id` and return its sheet ID.
+
+    `columns` is a list of `{title, type, primary?, options?, ...}` dicts
+    matching the Smartsheet Column model. The first entry whose
+    `primary=True` becomes the primary column (Smartsheet requires
+    exactly one; TEXT_NUMBER per its constraints).
+
+    Idempotency is the caller's job — use `find_sheet_by_name_in_folder`
+    first if the create needs to be re-run-safe (PR α migration pattern).
+    """
+    column_models = [smartsheet.models.Column(c) for c in columns]
+    sheet_model = smartsheet.models.Sheet({"name": name, "columns": column_models})
+    try:
+        result = get_client().Folders.create_sheet_in_folder(folder_id, sheet_model)
+    except sdk_exc.SmartsheetException as e:
+        raise _translate(e) from e
+    return int(result.result.id)
+
+
 # ---- SDK 404 noise suppression ------------------------------------------
 
 
