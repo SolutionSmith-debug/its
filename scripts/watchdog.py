@@ -42,6 +42,15 @@ Checks shipped:
        Resend-only push notification — they do NOT write to ITS_Errors
        or Sentry (no new forensic data; the rows already exist).
 
+       MAINTENANCE behavior: Check G receives `alerts_suppressed` via
+       signature inspection in `_run_check` and DEFERS phase-1 summary
+       firing (no Resend, no mark) while the kill switch is in
+       MAINTENANCE. Entries stay in expired+unsummarized state; the
+       first post-MAINTENANCE sweep fires the deferred digest normally.
+       Phase-2 deletion (already-summarized or clean-expired entries)
+       still proceeds during MAINTENANCE because that path has no push
+       side-effect. Op Stds v10 §2 codifies this carve-out.
+
 Planned (NOT in this file, scheduled for a follow-on PR — the Check E
 shipping PR; see `docs/tech_debt.md`):
     E. Anthropic spend trend. Deferred from Session 2 — the Admin API key
@@ -51,6 +60,7 @@ Trigger this script from a launchd plist. See `scripts/launchd/`.
 """
 from __future__ import annotations
 
+import inspect
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
@@ -495,19 +505,32 @@ def _compose_summary(entry: alert_dedupe.ExpiredEntry, run_ts: str) -> tuple[str
     return subject, body
 
 
-def _check_alert_dedupe_summaries() -> CheckResult:
+def _check_alert_dedupe_summaries(*, alerts_suppressed: bool = False) -> CheckResult:
     """Check G: sweep alert-dedupe state for expired windows.
 
     For each expired entry:
-      - If `suppressed_count >= 1` AND `summarized == False` → fire a
-        single Resend summary email, then `mark_summarized(key)`. The
-        entry stays one more sweep before deletion (phase 2 below).
+      - **Phase 1** — If `suppressed_count >= 1` AND `summarized == False`:
+        fire a single Resend summary email, then `mark_summarized(key)`.
+        The entry stays one more sweep before deletion (phase 2 below).
         Crash safety: a crash between send and mark causes the next
         sweep to re-fire (duplicate email is acceptable).
-      - Otherwise (`summarized == True` OR `suppressed_count == 0`) →
-        `delete_entry(key)`. This is phase 2 of the two-phase delete:
-        either the entry was summarized in a prior sweep, or the window
-        closed with no suppressions (a clean expiry needing no signal).
+      - **Phase 2** — Otherwise (`summarized == True` OR
+        `suppressed_count == 0`): `delete_entry(key)`. Either the entry
+        was summarized in a prior sweep, or the window closed with no
+        suppressions (a clean expiry needing no signal).
+
+    **MAINTENANCE behavior (`alerts_suppressed=True`):** Phase 1 is
+    DEFERRED — summary emails are not fired and the entry's `summarized`
+    flag stays False, so the entry persists in expired+unsummarized
+    state across the MAINTENANCE window. The first post-MAINTENANCE
+    sweep fires the deferred digest normally. Phase 2 (delete of
+    already-summarized or clean-expired entries) PROCEEDS during
+    MAINTENANCE — that path doesn't fire push, so suppressing it would
+    create unbounded state growth without any operator-visibility
+    benefit. Bounded delay = MAINTENANCE window + one watchdog cadence;
+    no information loss (the underlying CRITICAL events already wrote
+    to ITS_Errors at occurrence time per Op Stds v9 §27). Op Stds v10
+    §2 codifies this carve-out.
 
     Per Op Stds v9 §27 push-vs-record separation, the summary email is
     a Resend-only operational signal — it does NOT write to ITS_Errors
@@ -530,10 +553,20 @@ def _check_alert_dedupe_summaries() -> CheckResult:
 
     summaries_fired = 0
     entries_deleted = 0
+    summaries_deferred = 0
     fired_keys: list[str] = []
+    deferred_keys: list[str] = []
 
     for entry in entries:
-        if entry.suppressed_count >= 1 and not entry.summarized:
+        is_phase_1 = entry.suppressed_count >= 1 and not entry.summarized
+        if is_phase_1 and alerts_suppressed:
+            # MAINTENANCE defer: skip send AND mark. Entry stays
+            # summarized=False with expired window; first sweep after
+            # MAINTENANCE clears fires the deferred digest normally.
+            deferred_keys.append(entry.key)
+            summaries_deferred += 1
+            continue
+        if is_phase_1:
             subject, body = _compose_summary(entry, run_ts)
             try:
                 resend_client.send_alert(subject, body)
@@ -552,17 +585,29 @@ def _check_alert_dedupe_summaries() -> CheckResult:
             summaries_fired += 1
             fired_keys.append(entry.key)
         else:
+            # Phase 2: proceeds during MAINTENANCE — no push side-effect.
             alert_dedupe.delete_entry(entry.key)
             entries_deleted += 1
 
-    summary = (
-        f"Examined {len(entries)} expired entr{'y' if len(entries) == 1 else 'ies'}; "
-        f"fired {summaries_fired} summary email(s), "
-        f"deleted {entries_deleted} entr{'y' if entries_deleted == 1 else 'ies'}."
-    )
-    details = ""
+    parts = [
+        f"Examined {len(entries)} expired entr{'y' if len(entries) == 1 else 'ies'}",
+        f"fired {summaries_fired} summary email(s)",
+        f"deleted {entries_deleted} entr{'y' if entries_deleted == 1 else 'ies'}",
+    ]
+    if summaries_deferred:
+        parts.append(
+            f"deferred {summaries_deferred} summar"
+            f"{'y' if summaries_deferred == 1 else 'ies'} during MAINTENANCE"
+        )
+    summary = "; ".join(parts) + "."
+    detail_parts = []
     if fired_keys:
-        details = f"Summaries fired for: {', '.join(fired_keys)}"
+        detail_parts.append(f"Summaries fired for: {', '.join(fired_keys)}")
+    if deferred_keys:
+        detail_parts.append(
+            f"Summaries deferred (MAINTENANCE) for: {', '.join(deferred_keys)}"
+        )
+    details = " | ".join(detail_parts)
     return CheckResult(severity=Severity.INFO, summary=summary, details=details)
 
 
@@ -570,7 +615,7 @@ def _check_alert_dedupe_summaries() -> CheckResult:
 
 
 def _run_check(
-    check_fn: Callable[[], CheckResult],
+    check_fn: Callable[..., CheckResult],
     *,
     alerts_suppressed: bool,
 ) -> None:
@@ -582,9 +627,19 @@ def _run_check(
     `error_log._alert_critical`) never fire. ERROR (from harness catches)
     is NOT downgraded — a broken check must remain operator-visible
     regardless of operational state.
+
+    Most checks take zero args; severity-downgrade after-the-fact is
+    enough. Check G fires Resend directly inline (push side-effect during
+    result computation, not via `log()` later), so it needs to know
+    `alerts_suppressed` BEFORE running. Detected via signature inspection
+    so heterogeneous check signatures coexist without a typed protocol.
     """
     try:
-        result = check_fn()
+        sig = inspect.signature(check_fn)
+        if "alerts_suppressed" in sig.parameters:
+            result = check_fn(alerts_suppressed=alerts_suppressed)
+        else:
+            result = check_fn()
     except Exception as e:
         log(
             Severity.ERROR,
@@ -607,7 +662,7 @@ def _run_check(
 # ---- Entrypoint ---------------------------------------------------------
 
 
-CHECKS: list[Callable[[], CheckResult]] = [
+CHECKS: list[Callable[..., CheckResult]] = [
     _check_stale_review_queue,
     _check_open_criticals,
     _check_scheduled_jobs,

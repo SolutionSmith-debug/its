@@ -12,6 +12,7 @@ Run with: pytest -q tests/test_watchdog.py
 """
 from __future__ import annotations
 
+import inspect
 import sys
 from pathlib import Path
 
@@ -1106,3 +1107,174 @@ def test_summary_sweep_check_failure_isolated_by_run_check(
         c.args[2] for c in mock_log.call_args_list if c.args[0] is Severity.ERROR
     )
     assert "[watchdog-check-failed:_boom]" in err_line
+
+
+# ---- Group J: Check G — MAINTENANCE defer (V1 fix) ----------------------
+
+
+def test_check_g_skips_summary_fire_during_maintenance(
+    dedupe_state, frozen_clock, mock_send_alert
+):
+    """MAINTENANCE: phase-1 entry must not fire Resend; summarized stays False;
+    entry persists in state for the post-MAINTENANCE sweep."""
+    import json as _json
+
+    import shared.alert_dedupe as ad
+    _seed_expired_entry("safety.intake::uncaught_exception", suppressed_count=4)
+
+    result = watchdog._check_alert_dedupe_summaries(alerts_suppressed=True)
+
+    mock_send_alert.assert_not_called()
+    state = _json.loads(ad.STATE_FILE.read_text())
+    # Entry persists, still unsummarized.
+    assert "safety.intake::uncaught_exception" in state
+    assert state["safety.intake::uncaught_exception"]["summarized"] is False
+    # Result summary names the deferred count.
+    assert "deferred 1 summar" in result.summary
+    assert "MAINTENANCE" in result.summary
+    assert "safety.intake::uncaught_exception" in result.details
+
+
+def test_check_g_processes_phase2_delete_during_maintenance(
+    dedupe_state, frozen_clock, mock_send_alert
+):
+    """Phase-2 deletion has no push side-effect, so it proceeds during
+    MAINTENANCE — otherwise the state file would grow unboundedly
+    while the kill switch is engaged."""
+    import json as _json
+
+    import shared.alert_dedupe as ad
+    _seed_expired_entry(
+        "safety.intake::uncaught_exception", suppressed_count=4, summarized=True
+    )
+
+    result = watchdog._check_alert_dedupe_summaries(alerts_suppressed=True)
+
+    state = _json.loads(ad.STATE_FILE.read_text())
+    assert "safety.intake::uncaught_exception" not in state
+    mock_send_alert.assert_not_called()
+    assert "deleted 1 entry" in result.summary
+
+
+def test_check_g_processes_clean_expiry_delete_during_maintenance(
+    dedupe_state, frozen_clock, mock_send_alert
+):
+    """A clean-expiry entry (suppressed_count==0) also lands in phase 2
+    and deletes during MAINTENANCE — same no-push-side-effect rationale."""
+    import json as _json
+
+    import shared.alert_dedupe as ad
+    _seed_expired_entry("safety.intake::uncaught_exception", suppressed_count=0)
+
+    watchdog._check_alert_dedupe_summaries(alerts_suppressed=True)
+
+    state = _json.loads(ad.STATE_FILE.read_text())
+    assert "safety.intake::uncaught_exception" not in state
+    mock_send_alert.assert_not_called()
+
+
+def test_check_g_fires_normally_after_maintenance_ends(
+    dedupe_state, frozen_clock, mock_send_alert
+):
+    """Sequence: first sweep during MAINTENANCE defers; second sweep
+    after MAINTENANCE clears fires the deferred digest."""
+    import json as _json
+
+    import shared.alert_dedupe as ad
+    _seed_expired_entry("safety.intake::uncaught_exception", suppressed_count=4)
+
+    # First sweep — MAINTENANCE on.
+    watchdog._check_alert_dedupe_summaries(alerts_suppressed=True)
+    mock_send_alert.assert_not_called()
+    state = _json.loads(ad.STATE_FILE.read_text())
+    assert state["safety.intake::uncaught_exception"]["summarized"] is False
+
+    # Second sweep — MAINTENANCE off.
+    result = watchdog._check_alert_dedupe_summaries(alerts_suppressed=False)
+    mock_send_alert.assert_called_once()
+    subject, _ = mock_send_alert.call_args.args
+    assert "safety.intake" in subject
+    assert "4 suppressed" in subject
+    state = _json.loads(ad.STATE_FILE.read_text())
+    assert state["safety.intake::uncaught_exception"]["summarized"] is True
+    assert "fired 1 summary" in result.summary
+
+
+def test_check_g_default_arg_is_alerts_suppressed_false(
+    dedupe_state, frozen_clock, mock_send_alert
+):
+    """Calling without the kwarg must NOT defer — safety default per spec."""
+    _seed_expired_entry("safety.intake::uncaught_exception", suppressed_count=4)
+
+    # No alerts_suppressed kwarg.
+    watchdog._check_alert_dedupe_summaries()
+
+    mock_send_alert.assert_called_once()
+
+
+def test_check_g_mixed_entries_during_maintenance(
+    dedupe_state, frozen_clock, mock_send_alert
+):
+    """Phase-1 entries defer; phase-2 entries delete; both happen in one
+    MAINTENANCE sweep."""
+    import json as _json
+
+    import shared.alert_dedupe as ad
+
+    _seed_expired_entry("phase1::uncaught_exception", suppressed_count=4)
+    _seed_expired_entry("phase2_clean::uncaught_exception", suppressed_count=0)
+    _seed_expired_entry(
+        "phase2_summarized::uncaught_exception", suppressed_count=2, summarized=True
+    )
+
+    result = watchdog._check_alert_dedupe_summaries(alerts_suppressed=True)
+
+    mock_send_alert.assert_not_called()
+    state = _json.loads(ad.STATE_FILE.read_text())
+    # Phase 1 deferred → still present, still unsummarized.
+    assert "phase1::uncaught_exception" in state
+    assert state["phase1::uncaught_exception"]["summarized"] is False
+    # Both phase-2 entries deleted.
+    assert "phase2_clean::uncaught_exception" not in state
+    assert "phase2_summarized::uncaught_exception" not in state
+
+    assert "fired 0 summary" in result.summary
+    assert "deleted 2 entries" in result.summary
+    assert "deferred 1 summary during MAINTENANCE" in result.summary
+
+
+def test_run_check_threads_alerts_suppressed_to_check_g(
+    dedupe_state, frozen_clock, mock_send_alert
+):
+    """_run_check must detect Check G's alerts_suppressed kwarg and pass it.
+
+    Regression guard against the signature-inspection fork in _run_check
+    (V1 fix). If the threading regresses, Check G would always run as if
+    alerts_suppressed=False (default), re-introducing the V1 bug.
+    """
+    _seed_expired_entry("safety.intake::uncaught_exception", suppressed_count=4)
+
+    watchdog._run_check(
+        watchdog._check_alert_dedupe_summaries, alerts_suppressed=True
+    )
+    # Send NOT called — proves alerts_suppressed=True was threaded in.
+    mock_send_alert.assert_not_called()
+
+
+def test_run_check_does_not_pass_alerts_suppressed_to_legacy_checks(mocker):
+    """_run_check inspects signature; legacy checks that take no args
+    must still be called with no args (no TypeError from unexpected kwarg).
+    """
+    legacy_check = mocker.MagicMock(
+        return_value=watchdog.CheckResult(
+            severity=Severity.INFO, summary="ok"
+        )
+    )
+    legacy_check.__name__ = "legacy_check"
+    # Make signature inspection return zero params (mirrors the real
+    # legacy checks).
+    legacy_check.__signature__ = inspect.Signature(parameters=[])
+
+    watchdog._run_check(legacy_check, alerts_suppressed=True)
+
+    legacy_check.assert_called_once_with()  # zero args, NOT alerts_suppressed kwarg
