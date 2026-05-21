@@ -22,9 +22,11 @@ Per Foundation Mission v6 Invariant 1, generation and send live in separate scri
 
 - **`intake.py`** — fires per inbound email to `safety@evergreenmirror.com` (sandbox) /
   `safety@evergreenrenewables.com` (production). Sender allowlist enforced at the Mail.app
-  rule level; non-allowlist mail goes to Quarantine. Classifies one of three intake document
-  types, extracts structured fields, looks up the job, files in Box, writes tracking row.
-  **No send capability.**
+  rule level; non-allowlist mail goes to Quarantine. Classifies into one of the 5 Daily
+  Reports picklist categories (Daily JHA, Tool Box Talk, Equipment Check Sheets, Safe Work
+  Observation, Other), extracts structured fields via Anthropic tool-use JSON-mode, files
+  to Box, writes Daily Reports tracking row. **No send capability** — AST-enforced via
+  `tests/test_capability_gating.py` + `tests/test_intake_capability_gating.py`.
 - **`weekly_generate.py`** — launchd-scheduled Friday 2:00 PM ET. Reads the week's tracking
   rows, drafts a Weekly Project Report (WPR) per active job, writes drafts to
   `WPR_Pending_Review` Smartsheet with `Approved for Send` unchecked. **No send capability.**
@@ -78,11 +80,56 @@ Every Anthropic API call processing inbound mail:
 `Customer`, `Job`, `Week`, `Draft Body`, `Recipients`, `Approved for Send` (checkbox),
 `Approved By` (contact), `Approved At`, `Sent At`, `Send Status`, `Late Send` (checkbox), `Notes`.
 
-## What's blocked
+## Status
 
-- `intake.py` — needs Q4/Q5/Q6/Q8 from mirror inspection.
-- `weekly_generate.py` — needs Q4/Q5/Q6/Q8 + WPR canonical template (Q2 deferred drafting).
-- `weekly_send.py` — needs Q4/Q5/Q6/Q8 + `WPR_Pending_Review` sheet provisioned.
+- **`intake.py`** — wired end-to-end as of 2026-05-21. Sender allowlist → quarantine,
+  project resolution, Anthropic classify+extract with `<untrusted_content>` tagging + tool-use
+  JSON-mode output, confidence gate → review queue, anomaly check (sentinel + model-self-
+  report) → review queue, week-folder resolution, Daily Reports row write, Box upload, row
+  update with Box URL, .eml → .eml.processed watermark. 12-stage pipeline; see the
+  module docstring for the per-stage breakdown.
+- **`weekly_generate.py`** — R3 session 2 scope. Not yet started.
+- **`weekly_send.py`** — R3 session 3 scope. Not yet started.
 
-Current `intake.py` and `weekly_summary.py` are pre-cascade scaffolds. They get refactored to
-the three-script two-process model after sandbox mirror inspection.
+`weekly_summary.py` remains as the pre-cascade scaffold and is unused; it will be deleted
+when `weekly_generate.py` + `weekly_send.py` land per the two-process model.
+
+## intake.py configuration surface (ITS_Config workstream `safety_reports`)
+
+| Setting | Default | What it does |
+|---|---|---|
+| `safety_reports.intake.allowed_senders` | `["seths@evergreenmirror.com"]` | JSON list of allowlisted sender addresses or `@domain.com` patterns. Non-matching senders route to `ITS_Quarantine` without any Anthropic call. |
+| `safety_reports.intake.classification_model` | `claude-sonnet-4-6` | Anthropic model ID for the classify+extract tool-use call. |
+| `safety_reports.intake.box_filing_enabled` | `true` | When `false`, intake.py writes the Daily Reports row but skips Box upload and tags Notes / Action Items with `[box_filing_disabled]`. |
+| `safety_reports.intake.review_queue_on_low_confidence` | `true` | When `true` and `confidence < confidence_threshold`, the message routes to `ITS_Review_Queue` (Reason=low-confidence-extraction) instead of the Daily Reports row. |
+| `safety_reports.intake.confidence_threshold` | `0.75` | Float threshold for the confidence gate. |
+
+Seeded by `scripts/migrations/seed_safety_intake_config.py`. Idempotent re-run safe.
+
+## How to smoke-test intake.py
+
+The post-merge smoke is operator-driven against the sandbox (`evergreenmirror.com`):
+
+1. **Mail.app rule**: add a rule to Apple Mail that watches incoming messages to
+   `safety@evergreenmirror.com` (or wherever the sandbox intake address routes) and
+   runs `python ~/its/safety_reports/intake.py <path-to-eml>` with the dropped message.
+   The .eml file should land in a hot-folder the rule watches.
+2. **Anthropic key**: ensure `ITS_ANTHROPIC_KEY` is in macOS Keychain
+   (`security add-generic-password -a "$USER" -s "ITS_ANTHROPIC_KEY" -w`).
+   intake.py was the first production consumer of `shared.anthropic_client`; the key
+   may not be seeded if the previous sessions didn't need it.
+3. **Send the smoke email**: from `seths@evergreenmirror.com` to the configured intake
+   address. Subject example: `Bradley 1 — Daily JHA — 2026-05-21`. Body should mention
+   the project name + a paraphrased summary. Attach a representative PDF.
+4. **Observe**: tail `~/Library/Logs/its/safety_reports.log` (or wherever `error_log`
+   writes locally) for the single INFO line:
+   `intake SUCCESS sender='seths@evergreenmirror.com' project='Bradley 1' category='Daily JHA' entry=<row_id> box_urls=N box_errors=M`.
+5. **Verify Smartsheet**: open Bradley 1's current week Daily Reports sheet; a new row
+   with your subject's title and a Box URL in Notes / Action Items should be present.
+6. **Verify Box**: navigate to
+   `ITS DATA / Bradley 1 / (Project # & Name) Field / A. Onsite Reporting & Tracking / A. Safety Plan & Reports / D. JSA's/`.
+   The uploaded PDF should be named `<report_date>_<category>_<original-filename>`.
+
+To exercise the review-queue branch, send a smoke email whose project is ambiguous
+(`Bradley 1 vs Bradley 2 …`) and confirm a `PENDING` row appears in
+`ITS_Review_Queue` with `Reason=ambiguous-classification`.
