@@ -1,14 +1,23 @@
 """Unit tests for safety_reports/intake.py.
 
 All external services mocked. Tests organized by pipeline stage; the
-final section exercises `main()` end-to-end with full mocks to pin
-the orchestration glue.
+final section exercises `process_message()` end-to-end with full mocks
+to pin the orchestration glue.
+
+PR #59 (polling-daemon trigger) replaced the .eml-file ingest path with
+a Graph-based one. `process_message(message_id)` is the new pipeline
+entrypoint; `main(message_id)` is a thin CLI wrapper around it. The
+6 `test_process_message_*` tests below replace the prior `test_main_*`
+tests one-for-one, mocking `graph_client.get_message` /
+`list_attachments` / `download_attachment` instead of writing .eml
+files to tmp_path. The pipeline-stage tests (sender allowlist,
+resolve_project, classify_and_extract, collect_anomalies, write row,
+Box upload) are unchanged — they exercise pure functions and don't
+depend on the ingest mechanism.
 """
 from __future__ import annotations
 
 from datetime import date
-from email.message import EmailMessage
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
@@ -21,50 +30,93 @@ from safety_reports.intake import (
     EXTRACTION_TOOL_NAME,
     Extraction,
     ParsedEmail,
+    ProcessResult,
     _name_matches,
     _project_tool_use,
     check_sender_allowlist,
     classify_and_extract,
     collect_anomalies,
     next_entry_number,
-    parse_email_file,
+    process_message,
     resolve_project,
     upload_attachments_to_box,
     write_daily_reports_row,
 )
+from shared.graph_client import GraphNotFoundError
 from shared.smartsheet_client import SmartsheetError
 
-# ---- Fixtures -----------------------------------------------------------
+# ---- Graph mock helpers --------------------------------------------------
+
+DEFAULT_SENDER = "seths@evergreenmirror.com"
+DEFAULT_SUBJECT = "Bradley 1 Daily JHA — 2026-05-19"
+DEFAULT_BODY = "Crew started piles on Block C."
+DEFAULT_MAILBOX = "safety@evergreenmirror.com"
+DEFAULT_MESSAGE_ID = "AAMkADHAS5g="  # arbitrary Graph-style ID for tests
 
 
-def _build_eml(
-    sender: str = "seths@evergreenmirror.com",
-    subject: str = "Bradley 1 Daily JHA — 2026-05-19",
-    body: str = "Crew started piles on Block C.",
+def _build_graph_message(
+    *,
+    message_id: str = DEFAULT_MESSAGE_ID,
+    sender: str = DEFAULT_SENDER,
+    subject: str = DEFAULT_SUBJECT,
+    body: str = DEFAULT_BODY,
+    body_content_type: str = "text",
+    has_attachments: bool = False,
+) -> dict[str, Any]:
+    """Build the dict that `graph_client.get_message` would return."""
+    return {
+        "id": message_id,
+        "subject": subject,
+        "from": {"emailAddress": {"address": sender, "name": ""}},
+        "body": {"contentType": body_content_type, "content": body},
+        "hasAttachments": has_attachments,
+    }
+
+
+def _patch_graph_fetch(
+    mocker,
+    *,
+    message: dict[str, Any] | None = None,
     attachments: list[tuple[str, bytes, str]] | None = None,
-) -> bytes:
-    """Build a multipart .eml file as bytes for parse_email_file()."""
-    msg = EmailMessage()
-    msg["From"] = sender
-    msg["To"] = "safety@evergreenmirror.com"
-    msg["Subject"] = subject
-    msg.set_content(body)
-    for filename, content, mime_type in attachments or []:
-        maintype, _, subtype = mime_type.partition("/")
-        msg.add_attachment(
-            content, maintype=maintype, subtype=subtype, filename=filename
-        )
-    return msg.as_bytes()
+) -> dict[str, MagicMock]:
+    """Patch graph_client.get_message + list_attachments + download_attachment.
 
+    Returns the three patched mocks keyed by name so tests can assert
+    call counts or argument values when relevant.
+    """
+    message = message or _build_graph_message(
+        has_attachments=bool(attachments),
+    )
+    attachments = attachments or []
 
-@pytest.fixture
-def tmp_eml(tmp_path: Path):
-    """Factory that writes a .eml file and returns its path."""
-    def _write(name: str = "msg.eml", **kwargs) -> str:
-        path = tmp_path / name
-        path.write_bytes(_build_eml(**kwargs))
-        return str(path)
-    return _write
+    get_message = mocker.patch(
+        "safety_reports.intake.graph_client.get_message",
+        return_value=message,
+    )
+    list_attachments = mocker.patch(
+        "safety_reports.intake.graph_client.list_attachments",
+        return_value=[
+            {
+                "@odata.type": "#microsoft.graph.fileAttachment",
+                "id": f"att-{i}",
+                "name": filename,
+                "contentType": mime_type,
+            }
+            for i, (filename, _content, mime_type) in enumerate(attachments)
+        ],
+    )
+    # download_attachment receives (mailbox, message_id, attachment_id) — we
+    # return content keyed off the att-N id naming above.
+    by_att_id = {f"att-{i}": content for i, (_n, content, _m) in enumerate(attachments)}
+    download = mocker.patch(
+        "safety_reports.intake.graph_client.download_attachment",
+        side_effect=lambda _mailbox, _msg_id, att_id: by_att_id.get(att_id, b""),
+    )
+    return {
+        "get_message": get_message,
+        "list_attachments": list_attachments,
+        "download_attachment": download,
+    }
 
 
 def _make_extraction(**overrides: Any) -> Extraction:
@@ -84,32 +136,73 @@ def _make_extraction(**overrides: Any) -> Extraction:
     return Extraction(**base)
 
 
-# ---- Stage 1: parse_email_file ------------------------------------------
+# ---- Stage 1: _fetch_message_via_graph ----------------------------------
 
 
-def test_parse_email_file_extracts_bare_address(tmp_eml):
-    path = tmp_eml(sender="Seth Smith <seths@evergreenmirror.com>")
-    parsed = parse_email_file(path)
+def test_fetch_message_extracts_bare_address_from_graph_dict(mocker):
+    _patch_graph_fetch(
+        mocker,
+        message=_build_graph_message(sender="seths@evergreenmirror.com"),
+    )
+    parsed = intake._fetch_message_via_graph(DEFAULT_MAILBOX, DEFAULT_MESSAGE_ID)
     assert parsed.sender == "seths@evergreenmirror.com"
 
 
-def test_parse_email_file_extracts_subject_and_body(tmp_eml):
-    path = tmp_eml(subject="Daily JHA", body="Crew on Block C.\n")
-    parsed = parse_email_file(path)
-    assert parsed.subject == "Daily JHA"
+def test_fetch_message_strips_html_body(mocker):
+    _patch_graph_fetch(
+        mocker,
+        message=_build_graph_message(
+            body="<p>Crew on <b>Block C</b>.</p>",
+            body_content_type="html",
+        ),
+    )
+    parsed = intake._fetch_message_via_graph(DEFAULT_MAILBOX, DEFAULT_MESSAGE_ID)
+    assert "<" not in parsed.body_text
     assert "Block C" in parsed.body_text
 
 
-def test_parse_email_file_collects_attachments(tmp_eml):
-    path = tmp_eml(
+def test_fetch_message_collects_attachments(mocker):
+    _patch_graph_fetch(
+        mocker,
         attachments=[("jha.pdf", b"%PDF-fake", "application/pdf")],
     )
-    parsed = parse_email_file(path)
+    parsed = intake._fetch_message_via_graph(DEFAULT_MAILBOX, DEFAULT_MESSAGE_ID)
     assert len(parsed.attachments) == 1
     filename, content, mime_type = parsed.attachments[0]
     assert filename == "jha.pdf"
     assert content == b"%PDF-fake"
     assert mime_type == "application/pdf"
+
+
+def test_fetch_message_skips_non_file_attachments(mocker):
+    """Inline + item attachments are filtered out at projection time."""
+    mocker.patch(
+        "safety_reports.intake.graph_client.get_message",
+        return_value=_build_graph_message(has_attachments=True),
+    )
+    mocker.patch(
+        "safety_reports.intake.graph_client.list_attachments",
+        return_value=[
+            {
+                "@odata.type": "#microsoft.graph.itemAttachment",
+                "id": "item-att-0",
+                "name": "embedded-msg.msg",
+            },
+            {
+                "@odata.type": "#microsoft.graph.fileAttachment",
+                "id": "file-att-0",
+                "name": "real.pdf",
+                "contentType": "application/pdf",
+            },
+        ],
+    )
+    mocker.patch(
+        "safety_reports.intake.graph_client.download_attachment",
+        return_value=b"%PDF-fake",
+    )
+    parsed = intake._fetch_message_via_graph(DEFAULT_MAILBOX, DEFAULT_MESSAGE_ID)
+    assert len(parsed.attachments) == 1
+    assert parsed.attachments[0][0] == "real.pdf"
 
 
 # ---- Stage 2: sender allowlist ------------------------------------------
@@ -427,7 +520,7 @@ def test_upload_filename_construction(mocker):
     assert last_args.args[1] == "2026-05-19_Daily-JHA_morning.pdf"
 
 
-# ---- main() orchestration end-to-end ------------------------------------
+# ---- process_message() orchestration end-to-end -------------------------
 
 
 @pytest.fixture
@@ -455,10 +548,14 @@ def patch_all_config(mocker):
     )
 
 
-def test_main_quarantines_non_allowlisted_sender(mocker, tmp_eml, patch_all_config):
+def test_process_message_quarantines_non_allowlisted_sender(mocker, patch_all_config):
     mocker.patch(
         "safety_reports.intake._read_allowed_senders",
         return_value=["someone-else@evergreenmirror.com"],
+    )
+    _patch_graph_fetch(
+        mocker,
+        message=_build_graph_message(sender="random@spam.example"),
     )
     quarantine_log = mocker.patch(
         "safety_reports.intake.quarantine.log_quarantined_message",
@@ -468,15 +565,14 @@ def test_main_quarantines_non_allowlisted_sender(mocker, tmp_eml, patch_all_conf
     review_add = mocker.patch("safety_reports.intake.review_queue.add")
     classify = mocker.patch("safety_reports.intake.classify_and_extract")
 
-    path = tmp_eml(sender="random@spam.example")
-    intake.main(path)
+    result = process_message(DEFAULT_MESSAGE_ID, mailbox=DEFAULT_MAILBOX)
 
+    assert isinstance(result, ProcessResult)
+    assert result.status == "quarantined"
+    assert result.message_id == DEFAULT_MESSAGE_ID
     quarantine_log.assert_called_once()
     review_add.assert_not_called()
     classify.assert_not_called()
-    # Email file renamed to .processed
-    assert not Path(path).exists()
-    assert Path(path + ".processed").exists()
     # INFO log captures the quarantine.
     assert any(
         call.args[0].value == "INFO" and "quarantined" in call.args[2].lower()
@@ -484,28 +580,38 @@ def test_main_quarantines_non_allowlisted_sender(mocker, tmp_eml, patch_all_conf
     )
 
 
-def test_main_review_queue_on_unresolved_project(mocker, tmp_eml, patch_all_config):
+def test_process_message_review_queue_on_unresolved_project(mocker, patch_all_config):
+    _patch_graph_fetch(
+        mocker,
+        message=_build_graph_message(
+            subject="Generic safety note",
+            body="No project named here.",
+        ),
+    )
     mocker.patch("safety_reports.intake.error_log.log")
     review_add = mocker.patch(
         "safety_reports.intake.review_queue.add", return_value=1
     )
     classify = mocker.patch("safety_reports.intake.classify_and_extract")
 
-    path = tmp_eml(subject="Generic safety note", body="No project named here.")
-    intake.main(path)
+    result = process_message(DEFAULT_MESSAGE_ID, mailbox=DEFAULT_MAILBOX)
 
+    assert result.status == "review_queue"
     review_add.assert_called_once()
     assert (
         review_add.call_args.kwargs["reason"].value == "ambiguous-classification"
     )
     classify.assert_not_called()
-    assert Path(path + ".processed").exists()
 
 
-def test_main_routes_low_confidence_to_review_queue(mocker, tmp_eml, patch_all_config):
+def test_process_message_routes_low_confidence_to_review_queue(mocker, patch_all_config):
     mocker.patch(
         "safety_reports.intake._read_float_setting",
         side_effect=lambda key, fallback: 0.75 if "threshold" in key else fallback,
+    )
+    _patch_graph_fetch(
+        mocker,
+        message=_build_graph_message(subject="Bradley 1 Daily JHA"),
     )
     extraction = _make_extraction(confidence=0.5)
     mocker.patch(
@@ -517,19 +623,26 @@ def test_main_routes_low_confidence_to_review_queue(mocker, tmp_eml, patch_all_c
     )
     write_row = mocker.patch("safety_reports.intake.write_daily_reports_row")
 
-    path = tmp_eml(subject="Bradley 1 Daily JHA")
-    intake.main(path)
+    result = process_message(DEFAULT_MESSAGE_ID, mailbox=DEFAULT_MAILBOX)
 
+    assert result.status == "review_queue"
     review_add.assert_called_once()
     assert (
         review_add.call_args.kwargs["reason"].value
         == "low-confidence-extraction"
     )
     write_row.assert_not_called()
-    assert Path(path + ".processed").exists()
 
 
-def test_main_happy_path_writes_row_and_uploads(mocker, tmp_eml, patch_all_config):
+def test_process_message_happy_path_writes_row_and_uploads(mocker, patch_all_config):
+    _patch_graph_fetch(
+        mocker,
+        message=_build_graph_message(
+            subject="Bradley 1 Daily JHA",
+            has_attachments=True,
+        ),
+        attachments=[("jha.pdf", b"%PDF-fake", "application/pdf")],
+    )
     extraction = _make_extraction(confidence=0.95)
     mocker.patch(
         "safety_reports.intake.classify_and_extract", return_value=extraction
@@ -552,16 +665,13 @@ def test_main_happy_path_writes_row_and_uploads(mocker, tmp_eml, patch_all_confi
     )
     error_log_log = mocker.patch("safety_reports.intake.error_log.log")
 
-    path = tmp_eml(
-        subject="Bradley 1 Daily JHA",
-        attachments=[("jha.pdf", b"x", "application/pdf")],
-    )
-    intake.main(path)
+    result = process_message(DEFAULT_MESSAGE_ID, mailbox=DEFAULT_MAILBOX)
 
+    assert result.status == "processed"
+    assert result.message_id == DEFAULT_MESSAGE_ID
     write_row.assert_called_once()
     upload.assert_called_once()
     update_row.assert_called_once()
-    assert Path(path + ".processed").exists()
 
     # Success log emitted.
     success_logs = [
@@ -571,7 +681,40 @@ def test_main_happy_path_writes_row_and_uploads(mocker, tmp_eml, patch_all_confi
     assert success_logs, "expected one INFO 'intake SUCCESS' log"
 
 
-def test_main_high_severity_anomaly_routes_to_review(mocker, tmp_eml, patch_all_config):
+def test_process_message_skipped_swo_other_when_category_is_other(mocker, patch_all_config):
+    """SWO/Other categories surface a distinct status for poller observability."""
+    _patch_graph_fetch(
+        mocker,
+        message=_build_graph_message(subject="Bradley 1 site-walk note"),
+    )
+    extraction = _make_extraction(report_category="Other", confidence=0.95)
+    mocker.patch(
+        "safety_reports.intake.classify_and_extract", return_value=extraction
+    )
+    mocker.patch(
+        "safety_reports.intake.ensure_current_week_folder",
+        return_value=SimpleNamespace(
+            folder_id=1, daily_reports_sheet_id=100, weekly_rollup_sheet_id=200
+        ),
+    )
+    mocker.patch(
+        "safety_reports.intake.write_daily_reports_row", return_value=42
+    )
+    # upload_attachments_to_box returns the "no Box subfolder mapping" error
+    # for SWO/Other; we let the real function return that — no patch needed.
+    mocker.patch("safety_reports.intake.update_row_with_box_links")
+    mocker.patch("safety_reports.intake.error_log.log")
+
+    result = process_message(DEFAULT_MESSAGE_ID, mailbox=DEFAULT_MAILBOX)
+
+    assert result.status == "skipped_swo_other"
+
+
+def test_process_message_high_severity_anomaly_routes_to_review(mocker, patch_all_config):
+    _patch_graph_fetch(
+        mocker,
+        message=_build_graph_message(subject="Bradley 1 Daily JHA"),
+    )
     extraction = _make_extraction(
         confidence=0.95, anomaly_flags=["apparent_injection_attempt"]
     )
@@ -584,19 +727,32 @@ def test_main_high_severity_anomaly_routes_to_review(mocker, tmp_eml, patch_all_
     )
     write_row = mocker.patch("safety_reports.intake.write_daily_reports_row")
 
-    path = tmp_eml(subject="Bradley 1 Daily JHA")
-    intake.main(path)
+    result = process_message(DEFAULT_MESSAGE_ID, mailbox=DEFAULT_MAILBOX)
 
+    assert result.status == "review_queue"
     review_add.assert_called_once()
     assert review_add.call_args.kwargs["reason"].value == "security-trigger"
     assert review_add.call_args.kwargs["security_flag"] is True
     write_row.assert_not_called()
-    assert Path(path + ".processed").exists()
 
 
-def test_main_smartsheet_write_failure_leaves_file_for_retry(
-    mocker, tmp_eml, patch_all_config
+def test_process_message_returns_error_status_on_smartsheet_failure(
+    mocker, patch_all_config
 ):
+    """SmartsheetError during write is now a soft failure: status='error'.
+
+    Prior behavior (file-based intake): SmartsheetError propagated and the
+    .eml file was left unrenamed for retry. New behavior (Graph-based
+    intake): SmartsheetError is caught inside process_message and turned
+    into ProcessResult(status='error'). The poll loop then skips
+    mark_read for this message, so it stays unread and is re-tried on
+    the next cycle. Same operator-visible retry semantic, expressed via
+    return-value instead of raise.
+    """
+    _patch_graph_fetch(
+        mocker,
+        message=_build_graph_message(subject="Bradley 1 Daily JHA"),
+    )
     extraction = _make_extraction(confidence=0.95)
     mocker.patch(
         "safety_reports.intake.classify_and_extract", return_value=extraction
@@ -611,19 +767,37 @@ def test_main_smartsheet_write_failure_leaves_file_for_retry(
         "safety_reports.intake.write_daily_reports_row",
         side_effect=SmartsheetError("HTTP 500"),
     )
-    # Suppress the @its_error_log decorator's full CRITICAL-alert pipeline.
-    # log() hits _smartsheet_log → smartsheet_client → keychain (fails on
-    # Linux CI; no `security` CLI). _alert_critical fires Resend + Sentry
-    # → also keychain. Patch both so the decorator's except branch
-    # completes and re-raises the original SmartsheetError, which is what
-    # we assert.
+    # Suppress the side-channel CRITICAL pipeline so the test isolates the
+    # ProcessResult.status assertion. The decorator we care about lives on
+    # poll_once, not process_message — but error_log.log can still hit
+    # _alert_critical via Smartsheet writes; patch defensively.
     mocker.patch("shared.error_log.log")
     mocker.patch("shared.error_log._alert_critical")
 
-    path = tmp_eml(subject="Bradley 1 Daily JHA")
-    with pytest.raises(SmartsheetError):
-        intake.main(path)
+    result = process_message(DEFAULT_MESSAGE_ID, mailbox=DEFAULT_MAILBOX)
 
-    # File NOT renamed — main() raised before reaching mark_email_processed.
-    assert Path(path).exists()
-    assert not Path(path + ".processed").exists()
+    assert result.status == "error"
+    assert "SmartsheetError" in (result.notes or "")
+
+
+def test_process_message_returns_error_status_on_graph_fetch_failure(
+    mocker, patch_all_config
+):
+    """A GraphError during fetch is also a soft failure: status='error'.
+
+    Same retry contract as SmartsheetError above — the poller leaves the
+    message unread, the next poll cycle re-fetches. This case is the
+    common scenario when Graph throws 401/403/404 transiently (token
+    rotation, app-policy change, race with the user moving the message).
+    """
+    mocker.patch(
+        "safety_reports.intake.graph_client.get_message",
+        side_effect=GraphNotFoundError("HTTP 404: message gone"),
+    )
+    mocker.patch("shared.error_log.log")
+    mocker.patch("shared.error_log._alert_critical")
+
+    result = process_message(DEFAULT_MESSAGE_ID, mailbox=DEFAULT_MAILBOX)
+
+    assert result.status == "error"
+    assert "GraphNotFoundError" in (result.notes or "")

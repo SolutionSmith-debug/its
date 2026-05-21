@@ -119,13 +119,19 @@ Resolution: see commit on the `fix/migrate-fl-warnings-annotation` branch (squas
 
 Originally surfaced 2026-05-18 in the mypy baseline reconciliation; see `docs/reports/2026-05-18_mypy_baseline.md` for the lifecycle context.
 
-## Mail.app rule silent disable on macOS updates [OPEN]
+## Mail.app rule silent disable on macOS updates [PARTIALLY MITIGATED 2026-05-22]
 
 macOS updates have a known pattern of silently disabling Mail.app rules without warning. Affects any workstream whose intake depends on Mail.app rules routing messages to the Claude Code script.
 
-Workaround / mitigation: Watchdog (Op Stds v9 §2) must include an inbound-mail-processed-in-24h check. If watchdog observes no recent intake activity from a given workstream, surface as WARN to operator. Originally captured in Foundation Scaffold v4 "Outstanding Gotchas"; carried forward through v5; re-surfaced via Cascade Audit Errata 2026-05-19.
+**Mitigation in place (Watchdog Check F, PR #36):** Watchdog has an inbound-mail-activity check across all intake-bearing workstreams, surfacing WARN when no recent intake activity is observed.
 
-Resolves when: shared/watchdog.py implements inbound-mail-activity check across all intake-bearing workstreams (Excellence Roadmap v2.1 Track 1 R2).
+**Architectural cutover (safety_reports, PR #59, 2026-05-22):** safety_reports migrated off the Mail.app rule trigger to a launchd-driven Graph polling daemon (`safety_reports/intake_poll.py`). This eliminates the silent-disable risk for safety_reports specifically — no Mail.app rule exists in the trigger path anymore. Future workstreams should use the same polling pattern rather than Mail.app rules; this tech-debt entry stays OPEN until that becomes the documented standard for new intake-bearing workstreams (likely Email Triage Brief v5 update + a shared/runner.py abstraction at PR #60 when the second polling consumer ships).
+
+Watchdog Check F still polls mailbox-idle as a proxy for trigger health — works unchanged for safety_reports after PR #59 because the inbox-activity signal is the same regardless of trigger mechanism. A cleaner heartbeat-based replacement (read `~/its/state/safety_intake_heartbeat.txt`) is queued as a follow-up PR after PR #60.
+
+Resolves fully when: every intake-bearing workstream is on a polling daemon (no Mail.app rule trigger remains anywhere in ITS), and Watchdog Check F is repurposed to read the per-daemon heartbeat files instead of mailbox-idle.
+
+Originally captured in Foundation Scaffold v4 "Outstanding Gotchas"; carried forward through v5; re-surfaced via Cascade Audit Errata 2026-05-19; mitigation lifecycle landed via PR #36 (Watchdog Check F) + PR #59 (safety_reports cutover).
 
 ## PowerShell macOS Gatekeeper deprecation 2026-09-01 [OPEN]
 
