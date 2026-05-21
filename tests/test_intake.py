@@ -611,6 +611,12 @@ def test_main_smartsheet_write_failure_leaves_file_for_retry(
         "safety_reports.intake.write_daily_reports_row",
         side_effect=SmartsheetError("HTTP 500"),
     )
+    # Suppress the @its_error_log decorator's triple-fire CRITICAL alert
+    # path — its Resend/Sentry legs read keychain, which fails on Linux CI
+    # (no `security` CLI). Local-mac runs work, but we want this test to
+    # pass everywhere. The decorator still re-raises the original
+    # exception after the suppressed alert path, which is what we assert.
+    mocker.patch("shared.error_log._alert_critical")
 
     path = tmp_eml(subject="Bradley 1 Daily JHA")
     with pytest.raises(SmartsheetError):
