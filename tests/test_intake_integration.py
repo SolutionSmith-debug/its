@@ -4,8 +4,11 @@ End-to-end pipeline against the sandbox tenant:
   - synthetic .eml file on disk (Mail.app not exercised)
   - live Anthropic classify+extract call (real model, real key)
   - live Smartsheet add_rows into Bradley 1's current-week Daily Reports
+    OR live add to ITS_Review_Queue (whichever path the pipeline takes
+    based on the model's confidence + anomaly self-report)
   - live Box upload into the per-category subfolder under Bradley 1
-  - live cleanup of both the row and the file in the test's finally block
+    (happy path only)
+  - live cleanup of any rows + files this test created, in finally
 
 Default `pytest -q` SKIPS this file via the pyproject `addopts = -m 'not
 integration'`. Operator runs with:
@@ -19,9 +22,30 @@ skip the whole module.
 
 Cost note: this test makes one live Anthropic call per run (Sonnet 4.6,
 ~2k tokens). Run sparingly. Not part of CI.
+
+Why the assertion accepts either path
+-------------------------------------
+
+intake.py's contract is: route an inbound email somewhere sensible. The
+"somewhere" varies based on the model's classification confidence and
+anomaly-flag self-report against the configured threshold + sentinel
+list. A synthetic test email can land at either:
+
+  - Daily Reports row (happy path, `confidence >= threshold`, no
+    high-severity anomalies)
+  - ITS_Review_Queue row (any gate fires: low confidence, anomaly,
+    structured-output edge, project unresolved)
+
+Both outcomes prove the pipeline is wired end-to-end. The test asserts
+XOR: exactly one of the two paths produced a row. Neither would mean
+the pipeline silently dropped the message; both would mean a duplicated
+write bug. The print line surfaces which path fired so the operator can
+spot a routing-pattern drift across runs without needing to dig into
+the row data.
 """
 from __future__ import annotations
 
+import re
 from datetime import UTC, date, datetime
 from email.message import EmailMessage
 from pathlib import Path
@@ -37,6 +61,7 @@ pytestmark = pytest.mark.integration
 
 SANDBOX_PROJECT = "Bradley 1"
 SANDBOX_SENDER = "intake_integration@evergreenmirror.com"
+WORKSTREAM = "safety_reports"
 
 
 @pytest.fixture(scope="module")
@@ -96,12 +121,38 @@ def _build_eml_bytes(sender: str, subject: str, body: str, pdf_bytes: bytes) -> 
     return msg.as_bytes()
 
 
-def _find_today_row(sheet_id: int, marker: str) -> dict | None:
+def _find_daily_reports_row(sheet_id: int, marker: str) -> dict | None:
     """Return the Daily Reports row whose Safety Topic / Report Title
-    matches `marker`. Use a distinctive marker so we can identify the row
-    we wrote even after concurrent additions."""
+    matches `marker`. The marker is embedded in the synthetic email body
+    so the model carries it verbatim into the title field."""
     rows = smartsheet_client.get_rows(
         sheet_id, filters={"Safety Topic / Report Title": marker}
+    )
+    return rows[0] if rows else None
+
+
+def _find_review_queue_row(source_file: str) -> dict | None:
+    """Return the ITS_Review_Queue row whose Source File matches the
+    .eml path we wrote. intake.py passes `email_path` as `source_file`
+    on every review-queue write, so the row carries the exact .eml path
+    (unique per pytest tmp_path) — clean primary key for cleanup."""
+    rows = smartsheet_client.get_rows(
+        sheet_ids.SHEET_REVIEW_QUEUE,
+        filters={"Source File": source_file, "Workstream": WORKSTREAM},
+    )
+    return rows[0] if rows else None
+
+
+def _find_quarantine_row(sender: str, subject: str) -> dict | None:
+    """Return the ITS_Quarantine row matching sender + subject.
+
+    No current code path in this test triggers the quarantine branch
+    (the sandbox sender is allowlisted in setup), but the finally cleans
+    up defensively for symmetry — if a future test exercises the
+    quarantine path, this helper is already in place."""
+    rows = smartsheet_client.get_rows(
+        sheet_ids.SHEET_QUARANTINE,
+        filters={"Sender": sender, "Subject": subject},
     )
     return rows[0] if rows else None
 
@@ -167,16 +218,16 @@ def test_intake_end_to_end_round_trip(
     _token_available: str,
     _anthropic_available: None,
     _box_available: None,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Synthetic email → live pipeline → Smartsheet row + Box file → cleanup.
-
-    Asserts: a Daily Reports row matches the marker we wrote, AND the
-    row's Notes / Action Items field contains a Box URL.
-    """
+    """Synthetic email → live pipeline → exactly one of Daily Reports OR Review Queue → cleanup."""
     # Build the .eml file. Use a marker the model will pass through
-    # verbatim into safety_topic_or_report_title so we can find the row.
+    # verbatim into safety_topic_or_report_title so we can find a Daily
+    # Reports row by it; the .eml path serves as the primary key for
+    # ITS_Review_Queue cleanup via the Source File column.
     ts = datetime.now(UTC).strftime("%H%M%S")
     marker = f"_int_intake_integration_{ts}"
+    subject = f"Bradley 1 — Daily JHA — {marker}"
     today_iso = date.today().isoformat()
     body = (
         f"Bradley 1 site, Daily JHA on {today_iso}. "
@@ -186,12 +237,13 @@ def test_intake_end_to_end_round_trip(
     )
     eml_bytes = _build_eml_bytes(
         SANDBOX_SENDER,
-        f"Bradley 1 — Daily JHA — {marker}",
+        subject,
         body,
         b"%PDF-1.4\n%integration test placeholder\n%%EOF\n",
     )
     eml_path = tmp_path / "integration.eml"
     eml_path.write_bytes(eml_bytes)
+    eml_path_str = str(eml_path)
 
     # Add the sandbox sender to the live allowlist row; restore in finally.
     allowlist_row_id = _add_sandbox_sender_to_allowlist(_token_available)
@@ -201,11 +253,10 @@ def test_intake_end_to_end_round_trip(
             "run scripts/migrations/seed_safety_intake_config.py first."
         )
 
-    created_row_id: int | None = None
     created_sheet_id: int | None = None
     created_box_file_ids: list[str] = []
     try:
-        intake.main(str(eml_path))
+        intake.main(eml_path_str)
 
         # The pipeline writes into the project's current-week sheet — recompute
         # the week-folder scaffold to find the sheet ID.
@@ -213,29 +264,68 @@ def test_intake_end_to_end_round_trip(
         scaffold = ensure_current_week_folder(SANDBOX_PROJECT)
         created_sheet_id = scaffold.daily_reports_sheet_id
 
-        row = _find_today_row(created_sheet_id, marker)
-        assert row is not None, (
-            f"no Daily Reports row found with Safety Topic / Report Title "
-            f"= {marker!r} on sheet {created_sheet_id}"
-        )
-        created_row_id = int(row["_row_id"])
+        daily_row = _find_daily_reports_row(created_sheet_id, marker)
+        review_row = _find_review_queue_row(eml_path_str)
 
-        # The Notes / Action Items field should now contain a Box URL prefix
-        # from the row update step (or the [box_filing_failed] marker if the
-        # upload failed — both are acceptable end states for assertion).
-        notes = row.get("Notes / Action Items") or ""
-        assert "Box: " in notes or "[box_filing" in notes, (
-            f"Notes / Action Items lacks Box-link prefix: {notes!r}"
+        # XOR: exactly one of the two paths produced a row. Both would be
+        # a duplicated-write bug; neither would mean the pipeline silently
+        # dropped the message.
+        present_count = (daily_row is not None) + (review_row is not None)
+        assert present_count == 1, (
+            f"intake.py routing-contract violated: expected exactly ONE of "
+            f"Daily Reports row or Review Queue row; got "
+            f"daily_row={daily_row!r}, review_row={review_row!r}."
         )
 
-        # Extract the Box file ID from the URL (for cleanup) if present.
-        import re
-        for match in re.finditer(r"app\.box\.com/file/(\d+)", notes):
-            created_box_file_ids.append(match.group(1))
+        if daily_row is not None:
+            # Happy path: confidence >= threshold, no high-severity anomalies.
+            print(
+                f"[intake-test] Path: Daily Reports row "
+                f"(row_id={daily_row['_row_id']}) — confidence >= threshold, "
+                f"no high-severity anomalies"
+            )
+            notes = daily_row.get("Notes / Action Items") or ""
+            assert "Box: " in notes or "[box_filing" in notes, (
+                f"Notes / Action Items lacks Box-link prefix: {notes!r}"
+            )
+            # Capture box file IDs from the URLs so finally can delete them.
+            for match in re.finditer(r"app\.box\.com/file/(\d+)", notes):
+                created_box_file_ids.append(match.group(1))
+        else:
+            # review_row is not None.
+            reason = review_row.get("Reason") if review_row else None
+            print(
+                f"[intake-test] Path: ITS_Review_Queue row "
+                f"(row_id={review_row['_row_id'] if review_row else '?'}) "
+                f"— gate routed (Reason={reason!r})"
+            )
     finally:
         _restore_allowlist(allowlist_row_id)
-        if created_row_id is not None and created_sheet_id is not None:
-            _delete_row(created_sheet_id, created_row_id, _token_available)
+        # Defensive cleanup: search every possible target sheet for rows
+        # this test could have created, delete what we find. Runs whether
+        # the test passed, failed, or main() raised partway through.
+        if created_sheet_id is not None:
+            daily_row_cleanup = _find_daily_reports_row(created_sheet_id, marker)
+            if daily_row_cleanup is not None:
+                _delete_row(
+                    created_sheet_id,
+                    int(daily_row_cleanup["_row_id"]),
+                    _token_available,
+                )
+        review_row_cleanup = _find_review_queue_row(eml_path_str)
+        if review_row_cleanup is not None:
+            _delete_row(
+                sheet_ids.SHEET_REVIEW_QUEUE,
+                int(review_row_cleanup["_row_id"]),
+                _token_available,
+            )
+        quarantine_row_cleanup = _find_quarantine_row(SANDBOX_SENDER, subject)
+        if quarantine_row_cleanup is not None:
+            _delete_row(
+                sheet_ids.SHEET_QUARANTINE,
+                int(quarantine_row_cleanup["_row_id"]),
+                _token_available,
+            )
         for file_id in created_box_file_ids:
             _delete_box_file(file_id)
         # The intake.main rename-on-success made the .eml.processed file;
