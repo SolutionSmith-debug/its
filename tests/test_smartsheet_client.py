@@ -777,3 +777,172 @@ def test_create_sheet_in_folder_translates_api_error(mocker):
 
     with pytest.raises(SmartsheetRateLimitError):
         smartsheet_client.create_sheet_in_folder(7, "Whatever", [])
+
+
+# ---- find_folder_by_name_in_folder ---------------------------------------
+
+
+def _rest_get_folder_response_with_folders(
+    folders: list[dict] | None, status: int = 200
+):
+    """Build a mock requests.Response with a `folders` field.
+
+    Mirror of `_rest_get_folder_response` for the find-folder helper. The
+    underlying REST endpoint is the same (GET /folders/{id}); the helper
+    reads `body["folders"]` instead of `body["sheets"]`.
+    """
+    response = MagicMock()
+    response.status_code = status
+    body: dict = {"id": 7, "name": "fake-folder"}
+    if folders is not None:
+        body["folders"] = folders
+    response.json.return_value = body
+    if status >= 400:
+        from requests import HTTPError
+        err = HTTPError(f"HTTP {status}")
+        err.response = response
+        response.raise_for_status.side_effect = err
+        response.text = body.get("message", "error")
+    else:
+        response.raise_for_status.return_value = None
+    return response
+
+
+def test_find_folder_by_name_in_folder_matches_title(mocker):
+    mocker.patch(
+        "shared.smartsheet_client.requests.get",
+        return_value=_rest_get_folder_response_with_folders([
+            {"id": 100, "name": "Week of 2026-02-16"},
+            {"id": 200, "name": "Week of 2026-02-23"},
+            {"id": 300, "name": "Week of 2026-03-09"},
+        ]),
+    )
+
+    result = smartsheet_client.find_folder_by_name_in_folder(
+        7, "Week of 2026-02-23"
+    )
+    assert result == 200
+
+
+def test_find_folder_by_name_in_folder_returns_none_when_absent(mocker):
+    mocker.patch(
+        "shared.smartsheet_client.requests.get",
+        return_value=_rest_get_folder_response_with_folders([
+            {"id": 100, "name": "Week of 2026-02-16"},
+        ]),
+    )
+
+    assert (
+        smartsheet_client.find_folder_by_name_in_folder(7, "Week of 9999-99-99")
+        is None
+    )
+
+
+def test_find_folder_by_name_in_folder_translates_rate_limit(mocker):
+    mocker.patch(
+        "shared.smartsheet_client.requests.get",
+        return_value=_rest_get_folder_response_with_folders(None, status=429),
+    )
+
+    with pytest.raises(SmartsheetRateLimitError):
+        smartsheet_client.find_folder_by_name_in_folder(7, "Anything")
+
+
+# ---- create_folder_in_folder + create_sheet_in_folder_from_template -----
+
+
+def _rest_post_response(result_id: int, status: int = 200):
+    """Build a mock requests.Response wrapping `{"result": {"id": result_id}}`."""
+    response = MagicMock()
+    response.status_code = status
+    response.json.return_value = {"result": {"id": result_id}}
+    if status >= 400:
+        from requests import HTTPError
+        err = HTTPError(f"HTTP {status}")
+        err.response = response
+        response.raise_for_status.side_effect = err
+        response.text = "error"
+    else:
+        response.raise_for_status.return_value = None
+    return response
+
+
+def test_create_folder_in_folder_returns_new_folder_id(mocker):
+    post = mocker.patch(
+        "shared.smartsheet_client.requests.post",
+        return_value=_rest_post_response(999),
+    )
+
+    folder_id = smartsheet_client.create_folder_in_folder(7, "Week of 2026-05-18")
+
+    assert folder_id == 999
+    post.assert_called_once()
+    args, kwargs = post.call_args
+    assert args[0] == "https://api.smartsheet.com/2.0/folders/7/folders"
+    assert kwargs["json"] == {"name": "Week of 2026-05-18"}
+
+
+def test_create_folder_in_folder_translates_permission_error(mocker):
+    mocker.patch(
+        "shared.smartsheet_client.requests.post",
+        return_value=_rest_post_response(0, status=403),
+    )
+
+    with pytest.raises(SmartsheetPermissionError):
+        smartsheet_client.create_folder_in_folder(7, "Anything")
+
+
+def test_create_sheet_in_folder_from_template_returns_new_sheet_id(mocker):
+    post = mocker.patch(
+        "shared.smartsheet_client.requests.post",
+        return_value=_rest_post_response(1234),
+    )
+
+    sheet_id = smartsheet_client.create_sheet_in_folder_from_template(
+        folder_id=42,
+        name="Daily Reports — Week of 2026-05-18",
+        template_sheet_id=7282977254887300,
+    )
+
+    assert sheet_id == 1234
+    args, kwargs = post.call_args
+    # Default (include=None) -> structure-only clone, no ?include= query string.
+    assert args[0] == (
+        "https://api.smartsheet.com/2.0/sheets/7282977254887300/copy"
+    )
+    assert kwargs["json"] == {
+        "destinationType": "folder",
+        "destinationId": 42,
+        "newName": "Daily Reports — Week of 2026-05-18",
+    }
+
+
+def test_create_sheet_in_folder_from_template_passes_include_csv(mocker):
+    post = mocker.patch(
+        "shared.smartsheet_client.requests.post",
+        return_value=_rest_post_response(1234),
+    )
+
+    smartsheet_client.create_sheet_in_folder_from_template(
+        folder_id=42,
+        name="copy",
+        template_sheet_id=99,
+        include=["data", "attachments"],
+    )
+
+    args, _ = post.call_args
+    assert args[0].endswith("?include=data,attachments")
+
+
+def test_create_sheet_in_folder_from_template_translates_not_found(mocker):
+    mocker.patch(
+        "shared.smartsheet_client.requests.post",
+        return_value=_rest_post_response(0, status=404),
+    )
+
+    with pytest.raises(SmartsheetNotFoundError):
+        smartsheet_client.create_sheet_in_folder_from_template(
+            folder_id=42,
+            name="copy",
+            template_sheet_id=12345,
+        )
