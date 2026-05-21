@@ -348,7 +348,9 @@ def test_sync_addition_propagates(mocker):
     result = picklist_sync.sync_one_mapping(_mapping())
     assert result.status == "applied"
     assert result.additions == ["NEW"]
-    update_col.assert_called_once_with(200, 22, ["Acme", "Bravo", "NEW"])
+    update_col.assert_called_once_with(
+        200, 22, ["Acme", "Bravo", "NEW"], column_type="PICKLIST"
+    )
 
 
 def test_sync_removal_applied_when_safe(mocker):
@@ -375,7 +377,9 @@ def test_sync_removal_applied_when_safe(mocker):
     assert result.status == "applied"
     assert result.removals_applied == ["OBSOLETE"]
     assert result.removals_blocked == []
-    update_col.assert_called_once_with(200, 22, ["Acme", "Bravo"])
+    update_col.assert_called_once_with(
+        200, 22, ["Acme", "Bravo"], column_type="PICKLIST"
+    )
     review_add.assert_not_called()
 
 

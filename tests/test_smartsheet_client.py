@@ -547,7 +547,9 @@ def test_update_column_options_calls_sdk_and_invalidates_cache(mocker):
     # Seed the column cache so we can assert the invalidation.
     smartsheet_client._column_maps[42] = {"Status": 99}
 
-    smartsheet_client.update_column_options(42, 99, ["A", "B", "C"])
+    smartsheet_client.update_column_options(
+        42, 99, ["A", "B", "C"], column_type="PICKLIST"
+    )
 
     client.Sheets.update_column.assert_called_once()
     args, _ = client.Sheets.update_column.call_args
@@ -559,6 +561,8 @@ def test_update_column_options_calls_sdk_and_invalidates_cache(mocker):
     # the URL path (args[1]), not the model — the body must omit `id`.
     assert col.id is None
     assert list(col.options) == ["A", "B", "C"]
+    # `type` IS required (errorCode 1090) when updating options.
+    assert col.type == "PICKLIST"
     # Cache invalidated after the update so subsequent reads refresh.
     assert 42 not in smartsheet_client._column_maps
 
@@ -571,7 +575,7 @@ def test_update_column_options_body_omits_id(mocker):
     but the real Smartsheet API returned HTTP 400.
     """
     client = _install_client(mocker)
-    smartsheet_client.update_column_options(42, 99, ["A"])
+    smartsheet_client.update_column_options(42, 99, ["A"], column_type="PICKLIST")
 
     body = client.Sheets.update_column.call_args.args[2]
     assert body.id is None
@@ -580,18 +584,43 @@ def test_update_column_options_body_omits_id(mocker):
     assert "columnId" not in serialized
 
 
+def test_update_column_options_body_includes_type(mocker):
+    """Regression guard: API requires `type` when updating options
+    (errorCode 1090). Discovered live during PR #47 re-smoke."""
+    client = _install_client(mocker)
+    smartsheet_client.update_column_options(
+        42, 99, ["A"], column_type="PICKLIST"
+    )
+
+    body = client.Sheets.update_column.call_args.args[2]
+    assert body.type == "PICKLIST"
+    assert "type" in body.to_dict()
+
+
+def test_update_column_options_accepts_multi_picklist(mocker):
+    client = _install_client(mocker)
+    smartsheet_client.update_column_options(
+        42, 99, ["A"], column_type="MULTI_PICKLIST"
+    )
+
+    body = client.Sheets.update_column.call_args.args[2]
+    assert body.type == "MULTI_PICKLIST"
+
+
 def test_update_column_options_translates_auth_error(mocker):
     client = _install_client(mocker)
     client.Sheets.update_column.side_effect = _api_error(401, message="bad token")
 
     with pytest.raises(SmartsheetAuthError):
-        smartsheet_client.update_column_options(42, 99, ["A"])
+        smartsheet_client.update_column_options(
+            42, 99, ["A"], column_type="PICKLIST"
+        )
 
 
 def test_update_column_options_handles_empty_options_list(mocker):
     client = _install_client(mocker)
 
-    smartsheet_client.update_column_options(42, 99, [])
+    smartsheet_client.update_column_options(42, 99, [], column_type="PICKLIST")
 
     args, _ = client.Sheets.update_column.call_args
     col = args[2]

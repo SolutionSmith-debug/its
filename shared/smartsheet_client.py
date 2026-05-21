@@ -350,7 +350,7 @@ def list_columns_with_options(sheet_id: int) -> list[dict[str, Any]]:
 
 
 def update_column_options(
-    sheet_id: int, column_id: int, options: list[str]
+    sheet_id: int, column_id: int, options: list[str], *, column_type: str
 ) -> None:
     """Replace a PICKLIST column's options list with `options`.
 
@@ -359,17 +359,27 @@ def update_column_options(
     alphabetized list when stable order matters (R5 — Smartsheet does
     not guarantee API-side preservation otherwise).
 
-    The column ID lives in the URL path, NOT the request body — the API
-    returns HTTP 400 / errorCode 1032 if `id` appears in the body. The
-    Column model passed below intentionally omits the `id` field; the
-    `column_id` argument flows through the path component of the call.
+    Body shape requirements discovered live (PR #47 → PR #48):
+      - `id` must NOT appear in the body (errorCode 1032; the column ID
+        lives in the URL path).
+      - `type` IS required when changing `options` (errorCode 1090).
+        Caller passes it explicitly because callers already have the
+        column type from list_columns_with_options(); fetching it here
+        would mean an extra round-trip per write.
+
+    Expected `column_type` values: "PICKLIST" or "MULTI_PICKLIST". Other
+    values are accepted but the API will reject any type that doesn't
+    take an options array.
 
     Invalidates the column-title cache for the sheet because picklist
     edits don't change titles but the cache may be stale if titles were
     edited in the same UI session.
     """
     try:
-        body = smartsheet.models.Column({"options": list(options)})
+        body = smartsheet.models.Column({
+            "type": column_type,
+            "options": list(options),
+        })
         get_client().Sheets.update_column(sheet_id, column_id, body)
     except sdk_exc.SmartsheetException as e:
         raise _translate(e) from e
