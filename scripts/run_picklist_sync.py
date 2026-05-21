@@ -37,6 +37,7 @@ from shared import (  # noqa: E402
     smartsheet_client,
 )
 from shared.error_log import Severity, its_error_log, log  # noqa: E402
+from shared.kill_switch import require_active  # noqa: E402
 
 _SCRIPT = "scripts.run_picklist_sync"
 
@@ -280,6 +281,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+@require_active
 @its_error_log(_SCRIPT)
 def main() -> None:
     args = _parse_args()

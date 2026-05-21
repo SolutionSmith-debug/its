@@ -53,7 +53,15 @@ ignore = ["E501"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q --strict-markers"
+# Default invocation skips integration tests — those hit live Smartsheet
+# and require ITS_SMARTSHEET_TOKEN in Keychain. Operator runs them
+# explicitly with `pytest -m integration` pre-deployment / after any
+# smartsheet_client.py change. CI doesn't have live credentials, so
+# default-skip keeps CI green.
+addopts = "-q --strict-markers -m 'not integration'"
+markers = [
+    "integration: live-API tests against Smartsheet sandbox. Skipped by default; run with `pytest -m integration`. Requires ITS_SMARTSHEET_TOKEN in Keychain. NOT executed in CI.",
+]
 
 # ---- mypy ---------------------------------------------------------------
 # Vendor SDKs without published type stubs or py.typed markers — silenced
