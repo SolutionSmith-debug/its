@@ -1,19 +1,26 @@
-"""Safety Reports intake — process one inbound safety report email.
+"""Safety Reports intake — process one inbound safety report message.
 
-Invoked per inbound message by a Mail.app rule that drops the .eml file
-into a hot-folder; Mail.app passes the absolute path of that file to
-this script's `main(email_path)`. After successful processing the script
-renames the file to `<name>.eml.processed` so the operator can audit what
-was consumed; on failure the file stays in place for retry on the next
-invocation.
+Invoked per message by `safety_reports/intake_poll.py` (the launchd-driven
+polling daemon) which calls `process_message(message_id)`. The message is
+fetched from Microsoft Graph; on success the poller calls
+`graph_client.mark_read` as the canonical push-side watermark. On failure
+the message is left unread, allowing retry on the next poll cycle.
+
+The `main()` CLI wrapper around `process_message` preserves a manual-rerun
+entrypoint: `python -m safety_reports.intake <message_id>` re-processes
+one message by its Graph ID. Useful when an operator is debugging a
+review-queue entry and wants to force-rerun the pipeline against the
+original inbound message.
 
 12-stage pipeline
 -----------------
 
-  1. Parse the .eml file (stdlib `email` module).
-  2. Sender allowlist gate (defense-in-depth on top of the Mail.app rule).
+  1. Fetch message + attachments via Graph (`_fetch_message_via_graph`).
+  2. Sender allowlist gate (defense-in-depth on top of the Entra app's
+     Application Access Policy + the operator-curated allowlist row).
      Non-allowlisted senders → ITS_Quarantine. No Anthropic API call.
-  3. Extract attachments + plain-text body.
+  3. Extract attachments + plain-text body (part of stage 1's Graph
+     projection — Graph delivers structured fields, not raw .eml bytes).
   4. Resolve which Forefront project the report belongs to (subject
      prefix or body scan; ambiguous → ITS_Review_Queue).
   5. Anthropic classify+extract call with `<untrusted_content>` wrapping
@@ -31,21 +38,29 @@ invocation.
  10. Box upload of attachments to the per-category subfolder under
      `BOX_PROJECT_FOLDERS[project_name]`. Categories without a fixed
      mapping (Safe Work Observation, Other) skip Box and tag the row's
-     Notes with `[box_filing_skipped: category]`.
+     Notes with `[box_filing_skipped: category]`; the resulting status
+     is `skipped_swo_other` for observability.
  11. Daily Reports row update: prepend the Box URL to Notes / Action Items
      so the row carries the audit-trail link to the filed document.
- 12. Rename the email file to `.processed` and emit a single INFO success
-     line via `error_log`.
+ 12. Return `ProcessResult` to the caller. The caller (poll_once) calls
+     `graph_client.mark_read` iff the status is in the success set
+     (processed / review_queue / quarantined / skipped_swo_other). On
+     status='error' the message stays unread for retry next cycle.
 
 Capability gating
 -----------------
 
-No send capability. Per Foundation Mission v6 Invariant 1, generation
-scripts (which call the Anthropic API) have zero send capability. This
-module:
+No customer-facing send capability. Per Foundation Mission v6 Invariant 1,
+generation scripts (which call the Anthropic API) have zero external-send
+capability. This module:
 
-  - Does not import `resend`, `smtplib`, `email.mime.*` (the send
-    side of the stdlib), or any `*_send_*` module.
+  - Imports `shared.graph_client` for READ-ONLY methods only
+    (`get_message`, `list_attachments`, `download_attachment`).
+    `send_mail` is NOT imported and the AST gate in
+    `tests/test_capability_gating.py` forbids any import path containing
+    the substring `send_mail`.
+  - Does not import `resend`, `smtplib`, `email.mime.*`, or any
+    `*_send_*` module.
   - Does not call any external mail-relay endpoint.
   - `tests/test_intake_capability_gating.py` AST-scans this file to
     enforce the contract.
@@ -72,28 +87,25 @@ Per Foundation Mission v6 Invariant 2:
 Idempotency
 -----------
 
-Per-message: the rename-to-.processed step is the success watermark. A
-crash before that step leaves the file in the hot-folder; a re-run picks
-it up fresh. The Smartsheet + Box writes are NOT transaction-coupled
-(can't be — different services); if the row write succeeds but the Box
-upload fails, the row stays, the Notes field tags
-`[box_filing_failed]`, and the file IS marked .processed (because the
-authoritative state-of-record — Smartsheet — committed).
-
-Mail.app rule integration is operator-side: see safety_reports/README.md
-for the smoke-test setup.
+Per-message: `mark_read` (called by the poller after a non-error
+`ProcessResult`) is the success watermark. A crash inside
+`process_message` leaves the message unread; the next poll picks it up
+fresh. The Smartsheet + Box writes are NOT transaction-coupled (can't be
+— different services); if the row write succeeds but the Box upload
+fails, the row stays, the Notes field tags `[box_filing_failed]`, and
+the result is still `processed` (because the authoritative state-of-record
+— Smartsheet — committed). The poller also maintains an in-process seen-set
+(state file `~/its/state/safety_intake_processed.json`) as defense in depth
+against double-fetch, but the mark_read path is the canonical idempotency
+guarantee.
 """
 from __future__ import annotations
 
-import email
-import json
 import re
-import shutil
+import uuid
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
-from email.message import EmailMessage
-from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from safety_reports.week_folder import ensure_current_week_folder
 from shared import (
@@ -102,6 +114,7 @@ from shared import (
     box_client,
     defaults,
     error_log,
+    graph_client,
     quarantine,
     review_queue,
     sheet_ids,
@@ -109,17 +122,21 @@ from shared import (
     untrusted_content,
 )
 from shared.error_log import Severity, its_error_log
+from shared.graph_client import GraphError
 from shared.kill_switch import require_active
+from shared.smartsheet_client import SmartsheetError
 
 SCRIPT_NAME = "safety_reports.intake"
 WORKSTREAM = "safety_reports"
 
-# ITS_Config knobs (seeded by scripts/migrations/seed_safety_intake_config.py).
+# ITS_Config knobs (seeded by scripts/migrations/seed_safety_intake_config.py
+# and seed_safety_intake_polling_config.py).
 CFG_ALLOWED_SENDERS = "safety_reports.intake.allowed_senders"
 CFG_MODEL = "safety_reports.intake.classification_model"
 CFG_BOX_FILING_ENABLED = "safety_reports.intake.box_filing_enabled"
 CFG_REVIEW_ON_LOW_CONFIDENCE = "safety_reports.intake.review_queue_on_low_confidence"
 CFG_CONFIDENCE_THRESHOLD = "safety_reports.intake.confidence_threshold"
+CFG_MAILBOX = "safety_reports.intake.mailbox"
 
 # Defaults used when the ITS_Config row is missing or unparseable. Each fallback
 # is operationally safe: the default model is the documented Sonnet, Box filing
@@ -128,6 +145,7 @@ DEFAULT_MODEL = anthropic_client.DEFAULT_MODEL
 DEFAULT_BOX_FILING_ENABLED = True
 DEFAULT_REVIEW_ON_LOW_CONFIDENCE = True
 DEFAULT_CONFIDENCE_THRESHOLD = 0.75
+DEFAULT_MAILBOX = "safety@evergreenmirror.com"
 
 # Box per-category subfolder mapping under each project root. None means
 # "no automatic filing path — skip Box upload and tag Notes for operator
@@ -158,6 +176,13 @@ BOX_SUBPATH_BY_CATEGORY: dict[str, tuple[str, ...] | None] = {
 }
 
 VALID_CATEGORIES = frozenset(BOX_SUBPATH_BY_CATEGORY.keys())
+
+# Categories that result in `status='skipped_swo_other'` when processed —
+# the Daily Reports row IS written but Box upload is intentionally skipped
+# (no per-category subfolder maps to these). The status name is mainly for
+# observability so operators can grep poll logs for the swo/other path
+# without scanning Notes columns.
+SWO_OTHER_CATEGORIES = frozenset({"Safe Work Observation", "Other"})
 
 # Anomaly flags from the model's self-report that are HIGH-severity and
 # should route to ITS_Review_Queue with Reason=security-trigger. Other
@@ -277,7 +302,7 @@ SYSTEM_PROMPT = (
 
 @dataclass(frozen=True)
 class ParsedEmail:
-    """Minimal projection of an .eml file."""
+    """Minimal projection of an inbound Graph message."""
     sender: str
     subject: str
     body_text: str
@@ -299,24 +324,72 @@ class Extraction:
     anomaly_flags: list[str]
 
 
-# ---- Pipeline stages -----------------------------------------------------
+ProcessStatus = Literal[
+    "processed", "review_queue", "quarantined", "skipped_swo_other", "error"
+]
 
 
-def parse_email_file(email_path: str) -> ParsedEmail:
-    """Stage 1: read the .eml file and project to ParsedEmail."""
-    raw = Path(email_path).read_bytes()
-    msg: EmailMessage = email.message_from_bytes(raw, _class=EmailMessage)
+@dataclass(frozen=True)
+class ProcessResult:
+    """Outcome of one `process_message` call.
 
-    sender = (msg.get("From") or "").strip()
-    # `From` may include a display name: "Name <addr@host>". Extract the
-    # bare address for the allowlist check.
-    match = re.search(r"<([^>]+)>", sender)
-    if match:
-        sender = match.group(1).strip()
+    Consumed by `safety_reports.intake_poll.poll_once` to decide whether to
+    `mark_read`: success statuses (processed / review_queue / quarantined /
+    skipped_swo_other) advance the inbox cursor; `error` leaves the message
+    unread for retry on the next poll cycle.
 
-    subject = (msg.get("Subject") or "").strip()
-    body_text = _extract_body_text(msg)
-    attachments = list(_iter_attachments(msg))
+    `correlation_id` is the per-message UUID threaded through any error_log
+    rows + review-queue rows + Smartsheet writes this call produced, so a
+    single grep stitches together a forensic trail for one message.
+
+    `notes` is a short freeform string explaining the outcome (sender for
+    quarantined, reason enum value for review_queue, exception class for
+    error). Mainly for poll logs / debug — not a structured field.
+    """
+    status: ProcessStatus
+    message_id: str
+    correlation_id: str
+    notes: str | None = None
+
+
+# ---- Graph ingest --------------------------------------------------------
+
+
+def _fetch_message_via_graph(mailbox: str, message_id: str) -> ParsedEmail:
+    """Stage 1: fetch one Graph message + attachments → ParsedEmail.
+
+    Raises:
+        GraphError (or subclass) on any auth / network / not-found
+            failure. Caller (process_message) catches and routes to
+            status='error'.
+    """
+    msg = graph_client.get_message(mailbox, message_id)
+
+    from_obj = msg.get("from") or {}
+    email_obj = from_obj.get("emailAddress") if isinstance(from_obj, dict) else None
+    sender = ""
+    if isinstance(email_obj, dict):
+        sender = (email_obj.get("address") or "").strip()
+
+    subject = (msg.get("subject") or "").strip()
+
+    body_text = _body_text_from_graph(msg)
+
+    attachments: list[tuple[str, bytes, str]] = []
+    if msg.get("hasAttachments"):
+        for att_meta in graph_client.list_attachments(mailbox, message_id):
+            # Only file attachments — inline images / item attachments not
+            # carried into the pipeline (the model classifies on the body
+            # alone and Box wants concrete files).
+            if att_meta.get("@odata.type") != "#microsoft.graph.fileAttachment":
+                continue
+            filename = att_meta.get("name") or "attachment.bin"
+            mime_type = att_meta.get("contentType") or "application/octet-stream"
+            content = graph_client.download_attachment(
+                mailbox, message_id, att_meta["id"]
+            )
+            attachments.append((filename, content, mime_type))
+
     return ParsedEmail(
         sender=sender,
         subject=subject,
@@ -325,51 +398,24 @@ def parse_email_file(email_path: str) -> ParsedEmail:
     )
 
 
-def _extract_body_text(msg: EmailMessage) -> str:
-    """Return the plain-text body. Multipart: prefer text/plain; fall back
-    to a stripped text/html if no text/plain part exists."""
-    if msg.is_multipart():
-        for part in msg.walk():
-            if part.get_content_type() == "text/plain":
-                payload = part.get_payload(decode=True)
-                if isinstance(payload, bytes):
-                    return payload.decode(
-                        part.get_content_charset() or "utf-8", errors="replace"
-                    )
-        for part in msg.walk():
-            if part.get_content_type() == "text/html":
-                payload = part.get_payload(decode=True)
-                if isinstance(payload, bytes):
-                    html = payload.decode(
-                        part.get_content_charset() or "utf-8", errors="replace"
-                    )
-                    # Cheap text-strip — enough for classification context.
-                    return re.sub(r"<[^>]+>", " ", html)
+def _body_text_from_graph(msg: dict[str, Any]) -> str:
+    """Extract plain-text body content from a Graph message dict.
+
+    Graph delivers `body.content` already decoded as a string. HTML bodies
+    are cheap-stripped to text via the same regex the prior .eml-parsing
+    path used — enough fidelity for downstream classification context.
+    """
+    body = msg.get("body") or {}
+    content = body.get("content") or ""
+    if not isinstance(content, str):
         return ""
-    payload = msg.get_payload(decode=True)
-    if isinstance(payload, bytes):
-        return payload.decode(
-            msg.get_content_charset() or "utf-8", errors="replace"
-        )
-    return str(payload or "")
+    content_type = (body.get("contentType") or "").lower()
+    if content_type == "html":
+        return re.sub(r"<[^>]+>", " ", content)
+    return content
 
 
-def _iter_attachments(msg: EmailMessage):
-    """Yield (filename, bytes, mime_type) tuples for every named attachment."""
-    if not msg.is_multipart():
-        return
-    for part in msg.walk():
-        disposition = (part.get("Content-Disposition") or "").lower()
-        if "attachment" not in disposition and "inline" not in disposition:
-            continue
-        filename = part.get_filename()
-        if not filename:
-            continue
-        payload = part.get_payload(decode=True)
-        if not isinstance(payload, bytes):
-            continue
-        mime_type = part.get_content_type() or "application/octet-stream"
-        yield filename, payload, mime_type
+# ---- Pipeline stages -----------------------------------------------------
 
 
 def check_sender_allowlist(parsed: ParsedEmail, allowlist: list[str]) -> bool:
@@ -642,19 +688,12 @@ def update_row_with_box_links(
     )
 
 
-def mark_email_processed(email_path: str) -> Path:
-    """Stage 12 (success watermark): rename .eml → .eml.processed."""
-    src = Path(email_path)
-    dst = src.with_suffix(src.suffix + ".processed")
-    shutil.move(str(src), str(dst))
-    return dst
-
-
 # ---- Config readers ------------------------------------------------------
 
 
 def _read_allowed_senders() -> list[str]:
     """Read + parse JSON list from ITS_Config. Empty list on parse failure."""
+    import json
     try:
         raw = smartsheet_client.get_setting(
             CFG_ALLOWED_SENDERS, workstream=WORKSTREAM
@@ -693,21 +732,74 @@ def _read_float_setting(key: str, fallback: float) -> float:
         return fallback
 
 
-# ---- Main entrypoint -----------------------------------------------------
+# ---- process_message + main ---------------------------------------------
 
 
-@its_error_log(SCRIPT_NAME)
-@require_active
-def main(email_path: str) -> None:
-    """Process one inbound safety report email file.
+def process_message(
+    message_id: str,
+    *,
+    mailbox: str | None = None,
+) -> ProcessResult:
+    """Process one inbound safety report message by its Graph message_id.
 
     Args:
-        email_path: Absolute path to the .eml file dropped by the Mail.app
-            rule. The file MUST exist; main() raises FileNotFoundError
-            otherwise.
+        message_id: Graph message ID inside the safety mailbox.
+        mailbox: Override the mailbox address (e.g., for testing); defaults
+            to the ITS_Config value at `safety_reports.intake.mailbox`.
+
+    Returns:
+        ProcessResult — the poller uses `status` to decide whether to
+        mark_read. `status='error'` is reserved for known soft failures
+        (Graph fetch failed, Smartsheet write failed). Unknown exceptions
+        (programming errors, third-party SDK regressions) propagate; the
+        poll loop's `@its_error_log` decorator catches them.
     """
-    # Stage 1: parse the file
-    parsed = parse_email_file(email_path)
+    correlation_id = uuid.uuid4().hex[:12]
+    resolved_mailbox = mailbox if mailbox is not None else _read_str_setting(
+        CFG_MAILBOX, DEFAULT_MAILBOX
+    )
+
+    try:
+        return _run_pipeline(message_id, resolved_mailbox, correlation_id)
+    except GraphError as exc:
+        error_log.log(
+            Severity.ERROR,
+            SCRIPT_NAME,
+            f"Graph error during process_message id={message_id}: {exc!r}",
+            error_code="graph_error",
+            correlation_id=correlation_id,
+        )
+        return ProcessResult(
+            status="error",
+            message_id=message_id,
+            correlation_id=correlation_id,
+            notes=f"{type(exc).__name__}: {exc!r}",
+        )
+    except SmartsheetError as exc:
+        error_log.log(
+            Severity.ERROR,
+            SCRIPT_NAME,
+            f"Smartsheet error during process_message id={message_id}: {exc!r}",
+            error_code="smartsheet_error",
+            correlation_id=correlation_id,
+        )
+        return ProcessResult(
+            status="error",
+            message_id=message_id,
+            correlation_id=correlation_id,
+            notes=f"{type(exc).__name__}: {exc!r}",
+        )
+
+
+def _run_pipeline(
+    message_id: str,
+    mailbox: str,
+    correlation_id: str,
+) -> ProcessResult:
+    """Inner pipeline body; raises on soft failures so `process_message`'s
+    outer try/except converts them to status='error'."""
+    # Stage 1: fetch from Graph.
+    parsed = _fetch_message_via_graph(mailbox, message_id)
 
     # Read config knobs (cheap; cached per-process via smartsheet_client).
     allowlist = _read_allowed_senders()
@@ -730,11 +822,16 @@ def main(email_path: str) -> None:
             SCRIPT_NAME,
             f"quarantined: sender={parsed.sender!r} not in allowlist",
             error_code="quarantined_sender",
+            correlation_id=correlation_id,
         )
-        mark_email_processed(email_path)
-        return
+        return ProcessResult(
+            status="quarantined",
+            message_id=message_id,
+            correlation_id=correlation_id,
+            notes=f"sender={parsed.sender}",
+        )
 
-    # Stage 4: resolve project (Stage 3 already done as part of parse).
+    # Stage 4: resolve project (Stage 3 was rolled into the Graph projection).
     project_name = resolve_project(parsed)
     if project_name is None:
         review_queue.add(
@@ -744,20 +841,26 @@ def main(email_path: str) -> None:
                 "sender": parsed.sender,
                 "subject": parsed.subject,
                 "body_excerpt": parsed.body_text[:500],
+                "message_id": message_id,
             },
             sla_tier=review_queue.SlaTier.SAFETY_INTAKE,
             reason=review_queue.ReviewReason.AMBIGUOUS_CLASSIFICATION,
             severity=Severity.WARN,
-            source_file=email_path,
+            source_file=message_id,
         )
         error_log.log(
             Severity.WARN,
             SCRIPT_NAME,
             f"project unresolved: sender={parsed.sender!r}",
             error_code="project_unresolved",
+            correlation_id=correlation_id,
         )
-        mark_email_processed(email_path)
-        return
+        return ProcessResult(
+            status="review_queue",
+            message_id=message_id,
+            correlation_id=correlation_id,
+            notes="reason=ambiguous-classification",
+        )
 
     # Stage 5: classify + extract.
     extraction = classify_and_extract(parsed, model=model)
@@ -769,20 +872,26 @@ def main(email_path: str) -> None:
                 "sender": parsed.sender,
                 "subject": parsed.subject,
                 "project_name": project_name,
+                "message_id": message_id,
             },
             sla_tier=review_queue.SlaTier.SAFETY_INTAKE,
             reason=review_queue.ReviewReason.STRUCTURED_OUTPUT_EDGE,
             severity=Severity.ERROR,
-            source_file=email_path,
+            source_file=message_id,
         )
         error_log.log(
             Severity.ERROR,
             SCRIPT_NAME,
-            f"classifier returned no/malformed tool-use for {email_path}",
+            f"classifier returned no/malformed tool-use for message_id={message_id}",
             error_code="classifier_malformed",
+            correlation_id=correlation_id,
         )
-        mark_email_processed(email_path)
-        return
+        return ProcessResult(
+            status="review_queue",
+            message_id=message_id,
+            correlation_id=correlation_id,
+            notes="reason=structured-output-edge",
+        )
 
     # Stage 6: confidence gate.
     if review_on_low_confidence and extraction.confidence < threshold:
@@ -798,20 +907,26 @@ def main(email_path: str) -> None:
                 "subject": parsed.subject,
                 "project_name": project_name,
                 "extraction": _extraction_to_dict(extraction),
+                "message_id": message_id,
             },
             sla_tier=review_queue.SlaTier.SAFETY_INTAKE,
             reason=review_queue.ReviewReason.LOW_CONFIDENCE_EXTRACTION,
             severity=Severity.WARN,
-            source_file=email_path,
+            source_file=message_id,
         )
         error_log.log(
             Severity.WARN,
             SCRIPT_NAME,
             f"low-confidence routed to review: {extraction.confidence:.2f}",
             error_code="low_confidence",
+            correlation_id=correlation_id,
         )
-        mark_email_processed(email_path)
-        return
+        return ProcessResult(
+            status="review_queue",
+            message_id=message_id,
+            correlation_id=correlation_id,
+            notes="reason=low-confidence-extraction",
+        )
 
     # Stage 7: anomaly check.
     anomaly_flags, has_high_severity = collect_anomalies(extraction)
@@ -828,11 +943,12 @@ def main(email_path: str) -> None:
                 "project_name": project_name,
                 "extraction": _extraction_to_dict(extraction),
                 "anomaly_flags": anomaly_flags,
+                "message_id": message_id,
             },
             sla_tier=review_queue.SlaTier.SAFETY_INTAKE,
             reason=review_queue.ReviewReason.SECURITY_TRIGGER,
             severity=Severity.CRITICAL,
-            source_file=email_path,
+            source_file=message_id,
             security_flag=True,
         )
         error_log.log(
@@ -840,9 +956,14 @@ def main(email_path: str) -> None:
             SCRIPT_NAME,
             f"high-severity anomaly: flags={anomaly_flags}",
             error_code="anomaly_high_severity",
+            correlation_id=correlation_id,
         )
-        mark_email_processed(email_path)
-        return
+        return ProcessResult(
+            status="review_queue",
+            message_id=message_id,
+            correlation_id=correlation_id,
+            notes="reason=security-trigger",
+        )
 
     notes_prefix = f"[anomaly: {', '.join(anomaly_flags)}]" if anomaly_flags else ""
 
@@ -880,16 +1001,19 @@ def main(email_path: str) -> None:
             urls=urls,
             errors=errors,
         )
-    except Exception as exc:  # noqa: BLE001 — non-fatal per pipeline spec.
+    except SmartsheetError as exc:
+        # Non-fatal per pipeline spec (Stage 11). The row already exists
+        # and is the authoritative state of record; the Box-link prefix
+        # is an audit-trail nice-to-have.
         error_log.log(
             Severity.WARN,
             SCRIPT_NAME,
             f"row {row_id} update failed (Box link unrecorded): {exc!r}",
             error_code="row_update_failed",
+            correlation_id=correlation_id,
         )
 
-    # Stage 12: success watermark + log.
-    mark_email_processed(email_path)
+    # Stage 12: success log + return.
     error_log.log(
         Severity.INFO,
         SCRIPT_NAME,
@@ -899,6 +1023,22 @@ def main(email_path: str) -> None:
             f"box_urls={len(urls)} box_errors={len(errors)}"
         ),
         error_code="intake_success",
+        correlation_id=correlation_id,
+    )
+
+    status: ProcessStatus = (
+        "skipped_swo_other"
+        if extraction.report_category in SWO_OTHER_CATEGORIES
+        else "processed"
+    )
+    return ProcessResult(
+        status=status,
+        message_id=message_id,
+        correlation_id=correlation_id,
+        notes=(
+            f"project={project_name} category={extraction.report_category} "
+            f"entry={row_id}"
+        ),
     )
 
 
@@ -916,6 +1056,26 @@ def _extraction_to_dict(extraction: Extraction) -> dict[str, Any]:
         "visitor_log": extraction.visitor_log,
         "anomaly_flags": extraction.anomaly_flags,
     }
+
+
+@its_error_log(SCRIPT_NAME)
+@require_active
+def main(message_id: str) -> None:
+    """CLI entrypoint: process one message by Graph message_id.
+
+    Manual rerun: `python -m safety_reports.intake <message_id>`. The
+    polling daemon (`safety_reports.intake_poll`) is the normal trigger;
+    this entry point exists for operator-initiated retries of a specific
+    message that landed in the review queue or errored.
+    """
+    result = process_message(message_id)
+    error_log.log(
+        Severity.INFO,
+        SCRIPT_NAME,
+        f"intake CLI run: status={result.status} message_id={message_id} notes={result.notes!r}",
+        error_code="intake_cli_run",
+        correlation_id=result.correlation_id,
+    )
 
 
 if __name__ == "__main__":

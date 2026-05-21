@@ -34,3 +34,12 @@ that `safety_reports/intake.py` reads at runtime: `allowed_senders` (JSON list),
 `classification_model` (Anthropic model ID), `box_filing_enabled` (capability flag),
 `review_queue_on_low_confidence` (behavior flag), and `confidence_threshold` (float).
 Ran 2026-05-21. Idempotent per row.
+
+### `seed_safety_intake_polling_config.py`
+
+Seeds 3 `safety_reports.intake.*` polling-daemon rows in `ITS_Config` (workstream
+`safety_reports`) consumed by `safety_reports/intake_poll.py` + the install script:
+`poll_interval_seconds` (read at install time and substituted into the launchd
+plist's `StartInterval`), `mailbox` (Graph mailbox to poll), and `polling_enabled`
+(per-workstream kill switch, distinct from the global `system.state`). Companion
+to PR #59. Idempotent per row.
