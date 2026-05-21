@@ -1,127 +1,172 @@
 #!/usr/bin/env python3
-"""Smoke test for shared/alert_dedupe.py + triple-fire dedupe gating.
+"""Smoke test for alert-routing dedupe + correlation-ID threading.
 
-OPERATIONAL — fires 5 REAL CRITICAL events through the full triple-fire
-path (Smartsheet ITS_Errors + Resend operator email + Sentry). With
-dedupe operational, the operator's inbox should receive exactly ONE
-email; ITS_Errors should grow by 5 rows; Sentry should record 5 events.
+OPERATIONAL — exercises the FULL triple-fire path through the
+`@its_error_log` decorator:
+  - Smartsheet ITS_Errors row write (via `log()`)
+  - Resend operator email (via `_alert_critical`, gated by `alert_dedupe`)
+  - Sentry event (via `_alert_critical`)
 
-Opt-in: run by hand after PR α lands. NOT scheduled, NOT triggered by
-CI. Re-run after:
-  - Any change to shared/alert_dedupe.py.
-  - Any change to shared/error_log.py `_fire_resend_leg` dedupe gate.
+Fires 5 CRITICALs with the same `(script, error_code)` key in a tight
+loop. Resend dedupe will suppress all-but-the-first within the window.
 
-Requires:
+Opt-in: run by hand. NOT scheduled, NOT triggered by CI. Re-run after:
+  - Any change to `shared/alert_dedupe.py`.
+  - Any change to `shared/error_log.py` (decorator, `log()`,
+    `_alert_critical`, `_fire_resend_leg`).
+  - Schema changes to ITS_Errors `Correlation_ID` column.
+
+Requires (per PR α landing state):
   1. ITS_SMARTSHEET_TOKEN in Keychain.
   2. ITS_RESEND_API_KEY in Keychain.
   3. ITS_SENTRY_DSN in Keychain.
-  4. Correlation_ID column present in ITS_Errors (PR α migration).
-  5. alerting.dedupe_window_minutes row present in ITS_Config (PR α migration).
-  6. system.operator_email row present in ITS_Config (already seeded).
+  4. `Correlation_ID` column on ITS_Errors (sheet 27291433258884).
+  5. `alerting.dedupe_window_minutes` row in ITS_Config (workstream `global`).
+  6. `system.operator_email` row in ITS_Config (already seeded).
 
-What it verifies:
-  - 5 CRITICALs with same (script, error_code) trigger exactly 1 Resend
-    send (subsequent 4 suppressed by the dedupe gate).
-  - All 5 share the same script + error_code dedupe key but each carries
-    a DISTINCT correlation_id (one UUID per CRITICAL event).
-  - Smartsheet ITS_Errors records 5 rows. Sentry records 5 events.
+What it verifies (all three triple-fire legs):
+  - 5 CRITICALs through `@its_error_log` decorator land:
+      • Smartsheet ITS_Errors: **5 new rows**, each with a distinct
+        `Correlation_ID` value (decorator generates one UUID per CRITICAL).
+      • Resend operator inbox: **1 new email** if the
+        `<script>::uncaught_exception` dedupe window was previously empty
+        OR **0 new emails** if a prior smoke (or production CRITICAL on
+        the same key) has the window already open. The first fire's
+        correlation ID lands in the Resend subject's `[corr: ...]` suffix.
+      • Sentry: **5 new events**, each tagged with one of the 5 distinct
+        correlation IDs. Sentry's fingerprint may group them into one
+        issue (identical stacktrace) or split by exception message
+        (`#1` … `#5`) — both outcomes demonstrate the leg fired.
 
-What it does NOT verify automatically:
-  - Resend delivery to the operator inbox (operator confirms by counting
-    emails received).
-  - Smartsheet row count (operator confirms via sheet inspection).
-  - Sentry event arrival (operator confirms via Sentry dashboard).
+State-file note:
+  This harness does NOT clear `~/its/state/alert_dedupe.json` at start.
+  Persisting state across invocations is part of the test surface — a
+  prior open window on the same dedupe key suppresses every fire of
+  this run. The smoke's job is to exercise the legs; the operator
+  inspects state before + after to see what dedupe did with this batch.
 
-Note on state-file hygiene: the dedupe state file at
-`~/its/state/alert_dedupe.json` is cleared at script start so each run
-starts from a clean window. If you want to test that the window persists
-across runs, comment out the clear step.
+Smoke harness divergence:
+  `smoke_test_sentry.py` and `smoke_test_resend.py` call `_alert_critical`
+  directly, which skips the Smartsheet leg (that path is in `log()`,
+  upstream of `_alert_critical`). This smoke uses the full decorator
+  path specifically to exercise all three legs. See
+  `docs/tech_debt.md` "Smoke harness pattern divergence" entry.
 """
 from __future__ import annotations
 
+import json
 import sys
-from datetime import UTC, datetime
 from pathlib import Path
 
 # Allow running from repo root without installing the package.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from shared import alert_dedupe  # noqa: E402
-from shared.error_log import _alert_critical  # noqa: E402
+from shared.error_log import its_error_log  # noqa: E402
 
 SCRIPT_NAME = "scripts.smoke_test_alert_dedupe"
-ERROR_CODE = "smoke_dedupe"  # explicit non-uncaught_exception key
 FIRE_COUNT = 5
 
 
-def _clear_state() -> None:
-    """Reset dedupe state so this run starts fresh."""
+@its_error_log(SCRIPT_NAME)
+def _fire_one(iteration: int) -> None:
+    """Decorator-wrapped CRITICAL trigger.
+
+    The decorator catches the raised exception, writes a CRITICAL row to
+    ITS_Errors via `log()`, then fires `_alert_critical` (Resend gated by
+    dedupe + Sentry). The raised exception is re-raised after the
+    side-channel writes complete; the loop in `main` swallows it so the
+    next iteration runs.
+    """
+    raise RuntimeError(f"smoke-dedupe synthetic CRITICAL #{iteration}")
+
+
+def _read_state() -> dict:
     if alert_dedupe.STATE_FILE.exists():
-        alert_dedupe.STATE_FILE.unlink()
-        print(f"[setup] Cleared {alert_dedupe.STATE_FILE}")
-    else:
-        print(f"[setup] No prior state file at {alert_dedupe.STATE_FILE}")
+        try:
+            return json.loads(alert_dedupe.STATE_FILE.read_text())
+        except json.JSONDecodeError:
+            return {}
+    return {}
 
 
 def main() -> None:
-    print("ITS alert-dedupe smoke test")
+    print("ITS Alert Dedupe Smoke — Triple-Fire Verification")
     print("=" * 60)
-    _clear_state()
+
+    pre_state = _read_state()
+    pre_keys = set(pre_state.keys())
+    print(f"[setup] State file: {alert_dedupe.STATE_FILE}")
+    if pre_keys:
+        print(f"[setup] Pre-existing dedupe entries: {len(pre_keys)}")
+        for k, v in pre_state.items():
+            ends = v.get("window_ends_at", "(unknown)")
+            count = v.get("suppressed_count", 0)
+            print(f"          {k}  (window_ends_at={ends}, suppressed_count={count})")
+    else:
+        print("[setup] State file empty / missing — first fire will open a fresh window.")
     print()
 
-    ts = datetime.now(UTC).isoformat()
-    correlation_ids: list[str] = []
+    expected_key = f"{SCRIPT_NAME}::uncaught_exception"
+    print(f"[fire] Triggering {FIRE_COUNT} CRITICALs via @its_error_log decorator.")
+    print(f"[fire] Dedupe key:  {expected_key}")
+    print()
 
     for i in range(1, FIRE_COUNT + 1):
-        message = f"synthetic CRITICAL #{i} at {ts} — safe to ignore"
-        fake_tb = (
-            "Traceback (most recent call last):\n"
-            "  File \"scripts/smoke_test_alert_dedupe.py\", line 99, in <synthetic>\n"
-            f"    raise RuntimeError(\"synthetic #{i}\")\n"
-            f"RuntimeError: synthetic #{i}"
-        )
-        # _alert_critical generates a correlation_id internally when not
-        # passed; for the smoke test we want to surface the ID, so we
-        # pre-generate here and pass through. Mirrors the decorator
-        # pattern for visibility.
-        import uuid
-        correlation_id = str(uuid.uuid4())
-        correlation_ids.append(correlation_id)
-        print(f"[fire {i}/{FIRE_COUNT}] correlation_id={correlation_id}")
-        _alert_critical(
-            script=SCRIPT_NAME,
-            message=message,
-            exc_info=fake_tb,
-            correlation_id=correlation_id,
-            error_code=ERROR_CODE,
-        )
+        try:
+            _fire_one(i)
+        except RuntimeError:
+            # Decorator re-raises. Swallow so loop continues.
+            pass
 
     print()
     print("=" * 60)
-    print("All 5 CRITICALs fired. Expected results:")
-    print(f"  Resend inbox:        1 email  (one '[corr: {correlation_ids[0][:8]}]')")
-    print(f"  ITS_Errors:          {FIRE_COUNT} rows (one per correlation_id below)")
-    print(f"  Sentry events:       {FIRE_COUNT} events tagged with the IDs below")
+    post_state = _read_state()
+    new_window = post_state.get(expected_key)
+    pre_window_open = expected_key in pre_keys
+
+    print(f"All {FIRE_COUNT} CRITICALs fired through the decorator path.")
     print()
-    print("Correlation IDs (full UUIDs, in fire order):")
-    for i, cid in enumerate(correlation_ids, start=1):
-        print(f"  {i}. {cid}")
+    print("Expected results:")
+    print(f"  ITS_Errors:        {FIRE_COUNT} new rows, each with a DISTINCT Correlation_ID")
+    print(f"  Sentry:            {FIRE_COUNT} new events, each tagged with one of those IDs")
+    if pre_window_open:
+        print(
+            f"  Resend inbox:      0 NEW emails (prior {expected_key!s} window was open;"
+            f"\n                     all {FIRE_COUNT} suppressed)"
+        )
+    else:
+        print(
+            f"  Resend inbox:      1 NEW [ITS CRITICAL] email\n"
+            f"                     (fire #1 opened the window; #2-{FIRE_COUNT} suppressed)"
+        )
     print()
+
+    if new_window:
+        suppressed = new_window.get("suppressed_count", 0)
+        first = new_window.get("first_fired_at", "?")
+        ends = new_window.get("window_ends_at", "?")
+        print(f"State file after run — entry for {expected_key!s}:")
+        print(f"  first_fired_at:    {first}")
+        print(f"  window_ends_at:    {ends}")
+        print(f"  suppressed_count:  {suppressed}  (expected: {FIRE_COUNT - 1 if not pre_window_open else FIRE_COUNT})")
+    else:
+        print(f"WARNING: no state entry written for {expected_key!s} — investigate.")
+    print()
+
     print("Operator verification steps:")
     print(
-        f"  1. Check operator inbox — exactly 1 email with subject suffix\n"
-        f"     [corr: {correlation_ids[0][:8]}].\n"
-        f"  2. Open ITS_Errors in Smartsheet — 5 new rows, Severity=CRITICAL,\n"
-        f"     Script={SCRIPT_NAME!r}, Error={ERROR_CODE!r},\n"
-        f"     each with a distinct Correlation_ID value.\n"
-        f"  3. Sentry dashboard — 5 new events tagged correlation_id=<above>."
+        f"  1. Inbox — check for [ITS CRITICAL] emails. Expected count depends on\n"
+        f"     pre-existing window state (see above). The email subject carries a\n"
+        f"     [corr: xxxxxxxx] suffix matching one of the row Correlation_IDs.\n"
+        f"  2. ITS_Errors (sheet 27291433258884) — filter Surfaced At to the last\n"
+        f"     10 minutes; expect 5 rows with Severity=CRITICAL,\n"
+        f"     Script={SCRIPT_NAME!r}, Error='uncaught_exception',\n"
+        f"     and 5 distinct Correlation_ID values.\n"
+        f"  3. Sentry dashboard — expect 5 new events, all tagged\n"
+        f"     source=its-error-log + correlation_id=<distinct uuid>. Grouping\n"
+        f"     under one issue OR five issues are both acceptable outcomes."
     )
-    print()
-    print("State file after run:")
-    if alert_dedupe.STATE_FILE.exists():
-        print(f"  {alert_dedupe.STATE_FILE} (will contain one window entry)")
-    else:
-        print("  (no state file written — investigate)")
 
 
 if __name__ == "__main__":
