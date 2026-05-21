@@ -11,10 +11,10 @@ Modes:
                             mappings.
 
 Trigger:
-    Default mode runs under launchd every 15 minutes
-    (scripts/launchd/org.solutionsmith.its.picklist-sync.plist). One ITS_Errors
-    INFO row per run summarizing mappings examined / applied / skipped /
-    blocked / failed.
+    Default mode runs under launchd every hour
+    (scripts/launchd/org.solutionsmith.its.picklist-sync.plist;
+    StartInterval=3600). One ITS_Errors INFO row per run summarizing
+    mappings examined / applied / skipped / blocked / failed.
 
 Failure handling:
     Per Op Stds v9 §27, single-mapping failures stay at ERROR (recorded in
@@ -37,6 +37,7 @@ from shared import (  # noqa: E402
     smartsheet_client,
 )
 from shared.error_log import Severity, its_error_log, log  # noqa: E402
+from shared.kill_switch import require_active  # noqa: E402
 
 _SCRIPT = "scripts.run_picklist_sync"
 
@@ -280,6 +281,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+@require_active
 @its_error_log(_SCRIPT)
 def main() -> None:
     args = _parse_args()
