@@ -405,6 +405,46 @@ def update_column_options(
     invalidate_column_cache(sheet_id)
 
 
+def _translate_smartsheet_error(response: requests.Response, *, context: str) -> None:
+    """Raise a typed `SmartsheetError` for a non-2xx REST response.
+
+    No-op on 2xx — callers continue. On 4xx/5xx, dispatch the status code
+    onto the same typed-exception hierarchy used by `_translate` for SDK
+    errors (401 → Auth, 403 → Permission, 404 → NotFound, 429 → RateLimit,
+    everything else → base `SmartsheetError`).
+
+    Internal helper for the REST-backed helpers below (`find_sheet_by_name_in_folder`,
+    `find_folder_by_name_in_folder`, `create_folder_in_folder`,
+    `create_sheet_in_folder_from_template`). Reached the §14 abstraction
+    threshold at PR #54 (4 REST helpers sharing identical dispatch).
+
+    `context` is prepended to the error message so operator-facing logs
+    identify which REST operation failed without needing a stack trace —
+    e.g. "creating folder in parent 12345: HTTP 500: ...".
+
+    Internally drives off `response.raise_for_status()` rather than direct
+    `response.ok` / `status_code` inspection so the existing
+    `requests.HTTPError`-shaped mock fixtures in
+    `tests/test_smartsheet_client.py` continue to exercise the dispatch
+    without per-fixture `.ok` configuration.
+    """
+    try:
+        response.raise_for_status()
+    except requests.HTTPError as e:
+        resp = e.response if e.response is not None else response
+        status = resp.status_code if resp is not None else 0
+        body_text = ((resp.text or "")[:200]) if resp is not None else str(e)
+        if status == 401:
+            raise SmartsheetAuthError(f"{context}: HTTP 401: {body_text}") from e
+        if status == 403:
+            raise SmartsheetPermissionError(f"{context}: HTTP 403: {body_text}") from e
+        if status == 404:
+            raise SmartsheetNotFoundError(f"{context}: HTTP 404: {body_text}") from e
+        if status == 429:
+            raise SmartsheetRateLimitError(f"{context}: HTTP 429: {body_text}") from e
+        raise SmartsheetError(f"{context}: HTTP {status}: {body_text}") from e
+
+
 def find_sheet_by_name_in_folder(folder_id: int, name: str) -> int | None:
     """Return the sheet ID with title `name` inside `folder_id`, or None.
 
@@ -431,27 +471,14 @@ def find_sheet_by_name_in_folder(folder_id: int, name: str) -> int | None:
     """
     token = keychain.get_secret("ITS_SMARTSHEET_TOKEN")
     url = f"https://api.smartsheet.com/2.0/folders/{folder_id}"
+    context = f"finding sheet {name!r} in folder {folder_id}"
     try:
         response = requests.get(
             url, headers={"Authorization": f"Bearer {token}"}, timeout=30
         )
-        response.raise_for_status()
-    except requests.HTTPError as e:
-        # Map to the typed SmartsheetError hierarchy so callers see the
-        # same exception shape as the SDK-backed helpers.
-        status = e.response.status_code if e.response is not None else 0
-        body_text = e.response.text[:200] if e.response is not None else str(e)
-        if status == 401:
-            raise SmartsheetAuthError(f"HTTP 401: {body_text}") from e
-        if status == 403:
-            raise SmartsheetPermissionError(f"HTTP 403: {body_text}") from e
-        if status == 404:
-            raise SmartsheetNotFoundError(f"HTTP 404: {body_text}") from e
-        if status == 429:
-            raise SmartsheetRateLimitError(f"HTTP 429: {body_text}") from e
-        raise SmartsheetError(f"HTTP {status}: {body_text}") from e
     except requests.RequestException as e:
-        raise SmartsheetError(f"folder fetch failed: {e!r}") from e
+        raise SmartsheetError(f"{context}: {e!r}") from e
+    _translate_smartsheet_error(response, context=context)
     body = response.json()
     for sheet in body.get("sheets", []):
         if sheet.get("name") == name:
@@ -487,25 +514,14 @@ def find_folder_by_name_in_folder(parent_folder_id: int, name: str) -> int | Non
     """
     token = keychain.get_secret("ITS_SMARTSHEET_TOKEN")
     url = f"https://api.smartsheet.com/2.0/folders/{parent_folder_id}"
+    context = f"finding folder {name!r} in folder {parent_folder_id}"
     try:
         response = requests.get(
             url, headers={"Authorization": f"Bearer {token}"}, timeout=30
         )
-        response.raise_for_status()
-    except requests.HTTPError as e:
-        status = e.response.status_code if e.response is not None else 0
-        body_text = e.response.text[:200] if e.response is not None else str(e)
-        if status == 401:
-            raise SmartsheetAuthError(f"HTTP 401: {body_text}") from e
-        if status == 403:
-            raise SmartsheetPermissionError(f"HTTP 403: {body_text}") from e
-        if status == 404:
-            raise SmartsheetNotFoundError(f"HTTP 404: {body_text}") from e
-        if status == 429:
-            raise SmartsheetRateLimitError(f"HTTP 429: {body_text}") from e
-        raise SmartsheetError(f"HTTP {status}: {body_text}") from e
     except requests.RequestException as e:
-        raise SmartsheetError(f"folder fetch failed: {e!r}") from e
+        raise SmartsheetError(f"{context}: {e!r}") from e
+    _translate_smartsheet_error(response, context=context)
     body = response.json()
     for folder in body.get("folders", []):
         if folder.get("name") == name:
@@ -551,6 +567,7 @@ def create_folder_in_folder(parent_folder_id: int, name: str) -> int:
     """
     token = keychain.get_secret("ITS_SMARTSHEET_TOKEN")
     url = f"https://api.smartsheet.com/2.0/folders/{parent_folder_id}/folders"
+    context = f"creating folder {name!r} in folder {parent_folder_id}"
     try:
         response = requests.post(
             url,
@@ -561,21 +578,9 @@ def create_folder_in_folder(parent_folder_id: int, name: str) -> int:
             json={"name": name},
             timeout=30,
         )
-        response.raise_for_status()
-    except requests.HTTPError as e:
-        status = e.response.status_code if e.response is not None else 0
-        body_text = e.response.text[:200] if e.response is not None else str(e)
-        if status == 401:
-            raise SmartsheetAuthError(f"HTTP 401: {body_text}") from e
-        if status == 403:
-            raise SmartsheetPermissionError(f"HTTP 403: {body_text}") from e
-        if status == 404:
-            raise SmartsheetNotFoundError(f"HTTP 404: {body_text}") from e
-        if status == 429:
-            raise SmartsheetRateLimitError(f"HTTP 429: {body_text}") from e
-        raise SmartsheetError(f"HTTP {status}: {body_text}") from e
     except requests.RequestException as e:
-        raise SmartsheetError(f"folder create failed: {e!r}") from e
+        raise SmartsheetError(f"{context}: {e!r}") from e
+    _translate_smartsheet_error(response, context=context)
     body = response.json()
     return int(body["result"]["id"])
 
@@ -618,6 +623,9 @@ def create_sheet_in_folder_from_template(
     include_csv = ",".join(include) if include else ""
     if include_csv:
         url += f"?include={include_csv}"
+    context = (
+        f"copying sheet {template_sheet_id} into folder {folder_id} as {name!r}"
+    )
     try:
         response = requests.post(
             url,
@@ -632,21 +640,9 @@ def create_sheet_in_folder_from_template(
             },
             timeout=30,
         )
-        response.raise_for_status()
-    except requests.HTTPError as e:
-        status = e.response.status_code if e.response is not None else 0
-        body_text = e.response.text[:200] if e.response is not None else str(e)
-        if status == 401:
-            raise SmartsheetAuthError(f"HTTP 401: {body_text}") from e
-        if status == 403:
-            raise SmartsheetPermissionError(f"HTTP 403: {body_text}") from e
-        if status == 404:
-            raise SmartsheetNotFoundError(f"HTTP 404: {body_text}") from e
-        if status == 429:
-            raise SmartsheetRateLimitError(f"HTTP 429: {body_text}") from e
-        raise SmartsheetError(f"HTTP {status}: {body_text}") from e
     except requests.RequestException as e:
-        raise SmartsheetError(f"sheet copy failed: {e!r}") from e
+        raise SmartsheetError(f"{context}: {e!r}") from e
+    _translate_smartsheet_error(response, context=context)
     body = response.json()
     return int(body["result"]["id"])
 

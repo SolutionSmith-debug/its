@@ -946,3 +946,55 @@ def test_create_sheet_in_folder_from_template_translates_not_found(mocker):
             name="copy",
             template_sheet_id=12345,
         )
+
+
+# ---- _translate_smartsheet_error (contract lock) ------------------------
+#
+# The 4 REST helpers above all dispatch through the private
+# `_translate_smartsheet_error` helper. Their per-helper tests above
+# exercise it indirectly. These tests lock its contract directly so a
+# future caller landing without parallel per-helper coverage still has a
+# documented behavioral pin for the dispatch + context-prefix logic.
+
+
+def test_translate_smartsheet_error_passes_through_2xx(mocker):
+    """A 2xx response is a no-op — no exception, returns None."""
+    response = _rest_get_folder_response([], status=200)
+
+    result = smartsheet_client._translate_smartsheet_error(
+        response, context="anything goes here"
+    )
+    assert result is None
+
+
+def test_translate_smartsheet_error_raises_with_context_on_4xx(mocker):
+    """A 4xx response raises SmartsheetError; message carries context +
+    status code + body excerpt so operator triage doesn't need a stack."""
+    response = _rest_get_folder_response(None, status=400)
+    response.text = "errorCode 1008: Unknown attribute 'destination'"
+
+    with pytest.raises(SmartsheetError) as exc_info:
+        smartsheet_client._translate_smartsheet_error(
+            response, context="copying sheet 99 into folder 42 as 'X'"
+        )
+
+    msg = str(exc_info.value)
+    assert "copying sheet 99 into folder 42" in msg  # context prefix
+    assert "HTTP 400" in msg  # status code
+    assert "errorCode 1008" in msg  # body excerpt
+
+
+def test_translate_smartsheet_error_raises_on_5xx(mocker):
+    """Untyped 5xx falls through to base SmartsheetError (not the typed
+    Auth/Permission/NotFound/RateLimit subclasses)."""
+    response = _rest_get_folder_response(None, status=500)
+    response.text = "Internal Server Error"
+
+    with pytest.raises(SmartsheetError) as exc_info:
+        smartsheet_client._translate_smartsheet_error(
+            response, context="finding folder 'X' in folder 7"
+        )
+
+    # Exact subclass: base SmartsheetError, not Auth/Permission/NotFound/RateLimit.
+    assert type(exc_info.value) is SmartsheetError
+    assert "HTTP 500" in str(exc_info.value)
