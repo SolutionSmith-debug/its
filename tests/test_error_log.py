@@ -9,13 +9,20 @@ Run with: pytest -q tests/test_error_log.py
 """
 from __future__ import annotations
 
+import re
 from datetime import date, datetime
 
 import pytest
 
+import shared.alert_dedupe as alert_dedupe_module
 import shared.error_log as error_log_module
 from shared.error_log import Severity, _local_log, its_error_log, log
 from shared.smartsheet_client import SmartsheetError
+
+# UUID4 pattern for correlation-ID assertions.
+_UUID4_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+)
 
 
 @pytest.fixture
@@ -61,6 +68,23 @@ def send_alert_mock(mocker):
     mock = mocker.patch("shared.resend_client.send_alert")
     yield mock
     error_log_module._in_resend_alert = False
+
+
+@pytest.fixture(autouse=True)
+def alert_dedupe_state(tmp_path, monkeypatch):
+    """Autouse: redirect alert_dedupe state file to tmp_path.
+
+    Without this, the dedupe key `test.script::uncaught_exception` persists
+    between tests in `~/its/state/alert_dedupe.json` and silently suppresses
+    Resend calls in later tests. tmp_path isolation gives each test a clean
+    window. Also fixes the `should_fire` clock to a real `datetime.now`.
+    """
+    state_dir = tmp_path / "state"
+    monkeypatch.setattr(alert_dedupe_module, "STATE_DIR", state_dir)
+    monkeypatch.setattr(
+        alert_dedupe_module, "STATE_FILE", state_dir / "alert_dedupe.json"
+    )
+    return state_dir
 
 
 @pytest.fixture(autouse=True)
@@ -238,6 +262,7 @@ def test_warn_writes_to_smartsheet_with_correct_cell_payload(log_dir, add_rows_m
         "Script": "test.script",
         "Message": "heads up",
         "Traceback": "",
+        "Correlation_ID": "",
     }
 
 
@@ -614,7 +639,7 @@ def test_sentry_recursion_guard_blocks_reentry(
     # must see the guard and skip.
     inner_call_count = {"value": 0}
 
-    def reentrant_capture(script, message, exc_info):
+    def reentrant_capture(script, message, exc_info, correlation_id=None):
         inner_call_count["value"] += 1
         log(Severity.CRITICAL, "inner", "reentered")
 
@@ -656,3 +681,189 @@ def test_sentry_guard_and_resend_guard_are_independent(
         send_alert_mock.assert_called_once()
     finally:
         el._in_sentry_capture = False
+
+
+# ---- Correlation ID threading (PR α) -------------------------------------
+
+
+def _trigger_critical(script: str = "test.script", exc_message: str = "kaboom"):
+    """Convenience: fire one CRITICAL via the decorator and let it re-raise."""
+    @its_error_log(script)
+    def boom():
+        raise ValueError(exc_message)
+
+    with pytest.raises(ValueError, match=exc_message):
+        boom()
+
+
+def test_alert_critical_generates_correlation_id(
+    log_dir, send_alert_mock, sentry_capture_mock, add_rows_mock
+):
+    # Same UUID4 reaches all three legs. Single CRITICAL → single correlation.
+    _trigger_critical()
+
+    subject, _ = send_alert_mock.call_args.args
+    # Sentry receives correlation_id as a kwarg.
+    sentry_kwargs = sentry_capture_mock.call_args.kwargs
+    sentry_corr = sentry_kwargs.get("correlation_id")
+    assert sentry_corr is not None
+    assert _UUID4_RE.match(sentry_corr)
+
+    # Subject embeds the first 8 chars of the same UUID.
+    assert f"[corr: {sentry_corr[:8]}]" in subject
+
+    # Smartsheet row has the full UUID in Correlation_ID column.
+    _, row = _row_payload(add_rows_mock)
+    assert row["Correlation_ID"] == sentry_corr
+
+
+def test_alert_critical_correlation_id_in_resend_subject(
+    log_dir, send_alert_mock, sentry_capture_mock
+):
+    _trigger_critical()
+    subject, _ = send_alert_mock.call_args.args
+    # `[corr: ........]` — exactly 8 lowercase hex chars after the space.
+    assert re.search(r"\[corr: [0-9a-f]{8}\]", subject)
+
+
+def test_alert_critical_correlation_id_in_resend_body(
+    log_dir, send_alert_mock, sentry_capture_mock
+):
+    _trigger_critical()
+    _, body = send_alert_mock.call_args.args
+    # `Correlation: <full-uuid>` line in body — full UUID, not short form.
+    m = re.search(r"Correlation: ([0-9a-f-]+)", body)
+    assert m is not None
+    assert _UUID4_RE.match(m.group(1))
+
+
+def test_alert_critical_correlation_id_in_sentry_tag(
+    log_dir, send_alert_mock, sentry_capture_mock
+):
+    _trigger_critical()
+    kwargs = sentry_capture_mock.call_args.kwargs
+    assert "correlation_id" in kwargs
+    assert _UUID4_RE.match(kwargs["correlation_id"])
+
+
+def test_alert_critical_correlation_id_in_smartsheet_row(
+    log_dir, send_alert_mock, sentry_capture_mock, add_rows_mock
+):
+    _trigger_critical()
+    _, row = _row_payload(add_rows_mock)
+    assert _UUID4_RE.match(row["Correlation_ID"])
+
+
+def test_alert_critical_legacy_log_call_writes_blank_correlation_id(
+    log_dir, add_rows_mock
+):
+    # log() called directly (not via decorator) — no correlation_id supplied;
+    # the Correlation_ID cell must still be present (blank) so the column
+    # write doesn't fail on the missing key.
+    log(Severity.WARN, "test.script", "no corr here")
+    _, row = _row_payload(add_rows_mock)
+    assert row["Correlation_ID"] == ""
+
+
+# ---- Resend dedupe gating -----------------------------------------------
+
+
+def test_resend_suppressed_when_dedupe_says_no(
+    log_dir, send_alert_mock, sentry_capture_mock, add_rows_mock, mocker
+):
+    mocker.patch("shared.alert_dedupe.should_fire", return_value=False)
+
+    _trigger_critical()
+
+    # Resend suppressed.
+    send_alert_mock.assert_not_called()
+    # Sentry + Smartsheet always write per §27.
+    sentry_capture_mock.assert_called_once()
+    add_rows_mock.assert_called_once()
+    # Marker line surfaces the suppression.
+    assert "[resend-alert-suppressed]" in _today_log(log_dir).read_text()
+
+
+def test_resend_fires_when_dedupe_says_yes(
+    log_dir, send_alert_mock, sentry_capture_mock, add_rows_mock, mocker
+):
+    should_fire = mocker.patch("shared.alert_dedupe.should_fire", return_value=True)
+    record_fire = mocker.patch("shared.alert_dedupe.record_fire")
+
+    _trigger_critical()
+
+    should_fire.assert_called_once_with("test.script::uncaught_exception")
+    send_alert_mock.assert_called_once()
+    sentry_capture_mock.assert_called_once()
+    record_fire.assert_called_once_with("test.script::uncaught_exception")
+
+
+def test_dedupe_module_exception_falls_open(
+    log_dir, send_alert_mock, sentry_capture_mock, mocker
+):
+    # If should_fire raises (e.g., flock failure, disk full, JSON error
+    # we somehow didn't catch internally), the Resend leg must still send.
+    # Fail-open is the load-bearing invariant — a bug in dedupe must never
+    # silently drop a CRITICAL email.
+    mocker.patch(
+        "shared.alert_dedupe.should_fire",
+        side_effect=RuntimeError("disk full"),
+    )
+
+    _trigger_critical()
+
+    send_alert_mock.assert_called_once()
+    sentry_capture_mock.assert_called_once()
+    contents = _today_log(log_dir).read_text()
+    assert "[alert-dedupe-state-error]" in contents
+    assert "disk full" in contents
+
+
+def test_record_fire_exception_after_successful_send_does_not_raise(
+    log_dir, send_alert_mock, sentry_capture_mock, mocker
+):
+    # If record_fire raises after a successful send, the send itself
+    # already happened — no behavioral regression. Marker line written.
+    mocker.patch("shared.alert_dedupe.should_fire", return_value=True)
+    mocker.patch(
+        "shared.alert_dedupe.record_fire",
+        side_effect=RuntimeError("write failed"),
+    )
+
+    _trigger_critical()
+
+    send_alert_mock.assert_called_once()
+    contents = _today_log(log_dir).read_text()
+    assert "[alert-dedupe-state-error]" in contents
+    assert "write failed" in contents
+
+
+def test_five_same_key_critical_calls_one_resend_five_smartsheet_five_sentry(
+    log_dir, send_alert_mock, sentry_capture_mock, add_rows_mock
+):
+    # Full integration through the real `alert_dedupe` module against a
+    # tmp_path state file (per the autouse `alert_dedupe_state` fixture).
+    # Five CRITICALs with the same `(script, error_code)` key. Expected:
+    # - 1 Resend send (first one through; subsequent four suppressed).
+    # - 5 Smartsheet rows (§27 — records every time).
+    # - 5 Sentry captures (§27 — records every time).
+    # All 5 rows share ONE correlation ID per CRITICAL (i.e., 5 distinct
+    # UUIDs total, not 1 UUID reused).
+    for _ in range(5):
+        _trigger_critical()
+
+    assert send_alert_mock.call_count == 1
+    assert add_rows_mock.call_count == 5
+    assert sentry_capture_mock.call_count == 5
+
+    # 5 distinct correlation IDs landed across the Smartsheet writes.
+    corr_ids = [call.args[1][0]["Correlation_ID"] for call in add_rows_mock.call_args_list]
+    assert len(set(corr_ids)) == 5
+    for c in corr_ids:
+        assert _UUID4_RE.match(c)
+
+    # The single Resend send carries one of those correlation IDs (the
+    # first — the others were suppressed).
+    sent_subject, _ = send_alert_mock.call_args.args
+    short = corr_ids[0][:8]
+    assert f"[corr: {short}]" in sent_subject

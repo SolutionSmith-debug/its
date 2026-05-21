@@ -27,6 +27,9 @@ logs/*.log
 # Watchdog last-run markers (scripts/watchdog.py write_last_run_marker)
 .watchdog/
 
+# Alert-routing dedupe state file (shared/alert_dedupe.py)
+state/
+
 # Credentials must NEVER be committed.
 # All secrets live in macOS Keychain — see shared/keychain.py.
 *_secret*

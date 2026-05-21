@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import os
 import traceback
+import uuid
 from collections.abc import Callable
 from datetime import UTC, date, datetime
 from enum import StrEnum
@@ -35,6 +36,8 @@ from typing import TypeVar
 
 from . import sheet_ids, smartsheet_client
 from .smartsheet_client import SmartsheetError
+
+_CORRELATION_ID_SUBJECT_PREFIX_LEN = 8
 
 LOG_DIR = Path.home() / "its" / "logs"
 
@@ -82,6 +85,7 @@ def _smartsheet_log(
     message: str,
     error_code: str,
     exc_info: str | None,
+    correlation_id: str | None,
 ) -> None:
     """Append one row to ITS_Errors. Recursion-guarded; never raises.
 
@@ -90,6 +94,9 @@ def _smartsheet_log(
     file. The original log line was already written by `_local_log` before
     this is called, so the underlying event is captured even if the
     Smartsheet write fails.
+
+    `correlation_id` lands in the `Correlation_ID` column when provided;
+    empty string for legacy callers (column is TEXT_NUMBER, blank is fine).
     """
     global _in_smartsheet_write
     if _in_smartsheet_write:
@@ -110,6 +117,7 @@ def _smartsheet_log(
                         "Script": script,
                         "Message": message,
                         "Traceback": exc_info or "",
+                        "Correlation_ID": correlation_id or "",
                     }
                 ],
             )
@@ -130,6 +138,7 @@ def log(
     *,
     error_code: str | None = None,
     exc_info: str | None = None,
+    correlation_id: str | None = None,
 ) -> None:
     """Manually log an entry. Use this from inside a script for non-exception events.
 
@@ -137,6 +146,10 @@ def log(
     column. Defaults to the lowercased severity value (`"info"` / `"warn"` /
     `"error"` / `"critical"`); the decorator overrides with specific codes
     `"started"` / `"completed"` / `"uncaught_exception"`.
+
+    `correlation_id` is the shared UUID that ties this log row to its
+    triple-fire Resend email + Sentry event. Legacy callers that omit it
+    write a blank `Correlation_ID` cell; the column accepts blanks.
     """
     _local_log(severity, script, message, exc_info=exc_info)
     _smartsheet_log(
@@ -145,11 +158,23 @@ def log(
         message,
         error_code or severity.value.lower(),
         exc_info,
+        correlation_id,
     )
 
 
-def _fire_resend_leg(script: str, subject: str, body: str) -> None:
+def _fire_resend_leg(
+    script: str,
+    subject: str,
+    body: str,
+    correlation_id: str,
+    error_code: str,
+) -> None:
     """Resend leg of the triple-fire. Recursion-guarded; failure-isolated.
+
+    Gated by `shared.alert_dedupe.should_fire` on `(script, error_code)`.
+    Within the dedupe window, suppressed sends still write a local marker
+    so operators can confirm the dedupe path is doing what it says. On a
+    successful send, `record_fire` opens the next window.
 
     The guard + broad-except + marker-line pattern matches `_smartsheet_log`.
     Sister of `_fire_sentry_leg`; the two are independent — one failing
@@ -163,7 +188,32 @@ def _fire_resend_leg(script: str, subject: str, body: str) -> None:
     try:
         # Lazy import to keep this module's boot-time deps minimal and
         # avoid a circular if resend_client ever needs to log.
-        from . import resend_client
+        from . import alert_dedupe, resend_client
+
+        dedupe_key = f"{script}::{error_code}"
+        try:
+            allowed = alert_dedupe.should_fire(dedupe_key)
+        except Exception as e:
+            # Fail-open: if the dedupe module itself raises, send anyway.
+            # The contract is "dedupe can never silently drop a CRITICAL."
+            _local_log(
+                Severity.ERROR,
+                "shared.error_log",
+                f"[alert-dedupe-state-error] should_fire raised: {e!r}",
+            )
+            allowed = True
+
+        if not allowed:
+            # Op Stds v9 §27: dedupe applies only to push. The Smartsheet
+            # row + Sentry event already fired upstream of this leg, so
+            # suppressing here loses no record. Marker line lets the
+            # operator confirm dedupe is acting.
+            _local_log(
+                Severity.INFO,
+                "shared.error_log",
+                f"[resend-alert-suppressed] key={dedupe_key} corr={correlation_id}",
+            )
+            return
 
         try:
             resend_client.send_alert(subject, body)
@@ -179,16 +229,35 @@ def _fire_resend_leg(script: str, subject: str, body: str) -> None:
                 "shared.error_log",
                 f"[resend-alert-failed] {e!r}",
             )
+            return
+
+        try:
+            alert_dedupe.record_fire(dedupe_key)
+        except Exception as e:
+            # record_fire is best-effort; if it fails, the next CRITICAL
+            # within the intended window may produce an extra email. That
+            # is the right failure mode per the fail-open contract.
+            _local_log(
+                Severity.ERROR,
+                "shared.error_log",
+                f"[alert-dedupe-state-error] record_fire raised: {e!r}",
+            )
     finally:
         _in_resend_alert = False
 
 
-def _fire_sentry_leg(script: str, message: str, exc_info: str) -> None:
+def _fire_sentry_leg(
+    script: str,
+    message: str,
+    exc_info: str,
+    correlation_id: str,
+) -> None:
     """Sentry leg of the triple-fire. Recursion-guarded; failure-isolated.
 
     Same shape as `_fire_resend_leg`. Sentry needs the structured
     (script / message / traceback) fields rather than the already-
     composed email subject + body, so this helper takes the raw args.
+    `correlation_id` lands as a Sentry tag.
     """
     global _in_sentry_capture
     if _in_sentry_capture:
@@ -199,7 +268,9 @@ def _fire_sentry_leg(script: str, message: str, exc_info: str) -> None:
         from . import sentry_client
 
         try:
-            sentry_client.capture_exception(script, message, exc_info)
+            sentry_client.capture_exception(
+                script, message, exc_info, correlation_id=correlation_id
+            )
         except Exception as e:
             # Broad catch for the same reason as the Resend leg —
             # `KeychainError` on missing DSN, network errors during init,
@@ -214,15 +285,32 @@ def _fire_sentry_leg(script: str, message: str, exc_info: str) -> None:
         _in_sentry_capture = False
 
 
-def _alert_critical(script: str, message: str, exc_info: str) -> None:
+def _alert_critical(
+    script: str,
+    message: str,
+    exc_info: str,
+    correlation_id: str | None = None,
+    error_code: str = "uncaught_exception",
+) -> None:
     """Fire out-of-band CRITICAL alerts on all triple-fire legs.
 
-    Triple-fire per Op Stds v8 §3:
+    Triple-fire per Op Stds v9 §3:
     - Smartsheet `ITS_Errors` row — written earlier by `log()` →
       `_smartsheet_log` (NOT here; that path is unconditional on
       WARN / ERROR / CRITICAL).
     - Resend operator email — `_fire_resend_leg`.
     - Sentry structured event — `_fire_sentry_leg`.
+
+    `correlation_id` is the shared UUID that ties the Smartsheet row,
+    Resend email, and Sentry event together. The decorator generates it
+    ONCE upstream and threads to both `log()` and here so all three legs
+    share the identifier. Standalone callers (smoke tests, direct
+    invocation) can omit it; a UUID is generated internally and only
+    threaded to the two side-channel legs.
+
+    `error_code` is the dedupe-key suffix passed to the Resend leg's
+    `(script, error_code)` dedupe gate. Defaults to `"uncaught_exception"`
+    because today's only call site is the decorator's exception path.
 
     Both side-channel legs are INDEPENDENT: each has its own try/except
     and its own recursion guard. A failure of either does NOT prevent
@@ -235,10 +323,10 @@ def _alert_critical(script: str, message: str, exc_info: str) -> None:
     that attempt to fire before any Sentry-side latency. If both legs
     succeed in milliseconds, the order is invisible; if Sentry hangs,
     Resend has already gone out.
-
-    Alert-routing dedupe across the three legs is a separate design
-    question per Op Stds v8 §3 open items.
     """
+    if correlation_id is None:
+        correlation_id = str(uuid.uuid4())
+
     # Subject + body composed once and shared with Resend. Sentry uses
     # the raw structured fields (`_fire_sentry_leg` constructs its own
     # SDK payload from `message` + `exc_info` directly), so it doesn't
@@ -246,20 +334,22 @@ def _alert_critical(script: str, message: str, exc_info: str) -> None:
     truncated = message
     if len(truncated) > _ALERT_SUBJECT_TRUNCATE:
         truncated = truncated[: _ALERT_SUBJECT_TRUNCATE - 1] + "…"
-    subject = f"{_ALERT_SUBJECT_PREFIX} {script}: {truncated}"
+    short_corr = correlation_id[:_CORRELATION_ID_SUBJECT_PREFIX_LEN]
+    subject = f"{_ALERT_SUBJECT_PREFIX} {script}: {truncated} [corr: {short_corr}]"
 
     ts = datetime.now(UTC).isoformat()
     body = "\n".join([
         f"Script:    {script}",
         f"Timestamp: {ts}",
+        f"Correlation: {correlation_id}",
         f"Message:   {message}",
         "",
         "Traceback:",
         exc_info or "(none)",
     ])
 
-    _fire_resend_leg(script, subject, body)
-    _fire_sentry_leg(script, message, exc_info)
+    _fire_resend_leg(script, subject, body, correlation_id, error_code)
+    _fire_sentry_leg(script, message, exc_info, correlation_id)
 
 
 F = TypeVar("F", bound=Callable)
@@ -281,14 +371,25 @@ def its_error_log(script_name: str) -> Callable[[F], F]:
                 # Resend alert email so operator sees consistent text across
                 # the triple-fire channels.
                 msg = f"unhandled: {e}"
+                # One UUID per CRITICAL, threaded to all three legs so a
+                # single grep recovers the full Smartsheet / Resend / Sentry
+                # picture during triage.
+                correlation_id = str(uuid.uuid4())
                 log(
                     Severity.CRITICAL,
                     script_name,
                     msg,
                     error_code="uncaught_exception",
                     exc_info=tb,
+                    correlation_id=correlation_id,
                 )
-                _alert_critical(script_name, msg, tb)
+                _alert_critical(
+                    script_name,
+                    msg,
+                    tb,
+                    correlation_id=correlation_id,
+                    error_code="uncaught_exception",
+                )
                 raise
         return wrapper  # type: ignore[return-value]
     return decorator
