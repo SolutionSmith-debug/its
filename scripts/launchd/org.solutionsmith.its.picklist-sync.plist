@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Picklist sync — every 15 minutes.
+
+  Reads enabled mappings from Picklist_Sync_Config; for each, syncs
+  source-master-DB unique values into the target sheet's PICKLIST
+  options. Idempotent via last_run_hash on each mapping row.
+
+  Install:
+    cp scripts/launchd/org.solutionsmith.its.picklist-sync.plist ~/Library/LaunchAgents/
+    launchctl load -w ~/Library/LaunchAgents/org.solutionsmith.its.picklist-sync.plist
+
+  This file uses literal paths instead of template placeholders because
+  the operator's $HOME is known at deployment time. If forking to a new
+  customer repo, scripts/launchd/install.sh handles substitution from
+  scripts/launchd/template.plist if you prefer the template flow.
+
+  See docs/picklist_sync.md for the full operations runbook.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>org.solutionsmith.its.picklist-sync</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/sethsmith/its/.venv/bin/python</string>
+        <string>/Users/sethsmith/its/scripts/run_picklist_sync.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/sethsmith/its</string>
+
+    <key>StandardOutPath</key>
+    <string>/Users/sethsmith/its/logs/launchd/run_picklist_sync.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/sethsmith/its/logs/launchd/run_picklist_sync.err.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>LANG</key>
+        <string>en_US.UTF-8</string>
+    </dict>
+
+    <!-- Recurring every 15 minutes -->
+    <key>StartInterval</key>
+    <integer>900</integer>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>

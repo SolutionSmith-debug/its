@@ -34,6 +34,17 @@ class ReviewerChainConfig(TypedDict):
 # missing or the read fails. ITS_Config takes precedence whenever readable.
 ALERTING_DEDUPE_WINDOW_MINUTES = 60
 
+# Picklist sync — size guardrails for shared/picklist_sync.py. Two-stage:
+# WARN at >200 options, HARD-HALT-that-mapping at >400. Both values are
+# operator-tunable via ITS_Config rows picklist_sync.size_warn_threshold
+# and picklist_sync.size_hard_halt_threshold (workstream=global). The
+# validation helper _resolve_size_thresholds() falls back to these
+# defaults on any read failure or invalid (warn>=halt, non-int,
+# negative, >1000) configured value.
+PICKLIST_SIZE_WARN_THRESHOLD       = 200
+PICKLIST_SIZE_HARD_HALT_THRESHOLD  = 400
+PICKLIST_SIZE_THRESHOLD_MAX        = 1000  # sanity ceiling on configured values
+
 
 DEFAULT_REVIEWER_CHAINS: dict[str, ReviewerChainConfig] = {
     "safety_reports": {
