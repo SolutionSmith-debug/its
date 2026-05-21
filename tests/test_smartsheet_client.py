@@ -534,6 +534,42 @@ def test_list_columns_with_options_returns_normalized_dicts(mocker):
     client.Sheets.get_sheet.assert_called_once_with(42, include="columns")
 
 
+def test_list_columns_with_options_unwraps_enumerated_value_type(mocker):
+    """Regression guard: live SDK returns `col.type` as an EnumeratedValue
+    wrapper, not a string. If we pass that wrapper back into a Column
+    body (for update_column_options), the SDK silently strips it and
+    the API rejects with errorCode 1090. Caller must receive a plain
+    string. Discovered live during PR #48 re-smoke."""
+    client = _install_client(mocker)
+
+    class _FakeColumnType:
+        # Mirrors the SDK's ColumnType enum member: `.name` is the string.
+        def __init__(self, name):
+            self.name = name
+
+    class _FakeEnumeratedValue:
+        # Mirrors smartsheet.types.EnumeratedValue: `.value` is the enum
+        # member, which has `.name` as the wire string.
+        def __init__(self, name):
+            self.value = _FakeColumnType(name)
+
+    cols = [
+        SimpleNamespace(
+            id=2, title="Status",
+            type=_FakeEnumeratedValue("PICKLIST"),
+            options=["a"],
+        ),
+    ]
+    sheet = SimpleNamespace(columns=cols)
+    client.Sheets.get_sheet.return_value = sheet
+
+    out = smartsheet_client.list_columns_with_options(42)
+    # type must be a plain str — otherwise update_column_options will
+    # fail later with errorCode 1090.
+    assert isinstance(out[0]["type"], str)
+    assert out[0]["type"] == "PICKLIST"
+
+
 def test_list_columns_with_options_translates_api_error(mocker):
     client = _install_client(mocker)
     client.Sheets.get_sheet.side_effect = _api_error(404, message="sheet not found")
