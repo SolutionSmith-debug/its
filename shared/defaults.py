@@ -61,19 +61,15 @@ FOREFRONT_CUSTOMER_NAME = "Forefront"
 
 # Box project folders under ITS DATA root (id 382010286207).
 # Active-side schema follows the "1111A (Copy for new projects)" template
-# (folder 382384021749). Per-customer-repo invariant: replace at fork time.
+# (folder 382384021749). Values captured 2026-05-21 via
+# scripts/migrations/box_clone_1111a_to_projects.py — each entry is the
+# Box folder ID of a project-specific clone of 1111A under ITS DATA.
+# Per-customer-repo invariant: replace at fork time.
 BOX_PROJECT_FOLDERS: dict[str, str] = {
-    # Bradley 1 → maps to a yet-to-be-created Box project folder under ITS DATA.
-    # The 4 currently-extracted active-side folders (14130.1 Dooley, 2018.111
-    # Neighborhood Portfolio, Bear Creek, plus 1111A template) are reference
-    # corpus, not the actual Bradley/Brimfield/etc project folders. Operator
-    # will clone 1111A → "<Project Name>" before R3 session 1 wires intake.py.
-    # Leave the values as empty strings here and let week_folder.ensure_*
-    # raise NotImplementedError when called against an unconfigured project.
-    "Bradley 1": "",
-    "Bradley 2": "",
-    "Brimfield 1": "",
-    "Brimfield 2": "",
-    "Huntley": "",
-    "Rockford": "",
+    "Bradley 1": "383299029178",
+    "Bradley 2": "383298229322",
+    "Brimfield 1": "383303174342",
+    "Brimfield 2": "383303695163",
+    "Huntley": "383302259414",
+    "Rockford": "383305112425",
 }
