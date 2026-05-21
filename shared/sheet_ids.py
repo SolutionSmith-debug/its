@@ -40,12 +40,21 @@ FOLDER_HR_PERSONNEL                   = 7377585005979524  # 06 — Personnel
 
 # ---- System sheets -------------------------------------------------------
 
-SHEET_CONFIG       = 3072320166907780  # ITS — System / 01 — Config / ITS_Config
-SHEET_ERRORS       = 27291433258884    # ITS — System / 02 — Logs / ITS_Errors
-SHEET_QUARANTINE   = 8687740798324612  # ITS — System / 02 — Logs / ITS_Quarantine
-SHEET_REVIEW_QUEUE = 7243317526876036  # ITS — System / 03 — Queues / ITS_Review_Queue
+SHEET_CONFIG              = 3072320166907780  # ITS — System / 01 — Config / ITS_Config
+SHEET_PICKLIST_SYNC_CONFIG = 7486553185013636  # ITS — System / 01 — Config / Picklist_Sync_Config
+SHEET_ERRORS              = 27291433258884    # ITS — System / 02 — Logs / ITS_Errors
+SHEET_QUARANTINE          = 8687740798324612  # ITS — System / 02 — Logs / ITS_Quarantine
+SHEET_REVIEW_QUEUE        = 7243317526876036  # ITS — System / 03 — Queues / ITS_Review_Queue
 
 # ---- Human-review sheets -------------------------------------------------
 
 SHEET_WPR_PENDING_REVIEW = 3096105695793028  # ITS — Human Review / 01 — Safety Reports / WPR_Pending_Review
 SHEET_TIME_OFF           = 1506418040459140  # ITS — Human Review / 06 — Personnel / ITS_Time_Off
+
+# ---- Master DB sheets (ITS — Operations / Master Databases) -------------
+# Canonical sources for shared/picklist_sync.py. Vendor + Subcontractor
+# stubs seeded from Bradley 1 FL parse 2026-05-17.
+
+SHEET_VENDOR_DB        = 7278304330469252  # ITS — Operations / Master Databases / Vendor DB
+SHEET_SUBCONTRACTOR_DB = 1230913068289924  # ITS — Operations / Master Databases / Subcontractor DB
+SHEET_EQUIPMENT_MASTER = 4132885031243652  # ITS — Operations / Master Databases / Equipment Master
