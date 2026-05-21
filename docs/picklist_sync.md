@@ -4,7 +4,7 @@ Cross-sheet PICKLIST option sync from master DBs (Vendor / Subcontractor / Equip
 
 ## What it does
 
-Every 15 minutes (launchd cadence), reads `Picklist_Sync_Config` for enabled mappings, then for each mapping:
+Every hour (launchd cadence — operator decision 2026-05-21), reads `Picklist_Sync_Config` for enabled mappings, then for each mapping:
 
 1. Reads unique values from the **source** sheet's column.
 2. Compares against the **target** sheet's PICKLIST column options.
@@ -36,7 +36,7 @@ Reference-blocked removals route to `ITS_Review_Queue` (`Reason=mismatched-refer
 | `target_sheet_id` | TEXT_NUMBER | Downstream sheet ID |
 | `target_column` | TEXT_NUMBER | Downstream PICKLIST column title |
 | `enabled` | CHECKBOX | Toggle without deleting the row |
-| `last_run_at` | **TEXT_NUMBER** holding ISO 8601 UTC | Debuggable per-run timestamp. Note: NOT DATE — 15-min cadence needs time-of-day resolution. Column description on the sheet documents this; do not "fix" to DATE. |
+| `last_run_at` | **TEXT_NUMBER** holding ISO 8601 UTC | Debuggable per-run timestamp. Note: NOT DATE — sub-daily cadence needs time-of-day resolution to answer "did the 4:00 PM run complete?" Column description on the sheet documents this; do not "fix" to DATE. |
 | `last_run_hash` | TEXT_NUMBER | SHA-256 of sorted unique source values; idempotency short-circuit. |
 | `notes` | TEXT_NUMBER | Free-text |
 
@@ -45,7 +45,7 @@ Reference-blocked removals route to `ITS_Review_Queue` (`Reason=mismatched-refer
 1. Identify the source master DB sheet + column title.
 2. Identify the downstream PICKLIST column.
 3. Insert a row into `Picklist_Sync_Config` with `enabled=true`. Leave `last_run_at` / `last_run_hash` / `notes` blank.
-4. Watch `ITS_Errors` for the next 15-min run's INFO summary line to confirm the mapping landed.
+4. Watch `ITS_Errors` for the next hourly run's INFO summary line to confirm the mapping landed.
 
 ### Disabling a mapping
 
@@ -66,7 +66,7 @@ Missing rows are silent (documented default state). Only invalid configured valu
 
 ### Routine
 
-- **Daily**: glance at `ITS_Errors` for `picklist_sync_run_summary` INFO rows. Confirm one row per 15-min cadence (96/day under normal operation).
+- **Daily**: glance at `ITS_Errors` for `picklist_sync_run_summary` INFO rows. Confirm one row per hourly cadence (24/day under normal operation).
 - **Weekly**: check `ITS_Review_Queue` for `Reason=mismatched-reference` items. Each indicates a master-DB hygiene issue (an option was removed from the master but a live downstream cell still uses it).
 - **Monthly**: review picklist sizes per mapping. Any approaching 200 options is a capacity-planning signal.
 

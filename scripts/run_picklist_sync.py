@@ -11,10 +11,10 @@ Modes:
                             mappings.
 
 Trigger:
-    Default mode runs under launchd every 15 minutes
-    (scripts/launchd/org.solutionsmith.its.picklist-sync.plist). One ITS_Errors
-    INFO row per run summarizing mappings examined / applied / skipped /
-    blocked / failed.
+    Default mode runs under launchd every hour
+    (scripts/launchd/org.solutionsmith.its.picklist-sync.plist;
+    StartInterval=3600). One ITS_Errors INFO row per run summarizing
+    mappings examined / applied / skipped / blocked / failed.
 
 Failure handling:
     Per Op Stds v9 §27, single-mapping failures stay at ERROR (recorded in

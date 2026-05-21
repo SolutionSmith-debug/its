@@ -32,7 +32,7 @@ Schema for Picklist_Sync_Config:
   enabled          CHECKBOX
   last_run_at      TEXT_NUMBER  (ISO 8601 string; DATE column would lose
                                   time-of-day precision at the script's
-                                  15-min cadence — TEXT carries debuggable
+                                  sub-daily cadence — TEXT carries debuggable
                                   timestamps)
   last_run_hash    TEXT_NUMBER  (SHA-256 of sorted unique source values)
   notes            TEXT_NUMBER
@@ -69,7 +69,7 @@ PARENT_FOLDER = sheet_ids.FOLDER_SYSTEM_CONFIG  # 164788727768964
 
 LAST_RUN_AT_DESCRIPTION = (
     "ISO 8601 UTC timestamp of last successful sync. TEXT_NUMBER, not DATE — "
-    "the 15-min cron cadence needs time-of-day resolution for debugging "
+    "the sub-daily cron cadence needs time-of-day resolution for debugging "
     "('did the 7:15 run succeed?'). DATE would collapse to today-only. "
     "Do not 'fix' to DATE."
 )

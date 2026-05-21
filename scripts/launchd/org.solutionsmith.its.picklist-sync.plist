@@ -46,9 +46,13 @@
         <string>en_US.UTF-8</string>
     </dict>
 
-    <!-- Recurring every 15 minutes -->
+    <!-- Recurring every hour. Operator decision 2026-05-21: hourly
+         matches construction-workflow tempo (vendors added today don't
+         need to appear in dropdowns within 15 minutes), cuts run count
+         96/day → 24/day, and the idempotency short-circuit means most
+         hourly runs are still cheap reads. -->
     <key>StartInterval</key>
-    <integer>900</integer>
+    <integer>3600</integer>
 
     <key>RunAtLoad</key>
     <false/>
