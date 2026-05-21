@@ -254,3 +254,45 @@ The row is not yet seeded. The read-only smoke (default invocation) works withou
 **Urgency:** low. Read-only smoke is sufficient for most operator checks. Write-test is useful only when diagnosing suspected scope or permission issues.
 
 Surfaced: PR #39 brief, Open Question Q4, 2026-05-20.
+
+## Alert-routing dedupe key granularity [OPEN 2026-05-20]
+
+`shared/alert_dedupe.py` keys dedupe windows on `(script, error_code)` (built at the `_fire_resend_leg` call site). Today's only call path uses `error_code="uncaught_exception"`, so all decorator-driven CRITICALs from a given script collapse into one window. If production shows distinct underlying exception classes inside one script collapsing within a window — and the operator misses the second bug because the first one suppressed its alert — upgrade the key to `(script, error_code, exc_class)`.
+
+**Action:** one-line change at the `dedupe_key = f"{script}::{error_code}"` site in `shared/error_log._fire_resend_leg`. Thread `exc_class` from the decorator's `except Exception as e:` path via `type(e).__name__`.
+
+**Urgency:** low until production surfaces the collapse-different-bugs failure mode. Bounded blast radius — Smartsheet ITS_Errors + Sentry still record each bug separately, so the operator sees the second bug eventually; only the wake-up email is delayed.
+
+Surfaced: PR α (alert-dedupe-core) brief, 2026-05-20.
+
+## Cross-leg dedupe activation [OPEN 2026-05-20]
+
+PR α suppresses only the Resend leg. Sentry events and Smartsheet ITS_Errors rows always write (per Op Stds v9 §27 — dedupe applies only to push, never to records). Today this is the right choice: Sentry's own alert rules and Smartsheet's sheet-level notifications are NOT configured.
+
+**Resolves when:** the operator configures Sentry alert rules (or Smartsheet notifications) that themselves wake the operator on every event. At that point, those legs become "push" surfaces too and need their own dedupe layer. The shared `correlation_id` is already wired through all three legs, so a future cross-leg dedupe (or alert-aggregator) has the join key it needs.
+
+**Urgency:** activates only when external alert rules are configured. No risk while Sentry/Smartsheet stay record-only.
+
+Surfaced: PR α (alert-dedupe-core) brief, 2026-05-20.
+
+## Alert-dedupe state is per-machine [OPEN 2026-05-20]
+
+`~/its/state/alert_dedupe.json` lives on the local MacBook. The dedupe window is per-host. If ITS ever runs on multiple hosts (Phase 4+ blueprint generalization, or a hot-spare during MacBook RMA), each host would dedupe independently — and an operator-facing flapping CRITICAL on two hosts would produce one email per host instead of one total.
+
+**Resolves when:** ITS gains multi-host execution. The state needs to move into a centralized store. Smartsheet itself can't host it (Smartsheet IS a triple-fire leg; circular dependency). Likely candidates: a dedicated S3 prefix, a Redis sidecar, or a per-customer SQLite that lives on whichever host happens to be authoritative.
+
+**Urgency:** low. Phase 1 through Phase 3 is single-host on a designated MacBook. Multi-host is a Phase 4+ blueprint-generalization decision.
+
+Surfaced: PR α (alert-dedupe-core) brief, 2026-05-20.
+
+## Alert-dedupe state file grows unboundedly until PR β lands [OPEN 2026-05-20]
+
+PR α writes one entry per `(script, error_code)` key to `~/its/state/alert_dedupe.json` and never deletes. The follow-up PR β (watchdog summary sweep) will delete entries once their summary email has fired and `summarized=true` has been set. Until PR β lands, the file grows.
+
+**Bounded blast radius:** one entry per distinct `(script, error_code)` pair across the ITS lifetime. Even pessimistically (every shared module and every workstream each producing a handful of error codes), the file should stay under a few KB. Operationally acceptable but tracked here so a future operator reviewing the state file isn't surprised by the growth pattern.
+
+**Resolves with:** PR β landing. Watchdog summary sweep iterates entries with `now >= window_ends_at AND summarized == false`, sends one summary email per entry (containing the `suppressed_count` and time range), sets `summarized=true`, then deletes once the entry is older than some retention threshold.
+
+**Urgency:** none. PR β is queued for the next session.
+
+Surfaced: PR α (alert-dedupe-core) brief, 2026-05-20.

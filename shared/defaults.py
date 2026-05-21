@@ -28,6 +28,13 @@ class ReviewerChainConfig(TypedDict):
     delay_to_tertiary_hours: int
 
 
+# Alerting — defaults for shared/alert_dedupe.py. Window value is read at
+# runtime via smartsheet_client.get_setting("alerting.dedupe_window_minutes",
+# workstream="global"); this constant is the fallback used when the row is
+# missing or the read fails. ITS_Config takes precedence whenever readable.
+ALERTING_DEDUPE_WINDOW_MINUTES = 60
+
+
 DEFAULT_REVIEWER_CHAINS: dict[str, ReviewerChainConfig] = {
     "safety_reports": {
         "primary": "tealap@evergreenmirror.com",
