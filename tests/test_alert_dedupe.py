@@ -356,6 +356,186 @@ def test_lock_released_after_each_call(state_in_tmp, frozen_now):
     assert "script::code" in state
 
 
+# ---- PR β: list_expired_summaries ---------------------------------------
+
+
+def test_list_expired_summaries_returns_empty_when_state_missing(state_in_tmp, frozen_now):
+    assert alert_dedupe.list_expired_summaries() == []
+
+
+def test_list_expired_summaries_returns_empty_when_state_corrupt(
+    state_in_tmp, frozen_now, log_capture
+):
+    state_in_tmp.mkdir(parents=True, exist_ok=True)
+    (state_in_tmp / "alert_dedupe.json").write_text("not json {{{")
+
+    assert alert_dedupe.list_expired_summaries() == []
+    assert any("[alert-dedupe-state-error]" in line for line in log_capture.lines)
+
+
+def test_list_expired_summaries_filters_to_expired_only(state_in_tmp, frozen_now):
+    # Two entries: one whose window has closed, one still open.
+    alert_dedupe.record_fire("script_expired::code")
+    frozen_now.advance(minutes=70)
+    alert_dedupe.record_fire("script_open::code")
+
+    expired = alert_dedupe.list_expired_summaries()
+    keys = [e.key for e in expired]
+    assert "script_expired::code" in keys
+    assert "script_open::code" not in keys
+
+
+def test_list_expired_summaries_includes_all_fields(state_in_tmp, frozen_now):
+    alert_dedupe.record_fire("script::code")
+    # Suppress one fire inside the window so suppressed_count > 0.
+    frozen_now.advance(minutes=5)
+    alert_dedupe.should_fire("script::code")
+    # Advance past window so the entry is expired.
+    frozen_now.advance(minutes=70)
+
+    expired = alert_dedupe.list_expired_summaries()
+    assert len(expired) == 1
+    e = expired[0]
+    assert e.key == "script::code"
+    assert e.first_fired_at  # non-empty
+    assert e.last_fired_at  # non-empty
+    assert e.window_ends_at  # non-empty
+    assert e.suppressed_count == 1
+    assert e.summarized is False
+
+
+def test_list_expired_summaries_skips_malformed_entry(
+    state_in_tmp, frozen_now, log_capture
+):
+    # Write a state file with one malformed entry (missing window_ends_at)
+    # and one good expired entry. Sweep should return only the good one
+    # and write a marker for the bad one.
+    alert_dedupe.record_fire("good::code")
+    frozen_now.advance(minutes=70)
+    state = json.loads(alert_dedupe.STATE_FILE.read_text())
+    state["bad::code"] = {"first_fired_at": "garbage"}
+    alert_dedupe.STATE_FILE.write_text(json.dumps(state))
+
+    expired = alert_dedupe.list_expired_summaries()
+    keys = [e.key for e in expired]
+    assert keys == ["good::code"]
+    assert any("malformed window_ends_at" in line for line in log_capture.lines)
+
+
+def test_list_expired_summaries_returns_immutable_snapshot(state_in_tmp, frozen_now):
+    """ExpiredEntry is frozen — mutating it must raise; the state file is
+    the only mutation surface, accessed only through mark_summarized /
+    delete_entry."""
+    import dataclasses
+
+    alert_dedupe.record_fire("script::code")
+    frozen_now.advance(minutes=70)
+
+    [entry] = alert_dedupe.list_expired_summaries()
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        entry.summarized = True  # type: ignore[misc]
+
+
+# ---- PR β: mark_summarized ----------------------------------------------
+
+
+def test_mark_summarized_sets_field_true(state_in_tmp, frozen_now):
+    alert_dedupe.record_fire("script::code")
+    alert_dedupe.mark_summarized("script::code")
+
+    state = json.loads(alert_dedupe.STATE_FILE.read_text())
+    assert state["script::code"]["summarized"] is True
+
+
+def test_mark_summarized_no_op_on_missing_key(state_in_tmp, frozen_now):
+    alert_dedupe.record_fire("script::code")
+    alert_dedupe.mark_summarized("nonexistent::code")
+
+    state = json.loads(alert_dedupe.STATE_FILE.read_text())
+    assert state["script::code"]["summarized"] is False
+    assert "nonexistent::code" not in state
+
+
+def test_mark_summarized_preserves_other_entries(state_in_tmp, frozen_now):
+    alert_dedupe.record_fire("a::code")
+    alert_dedupe.record_fire("b::code")
+    alert_dedupe.mark_summarized("a::code")
+
+    state = json.loads(alert_dedupe.STATE_FILE.read_text())
+    assert state["a::code"]["summarized"] is True
+    assert state["b::code"]["summarized"] is False
+
+
+def test_mark_summarized_silent_noop_when_state_missing(state_in_tmp, frozen_now):
+    # No record_fire first → no state file → mark_summarized must not raise.
+    alert_dedupe.mark_summarized("script::code")
+    assert not alert_dedupe.STATE_FILE.exists()
+
+
+def test_mark_summarized_logs_marker_on_failure(
+    state_in_tmp, frozen_now, monkeypatch, log_capture
+):
+    alert_dedupe.record_fire("script::code")
+    monkeypatch.setattr(alert_dedupe, "_acquire_lock", lambda fh: False)
+
+    alert_dedupe.mark_summarized("script::code")
+    assert any("could not acquire flock" in line for line in log_capture.lines)
+
+
+# ---- PR β: delete_entry -------------------------------------------------
+
+
+def test_delete_entry_removes_target_only(state_in_tmp, frozen_now):
+    alert_dedupe.record_fire("a::code")
+    alert_dedupe.record_fire("b::code")
+    alert_dedupe.delete_entry("a::code")
+
+    state = json.loads(alert_dedupe.STATE_FILE.read_text())
+    assert "a::code" not in state
+    assert "b::code" in state
+
+
+def test_delete_entry_no_op_on_missing_key(state_in_tmp, frozen_now):
+    alert_dedupe.record_fire("script::code")
+    alert_dedupe.delete_entry("nonexistent::code")
+
+    state = json.loads(alert_dedupe.STATE_FILE.read_text())
+    assert "script::code" in state
+
+
+def test_delete_entry_silent_noop_when_state_missing(state_in_tmp, frozen_now):
+    alert_dedupe.delete_entry("script::code")
+    assert not alert_dedupe.STATE_FILE.exists()
+
+
+def test_delete_entry_logs_marker_on_failure(
+    state_in_tmp, frozen_now, monkeypatch, log_capture
+):
+    alert_dedupe.record_fire("script::code")
+    monkeypatch.setattr(alert_dedupe, "_acquire_lock", lambda fh: False)
+
+    alert_dedupe.delete_entry("script::code")
+    assert any("could not acquire flock" in line for line in log_capture.lines)
+
+
+# ---- PR β: concurrent / serialized mark+delete --------------------------
+
+
+def test_mark_then_delete_serialize_via_flock(state_in_tmp, frozen_now):
+    """A mark followed by a delete must produce a state file without the entry.
+
+    If the lock were not released between calls, the second call would
+    fail-open (lock retry exhaustion) and the entry would survive. Confirm
+    persisted state shows the deletion.
+    """
+    alert_dedupe.record_fire("script::code")
+    alert_dedupe.mark_summarized("script::code")
+    alert_dedupe.delete_entry("script::code")
+
+    state = json.loads(alert_dedupe.STATE_FILE.read_text())
+    assert "script::code" not in state
+
+
 # ---- log_capture fixture ------------------------------------------------
 
 

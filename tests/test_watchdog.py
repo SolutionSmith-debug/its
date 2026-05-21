@@ -91,15 +91,18 @@ def mock_get_rows(mocker):
 # ---- Group A: module shape ----------------------------------------------
 
 
-def test_checks_list_has_all_session_1_and_2_checks():
-    """CHECKS registry in priority order. Check E is deferred to PR #37
-    (Admin API key prerequisite) and intentionally absent here."""
+def test_checks_list_has_all_session_1_2_3_checks():
+    """CHECKS registry in priority order. Check E is deferred to its
+    shipping PR (Admin API key prerequisite) and intentionally absent
+    here. Check G (alert-dedupe summary sweep) shipped in PR β
+    (Session 3) and is registered last."""
     assert watchdog.CHECKS == [
         watchdog._check_stale_review_queue,
         watchdog._check_open_criticals,
         watchdog._check_scheduled_jobs,
         watchdog._check_reviewer_chain_forward,
         watchdog._check_mail_intake_silent_disable,
+        watchdog._check_alert_dedupe_summaries,
     ]
 
 
@@ -781,3 +784,325 @@ def test_check_mail_intake_ignores_non_threshold_rows(
     result = watchdog._check_mail_intake_silent_disable()
     assert result.severity is Severity.INFO
     mock_fetch_latest_inbound.assert_not_called()
+
+
+# ---- Group I: Check G — alert-dedupe summary sweep ---------------------
+
+
+@pytest.fixture
+def dedupe_state(tmp_path, monkeypatch):
+    """Redirect alert_dedupe state file to tmp_path for hermetic tests.
+
+    Mirrors the pattern in tests/test_alert_dedupe.py::state_in_tmp. The
+    watchdog imports `alert_dedupe` from `shared`, so monkeypatching the
+    module attributes is sufficient — the check function reads
+    `alert_dedupe.STATE_FILE` indirectly through the public helpers.
+    """
+    import shared.alert_dedupe as ad
+    state_dir = tmp_path / "state"
+    monkeypatch.setattr(ad, "STATE_DIR", state_dir)
+    monkeypatch.setattr(ad, "STATE_FILE", state_dir / "alert_dedupe.json")
+    return state_dir
+
+
+@pytest.fixture
+def frozen_clock(monkeypatch):
+    """Pin alert_dedupe._now() to a known UTC moment with mutation support."""
+    from datetime import UTC, datetime, timedelta
+
+    import shared.alert_dedupe as ad
+
+    class _Clock:
+        def __init__(self):
+            self.now = datetime(2026, 5, 20, 15, 0, 0, tzinfo=UTC)
+
+        def advance(self, **kwargs):
+            self.now = self.now + timedelta(**kwargs)
+
+    clock = _Clock()
+    monkeypatch.setattr(ad, "_now", lambda: clock.now)
+    return clock
+
+
+@pytest.fixture(autouse=True)
+def settings_mock_for_dedupe(mocker):
+    """Default ITS_Config window = 60 min so record_fire works in tests."""
+    return mocker.patch(
+        "shared.smartsheet_client.get_setting", return_value="60"
+    )
+
+
+@pytest.fixture
+def mock_send_alert(mocker):
+    return mocker.patch("watchdog.resend_client.send_alert")
+
+
+def _seed_expired_entry(
+    key: str, suppressed_count: int = 0, summarized: bool = False
+):
+    """Write one entry to the redirected state file with window already expired."""
+    import json as _json
+
+    import shared.alert_dedupe as ad
+    ad.STATE_DIR.mkdir(parents=True, exist_ok=True)
+    state = (
+        _json.loads(ad.STATE_FILE.read_text())
+        if ad.STATE_FILE.exists() and ad.STATE_FILE.stat().st_size > 0
+        else {}
+    )
+    state[key] = {
+        "first_fired_at": "2026-05-20T14:00:00+00:00",
+        "last_fired_at":  "2026-05-20T14:05:00+00:00",
+        "suppressed_count": suppressed_count,
+        "window_ends_at": "2026-05-20T14:30:00+00:00",  # before frozen_clock = 15:00
+        "summarized": summarized,
+    }
+    ad.STATE_FILE.write_text(_json.dumps(state))
+
+
+def test_summary_sweep_no_expired_returns_info(dedupe_state, frozen_clock, mock_send_alert):
+    result = watchdog._check_alert_dedupe_summaries()
+
+    assert result.severity is Severity.INFO
+    assert "No expired" in result.summary
+    mock_send_alert.assert_not_called()
+
+
+def test_summary_sweep_fires_resend_for_suppressed_expired_entry(
+    dedupe_state, frozen_clock, mock_send_alert
+):
+    _seed_expired_entry("safety.intake::uncaught_exception", suppressed_count=4)
+
+    result = watchdog._check_alert_dedupe_summaries()
+
+    mock_send_alert.assert_called_once()
+    subject, body = mock_send_alert.call_args.args
+    assert subject.startswith("[ITS CRITICAL SUMMARY]")
+    assert "safety.intake" in subject
+    assert "4 suppressed" in subject
+    assert "Script:           safety.intake" in body
+    assert "Error code:       uncaught_exception" in body
+    assert "Suppressed count: 4" in body
+    assert "Filter ITS_Errors by:" in body
+    assert result.severity is Severity.INFO
+    assert "fired 1 summary" in result.summary
+
+
+def test_summary_sweep_marks_summarized_after_fire(
+    dedupe_state, frozen_clock, mock_send_alert
+):
+    import json as _json
+
+    import shared.alert_dedupe as ad
+
+    _seed_expired_entry("script::uncaught_exception", suppressed_count=2)
+
+    watchdog._check_alert_dedupe_summaries()
+
+    state = _json.loads(ad.STATE_FILE.read_text())
+    assert state["script::uncaught_exception"]["summarized"] is True
+
+
+def test_summary_sweep_does_not_delete_freshly_summarized(
+    dedupe_state, frozen_clock, mock_send_alert
+):
+    """Two-phase deletion: a just-summarized entry stays for next sweep."""
+    import json as _json
+
+    import shared.alert_dedupe as ad
+
+    _seed_expired_entry("script::uncaught_exception", suppressed_count=2)
+    watchdog._check_alert_dedupe_summaries()
+
+    state = _json.loads(ad.STATE_FILE.read_text())
+    assert "script::uncaught_exception" in state
+
+
+def test_summary_sweep_deletes_already_summarized_entry(
+    dedupe_state, frozen_clock, mock_send_alert
+):
+    """Phase 2 of two-phase delete: summarized entries get removed."""
+    import json as _json
+
+    import shared.alert_dedupe as ad
+
+    _seed_expired_entry("script::uncaught_exception", suppressed_count=2, summarized=True)
+
+    result = watchdog._check_alert_dedupe_summaries()
+
+    state = _json.loads(ad.STATE_FILE.read_text())
+    assert "script::uncaught_exception" not in state
+    mock_send_alert.assert_not_called()
+    assert "deleted 1 entry" in result.summary
+
+
+def test_summary_sweep_deletes_clean_expired_entry(
+    dedupe_state, frozen_clock, mock_send_alert
+):
+    """suppressed_count == 0 means no flapping happened; delete on first sweep
+    without firing a summary."""
+    import json as _json
+
+    import shared.alert_dedupe as ad
+
+    _seed_expired_entry("script::uncaught_exception", suppressed_count=0)
+
+    result = watchdog._check_alert_dedupe_summaries()
+
+    state = _json.loads(ad.STATE_FILE.read_text())
+    assert "script::uncaught_exception" not in state
+    mock_send_alert.assert_not_called()
+    assert "deleted 1 entry" in result.summary
+
+
+def test_summary_sweep_skips_open_windows(
+    dedupe_state, frozen_clock, mock_send_alert
+):
+    """Open-window entries are excluded from the sweep entirely (Phase 0).
+
+    list_expired_summaries filters on window_ends_at < now; open windows
+    never reach the check function's loop.
+    """
+    import json as _json
+
+    import shared.alert_dedupe as ad
+
+    # Seed a state entry with a future window_ends_at.
+    ad.STATE_DIR.mkdir(parents=True, exist_ok=True)
+    ad.STATE_FILE.write_text(_json.dumps({
+        "script::uncaught_exception": {
+            "first_fired_at": "2026-05-20T14:55:00+00:00",
+            "last_fired_at":  "2026-05-20T14:55:30+00:00",
+            "suppressed_count": 3,
+            "window_ends_at": "2026-05-20T15:55:00+00:00",  # 55 min after frozen
+            "summarized": False,
+        }
+    }))
+
+    result = watchdog._check_alert_dedupe_summaries()
+
+    mock_send_alert.assert_not_called()
+    state = _json.loads(ad.STATE_FILE.read_text())
+    # Still present — sweep didn't touch it.
+    assert "script::uncaught_exception" in state
+    assert "No expired" in result.summary
+
+
+def test_summary_sweep_resend_failure_leaves_entry_unmarked(
+    dedupe_state, frozen_clock, mock_send_alert, mock_log
+):
+    """If Resend raises, the entry stays unmarked so the next sweep retries."""
+    import json as _json
+
+    import shared.alert_dedupe as ad
+
+    _seed_expired_entry("script::uncaught_exception", suppressed_count=2)
+    mock_send_alert.side_effect = RuntimeError("resend down")
+
+    watchdog._check_alert_dedupe_summaries()
+
+    state = _json.loads(ad.STATE_FILE.read_text())
+    assert state["script::uncaught_exception"]["summarized"] is False
+    # WARN line via watchdog.log captures the send failure.
+    severities = [c.args[0] for c in mock_log.call_args_list]
+    assert Severity.WARN in severities
+
+
+def test_summary_sweep_state_read_failure_logs_marker_no_crash(
+    dedupe_state, frozen_clock, mock_send_alert, monkeypatch
+):
+    """If list_expired_summaries returns empty (e.g., due to internal failure),
+    the check still completes cleanly with the no-work message."""
+    import shared.alert_dedupe as ad
+    monkeypatch.setattr(ad, "list_expired_summaries", lambda: [])
+
+    result = watchdog._check_alert_dedupe_summaries()
+
+    assert result.severity is Severity.INFO
+    mock_send_alert.assert_not_called()
+
+
+def test_summary_sweep_mixed_expired_entries(
+    dedupe_state, frozen_clock, mock_send_alert
+):
+    """One needs summarizing, one needs deleting (clean expiry), one is
+    summarized-and-pending-delete. All three handled in one sweep."""
+    import json as _json
+
+    import shared.alert_dedupe as ad
+
+    _seed_expired_entry("a::uncaught_exception", suppressed_count=3)
+    _seed_expired_entry("b::uncaught_exception", suppressed_count=0)
+    _seed_expired_entry(
+        "c::uncaught_exception", suppressed_count=5, summarized=True
+    )
+
+    result = watchdog._check_alert_dedupe_summaries()
+
+    # `a` got a summary fired + marked; `b` and `c` deleted.
+    mock_send_alert.assert_called_once()
+    subject, _ = mock_send_alert.call_args.args
+    assert "a::" not in subject  # subject uses just the script half
+    assert subject.startswith("[ITS CRITICAL SUMMARY] a:")
+
+    state = _json.loads(ad.STATE_FILE.read_text())
+    assert "a::uncaught_exception" in state  # stays this sweep (phase 1)
+    assert state["a::uncaught_exception"]["summarized"] is True
+    assert "b::uncaught_exception" not in state  # deleted
+    assert "c::uncaught_exception" not in state  # deleted
+
+    assert "fired 1 summary" in result.summary
+    assert "deleted 2 entries" in result.summary
+
+
+def test_summary_subject_format_matches_spec(
+    dedupe_state, frozen_clock, mock_send_alert
+):
+    _seed_expired_entry("safety_reports.intake::uncaught_exception", suppressed_count=7)
+    watchdog._check_alert_dedupe_summaries()
+
+    subject, _ = mock_send_alert.call_args.args
+    assert subject == "[ITS CRITICAL SUMMARY] safety_reports.intake: 7 suppressed occurrences"
+
+
+def test_summary_body_includes_filter_criteria(
+    dedupe_state, frozen_clock, mock_send_alert
+):
+    _seed_expired_entry("safety_reports.intake::uncaught_exception", suppressed_count=2)
+    watchdog._check_alert_dedupe_summaries()
+
+    _, body = mock_send_alert.call_args.args
+    # Filter criteria pointing operator at ITS_Errors.
+    assert "Filter ITS_Errors by:" in body
+    assert "Script = safety_reports.intake" in body
+    assert "Surfaced At BETWEEN" in body
+    # Sheet ID reference (so operator can copy/paste).
+    from shared import sheet_ids
+    assert str(sheet_ids.SHEET_ERRORS) in body
+
+
+def test_summary_sweep_check_registered_in_checks_list():
+    """The new check is registered in CHECKS so main() runs it."""
+    assert watchdog._check_alert_dedupe_summaries in watchdog.CHECKS
+
+
+def test_summary_sweep_check_failure_isolated_by_run_check(
+    dedupe_state, frozen_clock, mock_send_alert, mock_log, monkeypatch
+):
+    """A raise inside the check is caught by _run_check, marker logged,
+    other checks would still run (here we only assert no propagation)."""
+    def _boom():
+        raise RuntimeError("unexpected sweep failure")
+
+    monkeypatch.setattr(watchdog, "_check_alert_dedupe_summaries", _boom)
+    # Patch the CHECKS list to only include the broken one for clarity.
+    monkeypatch.setattr(watchdog, "CHECKS", [_boom])
+
+    watchdog._run_check(_boom, alerts_suppressed=False)
+
+    severities = [c.args[0] for c in mock_log.call_args_list]
+    assert Severity.ERROR in severities
+    err_line = next(
+        c.args[2] for c in mock_log.call_args_list if c.args[0] is Severity.ERROR
+    )
+    assert "[watchdog-check-failed:_boom]" in err_line

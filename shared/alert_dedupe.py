@@ -30,7 +30,7 @@ State:
     never sets it to true; the field is initialized to false and lives
     there for forward-compat.
 
-Public API:
+Public API (PR α — push-suppression):
     should_fire(key: str) -> bool
         True if the Resend leg should send; False if suppressed.
         Increments `suppressed_count` on the suppressed path.
@@ -38,16 +38,30 @@ Public API:
         Called by `_fire_resend_leg` after a SUCCESSFUL send to open
         (or no-op on already-open) the dedupe window.
 
-Failure isolation:
-    Both functions fail OPEN. Any exception inside `should_fire` →
-    returns `True` and writes a `[alert-dedupe-state-error]` marker to
-    the local log; any exception inside `record_fire` → silent no-op
-    with the same marker. The contract is: a bug here can never silently
-    drop a CRITICAL Resend send. False positives (extra emails) are
-    acceptable; false negatives (missed wake-ups) are not.
+Public API (PR β — summary-sweep lifecycle):
+    list_expired_summaries() -> list[ExpiredEntry]
+        All entries whose `window_ends_at < now`. Watchdog's summary
+        sweep consumes this to decide which entries need a summary email
+        and which can be deleted.
+    mark_summarized(key: str) -> None
+        Atomically set `summarized=true` after a summary email has been
+        sent. Two-phase deletion: marked entries get deleted on the
+        next sweep (crash safety — a crash between Resend send and mark
+        causes a duplicate email rather than silent loss).
+    delete_entry(key: str) -> None
+        Atomically remove one entry from the state file.
 
-Out of scope (PR α):
-    - Summary delivery / state-entry deletion-after-summary (PR β).
+Failure isolation:
+    All functions fail OPEN. Any exception inside `should_fire` →
+    returns `True` and writes a `[alert-dedupe-state-error]` marker to
+    the local log; exceptions inside `record_fire` / `mark_summarized`
+    / `delete_entry` → silent no-op with the same marker;
+    `list_expired_summaries` → returns `[]`. The contract is: a bug
+    here can never silently drop a CRITICAL Resend send. False
+    positives (extra emails) are acceptable; false negatives (missed
+    wake-ups) are not.
+
+Out of scope:
     - Multi-machine state sync — file is per-host.
     - Sentry / Smartsheet leg dedupe — single-leg suppression only.
 
@@ -61,11 +75,30 @@ from __future__ import annotations
 import fcntl
 import json
 import time
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from . import defaults
+
+
+@dataclass(frozen=True)
+class ExpiredEntry:
+    """One state-file entry whose `window_ends_at` has passed.
+
+    Returned by `list_expired_summaries()` for watchdog's summary sweep
+    (PR β). Frozen so callers cannot accidentally mutate the snapshot
+    between read and write — mutations always go through
+    `mark_summarized()` / `delete_entry()` against the state file with
+    the flock contract.
+    """
+    key: str
+    first_fired_at: str
+    last_fired_at: str
+    suppressed_count: int
+    window_ends_at: str
+    summarized: bool
 
 STATE_DIR = Path.home() / "its" / "state"
 STATE_FILE = STATE_DIR / "alert_dedupe.json"
@@ -246,3 +279,126 @@ def record_fire(key: str) -> None:
                 fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
     except Exception as e:
         _write_marker(f"record_fire({key!r}) raised: {e!r}")
+
+
+# ---- PR β: summary-sweep lifecycle --------------------------------------
+
+
+def list_expired_summaries() -> list[ExpiredEntry]:
+    """Return all state entries where `window_ends_at < now`.
+
+    Caller (watchdog summary sweep) filters by `summarized` and
+    `suppressed_count` to decide whether to fire a summary, mark, or
+    delete. Open windows are excluded.
+
+    Fail-open: any state-read failure returns an empty list and writes
+    a `[alert-dedupe-state-error]` marker. The sweep sees no work; the
+    next sweep retries.
+    """
+    try:
+        if not STATE_FILE.exists():
+            return []
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        with STATE_FILE.open("a+") as fh:
+            if not _acquire_lock(fh):
+                _write_marker(
+                    f"could not acquire flock on {STATE_FILE} after retries (list_expired_summaries)"
+                )
+                return []
+            try:
+                state = _load_state(fh)
+                now = _now()
+                expired: list[ExpiredEntry] = []
+                for key, entry in state.items():
+                    try:
+                        window_ends_at = datetime.fromisoformat(entry["window_ends_at"])
+                    except (KeyError, ValueError, TypeError):
+                        # Skip malformed entries rather than fail the whole sweep.
+                        _write_marker(
+                            f"skipping malformed window_ends_at on key {key!r}"
+                        )
+                        continue
+                    if now < window_ends_at:
+                        continue
+                    expired.append(
+                        ExpiredEntry(
+                            key=key,
+                            first_fired_at=str(entry.get("first_fired_at", "")),
+                            last_fired_at=str(entry.get("last_fired_at", "")),
+                            suppressed_count=int(entry.get("suppressed_count", 0)),
+                            window_ends_at=str(entry.get("window_ends_at", "")),
+                            summarized=bool(entry.get("summarized", False)),
+                        )
+                    )
+                return expired
+            finally:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+    except Exception as e:
+        _write_marker(f"list_expired_summaries raised: {e!r}")
+        return []
+
+
+def mark_summarized(key: str) -> None:
+    """Atomically set `summarized=true` for one entry. No-op on missing key.
+
+    Crash-safety property: if the watchdog crashes between the summary
+    Resend send and this call, the next sweep re-fires the summary
+    (duplicate email is acceptable; silent loss is not).
+
+    Fail-open: any write failure writes a marker and returns; the entry
+    stays unmarked so the next sweep retries.
+    """
+    try:
+        if not STATE_FILE.exists():
+            return
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        with STATE_FILE.open("a+") as fh:
+            if not _acquire_lock(fh):
+                _write_marker(
+                    f"could not acquire flock on {STATE_FILE} after retries (mark_summarized)"
+                )
+                return
+            try:
+                state = _load_state(fh)
+                entry = state.get(key)
+                if entry is None:
+                    return
+                entry["summarized"] = True
+                state[key] = entry
+                _dump_state(fh, state)
+            finally:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+    except Exception as e:
+        _write_marker(f"mark_summarized({key!r}) raised: {e!r}")
+
+
+def delete_entry(key: str) -> None:
+    """Atomically remove one entry from state. No-op on missing key.
+
+    Called by the watchdog summary sweep in phase 2 (the sweep after the
+    summary fired and was marked, OR for clean-expired entries where
+    `suppressed_count == 0` and no summary was needed).
+
+    Fail-open: any write failure writes a marker and returns; the entry
+    stays so the next sweep retries deletion.
+    """
+    try:
+        if not STATE_FILE.exists():
+            return
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        with STATE_FILE.open("a+") as fh:
+            if not _acquire_lock(fh):
+                _write_marker(
+                    f"could not acquire flock on {STATE_FILE} after retries (delete_entry)"
+                )
+                return
+            try:
+                state = _load_state(fh)
+                if key not in state:
+                    return
+                del state[key]
+                _dump_state(fh, state)
+            finally:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+    except Exception as e:
+        _write_marker(f"delete_entry({key!r}) raised: {e!r}")
