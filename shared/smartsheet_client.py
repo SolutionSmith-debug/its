@@ -332,6 +332,14 @@ def list_columns_with_options(sheet_id: int) -> list[dict[str, Any]]:
     Bypasses the column-title cache because picklist sync needs the
     `options` field (the cache only stores `{title: id}` for cell-write
     resolution). A direct `get_sheet` is the right shape here.
+
+    `type` is returned as a plain string (e.g. `"PICKLIST"`), NOT as the
+    SDK's `EnumeratedValue` wrapper. Callers feeding `type` back into a
+    Column body for `update_column_options` need the string form — the
+    SDK's deserializer can't set an EnumeratedValue field from another
+    EnumeratedValue object and silently strips it, which produces a body
+    without `type` and triggers errorCode 1090 on the API side.
+    Surfaced live during the PR #48 re-smoke.
     """
     try:
         sheet = get_client().Sheets.get_sheet(sheet_id, include="columns")
@@ -340,10 +348,20 @@ def list_columns_with_options(sheet_id: int) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for col in sheet.columns:
         opts = getattr(col, "options", None) or []
+        # col.type is an EnumeratedValue wrapper; .value is the ColumnType
+        # enum member; .name is the picklist-friendly string ("PICKLIST",
+        # "TEXT_NUMBER", etc.). Defensively fall back to str() if the
+        # SDK shape ever changes.
+        col_type = col.type
+        type_str: str
+        if hasattr(col_type, "value") and hasattr(col_type.value, "name"):
+            type_str = col_type.value.name
+        else:
+            type_str = str(col_type)
         out.append({
             "id": col.id,
             "title": col.title,
-            "type": col.type,
+            "type": type_str,
             "options": list(opts),
         })
     return out
