@@ -319,6 +319,75 @@ def delete_rows(sheet_id: int, row_ids: list[int]) -> None:
         raise _translate(e) from e
 
 
+def find_row_by_primary(
+    sheet_id: int,
+    primary_column_id: int,
+    value: Any,
+) -> dict[str, Any] | None:
+    """Return the first row whose primary column equals `value`, or None.
+
+    Primary-key lookup by column ID (not title) so the call site is robust
+    against column renames. Used by daemon-style consumers (PR #59.5
+    heartbeat write) that maintain a row-id state-file cache and need a
+    cheap one-shot lookup on first write or cache invalidation.
+
+    Returns a `{_row_id, <title>: value, ...}` dict on match, or None when
+    no row contains a matching cell. Iterates the full sheet client-side
+    — only safe on sheets bounded in size (ITS_Daemon_Health is one row
+    per daemon, ITS_Config is a couple dozen rows). Bigger sheets need a
+    Reports-backed query path; this function is NOT that.
+    """
+    try:
+        sheet = get_client().Sheets.get_sheet(sheet_id)
+    except sdk_exc.SmartsheetException as e:
+        raise _translate(e) from e
+
+    title_by_id = {col.id: col.title for col in sheet.columns}
+    for row in sheet.rows:
+        for cell in row.cells:
+            if cell.column_id == primary_column_id and cell.value == value:
+                record: dict[str, Any] = {"_row_id": row.id}
+                for c in row.cells:
+                    title = title_by_id.get(c.column_id)
+                    if title is not None:
+                        record[title] = c.value
+                return record
+    return None
+
+
+def update_row_cells_by_id(
+    sheet_id: int,
+    row_id: int,
+    cells_by_column_id: dict[int, Any],
+) -> None:
+    """Update one row's cells, keyed by column ID instead of column title.
+
+    The title-based `update_rows` is the right call when the schema is
+    column-rename-stable (most ITS sheets). For daemon heartbeat writes
+    where the column IDs are committed in `sheet_ids.DAEMON_HEALTH_COLUMNS`
+    and we want write paths that survive a title rename without code
+    changes, this ID-based helper is the right shape. No title-cache
+    lookup happens — the IDs are the authoritative reference.
+
+    Raises `SmartsheetNotFoundError` if the row no longer exists (e.g.,
+    the daemon-health row was re-seeded after a column reset); the
+    caller's row-id cache should invalidate on this signal.
+    """
+    if not cells_by_column_id:
+        return
+    cells = [
+        smartsheet.models.Cell({"column_id": col_id, "value": value})
+        for col_id, value in cells_by_column_id.items()
+    ]
+    row = smartsheet.models.Row()
+    row.id = row_id
+    row.cells = cells
+    try:
+        get_client().Sheets.update_rows(sheet_id, [row])
+    except sdk_exc.SmartsheetException as e:
+        raise _translate(e) from e
+
+
 # ---- Column + sheet helpers (PICKLIST sync) -----------------------------
 
 

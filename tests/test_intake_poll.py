@@ -789,3 +789,327 @@ def test_poll_integration_sends_via_graph_and_processes(
                 pass
 
 
+
+
+# ---- Heartbeat-row tests (PR #59.5) -------------------------------------
+
+
+@pytest.fixture
+def heartbeat_state_in_tmp(monkeypatch, tmp_path: Path):
+    """Redirect HEARTBEAT_ROW_STATE_PATH into tmp_path (PR #59.5)."""
+    state = tmp_path / "heartbeat_row_ids.json"
+    monkeypatch.setattr(intake_poll, "HEARTBEAT_ROW_STATE_PATH", state)
+    return state
+
+
+def test_load_heartbeat_state_returns_none_when_missing(heartbeat_state_in_tmp):
+    assert intake_poll._load_heartbeat_row_state("x") is None
+
+
+def test_load_heartbeat_state_returns_none_on_corrupt_json(heartbeat_state_in_tmp):
+    heartbeat_state_in_tmp.write_text("{not json")
+    assert intake_poll._load_heartbeat_row_state("x") is None
+
+
+def test_persist_then_load_round_trip(heartbeat_state_in_tmp):
+    intake_poll._persist_heartbeat_row_state("daemon_a", row_id=42, total_cycles=7)
+    state = intake_poll._load_heartbeat_row_state("daemon_a")
+    assert state == {"row_id": 42, "total_cycles": 7}
+
+
+def test_persist_preserves_other_daemons(heartbeat_state_in_tmp):
+    intake_poll._persist_heartbeat_row_state("daemon_a", 11, 1)
+    intake_poll._persist_heartbeat_row_state("daemon_b", 22, 2)
+    assert intake_poll._load_heartbeat_row_state("daemon_a") == {"row_id": 11, "total_cycles": 1}
+    assert intake_poll._load_heartbeat_row_state("daemon_b") == {"row_id": 22, "total_cycles": 2}
+
+
+def test_invalidate_removes_only_that_daemon(heartbeat_state_in_tmp):
+    intake_poll._persist_heartbeat_row_state("daemon_a", 11, 1)
+    intake_poll._persist_heartbeat_row_state("daemon_b", 22, 2)
+    intake_poll._invalidate_heartbeat_row_state("daemon_a")
+    assert intake_poll._load_heartbeat_row_state("daemon_a") is None
+    assert intake_poll._load_heartbeat_row_state("daemon_b") == {"row_id": 22, "total_cycles": 2}
+
+
+def test_resolve_row_id_uses_cache_when_present(heartbeat_state_in_tmp, mocker):
+    intake_poll._persist_heartbeat_row_state("safety_reports.intake_poll", 999, 0)
+    find = mocker.patch("safety_reports.intake_poll.smartsheet_client.find_row_by_primary")
+    assert intake_poll._resolve_heartbeat_row_id("safety_reports.intake_poll") == 999
+    find.assert_not_called()
+
+
+def test_resolve_row_id_falls_back_to_find_and_persists(heartbeat_state_in_tmp, mocker):
+    mocker.patch(
+        "safety_reports.intake_poll.smartsheet_client.find_row_by_primary",
+        return_value={"_row_id": 7461022174478212, "Daemon Name": "x"},
+    )
+    row_id = intake_poll._resolve_heartbeat_row_id("safety_reports.intake_poll")
+    assert row_id == 7461022174478212
+    # Persisted with total_cycles=0 as the lifetime counter starts.
+    state = intake_poll._load_heartbeat_row_state("safety_reports.intake_poll")
+    assert state == {"row_id": 7461022174478212, "total_cycles": 0}
+
+
+def test_resolve_row_id_returns_none_when_not_found(heartbeat_state_in_tmp, mocker):
+    mocker.patch(
+        "safety_reports.intake_poll.smartsheet_client.find_row_by_primary",
+        return_value=None,
+    )
+    assert intake_poll._resolve_heartbeat_row_id("daemon_missing") is None
+
+
+@pytest.mark.parametrize(
+    "status", ["OK", "WARN", "ERROR", "SKIPPED", "skipped_swo_other"]
+)
+def test_write_heartbeat_row_writes_status_cell(
+    heartbeat_state_in_tmp, mocker, status
+):
+    """Each status value flows through to the Last Cycle Status cell payload."""
+    intake_poll._persist_heartbeat_row_state(
+        "safety_reports.intake_poll", row_id=7461022174478212, total_cycles=10
+    )
+    update = mocker.patch(
+        "safety_reports.intake_poll.smartsheet_client.update_row_cells_by_id"
+    )
+    intake_poll._write_heartbeat_row(
+        status=status,  # type: ignore[arg-type]
+        items_processed=3,
+    )
+    update.assert_called_once()
+    sheet_id, row_id, cells = (
+        update.call_args.args[0],
+        update.call_args.args[1],
+        update.call_args.args[2],
+    )
+    from shared.sheet_ids import DAEMON_HEALTH_COLUMNS, SHEET_DAEMON_HEALTH
+    assert sheet_id == SHEET_DAEMON_HEALTH
+    assert row_id == 7461022174478212
+    assert cells[DAEMON_HEALTH_COLUMNS["last_cycle_status"]] == status
+    assert cells[DAEMON_HEALTH_COLUMNS["last_cycle_items_processed"]] == 3
+    assert cells[DAEMON_HEALTH_COLUMNS["total_cycles"]] == 11  # 10 → 11
+
+
+def test_write_heartbeat_row_lifetime_counter_increments(
+    heartbeat_state_in_tmp, mocker
+):
+    intake_poll._persist_heartbeat_row_state(
+        "safety_reports.intake_poll", row_id=1, total_cycles=100
+    )
+    mocker.patch(
+        "safety_reports.intake_poll.smartsheet_client.update_row_cells_by_id"
+    )
+    intake_poll._write_heartbeat_row(status="OK", items_processed=0)
+    state = intake_poll._load_heartbeat_row_state("safety_reports.intake_poll")
+    assert state == {"row_id": 1, "total_cycles": 101}
+    # Second call increments again — verifies the counter is read-from-state,
+    # not always reset to 0.
+    intake_poll._write_heartbeat_row(status="OK", items_processed=0)
+    state = intake_poll._load_heartbeat_row_state("safety_reports.intake_poll")
+    assert state == {"row_id": 1, "total_cycles": 102}
+
+
+def test_write_heartbeat_row_includes_optional_cells(
+    heartbeat_state_in_tmp, mocker
+):
+    intake_poll._persist_heartbeat_row_state(
+        "safety_reports.intake_poll", row_id=1, total_cycles=0
+    )
+    update = mocker.patch(
+        "safety_reports.intake_poll.smartsheet_client.update_row_cells_by_id"
+    )
+    intake_poll._write_heartbeat_row(
+        status="WARN",
+        items_processed=5,
+        error_summary="2 mark_read failures",
+        correlation_id="abc123def456",
+        notes="manual debug",
+    )
+    cells = update.call_args.args[2]
+    from shared.sheet_ids import DAEMON_HEALTH_COLUMNS
+    assert cells[DAEMON_HEALTH_COLUMNS["last_error_summary"]] == "2 mark_read failures"
+    assert cells[DAEMON_HEALTH_COLUMNS["last_error_correlation_id"]] == "abc123def456"
+    assert cells[DAEMON_HEALTH_COLUMNS["notes"]] == "manual debug"
+
+
+def test_write_heartbeat_row_swallows_smartsheet_error(
+    heartbeat_state_in_tmp, mocker
+):
+    """Per the brief: SmartsheetError logs daemon_health_write_failed and returns None.
+
+    Never raises to caller. Verifies the function's defense-in-depth contract.
+    """
+    intake_poll._persist_heartbeat_row_state(
+        "safety_reports.intake_poll", row_id=1, total_cycles=0
+    )
+    mocker.patch(
+        "safety_reports.intake_poll.smartsheet_client.update_row_cells_by_id",
+        side_effect=intake_poll.smartsheet_client.SmartsheetError("HTTP 500"),
+    )
+    log = mocker.patch("safety_reports.intake_poll.error_log.log")
+    # Must NOT raise.
+    result = intake_poll._write_heartbeat_row(status="OK", items_processed=0)
+    assert result is None
+    # daemon_health_write_failed logged.
+    assert any(
+        c.kwargs.get("error_code") == "daemon_health_write_failed"
+        for c in log.call_args_list
+    )
+
+
+def test_write_heartbeat_row_404_invalidates_cache(heartbeat_state_in_tmp, mocker):
+    """A 404 on update means the row was deleted/re-seeded; cache invalidates
+    so the next cycle re-resolves via find_row_by_primary."""
+    intake_poll._persist_heartbeat_row_state(
+        "safety_reports.intake_poll", row_id=999, total_cycles=10
+    )
+    mocker.patch(
+        "safety_reports.intake_poll.smartsheet_client.update_row_cells_by_id",
+        side_effect=intake_poll.smartsheet_client.SmartsheetNotFoundError("row gone"),
+    )
+    mocker.patch("safety_reports.intake_poll.error_log.log")
+    intake_poll._write_heartbeat_row(status="OK", items_processed=0)
+    assert intake_poll._load_heartbeat_row_state("safety_reports.intake_poll") is None
+
+
+def test_write_heartbeat_row_swallows_unexpected_exception(
+    heartbeat_state_in_tmp, mocker
+):
+    """Any exception (not just SmartsheetError) is caught and logged.
+
+    Defense in depth: the brief explicitly says heartbeat failure must never
+    block the daemon's primary work, so the function catches Exception broadly.
+    """
+    intake_poll._persist_heartbeat_row_state(
+        "safety_reports.intake_poll", row_id=1, total_cycles=0
+    )
+    mocker.patch(
+        "safety_reports.intake_poll.smartsheet_client.update_row_cells_by_id",
+        side_effect=RuntimeError("totally unexpected"),
+    )
+    log = mocker.patch("safety_reports.intake_poll.error_log.log")
+    result = intake_poll._write_heartbeat_row(status="OK", items_processed=0)
+    assert result is None
+    assert any(
+        c.kwargs.get("error_code") == "daemon_health_write_failed"
+        for c in log.call_args_list
+    )
+
+
+def test_poll_once_calls_write_heartbeat_row_after_cycle(
+    mocker, state_in_tmp, heartbeat_state_in_tmp, kill_switch_active, quiet_logs,
+    polling_on, mailbox_from_config,
+):
+    """poll_once invokes _write_heartbeat_row after the for-loop completes."""
+    mocker.patch(
+        "safety_reports.intake_poll.graph_client.list_inbox",
+        return_value=[{"id": "msg-1", "isRead": False}],
+    )
+    mocker.patch(
+        "safety_reports.intake_poll.intake.process_message",
+        return_value=_make_result("processed", message_id="msg-1"),
+    )
+    mocker.patch("safety_reports.intake_poll.graph_client.mark_read")
+    write_hb = mocker.patch("safety_reports.intake_poll._write_heartbeat_row")
+
+    intake_poll.poll_once()
+
+    write_hb.assert_called_once()
+    call = write_hb.call_args
+    assert call.kwargs["status"] == "OK"
+    assert call.kwargs["items_processed"] == 1
+
+
+def test_poll_once_writes_warn_status_when_errors_present(
+    mocker, state_in_tmp, heartbeat_state_in_tmp, kill_switch_active, quiet_logs,
+    polling_on, mailbox_from_config,
+):
+    """A cycle with errors > 0 reports status=WARN to the heartbeat row."""
+    mocker.patch(
+        "safety_reports.intake_poll.graph_client.list_inbox",
+        return_value=[{"id": "msg-1", "isRead": False}],
+    )
+    mocker.patch(
+        "safety_reports.intake_poll.intake.process_message",
+        return_value=_make_result("error", message_id="msg-1"),
+    )
+    mocker.patch("safety_reports.intake_poll.graph_client.mark_read")
+    write_hb = mocker.patch("safety_reports.intake_poll._write_heartbeat_row")
+
+    intake_poll.poll_once()
+
+    assert write_hb.call_args.kwargs["status"] == "WARN"
+
+
+def test_poll_once_outer_catchall_protects_against_heartbeat_blowup(
+    mocker, state_in_tmp, heartbeat_state_in_tmp, kill_switch_active, quiet_logs,
+    polling_on, mailbox_from_config,
+):
+    """If _write_heartbeat_row somehow re-raises, poll_once's outer catch
+    swallows it so the daemon's primary work isn't blocked."""
+    mocker.patch(
+        "safety_reports.intake_poll.graph_client.list_inbox",
+        return_value=[],
+    )
+    mocker.patch(
+        "safety_reports.intake_poll._write_heartbeat_row",
+        side_effect=RuntimeError("escape attempt"),
+    )
+
+    # Must NOT raise.
+    stats = intake_poll.poll_once()
+    assert stats is not None
+
+
+# ---- Heartbeat-row integration test (gated) -----------------------------
+
+
+@pytest.mark.integration
+def test_heartbeat_row_live_round_trip(
+    _smartsheet_token: str,
+    heartbeat_state_in_tmp,
+) -> None:
+    """Real write against ITS_Daemon_Health row 7461022174478212.
+
+    Reads the row before + after to assert Last Heartbeat advanced and
+    Total Cycles incremented exactly by 1. Cleans up nothing — heartbeat
+    cells are append-only by design; subsequent cycles overwrite. State
+    file is redirected to tmp_path so the live operator state is
+    untouched.
+    """
+    from shared import sheet_ids as _live_sheet_ids
+    from shared import smartsheet_client as _live_smartsheet_client
+
+    before_row = _live_smartsheet_client.find_row_by_primary(
+        _live_sheet_ids.SHEET_DAEMON_HEALTH,
+        _live_sheet_ids.DAEMON_HEALTH_COLUMNS["daemon_name"],
+        "safety_reports.intake_poll",
+    )
+    assert before_row is not None, (
+        "ITS_Daemon_Health row 7461022174478212 not present — "
+        "schema doc seed step missing"
+    )
+    before_total = before_row.get("Total Cycles Today") or 0
+    # Smartsheet may store integers as floats; normalize.
+    before_total_int = int(before_total)
+
+    intake_poll._write_heartbeat_row(
+        status="OK",
+        items_processed=0,
+        notes="integration test write — safe to ignore",
+    )
+
+    after_row = _live_smartsheet_client.find_row_by_primary(
+        _live_sheet_ids.SHEET_DAEMON_HEALTH,
+        _live_sheet_ids.DAEMON_HEALTH_COLUMNS["daemon_name"],
+        "safety_reports.intake_poll",
+    )
+    assert after_row is not None
+    after_total_int = int(after_row.get("Total Cycles Today") or 0)
+    assert after_total_int == before_total_int + 1, (
+        f"Total Cycles should increment by 1: before={before_total_int} "
+        f"after={after_total_int}"
+    )
+
+    last_hb = after_row.get("Last Heartbeat")
+    assert last_hb is not None, "Last Heartbeat should be set"

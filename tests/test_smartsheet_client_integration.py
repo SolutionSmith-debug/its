@@ -271,3 +271,95 @@ def test_find_folder_by_name_in_folder_round_trip(_token_available):
         assert missing is None
     finally:
         _delete_folder_rest(folder_id, _token_available)
+
+
+# ---- find_row_by_primary + update_row_cells_by_id (PR #59.5) ------------
+
+
+def test_find_row_by_primary_live_round_trip(_token_available):
+    """Create sheet → add 2 rows → find by primary → update by ID → re-read.
+
+    Exercises both new helpers against the live API in one cycle to catch
+    body-shape drift the unit tests' SDK mocks can't catch (the PR #47/#48/#49
+    failure mode this integration file was created for).
+    """
+    sheet_id = smartsheet_client.create_sheet_in_folder(
+        sheet_ids.FOLDER_SYSTEM_CONFIG,
+        _sandbox_name("find_by_primary"),
+        [
+            {"title": "Name", "type": "TEXT_NUMBER", "primary": True},
+            {"title": "Status", "type": "TEXT_NUMBER"},
+            {"title": "Count", "type": "TEXT_NUMBER"},
+        ],
+    )
+    try:
+        # Add two rows so the find_by_primary lookup has to discriminate.
+        row_ids = smartsheet_client.add_rows(
+            sheet_id,
+            [
+                {"Name": "alpha", "Status": "OK", "Count": "0"},
+                {"Name": "beta",  "Status": "WARN", "Count": "5"},
+            ],
+        )
+        assert len(row_ids) == 2
+
+        # Look up the live columns to discover the Name column ID — the
+        # primary-key lookup is by ID, so we need the live ID.
+        cols = smartsheet_client.list_columns_with_options(sheet_id)
+        name_col_id = next(c["id"] for c in cols if c["title"] == "Name")
+        status_col_id = next(c["id"] for c in cols if c["title"] == "Status")
+        count_col_id = next(c["id"] for c in cols if c["title"] == "Count")
+
+        # find_row_by_primary returns the matching row's title-keyed dict.
+        beta = smartsheet_client.find_row_by_primary(sheet_id, name_col_id, "beta")
+        assert beta is not None
+        assert beta["Name"] == "beta"
+        assert beta["Status"] == "WARN"
+        assert beta["_row_id"] == row_ids[1]
+
+        # find_row_by_primary returns None on a missing primary value.
+        gamma = smartsheet_client.find_row_by_primary(sheet_id, name_col_id, "gamma")
+        assert gamma is None
+
+        # update_row_cells_by_id updates by column ID, no title-cache lookup.
+        smartsheet_client.update_row_cells_by_id(
+            sheet_id,
+            row_ids[1],
+            {status_col_id: "OK", count_col_id: "99"},
+        )
+
+        # Re-read confirms the update landed.
+        beta_after = smartsheet_client.find_row_by_primary(sheet_id, name_col_id, "beta")
+        assert beta_after is not None
+        assert beta_after["Status"] == "OK"
+        assert beta_after["Count"] == "99"
+    finally:
+        _delete_sheet_rest(sheet_id, _token_available)
+
+
+def test_update_row_cells_by_id_raises_not_found_on_missing_row(_token_available):
+    """A 404 on a non-existent row id surfaces as SmartsheetNotFoundError.
+
+    Regression guard for the heartbeat-cache 404 invalidation path —
+    intake_poll relies on this exception type to know when to invalidate
+    the heartbeat row-id cache.
+    """
+    sheet_id = smartsheet_client.create_sheet_in_folder(
+        sheet_ids.FOLDER_SYSTEM_CONFIG,
+        _sandbox_name("not_found_row"),
+        [
+            {"title": "Name", "type": "TEXT_NUMBER", "primary": True},
+        ],
+    )
+    try:
+        cols = smartsheet_client.list_columns_with_options(sheet_id)
+        name_col_id = next(c["id"] for c in cols if c["title"] == "Name")
+        bogus_row_id = 1  # No row with id 1 exists on a fresh sheet.
+        with pytest.raises(smartsheet_client.SmartsheetNotFoundError):
+            smartsheet_client.update_row_cells_by_id(
+                sheet_id,
+                bogus_row_id,
+                {name_col_id: "anything"},
+            )
+    finally:
+        _delete_sheet_rest(sheet_id, _token_available)
