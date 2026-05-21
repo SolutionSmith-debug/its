@@ -26,3 +26,11 @@ resulting folder IDs are committed in `shared.defaults.BOX_PROJECT_FOLDERS`.
 
 Idempotent: a re-run with all 6 folders present makes zero copy calls, prints
 6 `EXISTS` lines, exits 0.
+
+### `seed_safety_intake_config.py`
+
+Seeds 5 `safety_reports.intake.*` rows in `ITS_Config` (workstream `safety_reports`)
+that `safety_reports/intake.py` reads at runtime: `allowed_senders` (JSON list),
+`classification_model` (Anthropic model ID), `box_filing_enabled` (capability flag),
+`review_queue_on_low_confidence` (behavior flag), and `confidence_threshold` (float).
+Ran 2026-05-21. Idempotent per row.

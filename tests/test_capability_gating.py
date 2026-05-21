@@ -29,6 +29,10 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # Generation scripts: must NOT import any send capability.
 # Each entry: (relative path from repo root, list of forbidden import substrings)
 GATED_SCRIPTS: list[tuple[str, list[str]]] = [
+    (
+        "safety_reports/intake.py",
+        ["graph_client", "send_mail", "resend", "smtplib", "email.mime"],
+    ),
     # ("safety_reports/weekly_generate.py", ["graph_client", "send_mail"]),
     # ("po_materials/standard_rfq_generate.py", ["graph_client", "send_mail"]),
     # ("po_materials/racking_module_rfq_generate.py", ["graph_client", "send_mail"]),
