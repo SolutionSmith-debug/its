@@ -374,3 +374,25 @@ Class of bug: `SimpleNamespace`-based mocks at the SDK boundary don't enforce th
 **Urgency:** addressed. Note kept open for visibility — any new wrapper that lands without parallel integration coverage re-introduces the class of bug.
 
 Surfaced: PR #46 → #47 → #48 → #49 iteration, 2026-05-20/21.
+
+## Smartsheet MULTI_PICKLIST type doesn't survive sheet-creation round-trip [OPEN 2026-05-21]
+
+Creating a sheet with `{"type": "MULTI_PICKLIST", "options": [...]}` via `Folders.create_sheet_in_folder` (or the equivalent REST POST `/folders/{id}/sheets`) returns 200 OK, but a subsequent `GET /sheets/{id}?include=columns` shows the column's type as `TEXT_NUMBER`, not `MULTI_PICKLIST`. The column doesn't behave as MULTI_PICKLIST either.
+
+Probed live during the PR #51 integration-test run. Adding the column via a separate `POST /sheets/{id}/columns` after the sheet exists DOES return `"type": "MULTI_PICKLIST"` in the immediate response — but the subsequent GET still shows TEXT_NUMBER. The discrepancy is consistent enough that "sheet creation with MULTI_PICKLIST" appears to be a Smartsheet API behavior, not a transient race.
+
+**Impact on `shared/picklist_sync.py`:** none today. The picklist sync's only target columns are PICKLIST (master DBs → downstream forms). MULTI_PICKLIST is a defensive code path in `update_column_options` (accepts the type, unit-tested via `test_update_column_options_accepts_multi_picklist`) but no production mapping uses it.
+
+**Action if MULTI_PICKLIST becomes a real use case:** investigate whether the column needs to be created with additional flags (`validation`, `width`, …) or via a different REST endpoint. May require a Smartsheet support ticket — their column-type matrix isn't fully self-documenting.
+
+**Urgency:** none. Tracked for visibility so a future operator looking at the integration test's missing MULTI_PICKLIST coverage understands why.
+
+Surfaced: PR #51 integration test run, 2026-05-21.
+
+## `find_sheet_by_name_in_folder` switched from SDK to REST [CLOSED 2026-05-21]
+
+Original PR #45 implementation used `smartsheet.Folders.get_folder()` — deprecated upstream AND returns stale folder data within a single SDK client session. A sheet created via the SDK's `create_sheet_in_folder()` does not appear in a subsequent `get_folder()` from the same client; direct REST sees it immediately.
+
+PR #51 swapped the helper to direct REST. Unit tests updated to mock `requests.get` instead of the SDK shape. Removes the DeprecationWarning AND fixes the same-session-create-then-find bug. The picklist sync migration script's earlier success was a happy accident: it didn't exercise back-to-back create + find in the same Python process, so the SDK cache never tripped.
+
+Closed by PR #51.

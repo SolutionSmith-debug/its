@@ -36,6 +36,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+import requests  # type: ignore[import-untyped]
 import smartsheet  # type: ignore[import-untyped]
 import smartsheet.exceptions as sdk_exc  # type: ignore[import-untyped]
 
@@ -411,17 +412,50 @@ def find_sheet_by_name_in_folder(folder_id: int, name: str) -> int | None:
     already exist?" before issuing a `create_sheet_in_folder` POST — the
     idempotency pattern from the PR α migration generalizes here.
 
+    Implemented via direct REST (`GET /folders/{id}`) rather than the
+    SDK's `Folders.get_folder()` for two reasons surfaced live during
+    the PR #50 integration-test run on 2026-05-21:
+
+    1. `Folders.get_folder()` is deprecated upstream (emits
+       DeprecationWarning).
+    2. The deprecated method returns stale folder data within a single
+       SDK client session — a sheet created via the SDK's
+       `create_sheet_in_folder()` does NOT appear in a subsequent
+       `get_folder()` from the same client. Direct REST sees the sheet
+       immediately. Confirmed live: REST returned the freshly-created
+       sheet, SDK did not.
+
     Matches on exact title equality (Smartsheet folder listings are
     case-sensitive; titles are unique within a folder by convention but
     not enforced by the API, so a duplicate returns the first match).
     """
+    token = keychain.get_secret("ITS_SMARTSHEET_TOKEN")
+    url = f"https://api.smartsheet.com/2.0/folders/{folder_id}"
     try:
-        folder = get_client().Folders.get_folder(folder_id)
-    except sdk_exc.SmartsheetException as e:
-        raise _translate(e) from e
-    for sheet in getattr(folder, "sheets", []) or []:
-        if sheet.name == name:
-            return int(sheet.id)
+        response = requests.get(
+            url, headers={"Authorization": f"Bearer {token}"}, timeout=30
+        )
+        response.raise_for_status()
+    except requests.HTTPError as e:
+        # Map to the typed SmartsheetError hierarchy so callers see the
+        # same exception shape as the SDK-backed helpers.
+        status = e.response.status_code if e.response is not None else 0
+        body_text = e.response.text[:200] if e.response is not None else str(e)
+        if status == 401:
+            raise SmartsheetAuthError(f"HTTP 401: {body_text}") from e
+        if status == 403:
+            raise SmartsheetPermissionError(f"HTTP 403: {body_text}") from e
+        if status == 404:
+            raise SmartsheetNotFoundError(f"HTTP 404: {body_text}") from e
+        if status == 429:
+            raise SmartsheetRateLimitError(f"HTTP 429: {body_text}") from e
+        raise SmartsheetError(f"HTTP {status}: {body_text}") from e
+    except requests.RequestException as e:
+        raise SmartsheetError(f"folder fetch failed: {e!r}") from e
+    body = response.json()
+    for sheet in body.get("sheets", []):
+        if sheet.get("name") == name:
+            return int(sheet["id"])
     return None
 
 
