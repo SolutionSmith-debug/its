@@ -554,10 +554,30 @@ def test_update_column_options_calls_sdk_and_invalidates_cache(mocker):
     assert args[0] == 42
     assert args[1] == 99
     col = args[2]
-    assert col.id == 99
+    # Smartsheet's PUT /sheets/{sheetId}/columns/{columnId} rejects `id`
+    # in the request body (errorCode 1032). The column_id flows through
+    # the URL path (args[1]), not the model — the body must omit `id`.
+    assert col.id is None
     assert list(col.options) == ["A", "B", "C"]
     # Cache invalidated after the update so subsequent reads refresh.
     assert 42 not in smartsheet_client._column_maps
+
+
+def test_update_column_options_body_omits_id(mocker):
+    """Regression guard: API rejects body with `id` (errorCode 1032).
+
+    Discovered live during PR #46 picklist smoke test post-#45 merge —
+    the SDK mock didn't validate body shape so the test suite passed
+    but the real Smartsheet API returned HTTP 400.
+    """
+    client = _install_client(mocker)
+    smartsheet_client.update_column_options(42, 99, ["A"])
+
+    body = client.Sheets.update_column.call_args.args[2]
+    assert body.id is None
+    serialized = body.to_dict()
+    assert "id" not in serialized
+    assert "columnId" not in serialized
 
 
 def test_update_column_options_translates_auth_error(mocker):

@@ -359,15 +359,17 @@ def update_column_options(
     alphabetized list when stable order matters (R5 — Smartsheet does
     not guarantee API-side preservation otherwise).
 
+    The column ID lives in the URL path, NOT the request body — the API
+    returns HTTP 400 / errorCode 1032 if `id` appears in the body. The
+    Column model passed below intentionally omits the `id` field; the
+    `column_id` argument flows through the path component of the call.
+
     Invalidates the column-title cache for the sheet because picklist
     edits don't change titles but the cache may be stale if titles were
     edited in the same UI session.
     """
     try:
-        body = smartsheet.models.Column({
-            "id": column_id,
-            "options": list(options),
-        })
+        body = smartsheet.models.Column({"options": list(options)})
         get_client().Sheets.update_column(sheet_id, column_id, body)
     except sdk_exc.SmartsheetException as e:
         raise _translate(e) from e
