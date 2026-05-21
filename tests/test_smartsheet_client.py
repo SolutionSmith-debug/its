@@ -666,45 +666,69 @@ def test_update_column_options_handles_empty_options_list(mocker):
 # ---- find_sheet_by_name_in_folder / create_sheet_in_folder --------------
 
 
+def _rest_get_folder_response(sheets: list[dict] | None, status: int = 200):
+    """Build a mock requests.Response for the GET /folders/{id} endpoint.
+
+    `sheets` is the list of {"id": int, "name": str} dicts to embed in
+    the response body; pass None to model an API that omits the field
+    entirely. status=200 unless the test wants an error path.
+    """
+    response = MagicMock()
+    response.status_code = status
+    body: dict = {"id": 7, "name": "fake-folder"}
+    if sheets is not None:
+        body["sheets"] = sheets
+    response.json.return_value = body
+    if status >= 400:
+        from requests import HTTPError
+        err = HTTPError(f"HTTP {status}")
+        err.response = response
+        response.raise_for_status.side_effect = err
+        response.text = body.get("message", "error")
+    else:
+        response.raise_for_status.return_value = None
+    return response
+
+
 def test_find_sheet_by_name_in_folder_matches_title(mocker):
-    client = _install_client(mocker)
-    folder = SimpleNamespace(
-        sheets=[
-            SimpleNamespace(id=111, name="ITS_Errors"),
-            SimpleNamespace(id=222, name="Picklist_Sync_Config"),
-            SimpleNamespace(id=333, name="Other"),
-        ]
+    # PR #51: helper switched to direct REST; stub requests.get instead of SDK.
+    mocker.patch(
+        "shared.smartsheet_client.requests.get",
+        return_value=_rest_get_folder_response([
+            {"id": 111, "name": "ITS_Errors"},
+            {"id": 222, "name": "Picklist_Sync_Config"},
+            {"id": 333, "name": "Other"},
+        ]),
     )
-    client.Folders.get_folder.return_value = folder
 
     result = smartsheet_client.find_sheet_by_name_in_folder(7, "Picklist_Sync_Config")
-
     assert result == 222
 
 
 def test_find_sheet_by_name_in_folder_returns_none_when_absent(mocker):
-    client = _install_client(mocker)
-    folder = SimpleNamespace(
-        sheets=[SimpleNamespace(id=111, name="Other")]
+    mocker.patch(
+        "shared.smartsheet_client.requests.get",
+        return_value=_rest_get_folder_response([{"id": 111, "name": "Other"}]),
     )
-    client.Folders.get_folder.return_value = folder
 
-    result = smartsheet_client.find_sheet_by_name_in_folder(7, "Nope")
-    assert result is None
+    assert smartsheet_client.find_sheet_by_name_in_folder(7, "Nope") is None
 
 
 def test_find_sheet_by_name_in_folder_handles_empty_folder(mocker):
-    client = _install_client(mocker)
-    # A folder with no sheets list at all (defensive: API may omit the key).
-    folder = SimpleNamespace(sheets=None)
-    client.Folders.get_folder.return_value = folder
+    # Response body omits the "sheets" key entirely.
+    mocker.patch(
+        "shared.smartsheet_client.requests.get",
+        return_value=_rest_get_folder_response(None),
+    )
 
     assert smartsheet_client.find_sheet_by_name_in_folder(7, "Anything") is None
 
 
 def test_find_sheet_by_name_in_folder_translates_permission_error(mocker):
-    client = _install_client(mocker)
-    client.Folders.get_folder.side_effect = _api_error(403, message="no access")
+    mocker.patch(
+        "shared.smartsheet_client.requests.get",
+        return_value=_rest_get_folder_response(None, status=403),
+    )
 
     with pytest.raises(SmartsheetPermissionError):
         smartsheet_client.find_sheet_by_name_in_folder(7, "Anything")
@@ -713,14 +737,13 @@ def test_find_sheet_by_name_in_folder_translates_permission_error(mocker):
 def test_find_sheet_by_name_in_folder_returns_first_match_on_duplicate(mocker):
     """Smartsheet doesn't enforce title uniqueness inside a folder; if a
     duplicate exists, return the first match (deterministic + cheap)."""
-    client = _install_client(mocker)
-    folder = SimpleNamespace(
-        sheets=[
-            SimpleNamespace(id=111, name="Dup"),
-            SimpleNamespace(id=222, name="Dup"),
-        ]
+    mocker.patch(
+        "shared.smartsheet_client.requests.get",
+        return_value=_rest_get_folder_response([
+            {"id": 111, "name": "Dup"},
+            {"id": 222, "name": "Dup"},
+        ]),
     )
-    client.Folders.get_folder.return_value = folder
 
     assert smartsheet_client.find_sheet_by_name_in_folder(7, "Dup") == 111
 
