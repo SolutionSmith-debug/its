@@ -476,7 +476,10 @@ def sync_one_mapping(mapping: Mapping, *, dry_run: bool = False) -> MappingResul
             return result
 
         smartsheet_client.update_column_options(
-            mapping.target_sheet_id, target_col["id"], sorted_final
+            mapping.target_sheet_id,
+            target_col["id"],
+            sorted_final,
+            column_type=target_col["type"],
         )
 
         # 8. Persist run-state
