@@ -34,6 +34,13 @@ Checks shipped:
        Session 2. WARN when a tracked mailbox is idle beyond its per-
        workstream `mail_intake.<workstream>.max_idle_hours` threshold
        (per `docs/tech_debt.md` Mail.app entry added 2026-05-19).
+    G. Alert-routing dedupe summary sweep — Session 3 (PR β). For each
+       expired entry in `~/its/state/alert_dedupe.json`, fire a single
+       operator summary email naming what was suppressed during the
+       window, mark the entry, and delete it on the next sweep
+       (two-phase deletion for crash safety). Summary emails are a
+       Resend-only push notification — they do NOT write to ITS_Errors
+       or Sentry (no new forensic data; the rows already exist).
 
 Planned (NOT in this file, scheduled for a follow-on PR — the Check E
 shipping PR; see `docs/tech_debt.md`):
@@ -49,7 +56,14 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
-from shared import graph_client, review_queue, sheet_ids, smartsheet_client
+from shared import (
+    alert_dedupe,
+    graph_client,
+    resend_client,
+    review_queue,
+    sheet_ids,
+    smartsheet_client,
+)
 from shared.error_log import Severity, its_error_log, log
 from shared.kill_switch import SystemState, check_system_state
 from shared.review_queue import ReviewReason, SlaTier
@@ -430,6 +444,128 @@ def _check_mail_intake_silent_disable() -> CheckResult:
     )
 
 
+# ---- Check G: alert-dedupe summary sweep --------------------------------
+
+_SUMMARY_SUBJECT_PREFIX = "[ITS CRITICAL SUMMARY]"
+
+
+def _compose_summary(entry: alert_dedupe.ExpiredEntry, run_ts: str) -> tuple[str, str]:
+    """Build (subject, body) for one expired-window summary email.
+
+    Subject:  [ITS CRITICAL SUMMARY] {script}: N suppressed occurrences
+    Body:     Fields naming the window + filter criteria for ITS_Errors.
+
+    The body references filter criteria rather than enumerating
+    correlation IDs inline because the state file aggregates only
+    (suppressed_count, timestamps) — individual correlation IDs live in
+    ITS_Errors. Operator pulls detail from the sheet with the filter.
+
+    `entry.key` is `f"{script}::{error_code}"`; we split once on `::` to
+    recover the two parts for display. A key without `::` falls back to
+    using the whole string as `script` and an empty error_code (the
+    `record_fire` callers always build keys with `::`, so this fallback
+    is defensive against hand-edited state files).
+    """
+    script, sep, error_code = entry.key.partition("::")
+    if not sep:
+        error_code = ""
+    subject = (
+        f"{_SUMMARY_SUBJECT_PREFIX} {script}: "
+        f"{entry.suppressed_count} suppressed occurrences"
+    )
+    body = "\n".join(
+        [
+            f"Script:           {script}",
+            f"Error code:       {error_code}",
+            f"Window opened:    {entry.first_fired_at}",
+            f"Window closed:    {entry.window_ends_at}",
+            f"First fire:       {entry.first_fired_at}",
+            f"Last fire:        {entry.last_fired_at}",
+            f"Suppressed count: {entry.suppressed_count}",
+            "",
+            f"See ITS_Errors (sheet {sheet_ids.SHEET_ERRORS}) for full row detail.",
+            "",
+            "Filter ITS_Errors by:",
+            f"  Script = {script}",
+            f"  Surfaced At BETWEEN {entry.first_fired_at} AND {entry.last_fired_at}",
+            "",
+            f"Sent by watchdog summary sweep, {run_ts}.",
+        ]
+    )
+    return subject, body
+
+
+def _check_alert_dedupe_summaries() -> CheckResult:
+    """Check G: sweep alert-dedupe state for expired windows.
+
+    For each expired entry:
+      - If `suppressed_count >= 1` AND `summarized == False` → fire a
+        single Resend summary email, then `mark_summarized(key)`. The
+        entry stays one more sweep before deletion (phase 2 below).
+        Crash safety: a crash between send and mark causes the next
+        sweep to re-fire (duplicate email is acceptable).
+      - Otherwise (`summarized == True` OR `suppressed_count == 0`) →
+        `delete_entry(key)`. This is phase 2 of the two-phase delete:
+        either the entry was summarized in a prior sweep, or the window
+        closed with no suppressions (a clean expiry needing no signal).
+
+    Per Op Stds v9 §27 push-vs-record separation, the summary email is
+    a Resend-only operational signal — it does NOT write to ITS_Errors
+    (the rows already exist from PR α) and does NOT fire Sentry (this
+    is not an exception event).
+
+    Returns INFO `CheckResult` with sweep stats. The check itself never
+    fails the watchdog run — `_run_check` wraps it for harness-level
+    isolation, and the per-entry Resend / mark / delete calls each have
+    their own try/except so one bad entry doesn't poison the sweep.
+    """
+    run_ts = datetime.now(UTC).isoformat()
+    entries = alert_dedupe.list_expired_summaries()
+
+    if not entries:
+        return CheckResult(
+            severity=Severity.INFO,
+            summary="No expired alert-dedupe windows to sweep.",
+        )
+
+    summaries_fired = 0
+    entries_deleted = 0
+    fired_keys: list[str] = []
+
+    for entry in entries:
+        if entry.suppressed_count >= 1 and not entry.summarized:
+            subject, body = _compose_summary(entry, run_ts)
+            try:
+                resend_client.send_alert(subject, body)
+            except Exception as e:
+                # Resend failure leaves entry unmarked → next sweep retries.
+                # No marker rewrite here — resend_client / error_log paths
+                # have their own logging; the watchdog status line below
+                # surfaces the aggregate count.
+                log(
+                    Severity.WARN,
+                    f"{_SCRIPT}._check_alert_dedupe_summaries",
+                    f"[summary-send-failed] key={entry.key!r} {e!r}",
+                )
+                continue
+            alert_dedupe.mark_summarized(entry.key)
+            summaries_fired += 1
+            fired_keys.append(entry.key)
+        else:
+            alert_dedupe.delete_entry(entry.key)
+            entries_deleted += 1
+
+    summary = (
+        f"Examined {len(entries)} expired entr{'y' if len(entries) == 1 else 'ies'}; "
+        f"fired {summaries_fired} summary email(s), "
+        f"deleted {entries_deleted} entr{'y' if entries_deleted == 1 else 'ies'}."
+    )
+    details = ""
+    if fired_keys:
+        details = f"Summaries fired for: {', '.join(fired_keys)}"
+    return CheckResult(severity=Severity.INFO, summary=summary, details=details)
+
+
 # ---- Failure-isolation harness ------------------------------------------
 
 
@@ -477,6 +613,7 @@ CHECKS: list[Callable[[], CheckResult]] = [
     _check_scheduled_jobs,
     _check_reviewer_chain_forward,
     _check_mail_intake_silent_disable,
+    _check_alert_dedupe_summaries,
     # Check E (Anthropic spend trend) deferred to a follow-on PR (the
     # Check E shipping PR) — requires an Admin API key (sk-ant-admin01-...
     # prefix) provisioned in Keychain under ITS_ANTHROPIC_ADMIN_API_KEY.
