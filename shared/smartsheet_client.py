@@ -459,6 +459,60 @@ def find_sheet_by_name_in_folder(folder_id: int, name: str) -> int | None:
     return None
 
 
+def find_folder_by_name_in_folder(parent_folder_id: int, name: str) -> int | None:
+    """Return the sub-folder ID with title `name` inside `parent_folder_id`, or None.
+
+    Sibling of `find_sheet_by_name_in_folder` for the folders[] response field.
+    Used by `safety_reports.week_folder.ensure_current_week_folder` to check
+    "does this week's folder already exist?" before issuing a folder-create
+    POST — same find-or-create idempotency pattern.
+
+    Implemented via direct REST (`GET /folders/{id}`) rather than the SDK's
+    `Folders.get_folder()` for the same two reasons documented on
+    `find_sheet_by_name_in_folder`:
+
+    1. `Folders.get_folder()` is deprecated upstream (emits
+       DeprecationWarning).
+    2. The deprecated method returns stale folder data within a single
+       SDK client session — a folder created via `create_folder_in_folder`
+       does NOT appear in a subsequent `get_folder()` from the same
+       client. Direct REST sees the folder immediately. Confirmed live
+       during the PR #51 integration-test run.
+
+    Matches on exact title equality (Smartsheet folder listings are
+    case-sensitive; titles are unique within a folder by convention but
+    not enforced by the API, so a duplicate returns the first match —
+    callers that need duplicate-aware behavior must inspect the listing
+    themselves).
+    """
+    token = keychain.get_secret("ITS_SMARTSHEET_TOKEN")
+    url = f"https://api.smartsheet.com/2.0/folders/{parent_folder_id}"
+    try:
+        response = requests.get(
+            url, headers={"Authorization": f"Bearer {token}"}, timeout=30
+        )
+        response.raise_for_status()
+    except requests.HTTPError as e:
+        status = e.response.status_code if e.response is not None else 0
+        body_text = e.response.text[:200] if e.response is not None else str(e)
+        if status == 401:
+            raise SmartsheetAuthError(f"HTTP 401: {body_text}") from e
+        if status == 403:
+            raise SmartsheetPermissionError(f"HTTP 403: {body_text}") from e
+        if status == 404:
+            raise SmartsheetNotFoundError(f"HTTP 404: {body_text}") from e
+        if status == 429:
+            raise SmartsheetRateLimitError(f"HTTP 429: {body_text}") from e
+        raise SmartsheetError(f"HTTP {status}: {body_text}") from e
+    except requests.RequestException as e:
+        raise SmartsheetError(f"folder fetch failed: {e!r}") from e
+    body = response.json()
+    for folder in body.get("folders", []):
+        if folder.get("name") == name:
+            return int(folder["id"])
+    return None
+
+
 def create_sheet_in_folder(
     folder_id: int,
     name: str,
@@ -481,6 +535,120 @@ def create_sheet_in_folder(
     except sdk_exc.SmartsheetException as e:
         raise _translate(e) from e
     return int(result.result.id)
+
+
+def create_folder_in_folder(parent_folder_id: int, name: str) -> int:
+    """Create a sub-folder inside `parent_folder_id` and return its folder ID.
+
+    Implemented via direct REST (`POST /folders/{id}/folders`) for symmetry
+    with `find_folder_by_name_in_folder` — both legs of the find-or-create
+    idempotency pattern in `safety_reports.week_folder` share the REST
+    transport so the same-session cache bug (PR #51) cannot bite a
+    later refactor.
+
+    Idempotency is the caller's job — use `find_folder_by_name_in_folder`
+    first if the create needs to be re-run-safe.
+    """
+    token = keychain.get_secret("ITS_SMARTSHEET_TOKEN")
+    url = f"https://api.smartsheet.com/2.0/folders/{parent_folder_id}/folders"
+    try:
+        response = requests.post(
+            url,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            },
+            json={"name": name},
+            timeout=30,
+        )
+        response.raise_for_status()
+    except requests.HTTPError as e:
+        status = e.response.status_code if e.response is not None else 0
+        body_text = e.response.text[:200] if e.response is not None else str(e)
+        if status == 401:
+            raise SmartsheetAuthError(f"HTTP 401: {body_text}") from e
+        if status == 403:
+            raise SmartsheetPermissionError(f"HTTP 403: {body_text}") from e
+        if status == 404:
+            raise SmartsheetNotFoundError(f"HTTP 404: {body_text}") from e
+        if status == 429:
+            raise SmartsheetRateLimitError(f"HTTP 429: {body_text}") from e
+        raise SmartsheetError(f"HTTP {status}: {body_text}") from e
+    except requests.RequestException as e:
+        raise SmartsheetError(f"folder create failed: {e!r}") from e
+    body = response.json()
+    return int(body["result"]["id"])
+
+
+def create_sheet_in_folder_from_template(
+    folder_id: int,
+    name: str,
+    template_sheet_id: int,
+    *,
+    include: list[str] | None = None,
+) -> int:
+    """Clone `template_sheet_id` into `folder_id` with name `name`.
+
+    `include` controls which parts of the template are copied. Empty list
+    (or None — the default) clones structure only: columns, formatting,
+    column descriptions. Pass `["data"]` to also copy row contents, or
+    `["data", "attachments", "discussions"]` for a fuller clone. Values
+    match Smartsheet's `POST /sheets/{id}/copy?include=...` query param.
+
+    Used by `safety_reports.week_folder.ensure_current_week_folder` to
+    clone the Bradley 1 / Week of 2026-03-09 templates forward into
+    each new week. Empty include is the right default — we want the
+    template's schema (column titles, picklists, descriptions) but not
+    the template week's residual rows.
+
+    Implemented via direct REST (`POST /sheets/{id}/copy`) for symmetry
+    with `find_folder_by_name_in_folder` and `create_folder_in_folder`
+    — keeps the create-then-find loop in `ensure_current_week_folder`
+    on a single transport.
+
+    Body shape requirement discovered live during this PR's integration
+    test: Copy Sheet expects `destinationType` + `destinationId` as
+    flat top-level keys, NOT a nested `destination: {type, id}` object.
+    The nested form returns HTTP 400 errorCode 1008 ("Unknown attribute
+    'destination'"). Smartsheet's other endpoints (Move Sheet, etc.) use
+    the same flat shape — pattern is consistent once you know it.
+    """
+    token = keychain.get_secret("ITS_SMARTSHEET_TOKEN")
+    url = f"https://api.smartsheet.com/2.0/sheets/{template_sheet_id}/copy"
+    include_csv = ",".join(include) if include else ""
+    if include_csv:
+        url += f"?include={include_csv}"
+    try:
+        response = requests.post(
+            url,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "destinationType": "folder",
+                "destinationId": folder_id,
+                "newName": name,
+            },
+            timeout=30,
+        )
+        response.raise_for_status()
+    except requests.HTTPError as e:
+        status = e.response.status_code if e.response is not None else 0
+        body_text = e.response.text[:200] if e.response is not None else str(e)
+        if status == 401:
+            raise SmartsheetAuthError(f"HTTP 401: {body_text}") from e
+        if status == 403:
+            raise SmartsheetPermissionError(f"HTTP 403: {body_text}") from e
+        if status == 404:
+            raise SmartsheetNotFoundError(f"HTTP 404: {body_text}") from e
+        if status == 429:
+            raise SmartsheetRateLimitError(f"HTTP 429: {body_text}") from e
+        raise SmartsheetError(f"HTTP {status}: {body_text}") from e
+    except requests.RequestException as e:
+        raise SmartsheetError(f"sheet copy failed: {e!r}") from e
+    body = response.json()
+    return int(body["result"]["id"])
 
 
 # ---- SDK 404 noise suppression ------------------------------------------

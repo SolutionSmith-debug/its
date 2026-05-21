@@ -69,6 +69,14 @@ def _delete_sheet_rest(sheet_id: int, token: str) -> None:
     )
 
 
+def _delete_folder_rest(folder_id: int, token: str) -> None:
+    """Cleanup helper — direct REST DELETE for a folder (no SDK wrapper today)."""
+    requests.delete(
+        f"https://api.smartsheet.com/2.0/folders/{folder_id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+
 def _sandbox_name(label: str) -> str:
     """Build a sandbox sheet name <= 50 chars (Smartsheet's hard limit
     on sheet.name; surfaced live during the first integration-test run
@@ -231,3 +239,35 @@ def test_find_sheet_by_name_in_folder_round_trip(_token_available):
         assert missing is None
     finally:
         _delete_sheet_rest(sheet_id, _token_available)
+
+
+# ---- find_folder_by_name_in_folder + create_folder_in_folder ----------
+
+
+def test_find_folder_by_name_in_folder_round_trip(_token_available):
+    """Create folder → find → cleanup. Mirrors the sheet round-trip.
+
+    Sandbox parent is FOLDER_SYSTEM_CONFIG to match the existing
+    integration-test precedent (no dedicated test-only folder constant
+    today; see PR description for the trade-off discussion). The
+    sandbox folder is name-namespaced via `_sandbox_name`, so it's
+    visually distinguishable from real config artifacts and gets
+    deleted in `finally` regardless of test outcome.
+    """
+    name = _sandbox_name("find_folder")
+    folder_id = smartsheet_client.create_folder_in_folder(
+        sheet_ids.FOLDER_SYSTEM_CONFIG, name
+    )
+    try:
+        found_id = smartsheet_client.find_folder_by_name_in_folder(
+            sheet_ids.FOLDER_SYSTEM_CONFIG, name
+        )
+        assert found_id == folder_id
+
+        # Negative case: a name that doesn't exist returns None.
+        missing = smartsheet_client.find_folder_by_name_in_folder(
+            sheet_ids.FOLDER_SYSTEM_CONFIG, name + "_DOES_NOT_EXIST"
+        )
+        assert missing is None
+    finally:
+        _delete_folder_rest(folder_id, _token_available)

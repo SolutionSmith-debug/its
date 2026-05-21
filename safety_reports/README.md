@@ -3,18 +3,18 @@
 Reference docs: **Safety Reports Mission v5** and **Safety Reports Brief v6** in the
 planning project.
 
-## Decision state (as of 2026-05-13)
+## Decision state (as of 2026-05-21)
 
-- **5 resolved**: three intake document types (Q1), Outlook inbox addresses (Q3),
+- **5 resolved (2026-05-13)**: three intake document types (Q1), Outlook inbox addresses (Q3),
   ambiguous-report review surface routes to Teala Paradise (Q7), weekly cadence + gated send
   architecture (Q9), and WPR canonical template resolved-in-principle (Q2 — drafting deferred
   until inspection of mirror templates).
-- **4 deferred, now resolvable** from sandbox mirror inspection: Smartsheet job lookup schema
-  (Q4), Smartsheet tracking row schema (Q5), Box folder taxonomy (Q6), customer recipient
-  list location (Q8).
-
-The four deferred decisions must be locked **before** `intake.py` writes code that touches
-Smartsheet or Box, or those calls will be rewritten when the real schema lands.
+- **4 deferred-then-resolved (2026-05-21)**: see `ITS_Q4-Q8_Resolution_2026-05-21.docx` in the
+  planning project for the full resolution. Q4 (job lookup = folder constants in
+  `shared/sheet_ids.py`), Q5 (tracking row schema lives on `Daily Reports — Week of <date>`
+  sheets in Field Reports tree, 9 columns), Q6 (Box taxonomy = `1111A (Copy for new projects)`
+  template), Q8 (recipients in ITS_Config keyed `safety_reports.recipients.<job>` with
+  JSON-list values). R3 session 1 (intake.py wiring) is unblocked.
 
 ## Three scripts — External Send Gate two-process model
 

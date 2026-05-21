@@ -410,6 +410,34 @@ The known UI-only surfaces (as of 2026-05):
 
 Surfaced: Phase-0 architecture review 2026-05; referenced from `docs/picklist_sync.md` activation checklist.
 
+## safety_reports week-folder create-find race condition [OPEN 2026-05-21]
+
+`safety_reports/week_folder.ensure_current_week_folder` performs a find-or-create on the per-week folder under each project's Field Reports subtree. Two concurrent callers (e.g., a same-week intake.py and a Friday weekly_generate.py firing within the same minute) could both pass the initial `find_folder_by_name_in_folder` step and both create the folder; Smartsheet does not enforce folder-name uniqueness, so both creates succeed.
+
+The helper detects the duplicate on a post-create find: if the post-create lookup returns a different folder ID than the just-created one, it logs a WARN to ITS_Errors with `error_code="week_folder_race_duplicate"` and proceeds with the first match (the survivor). The orphan folder ID appears in the WARN message for operator triage.
+
+**Workaround:** operator manually deletes orphan folders via short-lived sandbox token + curl per Op Stds v10 §25 MCP-gap REST fallback (`curl -X DELETE https://api.smartsheet.com/2.0/folders/<orphan_id> -H "Authorization: Bearer <token>"`). No automatic cleanup — race is rare at single-machine cadence, and the safer move is operator visibility (WARN → review) over an automated delete that could race against legitimate concurrent writes.
+
+**Why not auto-clean:** the orphan folder is initially empty (the losing-race caller hasn't created its sheets yet at the moment of duplicate detection). But a subsequent run on the orphan side WOULD create sheets, and an auto-delete couldn't safely distinguish "empty orphan" from "filled-by-another-thread orphan." Operator visibility wins.
+
+**Resolves if:** observed in practice (no incident expected at single-machine cadence; multi-machine ops would trigger this).
+
+Surfaced: R3 foundation PR brief, 2026-05-21.
+
+## Daily Reports schema gap — no Box Link column [OPEN 2026-05-21]
+
+The `Daily Reports — Week of <date>` sheet schema (cloned forward by `safety_reports/week_folder.ensure_current_week_folder` from the Bradley 1 / Week of 2026-03-09 template, sheet ID 7282977254887300) has no explicit column for the filed Box document URL.
+
+When `safety_reports/intake.py` lands in R3 session 1, each inbound safety email will be filed to Box; the Box URL is the audit trail back to the source document. Without a dedicated column, intake.py will embed the URL inside the existing `Notes / Action Items` cell — workable but harder to query and prone to cell-truncation as notes grow.
+
+**Action at R3 session 1:** the session's brief should include a schema edit adding a `Box Link` (TEXT_NUMBER) column to the Bradley 1 / Week of 2026-03-09 template sheet (the canonical source for clones). The auto-gen helper will then carry the column forward into every new week's clone. Until that lands, intake.py embeds the URL in `Notes / Action Items`.
+
+**Workaround in the interim:** intake.py's notes-embedding pattern. Once the column lands, the migration is a one-pass extraction of URLs from existing notes into the new column for any rows written between R3 session 1 start and the schema edit.
+
+**Resolves at:** R3 session 1 (the intake.py wiring brief).
+
+Surfaced: R3 foundation PR brief, 2026-05-21.
+
 ## `find_sheet_by_name_in_folder` switched from SDK to REST [CLOSED 2026-05-21]
 
 Original PR #45 implementation used `smartsheet.Folders.get_folder()` — deprecated upstream AND returns stale folder data within a single SDK client session. A sheet created via the SDK's `create_sheet_in_folder()` does not appear in a subsequent `get_folder()` from the same client; direct REST sees it immediately.
