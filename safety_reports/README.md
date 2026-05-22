@@ -36,9 +36,19 @@ Per Foundation Mission v6 Invariant 1, generation and send live in separate scri
   seen-set at `~/its/state/safety_intake_processed.json` (defense-in-depth idempotency) and
   a heartbeat at `~/its/state/safety_intake_heartbeat.txt`. **Same capability gating as
   intake.py** — added to GATED_SCRIPTS.
-- **`weekly_generate.py`** — launchd-scheduled Friday 2:00 PM ET. Reads the week's tracking
-  rows, drafts a Weekly Project Report (WPR) per active job, writes drafts to
-  `WPR_Pending_Review` Smartsheet with `Approved for Send` unchecked. **No send capability.**
+- **`weekly_generate.py`** — SHIPPED (R3 Session 2). launchd-scheduled Friday 2:00 PM ET via
+  `org.solutionsmith.its.weekly-generate.plist` (`StartCalendarInterval`, Weekday=5, Hour=14).
+  Reads the week's Daily Reports + Weekly Rollup rows for each project, drafts a Weekly Project
+  Report (WPR) via Anthropic Sonnet 4.6 with the `generate_weekly_project_report` tool schema
+  (`schemas/safety_weekly_generate.json`), writes drafts to `WPR_Pending_Review` with
+  `Approved for Send=false`. **No send capability** — `graph_client`, `send_mail`, `resend`,
+  `smtplib`, `email.mime` AST-forbidden via `tests/test_capability_gating.py`. ZERO_DATA_WEEK
+  branch writes placeholder rows when a project had no reports that week (reviewer decides
+  whether to send-as-such, hold, or follow up with field PM). Idempotent: existing approved
+  rows are skipped; existing unapproved rows have their `Draft Body` / `Recipients` / `Notes`
+  replaced but approval columns never touched. Empty reviewer chain → CRITICAL abort, no
+  Anthropic spend. Watchdog Check C tracks freshness via `safety_weekly_generate.last_run`
+  marker (8-day per-job window).
 - **`weekly_send.py`** — launchd-scheduled Monday 6:00 AM ET. Reads `WPR_Pending_Review` rows
   where `Approved for Send` is checked and `Sent At` is empty. Sends customer email via Graph
   API. Updates `Sent At` + `Send Status`. Files sent copy in Box. **No Anthropic API capability** —

@@ -49,7 +49,13 @@ GATED_SCRIPTS: list[tuple[str, list[str]]] = [
         "safety_reports/intake_poll.py",
         ["send_mail", "resend", "smtplib", "email.mime"],
     ),
-    # ("safety_reports/weekly_generate.py", ["graph_client", "send_mail"]),
+    (
+        # weekly_generate does NOT need Graph reads (it only reads Smartsheet
+        # rows, not mail) so `graph_client` is forbidden in addition to the
+        # narrower send substrings — stricter list than the intake pair.
+        "safety_reports/weekly_generate.py",
+        ["graph_client", "send_mail", "resend", "smtplib", "email.mime"],
+    ),
     # ("po_materials/standard_rfq_generate.py", ["graph_client", "send_mail"]),
     # ("po_materials/racking_module_rfq_generate.py", ["graph_client", "send_mail"]),
     # ("subcontracts/subcontract_generate.py", ["graph_client", "send_mail"]),

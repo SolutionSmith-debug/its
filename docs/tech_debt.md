@@ -523,3 +523,42 @@ Check H (successor): read ITS_Daemon_Health for every Enabled=true daemon; flag 
 **Effort:** ~1-2 hour session.
 
 **Revisit when:** second polling-daemon consumer ships (Email Triage or weekly_generate) — at that point shared/runner.py extraction + Check H consolidation become joint opportunity.
+
+## safety_weekly_generate prompt v0.1.0 calibration [OPEN 2026-05-22]
+
+Initial WPR generation prompt (`prompts/safety_weekly_generate.md` v0.1.0) anchors on the 2016-03-12 Gates Solar legacy WPR captured at `prompts/samples/legacy_wpr_gates_solar_2016-03-12.md`. Per Safety Reports Brief v6.1, calibrate v0.2.0 after the first 30 days of real Evergreen cycles — areas to watch:
+
+- Whether reviewers consistently keep the [REVIEWER TO FILL] sentinels (vs. editing them out), suggesting prompt should drop or move those sections.
+- Confidence threshold tuning. Default 0.85 was inherited from intake.py extraction; generation may warrant a different threshold once we see real distribution.
+- Subcontractor-list extraction quality — currently derived from `Crew or Subcontractor` column values; might miss subs mentioned only in `Summary of Events` narrative.
+- `narrative_summary` length tuning — model defaults to one paragraph but reviewer feedback may push for terser or denser summaries.
+- Anomaly self-report sentinel coverage — current set (`apparent_injection_attempt`, `inconsistent_dates`, `crew_name_special_chars`) may need expansion.
+
+**Effort:** ~half-day session including reviewer-feedback synthesis + v0.2.0 prompt edit + before/after diff documentation.
+
+**Revisit when:** ~30 days of real Friday cycles have run (2026-06-22 plus or minus a week).
+
+## Smartsheet transient 404 on first-project sheet/folder create [OPEN 2026-05-22 — observed twice]
+
+Two `weekly_generate` smoke runs on 2026-05-22 each surfaced exactly one transient 404 during per-project iteration:
+
+- Smoke #1 (`--week-start 2030-01-07`): `SmartsheetNotFoundError('HTTP 404 (code 1006): Not Found')` on Bradley 2. Folder DID get created (cleanup confirmed it existed).
+- Smoke #2 (`--week-start 2026-02-16`): same error on Rockford.
+
+Different project each run; both error-and-continue per the weekly_generate per-project fence. Pattern: the FIRST project to need a fresh `ensure_current_week_folder` scaffold creation in a fresh process consistently 404s; subsequent projects in the same run succeed. Looks similar to the known `find_sheet_by_name_in_folder` SDK staleness pattern that PR #51 fixed via REST swap.
+
+**Action:** if reproducible on a third smoke run, port the same SDK→REST swap pattern to whichever `safety_reports/week_folder.py` call is racing (likely the find-after-create on the daily/rollup template clone).
+
+**Effort:** ~1 hour session if pattern reproduces; non-blocking otherwise (per-project fence absorbs it).
+
+**Revisit when:** next weekly_generate smoke or live cycle surfaces a third occurrence.
+
+## Intake stream extension for Weather + Labor + Mobilization metadata [OPEN 2026-05-22]
+
+The WPR draft sections Weather Report, Construction Labor Report, Mobilization Date, and Location are currently `[REVIEWER TO FILL]` because the intake.py Daily Reports stream doesn't capture them — operator-side reviewers add the data during approval per Safety Reports Brief v6.1. Phase 1.4+ option: extend `safety_reports/intake.py` to capture weather (via a public weather API or `Summary of Events` extraction) and labor counts (via a new Daily Reports column or field PM submission convention), eliminating those `[REVIEWER TO FILL]` placeholders.
+
+Mobilization Date is project-scoped not week-scoped — better captured as a project-level metadata sheet (a "Projects" master sheet keyed by `project_name`) rather than threaded through every Daily Reports row. Same for Location.
+
+**Effort:** 1-2 sessions (intake-side weather + labor extension, projects-metadata-sheet schema + read-side wire-up).
+
+**Revisit when:** Phase 1.4 security hardening cluster ships and operator feedback drives WPR template v0.2.0 calibration.

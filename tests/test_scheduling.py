@@ -23,6 +23,7 @@ from shared.scheduling import (
     _extract_email,
     _live_fetcher,
     is_federal_holiday,
+    monday_of_week,
     resolve_chain,
     shift_gen_date,
     shift_send_date,
@@ -150,6 +151,28 @@ def test_shift_send_date_rolls_forward_off_holiday(target: date, expected: date)
 def test_shift_send_date_passes_through_normal_business_day():
     d = date(2026, 5, 13)
     assert shift_send_date(d) == d
+
+
+# ---- monday_of_week --------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "given, expected",
+    [
+        # Friday 2026-05-22 -> Monday 2026-05-18.
+        (date(2026, 5, 22), date(2026, 5, 18)),
+        # Monday is idempotent.
+        (date(2026, 5, 18), date(2026, 5, 18)),
+        # Sunday rolls back to the prior Monday.
+        (date(2026, 5, 24), date(2026, 5, 18)),
+        # Holiday-Friday (Christmas Day 2026): target week is still that
+        # week's Monday — the helper is holiday-unaware by design.
+        (date(2026, 12, 25), date(2026, 12, 21)),
+    ],
+)
+def test_monday_of_week_resolves_to_calendar_week_monday(
+    given: date, expected: date
+):
+    assert monday_of_week(given) == expected
 
 
 # ---- Multi-holiday-in-a-row edge cases -------------------------------------
