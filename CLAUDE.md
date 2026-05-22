@@ -23,14 +23,14 @@ Two layers, deliberately separated:
 
 1. **Planning & Foundation** (Claude.ai project, not in this repo). Mission files, architectural
    decisions, owner-facing artifacts, prompt designs, schemas. Canonical docs: Foundation Mission
-   v7, Operational Standards v9, Vision & Roadmap v7, Handover Plan v6.
+   v8, Operational Standards v11, Vision & Roadmap v7.2, Handover Plan v6.3.
 2. **Execution** (this repo). Claude Code scripts on a MacBook, triggered by launchd, Mail.app
    rules, and Shortcuts. Reads/writes Smartsheet (structured data), Box (documents), Outlook
    (communication) via APIs. Calls Anthropic API for reasoning steps.
 
 Smartsheet, Box, Outlook are systems of record — unchanged by ITS.
 
-## System-wide invariants (Foundation Mission v7)
+## System-wide invariants (Foundation Mission v8)
 
 These are non-negotiable. Every workstream inherits both.
 
@@ -51,10 +51,15 @@ Earlier framing in Op Stds v4 that described review as a 30–60 day window is s
 
 ### Invariant 2 — Adversarial Input Handling
 
-All content originating outside the operating customer tenant is untrusted data. Five-layer defense:
+All content originating outside the operating customer tenant is untrusted data. Six-layer defense:
 
-1. **Sender allowlist** at the inbox. Mail.app rule fires only on allowlisted senders;
-   non-allowlisted email routes to Quarantine. Helpers in `shared/quarantine.py`.
+1. **Sender allowlist + scope enforcement + header-forgery detection.** Polling daemon
+   (canonical pattern per Op Stds v11 §31; `safety_reports/intake_poll.py` is the first
+   consumer) fetches from allowlisted senders via Graph; non-allowlisted email routes to
+   Quarantine. ITS_Trusted_Contacts sheet (Op Stds v11 §33) is the canonical allowlist
+   mechanism, replacing ITS_Config JSON lists at Phase 1.4 cutover. Header-forgery detection
+   (SPF/DKIM/DMARC + Return-Path validation) precedes allowlist lookup. Helpers in
+   `shared/quarantine.py`.
 2. **Untrusted-content tagging.** Every Anthropic API call processing external content uses
    `shared.untrusted_content.wrap()` and the canonical system-prompt boilerplate.
 3. **Capability gating.** AI has no permission to send or take action (see Invariant 1).
@@ -62,6 +67,12 @@ All content originating outside the operating customer tenant is untrusted data.
    responses; non-conforming rejected.
 5. **Output validation and anomaly logging.** `shared.anomaly_logger.check()` runs on every
    extraction output. Anomalies route to `ITS_Review_Queue` with `security_flag=True`.
+6. **Attachment screening pipeline.** Every attachment passes through four sub-layers per
+   Op Stds v11 §34: (a) static signatures (magic-number, size, filename); (b) format-aware
+   structural inspection (PDF JS/embedded, Office macros); (c) ClamAV scan via pyclamd;
+   (d) optional VirusTotal hash check (Phase 2+ enhancement). Malicious → ITS_Quarantine +
+   CRITICAL triple-fire + sender DISABLED in ITS_Trusted_Contacts pending operator review.
+   Implementation scheduled Phase 1.4 pre-Customer-1 hardening.
 
 Residual risk: prompt injection is an unsolved research problem. The architecture assumes
 injection might succeed at the AI layer and ensures the damage ceiling is "extracted data is
@@ -108,7 +119,7 @@ shipment.
 | `shared/kill_switch.py` | Working, tested | Reads `system.state` from ITS_Config via `smartsheet_client.get_setting`; fail-open on three modes (sheet unreachable / row missing / invalid value) with distinguishable WARN. Wired 2026-05-18. |
 | `shared/anthropic_client.py` | Working, unconsumed | Reads `ITS_ANTHROPIC_KEY` from Keychain. No production consumers yet — first generation script (`safety_reports/weekly_generate.py`) will be the integration test. No dedicated test file. |
 | `shared/smartsheet_client.py` | Working, tested | SDK wrapper with title-keyed reads/writes, typed exception hierarchy, lazy keychain-backed client. Wired 2026-05-18. |
-| `shared/box_client.py` | Working, tested | boxsdk OAuth2 User Authentication. Refresh tokens rotate on every exchange — `_store_tokens` callback persists the new token to Keychain (CRITICAL invariant; if `_store_tokens` ever stops writing, ITS dies in 60 days; `test_store_tokens_persists_refresh_token` locks the invariant). Auth as operator user in sandbox (seths@evergreenmirror.com); dedicated ITS user at Phase 1.5 cutover per Permissions Ask v4 + Handover Plan v6.1. Setup: `scripts/setup_box_oauth.py` (one-time, interactive). Smoke: `scripts/smoke_test_box.py`. PR #39 / commit 2ce6ece. |
+| `shared/box_client.py` | Working, tested | boxsdk OAuth2 User Authentication. Refresh tokens rotate on every exchange — `_store_tokens` callback persists the new token to Keychain (CRITICAL invariant; if `_store_tokens` ever stops writing, ITS dies in 60 days; `test_store_tokens_persists_refresh_token` locks the invariant). Auth as operator user in sandbox (seths@evergreenmirror.com); dedicated ITS user at Phase 1.5 cutover per Permissions Ask v4 + Handover Plan v6.3. Setup: `scripts/setup_box_oauth.py` (one-time, interactive). Smoke: `scripts/smoke_test_box.py`. PR #39 / commit 2ce6ece. |
 | `shared/graph_client.py` | Working, tested | MSAL client-credentials + Mail API wrappers (`list_inbox`, `get_message`, `list_attachments`, `download_attachment`, `mark_read`, `move_message`, `send_mail`). Sandbox tenant `evergreenmirror.com` verified 2026-05-17 via `scripts/smoke_test_graph.py`. |
 | `shared/review_queue.py` | Working, tested | `add()` writes a row to `ITS_Review_Queue` and returns the row ID; `get_status()` reads back by Item ID. Item ID format: `<workstream>-<YYYYMMDD>-<HHMMSS>` UTC. Smartsheet failures propagate so workstream callers can fire CRITICAL via error_log. Live schema differed from brief: `Reason` is PICKLIST (added `ReviewReason` enum) + new `Severity` and `Source File` columns. |
 | `shared/untrusted_content.py` | Working, tested | Invariant 2 — XML tagging + system boilerplate. |
@@ -120,7 +131,9 @@ shipment.
 | `shared/defaults.py` | Working | Module-level constants for cross-cutting fallbacks. `DEFAULT_REVIEWER_CHAINS` (reviewer identity), `ALERTING_DEDUPE_WINDOW_MINUTES`, `PICKLIST_SIZE_WARN_THRESHOLD` / `PICKLIST_SIZE_HARD_HALT_THRESHOLD` / `PICKLIST_SIZE_THRESHOLD_MAX`. ITS_Config rows override at runtime; these are the fallback used when the row is missing or invalid. |
 | `scripts/watchdog.py` | Working, tested. 6 of 7 checks operational (E deferred). | Checks A (stale review queue) + B (open CRITICALs) shipped Session 1 (PR #33). Checks C (scheduled-jobs marker scaffold + `write_last_run_marker` helper; `TRACKED_JOBS=[]` by design until a second scheduled job ships), D (14-day reviewer-chain forward scan per Op Stds v9 §18), F (mail-intake silent-disable) shipped Session 2 (PR #36). Check G (alert-dedupe summary sweep — Resend-only push, fires summary email for expired+suppressed entries; two-phase deletion for crash safety; defers phase-1 during MAINTENANCE per V1 fix) shipped PR #44 (PR β) + PR #52 (MAINTENANCE defer). Check E (Anthropic spend trend) deferred to a follow-on PR (the Check E shipping PR) / Phase 1.5 — Admin API key prerequisite, architectural choice not capability gap (see `docs/tech_debt.md`). Live smoke at `scripts/smoke_test_watchdog.py` + Check G live smoke at `scripts/smoke_test_watchdog_summary.py`. |
 | `scripts/run_picklist_sync.py` | Working, tested | Hourly launchd-driven entry point for picklist sync. CLI: `--dry`, `--mapping <id>`, `--smoke-test`. `@require_active` (kill-switch-aware) outer + `@its_error_log` inner. Sandbox-only smoke mode bootstraps + exercises full add/remove-safe/remove-blocked flow + tears down. PR #46 / hardened PR #50. |
-| `safety_reports/intake.py` | Stub | Awaits Q4/Q5/Q6/Q8 mirror inspection. |
+| `safety_reports/intake.py` | Working, live-validated end-to-end | 12-stage pipeline (PR #57, c4c4bc9). `process_message(message_id)` extracted in PR #59 as the public API invoked by `intake_poll.py` per message. `SmartsheetError`/`GraphError` soft-fail returns rather than raise. Stages 1-9 + 11-12 live; Stage 10 (attachment screening per Op Stds v11 §34) planned for Phase 1.4 pre-Customer-1 hardening. 1083 lines. |
+| `safety_reports/intake_poll.py` | Working, live in production | Polling daemon (PR #59, f1e724f). Replaces Mail.app rule trigger per Op Stds v11 §31. Per-cycle: `polling_enabled` ITS_Config gate, fcntl file lock at `~/its/state/safety_intake.lock`, `graph_client.list_inbox` unread_only top=50, seen-set idempotency guard, `intake.process_message`, `mark_read` on success, heartbeat write to ITS_Daemon_Health. 632 lines. 60s launchd cadence; 242+ confirmed cycles. |
+| `safety_reports/week_folder.py` | Working, tested | Per-project per-week Field Reports folder + Daily Reports + Weekly Rollup scaffolding (PR #54, ed46a96). Idempotent find-or-create. Race-condition tech-debt entry tracks the find-after-create gap. 168 lines. |
 | `safety_reports/weekly_generate.py` | Not yet created | Replaces `weekly_summary.py` per Invariant 1 two-process model. |
 | `safety_reports/weekly_send.py` | Not yet created | The send half of the two-process model. |
 
@@ -136,8 +149,10 @@ shipment.
    `shared.untrusted_content.system_boilerplate()` in the system prompt.
 7. Every extraction output passes through `shared.anomaly_logger.check()` before use.
 8. launchd plists live in `scripts/launchd/` as templates; `install.sh` copies them to
-   `~/Library/LaunchAgents/` and loads them. Mail.app rules and Shortcuts remain system-level
-   config — document those triggers in the workstream's brief.
+   `~/Library/LaunchAgents/` and loads them. **Polling daemons via launchd are canonical for
+   intake-bearing workstreams** (Op Stds v11 §31; `safety_reports/intake_poll.py` is the
+   canonical example). Shortcuts remain for manual operator-triggered jobs. Mail.app rules
+   deprecated.
 
 ## Model selection
 
@@ -162,6 +177,21 @@ Deferred to Customer 2+: Better Stack (log aggregation), 1Password CLI (multi-cu
 secrets), Helicone (LLM observability). Permanent skip: HashiCorp Vault, Snowflake,
 LangChain, Kubernetes.
 
+## Operator visibility surface
+
+ITS_Daemon_Health sheet (System workspace / folder 04 — Daemons / sheet 4529351700729732) is
+the canonical operator-visibility surface for all polling daemons. One row per daemon,
+update-in-place per cycle. Push surface per Op Stds v11 §3.1 + §32.
+
+- Schema: 12 columns per `shared.sheet_ids.DAEMON_HEALTH_COLUMNS` dict. See
+  `ITS_Daemon_Health_Schema_2026-05-21.docx` in the planning project for full schema reference.
+- Heartbeat write must NEVER block daemon primary work. Failure path: log to ITS_Errors
+  category `daemon_health_write_failed`; daemon continues.
+- ARCH-1: Enabled checkbox is report-filter metadata only. Canonical runtime gate is
+  `<workstream>.<daemon>.polling_enabled` in ITS_Config.
+- ARCH-2: Row-id cache persists to `~/its/state/heartbeat_row_ids.json`.
+- ARCH-3: Total Cycles is lifetime monotonic, NOT daily reset.
+
 ## What NOT to do
 
 - Don't add cloud-server execution. The architecture is local-first on MacBook through Phase 4.
@@ -185,5 +215,5 @@ LangChain, Kubernetes.
 - `scripts/launchd/template.plist` + `install.sh` — launchd trigger pattern.
 - `docs/session_logs/` — durable narrative log of during-execution decisions. Write one at end of any session that lands ≥1 commit and involves a non-obvious decision. See `docs/session_logs/README.md` for the convention.
 
-If something here contradicts the planning project's canonical docs (Foundation Mission v7,
-Operational Standards v9), the planning project wins. Flag the inconsistency.
+If something here contradicts the planning project's canonical docs (Foundation Mission v8,
+Operational Standards v11), the planning project wins. Flag the inconsistency.
