@@ -451,3 +451,75 @@ Original PR #45 implementation used `smartsheet.Folders.get_folder()` — deprec
 PR #51 swapped the helper to direct REST. Unit tests updated to mock `requests.get` instead of the SDK shape. Removes the DeprecationWarning AND fixes the same-session-create-then-find bug. The picklist sync migration script's earlier success was a happy accident: it didn't exercise back-to-back create + find in the same Python process, so the SDK cache never tripped.
 
 Closed by PR #51.
+
+## Picklist-hardening pre-Customer-1 [OPEN 2026-05-22]
+
+All bounded-enum Smartsheet columns currently TEXT_NUMBER should convert to PICKLIST or CHECKBOX before Customer 1 handover. Targets:
+- ITS_Config: system.state {ACTIVE/PAUSED/MAINTENANCE}, all *.polling_enabled flags, any setting with an enumerated domain.
+- ITS_Errors: Severity {INFO/WARN/ERROR/CRITICAL}, Workstream, status fields.
+- ITS_Review_Queue: Status enum, Workstream, urgency tiers, reviewer-chain selectors.
+- ITS_Quarantine: quarantine reason enum, disposition {release/delete/escalate}, Workstream.
+- Per-project sheets (Daily Reports, Weekly Rollups): status, category fields.
+
+Codified in Op Stds v11 §35 (standing rule going forward; retrofit audit triggered before Customer 1 handover). kill_switch.py fail-open logic stays as belt-and-suspenders.
+
+**Effort:** ~30 min operator UI + ~1 hour audit pass.
+
+**Revisit when:** Phase 1.4 security hardening session lands.
+
+## ITS_Trusted_Contacts sheet replaces ITS_Config JSON allowlists [OPEN 2026-05-22]
+
+Build ITS_Trusted_Contacts sheet in System workspace per Op Stds v11 §33 schema:
+- Email (PRIMARY, exact-match), Display Name, Role (PICKLIST), Project Scope (multi-PICKLIST), Workstream Scope (multi-PICKLIST), Status (ACTIVE/DISABLED/PENDING_VERIFICATION), Added By, Added Date, Last Verified, Notes.
+
+Refactor `safety_reports/intake.py` Stage 2 (Sender allowlist gate) to query trusted-contacts sheet with scope enforcement. Add header-forgery detection via `shared/graph_client.py` extensions: parse internetMessageHeaders for spf/dkim/dmarc results; compare Return-Path against From: domain; compare Received chain. Disposition: header-fail → ITS_Quarantine 'header_forgery_suspected'; soft-fail on trusted sender → ITS_Review_Queue; clean → proceed.
+
+Retire `safety_reports.intake.allowed_senders` ITS_Config row at cutover. Per FM v8 Invariant 2 Layer 1.
+
+**Effort:** ~half-day session (sheet build + intake refactor + header-forgery wiring + tests).
+
+**Revisit when:** Phase 1.4 security hardening session lands; required before Phase 1.5 cutover.
+
+## Attachment screening pipeline Layers 1-3 [OPEN 2026-05-22]
+
+Implement 4-layer attachment screening per Op Stds v11 §34 + FM v8 Invariant 2 Layer 6 (Layers 1-3 for Phase 1.5; Layer 4 VirusTotal deferred Phase 2+):
+- Layer 1 (static): magic-number verification, size sanity, filename pattern matching.
+- Layer 2 (structural): PyMuPDF or pypdf for PDF JS/embedded-file detection; python-docx/openpyxl for Office macro/OLE detection; EXIF anomalies; embedded URL extraction.
+- Layer 3 (ClamAV): pyclamd + clamd daemon + freshclam auto-update. Homebrew install on operator Mac.
+- Layer 4 (VirusTotal): defer.
+
+EICAR test signature fixtures verify pipeline health without real malware. Integration test against corpus of legitimate DFR samples.
+
+Disposition: malicious → ITS_Quarantine + CRITICAL triple-fire + sender DISABLED in ITS_Trusted_Contacts; suspicious → ITS_Review_Queue; clean → proceed.
+
+**Effort:** ~half-day to one-day session (operator-side ClamAV install + code + tests).
+
+**Revisit when:** Phase 1.4 security hardening session lands; required before Phase 1.5 cutover.
+
+## 5-duplicate ITS_Errors sheets in System/02-Logs [OPEN 2026-05-22 — operator UI delete required]
+
+Bootstrap drift from 2026-05-18 sheet creation: 5 ITS_Errors sheets created within ~75 seconds. Canonical sheet is 27291433258884 per Op Stds v11 §23. The four duplicates are dead and require operator UI delete:
+- 2704945844277124
+- 470411799121796
+- 4505679602601860
+- 4195780532326276
+
+Smartsheet MCP has no delete-sheet primitive; operator UI is the only path.
+
+**Revisit when:** next operator Smartsheet UI session; not blocking any code or workflow.
+
+## 1 empty duplicate ITS_Daemon_Health sheet [OPEN 2026-05-22 — operator UI delete required]
+
+Parallel chat build of ITS_Daemon_Health surface created an extra empty sheet 3717381690969988 in System / 04 — Daemons. Canonical sheet is 4529351700729732. Empty duplicate requires operator UI delete (Smartsheet MCP no delete-sheet primitive).
+
+**Revisit when:** next operator Smartsheet UI session.
+
+## Watchdog Check F retirement / Check H heartbeat-staleness successor [OPEN 2026-05-22]
+
+Check F (Mail.app rule silent disable, PR #36) polls safety@evergreenmirror.com mailbox idle hours as a proxy for Mail.app-rule trigger health. Post-PR-#59, safety_reports is on a polling daemon and writes a heartbeat to ITS_Daemon_Health every 60 seconds. The mailbox-idle proxy is now redundant for safety_reports.
+
+Check H (successor): read ITS_Daemon_Health for every Enabled=true daemon; flag rows where Last Heartbeat is older than 2 × Interval Seconds. Retire Check F when (a) Check H is operational and (b) no remaining workstream depends on Mail.app rules.
+
+**Effort:** ~1-2 hour session.
+
+**Revisit when:** second polling-daemon consumer ships (Email Triage or weekly_generate) — at that point shared/runner.py extraction + Check H consolidation become joint opportunity.
