@@ -81,6 +81,17 @@ def shift_send_date(target: date) -> date:
     return d
 
 
+def monday_of_week(d: date) -> date:
+    """Return the Monday on or before `d`.
+
+    `date.weekday()` returns 0 for Monday, so subtracting `weekday()` days walks back to
+    that week's Monday. Idempotent on Mondays. Holiday-unaware by design — this picks the
+    calendar week boundary, not a business-day boundary. Pair with `shift_gen_date(d)`
+    when the run day itself needs holiday handling.
+    """
+    return d - timedelta(days=d.weekday())
+
+
 # ---- Time-off lookup -------------------------------------------------------
 
 @dataclass(frozen=True)

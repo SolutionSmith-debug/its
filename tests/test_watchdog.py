@@ -107,10 +107,12 @@ def test_checks_list_has_all_session_1_2_3_checks():
     ]
 
 
-def test_tracked_jobs_empty_by_design():
-    """Planning decision C1: TRACKED_JOBS stays empty until a second
-    scheduled job ships and starts calling write_last_run_marker."""
-    assert watchdog.TRACKED_JOBS == []
+def test_tracked_jobs_contains_safety_weekly_generate():
+    """R3 Session 2 registered safety_weekly_generate as the first
+    non-watchdog tracked job. Per-job freshness window is 8 days (it runs
+    Friday 14:00 — 1-day-late survives, missed-week surfaces)."""
+    assert "safety_weekly_generate" in watchdog.TRACKED_JOBS
+    assert watchdog.TRACKED_JOB_WINDOWS["safety_weekly_generate"].days == 8
 
 
 # ---- Group B: _check_stale_review_queue ---------------------------------
@@ -475,8 +477,15 @@ def test_write_last_run_marker_fail_soft_on_oserror(mocker, mock_log):
     assert "No space left" in warn_msg
 
 
-def test_check_scheduled_jobs_returns_info_when_tracked_jobs_empty():
-    """TRACKED_JOBS is empty by design — Check C is a no-op."""
+def test_check_scheduled_jobs_returns_info_when_tracked_jobs_empty(monkeypatch):
+    """The empty-TRACKED_JOBS branch still exists and returns INFO.
+
+    R3 Session 2 added safety_weekly_generate to TRACKED_JOBS, so this
+    test temporarily empties the list to exercise the original no-op
+    branch — useful coverage for the brief period before the first
+    tracked job ships in any future forked customer repo.
+    """
+    monkeypatch.setattr("watchdog.TRACKED_JOBS", [])
     result = watchdog._check_scheduled_jobs()
     assert result.severity is Severity.INFO
     assert "empty by design" in result.summary or "No scheduled jobs" in result.summary

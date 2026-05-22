@@ -93,7 +93,16 @@ CRITICAL_ITEMS_CAP = 5
 # scheduled job calls `write_last_run_marker(<job_name>)` on success;
 # Check C verifies the markers stay fresh for everything in TRACKED_JOBS.
 WATCHDOG_MARKER_DIR = Path.home() / "its" / ".watchdog"
-TRACKED_JOBS: list[str] = []  # populated when a second scheduled job ships
+TRACKED_JOBS: list[str] = ["safety_weekly_generate"]
+
+# Per-job freshness windows. Jobs not in this map use the default 24h
+# window — appropriate for daily cadences. Weekly (Friday) jobs use 8 days
+# so a missed Friday + the following Wednesday still surface as stale, but
+# a 1-day-late run does not false-positive.
+TRACKED_JOB_WINDOWS: dict[str, timedelta] = {
+    "safety_weekly_generate": timedelta(days=8),
+}
+DEFAULT_TRACKED_JOB_WINDOW = timedelta(hours=24)
 
 # Check D scan window. 14 days = ~2 weeks of forward visibility; long
 # enough that PTO planned at the start of the next sprint surfaces; short
@@ -221,18 +230,17 @@ def write_last_run_marker(job_name: str) -> None:
 
 
 def _check_scheduled_jobs() -> CheckResult:
-    """Check C: verify each TRACKED_JOBS entry has fired within expected window.
+    """Check C: verify each TRACKED_JOBS entry has fired within its expected window.
 
-    Today TRACKED_JOBS is empty by design (per planning decision C1) —
-    only one scheduled job exists (watchdog itself) and self-tracking
-    has a chicken-and-egg hole better solved by external heartbeat
-    (UptimeRobot or similar). This iteration scaffold exists so adding
-    a job is one line: append the job slug to TRACKED_JOBS and ensure
-    the job calls `write_last_run_marker` on success.
+    Each tracked job has either a per-job window in TRACKED_JOB_WINDOWS or
+    falls back to DEFAULT_TRACKED_JOB_WINDOW (24h). Adding a new daily job
+    is one line: append the slug to TRACKED_JOBS and ensure the job calls
+    `write_last_run_marker` on success. Adding a weekly/monthly job is two
+    lines: also add a per-job timedelta to TRACKED_JOB_WINDOWS.
 
-    Returns OK with a noop summary when TRACKED_JOBS is empty. When a job
-    is tracked, returns WARN if its marker is missing or older than
-    24 hours, otherwise OK.
+    Returns INFO with a noop summary when TRACKED_JOBS is empty. When jobs
+    are tracked, returns WARN if any marker is missing or older than that
+    job's window, otherwise INFO.
     """
     if not TRACKED_JOBS:
         return CheckResult(
@@ -243,6 +251,7 @@ def _check_scheduled_jobs() -> CheckResult:
     now = datetime.now(UTC)
     stale: list[str] = []
     for job in TRACKED_JOBS:
+        window = TRACKED_JOB_WINDOWS.get(job, DEFAULT_TRACKED_JOB_WINDOW)
         marker = WATCHDOG_MARKER_DIR / f"{job}.last_run"
         if not marker.exists():
             stale.append(f"{job} (no marker)")
@@ -254,7 +263,7 @@ def _check_scheduled_jobs() -> CheckResult:
             continue
         if last_run.tzinfo is None:
             last_run = last_run.replace(tzinfo=UTC)
-        if (now - last_run) > timedelta(hours=24):
+        if (now - last_run) > window:
             stale.append(f"{job} (last_run={last_run.isoformat()})")
 
     if not stale:

@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Safety Reports weekly_generate — Friday 14:00 local time. Drafts a
+  Weekly Project Report per active Forefront project, writes to
+  WPR_Pending_Review with `Approved for Send=False`. Zero send
+  capability (External Send Gate per Foundation Mission v8 Invariant 1).
+
+  Install:
+    scripts/launchd/install.sh load org.solutionsmith.its.weekly-generate.plist
+
+  Calendar-driven (StartCalendarInterval), NOT interval-driven — runs
+  exactly once per Friday at 14:00 local time. launchd handles
+  missed-while-asleep by firing on wake when the schedule has lapsed.
+  No __POLL_INTERVAL_SECONDS__ substitution; the installer only
+  substitutes __ITS_HOME__.
+
+  See safety_reports/README.md for the operator runbook.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>org.solutionsmith.its.weekly-generate</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__ITS_HOME__/.venv/bin/python</string>
+        <string>-m</string>
+        <string>safety_reports.weekly_generate</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__ITS_HOME__</string>
+
+    <key>StandardOutPath</key>
+    <string>__ITS_HOME__/logs/launchd/weekly_generate.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>__ITS_HOME__/logs/launchd/weekly_generate.err.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>LANG</key>
+        <string>en_US.UTF-8</string>
+    </dict>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Weekday</key>
+        <integer>5</integer>
+        <key>Hour</key>
+        <integer>14</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>
