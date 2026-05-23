@@ -106,13 +106,24 @@ def _extraction() -> Extraction:
 
 @pytest.fixture
 def patch_baseline(mocker):
-    """Per-test plumbing: bypass Graph fetch, ITS_Config reads, kill switch."""
+    """Per-test plumbing: bypass Graph fetch, ITS_Config reads, kill switch.
+
+    `_read_allowed_senders` is mocked even though most tests take the
+    sheet-authoritative branch — `_run_pipeline` calls it unconditionally
+    at the top of the function (cheap config read), and on CI (Linux,
+    no macOS Keychain) the underlying smartsheet_client call would raise
+    KeychainError before reaching the Stage 2 branch.
+    """
     mocker.patch(
         "safety_reports.intake.graph_client.get_message",
         return_value=_graph_message(),
     )
     mocker.patch(
         "safety_reports.intake.graph_client.list_attachments", return_value=[],
+    )
+    mocker.patch(
+        "safety_reports.intake._read_allowed_senders",
+        return_value=[DEFAULT_SENDER],
     )
     mocker.patch(
         "safety_reports.intake._read_str_setting",
