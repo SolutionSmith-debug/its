@@ -163,33 +163,30 @@ DEFAULT_MAILBOX = "safety@evergreenmirror.com"
 
 # Box per-category subfolder mapping under each project root. None means
 # "no automatic filing path — skip Box upload and tag Notes for operator
-# manual filing." Verified live 2026-05-21 against Bradley 1's cloned
-# 1111A folder structure (PR #56). Categories not in this dict default
-# to None.
+# manual filing." Categories not in this dict default to None.
 #
-# TODO(post-1111B): folder name lookups need updating when 1111B is canonical:
-#   "A. Onsite Reporting & Tracking" -> "01. Onsite Reporting & Tracking"
-#   "A. Safety Plan & Reports"       -> "01. Safety Plan & Reports"
-#   "B. Project Reports & Trackers"  -> "02. Project Reports & Trackers"
-# See docs/session_logs/2026-05-22_box_blueprint_1111b_design.md
+# Migrated to 1111B canonical naming in the post-1111B cutover PR: the
+# letter-prefix segments (A./B./D./E.) became zero-padded numerics, and
+# the apostrophe-laden `D. JSA's` became `04. JSAs`. See
+# docs/session_logs/2026-05-23_post_1111b_canonical_cutover.md.
 BOX_SUBPATH_BY_CATEGORY: dict[str, tuple[str, ...] | None] = {
     "Daily JHA": (
         "(Project # & Name) Field",
-        "A. Onsite Reporting & Tracking",
-        "A. Safety Plan & Reports",
-        "D. JSA's",
+        "01. Onsite Reporting & Tracking",
+        "01. Safety Plan & Reports",
+        "04. JSAs",
     ),
     "Tool Box Talk": (
         "(Project # & Name) Field",
-        "A. Onsite Reporting & Tracking",
-        "A. Safety Plan & Reports",
-        "E. Tool Box Talks",
+        "01. Onsite Reporting & Tracking",
+        "01. Safety Plan & Reports",
+        "05. Tool Box Talks",
     ),
     "Equipment Check Sheets": (
         "(Project # & Name) Field",
-        "A. Onsite Reporting & Tracking",
-        "B. Project Reports & Trackers",
-        "D. Inspection Reports",
+        "01. Onsite Reporting & Tracking",
+        "02. Project Reports & Trackers",
+        "04. Inspection Reports",
     ),
     "Safe Work Observation": None,
     "Other": None,
