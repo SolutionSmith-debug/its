@@ -152,6 +152,12 @@ DEFAULT_MAILBOX = "safety@evergreenmirror.com"
 # manual filing." Verified live 2026-05-21 against Bradley 1's cloned
 # 1111A folder structure (PR #56). Categories not in this dict default
 # to None.
+#
+# TODO(post-1111B): folder name lookups need updating when 1111B is canonical:
+#   "A. Onsite Reporting & Tracking" -> "01. Onsite Reporting & Tracking"
+#   "A. Safety Plan & Reports"       -> "01. Safety Plan & Reports"
+#   "B. Project Reports & Trackers"  -> "02. Project Reports & Trackers"
+# See docs/session_logs/2026-05-22_box_blueprint_1111b_design.md
 BOX_SUBPATH_BY_CATEGORY: dict[str, tuple[str, ...] | None] = {
     "Daily JHA": (
         "(Project # & Name) Field",

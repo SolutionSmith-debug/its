@@ -40,6 +40,9 @@ FOLDER_ARCHIVE_CLOSED_PROJECTS = 1034553964947332
 
 # ---- Active project folders (Forefront Portfolio / 01 — Active Projects) -
 
+# TODO(post-1111B): when 1111B replaces 1111A as canonical, regenerate
+# FOLDER_PROJECT_* constants from the new clones. See
+# docs/session_logs/2026-05-22_box_blueprint_1111b_design.md for blueprint.
 FOLDER_PROJECT_BRADLEY_1 = 8025248894347140
 FOLDER_PROJECT_BRADLEY_2 = 5210499127240580
 FOLDER_PROJECT_BRIMFIELD_1 = 7462298940925828
