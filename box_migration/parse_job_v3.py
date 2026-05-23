@@ -110,6 +110,10 @@ class Schema(str, Enum):
 # Schema signature regexes (v3 set)
 # =============================================================================
 
+# TODO(post-1111B): regex was designed for messy legacy projects (0., 1.5., z., - Copy).
+# Should match clean 1111B paths but worth a verification run when 1111B exists.
+# See docs/session_logs/2026-05-22_box_blueprint_1111b_design.md
+
 # v2 ACTIVE_MODERN signature (Kendall 2023.126 — pre-Portfolio)
 # v3 tightens "Permitting" with a negative lookahead so it doesn't collide
 # with ACTIVE_DEVELOPMENT's "Permitting & Environmental".

@@ -158,6 +158,16 @@ CFG_RECIPIENTS_PREFIX = "safety_reports.recipients."
 DEFAULT_CONFIDENCE_THRESHOLD = 0.85
 DEFAULT_MODEL = anthropic_client.DEFAULT_MODEL  # claude-sonnet-4-6
 
+# TODO(post-1111B): folder name lookups need updating when 1111B is canonical:
+#   "A. Onsite Reporting & Tracking" -> "01. Onsite Reporting & Tracking"
+#   "A. Safety Plan & Reports"       -> "01. Safety Plan & Reports"
+#   "B. Project Reports & Trackers"  -> "02. Project Reports & Trackers"
+# This module does not yet do Box folder lookups directly — those live in
+# safety_reports/intake.py BOX_SUBPATH_BY_CATEGORY. Forward-looking marker
+# here in case weekly_generate grows to upload approved-WPR PDFs to Box
+# (a likely future workstream extension). See
+# docs/session_logs/2026-05-22_box_blueprint_1111b_design.md
+#
 # Watchdog Check C marker. Replicated inline from scripts/watchdog.py per
 # preservation-over-refactor (Op Stds v11 §14) — cross-module marker
 # helpers are a candidate for shared/runner.py at the second polling
