@@ -16,13 +16,22 @@ original inbound message.
 -----------------
 
   1. Fetch message + attachments via Graph (`_fetch_message_via_graph`).
-  2. Sender allowlist gate (defense-in-depth on top of the Entra app's
-     Application Access Policy + the operator-curated allowlist row).
-     Non-allowlisted senders → ITS_Quarantine. No Anthropic API call.
+     Headers are projected too (`include_headers=True`) so Stage 2 can
+     read Authentication-Results / Return-Path.
+  2. Trusted-sender + header-forgery gate (`check_trusted_sender`).
+     Reads `ITS_Trusted_Contacts` for an ACTIVE row matching sender
+     email + workstream scope, then `shared.header_forgery.analyze`
+     for SPF/DKIM/DMARC + Return-Path mismatch. Routing matrix decides
+     proceed / quarantine / review queue per `_run_pipeline`. The
+     legacy ITS_Config `allowed_senders` JSON list is the fallback path
+     when the sheet is empty (cutover transitional only — operator
+     deletes the row after parity verified).
   3. Extract attachments + plain-text body (part of stage 1's Graph
      projection — Graph delivers structured fields, not raw .eml bytes).
   4. Resolve which Forefront project the report belongs to (subject
      prefix or body scan; ambiguous → ITS_Review_Queue).
+  4b. Project-scope check on the resolved project name (trusted
+     contacts only — skipped on the legacy fallback path).
   5. Anthropic classify+extract call with `<untrusted_content>` wrapping
      + Adversarial-Input system prompt + tool-use JSON-mode output.
   6. Confidence gate: classifier-reported `confidence < threshold` →
@@ -103,7 +112,7 @@ from __future__ import annotations
 
 import re
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from typing import Any, Literal
 
@@ -115,16 +124,21 @@ from shared import (
     defaults,
     error_log,
     graph_client,
+    header_forgery,
     quarantine,
     review_queue,
     sheet_ids,
     smartsheet_client,
+    trusted_contacts,
     untrusted_content,
 )
 from shared.error_log import Severity, its_error_log
 from shared.graph_client import GraphError
+from shared.header_forgery import HeaderAnalysis, HeaderVerdict
 from shared.kill_switch import require_active
+from shared.quarantine import QuarantineReason
 from shared.smartsheet_client import SmartsheetError
+from shared.trusted_contacts import ScopeVerdict
 
 SCRIPT_NAME = "safety_reports.intake"
 WORKSTREAM = "safety_reports"
@@ -308,11 +322,19 @@ SYSTEM_PROMPT = (
 
 @dataclass(frozen=True)
 class ParsedEmail:
-    """Minimal projection of an inbound Graph message."""
+    """Minimal projection of an inbound Graph message.
+
+    `internet_message_headers` is the list-of-dicts Graph emits under
+    `internetMessageHeaders` when `get_message(..., include_headers=True)`
+    is called. Default `[]` keeps pre-Stage-2-refactor unit tests
+    (`tests/test_intake.py`'s pure-function suite) working without
+    parameter churn; the Stage-2 path itself always populates this.
+    """
     sender: str
     subject: str
     body_text: str
     attachments: list[tuple[str, bytes, str]]  # (filename, bytes, mime_type)
+    internet_message_headers: list[dict[str, str]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -369,7 +391,7 @@ def _fetch_message_via_graph(mailbox: str, message_id: str) -> ParsedEmail:
             failure. Caller (process_message) catches and routes to
             status='error'.
     """
-    msg = graph_client.get_message(mailbox, message_id)
+    msg = graph_client.get_message(mailbox, message_id, include_headers=True)
 
     from_obj = msg.get("from") or {}
     email_obj = from_obj.get("emailAddress") if isinstance(from_obj, dict) else None
@@ -380,6 +402,11 @@ def _fetch_message_via_graph(mailbox: str, message_id: str) -> ParsedEmail:
     subject = (msg.get("subject") or "").strip()
 
     body_text = _body_text_from_graph(msg)
+
+    raw_headers = msg.get("internetMessageHeaders") or []
+    headers: list[dict[str, str]] = [
+        h for h in raw_headers if isinstance(h, dict)
+    ]
 
     attachments: list[tuple[str, bytes, str]] = []
     if msg.get("hasAttachments"):
@@ -401,6 +428,7 @@ def _fetch_message_via_graph(mailbox: str, message_id: str) -> ParsedEmail:
         subject=subject,
         body_text=body_text,
         attachments=attachments,
+        internet_message_headers=headers,
     )
 
 
@@ -424,12 +452,100 @@ def _body_text_from_graph(msg: dict[str, Any]) -> str:
 # ---- Pipeline stages -----------------------------------------------------
 
 
-def check_sender_allowlist(parsed: ParsedEmail, allowlist: list[str]) -> bool:
-    """Stage 2: pass-through helper around `quarantine.is_allowlisted`."""
-    return quarantine.is_allowlisted(parsed.sender, allowlist)
+SinkKind = Literal["proceed", "quarantine", "review_queue"]
 
 
-def quarantine_sender(parsed: ParsedEmail) -> None:
+@dataclass(frozen=True)
+class Stage2Decision:
+    """Routing matrix output for the trusted-sender + header-forgery gate.
+
+    `sink` says where the message goes; `disposition` is the reason code
+    (a `QuarantineReason` value when sink="quarantine", a
+    `ReviewReason` value when sink="review_queue", or the literal
+    "allowed" when sink="proceed"). `scope_verdict` + `header_analysis`
+    carry the raw inputs to the matrix for diagnostic logging.
+    """
+
+    sink: SinkKind
+    disposition: str
+    scope_verdict: ScopeVerdict
+    header_analysis: HeaderAnalysis
+
+
+def check_trusted_sender(
+    parsed: ParsedEmail,
+    *,
+    workstream: str,
+) -> Stage2Decision:
+    """Stage 2: trusted-contacts gate × header-forgery gate.
+
+    Routing matrix (see Stage 2 brief):
+
+      scope=allowed                          + PASS       → proceed
+      scope=allowed                          + SOFT_FAIL  → review (header-soft-fail-trusted)
+      scope=allowed                          + HARD_FAIL  → quarantine (header_forgery_suspected)
+      scope=unknown_sender                   + any        → quarantine (unknown_sender)
+      scope=status_disabled                  + any        → quarantine (sender_disabled)
+      scope=status_pending_verification      + any        → review (sender-pending-verification)
+      scope=workstream_out_of_scope          + any        → quarantine (workstream_out_of_scope)
+
+    Project-scope is NOT checked here (Stage 4b runs after project resolves).
+    """
+    scope = trusted_contacts.check_scope(
+        parsed.sender, workstream=workstream, project=None,
+    )
+    header = header_forgery.analyze(parsed.internet_message_headers)
+
+    if scope.reason == "allowed":
+        if header.verdict is HeaderVerdict.PASS:
+            return Stage2Decision(
+                sink="proceed",
+                disposition="allowed",
+                scope_verdict=scope,
+                header_analysis=header,
+            )
+        if header.verdict is HeaderVerdict.SOFT_FAIL:
+            return Stage2Decision(
+                sink="review_queue",
+                disposition=review_queue.ReviewReason.HEADER_SOFT_FAIL_TRUSTED.value,
+                scope_verdict=scope,
+                header_analysis=header,
+            )
+        return Stage2Decision(
+            sink="quarantine",
+            disposition=QuarantineReason.HEADER_FORGERY_SUSPECTED.value,
+            scope_verdict=scope,
+            header_analysis=header,
+        )
+
+    if scope.reason == "status_pending_verification":
+        return Stage2Decision(
+            sink="review_queue",
+            disposition=review_queue.ReviewReason.SENDER_PENDING_VERIFICATION.value,
+            scope_verdict=scope,
+            header_analysis=header,
+        )
+
+    # Remaining scope reasons all quarantine. Map to the matching QuarantineReason.
+    reason_to_disposition = {
+        "unknown_sender": QuarantineReason.UNKNOWN_SENDER,
+        "status_disabled": QuarantineReason.SENDER_DISABLED,
+        "workstream_out_of_scope": QuarantineReason.WORKSTREAM_OUT_OF_SCOPE,
+    }
+    disposition = reason_to_disposition.get(scope.reason, QuarantineReason.UNKNOWN_SENDER)
+    return Stage2Decision(
+        sink="quarantine",
+        disposition=disposition.value,
+        scope_verdict=scope,
+        header_analysis=header,
+    )
+
+
+def quarantine_sender(
+    parsed: ParsedEmail,
+    *,
+    reason: QuarantineReason,
+) -> None:
     """Stage 2 (failure branch): log to ITS_Quarantine. No Anthropic call."""
     quarantine.log_quarantined_message(
         sender=parsed.sender,
@@ -437,6 +553,73 @@ def quarantine_sender(parsed: ParsedEmail) -> None:
         timestamp=datetime.now(UTC).isoformat(),
         summary=parsed.body_text[:200],
         workstream=WORKSTREAM,
+        reason=reason,
+    )
+
+
+# Process-wide flag so we only emit the "fallback hit" INFO log once per
+# process lifetime. The cutover from ITS_Config allowed_senders to the
+# ITS_Trusted_Contacts sheet is gradual — once the operator confirms parity
+# and deletes the ITS_Config row, the fallback path becomes dead code.
+_fallback_logged = False
+
+
+def _check_legacy_allowlist(
+    parsed: ParsedEmail,
+    allowlist: list[str],
+    *,
+    correlation_id: str,
+) -> Stage2Decision:
+    """Legacy Phase 0 path: ITS_Config JSON allowlist + workstream-scope semantics.
+
+    Triggered when the ITS_Trusted_Contacts sheet returns zero rows. Header
+    forgery still applies — even on fallback we don't let HARD_FAIL through.
+    The allowlist's match semantics are workstream=safety_reports, project=*
+    (matches the seed migration defaults).
+    """
+    global _fallback_logged
+    if not _fallback_logged:
+        error_log.log(
+            Severity.INFO,
+            SCRIPT_NAME,
+            "trusted_contacts sheet empty; falling back to ITS_Config allowed_senders",
+            error_code="trusted_contacts.fallback_to_its_config",
+            correlation_id=correlation_id,
+        )
+        _fallback_logged = True
+
+    header = header_forgery.analyze(parsed.internet_message_headers)
+    # Synthesize a ScopeVerdict for downstream logging; not used for routing.
+    if quarantine.is_allowlisted(parsed.sender, allowlist):
+        synthetic = ScopeVerdict(allowed=True, contact=None, reason="allowed")
+        if header.verdict is HeaderVerdict.PASS:
+            return Stage2Decision(
+                sink="proceed",
+                disposition="allowed",
+                scope_verdict=synthetic,
+                header_analysis=header,
+            )
+        if header.verdict is HeaderVerdict.SOFT_FAIL:
+            return Stage2Decision(
+                sink="review_queue",
+                disposition=review_queue.ReviewReason.HEADER_SOFT_FAIL_TRUSTED.value,
+                scope_verdict=synthetic,
+                header_analysis=header,
+            )
+        return Stage2Decision(
+            sink="quarantine",
+            disposition=QuarantineReason.HEADER_FORGERY_SUSPECTED.value,
+            scope_verdict=synthetic,
+            header_analysis=header,
+        )
+    synthetic_miss = ScopeVerdict(
+        allowed=False, contact=None, reason="unknown_sender",
+    )
+    return Stage2Decision(
+        sink="quarantine",
+        disposition=QuarantineReason.LEGACY_ALLOWLIST_MISS.value,
+        scope_verdict=synthetic_miss,
+        header_analysis=header,
     )
 
 
@@ -820,13 +1003,30 @@ def _run_pipeline(
         CFG_CONFIDENCE_THRESHOLD, DEFAULT_CONFIDENCE_THRESHOLD
     )
 
-    # Stage 2: sender allowlist gate.
-    if not check_sender_allowlist(parsed, allowlist):
-        quarantine_sender(parsed)
+    # Stage 2: trusted-sender + header-forgery gate. Sheet-first; legacy
+    # ITS_Config allowlist is consulted only when the sheet is empty
+    # (cutover fallback — `_check_legacy_allowlist` fires the
+    # `trusted_contacts.fallback_to_its_config` INFO once per process).
+    sheet_contacts = trusted_contacts._load_contacts()
+    if sheet_contacts:
+        stage2 = check_trusted_sender(parsed, workstream=WORKSTREAM)
+    else:
+        stage2 = _check_legacy_allowlist(
+            parsed, allowlist, correlation_id=correlation_id,
+        )
+
+    if stage2.sink == "quarantine":
+        quarantine_sender(
+            parsed, reason=QuarantineReason(stage2.disposition),
+        )
         error_log.log(
             Severity.INFO,
             SCRIPT_NAME,
-            f"quarantined: sender={parsed.sender!r} not in allowlist",
+            (
+                f"quarantined: sender={parsed.sender!r} "
+                f"reason={stage2.disposition} "
+                f"header_verdict={stage2.header_analysis.verdict.value}"
+            ),
             error_code="quarantined_sender",
             correlation_id=correlation_id,
         )
@@ -834,7 +1034,50 @@ def _run_pipeline(
             status="quarantined",
             message_id=message_id,
             correlation_id=correlation_id,
-            notes=f"sender={parsed.sender}",
+            notes=f"sender={parsed.sender} reason={stage2.disposition}",
+        )
+
+    if stage2.sink == "review_queue":
+        review_queue.add(
+            workstream=WORKSTREAM,
+            summary=(
+                f"safety intake: trusted-sender gate routed to review "
+                f"(sender={parsed.sender} reason={stage2.disposition})"
+            ),
+            payload={
+                "sender": parsed.sender,
+                "subject": parsed.subject,
+                "message_id": message_id,
+                "scope_reason": stage2.scope_verdict.reason,
+                "header_verdict": stage2.header_analysis.verdict.value,
+                "spf": stage2.header_analysis.spf,
+                "dkim": stage2.header_analysis.dkim,
+                "dmarc": stage2.header_analysis.dmarc,
+                "return_path_mismatch": stage2.header_analysis.return_path_mismatch,
+            },
+            sla_tier=review_queue.SlaTier.SAFETY_INTAKE,
+            reason=review_queue.ReviewReason(stage2.disposition),
+            severity=Severity.WARN,
+            source_file=message_id,
+            security_flag=(
+                stage2.header_analysis.verdict is HeaderVerdict.SOFT_FAIL
+            ),
+        )
+        error_log.log(
+            Severity.WARN,
+            SCRIPT_NAME,
+            (
+                f"trusted-sender review: sender={parsed.sender!r} "
+                f"reason={stage2.disposition}"
+            ),
+            error_code="trusted_sender_review",
+            correlation_id=correlation_id,
+        )
+        return ProcessResult(
+            status="review_queue",
+            message_id=message_id,
+            correlation_id=correlation_id,
+            notes=f"reason={stage2.disposition}",
         )
 
     # Stage 4: resolve project (Stage 3 was rolled into the Graph projection).
@@ -867,6 +1110,51 @@ def _run_pipeline(
             correlation_id=correlation_id,
             notes="reason=ambiguous-classification",
         )
+
+    # Stage 4b: project-scope check for trusted contacts. Stage 2 deferred
+    # the project leg because the project name wasn't resolved yet. Skipped
+    # when the legacy fallback path ran (no contact row exists to gate on).
+    if stage2.scope_verdict.contact is not None:
+        project_scope = trusted_contacts.check_scope(
+            parsed.sender, workstream=WORKSTREAM, project=project_name,
+        )
+        if project_scope.reason == "project_out_of_scope":
+            review_queue.add(
+                workstream=WORKSTREAM,
+                summary=(
+                    f"safety intake: sender allowed for workstream but project "
+                    f"out of scope (sender={parsed.sender} project={project_name})"
+                ),
+                payload={
+                    "sender": parsed.sender,
+                    "subject": parsed.subject,
+                    "project_name": project_name,
+                    "message_id": message_id,
+                    "contact_project_scope": list(
+                        stage2.scope_verdict.contact.project_scope
+                    ),
+                },
+                sla_tier=review_queue.SlaTier.SAFETY_INTAKE,
+                reason=review_queue.ReviewReason.PROJECT_OUT_OF_SCOPE,
+                severity=Severity.WARN,
+                source_file=message_id,
+            )
+            error_log.log(
+                Severity.WARN,
+                SCRIPT_NAME,
+                (
+                    f"project out of scope: sender={parsed.sender!r} "
+                    f"project={project_name!r}"
+                ),
+                error_code="project_out_of_scope",
+                correlation_id=correlation_id,
+            )
+            return ProcessResult(
+                status="review_queue",
+                message_id=message_id,
+                correlation_id=correlation_id,
+                notes=f"reason=project-out-of-scope project={project_name}",
+            )
 
     # Stage 5: classify + extract.
     extraction = classify_and_extract(parsed, model=model)

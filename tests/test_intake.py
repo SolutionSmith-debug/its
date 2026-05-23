@@ -33,7 +33,6 @@ from safety_reports.intake import (
     ProcessResult,
     _name_matches,
     _project_tool_use,
-    check_sender_allowlist,
     classify_and_extract,
     collect_anomalies,
     next_entry_number,
@@ -54,6 +53,19 @@ DEFAULT_MAILBOX = "safety@evergreenmirror.com"
 DEFAULT_MESSAGE_ID = "AAMkADHAS5g="  # arbitrary Graph-style ID for tests
 
 
+DEFAULT_HEADERS_PASS: list[dict[str, str]] = [
+    {
+        "name": "Authentication-Results",
+        "value": (
+            "evergreenmirror.mail.protection.outlook.com; "
+            "spf=pass; dkim=pass; dmarc=pass"
+        ),
+    },
+    {"name": "Return-Path", "value": "<seths@evergreenmirror.com>"},
+    {"name": "From", "value": "Seth Smith <seths@evergreenmirror.com>"},
+]
+
+
 def _build_graph_message(
     *,
     message_id: str = DEFAULT_MESSAGE_ID,
@@ -62,6 +74,7 @@ def _build_graph_message(
     body: str = DEFAULT_BODY,
     body_content_type: str = "text",
     has_attachments: bool = False,
+    headers: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Build the dict that `graph_client.get_message` would return."""
     return {
@@ -70,6 +83,9 @@ def _build_graph_message(
         "from": {"emailAddress": {"address": sender, "name": ""}},
         "body": {"contentType": body_content_type, "content": body},
         "hasAttachments": has_attachments,
+        "internetMessageHeaders": (
+            headers if headers is not None else DEFAULT_HEADERS_PASS
+        ),
     }
 
 
@@ -205,29 +221,12 @@ def test_fetch_message_skips_non_file_attachments(mocker):
     assert parsed.attachments[0][0] == "real.pdf"
 
 
-# ---- Stage 2: sender allowlist ------------------------------------------
-
-
-def test_sender_allowlist_in_list_passes():
-    parsed = ParsedEmail(
-        sender="seths@evergreenmirror.com", subject="x", body_text="x", attachments=[]
-    )
-    assert check_sender_allowlist(parsed, ["seths@evergreenmirror.com"]) is True
-
-
-def test_sender_allowlist_out_of_list_fails():
-    parsed = ParsedEmail(
-        sender="random@spam.example", subject="x", body_text="x", attachments=[]
-    )
-    assert check_sender_allowlist(parsed, ["seths@evergreenmirror.com"]) is False
-
-
-def test_sender_allowlist_domain_wildcard():
-    parsed = ParsedEmail(
-        sender="anyone@evergreenmirror.com", subject="x", body_text="x", attachments=[]
-    )
-    assert check_sender_allowlist(parsed, ["@evergreenmirror.com"]) is True
-
+# ---- Stage 2 sender gate: see tests/test_intake_stage2_refactor.py ------
+# The old `test_sender_allowlist_*` tests (replaced 2026-05-23 by the
+# trusted-contacts + header-forgery routing matrix) live in a dedicated
+# file. The Stage-2 path is exercised end-to-end by the
+# `test_process_message_*` tests below, which now patch trusted_contacts
+# + header_forgery boundaries instead of `_read_allowed_senders`.
 
 # ---- Stage 4: project resolution ----------------------------------------
 
@@ -525,7 +524,34 @@ def test_upload_filename_construction(mocker):
 
 @pytest.fixture
 def patch_all_config(mocker):
-    """Patch every ITS_Config read to canned values + bypass kill switch."""
+    """Patch every ITS_Config + trusted-contacts read to canned values.
+
+    Stage 2 default: one ACTIVE contact for DEFAULT_SENDER scoped to
+    `safety_reports` + wildcard project, plus the legacy allowlist fallback
+    pre-populated for completeness (sheet-empty tests override one of these).
+    """
+    from shared.trusted_contacts import ContactStatus, ScopeVerdict, TrustedContact
+
+    default_contact = TrustedContact(
+        email=DEFAULT_SENDER,
+        display_name="Seth Smith",
+        role="Operator",
+        project_scope=("*",),
+        workstream_scope=("safety_reports",),
+        status=ContactStatus.ACTIVE,
+        row_id=4242,
+    )
+    # Default to "sheet has rows" so check_trusted_sender runs (not fallback).
+    mocker.patch(
+        "safety_reports.intake.trusted_contacts._load_contacts",
+        return_value=[default_contact],
+    )
+    mocker.patch(
+        "safety_reports.intake.trusted_contacts.check_scope",
+        return_value=ScopeVerdict(
+            allowed=True, contact=default_contact, reason="allowed",
+        ),
+    )
     mocker.patch(
         "safety_reports.intake._read_allowed_senders",
         return_value=["seths@evergreenmirror.com"],
@@ -548,10 +574,19 @@ def patch_all_config(mocker):
     )
 
 
-def test_process_message_quarantines_non_allowlisted_sender(mocker, patch_all_config):
+def test_process_message_quarantines_unknown_sender(mocker, patch_all_config):
+    """End-to-end: unknown sender quarantines at Stage 2.
+
+    Detailed routing-matrix coverage lives in test_intake_stage2_refactor.py;
+    this test pins the orchestration glue: trusted-contacts miss → quarantine
+    write → no classify call → ProcessResult(status='quarantined').
+    """
+    from shared.trusted_contacts import ScopeVerdict
     mocker.patch(
-        "safety_reports.intake._read_allowed_senders",
-        return_value=["someone-else@evergreenmirror.com"],
+        "safety_reports.intake.trusted_contacts.check_scope",
+        return_value=ScopeVerdict(
+            allowed=False, contact=None, reason="unknown_sender",
+        ),
     )
     _patch_graph_fetch(
         mocker,

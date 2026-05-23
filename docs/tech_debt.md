@@ -467,18 +467,77 @@ Codified in Op Stds v11 §35 (standing rule going forward; retrofit audit trigge
 
 **Revisit when:** Phase 1.4 security hardening session lands.
 
-## ITS_Trusted_Contacts sheet replaces ITS_Config JSON allowlists [OPEN 2026-05-22]
+## ITS_Trusted_Contacts sheet replaces ITS_Config JSON allowlists [DELIVERED 2026-05-23]
 
-Build ITS_Trusted_Contacts sheet in System workspace per Op Stds v11 §33 schema:
-- Email (PRIMARY, exact-match), Display Name, Role (PICKLIST), Project Scope (multi-PICKLIST), Workstream Scope (multi-PICKLIST), Status (ACTIVE/DISABLED/PENDING_VERIFICATION), Added By, Added Date, Last Verified, Notes.
+Code shipped on `feat/its-trusted-contacts` branch:
 
-Refactor `safety_reports/intake.py` Stage 2 (Sender allowlist gate) to query trusted-contacts sheet with scope enforcement. Add header-forgery detection via `shared/graph_client.py` extensions: parse internetMessageHeaders for spf/dkim/dmarc results; compare Return-Path against From: domain; compare Received chain. Disposition: header-fail → ITS_Quarantine 'header_forgery_suspected'; soft-fail on trusted sender → ITS_Review_Queue; clean → proceed.
+- `shared/trusted_contacts.py` — TrustedContact / ScopeVerdict / ContactStatus + 60s-TTL cache (`lookup`, `check_scope`).
+- `shared/header_forgery.py` — Authentication-Results parser + Return-Path-vs-From mismatch (PASS / SOFT_FAIL / HARD_FAIL verdicts; trusts inbound MTA's DKIM — no local re-validation).
+- `shared/graph_client.py::get_message` — opt-in `include_headers=True` projects `internetMessageHeaders` via `$select`.
+- `safety_reports/intake.py` — Stage 2 refactored to `check_trusted_sender` (routing matrix); Stage 4b project-scope re-check after project resolves. Old `check_sender_allowlist` removed; legacy ITS_Config `allowed_senders` JSON list survives as the dead-fallback path (`trusted_contacts.fallback_to_its_config` INFO once per process) until operator deletes the row.
+- `shared/quarantine.py` — `QuarantineReason` StrEnum added; `log_quarantined_message` accepts `reason=`, writes `[reason: <code>]` into Notes (no Reason column on live sheet).
+- `shared/review_queue.py::ReviewReason` — three new picklist values (header-soft-fail-trusted / sender-pending-verification / project-out-of-scope) awaiting operator UI add.
 
-Retire `safety_reports.intake.allowed_senders` ITS_Config row at cutover. Per FM v8 Invariant 2 Layer 1.
+Migrations: `scripts/migrations/build_its_trusted_contacts_sheet.py` (idempotent sheet create), `scripts/migrations/seed_its_trusted_contacts.py` (legacy → sheet seed, `--dry-run`).
 
-**Effort:** ~half-day session (sheet build + intake refactor + header-forgery wiring + tests).
+Tests: +46 (12 trusted_contacts, 14 header_forgery, 10 intake_stage2_refactor, 2 graph_client include_headers, 3 quarantine reason, 1 integration, +4 regression deltas across test_intake / test_review_queue) — baseline 903 → 949.
 
-**Revisit when:** Phase 1.4 security hardening session lands; required before Phase 1.5 cutover.
+Operator-side cutover items, all required before legacy fallback removal:
+1. Run `build_its_trusted_contacts_sheet.py`, paste sheet ID into `shared/sheet_ids.py::SHEET_TRUSTED_CONTACTS`.
+2. Add the 3 ITS_Review_Queue.Reason picklist values via UI.
+3. Run `seed_its_trusted_contacts.py`, adjust seeded rows.
+4. Live smoke against sandbox message.
+5. After one Friday cycle clean, delete the ITS_Config `safety_reports.intake.allowed_senders` row.
+
+## Fallback path removal after ITS_Config cutover [OPEN 2026-05-23]
+
+Per the ITS_Trusted_Contacts delivery above, the legacy ITS_Config allowed_senders fallback stays in `safety_reports/intake.py` (`_check_legacy_allowlist` + the `sheet_contacts` branch in `_run_pipeline`) until the operator confirms one full Friday cycle clean post-cutover. Then:
+
+- Remove `_check_legacy_allowlist`.
+- Remove the `sheet_contacts = trusted_contacts._load_contacts()` / `if sheet_contacts:` branch in `_run_pipeline`; replace with direct `check_trusted_sender(...)` call.
+- Delete `_fallback_logged` + the once-per-process INFO log.
+- Drop the `CFG_ALLOWED_SENDERS` constant + `_read_allowed_senders` helper.
+- Update `test_intake_stage2_refactor.py::test_empty_sheet_falls_back_to_its_config_allowlist` + `test_sheet_with_rows_is_authoritative_skips_legacy_allowlist` accordingly.
+
+**Effort:** ~30-min session.
+
+**Revisit when:** operator confirms one Friday cycle clean post-cutover.
+
+## Native multi-PICKLIST graduation for Trusted Contacts scope columns [OPEN 2026-05-23]
+
+`Project Scope` and `Workstream Scope` columns on `ITS_Trusted_Contacts` are TEXT_NUMBER JSON-lists, not native multi-PICKLIST. Rationale (per the Phase 1.4 brief): the Smartsheet SDK returns inconsistent shapes for multi-PICKLIST (sometimes comma-string, sometimes list) and the cross-sheet picklist sync from PR #45-51 doesn't cover multi-select reliably. Once the Phase 1.4 picklist-hardening deliverable lands:
+
+- Convert column types to MULTI_PICKLIST.
+- Update `shared/trusted_contacts.py::_parse_scope` to accept either form during the transition.
+- Add reference-checked sync to the picklist_sync.py registry.
+
+**Effort:** ~1 hour session.
+
+**Revisit when:** Picklist Hardening #1 deliverable lands.
+
+## DKIM in-process re-validation [OPEN 2026-05-23]
+
+`shared/header_forgery.py` trusts the inbound MTA's `Authentication-Results` DKIM verdict — no local DNS TXT lookup + RSA verify. Acceptable for Phase 1: the only path delivering messages is via the verified inbound MTA chain. If a future threat-model session demands cryptographic re-validation:
+
+- Add `dkimpy` (or `python-dkim`) to requirements.
+- Replace the `dkim=tokens.get(...)` path with a re-validation step (parse `DKIM-Signature` → DNS TXT lookup → RSA verify).
+- Cache DNS TXT records per (selector, domain) for the poll cycle.
+
+**Effort:** ~half-day session.
+
+**Revisit when:** security review or threat-model session flags the in-MTA-trust assumption.
+
+## Operator-UI Shortcuts for trusted-contacts workflows [OPEN 2026-05-23]
+
+`ITS_Trusted_Contacts` operator edits today require direct Smartsheet UI. A Shortcuts-track addition could wrap common flows:
+
+- "Approve pending sender" — picks PENDING_VERIFICATION rows, prompts operator, flips to ACTIVE + sets Last Verified=today.
+- "Disable sender" — by Email or row pick, flips Status to DISABLED + notes the reason.
+- "Verify identity" — re-stamps Last Verified=today for ACTIVE rows.
+
+**Effort:** ~half-day session.
+
+**Revisit when:** Tooling-track session has bandwidth.
 
 ## Attachment screening pipeline Layers 1-3 [OPEN 2026-05-22]
 

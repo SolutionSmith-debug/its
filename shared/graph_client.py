@@ -55,6 +55,22 @@ TOKEN_REFRESH_MARGIN_SECONDS = 600
 MAX_RETRIES = 3
 DEFAULT_INBOX_FIELDS = ["id", "subject", "from", "receivedDateTime", "hasAttachments"]
 
+# Fields requested by `get_message` when `include_headers=True`. Mirrors the
+# default Graph projection for a message PLUS `internetMessageHeaders` so the
+# safety_reports intake Stage 2 header-forgery gate can read Authentication-
+# Results / Return-Path / DKIM-Signature without a second round trip.
+# `body` is explicit (Graph normally returns it by default, but $select makes
+# the projection narrow) and so are the other fields intake reads.
+GET_MESSAGE_WITH_HEADERS_FIELDS = [
+    "id",
+    "subject",
+    "from",
+    "receivedDateTime",
+    "hasAttachments",
+    "body",
+    "internetMessageHeaders",
+]
+
 
 class GraphError(Exception):
     """Base exception for all Microsoft Graph failures."""
@@ -258,10 +274,24 @@ def fetch_latest_inbound_timestamp(mailbox: str) -> datetime | None:
     return parsed.astimezone(UTC)
 
 
-def get_message(mailbox: str, message_id: str) -> dict[str, Any]:
-    """Fetch a single message including body."""
+def get_message(
+    mailbox: str,
+    message_id: str,
+    *,
+    include_headers: bool = False,
+) -> dict[str, Any]:
+    """Fetch a single message including body.
+
+    `include_headers=True` projects `internetMessageHeaders` (plus the rest
+    of the fields the intake pipeline reads) via `$select`. Headers are NOT
+    in Graph's default response shape, so the opt-in is required for the
+    Stage 2 SPF/DKIM/DMARC parser.
+    """
     url = f"{GRAPH_BASE}/users/{mailbox}/messages/{message_id}"
-    response = _request("GET", url)
+    params: dict[str, Any] | None = None
+    if include_headers:
+        params = {"$select": ",".join(GET_MESSAGE_WITH_HEADERS_FIELDS)}
+    response = _request("GET", url, params=params)
     return response.json()
 
 

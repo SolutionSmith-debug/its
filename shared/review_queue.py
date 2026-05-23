@@ -86,6 +86,13 @@ class ReviewReason(StrEnum):
     Surfaced 2026-05-18 during live schema inspection — the original brief
     documented `Reason` as TEXT_NUMBER (free-text), but the live column is
     PICKLIST with the 9 options below.
+
+    The 2026-05-23 trusted-contacts cluster added three more values
+    (HEADER_SOFT_FAIL_TRUSTED / SENDER_PENDING_VERIFICATION /
+    PROJECT_OUT_OF_SCOPE). The operator must add those three to the live
+    Smartsheet picklist via UI; Smartsheet accepts unknown picklist
+    values as plain strings so writes succeed even before the UI add,
+    but pivot views won't bucket them until then.
     """
 
     LOW_CONFIDENCE_EXTRACTION = "low-confidence-extraction"
@@ -97,6 +104,9 @@ class ReviewReason(StrEnum):
     POLICY_EDGE = "policy-edge"
     MANUAL = "manual"
     OTHER = "other"
+    HEADER_SOFT_FAIL_TRUSTED = "header-soft-fail-trusted"
+    SENDER_PENDING_VERIFICATION = "sender-pending-verification"
+    PROJECT_OUT_OF_SCOPE = "project-out-of-scope"
 
 
 # Valid Workstream picklist values for the `Workstream` column.
