@@ -93,14 +93,19 @@ CRITICAL_ITEMS_CAP = 5
 # scheduled job calls `write_last_run_marker(<job_name>)` on success;
 # Check C verifies the markers stay fresh for everything in TRACKED_JOBS.
 WATCHDOG_MARKER_DIR = Path.home() / "its" / ".watchdog"
-TRACKED_JOBS: list[str] = ["safety_weekly_generate"]
+TRACKED_JOBS: list[str] = ["safety_weekly_generate", "safety_weekly_send_poll"]
 
 # Per-job freshness windows. Jobs not in this map use the default 24h
 # window — appropriate for daily cadences. Weekly (Friday) jobs use 8 days
 # so a missed Friday + the following Wednesday still surface as stale, but
-# a 1-day-late run does not false-positive.
+# a 1-day-late run does not false-positive. High-frequency pollers use
+# a tight window (a couple of poll intervals) so a missed cycle surfaces
+# promptly without the operator having to wait for the daily watchdog.
 TRACKED_JOB_WINDOWS: dict[str, timedelta] = {
     "safety_weekly_generate": timedelta(days=8),
+    # weekly_send_poll runs every 15 min (default); 30 min == 2 cycles.
+    # A single missed cycle is tolerated; two consecutive misses fire.
+    "safety_weekly_send_poll": timedelta(minutes=30),
 }
 DEFAULT_TRACKED_JOB_WINDOW = timedelta(hours=24)
 

@@ -564,3 +564,45 @@ Mobilization Date is project-scoped not week-scoped — better captured as a pro
 **Effort:** 1-2 sessions (intake-side weather + labor extension, projects-metadata-sheet schema + read-side wire-up).
 
 **Revisit when:** Phase 1.4 security hardening cluster ships and operator feedback drives WPR template v0.2.0 calibration.
+
+## `shared/heartbeat.py` + `shared/runner.py` extraction [OPEN 2026-05-23]
+
+R3 Session 3 (`weekly_send_poll.py`) is the 2nd polling-daemon consumer that triggers the polling-daemon doctrine's 2nd-consumer extraction signal (Op Stds v11 §14). The heartbeat helpers (`_load_heartbeat_row_state`, `_persist_heartbeat_row_state`, `_invalidate_heartbeat_row_state`, `_resolve_heartbeat_row_id`, `_write_heartbeat`, `_write_heartbeat_row`, `_log_heartbeat_failure`) were copied VERBATIM from `safety_reports/intake_poll.py` into `weekly_send_poll.py` rather than extracted, to keep the R3 Session 3 ship focused on the send-capability code.
+
+Both consumers now share the same heartbeat-row-state file at `~/its/state/heartbeat_row_ids.json` (keyed by daemon_name) so the file format is already shape-compatible. Extraction is mechanical: pull the seven helpers into `shared/heartbeat.py`, parameterize on `daemon_name` + `state_path`, replace inline copies with imports.
+
+**Effort:** ~half-day session including +6-10 unit tests for the new shared module + the migration of both `intake_poll` and `weekly_send_poll` to use it.
+
+**Risk of premature extraction:** if a 3rd polling consumer surfaces a different shape need (e.g. multi-row heartbeat per daemon, or a heartbeat surface that's not ITS_Daemon_Health), the API churns. Mitigate by waiting until `weekly_send` stabilizes through 1-2 real Friday cycles, then extract.
+
+**Revisit when:** weekly_send has completed 1-2 real Friday cycles (≥ ~2 weeks of production traffic), OR a 3rd polling daemon is queued for a workstream.
+
+## HTML email rendering for weekly_send [OPEN 2026-05-23]
+
+`weekly_send.py` v0.1.0 sends `Draft Body` as inline text via `content_type="Text"`. Sponsors may prefer HTML formatting (paragraph breaks, bullet lists, the WPR layout's table structure rendered properly). Calibrate with Teala after the first 30 days of real Friday cycles — same 30-day window as the `safety_weekly_generate` prompt v0.1.0 calibration entry.
+
+Implementation: render `Draft Body` (currently plain text with `[REVIEWER TO FILL]` placeholders) into minimal HTML via a small template, pass `content_type="HTML"` to `graph_client.send_mail`. Same recipient flow.
+
+**Effort:** ~half-day session including +2-4 unit tests for the rendering function + a smoke run.
+
+**Revisit when:** Teala provides feedback on the v0.1.0 inline-text format (after first 30 days of real cycles).
+
+## Word-doc / PDF attachment generation for weekly_send [OPEN 2026-05-23]
+
+Legacy WPRs (the Gates Solar 2016-03-12 anchor in `prompts/samples/`) were Word documents. Current `weekly_send` v0.1.0 sends `Draft Body` as inline text — no attachment. Sponsors who archive correspondence as document attachments may explicitly request a formatted attachment.
+
+Phase 1.4+ extension: render `Draft Body` to PDF (via reportlab or similar) or DOCX (via python-docx), attach via the existing `graph_client.send_mail(..., attachments=[...])` signature. Box upload + Smartsheet link-update for the sent PDF could ride alongside.
+
+**Effort:** 1-2 sessions depending on which format(s) sponsors want and whether Box archival ships in the same PR.
+
+**Revisit when:** explicit sponsor feedback requesting formatted attachment.
+
+## Automated mailbox cleanup for weekly_send integration smoke [OPEN 2026-05-23]
+
+`tests/test_weekly_send_integration.py` test seed sends a real email to `seths@evergreenmirror.com` per run. Cleanup currently deletes the `WPR_Pending_Review` row in `finally`, but the email itself sits in the recipient's inbox until manually deleted. Acceptable for first few integration runs (rare; operator-driven) but eventually deserves programmatic cleanup.
+
+Implementation: after assert SENT, use `graph_client.list_inbox` + `graph_client.delete_message` (would need to add `delete_message` to `graph_client.py` — currently not exposed) to remove the ITS-SMOKE-tagged message from the sandbox inbox.
+
+**Effort:** ~hour or two including a new `delete_message` helper in `graph_client.py` + the test wire-up.
+
+**Revisit when:** integration runs accumulate noticeable smoke clutter in the sandbox mailbox (estimate: after ~10-20 runs).

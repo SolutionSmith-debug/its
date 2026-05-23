@@ -49,10 +49,20 @@ Per Foundation Mission v6 Invariant 1, generation and send live in separate scri
   replaced but approval columns never touched. Empty reviewer chain → CRITICAL abort, no
   Anthropic spend. Watchdog Check C tracks freshness via `safety_weekly_generate.last_run`
   marker (8-day per-job window).
-- **`weekly_send.py`** — launchd-scheduled Monday 6:00 AM ET. Reads `WPR_Pending_Review` rows
-  where `Approved for Send` is checked and `Sent At` is empty. Sends customer email via Graph
-  API. Updates `Sent At` + `Send Status`. Files sent copy in Box. **No Anthropic API capability** —
-  only reads already-approved structured data.
+- **`weekly_send.py`** + **`weekly_send_poll.py`** — SHIPPED (R3 Session 3). Per-event
+  handler + polling daemon (default 15-min `StartInterval`, configurable via ITS_Config row
+  `safety_reports.weekly_send.poll_interval_seconds`). Trigger model is polling (not static
+  Monday cron) because approval is dynamic — Teala can approve Friday afternoon, Saturday
+  morning, or Monday morning, and send-latency matters for sponsor experience.
+  `weekly_send.send_one_row(row_id)` reads one `WPR_Pending_Review` row, validates state +
+  Recipients, sends via `graph_client.send_mail` (content_type=Text for v0.1.0; HTML deferred),
+  computes Late Send (informational only — never gates sending), updates row to
+  `Send Status=SENT`. **No Anthropic API capability** — `anthropic_client`, `anthropic`
+  AST-forbidden via `tests/test_capability_gating.py::SEND_SCRIPTS`. Refusal contract:
+  `[GENERATION_FAILED:` tag refuses even when Approved (belt-and-suspenders); empty Recipients
+  skips silently (the `[NO_RECIPIENTS]` design hold from weekly_generate). Retry-state
+  tag-encoded in Notes column because the live sheet lacks dedicated `Send Retry Count` and
+  `Last Send Error` columns — graceful-degrade per Op Stds v11 §23.3.
 
 A separate `wpr_notify.py` runs at Friday 6:00 PM, Saturday 12:00 PM, Sunday 12:00 PM, and
 Monday 6:00 AM ET to nag approvers about unapproved WPRs.

@@ -63,7 +63,19 @@ GATED_SCRIPTS: list[tuple[str, list[str]]] = [
 
 # Send scripts: must NOT import any AI capability.
 SEND_SCRIPTS: list[tuple[str, list[str]]] = [
-    # ("safety_reports/weekly_send.py", ["anthropic_client", "anthropic"]),
+    (
+        "safety_reports/weekly_send.py",
+        ["anthropic_client", "anthropic"],
+    ),
+    (
+        # weekly_send_poll imports safety_reports.weekly_send which
+        # transitively brings in graph_client.send_mail — that's the
+        # intended send capability for the workstream. The AST gate
+        # checks THIS file's imports specifically; anthropic / anthropic_client
+        # must not appear at all.
+        "safety_reports/weekly_send_poll.py",
+        ["anthropic_client", "anthropic"],
+    ),
     # ("po_materials/rfq_send.py", ["anthropic_client", "anthropic"]),
     # ("subcontracts/subcontract_send.py", ["anthropic_client", "anthropic"]),
 ]
