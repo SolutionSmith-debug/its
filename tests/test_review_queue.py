@@ -50,10 +50,17 @@ def test_review_status_values_match_live_picklist():
 
 
 def test_review_reason_values_match_live_picklist():
+    # Three values added 2026-05-23 with the trusted-contacts cluster
+    # (header-soft-fail-trusted / sender-pending-verification /
+    # project-out-of-scope) await operator UI add to the live picklist.
+    # Smartsheet accepts unknown picklist values as plain strings — writes
+    # succeed pre-UI-add; pivot views just don't bucket them until then.
     expected = {
         "low-confidence-extraction", "ambiguous-classification",
         "structured-output-edge", "zero-data-window", "mismatched-reference",
         "security-trigger", "policy-edge", "manual", "other",
+        "header-soft-fail-trusted", "sender-pending-verification",
+        "project-out-of-scope",
     }
     assert {r.value for r in ReviewReason} == expected
 

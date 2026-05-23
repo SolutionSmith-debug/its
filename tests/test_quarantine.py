@@ -8,7 +8,12 @@ from __future__ import annotations
 import pytest
 
 from shared import quarantine, sheet_ids
-from shared.quarantine import VALID_WORKSTREAMS, is_allowlisted, log_quarantined_message
+from shared.quarantine import (
+    VALID_WORKSTREAMS,
+    QuarantineReason,
+    is_allowlisted,
+    log_quarantined_message,
+)
 
 
 def test_exact_address_match():
@@ -169,3 +174,37 @@ def test_quarantine_module_exports_valid_workstreams():
     # the source for the right constant name.
     assert hasattr(quarantine, "VALID_WORKSTREAMS")
     assert isinstance(quarantine.VALID_WORKSTREAMS, frozenset)
+
+
+def test_log_quarantined_message_writes_reason_into_notes(add_rows_mock):
+    """The Phase 1.4 reason taxonomy lands in Notes as `[reason: <code>]`.
+
+    Live ITS_Quarantine has no dedicated Reason column; graceful-degrade
+    into Notes preserves the audit trail without blocking on operator UI.
+    """
+    log_quarantined_message(
+        sender="a@b.com", subject="s", timestamp="t", summary="x",
+        workstream="safety_reports",
+        reason=QuarantineReason.HEADER_FORGERY_SUSPECTED,
+    )
+    row = add_rows_mock.call_args.args[1][0]
+    assert row["Notes"] == "[reason: header_forgery_suspected]"
+
+
+def test_log_quarantined_message_omits_notes_when_no_reason(add_rows_mock):
+    """Backward compat: legacy callers without reason → no Notes cell written."""
+    log_quarantined_message(
+        sender="a@b.com", subject="s", timestamp="t", summary="x",
+        workstream="safety_reports",
+    )
+    row = add_rows_mock.call_args.args[1][0]
+    assert "Notes" not in row
+
+
+def test_quarantine_reason_values_documented():
+    """Pin the disposition code surface so a rename surfaces in tests."""
+    expected = {
+        "unknown_sender", "sender_disabled", "workstream_out_of_scope",
+        "header_forgery_suspected", "legacy_allowlist_miss",
+    }
+    assert {r.value for r in QuarantineReason} == expected

@@ -18,6 +18,8 @@ incident (we lose the audit record of who got quarantined).
 """
 from __future__ import annotations
 
+from enum import StrEnum
+
 from . import sheet_ids, smartsheet_client
 
 # Live ITS_Quarantine.Workstream picklist (verified 2026-05-18). Note that
@@ -30,6 +32,24 @@ VALID_WORKSTREAMS = frozenset({
     "ai_employee",
     "other",
 })
+
+
+class QuarantineReason(StrEnum):
+    """Disposition reasons for ITS_Quarantine writes.
+
+    Added 2026-05-23 alongside the ITS_Trusted_Contacts cluster. The live
+    ITS_Quarantine sheet does NOT currently have a `Reason` column (verified
+    2026-05-18) — the value is written into Notes as `[reason: <code>]` so
+    operators can grep without a schema change. A future picklist-hardening
+    pass may add a dedicated column; until then graceful-degrade into Notes
+    preserves the audit trail without blocking on operator UI work.
+    """
+
+    UNKNOWN_SENDER = "unknown_sender"
+    SENDER_DISABLED = "sender_disabled"
+    WORKSTREAM_OUT_OF_SCOPE = "workstream_out_of_scope"
+    HEADER_FORGERY_SUSPECTED = "header_forgery_suspected"
+    LEGACY_ALLOWLIST_MISS = "legacy_allowlist_miss"
 
 
 def is_allowlisted(sender: str, allowlist: list[str]) -> bool:
@@ -68,6 +88,7 @@ def log_quarantined_message(
     timestamp: str,
     summary: str,
     workstream: str,
+    reason: QuarantineReason | None = None,
 ) -> int:
     """Log a quarantined message to ITS_Quarantine Smartsheet.
 
@@ -82,6 +103,10 @@ def log_quarantined_message(
         summary: Brief content summary — first ~200 chars of body. No AI call.
         workstream: Which workstream's allowlist rejected this. Must be one of
             `VALID_WORKSTREAMS`.
+        reason: Optional `QuarantineReason` disposition code. Written into Notes
+            as `[reason: <code>]` because the live ITS_Quarantine sheet has no
+            dedicated Reason column. Omit for legacy callers without disposition
+            data.
 
     Returns:
         Smartsheet row ID of the newly-added row.
@@ -98,7 +123,7 @@ def log_quarantined_message(
             f"workstream={workstream!r} not in {sorted(VALID_WORKSTREAMS)}"
         )
 
-    row = {
+    row: dict[str, object] = {
         # Primary column — short operator-facing label. Format mirrors
         # ITS_Errors' "Error" column convention (short stable string).
         "Quarantined Message": f"quarantined: {sender}",
@@ -107,8 +132,10 @@ def log_quarantined_message(
         "Subject": subject,
         "Summary": summary,
         "Workstream": workstream,
-        # Reviewed / Added to Allowlist / Reviewed By / Reviewed At / Notes
+        # Reviewed / Added to Allowlist / Reviewed By / Reviewed At
         # are operator-workflow cells left blank at write time.
     }
+    if reason is not None:
+        row["Notes"] = f"[reason: {reason.value}]"
     [row_id] = smartsheet_client.add_rows(sheet_ids.SHEET_QUARANTINE, [row])
     return row_id

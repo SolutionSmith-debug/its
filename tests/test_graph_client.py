@@ -123,6 +123,41 @@ def test_list_inbox_not_found_raises_not_found_error(mocker):
         graph_client.list_inbox("ghost@example.com")
 
 
+# ---- get_message include_headers extension --------------------------------
+
+
+def test_get_message_default_does_not_pass_select(mocker):
+    """include_headers=False (default) preserves the pre-refactor surface."""
+    _mock_msal(mocker)
+    req = mocker.patch(
+        "shared.graph_client.requests.request",
+        return_value=_mock_response(status=200, json_body={"id": "x"}),
+    )
+    graph_client.get_message("u@x.com", "mid-1")
+    call_kwargs = req.call_args.kwargs
+    # No $select param when headers aren't requested — Graph returns the
+    # default field projection.
+    assert call_kwargs["params"] is None
+
+
+def test_get_message_include_headers_projects_internet_message_headers(mocker):
+    _mock_msal(mocker)
+    req = mocker.patch(
+        "shared.graph_client.requests.request",
+        return_value=_mock_response(status=200, json_body={"id": "x"}),
+    )
+    graph_client.get_message("u@x.com", "mid-1", include_headers=True)
+    params = req.call_args.kwargs["params"]
+    assert params is not None
+    select = params["$select"]
+    # Must include internetMessageHeaders and the other intake-read fields.
+    for field in (
+        "id", "subject", "from", "receivedDateTime",
+        "hasAttachments", "body", "internetMessageHeaders",
+    ):
+        assert field in select
+
+
 # ---- send_mail payload ----------------------------------------------------
 
 
