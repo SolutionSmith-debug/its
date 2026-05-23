@@ -538,20 +538,22 @@ Initial WPR generation prompt (`prompts/safety_weekly_generate.md` v0.1.0) ancho
 
 **Revisit when:** ~30 days of real Friday cycles have run (2026-06-22 plus or minus a week).
 
-## Smartsheet transient 404 on first-project sheet/folder create [OPEN 2026-05-22 — observed twice]
+## Smartsheet transient 404 on first-project sheet/folder create [PARTIALLY MITIGATED 2026-05-22]
 
 Two `weekly_generate` smoke runs on 2026-05-22 each surfaced exactly one transient 404 during per-project iteration:
 
 - Smoke #1 (`--week-start 2030-01-07`): `SmartsheetNotFoundError('HTTP 404 (code 1006): Not Found')` on Bradley 2. Folder DID get created (cleanup confirmed it existed).
 - Smoke #2 (`--week-start 2026-02-16`): same error on Rockford.
 
-Different project each run; both error-and-continue per the weekly_generate per-project fence. Pattern: the FIRST project to need a fresh `ensure_current_week_folder` scaffold creation in a fresh process consistently 404s; subsequent projects in the same run succeed. Looks similar to the known `find_sheet_by_name_in_folder` SDK staleness pattern that PR #51 fixed via REST swap.
+Different project each run; both error-and-continue per the weekly_generate per-project fence. Pattern: the FIRST project to need a fresh `ensure_current_week_folder` scaffold creation in a fresh process consistently 404s; subsequent projects in the same run succeed. Same class as PR #51's `find_sheet_by_name_in_folder` SDK staleness — both look like SDK in-process caching missing a just-created object.
 
-**Action:** if reproducible on a third smoke run, port the same SDK→REST swap pattern to whichever `safety_reports/week_folder.py` call is racing (likely the find-after-create on the daily/rollup template clone).
+**Mitigation shipped (2026-05-22 follow-on PR):** single-shot retry on `SmartsheetNotFoundError` inside the per-project fence (`_process_with_retry` wrapper in `safety_reports/weekly_generate.py`, 500 ms sleep + one retry, bumps `summary.retries_attempted`). When retry exhausts (or any non-404 error fires), the fence writes a `GENERATION_FAILED` placeholder row to `WPR_Pending_Review` so the operator's queue surfaces the failed project instead of leaving a silent gap. The placeholder respects the existing-row contract: approved rows are left untouched, unapproved rows have a `[GENERATION_FAILED: <ErrorClass>]` tag appended to Notes (Draft Body preserved), and missing rows get a fresh placeholder with the manual-rerun command embedded in Draft Body. Op Stds v11 §30 SDK-vs-Live discipline.
 
-**Effort:** ~1 hour session if pattern reproduces; non-blocking otherwise (per-project fence absorbs it).
+**Durable fix still deferred:** SDK→REST swap on the `ensure_current_week_folder` / `get_rows` paths to eliminate the staleness window entirely. Trigger condition: 3+ observed `weekly_generate.transient_404_retry` events in production cycles (meaning the retry IS firing in real runs, not just smoke). The `summary.retries_attempted` counter is the canonical signal — watchdog Check C or a follow-on metric scrape can surface the count without operator log-grep.
 
-**Revisit when:** next weekly_generate smoke or live cycle surfaces a third occurrence.
+**Effort to swap:** ~1-2 hour session (mirror PR #51's pattern; ~6 unit tests around the find-after-create REST flow).
+
+**Revisit when:** retries_attempted >= 3 in any consecutive 4-week window, OR a real Friday cycle surfaces a `GENERATION_FAILED` placeholder (the user-visible signal).
 
 ## Intake stream extension for Weather + Labor + Mobilization metadata [OPEN 2026-05-22]
 

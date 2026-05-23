@@ -123,6 +123,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
@@ -163,6 +164,16 @@ DEFAULT_MODEL = anthropic_client.DEFAULT_MODEL  # claude-sonnet-4-6
 # consumer ship, not this PR.
 WATCHDOG_MARKER_DIR = Path.home() / "its" / ".watchdog"
 WATCHDOG_JOB_SLUG = "safety_weekly_generate"
+
+# Single-shot retry window for transient Smartsheet 404s during per-project
+# scaffold creates. PR #51 evidence + the 2026-05-22 smoke observations
+# both indicate the SDK in-process staleness clears within ~1 second; a
+# 500 ms pause + single retry is sufficient. Bounded to one retry per
+# project so the run latency stays bounded — multi-retry loops would
+# delay non-transient errors (auth, permissions) by minutes without
+# fixing the underlying SDK staleness. Durable fix is the SDK→REST
+# swap tracked in docs/tech_debt.md.
+RETRY_SLEEP_SECONDS = 0.5
 
 # Anthropic tool wiring. The schema lives in
 # schemas/safety_weekly_generate.json; we mirror its name + input_schema
@@ -211,11 +222,22 @@ class GenerationResult:
 
 @dataclass
 class RunSummary:
-    """Per-run counters returned from main(); logged via @its_error_log."""
+    """Per-run counters returned from main(); logged via @its_error_log.
+
+    `drafts_failed` counts projects where the pipeline raised after exhausting
+    the single retry — increments alongside `drafts_written` when a
+    GENERATION_FAILED placeholder was written, or alone when the placeholder
+    write itself failed. `retries_attempted` increments each time the
+    transient-404 retry path fires (regardless of whether the retry then
+    succeeds or fails). Together they give the operator + watchdog a clean
+    signal without needing to grep ITS_Errors.
+    """
     projects_processed: int = 0
     drafts_written: int = 0
     drafts_skipped_approved: int = 0
     drafts_zero_data: int = 0
+    drafts_failed: int = 0
+    retries_attempted: int = 0
     review_queue_entries: int = 0
     anthropic_calls: int = 0
     errors_per_project: dict[str, str] = field(default_factory=dict)
@@ -751,6 +773,305 @@ def iter_active_projects() -> list[tuple[int, str]]:
     return sorted(sheet_ids.PROJECT_NAME_BY_FOLDER_ID.items())
 
 
+# ---- Per-project work unit + retry wrapper -------------------------------
+
+
+def _process_one_project(
+    *,
+    folder_id: int,
+    project_name: str,
+    week_start: date,
+    week_end: date,
+    threshold: float,
+    model: str,
+    correlation_id: str,
+    summary: RunSummary,
+) -> None:
+    """Process one (project, week). Pure extract from `_run_pipeline`'s loop body.
+
+    Raises whatever the underlying calls raise — the caller (the per-project
+    fence) handles retry semantics and writes a GENERATION_FAILED placeholder
+    when this re-raises after retry exhaustion.
+
+    Increments `summary.projects_processed` on every success path
+    (real draft, ZERO_DATA placeholder, or approved-skip). Does NOT
+    increment on raise — the fence-level placeholder write increments
+    `drafts_failed` instead.
+    """
+    scaffold = ensure_current_week_folder(project_name, week_start)
+    daily_rows = smartsheet_client.get_rows(scaffold.daily_reports_sheet_id)
+    # Filter rows to the target week. Report Date arrives as either
+    # an ISO string or a datetime.date — handle both shapes; rows
+    # with un-parseable dates fall through and are excluded (the
+    # standard branch's "complete vs partial" check still flags it).
+    daily_in_week = [
+        row for row in daily_rows if _row_in_week(row, week_start, week_end)
+    ]
+    rollup_rows = smartsheet_client.get_rows(scaffold.weekly_rollup_sheet_id)
+
+    existing_row_id, is_approved = _resolve_existing_wpr_row(
+        project_name, week_start
+    )
+    if is_approved:
+        error_log.log(
+            Severity.INFO,
+            SCRIPT_NAME,
+            f"skipping {project_name} week {week_start}: existing row is approved",
+            error_code="weekly_generate.skipped_approved",
+            correlation_id=correlation_id,
+        )
+        summary.drafts_skipped_approved += 1
+        summary.projects_processed += 1
+        return
+
+    recipients = _read_recipients_for(project_name)
+    inputs = ProjectInputs(
+        project_name=project_name,
+        folder_id=folder_id,
+        week_start=week_start,
+        week_end=week_end,
+        daily_reports_sheet_id=scaffold.daily_reports_sheet_id,
+        weekly_rollup_sheet_id=scaffold.weekly_rollup_sheet_id,
+        daily_reports_rows=daily_in_week,
+        weekly_rollup_rows=rollup_rows,
+    )
+
+    if not daily_in_week and not rollup_rows:
+        _handle_zero_data_week(
+            inputs=inputs,
+            existing_row_id=existing_row_id,
+            recipients=recipients,
+            correlation_id=correlation_id,
+            summary=summary,
+        )
+    else:
+        _handle_standard_project(
+            inputs=inputs,
+            existing_row_id=existing_row_id,
+            recipients=recipients,
+            threshold=threshold,
+            model=model,
+            correlation_id=correlation_id,
+            summary=summary,
+        )
+    summary.projects_processed += 1
+
+
+def _process_with_retry(
+    *,
+    folder_id: int,
+    project_name: str,
+    week_start: date,
+    week_end: date,
+    threshold: float,
+    model: str,
+    correlation_id: str,
+    summary: RunSummary,
+) -> None:
+    """Wrap `_process_one_project` with single-shot retry on transient 404.
+
+    Per Op Stds v11 §30 (SDK-vs-Live discipline): post-create reads against
+    just-scaffolded Smartsheet folders can hit transient 404s from SDK
+    in-process caching staleness. PR #51 fixed an analogous pattern via
+    SDK→REST swap; this wrapper is the lighter-weight mitigation. If the
+    retry succeeds the project gets a real draft; if both attempts 404
+    the caller writes a GENERATION_FAILED placeholder.
+
+    The retry is narrow: only `SmartsheetNotFoundError` (the specific
+    transient class). Auth failures, permission errors, schema mismatches
+    are NOT transient and retrying them only delays the error log.
+    """
+    try:
+        _process_one_project(
+            folder_id=folder_id,
+            project_name=project_name,
+            week_start=week_start,
+            week_end=week_end,
+            threshold=threshold,
+            model=model,
+            correlation_id=correlation_id,
+            summary=summary,
+        )
+    except SmartsheetNotFoundError as first_exc:
+        summary.retries_attempted += 1
+        error_log.log(
+            Severity.INFO,
+            SCRIPT_NAME,
+            (
+                f"transient 404 on {project_name}; retrying in "
+                f"{RETRY_SLEEP_SECONDS}s (first_error={first_exc!r})"
+            ),
+            error_code="weekly_generate.transient_404_retry",
+            correlation_id=correlation_id,
+        )
+        time.sleep(RETRY_SLEEP_SECONDS)
+        # Re-raises on second failure; caller (the per-project fence)
+        # handles by writing a GENERATION_FAILED placeholder.
+        _process_one_project(
+            folder_id=folder_id,
+            project_name=project_name,
+            week_start=week_start,
+            week_end=week_end,
+            threshold=threshold,
+            model=model,
+            correlation_id=correlation_id,
+            summary=summary,
+        )
+
+
+def _write_generation_failed_placeholder(
+    *,
+    project_name: str,
+    week_start: date,
+    error_class: str,
+    correlation_id: str,
+    summary: RunSummary,
+) -> None:
+    """Surface a failed project on the reviewer's WPR_Pending_Review queue.
+
+    Closes the silent-gap risk in the per-project fence: without this
+    placeholder, a failed project would have NO row at all on Teala's
+    queue, looking indistinguishable from "project deliberately skipped."
+
+    One-row-per-(Job, Week) contract is preserved by reusing
+    `_resolve_existing_wpr_row`:
+      - Approved row exists → log INFO, do NOT touch (manual operator
+        review of the existing approval + ITS_Errors trail is the right
+        disposition).
+      - Unapproved row exists → update Notes only (append
+        `[GENERATION_FAILED: ...]` to the existing tags); leave Draft Body
+        intact so the operator still sees the prior real draft alongside
+        the failure indicator.
+      - No existing row → write a placeholder with Recipients deliberately
+        empty so `weekly_send` refuses to transmit it. The Draft Body
+        spells out the manual-rerun command and the ITS_Errors
+        correlation_id.
+
+    Increments `summary.drafts_failed` on every code path (the project
+    failed regardless of whether the placeholder physically wrote).
+    Increments `summary.drafts_written` only when a row was added or
+    updated (mirroring the existing counter semantics elsewhere).
+    """
+    summary.drafts_failed += 1
+
+    # Best-effort lookup of existing row. The 404 that triggered us was on
+    # the per-project scaffold path, not on WPR_Pending_Review, so this
+    # read is unlikely to hit the same staleness; still, wrap defensively
+    # so a lookup failure doesn't prevent the placeholder fallback.
+    try:
+        rows = smartsheet_client.get_rows(
+            sheet_ids.SHEET_WPR_PENDING_REVIEW,
+            filters={"Job": project_name, "Week": week_start.isoformat()},
+        )
+    except Exception:  # noqa: BLE001 — fall through to add_rows below
+        rows = []
+
+    existing_row = rows[0] if rows else None
+    failure_tag = f"[GENERATION_FAILED: {error_class}]"
+    generation_ts = datetime.now(UTC)
+
+    if existing_row is not None and bool(existing_row.get("Approved for Send")):
+        # Do NOT touch an approved row. Log + leave the operator to inspect.
+        error_log.log(
+            Severity.INFO,
+            SCRIPT_NAME,
+            (
+                f"{project_name} week {week_start}: existing approved row "
+                f"present, NOT writing GENERATION_FAILED placeholder"
+            ),
+            error_code="weekly_generate.placeholder_skipped_approved",
+            correlation_id=correlation_id,
+        )
+        return
+
+    if existing_row is not None:
+        # Unapproved row — append the failure tag to existing Notes; do
+        # NOT touch Draft Body (preserve the prior real draft).
+        existing_notes = existing_row.get("Notes") or ""
+        new_notes = (
+            f"{existing_notes} {failure_tag}".strip()
+            if existing_notes
+            else _compose_notes([failure_tag], generation_ts)
+        )
+        smartsheet_client.update_rows(
+            sheet_ids.SHEET_WPR_PENDING_REVIEW,
+            [
+                {
+                    "_row_id": existing_row["_row_id"],
+                    "Notes": new_notes,
+                }
+            ],
+        )
+        summary.drafts_written += 1
+        return
+
+    # No existing row — write a fresh placeholder.
+    draft_body = (
+        f"[GENERATION_FAILED — pipeline error processing {project_name} for "
+        f"week of {week_start.isoformat()}. See ITS_Errors row with "
+        f"correlation_id={correlation_id}. Reviewer action: hold and rerun "
+        f"manually via `python -m safety_reports.weekly_generate "
+        f"--week-start {week_start.isoformat()}`, or delete this row if the "
+        f"project should be skipped for this week.]"
+    )
+    notes = _compose_notes([failure_tag], generation_ts)
+    smartsheet_client.add_rows(
+        sheet_ids.SHEET_WPR_PENDING_REVIEW,
+        [
+            {
+                "Customer": FOREFRONT_CUSTOMER_NAME,
+                "Job": project_name,
+                "Week": week_start.isoformat(),
+                "Draft Body": draft_body,
+                "Recipients": "",
+                "Approved for Send": False,
+                "Send Status": "PENDING",
+                "Late Send": False,
+                "Notes": notes,
+            }
+        ],
+    )
+    summary.drafts_written += 1
+
+
+def _safe_write_placeholder(
+    *,
+    project_name: str,
+    week_start: date,
+    error_class: str,
+    correlation_id: str,
+    summary: RunSummary,
+) -> None:
+    """Call `_write_generation_failed_placeholder` with a defensive outer catch.
+
+    If the placeholder write ITSELF fails (e.g. WPR_Pending_Review is
+    unreachable), log + continue. We do NOT want a placeholder-write
+    failure to tear down the remaining-project loop — every silent gap
+    we close is worth at least the row we tried to write. The placeholder
+    failure is itself a forensic surface (ITS_Errors row) so the
+    operator still has a trace.
+    """
+    try:
+        _write_generation_failed_placeholder(
+            project_name=project_name,
+            week_start=week_start,
+            error_class=error_class,
+            correlation_id=correlation_id,
+            summary=summary,
+        )
+    except Exception as placeholder_exc:  # noqa: BLE001 — defensive outer catch
+        error_log.log(
+            Severity.ERROR,
+            SCRIPT_NAME,
+            (
+                f"failed to write GENERATION_FAILED placeholder for "
+                f"{project_name}: {placeholder_exc!r}"
+            ),
+            error_code="weekly_generate.placeholder_write_failed",
+            correlation_id=correlation_id,
+        )
+
+
 # ---- main + CLI ----------------------------------------------------------
 
 
@@ -805,71 +1126,31 @@ def _run_pipeline(*, week_start_override: date | None) -> dict[str, Any]:
 
     for folder_id, project_name in iter_active_projects():
         try:
-            scaffold = ensure_current_week_folder(project_name, week_start)
-            daily_rows = smartsheet_client.get_rows(scaffold.daily_reports_sheet_id)
-            # Filter rows to the target week. Report Date arrives as either
-            # an ISO string or a datetime.date — handle both shapes; rows
-            # with un-parseable dates fall through and are excluded (the
-            # standard branch's "complete vs partial" check still flags it).
-            daily_in_week = [
-                row for row in daily_rows if _row_in_week(row, week_start, week_end)
-            ]
-            rollup_rows = smartsheet_client.get_rows(scaffold.weekly_rollup_sheet_id)
-
-            existing_row_id, is_approved = _resolve_existing_wpr_row(
-                project_name, week_start
-            )
-            if is_approved:
-                error_log.log(
-                    Severity.INFO,
-                    SCRIPT_NAME,
-                    f"skipping {project_name} week {week_start}: existing row is approved",
-                    error_code="weekly_generate.skipped_approved",
-                    correlation_id=correlation_id,
-                )
-                summary.drafts_skipped_approved += 1
-                summary.projects_processed += 1
-                continue
-
-            recipients = _read_recipients_for(project_name)
-            inputs = ProjectInputs(
-                project_name=project_name,
+            _process_with_retry(
                 folder_id=folder_id,
+                project_name=project_name,
                 week_start=week_start,
                 week_end=week_end,
-                daily_reports_sheet_id=scaffold.daily_reports_sheet_id,
-                weekly_rollup_sheet_id=scaffold.weekly_rollup_sheet_id,
-                daily_reports_rows=daily_in_week,
-                weekly_rollup_rows=rollup_rows,
+                threshold=threshold,
+                model=model,
+                correlation_id=correlation_id,
+                summary=summary,
             )
-
-            if not daily_in_week and not rollup_rows:
-                _handle_zero_data_week(
-                    inputs=inputs,
-                    existing_row_id=existing_row_id,
-                    recipients=recipients,
-                    correlation_id=correlation_id,
-                    summary=summary,
-                )
-            else:
-                _handle_standard_project(
-                    inputs=inputs,
-                    existing_row_id=existing_row_id,
-                    recipients=recipients,
-                    threshold=threshold,
-                    model=model,
-                    correlation_id=correlation_id,
-                    summary=summary,
-                )
-            summary.projects_processed += 1
         except SmartsheetError as exc:
             summary.errors_per_project[project_name] = f"{type(exc).__name__}: {exc!r}"
             error_log.log(
                 Severity.ERROR,
                 SCRIPT_NAME,
-                f"Smartsheet error processing {project_name}: {exc!r}",
+                f"Smartsheet error processing {project_name} after retry: {exc!r}",
                 error_code="smartsheet_error",
                 correlation_id=correlation_id,
+            )
+            _safe_write_placeholder(
+                project_name=project_name,
+                week_start=week_start,
+                error_class=type(exc).__name__,
+                correlation_id=correlation_id,
+                summary=summary,
             )
         except Exception as exc:  # noqa: BLE001 — per-project fence so one bad project doesn't kill the run
             summary.errors_per_project[project_name] = f"{type(exc).__name__}: {exc!r}"
@@ -879,6 +1160,13 @@ def _run_pipeline(*, week_start_override: date | None) -> dict[str, Any]:
                 f"unexpected error processing {project_name}: {exc!r}",
                 error_code="weekly_generate.project_failed",
                 correlation_id=correlation_id,
+            )
+            _safe_write_placeholder(
+                project_name=project_name,
+                week_start=week_start,
+                error_class=type(exc).__name__,
+                correlation_id=correlation_id,
+                summary=summary,
             )
 
     _write_watchdog_marker()

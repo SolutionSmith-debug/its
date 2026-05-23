@@ -211,3 +211,107 @@ def test_weekly_generate_end_to_end_writes_wpr_row(
             _delete_folder_rest(scaffold.folder_id, _smartsheet_token)
         except Exception:  # noqa: BLE001
             pass
+
+
+# ---- 6-rows invariant (silent-gap closure) -------------------------------
+
+INVARIANT_WEEK_START = date(2030, 1, 21)  # fresh future Monday past smoke #1's 2030-01-07.
+
+
+def test_weekly_generate_writes_one_row_per_project_regardless_of_outcome(
+    _smartsheet_token: str,
+    _anthropic_key: str,
+) -> None:
+    """The silent-gap closure invariant established by the 2026-05-22 follow-on PR.
+
+    For every iteration of `weekly_generate.main()`, EVERY active project
+    in `PROJECT_NAME_BY_FOLDER_ID` MUST end up with exactly one
+    `WPR_Pending_Review` row for the target week — regardless of whether
+    that row holds a real draft, a ZERO_DATA_WEEK placeholder, or a
+    GENERATION_FAILED placeholder. This is the operator-facing contract
+    Teala depends on; a "missing row" looks indistinguishable from
+    "project deliberately skipped" and that's the exact silent gap the
+    retry + placeholder helpers close.
+
+    This test runs against the live PROJECT_NAME_BY_FOLDER_ID (NOT
+    patched to a sandbox single entry) so the assertion is on the real
+    6-project iteration. Test week is a fresh future Monday so no real
+    intake activity collides.
+    """
+    expected_project_count = len(sheet_ids.PROJECT_NAME_BY_FOLDER_ID)
+    created_week_folder_ids: list[int] = []
+    try:
+        result = weekly_generate.main(week_start_override=INVARIANT_WEEK_START)
+        assert isinstance(result, dict)
+        assert result.get("aborted_empty_chain") is False
+
+        wpr_rows = smartsheet_client.get_rows(
+            sheet_ids.SHEET_WPR_PENDING_REVIEW,
+            filters={"Week": INVARIANT_WEEK_START.isoformat()},
+        )
+        # Group by Job; exactly one row per active project.
+        rows_by_job: dict[str, list[dict]] = {}
+        for row in wpr_rows:
+            job = str(row.get("Job") or "")
+            rows_by_job.setdefault(job, []).append(row)
+
+        missing_projects = [
+            name
+            for name in sheet_ids.PROJECT_NAME_BY_FOLDER_ID.values()
+            if name not in rows_by_job
+        ]
+        assert missing_projects == [], (
+            f"Silent-gap invariant violated — these projects have no WPR row "
+            f"for week {INVARIANT_WEEK_START}: {missing_projects}"
+        )
+        duplicates = {
+            name: len(rows)
+            for name, rows in rows_by_job.items()
+            if len(rows) > 1
+        }
+        assert duplicates == {}, (
+            f"One-row-per-(Job,Week) contract violated: {duplicates}"
+        )
+
+        # Counter assertion: total rows == project count.
+        active_projects = {
+            name for name in sheet_ids.PROJECT_NAME_BY_FOLDER_ID.values()
+        }
+        rows_for_active = [
+            r for r in wpr_rows if r.get("Job") in active_projects
+        ]
+        assert len(rows_for_active) == expected_project_count
+    finally:
+        # Cleanup: delete the WPR rows we created, then the week folders.
+        try:
+            rows_for_cleanup = smartsheet_client.get_rows(
+                sheet_ids.SHEET_WPR_PENDING_REVIEW,
+                filters={"Week": INVARIANT_WEEK_START.isoformat()},
+            )
+            ids = [r["_row_id"] for r in rows_for_cleanup]
+            if ids:
+                smartsheet_client.delete_rows(
+                    sheet_ids.SHEET_WPR_PENDING_REVIEW, ids
+                )
+        except Exception:  # noqa: BLE001 — cleanup best-effort
+            pass
+        # Week folders — find by name under each project's field reports root.
+        try:
+            import smartsheet  # noqa: F401 — typed SDK side effect
+
+            client = smartsheet_client.get_client()
+            folder_name = f"Week of {INVARIANT_WEEK_START.isoformat()}"
+            for parent_id in sheet_ids.FIELD_REPORTS_FOLDER_BY_PROJECT.values():
+                try:
+                    parent = client.Folders.get_folder(parent_id)
+                    for sub in parent.folders:
+                        if sub.name == folder_name:
+                            created_week_folder_ids.append(sub.id)
+                            try:
+                                _delete_folder_rest(sub.id, _smartsheet_token)
+                            except Exception:  # noqa: BLE001
+                                pass
+                except Exception:  # noqa: BLE001
+                    continue
+        except Exception:  # noqa: BLE001
+            pass
