@@ -1,5 +1,11 @@
 """Tests for scripts/audit_picklist_drift.py — registry/sheet comparison logic.
 
+`scripts/` is not a Python package; we use the same sys.path-insert
+pattern as tests/test_watchdog.py so `import audit_picklist_drift`
+resolves the script as a top-level module. Importing as
+`from scripts import audit_picklist_drift` would make mypy see the
+file under two module names and fail CI's strict `mypy .` gate.
+
 All Smartsheet reads are mocked. The audit logic itself (per-sheet
 comparison + finding categorization) is pure and trivially testable.
 
@@ -7,7 +13,14 @@ Run with: pytest -q tests/test_audit_picklist_drift.py
 """
 from __future__ import annotations
 
-from scripts import audit_picklist_drift
+import sys
+from pathlib import Path
+
+SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "scripts"
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
+
+import audit_picklist_drift  # noqa: E402  — sys.path-driven import
 
 
 def _live(title: str, ctype: str, options: list[str] | None = None) -> dict:
