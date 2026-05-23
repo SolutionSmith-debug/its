@@ -93,7 +93,11 @@ CRITICAL_ITEMS_CAP = 5
 # scheduled job calls `write_last_run_marker(<job_name>)` on success;
 # Check C verifies the markers stay fresh for everything in TRACKED_JOBS.
 WATCHDOG_MARKER_DIR = Path.home() / "its" / ".watchdog"
-TRACKED_JOBS: list[str] = ["safety_weekly_generate", "safety_weekly_send_poll"]
+TRACKED_JOBS: list[str] = [
+    "safety_weekly_generate",
+    "safety_weekly_send_poll",
+    "safety_picklist_audit",
+]
 
 # Per-job freshness windows. Jobs not in this map use the default 24h
 # window — appropriate for daily cadences. Weekly (Friday) jobs use 8 days
@@ -106,6 +110,10 @@ TRACKED_JOB_WINDOWS: dict[str, timedelta] = {
     # weekly_send_poll runs every 15 min (default); 30 min == 2 cycles.
     # A single missed cycle is tolerated; two consecutive misses fire.
     "safety_weekly_send_poll": timedelta(minutes=30),
+    # picklist drift audit runs once weekly (Sunday afternoon per
+    # operator launchd schedule). 8-day window matches the weekly_generate
+    # pattern — a missed Sunday + the following Friday still surfaces.
+    "safety_picklist_audit": timedelta(days=8),
 }
 DEFAULT_TRACKED_JOB_WINDOW = timedelta(hours=24)
 

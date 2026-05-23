@@ -452,20 +452,25 @@ PR #51 swapped the helper to direct REST. Unit tests updated to mock `requests.g
 
 Closed by PR #51.
 
-## Picklist-hardening pre-Customer-1 [OPEN 2026-05-22]
+## Picklist-hardening pre-Customer-1 [CODE DELIVERED 2026-05-23 / operator UI work tracked in docs/picklist_hardening_audit.md]
 
-All bounded-enum Smartsheet columns currently TEXT_NUMBER should convert to PICKLIST or CHECKBOX before Customer 1 handover. Targets:
-- ITS_Config: system.state {ACTIVE/PAUSED/MAINTENANCE}, all *.polling_enabled flags, any setting with an enumerated domain.
-- ITS_Errors: Severity {INFO/WARN/ERROR/CRITICAL}, Workstream, status fields.
-- ITS_Review_Queue: Status enum, Workstream, urgency tiers, reviewer-chain selectors.
-- ITS_Quarantine: quarantine reason enum, disposition {release/delete/escalate}, Workstream.
-- Per-project sheets (Daily Reports, Weekly Rollups): status, category fields.
+Code side shipped on `feat/picklist-hardening` branch:
 
-Codified in Op Stds v11 §35 (standing rule going forward; retrofit audit triggered before Customer 1 handover). kill_switch.py fail-open logic stays as belt-and-suspenders.
+- `shared/picklist_validation.py` — `PicklistViolationError` + `REGISTRY` (composed from `Severity`/`ReviewReason`/`SlaTier`/`ReviewStatus`/`QuarantineReason`/`ContactStatus` StrEnums) + `validate_cell` / `validate_row`. Opt-in semantics: unregistered (sheet, column) pairs pass-through; None and bool values bypass picklist check.
+- `shared/smartsheet_client.py::add_rows` + `update_rows` — late-import `picklist_validation` (circular-import safe) and call `validate_row` BEFORE any payload construction. Invalid values raise `PicklistViolationError` pre-API-call.
+- `scripts/audit_picklist_drift.py` — programmatic registry-vs-live drift audit; `--update-audit-doc` placeholder; writes `~/its/.watchdog/safety_picklist_audit.last_run` marker.
+- `scripts/watchdog.py::TRACKED_JOBS` — added `safety_picklist_audit` with 8-day freshness window (weekly cadence).
+- `docs/picklist_hardening_audit.md` — operator's UI conversion checklist; one row per bounded-enum column with conversion status emojis (⬜ ✅ ⚠️ 🟦).
 
-**Effort:** ~30 min operator UI + ~1 hour audit pass.
+`shared/kill_switch.py` Phase 3 was a no-op: existing `SystemState` StrEnum + try/except fail-open (returns ACTIVE on unknown value per Op Stds v8 §1 — never silently halt) IS the per-key registry pattern. The brief's suggested change to return PAUSED would have inverted the fail-open behavior; preserved existing.
 
-**Revisit when:** Phase 1.4 security hardening session lands.
+Tests: 949 → 1004 (+55: 20 validation + 8 smartsheet integration + 8 drift audit + transitive coverage). mypy 0, ruff clean. Capability gating intact.
+
+Operator-side conversion items remain in `docs/picklist_hardening_audit.md` — ~21 UI passes (toggle "Restrict to picklist values only" + add 3 PR #72 ReviewReason values + add ITS_Quarantine Disposition + Reason columns + 6 per-project template conversions). Audit doc IS the operator's checklist; after each batch, run `python -m scripts.audit_picklist_drift --update-audit-doc` to refresh status emojis.
+
+Subsumes PR #72 leftover step #2 — the three new ITS_Review_Queue.Reason picklist values are now part of this audit's checklist.
+
+**Closes when:** all rows in `docs/picklist_hardening_audit.md` show ✅. At that point the watchdog's drift WARN-threshold can flip to ERROR.
 
 ## ITS_Trusted_Contacts sheet replaces ITS_Config JSON allowlists [DELIVERED 2026-05-23]
 
