@@ -216,6 +216,15 @@ update-in-place per cycle. Push surface per Op Stds v11 §3.1 + §32.
 - `scripts/watchdog.py` — the daily watchdog skeleton.
 - `scripts/launchd/template.plist` + `install.sh` — launchd trigger pattern.
 - `docs/session_logs/` — durable narrative log of during-execution decisions. Write one at end of any session that lands ≥1 commit and involves a non-obvious decision. See `docs/session_logs/README.md` for the convention.
+- `docs/operations/pr_merge_discipline.md` — canonical four-part verification protocol for landing a PR on main. The original three-assertion verify (`state=MERGED` / `mergedAt` non-null / `mergeCommit.oid` present) catches GitHub-side ghost merges (PR #34 case) but misses the post-merge `push: main` workflow failure that propagated PR #68→#73's red main. Step 4 (verify main-branch CI on the merge commit) is the new fourth gate; a PR that passes steps 1-3 but fails step 4 is **functionally not landed**.
+
+Session-log line convention extended to four parts:
+```
+- pytest: <N> passed / <M> skipped / <D> deselected
+- mypy: <E> errors / <F> source files
+- ruff: clean
+- main-branch CI on merge commit: SUCCESS
+```
 
 If something here contradicts the planning project's canonical docs (Foundation Mission v8,
 Operational Standards v11), the planning project wins. Flag the inconsistency.

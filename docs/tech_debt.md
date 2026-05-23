@@ -4,6 +4,31 @@ Items deliberately deferred. Each carries the rationale for deferral and the tri
 
 When to add an entry: a session deliberately chooses preservation-over-refactor (per Op Stds v9 §14), discovers an external-API constraint that forced a workaround, or defers a non-trivial cleanup that's larger than the current session can absorb. When to mark CLOSED: the underlying item is resolved in a commit; preserve the entry with resolution detail rather than deleting (history is cheap, context is expensive).
 
+## Conftest mock surface coverage [OPEN 2026-05-23]
+
+`tests/conftest.py` (PR #74) autouse-mocks `shared.keychain.get_secret` and `shared.kill_switch.check_system_state`. The keychain mock at the source attribute covers all 7 credentialed surfaces transitively (smartsheet_client / graph_client / box_client / resend_client / sentry_client / anthropic_client / alert_dedupe). Two opt-out lists guard test files that exercise these surfaces directly (`test_keychain.py` + `test_helpers.py` for keychain; `test_kill_switch.py` for kill_switch).
+
+Latent risk: future credentialed surfaces (a new client wrapper for a new external service) might need parallel opt-outs if a corresponding `tests/test_<service>_client.py` lands. Action trigger: any new Linux-CI failure with a `*Error: macOS-only` signature, OR a CI-fix follow-on PR that adds a fixture beyond the keychain + kill_switch pair, OR a new credentialed client module added to `shared/`.
+
+**Revisit when:** next CI-hygiene pass, or any of the above triggers.
+
+## Pre-conftest-fix unit-test network leak to Smartsheet sandbox [CLOSED 2026-05-23]
+
+Between PR #68 merge (2026-05-23T02:02:33Z; Run #229) and PR #73 merge (2026-05-23T15:00:02Z; Run #251), unit tests on macOS dev machines were making live API calls against the sandbox Smartsheet tenant via the unmocked `kill_switch.smartsheet_client.get_setting` path. On macOS the keychain returned a real token, so `_get_client()` built a working SDK client and the kill_switch's `check_system_state` made a real network call on EVERY test that exercised `@require_active`. Volume small (one ITS_Config read per affected test invocation) and benign (read-only against a sandbox tenant).
+
+Closed by `tests/conftest.py` keychain + kill_switch fixtures in PR #74.
+
+## Structural fix: lazy keychain loading + DI-injected kill_switch [OPEN 2026-05-23]
+
+The conftest fix (PR #74) closes the immediate CI hole. A durable structural fix would:
+
+- `shared/smartsheet_client.py::_get_client` — defer the `keychain.get_secret("ITS_SMARTSHEET_TOKEN")` call from build time to first-API-call time, so a test that never makes a real network call never hits the keychain.
+- `shared/kill_switch.py` — accept a `get_setting` callable via dependency injection (with the module-level `smartsheet_client.get_setting` as default), so tests can inject without monkeypatching the source module.
+
+Both are non-trivial refactors with cross-call-site impact. Deferred from PR #74 to keep scope focused on the CI fix. Trigger: next session that touches either module for an unrelated reason, fold the refactor in.
+
+**Revisit when:** smartsheet_client or kill_switch refactor session lands.
+
 ## parse_job_v3.py:656 — `existing_keys` dead code [CLOSED 2026-05-17]
 
 Resolved in commit **`1fd6751`**. The unfinished de-dup attempt was removed and F841 came off the `box_migration/*` per-file-ignores. Originating commit (which suppressed it) was `8dfc6e8`; ground was tracked in `docs/session_logs/2026-05-17_ruff_and_doc_refresh.md`.
