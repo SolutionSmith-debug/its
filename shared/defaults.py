@@ -60,16 +60,21 @@ DEFAULT_REVIEWER_CHAINS: dict[str, ReviewerChainConfig] = {
 FOREFRONT_CUSTOMER_NAME = "Forefront"
 
 # Box project folders under ITS DATA root (id 382010286207).
-# Active-side schema follows the "1111A (Copy for new projects)" template
-# (folder 382384021749). Values captured 2026-05-21 via
-# scripts/migrations/box_clone_1111a_to_projects.py — each entry is the
-# Box folder ID of a project-specific clone of 1111A under ITS DATA.
+# Active-side schema follows the "1111B (Copy for new projects)" canonical
+# template (folder 383696567483, materialized PR #70 + verified 267
+# descendants). Values updated 2026-05-23 via
+# scripts/migrations/reclone_projects_from_1111b.py post-cutover — each
+# entry is the Box folder ID of a project-specific clone of 1111B under
+# ITS DATA. The legacy 1111A-derived clones are archived under
+# "ITS DATA / 99. Legacy 1111A Clones / <Project> (legacy 1111A)" for
+# audit reference; per Op Stds v11 §14 they stay archived (not deleted)
+# for ≥30 days.
 # Per-customer-repo invariant: replace at fork time.
 BOX_PROJECT_FOLDERS: dict[str, str] = {
-    "Bradley 1": "383299029178",
-    "Bradley 2": "383298229322",
-    "Brimfield 1": "383303174342",
-    "Brimfield 2": "383303695163",
-    "Huntley": "383302259414",
-    "Rockford": "383305112425",
+    "Bradley 1": "383795291728",
+    "Bradley 2": "383795215056",
+    "Brimfield 1": "383796013268",
+    "Brimfield 2": "383792793376",
+    "Huntley": "383796738311",
+    "Rockford": "383794509507",
 }

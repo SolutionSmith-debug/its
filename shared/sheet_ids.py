@@ -39,10 +39,11 @@ FOLDER_OPERATIONS_MASTER_DBS = 471604011526020
 FOLDER_ARCHIVE_CLOSED_PROJECTS = 1034553964947332
 
 # ---- Active project folders (Forefront Portfolio / 01 — Active Projects) -
-
-# TODO(post-1111B): when 1111B replaces 1111A as canonical, regenerate
-# FOLDER_PROJECT_* constants from the new clones. See
-# docs/session_logs/2026-05-22_box_blueprint_1111b_design.md for blueprint.
+#
+# These are Smartsheet folder IDs (NOT Box). Smartsheet folder structure
+# is independent of Box's 1111A→1111B cutover; these constants stay
+# unchanged across the canonical-blueprint flip. The 1111B-affected Box
+# folder IDs live in `shared/defaults.py BOX_PROJECT_FOLDERS`.
 FOLDER_PROJECT_BRADLEY_1 = 8025248894347140
 FOLDER_PROJECT_BRADLEY_2 = 5210499127240580
 FOLDER_PROJECT_BRIMFIELD_1 = 7462298940925828
