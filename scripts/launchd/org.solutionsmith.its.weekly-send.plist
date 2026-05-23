@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Safety Reports weekly_send polling daemon. Dispatches approved
+  WPR_Pending_Review rows to weekly_send.send_one_row, which transmits
+  via Microsoft Graph send_mail. Zero AI capability (External Send Gate
+  per Foundation Mission v8 Invariant 1).
+
+  Install:
+    scripts/launchd/install.sh load org.solutionsmith.its.weekly-send.plist
+
+  The installer reads safety_reports.weekly_send.poll_interval_seconds
+  from ITS_Config and substitutes both __ITS_HOME__ and
+  __POLL_INTERVAL_SECONDS__ before copying to ~/Library/LaunchAgents/.
+  Default cadence 900s (15 min). Changes to the interval row take effect
+  at the next install run; the running daemon does not hot-reload
+  (launchd holds the interval).
+
+  See safety_reports/README.md for the operator runbook.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>org.solutionsmith.its.weekly-send</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__ITS_HOME__/.venv/bin/python</string>
+        <string>-m</string>
+        <string>safety_reports.weekly_send_poll</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__ITS_HOME__</string>
+
+    <key>StandardOutPath</key>
+    <string>__ITS_HOME__/logs/launchd/weekly_send_poll.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>__ITS_HOME__/logs/launchd/weekly_send_poll.err.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>LANG</key>
+        <string>en_US.UTF-8</string>
+    </dict>
+
+    <key>StartInterval</key>
+    <integer>__POLL_INTERVAL_SECONDS__</integer>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>

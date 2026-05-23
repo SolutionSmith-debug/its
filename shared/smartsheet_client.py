@@ -175,6 +175,33 @@ def get_sheet(sheet_id: int):
         raise _translate(e) from e
 
 
+def get_row(sheet_id: int, row_id: int) -> dict[str, Any]:
+    """Fetch one row by ID as a `{_row_id, <title>: value, ...}` dict.
+
+    Raises `SmartsheetNotFoundError` if the row was deleted. Use this when
+    the caller knows the row_id (e.g. a polling daemon dispatching to a
+    per-event handler) and wants to avoid the full-sheet scan that
+    `get_rows()` requires.
+    """
+    try:
+        sheet = get_client().Sheets.get_sheet(sheet_id)
+    except sdk_exc.SmartsheetException as e:
+        raise _translate(e) from e
+    title_by_id = {col.id: col.title for col in sheet.columns}
+    for row in sheet.rows:
+        if row.id != row_id:
+            continue
+        record: dict[str, Any] = {"_row_id": row.id}
+        for cell in row.cells:
+            title = title_by_id.get(cell.column_id)
+            if title is not None:
+                record[title] = cell.value
+        return record
+    raise SmartsheetNotFoundError(
+        f"row_id={row_id} not found in sheet {sheet_id}"
+    )
+
+
 def get_rows(
     sheet_id: int,
     *,
