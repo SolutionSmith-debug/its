@@ -38,7 +38,7 @@ from safety_reports.weekly_generate import (
 )
 from shared import review_queue
 from shared.scheduling import ReviewerChain, ReviewerSlot
-from shared.smartsheet_client import SmartsheetNotFoundError
+from shared.smartsheet_client import SmartsheetError, SmartsheetNotFoundError
 
 # ---- Fixtures / helpers --------------------------------------------------
 
@@ -637,3 +637,159 @@ def test_read_recipients_for_slug_lowercase_underscore_conversion(_patch_all):
     # The first positional arg is the config key string
     call_args = _patch_all["get_setting"].call_args
     assert call_args.args[0] == "safety_reports.recipients.bradley_1"
+
+
+# ---- Single-shot retry + GENERATION_FAILED placeholder -------------------
+
+
+def test_transient_404_retried_succeeds(_patch_all, mocker):
+    """First call raises SmartsheetNotFoundError; retry call succeeds.
+
+    Verifies: retries_attempted incremented exactly once, drafts_failed
+    stays 0 (real draft wrote), no placeholder add_rows on
+    WPR_Pending_Review, INFO log entry with the retry error_code.
+    """
+    # Patch sleep so the test doesn't actually wait.
+    mocker.patch("safety_reports.weekly_generate.time.sleep", return_value=None)
+    # First call raises 404, second call returns scaffold successfully.
+    real_scaffold = _scaffold()
+    _patch_all["ensure_folder"].side_effect = [
+        SmartsheetNotFoundError("HTTP 404 (code 1006): Not Found"),
+        real_scaffold,
+    ]
+    result = _run_pipeline(week_start_override=date(2026, 5, 18))
+    assert result["retries_attempted"] == 1
+    assert result["drafts_failed"] == 0
+    assert result["drafts_written"] == 1
+    assert result["drafts_zero_data"] == 1  # ZERO_DATA path inside retry success
+    # Find the retry INFO log row
+    log_codes = [
+        kwargs.get("error_code")
+        for call in _patch_all["error_log"].call_args_list
+        for kwargs in [call.kwargs]
+    ]
+    assert "weekly_generate.transient_404_retry" in log_codes
+
+
+def test_persistent_404_writes_failure_placeholder(_patch_all, mocker):
+    """Both calls raise SmartsheetNotFoundError → placeholder write fires."""
+    mocker.patch("safety_reports.weekly_generate.time.sleep", return_value=None)
+    _patch_all["ensure_folder"].side_effect = SmartsheetNotFoundError(
+        "HTTP 404 (code 1006): Not Found"
+    )
+    result = _run_pipeline(week_start_override=date(2026, 5, 18))
+    assert result["retries_attempted"] == 1  # only ONE retry per project
+    assert result["drafts_failed"] == 1
+    assert result["drafts_written"] == 1  # the placeholder counts as a write
+    # Inspect the placeholder add_rows call
+    _patch_all["add_rows"].assert_called_once()
+    rows_arg = _patch_all["add_rows"].call_args[0][1]
+    assert "[GENERATION_FAILED: SmartsheetNotFoundError]" in rows_arg[0]["Notes"]
+    assert rows_arg[0]["Draft Body"].startswith(
+        "[GENERATION_FAILED — pipeline error processing"
+    )
+    assert rows_arg[0]["Recipients"] == ""
+    assert rows_arg[0]["Approved for Send"] is False
+
+
+def test_non_404_smartsheet_error_does_not_retry(_patch_all, mocker):
+    """A generic SmartsheetError (not the NotFound subclass) skips retry."""
+    mocker.patch("safety_reports.weekly_generate.time.sleep", return_value=None)
+    _patch_all["ensure_folder"].side_effect = SmartsheetError("HTTP 500: server error")
+    result = _run_pipeline(week_start_override=date(2026, 5, 18))
+    assert result["retries_attempted"] == 0  # NO retry on non-404
+    assert result["drafts_failed"] == 1
+    assert result["drafts_written"] == 1  # placeholder still wrote
+    rows_arg = _patch_all["add_rows"].call_args[0][1]
+    assert "[GENERATION_FAILED: SmartsheetError]" in rows_arg[0]["Notes"]
+
+
+def test_generic_exception_writes_placeholder_without_retry(_patch_all, mocker):
+    """A non-Smartsheet exception triggers the broad fence; no retry."""
+    mocker.patch("safety_reports.weekly_generate.time.sleep", return_value=None)
+    _patch_all["ensure_folder"].side_effect = RuntimeError("boom")
+    result = _run_pipeline(week_start_override=date(2026, 5, 18))
+    assert result["retries_attempted"] == 0
+    assert result["drafts_failed"] == 1
+    rows_arg = _patch_all["add_rows"].call_args[0][1]
+    assert "[GENERATION_FAILED: RuntimeError]" in rows_arg[0]["Notes"]
+
+
+def test_placeholder_respects_existing_unapproved_row(_patch_all, mocker):
+    """Existing unapproved row → update Notes only; do NOT add a new row."""
+    mocker.patch("safety_reports.weekly_generate.time.sleep", return_value=None)
+    # Force the per-project work to fail with a generic SmartsheetError.
+    _patch_all["ensure_folder"].side_effect = SmartsheetError("HTTP 500")
+    # The placeholder helper does its own get_rows lookup; return an
+    # existing unapproved row for the failing (Job, Week).
+    _patch_all["get_rows"].return_value = [
+        {
+            "_row_id": 7777,
+            "Job": "Bradley 1",
+            "Week": "2026-05-18",
+            "Approved for Send": False,
+            "Notes": "[LOW_CONFIDENCE: 0.50] generated=2026-05-22T14:00:00+00:00",
+        }
+    ]
+    result = _run_pipeline(week_start_override=date(2026, 5, 18))
+    assert result["drafts_failed"] == 1
+    assert result["drafts_written"] == 1
+    # No add_rows for the failing project (existing row → update path).
+    _patch_all["add_rows"].assert_not_called()
+    # update_rows called with appended Notes, not Draft Body touched.
+    _patch_all["update_rows"].assert_called_once()
+    updates = _patch_all["update_rows"].call_args[0][1]
+    assert updates[0]["_row_id"] == 7777
+    assert "[GENERATION_FAILED: SmartsheetError]" in updates[0]["Notes"]
+    assert "[LOW_CONFIDENCE: 0.50]" in updates[0]["Notes"]  # prior tag preserved
+    assert "Draft Body" not in updates[0]  # body untouched
+
+
+def test_placeholder_respects_existing_approved_row(_patch_all, mocker):
+    """Existing approved row → log + skip; do not write or update anything."""
+    mocker.patch("safety_reports.weekly_generate.time.sleep", return_value=None)
+    _patch_all["ensure_folder"].side_effect = SmartsheetError("HTTP 500")
+    _patch_all["get_rows"].return_value = [
+        {
+            "_row_id": 8888,
+            "Job": "Bradley 1",
+            "Week": "2026-05-18",
+            "Approved for Send": True,
+            "Notes": "generated=2026-05-22T14:00:00+00:00",
+        }
+    ]
+    result = _run_pipeline(week_start_override=date(2026, 5, 18))
+    # drafts_failed still incremented (the project failed) but no row written.
+    assert result["drafts_failed"] == 1
+    assert result["drafts_written"] == 0
+    _patch_all["add_rows"].assert_not_called()
+    _patch_all["update_rows"].assert_not_called()
+    # INFO log for the approved-skip.
+    log_codes = [
+        kwargs.get("error_code")
+        for call in _patch_all["error_log"].call_args_list
+        for kwargs in [call.kwargs]
+    ]
+    assert "weekly_generate.placeholder_skipped_approved" in log_codes
+
+
+def test_placeholder_write_failure_does_not_crash_run(_patch_all, mocker):
+    """When the placeholder add_rows itself raises, log and continue."""
+    mocker.patch("safety_reports.weekly_generate.time.sleep", return_value=None)
+    _patch_all["ensure_folder"].side_effect = SmartsheetError("HTTP 500")
+    # No existing row, so the placeholder helper takes the add_rows path —
+    # which we make fail.
+    _patch_all["add_rows"].side_effect = SmartsheetError(
+        "WPR_Pending_Review unreachable"
+    )
+    # Should NOT raise. Result returns cleanly.
+    result = _run_pipeline(week_start_override=date(2026, 5, 18))
+    assert result["drafts_failed"] == 1  # we tried; counter still increments
+    # Two ITS_Errors entries: original failure + placeholder-write failure.
+    log_codes = [
+        kwargs.get("error_code")
+        for call in _patch_all["error_log"].call_args_list
+        for kwargs in [call.kwargs]
+    ]
+    assert "smartsheet_error" in log_codes
+    assert "weekly_generate.placeholder_write_failed" in log_codes
