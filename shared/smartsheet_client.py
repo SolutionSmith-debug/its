@@ -297,9 +297,19 @@ def add_rows(sheet_id: int, rows: list[dict[str, Any]]) -> list[int]:
     Each entry in `rows` is a `{column_title: value}` dict. Rows are
     appended to the bottom — change at the call site if a different
     position is needed.
+
+    Pre-write picklist validation (Op Stds v11 §35): each row passes
+    through `picklist_validation.validate_row` first. Unregistered
+    (sheet, column) pairs pass-through; registered cells whose value
+    is outside the allowed set raise `PicklistViolationError` BEFORE any
+    Smartsheet API call. Late-import to avoid the
+    picklist_validation → kill_switch → smartsheet_client cycle.
     """
     if not rows:
         return []
+    from . import picklist_validation
+    for row_dict in rows:
+        picklist_validation.validate_row(sheet_id, row_dict)
     sdk_rows = []
     for values in rows:
         row = smartsheet.models.Row()
@@ -317,9 +327,16 @@ def update_rows(sheet_id: int, updates: list[dict[str, Any]]) -> None:
     """Update existing rows. Each update is `{_row_id: int, <title>: value, ...}`.
 
     Cells whose column titles aren't supplied are left untouched.
+
+    Pre-write picklist validation: same contract as `add_rows`.
+    `_row_id` and any other `_`-prefixed meta keys are skipped during
+    validation (they're not Smartsheet columns).
     """
     if not updates:
         return
+    from . import picklist_validation
+    for row_dict in updates:
+        picklist_validation.validate_row(sheet_id, row_dict)
     sdk_rows = []
     for values in updates:
         row_id = values.get("_row_id")
