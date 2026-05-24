@@ -213,9 +213,10 @@ location); `.claude/skills/` contains per-skill symlinks pointing at it.
 `.agents/skills/` is the source of truth; `skills-lock.json` pins the upstream
 revisions.
 
-The 14 installed skills: `caveman`, `diagnose`, `grill-me`, `grill-with-docs`,
-`handoff`, `improve-codebase-architecture`, `prototype`, `setup-matt-pocock-skills`,
-`tdd`, `to-issues`, `to-prd`, `triage`, `write-a-skill`, `zoom-out`.
+The 15 installed skills: `caveman`, `diagnose`, `git-guardrails-claude-code`,
+`grill-me`, `grill-with-docs`, `handoff`, `improve-codebase-architecture`,
+`prototype`, `setup-matt-pocock-skills`, `tdd`, `to-issues`, `to-prd`, `triage`,
+`write-a-skill`, `zoom-out`.
 
 Safe to invoke as needed: `grill-me`, `grill-with-docs`, `to-prd`, `to-issues`,
 `diagnose`, `tdd`, `handoff`, `caveman`, `zoom-out`, `triage`, `prototype`,
@@ -235,13 +236,32 @@ Safe to invoke as needed: `grill-me`, `grill-with-docs`, `to-prd`, `to-issues`,
 - `tdd` — any new `shared/*` SDK wrapper with create/update/delete on typed
   columns/rows (Op Stds §30 integration discipline).
 
+**Active guardrail hook — `git-guardrails-claude-code`:**
+
+Installed from `mattpocock/skills`'s `misc/` subdirectory via
+`npx skills@latest add mattpocock/skills --skill git-guardrails-claude-code --full-depth -y`.
+Hook script at `.claude/hooks/block-dangerous-git.sh`, wired via
+`.claude/settings.json` `PreToolUse` on `Bash`. Customized from upstream:
+
+- BLOCKED: `git push --force` / `-f` / `--force-with-lease`; `git push --delete`
+  / `-d` / colon-prefix delete (`origin :branch`); `git reset --hard`;
+  `git clean -f` (also catches `-fd`); `git branch -D` (force-delete);
+  `git checkout .`; `git restore .`.
+- ALLOWED (carved out from upstream default): plain `git push <branch>`
+  (canonical PR-feature push); `git branch -d` (safe-delete, canonical
+  post-merge cleanup); refspec push (`git push origin feature:main`);
+  `gh pr merge --delete-branch` (gh-side branch cleanup).
+
+This hook does **not** prevent direct push to `main` — that defense belongs
+at the GitHub branch protection layer (server-side, authoritative). Branch
+protection on `main` should be verified separately as a follow-up.
+
 **Not in default install (available in mattpocock/skills, can be added on demand):**
 - `request-refactor-plan` — would carry the same §14 constraint if added.
 - `qa` — useful for pre-merge verification workflows.
-- `git-guardrails-claude-code` — planned as a follow-up PR.
-- Adding a single skill: `npx skills@latest add mattpocock/skills` and confirm
-  the CLI's syntax for individual skill selection, or re-run the full add and
-  let the installer prompt.
+- Adding a single default-scope skill: `npx skills@latest add mattpocock/skills --skill <name> -y`.
+- Adding a `misc/`-scope skill: same plus `--full-depth` (as used for
+  `git-guardrails-claude-code` above).
 
 ## Useful references in this repo
 
