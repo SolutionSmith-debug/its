@@ -723,3 +723,212 @@ Trigger conditions:
 **Effort:** ~30 min.
 
 **Revisit when:** operator notes drift between local doc state and CI's view, OR a third polling daemon ships and the watchdog wiring patterns are being touched anyway.
+
+## Hardcoded BOX_PROJECT_FOLDERS dict requires code change per project [OPEN 2026-05-24]
+
+`shared/defaults.py:73` defines `BOX_PROJECT_FOLDERS: dict[str, str]` — a hardcoded mapping from project name to Box folder ID. Every new project added to Box requires editing this file and redeploying. `shared/defaults.py` is also the documented fallback layer for ITS_Config (per existing convention in the module — `BOX_PROJECT_FOLDERS` references "1111B-derived clones post-cutover" suggesting it gets manually edited at each Box cutover).
+
+**Failure mode:** non-developer operator cannot onboard a new project without CC involvement (code edit + PR + deploy). Risk of typo in folder ID silently routing uploads to the wrong project. Stale entries accumulate as projects close out. Project-onboarding is a routine ops task that should not require a deploy cycle.
+
+**Proposed fix:** migrate to a Smartsheet lookup (suggest a dedicated `ITS_Project_Routing` sheet with columns `Project Name`, `Box Folder ID`, `Active` bool, `Notes`). Code reads at daemon startup, caches in-process, refreshes on interval. Add startup validation that every active row's folder ID resolves via Box API — warn (don't fail) on resolution miss so a single bad row doesn't crash the daemon. Once live, `BOX_PROJECT_FOLDERS` becomes the empty-dict fallback or is removed entirely.
+
+**Effort:** ~half-day session (new sheet schema + `ITS_Project_Routing` migration script + reader in `shared/defaults.py` or new `shared/project_routing.py` + tests + Box resolution validation helper + operator runbook).
+
+**Phase target:** 1.5 — blocks first-customer onboarding cleanliness; every new customer's project set is different.
+
+**Tag:** `config-migration`.
+
+**Revisit when:** Phase 1.5 hardening cluster, or operator hits the "I need to add a project but can't without a code change" friction.
+
+Surfaced: 2026-05-24 hardcoded-values audit brief, §A2.
+
+## Hardcoded BOX_SUBPATH_BY_CATEGORY in safety_reports/intake.py [OPEN 2026-05-24]
+
+`safety_reports/intake.py:172` defines `BOX_SUBPATH_BY_CATEGORY: dict[str, tuple[str, ...] | None]` — hardcoded mapping from inbound email category to Box subfolder path. `VALID_CATEGORIES` (line 195) is derived from this dict's keys. Adding a new safety-reports category requires code change.
+
+**Failure mode:** same shape as `BOX_PROJECT_FOLDERS` (config-migration sibling): operator can't add a category without a PR. Lower change cadence than projects (categories churn slowly — the safety-reports taxonomy is more stable than the project set), but same redeploy-for-ops-task problem.
+
+**Proposed fix:** migrate to either (a) `ITS_Config` rows with key prefix `BOX_SUBPATH_<category>` and tuple values JSON-encoded, or (b) a dedicated `ITS_Category_Routing` sheet alongside the project-routing sheet from the A2 entry. Same caching pattern. Same Box-resolution validation. Coupled enough with A2 that landing both in one PR pair makes sense (a `shared/routing.py` module covering both lookups).
+
+**Effort:** ~2 hours, lower than A2 because category set is smaller and the schema is simpler (no `Active` bool needed if categories are append-only).
+
+**Phase target:** 1.6 — lower priority than A2 because category set is stable. Bundle with A2 only if the routing-module shape benefits from co-design.
+
+**Tag:** `config-migration`.
+
+**Revisit when:** A2 lands (do A3 right after, sharing the routing-module pattern), OR a new safety category needs adding before A2 lands (force the move at that point).
+
+Surfaced: 2026-05-24 hardcoded-values audit brief, §A3.
+
+## Hardcoded default fallbacks for ITS_Config-sourced timing constants [OPEN 2026-05-24]
+
+`safety_reports/weekly_send_poll.py:97-98` defines `DEFAULT_POLLING_ENABLED = True` and `DEFAULT_POLL_INTERVAL = 900` (15 minutes). The authoritative runtime values come from ITS_Config rows `safety_reports.weekly_send.polling_enabled` and `safety_reports.weekly_send.poll_interval_seconds` — the hardcoded constants are fallback defaults when those rows are missing or malformed. Other timing-bearing files (intake_poll, watchdog) follow the same pattern.
+
+This is partially good (already ITS_Config-sourced) and partially fragile: silent fallback to a hardcoded default when an operator typos an ITS_Config row means the daemon "works" but on the wrong schedule, with no operator-visible signal that the override didn't take.
+
+**Failure mode:** operator edits ITS_Config to change poll interval from 900 to 1800. Typos the key name. Daemon silently uses the hardcoded 900 default. Operator believes the new value is in effect; isn't. Costs and responsiveness are both off the operator's mental model.
+
+**Proposed fix (two layers):**
+
+1. **Startup log line** in every daemon: log the *resolved* values at startup (`[startup] poll_interval_seconds = 900 (source: default fallback)` vs `(source: ITS_Config)`). Cheap; makes the silent-fallback observable in launchd stdout/stderr logs.
+2. **Optional but stronger:** convert silent fallback to WARN-loud fallback when the ITS_Config row is unexpectedly missing for keys the daemon documented as "should be configured." A dedicated registry of "expected ITS_Config keys" per daemon, checked at startup, surfaced via Sentry WARN if missing. Same shape as the validation-at-startup proposal in C1.
+
+**Effort:** ~1 hour for layer 1 (startup-log only) across the 2-3 polling daemons. Layer 2 folds into C1's startup-validation module.
+
+**Phase target:** 1.6 alongside C1 (config validation cluster).
+
+**Tag:** `config-migration`.
+
+**Revisit when:** C1 startup-validation work begins, OR an operator hits the silent-fallback-after-typo failure mode in real ops.
+
+Surfaced: 2026-05-24 hardcoded-values audit brief, §A5. Note: the brief's framing assumed full hardcoding of timing constants; actual state is ITS_Config-sourced with hardcoded defaults as fallback. The fragility is the silent fallback, not the constants themselves.
+
+## Severity-tiered + multi-recipient alert routing [OPEN 2026-05-24]
+
+Current state: `shared/resend_client.send_alert()` sends to a single recipient resolved from `system.operator_email` in ITS_Config at runtime (per `shared/resend_client.py:164`). No multi-recipient distribution. No severity gating — every CRITICAL via `_alert_critical` fires the same Resend leg to the same single recipient regardless of severity.
+
+Adequate for the solo-operator stage. Becomes a gap when:
+
+- Team composition expands (on-call rotation, multiple operators in different timezones).
+- Severity stratification matters (CRITICAL to phone-via-Resend, WARN to a digest sheet only).
+- Customer 2+ onboarding lands and per-customer recipient lists need separation.
+
+**Proposed fix:** new `ITS_Alert_Routing` sheet with columns `Email` (TEXT_NUMBER, primary), `Severity Threshold` (PICKLIST: CRITICAL/WARN/INFO), `Workstream Filter` (TEXT_NUMBER, JSON list — `["*"]` for all), `Active` (bool), `Notes`. `send_alert()` reads the sheet, filters rows by severity ≥ threshold AND workstream match, fans out to each matching recipient. Email validation at sheet load (basic `^[^@]+@[^@]+\.[^@]+$`). Keep `system.operator_email` as the single-recipient fallback when the sheet is empty or unreachable.
+
+**Effort:** ~half-day session including schema migration script (mirror the trusted-contacts pattern) + `shared/alert_routing.py` reader + `send_alert()` rewiring + tests.
+
+**Phase target:** 2 (post-Customer-1 cutover). Single-recipient is sufficient for the solo + Customer-0 stage and shouldn't preempt Phase 1.4/1.5 critical-path work.
+
+**Tag:** `config-migration`.
+
+**Revisit when:** team expansion is concrete, OR Customer 2 onboarding begins.
+
+Surfaced: 2026-05-24 hardcoded-values audit brief, §A4. Note: the brief's premise (hardcoded recipients in `shared/alert.py`) was inaccurate — that file doesn't exist; recipient is already ITS_Config-sourced. This entry reframes the spirit of the concern: future multi-recipient + severity-tiered routing, not present-day hardcoding.
+
+## Allowlist drift detection — typo'd trusted-contacts entry silently quarantines [OPEN 2026-05-24]
+
+`ITS_Trusted_Contacts` entries with a typo in the Email field silently route legitimate senders to quarantine. Operator has no signal that the list itself is wrong vs. the sender being legitimately untrusted. Same shape applies to the legacy `safety_reports.intake.allowed_senders` JSON list still alive as the dead-fallback path (per the existing "Fallback path removal after ITS_Config cutover [OPEN 2026-05-23]" entry — that fallback should be removed soon, narrowing this surface).
+
+**Failure mode:** field PM emails a JHA from `joe.smith@evergreenrenewables.com`. Trusted-contacts row was seeded with `joe.smtih@evergreenrenewables.com` (transposed). Message routes to ITS_Quarantine instead of intake. Operator assumes everything is fine until a missed safety report surfaces downstream.
+
+**Proposed fix (two-layer):**
+
+1. **Validation at sheet read:** `shared/trusted_contacts._load_contacts()` adds basic email regex validation when materializing rows from `ITS_Trusted_Contacts`. Rows with malformed emails get logged to `ITS_Errors` with `error_code='trusted_contacts_row_malformed'` and skipped. Cheap; surfaces typos in the email format itself.
+2. **Reconciliation sweep:** weekly job that lists distinct senders in `ITS_Quarantine` over the last 7 days. For each, compute Levenshtein distance against every active `ITS_Trusted_Contacts` Email. Distance ≤ 2 surfaces as a `near_miss_quarantine` row in `ITS_Review_Queue` with the two emails side-by-side. Low-urgency review-queue item, not an alert. Catches typos that pass basic regex (`joe.smtih@...` is a valid email format).
+
+**Effort:** ~3 hours for layer 1 (regex validation + 5-6 unit tests). ~half-day for layer 2 (sheet read + Levenshtein + review-queue integration + tests + watchdog cadence wiring).
+
+**Phase target:** 1.6 (lands cleanly post-Customer-0-cutover; layer 1 can ship immediately once `_load_contacts` is being touched anyway).
+
+**Revisit when:** layer 1 — next touch of `shared/trusted_contacts.py`. Layer 2 — Phase 1.6 hardening, or operator first encounters a near-miss-typo incident.
+
+Surfaced: 2026-05-24 hardcoded-values audit brief, §B1.
+
+## Box folder delete-and-recreate breaks folder ID resolution [OPEN 2026-05-24]
+
+Box folder IDs are stable across renames but NOT across delete-and-recreate. If someone deletes a project folder in Box and recreates it with the same name, uploads to the stale ID will land in the wrong place (or fail, depending on SDK behavior against trashed folders — needs verification: the boxsdk 3.x trashed-folder upload path returns success or error?).
+
+**Failure mode (silent variant — needs SDK verification):** if Box returns 2xx on upload-to-trashed-folder, ITS-generated files land in trash invisibly. Operator sees no upload error; thinks files are filed correctly. Real-world impact: documents lost until someone notices missing files in the active folder.
+
+**Failure mode (loud variant):** Box returns error; intake daemon surfaces via triple-fire CRITICAL alert. Operator gets the alert but the failure cause ("404 folder not found" against a folder that "exists" in Box UI under a new ID) is opaque without tribal knowledge of the delete-recreate gotcha.
+
+**Proposed fix (depends on A2 landing first):**
+
+1. **Startup validation** in the new `shared/project_routing.py` (or whatever lands from A2): every active row's `Box Folder ID` must resolve via Box API to a non-trashed folder. Validation runs at daemon startup AND in a weekly reconciliation watchdog check. Log WARN + skip routing to invalid folders rather than crash.
+2. **Operator runbook entry**: "If a Box folder is recreated, update the routing sheet with the new ID. The old ID will WARN in watchdog within 24 hours regardless."
+3. **SDK trashed-folder behavior verification:** one-off smoke test against a deliberately-trashed sandbox folder to confirm whether boxsdk 3.x upload returns error or silently lands in trash. Document the answer in `docs/references/box_sdk_gotchas.md` (or similar).
+
+**Effort:** ~2 hours for validation logic + watchdog wiring (mostly straightforward once A2's routing sheet exists). ~30 min for the SDK behavior smoke test.
+
+**Phase target:** Phase 2 — depends on A2 landing first, since this is the validation layer for that routing config.
+
+**Revisit when:** A2 lands; bundle this immediately after as the second PR in the config-migration cluster.
+
+Surfaced: 2026-05-24 hardcoded-values audit brief, §B2.
+
+## Future PDF/JHA field extraction needs found-flag pattern [OPEN 2026-05-24]
+
+Phase 1.5 work introduces PDF-form-field extraction (and possibly free-text regex extraction) for JHA documents inbound from field PMs. Different field PMs format dates, names, and other fields inconsistently — one types `5/24/26`, another types `2026-05-24`, another writes `May 24`. Naive regex or PDF-form-field-by-name lookup silently extracts blank when the format doesn't match.
+
+(Note: this is NOT an extension of `box_migration/parse_job_v3.py`, despite the audit brief's framing. `parse_job_v3` parses Box folder *names* against the 4 active project-folder taxonomies — see `tests/test_parse_*.py` for its scope. JHA field extraction is a distinct future workstream that hasn't been built yet.)
+
+**Failure mode:** blank field in Smartsheet row. Downstream consumers (`safety_reports.weekly_generate`, reports, rollups) silently skip the row or compute wrong totals. No alert fires because "blank field" is not an error from the parser's perspective — it just didn't match. Worst case: a weekly safety report omits a critical incident because the date field was blank.
+
+**Proposed fix:**
+
+1. **Each extracted field returns a `(value, found: bool, confidence: float)` triple, not a bare value.** Existing anomaly_logger + review_queue + confidence-threshold convention (Op Stds §35) already covers the routing — if a *required* field comes back `found=False`, the row routes to `ITS_Review_Queue` with a flag instead of silently writing blank.
+2. **Build a corpus of real JHA samples** at the Phase 1.5 PDF-extraction workstream's design phase. Run extraction across the corpus, measure miss rate per field. Iterate format detection (multi-pattern regex, fuzzy date parser like `dateutil.parser`, etc.) until miss rate is acceptable for required fields.
+3. **Customer-facing JHA template** — produce a fillable form template that constrains the format at submission time, so future fields are pre-canonicalized. Reduces extraction burden for everyone.
+
+**Effort:** large — this is part of the Phase 1.5 PDF-extraction workstream design itself, not a separable cleanup. Multi-session work. The found-flag pattern alone is small (a few hours) but the corpus + iteration + customer-template + downstream-consumer wiring all add up to ~2-3 sessions.
+
+**Phase target:** 1.5 — directly part of PDF extraction workstream design. Solve found-flag + corpus + template together; don't ship PDF extraction without them.
+
+**Revisit when:** Phase 1.5 PDF-extraction workstream brief gets drafted (the regex-side concerns belong in that brief).
+
+Surfaced: 2026-05-24 hardcoded-values audit brief, §B3. Cross-ref Op Stds v11 §35 (confidence-scored extraction → review queue routing pattern).
+
+## No retry / backoff / circuit-breaker layer across Smartsheet call sites [OPEN 2026-05-24]
+
+Smartsheet API calls across `shared/smartsheet_client.py` and its consumers (intake_poll, weekly_send_poll, weekly_generate, watchdog, picklist_sync) have point-by-point exception catches (e.g., `intake_poll.py:406` catches `SmartsheetError`, `intake_poll.py:439` catches `SmartsheetNotFoundError`, weekly_generate's `_process_with_retry` does a one-shot retry on `SmartsheetNotFoundError`) but no unified retry-with-backoff decorator and no circuit-breaker pattern. A Smartsheet incident (5xx, timeout, rate-limit) means each call site degrades independently with no aggregate signal to the daemon ("Smartsheet is currently degraded — back off the whole loop").
+
+**Failure mode:** Smartsheet returns 5xx on a string of consecutive API calls during an incident. Each call-site catch logs to ITS_Errors and either soft-fails (`SmartsheetError as exc` returns rather than raises in many handlers) or — for un-caught paths — bubbles to the daemon-wide catch. The daemon doesn't crash today (current catches are broad enough), but ITS_Errors fills with N rows per cycle and the alert-dedupe state file grows. Worse: the daemon keeps hammering the degraded service, contributing to the incident's tail.
+
+**Proposed fix (layered):**
+
+1. **Retry-with-exponential-backoff decorator** in `shared/smartsheet_client.py`: wraps every public API method. 3 retries with 1s / 4s / 16s sleep, only on retryable errors (5xx, timeouts, 429 rate-limit). Existing exception classes (`SmartsheetError`, etc.) get a new `is_retryable: bool` property. The 2026-05-22 weekly_generate `_process_with_retry` becomes the prior-art that this decorator replaces.
+2. **Circuit-breaker pattern**: simple counter in `shared/smartsheet_client.py` state. N consecutive failures across the module pause new calls for a longer interval (5-10 min). Resume on a probe-call success. Coexists with retry — retry handles transient, circuit-breaker handles sustained.
+3. **Dedicated `SS_API_UNAVAILABLE` error code** in `_alert_critical`. The existing alert-dedupe (per `feedback_pr_scoping_narrow.md` and the alert-dedupe entries) handles spam-suppression — verify the dedupe key works for this case.
+
+**Effort:** ~half-day for the retry decorator + ~2 hours for circuit-breaker + ~1 hour to verify dedupe interaction. Integration tests against sandbox required (Op Stds v11 §30) — the SDK-vs-Live class of bug is the main risk here.
+
+**Phase target:** 1.5 — reliability gate for ship-and-leave threshold. ITS goes operator-untouched for stretches post-handover; a Smartsheet incident during one of those stretches shouldn't degrade ITS unboundedly.
+
+**Revisit when:** Phase 1.5 hardening cluster, OR a real Smartsheet incident exercises the call sites and surfaces concrete failure shapes worth designing for.
+
+Surfaced: 2026-05-24 hardcoded-values audit brief, §B4. Cross-ref Op Stds v11 §30 (SDK-vs-Live integration discipline — retry decorator is a candidate for parallel integration test coverage).
+
+## Configuration validation at daemon startup [OPEN 2026-05-24]
+
+Once items A2 / A3 / A5 (and the existing trusted-contacts work) migrate config into Smartsheet, daemons fetch config at startup with no formal validation step. A malformed row, missing key, or unresolvable folder ID can let the daemon enter its main loop with broken config — it'll fail per-cycle at unpredictable points instead of failing loud at startup.
+
+**Failure mode:** operator typos an ITS_Config row. Daemon starts. First poll cycle runs. Per-cell-write fails in some downstream call. ITS_Errors fills with cryptic errors. Operator's mental model: "ITS broke, why is the watchdog quiet?" — because the watchdog can't distinguish "broken config" from "broken external API."
+
+**Proposed fix:** new `shared/config_validation.py` with a single `validate_all()` entry point called from every daemon's `main()` before the loop starts. Per-daemon manifest of required keys + validators:
+
+- All required ITS_Config keys present (per a per-daemon registry — `intake_poll.REQUIRED_CONFIG`, etc.).
+- All email addresses pass `^[^@]+@[^@]+\.[^@]+$`.
+- All Box folder IDs resolve via Box API to non-trashed folders (depends on A2 landing).
+- All referenced Smartsheet sheet IDs exist (cheap `get_sheet_summary`-style probe).
+
+On failure: log full report to Sentry + ITS_Errors, exit non-zero. **Do not enter the loop with broken config — fail loud.**
+
+**Effort:** ~half-day session including the validation module + per-daemon registries + tests + integration smoke + runbook update ("if a daemon fails to start, check the Sentry / ITS_Errors entry for the validation report").
+
+**Phase target:** 1.6 — lands after A2/A3/A5 migrate config into Smartsheet. Sequence: config-migration cluster → validation layer.
+
+**Tag:** `config-migration` (the consumer side).
+
+**Revisit when:** A2 lands, AND a third polling daemon is queued, OR operator hits the silent-fallback-into-bad-config failure mode in real ops.
+
+Surfaced: 2026-05-24 hardcoded-values audit brief, §C1.
+
+## Config-change audit trail [OPEN 2026-05-24]
+
+Once configuration lives in Smartsheet (ITS_Config rows + future `ITS_Trusted_Contacts` / `ITS_Project_Routing` / `ITS_Alert_Routing` sheets), changes happen without a git commit. For security-relevant config — `ITS_Trusted_Contacts` especially — this is an audit gap. Smartsheet has cell-history natively, but that history is bounded to the Smartsheet tenant; if a customer ever needs an external audit copy independent of Smartsheet (compliance requirement, post-incident forensics, vendor risk), there's no out-of-band record.
+
+**Failure mode (low-frequency):** post-incident, operator wants to know "who added `acme@external-domain.com` to trusted contacts on 2026-XX-XX." Smartsheet cell history covers it. But if the question is "show me the entire trusted-contacts state on 2026-XX-XX" — Smartsheet's history surface is per-cell, not point-in-time-snapshot; reconstructing requires manual scrubbing.
+
+**Proposed fix (layered):**
+
+1. **Runbook entry:** document Smartsheet's built-in cell-history view as the canonical audit trail. Train operator on the per-cell-history surface. Low-cost, covers the common case.
+2. **Weekly diff-export job** for high-stakes sheets (`ITS_Trusted_Contacts`, future `ITS_Alert_Routing`): snapshot to a versioned file in Box on a weekly cadence. Filename `<sheet_name>_<YYYY-MM-DD>.json`. Gives a point-in-time snapshot independent of Smartsheet. Watchdog Check writes a marker; missing snapshots WARN.
+3. **Higher-stakes-yet option (deferred):** route trusted-contacts edits through a PR-style approval flow in a separate sheet (`ITS_Trusted_Contacts_Proposed` → operator-approval column → applied to canonical sheet). Likely overkill for solo-operator stage.
+
+**Effort:** ~1 hour for layer 1 (runbook). ~half-day for layer 2 (snapshot script + Box upload + watchdog wiring + tests). Layer 3 is a separate workstream if it ever lands.
+
+**Phase target:** 2 (post-Customer-1 cutover, when audit-as-deliverable becomes a customer-facing concern). Not a launch blocker for Customer 0.
+
+**Revisit when:** first customer raises compliance / audit requirements explicitly, OR a security review session formally surfaces the gap.
+
+Surfaced: 2026-05-24 hardcoded-values audit brief, §C2.
