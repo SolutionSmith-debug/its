@@ -1,7 +1,7 @@
 """Alert-routing dedupe — Resend-leg suppression for flapping CRITICALs.
 
 Purpose:
-    Third leg of the Op Stds v9 §3 triple-fire CRITICAL alert path
+    Third leg of the Op Stds v11 §3 triple-fire CRITICAL alert path
     (Smartsheet `ITS_Errors` + Resend operator email + Sentry) is the
     only one that wakes the operator. Without suppression, a flapping
     CRITICAL produces N emails into the inbox. This module gates the
@@ -9,7 +9,7 @@ Purpose:
     first fire of a given `(script, error_code)` key, subsequent fires
     are suppressed at the Resend leg.
 
-    Per Op Stds v9 §27: **dedupe applies only to push, never to records.**
+    Per Op Stds v11 §3.1: **dedupe applies only to push, never to records.**
     `_smartsheet_log` and `_fire_sentry_leg` write every time. The
     persistent record stays complete; only the operator's inbox is
     suppressed.

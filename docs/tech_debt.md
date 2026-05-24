@@ -2,7 +2,7 @@
 
 Items deliberately deferred. Each carries the rationale for deferral and the trigger for revisiting. The repo-side companion to Master Checklist §6 (planning project) — this file holds execution-layer tech debt; the Master Checklist holds owner-decision tech debt.
 
-When to add an entry: a session deliberately chooses preservation-over-refactor (per Op Stds v9 §14), discovers an external-API constraint that forced a workaround, or defers a non-trivial cleanup that's larger than the current session can absorb. When to mark CLOSED: the underlying item is resolved in a commit; preserve the entry with resolution detail rather than deleting (history is cheap, context is expensive).
+When to add an entry: a session deliberately chooses preservation-over-refactor (per Op Stds v11 §14), discovers an external-API constraint that forced a workaround, or defers a non-trivial cleanup that's larger than the current session can absorb. When to mark CLOSED: the underlying item is resolved in a commit; preserve the entry with resolution detail rather than deleting (history is cheap, context is expensive).
 
 ## Conftest mock surface coverage [OPEN 2026-05-23]
 
@@ -33,7 +33,7 @@ Both are non-trivial refactors with cross-call-site impact. Deferred from PR #74
 
 Resolved in commit **`1fd6751`**. The unfinished de-dup attempt was removed and F841 came off the `box_migration/*` per-file-ignores. Originating commit (which suppressed it) was `8dfc6e8`; ground was tracked in `docs/session_logs/2026-05-17_ruff_and_doc_refresh.md`.
 
-The fix was a deliberate departure from Op Stds v7 §14 (preservation-over-refactor) because the F841 was real dead code rather than a stylistic false positive, and the cleanup was five lines with zero behavior change. The preservation rule remains in effect for the rest of `box_migration/*`.
+The fix was a deliberate departure from Op Stds v11 §14 (preservation-over-refactor) because the F841 was real dead code rather than a stylistic false positive, and the cleanup was five lines with zero behavior change. The preservation rule remains in effect for the rest of `box_migration/*`.
 
 ## Smartsheet API constraint: DATETIME columns require system column type [OPEN]
 
@@ -130,7 +130,7 @@ Originally surfaced 2026-05-18 in the mypy baseline reconciliation; see `docs/re
 
 ## smartsheet_migration/ss_api.py: api body arg type mismatch [CLOSED 2026-05-18]
 
-Resolved by widening the `body` parameter annotation on `api()` from `dict | None` to `dict | list | None`. Single-character-class edit on the signature line; all existing call sites continue to type-check (the `add_rows()` caller that passed `list[dict]` now matches). Real-bug carve-out under Op Stds v8 §14.
+Resolved by widening the `body` parameter annotation on `api()` from `dict | None` to `dict | list | None`. Single-character-class edit on the signature line; all existing call sites continue to type-check (the `add_rows()` caller that passed `list[dict]` now matches). Real-bug carve-out under Op Stds v11 §14.
 
 Resolution: see commit on the `fix/ss-api-body-arg-type` branch (squash-merged), and `docs/session_logs/2026-05-18_alert_critical_and_mypy_closure.md`.
 
@@ -300,7 +300,7 @@ Surfaced: PR α (alert-dedupe-core) brief, 2026-05-20.
 
 ## Cross-leg dedupe activation [OPEN 2026-05-20]
 
-PR α suppresses only the Resend leg. Sentry events and Smartsheet ITS_Errors rows always write (per Op Stds v9 §27 — dedupe applies only to push, never to records). Today this is the right choice: Sentry's own alert rules and Smartsheet's sheet-level notifications are NOT configured.
+PR α suppresses only the Resend leg. Sentry events and Smartsheet ITS_Errors rows always write (per Op Stds v11 §3.1 — dedupe applies only to push, never to records). Today this is the right choice: Sentry's own alert rules and Smartsheet's sheet-level notifications are NOT configured.
 
 **Resolves when:** the operator configures Sentry alert rules (or Smartsheet notifications) that themselves wake the operator on every event. At that point, those legs become "push" surfaces too and need their own dedupe layer. The shared `correlation_id` is already wired through all three legs, so a future cross-leg dedupe (or alert-aggregator) has the join key it needs.
 
@@ -447,7 +447,7 @@ Surfaced: Phase-0 architecture review 2026-05; referenced from `docs/references/
 
 The helper detects the duplicate on a post-create find: if the post-create lookup returns a different folder ID than the just-created one, it logs a WARN to ITS_Errors with `error_code="week_folder_race_duplicate"` and proceeds with the first match (the survivor). The orphan folder ID appears in the WARN message for operator triage.
 
-**Workaround:** operator manually deletes orphan folders via short-lived sandbox token + curl per Op Stds v10 §25 MCP-gap REST fallback (`curl -X DELETE https://api.smartsheet.com/2.0/folders/<orphan_id> -H "Authorization: Bearer <token>"`). No automatic cleanup — race is rare at single-machine cadence, and the safer move is operator visibility (WARN → review) over an automated delete that could race against legitimate concurrent writes.
+**Workaround:** operator manually deletes orphan folders via short-lived sandbox token + curl per Op Stds v11 §25 MCP-gap REST fallback (`curl -X DELETE https://api.smartsheet.com/2.0/folders/<orphan_id> -H "Authorization: Bearer <token>"`). No automatic cleanup — race is rare at single-machine cadence, and the safer move is operator visibility (WARN → review) over an automated delete that could race against legitimate concurrent writes.
 
 **Why not auto-clean:** the orphan folder is initially empty (the losing-race caller hasn't created its sheets yet at the moment of duplicate detection). But a subsequent run on the orphan side WOULD create sheets, and an auto-delete couldn't safely distinguish "empty orphan" from "filled-by-another-thread orphan." Operator visibility wins.
 
@@ -487,7 +487,7 @@ Code side shipped on `feat/picklist-hardening` branch:
 - `scripts/watchdog.py::TRACKED_JOBS` — added `safety_picklist_audit` with 8-day freshness window (weekly cadence).
 - `docs/audits/picklist_hardening_audit.md` — operator's UI conversion checklist; one row per bounded-enum column with conversion status emojis (⬜ ✅ ⚠️ 🟦).
 
-`shared/kill_switch.py` Phase 3 was a no-op: existing `SystemState` StrEnum + try/except fail-open (returns ACTIVE on unknown value per Op Stds v8 §1 — never silently halt) IS the per-key registry pattern. The brief's suggested change to return PAUSED would have inverted the fail-open behavior; preserved existing.
+`shared/kill_switch.py` Phase 3 was a no-op: existing `SystemState` StrEnum + try/except fail-open (returns ACTIVE on unknown value per Op Stds v11 §1 — never silently halt) IS the per-key registry pattern. The brief's suggested change to return PAUSED would have inverted the fail-open behavior; preserved existing.
 
 Tests: 949 → 1004 (+55: 20 validation + 8 smartsheet integration + 8 drift audit + transitive coverage). mypy 0, ruff clean. Capability gating intact.
 

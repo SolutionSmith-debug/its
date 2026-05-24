@@ -5,7 +5,7 @@ Wires to the live `ITS_Review_Queue` Smartsheet sheet (id in
 2026-05-18 — see `docs/session_logs/2026-05-18_sentry_and_phase1_unblock.md`
 for the schema-drift notes vs. the original brief.
 
-Concepts (per Operational Standards v8):
+Concepts (per Operational Standards v11):
 
 Status enum:
     PENDING / IN_REVIEW / APPROVED / REJECTED / ESCALATED.
@@ -31,7 +31,7 @@ Severity:
 
 Security flag:
     Items routed here because of an anomaly_logger sentinel (per
-    Foundation Mission v6 Invariant 2) set `security_flag=True`. The
+    Foundation Mission v8 Invariant 2) set `security_flag=True`. The
     owner is notified separately for security-flagged items.
 
 Failure isolation:
@@ -159,7 +159,7 @@ def add(
         summary: One-line human-readable description.
         payload: Structured data the reviewer needs to make the decision.
             JSON-encoded into the `Payload` cell.
-        sla_tier: SLA tier per Operational Standards v8.
+        sla_tier: SLA tier per Operational Standards v11.
         reason: Why this is in the queue (default `OTHER` if unspecified).
         severity: Item severity. Defaults to `WARN`; use `CRITICAL` for
             security-flagged items and `INFO` for manual nudges.

@@ -42,7 +42,7 @@ Per-cycle behavior
 Push-vs-record separation
 -------------------------
 
-Per Op Stds v9 §3: the seen-set file is forensic-record-only — losing it
+Per Op Stds v11 §3.1: the seen-set file is forensic-record-only — losing it
 does NOT cause double-processing because `mark_read` (the canonical push
 checkpoint) on the prior message already kept it out of subsequent
 `list_inbox` results. The seen-set is the defense-in-depth layer that

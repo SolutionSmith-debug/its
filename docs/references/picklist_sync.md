@@ -123,7 +123,7 @@ The code can ship before the form-and-clone cascade because `picklist_sync` no-o
 
 ## Per-customer-repo invariant
 
-Per Foundation Mission v7.1, this customer's sheet IDs are baked into `shared/sheet_ids.py`. When the blueprint forks for a new customer, the four IDs that change here:
+Per Foundation Mission v8, this customer's sheet IDs are baked into `shared/sheet_ids.py`. When the blueprint forks for a new customer, the four IDs that change here:
 
 - `SHEET_PICKLIST_SYNC_CONFIG` — new fork's Picklist_Sync_Config
 - `SHEET_VENDOR_DB`, `SHEET_SUBCONTRACTOR_DB`, `SHEET_EQUIPMENT_MASTER` — new fork's master DBs
@@ -137,4 +137,4 @@ The migration script `scripts/migrations/create_picklist_sync_config.py` is re-r
 - `shared/review_queue.py` — `ReviewReason.MISMATCHED_REFERENCE`
 - `shared/defaults.py` — `PICKLIST_SIZE_WARN_THRESHOLD`, `PICKLIST_SIZE_HARD_HALT_THRESHOLD`, `PICKLIST_SIZE_THRESHOLD_MAX`
 - `docs/tech_debt.md` — "Smartsheet UI-only constraints (Forms, CF, Filter Views, Restrict-to-dropdown)" entry
-- Op Stds v9 §3 (push-vs-record), §22 (MCP-gap REST fallback), §27 (failure isolation)
+- Op Stds v11 §3.1 (push-vs-record), §25 (MCP-gap REST fallback), §27 (failure isolation)

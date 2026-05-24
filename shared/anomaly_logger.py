@@ -1,6 +1,6 @@
 """Output validation and anomaly logging for adversarial input handling.
 
-Per Foundation Mission v6 Invariant 2, every extraction output gets checked for sentinel
+Per Foundation Mission v8 Invariant 2, every extraction output gets checked for sentinel
 patterns that suggest prompt injection succeeded at the AI layer. Items flagged route to
 ITS_Review_Queue with security_flag=True; the owner is notified separately.
 

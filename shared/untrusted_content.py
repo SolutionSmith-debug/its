@@ -1,4 +1,4 @@
-"""XML tagging for adversarial input handling per Foundation Mission v6 Invariant 2.
+"""XML tagging for adversarial input handling per Foundation Mission v8 Invariant 2.
 
 Every Anthropic API call that processes content from outside the operating customer tenant
 wraps that content in `<untrusted_content source="...">` tags. The system prompt instructs

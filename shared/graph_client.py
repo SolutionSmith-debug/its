@@ -12,7 +12,7 @@ Error model:
     Every failure raises a typed exception under GraphError. Callers decide
     whether to log, quarantine, or retry — this module does not swallow.
 
-External Send Gate (Foundation Mission v6, Invariant 1):
+External Send Gate (Foundation Mission v8, Invariant 1):
     This module *exposes* send_mail() as a capability. The architectural gate
     that prevents AI-generated content from being sent externally lives at the
     workflow level: generation scripts must not import this module

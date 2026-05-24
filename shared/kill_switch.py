@@ -12,7 +12,7 @@ code. Useful before sensitive periods (audits, holidays, etc.).
 
 Fail-open: on any of three failure modes — Smartsheet unreachable, row missing, value
 not in the enum — we return ACTIVE and emit a distinguishable WARN via
-`shared.error_log.log`. Per Op Stds v8 §1: a config read failure must never silently
+`shared.error_log.log`. Per Op Stds v11 §1: a config read failure must never silently
 halt the system. The morning log scan reveals which mode tripped.
 """
 from __future__ import annotations
