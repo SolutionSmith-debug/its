@@ -131,7 +131,7 @@ corpus); FP cost high (138 occurrences, ~95% noise). Alternatives
 (B) allowlist-based refinement and (C) lower severity to INFO
 discussed but not recommended.
 
-`docs/person_tag_audit_2026-05-19.md` has the full 20-sample table,
+`docs/audits/person_tag_audit_2026-05-19.md` has the full 20-sample table,
 FP categorization, proposed regex if (A) is adopted, and test
 coverage notes.
 

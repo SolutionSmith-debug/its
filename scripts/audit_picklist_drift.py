@@ -21,7 +21,7 @@ CLI:
     python -m scripts.audit_picklist_drift --update-audit-doc
 
 `--update-audit-doc` re-writes the conversion status emojis in
-`docs/picklist_hardening_audit.md` (planned; not yet implemented — print
+`docs/audits/picklist_hardening_audit.md` (planned; not yet implemented — print
 findings and leave the doc edits to the operator until the table-rewrite
 heuristic is proven safe). For now the flag prints "TODO: implement
 auto-update of audit doc" and exits 0 alongside the regular report.
@@ -165,7 +165,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--update-audit-doc", action="store_true",
         help=(
-            "Re-write docs/picklist_hardening_audit.md status emojis "
+            "Re-write docs/audits/picklist_hardening_audit.md status emojis "
             "based on findings. Currently prints TODO — auto-update "
             "heuristic not yet implemented."
         ),
@@ -197,7 +197,7 @@ def main() -> None:
     if args.update_audit_doc:
         print(
             "[todo] --update-audit-doc requested; auto-update heuristic not "
-            "yet implemented. Edit docs/picklist_hardening_audit.md manually "
+            "yet implemented. Edit docs/audits/picklist_hardening_audit.md manually "
             "based on the findings above."
         )
 

@@ -88,6 +88,54 @@ natural reason to touch the planning surface (CLAUDE.md, an Op Std, a mission
 file) carries the decision up. Session logs are the staging area; the
 planning project is canonical.
 
+## Auto-generated index
+
+Populated by `scripts/regen_doc_indexes.py`. Operator-edited prose lives
+outside the sentinel block.
+
+<!-- BEGIN AUTO-INDEX -->
+| Date | Type | Status | Workstream | Title | PRs |
+|------|------|--------|------------|-------|-----|
+| 2026-05-24 | session_log | closed | docs | [2026-05-24 — Markdown doc conventions + index generation + lint](2026-05-24_doc_conventions.md) | _–_ |
+| _(no frontmatter)_ | _–_ | _–_ | _–_ | [2026-05-17 — Ruff exemption for box_migration + v5/v6/v7/v4 doc pointer refresh](2026-05-17_ruff_and_doc_refresh.md) | _–_ |
+| _(no frontmatter)_ | _–_ | _–_ | _–_ | [2026-05-17 — Smartsheet workspace restructure (operator vs customer separation)](2026-05-17_smartsheet_workspace_restructure.md) | _–_ |
+| _(no frontmatter)_ | _–_ | _–_ | _–_ | [2026-05-18 — `_alert_critical` Resend wiring + mypy tech-debt closure](2026-05-18_alert_critical_and_mypy_closure.md) | _–_ |
+| _(no frontmatter)_ | _–_ | _–_ | _–_ | [2026-05-18 — box_migration reconcile + parse_subsubject](2026-05-18_box_migration_reconcile.md) | _–_ |
+| _(no frontmatter)_ | _–_ | _–_ | _–_ | [2026-05-18 — restore parse_job v1 + v2 (cascade dependency for v3)](2026-05-18_box_migration_v1_v2_restore.md) | _–_ |
+| _(no frontmatter)_ | _–_ | _–_ | _–_ | [2026-05-18 — doc cleanup: CLAUDE.md doc-version refs and stub/real table](2026-05-18_doc_cleanup.md) | _–_ |
+| _(no frontmatter)_ | _–_ | _–_ | _–_ | [2026-05-18 — error_log Smartsheet write + SDK 404 filter](2026-05-18_error_log_smartsheet_write.md) | _–_ |
+| _(no frontmatter)_ | _–_ | _–_ | _–_ | [2026-05-18 — kill_switch reads ITS_Config; initial seven-row seed](2026-05-18_kill_switch_and_config_seed.md) | _–_ |
+| _(no frontmatter)_ | _–_ | _–_ | _–_ | [2026-05-18 — post-PR-#15 followup (memory + mypy + chore close)](2026-05-18_post_pr15_followup.md) | _–_ |
+| _(no frontmatter)_ | _–_ | _–_ | _–_ | [2026-05-18 — sanity-check sweep](2026-05-18_sanity_check_sweep.md) | _–_ |
+| _(no frontmatter)_ | _–_ | _–_ | _–_ | [2026-05-18 — Sentry triple-fire complete + Phase 1 critical-path unblock](2026-05-18_sentry_and_phase1_unblock.md) | _–_ |
+| _(no frontmatter)_ | _–_ | _–_ | _–_ | [2026-05-18 — smartsheet_client wired against sandbox](2026-05-18_smartsheet_client_wired.md) | _–_ |
+| _(no frontmatter)_ | _–_ | _–_ | _–_ | [Session log — 2026-05-19 Cascade Absorb](2026-05-19_cascade_absorb.md) | _–_ |
+| _(no frontmatter)_ | _–_ | _–_ | _–_ | [2026-05-19 — chore sweep + mypy lockdown](2026-05-19_chore_sweep_and_mypy_lockdown.md) | _–_ |
+| _(no frontmatter)_ | _–_ | _–_ | _–_ | [Session log — 2026-05-19 Watchdog Session 1](2026-05-19_watchdog_session_1.md) | _–_ |
+| _(no frontmatter)_ | _–_ | _–_ | _–_ | [Session log — 2026-05-20 person_tag regex refinement (redo)](2026-05-20_person_tag_regex_refinement_redo.md) | _–_ |
+| _(no frontmatter)_ | _–_ | _–_ | _–_ | [Post-Box-Pivot Repo Doc Cascade — 2026-05-20](2026-05-20_post_box_pivot_doc_cascade.md) | _–_ |
+| _(no frontmatter)_ | _–_ | _–_ | _–_ | [Session log — 2026-05-20 PTO fetcher wiring](2026-05-20_pto_fetcher_wiring.md) | _–_ |
+| _(no frontmatter)_ | _–_ | _–_ | _–_ | [Session log — 2026-05-20 Watchdog Session 2](2026-05-20_watchdog_session_2.md) | _–_ |
+| _(no frontmatter)_ | _–_ | _–_ | _–_ | [Alert-routing dedupe ship + picklist sync foundation + V1 fix — 2026-05-21](2026-05-21_alert_dedupe_and_picklist_sync.md) | _–_ |
+| _(no frontmatter)_ | _–_ | _–_ | _–_ | [2026-05-21 — Box 1111A clone cascade](2026-05-21_box_1111a_clone_cascade.md) | _–_ |
+| _(no frontmatter)_ | _–_ | _–_ | _–_ | [2026-05-21 — Intake-test either-path refactor](2026-05-21_intake_test_either_path_refactor.md) | _–_ |
+| _(no frontmatter)_ | _–_ | _–_ | _–_ | [2026-05-21 — R3 Foundation PR](2026-05-21_r3_foundation_pr.md) | _–_ |
+| _(no frontmatter)_ | _–_ | _–_ | _–_ | [2026-05-21 — R3 session 1: intake.py wiring](2026-05-21_r3_session_1_intake_wiring.md) | _–_ |
+| _(no frontmatter)_ | _–_ | _–_ | _–_ | [2026-05-21 — Safety intake heartbeat row writes to ITS_Daemon_Health](2026-05-21_safety_intake_heartbeat.md) | _–_ |
+| _(no frontmatter)_ | _–_ | _–_ | _–_ | [2026-05-21 — Safety intake polling-daemon trigger](2026-05-21_safety_intake_polling_daemon.md) | _–_ |
+| _(no frontmatter)_ | _–_ | _–_ | _–_ | [2026-05-21 — Smartsheet error-translation refactor](2026-05-21_smartsheet_error_translation_refactor.md) | _–_ |
+| _(no frontmatter)_ | _–_ | _–_ | _–_ | [2026-05-22 — Box 1111B blueprint design (1111A forensic + canonical redesign)](2026-05-22_box_blueprint_1111b_design.md) | _–_ |
+| _(no frontmatter)_ | _–_ | _–_ | _–_ | [2026-05-22 — 2026-05-22 cascade absorb (repo-side doc reconciliation)](2026-05-22_cascade_absorb.md) | _–_ |
+| _(no frontmatter)_ | _–_ | _–_ | _–_ | [2026-05-22 — Follow-on fix: transient-404 retry + GENERATION_FAILED placeholder](2026-05-22_followon_404_retry.md) | _–_ |
+| _(no frontmatter)_ | _–_ | _–_ | _–_ | [2026-05-22 — R3 Session 2: safety_reports/weekly_generate.py + WPR pipeline](2026-05-22_r3_session_2_weekly_generate.md) | _–_ |
+| _(no frontmatter)_ | _–_ | _–_ | _–_ | [2026-05-23 — 1111B Box Blueprint Materialization (live build in mirror tenant)](2026-05-23_1111b_materialization.md) | _–_ |
+| _(no frontmatter)_ | _–_ | _–_ | _–_ | [2026-05-23 — CI main-branch keychain fix + four-part verification discipline](2026-05-23_ci_keychain_fix.md) | _–_ |
+| _(no frontmatter)_ | _–_ | _–_ | _–_ | [2026-05-23 — Picklist-hardening pre-Customer-1 (Phase 1.4 #2)](2026-05-23_picklist_hardening.md) | _–_ |
+| _(no frontmatter)_ | _–_ | _–_ | _–_ | [2026-05-23 — Post-1111B canonical cutover (re-clone strategy)](2026-05-23_post_1111b_canonical_cutover.md) | _–_ |
+| _(no frontmatter)_ | _–_ | _–_ | _–_ | [2026-05-23 — R3 Session 3: safety_reports/weekly_send.py + weekly_send_poll.py (closes R3 cycle)](2026-05-23_r3_session_3_weekly_send.md) | _–_ |
+| _(no frontmatter)_ | _–_ | _–_ | _–_ | [2026-05-23 — ITS_Trusted_Contacts + Intake Stage 2 refactor + Header forgery detection](2026-05-23_trusted_contacts_stage2_refactor.md) | _–_ |
+<!-- END AUTO-INDEX -->
+
 ## First entry
 
 [`2026-05-17_ruff_and_doc_refresh.md`](./2026-05-17_ruff_and_doc_refresh.md) —

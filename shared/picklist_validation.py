@@ -8,7 +8,7 @@ Two-layer enforcement of bounded-enum Smartsheet columns:
      ReviewReason, etc.) so a code-side rename automatically propagates
      to the registry.
   2. Server-side (operator UI work, tracked in
-     `docs/picklist_hardening_audit.md`): Smartsheet's "Restrict to
+     `docs/audits/picklist_hardening_audit.md`): Smartsheet's "Restrict to
      picklist values only" toggle ON the columns. This catches writes
      from outside the codebase (manual edits, third-party integrations,
      legacy migration scripts that bypass `shared.smartsheet_client`).
@@ -118,7 +118,7 @@ def _build_per_project_entries() -> dict[int, dict[str, frozenset[str]]]:
     register the same enum sets. Until then this returns an empty dict —
     the registry's opt-in semantics handle the absent-constant case.
 
-    Tracked in `docs/picklist_hardening_audit.md` "Per-project sheets"
+    Tracked in `docs/audits/picklist_hardening_audit.md` "Per-project sheets"
     section for the operator's manual UI conversion pass.
     """
     out: dict[int, dict[str, frozenset[str]]] = {}

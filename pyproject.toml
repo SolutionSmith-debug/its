@@ -22,6 +22,10 @@ dependencies = [
     "python-dateutil>=2.9.0",
     "holidays>=0.50",
     "sentry-sdk>=2.0,<3.0",
+    # Required by scripts/regen_doc_indexes.py + scripts/lint_doc_conventions.py
+    # to parse YAML frontmatter in markdown docs. Transitively pulled in
+    # locally by other deps but not guaranteed; pin explicitly for CI.
+    "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]

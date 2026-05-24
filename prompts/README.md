@@ -10,3 +10,11 @@ Convention:
   (e.g., `safety_extract.md` ↔ `schemas/safety_extract.json`).
 
 Prompts are loaded as plain strings by `shared/anthropic_client.py` callers.
+
+<!-- BEGIN AUTO-INDEX -->
+| Date | Type | Status | Workstream | Title | PRs |
+|------|------|--------|------------|-------|-----|
+| _–_ | _–_ | _–_ | _–_ | [_example_prompt](_example_prompt.md) | _–_ |
+| _–_ | _–_ | _–_ | _–_ | [safety_weekly_generate](safety_weekly_generate.md) | _–_ |
+<!-- END AUTO-INDEX -->
+

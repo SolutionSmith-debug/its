@@ -1,7 +1,7 @@
 """Tests for box_migration/parse_job_v3.PERSON_TAG_IN_SUBJECT.
 
 Added 2026-05-20 implementing Direction A from
-docs/person_tag_audit_2026-05-19.md — the third alternation
+docs/audits/person_tag_audit_2026-05-19.md — the third alternation
 (`-\\s*[A-Z][a-z]+\\s*$`, "trailing-capitalized-word after dash") was
 removed because audit measured a 60–70% false-positive rate against
 ~138 corpus occurrences. The first two alternations stay:
@@ -82,7 +82,7 @@ def test_alt2_first_plus_verb_still_matches(raw, expected_match):
 # ===========================================================================
 # Group B — Audit FP negative locks
 # ===========================================================================
-# All 13 confirmed false positives from docs/person_tag_audit_2026-05-19.md
+# All 13 confirmed false positives from docs/audits/person_tag_audit_2026-05-19.md
 # (rows #1–#12 from the 20-sample table, plus #19 `As-Built Lum Mark-Ups`).
 # Every one hit the removed third alternation. None should match the
 # refined two-alternation regex. If a future change reintroduces alt 3,
@@ -118,14 +118,14 @@ def test_audit_false_positives_no_longer_match(raw):
     m = p.PERSON_TAG_IN_SUBJECT.search(raw)
     assert m is None, (
         f"reintroduced FP: {raw!r} matched on {(m.group(0) if m else None)!r}; "
-        "see docs/person_tag_audit_2026-05-19.md"
+        "see docs/audits/person_tag_audit_2026-05-19.md"
     )
 
 
 # ===========================================================================
 # Group C — Known TP losses (acceptance lock)
 # ===========================================================================
-# Per docs/person_tag_audit_2026-05-19.md: removing the third alternation
+# Per docs/audits/person_tag_audit_2026-05-19.md: removing the third alternation
 # drops these real-or-leaning-real person-tag catches by design. Operator
 # triages visually in the folder tree. DO NOT "fix" by reintroducing alt 3 —
 # the audit doc has the FP cost analysis (138 hits, ~95% noise) that makes
@@ -149,7 +149,7 @@ def test_known_tp_losses_no_longer_flagged(raw):
     m = p.PERSON_TAG_IN_SUBJECT.search(raw)
     assert m is None, (
         f"unexpected match on known-TP-loss case {raw!r}: {m.group(0)!r}. "
-        "Did alt 3 get reintroduced? See docs/person_tag_audit_2026-05-19.md."
+        "Did alt 3 get reintroduced? See docs/audits/person_tag_audit_2026-05-19.md."
     )
 
 

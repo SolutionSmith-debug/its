@@ -1,0 +1,44 @@
+{
+  "bradley_1": {
+    "old_id": "383299029178",
+    "new_id": "383795291728",
+    "status": "cutover_complete",
+    "verify_passed": true,
+    "compliance_report": "/Users/sethsmith/its/logs/migrations/reclone_project_bradley_1_report.txt"
+  },
+  "bradley_2": {
+    "old_id": "383298229322",
+    "new_id": "383795215056",
+    "status": "cutover_complete",
+    "verify_passed": true,
+    "compliance_report": "/Users/sethsmith/its/logs/migrations/reclone_project_bradley_2_report.txt"
+  },
+  "brimfield_1": {
+    "old_id": "383303174342",
+    "new_id": "383796013268",
+    "status": "cutover_complete",
+    "verify_passed": true,
+    "compliance_report": "/Users/sethsmith/its/logs/migrations/reclone_project_brimfield_1_report.txt"
+  },
+  "brimfield_2": {
+    "old_id": "383303695163",
+    "new_id": "383792793376",
+    "status": "cutover_complete",
+    "verify_passed": true,
+    "compliance_report": "/Users/sethsmith/its/logs/migrations/reclone_project_brimfield_2_report.txt"
+  },
+  "huntley": {
+    "old_id": "383302259414",
+    "new_id": "383796738311",
+    "status": "cutover_complete",
+    "verify_passed": true,
+    "compliance_report": "/Users/sethsmith/its/logs/migrations/reclone_project_huntley_report.txt"
+  },
+  "rockford": {
+    "old_id": "383305112425",
+    "new_id": "383794509507",
+    "status": "cutover_complete",
+    "verify_passed": true,
+    "compliance_report": "/Users/sethsmith/its/logs/migrations/reclone_project_rockford_report.txt"
+  }
+}

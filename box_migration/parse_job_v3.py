@@ -646,7 +646,7 @@ BOX_DRIVE_COPY = re.compile(r'\s+-\s+Copy\s*$')
 # Person-name tag inside a subject folder at portfolio root.
 # Catches "for ZACK" and "Teala Organize folder". The earlier trailing-
 # capitalized-word alternation (`-\s*[A-Z][a-z]+\s*$`) was removed
-# 2026-05-20 — see docs/person_tag_audit_2026-05-19.md for the FP
+# 2026-05-20 — see docs/audits/person_tag_audit_2026-05-19.md for the FP
 # analysis (138 hits / ~95% noise) and tech_debt closure.
 PERSON_TAG_IN_SUBJECT = re.compile(
     r'(\bfor\s+[A-Z]{3,}\b|'                            # "for ZACK"
