@@ -263,6 +263,14 @@ protection on `main` should be verified separately as a follow-up.
 - Adding a `misc/`-scope skill: same plus `--full-depth` (as used for
   `git-guardrails-claude-code` above).
 
+## Git workflow
+
+- After every PR merge, switch local back to main before the next task:
+  `git checkout main && git pull origin main`. This lets
+  `gh pr merge --delete-branch` auto-clean the local feature branch on
+  the next merge and avoids accumulating squash-merged residue that
+  requires force-delete to clean.
+
 ## Useful references in this repo
 
 - `shared/` — start here when implementing a new workstream.
