@@ -9,11 +9,11 @@ Capabilities exposed:
     send_alert(subject, body, *, to=None)
 
 Purpose:
-    Third leg of the Op Stds v8 §3 triple-fire CRITICAL alert path
+    Third leg of the Op Stds v11 §3 triple-fire CRITICAL alert path
     (Sentry + Smartsheet `ITS_Errors` + Resend). Wired into
     `shared.error_log._alert_critical`. NOT for customer-facing email —
     customer email goes through `shared.graph_client.send_mail` per
-    Foundation Mission v6 Invariant 1.
+    Foundation Mission v8 Invariant 1.
 
 Error model:
     Every failure raises a typed exception under `ResendError`. Callers

@@ -5,7 +5,7 @@ Auth: DSN from macOS Keychain. The keychain entry name is held in the
 per the 2026-05-18 seed).
 
 Purpose:
-    Second leg of the Op Stds v8 §3 triple-fire CRITICAL path
+    Second leg of the Op Stds v11 §3 triple-fire CRITICAL path
     (Smartsheet `ITS_Errors` + Resend operator email + Sentry).
     Wired into `shared.error_log._alert_critical`.
 

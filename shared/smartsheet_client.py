@@ -18,7 +18,7 @@ Column-name cache:
     than fast-failing on a stale title. Long-lived processes that need to
     survive a rename must restart or call `invalidate_column_cache()`.
 
-External Send Gate (Foundation Mission v6, Invariant 1):
+External Send Gate (Foundation Mission v8, Invariant 1):
     Smartsheet writes are not external sends. This module is freely
     importable by both generation and send scripts.
 

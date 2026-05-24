@@ -180,7 +180,7 @@ def _live_fetcher() -> list[TimeOffEntry]:
         )
         return []
     except Exception as e:
-        # Broad catch is deliberate per Op Stds v9 §27 failure-isolation:
+        # Broad catch is deliberate per Op Stds v11 §27 failure-isolation:
         # the PTO fetch must never crash the watchdog. Keychain misses,
         # network errors, and unforeseen SDK failures all land here.
         log(

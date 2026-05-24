@@ -9,8 +9,8 @@ planning project.
   ambiguous-report review surface routes to Teala Paradise (Q7), weekly cadence + gated send
   architecture (Q9), and WPR canonical template resolved-in-principle (Q2 — drafting deferred
   until inspection of mirror templates).
-- **4 deferred-then-resolved (2026-05-21)**: see `ITS_Q4-Q8_Resolution_2026-05-21.docx` in the
-  planning project for the full resolution. Q4 (job lookup = folder constants in
+- **4 deferred-then-resolved (2026-05-21)**: see `workstreams/safety-reports/mission.md` in
+  the its-blueprint repo for the full resolution. Q4 (job lookup = folder constants in
   `shared/sheet_ids.py`), Q5 (tracking row schema lives on `Daily Reports — Week of <date>`
   sheets in Field Reports tree, 9 columns), Q6 (Box taxonomy = `1111A (Copy for new projects)`
   template), Q8 (recipients in ITS_Config keyed `safety_reports.recipients.<job>` with
@@ -18,7 +18,7 @@ planning project.
 
 ## Three scripts — External Send Gate two-process model
 
-Per Foundation Mission v6 Invariant 1, generation and send live in separate scripts:
+Per Foundation Mission v8 Invariant 1, generation and send live in separate scripts:
 
 - **`intake.py`** — `process_message(message_id)` runs the 12-stage pipeline per inbound
   message at `safety@evergreenmirror.com` (sandbox) / `safety@evergreenrenewables.com`

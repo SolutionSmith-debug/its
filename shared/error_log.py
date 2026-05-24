@@ -10,7 +10,7 @@ Behavior:
   the operator (`system.operator_email` from ITS_Config). Failure-isolated:
   if Resend is down, the underlying CRITICAL event is still captured in the
   local log and ITS_Errors. Sentry hook + alert-routing dedupe are separate
-  PRs per Op Stds v8 §3 triple-fire.
+  PRs per Op Stds v11 §3 triple-fire.
 
 Both side-channel write paths (Smartsheet + Resend) are recursion-guarded
 and failure-isolated: any module-specific exception is caught and reduced
@@ -204,7 +204,7 @@ def _fire_resend_leg(
             allowed = True
 
         if not allowed:
-            # Op Stds v9 §27: dedupe applies only to push. The Smartsheet
+            # Op Stds v11 §3.1: dedupe applies only to push. The Smartsheet
             # row + Sentry event already fired upstream of this leg, so
             # suppressing here loses no record. Marker line lets the
             # operator confirm dedupe is acting.
@@ -294,7 +294,7 @@ def _alert_critical(
 ) -> None:
     """Fire out-of-band CRITICAL alerts on all triple-fire legs.
 
-    Triple-fire per Op Stds v9 §3:
+    Triple-fire per Op Stds v11 §3:
     - Smartsheet `ITS_Errors` row — written earlier by `log()` →
       `_smartsheet_log` (NOT here; that path is unconditional on
       WARN / ERROR / CRITICAL).

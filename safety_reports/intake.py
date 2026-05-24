@@ -59,7 +59,7 @@ original inbound message.
 Capability gating
 -----------------
 
-No customer-facing send capability. Per Foundation Mission v6 Invariant 1,
+No customer-facing send capability. Per Foundation Mission v8 Invariant 1,
 generation scripts (which call the Anthropic API) have zero external-send
 capability. This module:
 
@@ -77,7 +77,7 @@ capability. This module:
 Adversarial Input Handling
 --------------------------
 
-Per Foundation Mission v6 Invariant 2:
+Per Foundation Mission v8 Invariant 2:
 
   - Email body + subject wrapped in `<untrusted_content>` tags via
     `shared.untrusted_content.wrap()`.

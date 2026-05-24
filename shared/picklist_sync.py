@@ -14,13 +14,13 @@ Architecture:
     mapping row's last_run_at + last_run_hash on success for the
     idempotency short-circuit.
 
-Op Stds v9 §27 — push-vs-record separation:
+Op Stds v11 §3.1 — push-vs-record separation:
     Failures route to ITS_Errors via error_log (record). The triple-fire
     CRITICAL path (Sentry + Resend + ITS_Errors row) fires only when an
     aggregate failure threshold is reached (>=3 mappings fail in one
     run); single-mapping failures stay at ERROR severity.
 
-Op Stds v9 §22 — MCP-gap REST fallback:
+Op Stds v11 §25 — MCP-gap REST fallback:
     Column-option mutations are not exposed cleanly through the SDK's
     high-level row APIs, so this module's writes go through the
     smartsheet_client helpers added in PR #45 (update_column_options,
@@ -546,7 +546,7 @@ def sync_all(
         stats.removals_blocked_total += len(result.removals_blocked)
 
     if stats.mappings_failed >= TRIPLE_FIRE_FAILURE_THRESHOLD:
-        # CRITICAL escalation. Per Op Stds v9 §3, this routes through
+        # CRITICAL escalation. Per Op Stds v11 §3, this routes through
         # the triple-fire path (ITS_Errors + Resend + Sentry via
         # error_log's _alert_critical). The log() with CRITICAL severity
         # writes the row; the decorator on the caller (run_picklist_sync.py)
