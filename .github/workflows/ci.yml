@@ -28,3 +28,12 @@ jobs:
 
       - name: Tests (pytest + coverage)
         run: pytest --cov=shared --cov=safety_reports --cov-report=term-missing -q
+
+      # Warn-only during the retrofit window (see docs/operations/doc_conventions.md
+      # "Retrofit policy"). Both invocations are designed to exit 0 even with
+      # violations; output appears in the CI log so the operator can see drift.
+      - name: Doc-conventions lint (warn-only)
+        run: python -m scripts.lint_doc_conventions
+
+      - name: Doc-index freshness (warn-only)
+        run: python -m scripts.regen_doc_indexes --check || echo "::warning::Doc indexes stale — run \`python -m scripts.regen_doc_indexes\` locally."

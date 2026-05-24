@@ -1,6 +1,6 @@
 # 2026-05-23 — Picklist-hardening pre-Customer-1 (Phase 1.4 #2)
 
-Second deliverable of the Phase 1.4 pre-Customer-1 security hardening cluster per V&R v7.2 + Op Stds v11 §35. Ships the code-side picklist registry + write-path validation + drift audit; the operator-side UI conversion work is checklist-driven in `docs/picklist_hardening_audit.md`.
+Second deliverable of the Phase 1.4 pre-Customer-1 security hardening cluster per V&R v7.2 + Op Stds v11 §35. Ships the code-side picklist registry + write-path validation + drift audit; the operator-side UI conversion work is checklist-driven in `docs/audits/picklist_hardening_audit.md`.
 
 Branch: `feat/picklist-hardening` off `main` at `4b239fc` (PR #72 close).
 
@@ -9,7 +9,7 @@ Branch: `feat/picklist-hardening` off `main` at `4b239fc` (PR #72 close).
 Two-layer enforcement of bounded-enum Smartsheet columns:
 
 1. **Client-side** (this PR): `shared/picklist_validation.py` composes the allowed sets from existing StrEnums (`Severity`, `ReviewReason`, `QuarantineReason`, `ContactStatus`, etc.) and validates every `add_rows` / `update_rows` payload BEFORE the API call. Code-side renames propagate automatically.
-2. **Server-side** (operator UI work, tracked in `docs/picklist_hardening_audit.md`): Smartsheet "Restrict to picklist values only" toggle ON the columns. Catches writes that bypass `shared.smartsheet_client` (manual edits, third-party integrations, legacy migration scripts).
+2. **Server-side** (operator UI work, tracked in `docs/audits/picklist_hardening_audit.md`): Smartsheet "Restrict to picklist values only" toggle ON the columns. Catches writes that bypass `shared.smartsheet_client` (manual edits, third-party integrations, legacy migration scripts).
 
 ## Pre-flight findings
 
@@ -61,7 +61,7 @@ CLI: `python -m scripts.audit_picklist_drift [--update-audit-doc] [--no-emit]`. 
 
 Added `safety_picklist_audit` with `timedelta(days=8)` freshness window (matches `safety_weekly_generate` pattern — weekly cadence with one-cycle tolerance).
 
-### `docs/picklist_hardening_audit.md`
+### `docs/audits/picklist_hardening_audit.md`
 
 Operator's UI conversion checklist. One table per sheet (ITS_Config, ITS_Errors, ITS_Review_Queue, ITS_Quarantine, ITS_Trusted_Contacts, WPR_Pending_Review, per-project sheets) listing every bounded-enum column with target type + values + status emoji (⬜ ✅ ⚠️ 🟦). Doc lives until Phase 1.5 cutover; `audit_picklist_drift.py` keeps the registry honest with the live state once operator converts.
 
@@ -94,7 +94,7 @@ Baseline 949 → final 1004 (+55). All pass.
 
 ## Operator-side actions remaining
 
-Per `docs/picklist_hardening_audit.md`:
+Per `docs/audits/picklist_hardening_audit.md`:
 
 1. Walk each ⬜ row in the audit doc. For each column:
    - Open Smartsheet column properties

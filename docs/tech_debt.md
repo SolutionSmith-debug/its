@@ -77,7 +77,7 @@ Resolution: see commit on the `feature/iso-date-prefix` branch (squash-merged), 
 
 ## parse_job_v3: person_tag_in_subject chaos over-match [CLOSED 2026-05-20]
 
-Resolved by adopting **Direction (A)** from `docs/person_tag_audit_2026-05-19.md`: the third alternation (`-\s*[A-Z][a-z]+\s*$`, "trailing-capitalized-word after dash") was removed from `PERSON_TAG_IN_SUBJECT` in `box_migration/parse_job_v3.py`. The refined regex keeps the two alternations that the audit confirmed as high-precision:
+Resolved by adopting **Direction (A)** from `docs/audits/person_tag_audit_2026-05-19.md`: the third alternation (`-\s*[A-Z][a-z]+\s*$`, "trailing-capitalized-word after dash") was removed from `PERSON_TAG_IN_SUBJECT` in `box_migration/parse_job_v3.py`. The refined regex keeps the two alternations that the audit confirmed as high-precision:
 
 ```python
 PERSON_TAG_IN_SUBJECT = re.compile(
@@ -98,7 +98,7 @@ Consumer path (`detect_chaos` in the same file) is unchanged — the chaos flag 
 
 **Redo history:** an earlier attempt (PR #34) implemented this same change but was closed-without-merge during a 2026-05-20 branch-cleanup pass where the head branch was deleted before verifying the merge had actually landed. The chore PR #37 explicitly preserved this entry's `[OPEN]` status; the present resolution comes from the redo PR. The cleanup-pass mistake is captured as a private feedback memory (`feedback_verify_merge_before_branch_delete`): always `gh pr view <N> --json mergedAt` before `git push origin --delete`, do not infer merge from "I saw CI green."
 
-Resolution: see commit on the `feature/person-tag-regex-refinement-redo` branch (squash-merged), and `docs/session_logs/2026-05-20_person_tag_regex_refinement_redo.md`. Audit context preserved at `docs/person_tag_audit_2026-05-19.md` (not modified by this PR).
+Resolution: see commit on the `feature/person-tag-regex-refinement-redo` branch (squash-merged), and `docs/session_logs/2026-05-20_person_tag_regex_refinement_redo.md`. Audit context preserved at `docs/audits/person_tag_audit_2026-05-19.md` (not modified by this PR).
 
 ## smartsheet_migration: import-time side effects in three scripts [CLOSED 2026-05-19]
 
@@ -431,7 +431,7 @@ The known UI-only surfaces (as of 2026-05):
 - **Filter Views** (saved per-user filter definitions over a sheet) — UI-only.
 - **Restrict to dropdown values only** (PICKLIST column validation toggle) — UI-only. Critical for `shared/picklist_sync.py` activation: the sync writes the option list, but the "reject free-text entries" enforcement toggle must be set manually per column. Without it, picklist sync still works but users can type values that aren't in the master DB (canonical-name drift).
 
-**Impact on `shared/picklist_sync.py`:** the `Restrict to dropdown values only` toggle must be manually set on each downstream PICKLIST column at deployment time. Without it, the sync still works (options stay in sync) but the strict-mode validation that prevents users from typing vendor-name drift is absent. Documented in `docs/picklist_sync.md` activation checklist step 5.
+**Impact on `shared/picklist_sync.py`:** the `Restrict to dropdown values only` toggle must be manually set on each downstream PICKLIST column at deployment time. Without it, the sync still works (options stay in sync) but the strict-mode validation that prevents users from typing vendor-name drift is absent. Documented in `docs/references/picklist_sync.md` activation checklist step 5.
 
 **Impact on form-and-clone cascade:** every form requires manual UI setup. The cascade flow assumes operator builds forms in the UI as the final cutover step.
 
@@ -439,7 +439,7 @@ The known UI-only surfaces (as of 2026-05):
 
 **Urgency:** none. Operationally accepted; manual deployment steps documented per-customer.
 
-Surfaced: Phase-0 architecture review 2026-05; referenced from `docs/picklist_sync.md` activation checklist.
+Surfaced: Phase-0 architecture review 2026-05; referenced from `docs/references/picklist_sync.md` activation checklist.
 
 ## safety_reports week-folder create-find race condition [OPEN 2026-05-21]
 
@@ -477,7 +477,7 @@ PR #51 swapped the helper to direct REST. Unit tests updated to mock `requests.g
 
 Closed by PR #51.
 
-## Picklist-hardening pre-Customer-1 [CODE DELIVERED 2026-05-23 / operator UI work tracked in docs/picklist_hardening_audit.md]
+## Picklist-hardening pre-Customer-1 [CODE DELIVERED 2026-05-23 / operator UI work tracked in docs/audits/picklist_hardening_audit.md]
 
 Code side shipped on `feat/picklist-hardening` branch:
 
@@ -485,17 +485,17 @@ Code side shipped on `feat/picklist-hardening` branch:
 - `shared/smartsheet_client.py::add_rows` + `update_rows` — late-import `picklist_validation` (circular-import safe) and call `validate_row` BEFORE any payload construction. Invalid values raise `PicklistViolationError` pre-API-call.
 - `scripts/audit_picklist_drift.py` — programmatic registry-vs-live drift audit; `--update-audit-doc` placeholder; writes `~/its/.watchdog/safety_picklist_audit.last_run` marker.
 - `scripts/watchdog.py::TRACKED_JOBS` — added `safety_picklist_audit` with 8-day freshness window (weekly cadence).
-- `docs/picklist_hardening_audit.md` — operator's UI conversion checklist; one row per bounded-enum column with conversion status emojis (⬜ ✅ ⚠️ 🟦).
+- `docs/audits/picklist_hardening_audit.md` — operator's UI conversion checklist; one row per bounded-enum column with conversion status emojis (⬜ ✅ ⚠️ 🟦).
 
 `shared/kill_switch.py` Phase 3 was a no-op: existing `SystemState` StrEnum + try/except fail-open (returns ACTIVE on unknown value per Op Stds v8 §1 — never silently halt) IS the per-key registry pattern. The brief's suggested change to return PAUSED would have inverted the fail-open behavior; preserved existing.
 
 Tests: 949 → 1004 (+55: 20 validation + 8 smartsheet integration + 8 drift audit + transitive coverage). mypy 0, ruff clean. Capability gating intact.
 
-Operator-side conversion items remain in `docs/picklist_hardening_audit.md` — ~21 UI passes (toggle "Restrict to picklist values only" + add 3 PR #72 ReviewReason values + add ITS_Quarantine Disposition + Reason columns + 6 per-project template conversions). Audit doc IS the operator's checklist; after each batch, run `python -m scripts.audit_picklist_drift --update-audit-doc` to refresh status emojis.
+Operator-side conversion items remain in `docs/audits/picklist_hardening_audit.md` — ~21 UI passes (toggle "Restrict to picklist values only" + add 3 PR #72 ReviewReason values + add ITS_Quarantine Disposition + Reason columns + 6 per-project template conversions). Audit doc IS the operator's checklist; after each batch, run `python -m scripts.audit_picklist_drift --update-audit-doc` to refresh status emojis.
 
 Subsumes PR #72 leftover step #2 — the three new ITS_Review_Queue.Reason picklist values are now part of this audit's checklist.
 
-**Closes when:** all rows in `docs/picklist_hardening_audit.md` show ✅. At that point the watchdog's drift WARN-threshold can flip to ERROR.
+**Closes when:** all rows in `docs/audits/picklist_hardening_audit.md` show ✅. At that point the watchdog's drift WARN-threshold can flip to ERROR.
 
 ## ITS_Trusted_Contacts sheet replaces ITS_Config JSON allowlists [DELIVERED 2026-05-23]
 
@@ -695,3 +695,31 @@ Implementation: after assert SENT, use `graph_client.list_inbox` + `graph_client
 **Effort:** ~hour or two including a new `delete_message` helper in `graph_client.py` + the test wire-up.
 
 **Revisit when:** integration runs accumulate noticeable smoke clutter in the sandbox mailbox (estimate: after ~10-20 runs).
+
+## Doc-conventions lint strict-mode flip after retrofit window closes [OPEN 2026-05-24]
+
+`scripts/lint_doc_conventions.py` ships warn-only. Two follow-on items track the retrofit window's close:
+
+1. **Bulk-retrofit sweep** of grandfathered docs (~36 session logs + a handful of pre-existing audits / references) — add YAML frontmatter to each. Target window: ~60 days (2026-07-24). Lazy retrofit per `docs/operations/doc_conventions.md` is the interim policy; this sweep is the optional bulk-migration option.
+2. **Flip lint to `--strict`** in CI after the sweep completes. `.github/workflows/ci.yml` currently invokes the lint without `--strict`; one-line change to add the flag once the sweep lands and all violations clear.
+
+Trigger conditions:
+- Auto-trigger #1: 2026-07-24 reached (default sweep target).
+- Manual-trigger #1: operator decides to skip the bulk sweep and accept indefinite grandfather state. In that case strict-mode flip is also skipped; the conventions doc's "Retrofit policy" section should be updated to mark the policy as permanent.
+
+**Effort:** ~2 hours for bulk sweep (mostly automatable — frontmatter generation from filename/git-log); ~5 min for the strict-mode flip.
+
+**Revisit when:** 2026-07-24, or sooner if operator opens a doc-retrofit session.
+
+## Nightly auto-index regen wiring [DEFERRED 2026-05-24]
+
+`docs/operations/doc_conventions.md` mentions a "nightly regeneration" path for `scripts/regen_doc_indexes.py` via `scripts/watchdog.py::TRACKED_JOBS`. Not wired in the initial ship: regen runs in CI (`--check` mode) on every PR, which is the load-bearing enforcement. A nightly launchd job would add freshness for un-merged branches sitting on the operator's MacBook, but the CI gate is sufficient for `main`.
+
+**Action when triggered:**
+1. Add launchd plist `org.solutionsmith.its.doc-index-regen.plist` (StartCalendarInterval, daily 03:00 local).
+2. Have the script write a watchdog marker on successful regen.
+3. Append `doc_index_regen` to `scripts/watchdog.py::TRACKED_JOBS` with 36-hour freshness window.
+
+**Effort:** ~30 min.
+
+**Revisit when:** operator notes drift between local doc state and CI's view, OR a third polling daemon ships and the watchdog wiring patterns are being touched anyway.

@@ -3,7 +3,7 @@
 ## Purpose
 
 Re-do of [PR #34](https://github.com/SolutionSmith-debug/its/pull/34), which
-implemented Direction (A) from `docs/person_tag_audit_2026-05-19.md` — removing
+implemented Direction (A) from `docs/audits/person_tag_audit_2026-05-19.md` — removing
 the third alternation (`-\s*[A-Z][a-z]+\s*$`, "trailing-capitalized-word after
 dash") from `PERSON_TAG_IN_SUBJECT` in `box_migration/parse_job_v3.py`. PR #34
 shipped a working diff (27 tests passed, CI was green), but was closed-without-
@@ -81,7 +81,7 @@ consumer-path integration. All pass on first run (0.02s).
 |---|---:|---|
 | A — alt 1 positive regression  | 3 | `for ZACK` and two boundary-case 3-cap forms. |
 | A — alt 2 positive regression  | 4 | Every allowlist verb: Organize, Cleanup, Notes, Files. |
-| B — audit FP negative locks    | 13 | Every confirmed FP from `docs/person_tag_audit_2026-05-19.md` rows #1–#12 + sample #19. Prevents accidental reintroduction of alt 3. |
+| B — audit FP negative locks    | 13 | Every confirmed FP from `docs/audits/person_tag_audit_2026-05-19.md` rows #1–#12 + sample #19. Prevents accidental reintroduction of alt 3. |
 | C — known TP loss acceptance   | 5 | `KNOWN_TP_LOSSES_NO_LONGER_FLAGGED` list, cross-referenced to audit doc samples #15–#20. Locks the "we accept these as a tradeoff" decision so a future maintainer must read the audit before re-adding alt 3. |
 | Consumer-path integration      | 2 | `detect_chaos()` emits flag for a TP, skips it for `9. Utility-Documents-Tracking` (most-common audit FP shape). |
 
@@ -96,7 +96,7 @@ prefix). Stanza explicitly documents the redo history (PR #34 close-without-
 merge → PR #37 OPEN preservation → this PR closes it for real) so a future
 audit doesn't reconstruct that timeline from scratch.
 
-`docs/person_tag_audit_2026-05-19.md` **not modified** per redo-brief anti-
+`docs/audits/person_tag_audit_2026-05-19.md` **not modified** per redo-brief anti-
 pattern §2 — it remains historical context for the decision.
 
 ## Decisions made during session
@@ -150,7 +150,7 @@ Honored every "do not" in the brief:
 
 1. Directions B (allowlist) and C (INFO severity) not implemented —
    remain documented in the audit doc as alternatives-not-taken.
-2. `docs/person_tag_audit_2026-05-19.md` not modified.
+2. `docs/audits/person_tag_audit_2026-05-19.md` not modified.
 3. First two alternations unchanged.
 4. Consumer downstream unchanged.
 5. No helper extraction or surrounding refactor.

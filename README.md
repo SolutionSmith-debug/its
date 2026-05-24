@@ -26,7 +26,7 @@ implements what is decided there.
 - `schemas/` — JSON schemas for Anthropic tool-use / structured output calls.
 - `prompts/` — prompt files, version-controlled in markdown.
 - `scripts/` — top-level scheduled scripts (watchdog daily; picklist sync hourly) and
-  launchd plists. See `docs/picklist_sync.md` for the picklist sync runbook.
+  launchd plists. See `docs/references/picklist_sync.md` for the picklist sync runbook.
 - `safety_reports/` — Phase 1 active workstream.
 - `logs/` — local backup of error log (also written to Smartsheet ITS_Errors).
 - `tests/` — pytest suite (run with `pytest`; integration tests gated behind
@@ -78,6 +78,22 @@ specifications (Foundation Mission v8, Operational Standards v11).
   `shared.anomaly_logger.check()`.
 - **Production-quality, defensively-built.** Appropriate for 10–50 person construction firm
   scale. Failures must be observable, recoverable, and never silent.
+
+## Documentation
+
+The `docs/` subtree organizes everything that isn't code:
+
+- [`docs/session_logs/`](docs/session_logs/) — durable narrative records of cc sessions.
+- [`docs/operations/`](docs/operations/) — runbook procedures (PR merge discipline, doc conventions).
+- [`docs/audits/`](docs/audits/) — structured findings against a closed scope.
+- [`docs/reports/`](docs/reports/) — one-shot quantitative or qualitative snapshots.
+- [`docs/references/`](docs/references/) — evergreen explanatory docs.
+- [`docs/tech_debt.md`](docs/tech_debt.md) — accumulator of deferred items.
+
+Filename, frontmatter, and section conventions across every doc type are defined in
+[`docs/operations/doc_conventions.md`](docs/operations/doc_conventions.md). Existing docs are
+grandfathered (lazy retrofit policy); new docs MUST conform. CI runs `scripts/lint_doc_conventions.py`
+and `scripts/regen_doc_indexes.py --check` warn-only during the retrofit window.
 
 ## Status
 
