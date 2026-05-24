@@ -36,6 +36,8 @@ state/
 *_secret*
 *credentials*.json
 *.token
+*.pem
+*.key
 
 # Defensive — some SDKs cache HTTP responses to a local .cache/ dir.
 # boxsdk 3.x does not, but the pattern guards against future deps that do.
