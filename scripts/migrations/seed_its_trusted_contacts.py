@@ -120,16 +120,28 @@ def seed_trusted_contacts(*, dry_run: bool) -> tuple[int, int, int]:
 
     rows_to_add: list[dict] = []
     skipped_count = 0
-    for raw_email in legacy:
+    # PII-logging asymmetry: dry-run prints emails so the operator can
+    # review what will be written; live-write prints positional info only
+    # so terminal output (which may be captured in session logs) contains
+    # no PII. See 2026-05-24 CodeQL triage + per-customer template note.
+    for idx, raw_email in enumerate(legacy):
         # Skip domain-pattern entries (`@evergreenmirror.com`) — the sheet
         # is exact-match-per-email, not pattern. Domain-wildcard senders
         # need to be enumerated manually by the operator post-seed; flag
         # them in the output so they're easy to spot.
         if raw_email.startswith("@"):
-            print(
-                f"[skip] domain-pattern entry {raw_email!r} — sheet schema is "
-                f"per-email; operator must enumerate concrete addresses."
-            )
+            if dry_run:
+                print(
+                    f"[skip] domain-pattern entry {raw_email!r} — sheet "
+                    f"schema is per-email; operator must enumerate concrete "
+                    f"addresses."
+                )
+            else:
+                print(
+                    f"[skip] domain-pattern entry #{idx + 1} — sheet schema "
+                    f"is per-email; operator must enumerate concrete "
+                    f"addresses."
+                )
             skipped_count += 1
             continue
 
@@ -138,7 +150,10 @@ def seed_trusted_contacts(*, dry_run: bool) -> tuple[int, int, int]:
             skipped_count += 1
             continue
         if email in existing:
-            print(f"[skip] already present: {email}")
+            if dry_run:
+                print(f"[skip] already present: {email}")
+            else:
+                print(f"[skip] already present (entry #{idx + 1})")
             skipped_count += 1
             continue
 
@@ -168,8 +183,10 @@ def seed_trusted_contacts(*, dry_run: bool) -> tuple[int, int, int]:
         return len(rows_to_add), skipped_count, len(legacy)
 
     new_row_ids = smartsheet_client.add_rows(sheet_id, rows_to_add)
-    for r, rid in zip(rows_to_add, new_row_ids, strict=True):
-        print(f"[ok] added row id={rid}: {r['Email']}")
+    # Live-write path — log positional/row-id info only (no PII to terminal).
+    # zip() with strict=True preserves the original cardinality invariant.
+    for i, (_r, rid) in enumerate(zip(rows_to_add, new_row_ids, strict=True)):
+        print(f"[ok] added row {i + 1}/{len(rows_to_add)} (smartsheet row_id={rid})")
     return len(rows_to_add), skipped_count, len(legacy)
 
 
