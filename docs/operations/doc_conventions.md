@@ -32,7 +32,7 @@ type: session_log | brief | audit | report | operations | reference | sample | r
 date: YYYY-MM-DD
 status: draft | active | superseded | archived | closed
 related_prs: [123, 124]       # optional, list of PR numbers
-workstream: safety_reports | box | ci | security | docs | infrastructure | null
+workstream: safety_reports | safety_portal | box | ci | security | docs | infrastructure | null
 supersedes: docs/path/to/old-doc.md  # optional; omit when first version
 tags: [phase_1.4, security]   # optional
 ---
@@ -212,6 +212,7 @@ opening a small PR before the value is used elsewhere.
 | Value             | Scope |
 |-------------------|-------|
 | `safety_reports`  | intake / weekly_generate / weekly_send + trusted_contacts |
+| `safety_portal`   | Cloudflare-hosted portal, sync Worker, email shim, form schemas, prune Worker, intake.py portal-marker branch |
 | `box`             | 1111A/1111B, migrations, parse_job_v3 |
 | `ci`              | CI workflows, verification discipline, conftest |
 | `security`        | picklist hardening, header forgery, attachment screening |
