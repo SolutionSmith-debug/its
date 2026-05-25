@@ -83,7 +83,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from safety_reports import weekly_send
-from shared import error_log, sheet_ids, smartsheet_client
+from shared import error_log, sheet_ids, smartsheet_client, state_io
 from shared.error_log import Severity, its_error_log
 from shared.kill_switch import require_active
 
@@ -180,8 +180,7 @@ def _file_lock(path: Path) -> Iterator[bool]:
 
 def _write_heartbeat() -> None:
     """Overwrite the heartbeat file with the current UTC ISO timestamp."""
-    HEARTBEAT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    HEARTBEAT_PATH.write_text(datetime.now(UTC).isoformat())
+    state_io.atomic_write_text(HEARTBEAT_PATH, datetime.now(UTC).isoformat())
 
 
 # ---- Heartbeat-row state cache (ITS_Daemon_Health) ----------------------
@@ -214,32 +213,60 @@ def _load_heartbeat_row_state(daemon_name: str) -> dict[str, Any] | None:
 def _persist_heartbeat_row_state(
     daemon_name: str, row_id: int, total_cycles: int
 ) -> None:
-    """Atomically merge `{daemon_name: {row_id, total_cycles}}` into the state file."""
+    """Atomically merge `{daemon_name: {row_id, total_cycles}}` into the state file.
+
+    Shared-file lock contract per intake_poll: read-modify-write triple
+    runs under `state_io.with_path_lock`. Lock-timeout fails open: log
+    WARN + skip (next cycle re-tries).
+    """
     HEARTBEAT_ROW_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    current: dict[str, Any] = {}
-    if HEARTBEAT_ROW_STATE_PATH.exists():
-        try:
-            parsed = json.loads(HEARTBEAT_ROW_STATE_PATH.read_text())
-            if isinstance(parsed, dict):
-                current = parsed
-        except (OSError, json.JSONDecodeError):
-            current = {}
-    current[daemon_name] = {"row_id": row_id, "total_cycles": total_cycles}
-    HEARTBEAT_ROW_STATE_PATH.write_text(json.dumps(current, indent=2))
+    try:
+        with state_io.with_path_lock(HEARTBEAT_ROW_STATE_PATH):
+            current: dict[str, Any] = {}
+            if HEARTBEAT_ROW_STATE_PATH.exists():
+                try:
+                    parsed = json.loads(HEARTBEAT_ROW_STATE_PATH.read_text())
+                    if isinstance(parsed, dict):
+                        current = parsed
+                except (OSError, json.JSONDecodeError):
+                    current = {}
+            current[daemon_name] = {"row_id": row_id, "total_cycles": total_cycles}
+            state_io.atomic_write_json(HEARTBEAT_ROW_STATE_PATH, current)
+    except state_io.StateLockTimeoutError:
+        error_log.log(
+            Severity.WARN,
+            SCRIPT_NAME,
+            f"could not acquire lock on {HEARTBEAT_ROW_STATE_PATH} after retries",
+            error_code="daemon_health_write_failed",
+        )
 
 
 def _invalidate_heartbeat_row_state(daemon_name: str) -> None:
-    """Remove a daemon's entry from the state file (forces re-lookup)."""
+    """Remove a daemon's entry from the state file (forces re-lookup).
+
+    Same shared-file lock contract as `_persist_heartbeat_row_state`.
+    Lock-timeout fails open: stale cache resurfaces and re-resolves on
+    next cycle's 404.
+    """
     if not HEARTBEAT_ROW_STATE_PATH.exists():
         return
     try:
-        parsed = json.loads(HEARTBEAT_ROW_STATE_PATH.read_text())
-    except (OSError, json.JSONDecodeError):
-        return
-    if not isinstance(parsed, dict):
-        return
-    parsed.pop(daemon_name, None)
-    HEARTBEAT_ROW_STATE_PATH.write_text(json.dumps(parsed, indent=2))
+        with state_io.with_path_lock(HEARTBEAT_ROW_STATE_PATH):
+            try:
+                parsed = json.loads(HEARTBEAT_ROW_STATE_PATH.read_text())
+            except (OSError, json.JSONDecodeError):
+                return
+            if not isinstance(parsed, dict):
+                return
+            parsed.pop(daemon_name, None)
+            state_io.atomic_write_json(HEARTBEAT_ROW_STATE_PATH, parsed)
+    except state_io.StateLockTimeoutError:
+        error_log.log(
+            Severity.WARN,
+            SCRIPT_NAME,
+            f"could not acquire lock on {HEARTBEAT_ROW_STATE_PATH} after retries (invalidate)",
+            error_code="daemon_health_write_failed",
+        )
 
 
 def _resolve_heartbeat_row_id(daemon_name: str) -> int | None:
