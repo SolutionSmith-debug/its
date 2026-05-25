@@ -93,6 +93,17 @@ If the fourth line is anything other than SUCCESS, the session log
 records the PR as "merged but not landed" and the next action is the
 CI fix, not the next deliverable.
 
+## Tooling gotchas
+
+- **`gh run view --json` field name is `url`, not `htmlUrl`.** When chaining
+  `gh run watch --exit-status` with a follow-on `gh run view --json ...`, use
+  field name `url` — `htmlUrl` is not a valid `gh run view` field and causes
+  the chained command to exit non-zero. The shell-level exit is easy to
+  misread as "CI failed" when the underlying watch had actually reported
+  SUCCESS. Verify by re-running `gh run view <id> --json status,conclusion,url`
+  before treating an exit-non-zero as a CI failure signal. (Surfaced 2026-05-25
+  during PR #88 verification.)
+
 ## Retroactive verification at PR #73 (proof of discipline)
 
 Run on 2026-05-23 against PR #73's merge commit `06337bd`:
