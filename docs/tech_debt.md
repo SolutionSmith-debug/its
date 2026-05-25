@@ -4,6 +4,14 @@ Items deliberately deferred. Each carries the rationale for deferral and the tri
 
 When to add an entry: a session deliberately chooses preservation-over-refactor (per Op Stds v11 §14), discovers an external-API constraint that forced a workaround, or defers a non-trivial cleanup that's larger than the current session can absorb. When to mark CLOSED: the underlying item is resolved in a commit; preserve the entry with resolution detail rather than deleting (history is cheap, context is expensive).
 
+## State-file atomic-write + concurrent-writer lock [CLOSED 2026-05-25]
+
+`safety_reports/intake_poll.py` (seen-set + heartbeat-row state) and `safety_reports/weekly_send_poll.py` (heartbeat-row state) used raw `Path.write_text`; the heartbeat-row file (`~/its/state/heartbeat_row_ids.json`) is shared between the two daemons with no locking. Failure modes: mid-write crash leaves a truncated file; concurrent read-modify-write between the two daemons can clobber an entry (intake_poll writes its row_id while weekly_send_poll holds a stale read, then weekly_send_poll writes back, erasing intake_poll's update).
+
+Closed by `shared/state_io.py` with `atomic_write_json` / `atomic_write_text` / `with_path_lock` (sidecar-flock pattern: lock lives at `{path}.lock`, never replaced by `os.replace`). Seven callsites migrated — one seen-set + two local-heartbeat + four heartbeat-row read-modify-write triples. The two heartbeat-row triples per daemon are wrapped under `with_path_lock`; lock-timeout fails open per the heartbeat-never-blocks-daemon contract (`error_log.log` WARN with `error_code="daemon_health_write_failed"` + skip the cycle's write — next cycle re-tries).
+
+Audit findings F19 + F23 (atomic-write seen-set + heartbeat-row state + concurrent-writer lock) in `its-blueprint/audits/2026-05-25_forensic-audit.md`. `shared/alert_dedupe.py` migration to the same helper is a separate follow-on PR (sequencing decision 2026-05-25); `shared/heartbeat.py` consolidation tech-debt entry remains open below — this PR is the correctness floor.
+
 ## Conftest mock surface coverage [OPEN 2026-05-23]
 
 `tests/conftest.py` (PR #74) autouse-mocks `shared.keychain.get_secret` and `shared.kill_switch.check_system_state`. The keychain mock at the source attribute covers all 7 credentialed surfaces transitively (smartsheet_client / graph_client / box_client / resend_client / sentry_client / anthropic_client / alert_dedupe). Two opt-out lists guard test files that exercise these surfaces directly (`test_keychain.py` + `test_helpers.py` for keychain; `test_kill_switch.py` for kill_switch).
