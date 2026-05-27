@@ -294,5 +294,18 @@ Session-log line convention extended to four parts:
 - main-branch CI on merge commit: SUCCESS
 ```
 
+## Session-close maintenance
+
+At session close, invoke the `session-close-maintainer` agent (in `.claude/agents/`). It:
+
+- Surveys recent git activity in both repos
+- Delegates session-log generation to `session-log-writer` (writes to `docs/session_logs/` here and `../its-blueprint/session-logs/` when planning-side decisions surface)
+- Updates the info-gap doc (`../its-blueprint/references/claude-code-info-gap.md` — §1 / §5 / §6 / §8 + `Last refreshed:` frontmatter)
+- Appends a new `§G<N>` section to `../its-blueprint/references/memory-archive.md` when operational detail surfaced
+- Adds tech-debt entries to `docs/tech_debt.md`
+- Proposes new or updated auto-memory entries
+
+Convention canonical in `../its-blueprint/CLAUDE.md` (planning layer wins per the cross-repo rule). Don't skip — the info-gap doc and memory archive are the bridge between chat-only context and what a fresh CC session can reach on disk.
+
 If something here contradicts the planning project's canonical docs (Foundation Mission v8,
 Operational Standards v11), the planning project wins. Flag the inconsistency.
