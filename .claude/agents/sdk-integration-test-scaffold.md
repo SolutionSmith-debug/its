@@ -18,13 +18,14 @@ Caller invokes with a target module path (e.g., `shared/new_client.py`). If uncl
    - Touch typed columns (DATE, DATETIME, CONTACT_LIST, PICKLIST, AUTO_NUMBER, MULTI_PICKLIST, etc.)
    - Pass row / column payloads the SDK might silently rewrap or validate
 
-2. **Find a pattern reference.** Existing integration tests under `tests/integration/`:
-   - `test_smartsheet_client_integration.py`
-   - `test_box_client_integration.py`
-   - `test_graph_client_integration.py`
-   Read whichever is closest to the new wrapper's shape.
+2. **Find a pattern reference.** ITS uses a **flat `tests/` directory with suffix-based naming** (NOT a `tests/integration/` subdirectory). Discover existing integration tests:
+   ```bash
+   find tests -name "*_integration.py" -not -path "*/.venv/*"
+   ```
+   As of 2026-05-27, examples include `tests/test_smartsheet_client_integration.py`, `tests/test_box_build_1111b_integration.py`, `tests/test_trusted_contacts_integration.py`, `tests/test_weekly_generate_integration.py`. Each declares `pytestmark = pytest.mark.integration` at module top. The `markers` config in `pyproject.toml` registers `integration` (skipped by default; `pytest -m integration` to run; NOT executed in CI).
+   Read whichever existing test is closest to the new wrapper's shape.
 
-3. **Scaffold the new test file** at `tests/integration/test_<module>_integration.py`:
+3. **Scaffold the new test file** at `tests/test_<module>_integration.py`:
    - `pytestmark = pytest.mark.integration` at module top
    - Session-scoped fixture for sandbox resource setup + teardown
    - One test per create / update / delete method that:
@@ -33,21 +34,21 @@ Caller invokes with a target module path (e.g., `shared/new_client.py`). If uncl
      - Cleans up via `try/finally` or fixture
    - Use the same Keychain-backed credential pattern as the SUT — do NOT invent new auth
 
-4. **Syntax-check** the scaffolded file: `.venv/bin/python -m py_compile tests/integration/test_<module>_integration.py`
+4. **Syntax-check** the scaffolded file: `.venv/bin/python -m py_compile tests/test_<module>_integration.py`
 
 5. **Do NOT run the test** — running it costs sandbox resources and is the operator's call.
 
 ## Output format
 
 ```
-Scaffolded: tests/integration/test_<module>_integration.py
+Scaffolded: tests/test_<module>_integration.py
 Pattern reference: <which existing test was the template>
 Methods covered: <list of create/update/delete methods exercised>
 Sandbox resources used: <list>
 
 Next steps (operator):
   1. Review the scaffolded tests for correctness
-  2. Run: `.venv/bin/pytest -m integration tests/integration/test_<module>_integration.py`
+  2. Run: `.venv/bin/pytest -m integration tests/test_<module>_integration.py`
   3. If green, commit to a follow-on PR (NOT bundled with the SDK-wrapper PR per narrow-PR-scoping discipline)
 ```
 
