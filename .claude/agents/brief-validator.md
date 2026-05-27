@@ -21,7 +21,12 @@ Caller hands you a brief (text or file path). Verify every code-shape claim.
    - PR references ("per PR #N", "merged in PR #M")
    - Doctrine references ("Op Stds §N", "FM §M", "V&R §N")
 
-2. **Verify each claim against disk:**
+2. **Classify each file/function reference as descriptive vs prescriptive BEFORE checking disk.** Read ±3 lines of surrounding context:
+   - **Prescriptive markers** (the file is meant as FUTURE work, not current state): `introduce`, `will create`, `will land`, `add`, `build`, `next`, `future`, `planned`, `queued`, `TODO`, forensic-finding refs framed as work-to-do (e.g., "F22 (`shared/approval_verification.py`) must land"), bullet items under headings like "## Files to add" / "## Next session" / "## Phase 1.4 work".
+   - **Descriptive markers** (the file is being claimed as current state): `existing`, `already`, `currently`, `is hardcoded`, `lives at`, `the X module in shared/`, no future tense.
+   - If unclear, default to descriptive (safer — verifies more than it should rather than less).
+
+3. **Verify each descriptive claim against disk:**
    - File path → confirm exists with `ls` / `Read`
    - Function / class name → `Grep` for `def <name>` or `class <name>` in the named file
    - Line range → `Read` that range, confirm relevance
@@ -29,17 +34,21 @@ Caller hands you a brief (text or file path). Verify every code-shape claim.
    - PR ref → `gh pr view <N> --json state,mergedAt --repo SolutionSmith-debug/its` (lightweight check; do not full-verify — that's `pr-landed-verifier`'s job)
    - Doctrine ref → confirm the cited file exists in `~/its-blueprint/doctrine/` and contains the cited section
 
-3. **Report each claim as CONFIRMED or DISCREPANCY**, with the brief's exact wording vs the actual state.
+4. **Report each claim as CONFIRMED / PRESCRIPTIVE / DISCREPANCY**, with the brief's exact wording vs the actual state.
 
 ## Output format
 
 ```
 Brief validation: <brief title or first 60 chars>
 
-Confirmed:
+Confirmed (descriptive, verified):
   ✓ <claim> — verified at <file:line>
   ✓ <claim> — verified
   ...
+
+Prescriptive (future work, not expected on disk yet):
+  ⌛ <claim> — surrounding context "<excerpt>" marks this as future
+  ⌛ ...
 
 Discrepancies (REVIEW BEFORE ACTING):
   ✗ <claim>

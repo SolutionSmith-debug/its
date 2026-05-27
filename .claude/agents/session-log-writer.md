@@ -17,7 +17,7 @@ Caller invokes at session close, optionally passing:
 
 ## Process
 
-1. **Read the scaffold** at `~/its-blueprint/prompts/scaffold/session-log.md` (canonical) or fall back to `~/its/docs/session_logs/README.md`.
+1. **Read the scaffold** at `~/its-blueprint/prompts/scaffold/session-log.md` (canonical) or fall back to `~/its/docs/session_logs/README.md`. Adjacent scaffolds in the same directory may inform specific sections — `pr-merge-verify.md` for the "PRs landed" block, `manual-smoke.md` when the session included a live-API smoke, `forensic-audit.md` when the session captured an audit finding.
 
 2. **Read the most recent 2–3 session logs** in `~/its/docs/session_logs/` to match tone, filename convention, frontmatter shape, and section order.
 

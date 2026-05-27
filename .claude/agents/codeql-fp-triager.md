@@ -13,14 +13,14 @@ Invoked weekly (manual or via `/schedule`). No arguments — operates on open al
 
 ## Process
 
-1. **List open alerts:**
+1. **List open alerts** (URL quoted to prevent zsh `?` glob expansion):
    ```
-   gh api repos/SolutionSmith-debug/its/code-scanning/alerts?state=open --paginate
+   gh api "repos/SolutionSmith-debug/its/code-scanning/alerts?state=open" --paginate
    ```
 
 2. **For each alert, read the flagged code:**
    ```
-   gh api repos/SolutionSmith-debug/its/code-scanning/alerts/<id>
+   gh api "repos/SolutionSmith-debug/its/code-scanning/alerts/<id>"
    ```
    Note the `location.path` and `location.start_line`. Then `Read` that range from `~/its/`.
 

@@ -29,7 +29,15 @@ Caller invokes with a PR number ("verify PR #92 is landed"). If no number, ask o
 1. `gh pr view <num> --json mergedAt,mergeCommit,state --repo "$REPO"`
 2. Parse JSON. If checks 1–3 pass, extract `mergeCommit.oid`.
 3. `gh run list --branch main --commit <oid> --json status,conclusion,workflowName,databaseId --limit 5 --repo "$REPO"`
-4. Find the required workflow context. For `SolutionSmith-debug/its` it's the `test` workflow (app_id=15368, configured 2026-05-24). For `SolutionSmith-debug/its-blueprint` it's the `lint` workflow (frontmatter + crossref lints). Confirm `conclusion == "success"`.
+4. Verify **every** run on the merge commit has `conclusion == "success"`. The actual workflow names on `main` push events:
+   - `SolutionSmith-debug/its` — `ci` workflow (the `ci.yml` file with `name: ci`, producing the `test` job that appears in PR checks) + `CodeQL` workflow.
+   - `SolutionSmith-debug/its-blueprint` — `lint` workflow (frontmatter + crossref lints).
+   - **`test` and `Analyze` are JOB names** inside the `ci` workflow, not separate workflows on push. Filtering by workflow name `test` will miss the actual run; check all runs instead.
+   - If `gh run list` returns 0 runs, CI hasn't started yet — leg 4 fails. Re-check after CI completes.
+
+## Future enhancement
+
+Once OAuth completes on the remote GitHub MCP endpoint (currently the `@modelcontextprotocol/server-github` npm fallback), swap `gh pr view` / `gh run list` for `mcp__github__*` tools — typed JSON responses, no `jq` parsing.
 
 ## Output format
 

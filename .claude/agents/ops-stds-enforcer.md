@@ -37,7 +37,19 @@ If unclear, ask once.
 - New `shared/*` SDK wrapper with create/update/delete on typed columns/rows must have a paired `tests/integration/test_*_integration.py`. Flag if absent.
 
 ### §41 — Version-Bump Verification
-- GitHub Actions version bumps in `.github/workflows/*.yml` must be cited with the latest tag (via `gh api repos/<owner>/<repo>/releases/latest`) and release-notes review. Flag a blanket bump.
+Applies to version bumps in any of:
+- `.github/workflows/*.yml` — GitHub Actions versions (`actions/checkout@vX`, `actions/setup-python@vX`, etc.)
+- `pyproject.toml` — Python dependency pins (`anthropic>=X`, `smartsheet-python-sdk>=X`, `boxsdk[jwt]>=X,<Y`, etc.)
+- `requirements.txt` (if present) — same as pyproject.toml deps
+
+Each bump must cite:
+1. The latest upstream release (`gh api repos/<owner>/<repo>/releases/latest` for GitHub-hosted; `pip index versions <pkg>` or PyPI release page for Python deps)
+2. A release-notes review for breaking changes
+
+Flag:
+- Blanket bumps without notes
+- Pin loosens that cross major versions (e.g., the documented `boxsdk[jwt]>=3.10.0,<4.0.0` → `>=4.0.0` lift requires citing the Box Gen-API migration plan)
+- Removed upper bounds without justification
 
 ## Process
 
