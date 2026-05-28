@@ -1,6 +1,6 @@
 ---
 name: sdk-integration-test-scaffold
-description: Use this agent immediately after creating or significantly changing a `shared/<client>.py` SDK wrapper that performs create / update / delete on typed columns or rows (Smartsheet, Box, Graph, Anthropic, etc.). Scaffolds a parallel `tests/integration/test_<client>_integration.py` per Op Stds §30. Prevents the SimpleNamespace-mocks-pass-but-live-API-rejects class of bug (4 instances in 2 days: PRs #47/#48/#49/#51).
+description: Use this agent immediately after creating or significantly changing a `shared/<client>.py` SDK wrapper that performs create / update / delete on typed columns or rows (Smartsheet, Box, Graph, Anthropic, etc.). Scaffolds a parallel `tests/test_<client>_integration.py` (flat `tests/`, suffix-based naming) per Op Stds §30. Prevents the SimpleNamespace-mocks-pass-but-live-API-rejects class of bug (4 instances in 2 days — PRs #47/#48/#49/#51).
 tools: Read, Write, Edit, Grep, Glob, Bash
 model: sonnet
 ---
@@ -25,7 +25,7 @@ Caller invokes with a target module path (e.g., `shared/new_client.py`). If uncl
    As of 2026-05-27, examples include `tests/test_smartsheet_client_integration.py`, `tests/test_box_build_1111b_integration.py`, `tests/test_trusted_contacts_integration.py`, `tests/test_weekly_generate_integration.py`. Each declares `pytestmark = pytest.mark.integration` at module top. The `markers` config in `pyproject.toml` registers `integration` (skipped by default; `pytest -m integration` to run; NOT executed in CI).
    Read whichever existing test is closest to the new wrapper's shape.
 
-3. **Scaffold the new test file** at `tests/test_<module>_integration.py`:
+3. **Scaffold the new test file** at `tests/test_<module>_integration.py`. **First check whether that path already exists — if it does, STOP and report; do NOT overwrite or append.** An existing integration test is the operator's to evolve, not yours to rewrite. Only when the path is free:
    - `pytestmark = pytest.mark.integration` at module top
    - Session-scoped fixture for sandbox resource setup + teardown
    - One test per create / update / delete method that:
