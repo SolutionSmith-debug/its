@@ -109,6 +109,8 @@ Pick 1 unless we want belt-and-suspenders.
 
 ## 🔴 HIGH-2 — Invariant 2 Layer 6 (attachment screening) is doctrine-only, not implemented
 
+> **SUPERSEDED (2026-05-28) by the Safety Portal pivot** — not a safety-reports gate. The portal (blueprint mission v1, 2026-05-25) replaces PDF-email intake with form-fill submission: SVG vector signatures, no arbitrary-file attachment, HMAC-verified shim; mission §7 rules Layer 6 N/A for the portal. Layer 6 is reassigned to Email Triage. See `docs/tech_debt.md`. The finding below is preserved as the audit recorded it (accurate as of the audit) and is not rewritten.
+
 ### Location
 - Doctrine: `doctrine/foundation-mission.md` (its-blueprint) — Invariant 2,
   Layer 6
