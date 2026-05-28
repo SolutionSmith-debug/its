@@ -96,6 +96,7 @@ outside the sentinel block.
 <!-- BEGIN AUTO-INDEX -->
 | Date | Type | Status | Workstream | Title | PRs |
 |------|------|--------|------------|-------|-----|
+| 2026-05-28 | session_log | closed | security | [2026-05-28 — Portal-pivot reconciliation + HIGH-2 supersession](2026-05-28_portal-pivot-reconciliation.md) | #98, #99, #100 |
 | 2026-05-28 | session_log | closed | _–_ | [2026-05-28 — Subagent hardening (codeql propose-only + delegation/path/token fixes)](2026-05-28_subagent-hardening.md) | #92, #93 |
 | 2026-05-24 | session_log | closed | docs | [2026-05-24 — CC file-based memory consolidation](2026-05-24_cc-memory-consolidation.md) | _–_ |
 | 2026-05-24 | session_log | closed | docs | [2026-05-24 — Markdown doc conventions + index generation + lint](2026-05-24_doc_conventions.md) | _–_ |
