@@ -220,6 +220,32 @@ opening a small PR before the value is used elsewhere.
 | `infrastructure`  | kill_switch, watchdog, heartbeat, alerts |
 | `null`            | cross-cutting; the doc spans multiple workstreams |
 
+## Cross-repo supersession drift
+
+The blueprint (`its-blueprint`) holds doctrine; this repo holds code. The main
+drift risk is the two diverging — most dangerously when the blueprint supersedes
+a model this repo still asserts. (Concrete case: the 2026-05-28 Safety Portal
+pivot made attachment screening N/A for safety reports, superseding the model
+this repo had asserted in audit HIGH-2 — see `docs/tech_debt.md`.) There is **no
+automated cross-repo divergence check** — it would have to read both repos and
+is deliberately not built. The guard is the existing mechanisms, used together:
+
+- **Blueprint frontmatter** `last_verified` / `last_verified_against` records the
+  execution-repo SHA each canonical doctrine doc was validated against; the
+  blueprint's `lint_frontmatter.py` warns when it ages past the stale-day
+  threshold.
+- **Audit docs** (`docs/audits/` here, `audits/` in the blueprint) capture
+  point-in-time cross-repo verification snapshots citing the affected doc(s) and
+  the SHA where drift was observed.
+- **`session-close-maintainer`** runs a recurring manual "Cross-repo
+  supersession check" at every session close, in both directions (a blueprint
+  workstream with no exec acknowledgment; this repo asserting a superseded
+  model). See `.claude/agents/session-close-maintainer.md`.
+
+When you supersede a model in one repo, reconcile the other in the same session —
+or file a dated audit / tech-debt entry naming the lag. Don't leave the stale
+assertion standing.
+
 ## Retrofit policy
 
 Existing docs as of this PR's merge are **grandfathered**. They satisfy
