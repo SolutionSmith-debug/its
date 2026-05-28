@@ -42,11 +42,20 @@ def wrap(content: str, *, source: str) -> str:
     Note:
         Source label is sanitized — quote, angle-bracket, and backslash characters are
         stripped — so a malicious source label cannot break out of the attribute context.
-        Content itself is preserved verbatim; integrity-of-data matters more than escaping
-        because the system prompt is the actual defense.
+        Content is preserved verbatim except for one targeted neutralization: any literal
+        ``</untrusted_content>`` is zero-width-broken so attacker-supplied text cannot emit
+        a second closing tag and land outside the trust boundary (tag-breakout injection).
+        The system prompt boilerplate remains the primary defense; this is defense-in-depth
+        for the one module whose entire job is adversarial input handling.
     """
     safe_source = source.replace('"', "").replace("<", "").replace(">", "").replace("\\", "")
-    return f'<untrusted_content source="{safe_source}">\n{content}\n</untrusted_content>'
+    # Neutralize any closing sentinel embedded in the content. A zero-width space (U+200B)
+    # splits the tag token so it is no longer recognized as a closing delimiter while
+    # staying visually unchanged — the same delimiter-neutralization idiom that
+    # safety_reports/weekly_send._update_notes_tags uses ("[" -> "(", "]" -> ")") to stop
+    # tag-breakout in the Notes column.
+    safe_content = content.replace("</untrusted_content>", "</untrusted" + chr(0x200B) + "content>")
+    return f'<untrusted_content source="{safe_source}">\n{safe_content}\n</untrusted_content>'
 
 
 def system_boilerplate() -> str:
