@@ -15,7 +15,7 @@ dependencies = [
     # package jumped to a renamed Gen API at 10.x (imports as
     # `box_sdk_gen`, different surface). Migration to the Gen API is a
     # separate decision; legacy 3.x is supported and stable.
-    "boxsdk[jwt]>=3.10.0,<4.0.0",
+    "boxsdk>=3.10.0,<4.0.0",
     "msal>=1.28.0",
     "requests>=2.32.0",
     "python-docx>=1.1.0",

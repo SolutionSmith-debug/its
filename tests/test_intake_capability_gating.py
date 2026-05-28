@@ -1,7 +1,7 @@
 """Intake-specific capability gating tests.
 
 `tests/test_capability_gating.py` enforces the cross-workstream External
-Send Gate (Foundation Mission v6 Invariant 1) via the GATED_SCRIPTS list
+Send Gate (Foundation Mission v8 Invariant 1) via the GATED_SCRIPTS list
 that intake.py and intake_poll.py are enrolled in. This file pins the
 intake-specific nuances surfaced in the R3 session 1 brief + PR #59
 polling-daemon brief that aren't part of the generic GATED_SCRIPTS
@@ -111,5 +111,5 @@ def test_intake_pair_does_not_import_graph_send_mail():
         assert not offenders, (
             f"{path.relative_to(REPO_ROOT)} imports {offenders!r} — direct "
             f"send_mail attribute import is forbidden in any generation "
-            f"script per Foundation Mission v6 Invariant 1."
+            f"script per Foundation Mission v8 Invariant 1."
         )

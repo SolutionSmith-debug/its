@@ -4,6 +4,18 @@ Items deliberately deferred. Each carries the rationale for deferral and the tri
 
 When to add an entry: a session deliberately chooses preservation-over-refactor (per Op Stds v11 §14), discovers an external-API constraint that forced a workaround, or defers a non-trivial cleanup that's larger than the current session can absorb. When to mark CLOSED: the underlying item is resolved in a commit; preserve the entry with resolution detail rather than deleting (history is cheap, context is expensive).
 
+## Invariant 2 Layer 6 (attachment screening) is doctrine-only [OPEN 2026-05-28]
+
+FM v8 Invariant 2 Layer 6 (Op Stds v11 §34) mandates that every attachment pass four sub-layers — (a) static signature/magic-number/size, (b) format-aware structural inspection (PDF JS/embedded files, Office macros, EXIF anomalies), (c) ClamAV via a clamd socket, (d) optional VirusTotal hash — before it is uploaded to Box or referenced in any AI call. V&R names completion a **Phase 1.5 cutover precondition**. As of 2026-05-28 this is unimplemented: a grep across `shared/` `safety_reports/` `scripts/` `tests/` for `clamav|pyclamd|virustotal|magic.number|macro|attachment.screen` returns zero implementation hits, and attachments flow `_fetch_message_via_graph` (`safety_reports/intake.py`, raw download) → `upload_attachments_to_box` (raw upload) with no screening stage between fetch and either the Stage 5 AI call or the Stage 10 Box upload. The Graph-declared `mime_type` is attacker-controlled, so a real implementation must sniff bytes, not trust it.
+
+Confirmed against HEAD `4431bae` (forensic-audit HIGH-2; see `docs/audits/2026-05-28_forensic-evaluation.md`). Blast radius is bounded by Layer 1 (trusted senders), but a trusted-sender-gone-bad or credential-compromise writes unscanned bytes straight into customer Box.
+
+**Decision required before build (blocked-on-decision):**
+- **Option A — build:** implement `shared/attachment_screening.py` (a NOT-WIRED stub with the intended `screen(filename, content, mime_type) -> ScreenVerdict` signature is committed alongside this entry) and insert it as an intake stage between Stage 1 (fetch) and the AI call / Box upload. Dispositions per doctrine (malicious → ITS_Quarantine + CRITICAL triple-fire + sender DISABLED; suspicious → ITS_Review_Queue; clean → proceed). Sub-layers (a)/(b) are pure Python; (c) needs `pyclamd` + a running `clamd` socket (operator prerequisite); (d) VirusTotal is Phase 2+ (stub). Parallel SDK-vs-Live integration test per Op Stds §30 for any sub-layer calling an external surface. Recommended as its own dedicated session.
+- **Option B — defer:** file a dated doctrine exception in its-blueprint stating Layer 6 is unbuilt and the conditions under which Safety Reports may run without it; **delete** the `shared/attachment_screening.py` stub (the signature should not outlive a decision not to build).
+
+**Revisit when:** the operator picks Option A or B. This is a Phase 1.5 cutover gate — must be resolved (built or formally excepted) before Safety Reports is marked cutover-ready.
+
 ## State-file atomic-write + concurrent-writer lock [CLOSED 2026-05-25]
 
 `safety_reports/intake_poll.py` (seen-set + heartbeat-row state) and `safety_reports/weekly_send_poll.py` (heartbeat-row state) used raw `Path.write_text`; the heartbeat-row file (`~/its/state/heartbeat_row_ids.json`) is shared between the two daemons with no locking. Failure modes: mid-write crash leaves a truncated file; concurrent read-modify-write between the two daemons can clobber an entry (intake_poll writes its row_id while weekly_send_poll holds a stale read, then weekly_send_poll writes back, erasing intake_poll's update).
