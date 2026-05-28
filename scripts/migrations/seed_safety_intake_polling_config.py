@@ -71,7 +71,12 @@ CONFIG_ROWS: list[dict[str, Any]] = [
             "safety@evergreenrenewables.com happens at Phase 1.5 alongside "
             "the rest of the sandbox-to-production tenant swap. The mailbox "
             "MUST be covered by the Entra app registration's Application "
-            "Access Policy (Mail.ReadWrite on the resource)."
+            "Access Policy (Mail.ReadWrite on the resource). Post-pivot "
+            "(2026-05-28), this unified mailbox also receives the Safety "
+            "Portal's HMAC-verified email shim (portal-noreply@ -> safety@) "
+            "as the primary producer; the legacy PDF-email submission path "
+            "remains the documented fallback during the portal transition. "
+            "See blueprint workstreams/safety-portal/ (mission v1 + brief)."
         ),
     },
     {
