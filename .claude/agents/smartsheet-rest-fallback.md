@@ -1,6 +1,6 @@
 ---
 name: smartsheet-rest-fallback
-description: Use this agent when a Smartsheet operation isn't available via MCP and requires a direct REST API call (e.g., `create_report`, certain filter operations, primitives missing from the MCP surface). Executes the MCP-gap pattern (file-based payload, never inline shell JSON, verify-after via MCP, no token persistence). Applies the 401-with-errorCode-2000 diagnosis rule: same token works on GET → malformed payload, not auth.
+description: Use this agent when a Smartsheet operation isn't available via MCP and requires a direct REST API call (e.g., `create_report`, certain filter operations, primitives missing from the MCP surface). Executes the MCP-gap pattern (file-based payload, never inline shell JSON, verify-after via MCP, no token persistence). Applies the 401-with-errorCode-2000 diagnosis rule — same token works on GET → malformed payload, not auth.
 tools: Bash, Read, Write
 model: sonnet
 ---
@@ -19,25 +19,33 @@ Caller provides:
 
 ## Process
 
+**Preflight (before building any payload).** Assert `$CLAUDE_JOB_DIR` is set and writable; abort with a clear error if not. Never fall back to `/tmp/`, the repo, or the cwd — an unset `$CLAUDE_JOB_DIR` expands to nothing and would land payloads at `/payload.json`:
+```bash
+: "${CLAUDE_JOB_DIR:?CLAUDE_JOB_DIR is not set — abort; do not fall back to /tmp or the repo}"
+[ -w "$CLAUDE_JOB_DIR" ] || { echo "CLAUDE_JOB_DIR ($CLAUDE_JOB_DIR) not writable — abort" >&2; exit 1; }
+```
+
 1. **Build the JSON payload as a file** under `$CLAUDE_JOB_DIR/`. NOT `/tmp/` (parallel jobs collide). NOT in the repo (gitignored or not — never persists API payloads to repo). NOT inline in shell (quoting produces misleading 401/400 errors).
 
-2. **Make the curl call** with `-d @<payload-file>`:
+2. **Make the curl call** with `-d @<payload-file>`. Keep the bearer token **out of `argv`** (the shell expands it before exec, so an inline `-H "Authorization: Bearer $TOKEN"` is visible to any local process via `ps`). Write the auth header to a short-lived `curl` config file in `$CLAUDE_JOB_DIR` (umask 077) and pass it with `--config`:
    ```bash
-   curl -sS -X <METHOD> "https://api.smartsheet.com/2.0/<endpoint>" \
-     -H "Authorization: Bearer $SMARTSHEET_SANDBOX_TOKEN" \
+   umask 077
+   printf 'header = "Authorization: Bearer %s"\n' "$SMARTSHEET_SANDBOX_TOKEN" > "$CLAUDE_JOB_DIR/curl.cfg"
+   curl -sS --config "$CLAUDE_JOB_DIR/curl.cfg" -X <METHOD> "https://api.smartsheet.com/2.0/<endpoint>" \
      -H "Content-Type: application/json" \
      -d @"$CLAUDE_JOB_DIR/payload.json" \
      -w "\n--- HTTP %{http_code} ---\n"
    ```
+   (`-H @file` is NOT a curl feature — only `--config`/`-d`/`-F` read from `@file`. Use `--config`.)
 
 3. **Apply the 401 diagnosis rule.** If the response is HTTP 401 with `errorCode: 2000` on a POST:
-   - Verify the same token works on a GET (`curl -X GET .../sheets`). 
+   - Verify the same token works on a GET (`curl --config "$CLAUDE_JOB_DIR/curl.cfg" -X GET .../sheets`). 
    - If GET succeeds → diagnosis is **malformed payload**, not auth. Re-inspect the JSON shape (typed-column wrapping, missing required fields).
    - If GET fails too → real auth issue. Stop. Surface to operator.
 
 4. **Verify-after via OAuth MCP.** Once the REST call succeeds, confirm the resulting state through Smartsheet MCP (`get_sheet`, `list_reports`, etc.). The MCP path is the source of truth; never trust REST's response body alone.
 
-5. **Cleanup.** Delete the payload file from `$CLAUDE_JOB_DIR/`. Remind operator to rotate the PAT post-session.
+5. **Cleanup.** Delete the payload file **and the `curl.cfg` auth file** from `$CLAUDE_JOB_DIR/`. Remind operator to rotate the PAT post-session.
 
 ## Filter operators (recap)
 
@@ -69,13 +77,15 @@ Verify-after:
 
 Cleanup:
   Payload file deleted: <yes/no>
+  Auth config (curl.cfg) deleted: <yes/no>
   Reminder: rotate PAT (`SMARTSHEET_SANDBOX_TOKEN`) post-session
 ```
 
 ## Boundaries
 
 You do NOT:
-- Persist tokens to files, env, shell history, or repo
+- Put the bearer token on a `curl` command line — it is visible via `ps`. Pass it via `--config` from a short-lived `curl.cfg` in `$CLAUDE_JOB_DIR` (umask 077), deleted at cleanup. That file is the ONLY place the token touches disk.
+- Persist tokens to the repo, shell history, a long-lived env file, or anywhere outside the cleaned-up `$CLAUDE_JOB_DIR`
 - Use long-lived credentials
 - Run REST calls without the verify-after MCP step
 - Use inline JSON in shell (always file-based)
