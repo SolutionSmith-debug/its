@@ -1,0 +1,130 @@
+# ITS canonical-doctrine manifest
+# =================================
+# Machine-readable source of truth for the `doc-reconciliation-auditor` agent
+# (.claude/agents/doc-reconciliation-auditor.md) and the deterministic checker
+# `scripts/check_doctrine_drift.py`. Every checkable canonical fact lives here so
+# the mechanical drift tier is reproducible and CI-safe.
+#
+# HOME DECISION (why this lives in ~/its, not ~/its-blueprint)
+# ------------------------------------------------------------
+# This manifest is EXECUTION-REPO-RESIDENT but BLUEPRINT-DERIVED. The blueprint
+# (`../its-blueprint`) is the upstream canonical source — every fact below carries
+# a `source` pointer at the blueprint doctrine or an in-repo file — but the manifest
+# itself is committed here because:
+#   - The mechanical checker + its test run in CI, and CI checks out ONLY ~/its
+#     (the blueprint repo is NOT present in the GitHub Actions runner). A manifest
+#     read from `../its-blueprint` at CI time would fail. The facts the checker
+#     compares against must be self-contained in this repo.
+#   - This mirrors how `shared/sheet_ids.py` holds canonical Smartsheet IDs in-repo
+#     with provenance comments rather than reading them live.
+#   - It is meta-consistent: a stale manifest-vs-blueprint IS the drift class the
+#     agent exists to detect, so the manifest residing where the agent watches it
+#     is correct. "Blueprint-canonical + sync" resolves to exactly this: the
+#     blueprint doctrine frontmatter is upstream; this file is the synced-into-~/its
+#     derivation, with per-fact `source` + `blueprint_verified_against` provenance.
+#
+# TWO CHECK MODES
+# ---------------
+#   - CI mode (blueprint absent): checker compares ~/its code/docs against the
+#     values in THIS file only.
+#   - Local mode (operator/agent, blueprint present as sibling dir): checker may
+#     ALSO cross-check these values against live blueprint frontmatter, surfacing
+#     a stale manifest itself.
+#
+# UPDATE DISCIPLINE: when blueprint doctrine bumps, update the matching value here
+# and refresh `blueprint_head` + the fact's `blueprint_verified_against`. This is a
+# propose-only-agent INPUT, never auto-written by the agent.
+
+meta:
+  manifest_version: 1
+  generated: "2026-05-28"
+  its_head: c5cc456              # ~/its origin/main this manifest was seeded against
+  blueprint_head: ac9e44e        # ~/its-blueprint origin/main this manifest was seeded against
+  seeded_by: "doc-reconciliation series PR 2 (manifest)"
+
+# --- Doctrine versions (the headline drift class) ------------------------------
+doctrine_versions:
+  operational_standards:
+    current: 13
+    source: "../its-blueprint/doctrine/operational-standards.md"
+    source_field: "frontmatter.version"
+    blueprint_verified_against: a1dc227
+    notes: >
+      v12 added §§37-41; v13 added §42 (code-level self-documentation discipline).
+      Citations in ~/its should read "Op Stds v13" / "Operational Standards v13".
+    drift_signal: 'Op Stds v(1[0-2]|[0-9])\b or Operational Standards v(1[0-2]|[0-9])\b in current-doctrine prose'
+  foundation_mission:
+    current: 8
+    source: "../its-blueprint/doctrine/foundation-mission.md"
+    source_field: "frontmatter.version"
+    blueprint_verified_against: 3b7d56d
+    notes: "FM v8 added Invariant 2 Layer 6 (attachment screening)."
+    drift_signal: 'Foundation Mission v[0-7]\b or FM v[0-7]\b in current-doctrine prose'
+
+# --- §42 module-docstring discipline (Op Stds v13) -----------------------------
+section_42:
+  source: "../its-blueprint/doctrine/operational-standards.md §42"
+  required_headings:        # exact, in this order, RST-underline style
+    - Purpose
+    - Invariants
+    - Failure modes
+    - Consumers
+  applies_to:
+    - "new shared/*.py modules (from the v13 bump forward)"
+    - "workstream entrypoints (e.g. safety_reports/intake_poll.py, weekly_generate.py)"
+  retrofit_policy: "existing modules: opportunistic per §14 (retrofit-when-touched), NOT a sweep PR"
+  inventory: "docs/reports/2026-05-28_section42_compliance_inventory.md"
+
+# --- Canonical sheet IDs (verified against shared/sheet_ids.py) ----------------
+# Only the two doctrine-load-bearing IDs the brief calls out are pinned here; the
+# full set lives in shared/sheet_ids.py (the in-repo bootstrap source of truth).
+canonical_sheets:
+  SHEET_CONFIG:
+    id: 3072320166907780
+    name: "ITS_Config"
+    location: "ITS — System / 01 — Config"
+    source: "shared/sheet_ids.py:SHEET_CONFIG"
+  SHEET_DAEMON_HEALTH:
+    id: 4529351700729732
+    name: "ITS_Daemon_Health"
+    location: "ITS — System / 04 — Daemons"
+    column_count: 12
+    source: "shared/sheet_ids.py:SHEET_DAEMON_HEALTH + DAEMON_HEALTH_COLUMNS"
+
+# --- Active workstream slugs ---------------------------------------------------
+workstreams:
+  source: "../its-blueprint/CONVENTIONS.md canonical set + ../its-blueprint/workstreams/ dirs"
+  count: 6
+  drift_note: >
+    6 canonical workstreams. An earlier 'five' figure predates safety_portal
+    (mission v1, 2026-05-25 canonical). NOTE: ../its-blueprint/workstreams/README.md
+    table still lists only 5 (omits safety-portal) — known doc drift to reconcile.
+  slugs:
+    - safety_reports
+    - safety_portal
+    - email_triage
+    - purchase_orders
+    - subcontracts
+    - ai_employee_capabilities
+
+# --- doc-conventions taxonomy (execution-repo doc frontmatter) -----------------
+doc_conventions:
+  source: "docs/operations/doc_conventions.md"
+  types: [session_log, brief, audit, report, operations, reference, sample, readme]
+  statuses: [draft, active, superseded, archived, closed]
+  workstream_tags: [safety_reports, safety_portal, box, ci, security, docs, infrastructure, "null"]
+  tech_debt_statuses: [OPEN, PARTIALLY_MITIGATED, CLOSED, DEFERRED, DELIVERED]
+
+# --- Model strings — VERIFY-REQUIRED, NOT asserted-current ---------------------
+# Model currency is a LIVE fact that changes on Anthropic's release cadence. The
+# agent FLAGS these for verification against current Anthropic docs and NEVER
+# auto-blesses or asserts they are current. The values below are what the repo
+# CURRENTLY ASSERTS in CLAUDE.md, recorded only so the checker can detect that
+# code and CLAUDE.md agree with each other — agreement is NOT a currency claim.
+models:
+  verify_required: true
+  asserted_in: "CLAUDE.md (Model selection section)"
+  policy: "agent flags for human verification against current Anthropic model docs; never auto-updates"
+  reasoning_default: claude-sonnet-4-6
+  high_volume_classification: claude-haiku-4-5-20251001
+  deep_reasoning: claude-opus-4-7
