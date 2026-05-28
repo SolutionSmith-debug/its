@@ -1,0 +1,125 @@
+---
+type: report
+date: 2026-05-28
+status: active
+related_prs: []
+workstream: null
+tags: [op-stds-v13, section-42, code-self-documentation, doc-reconciliation]
+---
+
+# §42 module-docstring compliance inventory — 2026-05-28
+
+## Summary
+
+Operational Standards **v13 §42** (Code-Level Self-Documentation Discipline)
+mandates a four-heading module docstring — **Purpose / Invariants / Failure
+modes / Consumers** — on every NEW `shared/*` module and workstream entrypoint
+from the v13 bump forward, with existing modules retrofit **opportunistically
+per §14** (explicitly *not* a sweep PR).
+
+This inventory snapshots heading presence at HEAD `c5cc456` so the opportunistic
+retrofit has a worklist. Headline: **1 of 22 `shared/*` modules and 0 of 6
+audited workstream entrypoints carry the four headings.** The one compliant
+module — `shared/untrusted_content.py` — was retrofitted in *this* PR (it was
+touched for the doctrine-version-drift correction, satisfying the §14
+"retrofit-when-touched" trigger). Everything else is grandfathered-missing.
+
+The brief that scoped this work described §42 as "only partially applied"; the
+data shows it is effectively **un-applied** — including the doctrine's own
+worked example (see [Findings](#findings) note on `state_io.py`).
+
+## Methodology
+
+Deterministic, reproducible. For each module, count exact-line matches of the
+four mandated RST-style headings:
+
+```bash
+grep -c -E '^(Purpose|Invariants|Failure modes|Consumers)$' <file>
+```
+
+- **Compliant** = 4/4 headings present.
+- **Partial** = 1–3 present.
+- **Missing** = 0/4.
+
+Scope: every `shared/*.py` module (excluding `__init__.py`, a logic-free package
+marker) plus the six workstream entrypoints §42 names or implies
+(`safety_reports/{intake,intake_poll,weekly_generate,weekly_send,weekly_send_poll}.py`,
+`scripts/watchdog.py`). This same check is the §42 leg of the mechanical tier of
+the `doc-reconciliation-auditor` agent (PR 3 of this series), so future drift is
+caught automatically rather than re-inventoried by hand.
+
+## Findings
+
+### Compliant (4/4)
+
+| Module | Note |
+|--------|------|
+| `shared/untrusted_content.py` | Retrofitted in this PR (§14 touched-trigger). Invariant-2 boundary layer — highest-value module to self-document first. |
+
+### Partial (1–3/4)
+
+_None._ Modules either carry the full four-heading block or none of it.
+
+### Missing (0/4) — grandfathered, retrofit opportunistically per §14
+
+**`shared/*` (21):** `alert_dedupe`, `anomaly_logger`, `anthropic_client`,
+`box_client`, `defaults`, `error_log`, `graph_client`, `header_forgery`,
+`keychain`, `kill_switch`, `picklist_sync`, `picklist_validation`, `quarantine`,
+`resend_client`, `review_queue`, `scheduling`, `sentry_client`, `sheet_ids`,
+`smartsheet_client`, `state_io`¹, `trusted_contacts`.
+
+**Workstream entrypoints (6):** `safety_reports/intake.py`,
+`safety_reports/intake_poll.py`, `safety_reports/weekly_generate.py`,
+`safety_reports/weekly_send.py`, `safety_reports/weekly_send_poll.py`,
+`scripts/watchdog.py`.
+
+> Note: `shared/attachment_screening.py` (a `STUB, NOT WIRED` Layer-6 marker)
+> was **deleted** in PR #98 when the Safety Portal pivot superseded HIGH-2 for
+> safety reports, so it is no longer in scope. Layer 6 is reassigned to Email
+> Triage; if/when an `attachment_screening` module is built there it will be a
+> NEW module and §42-required from creation.
+
+¹ **Doc/code inconsistency worth flagging:** Op Stds v13 §42 ships a worked
+"`shared/state_io.py` post-§42 retrofit" *example* docstring, but the **real**
+`shared/state_io.py` at HEAD carries its original free-form docstring (0/4
+headings). The doctrine example is illustrative/aspirational and was never
+landed in code. This is exactly the doctrine-vs-code drift class the
+`doc-reconciliation-auditor` exists to surface.
+
+## Recommendations
+
+1. **Do not sweep.** §42 and §14 both forbid a bulk docstring-rewrite PR. Retrofit
+   each module's four headings only when it is next touched for an unrelated
+   reason (the §14 trigger), as was done here for `untrusted_content.py`.
+2. **Suggested opportunistic priority** (highest-leverage first), for when each is
+   next in a PR's blast radius:
+   - Invariant-bearing / External-Send-Gate-path modules: `anomaly_logger`,
+     `quarantine`, `trusted_contacts`, `header_forgery`, `anthropic_client`,
+     `graph_client` (Invariant 1/2 surfaces — self-documentation has the most
+     safety value here).
+   - State / alerting infrastructure: `state_io`, `alert_dedupe`, `error_log`,
+     `kill_switch`.
+   - The five `safety_reports/*` entrypoints + `watchdog.py`.
+3. **Land the `state_io.py` retrofit using the doctrine example** the next time
+   that module is touched — closing the §42-example-vs-reality gap noted above.
+4. **Mechanical tracking, not manual.** The `doc-reconciliation-auditor` agent
+   (PR 3) runs the [Methodology](#methodology) check against the canonical-doctrine
+   manifest each session, so this inventory does not need to be regenerated by
+   hand — drift re-surfaces on its own.
+
+## Appendix — raw grep output (HEAD `c5cc456`, post-PR-1)
+
+```
+4/4  shared/untrusted_content.py
+0/4  (all other shared/*.py: alert_dedupe, anomaly_logger, anthropic_client,
+      box_client, defaults, error_log, graph_client, header_forgery, keychain,
+      kill_switch, picklist_sync, picklist_validation, quarantine, resend_client,
+      review_queue, scheduling, sentry_client, sheet_ids, smartsheet_client,
+      state_io, trusted_contacts)
+0/4  safety_reports/intake.py, intake_poll.py, weekly_generate.py,
+      weekly_send.py, weekly_send_poll.py
+0/4  scripts/watchdog.py
+```
+
+Reproduce: `for f in shared/*.py safety_reports/*.py scripts/watchdog.py; do
+echo "$(grep -c -E '^(Purpose|Invariants|Failure modes|Consumers)$' "$f")/4  $f"; done`
