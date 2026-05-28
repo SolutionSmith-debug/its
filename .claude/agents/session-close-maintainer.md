@@ -41,6 +41,11 @@ Caller invokes at session close, optionally with a brief summary of what happene
 5. **Tech debt** — `~/its/docs/tech_debt.md`
    - Append an entry when deferred work was identified this session. Cite session log + relevant PR.
 
+6. **Cross-repo supersession check** — the cross-repo coupling (doctrine in blueprint, code here) is the main drift risk, and it has no automated divergence check by design (see `docs/operations/doc_conventions.md` "Cross-repo supersession drift"). Do a quick manual scan at every close, in both directions:
+   - **Blueprint → exec:** for each blueprint workstream (`~/its-blueprint/workstreams/<ws>/`), confirm the execution repo acknowledges it — code, a `CLAUDE.md` component/invariant note, a `docs/operations/doc_conventions.md` workstream-taxonomy entry, or an explicit "planned / not-built" note. A blueprint workstream with **zero** exec acknowledgment is drift — flag it.
+   - **Exec → blueprint:** if a blueprint doc flipped to `status: superseded`, or a mission/brief changed a model this session, grep the exec repo (`CLAUDE.md`, `docs/`, `shared/`, `safety_reports/`, `docs/tech_debt.md`) for the OLD model and flag any spot that still asserts it. (E.g. the 2026-05-28 Safety Portal pivot superseded the safety-reports attachment-screening model the exec repo asserted in audit HIGH-2 — that exact mismatch is what this check exists to catch.)
+   - The blueprint's `last_verified` / `last_verified_against` frontmatter + `audits/` snapshots remain the point-in-time record; this check is the recurring guard, not a replacement for them.
+
 ## Process
 
 1. **Survey what happened.** Pull from:
@@ -76,6 +81,8 @@ Applied:
   - tech_debt.md: <entry summary>
   - auto-memory: <new or updated entries>
   - frontmatter Last refreshed: <date>
+
+Cross-repo supersession check: <clean | flagged: <workstream/model + where the stale assertion lives>>
 
 Operator to run separately (cannot self-invoke):
   - session-log-writer (execution-repo session log) — needed? <yes/no + why>
