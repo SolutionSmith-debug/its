@@ -301,6 +301,15 @@ Session-log line convention extended to four parts:
 - main-branch CI on merge commit: SUCCESS
 ```
 
+## Agents
+
+Repo-local subagents live in `.claude/agents/` and are auto-discovered by Claude Code; each agent's `description` frontmatter is its dispatch signal (it tells the orchestrating CC when to reach for the agent). Invocation *moments* are wired in this file:
+
+- **`session-close-maintainer`** — at session close (see [Session-close maintenance](#session-close-maintenance)).
+- **`doc-reconciliation-auditor`** — propose-only cross-repo doctrine-vs-code drift audit (opus). Invoke after a blueprint doctrine version bump, after a doctrine-touching PR (version strings / sheet-IDs / workstream scope), or at session close for a deep pass. Reads `docs/doctrine_manifest.yaml`, runs `scripts/check_doctrine_drift.py`, emits a dated findings doc to `docs/audits/`; writes nothing (a `PreToolUse` hook enforces it). It is the heavy half of the cross-repo drift guard whose lightweight half is the `session-close-maintainer` check + the "Cross-repo supersession drift" note in `docs/operations/doc_conventions.md`.
+
+> **Follow-on (not done in this PR):** the other seven agents in `.claude/agents/` — `brief-validator`, `codeql-fp-triager`, `ops-stds-enforcer`, `pr-landed-verifier`, `sdk-integration-test-scaffold`, `session-log-writer`, `smartsheet-rest-fallback` — currently rely on their `description` frontmatter alone for dispatch and are not yet individually documented here. Enumerate each with its trigger moment in a small follow-on PR so a human or a fresh CC session can discover them from CLAUDE.md, not just from the description field.
+
 ## Session-close maintenance
 
 At session close, invoke the `session-close-maintainer` agent (in `.claude/agents/`). It:
@@ -313,6 +322,8 @@ At session close, invoke the `session-close-maintainer` agent (in `.claude/agent
 - Proposes new or updated auto-memory entries
 
 Convention canonical in `../its-blueprint/CLAUDE.md` (planning layer wins per the cross-repo rule). Don't skip — the info-gap doc and memory archive are the bridge between chat-only context and what a fresh CC session can reach on disk.
+
+For a **deeper, evidence-backed cross-repo pass** — after a blueprint doctrine version bump, after any PR that changes doctrine references / version strings / sheet-IDs / workstream scope, or when the session-close scan surfaces something — invoke the `doc-reconciliation-auditor` agent (see [Agents](#agents)). It is **propose-only** (a `PreToolUse` hook blocks any write): it checks this repo's code/docs against `docs/doctrine_manifest.yaml` (seeded from blueprint doctrine), runs `scripts/check_doctrine_drift.py` for the deterministic mechanical tier, and emits a dated findings report to `docs/audits/` for you to apply. It is the heavy/on-demand counterpart to the `session-close-maintainer`'s lightweight cross-repo supersession check — not a replacement.
 
 If something here contradicts the planning project's canonical docs (Foundation Mission v8,
 Operational Standards v11), the planning project wins. Flag the inconsistency.
