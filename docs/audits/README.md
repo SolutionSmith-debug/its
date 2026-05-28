@@ -14,6 +14,7 @@ indicate which mode it operates in.
 <!-- BEGIN AUTO-INDEX -->
 | Date | Type | Status | Workstream | Title | PRs |
 |------|------|--------|------------|-------|-----|
+| 2026-05-28 | audit | active | _–_ | [Doc-reconciliation audit (2026-05-28) — agent self-test](2026-05-28_doc-reconciliation.md) | #101, #103, #105 |
 | 2026-05-28 | audit | active | security | [Forensic Evaluation Audit (2026-05-28)](2026-05-28_forensic-evaluation.md) | #95, #96 |
 | _(no frontmatter)_ | _–_ | _–_ | _–_ | [person_tag_in_subject audit — 2026-05-19](person_tag_audit_2026-05-19.md) | _–_ |
 | _(no frontmatter)_ | _–_ | _–_ | _–_ | [Picklist-Hardening Audit (Op Stds v11 §35)](picklist_hardening_audit.md) | _–_ |

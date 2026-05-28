@@ -229,7 +229,7 @@ Captured 2026-05-20 during M365 sandbox re-verification while validating the `IT
 
 Stale Anthropic Service Account `svac_…SR7vDMJ` (created during R2 Watchdog Check E investigation 2026-05-20) flagged for archival. The associated workspace API key has already been deleted from macOS Keychain. No urgency; clean up when next in the Anthropic Console (Settings → Service Accounts → Archive). Captured here so the cleanup isn't forgotten at the next Anthropic-Console visit.
 
-## Remove unused `[jwt]` extra from boxsdk dependency [OPEN 2026-05-20]
+## Remove unused `[jwt]` extra from boxsdk dependency [CLOSED 2026-05-28]
 
 `pyproject.toml` currently pins `boxsdk[jwt]>=3.10.0,<4.0.0`. The `[jwt]` extra pulls in `PyJWT` and `cryptography` transitively. ITS uses OAuth 2.0 User Authentication (per PR #39, commit `2ce6ece`) and never exercises the JWT auth path; the extra dependencies are dead weight in the install tree.
 
@@ -238,6 +238,8 @@ Stale Anthropic Service Account `svac_…SR7vDMJ` (created during R2 Watchdog Ch
 **Urgency:** low. No functional impact, just install-tree hygiene.
 
 Surfaced: PR #39 review, 2026-05-20.
+
+**Closed:** PR #96 (LOW-1 of the 2026-05-28 forensic-evaluation hygiene batch) changed the pin to `boxsdk>=3.10.0,<4.0.0`. Verified at HEAD `c5cc456`: `pyproject.toml:18` reads `"boxsdk>=3.10.0,<4.0.0"` (no `[jwt]` extra), and `[tool.mypy].overrides` still ignores missing `boxsdk` imports as before. See `docs/audits/2026-05-28_forensic-evaluation.md` §LOW-1.
 
 ## Eventually migrate from legacy boxsdk to `box_sdk_gen` (Gen API) [OPEN 2026-05-20]
 

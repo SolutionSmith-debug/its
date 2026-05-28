@@ -2,7 +2,7 @@
 
 Purpose
 -------
-Gates the Resend operator-email leg of the Op Stds v11 §3 triple-fire
+Gates the Resend operator-email leg of the Op Stds v13 §3 triple-fire
 CRITICAL alert path behind a windowed dedupe. The Resend leg is the only
 one that wakes the operator; without suppression a flapping CRITICAL
 produces N emails into the inbox. Within `window_minutes` of the first
@@ -11,7 +11,7 @@ suppressed at the Resend leg only.
 
 Invariants
 ----------
-- **Push-vs-record separation (Op Stds v11 §3.1).** Dedupe applies ONLY
+- **Push-vs-record separation (Op Stds v13 §3.1).** Dedupe applies ONLY
   to push, never to records. The Smartsheet `ITS_Errors` row and the
   Sentry event fire every time (upstream of this module, in
   `error_log._alert_critical`); only the operator's inbox is suppressed.
