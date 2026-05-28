@@ -1,4 +1,4 @@
-"""Capability-gating tests for Foundation Mission v6 Invariant 1 (External Send Gate).
+"""Capability-gating tests for Foundation Mission v8 Invariant 1 (External Send Gate).
 
 The architectural invariant: scripts that call the Anthropic API to generate customer-facing
 content MUST NOT have the capability to send externally. Scripts that send externally MUST
@@ -11,9 +11,9 @@ How to extend this test:
 - When a new generation script lands, add it to GATED_SCRIPTS.
 - When a new send script lands, add it to SEND_SCRIPTS.
 
-The lists are currently empty because the Safety Reports two-process refactor (`weekly_generate.py`
-+ `weekly_send.py`) hasn't landed yet. The test framework is in place — adding new entries is
-the entire enforcement mechanism for new workstreams.
+The Safety Reports two-process refactor (`weekly_generate.py` + `weekly_send.py`) has landed,
+so both lists are populated. Adding new entries is the entire enforcement mechanism for new
+workstreams.
 
 Run with: pytest -q tests/test_capability_gating.py
 """
@@ -126,6 +126,6 @@ def test_send_script_does_not_import_ai(rel_path: str, forbidden: list[str]):
 
 
 def test_lists_documented():
-    """Sanity check — both lists exist and are typed correctly even when empty."""
+    """Sanity check — both lists exist and are typed correctly."""
     assert isinstance(GATED_SCRIPTS, list)
     assert isinstance(SEND_SCRIPTS, list)

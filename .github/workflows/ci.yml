@@ -5,6 +5,12 @@ on:
   pull_request:
     branches: [main]
 
+# Cancel superseded in-flight runs for the same ref (overlapping pushes to a
+# branch). main-branch CI on merge commits is unaffected — distinct refs.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
