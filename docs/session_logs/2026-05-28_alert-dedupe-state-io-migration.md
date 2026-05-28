@@ -3,13 +3,13 @@ type: session_log
 date: 2026-05-28
 status: closed
 workstream: infrastructure
-related_prs: [103, 88]
+related_prs: [104, 88]
 tags: [phase-1.4, alert-dedupe, state-io, atomic-write, sidecar-lock, fail-open, op-stds-3.1, op-stds-42, migration]
 ---
 
 # 2026-05-28 — `shared/alert_dedupe.py` → `state_io` migration (PR 2 of Phase 1.4 hardening cluster)
 
-PR: [#103](https://github.com/SolutionSmith-debug/its/pull/103) — _merge details filled at landing_.
+PR: [#104](https://github.com/SolutionSmith-debug/its/pull/104) — _merge details filled at landing_.
 
 Second PR of the Phase 1.4 hardening cluster. Migrates `shared/alert_dedupe.py` off
 its same-FD-flock pattern (`STATE_FILE.open("a+")` + `fcntl.flock` + `_acquire_lock(fh)` +
@@ -117,9 +117,9 @@ for a mutation decision.
 
 ### Docs
 - `CLAUDE.md` alert_dedupe row (123): fcntl description → state_io write mechanism + lock-free
-  reader note; lineage gains "+ PR #103 (state_io migration)". state_io row (124): alert_dedupe
+  reader note; lineage gains "+ PR #104 (state_io migration)". state_io row (124): alert_dedupe
   added as live consumer; "separate follow-on PR" clause removed.
-- `docs/tech_debt.md` (F19+F23 CLOSED section): alert_dedupe migration noted as LANDED in PR #103;
+- `docs/tech_debt.md` (F19+F23 CLOSED section): alert_dedupe migration noted as LANDED in PR #104;
   all three `~/its/state/` consumers now compliant with the row-216 rule.
 - `shared/state_io.py` docstring Consumers: alert_dedupe listed; follow-on-PR sentence dropped.
 

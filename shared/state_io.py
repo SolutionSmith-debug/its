@@ -37,7 +37,7 @@ Consumers:
     - ``safety_reports/intake_poll.py``  — seen-set + local heartbeat + row-state writes.
     - ``safety_reports/weekly_send_poll.py`` — local heartbeat + row-state writes.
     - ``shared/alert_dedupe.py`` — dedupe-state read-modify-write under
-      ``with_path_lock`` + ``atomic_write_json`` (migrated PR #103); its
+      ``with_path_lock`` + ``atomic_write_json`` (migrated PR #104); its
       read-only ``list_expired_summaries`` reads lock-free, relying on the
       atomic-write inode-swap guarantee documented above.
 """
