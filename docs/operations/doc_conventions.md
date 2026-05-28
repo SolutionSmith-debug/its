@@ -241,6 +241,13 @@ is deliberately not built. The guard is the existing mechanisms, used together:
   supersession check" at every session close, in both directions (a blueprint
   workstream with no exec acknowledgment; this repo asserting a superseded
   model). See `.claude/agents/session-close-maintainer.md`.
+- **`doc-reconciliation-auditor`** is the heavy / on-demand counterpart to that
+  manual check: a propose-only agent (opus) that runs
+  `scripts/check_doctrine_drift.py` against `docs/doctrine_manifest.yaml` (the
+  canonical-facts manifest) plus a semantic judgment tier, and emits a dated
+  findings report to `docs/audits/`. Invoke it after a doctrine version bump or a
+  doctrine-touching PR; it writes nothing (a `PreToolUse` hook enforces it). See
+  `.claude/agents/doc-reconciliation-auditor.md`.
 
 When you supersede a model in one repo, reconcile the other in the same session —
 or file a dated audit / tech-debt entry naming the lag. Don't leave the stale
