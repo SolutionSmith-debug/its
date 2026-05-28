@@ -96,6 +96,7 @@ outside the sentinel block.
 <!-- BEGIN AUTO-INDEX -->
 | Date | Type | Status | Workstream | Title | PRs |
 |------|------|--------|------------|-------|-----|
+| 2026-05-28 | session_log | closed | _–_ | [2026-05-28 — Subagent hardening (codeql propose-only + delegation/path/token fixes)](2026-05-28_subagent-hardening.md) | #92, #93 |
 | 2026-05-24 | session_log | closed | docs | [2026-05-24 — CC file-based memory consolidation](2026-05-24_cc-memory-consolidation.md) | _–_ |
 | 2026-05-24 | session_log | closed | docs | [2026-05-24 — Markdown doc conventions + index generation + lint](2026-05-24_doc_conventions.md) | _–_ |
 | 2026-05-24 | session_log | closed | docs | [2026-05-24 — Execution-repo doctrine version drift cleanup](2026-05-24_doctrine-version-drift-cleanup.md) | _–_ |
@@ -136,6 +137,7 @@ outside the sentinel block.
 | _(no frontmatter)_ | _–_ | _–_ | _–_ | [2026-05-23 — Post-1111B canonical cutover (re-clone strategy)](2026-05-23_post_1111b_canonical_cutover.md) | _–_ |
 | _(no frontmatter)_ | _–_ | _–_ | _–_ | [2026-05-23 — R3 Session 3: safety_reports/weekly_send.py + weekly_send_poll.py (closes R3 cycle)](2026-05-23_r3_session_3_weekly_send.md) | _–_ |
 | _(no frontmatter)_ | _–_ | _–_ | _–_ | [2026-05-23 — ITS_Trusted_Contacts + Intake Stage 2 refactor + Header forgery detection](2026-05-23_trusted_contacts_stage2_refactor.md) | _–_ |
+| _(no frontmatter)_ | _–_ | _–_ | _–_ | [2026-05-25 — `shared/state_io.py` + atomic-write migration (closes F19 + F23)](2026-05-25_state-io-atomic-write.md) | _–_ |
 <!-- END AUTO-INDEX -->
 
 ## First entry
