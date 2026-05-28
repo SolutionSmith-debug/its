@@ -1,34 +1,76 @@
 """Alert-routing dedupe — Resend-leg suppression for flapping CRITICALs.
 
-Purpose:
-    Third leg of the Op Stds v11 §3 triple-fire CRITICAL alert path
-    (Smartsheet `ITS_Errors` + Resend operator email + Sentry) is the
-    only one that wakes the operator. Without suppression, a flapping
-    CRITICAL produces N emails into the inbox. This module gates the
-    Resend leg behind a windowed dedupe: within `window_minutes` of the
-    first fire of a given `(script, error_code)` key, subsequent fires
-    are suppressed at the Resend leg.
+Purpose
+-------
+Gates the Resend operator-email leg of the Op Stds v11 §3 triple-fire
+CRITICAL alert path behind a windowed dedupe. The Resend leg is the only
+one that wakes the operator; without suppression a flapping CRITICAL
+produces N emails into the inbox. Within `window_minutes` of the first
+fire of a given `(script, error_code)` key, subsequent fires are
+suppressed at the Resend leg only.
 
-    Per Op Stds v11 §3.1: **dedupe applies only to push, never to records.**
-    `_smartsheet_log` and `_fire_sentry_leg` write every time. The
-    persistent record stays complete; only the operator's inbox is
-    suppressed.
+Invariants
+----------
+- **Push-vs-record separation (Op Stds v11 §3.1).** Dedupe applies ONLY
+  to push, never to records. The Smartsheet `ITS_Errors` row and the
+  Sentry event fire every time (upstream of this module, in
+  `error_log._alert_critical`); only the operator's inbox is suppressed.
+  This module must never gate a record-write.
+- **State-file integrity is non-load-bearing for correctness.** Loss,
+  truncation, or corruption of `~/its/state/alert_dedupe.json` degrades
+  only to EXTRA emails, never to a missed CRITICAL. The file is an
+  optimisation (suppress duplicates), not a source of truth.
+- **All writes route through `shared/state_io.py`.** Writers use
+  `state_io.atomic_write_json` (temp-file + `os.replace`) inside
+  `state_io.with_path_lock` (sidecar `.lock`). Direct `Path.write_text`
+  on any file under `~/its/state/` is forbidden (CLAUDE.md "What NOT to
+  do"; Op Stds §42). The read-only `list_expired_summaries` is
+  intentionally lock-free — see its rationale comment.
 
-State:
-    `~/its/state/alert_dedupe.json` — single writer guarded by
-    `fcntl.flock(LOCK_EX | LOCK_NB)` with bounded retry. JSON record
-    per dedupe key:
-        {
-            "first_fired_at":  "<UTC isoformat>",
-            "last_fired_at":   "<UTC isoformat>",
-            "suppressed_count": <int>,
-            "window_ends_at":  "<UTC isoformat>",
-            "summarized":      false
-        }
-    `summarized` is reserved for PR β (watchdog summary sweep) — read by
-    the future summarizer to skip entries it has already emailed. PR α
-    never sets it to true; the field is initialized to false and lives
-    there for forward-compat.
+Failure modes
+-------------
+- **All functions fail OPEN.** Any exception is caught and routed to a
+  per-function fail-open return: `should_fire` → `True` (send the email);
+  `record_fire` / `mark_summarized` / `delete_entry` → silent no-op;
+  `list_expired_summaries` → `[]`. Each writes an
+  `[alert-dedupe-state-error]` marker via `error_log._local_log`.
+- **`StateLockTimeoutError` is caught, never propagated.** A stuck
+  sidecar lock must not silently suppress a CRITICAL Resend wake-up
+  (Op Stds §3.1). Each writer's `except state_io.StateLockTimeoutError`
+  clause precedes its broad `except Exception` because
+  `StateLockTimeoutError` subclasses `Exception` and would otherwise be
+  shadowed; both route to the same fail-open value, split only so the
+  timeout case can carry the §3.1 rationale.
+- The contract: false positives (extra emails) are acceptable; false
+  negatives (missed wake-ups) are not. The Resend leg fires regardless
+  of state-file health.
+
+Consumers
+---------
+- `shared/error_log._fire_resend_leg` — calls `should_fire` (the gate)
+  and `record_fire` (opens the next window after a successful send).
+- `scripts/watchdog.py` Check G (`_check_alert_dedupe_summaries`) —
+  calls `list_expired_summaries`, `mark_summarized`, `delete_entry` for
+  the two-phase summary sweep.
+
+State
+-----
+`~/its/state/alert_dedupe.json` — single writer per host, serialized by
+the `state_io` sidecar lock (`with_path_lock` on
+`~/its/state/alert_dedupe.json.lock`) and written via
+`state_io.atomic_write_json` (temp-file + `os.replace`). JSON record
+per dedupe key:
+    {
+        "first_fired_at":  "<UTC isoformat>",
+        "last_fired_at":   "<UTC isoformat>",
+        "suppressed_count": <int>,
+        "window_ends_at":  "<UTC isoformat>",
+        "summarized":      false
+    }
+`summarized` is reserved for PR β (watchdog summary sweep) — read by
+the future summarizer to skip entries it has already emailed. PR α
+never sets it to true; the field is initialized to false and lives
+there for forward-compat.
 
 Public API (PR α — push-suppression):
     should_fire(key: str) -> bool
@@ -51,36 +93,27 @@ Public API (PR β — summary-sweep lifecycle):
     delete_entry(key: str) -> None
         Atomically remove one entry from the state file.
 
-Failure isolation:
-    All functions fail OPEN. Any exception inside `should_fire` →
-    returns `True` and writes a `[alert-dedupe-state-error]` marker to
-    the local log; exceptions inside `record_fire` / `mark_summarized`
-    / `delete_entry` → silent no-op with the same marker;
-    `list_expired_summaries` → returns `[]`. The contract is: a bug
-    here can never silently drop a CRITICAL Resend send. False
-    positives (extra emails) are acceptable; false negatives (missed
-    wake-ups) are not.
-
 Out of scope:
     - Multi-machine state sync — file is per-host.
     - Sentry / Smartsheet leg dedupe — single-leg suppression only.
 
 Cross-references:
     - `shared/error_log._fire_resend_leg` — the call site.
+    - `shared/state_io.py` — atomic-write + sidecar-lock helpers (PR #88,
+      merge `36932bd`); this module migrated onto them as PR 2 of the
+      Phase 1.4 hardening cluster.
     - `docs/tech_debt.md` — dedupe-key granularity + multi-machine sync
       tracked as forward-looking debt.
 """
 from __future__ import annotations
 
-import fcntl
 import json
-import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from . import defaults
+from . import defaults, state_io
 
 
 @dataclass(frozen=True)
@@ -102,12 +135,6 @@ class ExpiredEntry:
 
 STATE_DIR = Path.home() / "its" / "state"
 STATE_FILE = STATE_DIR / "alert_dedupe.json"
-
-# fcntl LOCK_NB retry budget. Single-host single-writer model means real
-# contention is essentially impossible; the retries exist to absorb the
-# rare case where one CRITICAL fires while a smoke test is mid-write.
-_LOCK_RETRY_ATTEMPTS = 5
-_LOCK_RETRY_DELAY_SECONDS = 0.05
 
 
 def _now() -> datetime:
@@ -154,14 +181,23 @@ def _resolve_window_minutes() -> int:
         return defaults.ALERTING_DEDUPE_WINDOW_MINUTES
 
 
-def _load_state(fh) -> dict[str, dict[str, Any]]:
-    """Read JSON state from an already-locked file handle.
+def _load_state_from_path() -> dict[str, dict[str, Any]]:
+    """Read and parse the JSON state file. Fail-open to `{}`.
 
-    Returns `{}` on missing file (handled by caller), empty file, or
-    malformed JSON. Callers MUST hold the lock before calling this.
+    Safe to call locked (writers, inside `state_io.with_path_lock`) OR
+    unlocked (the read-only `list_expired_summaries` reader). A single
+    `STATE_FILE.read_text()` reads exactly one inode; writers swap the
+    inode via `state_io.atomic_write_json`'s `os.replace` rather than
+    mutating in place, so a concurrent write can never tear this read —
+    the reader sees the complete old file or the complete new file.
+
+    Returns `{}` on missing file, empty file, malformed JSON (writes a
+    marker), or a non-object JSON root (writes a marker). Same fail-open
+    behavior and same marker text as the retired `_load_state(fh)`.
     """
-    fh.seek(0)
-    content = fh.read()
+    if not STATE_FILE.exists():
+        return {}
+    content = STATE_FILE.read_text()
     if not content:
         return {}
     try:
@@ -173,30 +209,6 @@ def _load_state(fh) -> dict[str, dict[str, Any]]:
         _write_marker(f"state file root is not an object at {STATE_FILE}; resetting")
         return {}
     return loaded
-
-
-def _dump_state(fh, state: dict[str, dict[str, Any]]) -> None:
-    """Write JSON state to an already-locked file handle. Truncate first."""
-    fh.seek(0)
-    fh.truncate()
-    fh.write(json.dumps(state, indent=2, sort_keys=True))
-    fh.flush()
-
-
-def _acquire_lock(fh) -> bool:
-    """Non-blocking flock with bounded retry. Returns True on acquire.
-
-    Single-host single-writer means real contention is rare; the bounded
-    retry is a defensive courtesy for the case where one CRITICAL fires
-    while a smoke test is mid-write.
-    """
-    for _ in range(_LOCK_RETRY_ATTEMPTS):
-        try:
-            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            return True
-        except BlockingIOError:
-            time.sleep(_LOCK_RETRY_DELAY_SECONDS)
-    return False
 
 
 def should_fire(key: str) -> bool:
@@ -211,30 +223,32 @@ def should_fire(key: str) -> bool:
     job, called after a successful Resend send.
     """
     try:
-        STATE_DIR.mkdir(parents=True, exist_ok=True)
-        with STATE_FILE.open("a+") as fh:
-            if not _acquire_lock(fh):
-                _write_marker(f"could not acquire flock on {STATE_FILE} after retries")
+        with state_io.with_path_lock(STATE_FILE):
+            state = _load_state_from_path()
+            entry = state.get(key)
+            now = _now()
+
+            if entry is None:
                 return True
-            try:
-                state = _load_state(fh)
-                entry = state.get(key)
-                now = _now()
 
-                if entry is None:
-                    return True
+            window_ends_at = datetime.fromisoformat(entry["window_ends_at"])
+            if now >= window_ends_at:
+                return True
 
-                window_ends_at = datetime.fromisoformat(entry["window_ends_at"])
-                if now >= window_ends_at:
-                    return True
-
-                entry["last_fired_at"] = now.isoformat()
-                entry["suppressed_count"] = int(entry.get("suppressed_count", 0)) + 1
-                state[key] = entry
-                _dump_state(fh, state)
-                return False
-            finally:
-                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            entry["last_fired_at"] = now.isoformat()
+            entry["suppressed_count"] = int(entry.get("suppressed_count", 0)) + 1
+            state[key] = entry
+            state_io.atomic_write_json(STATE_FILE, state)
+            return False
+    except state_io.StateLockTimeoutError:
+        # Rationale: StateLockTimeoutError must NOT propagate. Catching it and
+        # returning True (fire the email) is load-bearing per Op Stds §3.1
+        # (Push-vs-Record Separation): a stuck sidecar lock cannot be allowed
+        # to silently suppress a CRITICAL Resend wake-up. "False positives
+        # (extra emails) acceptable; false negatives (missed wake-ups) not."
+        # Reference: Op Stds §3.1; this PR; predecessor PR #88.
+        _write_marker(f"could not acquire flock on {STATE_FILE} after retries")
+        return True
     except Exception as e:
         _write_marker(f"should_fire({key!r}) raised: {e!r}")
         return True
@@ -249,34 +263,34 @@ def record_fire(key: str) -> None:
     """
     try:
         window_minutes = _resolve_window_minutes()
-        STATE_DIR.mkdir(parents=True, exist_ok=True)
-        with STATE_FILE.open("a+") as fh:
-            if not _acquire_lock(fh):
-                _write_marker(f"could not acquire flock on {STATE_FILE} after retries (record_fire)")
-                return
-            try:
-                state = _load_state(fh)
-                now = _now()
-                entry = state.get(key)
+        with state_io.with_path_lock(STATE_FILE):
+            state = _load_state_from_path()
+            now = _now()
+            entry = state.get(key)
 
-                if entry is not None:
-                    try:
-                        existing_window_end = datetime.fromisoformat(entry["window_ends_at"])
-                        if now < existing_window_end:
-                            return
-                    except (KeyError, ValueError, TypeError):
-                        pass
+            if entry is not None:
+                try:
+                    existing_window_end = datetime.fromisoformat(entry["window_ends_at"])
+                    if now < existing_window_end:
+                        return
+                except (KeyError, ValueError, TypeError):
+                    pass
 
-                state[key] = {
-                    "first_fired_at": now.isoformat(),
-                    "last_fired_at": now.isoformat(),
-                    "suppressed_count": 0,
-                    "window_ends_at": (now + timedelta(minutes=window_minutes)).isoformat(),
-                    "summarized": False,
-                }
-                _dump_state(fh, state)
-            finally:
-                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            state[key] = {
+                "first_fired_at": now.isoformat(),
+                "last_fired_at": now.isoformat(),
+                "suppressed_count": 0,
+                "window_ends_at": (now + timedelta(minutes=window_minutes)).isoformat(),
+                "summarized": False,
+            }
+            state_io.atomic_write_json(STATE_FILE, state)
+    except state_io.StateLockTimeoutError:
+        # Fail-open on lock timeout — see should_fire for the §3.1 rationale.
+        # record_fire failing only risks an extra email next window, never a
+        # missed CRITICAL.
+        _write_marker(
+            f"could not acquire flock on {STATE_FILE} after retries (record_fire)"
+        )
     except Exception as e:
         _write_marker(f"record_fire({key!r}) raised: {e!r}")
 
@@ -298,41 +312,36 @@ def list_expired_summaries() -> list[ExpiredEntry]:
     try:
         if not STATE_FILE.exists():
             return []
-        STATE_DIR.mkdir(parents=True, exist_ok=True)
-        with STATE_FILE.open("a+") as fh:
-            if not _acquire_lock(fh):
-                _write_marker(
-                    f"could not acquire flock on {STATE_FILE} after retries (list_expired_summaries)"
-                )
-                return []
+        # Rationale: read-only path, intentionally lock-free. atomic_write_json
+        # swaps the file inode via os.replace, so a single open().read() here
+        # always sees a complete file (old or new, never torn). A lock would
+        # add cost without adding safety. Writers still lock (read-modify-write).
+        # Reference: Op Stds §42; shared/state_io.py atomic-write semantics.
+        state = _load_state_from_path()
+        now = _now()
+        expired: list[ExpiredEntry] = []
+        for key, entry in state.items():
             try:
-                state = _load_state(fh)
-                now = _now()
-                expired: list[ExpiredEntry] = []
-                for key, entry in state.items():
-                    try:
-                        window_ends_at = datetime.fromisoformat(entry["window_ends_at"])
-                    except (KeyError, ValueError, TypeError):
-                        # Skip malformed entries rather than fail the whole sweep.
-                        _write_marker(
-                            f"skipping malformed window_ends_at on key {key!r}"
-                        )
-                        continue
-                    if now < window_ends_at:
-                        continue
-                    expired.append(
-                        ExpiredEntry(
-                            key=key,
-                            first_fired_at=str(entry.get("first_fired_at", "")),
-                            last_fired_at=str(entry.get("last_fired_at", "")),
-                            suppressed_count=int(entry.get("suppressed_count", 0)),
-                            window_ends_at=str(entry.get("window_ends_at", "")),
-                            summarized=bool(entry.get("summarized", False)),
-                        )
-                    )
-                return expired
-            finally:
-                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+                window_ends_at = datetime.fromisoformat(entry["window_ends_at"])
+            except (KeyError, ValueError, TypeError):
+                # Skip malformed entries rather than fail the whole sweep.
+                _write_marker(
+                    f"skipping malformed window_ends_at on key {key!r}"
+                )
+                continue
+            if now < window_ends_at:
+                continue
+            expired.append(
+                ExpiredEntry(
+                    key=key,
+                    first_fired_at=str(entry.get("first_fired_at", "")),
+                    last_fired_at=str(entry.get("last_fired_at", "")),
+                    suppressed_count=int(entry.get("suppressed_count", 0)),
+                    window_ends_at=str(entry.get("window_ends_at", "")),
+                    summarized=bool(entry.get("summarized", False)),
+                )
+            )
+        return expired
     except Exception as e:
         _write_marker(f"list_expired_summaries raised: {e!r}")
         return []
@@ -351,23 +360,19 @@ def mark_summarized(key: str) -> None:
     try:
         if not STATE_FILE.exists():
             return
-        STATE_DIR.mkdir(parents=True, exist_ok=True)
-        with STATE_FILE.open("a+") as fh:
-            if not _acquire_lock(fh):
-                _write_marker(
-                    f"could not acquire flock on {STATE_FILE} after retries (mark_summarized)"
-                )
+        with state_io.with_path_lock(STATE_FILE):
+            state = _load_state_from_path()
+            entry = state.get(key)
+            if entry is None:
                 return
-            try:
-                state = _load_state(fh)
-                entry = state.get(key)
-                if entry is None:
-                    return
-                entry["summarized"] = True
-                state[key] = entry
-                _dump_state(fh, state)
-            finally:
-                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            entry["summarized"] = True
+            state[key] = entry
+            state_io.atomic_write_json(STATE_FILE, state)
+    except state_io.StateLockTimeoutError:
+        # Fail-open on lock timeout — see should_fire for the §3.1 rationale.
+        _write_marker(
+            f"could not acquire flock on {STATE_FILE} after retries (mark_summarized)"
+        )
     except Exception as e:
         _write_marker(f"mark_summarized({key!r}) raised: {e!r}")
 
@@ -385,20 +390,16 @@ def delete_entry(key: str) -> None:
     try:
         if not STATE_FILE.exists():
             return
-        STATE_DIR.mkdir(parents=True, exist_ok=True)
-        with STATE_FILE.open("a+") as fh:
-            if not _acquire_lock(fh):
-                _write_marker(
-                    f"could not acquire flock on {STATE_FILE} after retries (delete_entry)"
-                )
+        with state_io.with_path_lock(STATE_FILE):
+            state = _load_state_from_path()
+            if key not in state:
                 return
-            try:
-                state = _load_state(fh)
-                if key not in state:
-                    return
-                del state[key]
-                _dump_state(fh, state)
-            finally:
-                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            del state[key]
+            state_io.atomic_write_json(STATE_FILE, state)
+    except state_io.StateLockTimeoutError:
+        # Fail-open on lock timeout — see should_fire for the §3.1 rationale.
+        _write_marker(
+            f"could not acquire flock on {STATE_FILE} after retries (delete_entry)"
+        )
     except Exception as e:
         _write_marker(f"delete_entry({key!r}) raised: {e!r}")

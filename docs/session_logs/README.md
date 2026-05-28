@@ -96,6 +96,7 @@ outside the sentinel block.
 <!-- BEGIN AUTO-INDEX -->
 | Date | Type | Status | Workstream | Title | PRs |
 |------|------|--------|------------|-------|-----|
+| 2026-05-28 | session_log | closed | infrastructure | [2026-05-28 — `shared/alert_dedupe.py` → `state_io` migration (PR 2 of Phase 1.4 hardening cluster)](2026-05-28_alert-dedupe-state-io-migration.md) | #103, #88 |
 | 2026-05-28 | session_log | closed | security | [2026-05-28 — Forensic-audit remediation (HIGH-1 injection fix + LOW hygiene + HIGH-2 surfacing)](2026-05-28_forensic-audit-remediation.md) | #95, #96 |
 | 2026-05-28 | session_log | closed | security | [2026-05-28 — Portal-pivot reconciliation + HIGH-2 supersession](2026-05-28_portal-pivot-reconciliation.md) | #98, #99, #100 |
 | 2026-05-28 | session_log | closed | _–_ | [2026-05-28 — Subagent hardening (codeql propose-only + delegation/path/token fixes)](2026-05-28_subagent-hardening.md) | #92, #93 |

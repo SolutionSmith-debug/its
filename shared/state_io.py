@@ -36,9 +36,10 @@ Single-host single-writer assumption:
 Consumers:
     - ``safety_reports/intake_poll.py``  — seen-set + local heartbeat + row-state writes.
     - ``safety_reports/weekly_send_poll.py`` — local heartbeat + row-state writes.
-    - ``shared/alert_dedupe.py`` migration to this helper is tracked as a
-      separate follow-on PR (sequencing decision 2026-05-25 — land this
-      helper clean before alert_dedupe's existing same-FD-flock pivots).
+    - ``shared/alert_dedupe.py`` — dedupe-state read-modify-write under
+      ``with_path_lock`` + ``atomic_write_json`` (migrated PR #103); its
+      read-only ``list_expired_summaries`` reads lock-free, relying on the
+      atomic-write inode-swap guarantee documented above.
 """
 from __future__ import annotations
 

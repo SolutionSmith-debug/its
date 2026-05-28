@@ -8,6 +8,7 @@ Run with: pytest -q tests/test_alert_dedupe.py
 """
 from __future__ import annotations
 
+import contextlib
 import json
 from datetime import UTC, datetime, timedelta
 
@@ -16,6 +17,24 @@ import pytest
 import shared.alert_dedupe as alert_dedupe
 from shared import defaults
 from shared.smartsheet_client import SmartsheetError
+from shared.state_io import StateLockTimeoutError
+
+
+def _make_failing_lock(exc_class=StateLockTimeoutError, message="test"):
+    """Return a `with_path_lock` replacement whose context-enter raises.
+
+    Drives alert_dedupe's fail-open paths: the default
+    `StateLockTimeoutError` exercises the per-function timeout catch (the
+    D2 ruling — a stuck lock must never suppress a CRITICAL); passing a
+    non-`StateLockTimeoutError` (e.g. `RuntimeError`) proves the broad
+    outer `except Exception` fail-open still fires.
+    """
+    @contextlib.contextmanager
+    def _failing(path):
+        raise exc_class(message)
+        yield  # unreachable; satisfies the generator contract
+
+    return _failing
 
 
 @pytest.fixture(autouse=True)
@@ -205,11 +224,12 @@ def test_record_fire_recovers_after_corruption(state_in_tmp, frozen_now):
 def test_should_fire_falls_open_on_unexpected_exception(
     state_in_tmp, frozen_now, monkeypatch, log_capture
 ):
-    # Simulate an unexpected blow-up below the public surface.
-    def boom(*args, **kwargs):
-        raise RuntimeError("disk gone")
-
-    monkeypatch.setattr(alert_dedupe, "_acquire_lock", boom)
+    # Simulate an unexpected (non-timeout) blow-up below the public surface;
+    # proves the broad outer `except Exception` fail-open path still fires.
+    monkeypatch.setattr(
+        "shared.state_io.with_path_lock",
+        _make_failing_lock(RuntimeError, "disk gone"),
+    )
 
     assert alert_dedupe.should_fire("script::code") is True
     assert any("[alert-dedupe-state-error]" in line for line in log_capture.lines)
@@ -218,10 +238,10 @@ def test_should_fire_falls_open_on_unexpected_exception(
 def test_record_fire_silent_noop_on_unexpected_exception(
     state_in_tmp, frozen_now, monkeypatch, log_capture
 ):
-    def boom(*args, **kwargs):
-        raise RuntimeError("disk gone")
-
-    monkeypatch.setattr(alert_dedupe, "_acquire_lock", boom)
+    monkeypatch.setattr(
+        "shared.state_io.with_path_lock",
+        _make_failing_lock(RuntimeError, "disk gone"),
+    )
 
     # Must not raise.
     alert_dedupe.record_fire("script::code")
@@ -231,12 +251,53 @@ def test_record_fire_silent_noop_on_unexpected_exception(
 def test_should_fire_returns_true_when_lock_unobtainable(
     state_in_tmp, frozen_now, monkeypatch, log_capture
 ):
-    monkeypatch.setattr(alert_dedupe, "_acquire_lock", lambda fh: False)
+    monkeypatch.setattr("shared.state_io.with_path_lock", _make_failing_lock())
 
     assert alert_dedupe.should_fire("script::code") is True
     assert any(
         "could not acquire flock" in line for line in log_capture.lines
     )
+
+
+def test_should_fire_returns_True_on_StateLockTimeoutError(  # noqa: N802
+    state_in_tmp, frozen_now, monkeypatch, log_capture
+):
+    # D2 ruling (Op Stds §3.1): a stuck sidecar lock must NEVER suppress a
+    # CRITICAL. StateLockTimeoutError is caught and routed to fail-open
+    # (return True / send the email), not propagated. This case is the
+    # explicit proof of that ruling; the name is brief-mandated verbatim.
+    # Distinct from test_should_fire_returns_true_when_lock_unobtainable: this
+    # one additionally proves the timeout path is INERT on state — the lock
+    # never acquires, so no atomic write runs and the state file is untouched.
+    monkeypatch.setattr("shared.state_io.with_path_lock", _make_failing_lock())
+
+    assert alert_dedupe.should_fire("script::code") is True
+    assert any("could not acquire flock" in line for line in log_capture.lines)
+    # Fail-open did not write or create state (the lock raised before any read/write).
+    assert not alert_dedupe.STATE_FILE.exists()
+
+
+def test_atomic_write_failure_leaves_no_tmp_residue(
+    state_in_tmp, frozen_now, monkeypatch, log_capture
+):
+    # Regression guard on PR #88's atomic-write cleanup, now that alert_dedupe
+    # is a consumer. Open a window so should_fire takes the suppressed WRITE
+    # path, then force os.replace to fail mid-write; atomic_write_json's
+    # `finally` must remove the sibling temp file so no `*.tmp.*` leaks.
+    alert_dedupe.record_fire("script::code")
+    frozen_now.advance(minutes=5)
+
+    def _boom_replace(src, dst):
+        raise OSError("simulated os.replace failure")
+
+    monkeypatch.setattr("os.replace", _boom_replace)
+
+    # Suppressed path → atomic_write_json → os.replace raises → caught
+    # broad-except fail-open (an extra email is acceptable; a missed one is not).
+    assert alert_dedupe.should_fire("script::code") is True
+
+    residue = [p.name for p in state_in_tmp.iterdir() if ".tmp." in p.name]
+    assert residue == [], f"unexpected atomic-write temp residue: {residue}"
 
 
 # ---- Config read fallback -----------------------------------------------
@@ -321,14 +382,15 @@ def test_concurrent_should_fire_calls_serialize_via_flock(
 ):
     """Two interleaved should_fire calls land at consistent state.
 
-    Simulates: process A opens lock and reads, process B's flock waits,
-    process A writes and releases, process B then reads A's write. The
-    flock contract means each writer sees a consistent state.
+    Simulates: process A acquires the sidecar lock and reads, process B's
+    flock waits, process A writes (atomic temp + os.replace) and releases,
+    process B then reads A's write. The `state_io.with_path_lock` contract
+    means each writer sees a consistent state.
 
-    We can't spawn a second OS process inside pytest cleanly, but we can
-    assert the lock-protected sequence by interleaving on the same
-    in-process file handles via a stubbed `_acquire_lock` that records
-    a hand-off counter.
+    We can't spawn a second OS process inside pytest cleanly, but the
+    sequential record_fire + two suppressed should_fire calls below
+    exercise the same acquire → read → write → release cycle the lock
+    serialises; the persisted suppressed_count proves both writes landed.
     """
     alert_dedupe.record_fire("script::code")
     # Two suppressed calls in tight sequence — both increment.
@@ -476,7 +538,7 @@ def test_mark_summarized_logs_marker_on_failure(
     state_in_tmp, frozen_now, monkeypatch, log_capture
 ):
     alert_dedupe.record_fire("script::code")
-    monkeypatch.setattr(alert_dedupe, "_acquire_lock", lambda fh: False)
+    monkeypatch.setattr("shared.state_io.with_path_lock", _make_failing_lock())
 
     alert_dedupe.mark_summarized("script::code")
     assert any("could not acquire flock" in line for line in log_capture.lines)
@@ -512,7 +574,7 @@ def test_delete_entry_logs_marker_on_failure(
     state_in_tmp, frozen_now, monkeypatch, log_capture
 ):
     alert_dedupe.record_fire("script::code")
-    monkeypatch.setattr(alert_dedupe, "_acquire_lock", lambda fh: False)
+    monkeypatch.setattr("shared.state_io.with_path_lock", _make_failing_lock())
 
     alert_dedupe.delete_entry("script::code")
     assert any("could not acquire flock" in line for line in log_capture.lines)
