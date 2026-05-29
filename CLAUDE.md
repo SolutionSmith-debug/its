@@ -276,6 +276,25 @@ protection on `main` should be verified separately as a follow-up.
 - Adding a `misc/`-scope skill: same plus `--full-depth` (as used for
   `git-guardrails-claude-code` above).
 
+## Agent skills
+
+Repo-specific config the planning / engineering skills above (`to-issues`,
+`to-prd`, `triage`, `grill-with-docs`, `improve-codebase-architecture`)
+consume — where issues live, what the triage labels mean, and how to read the
+domain docs. Each subsection points to the canonical file under `docs/agents/`.
+
+### Issue tracker
+
+Issues and PRDs are tracked in GitHub Issues via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default canonical triage labels (needs-triage, needs-info, ready-for-agent, ready-for-human, wontfix). See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
+
 ## Git workflow
 
 - After every PR merge, switch local back to main before the next task:
