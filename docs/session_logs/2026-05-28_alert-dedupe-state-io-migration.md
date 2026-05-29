@@ -9,7 +9,7 @@ tags: [phase-1.4, alert-dedupe, state-io, atomic-write, sidecar-lock, fail-open,
 
 # 2026-05-28 — `shared/alert_dedupe.py` → `state_io` migration (PR 2 of Phase 1.4 hardening cluster)
 
-PR: [#104](https://github.com/SolutionSmith-debug/its/pull/104) — _merge details filled at landing_.
+PR: [#104](https://github.com/SolutionSmith-debug/its/pull/104) — squash-merged at 2026-05-28T23:58:55Z. Merge commit `45be1498afd156e489103228531e69b11de5188e`. Four-part PR-landed verify clean (state=MERGED, mergedAt non-null, mergeCommit.oid present, main-branch CI on merge commit = SUCCESS).
 
 Second PR of the Phase 1.4 hardening cluster. Migrates `shared/alert_dedupe.py` off
 its same-FD-flock pattern (`STATE_FILE.open("a+")` + `fcntl.flock` + `_acquire_lock(fh)` +
@@ -156,17 +156,58 @@ for a mutation decision.
 
 | Stage | Result |
 |-------|--------|
-| pytest -q (full suite) | **1064 passed / 16 deselected** (+2 from 1062 baseline; `test_alert_dedupe.py` 37 → 39). |
-| mypy . | **0 errors / 131 source files.** |
+| pytest -q (isolated branch) | **1064 passed / 16 deselected** (+2 from 1062 branch baseline; `test_alert_dedupe.py` 37 → 39). |
+| pytest -q (post-integration, landed) | **1090 passed / 16 deselected** — main advanced +26 tests via #101/#103/#106/#107 (doc-reconciliation cluster) between branch-cut and merge; the migration's own +2 is unchanged. |
+| mypy . | **0 errors / 134 source files** (131 on the isolated branch; 134 after integrating main's new modules). |
 | ruff check . | **clean.** |
-| main-branch CI on merge commit | _filled at landing_. |
+| main-branch CI on merge commit `45be149` | **SUCCESS** (`ci` job + `Push on main` both `success`). |
 
-Four-part PR-landed verify: _filled at landing_.
+Four-part PR-landed verify (per `prompts/scaffold/pr-merge-verify.md`):
+- `state=MERGED`
+- `mergedAt=2026-05-28T23:58:55Z` (non-null)
+- `mergeCommit.oid=45be1498afd156e489103228531e69b11de5188e` (present)
+- main-branch CI on the merge commit: **SUCCESS**
 
-### Operator-side manual smoke (sandbox, pre-merge)
+### Post-authorization main-integration (conflict resolution)
 
-_Filled from operator paste-back per `its-blueprint/prompts/scaffold/manual-smoke.md`
-(7-assertion checklist; no 8th no-clobber check — single-writer file)._
+The operator authorized the merge, but main had advanced +5 commits (#101 Op Stds v11→v13
+drift fix; #103 doctrine manifest; #106/#107 doc-reconciliation agent + hook) since branch-cut,
+so the PR went un-mergeable. Resolved by merging `origin/main` into the branch:
+- **CLAUDE.md** (stubbed-vs-real table): took main's v13-corrected `error_log` row (its change,
+  not mine) + kept my migrated `alert_dedupe` + `state_io` rows.
+- **docs/session_logs/README.md** (auto-index): kept both new entries (mine + doc-reconciliation),
+  canonicalized via `regen_doc_indexes`.
+- **docs/tech_debt.md**: auto-merged clean (my F19+F23-entry edit + main's `[jwt]` closure are
+  disjoint sections).
+- **`shared/alert_dedupe.py` docstring**: aligned my new `Op Stds v11 §3/§3.1` citations to
+  **v13** (§3.1/§42 are v13 sections; #101 had just made v13 canonical — writing v11 in fresh
+  content would have reintroduced the exact drift #101 cleaned, and is inconsistent with the
+  v13 `error_log` row I merged). 2-word fix, no behavior change.
+Post-merge full gates re-run green on the integrated tree (1090 / 0 / clean) before re-merge.
+The pre-existing uncommitted CLAUDE.md "Agent skills" hunk + untracked `docs/agents/` (separate
+operator WIP, not on main, not in this PR) were preserved untouched throughout.
+
+### Operator-side manual smoke (sandbox, pre-merge) — PASS
+
+Ran `scripts/smoke_test_alert_dedupe.py` (full `@its_error_log` triple-fire path) twice against
+the live sandbox (real Resend + Keychain + `~/its/state/alert_dedupe.json`). 7-assertion
+checklist (no 8th no-clobber — single-writer file):
+
+| # | Assertion | Result |
+|---|-----------|--------|
+| 1 | Script exit | `exit=0` both runs |
+| 2 | State file present | `~/its/state/alert_dedupe.json` |
+| 3 | Valid JSON | well-formed, **alphabetically-sorted keys** (confirms `atomic_write_json`'s `sort_keys=True`); re-read cleanly by B3's run |
+| 4 | Sidecar lock present | `alert_dedupe.json.lock` created (confirms `with_path_lock`) |
+| 5 | ISO timestamps | `first_fired_at` / `window_ends_at` valid ISO |
+| 6 | No tmp residue | "none (good)" both runs (confirms atomic-write cleanup) |
+| 7 | Cycle log emitted | full triple-fire output + `[resend-alert-suppressed]` markers |
+| B3 | **Suppression end-to-end** | `suppressed_count` **4 → 9**, **exactly one Resend email** total (B2 opened the window + sent 1; B3 suppressed all 5, sent 0) — operator-confirmed |
+
+The B3 row is the load-bearing proof: windowed Resend suppression is preserved through the
+migration end-to-end against live infrastructure. (The `python3 -c` one-liner JSON-validity
+checks errored on `IndentationError` — a zsh multi-line-paste artifact, not a code fault; JSON
+validity confirmed by the `cat` output + the smoke's own successful re-read on the second run.)
 
 ## Out of scope
 
