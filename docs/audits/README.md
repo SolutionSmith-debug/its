@@ -14,6 +14,7 @@ indicate which mode it operates in.
 <!-- BEGIN AUTO-INDEX -->
 | Date | Type | Status | Workstream | Title | PRs |
 |------|------|--------|------------|-------|-----|
+| 2026-05-29 | audit | active | infrastructure | [Agent + Workflow Optimization Audit (2026-05-29)](2026-05-29_agent-workflow-audit.md) | _–_ |
 | 2026-05-28 | audit | active | _–_ | [Doc-reconciliation audit (2026-05-28) — agent self-test](2026-05-28_doc-reconciliation.md) | #101, #103, #105 |
 | 2026-05-28 | audit | active | security | [Forensic Evaluation Audit (2026-05-28)](2026-05-28_forensic-evaluation.md) | #95, #96 |
 | _(no frontmatter)_ | _–_ | _–_ | _–_ | [person_tag_in_subject audit — 2026-05-19](person_tag_audit_2026-05-19.md) | _–_ |
