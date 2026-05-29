@@ -96,6 +96,7 @@ outside the sentinel block.
 <!-- BEGIN AUTO-INDEX -->
 | Date | Type | Status | Workstream | Title | PRs |
 |------|------|--------|------------|-------|-----|
+| 2026-05-29 | session_log | closed | docs | [2026-05-29 — Exec-side ledger cleanup: FM v8→v9 + Op Stds v13→v14 doctrine bump](2026-05-29_exec-ledger-cleanup.md) | #125 |
 | 2026-05-29 | session_log | closed | security | [2026-05-29 — F02 (network-capability allowlist) + F22 (approval-attestation verification)](2026-05-29_f02-f22-capability-approval.md) | #118 |
 | 2026-05-29 | session_log | closed | ci | [2026-05-29 — Integration tests silently broken by autouse keychain stub; token-leak redaction](2026-05-29_integration-keychain-stub-fix.md) | #123 |
 | 2026-05-29 | session_log | closed | infrastructure | [2026-05-29 — Worktree-isolation fix + agent/workflow optimization audit](2026-05-29_worktree-discipline-and-audit.md) | #121 |
