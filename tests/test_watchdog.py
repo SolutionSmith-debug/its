@@ -127,6 +127,32 @@ def test_tracked_jobs_contains_safety_weekly_generate():
     assert watchdog.TRACKED_JOB_WINDOWS["safety_weekly_generate"].days == 8
 
 
+def test_tracked_jobs_contains_safety_intake():
+    """F17: the 60s customer-facing intake poller is registered with Check C
+    so a silent death of the inbound-safety-report path is detected. Tight
+    5-min window (~5 poll cycles) per the high-frequency-poller convention —
+    the slug must match safety_reports.intake_poll.WATCHDOG_JOB_SLUG."""
+    assert "safety_intake" in watchdog.TRACKED_JOBS
+    assert watchdog.TRACKED_JOB_WINDOWS["safety_intake"].total_seconds() == 5 * 60
+
+
+def test_safety_intake_slug_matches_intake_poll_module():
+    """F17 §1c consistency guard: the slug intake_poll writes its marker under
+    MUST equal the TRACKED_JOBS entry the watchdog reads — otherwise the
+    watchdog tracks a marker nothing writes → permanent false WARN.
+
+    The autouse `isolate` fixture redirects `watchdog.WATCHDOG_MARKER_DIR` to a
+    tmp dir, so a live cross-module equality can't be asserted here; instead we
+    pin intake_poll's writer dir to the canonical location both modules build
+    from `Path.home() / "its" / ".watchdog"` (watchdog's reader uses the same
+    literal — see the marker reads at WATCHDOG_MARKER_DIR / f"{job}.last_run")."""
+    from safety_reports import intake_poll
+
+    assert intake_poll.WATCHDOG_JOB_SLUG == "safety_intake"
+    assert intake_poll.WATCHDOG_JOB_SLUG in watchdog.TRACKED_JOBS
+    assert intake_poll.WATCHDOG_MARKER_DIR == Path.home() / "its" / ".watchdog"
+
+
 # ---- Group B: _check_stale_review_queue ---------------------------------
 
 

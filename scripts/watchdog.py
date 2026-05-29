@@ -22,11 +22,15 @@ Failure isolation (Op Stds v9 §27):
 Checks shipped:
     A. Stale ITS_Review_Queue items (PENDING past 2× SLA) — WARN. Session 1.
     B. Open CRITICAL ITS_Errors rows (Resolved At blank) — WARN. Session 1.
-    C. Scheduled-jobs last-run via marker files — Session 2. Infrastructure
-       only per planning decision C1: TRACKED_JOBS is empty by design today
-       (only one scheduled job exists — watchdog itself, and self-tracking
-       has a chicken-and-egg hole better solved by external heartbeat).
-       The marker-write helper is wired so adding a real job is one line.
+    C. Scheduled-jobs last-run via marker files — Session 2+. Each entry in
+       TRACKED_JOBS must have written a {slug}.last_run marker within its
+       freshness window (default 24h; per-job overrides in
+       TRACKED_JOB_WINDOWS). Tracked today: safety_weekly_generate,
+       safety_weekly_send_poll, safety_picklist_audit, and safety_intake
+       (the 60s customer-facing intake poller). A missing or stale marker
+       is a WARN. The watchdog's own run-marker is intentionally NOT in
+       TRACKED_JOBS — a daemon can't reliably detect its own death; that's
+       the external heartbeat observer's job (see main()).
     D. 14-day reviewer-chain forward scan — Session 2. Logs an INFO ANOMALY
        row to ITS_Review_Queue per workstream with reviewer-chain gaps in
        the next 14 days (Op Stds v9 §18).
@@ -98,6 +102,7 @@ TRACKED_JOBS: list[str] = [
     "safety_weekly_generate",
     "safety_weekly_send_poll",
     "safety_picklist_audit",
+    "safety_intake",
 ]
 
 # Per-job freshness windows. Jobs not in this map use the default 24h
@@ -115,6 +120,11 @@ TRACKED_JOB_WINDOWS: dict[str, timedelta] = {
     # operator launchd schedule). 8-day window matches the weekly_generate
     # pattern — a missed Sunday + the following Friday still surfaces.
     "safety_picklist_audit": timedelta(days=8),
+    # intake_poll runs every 60s (launchd StartInterval). 5 min == ~5 cycles:
+    # tolerates a few transient missed cycles (Graph hiccup, lock overlap)
+    # without false-positiving, but a genuine stall surfaces at the next daily
+    # watchdog run. Per the high-frequency-poller window convention above.
+    "safety_intake": timedelta(minutes=5),
 }
 DEFAULT_TRACKED_JOB_WINDOW = timedelta(hours=24)
 
@@ -259,7 +269,7 @@ def _check_scheduled_jobs() -> CheckResult:
     if not TRACKED_JOBS:
         return CheckResult(
             severity=Severity.INFO,
-            summary="No scheduled jobs tracked (TRACKED_JOBS is empty by design).",
+            summary="No scheduled jobs tracked (TRACKED_JOBS is empty).",
         )
 
     now = datetime.now(UTC)
@@ -724,7 +734,7 @@ def main() -> None:
     # so this marker is unconsumed today; it's written so adding the
     # watchdog to TRACKED_JOBS later is a one-line change. The external
     # "is the watchdog (and the host) alive" signal is the heartbeat ping
-    # below — that's the real dead-man's switch.
+    # below (audit F16) — that's the real dead-man's switch.
     write_last_run_marker("watchdog")
 
     # External heartbeat beacon (audit F16). Read the configured ping URL
