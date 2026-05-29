@@ -44,11 +44,12 @@ def _make_result(
 
 @pytest.fixture
 def state_in_tmp(monkeypatch, tmp_path: Path):
-    """Redirect SEEN_PATH / HEARTBEAT_PATH / LOCK_PATH into tmp_path.
+    """Redirect SEEN_PATH / HEARTBEAT_PATH / LOCK_PATH / WATCHDOG_MARKER_DIR.
 
-    The poller's state files normally live under ~/its/state. Tests
-    redirect them so concurrent test runs / CI don't share state. The
-    fixture has no useful return value — it's a side-effect fixture.
+    The poller's state files (and the Check C marker dir) normally live under
+    ~/its. Tests redirect them into tmp_path so concurrent test runs / CI
+    don't share state and the F17 marker-absence assertions can't be fooled by
+    a stale real ~/its/.watchdog/safety_intake.last_run. Side-effect fixture.
     """
     seen = tmp_path / "safety_intake_processed.json"
     heartbeat = tmp_path / "safety_intake_heartbeat.txt"
@@ -57,7 +58,13 @@ def state_in_tmp(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(intake_poll, "SEEN_PATH", seen)
     monkeypatch.setattr(intake_poll, "HEARTBEAT_PATH", heartbeat)
     monkeypatch.setattr(intake_poll, "LOCK_PATH", lock)
+    monkeypatch.setattr(intake_poll, "WATCHDOG_MARKER_DIR", tmp_path / ".watchdog")
     return tmp_path
+
+
+def _marker_path() -> Path:
+    """The Check C marker file the watchdog reads for the intake poller."""
+    return intake_poll.WATCHDOG_MARKER_DIR / f"{intake_poll.WATCHDOG_JOB_SLUG}.last_run"
 
 
 @pytest.fixture
@@ -101,6 +108,12 @@ def test_poll_once_skips_when_disabled(mocker, state_in_tmp, kill_switch_active,
     assert stats is not None  # @require_active didn't short-circuit
     assert stats.skipped_disabled is True
     list_inbox.assert_not_called()
+    # F17: the watchdog marker is written ONLY on a completed cycle, NEVER on
+    # the polling-disabled skip path. A disabled poller SHOULD eventually go
+    # stale → Check C WARN. This locks the deliberate divergence from
+    # weekly_send_poll (see the rationale in intake_poll._poll_inside_lock);
+    # a future reader must not "fix" this by marking on the skip path.
+    assert not _marker_path().exists()
 
 
 def test_poll_once_skips_when_lock_held(
@@ -121,9 +134,61 @@ def test_poll_once_skips_when_lock_held(
         stats = intake_poll.poll_once()
         assert stats.skipped_locked is True
         list_inbox.assert_not_called()
+        # F17: the lock-held skip path must NOT refresh the marker either —
+        # a perpetually lock-held poller is a stall the watchdog SHOULD
+        # surface. Same deliberate divergence as the disabled path above.
+        assert not _marker_path().exists()
     finally:
         fcntl.flock(holder, fcntl.LOCK_UN)
         holder.close()
+
+
+# ---- Watchdog Check C marker (F17) --------------------------------------
+
+
+def test_write_watchdog_marker_writes_parseable_iso_timestamp(state_in_tmp):
+    intake_poll._write_watchdog_marker()
+
+    marker = _marker_path()
+    assert marker.exists()
+    # Round-trips through datetime.fromisoformat the way Check C reads it,
+    # and is UTC-aware (matches weekly_send_poll's marker contract).
+    parsed = datetime.fromisoformat(marker.read_text().strip())
+    assert parsed.tzinfo is not None
+
+
+def test_write_watchdog_marker_is_fail_soft_on_oserror(mocker):
+    """A marker-write failure must NOT raise — Op Stds §3.1 fail-open. It logs
+    a single WARN with the watchdog_marker_failed code and returns; the poll
+    cycle's real work has already succeeded by the time this runs."""
+    bad_dir = mocker.MagicMock()
+    bad_dir.mkdir.side_effect = OSError("disk full")
+    mocker.patch.object(intake_poll, "WATCHDOG_MARKER_DIR", bad_dir)
+    log = mocker.patch("safety_reports.intake_poll.error_log.log")
+
+    intake_poll._write_watchdog_marker()  # must not raise
+
+    assert log.call_count == 1
+    assert log.call_args.kwargs["error_code"] == "watchdog_marker_failed"
+    assert log.call_args.args[0] is intake_poll.Severity.WARN
+
+
+def test_poll_once_writes_watchdog_marker_on_completed_cycle(
+    mocker, state_in_tmp, kill_switch_active, quiet_logs, polling_on, mailbox_from_config
+):
+    """A completed _poll_inside_lock cycle refreshes the Check C marker — even
+    a zero-message cycle, which is still a valid 'poller is alive' signal."""
+    mocker.patch(
+        "safety_reports.intake_poll.graph_client.list_inbox",
+        return_value=[],
+    )
+
+    stats = intake_poll.poll_once()
+
+    assert stats.messages_fetched == 0
+    marker = _marker_path()
+    assert marker.exists()
+    datetime.fromisoformat(marker.read_text().strip())  # parseable timestamp
 
 
 # ---- Per-message iteration -----------------------------------------------
