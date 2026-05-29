@@ -1,7 +1,7 @@
 """Tests for scripts/seed_its_config.py.
 
 Smartsheet reads/writes are mocked at the module level. These tests cover
-classify-and-skip logic and the seven-row build (including the reviewer_chain
+classify-and-skip logic and the seed-row build (including the reviewer_chain
 JSON round-trip back to the canonical DEFAULT_REVIEWER_CHAINS dict).
 
 Run with: pytest -q tests/test_seed_its_config.py
@@ -26,9 +26,10 @@ import seed_its_config  # noqa: E402  (path manipulation must precede import)
 # ---- _build_seed_rows ----------------------------------------------------
 
 
-def test_build_seed_rows_has_seven_entries():
+def test_build_seed_rows_has_expected_entries():
     rows = seed_its_config._build_seed_rows()
-    assert len(rows) == 7
+    # 7 Handover-v5 rows + F22 safety_reports.authorized_approvers.
+    assert len(rows) == 8
 
 
 def test_build_seed_rows_have_expected_columns():
@@ -60,7 +61,7 @@ def test_classify_empty_sheet_routes_all_to_added():
     seed = seed_its_config._build_seed_rows()
     added, skipped, stale = seed_its_config.classify(seed, [])
 
-    assert len(added) == 7
+    assert len(added) == 8
     assert skipped == []
     assert stale == []
 
@@ -75,7 +76,7 @@ def test_classify_full_sheet_matching_values_routes_all_to_skipped():
     added, skipped, stale = seed_its_config.classify(seed, existing)
 
     assert added == []
-    assert len(skipped) == 7
+    assert len(skipped) == 8
     assert stale == []
 
 
@@ -94,7 +95,7 @@ def test_classify_one_divergent_value_flagged_stale_not_overwritten():
     added, skipped, stale = seed_its_config.classify(seed, existing)
 
     assert added == []
-    assert len(skipped) == 6
+    assert len(skipped) == 7
     assert len(stale) == 1
     stale_seed, existing_value = stale[0]
     assert stale_seed["Setting"] == "system.state"
@@ -138,7 +139,7 @@ def test_main_empty_sheet_prompts_and_writes_on_confirm(mocker):
 
     add_rows.assert_called_once()
     _, called_rows = add_rows.call_args.args
-    assert len(called_rows) == 7
+    assert len(called_rows) == 8
 
 
 def test_main_empty_sheet_aborts_on_decline(mocker):

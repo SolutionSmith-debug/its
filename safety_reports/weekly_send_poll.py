@@ -29,10 +29,15 @@ Per-cycle behavior
          (Send Retry Count >= MAX_SEND_RETRIES, encoded in Notes per
          the schema-degradation contract in weekly_send.py) are
          filtered out.
-  4. For each candidate row: invoke `weekly_send.send_one_row(row_id)`.
-     The handler returns a `SendResult` — the poller logs the outcome
-     and continues. SmartsheetError raised by the handler caught
-     per-row; the cycle continues to the next row.
+  4. For each candidate row: first run the F22 approval-attestation gate
+     (`approval_verification.verify_approval`) — confirm the approval
+     cell's current value was set by an authorized actor per Smartsheet
+     cell history. A non-verified verdict BLOCKS that row (fail-closed)
+     with a forensic `approval_unverified` event and the cycle moves on;
+     other rows still dispatch. Verified rows invoke
+     `weekly_send.send_one_row(row_id)`. The handler returns a `SendResult`
+     — the poller logs the outcome and continues. SmartsheetError raised by
+     the handler caught per-row; the cycle continues to the next row.
   5. Write file heartbeat (`HEARTBEAT_PATH`).
   6. Write ITS_Daemon_Health row (PR #60 pattern; helpers replicated
      verbatim from `intake_poll.py` per preservation-over-refactor
@@ -75,6 +80,7 @@ from __future__ import annotations
 
 import fcntl
 import json
+import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -83,7 +89,13 @@ from pathlib import Path
 from typing import Any, Literal
 
 from safety_reports import weekly_send
-from shared import error_log, sheet_ids, smartsheet_client, state_io
+from shared import (
+    approval_verification,
+    error_log,
+    sheet_ids,
+    smartsheet_client,
+    state_io,
+)
 from shared.error_log import Severity, its_error_log
 from shared.kill_switch import require_active
 
@@ -93,6 +105,14 @@ WORKSTREAM = "safety_reports"
 # ITS_Config keys.
 CFG_POLLING_ENABLED = "safety_reports.weekly_send.polling_enabled"
 CFG_POLL_INTERVAL = "safety_reports.weekly_send.poll_interval_seconds"
+
+# F22 — approval-attestation gate. The authorized-approver allowlist lives in
+# ITS_Config (config-driven so it can be swapped at the evergreenmirror.com →
+# evergreenrenewables.com cutover without a code change — see
+# docs/operations/cutover_checklist.md). APPROVAL_COLUMN is the same CHECKBOX
+# the dispatch filter reads via `bool(row.get("Approved for Send"))`.
+CFG_AUTHORIZED_APPROVERS = "safety_reports.authorized_approvers"
+APPROVAL_COLUMN = "Approved for Send"
 
 DEFAULT_POLLING_ENABLED = True
 DEFAULT_POLL_INTERVAL = 900  # 15 minutes
@@ -133,6 +153,7 @@ class PollStats:
     skipped: int = 0  # any "skipped_*" outcome
     failed: int = 0   # any send_failed / invalid_recipients outcome
     errors: int = 0   # per-row SmartsheetError exceptions inside the loop
+    blocked: int = 0  # F22: rows whose approval failed attestation (not sent)
 
 
 # ---- Config readers (replicated per preservation) -----------------------
@@ -153,6 +174,27 @@ def _read_bool_setting(key: str, fallback: bool) -> bool:
 
 def _polling_enabled() -> bool:
     return _read_bool_setting(CFG_POLLING_ENABLED, DEFAULT_POLLING_ENABLED)
+
+
+def _load_authorized_approvers() -> frozenset[str]:
+    """Read the F22 authorized-approver allowlist from ITS_Config.
+
+    A missing row → empty set (the legitimate "not yet seeded" / cutover
+    case), which `verify_approval` treats as fail-closed (block all sends),
+    NEVER fail-open. Parsing is delegated to
+    `approval_verification.parse_authorized_actors` so the comma-separated
+    value has a single interpretation. A non-NotFound SmartsheetError (auth
+    / 500) propagates to the `@its_error_log` CRITICAL path — a config-read
+    infra failure aborts the cycle loudly with zero sends, retried next
+    cycle (fail-closed, and consistent with `_read_str_setting`'s posture).
+    """
+    try:
+        raw = smartsheet_client.get_setting(
+            CFG_AUTHORIZED_APPROVERS, workstream=WORKSTREAM
+        )
+    except smartsheet_client.SmartsheetNotFoundError:
+        raw = None
+    return approval_verification.parse_authorized_actors(raw)
 
 
 # ---- State / lock helpers -----------------------------------------------
@@ -417,6 +459,68 @@ def _filter_dispatch_candidates(rows: list[dict[str, Any]]) -> list[dict[str, An
     return out
 
 
+# ---- F22 approval-attestation handling ----------------------------------
+
+# Verdict reasons that warrant an operator wake-up (triple-fire), vs. those
+# that get a forensic row only. UNAUTHORIZED_ACTOR is the security case;
+# EMPTY_ALLOWLIST is a config/cutover failure blocking every send.
+_WAKE_REASONS = frozenset({
+    approval_verification.VerdictReason.UNAUTHORIZED_ACTOR,
+    approval_verification.VerdictReason.EMPTY_ALLOWLIST,
+})
+
+
+def _handle_unverified(
+    row_id: int, verdict: approval_verification.ApprovalVerdict
+) -> None:
+    """Record a blocked send for an unverified approval (fail-closed).
+
+    Always writes a forensic ITS_Errors row (never silently swallowed — an
+    unverified approval on a customer report is security-relevant). Wakes
+    the operator via the triple-fire path (dedupe-gated on
+    `(script, error_code)`) only for `_WAKE_REASONS`; a benign race
+    (NOT_CURRENTLY_APPROVED) gets a WARN row and a transient read failure an
+    ERROR row, neither paging.
+    """
+    reason = verdict.reason
+    if reason in _WAKE_REASONS:
+        severity: Severity = Severity.CRITICAL
+    elif reason == approval_verification.VerdictReason.NOT_CURRENTLY_APPROVED:
+        severity = Severity.WARN
+    else:
+        severity = Severity.ERROR
+
+    # One correlation_id threaded across all triple-fire legs (Op Stds v14 §3)
+    # so the ITS_Errors row, Resend email, and Sentry event share an identifier
+    # for cross-leg pivoting — the same pattern @its_error_log and the
+    # picklist_sync standalone caller use.
+    correlation_id = str(uuid.uuid4())
+
+    error_log.log(
+        severity,
+        SCRIPT_NAME,
+        (
+            f"approval attestation FAILED for row_id={row_id}; send BLOCKED "
+            f"(fail-closed). reason={reason.value} actor={verdict.actor!r} "
+            f"detail={verdict.detail}"
+        ),
+        error_code="approval_unverified",
+        correlation_id=correlation_id,
+    )
+
+    if reason in _WAKE_REASONS:
+        error_log._alert_critical(
+            SCRIPT_NAME,
+            (
+                f"weekly_send_poll BLOCKED an unverified approval "
+                f"(row_id={row_id}, reason={reason.value})"
+            ),
+            f"actor={verdict.actor!r} detail={verdict.detail}",
+            correlation_id=correlation_id,
+            error_code="approval_unverified",
+        )
+
+
 # ---- Public API ----------------------------------------------------------
 
 
@@ -468,16 +572,35 @@ def _poll_inside_lock() -> PollStats:
         return PollStats(errors=1)
 
     candidates = _filter_dispatch_candidates(rows)
+    authorized_actors = _load_authorized_approvers()
     counters = {
         "dispatched": 0,
         "sent": 0,
         "skipped": 0,
         "failed": 0,
         "errors": 0,
+        "blocked": 0,
     }
 
     for row in candidates:
         row_id = row["_row_id"]
+
+        # F22: approval-attestation gate (fail-CLOSED). Verify the approval
+        # cell's current value was set by an authorized actor per Smartsheet
+        # cell history BEFORE handing the row to the send process. A
+        # non-verified verdict blocks THIS row only; other rows still
+        # dispatch.
+        verdict = approval_verification.verify_approval(
+            sheet_ids.SHEET_WPR_PENDING_REVIEW,
+            row_id,
+            APPROVAL_COLUMN,
+            authorized_actors=authorized_actors,
+        )
+        if not verdict.verified:
+            counters["blocked"] += 1
+            _handle_unverified(row_id, verdict)
+            continue
+
         counters["dispatched"] += 1
         try:
             result = weekly_send.send_one_row(row_id)
@@ -514,10 +637,11 @@ def _poll_inside_lock() -> PollStats:
 
     _write_heartbeat()
 
-    # Determine cycle status.
+    # Determine cycle status. A blocked (unverified-approval) row is
+    # security-relevant → at least WARN.
     if counters["errors"] > 0:
         cycle_status: HeartbeatStatus = "DEGRADED"
-    elif counters["failed"] > 0:
+    elif counters["failed"] > 0 or counters["blocked"] > 0:
         cycle_status = "WARN"
     else:
         cycle_status = "OK"
@@ -528,9 +652,12 @@ def _poll_inside_lock() -> PollStats:
             items_processed=counters["dispatched"],
             error_summary=(
                 None
-                if counters["errors"] == 0 and counters["failed"] == 0
+                if counters["errors"] == 0
+                and counters["failed"] == 0
+                and counters["blocked"] == 0
                 else (
-                    f"errors={counters['errors']} failed={counters['failed']}"
+                    f"errors={counters['errors']} failed={counters['failed']} "
+                    f"blocked={counters['blocked']}"
                 )
             ),
         )
@@ -550,7 +677,8 @@ def _poll_inside_lock() -> PollStats:
         (
             f"poll cycle: scanned={len(rows)} dispatched={counters['dispatched']} "
             f"sent={counters['sent']} skipped={counters['skipped']} "
-            f"failed={counters['failed']} errors={counters['errors']}"
+            f"failed={counters['failed']} errors={counters['errors']} "
+            f"blocked={counters['blocked']}"
         ),
         error_code="poll_cycle_summary",
     )
@@ -561,6 +689,7 @@ def _poll_inside_lock() -> PollStats:
         skipped=counters["skipped"],
         failed=counters["failed"],
         errors=counters["errors"],
+        blocked=counters["blocked"],
     )
 
 
