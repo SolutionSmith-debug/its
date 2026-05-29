@@ -66,6 +66,8 @@ deliberate decision the operator hasn't made.
 """
 from __future__ import annotations
 
+import time
+from collections.abc import Iterator
 from datetime import UTC, datetime
 
 import pytest
@@ -82,12 +84,39 @@ pytestmark = pytest.mark.integration
 # ---------------------------------------------------------------------------
 
 
+class _SecretToken:
+    """Wraps the real ITS_SMARTSHEET_TOKEN so its value can never leak into a
+    pytest failure traceback.
+
+    pytest renders a failing test's fixture/argument values via ``repr()``.
+    A fixture that returned the raw token string therefore printed the live
+    secret into the traceback when one of these tests failed — which forced a
+    real token rotation this session. ``__repr__`` here redacts (and ``str()``
+    / f-strings fall back to it), so the value only escapes via an explicit
+    ``.reveal()`` call — the REST cleanup helper below is the sole caller.
+    """
+
+    __slots__ = ("_value",)
+
+    def __init__(self, value: str) -> None:
+        self._value = value
+
+    def reveal(self) -> str:
+        """Return the raw token. Call only where the real value is required
+        (the ``Authorization: Bearer`` header in REST cleanup)."""
+        return self._value
+
+    def __repr__(self) -> str:
+        return "<ITS_SMARTSHEET_TOKEN redacted>"
+
+
 @pytest.fixture(scope="module")
-def _token_available() -> str:
+def _token_available() -> _SecretToken:
     """Skip the whole module if ITS_SMARTSHEET_TOKEN isn't in Keychain.
 
-    Returns the raw token so cleanup helpers can call the REST API directly
-    when no SDK-level delete wrapper exists.
+    Returns the token wrapped in `_SecretToken` so cleanup helpers can call
+    the REST API directly (via `.reveal()`) when no SDK-level delete wrapper
+    exists, while the raw value can never render in a failure traceback.
     """
     try:
         token = keychain.get_secret("ITS_SMARTSHEET_TOKEN")
@@ -95,7 +124,27 @@ def _token_available() -> str:
         pytest.skip(f"ITS_SMARTSHEET_TOKEN unavailable: {e!r}")
     if not token:
         pytest.skip("ITS_SMARTSHEET_TOKEN returned empty")
-    return token
+    return _SecretToken(token)
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _reset_smartsheet_client() -> Iterator[None]:
+    """Force a fresh real-token Smartsheet client for this module.
+
+    `smartsheet_client._client` is a process-wide singleton built lazily from
+    the keychain token. In an isolated `pytest -m integration` run the
+    conftest keychain opt-out already guarantees it is built with the real
+    token, so this fixture is a no-op there. But in a MIXED-process run (full
+    suite / `pytest -m ''` / IDE "run all"), an earlier unit test runs with
+    the autouse keychain stub active and can prime `_client` with the fake
+    `"test-ITS_SMARTSHEET_TOKEN"` — which would then 401 here. Resetting on
+    entry forces a rebuild from the (now real) keychain; resetting on exit
+    keeps this module's real-token client from leaking into a unit test that
+    runs afterward in the same process.
+    """
+    smartsheet_client._client = None
+    yield
+    smartsheet_client._client = None
 
 
 # ---------------------------------------------------------------------------
@@ -103,16 +152,18 @@ def _token_available() -> str:
 # ---------------------------------------------------------------------------
 
 
-def _delete_sheet_rest(sheet_id: int, token: str) -> None:
+def _delete_sheet_rest(sheet_id: int, token: _SecretToken) -> None:
     """Cleanup helper — direct REST DELETE (no SDK delete-sheet wrapper today).
 
     Mirrors the precedent in test_smartsheet_client_integration.py.
-    Swallows failures silently: teardown cleanup should not mask the real
-    test outcome.
+    Takes the redacting `_SecretToken` (not a raw str) so the value cannot
+    render in a traceback frame; `.reveal()` is called only to build the
+    Authorization header. Swallows failures silently: teardown cleanup should
+    not mask the real test outcome.
     """
     requests.delete(
         f"https://api.smartsheet.com/2.0/sheets/{sheet_id}",
-        headers={"Authorization": f"Bearer {token}"},
+        headers={"Authorization": f"Bearer {token.reveal()}"},
     )
 
 
@@ -132,12 +183,42 @@ def _sandbox_name(label: str) -> str:
     return name
 
 
+def _wait_for_history(
+    sheet_id: int,
+    row_id: int,
+    column: str,
+    *,
+    attempts: int = 8,
+    delay_s: float = 0.5,
+) -> list[smartsheet_client.CellHistoryEvent]:
+    """Poll `get_cell_history` until at least one event is visible.
+
+    Smartsheet's cell-history endpoint is eventually consistent: for up to a
+    few seconds after `update_rows` returns, `get_cell_history` can still
+    report zero events for the just-written cell. A test that reads history
+    with no intervening settle therefore races — and an empty read is exactly
+    `verify_approval`'s fail-CLOSED `NO_HISTORY` verdict, which masks the
+    authorization path under test (observed deterministically once the
+    keychain fix let these tests reach the live API). This bounded poll
+    (default ~3.5 s ceiling) returns the events as soon as any appear; on
+    exhaustion it returns the last (empty) result so the caller's own
+    assertion still surfaces the failure with full context.
+    """
+    events = smartsheet_client.get_cell_history(sheet_id, row_id, column)
+    for _ in range(attempts - 1):
+        if events:
+            break
+        time.sleep(delay_s)
+        events = smartsheet_client.get_cell_history(sheet_id, row_id, column)
+    return events
+
+
 # ---------------------------------------------------------------------------
 # Integration tests
 # ---------------------------------------------------------------------------
 
 
-def test_get_cell_history_after_checkbox_write(_token_available: str) -> None:
+def test_get_cell_history_after_checkbox_write(_token_available: _SecretToken) -> None:
     """get_cell_history returns a real history event after update_rows writes
     a CHECKBOX cell.
 
@@ -177,10 +258,9 @@ def test_get_cell_history_after_checkbox_write(_token_available: str) -> None:
             [{"_row_id": row_id, "Approved for Send": True}],
         )
 
-        # Step 3: read the cell history.
-        events = smartsheet_client.get_cell_history(
-            sheet_id, row_id, "Approved for Send"
-        )
+        # Step 3: read the cell history. Poll to absorb Smartsheet's
+        # cell-history eventual-consistency window after the write above.
+        events = _wait_for_history(sheet_id, row_id, "Approved for Send")
 
         # At least one event must exist after the write above.
         assert len(events) >= 1, (
@@ -223,7 +303,7 @@ def test_get_cell_history_after_checkbox_write(_token_available: str) -> None:
         _delete_sheet_rest(sheet_id, _token_available)
 
 
-def test_verify_approval_authorized_actor(_token_available: str) -> None:
+def test_verify_approval_authorized_actor(_token_available: _SecretToken) -> None:
     """verify_approval returns verified=True / AUTHORIZED when the real actor
     is in authorized_actors.
 
@@ -260,9 +340,8 @@ def test_verify_approval_authorized_actor(_token_available: str) -> None:
 
         # Discover the real actor_email from live history — do not hardcode it
         # so the test works under any sandbox credentials without modification.
-        events = smartsheet_client.get_cell_history(
-            sheet_id, row_id, "Approved for Send"
-        )
+        # Poll to absorb the cell-history eventual-consistency window.
+        events = _wait_for_history(sheet_id, row_id, "Approved for Send")
         assert events, "Precondition: must have at least one history event"
         dated = [e for e in events if e.modified_at is not None]
         latest = max(dated, key=lambda e: e.modified_at) if dated else events[0]  # type: ignore[arg-type,return-value]
@@ -295,7 +374,7 @@ def test_verify_approval_authorized_actor(_token_available: str) -> None:
         _delete_sheet_rest(sheet_id, _token_available)
 
 
-def test_verify_approval_unauthorized_actor(_token_available: str) -> None:
+def test_verify_approval_unauthorized_actor(_token_available: _SecretToken) -> None:
     """verify_approval returns verified=False / UNAUTHORIZED_ACTOR when the
     real actor is NOT in authorized_actors.
 
@@ -328,6 +407,19 @@ def test_verify_approval_unauthorized_actor(_token_available: str) -> None:
         smartsheet_client.update_rows(
             sheet_id,
             [{"_row_id": row_id, "Approved for Send": True}],
+        )
+
+        # Settle the cell-history eventual-consistency window BEFORE calling
+        # verify_approval. Without this, the verdict races to NO_HISTORY (an
+        # empty read) instead of reaching the UNAUTHORIZED_ACTOR path this
+        # test targets — verify_approval reads history immediately, so unlike
+        # the two tests above there is no intervening round-trip to absorb the
+        # lag. This precondition both waits and asserts the event is visible.
+        settle_events = _wait_for_history(sheet_id, row_id, "Approved for Send")
+        assert settle_events, (
+            "Precondition: approval history must be visible before the verdict; "
+            "verify_approval fail-CLOSED-returns NO_HISTORY on an empty read, "
+            "which would mask the UNAUTHORIZED_ACTOR path under test."
         )
 
         # authorized_actors contains only a known-wrong email, not the

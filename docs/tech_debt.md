@@ -995,3 +995,61 @@ When merging a PR from a git worktree (e.g., `~/its-f02-f22` on branch `f02-f22`
 **Revisit when:** `git branch -r | grep origin/f02-f22` still shows it.
 
 Surfaced: 2026-05-29 F02/F22 session close. Session log: `docs/session_logs/2026-05-29_f02-f22-capability-approval.md`.
+
+## Integration tests silently broken by autouse keychain stub [RESOLVED 2026-05-29]
+
+Both Smartsheet integration files (`tests/test_smartsheet_client_integration.py`, `tests/test_approval_verification_integration.py`) — and in fact ALL ~10 `@pytest.mark.integration` files — lacked any opt-out from the autouse `_mock_keychain` fixture that landed in **PR #74** (the CI-fix follow-up to the macOS-`security`-CLI breakage PR #68 introduced; the fixture was authored in #74, NOT #68). The stub fed `get_client()` a fake `"test-ITS_SMARTSHEET_TOKEN"`, so the first live call (`create_sheet_in_folder` → `get_client()`) hit `SmartsheetAuthError: HTTP 401 (code 1002)` even though the real token was valid and read-write. The module-scoped `_token_available` fixture saw the real token (module setup runs before the function-scoped stub), but `get_client()` inside the test body saw the stub — the confusing "fixture has the real token but the call 401s" signature. The conftest docstring always *claimed* integration tests opt out ("they re-mock or override via test-level fixtures") but the opt-out was never implemented. Silently broken since PR #74 because nobody re-ran the integration suite after the stub landed.
+
+**Resolved (this PR):** added a **marker-based auto-opt-out** to `_mock_keychain` — `if request.node.get_closest_marker("integration") is not None: return`. Evaluated against the filename-list alternative the brief proposed and chose the marker approach because (a) it auto-covers all ~10 current integration files plus any future one with zero maintenance, and (b) it resolves at PER-TEST granularity, which is REQUIRED for mixed files like `tests/test_intake_poll.py` (per-test `@pytest.mark.integration` decorators at lines 730/1132 alongside unit tests that must keep the stub) — a filename list would wrongly disable the stub for that file's unit tests. The two non-integration filename entries (`test_keychain.py`, `test_helpers.py`) stay in `_KEYCHAIN_OPT_OUT_FILES` since they need the real keychain but are not integration-marked.
+
+**Lesson:** any new integration test now opts out automatically via the marker — no list to remember. The durable fix is in place; this entry is the incident record.
+
+Surfaced + resolved: 2026-05-29 integration-keychain-stub fix session.
+
+## No startup token-scope / write-capability validation [OPEN 2026-05-29]
+
+A read-only or otherwise-invalid `ITS_SMARTSHEET_TOKEN` fails **silently at the first daemon write** rather than loudly at boot. The keychain-stub session above burned significant operator time precisely because the failure mode was a confusing per-call `401 (code 1002)` deep in a test, not a loud boot-time "this token cannot write." A daemon in production with a mis-scoped token after a rotation would behave the same way: reads succeed, the first write 401s mid-cycle.
+
+**Proposed fix:** a cheap write-capability probe at daemon init (and/or a watchdog check) that CRITICAL-alerts if `ITS_SMARTSHEET_TOKEN` cannot write — e.g. create-then-delete a throwaway sheet in a sandbox folder, or call a low-cost write that the API rejects distinguishably for a read-only token. Fail loud at boot, not silent at first write.
+
+**Effort:** ~half-day (probe + watchdog wiring + a typed "token cannot write" error class + test).
+
+**Phase target:** 1.4 pre-Customer-1 hardening (reliability gap, not a launch blocker for Customer 0).
+
+**Revisit when:** the next token rotation, or any session that touches `shared/keychain.py` / `shared/smartsheet_client.py` auth.
+
+Surfaced: 2026-05-29 integration-keychain-stub fix session.
+
+## Single-token blast radius for Smartsheet [OPEN 2026-05-29]
+
+One PAT (`ITS_SMARTSHEET_TOKEN`) does ALL Smartsheet read + write across the whole system. A scope mistake on rotation (e.g. accidentally minting a read-only or viewer-scoped token) breaks every daemon at once, and — per the entry above — does so silently at first write. There is no blast-radius reduction (no separate read vs write tokens, no per-workstream tokens).
+
+**Proposed consideration (not necessarily implement):** evaluate splitting tokens by capability or workstream at a future hardening pass, weighed against the added secret-management complexity for a solo-operator stage. Likely overkill before Customer 2+ multi-customer secret management (already deferred to 1Password CLI per the observability-stack roadmap).
+
+**Phase target:** 2+ (revisit alongside multi-customer secrets).
+
+**Revisit when:** a rotation incident actually causes a system-wide outage, OR multi-customer secret management lands.
+
+Surfaced: 2026-05-29 integration-keychain-stub fix session.
+
+## Smartsheet integration tests flake on create→read/write eventual consistency [OPEN 2026-05-29]
+
+Once the keychain-stub fix (above) let the Smartsheet integration tests reach the live API for the first time since PR #74, they were found to flake intermittently (~40–60% of full-suite runs had ≥1 failure) on Smartsheet's **create→read/write eventual consistency**. Every observed failure is a transient `errorCode 1006` / HTTP 404 "Not Found" (or a `find_*_by_name_in_folder` returning `None`) — there were **zero** stale-*value* assertion failures. Diagnosis: `create_sheet_in_folder` returns a `sheet_id` before Smartsheet finishes propagating the new sheet across its read replicas, and the 404s **flap** — a successful read does NOT guarantee the next read/write (which may route to a lagging replica) succeeds, for a window of several seconds after create. Confirmed live: a run where `list_columns` succeeded, then `add_rows` → `_fetch_column_map` → `get_sheet` 404'd a moment later (different replica).
+
+This is **pre-existing** (tests authored PRs #47/#48/#49/#51/F22) and was merely **unmasked** by the keychain fix — it is NOT the keychain bug and NOT caused by that fix; the fake-token 401 previously killed every one of these tests at `create_sheet` before they could reach the racy ops.
+
+**Scoped out of the keychain-fix PR by operator decision (2026-05-29):** that PR ships the keychain opt-out + token-leak redaction + `_client` reset + the *deterministic* `NO_HISTORY` cell-history poll (`_wait_for_history`), and leaves this separate eventual-consistency hardening to a dedicated follow-up. A partial create→read settle (`_settle_sheet` / `_wait_until_listed`) was prototyped and **deliberately reverted** because it reduced but could not eliminate the flapping (a single settle read can't guarantee the next op's replica is caught up).
+
+**Proposed fix (follow-up PR), two viable approaches:**
+1. **Test-level reruns** — add the `pytest-rerunfailures` dev-dep and mark the integration tests (or run with `--reruns 3 --reruns-delay 2`). Cleanest, no test-body churn; the whole test re-runs against a fresh sheet so a transient 404 clears. Downsides: new dev dependency; masks rather than handles.
+2. **Retry-on-not-found wrapper** — a `_retry_nf(callable)` helper wrapping every post-create operation (`add_rows`, `update_rows`, `update_column_options`, `list_columns_with_options`, `find_*`, `get_cell_history`) to retry on `SmartsheetNotFoundError` / `None`. No new dep; deterministic (all flakiness is not-found-flapping). Downsides: larger diff touching ~16 call sites; MUST NOT wrap `test_update_row_cells_by_id_raises_not_found_on_missing_row`'s bogus-row update (which legitimately expects a 404). Retrying writes is safe here because a 404 means the write did not apply.
+
+Do NOT push the retry into the SUT (`shared/smartsheet_client.py`): a 404 must surface in production (e.g. the heartbeat-cache 404-invalidation path in `intake_poll`, regression-guarded by `test_update_row_cells_by_id_raises_not_found_on_missing_row`).
+
+**Effort:** ~1 hour for approach 1; ~half-day for approach 2 (+ multi-run verification).
+
+**Phase target:** next integration-test-maintenance pass; not a launch blocker (these tests are operator-run pre-deployment, NOT in CI).
+
+**Revisit when:** the operator next runs `pytest -m integration` and is annoyed by a transient 404, or before relying on the integration suite as a release gate.
+
+Surfaced: 2026-05-29 integration-keychain-stub fix session.

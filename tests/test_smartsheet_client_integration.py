@@ -39,6 +39,7 @@ hasn't made.
 """
 from __future__ import annotations
 
+from collections.abc import Iterator
 from datetime import UTC, datetime
 
 import pytest
@@ -49,31 +50,89 @@ from shared import keychain, sheet_ids, smartsheet_client
 pytestmark = pytest.mark.integration
 
 
+class _SecretToken:
+    """Wraps the real ITS_SMARTSHEET_TOKEN so its value can never leak into a
+    pytest failure traceback.
+
+    pytest renders a failing test's fixture/argument values via ``repr()``.
+    A fixture that returned the raw token string therefore printed the live
+    secret into the traceback when one of these tests failed — which forced a
+    real token rotation this session. ``__repr__`` here redacts (and ``str()``
+    / f-strings fall back to it), so the value only escapes via an explicit
+    ``.reveal()`` call — the REST cleanup helpers below are the sole callers.
+    """
+
+    __slots__ = ("_value",)
+
+    def __init__(self, value: str) -> None:
+        self._value = value
+
+    def reveal(self) -> str:
+        """Return the raw token. Call only where the real value is required
+        (the ``Authorization: Bearer`` header in REST cleanup)."""
+        return self._value
+
+    def __repr__(self) -> str:
+        return "<ITS_SMARTSHEET_TOKEN redacted>"
+
+
 @pytest.fixture(scope="module")
-def _token_available() -> str:
-    """Skip the whole module if ITS_SMARTSHEET_TOKEN isn't in Keychain."""
+def _token_available() -> _SecretToken:
+    """Skip the whole module if ITS_SMARTSHEET_TOKEN isn't in Keychain.
+
+    Returns the token wrapped in `_SecretToken` so the raw value cannot
+    render in a failure traceback (see the class docstring).
+    """
     try:
         token = keychain.get_secret("ITS_SMARTSHEET_TOKEN")
     except Exception as e:
         pytest.skip(f"ITS_SMARTSHEET_TOKEN unavailable: {e!r}")
     if not token:
         pytest.skip("ITS_SMARTSHEET_TOKEN returned empty")
-    return token
+    return _SecretToken(token)
 
 
-def _delete_sheet_rest(sheet_id: int, token: str) -> None:
-    """Cleanup helper — direct REST DELETE (no SDK wrapper today)."""
+@pytest.fixture(scope="module", autouse=True)
+def _reset_smartsheet_client() -> Iterator[None]:
+    """Force a fresh real-token Smartsheet client for this module.
+
+    `smartsheet_client._client` is a process-wide singleton built lazily from
+    the keychain token. In an isolated `pytest -m integration` run the
+    conftest keychain opt-out already guarantees it is built with the real
+    token, so this fixture is a no-op there. But in a MIXED-process run (full
+    suite / `pytest -m ''` / IDE "run all"), an earlier unit test runs with
+    the autouse keychain stub active and can prime `_client` with the fake
+    `"test-ITS_SMARTSHEET_TOKEN"` — which would then 401 here. Resetting on
+    entry forces a rebuild from the (now real) keychain; resetting on exit
+    keeps this module's real-token client from leaking into a unit test that
+    runs afterward in the same process.
+    """
+    smartsheet_client._client = None
+    yield
+    smartsheet_client._client = None
+
+
+def _delete_sheet_rest(sheet_id: int, token: _SecretToken) -> None:
+    """Cleanup helper — direct REST DELETE (no SDK wrapper today).
+
+    Takes the redacting `_SecretToken` (not a raw str) so the value cannot
+    render in a traceback frame; `.reveal()` is called only to build the
+    Authorization header.
+    """
     requests.delete(
         f"https://api.smartsheet.com/2.0/sheets/{sheet_id}",
-        headers={"Authorization": f"Bearer {token}"},
+        headers={"Authorization": f"Bearer {token.reveal()}"},
     )
 
 
-def _delete_folder_rest(folder_id: int, token: str) -> None:
-    """Cleanup helper — direct REST DELETE for a folder (no SDK wrapper today)."""
+def _delete_folder_rest(folder_id: int, token: _SecretToken) -> None:
+    """Cleanup helper — direct REST DELETE for a folder (no SDK wrapper today).
+
+    Takes the redacting `_SecretToken` wrapper; see `_delete_sheet_rest`.
+    """
     requests.delete(
         f"https://api.smartsheet.com/2.0/folders/{folder_id}",
-        headers={"Authorization": f"Bearer {token}"},
+        headers={"Authorization": f"Bearer {token.reveal()}"},
     )
 
 
