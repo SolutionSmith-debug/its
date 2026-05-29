@@ -23,11 +23,15 @@ Caller invokes at session close, optionally with a brief summary of what happene
    - `§1` Operator Communication Preferences — update if Seth corrected tone or process
    - `§5` Known Traps — add new FP patterns or class-of-bug discoveries
    - `§6` Tooling & Infrastructure — update if new MCP/SDK behavior surfaced
-   - `§8` Current State Snapshot — always check; update "Recently landed" / "Open queue" / "On the horizon"
+   - `§8` Current State Snapshot — always check; update "Recently landed" / "Open queue" / "On the horizon". **Reconcile against the fetched `origin/main` version of this file** — a concurrent session may have just refreshed §8 (this collided 2026-05-28 with PR #17's §8 refresh). Merge your entries into origin's current §8; do not overwrite from a stale base, and do not drop a sibling session's entries or subsections. When a version string is involved (Op Stds vN, V&R vN, FM vN), cite the current canonical value, not whatever the stale local copy held. Verify any PR number you cite is the REAL merged number (`gh pr view <N>`), never a predicted one (a predicted "#103" landed as "#104" on 2026-05-28). If `gh pr view <N>` errors because the PR doesn't exist yet, that error IS the signal — the number isn't real yet, so don't cite it.
    - Frontmatter `Last refreshed:` — must move to today
 
 2. **Memory archive** — `~/its-blueprint/references/memory-archive.md`
-   - If operational detail surfaced (sheet IDs, schema decisions, wiring history, class-of-bug), append a new `§G<N>` section. Find the highest existing §G<N> and increment.
+   - If operational detail surfaced (sheet IDs, schema decisions, wiring history, class-of-bug), append a new `§G<N>` section.
+   - **Number from `origin/main`, not the local copy.** Compute the next N as one past the highest `§G<N>` on the FETCHED `origin/main` version (level-agnostic — the trailing space excludes subsections like `§G10.4`, and `^#+` catches both the older level-1 `#` and the current level-2 `##` headings):
+     `git -C ~/its-blueprint show origin/main:references/memory-archive.md | grep -oE '^#+ §G[0-9]+ ' | sed 's/[^0-9]//g' | sort -n | tail -1`
+     then increment. A concurrent session that landed `§G<N>` while you worked is the exact collision this prevents — it happened 2026-05-28: a stale-local close authored a duplicate `§G9` that had to be renumbered to `§G10` at merge.
+   - **Heading template:** write the top-level section as `## §G<N> — <YYYY-MM-DD> <title>` (level-2 `##`). Match the recent sections (§G8–§G10, which are level-2); the older §G5–§G7 are level-1 `#` and are NOT the template — the convention changed at §G8. Subsections, if any, are `## §G<N>.<k> — <subtitle>`, also level-2.
    - **Never** create `memory-archive-v2.md`. The §G<N> append pattern is canonical.
 
 3. **Session log** — NOT written by this agent. Subagents cannot invoke other subagents, so the execution-repo log (`~/its/docs/session_logs/<YYYY-MM-DD>_<topic>.md`) and the planning-side log (`~/its-blueprint/session-logs/<...>.md`) are produced by the separate `session-log-writer` agent, which the **operator invokes directly**.
@@ -48,12 +52,18 @@ Caller invokes at session close, optionally with a brief summary of what happene
 
 ## Process
 
-1. **Survey what happened.** Pull from:
+1. **Fetch first, then survey against `origin/main` — never the stale local tree.** The single biggest failure mode for this agent is numbering or snapshotting off a local `main` that origin moved past while you worked (a concurrent session landed PRs). ALWAYS start with:
+   - `cd ~/its && git fetch origin && cd ~/its-blueprint && git fetch origin`
+
+   If `git fetch` fails (e.g. offline), STOP and surface to the operator — do NOT number or snapshot against a possibly-stale cached `origin/main`. `git show origin/main:…` silently reads the LAST-fetched ref, so proceeding offline reintroduces the exact staleness this step exists to prevent.
+
+   Then survey from:
    - Caller-provided summary (if any)
-   - `cd ~/its && git log --oneline --since="<last session date or 24h ago>"`
-   - `cd ~/its-blueprint && git log --oneline --since=...`
-   - `git status` in both repos (uncommitted-but-touched files)
+   - `git log --oneline origin/main --since="<last session date or 24h ago>"` in **both** repos (read `origin/main`, NOT `HEAD` / local `main`)
+   - `git status` in both repos — uncommitted-but-touched files are usually operator WIP; do NOT fold them into your edits unless they are yours
    - Recent session logs in `~/its/docs/session_logs/` and `~/its-blueprint/session-logs/`
+
+   Every monotonic value you assign or refresh below — the next `§G<N>`, the `§8` snapshot, the "Recently landed" PR list — must be derived from the **fetched `origin/main`** state so a concurrent session's just-landed work is visible and you don't collide with it.
 
 2. **Classify each change** by which living doc(s) it should touch.
 
