@@ -45,7 +45,7 @@ def _build_seed_rows() -> list[dict[str, str]]:
             "Setting": "system.heartbeat_url",
             "Value": "PLACEHOLDER_uptimerobot_heartbeat_url",
             "Workstream": "global",
-            "Description": "UptimeRobot heartbeat URL pinged by scripts/watchdog.py.",
+            "Description": "Healthchecks.io heartbeat URL pinged by scripts/watchdog.py.",
         },
         {
             "Setting": "system.sentry_dsn_keychain_key",

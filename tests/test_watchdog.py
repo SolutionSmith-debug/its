@@ -89,6 +89,18 @@ def mock_get_rows(mocker):
     return mocker.patch("watchdog.smartsheet_client.get_rows")
 
 
+@pytest.fixture
+def mock_get_setting(mocker):
+    """Mock the ITS_Config read main() uses for the F16 heartbeat URL."""
+    return mocker.patch("watchdog.smartsheet_client.get_setting")
+
+
+@pytest.fixture
+def mock_ping(mocker):
+    """Mock the outbound heartbeat beacon so main() makes no real GET."""
+    return mocker.patch("watchdog.heartbeat_client.ping")
+
+
 # ---- Group A: module shape ----------------------------------------------
 
 
@@ -380,8 +392,11 @@ def test_paused_skips_all_checks(mock_check_state, mock_log, mocker):
     assert any("PAUSED" in m for m in messages)
 
 
-def test_maintenance_runs_with_alerts_suppressed(mock_check_state, mock_log, mocker):
+def test_maintenance_runs_with_alerts_suppressed(
+    mock_check_state, mock_log, mock_get_setting, mock_ping, mocker
+):
     mock_check_state.return_value = SystemState.MAINTENANCE
+    mock_get_setting.return_value = "https://hc-ping.com/test-uuid"
     run_check_spy = mocker.patch("watchdog._run_check")
 
     watchdog.main()
@@ -396,8 +411,11 @@ def test_maintenance_runs_with_alerts_suppressed(mock_check_state, mock_log, moc
     assert any("MAINTENANCE" in m for m in messages)
 
 
-def test_active_runs_normally(mock_check_state, mock_log, mocker):
+def test_active_runs_normally(
+    mock_check_state, mock_log, mock_get_setting, mock_ping, mocker
+):
     mock_check_state.return_value = SystemState.ACTIVE
+    mock_get_setting.return_value = "https://hc-ping.com/test-uuid"
     run_check_spy = mocker.patch("watchdog._run_check")
 
     watchdog.main()
@@ -410,13 +428,16 @@ def test_active_runs_normally(mock_check_state, mock_log, mocker):
     assert not any("PAUSED" in m or "MAINTENANCE" in m for m in messages)
 
 
-def test_main_writes_watchdog_marker_at_end(mock_check_state, mocker):
+def test_main_writes_watchdog_marker_at_end(
+    mock_check_state, mock_get_setting, mock_ping, mocker
+):
     """`main()` calls write_last_run_marker('watchdog') after the check loop.
 
     PAUSED short-circuits before checks AND before the marker, so the
     marker is only written when state was ACTIVE or MAINTENANCE.
     """
     mock_check_state.return_value = SystemState.ACTIVE
+    mock_get_setting.return_value = "https://hc-ping.com/test-uuid"
     mocker.patch("watchdog._run_check")
 
     watchdog.main()
@@ -436,6 +457,95 @@ def test_main_paused_does_not_write_marker(mock_check_state, mocker):
 
     marker = watchdog.WATCHDOG_MARKER_DIR / "watchdog.last_run"
     assert not marker.exists()
+
+
+# ---- Group E2: main() F16 heartbeat beacon ------------------------------
+
+
+def test_main_pings_heartbeat_with_configured_url(
+    mock_check_state, mock_get_setting, mock_ping, mocker
+):
+    """ACTIVE run reads system.heartbeat_url and pings exactly that URL."""
+    mock_check_state.return_value = SystemState.ACTIVE
+    mocker.patch("watchdog._run_check")
+    mock_get_setting.return_value = "https://hc-ping.com/real-uuid"
+
+    watchdog.main()
+
+    mock_get_setting.assert_called_once_with(
+        "system.heartbeat_url", workstream="global"
+    )
+    mock_ping.assert_called_once_with("https://hc-ping.com/real-uuid")
+
+
+def test_main_pings_heartbeat_during_maintenance(
+    mock_check_state, mock_get_setting, mock_ping, mocker
+):
+    """MAINTENANCE still pings — the host is alive during a maintenance
+    window, so suppressing the beacon would trip a false 'host dead' alert.
+    Alert suppression applies to the checks' own alerts, not the beacon."""
+    mock_check_state.return_value = SystemState.MAINTENANCE
+    mocker.patch("watchdog._run_check")
+    mock_get_setting.return_value = "https://hc-ping.com/real-uuid"
+
+    watchdog.main()
+
+    mock_ping.assert_called_once_with("https://hc-ping.com/real-uuid")
+
+
+@pytest.mark.parametrize(
+    "value",
+    [None, "", "PLACEHOLDER_uptimerobot_heartbeat_url"],
+)
+def test_main_skips_ping_when_url_missing_or_placeholder(
+    value, mock_check_state, mock_get_setting, mock_ping, mock_log, mocker
+):
+    """Unconfigured (missing/blank/seed-placeholder) URL → no ping, one INFO
+    'not configured' line. The placeholder token MUST match the seed Value."""
+    mock_check_state.return_value = SystemState.ACTIVE
+    mocker.patch("watchdog._run_check")
+    mock_get_setting.return_value = value
+
+    watchdog.main()
+
+    mock_ping.assert_not_called()
+    messages = [c.args[2] for c in mock_log.call_args_list]
+    assert any("not configured" in m for m in messages)
+
+
+def test_main_paused_does_not_ping(
+    mock_check_state, mock_get_setting, mock_ping, mocker
+):
+    """PAUSED returns before the marker AND the heartbeat block — no config
+    read, no ping (a deliberately-paused system does not claim liveness)."""
+    mock_check_state.return_value = SystemState.PAUSED
+    mocker.patch("watchdog._run_check")
+
+    watchdog.main()
+
+    mock_ping.assert_not_called()
+    mock_get_setting.assert_not_called()
+
+
+def test_main_heartbeat_read_failure_is_swallowed(
+    mock_check_state, mock_get_setting, mock_ping, mock_log, mocker
+):
+    """A SmartsheetError reading the URL is caught (WARN), the ping is
+    skipped, and main() completes without raising — fail-soft per §3.1."""
+    mock_check_state.return_value = SystemState.ACTIVE
+    mocker.patch("watchdog._run_check")
+    mock_get_setting.side_effect = SmartsheetError("config unreachable")
+
+    # Must NOT raise.
+    watchdog.main()
+
+    mock_ping.assert_not_called()
+    severities = [c.args[0] for c in mock_log.call_args_list]
+    assert Severity.WARN in severities
+    warn_msg = next(
+        c.args[2] for c in mock_log.call_args_list if c.args[0] is Severity.WARN
+    )
+    assert "heartbeat_url read failed" in warn_msg
 
 
 # ---- Group F: Check C — scheduled jobs scaffold + marker writes ---------
