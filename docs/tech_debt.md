@@ -4,6 +4,14 @@ Items deliberately deferred. Each carries the rationale for deferral and the tri
 
 When to add an entry: a session deliberately chooses preservation-over-refactor (per Op Stds v11 §14), discovers an external-API constraint that forced a workaround, or defers a non-trivial cleanup that's larger than the current session can absorb. When to mark CLOSED: the underlying item is resolved in a commit; preserve the entry with resolution detail rather than deleting (history is cheap, context is expensive).
 
+## Invariant 2 Layer 5 prose: "defense layer" framing vs FM v9 tripwire reframe [OPEN 2026-05-29]
+
+FM v9 (blueprint, audit F13) reframed Invariant 2's Layer 5 (anomaly logging on extraction output) from a co-equal defense layer to a post-hoc **detection tripwire** — an honest characterization of a trivially-evadable substring matcher; the mechanism is unchanged and stays in production. The OBS-1 citation sweep (PR #127) recorded this reframe in CLAUDE.md's *governing-version block*, but the **Invariant 2 section itself** (the "Six-layer defense:" list) still describes Layer 5 as "Output validation and anomaly logging" — the pre-v9 framing — and still labels the whole set a "Six-layer defense."
+
+This is a doc-characterization reword (relabel Layer 5 as a detection tripwire inside the Invariant 2 list, and soften "Six-layer defense" to acknowledge Layer 5 is detection-not-prevention), deliberately scoped OUT of OBS-1 — that PR was citation-version reconciliation only, and no version string lives in the Layer 5 bullet, so `check_doctrine_drift.py` does not flag it. No code or behavior is affected; `shared/anomaly_logger.py` is untouched. The blueprint FM v9 and the doctrine manifest are the canonical source for the new wording.
+
+**Revisit when:** the next session that has a natural reason to touch the Invariant 2 section of CLAUDE.md — a security-review pass, the Email-Triage Layer-6 build, or a `doc-reconciliation-auditor` semantic-tier sweep. Mirror FM v9: Layer 5 is a detection tripwire, not a barrier.
+
 ## Invariant 2 Layer 6 (attachment screening) for safety reports — superseded by portal pivot [SUPERSEDED 2026-05-28]
 
 The 2026-05-28 forensic audit (HIGH-2) flagged FM v8 Invariant 2 Layer 6 (attachment screening, Op Stds v11 §34) as doctrine-only for the safety-reports PDF-email intake, and this entry originally tracked an Option A (build) vs Option B (documented exception) decision. **That is superseded by the Safety Portal pivot**, already canonical in the blueprint (`its-blueprint/workstreams/safety-portal/mission.md` v1, 2026-05-25 canonical; `brief.md`).
