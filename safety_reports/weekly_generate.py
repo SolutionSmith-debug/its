@@ -186,6 +186,13 @@ _PACKAGE_ROOT = Path(__file__).resolve().parent.parent
 _PROMPT_PATH = _PACKAGE_ROOT / "prompts" / "safety_weekly_generate.md"
 _SCHEMA_PATH = _PACKAGE_ROOT / "schemas" / "safety_weekly_generate.json"
 
+# Expected value of the `version` key in the schema file above.
+# `_load_tool_schema` rejects any other value (see its docstring for the
+# Op Stds §42 rationale). Bump this in lockstep with the schema's `version`
+# field — schemas/README.md: "bump the version, update the consuming script
+# in the same commit."
+_EXPECTED_SCHEMA_VERSION = "0.1.0"
+
 # Sentinel that the model uses for non-derivable sections — exposed here so
 # tests can assert the prompt preserves the bracket placeholder convention
 # without re-parsing the prompt file.
@@ -312,8 +319,29 @@ def _load_tool_schema() -> dict[str, Any]:
 
     Loads `schemas/safety_weekly_generate.json` and projects to the
     Anthropic tools=[...] shape: {name, description, input_schema}.
+
+    Op Stds §42 rationale — why the `version` key is validated, fail-LOUD:
+    a wrong/stale schema file would otherwise load silently and produce a
+    structurally-wrong WPR draft with no signal. This guard is deliberately
+    fail-LOUD (not fail-open like the kill switch): it runs at generation
+    time, well before any External Send Gate row is written, so a drifted
+    contract surfaces as a hard error here rather than as a malformed draft
+    a reviewer might approve. The damage ceiling of raising (no draft this
+    cycle, operator alerted via @its_error_log) is strictly better than the
+    alternative (bad output entering the review queue). This is the gate
+    schemas/README.md already mandates ("scripts reject responses on
+    schema-version mismatch") — previously documented but unimplemented.
     """
     payload = json.loads(_SCHEMA_PATH.read_text())
+    version = payload.get("version")
+    if version != _EXPECTED_SCHEMA_VERSION:
+        raise ValueError(
+            f"{_SCHEMA_PATH.name}: schema version {version!r} does not match "
+            f"expected {_EXPECTED_SCHEMA_VERSION!r}. Refusing to build the "
+            f"{GENERATE_WPR_TOOL_NAME} tool against a drifted schema contract "
+            f"— bump _EXPECTED_SCHEMA_VERSION in lockstep when the schema is "
+            f"intentionally revised (see schemas/README.md)."
+        )
     return {
         "name": payload["name"],
         "description": payload["description"],
@@ -1123,6 +1151,18 @@ def _run_pipeline(*, week_start_override: date | None) -> dict[str, Any]:
 
     threshold = _read_float_setting(CFG_CONFIDENCE_THRESHOLD, DEFAULT_CONFIDENCE_THRESHOLD)
     model = _read_str_setting(CFG_MODEL, DEFAULT_MODEL)
+
+    # Pre-flight schema-version validation (F20). A drifted/stale schema is a
+    # system-level precondition failure — identical for every project — so,
+    # exactly like the empty-reviewer-chain check above, abort the whole run
+    # LOUDLY rather than discovering it once per project. Raised here (outside
+    # the per-project fence below), the ValueError propagates to @its_error_log
+    # → CRITICAL triple-fire, instead of degrading to N GENERATION_FAILED
+    # placeholders + N ERROR logs for a single root cause — and we never spend
+    # Anthropic credit on a run that would fail every project.
+    # `_handle_standard_project` re-loads per project; this is the belt to that
+    # suspenders.
+    _load_tool_schema()
 
     for folder_id, project_name in iter_active_projects():
         try:
