@@ -96,6 +96,7 @@ outside the sentinel block.
 <!-- BEGIN AUTO-INDEX -->
 | Date | Type | Status | Workstream | Title | PRs |
 |------|------|--------|------------|-------|-----|
+| 2026-05-28 | session_log | active | infrastructure | [2026-05-28 — F16: wire the external heartbeat ping (Option A)](2026-05-28_f16-heartbeat-ping.md) | #114 |
 | 2026-05-28 | session_log | closed | infrastructure | [2026-05-28 — Agent-infrastructure follow-ons: session-close-maintainer staleness guard + agent-skills config landed](2026-05-28_agent-infra-followons.md) | #110, #111 |
 | 2026-05-28 | session_log | closed | infrastructure | [2026-05-28 — `shared/alert_dedupe.py` → `state_io` migration (PR 2 of Phase 1.4 hardening cluster)](2026-05-28_alert-dedupe-state-io-migration.md) | #104, #88 |
 | 2026-05-28 | session_log | closed | docs | [2026-05-28 — Doc-reconciliation: doctrine-version drift + canonical manifest + reconciliation agent](2026-05-28_doc-reconciliation.md) | #101, #103, #106 |
@@ -105,7 +106,6 @@ outside the sentinel block.
 | 2026-05-24 | session_log | closed | docs | [2026-05-24 — CC file-based memory consolidation](2026-05-24_cc-memory-consolidation.md) | _–_ |
 | 2026-05-24 | session_log | closed | docs | [2026-05-24 — Markdown doc conventions + index generation + lint](2026-05-24_doc_conventions.md) | _–_ |
 | 2026-05-24 | session_log | closed | docs | [2026-05-24 — Execution-repo doctrine version drift cleanup](2026-05-24_doctrine-version-drift-cleanup.md) | _–_ |
-| 2026-05-28 | session_log | open | observability | [2026-05-28 — F16: wire the external heartbeat ping (Option A)](2026-05-28_f16-heartbeat-ping.md) | #114 |
 | _(no frontmatter)_ | _–_ | _–_ | _–_ | [2026-05-17 — Ruff exemption for box_migration + v5/v6/v7/v4 doc pointer refresh](2026-05-17_ruff_and_doc_refresh.md) | _–_ |
 | _(no frontmatter)_ | _–_ | _–_ | _–_ | [2026-05-17 — Smartsheet workspace restructure (operator vs customer separation)](2026-05-17_smartsheet_workspace_restructure.md) | _–_ |
 | _(no frontmatter)_ | _–_ | _–_ | _–_ | [2026-05-18 — `_alert_critical` Resend wiring + mypy tech-debt closure](2026-05-18_alert_critical_and_mypy_closure.md) | _–_ |
