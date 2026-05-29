@@ -17,8 +17,13 @@ Two autouse fixtures, both default-applied to every test under `tests/`:
    `mocker.patch` after autouse fixtures.
 
 Integration tests gated by `-m integration` need real keychain access AND
-real Smartsheet calls; they re-mock or override via test-level fixtures
-(see `tests/test_smartsheet_client_integration.py` for the pattern).
+real Smartsheet calls. `_mock_keychain` auto-opts-out of the stub for any
+test carrying the `integration` marker (module-level `pytestmark` OR a
+per-test `@pytest.mark.integration` decorator) — so a new integration test
+gets the real keychain automatically, with no filename list to maintain.
+The marker check resolves per-test, so MIXED files (e.g.
+`tests/test_intake_poll.py`, whose unit tests must keep the stub but whose
+`@pytest.mark.integration` tests must not) are handled correctly.
 
 Why conftest.py rather than per-test mocks: the per-call-site mock
 strategy is fragile when a downstream library (`shared.kill_switch`)
@@ -44,12 +49,29 @@ def _mock_keychain(
 ) -> None:
     """Default keychain stub for all unit tests.
 
-    Auto-opt-out for `tests/test_keychain.py` (tests `get_secret` itself)
-    and `tests/test_helpers.py` (asserts `get_secret`'s real error message
-    via a macOS-only test). Those files want the real keychain entry
-    point under test; the stub would short-circuit assertions.
+    Two auto-opt-out paths, both of which leave the REAL `get_secret` in
+    place:
+
+    1. Filename opt-out (`_KEYCHAIN_OPT_OUT_FILES`) — `tests/test_keychain.py`
+       (tests `get_secret` itself) and `tests/test_helpers.py` (asserts
+       `get_secret`'s real error message via a macOS-only test). Those files
+       want the real keychain entry point under test; the stub would
+       short-circuit assertions. They are NOT integration-marked, so the
+       marker opt-out below would not cover them — the filename list is the
+       mechanism they need.
+
+    2. Marker opt-out — any test carrying the `integration` marker. Live
+       integration tests make real Smartsheet calls, so `get_client()` must
+       read the real `ITS_SMARTSHEET_TOKEN`, not the `f"test-..."` stub. This
+       is the durable fix: it auto-covers every current and future
+       `@pytest.mark.integration` test (there are ~10 such files) with no
+       filename list to maintain, and resolves at PER-TEST granularity so a
+       mixed file keeps the stub for its unit tests while bypassing it only
+       for its integration tests.
     """
     if request.node.path.name in _KEYCHAIN_OPT_OUT_FILES:
+        return
+    if request.node.get_closest_marker("integration") is not None:
         return
 
     def _fake_get_secret(service: str, account: str | None = None) -> str:
