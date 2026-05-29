@@ -221,6 +221,22 @@ def test_lint_exempts_index_readmes(tmp_path: Path, monkeypatch):
     assert lint_file(Path("docs/audits/README.md")) == []
 
 
+def test_lint_exempts_docs_agents(tmp_path: Path, monkeypatch):
+    """docs/agents/*.md follow the mattpocock/skills agent-OS convention, not
+    the ITS doc schema — exempt (same rationale as prompts/ direct children)."""
+    monkeypatch.setattr(lint_mod, "REPO_ROOT", tmp_path)
+    agents = tmp_path / "docs" / "agents"
+    agents.mkdir(parents=True)
+    for name in ("issue-tracker.md", "triage-labels.md", "domain.md"):
+        (agents / name).write_text(f"# {name}\n\nNo frontmatter (upstream convention).\n")
+        assert lint_file(Path(f"docs/agents/{name}")) == []
+    # Scoping guard: a non-agents doc without frontmatter MUST still flag.
+    other = tmp_path / "docs" / "operations"
+    other.mkdir(parents=True)
+    (other / "thing.md").write_text("# thing\n\nNo frontmatter.\n")
+    assert any(v.rule == "frontmatter-required" for v in lint_file(Path("docs/operations/thing.md")))
+
+
 # ---- main() / CLI --------------------------------------------------------
 
 

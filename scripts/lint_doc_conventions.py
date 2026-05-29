@@ -20,6 +20,8 @@ The exempt list covers entry-point docs and the tech-debt accumulator:
     README.md
     docs/tech_debt.md
     docs/**/README.md   (every subdirectory README — auto-generated index)
+    prompts/<name>.md   (direct children — prompt-specific frontmatter convention)
+    docs/agents/*.md    (mattpocock/skills agent-OS config — upstream convention)
 
 The grandfather list — docs that pre-date this PR and are explicitly
 permitted to lack frontmatter until they're touched for unrelated
@@ -105,12 +107,23 @@ def _is_exempt_prompt(rel_path: Path) -> bool:
     return len(parts) == 2 and parts[0] == "prompts" and parts[1].endswith(".md")
 
 
+def _is_exempt_agents(rel_path: Path) -> bool:
+    """Files under `docs/agents/` follow the mattpocock/skills agent-OS
+    convention (issue-tracker / triage-labels / domain config consumed by the
+    installed skills), not the ITS doc-conventions schema — same rationale as
+    the `prompts/` direct-children carve-out. See CLAUDE.md "## Agent skills"."""
+    parts = rel_path.parts
+    return len(parts) >= 2 and parts[0] == "docs" and parts[1] == "agents" and rel_path.name.endswith(".md")
+
+
 def _is_exempt(rel_path: Path) -> bool:
     if str(rel_path) in EXEMPT_FILES:
         return True
     if _is_exempt_readme(rel_path):
         return True
-    return _is_exempt_prompt(rel_path)
+    if _is_exempt_prompt(rel_path):
+        return True
+    return _is_exempt_agents(rel_path)
 
 
 # Grandfather date — docs created/modified before this date don't require
