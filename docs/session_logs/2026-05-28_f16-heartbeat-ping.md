@@ -1,7 +1,7 @@
 ---
 type: session_log
 date: 2026-05-28
-status: active
+status: closed
 workstream: infrastructure
 related_prs: [114]
 tags: [f16, heartbeat, watchdog, healthchecks-io, observability, fail-soft, option-a, network-boundary, integration-test, send-gate-classification]
@@ -13,11 +13,24 @@ Close audit **F16** — the largest documented-architecture-vs-actual-code gap. 
 
 ## Commits landed
 
-- `7ab6dd8` — `feat(watchdog): wire external heartbeat ping behind shared/heartbeat_client (F16)`. New `shared/heartbeat_client.py`, watchdog `main()` wiring, seed label correction, unit + integration tests.
+- PR [#114](https://github.com/SolutionSmith-debug/its/pull/114) — squash-merged 2026-05-29T13:31:00Z, merge commit `692a1c50c0ff5e1557a4f4c31c351260c6fb8e26`. Branch work: `7ab6dd8` (feat: new `shared/heartbeat_client.py`, watchdog `main()` wiring, seed label correction, unit + integration tests) + session-log/index commits + two `origin/main` merges resolving overlap with PR #113 (see below).
 
-## CI runs
+## CI runs — four-part PR-landed verify clean
 
-- PR [#114](https://github.com/SolutionSmith-debug/its/pull/114), branch `f16-heartbeat-ping`, head `7ab6dd8`. `test` + CodeQL `Analyze (python)` / `Analyze (actions)` triggered at session close. Result is the third leg of the operator's four-part merge verify (below) — **not yet merged**, so `status: active`.
+Per `pr-landed-verifier` (`docs/operations/pr_merge_discipline.md`):
+
+```
+PR #114 — four-part verify clean
+- state: MERGED
+- mergedAt: 2026-05-29T13:31:00Z
+- mergeCommit: 692a1c50c0ff5e1557a4f4c31c351260c6fb8e26
+- main CI on merge commit: SUCCESS
+  - workflow `ci` — job `test`: success
+  - workflow `CodeQL` — job `Analyze (python)`: success
+  - workflow `CodeQL` — job `Analyze (actions)`: success
+```
+
+Operator manual-smoke confirmed before merge (Healthchecks.io dashboard showed the live ping land). This finalization (status `active`→`closed` + merge facts) follows the repo's post-merge session-log discipline (cf. #108, #115).
 
 ## Decisions made during session
 
@@ -35,11 +48,17 @@ The audit's F16 line numbers were stale (authored against `40a3509`). `brief-val
 - The seed row carries `Workstream: "global"` (the brief omitted it) — the `get_setting` call uses `workstream="global"` accordingly.
 - Op Stds §30 has no standalone heading (rolled into the `§25-§30 Carry Forward` block) — citation is correct by intent; non-blocking.
 
-## Open items handed off (operator-gated before merge)
+## Operator close-out (completed)
 
-1. **Manual smoke (REQUIRED — external side effect)**, per `prompts/scaffold/manual-smoke.md`: run one real `python scripts/watchdog.py` cycle with the system ACTIVE; confirm the Healthchecks.io dashboard shows a fresh received ping flipped to "up". Optional negative check: point `system.heartbeat_url` at a bad URL, run once, confirm the watchdog completes all checks + logs the WARN (fail-soft proven), then restore.
-2. **Live integration test (operator-gated)**: `pytest -m integration tests/test_heartbeat_client_integration.py` (needs `ITS_SMARTSHEET_TOKEN` in Keychain + network). Not run by CC — avoids an unsanctioned outbound ping to the operator's live monitor during dev. Deselected by default in CI.
-3. **Four-part merge verify** (`prompts/scaffold/pr-merge-verify.md`): state=MERGED, mergedAt non-null, mergeCommit.oid present, main-branch CI on the merge commit = SUCCESS. Merge is operator-gated on item 1.
+1. **Manual smoke (REQUIRED — external side effect)** — ✅ DONE. Operator confirmed the Healthchecks.io dashboard showed the live ping land before authorizing the squash-merge.
+2. **Four-part merge verify** — ✅ DONE. `pr-landed-verifier` clean (see CI runs above): MERGED / mergedAt non-null / mergeCommit `692a1c5` / main CI on merge commit SUCCESS.
+
+Remaining optional:
+- **Live integration test (operator-gated)**: `pytest -m integration tests/test_heartbeat_client_integration.py` (needs `ITS_SMARTSHEET_TOKEN` in Keychain + network). Not run by CC — avoids an unsanctioned outbound ping to the operator's live monitor during dev. Deselected by default in CI; the wired path was already exercised by the operator manual-smoke.
+
+## Merge-treadmill note
+
+PRs #113 (F17/F04 sweep), #115, #116 landed on `main` mid-session. #113 independently rewrote the *same* watchdog self-marker comment F16 touches → resolved by keeping the F16 phrasing (it correctly separates the local Check-C marker from the heartbeat ping now sitting below it); #113's `safety_intake` `TRACKED_JOBS` entry preserved. #115/#116 (docs) auto-merged. Required three `origin/main` integrations before the branch stayed `CLEAN` long enough to squash.
 
 ## What was NOT touched (deliberate)
 
@@ -47,7 +66,7 @@ The audit's F16 line numbers were stale (authored against `40a3509`). `brief-val
 - **F02 network-library allowlist** — not built here; this PR is *designed to satisfy* it (the `requests` import is correctly housed), but the allowlist test is F02's job.
 - **The watchdog's self-marker (`write_last_run_marker("watchdog")`)** — kept; its purpose (Check-C self-tracking) is distinct from the heartbeat. Only its stale comment was rewritten to stop conflating the local marker with the (now-real) external beacon. The pre-existing stale "TRACKED_JOBS is empty" doc-drift in the module docstring was left for a doc pass (out of scope).
 - **No watchdog refactor** (Op Stds §14) — additive import + one block appended after the marker.
-- **The F17/F04/docstring sweep** (parallel branch `f17-f04-docstring-sweep`) — independent; land order does not matter.
+- **The F17/F04/docstring sweep** (PR #113) — functionally independent; land order did not matter for correctness, though it landed first and required a textual merge resolution (see Merge-treadmill note).
 
 ## Lessons captured to memory
 
