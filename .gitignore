@@ -42,3 +42,12 @@ state/
 # Defensive — some SDKs cache HTTP responses to a local .cache/ dir.
 # boxsdk 3.x does not, but the pattern guards against future deps that do.
 .cache/
+
+# Defensive — git worktrees for parallel CC sessions live as SIBLINGS of this
+# repo (~/its-<task>), never nested inside it (see docs/operations/worktree_discipline.md).
+# Sibling worktrees are outside the repo root, so git never sees them — this entry is
+# a guard against the one accident that would matter: a worktree mistakenly created at
+# the repo root (e.g. `git worktree add its-temp` without `../`), which would otherwise
+# show as an untracked dir and could be staged or scanned by repo-relative tooling.
+# No legitimate top-level dir is named its-*, so this is zero-false-positive.
+/its-*/
