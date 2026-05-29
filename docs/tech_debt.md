@@ -682,13 +682,15 @@ Mobilization Date is project-scoped not week-scoped — better captured as a pro
 
 R3 Session 3 (`weekly_send_poll.py`) is the 2nd polling-daemon consumer that triggers the polling-daemon doctrine's 2nd-consumer extraction signal (Op Stds v11 §14). The heartbeat helpers (`_load_heartbeat_row_state`, `_persist_heartbeat_row_state`, `_invalidate_heartbeat_row_state`, `_resolve_heartbeat_row_id`, `_write_heartbeat`, `_write_heartbeat_row`, `_log_heartbeat_failure`) were copied VERBATIM from `safety_reports/intake_poll.py` into `weekly_send_poll.py` rather than extracted, to keep the R3 Session 3 ship focused on the send-capability code.
 
-Both consumers now share the same heartbeat-row-state file at `~/its/state/heartbeat_row_ids.json` (keyed by daemon_name) so the file format is already shape-compatible. Extraction is mechanical: pull the seven helpers into `shared/heartbeat.py`, parameterize on `daemon_name` + `state_path`, replace inline copies with imports.
+**Update 2026-05-28 (PR #113, F17):** a 3rd copy of the watchdog-marker helper pattern was added to `intake_poll.py` as `_write_watchdog_marker()`. The heartbeat-row helpers (ITS_Daemon_Health write) and the watchdog-marker helper (`.watchdog/<slug>.last_run` write) are related patterns that both belong in `shared/heartbeat.py`. The 3rd copy strengthens the extraction signal from Op Stds §14: we now have 3 consumers sharing the same pattern across 2 helpers. The extraction trigger condition from the original entry (2nd consumer) has been met and exceeded.
 
-**Effort:** ~half-day session including +6-10 unit tests for the new shared module + the migration of both `intake_poll` and `weekly_send_poll` to use it.
+Both heartbeat consumers share the same state file at `~/its/state/heartbeat_row_ids.json` (keyed by daemon_name) so the file format is already shape-compatible. Extraction is mechanical: pull the seven heartbeat helpers + `_write_watchdog_marker` into `shared/heartbeat.py`, parameterize on `daemon_name` + `state_path` + `slug`, replace inline copies with imports.
 
-**Risk of premature extraction:** if a 3rd polling consumer surfaces a different shape need (e.g. multi-row heartbeat per daemon, or a heartbeat surface that's not ITS_Daemon_Health), the API churns. Mitigate by waiting until `weekly_send` stabilizes through 1-2 real Friday cycles, then extract.
+**Effort:** ~half-day session including +8-12 unit tests for the new shared module + migration of both `intake_poll` and `weekly_send_poll` to use it.
 
-**Revisit when:** weekly_send has completed 1-2 real Friday cycles (≥ ~2 weeks of production traffic), OR a 3rd polling daemon is queued for a workstream.
+**Risk of premature extraction:** if the watchdog-marker shape diverges per-daemon (e.g. different marker content, conditional write logic per §42 rationale), the API churns. The `intake_poll` deliberate divergence (marker only on completed cycle, not on skip paths) is the exact kind of per-daemon policy that the shared helper's API needs to accommodate. Parameterize the write-condition as a callable or flag.
+
+**Revisit when:** weekly_send has completed 1-2 real Friday cycles (≥ ~2 weeks of production traffic), OR a 3rd polling daemon with heartbeat needs is queued (Email Triage is the likely trigger).
 
 ## HTML email rendering for weekly_send [OPEN 2026-05-23]
 
