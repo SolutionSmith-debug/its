@@ -4,6 +4,18 @@ Items deliberately deferred. Each carries the rationale for deferral and the tri
 
 When to add an entry: a session deliberately chooses preservation-over-refactor (per Op Stds v11 §14), discovers an external-API constraint that forced a workaround, or defers a non-trivial cleanup that's larger than the current session can absorb. When to mark CLOSED: the underlying item is resolved in a commit; preserve the entry with resolution detail rather than deleting (history is cheap, context is expensive).
 
+## F21 — numeric `maximum` bounds + anomaly-logger range check [OPEN 2026-05-29]
+
+`schemas/safety_weekly_generate.json` defines 6 integer incident-count fields (`lost_time_accidents`, `lost_work_days`, `job_transfer_or_restriction`, `near_misses`, `other_recordable_cases`, `first_aid_cases`), each with `"minimum": 0` but **no `"maximum"`**. `shared/anomaly_logger._walk` branches on `dict` / `list` / `str` only — it has no numeric branch, so integers and floats fall through unchecked, and a prompt-injected count like `99999` passes extraction silently. (Contrast: the `confidence` field already carries both `minimum` and `maximum` in the same schema, so the pattern is established — it just wasn't applied to the incident counts.)
+
+**Proposed fix:** add a sane `"maximum"` to each of the 6 integer fields in the schema, and add a numeric-range branch to `anomaly_logger._walk` that emits a sentinel anomaly when an int/float value exceeds a configurable threshold — so an out-of-range count routes to `ITS_Review_Queue` with `security_flag=True` rather than being trusted.
+
+**Effort:** ~1 hour. **Phase target:** 1.4 pre-Customer-1 hardening.
+
+**Revisit when:** the next `safety_reports/` hardening session, or before Customer-1 launch. The F20 session (schema-version enforcement, PR #129) deliberately scoped F21 out to keep the PR focused; `brief-validator` confirmed the half-bounded fields + the missing numeric check live this turn.
+
+Surfaced: 2026-05-29 F20 session close. Session log: `docs/session_logs/2026-05-29_f20-schema-version.md`. Audit finding F21.
+
 ## Invariant 2 Layer 5 prose: "defense layer" framing vs FM v9 tripwire reframe [OPEN 2026-05-29]
 
 FM v9 (blueprint, audit F13) reframed Invariant 2's Layer 5 (anomaly logging on extraction output) from a co-equal defense layer to a post-hoc **detection tripwire** — an honest characterization of a trivially-evadable substring matcher; the mechanism is unchanged and stays in production. The OBS-1 citation sweep (PR #127) recorded this reframe in CLAUDE.md's *governing-version block*, but the **Invariant 2 section itself** (the "Six-layer defense:" list) still describes Layer 5 as "Output validation and anomaly logging" — the pre-v9 framing — and still labels the whole set a "Six-layer defense."
