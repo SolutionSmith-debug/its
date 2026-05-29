@@ -95,7 +95,11 @@ Every workstream script MUST follow these. Deviations get raised in the planning
 not invented locally.
 
 - **Kill switch first.** Call `shared.kill_switch.check_system_state()` (or use
-  `@require_active`) at script entry. PAUSED or MAINTENANCE → exit cleanly.
+  `@require_active`) at script entry. PAUSED or MAINTENANCE → exit cleanly. `@require_active`
+  is an operator-convenience pause, **not** a security control — it is fail-open by design
+  (sheet-unreachable / row-missing / invalid-value all resolve to ACTIVE-with-WARN), so the
+  External Send Gate (Invariant 1), not the kill switch, is the security boundary (Op Stds
+  v14 §1).
 - **Error log decorator.** Wrap every script's main function in `@its_error_log(script_name=...)`.
   Catches unhandled exceptions, writes to `ITS_Errors` sheet, surfaces CRITICAL via email + SMS.
 - **Confidence scoring on extractions.** Default threshold 0.85. Below threshold → routes to
