@@ -61,6 +61,11 @@ tags: [phase_1.4, security]   # optional
   (`name / version / model / notes`) documented in `prompts/README.md`,
   not the canonical doc-conventions schema. Samples in `prompts/samples/`
   DO follow the canonical schema (`type: sample`).
+- `docs/agents/*.md` (the mattpocock/skills agent-OS config — `issue-tracker.md`,
+  `triage-labels.md`, `domain.md`, consumed by the installed skills per
+  CLAUDE.md "## Agent skills"). These follow the upstream skills convention,
+  not the canonical doc-conventions schema — same rationale as the
+  `prompts/` direct-children carve-out.
 
 These have implicit `status: active` and don't need a date. The lint
 script's exempt list mirrors this.

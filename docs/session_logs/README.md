@@ -96,6 +96,7 @@ outside the sentinel block.
 <!-- BEGIN AUTO-INDEX -->
 | Date | Type | Status | Workstream | Title | PRs |
 |------|------|--------|------------|-------|-----|
+| 2026-05-28 | session_log | closed | infrastructure | [2026-05-28 — Agent-infrastructure follow-ons: session-close-maintainer staleness guard + agent-skills config landed](2026-05-28_agent-infra-followons.md) | #110, #111 |
 | 2026-05-28 | session_log | closed | infrastructure | [2026-05-28 — `shared/alert_dedupe.py` → `state_io` migration (PR 2 of Phase 1.4 hardening cluster)](2026-05-28_alert-dedupe-state-io-migration.md) | #104, #88 |
 | 2026-05-28 | session_log | closed | docs | [2026-05-28 — Doc-reconciliation: doctrine-version drift + canonical manifest + reconciliation agent](2026-05-28_doc-reconciliation.md) | #101, #103, #106 |
 | 2026-05-28 | session_log | closed | security | [2026-05-28 — Forensic-audit remediation (HIGH-1 injection fix + LOW hygiene + HIGH-2 surfacing)](2026-05-28_forensic-audit-remediation.md) | #95, #96 |
