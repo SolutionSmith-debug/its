@@ -1053,3 +1053,21 @@ Do NOT push the retry into the SUT (`shared/smartsheet_client.py`): a 404 must s
 **Revisit when:** the operator next runs `pytest -m integration` and is annoyed by a transient 404, or before relying on the integration suite as a release gate.
 
 Surfaced: 2026-05-29 integration-keychain-stub fix session.
+
+## Optional `fail_closed_until` kill-switch hardening (deferred) [DEFERRED 2026-05-29]
+
+The kill switch is **fail-OPEN by design** (Op Stds v14 §1, audit F07): if ITS_Config is unreachable, the `system.state` row is missing, or its value is invalid, `check_system_state()` resolves to ACTIVE-with-WARN so scheduled work proceeds — it is an operator-convenience pause, NOT a security control. (See the `shared/kill_switch.py` Phase 3 no-op / preserved-fail-open paragraph in the "Picklist-hardening pre-Customer-1" `[CODE DELIVERED 2026-05-23]` entry above, and the `shared/kill_switch.py` capability-table row + the `@require_active` bullet in CLAUDE.md.)
+
+The F07 reframe (blueprint PR #23, Q8) deferred an **optional** `fail_closed_until` mechanism: a timestamp in ITS_Config (e.g. `system.fail_closed_until`) that would let the operator make the kill switch fail **CLOSED** (block / exit cleanly) until a specified time — a time-bounded hard halt for a known-bad window (e.g. "halt all scheduled work until 2026-XX-XX 09:00 while I investigate") — as defense-in-depth over the current always-fail-open behavior.
+
+**Why deferred (not built):** the External Send Gate (Foundation Mission Invariant 1) is the real security boundary — no external transmission happens without explicit human approval regardless of kill-switch state — so a fail-CLOSED kill switch is belt-and-suspenders, not a gap. Adding it now would also complicate the deliberately-simple fail-open contract that the preserved Phase 3 decision settled on.
+
+**Proposed shape (if built):** read an optional `system.fail_closed_until` ISO-8601 timestamp in `check_system_state()`; if present AND `now < fail_closed_until` AND the state row is unreachable/missing/invalid, return PAUSED (block) instead of the fail-open ACTIVE. Absent or past → current fail-open behavior unchanged. Keep it strictly opt-in so the default stays fail-open.
+
+**Effort:** ~half-day (config read + one branch in `check_system_state` + tests covering present-future / present-past / absent).
+
+**Phase target:** 2+ defense-in-depth hardening; not a launch blocker (Invariant 1 already covers the security case).
+
+**Revisit when:** an operator ever needs a time-bounded hard halt of scheduled work (a known-bad maintenance/incident window) that the simple operator-set PAUSED state + fail-open default doesn't cover.
+
+Surfaced: 2026-05-29 exec-ledger-cleanup session (F07 reframe Q8 ledger item). Related: the kill-switch fail-open note in the Picklist-hardening DELIVERED entry above; Op Stds v14 §1; FM Invariant 1 (External Send Gate).

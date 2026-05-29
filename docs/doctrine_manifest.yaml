@@ -39,27 +39,33 @@ meta:
   manifest_version: 1
   generated: "2026-05-28"
   its_head: c5cc456              # ~/its origin/main this manifest was seeded against
-  blueprint_head: ac9e44e        # ~/its-blueprint origin/main this manifest was seeded against
+  blueprint_head: e7f8764        # ~/its-blueprint origin/main this manifest is synced against (refreshed on doctrine bump, per UPDATE DISCIPLINE above)
   seeded_by: "doc-reconciliation series PR 2 (manifest)"
 
 # --- Doctrine versions (the headline drift class) ------------------------------
 doctrine_versions:
   operational_standards:
-    current: 13
+    current: 14
     source: "../its-blueprint/doctrine/operational-standards.md"
     source_field: "frontmatter.version"
-    blueprint_verified_against: a1dc227
+    blueprint_verified_against: 29000f1   # PR #23 merge commit (FM v9 + Op Stds v14)
     notes: >
-      v12 added §§37-41; v13 added §42 (code-level self-documentation discipline).
-      Citations in ~/its should read "Op Stds v13" / "Operational Standards v13".
-    drift_signal: 'Op Stds v(1[0-2]|[0-9])\b or Operational Standards v(1[0-2]|[0-9])\b in current-doctrine prose'
+      v12 added §§37-41; v13 added §42 (code-level self-documentation discipline);
+      v14 reframed the kill switch as an operator-convenience pause that is fail-open
+      by design and NOT a security control (§1, audit F07) — companion to FM v9's
+      Invariant 2 Layer 5 tripwire reframe (audit F13). §42 unchanged in v14.
+      Citations in ~/its should read "Op Stds v14" / "Operational Standards v14".
+    drift_signal: 'Op Stds v(1[0-3]|[0-9])\b or Operational Standards v(1[0-3]|[0-9])\b in current-doctrine prose'
   foundation_mission:
-    current: 8
+    current: 9
     source: "../its-blueprint/doctrine/foundation-mission.md"
     source_field: "frontmatter.version"
-    blueprint_verified_against: 3b7d56d
-    notes: "FM v8 added Invariant 2 Layer 6 (attachment screening)."
-    drift_signal: 'Foundation Mission v[0-7]\b or FM v[0-7]\b in current-doctrine prose'
+    blueprint_verified_against: 29000f1   # PR #23 merge commit (FM v9 + Op Stds v14)
+    notes: >
+      FM v8 added Invariant 2 Layer 6 (attachment screening); v9 reframed Invariant 2
+      Layer 5 (anomaly logging on extraction output) from a defense layer to a detection
+      tripwire (audit F13) — mechanism unchanged, characterization corrected.
+    drift_signal: 'Foundation Mission v[0-8]\b or FM v[0-8]\b in current-doctrine prose'
 
 # --- §42 module-docstring discipline (Op Stds v13) -----------------------------
 section_42:
