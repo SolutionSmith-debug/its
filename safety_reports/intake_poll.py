@@ -127,6 +127,14 @@ HEARTBEAT_ROW_STATE_PATH = STATE_DIR / "heartbeat_row_ids.json"
 # helper extracted to shared/heartbeat.py.
 DAEMON_NAME = "safety_reports.intake_poll"
 
+# Watchdog Check C marker — matches the TRACKED_JOBS entry in
+# scripts/watchdog.py. Mirrors the weekly_send_poll pattern
+# (safety_reports/weekly_send_poll.py). The slug, the TRACKED_JOBS entry, and
+# the {slug}.last_run filename the watchdog reads MUST stay identical or the
+# watchdog tracks a marker nothing writes → permanent false WARN.
+WATCHDOG_MARKER_DIR = Path.home() / "its" / ".watchdog"
+WATCHDOG_JOB_SLUG = "safety_intake"
+
 # Allowed cycle-status values written to ITS_Daemon_Health.Last_Cycle_Status.
 # OK / WARN / ERROR are the canonical severity ladder; SKIPPED covers the
 # polling_disabled / lock_held early-exit branches if they ever reach the
@@ -269,6 +277,31 @@ def _write_heartbeat() -> None:
     is the watchdog signal; the row is the operator-visible status.
     """
     state_io.atomic_write_text(HEARTBEAT_PATH, datetime.now(UTC).isoformat())
+
+
+# ---- Watchdog Check C marker --------------------------------------------
+
+
+def _write_watchdog_marker() -> None:
+    """Touch the Check C freshness marker for this cycle.
+
+    Mirrors weekly_send_poll._write_watchdog_marker. Fail-soft per Op Stds
+    §3.1: a marker-write failure must not fail the poll cycle — the cycle's
+    real work (row writes, mark-read, heartbeat) already succeeded. The
+    watchdog will WARN on a stale marker, which is the correct signal if
+    this keeps failing.
+    """
+    try:
+        WATCHDOG_MARKER_DIR.mkdir(parents=True, exist_ok=True)
+        marker = WATCHDOG_MARKER_DIR / f"{WATCHDOG_JOB_SLUG}.last_run"
+        marker.write_text(datetime.now(UTC).isoformat())
+    except OSError as exc:
+        error_log.log(
+            Severity.WARN,
+            SCRIPT_NAME,
+            f"watchdog marker write failed: {exc!r}",
+            error_code="watchdog_marker_failed",
+        )
 
 
 # ---- Heartbeat-row state cache (ITS_Daemon_Health) ----------------------
@@ -608,6 +641,16 @@ def _poll_inside_lock() -> PollStats:
         _record_seen(seen, message_id, result.status)
 
     _write_heartbeat()
+    # Rationale: the watchdog marker is written ONLY on a completed cycle, NOT
+    # on the polling-disabled or lock-held skip paths in poll_once(). intake_poll
+    # runs every 60s; a persistently disabled or perpetually lock-held poller is
+    # a state the watchdog SHOULD eventually surface (Check C goes stale → WARN).
+    # This deliberately diverges from weekly_send_poll, whose SkippedWeeklyOther
+    # path is a normal, expected weekly state that must keep the marker fresh.
+    # Here, "not running" is exactly what we want detected. A zero-message cycle
+    # still reaches here and is a valid "poller alive" signal.
+    # Reference: audit F17 (its-blueprint/audits/2026-05-25_forensic-audit.md).
+    _write_watchdog_marker()
 
     final = PollStats(
         messages_fetched=stats.messages_fetched,

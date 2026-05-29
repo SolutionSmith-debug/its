@@ -63,27 +63,40 @@ def set_secret(service: str, value: str, account: str | None = None) -> None:
 
     Args:
         service: The service name (e.g., 'ITS_BOX_REFRESH_TOKEN').
-        value: The secret value to persist. Passed via `-w` argv, NOT stdin;
-            the value never lands in shell history because Python invokes
-            `security` directly via subprocess without a shell.
+        value: The secret value to persist. Supplied to `security` on stdin
+            (`-w` is the last option, with no `-w VALUE` argv element), so the
+            secret is not visible to other local processes via `ps` /
+            `/proc/<pid>/cmdline` / EDR argv capture. Must be a single-line
+            value — the CLI's `-w` prompt is line-based (all ITS secrets are
+            single-line API keys / OAuth tokens). Reference: audit F04.
         account: Optional account; defaults to the current user.
 
     Raises:
         KeychainError: If the `security` CLI is unavailable or the write fails.
     """
     account = account or getpass.getuser()
+    # `security add-generic-password` reads the password from stdin only when
+    # `-w` is the LAST option (`security add-generic-password -h`: "Specify -w
+    # as the last option to be prompted"). It then issues a password + retype
+    # confirmation prompt and reads one line per prompt, so the value is fed
+    # twice. `-U` (update-in-place) MUST precede `-w`; placed after `-w` it gets
+    # swallowed as the password value — verified live, the stored secret became
+    # the literal "-U". Feeding the value twice is robust whether the CLI
+    # prompts once or twice (a single-prompt build reads the first line and
+    # ignores the rest). Reference: audit F04.
     try:
         subprocess.run(
             [
                 "security", "add-generic-password",
+                "-U",
                 "-a", account,
                 "-s", service,
-                "-w", value,
-                "-U",
+                "-w",  # MUST be last — value read from stdin, never argv
             ],
             check=True,
             capture_output=True,
             text=True,
+            input=f"{value}\n{value}\n",  # password + retype; never in argv/ps
         )
     except FileNotFoundError as e:
         raise KeychainError(

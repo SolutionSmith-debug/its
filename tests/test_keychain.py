@@ -109,7 +109,10 @@ def test_set_secret_calls_security_with_update_flag(mocker):
     exists, otherwise create). Without it, a second call on the same
     service raises SecKeychainItemCreate errSecDuplicateItem (-25299).
     Box OAuth's refresh-token rotation hits the same key on every API
-    call — must not error on the second rotation."""
+    call — must not error on the second rotation.
+
+    F04: `-w` is now a bare flag (value supplied on stdin), so the secret
+    value must NOT appear anywhere in the argv list."""
     mock_run = mocker.patch("shared.keychain.subprocess.run")
     mocker.patch("shared.keychain.getpass.getuser", return_value="someuser")
 
@@ -120,8 +123,32 @@ def test_set_secret_calls_security_with_update_flag(mocker):
     assert cmd[1] == "add-generic-password"
     assert cmd[cmd.index("-a") + 1] == "someuser"
     assert cmd[cmd.index("-s") + 1] == "ITS_TEST_KEY"
-    assert cmd[cmd.index("-w") + 1] == "secret-value"
-    assert "-U" in cmd  # idempotent update
+    # F04: the secret is NOT in argv (it's on stdin). `-w` MUST be the last
+    # option — that's what makes `security` read from stdin instead of argv.
+    # `-U` MUST precede `-w`; placed after it, the CLI swallows `-U` as the
+    # password value (verified live). So `-U` is present and earlier than `-w`.
+    assert "secret-value" not in cmd
+    assert cmd[-1] == "-w"
+    assert "-U" in cmd  # idempotent update preserved
+    assert cmd.index("-U") < cmd.index("-w")
+
+
+def test_set_secret_passes_value_on_stdin_not_argv(mocker):
+    """F04: the secret reaches `security` via stdin (input=value, text=True),
+    never as a `-w VALUE` argv element — so it is invisible to `ps` /
+    `/proc/<pid>/cmdline` / EDR argv capture. Preserves the existing
+    capture_output / check kwargs."""
+    mock_run = mocker.patch("shared.keychain.subprocess.run")
+    mocker.patch("shared.keychain.getpass.getuser", return_value="someuser")
+
+    set_secret("ITS_TEST_KEY", "secret-value")
+
+    kwargs = mock_run.call_args.kwargs
+    # Value fed twice: the `-w` prompt reads password + retype, one line each.
+    assert kwargs["input"] == "secret-value\nsecret-value\n"
+    assert kwargs["text"] is True
+    assert kwargs["capture_output"] is True
+    assert kwargs["check"] is True
 
 
 def test_set_secret_explicit_account_overrides_default(mocker):
