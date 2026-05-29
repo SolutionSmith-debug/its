@@ -613,6 +613,89 @@ def test_schema_file_loads_and_projects_to_tool_shape():
         assert field_name in required
 
 
+# ---- Schema-version enforcement (F20) ------------------------------------
+#
+# `_load_tool_schema` validates the schema file's `version` key against
+# `_EXPECTED_SCHEMA_VERSION` and raises on mismatch/missing — a fail-LOUD
+# guard against silently loading a drifted contract (Op Stds §42). These
+# tests point the loader at a tmp fixture via monkeypatch so the real
+# schemas/safety_weekly_generate.json is never mutated.
+
+
+_MINIMAL_SCHEMA_BODY: dict[str, Any] = {
+    "name": GENERATE_WPR_TOOL_NAME,
+    "description": "fixture schema for version-enforcement tests",
+    "input_schema": {"type": "object", "properties": {}, "required": []},
+}
+
+
+def _write_fixture_schema(tmp_path: Path, payload: dict[str, Any]) -> Path:
+    """Write a fixture schema JSON to tmp and return its path."""
+    fixture = tmp_path / "fixture_schema.json"
+    fixture.write_text(json.dumps(payload))
+    return fixture
+
+
+def test_load_tool_schema_accepts_matching_version(tmp_path, monkeypatch):
+    """Happy path: a fixture whose version matches the expected constant
+    loads and projects to the tool shape; the version key is consumed for
+    validation, not projected through."""
+    payload = {
+        "version": weekly_generate._EXPECTED_SCHEMA_VERSION,
+        **_MINIMAL_SCHEMA_BODY,
+    }
+    monkeypatch.setattr(
+        weekly_generate, "_SCHEMA_PATH", _write_fixture_schema(tmp_path, payload)
+    )
+    tool_schema = weekly_generate._load_tool_schema()
+    assert tool_schema["name"] == GENERATE_WPR_TOOL_NAME
+    assert tool_schema["input_schema"] == _MINIMAL_SCHEMA_BODY["input_schema"]
+    assert "version" not in tool_schema
+
+
+def test_load_tool_schema_rejects_version_mismatch(tmp_path, monkeypatch):
+    """A version differing from the expected constant raises — never loads
+    a drifted contract silently."""
+    drifted = f"{weekly_generate._EXPECTED_SCHEMA_VERSION}-drift"
+    payload = {"version": drifted, **_MINIMAL_SCHEMA_BODY}
+    monkeypatch.setattr(
+        weekly_generate, "_SCHEMA_PATH", _write_fixture_schema(tmp_path, payload)
+    )
+    with pytest.raises(ValueError, match="schema version"):
+        weekly_generate._load_tool_schema()
+
+
+def test_load_tool_schema_rejects_missing_version(tmp_path, monkeypatch):
+    """A schema with no `version` key raises — missing is treated as drift,
+    not a silent pass."""
+    monkeypatch.setattr(
+        weekly_generate,
+        "_SCHEMA_PATH",
+        _write_fixture_schema(tmp_path, dict(_MINIMAL_SCHEMA_BODY)),
+    )
+    with pytest.raises(ValueError, match="schema version"):
+        weekly_generate._load_tool_schema()
+
+
+def test_run_pipeline_aborts_on_schema_drift(_patch_all, tmp_path, monkeypatch):
+    """A drifted schema version aborts the WHOLE run pre-flight, before the
+    project loop. The ValueError is raised outside the per-project fence, so
+    it propagates up to @its_error_log (→ CRITICAL) rather than degrading to
+    a per-project GENERATION_FAILED placeholder. This asserts the loud-abort
+    intent: never reach iteration, never call Anthropic, never write a row."""
+    drifted = f"{weekly_generate._EXPECTED_SCHEMA_VERSION}-drift"
+    payload = {"version": drifted, **_MINIMAL_SCHEMA_BODY}
+    monkeypatch.setattr(
+        weekly_generate, "_SCHEMA_PATH", _write_fixture_schema(tmp_path, payload)
+    )
+    with pytest.raises(ValueError, match="schema version"):
+        _run_pipeline(week_start_override=date(2026, 5, 18))
+    _patch_all["iter_projects"].assert_not_called()
+    _patch_all["anthropic_call"].assert_not_called()
+    _patch_all["add_rows"].assert_not_called()
+    _patch_all["update_rows"].assert_not_called()
+
+
 # ---- Recipients lookup ---------------------------------------------------
 
 
