@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Seed ITS_Config with the seven initial rows from Handover v5 §ITS_Config.
+"""Seed ITS_Config with the initial rows from Handover v5 §ITS_Config.
+
+(Plus later schema additions, e.g. the F22 `safety_reports.authorized_approvers`
+approver allowlist — the set grows; the idempotent classify/skip logic below
+handles re-runs.)
 
 OPERATIONAL — makes REAL Smartsheet API calls and (on confirmation) writes
 to ITS_Config. Sandbox-only: sheet ID comes from shared.sheet_ids.
@@ -30,7 +34,7 @@ from shared.defaults import DEFAULT_REVIEWER_CHAINS
 
 
 def _build_seed_rows() -> list[dict[str, str]]:
-    """Construct the seven seed rows. Reviewer chain pulled live from shared.defaults."""
+    """Construct the seed rows. Reviewer chain pulled live from shared.defaults."""
     reviewer_chain_json = json.dumps(
         DEFAULT_REVIEWER_CHAINS["safety_reports"], separators=(",", ":")
     )
@@ -45,7 +49,7 @@ def _build_seed_rows() -> list[dict[str, str]]:
             "Setting": "system.heartbeat_url",
             "Value": "PLACEHOLDER_uptimerobot_heartbeat_url",
             "Workstream": "global",
-            "Description": "UptimeRobot heartbeat URL pinged by scripts/watchdog.py.",
+            "Description": "Healthchecks.io heartbeat URL pinged by scripts/watchdog.py.",
         },
         {
             "Setting": "system.sentry_dsn_keychain_key",
@@ -82,6 +86,29 @@ def _build_seed_rows() -> list[dict[str, str]]:
             "Description": (
                 "External send gate mode. MANUAL = human approval required "
                 "for every send (Foundation Mission v6 Invariant 1)."
+            ),
+        },
+        {
+            # F22 — authorized-approver allowlist for approval-attestation
+            # verification (shared.approval_verification). Fail-CLOSED: an
+            # approval whose cell-history actor is NOT in this list blocks the
+            # send. These are the three real sandbox Smartsheet users during
+            # validation. SWAP to evergreenrenewables.com identities at
+            # cutover — see docs/operations/cutover_checklist.md (item 1).
+            "Setting": "safety_reports.authorized_approvers",
+            "Value": (
+                "daniels@evergreenmirror.com,"
+                "seths@evergreenmirror.com,"
+                "benf@evergreenmirror.com"
+            ),
+            "Workstream": "safety_reports",
+            "Description": (
+                "VALIDATION-PHASE approver allowlist (evergreenmirror.com "
+                "sandbox). Comma-separated Smartsheet user emails whose WPR "
+                "approval is trusted by approval_verification.verify_approval "
+                "(F22, fail-closed). MUST be swapped to real "
+                "evergreenrenewables.com identities at cutover — see "
+                "docs/operations/cutover_checklist.md."
             ),
         },
     ]

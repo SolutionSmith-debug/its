@@ -20,6 +20,7 @@ from safety_reports.weekly_send_poll import (
     _poll_inside_lock,
     poll_once,
 )
+from shared.approval_verification import ApprovalVerdict, VerdictReason
 from shared.smartsheet_client import SmartsheetError, SmartsheetNotFoundError
 
 
@@ -75,6 +76,21 @@ def _patch_all(mocker):
         ),
         "error_log": mocker.patch(
             "safety_reports.weekly_send_poll.error_log.log",
+            return_value=None,
+        ),
+        # F22: default to a VERIFIED approval so the existing dispatch tests
+        # exercise the send path unchanged. Tests that assert the block path
+        # override this return_value / side_effect.
+        "verify_approval": mocker.patch(
+            "safety_reports.weekly_send_poll.approval_verification.verify_approval",
+            return_value=ApprovalVerdict(
+                verified=True,
+                reason=VerdictReason.AUTHORIZED,
+                actor="seths@evergreenmirror.com",
+            ),
+        ),
+        "alert_critical": mocker.patch(
+            "safety_reports.weekly_send_poll.error_log._alert_critical",
             return_value=None,
         ),
     }
@@ -298,3 +314,158 @@ def test_watchdog_job_slug_matches_watchdog_tracked_jobs():
     import watchdog  # noqa: E402 — sys.path-driven import matching tests/test_watchdog.py
 
     assert weekly_send_poll.WATCHDOG_JOB_SLUG in watchdog.TRACKED_JOBS
+
+
+# ---- F22 approval-attestation gate (poller wiring) ----------------------
+
+
+def test_poll_blocks_unverified_approval(_patch_all):
+    """A row whose approval fails attestation is NOT dispatched (fail-closed)."""
+    _patch_all["get_rows"].return_value = [_row(row_id=70)]
+    _patch_all["verify_approval"].return_value = ApprovalVerdict(
+        verified=False,
+        reason=VerdictReason.UNAUTHORIZED_ACTOR,
+        actor="attacker@evil.com",
+        detail="approval set by 'attacker@evil.com', who is not authorized",
+    )
+    result = _poll_inside_lock()
+    _patch_all["send_one_row"].assert_not_called()
+    assert result.blocked == 1
+    assert result.dispatched == 0
+    # Security reason → operator wake-up (triple-fire) fired with the dedupe
+    # key intact (Op Stds §3.1: the (script, error_code) pair is the Resend
+    # dedupe key; a dropped error_code would collide with the default bucket).
+    _patch_all["alert_critical"].assert_called_once()
+    alert_call = _patch_all["alert_critical"].call_args
+    assert alert_call.args[0] == weekly_send_poll.SCRIPT_NAME
+    assert alert_call.kwargs["error_code"] == "approval_unverified"
+
+
+def test_poll_unauthorized_writes_critical_forensic_row(_patch_all):
+    """The block path emits an approval_unverified row at CRITICAL severity."""
+    _patch_all["get_rows"].return_value = [_row(row_id=71)]
+    _patch_all["verify_approval"].return_value = ApprovalVerdict(
+        verified=False, reason=VerdictReason.UNAUTHORIZED_ACTOR, actor="x@y.com"
+    )
+    _poll_inside_lock()
+    blocked_calls = [
+        c
+        for c in _patch_all["error_log"].call_args_list
+        if c.kwargs.get("error_code") == "approval_unverified"
+    ]
+    assert blocked_calls, "expected an approval_unverified forensic log line"
+    # Severity is positional arg 0.
+    from shared.error_log import Severity
+
+    assert blocked_calls[0].args[0] == Severity.CRITICAL
+
+
+def test_poll_empty_allowlist_blocks_and_pages(_patch_all):
+    """An empty authorized-approver set blocks the send and wakes the operator."""
+    _patch_all["get_rows"].return_value = [_row(row_id=72)]
+    _patch_all["verify_approval"].return_value = ApprovalVerdict(
+        verified=False, reason=VerdictReason.EMPTY_ALLOWLIST
+    )
+    result = _poll_inside_lock()
+    assert result.blocked == 1
+    _patch_all["send_one_row"].assert_not_called()
+    _patch_all["alert_critical"].assert_called_once()
+
+
+def test_poll_not_currently_approved_blocks_without_paging(_patch_all):
+    """A benign race (cell un-approved) blocks but does NOT page the operator."""
+    _patch_all["get_rows"].return_value = [_row(row_id=73)]
+    _patch_all["verify_approval"].return_value = ApprovalVerdict(
+        verified=False,
+        reason=VerdictReason.NOT_CURRENTLY_APPROVED,
+        actor="seths@evergreenmirror.com",
+    )
+    result = _poll_inside_lock()
+    assert result.blocked == 1
+    _patch_all["send_one_row"].assert_not_called()
+    _patch_all["alert_critical"].assert_not_called()
+    # The benign-race forensic row is logged at WARN (not CRITICAL/ERROR).
+    from shared.error_log import Severity
+
+    blocked_calls = [
+        c
+        for c in _patch_all["error_log"].call_args_list
+        if c.kwargs.get("error_code") == "approval_unverified"
+    ]
+    assert blocked_calls and blocked_calls[0].args[0] == Severity.WARN
+
+
+def test_poll_blocks_one_dispatches_other(_patch_all):
+    """Per-row gate: one row's failed attestation does not stop the others."""
+    rows = [_row(row_id=80), _row(row_id=81)]
+    _patch_all["get_rows"].return_value = rows
+
+    def _verify(sheet_id, row_id, column, *, authorized_actors):
+        if row_id == 80:
+            return ApprovalVerdict(
+                verified=False,
+                reason=VerdictReason.UNAUTHORIZED_ACTOR,
+                actor="x@y.com",
+            )
+        return ApprovalVerdict(
+            verified=True,
+            reason=VerdictReason.AUTHORIZED,
+            actor="seths@evergreenmirror.com",
+        )
+
+    _patch_all["verify_approval"].side_effect = _verify
+    result = _poll_inside_lock()
+    assert result.blocked == 1
+    assert result.dispatched == 1
+    assert _patch_all["send_one_row"].call_count == 1
+    assert _patch_all["send_one_row"].call_args.args[0] == 81
+
+
+def test_poll_blocked_sets_warn_heartbeat(_patch_all):
+    """A blocked send pushes the cycle status to at least WARN."""
+    _patch_all["get_rows"].return_value = [_row(row_id=90)]
+    _patch_all["verify_approval"].return_value = ApprovalVerdict(
+        verified=False, reason=VerdictReason.UNAUTHORIZED_ACTOR, actor="x@y.com"
+    )
+    _poll_inside_lock()
+    kwargs = _patch_all["write_heartbeat_row"].call_args.kwargs
+    assert kwargs["status"] == "WARN"
+
+
+def test_poll_passes_approval_column_and_sheet_to_verifier(_patch_all):
+    """The poller hands the verifier the WPR sheet id, row id, and approval column."""
+    _patch_all["get_rows"].return_value = [_row(row_id=95)]
+    _poll_inside_lock()
+    call = _patch_all["verify_approval"].call_args
+    assert call.args[0] == weekly_send_poll.sheet_ids.SHEET_WPR_PENDING_REVIEW
+    assert call.args[1] == 95
+    assert call.args[2] == weekly_send_poll.APPROVAL_COLUMN
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [VerdictReason.HISTORY_READ_FAILED, VerdictReason.NO_HISTORY],
+)
+def test_poll_error_branch_blocks_without_paging(_patch_all, reason):
+    """Fail-closed infra/edge reasons block the row at ERROR severity, no page.
+
+    Covers the `else` branch of _handle_unverified (HISTORY_READ_FAILED and
+    NO_HISTORY) — a regression mis-routing these into _WAKE_REASONS (paging on
+    every transient Smartsheet 500) would be caught here.
+    """
+    _patch_all["get_rows"].return_value = [_row(row_id=96)]
+    _patch_all["verify_approval"].return_value = ApprovalVerdict(
+        verified=False, reason=reason, detail="transient/edge"
+    )
+    result = _poll_inside_lock()
+    assert result.blocked == 1
+    _patch_all["send_one_row"].assert_not_called()
+    _patch_all["alert_critical"].assert_not_called()  # no operator wake-up
+    from shared.error_log import Severity
+
+    blocked_calls = [
+        c
+        for c in _patch_all["error_log"].call_args_list
+        if c.kwargs.get("error_code") == "approval_unverified"
+    ]
+    assert blocked_calls and blocked_calls[0].args[0] == Severity.ERROR

@@ -73,6 +73,7 @@ from pathlib import Path
 from shared import (
     alert_dedupe,
     graph_client,
+    heartbeat_client,
     resend_client,
     review_queue,
     sheet_ids,
@@ -726,12 +727,54 @@ def main() -> None:
         )
     for check in CHECKS:
         _run_check(check, alerts_suppressed=alerts_suppressed)
-    # Mark our own run so an external heartbeat observer (Healthchecks.io /
-    # UptimeRobot, per audit F16) can detect "watchdog itself stopped firing".
-    # This is intentionally NOT in TRACKED_JOBS: a daemon can't reliably
-    # detect its own death (the chicken-and-egg hole), so Check C never
-    # self-monitors — surfacing a dead watchdog is the external observer's job.
+
+    # Local Check-C freshness marker for the watchdog's own run. The
+    # watchdog is deliberately NOT in TRACKED_JOBS (self-tracking has a
+    # chicken-and-egg hole — a dead watchdog can't flag its own staleness),
+    # so this marker is unconsumed today; it's written so adding the
+    # watchdog to TRACKED_JOBS later is a one-line change. The external
+    # "is the watchdog (and the host) alive" signal is the heartbeat ping
+    # below (audit F16) — that's the real dead-man's switch.
     write_last_run_marker("watchdog")
+
+    # External heartbeat beacon (audit F16). Read the configured ping URL
+    # and notify the external monitor (Healthchecks.io) that the watchdog —
+    # and by proxy the whole host — is alive. This is the ONLY external
+    # detector for total-host failure (crash, disk-full, launchd unload,
+    # user logout); every in-tenant signal goes silent in that scenario
+    # with nothing to raise the alarm. Fail-soft end-to-end: a read failure
+    # WARNs and no-ops; a missing/placeholder URL no-ops (INFO); a ping
+    # failure is swallowed+logged inside heartbeat_client.ping. The watchdog
+    # must complete its real work regardless of monitor health.
+    #
+    # MAINTENANCE behavior: the ping fires on every non-PAUSED run,
+    # INCLUDING MAINTENANCE — the host IS alive during a maintenance window,
+    # so suppressing the ping would trip a false "host dead" alert on the
+    # external monitor. (Alert *suppression* during MAINTENANCE applies to
+    # the checks' own alerts, not to this liveness beacon.) PAUSED returns
+    # above before the marker and ping — a deliberately-paused system does
+    # not claim liveness.
+    try:
+        heartbeat_url = smartsheet_client.get_setting(
+            "system.heartbeat_url", workstream="global"
+        )
+    except smartsheet_client.SmartsheetError as exc:
+        log(Severity.WARN, _SCRIPT, f"heartbeat_url read failed: {exc!r}")
+        heartbeat_url = None
+
+    # Guard: skip the ping when unconfigured. A fork that hasn't provisioned
+    # a monitor leaves the seeded placeholder in place — pinging it is a
+    # guaranteed failure, so no-op (INFO) rather than WARN every run. This
+    # token MUST stay equal to the seed Value in scripts/seed_its_config.py.
+    if heartbeat_url and heartbeat_url != "PLACEHOLDER_uptimerobot_heartbeat_url":
+        heartbeat_client.ping(heartbeat_url)
+    else:
+        log(
+            Severity.INFO,
+            _SCRIPT,
+            "system.heartbeat_url not configured (missing or placeholder) "
+            "— skipping heartbeat ping",
+        )
 
 
 if __name__ == "__main__":

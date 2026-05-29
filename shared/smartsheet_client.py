@@ -34,6 +34,8 @@ SDK 404 noise:
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 import requests  # type: ignore[import-untyped]
@@ -286,6 +288,87 @@ def get_setting(key: str, *, workstream: str) -> str | None:
         )
     value = rows[0].get("Value")
     return value if isinstance(value, str) else None
+
+
+# ---- Cell history --------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class CellHistoryEvent:
+    """One modification event from a cell's Smartsheet history.
+
+    SDK-decoupled view of `smartsheet.models.CellHistory` so consumers
+    (`shared.approval_verification`) need not import the SDK and the F02
+    network allowlist stays honest — this module is the network boundary.
+
+    Identity note: Smartsheet's cell-history `modifiedBy` returns only
+    `{name, email}` — there is NO user ID in that payload (confirmed
+    against the documented API shape). `actor_user_id` is therefore
+    populated opportunistically (None today) for forensic logging and
+    future-proofing, but `actor_email` is the only stable match key
+    available to callers.
+    """
+    value: Any
+    actor_email: str | None
+    actor_name: str | None
+    actor_user_id: int | None
+    modified_at: datetime | None
+
+
+def get_cell_history(
+    sheet_id: int, row_id: int, column_title: str
+) -> list[CellHistoryEvent]:
+    """Return the modification history of one cell as `CellHistoryEvent`s.
+
+    Resolves `column_title` → column ID via the per-sheet title cache
+    (same refresh-once-on-miss semantics as `_resolve_cells`), then calls
+    the Smartsheet `GET /sheets/{id}/rows/{id}/columns/{id}/history`
+    endpoint via the SDK with `include_all=True` (no pagination — a single
+    cell's history is bounded).
+
+    Ordering follows the Smartsheet API (reverse-chronological, newest
+    first); callers that need a strict ordering should sort on
+    `modified_at` rather than trust list position.
+
+    Raises the typed `SmartsheetError` hierarchy on API failure (404 for a
+    deleted row, 401/403 for auth/permission) and `KeyError` for an unknown
+    column title — consistent with `_resolve_cells`. `shared.approval_verification`
+    calls THIS, never `Cells.get_cell_history` directly, so the network
+    egress stays inside the audited `*_client` boundary (audit F02).
+    """
+    columns = _column_map(sheet_id)
+    if column_title not in columns:
+        invalidate_column_cache(sheet_id)
+        columns = _column_map(sheet_id)
+    if column_title not in columns:
+        raise KeyError(
+            f"Column {column_title!r} not found in sheet {sheet_id}. "
+            f"Available: {sorted(columns)}"
+        )
+    column_id = columns[column_title]
+
+    try:
+        result = get_client().Cells.get_cell_history(
+            sheet_id, row_id, column_id, include_all=True
+        )
+    except sdk_exc.SmartsheetException as e:
+        raise _translate(e) from e
+
+    events: list[CellHistoryEvent] = []
+    for item in result.data:
+        modified_by = getattr(item, "modified_by", None)
+        events.append(
+            CellHistoryEvent(
+                value=item.value,
+                actor_email=getattr(modified_by, "email", None),
+                actor_name=getattr(modified_by, "name", None),
+                # SDK property is `id_` (trailing underscore); None when the
+                # cell-history payload omits it, which is always today.
+                actor_user_id=getattr(modified_by, "id_", None),
+                modified_at=getattr(item, "modified_at", None),
+            )
+        )
+    return events
 
 
 # ---- Writes --------------------------------------------------------------
