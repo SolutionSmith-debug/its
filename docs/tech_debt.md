@@ -1091,3 +1091,17 @@ The F07 reframe (blueprint PR #23, Q8) deferred an **optional** `fail_closed_unt
 **Revisit when:** an operator ever needs a time-bounded hard halt of scheduled work (a known-bad maintenance/incident window) that the simple operator-set PAUSED state + fail-open default doesn't cover.
 
 Surfaced: 2026-05-29 exec-ledger-cleanup session (F07 reframe Q8 ledger item). Related: the kill-switch fail-open note in the Picklist-hardening DELIVERED entry above; Op Stds v14 §1; FM Invariant 1 (External Send Gate).
+
+## Inline doctrine-pin normalization across shared/* + safety_reports/* [DEFERRED 2026-06-01]
+
+Tranche 0 (PR #132 — FM v11 / Op Stds v16 citation reconciliation) reconciled the *current-doctrine prose* surfaces (CLAUDE.md, README.md, the manifest) but deliberately did NOT touch the **inline doctrine-version pins in `shared/*` + `safety_reports/*` module docstrings/comments** — a sweep of **~50 sites across 17 files** (the Tranche-0 brief §7 set a "stop and report if >15 sites" guardrail; this is far past it). The pins cite a mix of **FM v8 / Op Stds v11 / v13 / v14**, each recording the doctrine version current *when that module was written* — i.e. historical provenance. Per Op Stds §14 (preservation-over-refactor) + §42 (self-documentation), and because `check_doctrine_drift.py` deliberately scopes `.py` files OUT of the M1 version-drift tier, these are correctly left as-is for now: they are not current-doctrine prose.
+
+Two things a future normalization pass should resolve:
+1. **Decide the convention (operator call).** Either (a) leave each pin as build-time provenance (cheapest; the version dates the decision), or (b) normalize to an "as-of v16 / FM v11" convention with the build-time version noted. Stylistic/provenance choice, not a correctness fix.
+2. **One real correctness fix to fold in:** `safety_reports/weekly_send.py:72` cites `Op Stds v11 §23.3` for the "sheet-level columns added via UI, not API" constraint. **§23.3 resolves nowhere** in any blueprint version (§23 is the Workspace-Topology stub). Tranche 0 corrected the *matching* CLAUDE.md citation to **§19 (Smartsheet UI-only constraint)** — the canonical home, confirmed by the doc-reconciliation-auditor across 5 commits. Retarget `weekly_send.py:72` §23.3→§19 here so code + doc agree. (`shared/picklist_sync.py:23` similarly cites `Op Stds v11 §25` for "MCP-gap REST fallback" while §25 in live v16 is "per-workstream sheets" — verify and retarget during the sweep.)
+
+**Effort:** ~1–2 hours (mechanical, but each of ~50 pins wants a per-site judgment: bump-version vs leave-as-provenance vs retarget-section). **Phase target:** not a launch blocker — provenance pins don't affect behavior.
+
+**Revisit when:** an operator wants a uniform doctrine-pin convention across the code, or the next session that touches `weekly_send.py` / `picklist_sync.py` for another reason (fix the §23.3→§19 / §25 mis-cites opportunistically per §14 retrofit-when-touched).
+
+Surfaced: 2026-06-01 Tranche 0 doctrine-citation reconciliation (PR #132). Related: PR #132 body "Flags & operator decisions" §2; CLAUDE.md §23.3→§19 correction.
