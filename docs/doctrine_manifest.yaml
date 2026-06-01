@@ -37,35 +37,56 @@
 
 meta:
   manifest_version: 1
-  generated: "2026-05-28"
-  its_head: c5cc456              # ~/its origin/main this manifest was seeded against
-  blueprint_head: e7f8764        # ~/its-blueprint origin/main this manifest is synced against (refreshed on doctrine bump, per UPDATE DISCIPLINE above)
+  generated: "2026-06-01"
+  its_head: 585823d              # ~/its origin/main this manifest was seeded against
+  blueprint_head: 8c708b9        # ~/its-blueprint origin/main this manifest is synced against (refreshed on doctrine bump, per UPDATE DISCIPLINE above); 8c708b9 = de-1b cascade merge (FM v11 / Op Stds v16 / Handover v8 / V&R v9 / Excellence v4)
   seeded_by: "doc-reconciliation series PR 2 (manifest)"
 
 # --- Doctrine versions (the headline drift class) ------------------------------
 doctrine_versions:
   operational_standards:
-    current: 14
+    current: 16
     source: "../its-blueprint/doctrine/operational-standards.md"
     source_field: "frontmatter.version"
-    blueprint_verified_against: 29000f1   # PR #23 merge commit (FM v9 + Op Stds v14)
+    blueprint_verified_against: 8c708b9   # de-1b cascade merge (FM v11 + Op Stds v16); prior: 29000f1 (Op Stds v14)
     notes: >
       v12 added §§37-41; v13 added §42 (code-level self-documentation discipline);
       v14 reframed the kill switch as an operator-convenience pause that is fail-open
       by design and NOT a security control (§1, audit F07) — companion to FM v9's
-      Invariant 2 Layer 5 tripwire reframe (audit F13). §42 unchanged in v14.
-      Citations in ~/its should read "Op Stds v14" / "Operational Standards v14".
-    drift_signal: 'Op Stds v(1[0-3]|[0-9])\b or Operational Standards v(1[0-3]|[0-9])\b in current-doctrine prose'
+      Invariant 2 Layer 5 tripwire reframe (audit F13); §42 unchanged in v14.
+      v15 added §43 (Successor-Remediation Documentation Discipline — the plain-language
+      "document-as-you-build" successor runbook companion to §42) + §44 (Tier-2
+      Claude-assisted repair path) and applied the Developer-Operator / Successor-Operator
+      role split across §§37-44. v16 recharacterized §44's Tier-2 boundary from a structural
+      "non-developer-safe enforcement layer" (which v15 named as a hard pre-cutover BUILD GAP)
+      to training-bounded co-resolution: there is no structural maintenance enforcement layer
+      and none is built or required; the boundary holds by the trained operator's judgment,
+      the both-rule (novel OR high-class → Tier 3), and co-resolution with the Developer-Operator
+      until per-category clearance. Section numbering is append-only since v11 — no cited section
+      renumbered (§§1-42 carry forward). Citations in ~/its should read "Op Stds v16" /
+      "Operational Standards v16".
+    drift_signal: 'Op Stds v(1[0-5]|[0-9])\b or Operational Standards v(1[0-5]|[0-9])\b in current-doctrine prose'
   foundation_mission:
-    current: 9
+    current: 11
     source: "../its-blueprint/doctrine/foundation-mission.md"
     source_field: "frontmatter.version"
-    blueprint_verified_against: 29000f1   # PR #23 merge commit (FM v9 + Op Stds v14)
+    blueprint_verified_against: 8c708b9   # de-1b cascade merge (FM v11 + Op Stds v16); prior: 29000f1 (FM v9)
     notes: >
       FM v8 added Invariant 2 Layer 6 (attachment screening); v9 reframed Invariant 2
       Layer 5 (anomaly logging on extraction output) from a defense layer to a detection
       tripwire (audit F13) — mechanism unchanged, characterization corrected.
-    drift_signal: 'Foundation Mission v[0-8]\b or FM v[0-8]\b in current-doctrine prose'
+      v10 composed Invariant 1's two-process capability-gating philosophy into a
+      maintenance through-line and introduced the Developer-Operator / Successor-Operator
+      two-named-role principle (naming a "non-developer-safe enforcement layer" as a
+      pre-cutover build requirement). v11 removes that enforcement-layer framing — there is
+      no structural maintenance enforcement layer and none is built or required; the
+      through-line ends at philosophy, not a built control. The two-named-role principle
+      stays (Successor-Operator redefined as a trained operator who runs Claude Code himself);
+      the Tier-2 maintenance boundary is enforced by training + the both-rule + co-resolution
+      with the Developer-Operator. Invariant principles, the six-layer structure, and v9's
+      Layer 5 tripwire framing all carry forward verbatim. Citations in ~/its should read
+      "Foundation Mission v11" / "FM v11".
+    drift_signal: 'Foundation Mission v([0-9]|10)\b or FM v([0-9]|10)\b in current-doctrine prose'
 
 # --- §42 module-docstring discipline (Op Stds v13) -----------------------------
 section_42:
@@ -80,6 +101,27 @@ section_42:
     - "workstream entrypoints (e.g. safety_reports/intake_poll.py, weekly_generate.py)"
   retrofit_policy: "existing modules: opportunistic per §14 (retrofit-when-touched), NOT a sweep PR"
   inventory: "docs/reports/2026-05-28_section42_compliance_inventory.md"
+
+# --- §43 successor-remediation runbook discipline (Op Stds v15, carried in v16) -
+# Recorded here so the manifest reflects the discipline introduced in the de-1b
+# cascade. The mechanical checker does NOT yet consume this block (no §43 check
+# exists) — it is documentation-only / future-proofing, mirroring how section_42
+# predated any automated heading enforcement.
+section_43:
+  source: "../its-blueprint/doctrine/operational-standards.md §43"
+  title: "Successor-Remediation Documentation Discipline"
+  summary: >
+    Plain-language "document-as-you-build" companion to §42. Where §42 answers
+    "why is this code the way it is" (developer audience), §43 answers "what does
+    the Successor-Operator do when this capability misbehaves" (trained-operator
+    audience). Each capability with a Tier-2-reachable failure mode ships a §43
+    remediation entry as part of definition-of-done: the symptom, the low-class
+    repair steps, and the explicit escalate-to-Seth (Tier-3) boundary stated in
+    observable terms.
+  applies_to:
+    - "every new workstream capability whose failure a Successor-Operator could plausibly be asked to resolve at Tier 2"
+  enforcement: "convention + PR review (mirrors §42); NOT a structural enforcement layer (Op Stds v16 §44 is training-bounded)"
+  introduced: "Op Stds v15; carried forward unchanged in v16"
 
 # --- Canonical sheet IDs (verified against shared/sheet_ids.py) ----------------
 # Only the two doctrine-load-bearing IDs the brief calls out are pinned here; the
