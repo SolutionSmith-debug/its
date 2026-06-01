@@ -23,23 +23,28 @@ Two layers, deliberately separated:
 
 1. **Planning & Foundation** (Claude.ai project, not in this repo). Mission files, architectural
    decisions, owner-facing artifacts, prompt designs, schemas. Canonical docs: Foundation Mission
-   v9, Operational Standards v14, Vision & Roadmap v7.2, Handover Plan v6.3.
+   v11, Operational Standards v16, Vision & Roadmap v9, Handover Plan v8.
 
-   _Operational Standards is canonically at **v14** (`../its-blueprint/doctrine/operational-standards.md`,
+   _Operational Standards is canonically at **v16** (`../its-blueprint/doctrine/operational-standards.md`,
    `status: canonical`): v12 added §§37–41, v13 added §42 (code-level self-documentation discipline),
    v14 reframed the kill switch (§1) as an operator-convenience pause that is fail-open by design and
    explicitly **not** a security control (audit F07) — the External Send Gate (FM Invariant 1) stays the
-   real security boundary; mechanism unchanged, §42 carried forward. (Companion reframe: Foundation
-   Mission v9 recategorizes Invariant 2's Layer 5 anomaly logging from a co-equal defense layer to a
-   post-hoc detection tripwire, audit F13 — mechanism likewise unchanged.) v14 is the governing version —
-   every `Op Stds §N` citation in this file resolves against it._
+   real security boundary; mechanism unchanged, §42 carried forward. v15 added §43/§44 (successor-remediation
+   documentation discipline + the Tier-2 Claude-assisted repair path) with the Developer-Operator /
+   Successor-Operator role split; v16 reframed §44's Tier-2 boundary as **training-bounded co-resolution** —
+   no structural maintenance enforcement layer is built or required (see "Maintenance & successor-operator
+   model" below). Section numbering is append-only since v11, so no cited `§N` renumbered. (Companion
+   reframe carried into FM v11: Invariant 2's Layer 5 anomaly logging is a post-hoc detection tripwire, not a
+   co-equal defense layer — a recharacterization first made in the earlier Foundation Mission v9, audit F13;
+   mechanism unchanged.) v16 is the governing version — every `Op Stds §N` citation in this file resolves
+   against it._
 2. **Execution** (this repo). Claude Code scripts on a MacBook, triggered by launchd, Mail.app
    rules, and Shortcuts. Reads/writes Smartsheet (structured data), Box (documents), Outlook
    (communication) via APIs. Calls Anthropic API for reasoning steps.
 
 Smartsheet, Box, Outlook are systems of record — unchanged by ITS.
 
-## System-wide invariants (Foundation Mission v9)
+## System-wide invariants (Foundation Mission v11)
 
 These are non-negotiable. Every workstream inherits both.
 
@@ -63,9 +68,9 @@ Earlier framing in Op Stds v4 that described review as a 30–60 day window is s
 All content originating outside the operating customer tenant is untrusted data. Six-layer defense:
 
 1. **Sender allowlist + scope enforcement + header-forgery detection.** Polling daemon
-   (canonical pattern per Op Stds v14 §31; `safety_reports/intake_poll.py` is the first
+   (canonical pattern per Op Stds v16 §31; `safety_reports/intake_poll.py` is the first
    consumer) fetches from allowlisted senders via Graph; non-allowlisted email routes to
-   Quarantine. ITS_Trusted_Contacts sheet (Op Stds v14 §33) is the canonical allowlist
+   Quarantine. ITS_Trusted_Contacts sheet (Op Stds v16 §33) is the canonical allowlist
    mechanism, replacing ITS_Config JSON lists at Phase 1.4 cutover. Header-forgery detection
    (SPF/DKIM/DMARC + Return-Path validation) precedes allowlist lookup. Helpers in
    `shared/quarantine.py`.
@@ -77,7 +82,7 @@ All content originating outside the operating customer tenant is untrusted data.
 5. **Output validation and anomaly logging.** `shared.anomaly_logger.check()` runs on every
    extraction output. Anomalies route to `ITS_Review_Queue` with `security_flag=True`.
 6. **Attachment screening pipeline.** Every attachment passes through four sub-layers per
-   Op Stds v14 §34: (a) static signatures (magic-number, size, filename); (b) format-aware
+   Op Stds v16 §34: (a) static signatures (magic-number, size, filename); (b) format-aware
    structural inspection (PDF JS/embedded, Office macros); (c) ClamAV scan via pyclamd;
    (d) optional VirusTotal hash check (Phase 2+ enhancement). Malicious → ITS_Quarantine +
    CRITICAL triple-fire + sender DISABLED in ITS_Trusted_Contacts pending operator review.
@@ -94,6 +99,44 @@ Residual risk: prompt injection is an unsolved research problem. The architectur
 injection might succeed at the AI layer and ensures the damage ceiling is "extracted data is
 wrong" rather than "data exfiltrated" or "external action taken on attacker's behalf."
 
+## Maintenance & successor-operator model (FM v11 · Op Stds v16 §§43–44)
+
+ITS is built to be maintained after the developer (Seth) departs. The maintenance model
+(Foundation Mission v11; Op Stds v16 §44) has **three tiers**:
+
+1. **Tier 1 — self-heal.** Daemons recover; the watchdog catches a stale heartbeat (Check H);
+   no human acts. (Check H is itself a pre-cutover build item — see `scripts/watchdog.py` + tech debt.)
+2. **Tier 2 — Claude-assisted repair by the Successor-Operator.** A *trained* operator who runs
+   Claude Code himself, follows the §43 runbook for the affected capability, and carries out a
+   **low-capability-class** repair (re-run a daemon, toggle an ITS_Config value, re-send an
+   approval, re-seed a row, clear a stuck lock). He is **not** a developer — writes no code, does
+   none of the §§37–41 developer-context work, touches no secrets/Keychain.
+3. **Tier 3 — escalate to the Developer-Operator (Seth).** A reachable escalation asset, not the
+   day-to-day operator.
+
+**Two named roles.** Every unqualified "operator" in this repo's docs resolves to exactly one: the
+**Developer-Operator** (Seth — git/CC/shell/worktree-fluent; performs all §§37–41 operations,
+Keychain access, code changes) or the **Successor-Operator** (the trained Tier-2 role above).
+
+**The both-rule (the Tier-2/Tier-3 boundary).** A fault is Tier-2-eligible only if it is
+**documented (has a §43 entry) AND low-capability-class**. Anything **novel OR high-class**
+escalates to Seth. The four **high-capability-class categories are FIXED**: (1) the External Send
+Gate, (2) secrets / auth, (3) doctrine, (4) code changes — high-class always escalates regardless
+of how well documented it is.
+
+**Training-enforced, NOT structurally enforced** (the Op Stds v16 / FM v11 reframe). There is no
+"non-developer-safe enforcement layer" and none is built or required — the verified-in-code
+capability gating (Invariant 1, `tests/test_capability_gating.py`) and the `.claude/hooks` guards
+protect developer / subagent sessions and fall *open* for the operator's own session, so they are
+not expected to confine a Tier-2 repair. The boundary holds by the trained operator's judgment, the
+both-rule, and co-resolution with Seth on the four high-class categories until per-category clearance.
+
+**§43 document-as-you-build (definition-of-done).** Every capability with a Tier-2-reachable failure
+mode ships a plain-language **successor-remediation runbook entry** as part of its DoD — symptom,
+low-class repair steps, and the explicit escalate-to-Seth boundary in observable terms. Where §42
+records *why the code is the way it is* (developer audience), §43 records *what the Successor-Operator
+does when it misbehaves*. CC briefs reference §43 when scoping any such capability.
+
 ## Operational conventions — load-bearing
 
 Every workstream script MUST follow these. Deviations get raised in the planning project first,
@@ -104,7 +147,7 @@ not invented locally.
   is an operator-convenience pause, **not** a security control — it is fail-open by design
   (sheet-unreachable / row-missing / invalid-value all resolve to ACTIVE-with-WARN), so the
   External Send Gate (Invariant 1), not the kill switch, is the security boundary (Op Stds
-  v14 §1).
+  v16 §1).
 - **Error log decorator.** Wrap every script's main function in `@its_error_log(script_name=...)`.
   Catches unhandled exceptions, writes to `ITS_Errors` sheet, surfaces CRITICAL via email + SMS.
 - **Confidence scoring on extractions.** Default threshold 0.85. Below threshold → routes to
@@ -132,7 +175,7 @@ shipment.
 | Module | State | Notes |
 |--------|-------|-------|
 | `shared/keychain.py` | Working, tested | macOS-only; uses `security` CLI. |
-| `shared/error_log.py` | Working, tested | Local file + Smartsheet `ITS_Errors` write (recursion-guarded; INFO env-gated via `ITS_ERROR_LOG_INFO=1`) + triple-fire CRITICAL path (Resend operator email + Sentry structured event). Each alert leg has its own recursion guard and broad-except failure isolation — a failure of one leg does NOT prevent the other. Correlation-ID threading shared across all three legs (`Correlation_ID` column on ITS_Errors); Resend-leg dedupe via `shared/alert_dedupe.py` on `(script, error_code)` key per Op Stds v14 §3.1 push-vs-record separation. PR #42 (PR α). |
+| `shared/error_log.py` | Working, tested | Local file + Smartsheet `ITS_Errors` write (recursion-guarded; INFO env-gated via `ITS_ERROR_LOG_INFO=1`) + triple-fire CRITICAL path (Resend operator email + Sentry structured event). Each alert leg has its own recursion guard and broad-except failure isolation — a failure of one leg does NOT prevent the other. Correlation-ID threading shared across all three legs (`Correlation_ID` column on ITS_Errors); Resend-leg dedupe via `shared/alert_dedupe.py` on `(script, error_code)` key per Op Stds v16 §3.1 push-vs-record separation. PR #42 (PR α). |
 | `shared/alert_dedupe.py` | Working, tested | Resend-leg dedupe state at `~/its/state/alert_dedupe.json`; writes via `state_io.atomic_write_json` under `state_io.with_path_lock` (sidecar `.lock`); read-only `list_expired_summaries` is lock-free (atomic-write read safety). Public API: `should_fire(key)` / `record_fire(key)` (PR α) + `list_expired_summaries()` / `mark_summarized(key)` / `delete_entry(key)` (PR β consumed by watchdog Check G). Window value from `alerting.dedupe_window_minutes` ITS_Config row (default 60 min via `defaults.ALERTING_DEDUPE_WINDOW_MINUTES`). Fail-open on every state error including `StateLockTimeoutError` — false positives (extra emails) acceptable, false negatives (missed wake-ups) not. PR #42 (PR α) + PR #44 (PR β) + PR #104 (state_io migration). |
 | `shared/state_io.py` | Working, tested | Canonical entry point for daemon-managed state-file writes. `atomic_write_json(path, data)` and `atomic_write_text(path, text)` use temp-file + `os.replace` for crash-safety. `with_path_lock(path)` is a context manager with non-blocking `fcntl` flock on a sidecar `.lock` file + 5×50ms bounded retry. Sidecar pattern is load-bearing: `os.replace` swaps the inode, which would invalidate a lock held on the data file itself. Raises typed `StateLockTimeoutError` on retry exhaustion. Consumers: `intake_poll.py` + `weekly_send_poll.py` heartbeat writes; `alert_dedupe.py` dedupe-state writes (migrated PR #104). Closes audit findings F19 + F23 (atomic-write + concurrent-writer lock on shared heartbeat-row state). |
 | `shared/resend_client.py` | Working, tested | Transactional-email client for operator alerts. API key from Keychain (`ITS_RESEND_API_KEY`). Used by `error_log._alert_critical`. NOT for customer email — that's `graph_client.send_mail` (Invariant 1). Live smoke green 2026-05-18 using Resend's sandbox sender (`onboarding@resend.dev`). |
@@ -150,14 +193,14 @@ shipment.
 | `shared/sheet_ids.py` | Working | Bootstrap module. Holds workspace/folder/sheet IDs for the three workspaces + master DB sheet constants (`SHEET_VENDOR_DB`, `SHEET_SUBCONTRACTOR_DB`, `SHEET_EQUIPMENT_MASTER`) + `SHEET_PICKLIST_SYNC_CONFIG`. |
 | `shared/picklist_sync.py` | Working, tested | Cross-sheet PICKLIST option sync from master DBs. Pure-function core (`extract_unique_values`, `compute_diff`, `compute_hash`, `_resolve_size_thresholds`) + `sync_one_mapping` / `sync_all` driver. Reference-checked removals (live cell usage blocks delete → Review Queue row, `Reason=mismatched-reference`). Two-stage size guardrails (200 WARN, 400 HARD-HALT, configurable). Triple-fire on ≥3 mappings failed via correlation_id-threaded `_alert_critical`. Idempotency via SHA-256 of sorted source values stored in `Picklist_Sync_Config.last_run_hash`. Hourly cron via `scripts/run_picklist_sync.py`. PR #46. |
 | `shared/defaults.py` | Working | Module-level constants for cross-cutting fallbacks. `DEFAULT_REVIEWER_CHAINS` (reviewer identity), `ALERTING_DEDUPE_WINDOW_MINUTES`, `PICKLIST_SIZE_WARN_THRESHOLD` / `PICKLIST_SIZE_HARD_HALT_THRESHOLD` / `PICKLIST_SIZE_THRESHOLD_MAX`, `BOX_PROJECT_FOLDERS` (the 6 active-project Box folder IDs; **now references 1111B-derived clones post-cutover**, with the legacy 1111A clones archived under `ITS DATA / 99. Legacy 1111A Clones` per the cutover session log). ITS_Config rows override at runtime; these are the fallback used when the row is missing or invalid. |
-| `scripts/watchdog.py` | Working, tested. 6 of 7 checks operational (E deferred). | Checks A (stale review queue) + B (open CRITICALs) shipped Session 1 (PR #33). Checks C (scheduled-jobs marker scaffold + `write_last_run_marker` helper; `TRACKED_JOBS=[]` by design until a second scheduled job ships), D (14-day reviewer-chain forward scan per Op Stds v14 §18), F (mail-intake silent-disable) shipped Session 2 (PR #36). Check G (alert-dedupe summary sweep — Resend-only push, fires summary email for expired+suppressed entries; two-phase deletion for crash safety; defers phase-1 during MAINTENANCE per V1 fix) shipped PR #44 (PR β) + PR #52 (MAINTENANCE defer). Check E (Anthropic spend trend) deferred to a follow-on PR (the Check E shipping PR) / Phase 1.5 — Admin API key prerequisite, architectural choice not capability gap (see `docs/tech_debt.md`). Live smoke at `scripts/smoke_test_watchdog.py` + Check G live smoke at `scripts/smoke_test_watchdog_summary.py`. |
+| `scripts/watchdog.py` | Working, tested. 6 of 7 checks operational (E deferred). | Checks A (stale review queue) + B (open CRITICALs) shipped Session 1 (PR #33). Checks C (scheduled-jobs marker scaffold + `write_last_run_marker` helper; `TRACKED_JOBS=[]` by design until a second scheduled job ships), D (14-day reviewer-chain forward scan per Op Stds v16 §18), F (mail-intake silent-disable) shipped Session 2 (PR #36). Check G (alert-dedupe summary sweep — Resend-only push, fires summary email for expired+suppressed entries; two-phase deletion for crash safety; defers phase-1 during MAINTENANCE per V1 fix) shipped PR #44 (PR β) + PR #52 (MAINTENANCE defer). Check E (Anthropic spend trend) deferred to a follow-on PR (the Check E shipping PR) / Phase 1.5 — Admin API key prerequisite, architectural choice not capability gap (see `docs/tech_debt.md`). Live smoke at `scripts/smoke_test_watchdog.py` + Check G live smoke at `scripts/smoke_test_watchdog_summary.py`. |
 | `scripts/run_picklist_sync.py` | Working, tested | Hourly launchd-driven entry point for picklist sync. CLI: `--dry`, `--mapping <id>`, `--smoke-test`. `@require_active` (kill-switch-aware) outer + `@its_error_log` inner. Sandbox-only smoke mode bootstraps + exercises full add/remove-safe/remove-blocked flow + tears down. PR #46 / hardened PR #50. |
-| `safety_reports/intake.py` | Working, live-validated end-to-end | 12-stage pipeline (PR #57, c4c4bc9). `process_message(message_id)` extracted in PR #59 as the public API invoked by `intake_poll.py` per message. `SmartsheetError`/`GraphError` soft-fail returns rather than raise. Stages 1-9 + 11-12 live; Stage 10 (attachment screening per Op Stds v14 §34) planned for Phase 1.4 pre-Customer-1 hardening. 1083 lines. **Portal pivot (2026-05-28):** canonical safety-report intake is pivoting to the Safety Portal (blueprint `workstreams/safety-portal/mission.md` v1 + `brief.md`); the portal feeds *this same* `intake.py` via an HMAC-verified email shim (`portal-noreply@` → unified `safety@` inbox, `X-ITS-Portal-HMAC` trust boundary). The portal-marker branches (brief §8 Step 4: Stage 1.5 allowlist+HMAC gate, Stage 8' JSON-payload parse, Stage 13' rollup) are **PLANNED, not built**; the legacy PDF-email path remains the documented fallback during transition. The "Stage 10 attachment screening" note above is superseded for safety reports (Layer 6 N/A per portal mission §7; reassigned to Email Triage — see `docs/tech_debt.md`). |
-| `safety_reports/intake_poll.py` | Working, live in production | Polling daemon (PR #59, f1e724f). Replaces Mail.app rule trigger per Op Stds v14 §31. Per-cycle: `polling_enabled` ITS_Config gate, fcntl file lock at `~/its/state/safety_intake.lock`, `graph_client.list_inbox` unread_only top=50, seen-set idempotency guard, `intake.process_message`, `mark_read` on success, heartbeat write to ITS_Daemon_Health. 632 lines. 60s launchd cadence; 242+ confirmed cycles. **Portal pivot (2026-05-28):** the polled `safety@` mailbox is now *unified* — post-pivot it also receives the Safety Portal's HMAC-verified shim mail (`portal-noreply@` → `safety@`) alongside legacy PDF-email. Poller logic is unchanged; portal-marker handling lives in `intake.process_message` (PLANNED per brief §8 Step 4, not built). |
+| `safety_reports/intake.py` | Working, live-validated end-to-end | 12-stage pipeline (PR #57, c4c4bc9). `process_message(message_id)` extracted in PR #59 as the public API invoked by `intake_poll.py` per message. `SmartsheetError`/`GraphError` soft-fail returns rather than raise. Stages 1-9 + 11-12 live; Stage 10 (attachment screening per Op Stds v16 §34) planned for Phase 1.4 pre-Customer-1 hardening. 1083 lines. **Portal pivot (2026-05-28):** canonical safety-report intake is pivoting to the Safety Portal (blueprint `workstreams/safety-portal/mission.md` v1 + `brief.md`); the portal feeds *this same* `intake.py` via an HMAC-verified email shim (`portal-noreply@` → unified `safety@` inbox, `X-ITS-Portal-HMAC` trust boundary). The portal-marker branches (brief §8 Step 4: Stage 1.5 allowlist+HMAC gate, Stage 8' JSON-payload parse, Stage 13' rollup) are **PLANNED, not built**; the legacy PDF-email path remains the documented fallback during transition. The "Stage 10 attachment screening" note above is superseded for safety reports (Layer 6 N/A per portal mission §7; reassigned to Email Triage — see `docs/tech_debt.md`). |
+| `safety_reports/intake_poll.py` | Working, live in production | Polling daemon (PR #59, f1e724f). Replaces Mail.app rule trigger per Op Stds v16 §31. Per-cycle: `polling_enabled` ITS_Config gate, fcntl file lock at `~/its/state/safety_intake.lock`, `graph_client.list_inbox` unread_only top=50, seen-set idempotency guard, `intake.process_message`, `mark_read` on success, heartbeat write to ITS_Daemon_Health. 632 lines. 60s launchd cadence; 242+ confirmed cycles. **Portal pivot (2026-05-28):** the polled `safety@` mailbox is now *unified* — post-pivot it also receives the Safety Portal's HMAC-verified shim mail (`portal-noreply@` → `safety@`) alongside legacy PDF-email. Poller logic is unchanged; portal-marker handling lives in `intake.process_message` (PLANNED per brief §8 Step 4, not built). |
 | `safety_reports/week_folder.py` | Working, tested | Per-project per-week Field Reports folder + Daily Reports + Weekly Rollup scaffolding (PR #54, ed46a96). Idempotent find-or-create. Race-condition tech-debt entry tracks the find-after-create gap. 168 lines. |
-| `safety_reports/weekly_generate.py` | Working, live-validated end-to-end | Generation half of the External Send Gate two-process model per FM v9 Invariant 1 (R3 Session 2). Friday 14:00 launchd `StartCalendarInterval`. Per-cycle: monday_of_week target resolution, empty-chain CRITICAL abort, per-project ensure_current_week_folder + Daily Reports + Weekly Rollup reads, `WPR_Pending_Review` add/update with `Approved for Send=false`, idempotent replace-if-unapproved + refuse-if-approved, ZERO_DATA_WEEK placeholder branch, low-confidence + security-trigger dual writes to `ITS_Review_Queue`. Watchdog Check C marker `safety_weekly_generate.last_run` with 8-day per-job window. **Per-project fence: single-shot retry on `SmartsheetNotFoundError` (500 ms) — bumps `summary.retries_attempted`; retry exhaustion OR any non-404 error writes a `GENERATION_FAILED` placeholder row so the operator queue never has a silent gap** (one-row-per-(Job,Week) invariant; respects existing approved rows). Capability-gated: `graph_client`, `send_mail`, `resend`, `smtplib`, `email.mime` AST-forbidden. Manual smoke 2026-05-22 confirmed real draft (Bradley 1 backfill week) + 4 ZERO_DATA placeholders + soft-fail per-project fence. ~900 lines. |
+| `safety_reports/weekly_generate.py` | Working, live-validated end-to-end | Generation half of the External Send Gate two-process model per FM v11 Invariant 1 (R3 Session 2). Friday 14:00 launchd `StartCalendarInterval`. Per-cycle: monday_of_week target resolution, empty-chain CRITICAL abort, per-project ensure_current_week_folder + Daily Reports + Weekly Rollup reads, `WPR_Pending_Review` add/update with `Approved for Send=false`, idempotent replace-if-unapproved + refuse-if-approved, ZERO_DATA_WEEK placeholder branch, low-confidence + security-trigger dual writes to `ITS_Review_Queue`. Watchdog Check C marker `safety_weekly_generate.last_run` with 8-day per-job window. **Per-project fence: single-shot retry on `SmartsheetNotFoundError` (500 ms) — bumps `summary.retries_attempted`; retry exhaustion OR any non-404 error writes a `GENERATION_FAILED` placeholder row so the operator queue never has a silent gap** (one-row-per-(Job,Week) invariant; respects existing approved rows). Capability-gated: `graph_client`, `send_mail`, `resend`, `smtplib`, `email.mime` AST-forbidden. Manual smoke 2026-05-22 confirmed real draft (Bradley 1 backfill week) + 4 ZERO_DATA placeholders + soft-fail per-project fence. ~900 lines. |
 | `safety_reports/weekly_summary.py` | DEPRECATED | Stub kept in-tree for one cycle so any orphan launchd reference surfaces as explicit NotImplementedError. Delete in follow-on cleanup PR once `org.solutionsmith.its.weekly-generate` plist is loaded on the production MacBook. |
-| `safety_reports/weekly_send.py` | Working, live-validated end-to-end | Send half of the External Send Gate two-process model per FM v9 Invariant 1 (R3 Session 3). `send_one_row(row_id)` is the per-event handler invoked by `weekly_send_poll` per approved row. 7-stage pipeline: fetch / state-gate / recipients-validate / build / Graph send / late-send compute / row→SENT. Capability-gated: `anthropic_client`, `anthropic` AST-forbidden. Refuses on `[GENERATION_FAILED:` tag (belt-and-suspenders) and on empty Recipients (skip silently — `[NO_RECIPIENTS]` design hold). Advisory tags (`[ZERO_DATA_WEEK]`, `[LOW_CONFIDENCE]`, `[SECURITY_TRIGGER]`) do NOT gate — reviewer approval is the gate. Retry-state tag-encoded in Notes (`[SEND_RETRY_COUNT: N]`, `[LAST_SEND_ERROR: …]`) because the live `WPR_Pending_Review` schema lacks dedicated columns — graceful degrade per Op Stds v14 §23.3. MAX_SEND_RETRIES=3; CRITICAL triple-fire on Graph auth failure OR retry exhaustion. Manual smoke 2026-05-23 confirmed live send to seths@evergreenmirror.com with row marked SENT. ~480 lines. |
+| `safety_reports/weekly_send.py` | Working, live-validated end-to-end | Send half of the External Send Gate two-process model per FM v11 Invariant 1 (R3 Session 3). `send_one_row(row_id)` is the per-event handler invoked by `weekly_send_poll` per approved row. 7-stage pipeline: fetch / state-gate / recipients-validate / build / Graph send / late-send compute / row→SENT. Capability-gated: `anthropic_client`, `anthropic` AST-forbidden. Refuses on `[GENERATION_FAILED:` tag (belt-and-suspenders) and on empty Recipients (skip silently — `[NO_RECIPIENTS]` design hold). Advisory tags (`[ZERO_DATA_WEEK]`, `[LOW_CONFIDENCE]`, `[SECURITY_TRIGGER]`) do NOT gate — reviewer approval is the gate. Retry-state tag-encoded in Notes (`[SEND_RETRY_COUNT: N]`, `[LAST_SEND_ERROR: …]`) because the live `WPR_Pending_Review` schema lacks dedicated columns — graceful degrade per Op Stds v16 §19 (Smartsheet UI-only constraint). MAX_SEND_RETRIES=3; CRITICAL triple-fire on Graph auth failure OR retry exhaustion. Manual smoke 2026-05-23 confirmed live send to seths@evergreenmirror.com with row marked SENT. ~480 lines. |
 | `safety_reports/weekly_send_poll.py` | Working, smoke-validated | Polling daemon (R3 Session 3) — default 15-min `StartInterval`. Scans `WPR_Pending_Review` for rows with `Approved for Send=True` AND `Send Status ∈ {PENDING, FAILED}` AND `[SEND_RETRY_COUNT: N]` < MAX_SEND_RETRIES; dispatches each to `weekly_send.send_one_row`. Per-row fence (one bad row doesn't kill the cycle). Heartbeat helpers replicated VERBATIM from `intake_poll.py` per preservation-over-refactor — `shared/heartbeat.py` extraction is the next consolidation PR's job (tech-debt entry). Heartbeat row state file SHARED with intake_poll (`~/its/state/heartbeat_row_ids.json` keyed by daemon_name). Watchdog Check C marker `safety_weekly_send_poll.last_run` with 30-min freshness window (= 2 poll cycles). Smoke 2026-05-23 confirmed all stages green. ~470 lines. |
 
 ## Adding a new workstream
@@ -173,9 +216,12 @@ shipment.
 7. Every extraction output passes through `shared.anomaly_logger.check()` before use.
 8. launchd plists live in `scripts/launchd/` as templates; `install.sh` copies them to
    `~/Library/LaunchAgents/` and loads them. **Polling daemons via launchd are canonical for
-   intake-bearing workstreams** (Op Stds v14 §31; `safety_reports/intake_poll.py` is the
+   intake-bearing workstreams** (Op Stds v16 §31; `safety_reports/intake_poll.py` is the
    canonical example). Shortcuts remain for manual operator-triggered jobs. Mail.app rules
    deprecated.
+9. **Ship the §43 successor-remediation runbook entry** for any capability with a Tier-2-reachable
+   failure mode (Op Stds v16 §43) — symptom, low-class repair steps, and escalate-to-Seth boundary.
+   This is part of definition-of-done, not a follow-up. See "Maintenance & successor-operator model".
 
 ## Model selection
 
@@ -204,7 +250,7 @@ LangChain, Kubernetes.
 
 ITS_Daemon_Health sheet (System workspace / folder 04 — Daemons / sheet 4529351700729732) is
 the canonical operator-visibility surface for all polling daemons. One row per daemon,
-update-in-place per cycle. Push surface per Op Stds v14 §3.1 + §32.
+update-in-place per cycle. Push surface per Op Stds v16 §3.1 + §32.
 
 - Schema: 12 columns per `shared.sheet_ids.DAEMON_HEALTH_COLUMNS` dict. See
   `references/daemon-health-schema.md` in the its-blueprint repo for full schema reference.
@@ -366,5 +412,5 @@ Convention canonical in `../its-blueprint/CLAUDE.md` (planning layer wins per th
 
 For a **deeper, evidence-backed cross-repo pass** — after a blueprint doctrine version bump, after any PR that changes doctrine references / version strings / sheet-IDs / workstream scope, or when the session-close scan surfaces something — invoke the `doc-reconciliation-auditor` agent (see [Agents](#agents)). It is **propose-only** (a `PreToolUse` hook blocks any write): it checks this repo's code/docs against `docs/doctrine_manifest.yaml` (seeded from blueprint doctrine), runs `scripts/check_doctrine_drift.py` for the deterministic mechanical tier, and emits a dated findings report to `docs/audits/` for you to apply. It is the heavy/on-demand counterpart to the `session-close-maintainer`'s lightweight cross-repo supersession check — not a replacement.
 
-If something here contradicts the planning project's canonical docs (Foundation Mission v9,
-Operational Standards v14), the planning project wins. Flag the inconsistency.
+If something here contradicts the planning project's canonical docs (Foundation Mission v11,
+Operational Standards v16), the planning project wins. Flag the inconsistency.

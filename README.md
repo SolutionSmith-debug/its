@@ -10,7 +10,7 @@ and design partner. This repo is Evergreen-specific; future customer forks live 
 own repos.
 
 ITS runs as Claude Code scripts on a MacBook, triggered by launchd-driven polling daemons
-(canonical pattern per Op Stds v14 §31). Shortcuts for manual operator-triggered jobs.
+(canonical pattern per Op Stds v16 §31). Shortcuts for manual operator-triggered jobs.
 Mail.app rules deprecated.
 
 The **planning layer** lives in a Claude.ai project ("ITS Foundation & Planning"). This repo
@@ -65,7 +65,7 @@ PR #39 (boxsdk addition, 2026-05-20) was the canonical case that surfaced this.
 
 Everything below is normative. See `CLAUDE.md` for the conversational version Claude Code
 reads on every launch. See the Claude.ai planning project for the full canonical
-specifications (Foundation Mission v9, Operational Standards v14).
+specifications (Foundation Mission v11, Operational Standards v16).
 
 - **Kill switch first.** Every script's entry point starts with `check_system_state()`.
 - **Error log decorator.** Every script's main function is wrapped in `@its_error_log`.
@@ -99,9 +99,9 @@ and `scripts/regen_doc_indexes.py --check` warn-only during the retrofit window.
 
 | Phase | State |
 |-------|-------|
-| 0 — Scaffold | ✓ shipped; 23-PR push 2026-05-18/19 wired the remaining shared/* modules (review_queue, quarantine, resend, sentry, error_log Smartsheet write, kill_switch refactor). Tests 137→781 (current; +644 from baseline). Triple-fire CRITICAL operational; mypy=0 enforced in CI; ruff clean. Resend-leg dedupe shipped 2026-05-21 (`shared/alert_dedupe.py` + watchdog Check G summary sweep + MAINTENANCE defer per PR #52). Polling-daemon doctrine codified Op Stds v14 §31 (watchdog + picklist_sync + safety-intake all launchd-driven Python pollers). |
-| 1 — Safety Reports + parallel workstreams | sandbox build active; 5 of 9 owner decisions resolved; Box sandbox uploaded 2026-05-14; Smartsheet system + human-review workspaces fully provisioned 2026-05-17; M365 Graph mail wired 2026-05-17. Cross-sheet picklist sync foundation shipped 2026-05-21 (`shared/picklist_sync.py` + `Picklist_Sync_Config` sheet + hourly cron; activates at form-and-clone cascade time). R3 cycle complete end-to-end (PRs #57/#59/#60 intake + #63 weekly_generate + #65 retry fix + #68 weekly_send). Box 1111B canonical blueprint materialized PR #70, projects re-cloned post-cutover (zero-padded numeric naming convention; legacy 1111A clones archived under `ITS DATA / 99. Legacy 1111A Clones`). Phase 1.4 security cluster: ITS_Trusted_Contacts shipped PR #72; picklist-hardening + attachment screening remaining per V&R v7.2. |
-| 1.5 — Combined Cutover + Hardware Handover (Florida → California) | scheduled after Phase 1 stable. 30-day clean-sandbox-operation gate per V&R v7. |
+| 0 — Scaffold | ✓ shipped; 23-PR push 2026-05-18/19 wired the remaining shared/* modules (review_queue, quarantine, resend, sentry, error_log Smartsheet write, kill_switch refactor). Tests 137→781 (current; +644 from baseline). Triple-fire CRITICAL operational; mypy=0 enforced in CI; ruff clean. Resend-leg dedupe shipped 2026-05-21 (`shared/alert_dedupe.py` + watchdog Check G summary sweep + MAINTENANCE defer per PR #52). Polling-daemon doctrine codified Op Stds v16 §31 (watchdog + picklist_sync + safety-intake all launchd-driven Python pollers). |
+| 1 — Safety Reports + parallel workstreams | sandbox build active; 5 of 9 owner decisions resolved; Box sandbox uploaded 2026-05-14; Smartsheet system + human-review workspaces fully provisioned 2026-05-17; M365 Graph mail wired 2026-05-17. Cross-sheet picklist sync foundation shipped 2026-05-21 (`shared/picklist_sync.py` + `Picklist_Sync_Config` sheet + hourly cron; activates at form-and-clone cascade time). R3 cycle complete end-to-end (PRs #57/#59/#60 intake + #63 weekly_generate + #65 retry fix + #68 weekly_send). Box 1111B canonical blueprint materialized PR #70, projects re-cloned post-cutover (zero-padded numeric naming convention; legacy 1111A clones archived under `ITS DATA / 99. Legacy 1111A Clones`). Phase 1.4 security cluster: ITS_Trusted_Contacts shipped PR #72; picklist-hardening + attachment screening remaining per V&R v9. |
+| 1.5 — Combined Cutover + Hardware Handover (Florida → California) | scheduled after Phase 1 stable. 30-day clean-sandbox-operation gate per V&R v9. |
 | 1.6 — Blueprint Generalization | pre-Customer-2 pass. Extracts Customer-0-specific assumptions from shared/* so a Customer 2 fork-and-customize cycle is mechanical. (Renamed from "Multi-Tenancy Framework" per the white-glove business-model commitment.) |
 | 2 — POs / Subcontracts | not started |
 | 3 — Email Triage / AI Employee | not started |
