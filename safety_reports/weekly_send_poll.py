@@ -91,6 +91,7 @@ from typing import Any, Literal
 from safety_reports import weekly_send
 from shared import (
     approval_verification,
+    circuit_breaker,
     error_log,
     sheet_ids,
     smartsheet_client,
@@ -134,7 +135,13 @@ WATCHDOG_MARKER_DIR = Path.home() / "its" / ".watchdog"
 WATCHDOG_JOB_SLUG = "safety_weekly_send_poll"
 
 # Allowed cycle-status values written to ITS_Daemon_Health.Last_Cycle_Status.
-HeartbeatStatus = Literal["OK", "WARN", "ERROR", "DEGRADED", "SKIPPED"]
+# CIRCUIT_OPEN (F08) overrides the cycle status when the Smartsheet circuit
+# breaker is OPEN (lock-free is_open() at the status-determination point); the
+# heartbeat write itself runs under circuit_breaker.bypass() so the status can
+# still land when Smartsheet is reachable.
+HeartbeatStatus = Literal[
+    "OK", "WARN", "ERROR", "DEGRADED", "SKIPPED", "CIRCUIT_OPEN"
+]
 
 # Send Status values the poller dispatches on. SENT rows are skipped
 # (already done); HELD rows are skipped (operator-driven hold; reserved
@@ -380,9 +387,13 @@ def _write_heartbeat_row(
         cells[cols["notes"]] = notes
 
     try:
-        smartsheet_client.update_row_cells_by_id(
-            sheet_ids.SHEET_DAEMON_HEALTH, row_id, cells
-        )
+        # F08: bypass the breaker for this control-plane write so a CIRCUIT_OPEN
+        # status can still land when Smartsheet is reachable — the
+        # already-once-per-cycle heartbeat write, no new hammering.
+        with circuit_breaker.bypass():
+            smartsheet_client.update_row_cells_by_id(
+                sheet_ids.SHEET_DAEMON_HEALTH, row_id, cells
+            )
     except smartsheet_client.SmartsheetNotFoundError:
         _invalidate_heartbeat_row_state(daemon_name)
         _log_heartbeat_failure(
@@ -645,6 +656,11 @@ def _poll_inside_lock() -> PollStats:
         cycle_status = "WARN"
     else:
         cycle_status = "OK"
+
+    # F08: a degraded Smartsheet overrides the cycle status. Lock-free local
+    # read (no Smartsheet call), safe even when the breaker is OPEN.
+    if circuit_breaker.is_open():
+        cycle_status = "CIRCUIT_OPEN"
 
     try:
         _write_heartbeat_row(
