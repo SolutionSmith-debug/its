@@ -79,7 +79,7 @@ def _saturday_after(target_monday: date) -> datetime:
 
 
 def _phase_a() -> None:
-    print("\n--- Phase A: live decision for the current target week (read-only) ---")
+    print("\n--- Phase A: live decision for the current target week (READ-ONLY) ---")
     now = watchdog._local_now()
     last_trigger = watchdog._most_recent_friday_trigger(now)
     target = (last_trigger - timedelta(days=4)).date()
@@ -93,9 +93,33 @@ def _phase_a() -> None:
         print(f"  WPR rows for week  = {len(rows)}")
     except Exception as exc:  # noqa: BLE001 — surface to operator
         print(f"  WPR read FAILED    = {exc!r}")
-    result = watchdog._check_weekly_generate_catchup()
+
+    # Read-only guarantee: stub _run_pipeline with a no-op (records would-fire,
+    # writes NO marker, makes NO Smartsheet/Anthropic write) so calling the
+    # real check exercises the genuine decision path WITHOUT side effects even
+    # if the live state happens to satisfy the fire conditions.
+    real_pipeline = weekly_generate._run_pipeline
+    fired = {"would": False}
+
+    def _noop_pipeline(**kwargs):  # type: ignore[no-untyped-def]
+        fired["would"] = True
+        return {
+            "drafts_written": 0,
+            "drafts_failed": 0,
+            "aborted_empty_chain": False,
+            "correlation_id": "(phase-a-stub)",
+        }
+
+    try:
+        weekly_generate._run_pipeline = _noop_pipeline  # type: ignore[assignment]
+        result = watchdog._check_weekly_generate_catchup()
+    finally:
+        weekly_generate._run_pipeline = real_pipeline  # type: ignore[assignment]
+
+    decision = "WOULD FIRE catch-up" if fired["would"] else "no catch-up"
+    print(f"  DECISION           = {decision} (generation stubbed — read-only)")
     print(f"  CheckResult        = {result.severity.value}: {result.summary}")
-    print("  (steady state is usually INFO 'ran for week …' or 'past the window'.)")
+    print("  (steady state is usually 'no catch-up' — marker fresh or rows present.)")
 
 
 def _find_empty_target_week(today: date) -> date | None:

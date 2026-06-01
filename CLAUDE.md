@@ -104,8 +104,13 @@ wrong" rather than "data exfiltrated" or "external action taken on attacker's be
 ITS is built to be maintained after the developer (Seth) departs. The maintenance model
 (Foundation Mission v11; Op Stds v16 §44) has **three tiers**:
 
-1. **Tier 1 — self-heal.** Daemons recover; the watchdog catches a stale heartbeat (Check H);
-   no human acts. (Check H is itself a pre-cutover build item — see `scripts/watchdog.py` + tech debt.)
+1. **Tier 1 — self-heal.** Interval daemons recover via launchd re-invocation (one-shot-per-
+   `StartInterval`); the watchdog's **Check C** marker-file staleness floor catches a stale daemon
+   across all four tracked jobs, and the external UptimeRobot ping (audit F16) is the dead-man's
+   switch for total-host death; no human acts. (There is no "Check H" — it was a doctrine naming
+   artifact; the marker-file Check C is the staleness floor. The lone residual, now closed, was
+   `weekly_generate`'s calendar-schedule Friday-crash gap — recovered by watchdog **Check I**
+   catch-up; see `scripts/watchdog.py` + the 2026-06-01 doctrine correction.)
 2. **Tier 2 — Claude-assisted repair by the Successor-Operator.** A *trained* operator who runs
    Claude Code himself, follows the §43 runbook for the affected capability, and carries out a
    **low-capability-class** repair (re-run a daemon, toggle an ITS_Config value, re-send an
