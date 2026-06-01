@@ -96,6 +96,7 @@ outside the sentinel block.
 <!-- BEGIN AUTO-INDEX -->
 | Date | Type | Status | Workstream | Title | PRs |
 |------|------|--------|------------|-------|-----|
+| 2026-06-01 | session_log | closed | infrastructure | [Session log — Tier-1 self-heal: weekly_generate catch-up (Check I)](2026-06-01_tier1-self-heal-checkI-catchup.md) | #133 |
 | 2026-05-29 | session_log | closed | docs | [2026-05-29 — Exec-side ledger cleanup: FM v8→v9 + Op Stds v13→v14 doctrine bump](2026-05-29_exec-ledger-cleanup.md) | #125 |
 | 2026-05-29 | session_log | closed | security | [2026-05-29 — F02 (network-capability allowlist) + F22 (approval-attestation verification)](2026-05-29_f02-f22-capability-approval.md) | #118 |
 | 2026-05-29 | session_log | closed | safety_reports | [2026-05-29 — F20: schema-version enforcement in `weekly_generate._load_tool_schema`](2026-05-29_f20-schema-version.md) | #129 |
