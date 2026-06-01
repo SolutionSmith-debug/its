@@ -191,6 +191,23 @@ def test_poll_once_writes_watchdog_marker_on_completed_cycle(
     datetime.fromisoformat(marker.read_text().strip())  # parseable timestamp
 
 
+def test_poll_once_surfaces_circuit_open_status(
+    mocker, state_in_tmp, kill_switch_active, quiet_logs, polling_on, mailbox_from_config
+):
+    """F08: an OPEN Smartsheet breaker overrides the cycle's heartbeat status to
+    CIRCUIT_OPEN (lock-free is_open() at the status-determination point)."""
+    mocker.patch("safety_reports.intake_poll.graph_client.list_inbox", return_value=[])
+    mocker.patch(
+        "safety_reports.intake_poll.circuit_breaker.is_open", return_value=True
+    )
+    hb = mocker.patch("safety_reports.intake_poll._write_heartbeat_row")
+
+    intake_poll.poll_once()
+
+    assert hb.call_count == 1
+    assert hb.call_args.kwargs["status"] == "CIRCUIT_OPEN"
+
+
 # ---- Per-message iteration -----------------------------------------------
 
 
