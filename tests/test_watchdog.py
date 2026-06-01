@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import inspect
 import sys
+from datetime import UTC, date, datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -108,7 +109,10 @@ def test_checks_list_has_all_session_1_2_3_checks():
     """CHECKS registry in priority order. Check E is deferred to its
     shipping PR (Admin API key prerequisite) and intentionally absent
     here. Check G (alert-dedupe summary sweep) shipped in PR β
-    (Session 3) and is registered last."""
+    (Session 3). Check I (weekly_generate catch-up) is registered last and
+    runs after Check C (it recovers what Check C only detects). There is no
+    Check H — the marker-file Check C is the staleness floor doctrine once
+    named "Check H" (2026-06-01 doctrine correction)."""
     assert watchdog.CHECKS == [
         watchdog._check_stale_review_queue,
         watchdog._check_open_criticals,
@@ -116,6 +120,7 @@ def test_checks_list_has_all_session_1_2_3_checks():
         watchdog._check_reviewer_chain_forward,
         watchdog._check_mail_intake_silent_disable,
         watchdog._check_alert_dedupe_summaries,
+        watchdog._check_weekly_generate_catchup,
     ]
 
 
@@ -1423,3 +1428,306 @@ def test_run_check_does_not_pass_alerts_suppressed_to_legacy_checks(mocker):
     watchdog._run_check(legacy_check, alerts_suppressed=True)
 
     legacy_check.assert_called_once_with()  # zero args, NOT alerts_suppressed kwarg
+
+
+# ---- Group I: Check I — weekly_generate catch-up recovery ----------------
+#
+# weekly_generate is the lone tracked daemon on a calendar schedule
+# (StartCalendarInterval Friday 14:00), so a crashed Friday cycle is not
+# re-invoked by launchd until the next Friday. Check I re-fires the missed
+# generation on a subsequent daily watchdog run while inside a short window.
+
+# Fixed offset standing in for the local timezone (the trigger fires in
+# local time). Anchor scenario: the Friday 2026-06-05 14:00 trigger, whose
+# ISO week's Monday is 2026-06-01.
+_LOCAL = timezone(timedelta(hours=-7))
+_LAST_TRIGGER = datetime(2026, 6, 5, 14, 0, tzinfo=_LOCAL)
+_TARGET_MONDAY = date(2026, 6, 1)
+# Saturday morning after the trigger — squarely inside the catch-up window.
+_SAT_AFTER_TRIGGER = datetime(2026, 6, 6, 7, 0, tzinfo=_LOCAL)
+# Tuesday morning — past the 3-day (through-Monday) catch-up window.
+_TUE_OUT_OF_WINDOW = datetime(2026, 6, 9, 7, 0, tzinfo=_LOCAL)
+
+
+@pytest.fixture
+def catchup_now(monkeypatch):
+    """Pin Check I's clock (_local_now). Returns a setter for each test."""
+    def _set(now: datetime) -> None:
+        monkeypatch.setattr("watchdog._local_now", lambda: now)
+    return _set
+
+
+@pytest.fixture
+def mock_run_pipeline(mocker):
+    """Mock weekly_generate._run_pipeline at the watchdog import path.
+
+    Default return = a healthy run (5 drafts). Tests override return_value
+    (empty-chain) or side_effect (failure).
+    """
+    return mocker.patch(
+        "watchdog.weekly_generate._run_pipeline",
+        return_value={
+            "drafts_written": 5,
+            "drafts_failed": 0,
+            "aborted_empty_chain": False,
+            "correlation_id": "abc123def456",
+            "week_start": _TARGET_MONDAY.isoformat(),
+        },
+    )
+
+
+@pytest.fixture
+def mock_alert_critical(mocker):
+    """Mock the triple-fire push leg so no real Resend/Sentry page fires."""
+    return mocker.patch("watchdog._alert_critical")
+
+
+def _write_wg_marker(ts: datetime) -> None:
+    """Write the safety_weekly_generate marker with an explicit timestamp."""
+    watchdog.WATCHDOG_MARKER_DIR.mkdir(parents=True, exist_ok=True)
+    (watchdog.WATCHDOG_MARKER_DIR / "safety_weekly_generate.last_run").write_text(
+        ts.isoformat()
+    )
+
+
+@pytest.mark.parametrize(
+    "now, expect_trigger, expect_target_monday",
+    [
+        # Friday before 14:00 → most recent trigger is LAST Friday (this
+        # week's run hasn't fired yet; last week is the most recent trigger).
+        (
+            datetime(2026, 6, 5, 7, 0, tzinfo=_LOCAL),
+            datetime(2026, 5, 29, 14, 0, tzinfo=_LOCAL),
+            "2026-05-25",
+        ),
+        # Friday after 14:00 → this Friday.
+        (
+            datetime(2026, 6, 5, 15, 0, tzinfo=_LOCAL),
+            datetime(2026, 6, 5, 14, 0, tzinfo=_LOCAL),
+            "2026-06-01",
+        ),
+        # Saturday → yesterday's Friday.
+        (
+            datetime(2026, 6, 6, 7, 0, tzinfo=_LOCAL),
+            datetime(2026, 6, 5, 14, 0, tzinfo=_LOCAL),
+            "2026-06-01",
+        ),
+        # Monday → the previous Friday.
+        (
+            datetime(2026, 6, 8, 7, 0, tzinfo=_LOCAL),
+            datetime(2026, 6, 5, 14, 0, tzinfo=_LOCAL),
+            "2026-06-01",
+        ),
+    ],
+)
+def test_most_recent_friday_trigger(now, expect_trigger, expect_target_monday):
+    trigger = watchdog._most_recent_friday_trigger(now)
+    assert trigger == expect_trigger
+    # Target week = the Monday of the trigger Friday's ISO week (Friday - 4d).
+    assert (trigger - timedelta(days=4)).date().isoformat() == expect_target_monday
+
+
+def test_check_i_registered_in_checks_after_check_c():
+    assert watchdog._check_weekly_generate_catchup in watchdog.CHECKS
+    # Check I recovers what Check C only detects, so it must run after it.
+    assert watchdog.CHECKS.index(
+        watchdog._check_weekly_generate_catchup
+    ) > watchdog.CHECKS.index(watchdog._check_scheduled_jobs)
+
+
+def test_catchup_no_fire_when_marker_fresh(catchup_now, mock_run_pipeline):
+    """(a) Generation ran this week (marker fresh) → no catch-up.
+
+    Marker written in UTC (as weekly_generate actually does) AFTER the local
+    Friday 14:00 trigger — exercises the cross-timezone marker comparison.
+    """
+    catchup_now(_SAT_AFTER_TRIGGER)
+    # 2026-06-05 22:00 UTC == 15:00 -07:00, i.e. after the 14:00 local trigger.
+    _write_wg_marker(datetime(2026, 6, 5, 22, 0, tzinfo=UTC))
+
+    result = watchdog._check_weekly_generate_catchup()
+
+    assert result.severity is Severity.INFO
+    assert "ran for week" in result.summary
+    mock_run_pipeline.assert_not_called()
+
+
+def test_catchup_fires_when_missing_in_window(
+    catchup_now, mock_run_pipeline, mock_get_rows
+):
+    """(b) No marker + no rows + in window → catch-up fires exactly once."""
+    catchup_now(_SAT_AFTER_TRIGGER)
+    mock_get_rows.return_value = []  # no WPR rows for the target week
+
+    result = watchdog._check_weekly_generate_catchup()
+
+    mock_run_pipeline.assert_called_once_with(week_start_override=_TARGET_MONDAY)
+    assert result.severity is Severity.INFO
+    assert "catch-up fired" in result.summary
+    assert "5 draft" in result.summary
+
+
+def test_catchup_no_fire_outside_window(
+    catchup_now, mock_run_pipeline, mock_get_rows
+):
+    """(c) Missed, but now is past the catch-up window → no catch-up."""
+    catchup_now(_TUE_OUT_OF_WINDOW)
+    mock_get_rows.return_value = []
+
+    result = watchdog._check_weekly_generate_catchup()
+
+    assert result.severity is Severity.INFO
+    assert "past the catch-up window" in result.summary
+    mock_run_pipeline.assert_not_called()
+
+
+def test_catchup_no_fire_when_rows_present_marker_stale(
+    catchup_now, mock_run_pipeline, mock_get_rows
+):
+    """Robustness: marker stale/missing BUT WPR rows exist (fail-soft marker
+    write left a stale marker on an otherwise-successful run) → no re-fire."""
+    catchup_now(_SAT_AFTER_TRIGGER)
+    mock_get_rows.return_value = [{"_row_id": 1, "Week": _TARGET_MONDAY.isoformat()}]
+
+    result = watchdog._check_weekly_generate_catchup()
+
+    assert result.severity is Severity.INFO
+    assert "rows present" in result.summary
+    mock_run_pipeline.assert_not_called()
+
+
+def test_catchup_failure_triple_fires_critical_no_loop(
+    catchup_now, mock_run_pipeline, mock_get_rows, mock_alert_critical, mock_log
+):
+    """(d) Catch-up generation raises → CRITICAL triple-fire, fired once."""
+    catchup_now(_SAT_AFTER_TRIGGER)
+    mock_get_rows.return_value = []
+    mock_run_pipeline.side_effect = RuntimeError("generation boom")
+
+    result = watchdog._check_weekly_generate_catchup()
+
+    # No loop — generation attempted exactly once.
+    mock_run_pipeline.assert_called_once()
+    # Operator paged via the triple-fire push legs.
+    mock_alert_critical.assert_called_once()
+    assert (
+        mock_alert_critical.call_args.kwargs["error_code"]
+        == "weekly_generate_catchup_failed"
+    )
+    # CRITICAL record row written with a matching distinct error_code.
+    crit_calls = [c for c in mock_log.call_args_list if c.args[0] is Severity.CRITICAL]
+    assert len(crit_calls) == 1
+    assert crit_calls[0].kwargs["error_code"] == "weekly_generate_catchup_failed"
+    # Row + page share one correlation_id (so a single grep recovers all legs).
+    assert (
+        crit_calls[0].kwargs["correlation_id"]
+        == mock_alert_critical.call_args.kwargs["correlation_id"]
+    )
+    assert result.severity is Severity.INFO  # alerting already fired explicitly
+    assert "FAILED" in result.summary
+
+
+def test_catchup_paused_skips_via_main(mock_check_state, mock_run_pipeline):
+    """(e) PAUSED → main() returns before the checks loop; no catch-up."""
+    mock_check_state.return_value = SystemState.PAUSED
+
+    watchdog.main()
+
+    mock_run_pipeline.assert_not_called()
+
+
+def test_catchup_maintenance_runs_but_defers_page(
+    catchup_now, mock_run_pipeline, mock_get_rows, mock_alert_critical, mock_log
+):
+    """(f) MAINTENANCE: generation RUNS but a failure's page is DEFERRED;
+    the CRITICAL record row is still written (push-vs-record, Op Stds §3.1)."""
+    catchup_now(_SAT_AFTER_TRIGGER)
+    mock_get_rows.return_value = []
+    mock_run_pipeline.side_effect = RuntimeError("boom")
+
+    result = watchdog._check_weekly_generate_catchup(alerts_suppressed=True)
+
+    mock_run_pipeline.assert_called_once()  # generation RAN during MAINTENANCE
+    mock_alert_critical.assert_not_called()  # operator page DEFERRED
+    # Record row still written at CRITICAL (forensic trail preserved).
+    severities = [c.args[0] for c in mock_log.call_args_list]
+    assert Severity.CRITICAL in severities
+    assert "page deferred" in result.summary
+
+
+def test_catchup_maintenance_success_runs(
+    catchup_now, mock_run_pipeline, mock_get_rows
+):
+    """(f) MAINTENANCE happy path: generation still runs (not @require_active
+    blocked) and succeeds."""
+    catchup_now(_SAT_AFTER_TRIGGER)
+    mock_get_rows.return_value = []
+
+    result = watchdog._check_weekly_generate_catchup(alerts_suppressed=True)
+
+    mock_run_pipeline.assert_called_once_with(week_start_override=_TARGET_MONDAY)
+    assert result.severity is Severity.INFO
+    assert "catch-up fired" in result.summary
+
+
+def test_run_check_threads_alerts_suppressed_to_check_i(
+    catchup_now, mock_run_pipeline, mock_get_rows, mock_alert_critical
+):
+    """_run_check must detect Check I's alerts_suppressed kwarg and thread it
+    (signature-inspection fork). If it regresses, the MAINTENANCE page would
+    fire."""
+    catchup_now(_SAT_AFTER_TRIGGER)
+    mock_get_rows.return_value = []
+    mock_run_pipeline.side_effect = RuntimeError("boom")
+
+    watchdog._run_check(
+        watchdog._check_weekly_generate_catchup, alerts_suppressed=True
+    )
+
+    mock_run_pipeline.assert_called_once()  # generation ran
+    mock_alert_critical.assert_not_called()  # threaded → page deferred
+
+
+def test_check_i_default_arg_alerts_suppressed_false(
+    catchup_now, mock_run_pipeline, mock_get_rows, mock_alert_critical
+):
+    """Calling Check I without the kwarg must NOT defer — safety default."""
+    catchup_now(_SAT_AFTER_TRIGGER)
+    mock_get_rows.return_value = []
+    mock_run_pipeline.side_effect = RuntimeError("boom")
+
+    watchdog._check_weekly_generate_catchup()  # no kwarg
+
+    mock_alert_critical.assert_called_once()  # NOT deferred
+
+
+def test_catchup_empty_chain_returns_warn(
+    catchup_now, mock_run_pipeline, mock_get_rows, mock_alert_critical
+):
+    """Empty reviewer chain: weekly_generate already recorded its own
+    CRITICAL → Check I surfaces WARN and does NOT double-escalate."""
+    catchup_now(_SAT_AFTER_TRIGGER)
+    mock_get_rows.return_value = []
+    mock_run_pipeline.return_value = {
+        "aborted_empty_chain": True,
+        "drafts_written": 0,
+        "drafts_failed": 0,
+        "correlation_id": "x",
+    }
+
+    result = watchdog._check_weekly_generate_catchup()
+
+    assert result.severity is Severity.WARN
+    assert "empty reviewer chain" in result.summary
+    mock_alert_critical.assert_not_called()
+
+
+def test_wpr_rows_exist_failsoft_returns_false(mock_get_rows, mock_log):
+    """A Smartsheet read failure during evaluation fails soft → False (the
+    decision falls back to the marker signal) and logs a WARN."""
+    mock_get_rows.side_effect = SmartsheetError("boom")
+
+    assert watchdog._wpr_rows_exist_for_week(_TARGET_MONDAY) is False
+
+    severities = [c.args[0] for c in mock_log.call_args_list]
+    assert Severity.WARN in severities
