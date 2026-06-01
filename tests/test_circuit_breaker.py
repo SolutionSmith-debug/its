@@ -70,24 +70,38 @@ def make_config(enabled: bool = True, threshold: int = 3, cooldown: int = 300):
     )
 
 
-def guarded(state_path: Path, behavior, *, config=None):
-    """Build a guarded fn driven by ``behavior``: a callable() that returns a
-    value or raises. Tracks invocation count on ``fn.calls``."""
-    cfg = config or make_config()
+class _Guarded:
+    """A guarded callable that also tracks how many times the inner fn ran.
 
-    @cb.guard(
-        open_exc=CircuitOpenError,
-        count=BaseError,
-        ignore=(AuthError,),
-        config_loader=cfg,
-        state_path=state_path,
-    )
-    def fn():
-        fn.calls += 1
-        return behavior()
+    A small class rather than a function with a ``.calls`` attribute so mypy
+    stays happy (you cannot attach attributes to a ``Callable``).
+    """
 
-    fn.calls = 0
-    return fn
+    def __init__(self, state_path: Path, behavior, *, config=None) -> None:
+        self.calls = 0
+        cfg = config or make_config()
+
+        @cb.guard(
+            open_exc=CircuitOpenError,
+            count=BaseError,
+            ignore=(AuthError,),
+            config_loader=cfg,
+            state_path=state_path,
+        )
+        def _inner():
+            self.calls += 1
+            return behavior()
+
+        self._guarded = _inner
+
+    def __call__(self):
+        return self._guarded()
+
+
+def guarded(state_path: Path, behavior, *, config=None) -> _Guarded:
+    """Build a guarded callable driven by ``behavior`` (returns a value or
+    raises). Tracks invocation count on ``.calls``."""
+    return _Guarded(state_path, behavior, config=config)
 
 
 def read_state(state_path: Path) -> dict:

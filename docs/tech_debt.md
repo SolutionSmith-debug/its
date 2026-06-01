@@ -924,25 +924,19 @@ Phase 1.5 work introduces PDF-form-field extraction (and possibly free-text rege
 
 Surfaced: 2026-05-24 hardcoded-values audit brief, §B3. Cross-ref Op Stds v11 §35 (confidence-scored extraction → review queue routing pattern).
 
-## No retry / backoff / circuit-breaker layer across Smartsheet call sites [OPEN 2026-05-24]
+## No retry / backoff / circuit-breaker layer across Smartsheet call sites [CLOSED 2026-06-01]
 
-Smartsheet API calls across `shared/smartsheet_client.py` and its consumers (intake_poll, weekly_send_poll, weekly_generate, watchdog, picklist_sync) have point-by-point exception catches (e.g., `intake_poll.py:406` catches `SmartsheetError`, `intake_poll.py:439` catches `SmartsheetNotFoundError`, weekly_generate's `_process_with_retry` does a one-shot retry on `SmartsheetNotFoundError`) but no unified retry-with-backoff decorator and no circuit-breaker pattern. A Smartsheet incident (5xx, timeout, rate-limit) means each call site degrades independently with no aggregate signal to the daemon ("Smartsheet is currently degraded — back off the whole loop").
+Smartsheet API calls across `shared/smartsheet_client.py` and its consumers (intake_poll, weekly_send_poll, weekly_generate, watchdog, picklist_sync) had point-by-point exception catches but no aggregate "Smartsheet is degraded — back off the whole loop" signal. During an incident (5xx / timeout / rate-limit) each call site degraded independently: the daemon kept hammering the degraded service, ITS_Errors filled with one row per failed call, and a flapping failure could fan out unbounded operator email.
 
-**Failure mode:** Smartsheet returns 5xx on a string of consecutive API calls during an incident. Each call-site catch logs to ITS_Errors and either soft-fails (`SmartsheetError as exc` returns rather than raises in many handlers) or — for un-caught paths — bubbles to the daemon-wide catch. The daemon doesn't crash today (current catches are broad enough), but ITS_Errors fills with N rows per cycle and the alert-dedupe state file grows. Worse: the daemon keeps hammering the degraded service, contributing to the incident's tail.
+Closed by the **F08/F09** Phase 1.4 hardening PR, with a design that **differs from the originally-proposed one in two deliberate ways**:
 
-**Proposed fix (layered):**
+1. **The circuit breaker is a separate, domain-agnostic module** (`shared/circuit_breaker.py`) — NOT "a simple counter in `smartsheet_client` state" as first sketched. It exposes a parameterized `guard(open_exc, count, ignore, …)` decorator + `bypass()` + lock-free `is_open()`; `smartsheet_client` decorates its **16 network-issuing methods** (leaving `get_setting` / `get_settings_with_prefix` undecorated — transitive via `get_rows`, no double-count) and injects the Smartsheet exception set + a bypass-wrapped, process-cached config loader. **One global breaker, persisted** to `~/its/state/circuit_breaker.json` (launchd daemons are fresh-process-per-cycle, so the consecutive-failure count + OPEN deadline must outlive the process). N consecutive counting-eligible failures (429/5xx/transport; **401/403/404 ignored** — deterministic/routine) trip OPEN → short-circuit with `SmartsheetCircuitOpenError` (a `SmartsheetError` subclass, so every existing consumer catch handles it unchanged); cooldown → single HALF_OPEN probe → CLOSED/OPEN. Surfaced via the daemons' `CIRCUIT_OPEN` heartbeat status and (PR 2) a watchdog prolonged-open check that reads the local file (works during a total Smartsheet outage).
 
-1. **Retry-with-exponential-backoff decorator** in `shared/smartsheet_client.py`: wraps every public API method. 3 retries with 1s / 4s / 16s sleep, only on retryable errors (5xx, timeouts, 429 rate-limit). Existing exception classes (`SmartsheetError`, etc.) get a new `is_retryable: bool` property. The 2026-05-22 weekly_generate `_process_with_retry` becomes the prior-art that this decorator replaces.
-2. **Circuit-breaker pattern**: simple counter in `shared/smartsheet_client.py` state. N consecutive failures across the module pause new calls for a longer interval (5-10 min). Resume on a probe-call success. Coexists with retry — retry handles transient, circuit-breaker handles sustained.
-3. **Dedicated `SS_API_UNAVAILABLE` error code** in `_alert_critical`. The existing alert-dedupe (per `feedback_pr_scoping_narrow.md` and the alert-dedupe entries) handles spam-suppression — verify the dedupe key works for this case.
+2. **No retry-with-backoff decorator was built — deliberately.** Per Op Stds §14 (wrap, don't reimplement), the SDK's own HTTP retry/backoff already handles the transient/per-call layer; the breaker sits strictly *above* the typed-exception layer for the sustained/cross-call (and cross-process) case. `weekly_generate._process_with_retry`'s narrow NotFound-only retry stays as-is (it is not the transient-5xx retry this item imagined, and circuit-open deliberately does not trigger it). No `is_retryable` property and no `SS_API_UNAVAILABLE` error code were needed — `SmartsheetCircuitOpenError` is the typed signal.
 
-**Effort:** ~half-day for the retry decorator + ~2 hours for circuit-breaker + ~1 hour to verify dedupe interaction. Integration tests against sandbox required (Op Stds v11 §30) — the SDK-vs-Live class of bug is the main risk here.
+The "ITS_Errors / dedupe state fills + unbounded email" half is addressed by **F09's global alerts-per-hour cap** (`alert_dedupe.check_hourly_cap` gating the Resend leg in `error_log._fire_resend_leg`): records still fire every time (Op Stds v16 §3.1 push-vs-record), only the operator email fan-out is bounded.
 
-**Phase target:** 1.5 — reliability gate for ship-and-leave threshold. ITS goes operator-untouched for stretches post-handover; a Smartsheet incident during one of those stretches shouldn't degrade ITS unboundedly.
-
-**Revisit when:** Phase 1.5 hardening cluster, OR a real Smartsheet incident exercises the call sites and surfaces concrete failure shapes worth designing for.
-
-Surfaced: 2026-05-24 hardcoded-values audit brief, §B4. Cross-ref Op Stds v11 §30 (SDK-vs-Live integration discipline — retry decorator is a candidate for parallel integration test coverage).
+§43 successor-remediation runbook shipped at `docs/runbooks/circuit_breaker.md` (circuit-open + rate-cap-hit). §30 integration coverage at `tests/test_circuit_breaker_integration.py` (live trip/reset against the sandbox, CI-skipped). Surfaced: 2026-05-24 hardcoded-values audit brief, §B4.
 
 ## Configuration validation at daemon startup [OPEN 2026-05-24]
 
