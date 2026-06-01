@@ -647,15 +647,25 @@ Parallel chat build of ITS_Daemon_Health surface created an extra empty sheet 37
 
 **Revisit when:** next operator Smartsheet UI session.
 
-## Watchdog Check F retirement / Check H heartbeat-staleness successor [OPEN 2026-05-22]
+## Watchdog Check F retirement [PARTIALLY_MITIGATED 2026-06-01]
 
 Check F (Mail.app rule silent disable, PR #36) polls safety@evergreenmirror.com mailbox idle hours as a proxy for Mail.app-rule trigger health. Post-PR-#59, safety_reports is on a polling daemon and writes a heartbeat to ITS_Daemon_Health every 60 seconds. The mailbox-idle proxy is now redundant for safety_reports.
 
-Check H (successor): read ITS_Daemon_Health for every Enabled=true daemon; flag rows where Last Heartbeat is older than 2 × Interval Seconds. Retire Check F when (a) Check H is operational and (b) no remaining workstream depends on Mail.app rules.
+**Check-H reframe (2026-06-01).** This entry originally proposed a "Check H heartbeat-staleness successor" that would "read ITS_Daemon_Health for every Enabled=true daemon; flag rows where Last Heartbeat is older than 2 × Interval Seconds." That mechanism was **never built and is superseded** — the staleness floor doctrine called "Check H" is, and always was, the **Check C marker-file** check (`scripts/watchdog.py`), which already covers all four tracked daemons (`safety_intake`, `safety_weekly_send_poll`, `safety_picklist_audit`, `safety_weekly_generate`) with per-job freshness windows. The blueprint doctrine carrying the stale "Check H unimplemented / 2-of-3 heartbeat-pending" framing is corrected in the 2026-06-01 doctrine pass (FM v11.x / Op Stds v16.x / V&R v9.x / Handover v8.x / Excellence Roadmap v4). The companion residual this entry's "revisit when" anticipated — the weekly_generate catch-up — is now **built** as watchdog **Check I** (`_check_weekly_generate_catchup`, this PR), closing the one daemon launchd could not self-recover (calendar-scheduled, Friday).
 
-**Effort:** ~1-2 hour session.
+**Remaining open leg:** the *Check F retirement itself*. Retire Check F when (a) the Check C marker-file floor covers all daemons [done] and (b) no remaining workstream depends on Mail.app rules. Leg (b) is the live gate.
 
-**Revisit when:** second polling-daemon consumer ships (Email Triage or weekly_generate) — at that point shared/runner.py extraction + Check H consolidation become joint opportunity.
+**Effort:** ~1 hour session (delete Check F + its tests once Mail.app rules are fully gone).
+
+**Revisit when:** the last Mail.app-rule-dependent workstream is migrated to a polling daemon (then leg (b) is satisfied and Check F can be deleted). The `shared/runner.py` marker-helper consolidation remains a separate opportunity at the next polling-daemon consumer ship.
+
+## audit_picklist_drift.py marker writer is not wired to a launchd plist [OPEN 2026-06-01]
+
+Surfaced during the Check I (weekly_generate catch-up) build. `scripts/watchdog.py` Check C tracks `safety_picklist_audit` (8-day window), and the **only** writer of the `safety_picklist_audit.last_run` marker is `scripts/audit_picklist_drift.py`. But the picklist launchd plist (`scripts/launchd/org.solutionsmith.its.picklist-sync.plist`) invokes `scripts/run_picklist_sync.py` (the hourly option-SYNC job), **not** `audit_picklist_drift.py` (the drift-AUDIT job) — and `run_picklist_sync.py` writes no watchdog marker. So either (a) the operator schedules `audit_picklist_drift.py` via a plist outside `scripts/launchd/`, or (b) the `safety_picklist_audit` marker is never written → a permanent stale Check C WARN. Separately, `run_picklist_sync.py` (the actually-scheduled hourly job) is not in TRACKED_JOBS at all, so its silent death is invisible to Check C.
+
+**Out of scope** for the Check I PR (no behavior changed here — recording the finding only). Per Op Stds "silent fail-open hazards must become watchdog-detectable signals," this should be reconciled: confirm where `audit_picklist_drift.py` is scheduled (or wire it), and consider tracking `run_picklist_sync.py`.
+
+**Revisit when:** the picklist scheduling/Tranche-0 work is next touched, or the first time a `safety_picklist_audit` stale WARN fires with no underlying cause.
 
 ## safety_weekly_generate prompt v0.1.0 calibration [OPEN 2026-05-22]
 

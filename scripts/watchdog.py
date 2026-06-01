@@ -54,6 +54,25 @@ Checks shipped:
        Phase-2 deletion (already-summarized or clean-expired entries)
        still proceeds during MAINTENANCE because that path has no push
        side-effect. Op Stds v10 §2 codifies this carve-out.
+    I. weekly_generate catch-up recovery — 2026-06-01. weekly_generate is
+       the one tracked daemon on a calendar schedule (StartCalendarInterval,
+       Friday 14:00), so a *crashed* Friday cycle is not re-invoked by
+       launchd until the next Friday — launchd treats a started-then-failed
+       job as "ran" (unlike the interval pollers, whose next StartInterval
+       tick IS their recovery). Check C detects the resulting marker
+       staleness (8-day window) and the external UptimeRobot ping (audit
+       F16) covers total-host death, but neither *recovers* the missed run.
+       Check I closes that gap: on a subsequent daily run, if the current
+       target week's generation did not run and we are still inside a short
+       catch-up window, it re-fires the generation once. CRITICAL triple-fire
+       on catch-up failure (page deferred — record kept — during MAINTENANCE
+       per the push-vs-record carve-out). See the in-code rationale above
+       `_check_weekly_generate_catchup`.
+
+       (There is no Check H. Doctrine once named a heartbeat-staleness check
+       "Check H", but that mechanism was never built — the marker-file Check
+       C is the staleness floor. Corrected in the 2026-06-01 blueprint
+       doctrine pass; the next free check letter is therefore I.)
 
 Planned (NOT in this file, scheduled for a follow-on PR — the Check E
 shipping PR; see `docs/tech_debt.md`):
@@ -65,11 +84,14 @@ Trigger this script from a launchd plist. See `scripts/launchd/`.
 from __future__ import annotations
 
 import inspect
+import traceback
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 
+from safety_reports import weekly_generate
 from shared import (
     alert_dedupe,
     graph_client,
@@ -79,7 +101,7 @@ from shared import (
     sheet_ids,
     smartsheet_client,
 )
-from shared.error_log import Severity, its_error_log, log
+from shared.error_log import Severity, _alert_critical, its_error_log, log
 from shared.kill_switch import SystemState, check_system_state
 from shared.review_queue import ReviewReason, SlaTier
 from shared.scheduling import TimeOffClient, is_federal_holiday, resolve_chain
@@ -644,6 +666,306 @@ def _check_alert_dedupe_summaries(*, alerts_suppressed: bool = False) -> CheckRe
     return CheckResult(severity=Severity.INFO, summary=summary, details=details)
 
 
+# ---- Check I: weekly_generate catch-up recovery -------------------------
+#
+# Motivating finding (Tier-1 self-heal completion, 2026-06-01). Every other
+# tracked daemon is interval-driven (launchd StartInterval), so a crashed
+# cycle is simply re-run at the next interval — launchd re-invocation IS the
+# recovery, and no KeepAlive is needed. weekly_generate is the lone
+# exception: it runs Friday 14:00 via StartCalendarInterval, so a *crashed*
+# Friday cycle is not re-invoked until the next Friday (launchd treats a
+# started-then-failed job as "ran"; it only re-runs a calendar job that the
+# host MISSED while asleep/off, not one that ran and errored). Check C
+# detects the resulting marker staleness (8-day window) and the external
+# UptimeRobot ping (audit F16) covers total-host death — but neither
+# *recovers* the missed run; it stays missing until next Friday or a human
+# acts. Check I is that recovery: a daily, self-correcting re-fire that
+# brings weekly_generate up to the interval pollers' self-heal bar.
+#
+# This is the one open leg of the V&R Pre-Cutover Condition 4 (Tier-1
+# self-heal) gate; the all-daemon Check C coverage and the F16 ping legs are
+# already met. See the 2026-06-01 blueprint doctrine correction.
+
+# The job whose Friday calendar-run Check I recovers — the same marker slug
+# Check C tracks (TRACKED_JOBS[0]), but read here against the most-recent
+# Friday trigger instant rather than Check C's broad 8-day staleness window.
+WEEKLY_GENERATE_JOB_SLUG = "safety_weekly_generate"
+
+# weekly_generate's launchd trigger: Friday (Python date.weekday() == 4) at
+# 14:00 local time. Mirrors scripts/launchd/org.solutionsmith.its.weekly-
+# generate.plist (StartCalendarInterval Weekday=5 / Hour=14); keep in sync
+# if that plist's schedule ever changes.
+WEEKLY_GENERATE_TRIGGER_WEEKDAY = 4
+WEEKLY_GENERATE_TRIGGER_HOUR = 14
+
+# Catch-up window measured from the Friday 14:00 trigger: through the end of
+# the following Monday (the "following business day" bound). That spans the
+# Saturday / Sunday / Monday daily-or-on-wake watchdog runs after a missed
+# Friday, without re-firing an ancient week — a miss not recovered by Monday
+# falls through to Check C's 8-day WARN → human (Tier 2/3). Re-firing is
+# idempotent (weekly_generate replace-if-unapproved / refuse-if-approved),
+# so the bound is about not wasting Anthropic spend on stale weeks, not
+# about safety.
+CATCHUP_WINDOW = timedelta(days=3)
+
+
+def _local_now() -> datetime:
+    """Local timezone-aware 'now'. Seam so tests can pin the clock.
+
+    weekly_generate's launchd trigger fires in LOCAL time, so the Friday-
+    trigger math runs in local time. The marker (written by weekly_generate
+    as UTC) is compared as an aware datetime, which Python resolves correctly
+    across zones.
+    """
+    return datetime.now().astimezone()
+
+
+def _most_recent_friday_trigger(now: datetime) -> datetime:
+    """Most recent Friday 14:00 local at or before `now` (aware, local tz)."""
+    days_since_friday = (now.weekday() - WEEKLY_GENERATE_TRIGGER_WEEKDAY) % 7
+    candidate = (now - timedelta(days=days_since_friday)).replace(
+        hour=WEEKLY_GENERATE_TRIGGER_HOUR, minute=0, second=0, microsecond=0
+    )
+    if candidate > now:
+        # `now` is earlier in the day than the trigger hour on a Friday →
+        # this week's trigger hasn't happened; the most recent is last week.
+        candidate -= timedelta(days=7)
+    return candidate
+
+
+def _read_marker_datetime(job_slug: str) -> datetime | None:
+    """Read a `{slug}.last_run` marker as an aware datetime, or None.
+
+    None on missing / unreadable / unparseable marker — each such case is
+    treated as "did not run" by the caller (catch-up errs toward firing, not
+    toward a silent miss). Mirrors Check C's contents-based read; a naive
+    timestamp is assumed UTC.
+    """
+    marker = WATCHDOG_MARKER_DIR / f"{job_slug}.last_run"
+    if not marker.exists():
+        return None
+    try:
+        parsed = datetime.fromisoformat(marker.read_text().strip())
+    except (OSError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed
+
+
+def _wpr_rows_exist_for_week(week_start: date) -> bool:
+    """True iff WPR_Pending_Review has >=1 row for the target week.
+
+    The second "did it complete" signal alongside the marker's "did it run":
+    weekly_generate's marker write is fail-soft, so a successful run can
+    leave a stale/missing marker. Row presence catches that and prevents a
+    wasteful re-fire. Fail-soft: a read error logs WARN and returns False,
+    so the decision falls back to the marker signal — and a Smartsheet
+    outage that hides the rows here will resurface when the (also-Smartsheet)
+    catch-up generation runs and fails loudly, never silently.
+    """
+    try:
+        rows = smartsheet_client.get_rows(
+            sheet_ids.SHEET_WPR_PENDING_REVIEW,
+            filters={"Week": week_start.isoformat()},
+        )
+    except Exception as exc:  # noqa: BLE001 — fail-soft to marker-only decision
+        log(
+            Severity.WARN,
+            f"{_SCRIPT}._wpr_rows_exist_for_week",
+            f"WPR_Pending_Review read failed for week {week_start}: {exc!r}",
+        )
+        return False
+    return bool(rows)
+
+
+def _check_weekly_generate_catchup(*, alerts_suppressed: bool = False) -> CheckResult:
+    """Check I: re-fire a missed weekly_generate Friday run (Tier-1 self-heal).
+
+    Catch-up fires iff ALL THREE hold for the current target week:
+      (a) we are within CATCHUP_WINDOW of the most recent Friday 14:00
+          trigger (don't recover an ancient week — Check C owns those);
+      (b) the Check C marker is missing or older than that trigger
+          ("did not run"); AND
+      (c) WPR_Pending_Review has no row for that week ("produced nothing").
+    A fresh marker OR existing rows means the run happened, so we do not
+    re-fire. Combining the two "ran" signals with OR (fire only when BOTH
+    are negative) is deliberately conservative: re-firing is safe but burns
+    Anthropic spend, and a fail-soft marker write must not look like a miss.
+    The "ran but every project errored" case is out of scope here — those
+    runs DID complete (rows + GENERATION_FAILED placeholders exist) and are
+    owned by the future generation-retry redesign (planning #1); Check I
+    closes only the "calendar run never executed" Tier-1 gap.
+
+    On fire, calls `weekly_generate._run_pipeline` directly — NOT the
+    `@require_active`-decorated `main()`. The watchdog's own `main()` has
+    already honored the kill switch, and `_run_pipeline` is weekly_generate's
+    documented direct-invocation entry point (its `main` docstring: "Logic
+    lives in `_run_pipeline` so unit tests can call it directly without the
+    decorator stack"). Calling it directly is what lets a catch-up run during
+    MAINTENANCE — which the Tier-1 brief requires, because generation is
+    internal (no external send); the decorated `main()` would be blocked by
+    `@require_active` during MAINTENANCE. Capability gate is unaffected: the
+    watchdog is neither a generation nor a send script in
+    tests/test_capability_gating.py (scripts/ is not walked), and Check I
+    drives generation only — it adds no send capability.
+
+    MAINTENANCE (`alerts_suppressed=True`): generation still RUNS, but a
+    catch-up FAILURE's operator page (the Resend/Sentry `_alert_critical`
+    legs) is DEFERRED — only the ITS_Errors record row is written
+    (push-vs-record, Op Stds §3.1; same carve-out shape as Check G). The
+    deferred CRITICAL resurfaces post-MAINTENANCE via Check B (open
+    CRITICALs). `alerts_suppressed` is wired in by `_run_check`'s signature
+    inspection.
+
+    At most one catch-up per watchdog run (no loop): this returns after a
+    single `_run_pipeline` call, and a successful run refreshes the marker so
+    the next watchdog run takes the "marker fresh" early-return. A persistent
+    failure re-attempts on the next daily run while still inside the window,
+    then falls to Check C / a human.
+    """
+    now = _local_now()
+    last_trigger = _most_recent_friday_trigger(now)
+    target_week = (last_trigger - timedelta(days=4)).date()  # Friday → Monday
+
+    deadline = datetime.combine(
+        last_trigger.date() + CATCHUP_WINDOW, time.max, tzinfo=last_trigger.tzinfo
+    )
+    if now > deadline:
+        return CheckResult(
+            severity=Severity.INFO,
+            summary=(
+                f"weekly_generate catch-up: week {target_week} is past the "
+                f"catch-up window (Check C covers older misses)."
+            ),
+        )
+
+    marker_dt = _read_marker_datetime(WEEKLY_GENERATE_JOB_SLUG)
+    if marker_dt is not None and marker_dt >= last_trigger:
+        return CheckResult(
+            severity=Severity.INFO,
+            summary=f"weekly_generate ran for week {target_week} (marker fresh).",
+        )
+
+    if _wpr_rows_exist_for_week(target_week):
+        return CheckResult(
+            severity=Severity.INFO,
+            summary=(
+                f"weekly_generate produced WPR rows for week {target_week} "
+                f"(marker stale but rows present); no catch-up."
+            ),
+        )
+
+    return _fire_weekly_generate_catchup(target_week, alerts_suppressed=alerts_suppressed)
+
+
+def _fire_weekly_generate_catchup(
+    target_week: date, *, alerts_suppressed: bool
+) -> CheckResult:
+    """Re-run weekly_generate for a missed week; escalate on failure.
+
+    Returns INFO on success, WARN on an empty-reviewer-chain abort
+    (weekly_generate has already recorded its own CRITICAL row — no
+    double-escalation), and INFO on a generation failure (the CRITICAL row +
+    operator page are fired explicitly inside `_escalate_catchup_failure`
+    with a threaded correlation_id, so the returned result is informational
+    only and avoids a duplicate, correlation-id-less row).
+    """
+    log(
+        Severity.INFO,
+        _SCRIPT,
+        f"[catch-up] weekly_generate did not run for week {target_week}; "
+        f"re-firing generation",
+    )
+    try:
+        result = weekly_generate._run_pipeline(week_start_override=target_week)
+    except Exception as exc:  # noqa: BLE001 — convert to a MAINTENANCE-aware CRITICAL
+        tb = traceback.format_exc()
+        return _escalate_catchup_failure(
+            target_week, exc, tb, alerts_suppressed=alerts_suppressed
+        )
+
+    if result.get("aborted_empty_chain"):
+        return CheckResult(
+            severity=Severity.WARN,
+            summary=(
+                f"weekly_generate catch-up for week {target_week} aborted: "
+                f"empty reviewer chain (weekly_generate logged its own CRITICAL)."
+            ),
+        )
+
+    drafts = result.get("drafts_written", 0)
+    failed = result.get("drafts_failed", 0)
+    return CheckResult(
+        severity=Severity.INFO,
+        summary=(
+            f"weekly_generate catch-up fired for week {target_week}: "
+            f"{drafts} draft(s) written, {failed} failed."
+        ),
+        details=f"correlation_id={result.get('correlation_id', '?')}",
+    )
+
+
+def _escalate_catchup_failure(
+    target_week: date,
+    exc: Exception,
+    tb: str,
+    *,
+    alerts_suppressed: bool,
+) -> CheckResult:
+    """Programmatic CRITICAL triple-fire for a failed catch-up generation.
+
+    Mirrors the canonical pattern in `shared.picklist_sync.sync_all`
+    (sync_all does not raise on partial failure, so its triple-fire is
+    explicit): write the ITS_Errors record row via `log(CRITICAL, ...)` and
+    fire the operator-page legs via `error_log._alert_critical`, threading a
+    single `correlation_id` across both so one grep recovers the full
+    Smartsheet / Resend / Sentry picture.
+
+    push-vs-record (Op Stds §3.1): the record row is ALWAYS written — even in
+    MAINTENANCE, a real failure must leave a forensic trail. Only the
+    Resend/Sentry PAGE is deferred under `alerts_suppressed`; the deferred
+    CRITICAL resurfaces post-MAINTENANCE via Check B (open CRITICALs).
+    """
+    correlation_id = str(uuid.uuid4())
+    message = f"weekly_generate catch-up FAILED for week {target_week}: {exc!r}"
+    log(
+        Severity.CRITICAL,
+        _SCRIPT,
+        message,
+        error_code="weekly_generate_catchup_failed",
+        exc_info=tb,
+        correlation_id=correlation_id,
+    )
+    if alerts_suppressed:
+        log(
+            Severity.INFO,
+            _SCRIPT,
+            f"[catch-up] CRITICAL page deferred during MAINTENANCE for week "
+            f"{target_week} (corr={correlation_id[:8]}); record row written.",
+        )
+    else:
+        _alert_critical(
+            _SCRIPT,
+            message,
+            tb,
+            correlation_id=correlation_id,
+            error_code="weekly_generate_catchup_failed",
+        )
+    return CheckResult(
+        severity=Severity.INFO,
+        summary=(
+            f"weekly_generate catch-up FAILED for week {target_week} — CRITICAL "
+            + (
+                "recorded (page deferred, MAINTENANCE)"
+                if alerts_suppressed
+                else "triple-fired"
+            )
+            + f" (corr={correlation_id[:8]})."
+        ),
+    )
+
+
 # ---- Failure-isolation harness ------------------------------------------
 
 
@@ -702,6 +1024,12 @@ CHECKS: list[Callable[..., CheckResult]] = [
     _check_reviewer_chain_forward,
     _check_mail_intake_silent_disable,
     _check_alert_dedupe_summaries,
+    # Check I runs after Check C (above): Check C reports staleness; Check I
+    # recovers the one daemon launchd can't self-recover (weekly_generate,
+    # calendar-scheduled). It fires generation inline, so — like Check G —
+    # it takes alerts_suppressed (threaded by _run_check) to defer the
+    # operator page during MAINTENANCE.
+    _check_weekly_generate_catchup,
     # Check E (Anthropic spend trend) deferred to a follow-on PR (the
     # Check E shipping PR) — requires an Admin API key (sk-ant-admin01-...
     # prefix) provisioned in Keychain under ITS_ANTHROPIC_ADMIN_API_KEY.
@@ -738,7 +1066,7 @@ def main() -> None:
     write_last_run_marker("watchdog")
 
     # External heartbeat beacon (audit F16). Read the configured ping URL
-    # and notify the external monitor (Healthchecks.io) that the watchdog —
+    # and notify the external monitor (UptimeRobot) that the watchdog —
     # and by proxy the whole host — is alive. This is the ONLY external
     # detector for total-host failure (crash, disk-full, launchd unload,
     # user logout); every in-tenant signal goes silent in that scenario
