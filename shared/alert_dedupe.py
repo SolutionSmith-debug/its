@@ -18,7 +18,7 @@ operator email.
 
 Invariants
 ----------
-- **Push-vs-record separation (Op Stds v16 §3.1).** Dedupe AND the F09 cap
+- **Push-vs-record separation (Op Stds v13 §3.1).** Dedupe AND the F09 cap
   apply ONLY to push, never to records. The Smartsheet `ITS_Errors` row and
   the Sentry event fire every time (upstream of this module, in
   `error_log._alert_critical`); only the operator's inbox is suppressed.
