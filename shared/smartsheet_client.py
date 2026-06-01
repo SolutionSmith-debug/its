@@ -42,7 +42,7 @@ import requests  # type: ignore[import-untyped]
 import smartsheet  # type: ignore[import-untyped]
 import smartsheet.exceptions as sdk_exc  # type: ignore[import-untyped]
 
-from . import keychain, sheet_ids
+from . import circuit_breaker, defaults, keychain, sheet_ids
 
 SDK_LOGGER_NAME = "smartsheet.smartsheet"
 
@@ -65,6 +65,19 @@ class SmartsheetNotFoundError(SmartsheetError):
 
 class SmartsheetRateLimitError(SmartsheetError):
     """SDK retry budget exhausted (HTTP 429)."""
+
+
+class SmartsheetCircuitOpenError(SmartsheetError):
+    """Circuit breaker is OPEN — short-circuiting to spare a sustained-degraded
+    Smartsheet API (F08).
+
+    A subclass of ``SmartsheetError`` BY DESIGN: every existing consumer that
+    catches ``SmartsheetError`` (kill_switch, intake_poll, weekly_send_poll,
+    weekly_generate, picklist_sync) handles it unchanged, and
+    ``weekly_generate``'s NotFound-only retry deliberately excludes it (so a
+    short-circuit never triggers a retry-hammer). Raised by the
+    ``circuit_breaker.guard`` wrappers below — never by the SDK-translation path.
+    """
 
 
 _client: smartsheet.Smartsheet | None = None
@@ -109,6 +122,85 @@ def _translate(exc: sdk_exc.SmartsheetException) -> SmartsheetError:
     if isinstance(exc, sdk_exc.HttpError):
         return SmartsheetError(f"HTTP {exc.status_code}: {exc.body!r}")
     return SmartsheetError(str(exc))
+
+
+# ---- Circuit breaker wiring (F08) ---------------------------------------
+#
+# This wrapper is the canonical Smartsheet network boundary, so it hosts the
+# breaker. The breaker mechanism itself is domain-agnostic
+# (shared/circuit_breaker.py); the Smartsheet specifics — which exceptions
+# count, which are ignored, and how config is read — are injected here.
+
+_circuit_config_cache: circuit_breaker.CircuitConfig | None = None
+
+
+def _coerce_bool(raw: str | None, default: bool) -> bool:
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"true", "1", "yes", "on"}
+
+
+def _coerce_int(raw: str | None, default: int) -> int:
+    try:
+        return int(raw) if raw is not None else default
+    except (ValueError, TypeError):
+        return default
+
+
+def _read_global_setting(key: str) -> str | None:
+    """Read one global ITS_Config setting; None if the row is missing or the
+    read fails. Called only inside ``_load_circuit_config`` (under bypass)."""
+    try:
+        return get_setting(key, workstream="global")
+    except SmartsheetError:
+        return None
+
+
+def _load_circuit_config() -> circuit_breaker.CircuitConfig:
+    """Resolve ``circuit_breaker.*`` from ITS_Config, under
+    ``circuit_breaker.bypass()`` so an OPEN breaker cannot block the read of its
+    own ``enabled=false`` kill flag (escape-hatch layer 3). Cached for the
+    process lifetime: launchd runs each daemon as a fresh process per cycle, so
+    a per-process read picks up operator changes on the next cycle at the cost
+    of at most one extra config round-trip per process. Any unreadable value
+    falls back to ``defaults.py`` (→ ENABLED — a degraded Smartsheet still trips).
+    """
+    global _circuit_config_cache
+    if _circuit_config_cache is not None:
+        return _circuit_config_cache
+    with circuit_breaker.bypass():
+        enabled_raw = _read_global_setting("circuit_breaker.enabled")
+        threshold_raw = _read_global_setting("circuit_breaker.failure_threshold")
+        cooldown_raw = _read_global_setting("circuit_breaker.cooldown_seconds")
+    cfg = circuit_breaker.CircuitConfig(
+        enabled=_coerce_bool(enabled_raw, defaults.CIRCUIT_BREAKER_ENABLED),
+        failure_threshold=_coerce_int(
+            threshold_raw, defaults.CIRCUIT_BREAKER_FAILURE_THRESHOLD
+        ),
+        cooldown_seconds=_coerce_int(
+            cooldown_raw, defaults.CIRCUIT_BREAKER_COOLDOWN_SECONDS
+        ),
+    )
+    _circuit_config_cache = cfg
+    return cfg
+
+
+# Applied to every network-issuing method below. Reads + writes both count
+# toward tripping; 401/403/404 are ignored (deterministic / routine — must
+# surface as themselves, never as a degraded-service signal). NOTE:
+# get_setting / get_settings_with_prefix are deliberately LEFT UNDECORATED —
+# they delegate to the decorated get_rows, so guarding them too would nest the
+# breaker and double-count a single failure.
+_breaker_guard = circuit_breaker.guard(
+    open_exc=SmartsheetCircuitOpenError,
+    count=SmartsheetError,
+    ignore=(SmartsheetAuthError, SmartsheetPermissionError, SmartsheetNotFoundError),
+    config_loader=_load_circuit_config,
+)
+
+# Register the same loader so arg-free circuit_breaker.is_open() (the daemons'
+# CIRCUIT_OPEN status surfacing) resolves live Smartsheet config too.
+circuit_breaker.set_config_loader(_load_circuit_config)
 
 
 # ---- Column-map cache ----------------------------------------------------
@@ -169,6 +261,7 @@ def _resolve_cells(sheet_id: int, values: dict[str, Any]) -> list[Any]:
 # ---- Reads ---------------------------------------------------------------
 
 
+@_breaker_guard
 def get_sheet(sheet_id: int):
     """Fetch the full sheet object (SDK model). Most callers want get_rows()."""
     try:
@@ -177,6 +270,7 @@ def get_sheet(sheet_id: int):
         raise _translate(e) from e
 
 
+@_breaker_guard
 def get_row(sheet_id: int, row_id: int) -> dict[str, Any]:
     """Fetch one row by ID as a `{_row_id, <title>: value, ...}` dict.
 
@@ -204,6 +298,7 @@ def get_row(sheet_id: int, row_id: int) -> dict[str, Any]:
     )
 
 
+@_breaker_guard
 def get_rows(
     sheet_id: int,
     *,
@@ -315,6 +410,7 @@ class CellHistoryEvent:
     modified_at: datetime | None
 
 
+@_breaker_guard
 def get_cell_history(
     sheet_id: int, row_id: int, column_title: str
 ) -> list[CellHistoryEvent]:
@@ -374,6 +470,7 @@ def get_cell_history(
 # ---- Writes --------------------------------------------------------------
 
 
+@_breaker_guard
 def add_rows(sheet_id: int, rows: list[dict[str, Any]]) -> list[int]:
     """Append rows to a sheet. Returns the new row IDs in input order.
 
@@ -406,6 +503,7 @@ def add_rows(sheet_id: int, rows: list[dict[str, Any]]) -> list[int]:
     return [r.id for r in result.result]
 
 
+@_breaker_guard
 def update_rows(sheet_id: int, updates: list[dict[str, Any]]) -> None:
     """Update existing rows. Each update is `{_row_id: int, <title>: value, ...}`.
 
@@ -436,6 +534,7 @@ def update_rows(sheet_id: int, updates: list[dict[str, Any]]) -> None:
         raise _translate(e) from e
 
 
+@_breaker_guard
 def delete_rows(sheet_id: int, row_ids: list[int]) -> None:
     """Delete rows by ID. Smartsheet caps at 450 IDs per call."""
     if not row_ids:
@@ -446,6 +545,7 @@ def delete_rows(sheet_id: int, row_ids: list[int]) -> None:
         raise _translate(e) from e
 
 
+@_breaker_guard
 def find_row_by_primary(
     sheet_id: int,
     primary_column_id: int,
@@ -482,6 +582,7 @@ def find_row_by_primary(
     return None
 
 
+@_breaker_guard
 def update_row_cells_by_id(
     sheet_id: int,
     row_id: int,
@@ -518,6 +619,7 @@ def update_row_cells_by_id(
 # ---- Column + sheet helpers (PICKLIST sync) -----------------------------
 
 
+@_breaker_guard
 def list_columns_with_options(sheet_id: int) -> list[dict[str, Any]]:
     """Return one dict per column with `id`, `title`, `type`, and `options`.
 
@@ -564,6 +666,7 @@ def list_columns_with_options(sheet_id: int) -> list[dict[str, Any]]:
     return out
 
 
+@_breaker_guard
 def update_column_options(
     sheet_id: int, column_id: int, options: list[str], *, column_type: str
 ) -> None:
@@ -641,6 +744,7 @@ def _translate_smartsheet_error(response: requests.Response, *, context: str) ->
         raise SmartsheetError(f"{context}: HTTP {status}: {body_text}") from e
 
 
+@_breaker_guard
 def find_sheet_by_name_in_folder(folder_id: int, name: str) -> int | None:
     """Return the sheet ID with title `name` inside `folder_id`, or None.
 
@@ -682,6 +786,7 @@ def find_sheet_by_name_in_folder(folder_id: int, name: str) -> int | None:
     return None
 
 
+@_breaker_guard
 def find_folder_by_name_in_folder(parent_folder_id: int, name: str) -> int | None:
     """Return the sub-folder ID with title `name` inside `parent_folder_id`, or None.
 
@@ -725,6 +830,7 @@ def find_folder_by_name_in_folder(parent_folder_id: int, name: str) -> int | Non
     return None
 
 
+@_breaker_guard
 def create_sheet_in_folder(
     folder_id: int,
     name: str,
@@ -749,6 +855,7 @@ def create_sheet_in_folder(
     return int(result.result.id)
 
 
+@_breaker_guard
 def create_folder_in_folder(parent_folder_id: int, name: str) -> int:
     """Create a sub-folder inside `parent_folder_id` and return its folder ID.
 
@@ -781,6 +888,7 @@ def create_folder_in_folder(parent_folder_id: int, name: str) -> int:
     return int(body["result"]["id"])
 
 
+@_breaker_guard
 def create_sheet_in_folder_from_template(
     folder_id: int,
     name: str,

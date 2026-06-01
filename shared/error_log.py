@@ -162,6 +162,51 @@ def log(
     )
 
 
+def _send_exempt_alert(subject: str, body: str) -> None:
+    """Send a cap-EXEMPT meta-alert (F09 cap-reached / window-summary).
+
+    Failure-isolated like the normal Resend send, and deliberately does NOT
+    call `alert_dedupe.record_hourly_send` — exempt alerts must not count
+    toward (and so accelerate) the very cap they announce.
+    """
+    try:
+        from . import resend_client
+
+        resend_client.send_alert(subject, body)
+    except Exception as e:
+        _local_log(
+            Severity.ERROR, "shared.error_log", f"[resend-alert-failed] exempt: {e!r}"
+        )
+
+
+def _maybe_fire_window_summary(correlation_id: str) -> None:
+    """F09 opportunistic window-summary: if a prior suppression episode has
+    expired with un-summarized suppressions, emit the one exempt summary now.
+
+    PR 2 adds a guaranteed watchdog-driven sweep; the shared `summarized` flag
+    on the window record keeps the two from double-firing. Best-effort — never
+    raises.
+    """
+    try:
+        from . import alert_dedupe
+
+        suppressed = alert_dedupe.pop_due_window_summary()
+    except Exception as e:
+        _local_log(
+            Severity.ERROR,
+            "shared.error_log",
+            f"[alert-rate-cap-error] pop_due_window_summary raised: {e!r}",
+        )
+        return
+    if suppressed:
+        _send_exempt_alert(
+            "[ITS] alert-rate-cap window summary",
+            f"During the last alert-rate-cap window, {suppressed} operator "
+            f"alert(s) were suppressed at the email leg. Records are in "
+            f"ITS_Errors + Sentry (corr={correlation_id}).",
+        )
+
+
 def _fire_resend_leg(
     script: str,
     subject: str,
@@ -190,6 +235,10 @@ def _fire_resend_leg(
         # avoid a circular if resend_client ever needs to log.
         from . import alert_dedupe, resend_client
 
+        # F09 opportunistic window-summary — fires on the next gate invocation
+        # after a suppression episode expires (PR 2 adds a guaranteed sweep).
+        _maybe_fire_window_summary(correlation_id)
+
         dedupe_key = f"{script}::{error_code}"
         try:
             allowed = alert_dedupe.should_fire(dedupe_key)
@@ -212,6 +261,37 @@ def _fire_resend_leg(
                 Severity.INFO,
                 "shared.error_log",
                 f"[resend-alert-suppressed] key={dedupe_key} corr={correlation_id}",
+            )
+            return
+
+        # F09 — global alerts-per-hour cap (the SECOND gate). Records already
+        # fired upstream (§3.1); only the email fan-out is bounded here.
+        try:
+            cap_decision = alert_dedupe.check_hourly_cap()
+        except Exception as e:
+            # Fail-open: a cap-module failure must never drop a CRITICAL email.
+            _local_log(
+                Severity.ERROR,
+                "shared.error_log",
+                f"[alert-rate-cap-error] check_hourly_cap raised: {e!r}",
+            )
+            cap_decision = alert_dedupe.CapDecision.ALLOW
+
+        if cap_decision is alert_dedupe.CapDecision.SUPPRESS_QUIET:
+            _local_log(
+                Severity.INFO,
+                "shared.error_log",
+                f"[resend-alert-rate-capped] key={dedupe_key} corr={correlation_id}",
+            )
+            return
+        if cap_decision is alert_dedupe.CapDecision.SUPPRESS_FIRST:
+            # First suppression of the episode — emit ONE exempt brownout alert
+            # instead of the original so the operator knows a storm is underway.
+            _send_exempt_alert(
+                "[ITS] alert-rate cap reached — further alerts suppressed",
+                f"The operator alert-rate cap was reached; further alerts this "
+                f"hour are suppressed at the email leg (records still land in "
+                f"ITS_Errors + Sentry). Most recent: {subject}",
             )
             return
 
@@ -241,6 +321,16 @@ def _fire_resend_leg(
                 Severity.ERROR,
                 "shared.error_log",
                 f"[alert-dedupe-state-error] record_fire raised: {e!r}",
+            )
+
+        try:
+            # F09: count this confirmed normal-alert send toward the cap window.
+            alert_dedupe.record_hourly_send()
+        except Exception as e:
+            _local_log(
+                Severity.ERROR,
+                "shared.error_log",
+                f"[alert-rate-cap-error] record_hourly_send raised: {e!r}",
             )
     finally:
         _in_resend_alert = False

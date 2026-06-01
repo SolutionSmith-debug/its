@@ -38,9 +38,43 @@ The conftest fix is the immediate hole-closer. A durable structural fix
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 _KEYCHAIN_OPT_OUT_FILES = frozenset({"test_keychain.py", "test_helpers.py"})
+
+
+@pytest.fixture(autouse=True)
+def _neutralize_circuit_breaker(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Keep the F08 circuit breaker out of the way of non-integration tests.
+
+    The breaker now wraps all 16 `smartsheet_client` network methods. For unit
+    tests we (1) redirect its state file to a per-test tmp path so nothing ever
+    reads/writes the real `~/its/state/circuit_breaker.json`, and (2) pre-cache
+    a DISABLED config so the guard is a pure pass-through that never issues a
+    config read (a read would hit the mocked SDK and perturb call-count
+    assertions in `tests/test_smartsheet_client.py`).
+
+    Integration tests (`@pytest.mark.integration`) opt out — they exercise the
+    real breaker (live trip/reset against the sandbox sheet), managing their
+    own state file and config explicitly. `tests/test_circuit_breaker.py` is
+    unaffected either way: it passes `state_path` + `config_loader` to every
+    call, so neither the patched `STATE_FILE` nor the cache is consulted there.
+    """
+    if request.node.get_closest_marker("integration") is not None:
+        return
+    import shared.circuit_breaker as _cb
+    import shared.smartsheet_client as _sc
+
+    monkeypatch.setattr(_cb, "STATE_FILE", tmp_path / "circuit_breaker.json")
+    monkeypatch.setattr(
+        _sc,
+        "_circuit_config_cache",
+        _cb.CircuitConfig(enabled=False, failure_threshold=5, cooldown_seconds=300),
+    )
 
 
 @pytest.fixture(autouse=True)
