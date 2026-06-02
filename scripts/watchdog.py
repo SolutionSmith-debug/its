@@ -94,6 +94,8 @@ from pathlib import Path
 from safety_reports import weekly_generate
 from shared import (
     alert_dedupe,
+    circuit_breaker,
+    defaults,
     graph_client,
     heartbeat_client,
     resend_client,
@@ -101,7 +103,13 @@ from shared import (
     sheet_ids,
     smartsheet_client,
 )
-from shared.error_log import Severity, _alert_critical, its_error_log, log
+from shared.error_log import (
+    Severity,
+    _alert_critical,
+    _maybe_fire_window_summary,
+    its_error_log,
+    log,
+)
 from shared.kill_switch import SystemState, check_system_state
 from shared.review_queue import ReviewReason, SlaTier
 from shared.scheduling import TimeOffClient, is_federal_holiday, resolve_chain
@@ -966,6 +974,139 @@ def _escalate_catchup_failure(
     )
 
 
+# ---- Check J: circuit-breaker prolonged-open alert ----------------------
+
+
+def _check_circuit_breaker_prolonged_open(
+    *, alerts_suppressed: bool = False
+) -> CheckResult:
+    """Page the operator when the Smartsheet circuit breaker has been OPEN (one
+    outage episode) longer than ``circuit_breaker.prolonged_open_alert_seconds``.
+
+    Reads ``circuit_breaker.seconds_open()`` — a lock-free LOCAL-file read, so it
+    works during the very Smartsheet outage this fires for. The threshold read
+    DOES short-circuit during that outage, so it MUST fail open to the default
+    (mirrors the heartbeat_url read in ``main()``).
+
+    The page fires INLINE via ``_alert_critical`` — NOT a returned CRITICAL:
+    ``_run_check`` routes results through ``log()``, which writes records but
+    does NOT fire the Resend/Sentry legs, so a returned-CRITICAL would be a
+    silent missed wake-up (see the ``log(CRITICAL)``-doesn't-page tech-debt).
+    A STABLE ``error_code`` lets the per-key dedupe throttle the page to ~1/hour
+    even though this runs every cycle while OPEN.
+
+    The ``_alert_critical`` call is wrapped in ``circuit_breaker.bypass()``: its
+    Resend leg reads ``system.operator_email`` from ITS_Config via the GUARDED
+    ``get_setting``, which would itself short-circuit while the breaker is OPEN
+    — i.e. exactly when this check fires — so without the bypass the page could
+    never send (confirmed by the PR-1 smoke's ``[resend-alert-failed]
+    SmartsheetCircuitOpenError`` lines). The ITS_Errors record write is
+    independently bypassed (§3.1 fold-in); Resend/Sentry are HTTP, so the page
+    goes out whenever Smartsheet is reachable (incl. cooldown-after-recovery).
+    """
+    dur = circuit_breaker.seconds_open()
+    if dur is None:
+        return CheckResult(Severity.INFO, "circuit breaker not open")
+
+    try:
+        raw = smartsheet_client.get_setting(
+            "circuit_breaker.prolonged_open_alert_seconds", workstream="global"
+        )
+        threshold = (
+            int(raw)
+            if raw is not None
+            else defaults.CIRCUIT_BREAKER_PROLONGED_OPEN_ALERT_SECONDS
+        )
+    except (smartsheet_client.SmartsheetError, ValueError, TypeError):
+        # Fail open to the default — the ITS_Config read short-circuits during
+        # the very outage this check exists for.
+        threshold = defaults.CIRCUIT_BREAKER_PROLONGED_OPEN_ALERT_SECONDS
+
+    if dur <= threshold:
+        return CheckResult(
+            Severity.WARN,
+            f"circuit breaker OPEN for {dur:.0f}s (< {threshold}s threshold)",
+        )
+
+    correlation_id = str(uuid.uuid4())
+    message = (
+        f"Smartsheet circuit breaker OPEN for {dur:.0f}s (> {threshold}s) — "
+        "backend degraded and not self-recovering."
+    )
+    log(
+        Severity.CRITICAL,
+        _SCRIPT,
+        message,
+        error_code="circuit_breaker_prolonged_open",
+        correlation_id=correlation_id,
+    )
+    if alerts_suppressed:
+        log(
+            Severity.INFO,
+            _SCRIPT,
+            f"[prolonged-open] CRITICAL page deferred during MAINTENANCE "
+            f"(corr={correlation_id[:8]}); record row written.",
+        )
+    else:
+        # bypass() so the Resend leg's operator_email read isn't short-circuited
+        # by the very-OPEN breaker (see docstring).
+        with circuit_breaker.bypass():
+            _alert_critical(
+                _SCRIPT,
+                message,
+                "",
+                correlation_id=correlation_id,
+                error_code="circuit_breaker_prolonged_open",
+            )
+    return CheckResult(
+        Severity.INFO,
+        f"circuit breaker OPEN for {dur:.0f}s (> {threshold}s) — CRITICAL "
+        + (
+            "recorded (page deferred, MAINTENANCE)"
+            if alerts_suppressed
+            else "triple-fired"
+        )
+        + f" (corr={correlation_id[:8]}).",
+    )
+
+
+# ---- Check K: guaranteed F09 cap-window-summary sweep -------------------
+
+
+def _check_alert_rate_cap_window(
+    *, alerts_suppressed: bool = False
+) -> CheckResult:
+    """Guarantee the F09 alerts-per-hour cap WINDOW SUMMARY fires even when no
+    new alert arrives to trigger the opportunistic path in
+    ``error_log._maybe_fire_window_summary``.
+
+    Calls ``_maybe_fire_window_summary`` once per cycle → it pops the due window
+    via ``alert_dedupe.pop_due_window_summary()`` (atomically marks
+    ``summarized=True``) and sends the one exempt summary. The ``summarized``
+    flag is the double-fire guard SHARED with the opportunistic path — calling
+    from both is safe (first wins; the other gets None).
+
+    DISTINCT from Check G (``_check_alert_dedupe_summaries``), which sweeps the
+    PER-KEY dedupe summaries and explicitly skips the reserved
+    ``_alerts_per_hour_window`` key. Per-key and per-hour are separate subsystems.
+
+    MAINTENANCE-defer: when ``alerts_suppressed`` do NOT fire (matching Check G);
+    the window record persists for the next sweep. The OPPORTUNISTIC path does
+    not itself respect MAINTENANCE (error_log-level, pre-existing, out of scope);
+    this sweep just keeps its own behavior consistent.
+    """
+    if alerts_suppressed:
+        return CheckResult(
+            Severity.INFO, "alert-rate cap-window summary sweep deferred (MAINTENANCE)"
+        )
+    correlation_id = uuid.uuid4().hex
+    _maybe_fire_window_summary(correlation_id)
+    return CheckResult(
+        Severity.INFO,
+        f"alert-rate cap-window summary sweep ran (corr={correlation_id[:8]}).",
+    )
+
+
 # ---- Failure-isolation harness ------------------------------------------
 
 
@@ -1030,6 +1171,13 @@ CHECKS: list[Callable[..., CheckResult]] = [
     # it takes alerts_suppressed (threaded by _run_check) to defer the
     # operator page during MAINTENANCE.
     _check_weekly_generate_catchup,
+    # Check J / K (F08/F09 PR 2): prolonged-open page + guaranteed cap-window
+    # summary sweep. Both fire alerts inline (J via _alert_critical, K via
+    # _maybe_fire_window_summary's _send_exempt_alert), so — like Check G / I —
+    # they take alerts_suppressed (threaded by _run_check) to defer the operator
+    # page during MAINTENANCE.
+    _check_circuit_breaker_prolonged_open,
+    _check_alert_rate_cap_window,
     # Check E (Anthropic spend trend) deferred to a follow-on PR (the
     # Check E shipping PR) — requires an Admin API key (sk-ant-admin01-...
     # prefix) provisioned in Keychain under ITS_ANTHROPIC_ADMIN_API_KEY.
