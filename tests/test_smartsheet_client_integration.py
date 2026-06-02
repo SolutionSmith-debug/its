@@ -457,3 +457,16 @@ def test_update_row_cells_by_id_raises_not_found_on_missing_row(_token_available
             )
     finally:
         _delete_sheet_rest(sheet_id, _token_available)
+
+
+def test_verify_write_capability_live(_token_available):
+    """B2: the real write-capability probe creates a throwaway sheet (proving
+    the live token can WRITE) and returns its id; cleanup goes through the
+    delete_sheet WRAPPER under test, confirming it round-trips live too.
+
+    A healthy read-write token passes; a read-only/mis-scoped token would raise
+    SmartsheetWriteCapabilityError here — which is the whole point.
+    """
+    sheet_id = smartsheet_client.verify_write_capability()
+    assert isinstance(sheet_id, int)
+    smartsheet_client.delete_sheet(sheet_id)

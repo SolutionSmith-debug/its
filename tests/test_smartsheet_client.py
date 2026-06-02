@@ -18,10 +18,12 @@ import smartsheet.exceptions as sdk_exc
 from shared import sheet_ids, smartsheet_client
 from shared.smartsheet_client import (
     SmartsheetAuthError,
+    SmartsheetCircuitOpenError,
     SmartsheetError,
     SmartsheetNotFoundError,
     SmartsheetPermissionError,
     SmartsheetRateLimitError,
+    SmartsheetWriteCapabilityError,
 )
 
 # ---- Fixtures + helpers --------------------------------------------------
@@ -1131,3 +1133,62 @@ def test_add_row_by_id_translates_sdk_error(mocker):
     client.Sheets.add_rows.side_effect = _api_error(500, message="boom")
     with pytest.raises(SmartsheetError):
         smartsheet_client.add_row_by_id(1, {10: "x"})
+
+
+# ---- delete_sheet + verify_write_capability (B2 write probe) --------------
+
+
+def test_delete_sheet_calls_sdk(mocker):
+    client = _install_client(mocker)
+    smartsheet_client.delete_sheet(7788)
+    client.Sheets.delete_sheet.assert_called_once_with(7788)
+
+
+def test_delete_sheet_translates_error(mocker):
+    client = _install_client(mocker)
+    client.Sheets.delete_sheet.side_effect = _api_error(403, message="nope")
+    with pytest.raises(SmartsheetPermissionError):
+        smartsheet_client.delete_sheet(1)
+
+
+def test_verify_write_capability_returns_new_sheet_id(mocker):
+    create = mocker.patch(
+        "shared.smartsheet_client.create_sheet_in_folder", return_value=9911
+    )
+    sid = smartsheet_client.verify_write_capability(folder_id=42)
+    assert sid == 9911
+    folder_arg, name_arg, cols_arg = create.call_args.args
+    assert folder_arg == 42
+    assert name_arg.startswith("_its_write_probe_")
+    assert len(name_arg) <= 50  # Smartsheet sheet-name limit (errorCode 1041)
+    assert cols_arg[0]["primary"] is True
+
+
+def test_verify_write_capability_defaults_to_system_config_folder(mocker):
+    create = mocker.patch(
+        "shared.smartsheet_client.create_sheet_in_folder", return_value=1
+    )
+    smartsheet_client.verify_write_capability()
+    assert create.call_args.args[0] == sheet_ids.FOLDER_SYSTEM_CONFIG
+
+
+@pytest.mark.parametrize("err", [SmartsheetAuthError, SmartsheetPermissionError])
+def test_verify_write_capability_wraps_auth_permission(mocker, err):
+    # A read-only / mis-scoped token's CREATE 401/403 → the typed verdict.
+    mocker.patch(
+        "shared.smartsheet_client.create_sheet_in_folder",
+        side_effect=err("read-only token"),
+    )
+    with pytest.raises(SmartsheetWriteCapabilityError, match="cannot create"):
+        smartsheet_client.verify_write_capability()
+
+
+def test_verify_write_capability_propagates_circuit_open(mocker):
+    # A Smartsheet OUTAGE is not a token verdict — CircuitOpenError must
+    # propagate UNWRAPPED so the caller treats it as inconclusive.
+    mocker.patch(
+        "shared.smartsheet_client.create_sheet_in_folder",
+        side_effect=SmartsheetCircuitOpenError("breaker open"),
+    )
+    with pytest.raises(SmartsheetCircuitOpenError):
+        smartsheet_client.verify_write_capability()

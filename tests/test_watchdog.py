@@ -114,7 +114,7 @@ def test_checks_list_has_all_session_1_2_3_checks():
     Check H — the marker-file Check C is the staleness floor doctrine once
     named "Check H" (2026-06-01 doctrine correction). Checks J (circuit-breaker
     prolonged-open page) and K (guaranteed F09 cap-window summary sweep) shipped
-    in F08/F09 PR 2."""
+    in F08/F09 PR 2. Check L (token write-capability probe) shipped in B2."""
     assert watchdog.CHECKS == [
         watchdog._check_stale_review_queue,
         watchdog._check_open_criticals,
@@ -125,7 +125,54 @@ def test_checks_list_has_all_session_1_2_3_checks():
         watchdog._check_weekly_generate_catchup,
         watchdog._check_circuit_breaker_prolonged_open,
         watchdog._check_alert_rate_cap_window,
+        watchdog._check_token_write_capability,
     ]
+
+
+# ---- Check L: token write-capability probe (B2) --------------------------
+
+
+def test_token_write_capability_ok(mocker):
+    mocker.patch("watchdog.smartsheet_client.verify_write_capability", return_value=55)
+    delete = mocker.patch("watchdog.smartsheet_client.delete_sheet")
+    result = watchdog._check_token_write_capability()
+    assert result.severity is Severity.INFO
+    delete.assert_called_once_with(55)  # throwaway probe sheet cleaned up
+
+
+def test_token_write_capability_critical_on_write_error(mocker):
+    mocker.patch(
+        "watchdog.smartsheet_client.verify_write_capability",
+        side_effect=watchdog.smartsheet_client.SmartsheetWriteCapabilityError(
+            "read-only token"
+        ),
+    )
+    result = watchdog._check_token_write_capability()
+    assert result.severity is Severity.CRITICAL  # _run_check pages this (post-A3)
+    assert "cannot write" in result.summary
+
+
+def test_token_write_capability_skips_on_breaker_open(mocker):
+    # A Smartsheet OUTAGE is not a token verdict — INFO-skip, never CRITICAL.
+    mocker.patch(
+        "watchdog.smartsheet_client.verify_write_capability",
+        side_effect=watchdog.smartsheet_client.SmartsheetCircuitOpenError("open"),
+    )
+    result = watchdog._check_token_write_capability()
+    assert result.severity is Severity.INFO
+    assert "breaker OPEN" in result.summary
+
+
+def test_token_write_capability_warn_on_delete_failure(mocker):
+    # Create proved write capability; a cleanup-delete failure is WARN, not CRITICAL.
+    mocker.patch("watchdog.smartsheet_client.verify_write_capability", return_value=77)
+    mocker.patch(
+        "watchdog.smartsheet_client.delete_sheet",
+        side_effect=SmartsheetError("delete boom"),
+    )
+    result = watchdog._check_token_write_capability()
+    assert result.severity is Severity.WARN
+    assert "77" in result.summary
 
 
 def test_tracked_jobs_contains_safety_weekly_generate():

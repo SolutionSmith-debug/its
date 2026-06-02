@@ -80,6 +80,18 @@ class SmartsheetCircuitOpenError(SmartsheetError):
     """
 
 
+class SmartsheetWriteCapabilityError(SmartsheetError):
+    """The token can READ but cannot WRITE (B2 — startup write-capability probe).
+
+    Raised by ``verify_write_capability`` when a probe write is rejected with an
+    auth/permission error (401/403) — i.e. a read-only or mis-scoped
+    ``ITS_SMARTSHEET_TOKEN``. A subclass of ``SmartsheetError`` so generic
+    callers still catch it, but distinct so a boot/watchdog caller can fail LOUD
+    on it specifically: the alternative is the token passing every read and only
+    failing at the first real daemon write (a mid-cycle 401 that is hard to
+    trace — the keychain-stub session burned ~2 h on exactly that signature)."""
+
+
 _client: smartsheet.Smartsheet | None = None
 _column_maps: dict[int, dict[str, int]] = {}
 
@@ -885,6 +897,56 @@ def create_sheet_in_folder(
     except sdk_exc.SmartsheetException as e:
         raise _translate(e) from e
     return int(result.result.id)
+
+
+@_breaker_guard
+def delete_sheet(sheet_id: int) -> None:
+    """Delete a sheet by ID via the SDK (`Sheets.delete_sheet`).
+
+    Raises the typed hierarchy on failure (404 if already gone; 401/403 on a
+    read-only token). The B2 write-capability probe uses this to clean up its
+    throwaway sheet.
+    """
+    try:
+        get_client().Sheets.delete_sheet(sheet_id)
+    except sdk_exc.SmartsheetException as e:
+        raise _translate(e) from e
+
+
+def verify_write_capability(folder_id: int = sheet_ids.FOLDER_SYSTEM_CONFIG) -> int:
+    """Probe that ITS_SMARTSHEET_TOKEN can WRITE, not just read (B2).
+
+    Creates a throwaway one-column sheet in `folder_id` and returns its id. The
+    CALLER must `delete_sheet` it — cleanup is kept separate so a *delete*
+    failure is the caller's WARN, not a false "cannot write" verdict (the create
+    already proved write capability). A read-only or mis-scoped token fails the
+    CREATE with 401/403, re-raised here as `SmartsheetWriteCapabilityError` so a
+    boot/watchdog caller can fail LOUD — instead of the token passing every read
+    and only failing at the first real daemon write (a mid-cycle 401 that is hard
+    to trace; the keychain-stub session lost ~2 h to exactly that signature).
+
+    NOT `@_breaker_guard`-decorated: it composes the already-guarded
+    `create_sheet_in_folder`, so a `SmartsheetCircuitOpenError` (Smartsheet
+    OUTAGE, not a token problem) propagates unchanged for the caller to treat as
+    inconclusive rather than as a write-capability verdict.
+
+    Raises:
+        SmartsheetWriteCapabilityError: create rejected 401/403 → cannot write.
+        SmartsheetCircuitOpenError / other SmartsheetError: transient/outage —
+            propagates unchanged (NOT a capability verdict).
+    """
+    probe_name = f"_its_write_probe_{datetime.now():%H%M%S%f}"  # <= 50 chars (1041)
+    try:
+        return create_sheet_in_folder(
+            folder_id,
+            probe_name,
+            [{"title": "probe", "type": "TEXT_NUMBER", "primary": True}],
+        )
+    except (SmartsheetAuthError, SmartsheetPermissionError) as exc:
+        raise SmartsheetWriteCapabilityError(
+            f"ITS_SMARTSHEET_TOKEN cannot create a sheet in folder {folder_id} "
+            f"(read-only or mis-scoped token?): {exc}"
+        ) from exc
 
 
 @_breaker_guard
