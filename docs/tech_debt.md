@@ -46,6 +46,22 @@ Closed by `shared/state_io.py` with `atomic_write_json` / `atomic_write_text` / 
 
 Audit findings F19 + F23 (atomic-write seen-set + heartbeat-row state + concurrent-writer lock) in `its-blueprint/audits/2026-05-25_forensic-audit.md`. `shared/alert_dedupe.py` migration to the same helper **landed in PR #104** (2026-05-28, PR 2 of the Phase 1.4 hardening cluster): its five state-file callsites (`should_fire` / `record_fire` / `mark_summarized` / `delete_entry` read-modify-write under `state_io.with_path_lock` + `atomic_write_json`; `list_expired_summaries` intentionally lock-free) replace the old same-FD-flock `_acquire_lock` / `_dump_state` pattern. All three `~/its/state/` consumers (intake_poll, weekly_send_poll, alert_dedupe) are now compliant with the CLAUDE.md "no direct `Path.write_text` under `~/its/state/`" rule. `shared/heartbeat.py` consolidation tech-debt entry remains open below — PR #88 was the correctness floor.
 
+## `error_log.log(Severity.CRITICAL, ...)` does not fire the triple-fire alert path [OPEN 2026-06-02]
+
+`error_log.log()` writes only the two RECORD legs — `_local_log` (local file) + `_smartsheet_log` (ITS_Errors row). It never calls `_alert_critical`, so a CRITICAL passed to `log()` produces **no Resend operator email and no Sentry event**. The alert path (`_alert_critical` → `_fire_resend_leg` + `_fire_sentry_leg`) is reached ONLY via (a) the `@its_error_log` decorator's unhandled-exception branch — which calls `log(Severity.CRITICAL, …)` for the records AND `_alert_critical(…)` for the alerts as two separate calls threading one correlation_id — or (b) explicit `error_log._alert_critical(...)` calls (`picklist_sync`, `weekly_send`, `weekly_send_poll`). The split is intentional and documented (`log()`'s docstring: "for non-exception events"; `_alert_critical`'s: the ITS_Errors row is "written earlier by `log()` … NOT here"), but it is a sharp edge.
+
+**Failure mode:** a caller does `error_log.log(Severity.CRITICAL, script, message, error_code=…)` reasonably expecting it to page the operator; it silently writes records only. Surfaced live during the F08/F09 §7 manual smoke (B6 F09-cap test): four `log(CRITICAL)` calls wrote four ITS_Errors records but produced zero Resend activity — no email, not even a `[resend-alert-*]` marker — which read as a broken F09 cap until traced to the call shape. `log(CRITICAL)` never enters `_fire_resend_leg`, so none of its gates (recursion guard, dedupe, F09 cap) run.
+
+**Proposed fix (small):** in `log()`, when `severity is Severity.CRITICAL`, also fire `_alert_critical(script, message, exc_info or "", correlation_id, error_code or "critical")`. To avoid a double-fire, also REMOVE the decorator's now-redundant explicit `_alert_critical(...)` call (let its `log(Severity.CRITICAL, …)` carry both records + alerts) — otherwise the decorator path fires `_alert_critical` twice, and the `_in_resend_alert` recursion guard only blocks NESTED re-entry, not two sequential calls. Tests: `log(CRITICAL)` fires `_alert_critical` exactly once; `log(WARN/ERROR/INFO)` fires it zero times; the decorator path still fires it exactly once with the shared correlation_id.
+
+**Effort:** ~1–2 hours incl. the decorator de-dup + tests.
+
+**Phase target:** 1.4 hardening (alert-path correctness), or whenever a workstream needs an explicit (non-exception) CRITICAL to page. No current production caller relies on it — every real CRITICAL today goes through the decorator or a direct `_alert_critical` (the F08/F09 triple-fire sites).
+
+**Revisit when:** a caller wants an explicit CRITICAL log to page the operator, OR the next time someone is surprised that `log(CRITICAL)` didn't alert.
+
+Surfaced: 2026-06-02 F08/F09 PR-1 §7 manual smoke (B6); diagnosed to the `error_log.log` records-only call shape vs the `_alert_critical` triple-fire entry point.
+
 ## Conftest mock surface coverage [OPEN 2026-05-23]
 
 `tests/conftest.py` (PR #74) autouse-mocks `shared.keychain.get_secret` and `shared.kill_switch.check_system_state`. The keychain mock at the source attribute covers all 7 credentialed surfaces transitively (smartsheet_client / graph_client / box_client / resend_client / sentry_client / anthropic_client / alert_dedupe). Two opt-out lists guard test files that exercise these surfaces directly (`test_keychain.py` + `test_helpers.py` for keychain; `test_kill_switch.py` for kill_switch).
@@ -934,25 +950,19 @@ Phase 1.5 work introduces PDF-form-field extraction (and possibly free-text rege
 
 Surfaced: 2026-05-24 hardcoded-values audit brief, §B3. Cross-ref Op Stds v11 §35 (confidence-scored extraction → review queue routing pattern).
 
-## No retry / backoff / circuit-breaker layer across Smartsheet call sites [OPEN 2026-05-24]
+## No retry / backoff / circuit-breaker layer across Smartsheet call sites [CLOSED 2026-06-01]
 
-Smartsheet API calls across `shared/smartsheet_client.py` and its consumers (intake_poll, weekly_send_poll, weekly_generate, watchdog, picklist_sync) have point-by-point exception catches (e.g., `intake_poll.py:406` catches `SmartsheetError`, `intake_poll.py:439` catches `SmartsheetNotFoundError`, weekly_generate's `_process_with_retry` does a one-shot retry on `SmartsheetNotFoundError`) but no unified retry-with-backoff decorator and no circuit-breaker pattern. A Smartsheet incident (5xx, timeout, rate-limit) means each call site degrades independently with no aggregate signal to the daemon ("Smartsheet is currently degraded — back off the whole loop").
+Smartsheet API calls across `shared/smartsheet_client.py` and its consumers (intake_poll, weekly_send_poll, weekly_generate, watchdog, picklist_sync) had point-by-point exception catches but no aggregate "Smartsheet is degraded — back off the whole loop" signal. During an incident (5xx / timeout / rate-limit) each call site degraded independently: the daemon kept hammering the degraded service, ITS_Errors filled with one row per failed call, and a flapping failure could fan out unbounded operator email.
 
-**Failure mode:** Smartsheet returns 5xx on a string of consecutive API calls during an incident. Each call-site catch logs to ITS_Errors and either soft-fails (`SmartsheetError as exc` returns rather than raises in many handlers) or — for un-caught paths — bubbles to the daemon-wide catch. The daemon doesn't crash today (current catches are broad enough), but ITS_Errors fills with N rows per cycle and the alert-dedupe state file grows. Worse: the daemon keeps hammering the degraded service, contributing to the incident's tail.
+Closed by the **F08/F09** Phase 1.4 hardening PR, with a design that **differs from the originally-proposed one in two deliberate ways**:
 
-**Proposed fix (layered):**
+1. **The circuit breaker is a separate, domain-agnostic module** (`shared/circuit_breaker.py`) — NOT "a simple counter in `smartsheet_client` state" as first sketched. It exposes a parameterized `guard(open_exc, count, ignore, …)` decorator + `bypass()` + lock-free `is_open()`; `smartsheet_client` decorates its **16 network-issuing methods** (leaving `get_setting` / `get_settings_with_prefix` undecorated — transitive via `get_rows`, no double-count) and injects the Smartsheet exception set + a bypass-wrapped, process-cached config loader. **One global breaker, persisted** to `~/its/state/circuit_breaker.json` (launchd daemons are fresh-process-per-cycle, so the consecutive-failure count + OPEN deadline must outlive the process). N consecutive counting-eligible failures (429/5xx/transport; **401/403/404 ignored** — deterministic/routine) trip OPEN → short-circuit with `SmartsheetCircuitOpenError` (a `SmartsheetError` subclass, so every existing consumer catch handles it unchanged); cooldown → single HALF_OPEN probe → CLOSED/OPEN. Surfaced via the daemons' `CIRCUIT_OPEN` heartbeat status and (PR 2) a watchdog prolonged-open check that reads the local file (works during a total Smartsheet outage).
 
-1. **Retry-with-exponential-backoff decorator** in `shared/smartsheet_client.py`: wraps every public API method. 3 retries with 1s / 4s / 16s sleep, only on retryable errors (5xx, timeouts, 429 rate-limit). Existing exception classes (`SmartsheetError`, etc.) get a new `is_retryable: bool` property. The 2026-05-22 weekly_generate `_process_with_retry` becomes the prior-art that this decorator replaces.
-2. **Circuit-breaker pattern**: simple counter in `shared/smartsheet_client.py` state. N consecutive failures across the module pause new calls for a longer interval (5-10 min). Resume on a probe-call success. Coexists with retry — retry handles transient, circuit-breaker handles sustained.
-3. **Dedicated `SS_API_UNAVAILABLE` error code** in `_alert_critical`. The existing alert-dedupe (per `feedback_pr_scoping_narrow.md` and the alert-dedupe entries) handles spam-suppression — verify the dedupe key works for this case.
+2. **No retry-with-backoff decorator was built — deliberately.** Per Op Stds §14 (wrap, don't reimplement), the SDK's own HTTP retry/backoff already handles the transient/per-call layer; the breaker sits strictly *above* the typed-exception layer for the sustained/cross-call (and cross-process) case. `weekly_generate._process_with_retry`'s narrow NotFound-only retry stays as-is (it is not the transient-5xx retry this item imagined, and circuit-open deliberately does not trigger it). No `is_retryable` property and no `SS_API_UNAVAILABLE` error code were needed — `SmartsheetCircuitOpenError` is the typed signal.
 
-**Effort:** ~half-day for the retry decorator + ~2 hours for circuit-breaker + ~1 hour to verify dedupe interaction. Integration tests against sandbox required (Op Stds v11 §30) — the SDK-vs-Live class of bug is the main risk here.
+The "ITS_Errors / dedupe state fills + unbounded email" half is addressed by **F09's global alerts-per-hour cap** (`alert_dedupe.check_hourly_cap` gating the Resend leg in `error_log._fire_resend_leg`): records still fire every time (Op Stds v16 §3.1 push-vs-record), only the operator email fan-out is bounded.
 
-**Phase target:** 1.5 — reliability gate for ship-and-leave threshold. ITS goes operator-untouched for stretches post-handover; a Smartsheet incident during one of those stretches shouldn't degrade ITS unboundedly.
-
-**Revisit when:** Phase 1.5 hardening cluster, OR a real Smartsheet incident exercises the call sites and surfaces concrete failure shapes worth designing for.
-
-Surfaced: 2026-05-24 hardcoded-values audit brief, §B4. Cross-ref Op Stds v11 §30 (SDK-vs-Live integration discipline — retry decorator is a candidate for parallel integration test coverage).
+§43 successor-remediation runbook shipped at `docs/runbooks/circuit_breaker.md` (circuit-open + rate-cap-hit). §30 integration coverage at `tests/test_circuit_breaker_integration.py` (live trip/reset against the sandbox, CI-skipped). Surfaced: 2026-05-24 hardcoded-values audit brief, §B4.
 
 ## Configuration validation at daemon startup [OPEN 2026-05-24]
 

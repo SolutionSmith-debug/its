@@ -34,6 +34,26 @@ class ReviewerChainConfig(TypedDict):
 # missing or the read fails. ITS_Config takes precedence whenever readable.
 ALERTING_DEDUPE_WINDOW_MINUTES = 60
 
+# Alerts-per-hour cap (F09) — global ceiling on operator Resend emails across
+# all dedupe keys, so a flapping failure with many distinct keys cannot fire
+# unbounded email. Read at runtime via
+# smartsheet_client.get_setting("alerting.max_alerts_per_hour", workstream="global");
+# this constant is the fallback when the row is missing or the read fails.
+# Records (ITS_Errors + Sentry) are never capped — only the Resend fan-out is
+# (Op Stds v16 §3.1 push-vs-record separation).
+ALERTING_MAX_ALERTS_PER_HOUR = 15
+
+# Circuit breaker (F08) — fallbacks for shared/circuit_breaker.py's Smartsheet
+# breaker. Each is operator-tunable via an ITS_Config row (workstream="global")
+# read under circuit_breaker.bypass(); these constants are the fallback used
+# when the row is missing or unreadable. On an unreadable config the breaker
+# falls back to ENABLED (safe — a degraded Smartsheet still trips), per the
+# D4 escape-hatch design.
+CIRCUIT_BREAKER_ENABLED                      = True   # circuit_breaker.enabled
+CIRCUIT_BREAKER_FAILURE_THRESHOLD            = 5      # circuit_breaker.failure_threshold
+CIRCUIT_BREAKER_COOLDOWN_SECONDS             = 300    # circuit_breaker.cooldown_seconds
+CIRCUIT_BREAKER_PROLONGED_OPEN_ALERT_SECONDS = 600    # circuit_breaker.prolonged_open_alert_seconds (PR-2 watchdog)
+
 # Picklist sync — size guardrails for shared/picklist_sync.py. Two-stage:
 # WARN at >200 options, HARD-HALT-that-mapping at >400. Both values are
 # operator-tunable via ITS_Config rows picklist_sync.size_warn_threshold

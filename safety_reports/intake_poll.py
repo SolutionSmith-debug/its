@@ -79,7 +79,14 @@ from pathlib import Path
 from typing import Any, Literal
 
 from safety_reports import intake
-from shared import error_log, graph_client, sheet_ids, smartsheet_client, state_io
+from shared import (
+    circuit_breaker,
+    error_log,
+    graph_client,
+    sheet_ids,
+    smartsheet_client,
+    state_io,
+)
 from shared.error_log import Severity, its_error_log
 from shared.kill_switch import require_active
 
@@ -142,7 +149,14 @@ WATCHDOG_JOB_SLUG = "safety_intake"
 # future caller can use it without changing the function); skipped_swo_other
 # is a pass-through to surface the SWO/Other category-skip status in
 # operator-facing reports without forcing the operator to grep Notes.
-HeartbeatStatus = Literal["OK", "WARN", "ERROR", "SKIPPED", "skipped_swo_other"]
+# CIRCUIT_OPEN (F08) overrides the cycle status when the Smartsheet circuit
+# breaker is OPEN — set from a lock-free circuit_breaker.is_open() check at the
+# status-determination point; the heartbeat write itself runs under
+# circuit_breaker.bypass() so the status can still land when Smartsheet is
+# reachable.
+HeartbeatStatus = Literal[
+    "OK", "WARN", "ERROR", "SKIPPED", "skipped_swo_other", "CIRCUIT_OPEN"
+]
 
 # Process result statuses that should result in `mark_read`. Mirror of the
 # `success` statuses produced by `intake.process_message`. `error` is the
@@ -174,6 +188,13 @@ def _read_str_setting(key: str, fallback: str) -> str:
     try:
         raw = smartsheet_client.get_setting(key, workstream=WORKSTREAM)
     except smartsheet_client.SmartsheetNotFoundError:
+        return fallback
+    except smartsheet_client.SmartsheetCircuitOpenError:
+        # F08: an OPEN breaker short-circuits this control-plane config read.
+        # Fail open to the fallback so a degraded Smartsheet cannot crash the
+        # cycle BEFORE it surfaces CIRCUIT_OPEN in its heartbeat — the data-plane
+        # work still short-circuits, but the cycle runs to completion. Mirrors
+        # the kill-switch read's own breaker-resilience. (Op Stds v16 §3.1.)
         return fallback
     return raw if isinstance(raw, str) and raw else fallback
 
@@ -490,9 +511,13 @@ def _write_heartbeat_row(
         cells[cols["notes"]] = notes
 
     try:
-        smartsheet_client.update_row_cells_by_id(
-            sheet_ids.SHEET_DAEMON_HEALTH, row_id, cells
-        )
+        # F08: bypass the breaker for this control-plane write so a CIRCUIT_OPEN
+        # status can still land when Smartsheet is reachable. This is the
+        # already-once-per-cycle heartbeat write, so it adds no new hammering.
+        with circuit_breaker.bypass():
+            smartsheet_client.update_row_cells_by_id(
+                sheet_ids.SHEET_DAEMON_HEALTH, row_id, cells
+            )
     except smartsheet_client.SmartsheetNotFoundError:
         # Row was deleted / re-seeded; invalidate cache so next cycle
         # re-resolves via find_row_by_primary. Don't retry inline —
@@ -667,9 +692,14 @@ def _poll_inside_lock() -> PollStats:
     # the outer try/except guarantees a heartbeat failure NEVER blocks
     # the daemon's primary work (the cycle's INFO summary still emits;
     # the cycle still returns success to launchd).
+    # F08: surface a degraded Smartsheet via the heartbeat. Lock-free local
+    # read (no Smartsheet call) so it's safe even when the breaker is OPEN.
+    cycle_status: HeartbeatStatus = "OK" if final.errors == 0 else "WARN"
+    if circuit_breaker.is_open():
+        cycle_status = "CIRCUIT_OPEN"
     try:
         _write_heartbeat_row(
-            status="OK" if final.errors == 0 else "WARN",
+            status=cycle_status,
             items_processed=final.messages_processed,
         )
     except Exception as exc:  # noqa: BLE001 — heartbeat must never block the daemon

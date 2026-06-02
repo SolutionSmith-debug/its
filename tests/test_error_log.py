@@ -867,3 +867,31 @@ def test_five_same_key_critical_calls_one_resend_five_smartsheet_five_sentry(
     sent_subject, _ = send_alert_mock.call_args.args
     short = corr_ids[0][:8]
     assert f"[corr: {short}]" in sent_subject
+
+
+# ---- §3.1: ITS_Errors record write bypasses the circuit breaker ----------
+
+
+def test_its_errors_write_runs_under_circuit_breaker_bypass(log_dir, add_rows_mock):
+    """§3.1: the ITS_Errors record write is wrapped in circuit_breaker.bypass(),
+    so an OPEN breaker can never short-circuit the forensic surface (and, since
+    bypass also exempts failure-counting — see
+    test_circuit_breaker.test_bypass_does_not_count_failures — the forensic leg
+    can't drive the breaker). Captures _bypass_depth at the moment add_rows runs.
+    """
+    import shared.circuit_breaker as cb
+    from shared import sheet_ids
+
+    seen: dict[str, object] = {}
+
+    def _capture(sheet_id, rows):
+        seen["bypass_depth"] = cb._bypass_depth
+        seen["sheet_id"] = sheet_id
+        return [1]
+
+    add_rows_mock.side_effect = _capture
+
+    log(Severity.ERROR, "test.script", "boom", error_code="test_error")
+
+    assert seen["bypass_depth"] == 1  # the write executed inside bypass()
+    assert seen["sheet_id"] == sheet_ids.SHEET_ERRORS

@@ -618,3 +618,95 @@ def log_capture(tmp_path, monkeypatch):
             return files[0].read_text().splitlines()
 
     return _Capture()
+
+
+# ---- F09: global alerts-per-hour cap ------------------------------------
+
+
+def _hourly_window(state_dir):
+    return json.loads(
+        (state_dir / "alert_dedupe.json").read_text()
+    )["_alerts_per_hour_window"]
+
+
+@pytest.fixture
+def cap3(mocker):
+    """Override the autouse settings mock: alerting.max_alerts_per_hour = 3."""
+    return mocker.patch("shared.smartsheet_client.get_setting", return_value="3")
+
+
+def test_cap_under_limit_allows(state_in_tmp, frozen_now, cap3):
+    assert alert_dedupe.check_hourly_cap() is alert_dedupe.CapDecision.ALLOW
+
+
+def test_cap_allows_to_limit_then_suppresses(state_in_tmp, frozen_now, cap3):
+    for _ in range(3):  # cap = 3
+        assert alert_dedupe.check_hourly_cap() is alert_dedupe.CapDecision.ALLOW
+        alert_dedupe.record_hourly_send()
+    assert alert_dedupe.check_hourly_cap() is alert_dedupe.CapDecision.SUPPRESS_FIRST
+    assert alert_dedupe.check_hourly_cap() is alert_dedupe.CapDecision.SUPPRESS_QUIET
+    win = _hourly_window(state_in_tmp)
+    assert win["suppressed_count"] == 2
+    assert win["cap_alert_fired"] is True
+
+
+def test_cap_sliding_window_prunes_old_sends(state_in_tmp, frozen_now, cap3):
+    for _ in range(3):
+        alert_dedupe.record_hourly_send()
+    assert alert_dedupe.check_hourly_cap() is alert_dedupe.CapDecision.SUPPRESS_FIRST
+    frozen_now.advance(minutes=61)  # slide past the 60-min window
+    assert alert_dedupe.check_hourly_cap() is alert_dedupe.CapDecision.ALLOW
+
+
+def test_record_hourly_send_appends_then_prunes(state_in_tmp, frozen_now, cap3):
+    alert_dedupe.record_hourly_send()
+    assert len(_hourly_window(state_in_tmp)["sends"]) == 1
+    frozen_now.advance(minutes=61)
+    alert_dedupe.record_hourly_send()
+    assert len(_hourly_window(state_in_tmp)["sends"]) == 1  # old one pruned
+
+
+def test_window_summary_fires_once_after_expiry(state_in_tmp, frozen_now, cap3):
+    for _ in range(3):
+        alert_dedupe.record_hourly_send()
+    alert_dedupe.check_hourly_cap()  # SUPPRESS_FIRST
+    alert_dedupe.check_hourly_cap()  # SUPPRESS_QUIET → suppressed_count = 2
+    assert alert_dedupe.pop_due_window_summary() is None  # episode not expired
+    frozen_now.advance(minutes=61)
+    assert alert_dedupe.pop_due_window_summary() == 2
+    assert alert_dedupe.pop_due_window_summary() is None  # already summarized
+
+
+def test_window_summary_none_without_suppressions(state_in_tmp, frozen_now, cap3):
+    alert_dedupe.record_hourly_send()
+    frozen_now.advance(minutes=61)
+    assert alert_dedupe.pop_due_window_summary() is None
+
+
+def test_new_episode_after_summary(state_in_tmp, frozen_now, cap3):
+    for _ in range(3):
+        alert_dedupe.record_hourly_send()
+    alert_dedupe.check_hourly_cap()  # SUPPRESS_FIRST
+    frozen_now.advance(minutes=61)
+    assert alert_dedupe.pop_due_window_summary() == 1
+    assert alert_dedupe.check_hourly_cap() is alert_dedupe.CapDecision.ALLOW  # window slid
+    for _ in range(3):
+        alert_dedupe.record_hourly_send()
+    # A fresh episode (prior one was summarized) → SUPPRESS_FIRST again.
+    assert alert_dedupe.check_hourly_cap() is alert_dedupe.CapDecision.SUPPRESS_FIRST
+
+
+def test_cap_fail_open_on_state_error(state_in_tmp, frozen_now, cap3, monkeypatch):
+    monkeypatch.setattr(
+        "shared.state_io.with_path_lock", _make_failing_lock(RuntimeError, "boom")
+    )
+    assert alert_dedupe.check_hourly_cap() is alert_dedupe.CapDecision.ALLOW
+
+
+def test_reserved_key_skipped_by_list_expired_summaries(state_in_tmp, frozen_now, cap3):
+    alert_dedupe.record_hourly_send()         # creates _alerts_per_hour_window
+    alert_dedupe.record_fire("script::code")  # a normal dedupe entry
+    frozen_now.advance(minutes=120)           # expire the dedupe entry (3-min window)
+    keys = {e.key for e in alert_dedupe.list_expired_summaries()}
+    assert "_alerts_per_hour_window" not in keys  # reserved key skipped, no malformed marker
+    assert "script::code" in keys

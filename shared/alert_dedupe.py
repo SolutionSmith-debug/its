@@ -9,13 +9,28 @@ produces N emails into the inbox. Within `window_minutes` of the first
 fire of a given `(script, error_code)` key, subsequent fires are
 suppressed at the Resend leg only.
 
+Two gates live here. The per-key dedupe (`should_fire`/`record_fire`)
+suppresses ONE flapping `(script, error_code)`. F09 adds a SECOND, global
+gate — an alerts-per-hour cap across ALL keys (`check_hourly_cap` /
+`record_hourly_send` / `pop_due_window_summary`) — so a storm of DISTINCT
+keys, which per-key dedupe cannot catch, still cannot fan out unbounded
+operator email.
+
 Invariants
 ----------
-- **Push-vs-record separation (Op Stds v13 §3.1).** Dedupe applies ONLY
-  to push, never to records. The Smartsheet `ITS_Errors` row and the
-  Sentry event fire every time (upstream of this module, in
+- **Push-vs-record separation (Op Stds v13 §3.1).** Dedupe AND the F09 cap
+  apply ONLY to push, never to records. The Smartsheet `ITS_Errors` row and
+  the Sentry event fire every time (upstream of this module, in
   `error_log._alert_critical`); only the operator's inbox is suppressed.
   This module must never gate a record-write.
+- **F09 cap is the ONE deliberate fail-CLOSED point in this module.** At the
+  clean `count >= max_alerts_per_hour` ceiling, `check_hourly_cap` suppresses a
+  real email — *policy*-suppression (bounded + observable: §3.1 records still
+  fire, plus a one-shot cap-reached alert and an end-of-window summary), NOT
+  bug-suppression. Every ERROR path inside the cap still fails OPEN (sends),
+  exactly like the per-key dedupe. The "false positives (extra emails) OK,
+  false negatives (missed wake-ups) not" contract is preserved everywhere
+  except this single, deliberate, capped ceiling.
 - **State-file integrity is non-load-bearing for correctness.** Loss,
   truncation, or corruption of `~/its/state/alert_dedupe.json` degrades
   only to EXTRA emails, never to a missed CRITICAL. The file is an
@@ -110,6 +125,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
@@ -321,6 +337,12 @@ def list_expired_summaries() -> list[ExpiredEntry]:
         now = _now()
         expired: list[ExpiredEntry] = []
         for key, entry in state.items():
+            if key.startswith("_"):
+                # Reserved keys (F09's `_alerts_per_hour_window`) are not
+                # dedupe entries and carry a different shape (no
+                # `window_ends_at`). Skip them — without this they'd trip the
+                # malformed-entry marker on every sweep.
+                continue
             try:
                 window_ends_at = datetime.fromisoformat(entry["window_ends_at"])
             except (KeyError, ValueError, TypeError):
@@ -403,3 +425,177 @@ def delete_entry(key: str) -> None:
         )
     except Exception as e:
         _write_marker(f"delete_entry({key!r}) raised: {e!r}")
+
+
+# ---- F09: global alerts-per-hour cap ------------------------------------
+#
+# A SECOND gate (after per-key `should_fire`) on the Resend leg: a global
+# ceiling on operator emails across ALL dedupe keys, so a storm of DISTINCT
+# keys cannot fan out unbounded email. State lives under the reserved key
+# `_alerts_per_hour_window` in the SAME state file (a dict, not a dedupe
+# entry — every iterator over the dedupe entries skips `_`-prefixed keys).
+
+_HOURLY_WINDOW_KEY = "_alerts_per_hour_window"
+_HOURLY_WINDOW_MINUTES = 60  # the cap is per-HOUR; the sliding window is fixed at 60 min
+
+
+class CapDecision(Enum):
+    """Outcome of the alerts-per-hour gate (`check_hourly_cap`)."""
+
+    ALLOW = "ALLOW"                    # under cap — caller sends the alert
+    SUPPRESS_FIRST = "SUPPRESS_FIRST"  # over cap, first of the episode — caller emits the exempt cap-reached alert
+    SUPPRESS_QUIET = "SUPPRESS_QUIET"  # over cap, subsequent — caller logs local-INFO only
+
+
+def _resolve_max_per_hour() -> int:
+    """Read `alerting.max_alerts_per_hour` from ITS_Config; fall back to
+    `defaults.ALERTING_MAX_ALERTS_PER_HOUR`. Fail-open on any read failure —
+    a Smartsheet outage must not tighten (or loosen-to-unbounded) the cap."""
+    try:
+        from . import smartsheet_client
+
+        raw = smartsheet_client.get_setting(
+            "alerting.max_alerts_per_hour", workstream="global"
+        )
+        if raw is None:
+            return defaults.ALERTING_MAX_ALERTS_PER_HOUR
+        return int(raw)
+    except Exception:
+        return defaults.ALERTING_MAX_ALERTS_PER_HOUR
+
+
+def _blank_window() -> dict[str, Any]:
+    return {
+        "sends": [],
+        "suppressed_count": 0,
+        "cap_alert_fired": False,
+        "episode_ends_at": None,
+        "summarized": False,
+    }
+
+
+def _prune_sends(sends: list[str], now: datetime) -> list[str]:
+    """Drop send timestamps older than the 60-min sliding window (and any
+    unparseable entries)."""
+    cutoff = now - timedelta(minutes=_HOURLY_WINDOW_MINUTES)
+    kept: list[str] = []
+    for ts in sends:
+        try:
+            if datetime.fromisoformat(ts) >= cutoff:
+                kept.append(ts)
+        except (ValueError, TypeError):
+            continue
+    return kept
+
+
+def check_hourly_cap() -> CapDecision:
+    """Second-gate decision for the Resend leg (F09).
+
+    ALLOW when the global sliding-window send count is under the cap. Otherwise
+    SUPPRESS_FIRST on the first suppression of an episode (caller emits the one
+    exempt cap-reached alert) or SUPPRESS_QUIET thereafter (caller logs
+    local-INFO only). Mutates suppression bookkeeping under lock; does NOT
+    append a send (`record_hourly_send` does that, after a confirmed send).
+
+    FAILS OPEN (ALLOW) on every error path — only a clean over-cap count
+    suppresses. The lock is NOT held across any network send (the caller sends
+    after this returns)."""
+    try:
+        cap = _resolve_max_per_hour()
+        with state_io.with_path_lock(STATE_FILE):
+            state = _load_state_from_path()
+            now = _now()
+            window = state.get(_HOURLY_WINDOW_KEY) or _blank_window()
+            window["sends"] = _prune_sends(list(window.get("sends", [])), now)
+
+            if len(window["sends"]) < cap:
+                # Under cap — persist the prune (cheap) and allow.
+                state[_HOURLY_WINDOW_KEY] = window
+                state_io.atomic_write_json(STATE_FILE, state)
+                return CapDecision.ALLOW
+
+            # Over cap → suppress. `fresh_episode` is the first suppression of a
+            # new episode (none in flight, or the prior one already summarized).
+            fresh_episode = not window.get("cap_alert_fired") or bool(
+                window.get("summarized")
+            )
+            if fresh_episode:
+                window["suppressed_count"] = 1
+                window["cap_alert_fired"] = True
+                window["episode_ends_at"] = (
+                    now + timedelta(minutes=_HOURLY_WINDOW_MINUTES)
+                ).isoformat()
+                window["summarized"] = False
+                decision = CapDecision.SUPPRESS_FIRST
+            else:
+                window["suppressed_count"] = int(window.get("suppressed_count", 0)) + 1
+                decision = CapDecision.SUPPRESS_QUIET
+
+            state[_HOURLY_WINDOW_KEY] = window
+            state_io.atomic_write_json(STATE_FILE, state)
+            return decision
+    except state_io.StateLockTimeoutError:
+        _write_marker(
+            f"could not acquire flock on {STATE_FILE} (check_hourly_cap); allowing"
+        )
+        return CapDecision.ALLOW
+    except Exception as e:
+        _write_marker(f"check_hourly_cap raised: {e!r}; allowing")
+        return CapDecision.ALLOW
+
+
+def record_hourly_send() -> None:
+    """Append `now` to the sliding send-window after a CONFIRMED normal-alert
+    send (called alongside `record_fire`). Cap-EXEMPT meta-alerts (cap-reached,
+    window-summary) deliberately do NOT call this — they must not accelerate the
+    cap. No-op on any error (an undercount only risks an extra email)."""
+    try:
+        with state_io.with_path_lock(STATE_FILE):
+            state = _load_state_from_path()
+            now = _now()
+            window = state.get(_HOURLY_WINDOW_KEY) or _blank_window()
+            sends = _prune_sends(list(window.get("sends", [])), now)
+            sends.append(now.isoformat())
+            window["sends"] = sends
+            state[_HOURLY_WINDOW_KEY] = window
+            state_io.atomic_write_json(STATE_FILE, state)
+    except state_io.StateLockTimeoutError:
+        _write_marker(
+            f"could not acquire flock on {STATE_FILE} after retries (record_hourly_send)"
+        )
+    except Exception as e:
+        _write_marker(f"record_hourly_send raised: {e!r}")
+
+
+def pop_due_window_summary() -> int | None:
+    """If the current suppression episode has expired with un-summarized
+    suppressions, return the suppressed count and mark it summarized (so neither
+    the opportunistic path nor PR-2's watchdog sweep double-fires); else None.
+    The caller emits the one exempt window-summary Resend. Fail-open → None."""
+    try:
+        with state_io.with_path_lock(STATE_FILE):
+            state = _load_state_from_path()
+            window = state.get(_HOURLY_WINDOW_KEY)
+            if not window:
+                return None
+            ends_at = window.get("episode_ends_at")
+            suppressed = int(window.get("suppressed_count", 0))
+            if ends_at is None or window.get("summarized") or suppressed <= 0:
+                return None
+            try:
+                if _now() < datetime.fromisoformat(ends_at):
+                    return None
+            except (ValueError, TypeError):
+                return None
+            window["summarized"] = True
+            state[_HOURLY_WINDOW_KEY] = window
+            state_io.atomic_write_json(STATE_FILE, state)
+            return suppressed
+    except state_io.StateLockTimeoutError:
+        _write_marker(
+            f"could not acquire flock on {STATE_FILE} after retries (pop_due_window_summary)"
+        )
+        return None
+    except Exception as e:
+        _write_marker(f"pop_due_window_summary raised: {e!r}")
+        return None
