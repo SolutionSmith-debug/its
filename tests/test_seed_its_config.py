@@ -28,8 +28,9 @@ import seed_its_config  # noqa: E402  (path manipulation must precede import)
 
 def test_build_seed_rows_has_expected_entries():
     rows = seed_its_config._build_seed_rows()
-    # 7 Handover-v5 rows + F22 safety_reports.authorized_approvers.
-    assert len(rows) == 8
+    # 7 Handover-v5 rows + F22 authorized_approvers + 5 F08/F09 rows
+    # (4 circuit_breaker.* + alerting.max_alerts_per_hour).
+    assert len(rows) == 13
 
 
 def test_build_seed_rows_have_expected_columns():
@@ -61,7 +62,7 @@ def test_classify_empty_sheet_routes_all_to_added():
     seed = seed_its_config._build_seed_rows()
     added, skipped, stale = seed_its_config.classify(seed, [])
 
-    assert len(added) == 8
+    assert len(added) == 13
     assert skipped == []
     assert stale == []
 
@@ -76,7 +77,7 @@ def test_classify_full_sheet_matching_values_routes_all_to_skipped():
     added, skipped, stale = seed_its_config.classify(seed, existing)
 
     assert added == []
-    assert len(skipped) == 8
+    assert len(skipped) == 13
     assert stale == []
 
 
@@ -95,7 +96,7 @@ def test_classify_one_divergent_value_flagged_stale_not_overwritten():
     added, skipped, stale = seed_its_config.classify(seed, existing)
 
     assert added == []
-    assert len(skipped) == 7
+    assert len(skipped) == 12
     assert len(stale) == 1
     stale_seed, existing_value = stale[0]
     assert stale_seed["Setting"] == "system.state"
@@ -139,7 +140,7 @@ def test_main_empty_sheet_prompts_and_writes_on_confirm(mocker):
 
     add_rows.assert_called_once()
     _, called_rows = add_rows.call_args.args
-    assert len(called_rows) == 8
+    assert len(called_rows) == 13
 
 
 def test_main_empty_sheet_aborts_on_decline(mocker):
