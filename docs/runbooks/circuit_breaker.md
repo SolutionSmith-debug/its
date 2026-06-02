@@ -56,8 +56,11 @@ One of:
      is wrong on the ITS side, not the service. Proceed to the action below.
 2. **ITS_Errors** — filter for the underlying Smartsheet failures that tripped
    it (e.g. `Script = safety_reports.intake_poll`, recent `SmartsheetError` /
-   rate-limit rows). Note whether they look like a transient incident
-   (now passed) or a persistent auth/permission problem.
+   rate-limit rows). These records are reliably present whenever Smartsheet is
+   reachable — **including the cooldown-after-recovery window** — because the
+   ITS_Errors write bypasses the breaker (§3.1 forensic surface). Note whether
+   they look like a transient incident (now passed) or a persistent
+   auth/permission problem.
 
 ### The Claude prompt or UI action
 

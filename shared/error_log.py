@@ -107,20 +107,30 @@ def _smartsheet_log(
     _in_smartsheet_write = True
     try:
         try:
-            smartsheet_client.add_rows(
-                sheet_ids.SHEET_ERRORS,
-                [
-                    {
-                        "Error": error_code,
-                        "Timestamp": date.today().isoformat(),
-                        "Severity": severity.value,
-                        "Script": script,
-                        "Message": message,
-                        "Traceback": exc_info or "",
-                        "Correlation_ID": correlation_id or "",
-                    }
-                ],
-            )
+            # §3.1: ITS_Errors is an always-write forensic surface. The breaker
+            # must NOT suppress this record write — including during the
+            # cooldown-after-recovery window (Smartsheet reachable, breaker still
+            # OPEN). bypass() exempts this call from BOTH the short-circuit AND
+            # failure-accounting, so the forensic leg can never itself drive the
+            # breaker. Mirrors the heartbeat-write + config-read bypass.
+            # (Op Stds v16 §3.1; F08 PR 1.) Lazy import matches this file's idiom.
+            from . import circuit_breaker
+
+            with circuit_breaker.bypass():
+                smartsheet_client.add_rows(
+                    sheet_ids.SHEET_ERRORS,
+                    [
+                        {
+                            "Error": error_code,
+                            "Timestamp": date.today().isoformat(),
+                            "Severity": severity.value,
+                            "Script": script,
+                            "Message": message,
+                            "Traceback": exc_info or "",
+                            "Correlation_ID": correlation_id or "",
+                        }
+                    ],
+                )
         except SmartsheetError as e:
             _local_log(
                 Severity.ERROR,
