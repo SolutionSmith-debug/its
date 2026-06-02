@@ -343,3 +343,67 @@ def test_is_open_false_when_disabled_even_with_open_state(
     assert cb.is_open(state_path, make_config(enabled=False)) is False
     # Sanity: with the breaker enabled, the same OPEN state IS open.
     assert cb.is_open(state_path, make_config(enabled=True)) is True
+
+
+# ---- first_opened_at + seconds_open (PR 2 — prolonged-open clock) ---------
+
+
+def test_first_opened_at_set_on_trip(state_path: Path, clock: Clock) -> None:
+    cfg = make_config(threshold=3)()
+    for _ in range(3):
+        cb._record_failure(state_path, cfg)
+    s = read_state(state_path)
+    assert s["state"] == cb.OPEN
+    assert s["first_opened_at"] == s["opened_at"] == clock.now.isoformat()
+
+
+def test_first_opened_at_preserved_across_probe_reopen(
+    state_path: Path, clock: Clock
+) -> None:
+    """Core invariant: a probe-failure re-open advances opened_at but PRESERVES
+    first_opened_at (the outage-episode start). This is the regression the whole
+    field exists to protect."""
+    cfg = make_config(threshold=3, cooldown=300)()
+    for _ in range(3):
+        cb._record_failure(state_path, cfg)
+    episode_start = read_state(state_path)["first_opened_at"]
+    original_opened = read_state(state_path)["opened_at"]
+    clock.advance(301)                       # cooldown elapses
+    cb._try_claim_probe(state_path, cfg)     # OPEN -> HALF_OPEN
+    cb._record_probe_failure(state_path, cfg)  # probe fails -> re-OPEN
+    s = read_state(state_path)
+    assert s["state"] == cb.OPEN
+    assert s["opened_at"] != original_opened     # opened_at advanced
+    assert s["first_opened_at"] == episode_start  # episode start preserved
+
+
+def test_first_opened_at_cleared_on_success(state_path: Path, clock: Clock) -> None:
+    cfg = make_config(threshold=3)()
+    for _ in range(3):
+        cb._record_failure(state_path, cfg)
+    assert read_state(state_path)["first_opened_at"] is not None
+    cb._record_success(state_path)
+    assert read_state(state_path)["first_opened_at"] is None  # blank state clears it
+
+
+def test_seconds_open_none_when_not_open(state_path: Path, clock: Clock) -> None:
+    assert cb.seconds_open(state_path=state_path) is None         # missing file
+    cb._write_state(state_path, cb._blank_state())
+    assert cb.seconds_open(state_path=state_path) is None         # CLOSED
+
+
+def test_seconds_open_measures_from_episode_start(
+    state_path: Path, clock: Clock
+) -> None:
+    """seconds_open grows from first_opened_at, so a probe-failure re-open (which
+    advances opened_at) does NOT reset the measured outage duration."""
+    cfg = make_config(threshold=3, cooldown=300)()
+    for _ in range(3):
+        cb._record_failure(state_path, cfg)  # episode starts at T0
+    clock.advance(301)
+    cb._try_claim_probe(state_path, cfg)
+    cb._record_probe_failure(state_path, cfg)  # opened_at now ~ T0+301
+    clock.advance(399)                          # now T0+700
+    dur = cb.seconds_open(state_path=state_path)
+    assert dur is not None
+    assert abs(dur - 700) < 2                   # from T0 (700), NOT from opened_at (399)

@@ -35,9 +35,14 @@ One of:
 
 - In **ITS_Daemon_Health**, a daemon's `Last Cycle Status` reads
   `CIRCUIT_OPEN` (instead of OK / WARN / DEGRADED).
-- (Once PR 2 lands) a watchdog **WARN** that the Smartsheet circuit breaker
-  has been OPEN longer than the prolonged-open threshold (default 10 min),
-  naming the `opened_at` time.
+- A watchdog **CRITICAL page** (`[ITS CRITICAL]` email + Sentry) that the
+  Smartsheet circuit breaker has been OPEN for an outage episode longer than
+  `circuit_breaker.prolonged_open_alert_seconds` (default 600 s / 10 min). The
+  watchdog reads the LOCAL breaker state file, so this fires even during a total
+  Smartsheet outage (the page's recipient lookup is bypassed past the breaker);
+  it is throttled to ~once/hour by per-key dedupe. The duration is the outage
+  EPISODE length (`first_opened_at`), so it keeps climbing across cooldown
+  probe-failures rather than resetting each cycle.
 - Smartsheet operations across multiple daemons start failing fast with a
   "circuit breaker OPEN — short-circuiting" message in ITS_Errors.
 
@@ -124,6 +129,17 @@ Stop and escalate to the Developer-Operator (Seth, Tier 3) when **any** of:
 Escalate (Tier 3) when the storm's root cause is **high-capability-class** —
 auth / secrets / Keychain, the External Send Gate, doctrine, or a code change —
 or the storm is **novel**.
+
+### How the window summary fires (two paths)
+
+The end-of-window summary (`[ITS] alert-rate-cap window summary`) fires by
+whichever path reaches it first: **opportunistically** on the next alert after
+the window expires (`error_log._maybe_fire_window_summary`), OR — if alerts go
+quiet after a cap episode so nothing triggers the opportunistic path — via the
+**guaranteed watchdog sweep** (Check K, `_check_alert_rate_cap_window`, every
+watchdog cycle). A shared `summarized` flag on the window record means exactly
+one path fires it; the other is a no-op. The sweep is deferred during
+MAINTENANCE (the record persists for the next cycle).
 
 ### Testing / re-testing the cap
 

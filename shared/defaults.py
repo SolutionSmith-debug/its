@@ -43,6 +43,15 @@ ALERTING_DEDUPE_WINDOW_MINUTES = 60
 # (Op Stds v16 §3.1 push-vs-record separation).
 ALERTING_MAX_ALERTS_PER_HOUR = 15
 
+# Operator alert recipient — build-time FALLBACK for shared/resend_client.send_alert
+# when system.operator_email cannot be read from ITS_Config (e.g. the Smartsheet
+# circuit breaker is OPEN during the very outage the prolonged-open CRITICAL page
+# must reach the operator about — the ITS_Config read short-circuits). ITS_Config's
+# system.operator_email takes precedence whenever readable; this is the last-resort
+# recipient so an out-of-band page still delivers during a total Smartsheet outage
+# (Resend is HTTP, unaffected). Per-customer-repo invariant: replace at fork time.
+OPERATOR_EMAIL_FALLBACK = "seths@evergreenmirror.com"
+
 # Circuit breaker (F08) — fallbacks for shared/circuit_breaker.py's Smartsheet
 # breaker. Each is operator-tunable via an ITS_Config row (workstream="global")
 # read under circuit_breaker.bypass(); these constants are the fallback used

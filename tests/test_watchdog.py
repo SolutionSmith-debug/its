@@ -112,7 +112,9 @@ def test_checks_list_has_all_session_1_2_3_checks():
     (Session 3). Check I (weekly_generate catch-up) is registered last and
     runs after Check C (it recovers what Check C only detects). There is no
     Check H — the marker-file Check C is the staleness floor doctrine once
-    named "Check H" (2026-06-01 doctrine correction)."""
+    named "Check H" (2026-06-01 doctrine correction). Checks J (circuit-breaker
+    prolonged-open page) and K (guaranteed F09 cap-window summary sweep) shipped
+    in F08/F09 PR 2."""
     assert watchdog.CHECKS == [
         watchdog._check_stale_review_queue,
         watchdog._check_open_criticals,
@@ -121,6 +123,8 @@ def test_checks_list_has_all_session_1_2_3_checks():
         watchdog._check_mail_intake_silent_disable,
         watchdog._check_alert_dedupe_summaries,
         watchdog._check_weekly_generate_catchup,
+        watchdog._check_circuit_breaker_prolonged_open,
+        watchdog._check_alert_rate_cap_window,
     ]
 
 
@@ -1731,3 +1735,108 @@ def test_wpr_rows_exist_failsoft_returns_false(mock_get_rows, mock_log):
 
     severities = [c.args[0] for c in mock_log.call_args_list]
     assert Severity.WARN in severities
+
+
+# ---- Check J: circuit-breaker prolonged-open (F08/F09 PR 2) --------------
+
+
+def test_prolonged_open_pages_past_threshold(mocker):
+    mocker.patch("watchdog.circuit_breaker.seconds_open", return_value=700.0)
+    mocker.patch("watchdog.smartsheet_client.get_setting", return_value="600")
+    alert = mocker.patch("watchdog._alert_critical")
+    mocker.patch("watchdog.log")
+
+    result = watchdog._check_circuit_breaker_prolonged_open()
+
+    alert.assert_called_once()
+    assert alert.call_args.kwargs["error_code"] == "circuit_breaker_prolonged_open"
+    assert result.severity is Severity.INFO
+
+
+def test_prolonged_open_silent_under_threshold(mocker):
+    mocker.patch("watchdog.circuit_breaker.seconds_open", return_value=120.0)
+    mocker.patch("watchdog.smartsheet_client.get_setting", return_value="600")
+    alert = mocker.patch("watchdog._alert_critical")
+
+    result = watchdog._check_circuit_breaker_prolonged_open()
+
+    alert.assert_not_called()
+    assert result.severity is Severity.WARN
+
+
+def test_prolonged_open_not_open_no_alert(mocker):
+    mocker.patch("watchdog.circuit_breaker.seconds_open", return_value=None)
+    alert = mocker.patch("watchdog._alert_critical")
+
+    result = watchdog._check_circuit_breaker_prolonged_open()
+
+    alert.assert_not_called()
+    assert result.severity is Severity.INFO
+
+
+def test_prolonged_open_threshold_read_fails_open_to_default(mocker):
+    """The threshold read short-circuits during the outage; the check must fail
+    open to the default (600), so a 700s outage still pages."""
+    mocker.patch("watchdog.circuit_breaker.seconds_open", return_value=700.0)
+    mocker.patch(
+        "watchdog.smartsheet_client.get_setting",
+        side_effect=watchdog.smartsheet_client.SmartsheetCircuitOpenError("open"),
+    )
+    alert = mocker.patch("watchdog._alert_critical")
+    mocker.patch("watchdog.log")
+
+    watchdog._check_circuit_breaker_prolonged_open()
+
+    alert.assert_called_once()  # 700 > default 600 → page
+
+
+def test_prolonged_open_page_runs_under_bypass(mocker):
+    """The page MUST fire inside circuit_breaker.bypass() — otherwise the Resend
+    leg's operator_email read short-circuits on the very-OPEN breaker."""
+    import shared.circuit_breaker as cb
+
+    mocker.patch("watchdog.circuit_breaker.seconds_open", return_value=700.0)
+    mocker.patch("watchdog.smartsheet_client.get_setting", return_value="600")
+    mocker.patch("watchdog.log")
+    seen: dict[str, int] = {}
+    mocker.patch(
+        "watchdog._alert_critical",
+        side_effect=lambda *a, **k: seen.update(depth=cb._bypass_depth),
+    )
+
+    watchdog._check_circuit_breaker_prolonged_open()
+
+    assert seen.get("depth", 0) > 0
+
+
+def test_prolonged_open_maintenance_defers_page(mocker):
+    mocker.patch("watchdog.circuit_breaker.seconds_open", return_value=700.0)
+    mocker.patch("watchdog.smartsheet_client.get_setting", return_value="600")
+    alert = mocker.patch("watchdog._alert_critical")
+    mocker.patch("watchdog.log")
+
+    result = watchdog._check_circuit_breaker_prolonged_open(alerts_suppressed=True)
+
+    alert.assert_not_called()  # page deferred during MAINTENANCE
+    assert "deferred" in result.summary.lower()
+
+
+# ---- Check K: guaranteed F09 cap-window-summary sweep (F08/F09 PR 2) -----
+
+
+def test_cap_window_sweep_calls_maybe_fire(mocker):
+    fire = mocker.patch("watchdog._maybe_fire_window_summary")
+
+    result = watchdog._check_alert_rate_cap_window()
+
+    fire.assert_called_once()
+    assert result.severity is Severity.INFO
+
+
+def test_cap_window_sweep_deferred_in_maintenance(mocker):
+    fire = mocker.patch("watchdog._maybe_fire_window_summary")
+
+    result = watchdog._check_alert_rate_cap_window(alerts_suppressed=True)
+
+    fire.assert_not_called()
+    assert "defer" in result.summary.lower()

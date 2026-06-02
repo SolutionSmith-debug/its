@@ -132,13 +132,44 @@ def test_send_alert_defaults_to_from_its_config(mocker):
     assert req.call_args.kwargs["json"]["to"] == "operator@evergreenmirror.com"
 
 
-def test_send_alert_raises_when_to_unconfigured(mocker):
+def test_send_alert_falls_back_to_default_when_operator_email_none(mocker):
+    """Missing system.operator_email → fall back to the build-time recipient
+    (do NOT raise)."""
+    mocker.patch("shared.smartsheet_client.get_setting", return_value=None)
+    mocker.patch("shared.defaults.OPERATOR_EMAIL_FALLBACK", "fallback@example.com")
+    req = _patch_requests(mocker, _mock_response(status=200))
+
+    resend_client.send_alert("s", "b")
+
+    assert req.call_args.kwargs["json"]["to"] == "fallback@example.com"
+
+
+def test_send_alert_falls_back_on_breaker_short_circuit(mocker):
+    """The operator_email read is a GUARDED Smartsheet call; when it
+    short-circuits (breaker OPEN during an outage), send_alert falls back to the
+    build-time recipient so the prolonged-open page still delivers."""
+    from shared.smartsheet_client import SmartsheetCircuitOpenError
+
     mocker.patch(
-        "shared.smartsheet_client.get_setting", return_value=None
+        "shared.smartsheet_client.get_setting",
+        side_effect=SmartsheetCircuitOpenError("breaker open"),
     )
+    mocker.patch("shared.defaults.OPERATOR_EMAIL_FALLBACK", "fallback@example.com")
+    req = _patch_requests(mocker, _mock_response(status=200))
+
+    resend_client.send_alert("s", "b")
+
+    assert req.call_args.kwargs["json"]["to"] == "fallback@example.com"
+
+
+def test_send_alert_raises_when_no_recipient_anywhere(mocker):
+    """Raise ONLY when system.operator_email is unreadable AND the build-time
+    fallback is unset."""
+    mocker.patch("shared.smartsheet_client.get_setting", return_value=None)
+    mocker.patch("shared.defaults.OPERATOR_EMAIL_FALLBACK", "")
     _patch_requests(mocker, _mock_response(status=200))
 
-    with pytest.raises(ResendError, match="system.operator_email"):
+    with pytest.raises(ResendError, match="no operator recipient"):
         resend_client.send_alert("s", "b")
 
 

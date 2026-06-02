@@ -148,8 +148,9 @@ def _request(method: str, path: str, *, json_body: dict[str, Any]) -> requests.R
 def send_alert(subject: str, body: str, *, to: str | None = None) -> None:
     """Send one transactional alert email via Resend.
 
-    `to` defaults to `system.operator_email` from ITS_Config when omitted.
-    Plain-text body only (no HTML).
+    `to` defaults to `system.operator_email` from ITS_Config when omitted,
+    falling back to `defaults.OPERATOR_EMAIL_FALLBACK` when that read is
+    unavailable (see below). Plain-text body only (no HTML).
 
     Raises `ResendError` (or a subclass) on any failure. Callers that need
     failure isolation (e.g., `error_log._alert_critical`) must catch
@@ -159,14 +160,24 @@ def send_alert(subject: str, body: str, *, to: str | None = None) -> None:
         # Lazy import to keep this module's boot-time deps minimal and
         # avoid a circular if smartsheet_client ever needs to log via
         # error_log → alert path.
-        from . import smartsheet_client
-        to = smartsheet_client.get_setting(
-            "system.operator_email", workstream="global"
-        )
-        if to is None:
+        from . import defaults, smartsheet_client
+        try:
+            to = smartsheet_client.get_setting(
+                "system.operator_email", workstream="global"
+            )
+        except smartsheet_client.SmartsheetError:
+            # The ITS_Config read is a GUARDED Smartsheet call, so it
+            # short-circuits when the circuit breaker is OPEN — i.e. during
+            # exactly the outage the prolonged-open CRITICAL page must reach
+            # the operator about. Fall back to the build-time recipient so the
+            # page still delivers (Resend is HTTP, unaffected by the outage).
+            to = None
+        if not to:
+            to = defaults.OPERATOR_EMAIL_FALLBACK
+        if not to:
             raise ResendError(
-                "system.operator_email not configured in ITS_Config; "
-                "pass `to=` explicitly or seed the row"
+                "no operator recipient: system.operator_email unreadable and "
+                "defaults.OPERATOR_EMAIL_FALLBACK unset; pass `to=` explicitly"
             )
 
     payload: dict[str, Any] = {

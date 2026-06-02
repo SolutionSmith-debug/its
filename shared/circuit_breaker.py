@@ -73,8 +73,9 @@ Consumers:
     - ``safety_reports/intake_poll.py`` / ``weekly_send_poll.py`` — call
       ``is_open()`` (lock-free) to surface ``CIRCUIT_OPEN`` heartbeat status,
       and wrap their heartbeat write in ``bypass()``.
-    - PR-2 ``scripts/watchdog.py`` — reads the LOCAL state file (works during a
-      Smartsheet outage) for a prolonged-open alert.
+    - ``scripts/watchdog.py`` (PR 2) — calls ``seconds_open()`` (lock-free LOCAL
+      read, works during a Smartsheet outage) for the prolonged-open alert, and
+      drives the guaranteed F09 cap-window-summary sweep.
 
 Import discipline (cycle-break):
     ``error_log`` imports ``smartsheet_client`` at module top, and
@@ -168,7 +169,18 @@ def _now() -> datetime:
 
 
 def _blank_state() -> dict[str, Any]:
-    return {"state": CLOSED, "consecutive_failures": 0, "opened_at": None}
+    return {
+        "state": CLOSED,
+        "consecutive_failures": 0,
+        "opened_at": None,
+        # first_opened_at = the start of the CURRENT outage episode. Unlike
+        # opened_at (reset on every probe-failure re-open), it is preserved
+        # across re-opens and cleared only on a successful reset to CLOSED, so it
+        # drives a MONOTONIC prolonged-open duration. Without it, opened_at keeps
+        # advancing ~one cooldown per cycle during a sustained outage and a
+        # `now - opened_at > threshold` check never fires (F08/F09 PR 2).
+        "first_opened_at": None,
+    }
 
 
 def _load_state(path: Path) -> dict[str, Any]:
@@ -191,6 +203,9 @@ def _load_state(path: Path) -> dict[str, Any]:
         return _blank_state()
     data.setdefault("consecutive_failures", 0)
     data.setdefault("opened_at", None)
+    # Backward-compat: a pre-upgrade OPEN state file has no first_opened_at;
+    # inherit opened_at as a best-effort episode start.
+    data.setdefault("first_opened_at", data.get("opened_at"))
     return data
 
 
@@ -242,6 +257,37 @@ def is_open(
     return not _cooldown_elapsed(state, cfg)
 
 
+def seconds_open(
+    now: datetime | None = None,
+    state_path: Path | None = None,
+) -> float | None:
+    """Seconds since the current OUTAGE EPISODE began (``first_opened_at``), or
+    None if the breaker is not in an outage episode.
+
+    Keys off ``first_opened_at`` (preserved across probe-failure re-opens), NOT
+    ``opened_at`` (reset every probe failure), so it reflects TOTAL outage
+    duration and increases MONOTONICALLY through a sustained outage regardless of
+    probe cadence — the watchdog's prolonged-open check (PR 2) reads this. OPEN
+    and HALF_OPEN both count as "in an outage episode" (HALF_OPEN is a probe in
+    flight; the episode is not over until a CLOSED reset).
+
+    Lock-free LOCAL read — works during a Smartsheet outage, which is exactly
+    when the prolonged-open alert must fire. Missing/corrupt state, not-open, or
+    an unparseable ``first_opened_at`` → None (never a false alert).
+    """
+    state = _load_state(STATE_FILE if state_path is None else state_path)
+    if state["state"] not in (OPEN, HALF_OPEN):
+        return None
+    first = state.get("first_opened_at") or state.get("opened_at")
+    if not first:
+        return None
+    try:
+        started = datetime.fromisoformat(first)
+    except (ValueError, TypeError):
+        return None
+    return ((now or _now()) - started).total_seconds()
+
+
 # ---- bypass ---------------------------------------------------------------
 
 
@@ -272,20 +318,28 @@ def _record_failure(path: Path, cfg: CircuitConfig) -> None:
         with state_io.with_path_lock(path):
             state = _load_state(path)
             failures = int(state.get("consecutive_failures", 0)) + 1
+            now_iso = _now().isoformat()
+            in_episode = state.get("state") in (OPEN, HALF_OPEN)
             if failures >= cfg.failure_threshold:
+                # A fresh CLOSED→OPEN trip starts a new outage episode; an
+                # already-open breaker preserves its episode start.
+                first = state.get("first_opened_at") if in_episode else now_iso
                 _write_state(
                     path,
                     {"state": OPEN, "consecutive_failures": failures,
-                     "opened_at": _now().isoformat()},
+                     "opened_at": now_iso,
+                     "first_opened_at": first or now_iso},
                 )
             else:
                 # Preserve current OPEN/HALF_OPEN markers' opened_at if present;
-                # a CLOSED breaker just accrues the count.
+                # a CLOSED breaker just accrues the count. first_opened_at is
+                # preserved either way (None while CLOSED-accruing).
                 _write_state(
                     path,
                     {"state": state.get("state", CLOSED) if state.get("state") != HALF_OPEN else OPEN,
                      "consecutive_failures": failures,
-                     "opened_at": state.get("opened_at")},
+                     "opened_at": state.get("opened_at"),
+                     "first_opened_at": state.get("first_opened_at")},
                 )
     except state_io.StateLockTimeoutError:
         _warn("circuit_breaker: lock timeout recording failure (skipped, fail-open)")
@@ -297,10 +351,17 @@ def _record_probe_failure(path: Path, cfg: CircuitConfig) -> None:
         with state_io.with_path_lock(path):
             state = _load_state(path)
             failures = int(state.get("consecutive_failures", 0)) + 1
+            now_iso = _now().isoformat()
+            # PRESERVE first_opened_at. A probe failure re-opens with a FRESH
+            # cooldown (opened_at), but the outage EPISODE began at the original
+            # trip. Resetting first_opened_at here would make the prolonged-open
+            # duration never accumulate — the whole reason the field exists
+            # (F08/F09 PR 2). Only opened_at resets.
             _write_state(
                 path,
                 {"state": OPEN, "consecutive_failures": failures,
-                 "opened_at": _now().isoformat()},
+                 "opened_at": now_iso,
+                 "first_opened_at": state.get("first_opened_at") or now_iso},
             )
     except state_io.StateLockTimeoutError:
         _warn("circuit_breaker: lock timeout recording probe failure (skipped)")
@@ -338,7 +399,9 @@ def _try_claim_probe(path: Path, cfg: CircuitConfig) -> bool:
                     path,
                     {"state": HALF_OPEN,
                      "consecutive_failures": int(state.get("consecutive_failures", 0)),
-                     "opened_at": state.get("opened_at")},
+                     "opened_at": state.get("opened_at"),
+                     # Preserve the outage-episode start across OPEN→HALF_OPEN.
+                     "first_opened_at": state.get("first_opened_at")},
                 )
                 return True
             # OPEN-within-cooldown, or HALF_OPEN already claimed by another.
