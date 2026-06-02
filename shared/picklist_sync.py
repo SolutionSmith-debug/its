@@ -20,11 +20,13 @@ Op Stds v11 §3.1 — push-vs-record separation:
     aggregate failure threshold is reached (>=3 mappings fail in one
     run); single-mapping failures stay at ERROR severity.
 
-Op Stds v11 §25 — MCP-gap REST fallback:
+Op Stds v11 §12 — tool surface discipline:
     Column-option mutations are not exposed cleanly through the SDK's
     high-level row APIs, so this module's writes go through the
     smartsheet_client helpers added in PR #45 (update_column_options,
     list_columns_with_options) which wrap the SDK's column-level calls.
+    (Retarget: §25 in live Op Stds v16 is "per-workstream sheets"; the
+    surface-selection rationale here is §12 "tool surface discipline".)
 
 Removals are gated:
     Before removing a picklist option, count live cells in the target

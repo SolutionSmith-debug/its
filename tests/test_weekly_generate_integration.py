@@ -74,6 +74,18 @@ def _anthropic_key() -> str:
     return key
 
 
+@pytest.fixture(autouse=True)
+def _isolate_watchdog_marker(monkeypatch, tmp_path):
+    """D3: redirect the Check C marker dir to a tmp path so a LIVE integration
+    run can't refresh the real ~/its/.watchdog/safety_weekly_generate.last_run
+    marker. A marker refreshed here AFTER the Friday trigger would mask a genuine
+    Check I catch-up (false negative — degrades safely to Check C's 8-day WARN
+    but is non-obvious; observed during the #133 smoke). Mirrors the autouse
+    WATCHDOG_MARKER_DIR monkeypatch in tests/test_watchdog.py.
+    """
+    monkeypatch.setattr(weekly_generate, "WATCHDOG_MARKER_DIR", tmp_path / ".watchdog")
+
+
 @pytest.fixture
 def _sandbox_project_map():
     """Temporarily inject a sandbox project into both lookup maps.
