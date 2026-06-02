@@ -62,6 +62,13 @@ class Severity(StrEnum):
 _in_smartsheet_write = False
 _in_resend_alert = False
 _in_sentry_capture = False
+# Top-level alert-path guard. The two per-leg guards above are asymmetric on
+# their own — _in_sentry_capture is still clear while the Resend leg runs — so a
+# reentrant log(CRITICAL) raised from INSIDE the Resend send would skip the
+# Resend leg but re-fire the (undeduped) Sentry leg. This guard wraps the whole
+# of `_alert_critical`, making the alert path fully reentrancy-safe (A3: log()
+# now fires _alert_critical, so this reentry is reachable in principle).
+_in_alert_critical = False
 
 
 def _local_log(severity: Severity, script: str, message: str, exc_info: str | None = None) -> None:
@@ -149,6 +156,7 @@ def log(
     error_code: str | None = None,
     exc_info: str | None = None,
     correlation_id: str | None = None,
+    alert: bool = True,
 ) -> None:
     """Manually log an entry. Use this from inside a script for non-exception events.
 
@@ -158,9 +166,26 @@ def log(
     `"started"` / `"completed"` / `"uncaught_exception"`.
 
     `correlation_id` is the shared UUID that ties this log row to its
-    triple-fire Resend email + Sentry event. Legacy callers that omit it
-    write a blank `Correlation_ID` cell; the column accepts blanks.
+    triple-fire Resend email + Sentry event. For a CRITICAL that pages (see
+    `alert`), one is minted here if the caller omits it and threaded to BOTH
+    the ITS_Errors row and the alert legs, so a single grep recovers the full
+    picture. Non-CRITICAL callers that omit it write a blank `Correlation_ID`
+    cell; the column accepts blanks.
+
+    `alert` (A3): a CRITICAL log PAGES the operator by default — after the two
+    RECORD legs (local file + ITS_Errors row) it fires the triple-fire alert
+    legs (Resend email + Sentry event) via `_alert_critical`. This closes the
+    sharp edge where `log(CRITICAL)` silently recorded but never paged. Pass
+    `alert=False` to RECORD a CRITICAL without paging — the opt-out for callers
+    that manage their own paging (e.g. the watchdog deferring the operator page
+    during MAINTENANCE while still writing the forensic record). `alert` is a
+    no-op for non-CRITICAL severities (they never paged).
     """
+    fire_alert = alert and severity is Severity.CRITICAL
+    if fire_alert and correlation_id is None:
+        # Mint once so the ITS_Errors row and the alert legs share one id.
+        correlation_id = str(uuid.uuid4())
+
     _local_log(severity, script, message, exc_info=exc_info)
     _smartsheet_log(
         severity,
@@ -170,6 +195,17 @@ def log(
         exc_info,
         correlation_id,
     )
+    if fire_alert:
+        # correlation_id + error_code passed as KEYWORDS so call sites/tests
+        # that inspect _alert_critical positionally still see (script, message,
+        # exc_info) as the three positional args.
+        _alert_critical(
+            script,
+            message,
+            exc_info or "",
+            correlation_id=correlation_id,
+            error_code=error_code or "critical",
+        )
 
 
 def _send_exempt_alert(subject: str, body: str) -> None:
@@ -424,32 +460,41 @@ def _alert_critical(
     succeed in milliseconds, the order is invisible; if Sentry hangs,
     Resend has already gone out.
     """
-    if correlation_id is None:
-        correlation_id = str(uuid.uuid4())
+    global _in_alert_critical
+    if _in_alert_critical:
+        # Reentrant CRITICAL raised from inside a leg → do not re-run EITHER leg
+        # (prevents the asymmetric duplicate Sentry event; see the guard's def).
+        return
+    _in_alert_critical = True
+    try:
+        if correlation_id is None:
+            correlation_id = str(uuid.uuid4())
 
-    # Subject + body composed once and shared with Resend. Sentry uses
-    # the raw structured fields (`_fire_sentry_leg` constructs its own
-    # SDK payload from `message` + `exc_info` directly), so it doesn't
-    # need these.
-    truncated = message
-    if len(truncated) > _ALERT_SUBJECT_TRUNCATE:
-        truncated = truncated[: _ALERT_SUBJECT_TRUNCATE - 1] + "…"
-    short_corr = correlation_id[:_CORRELATION_ID_SUBJECT_PREFIX_LEN]
-    subject = f"{_ALERT_SUBJECT_PREFIX} {script}: {truncated} [corr: {short_corr}]"
+        # Subject + body composed once and shared with Resend. Sentry uses
+        # the raw structured fields (`_fire_sentry_leg` constructs its own
+        # SDK payload from `message` + `exc_info` directly), so it doesn't
+        # need these.
+        truncated = message
+        if len(truncated) > _ALERT_SUBJECT_TRUNCATE:
+            truncated = truncated[: _ALERT_SUBJECT_TRUNCATE - 1] + "…"
+        short_corr = correlation_id[:_CORRELATION_ID_SUBJECT_PREFIX_LEN]
+        subject = f"{_ALERT_SUBJECT_PREFIX} {script}: {truncated} [corr: {short_corr}]"
 
-    ts = datetime.now(UTC).isoformat()
-    body = "\n".join([
-        f"Script:    {script}",
-        f"Timestamp: {ts}",
-        f"Correlation: {correlation_id}",
-        f"Message:   {message}",
-        "",
-        "Traceback:",
-        exc_info or "(none)",
-    ])
+        ts = datetime.now(UTC).isoformat()
+        body = "\n".join([
+            f"Script:    {script}",
+            f"Timestamp: {ts}",
+            f"Correlation: {correlation_id}",
+            f"Message:   {message}",
+            "",
+            "Traceback:",
+            exc_info or "(none)",
+        ])
 
-    _fire_resend_leg(script, subject, body, correlation_id, error_code)
-    _fire_sentry_leg(script, message, exc_info, correlation_id)
+        _fire_resend_leg(script, subject, body, correlation_id, error_code)
+        _fire_sentry_leg(script, message, exc_info, correlation_id)
+    finally:
+        _in_alert_critical = False
 
 
 F = TypeVar("F", bound=Callable)
@@ -467,28 +512,18 @@ def its_error_log(script_name: str) -> Callable[[F], F]:
                 return result
             except Exception as e:
                 tb = traceback.format_exc()
-                # Use the same prefixed message for both Smartsheet row and
-                # Resend alert email so operator sees consistent text across
-                # the triple-fire channels.
                 msg = f"unhandled: {e}"
-                # One UUID per CRITICAL, threaded to all three legs so a
-                # single grep recovers the full Smartsheet / Resend / Sentry
-                # picture during triage.
-                correlation_id = str(uuid.uuid4())
+                # A3: log(CRITICAL) now fires the triple-fire alert path itself
+                # — it mints + threads one correlation_id across the ITS_Errors
+                # row, the Resend email, and the Sentry event. No separate
+                # _alert_critical call (that would double-fire the Sentry leg,
+                # which has no dedupe).
                 log(
                     Severity.CRITICAL,
                     script_name,
                     msg,
                     error_code="uncaught_exception",
                     exc_info=tb,
-                    correlation_id=correlation_id,
-                )
-                _alert_critical(
-                    script_name,
-                    msg,
-                    tb,
-                    correlation_id=correlation_id,
-                    error_code="uncaught_exception",
                 )
                 raise
         return wrapper  # type: ignore[return-value]

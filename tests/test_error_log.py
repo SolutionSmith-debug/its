@@ -63,11 +63,13 @@ def send_alert_mock(mocker):
     resets the module-level `_in_resend_alert` recursion guard between tests.
     """
     error_log_module._in_resend_alert = False
+    error_log_module._in_alert_critical = False
     # Patch at the source module so the lazy `from . import resend_client`
     # inside `_alert_critical` sees the mocked function.
     mock = mocker.patch("shared.resend_client.send_alert")
     yield mock
     error_log_module._in_resend_alert = False
+    error_log_module._in_alert_critical = False
 
 
 @pytest.fixture(autouse=True)
@@ -447,17 +449,50 @@ def test_alert_critical_called_on_critical_severity(log_dir, send_alert_mock):
     assert "ValueError" in body
 
 
-def test_alert_critical_not_called_for_warn_error_info(log_dir, send_alert_mock):
-    # log() with non-CRITICAL severity should never trigger _alert_critical
-    # (the decorator is the only caller of _alert_critical, and only on the
-    # CRITICAL exception path).
+def test_log_critical_fires_alert_other_severities_do_not(
+    log_dir, send_alert_mock, sentry_capture_mock
+):
+    # A3: log(CRITICAL) now PAGES directly (Resend + Sentry). INFO/WARN/ERROR
+    # never page.
     log(Severity.INFO, "s", "info msg")
     log(Severity.WARN, "s", "warn msg")
     log(Severity.ERROR, "s", "error msg")
-    log(Severity.CRITICAL, "s", "critical msg")  # via log() directly, NOT decorator
-
-    # log() doesn't call _alert_critical; only the decorator does.
     send_alert_mock.assert_not_called()
+    sentry_capture_mock.assert_not_called()
+
+    log(Severity.CRITICAL, "s", "critical msg")  # via log() directly, NOT decorator
+    send_alert_mock.assert_called_once()
+    sentry_capture_mock.assert_called_once()
+
+
+def test_log_critical_alert_false_records_but_does_not_page(
+    log_dir, send_alert_mock, sentry_capture_mock, add_rows_mock
+):
+    # A3 opt-out: alert=False records the CRITICAL (local file + ITS_Errors
+    # row) but withholds the operator page — the watchdog's MAINTENANCE-defer
+    # path. The record legs still fire.
+    log(Severity.CRITICAL, "s", "deferred crit", alert=False)
+    send_alert_mock.assert_not_called()
+    sentry_capture_mock.assert_not_called()
+    add_rows_mock.assert_called_once()  # the ITS_Errors record still fired
+
+
+def test_log_critical_threads_one_correlation_id_to_all_legs(
+    log_dir, send_alert_mock, sentry_capture_mock, add_rows_mock
+):
+    # A3: a direct log(CRITICAL) with no correlation_id mints ONE id and
+    # threads it to the ITS_Errors row, the Resend subject, and the Sentry tag.
+    log(Severity.CRITICAL, "s", "crit msg")
+
+    _, row = _row_payload(add_rows_mock)
+    row_corr = row["Correlation_ID"]
+    assert _UUID4_RE.match(row_corr)
+
+    sentry_corr = sentry_capture_mock.call_args.kwargs.get("correlation_id")
+    assert sentry_corr == row_corr
+
+    subject, _ = send_alert_mock.call_args.args
+    assert f"[corr: {row_corr[:8]}]" in subject
 
 
 def test_alert_critical_truncates_long_message_in_subject(log_dir, send_alert_mock):
@@ -517,15 +552,17 @@ def test_alert_critical_swallows_non_resend_exceptions_too(log_dir, send_alert_m
     assert "keychain missing" in contents
 
 
-def test_alert_critical_recursion_guard_blocks_reentry(log_dir, send_alert_mock):
+def test_alert_critical_recursion_guard_blocks_reentry(
+    log_dir, send_alert_mock, sentry_capture_mock
+):
     # If send_alert somehow triggers another log() call that hits CRITICAL,
-    # the inner _alert_critical must see the guard and skip.
+    # the inner _alert_critical must see the top-level guard and skip BOTH legs.
     inner_call_count = {"value": 0}
 
     def reentrant_send(subject, body, **kwargs):
         inner_call_count["value"] += 1
-        # Inner CRITICAL log → would trigger _alert_critical → must be skipped
-        # by the recursion guard.
+        # Inner CRITICAL log → would trigger _alert_critical → must be fully
+        # skipped by the top-level reentrancy guard.
         log(Severity.CRITICAL, "inner", "reentered")
 
     send_alert_mock.side_effect = reentrant_send
@@ -537,10 +574,11 @@ def test_alert_critical_recursion_guard_blocks_reentry(log_dir, send_alert_mock)
     with pytest.raises(ValueError):
         boom()
 
-    # send_alert called exactly once. The inner log()'s _alert_critical
-    # invocation saw _in_resend_alert==True and returned without calling
-    # send_alert again.
+    # Exactly ONE Resend AND ONE Sentry. The inner reentrant log(CRITICAL) is
+    # blocked by `_in_alert_critical`; the per-leg guards alone would have let
+    # the Sentry leg double-fire (the A3 asymmetry this test now locks).
     assert send_alert_mock.call_count == 1
+    assert sentry_capture_mock.call_count == 1
     assert inner_call_count["value"] == 1
 
 
