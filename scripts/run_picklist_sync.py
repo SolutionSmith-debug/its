@@ -41,6 +41,35 @@ from shared.kill_switch import require_active  # noqa: E402
 
 _SCRIPT = "scripts.run_picklist_sync"
 
+# Watchdog Check C marker (C4). run_picklist_sync was previously untracked, so
+# its silent death was invisible; it now writes
+# ~/its/.watchdog/safety_picklist_sync.last_run each run so
+# scripts/watchdog.py::TRACKED_JOBS can surface a stall. Distinct slug from the
+# WEEKLY safety_picklist_audit (a different job — scripts/audit_picklist_drift).
+WATCHDOG_JOB_NAME = "safety_picklist_sync"
+
+
+def _watchdog_marker_path() -> Path:
+    return Path.home() / "its" / ".watchdog" / f"{WATCHDOG_JOB_NAME}.last_run"
+
+
+def _write_marker() -> None:
+    """Inline-replicate watchdog.write_last_run_marker (fail-soft).
+
+    Avoids importing `scripts.watchdog` (heavy, side-effecty init) for a 3-line
+    write. Mirrors `scripts/audit_picklist_drift.py::_write_marker`.
+    """
+    try:
+        marker = _watchdog_marker_path()
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(datetime.now(UTC).isoformat())
+    except OSError as e:
+        log(
+            Severity.WARN,
+            f"{_SCRIPT}.write_marker",
+            f"failed to write last_run marker: {e!r}",
+        )
+
 
 def _print_stats(stats: picklist_sync.SyncStats) -> None:
     print(
@@ -293,6 +322,7 @@ def main() -> None:
     stats = picklist_sync.sync_all(only=args.mapping, dry_run=args.dry)
     _print_stats(stats)
     _log_run_summary(stats)
+    _write_marker()  # C4: refresh the Check C marker on a completed run.
 
 
 if __name__ == "__main__":

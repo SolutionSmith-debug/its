@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Picklist drift AUDIT — Sunday 15:00 local time (C4).
+
+  Runs scripts/audit_picklist_drift.py: compares shared.picklist_validation
+  .REGISTRY against the live Smartsheet column config (server-side §35
+  enforcement) and writes ~/its/.watchdog/safety_picklist_audit.last_run on
+  completion. That marker is tracked by scripts/watchdog.py::TRACKED_JOBS
+  (Check C, 8-day window) — which previously tracked a job NOTHING scheduled
+  (the only picklist plist runs the hourly run_picklist_sync, a different job),
+  so the marker was never written and Check C would eventually WARN forever.
+  This plist closes that gap: it is the weekly schedule the watchdog already
+  assumed existed.
+
+  Distinct from org.solutionsmith.its.picklist-sync.plist (the hourly SYNC).
+
+  Install:
+    scripts/launchd/install.sh load org.solutionsmith.its.picklist-audit.plist
+
+  Calendar-driven (StartCalendarInterval) — once per Sunday at 15:00 local.
+  launchd fires on wake if the schedule lapsed while asleep. The installer
+  substitutes __ITS_HOME__ only.
+
+  See docs/picklist_sync.md / docs/audits/picklist_hardening_audit.md.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>org.solutionsmith.its.picklist-audit</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__ITS_HOME__/.venv/bin/python</string>
+        <string>__ITS_HOME__/scripts/audit_picklist_drift.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__ITS_HOME__</string>
+
+    <key>StandardOutPath</key>
+    <string>__ITS_HOME__/logs/launchd/audit_picklist_drift.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>__ITS_HOME__/logs/launchd/audit_picklist_drift.err.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>LANG</key>
+        <string>en_US.UTF-8</string>
+    </dict>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Weekday</key>
+        <integer>0</integer>
+        <key>Hour</key>
+        <integer>15</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>
