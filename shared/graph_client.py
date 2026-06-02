@@ -92,6 +92,45 @@ class GraphRateLimitError(GraphError):
     """Graph returned 429 after the retry budget was exhausted."""
 
 
+class GraphTimeoutError(GraphError):
+    """A Graph request (or the MSAL token call) exceeded its connect/read
+    timeout. A distinct subclass so a *hang* is grep-distinguishable in
+    ITS_Errors from a rate-limit / auth / not-found failure, and so callers
+    that already catch GraphError soft-fail it on the normal path."""
+
+
+# Request timeout — (connect, read) tuple passed to every requests.request call.
+#
+# §42 rationale (2026-06-02): the Mail wrappers funnel through `_request`, which
+# called `requests.request` with NO `timeout=`. A stalled TCP connection
+# therefore hung the whole daemon cycle *indefinitely* — an `intake_poll` cycle
+# hung ~88 min holding the fcntl lock, starving every later launchd interval
+# (the daemon silently stopped while launchd believed it was running). The F08
+# Smartsheet circuit breaker can't catch this: it guards Smartsheet, and a call
+# that never *returns* never trips the failure counter. A connect/read timeout
+# converts that indefinite hang into a finite `requests.Timeout`, translated
+# below to `GraphTimeoutError` so it lands in callers' existing `except
+# GraphError` fence (e.g. intake.process_message) and the per-cycle fence
+# releases the lock. See docs/tech_debt.md (Graph-call timeout) +
+# docs/runbooks/... 30s read matches the smartsheet_client REST-helper literal.
+#
+# requests' read timeout is an *inactivity* timeout (max seconds between bytes
+# from the server), not a total-transfer cap. download_attachment buffers the
+# whole body (response.content, no stream=True), but the read timeout still
+# applies per socket read during that buffering — a large $value attachment
+# that keeps arriving will NOT trip it; only a server that goes silent for 30s
+# does. That is exactly the hang we want to catch, so download_attachment needs
+# no special-casing.
+CONNECT_TIMEOUT_SECONDS = 10.0
+READ_TIMEOUT_SECONDS = 30.0
+REQUEST_TIMEOUT = (CONNECT_TIMEOUT_SECONDS, READ_TIMEOUT_SECONDS)
+
+# The MSAL token-acquisition path uses MSAL's OWN internal HTTP client (a
+# separate requests.Session), so REQUEST_TIMEOUT above does NOT cover it.
+# ConfidentialClientApplication accepts a top-level timeout= kwarg (msal 1.36).
+TOKEN_TIMEOUT_SECONDS = 30.0
+
+
 _token: str | None = None
 _token_expires_at: float = 0.0
 
@@ -116,12 +155,24 @@ def _get_token() -> str:
     client_id = keychain.get_secret("ITS_MS_CLIENT_ID")
     client_secret = keychain.get_secret("ITS_MS_CLIENT_SECRET")
 
-    app = msal.ConfidentialClientApplication(
-        client_id,
-        authority=f"https://login.microsoftonline.com/{tenant_id}",
-        client_credential=client_secret,
-    )
-    result = app.acquire_token_for_client(scopes=DEFAULT_SCOPES)
+    # timeout= covers MSAL's internal HTTP (instance discovery + token call);
+    # wrap construction AND acquisition so a transport stall becomes a finite
+    # GraphTimeoutError instead of hanging the daemon (the A2 token surface,
+    # distinct from the requests.request surface in _request).
+    try:
+        app = msal.ConfidentialClientApplication(
+            client_id,
+            authority=f"https://login.microsoftonline.com/{tenant_id}",
+            client_credential=client_secret,
+            timeout=TOKEN_TIMEOUT_SECONDS,
+        )
+        result = app.acquire_token_for_client(scopes=DEFAULT_SCOPES)
+    except requests.Timeout as exc:
+        raise GraphTimeoutError(
+            f"MSAL token acquisition timed out after {TOKEN_TIMEOUT_SECONDS}s: {exc!r}"
+        ) from exc
+    except requests.RequestException as exc:
+        raise GraphAuthError(f"MSAL token acquisition transport error: {exc!r}") from exc
 
     if "access_token" not in result:
         err = result.get("error", "unknown")
@@ -185,13 +236,31 @@ def _request(
 
     response: requests.Response | None = None
     for attempt in range(MAX_RETRIES):
-        response = requests.request(
-            method,
-            url,
-            params=params,
-            json=json_body,
-            headers=headers,
-        )
+        try:
+            response = requests.request(
+                method,
+                url,
+                params=params,
+                json=json_body,
+                headers=headers,
+                timeout=REQUEST_TIMEOUT,
+            )
+        except requests.Timeout as exc:
+            # Fail fast — do NOT consume retries on a hang. A hung host rarely
+            # un-hangs within the same cycle, and retrying would re-create the
+            # very lock-starvation (up to MAX_RETRIES × read timeout) this guard
+            # exists to prevent. The launchd interval + watchdog are the
+            # recovery net. Typed so it lands in callers' `except GraphError`.
+            raise GraphTimeoutError(
+                f"Graph request {method} {url} timed out: {exc!r}"
+            ) from exc
+        except requests.RequestException as exc:
+            # Connection reset / DNS failure / etc. — a finite, typed failure
+            # rather than a raw requests exception escaping the GraphError
+            # hierarchy (mirrors smartsheet_client's RequestException→typed wrap).
+            raise GraphError(
+                f"Graph request {method} {url} failed: {exc!r}"
+            ) from exc
         if response.status_code not in (429, 503):
             break
         if attempt == MAX_RETRIES - 1:

@@ -12,12 +12,16 @@ import base64
 from unittest.mock import MagicMock
 
 import pytest
+import requests
 
 from shared import graph_client
 from shared.graph_client import (
+    GraphAuthError,
+    GraphError,
     GraphNotFoundError,
     GraphPermissionError,
     GraphRateLimitError,
+    GraphTimeoutError,
 )
 
 # ---- Fixtures + helpers ---------------------------------------------------
@@ -266,6 +270,79 @@ def test_retry_on_429_gives_up_after_max_attempts(mocker):
         graph_client.list_inbox("safety@example.com")
 
     assert req.call_count == 3
+
+
+# ---- Timeouts (A2: indefinite hang → finite typed error) ------------------
+
+
+def test_request_passes_timeout_kwarg(mocker):
+    """Every Graph request carries the (connect, read) timeout tuple."""
+    _mock_msal(mocker)
+    req = mocker.patch(
+        "shared.graph_client.requests.request",
+        return_value=_mock_response(status=200, json_body={"value": []}),
+    )
+    graph_client.list_inbox("safety@example.com")
+    assert req.call_args.kwargs["timeout"] == graph_client.REQUEST_TIMEOUT
+
+
+def test_request_timeout_raises_graph_timeout_error_fail_fast(mocker):
+    """A stalled request becomes a catchable GraphTimeoutError, and does NOT
+    consume retries (no multiplied wall time re-creating lock starvation)."""
+    _mock_msal(mocker)
+    sleep = mocker.patch("shared.graph_client.time.sleep")
+    req = mocker.patch(
+        "shared.graph_client.requests.request",
+        side_effect=requests.Timeout("slow"),
+    )
+    with pytest.raises(GraphTimeoutError):
+        graph_client.list_inbox("safety@example.com")
+    assert req.call_count == 1  # fail-fast, no retry on a hang
+    sleep.assert_not_called()
+
+
+def test_request_connection_error_raises_graph_error(mocker):
+    """Non-timeout transport errors also land inside the GraphError hierarchy."""
+    _mock_msal(mocker)
+    mocker.patch(
+        "shared.graph_client.requests.request",
+        side_effect=requests.ConnectionError("reset"),
+    )
+    with pytest.raises(GraphError):
+        graph_client.list_inbox("safety@example.com")
+
+
+def test_msal_constructor_receives_timeout(mocker):
+    """The MSAL token path (separate HTTP client) carries its own timeout."""
+    patched = _mock_msal(mocker)
+    mocker.patch(
+        "shared.graph_client.requests.request",
+        return_value=_mock_response(status=200, json_body={"value": []}),
+    )
+    graph_client.list_inbox("safety@example.com")
+    assert patched.call_args.kwargs["timeout"] == graph_client.TOKEN_TIMEOUT_SECONDS
+
+
+def test_token_acquisition_timeout_raises_graph_timeout_error(mocker):
+    """A token-call timeout (MSAL's internal HTTP) surfaces as GraphTimeoutError."""
+    app = MagicMock()
+    app.acquire_token_for_client.side_effect = requests.Timeout("slow token")
+    mocker.patch(
+        "shared.graph_client.msal.ConfidentialClientApplication", return_value=app
+    )
+    with pytest.raises(GraphTimeoutError):
+        graph_client.list_inbox("safety@example.com")
+
+
+def test_token_acquisition_transport_error_raises_auth_error(mocker):
+    """A non-timeout token transport error stays in the existing auth failure mode."""
+    app = MagicMock()
+    app.acquire_token_for_client.side_effect = requests.ConnectionError("dns")
+    mocker.patch(
+        "shared.graph_client.msal.ConfidentialClientApplication", return_value=app
+    )
+    with pytest.raises(GraphAuthError):
+        graph_client.list_inbox("safety@example.com")
 
 
 # ---- fetch_latest_inbound_timestamp ---------------------------------------

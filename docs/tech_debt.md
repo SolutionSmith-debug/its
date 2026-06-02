@@ -62,7 +62,11 @@ Audit findings F19 + F23 (atomic-write seen-set + heartbeat-row state + concurre
 
 Surfaced: 2026-06-02 F08/F09 PR-1 §7 manual smoke (B6); diagnosed to the `error_log.log` records-only call shape vs the `_alert_critical` triple-fire entry point.
 
-## Graph client calls have no request timeout → a stalled call hangs a daemon cycle indefinitely [OPEN 2026-06-02]
+## Graph client calls have no request timeout → a stalled call hangs a daemon cycle indefinitely [CLOSED 2026-06-02]
+
+**Resolved by** the A2 timeout change (branch `pr1-tier-a-reliability`): `_request` now passes `timeout=REQUEST_TIMEOUT` (`(10s connect, 30s read)`) to the single `requests.request` call (covers all seven Mail wrappers) and the MSAL token path passes `timeout=TOKEN_TIMEOUT_SECONDS` (30s) to `ConfidentialClientApplication` (MSAL's own HTTP client — a separate surface). A `requests.Timeout` is translated to a new `GraphTimeoutError(GraphError)` and other `requests.RequestException` to `GraphError`, so a hang lands in callers' existing `except GraphError` soft-fail fence (e.g. `intake.process_message`) instead of escaping raw — and the per-cycle fence releases the fcntl lock. **Fail-fast**: a timeout does NOT consume retries (no multiplied wall time). The `requests` read timeout is an inactivity timeout, so steady large `$value` attachment downloads are unaffected; only a stalled server trips it.
+
+**Cross-client audit (fix part b) conclusions:** `smartsheet_client` direct-REST helpers already pass `timeout=30` (NOT a gap). `anthropic_client` is **SDK-bounded** — the Anthropic SDK default is `Timeout(connect=5, read=600, …)`, a finite ceiling, not the indefinite-hang class; an explicit tighter timeout for daemon use is an optional low-priority follow-up, not done here (preservation-over-refactor — no demonstrated need). `box_client` IS a real indefinite-hang gap (boxsdk `DefaultNetwork.request` passes no timeout) — see the dedicated entry below. Fix part (c), the watchdog/launchd hang-killer, remains OPEN as a separate design item — see below. Original analysis kept for history.
 
 `shared/graph_client.py`'s Mail API wrappers (`list_inbox`, `get_message`, `list_attachments`, `download_attachment`, `mark_read`, `move_message`, `send_mail`) issue their underlying `requests` / MSAL HTTP calls with **no `timeout=`**. A stalled TCP connection (network blip, M365 throttle, half-open socket) therefore blocks the call — and the entire daemon cycle — **indefinitely**. Under launchd `StartInterval`, a hung cycle holds the daemon's fcntl lock and starves every subsequent interval, so the daemon silently stops cycling while launchd believes it is still running.
 
@@ -78,7 +82,29 @@ Surfaced: 2026-06-02 F08/F09 PR-1 §7 manual smoke (B6); diagnosed to the `error
 
 Surfaced: 2026-06-02 F08/F09 live deploy + post-deploy sanity-check — a pre-existing hung `intake_poll` cycle (old code) was blocking the daemon, found while verifying the heartbeat advanced onto the new circuit-breaker code.
 
-## `weekly_send_poll` has no `ITS_Daemon_Health` row → its heartbeat (incl. F08 `CIRCUIT_OPEN`) cannot surface [OPEN 2026-06-02]
+## `box_client` has no network timeout → boxsdk call can hang a consumer indefinitely [OPEN 2026-06-02]
+
+`shared/box_client.py` calls go through boxsdk's `Client` / OAuth2, and boxsdk's `DefaultNetwork.request` issues its underlying `requests` call with **no `timeout=`** (verified by inspecting the installed boxsdk source). Same indefinite-hang class as the (now-fixed) graph_client gap: a stalled connection blocks the calling cycle forever. Lower urgency than graph_client because box_client is not yet on a 60-second polling daemon's hot path (its consumers are weekly/migration-cadence), but it is a real gap once a box-reading daemon ships.
+
+**Proposed fix:** boxsdk does not expose a simple per-call `timeout=` the way `requests`/MSAL/Anthropic do — it requires supplying a custom network layer (subclass `DefaultNetwork` / `DefaultNetworkResponse`, or pass a pre-configured `requests.Session`) to the `Client`. Non-trivial; scope it as its own PR. Until then, box hangs are caught only by the watchdog staleness floor (detect, not recover).
+
+**Phase target:** 1.4 hardening (reliability), before any box-reading polling daemon goes on a tight interval.
+
+Surfaced: 2026-06-02 A2 cross-client timeout audit (the graph_client timeout fix's "audit box/anthropic/smartsheet" follow-through).
+
+## Watchdog/launchd hang-killer: hard-kill a daemon exceeding N× expected cycle duration [OPEN 2026-06-02]
+
+Fix part (c) carved out of the now-closed graph_client-timeout entry. The graph + (future) box timeouts convert *known* network surfaces' hangs into finite errors, but a hang from any *other* cause (a future un-timed call, a CPU spin, a deadlock) still defeats the launchd one-shot-per-interval model: the hung process holds the fcntl lock and every later interval no-ops on `poll_lock_held`. Check C's marker-staleness floor only **detects** this (after the staleness window); it does not **recover** it (the 2026-06-02 incident needed a manual `launchctl kickstart -k`).
+
+**Proposed fix:** a watchdog (or a launchd `ExitTimeOut` / wrapper) that hard-kills a daemon process whose elapsed wall time exceeds N× its expected cycle duration, so the next interval can re-acquire the lock and self-heal. Larger design decision (where the kill lives, how to size N per daemon, interaction with legitimately-long cycles) — its own item.
+
+**Phase target:** 1.4/1.5 reliability — the recovery complement to Check C's detection.
+
+Surfaced: 2026-06-02 A2 graph_client timeout work (the indefinite-hang incident motivated detection→recovery, not just per-call timeouts).
+
+## `weekly_send_poll` has no `ITS_Daemon_Health` row → its heartbeat (incl. F08 `CIRCUIT_OPEN`) cannot surface [CLOSED 2026-06-02]
+
+**Resolved by** the A1 self-provision change (branch `pr1-tier-a-reliability`): the shared heartbeat helper `_resolve_heartbeat_row_id` now **find-or-creates** the daemon's `ITS_Daemon_Health` row on first-seen-missing (new `_create_heartbeat_row` + the ID-keyed `smartsheet_client.add_row_by_id` primitive), mirroring `week_folder.py`'s find-after-create race handling (`daemon_health_race_duplicate` WARN, adopt first match). Applied to **both** daemons (helpers stay logic-identical; AST-verified). Heartbeat-never-blocks contract preserved (create failure → `daemon_health_write_failed` WARN + continue). So `weekly_send_poll` self-provisions its row on the next cycle — no manual seed. §43 runbook: `docs/runbooks/daemon_health_self_provision.md`. Original analysis kept below for history.
 
 `safety_reports.weekly_send_poll`'s heartbeat write resolves its row in `ITS_Daemon_Health` (sheet 4529351700729732) by primary key (`safety_reports.weekly_send_poll`) — but **no such row exists**. Every heartbeat write logs a `daemon_health_write_failed` WARN ("no row with this primary key — seeder needed") and skips. So weekly_send_poll's `Last Cycle Status` — including the F08 `CIRCUIT_OPEN` surfacing added in PR #137, plus any OK / WARN / DEGRADED — never lands on the operator-visibility surface; the daemon is invisible there.
 

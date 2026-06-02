@@ -507,3 +507,52 @@ def test_poll_once_read_short_circuit_surfaces_circuit_open(_patch_all, mocker):
     kwargs = _patch_all["write_heartbeat_row"].call_args.kwargs
     assert kwargs["status"] == "CIRCUIT_OPEN"
     assert kwargs["error_summary"] is None
+
+
+# ---- A1: ITS_Daemon_Health row self-provision (the 2026-06-02 dark gap) --
+
+
+@pytest.fixture
+def heartbeat_state_in_tmp(monkeypatch, tmp_path):
+    """Redirect HEARTBEAT_ROW_STATE_PATH into tmp_path so the live shared
+    state file (~/its/state/heartbeat_row_ids.json) is untouched."""
+    state = tmp_path / "heartbeat_row_ids.json"
+    monkeypatch.setattr(weekly_send_poll, "HEARTBEAT_ROW_STATE_PATH", state)
+    return state
+
+
+def test_resolve_row_id_self_provisions_weekly_send_poll(heartbeat_state_in_tmp, mocker):
+    """REGRESSION (the 2026-06-02 dark-daemon gap): weekly_send_poll had no
+    ITS_Daemon_Health row, so every heartbeat logged 'seeder needed' and the
+    daemon was invisible. A missing row now self-provisions, with this daemon's
+    own cadence (900s) — not intake's 60s — proving the per-file registration
+    constants are wired correctly into the otherwise-identical helper.
+
+    The create-fail / race-adopt / write-then-update / no-raise paths are
+    exhaustively unit-tested on the intake_poll side (tests/test_intake_poll.py);
+    this side relies on those bodies being byte-identical, which
+    tests/test_heartbeat_helper_parity.py enforces. This test covers the one
+    real behavioral difference: the per-daemon cadence constant.
+    """
+    mocker.patch(
+        "safety_reports.weekly_send_poll.smartsheet_client.find_row_by_primary",
+        return_value=None,
+    )
+    add = mocker.patch(
+        "safety_reports.weekly_send_poll.smartsheet_client.add_row_by_id",
+        return_value=3344,
+    )
+    row_id = weekly_send_poll._resolve_heartbeat_row_id(DAEMON_NAME)
+    assert row_id == 3344
+    add.assert_called_once()
+    from shared.sheet_ids import DAEMON_HEALTH_COLUMNS, SHEET_DAEMON_HEALTH
+    sheet_id_arg, payload = add.call_args.args
+    assert sheet_id_arg == SHEET_DAEMON_HEALTH
+    assert payload[DAEMON_HEALTH_COLUMNS["daemon_name"]] == DAEMON_NAME
+    assert payload[DAEMON_HEALTH_COLUMNS["workstream"]] == "safety_reports"
+    assert (
+        payload[DAEMON_HEALTH_COLUMNS["interval_seconds"]]
+        == weekly_send_poll.DEFAULT_POLL_INTERVAL
+    )
+    # Per-cycle columns are filled by the immediately-following update, not here.
+    assert DAEMON_HEALTH_COLUMNS["last_cycle_status"] not in payload

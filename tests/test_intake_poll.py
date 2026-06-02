@@ -958,12 +958,135 @@ def test_resolve_row_id_falls_back_to_find_and_persists(heartbeat_state_in_tmp, 
     assert state == {"row_id": 7461022174478212, "total_cycles": 0}
 
 
-def test_resolve_row_id_returns_none_when_not_found(heartbeat_state_in_tmp, mocker):
+def test_resolve_row_id_self_provisions_when_not_found(heartbeat_state_in_tmp, mocker):
+    """A1: a missing row now self-provisions instead of returning None.
+
+    find misses on the initial lookup AND the post-create race re-find →
+    adopt the created id and persist with the lifetime counter at 0.
+    """
     mocker.patch(
         "safety_reports.intake_poll.smartsheet_client.find_row_by_primary",
         return_value=None,
     )
+    add = mocker.patch(
+        "safety_reports.intake_poll.smartsheet_client.add_row_by_id",
+        return_value=5566,
+    )
+    row_id = intake_poll._resolve_heartbeat_row_id("safety_reports.intake_poll")
+    assert row_id == 5566
+    add.assert_called_once()
+    state = intake_poll._load_heartbeat_row_state("safety_reports.intake_poll")
+    assert state == {"row_id": 5566, "total_cycles": 0}
+
+
+def test_resolve_row_id_returns_none_when_create_fails(heartbeat_state_in_tmp, mocker):
+    """A1 heartbeat-never-blocks: a create failure logs + returns None (no raise)."""
+    mocker.patch(
+        "safety_reports.intake_poll.smartsheet_client.find_row_by_primary",
+        return_value=None,
+    )
+    mocker.patch(
+        "safety_reports.intake_poll.smartsheet_client.add_row_by_id",
+        side_effect=intake_poll.smartsheet_client.SmartsheetError("create boom"),
+    )
+    log = mocker.patch("safety_reports.intake_poll.error_log.log")
     assert intake_poll._resolve_heartbeat_row_id("daemon_missing") is None
+    assert any(
+        c.kwargs.get("error_code") == "daemon_health_write_failed"
+        for c in log.call_args_list
+    )
+
+
+def test_resolve_row_id_race_adopts_first_match(heartbeat_state_in_tmp, mocker):
+    """A1 race-safety: post-create re-find returns a different row → adopt it, WARN.
+
+    A concurrent cycle won the create race; Smartsheet enforces no primary-key
+    uniqueness, so adopt the first match (200), flag the duplicate (100) for
+    operator cleanup. Mirrors week_folder_race_duplicate.
+    """
+    find = mocker.patch(
+        "safety_reports.intake_poll.smartsheet_client.find_row_by_primary",
+        side_effect=[None, {"_row_id": 200, "Daemon Name": "x"}],
+    )
+    mocker.patch(
+        "safety_reports.intake_poll.smartsheet_client.add_row_by_id",
+        return_value=100,
+    )
+    log = mocker.patch("safety_reports.intake_poll.error_log.log")
+    row_id = intake_poll._resolve_heartbeat_row_id("daemon_x")
+    assert row_id == 200
+    assert find.call_count == 2
+    assert any(
+        c.kwargs.get("error_code") == "daemon_health_race_duplicate"
+        for c in log.call_args_list
+    )
+    assert intake_poll._load_heartbeat_row_state("daemon_x") == {
+        "row_id": 200,
+        "total_cycles": 0,
+    }
+
+
+def test_create_heartbeat_row_id_payload_under_bypass(heartbeat_state_in_tmp, mocker):
+    """A1: create writes registration columns only, ID-keyed, under the breaker bypass."""
+    add = mocker.patch(
+        "safety_reports.intake_poll.smartsheet_client.add_row_by_id",
+        return_value=4242,
+    )
+    bypass = mocker.patch(
+        "safety_reports.intake_poll.circuit_breaker.bypass",
+        wraps=intake_poll.circuit_breaker.bypass,
+    )
+    new_id = intake_poll._create_heartbeat_row("safety_reports.intake_poll")
+    assert new_id == 4242
+    bypass.assert_called_once()  # F08: self-provision runs under breaker bypass
+    sheet_id_arg, payload = add.call_args.args
+    from shared.sheet_ids import DAEMON_HEALTH_COLUMNS, SHEET_DAEMON_HEALTH
+    assert sheet_id_arg == SHEET_DAEMON_HEALTH
+    assert payload[DAEMON_HEALTH_COLUMNS["daemon_name"]] == "safety_reports.intake_poll"
+    assert payload[DAEMON_HEALTH_COLUMNS["workstream"]] == "safety_reports"
+    assert payload[DAEMON_HEALTH_COLUMNS["enabled"]] is True
+    assert DAEMON_HEALTH_COLUMNS["interval_seconds"] in payload
+    assert DAEMON_HEALTH_COLUMNS["source_id"] in payload
+    # Per-cycle columns are filled by the immediately-following update, not here.
+    assert DAEMON_HEALTH_COLUMNS["last_cycle_status"] not in payload
+    assert DAEMON_HEALTH_COLUMNS["last_heartbeat"] not in payload
+
+
+def test_write_heartbeat_row_self_provisions_then_updates(heartbeat_state_in_tmp, mocker):
+    """A1 end-to-end: no row → create → per-cycle update lands on the new row id."""
+    mocker.patch(
+        "safety_reports.intake_poll.smartsheet_client.find_row_by_primary",
+        return_value=None,
+    )
+    mocker.patch(
+        "safety_reports.intake_poll.smartsheet_client.add_row_by_id",
+        return_value=909,
+    )
+    update = mocker.patch(
+        "safety_reports.intake_poll.smartsheet_client.update_row_cells_by_id"
+    )
+    intake_poll._write_heartbeat_row(status="OK", items_processed=2)
+    update.assert_called_once()
+    assert update.call_args.args[1] == 909  # the freshly self-provisioned row
+
+
+def test_write_heartbeat_row_self_provision_failure_does_not_raise(
+    heartbeat_state_in_tmp, mocker
+):
+    """A1 heartbeat-never-blocks: create failure → no update, no raise."""
+    mocker.patch(
+        "safety_reports.intake_poll.smartsheet_client.find_row_by_primary",
+        return_value=None,
+    )
+    mocker.patch(
+        "safety_reports.intake_poll.smartsheet_client.add_row_by_id",
+        side_effect=intake_poll.smartsheet_client.SmartsheetError("create boom"),
+    )
+    update = mocker.patch(
+        "safety_reports.intake_poll.smartsheet_client.update_row_cells_by_id"
+    )
+    intake_poll._write_heartbeat_row(status="ERROR", items_processed=0)
+    update.assert_not_called()
 
 
 @pytest.mark.parametrize(
