@@ -27,6 +27,7 @@ from safety_reports.weekly_send import (
     _validate_recipients,
     send_one_row,
 )
+from shared.error_log import Severity
 from shared.graph_client import GraphAuthError, GraphError
 from shared.smartsheet_client import SmartsheetError, SmartsheetNotFoundError
 
@@ -91,6 +92,22 @@ def _patch_all(mocker):
         ),
     }
     return mocks
+
+
+def _critical_logged(error_log_mock, error_code: str) -> int:
+    """Count CRITICAL log() calls with the given error_code.
+
+    A3: log(CRITICAL) IS the operator-page signal (it fires Resend + Sentry),
+    so a paging assertion checks for the CRITICAL record with its dedupe-key
+    error_code rather than a separate _alert_critical call.
+    """
+    return sum(
+        1
+        for c in error_log_mock.call_args_list
+        if c.args
+        and c.args[0] == Severity.CRITICAL
+        and c.kwargs.get("error_code") == error_code
+    )
 
 
 # ---- Helper-function tests ----------------------------------------------
@@ -275,8 +292,8 @@ def test_send_graph_error_marks_failed_increments_retry(_patch_all):
     updates = _patch_all["update_rows"].call_args[0][1]
     assert updates[0]["Send Status"] == STATUS_FAILED
     assert "[SEND_RETRY_COUNT: 1]" in updates[0]["Notes"]
-    # Below retries-exhaust threshold — CRITICAL alert NOT fired.
-    _patch_all["alert_critical"].assert_not_called()
+    # Below retries-exhaust threshold — logs ERROR, not CRITICAL → no page (A3).
+    assert _critical_logged(_patch_all["error_log"], "weekly_send.retries_exhausted") == 0
 
 
 def test_send_graph_auth_error_fires_critical(_patch_all):
@@ -284,10 +301,12 @@ def test_send_graph_auth_error_fires_critical(_patch_all):
     _patch_all["send_mail"].side_effect = GraphAuthError("HTTP 401: Unauthorized")
     result = send_one_row(100)
     assert result.status == "send_failed"
-    _patch_all["alert_critical"].assert_called_once()
-    alert_args = _patch_all["alert_critical"].call_args
-    assert "auth" in alert_args.kwargs.get("error_code", "").lower() or \
-           "auth" in alert_args.args[3] if len(alert_args.args) >= 4 else True
+    # A3: the CRITICAL log IS the page (log(CRITICAL) fires Resend + Sentry),
+    # with the dedupe-key error_code intact (Op Stds §3.1).
+    assert _critical_logged(_patch_all["error_log"], "weekly_send.graph_auth_failed") == 1
+    # Double-fire guard: paging is via log(CRITICAL) ONLY — a re-introduced
+    # explicit error_log._alert_critical would trip this (it patches that name).
+    _patch_all["alert_critical"].assert_not_called()
 
 
 def test_send_retry_count_exhausted_fires_critical(_patch_all):
@@ -299,7 +318,8 @@ def test_send_retry_count_exhausted_fires_critical(_patch_all):
     result = send_one_row(100)
     assert result.status == "send_failed"
     assert result.retry_count == 3
-    _patch_all["alert_critical"].assert_called_once()
+    assert _critical_logged(_patch_all["error_log"], "weekly_send.retries_exhausted") == 1
+    _patch_all["alert_critical"].assert_not_called()  # double-fire guard (A3)
 
 
 def test_send_skipped_when_retries_already_exhausted(_patch_all):
@@ -412,4 +432,7 @@ def test_send_post_send_row_update_failure_fires_critical(_patch_all):
     result = send_one_row(100)
     assert result.status == "sent"  # send DID happen
     assert "row_update_failed" in (result.error or "")
-    _patch_all["alert_critical"].assert_called_once()
+    assert _critical_logged(
+        _patch_all["error_log"], "weekly_send.post_send_row_update_failed"
+    ) == 1
+    _patch_all["alert_critical"].assert_not_called()  # double-fire guard (A3)
