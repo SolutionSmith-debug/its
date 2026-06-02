@@ -667,6 +667,16 @@ Surfaced during the Check I (weekly_generate catch-up) build. `scripts/watchdog.
 
 **Revisit when:** the picklist scheduling/Tranche-0 work is next touched, or the first time a `safety_picklist_audit` stale WARN fires with no underlying cause.
 
+## Integration-test marker isolation — weekly_generate live test pollutes the shared watchdog marker [OPEN 2026-06-02]
+
+Surfaced during the Check I (weekly_generate catch-up) live smoke. The `@pytest.mark.integration` `weekly_generate` test (`tests/test_weekly_generate_integration.py`) runs real `weekly_generate` against the live Smartsheet sandbox, which writes the **real** shared `~/its/.watchdog/safety_weekly_generate.last_run` Check C marker (via `weekly_generate._write_watchdog_marker`). Unlike the unit tests, the integration test does NOT redirect `WATCHDOG_MARKER_DIR` to a tmp dir, so an operator running `pytest -m integration` refreshes the production marker for a *disposable* week.
+
+Interaction with watchdog Check I (`_check_weekly_generate_catchup`, PR #133): Check I deliberately treats a fresh marker as "the week ran" (so it never regenerates reviewer-deleted rows). A marker refreshed by the integration test *after* the Friday trigger can therefore **mask a genuine catch-up for that window** — a false-negative that degrades safely to Check C's 8-day WARN / a human, but is non-obvious. Observed live during the PR #133 catch-up smoke: the integration test (run earlier in the session) had refreshed the marker, pre-empting the fire path until the marker was removed.
+
+**Fix:** redirect `WATCHDOG_MARKER_DIR` to a temp dir inside `tests/test_weekly_generate_integration.py` (mirror the autouse `monkeypatch.setattr("watchdog.WATCHDOG_MARKER_DIR", …)` pattern from `tests/test_watchdog.py`), so the live test never touches the production marker. Same isolation discipline already applied to the watchdog unit tests.
+
+**Revisit when:** `tests/test_weekly_generate_integration.py` is next touched, or an operator reports a missed `weekly_generate` catch-up that coincides with an integration-test run.
+
 ## safety_weekly_generate prompt v0.1.0 calibration [OPEN 2026-05-22]
 
 Initial WPR generation prompt (`prompts/safety_weekly_generate.md` v0.1.0) anchors on the 2016-03-12 Gates Solar legacy WPR captured at `prompts/samples/legacy_wpr_gates_solar_2016-03-12.md`. Per Safety Reports Brief v6.1, calibrate v0.2.0 after the first 30 days of real Evergreen cycles — areas to watch:
