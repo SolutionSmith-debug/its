@@ -69,7 +69,7 @@ Schema-degradation note (2026-05-23)
 
 The live `WPR_Pending_Review` schema (sheet 3096105695793028) does NOT
 have `Last Send Error` or `Send Retry Count` columns. Per the brief and
-Op Stds v11 §23.3 (sheet-level columns added via UI, not API), this
+Op Stds v11 §19 (sheet-level columns added via UI, not API), this
 module gracefully degrades by encoding both fields as bracketed tags in
 the `Notes` column:
 
