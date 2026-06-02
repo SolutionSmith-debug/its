@@ -46,3 +46,40 @@ jobs:
 
       - name: Doc-index freshness (warn-only)
         run: python -m scripts.regen_doc_indexes --check || echo "::warning::Doc indexes stale — run \`python -m scripts.regen_doc_indexes\` locally."
+
+      # Warn-only, like the doc linters above. check_doctrine_drift is the
+      # propose-only MECHANICAL tier of the cross-repo drift guard: it prints
+      # findings and exits 0 even when drift exists (the operator + the heavy
+      # semantic tier — the doc-reconciliation-auditor agent — decide). It exits
+      # non-zero ONLY on a fatal config error (e.g. an unreadable doctrine
+      # manifest), which SHOULD fail CI. Previously this ran only via unit tests
+      # + the on-demand agent; now every CI run surfaces mechanical drift.
+      - name: Doctrine-drift check (warn-only, mechanical tier)
+        run: python -m scripts.check_doctrine_drift
+
+  # Secret-scanning gate. BLOCKING (unlike the propose-only doc/drift steps) —
+  # a committed secret must stop the merge. Separate job so it runs in parallel
+  # with `test` and surfaces as its own PR check. Uses the pinned gitleaks
+  # BINARY rather than gitleaks/gitleaks-action@v2 because that action requires
+  # a paid GITLEAKS_LICENSE for GitHub Organizations (SolutionSmith-debug is an
+  # org). Pin GITLEAKS_VERSION on bumps after reading the release notes.
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0  # full commit history for the `gitleaks git` scan
+
+      - name: Install gitleaks (pinned)
+        env:
+          GITLEAKS_VERSION: "8.30.1"
+        run: |
+          curl -sSfL \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            -o /tmp/gitleaks.tar.gz
+          tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
+          sudo install /tmp/gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+
+      - name: Scan full git history for secrets (blocking)
+        run: gitleaks git . --redact --no-banner --exit-code 1
