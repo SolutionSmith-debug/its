@@ -1091,3 +1091,43 @@ def test_update_row_cells_by_id_translates_404(mocker):
     client.Sheets.update_rows.side_effect = _api_error(404, message="row gone")
     with pytest.raises(SmartsheetNotFoundError):
         smartsheet_client.update_row_cells_by_id(1, 2, {3: "x"})
+
+
+# ---- add_row_by_id (A1 self-provision create primitive) -----------------
+
+
+def test_add_row_by_id_builds_cell_payload_and_returns_new_id(mocker):
+    client = _install_client(mocker)
+    # add_row_by_id does NOT use the title cache, so no get_sheet call.
+    client.Sheets.add_rows.return_value = SimpleNamespace(
+        result=[SimpleNamespace(id=7788)]
+    )
+
+    new_id = smartsheet_client.add_row_by_id(
+        sheet_id=4529351700729732,
+        cells_by_column_id={
+            817803644145540: "safety_reports.weekly_send_poll",  # daemon_name
+            5321403271516036: "safety_reports",                   # workstream
+            3069603457830788: True,                               # enabled
+        },
+    )
+
+    assert new_id == 7788
+    assert client.Sheets.add_rows.call_count == 1
+    sheet_id_arg, rows_arg = client.Sheets.add_rows.call_args.args
+    assert sheet_id_arg == 4529351700729732
+    [row] = rows_arg
+    assert row.to_bottom is True
+    by_col = {c.column_id: c.value for c in row.cells}
+    assert by_col == {
+        817803644145540: "safety_reports.weekly_send_poll",
+        5321403271516036: "safety_reports",
+        3069603457830788: True,
+    }
+
+
+def test_add_row_by_id_translates_sdk_error(mocker):
+    client = _install_client(mocker)
+    client.Sheets.add_rows.side_effect = _api_error(500, message="boom")
+    with pytest.raises(SmartsheetError):
+        smartsheet_client.add_row_by_id(1, {10: "x"})

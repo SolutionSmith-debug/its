@@ -130,6 +130,16 @@ HEARTBEAT_ROW_STATE_PATH = STATE_DIR / "heartbeat_row_ids.json"
 # the state-file dict key. Distinct from intake's `safety_reports.intake_poll`.
 DAEMON_NAME = "safety_reports.weekly_send_poll"
 
+# A1 self-provision metadata. Per-daemon values written ONCE to
+# ITS_Daemon_Health when this daemon's row is absent (see
+# `_create_heartbeat_row`); the per-cycle columns are filled by the very next
+# `_write_heartbeat_row` update. These two constants are the ONLY per-daemon
+# difference in the otherwise byte-identical heartbeat helpers — keep them OUT
+# of the helper bodies so the verbatim-duplication invariant (and the future
+# `shared/heartbeat.py` extraction) stays clean.
+_REGISTRATION_INTERVAL_SECONDS = DEFAULT_POLL_INTERVAL  # 900s = 15-min cadence
+_REGISTRATION_SOURCE_ID = f"WPR_Pending_Review ({sheet_ids.SHEET_WPR_PENDING_REVIEW})"
+
 # Watchdog Check C marker — matches `TRACKED_JOBS` entry in scripts/watchdog.py.
 WATCHDOG_MARKER_DIR = Path.home() / "its" / ".watchdog"
 WATCHDOG_JOB_SLUG = "safety_weekly_send_poll"
@@ -325,8 +335,64 @@ def _invalidate_heartbeat_row_state(daemon_name: str) -> None:
         )
 
 
+def _create_heartbeat_row(daemon_name: str) -> int | None:
+    """Self-provision this daemon's ITS_Daemon_Health row (A1, find-or-create).
+
+    Called by `_resolve_heartbeat_row_id` when no row exists for this daemon's
+    primary key, so a newly-added daemon registers its own operator-visibility
+    row instead of going dark (the 2026-06-02 `weekly_send_poll`-was-dark gap).
+    Writes the registration columns only; `last_cycle_status` and the other
+    per-cycle columns are filled by the `_write_heartbeat_row` update that runs
+    immediately after, in the same cycle. Deliberately omits a
+    `last_cycle_status` seed so the create can't be rejected by a
+    restrict-to-dropdown PICKLIST and so the first status the operator sees is
+    a real one. Registers `Enabled=True` — NOT the schema doc's seed-time
+    `Enabled=false`-then-flip convention: a self-provisioning daemon is by
+    definition already running, and the operator health report filters on
+    `Enabled=true`, so a live daemon must register enabled to be visible (the
+    whole point of self-provision). (The blueprint schema doc's manual-seed
+    convention predates this self-provision model — flagged for a references-pass.)
+
+    ID-keyed via `smartsheet_client.add_row_by_id` for the same
+    column-rename-stability reason as the update path (`sheet_ids.py`).
+
+    Heartbeat-never-blocks contract: any failure is logged to ITS_Errors
+    (`error_code='daemon_health_write_failed'`) and returns None — the caller
+    then skips this cycle's heartbeat write and the next cycle retries. Runs
+    under `circuit_breaker.bypass()` so an OPEN Smartsheet breaker doesn't stop
+    a daemon from registering its visibility row (one extra control-plane call
+    per resurrection, no new hammering — same rationale as the update write).
+    """
+    cols = sheet_ids.DAEMON_HEALTH_COLUMNS
+    payload: dict[int, Any] = {
+        cols["daemon_name"]: daemon_name,
+        cols["workstream"]: WORKSTREAM,
+        cols["enabled"]: True,
+        cols["interval_seconds"]: _REGISTRATION_INTERVAL_SECONDS,
+        cols["source_id"]: _REGISTRATION_SOURCE_ID,
+    }
+    try:
+        with circuit_breaker.bypass():
+            return smartsheet_client.add_row_by_id(
+                sheet_ids.SHEET_DAEMON_HEALTH, payload
+            )
+    except smartsheet_client.SmartsheetError as exc:
+        _log_heartbeat_failure(daemon_name, f"self-provision create failed: {exc!r}")
+        return None
+    except Exception as exc:  # noqa: BLE001 — heartbeat must never raise
+        _log_heartbeat_failure(daemon_name, f"self-provision unexpected: {exc!r}")
+        return None
+
+
 def _resolve_heartbeat_row_id(daemon_name: str) -> int | None:
-    """Look up the ITS_Daemon_Health row id for `daemon_name`. Caches on first hit."""
+    """Return the ITS_Daemon_Health row id for `daemon_name`, find-or-create.
+
+    Cache hit → cached id. Else `find_row_by_primary`; on a hit, cache and
+    return. On a miss, self-provision the row (A1) so the daemon is never dark
+    on the operator surface, with a week_folder-style post-create race re-find.
+    Returns None only when the create itself failed (already logged) — the
+    caller skips this cycle and retries next.
+    """
     state = _load_heartbeat_row_state(daemon_name)
     if state is not None:
         return state["row_id"]
@@ -335,9 +401,41 @@ def _resolve_heartbeat_row_id(daemon_name: str) -> int | None:
         sheet_ids.DAEMON_HEALTH_COLUMNS["daemon_name"],
         daemon_name,
     )
-    if row is None:
+    if row is not None:
+        row_id = int(row["_row_id"])
+        _persist_heartbeat_row_state(daemon_name, row_id, total_cycles=0)
+        return row_id
+    # A1 self-provision: no row for this daemon's primary key — create one so
+    # the daemon registers its own visibility row instead of logging "seeder
+    # needed" and going dark every cycle.
+    created_id = _create_heartbeat_row(daemon_name)
+    if created_id is None:
         return None
-    row_id = int(row["_row_id"])
+    # Race-safety re-find (mirror week_folder.py). The per-cycle fcntl lock +
+    # launchd one-shot model already serialize a single daemon's own cycles, so
+    # the racer this guards is NOT two concurrent cycles — it is a manual
+    # operator/seeder hand-creating the row between our create and this re-find
+    # (Smartsheet enforces no primary-key uniqueness, so that would duplicate).
+    # Belt-and-suspenders: adopt the first match, WARN, leave the duplicate for
+    # operator cleanup. Bounded blast radius: one extra row.
+    post_find = smartsheet_client.find_row_by_primary(
+        sheet_ids.SHEET_DAEMON_HEALTH,
+        sheet_ids.DAEMON_HEALTH_COLUMNS["daemon_name"],
+        daemon_name,
+    )
+    row_id = created_id
+    if post_find is not None and int(post_find["_row_id"]) != created_id:
+        error_log.log(
+            Severity.WARN,
+            SCRIPT_NAME,
+            (
+                f"Duplicate ITS_Daemon_Health rows for daemon={daemon_name!r}; "
+                f"using first match {post_find['_row_id']}, manual cleanup "
+                f"needed for row {created_id}."
+            ),
+            error_code="daemon_health_race_duplicate",
+        )
+        row_id = int(post_find["_row_id"])
     _persist_heartbeat_row_state(daemon_name, row_id, total_cycles=0)
     return row_id
 
@@ -368,9 +466,12 @@ def _write_heartbeat_row(
             _log_heartbeat_failure(daemon_name, f"row-id lookup failed: {exc!r}")
             return
         if row_id is None:
+            # A1: _resolve now self-provisions a missing row, so a None here
+            # means the create itself failed (already logged with its own
+            # detail) — skip this cycle's write; next cycle retries.
             _log_heartbeat_failure(
                 daemon_name,
-                "no ITS_Daemon_Health row with this primary key — seeder needed",
+                "row id unresolved after self-provision attempt — skipping write",
             )
             return
         total_cycles = 0
