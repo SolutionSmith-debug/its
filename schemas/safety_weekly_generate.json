@@ -1,5 +1,5 @@
 {
-  "version": "0.1.0",
+  "version": "0.2.0",
   "name": "generate_weekly_project_report",
   "description": "Emit a structured Weekly Project Report (WPR) draft for one (project, week) pair. The draft is written to WPR_Pending_Review with Approved for Send unchecked for human reviewer disposition.",
   "input_schema": {
@@ -17,14 +17,14 @@
       },
       "incident_counts": {
         "type": "object",
-        "description": "Monthly Total Incidents extracted from this week's Daily Reports rows. All counts default to 0 if no incident rows surfaced.",
+        "description": "Monthly Total Incidents extracted from this week's Daily Reports rows. All counts default to 0 if no incident rows surfaced. Each field is bounded [0, 1000] (F21): a 10-50-person firm cannot plausibly record 1000 of any single monthly metric, so the upper bound is a generous hard ceiling that rejects a prompt-injected absurd count (e.g. 99999) without ever rejecting realistic data. The anomaly logger (Layer 5) is the in-code backstop.",
         "properties": {
-          "lost_time_accidents": {"type": "integer", "minimum": 0},
-          "lost_work_days": {"type": "integer", "minimum": 0},
-          "job_transfer_or_restriction": {"type": "integer", "minimum": 0},
-          "near_misses": {"type": "integer", "minimum": 0},
-          "other_recordable_cases": {"type": "integer", "minimum": 0},
-          "first_aid_cases": {"type": "integer", "minimum": 0}
+          "lost_time_accidents": {"type": "integer", "minimum": 0, "maximum": 1000},
+          "lost_work_days": {"type": "integer", "minimum": 0, "maximum": 1000},
+          "job_transfer_or_restriction": {"type": "integer", "minimum": 0, "maximum": 1000},
+          "near_misses": {"type": "integer", "minimum": 0, "maximum": 1000},
+          "other_recordable_cases": {"type": "integer", "minimum": 0, "maximum": 1000},
+          "first_aid_cases": {"type": "integer", "minimum": 0, "maximum": 1000}
         },
         "required": [
           "lost_time_accidents",
