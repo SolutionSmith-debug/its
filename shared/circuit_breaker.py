@@ -67,6 +67,9 @@ Consumers:
     - ``shared/smartsheet_client.py`` — decorates its 16 network-issuing
       methods; defines ``SmartsheetCircuitOpenError`` and registers the
       bypass-wrapped config loader.
+    - ``shared/error_log.py`` — wraps the ITS_Errors record write
+      (``_smartsheet_log``) in ``bypass()`` so the §3.1 always-write forensic
+      surface is never short-circuited by an OPEN breaker (the third bypass site).
     - ``safety_reports/intake_poll.py`` / ``weekly_send_poll.py`` — call
       ``is_open()`` (lock-free) to surface ``CIRCUIT_OPEN`` heartbeat status,
       and wrap their heartbeat write in ``bypass()``.

@@ -125,6 +125,19 @@ Escalate (Tier 3) when the storm's root cause is **high-capability-class** —
 auth / secrets / Keychain, the External Send Gate, doctrine, or a code change —
 or the storm is **novel**.
 
+### Testing / re-testing the cap
+
+The per-hour window lives under the reserved key `_alerts_per_hour_window` in
+`~/its/state/alert_dedupe.json`. It is **global across all alert keys** and
+**persistent** — it does NOT reset between runs, and a prior run's confirmed
+sends keep counting toward the cap. To test or re-test cleanly, first either
+delete that key from the state file (or `rm` the whole file) **or** raise
+`alerting.max_alerts_per_hour`; otherwise earlier sends silently consume the
+budget. Also: the alert push leg only fires via `error_log._alert_critical` (the
+`@its_error_log` decorator's unhandled-exception path, or a direct call) —
+`error_log.log(Severity.CRITICAL, …)` writes records only and never reaches the
+cap.
+
 ## Escape hatch — three layers (which works when)
 
 If the breaker ever misbehaves, there are three independent levers, in order of
