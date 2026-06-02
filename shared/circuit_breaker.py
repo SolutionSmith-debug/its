@@ -227,10 +227,15 @@ def is_open(
     best-effort signal, never a gate. ``state_path`` defaults to the module
     ``STATE_FILE`` resolved at CALL time (so tests can monkeypatch it).
     """
+    cfg = _resolve_config(config_loader)
+    if not cfg.enabled:
+        # Breaker disabled (escape hatch) → the guard is a pass-through, so it is
+        # never "open". Don't let a stale OPEN state file surface a spurious
+        # CIRCUIT_OPEN — consistent with the guard, which also respects enabled.
+        return False
     state = _load_state(STATE_FILE if state_path is None else state_path)
     if state["state"] != OPEN:
         return False
-    cfg = _resolve_config(config_loader)
     return not _cooldown_elapsed(state, cfg)
 
 

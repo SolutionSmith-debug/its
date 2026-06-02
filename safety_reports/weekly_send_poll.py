@@ -581,10 +581,20 @@ def _poll_inside_lock() -> PollStats:
         # Still write watchdog marker so Check C doesn't fire on a transient
         # read failure (the daemon DID run, it just got nothing).
         _write_heartbeat()
+        # F08: this early-return bypasses the normal-path CIRCUIT_OPEN status
+        # override, so apply it here too — a scan short-circuited by an OPEN
+        # breaker surfaces CIRCUIT_OPEN, not a generic ERROR. A genuine
+        # non-breaker read failure still surfaces ERROR.
+        breaker_open = circuit_breaker.is_open()
+        read_fail_status: HeartbeatStatus = "CIRCUIT_OPEN" if breaker_open else "ERROR"
         _write_heartbeat_row(
-            status="ERROR",
+            status=read_fail_status,
             items_processed=0,
-            error_summary=f"read failed: {type(exc).__name__}: {exc!r}",
+            error_summary=(
+                None
+                if breaker_open
+                else f"read failed: {type(exc).__name__}: {exc!r}"
+            ),
         )
         _write_watchdog_marker()
         return PollStats(errors=1)

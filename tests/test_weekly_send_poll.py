@@ -487,3 +487,23 @@ def test_read_str_setting_fails_open_on_open_breaker(mocker):
     )
     assert weekly_send_poll._read_str_setting("any.key", "fb") == "fb"
     assert weekly_send_poll._polling_enabled() is weekly_send_poll.DEFAULT_POLLING_ENABLED
+
+
+def test_poll_once_read_short_circuit_surfaces_circuit_open(_patch_all, mocker):
+    """REGRESSION (F08): when the WPR_Pending_Review scan short-circuits because
+    the breaker is OPEN, the heartbeat must surface CIRCUIT_OPEN (not a generic
+    ERROR). The scan-failure early-return path bypasses the normal-path status
+    determination, so it applies the CIRCUIT_OPEN override itself.
+    """
+    _patch_all["get_rows"].side_effect = (
+        weekly_send_poll.smartsheet_client.SmartsheetCircuitOpenError("breaker open")
+    )
+    mocker.patch(
+        "safety_reports.weekly_send_poll.circuit_breaker.is_open", return_value=True
+    )
+
+    poll_once()
+
+    kwargs = _patch_all["write_heartbeat_row"].call_args.kwargs
+    assert kwargs["status"] == "CIRCUIT_OPEN"
+    assert kwargs["error_summary"] is None

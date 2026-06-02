@@ -328,3 +328,18 @@ def test_is_open_false_when_half_open(state_path: Path, clock: Clock) -> None:
         {"state": cb.HALF_OPEN, "consecutive_failures": 3, "opened_at": clock.now.isoformat()},
     )
     assert cb.is_open(state_path, make_config()) is False
+
+
+def test_is_open_false_when_disabled_even_with_open_state(
+    state_path: Path, clock: Clock
+) -> None:
+    """A disabled breaker (escape hatch) is never 'open' — a stale OPEN state
+    file must not surface a spurious CIRCUIT_OPEN. Consistent with the guard,
+    which also passes through when disabled."""
+    cb._write_state(
+        state_path,
+        {"state": cb.OPEN, "consecutive_failures": 9, "opened_at": clock.now.isoformat()},
+    )
+    assert cb.is_open(state_path, make_config(enabled=False)) is False
+    # Sanity: with the breaker enabled, the same OPEN state IS open.
+    assert cb.is_open(state_path, make_config(enabled=True)) is True
