@@ -189,6 +189,13 @@ def _read_str_setting(key: str, fallback: str) -> str:
         raw = smartsheet_client.get_setting(key, workstream=WORKSTREAM)
     except smartsheet_client.SmartsheetNotFoundError:
         return fallback
+    except smartsheet_client.SmartsheetCircuitOpenError:
+        # F08: an OPEN breaker short-circuits this control-plane config read.
+        # Fail open to the fallback so a degraded Smartsheet cannot crash the
+        # cycle BEFORE it surfaces CIRCUIT_OPEN in its heartbeat — the data-plane
+        # work still short-circuits, but the cycle runs to completion. Mirrors
+        # the kill-switch read's own breaker-resilience. (Op Stds v16 §3.1.)
+        return fallback
     return raw if isinstance(raw, str) and raw else fallback
 
 

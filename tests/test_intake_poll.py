@@ -208,6 +208,31 @@ def test_poll_once_surfaces_circuit_open_status(
     assert hb.call_args.kwargs["status"] == "CIRCUIT_OPEN"
 
 
+def test_poll_once_survives_open_breaker_config_read_and_surfaces_circuit_open(
+    mocker, state_in_tmp, kill_switch_active, quiet_logs
+):
+    """REGRESSION (live smoke B3): when the breaker is OPEN, the daemon's
+    `polling_enabled` / mailbox config reads short-circuit with
+    `SmartsheetCircuitOpenError`. `poll_once` must NOT crash there (it did before
+    the `_read_str_setting` fail-open fix) — it must run to completion and
+    surface CIRCUIT_OPEN. Deliberately omits the `polling_on` /
+    `mailbox_from_config` fixtures so the REAL config readers run and hit the
+    short-circuit.
+    """
+    mocker.patch(
+        "safety_reports.intake_poll.smartsheet_client.get_setting",
+        side_effect=intake_poll.smartsheet_client.SmartsheetCircuitOpenError("breaker open"),
+    )
+    mocker.patch("safety_reports.intake_poll.graph_client.list_inbox", return_value=[])
+    mocker.patch("safety_reports.intake_poll.circuit_breaker.is_open", return_value=True)
+    hb = mocker.patch("safety_reports.intake_poll._write_heartbeat_row")
+
+    intake_poll.poll_once()  # must NOT raise
+
+    assert hb.call_count == 1
+    assert hb.call_args.kwargs["status"] == "CIRCUIT_OPEN"
+
+
 # ---- Per-message iteration -----------------------------------------------
 
 

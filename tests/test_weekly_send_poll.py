@@ -469,3 +469,21 @@ def test_poll_error_branch_blocks_without_paging(_patch_all, reason):
         if c.kwargs.get("error_code") == "approval_unverified"
     ]
     assert blocked_calls and blocked_calls[0].args[0] == Severity.ERROR
+
+
+# ---- F08: config-read resilience to an OPEN breaker ----------------------
+
+
+def test_read_str_setting_fails_open_on_open_breaker(mocker):
+    """REGRESSION (live smoke B3, intake_poll's twin): an OPEN breaker
+    short-circuits the daemon's `polling_enabled` config read with
+    `SmartsheetCircuitOpenError`; `_read_str_setting` must fail open to the
+    fallback so the cycle survives to surface CIRCUIT_OPEN instead of crashing
+    at the config read.
+    """
+    mocker.patch(
+        "safety_reports.weekly_send_poll.smartsheet_client.get_setting",
+        side_effect=weekly_send_poll.smartsheet_client.SmartsheetCircuitOpenError("open"),
+    )
+    assert weekly_send_poll._read_str_setting("any.key", "fb") == "fb"
+    assert weekly_send_poll._polling_enabled() is weekly_send_poll.DEFAULT_POLLING_ENABLED
