@@ -62,6 +62,38 @@ Audit findings F19 + F23 (atomic-write seen-set + heartbeat-row state + concurre
 
 Surfaced: 2026-06-02 F08/F09 PR-1 §7 manual smoke (B6); diagnosed to the `error_log.log` records-only call shape vs the `_alert_critical` triple-fire entry point.
 
+## Graph client calls have no request timeout → a stalled call hangs a daemon cycle indefinitely [OPEN 2026-06-02]
+
+`shared/graph_client.py`'s Mail API wrappers (`list_inbox`, `get_message`, `list_attachments`, `download_attachment`, `mark_read`, `move_message`, `send_mail`) issue their underlying `requests` / MSAL HTTP calls with **no `timeout=`**. A stalled TCP connection (network blip, M365 throttle, half-open socket) therefore blocks the call — and the entire daemon cycle — **indefinitely**. Under launchd `StartInterval`, a hung cycle holds the daemon's fcntl lock and starves every subsequent interval, so the daemon silently stops cycling while launchd believes it is still running.
+
+**Failure mode (observed live 2026-06-02):** a `safety_reports.intake_poll` cycle started `17:24:23`, hung with no `poll cycle` / `completed` log line (stuck *before* processing — i.e. inside `list_inbox`), and held the lock for ~88 minutes until a manual `launchctl kickstart -k`. The heartbeat froze at 17:23 the whole time. **Only the watchdog's Check C marker-staleness floor surfaced it** (`safety_intake stale`) — there is no in-process detection, and no self-recovery. The F08 Smartsheet circuit breaker does **not** cover this: it guards Smartsheet (not Graph), and a *hang* is not a counting failure that trips it (the failure counter only advances on a returned exception, never on a call that never returns). Tier-1 self-heal recovers *crashes* (launchd re-invoke on the next interval) but **not hangs** — a hang defeats the one-shot-per-interval model by never releasing the slot.
+
+**Proposed fix:** (a) add `timeout=(connect, read)` to every `requests` call in `graph_client.py`, converting an indefinite hang into a catchable `requests.Timeout` that the per-cycle fence already handles; (b) audit `shared/box_client.py`, `shared/anthropic_client.py`, and the direct-REST helpers in `shared/smartsheet_client.py` for the same missing-timeout gap; (c) consider a watchdog/launchd hard-kill of any daemon process whose elapsed time exceeds N× its expected cycle duration — a hang-specific recovery net complementary to Check C's staleness floor (which only *detects*, it does not *recover*).
+
+**Effort:** ~half-day for the `graph_client` timeout sweep + the cross-client audit + tests; the hang-killer is a larger watchdog/launchd design decision (separate item if pursued).
+
+**Phase target:** 1.4 hardening (reliability) — a silently-stalled daemon is precisely the never-silent-failure the system is built to avoid.
+
+**Revisit when:** the next reliability pass, OR the next time a daemon hangs (the watchdog staleness WARN is the trigger signal).
+
+Surfaced: 2026-06-02 F08/F09 live deploy + post-deploy sanity-check — a pre-existing hung `intake_poll` cycle (old code) was blocking the daemon, found while verifying the heartbeat advanced onto the new circuit-breaker code.
+
+## `weekly_send_poll` has no `ITS_Daemon_Health` row → its heartbeat (incl. F08 `CIRCUIT_OPEN`) cannot surface [OPEN 2026-06-02]
+
+`safety_reports.weekly_send_poll`'s heartbeat write resolves its row in `ITS_Daemon_Health` (sheet 4529351700729732) by primary key (`safety_reports.weekly_send_poll`) — but **no such row exists**. Every heartbeat write logs a `daemon_health_write_failed` WARN ("no row with this primary key — seeder needed") and skips. So weekly_send_poll's `Last Cycle Status` — including the F08 `CIRCUIT_OPEN` surfacing added in PR #137, plus any OK / WARN / DEGRADED — never lands on the operator-visibility surface; the daemon is invisible there.
+
+**Failure mode (observed live during the F08 PR-1 §7 smoke):** a `weekly_send_poll` cycle with the breaker OPEN logged "seeder needed" instead of surfacing `CIRCUIT_OPEN`. The shared `~/its/state/heartbeat_row_ids.json` caches only `safety_reports.intake_poll`, and the sheet has no weekly_send_poll row. PR #137's Bug-2 fix (scan-failure short-circuit surfaces `CIRCUIT_OPEN` instead of a bare `ERROR`) is correct in code but **inert until the row exists**.
+
+**Proposed fix:** provision the `safety_reports.weekly_send_poll` row in `ITS_Daemon_Health` (one-time seed — mirror the `intake_poll` row's 12 columns per `shared.sheet_ids.DAEMON_HEALTH_COLUMNS`). Then consider whether the shared heartbeat helper should **find-or-create** the row on first-seen-missing (like the week-folder scaffold pattern) rather than log-and-skip, so a newly-added daemon self-provisions its visibility row. (The find-after-create race is already a tracked pattern — reuse that handling.) The heartbeat-never-blocks-daemon contract still holds: a create failure logs `daemon_health_write_failed` and the daemon continues.
+
+**Effort:** ~15 min for the one-time row seed; ~1–2 h if implementing self-provisioning find-or-create + a regression test.
+
+**Phase target:** 1.4 — operator-visibility completeness; `weekly_send_poll` is a live daemon whose status is currently dark.
+
+**Revisit when:** the `weekly_send_poll` daemon is next exercised, OR the operator notices it is missing from `ITS_Daemon_Health`.
+
+Surfaced: 2026-06-02 F08/F09 PR-1 §7 manual smoke (weekly_send_poll `CIRCUIT_OPEN` live-verify) + the PR-2 / live-deploy follow-up.
+
 ## Conftest mock surface coverage [OPEN 2026-05-23]
 
 `tests/conftest.py` (PR #74) autouse-mocks `shared.keychain.get_secret` and `shared.kill_switch.check_system_state`. The keychain mock at the source attribute covers all 7 credentialed surfaces transitively (smartsheet_client / graph_client / box_client / resend_client / sentry_client / anthropic_client / alert_dedupe). Two opt-out lists guard test files that exercise these surfaces directly (`test_keychain.py` + `test_helpers.py` for keychain; `test_kill_switch.py` for kill_switch).
