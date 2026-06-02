@@ -56,10 +56,12 @@ Failure modes (all fail OPEN = let the call THROUGH, never wedge the system):
       works when config reads succeed (it is layer 3 of 3 — see the runbook;
       layer 2, ``rm circuit_breaker.json``, works even during a total outage).
     - ``bypass()`` skips the open-check AND failure-counting and calls straight
-      through. Used for two control-plane sites (heartbeat status write; the
+      through. Used for three control-plane sites (the ``CIRCUIT_OPEN`` heartbeat
+      status write; the ``ITS_Errors`` forensic record write in
+      ``error_log._smartsheet_log`` — §3.1 always-write surface; and the
       breaker's own config reads) so an OPEN breaker can neither block the
-      ``CIRCUIT_OPEN`` surfacing write nor block reading the ``enabled=false``
-      flag that disables it.
+      surfacing / forensic writes nor block reading the ``enabled=false`` flag
+      that disables it.
 
 Consumers:
     - ``shared/smartsheet_client.py`` — decorates its 16 network-issuing
@@ -239,8 +241,10 @@ def is_open(
 def bypass() -> Iterator[None]:
     """Within this context, ``guard`` skips the open-check AND failure-counting
     and calls straight through. Wrap control-plane call sites that must reach
-    the backend even when the breaker is OPEN (the ``CIRCUIT_OPEN`` heartbeat
-    write; the breaker's own ``enabled``/threshold/cooldown config reads)."""
+    the backend even when the breaker is OPEN — the three today are: the
+    ``CIRCUIT_OPEN`` heartbeat write; the ``ITS_Errors`` forensic record write
+    (``error_log._smartsheet_log``, §3.1 always-write surface); and the breaker's
+    own ``enabled``/threshold/cooldown config reads."""
     global _bypass_depth
     _bypass_depth += 1
     try:

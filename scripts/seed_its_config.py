@@ -111,6 +111,39 @@ def _build_seed_rows() -> list[dict[str, str]]:
                 "docs/operations/cutover_checklist.md."
             ),
         },
+        # F08 Smartsheet circuit breaker (shared/circuit_breaker.py) — all
+        # global. defaults.py covers missing rows; these seeds make them tunable.
+        {
+            "Setting": "circuit_breaker.enabled",
+            "Value": "true",
+            "Workstream": "global",
+            "Description": "F08 Smartsheet breaker master switch. false = guard is pass-through (debug escape hatch).",
+        },
+        {
+            "Setting": "circuit_breaker.failure_threshold",
+            "Value": "5",
+            "Workstream": "global",
+            "Description": "Consecutive counting-eligible Smartsheet failures that trip the breaker OPEN.",
+        },
+        {
+            "Setting": "circuit_breaker.cooldown_seconds",
+            "Value": "300",
+            "Workstream": "global",
+            "Description": "Seconds OPEN before a single HALF_OPEN probe is allowed.",
+        },
+        {
+            "Setting": "circuit_breaker.prolonged_open_alert_seconds",
+            "Value": "600",
+            "Workstream": "global",
+            "Description": "PR-2 watchdog alerts if the breaker has been OPEN longer than this.",
+        },
+        {
+            # F09 global alerts-per-hour cap (shared/alert_dedupe.py).
+            "Setting": "alerting.max_alerts_per_hour",
+            "Value": "15",
+            "Workstream": "global",
+            "Description": "F09 global cap on Resend operator alerts per rolling 60-min window.",
+        },
     ]
 
 
