@@ -627,17 +627,13 @@ def _handle_unverified(
         correlation_id=correlation_id,
     )
 
-    if reason in _WAKE_REASONS:
-        error_log._alert_critical(
-            SCRIPT_NAME,
-            (
-                f"weekly_send_poll BLOCKED an unverified approval "
-                f"(row_id={row_id}, reason={reason.value})"
-            ),
-            f"actor={verdict.actor!r} detail={verdict.detail}",
-            correlation_id=correlation_id,
-            error_code="approval_unverified",
-        )
+    # A3: paging is now driven by the severity of the log() call above —
+    # log(CRITICAL) fires the triple-fire alert path itself. Because severity
+    # is CRITICAL exactly when `reason in _WAKE_REASONS` (see the mapping
+    # above), the operator is woken for precisely the wake reasons and not for
+    # the WARN/ERROR (benign-race / transient-read-failure) reasons. No
+    # explicit _alert_critical needed (it would double-fire the Sentry leg).
+    # The log message already carries actor + detail for the page body.
 
 
 # ---- Public API ----------------------------------------------------------

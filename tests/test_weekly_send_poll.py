@@ -332,13 +332,24 @@ def test_poll_blocks_unverified_approval(_patch_all):
     _patch_all["send_one_row"].assert_not_called()
     assert result.blocked == 1
     assert result.dispatched == 0
-    # Security reason → operator wake-up (triple-fire) fired with the dedupe
-    # key intact (Op Stds §3.1: the (script, error_code) pair is the Resend
-    # dedupe key; a dropped error_code would collide with the default bucket).
-    _patch_all["alert_critical"].assert_called_once()
-    alert_call = _patch_all["alert_critical"].call_args
-    assert alert_call.args[0] == weekly_send_poll.SCRIPT_NAME
-    assert alert_call.kwargs["error_code"] == "approval_unverified"
+    # A3: a security reason logs at CRITICAL, which IS the operator wake-up
+    # (log(CRITICAL) fires the triple-fire path) — with the dedupe-key
+    # error_code intact (Op Stds §3.1: the (script, error_code) pair is the
+    # Resend dedupe key; a dropped error_code would collide with the default).
+    from shared.error_log import Severity
+
+    paged = [
+        c
+        for c in _patch_all["error_log"].call_args_list
+        if c.args
+        and c.args[0] == Severity.CRITICAL
+        and c.kwargs.get("error_code") == "approval_unverified"
+    ]
+    assert len(paged) == 1
+    assert paged[0].args[1] == weekly_send_poll.SCRIPT_NAME
+    # Double-fire guard: paging is via log(CRITICAL) ONLY — a re-introduced
+    # explicit error_log._alert_critical would trip this (it patches that name).
+    _patch_all["alert_critical"].assert_not_called()
 
 
 def test_poll_unauthorized_writes_critical_forensic_row(_patch_all):
@@ -369,7 +380,16 @@ def test_poll_empty_allowlist_blocks_and_pages(_patch_all):
     result = _poll_inside_lock()
     assert result.blocked == 1
     _patch_all["send_one_row"].assert_not_called()
-    _patch_all["alert_critical"].assert_called_once()
+    # A3: EMPTY_ALLOWLIST is a wake reason → logged CRITICAL → pages.
+    from shared.error_log import Severity
+
+    assert any(
+        c.args
+        and c.args[0] == Severity.CRITICAL
+        and c.kwargs.get("error_code") == "approval_unverified"
+        for c in _patch_all["error_log"].call_args_list
+    )
+    _patch_all["alert_critical"].assert_not_called()  # double-fire guard (A3)
 
 
 def test_poll_not_currently_approved_blocks_without_paging(_patch_all):
@@ -383,8 +403,8 @@ def test_poll_not_currently_approved_blocks_without_paging(_patch_all):
     result = _poll_inside_lock()
     assert result.blocked == 1
     _patch_all["send_one_row"].assert_not_called()
-    _patch_all["alert_critical"].assert_not_called()
-    # The benign-race forensic row is logged at WARN (not CRITICAL/ERROR).
+    # A3: no page — the benign-race forensic row is logged at WARN (not
+    # CRITICAL), so log() does not fire the alert path (asserted below).
     from shared.error_log import Severity
 
     blocked_calls = [
@@ -460,7 +480,8 @@ def test_poll_error_branch_blocks_without_paging(_patch_all, reason):
     result = _poll_inside_lock()
     assert result.blocked == 1
     _patch_all["send_one_row"].assert_not_called()
-    _patch_all["alert_critical"].assert_not_called()  # no operator wake-up
+    # A3: no page — these reasons log at ERROR (not CRITICAL), so log() does
+    # not fire the alert path (severity asserted below).
     from shared.error_log import Severity
 
     blocked_calls = [

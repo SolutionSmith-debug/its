@@ -492,6 +492,9 @@ def send_one_row(row_id: int) -> SendResult:
         )
     except GraphAuthError as exc:
         new_retry = retry_count + 1
+        # A3: log(CRITICAL) fires the triple-fire alert path itself (Resend +
+        # Sentry); exc_info carries the exception into the page body + the
+        # ITS_Errors Traceback. No explicit _alert_critical (would double-fire).
         error_log.log(
             Severity.CRITICAL,
             SCRIPT_NAME,
@@ -500,12 +503,7 @@ def send_one_row(row_id: int) -> SendResult:
                 f"{exc!r}. Operator credential rotation likely needed."
             ),
             error_code="weekly_send.graph_auth_failed",
-        )
-        error_log._alert_critical(
-            SCRIPT_NAME,
-            f"weekly_send Graph auth failure for row_id={row_id}",
-            repr(exc),
-            error_code="weekly_send.graph_auth_failed",
+            exc_info=repr(exc),
         )
         return _mark_failed(
             row_id=row_id,
@@ -521,6 +519,8 @@ def send_one_row(row_id: int) -> SendResult:
         # the poller's next pass picks up the FAILED row and retries until
         # MAX_SEND_RETRIES.
         if new_retry >= MAX_SEND_RETRIES:
+            # A3: log(CRITICAL) pages directly; exc_info preserves the exc that
+            # the removed explicit _alert_critical used to carry.
             error_log.log(
                 Severity.CRITICAL,
                 SCRIPT_NAME,
@@ -529,15 +529,7 @@ def send_one_row(row_id: int) -> SendResult:
                     f"MAX_SEND_RETRIES={MAX_SEND_RETRIES}; CRITICAL fire"
                 ),
                 error_code="weekly_send.retries_exhausted",
-            )
-            error_log._alert_critical(
-                SCRIPT_NAME,
-                (
-                    f"weekly_send retries exhausted for row_id={row_id} "
-                    f"project={project_name}"
-                ),
-                f"{type(exc).__name__}: {exc!r}",
-                error_code="weekly_send.retries_exhausted",
+                exc_info=f"{type(exc).__name__}: {exc!r}",
             )
         else:
             error_log.log(
@@ -588,6 +580,8 @@ def send_one_row(row_id: int) -> SendResult:
         # the row means we'll re-send on the next poll cycle — a
         # double-send risk. Log CRITICAL but do NOT auto-retry the row
         # update inline; operator inspection is the right disposition.
+        # A3: log(CRITICAL) pages directly (Resend + Sentry); exc_info carries
+        # the exception. No explicit _alert_critical (would double-fire Sentry).
         error_log.log(
             Severity.CRITICAL,
             SCRIPT_NAME,
@@ -596,12 +590,7 @@ def send_one_row(row_id: int) -> SendResult:
                 f"DOUBLE-SEND RISK — operator must mark this row SENT manually."
             ),
             error_code="weekly_send.post_send_row_update_failed",
-        )
-        error_log._alert_critical(
-            SCRIPT_NAME,
-            f"weekly_send post-send row update failed for row_id={row_id}",
-            repr(exc),
-            error_code="weekly_send.post_send_row_update_failed",
+            exc_info=repr(exc),
         )
         return SendResult(
             status="sent",  # send DID happen
