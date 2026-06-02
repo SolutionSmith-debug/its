@@ -4,7 +4,11 @@ Run with: pytest -q tests/test_anomaly_logger.py
 """
 from __future__ import annotations
 
-from shared.anomaly_logger import MAX_FIELD_VALUE_BYTES, check
+from shared.anomaly_logger import (
+    MAX_FIELD_VALUE_BYTES,
+    NUMERIC_ANOMALY_THRESHOLD,
+    check,
+)
 
 
 def test_clean_extraction_returns_no_anomalies():
@@ -97,3 +101,46 @@ def test_top_level_string_handled():
     assert check("plain string") == []
     assert check([]) == []
     assert check(42) == []
+
+
+# ---- F21: numeric out-of-range detection ---------------------------------
+
+
+def test_out_of_range_int_flagged():
+    extracted = {"incident_counts": {"near_misses": 99999}}
+    anomalies = check(extracted)
+    assert any("out-of-range numeric value 99999" in a for a in anomalies)
+    assert any("incident_counts.near_misses" in a for a in anomalies)
+
+
+def test_out_of_range_float_flagged():
+    anomalies = check({"amount": 50000.5})
+    assert any("out-of-range numeric value 50000.5" in a for a in anomalies)
+
+
+def test_in_range_numbers_not_flagged():
+    # Realistic incident counts + a 0-1 confidence sit well below the threshold.
+    extracted = {
+        "incident_counts": {"near_misses": 3, "lost_work_days": 200},
+        "confidence": 0.97,
+    }
+    assert check(extracted) == []
+
+
+def test_bool_not_flagged_as_numeric():
+    # bool is a subclass of int — checkbox/flag values must never trip the branch.
+    assert check({"approved": True, "flag": False}) == []
+
+
+def test_numeric_threshold_is_strictly_greater_than():
+    # Exactly at the threshold is allowed; one over is flagged.
+    assert check({"n": NUMERIC_ANOMALY_THRESHOLD}) == []
+    assert any("out-of-range" in a for a in check({"n": NUMERIC_ANOMALY_THRESHOLD + 1}))
+
+
+def test_numeric_threshold_override():
+    # A consumer with legitimately larger numbers can raise the threshold.
+    assert check({"big": 5000}, numeric_threshold=10000) == []
+    assert any(
+        "out-of-range" in a for a in check({"big": 5000}, numeric_threshold=1000)
+    )
