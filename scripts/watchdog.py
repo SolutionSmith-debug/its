@@ -1196,9 +1196,12 @@ def _check_token_write_capability() -> CheckResult:
             Severity.WARN,
             f"token write-probe inconclusive (transient Smartsheet error): {exc!r}",
         )
-    # Created → the token can write. Clean up the throwaway probe sheet.
+    # Created → the token can write. Clean up the throwaway probe sheet, with a
+    # create→delete eventual-consistency settle retry (the immediate delete can
+    # 404 / errorCode 5036 before the new sheet propagates — surfaced in the B2
+    # smoke).
     try:
-        smartsheet_client.delete_sheet(probe_sheet_id)
+        smartsheet_client.delete_sheet_settling(probe_sheet_id)
     except smartsheet_client.SmartsheetError as exc:
         return CheckResult(
             Severity.WARN,

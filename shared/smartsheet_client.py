@@ -34,6 +34,7 @@ SDK 404 noise:
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -911,6 +912,45 @@ def delete_sheet(sheet_id: int) -> None:
         get_client().Sheets.delete_sheet(sheet_id)
     except sdk_exc.SmartsheetException as e:
         raise _translate(e) from e
+
+
+def delete_sheet_settling(
+    sheet_id: int, *, attempts: int = 3, backoff_seconds: float = 1.0
+) -> None:
+    """Delete a sheet, retrying the create→delete eventual-consistency window.
+
+    Smartsheet is eventually consistent: a delete issued IMMEDIATELY after a
+    create can 404 (errorCode 1006) or return errorCode 5036 ("not yet
+    propagated") because the new sheet has not replicated across read/write
+    replicas yet — a settle window of several seconds. (Same flake class as the
+    `docs/tech_debt.md` entry "Smartsheet integration tests flake on
+    create→read/write eventual consistency"; surfaced here on the B2
+    write-capability probe's immediate cleanup.) This retries `delete_sheet` on
+    that transient not-found a few times with a short backoff.
+
+    DISTINCT from `delete_sheet` BY DESIGN: a genuine missing-sheet delete
+    elsewhere should fail FAST, so ONLY the probe-cleanup path
+    (`verify_write_capability` / watchdog Check L) uses this. Re-raises the last
+    not-found error if all attempts are exhausted; a non-not-found error
+    (including `SmartsheetCircuitOpenError`) fails fast on the first attempt.
+    """
+    last_exc: SmartsheetError | None = None
+    for attempt in range(attempts):
+        try:
+            delete_sheet(sheet_id)
+            return
+        except SmartsheetNotFoundError as exc:
+            last_exc = exc  # 404 / errorCode 1006 — likely not-yet-propagated.
+        except SmartsheetError as exc:
+            # errorCode 5036 can surface with a non-404 status but is still an
+            # eventual-consistency not-found; retry it. Anything else fails fast.
+            if "5036" not in str(exc):
+                raise
+            last_exc = exc
+        if attempt < attempts - 1:
+            time.sleep(backoff_seconds)
+    assert last_exc is not None  # loop ran >=1 time and never returned
+    raise last_exc
 
 
 def verify_write_capability(folder_id: int = sheet_ids.FOLDER_SYSTEM_CONFIG) -> int:

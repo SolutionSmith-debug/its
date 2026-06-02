@@ -1151,6 +1151,70 @@ def test_delete_sheet_translates_error(mocker):
         smartsheet_client.delete_sheet(1)
 
 
+# ---- delete_sheet_settling (probe create→delete eventual-consistency retry) ---
+
+
+def test_delete_sheet_settling_retries_on_not_found_then_succeeds(mocker):
+    sleep = mocker.patch("shared.smartsheet_client.time.sleep")
+    delete = mocker.patch(
+        "shared.smartsheet_client.delete_sheet",
+        side_effect=[
+            SmartsheetNotFoundError("HTTP 404 (code 1006): Not Found"),
+            SmartsheetNotFoundError("HTTP 404 (code 5036): not yet propagated"),
+            None,
+        ],
+    )
+    smartsheet_client.delete_sheet_settling(123)
+    assert delete.call_count == 3
+    assert sleep.call_count == 2  # backoff between the 3 attempts
+
+
+def test_delete_sheet_settling_reraises_after_exhaustion(mocker):
+    mocker.patch("shared.smartsheet_client.time.sleep")
+    mocker.patch(
+        "shared.smartsheet_client.delete_sheet",
+        side_effect=SmartsheetNotFoundError("HTTP 404 (code 1006): Not Found"),
+    )
+    with pytest.raises(SmartsheetNotFoundError):
+        smartsheet_client.delete_sheet_settling(123, attempts=2)
+
+
+def test_delete_sheet_settling_retries_5036_with_non_404_status(mocker):
+    mocker.patch("shared.smartsheet_client.time.sleep")
+    delete = mocker.patch(
+        "shared.smartsheet_client.delete_sheet",
+        side_effect=[
+            SmartsheetError("HTTP 500 (code 5036): not yet propagated"),
+            None,
+        ],
+    )
+    smartsheet_client.delete_sheet_settling(123)
+    assert delete.call_count == 2
+
+
+def test_delete_sheet_settling_fails_fast_on_other_error(mocker):
+    # A genuine non-eventual-consistency error is NOT retried — fail fast so a
+    # real missing-sheet/permission problem surfaces immediately.
+    delete = mocker.patch(
+        "shared.smartsheet_client.delete_sheet",
+        side_effect=SmartsheetPermissionError("HTTP 403 (code 1004): forbidden"),
+    )
+    with pytest.raises(SmartsheetPermissionError):
+        smartsheet_client.delete_sheet_settling(123)
+    assert delete.call_count == 1
+
+
+def test_delete_sheet_settling_circuit_open_fails_fast(mocker):
+    # CircuitOpenError is a SmartsheetError but NOT a not-found → fail fast.
+    delete = mocker.patch(
+        "shared.smartsheet_client.delete_sheet",
+        side_effect=SmartsheetCircuitOpenError("breaker open"),
+    )
+    with pytest.raises(SmartsheetCircuitOpenError):
+        smartsheet_client.delete_sheet_settling(123)
+    assert delete.call_count == 1
+
+
 def test_verify_write_capability_returns_new_sheet_id(mocker):
     create = mocker.patch(
         "shared.smartsheet_client.create_sheet_in_folder", return_value=9911

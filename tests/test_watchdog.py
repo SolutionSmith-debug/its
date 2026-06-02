@@ -134,10 +134,10 @@ def test_checks_list_has_all_session_1_2_3_checks():
 
 def test_token_write_capability_ok(mocker):
     mocker.patch("watchdog.smartsheet_client.verify_write_capability", return_value=55)
-    delete = mocker.patch("watchdog.smartsheet_client.delete_sheet")
+    delete = mocker.patch("watchdog.smartsheet_client.delete_sheet_settling")
     result = watchdog._check_token_write_capability()
     assert result.severity is Severity.INFO
-    delete.assert_called_once_with(55)  # throwaway probe sheet cleaned up
+    delete.assert_called_once_with(55)  # throwaway probe sheet cleaned up (with retry)
 
 
 def test_token_write_capability_critical_on_write_error(mocker):
@@ -167,8 +167,8 @@ def test_token_write_capability_warn_on_delete_failure(mocker):
     # Create proved write capability; a cleanup-delete failure is WARN, not CRITICAL.
     mocker.patch("watchdog.smartsheet_client.verify_write_capability", return_value=77)
     mocker.patch(
-        "watchdog.smartsheet_client.delete_sheet",
-        side_effect=SmartsheetError("delete boom"),
+        "watchdog.smartsheet_client.delete_sheet_settling",
+        side_effect=SmartsheetError("delete boom"),  # all settle retries exhausted
     )
     result = watchdog._check_token_write_capability()
     assert result.severity is Severity.WARN
