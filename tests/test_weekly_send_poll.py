@@ -332,13 +332,24 @@ def test_poll_blocks_unverified_approval(_patch_all):
     _patch_all["send_one_row"].assert_not_called()
     assert result.blocked == 1
     assert result.dispatched == 0
-    # Security reason → operator wake-up (triple-fire) fired with the dedupe
-    # key intact (Op Stds §3.1: the (script, error_code) pair is the Resend
-    # dedupe key; a dropped error_code would collide with the default bucket).
-    _patch_all["alert_critical"].assert_called_once()
-    alert_call = _patch_all["alert_critical"].call_args
-    assert alert_call.args[0] == weekly_send_poll.SCRIPT_NAME
-    assert alert_call.kwargs["error_code"] == "approval_unverified"
+    # A3: a security reason logs at CRITICAL, which IS the operator wake-up
+    # (log(CRITICAL) fires the triple-fire path) — with the dedupe-key
+    # error_code intact (Op Stds §3.1: the (script, error_code) pair is the
+    # Resend dedupe key; a dropped error_code would collide with the default).
+    from shared.error_log import Severity
+
+    paged = [
+        c
+        for c in _patch_all["error_log"].call_args_list
+        if c.args
+        and c.args[0] == Severity.CRITICAL
+        and c.kwargs.get("error_code") == "approval_unverified"
+    ]
+    assert len(paged) == 1
+    assert paged[0].args[1] == weekly_send_poll.SCRIPT_NAME
+    # Double-fire guard: paging is via log(CRITICAL) ONLY — a re-introduced
+    # explicit error_log._alert_critical would trip this (it patches that name).
+    _patch_all["alert_critical"].assert_not_called()
 
 
 def test_poll_unauthorized_writes_critical_forensic_row(_patch_all):
@@ -369,7 +380,16 @@ def test_poll_empty_allowlist_blocks_and_pages(_patch_all):
     result = _poll_inside_lock()
     assert result.blocked == 1
     _patch_all["send_one_row"].assert_not_called()
-    _patch_all["alert_critical"].assert_called_once()
+    # A3: EMPTY_ALLOWLIST is a wake reason → logged CRITICAL → pages.
+    from shared.error_log import Severity
+
+    assert any(
+        c.args
+        and c.args[0] == Severity.CRITICAL
+        and c.kwargs.get("error_code") == "approval_unverified"
+        for c in _patch_all["error_log"].call_args_list
+    )
+    _patch_all["alert_critical"].assert_not_called()  # double-fire guard (A3)
 
 
 def test_poll_not_currently_approved_blocks_without_paging(_patch_all):
@@ -383,8 +403,8 @@ def test_poll_not_currently_approved_blocks_without_paging(_patch_all):
     result = _poll_inside_lock()
     assert result.blocked == 1
     _patch_all["send_one_row"].assert_not_called()
-    _patch_all["alert_critical"].assert_not_called()
-    # The benign-race forensic row is logged at WARN (not CRITICAL/ERROR).
+    # A3: no page — the benign-race forensic row is logged at WARN (not
+    # CRITICAL), so log() does not fire the alert path (asserted below).
     from shared.error_log import Severity
 
     blocked_calls = [
@@ -460,7 +480,8 @@ def test_poll_error_branch_blocks_without_paging(_patch_all, reason):
     result = _poll_inside_lock()
     assert result.blocked == 1
     _patch_all["send_one_row"].assert_not_called()
-    _patch_all["alert_critical"].assert_not_called()  # no operator wake-up
+    # A3: no page — these reasons log at ERROR (not CRITICAL), so log() does
+    # not fire the alert path (severity asserted below).
     from shared.error_log import Severity
 
     blocked_calls = [
@@ -507,3 +528,52 @@ def test_poll_once_read_short_circuit_surfaces_circuit_open(_patch_all, mocker):
     kwargs = _patch_all["write_heartbeat_row"].call_args.kwargs
     assert kwargs["status"] == "CIRCUIT_OPEN"
     assert kwargs["error_summary"] is None
+
+
+# ---- A1: ITS_Daemon_Health row self-provision (the 2026-06-02 dark gap) --
+
+
+@pytest.fixture
+def heartbeat_state_in_tmp(monkeypatch, tmp_path):
+    """Redirect HEARTBEAT_ROW_STATE_PATH into tmp_path so the live shared
+    state file (~/its/state/heartbeat_row_ids.json) is untouched."""
+    state = tmp_path / "heartbeat_row_ids.json"
+    monkeypatch.setattr(weekly_send_poll, "HEARTBEAT_ROW_STATE_PATH", state)
+    return state
+
+
+def test_resolve_row_id_self_provisions_weekly_send_poll(heartbeat_state_in_tmp, mocker):
+    """REGRESSION (the 2026-06-02 dark-daemon gap): weekly_send_poll had no
+    ITS_Daemon_Health row, so every heartbeat logged 'seeder needed' and the
+    daemon was invisible. A missing row now self-provisions, with this daemon's
+    own cadence (900s) — not intake's 60s — proving the per-file registration
+    constants are wired correctly into the otherwise-identical helper.
+
+    The create-fail / race-adopt / write-then-update / no-raise paths are
+    exhaustively unit-tested on the intake_poll side (tests/test_intake_poll.py);
+    this side relies on those bodies being byte-identical, which
+    tests/test_heartbeat_helper_parity.py enforces. This test covers the one
+    real behavioral difference: the per-daemon cadence constant.
+    """
+    mocker.patch(
+        "safety_reports.weekly_send_poll.smartsheet_client.find_row_by_primary",
+        return_value=None,
+    )
+    add = mocker.patch(
+        "safety_reports.weekly_send_poll.smartsheet_client.add_row_by_id",
+        return_value=3344,
+    )
+    row_id = weekly_send_poll._resolve_heartbeat_row_id(DAEMON_NAME)
+    assert row_id == 3344
+    add.assert_called_once()
+    from shared.sheet_ids import DAEMON_HEALTH_COLUMNS, SHEET_DAEMON_HEALTH
+    sheet_id_arg, payload = add.call_args.args
+    assert sheet_id_arg == SHEET_DAEMON_HEALTH
+    assert payload[DAEMON_HEALTH_COLUMNS["daemon_name"]] == DAEMON_NAME
+    assert payload[DAEMON_HEALTH_COLUMNS["workstream"]] == "safety_reports"
+    assert (
+        payload[DAEMON_HEALTH_COLUMNS["interval_seconds"]]
+        == weekly_send_poll.DEFAULT_POLL_INTERVAL
+    )
+    # Per-cycle columns are filled by the immediately-following update, not here.
+    assert DAEMON_HEALTH_COLUMNS["last_cycle_status"] not in payload

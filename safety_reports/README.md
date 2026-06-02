@@ -218,12 +218,21 @@ To exercise the review-queue branch, send a smoke email whose project is ambiguo
 | Same message processed twice | Seen-set state was lost or `mark_read` failed | `~/its/state/safety_intake_processed.json` + the stderr log; delete duplicate row in Daily Reports |
 | Manual rerun needed for one message | Operator-initiated retry | `python -m safety_reports.intake <message_id>` (CLI wrapper around process_message) |
 | `daemon_health_write_failed` entries in ITS_Errors | Heartbeat write to ITS_Daemon_Health failed (PR #59.5) | Check the heartbeat row at `ITS_Daemon_Health`; row may have been deleted or columns renamed. The cache auto-invalidates on 404 — see Operator visibility below |
+| Daemon missing from ITS_Daemon_Health | Row not yet provisioned | A missing row now **self-provisions** on the next cycle (A1). If `daemon_health_write_failed` / `self-provision create failed` persists, or a `daemon_health_race_duplicate` WARN appears, follow [`docs/runbooks/daemon_health_self_provision.md`](../docs/runbooks/daemon_health_self_provision.md) |
 
 ## Operator visibility — ITS_Daemon_Health (PR #59.5)
 
 Every poll cycle writes a heartbeat row to `ITS_Daemon_Health` (sheet `4529351700729732`,
 under `ITS — System / 04 — Daemons`). The row keyed `safety_reports.intake_poll`
-carries the canonical operator-facing status:
+carries the canonical operator-facing status. **Self-provision (A1):** if a
+daemon's row is absent, the daemon creates its own row (registration columns —
+Daemon Name / Workstream / Enabled / Interval Seconds / Source ID) on the next
+cycle and the per-cycle columns fill immediately after; no manual seed step is
+needed. The create is failure-isolated (heartbeat never blocks the daemon) and
+race-safe (a duplicate-on-race adopts the first row and WARNs
+`daemon_health_race_duplicate`). See
+[`docs/runbooks/daemon_health_self_provision.md`](../docs/runbooks/daemon_health_self_provision.md)
+for the Tier-2 remediation. The status columns:
 
 - **Last Heartbeat** — UTC ISO timestamp of the most recent successful poll cycle.
 - **Last Cycle Status** — `OK` (errors=0) or `WARN` (errors>0). `ERROR` / `SKIPPED` are

@@ -937,6 +937,10 @@ def _escalate_catchup_failure(
     """
     correlation_id = str(uuid.uuid4())
     message = f"weekly_generate catch-up FAILED for week {target_week}: {exc!r}"
+    # A3: alert=False — the watchdog manages its own operator page below
+    # (deferred under MAINTENANCE via alerts_suppressed), so the record log
+    # must NOT auto-fire the alert legs or it would page during MAINTENANCE
+    # and double-fire the Sentry leg.
     log(
         Severity.CRITICAL,
         _SCRIPT,
@@ -944,6 +948,7 @@ def _escalate_catchup_failure(
         error_code="weekly_generate_catchup_failed",
         exc_info=tb,
         correlation_id=correlation_id,
+        alert=False,
     )
     if alerts_suppressed:
         log(
@@ -1033,12 +1038,17 @@ def _check_circuit_breaker_prolonged_open(
         f"Smartsheet circuit breaker OPEN for {dur:.0f}s (> {threshold}s) — "
         "backend degraded and not self-recovering."
     )
+    # A3: alert=False — same rationale as the catch-up escalation. The page
+    # below is wrapped in circuit_breaker.bypass() (the breaker is OPEN, so the
+    # Resend leg's operator_email read must bypass it); log()'s auto-fire could
+    # not provide that wrapper, so paging stays explicit here.
     log(
         Severity.CRITICAL,
         _SCRIPT,
         message,
         error_code="circuit_breaker_prolonged_open",
         correlation_id=correlation_id,
+        alert=False,
     )
     if alerts_suppressed:
         log(

@@ -1622,6 +1622,11 @@ def test_catchup_failure_triple_fires_critical_no_loop(
     crit_calls = [c for c in mock_log.call_args_list if c.args[0] is Severity.CRITICAL]
     assert len(crit_calls) == 1
     assert crit_calls[0].kwargs["error_code"] == "weekly_generate_catchup_failed"
+    # A3: the record log MUST opt out of auto-paging (alert=False) so the
+    # explicit, MAINTENANCE-deferrable page below is the ONLY page. Dropping
+    # this kwarg would double-fire and page during MAINTENANCE (live, not in
+    # these mocked tests) — this assertion is the regression lock.
+    assert crit_calls[0].kwargs["alert"] is False
     # Row + page share one correlation_id (so a single grep recovers all legs).
     assert (
         crit_calls[0].kwargs["correlation_id"]
@@ -1744,13 +1749,18 @@ def test_prolonged_open_pages_past_threshold(mocker):
     mocker.patch("watchdog.circuit_breaker.seconds_open", return_value=700.0)
     mocker.patch("watchdog.smartsheet_client.get_setting", return_value="600")
     alert = mocker.patch("watchdog._alert_critical")
-    mocker.patch("watchdog.log")
+    log_mock = mocker.patch("watchdog.log")
 
     result = watchdog._check_circuit_breaker_prolonged_open()
 
     alert.assert_called_once()
     assert alert.call_args.kwargs["error_code"] == "circuit_breaker_prolonged_open"
     assert result.severity is Severity.INFO
+    # A3: the record log MUST opt out of auto-paging (alert=False); the page
+    # fires explicitly under bypass below. Regression lock (the live double-fire
+    # / page-in-MAINTENANCE would otherwise be invisible to these mocked tests).
+    crit = [c for c in log_mock.call_args_list if c.args[0] is Severity.CRITICAL]
+    assert crit and crit[0].kwargs["alert"] is False
 
 
 def test_prolonged_open_silent_under_threshold(mocker):

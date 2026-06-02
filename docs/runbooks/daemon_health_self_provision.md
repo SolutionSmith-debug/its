@@ -1,0 +1,108 @@
+---
+type: operations
+date: 2026-06-02
+status: active
+related_prs: []
+workstream: safety_reports
+tags: [runbook, successor-remediation, daemon-health, self-provision, tier-2]
+---
+
+# Runbook — ITS_Daemon_Health row self-provision (Successor-Remediation, Op Stds §43)
+
+A §43 successor-remediation entry, written for the **Successor-Operator**: a
+trained operator who runs Claude Code and reads Smartsheet rows + alert emails,
+but does **not** read code. Claude loads this entry to drive a Tier-2 repair;
+the operator sees the Smartsheet/ITS_Errors evidence and approves. The §42
+code-reader rationale for the same capability lives in the
+`_create_heartbeat_row` / `_resolve_heartbeat_row_id` docstrings in
+`safety_reports/intake_poll.py` and `safety_reports/weekly_send_poll.py`.
+
+## Purpose
+
+Each polling daemon publishes its health to one row in **ITS_Daemon_Health**
+(sheet `4529351700729732`), keyed by its daemon name (e.g.
+`safety_reports.intake_poll`, `safety_reports.weekly_send_poll`). As of the A1
+fix, a daemon whose row is **missing self-provisions it** on the next cycle —
+it creates its own row instead of going dark. So the common "a daemon has no
+health row" case now **self-heals with no operator action**. This runbook is
+for the cases where self-provision keeps **failing**, or leaves a **duplicate**.
+
+(Before A1, a missing row produced an endless `daemon_health_write_failed`
+"seeder needed" WARN and the daemon was invisible on the operator surface — the
+2026-06-02 `weekly_send_poll`-was-dark gap. That specific symptom no longer
+needs a repair; it fixes itself.)
+
+## Procedure
+
+### Symptom
+
+One of:
+
+- A daemon is **absent from ITS_Daemon_Health** for more than a couple of its
+  poll intervals (so it cannot just be a not-yet-run new daemon), AND
+- **ITS_Errors** carries repeated `Severity = WARN`,
+  `Error = daemon_health_write_failed` rows whose `Message` mentions
+  `self-provision create failed` or `row id unresolved after self-provision
+  attempt` for that daemon — the create is being attempted but rejected.
+- OR: **two ITS_Daemon_Health rows** share the same `Daemon Name`, plus an
+  ITS_Errors `Error = daemon_health_race_duplicate` WARN naming the row id to
+  clean up — two cycles raced to create the row.
+
+### What the Successor-Operator checks
+
+1. **ITS_Daemon_Health** — does a row already exist for the daemon name in the
+   `daemon_health_race_duplicate` WARN? If so, the daemon is **healthy and
+   visible** (it adopted the first row); the WARN is only telling you a
+   leftover duplicate row exists.
+2. **ITS_Errors** — filter `Error = daemon_health_write_failed` for the daemon;
+   read the `Message`. "self-provision create failed: …" carries the
+   underlying Smartsheet error (e.g. a `Workstream` picklist value the sheet
+   rejects, a missing/renamed column, or an auth error).
+3. **ITS_Config `system.state`** — `MAINTENANCE` does **not** stop heartbeat
+   writes, so this is not a kill-switch effect; rule it out and move on.
+4. Confirm you are reading the **canonical** ITS_Daemon_Health (`4529351700729732`,
+   under `ITS — System / 04 — Daemons`), not the empty duplicate sheet pending
+   operator deletion.
+
+### The Claude prompt or UI action
+
+- **Duplicate row** (`daemon_health_race_duplicate`): in the Smartsheet UI,
+  delete the **extra** ITS_Daemon_Health row named in the WARN message (the
+  daemon already adopted the surviving one). Direct UI delete; no code. This is
+  the one row the daemon told you to remove — confirm the daemon name matches
+  before deleting.
+- **Persistent create-failed**: hand it to Claude:
+
+  > "Claude, the daemon `<daemon name>` is missing from ITS_Daemon_Health and
+  > ITS_Errors shows repeated `daemon_health_write_failed` /
+  > `self-provision create failed`. Please read the underlying error and tell
+  > me whether the daemon-health columns or the `Workstream` picklist drifted,
+  > then re-run the daemon once."
+
+  Re-running a daemon and confirming the sheet's columns/picklist options is a
+  **low-capability-class** action (re-run a job; read a sheet; no code, no
+  secret, no external send) — Claude drives it; the operator approves. Heartbeat
+  writes never block the daemon's primary work, so a still-failing health row
+  does not stop intake or sending — it only affects visibility.
+
+### Escalate-to-Seth condition
+
+Stop and escalate to the Developer-Operator (Seth, Tier 3) when **any** of:
+
+- Claude's diagnosis says the ITS_Daemon_Health **schema drifted** — a column
+  was renamed/deleted or `shared.sheet_ids.DAEMON_HEALTH_COLUMNS` no longer
+  matches the live sheet (fixing column IDs is a **code change** = high-class).
+- The failure names a **secret / auth / Keychain** problem (the token can't
+  write).
+- The symptom is **novel** — it does not match this entry.
+
+Both-rule (Op Stds §44): "row missing → self-provisions" and "delete a flagged
+duplicate row" are low-class / documented (Tier 2). "Health writes keep failing
+for an unknown reason, or the sheet schema changed" is **novel or high-class →
+Tier 3.**
+
+## Owner
+
+`@solutionsmith`. New daemon-health failure modes that become Tier-2-reachable
+should be added here as additional Symptom → checks → action → escalate blocks,
+per Op Stds §43.

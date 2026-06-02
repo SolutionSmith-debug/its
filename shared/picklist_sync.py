@@ -548,17 +548,15 @@ def sync_all(
         stats.removals_blocked_total += len(result.removals_blocked)
 
     if stats.mappings_failed >= TRIPLE_FIRE_FAILURE_THRESHOLD:
-        # CRITICAL escalation. Per Op Stds v11 §3, this routes through
-        # the triple-fire path (ITS_Errors + Resend + Sentry via
-        # error_log's _alert_critical). The log() with CRITICAL severity
-        # writes the row; the decorator on the caller (run_picklist_sync.py)
-        # handles the alert leg via its uncaught_exception branch only if
-        # the caller raises. We DO NOT raise here — sync_all returns
-        # normally on partial failure — so the alert escalation has to be
-        # explicit. Lazy-import to avoid the circular with error_log.
+        # CRITICAL escalation. sync_all returns normally on partial failure
+        # (it does NOT raise), so the caller's @its_error_log decorator never
+        # sees an exception — the escalation must be explicit here. A3:
+        # log(CRITICAL) now fires the full triple-fire path (ITS_Errors record
+        # + Resend + Sentry) itself, so no explicit _alert_critical is needed.
+        # `exc_info` carries the aggregate-failure note (there is no exception
+        # object) into the page body + the ITS_Errors Traceback column.
         from uuid import uuid4
 
-        from .error_log import _alert_critical
         correlation_id = str(uuid4())
         message = (
             f"{stats.mappings_failed} picklist sync mappings failed in one run "
@@ -566,11 +564,7 @@ def sync_all(
         )
         log(Severity.CRITICAL, _SCRIPT, message,
             error_code="picklist_sync_multi_failure",
+            exc_info="(no exception — aggregate failure signal)",
             correlation_id=correlation_id)
-        _alert_critical(
-            _SCRIPT, message, "(no exception — aggregate failure signal)",
-            correlation_id=correlation_id,
-            error_code="picklist_sync_multi_failure",
-        )
 
     return stats
