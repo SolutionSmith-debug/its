@@ -46,6 +46,22 @@ Closed by `shared/state_io.py` with `atomic_write_json` / `atomic_write_text` / 
 
 Audit findings F19 + F23 (atomic-write seen-set + heartbeat-row state + concurrent-writer lock) in `its-blueprint/audits/2026-05-25_forensic-audit.md`. `shared/alert_dedupe.py` migration to the same helper **landed in PR #104** (2026-05-28, PR 2 of the Phase 1.4 hardening cluster): its five state-file callsites (`should_fire` / `record_fire` / `mark_summarized` / `delete_entry` read-modify-write under `state_io.with_path_lock` + `atomic_write_json`; `list_expired_summaries` intentionally lock-free) replace the old same-FD-flock `_acquire_lock` / `_dump_state` pattern. All three `~/its/state/` consumers (intake_poll, weekly_send_poll, alert_dedupe) are now compliant with the CLAUDE.md "no direct `Path.write_text` under `~/its/state/`" rule. `shared/heartbeat.py` consolidation tech-debt entry remains open below — PR #88 was the correctness floor.
 
+## `error_log.log(Severity.CRITICAL, ...)` does not fire the triple-fire alert path [OPEN 2026-06-02]
+
+`error_log.log()` writes only the two RECORD legs — `_local_log` (local file) + `_smartsheet_log` (ITS_Errors row). It never calls `_alert_critical`, so a CRITICAL passed to `log()` produces **no Resend operator email and no Sentry event**. The alert path (`_alert_critical` → `_fire_resend_leg` + `_fire_sentry_leg`) is reached ONLY via (a) the `@its_error_log` decorator's unhandled-exception branch — which calls `log(Severity.CRITICAL, …)` for the records AND `_alert_critical(…)` for the alerts as two separate calls threading one correlation_id — or (b) explicit `error_log._alert_critical(...)` calls (`picklist_sync`, `weekly_send`, `weekly_send_poll`). The split is intentional and documented (`log()`'s docstring: "for non-exception events"; `_alert_critical`'s: the ITS_Errors row is "written earlier by `log()` … NOT here"), but it is a sharp edge.
+
+**Failure mode:** a caller does `error_log.log(Severity.CRITICAL, script, message, error_code=…)` reasonably expecting it to page the operator; it silently writes records only. Surfaced live during the F08/F09 §7 manual smoke (B6 F09-cap test): four `log(CRITICAL)` calls wrote four ITS_Errors records but produced zero Resend activity — no email, not even a `[resend-alert-*]` marker — which read as a broken F09 cap until traced to the call shape. `log(CRITICAL)` never enters `_fire_resend_leg`, so none of its gates (recursion guard, dedupe, F09 cap) run.
+
+**Proposed fix (small):** in `log()`, when `severity is Severity.CRITICAL`, also fire `_alert_critical(script, message, exc_info or "", correlation_id, error_code or "critical")`. To avoid a double-fire, also REMOVE the decorator's now-redundant explicit `_alert_critical(...)` call (let its `log(Severity.CRITICAL, …)` carry both records + alerts) — otherwise the decorator path fires `_alert_critical` twice, and the `_in_resend_alert` recursion guard only blocks NESTED re-entry, not two sequential calls. Tests: `log(CRITICAL)` fires `_alert_critical` exactly once; `log(WARN/ERROR/INFO)` fires it zero times; the decorator path still fires it exactly once with the shared correlation_id.
+
+**Effort:** ~1–2 hours incl. the decorator de-dup + tests.
+
+**Phase target:** 1.4 hardening (alert-path correctness), or whenever a workstream needs an explicit (non-exception) CRITICAL to page. No current production caller relies on it — every real CRITICAL today goes through the decorator or a direct `_alert_critical` (the F08/F09 triple-fire sites).
+
+**Revisit when:** a caller wants an explicit CRITICAL log to page the operator, OR the next time someone is surprised that `log(CRITICAL)` didn't alert.
+
+Surfaced: 2026-06-02 F08/F09 PR-1 §7 manual smoke (B6); diagnosed to the `error_log.log` records-only call shape vs the `_alert_critical` triple-fire entry point.
+
 ## Conftest mock surface coverage [OPEN 2026-05-23]
 
 `tests/conftest.py` (PR #74) autouse-mocks `shared.keychain.get_secret` and `shared.kill_switch.check_system_state`. The keychain mock at the source attribute covers all 7 credentialed surfaces transitively (smartsheet_client / graph_client / box_client / resend_client / sentry_client / anthropic_client / alert_dedupe). Two opt-out lists guard test files that exercise these surfaces directly (`test_keychain.py` + `test_helpers.py` for keychain; `test_kill_switch.py` for kill_switch).
