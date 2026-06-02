@@ -396,6 +396,41 @@ def test_find_row_by_primary_live_round_trip(_token_available):
         _delete_sheet_rest(sheet_id, _token_available)
 
 
+def test_add_row_by_id_live_round_trip(_token_available):
+    """Create sheet → add_row_by_id (ID-keyed create) → find → verify (A1).
+
+    Guards the self-provision create path against the body-shape drift the
+    unit-test SDK mocks can't catch — specifically the `result.result[0].id`
+    return shape and the column_id-keyed Cell payload. Mirrors the
+    find_row_by_primary round-trip; self-cleans by deleting the throwaway sheet.
+    """
+    sheet_id = smartsheet_client.create_sheet_in_folder(
+        sheet_ids.FOLDER_SYSTEM_CONFIG,
+        _sandbox_name("add_row_by_id"),
+        [
+            {"title": "Name", "type": "TEXT_NUMBER", "primary": True},
+            {"title": "Status", "type": "TEXT_NUMBER"},
+        ],
+    )
+    try:
+        cols = smartsheet_client.list_columns_with_options(sheet_id)
+        name_col_id = next(c["id"] for c in cols if c["title"] == "Name")
+        status_col_id = next(c["id"] for c in cols if c["title"] == "Status")
+
+        new_id = smartsheet_client.add_row_by_id(
+            sheet_id,
+            {name_col_id: "delta", status_col_id: "OK"},
+        )
+        assert isinstance(new_id, int)
+
+        found = smartsheet_client.find_row_by_primary(sheet_id, name_col_id, "delta")
+        assert found is not None
+        assert found["_row_id"] == new_id
+        assert found["Status"] == "OK"
+    finally:
+        _delete_sheet_rest(sheet_id, _token_available)
+
+
 def test_update_row_cells_by_id_raises_not_found_on_missing_row(_token_available):
     """A 404 on a non-existent row id surfaces as SmartsheetNotFoundError.
 

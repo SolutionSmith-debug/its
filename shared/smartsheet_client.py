@@ -616,6 +616,38 @@ def update_row_cells_by_id(
         raise _translate(e) from e
 
 
+@_breaker_guard
+def add_row_by_id(sheet_id: int, cells_by_column_id: dict[int, Any]) -> int:
+    """Append one row, cells keyed by column ID instead of column title.
+
+    The ID-keyed sibling of `update_row_cells_by_id`. Use it for the same
+    reason that helper exists: daemon control-plane rows (e.g. a daemon
+    self-provisioning its `ITS_Daemon_Health` visibility row) whose column
+    IDs are committed in `sheet_ids.DAEMON_HEALTH_COLUMNS` and which want a
+    create path that survives a column-title rename without a code change.
+    No title-cache lookup happens — the IDs are the authoritative reference,
+    so a value cannot land in the wrong column via a stale title map.
+
+    Returns the new row ID. Unlike the title-keyed `add_rows`, this skips the
+    `picklist_validation` pass: that registry is title-keyed, and the
+    ID-keyed control-plane sheets this serves (ITS_Daemon_Health) are not
+    registered there (validation would be a pass-through anyway). Callers
+    must pass a non-empty payload that includes the sheet's primary-key cell.
+    """
+    cells = [
+        smartsheet.models.Cell({"column_id": col_id, "value": value})
+        for col_id, value in cells_by_column_id.items()
+    ]
+    row = smartsheet.models.Row()
+    row.to_bottom = True
+    row.cells = cells
+    try:
+        result = get_client().Sheets.add_rows(sheet_id, [row])
+    except sdk_exc.SmartsheetException as e:
+        raise _translate(e) from e
+    return result.result[0].id
+
+
 # ---- Column + sheet helpers (PICKLIST sync) -----------------------------
 
 
