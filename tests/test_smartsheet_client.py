@@ -665,6 +665,88 @@ def test_update_column_options_handles_empty_options_list(mocker):
     assert list(col.options) == []
 
 
+# ---- ensure_picklist_options: additive / idempotent / dry-run -----------
+
+
+def _pl_cols(options, *, title="Reason", col_id=7, col_type="PICKLIST"):
+    """A list_columns_with_options-shaped return with one option-bearing column."""
+    return [
+        {"id": 1, "title": "Item ID", "type": "TEXT_NUMBER", "options": []},
+        {"id": col_id, "title": title, "type": col_type, "options": list(options)},
+    ]
+
+
+def _patch_cols(mocker, cols):
+    return mocker.patch(
+        "shared.smartsheet_client.list_columns_with_options", return_value=cols,
+    )
+
+
+def test_ensure_picklist_options_appends_only_missing(mocker):
+    _patch_cols(mocker, _pl_cols(["a", "b"]))
+    upd = mocker.patch("shared.smartsheet_client.update_column_options")
+
+    result = smartsheet_client.ensure_picklist_options(42, "Reason", ["b", "c", "d"])
+
+    assert result.applied is True
+    assert result.added == ("c", "d")
+    # Existing order preserved; new values appended in request order.
+    assert result.final_options == ("a", "b", "c", "d")
+    # The write is the FULL union (REPLACE-style API), not just the delta.
+    upd.assert_called_once_with(42, 7, ["a", "b", "c", "d"], column_type="PICKLIST")
+
+
+def test_ensure_picklist_options_idempotent_noop_when_all_present(mocker):
+    _patch_cols(mocker, _pl_cols(["a", "b", "c"]))
+    upd = mocker.patch("shared.smartsheet_client.update_column_options")
+
+    result = smartsheet_client.ensure_picklist_options(42, "Reason", ["a", "b"])
+
+    assert result.applied is False
+    assert result.added == ()
+    assert result.final_options == ("a", "b", "c")
+    upd.assert_not_called()  # no write on a pure no-op
+
+
+def test_ensure_picklist_options_dry_run_does_not_write(mocker):
+    _patch_cols(mocker, _pl_cols(["a"]))
+    upd = mocker.patch("shared.smartsheet_client.update_column_options")
+
+    result = smartsheet_client.ensure_picklist_options(
+        42, "Reason", ["a", "b"], dry_run=True,
+    )
+
+    assert result.applied is False
+    assert result.added == ("b",)
+    assert result.final_options == ("a", "b")
+    upd.assert_not_called()
+
+
+def test_ensure_picklist_options_dedups_and_skips_empty(mocker):
+    _patch_cols(mocker, _pl_cols(["a"]))
+    mocker.patch("shared.smartsheet_client.update_column_options")
+
+    result = smartsheet_client.ensure_picklist_options(
+        42, "Reason", ["b", "b", "c", ""],
+    )
+    assert result.added == ("b", "c")  # duplicate collapsed, "" skipped
+
+
+def test_ensure_picklist_options_missing_column_raises(mocker):
+    _patch_cols(mocker, _pl_cols(["a"], title="Reason"))
+    with pytest.raises(ValueError, match="not found"):
+        smartsheet_client.ensure_picklist_options(42, "Nonexistent", ["x"])
+
+
+def test_ensure_picklist_options_non_picklist_column_raises(mocker):
+    _patch_cols(
+        mocker,
+        [{"id": 1, "title": "Notes", "type": "TEXT_NUMBER", "options": []}],
+    )
+    with pytest.raises(ValueError, match="not an option-bearing"):
+        smartsheet_client.ensure_picklist_options(42, "Notes", ["x"])
+
+
 # ---- find_sheet_by_name_in_folder / create_sheet_in_folder --------------
 
 
