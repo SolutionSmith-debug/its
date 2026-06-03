@@ -61,7 +61,10 @@ Earlier framing in Op Stds v4 that described review as a 30–60 day window is s
 
 ### Invariant 2 — Adversarial Input Handling
 
-All content originating outside the operating customer tenant is untrusted data. Six-layer defense:
+All content originating outside the operating customer tenant is untrusted data. Six-layer defense —
+but **Layer 5 is a post-hoc detection tripwire, not a co-equal defense layer** (reframed FM v9, audit
+F13); the actual prevention is Layers 2–4 plus the two-process External Send Gate (Invariant 1, the
+real security boundary):
 
 1. **Sender allowlist + scope enforcement + header-forgery detection.** Polling daemon
    (canonical pattern per Op Stds v16 §31; `safety_reports/intake_poll.py` is the first
@@ -75,8 +78,12 @@ All content originating outside the operating customer tenant is untrusted data.
 3. **Capability gating.** AI has no permission to send or take action (see Invariant 1).
 4. **Structured output enforcement.** Anthropic tool-use forces JSON-schema-conforming
    responses; non-conforming rejected.
-5. **Output validation and anomaly logging.** `shared.anomaly_logger.check()` runs on every
-   extraction output. Anomalies route to `ITS_Review_Queue` with `security_flag=True`.
+5. **Anomaly logging — detection tripwire, NOT a defense layer** (reframed FM v9, audit F13).
+   `shared.anomaly_logger.check()` runs on every extraction output but does NOT *prevent* a
+   successful injection — it raises a post-hoc signal that an output matched a known-suspicious
+   pattern (exact-substring sentinel matching, trivially evaded by paraphrase), routing the item to
+   `ITS_Review_Queue` with `security_flag=True`. Never rely on it as a barrier; prevention is
+   Layers 2–4 + Invariant 1. The code (`shared/anomaly_logger.py`) is unchanged.
 6. **Attachment screening pipeline.** Every attachment passes through four sub-layers per
    Op Stds v16 §34: (a) static signatures (magic-number, size, filename); (b) format-aware
    structural inspection (PDF JS/embedded, Office macros); (c) ClamAV scan via pyclamd;

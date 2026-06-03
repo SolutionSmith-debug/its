@@ -12,7 +12,9 @@ The generic launchd installer `scripts/launchd/install.sh` substituted ONLY `__I
 
 **Residual (low):** `scripts/install_safety_intake_daemon.sh` is now largely redundant with `install.sh load org.solutionsmith.its.safety-intake [interval]` (both read ITS_Config + substitute). Consolidating to the generic installer (the dedicated script also creates `~/its/state/`, so confirm that is covered first) is a small future cleanup, not done here.
 
-## F21 — numeric `maximum` bounds + anomaly-logger range check [OPEN 2026-05-29]
+## F21 — numeric `maximum` bounds + anomaly-logger range check [CLOSED 2026-06-02]
+
+**Resolved by** B1 (#144, merge `c200914`): added `"maximum": 1000` to each of the 6 incident-count fields (Layer-4 structured-output ceiling) and a numeric-range branch in `shared/anomaly_logger._walk` (`NUMERIC_ANOMALY_THRESHOLD=1000`, overridable per call; `bool` excluded as an `int` subclass) that flags an out-of-range int/float → routes the extraction to `ITS_Review_Queue` with `security_flag=True` (the Layer-5 detection backstop). Schema `version` bumped `0.1.0`→`0.2.0` with `weekly_generate._EXPECTED_SCHEMA_VERSION` in lockstep (F20); a new test (`test_incident_count_fields_carry_numeric_bounds`) locks both the per-field bounds and the version-lockstep against the real schema. Original analysis kept below.
 
 `schemas/safety_weekly_generate.json` defines 6 integer incident-count fields (`lost_time_accidents`, `lost_work_days`, `job_transfer_or_restriction`, `near_misses`, `other_recordable_cases`, `first_aid_cases`), each with `"minimum": 0` but **no `"maximum"`**. `shared/anomaly_logger._walk` branches on `dict` / `list` / `str` only — it has no numeric branch, so integers and floats fall through unchecked, and a prompt-injected count like `99999` passes extraction silently. (Contrast: the `confidence` field already carries both `minimum` and `maximum` in the same schema, so the pattern is established — it just wasn't applied to the incident counts.)
 
