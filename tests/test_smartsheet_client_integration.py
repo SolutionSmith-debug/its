@@ -336,6 +336,47 @@ def test_ensure_picklist_options_additive_round_trip(_token_available):
         _delete_sheet_rest(sheet_id, _token_available)
 
 
+# ---- create_picklist_column: additive column create --------------------
+
+
+def test_create_picklist_column_live_round_trip(_token_available):
+    """Live §30: add a PICKLIST column to an existing sheet → read it back.
+
+    The SDK-vs-Live guard for the Phase 3a add-column path: `add_columns` is a
+    DIFFERENT POST flow from sheet-creation columns, and a SimpleNamespace mock
+    can't prove the live API accepts the `{title,type,index,options}` body or
+    that `list_columns_with_options` reads the new column back as a real
+    PICKLIST with its seeded options (the audit's pass/fail check). Creates the
+    sheet with one TEXT_NUMBER primary, adds the picklist column, asserts the
+    read-back, then deletes the whole sheet in `finally`.
+    """
+    sheet_id = smartsheet_client.create_sheet_in_folder(
+        sheet_ids.FOLDER_SYSTEM_CONFIG,
+        _sandbox_name("create_pl_col"),
+        [{"title": "id_col", "type": "TEXT_NUMBER", "primary": True}],
+    )
+    try:
+        options = ["RELEASE", "DELETE", "ESCALATE"]
+        col_id = smartsheet_client.create_picklist_column(
+            sheet_id, "Disposition", options,
+        )
+        assert isinstance(col_id, int)
+
+        cols = smartsheet_client.list_columns_with_options(sheet_id)
+        by_title = {c["title"]: c for c in cols}
+        assert "Disposition" in by_title, "new column must read back by title"
+        added = by_title["Disposition"]
+        assert added["id"] == col_id
+        assert added["type"] == "PICKLIST"
+        # Seeded options must match exactly (this is what audit_picklist_drift
+        # compares the live allowed-set against — order-insensitive).
+        assert set(added["options"]) == set(options)
+        # Appended after the primary (default index == existing column count).
+        assert cols[-1]["title"] == "Disposition"
+    finally:
+        _delete_sheet_rest(sheet_id, _token_available)
+
+
 # ---- find_sheet_by_name_in_folder + create_sheet_in_folder ------------
 
 

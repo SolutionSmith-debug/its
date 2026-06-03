@@ -1212,9 +1212,27 @@ Two things a future normalization pass should resolve:
 
 Surfaced: 2026-06-01 Tranche 0 doctrine-citation reconciliation (PR #132). Related: PR #132 body "Flags & operator decisions" §2; CLAUDE.md §23.3→§19 correction.
 
-## Picklist drift Phase 3a — two DORMANT registry-over-declares (Workstream / Disposition) [DECISION PENDING 2026-06-02]
+## Picklist drift Phase 3a — two DORMANT registry-over-declares (Workstream / Disposition) [RESOLVED — columns added 2026-06-03]
 
-The first `scripts/audit_picklist_drift.py` run surfaced three findings. Phase 1 (`docs/audits/picklist_drift_2026-06-02_classification.md`) classified two as **dormant** — the `picklist_validation.REGISTRY` declares a column the live sheet lacks AND no code writes it:
+**Resolved (D1 = ADD, 2026-06-03):** Seth chose option 2 (add the empty columns).
+Both live (sandbox) columns were created as PICKLIST seeded with their `REGISTRY`
+allowed sets, so the weekly audit is now clean (`audit_picklist_drift --no-emit`
+→ "No drift findings"):
+
+- **ITS_Errors · `Workstream`** — new column_id `368377473568644` (6 `_WORKSTREAM_VALUES_GLOBAL` options).
+- **ITS_Quarantine · `Disposition`** — new column_id `8535753050328964` (RELEASE / DELETE / ESCALATE).
+
+Mechanism: new additive `shared/smartsheet_client.create_picklist_column`
+(§42 docstring; unit-tested + §30 live round-trip in
+`tests/test_smartsheet_client_integration.py`) + idempotent migration
+`scripts/migrations/add_dormant_picklist_columns.py` (preview-default, `--commit`
+to write, options sourced from `REGISTRY` so they can't drift). Re-run is a clean
+skip. The columns sit empty — the **writers** (error_log `Workstream`, quarantine
+`Disposition`) remain a separate, out-of-scope feature; an empty column is fine.
+Server-side restrict-to-dropdown (validation) was intentionally left off (the
+separate hardening sweep, `docs/audits/picklist_hardening_audit.md`).
+
+Original (for reference) ▸ The first `scripts/audit_picklist_drift.py` run surfaced three findings. Phase 1 (`docs/audits/picklist_drift_2026-06-02_classification.md`) classified two as **dormant** — the `picklist_validation.REGISTRY` declares a column the live sheet lacks AND no code writes it:
 
 - **ITS_Errors · `Workstream`** — `REGISTRY` registers `SHEET_ERRORS → "Workstream" → _WORKSTREAM_VALUES_GLOBAL` (`shared/picklist_validation.py:147`), but the live sheet has no `Workstream` column and `shared/error_log.py:130-138` builds the row dict with no `Workstream` key. (Wiring a `Workstream` *writer* into error_log is a separate feature, explicitly out of scope.)
 - **ITS_Quarantine · `Disposition`** — `REGISTRY` registers `SHEET_QUARANTINE → "Disposition" → _QUARANTINE_DISPOSITION_VALUES` (RELEASE/DELETE/ESCALATE, `picklist_validation.py:158/96-98`), but the live sheet has no `Disposition` column and `shared/quarantine.py::log_quarantined_message` writes `QuarantineReason`→Notes, never a `Disposition`. The value set is registered for a future write path that does not exist yet (tied to attachment-screening Layers 1–3, Phase 1.4).
