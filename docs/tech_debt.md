@@ -1211,3 +1211,45 @@ Two things a future normalization pass should resolve:
 **Revisit when:** an operator wants a uniform doctrine-pin convention across the code, or the next session that touches `weekly_send.py` / `picklist_sync.py` for another reason (fix the §23.3→§19 / §25 mis-cites opportunistically per §14 retrofit-when-touched).
 
 Surfaced: 2026-06-01 Tranche 0 doctrine-citation reconciliation (PR #132). Related: PR #132 body "Flags & operator decisions" §2; CLAUDE.md §23.3→§19 correction.
+
+## Picklist drift Phase 3a — two DORMANT registry-over-declares (Workstream / Disposition) [DECISION PENDING 2026-06-02]
+
+The first `scripts/audit_picklist_drift.py` run surfaced three findings. Phase 1 (`docs/audits/picklist_drift_2026-06-02_classification.md`) classified two as **dormant** — the `picklist_validation.REGISTRY` declares a column the live sheet lacks AND no code writes it:
+
+- **ITS_Errors · `Workstream`** — `REGISTRY` registers `SHEET_ERRORS → "Workstream" → _WORKSTREAM_VALUES_GLOBAL` (`shared/picklist_validation.py:147`), but the live sheet has no `Workstream` column and `shared/error_log.py:130-138` builds the row dict with no `Workstream` key. (Wiring a `Workstream` *writer* into error_log is a separate feature, explicitly out of scope.)
+- **ITS_Quarantine · `Disposition`** — `REGISTRY` registers `SHEET_QUARANTINE → "Disposition" → _QUARANTINE_DISPOSITION_VALUES` (RELEASE/DELETE/ESCALATE, `picklist_validation.py:158/96-98`), but the live sheet has no `Disposition` column and `shared/quarantine.py::log_quarantined_message` writes `QuarantineReason`→Notes, never a `Disposition`. The value set is registered for a future write path that does not exist yet (tied to attachment-screening Layers 1–3, Phase 1.4).
+
+**Failure mode:** the weekly `safety_picklist_audit` WARNs on both every Sunday. Accurate, but a chronically-warning audit risks alarm fatigue for a ship-and-leave system.
+
+**DECISION (Seth — deferred from the 2026-06-02 picklist-reconcile session, three options on the table):**
+1. **Trim the registry entries** so `REGISTRY` declares only what's actually written → audit goes quiet, registry stays honest; re-add when the writer is built. (Canonical-ish edit; route via `doc-reconciliation-auditor`.)
+2. **Add the empty columns** to the live sandbox sheets now → audit clean, sheets ready for the future writer. Downside: premature schema for unbuilt features (YAGNI).
+3. **Defer — keep the WARN** until a writer is wired (lowest touch; audit stays noisy).
+
+CC recommendation was (1) trim-registry (honest + quiet + no premature live schema). **Not executed — Seth decides.**
+
+**Effort:** (1) ~30 min + a `doc-reconciliation-auditor` pass; (2) ~30 min two live column-adds; (3) zero.
+
+**Tag:** `picklist-drift`, `config-migration`.
+
+**Revisit when:** next session (picked up 2026-06-03), OR whenever the Disposition / error-Workstream writer is actually built (then option 2 lands naturally with that feature).
+
+Surfaced: 2026-06-02 picklist-drift reconcile (PR #150, Phase 3a). Related: classification doc `docs/audits/picklist_drift_2026-06-02_classification.md`; `docs/runbooks/picklist_drift_reconcile.md`.
+
+## Picklist drift Phase 3b — no automated registry→live apply (systemic ship-and-leave gap) [DECISION PENDING 2026-06-02]
+
+There is **no automated path that pushes `picklist_validation.REGISTRY` additions into the live Smartsheet picklists.** `picklist_sync.py` is sheet→sheet (reads a source sheet column's values, not the code registry); the audit is read-only (no `--apply`). So a `REGISTRY`/enum addition reaches live sheets only via a **human remembering a manual step** (`review_queue.py:84-96` documents exactly this for the three `Reason` values — and that step went undone until the 2026-06-02 reconcile). The weekly audit only **WARNs after the fact**. This is the real ship-and-leave finding: the loop depends on developer memory.
+
+Phase 2 of the reconcile landed the additive primitive `shared/smartsheet_client.ensure_picklist_options` (additive, idempotent, dry-run, no-removal, never-creates-columns; live-validated), but it is invoked today only by a hand-written Python snippet (developer action), not an operator-friendly command.
+
+**DECISION (Seth — deferred from 2026-06-02, two options):**
+- **(a) Automate:** add an additive, dry-run-previewed, reference-checked `--apply` mode to `scripts/audit_picklist_drift.py` (or a sibling) built on `ensure_picklist_options` — additive-only by default, removals behind an explicit flag mirroring `picklist_sync.py`'s guard. Removes the human-memory dependency; gives the Successor-Operator a clean Tier-2 command (`docs/runbooks/picklist_drift_reconcile.md` already describes the operator flow contingent on this landing). **CC recommendation for ship-and-leave.**
+- **(b) Document only (minimum bar):** keep it manual — add "any `picklist_validation.REGISTRY` change → apply to live sheets" to `docs/operations/cutover_checklist.md` + a release checklist, plus the §43 note already in `picklist_drift_reconcile.md`. No new code; human-memory dependency remains.
+
+**Do not build (a) without Seth's sign-off** (per the brief). If (a): ~half-day (the `--apply` mode + dry-run preview + reference-check guard + §30 test + the §43 runbook's `--apply` path becomes real). If (b): ~1 hour (checklist entries).
+
+**Tag:** `picklist-drift`, `ship-and-leave`.
+
+**Revisit when:** next session (picked up 2026-06-03) — this is the higher-leverage of the two Phase 3 decisions.
+
+Surfaced: 2026-06-02 picklist-drift reconcile (PR #150, Phase 3b). Related: `ensure_picklist_options` (`shared/smartsheet_client.py`); `docs/runbooks/picklist_drift_reconcile.md`; classification doc Phase 3b.
