@@ -503,9 +503,9 @@ def test_upload_filename_construction(mocker):
     uploaded = SimpleNamespace(id="999")
     fake_client.folder().upload_stream.return_value = uploaded
     mocker.patch("safety_reports.intake.box_client.get_client", return_value=fake_client)
-    mocker.patch.dict(
-        "safety_reports.intake.defaults.BOX_PROJECT_FOLDERS",
-        {"Bradley 1": "root-id"},
+    mocker.patch(
+        "safety_reports.intake.project_routing.get_folder_id",
+        return_value="root-id",
     )
 
     urls, errors = upload_attachments_to_box(
