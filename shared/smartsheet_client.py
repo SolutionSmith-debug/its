@@ -1230,6 +1230,98 @@ def create_folder_in_folder(parent_folder_id: int, name: str) -> int:
 
 
 @_breaker_guard
+def find_folder_by_name_in_workspace(workspace_id: int, name: str) -> int | None:
+    """Return the top-level folder ID named `name` in `workspace_id`, or None.
+
+    Purpose
+        The workspace-level sibling of `find_folder_by_name_in_folder`. Lets a
+        migration find-or-create a folder directly under a workspace (e.g. the
+        "Safety Portal" config folder under ITS — Operations) idempotently.
+
+    Invariants
+        - Direct REST (`GET /workspaces/{id}`) rather than the SDK's
+          `Workspaces.get_workspace()`, for the same reason its folder-level
+          twin avoids `Folders.get_folder()`: the SDK getter returns stale
+          within-session data after a sibling create (PR #51). Direct REST sees
+          a just-created folder immediately.
+        - Exact, case-sensitive title match (Smartsheet does not enforce unique
+          folder titles; the FIRST match wins — a caller needing duplicate-aware
+          behaviour must inspect the listing itself). Read-only; never creates.
+
+    Failure modes
+        - Non-2xx surfaces as the typed `SmartsheetError` hierarchy via
+          `_translate_smartsheet_error`; `SmartsheetCircuitOpenError` when the
+          breaker is OPEN.
+
+    Consumers
+        `scripts/migrations/build_its_active_jobs_sheet.py` +
+        `build_its_forms_catalog_sheet.py` (find-or-create the shared
+        "Safety Portal" folder under WORKSPACE_OPERATIONS).
+    """
+    token = keychain.get_secret("ITS_SMARTSHEET_TOKEN")
+    url = f"https://api.smartsheet.com/2.0/workspaces/{workspace_id}"
+    context = f"finding folder {name!r} in workspace {workspace_id}"
+    try:
+        response = requests.get(
+            url, headers={"Authorization": f"Bearer {token}"}, timeout=30
+        )
+    except requests.RequestException as e:
+        raise SmartsheetError(f"{context}: {e!r}") from e
+    _translate_smartsheet_error(response, context=context)
+    body = response.json()
+    for folder in body.get("folders", []):
+        if folder.get("name") == name:
+            return int(folder["id"])
+    return None
+
+
+@_breaker_guard
+def create_folder_in_workspace(workspace_id: int, name: str) -> int:
+    """Create a top-level folder named `name` in `workspace_id`; return its ID.
+
+    Purpose
+        Workspace-level sibling of `create_folder_in_folder`. Stands up a config
+        folder directly under a workspace (the "Safety Portal" folder under
+        ITS — Operations).
+
+    Invariants
+        - Direct REST (`POST /workspaces/{id}/folders`) for transport symmetry
+          with `find_folder_by_name_in_workspace` — keeps the find-or-create
+          loop on one transport so a later refactor can't reintroduce the SDK
+          same-session cache bug (PR #51).
+        - Idempotency is the CALLER's job — call
+          `find_folder_by_name_in_workspace` first if the create must be
+          re-run-safe. Re-running blindly creates a duplicate-titled folder.
+
+    Failure modes
+        - Non-2xx surfaces as the typed `SmartsheetError` hierarchy;
+          `SmartsheetCircuitOpenError` when the breaker is OPEN (a create is a
+          write).
+
+    Consumers
+        Same as `find_folder_by_name_in_workspace`.
+    """
+    token = keychain.get_secret("ITS_SMARTSHEET_TOKEN")
+    url = f"https://api.smartsheet.com/2.0/workspaces/{workspace_id}/folders"
+    context = f"creating folder {name!r} in workspace {workspace_id}"
+    try:
+        response = requests.post(
+            url,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            },
+            json={"name": name},
+            timeout=30,
+        )
+    except requests.RequestException as e:
+        raise SmartsheetError(f"{context}: {e!r}") from e
+    _translate_smartsheet_error(response, context=context)
+    body = response.json()
+    return int(body["result"]["id"])
+
+
+@_breaker_guard
 def create_sheet_in_folder_from_template(
     folder_id: int,
     name: str,

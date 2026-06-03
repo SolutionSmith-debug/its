@@ -36,6 +36,7 @@ FOLDER_FIELD_REPORTS = 705799988242308
 # ---- Operations + Archive sub-folders -----------------------------------
 
 FOLDER_OPERATIONS_MASTER_DBS = 471604011526020
+FOLDER_OPERATIONS_SAFETY_PORTAL = 6663869084002180  # ITS — Operations / Safety Portal (built 2026-06-03 by build_its_active_jobs_sheet.py)
 FOLDER_ARCHIVE_CLOSED_PROJECTS = 1034553964947332
 
 # ---- Active project folders (Forefront Portfolio / 01 — Active Projects) -
@@ -127,6 +128,13 @@ SHEET_TIME_OFF           = 1506418040459140  # ITS — Human Review / 06 — Per
 SHEET_VENDOR_DB        = 7278304330469252  # ITS — Operations / Master Databases / Vendor DB
 SHEET_SUBCONTRACTOR_DB = 1230913068289924  # ITS — Operations / Master Databases / Subcontractor DB
 SHEET_EQUIPMENT_MASTER = 4132885031243652  # ITS — Operations / Master Databases / Equipment Master
+
+# ---- Safety Portal config sheets (ITS — Operations / Safety Portal) ------
+# The two Smartsheet inputs the Safety Portal reads (blueprint
+# workstreams/safety-portal/brief.md §3). OPERATOR: flip each from 0 after the
+# matching build migration prints the real ID (FLIP precedes SEED).
+SHEET_ACTIVE_JOBS   = 6223950341164932  # ITS_Active_Jobs   (ITS — Operations / Safety Portal; built 2026-06-03 by build_its_active_jobs_sheet.py)
+SHEET_FORMS_CATALOG = 423274885369732   # ITS_Forms_Catalog (ITS — Operations / Safety Portal; built 2026-06-03 by build_its_forms_catalog_sheet.py)
 
 
 # ---- Reverse-lookup maps ------------------------------------------------
