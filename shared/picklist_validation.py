@@ -172,6 +172,17 @@ if sheet_ids.SHEET_TRUSTED_CONTACTS:
         "Role": _TRUSTED_CONTACTS_ROLE_VALUES,
     }
 
+# Safety Portal config sheets (ITS — Operations / Safety Portal). Both carry an
+# identical "Active" lifecycle picklist. Registered only once the operator has
+# flipped the real sheet ID in (the build migration prints it) — registering
+# against the placeholder 0 would fire spurious violations on unrelated sheet
+# IDs in tests, the same guard as Trusted Contacts above.
+_ACTIVE_LIFECYCLE_VALUES = frozenset({"Active", "Inactive", "Archived"})
+if sheet_ids.SHEET_ACTIVE_JOBS:
+    REGISTRY[sheet_ids.SHEET_ACTIVE_JOBS] = {"Active": _ACTIVE_LIFECYCLE_VALUES}
+if sheet_ids.SHEET_FORMS_CATALOG:
+    REGISTRY[sheet_ids.SHEET_FORMS_CATALOG] = {"Active": _ACTIVE_LIFECYCLE_VALUES}
+
 REGISTRY.update(_build_per_project_entries())
 
 # Re-export StrEnum members so callers can introspect the registry's source
