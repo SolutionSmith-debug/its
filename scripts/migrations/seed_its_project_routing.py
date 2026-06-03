@@ -1,12 +1,14 @@
 """One-shot migration: seed ITS_Project_Routing from the hardcoded
 `shared.defaults.BOX_PROJECT_FOLDERS` dict (E1).
 
-Cutover companion to the project-routing cluster:
+Cutover companion to the project-routing cluster (FLIP precedes SEED):
   1. `build_its_project_routing_sheet.py` (one-time, builds the sheet).
-  2. THIS script (one-time, populates from BOX_PROJECT_FOLDERS).
-  3. Operator updates `SHEET_PROJECT_ROUTING` in `shared/sheet_ids.py`, then
-     verifies parity (every project resolves the same folder ID via the sheet
-     as it did via the dict) before relying on the sheet.
+  2. Flip `SHEET_PROJECT_ROUTING` in `shared/sheet_ids.py` to the new id.
+  3. THIS script (one-time, populates from BOX_PROJECT_FOLDERS). It READS
+     `SHEET_PROJECT_ROUTING`, so step 2 must precede it — seeding against the
+     0 placeholder raises RuntimeError.
+  4. Verify parity (every project resolves the same folder ID via the sheet as
+     it did via the dict) before relying on the sheet.
 
 For each (project, folder_id) in BOX_PROJECT_FOLDERS this creates one
 ITS_Project_Routing row: Project Name, Box Folder ID, Active=true, Notes

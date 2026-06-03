@@ -16,10 +16,13 @@ Schema (one row per project):
   Active         CHECKBOX    (false = retired; excluded from resolution)
   Notes          TEXT_NUMBER
 
-Cutover sequence:
-  1. THIS script (build the sheet).
-  2. `seed_its_project_routing.py` (populate from BOX_PROJECT_FOLDERS).
-  3. Operator updates `SHEET_PROJECT_ROUTING` in `shared/sheet_ids.py`.
+Cutover sequence (FLIP precedes SEED — seed reads SHEET_PROJECT_ROUTING):
+  1. THIS script (build the sheet); note the printed sheet id.
+  2. Flip `SHEET_PROJECT_ROUTING` in `shared/sheet_ids.py` to that id.
+  3. `seed_its_project_routing.py` (populate from BOX_PROJECT_FOLDERS). It reads
+     the flipped constant, so seeding against the 0 placeholder raises — step 2
+     MUST come first.
+  4. Verify parity, then rely on the sheet.
 
 Auth: ITS_SMARTSHEET_TOKEN from macOS Keychain.
 
