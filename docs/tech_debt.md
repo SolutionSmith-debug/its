@@ -1254,9 +1254,26 @@ CC recommendation was (1) trim-registry (honest + quiet + no premature live sche
 
 Surfaced: 2026-06-02 picklist-drift reconcile (PR #150, Phase 3a). Related: classification doc `docs/audits/picklist_drift_2026-06-02_classification.md`; `docs/runbooks/picklist_drift_reconcile.md`.
 
-## Picklist drift Phase 3b — no automated registry→live apply (systemic ship-and-leave gap) [DECISION PENDING 2026-06-02]
+## Picklist drift Phase 3b — no automated registry→live apply (systemic ship-and-leave gap) [RESOLVED — automated 2026-06-03]
 
-There is **no automated path that pushes `picklist_validation.REGISTRY` additions into the live Smartsheet picklists.** `picklist_sync.py` is sheet→sheet (reads a source sheet column's values, not the code registry); the audit is read-only (no `--apply`). So a `REGISTRY`/enum addition reaches live sheets only via a **human remembering a manual step** (`review_queue.py:84-96` documents exactly this for the three `Reason` values — and that step went undone until the 2026-06-02 reconcile). The weekly audit only **WARNs after the fact**. This is the real ship-and-leave finding: the loop depends on developer memory.
+**Resolved (D2 = AUTOMATE, 2026-06-03):** added an additive `--apply` mode to
+`scripts/audit_picklist_drift.py`, built on `ensure_picklist_options`. For each
+registered `(sheet_id, column → values)` it pushes the MISSING options into the
+live picklist. **Dry-run is the default** (`--apply` previews; `--apply --commit`
+writes). **Additive + option-only**: never removes an option, and a
+missing/wrong-typed column is logged + skipped (column creation is the Phase 3a
+schema decision, not this command). `--commit` without `--apply` is a CLI error.
+This removes the developer-memory dependency and gives the Successor-Operator a
+clean Tier-2 command. Coverage: unit tests in `tests/test_audit_picklist_drift.py`
+(dry-run/commit/no-op/skip/CLI-guard) + a §30 live round-trip in
+`tests/test_audit_picklist_drift_integration.py`; the `docs/runbooks/picklist_drift_reconcile.md`
+`--apply` flow + §43 note are now real (no longer "contingent"). Live-smoked
+this session: `--apply` preview against the real registry reports 0 adds / 0
+skips (all sheets reconciled). **Prune/removal mode remains out of scope** (v1
+additive-only, parity with `ensure_picklist_options`); if ever added it goes
+behind an explicit flag with `picklist_sync.py`'s reference-check guard.
+
+Original (for reference) ▸ There is **no automated path that pushes `picklist_validation.REGISTRY` additions into the live Smartsheet picklists.** `picklist_sync.py` is sheet→sheet (reads a source sheet column's values, not the code registry); the audit is read-only (no `--apply`). So a `REGISTRY`/enum addition reaches live sheets only via a **human remembering a manual step** (`review_queue.py:84-96` documents exactly this for the three `Reason` values — and that step went undone until the 2026-06-02 reconcile). The weekly audit only **WARNs after the fact**. This is the real ship-and-leave finding: the loop depends on developer memory.
 
 Phase 2 of the reconcile landed the additive primitive `shared/smartsheet_client.ensure_picklist_options` (additive, idempotent, dry-run, no-removal, never-creates-columns; live-validated), but it is invoked today only by a hand-written Python snippet (developer action), not an operator-friendly command.
 

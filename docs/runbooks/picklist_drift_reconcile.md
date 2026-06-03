@@ -46,18 +46,23 @@ repairs.
 
 - **Additive option drift, registry-canonical (e.g. ITS_Review_Queue `Reason`):**
   the fix is to *add* the missing options to the live picklist — additive, never
-  removing. This was done for `Reason` on 2026-06-02 via
-  `smartsheet_client.ensure_picklist_options` (additive, idempotent, no-removal;
-  validated by `tests/test_smartsheet_client_integration.py`). **Today this helper
-  is invoked by the Developer-Operator** (a short Python call against the live
-  SDK), so it currently **escalates to Seth**. An operator-friendly
-  `audit_picklist_drift.py --apply` mode is a *pending decision* (see the
-  classification doc Phase 3b); **if/when it lands**, the Tier-2 action becomes:
+  removing. The operator-friendly `audit_picklist_drift.py --apply` mode landed
+  **2026-06-03 (Phase 3b)**, built on the additive, idempotent, no-removal
+  `smartsheet_client.ensure_picklist_options` (validated by
+  `tests/test_smartsheet_client_integration.py` and
+  `tests/test_audit_picklist_drift_integration.py`). This is now a **low-class
+  Tier-2** repair — the Successor-Operator can run it. The Tier-2 action:
 
   > "Claude, the weekly picklist audit reports an additive `Reason` option drift.
-  > Run `scripts/audit_picklist_drift.py --apply --dry-run`, show me the proposed
-  > additions, and after I confirm, run it for real and re-run the audit to
-  > confirm the finding clears."
+  > Run `scripts/audit_picklist_drift.py --apply` (preview — dry-run is the
+  > default), show me the proposed additions, and after I confirm run
+  > `scripts/audit_picklist_drift.py --apply --commit`, then re-run the audit
+  > (`scripts/audit_picklist_drift.py --no-emit`) to confirm the finding clears."
+
+  `--apply` is **additive + option-only**: it never removes an option and it
+  **skips** (logs, does not crash on) a missing/wrong-typed column — so it is
+  safe to run against the whole registry. Removals and column creation are still
+  Tier-3 (below).
 
 - **Missing column, or any "in live only" removal:** **do not** add or remove a
   column. Whether to add the empty column to the sheet or to trim the `REGISTRY`
@@ -71,14 +76,18 @@ Escalate (Tier 3) when **any** of:
   sandbox schema change and trimming the registry is a **doctrine/code** edit
   (route registry edits via `doc-reconciliation-auditor`); both are Seth's.
 - The mismatch has values **in live only** (a *removal* question — removals are
-  reference-checked and never additive-safe by default).
-- The additive `--apply` operator path does **not yet exist** (pending the
-  Phase 3b decision) — until then the additive reconcile itself is run by Seth.
+  reference-checked and never additive-safe by default; `--apply` is additive-only
+  and will NOT remove them).
 - Any change to `picklist_validation.REGISTRY` (code) is implied.
 
-Both-rule (Op Stds §44): confirming the finding and (once `--apply` exists)
-running an additive, dry-run-previewed, no-removal option-add is low-class Tier-2;
-column creation, registry edits, and removals are high-class Tier-3.
+(The additive `--apply` operator path now EXISTS — landed Phase 3b 2026-06-03 —
+so additive option drift on an existing column is no longer an escalate reason;
+it is the Tier-2 action above.)
+
+Both-rule (Op Stds §44): confirming the finding and running the additive,
+dry-run-previewed (`--apply`), no-removal option-add (`--apply --commit`) is
+low-class Tier-2; column creation, registry edits, and removals are high-class
+Tier-3.
 
 ## Owner
 

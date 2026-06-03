@@ -161,3 +161,88 @@ def test_audit_skips_empty_registry_entries(mocker):
     )
     findings = audit_picklist_drift.audit()
     assert findings == []
+
+
+# ---- apply_reconcile (Phase 3b --apply) ---------------------------------
+
+
+def _stub_registry(mocker, registry):
+    mocker.patch.object(
+        audit_picklist_drift.picklist_validation, "REGISTRY", registry,
+    )
+
+
+def _patch_ensure(mocker, *, added=(), applied=False, side_effect=None):
+    from types import SimpleNamespace
+    kwargs = {}
+    if side_effect is not None:
+        kwargs["side_effect"] = side_effect
+    else:
+        kwargs["return_value"] = SimpleNamespace(added=tuple(added), applied=applied)
+    return mocker.patch(
+        "scripts.audit_picklist_drift.smartsheet_client.ensure_picklist_options",
+        **kwargs,
+    )
+
+
+def test_apply_reconcile_dry_run_counts_and_passes_dry_run_true(mocker):
+    _stub_registry(mocker, {1: {"Reason": frozenset({"a", "b", "c"})}})
+    ensure = _patch_ensure(mocker, added=("b", "c"), applied=False)
+
+    changed, added, skipped = audit_picklist_drift.apply_reconcile(commit=False)
+
+    assert (changed, added, skipped) == (1, 2, [])
+    # Sorted values + dry_run=True on a preview.
+    ensure.assert_called_once_with(1, "Reason", ["a", "b", "c"], dry_run=True)
+
+
+def test_apply_reconcile_commit_passes_dry_run_false(mocker):
+    _stub_registry(mocker, {1: {"Reason": frozenset({"a"})}})
+    ensure = _patch_ensure(mocker, added=("a",), applied=True)
+
+    audit_picklist_drift.apply_reconcile(commit=True)
+
+    assert ensure.call_args.kwargs["dry_run"] is False
+
+
+def test_apply_reconcile_noop_when_nothing_added(mocker):
+    _stub_registry(mocker, {1: {"Reason": frozenset({"a"})}})
+    _patch_ensure(mocker, added=(), applied=False)
+
+    assert audit_picklist_drift.apply_reconcile(commit=True) == (0, 0, [])
+
+
+def test_apply_reconcile_skips_missing_column_value_error(mocker):
+    _stub_registry(mocker, {1: {"Absent": frozenset({"x"})}})
+    _patch_ensure(
+        mocker, side_effect=ValueError("column 'Absent' not found"),
+    )
+
+    changed, added, skipped = audit_picklist_drift.apply_reconcile(commit=True)
+
+    assert (changed, added) == (0, 0)
+    assert len(skipped) == 1
+    assert "Absent" in skipped[0]
+
+
+def test_apply_reconcile_skips_empty_registry_entries(mocker):
+    _stub_registry(mocker, {1: {}, 2: {}})
+    ensure = _patch_ensure(mocker, added=("x",))
+
+    assert audit_picklist_drift.apply_reconcile(commit=True) == (0, 0, [])
+    ensure.assert_not_called()
+
+
+# ---- CLI flag validation -------------------------------------------------
+
+
+def test_parse_args_commit_without_apply_errors():
+    import pytest
+    with pytest.raises(SystemExit):
+        audit_picklist_drift._parse_args(["--commit"])
+
+
+def test_parse_args_apply_defaults_to_preview():
+    args = audit_picklist_drift._parse_args(["--apply"])
+    assert args.apply is True
+    assert args.commit is False
