@@ -1173,6 +1173,52 @@ def _run_check(
     log(severity, _SCRIPT, message)
 
 
+def _check_token_write_capability() -> CheckResult:
+    """Check L (B2): verify ITS_SMARTSHEET_TOKEN can WRITE, not just read.
+
+    A read-only or mis-scoped token (e.g. after a botched rotation) passes every
+    READ and only fails at the first real daemon WRITE — a silent mid-cycle 401
+    that is hard to trace. This probe (create + delete a throwaway sheet) turns
+    that into a LOUD daily signal: a SmartsheetWriteCapabilityError → CRITICAL,
+    which (post-A3) pages the operator via `_run_check`'s `log(CRITICAL)` and is
+    deferred during MAINTENANCE by the standard `alerts_suppressed` downgrade
+    above. A Smartsheet OUTAGE (SmartsheetCircuitOpenError) is INFO-skipped — it
+    is not a token verdict; any other transient error is WARN-inconclusive. Cost
+    is one create + one delete per daily watchdog run (negligible footprint;
+    the throwaway sheet is named `_its_write_probe_*` and deleted immediately).
+    """
+    try:
+        probe_sheet_id = smartsheet_client.verify_write_capability()
+    except smartsheet_client.SmartsheetWriteCapabilityError as exc:
+        return CheckResult(
+            Severity.CRITICAL,
+            f"ITS_SMARTSHEET_TOKEN cannot write (read-only or mis-scoped?): {exc}",
+        )
+    except smartsheet_client.SmartsheetCircuitOpenError:
+        return CheckResult(
+            Severity.INFO,
+            "token write-probe skipped — Smartsheet circuit breaker OPEN.",
+        )
+    except smartsheet_client.SmartsheetError as exc:
+        return CheckResult(
+            Severity.WARN,
+            f"token write-probe inconclusive (transient Smartsheet error): {exc!r}",
+        )
+    # Created → the token can write. Clean up the throwaway probe sheet, with a
+    # create→delete eventual-consistency settle retry (the immediate delete can
+    # 404 / errorCode 5036 before the new sheet propagates — surfaced in the B2
+    # smoke).
+    try:
+        smartsheet_client.delete_sheet_settling(probe_sheet_id)
+    except smartsheet_client.SmartsheetError as exc:
+        return CheckResult(
+            Severity.WARN,
+            f"token write OK, but probe sheet {probe_sheet_id} delete failed "
+            f"(manual cleanup of `_its_write_probe_*` may be needed): {exc!r}",
+        )
+    return CheckResult(Severity.INFO, "ITS_SMARTSHEET_TOKEN write capability OK.")
+
+
 # Check M (C3): the blueprint repo's .claude guard symlinks.
 _BLUEPRINT_ROOT = Path.home() / "its-blueprint"
 _BLUEPRINT_GUARD_PATHS = (".claude/agents", ".claude/hooks")
@@ -1239,6 +1285,9 @@ CHECKS: list[Callable[..., CheckResult]] = [
     # page during MAINTENANCE.
     _check_circuit_breaker_prolonged_open,
     _check_alert_rate_cap_window,
+    # Check L (B2): token write-capability probe. Returns a CheckResult, so its
+    # CRITICAL is paged + MAINTENANCE-deferred by _run_check (no inline alert).
+    _check_token_write_capability,
     # Check M (C3): blueprint .claude guard-symlink resolution. Returns a
     # CheckResult (no inline alert); WARN-only if the symlinks dangle.
     _check_blueprint_guard_symlinks,

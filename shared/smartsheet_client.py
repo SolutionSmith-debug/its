@@ -34,6 +34,7 @@ SDK 404 noise:
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -78,6 +79,18 @@ class SmartsheetCircuitOpenError(SmartsheetError):
     short-circuit never triggers a retry-hammer). Raised by the
     ``circuit_breaker.guard`` wrappers below — never by the SDK-translation path.
     """
+
+
+class SmartsheetWriteCapabilityError(SmartsheetError):
+    """The token can READ but cannot WRITE (B2 — startup write-capability probe).
+
+    Raised by ``verify_write_capability`` when a probe write is rejected with an
+    auth/permission error (401/403) — i.e. a read-only or mis-scoped
+    ``ITS_SMARTSHEET_TOKEN``. A subclass of ``SmartsheetError`` so generic
+    callers still catch it, but distinct so a boot/watchdog caller can fail LOUD
+    on it specifically: the alternative is the token passing every read and only
+    failing at the first real daemon write (a mid-cycle 401 that is hard to
+    trace — the keychain-stub session burned ~2 h on exactly that signature)."""
 
 
 _client: smartsheet.Smartsheet | None = None
@@ -885,6 +898,95 @@ def create_sheet_in_folder(
     except sdk_exc.SmartsheetException as e:
         raise _translate(e) from e
     return int(result.result.id)
+
+
+@_breaker_guard
+def delete_sheet(sheet_id: int) -> None:
+    """Delete a sheet by ID via the SDK (`Sheets.delete_sheet`).
+
+    Raises the typed hierarchy on failure (404 if already gone; 401/403 on a
+    read-only token). The B2 write-capability probe uses this to clean up its
+    throwaway sheet.
+    """
+    try:
+        get_client().Sheets.delete_sheet(sheet_id)
+    except sdk_exc.SmartsheetException as e:
+        raise _translate(e) from e
+
+
+def delete_sheet_settling(
+    sheet_id: int, *, attempts: int = 3, backoff_seconds: float = 1.0
+) -> None:
+    """Delete a sheet, retrying the create→delete eventual-consistency window.
+
+    Smartsheet is eventually consistent: a delete issued IMMEDIATELY after a
+    create can 404 (errorCode 1006) or return errorCode 5036 ("not yet
+    propagated") because the new sheet has not replicated across read/write
+    replicas yet — a settle window of several seconds. (Same flake class as the
+    `docs/tech_debt.md` entry "Smartsheet integration tests flake on
+    create→read/write eventual consistency"; surfaced here on the B2
+    write-capability probe's immediate cleanup.) This retries `delete_sheet` on
+    that transient not-found a few times with a short backoff.
+
+    DISTINCT from `delete_sheet` BY DESIGN: a genuine missing-sheet delete
+    elsewhere should fail FAST, so ONLY the probe-cleanup path
+    (`verify_write_capability` / watchdog Check L) uses this. Re-raises the last
+    not-found error if all attempts are exhausted; a non-not-found error
+    (including `SmartsheetCircuitOpenError`) fails fast on the first attempt.
+    """
+    last_exc: SmartsheetError | None = None
+    for attempt in range(attempts):
+        try:
+            delete_sheet(sheet_id)
+            return
+        except SmartsheetNotFoundError as exc:
+            last_exc = exc  # 404 / errorCode 1006 — likely not-yet-propagated.
+        except SmartsheetError as exc:
+            # errorCode 5036 can surface with a non-404 status but is still an
+            # eventual-consistency not-found; retry it. Anything else fails fast.
+            if "5036" not in str(exc):
+                raise
+            last_exc = exc
+        if attempt < attempts - 1:
+            time.sleep(backoff_seconds)
+    assert last_exc is not None  # loop ran >=1 time and never returned
+    raise last_exc
+
+
+def verify_write_capability(folder_id: int = sheet_ids.FOLDER_SYSTEM_CONFIG) -> int:
+    """Probe that ITS_SMARTSHEET_TOKEN can WRITE, not just read (B2).
+
+    Creates a throwaway one-column sheet in `folder_id` and returns its id. The
+    CALLER must `delete_sheet` it — cleanup is kept separate so a *delete*
+    failure is the caller's WARN, not a false "cannot write" verdict (the create
+    already proved write capability). A read-only or mis-scoped token fails the
+    CREATE with 401/403, re-raised here as `SmartsheetWriteCapabilityError` so a
+    boot/watchdog caller can fail LOUD — instead of the token passing every read
+    and only failing at the first real daemon write (a mid-cycle 401 that is hard
+    to trace; the keychain-stub session lost ~2 h to exactly that signature).
+
+    NOT `@_breaker_guard`-decorated: it composes the already-guarded
+    `create_sheet_in_folder`, so a `SmartsheetCircuitOpenError` (Smartsheet
+    OUTAGE, not a token problem) propagates unchanged for the caller to treat as
+    inconclusive rather than as a write-capability verdict.
+
+    Raises:
+        SmartsheetWriteCapabilityError: create rejected 401/403 → cannot write.
+        SmartsheetCircuitOpenError / other SmartsheetError: transient/outage —
+            propagates unchanged (NOT a capability verdict).
+    """
+    probe_name = f"_its_write_probe_{datetime.now():%H%M%S%f}"  # <= 50 chars (1041)
+    try:
+        return create_sheet_in_folder(
+            folder_id,
+            probe_name,
+            [{"title": "probe", "type": "TEXT_NUMBER", "primary": True}],
+        )
+    except (SmartsheetAuthError, SmartsheetPermissionError) as exc:
+        raise SmartsheetWriteCapabilityError(
+            f"ITS_SMARTSHEET_TOKEN cannot create a sheet in folder {folder_id} "
+            f"(read-only or mis-scoped token?): {exc}"
+        ) from exc
 
 
 @_breaker_guard

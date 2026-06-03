@@ -1164,6 +1164,8 @@ This is **pre-existing** (tests authored PRs #47/#48/#49/#51/F22) and was merely
 
 Do NOT push the retry into the SUT (`shared/smartsheet_client.py`): a 404 must surface in production (e.g. the heartbeat-cache 404-invalidation path in `intake_poll`, regression-guarded by `test_update_row_cells_by_id_raises_not_found_on_missing_row`).
 
+**Related — create→DELETE variant (B2, 2026-06-02):** the same eventual-consistency flake surfaced live on the B2 token write-capability probe's IMMEDIATE cleanup — a delete issued right after create returned `errorCode 5036` / 404 ("not yet propagated"). Handled by a **scoped** `smartsheet_client.delete_sheet_settling` (retry-on-not-found, ~3 attempts, short backoff) used ONLY by the probe-cleanup path (`verify_write_capability` / watchdog Check L); the general `delete_sheet` still fails fast, honoring the rule above. This is a targeted mitigation for that ONE op — NOT the suite-wide create→read hardening this entry still tracks.
+
 **Effort:** ~1 hour for approach 1; ~half-day for approach 2 (+ multi-run verification).
 
 **Phase target:** next integration-test-maintenance pass; not a launch blocker (these tests are operator-run pre-deployment, NOT in CI).

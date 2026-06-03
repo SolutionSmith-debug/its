@@ -457,3 +457,23 @@ def test_update_row_cells_by_id_raises_not_found_on_missing_row(_token_available
             )
     finally:
         _delete_sheet_rest(sheet_id, _token_available)
+
+
+def test_verify_write_capability_live(_token_available):
+    """B2: the real write-capability probe creates a throwaway sheet (proving
+    the live token can WRITE) and returns its id; cleanup goes through
+    `delete_sheet_settling`, exercising the TIGHT back-to-back create→delete
+    with NO settle wait.
+
+    This is the regression lock for the B2-smoke finding: an immediate delete
+    after create can 404 / errorCode 5036 (create→delete eventual consistency).
+    The earlier version called the plain `delete_sheet` and passed only by
+    winning the timing race; the settle retry makes it reliable. (Same flake
+    class as the docs/tech_debt.md create→read entry.)
+
+    A healthy read-write token passes; a read-only/mis-scoped token would raise
+    SmartsheetWriteCapabilityError at the create step — which is the whole point.
+    """
+    sheet_id = smartsheet_client.verify_write_capability()
+    assert isinstance(sheet_id, int)
+    smartsheet_client.delete_sheet_settling(sheet_id)
