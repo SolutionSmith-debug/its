@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -747,6 +748,136 @@ def update_column_options(
     except sdk_exc.SmartsheetException as e:
         raise _translate(e) from e
     invalidate_column_cache(sheet_id)
+
+
+@dataclass(frozen=True)
+class EnsureOptionsResult:
+    """Outcome of an `ensure_picklist_options` call.
+
+    `added` is empty on an idempotent no-op (every requested value already
+    present) AND on the precondition where nothing was missing. `applied` is
+    True only when an API write actually happened (False on dry-run and on a
+    no-op). `final_options` is the option list after the call (== current when
+    nothing changed).
+    """
+
+    column: str
+    column_id: int
+    already_present: tuple[str, ...]
+    added: tuple[str, ...]
+    final_options: tuple[str, ...]
+    applied: bool
+
+
+def ensure_picklist_options(
+    sheet_id: int,
+    column: str,
+    values: Iterable[str],
+    *,
+    dry_run: bool = False,
+) -> EnsureOptionsResult:
+    """Additively ensure `values` are present on a PICKLIST column. Never removes.
+
+    Purpose
+        The additive complement to `update_column_options` (which is
+        REPLACE-style: it overwrites the whole options array). Used to reconcile
+        a live picklist UP TO a canonical superset — e.g. push the three
+        `ReviewReason` enum values the live ITS_Review_Queue `Reason` picklist
+        lacks (picklist-drift reconcile, the documented-but-undone operator step
+        at `review_queue.py`) — without disturbing existing options or their
+        order.
+
+    Invariants
+        - **Additive only.** The resulting list is `current + missing`, where
+          `missing` are the requested values not already present, in the order
+          they appear in `values`. Existing options are never removed and their
+          relative order is preserved (the operator's dropdown doesn't reshuffle).
+        - **Idempotent.** When every requested value is already present, NO API
+          write is issued (`applied=False`, `added=()`); re-running is a no-op.
+        - **Does not create columns.** A title that doesn't resolve to an
+          existing PICKLIST/MULTI_PICKLIST column raises `ValueError` — adding a
+          missing *column* is a separate, deliberate schema change, not a
+          side effect of an option add.
+        - **Preview-able.** `dry_run=True` computes `added`/`final_options`
+          without writing, so a caller can log the proposed change set first.
+
+    Failure modes
+        - Column title absent, or present but not an option-bearing type →
+          `ValueError` (fail loud; this is a caller/config error).
+        - Underlying read/write raises the typed `SmartsheetError` hierarchy
+          (incl. `SmartsheetCircuitOpenError` when the breaker is OPEN — this
+          helper is not breaker-guarded itself; `list_columns_with_options` is
+          not guarded but `update_column_options` is, so a circuit-open surfaces
+          on apply, not preview).
+
+    Consumers
+        Picklist-drift remediation (`scripts/`-side apply + the §30 integration
+        test). NOT wired into any daemon hot path — option edits are an
+        operator/maintenance action, not per-cycle work.
+    """
+    cols = list_columns_with_options(sheet_id)
+    target = next((c for c in cols if c["title"] == column), None)
+    if target is None:
+        raise ValueError(
+            f"ensure_picklist_options: column {column!r} not found on sheet "
+            f"{sheet_id} (this helper never creates columns)"
+        )
+    col_type = target["type"]
+    if col_type not in ("PICKLIST", "MULTI_PICKLIST"):
+        raise ValueError(
+            f"ensure_picklist_options: column {column!r} is type {col_type!r}, "
+            f"not an option-bearing PICKLIST/MULTI_PICKLIST"
+        )
+
+    current = list(target["options"])
+    current_set = set(current)
+    # `values` may be a one-shot iterable (e.g. a generator); classify each
+    # requested value as missing-vs-already in a SINGLE pass so we never
+    # re-iterate an exhausted iterable (which would silently empty
+    # `already_present`). Dedup within the request and skip falsy values
+    # consistently for BOTH buckets.
+    missing: list[str] = []
+    already_list: list[str] = []
+    seen: set[str] = set()
+    for v in values:
+        if not v or v in seen:
+            continue
+        seen.add(v)
+        (already_list if v in current_set else missing).append(v)
+    already = tuple(already_list)
+
+    if not missing:
+        return EnsureOptionsResult(
+            column=column,
+            column_id=int(target["id"]),
+            already_present=already,
+            added=(),
+            final_options=tuple(current),
+            applied=False,
+        )
+
+    final = current + missing
+    if dry_run:
+        return EnsureOptionsResult(
+            column=column,
+            column_id=int(target["id"]),
+            already_present=already,
+            added=tuple(missing),
+            final_options=tuple(final),
+            applied=False,
+        )
+
+    update_column_options(
+        sheet_id, int(target["id"]), final, column_type=col_type
+    )
+    return EnsureOptionsResult(
+        column=column,
+        column_id=int(target["id"]),
+        already_present=already,
+        added=tuple(missing),
+        final_options=tuple(final),
+        applied=True,
+    )
 
 
 def _translate_smartsheet_error(response: requests.Response, *, context: str) -> None:

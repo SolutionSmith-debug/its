@@ -274,6 +274,68 @@ def test_update_column_options_replaces_not_appends(_token_available):
         _delete_sheet_rest(sheet_id, _token_available)
 
 
+# ---- ensure_picklist_options: additive, idempotent, no-removal ----------
+
+
+def test_ensure_picklist_options_additive_round_trip(_token_available):
+    """Live §30: additive ensure preserves existing options + order, appends
+    only the missing, is idempotent on re-run, and previews without writing.
+
+    This is the SDK-vs-Live guard for the picklist-drift reconcile: a
+    SimpleNamespace mock would not catch the REPLACE-style body shape that the
+    additive wrapper depends on (read current → union → write the full union).
+    """
+    sheet_id = smartsheet_client.create_sheet_in_folder(
+        sheet_ids.FOLDER_SYSTEM_CONFIG,
+        _sandbox_name("ensure_additive"),
+        [
+            {"title": "id_col", "type": "TEXT_NUMBER", "primary": True},
+            {"title": "pl_col", "type": "PICKLIST",
+                "options": ["seed_a", "seed_b"]},
+        ],
+    )
+    try:
+        # Add seed_b (already present) + two new — only the new two append,
+        # existing seeds + order preserved.
+        result = smartsheet_client.ensure_picklist_options(
+            sheet_id, "pl_col", ["seed_b", "new_x", "new_y"],
+        )
+        # result.final_options is OUR deterministic construction (current+missing),
+        # so its order is asserted exactly.
+        assert result.applied is True
+        assert result.added == ("new_x", "new_y")
+        assert result.final_options == ("seed_a", "seed_b", "new_x", "new_y")
+
+        live = smartsheet_client.list_columns_with_options(sheet_id)
+        pl_after = next(c for c in live if c["title"] == "pl_col")
+        # The LIVE re-read is compared as a SET — Smartsheet does not guarantee
+        # API-side option-order preservation (see update_column_options docstring),
+        # so an exact-order assert here would flake. The invariants that matter:
+        # no removal (seeds survive) + the new values are present.
+        assert set(pl_after["options"]) == {"seed_a", "seed_b", "new_x", "new_y"}
+        assert "seed_a" in pl_after["options"] and "seed_b" in pl_after["options"]
+
+        # Idempotent: re-running the same request issues no write.
+        again = smartsheet_client.ensure_picklist_options(
+            sheet_id, "pl_col", ["seed_b", "new_x", "new_y"],
+        )
+        assert again.applied is False
+        assert again.added == ()
+        assert again.final_options == ("seed_a", "seed_b", "new_x", "new_y")
+
+        # dry_run previews the next addition without mutating the live column.
+        preview = smartsheet_client.ensure_picklist_options(
+            sheet_id, "pl_col", ["new_z"], dry_run=True,
+        )
+        assert preview.applied is False
+        assert preview.added == ("new_z",)
+        live2 = smartsheet_client.list_columns_with_options(sheet_id)
+        pl_preview = next(c for c in live2 if c["title"] == "pl_col")
+        assert "new_z" not in pl_preview["options"]
+    finally:
+        _delete_sheet_rest(sheet_id, _token_available)
+
+
 # ---- find_sheet_by_name_in_folder + create_sheet_in_folder ------------
 
 
