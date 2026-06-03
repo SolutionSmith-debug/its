@@ -96,6 +96,7 @@ outside the sentinel block.
 <!-- BEGIN AUTO-INDEX -->
 | Date | Type | Status | Workstream | Title | PRs |
 |------|------|--------|------------|-------|-----|
+| 2026-06-03 | session_log | closed | infrastructure | [Session log — Phase 3a/3b decisions + E1 cutover (continuation of 2026-06-02)](2026-06-03_phase3a-3b-e1-cutover.md) | #151, #152, #153 |
 | 2026-06-02 | session_log | closed | infrastructure | [Session log — E1 project-routing migration + first picklist-drift reconcile](2026-06-02_e1-and-picklist-drift-reconcile.md) | #149, #150 |
 | 2026-06-01 | session_log | closed | infrastructure | [Session log — Tier-1 self-heal: weekly_generate catch-up (Check I)](2026-06-01_tier1-self-heal-checkI-catchup.md) | #133 |
 | 2026-05-29 | session_log | closed | docs | [2026-05-29 — Exec-side ledger cleanup: FM v8→v9 + Op Stds v13→v14 doctrine bump](2026-05-29_exec-ledger-cleanup.md) | #125 |
