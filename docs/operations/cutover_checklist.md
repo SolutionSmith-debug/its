@@ -118,6 +118,27 @@ After editing the `safety_reports.authorized_approvers` row (item 1):
 3. **Each approver resolves.** Spot-check that each of the seven emails is a
    real, active Smartsheet user in the production workspace.
 
+## Daemon (re)install — interval substitution (§43 note)
+
+A cutover that (re)installs the launchd daemons uses
+`scripts/launchd/install.sh load <plist> [interval]`. For the **interval**
+daemons (`org.solutionsmith.its.safety-intake`, `…weekly-send`) the installer
+substitutes `__POLL_INTERVAL_SECONDS__` in `<integer>StartInterval</integer>`
+from (priority): the optional `[interval]` arg → the daemon's ITS_Config
+poll-interval row (`safety_reports.intake` / `safety_reports.weekly_send`
+`.poll_interval_seconds`) → a per-daemon default (60 / 900). If the token /
+Smartsheet isn't ready yet at cutover time the read falls back to the default (a
+`note:` line on stderr — harmless). After each load, confirm with
+`install.sh status` and `plutil -lint` the installed copy under
+`~/Library/LaunchAgents/`.
+
+**Successor-Operator boundary (Op Stds §43/§44):** running the installer + reading
+a config row is a **low-capability-class** action. But if `install.sh load` fails
+`plutil -lint` with a surviving `__…__` placeholder, **escalate to Seth** — a
+plist or installer change is a **code change** (high-capability-class). (This
+exact gap — install.sh not substituting `__POLL_INTERVAL_SECONDS__` — was the
+2026-06-02 fix; see `docs/tech_debt.md`.)
+
 ## Owner
 
 `@solutionsmith`. This checklist is appended to as future workstreams add
