@@ -876,9 +876,13 @@ Trigger conditions:
 
 **Revisit when:** operator notes drift between local doc state and CI's view, OR a third polling daemon ships and the watchdog wiring patterns are being touched anyway.
 
-## Hardcoded BOX_PROJECT_FOLDERS dict requires code change per project [OPEN 2026-05-24]
+## Hardcoded BOX_PROJECT_FOLDERS dict requires code change per project [RESOLVED 2026-06-02]
 
-`shared/defaults.py:73` defines `BOX_PROJECT_FOLDERS: dict[str, str]` — a hardcoded mapping from project name to Box folder ID. Every new project added to Box requires editing this file and redeploying. `shared/defaults.py` is also the documented fallback layer for ITS_Config (per existing convention in the module — `BOX_PROJECT_FOLDERS` references "1111B-derived clones post-cutover" suggesting it gets manually edited at each Box cutover).
+**Resolved-by (E1):** `shared/project_routing.py` (TTL-cached `ITS_Project_Routing` sheet reader, `get_folder_id`), `scripts/migrations/build_its_project_routing_sheet.py` + `seed_its_project_routing.py`, `SHEET_PROJECT_ROUTING` in `shared/sheet_ids.py`, `safety_reports/intake.py::upload_attachments_to_box` now resolves via `project_routing.get_folder_id` (BOX_PROJECT_FOLDERS retained as the warn-not-crash fallback), `tests/test_project_routing.py` + `tests/test_project_routing_integration.py`, and `docs/runbooks/project_routing_onboarding.md` (§43). Pre-cutover (`SHEET_PROJECT_ROUTING == 0`) every lookup falls through to the unchanged hardcoded dict, so this lands with zero behavior change until the operator runs the two migrations and fills the sheet id.
+
+**Deferred sub-items (NOT closed by E1, tracked separately below):** (1) startup Box-API folder-ID resolution validation — see "Daemon startup config validation" entry (the §989 reconciliation check); (2) post-cutover removal/empty-out of `BOX_PROJECT_FOLDERS` is an operator step after parity verification, not a code change here.
+
+Original (for reference) ▸ `shared/defaults.py:73` defines `BOX_PROJECT_FOLDERS: dict[str, str]` — a hardcoded mapping from project name to Box folder ID. Every new project added to Box requires editing this file and redeploying. `shared/defaults.py` is also the documented fallback layer for ITS_Config (per existing convention in the module — `BOX_PROJECT_FOLDERS` references "1111B-derived clones post-cutover" suggesting it gets manually edited at each Box cutover).
 
 **Failure mode:** non-developer operator cannot onboard a new project without CC involvement (code edit + PR + deploy). Risk of typo in folder ID silently routing uploads to the wrong project. Stale entries accumulate as projects close out. Project-onboarding is a routine ops task that should not require a deploy cycle.
 

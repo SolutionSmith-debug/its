@@ -19,6 +19,7 @@ convention has no separate `runbook` type).
 | Date | Type | Status | Workstream | Title | PRs |
 |------|------|--------|------------|-------|-----|
 | 2026-06-02 | operations | active | safety_reports | [Runbook — ITS_Daemon_Health row self-provision (Successor-Remediation, Op Stds §43)](daemon_health_self_provision.md) | _–_ |
+| 2026-06-02 | operations | active | safety_reports | [Runbook — Project not routed to a Box folder (Successor-Remediation, Op Stds §43)](project_routing_onboarding.md) | _–_ |
 | 2026-06-02 | operations | active | infrastructure | [Runbook — Smartsheet token cannot write (Successor-Remediation, Op Stds §43)](token_write_capability.md) | _–_ |
 | 2026-06-01 | operations | active | infrastructure | [Runbook — Smartsheet circuit breaker + alerts-per-hour cap (Successor-Remediation, Op Stds §43)](circuit_breaker.md) | _–_ |
 | 2026-06-01 | operations | active | safety_reports | [Runbook — weekly_generate catch-up (Successor-Remediation, Op Stds §43)](safety_weekly_generate.md) | _–_ |
