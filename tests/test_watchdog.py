@@ -125,7 +125,8 @@ def test_checks_list_has_all_session_1_2_3_checks():
         watchdog._check_weekly_generate_catchup,
         watchdog._check_circuit_breaker_prolonged_open,
         watchdog._check_alert_rate_cap_window,
-        watchdog._check_token_write_capability,
+        watchdog._check_token_write_capability,  # Check L (B2)
+        watchdog._check_blueprint_guard_symlinks,  # Check M (C3)
     ]
 
 
@@ -207,6 +208,69 @@ def test_safety_intake_slug_matches_intake_poll_module():
     assert intake_poll.WATCHDOG_JOB_SLUG == "safety_intake"
     assert intake_poll.WATCHDOG_JOB_SLUG in watchdog.TRACKED_JOBS
     assert intake_poll.WATCHDOG_MARKER_DIR == Path.home() / "its" / ".watchdog"
+
+
+def test_picklist_marker_slugs_match_their_writers():
+    """C4 consistency guard (same class as the intake one above): every tracked
+    picklist slug must be written by an actual scheduled job, or the watchdog
+    tracks a marker nothing writes → permanent false WARN.
+
+    - safety_picklist_audit ← scripts/audit_picklist_drift (weekly plist, C4).
+    - safety_picklist_sync  ← scripts/run_picklist_sync (hourly plist, C4 adds
+      the marker so the previously-untracked job's death becomes visible).
+    """
+    import audit_picklist_drift
+    import run_picklist_sync
+
+    assert audit_picklist_drift.WATCHDOG_JOB_NAME == "safety_picklist_audit"
+    assert audit_picklist_drift.WATCHDOG_JOB_NAME in watchdog.TRACKED_JOBS
+    assert run_picklist_sync.WATCHDOG_JOB_NAME == "safety_picklist_sync"
+    assert run_picklist_sync.WATCHDOG_JOB_NAME in watchdog.TRACKED_JOBS
+
+
+def test_run_picklist_sync_write_marker_round_trips(monkeypatch, tmp_path):
+    """C4: run_picklist_sync writes a parseable ISO timestamp to its marker
+    (fail-soft path mirrors audit_picklist_drift's, proven elsewhere)."""
+    import run_picklist_sync
+
+    marker = tmp_path / "safety_picklist_sync.last_run"
+    monkeypatch.setattr(run_picklist_sync, "_watchdog_marker_path", lambda: marker)
+    run_picklist_sync._write_marker()
+    assert marker.exists()
+    datetime.fromisoformat(marker.read_text().strip())  # raises if not valid ISO
+
+
+# ---- Check M: blueprint guard-symlink resolution (C3) --------------------
+
+
+def test_blueprint_guard_symlinks_ok(monkeypatch, tmp_path):
+    bp = tmp_path / "its-blueprint"
+    (bp / ".claude" / "agents").mkdir(parents=True)
+    (bp / ".claude" / "hooks").mkdir(parents=True)
+    monkeypatch.setattr("watchdog._BLUEPRINT_ROOT", bp)
+    result = watchdog._check_blueprint_guard_symlinks()
+    assert result.severity is Severity.INFO
+    assert "resolve OK" in result.summary
+
+
+def test_blueprint_guard_symlinks_dangling_warns(monkeypatch, tmp_path):
+    # Blueprint root exists, but the .claude guard symlinks dangle (target gone).
+    bp = tmp_path / "its-blueprint"
+    (bp / ".claude").mkdir(parents=True)
+    (bp / ".claude" / "agents").symlink_to(tmp_path / "missing-agents")  # dangling
+    (bp / ".claude" / "hooks").symlink_to(tmp_path / "missing-hooks")    # dangling
+    monkeypatch.setattr("watchdog._BLUEPRINT_ROOT", bp)
+    result = watchdog._check_blueprint_guard_symlinks()
+    assert result.severity is Severity.WARN
+    assert "fail-open" in result.summary
+    assert ".claude/agents" in result.summary
+
+
+def test_blueprint_guard_symlinks_skipped_when_absent(monkeypatch, tmp_path):
+    monkeypatch.setattr("watchdog._BLUEPRINT_ROOT", tmp_path / "no-blueprint-here")
+    result = watchdog._check_blueprint_guard_symlinks()
+    assert result.severity is Severity.INFO
+    assert "not on this host" in result.summary
 
 
 # ---- Group B: _check_stale_review_queue ---------------------------------

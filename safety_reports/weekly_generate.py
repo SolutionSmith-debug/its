@@ -191,7 +191,7 @@ _SCHEMA_PATH = _PACKAGE_ROOT / "schemas" / "safety_weekly_generate.json"
 # Op Stds §42 rationale). Bump this in lockstep with the schema's `version`
 # field — schemas/README.md: "bump the version, update the consuming script
 # in the same commit."
-_EXPECTED_SCHEMA_VERSION = "0.1.0"
+_EXPECTED_SCHEMA_VERSION = "0.2.0"  # 0.2.0: F21 added maximum bounds to incident counts
 
 # Sentinel that the model uses for non-derivable sections — exposed here so
 # tests can assert the prompt preserves the bracket placeholder convention

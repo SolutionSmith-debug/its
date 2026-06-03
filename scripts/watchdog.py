@@ -133,6 +133,10 @@ TRACKED_JOBS: list[str] = [
     "safety_weekly_send_poll",
     "safety_picklist_audit",
     "safety_intake",
+    # C4: the hourly picklist SYNC job (run_picklist_sync) — distinct from the
+    # weekly picklist AUDIT above. Previously untracked, so its silent death was
+    # invisible; it now writes a safety_picklist_sync marker each run.
+    "safety_picklist_sync",
 ]
 
 # Per-job freshness windows. Jobs not in this map use the default 24h
@@ -155,6 +159,10 @@ TRACKED_JOB_WINDOWS: dict[str, timedelta] = {
     # without false-positiving, but a genuine stall surfaces at the next daily
     # watchdog run. Per the high-frequency-poller window convention above.
     "safety_intake": timedelta(minutes=5),
+    # run_picklist_sync runs hourly (launchd StartInterval=3600). 3 h == ~3
+    # cycles: tolerates a coalesced/delayed run without false-positiving, but a
+    # genuine stall surfaces at the next daily watchdog run. (C4.)
+    "safety_picklist_sync": timedelta(hours=3),
 }
 DEFAULT_TRACKED_JOB_WINDOW = timedelta(hours=24)
 
@@ -1211,6 +1219,49 @@ def _check_token_write_capability() -> CheckResult:
     return CheckResult(Severity.INFO, "ITS_SMARTSHEET_TOKEN write capability OK.")
 
 
+# Check M (C3): the blueprint repo's .claude guard symlinks.
+_BLUEPRINT_ROOT = Path.home() / "its-blueprint"
+_BLUEPRINT_GUARD_PATHS = (".claude/agents", ".claude/hooks")
+
+
+def _check_blueprint_guard_symlinks() -> CheckResult:
+    """Check M (C3): the blueprint repo's `.claude` guard symlinks must resolve.
+
+    `~/its-blueprint/.claude/{agents,hooks}` are committed RELATIVE symlinks into
+    `../../its/.claude/...`; they resolve ONLY when `~/its-blueprint` is a
+    `~/`-level sibling of `~/its`. If they DANGLE (a repo move / non-sibling
+    layout), Claude Code loads zero agents AND the propose-only guard hooks
+    (block-doctrine-write, block-codeql-dismiss, block-doc-reconciliation-write)
+    silently vanish — a fail-OPEN with no warning. This converts that into a
+    loud WARN on the production host, where the watchdog runs and the symlinks
+    SHOULD resolve.
+
+    Scope (C3 fix-direction (a)): this catches a PRODUCTION-layout regression —
+    the one place a structural check can actually run against a resolvable
+    layout. A bare blueprint clone / CI runner has no `~/its` sibling and no
+    watchdog running, so that case stays a documented operating constraint
+    (`docs/operations/worktree_discipline.md`). WARN (not CRITICAL): the guards
+    are propose-only safety nets, not the security boundary — operator-actionable
+    "fix your layout", not a page-worthy emergency.
+    """
+    if not _BLUEPRINT_ROOT.exists():
+        return CheckResult(
+            Severity.INFO,
+            "blueprint repo not on this host — guard-symlink check skipped.",
+        )
+    # Path.exists() follows the symlink, so a dangling link (target missing) and
+    # an outright-missing path both read as False — either way the guards are gone.
+    unresolved = [rel for rel in _BLUEPRINT_GUARD_PATHS if not (_BLUEPRINT_ROOT / rel).exists()]
+    if unresolved:
+        return CheckResult(
+            Severity.WARN,
+            f"blueprint guard symlinks unresolved: {unresolved} — the propose-only "
+            f"guard hooks may be SILENTLY ABSENT (fail-open). Confirm ~/its-blueprint "
+            f"is a ~/-level sibling of ~/its (docs/operations/worktree_discipline.md).",
+        )
+    return CheckResult(Severity.INFO, "blueprint guard symlinks resolve OK.")
+
+
 # ---- Entrypoint ---------------------------------------------------------
 
 
@@ -1237,6 +1288,9 @@ CHECKS: list[Callable[..., CheckResult]] = [
     # Check L (B2): token write-capability probe. Returns a CheckResult, so its
     # CRITICAL is paged + MAINTENANCE-deferred by _run_check (no inline alert).
     _check_token_write_capability,
+    # Check M (C3): blueprint .claude guard-symlink resolution. Returns a
+    # CheckResult (no inline alert); WARN-only if the symlinks dangle.
+    _check_blueprint_guard_symlinks,
     # Check E (Anthropic spend trend) deferred to a follow-on PR (the
     # Check E shipping PR) — requires an Admin API key (sk-ant-admin01-...
     # prefix) provisioned in Keychain under ITS_ANTHROPIC_ADMIN_API_KEY.

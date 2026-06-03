@@ -622,6 +622,20 @@ def test_schema_file_loads_and_projects_to_tool_shape():
 # schemas/safety_weekly_generate.json is never mutated.
 
 
+def test_incident_count_fields_carry_numeric_bounds():
+    """F21: every incident-count integer field in the REAL schema carries both
+    minimum and maximum, so a prompt-injected absurd count can't pass extraction
+    silently; and the schema `version` stays in lockstep with the consuming
+    constant (so a future schema edit without a version bump is caught here)."""
+    schema = json.loads(weekly_generate._SCHEMA_PATH.read_text())
+    counts = schema["input_schema"]["properties"]["incident_counts"]["properties"]
+    assert counts, "no incident-count fields found"
+    for field, spec in counts.items():
+        assert "minimum" in spec, f"{field} missing minimum"
+        assert "maximum" in spec, f"{field} missing maximum (F21)"
+    assert schema["version"] == weekly_generate._EXPECTED_SCHEMA_VERSION
+
+
 _MINIMAL_SCHEMA_BODY: dict[str, Any] = {
     "name": GENERATE_WPR_TOOL_NAME,
     "description": "fixture schema for version-enforcement tests",
