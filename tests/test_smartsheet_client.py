@@ -768,6 +768,83 @@ def test_ensure_picklist_options_non_picklist_column_raises(mocker):
         smartsheet_client.ensure_picklist_options(42, "Notes", ["x"])
 
 
+# ---- create_picklist_column: additive column create ---------------------
+
+
+def _install_add_columns(mocker, new_col_id: int = 555):
+    """Patch get_client so add_columns returns a created column with `new_col_id`."""
+    client = _install_client(mocker)
+    client.Sheets.add_columns.return_value = SimpleNamespace(
+        result=[SimpleNamespace(id=new_col_id)]
+    )
+    return client
+
+
+def test_create_picklist_column_body_shape_and_return(mocker):
+    """Body carries title/type/options/index; return is the new column id."""
+    client = _install_add_columns(mocker, new_col_id=777)
+    # Two existing columns → default append index == 2.
+    mocker.patch(
+        "shared.smartsheet_client.list_columns_with_options",
+        return_value=[{"id": 1, "title": "A"}, {"id": 2, "title": "B"}],
+    )
+
+    col_id = smartsheet_client.create_picklist_column(
+        42, "Workstream", ["safety_reports", "global"],
+    )
+
+    assert col_id == 777
+    args, _ = client.Sheets.add_columns.call_args
+    assert args[0] == 42
+    bodies = args[1]
+    assert isinstance(bodies, list) and len(bodies) == 1
+    body = bodies[0]
+    assert body.title == "Workstream"
+    assert body.type == "PICKLIST"
+    assert list(body.options) == ["safety_reports", "global"]
+    assert body.index == 2  # appended after the two existing columns
+    # No restrict by default → validation not set true.
+    assert not getattr(body, "validation", False)
+
+
+def test_create_picklist_column_explicit_index_skips_count_read(mocker):
+    """An explicit index is used verbatim and avoids the list_columns read."""
+    client = _install_add_columns(mocker)
+    listed = mocker.patch("shared.smartsheet_client.list_columns_with_options")
+
+    smartsheet_client.create_picklist_column(42, "X", ["a"], index=0)
+
+    body = client.Sheets.add_columns.call_args.args[1][0]
+    assert body.index == 0
+    listed.assert_not_called()  # explicit index → no count round-trip
+
+
+def test_create_picklist_column_restrict_sets_validation(mocker):
+    client = _install_add_columns(mocker)
+    smartsheet_client.create_picklist_column(
+        42, "X", ["a"], index=0, restrict_to_options=True,
+    )
+    body = client.Sheets.add_columns.call_args.args[1][0]
+    assert body.validation is True
+
+
+def test_create_picklist_column_invalidates_cache(mocker):
+    _install_add_columns(mocker)
+    smartsheet_client._column_maps[42] = {"A": 1}
+
+    smartsheet_client.create_picklist_column(42, "X", ["a"], index=0)
+
+    assert 42 not in smartsheet_client._column_maps  # invalidated post-create
+
+
+def test_create_picklist_column_translates_permission_error(mocker):
+    client = _install_client(mocker)
+    client.Sheets.add_columns.side_effect = _api_error(403, message="denied")
+
+    with pytest.raises(SmartsheetPermissionError):
+        smartsheet_client.create_picklist_column(42, "X", ["a"], index=0)
+
+
 # ---- find_sheet_by_name_in_folder / create_sheet_in_folder --------------
 
 

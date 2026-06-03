@@ -85,5 +85,9 @@ column creation, registry edits, and removals are high-class Tier-3.
 `@solutionsmith`. The audit, the REGISTRY, and `ensure_picklist_options` are code
 (Tier 3). The 2026-06-02 `Reason` reconcile + this runbook landed together;
 findings #2 (ITS_Errors `Workstream`) and #3 (ITS_Quarantine `Disposition`) were
-classified **dormant** (registry over-declares; no live writer) and await the
-Phase 3a add-column-vs-trim-registry decision.
+classified **dormant** (registry over-declares; no live writer) and were
+**resolved 2026-06-03 (Phase 3a, decision D1 = ADD)** by creating the two columns
+(PICKLIST, seeded with the registry options) via
+`scripts/migrations/add_dormant_picklist_columns.py` — the weekly audit is now
+quiet. The general guidance above still holds for any *new* "NOT PRESENT" finding
+(add-column vs trim-registry remains a per-finding Tier-3 decision).
