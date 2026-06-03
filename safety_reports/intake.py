@@ -44,11 +44,13 @@ original inbound message.
      still land in the right week).
   9. Smartsheet Daily Reports row write with `add_rows`. Entry # is the
      next sequential integer.
- 10. Box upload of attachments to the per-category subfolder under
-     `BOX_PROJECT_FOLDERS[project_name]`. Categories without a fixed
-     mapping (Safe Work Observation, Other) skip Box and tag the row's
-     Notes with `[box_filing_skipped: category]`; the resulting status
-     is `skipped_swo_other` for observability.
+ 10. Box upload of attachments to the per-category subfolder. The project's
+     Box folder ID is resolved via `project_routing.get_folder_id()`
+     (ITS_Project_Routing sheet Active rows → `BOX_PROJECT_FOLDERS` fallback
+     → empty string on total miss). Categories without a fixed mapping
+     (Safe Work Observation, Other) skip Box and tag the row's Notes with
+     `[box_filing_skipped: category]`; the resulting status is
+     `skipped_swo_other` for observability.
  11. Daily Reports row update: prepend the Box URL to Notes / Action Items
      so the row carries the audit-trail link to the filed document.
  12. Return `ProcessResult` to the caller. The caller (poll_once) calls
@@ -121,10 +123,10 @@ from shared import (
     anomaly_logger,
     anthropic_client,
     box_client,
-    defaults,
     error_log,
     graph_client,
     header_forgery,
+    project_routing,
     quarantine,
     review_queue,
     sheet_ids,
@@ -797,9 +799,12 @@ def upload_attachments_to_box(
     if subpath is None:
         return [], [f"no Box subfolder mapping for category {extraction.report_category!r}"]
 
-    project_folder_id = defaults.BOX_PROJECT_FOLDERS.get(project_name) or ""
+    project_folder_id = project_routing.get_folder_id(project_name)
     if not project_folder_id:
-        return [], [f"BOX_PROJECT_FOLDERS[{project_name!r}] is empty"]
+        return [], [
+            f"no Box folder for project {project_name!r} "
+            f"(ITS_Project_Routing + BOX_PROJECT_FOLDERS fallback both empty)"
+        ]
 
     target_folder_id = _resolve_box_subfolder(project_folder_id, subpath)
     if target_folder_id is None:
