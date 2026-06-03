@@ -300,14 +300,20 @@ def test_ensure_picklist_options_additive_round_trip(_token_available):
         result = smartsheet_client.ensure_picklist_options(
             sheet_id, "pl_col", ["seed_b", "new_x", "new_y"],
         )
+        # result.final_options is OUR deterministic construction (current+missing),
+        # so its order is asserted exactly.
         assert result.applied is True
         assert result.added == ("new_x", "new_y")
         assert result.final_options == ("seed_a", "seed_b", "new_x", "new_y")
 
         live = smartsheet_client.list_columns_with_options(sheet_id)
         pl_after = next(c for c in live if c["title"] == "pl_col")
-        # No removal: the original seeds survive; new values appended in order.
-        assert pl_after["options"] == ["seed_a", "seed_b", "new_x", "new_y"]
+        # The LIVE re-read is compared as a SET — Smartsheet does not guarantee
+        # API-side option-order preservation (see update_column_options docstring),
+        # so an exact-order assert here would flake. The invariants that matter:
+        # no removal (seeds survive) + the new values are present.
+        assert set(pl_after["options"]) == {"seed_a", "seed_b", "new_x", "new_y"}
+        assert "seed_a" in pl_after["options"] and "seed_b" in pl_after["options"]
 
         # Idempotent: re-running the same request issues no write.
         again = smartsheet_client.ensure_picklist_options(

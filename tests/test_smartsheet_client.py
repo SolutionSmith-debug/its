@@ -726,10 +726,31 @@ def test_ensure_picklist_options_dedups_and_skips_empty(mocker):
     _patch_cols(mocker, _pl_cols(["a"]))
     mocker.patch("shared.smartsheet_client.update_column_options")
 
+    # "a" already present (and duplicated); b duplicated; "" skipped.
     result = smartsheet_client.ensure_picklist_options(
-        42, "Reason", ["b", "b", "c", ""],
+        42, "Reason", ["a", "a", "b", "b", "c", ""],
     )
     assert result.added == ("b", "c")  # duplicate collapsed, "" skipped
+    # already_present is deduped + empty-skipped the SAME way as added (no
+    # asymmetry): "a" appears once, not twice.
+    assert result.already_present == ("a",)
+
+
+def test_ensure_picklist_options_accepts_generator_values(mocker):
+    """Regression: a one-shot generator must not silently empty already_present.
+
+    The classification is a SINGLE pass over `values`, so a generator is fully
+    honored for BOTH added and already_present (the two-iteration bug would
+    leave already_present empty).
+    """
+    _patch_cols(mocker, _pl_cols(["a", "b"]))
+    mocker.patch("shared.smartsheet_client.update_column_options")
+
+    result = smartsheet_client.ensure_picklist_options(
+        42, "Reason", (v for v in ["a", "b", "c"]),  # generator
+    )
+    assert result.added == ("c",)
+    assert result.already_present == ("a", "b")  # NOT () — generator fully read
 
 
 def test_ensure_picklist_options_missing_column_raises(mocker):

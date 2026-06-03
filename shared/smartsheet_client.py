@@ -831,14 +831,20 @@ def ensure_picklist_options(
 
     current = list(target["options"])
     current_set = set(current)
+    # `values` may be a one-shot iterable (e.g. a generator); classify each
+    # requested value as missing-vs-already in a SINGLE pass so we never
+    # re-iterate an exhausted iterable (which would silently empty
+    # `already_present`). Dedup within the request and skip falsy values
+    # consistently for BOTH buckets.
     missing: list[str] = []
+    already_list: list[str] = []
     seen: set[str] = set()
     for v in values:
-        if v and v not in current_set and v not in seen:
-            missing.append(v)
-            seen.add(v)
-
-    already = tuple(v for v in values if v in current_set)
+        if not v or v in seen:
+            continue
+        seen.add(v)
+        (already_list if v in current_set else missing).append(v)
+    already = tuple(already_list)
 
     if not missing:
         return EnsureOptionsResult(
