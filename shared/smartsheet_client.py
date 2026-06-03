@@ -880,6 +880,82 @@ def ensure_picklist_options(
     )
 
 
+@_breaker_guard
+def create_picklist_column(
+    sheet_id: int,
+    title: str,
+    options: list[str],
+    *,
+    index: int | None = None,
+    restrict_to_options: bool = False,
+) -> int:
+    """Add a NEW PICKLIST column to a sheet and return its column ID.
+
+    Purpose
+        The create-side complement to `update_column_options`/`ensure_picklist_options`
+        (both of which *edit an existing* option-bearing column and raise if the
+        column is absent). This adds a column that does not exist yet — the
+        deliberate schema change behind the Phase 3a "add the dormant column"
+        decision (e.g. ITS_Errors `Workstream`, ITS_Quarantine `Disposition`),
+        seeded with its `picklist_validation.REGISTRY` allowed set so the
+        `audit_picklist_drift` allowed-set check passes immediately rather than
+        flipping a "NOT PRESENT" finding into an "allowed-set mismatch" one.
+
+    Invariants
+        - **Additive only.** Creates a new column; never edits or removes an
+          existing column. Idempotency is the CALLER's job — use
+          `list_columns_with_options` to skip when the title already exists
+          (same contract as `create_sheet_in_folder`). Re-running blindly would
+          create a duplicate-titled column.
+        - **Append by default.** `index=None` appends after the last existing
+          column (one extra read to count them — acceptable for a maintenance
+          helper, not a hot path). Pass an explicit 0-based `index` to insert
+          elsewhere; Smartsheet's `POST /columns` *requires* an index.
+        - **Plain PICKLIST, restrict-off by default.** `restrict_to_options=False`
+          mirrors the rest of the sandbox sheets (server-side "restrict to
+          dropdown values only" is the separate hardening sweep,
+          `docs/audits/picklist_hardening_audit.md`). Pass `restrict_to_options=True`
+          to set `validation=True` at creation. NOTE: `list_columns_with_options`
+          does not read back `validation`, so the restrict flag is covered only
+          at the unit-body level, not the §30 live round-trip.
+
+    Failure modes
+        - Underlying SDK error surfaces as the typed `SmartsheetError` hierarchy
+          (401→Auth, 403→Permission, etc.); `SmartsheetCircuitOpenError` when the
+          breaker is OPEN (this helper IS `@_breaker_guard`-decorated — a column
+          create is a write).
+        - Invalidates the sheet's column-title cache on success so a later
+          title→id lookup resolves the new column.
+
+    Consumers
+        `scripts/migrations/add_dormant_picklist_columns.py` (Phase 3a) + its §30
+        integration test. NOT wired into any daemon hot path — adding a column is
+        an operator/maintenance schema action, not per-cycle work.
+    """
+    if index is None:
+        # Append after the last existing column. One extra read; a column add
+        # is a one-shot maintenance action, so the round-trip cost is moot.
+        index = len(list_columns_with_options(sheet_id))
+    body = smartsheet.models.Column({
+        "title": title,
+        "type": "PICKLIST",
+        "index": index,
+        "options": list(options),
+    })
+    if restrict_to_options:
+        body.validation = True
+    try:
+        result = get_client().Sheets.add_columns(sheet_id, [body])
+    except sdk_exc.SmartsheetException as e:
+        raise _translate(e) from e
+    invalidate_column_cache(sheet_id)
+    added = result.result
+    # `add_columns` returns the created Column(s) under `.result` (a list even
+    # for a single add). Defensive: accept a bare object if the SDK shape drifts.
+    first = added[0] if isinstance(added, (list, tuple)) else added
+    return int(first.id)
+
+
 def _translate_smartsheet_error(response: requests.Response, *, context: str) -> None:
     """Raise a typed `SmartsheetError` for a non-2xx REST response.
 

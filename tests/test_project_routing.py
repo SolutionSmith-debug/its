@@ -47,6 +47,18 @@ def sheet_wired(monkeypatch):
     return 999001
 
 
+@pytest.fixture
+def sheet_unwired(monkeypatch):
+    """Force the pre-cutover unwired state (SHEET_PROJECT_ROUTING == 0).
+
+    Post-E1-cutover (2026-06-03) the module constant is a real sheet id, so the
+    pre-cutover "sheet not yet built" behavior must be SIMULATED rather than
+    relying on the default placeholder. Mirrors `sheet_wired`.
+    """
+    monkeypatch.setattr(project_routing.sheet_ids, "SHEET_PROJECT_ROUTING", 0)
+    return 0
+
+
 def _row(
     *,
     project_name: str = "Bradley 1",
@@ -100,9 +112,12 @@ def test_inactive_row_is_skipped_and_falls_back(mocker, fallback, sheet_wired, c
 # ---- get_folder_id() — fallback paths ------------------------------------
 
 
-def test_pre_cutover_sheet_unwired_falls_back_silently(mocker, fallback, caplog):
-    # SHEET_PROJECT_ROUTING is the default 0 placeholder → get_rows raises
-    # NotFound. The fallback is expected pre-cutover, so NO warning is emitted.
+def test_pre_cutover_sheet_unwired_falls_back_silently(
+    mocker, fallback, sheet_unwired, caplog
+):
+    # SHEET_PROJECT_ROUTING == 0 (unwired, simulated post-cutover) → get_rows
+    # raises NotFound. The fallback is expected pre-cutover, so NO warning is
+    # emitted (the warn branch requires SHEET_PROJECT_ROUTING truthy).
     mocker.patch(
         "shared.project_routing.smartsheet_client.get_rows",
         side_effect=smartsheet_client.SmartsheetNotFoundError("id 0 → 404"),
