@@ -13,13 +13,13 @@ Sheet schema (one row per project):
     Active          CHECKBOX    (false = retired; excluded from resolution)
     Notes           TEXT_NUMBER
 
-Cutover (mirrors the trusted-contacts cluster):
+Cutover (mirrors the trusted-contacts cluster; FLIP precedes SEED):
     1. `scripts/migrations/build_its_project_routing_sheet.py` builds the sheet.
-    2. `scripts/migrations/seed_its_project_routing.py` seeds it from
-       `BOX_PROJECT_FOLDERS`.
-    3. Operator fills `SHEET_PROJECT_ROUTING` in `shared/sheet_ids.py`.
-Until step 3, `SHEET_PROJECT_ROUTING == 0` and every lookup falls back to
-`BOX_PROJECT_FOLDERS` — i.e. behavior is unchanged pre-cutover (no regression).
+    2. Flip `SHEET_PROJECT_ROUTING` in `shared/sheet_ids.py` to the new id.
+    3. `scripts/migrations/seed_its_project_routing.py` seeds it from
+       `BOX_PROJECT_FOLDERS` (reads the flipped constant, so it follows step 2).
+Until step 2 (the flip), `SHEET_PROJECT_ROUTING == 0` and every lookup falls back
+to `BOX_PROJECT_FOLDERS` — i.e. behavior is unchanged pre-cutover (no regression).
 
 In-process cache: 60-second TTL, same rationale as `trusted_contacts` — a
 single 60-second `intake_poll` cycle reuses cached state; an operator edit
