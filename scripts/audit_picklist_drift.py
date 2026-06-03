@@ -17,8 +17,10 @@ Three drift categories surface as findings:
      we check the `validation` attribute when present.)
 
 CLI:
-    python -m scripts.audit_picklist_drift             # report only
+    python -m scripts.audit_picklist_drift             # report only (read-only audit)
     python -m scripts.audit_picklist_drift --update-audit-doc
+    python -m scripts.audit_picklist_drift --apply           # PREVIEW the reconcile (no write)
+    python -m scripts.audit_picklist_drift --apply --commit  # APPLY the reconcile (live write)
 
 `--update-audit-doc` re-writes the conversion status emojis in
 `docs/audits/picklist_hardening_audit.md` (planned; not yet implemented — print
@@ -26,9 +28,22 @@ findings and leave the doc edits to the operator until the table-rewrite
 heuristic is proven safe). For now the flag prints "TODO: implement
 auto-update of audit doc" and exits 0 alongside the regular report.
 
+`--apply` (Phase 3b) is the operator-friendly reconcile: for every registered
+`(sheet_id, column → values)` in `picklist_validation.REGISTRY` it calls the
+additive `smartsheet_client.ensure_picklist_options` to push any MISSING options
+into the live picklist. It is **additive only** (never removes an option — that
+parity matches `ensure_picklist_options`; a prune would be a separate flag behind
+`picklist_sync`'s reference-check guard), **idempotent** (a column already at its
+registry set is a no-op), and **option-only** — a missing or wrong-typed COLUMN
+is logged and skipped (creating a column is the Phase 3a schema decision, not
+this command's job). **Dry-run is the default**: bare `--apply` previews the
+proposed adds per column and writes nothing; `--commit` is required to mutate.
+This is the real form of the `--apply` flow the §43 runbook
+(`docs/runbooks/picklist_drift_reconcile.md`) describes for the Successor-Operator.
+
 Exits:
-  0 — zero drift findings.
-  1 — at least one drift finding (operator UI work pending or registry/sheet disagreement).
+  0 — audit: zero drift findings | apply: reconcile completed.
+  1 — audit: at least one drift finding (operator UI work pending or registry/sheet disagreement).
 
 Watchdog integration: this script writes
 `~/its/.watchdog/safety_picklist_audit.last_run` on completion so
@@ -139,6 +154,60 @@ def audit() -> list[str]:
     return all_findings
 
 
+def apply_reconcile(*, commit: bool) -> tuple[int, int, list[str]]:
+    """Additively reconcile every registered picklist UP TO its REGISTRY set.
+
+    Phase 3b — the operator-friendly form of the picklist-drift reconcile. For
+    each registered `(sheet_id, column → values)` in `picklist_validation.REGISTRY`
+    it calls `smartsheet_client.ensure_picklist_options` (additive, idempotent,
+    NEVER creates columns) with `dry_run = not commit`.
+
+    Scope (deliberate):
+      - **Option drift only.** A missing or wrong-typed COLUMN raises `ValueError`
+        from `ensure_picklist_options`; that is the Phase 3a schema decision
+        (add-column vs trim-registry), NOT this command's job — log + skip + continue.
+      - **Additive only.** Never removes an option (parity with the underlying
+        helper); a prune would be a separate flag behind a reference-check guard.
+      - **Idempotent.** A column already at its registry set is a no-op (no write).
+
+    Returns `(columns_changed, options_added, skipped)` where `skipped` is the list
+    of human-readable column-absent/wrong-type notes. A real SMARTSHEET error
+    (auth/permission/rate-limit/circuit-open) is NOT swallowed — it propagates to
+    `@its_error_log` so a genuine write failure surfaces (re-run is safe: additive
+    + idempotent).
+    """
+    columns_changed = 0
+    options_added = 0
+    skipped: list[str] = []
+    for sheet_id, column_registry in picklist_validation.REGISTRY.items():
+        if not column_registry:
+            continue  # empty registry entry (per-project shells)
+        for column, values in column_registry.items():
+            # sorted() → deterministic preview/append order for the missing values
+            # (Smartsheet doesn't guarantee server-side option order anyway).
+            try:
+                result = smartsheet_client.ensure_picklist_options(
+                    sheet_id, column, sorted(values), dry_run=not commit,
+                )
+            except ValueError as e:
+                note = (
+                    f"sheet={sheet_id} column={column!r}: column absent/wrong-type "
+                    f"— schema decision (Phase 3a), skipping ({e})"
+                )
+                print(f"  [skip] {note}")
+                skipped.append(note)
+                continue
+            if result.added:
+                columns_changed += 1
+                options_added += len(result.added)
+                verb = "applied" if result.applied else "would add"
+                print(
+                    f"  [{verb}] sheet={sheet_id} column={column!r}: "
+                    f"+{list(result.added)}"
+                )
+    return columns_changed, options_added, skipped
+
+
 def _emit_findings_to_its_errors(findings: list[str]) -> None:
     """Push one ITS_Errors row per finding (WARN). Empty findings → one INFO."""
     if not findings:
@@ -174,13 +243,52 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--no-emit", action="store_true",
         help="Skip ITS_Errors writes (useful for dry-run / local probe).",
     )
-    return parser.parse_args(argv)
+    parser.add_argument(
+        "--apply", action="store_true",
+        help=(
+            "Reconcile mode (Phase 3b): additively push every REGISTRY column's "
+            "missing options into the live picklist via ensure_picklist_options. "
+            "DRY-RUN by default (preview only); add --commit to write. "
+            "Option-only — a missing column is logged + skipped (Phase 3a)."
+        ),
+    )
+    parser.add_argument(
+        "--commit", action="store_true",
+        help="With --apply: actually write. Without it, --apply previews only.",
+    )
+    args = parser.parse_args(argv)
+    if args.commit and not args.apply:
+        parser.error("--commit is only valid together with --apply.")
+    return args
 
 
 @require_active
 @its_error_log(_SCRIPT)
 def main() -> None:
     args = _parse_args()
+
+    if args.apply:
+        mode = "COMMIT (live write)" if args.commit else "DRY-RUN (preview only)"
+        print(f"[info] --apply reconcile mode: {mode}")
+        changed, added, skipped = apply_reconcile(commit=args.commit)
+        print()
+        print("Summary:")
+        verb = "applied" if args.commit else "would apply"
+        print(f"  Columns with option adds {verb}: {changed}")
+        print(f"  Options {verb}: {added}")
+        print(f"  Columns skipped (absent/wrong-type — Phase 3a): {len(skipped)}")
+        if not args.commit and (changed or added):
+            print("  Re-run with --commit to apply.")
+        if not args.no_emit and args.commit and added:
+            log(
+                Severity.INFO,
+                _SCRIPT,
+                f"picklist reconcile applied: {added} option(s) added across "
+                f"{changed} column(s); {len(skipped)} column(s) skipped.",
+                error_code="picklist_reconcile_applied",
+            )
+        _write_marker()
+        sys.exit(0)
 
     findings = audit()
     print(f"[info] Audited {len(picklist_validation.REGISTRY)} registered sheet(s).")
