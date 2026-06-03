@@ -2,15 +2,25 @@
 #
 # ITS launchd helper — load, unload, and inspect ITS LaunchAgents.
 #
-# Substitutes __ITS_HOME__ → "$HOME/its" when copying the plist into
-# ~/Library/LaunchAgents/. The plist files in this directory stay
-# generic; the installed copies have concrete paths.
+# Substitutes __ITS_HOME__ → "$HOME/its" (and __POLL_INTERVAL_SECONDS__ for the
+# interval daemons — see below) when copying the plist into
+# ~/Library/LaunchAgents/. The plist files in this directory stay generic; the
+# installed copies have concrete values.
+#
+# __POLL_INTERVAL_SECONDS__ (safety-intake, weekly-send): these plists carry the
+# placeholder in <integer>StartInterval</integer>. `load`/`dry-run` resolve it
+# from the optional [interval] arg, else a per-daemon default (60 / 900, matching
+# the daemon's ITS_Config poll-interval row default — safety_reports.intake /
+# safety_reports.weekly_send .poll_interval_seconds). The interval is BAKED into
+# the installed plist, so a later ITS_Config change needs a re-install (pass the
+# new value as [interval]). WITHOUT this substitution the installed plist keeps
+# the literal placeholder and fails `plutil -lint` → the daemon won't load.
 #
 # Usage:
-#   ./install.sh load    <plist>     # substitute, copy, bootstrap
+#   ./install.sh load    <plist> [interval]   # substitute, copy, bootstrap
 #   ./install.sh unload  <plist>     # bootout, remove from LaunchAgents
 #   ./install.sh status  [<plist>]   # show ITS jobs (all if no arg)
-#   ./install.sh dry-run <plist>     # print resolved plist to stdout
+#   ./install.sh dry-run <plist> [interval]   # print resolved plist to stdout
 #
 # <plist> can be the filename (with or without .plist) or the label.
 #
@@ -24,12 +34,15 @@ UID_NUM="$(id -u)"
 
 usage() {
     cat <<EOF
-usage: $0 {load|unload|status|dry-run} [plist]
+usage: $0 {load|unload|status|dry-run} [plist] [interval]
 
-  load     <plist>   substitute __ITS_HOME__ and bootstrap into launchd
-  unload   <plist>   bootout and remove from ~/Library/LaunchAgents/
-  status   [plist]   list loaded ITS jobs (or one if specified)
-  dry-run  <plist>   print the resolved plist content to stdout
+  load     <plist> [interval]   substitute placeholders + bootstrap into launchd
+  unload   <plist>              bootout and remove from ~/Library/LaunchAgents/
+  status   [plist]              list loaded ITS jobs (or one if specified)
+  dry-run  <plist> [interval]   print the resolved plist content to stdout
+
+  [interval] (positive integer seconds) overrides the StartInterval for the
+  poll-interval daemons (safety-intake → default 60, weekly-send → default 900).
 EOF
     exit 1
 }
@@ -41,18 +54,100 @@ resolve_plist_name() {
     echo "$name"
 }
 
+# Per-daemon ITS_Config poll-interval row + default. Empty/empty for the
+# non-interval daemons (calendar-driven or no placeholder) → substitution skipped.
+poll_interval_config_key() {
+    case "$1" in
+        org.solutionsmith.its.safety-intake) echo "safety_reports.intake.poll_interval_seconds" ;;
+        org.solutionsmith.its.weekly-send)   echo "safety_reports.weekly_send.poll_interval_seconds" ;;
+        *) echo "" ;;
+    esac
+}
+poll_interval_default() {
+    case "$1" in
+        org.solutionsmith.its.safety-intake) echo "60" ;;
+        org.solutionsmith.its.weekly-send)   echo "900" ;;
+        *) echo "" ;;
+    esac
+}
+
+# Read a numeric ITS_Config setting via the venv python (reusing
+# shared.smartsheet_client + keychain, exactly like
+# scripts/install_safety_intake_daemon.sh). Echoes the value, or nothing on any
+# failure — Smartsheet may be unreachable / the token unseeded at cutover time,
+# in which case the caller falls back to the per-daemon default.
+read_its_config_interval() {
+    local key="$1"
+    [[ -n "$key" ]] || return 0
+    "${ITS_HOME}/.venv/bin/python" - "$key" 2>/dev/null <<'PYEOF' || true
+import sys
+sys.path.insert(0, ".")
+try:
+    from shared import smartsheet_client
+    raw = smartsheet_client.get_setting(sys.argv[1], workstream="safety_reports")
+    interval = int(str(raw).strip())
+    if interval >= 1:
+        print(interval)
+except Exception:
+    pass
+PYEOF
+}
+
+# Resolve __POLL_INTERVAL_SECONDS__ for a label: [interval] arg > ITS_Config row
+# > per-daemon default. Echoes the value (empty for non-interval daemons, so the
+# substitution is skipped). Returns 1 on a non-positive-integer value.
+resolve_poll_interval() {
+    local label="$1" cli_arg="${2:-}" key default value
+    key="$(poll_interval_config_key "$label")"
+    default="$(poll_interval_default "$label")"
+    [[ -z "$key" && -z "$default" ]] && { printf ''; return 0; }  # non-interval daemon
+    if [[ -n "$cli_arg" ]]; then
+        value="$cli_arg"
+    else
+        value="$(cd "${ITS_HOME}" 2>/dev/null && read_its_config_interval "$key")"
+        if [[ -z "$value" ]]; then
+            echo "note: could not read ${key} from ITS_Config; using default ${default}s" >&2
+            value="$default"
+        fi
+    fi
+    if [[ ! "$value" =~ ^[1-9][0-9]*$ ]]; then
+        echo "error: interval must be a positive integer of seconds, got: ${value}" >&2
+        return 1
+    fi
+    printf '%s' "$value"
+}
+
+# Render a plist to stdout: always substitute __ITS_HOME__; substitute
+# __POLL_INTERVAL_SECONDS__ only when $interval is non-empty (the interval
+# daemons). Non-interval plists that mention the placeholder only in a comment
+# (e.g. weekly-generate) are left untouched — comments don't fail plutil.
+render_plist() {
+    local src="$1" interval="${2:-}"
+    if [[ -n "$interval" ]]; then
+        sed -e "s|__ITS_HOME__|${ITS_HOME}|g" \
+            -e "s|__POLL_INTERVAL_SECONDS__|${interval}|g" "$src"
+    else
+        sed "s|__ITS_HOME__|${ITS_HOME}|g" "$src"
+    fi
+}
+
 cmd_load() {
     local plist; plist="$(resolve_plist_name "$1")"
+    local cli_interval="${2:-}"
     local src="${SRC_DIR}/${plist}"
     local dst="${TARGET_DIR}/${plist}"
     local label="${plist%.plist}"
 
     [[ -f "$src" ]] || { echo "error: $src not found" >&2; exit 1; }
 
+    # Resolve the interval BEFORE writing $dst so a bad value aborts cleanly.
+    local interval
+    interval="$(resolve_poll_interval "$label" "$cli_interval")" || exit 1
+
     mkdir -p "$TARGET_DIR" "$LOG_DIR"
 
-    # Substitute __ITS_HOME__ with the real $HOME/its.
-    sed "s|__ITS_HOME__|${ITS_HOME}|g" "$src" > "$dst"
+    # Substitute __ITS_HOME__ (+ __POLL_INTERVAL_SECONDS__ for interval daemons).
+    render_plist "$src" "$interval" > "$dst"
 
     # Validate before loading — plutil catches XML/typing errors early.
     if ! plutil -lint "$dst" >/dev/null; then
@@ -113,18 +208,22 @@ cmd_status() {
 
 cmd_dry_run() {
     local plist; plist="$(resolve_plist_name "$1")"
+    local cli_interval="${2:-}"
     local src="${SRC_DIR}/${plist}"
+    local label="${plist%.plist}"
     [[ -f "$src" ]] || { echo "error: $src not found" >&2; exit 1; }
-    sed "s|__ITS_HOME__|${ITS_HOME}|g" "$src"
+    local interval
+    interval="$(resolve_poll_interval "$label" "$cli_interval")" || exit 1
+    render_plist "$src" "$interval"
 }
 
 main() {
     local cmd="${1:-}"
     case "$cmd" in
-        load)    [[ $# -ge 2 ]] || usage; cmd_load    "$2" ;;
+        load)    [[ $# -ge 2 ]] || usage; cmd_load    "$2" "${3:-}" ;;
         unload)  [[ $# -ge 2 ]] || usage; cmd_unload  "$2" ;;
         status)  shift; cmd_status "$@" ;;
-        dry-run) [[ $# -ge 2 ]] || usage; cmd_dry_run "$2" ;;
+        dry-run) [[ $# -ge 2 ]] || usage; cmd_dry_run "$2" "${3:-}" ;;
         *) usage ;;
     esac
 }
