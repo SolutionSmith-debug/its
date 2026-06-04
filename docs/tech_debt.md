@@ -1288,3 +1288,51 @@ Phase 2 of the reconcile landed the additive primitive `shared/smartsheet_client
 **Revisit when:** next session (picked up 2026-06-03) — this is the higher-leverage of the two Phase 3 decisions.
 
 Surfaced: 2026-06-02 picklist-drift reconcile (PR #150, Phase 3b). Related: `ensure_picklist_options` (`shared/smartsheet_client.py`); `docs/runbooks/picklist_drift_reconcile.md`; classification doc Phase 3b.
+
+## ITS_Active_Jobs Address cells blank — office PM fill required [OPEN 2026-06-03]
+
+The 6 rows seeded into ITS_Active_Jobs (PR #155) have blank Address values. Real addresses were not invented (§4 — adversarial input / data fidelity; no structured live source exists). The Safety Portal's Work Location auto-fill path will return empty strings until these cells are populated.
+
+**Required action:** office PM opens ITS_Active_Jobs in Smartsheet (Operations workspace → Safety Portal folder) and fills the Address column for all 6 rows (bradley-1, bradley-2, evergreen-hq, poa, rockford-s1, rockford-s2) with the correct street addresses before the Safety Portal goes live.
+
+**No code change required.** The column exists and is schema-correct; the data gap is operational.
+
+**Tag:** `safety-portal`, `data-gap`.
+
+**Revisit when:** Safety Portal goes live (before activating Work Location auto-fill).
+
+Surfaced: 2026-06-03 Safety Portal config sheets session (PR #155). Related: `docs/runbooks/safety_portal_config_sheets.md`.
+
+## `scripts/lint_doc_conventions.py` missing `safety_portal` workstream tag [OPEN 2026-06-03]
+
+`docs/doctrine_manifest.yaml` lists `safety_portal` as a valid `doc_conventions.workstream_tags` entry, but `scripts/lint_doc_conventions.py`'s canonical workstream set does not include it. Any doc tagged `workstream: safety_portal` (including `docs/runbooks/safety_portal_config_sheets.md`) will produce a lint warning in CI.
+
+**Fix:** add `"safety_portal"` to the canonical workstream set in `scripts/lint_doc_conventions.py` (one-line change). Lint is warn-only in CI today so this does not block merges.
+
+**Tag:** `lint`, `safety-portal`, `doc-conventions`.
+
+**Effort:** ~5 minutes.
+
+**Revisit when:** next session touching `lint_doc_conventions.py`, or when the CI warn noise becomes distracting.
+
+Surfaced: 2026-06-03 Safety Portal config sheets session (PR #155 + PR #156 audit).
+
+## `ops-stds-enforcer` agent pinned at "Op Stds v13" — 3 majors behind v16 [OPEN 2026-06-03]
+
+The `ops-stds-enforcer` subagent's system prompt (`.claude/agents/ops-stds-enforcer.md`, symlinked from `~/its-blueprint/.claude/agents/`) cites "Op Stds v13". The canonical version is v16. The agent is blind to:
+
+- §43 (successor-remediation documentation as definition-of-done)
+- §44 (Tier-2 Claude-assisted repair model; Developer-Operator / Successor-Operator split)
+- v14 reframe: §1 kill switch as operator-convenience pause, NOT a security control (F07)
+- v15 additions: §43/§44 initial draft
+- v16 reframe: §44 Tier-2 boundary as training-bounded co-resolution (no structural enforcement layer)
+
+**Fix:** update the version string and incorporate the §43/§44 enforcement brief into the agent's review criteria. This is a blueprint edit (`.claude/agents/ops-stds-enforcer.md`); requires doctrine-edit approval per the session-close-maintainer boundary rule.
+
+**Risk:** any PR review by `ops-stds-enforcer` that ships without a §43 runbook entry passes the agent but fails the actual DoD. The gap is silent.
+
+**Tag:** `agent`, `doctrine-drift`, `ops-stds`.
+
+**Revisit when:** next session that runs `ops-stds-enforcer` on a PR touching a new capability, or when a §43 entry is required as DoD and the agent misses it.
+
+Surfaced: 2026-06-03 unifying alignment audit (PR #156, DR-E1 / OPEN-1). Related: `docs/audits/2026-06-03_unifying-alignment-audit.md`.
