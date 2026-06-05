@@ -120,7 +120,7 @@ def test_checks_list_has_all_session_1_2_3_checks():
         watchdog._check_open_criticals,
         watchdog._check_scheduled_jobs,
         watchdog._check_reviewer_chain_forward,
-        watchdog._check_mail_intake_silent_disable,
+        # _check_mail_intake_silent_disable RETIRED 2026-06-05 (safety email intake retired).
         watchdog._check_alert_dedupe_summaries,
         watchdog._check_weekly_generate_catchup,
         watchdog._check_circuit_breaker_prolonged_open,
@@ -184,30 +184,10 @@ def test_tracked_jobs_contains_safety_weekly_generate():
     assert watchdog.TRACKED_JOB_WINDOWS["safety_weekly_generate"].days == 8
 
 
-def test_tracked_jobs_contains_safety_intake():
-    """F17: the 60s customer-facing intake poller is registered with Check C
-    so a silent death of the inbound-safety-report path is detected. Tight
-    5-min window (~5 poll cycles) per the high-frequency-poller convention —
-    the slug must match safety_reports.intake_poll.WATCHDOG_JOB_SLUG."""
-    assert "safety_intake" in watchdog.TRACKED_JOBS
-    assert watchdog.TRACKED_JOB_WINDOWS["safety_intake"].total_seconds() == 5 * 60
-
-
-def test_safety_intake_slug_matches_intake_poll_module():
-    """F17 §1c consistency guard: the slug intake_poll writes its marker under
-    MUST equal the TRACKED_JOBS entry the watchdog reads — otherwise the
-    watchdog tracks a marker nothing writes → permanent false WARN.
-
-    The autouse `isolate` fixture redirects `watchdog.WATCHDOG_MARKER_DIR` to a
-    tmp dir, so a live cross-module equality can't be asserted here; instead we
-    pin intake_poll's writer dir to the canonical location both modules build
-    from `Path.home() / "its" / ".watchdog"` (watchdog's reader uses the same
-    literal — see the marker reads at WATCHDOG_MARKER_DIR / f"{job}.last_run")."""
-    from safety_reports import intake_poll
-
-    assert intake_poll.WATCHDOG_JOB_SLUG == "safety_intake"
-    assert intake_poll.WATCHDOG_JOB_SLUG in watchdog.TRACKED_JOBS
-    assert intake_poll.WATCHDOG_MARKER_DIR == Path.home() / "its" / ".watchdog"
+# test_tracked_jobs_contains_safety_intake + test_safety_intake_slug_matches_intake_poll_module
+# REMOVED 2026-06-05: the safety email-intake poller (intake_poll) is RETIRED to a
+# tombstone (Safety Portal PULL model supersedes it), so safety_intake is no longer a
+# Check-C TRACKED_JOBS entry and the tombstone writes no marker / has no WATCHDOG_JOB_SLUG.
 
 
 def test_picklist_marker_slugs_match_their_writers():
@@ -914,142 +894,7 @@ def test_check_reviewer_chain_payload_dates_iso_formatted(
     date.fromisoformat(gap_str)
 
 
-# ---- Group H: Check F — mail intake silent-disable ----------------------
-
-
-@pytest.fixture
-def mock_get_settings_with_prefix(mocker):
-    return mocker.patch("watchdog.smartsheet_client.get_settings_with_prefix")
-
-
-@pytest.fixture
-def mock_fetch_latest_inbound(mocker):
-    return mocker.patch("watchdog.graph_client.fetch_latest_inbound_timestamp")
-
-
-def test_check_mail_intake_no_rows(mock_get_settings_with_prefix):
-    mock_get_settings_with_prefix.return_value = {}
-    result = watchdog._check_mail_intake_silent_disable()
-    assert result.severity is Severity.INFO
-    assert "Nothing to check" in result.summary or "No mail_intake" in result.summary
-
-
-def test_check_mail_intake_under_threshold(
-    mock_get_settings_with_prefix, mock_fetch_latest_inbound,
-):
-    from datetime import datetime as dt
-    mock_get_settings_with_prefix.return_value = {
-        "mail_intake.safety.max_idle_hours": "96",
-    }
-    # Last inbound 24h ago — well under 96h threshold.
-    mock_fetch_latest_inbound.return_value = dt.now(watchdog.UTC) - watchdog.timedelta(hours=24)
-
-    result = watchdog._check_mail_intake_silent_disable()
-
-    assert result.severity is Severity.INFO
-    assert "fresh" in result.summary.lower()
-
-
-def test_check_mail_intake_over_threshold_warns(
-    mock_get_settings_with_prefix, mock_fetch_latest_inbound,
-):
-    from datetime import datetime as dt
-    mock_get_settings_with_prefix.return_value = {
-        "mail_intake.safety.max_idle_hours": "96",
-    }
-    # Last inbound 200h ago — well past 96h threshold.
-    mock_fetch_latest_inbound.return_value = dt.now(watchdog.UTC) - watchdog.timedelta(hours=200)
-
-    result = watchdog._check_mail_intake_silent_disable()
-
-    assert result.severity is Severity.WARN
-    assert "safety@evergreenmirror.com" in result.details
-    assert "200" in result.details
-    assert "96" in result.details
-
-
-def test_check_mail_intake_no_inbound_history_does_not_warn(
-    mock_get_settings_with_prefix, mock_fetch_latest_inbound,
-):
-    """Empty mailbox (None from fetch_latest) is informational, not silent-disable."""
-    mock_get_settings_with_prefix.return_value = {
-        "mail_intake.safety.max_idle_hours": "96",
-    }
-    mock_fetch_latest_inbound.return_value = None
-
-    result = watchdog._check_mail_intake_silent_disable()
-
-    assert result.severity is Severity.INFO
-
-
-def test_check_mail_intake_missing_mailbox_config_warns(
-    mock_get_settings_with_prefix, mock_log, mock_fetch_latest_inbound,
-):
-    """Unmapped workstream → WARN about config gap, don't crash."""
-    mock_get_settings_with_prefix.return_value = {
-        "mail_intake.unicorn.max_idle_hours": "96",
-    }
-    result = watchdog._check_mail_intake_silent_disable()
-
-    severities = [c.args[0] for c in mock_log.call_args_list]
-    assert Severity.WARN in severities
-    msg = next(c.args[2] for c in mock_log.call_args_list if c.args[0] is Severity.WARN)
-    assert "unicorn" in msg
-    assert "WORKSTREAM_TO_MAILBOX" in msg or "no mailbox" in msg.lower()
-    # Overall result remains INFO since no actual silent mailbox detected.
-    assert result.severity is Severity.INFO
-    mock_fetch_latest_inbound.assert_not_called()
-
-
-def test_check_mail_intake_graph_failure_warns_and_continues(
-    mock_get_settings_with_prefix, mock_fetch_latest_inbound, mock_log,
-):
-    """Per-mailbox Graph failure WARNs but the check overall still completes."""
-    from shared.graph_client import GraphPermissionError
-    mock_get_settings_with_prefix.return_value = {
-        "mail_intake.safety.max_idle_hours": "96",
-    }
-    mock_fetch_latest_inbound.side_effect = GraphPermissionError(
-        "HTTP 403: ApplicationAccessPolicy denied"
-    )
-
-    result = watchdog._check_mail_intake_silent_disable()
-
-    # Per-mailbox WARN was emitted.
-    severities = [c.args[0] for c in mock_log.call_args_list]
-    assert Severity.WARN in severities
-    msg = next(c.args[2] for c in mock_log.call_args_list if c.args[0] is Severity.WARN)
-    assert "safety@evergreenmirror.com" in msg
-    # Overall check returns INFO (no silent mailbox identified).
-    assert result.severity is Severity.INFO
-
-
-def test_check_mail_intake_non_int_threshold_warns(
-    mock_get_settings_with_prefix, mock_log, mock_fetch_latest_inbound,
-):
-    """Garbage threshold value → WARN about the row, skip the mailbox."""
-    mock_get_settings_with_prefix.return_value = {
-        "mail_intake.safety.max_idle_hours": "not-a-number",
-    }
-    watchdog._check_mail_intake_silent_disable()
-
-    severities = [c.args[0] for c in mock_log.call_args_list]
-    assert Severity.WARN in severities
-    msg = next(c.args[2] for c in mock_log.call_args_list if c.args[0] is Severity.WARN)
-    assert "not-a-number" in msg
-    mock_fetch_latest_inbound.assert_not_called()
-
-
-def test_check_mail_intake_ignores_non_threshold_rows(
-    mock_get_settings_with_prefix, mock_fetch_latest_inbound,
-):
-    """Rows like mail_intake.foo.other_setting are skipped (not max_idle_hours)."""
-    mock_get_settings_with_prefix.return_value = {
-        "mail_intake.safety.notes": "ignore me",
-    }
-    result = watchdog._check_mail_intake_silent_disable()
-    assert result.severity is Severity.INFO
-    mock_fetch_latest_inbound.assert_not_called()
+# ---- Group H: Check F — RETIRED 2026-06-05 (safety mail-intake silent-disable removed) ----
 
 
 # ---- Group I: Check G — alert-dedupe summary sweep ---------------------

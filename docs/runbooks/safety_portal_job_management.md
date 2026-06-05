@@ -58,6 +58,10 @@ each submission to its job via the **Job ID**.
 - Set **Active = Inactive** (temporarily off the dropdown) or **Archived**
   (permanently; the row stays as the historical record). The job leaves the portal
   dropdown on the next sync. **Never delete the row** — it is the history.
+- **Deleting the `Job Slug` COLUMN is operator-manual, never from code.** The legacy
+  kebab `Job Slug` is retained for readability; if it is ever removed, the operator
+  does it by hand in the Smartsheet UI after confirming nothing reads it. Claude must
+  never delete that column from a migration. Escalate to Seth if unsure.
 
 ### Task C — One-time setup: the AUTO_NUMBER "Job ID" column
 
@@ -71,6 +75,22 @@ creating Auto-Number columns).
 3. Format: prefix `JOB-`, 6-digit fill, starting number `1` (→ `JOB-000001`).
 4. Existing rows backfill automatically (`JOB-000001`…). Done — the portal and
    `intake.py` now have a permanent key.
+
+### Task D — Retiring the legacy safety email-intake daemon (operator-manual)
+
+The safety **mailbox poller** (`safety_reports/intake_poll.py`) is **RETIRED** as of
+2026-06-05 — superseded by the Safety Portal **PULL** model (`portal_poll.py`, PLANNED;
+`decision_phase5-portal-transport`). The module is now a tombstone.
+
+- **Unload the launchd job** (low-class, operator-manual, never from code):
+  `scripts/uninstall_safety_intake_daemon.sh` (or `launchctl bootout` the
+  `org.solutionsmith.its.safety-intake` job). Until you do, an orphan-loaded job runs
+  every 60s as a harmless WARNING-logging no-op (no alerts).
+- The Graph email **plumbing** (`shared/graph_client.py` etc.) is **preserved** — the
+  future **Email Triage** workstream reuses it. This retire is the safety email-intake
+  *path* only, not an email-infrastructure teardown.
+- Escalate to Seth if the safety-intake job won't unload or if portal submissions stop
+  arriving after the pull daemon is built.
 
 ## Escalate to Seth (Tier 3) when
 

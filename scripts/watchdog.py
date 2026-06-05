@@ -26,18 +26,18 @@ Checks shipped:
        TRACKED_JOBS must have written a {slug}.last_run marker within its
        freshness window (default 24h; per-job overrides in
        TRACKED_JOB_WINDOWS). Tracked today: safety_weekly_generate,
-       safety_weekly_send_poll, safety_picklist_audit, and safety_intake
-       (the 60s customer-facing intake poller). A missing or stale marker
-       is a WARN. The watchdog's own run-marker is intentionally NOT in
-       TRACKED_JOBS — a daemon can't reliably detect its own death; that's
-       the external heartbeat observer's job (see main()).
+       safety_weekly_send_poll, and safety_picklist_audit. A missing or
+       stale marker is a WARN. The watchdog's own run-marker is intentionally
+       NOT in TRACKED_JOBS — a daemon can't reliably detect its own death;
+       that's the external heartbeat observer's job (see main()).
     D. 14-day reviewer-chain forward scan — Session 2. Logs an INFO ANOMALY
        row to ITS_Review_Queue per workstream with reviewer-chain gaps in
        the next 14 days (Op Stds v9 §18).
-    F. Mail.app rule silent-disable inbound-mail activity check —
-       Session 2. WARN when a tracked mailbox is idle beyond its per-
-       workstream `mail_intake.<workstream>.max_idle_hours` threshold
-       (per `docs/tech_debt.md` Mail.app entry added 2026-05-19).
+    F. (RETIRED 2026-06-05) Mail-intake silent-disable check — removed with
+       the safety email-intake retirement (the Safety Portal PULL model
+       supersedes the safety@ mailbox; see decision_phase5-portal-transport).
+       A portal_poll-health check and an Email-Triage mailbox-silence check
+       are future additions when those daemons land.
     G. Alert-routing dedupe summary sweep — Session 3 (PR β). For each
        expired entry in `~/its/state/alert_dedupe.json`, fire a single
        operator summary email naming what was suppressed during the
@@ -96,7 +96,6 @@ from shared import (
     alert_dedupe,
     circuit_breaker,
     defaults,
-    graph_client,
     heartbeat_client,
     resend_client,
     review_queue,
@@ -132,7 +131,9 @@ TRACKED_JOBS: list[str] = [
     "safety_weekly_generate",
     "safety_weekly_send_poll",
     "safety_picklist_audit",
-    "safety_intake",
+    # safety_intake removed 2026-06-05: the safety email-intake poller is RETIRED
+    # (Safety Portal PULL model supersedes it). The tombstone writes no marker, so
+    # tracking it would perpetually WARN. A portal_poll marker is a future addition.
     # C4: the hourly picklist SYNC job (run_picklist_sync) — distinct from the
     # weekly picklist AUDIT above. Previously untracked, so its silent death was
     # invisible; it now writes a safety_picklist_sync marker each run.
@@ -154,11 +155,7 @@ TRACKED_JOB_WINDOWS: dict[str, timedelta] = {
     # operator launchd schedule). 8-day window matches the weekly_generate
     # pattern — a missed Sunday + the following Friday still surfaces.
     "safety_picklist_audit": timedelta(days=8),
-    # intake_poll runs every 60s (launchd StartInterval). 5 min == ~5 cycles:
-    # tolerates a few transient missed cycles (Graph hiccup, lock overlap)
-    # without false-positiving, but a genuine stall surfaces at the next daily
-    # watchdog run. Per the high-frequency-poller window convention above.
-    "safety_intake": timedelta(minutes=5),
+    # (safety_intake window removed 2026-06-05 — poller retired; see TRACKED_JOBS.)
     # run_picklist_sync runs hourly (launchd StartInterval=3600). 3 h == ~3
     # cycles: tolerates a coalesced/delayed run without false-positiving, but a
     # genuine stall surfaces at the next daily watchdog run. (C4.)
@@ -176,16 +173,9 @@ REVIEWER_CHAIN_SCAN_DAYS = 14
 # when its three-tier chain goes live in ITS_Config / DEFAULT_REVIEWER_CHAINS.
 WORKSTREAMS_TO_SCAN: list[str] = ["safety_reports"]
 
-# Check F mailbox routing. Workstream slug (used in the
-# `mail_intake.<workstream>.max_idle_hours` config key) → mailbox address.
-# Add entries when a new workstream's intake mailbox goes live; until then
-# the iteration is bounded by the ITS_Config rows seeded, so an unmapped
-# workstream surfaces a WARN ("no mailbox configured") rather than failing
-# silently.
-WORKSTREAM_TO_MAILBOX: dict[str, str] = {
-    "safety": "safety@evergreenmirror.com",
-    # procurement / subcontracts / its / voice — added when activated.
-}
+# (Check F mailbox routing WORKSTREAM_TO_MAILBOX removed 2026-06-05 with the
+# safety email-intake retirement. Email Triage owns its own mailbox-silence check
+# when it lands; the shared Graph plumbing in shared/graph_client.py is preserved.)
 
 
 @dataclass(frozen=True)
@@ -436,93 +426,12 @@ def _log_anomaly_to_review_queue(workstream: str, gaps: list[date]) -> None:
     )
 
 
-# ---- Check F: Mail.app rule silent-disable ------------------------------
-
-
-def _check_mail_intake_silent_disable() -> CheckResult:
-    """Check F: detect mailboxes that have gone silent past their threshold.
-
-    Iterates `ITS_Config` rows matching prefix `mail_intake.` and ending
-    `.max_idle_hours`. For each, resolves the mailbox via
-    `WORKSTREAM_TO_MAILBOX` and queries Graph for the most recent inbound
-    timestamp. WARN summary names each silent mailbox + its idle-hours
-    figure.
-
-    Per planning decision F.2a: absolute idle-hours threshold per
-    mailbox, tunable via ITS_Config — no code change needed when adding
-    a new mailbox.
-
-    Fail-soft: per-mailbox Graph errors WARN and continue; the check
-    overall still surfaces other mailbox results.
-    """
-    intake_rows = smartsheet_client.get_settings_with_prefix("mail_intake.")
-    if not intake_rows:
-        return CheckResult(
-            severity=Severity.INFO,
-            summary="No mail_intake.* rows in ITS_Config; nothing to check.",
-        )
-
-    silent: list[str] = []
-    now = datetime.now(UTC)
-
-    for setting_key, value_str in intake_rows.items():
-        if not setting_key.endswith(".max_idle_hours"):
-            continue
-
-        workstream = (
-            setting_key.removeprefix("mail_intake.").removesuffix(".max_idle_hours")
-        )
-        try:
-            threshold_hours = int(value_str)
-        except ValueError:
-            log(
-                Severity.WARN,
-                f"{_SCRIPT}._check_mail_intake_silent_disable",
-                f"non-int max_idle_hours for {workstream!r}: {value_str!r}",
-            )
-            continue
-
-        mailbox = WORKSTREAM_TO_MAILBOX.get(workstream)
-        if not mailbox:
-            log(
-                Severity.WARN,
-                f"{_SCRIPT}._check_mail_intake_silent_disable",
-                f"no mailbox in WORKSTREAM_TO_MAILBOX for workstream {workstream!r}",
-            )
-            continue
-
-        try:
-            last_inbound = graph_client.fetch_latest_inbound_timestamp(mailbox)
-        except graph_client.GraphError as e:
-            log(
-                Severity.WARN,
-                f"{_SCRIPT}._check_mail_intake_silent_disable",
-                f"Graph fetch failed for {mailbox}: {e!r}",
-            )
-            continue
-
-        if last_inbound is None:
-            # Empty mailbox is distinct from silent-disable — could be a
-            # brand-new mailbox that just hasn't received its first message.
-            # Treat as informational, not stale.
-            continue
-
-        idle_hours = (now - last_inbound).total_seconds() / 3600.0
-        if idle_hours > threshold_hours:
-            silent.append(
-                f"{mailbox} idle {idle_hours:.1f}h (threshold {threshold_hours}h)"
-            )
-
-    if not silent:
-        return CheckResult(
-            severity=Severity.INFO,
-            summary="All tracked intake mailboxes fresh.",
-        )
-    return CheckResult(
-        severity=Severity.WARN,
-        summary=f"{len(silent)} intake mailbox(es) silent past threshold.",
-        details="; ".join(silent),
-    )
+# ---- Check F: RETIRED 2026-06-05 (safety mail-intake silent-disable) ----
+# Removed with the safety email-intake retirement — the Safety Portal PULL model
+# supersedes the safety@ mailbox (see decision_phase5-portal-transport), so there is
+# no safety mailbox to monitor for silence. The shared Graph plumbing this check used
+# (shared/graph_client.fetch_latest_inbound_timestamp) is PRESERVED untouched for the
+# future Email Triage workstream, which will own its own mailbox-silence check.
 
 
 # ---- Check G: alert-dedupe summary sweep --------------------------------
@@ -1270,7 +1179,7 @@ CHECKS: list[Callable[..., CheckResult]] = [
     _check_open_criticals,
     _check_scheduled_jobs,
     _check_reviewer_chain_forward,
-    _check_mail_intake_silent_disable,
+    # _check_mail_intake_silent_disable RETIRED 2026-06-05 (safety email intake retired).
     _check_alert_dedupe_summaries,
     # Check I runs after Check C (above): Check C reports staleness; Check I
     # recovers the one daemon launchd can't self-recover (weekly_generate,

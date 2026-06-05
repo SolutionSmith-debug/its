@@ -19,8 +19,10 @@ helper module to safety_reports doesn't accidentally enable a back-door
 send capability for either intake.py or the polling daemon.
 
 PR #59 expanded coverage from intake.py only to BOTH intake.py and
-intake_poll.py: the polling daemon is the live mail-touching process
-now, and the same capability surface applies to it.
+intake_poll.py. NOTE 2026-06-05: `intake_poll.py` is now a RETIRED tombstone (the
+safety email-intake poller is superseded by the Safety Portal PULL model). It is
+KEPT in INTAKE_PATHS so a future resurrection that re-adds a real send/AI import is
+still caught by the gate — the tombstone (stdlib-only) passes all checks trivially.
 """
 from __future__ import annotations
 
