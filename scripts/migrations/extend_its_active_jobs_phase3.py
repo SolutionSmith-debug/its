@@ -161,7 +161,7 @@ _MANUAL_INSTRUCTION = (
     f"    Name:     {AUTONUM_TITLE}\n"
     "    Type:     System Columns → Auto-Number\n"
     f"    Format:   prefix {AUTONUM_FORMAT['prefix']!r}, "
-    f"{len(AUTONUM_FORMAT['fill'])}-digit fill, starting number "
+    f"{len(str(AUTONUM_FORMAT['fill']))}-digit fill, starting number "
     f"{AUTONUM_FORMAT['startingNumber']}  (→ JOB-0001, JOB-0002, …)\n"
     "    Position: right after 'Project Name'\n"
     "This is the immutable join key the portal payload carries; existing rows\n"
