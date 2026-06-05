@@ -99,6 +99,7 @@ from shared import (
     heartbeat_client,
     resend_client,
     review_queue,
+    safety_week,
     sheet_ids,
     smartsheet_client,
 )
@@ -678,27 +679,29 @@ def _read_marker_datetime(job_slug: str) -> datetime | None:
     return parsed
 
 
-def _wpr_rows_exist_for_week(week_start: date) -> bool:
-    """True iff WPR_Pending_Review has >=1 row for the target week.
+def _wsr_rows_exist_for_week(week_start: date) -> bool:
+    """True iff WSR_human_review has >=1 row for the target week (Phase-5).
 
     The second "did it complete" signal alongside the marker's "did it run":
-    weekly_generate's marker write is fail-soft, so a successful run can
-    leave a stale/missing marker. Row presence catches that and prevents a
-    wasteful re-fire. Fail-soft: a read error logs WARN and returns False,
-    so the decision falls back to the marker signal — and a Smartsheet
-    outage that hides the rows here will resurface when the (also-Smartsheet)
-    catch-up generation runs and fails loudly, never silently.
+    weekly_generate's marker write is fail-soft, so a successful run can leave a
+    stale/missing marker. Row presence catches that and prevents a wasteful
+    re-fire. `week_start` is the catch-up's Monday; the WSR `Week Of` column keys
+    on the Saturday that opens the Sat→Fri week, so we convert via safety_week.
+    Fail-soft: a read error logs WARN and returns False, so the decision falls
+    back to the marker signal — and a Smartsheet outage that hides the rows here
+    resurfaces when the (also-Smartsheet) catch-up compile runs and fails loudly.
     """
+    saturday = safety_week.week_bounds(week_start).start
     try:
         rows = smartsheet_client.get_rows(
-            sheet_ids.SHEET_WPR_PENDING_REVIEW,
-            filters={"Week": week_start.isoformat()},
+            sheet_ids.SHEET_WSR_HUMAN_REVIEW,
+            filters={"Week Of": saturday.isoformat()},
         )
     except Exception as exc:  # noqa: BLE001 — fail-soft to marker-only decision
         log(
             Severity.WARN,
-            f"{_SCRIPT}._wpr_rows_exist_for_week",
-            f"WPR_Pending_Review read failed for week {week_start}: {exc!r}",
+            f"{_SCRIPT}._wsr_rows_exist_for_week",
+            f"WSR_human_review read failed for week {saturday}: {exc!r}",
         )
         return False
     return bool(rows)
@@ -712,8 +715,8 @@ def _check_weekly_generate_catchup(*, alerts_suppressed: bool = False) -> CheckR
           trigger (don't recover an ancient week — Check C owns those);
       (b) the Check C marker is missing or older than that trigger
           ("did not run"); AND
-      (c) WPR_Pending_Review has no row for that week ("produced nothing").
-    A fresh marker OR existing rows means the run happened, so we do not
+      (c) WSR_human_review has no row for that week ("produced nothing").
+    A fresh marker OR existing WSR rows means the run happened, so we do not
     re-fire. Combining the two "ran" signals with OR (fire only when BOTH
     are negative) is deliberately conservative: re-firing is safe but burns
     Anthropic spend, and a fail-soft marker write must not look like a miss.
@@ -772,7 +775,7 @@ def _check_weekly_generate_catchup(*, alerts_suppressed: bool = False) -> CheckR
             summary=f"weekly_generate ran for week {target_week} (marker fresh).",
         )
 
-    if _wpr_rows_exist_for_week(target_week):
+    if _wsr_rows_exist_for_week(target_week):
         return CheckResult(
             severity=Severity.INFO,
             summary=(

@@ -1663,3 +1663,26 @@ left these:
 **Tag:** `safety-portal`, `email-triage`, `cleanup`, `phase-5`, `medium`.
 
 Surfaced: 2026-06-05 safety email-intake retire.
+
+## WPR_Pending_Review final removal (decommission-by-doc → delete)
+
+After the Phase-5 WSR rewire (PRs portal-rewire-pr1..pr4, 2026-06-05), **no live
+runtime code references `WPR_Pending_Review`**: `weekly_generate` (compile→WSR),
+`weekly_send` + `weekly_send_poll` (send←WSR), and `watchdog` Check I (row-exist←WSR)
+are all repointed. The constant `shared.sheet_ids.SHEET_WPR_PENDING_REVIEW` + the
+`shared.picklist_validation` WPR registry entry are kept (decommission-by-doc) only
+because a few non-runtime refs remain:
+
+  - `scripts/smoke_test_watchdog_catchup.py` — still seeds/clears WPR rows to simulate
+    a populated week; needs a WSR rewrite (the catch-up now checks WSR via the Saturday
+    `Week Of`).
+  - `tests/test_picklist_validation.py` — asserts the WPR Send Status registry entry.
+  - the constant + picklist entry themselves.
+
+**Follow-up (trivial, after the operator deletes the WPR sheet):** rewrite the catch-up
+smoke to WSR, drop the picklist WPR entry + its test assertion, then delete
+`SHEET_WPR_PENDING_REVIEW`. The WPR Smartsheet sheet itself is operator-deleted.
+
+**Tag:** `safety-portal`, `cleanup`, `phase-5`, `low`.
+
+Surfaced: 2026-06-05 WSR rewire (PR4).

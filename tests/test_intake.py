@@ -236,7 +236,7 @@ def test_fetch_message_skips_non_file_attachments(mocker):
 # subject/body name-matching retired, Phase 3); these tests stub active_jobs.get_job.
 def _job(job_id="JOB-0001", project="Bradley 1", status="Active"):
     return _active_jobs.ActiveJob(
-        job_id=job_id, project_name=project, job_slug="bradley-1", address="",
+        job_id=job_id, project_name=project, address="",
         stakeholder_name="", stakeholder_email="", stakeholder_phone="",
         safety_reports_contact_email="safety@evergreen.example",
         safety_reports_contact_name="", cc_emails=(),
