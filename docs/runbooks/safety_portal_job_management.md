@@ -31,9 +31,13 @@ each submission to its job via the **Job ID**.
 | Job Slug | Human-readable name (e.g. `bradley-1`). Was the old key; kept for readability. |
 | Project Name | Display name on the portal dropdown. |
 | Address | Full street address (auto-fills the form Work Location). |
-| Stakeholder Name / Email / Phone | The client contact named in the weekly email body. |
-| **Safety Reports Contact Email** | The **TO** recipient of the weekly safety email. **Required for Active jobs.** |
+| Stakeholder Name / Email / Phone | Client reference contact. **Not** on the weekly email (reference data only). |
+| **Safety Reports Contact Email** | The **TO** recipient of the weekly safety email (TEXT — type the address). **Required for Active jobs.** |
+| Safety Reports Contact Name | Greeting target on the email ("Good morning [name] …"). |
+| CC 1 … CC 5 | CC recipients (TEXT). One email per slot, or several comma-separated. Every non-empty slot is CC'd; the full list is flattened + de-duped (malformed entries skipped + logged). |
 | **Active** | `Active` / `Inactive` / `Archived`. Only **Active** jobs appear in the portal. |
+
+> **Weekly email model:** TO = `Safety Reports Contact Email`; CC = all of `CC 1`–`CC 5`; greeting addresses `Safety Reports Contact Name`. The stakeholder is reference data, not a recipient. An empty TO refuses the send + flags; a malformed CC is skipped + logged (the rest still send).
 
 ## Procedure
 

@@ -1516,3 +1516,13 @@ The 4 contact columns (Stakeholder Name, Stakeholder Email, Stakeholder Phone, S
 **Revisit when:** convenience; not a blocker.
 
 Surfaced: 2026-06-05 Safety Portal Phase 3 session (PR #160).
+
+## ITS_Active_Jobs CC recipients are operator-entered, not allowlist-validated [OPEN 2026-06-05, accepted-risk]
+
+`shared/active_jobs.py` `cc_emails` (and the TO `safety_reports_contact_email`) come from operator-typed TEXT cells on ITS_Active_Jobs. They are email-shape-validated + de-duped, but NOT checked against `ITS_Trusted_Contacts` or any allowlist. When Phase 5 `weekly_send` wires up `cc_emails`, a PM socially-engineered into entering an attacker address would CC the compiled packet to an unintended party. **Accepted risk** (trusted-operator-input model; the External Send Gate still requires explicit `Approved for Send` before any send). Phase 5 `weekly_send` must document that CC/TO recipients are unverified operator-entered addresses, and log the full resolved TO+CC list at send (already in the Phase 5 brief).
+
+**Tag:** `safety-portal`, `safety-reports`, `phase-5`, `accepted-risk`.
+
+**Revisit when:** building Phase 5 `weekly_send` recipient resolution.
+
+Surfaced: 2026-06-05 Safety Portal Phase 3 contacts amendment (ops-stds-enforcer W1).

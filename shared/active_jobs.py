@@ -35,6 +35,7 @@ Consumers
 from __future__ import annotations
 
 import logging
+import re
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -46,6 +47,41 @@ LOGGER = logging.getLogger(__name__)
 CACHE_TTL_SECONDS = 60.0
 
 ACTIVE_STATUS = "Active"
+
+# CC slots are TEXT (operator decision 2026-06-05 — MULTI_CONTACT_LIST loses
+# external emails on API read-back; rationale + live-probe evidence in
+# scripts/migrations/add_active_jobs_contact_routing_columns.py + the 2026-06-05
+# session log). A slot may hold one email or several comma-separated. Crude
+# email-shape check: no whitespace, one @, a dotted domain.
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+_CC_SLOTS = tuple(f"CC {i}" for i in range(1, 6))
+
+
+def _flatten_cc(slots: list[str], job_label: str) -> tuple[str, ...]:
+    """Flatten the CC 1–5 slots → an ordered, de-duplicated email tuple.
+
+    Each slot is TEXT and may hold one email or several comma-separated. De-dup is
+    case-insensitive (first spelling wins). A malformed entry is **skipped and
+    WARN-announced** (soft-fail) — never silently dropped (cross-cutting #1).
+    """
+    seen: set[str] = set()
+    out: list[str] = []
+    for slot in slots:
+        for piece in slot.split(","):
+            email = piece.strip()
+            if not email:
+                continue
+            if not _EMAIL_RE.match(email):
+                LOGGER.warning(
+                    "active_jobs: skipping malformed CC %r on job %r", email, job_label
+                )
+                continue
+            key = email.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(email)
+    return tuple(out)
 
 
 @dataclass(frozen=True)
@@ -59,7 +95,9 @@ class ActiveJob:
     stakeholder_name: str
     stakeholder_email: str
     stakeholder_phone: str
-    safety_reports_contact_email: str  # the weekly-rollup TO recipient
+    safety_reports_contact_email: str  # the weekly-rollup TO recipient (TEXT)
+    safety_reports_contact_name: str   # greeting target on the weekly email
+    cc_emails: tuple[str, ...]         # CC 1–5 flattened + de-duped (weekly_send CCs all)
     active_status: str   # "Active" / "Inactive" / "Archived" / "" (deny-by-default)
     row_id: int
 
@@ -104,6 +142,8 @@ def _row_to_job(row: dict[str, Any]) -> ActiveJob | None:
         stakeholder_email=_cell(row, "Stakeholder Email"),
         stakeholder_phone=_cell(row, "Stakeholder Phone"),
         safety_reports_contact_email=_cell(row, "Safety Reports Contact Email"),
+        safety_reports_contact_name=_cell(row, "Safety Reports Contact Name"),
+        cc_emails=_flatten_cc([_cell(row, slot) for slot in _CC_SLOTS], project_name),
         active_status=_cell(row, "Active"),
         row_id=row_id,
     )

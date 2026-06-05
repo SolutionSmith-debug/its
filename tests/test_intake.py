@@ -239,6 +239,7 @@ def _job(job_id="JOB-0001", project="Bradley 1", status="Active"):
         job_id=job_id, project_name=project, job_slug="bradley-1", address="",
         stakeholder_name="", stakeholder_email="", stakeholder_phone="",
         safety_reports_contact_email="safety@evergreen.example",
+        safety_reports_contact_name="", cc_emails=(),
         active_status=status, row_id=1,
     )
 
