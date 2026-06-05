@@ -14,8 +14,10 @@ import { validateUser, newSessionClaims } from "./auth";
 // Invariants:
 //   - Invariant 1 (External Send Gate): ZERO external transmission — no email, no
 //     third-party outbound, no AI step. The only fetch is c.env.ASSETS (asset
-//     serving). The Phase 5 email shim is a SEPARATE, capability-gated component;
-//     keep this Worker send-free.
+//     serving). Phase 5 keeps the Worker SEND-FREE by design: it signs + queues each
+//     submission in D1 and serves it over an authenticated /api/internal/pending
+//     endpoint; the Mac-side portal_poll daemon PULLS + files (the pull model —
+//     decision_phase5-portal-transport). The Worker never sends.
 //   - Invariant 2 (Adversarial Input Handling): all browser input is untrusted —
 //     request bodies are type-checked + length-bounded; D1 access uses bound
 //     parameters (no string interpolation); the session cookie is HttpOnly +
@@ -30,14 +32,69 @@ import { validateUser, newSessionClaims } from "./auth";
 //   (see the /api/logout rationale).
 //
 // Consumers: the SPA (src/) via same-origin fetch — /api/login, /api/session,
-//   /api/logout, /api/jobs (job dropdown), /api/recent (amend prefill), /api/submit
-//   (caches the structured submission). Phase 5 adds /api/sync + the email shim.
+//   /api/logout, /api/jobs, /api/recent, /api/submit (signs + queues the submission).
+//   The Mac-side portal_poll daemon via bearer-token /api/internal/pending (queue
+//   drain) + /api/internal/mark-filed (the receipt). Phase 5 adds /api/sync (jobs).
 // ─────────────────────────────────────────────────────────────────────────────
 
 const COOKIE = "its_portal_session";
 const MAX_AGE_S = 60 * 60 * 24 * 90; // 90-day session (safety-portal/mission.md §3 — long-lived, no idle timeout)
 
 const app = new Hono<{ Bindings: Env; Variables: Vars }>();
+
+// ── Phase 5 transport (pull model) — HMAC signing + internal-endpoint auth ──────
+
+/**
+ * Canonical payload for the submission HMAC. The Mac-side portal_poll daemon
+ * recomputes this byte-for-byte (shared/portal_hmac.py) to verify integrity +
+ * authenticity before intake trusts a pulled submission. ORDER + SEPARATOR are
+ * load-bearing and mirrored on the Python side:
+ *   submission_uuid \n job_id \n form_code \n work_date \n payload_json
+ * payload_json is the EXACT stored JSON string, used verbatim on both sides.
+ */
+function canonicalPayload(p: {
+  submission_uuid: string; job_id: string; form_code: string; work_date: string; payload_json: string;
+}): string {
+  return [p.submission_uuid, p.job_id, p.form_code, p.work_date, p.payload_json].join("\n");
+}
+
+/** HMAC-SHA256(secret, message) → lowercase hex. */
+async function hmacHex(secret: string, message: string): Promise<string> {
+  const key = await crypto.subtle.importKey(
+    "raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"],
+  );
+  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(message));
+  return [...new Uint8Array(sig)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/**
+ * Length-independent constant-time compare: compares the SHA-256 digests, so the
+ * loop runs over fixed 32-byte hashes and leaks NO length oracle on the bearer token
+ * (a plain char-by-char compare with an early length-mismatch exit would).
+ */
+async function safeTokenEqual(a: string, b: string): Promise<boolean> {
+  const enc = new TextEncoder();
+  const [da, db] = await Promise.all([
+    crypto.subtle.digest("SHA-256", enc.encode(a)),
+    crypto.subtle.digest("SHA-256", enc.encode(b)),
+  ]);
+  const ua = new Uint8Array(da);
+  const ub = new Uint8Array(db);
+  let diff = 0;
+  for (let i = 0; i < ua.length; i++) diff |= ua[i] ^ ub[i];
+  return diff === 0;
+}
+
+/** Bearer-token gate for /api/internal/* — the Mac-side portal_poll daemon's auth. */
+const requireInternalToken = createMiddleware<{ Bindings: Env; Variables: Vars }>(async (c, next) => {
+  const auth = c.req.header("Authorization") ?? "";
+  const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+  // Fail closed if the token isn't configured (missing secret → reject, never allow).
+  if (!token || !c.env.PORTAL_INTERNAL_API_TOKEN || !(await safeTokenEqual(token, c.env.PORTAL_INTERNAL_API_TOKEN))) {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+  await next();
+});
 
 /**
  * POST /api/login — validate credentials, issue a signed session cookie.
@@ -182,15 +239,64 @@ app.post("/api/submit", requireSession, async (c) => {
   if (!job) return c.json({ error: "unknown_job" }, 422);
   const payload = JSON.stringify(values);
   if (payload.length > 1_000_000) return c.json({ error: "too_large" }, 413);
+  // Fail closed on a misconfigured Worker: never sign with an undefined secret
+  // (that would produce signatures the Mac side could never verify → silent loss).
+  if (!c.env.HMAC_PAYLOAD_SECRET) return c.json({ error: "server_misconfigured" }, 503);
+  // Sign the submission so the Mac-side portal_poll daemon can verify it before
+  // intake files it. INSERT OR REPLACE resets box_verified=0 — an amended submission
+  // re-enters the queue for re-filing.
+  const hmac = await hmacHex(
+    c.env.HMAC_PAYLOAD_SECRET,
+    canonicalPayload({ submission_uuid, job_id, form_code, work_date, payload_json: payload }),
+  );
   await c.env.DB
     .prepare(
       "INSERT OR REPLACE INTO submissions " +
-        "(submission_uuid, job_id, form_code, work_date, payload_json, amends_uuid) VALUES (?,?,?,?,?,?)",
+        "(submission_uuid, job_id, form_code, work_date, payload_json, amends_uuid, hmac, box_verified) " +
+        "VALUES (?,?,?,?,?,?,?,0)",
     )
-    .bind(submission_uuid, job_id, form_code, work_date, payload, amends_uuid)
+    .bind(submission_uuid, job_id, form_code, work_date, payload, amends_uuid, hmac)
     .run();
-  // Phase 5 wires the HMAC email shim here (emit the signed payload to safety@).
   return c.json({ ok: true, status: "submitted", submission_uuid });
+});
+
+/**
+ * GET /api/internal/pending — the queue drain for the Mac-side portal_poll daemon.
+ * Returns unfiled submissions (box_verified=0) oldest-first, each with the Worker's
+ * HMAC so the daemon verifies integrity before intake files it. Bearer-token gated.
+ */
+app.get("/api/internal/pending", requireInternalToken, async (c) => {
+  const limit = Math.min(Number(c.req.query("limit")) || 50, 200);
+  const { results } = await c.env.DB
+    .prepare(
+      "SELECT submission_uuid, job_id, form_code, work_date, payload_json, amends_uuid, hmac, created_at " +
+        "FROM submissions WHERE box_verified = 0 ORDER BY created_at ASC LIMIT ?",
+    )
+    .bind(limit)
+    .all();
+  return c.json({ pending: results });
+});
+
+/**
+ * POST /api/internal/mark-filed — the receipt. intake calls this after it files a
+ * submission to Smartsheet + Box; flips box_verified=1 so the queue drains and the
+ * portal can show "received & filed." Idempotent. Bearer-token gated.
+ */
+app.post("/api/internal/mark-filed", requireInternalToken, async (c) => {
+  let body: Record<string, unknown>;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "bad_request" }, 400);
+  }
+  const submission_uuid = typeof body.submission_uuid === "string" ? body.submission_uuid : "";
+  const box_link = typeof body.box_link === "string" ? body.box_link.slice(0, 2000) : null;
+  if (!submission_uuid || submission_uuid.length > 64) return c.json({ error: "invalid" }, 400);
+  const res = await c.env.DB
+    .prepare("UPDATE submissions SET box_verified=1, filed_at=unixepoch(), box_link=? WHERE submission_uuid=?")
+    .bind(box_link, submission_uuid)
+    .run();
+  return c.json({ ok: true, found: (res.meta?.changes ?? 0) > 0 });
 });
 
 // Unmatched /api/* → JSON 404 (never the SPA shell).
