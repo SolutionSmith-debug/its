@@ -29,6 +29,10 @@ dependencies = [
     # Validates safety_portal/forms/*.json against forms/meta-schema.json — the
     # single source of truth both renderers (TS display + Python PDF) consume.
     "jsonschema>=4.0",
+    # Deterministic render-parity PDF renderer for Safety Portal submissions
+    # (safety_reports/form_pdf.py, Option B — intake renders on arrival, Phase 5).
+    # No AI; embeds SVG-path signatures + the definition's mandatory/legal text.
+    "reportlab>=4.0",
 ]
 
 [project.optional-dependencies]
@@ -40,6 +44,10 @@ dev = [
     "mypy>=1.10",
     "types-requests>=2.32",
     "types-jsonschema>=4.0",
+    # Extracts text from the reportlab-rendered PDFs in tests/test_form_pdf.py to
+    # assert render parity (labels / legal text / N/A present). Phase 5 promotes
+    # this to a runtime dep for the Sat→Fri weekly-packet merge.
+    "pypdf>=4.0",
 ]
 
 [tool.setuptools]
@@ -77,5 +85,5 @@ markers = [
 # (the proper fix for `requests`) is in dev deps above; the others have
 # no maintained stubs upstream as of 2026-05.
 [[tool.mypy.overrides]]
-module = ["msal", "msal.*", "smartsheet", "smartsheet.*", "boxsdk", "boxsdk.*"]
+module = ["msal", "msal.*", "smartsheet", "smartsheet.*", "boxsdk", "boxsdk.*", "reportlab", "reportlab.*"]
 ignore_missing_imports = true

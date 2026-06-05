@@ -22,7 +22,7 @@
       "key": "inspection",
       "groups": [
         {
-          "key": "before_startup", "label": "CHECK BEFORE ENGINE START-UP", "scale": ["OK", "NOT OK"], "comment_per_item": false,
+          "key": "before_startup", "label": "CHECK BEFORE ENGINE START-UP", "scale": ["OK", "NOT OK", "N/A"], "comment_per_item": false,
           "items": [
             { "key": "bs_bucket", "label": "BUCKET" },
             { "key": "bs_cutting_edge", "label": "CUTTING EDGE" },
@@ -44,7 +44,7 @@
           ]
         },
         {
-          "key": "after_startup", "label": "CHECK AFTER START-UP", "scale": ["OK", "NOT OK"], "comment_per_item": false,
+          "key": "after_startup", "label": "CHECK AFTER START-UP", "scale": ["OK", "NOT OK", "N/A"], "comment_per_item": false,
           "items": [
             { "key": "as_owner_manual", "label": "OWNER MANUAL" },
             { "key": "as_seat_bar", "label": "SEAT BAR" },
