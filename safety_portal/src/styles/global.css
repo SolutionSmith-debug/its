@@ -1,0 +1,421 @@
+/* Safety Portal — base + components. Mobile-first; scales up at 640px. */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font);
+  font-size: var(--fs-base);
+  line-height: var(--lh);
+  color: var(--c-black);
+  background: var(--c-surface);
+}
+
+h1,
+h2,
+h3 {
+  line-height: 1.2;
+  margin: 0 0 0.5em;
+}
+
+/* Accessible focus — BRG ring on light surfaces (gold would fail contrast). */
+:focus-visible {
+  outline: 3px solid var(--c-focus);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.muted {
+  color: var(--c-muted);
+}
+
+.centered {
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: var(--gap);
+}
+
+/* ── Header (BRG bar; logo on a white plate so brand-green ≠ BRG doesn't clash; */
+/*    gold is a thin DECORATIVE rule on green) ──────────────────────────────── */
+.app-header {
+  background: linear-gradient(180deg, var(--c-brg) 0%, var(--c-brg-700) 100%);
+  border-bottom: 3px solid var(--c-gold);
+  color: var(--c-on-brg);
+  padding: 12px clamp(12px, 4vw, 24px);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.app-header__brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.app-header__logo-plate {
+  background: var(--c-white);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  display: flex;
+  align-items: center;
+  flex: none;
+}
+
+.app-header__logo {
+  display: block;
+  height: 28px;
+  width: auto;
+}
+
+.app-header__title {
+  font-size: var(--fs-lg);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.app-header__action {
+  flex: none;
+}
+
+/* ── Page shells ──────────────────────────────────────────────────────────── */
+.page,
+.login {
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+}
+
+.page__main {
+  width: 100%;
+  max-width: var(--maxw);
+  margin: 0 auto;
+  padding: clamp(16px, 4vw, 28px);
+}
+
+.page__heading {
+  font-size: var(--fs-xl);
+  color: var(--c-brg);
+}
+
+.welcome {
+  color: var(--c-muted);
+  margin: 0 0 6px;
+}
+
+/* ── Card ─────────────────────────────────────────────────────────────────── */
+.card {
+  background: var(--c-white);
+  border: 1px solid var(--c-line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: clamp(18px, 4vw, 28px);
+}
+
+/* ── Login ────────────────────────────────────────────────────────────────── */
+.login__main {
+  flex: 1;
+  display: grid;
+  place-items: center;
+  padding: var(--gap);
+}
+
+.login__card {
+  width: 100%;
+  max-width: 400px;
+}
+
+.login__heading {
+  font-size: var(--fs-xl);
+  color: var(--c-brg);
+}
+
+.login__error {
+  color: var(--c-danger);
+  font-weight: 600;
+  margin: 4px 0 0;
+}
+
+/* ── Form fields ──────────────────────────────────────────────────────────── */
+.field {
+  display: block;
+  margin: 0 0 16px;
+}
+
+.field__label {
+  display: block;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--c-brg);
+  margin-bottom: 6px;
+}
+
+.field__input,
+.field__textarea {
+  width: 100%;
+  min-height: var(--tap);
+  font: inherit;
+  color: var(--c-black);
+  background: var(--c-white);
+  border: 1.5px solid var(--c-line);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+}
+
+.field__textarea {
+  min-height: 64px;
+  resize: vertical;
+}
+
+.field__input:focus-visible,
+.field__textarea:focus-visible {
+  border-color: var(--c-brg);
+  outline: 3px solid var(--c-focus);
+  outline-offset: 1px;
+}
+
+/* ── Buttons (min 48px tap target) ────────────────────────────────────────── */
+.btn {
+  font: inherit;
+  font-weight: 600;
+  min-height: var(--tap);
+  padding: 0 18px;
+  border-radius: var(--radius-sm);
+  border: 1.5px solid transparent;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.btn--block {
+  width: 100%;
+}
+
+.btn--primary {
+  background: var(--c-brg);
+  color: var(--c-on-brg);
+}
+
+.btn--primary:hover {
+  background: var(--c-brg-700);
+}
+
+.btn--primary:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* Ghost button on the BRG header — white outline for contrast on green. */
+.btn--ghost {
+  background: transparent;
+  color: var(--c-on-brg);
+  border-color: rgba(255, 255, 255, 0.6);
+}
+
+.btn--ghost:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.btn--ghost:focus-visible {
+  outline-color: var(--c-white);
+}
+
+.btn--secondary {
+  background: var(--c-white);
+  color: var(--c-brg);
+  border-color: var(--c-brg);
+}
+
+/* ── Home: form cards ─────────────────────────────────────────────────────── */
+.form-grid {
+  display: grid;
+  gap: var(--gap);
+  grid-template-columns: 1fr;
+  margin-top: var(--gap);
+}
+
+.form-card {
+  text-align: left;
+  font: inherit;
+  background: var(--c-white);
+  border: 1px solid var(--c-line);
+  border-left: 5px solid var(--c-brg);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 18px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: var(--tap);
+}
+
+.form-card:hover {
+  box-shadow: var(--shadow-lg);
+}
+
+.form-card--disabled {
+  border-left-color: var(--c-line);
+  opacity: 0.75;
+  cursor: default;
+}
+
+.form-card__badge {
+  align-self: flex-start;
+  font-size: var(--fs-sm);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--c-on-brg);
+  background: var(--c-brg);
+  border-radius: 4px;
+  padding: 2px 8px;
+}
+
+.form-card__badge--muted {
+  background: var(--c-muted);
+}
+
+.form-card__title {
+  font-size: var(--fs-lg);
+  font-weight: 600;
+  color: var(--c-black);
+}
+
+.form-card__desc {
+  color: var(--c-muted);
+}
+
+/* ── JHA stub ─────────────────────────────────────────────────────────────── */
+.jha__notice {
+  background: #fff8e8;
+  border: 1px solid var(--c-gold);
+  border-radius: var(--radius-sm);
+  padding: 10px 14px;
+  margin: 0 0 var(--gap);
+  color: var(--c-black);
+  font-size: var(--fs-sm);
+}
+
+.jha__section {
+  margin: 22px 0 0;
+}
+
+.jha__section-title {
+  font-size: var(--fs-lg);
+  color: var(--c-brg);
+  border-bottom: 2px solid var(--c-gold); /* decorative gold rule (not text) */
+  padding-bottom: 4px;
+}
+
+.jha__grid-2 {
+  display: grid;
+  gap: var(--gap);
+  grid-template-columns: 1fr;
+}
+
+/* Task / Hazard / Mitigation rows — stacked on mobile, 3-col on wide screens. */
+.jha__rows {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.jha__row {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--c-line);
+  border-radius: var(--radius-sm);
+  background: var(--c-surface);
+  position: relative;
+}
+
+.jha__row-head {
+  font-size: var(--fs-sm);
+  font-weight: 700;
+  color: var(--c-muted);
+}
+
+.jha__row-remove {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  background: transparent;
+  border: none;
+  color: var(--c-danger);
+  font-weight: 700;
+  cursor: pointer;
+  min-height: 32px;
+  min-width: 32px;
+}
+
+.jha__footer-line {
+  margin-top: 18px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--c-brg);
+}
+
+/* Signature pad */
+.sig {
+  margin-top: 8px;
+}
+
+.sig__surface {
+  width: 100%;
+  background: var(--c-white);
+  border: 1.5px dashed var(--c-brg);
+  border-radius: var(--radius-sm);
+  touch-action: none; /* LOAD-BEARING: stops mobile scroll/zoom stealing the stroke */
+}
+
+.sig__bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 6px;
+  gap: 12px;
+}
+
+.sig__hint {
+  font-size: var(--fs-sm);
+  color: var(--c-muted);
+}
+
+.jha__actions {
+  margin-top: 24px;
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+/* ── Responsive bump ──────────────────────────────────────────────────────── */
+@media (min-width: 640px) {
+  .form-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+  .jha__grid-2 {
+    grid-template-columns: 1fr 1fr;
+  }
+  .jha__row {
+    grid-template-columns: 1fr 1fr 1fr;
+    align-items: start;
+  }
+}

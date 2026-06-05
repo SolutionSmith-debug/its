@@ -1,0 +1,10 @@
+# Local-only Worker secrets for `vite dev` / `wrangler dev`.
+# COPY this file to `.dev.vars` (gitignored) and fill in a real value.
+#
+# Generate a strong signing secret:
+#   openssl rand -base64 48
+#
+# In a DEPLOYED Worker this is set out-of-band, NOT from this file:
+#   wrangler secret put SESSION_SIGNING_SECRET
+
+SESSION_SIGNING_SECRET="replace-with-output-of-openssl-rand-base64-48"

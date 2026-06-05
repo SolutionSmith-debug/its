@@ -1,0 +1,49 @@
+/* ─────────────────────────────────────────────────────────────────────────────
+   Safety Portal design tokens (Phase 2)
+
+   Palette is field-first: high contrast, large type. Every text pair below is
+   WCAG 2.1 AA-verified (4.5:1 normal / 3:1 large·UI):
+     white-on-BRG        12.33:1   PASS   (all text on green)
+     black-on-surface    17.85:1   PASS   (body)
+     black-on-white      19.30:1   PASS   (body)
+     muted-on-surface     ~7:1     PASS   (secondary text)
+   GOLD IS DECORATIVE ONLY. gold-on-white = 2.46:1 (FAILS even the 3:1 UI floor),
+   gold-on-BRG = 5.01:1 (marginal). Gold is used only as an accent rule ON GREEN,
+   never as text and never as a focus indicator on light surfaces.
+   ───────────────────────────────────────────────────────────────────────────── */
+:root {
+  /* Brand */
+  --c-brg: #013d2b;        /* deep British racing green — headers, structural fills */
+  --c-brg-700: #012a1e;    /* darker BRG — gradients / pressed states */
+  --c-gold: #c6a04d;       /* DECORATIVE accent ON GREEN only — never text on light */
+
+  /* Ink + surfaces */
+  --c-black: #0e0e0e;      /* body text on light */
+  --c-white: #ffffff;
+  --c-on-brg: #ffffff;     /* text on green */
+  --c-surface: #f7f6f2;    /* page background */
+  --c-surface-2: #efeee8;  /* raised card alt / disabled */
+  --c-line: #d8d6cd;       /* hairlines on light */
+  --c-muted: #54514a;      /* secondary text on light (AA on surface) */
+  --c-danger: #9b1c1c;     /* error text (AA on light) */
+  --c-focus: #013d2b;      /* focus ring on light = BRG (12.3:1) — accessible, not gold */
+
+  /* Type — larger base for outdoor legibility */
+  --fs-sm: 0.875rem;
+  --fs-base: 1.0625rem;    /* 17px */
+  --fs-lg: 1.25rem;
+  --fs-xl: 1.625rem;
+  --fs-2xl: 2rem;
+  --lh: 1.5;
+  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial,
+    sans-serif;
+
+  /* Geometry */
+  --tap: 48px;             /* min tap target */
+  --radius: 10px;
+  --radius-sm: 6px;
+  --gap: 16px;
+  --maxw: 920px;
+  --shadow: 0 1px 3px rgba(0, 0, 0, 0.12), 0 1px 2px rgba(0, 0, 0, 0.08);
+  --shadow-lg: 0 8px 24px rgba(1, 61, 43, 0.14);
+}

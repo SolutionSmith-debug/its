@@ -1,0 +1,36 @@
+{
+  "name": "its-safety-portal",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "ITS Safety Portal — Cloudflare Worker (Static Assets) + React SPA. Phase 2 scaffold: login + home + hard-coded JHA stub. Field PMs submit daily safety paperwork; downstream pipeline lands in later phases.",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "vite dev",
+    "build": "vite build",
+    "preview": "npm run build && vite preview",
+    "deploy": "npm run build && wrangler deploy",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.worker.json --noEmit",
+    "cf-typegen": "wrangler types",
+    "db:migrate:local": "wrangler d1 migrations apply its-safety-portal-db --local",
+    "db:query:local": "wrangler d1 execute its-safety-portal-db --local --command"
+  },
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "hono": "^4.12.23",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7"
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "^1.40.0",
+    "@cloudflare/workers-types": "^4.20260604.1",
+    "@types/react": "^19.2.16",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.2",
+    "typescript": "^6.0.3",
+    "vite": "^8.0.16",
+    "wrangler": "^4.98.0"
+  }
+}
