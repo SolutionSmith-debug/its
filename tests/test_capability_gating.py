@@ -180,12 +180,20 @@ def test_lists_documented():
 #                                 Included because `subprocess` is a needle and
 #                                 keychain is the one legitimate non-*_client
 #                                 subprocess user on the walked surface.
+#   shared/portal_client.py     — Safety Portal Worker REST (the pull-model
+#                                 transport: GET /api/internal/pending +
+#                                 POST /api/internal/mark-filed). The ONE audited
+#                                 egress to the Worker, so portal_poll.py can pull
+#                                 WITHOUT importing `requests` itself — keeping the
+#                                 puller inside the capability gate the TS Worker
+#                                 was outside of.
 NETWORK_LIB_ALLOWLIST: frozenset[str] = frozenset({
     "shared/graph_client.py",
     "shared/resend_client.py",
     "shared/smartsheet_client.py",
     "shared/heartbeat_client.py",
     "shared/keychain.py",
+    "shared/portal_client.py",
 })
 
 # Import needles that constitute network-egress or process-spawn capability.

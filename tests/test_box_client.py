@@ -448,3 +448,110 @@ def test_get_folder_by_path_root_returns_root_shape(mocker):
 )
 def test_canonical_job_path_format(customer, job_number, job_name, year, expected):
     assert canonical_job_path(customer, job_number, job_name, year) == expected
+
+
+# =========================================================================
+# Phase-5 Safety Portal Box primitives — upload_bytes + get_or_create_folder
+# =========================================================================
+
+
+def _folder_item(id_: str, name: str, type_: str = "folder") -> SimpleNamespace:
+    return SimpleNamespace(id=id_, name=name, type=type_)
+
+
+def test_upload_bytes_streams_content_and_returns_metadata(mocker):
+    _oauth, _client_cls, instance = _install_mocked_sdk(mocker)
+    instance.folder.return_value.upload_stream.return_value = SimpleNamespace(
+        id="900", name="2026-06-05-jha.pdf", size=2048
+    )
+
+    out = box_client.upload_bytes("123", "2026-06-05-jha.pdf", b"%PDF-1.4 ...")
+
+    assert out == {"id": "900", "name": "2026-06-05-jha.pdf", "size": 2048}
+    instance.folder.assert_called_with("123")
+    # The bytes were wrapped in a stream and the name forwarded.
+    call = instance.folder.return_value.upload_stream.call_args
+    assert call.args[1] == "2026-06-05-jha.pdf"
+
+
+def test_upload_bytes_conflict_raises_box_conflict(mocker):
+    _oauth, _client_cls, instance = _install_mocked_sdk(mocker)
+    instance.folder.return_value.upload_stream.side_effect = _box_api_error(
+        409, message="item_name_in_use"
+    )
+
+    with pytest.raises(BoxConflictError):
+        box_client.upload_bytes("123", "dup.pdf", b"x")
+
+
+def test_upload_bytes_auth_failure_raises_box_auth(mocker):
+    _oauth, _client_cls, instance = _install_mocked_sdk(mocker)
+    instance.folder.return_value.upload_stream.side_effect = _box_api_error(401)
+    with pytest.raises(BoxAuthError):
+        box_client.upload_bytes("123", "x.pdf", b"x")
+
+
+def test_get_or_create_folder_returns_existing_without_create(mocker):
+    _oauth, _client_cls, instance = _install_mocked_sdk(mocker)
+    instance.folder.return_value.get_items.return_value = [
+        _folder_item("10", "Other"),
+        _folder_item("11", "ITS Week of 2026-05-30 to 2026-06-05"),
+    ]
+
+    fid = box_client.get_or_create_folder("root", "ITS Week of 2026-05-30 to 2026-06-05")
+
+    assert fid == "11"
+    instance.folder.return_value.create_subfolder.assert_not_called()
+
+
+def test_get_or_create_folder_creates_on_miss(mocker):
+    _oauth, _client_cls, instance = _install_mocked_sdk(mocker)
+    instance.folder.return_value.get_items.return_value = [_folder_item("10", "Other")]
+    instance.folder.return_value.create_subfolder.return_value = SimpleNamespace(
+        id="77", name="ITS Week of X"
+    )
+
+    fid = box_client.get_or_create_folder("root", "ITS Week of X")
+
+    assert fid == "77"
+    instance.folder.return_value.create_subfolder.assert_called_once_with("ITS Week of X")
+
+
+def test_get_or_create_folder_conflict_refinds_existing(mocker):
+    """Lost create-race: create returns 409, re-find adopts the winner's folder."""
+    _oauth, _client_cls, instance = _install_mocked_sdk(mocker)
+    # First find: miss. Post-409 re-find: the racer's folder is now present.
+    instance.folder.return_value.get_items.side_effect = [
+        [_folder_item("10", "Other")],
+        [_folder_item("10", "Other"), _folder_item("88", "ITS Week of X")],
+    ]
+    instance.folder.return_value.create_subfolder.side_effect = _box_api_error(
+        409, message="item_name_in_use"
+    )
+
+    fid = box_client.get_or_create_folder("root", "ITS Week of X")
+    assert fid == "88"  # adopted the racer's folder, did not raise
+
+
+def test_upload_bytes_oauth_exception_raises_box_auth(mocker):
+    _oauth, _client_cls, instance = _install_mocked_sdk(mocker)
+    instance.folder.return_value.upload_stream.side_effect = BoxOAuthException(
+        400, "bad refresh token"
+    )
+    with pytest.raises(BoxAuthError, match="OAuth"):
+        box_client.upload_bytes("1", "x.pdf", b"x")
+
+
+def test_get_or_create_folder_409_but_refind_still_misses_reraises(mocker):
+    """409 on create AND the post-conflict re-find still misses → re-raise (loud,
+    never proceed with no folder)."""
+    _oauth, _client_cls, instance = _install_mocked_sdk(mocker)
+    instance.folder.return_value.get_items.side_effect = [
+        [_folder_item("10", "Other")],  # initial find: miss
+        [_folder_item("10", "Other")],  # post-409 re-find: still miss
+    ]
+    instance.folder.return_value.create_subfolder.side_effect = _box_api_error(
+        409, message="item_name_in_use"
+    )
+    with pytest.raises(BoxConflictError):
+        box_client.get_or_create_folder("root", "ITS Week of X")
