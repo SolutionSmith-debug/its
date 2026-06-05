@@ -27,7 +27,7 @@ each submission to its job via the **Job ID**.
 
 | Column | Meaning |
 |---|---|
-| **Job ID** | Auto-Number (e.g. `JOB-0001`) — the permanent key. **Smartsheet fills it automatically**; never type or change it. |
+| **Job ID** | Auto-Number (e.g. `JOB-000001`) — the permanent key. **Smartsheet fills it automatically**; never type or change it. |
 | Job Slug | Human-readable name (e.g. `bradley-1`). Was the old key; kept for readability. |
 | Project Name | Display name on the portal dropdown. |
 | Address | Full street address (auto-fills the form Work Location). |
@@ -46,7 +46,7 @@ each submission to its job via the **Job ID**.
 1. Open **ITS_Active_Jobs** → use the **New Job** form (or add a row directly).
 2. Fill: Project Name, Address, Stakeholder Name/Email/Phone, **Safety Reports
    Contact Email** (required), and set **Active = Active**.
-3. **Do not touch Job ID** — Smartsheet assigns the next `JOB-####` automatically.
+3. **Do not touch Job ID** — Smartsheet assigns the next `JOB-######` automatically.
 4. The job appears in the portal dropdown on the next sync (cron/manual).
 
 > A job with **Active = Active but no Safety Reports Contact Email** will be
@@ -68,8 +68,8 @@ creating Auto-Number columns).
 1. In the Smartsheet UI, open **ITS_Active_Jobs** → add a column **right after
    Project Name**.
 2. Name it **`Job ID`**, type **System Columns → Auto-Number**.
-3. Format: prefix `JOB-`, 4-digit fill, starting number `1` (→ `JOB-0001`).
-4. Existing rows backfill automatically (`JOB-0001`…). Done — the portal and
+3. Format: prefix `JOB-`, 6-digit fill, starting number `1` (→ `JOB-000001`).
+4. Existing rows backfill automatically (`JOB-000001`…). Done — the portal and
    `intake.py` now have a permanent key.
 
 ## Escalate to Seth (Tier 3) when

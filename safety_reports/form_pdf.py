@@ -298,6 +298,29 @@ def render_submission_pdf(definition: dict, submission: dict) -> bytes:
     return buf.getvalue()
 
 
+def merge_pdfs(pdfs: list[bytes]) -> bytes:
+    """Concatenate per-submission PDFs into one weekly packet, in the given order.
+
+    The caller (weekly_generate, Phase 5) orders `pdfs` oldest-first — Sat→Fri
+    ascending by work-date, intra-date by submission time. Deterministic; no AI /
+    network. Raises ValueError on an empty list (an empty week takes the
+    'no submissions this week' rollup path, never a zero-page merge).
+    """
+    from pypdf import (  # runtime dep; lazy so the renderer alone needn't load it
+        PdfReader,
+        PdfWriter,
+    )
+
+    if not pdfs:
+        raise ValueError("merge_pdfs: no PDFs to merge")
+    writer = PdfWriter()
+    for b in pdfs:
+        writer.append(PdfReader(io.BytesIO(b)))
+    out = io.BytesIO()
+    writer.write(out)
+    return out.getvalue()
+
+
 def incomplete_checklist_items(definition: dict, submission: dict) -> list[tuple[str, str, str]]:
     """Checklist items left BLANK (not-yet-inspected). N/A is a complete answer and is
     NOT returned. Phase-5 intake uses this to flag an incomplete submission — blank

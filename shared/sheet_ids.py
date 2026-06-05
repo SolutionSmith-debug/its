@@ -27,6 +27,12 @@ WORKSPACE_HUMAN_REVIEW = 8561891980142468  # ITS — Human Review (Evergreen-fac
 WORKSPACE_OPERATIONS = 7217130472007556
 WORKSPACE_ARCHIVE = 5528280611743620
 
+# ITS –– Safety Portal — standalone workspace (2026-06-05). The "Safety Portal"
+# folder (ITS_Active_Jobs + ITS_Forms_Catalog + WSR_human_review) was MOVED here
+# from ITS — Operations with IDs preserved (amendment b). Workspace access =
+# approval authority — sharing it is the send gate.
+WORKSPACE_SAFETY_PORTAL = 194283417429892
+
 # ---- Portfolio sub-folders ----------------------------------------------
 
 FOLDER_ACTIVE_PROJECTS = 5819628569028484
@@ -36,7 +42,10 @@ FOLDER_FIELD_REPORTS = 705799988242308
 # ---- Operations + Archive sub-folders -----------------------------------
 
 FOLDER_OPERATIONS_MASTER_DBS = 471604011526020
-FOLDER_OPERATIONS_SAFETY_PORTAL = 6663869084002180  # ITS — Operations / Safety Portal (built 2026-06-03 by build_its_active_jobs_sheet.py)
+# Safety Portal folder — MOVED 2026-06-05 to the standalone ITS –– Safety Portal
+# workspace (WORKSPACE_SAFETY_PORTAL); folder ID preserved (amendment b).
+FOLDER_SAFETY_PORTAL = 6663869084002180  # ITS –– Safety Portal / Safety Portal (ITS_Active_Jobs, ITS_Forms_Catalog, WSR_human_review)
+FOLDER_OPERATIONS_SAFETY_PORTAL = FOLDER_SAFETY_PORTAL  # back-compat alias (name retains the pre-move location)
 FOLDER_ARCHIVE_CLOSED_PROJECTS = 1034553964947332
 
 # ---- Active project folders (Forefront Portfolio / 01 — Active Projects) -
@@ -129,12 +138,14 @@ SHEET_VENDOR_DB        = 7278304330469252  # ITS — Operations / Master Databas
 SHEET_SUBCONTRACTOR_DB = 1230913068289924  # ITS — Operations / Master Databases / Subcontractor DB
 SHEET_EQUIPMENT_MASTER = 4132885031243652  # ITS — Operations / Master Databases / Equipment Master
 
-# ---- Safety Portal config sheets (ITS — Operations / Safety Portal) ------
-# The two Smartsheet inputs the Safety Portal reads (blueprint
-# workstreams/safety-portal/brief.md §3). OPERATOR: flip each from 0 after the
-# matching build migration prints the real ID (FLIP precedes SEED).
-SHEET_ACTIVE_JOBS   = 6223950341164932  # ITS_Active_Jobs   (ITS — Operations / Safety Portal; built 2026-06-03 by build_its_active_jobs_sheet.py)
-SHEET_FORMS_CATALOG = 423274885369732   # ITS_Forms_Catalog (ITS — Operations / Safety Portal; built 2026-06-03 by build_its_forms_catalog_sheet.py)
+# ---- Safety Portal sheets (ITS –– Safety Portal / Safety Portal) ---------
+# The Smartsheet inputs + the Phase-5 review surface for the Safety Portal flow.
+# The folder MOVED to the standalone ITS –– Safety Portal workspace 2026-06-05
+# (amendment b; IDs preserved). OPERATOR: flip a 0 placeholder after the matching
+# build migration prints the real ID (FLIP precedes SEED).
+SHEET_ACTIVE_JOBS   = 6223950341164932  # ITS_Active_Jobs   (built 2026-06-03 by build_its_active_jobs_sheet.py)
+SHEET_FORMS_CATALOG = 423274885369732   # ITS_Forms_Catalog (built 2026-06-03 by build_its_forms_catalog_sheet.py)
+SHEET_WSR_HUMAN_REVIEW = 5035670127988612  # WSR_human_review — Phase-5 weekly review/approve/send surface (amendment b; built 2026-06-05 by build_wsr_human_review_sheet.py). Supersedes WPR_Pending_Review for the portal flow.
 
 
 # ---- Reverse-lookup maps ------------------------------------------------

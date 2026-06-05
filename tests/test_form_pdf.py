@@ -15,6 +15,7 @@ import pytest
 from safety_reports.form_pdf import (
     _parse_ml_path,
     incomplete_checklist_items,
+    merge_pdfs,
     render_submission_pdf,
 )
 
@@ -144,6 +145,35 @@ def test_signature_renders_without_error() -> None:
 
 
 # ── HSS&E sectioned assessment renders all sections ───────────────────────────
+# ── weekly-packet merge (Sat→Fri) ─────────────────────────────────────────────
+def _one_page(form: str, job: str) -> bytes:
+    return render_submission_pdf(_load(form), {"job_name": job, "work_date": "2026-06-03", "values": {}})
+
+
+def test_merge_concatenates_in_order() -> None:
+    a = _one_page("jha-v1.json", "Bradley 1")
+    b = _one_page("visitor-sign-in-v1.json", "Bradley 1")
+    merged = merge_pdfs([a, b])
+    reader = pypdf.PdfReader(io.BytesIO(merged))
+    pa = len(pypdf.PdfReader(io.BytesIO(a)).pages)
+    pb = len(pypdf.PdfReader(io.BytesIO(b)).pages)
+    assert len(reader.pages) == pa + pb, "merged page count must equal the sum"
+    text = _norm(" ".join(p.extract_text() for p in reader.pages))
+    assert "JOB HAZARD ANALYSIS" in text and "VISITOR SIGN" in text.upper()
+
+
+def test_merge_empty_raises() -> None:
+    with pytest.raises(ValueError):
+        merge_pdfs([])
+
+
+def test_merge_single_pdf_roundtrips() -> None:
+    a = _one_page("jha-v1.json", "Bradley 1")
+    merged = merge_pdfs([a])
+    assert merged[:5] == b"%PDF-"
+    assert len(pypdf.PdfReader(io.BytesIO(merged)).pages) == len(pypdf.PdfReader(io.BytesIO(a)).pages)
+
+
 def test_hsse_sections_render() -> None:
     out = render_submission_pdf(
         _load("hsse-work-observation-v1.json"),
