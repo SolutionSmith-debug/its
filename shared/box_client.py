@@ -36,8 +36,8 @@ the operator must re-run `setup_box_oauth.py`. A watchdog freshness check
 and CRITICAL at 58.
 
 Capabilities exposed:
-    get_client(), upload_file(), download_file(), list_folder(),
-    get_folder_by_path(), search(), get_file_metadata(),
+    get_client(), upload_file(), upload_bytes(), download_file(), list_folder(),
+    get_folder_by_path(), get_or_create_folder(), search(), get_file_metadata(),
     canonical_job_path()
 
 Error model:
@@ -258,6 +258,40 @@ def upload_file(
     return {"id": uploaded.id, "name": uploaded.name, "size": uploaded.size}
 
 
+def upload_bytes(folder_id: str, name: str, content: bytes) -> dict[str, Any]:
+    """Upload in-memory bytes as a Box file. Returns minimal file metadata.
+
+    The in-memory sibling of `upload_file` — for content produced at runtime
+    (e.g. `form_pdf.render_submission_pdf` → PDF bytes) that never touches the
+    local filesystem. Uses the boxsdk byte-stream upload path.
+
+    Deliberately NOT routed through `_call`'s 429/503 retry: a `BytesIO` stream
+    is consumed on the first attempt, so a naive retry would re-send from EOF and
+    upload an empty file. Upload is not safely idempotent to retry anyway. We
+    translate exceptions to the typed hierarchy and let the caller decide (the
+    portal path suffixes the name + re-uploads on `BoxConflictError` to keep both
+    versions of an amended submission).
+
+    Raises:
+        BoxConflictError: HTTP 409 — a file named `name` already exists here.
+        BoxAuthError / BoxNotFoundError / BoxRateLimitError / BoxError: per the
+            typed hierarchy.
+    """
+    import io
+    client = get_client()
+    try:
+        uploaded = client.folder(folder_id).upload_stream(io.BytesIO(content), name)
+    except BoxOAuthException as exc:
+        raise BoxAuthError(f"OAuth exchange failed: {exc}") from exc
+    except BoxAPIException as exc:
+        raise _translate(exc) from exc
+    except Exception as exc:  # noqa: BLE001 — honor the module's "every failure → BoxError" contract
+        # boxsdk usually raises its own types, but anything else (e.g. an OSError
+        # mid-stream) must not escape untranslated past the typed boundary.
+        raise BoxError(f"Box upload of {name!r} failed: {exc!r}") from exc
+    return {"id": str(uploaded.id), "name": uploaded.name, "size": uploaded.size}
+
+
 def download_file(file_id: str) -> bytes:
     """Return the raw bytes of a Box file."""
     client = get_client()
@@ -313,6 +347,50 @@ def get_folder_by_path(path: str) -> dict[str, Any]:
         current_id = match["id"]
         current_name = match["name"]
     return {"id": current_id, "name": current_name, "type": "folder"}
+
+
+def _find_child_folder(parent_folder_id: str, name: str) -> str | None:
+    """Return the ID of the direct child folder named `name`, or None.
+
+    Lists at a generous page limit (1000, Box's max page) — folders that hold
+    more than 1000 same-level children with the target beyond that page won't
+    resolve, same documented caveat as `get_folder_by_path`.
+    """
+    for item in list_folder(parent_folder_id, limit=1000):
+        if item["type"] == "folder" and item["name"] == name:
+            return str(item["id"])
+    return None
+
+
+def get_or_create_folder(parent_folder_id: str, name: str) -> str:
+    """Find a direct child folder named `name` under `parent_folder_id`; create
+    it if absent. Idempotent find-or-create. Returns the child folder ID.
+
+    The ITS-auto-created-folder primitive for the Safety Portal Box mirror (the
+    compiled-WSR week folder). Per the operator naming rule, callers prefix
+    ITS-created folder names with ``ITS`` so the system's own folders are
+    distinguishable from the existing job/category tree.
+
+    Race-tolerant: Box does NOT enforce folder-name uniqueness, so two callers
+    can both pass the find step and both create. On a create that returns 409
+    (BoxConflictError), we re-find and adopt the existing folder if it is now
+    visible. If the re-find STILL misses (the folder was concurrently deleted, or
+    Box read-replica lag), we re-RAISE the 409 — loud, not silent — so the caller
+    retries next cycle rather than proceeding with no folder. Bounded blast
+    radius on the adopt path: at worst one extra empty folder for operator cleanup.
+    """
+    existing = _find_child_folder(parent_folder_id, name)
+    if existing is not None:
+        return existing
+    client = get_client()
+    try:
+        created = _call(client.folder(parent_folder_id).create_subfolder, name)
+        return str(created.id)
+    except BoxConflictError:
+        refound = _find_child_folder(parent_folder_id, name)
+        if refound is not None:
+            return refound
+        raise
 
 
 def search(

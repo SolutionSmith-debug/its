@@ -34,7 +34,10 @@ Consumers
 from __future__ import annotations
 
 import io
+import json
 import logging
+import re
+from pathlib import Path
 from typing import Any
 from xml.sax.saxutils import escape as _esc
 
@@ -319,6 +322,38 @@ def merge_pdfs(pdfs: list[bytes]) -> bytes:
     out = io.BytesIO()
     writer.write(out)
     return out.getvalue()
+
+
+# ── form-definition loader ──────────────────────────────────────────────────────
+# The Phase-4 definitions are the single source of truth shared with the TS display
+# runtime; they live as JSON under safety_portal/forms/<form_code>.json. The TS side
+# loads them via a Vite glob (src/forms/registry.ts); this is the Python side's loader
+# for the Phase-5 intake portal branch (`form_code` arrives in the HMAC-verified payload).
+_FORMS_DIR = Path(__file__).resolve().parent.parent / "safety_portal" / "forms"
+# Form codes are lowercase-kebab + version (e.g. "jha-v1", "toolbox-talk-ppe-v1").
+# The strict charset is also the path-traversal guard: `form_code` originates in the
+# portal payload, so no "/" / "." / ".." can reach the filesystem path.
+_FORM_CODE_RE = re.compile(r"[a-z0-9-]+")
+
+
+def load_definition(form_code: str) -> dict | None:
+    """Load the Phase-4 form definition for `form_code`, or None if unresolvable.
+
+    Returns None (never raises, never returns a partial) on: an unsafe/empty
+    form_code, a missing file, malformed JSON, or a non-object top level. The
+    caller (intake portal branch) treats None as "unknown/invalid form → flag to
+    the Review Queue, do NOT render" — a blank form must never be filed silently.
+    """
+    if not form_code or not _FORM_CODE_RE.fullmatch(form_code):
+        return None
+    path = _FORMS_DIR / f"{form_code}.json"
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
 
 
 def incomplete_checklist_items(definition: dict, submission: dict) -> list[tuple[str, str, str]]:

@@ -15,6 +15,7 @@ import pytest
 from safety_reports.form_pdf import (
     _parse_ml_path,
     incomplete_checklist_items,
+    load_definition,
     merge_pdfs,
     render_submission_pdf,
 )
@@ -184,3 +185,58 @@ def test_hsse_sections_render() -> None:
     text = _norm(_pdf_text(out))
     assert "SECTION 2: JOB PLAN EVALUATION" in text
     assert "J. Lee" in text
+
+
+# ── load_definition (Phase-5 Python-side form-definition loader) ───────────────
+def test_load_definition_known_form_returns_dict() -> None:
+    d = load_definition("jha-v1")
+    assert d is not None
+    assert d["form_code"] == "jha-v1"
+    assert "sections" in d
+
+
+def test_load_definition_matches_every_shipped_form() -> None:
+    # Every form file (except the meta-schema) must load by its filename stem.
+    for path in DEF_PATHS:
+        d = load_definition(path.stem)
+        assert d is not None, f"{path.stem} failed to load"
+        assert d.get("form_code") == path.stem
+
+
+def test_load_definition_unknown_form_returns_none() -> None:
+    assert load_definition("does-not-exist-v9") is None
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "",                       # empty
+        "jha-v1.json",            # has a dot → blocked (and would double-suffix)
+        "../jha-v1",              # path traversal
+        "jha/../../etc/passwd",   # path traversal
+        "JHA-V1",                 # uppercase not in the charset
+        "jha_v1",                 # underscore not in the charset
+        "foo bar",                # space not in the charset
+    ],
+)
+def test_load_definition_rejects_unsafe_form_codes(bad: str) -> None:
+    assert load_definition(bad) is None
+
+
+def test_load_definition_malformed_json_returns_none(tmp_path, monkeypatch) -> None:
+    # Point the loader at a temp dir holding a malformed file.
+    import safety_reports.form_pdf as fp
+
+    bad = tmp_path / "broken-v1.json"
+    bad.write_text("{ not valid json ")
+    monkeypatch.setattr(fp, "_FORMS_DIR", tmp_path)
+    assert fp.load_definition("broken-v1") is None
+
+
+def test_load_definition_non_object_json_returns_none(tmp_path, monkeypatch) -> None:
+    """Valid JSON whose top level is not an object (e.g. an array) → None."""
+    import safety_reports.form_pdf as fp
+
+    (tmp_path / "arr-v1.json").write_text("[1, 2, 3]")
+    monkeypatch.setattr(fp, "_FORMS_DIR", tmp_path)
+    assert fp.load_definition("arr-v1") is None
