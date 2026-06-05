@@ -446,13 +446,19 @@ def _write_watchdog_marker() -> None:
 # ---- HMAC verification --------------------------------------------------
 
 
-def _verify_row_hmac(row: dict[str, Any], secret: str) -> bool:
+def _verify_row_hmac(row: dict[str, Any], provided_hmac: str, secret: str) -> bool:
     """Recompute the canonical HMAC for a pulled row and constant-time compare to
-    its `hmac` field. The downgrade defense: a row that fails is rejected, never
-    filed. payload_json is used VERBATIM (re-serializing would change the bytes)."""
+    `provided_hmac`. The downgrade defense: a row that fails is rejected, never
+    filed. payload_json is used VERBATIM (re-serializing would change the bytes).
+
+    `provided_hmac` is passed SEPARATELY (not read from `row`) so the HMAC value
+    stays isolated to this verification step and never travels inside the row dict
+    into intake or any log line — both better hygiene (an integrity tag has no
+    business downstream) and it keeps CodeQL's clear-text-logging taint off the
+    submission fields the daemon logs."""
     return portal_hmac.verify(
         secret,
-        str(row.get("hmac") or ""),
+        provided_hmac,
         submission_uuid=str(row.get("submission_uuid") or ""),
         job_id=str(row.get("job_id") or ""),
         form_code=str(row.get("form_code") or ""),
@@ -481,7 +487,9 @@ def _handle_hmac_failure(row: dict[str, Any], correlation_id: str) -> None:
             "job_id": row.get("job_id"),
             "form_code": row.get("form_code"),
             "work_date": row.get("work_date"),
-            "provided_hmac": str(row.get("hmac") or "")[:16] + "…",
+            # The HMAC value is deliberately NOT recorded — it is signature
+            # material, isolated to verification; the submission_uuid + the
+            # CRITICAL alert are the forensic handle, and the raw row stays in D1.
         },
         sla_tier=review_queue.SlaTier.SAFETY_INTAKE,
         reason=review_queue.ReviewReason.SECURITY_TRIGGER,
@@ -582,15 +590,20 @@ def _poll_inside_lock() -> PollStats:
     counters = {"filed": 0, "reviewed": 0, "rejected": 0, "remarked": 0, "errors": 0}
 
     for row in rows:
+        # Split the HMAC off the row IMMEDIATELY: it is verified separately and
+        # never travels into intake or any log line (the `clean` dict is what the
+        # rest of the cycle sees). Keeps signature material isolated to verify.
+        provided_hmac = str(row.get("hmac") or "")
+        clean = {k: v for k, v in row.items() if k != "hmac"}
         try:
-            _process_row(row, base_url, bearer, secret, seen, counters)
+            _process_row(clean, provided_hmac, base_url, bearer, secret, seen, counters)
         except Exception as exc:  # noqa: BLE001 — per-row fence; one bad row never kills the cycle
             counters["errors"] += 1
             error_log.log(
                 Severity.ERROR, SCRIPT_NAME,
                 (
                     f"per-row unexpected exception submission_uuid="
-                    f"{row.get('submission_uuid')!r}: {type(exc).__name__}: {exc!r}"
+                    f"{clean.get('submission_uuid')!r}: {type(exc).__name__}: {exc!r}"
                 ),
                 error_code="portal_row_unexpected",
             )
@@ -646,13 +659,15 @@ def _poll_inside_lock() -> PollStats:
 
 def _process_row(
     row: dict[str, Any],
+    provided_hmac: str,
     base_url: str,
     bearer: str,
     secret: str,
     seen: dict[str, dict[str, Any]],
     counters: dict[str, int],
 ) -> None:
-    """Verify + dispatch + receipt one pulled row. Mutates `seen` + `counters`."""
+    """Verify + dispatch + receipt one pulled row. `row` is HMAC-free (the caller
+    split the signature off into `provided_hmac`); mutates `seen` + `counters`."""
     submission_uuid = str(row.get("submission_uuid") or "")
     if not submission_uuid:
         # A row with no UUID can't be receipted/deduped — flag, don't dispatch.
@@ -685,7 +700,7 @@ def _process_row(
     correlation_id = uuid.uuid4().hex[:12]
 
     # Downgrade defense: verify the HMAC BEFORE intake ever sees the row.
-    if not _verify_row_hmac(row, secret):
+    if not _verify_row_hmac(row, provided_hmac, secret):
         _handle_hmac_failure(row, correlation_id)
         seen[submission_uuid] = {"status": "rejected"}
         counters["rejected"] += 1
