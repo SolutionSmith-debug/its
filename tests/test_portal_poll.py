@@ -39,7 +39,9 @@ def _patch_all(mocker):
     return {
         "creds": mocker.patch.object(
             portal_poll, "_resolve_credentials",
-            return_value=("https://portal.example.com", "bearer", "secret"),
+            return_value=portal_poll._PortalCreds(
+                base_url="https://portal.example.com", bearer="bearer", secret="secret",
+            ),
         ),
         "get_pending": mocker.patch.object(
             portal_poll.portal_client, "get_pending", return_value=[]

@@ -534,8 +534,25 @@ def poll_once() -> PollStats:
         return _poll_inside_lock()
 
 
-def _resolve_credentials() -> tuple[str, str, str] | None:
-    """Resolve (base_url, bearer, hmac_secret) fail-CLOSED. None if any is absent."""
+@dataclass(frozen=True)
+class _PortalCreds:
+    """Resolved portal credentials with NAMED fields.
+
+    Deliberately a dataclass, NOT a `(base_url, bearer, secret)` tuple: tuple
+    unpacking is taint-imprecise (CodeQL can't tell which element is the secret,
+    so unpacking taints `base_url` from `bearer` and the false taint then rides
+    the Worker request into the response → every logged submission field). With
+    named fields CodeQL is field-sensitive, so `base_url` never inherits the
+    bearer/secret taint. Also just clearer than positional unpacking.
+    """
+
+    base_url: str
+    bearer: str
+    secret: str
+
+
+def _resolve_credentials() -> _PortalCreds | None:
+    """Resolve portal credentials fail-CLOSED. None if any is absent."""
     base_url = _read_str_setting(CFG_WORKER_BASE_URL, "")
     try:
         bearer = keychain.get_secret(KC_BEARER)
@@ -544,7 +561,7 @@ def _resolve_credentials() -> tuple[str, str, str] | None:
         bearer = secret = ""
     if not (base_url and bearer and secret):
         return None
-    return base_url, bearer, secret
+    return _PortalCreds(base_url=base_url, bearer=bearer, secret=secret)
 
 
 def _poll_inside_lock() -> PollStats:
@@ -570,10 +587,9 @@ def _poll_inside_lock() -> PollStats:
                              error_summary="fail-closed: portal credentials missing")
         _write_watchdog_marker()
         return PollStats(halted_no_creds=True)
-    base_url, bearer, secret = creds
 
     try:
-        rows = portal_client.get_pending(base_url, bearer, limit=PENDING_LIMIT)
+        rows = portal_client.get_pending(creds.base_url, creds.bearer, limit=PENDING_LIMIT)
     except portal_client.PortalTransportError as exc:
         error_log.log(
             Severity.ERROR, SCRIPT_NAME,
@@ -596,7 +612,10 @@ def _poll_inside_lock() -> PollStats:
         provided_hmac = str(row.get("hmac") or "")
         clean = {k: v for k, v in row.items() if k != "hmac"}
         try:
-            _process_row(clean, provided_hmac, base_url, bearer, secret, seen, counters)
+            _process_row(
+                clean, provided_hmac, creds.base_url, creds.bearer, creds.secret,
+                seen, counters,
+            )
         except Exception as exc:  # noqa: BLE001 — per-row fence; one bad row never kills the cycle
             counters["errors"] += 1
             error_log.log(
