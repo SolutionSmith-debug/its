@@ -51,6 +51,16 @@ GATED_SCRIPTS: list[tuple[str, list[str]]] = [
         ["send_mail", "resend", "smtplib", "email.mime"],
     ),
     (
+        # portal_poll is the Phase-5 pull-model daemon: it ingests untrusted portal
+        # submissions (HMAC-verified) and files them via intake — generation-side,
+        # ZERO external send. The point of the pull model is that the Python puller
+        # is INSIDE this AST gate (the TS Worker was outside it). HTTP egress lives
+        # in shared/portal_client.py (F02-allowlisted), so portal_poll itself imports
+        # no network library and no send capability.
+        "safety_reports/portal_poll.py",
+        ["send_mail", "resend", "smtplib", "email.mime"],
+    ),
+    (
         # weekly_generate does NOT need Graph reads (it only reads Smartsheet
         # rows, not mail) so `graph_client` is forbidden in addition to the
         # narrower send substrings — stricter list than the intake pair.

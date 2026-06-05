@@ -278,3 +278,65 @@ Cache files (local, under `~/its/state/`):
   cycle would re-resolve via `find_row_by_primary`, adding a Smartsheet read per cycle).
   Also stores the lifetime `total_cycles` counter. The file auto-recovers from a
   404 (row deleted/re-seeded) by invalidating the entry; the next cycle re-resolves.
+
+## Portal pull daemon (`portal_poll.py`) — Phase 5
+
+The Safety Portal pull model (`decision_phase5-portal-transport`). `portal_poll`
+drains the Worker's D1 queue: `GET /api/internal/pending` → per-row HMAC verify
+(`shared/portal_hmac.py`) → `intake.process_portal_submission` → `POST
+/api/internal/mark-filed` (the receipt). It is a generation-side daemon with **zero
+external-send capability** (enrolled in `tests/test_capability_gating.py`); the
+human-approved send is the separate `weekly_send` process.
+
+> **NOT live-verified.** The end-to-end chain (portal → Worker → poll → intake →
+> Box → Smartsheet → WSR → send) is validated in the deploy session, which also
+> deploys the Worker, seeds the secrets below, and loads this daemon's launchd job.
+
+### Configuration surface
+
+| Key (ITS_Config workstream `safety_reports`) | Default | Meaning |
+|---|---|---|
+| `safety_reports.portal_poll.polling_enabled` | `true` | Runtime kill switch. `false` short-circuits each cycle (canonical on/off gate — NOT the ITS_Daemon_Health `Enabled` checkbox, which is report-filter metadata). |
+| `safety_reports.portal_poll.poll_interval_seconds` | `60` | launchd cadence (read at install time). |
+| `safety_reports.portal.worker_base_url` | — | The Worker origin, e.g. `https://…workers.dev`. **Fail-closed: if unset, the daemon does NOT poll.** |
+
+Keychain entries (mirror the Worker's `PORTAL_INTERNAL_API_TOKEN` + `HMAC_PAYLOAD_SECRET`):
+
+- `ITS_PORTAL_INTERNAL_TOKEN` — the bearer for `/api/internal/*`. **Fail-closed if absent.**
+- `ITS_PORTAL_HMAC_SECRET` — the per-row HMAC verify secret. **Fail-closed if absent.**
+
+State files (under `~/its/state/`): `portal_poll_heartbeat.txt`, `portal_poll.lock`,
+`portal_poll_seen.json` (the idempotency seen-set — `{uuid: {status, box_link}}`).
+
+### Mark-filed (drain) policy
+
+- `processed` / `already_filed` → mark-filed with the Box link (queue drains).
+- `review_queue` (unknown/inactive job, unknown form, malformed payload/date,
+  unresolved Box) → **also drained**, because a re-pull can't fix it; the
+  **Review Queue entry is the operator's action item** and holds the full payload
+  for manual re-filing. _Trade-off: the portal shows "filed" though it went to review._
+- `error` (transient Smartsheet/Box auth·rate·5xx) → **NOT drained** → auto-retries
+  next cycle.
+- **HMAC verify failure** → rejected: anomaly-logged + Review-Queue-flagged
+  (`security_flag=True`, CRITICAL) + recorded `rejected` in the seen-set (one-shot,
+  no re-spam) + **never filed, never drained** (the row stays in D1 for forensics).
+
+### §43 Successor-Operator remediation runbook
+
+Low-capability-class repairs the trained Successor-Operator may perform (no code,
+no secrets/Keychain, no doctrine):
+
+| Symptom | Likely cause | Low-class repair |
+|---|---|---|
+| `poll cycle: skipped_disabled` in the log | `polling_enabled=false` | Set `safety_reports.portal_poll.polling_enabled=true` in ITS_Config to resume; `false` to pause. |
+| `portal_creds_missing` ERROR; daemon not polling | Worker base URL row missing, or the daemon is running before the deploy session seeded secrets | Confirm the `safety_reports.portal.worker_base_url` ITS_Config row is set. If the row exists and it still fails, the Keychain secrets are missing → **escalate to Seth** (secrets/auth = high-class). |
+| `portal_pending_fetch_failed` ERROR each cycle | Worker unreachable / network blip | Transient — self-heals when the Worker is reachable. If it persists >1 h, **escalate to Seth**. |
+| Submissions stuck in `ITS_Review_Queue` with reason `job_not_found` / `job_inactive` | The job isn't an Active row in `ITS_Active_Jobs` (config lag) | Add/activate the job in `ITS_Active_Jobs`, then **re-file the submission manually** from the Review-Queue payload (the auto-drain means it won't re-pull): `python -m safety_reports.intake` is email-only — re-filing a portal submission is a **developer task → escalate to Seth**. |
+| `portal_hmac_failure` CRITICAL | A pulled row's signature didn't verify (tamper, or a secret mismatch between Worker and Mac) | **Escalate to Seth** — this is a security event (secrets/auth = high-class). Do NOT clear it. |
+| `daemon_health_write_failed` / daemon missing from `ITS_Daemon_Health` | Heartbeat-row write failed | Same as the intake daemon — see [`docs/runbooks/daemon_health_self_provision.md`](../docs/runbooks/daemon_health_self_provision.md). |
+
+**Escalate-to-Seth boundary (high-capability-class — always escalate):** anything
+touching the **HMAC/bearer secrets or the Keychain** (`portal_hmac_failure`,
+`portal_creds_missing` when the row exists), any **code change**, or re-filing a
+drained submission. The four fixed high-class categories (External Send Gate,
+secrets/auth, doctrine, code) always escalate regardless of documentation.
