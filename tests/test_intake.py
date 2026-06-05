@@ -31,7 +31,7 @@ from safety_reports.intake import (
     Extraction,
     ParsedEmail,
     ProcessResult,
-    _name_matches,
+    ProjectResolution,
     _project_tool_use,
     classify_and_extract,
     collect_anomalies,
@@ -41,6 +41,7 @@ from safety_reports.intake import (
     upload_attachments_to_box,
     write_daily_reports_row,
 )
+from shared import active_jobs as _active_jobs
 from shared.graph_client import GraphNotFoundError
 from shared.smartsheet_client import SmartsheetError
 
@@ -231,48 +232,63 @@ def test_fetch_message_skips_non_file_attachments(mocker):
 # ---- Stage 4: project resolution ----------------------------------------
 
 
-def test_resolve_project_subject_match():
-    parsed = ParsedEmail(
-        sender="seths@evergreenmirror.com",
-        subject="Bradley 1 — Daily JHA 2026-05-19",
-        body_text="Crew on site.",
-        attachments=[],
+# Stage-4 resolution is now keyed on the portal payload's Job ID (legacy
+# subject/body name-matching retired, Phase 3); these tests stub active_jobs.get_job.
+def _job(job_id="JOB-0001", project="Bradley 1", status="Active"):
+    return _active_jobs.ActiveJob(
+        job_id=job_id, project_name=project, job_slug="bradley-1", address="",
+        stakeholder_name="", stakeholder_email="", stakeholder_phone="",
+        safety_reports_contact_email="safety@evergreen.example",
+        active_status=status, row_id=1,
     )
-    assert resolve_project(parsed) == "Bradley 1"
 
 
-def test_resolve_project_body_match_when_subject_empty():
-    parsed = ParsedEmail(
-        sender="seths@evergreenmirror.com",
-        subject="",
-        body_text="This is for the Huntley site today.",
-        attachments=[],
+def _parsed(job_id):
+    return ParsedEmail(
+        sender="seths@evergreenmirror.com", subject="", body_text="",
+        attachments=[], job_id=job_id,
     )
-    assert resolve_project(parsed) == "Huntley"
 
 
-def test_resolve_project_returns_none_when_no_match():
-    parsed = ParsedEmail(
-        sender="seths@evergreenmirror.com",
-        subject="Random subject",
-        body_text="No project named here.",
-        attachments=[],
+def test_resolve_project_resolves_active_job_id(monkeypatch):
+    monkeypatch.setattr(
+        _active_jobs, "get_job",
+        lambda jid: _job() if jid == "JOB-0001" else None,
     )
-    assert resolve_project(parsed) is None
+    res = resolve_project(_parsed("JOB-0001"))
+    assert isinstance(res, ProjectResolution)
+    assert res.project_name == "Bradley 1"
+    assert res.reason == ""
 
 
-def test_resolve_project_returns_none_when_subject_multi_match():
-    parsed = ParsedEmail(
-        sender="seths@evergreenmirror.com",
-        subject="Bradley 1 vs Bradley 2 comparison",
-        body_text="",
-        attachments=[],
+def test_resolve_project_no_job_id_refuses(monkeypatch):
+    # Legacy email / any message with no Job ID → explicit refusal, never a guess.
+    called = {"n": 0}
+    monkeypatch.setattr(
+        _active_jobs, "get_job",
+        lambda jid: called.__setitem__("n", called["n"] + 1) or None,
     )
-    assert resolve_project(parsed) is None
+    res = resolve_project(_parsed(None))
+    assert res.project_name is None
+    assert res.reason == "no_job_id"
+    assert called["n"] == 0  # short-circuits before any sheet read
 
 
-def test_name_matches_case_insensitive():
-    assert _name_matches("BRADLEY 1 site", ["Bradley 1", "Huntley"]) == ["Bradley 1"]
+def test_resolve_project_unknown_job_refuses(monkeypatch):
+    monkeypatch.setattr(_active_jobs, "get_job", lambda jid: None)
+    res = resolve_project(_parsed("JOB-9999"))
+    assert res.project_name is None
+    assert res.reason == "job_not_found"
+
+
+def test_resolve_project_inactive_job_refuses(monkeypatch):
+    monkeypatch.setattr(
+        _active_jobs, "get_job",
+        lambda jid: _job(job_id="JOB-0002", project="Brimfield 1", status="Inactive"),
+    )
+    res = resolve_project(_parsed("JOB-0002"))
+    assert res.project_name is None
+    assert res.reason == "job_inactive"
 
 
 # ---- Stage 5: classify_and_extract --------------------------------------
@@ -574,6 +590,21 @@ def patch_all_config(mocker):
     )
 
 
+@pytest.fixture
+def resolved_job(mocker):
+    """Stage-4 resolves to Bradley 1.
+
+    Phase 3 retired legacy subject/body matching and keys resolution on the
+    portal payload's Job ID (populated by the Phase-5 portal-marker branch). The
+    Job-ID resolution mechanism is unit-tested directly above; these end-to-end
+    tests exercise the DOWNSTREAM stages, so they stub a successful resolution.
+    """
+    mocker.patch(
+        "safety_reports.intake.resolve_project",
+        return_value=ProjectResolution(project_name="Bradley 1", reason=""),
+    )
+
+
 def test_process_message_quarantines_unknown_sender(mocker, patch_all_config):
     """End-to-end: unknown sender quarantines at Stage 2.
 
@@ -639,7 +670,7 @@ def test_process_message_review_queue_on_unresolved_project(mocker, patch_all_co
     classify.assert_not_called()
 
 
-def test_process_message_routes_low_confidence_to_review_queue(mocker, patch_all_config):
+def test_process_message_routes_low_confidence_to_review_queue(mocker, patch_all_config, resolved_job):
     mocker.patch(
         "safety_reports.intake._read_float_setting",
         side_effect=lambda key, fallback: 0.75 if "threshold" in key else fallback,
@@ -669,7 +700,7 @@ def test_process_message_routes_low_confidence_to_review_queue(mocker, patch_all
     write_row.assert_not_called()
 
 
-def test_process_message_happy_path_writes_row_and_uploads(mocker, patch_all_config):
+def test_process_message_happy_path_writes_row_and_uploads(mocker, patch_all_config, resolved_job):
     _patch_graph_fetch(
         mocker,
         message=_build_graph_message(
@@ -716,7 +747,7 @@ def test_process_message_happy_path_writes_row_and_uploads(mocker, patch_all_con
     assert success_logs, "expected one INFO 'intake SUCCESS' log"
 
 
-def test_process_message_skipped_swo_other_when_category_is_other(mocker, patch_all_config):
+def test_process_message_skipped_swo_other_when_category_is_other(mocker, patch_all_config, resolved_job):
     """SWO/Other categories surface a distinct status for poller observability."""
     _patch_graph_fetch(
         mocker,
@@ -745,7 +776,7 @@ def test_process_message_skipped_swo_other_when_category_is_other(mocker, patch_
     assert result.status == "skipped_swo_other"
 
 
-def test_process_message_high_severity_anomaly_routes_to_review(mocker, patch_all_config):
+def test_process_message_high_severity_anomaly_routes_to_review(mocker, patch_all_config, resolved_job):
     _patch_graph_fetch(
         mocker,
         message=_build_graph_message(subject="Bradley 1 Daily JHA"),
@@ -772,7 +803,7 @@ def test_process_message_high_severity_anomaly_routes_to_review(mocker, patch_al
 
 
 def test_process_message_returns_error_status_on_smartsheet_failure(
-    mocker, patch_all_config
+    mocker, patch_all_config, resolved_job
 ):
     """SmartsheetError during write is now a soft failure: status='error'.
 
