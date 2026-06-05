@@ -1525,29 +1525,21 @@ Surfaced: 2026-06-05 Safety Portal Phase 3 session (PR #160).
 
 Surfaced: 2026-06-05 Safety Portal Phase 3 contacts amendment (ops-stds-enforcer W1).
 
-## Safety Portal Phase 4 PR 2 — TS display runtime [OPEN 2026-06-05]
+## Safety Portal Phase 4 PR 2 — TS display runtime [CLOSED 2026-06-05]
 
-Generic definition-driven renderer in `safety_portal/spa/src/` for the 3 archetypes (rows+signatures, grouped-checklist, sectioned-assessment / visitor / content+signin). Replaces the hard-coded `src/pages/JhaStubPage.tsx` stub with a dynamic component driven by the form definition JSON and meta-schema. Required form controls: form-type + variant dropdowns (populated from ITS_Forms_Catalog parent/variant columns); multi-row SVG signature capture via `signature_pad`; amend/prefill from a prior submission; structured-data emit to the HMAC email shim on submit.
+**Resolved by PR #166 (`23af65f`, four-part-verify clean):** definition-driven TS display runtime landed. 3 archetype renderers (rows+signatures, grouped-checklist, sectioned-assessment) in `safety_portal/src/forms/`; form-type + variant dropdowns; multi-row SVG signature capture via `signature_pad`; amend/prefill from a prior submission; structured-data emit to the Worker; 3 new Worker endpoints (`/api/jobs`, `/api/forms`, `/api/submissions`); D1 `jobs` + `submissions` tables (migration 0004). Session log: `docs/session_logs/2026-06-05_safety-portal-phase4-runtime-renderer-phase5-foundation-transport.md`.
 
 **Tag:** `safety-portal`, `typescript`, `phase-4`.
 
-**Effort:** ~2–3 days (3 archetype renderers + dropdown wiring + amend prefill + structured emit).
+Surfaced: 2026-06-05 Safety Portal Phase 4 PR 1 session (PR #164). Closed: PR #166, 2026-06-05.
 
-**Revisit when:** Phase 4 PR 2 session begins. Blocked on: meta-schema + 11 definitions (landed PR #164).
+## Safety Portal Phase 4 PR 3 — Python reportlab PDF renderer [CLOSED 2026-06-05]
 
-Surfaced: 2026-06-05 Safety Portal Phase 4 PR 1 session (PR #164). Session log: `docs/session_logs/2026-06-05_safety-portal-phase4-pr1-forms-foundation.md`.
-
-## Safety Portal Phase 4 PR 3 — Python reportlab PDF renderer [OPEN 2026-06-05]
-
-Reads `safety_portal/forms/*.json` (the 11 form definitions) + a structured submission payload → renders a print-parity PDF (Evergreen header, table/checklist/section layout matching the physical PDFs, legal invariants in code, embedded SVG signatures). Deterministic — no AI step. Per-form parity tests. Invoked by Phase 5 intake (Option B render path); PDFs land in Box per the existing week-folder structure. Requires adding `reportlab` to `pyproject.toml` (one-line edit; CI installs via `pip install -e`; no lockfile used).
+**Resolved by PR #167 (`2946184`, four-part-verify clean):** Python Option-B reportlab renderer landed. `safety_reports/form_pdf.py`: reads `safety_portal/forms/*.json` + a structured submission → deterministic print-parity PDF (Evergreen header, table/checklist/section layout, legal invariants in code, embedded SVG signatures); equipment checklist items are tri-state OK / NOT OK / N/A (N/A distinct from blank); `merge_pdfs()` primitive added; `+reportlab` + `+pypdf` to `pyproject.toml`. Session log same as above.
 
 **Tag:** `safety-portal`, `python`, `phase-4`, `reportlab`.
 
-**Effort:** ~2–3 days (11 form render paths + layout engine + parity tests).
-
-**Revisit when:** Phase 4 PR 3 session. Blocked on: Phase 4 PR 2 (structured-data shape confirmed by the TS renderer).
-
-Surfaced: 2026-06-05 Safety Portal Phase 4 PR 1 session (PR #164).
+Surfaced: 2026-06-05 Safety Portal Phase 4 PR 1 session (PR #164). Closed: PR #167, 2026-06-05.
 
 ## Safety Portal — toolbox talk header context missing from form definitions [OPEN 2026-06-05, low]
 
@@ -1592,3 +1584,56 @@ equivalent of `test_capability_gating.py`. Surfaced by `ops-stds-enforcer` (W2).
 **Revisit when:** the Worker gains any new outbound-capable code path, or at the deploy hardening pass.
 
 Surfaced: 2026-06-05 Safety Portal Phase 5 PR 2 (transport queue).
+
+## Safety Portal Phase 5 — `portal_poll.py` Mac-side puller daemon [OPEN 2026-06-05]
+
+The Phase 5 pull model (decision: `decision_phase5-portal-transport.md`) requires a new Mac-side polling daemon `portal_poll.py` (modeled on `safety_reports/intake_poll.py`). It polls the Worker's `/api/internal/pending` endpoint (bearer auth: `ITS_PORTAL_INTERNAL_TOKEN` from Keychain), iterates unprocessed submissions, verifies the `X-ITS-Portal-HMAC` using `shared/portal_hmac.py`, hands each to intake, then POSTs `/api/internal/mark-filed` with the receipt. Standard daemon contract: heartbeat to `ITS_Daemon_Health`, kill-switch gate, fcntl lock, `@its_error_log`. Locally testable on `wrangler dev --local`. launchd plist needed.
+
+**Tag:** `safety-portal`, `phase-5`, `daemon`.
+
+**Revisit when:** Phase 5 daemon-build session. Blocked on: deploy (Worker must be up; `wrangler dev --local` for local testing).
+
+Surfaced: 2026-06-05 Safety Portal Phase 5 session. Session log: `docs/session_logs/2026-06-05_safety-portal-phase4-runtime-renderer-phase5-foundation-transport.md`.
+
+## Safety Portal Phase 5 — intake portal-marker branch (HMAC verify → file → receipt) [OPEN 2026-06-05]
+
+`safety_reports/intake.py` needs portal-marker branches (PLANNED, not built) for the pull-model flow: HMAC verify → submission UUID dedupe → Sat→Fri Job-ID week key via `safety_week` → `active_jobs` lookup → `form_pdf.render` (Option B) → per-job/week Box tree via `week_folder` (box_client needs a `get_or_create_folder` primitive — `canonical_job_path` is currently a stub) → file PDF → write week-sheet row → receipt POST back to Worker. `box_client.canonical_job_path()` is a stub (format unconfirmed with owner; see existing tech-debt entry). UUID idempotency guard needed (duplicate POST from the Worker must not double-file).
+
+**Tag:** `safety-portal`, `phase-5`, `intake`, `box`.
+
+**Revisit when:** Phase 5 intake-branch build session. Blocked on: `portal_poll.py` + `box_client` get-or-create primitive.
+
+Surfaced: 2026-06-05 Safety Portal Phase 5 session.
+
+## Safety Portal Phase 5 — weekly generate/send rewire for WSR (narrative→PDF-merge + dual-write + gated send) [OPEN 2026-06-05]
+
+Three pieces:
+
+1. **`weekly_generate.py` (compile step):** on Friday 14:00 (or `Compile Now` checkbox trigger), merge all Sat→Fri submission PDFs via `form_pdf.merge_pdfs` + generate the narrative summary; dual-write to the per-job week sheet (read-only snapshot) and to `WSR_human_review` row (`SHEET_WSR_HUMAN_REVIEW = 5035670127988612`) with editable email body + resolved recipients (TO from `safety_reports_contact_email`, CC from `cc_emails`). Skip compile if already compiled and no new docs since last compile. Late arrivals → next uncompiled week + Review-Queue flag.
+2. **`weekly_send.py` (Phase 5 send step):** reads approved `WSR_human_review` rows; attaches merged PDF; resolves TO + CC from the row (not hardcoded); logs full resolved TO+CC list at send; refuses on blank recipients or GENERATION_FAILED tag; Pacific-Monday 7 AM cadence from `ITS_Config`.
+3. **Watchdog catch-up (Check I):** retries missed Friday compile on Saturday if marker stale.
+
+**Tag:** `safety-portal`, `phase-5`, `weekly-generate`, `weekly-send`.
+
+**Revisit when:** Phase 5 generate/send rewire session. Blocked on: intake portal-branch + `WSR_human_review` row format (built in PR #168).
+
+Surfaced: 2026-06-05 Safety Portal Phase 5 session.
+
+## Safety Portal Phase 5 — deploy prerequisites (Cloudflare secrets + D1 + wrangler.jsonc IDs) [OPEN 2026-06-05]
+
+Additional prerequisites surfaced by Phase 5 PR 2 (transport queue, PR #169) beyond the base deploy entry above:
+
+1. `CLOUDFLARE_API_TOKEN` — operator obtains (Workers + D1 + R2 scopes); `wrangler login` or env var.
+2. `wrangler d1 create its-safety-portal-db` → copy `database_id` into `wrangler.jsonc` (placeholder present).
+3. `wrangler d1 migrations apply` (remote, migrations 0001–0005).
+4. Worker secrets (two new Phase 5 secrets, in addition to `SESSION_SIGNING_SECRET`):
+   - `wrangler secret put HMAC_PAYLOAD_SECRET` (≥32-byte random; used by `shared/portal_hmac.py` verify contract; cross-language HMAC validated in PR #169 tests).
+   - `wrangler secret put PORTAL_INTERNAL_API_TOKEN` (bearer token for `/api/internal/*`; mirrored to Keychain as `ITS_PORTAL_INTERNAL_TOKEN` on the Mac side).
+5. Keychain entries on the Mac: `ITS_PORTAL_HMAC_SECRET` (same value as `HMAC_PAYLOAD_SECRET`) + `ITS_PORTAL_INTERNAL_TOKEN`.
+6. `wrangler deploy` → custom domain binding.
+
+**Tag:** `safety-portal`, `phase-5`, `deploy`, `cloudflare`.
+
+**Revisit when:** Safety Portal deploy session. This entry extends the earlier "deploy + provisioning deferred" entry; that entry covers the base steps; this one covers Phase 5-specific secrets and the D1 migration count update.
+
+Surfaced: 2026-06-05 Safety Portal Phase 5 PR 2 session (PR #169).
