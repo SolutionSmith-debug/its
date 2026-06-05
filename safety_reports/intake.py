@@ -120,6 +120,7 @@ from typing import Any, Literal
 
 from safety_reports.week_folder import ensure_current_week_folder
 from shared import (
+    active_jobs,
     anomaly_logger,
     anthropic_client,
     box_client,
@@ -129,7 +130,6 @@ from shared import (
     project_routing,
     quarantine,
     review_queue,
-    sheet_ids,
     smartsheet_client,
     trusted_contacts,
     untrusted_content,
@@ -334,6 +334,9 @@ class ParsedEmail:
     body_text: str
     attachments: list[tuple[str, bytes, str]]  # (filename, bytes, mime_type)
     internet_message_headers: list[dict[str, str]] = field(default_factory=list)
+    # Populated by the Phase-5 portal-marker branch from the HMAC-verified portal
+    # payload; None for any non-portal message (legacy email intake is retired).
+    job_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -622,33 +625,39 @@ def _check_legacy_allowlist(
     )
 
 
-def resolve_project(parsed: ParsedEmail) -> str | None:
-    """Stage 4: pick a Forefront project from subject + body.
+@dataclass(frozen=True)
+class ProjectResolution:
+    """Outcome of Stage-4 Job-ID resolution.
 
-    Match by case-insensitive substring against the 6 project names
-    (`sheet_ids.FIELD_REPORTS_FOLDER_BY_PROJECT.keys()`). Subject takes
-    precedence; if subject is ambiguous or empty, scan the first 500
-    characters of the body. Returns None if zero matches or multiple
-    matches from the same source — both route to the Review Queue with
-    Reason=project_unresolved upstream.
+    `project_name` is the resolved Forefront project on success, else None.
+    `reason` is "" on success, else a precise machine reason carried into the
+    Review-Queue announcement: "no_job_id" | "job_not_found" | "job_inactive".
     """
-    projects = list(sheet_ids.FIELD_REPORTS_FOLDER_BY_PROJECT.keys())
-    subject_matches = _name_matches(parsed.subject, projects)
-    if len(subject_matches) == 1:
-        return subject_matches[0]
-    if len(subject_matches) > 1:
-        return None
-    body_window = parsed.body_text[:500]
-    body_matches = _name_matches(body_window, projects)
-    if len(body_matches) == 1:
-        return body_matches[0]
-    return None
+
+    project_name: str | None
+    reason: str
 
 
-def _name_matches(haystack: str, candidates: list[str]) -> list[str]:
-    """Case-insensitive substring match. Returns matched names in order."""
-    lower = haystack.lower()
-    return [c for c in candidates if c.lower() in lower]
+def resolve_project(parsed: ParsedEmail) -> ProjectResolution:
+    """Stage 4: resolve the submission's Job ID to its Forefront project.
+
+    Portal payloads carry an `ITS_Active_Jobs` Job ID (the Phase-5 portal-marker
+    branch populates `ParsedEmail.job_id` from the HMAC-verified marker). Legacy
+    subject/body project-name substring matching is **retired** (Phase-3
+    decision) — a message with no Job ID, an unknown Job ID, or a job that is not
+    Active is refused to the Review Queue with an explicit reason, never silently
+    dropped or guessed (CLAUDE.md "never silent"). `get_job` returns a job of any
+    status so we can distinguish 'unknown' from 'inactive' in the announcement.
+    """
+    job_id = (parsed.job_id or "").strip()
+    if not job_id:
+        return ProjectResolution(None, "no_job_id")
+    job = active_jobs.get_job(job_id)
+    if job is None:
+        return ProjectResolution(None, "job_not_found")
+    if not job.is_active:
+        return ProjectResolution(None, "job_inactive")
+    return ProjectResolution(job.project_name, "")
 
 
 def classify_and_extract(
@@ -1082,15 +1091,21 @@ def _run_pipeline(
             notes=f"reason={stage2.disposition}",
         )
 
-    # Stage 4: resolve project (Stage 3 was rolled into the Graph projection).
-    project_name = resolve_project(parsed)
+    # Stage 4: resolve project via the submission's Job ID (legacy name-match retired).
+    resolution = resolve_project(parsed)
+    project_name = resolution.project_name
     if project_name is None:
         review_queue.add(
             workstream=WORKSTREAM,
-            summary=f"safety intake: project unresolved (sender={parsed.sender})",
+            summary=(
+                f"safety intake: project unresolved "
+                f"({resolution.reason}; job_id={parsed.job_id!r}, sender={parsed.sender})"
+            ),
             payload={
                 "sender": parsed.sender,
                 "subject": parsed.subject,
+                "job_id": parsed.job_id,
+                "resolution_reason": resolution.reason,
                 "body_excerpt": parsed.body_text[:500],
                 "message_id": message_id,
             },
@@ -1102,15 +1117,16 @@ def _run_pipeline(
         error_log.log(
             Severity.WARN,
             SCRIPT_NAME,
-            f"project unresolved: sender={parsed.sender!r}",
-            error_code="project_unresolved",
+            f"project unresolved: reason={resolution.reason} "
+            f"job_id={parsed.job_id!r} sender={parsed.sender!r}",
+            error_code=f"project_unresolved_{resolution.reason}",
             correlation_id=correlation_id,
         )
         return ProcessResult(
             status="review_queue",
             message_id=message_id,
             correlation_id=correlation_id,
-            notes="reason=ambiguous-classification",
+            notes=f"reason=project-unresolved:{resolution.reason}",
         )
 
     # Stage 4b: project-scope check for trusted contacts. Stage 2 deferred

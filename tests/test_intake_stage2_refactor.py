@@ -19,6 +19,7 @@ import pytest
 
 from safety_reports.intake import (
     Extraction,
+    ProjectResolution,
     process_message,
 )
 from shared.header_forgery import HeaderAnalysis, HeaderVerdict
@@ -141,6 +142,13 @@ def patch_baseline(mocker):
     from shared.kill_switch import SystemState
     mocker.patch(
         "shared.kill_switch.check_system_state", return_value=SystemState.ACTIVE
+    )
+    # Stage-4 Job-ID resolution (Phase 3) succeeds by default — this file
+    # exercises Stage-2 trusted-sender/header routing, not resolution; the
+    # Job-ID lookup is unit-tested in test_intake.py + test_active_jobs.py.
+    mocker.patch(
+        "safety_reports.intake.resolve_project",
+        return_value=ProjectResolution(project_name="Bradley 1", reason=""),
     )
 
 
