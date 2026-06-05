@@ -101,9 +101,11 @@ class SignatureDrawing(Flowable):
         self._strokes = _parse_ml_path(path_d) if path_d else []
         if path_d and not any(len(s) >= 2 for s in self._strokes):
             # A non-empty signature value that yields no drawable stroke is a
-            # malformed/dropped signature — never let it vanish silently.
-            logger.warning("form_pdf: signature path %r produced no drawable strokes — rendering blank",
-                           path_d[:40])
+            # malformed/dropped signature — never let it vanish silently. Log the
+            # LENGTH only, never the path content: a signature is PII (and logging
+            # it trips CodeQL clear-text-logging), so the debug signal is the size.
+            logger.warning("form_pdf: signature value (len=%d) produced no drawable strokes — rendering blank",
+                           len(path_d))
 
     def draw(self) -> None:
         c = self.canv

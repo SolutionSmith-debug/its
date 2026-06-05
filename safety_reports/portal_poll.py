@@ -547,9 +547,13 @@ def _poll_inside_lock() -> PollStats:
         error_log.log(
             Severity.ERROR, SCRIPT_NAME,
             (
-                "fail-closed: missing portal credentials "
-                f"(base_url={CFG_WORKER_BASE_URL!r}, Keychain {KC_BEARER}/{KC_HMAC_SECRET}); "
-                "not polling this cycle"
+                # Deliberately does NOT interpolate the ITS_Config key or the
+                # Keychain entry NAMES — naming secret-store entries in a log is
+                # both a CodeQL clear-text-logging trip and poor hygiene. The
+                # operator looks them up in the §43 runbook.
+                "fail-closed: missing portal credentials — the Worker base URL "
+                "(ITS_Config) and/or the bearer + HMAC-secret Keychain entries are "
+                "unset; not polling this cycle (see safety_reports/README.md §43)"
             ),
             error_code="portal_creds_missing",
         )
