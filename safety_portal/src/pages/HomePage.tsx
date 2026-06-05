@@ -1,7 +1,7 @@
 import { useAuth } from "../lib/auth";
 import { AppHeader } from "../components/AppHeader";
 
-export function HomePage({ onOpenJha }: { onOpenJha: () => void }) {
+export function HomePage({ onOpenForm }: { onOpenForm: () => void }) {
   const { user, logout } = useAuth();
   return (
     <div className="page">
@@ -19,20 +19,14 @@ export function HomePage({ onOpenJha }: { onOpenJha: () => void }) {
         </p>
         <h1 className="page__heading">Daily safety forms</h1>
         <div className="form-grid">
-          <button className="form-card" onClick={onOpenJha}>
-            <span className="form-card__badge">JHA</span>
-            <span className="form-card__title">Job Hazard Analysis</span>
+          <button className="form-card" onClick={onOpenForm}>
+            <span className="form-card__badge">New</span>
+            <span className="form-card__title">Submit a safety form</span>
             <span className="form-card__desc">
-              Tasks, major hazards, mitigations, and crew sign-off.
+              Pick a job and form — JHA, Toolbox Talk, Equipment Pre-Inspection, Visitor
+              Sign-In, or HSS&amp;E Work Observation.
             </span>
           </button>
-          <div className="form-card form-card--disabled" aria-disabled="true">
-            <span className="form-card__badge form-card__badge--muted">Soon</span>
-            <span className="form-card__title">More forms</span>
-            <span className="form-card__desc">
-              Toolbox Talks, Equipment Pre-Inspection, and others arrive in Phase 4.
-            </span>
-          </div>
         </div>
       </main>
     </div>

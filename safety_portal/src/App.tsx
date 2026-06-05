@@ -2,14 +2,15 @@ import { useState } from "react";
 import { useAuth } from "./lib/auth";
 import { LoginPage } from "./pages/LoginPage";
 import { HomePage } from "./pages/HomePage";
-import { JhaStubPage } from "./pages/JhaStubPage";
+import { FormFillPage } from "./pages/FormFillPage";
 
-type View = "home" | "jha";
+type View = "home" | "fill";
 
 /**
- * Minimal in-memory view switch (login → home → JHA stub). Phase 2 has a single
- * authed surface, so a full client router is deferred; the SPA static-asset
- * fallback (not_found_handling) still serves index.html for any deep link.
+ * Minimal in-memory view switch (login → home → form fill). Phase 4 PR 2 replaced
+ * the hard-coded JHA stub with the definition-driven FormFillPage (renders any
+ * catalog form from safety_portal/forms/*.json). A full client router is still
+ * deferred; the SPA static-asset fallback serves index.html for any deep link.
  */
 export function App() {
   const { user, loading } = useAuth();
@@ -21,8 +22,8 @@ export function App() {
   if (!user) {
     return <LoginPage />;
   }
-  if (view === "jha") {
-    return <JhaStubPage onBack={() => setView("home")} />;
+  if (view === "fill") {
+    return <FormFillPage onBack={() => setView("home")} />;
   }
-  return <HomePage onOpenJha={() => setView("jha")} />;
+  return <HomePage onOpenForm={() => setView("fill")} />;
 }
