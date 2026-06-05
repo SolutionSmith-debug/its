@@ -115,12 +115,15 @@ guarantee.
 """
 from __future__ import annotations
 
+import json
 import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from typing import Any, Literal
+from zoneinfo import ZoneInfo
 
+from safety_reports import form_pdf, week_sheet
 from safety_reports.week_folder import ensure_current_week_folder
 from shared import (
     active_jobs,
@@ -358,7 +361,10 @@ class Extraction:
 
 
 ProcessStatus = Literal[
-    "processed", "review_queue", "quarantined", "skipped_swo_other", "error"
+    "processed", "review_queue", "quarantined", "skipped_swo_other", "error",
+    # Portal pull path (Phase 5): a re-pulled submission already filed on the week
+    # sheet — skip re-filing, but the receipt still posts (advances the queue).
+    "already_filed",
 ]
 
 
@@ -384,6 +390,11 @@ class ProcessResult:
     message_id: str
     correlation_id: str
     notes: str | None = None
+    # Portal pull path (Phase 5): the Box link the receipt (mark-filed) carries.
+    # Populated on processed / already_filed; None otherwise. The email path never
+    # sets it. portal_poll posts mark-filed iff status is a drain status (see
+    # process_portal_submission's return-contract docstring).
+    box_link: str | None = None
 
 
 # ---- Graph ingest --------------------------------------------------------
@@ -1372,6 +1383,425 @@ def _extraction_to_dict(extraction: Extraction) -> dict[str, Any]:
         "visitor_log": extraction.visitor_log,
         "anomaly_flags": extraction.anomaly_flags,
     }
+
+
+# =========================================================================
+# Portal pull path (Phase 5) — process_portal_submission
+# =========================================================================
+#
+# The Safety Portal pull model (decision_phase5-portal-transport). A field-PM
+# fills a form in the authenticated portal; the Cloudflare Worker signs + queues
+# the submission send-free in D1; safety_reports/portal_poll.py pulls it over
+# HTTPS, verifies the per-row HMAC (shared.portal_hmac) BEFORE this call, then
+# hands the verified, structured submission here. PARALLEL to the email pipeline
+# (_run_pipeline); shares NONE of its sender-authenticity stages:
+#
+#   Email Stage 1 (Graph fetch)        → N/A: the payload arrives structured.
+#   Email Stage 2 (trusted-sender +    → REPLACED by the authenticated portal
+#     header-forgery + legacy allowlist)    session + the HMAC (only the Worker can
+#                                           mint a verifying row; HMAC checked upstream).
+#   Email Stage 5 (Anthropic extract)  → N/A: the portal flow is DETERMINISTIC (no
+#                                           LLM), so Invariant-2 Layer-2 untrusted-
+#                                           content tagging is N/A here. If any portal
+#                                           field is ever fed to an LLM downstream it
+#                                           MUST be wrapped.
+#
+# Invariant 2 mapping for the portal path: (1) auth = portal session + HMAC;
+# (4) structured-output enforcement = payload validated against the Phase-4 form
+# definition before render; (5) anomaly logging = malformed payload / unknown or
+# inactive job / unknown form / unresolved Box all logged + Review-Queue-flagged.
+# Invariant 1: generation-only (files to Box + Smartsheet); ZERO customer-send
+# capability (weekly_send is the separate human-approved send process).
+
+# parent_form_code → the email path's Daily-Reports Box category (so the per-
+# submission PDF lands in the job's EXISTING category subfolder — JSAs / Toolbox
+# Talks / Inspection Reports). A parent with no mapping, a category with no fixed
+# subfolder (None), or a missing category subfolder falls back to an auto-created
+# ITS-prefixed folder so NO submission is ever left without a retrievable Box PDF
+# (the weekly packet needs every per-submission PDF). The fallback is tagged on the
+# row Notes — never silent. (Owner decision 2026-06-05; deploy session validates the
+# real Box structure + may refine this map.)
+PORTAL_FORM_CATEGORY: dict[str, str] = {
+    "jha": "Daily JHA",
+    "toolbox-talk": "Tool Box Talk",
+    "equipment-preinspection": "Equipment Check Sheets",
+    "hsse-work-observation": "Safe Work Observation",
+    "visitor-sign-in": "Other",
+}
+# Auto-created (ITS-prefixed per the operator Box naming rule) per-job fallback.
+PORTAL_BOX_FALLBACK_FOLDER = "ITS Portal Submissions"
+
+
+def _portal_submitted_at_pacific(created_at: Any) -> str:
+    """D1 created_at (unix epoch seconds) → Pacific ISO string (everything Pacific).
+
+    Returns '' on a missing/invalid value — the row still files; the timestamp is
+    informational, never load-bearing.
+    """
+    try:
+        ts = int(created_at)
+    except (TypeError, ValueError, OverflowError):
+        # OverflowError guards float('inf'); ValueError guards 'NaN'/non-numeric —
+        # the timestamp is informational, so degrade to '' rather than escape the
+        # per-row fence as an "unexpected error" (which would wrongly count as a failure).
+        return ""
+    return datetime.fromtimestamp(ts, tz=ZoneInfo("America/Los_Angeles")).isoformat()
+
+
+def _box_link(file_id: str) -> str:
+    return f"https://app.box.com/file/{file_id}"
+
+
+def _resolve_portal_box_folder(
+    project_name: str, parent_form_code: str
+) -> tuple[str | None, str]:
+    """Resolve the Box folder a portal per-submission PDF files into.
+
+    Returns (folder_id, note). folder_id is None ONLY when the project's Box root
+    is unresolvable (a config gap → caller routes to Review Queue). Otherwise the
+    PDF always gets a home: the mapped category subfolder if it exists (the job's
+    existing structure), else an auto-created ITS-prefixed fallback folder under
+    the project root. `note` records which path was taken (for the row Notes).
+    """
+    project_root = project_routing.get_folder_id(project_name)
+    if not project_root:
+        return None, "project_box_root_unresolved"
+    category = PORTAL_FORM_CATEGORY.get(parent_form_code)
+    subpath = BOX_SUBPATH_BY_CATEGORY.get(category) if category else None
+    if subpath is not None:
+        leaf = _resolve_box_subfolder(project_root, subpath)
+        if leaf is not None:
+            return leaf, f"category:{category}"
+        reason = f"category_subfolder_missing:{category}"
+    else:
+        reason = f"no_category_subfolder:{category or parent_form_code}"
+    fallback_id = box_client.get_or_create_folder(
+        project_root, PORTAL_BOX_FALLBACK_FOLDER
+    )
+    return fallback_id, f"fallback({reason})"
+
+
+def _file_portal_pdf(
+    folder_id: str,
+    work_date_iso: str,
+    type_slug: str,
+    submission_uuid: str,
+    pdf: bytes,
+) -> str:
+    """Upload the rendered PDF to `folder_id`; return its Box link.
+
+    Names `<work_date>-<type>.pdf` (operator-readable). On a name conflict (a
+    genuine same-day same-type submission, OR a retry of THIS submission after a
+    downstream failure) it suffixes with the submission's short id; if THAT
+    deterministic name ALSO exists (a prior partial attempt of this same
+    submission), it recovers + returns the existing file's link instead of
+    re-uploading. Terminates; bounded duplication ("Box keeps both").
+    """
+    base = f"{work_date_iso}-{type_slug}.pdf"
+    try:
+        return _box_link(box_client.upload_bytes(folder_id, base, pdf)["id"])
+    except box_client.BoxConflictError:
+        pass
+    suffixed = f"{work_date_iso}-{type_slug}-{submission_uuid[:8]}.pdf"
+    try:
+        return _box_link(box_client.upload_bytes(folder_id, suffixed, pdf)["id"])
+    except box_client.BoxConflictError:
+        for item in box_client.list_folder(folder_id, limit=1000):
+            if item["type"] == "file" and item["name"] == suffixed:
+                return _box_link(str(item["id"]))
+        raise
+
+
+def _portal_review(
+    submission: dict[str, Any],
+    *,
+    machine_reason: str,
+    summary: str,
+    reason: Any,
+    correlation_id: str,
+    severity: Severity = Severity.WARN,
+) -> ProcessResult:
+    """Route a portal submission to the Review Queue (never silent) + return the
+    drain-eligible review_queue ProcessResult. Used for PERMANENT/structural
+    refusals (re-pulling cannot fix them; the Review Queue entry is the operator's
+    action item)."""
+    submission_uuid = str(submission.get("submission_uuid") or "")
+    review_queue.add(
+        workstream=WORKSTREAM,
+        summary=summary,
+        payload={
+            "submission_uuid": submission_uuid,
+            "job_id": submission.get("job_id"),
+            "form_code": submission.get("form_code"),
+            "work_date": submission.get("work_date"),
+            "amends_uuid": submission.get("amends_uuid"),
+            "reason": machine_reason,
+            # The full payload so the operator can re-file after fixing the cause —
+            # a review_queue submission is DRAINED (mark-filed), so this is the
+            # durable copy. Bounded: payloads are <1 MB (Worker-enforced).
+            "payload_json": submission.get("payload_json"),
+        },
+        sla_tier=review_queue.SlaTier.SAFETY_INTAKE,
+        reason=reason,
+        severity=severity,
+        source_file=submission_uuid,
+    )
+    error_log.log(
+        severity,
+        SCRIPT_NAME,
+        f"portal: routed to review ({machine_reason}) submission_uuid={submission_uuid}",
+        error_code=f"portal_review_{machine_reason}",
+        correlation_id=correlation_id,
+    )
+    return ProcessResult(
+        status="review_queue",
+        message_id=submission_uuid,
+        correlation_id=correlation_id,
+        notes=f"reason={machine_reason}",
+    )
+
+
+def process_portal_submission(submission: dict[str, Any]) -> ProcessResult:
+    """Process one HMAC-verified portal submission (Phase-5 pull path).
+
+    `submission` is a pulled D1 row (HMAC already verified by portal_poll):
+    submission_uuid, job_id, form_code, work_date (ISO), payload_json (str),
+    amends_uuid (str|None), created_at (int epoch).
+
+    Return contract (drives portal_poll's mark-filed decision):
+      processed     — filed to Box + week sheet; box_link set → DRAIN (mark-filed).
+      already_filed — dedupe hit (re-pull); box_link recovered → DRAIN.
+      review_queue  — PERMANENT/structural refusal (unknown/inactive job, unknown
+                      form, malformed payload/date, unresolved Box) → flagged →
+                      DRAIN (re-pull can't fix; the Review Queue entry is the action).
+      error         — TRANSIENT infra failure (Smartsheet/Box auth/rate/5xx) → NOT
+                      drained → re-pulls next cycle (auto-retry).
+    """
+    correlation_id = uuid.uuid4().hex[:12]
+    submission_uuid = str(submission.get("submission_uuid") or "").strip()
+    job_id = str(submission.get("job_id") or "").strip()
+    form_code = str(submission.get("form_code") or "").strip()
+    work_date_raw = str(submission.get("work_date") or "").strip()
+    amends_raw = submission.get("amends_uuid")
+    amends_uuid = str(amends_raw).strip() if amends_raw else ""
+
+    try:
+        return _run_portal_pipeline(
+            submission,
+            submission_uuid=submission_uuid,
+            job_id=job_id,
+            form_code=form_code,
+            work_date_raw=work_date_raw,
+            amends_uuid=amends_uuid,
+            correlation_id=correlation_id,
+        )
+    except SmartsheetError as exc:
+        # TRANSIENT — Smartsheet auth/rate/5xx. Do NOT drain; re-pull retries.
+        error_log.log(
+            Severity.ERROR, SCRIPT_NAME,
+            f"portal: Smartsheet error on submission_uuid={submission_uuid}: {exc!r}",
+            error_code="portal_smartsheet_error", correlation_id=correlation_id,
+        )
+        return ProcessResult(
+            status="error", message_id=submission_uuid,
+            correlation_id=correlation_id, notes=f"{type(exc).__name__}: {exc!r}",
+        )
+    except (box_client.BoxRateLimitError, box_client.BoxAuthError) as exc:
+        # TRANSIENT — Box auth/rate. Do NOT drain; re-pull retries.
+        error_log.log(
+            Severity.ERROR, SCRIPT_NAME,
+            f"portal: transient Box error on submission_uuid={submission_uuid}: {exc!r}",
+            error_code="portal_box_transient", correlation_id=correlation_id,
+        )
+        return ProcessResult(
+            status="error", message_id=submission_uuid,
+            correlation_id=correlation_id, notes=f"{type(exc).__name__}: {exc!r}",
+        )
+    except box_client.BoxError as exc:
+        # PERMANENT Box error (404/409 we couldn't recover) → Review Queue + DRAIN.
+        return _portal_review(
+            submission, machine_reason="box_error",
+            summary=f"portal: unrecoverable Box error ({type(exc).__name__}) for submission {submission_uuid}",
+            reason=review_queue.ReviewReason.AMBIGUOUS_CLASSIFICATION,
+            correlation_id=correlation_id, severity=Severity.ERROR,
+        )
+
+
+def _run_portal_pipeline(
+    submission: dict[str, Any],
+    *,
+    submission_uuid: str,
+    job_id: str,
+    form_code: str,
+    work_date_raw: str,
+    amends_uuid: str,
+    correlation_id: str,
+) -> ProcessResult:
+    """Inner portal pipeline. Permanent refusals return review_queue directly;
+    transient infra failures RAISE (process_portal_submission maps them to error)."""
+    if not submission_uuid:
+        # A row with no UUID can't be deduped or receipted — malformed transport.
+        return _portal_review(
+            submission, machine_reason="missing_submission_uuid",
+            summary="portal: submission missing submission_uuid",
+            reason=review_queue.ReviewReason.STRUCTURED_OUTPUT_EDGE,
+            correlation_id=correlation_id, severity=Severity.ERROR,
+        )
+
+    # Parse the work-date (week membership + filename key).
+    try:
+        work_date = date.fromisoformat(work_date_raw)
+    except ValueError:
+        return _portal_review(
+            submission, machine_reason="malformed_work_date",
+            summary=f"portal: malformed work_date {work_date_raw!r} (submission {submission_uuid})",
+            reason=review_queue.ReviewReason.STRUCTURED_OUTPUT_EDGE,
+            correlation_id=correlation_id,
+        )
+
+    # Resolve the job (deny-by-default: unknown or not-Active → refuse, never file).
+    job = active_jobs.get_job(job_id)
+    if job is None:
+        return _portal_review(
+            submission, machine_reason="job_not_found",
+            summary=f"portal: unknown job_id={job_id!r} (submission {submission_uuid})",
+            reason=review_queue.ReviewReason.AMBIGUOUS_CLASSIFICATION,
+            correlation_id=correlation_id,
+        )
+    if not job.is_active:
+        return _portal_review(
+            submission, machine_reason="job_inactive",
+            summary=f"portal: inactive job_id={job_id!r} status={job.active_status!r} (submission {submission_uuid})",
+            reason=review_queue.ReviewReason.AMBIGUOUS_CLASSIFICATION,
+            correlation_id=correlation_id,
+        )
+    project_name = job.project_name
+
+    # Resolve the (job, week) sheet (a SmartsheetError here is transient → raises).
+    try:
+        sheet_id = week_sheet.ensure_week_sheet(project_name, work_date)
+    except KeyError:
+        # The Active job's project has no Field Reports folder mapping (config gap).
+        return _portal_review(
+            submission, machine_reason="project_no_field_reports_folder",
+            summary=f"portal: project {project_name!r} has no Field Reports folder (submission {submission_uuid})",
+            reason=review_queue.ReviewReason.AMBIGUOUS_CLASSIFICATION,
+            correlation_id=correlation_id, severity=Severity.ERROR,
+        )
+
+    # Dedupe (the Python authority): a re-pull whose row already exists skips
+    # re-filing but still drains (portal_poll posts the receipt with the link).
+    existing = week_sheet.find_submission_row(sheet_id, submission_uuid)
+    if existing is not None:
+        recovered = str(existing.get(week_sheet.COL_SUBMISSION_PDF) or "")
+        error_log.log(
+            Severity.INFO, SCRIPT_NAME,
+            f"portal: submission_uuid={submission_uuid} already filed; skipping re-file",
+            error_code="portal_already_filed", correlation_id=correlation_id,
+        )
+        return ProcessResult(
+            status="already_filed", message_id=submission_uuid,
+            correlation_id=correlation_id, notes="already filed", box_link=recovered,
+        )
+
+    # Load + validate against the Phase-4 form definition (Invariant 2, Layer 4).
+    definition = form_pdf.load_definition(form_code)
+    if definition is None:
+        return _portal_review(
+            submission, machine_reason="unknown_form",
+            summary=f"portal: unknown form_code={form_code!r} (submission {submission_uuid})",
+            reason=review_queue.ReviewReason.STRUCTURED_OUTPUT_EDGE,
+            correlation_id=correlation_id,
+        )
+    try:
+        values = json.loads(submission.get("payload_json") or "")
+    except (json.JSONDecodeError, TypeError):
+        values = None
+    if not isinstance(values, dict):
+        return _portal_review(
+            submission, machine_reason="malformed_payload",
+            summary=f"portal: payload_json not a JSON object (submission {submission_uuid})",
+            reason=review_queue.ReviewReason.STRUCTURED_OUTPUT_EDGE,
+            correlation_id=correlation_id,
+        )
+
+    # Render (deterministic; no LLM, no network).
+    render_submission = {
+        "job_name": project_name,
+        "work_date": work_date_raw,
+        "values": values,
+    }
+    try:
+        pdf = form_pdf.render_submission_pdf(definition, render_submission)
+    except Exception as exc:  # noqa: BLE001 — a render failure must surface, not crash
+        return _portal_review(
+            submission, machine_reason="render_failed",
+            summary=f"portal: render failed for form_code={form_code!r} ({exc!r}) submission {submission_uuid}",
+            reason=review_queue.ReviewReason.STRUCTURED_OUTPUT_EDGE,
+            correlation_id=correlation_id, severity=Severity.ERROR,
+        )
+    incomplete = form_pdf.incomplete_checklist_items(definition, render_submission)
+    notes = f"[incomplete: {len(incomplete)} items]" if incomplete else ""
+
+    # File the per-submission PDF to Box (existing category subfolder / ITS fallback).
+    parent_form_code = str(definition.get("parent_form_code") or form_code)
+    folder_id, box_note = _resolve_portal_box_folder(project_name, parent_form_code)
+    if folder_id is None:
+        return _portal_review(
+            submission, machine_reason="project_box_root_unresolved",
+            summary=f"portal: no Box root for project {project_name!r} (submission {submission_uuid})",
+            reason=review_queue.ReviewReason.AMBIGUOUS_CLASSIFICATION,
+            correlation_id=correlation_id, severity=Severity.ERROR,
+        )
+    box_link = _file_portal_pdf(
+        folder_id, work_date_raw, parent_form_code, submission_uuid, pdf
+    )
+    notes = (notes + f" [box:{box_note}]").strip()
+
+    # Write the durable per-submission row (a SmartsheetError here is transient →
+    # raises → re-pull; the conflict-recovery in _file_portal_pdf de-dups the Box
+    # re-upload, and the absent sheet row means the dedupe correctly re-files).
+    title = str(definition.get("form_name") or form_code)
+    week_sheet.write_submission_row(
+        sheet_id,
+        submission_uuid=submission_uuid,
+        form_code=form_code,
+        work_date=work_date,
+        title=title,
+        box_link=box_link,
+        submitted_at=_portal_submitted_at_pacific(submission.get("created_at")),
+        notes=notes,
+    )
+
+    # Amend: supersede the prior submission's row (Box keeps BOTH PDFs).
+    if amends_uuid:
+        superseded = week_sheet.supersede_row(sheet_id, amends_uuid, submission_uuid)
+        error_log.log(
+            Severity.INFO if superseded else Severity.WARN,
+            SCRIPT_NAME,
+            (
+                f"portal amend: {amends_uuid} superseded by {submission_uuid}"
+                if superseded
+                else f"portal amend: prior {amends_uuid!r} not found on week sheet "
+                f"(superseded-by pointer not written); Box keeps both"
+            ),
+            error_code="portal_amend",
+            correlation_id=correlation_id,
+        )
+
+    error_log.log(
+        Severity.INFO, SCRIPT_NAME,
+        (
+            f"portal SUCCESS submission_uuid={submission_uuid} project={project_name!r} "
+            f"form={form_code!r} box={box_note} incomplete={len(incomplete)}"
+        ),
+        error_code="portal_success", correlation_id=correlation_id,
+    )
+    return ProcessResult(
+        status="processed", message_id=submission_uuid,
+        correlation_id=correlation_id,
+        notes=f"project={project_name} form={form_code}", box_link=box_link,
+    )
 
 
 @its_error_log(SCRIPT_NAME)
