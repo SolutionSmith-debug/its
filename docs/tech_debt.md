@@ -1407,20 +1407,18 @@ Surfaced: 2026-06-04 Safety Portal Phase 2 session (PR #158).
 
 Surfaced: 2026-06-04 Safety Portal Phase 2 session (PR #158).
 
-## Safety Portal — form-catalog corpus mismatch with blueprint (pre-Phase-4) [OPEN 2026-06-04]
+## Safety Portal — form-catalog corpus mismatch with blueprint (pre-Phase-4) [CLOSED 2026-06-05]
 
-The 10 PDF reference forms committed to `safety_portal/worker/public/forms/` do not match the 4 forms named in blueprint `workstreams/safety-portal/mission.md` and the ITS_Forms_Catalog sheet seeded in PR #155. Specifically:
-- ITS_Forms_Catalog has: `jha-v1`, `daily-site-safety-v1`, `equipment-preinspection-v1`, `toolbox-talk-v1`.
-- The PDF corpus adds: HSS&E Work Observation, Visitor Sign-In, and several others not named in the blueprint.
-- "Daily Site Safety Worksheet" (named in the brief) is absent from the committed PDFs.
+The 10 PDF reference forms committed to `safety_portal/worker/public/forms/` did not match the 4 forms named in blueprint `workstreams/safety-portal/mission.md` and the ITS_Forms_Catalog sheet seeded in PR #155. Specifically:
+- ITS_Forms_Catalog had: `jha-v1`, `daily-site-safety-v1`, `equipment-preinspection-v1`, `toolbox-talk-v1`.
+- The PDF corpus added: HSS&E Work Observation, Visitor Sign-In, and several others not named in the blueprint.
+- "Daily Site Safety Worksheet" (named in the brief) was absent from the committed PDFs.
 
-**Required action (pre-Phase-4 form rendering):** Confirm the real v1 form catalog with the operator / office PM. Update ITS_Forms_Catalog rows and the committed PDF corpus to match before building the form-rendering Phase 4 step.
+**Resolved by PR #164 (2026-06-05):** The v1 catalog was confirmed via the PDF corpus. ITS_Forms_Catalog migrated to the parent/variant model (5 parents + 7 variants = 12 rows). Daily Site Safety removed (not a form-fill candidate); Visitor + HSS&E added. All 11 form definitions transcribed faithfully from the 10 reference PDFs and validated against the meta-schema (49 tests). The mismatch is fully resolved; Phase 4 form rendering may proceed.
 
 **Tag:** `safety-portal`, `data-gap`, `form-catalog`.
 
-**Revisit when:** Phase 4 form-rendering work begins, or before seeding form entries into the live (non-mirror) tenant.
-
-Surfaced: 2026-06-04 Safety Portal Phase 2 session (PR #158). Related: `safety_portal/worker/public/forms/`, `docs/runbooks/safety_portal_config_sheets.md`.
+Surfaced: 2026-06-04 Safety Portal Phase 2 session (PR #158). Closed: PR #164, 2026-06-05.
 
 ## Safety Portal — frontend build/lint CI step missing [OPEN 2026-06-04]
 
