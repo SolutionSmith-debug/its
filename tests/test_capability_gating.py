@@ -61,11 +61,14 @@ GATED_SCRIPTS: list[tuple[str, list[str]]] = [
         ["send_mail", "resend", "smtplib", "email.mime"],
     ),
     (
-        # weekly_generate does NOT need Graph reads (it only reads Smartsheet
-        # rows, not mail) so `graph_client` is forbidden in addition to the
-        # narrower send substrings — stricter list than the intake pair.
+        # weekly_generate is now the DETERMINISTIC portal compile (Phase 5b): no
+        # Graph reads, no external send, AND no LLM (the narrative-draft Anthropic
+        # core was retired). `anthropic` (catches `anthropic` + `anthropic_client`
+        # via substring) is forbidden alongside the send substrings — asserting the
+        # compile stays deterministic, not just send-free.
         "safety_reports/weekly_generate.py",
-        ["graph_client", "send_mail", "resend", "smtplib", "email.mime"],
+        ["graph_client", "send_mail", "resend", "smtplib", "email.mime",
+         "anthropic", "anthropic_client"],
     ),
     # ("po_materials/standard_rfq_generate.py", ["graph_client", "send_mail"]),
     # ("po_materials/racking_module_rfq_generate.py", ["graph_client", "send_mail"]),

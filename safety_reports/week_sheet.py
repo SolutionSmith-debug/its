@@ -66,12 +66,19 @@ COL_ROW_TYPE = "Row Type"
 COL_STATUS = "Status"
 COL_SUPERSEDED_BY = "Superseded By"
 COL_NOTES = "Notes"
+# Operator trigger for an out-of-band recompile (Phase 5b weekly_generate). A
+# CHECKBOX checked on the Rollup row forces a recompile even with no new docs;
+# weekly_generate clears it after compiling. Absent on PR1-era sheets → falsy →
+# Friday auto-compile is the only trigger (graceful).
+COL_COMPILE_NOW = "Compile Now"
 
 # Controlled vocabularies (TEXT cells, not PICKLIST — see module docstring).
 ROW_TYPE_SUBMISSION = "Submission"
 ROW_TYPE_ROLLUP = "Rollup"
 STATUS_ACTIVE = "Active"
 STATUS_SUPERSEDED = "Superseded"
+# The Rollup row's fixed primary label (one Rollup row per week sheet).
+ROLLUP_LABEL = "Weekly Rollup"
 
 # The schema passed to create_sheet_in_folder. Order = left-to-right UI order.
 # Exactly one primary; Smartsheet requires the primary to be TEXT_NUMBER.
@@ -86,6 +93,7 @@ WEEK_SHEET_COLUMNS: list[dict[str, Any]] = [
     {"title": COL_STATUS, "type": "TEXT_NUMBER"},
     {"title": COL_SUPERSEDED_BY, "type": "TEXT_NUMBER"},
     {"title": COL_NOTES, "type": "TEXT_NUMBER"},
+    {"title": COL_COMPILE_NOW, "type": "CHECKBOX"},
 ]
 
 
@@ -216,3 +224,83 @@ def supersede_row(sheet_id: int, prior_uuid: str, new_uuid: str) -> bool:
         ],
     )
     return True
+
+
+# ---- Rollup / compile helpers (Phase 5b — weekly_generate) ---------------
+
+
+def list_submission_rows(sheet_id: int, *, active_only: bool = True) -> list[dict[str, Any]]:
+    """Return the per-submission rows on the week sheet (Row Type=Submission).
+
+    `active_only` (default) excludes Superseded rows — the compile merges only the
+    current version of each submission (amendments supersede; Box keeps both PDFs
+    but the packet carries the live one). Ordered oldest-first by Work Date then
+    Submitted At, so the merged packet reads Sat→Fri ascending (brief §D).
+    """
+    rows = [
+        r for r in smartsheet_client.get_rows(sheet_id)
+        if (r.get(COL_ROW_TYPE) or "") == ROW_TYPE_SUBMISSION
+    ]
+    if active_only:
+        rows = [r for r in rows if (r.get(COL_STATUS) or STATUS_ACTIVE) != STATUS_SUPERSEDED]
+    return sorted(
+        rows,
+        key=lambda r: (str(r.get(COL_WORK_DATE) or ""), str(r.get(COL_SUBMITTED_AT) or "")),
+    )
+
+
+def get_rollup_row(sheet_id: int) -> dict[str, Any] | None:
+    """Return the single Row Type=Rollup snapshot row, or None if not yet compiled."""
+    for r in smartsheet_client.get_rows(sheet_id):
+        if (r.get(COL_ROW_TYPE) or "") == ROW_TYPE_ROLLUP:
+            return r
+    return None
+
+
+def compile_now_requested(rollup_row: dict[str, Any] | None) -> bool:
+    """True iff the operator checked Compile Now on the Rollup row (force recompile)."""
+    return bool(rollup_row and rollup_row.get(COL_COMPILE_NOW))
+
+
+def latest_submitted_at(submission_rows: list[dict[str, Any]]) -> str:
+    """Max Submitted At across submission rows; '' if NONE has a usable value.
+
+    Pacific ISO strings sort lexically, so this is the 'newest doc' watermark for the
+    no-new-docs skip. BLANK Submitted At values are EXCLUDED (an empty string sorts
+    below every timestamp, so including them would mask a genuinely-new blank-stamped
+    submission and silently skip the recompile). A return of '' when rows exist is the
+    caller's signal that it cannot prove 'no new docs' → it recompiles, never skips."""
+    stamps = [s for s in (str(r.get(COL_SUBMITTED_AT) or "").strip() for r in submission_rows) if s]
+    return max(stamps, default="")
+
+
+def upsert_rollup_row(
+    sheet_id: int,
+    *,
+    packet_link: str,
+    compiled_at: str,
+    manifest_note: str,
+    existing_rollup_row_id: int | None = None,
+) -> int:
+    """Write/refresh the read-only Rollup snapshot row (Row Type=Rollup).
+
+    The rollup row is a MANIFEST of what the compiled packet contains — NOT an
+    editable surface (that's the WSR_human_review row). `compiled_at` (Pacific ISO)
+    lands in Submitted At so the no-new-docs skip can compare it to submission
+    timestamps. Clears Compile Now on write (the recompile it requested is done).
+    """
+    cells = {
+        COL_SUBMISSION: ROLLUP_LABEL,
+        COL_ROW_TYPE: ROW_TYPE_ROLLUP,
+        COL_STATUS: STATUS_ACTIVE,
+        COL_SUBMISSION_PDF: packet_link,
+        COL_SUBMITTED_AT: compiled_at,
+        COL_NOTES: manifest_note,
+        COL_COMPILE_NOW: False,
+    }
+    if existing_rollup_row_id is not None:
+        cells_with_id = {"_row_id": existing_rollup_row_id, **cells}
+        smartsheet_client.update_rows(sheet_id, [cells_with_id])
+        return existing_rollup_row_id
+    [row_id] = smartsheet_client.add_rows(sheet_id, [cells])
+    return row_id

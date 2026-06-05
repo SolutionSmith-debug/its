@@ -160,6 +160,12 @@ REGISTRY: dict[int, dict[str, frozenset[str]]] = {
     sheet_ids.SHEET_WPR_PENDING_REVIEW: {
         "Send Status": _WPR_SEND_STATUS_VALUES,
     },
+    # WSR_human_review (Phase-5 portal review surface) — same Send Status picklist
+    # as WPR (PENDING/SENT/FAILED/HELD). Supersedes WPR for the portal flow; both
+    # stay registered until the WPR sheet itself is operator-deleted (PR4 cleanup).
+    sheet_ids.SHEET_WSR_HUMAN_REVIEW: {
+        "Send Status": _WPR_SEND_STATUS_VALUES,
+    },
 }
 
 # Trusted Contacts: registered only if the operator has wired the real sheet
