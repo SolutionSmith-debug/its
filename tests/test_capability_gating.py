@@ -29,13 +29,14 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # Generation scripts: must NOT import any send capability.
 # Each entry: (relative path from repo root, list of forbidden import substrings)
 #
-# Note on `graph_client` granularity: intake.py and intake_poll.py legitimately
-# need `graph_client` READ methods (`get_message`, `list_attachments`,
-# `download_attachment`, `mark_read`) to ingest mail from the safety mailbox.
-# `mark_read` is an inbox-side write (isRead=True) but is NOT an external
-# transmission — the External Send Gate covers customer-facing email, not
-# inbox-cursor management. So `graph_client` (broad substring) is allowed for
-# the intake pair; `send_mail` (narrow substring) remains forbidden. The
+# Note on `graph_client` granularity: intake.py legitimately needs `graph_client`
+# READ methods (`get_message`, `list_attachments`, `download_attachment`,
+# `mark_read`) for the legacy email-ingestion path (now dormant). `mark_read` is an
+# inbox-side write (isRead=True) but is NOT an external transmission — the External
+# Send Gate covers customer-facing email, not inbox-cursor management. So
+# `graph_client` (broad substring) is allowed; `send_mail` (narrow substring) remains
+# forbidden. (`intake_poll.py` is a RETIRED tombstone as of 2026-06-05 — stdlib-only —
+# but stays enrolled below so a future resurrection is still gated.) The
 # per-substring AST check below catches `shared.graph_client.send_mail` via
 # the "send_mail" needle even when `shared.graph_client` is imported. Future
 # generation scripts that do NOT need Graph reads can use a stricter list

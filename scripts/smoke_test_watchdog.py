@@ -11,7 +11,6 @@ discipline).
 Re-run after:
   - Any change to scripts/watchdog.py
   - ITS_Config / ITS_Errors / ITS_Review_Queue schema changes
-  - shared/graph_client.py changes affecting fetch_latest_inbound_timestamp
   - shared/scheduling.py changes affecting resolve_chain or TimeOffClient
 
 Phases (one per check in scripts/watchdog.CHECKS, plus the deferred E):
@@ -24,16 +23,14 @@ Phases (one per check in scripts/watchdog.CHECKS, plus the deferred E):
   E. Spend trend          — DEFERRED to PR #37 (Admin API key required);
                             phase prints SKIPPED so the runner still
                             enumerates the full check set.
-  F. Mail intake          — fetch the real safety@ latest-inbound
-                            timestamp, run the check, log observed
-                            idle-hours figure for operator triage
+  (F. Mail intake — RETIRED 2026-06-05 with the safety email-intake path.)
 """
 from __future__ import annotations
 
 import json
 import sys
 from collections.abc import Callable
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -219,32 +216,10 @@ class _PhaseSkippedError(Exception):
     """Raised by a smoke phase to indicate deliberate deferral, not failure."""
 
 
-# ---- Phase F: mail intake silent-disable --------------------------------
-
-
-def smoke_check_f() -> None:
-    """Live: fetch real safety@ latest-inbound timestamp, then run Check F.
-
-    Doesn't assert on the resulting Severity because that depends on
-    inbox state (silent if no mail received in 96h; fresh otherwise) —
-    asserts only that the check returns a valid CheckResult and that
-    the Graph fetch succeeded.
-    """
-    from shared import graph_client
-    mailbox = watchdog.WORKSTREAM_TO_MAILBOX["safety"]
-    last_inbound = graph_client.fetch_latest_inbound_timestamp(mailbox)
-    if last_inbound is None:
-        print(f"      observed: {mailbox} has no inbound history")
-    else:
-        idle_h = (datetime.now(UTC) - last_inbound).total_seconds() / 3600
-        print(f"      observed: {mailbox} idle {idle_h:.1f}h, threshold 96h")
-
-    result = watchdog._check_mail_intake_silent_disable()
-    assert isinstance(result, watchdog.CheckResult), f"unexpected: {result!r}"
-    assert result.severity in (Severity.INFO, Severity.WARN), (
-        f"unexpected severity: {result.severity}"
-    )
-    print(f"      check result: {result.severity.value} — {result.summary}")
+# ---- Phase F: RETIRED 2026-06-05 (safety mail-intake silent-disable check removed) ----
+# Removed with the safety email-intake retirement (Safety Portal PULL model). The shared
+# Graph plumbing (shared/graph_client.fetch_latest_inbound_timestamp) is preserved for
+# Email Triage, which will bring its own mailbox-silence smoke phase.
 
 
 # ---- Runner -------------------------------------------------------------
@@ -256,7 +231,6 @@ PHASES: list[tuple[str, Callable[[], Any]]] = [
     ("Check C (scheduled jobs scaffold)", smoke_check_c),
     ("Check D (reviewer chain forward scan)", smoke_check_d),
     ("Check E (spend trend)", smoke_check_e),
-    ("Check F (mail intake silent-disable)", smoke_check_f),
 ]
 
 

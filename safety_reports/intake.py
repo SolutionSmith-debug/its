@@ -1,16 +1,19 @@
-"""Safety Reports intake — process one inbound safety report message.
+"""Safety Reports intake — the engine that processes one inbound safety report.
 
-Invoked per message by `safety_reports/intake_poll.py` (the launchd-driven
-polling daemon) which calls `process_message(message_id)`. The message is
-fetched from Microsoft Graph; on success the poller calls
-`graph_client.mark_read` as the canonical push-side watermark. On failure
-the message is left unread, allowing retry on the next poll cycle.
+LEGACY/DORMANT ingestion (2026-06-05): the email-PDF-as-safety-submission path —
+fetching a message from Microsoft Graph and extracting the report from its PDF
+attachment — is LEGACY. The launchd email poller that drove it
+(`safety_reports/intake_poll.py`) is RETIRED (superseded by the Safety Portal PULL
+model). The Graph-fetch + `mark_read` + AI-extract stages remain IN-TREE but dormant
+pending the **portal-marker branch** (PLANNED, not built), which will reach this engine
+with a structured, HMAC-verified submission handed over by `safety_reports/portal_poll.py`
+(PLANNED; see `decision_phase5-portal-transport`) — no email, no PDF-extraction.
 
 The `main()` CLI wrapper around `process_message` preserves a manual-rerun
 entrypoint: `python -m safety_reports.intake <message_id>` re-processes
 one message by its Graph ID. Useful when an operator is debugging a
 review-queue entry and wants to force-rerun the pipeline against the
-original inbound message.
+original inbound message. (The retired email poller no longer drives it.)
 
 12-stage pipeline
 -----------------
@@ -363,7 +366,8 @@ ProcessStatus = Literal[
 class ProcessResult:
     """Outcome of one `process_message` call.
 
-    Consumed by `safety_reports.intake_poll.poll_once` to decide whether to
+    Consumed by the legacy email poller (`intake_poll`, RETIRED 2026-06-05) — and,
+    in the PLANNED portal-marker branch, by `portal_poll` — to decide whether to
     `mark_read`: success statuses (processed / review_queue / quarantined /
     skipped_swo_other) advance the inbox cursor; `error` leaves the message
     unread for retry on the next poll cycle.
@@ -1375,9 +1379,10 @@ def _extraction_to_dict(extraction: Extraction) -> dict[str, Any]:
 def main(message_id: str) -> None:
     """CLI entrypoint: process one message by Graph message_id.
 
-    Manual rerun: `python -m safety_reports.intake <message_id>`. The
-    polling daemon (`safety_reports.intake_poll`) is the normal trigger;
-    this entry point exists for operator-initiated retries of a specific
+    Manual rerun: `python -m safety_reports.intake <message_id>`. The legacy
+    email poller (`safety_reports.intake_poll`) is RETIRED (2026-06-05); the
+    PLANNED portal PULL daemon (`portal_poll.py`) is the future normal trigger.
+    This entry point exists for operator-initiated retries of a specific
     message that landed in the review queue or errored.
     """
     result = process_message(message_id)

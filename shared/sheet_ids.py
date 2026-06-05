@@ -127,6 +127,10 @@ DAEMON_HEALTH_COLUMNS: dict[str, int] = {
 
 # ---- Human-review sheets -------------------------------------------------
 
+# DECOMMISSIONED 2026-06-05 — superseded by WSR_human_review (SHEET_WSR_HUMAN_REVIEW)
+# for the portal flow. STILL read/written by weekly_generate.py + weekly_send.py +
+# weekly_send_poll.py — do NOT delete this constant or the sheet until the
+# weekly_generate/weekly_send rewire-to-WSR_human_review lands (future PR; see tech_debt).
 SHEET_WPR_PENDING_REVIEW = 3096105695793028  # ITS — Human Review / 01 — Safety Reports / WPR_Pending_Review
 SHEET_TIME_OFF           = 1506418040459140  # ITS — Human Review / 06 — Personnel / ITS_Time_Off
 

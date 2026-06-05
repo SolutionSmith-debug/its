@@ -39,9 +39,10 @@ Per-cycle behavior
      — the poller logs the outcome and continues. SmartsheetError raised by
      the handler caught per-row; the cycle continues to the next row.
   5. Write file heartbeat (`HEARTBEAT_PATH`).
-  6. Write ITS_Daemon_Health row (PR #60 pattern; helpers replicated
-     verbatim from `intake_poll.py` per preservation-over-refactor
-     until weekly_send stabilizes through 1-2 real Friday cycles).
+  6. Write ITS_Daemon_Health row (PR #60 pattern; the heartbeat helpers were
+     originally replicated verbatim from `intake_poll.py` per preservation-over-
+     refactor. `intake_poll.py` is RETIRED 2026-06-05 — this is now the canonical
+     copy, pending the `shared/heartbeat.py` extraction (tech-debt)).
   7. Write watchdog Check C marker (`safety_weekly_send_poll.last_run`).
 
 Capability gating

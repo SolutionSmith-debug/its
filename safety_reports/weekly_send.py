@@ -194,7 +194,7 @@ class SendResult:
     retry_count: int = 0
 
 
-# ---- Config readers (replicated from intake_poll per preservation) ------
+# ---- Config readers (replicated per preservation; source intake_poll RETIRED 2026-06-05) ----
 
 
 def _read_str_setting(key: str, fallback: str) -> str:

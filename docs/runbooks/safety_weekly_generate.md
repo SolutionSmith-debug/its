@@ -9,6 +9,11 @@ tags: [runbook, successor-remediation, watchdog, weekly_generate, tier-2]
 
 # Runbook — weekly_generate catch-up (Successor-Remediation, Op Stds §43)
 
+> **NOTE (2026-06-05):** `WPR_Pending_Review` is **DECOMMISSIONED** — superseded by
+> `WSR_human_review` for the Safety Portal pull flow. `weekly_generate`/`weekly_send`
+> **still read/write WPR** (this procedure stays valid) until the Phase-5 rewire-to-WSR
+> lands; only then are WPR + its constant deleted (see `docs/tech_debt.md`).
+
 The first §43 successor-remediation entry in this repo (Op Stds v16 §43 —
 "Successor-Remediation Documentation Discipline"). It is written for the
 **Successor-Operator**: a trained operator who runs Claude Code and reads

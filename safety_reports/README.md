@@ -3,6 +3,15 @@
 Reference docs: **Safety Reports Mission v5** and **Safety Reports Brief v6** in the
 planning project.
 
+> **RETIRED 2026-06-05 — `intake_poll.py` (the safety email-intake poller).** The prose
+> below that describes `intake_poll` as a live launchd polling daemon reading the `safety@`
+> mailbox is **historical**. The safety intake is superseded by the Safety Portal **PULL**
+> model (`portal_poll.py`, PLANNED; `decision_phase5-portal-transport`): the Worker queues
+> submissions in D1; `portal_poll` pulls + HMAC-verifies + hands them to `intake.py`. The
+> shared Graph plumbing is **preserved** for Email Triage. `intake.py` (the engine) stays.
+> `WPR_Pending_Review` is decommissioned-by-doc (still used by the live weekly daemons
+> pending the WSR rewire). See `CLAUDE.md` for the current-state table.
+
 ## Decision state (as of 2026-05-21)
 
 - **5 resolved (2026-05-13)**: three intake document types (Q1), Outlook inbox addresses (Q3),
@@ -104,7 +113,10 @@ Every Anthropic API call processing inbound mail:
   `Late Send` flag set; owner notified.
 - **Unapproved Monday morning**: row held indefinitely. Never auto-sent unreviewed.
 
-## WPR_Pending_Review sheet columns
+## WPR_Pending_Review sheet columns [DECOMMISSIONED 2026-06-05 — superseded by WSR_human_review]
+
+> Superseded by `WSR_human_review` for the portal pull flow. `weekly_generate`/`weekly_send`
+> still read/write WPR (the columns below remain the live schema) until the Phase-5 rewire.
 
 `Customer`, `Job`, `Week`, `Draft Body`, `Recipients`, `Approved for Send` (checkbox),
 `Approved By` (contact), `Approved At`, `Sent At`, `Send Status`, `Late Send` (checkbox), `Notes`.

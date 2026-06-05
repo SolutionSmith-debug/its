@@ -1637,3 +1637,29 @@ Additional prerequisites surfaced by Phase 5 PR 2 (transport queue, PR #169) bey
 **Revisit when:** Safety Portal deploy session. This entry extends the earlier "deploy + provisioning deferred" entry; that entry covers the base steps; this one covers Phase 5-specific secrets and the D1 migration count update.
 
 Surfaced: 2026-06-05 Safety Portal Phase 5 PR 2 session (PR #169).
+
+## [OPEN] Safety email-intake retire — operator-manual + future-PR follow-ups [2026-06-05]
+
+The 2026-06-05 retire of the safety email-intake path (PR: chore/retire-safety-email-intake)
+left these:
+
+1. **Operator-manual: unload the launchd job** `org.solutionsmith.its.safety-intake` on the
+   production Mac — `scripts/uninstall_safety_intake_daemon.sh`. `intake_poll.py` is a retired
+   tombstone (quiet WARNING no-op on `poll_once`); until unloaded it runs every 60s doing
+   nothing. Never done from code.
+2. **Operator-manual: delete the `Job Slug` Smartsheet COLUMN** (if/when wanted) — by hand in
+   the UI after confirming nothing reads it. Never from a migration. (Runbook: safety_portal_job_management.md Task B.)
+3. **Future PR: delete WPR_Pending_Review** (sheet 3096105695793028 + `SHEET_WPR_PENDING_REVIEW`)
+   — GATED on the `weekly_generate`/`weekly_send` rewire to `WSR_human_review`. WPR is
+   DECOMMISSIONED-by-doc but still read/written by the live weekly daemons; deleting the
+   constant/sheet now breaks them. Pairs with the existing Phase-5 weekly-rewire tech-debt entry.
+4. **Future: cleanup the tombstone + its assets** — delete `safety_reports/intake_poll.py`,
+   `scripts/launchd/org.solutionsmith.its.safety-intake.plist`, and `install/uninstall_safety_intake_daemon.sh`
+   once no orphan plist remains and `portal_poll.py` has landed.
+5. **Preserved (do NOT touch):** `shared/graph_client.py` (incl. `fetch_latest_inbound_timestamp`,
+   whose docstring still says "Used by watchdog Check F" — stale, fix in a future shared/-touching
+   PR) and all other `shared/` primitives — Email Triage reuses them.
+
+**Tag:** `safety-portal`, `email-triage`, `cleanup`, `phase-5`, `medium`.
+
+Surfaced: 2026-06-05 safety email-intake retire.
