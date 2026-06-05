@@ -1,0 +1,42 @@
+# Reference forms — Phase-4 source-of-truth
+
+The 10 source PDFs the Safety Portal forms are modeled on. They are committed here as
+the **canonical reference** for building per-form `form.ts` modules in **Phase 4** (one
+PR per form). Phase 2 uses only the JHA (rendered as a hard-coded stub).
+
+Source: Evergreen's Box folder `ITS DATA/Safety Sheets/` (operator-maintained). Filenames
+below are normalized (spaces → underscores) to match the brief's catalog table; the Box
+originals differ only in whitespace.
+
+| Committed file | Maps to catalog | Archetype |
+|---|---|---|
+| `Daily_JOB_HAZARD_ANALYSIS_template.pdf` | JHA | rows + signatures |
+| `Back_Strains_and_Sprains_TBT.pdf` | Toolbox Talk (topic) | content + sign-in |
+| `Electrical-Safety_TBT.pdf` | Toolbox Talk (topic) | content + sign-in |
+| `Ergonomics-Back-Safety_TBT.pdf` | Toolbox Talk (topic) | content + sign-in |
+| `Hard-Hat-Safety_TBT.pdf` | Toolbox Talk (topic) | content + sign-in |
+| `PPE_TBT.pdf` | Toolbox Talk (topic) | content + sign-in |
+| `blank_forklift-rough-terrain-pre-use-inspection-form.pdf` | Equipment Pre-Inspection (Telehandler) | tri-state checklist |
+| `Skid_Steer__Daily_Pre-Inspection_Checklist.pdf` | Equipment Pre-Inspection (Skid Steer) | tri-state checklist |
+| `weekly_Safe_Work_Observation_Template.pdf` | HSS&E Work Observation | sectioned assessment |
+| `VISITOR-SIGN-IN.pdf` | Visitor Sign-In | rows (not Evergreen-branded — header added in Phase 4) |
+
+The three form archetypes Phase 4's `_runtime/` must handle: **rows + signatures**,
+**tri-state checklist**, and **sectioned assessment** (plus a per-form `pdf_override.ts`
+escape hatch).
+
+## ⚠️ Form-catalog reconciliation (resolve before Phase 4)
+
+The uploaded corpus does **not** match the blueprint's named forms — confirm the real v1
+catalog with the operator before seeding `ITS_Forms_Catalog` or building forms:
+
+- **Blueprint** (`mission.md` §8 "Forms catalog at v1") names **four**: JHA, **Daily Site
+  Safety Worksheet**, Equipment Pre-Inspection, Toolbox Talk.
+- **This corpus** has **no "Daily Site Safety Worksheet"**, and adds two the blueprint does
+  not name: **HSS&E Work Observation** (`weekly_Safe_Work_Observation_Template.pdf`) and
+  **Visitor Sign-In** (`VISITOR-SIGN-IN.pdf`). Toolbox Talk is represented as five topic
+  variants rather than one form.
+
+Neither set is wrong on its face, but they disagree. The catalog scope is an explicit
+open item (brief §"Open items / forward") — do not treat this table as the locked v1
+catalog without operator sign-off.

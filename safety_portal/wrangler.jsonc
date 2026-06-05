@@ -1,0 +1,56 @@
+{
+  // ── ITS Safety Portal — Cloudflare Worker + Static Assets (Phase 2) ───────────
+  // Architecture: a SINGLE Worker serves the built React SPA (static assets) AND
+  // handles same-origin /api/* routes — zero CORS. This is the current Cloudflare
+  // recommendation for new full-stack projects (Workers Static Assets over Pages;
+  // Pages is in maintenance mode). See safety_portal/README.md "Deploy: Pages vs
+  // Workers reconciliation" for how this relates to blueprint topology §11
+  // (which predates the Workers-Static-Assets guidance and names a *.pages.dev URL).
+  //
+  // SECRETS: none here. SESSION_SIGNING_SECRET is a Workers Secret — set it with
+  //   `wrangler secret put SESSION_SIGNING_SECRET` (deploy) / .dev.vars (local).
+  // Never put secrets in this file.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "its-safety-portal",
+  "compatibility_date": "2026-06-04",
+  // nodejs_compat: `bcryptjs` (mission Q2 "bcrypt cost 10") statically imports
+  // node:crypto for salt generation. The flag provides it in the Workers runtime.
+  "compatibility_flags": ["nodejs_compat"],
+  "main": "./worker/index.ts",
+
+  "assets": {
+    "directory": "./dist/client",
+    // Required when `main` + assets coexist: lets the Worker fall back to env.ASSETS.fetch().
+    "binding": "ASSETS",
+    // Client-side routes (e.g. deep links) fall back to index.html with 200.
+    "not_found_handling": "single-page-application",
+    // Run the Worker FIRST only for the API; everything else is served as a static
+    // asset directly (cheaper, and API paths can't be shadowed by a same-named asset).
+    "run_worker_first": ["/api/*"]
+  },
+
+  "observability": { "enabled": true },
+
+  // ── D1 (env.DB). Phase 2 uses the `users` table only (migrations/). ──
+  // database_id is a placeholder for token-free LOCAL dev (`--local` keys off the
+  // db name, not this id). Replace after `wrangler d1 create its-safety-portal-db`.
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "its-safety-portal-db",
+      // ⚠ REPLACE before remote deploy: `wrangler d1 create its-safety-portal-db` → paste the returned id.
+      // (Local `--local` dev keys off database_name, so the all-zeros placeholder is fine for `wrangler dev`.)
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ],
+
+  // ── R2 (env.PDF_BUCKET). Provisioned to match topology §11; UNUSED until Phase 5
+  //    (generated-PDF storage). Create with `wrangler r2 bucket create ...`. ──
+  "r2_buckets": [
+    {
+      "binding": "PDF_BUCKET",
+      "bucket_name": "its-safety-portal-pdfs-validation"
+    }
+  ]
+}
