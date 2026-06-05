@@ -340,3 +340,45 @@ touching the **HMAC/bearer secrets or the Keychain** (`portal_hmac_failure`,
 `portal_creds_missing` when the row exists), any **code change**, or re-filing a
 drained submission. The four fixed high-class categories (External Send Gate,
 secrets/auth, doctrine, code) always escalate regardless of documentation.
+
+## Weekly compile (`weekly_generate.py`) — Phase 5b
+
+The DETERMINISTIC weekly compile (the Anthropic narrative core was retired). For each
+Active job's Saturday→Friday week it merges the per-submission PDFs recorded on the
+week sheet (`form_pdf.merge_pdfs`), files the packet to an `ITS`-prefixed Box week
+folder, and **dual-writes**: (a) the week sheet's read-only **Rollup** manifest row;
+(b) one **WSR_human_review** row per (job, week) — Email Body seeded from a fixed
+template (the reviewer edits it; it is the source of truth `weekly_send` transmits),
+Recipient TO/CC display resolved from `ITS_Active_Jobs`, Send Status PENDING.
+
+> **NOT live-verified.** Friday-fire 14:00 Pacific (`StartCalendarInterval`); the
+> watchdog Check-I catch-up re-runs a missed Friday. `--week-start <ISO>` backfills.
+> Box file-attach to the WSR row is deferred to the deploy session — the Compiled PDF
+> column carries the Box link (one-click reviewable), which is sufficient for review.
+
+### Trigger + idempotency
+- **Friday auto-compile** + **`Compile Now`** checkbox on the week sheet's Rollup row
+  (forces an out-of-band recompile).
+- **Skip-if-already-compiled-and-no-new-docs**: if a Rollup row exists and no
+  submission is newer than its `compiled_at` watermark (and Compile Now is unchecked),
+  the week is skipped. **Never closes the week** — a later submission + a recompile
+  just refresh the packet + the WSR Compiled-PDF link; the WSR Email Body + approval
+  columns are NEVER touched on an existing row (re-sending an updated packet is a
+  deliberate operator re-approval, F22-gated).
+- **Empty week** → still writes the Rollup + WSR row (a silent skip would look like
+  daemon failure); the WSR row carries no packet, so `weekly_send` HELDs it.
+
+### §43 Successor-Operator remediation runbook
+
+| Symptom | Likely cause | Low-class repair |
+|---|---|---|
+| A job's weekly packet never appears | The job isn't Active in `ITS_Active_Jobs`, or has no Field Reports folder | Confirm the job is Active in `ITS_Active_Jobs`. A `weekly_generate.compile_failed` Review-Queue entry names the cause; a missing Field Reports folder is a **developer task → escalate to Seth**. |
+| Packet is short (missing a submission) | A per-submission PDF had no Box link or failed to download (`weekly_generate.submission_no_link` / `submission_download_failed` WARN) | The Rollup row Notes list the gap. Re-trigger by checking **Compile Now** on the week sheet's Rollup row once the missing PDF is in Box; if the Box file is genuinely gone, **escalate to Seth**. |
+| Operator wants to recompile after a late submission | New doc arrived after the Friday compile | Check **Compile Now** on the week sheet's Rollup row (or wait for the next Friday — a new doc auto-triggers a recompile). |
+| `weekly_generate.no_downloadable_pdfs` ERROR | Box unreachable or every submission link broke | Transient → self-heals (recompile). Persistent → **escalate to Seth** (Box auth = secrets, high-class). |
+| WSR row shows an old packet after recompile | Expected — a recompile updates the Compiled PDF link but never the human Email Body or approval columns | Re-review the updated Compiled PDF; re-approve to re-send (a deliberate human re-approval; the prior send is not auto-repeated). |
+
+**Escalate-to-Seth boundary (high-class):** Box auth/secrets, missing Field Reports
+folders or sheet IDs (config/topology), any code change. The compile itself is
+generation-only (no external send) — the human-approved send is the separate
+`weekly_send` process.

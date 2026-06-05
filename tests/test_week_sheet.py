@@ -214,3 +214,83 @@ def test_week_sheet_schema_is_complete_and_typed():
 def test_find_submission_row_whitespace_only_uuid_returns_none_without_read(stub_ss):
     assert find_submission_row(8001, "   ") is None
     stub_ss["get_rows"].assert_not_called()
+
+
+# ---- Phase-5b rollup/compile helpers --------------------------------------
+
+from safety_reports.week_sheet import (  # noqa: E402
+    COL_COMPILE_NOW,
+    COL_WORK_DATE,
+    ROLLUP_LABEL,
+    compile_now_requested,
+    get_rollup_row,
+    latest_submitted_at,
+    list_submission_rows,
+    upsert_rollup_row,
+)
+
+
+def test_list_submission_rows_excludes_superseded_and_rollup_and_orders(stub_ss):
+    stub_ss["get_rows"].return_value = [
+        {"_row_id": 9, COL_SUBMISSION_UUID: "r", "Row Type": ROW_TYPE_ROLLUP},  # rollup excluded
+        {"_row_id": 1, COL_SUBMISSION_UUID: "b", "Row Type": ROW_TYPE_SUBMISSION,
+         COL_STATUS: STATUS_SUPERSEDED, COL_WORK_DATE: "2026-06-01", week_sheet.COL_SUBMITTED_AT: "x"},
+        {"_row_id": 2, COL_SUBMISSION_UUID: "a", "Row Type": ROW_TYPE_SUBMISSION,
+         COL_STATUS: "Active", COL_WORK_DATE: "2026-06-02", week_sheet.COL_SUBMITTED_AT: "2026-06-02T09:00-07:00"},
+        {"_row_id": 3, COL_SUBMISSION_UUID: "c", "Row Type": ROW_TYPE_SUBMISSION,
+         COL_STATUS: "Active", COL_WORK_DATE: "2026-06-01", week_sheet.COL_SUBMITTED_AT: "2026-06-01T09:00-07:00"},
+    ]
+    active = list_submission_rows(8001, active_only=True)
+    assert [r["_row_id"] for r in active] == [3, 2]  # superseded(1)+rollup(9) excluded; ordered by work date
+    all_subs = list_submission_rows(8001, active_only=False)
+    assert {r["_row_id"] for r in all_subs} == {1, 2, 3}  # superseded included, rollup still excluded
+
+
+def test_get_rollup_row(stub_ss):
+    stub_ss["get_rows"].return_value = [
+        {"_row_id": 1, "Row Type": ROW_TYPE_SUBMISSION},
+        {"_row_id": 2, "Row Type": ROW_TYPE_ROLLUP},
+    ]
+    r = get_rollup_row(8001)
+    assert r is not None and r["_row_id"] == 2
+
+
+@pytest.mark.parametrize("rollup,expected", [
+    (None, False),
+    ({COL_COMPILE_NOW: True}, True),
+    ({COL_COMPILE_NOW: False}, False),
+    ({}, False),
+])
+def test_compile_now_requested(rollup, expected):
+    assert compile_now_requested(rollup) is expected
+
+
+def test_latest_submitted_at_excludes_blanks():
+    assert latest_submitted_at([
+        {week_sheet.COL_SUBMITTED_AT: ""},
+        {week_sheet.COL_SUBMITTED_AT: "2026-06-02T09:00-07:00"},
+        {week_sheet.COL_SUBMITTED_AT: "   "},
+        {week_sheet.COL_SUBMITTED_AT: "2026-06-01T09:00-07:00"},
+    ]) == "2026-06-02T09:00-07:00"
+    assert latest_submitted_at([{week_sheet.COL_SUBMITTED_AT: ""}]) == ""  # all blank → ''
+    assert latest_submitted_at([]) == ""
+
+
+def test_upsert_rollup_row_create_sets_rollup_type_and_clears_compile_now(stub_ss):
+    stub_ss["add_rows"].return_value = [42]
+    rid = upsert_rollup_row(8001, packet_link="L", compiled_at="2026-06-05T09:00-07:00",
+                            manifest_note="2 subs")
+    assert rid == 42
+    row = stub_ss["add_rows"].call_args.args[1][0]
+    assert row["Row Type"] == ROW_TYPE_ROLLUP and row["Submission"] == ROLLUP_LABEL
+    assert row[COL_COMPILE_NOW] is False  # cleared on write
+    assert row[COL_SUBMISSION_PDF] == "L"
+
+
+def test_upsert_rollup_row_update_threads_row_id_and_clears_compile_now(stub_ss):
+    rid = upsert_rollup_row(8001, packet_link="L2", compiled_at="t", manifest_note="m",
+                            existing_rollup_row_id=77)
+    assert rid == 77
+    stub_ss["add_rows"].assert_not_called()
+    upd = stub_ss["update_rows"].call_args.args[1][0]
+    assert upd["_row_id"] == 77 and upd[COL_COMPILE_NOW] is False
