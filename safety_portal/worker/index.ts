@@ -29,8 +29,9 @@ import { validateUser, newSessionClaims } from "./auth";
 //   Session validity is cookie-derived only: NO server-side revocation in Phase 2
 //   (see the /api/logout rationale).
 //
-// Consumers: the SPA (src/) via same-origin fetch; the Miniflare local-dev runtime
-//   (vite dev / wrangler dev). Later phases add /api/submit, /api/sync, etc.
+// Consumers: the SPA (src/) via same-origin fetch — /api/login, /api/session,
+//   /api/logout, /api/jobs (job dropdown), /api/recent (amend prefill), /api/submit
+//   (caches the structured submission). Phase 5 adds /api/sync + the email shim.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const COOKIE = "its_portal_session";
@@ -117,6 +118,79 @@ app.get("/api/session", requireSession, (c) => {
 app.post("/api/logout", (c) => {
   deleteCookie(c, COOKIE, { path: "/" });
   return c.json({ ok: true });
+});
+
+/** GET /api/jobs — Active jobs for the dropdown (from D1; the portal never reads Smartsheet). */
+app.get("/api/jobs", requireSession, async (c) => {
+  const { results } = await c.env.DB
+    .prepare("SELECT job_id, project_name FROM jobs WHERE active = 1 ORDER BY project_name")
+    .all<{ job_id: string; project_name: string }>();
+  return c.json({ jobs: results });
+});
+
+/** GET /api/recent?job=&form=&date= — the latest prior submission for Amend prefill. */
+app.get("/api/recent", requireSession, async (c) => {
+  const job = c.req.query("job") ?? "";
+  const form = c.req.query("form") ?? "";
+  const date = c.req.query("date") ?? "";
+  if (!job || !form || !date) return c.json({ submission: null });
+  const row = await c.env.DB
+    .prepare(
+      "SELECT submission_uuid, payload_json FROM submissions " +
+        "WHERE job_id=? AND form_code=? AND work_date=? ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(job, form, date)
+    .first<{ submission_uuid: string; payload_json: string }>();
+  if (!row) return c.json({ submission: null });
+  return c.json({
+    submission: { submission_uuid: row.submission_uuid, values: JSON.parse(row.payload_json) },
+  });
+});
+
+/**
+ * POST /api/submit — accept a structured submission, cache it in D1 (Amend
+ * prefill), and return success.
+ *
+ * INVARIANT 1: this Worker still performs ZERO external transmission. The Phase-5
+ * email shim (portal-noreply@ → safety@, HMAC-signed) is a SEPARATE component that
+ * forwards this payload to intake.py; it is NOT wired here. INVARIANT 2: the body
+ * is type-checked + length-bounded; the job_id is verified against D1.
+ */
+app.post("/api/submit", requireSession, async (c) => {
+  let body: Record<string, unknown>;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "bad_request" }, 400);
+  }
+  const str = (k: string) => (typeof body[k] === "string" ? (body[k] as string) : "");
+  const job_id = str("job_id");
+  const form_code = str("form_code");
+  const work_date = str("work_date");
+  const submission_uuid = str("submission_uuid");
+  const amends_uuid = typeof body.amends_uuid === "string" ? body.amends_uuid : null;
+  const values = body.values;
+  if (
+    !job_id || !form_code || !work_date || !submission_uuid ||
+    job_id.length > 64 || form_code.length > 64 || work_date.length > 10 || submission_uuid.length > 64 ||
+    (amends_uuid !== null && amends_uuid.length > 64) ||
+    typeof values !== "object" || values === null
+  ) {
+    return c.json({ error: "invalid_submission" }, 400);
+  }
+  const job = await c.env.DB.prepare("SELECT 1 FROM jobs WHERE job_id=? AND active=1").bind(job_id).first();
+  if (!job) return c.json({ error: "unknown_job" }, 422);
+  const payload = JSON.stringify(values);
+  if (payload.length > 1_000_000) return c.json({ error: "too_large" }, 413);
+  await c.env.DB
+    .prepare(
+      "INSERT OR REPLACE INTO submissions " +
+        "(submission_uuid, job_id, form_code, work_date, payload_json, amends_uuid) VALUES (?,?,?,?,?,?)",
+    )
+    .bind(submission_uuid, job_id, form_code, work_date, payload, amends_uuid)
+    .run();
+  // Phase 5 wires the HMAC email shim here (emit the signed payload to safety@).
+  return c.json({ ok: true, status: "submitted", submission_uuid });
 });
 
 // Unmatched /api/* → JSON 404 (never the SPA shell).

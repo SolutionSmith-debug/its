@@ -35,3 +35,52 @@ export async function fetchSession(): Promise<SessionUser | null> {
 export async function logout(): Promise<void> {
   await postJson("/api/logout");
 }
+
+export interface Job {
+  job_id: string;
+  project_name: string;
+}
+
+export async function fetchJobs(): Promise<Job[]> {
+  const res = await fetch("/api/jobs", { credentials: "same-origin" });
+  if (!res.ok) throw new Error("Could not load jobs.");
+  return ((await res.json()) as { jobs: Job[] }).jobs;
+}
+
+export interface RecentSubmission {
+  submission_uuid: string;
+  values: Record<string, unknown>;
+}
+
+export async function fetchRecent(
+  job: string,
+  form: string,
+  date: string,
+): Promise<RecentSubmission | null> {
+  const q = new URLSearchParams({ job, form, date });
+  const res = await fetch(`/api/recent?${q.toString()}`, { credentials: "same-origin" });
+  if (!res.ok) return null;
+  return ((await res.json()) as { submission: RecentSubmission | null }).submission;
+}
+
+export interface SubmitBody {
+  job_id: string;
+  form_code: string;
+  variant_label: string | null;
+  work_date: string;
+  values: Record<string, unknown>;
+  submission_uuid: string;
+  amends_uuid?: string | null;
+}
+
+export async function submitForm(body: SubmitBody): Promise<void> {
+  const res = await postJson("/api/submit", body);
+  if (!res.ok) {
+    const data = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(
+      data.error === "unknown_job"
+        ? "That job is no longer active — pick another."
+        : "Submission failed. Please try again.",
+    );
+  }
+}
