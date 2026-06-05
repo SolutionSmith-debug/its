@@ -1336,3 +1336,105 @@ The `ops-stds-enforcer` subagent's system prompt (`.claude/agents/ops-stds-enfor
 **Revisit when:** next session that runs `ops-stds-enforcer` on a PR touching a new capability, or when a §43 entry is required as DoD and the agent misses it.
 
 Surfaced: 2026-06-03 unifying alignment audit (PR #156, DR-E1 / OPEN-1). Related: `docs/audits/2026-06-03_unifying-alignment-audit.md`.
+
+## Safety Portal — deploy + provisioning deferred [OPEN 2026-06-04]
+
+Cloudflare D1/R2/Pages-or-Workers resource creation, `wrangler secret put SESSION_SIGNING_SECRET`, `wrangler deploy`, and custom domain `safety.evergreenmirror.com` binding are all deferred. Blocked on operator obtaining a `CLOUDFLARE_API_TOKEN` with the required scopes (Workers / D1 / R2 / Pages, or Workers Static Assets depending on topology decision below). The Safety Portal Phase 2 code (PR #158) was locally validated end-to-end via `wrangler dev --local` + Playwright before deferral.
+
+**Required operator steps (at deploy time):**
+1. `wrangler login` (or set `CLOUDFLARE_API_TOKEN`).
+2. `wrangler d1 create its-safety-portal-db` → copy the returned `database_id` into `wrangler.toml`.
+3. `wrangler d1 migrations apply its-safety-portal-db` (remote).
+4. `wrangler secret put SESSION_SIGNING_SECRET` (≥32-byte random value).
+5. `wrangler deploy` (or Pages upload if Pages topology wins).
+6. Bind custom domain `safety.evergreenmirror.com` → Worker/Pages route.
+
+**Tag:** `safety-portal`, `deploy`, `cloudflare`.
+
+**Revisit when:** operator has CLOUDFLARE_API_TOKEN. Anticipated pre-Phase-3 portal go-live.
+
+Surfaced: 2026-06-04 Safety Portal Phase 2 session (PR #158). Session log: `docs/session_logs/2026-06-04_safety-portal-phase2-cloudflare-scaffold.md`.
+
+## Safety Portal — Pages-vs-Workers Static Assets topology TBD [OPEN 2026-06-04]
+
+Blueprint `workstreams/safety-portal/mission.md` §11 and any DNS/route assumptions were written against a Cloudflare Pages (`*.pages.dev`) topology. Cloudflare's current guidance (confirmed via cloudflare-docs MCP, 2026-06) recommends **Workers Static Assets** as the standard model for serving SPAs from a Worker. The Phase 2 code (`safety_portal/worker/`) is deploy-agnostic (Vite builds to `dist/`; `wrangler.toml` can target either). The decision must be made at deploy time.
+
+**Decision required:** Workers Static Assets (current best-practice; better D1/binding integration) vs Cloudflare Pages (`*.pages.dev` + Pages-native CI). Update blueprint `workstreams/safety-portal/mission.md` §11 and DNS config to match.
+
+**Tag:** `safety-portal`, `cloudflare`, `architecture`.
+
+**Revisit when:** Safety Portal deploy step (above entry). One decision, made once.
+
+Surfaced: 2026-06-04 Safety Portal Phase 2 session (PR #158). Related: `docs/tech_debt.md` "Safety Portal deploy + provisioning deferred" entry above.
+
+## Safety Portal — Worker-side capability-gate for TS not covered by Python AST gate [OPEN 2026-06-04]
+
+`tests/test_capability_gating.py` enforces Invariant 1 at the Python AST level. It does not reach the TypeScript Worker at `safety_portal/worker/`. Phase 2 Worker is send-free by inspection (no email, no Graph, no Anthropic). When the Phase 5 HMAC email shim lands (the Worker emits a verified email to `safety@` → `intake.py`), this gap becomes load-bearing.
+
+**Proposed fix (at Phase 5):** add a TS-equivalent capability-gate step — either a `tsc --noEmit` + `grep`-based AST scan of Worker entrypoints for forbidden imports, or extend `test_capability_gating.py` to scan `.ts` entrypoints with the same pattern. Phase 2 does not require this yet.
+
+Note: the Phase 2 brief referenced "Decision 4" for this item, but no named blueprint decision with that ID exists. The decision is tracked here instead.
+
+**Tag:** `safety-portal`, `capability-gate`, `invariant-1`.
+
+**Revisit when:** Phase 5 email-shim work begins.
+
+Surfaced: 2026-06-04 Safety Portal Phase 2 session (PR #158). Related: `tests/test_capability_gating.py`.
+
+## Safety Portal — bcryptjs cost-10 may exceed Workers Free 10ms CPU cap [OPEN 2026-06-04]
+
+`safety_portal/worker/src/worker/auth.ts` uses bcryptjs with cost factor 10. On the Cloudflare Workers **Free plan**, CPU time is capped at 10ms per request (Error 1102). A bcrypt compare at cost 10 can take 50–100ms in V8, reliably triggering the cap on login.
+
+**Options at deploy:**
+1. Deploy on Cloudflare Workers **Paid plan** (5ms CPU wall removed; 30s+ allowed) — simplest.
+2. Swap `auth.ts` to `Web Crypto PBKDF2-SHA-256` at 100k iterations — CPU-comparable security, runs within Free limits, requires `nodejs_compat` flag and minor code change.
+
+**Tag:** `safety-portal`, `cloudflare`, `performance`.
+
+**Revisit when:** Safety Portal deploy. Decision is Paid-plan vs PBKDF2 swap. Decide before `wrangler deploy`.
+
+Surfaced: 2026-06-04 Safety Portal Phase 2 session (PR #158).
+
+## Safety Portal — no server-side session revocation [OPEN 2026-06-04]
+
+`safety_portal/worker/src/worker/middleware/requireSession.ts` validates a HMAC-signed session cookie (iat + 90-day expiry) but does NOT check a server-side session table. A deprovisioned user's cookie remains valid until `iat + 90d`. A stolen cookie cannot be individually invalidated before expiry.
+
+**Proposed fix (Phase 7):** add a D1 `sessions` table (session_id, user_id, created_at, revoked_at); `requireSession` queries it; admin route provides revoke-session capability.
+
+**Tag:** `safety-portal`, `auth`, `security`.
+
+**Revisit when:** Phase 7 admin route build, or earlier if a user is deprovisioned while a live session exists.
+
+Surfaced: 2026-06-04 Safety Portal Phase 2 session (PR #158).
+
+## Safety Portal — form-catalog corpus mismatch with blueprint (pre-Phase-4) [OPEN 2026-06-04]
+
+The 10 PDF reference forms committed to `safety_portal/worker/public/forms/` do not match the 4 forms named in blueprint `workstreams/safety-portal/mission.md` and the ITS_Forms_Catalog sheet seeded in PR #155. Specifically:
+- ITS_Forms_Catalog has: `jha-v1`, `daily-site-safety-v1`, `equipment-preinspection-v1`, `toolbox-talk-v1`.
+- The PDF corpus adds: HSS&E Work Observation, Visitor Sign-In, and several others not named in the blueprint.
+- "Daily Site Safety Worksheet" (named in the brief) is absent from the committed PDFs.
+
+**Required action (pre-Phase-4 form rendering):** Confirm the real v1 form catalog with the operator / office PM. Update ITS_Forms_Catalog rows and the committed PDF corpus to match before building the form-rendering Phase 4 step.
+
+**Tag:** `safety-portal`, `data-gap`, `form-catalog`.
+
+**Revisit when:** Phase 4 form-rendering work begins, or before seeding form entries into the live (non-mirror) tenant.
+
+Surfaced: 2026-06-04 Safety Portal Phase 2 session (PR #158). Related: `safety_portal/worker/public/forms/`, `docs/runbooks/safety_portal_config_sheets.md`.
+
+## Safety Portal — frontend build/lint CI step missing [OPEN 2026-06-04]
+
+PR #158 added the `safety_portal/` TypeScript/Node tree. The existing GitHub Actions CI (`ruff` + `pytest`) covers only Python. The TS tree has no CI job for `tsc --noEmit` (typecheck), `npm run build` (Vite bundle), or a lint step. Errors in the TS tree are invisible to CI until a developer manually runs `npm run build` locally.
+
+**Proposed fix:** add a `.github/workflows/frontend-ci.yml` job:
+1. `npm ci` in `safety_portal/worker/`
+2. `npm run build`
+3. `tsc --noEmit`
+
+**Tag:** `safety-portal`, `ci`, `frontend`.
+
+**Effort:** ~30 minutes.
+
+**Revisit when:** next session touching `safety_portal/` — or proactively before Phase 3 portal hardening.
+
+Surfaced: 2026-06-04 Safety Portal Phase 2 session (PR #158).
