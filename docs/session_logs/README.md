@@ -96,6 +96,12 @@ outside the sentinel block.
 <!-- BEGIN AUTO-INDEX -->
 | Date | Type | Status | Workstream | Title | PRs |
 |------|------|--------|------------|-------|-----|
+| 2026-06-05 | session_log | closed | safety_portal | [Session log — Safety Portal Phase 3: contacts amendment (contact routing columns)](2026-06-05_safety-portal-phase3-contacts-amendment.md) | #162 |
+| 2026-06-05 | session_log | closed | safety_portal | [Session log — Safety Portal Phase 3: job model + live Job-ID resolution](2026-06-05_safety-portal-phase3-job-model.md) | #160 |
+| 2026-06-05 | session_log | closed | safety_portal | [Session log — Safety Portal Phase 4 PR 1: forms foundation](2026-06-05_safety-portal-phase4-pr1-forms-foundation.md) | #164 |
+| 2026-06-05 | session_log | closed | safety_portal | [Session log — Safety Portal Phase 4 PR 2 → Phase 5 PR 2: display runtime, PDF renderer, WSR foundation, transport queue](2026-06-05_safety-portal-phase4-runtime-renderer-phase5-foundation-transport.md) | #166, #167, #168, #169 |
+| 2026-06-05 | session_log | closed | safety_portal | [Session log — Safety Portal WSR rewire (Phase-5 Python pull model, PRs #173–#176)](2026-06-05_safety-portal-wsr-rewire-pull-model.md) | #173, #174, #175, #176 |
+| 2026-06-04 | session_log | closed | safety_portal | [Session log — Safety Portal Phase 2: Cloudflare scaffolding + minimal portal](2026-06-04_safety-portal-phase2-cloudflare-scaffold.md) | #158 |
 | 2026-06-03 | session_log | closed | infrastructure | [Session log — Phase 3a/3b decisions + E1 cutover (continuation of 2026-06-02)](2026-06-03_phase3a-3b-e1-cutover.md) | #151, #152, #153 |
 | 2026-06-03 | session_log | closed | safety_portal | [Session log — Safety Portal config sheets + unifying alignment audit](2026-06-03_safety-portal-config-sheets-and-alignment-audit.md) | #155, #156 |
 | 2026-06-02 | session_log | closed | infrastructure | [Session log — E1 project-routing migration + first picklist-drift reconcile](2026-06-02_e1-and-picklist-drift-reconcile.md) | #149, #150 |
