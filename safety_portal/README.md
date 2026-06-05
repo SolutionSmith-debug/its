@@ -29,7 +29,7 @@ handles same-origin `/api/*` routes — zero CORS, one deployment unit.
 | Bundler | `@cloudflare/vite-plugin` (runs the Worker in dev, builds both for deploy) |
 | Auth | D1 `users` table + `bcryptjs` (cost 10); HMAC-signed session cookie |
 | Database | Cloudflare D1 (`migrations/`) |
-| PDF storage | Cloudflare R2 — provisioned, **unused until Phase 5** |
+| PDF storage | **Box** (system of record). No R2 — under Option-B render the Worker never holds a PDF; `intake.py` renders + stores it in Box. |
 
 ### Deploy target: Workers Static Assets vs Pages (reconciliation)
 
@@ -69,7 +69,7 @@ safety_portal/
   migrations/             # D1 schema + seed (0001 users, 0002 validation user)
   public/                 # static assets (evergreen-logo.svg)
   reference_forms/        # the 10 source PDFs — Phase-4 source-of-truth (see its README)
-  wrangler.jsonc          # Worker + assets + D1 + R2 bindings (NO secrets)
+  wrangler.jsonc          # Worker + assets + D1 bindings (NO secrets; no R2 — PDFs live in Box)
   vite.config.ts · package.json · tsconfig*.json
   .dev.vars.example       # local secret template (copy to .dev.vars, gitignored)
 ```
@@ -78,7 +78,7 @@ safety_portal/
 
 ## Local development (no Cloudflare token required)
 
-`vite dev` / `wrangler dev` run fully on Miniflare with D1 + R2 simulated locally —
+`vite dev` / `wrangler dev` run fully on Miniflare with D1 simulated locally —
 **no Cloudflare account or token needed.**
 
 ```bash
@@ -122,13 +122,12 @@ npm run db:query:local "SELECT * FROM users;"
 ## Deploy (operator — requires CLOUDFLARE_API_TOKEN)
 
 Deferred this session (built + validated locally first). When ready, with a token
-scoped to **Workers + D1 + R2 edit** exported as `CLOUDFLARE_API_TOKEN`
+scoped to **Workers + D1 edit** exported as `CLOUDFLARE_API_TOKEN`
 (+ `CLOUDFLARE_ACCOUNT_ID`):
 
 ```bash
 cd safety_portal
 npx wrangler d1 create its-safety-portal-db          # -> paste database_id into wrangler.jsonc
-npx wrangler r2 bucket create its-safety-portal-pdfs-validation
 npx wrangler d1 migrations apply its-safety-portal-db --remote   # users + seed (validation env)
 npx wrangler secret put SESSION_SIGNING_SECRET       # paste `openssl rand -base64 48`
 npm run deploy                                       # vite build && wrangler deploy
@@ -184,9 +183,9 @@ Phase 2 is the skeleton + one form stub. **Not built here** (later phases per `b
 - Generic form runtime (`_runtime/` renderer + pdf_renderer) and per-form `form.ts` — **Phase 4**.
 - The other nine forms (see `reference_forms/`) — **Phase 4**.
 - Sync Worker (cron + Smartsheet webhook), D1 mirror tables — **Phase 3**.
-- Submission pipeline: PDF generation, HMAC email shim, `intake.py` portal branch — **Phase 5**.
+- Submission pipeline: Python PDF render (Box-stored), the pull-model `portal_poll` daemon, `intake.py` portal branch — **Phase 5**.
 - `/admin` route, user CRUD, per-user password scheme (Q2b) — **Phase 7**.
-- R2 prune cron, JHA Weekly Compliance Rollup — **Phase 5/6**.
+- JHA Weekly Compliance Rollup — **Phase 5/6**. (No R2 — PDFs live in Box.)
 
 The JHA view is a **hard-coded stub** that mirrors the real layout to validate the stack;
 it does not submit.
