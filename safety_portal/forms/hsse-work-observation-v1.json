@@ -1,0 +1,106 @@
+{
+  "form_code": "hsse-work-observation-v1",
+  "parent_form_code": "hsse-work-observation",
+  "form_name": "HSS&E Work Observation",
+  "variant_label": null,
+  "version": 1,
+  "archetype": "sectioned_assessment",
+  "source_pdf": "weekly_Safe_Work_Observation_Template.pdf",
+  "branding": { "logo": true, "title": "HSS&E Form F: HSS&E Work Observation" },
+  "sections": [
+    {
+      "type": "header",
+      "fields": [
+        { "key": "facility_work_site", "label": "Facility / Work Site:", "input": "text" },
+        { "key": "specific_location", "label": "Specific Location:", "input": "text" },
+        { "key": "observer", "label": "Observer:", "input": "text", "required": true },
+        { "key": "work_date", "label": "Date:", "input": "date", "required": true },
+        { "key": "description_of_work", "label": "Description of Work/Job Task:", "input": "textarea" },
+        { "key": "risk_rating", "label": "RISK RATING:", "input": "select", "options": ["High", "Medium", "Low"] },
+        { "key": "crew_leader", "label": "Crew Leader:", "input": "text" },
+        { "key": "crew_members", "label": "Crew Members:", "input": "textarea" }
+      ]
+    },
+    {
+      "type": "checklist",
+      "key": "section_1",
+      "title": "SECTION 1: WORK OBSERVATION ASSESSMENT",
+      "groups": [
+        {
+          "key": "work_observation", "label": "Work Observation Assessment",
+          "scale": ["Acceptable", "Needs Improvement", "N/A"], "comment_per_item": true,
+          "items": [
+            { "key": "s1_1", "label": "Job / Project HSS&E Plan (available, well communicated, hazards identified, effective barriers):" },
+            { "key": "s1_2", "label": "Hazardous Energy Control (lock-out/tag-out, de-energized, tested and grounded, insulation, cover-up, minimum approach distance):" },
+            { "key": "s1_3", "label": "Work From Height/Climbing (handrails, fall restraint, fall protection)" },
+            { "key": "s1_4", "label": "Personal Protective Equipment (hard hat, eye/face protection, hearing protection, safety shoes, rubber gloves/sleeves):" },
+            { "key": "s1_5", "label": "Work Methods/Set-Up (confined space, rigging, vehicle set-up and crane operation, ergonomics, welding, housekeeping, ladder set-up, work area protection):" },
+            { "key": "s1_6", "label": "Public Safety Considerations (protection of members of the public in work zone and in area that could be affected), signage notifying the public of the danger and warning not to enter the site:" },
+            { "key": "s1_7", "label": "Environmental Protection (Identification of zones, species and habitat to protect (such as spawning or nesting areas), identification of species at risk and critical habitat, identification of migratory timelines, storage and transfer of oil & chemical, waste classification, storage & disposal, availability of spill kits):" },
+            { "key": "s1_8", "label": "Security Considerations (mechanisms to deter, detect, delay and deny access to people with criminal intent to prevent theft, vandalism, violence against workers, etc.):" },
+            { "key": "s1_9", "label": "Trenching and Excavation (Covering / markings, utility location, shoring, etc.) clearly marked with the words “Hole” or “Danger”, color-coded methods (red or orange):" },
+            { "key": "s1_10", "label": "Roof Work (Tie off connections, Material loading area, Flagging temp railings, Skylight protection, Means of egress):" },
+            { "key": "s1_11", "label": "Caught-In or -Between and Struck-By Hazards (note this is one of the OSHA fatal four):" }
+          ]
+        }
+      ]
+    },
+    { "type": "freeform", "key": "work_crews_comments", "label": "Work Crew’s Comments:", "input": "textarea" },
+    {
+      "type": "repeating_table",
+      "key": "corrective_actions",
+      "title": "Corrective Action/Follow-up Required",
+      "min_rows": 3,
+      "allow_add": true,
+      "columns": [
+        { "key": "recommendations", "label": "Recommendations", "input": "textarea" },
+        { "key": "responsibility", "label": "Responsibility", "input": "text" },
+        { "key": "target_date", "label": "Target Date", "input": "date" }
+      ]
+    },
+    {
+      "type": "checklist",
+      "key": "section_2",
+      "title": "SECTION 2: JOB PLAN EVALUATION",
+      "groups": [
+        {
+          "key": "job_plan_evaluation", "label": "Job Plan Evaluation",
+          "scale": ["Yes", "No"], "comment_per_item": true,
+          "items": [
+            { "key": "s2_1", "label": "Is all required information completed on the Job Plan (JHA)?" },
+            { "key": "s2_2", "label": "Are the Job Steps/Tasks adequately and accurately identified?" },
+            { "key": "s2_3", "label": "Are the Major Hazards adequately and accurately identified?" },
+            { "key": "s2_4", "label": "Are Risk designations accurately identified?" },
+            { "key": "s2_5", "label": "Do High Risk Hazards identify a Control Barrier?", "comment": false },
+            { "key": "s2_6", "label": "Were multiple secondary barriers employed?", "scale": ["Yes", "No", "N/A"] },
+            { "key": "s2_7", "label": "Are the barriers specific and correctly identified (i.e. Proper category for Control, Protective and Support barriers)?" },
+            { "key": "s2_8", "label": "Is the JSP or JHA updated if conditions change?", "scale": ["Yes", "No", "N/A"] },
+            { "key": "s2_9", "label": "Are Environmental and Biodiversity Risks adequately included in the Job Plan?", "scale": ["Yes", "No", "N/A"] }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "checklist",
+      "key": "section_3",
+      "title": "SECTION 3: FOLLOW UP AND FEEDBACK",
+      "groups": [
+        {
+          "key": "follow_up", "label": "Follow Up and Feedback",
+          "scale": ["Yes", "No"], "comment_per_item": true,
+          "items": [
+            { "key": "s3_1", "label": "Based on the review, does the employee (crew) have a good understanding of how to accurately prepare Job Plans?" },
+            { "key": "s3_2", "label": "Is further employee (crew) review/follow-up/training required?" }
+          ]
+        }
+      ]
+    },
+    { "type": "freeform", "key": "s3_2_how", "label": "If yes (further review/training required), how will this be accomplished?", "input": "textarea" },
+    {
+      "type": "freeform",
+      "key": "section_4",
+      "label": "SECTION 4: ADDITIONAL INFORMATION AND COMMENTS — Additional Information/comments/notable improvements/recommendations:",
+      "input": "textarea"
+    }
+  ]
+}

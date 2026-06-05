@@ -1,0 +1,58 @@
+{
+  "form_code": "toolbox-talk-ergonomics-v1",
+  "parent_form_code": "toolbox-talk",
+  "form_name": "Toolbox Talk — Ergonomics / Back Safety",
+  "variant_label": "Ergonomics / Back Safety",
+  "version": 1,
+  "archetype": "content_signin",
+  "source_pdf": "Ergonomics-Back-Safety_TBT.pdf",
+  "branding": {
+    "logo": true,
+    "title": "5-MINUTE SAFETY TALK"
+  },
+  "sections": [
+    {
+      "type": "content_blocks",
+      "key": "topic_content",
+      "title": "The Ergonomic Solution to Backbreaking Tasks",
+      "source_pdf": "Ergonomics-Back-Safety_TBT.pdf",
+      "blocks": [
+        {
+          "heading": "5-MINUTE SAFETY TALK by OSHA Pros — THE ERGONOMIC SOLUTION TO BACKBREAKING TASKS",
+          "body": "The warning signals of a chore or task that could potentially be back-breaking isn't difficult to notice—Reoccurring hazards, people making complaints about the job, minimum production and excessive junk. There's no need for intricate scrutiny to see these signs. \"The Science of Ergonomics\" covers strategies to incite comfortability in workers regarding the contraptions and devices they utilize on a daily basis in the work-place. Involving the resituating of employee work stations, it will help the workers achieve more work without having to exert as much energy."
+        },
+        {
+          "heading": "Take the Problem Out of the Task",
+          "body": "A good example of an ergonomic strategy could be to reposition large containers and bins in a way that gives employees access without making them strain or bend over. One other option would be to incorporate a mechanical lifting-machine or to readjust the size of shelves, tables, or chairs. These 'Ergonomic' alterations will improve safety and reduce stressful situations. Such reorganization and –situation have been widely expressed to prevent damage to the back significantly."
+        },
+        {
+          "heading": "Simple Cures",
+          "body": "Luckily, there are ways to make these back-breaking jobs much safer and healthier. For instance:\n- 1. In the scenario that you are performing a lot of heavy-lifting and are twisting around while doing this, reorganize the area in order to make way for a more straight-forward path. When you twist about while carrying something you are much more likely to undergo back damage.\n- 2. Switch back and forth between tasks in a way that allows tasks involving a lot of standing and moving are alternated with sitting time.\n- 3. Knee level is the optimum height at which to store goods. Shallower shelves allow for less space to have to reach to. Always remember to break up burdens as much as possible.\n- 4. Keep in mind that keeping heavy loads and materials as close to the work station as possible will prevent long, tedious, and sometimes dangerous walks back and forth."
+        },
+        {
+          "heading": "Stretch Breaks Save Backs",
+          "body": "The majority of employees' compensation-injuries happen within the first several hours of work, prior to their muscles having gotten relaxed and warmed up. Generally these physical issues are due to a plethora of back pains and tensions as opposed to disorders or diseases. Because of this, many corporations are giving employees stretching intermissions to get their muscles warmed up and to help increase flexibility. Even just 8 minutes of doing stretching exercises has proven to prevent forty-percent of accidents at some organizations! Some companies have taken it into their hands to promote a healthy lifestyle outside of the work place. A routine of continuous exercise and stretching practices will lead to a much safer and healthier environment."
+        }
+      ]
+    },
+    {
+      "type": "signature_table",
+      "key": "sign_in",
+      "title": "Safety Meeting / Training Sign In Sheet",
+      "min_rows": 8,
+      "allow_add": true,
+      "columns": [
+        {
+          "key": "instructor_worker_name",
+          "label": "Instructor / Worker Name",
+          "input": "text"
+        },
+        {
+          "key": "signature",
+          "label": "Signature",
+          "input": "signature"
+        }
+      ]
+    }
+  ]
+}

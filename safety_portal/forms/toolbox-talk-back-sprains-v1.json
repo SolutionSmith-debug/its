@@ -1,0 +1,65 @@
+{
+  "form_code": "toolbox-talk-back-sprains-v1",
+  "parent_form_code": "toolbox-talk",
+  "form_name": "Toolbox Talk — Back Sprains and Strains",
+  "variant_label": "Back Sprains and Strains",
+  "version": 1,
+  "archetype": "content_signin",
+  "source_pdf": "Back_Strains_and_Sprains_TBT.pdf",
+  "branding": {
+    "logo": true,
+    "title": "5-MINUTE SAFETY TALK"
+  },
+  "sections": [
+    {
+      "type": "content_blocks",
+      "key": "topic_content",
+      "title": "Back Sprains and Strains",
+      "source_pdf": "Back_Strains_and_Sprains_TBT.pdf",
+      "blocks": [
+        {
+          "body": "5-MINUTE SAFETY TALK\nBrought to you by www.osha-pros.com"
+        },
+        {
+          "heading": "BACK SPRAINS AND STRAINS",
+          "body": "You may not be aware, but the most commonly experienced workplace injury is also the most avoidable. 50% of US employees are expected to experience physical damage to their lower back at some point. Even if you believe you aren't susceptible to back damage where you work, it's important to re-assess. In any job that includes lifting any kind of object you might be vulnerable to back injury. Issues usually arise when an employee is uneducated on proper lifting procedures. Even in the absence of extra appliances or company programs, there are many ways to avoid this problem."
+        },
+        {
+          "heading": "Can You Actually Lift It?",
+          "body": "Prior to lifting an object, go through this checklist to ensure your physical capability:\n- Can I transport this without assistance?\n- How high off the ground does it have to be?\n- What is the distance that it must be carried?\n- Is this going to be a recurring part of the job?\n- Are you concerned with lifting this object to impress or prove something?"
+        },
+        {
+          "heading": "Lift It Correctly",
+          "body": "When there is something you must carry and it exceeds twenty-five lbs. you should follow these directions in order to proceed:\n- Arrange your footing appropriately. One foot should be placed beside what you are hauling; the other should be placed behind it.\n- Bend down with your knees, maintaining straightened back posture and keeping your neck and head upright.\n- Grasp the object using the full palm of your hands. Your fingers alone will not be sufficient.\n- Pull the object next to your body and make sure your upper extremities are close to you.\n- Centralize your weight above your feet and pick the object up by thrusting your leg.\n- If/when it is required of you to make turns be sure to turn with your feet while keeping your body centered."
+        },
+        {
+          "heading": "Get In Shape",
+          "body": "A fitness program could benefit you significantly if your workplace requires lifting such objects. Some employers provide classes but you can also practice physical wellness in your own home.\nFlexibility practices are helpful as they help to prevent accidents caused by abrupt thrusting of muscles that are not loose enough. Aerobic activities, cycling, jogging, and weight-lifting boost your endurance and strength."
+        },
+        {
+          "heading": "What to do When an Injury Occurs",
+          "body": "On the occasion that you do throw out or damage your back, remember to stay calm. Most back injuries acquired at the workplace are due to a straining or twisting of the muscles and the repercussions are not permanent. Follow these instructions if you obtain a back injury:\n- Allow your back to recuperate but be sure not to relax too much or the possibility of getting out of shape arises. If the damage is still creating problems, immediately see your doctor.\n- Return to the workplace but be sure to refrain from any heavy-lifting before you are physically ready for it. Talk with your superior about creating a specific plan so your co-workers are aware that you intend to work your way up to a regular work regiment. Start with light loads and progressively carry heavier objects.\n- Sign up for a physical therapy or fitness training class to prevent any further bodily damage in future."
+        }
+      ]
+    },
+    {
+      "type": "signature_table",
+      "key": "sign_in",
+      "title": "Safety Meeting / Training Sign In Sheet",
+      "min_rows": 8,
+      "allow_add": true,
+      "columns": [
+        {
+          "key": "instructor_worker_name",
+          "label": "Instructor / Worker Name",
+          "input": "text"
+        },
+        {
+          "key": "signature",
+          "label": "Signature",
+          "input": "signature"
+        }
+      ]
+    }
+  ]
+}

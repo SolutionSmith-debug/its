@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://its.solutionsmith.org/safety_portal/forms/meta-schema.json",
+  "title": "Safety Portal form definition",
+  "description": "The single source of truth for ONE safety form, consumed by BOTH renderers: the TS portal display runtime (on-screen fill) and the Python reportlab PDF renderer (render-parity). One JSON file per form/variant under safety_portal/forms/. Fields/sections are transcribed faithfully from the source PDF in safety_portal/reference_forms/ — no invention.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["form_code", "parent_form_code", "form_name", "version", "archetype", "source_pdf", "sections"],
+  "properties": {
+    "form_code": { "type": "string", "description": "Stable unique key (e.g. 'jha-v1'); the catalog variant row's rendering contract." },
+    "parent_form_code": { "type": "string", "description": "The form-type parent (e.g. 'jha', 'equipment-preinspection'); drives the form-type dropdown." },
+    "form_name": { "type": "string" },
+    "variant_label": { "type": ["string", "null"], "description": "3rd-picklist label (e.g. 'Telehandler/Forklift'); null when the parent has no variants." },
+    "version": { "type": "integer", "minimum": 1 },
+    "archetype": { "type": "string", "enum": ["rows_signatures", "grouped_checklist", "content_signin", "visitor_rows", "sectioned_assessment"] },
+    "source_pdf": { "type": "string", "description": "Reference PDF filename in safety_portal/reference_forms/ this definition was transcribed from." },
+    "branding": {
+      "type": "object", "additionalProperties": false,
+      "properties": { "logo": { "type": "boolean" }, "title": { "type": "string" } }
+    },
+    "sections": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/section" } }
+  },
+  "$defs": {
+    "input": { "type": "string", "enum": ["text", "textarea", "date", "time", "number", "select", "signature"] },
+    "field": {
+      "type": "object", "additionalProperties": false,
+      "required": ["key", "label", "input"],
+      "properties": {
+        "key": { "type": "string" }, "label": { "type": "string" },
+        "input": { "$ref": "#/$defs/input" },
+        "options": { "type": "array", "items": { "type": "string" } },
+        "required": { "type": "boolean" }
+      }
+    },
+    "item": {
+      "type": "object", "additionalProperties": false,
+      "required": ["key", "label"],
+      "properties": {
+        "key": { "type": "string" }, "label": { "type": "string" },
+        "kind": { "type": "string", "enum": ["rated", "numeric", "circle_one", "text"], "description": "rated = use the group scale (default); numeric/circle_one/text = special item per the source." },
+        "options": { "type": "array", "items": { "type": "string" }, "description": "for circle_one items (e.g. fuel ['1/4','1/2','3/4','Full'])." },
+        "scale": { "type": "array", "items": { "type": "string" }, "description": "per-item override of the group scale (e.g. a Yes/No question inside a group that elsewhere offers N/A)." },
+        "comment": { "type": "boolean", "description": "per-item override of group comment_per_item." }
+      }
+    },
+    "section": {
+      "type": "object",
+      "required": ["type"],
+      "properties": { "type": { "type": "string", "enum": ["header", "static_text", "repeating_table", "signature_table", "checklist", "freeform", "content_blocks"] } },
+      "oneOf": [
+        {
+          "additionalProperties": false, "required": ["type", "fields"],
+          "properties": { "type": { "const": "header" }, "title": { "type": "string" }, "fields": { "type": "array", "items": { "$ref": "#/$defs/field" } } }
+        },
+        {
+          "additionalProperties": false, "required": ["type", "text"],
+          "properties": { "type": { "const": "static_text" }, "text": { "type": "string" }, "emphasis": { "type": "string", "enum": ["footer", "heading", "legal"] } }
+        },
+        {
+          "additionalProperties": false, "required": ["type", "key", "columns"],
+          "properties": { "type": { "const": "repeating_table" }, "key": { "type": "string" }, "title": { "type": "string" }, "columns": { "type": "array", "items": { "$ref": "#/$defs/field" } }, "min_rows": { "type": "integer" }, "allow_add": { "type": "boolean" } }
+        },
+        {
+          "additionalProperties": false, "required": ["type", "key", "columns"],
+          "properties": { "type": { "const": "signature_table" }, "key": { "type": "string" }, "title": { "type": "string" }, "columns": { "type": "array", "items": { "$ref": "#/$defs/field" }, "description": "exactly one column must have input:signature" }, "min_rows": { "type": "integer" }, "allow_add": { "type": "boolean" } }
+        },
+        {
+          "additionalProperties": false, "required": ["type", "key", "groups"],
+          "properties": {
+            "type": { "const": "checklist" }, "key": { "type": "string" }, "title": { "type": "string" },
+            "groups": { "type": "array", "items": {
+              "type": "object", "additionalProperties": false, "required": ["key", "label", "scale", "items"],
+              "properties": { "key": { "type": "string" }, "label": { "type": "string" }, "scale": { "type": "array", "items": { "type": "string" }, "description": "response options, e.g. ['OK','NO','N/A']" }, "comment_per_item": { "type": "boolean" }, "items": { "type": "array", "items": { "$ref": "#/$defs/item" } } }
+            } }
+          }
+        },
+        {
+          "additionalProperties": false, "required": ["type", "key", "label"],
+          "properties": { "type": { "const": "freeform" }, "key": { "type": "string" }, "label": { "type": "string" }, "input": { "type": "string", "enum": ["textarea", "text"] } }
+        },
+        {
+          "additionalProperties": false, "required": ["type", "key", "blocks"],
+          "properties": { "type": { "const": "content_blocks" }, "key": { "type": "string" }, "title": { "type": "string" }, "source_pdf": { "type": "string" }, "blocks": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["body"], "properties": { "heading": { "type": "string" }, "body": { "type": "string" } } } } }
+        }
+      ]
+    }
+  }
+}

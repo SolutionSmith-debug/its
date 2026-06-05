@@ -1,0 +1,35 @@
+{
+  "form_code": "visitor-sign-in-v1",
+  "parent_form_code": "visitor-sign-in",
+  "form_name": "Visitor Sign-In",
+  "variant_label": null,
+  "version": 1,
+  "archetype": "visitor_rows",
+  "source_pdf": "VISITOR-SIGN-IN.pdf",
+  "branding": { "logo": true, "title": "VISITOR SIGN IN/SIGN OUT" },
+  "sections": [
+    {
+      "type": "header",
+      "fields": [
+        { "key": "job", "label": "PROJECT", "input": "text", "required": true },
+        { "key": "site_address", "label": "SITE ADDRESS", "input": "text" }
+      ]
+    },
+    {
+      "type": "repeating_table",
+      "key": "visitor_log",
+      "title": "Visitor Log",
+      "min_rows": 15,
+      "allow_add": true,
+      "columns": [
+        { "key": "print_name", "label": "PRINT NAME", "input": "text" },
+        { "key": "organization", "label": "ORGANIZATION", "input": "text" },
+        { "key": "phone", "label": "PHONE", "input": "text" },
+        { "key": "date", "label": "DATE", "input": "date" },
+        { "key": "time_in", "label": "TIME IN", "input": "time" },
+        { "key": "time_out", "label": "TIME OUT", "input": "time" }
+      ]
+    },
+    { "type": "freeform", "key": "notes", "label": "NOTES", "input": "textarea" }
+  ]
+}

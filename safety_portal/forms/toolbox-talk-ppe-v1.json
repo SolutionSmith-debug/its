@@ -1,0 +1,74 @@
+{
+  "form_code": "toolbox-talk-ppe-v1",
+  "parent_form_code": "toolbox-talk",
+  "form_name": "Toolbox Talk — Protective Clothing and Equipment (PPE)",
+  "variant_label": "Protective Clothing and Equipment (PPE)",
+  "version": 1,
+  "archetype": "content_signin",
+  "source_pdf": "PPE_TBT.pdf",
+  "branding": {
+    "logo": true,
+    "title": "5-MINUTE SAFETY TALK"
+  },
+  "sections": [
+    {
+      "type": "content_blocks",
+      "key": "topic_content",
+      "title": "Protective Clothing and Equipment — Your Personal Line of Defense",
+      "source_pdf": "PPE_TBT.pdf",
+      "blocks": [
+        {
+          "heading": "Protective Clothing and Equipment",
+          "body": "5-MINUTE SAFETY TALK by OSHA Pros\n\nYour Personal Line of Defense\n\nEvery year about two-million employees are the victims of debilitating accidents in the workplace. If you also take into account the implications of many of these injuries (progressive loss of sight, hearing, and damage to the lungs) you can understand why using PPE (Personal Protective Equipment) in the workplace."
+        },
+        {
+          "heading": "Know Your Hazards",
+          "body": "Employees are often not conscious of the potential hazards in their workplace. Disasters can escalate quickly and a lot of employees cannot recognize the effects of health hazards until they progressively get worse and it's too late to receive medical treatment. Below is information on the frequently occurring accidents in work environments and precautionary techniques against them:"
+        },
+        {
+          "heading": "Unsafe Air",
+          "body": "In environments containing loose particles, vapors, sprays, or gaseous poisons you must wear a respirator. APRs (air-purifying respirators) clean the pollutants from the air, whereas supplied-air respirators deliver oxygen when the surrounding doesn't contain any. Polluted air at first can seem harmless as a lot of the effects are unnoticeable until your lungs are irretrievably harmed."
+        },
+        {
+          "heading": "Eye Hazards",
+          "body": "Are you in need of ocular protection while working? The answer is a resounding yes if there is anything that can find its way to your eyes via splashing, flying or drifting. Safety goggles, glasses and face-shields are some common tools used in the workplace that are specifically designed as protection from heavy objects, miniscule dusts and fibers, and the nearly always surprising chemical-splashes, as well as a variety of other disasters. Talk to your supervisor if you're unaware of why your workplace requires optical protection. It is probably the case that your employers have discovered hazardous situations you would never have suspected."
+        },
+        {
+          "heading": "Noise",
+          "body": "On many occasions employees aren't conscious of how much stimulation they are experiencing at an auditory level. If you're needing to raise your voice dramatically to be heard on the worksite it means you're around noise levels that escalate above 85 decibels which is plenty to cause damage to the eardrums over long time periods. It would seem that ear protection wouldn't be convenient as you wouldn't be able to communicate with others while wearing it, but the truth of the matter is that they now have hearing protection that gives you the capability of hearing other noises that are vital."
+        },
+        {
+          "heading": "\"Bodyguards\" for Extreme Hazards",
+          "body": "In the situation that you are an employee that must work in emphatically dangerous conditions, you are aware that your PPE must be entirely sealed with no exposure to the surrounding environment. You'll be wearing an anti-chemical (and in some cases heat-repellent) outfit with boots attached and a built in APR. This form of protective equipment will require training to don properly and and you will need help putting it on to ensure the highest level of safety. Many of these suits are expendable which is easier than decontaminating the apparatus appropriately."
+        },
+        {
+          "heading": "Other Physical Hazards",
+          "body": "A good majority of the precautionary devices and apparel you will wear will seem uncomfortable and arduous, but when one day you are involved in a situation where they are the only thing protecting you, you'll notice how important they truly are. Even if it seems pointless to start out, the reality of the situation is that your employer most likely wouldn't waste funds on purchasing and training you to utilize PPE that isn't necessary at some point. By the time you need it and haven't adhered to the safety conditions it's too late to put the PPE on. It is advantageous to them to maintain your safety and not have you exposed to situations that will land you in a medical treatment facility. Luckily, manufacturers are making more lightweight, durable, and fitting PPE than ever has been in the past."
+        },
+        {
+          "heading": "Checklist for PPE Users",
+          "body": "- Investigate the equipment for fissures, leaks, or other damage before applying.\n- Follow instructions and contact a superior if you are confused on how to wear the PPE.\n- Never use the wrong size.\n- Maintain cleanliness and if needed, decontaminated.\n- Adhere to precise instructions for taking off contaminated PPE\n- If you experience medical issues from wearing PPE, alert a supervisor immediately."
+        }
+      ]
+    },
+    {
+      "type": "signature_table",
+      "key": "sign_in",
+      "title": "Safety Meeting / Training Sign In Sheet",
+      "min_rows": 8,
+      "allow_add": true,
+      "columns": [
+        {
+          "key": "instructor_worker_name",
+          "label": "Instructor / Worker Name",
+          "input": "text"
+        },
+        {
+          "key": "signature",
+          "label": "Signature",
+          "input": "signature"
+        }
+      ]
+    }
+  ]
+}

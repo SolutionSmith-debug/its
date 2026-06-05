@@ -1,0 +1,65 @@
+{
+  "form_code": "toolbox-talk-hard-hat-v1",
+  "parent_form_code": "toolbox-talk",
+  "form_name": "Toolbox Talk — Hard Hat Safety",
+  "variant_label": "Hard Hat Safety",
+  "version": 1,
+  "archetype": "content_signin",
+  "source_pdf": "Hard-Hat-Safety_TBT.pdf",
+  "branding": {
+    "logo": true,
+    "title": "5-MINUTE SAFETY TALK"
+  },
+  "sections": [
+    {
+      "type": "content_blocks",
+      "key": "topic_content",
+      "title": "Hard Hats and Overhead Safety",
+      "source_pdf": "Hard-Hat-Safety_TBT.pdf",
+      "blocks": [
+        {
+          "body": "5-Minute Safety Talk by OSHA Pros"
+        },
+        {
+          "heading": "Hard Hats and Overhead Safety",
+          "body": "While working in an environment in which objects can be knocked down on your cranium, the best working commodity you will have is a hard-hat. Being made from high-pressure-molded plastic, the hats are durable against not just impact but also liquids, hazardous oils, and even acids and electrical contact.\n\nHard-hats use an internal suspension structure that absorbs the shock from objects coming into contact with your head. A hard hat has a built-in suspension system that acts as a shock absorber to cushion a blow. Even in instances where the hat is damaged by an object, the shock-absorption still reduces the collision. However, as great as hard hats are, they need consistent upkeep in order to provide quality hazard-prevention."
+        },
+        {
+          "heading": "Keep Spare Parts for Your Hard Hat",
+          "body": "The external covering of the hat is held up by a cable, which is secured to a headband. The band ensures that the external part of the hat stays away from your skull in case you’re hit by something. Since both the cradle and the headband are essential to injury prevention, you should check to make sure they are not worn out or detached. Many organizations keep a stock of extra hardhat parts solely for this reason."
+        },
+        {
+          "heading": "Caring for Your Hard Hat",
+          "body": "If the shell is fissured or damaged do not try and fix it. Just ask for a replacement shell. Don’t try and “modify” your hard hat because the airflow is not to your liking. This severely reduces the external part of the hat’s capability for protection.\n\nClean the hard-hat once a month. Soak it in hot soap-water and then rinse it off. For the pieces besides the shell you can steam clean. If you do not wash these parts they will rot from dirt and sweat."
+        },
+        {
+          "heading": "Add Extra Protection",
+          "body": "There are several accessories that can come with the hats. For instance, if you are working a traffic nightshift a covering with good reflection can prevent against getting hit by an automobile. When exposed to strong gusts of wind it is recommended you get a strap and a visor."
+        },
+        {
+          "heading": "Wear It Right",
+          "body": "The suspension qualities of the hat are the primary thing protecting you, so it is important that you do not toggle with the natural settings and not wear a hood beneath the hat. Invest in or request from your supervisor a cold-weather liner if you are too cold. .\nThe same goes for keeping your gloves in this space. It should remain entirely spacious."
+        }
+      ]
+    },
+    {
+      "type": "signature_table",
+      "key": "sign_in",
+      "title": "Safety Meeting / Training Sign In Sheet",
+      "min_rows": 8,
+      "allow_add": true,
+      "columns": [
+        {
+          "key": "instructor_worker_name",
+          "label": "Instructor / Worker Name",
+          "input": "text"
+        },
+        {
+          "key": "signature",
+          "label": "Signature",
+          "input": "signature"
+        }
+      ]
+    }
+  ]
+}
