@@ -8,3 +8,9 @@
 #   wrangler secret put SESSION_SIGNING_SECRET
 
 SESSION_SIGNING_SECRET="replace-with-output-of-openssl-rand-base64-48"
+
+# Phase 5 transport (pull model). The Mac-side portal_poll daemon mirrors these
+# into the macOS Keychain (ITS_PORTAL_HMAC_SECRET / ITS_PORTAL_INTERNAL_TOKEN) so
+# both sides share the same secret. In a DEPLOYED Worker: `wrangler secret put …`.
+HMAC_PAYLOAD_SECRET="replace-with-output-of-openssl-rand-base64-48"
+PORTAL_INTERNAL_API_TOKEN="replace-with-output-of-openssl-rand-base64-48"

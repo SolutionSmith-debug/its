@@ -1570,3 +1570,25 @@ The parent/variant mechanism is built (ITS_Forms_Catalog `Parent Form` + `Varian
 **Revisit when:** PM identifies a job with site-specific JHA requirements.
 
 Surfaced: 2026-06-05 Safety Portal Phase 4 PR 1 session (PR #164). Related: `safety_portal/forms/meta-schema.json` `variantOf`, ITS_Forms_Catalog `Parent Form`/`Variant Tag` columns.
+
+## [OPEN] Worker-side send-gate enforcement (the TS Worker is outside the Python AST capability-gate)
+
+**What:** `tests/test_capability_gating.py` enforces Invariant 1 (no send capability on
+generation scripts; no AI on send scripts) by AST-scanning Python under `shared/` +
+`safety_reports/`. It does NOT reach the TypeScript Cloudflare Worker
+(`safety_portal/worker/`). As of Phase 5 PR 2 the Worker holds the HMAC signing secret +
+the internal bearer token, so it is no longer trivially "send-free by binding-absence" —
+its send-free posture rests on code review + the module docstring only. The **pull model**
+keeps the Worker send-free by design (it serves a queue + accepts a receipt; it never
+initiates outbound), but nothing structurally PREVENTS a future Worker edit from acquiring
+an outbound `fetch()` to an external host.
+
+**Fix (when the Worker surface grows):** add a CI grep / ESLint rule forbidding `fetch(` in
+`safety_portal/worker/` except to an allowlist (the ASSETS binding), as the TS-side
+equivalent of `test_capability_gating.py`. Surfaced by `ops-stds-enforcer` (W2).
+
+**Tag:** `safety-portal`, `security`, `invariant-1`, `phase-5`, `medium`.
+
+**Revisit when:** the Worker gains any new outbound-capable code path, or at the deploy hardening pass.
+
+Surfaced: 2026-06-05 Safety Portal Phase 5 PR 2 (transport queue).

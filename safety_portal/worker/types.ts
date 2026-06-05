@@ -11,6 +11,18 @@ export interface Env {
   ASSETS: Fetcher;
   /** HMAC key for signing session cookies. Workers Secret / .dev.vars — never committed. */
   SESSION_SIGNING_SECRET: string;
+  /**
+   * HMAC-SHA256 key the Worker signs each submission with at /api/submit (Phase 5
+   * pull model). The Mac-side portal_poll daemon verifies it (mirrored into the
+   * macOS Keychain as ITS_PORTAL_HMAC_SECRET). Workers Secret / .dev.vars — never committed.
+   */
+  HMAC_PAYLOAD_SECRET: string;
+  /**
+   * Bearer token the Mac-side portal_poll daemon presents to /api/internal/* (the
+   * queue drain + the receipt). Mirrored into the Keychain as ITS_PORTAL_INTERNAL_TOKEN.
+   * Workers Secret / .dev.vars — never committed.
+   */
+  PORTAL_INTERNAL_API_TOKEN: string;
 }
 
 /** Claims signed (NOT encrypted) into the session cookie. Keep minimal — readable by the holder. */
