@@ -26,6 +26,9 @@ dependencies = [
     # to parse YAML frontmatter in markdown docs. Transitively pulled in
     # locally by other deps but not guaranteed; pin explicitly for CI.
     "pyyaml>=6.0",
+    # Validates safety_portal/forms/*.json against forms/meta-schema.json — the
+    # single source of truth both renderers (TS display + Python PDF) consume.
+    "jsonschema>=4.0",
 ]
 
 [project.optional-dependencies]
@@ -36,6 +39,7 @@ dev = [
     "ruff>=0.5.0",
     "mypy>=1.10",
     "types-requests>=2.32",
+    "types-jsonschema>=4.0",
 ]
 
 [tool.setuptools]

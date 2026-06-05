@@ -1,0 +1,128 @@
+{
+  "form_code": "equipment-telehandler-v1",
+  "parent_form_code": "equipment-preinspection",
+  "form_name": "Equipment Pre-Inspection — Telehandler / Rough-Terrain Forklift",
+  "variant_label": "Telehandler/Forklift",
+  "version": 1,
+  "archetype": "grouped_checklist",
+  "source_pdf": "blank_forklift-rough-terrain-pre-use-inspection-form.pdf",
+  "branding": { "logo": true, "title": "Telehandler / Rough-Terrain Forklift Pre-Use Inspection" },
+  "sections": [
+    {
+      "type": "header",
+      "fields": [
+        { "key": "operator", "label": "Operator", "input": "text", "required": true },
+        { "key": "make_model", "label": "Make & Model", "input": "text" },
+        { "key": "company", "label": "Company", "input": "text" },
+        { "key": "hour_meter", "label": "Hour Meter Reading", "input": "number" },
+        { "key": "location", "label": "Location", "input": "text" },
+        { "key": "work_date", "label": "Date", "input": "date", "required": true },
+        { "key": "unit_no", "label": "Unit No.", "input": "text" }
+      ]
+    },
+    {
+      "type": "checklist",
+      "key": "inspection",
+      "groups": [
+        {
+          "key": "power_off", "label": "POWER OFF CHECKS", "scale": ["OK", "NO", "N/A"], "comment_per_item": false,
+          "items": [
+            { "key": "po_1", "label": "Wheels and Tires" },
+            { "key": "po_2", "label": "Lights/Strobes" },
+            { "key": "po_3", "label": "Mirrors/Visibility aids" },
+            { "key": "po_4", "label": "Engine/Engine compartment:" },
+            { "key": "po_4a", "label": "Belts/Hoses" },
+            { "key": "po_4b", "label": "Cables/Wires" },
+            { "key": "po_4c", "label": "Debris" },
+            { "key": "po_5", "label": "Battery/Batteries:" },
+            { "key": "po_5a", "label": "Terminals tight" },
+            { "key": "po_5b", "label": "Clean/Dry/Secure" },
+            { "key": "po_6", "label": "Hydraulics:" },
+            { "key": "po_6a", "label": "Cylinders/Rods" },
+            { "key": "po_6b", "label": "Hoses/Lines/Fittings" },
+            { "key": "po_7", "label": "Fluids:" },
+            { "key": "po_7a", "label": "Engine oil — Level / Leaks" },
+            { "key": "po_7b", "label": "Engine coolant — Level / Leaks" },
+            { "key": "po_7c", "label": "Hydraulic oil — Level / Leaks" },
+            { "key": "po_7d", "label": "Fuel — Level / Leaks" },
+            { "key": "po_8", "label": "Data/Capacity Plate/Load Charts" },
+            { "key": "po_9", "label": "Windows/Glass/Doors" },
+            { "key": "po_10", "label": "Lifting Attachment(s)" },
+            { "key": "po_11", "label": "Counterweight/Counterweight bolt(s)" },
+            { "key": "po_12", "label": "Hood/Covers/Panels" },
+            { "key": "po_13", "label": "Air filter indicator" },
+            { "key": "po_14", "label": "Boom Sections – damage/wear pads" },
+            { "key": "po_15", "label": "Boom Angle Indicator-free movement" },
+            { "key": "po_16", "label": "ROPS/Cab" },
+            { "key": "po_17", "label": "Frame level indicator" },
+            { "key": "po_18", "label": "Seatbelt" },
+            { "key": "po_other_1", "label": "Other:", "kind": "text" },
+            { "key": "po_other_2", "label": "Other:", "kind": "text" },
+            { "key": "po_other_3", "label": "Other:", "kind": "text" },
+            { "key": "po_other_4", "label": "Other:", "kind": "text" }
+          ]
+        },
+        {
+          "key": "power_on", "label": "POWER ON CHECKS", "scale": ["OK", "NO", "N/A"], "comment_per_item": false,
+          "items": [
+            { "key": "pn_20", "label": "Unit starts and runs properly" },
+            { "key": "pn_21", "label": "Instruments/Gauges" },
+            { "key": "pn_22", "label": "Warning lights/audible alarms" },
+            { "key": "pn_23", "label": "Fuel level" },
+            { "key": "pn_24", "label": "Horn/audible warning device(s)" },
+            { "key": "pn_25", "label": "Function controls:" },
+            { "key": "pn_25a", "label": "Boom & carriage – raise/lower/tilt/extend/retract" },
+            { "key": "pn_25b", "label": "Lifting attachment – proper movement" },
+            { "key": "pn_25c", "label": "Drive – forward/reverse" },
+            { "key": "pn_25d", "label": "Steer – left/right" },
+            { "key": "pn_25e", "label": "Frame level" },
+            { "key": "pn_25f", "label": "Outriggers" },
+            { "key": "pn_26", "label": "Braking:" },
+            { "key": "pn_26a", "label": "Service/De-clutch" },
+            { "key": "pn_26b", "label": "Parking" },
+            { "key": "pn_other_1", "label": "Other:", "kind": "text" },
+            { "key": "pn_other_2", "label": "Other:", "kind": "text" }
+          ]
+        },
+        {
+          "key": "general", "label": "GENERAL", "scale": ["OK", "NO", "N/A"], "comment_per_item": false,
+          "items": [
+            { "key": "g_28", "label": "Housekeeping" },
+            { "key": "g_29", "label": "Manufacturer's operating manuals" },
+            { "key": "g_30", "label": "Decals/Warnings/Placards" },
+            { "key": "g_31", "label": "Misc. parts – loose/missing/broken" }
+          ]
+        },
+        {
+          "key": "workplace", "label": "WORKPLACE INSPECTION", "scale": ["OK", "NO", "N/A"], "comment_per_item": false,
+          "items": [
+            { "key": "w_32", "label": "Drop-offs or holes" },
+            { "key": "w_33", "label": "Bumps and floor/ground obstructions" },
+            { "key": "w_34", "label": "Debris" },
+            { "key": "w_35", "label": "Overhead obstructions" },
+            { "key": "w_36", "label": "Energized power lines" },
+            { "key": "w_37", "label": "Hazardous locations" },
+            { "key": "w_38", "label": "Ground surface and support conditions" },
+            { "key": "w_39", "label": "Pedestrian/vehicle traffic" },
+            { "key": "w_40", "label": "Wind and weather conditions" },
+            { "key": "w_41", "label": "Other possible hazards" }
+          ]
+        }
+      ]
+    },
+    { "type": "freeform", "key": "comments", "label": "COMMENTS", "input": "textarea" },
+    {
+      "type": "header",
+      "title": "Sign-off",
+      "fields": [
+        { "key": "operator_initials", "label": "Operator's initials", "input": "text" },
+        { "key": "alt_operator_initials", "label": "Alternative operator's initials", "input": "text" }
+      ]
+    },
+    {
+      "type": "static_text",
+      "text": "Report any problems found to your supervisor/employer. ALWAYS lock/tag-out unsafe equipment.",
+      "emphasis": "legal"
+    }
+  ]
+}

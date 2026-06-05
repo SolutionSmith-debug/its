@@ -1,0 +1,65 @@
+{
+  "form_code": "toolbox-talk-electrical-v1",
+  "parent_form_code": "toolbox-talk",
+  "form_name": "Toolbox Talk — Electrical Safety",
+  "variant_label": "Electrical Safety",
+  "version": 1,
+  "archetype": "content_signin",
+  "source_pdf": "Electrical-Safety_TBT.pdf",
+  "branding": {
+    "logo": true,
+    "title": "5-MINUTE SAFETY TALK"
+  },
+  "sections": [
+    {
+      "type": "content_blocks",
+      "key": "topic_content",
+      "title": "Watch Out For Those Electrical Arcs!",
+      "source_pdf": "Electrical-Safety_TBT.pdf",
+      "blocks": [
+        {
+          "body": "5-MINUTE SAFETY TALK by OSHA Pros"
+        },
+        {
+          "heading": "Intro",
+          "body": "The potential danger of getting shocked isn't the only peril when working in an environment with electrical devices. Arcs are miniscule, spark-like upsurges of voltage that occur when a current's flow is disrupted, such as in the occasion of a short circuit. Below is information on how hazardous arcs can be and how to avoid them."
+        },
+        {
+          "heading": "Arc Hazards",
+          "body": "Arcs take place when there has been damage to cord-insulation, bad wiring, or short-circuit. When the current is strong enough, the resulting arc is known to be responsible for shocking, burning, and even in some ignition of a fire. If you work in a place with volatile gases, mists, or other small fibers, even the smallest of arcs can result in extremely severe explosions."
+        },
+        {
+          "heading": "Arc Prevention",
+          "body": "Insulation, the covering for electrical-wires and what is responsible for encasing the live wires on certain apparatuses, allows the flow of currents to be blocked out, protecting against arcs. In order to be efficacious, however, the insulation has to be correct for the electrical current and should always be maintained and kept away from moisture. Check the insulation every time prior to each use. You should always ensure that power cords are safe and undamaged, but in the case that they are, be sure to replace them. Two ways to ensure safety are to keep your feet off of the cords and to not let them near sharp edges"
+        },
+        {
+          "heading": "Working Wet",
+          "body": "Dealing with electrical equipment in moist and wet environments can be a cause of extreme hazard. Water charges the current of electricity and lessens the efficacy of insulation. If utilizing the electrical apparatus in wet conditions is a must, use double-insulation and a GFCI (short for: Ground Fault Circuit Interrupter). Do not let the cord come into contact with the water and make sure you are dry when handling the equipment."
+        },
+        {
+          "heading": "Practice Basic Safety",
+          "body": "General practice of precautionary techniques will assist in preventing the occurrence of arcs and lessen the threat of physical harm if they happen by chance. Check the equipment for damage and report as soon as you notice any abnormalities or unstable wiring connections. Work with only grounded accessories and tools and install them only into grounded electrical outlets. If you treat electricity cautiously, your work environment will become much less dangerous for you and those around."
+        }
+      ]
+    },
+    {
+      "type": "signature_table",
+      "key": "sign_in",
+      "title": "Safety Meeting / Training Sign In Sheet",
+      "min_rows": 8,
+      "allow_add": true,
+      "columns": [
+        {
+          "key": "instructor_worker_name",
+          "label": "Instructor / Worker Name",
+          "input": "text"
+        },
+        {
+          "key": "signature",
+          "label": "Signature",
+          "input": "signature"
+        }
+      ]
+    }
+  ]
+}
