@@ -127,11 +127,15 @@ DAEMON_HEALTH_COLUMNS: dict[str, int] = {
 
 # ---- Human-review sheets -------------------------------------------------
 
-# DECOMMISSIONED 2026-06-05 — superseded by WSR_human_review (SHEET_WSR_HUMAN_REVIEW)
-# for the portal flow. STILL read/written by weekly_generate.py + weekly_send.py +
-# weekly_send_poll.py — do NOT delete this constant or the sheet until the
-# weekly_generate/weekly_send rewire-to-WSR_human_review lands (future PR; see tech_debt).
-SHEET_WPR_PENDING_REVIEW = 3096105695793028  # ITS — Human Review / 01 — Safety Reports / WPR_Pending_Review
+# DECOMMISSIONED 2026-06-05, fully repointed 2026-06-05 (PR4) — superseded by
+# WSR_human_review (SHEET_WSR_HUMAN_REVIEW) for the portal flow. NO live RUNTIME code
+# references this any more: weekly_generate (PR3), weekly_send + weekly_send_poll +
+# watchdog Check I (PR4) all read/write WSR_human_review now. The only remaining refs
+# are operator smoke scripts (smoke_test_watchdog_catchup), the picklist_validation
+# registry entry, and a couple of tests — kept until the operator deletes the WPR
+# SHEET, after which this constant + the picklist entry are a trivial follow-up
+# removal. See docs/tech_debt.md.
+SHEET_WPR_PENDING_REVIEW = 3096105695793028  # ITS — Human Review / 01 — Safety Reports / WPR_Pending_Review (decommissioned)
 SHEET_TIME_OFF           = 1506418040459140  # ITS — Human Review / 06 — Personnel / ITS_Time_Off
 
 # ---- Master DB sheets (ITS — Operations / Master Databases) -------------

@@ -1687,12 +1687,12 @@ def test_catchup_empty_chain_returns_warn(
     mock_alert_critical.assert_not_called()
 
 
-def test_wpr_rows_exist_failsoft_returns_false(mock_get_rows, mock_log):
+def test_wsr_rows_exist_failsoft_returns_false(mock_get_rows, mock_log):
     """A Smartsheet read failure during evaluation fails soft → False (the
     decision falls back to the marker signal) and logs a WARN."""
     mock_get_rows.side_effect = SmartsheetError("boom")
 
-    assert watchdog._wpr_rows_exist_for_week(_TARGET_MONDAY) is False
+    assert watchdog._wsr_rows_exist_for_week(_TARGET_MONDAY) is False
 
     severities = [c.args[0] for c in mock_log.call_args_list]
     assert Severity.WARN in severities

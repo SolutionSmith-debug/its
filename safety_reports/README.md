@@ -382,3 +382,39 @@ Recipient TO/CC display resolved from `ITS_Active_Jobs`, Send Status PENDING.
 folders or sheet IDs (config/topology), any code change. The compile itself is
 generation-only (no external send) — the human-approved send is the separate
 `weekly_send` process.
+
+## Weekly send (`weekly_send.py` + `weekly_send_poll.py`) — Phase 5c
+
+The send half of the External Send Gate (Invariant 1) for the portal flow, repointed
+WPR_Pending_Review → **WSR_human_review**. `weekly_send_poll` discovers WSR rows with
+`Send Now` (immediate) OR `Approve for Scheduled Send` (the Monday-≥07:00-Pacific
+batch) checked, runs the **F22** approval-attestation gate on the driving checkbox,
+stamps the verified approver (Approved By/At), and dispatches `weekly_send.send_one_row`.
+
+`send_one_row` resolves recipients **at send time from `ITS_Active_Jobs`** (TO = the
+job's safety-reports contact; CC = the non-empty CC 1–5; stakeholder NOT on the
+envelope) — NOT the WSR display columns. Body = the WSR `Email Body` (the reviewer's
+edits are the source of truth). The compiled Box PDF is attached. **HELD** (refuse,
+no send) on empty/unknown TO or a missing Compiled PDF; **FAILED** + retry on a
+transient Graph/Box error.
+
+> **NOT live-verified.** Transport stays on Graph (the Resend-vs-Graph decision is
+> separate). Scheduled cadence (`Approve for Scheduled Send`) is the
+> `safety_reports.weekly_send.scheduled_send_local` ITS_Config window (default
+> `MON 07:00`, Pacific, DST-aware). `Send Now` fires on the next poll cycle.
+
+### §43 Successor-Operator remediation runbook
+
+| Symptom | Likely cause | Low-class repair |
+|---|---|---|
+| A WSR row stays PENDING after approval | `Approve for Scheduled Send` is checked but it's not yet the Monday-07:00 window | Expected — it sends at the next Monday ≥07:00 Pacific cycle. For immediate send, check `Send Now` instead. |
+| WSR row went **HELD** | No Compiled PDF, or the job's safety-reports contact (TO) is empty/unknown | The Notes cell carries the reason. Missing PDF → check `Compile Now` on the week sheet's Rollup row to recompile. Empty TO → set the Safety Reports Contact on the job in `ITS_Active_Jobs`, then re-check `Send Now`. |
+| `approval_unverified` CRITICAL/WARN | The approve checkbox was flipped by an actor NOT in `safety_reports.authorized_approvers` (CRITICAL), the allowlist is empty (CRITICAL), or a benign un-approve race (WARN) | UNAUTHORIZED/EMPTY → **escalate to Seth** (secrets/auth + send-gate = high-class; do NOT add approvers yourself). Benign race → no action. |
+| `weekly_send.graph_auth_failed` CRITICAL | Graph send credentials rejected | **Escalate to Seth** (secrets/auth = high-class). |
+| `weekly_send.retries_exhausted` CRITICAL | A row hit MAX_SEND_RETRIES on transient Graph errors | Investigate the `[LAST_SEND_ERROR: …]` Notes tag; if transient is resolved, clear the `[SEND_RETRY_COUNT: N]` tag (low-class) to re-arm, else **escalate to Seth**. |
+| `weekly_send.post_send_row_update_failed` CRITICAL | The email sent but the row didn't flip to SENT (DOUBLE-SEND RISK) | Manually set the WSR row's Send Status = SENT to prevent a re-send (low-class, time-sensitive). |
+
+**Escalate-to-Seth boundary (high-class):** the **External Send Gate** itself, the
+authorized-approver allowlist / Graph secrets (auth), doctrine, code. The
+authorized-approver set is config-driven but is part of the send-gate trust boundary
+— co-resolve approver changes with Seth.

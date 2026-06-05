@@ -1,9 +1,11 @@
 """Safety Reports weekly send polling daemon — launchd-driven dispatcher.
 
-Discovers approved `WPR_Pending_Review` rows and dispatches each to
-`safety_reports.weekly_send.send_one_row`. The poller has zero send
-capability of its own; it is an iterator + dispatcher. The handler is
-the only place `graph_client.send_mail` is called.
+Phase-5: discovers `WSR_human_review` rows with `Send Now` (immediate) OR
+`Approve for Scheduled Send` (the Monday-≥07:00-Pacific batch) checked, runs the
+F22 approval-attestation gate on the driving checkbox, stamps the verified approver
+(Approved By/At), and dispatches each to `safety_reports.weekly_send.send_one_row`.
+The poller has zero send capability of its own; it is an iterator + dispatcher. The
+handler is the only place `graph_client.send_mail` is called.
 
 launchd schedule
 ----------------
@@ -22,19 +24,22 @@ Per-cycle behavior
   2. fcntl file lock at `~/its/state/weekly_send.lock` — skip-if-held.
      Prevents launchd-overlap collisions if a previous cycle took longer
      than the interval.
-  3. Read `WPR_Pending_Review` via `smartsheet_client.get_rows`. Filter
+  3. Read `WSR_human_review` via `smartsheet_client.get_rows`. Filter
      client-side to rows that need send-attention:
-       - Approved for Send = True
+       - `Send Now` = True OR `Approve for Scheduled Send` = True
        - Send Status in (PENDING, FAILED) — terminally-failed rows
          (Send Retry Count >= MAX_SEND_RETRIES, encoded in Notes per
          the schema-degradation contract in weekly_send.py) are
          filtered out.
-  4. For each candidate row: first run the F22 approval-attestation gate
-     (`approval_verification.verify_approval`) — confirm the approval
-     cell's current value was set by an authorized actor per Smartsheet
-     cell history. A non-verified verdict BLOCKS that row (fail-closed)
-     with a forensic `approval_unverified` event and the cycle moves on;
-     other rows still dispatch. Verified rows invoke
+  4. For each candidate row: pick the DRIVING approval column — `Send Now`
+     dispatches immediately; `Approve for Scheduled Send` dispatches only
+     inside the scheduled window (default Monday ≥07:00 Pacific). Then run
+     the F22 approval-attestation gate (`approval_verification.verify_approval`)
+     on that column — confirm the checkbox's current value was set by an
+     authorized actor per Smartsheet cell history. A non-verified verdict
+     BLOCKS that row (fail-closed) with a forensic `approval_unverified`
+     event; other rows still dispatch. Verified rows are stamped with the
+     approver identity (Approved By/At) and invoke
      `weekly_send.send_one_row(row_id)`. The handler returns a `SendResult`
      — the poller logs the outcome and continues. SmartsheetError raised by
      the handler caught per-row; the cycle continues to the next row.
@@ -85,11 +90,12 @@ import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, time
 from pathlib import Path
 from typing import Any, Literal
+from zoneinfo import ZoneInfo
 
-from safety_reports import weekly_send
+from safety_reports import weekly_send, wsr_review
 from shared import (
     approval_verification,
     circuit_breaker,
@@ -111,10 +117,20 @@ CFG_POLL_INTERVAL = "safety_reports.weekly_send.poll_interval_seconds"
 # F22 — approval-attestation gate. The authorized-approver allowlist lives in
 # ITS_Config (config-driven so it can be swapped at the evergreenmirror.com →
 # evergreenrenewables.com cutover without a code change — see
-# docs/operations/cutover_checklist.md). APPROVAL_COLUMN is the same CHECKBOX
-# the dispatch filter reads via `bool(row.get("Approved for Send"))`.
+# docs/operations/cutover_checklist.md). Phase-5: WSR has TWO human approval
+# CHECKBOXes — `Approve for Scheduled Send` (the Monday batch) and `Send Now`
+# (immediate, out-of-band). The F22 gate verifies the actor on whichever drove
+# the dispatch.
 CFG_AUTHORIZED_APPROVERS = "safety_reports.authorized_approvers"
-APPROVAL_COLUMN = "Approved for Send"
+APPROVAL_COLUMN_SCHEDULED = wsr_review.COL_APPROVE_SCHEDULED  # "Approve for Scheduled Send"
+APPROVAL_COLUMN_SEND_NOW = wsr_review.COL_SEND_NOW            # "Send Now"
+
+# Scheduled send window — `Approve for Scheduled Send` rows dispatch only when the
+# poll cycle runs on/after this weekday + local time (default Monday 07:00 Pacific,
+# ITS_Config-overridable). `Send Now` rows dispatch on every cycle.
+CFG_SCHEDULED_SEND_LOCAL = "safety_reports.weekly_send.scheduled_send_local"
+DEFAULT_SCHEDULED_SEND_LOCAL = "MON 07:00"
+SEND_TZ = "America/Los_Angeles"  # everything Pacific
 
 DEFAULT_POLLING_ENABLED = True
 DEFAULT_POLL_INTERVAL = 900  # 15 minutes
@@ -139,7 +155,7 @@ DAEMON_NAME = "safety_reports.weekly_send_poll"
 # of the helper bodies so the verbatim-duplication invariant (and the future
 # `shared/heartbeat.py` extraction) stays clean.
 _REGISTRATION_INTERVAL_SECONDS = DEFAULT_POLL_INTERVAL  # 900s = 15-min cadence
-_REGISTRATION_SOURCE_ID = f"WPR_Pending_Review ({sheet_ids.SHEET_WPR_PENDING_REVIEW})"
+_REGISTRATION_SOURCE_ID = f"WSR_human_review ({sheet_ids.SHEET_WSR_HUMAN_REVIEW})"
 
 # Watchdog Check C marker — matches `TRACKED_JOBS` entry in scripts/watchdog.py.
 WATCHDOG_MARKER_DIR = Path.home() / "its" / ".watchdog"
@@ -552,31 +568,52 @@ def _write_watchdog_marker() -> None:
 
 
 def _filter_dispatch_candidates(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Return rows that need send-attention this cycle.
+    """Return WSR rows that need send-attention this cycle.
 
     Filter rules (all must be true):
-      - Approved for Send is truthy.
-      - Send Status in {PENDING, FAILED}.
-      - If Send Status == FAILED, Notes-encoded retry count <
-        MAX_SEND_RETRIES (skip terminally-failed rows — they need human
-        resolution).
+      - `Send Now` OR `Approve for Scheduled Send` is checked.
+      - Send Status in {PENDING, FAILED} (SENT + HELD excluded).
+      - If Send Status == FAILED, Notes-encoded retry count < MAX_SEND_RETRIES
+        (terminally-failed rows need human resolution).
 
-    The handler still re-checks the state on each dispatch (race-tolerant);
-    this filter is just to reduce the dispatch volume per cycle.
+    The dispatch loop decides scheduled-vs-now TIMING + runs the F22 gate per row;
+    this filter just reduces the per-cycle volume.
     """
     out: list[dict[str, Any]] = []
     for row in rows:
-        if not bool(row.get("Approved for Send")):
+        if not (bool(row.get(APPROVAL_COLUMN_SEND_NOW)) or bool(row.get(APPROVAL_COLUMN_SCHEDULED))):
             continue
-        status = row.get("Send Status") or weekly_send.STATUS_PENDING
+        status = row.get(wsr_review.COL_SEND_STATUS) or weekly_send.STATUS_PENDING
         if status not in DISPATCH_STATUSES:
             continue
         if status == weekly_send.STATUS_FAILED:
-            retry_count = weekly_send._parse_retry_count(row.get("Notes"))
-            if retry_count >= weekly_send.MAX_SEND_RETRIES:
+            if weekly_send._parse_retry_count(row.get(wsr_review.COL_NOTES)) >= weekly_send.MAX_SEND_RETRIES:
                 continue
         out.append(row)
     return out
+
+
+_WEEKDAY_MAP = {"MON": 0, "TUE": 1, "WED": 2, "THU": 3, "FRI": 4, "SAT": 5, "SUN": 6}
+
+
+def _parse_scheduled_spec(spec: str) -> tuple[int, time]:
+    """Parse `MON 07:00` → (0, time(7, 0)). Defaults on parse failure."""
+    try:
+        wd, hhmm = spec.strip().split()
+        h, m = hhmm.split(":")
+        return _WEEKDAY_MAP[wd.upper()], time(int(h), int(m))
+    except (KeyError, ValueError):
+        return 0, time(7, 0)
+
+
+def _is_scheduled_window(now_local: datetime, spec: str) -> bool:
+    """True iff `now_local` is on/after the configured weekday + time (e.g. Mon ≥07:00).
+
+    `Approve for Scheduled Send` rows dispatch only inside this window; `Send Now`
+    rows ignore it. A scheduled row stays PENDING until its first Monday-≥07:00 cycle
+    (idempotent thereafter — Send Status flips to SENT and the filter drops it)."""
+    weekday, tod = _parse_scheduled_spec(spec)
+    return now_local.weekday() == weekday and now_local.timetz().replace(tzinfo=None) >= tod
 
 
 # ---- F22 approval-attestation handling ----------------------------------
@@ -637,6 +674,32 @@ def _handle_unverified(
     # The log message already carries actor + detail for the page body.
 
 
+def _stamp_approval(row_id: int, verdict: approval_verification.ApprovalVerdict) -> None:
+    """Stamp the verified approver identity onto the WSR row (Approved By/At).
+
+    Best-effort AUDIT write — a stamp failure must NOT block a send the F22 gate
+    already verified (the approval is real regardless of whether the stamp lands).
+    Approved By takes the actor email; Approved At takes the deciding-event date
+    (the DATE column wants YYYY-MM-DD), falling back to today (Pacific)."""
+    approved_at = (verdict.modified_at or datetime.now(ZoneInfo(SEND_TZ)).isoformat())[:10]
+    try:
+        smartsheet_client.update_rows(
+            sheet_ids.SHEET_WSR_HUMAN_REVIEW,
+            [{
+                "_row_id": row_id,
+                wsr_review.COL_APPROVED_BY: verdict.actor or "",
+                wsr_review.COL_APPROVED_AT: approved_at,
+            }],
+        )
+    except Exception as exc:  # noqa: BLE001 — the stamp is best-effort AUDIT; it must
+        # NEVER block a send the F22 gate already verified (any failure → WARN + proceed).
+        error_log.log(
+            Severity.WARN, SCRIPT_NAME,
+            f"approval stamp failed for row_id={row_id} (non-fatal; send proceeds): {exc!r}",
+            error_code="weekly_send_poll.stamp_failed",
+        )
+
+
 # ---- Public API ----------------------------------------------------------
 
 
@@ -668,12 +731,12 @@ def poll_once() -> PollStats:
 def _poll_inside_lock() -> PollStats:
     """Body of poll_once running under the file lock."""
     try:
-        rows = smartsheet_client.get_rows(sheet_ids.SHEET_WPR_PENDING_REVIEW)
+        rows = smartsheet_client.get_rows(sheet_ids.SHEET_WSR_HUMAN_REVIEW)
     except smartsheet_client.SmartsheetError as exc:
         error_log.log(
             Severity.ERROR,
             SCRIPT_NAME,
-            f"failed to read WPR_Pending_Review: {exc!r}",
+            f"failed to read WSR_human_review: {exc!r}",
             error_code="weekly_send_poll.read_failed",
         )
         # Still write watchdog marker so Check C doesn't fire on a transient
@@ -708,24 +771,40 @@ def _poll_inside_lock() -> PollStats:
         "blocked": 0,
     }
 
+    now_local = datetime.now(ZoneInfo(SEND_TZ))
+    scheduled_spec = _read_str_setting(CFG_SCHEDULED_SEND_LOCAL, DEFAULT_SCHEDULED_SEND_LOCAL)
+
     for row in candidates:
         row_id = row["_row_id"]
 
-        # F22: approval-attestation gate (fail-CLOSED). Verify the approval
-        # cell's current value was set by an authorized actor per Smartsheet
-        # cell history BEFORE handing the row to the send process. A
-        # non-verified verdict blocks THIS row only; other rows still
-        # dispatch.
+        # Pick the DRIVING approval column. `Send Now` (immediate) takes precedence;
+        # else `Approve for Scheduled Send`, but only inside the scheduled window
+        # (default Monday ≥07:00 Pacific) — otherwise the scheduled row waits.
+        if bool(row.get(APPROVAL_COLUMN_SEND_NOW)):
+            approval_column = APPROVAL_COLUMN_SEND_NOW
+        elif _is_scheduled_window(now_local, scheduled_spec):
+            approval_column = APPROVAL_COLUMN_SCHEDULED
+        else:
+            counters["skipped"] += 1  # approved-for-scheduled, not yet the window
+            continue
+
+        # F22: approval-attestation gate (fail-CLOSED) on the DRIVING column. Verify
+        # the checkbox's current value was set by an authorized actor per Smartsheet
+        # cell history BEFORE handing the row to the send process. A non-verified
+        # verdict blocks THIS row only; other rows still dispatch.
         verdict = approval_verification.verify_approval(
-            sheet_ids.SHEET_WPR_PENDING_REVIEW,
+            sheet_ids.SHEET_WSR_HUMAN_REVIEW,
             row_id,
-            APPROVAL_COLUMN,
+            approval_column,
             authorized_actors=authorized_actors,
         )
         if not verdict.verified:
             counters["blocked"] += 1
             _handle_unverified(row_id, verdict)
             continue
+
+        # Stamp the verified approver identity (Approved By/At) — best-effort audit.
+        _stamp_approval(row_id, verdict)
 
         counters["dispatched"] += 1
         try:

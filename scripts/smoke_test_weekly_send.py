@@ -50,15 +50,16 @@ def main() -> int:
         )
 
     # ---- Stage 2: ITS_Config readable ----------------------------------
-    stage(2, "ITS_Config keys (from_mailbox + poll_interval + send_deadline_local)")
+    stage(2, "ITS_Config keys (from_mailbox + poll_interval + scheduled_send_local)")
     from_mailbox = weekly_send._read_str_setting(
         weekly_send.CFG_FROM_MAILBOX, weekly_send.DEFAULT_FROM_MAILBOX
     )
     print(f"  OK — from_mailbox = {from_mailbox!r}")
-    deadline_spec = weekly_send._read_str_setting(
-        weekly_send.CFG_SEND_DEADLINE, weekly_send.DEFAULT_SEND_DEADLINE
+    scheduled_spec = weekly_send_poll._read_str_setting(
+        weekly_send_poll.CFG_SCHEDULED_SEND_LOCAL,
+        weekly_send_poll.DEFAULT_SCHEDULED_SEND_LOCAL,
     )
-    print(f"  OK — send_deadline_local = {deadline_spec!r}")
+    print(f"  OK — scheduled_send_local = {scheduled_spec!r}")
     poll_interval = weekly_send_poll._read_str_setting(
         weekly_send_poll.CFG_POLL_INTERVAL,
         str(weekly_send_poll.DEFAULT_POLL_INTERVAL),
@@ -77,24 +78,25 @@ def main() -> int:
         return 1
     print("  OK — Graph token acquired (creds in keychain + Entra reachable)")
 
-    # ---- Stage 4: WPR_Pending_Review schema check ----------------------
-    stage(4, "WPR_Pending_Review sheet reachable + expected columns present")
+    # ---- Stage 4: WSR_human_review schema check (Phase-5) ---------------
+    stage(4, "WSR_human_review sheet reachable + expected columns present")
     try:
-        rows = smartsheet_client.get_rows(sheet_ids.SHEET_WPR_PENDING_REVIEW)
+        from safety_reports import wsr_review
+        rows = smartsheet_client.get_rows(wsr_review.SHEET_ID)
     except Exception as exc:  # noqa: BLE001
         print(f"  FAIL — get_rows raised: {exc!r}")
         return 1
     expected = {
-        "Customer",
-        "Job",
-        "Week",
-        "Draft Body",
-        "Recipients",
-        "Approved for Send",
-        "Send Status",
-        "Sent At",
-        "Late Send",
-        "Notes",
+        wsr_review.COL_JOB_PROJECT,
+        wsr_review.COL_JOB_ID,
+        wsr_review.COL_WEEK_OF,
+        wsr_review.COL_COMPILED_PDF,
+        wsr_review.COL_EMAIL_BODY,
+        wsr_review.COL_APPROVE_SCHEDULED,
+        wsr_review.COL_SEND_NOW,
+        wsr_review.COL_SEND_STATUS,
+        wsr_review.COL_SENT_AT,
+        wsr_review.COL_NOTES,
     }
     if rows:
         present = set(rows[0].keys()) - {"_row_id"}

@@ -15,8 +15,9 @@ Invariants
 - Deny-by-default: a row missing Job ID or Project Name is skipped; a blank Active
   status is treated as not-Active.
 - Join key is the `Job ID` column (a Smartsheet AUTO_NUMBER per the Phase-3
-  decision; the former kebab key lives on as `Job Slug`). The lookup is agnostic to
-  the key format — it matches whatever string the `Job ID` cell holds.
+  decision). The former kebab `Job Slug` key is RETIRED (no consumer); the Smartsheet
+  column delete is operator-manual. The lookup is agnostic to the key format — it
+  matches whatever string the `Job ID` cell holds.
 - 60-second TTL cache at module scope (mirrors shared.project_routing, §33 family).
 
 Failure modes
@@ -90,7 +91,6 @@ class ActiveJob:
 
     job_id: str          # AUTO_NUMBER immutable key (e.g. "JOB-0001"); the join key
     project_name: str    # primary; portal dropdown display; == ITS_Project_Routing key
-    job_slug: str        # human-readable kebab (e.g. "bradley-1"); was the old key
     address: str
     stakeholder_name: str
     stakeholder_email: str
@@ -136,7 +136,6 @@ def _row_to_job(row: dict[str, Any]) -> ActiveJob | None:
     return ActiveJob(
         job_id=job_id,
         project_name=project_name,
-        job_slug=_cell(row, "Job Slug"),
         address=_cell(row, "Address"),
         stakeholder_name=_cell(row, "Stakeholder Name"),
         stakeholder_email=_cell(row, "Stakeholder Email"),

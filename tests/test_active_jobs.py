@@ -60,7 +60,6 @@ def test_get_job_resolves_by_autonumber_job_id(patch_rows):
     job = active_jobs.get_job("JOB-0001")
     assert job is not None
     assert job.project_name == "Bradley 1"
-    assert job.job_slug == "bradley-1"
     assert job.safety_reports_contact_email == "safety@bradley.example"
     assert job.is_active
     assert job.row_id == 11
