@@ -43,14 +43,9 @@
       "database_id": "00000000-0000-0000-0000-000000000000",
       "migrations_dir": "migrations"
     }
-  ],
-
-  // ── R2 (env.PDF_BUCKET). Provisioned to match topology §11; UNUSED until Phase 5
-  //    (generated-PDF storage). Create with `wrangler r2 bucket create ...`. ──
-  "r2_buckets": [
-    {
-      "binding": "PDF_BUCKET",
-      "bucket_name": "its-safety-portal-pdfs-validation"
-    }
   ]
+
+  // R2 removed 2026-06-05: unused under Box-as-System-of-Record + Option-B render.
+  // The Worker never holds a PDF — intake.py renders the submission PDF and stores it
+  // in Box; the Worker only signs + queues structured submission data in D1.
 }

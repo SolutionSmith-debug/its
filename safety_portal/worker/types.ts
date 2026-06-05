@@ -1,12 +1,13 @@
 // Cloudflare bindings + shared types for the Safety Portal Worker.
 // Bindings are declared in wrangler.jsonc; @cloudflare/workers-types supplies
-// the D1Database / R2Bucket / Fetcher globals.
+// the D1Database / Fetcher globals.
+//
+// No R2: under Box-as-System-of-Record + Option-B render the Worker never holds a
+// PDF (intake.py renders + stores it in Box). Removed 2026-06-05.
 
 export interface Env {
   /** D1 database. Phase 2: `users` table. Later phases: submissions + mirrors. */
   DB: D1Database;
-  /** R2 bucket for generated PDFs. Provisioned in Phase 2, first used in Phase 5. */
-  PDF_BUCKET: R2Bucket;
   /** Static-asset fetcher (the built SPA). Bound via assets.binding in wrangler.jsonc. */
   ASSETS: Fetcher;
   /** HMAC key for signing session cookies. Workers Secret / .dev.vars — never committed. */
