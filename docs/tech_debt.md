@@ -1526,3 +1526,49 @@ Surfaced: 2026-06-05 Safety Portal Phase 3 session (PR #160).
 **Revisit when:** building Phase 5 `weekly_send` recipient resolution.
 
 Surfaced: 2026-06-05 Safety Portal Phase 3 contacts amendment (ops-stds-enforcer W1).
+
+## Safety Portal Phase 4 PR 2 — TS display runtime [OPEN 2026-06-05]
+
+Generic definition-driven renderer in `safety_portal/spa/src/` for the 3 archetypes (rows+signatures, grouped-checklist, sectioned-assessment / visitor / content+signin). Replaces the hard-coded `src/pages/JhaStubPage.tsx` stub with a dynamic component driven by the form definition JSON and meta-schema. Required form controls: form-type + variant dropdowns (populated from ITS_Forms_Catalog parent/variant columns); multi-row SVG signature capture via `signature_pad`; amend/prefill from a prior submission; structured-data emit to the HMAC email shim on submit.
+
+**Tag:** `safety-portal`, `typescript`, `phase-4`.
+
+**Effort:** ~2–3 days (3 archetype renderers + dropdown wiring + amend prefill + structured emit).
+
+**Revisit when:** Phase 4 PR 2 session begins. Blocked on: meta-schema + 11 definitions (landed PR #164).
+
+Surfaced: 2026-06-05 Safety Portal Phase 4 PR 1 session (PR #164). Session log: `docs/session_logs/2026-06-05_safety-portal-phase4-pr1-forms-foundation.md`.
+
+## Safety Portal Phase 4 PR 3 — Python reportlab PDF renderer [OPEN 2026-06-05]
+
+Reads `safety_portal/forms/*.json` (the 11 form definitions) + a structured submission payload → renders a print-parity PDF (Evergreen header, table/checklist/section layout matching the physical PDFs, legal invariants in code, embedded SVG signatures). Deterministic — no AI step. Per-form parity tests. Invoked by Phase 5 intake (Option B render path); PDFs land in Box per the existing week-folder structure. Requires adding `reportlab` to `pyproject.toml` (one-line edit; CI installs via `pip install -e`; no lockfile used).
+
+**Tag:** `safety-portal`, `python`, `phase-4`, `reportlab`.
+
+**Effort:** ~2–3 days (11 form render paths + layout engine + parity tests).
+
+**Revisit when:** Phase 4 PR 3 session. Blocked on: Phase 4 PR 2 (structured-data shape confirmed by the TS renderer).
+
+Surfaced: 2026-06-05 Safety Portal Phase 4 PR 1 session (PR #164).
+
+## Safety Portal — toolbox talk header context missing from form definitions [OPEN 2026-06-05, low]
+
+The source Toolbox Talk PDFs have no operator header fields (the digital record gets job and work-date from the submission envelope; the sign-in section's first row serves as the instructor record). The 5 `toolbox-talk-*.json` definitions are faithful to the source PDFs and therefore contain no Presenter or Date-on-page field. If a Presenter/Date-on-page header field is wanted beyond what the envelope provides, it must be added explicitly to those definitions.
+
+**Tag:** `safety-portal`, `form-definitions`, `low`.
+
+**Effort:** trivial (add a field to the definition + update the catalog row).
+
+**Revisit when:** PM confirms whether a header field is wanted on the rendered PDF.
+
+Surfaced: 2026-06-05 Safety Portal Phase 4 PR 1 session (PR #164). Related: `safety_portal/forms/toolbox-talk-*.json`.
+
+## Safety Portal — job-specific JHA variant content deferred [OPEN 2026-06-05]
+
+The parent/variant mechanism is built (ITS_Forms_Catalog `Parent Form` + `Variant Tag` columns; meta-schema `variantOf` field in form definitions). Specific job-site JHA variants (e.g., `jha-bradley`) are added later as: (1) a new row in ITS_Forms_Catalog with `Parent Form = jha` + a `Variant Tag`; (2) a new `safety_portal/forms/jha-<variant>.json` definition inheriting/overriding the parent. No code change to the renderer — variant resolution is data-driven.
+
+**Tag:** `safety-portal`, `form-definitions`, `phase-4+`.
+
+**Revisit when:** PM identifies a job with site-specific JHA requirements.
+
+Surfaced: 2026-06-05 Safety Portal Phase 4 PR 1 session (PR #164). Related: `safety_portal/forms/meta-schema.json` `variantOf`, ITS_Forms_Catalog `Parent Form`/`Variant Tag` columns.
