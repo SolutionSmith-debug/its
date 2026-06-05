@@ -1438,3 +1438,81 @@ PR #158 added the `safety_portal/` TypeScript/Node tree. The existing GitHub Act
 **Revisit when:** next session touching `safety_portal/` — or proactively before Phase 3 portal hardening.
 
 Surfaced: 2026-06-04 Safety Portal Phase 2 session (PR #158).
+
+## ITS_Active_Jobs AUTO_NUMBER `Job ID` column — manual operator UI step pending [OPEN 2026-06-05]
+
+The Smartsheet REST API cannot create `AUTO_NUMBER` columns (verified: bare `type:AUTO_NUMBER` → `errorCode 1008`; UI-only type). The Phase 3 migration (PR #160) did the API-doable parts (4 contact columns + rename `Job ID`→`Job Slug`, freeing the title) and detects-or-instructs if the `Job ID` AUTO_NUMBER column is missing. Operator must add the `Job ID` AUTO_NUMBER column in the Smartsheet UI to complete the schema: prefix `JOB-`, 4-digit fill, start 1. `shared/active_jobs.py` reads it the moment it exists.
+
+**Required operator steps (Smartsheet UI):**
+1. Open ITS_Active_Jobs in the Smartsheet UI.
+2. Insert a new column named `Job ID`, type AUTO_NUMBER (System column).
+3. Set prefix `JOB-`, fill width 4, start 1.
+4. Confirm `shared/active_jobs.py::get_job_by_id()` resolves correctly on the next lookup.
+
+**Tag:** `safety-portal`, `smartsheet-api-constraint`, `data-gap`.
+
+**Revisit when:** operator has Smartsheet UI access at deploy time. Required before Job-ID-keyed portal queries work end-to-end.
+
+Surfaced: 2026-06-05 Safety Portal Phase 3 session (PR #160). Session log: `docs/session_logs/2026-06-05_safety-portal-phase3-job-model.md`.
+
+## "New Job" Smartsheet form on ITS_Active_Jobs — operator-UI creation pending [OPEN 2026-06-05]
+
+Smartsheet forms are UI-configured (not API-creatable). A "New Job" form on ITS_Active_Jobs is needed so office PM can add jobs without opening the sheet directly. Required fields: Project Name, Address, Stakeholder Name / Email / Phone (email required), Safety Reports Contact Email (required), Active. Job ID auto-fills from the AUTO_NUMBER column (off the form).
+
+**Required operator steps (Smartsheet UI):**
+1. Open ITS_Active_Jobs → Forms → Create New Form.
+2. Add and mark required fields per above.
+3. Set form title "New Job".
+4. Share form URL with office PM.
+
+**Tag:** `safety-portal`, `smartsheet-ui`, `data-gap`.
+
+**Effort:** ~15 minutes (UI-only).
+
+**Revisit when:** deploy session, after the AUTO_NUMBER column entry above is complete.
+
+Surfaced: 2026-06-05 Safety Portal Phase 3 session (PR #160). Related: `docs/tech_debt.md` AUTO_NUMBER entry above.
+
+## Safety Portal D1 dropdown sync (Phase-3 A.1.4) deferred to deploy session [OPEN 2026-06-05]
+
+The Phase 3 architecture (PR #160) populates the Worker's D1 `active_jobs` table from ITS_Active_Jobs so the portal form's Job dropdown stays current. This sync step requires the portal D1 database (Phase 2 deploy deferred) plus a Python→D1 write mechanism (options: a Worker `/api/sync` HMAC-authed endpoint vs Cloudflare D1 HTTP API directly). The decision and implementation are deferred to the deploy session.
+
+**Decision required at deploy:** Worker `/api/sync` (POST, HMAC-authed, Worker writes to D1 from request body) vs direct Cloudflare D1 HTTP API from Python (`shared/active_jobs.py` writes to D1 via REST). The Worker approach keeps D1 write capability server-side; the D1 HTTP API approach is simpler but requires a D1 API token in the Python environment.
+
+**Tag:** `safety-portal`, `deploy`, `d1-sync`.
+
+**Revisit when:** Safety Portal deploy session. Blocked on D1 creation (see deploy entry above).
+
+Surfaced: 2026-06-05 Safety Portal Phase 3 session (PR #160).
+
+## Phase 5 manual week-sheet additions [OPEN 2026-06-05]
+
+Operator-decided edge case (2026-06-05): if a PM submits a safety doc directly (outside the portal) for a specific job-week, the operator adds a row + the safety doc directly to the per-job week sheet, fills the relevant cells; `intake.py` ignores the manually-added row and `weekly_generate.py` rolls it into the compiled packet like any other doc. This is by design — no automation needed for an occasional manual correction.
+
+**Tag:** `safety-portal`, `operator-workflow`.
+
+**Revisit when:** Phase 5 build. Low-urgency; operator-decided.
+
+Surfaced: 2026-06-05 Safety Portal Phase 3 session (PR #160).
+
+## Worktree discipline for safety_reports edits [OPEN 2026-06-05]
+
+Phase 3 (PR #160) was built in `~/its` directly (not a git worktree) because the `resolve_project()` legacy was retired and nothing was incoming to the sandbox during development. However, any live `safety_reports/` edit in `~/its` goes live in the launchd daemon tree on the next 60s poll cycle. Future `safety_reports/` feature edits should follow `docs/operations/worktree_discipline.md` and use a dedicated worktree to avoid hot-path exposure of WIP code.
+
+**Tag:** `worktree-discipline`, `safety-reports`.
+
+**Revisit when:** next `safety_reports/` edit session.
+
+Surfaced: 2026-06-05 Safety Portal Phase 3 session (PR #160). Related: `docs/operations/worktree_discipline.md`.
+
+## ITS_Active_Jobs column order cosmetically scrambled [OPEN 2026-06-05, low]
+
+The 4 contact columns (Stakeholder Name, Stakeholder Email, Stakeholder Phone, Safety Reports Contact Email) were added one-at-a-time to ITS_Active_Jobs after the initial schema, causing them to interleave with Active/Notes and the system columns in the Smartsheet UI. Column order is not load-bearing — `shared/active_jobs.py` looks up columns by title, not position. Reorder in the Smartsheet UI if desired for operator readability.
+
+**Tag:** `safety-portal`, `cosmetic`, `smartsheet-ui`.
+
+**Effort:** ~5 minutes (UI drag-to-reorder).
+
+**Revisit when:** convenience; not a blocker.
+
+Surfaced: 2026-06-05 Safety Portal Phase 3 session (PR #160).
