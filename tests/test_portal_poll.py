@@ -7,6 +7,7 @@ fast-paths. Structure mirrors tests/test_weekly_send_poll.py.
 from __future__ import annotations
 
 from contextlib import contextmanager
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -62,6 +63,15 @@ def _patch_all(mocker):
         "log": mocker.patch.object(portal_poll.error_log, "log"),
         "review": mocker.patch.object(portal_poll.review_queue, "add"),
         "anomaly": mocker.patch.object(portal_poll.anomaly_logger, "check"),
+        # Job-sync push leg: default to an empty set so the push short-circuits and
+        # the existing cycle tests neither hit Smartsheet nor POST anything.
+        "list_all_jobs": mocker.patch.object(
+            portal_poll.active_jobs, "list_all_jobs", return_value=[]
+        ),
+        "push_jobs": mocker.patch.object(
+            portal_poll.portal_client, "push_jobs",
+            return_value={"ok": True, "upserted": 0, "deactivated": 0},
+        ),
     }
 
 
@@ -219,6 +229,49 @@ def test_pending_fetch_failure_writes_error_heartbeat(_patch_all):
     assert result.errors == 1
     assert _patch_all["hb_row"].call_args.kwargs["status"] == "ERROR"
     _patch_all["wd"].assert_called_once()
+
+
+# ---- job-sync push leg ----------------------------------------------------
+
+
+def _job(job_id="JOB-000001", project_name="Bradley 1", *, is_active=True):
+    return SimpleNamespace(job_id=job_id, project_name=project_name, is_active=is_active)
+
+
+def test_job_sync_pushes_full_set_after_drain(_patch_all):
+    _patch_all["list_all_jobs"].return_value = [
+        _job("JOB-000001", "Bradley 1", is_active=True),
+        _job("JOB-000007", "Atlantis", is_active=False),
+    ]
+    result = _poll_inside_lock()
+    assert result.halted_no_creds is False
+    _patch_all["push_jobs"].assert_called_once()
+    args = _patch_all["push_jobs"].call_args.args
+    # (base_url, bearer, payload) — the full set with active flags 1/0.
+    assert args[0] == "https://portal.example.com" and args[1] == "bearer"
+    assert args[2] == [
+        {"job_id": "JOB-000001", "project_name": "Bradley 1", "active": 1},
+        {"job_id": "JOB-000007", "project_name": "Atlantis", "active": 0},
+    ]
+
+
+def test_job_sync_empty_set_short_circuits_without_push(_patch_all):
+    _patch_all["list_all_jobs"].return_value = []  # Smartsheet read miss / empty sheet
+    _poll_inside_lock()
+    _patch_all["push_jobs"].assert_not_called()  # never wipe the dropdown
+
+
+def test_job_sync_failure_is_swallowed_and_does_not_affect_intake(_patch_all):
+    # A filed submission + a failing job-sync push: the cycle still completes, the
+    # intake drain stats are intact, and the failure is a WARN (not an intake error).
+    _patch_all["get_pending"].return_value = [_row("u1")]
+    _patch_all["list_all_jobs"].return_value = [_job()]
+    _patch_all["push_jobs"].side_effect = portal_poll.portal_client.PortalTransportError("500")
+    result = _poll_inside_lock()
+    assert result.filed == 1            # intake drain unaffected
+    assert result.errors == 0           # the push failure is NOT an intake error
+    codes = [c.kwargs.get("error_code") for c in _patch_all["log"].call_args_list]
+    assert "portal_job_sync_failed" in codes
 
 
 # ---- poll_once outer gating ----------------------------------------------

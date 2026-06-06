@@ -132,6 +132,58 @@ def test_mark_filed_401_raises_auth_error(mocker):
         portal_client.mark_filed(BASE, TOKEN, submission_uuid="u1", box_link="x")
 
 
+# ---- push_jobs -----------------------------------------------------------
+
+
+def test_push_jobs_posts_full_set_and_returns_summary(mocker):
+    jobs = [
+        {"job_id": "JOB-000001", "project_name": "Bradley 1", "active": 1},
+        {"job_id": "JOB-000007", "project_name": "Atlantis", "active": 0},
+    ]
+    req = _patch_requests(
+        mocker, _mock_response(json_body={"ok": True, "upserted": 2, "deactivated": 1})
+    )
+
+    out = portal_client.push_jobs(BASE, TOKEN, jobs)
+
+    assert out == {"ok": True, "upserted": 2, "deactivated": 1}
+    args, kwargs = req.call_args
+    assert args == ("POST", "https://portal.example.com/api/internal/sync")
+    assert kwargs["json"] == {"jobs": jobs}
+    assert kwargs["headers"]["Authorization"] == "Bearer fake-bearer"
+
+
+def test_push_jobs_401_raises_auth_error(mocker):
+    _patch_requests(mocker, _mock_response(status=401))
+    with pytest.raises(PortalAuthError):
+        portal_client.push_jobs(
+            BASE, TOKEN, [{"job_id": "J", "project_name": "P", "active": 1}]
+        )
+
+
+def test_push_jobs_non_200_raises_transport_error(mocker):
+    _patch_requests(mocker, _mock_response(status=500, text="boom"))
+    with pytest.raises(PortalTransportError, match="500"):
+        portal_client.push_jobs(
+            BASE, TOKEN, [{"job_id": "J", "project_name": "P", "active": 1}]
+        )
+
+
+def test_push_jobs_503_then_success(mocker):
+    mocker.patch("shared.portal_client.time.sleep")
+    _patch_requests(
+        mocker,
+        [
+            _mock_response(status=503),
+            _mock_response(json_body={"ok": True, "upserted": 1, "deactivated": 0}),
+        ],
+    )
+    out = portal_client.push_jobs(
+        BASE, TOKEN, [{"job_id": "J", "project_name": "P", "active": 1}]
+    )
+    assert out["upserted"] == 1
+
+
 # ---- retry / backoff -----------------------------------------------------
 
 
