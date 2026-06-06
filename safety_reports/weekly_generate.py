@@ -209,8 +209,9 @@ def _compile_job_week(
     """Compile one (job, week): merge → file → dual-write Rollup + WSR.
 
     Raises SmartsheetError / BoxError on transient infra failure (the per-job fence
-    in _run_pipeline catches + routes to the Review Queue). KeyError (project has no
-    Field Reports folder) likewise surfaces to the fence."""
+    in _run_pipeline catches + routes to the Review Queue). A brand-new job
+    self-provisions its per-job folder + week sheet under the Safety Portal
+    workspace (find-or-create), so there is no per-project-folder config gap."""
     project_name = job.project_name
     sheet_id = week_sheet.ensure_week_sheet(project_name, week.start)
     rollup = week_sheet.get_rollup_row(sheet_id)
@@ -377,7 +378,7 @@ def _run_pipeline(*, week_start_override: date | None) -> dict[str, Any]:
         summary.jobs_processed += 1
         try:
             _compile_job_week(job, week, summary, correlation_id)
-        except (SmartsheetError, box_client.BoxError, KeyError) as exc:
+        except (SmartsheetError, box_client.BoxError) as exc:
             summary.errors_per_job[job.project_name] = f"{type(exc).__name__}: {exc!r}"
             error_log.log(
                 Severity.ERROR, SCRIPT_NAME,

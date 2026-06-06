@@ -3,7 +3,9 @@
 Purpose
 -------
     One sheet per (job, Saturday→Friday week), `"<project> — week of <Saturday>"`,
-    living in that project's Field Reports Smartsheet folder. The Phase-5 intake
+    living in an auto-provisioned per-job folder at the surface of the ITS — Safety
+    Portal workspace (`sheet_ids.WORKSPACE_SAFETY_PORTAL`), a sibling of the "Safety
+    Portal" / "Form Catalog" folders. The Phase-5 intake
     portal branch writes one row per HMAC-verified submission here (the durable
     per-submission record + the Box-link pointer); `weekly_generate` later appends a
     read-only rollup row (Phase 5b) and compiles the week's packet.
@@ -40,9 +42,10 @@ Idempotency / amendments
 Failure modes
 -------------
     A `SmartsheetError` propagates to the caller (intake), which soft-fails the
-    submission to status='error' so it re-pulls next cycle — never a silent drop. An
-    unknown `project_name` (not in FIELD_REPORTS_FOLDER_BY_PROJECT) raises `KeyError`:
-    writing to nowhere observable is worse than a loud refusal (CLAUDE.md "never silent").
+    submission to status='error' so it re-pulls next cycle — never a silent drop. A
+    brand-new `project_name` self-provisions its per-job folder (find-or-create); the
+    only failure mode is a transient Smartsheet error (loud, recoverable) — never a
+    silent write-to-nowhere (CLAUDE.md "never silent").
 """
 from __future__ import annotations
 
@@ -107,20 +110,75 @@ def week_sheet_name(project_name: str, work_date: date) -> str:
     return f"{project_name} — week of {saturday.isoformat()}"
 
 
+def _folder_name(project_name: str) -> str:
+    """Sanitize a project display name into a Smartsheet folder title.
+
+    `project_name` is operator-entered in ITS_Active_Jobs, so this is defensive:
+    drop non-printable chars, turn `/` (which Smartsheet treats path-like) into
+    `-`, and strip surrounding whitespace. Falls back to the raw stripped name if
+    sanitizing empties it. The result is the per-job folder title + the
+    find/create key under WORKSPACE_SAFETY_PORTAL (e.g. "Bradley 1").
+    """
+    cleaned = "".join(ch for ch in project_name if ch.isprintable())
+    return cleaned.replace("/", "-").strip() or project_name.strip()
+
+
+def _ensure_job_folder(project_name: str) -> int:
+    """Find-or-create the per-job folder at the WORKSPACE_SAFETY_PORTAL surface.
+
+    A direct child of the workspace (sibling of the "Safety Portal" / "Form
+    Catalog" folders), titled by `project_name`. Idempotent. Race-tolerant: two
+    concurrent creators can both pass the find step (Smartsheet does not enforce
+    folder-name uniqueness) — we re-find after create, adopt the first match, and
+    WARN-log the duplicate for operator cleanup (mirrors the sheet-level guard
+    below + `week_folder.ensure_current_week_folder`). Auto-provisions for a
+    brand-new job — there is no per-project allowlist any more.
+    """
+    folder_name = _folder_name(project_name)
+    existing = smartsheet_client.find_folder_by_name_in_workspace(
+        sheet_ids.WORKSPACE_SAFETY_PORTAL, folder_name
+    )
+    if existing is not None:
+        return existing
+
+    folder_id = smartsheet_client.create_folder_in_workspace(
+        sheet_ids.WORKSPACE_SAFETY_PORTAL, folder_name
+    )
+    post_find = smartsheet_client.find_folder_by_name_in_workspace(
+        sheet_ids.WORKSPACE_SAFETY_PORTAL, folder_name
+    )
+    if post_find is not None and post_find != folder_id:
+        error_log.log(
+            Severity.WARN,
+            SCRIPT_NAME,
+            (
+                f"Duplicate per-job folder {folder_name!r} under workspace "
+                f"{sheet_ids.WORKSPACE_SAFETY_PORTAL} (project={project_name!r}); "
+                f"using first match {post_find}, manual cleanup needed for {folder_id}."
+            ),
+            error_code="week_sheet_folder_race_duplicate",
+        )
+        return post_find
+    return folder_id
+
+
 def ensure_week_sheet(project_name: str, work_date: date) -> int:
     """Find-or-create the (project, week) sheet; return its sheet ID.
 
-    Located in the project's Field Reports folder (FIELD_REPORTS_FOLDER_BY_PROJECT).
-    Idempotent: a second call in the same week returns the same sheet with no
-    write. Race-tolerant: two concurrent creators can both pass the find step
-    (Smartsheet does not enforce sheet-name uniqueness) — we re-find after create
-    and adopt the first match, WARN-logging the duplicate for operator cleanup
-    (mirrors `week_folder.ensure_current_week_folder`). Bounded blast radius: one
-    extra empty sheet.
+    Located in an auto-provisioned per-job folder named `project_name` at the
+    surface of `sheet_ids.WORKSPACE_SAFETY_PORTAL` (a sibling of the "Safety
+    Portal" / "Form Catalog" folders). The per-job folder AND the week sheet are
+    BOTH find-or-create, so a brand-new job self-provisions on first submission —
+    there is no hardcoded per-project folder map.
 
-    Raises `KeyError` for an unknown `project_name` (never silently write nowhere).
+    Idempotent: a second call in the same week returns the same sheet with no
+    write. Race-tolerant at both levels: concurrent creators can each pass the
+    find step (Smartsheet does not enforce name uniqueness) for the folder and the
+    sheet — we re-find after each create, adopt the first match, and WARN-log the
+    duplicate for operator cleanup. Bounded blast radius: one extra empty folder
+    and/or sheet.
     """
-    folder_id = sheet_ids.FIELD_REPORTS_FOLDER_BY_PROJECT[project_name]
+    folder_id = _ensure_job_folder(project_name)
     name = week_sheet_name(project_name, work_date)
 
     existing = smartsheet_client.find_sheet_by_name_in_folder(folder_id, name)

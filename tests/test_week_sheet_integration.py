@@ -4,10 +4,14 @@ Default `pytest -q` SKIPS this file (pyproject addopts `-m 'not integration'`).
 Run with `pytest -m integration`. Requires ITS_SMARTSHEET_TOKEN in Keychain.
 NOT executed in CI.
 
-Exercises the new Smartsheet WRITE paths: create_sheet (columns-via-API),
-add_rows (submission row), update_rows (amend supersede). The sandbox 'project'
-maps to FOLDER_SYSTEM_CONFIG (same parent the other Smartsheet integration tests
-use); the work-date pins a Saturday in 1970 so the sheet name is collision-free.
+Exercises the Smartsheet WRITE paths the portal flow now uses under the ITS — Safety
+Portal workspace: create_folder_in_workspace (the per-job folder, AUTO-PROVISIONED),
+create_sheet_in_folder (columns-via-API), add_rows (submission row), update_rows
+(amend supersede). Doubles as the **service-account permission probe** — a 403 on
+create_folder_in_workspace means the ITS token lacks Admin on WORKSPACE_SAFETY_PORTAL
+(folder-create at the workspace surface needs Admin, not Editor). The work-date pins
+a Saturday in 1970 so the sheet name is collision-free; the sandbox project name is
+distinctive so its auto-created folder is unmistakable + cleaned up after.
 """
 from __future__ import annotations
 
@@ -17,7 +21,7 @@ import pytest
 import requests  # type: ignore[import-untyped]
 
 from safety_reports import week_sheet
-from shared import keychain, sheet_ids
+from shared import keychain, sheet_ids, smartsheet_client
 
 pytestmark = pytest.mark.integration
 
@@ -36,19 +40,6 @@ def _token() -> str:
     return token
 
 
-@pytest.fixture
-def sandbox_project_map():
-    original = dict(sheet_ids.FIELD_REPORTS_FOLDER_BY_PROJECT)
-    sheet_ids.FIELD_REPORTS_FOLDER_BY_PROJECT[SANDBOX_PROJECT] = (
-        sheet_ids.FOLDER_SYSTEM_CONFIG
-    )
-    try:
-        yield
-    finally:
-        sheet_ids.FIELD_REPORTS_FOLDER_BY_PROJECT.clear()
-        sheet_ids.FIELD_REPORTS_FOLDER_BY_PROJECT.update(original)
-
-
 def _delete_sheet(sheet_id: int, token: str) -> None:
     requests.delete(
         f"https://api.smartsheet.com/2.0/sheets/{sheet_id}",
@@ -56,11 +47,24 @@ def _delete_sheet(sheet_id: int, token: str) -> None:
     )
 
 
-def test_week_sheet_round_trip(_token, sandbox_project_map):
-    """create → write submission → dedupe find → amend supersede → idempotent re-ensure."""
+def _delete_folder(folder_id: int, token: str) -> None:
+    requests.delete(
+        f"https://api.smartsheet.com/2.0/folders/{folder_id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+
+def test_week_sheet_round_trip(_token):
+    """auto-provision folder → create sheet → write → dedupe → amend → idempotent re-ensure."""
     sheet_id = week_sheet.ensure_week_sheet(SANDBOX_PROJECT, SANDBOX_WORK_DATE)
+    # Capture the auto-created per-job folder up front so the finally can clean it.
+    folder_id = smartsheet_client.find_folder_by_name_in_workspace(
+        sheet_ids.WORKSPACE_SAFETY_PORTAL, SANDBOX_PROJECT
+    )
     try:
         assert sheet_id > 0
+        # The per-job folder was auto-provisioned at the WORKSPACE_SAFETY_PORTAL surface.
+        assert folder_id is not None
         # Name keys on the Saturday that opens the work-date's week.
         assert week_sheet.week_sheet_name(SANDBOX_PROJECT, SANDBOX_WORK_DATE).endswith(
             "week of 1970-01-03"
@@ -100,3 +104,5 @@ def test_week_sheet_round_trip(_token, sandbox_project_map):
         assert week_sheet.ensure_week_sheet(SANDBOX_PROJECT, SANDBOX_WORK_DATE) == sheet_id
     finally:
         _delete_sheet(sheet_id, _token)
+        if folder_id is not None:
+            _delete_folder(folder_id, _token)

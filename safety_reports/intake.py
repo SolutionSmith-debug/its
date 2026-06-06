@@ -1677,17 +1677,12 @@ def _run_portal_pipeline(
         )
     project_name = job.project_name
 
-    # Resolve the (job, week) sheet (a SmartsheetError here is transient → raises).
-    try:
-        sheet_id = week_sheet.ensure_week_sheet(project_name, work_date)
-    except KeyError:
-        # The Active job's project has no Field Reports folder mapping (config gap).
-        return _portal_review(
-            submission, machine_reason="project_no_field_reports_folder",
-            summary=f"portal: project {project_name!r} has no Field Reports folder (submission {submission_uuid})",
-            reason=review_queue.ReviewReason.AMBIGUOUS_CLASSIFICATION,
-            correlation_id=correlation_id, severity=Severity.ERROR,
-        )
+    # Resolve the (job, week) sheet. A brand-new job self-provisions its per-job
+    # folder + week sheet under the ITS — Safety Portal workspace (find-or-create,
+    # no per-project map → no config-gap path). A SmartsheetError (transient
+    # folder/sheet create failure) propagates → the caller soft-fails the
+    # submission to 'error' so it re-pulls next cycle (never silent).
+    sheet_id = week_sheet.ensure_week_sheet(project_name, work_date)
 
     # Dedupe (the Python authority): a re-pull whose row already exists skips
     # re-filing but still drains (portal_poll posts the receipt with the link).
