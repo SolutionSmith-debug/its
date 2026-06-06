@@ -50,6 +50,10 @@ def _patch_all(mocker):
             "safety_reports.weekly_send_poll.smartsheet_client.get_setting",
             side_effect=SmartsheetNotFoundError("default test stub"),
         ),
+        "workspace_shares": mocker.patch(
+            "safety_reports.weekly_send_poll.smartsheet_client.list_workspace_share_emails",
+            return_value=frozenset({"seths@evergreenmirror.com"}),
+        ),
         "write_heartbeat": mocker.patch("safety_reports.weekly_send_poll._write_heartbeat", return_value=None),
         "write_heartbeat_row": mocker.patch("safety_reports.weekly_send_poll._write_heartbeat_row", return_value=None),
         "write_watchdog_marker": mocker.patch("safety_reports.weekly_send_poll._write_watchdog_marker", return_value=None),
@@ -111,6 +115,40 @@ def test_is_scheduled_window():
     assert _is_scheduled_window(mon_8am, "MON 07:00") is True
     assert _is_scheduled_window(mon_6am, "MON 07:00") is False
     assert _is_scheduled_window(tue_8am, "MON 07:00") is False
+
+
+# ---- F22 authorized-approver source (workspace membership) ---------------
+
+
+def test_load_authorized_approvers_reads_workspace_shares(mocker):
+    shares = mocker.patch(
+        "safety_reports.weekly_send_poll.smartsheet_client.list_workspace_share_emails",
+        return_value=frozenset({"a@x.com", "b@x.com"}),
+    )
+    out = weekly_send_poll._load_authorized_approvers()
+    assert out == frozenset({"a@x.com", "b@x.com"})
+    shares.assert_called_once_with(weekly_send_poll.sheet_ids.WORKSPACE_SAFETY_PORTAL)
+
+
+def test_load_authorized_approvers_empty_workspace_is_fail_closed_empty(mocker):
+    # No individual shares → empty set → verify_approval treats it as
+    # EMPTY_ALLOWLIST → block all sends (fail-closed, never fail-open).
+    mocker.patch(
+        "safety_reports.weekly_send_poll.smartsheet_client.list_workspace_share_emails",
+        return_value=frozenset(),
+    )
+    assert weekly_send_poll._load_authorized_approvers() == frozenset()
+
+
+def test_load_authorized_approvers_smartsheet_error_propagates(mocker):
+    # A membership-read infra failure must surface (→ @its_error_log CRITICAL,
+    # cycle aborts with zero sends), never silently fail-open.
+    mocker.patch(
+        "safety_reports.weekly_send_poll.smartsheet_client.list_workspace_share_emails",
+        side_effect=SmartsheetError("boom"),
+    )
+    with pytest.raises(SmartsheetError):
+        weekly_send_poll._load_authorized_approvers()
 
 
 # ---- dispatch ------------------------------------------------------------
