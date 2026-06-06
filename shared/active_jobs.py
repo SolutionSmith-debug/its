@@ -30,8 +30,9 @@ Consumers
 ---------
 - safety_reports/intake.py `resolve_project()` — resolves a submission's Job ID
   (carried in the portal payload, Phase 5) to its project; refuses unknown/inactive.
-- the Phase-5 D1 sync job — `list_active_jobs()` pushes the Active set to the
-  portal dropdown.
+- the Phase-5 D1 sync (`safety_reports/portal_poll`) — `list_all_jobs()` pushes
+  the FULL set (each row's active flag) to the Worker, which upserts the dropdown
+  cache + deactivates any job_id absent from the push.
 """
 from __future__ import annotations
 
@@ -202,5 +203,18 @@ def get_job(job_id: str) -> ActiveJob | None:
 
 
 def list_active_jobs() -> list[ActiveJob]:
-    """All Active jobs (the portal dropdown source for the Phase-5 D1 sync)."""
+    """All Active jobs (e.g. weekly_generate iterates these)."""
     return [job for job in _load_jobs() if job.is_active]
+
+
+def list_all_jobs() -> list[ActiveJob]:
+    """Every job (ANY status) — the FULL set the Phase-5 D1 sync pushes.
+
+    The portal sync (`safety_reports/portal_poll`) pushes this complete set, each
+    `ActiveJob` carrying its `is_active` flag, so the Worker can reconcile: upsert
+    each row + deactivate any job_id absent from the push. `list_active_jobs()`
+    (Active-only) cannot drive a deactivate-missing reconcile — a job flipped to
+    Inactive would simply vanish from the pushed set and the Worker couldn't tell
+    'gone' from 'deactivated'. On a read miss `_load_jobs()` returns [] (the caller
+    MUST refuse to push an empty set — see portal_poll._push_active_jobs)."""
+    return list(_load_jobs())

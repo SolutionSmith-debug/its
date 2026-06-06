@@ -59,6 +59,7 @@ from typing import Any, Literal
 
 from safety_reports import intake
 from shared import (
+    active_jobs,
     anomaly_logger,
     circuit_breaker,
     error_log,
@@ -564,6 +565,35 @@ def _resolve_credentials() -> _PortalCreds | None:
     return _PortalCreds(base_url=base_url, bearer=bearer, secret=secret)
 
 
+def _push_active_jobs(base_url: str, bearer: str) -> None:
+    """Full-replace push of the ITS_Active_Jobs set → the Worker's D1 dropdown cache.
+
+    The pull model's symmetric write-leg: each cycle the Mac tells the Worker the
+    current job set so the portal's job dropdown stays current (a job created via
+    the ITS_Active_Jobs form appears within one cycle). Send-free — control-plane
+    to OUR OWN Worker via the F02-allowlisted portal_client, NOT a customer send
+    (outside the External Send Gate, Invariant 1).
+
+    REFUSES to push an empty set: `active_jobs.list_all_jobs()` returns [] on a
+    Smartsheet read miss, and pushing [] would deactivate the entire dropdown. So a
+    transient Smartsheet outage is a no-op here, not a wipe (belt-and-suspenders
+    with the Worker's own empty_jobs rejection).
+    """
+    all_jobs = active_jobs.list_all_jobs()
+    if not all_jobs:
+        return  # read miss / genuinely-empty sheet → skip, never wipe the dropdown
+    payload = [
+        {"job_id": j.job_id, "project_name": j.project_name, "active": 1 if j.is_active else 0}
+        for j in all_jobs
+    ]
+    result = portal_client.push_jobs(base_url, bearer, payload)
+    error_log.log(
+        Severity.INFO, SCRIPT_NAME,
+        f"job sync: upserted={result.get('upserted')} deactivated={result.get('deactivated')}",
+        error_code="portal_job_sync_ok",
+    )
+
+
 def _poll_inside_lock() -> PollStats:
     """Body of poll_once running under the file lock."""
     creds = _resolve_credentials()
@@ -628,6 +658,19 @@ def _poll_inside_lock() -> PollStats:
             )
 
     _persist_seen(seen)
+
+    # Best-effort job-set sync (ITS_Active_Jobs → the Worker's D1 dropdown cache).
+    # FENCED so a sync failure never affects the intake drain above; the sync is
+    # idempotent (full-replace), so a skipped/failed cycle self-heals next time.
+    try:
+        _push_active_jobs(creds.base_url, creds.bearer)
+    except Exception as exc:  # noqa: BLE001 — best-effort; must not block intake filing
+        error_log.log(
+            Severity.WARN, SCRIPT_NAME,
+            f"job sync push failed (intake unaffected): {type(exc).__name__}: {exc!r}",
+            error_code="portal_job_sync_failed",
+        )
+
     _write_heartbeat()
 
     if counters["errors"] > 0:

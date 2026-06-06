@@ -55,6 +55,7 @@ MAX_RETRIES = 3
 
 PENDING_PATH = "/api/internal/pending"
 MARK_FILED_PATH = "/api/internal/mark-filed"
+SYNC_PATH = "/api/internal/sync"
 
 
 # ---- Typed exceptions ----------------------------------------------------
@@ -196,3 +197,24 @@ def mark_filed(base_url: str, token: str, *, submission_uuid: str, box_link: str
         json_body={"submission_uuid": submission_uuid, "box_link": box_link},
     )
     return bool(data.get("found"))
+
+
+def push_jobs(base_url: str, token: str, jobs: list[dict[str, Any]]) -> dict[str, Any]:
+    """Full-replace job sync: POST /api/internal/sync → {ok, upserted, deactivated}.
+
+    `jobs` is the COMPLETE ITS_Active_Jobs set, each row
+    `{job_id, project_name, active}` (active 1/0). The Worker upserts each and
+    deactivates any job_id absent from the set — so this is a full-replace sync,
+    NOT an incremental add. The caller MUST refuse to push an empty list (an empty
+    set would deactivate the whole dropdown); the Worker also rejects it (400
+    empty_jobs). Idempotent: re-pushing the same set is a no-op, so a missed cycle
+    self-heals.
+
+    Like `mark_filed`, this is a control-plane receipt/write to our OWN Worker
+    (D1 dropdown cache), NOT a customer-facing send — it is outside the External
+    Send Gate (Invariant 1).
+
+    Raises `PortalAuthError` (401) / `PortalRateLimitError` (429/503 exhausted) /
+    `PortalTransportError` (any other failure).
+    """
+    return _request("POST", base_url, SYNC_PATH, token, json_body={"jobs": jobs})

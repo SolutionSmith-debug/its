@@ -34,7 +34,8 @@ import { validateUser, newSessionClaims } from "./auth";
 // Consumers: the SPA (src/) via same-origin fetch — /api/login, /api/session,
 //   /api/logout, /api/jobs, /api/recent, /api/submit (signs + queues the submission).
 //   The Mac-side portal_poll daemon via bearer-token /api/internal/pending (queue
-//   drain) + /api/internal/mark-filed (the receipt). Phase 5 adds /api/sync (jobs).
+//   drain) + /api/internal/mark-filed (the receipt) + /api/internal/sync (full-replace
+//   push of the ITS_Active_Jobs set → the D1 dropdown cache).
 // ─────────────────────────────────────────────────────────────────────────────
 
 const COOKIE = "its_portal_session";
@@ -297,6 +298,74 @@ app.post("/api/internal/mark-filed", requireInternalToken, async (c) => {
     .bind(box_link, submission_uuid)
     .run();
   return c.json({ ok: true, found: (res.meta?.changes ?? 0) > 0 });
+});
+
+/**
+ * POST /api/internal/sync — full-replace sync of the active-job set from the Mac
+ * side (portal_poll reads ITS_Active_Jobs and POSTs the COMPLETE set each cycle).
+ * Bearer-token gated. This is the write-leg counterpart to GET /api/jobs (which
+ * the SPA reads): Smartsheet is the source of truth, D1 is the dropdown cache.
+ *
+ * Body: { jobs: [{ job_id, project_name, active }] } — the complete ITS_Active_Jobs
+ * set, each row carrying its own active flag (1/0). The payload is AUTHORITATIVE:
+ * any D1 job_id ABSENT from it is deactivated (active=0) so a job removed/archived
+ * in Smartsheet drops off the dropdown. We never DELETE (submissions reference
+ * job_id — deactivate, don't orphan). Upserts + the single reconcile run in ONE
+ * atomic D1 batch.
+ *
+ * INVARIANT 1: still ZERO external transmission — this only writes D1; the Mac side
+ * initiated the request, the Worker sends nothing outward. INVARIANT 2: every row
+ * is type-checked + length-bounded, all D1 access is parameter-bound, the batch is
+ * size-capped, and an EMPTY payload is rejected (it would otherwise wipe the whole
+ * dropdown — a Smartsheet read miss on the Mac side must never reach here as []).
+ */
+app.post("/api/internal/sync", requireInternalToken, async (c) => {
+  let body: { jobs?: unknown };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "bad_request" }, 400);
+  }
+  const raw = body.jobs;
+  if (!Array.isArray(raw)) return c.json({ error: "invalid_jobs" }, 400);
+  if (raw.length === 0) return c.json({ error: "empty_jobs" }, 400); // never wipe the dropdown
+  if (raw.length > 5000) return c.json({ error: "too_many_jobs" }, 413);
+
+  // Validate + normalize every row up front; reject the WHOLE batch on any bad row
+  // (a partial sync would silently desync the dropdown).
+  const jobs: { job_id: string; project_name: string; active: number }[] = [];
+  const seen = new Set<string>();
+  for (const r of raw) {
+    if (typeof r !== "object" || r === null) return c.json({ error: "invalid_row" }, 400);
+    const row = r as Record<string, unknown>;
+    const job_id = typeof row.job_id === "string" ? row.job_id : "";
+    const project_name = typeof row.project_name === "string" ? row.project_name : "";
+    const active = row.active === 1 || row.active === true ? 1 : 0;
+    if (!job_id || job_id.length > 64 || !project_name || project_name.length > 256) {
+      return c.json({ error: "invalid_row" }, 400);
+    }
+    if (seen.has(job_id)) return c.json({ error: "duplicate_job_id" }, 400);
+    seen.add(job_id);
+    jobs.push({ job_id, project_name, active });
+  }
+
+  // One atomic batch: upsert every supplied row, then deactivate any active D1
+  // job_id NOT in the payload (the NOT-IN list is bound, never interpolated).
+  const ids = jobs.map((j) => j.job_id);
+  const statements = [
+    ...jobs.map((j) =>
+      c.env.DB.prepare(
+        "INSERT INTO jobs (job_id, project_name, active) VALUES (?,?,?) " +
+          "ON CONFLICT(job_id) DO UPDATE SET project_name=excluded.project_name, active=excluded.active",
+      ).bind(j.job_id, j.project_name, j.active),
+    ),
+    c.env.DB.prepare(
+      `UPDATE jobs SET active=0 WHERE active=1 AND job_id NOT IN (${ids.map(() => "?").join(",")})`,
+    ).bind(...ids),
+  ];
+  const results = await c.env.DB.batch(statements);
+  const deactivated = results[results.length - 1]?.meta?.changes ?? 0;
+  return c.json({ ok: true, upserted: jobs.length, deactivated });
 });
 
 // Unmatched /api/* → JSON 404 (never the SPA shell).
