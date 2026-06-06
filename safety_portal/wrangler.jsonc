@@ -32,15 +32,16 @@
   "observability": { "enabled": true },
 
   // ── D1 (env.DB). Phase 2 uses the `users` table only (migrations/). ──
-  // database_id is a placeholder for token-free LOCAL dev (`--local` keys off the
-  // db name, not this id). Replace after `wrangler d1 create its-safety-portal-db`.
+  // database_id points at the live mirror/validation D1 (set 2026-06-06). Local
+  // `--local` dev keys off database_name, not this id, so it stays token-free.
   "d1_databases": [
     {
       "binding": "DB",
       "database_name": "its-safety-portal-db",
-      // ⚠ REPLACE before remote deploy: `wrangler d1 create its-safety-portal-db` → paste the returned id.
-      // (Local `--local` dev keys off database_name, so the all-zeros placeholder is fine for `wrangler dev`.)
-      "database_id": "00000000-0000-0000-0000-000000000000",
+      // Live mirror/validation D1 (created 2026-06-06, region ENAM) via
+      // `wrangler d1 create its-safety-portal-db`. Local `--local` dev keys off
+      // database_name, not this id.
+      "database_id": "924f142b-c812-49fd-a262-2eb6fb34fe95",
       "migrations_dir": "migrations"
     }
   ]
