@@ -444,6 +444,9 @@ h3 {
 .fr__content-body { white-space: pre-line; margin: 0; }
 
 .fr__rows { display: flex; flex-direction: column; gap: 12px; }
+/* "+ Add row" sits directly after .fr__rows — drop it down with a clear gap
+   from the bottom of the last repeating-group block (e.g. the last worker row). */
+.fr__rows + .btn { margin-top: 24px; }
 .fr__row {
   display: grid; grid-template-columns: 1fr; gap: 10px; padding: 12px; position: relative;
   border: 1px solid var(--c-line); border-radius: var(--radius-sm); background: var(--c-surface);
