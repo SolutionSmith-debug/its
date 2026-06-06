@@ -580,3 +580,24 @@ def test_verify_write_capability_live(_token_available):
     sheet_id = smartsheet_client.verify_write_capability()
     assert isinstance(sheet_id, int)
     smartsheet_client.delete_sheet_settling(sheet_id)
+
+
+# ---- list_workspace_share_emails: F22 approval-authority source ---------
+
+
+def test_list_workspace_share_emails_live(_token_available):
+    """Live §30: read the ITS — Safety Portal workspace share list — the F22
+    approval-authority source (workspace membership). Read-only, no cleanup.
+
+    Also the send-leg service-account permission probe: a 403 here means the ITS
+    token cannot read WORKSPACE_SAFETY_PORTAL's shares (it must at least be shared
+    on the workspace). Asserts the return is a frozenset of lowercased, @-bearing
+    emails — the normalized shape `verify_approval` consumes.
+    """
+    emails = smartsheet_client.list_workspace_share_emails(
+        sheet_ids.WORKSPACE_SAFETY_PORTAL
+    )
+    assert isinstance(emails, frozenset)
+    for e in emails:
+        assert isinstance(e, str) and "@" in e
+        assert e == e.lower().strip()  # normalized (lowercased + stripped)

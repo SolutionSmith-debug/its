@@ -930,6 +930,67 @@ def test_find_sheet_by_name_in_folder_returns_first_match_on_duplicate(mocker):
     assert smartsheet_client.find_sheet_by_name_in_folder(7, "Dup") == 111
 
 
+# ---- list_workspace_share_emails (F22 approval-authority source) ---------
+
+
+def _rest_shares_response(data: list[dict] | None, status: int = 200):
+    """Mock requests.Response for GET /workspaces/{id}/shares (the `data` array)."""
+    response = MagicMock()
+    response.status_code = status
+    body: dict = {}
+    if data is not None:
+        body["data"] = data
+    response.json.return_value = body
+    if status >= 400:
+        from requests import HTTPError
+        err = HTTPError(f"HTTP {status}")
+        err.response = response
+        response.raise_for_status.side_effect = err
+        response.text = body.get("message", "error")
+    else:
+        response.raise_for_status.return_value = None
+    return response
+
+
+def test_list_workspace_share_emails_parses_normalizes_and_excludes_groups(mocker):
+    mocker.patch(
+        "shared.smartsheet_client.requests.get",
+        return_value=_rest_shares_response([
+            {"email": "Alice@X.com", "accessLevel": "ADMIN", "type": "USER"},
+            {"email": "bob@x.com", "accessLevel": "EDITOR", "type": "USER"},
+            {"email": "alice@x.com", "accessLevel": "VIEWER", "type": "USER"},  # dup (case)
+            {"accessLevel": "EDITOR", "type": "GROUP", "groupId": 9},           # no email → excluded
+        ]),
+    )
+    out = smartsheet_client.list_workspace_share_emails(194283417429892)
+    assert out == frozenset({"alice@x.com", "bob@x.com"})
+
+
+def test_list_workspace_share_emails_empty_returns_empty_frozenset(mocker):
+    mocker.patch(
+        "shared.smartsheet_client.requests.get",
+        return_value=_rest_shares_response([]),
+    )
+    assert smartsheet_client.list_workspace_share_emails(1) == frozenset()
+
+
+def test_list_workspace_share_emails_missing_data_key_returns_empty(mocker):
+    mocker.patch(
+        "shared.smartsheet_client.requests.get",
+        return_value=_rest_shares_response(None),
+    )
+    assert smartsheet_client.list_workspace_share_emails(1) == frozenset()
+
+
+def test_list_workspace_share_emails_translates_permission_error(mocker):
+    mocker.patch(
+        "shared.smartsheet_client.requests.get",
+        return_value=_rest_shares_response(None, status=403),
+    )
+    with pytest.raises(SmartsheetPermissionError):
+        smartsheet_client.list_workspace_share_emails(1)
+
+
 def test_create_sheet_in_folder_returns_new_sheet_id(mocker):
     client = _install_client(mocker)
     created = SimpleNamespace(result=SimpleNamespace(id=555))

@@ -114,14 +114,15 @@ WORKSTREAM = "safety_reports"
 CFG_POLLING_ENABLED = "safety_reports.weekly_send.polling_enabled"
 CFG_POLL_INTERVAL = "safety_reports.weekly_send.poll_interval_seconds"
 
-# F22 — approval-attestation gate. The authorized-approver allowlist lives in
-# ITS_Config (config-driven so it can be swapped at the evergreenmirror.com →
-# evergreenrenewables.com cutover without a code change — see
-# docs/operations/cutover_checklist.md). Phase-5: WSR has TWO human approval
-# CHECKBOXes — `Approve for Scheduled Send` (the Monday batch) and `Send Now`
-# (immediate, out-of-band). The F22 gate verifies the actor on whichever drove
-# the dispatch.
-CFG_AUTHORIZED_APPROVERS = "safety_reports.authorized_approvers"
+# F22 — approval-attestation gate. Approval authority = ITS — Safety Portal
+# WORKSPACE membership: an approver is authorized iff they are a member of the
+# workspace's share list (sharing the workspace IS granting send authority —
+# Evergreen controls who can approve by who it shares with, with no per-email
+# config to maintain across the evergreenmirror.com → evergreenrenewables.com
+# cutover). The former `safety_reports.authorized_approvers` ITS_Config allowlist
+# is retired. Phase-5: WSR has TWO human approval CHECKBOXes — `Approve for
+# Scheduled Send` (the Monday batch) and `Send Now` (immediate, out-of-band). The
+# F22 gate verifies the actor on whichever drove the dispatch is a workspace member.
 APPROVAL_COLUMN_SCHEDULED = wsr_review.COL_APPROVE_SCHEDULED  # "Approve for Scheduled Send"
 APPROVAL_COLUMN_SEND_NOW = wsr_review.COL_SEND_NOW            # "Send Now"
 
@@ -218,24 +219,24 @@ def _polling_enabled() -> bool:
 
 
 def _load_authorized_approvers() -> frozenset[str]:
-    """Read the F22 authorized-approver allowlist from ITS_Config.
+    """Resolve the F22 authorized-approver set from ITS — Safety Portal WORKSPACE
+    membership (workspace access == approval authority; see the F22 note above).
 
-    A missing row → empty set (the legitimate "not yet seeded" / cutover
-    case), which `verify_approval` treats as fail-closed (block all sends),
-    NEVER fail-open. Parsing is delegated to
-    `approval_verification.parse_authorized_actors` so the comma-separated
-    value has a single interpretation. A non-NotFound SmartsheetError (auth
-    / 500) propagates to the `@its_error_log` CRITICAL path — a config-read
-    infra failure aborts the cycle loudly with zero sends, retried next
-    cycle (fail-closed, and consistent with `_read_str_setting`'s posture).
+    Returns the lowercased member emails of the workspace's share list. An empty
+    set (the workspace has no individual shares) is the legitimate fail-closed
+    case, which `verify_approval` treats as EMPTY_ALLOWLIST (block all sends),
+    NEVER fail-open. A SmartsheetError (auth / 500 / circuit-open) propagates to
+    the `@its_error_log` CRITICAL path — a membership-read infra failure aborts
+    the cycle loudly with zero sends, retried next cycle (fail-closed).
     """
-    try:
-        raw = smartsheet_client.get_setting(
-            CFG_AUTHORIZED_APPROVERS, workstream=WORKSTREAM
-        )
-    except smartsheet_client.SmartsheetNotFoundError:
-        raw = None
-    return approval_verification.parse_authorized_actors(raw)
+    # F08 CONTRAST — deliberately NO try/except here. Unlike `_read_str_setting`
+    # (which catches SmartsheetCircuitOpenError and fails OPEN to a scheduling
+    # fallback), this is the SECURITY gate: a circuit-open / auth / 500 reading
+    # the approver set MUST propagate (→ @its_error_log CRITICAL, cycle aborts,
+    # zero sends) — fail-CLOSED. Do not add a fallback-to-empty / fail-open catch.
+    return smartsheet_client.list_workspace_share_emails(
+        sheet_ids.WORKSPACE_SAFETY_PORTAL
+    )
 
 
 # ---- State / lock helpers -----------------------------------------------

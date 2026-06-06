@@ -1322,6 +1322,57 @@ def create_folder_in_workspace(workspace_id: int, name: str) -> int:
 
 
 @_breaker_guard
+def list_workspace_share_emails(workspace_id: int) -> frozenset[str]:
+    """Return the lowercased member emails the workspace is directly shared with.
+
+    Purpose
+        The F22 approval authority for the Safety Portal send leg: an approver is
+        authorized iff they are a member of the ITS — Safety Portal workspace's
+        share list. Sharing the workspace IS granting approval authority (Evergreen
+        controls who can trigger rollup + send by who the workspace is shared with),
+        replacing the former `safety_reports.authorized_approvers` ITS_Config
+        allowlist.
+
+    Invariants
+        - Direct REST (`GET /workspaces/{id}/shares?includeAll=true`) for transport
+          symmetry with the workspace folder helpers (one transport, no SDK
+          same-session cache surprises — PR #51).
+        - Only USER (individual) shares carry an `email`; GROUP shares have no email
+          and are excluded (group-membership expansion is a documented follow-up).
+          Emails are lowercased + stripped + deduped.
+        - Read-only. An EMPTY result is a valid return the F22 gate treats as
+          fail-closed (EMPTY_ALLOWLIST → block all sends), NEVER fail-open.
+
+    Failure modes
+        - Non-2xx → typed `SmartsheetError` hierarchy via
+          `_translate_smartsheet_error`; `SmartsheetCircuitOpenError` when the
+          breaker is OPEN.
+
+    Consumers
+        `safety_reports/weekly_send_poll._load_authorized_approvers` (the F22 gate).
+    """
+    token = keychain.get_secret("ITS_SMARTSHEET_TOKEN")
+    url = (
+        f"https://api.smartsheet.com/2.0/workspaces/{workspace_id}/shares"
+        "?includeAll=true"
+    )
+    context = f"listing shares for workspace {workspace_id}"
+    try:
+        response = requests.get(
+            url, headers={"Authorization": f"Bearer {token}"}, timeout=30
+        )
+    except requests.RequestException as e:
+        raise SmartsheetError(f"{context}: {e!r}") from e
+    _translate_smartsheet_error(response, context=context)
+    body = response.json()
+    return frozenset(
+        str(share["email"]).strip().lower()
+        for share in body.get("data", [])
+        if isinstance(share, dict) and share.get("email")
+    )
+
+
+@_breaker_guard
 def create_sheet_in_folder_from_template(
     folder_id: int,
     name: str,

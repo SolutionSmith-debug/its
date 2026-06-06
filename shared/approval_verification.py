@@ -38,10 +38,10 @@ Invariants
   documented API shape; `User.id_` comes back `None`). Email is therefore
   the only available match key. This makes the authorized set FRAGILE
   across the `evergreenmirror.com` → `evergreenrenewables.com` cutover:
-  the production reviewers are different email identities, so the
-  `safety_reports.authorized_approvers` ITS_Config row MUST be swapped at
-  delivery or every send silently fail-closes. See
-  `docs/operations/cutover_checklist.md` (cutover item 1).
+  the production reviewers are different email identities, so the production
+  ITS — Safety Portal workspace MUST be shared with them at delivery (the
+  authorized set IS the workspace's share list) or every send silently
+  fail-closes. See `docs/operations/cutover_checklist.md` (cutover item 1).
 - **Network egress stays inside the audited boundary.** History is read via
   `smartsheet_client.get_cell_history` (a `*_client` method on the F02
   network allowlist), never the Smartsheet SDK directly.
@@ -50,8 +50,9 @@ Failure modes
 -------------
 All fold into a non-verified `ApprovalVerdict` carrying a `VerdictReason`
 the caller can use to choose alerting severity:
-- `EMPTY_ALLOWLIST` — authorized set empty (missing/blank ITS_Config row);
-  no history is even read. Config/cutover failure → caller should alert.
+- `EMPTY_ALLOWLIST` — the authorized set is empty (the workspace has no
+  individual shares, or a transient membership-read miss); no history is even
+  read. Cutover/sharing failure → caller should alert.
 - `HISTORY_READ_FAILED` — the Smartsheet history read OR the deciding-event
   selection raised (any exception — `SmartsheetError`, `KeyError` for an
   unknown column, or a pathological timestamp set). Fail-closed; typically
@@ -69,9 +70,10 @@ Consumers
   candidate row in the dispatch loop; a non-verified verdict blocks that
   row's send and fires a forensic `approval_unverified` event (severity
   chosen by `VerdictReason`). Other rows still dispatch (per-row gate).
-- `parse_authorized_actors` is the single source of truth for how the
-  comma-separated `safety_reports.authorized_approvers` config string is
-  interpreted; the poller uses it to build the `authorized_actors` set.
+- `parse_authorized_actors` is a retained generic comma-separated-email parser
+  (one interpretation of such a value); the poller now builds the
+  `authorized_actors` set from ITS — Safety Portal workspace membership via
+  `smartsheet_client.list_workspace_share_emails`.
 """
 from __future__ import annotations
 
@@ -139,12 +141,14 @@ def _latest_event(
 
 
 def parse_authorized_actors(raw: str | None) -> frozenset[str]:
-    """Parse the comma-separated `authorized_approvers` config value.
+    """Generic comma-separated email-list parser → frozenset of normalized
+    (lowercased, stripped) emails.
 
-    Returns a frozenset of normalized (lowercased, stripped) emails. A
-    missing/blank value yields the empty set — which `verify_approval`
-    treats as EMPTY_ALLOWLIST (fail-closed, "no one is authorized"), NEVER
-    as "allow all."
+    Retained as a utility; the F22 gate NO LONGER uses this — the authorized set
+    now comes from ITS — Safety Portal workspace membership via
+    `smartsheet_client.list_workspace_share_emails`. A missing/blank value yields
+    the empty set — which `verify_approval` treats as EMPTY_ALLOWLIST (fail-closed,
+    "no one is authorized"), NEVER as "allow all."
     """
     if not raw:
         return frozenset()
@@ -174,7 +178,7 @@ def verify_approval(
             verified=False,
             reason=VerdictReason.EMPTY_ALLOWLIST,
             detail=(
-                "authorized_actors is empty (missing/blank ITS_Config row) — "
+                "authorized_actors is empty (no workspace members) — "
                 "blocking all sends fail-closed"
             ),
         )

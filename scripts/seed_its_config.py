@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Seed ITS_Config with the initial rows from Handover v5 §ITS_Config.
 
-(Plus later schema additions, e.g. the F22 `safety_reports.authorized_approvers`
-approver allowlist — the set grows; the idempotent classify/skip logic below
-handles re-runs.)
+(Plus later schema additions — the set grows; the idempotent classify/skip logic
+below handles re-runs.)
 
 OPERATIONAL — makes REAL Smartsheet API calls and (on confirmation) writes
 to ITS_Config. Sandbox-only: sheet ID comes from shared.sheet_ids.
@@ -88,29 +87,11 @@ def _build_seed_rows() -> list[dict[str, str]]:
                 "for every send (Foundation Mission v6 Invariant 1)."
             ),
         },
-        {
-            # F22 — authorized-approver allowlist for approval-attestation
-            # verification (shared.approval_verification). Fail-CLOSED: an
-            # approval whose cell-history actor is NOT in this list blocks the
-            # send. These are the three real sandbox Smartsheet users during
-            # validation. SWAP to evergreenrenewables.com identities at
-            # cutover — see docs/operations/cutover_checklist.md (item 1).
-            "Setting": "safety_reports.authorized_approvers",
-            "Value": (
-                "daniels@evergreenmirror.com,"
-                "seths@evergreenmirror.com,"
-                "benf@evergreenmirror.com"
-            ),
-            "Workstream": "safety_reports",
-            "Description": (
-                "VALIDATION-PHASE approver allowlist (evergreenmirror.com "
-                "sandbox). Comma-separated Smartsheet user emails whose WPR "
-                "approval is trusted by approval_verification.verify_approval "
-                "(F22, fail-closed). MUST be swapped to real "
-                "evergreenrenewables.com identities at cutover — see "
-                "docs/operations/cutover_checklist.md."
-            ),
-        },
+        # F22 `safety_reports.authorized_approvers` seed REMOVED 2026-06-06: the
+        # approval authority is now ITS — Safety Portal WORKSPACE membership (read
+        # live by weekly_send_poll via smartsheet_client.list_workspace_share_emails),
+        # not a seeded ITS_Config row. Authorizing an approver == sharing the
+        # workspace with them (an owner access decision); there is no row to seed.
         # F08 Smartsheet circuit breaker (shared/circuit_breaker.py) — all
         # global. defaults.py covers missing rows; these seeds make them tunable.
         {
