@@ -36,8 +36,10 @@ Checks shipped:
     F. (RETIRED 2026-06-05) Mail-intake silent-disable check — removed with
        the safety email-intake retirement (the Safety Portal PULL model
        supersedes the safety@ mailbox; see decision_phase5-portal-transport).
-       A portal_poll-health check and an Email-Triage mailbox-silence check
-       are future additions when those daemons land.
+       portal_poll's basic liveness is now covered by Check C (its
+       safety_portal_poll marker, registered 2026-06-06); a dedicated
+       silent-disable health check for it and an Email-Triage mailbox-silence
+       check remain future additions when those surfaces mature.
     G. Alert-routing dedupe summary sweep — Session 3 (PR β). For each
        expired entry in `~/its/state/alert_dedupe.json`, fire a single
        operator summary email naming what was suppressed during the
@@ -134,11 +136,16 @@ TRACKED_JOBS: list[str] = [
     "safety_picklist_audit",
     # safety_intake removed 2026-06-05: the safety email-intake poller is RETIRED
     # (Safety Portal PULL model supersedes it). The tombstone writes no marker, so
-    # tracking it would perpetually WARN. A portal_poll marker is a future addition.
+    # tracking it would perpetually WARN.
     # C4: the hourly picklist SYNC job (run_picklist_sync) — distinct from the
     # weekly picklist AUDIT above. Previously untracked, so its silent death was
     # invisible; it now writes a safety_picklist_sync marker each run.
     "safety_picklist_sync",
+    # Safety Portal pull-model poller (safety_reports.portal_poll). Writes a
+    # safety_portal_poll.last_run marker each cycle; registered here at the
+    # 2026-06-06 deploy session (previously a deferred "future addition") so a dead
+    # puller surfaces via Check C.
+    "safety_portal_poll",
 ]
 
 # Per-job freshness windows. Jobs not in this map use the default 24h
@@ -161,6 +168,10 @@ TRACKED_JOB_WINDOWS: dict[str, timedelta] = {
     # cycles: tolerates a coalesced/delayed run without false-positiving, but a
     # genuine stall surfaces at the next daily watchdog run. (C4.)
     "safety_picklist_sync": timedelta(hours=3),
+    # portal_poll runs every 60s (default). 5 min == ~5 cycles: tolerates
+    # coalesced/delayed runs, but a genuine stall surfaces at the next daily
+    # watchdog. (Mirrors the high-frequency-poller window pattern.)
+    "safety_portal_poll": timedelta(minutes=5),
 }
 DEFAULT_TRACKED_JOB_WINDOW = timedelta(hours=24)
 

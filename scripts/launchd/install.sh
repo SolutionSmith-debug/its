@@ -7,11 +7,12 @@
 # ~/Library/LaunchAgents/. The plist files in this directory stay generic; the
 # installed copies have concrete values.
 #
-# __POLL_INTERVAL_SECONDS__ (safety-intake, weekly-send): these plists carry the
-# placeholder in <integer>StartInterval</integer>. `load`/`dry-run` resolve it
-# from the optional [interval] arg, else a per-daemon default (60 / 900, matching
-# the daemon's ITS_Config poll-interval row default — safety_reports.intake /
-# safety_reports.weekly_send .poll_interval_seconds). The interval is BAKED into
+# __POLL_INTERVAL_SECONDS__ (safety-intake, weekly-send, portal-poll): these
+# plists carry the placeholder in <integer>StartInterval</integer>. `load`/`dry-run`
+# resolve it from the optional [interval] arg, else a per-daemon default
+# (60 / 900 / 60, matching the daemon's ITS_Config poll-interval row default —
+# safety_reports.intake / safety_reports.weekly_send / safety_reports.portal_poll
+# .poll_interval_seconds). The interval is BAKED into
 # the installed plist, so a later ITS_Config change needs a re-install (pass the
 # new value as [interval]). WITHOUT this substitution the installed plist keeps
 # the literal placeholder and fails `plutil -lint` → the daemon won't load.
@@ -42,7 +43,8 @@ usage: $0 {load|unload|status|dry-run} [plist] [interval]
   dry-run  <plist> [interval]   print the resolved plist content to stdout
 
   [interval] (positive integer seconds) overrides the StartInterval for the
-  poll-interval daemons (safety-intake → default 60, weekly-send → default 900).
+  poll-interval daemons (safety-intake → default 60, weekly-send → default 900,
+  portal-poll → default 60).
 EOF
     exit 1
 }
@@ -60,6 +62,7 @@ poll_interval_config_key() {
     case "$1" in
         org.solutionsmith.its.safety-intake) echo "safety_reports.intake.poll_interval_seconds" ;;
         org.solutionsmith.its.weekly-send)   echo "safety_reports.weekly_send.poll_interval_seconds" ;;
+        org.solutionsmith.its.portal-poll)   echo "safety_reports.portal_poll.poll_interval_seconds" ;;
         *) echo "" ;;
     esac
 }
@@ -67,6 +70,7 @@ poll_interval_default() {
     case "$1" in
         org.solutionsmith.its.safety-intake) echo "60" ;;
         org.solutionsmith.its.weekly-send)   echo "900" ;;
+        org.solutionsmith.its.portal-poll)   echo "60" ;;
         *) echo "" ;;
     esac
 }

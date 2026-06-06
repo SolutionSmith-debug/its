@@ -208,6 +208,22 @@ def test_picklist_marker_slugs_match_their_writers():
     assert run_picklist_sync.WATCHDOG_JOB_NAME in watchdog.TRACKED_JOBS
 
 
+def test_portal_poll_marker_slug_matches_writer_and_window():
+    """Same Check-C consistency guard for the Safety Portal pull daemon: the
+    slug portal_poll writes (safety_portal_poll.last_run) must match the slug
+    the watchdog tracks, or Check C either watches a marker nothing writes
+    (permanent false WARN) or — worse — a dead puller goes unnoticed.
+    Registered at the 2026-06-06 deploy session (previously a deferred
+    "future addition"). 5-min window == ~5 poll cycles at the 60s default."""
+    from safety_reports import portal_poll
+
+    assert portal_poll.WATCHDOG_JOB_SLUG == "safety_portal_poll"
+    assert portal_poll.WATCHDOG_JOB_SLUG in watchdog.TRACKED_JOBS
+    assert watchdog.TRACKED_JOB_WINDOWS[portal_poll.WATCHDOG_JOB_SLUG] == timedelta(
+        minutes=5
+    )
+
+
 def test_run_picklist_sync_write_marker_round_trips(monkeypatch, tmp_path):
     """C4: run_picklist_sync writes a parseable ISO timestamp to its marker
     (fail-soft path mirrors audit_picklist_drift's, proven elsewhere)."""
