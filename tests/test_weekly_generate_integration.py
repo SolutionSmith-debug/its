@@ -5,7 +5,8 @@ This exercises the new Smartsheet WRITE paths against a real sandbox via the
 EMPTY-WEEK path — which needs NO Box files and NO LLM:
 
   - active_jobs.list_active_jobs (patched to one sandbox job),
-  - week_sheet.ensure_week_sheet (creates the sandbox week sheet),
+  - week_sheet.ensure_week_sheet (auto-provisions the per-job folder + week sheet
+    under the ITS — Safety Portal workspace),
   - week_sheet.upsert_rollup_row (the read-only Rollup snapshot row),
   - wsr_review.upsert_row (the WSR_human_review row — the real Phase-5 review sheet).
 
@@ -15,9 +16,10 @@ deploy-gated (the next session's live smoke).
 Default `pytest -q` SKIPS this file (`-m 'not integration'`). Run with
 `pytest -m integration`. Requires ITS_SMARTSHEET_TOKEN in Keychain. NOT in CI.
 
-Sandbox isolation: a synthetic project mapped to FOLDER_SYSTEM_CONFIG; a unique
-sandbox Job ID + a 1970 week so the WSR row + week sheet are collision-free.
-Try/finally deletes the week sheet + the WSR row.
+Sandbox isolation: a synthetic project whose per-job folder + week sheet
+auto-provision under WORKSPACE_SAFETY_PORTAL; a unique sandbox Job ID + a 1970
+week so the WSR row + week sheet are collision-free. Try/finally deletes the WSR
+row, the week sheet, and the auto-created folder.
 """
 from __future__ import annotations
 
@@ -50,8 +52,6 @@ def _token() -> str:
 
 @pytest.fixture
 def sandbox(mocker):
-    original = dict(sheet_ids.FIELD_REPORTS_FOLDER_BY_PROJECT)
-    sheet_ids.FIELD_REPORTS_FOLDER_BY_PROJECT[SANDBOX_PROJECT] = sheet_ids.FOLDER_SYSTEM_CONFIG
     job = SimpleNamespace(
         project_name=SANDBOX_PROJECT, job_id=SANDBOX_JOB_ID,
         safety_reports_contact_email="int@evergreenmirror.com",
@@ -59,11 +59,7 @@ def sandbox(mocker):
         is_active=True, active_status="Active",
     )
     mocker.patch.object(weekly_generate.active_jobs, "list_active_jobs", return_value=[job])
-    try:
-        yield
-    finally:
-        sheet_ids.FIELD_REPORTS_FOLDER_BY_PROJECT.clear()
-        sheet_ids.FIELD_REPORTS_FOLDER_BY_PROJECT.update(original)
+    yield
 
 
 def test_empty_week_compile_writes_rollup_and_wsr(_token, sandbox):
@@ -71,15 +67,18 @@ def test_empty_week_compile_writes_rollup_and_wsr(_token, sandbox):
     sheet_name = week_sheet.week_sheet_name(SANDBOX_PROJECT, SANDBOX_ANCHOR)
     wsr_row_id: int | None = None
     week_sheet_id: int | None = None
+    folder_id: int | None = None
     try:
         out = weekly_generate._run_pipeline(week_start_override=SANDBOX_ANCHOR)
         assert out["empty_weeks"] == 1
         assert out["wsr_written"] == 1
 
-        # The sandbox week sheet now exists with a Rollup row.
-        week_sheet_id = smartsheet_client.find_sheet_by_name_in_folder(
-            sheet_ids.FOLDER_SYSTEM_CONFIG, sheet_name
+        # The per-job folder + week sheet auto-provisioned under the Safety Portal workspace.
+        folder_id = smartsheet_client.find_folder_by_name_in_workspace(
+            sheet_ids.WORKSPACE_SAFETY_PORTAL, SANDBOX_PROJECT
         )
+        assert folder_id is not None
+        week_sheet_id = smartsheet_client.find_sheet_by_name_in_folder(folder_id, sheet_name)
         assert week_sheet_id is not None
         rollup = week_sheet.get_rollup_row(week_sheet_id)
         assert rollup is not None
@@ -97,5 +96,10 @@ def test_empty_week_compile_writes_rollup_and_wsr(_token, sandbox):
         if week_sheet_id is not None:
             requests.delete(
                 f"https://api.smartsheet.com/2.0/sheets/{week_sheet_id}",
+                headers={"Authorization": f"Bearer {_token}"},
+            )
+        if folder_id is not None:
+            requests.delete(
+                f"https://api.smartsheet.com/2.0/folders/{folder_id}",
                 headers={"Authorization": f"Bearer {_token}"},
             )

@@ -32,6 +32,12 @@ from shared.error_log import Severity
 @pytest.fixture
 def stub_ss(mocker) -> dict[str, MagicMock]:
     return {
+        "find_folder": mocker.patch.object(
+            week_sheet.smartsheet_client, "find_folder_by_name_in_workspace"
+        ),
+        "create_folder": mocker.patch.object(
+            week_sheet.smartsheet_client, "create_folder_in_workspace"
+        ),
         "find_sheet": mocker.patch.object(
             week_sheet.smartsheet_client, "find_sheet_by_name_in_folder"
         ),
@@ -71,20 +77,23 @@ def test_week_sheet_name_keys_on_saturday(work_date, expected_saturday):
 
 
 def test_ensure_week_sheet_existing_returns_without_create(stub_ss):
+    stub_ss["find_folder"].return_value = 4242  # per-job folder already exists
     stub_ss["find_sheet"].return_value = 8001
     sid = ensure_week_sheet("Bradley 1", date(2026, 6, 5))
     assert sid == 8001
+    stub_ss["create_folder"].assert_not_called()
     stub_ss["create_sheet"].assert_not_called()
 
 
 def test_ensure_week_sheet_missing_creates_with_schema(stub_ss):
+    stub_ss["find_folder"].return_value = 4242  # folder exists; sheet does not
     stub_ss["find_sheet"].side_effect = [None, None]  # pre-find, post-find
     stub_ss["create_sheet"].return_value = 8002
     sid = ensure_week_sheet("Bradley 1", date(2026, 6, 5))
     assert sid == 8002
-    # Created in the project's Field Reports folder with the Saturday name + schema.
+    # Created INSIDE the per-job folder with the Saturday name + schema.
     args = stub_ss["create_sheet"].call_args.args
-    assert args[0] == sheet_ids.FOLDER_FIELD_REPORTS_BRADLEY_1
+    assert args[0] == 4242
     assert args[1] == "Bradley 1 — week of 2026-05-30"
     cols = args[2]
     titles = [c["title"] for c in cols]
@@ -95,6 +104,7 @@ def test_ensure_week_sheet_missing_creates_with_schema(stub_ss):
 
 
 def test_ensure_week_sheet_race_warns_and_uses_first_match(stub_ss, stub_error_log):
+    stub_ss["find_folder"].return_value = 4242  # folder exists (no folder race here)
     stub_ss["find_sheet"].side_effect = [None, 7000]  # pre-find None, post-find 7000
     stub_ss["create_sheet"].return_value = 9999
     sid = ensure_week_sheet("Bradley 1", date(2026, 6, 5))
@@ -106,10 +116,63 @@ def test_ensure_week_sheet_race_warns_and_uses_first_match(stub_ss, stub_error_l
     assert "9999" in call.args[2] and "7000" in call.args[2]
 
 
-def test_ensure_week_sheet_unknown_project_raises(stub_ss):
-    with pytest.raises(KeyError):
-        ensure_week_sheet("Atlantis", date(2026, 6, 5))
-    stub_ss["find_sheet"].assert_not_called()
+def test_ensure_week_sheet_unknown_project_auto_provisions(stub_ss):
+    # A brand-new job (no hardcoded map) self-provisions its folder + sheet.
+    stub_ss["find_folder"].side_effect = [None, None]  # pre-find, post-find (no race)
+    stub_ss["create_folder"].return_value = 5555
+    stub_ss["find_sheet"].side_effect = [None, None]
+    stub_ss["create_sheet"].return_value = 8003
+    sid = ensure_week_sheet("Atlantis", date(2026, 6, 5))
+    assert sid == 8003
+    stub_ss["create_folder"].assert_called_once_with(
+        sheet_ids.WORKSPACE_SAFETY_PORTAL, "Atlantis"
+    )
+    # the week sheet is created INSIDE the just-provisioned folder
+    assert stub_ss["create_sheet"].call_args.args[0] == 5555
+
+
+def test_ensure_week_sheet_creates_folder_under_workspace_when_missing(stub_ss):
+    stub_ss["find_folder"].side_effect = [None, None]
+    stub_ss["create_folder"].return_value = 6001
+    stub_ss["find_sheet"].return_value = 8010  # sheet already exists in the new folder
+    ensure_week_sheet("Bradley 1", date(2026, 6, 5))
+    stub_ss["create_folder"].assert_called_once_with(
+        sheet_ids.WORKSPACE_SAFETY_PORTAL, "Bradley 1"
+    )
+
+
+def test_ensure_week_sheet_folder_race_warns_and_uses_first_match(stub_ss, stub_error_log):
+    stub_ss["find_folder"].side_effect = [None, 6000]  # pre None, post 6000 (folder race)
+    stub_ss["create_folder"].return_value = 9090
+    stub_ss["find_sheet"].return_value = 8050  # sheet exists in the survivor folder
+    sid = ensure_week_sheet("Bradley 1", date(2026, 6, 5))
+    assert sid == 8050
+    # the sheet lookup used the survivor folder (6000), not the just-created 9090
+    assert stub_ss["find_sheet"].call_args.args[0] == 6000
+    stub_error_log.assert_called_once()
+    call = stub_error_log.call_args
+    assert call.args[0] == Severity.WARN
+    assert call.kwargs.get("error_code") == "week_sheet_folder_race_duplicate"
+    assert "9090" in call.args[2] and "6000" in call.args[2]
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("Bradley 1", "Bradley 1"),
+    ("A/B Job", "A-B Job"),    # slash → dash (Smartsheet path-safety)
+    ("  Padded  ", "Padded"),  # surrounding whitespace stripped
+])
+def test_folder_name_sanitizes(raw, expected):
+    assert week_sheet._folder_name(raw) == expected
+
+
+def test_ensure_week_sheet_uses_sanitized_folder_name(stub_ss):
+    stub_ss["find_folder"].return_value = 4242
+    stub_ss["find_sheet"].return_value = 8001
+    ensure_week_sheet("A/B Job", date(2026, 6, 5))
+    # folder lookup uses the sanitized name; the sheet name keeps the raw project.
+    assert stub_ss["find_folder"].call_args.args == (
+        sheet_ids.WORKSPACE_SAFETY_PORTAL, "A-B Job"
+    )
 
 
 # ---- find_submission_row (dedupe authority) ------------------------------

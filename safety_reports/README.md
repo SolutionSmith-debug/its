@@ -372,14 +372,16 @@ Recipient TO/CC display resolved from `ITS_Active_Jobs`, Send Status PENDING.
 
 | Symptom | Likely cause | Low-class repair |
 |---|---|---|
-| A job's weekly packet never appears | The job isn't Active in `ITS_Active_Jobs`, or has no Field Reports folder | Confirm the job is Active in `ITS_Active_Jobs`. A `weekly_generate.compile_failed` Review-Queue entry names the cause; a missing Field Reports folder is a **developer task → escalate to Seth**. |
+| A job's weekly packet never appears | The job isn't Active in `ITS_Active_Jobs`, or a transient Smartsheet error blocked auto-provisioning its per-job folder/week sheet | Confirm the job is Active in `ITS_Active_Jobs`. A `weekly_generate.compile_failed` Review-Queue entry names the cause. The per-job folder + week sheet auto-provision under the ITS — Safety Portal workspace (no config step), so a persistent failure is a transient-Smartsheet or workspace-permission issue → **escalate to Seth**. |
 | Packet is short (missing a submission) | A per-submission PDF had no Box link or failed to download (`weekly_generate.submission_no_link` / `submission_download_failed` WARN) | The Rollup row Notes list the gap. Re-trigger by checking **Compile Now** on the week sheet's Rollup row once the missing PDF is in Box; if the Box file is genuinely gone, **escalate to Seth**. |
 | Operator wants to recompile after a late submission | New doc arrived after the Friday compile | Check **Compile Now** on the week sheet's Rollup row (or wait for the next Friday — a new doc auto-triggers a recompile). |
 | `weekly_generate.no_downloadable_pdfs` ERROR | Box unreachable or every submission link broke | Transient → self-heals (recompile). Persistent → **escalate to Seth** (Box auth = secrets, high-class). |
 | WSR row shows an old packet after recompile | Expected — a recompile updates the Compiled PDF link but never the human Email Body or approval columns | Re-review the updated Compiled PDF; re-approve to re-send (a deliberate human re-approval; the prior send is not auto-repeated). |
 
-**Escalate-to-Seth boundary (high-class):** Box auth/secrets, missing Field Reports
-folders or sheet IDs (config/topology), any code change. The compile itself is
+**Escalate-to-Seth boundary (high-class):** Box auth/secrets, the ITS service
+account lacking Admin on the ITS — Safety Portal workspace (blocks per-job
+folder/week-sheet auto-provision), sheet IDs (config/topology), any code change.
+The compile itself is
 generation-only (no external send) — the human-approved send is the separate
 `weekly_send` process.
 

@@ -4,6 +4,14 @@ Items deliberately deferred. Each carries the rationale for deferral and the tri
 
 When to add an entry: a session deliberately chooses preservation-over-refactor (per Op Stds v11 §14), discovers an external-API constraint that forced a workaround, or defers a non-trivial cleanup that's larger than the current session can absorb. When to mark CLOSED: the underlying item is resolved in a commit; preserve the entry with resolution detail rather than deleting (history is cheap, context is expensive).
 
+## Orphan Smartsheet week sheet from the pre-relocation smoke [OPEN 2026-06-06]
+
+The 2026-06-06 deploy smoke filed one test JHA (Bradley 1 / JOB-000001) through the pre-relocation `week_sheet.ensure_week_sheet`, creating week sheet **`1966431334780804`** in the legacy Field Reports "Bradley 1" folder (Forefront Portfolio workspace) instead of the ITS — Safety Portal workspace. PR-C (filing relocation) moved portal filing to auto-provisioned per-job folders under `WORKSPACE_SAFETY_PORTAL`, so that sheet is now an **orphan** — nothing reads or writes it. Harmless but stray.
+
+**Repair (operator, manual):** delete sheet `1966431334780804`. Leave the enclosing Field Reports "Bradley 1" folder — the dormant Monday-ISO email path (`week_folder.py`) still maps it.
+
+**Revisit when:** any workspace-tidy pass.
+
 ## `scripts/launchd/install.sh` did not substitute `__POLL_INTERVAL_SECONDS__` [CLOSED 2026-06-02]
 
 The generic launchd installer `scripts/launchd/install.sh` substituted ONLY `__ITS_HOME__`, but the `safety-intake` and `weekly-send` plists carry `__POLL_INTERVAL_SECONDS__` in `<integer>StartInterval</integer>`. So `install.sh load` of either left the literal placeholder → `plutil -lint` failed → the daemon would not load. The **documented** install path (the picklist/weekly-send plists point at `install.sh load …`) was therefore broken for interval daemons; `intake` was running only because it has a **dedicated** installer (`scripts/install_safety_intake_daemon.sh`) that already reads the interval from ITS_Config and substitutes both placeholders.
