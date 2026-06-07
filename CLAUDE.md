@@ -23,7 +23,7 @@ Two layers, deliberately separated:
 
 1. **Planning & Foundation** (Claude.ai project, not in this repo). Mission files, architectural
    decisions, owner-facing artifacts, prompt designs, schemas. Canonical docs: Foundation Mission
-   v11, Operational Standards v16, Vision & Roadmap v9, Handover Plan v8.
+   v11, Operational Standards v18, Vision & Roadmap v9, Handover Plan v9.
 
    _Operational Standards is canonically at **v16** (`../its-blueprint/doctrine/operational-standards.md`,
    `status: canonical`); **v16 is the governing version — every `Op Stds §N` citation in this file
@@ -67,9 +67,9 @@ F13); the actual prevention is Layers 2–4 plus the two-process External Send G
 real security boundary):
 
 1. **Sender allowlist + scope enforcement + header-forgery detection.** The polling-daemon
-   pattern (canonical per Op Stds v16 §31; first exercised by the now-retired
+   pattern (canonical per Op Stds v18 §31; first exercised by the now-retired
    `safety_reports/intake_poll.py`, carried forward by Email Triage) fetches from allowlisted
-   senders via Graph; non-allowlisted email routes to Quarantine. ITS_Trusted_Contacts sheet (Op Stds v16 §33) is the canonical allowlist
+   senders via Graph; non-allowlisted email routes to Quarantine. ITS_Trusted_Contacts sheet (Op Stds v18 §33) is the canonical allowlist
    mechanism, replacing ITS_Config JSON lists at Phase 1.4 cutover. Header-forgery detection
    (SPF/DKIM/DMARC + Return-Path validation) precedes allowlist lookup. Helpers in
    `shared/quarantine.py`.
@@ -85,7 +85,7 @@ real security boundary):
    `ITS_Review_Queue` with `security_flag=True`. Never rely on it as a barrier; prevention is
    Layers 2–4 + Invariant 1. The code (`shared/anomaly_logger.py`) is unchanged.
 6. **Attachment screening pipeline.** Every attachment passes through four sub-layers per
-   Op Stds v16 §34: (a) static signatures (magic-number, size, filename); (b) format-aware
+   Op Stds v18 §34: (a) static signatures (magic-number, size, filename); (b) format-aware
    structural inspection (PDF JS/embedded, Office macros); (c) ClamAV scan via pyclamd;
    (d) optional VirusTotal hash check (Phase 2+ enhancement). Malicious → ITS_Quarantine +
    CRITICAL triple-fire + sender DISABLED in ITS_Trusted_Contacts pending operator review.
@@ -101,9 +101,9 @@ Residual risk: prompt injection is an unsolved research problem. The architectur
 injection might succeed at the AI layer and ensures the damage ceiling is "extracted data is
 wrong" rather than "data exfiltrated" or "external action taken on attacker's behalf."
 
-## Maintenance & successor-operator model (FM v11 · Op Stds v16 §§43–44)
+## Maintenance & successor-operator model (FM v11 · Op Stds v18 §§43–44)
 
-ITS is built to be maintained after the developer (Seth) departs. The model (FM v11; Op Stds v16
+ITS is built to be maintained after the developer (Seth) departs. The model (FM v11; Op Stds v18
 §44) has **three tiers**:
 
 1. **Tier 1 — self-heal.** Interval daemons recover via launchd re-invocation (one-shot-per-
@@ -150,7 +150,7 @@ not invented locally.
   at script entry. PAUSED or MAINTENANCE → exit cleanly. `@require_active` is an operator-convenience
   pause, **not** a security control — it is fail-open by design (sheet-unreachable / row-missing /
   invalid-value all resolve to ACTIVE-with-WARN), so the External Send Gate (Invariant 1), not the
-  kill switch, is the security boundary (Op Stds v16 §1).
+  kill switch, is the security boundary (Op Stds v18 §1).
 - **Error log decorator.** Wrap every script's main function in `@its_error_log(script_name=...)`.
   Catches unhandled exceptions, writes to `ITS_Errors` sheet, surfaces CRITICAL via email + SMS.
 - **Confidence scoring on extractions.** Default threshold 0.85. Below threshold → routes to
@@ -177,7 +177,7 @@ Phase 1 → 1.5 gate, then again at Florida → customer-site hardware shipment.
 | Module | State | Notes |
 |--------|-------|-------|
 | `shared/keychain.py` | Working, tested | macOS-only; uses `security` CLI. |
-| `shared/error_log.py` | Working, tested | Local file + `ITS_Errors` write (recursion-guarded; INFO env-gated via `ITS_ERROR_LOG_INFO=1`) + triple-fire CRITICAL (Resend email + Sentry). Each leg independently recursion-guarded + broad-except isolated; one leg failing never blocks the others. `Correlation_ID` threaded across all three; Resend-leg dedupe via `alert_dedupe` on `(script, error_code)` (Op Stds v16 §3.1). |
+| `shared/error_log.py` | Working, tested | Local file + `ITS_Errors` write (recursion-guarded; INFO env-gated via `ITS_ERROR_LOG_INFO=1`) + triple-fire CRITICAL (Resend email + Sentry). Each leg independently recursion-guarded + broad-except isolated; one leg failing never blocks the others. `Correlation_ID` threaded across all three; Resend-leg dedupe via `alert_dedupe` on `(script, error_code)` (Op Stds v18 §3.1). |
 | `shared/alert_dedupe.py` | Working, tested | Resend-leg dedupe state at `~/its/state/alert_dedupe.json` via `state_io` atomic-write + path-lock. Window from `alerting.dedupe_window_minutes` ITS_Config (default 60). **Fail-open on every state error incl. `StateLockTimeoutError`** — false positives (extra emails) OK, false negatives (missed wake-ups) NOT. Watchdog Check G consumes the summary API. |
 | `shared/state_io.py` | Working, tested | **Canonical entry point for all `~/its/state/` writes.** `atomic_write_json`/`atomic_write_text` = temp-file + `os.replace` (crash-safe); `with_path_lock` = non-blocking `fcntl` flock on a **sidecar `.lock`** (load-bearing: `os.replace` swaps the inode, invalidating a lock on the data file itself) + bounded retry → typed `StateLockTimeoutError`. Closes audit F19 + F23. |
 | `shared/resend_client.py` | Working, tested | Transactional-email client for **operator alerts only**. Key from Keychain (`ITS_RESEND_API_KEY`). NOT for customer email — that's `graph_client.send_mail` (Invariant 1). |
@@ -218,11 +218,11 @@ Phase 1 → 1.5 gate, then again at Florida → customer-site hardware shipment.
 7. Every extraction output passes through `shared.anomaly_logger.check()` before use.
 8. launchd plists live in `scripts/launchd/` as templates; `install.sh` copies them to
    `~/Library/LaunchAgents/` and loads them. **Polling daemons via launchd are canonical for
-   intake-bearing workstreams** (Op Stds v16 §31; `safety_reports/intake_poll.py` is the
+   intake-bearing workstreams** (Op Stds v18 §31; `safety_reports/intake_poll.py` is the
    canonical example). Shortcuts remain for manual operator-triggered jobs. Mail.app rules
    deprecated.
 9. **Ship the §43 successor-remediation runbook entry** for any capability with a Tier-2-reachable
-   failure mode (Op Stds v16 §43) — symptom, low-class repair steps, and escalate-to-Seth boundary.
+   failure mode (Op Stds v18 §43) — symptom, low-class repair steps, and escalate-to-Seth boundary.
    This is part of definition-of-done, not a follow-up. See "Maintenance & successor-operator model".
 
 ## Model selection
@@ -251,7 +251,7 @@ LangChain, Kubernetes.
 
 ITS_Daemon_Health sheet (System workspace / folder 04 — Daemons / sheet 4529351700729732) is
 the canonical operator-visibility surface for all polling daemons. One row per daemon,
-update-in-place per cycle. Push surface per Op Stds v16 §3.1 + §32.
+update-in-place per cycle. Push surface per Op Stds v18 §3.1 + §32.
 
 - Schema: 12 columns per `shared.sheet_ids.DAEMON_HEALTH_COLUMNS` dict. See
   `references/daemon-health-schema.md` in the its-blueprint repo for full schema reference.
@@ -394,4 +394,4 @@ Convention canonical in `../its-blueprint/CLAUDE.md` (planning layer wins). Don'
 For a **deeper cross-repo pass**, invoke `doc-reconciliation-auditor` (see [Agents](#agents)) — the heavy/on-demand counterpart to the lightweight session-close supersession check, not a replacement.
 
 If something here contradicts the planning project's canonical docs (Foundation Mission v11,
-Operational Standards v16), the planning project wins. Flag the inconsistency.
+Operational Standards v18), the planning project wins. Flag the inconsistency.
