@@ -601,3 +601,34 @@ def test_list_workspace_share_emails_live(_token_available):
     for e in emails:
         assert isinstance(e, str) and "@" in e
         assert e == e.lower().strip()  # normalized (lowercased + stripped)
+
+
+# ---- attach_pdf_to_row: live multipart upload + idempotent replace ------
+
+
+def test_attach_pdf_to_row_live_round_trip(_token_available):
+    """Live §30: attach a PDF to a row → list → re-attach (same name) → verify
+    exactly one current attachment. SimpleNamespace SDK mocks can't catch the
+    multipart file-upload body shape; this proves the live API accepts it AND that
+    the replace (delete-same-named-then-attach) leaves exactly one copy."""
+    sheet_id = smartsheet_client.create_sheet_in_folder(
+        sheet_ids.FOLDER_SYSTEM_CONFIG,
+        _sandbox_name("attach_pdf"),
+        [{"title": "Name", "type": "TEXT_NUMBER", "primary": True}],
+    )
+    try:
+        [row_id] = smartsheet_client.add_rows(sheet_id, [{"Name": "row-1"}])
+        pdf = b"%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF\n"
+        smartsheet_client.attach_pdf_to_row(sheet_id, row_id, "proof.pdf", pdf)
+        atts = smartsheet_client.get_client().Attachments.list_row_attachments(
+            sheet_id, row_id
+        ).data
+        assert [a.name for a in atts] == ["proof.pdf"]
+        # Re-attach with the SAME name → replace, not accumulate → still exactly one.
+        smartsheet_client.attach_pdf_to_row(sheet_id, row_id, "proof.pdf", pdf)
+        atts2 = smartsheet_client.get_client().Attachments.list_row_attachments(
+            sheet_id, row_id
+        ).data
+        assert [a.name for a in atts2] == ["proof.pdf"]
+    finally:
+        _delete_sheet_rest(sheet_id, _token_available)

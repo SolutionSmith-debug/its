@@ -46,6 +46,7 @@ def stub(mocker) -> dict[str, MagicMock]:
         "rollup": mocker.patch.object(weekly_generate.week_sheet, "get_rollup_row", return_value=None),
         "subs": mocker.patch.object(weekly_generate.week_sheet, "list_submission_rows", return_value=[_sub()]),
         "upsert_rollup": mocker.patch.object(weekly_generate.week_sheet, "upsert_rollup_row", return_value=99),
+        "attach": mocker.patch.object(weekly_generate.smartsheet_client, "attach_pdf_to_row", return_value=1),
         "download": mocker.patch.object(weekly_generate.box_client, "download_file", return_value=b"%PDF-1.4 one"),
         "merge": mocker.patch.object(weekly_generate.form_pdf, "merge_pdfs", return_value=b"%PDF-merged"),
         "get_root": mocker.patch.object(weekly_generate.project_routing, "get_folder_id", return_value="root1"),
@@ -101,6 +102,32 @@ def test_compile_merges_files_and_dual_writes(stub):
     assert stub["wsr"].call_args.kwargs["compiled_pdf_link"] == "https://app.box.com/file/pkt9"
     assert stub["wsr"].call_args.kwargs["job_id"] == "JOB-1"
     assert stub["wsr"].call_args.kwargs["recipient_to"] == "pm@evergreenmirror.com"
+
+
+def test_compile_attaches_packet_to_rollup_and_wsr_rows(stub):
+    weekly_generate._run_pipeline(week_start_override=ANCHOR)
+    # The merged packet is attached inline on BOTH the week-sheet Rollup row and
+    # the WSR_human_review row (the Box-link cells stay; this is the supplementary copy).
+    targets = {(c.args[0], c.args[1]) for c in stub["attach"].call_args_list}
+    assert (8001, 99) in targets                                   # week sheet ▸ Rollup row
+    assert (weekly_generate.wsr_review.SHEET_ID, 123) in targets   # WSR_human_review row
+    for c in stub["attach"].call_args_list:
+        assert c.args[3] == b"%PDF-merged" and c.args[2].endswith(".pdf")
+
+
+def test_empty_week_does_not_attach_a_packet(stub):
+    stub["subs"].return_value = []  # no submissions → no packet → nothing to attach
+    weekly_generate._run_pipeline(week_start_override=ANCHOR)
+    stub["attach"].assert_not_called()
+
+
+def test_attach_failure_does_not_fail_compile(stub):
+    # The inline attachment is supplementary (Box is the SoR) — a failure is a WARN,
+    # never a compile failure: the packet is already in Box + linked on the rows.
+    from shared.smartsheet_client import SmartsheetError
+    stub["attach"].side_effect = SmartsheetError("attach boom")
+    out = weekly_generate._run_pipeline(week_start_override=ANCHOR)
+    assert out["packets_compiled"] == 1 and out["wsr_written"] == 1  # compile unaffected
 
 
 def test_two_submissions_merged_in_order(stub):

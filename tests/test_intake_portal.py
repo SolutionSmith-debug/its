@@ -44,6 +44,7 @@ def stub(mocker) -> dict[str, MagicMock]:
         "ensure": mocker.patch.object(intake.week_sheet, "ensure_week_sheet", return_value=8001),
         "find": mocker.patch.object(intake.week_sheet, "find_submission_row", return_value=None),
         "write": mocker.patch.object(intake.week_sheet, "write_submission_row", return_value=555),
+        "attach": mocker.patch.object(intake.smartsheet_client, "attach_pdf_to_row", return_value=42),
         "supersede": mocker.patch.object(intake.week_sheet, "supersede_row", return_value=True),
         "load_def": mocker.patch.object(intake.form_pdf, "load_definition", return_value=DEFINITION),
         "render": mocker.patch.object(intake.form_pdf, "render_submission_pdf", return_value=b"%PDF-1.4"),
@@ -72,6 +73,23 @@ def test_success_files_box_and_sheet_returns_processed(stub):
     assert kwargs["box_link"] == "https://app.box.com/file/f9"
     assert kwargs["form_code"] == "jha-v1"
     stub["review"].assert_not_called()
+
+
+def test_success_attaches_rendered_pdf_to_submission_row(stub):
+    intake.process_portal_submission(dict(BASE_SUB))
+    stub["attach"].assert_called_once()
+    sheet_id, row_id, filename, pdf_bytes = stub["attach"].call_args.args
+    assert sheet_id == 8001 and row_id == 555   # the week sheet + the submission row id
+    assert filename.endswith(".pdf")
+    assert pdf_bytes == b"%PDF-1.4"             # the rendered bytes, inline on the row
+
+
+def test_attach_failure_does_not_fail_filing(stub):
+    # The inline attachment is supplementary (Box is the SoR) — a failure is a WARN,
+    # never a filing failure.
+    stub["attach"].side_effect = SmartsheetError("attach boom")
+    result = intake.process_portal_submission(dict(BASE_SUB))
+    assert result.status == "processed"
 
 
 def test_success_uploads_to_category_subfolder_named_by_date_and_type(stub):
