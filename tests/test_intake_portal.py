@@ -49,6 +49,7 @@ def stub(mocker) -> dict[str, MagicMock]:
         "load_def": mocker.patch.object(intake.form_pdf, "load_definition", return_value=DEFINITION),
         "render": mocker.patch.object(intake.form_pdf, "render_submission_pdf", return_value=b"%PDF-1.4"),
         "incomplete": mocker.patch.object(intake.form_pdf, "incomplete_checklist_items", return_value=[]),
+        "box_root": mocker.patch.object(intake, "_portal_box_root", return_value=""),  # gated OFF → legacy
         "get_folder_id": mocker.patch.object(intake.project_routing, "get_folder_id", return_value="root1"),
         "resolve_sub": mocker.patch.object(intake, "_resolve_box_subfolder", return_value="leaf1"),
         "upload": mocker.patch.object(intake.box_client, "upload_bytes", return_value={"id": "f9", "name": "x", "size": 5}),
@@ -113,6 +114,35 @@ def test_box_fallback_when_category_subfolder_missing(stub):
     assert stub["upload"].call_args.args[0] == "fb1"
     notes = stub["write"].call_args.kwargs["notes"]
     assert "fallback" in notes
+
+
+# ---- Box mirror tree (PR-K) ----------------------------------------------
+
+
+def test_mirror_tree_files_into_root_job_week_when_configured(stub):
+    stub["box_root"].return_value = "ROOT9"  # mirror tree ON
+    stub["get_or_create"].side_effect = ["job9", "week9"]  # ROOT→job, job→week
+    result = intake.process_portal_submission(dict(BASE_SUB))
+    assert result.status == "processed"
+    calls = stub["get_or_create"].call_args_list
+    assert calls[0].args == ("ROOT9", "Bradley 1")  # ROOT → per-job folder
+    assert calls[1].args == ("job9", "week of 2026-05-30")  # job → per-week folder
+    assert stub["upload"].call_args.args[0] == "week9"  # PDF filed into the week folder
+    assert "[box:mirror_tree]" in stub["write"].call_args.kwargs["notes"]
+    # Legacy category path bypassed entirely.
+    stub["get_folder_id"].assert_not_called()
+    stub["resolve_sub"].assert_not_called()
+
+
+def test_mirror_tree_new_job_does_not_strand(stub):
+    # Headline fix: with the root configured, a brand-new job (no project_routing
+    # entry) self-provisions in Box — NEVER strands with project_box_root_unresolved.
+    stub["box_root"].return_value = "ROOT9"
+    stub["get_folder_id"].return_value = ""  # new job: no legacy routing
+    stub["get_or_create"].side_effect = ["jobN", "weekN"]
+    result = intake.process_portal_submission(dict(BASE_SUB))
+    assert result.status == "processed"
+    stub["review"].assert_not_called()
 
 
 # ---- dedupe (re-pull) ----------------------------------------------------
@@ -294,24 +324,38 @@ def test_file_portal_pdf_suffix_conflict_no_recovery_reraises(mocker):
 
 
 def test_resolve_box_folder_category_hit(mocker):
+    mocker.patch.object(intake, "_portal_box_root", return_value="")  # legacy path
     mocker.patch.object(intake.project_routing, "get_folder_id", return_value="root1")
     mocker.patch.object(intake, "_resolve_box_subfolder", return_value="leaf1")
-    fid, note = intake._resolve_portal_box_folder("Bradley 1", "jha")
+    fid, note = intake._resolve_portal_box_folder("Bradley 1", "jha", date(2026, 6, 5))
     assert fid == "leaf1" and note.startswith("category:")
 
 
 def test_resolve_box_folder_unknown_parent_uses_fallback(mocker):
+    mocker.patch.object(intake, "_portal_box_root", return_value="")
     mocker.patch.object(intake.project_routing, "get_folder_id", return_value="root1")
     goc = mocker.patch.object(intake.box_client, "get_or_create_folder", return_value="fb1")
-    fid, note = intake._resolve_portal_box_folder("Bradley 1", "unknown-parent")
+    fid, note = intake._resolve_portal_box_folder("Bradley 1", "unknown-parent", date(2026, 6, 5))
     assert fid == "fb1" and "fallback" in note
     goc.assert_called_once_with("root1", intake.PORTAL_BOX_FALLBACK_FOLDER)
 
 
 def test_resolve_box_folder_unresolved_root_returns_none(mocker):
+    mocker.patch.object(intake, "_portal_box_root", return_value="")
     mocker.patch.object(intake.project_routing, "get_folder_id", return_value="")
-    fid, note = intake._resolve_portal_box_folder("Bradley 1", "jha")
+    fid, note = intake._resolve_portal_box_folder("Bradley 1", "jha", date(2026, 6, 5))
     assert fid is None and note == "project_box_root_unresolved"
+
+
+def test_resolve_box_folder_mirror_tree_when_root_set(mocker):
+    mocker.patch.object(intake, "_portal_box_root", return_value="ROOT9")
+    goc = mocker.patch.object(
+        intake.box_client, "get_or_create_folder", side_effect=["jobX", "weekX"]
+    )
+    fid, note = intake._resolve_portal_box_folder("A/B Site", "jha", date(2026, 6, 5))
+    assert fid == "weekX" and note == "mirror_tree"
+    assert goc.call_args_list[0].args == ("ROOT9", "A-B Site")  # sanitized job folder
+    assert goc.call_args_list[1].args == ("jobX", "week of 2026-05-30")
 
 
 # ---- _portal_review payload completeness ----------------------------------

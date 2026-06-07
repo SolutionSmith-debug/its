@@ -4,6 +4,20 @@ Items deliberately deferred. Each carries the rationale for deferral and the tri
 
 When to add an entry: a session deliberately chooses preservation-over-refactor (per Op Stds v11 §14), discovers an external-API constraint that forced a workaround, or defers a non-trivial cleanup that's larger than the current session can absorb. When to mark CLOSED: the underlying item is resolved in a commit; preserve the entry with resolution detail rather than deleting (history is cheap, context is expensive).
 
+## Pre-mirror-tree portal Box filings are sandbox orphans [OPEN 2026-06-07]
+
+PR-K mirrors the Smartsheet schema in Box (`ROOT → per-job → per-week → PDFs`),
+replacing the legacy `project_routing` → category-subfolder layout for the portal
+path. Submissions filed BEFORE the operator activates the mirror tree (sets
+`safety_naming.CFG_BOX_PORTAL_ROOT`) live under the old category subfolders (e.g.
+`Bradley 1 ▸ … ▸ 05. Tool Box Talks`). These are **pre-launch sandbox orphans** — no
+migration is provided (validation-tenant data, pre-customer-1). Box keeps both; the
+mirror tree simply files NEW submissions into the new tree once activated.
+
+**Repair:** none required (sandbox). At a real cutover, decide per-customer whether
+to leave or hand-move the handful of pre-activation PDFs. **Revisit when:** the Box
+root is activated for a live customer tenant.
+
 ## Orphan Smartsheet week sheet from the pre-relocation smoke [OPEN 2026-06-06]
 
 The 2026-06-06 deploy smoke filed one test JHA (Bradley 1 / JOB-000001) through the pre-relocation `week_sheet.ensure_week_sheet`, creating week sheet **`1966431334780804`** in the legacy Field Reports "Bradley 1" folder (Forefront Portfolio workspace) instead of the ITS — Safety Portal workspace. PR-C (filing relocation) moved portal filing to auto-provisioned per-job folders under `WORKSPACE_SAFETY_PORTAL`, so that sheet is now an **orphan** — nothing reads or writes it. Harmless but stray.
