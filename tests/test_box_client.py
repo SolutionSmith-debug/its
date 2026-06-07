@@ -555,3 +555,37 @@ def test_get_or_create_folder_409_but_refind_still_misses_reraises(mocker):
     )
     with pytest.raises(BoxConflictError):
         box_client.get_or_create_folder("root", "ITS Week of X")
+
+
+# ---- upload_bytes_or_new_version (PR-G: version-on-conflict) --------------
+
+
+def test_upload_bytes_or_new_version_no_conflict_passes_through(mocker):
+    up = mocker.patch.object(
+        box_client, "upload_bytes", return_value={"id": "1", "name": "x.pdf", "size": 3}
+    )
+    out = box_client.upload_bytes_or_new_version("F", "x.pdf", b"abc")
+    assert out == {"id": "1", "name": "x.pdf", "size": 3}
+    up.assert_called_once_with("F", "x.pdf", b"abc")
+
+
+def test_upload_bytes_or_new_version_conflict_uploads_new_version(mocker):
+    mocker.patch.object(box_client, "upload_bytes", side_effect=BoxConflictError("409"))
+    mocker.patch.object(box_client, "_find_child_file", return_value="999")
+    client = MagicMock()
+    client.file.return_value.update_contents_with_stream.return_value = SimpleNamespace(
+        id="999", name="x.pdf", size=5
+    )
+    mocker.patch.object(box_client, "get_client", return_value=client)
+    out = box_client.upload_bytes_or_new_version("F", "x.pdf", b"abcde")
+    assert out == {"id": "999", "name": "x.pdf", "size": 5}  # stable id = same file, new version
+    client.file.assert_called_once_with("999")
+    client.file.return_value.update_contents_with_stream.assert_called_once()
+
+
+def test_upload_bytes_or_new_version_conflict_but_file_vanished_reraises(mocker):
+    """A 409 whose conflicting file then can't be found (race) re-raises, never silent."""
+    mocker.patch.object(box_client, "upload_bytes", side_effect=BoxConflictError("409"))
+    mocker.patch.object(box_client, "_find_child_file", return_value=None)
+    with pytest.raises(BoxConflictError):
+        box_client.upload_bytes_or_new_version("F", "x.pdf", b"abc")
