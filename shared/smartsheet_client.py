@@ -254,7 +254,14 @@ def _resolve_cells(sheet_id: int, values: dict[str, Any]) -> list[Any]:
     On any title that isn't in the cached column map, refetches the map once
     before giving up — see module docstring for the rename-breaks-cache
     failure mode.
+
+    Optional per-cell formatting: a `_formats` meta key (`{title: format_str}`,
+    where `format_str` is a Smartsheet format-descriptor string) attaches that
+    format to the matching cell. `_`-prefixed keys are meta — never treated as
+    column titles (so callers can pass `_formats` alongside the cell values).
     """
+    formats: dict[str, str] = values.get("_formats") or {}
+    values = {k: v for k, v in values.items() if not k.startswith("_")}
     columns = _column_map(sheet_id)
     if any(title not in columns for title in values):
         invalidate_column_cache(sheet_id)
@@ -267,9 +274,10 @@ def _resolve_cells(sheet_id: int, values: dict[str, Any]) -> list[Any]:
                 f"Column {title!r} not found in sheet {sheet_id}. "
                 f"Available: {sorted(columns)}"
             )
-        cells.append(
-            smartsheet.models.Cell({"column_id": columns[title], "value": value})
-        )
+        cell_dict: dict[str, Any] = {"column_id": columns[title], "value": value}
+        if title in formats:
+            cell_dict["format"] = formats[title]
+        cells.append(smartsheet.models.Cell(cell_dict))
     return cells
 
 
@@ -1106,6 +1114,48 @@ def create_sheet_in_folder(
     except sdk_exc.SmartsheetException as e:
         raise _translate(e) from e
     return int(result.result.id)
+
+
+@_breaker_guard
+def apply_column_styles(sheet_id: int, styles: list[dict[str, Any]]) -> None:
+    """Apply column WIDTH / default-FORMAT to columns post-create (cosmetic only).
+
+    Smartsheet IGNORES `width` / `format` on sheet creation (the `POST` path) —
+    they're honored only on a column UPDATE (`PUT`). So week-sheet styling is a
+    two-step: create with `create_sheet_in_folder`, then style with THIS. Each
+    `styles` entry is `{"title": str, "width"?: int, "format"?: str}` where
+    `format` is a Smartsheet format-descriptor string (comma-separated positions:
+    2=bold, 8=textColor, 9=backgroundColor — colors index the account palette from
+    `GET /serverinfo`). Titles resolve to column id + index via the live column
+    list (`index` is required on the update model). No-op for an empty list.
+
+    Cosmetic-only: no data change, no external send. Raises the typed
+    `SmartsheetError` hierarchy on failure (e.g. a 403 read-only-token probe).
+    """
+    if not styles:
+        return
+    try:
+        cols = get_client().Sheets.get_columns(sheet_id, include_all=True).data
+    except sdk_exc.SmartsheetException as e:
+        raise _translate(e) from e
+    by_title = {c.title: c for c in cols}
+    for style in styles:
+        title = style["title"]
+        col = by_title.get(title)
+        if col is None:
+            raise KeyError(f"Column {title!r} not found in sheet {sheet_id} for styling")
+        # `format` must be set via the model ATTRIBUTE — the Column dict constructor
+        # silently drops a `"format"` key (verified live; width is fine either way).
+        model = smartsheet.models.Column()
+        model.index = col.index
+        if "width" in style:
+            model.width = style["width"]
+        if "format" in style:
+            model.format = style["format"]
+        try:
+            get_client().Sheets.update_column(sheet_id, col.id, model)
+        except sdk_exc.SmartsheetException as e:
+            raise _translate(e) from e
 
 
 @_breaker_guard

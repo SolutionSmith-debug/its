@@ -49,3 +49,50 @@ def test_get_or_create_folder_and_upload_bytes_round_trip(_client):
         if file_id is not None:
             _client.file(file_id).delete()
         _client.folder(folder_id).delete(recursive=True)
+
+
+def test_upload_bytes_or_new_version_versions_on_conflict(_client):
+    """Live §30 (PR-G): a same-named re-upload lands a NEW Box VERSION (stable file
+    id), not a 409 — the Compile-Now recompile path. Proves the conflict →
+    update_contents branch against the live API."""
+    folder_id = box_client.get_or_create_folder("0", TEST_FOLDER)
+    file_id = None
+    try:
+        name = "ITS-version-conflict-probe.pdf"
+        first = box_client.upload_bytes_or_new_version(folder_id, name, b"%PDF-1.4 v1\n")
+        file_id = first["id"]
+        # Same name again → NEW VERSION of the SAME file (not a 409, not a 2nd file).
+        second = box_client.upload_bytes_or_new_version(folder_id, name, b"%PDF-1.4 v2 longer\n")
+        assert second["id"] == file_id  # stable file id across versions
+        # Exactly one file with that name in the folder (no duplicate / suffix).
+        names = [
+            it["name"]
+            for it in box_client.list_folder(folder_id, limit=1000)
+            if it["type"] == "file"
+        ]
+        assert names.count(name) == 1
+        # The current content is v2 (the version replaced, not appended).
+        assert box_client.download_file(file_id) == b"%PDF-1.4 v2 longer\n"
+    finally:
+        if file_id is not None:
+            _client.file(file_id).delete()
+        _client.folder(folder_id).delete(recursive=True)
+
+
+def test_mirror_tree_nesting_round_trip(_client):
+    """Live §30 (PR-K): the ROOT → per-job → per-week nesting the portal mirror tree
+    files into — get_or_create_folder under a throwaway root, twice, idempotent. Also
+    the permission probe: a 403 here ⇒ the Box app lacks access to the configured root."""
+    root = box_client.get_or_create_folder("0", TEST_FOLDER)
+    try:
+        job = box_client.get_or_create_folder(root, "Bradley 1")
+        week = box_client.get_or_create_folder(job, "week of 2026-05-30")
+        assert job != root and week != job
+        # Idempotent: re-resolving returns the SAME folders (no duplicates).
+        assert box_client.get_or_create_folder(root, "Bradley 1") == job
+        assert box_client.get_or_create_folder(job, "week of 2026-05-30") == week
+        # `week` is genuinely nested under `job`.
+        job_children = {it["name"]: it["id"] for it in box_client.list_folder(job)}
+        assert job_children.get("week of 2026-05-30") == week
+    finally:
+        _client.folder(root).delete(recursive=True)

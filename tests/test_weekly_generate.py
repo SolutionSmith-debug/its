@@ -49,6 +49,7 @@ def stub(mocker) -> dict[str, MagicMock]:
         "attach": mocker.patch.object(weekly_generate.smartsheet_client, "attach_pdf_to_row", return_value=1),
         "download": mocker.patch.object(weekly_generate.box_client, "download_file", return_value=b"%PDF-1.4 one"),
         "merge": mocker.patch.object(weekly_generate.form_pdf, "merge_pdfs", return_value=b"%PDF-merged"),
+        "box_root": mocker.patch.object(weekly_generate, "_portal_box_root", return_value=""),  # gated OFF → legacy
         "get_root": mocker.patch.object(weekly_generate.project_routing, "get_folder_id", return_value="root1"),
         "mkfolder": mocker.patch.object(weekly_generate.box_client, "get_or_create_folder", return_value="wk1"),
         "upload": mocker.patch.object(weekly_generate.box_client, "upload_bytes", return_value={"id": "pkt9", "name": "x", "size": 9}),
@@ -102,6 +103,19 @@ def test_compile_merges_files_and_dual_writes(stub):
     assert stub["wsr"].call_args.kwargs["compiled_pdf_link"] == "https://app.box.com/file/pkt9"
     assert stub["wsr"].call_args.kwargs["job_id"] == "JOB-1"
     assert stub["wsr"].call_args.kwargs["recipient_to"] == "pm@evergreenmirror.com"
+
+
+def test_compile_files_packet_into_mirror_tree_when_root_configured(stub):
+    # PR-K: with the Box root configured, the packet files into the SAME
+    # ROOT → per-job → per-week tree as the submission PDFs (legacy bypassed).
+    stub["box_root"].return_value = "ROOT9"
+    stub["mkfolder"].side_effect = ["jobP", "weekP"]  # ROOT→job, job→week
+    weekly_generate._run_pipeline(week_start_override=ANCHOR)
+    calls = stub["mkfolder"].call_args_list
+    assert calls[0].args[0] == "ROOT9"  # ROOT → per-job folder
+    assert calls[1].args[0] == "jobP" and calls[1].args[1].startswith("week of ")
+    assert stub["upload"].call_args.args[0] == "weekP"  # packet into the week folder
+    stub["get_root"].assert_not_called()  # legacy project_routing bypassed
 
 
 def test_compile_attaches_packet_to_rollup_and_wsr_rows(stub):

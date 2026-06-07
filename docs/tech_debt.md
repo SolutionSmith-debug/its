@@ -4,6 +4,38 @@ Items deliberately deferred. Each carries the rationale for deferral and the tri
 
 When to add an entry: a session deliberately chooses preservation-over-refactor (per Op Stds v11 §14), discovers an external-API constraint that forced a workaround, or defers a non-trivial cleanup that's larger than the current session can absorb. When to mark CLOSED: the underlying item is resolved in a commit; preserve the entry with resolution detail rather than deleting (history is cheap, context is expensive).
 
+## Smartsheet API constraint: column FORMAT must be set via model attribute, not dict constructor [OPEN 2026-06-07]
+
+**Verified live (PR #187, 2026-06-07).** When using the Smartsheet Python SDK to create or update a column, the column **format string** (font, size, bold, color, etc.) must be assigned via the model **attribute** (`column.format = "..."`) — passing `format` as a key in the dict constructor (`smartsheet.models.Column({"format": "..."})`) silently drops the value. Column **width** works via either path (dict or attribute). The same per-cell format DOES work via the `Cell` dict constructor (`_resolve_cells` attaches it via the `_formats` meta-key extension).
+
+**Palette index source:** `GET /2.0/serverinfo` → `.formats.color` (array, index → hex). Verified live: 38 = `#237F2E` (dark green), 7 = `#E7F5E9` (light green), 18 = `#E5E5E5` (gray). `dateFormat` enum at `.formats.dateFormat`. Format-descriptor positions: 2=bold, 8=textColor, 9=backgroundColor, 16=dateFormat.
+
+**Impact:** code that sets a column format via the dict constructor silently succeeds (200) but the column stays unformatted. Always use the attribute path for column format.
+
+**Tag:** `smartsheet`, `sdk-vs-live`, `styling`. **Revisit when:** any new column-format code; `smartsheet_client.apply_column_styles` already uses the attribute path.
+
+## Safety Portal — admin route (PR-H) blocked on operator CodeQL dismissal [OPEN 2026-06-07]
+
+PR-H (#185) adds the admin route (user provision/reset/disable/enable/list + per-request D1 session revocation + migration 0006 `users.disabled` + `shared/portal_client.admin_request` + `safety_reports/portal_admin.py` CLI). CI is GREEN except 2 CodeQL `py/clear-text-logging` alerts (alert #11 `portal_admin.py:52`, alert #13 `portal_admin.py:148`) that are FALSE POSITIVES — interprocedural imprecision: the bearer token taints `admin_request`'s return value; `list-users` and `_fail` print that return; CodeQL flags all prints of it. The refactor already cleared 1 of 3 (stopped echoing the raw response dict); the remaining 2 are unfixable without contorting correct code.
+
+**Resolution required (operator):** dismiss alerts #11 + #13 in the GitHub code-scanning UI as "False positive" (CC is hook-blocked from dismissing) → `gh pr update-branch 185` → merge. **Note:** migration 0006 MUST apply to the live D1 BEFORE the Worker redeploy: `wrangler d1 migrations apply` → `npm run deploy` → `portal_admin add-user`.
+
+**Tag:** `safety-portal`, `phase-7`, `auth`, `codeql`.
+
+## Pre-mirror-tree portal Box filings are sandbox orphans [OPEN 2026-06-07]
+
+PR-K mirrors the Smartsheet schema in Box (`ROOT → per-job → per-week → PDFs`),
+replacing the legacy `project_routing` → category-subfolder layout for the portal
+path. Submissions filed BEFORE the operator activates the mirror tree (sets
+`safety_naming.CFG_BOX_PORTAL_ROOT`) live under the old category subfolders (e.g.
+`Bradley 1 ▸ … ▸ 05. Tool Box Talks`). These are **pre-launch sandbox orphans** — no
+migration is provided (validation-tenant data, pre-customer-1). Box keeps both; the
+mirror tree simply files NEW submissions into the new tree once activated.
+
+**Repair:** none required (sandbox). At a real cutover, decide per-customer whether
+to leave or hand-move the handful of pre-activation PDFs. **Revisit when:** the Box
+root is activated for a live customer tenant.
+
 ## Orphan Smartsheet week sheet from the pre-relocation smoke [OPEN 2026-06-06]
 
 The 2026-06-06 deploy smoke filed one test JHA (Bradley 1 / JOB-000001) through the pre-relocation `week_sheet.ensure_week_sheet`, creating week sheet **`1966431334780804`** in the legacy Field Reports "Bradley 1" folder (Forefront Portfolio workspace) instead of the ITS — Safety Portal workspace. PR-C (filing relocation) moved portal filing to auto-provisioned per-job folders under `WORKSPACE_SAFETY_PORTAL`, so that sheet is now an **orphan** — nothing reads or writes it. Harmless but stray.

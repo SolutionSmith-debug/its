@@ -53,7 +53,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from safety_reports import form_pdf, week_sheet, wsr_review
+from safety_reports import form_pdf, safety_naming, week_sheet, wsr_review
 from shared import (
     active_jobs,
     box_client,
@@ -265,7 +265,11 @@ def _compile_job_week(
     if pdfs:
         compiled = form_pdf.merge_pdfs(pdfs)
         folder_id = _ensure_its_week_folder(project_name, week, correlation_id)
-        meta = box_client.upload_bytes(
+        # A recompile (Compile Now / a late submission) re-produces the SAME packet
+        # filename — `upload_bytes` 409s on that, which used to route the recompile to
+        # the Review Queue and break Compile Now (PR-G). Upload a new Box VERSION
+        # instead — preserving the packet's file-version history (system of record).
+        meta = box_client.upload_bytes_or_new_version(
             folder_id, _packet_filename(project_name, week), compiled
         )
         packet_link = f"https://app.box.com/file/{meta['id']}"
@@ -304,10 +308,36 @@ def _compile_job_week(
         _attach_pdf_best_effort(wsr_review.SHEET_ID, wsr_row_id, packet_name, compiled, correlation_id)
 
 
+def _portal_box_root() -> str:
+    """The Box "ITS Safety Portal" root folder ID (ITS_Config, config-GATED, PR-K).
+
+    Blank/unset → the mirror tree is OFF; the packet files into the legacy
+    `project_routing` → ITS-prefixed week folder (so pulling PR-K is inert). The
+    operator sets `safety_naming.CFG_BOX_PORTAL_ROOT` to activate. Mirrors
+    `intake._portal_box_root` (same config key → same root for both writers).
+    """
+    return _read_str_setting(safety_naming.CFG_BOX_PORTAL_ROOT, "").strip()
+
+
 def _ensure_its_week_folder(
     project_name: str, week: safety_week.SafetyWeek, correlation_id: str
 ) -> str:
-    """Resolve the job's Box root + get-or-create the ITS-prefixed week folder."""
+    """Resolve the Box folder the compiled packet files into.
+
+    MIRROR-TREE path (PR-K, when `_portal_box_root()` is set): the SAME
+    `ROOT → per-job folder → per-week folder` tree the per-submission PDFs land in
+    (`safety_naming.job_folder_name` / `week_label`) — the packet is a sibling of the
+    week's submission PDFs, mirroring the week sheet holding submission rows + the
+    rollup. LEGACY path (gated OFF): `project_routing` root → ITS-prefixed week folder.
+    """
+    portal_root = _portal_box_root()
+    if portal_root:
+        job_folder = box_client.get_or_create_folder(
+            portal_root, safety_naming.job_folder_name(project_name)
+        )
+        return box_client.get_or_create_folder(
+            job_folder, safety_naming.week_label(week.start)
+        )
     root = project_routing.get_folder_id(project_name)
     if not root:
         # Surfaced to the fence → Review Queue (a config gap, not a silent skip).

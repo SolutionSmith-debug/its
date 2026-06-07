@@ -47,6 +47,9 @@ def stub_ss(mocker) -> dict[str, MagicMock]:
         "get_rows": mocker.patch.object(week_sheet.smartsheet_client, "get_rows"),
         "add_rows": mocker.patch.object(week_sheet.smartsheet_client, "add_rows"),
         "update_rows": mocker.patch.object(week_sheet.smartsheet_client, "update_rows"),
+        "apply_styles": mocker.patch.object(
+            week_sheet.smartsheet_client, "apply_column_styles"
+        ),
     }
 
 
@@ -101,6 +104,24 @@ def test_ensure_week_sheet_missing_creates_with_schema(stub_ss):
     # exactly one primary, and it is TEXT_NUMBER
     primaries = [c for c in cols if c.get("primary")]
     assert len(primaries) == 1 and primaries[0]["type"] == "TEXT_NUMBER"
+    # Cosmetic styling applied to the NEW sheet (widths + format), best-effort.
+    stub_ss["apply_styles"].assert_called_once_with(8002, week_sheet.WEEK_SHEET_STYLES)
+
+
+def test_ensure_week_sheet_existing_does_not_restyle(stub_ss):
+    stub_ss["find_sheet"].return_value = 8001  # already exists → find path
+    ensure_week_sheet("Bradley 1", date(2026, 6, 5))
+    stub_ss["apply_styles"].assert_not_called()
+
+
+def test_ensure_week_sheet_styling_failure_does_not_block(stub_ss, stub_error_log):
+    # Cosmetic: a styling failure WARNs but the sheet id is still returned.
+    stub_ss["find_folder"].return_value = 4242
+    stub_ss["find_sheet"].side_effect = [None, None]
+    stub_ss["create_sheet"].return_value = 8002
+    stub_ss["apply_styles"].side_effect = week_sheet.smartsheet_client.SmartsheetError("boom")
+    assert ensure_week_sheet("Bradley 1", date(2026, 6, 5)) == 8002
+    assert stub_error_log.called
 
 
 def test_ensure_week_sheet_race_warns_and_uses_first_match(stub_ss, stub_error_log):
@@ -233,6 +254,7 @@ def test_write_submission_row_payload_and_label(stub_ss):
     assert row[COL_STATUS] == "Active"
     assert row[COL_SUBMISSION_PDF] == "https://app.box.com/file/7"
     assert row["Notes"] == "[incomplete: 1]"
+    assert row["_formats"][COL_STATUS] == week_sheet.STATUS_ACTIVE_FMT  # green status cell
 
 
 # ---- supersede_row (amend) -----------------------------------------------
@@ -249,6 +271,7 @@ def test_supersede_row_marks_prior_superseded(stub_ss):
     assert upd["_row_id"] == 42
     assert upd[COL_STATUS] == STATUS_SUPERSEDED
     assert upd[COL_SUPERSEDED_BY] == "u-new"
+    assert upd["_formats"][COL_STATUS] == week_sheet.STATUS_SUPERSEDED_FMT  # gray status cell
 
 
 def test_supersede_row_missing_prior_returns_false_without_update(stub_ss):
