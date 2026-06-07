@@ -99,6 +99,48 @@ WEEK_SHEET_COLUMNS: list[dict[str, Any]] = [
     {"title": COL_COMPILE_NOW, "type": "CHECKBOX"},
 ]
 
+# ---- Cosmetic styling (PR-I) — Smartsheet format-descriptor strings + widths.
+# Colors index the account palette (GET /serverinfo): 7=#E7F5E9 light green,
+# 18=#E5E5E5 light gray, 38=#237F2E dark green. Format positions: 2=bold,
+# 8=textColor, 9=backgroundColor, 16=dateFormat (2=MMM_D_YYYY). These APPROXIMATE
+# the Evergreen brand green #3a5a40 — Smartsheet is palette-only (no exact hex);
+# adjust the indices here to retune. Applied AFTER create (the API ignores
+# width/format at POST — see smartsheet_client.apply_column_styles).
+FMT_PRIMARY = ",,1,,,,,,38,7,,,,,,,"  # bold + dark-green text + light-green bg
+FMT_DATE = ",,,,,,,,,,,,,,,,2"  # MMM_D_YYYY date display
+STATUS_ACTIVE_FMT = ",,,,,,,,,7,,,,,,,"  # light-green bg
+STATUS_SUPERSEDED_FMT = ",,,,,,,,,18,,,,,,,"  # light-gray bg
+
+WEEK_SHEET_STYLES: list[dict[str, Any]] = [
+    {"title": COL_SUBMISSION, "width": 320, "format": FMT_PRIMARY},
+    {"title": COL_SUBMISSION_UUID, "width": 90},
+    {"title": COL_FORM_CODE, "width": 180},
+    {"title": COL_WORK_DATE, "width": 110, "format": FMT_DATE},
+    {"title": COL_SUBMITTED_AT, "width": 160},
+    {"title": COL_SUBMISSION_PDF, "width": 260},
+    {"title": COL_ROW_TYPE, "width": 90},
+    {"title": COL_STATUS, "width": 110},
+    {"title": COL_SUPERSEDED_BY, "width": 120},
+    {"title": COL_NOTES, "width": 300},
+    {"title": COL_COMPILE_NOW, "width": 100},
+]
+
+
+def _apply_styles_best_effort(sheet_id: int) -> None:
+    """Apply `WEEK_SHEET_STYLES` to a freshly-created week sheet, BEST-EFFORT.
+
+    Cosmetic only — a styling failure WARNs (never silent) but must NOT fail the
+    already-created sheet (the data path is unaffected)."""
+    try:
+        smartsheet_client.apply_column_styles(sheet_id, WEEK_SHEET_STYLES)
+    except Exception as exc:  # noqa: BLE001 — cosmetic; never fail sheet creation
+        error_log.log(
+            Severity.WARN,
+            SCRIPT_NAME,
+            f"week-sheet styling failed (sheet {sheet_id}): {type(exc).__name__}: {exc!r}",
+            error_code="week_sheet_style_failed",
+        )
+
 
 def week_sheet_name(project_name: str, work_date: date) -> str:
     """Return the canonical week-sheet name for a (project, work-date).
@@ -201,6 +243,7 @@ def ensure_week_sheet(project_name: str, work_date: date) -> int:
             error_code="week_sheet_race_duplicate",
         )
         return post_find
+    _apply_styles_best_effort(sheet_id)  # cosmetic; only the create path (not find)
     return sheet_id
 
 
@@ -254,6 +297,7 @@ def write_submission_row(
                 COL_ROW_TYPE: ROW_TYPE_SUBMISSION,
                 COL_STATUS: STATUS_ACTIVE,
                 COL_NOTES: notes,
+                "_formats": {COL_STATUS: STATUS_ACTIVE_FMT},  # green status cell
             }
         ],
     )
@@ -278,6 +322,7 @@ def supersede_row(sheet_id: int, prior_uuid: str, new_uuid: str) -> bool:
                 "_row_id": prior["_row_id"],
                 COL_STATUS: STATUS_SUPERSEDED,
                 COL_SUPERSEDED_BY: new_uuid,
+                "_formats": {COL_STATUS: STATUS_SUPERSEDED_FMT},  # gray status cell
             }
         ],
     )

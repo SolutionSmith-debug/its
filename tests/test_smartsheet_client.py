@@ -174,6 +174,57 @@ def test_invalidate_column_cache_targeted_and_global(mocker):
     assert smartsheet_client._column_maps == {}
 
 
+# ---- _resolve_cells per-cell format + apply_column_styles (PR-I) ----------
+
+
+def test_resolve_cells_attaches_per_cell_format_and_skips_meta():
+    smartsheet_client._column_maps[1] = {"Name": 6, "Status": 5}
+    try:
+        cells = smartsheet_client._resolve_cells(
+            1,
+            {"Name": "x", "Status": "Active",
+             "_formats": {"Status": ",,,,,,,,,7,,,,,,,"}, "_row_id": 9},
+        )
+    finally:
+        smartsheet_client._column_maps.clear()
+    by_col = {c.column_id: c for c in cells}
+    # _formats + _row_id are meta — never columns.
+    assert set(by_col) == {6, 5}
+    assert by_col[5].format == ",,,,,,,,,7,,,,,,,"  # Status carries the format
+    assert getattr(by_col[6], "format", None) in (None, "")  # Name unformatted
+
+
+def test_apply_column_styles_sets_width_and_format(mocker):
+    client = _install_client(mocker)
+    client.Sheets.get_columns.return_value = SimpleNamespace(data=[
+        SimpleNamespace(title="Submission", id=11, index=0),
+        SimpleNamespace(title="Status", id=12, index=7),
+    ])
+    smartsheet_client.apply_column_styles(1, [
+        {"title": "Submission", "width": 320, "format": ",,1,,,,,,38,7,,,,,,,"},
+        {"title": "Status", "width": 110},
+    ])
+    assert client.Sheets.update_column.call_count == 2
+    sheet_id, col_id, model = client.Sheets.update_column.call_args_list[0].args
+    assert sheet_id == 1 and col_id == 11
+    assert model.width == 320 and model.format == ",,1,,,,,,38,7,,,,,,,"
+
+
+def test_apply_column_styles_empty_is_noop(mocker):
+    client = _install_client(mocker)
+    smartsheet_client.apply_column_styles(1, [])
+    client.Sheets.get_columns.assert_not_called()
+
+
+def test_apply_column_styles_unknown_title_raises(mocker):
+    client = _install_client(mocker)
+    client.Sheets.get_columns.return_value = SimpleNamespace(
+        data=[SimpleNamespace(title="X", id=1, index=0)]
+    )
+    with pytest.raises(KeyError):
+        smartsheet_client.apply_column_styles(1, [{"title": "Nope", "width": 100}])
+
+
 # ---- get_rows + filtering -------------------------------------------------
 
 
