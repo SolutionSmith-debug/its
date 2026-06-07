@@ -632,3 +632,29 @@ def test_attach_pdf_to_row_live_round_trip(_token_available):
         assert [a.name for a in atts2] == ["proof.pdf"]
     finally:
         _delete_sheet_rest(sheet_id, _token_available)
+
+
+def test_apply_column_styles_live_round_trip(_token_available):
+    """Live §30 (PR-I): width applies on read-back; a column format applies + is
+    INHERITED by a cell (the format isn't returned on the column itself — only via a
+    cell, which the SimpleNamespace mocks can't model). Proves the live PUT path +
+    the format-descriptor string the styling relies on."""
+    sheet_id = smartsheet_client.create_sheet_in_folder(
+        sheet_ids.FOLDER_SYSTEM_CONFIG,
+        _sandbox_name("col_style"),
+        [{"title": "Name", "type": "TEXT_NUMBER", "primary": True}],
+    )
+    try:
+        smartsheet_client.apply_column_styles(
+            sheet_id, [{"title": "Name", "width": 260, "format": ",,1,,,,,,38,7,,,,,,,"}]
+        )
+        cols = smartsheet_client.get_client().Sheets.get_columns(
+            sheet_id, include_all=True
+        ).data
+        assert next(c for c in cols if c.title == "Name").width == 260
+        # The format applies at the column level → a new cell inherits it.
+        smartsheet_client.add_rows(sheet_id, [{"Name": "row-1"}])
+        sheet = smartsheet_client.get_client().Sheets.get_sheet(sheet_id, include=["format"])
+        assert getattr(sheet.rows[0].cells[0], "format", None) == ",,1,,,,,,38,7,,,,,,,"
+    finally:
+        _delete_sheet_rest(sheet_id, _token_available)
