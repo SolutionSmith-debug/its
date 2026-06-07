@@ -96,6 +96,7 @@ outside the sentinel block.
 <!-- BEGIN AUTO-INDEX -->
 | Date | Type | Status | Workstream | Title | PRs |
 |------|------|--------|------------|-------|-----|
+| 2026-06-07 | session_log | closed | safety_portal | [Session log — Safety Portal Phase 7: styling, Box schema, custom domain (PRs #186–#189 + #185 open)](2026-06-07_safety-portal-phase7-styling-box-schema.md) | #185, #186, #187, #188, #189 |
 | 2026-06-05 | session_log | closed | safety_portal | [Session log — Safety Portal Phase 3: contacts amendment (contact routing columns)](2026-06-05_safety-portal-phase3-contacts-amendment.md) | #162 |
 | 2026-06-05 | session_log | closed | safety_portal | [Session log — Safety Portal Phase 3: job model + live Job-ID resolution](2026-06-05_safety-portal-phase3-job-model.md) | #160 |
 | 2026-06-05 | session_log | closed | safety_portal | [Session log — Safety Portal Phase 4 PR 1: forms foundation](2026-06-05_safety-portal-phase4-pr1-forms-foundation.md) | #164 |
