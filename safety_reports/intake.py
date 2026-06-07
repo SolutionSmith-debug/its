@@ -123,7 +123,7 @@ from datetime import UTC, date, datetime
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
-from safety_reports import form_pdf, week_sheet
+from safety_reports import form_pdf, safety_naming, week_sheet
 from safety_reports.week_folder import ensure_current_week_folder
 from shared import (
     active_jobs,
@@ -1452,17 +1452,46 @@ def _box_link(file_id: str) -> str:
     return f"https://app.box.com/file/{file_id}"
 
 
+def _portal_box_root() -> str:
+    """The Box "ITS Safety Portal" root folder ID (ITS_Config, config-GATED, PR-K).
+
+    Blank/unset → the mirror tree is OFF and the portal Box path keeps its legacy
+    category behavior (so pulling PR-K is INERT). The operator sets
+    `safety_naming.CFG_BOX_PORTAL_ROOT` after creating the Box root to activate the
+    mirror tree. A read failure / missing row → "" (fail to the legacy path, never
+    crash).
+    """
+    return _read_str_setting(safety_naming.CFG_BOX_PORTAL_ROOT, "").strip()
+
+
 def _resolve_portal_box_folder(
-    project_name: str, parent_form_code: str
+    project_name: str, parent_form_code: str, work_date: date
 ) -> tuple[str | None, str]:
     """Resolve the Box folder a portal per-submission PDF files into.
 
-    Returns (folder_id, note). folder_id is None ONLY when the project's Box root
-    is unresolvable (a config gap → caller routes to Review Queue). Otherwise the
-    PDF always gets a home: the mapped category subfolder if it exists (the job's
-    existing structure), else an auto-created ITS-prefixed fallback folder under
-    the project root. `note` records which path was taken (for the row Notes).
+    MIRROR-TREE path (PR-K, when `_portal_box_root()` is configured): mirror the
+    Smartsheet schema exactly — ROOT → per-job folder (the SAME
+    `safety_naming.job_folder_name` as the Smartsheet per-job folder) → per-week
+    folder (`safety_naming.week_label`) → the PDF. Find-or-create + race-tolerant at
+    every level (`box_client.get_or_create_folder`); a brand-new job self-provisions
+    and NEVER strands (no `project_box_root_unresolved` in this branch).
+
+    LEGACY path (root unset → gated OFF): the prior `project_routing` →
+    category-subfolder behavior, preserved for the DORMANT email path + pre-activation.
+    folder_id is None ONLY on the legacy unresolved-root config gap (caller routes to
+    Review Queue). `note` records which path was taken (for the row Notes).
     """
+    root = _portal_box_root()
+    if root:
+        job_folder = box_client.get_or_create_folder(
+            root, safety_naming.job_folder_name(project_name)
+        )
+        week_folder = box_client.get_or_create_folder(
+            job_folder, safety_naming.week_label(work_date)
+        )
+        return week_folder, "mirror_tree"
+
+    # --- legacy (mirror tree gated OFF): project_routing → category subfolder ---
     project_root = project_routing.get_folder_id(project_name)
     if not project_root:
         return None, "project_box_root_unresolved"
@@ -1757,9 +1786,12 @@ def _run_portal_pipeline(
     incomplete = form_pdf.incomplete_checklist_items(definition, render_submission)
     notes = f"[incomplete: {len(incomplete)} items]" if incomplete else ""
 
-    # File the per-submission PDF to Box (existing category subfolder / ITS fallback).
+    # File the per-submission PDF to Box (mirror tree when configured, else the
+    # legacy category subfolder / ITS fallback).
     parent_form_code = str(definition.get("parent_form_code") or form_code)
-    folder_id, box_note = _resolve_portal_box_folder(project_name, parent_form_code)
+    folder_id, box_note = _resolve_portal_box_folder(
+        project_name, parent_form_code, work_date
+    )
     if folder_id is None:
         return _portal_review(
             submission, machine_reason="project_box_root_unresolved",

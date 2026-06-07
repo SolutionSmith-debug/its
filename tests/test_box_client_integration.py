@@ -77,3 +77,22 @@ def test_upload_bytes_or_new_version_versions_on_conflict(_client):
         if file_id is not None:
             _client.file(file_id).delete()
         _client.folder(folder_id).delete(recursive=True)
+
+
+def test_mirror_tree_nesting_round_trip(_client):
+    """Live §30 (PR-K): the ROOT → per-job → per-week nesting the portal mirror tree
+    files into — get_or_create_folder under a throwaway root, twice, idempotent. Also
+    the permission probe: a 403 here ⇒ the Box app lacks access to the configured root."""
+    root = box_client.get_or_create_folder("0", TEST_FOLDER)
+    try:
+        job = box_client.get_or_create_folder(root, "Bradley 1")
+        week = box_client.get_or_create_folder(job, "week of 2026-05-30")
+        assert job != root and week != job
+        # Idempotent: re-resolving returns the SAME folders (no duplicates).
+        assert box_client.get_or_create_folder(root, "Bradley 1") == job
+        assert box_client.get_or_create_folder(job, "week of 2026-05-30") == week
+        # `week` is genuinely nested under `job`.
+        job_children = {it["name"]: it["id"] for it in box_client.list_folder(job)}
+        assert job_children.get("week of 2026-05-30") == week
+    finally:
+        _client.folder(root).delete(recursive=True)

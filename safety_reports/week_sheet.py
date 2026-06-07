@@ -52,8 +52,10 @@ from __future__ import annotations
 from datetime import date
 from typing import Any
 
-from shared import error_log, safety_week, sheet_ids, smartsheet_client
+from shared import error_log, sheet_ids, smartsheet_client
 from shared.error_log import Severity
+
+from . import safety_naming
 
 SCRIPT_NAME = "safety_reports.week_sheet"
 
@@ -148,21 +150,16 @@ def week_sheet_name(project_name: str, work_date: date) -> str:
     Name keys on the Saturday that opens the work-date's week, so every day
     Sat→Fri maps to one sheet, e.g. `"Bradley 1 — week of 2026-05-30"`.
     """
-    saturday = safety_week.week_bounds(work_date).start
-    return f"{project_name} — week of {saturday.isoformat()}"
+    return f"{project_name} — {safety_naming.week_label(work_date)}"
 
 
 def _folder_name(project_name: str) -> str:
-    """Sanitize a project display name into a Smartsheet folder title.
-
-    `project_name` is operator-entered in ITS_Active_Jobs, so this is defensive:
-    drop non-printable chars, turn `/` (which Smartsheet treats path-like) into
-    `-`, and strip surrounding whitespace. Falls back to the raw stripped name if
-    sanitizing empties it. The result is the per-job folder title + the
-    find/create key under WORKSPACE_SAFETY_PORTAL (e.g. "Bradley 1").
+    """The per-job folder title + find/create key under WORKSPACE_SAFETY_PORTAL
+    (e.g. "Bradley 1"). Thin delegate to `safety_naming.job_folder_name` — the
+    single source of truth shared with the Box mirror tree (PR-K), so the per-job
+    folder is named + sanitized identically in Smartsheet and Box.
     """
-    cleaned = "".join(ch for ch in project_name if ch.isprintable())
-    return cleaned.replace("/", "-").strip() or project_name.strip()
+    return safety_naming.job_folder_name(project_name)
 
 
 def _ensure_job_folder(project_name: str) -> int:
