@@ -265,7 +265,11 @@ def _compile_job_week(
     if pdfs:
         compiled = form_pdf.merge_pdfs(pdfs)
         folder_id = _ensure_its_week_folder(project_name, week, correlation_id)
-        meta = box_client.upload_bytes(
+        # A recompile (Compile Now / a late submission) re-produces the SAME packet
+        # filename — `upload_bytes` 409s on that, which used to route the recompile to
+        # the Review Queue and break Compile Now (PR-G). Upload a new Box VERSION
+        # instead — preserving the packet's file-version history (system of record).
+        meta = box_client.upload_bytes_or_new_version(
             folder_id, _packet_filename(project_name, week), compiled
         )
         packet_link = f"https://app.box.com/file/{meta['id']}"
