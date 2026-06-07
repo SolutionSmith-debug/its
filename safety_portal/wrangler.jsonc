@@ -31,6 +31,14 @@
 
   "observability": { "enabled": true },
 
+  // ── Custom domain (PR-J). The portal serves on safety.evergreenmirror.com.
+  // custom_domain:true → Cloudflare provisions the hostname + TLS cert for the
+  // zone on deploy. Declared here for version-control + reproducibility at cutover;
+  // the OPERATOR activates it (dashboard custom-domain add, or `wrangler deploy`
+  // with Cloudflare auth — NOT deployed by this PR). The SPA uses relative paths +
+  // a host-default cookie, so no rebuild is needed.
+  "routes": [{ "pattern": "safety.evergreenmirror.com", "custom_domain": true }],
+
   // ── D1 (env.DB). Phase 2 uses the `users` table only (migrations/). ──
   // database_id points at the live mirror/validation D1 (set 2026-06-06). Local
   // `--local` dev keys off database_name, not this id, so it stays token-free.
