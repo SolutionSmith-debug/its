@@ -991,6 +991,45 @@ def test_list_workspace_share_emails_translates_permission_error(mocker):
         smartsheet_client.list_workspace_share_emails(1)
 
 
+# ---- attach_pdf_to_row ----------------------------------------------------
+
+
+def test_attach_pdf_to_row_replaces_same_named_then_attaches(mocker):
+    client = _install_client(mocker)
+    client.Attachments.list_row_attachments.return_value = SimpleNamespace(data=[
+        SimpleNamespace(id=11, name="doc.pdf"),
+        SimpleNamespace(id=12, name="other.pdf"),
+    ])
+    client.Attachments.attach_file_to_row.return_value = SimpleNamespace(
+        result=SimpleNamespace(id=999)
+    )
+    att_id = smartsheet_client.attach_pdf_to_row(7, 100, "doc.pdf", b"%PDF-1.4 data")
+    assert att_id == 999
+    # only the SAME-named prior attachment is deleted (idempotent replace)
+    client.Attachments.delete_attachment.assert_called_once_with(7, 11)
+    sid, rid, file_tuple = client.Attachments.attach_file_to_row.call_args.args
+    assert sid == 7 and rid == 100
+    assert file_tuple[0] == "doc.pdf" and file_tuple[2] == "application/pdf"
+
+
+def test_attach_pdf_to_row_no_replace_skips_listing(mocker):
+    client = _install_client(mocker)
+    client.Attachments.attach_file_to_row.return_value = SimpleNamespace(
+        result=SimpleNamespace(id=5)
+    )
+    smartsheet_client.attach_pdf_to_row(7, 100, "x.pdf", b"data", replace=False)
+    client.Attachments.list_row_attachments.assert_not_called()
+    client.Attachments.delete_attachment.assert_not_called()
+
+
+def test_attach_pdf_to_row_translates_sdk_error(mocker):
+    client = _install_client(mocker)
+    client.Attachments.list_row_attachments.return_value = SimpleNamespace(data=[])
+    client.Attachments.attach_file_to_row.side_effect = _api_error(403, message="denied")
+    with pytest.raises(SmartsheetPermissionError):
+        smartsheet_client.attach_pdf_to_row(7, 100, "x.pdf", b"d")
+
+
 def test_create_sheet_in_folder_returns_new_sheet_id(mocker):
     client = _install_client(mocker)
     created = SimpleNamespace(result=SimpleNamespace(id=555))

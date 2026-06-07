@@ -1512,6 +1512,25 @@ def _file_portal_pdf(
         raise
 
 
+def _attach_pdf_best_effort(
+    sheet_id: int, row_id: int, filename: str, pdf_bytes: bytes, correlation_id: str
+) -> None:
+    """Attach a rendered PDF inline on a Smartsheet row, BEST-EFFORT.
+
+    Box is the System of Record; this inline copy is supplementary, so a failure is
+    a WARN (logged, not silent) that NEVER fails the filing — the submission is
+    already in Box + recorded on the row with its Box link.
+    """
+    try:
+        smartsheet_client.attach_pdf_to_row(sheet_id, row_id, filename, pdf_bytes)
+    except Exception as exc:  # noqa: BLE001 — supplementary inline copy; Box is the SoR
+        error_log.log(
+            Severity.WARN, SCRIPT_NAME,
+            f"row PDF attach failed (row {row_id}, {filename!r}): {type(exc).__name__}: {exc!r}",
+            error_code="row_pdf_attach_failed", correlation_id=correlation_id,
+        )
+
+
 def _portal_review(
     submission: dict[str, Any],
     *,
@@ -1757,7 +1776,7 @@ def _run_portal_pipeline(
     # raises → re-pull; the conflict-recovery in _file_portal_pdf de-dups the Box
     # re-upload, and the absent sheet row means the dedupe correctly re-files).
     title = str(definition.get("form_name") or form_code)
-    week_sheet.write_submission_row(
+    sub_row_id = week_sheet.write_submission_row(
         sheet_id,
         submission_uuid=submission_uuid,
         form_code=form_code,
@@ -1766,6 +1785,12 @@ def _run_portal_pipeline(
         box_link=box_link,
         submitted_at=_portal_submitted_at_pacific(submission.get("created_at")),
         notes=notes,
+    )
+    # Supplementary: attach the rendered PDF inline on the Submission row so a
+    # reviewer sees it without a Box round-trip (Box stays the SoR; the row's Box
+    # link is unchanged). Best-effort — never fails an already-filed submission.
+    _attach_pdf_best_effort(
+        sheet_id, sub_row_id, f"{work_date_raw}-{parent_form_code}.pdf", pdf, correlation_id
     )
 
     # Amend: supersede the prior submission's row (Box keeps BOTH PDFs).

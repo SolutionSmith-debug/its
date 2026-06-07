@@ -261,6 +261,7 @@ def _compile_job_week(
 
     pdfs, manifest_parts = _gather_submission_pdfs(submissions, summary, correlation_id)
     packet_link = ""
+    compiled: bytes | None = None
     if pdfs:
         compiled = form_pdf.merge_pdfs(pdfs)
         folder_id = _ensure_its_week_folder(project_name, week, correlation_id)
@@ -285,12 +286,22 @@ def _compile_job_week(
         f"{len(submissions)} submissions ({len(pdfs)} in packet): "
         f"{', '.join(manifest_parts)}; compiled {compiled_at}"
     )
-    week_sheet.upsert_rollup_row(
+    rollup_row_id = week_sheet.upsert_rollup_row(
         sheet_id, packet_link=packet_link, compiled_at=compiled_at,
         manifest_note=manifest_note, existing_rollup_row_id=rollup_id,
     )
-    _write_wsr(job, week, packet_link=packet_link, manifest=manifest_note,
-               summary=summary, correlation_id=correlation_id)
+    wsr_row_id = _write_wsr(job, week, packet_link=packet_link, manifest=manifest_note,
+                            summary=summary, correlation_id=correlation_id)
+
+    # Supplementary: attach the compiled packet inline on the Rollup row (the
+    # week-sheet preview) + the WSR_human_review row (the approve/send surface), so
+    # a reviewer sees the packet without a Box round-trip. Box stays the SoR (the
+    # Compiled-PDF link cells are unchanged). Best-effort + only when a real packet
+    # exists (an empty / all-downloads-failed week has no packet to attach).
+    if compiled is not None:
+        packet_name = _packet_filename(project_name, week)
+        _attach_pdf_best_effort(sheet_id, rollup_row_id, packet_name, compiled, correlation_id)
+        _attach_pdf_best_effort(wsr_review.SHEET_ID, wsr_row_id, packet_name, compiled, correlation_id)
 
 
 def _ensure_its_week_folder(
@@ -314,8 +325,8 @@ def _write_wsr(
     manifest: str,
     summary: RunSummary,
     correlation_id: str,
-) -> None:
-    """Dual-write (b): upsert the WSR_human_review row for (job, week)."""
+) -> int:
+    """Dual-write (b): upsert the WSR_human_review row for (job, week); return its row ID."""
     to_display, cc_display = _recipient_display(job)
     evergreen = _read_str_setting(CFG_EVERGREEN_CONTACT, DEFAULT_EVERGREEN_CONTACT)
     body = wsr_review.email_body_template(
@@ -348,6 +359,25 @@ def _write_wsr(
             source_file=f"{job.job_id}-{week.start.isoformat()}",
         )
         summary.review_queue_entries += 1
+    return _row_id
+
+
+def _attach_pdf_best_effort(
+    sheet_id: int, row_id: int, filename: str, pdf_bytes: bytes, correlation_id: str
+) -> None:
+    """Attach the compiled packet inline on a Smartsheet row, BEST-EFFORT.
+
+    Box is the System of Record (the row's Compiled-PDF link is unchanged); this
+    inline copy is supplementary, so a failure is a WARN (logged, not silent) that
+    NEVER fails the compile."""
+    try:
+        smartsheet_client.attach_pdf_to_row(sheet_id, row_id, filename, pdf_bytes)
+    except Exception as exc:  # noqa: BLE001 — supplementary inline copy; Box is the SoR
+        error_log.log(
+            Severity.WARN, SCRIPT_NAME,
+            f"row PDF attach failed (row {row_id}, {filename!r}): {type(exc).__name__}: {exc!r}",
+            error_code="row_pdf_attach_failed", correlation_id=correlation_id,
+        )
 
 
 # ---- main + CLI ----------------------------------------------------------

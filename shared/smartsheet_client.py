@@ -33,6 +33,7 @@ SDK 404 noise:
 """
 from __future__ import annotations
 
+import io
 import logging
 import time
 from collections.abc import Iterable
@@ -1370,6 +1371,58 @@ def list_workspace_share_emails(workspace_id: int) -> frozenset[str]:
         for share in body.get("data", [])
         if isinstance(share, dict) and share.get("email")
     )
+
+
+@_breaker_guard
+def attach_pdf_to_row(
+    sheet_id: int, row_id: int, filename: str, pdf_bytes: bytes, *, replace: bool = True
+) -> int:
+    """Attach `pdf_bytes` as `filename` (a PDF) to a row; return the attachment ID.
+
+    Purpose
+        Put the rendered document INLINE on a Smartsheet row — the per-submission
+        PDF on its week-sheet Submission row, and the compiled weekly packet on the
+        week-sheet Rollup row + the WSR_human_review row — so a reviewer sees it
+        without a Box round-trip.
+
+    Invariants
+        - Box stays the System of Record: the row's Box-link cell is UNCHANGED and
+          the weekly compile still reads per-submission PDFs from Box, not from
+          these attachments. This inline copy is purely supplementary.
+        - A Smartsheet attachment write is NOT an external send (Invariant 1 safe)
+          and has no AI step — the generation/send-gate separation is untouched.
+        - `replace=True` (default) deletes any prior attachment on the row with the
+          SAME `filename` first, so a re-pull / recompile leaves exactly one current
+          copy instead of accumulating duplicates (the per-submission + packet
+          filenames are deterministic per row).
+
+    Failure modes
+        SDK / non-2xx → the typed `SmartsheetError` hierarchy via `_translate`;
+        `SmartsheetCircuitOpenError` when the breaker is OPEN. Callers treat this
+        BEST-EFFORT (Box is the SoR) — an attach failure must NOT fail the
+        filing/compile that produced the row.
+
+    Consumers
+        `safety_reports/intake._attach_pdf_best_effort` (the per-submission PDF on
+        the Submission row); `safety_reports/weekly_generate._attach_pdf_best_effort`
+        (the compiled packet on the Rollup row + the WSR_human_review row).
+    """
+    client = get_client()
+    if replace:
+        try:
+            existing = client.Attachments.list_row_attachments(sheet_id, row_id)
+            for att in existing.data:
+                if att.name == filename:
+                    client.Attachments.delete_attachment(sheet_id, att.id)
+        except sdk_exc.SmartsheetException as e:
+            raise _translate(e) from e
+    try:
+        result = client.Attachments.attach_file_to_row(
+            sheet_id, row_id, (filename, io.BytesIO(pdf_bytes), "application/pdf")
+        )
+    except sdk_exc.SmartsheetException as e:
+        raise _translate(e) from e
+    return int(result.result.id)
 
 
 @_breaker_guard
