@@ -37,18 +37,18 @@
 
 meta:
   manifest_version: 1
-  generated: "2026-06-01"
-  its_head: 585823d              # ~/its origin/main this manifest was seeded against
-  blueprint_head: 8c708b9        # ~/its-blueprint origin/main this manifest is synced against (refreshed on doctrine bump, per UPDATE DISCIPLINE above); 8c708b9 = de-1b cascade merge (FM v11 / Op Stds v16 / Handover v8 / V&R v9 / Excellence v4)
+  generated: "2026-06-07"
+  its_head: f3ad814              # ~/its origin/main this manifest was seeded against (Safety Portal deploy + Phase-7 batch, PRs #178–#189)
+  blueprint_head: 0e85a1a        # ~/its-blueprint main this manifest is synced against (refreshed on doctrine bump, per UPDATE DISCIPLINE above); 0e85a1a = 2026-06-07 Safety Portal deploy reconciliation (Op Stds v18 / Handover v9 / FM v11 / V&R v9 / Excellence v4)
   seeded_by: "doc-reconciliation series PR 2 (manifest)"
 
 # --- Doctrine versions (the headline drift class) ------------------------------
 doctrine_versions:
   operational_standards:
-    current: 16
+    current: 18
     source: "../its-blueprint/doctrine/operational-standards.md"
     source_field: "frontmatter.version"
-    blueprint_verified_against: 8c708b9   # de-1b cascade merge (FM v11 + Op Stds v16); prior: 29000f1 (Op Stds v14)
+    blueprint_verified_against: 0e85a1a   # 2026-06-07 deploy reconciliation (Op Stds v18); prior: 8c708b9 (v16)
     notes: >
       v12 added §§37-41; v13 added §42 (code-level self-documentation discipline);
       v14 reframed the kill switch as an operator-convenience pause that is fail-open
@@ -62,15 +62,19 @@ doctrine_versions:
       to training-bounded co-resolution: there is no structural maintenance enforcement layer
       and none is built or required; the boundary holds by the trained operator's judgment,
       the both-rule (novel OR high-class → Tier 3), and co-resolution with the Developer-Operator
-      until per-category clearance. Section numbering is append-only since v11 — no cited section
-      renumbered (§§1-42 carry forward). Citations in ~/its should read "Op Stds v16" /
-      "Operational Standards v16".
-    drift_signal: 'Op Stds v(1[0-5]|[0-9])\b or Operational Standards v(1[0-5]|[0-9])\b in current-doctrine prose'
+      until per-category clearance. v17 (2026-06-05) added the sixth standalone workspace
+      (ITS — Safety Portal) to §23/§24 — governing principle workspace-membership = approval
+      authority. v18 (2026-06-07) added §§45-49: find-or-create-not-strand; workspace-membership
+      = approval authority (in-code F22 mechanism); Box version-on-conflict; CodeQL-FP handling;
+      preservation-for-a-committed-future-workstream. Section numbering is append-only since v11
+      — no cited section renumbered (§§1-44 carry forward). Citations in ~/its should read
+      "Op Stds v18" / "Operational Standards v18".
+    drift_signal: 'Op Stds v(1[0-7]|[0-9])\b or Operational Standards v(1[0-7]|[0-9])\b in current-doctrine prose'
   foundation_mission:
     current: 11
     source: "../its-blueprint/doctrine/foundation-mission.md"
     source_field: "frontmatter.version"
-    blueprint_verified_against: 8c708b9   # de-1b cascade merge (FM v11 + Op Stds v16); prior: 29000f1 (FM v9)
+    blueprint_verified_against: 0e85a1a   # re-verified unchanged at v11, 2026-06-07; prior: 8c708b9 (FM v11)
     notes: >
       FM v8 added Invariant 2 Layer 6 (attachment screening); v9 reframed Invariant 2
       Layer 5 (anomaly logging on extraction output) from a defense layer to a detection
@@ -87,6 +91,21 @@ doctrine_versions:
       Layer 5 tripwire framing all carry forward verbatim. Citations in ~/its should read
       "Foundation Mission v11" / "FM v11".
     drift_signal: 'Foundation Mission v([0-9]|10)\b or FM v([0-9]|10)\b in current-doctrine prose'
+  handover_plan:
+    current: 9
+    source: "../its-blueprint/doctrine/handover-plan.md"
+    source_field: "frontmatter.version"
+    blueprint_verified_against: 0e85a1a   # 2026-06-07 deploy reconciliation (Handover v9); prior: 8c708b9 (v8)
+    notes: >
+      v8 removed the Tier-2 "non-developer-safe enforcement layer" pre-cutover build gap and
+      redefined the Successor-Operator as a trained CC operator. v9 (2026-06-07) adds the Safety
+      Portal field-PM account-administration runbook to Step 8 (operator provision/reset/disable/
+      enable/list via the safety_reports.portal_admin CLI; server-side session revocation; a
+      one-time live-activation gate: byte-equal admin tokens + migration 0006-before-redeploy +
+      redeploy). Portal-user admin is Tier-2 low-class; rotating the admin token is Tier-3
+      secrets/auth. The three-tier model, roles, and escalation boundary carry forward from v8.
+      Citations in ~/its should read "Handover Plan v9".
+    drift_signal: 'Handover Plan v[1-8]\b in current-doctrine prose'
 
 # --- §42 module-docstring discipline (Op Stds v13) -----------------------------
 section_42:
@@ -145,8 +164,9 @@ workstreams:
   count: 6
   drift_note: >
     6 canonical workstreams. An earlier 'five' figure predates safety_portal
-    (mission v1, 2026-05-25 canonical). NOTE: ../its-blueprint/workstreams/README.md
-    table still lists only 5 (omits safety-portal) — known doc drift to reconcile.
+    (mission v1, 2026-05-25 canonical). The ../its-blueprint/workstreams/README.md
+    table now lists all 6 (incl. safety-portal) — the earlier 5-vs-6 count drift is
+    reconciled (Op Stds v17 acknowledged the sixth standalone workspace).
   slugs:
     - safety_reports
     - safety_portal
