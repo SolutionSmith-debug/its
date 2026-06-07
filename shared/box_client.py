@@ -292,6 +292,56 @@ def upload_bytes(folder_id: str, name: str, content: bytes) -> dict[str, Any]:
     return {"id": str(uploaded.id), "name": uploaded.name, "size": uploaded.size}
 
 
+def _find_child_file(parent_folder_id: str, name: str) -> str | None:
+    """Return the ID of the direct child FILE named `name`, or None.
+
+    File sibling of `_find_child_folder` (same 1000-child page caveat). Used by
+    `upload_bytes_or_new_version` to resolve the existing file to version-update.
+    """
+    for item in list_folder(parent_folder_id, limit=1000):
+        if item["type"] == "file" and item["name"] == name:
+            return str(item["id"])
+    return None
+
+
+def upload_bytes_or_new_version(folder_id: str, name: str, content: bytes) -> dict[str, Any]:
+    """Upload bytes as `name`; if a same-named file already exists, upload a NEW
+    Box VERSION of it instead of failing.
+
+    The version-on-conflict sibling of `upload_bytes`, for content RE-generated under
+    a DETERMINISTIC name — the weekly packet: a recompile (Compile Now / a late
+    submission) produces the same filename. `upload_bytes` 409s on the same name,
+    which routed the recompile to the Review Queue and broke Compile Now. Here a 409
+    instead resolves the existing file and `update_contents` it — preserving Box's
+    file-version HISTORY (the System of Record) rather than 409ing or accumulating
+    suffixed copies. (The per-SUBMISSION path keeps `upload_bytes`'s suffix strategy:
+    each amend is a genuinely distinct document, not a new version of one.)
+
+    Idempotent on recompile: the returned file id is STABLE across versions.
+
+    Raises the typed `BoxError` hierarchy. A 409 whose conflicting file then can't be
+    found (it vanished between the upload and the find — a race) re-raises
+    `BoxConflictError` rather than silently swallowing.
+    """
+    import io
+    try:
+        return upload_bytes(folder_id, name, content)
+    except BoxConflictError:
+        existing_id = _find_child_file(folder_id, name)
+        if existing_id is None:
+            raise  # the conflicting file vanished between upload + find — surface it
+        client = get_client()
+        try:
+            updated = client.file(existing_id).update_contents_with_stream(io.BytesIO(content))
+        except BoxOAuthException as exc:
+            raise BoxAuthError(f"OAuth exchange failed: {exc}") from exc
+        except BoxAPIException as exc:
+            raise _translate(exc) from exc
+        except Exception as exc:  # noqa: BLE001 — honor "every failure → BoxError"
+            raise BoxError(f"Box version-update of {name!r} failed: {exc!r}") from exc
+        return {"id": str(updated.id), "name": updated.name, "size": updated.size}
+
+
 def download_file(file_id: str) -> bytes:
     """Return the raw bytes of a Box file."""
     client = get_client()
