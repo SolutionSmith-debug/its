@@ -147,7 +147,48 @@ see [the reconciliation note](#deploy-target-workers-static-assets-vs-pages-reco
 
 All secrets are Workers Secrets / `.dev.vars` — **never committed**. Phase 2 needs only
 `SESSION_SIGNING_SECRET`. Later phases add `HMAC_PAYLOAD_SECRET`,
-`EMAIL_SHIM_M365_*`, etc. (mission §11) with macOS Keychain mirrors per ITS convention.
+`PORTAL_INTERNAL_API_TOKEN` (the poller's bearer), and `PORTAL_ADMIN_API_TOKEN`
+(the operator-only admin bearer — **separate** so the poller's token can't provision
+users) with macOS Keychain mirrors per ITS convention.
+
+---
+
+## Phase 7 — operator user provisioning + session revocation
+
+Users are **operator-provisioned** (NOT self-service; no user-role model — brief §4).
+The operator passes plaintext over a bearer-gated admin channel; the **backend
+bcrypt-hashes** (cost 10) before write — plaintext is never stored, returned, or logged.
+
+**Routes** (`/api/internal/admin/*`, gated by `requireAdminToken` = `PORTAL_ADMIN_API_TOKEN`,
+which is **separate** from the poller's `PORTAL_INTERNAL_API_TOKEN`):
+`POST users` (provision, 409 if exists) · `POST users/reset` · `POST users/disable` ·
+`POST users/enable` · `GET users` (no hashes).
+
+**Revocation:** `requireSession` reads `users.disabled` per request (migration 0006) and
+401s a disabled/deleted user immediately — fail-closed (a D1 error also → 401). The
+cookie stays valid cryptographically, but the lookup gates it.
+
+**Operator CLI** (Mac, not a daemon): `python -m safety_reports.portal_admin <cmd>`
+— `add-user <lastname.firstname>` / `reset-password <u>` / `disable-user <u>` /
+`enable-user <u>` / `list-users`. Reads the Worker URL from ITS_Config + the admin
+bearer from Keychain `ITS_PORTAL_ADMIN_TOKEN`; passwords via `getpass` (confirmed twice).
+
+### Activation punch-list (operator — needs Cloudflare/Keychain auth)
+
+The Worker/admin/migration code sits **inert** in the repo until activated. The
+Box-409 fix + sheet-styling (PRs G/I, Python-only) activate on a plain `~/its` pull;
+the admin route needs:
+
+1. Set `PORTAL_ADMIN_API_TOKEN` (Worker secret) + `ITS_PORTAL_ADMIN_TOKEN` (Keychain),
+   **byte-equal** (`openssl rand -hex 32`; `wrangler secret put` + `security add-generic-password -U -a "$USER" -s ITS_PORTAL_ADMIN_TOKEN -w`).
+2. Apply migration **0006** to live D1 **BEFORE** the redeploy
+   (`npx wrangler d1 migrations apply its-safety-portal-db --remote`) — else the
+   `requireSession` disabled-read errors and 401s every session.
+3. **Redeploy** the Worker (`npm run deploy`) — activates the admin routes + revocation.
+4. Provision real users: `python -m safety_reports.portal_admin add-user lastname.firstname`.
+5. (Optional) custom domain — see PR-J's `wrangler.jsonc` `routes` (dashboard add or `wrangler deploy`).
+
+> **This is the secrets/auth boundary** — review the admin diff before activating.
 
 ---
 

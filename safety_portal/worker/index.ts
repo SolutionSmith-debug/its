@@ -1,8 +1,9 @@
 import { Hono } from "hono";
 import { createMiddleware } from "hono/factory";
+import type { Context } from "hono";
 import { setSignedCookie, getSignedCookie, deleteCookie } from "hono/cookie";
 import type { Env, SessionClaims, Vars } from "./types";
-import { validateUser, newSessionClaims } from "./auth";
+import { validateUser, newSessionClaims, hashPassword, normalizeUsername } from "./auth";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ITS Safety Portal — Worker API (Phase 2)
@@ -98,6 +99,21 @@ const requireInternalToken = createMiddleware<{ Bindings: Env; Variables: Vars }
 });
 
 /**
+ * Bearer-token gate for /api/internal/admin/* — operator user-provisioning.
+ * SEPARATE secret from PORTAL_INTERNAL_API_TOKEN (privilege separation): the
+ * portal_poll daemon's token must NOT be able to create / reset / disable users.
+ * Same fail-closed-on-missing-secret + constant-time posture as requireInternalToken.
+ */
+const requireAdminToken = createMiddleware<{ Bindings: Env; Variables: Vars }>(async (c, next) => {
+  const auth = c.req.header("Authorization") ?? "";
+  const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+  if (!token || !c.env.PORTAL_ADMIN_API_TOKEN || !(await safeTokenEqual(token, c.env.PORTAL_ADMIN_API_TOKEN))) {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+  await next();
+});
+
+/**
  * POST /api/login — validate credentials, issue a signed session cookie.
  * `secure` is conditional on HTTPS so login works over http://localhost in
  * `vite dev` while staying Secure on the deployed HTTPS origin.
@@ -153,6 +169,25 @@ const requireSession = createMiddleware<{ Bindings: Env; Variables: Vars }>(asyn
   if (ageS < 0 || ageS > MAX_AGE_S) {
     return c.json({ error: "expired" }, 401);
   }
+
+  // Phase-7 revocation: the session is cookie-derived, but a disabled (or deleted)
+  // user must be locked out immediately. Per-request D1 lookup by username
+  // (negligible at this scale). FAIL-CLOSED: a missing/disabled user → 401, and any
+  // D1 error → 401 too (a DB blip must neither grant access nor crash the request).
+  // ORDER DEPENDENCY: migration 0006 (users.disabled) must be live BEFORE this
+  // deploys, else this read errors and 401s every session — see README activation.
+  try {
+    const row = await c.env.DB
+      .prepare("SELECT disabled FROM users WHERE username = ?")
+      .bind(claims.username)
+      .first<{ disabled: number }>();
+    if (!row || row.disabled) {
+      return c.json({ error: "revoked" }, 401);
+    }
+  } catch {
+    return c.json({ error: "unauthenticated" }, 401);
+  }
+
   c.set("session", claims);
   await next();
 });
@@ -366,6 +401,88 @@ app.post("/api/internal/sync", requireInternalToken, async (c) => {
   const results = await c.env.DB.batch(statements);
   const deactivated = results[results.length - 1]?.meta?.changes ?? 0;
   return c.json({ ok: true, upserted: jobs.length, deactivated });
+});
+
+/**
+ * Operator user provisioning — /api/internal/admin/* (requireAdminToken, the
+ * operator-only secret). The operator passes PLAINTEXT over this bearer-gated
+ * channel; the BACKEND bcrypt-hashes (cost 10) before write — plaintext is never
+ * stored, returned, or logged. NOT a self-service UI and NO user-role model; these
+ * are operator-run endpoints driven by the Mac `portal_admin` CLI (brief §4).
+ */
+async function setUserDisabled(
+  c: Context<{ Bindings: Env; Variables: Vars }>,
+  value: 0 | 1,
+): Promise<Response> {
+  let body: { username?: unknown };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "bad_request" }, 400);
+  }
+  const username = normalizeUsername(typeof body.username === "string" ? body.username : "");
+  if (!username) return c.json({ error: "invalid_username" }, 400);
+  const res = await c.env.DB
+    .prepare("UPDATE users SET disabled=? WHERE username=?")
+    .bind(value, username)
+    .run();
+  if ((res.meta?.changes ?? 0) === 0) return c.json({ error: "not_found" }, 404);
+  return c.json({ ok: true, username, disabled: value });
+}
+
+// POST /api/internal/admin/users — provision a new user (409 if it exists).
+app.post("/api/internal/admin/users", requireAdminToken, async (c) => {
+  let body: { username?: unknown; password?: unknown };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "bad_request" }, 400);
+  }
+  const username = normalizeUsername(typeof body.username === "string" ? body.username : "");
+  const password = typeof body.password === "string" ? body.password : "";
+  if (!username) return c.json({ error: "invalid_username" }, 400);
+  if (password.length < 8 || password.length > 256) return c.json({ error: "invalid_password" }, 400);
+  const exists = await c.env.DB.prepare("SELECT 1 FROM users WHERE username=?").bind(username).first();
+  if (exists) return c.json({ error: "exists" }, 409);
+  const password_hash = await hashPassword(password); // plaintext never stored/logged
+  await c.env.DB
+    .prepare("INSERT INTO users (username, password_hash) VALUES (?,?)")
+    .bind(username, password_hash)
+    .run();
+  return c.json({ ok: true, username }, 201);
+});
+
+// POST /api/internal/admin/users/reset — re-hash an existing user's password (404 if absent).
+app.post("/api/internal/admin/users/reset", requireAdminToken, async (c) => {
+  let body: { username?: unknown; password?: unknown };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "bad_request" }, 400);
+  }
+  const username = normalizeUsername(typeof body.username === "string" ? body.username : "");
+  const password = typeof body.password === "string" ? body.password : "";
+  if (!username) return c.json({ error: "invalid_username" }, 400);
+  if (password.length < 8 || password.length > 256) return c.json({ error: "invalid_password" }, 400);
+  const password_hash = await hashPassword(password); // plaintext never stored/logged
+  const res = await c.env.DB
+    .prepare("UPDATE users SET password_hash=? WHERE username=?")
+    .bind(password_hash, username)
+    .run();
+  if ((res.meta?.changes ?? 0) === 0) return c.json({ error: "not_found" }, 404);
+  return c.json({ ok: true, username });
+});
+
+// POST /api/internal/admin/users/disable — disabled=1; /enable — disabled=0.
+app.post("/api/internal/admin/users/disable", requireAdminToken, (c) => setUserDisabled(c, 1));
+app.post("/api/internal/admin/users/enable", requireAdminToken, (c) => setUserDisabled(c, 0));
+
+// GET /api/internal/admin/users — list users (NO password hashes).
+app.get("/api/internal/admin/users", requireAdminToken, async (c) => {
+  const { results } = await c.env.DB
+    .prepare("SELECT username, disabled, created_at FROM users ORDER BY username")
+    .all<{ username: string; disabled: number; created_at: number }>();
+  return c.json({ users: results });
 });
 
 // Unmatched /api/* → JSON 404 (never the SPA shell).

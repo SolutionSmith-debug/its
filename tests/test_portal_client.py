@@ -184,6 +184,54 @@ def test_push_jobs_503_then_success(mocker):
     assert out["upserted"] == 1
 
 
+# ---- admin_request -------------------------------------------------------
+
+
+def test_admin_request_returns_status_and_json(mocker):
+    req = _patch_requests(
+        mocker, _mock_response(status=201, json_body={"ok": True, "username": "a.b"})
+    )
+    status, data = portal_client.admin_request(
+        BASE, TOKEN, "POST", "/api/internal/admin/users",
+        json_body={"username": "a.b", "password": "x"},
+    )
+    assert status == 201 and data == {"ok": True, "username": "a.b"}
+    args, kwargs = req.call_args
+    assert args == ("POST", "https://portal.example.com/api/internal/admin/users")
+    assert kwargs["headers"]["Authorization"] == "Bearer fake-bearer"
+    assert kwargs["json"] == {"username": "a.b", "password": "x"}
+
+
+def test_admin_request_semantic_4xx_returned_not_raised(mocker):
+    _patch_requests(mocker, _mock_response(status=409, json_body={"error": "exists"}))
+    status, data = portal_client.admin_request(BASE, TOKEN, "POST", "/p")
+    assert status == 409 and data == {"error": "exists"}
+
+
+def test_admin_request_401_raises_auth(mocker):
+    _patch_requests(mocker, _mock_response(status=401))
+    with pytest.raises(PortalAuthError):
+        portal_client.admin_request(BASE, TOKEN, "GET", "/p")
+
+
+def test_admin_request_503_then_success(mocker):
+    mocker.patch("shared.portal_client.time.sleep")
+    _patch_requests(
+        mocker,
+        [_mock_response(status=503), _mock_response(status=200, json_body={"users": []})],
+    )
+    status, data = portal_client.admin_request(BASE, TOKEN, "GET", "/p")
+    assert status == 200 and data == {"users": []}
+
+
+def test_admin_request_non_json_body_returns_empty_dict(mocker):
+    resp = _mock_response(status=204)
+    resp.json.side_effect = ValueError
+    _patch_requests(mocker, resp)
+    status, data = portal_client.admin_request(BASE, TOKEN, "POST", "/p")
+    assert status == 204 and data == {}
+
+
 # ---- retry / backoff -----------------------------------------------------
 
 

@@ -341,6 +341,20 @@ touching the **HMAC/bearer secrets or the Keychain** (`portal_hmac_failure`,
 drained submission. The four fixed high-class categories (External Send Gate,
 secrets/auth, doctrine, code) always escalate regardless of documentation.
 
+### Portal user login / admin (Phase 7) — §43 (high-class, escalate to Seth)
+
+Portal user provisioning + session revocation is the **secrets/auth + code** boundary —
+a FIXED high-capability class — so it is **developer-operator only** (Seth). There is NO
+Tier-2 repair; the Successor-Operator escalates.
+
+| Symptom | Likely cause | Action |
+|---|---|---|
+| Field PMs all 401 / can't log in right after a deploy | migration 0006 (`users.disabled`) wasn't applied BEFORE the Worker redeploy → `requireSession` fail-closes every session | **Escalate to Seth** (apply 0006 to live D1; the per-request read then succeeds). |
+| `portal_admin` CLI returns `(401) — admin bearer rejected` | Keychain `ITS_PORTAL_ADMIN_TOKEN` ≠ Worker `PORTAL_ADMIN_API_TOKEN`, or unset | **Escalate to Seth** (secrets/auth). |
+| Need to add / reset / disable a portal user | routine provisioning | **Escalate to Seth** — it's `python -m safety_reports.portal_admin …` with the admin bearer (developer-operator task). |
+
+Activation steps + the route/CLI reference live in `safety_portal/README.md` (Phase 7).
+
 ## Weekly compile (`weekly_generate.py`) — Phase 5b
 
 The DETERMINISTIC weekly compile (the Anthropic narrative core was retired). For each

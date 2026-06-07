@@ -70,3 +70,26 @@ export async function validateUser(
 export function newSessionClaims(user: AuthedUser): SessionClaims {
   return { sub: user.id, username: user.username, iat: Math.floor(Date.now() / 1000) };
 }
+
+/**
+ * Hash a plaintext password with bcrypt cost 10 (the mission's locked factor).
+ *
+ * The BACKEND hashes: the operator passes plaintext over the bearer-gated admin
+ * route at provision/reset; the plaintext is never stored, returned, or logged.
+ * Same cost-10 caveat as `validateUser` (Workers Paid plan, Error 1102).
+ */
+export async function hashPassword(password: string): Promise<string> {
+  return bcrypt.hash(password, 10);
+}
+
+/**
+ * Normalize + validate a portal username: `lastname.firstname`, lowercase ASCII
+ * letters (with internal `'`/`-`), exactly one dot, length-capped. Returns the
+ * normalized (trimmed + lowercased) username, or `null` if invalid.
+ */
+export function normalizeUsername(raw: string): string | null {
+  const u = raw.trim().toLowerCase();
+  if (u.length < 3 || u.length > 64) return null;
+  if (!/^[a-z][a-z'-]*\.[a-z][a-z'-]*$/.test(u)) return null;
+  return u;
+}
