@@ -93,16 +93,16 @@ def cmd_add_user(base_url: str, token: str, username: str) -> None:
         json_body={"username": username, "password": password},
     )
     if status == 201:
-        print(f"OK: created user {data.get('username', username)!r}")
+        print(f"OK: created user {username!r}")
     elif status == 409:
         _fail(f"user {username!r} already exists (use reset-password)")
     elif status == 400:
         _fail(
-            f"rejected ({data.get('error')}); username must be lastname.firstname, "
+            f"rejected: username must be lastname.firstname (lowercased), "
             f"password ≥ {MIN_PASSWORD_LEN} chars"
         )
     else:
-        _fail(f"unexpected status {status}: {data}")
+        _fail(f"unexpected status {status}")
 
 
 def cmd_reset_password(base_url: str, token: str, username: str) -> None:
@@ -116,7 +116,7 @@ def cmd_reset_password(base_url: str, token: str, username: str) -> None:
     elif status == 404:
         _fail(f"user {username!r} not found (use add-user)")
     else:
-        _fail(f"unexpected status {status}: {data}")
+        _fail(f"unexpected status {status}")
 
 
 def cmd_set_disabled(base_url: str, token: str, username: str, *, disable: bool) -> None:
@@ -130,7 +130,7 @@ def cmd_set_disabled(base_url: str, token: str, username: str, *, disable: bool)
     elif status == 404:
         _fail(f"user {username!r} not found")
     else:
-        _fail(f"unexpected status {status}: {data}")
+        _fail(f"unexpected status {status}")
 
 
 def cmd_list_users(base_url: str, token: str) -> None:
@@ -138,7 +138,7 @@ def cmd_list_users(base_url: str, token: str) -> None:
         base_url, token, "GET", "/api/internal/admin/users"
     )
     if status != 200:
-        _fail(f"unexpected status {status}: {data}")
+        _fail(f"unexpected status {status}")
     users = data.get("users") or []
     if not users:
         print("(no users)")
