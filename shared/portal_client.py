@@ -218,3 +218,56 @@ def push_jobs(base_url: str, token: str, jobs: list[dict[str, Any]]) -> dict[str
     `PortalTransportError` (any other failure).
     """
     return _request("POST", base_url, SYNC_PATH, token, json_body={"jobs": jobs})
+
+
+def admin_request(
+    base_url: str, token: str, method: str, path: str, *,
+    json_body: dict[str, Any] | None = None,
+) -> tuple[int, dict[str, Any]]:
+    """Issue one bearer-authed admin request to `/api/internal/admin/*` → (status, json).
+
+    The operator-only control-plane leg (user provision / reset / disable / enable /
+    list) to OUR OWN Worker — NOT a customer-facing send (outside the External Send
+    Gate, Invariant 1). The bearer is the Mac Keychain `ITS_PORTAL_ADMIN_TOKEN`,
+    mirroring the Worker's `PORTAL_ADMIN_API_TOKEN` (SEPARATE from the poller's
+    internal token — privilege separation). Retries 429/503 + network failures like
+    the other portal_client calls.
+
+    A 401 raises `PortalAuthError` (the admin bearer is wrong/missing — a real
+    misconfig). Application statuses (200/201/400/404/409) are RETURNED, not raised,
+    so the CLI maps them to operator-readable outcomes (created / exists / not_found
+    / invalid). A non-JSON body yields `{}` — the caller treats the status as truth.
+    """
+    url = base_url.rstrip("/") + path
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+    last_detail = ""
+    for attempt in range(MAX_RETRIES):
+        try:
+            response = requests.request(
+                method, url, json=json_body, headers=headers, timeout=TIMEOUT
+            )
+        except requests.RequestException as exc:
+            last_detail = f"{type(exc).__name__}: {exc}"
+            if attempt == MAX_RETRIES - 1:
+                raise PortalTransportError(
+                    f"{method} {path} network failure after {MAX_RETRIES} attempts: {last_detail}"
+                ) from exc
+            time.sleep(float(2**attempt))
+            continue
+        if response.status_code == 401:
+            raise PortalAuthError(f"{method} {path} unauthorized (401) — admin bearer rejected")
+        if response.status_code in (429, 503):
+            if attempt == MAX_RETRIES - 1:
+                raise PortalRateLimitError(
+                    f"{method} {path} throttled/unavailable after {MAX_RETRIES} attempts"
+                )
+            delay = _parse_retry_after(response.headers.get("Retry-After"))
+            time.sleep(delay if delay is not None else float(2**attempt))
+            continue
+        try:
+            data = response.json()
+        except ValueError:
+            data = {}
+        return response.status_code, data if isinstance(data, dict) else {}
+    # Unreachable: every loop branch returns or raises on the last attempt.
+    raise PortalTransportError(f"{method} {path} exhausted retries: {last_detail}")

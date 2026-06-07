@@ -24,6 +24,14 @@ export interface Env {
    * Workers Secret / .dev.vars — never committed.
    */
   PORTAL_INTERNAL_API_TOKEN: string;
+  /**
+   * OPERATOR-ONLY bearer token for the /api/internal/admin/* user-provisioning
+   * routes — SEPARATE from PORTAL_INTERNAL_API_TOKEN so the portal_poll daemon's
+   * token cannot create / reset / disable users (privilege separation). Mirrored
+   * into the Keychain as ITS_PORTAL_ADMIN_TOKEN. Workers Secret / .dev.vars —
+   * never committed.
+   */
+  PORTAL_ADMIN_API_TOKEN: string;
 }
 
 /** Claims signed (NOT encrypted) into the session cookie. Keep minimal — readable by the holder. */
