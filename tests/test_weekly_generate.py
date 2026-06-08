@@ -52,7 +52,16 @@ def stub(mocker) -> dict[str, MagicMock]:
         "box_root": mocker.patch.object(weekly_generate, "_portal_box_root", return_value=""),  # gated OFF → legacy
         "get_root": mocker.patch.object(weekly_generate.project_routing, "get_folder_id", return_value="root1"),
         "mkfolder": mocker.patch.object(weekly_generate.box_client, "get_or_create_folder", return_value="wk1"),
-        "upload": mocker.patch.object(weekly_generate.box_client, "upload_bytes", return_value={"id": "pkt9", "name": "x", "size": 9}),
+        # Mock the function weekly_generate ACTUALLY calls (the version-on-conflict
+        # upload). Formerly this patched plain `upload_bytes`, which production only
+        # hit indirectly via the real wrapper's happy path — so the recompile/409
+        # branch went unexercised here (fixture-fidelity gap, relied on live smoke).
+        "upload": mocker.patch.object(weekly_generate.box_client, "upload_bytes_or_new_version", return_value={"id": "pkt9", "name": "x", "size": 9}),
+        # Guard: weekly_generate must NOT call the plain (409-prone) upload_bytes
+        # directly — it 409s on the deterministic packet name and routed recompiles
+        # to the Review Queue (PR-G). Patched so a regression is inert (no live Box
+        # call) AND assertable via .assert_not_called().
+        "upload_plain": mocker.patch.object(weekly_generate.box_client, "upload_bytes"),
         "wsr": mocker.patch.object(weekly_generate.wsr_review, "upsert_row", return_value=(123, True)),
         "evergreen": mocker.patch.object(weekly_generate, "_read_str_setting", return_value="the office"),
         "review": mocker.patch.object(weekly_generate.review_queue, "add"),
@@ -188,6 +197,37 @@ def test_new_doc_since_compile_triggers_recompile(stub):
     }
     out = weekly_generate._run_pipeline(week_start_override=ANCHOR)
     assert out["packets_compiled"] == 1
+
+
+def test_recompile_versions_packet_via_version_safe_upload(stub):
+    """A `Compile Now` mid-week run then a later Friday recompile must RE-VERSION
+    the one Box packet, never duplicate it. Locks the layering: weekly_generate
+    calls box_client.upload_bytes_or_new_version (409 → new Box VERSION, STABLE
+    file id) with a DETERMINISTIC filename + the same job/week folder on every
+    (re)compile — NOT the plain upload_bytes (409 → Review Queue, PR-G). The
+    version-on-conflict BEHAVIOUR itself is locked in test_box_client.py; this
+    guards that weekly_generate uses that version-safe entry point. Closes the
+    fixture-fidelity gap that left the recompile path covered only by live smoke."""
+    stub["box_root"].return_value = "ROOT9"
+    stub["mkfolder"].side_effect = ["jobP", "weekP", "jobP", "weekP"]  # two compiles
+    wk = weekly_generate.safety_week.week_bounds(ANCHOR)
+    expected_name = weekly_generate._packet_filename("Bradley 1", wk)
+
+    weekly_generate._run_pipeline(week_start_override=ANCHOR)  # Wed: first compile
+    stub["rollup"].return_value = {  # a prior Rollup now exists; Compile Now forces recompile
+        "_row_id": 5, week_sheet.COL_ROW_TYPE: week_sheet.ROW_TYPE_ROLLUP,
+        week_sheet.COL_SUBMITTED_AT: "2026-06-05T09:00:00-07:00",
+        week_sheet.COL_COMPILE_NOW: True,
+    }
+    weekly_generate._run_pipeline(week_start_override=ANCHOR)  # Fri: recompile
+
+    # Both runs target the SAME job/week folder + SAME deterministic filename via the
+    # version-safe upload → Box versions the one packet, no duplicate accumulation.
+    assert stub["upload"].call_count == 2
+    for call in stub["upload"].call_args_list:
+        assert call.args[0] == "weekP", "packet must file into the job/week folder"
+        assert call.args[1] == expected_name, "recompile must reuse the deterministic packet name"
+    stub["upload_plain"].assert_not_called()  # never the 409-prone plain upload
 
 
 # ---- empty week ----------------------------------------------------------
