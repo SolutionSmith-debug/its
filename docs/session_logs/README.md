@@ -96,6 +96,8 @@ outside the sentinel block.
 <!-- BEGIN AUTO-INDEX -->
 | Date | Type | Status | Workstream | Title | PRs |
 |------|------|--------|------------|-------|-----|
+| 2026-06-08 | session_log | closed | safety_portal | [Session log — Safety Portal Admin Dashboard (Phase 1) + security audit + post-audit hardening](2026-06-08_admin-dashboard-audit-and-security-hardening.md) | #193, #194, #195, #197 |
+| 2026-06-08 | session_log | closed | safety_portal | [Session log — Safety Portal mirror activation (end-to-end live proof on evergreenmirror.com)](2026-06-08_safety-portal-mirror-activation.md) | #185 |
 | 2026-06-07 | session_log | closed | safety_portal | [Session log — Safety Portal Phase 7: styling, Box schema, custom domain (PRs #186–#189 + #185 open)](2026-06-07_safety-portal-phase7-styling-box-schema.md) | #185, #186, #187, #188, #189 |
 | 2026-06-05 | session_log | closed | safety_portal | [Session log — Safety Portal Phase 3: contacts amendment (contact routing columns)](2026-06-05_safety-portal-phase3-contacts-amendment.md) | #162 |
 | 2026-06-05 | session_log | closed | safety_portal | [Session log — Safety Portal Phase 3: job model + live Job-ID resolution](2026-06-05_safety-portal-phase3-job-model.md) | #160 |

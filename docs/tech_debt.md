@@ -4,6 +4,26 @@ Items deliberately deferred. Each carries the rationale for deferral and the tri
 
 When to add an entry: a session deliberately chooses preservation-over-refactor (per Op Stds v11 §14), discovers an external-API constraint that forced a workaround, or defers a non-trivial cleanup that's larger than the current session can absorb. When to mark CLOSED: the underlying item is resolved in a commit; preserve the entry with resolution detail rather than deleting (history is cheap, context is expensive).
 
+## Safety Portal — 2026-06-08 adversarial security audit: 11 findings remediated [CLOSED 2026-06-08]
+
+**Closed by the post-audit hardening PR (this session).** A grey-box adversarial audit of the live mirror Worker (`safety.evergreenmirror.com`) confirmed the core posture HELD — injection 0/4 (bound params), no auth bypass (HMAC cookie unforgeable), no privilege escalation, and the atomic last-admin guard survived the TOCTOU race — and surfaced 11 perimeter findings, all remediated:
+
+- **#1 (med)** null/non-object JSON body → unhandled TypeError → bare 500 on every handler (unauth on `/api/login`). Fixed: a per-handler body-shape guard (`typeof!=='object' || null || Array.isArray` → 400) on all 12 handlers + a global `app.onError` (clean JSON, no stack leak, NOT Sentry-paged on unauth noise).
+- **#4 (low)** `values:[]` slipped the `typeof==='object'` check in `/api/submit` → added `|| Array.isArray(values)`.
+- **#2/#3/#8–11** security headers via Hono `secureHeaders()` + `run_worker_first:true` (so they reach the SPA document + assets): `X-Frame-Options:DENY`, `nosniff`, `Referrer-Policy`, `HSTS`, `Cache-Control:no-store` on `/api/*`, and **CSP shipped REPORT-ONLY** (loosened for React inline styles + the logo/inline-SVG signature) — the enforce-flip is the operator's post-deploy step.
+- **#5 (low)** create/rename UNIQUE-race → 500 → mapped to 409 via an `isUniqueViolation` catch (the cheap pre-check stays; this is the race backstop).
+- **#6 (low)** delete/demote `changes()==0` was overloaded (guard-block vs already-gone) → re-check existence → 404 vs 409 `last_admin`. The atomic guard itself is unchanged (audit-confirmed TOCTOU-safe).
+
+Worker stays SEND-FREE; no migration. 42 vitest tests (real workerd + D1). Rider in the same PR: the AccountsPage edit-login editor now closes on a no-change Submit. **Activation operator-gated:** `npm run deploy` + a live re-probe of the audit vectors + the **CSP enforce-flip after a signature-capture smoke**.
+
+**Tag:** `safety-portal`, `security`, `audit`.
+
+## Safety Portal — session-epoch revocation + role-aware idle timeout (audit #7) [OPEN — Phase-2 carry 2026-06-08]
+
+**Deferred from the 2026-06-08 audit hardening; carried to the Phase-2 Session Hardening bundle** (needs a migration + a session epoch). Today logout (`/api/logout`) is client-side only — a captured cookie stays valid to `iat+90d`; `requireSession` re-checks only `users.disabled` (a user-level kill, not per-session / logout revocation). Phase-2 fix (resolved in the form-editor grill): a per-user **session epoch** (D1 column, embedded in cookie claims, checked in `requireSession`; logout AND password-change bump it) + **role-aware lifetime** — submitters keep 90-day, **admins get a 5-min idle timeout** (client activity-detection + a server-enforced sliding window). Specced in the Phase-2 form-editor + session-hardening design brief (lands via Session B / the brief PR).
+
+**Tag:** `safety-portal`, `auth`, `session`, `phase-2`.
+
 ## Smartsheet API constraint: column FORMAT must be set via model attribute, not dict constructor [OPEN 2026-06-07]
 
 **Verified live (PR #187, 2026-06-07).** When using the Smartsheet Python SDK to create or update a column, the column **format string** (font, size, bold, color, etc.) must be assigned via the model **attribute** (`column.format = "..."`) — passing `format` as a key in the dict constructor (`smartsheet.models.Column({"format": "..."})`) silently drops the value. Column **width** works via either path (dict or attribute). The same per-cell format DOES work via the `Cell` dict constructor (`_resolve_cells` attaches it via the `_formats` meta-key extension).
