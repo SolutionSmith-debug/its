@@ -1,0 +1,248 @@
+"""Tests for the manual-fallback blank-form archive (PR-L).
+
+Covers `form_pdf.render_blank_fillable` + `render_cover_sheet` (pure-bytes renderers)
+and `scripts/generate_form_archive.py` (render-only). Asserts every form renders to a
+valid, openable, field-bearing PDF and that static row tables emit EXACTLY `min_rows`
+fillable rows. A CI-SKIPPED integration test exercises the live Box round-trip.
+"""
+from __future__ import annotations
+
+import importlib.util
+import io
+import json
+from pathlib import Path
+
+import pypdf
+import pytest
+
+from safety_reports.form_pdf import (
+    load_definition,
+    render_blank_fillable,
+    render_cover_sheet,
+)
+
+_ROOT = Path(__file__).resolve().parents[1]
+FORMS_DIR = _ROOT / "safety_portal" / "forms"
+DEF_PATHS = sorted(p for p in FORMS_DIR.glob("*.json") if p.name != "meta-schema.json")
+
+
+def _load(path: Path) -> dict:
+    return json.loads(path.read_text())
+
+
+def _def(code: str) -> dict:
+    """load_definition that asserts the form resolved (narrows dict|None → dict)."""
+    d = load_definition(code)
+    assert d is not None, f"definition {code!r} did not load"
+    return d
+
+
+def _fields(pdf_bytes: bytes) -> dict:
+    return pypdf.PdfReader(io.BytesIO(pdf_bytes)).get_fields() or {}
+
+
+def _row_table_sections(definition: dict) -> list[dict]:
+    return [s for s in definition["sections"]
+            if s["type"] in ("repeating_table", "signature_table")]
+
+
+# ── every form renders to a valid, field-bearing fillable PDF ──────────────────
+@pytest.mark.parametrize("path", DEF_PATHS, ids=lambda p: p.stem)
+def test_blank_form_renders_valid_fillable_pdf(path: Path) -> None:
+    out = render_blank_fillable(_load(path))
+    assert out[:5] == b"%PDF-", "not a PDF"
+    reader = pypdf.PdfReader(io.BytesIO(out))
+    assert len(reader.pages) >= 1
+    # AcroForm fields exist (the whole point — a blank fillable form).
+    assert reader.get_fields(), f"{path.stem} produced no AcroForm fields"
+
+
+def test_all_ten_forms_present() -> None:
+    """The glob must pick up exactly the 10 form definitions (meta-schema excluded)."""
+    assert len(DEF_PATHS) == 10
+    assert all(p.name != "meta-schema.json" for p in DEF_PATHS)
+
+
+# ── static row tables emit EXACTLY min_rows fillable rows (no add/delete) ───────
+@pytest.mark.parametrize("path", DEF_PATHS, ids=lambda p: p.stem)
+def test_row_tables_emit_exactly_min_rows(path: Path) -> None:
+    """For each repeating/signature table, the count of text-field WIDGETS for a given
+    column equals min_rows. We pick a TEXT column (text/textarea/date/time/number) —
+    signature columns render as a hand-sign LINE (not a field), so they're excluded.
+    """
+    definition = _load(path)
+    fields = _fields(render_blank_fillable(definition))
+    # Field names are "f{n}_{sanitized-key}" (see form_pdf._FieldNamer). The key is
+    # already underscore-safe in the definitions, so the suffix after the first "_"
+    # equals the column key — count rows by that exact suffix.
+    for section in _row_table_sections(definition):
+        expect = section.get("min_rows", 1)
+        for col in section["columns"]:
+            if col["input"] == "signature":
+                continue  # sign-by-hand line, not an AcroForm field
+            key = col["key"]
+            count = sum(1 for name in fields if name.split("_", 1)[-1] == key)
+            assert count == expect, (
+                f"{path.stem} {section['key']}.{key}: got {count} field rows, "
+                f"expected min_rows={expect}"
+            )
+
+
+def test_jha_row_counts() -> None:
+    """JHA: hazard_analysis 8 rows × 3 cols + worker_acknowledgement 4 rows × 2 fields
+    (the signature column is a line, not a field) + 4 header fields = 36 text fields."""
+    fields = _fields(render_blank_fillable(_def("jha-v1")))
+    text_fields = {n: f for n, f in fields.items() if f.get("/FT") == "/Tx"}
+    assert len(text_fields) == 36, f"JHA text-field count drifted: {len(text_fields)}"
+
+
+def test_toolbox_signin_is_eight_rows() -> None:
+    """Every toolbox talk sign_in has min_rows=8; one name field per row (signature is a
+    hand-sign line) → 8 text fields."""
+    for code in ("toolbox-talk-electrical-v1", "toolbox-talk-ppe-v1",
+                 "toolbox-talk-back-sprains-v1", "toolbox-talk-hard-hat-v1",
+                 "toolbox-talk-ergonomics-v1"):
+        fields = _fields(render_blank_fillable(_def(code)))
+        assert len([1 for f in fields.values() if f.get("/FT") == "/Tx"]) == 8, code
+
+
+def test_visitor_log_is_fifteen_rows() -> None:
+    """Visitor: header 2 + visitor_log 15×6 + notes 1 = 93 text fields."""
+    fields = _fields(render_blank_fillable(_def("visitor-sign-in-v1")))
+    assert len([1 for f in fields.values() if f.get("/FT") == "/Tx"]) == 93
+
+
+# ── checklist: rated → checkboxes, select → dropdown, numeric/text → text field ─
+def test_skid_steer_checklist_has_checkboxes_and_no_dropdown() -> None:
+    fields = _fields(render_blank_fillable(_def("equipment-skid-steer-v1")))
+    kinds = {f.get("/FT") for f in fields.values()}
+    assert "/Btn" in kinds, "rated checklist items must render as checkboxes"
+    # numeric items (NEXT OIL CHANGE — HOURS, HOURS ON MACHINE) → text fields
+    assert "/Tx" in kinds
+
+
+def test_hsse_select_renders_as_dropdown() -> None:
+    """HSS&E risk_rating is the one `select` field across all forms → a /Ch dropdown
+    carrying its options (High/Medium/Low)."""
+    fields = _fields(render_blank_fillable(_def("hsse-work-observation-v1")))
+    choices = [f for f in fields.values() if f.get("/FT") == "/Ch"]
+    assert len(choices) == 1, "expected exactly one dropdown (risk_rating)"
+    opts = choices[0].get("/Opt") or []
+    assert "High" in opts and "Medium" in opts and "Low" in opts
+
+
+# ── static_text / content_blocks render verbatim via the submission path ────────
+def test_static_text_renders_verbatim_in_blank() -> None:
+    """JHA's mandatory footer + equipment lock/tag-out legal text MUST appear in the
+    blank form — they route through the SAME `_section_flowables` as the submission
+    renderer, so they cannot diverge."""
+    jha = render_blank_fillable(_def("jha-v1"))
+    text = " ".join(p.extract_text() for p in pypdf.PdfReader(io.BytesIO(jha)).pages)
+    assert "REVIEW AND REVISE THE PLAN" in " ".join(text.split())
+
+    skid = render_blank_fillable(_def("equipment-skid-steer-v1"))
+    stext = " ".join(p.extract_text() for p in pypdf.PdfReader(io.BytesIO(skid)).pages)
+    assert "ALWAYS lock/tag-out unsafe equipment" in " ".join(stext.split())
+
+
+def test_toolbox_content_blocks_body_renders_in_blank() -> None:
+    out = render_blank_fillable(_def("toolbox-talk-electrical-v1"))
+    text = " ".join(p.extract_text() for p in pypdf.PdfReader(io.BytesIO(out)).pages)
+    norm = " ".join(text.split())
+    assert "5-MINUTE SAFETY TALK" in norm
+    # A sentence from the verbatim talk body.
+    assert "Arcs take place when there has been damage" in norm
+
+
+def test_blank_render_is_deterministic_field_shape() -> None:
+    """Two renders of the same form produce the same field NAMES (the counter is reset
+    per render, so the shape is stable run-to-run)."""
+    a = set(_fields(render_blank_fillable(_def("jha-v1"))))
+    b = set(_fields(render_blank_fillable(_def("jha-v1"))))
+    assert a == b
+
+
+# ── cover sheet ────────────────────────────────────────────────────────────────
+def test_cover_sheet_renders_instructions() -> None:
+    out = render_cover_sheet()
+    assert out[:5] == b"%PDF-"
+    text = " ".join(p.extract_text() for p in pypdf.PdfReader(io.BytesIO(out)).pages)
+    norm = " ".join(text.split())
+    assert "Manual Fallback" in norm
+    assert "ITS_Active_Jobs" in norm  # look the contact up there
+    assert "Safety-Reports contact" in norm
+
+
+# ── the generate script (render-only; no network) ──────────────────────────────
+def _load_script():
+    spec = importlib.util.spec_from_file_location(
+        "generate_form_archive", _ROOT / "scripts" / "generate_form_archive.py")
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_script_definition_paths_match_registry_glob() -> None:
+    mod = _load_script()
+    paths = mod._form_definition_paths()
+    assert len(paths) == 10
+    assert all(p.name != "meta-schema.json" for p in paths)
+
+
+def test_script_filename_by_form_name() -> None:
+    mod = _load_script()
+    assert mod._blank_pdf_filename("Job Hazard Analysis") == "Job Hazard Analysis (fillable).pdf"
+    # `/` (a Box path separator) is sanitized.
+    assert "/" not in mod._blank_pdf_filename("A/B Form")
+
+
+def test_script_render_only_writes_all_pdfs(tmp_path, monkeypatch) -> None:
+    """Default mode renders the cover + 10 forms to the out dir and touches NO Box.
+    If anything tried to import box_client/smartsheet at render-time this would surface
+    as a real network attempt — render-only must stay pure."""
+    mod = _load_script()
+    out = tmp_path / "out"
+    rc = mod.main(["--out-dir", str(out)])
+    assert rc == 0
+    pdfs = sorted(out.glob("*.pdf"))
+    assert len(pdfs) == 11  # 10 forms + cover
+    assert any(p.name.startswith("00") for p in pdfs)  # cover sorts first
+    for p in pdfs:
+        assert p.read_bytes()[:5] == b"%PDF-"
+
+
+def test_script_defaults_to_render_only(monkeypatch, tmp_path) -> None:
+    """`_upload` must NEVER be called without the explicit --upload flag. We poison it
+    so the default path failing to be render-only would raise."""
+    mod = _load_script()
+    monkeypatch.setattr(mod, "_upload", lambda *a, **k: pytest.fail("upload in default mode!"))
+    assert mod.main(["--out-dir", str(tmp_path / "o")]) == 0
+
+
+# ── live Box round-trip — CI-SKIPPED (write-access probe, Op Stds §30) ──────────
+# Default `pytest -q` SKIPS this (pyproject addopts `-m 'not integration'`). Run with
+# `pytest -m integration`; requires Box OAuth creds in Keychain. NOT executed in CI.
+@pytest.mark.integration
+def test_box_archive_round_trip() -> None:
+    from shared import box_client
+    try:
+        client = box_client.get_client()
+    except box_client.BoxError as e:
+        pytest.skip(f"Box credentials unavailable: {e!r}")
+
+    # Use a throwaway ITS-prefixed root so we never touch the live mirror tree.
+    root = box_client.get_or_create_folder("0", "ITS _int_form_archive_sandbox")
+    try:
+        archive = box_client.get_or_create_folder(root, "00_Form_Archive")
+        pdf = render_blank_fillable(_def("jha-v1"))
+        name = "Job Hazard Analysis (fillable).pdf"
+        first = box_client.upload_bytes_or_new_version(archive, name, pdf)
+        # Re-run = version-on-conflict: SAME file id, no duplicate.
+        second = box_client.upload_bytes_or_new_version(archive, name, pdf)
+        assert second["id"] == first["id"]
+        names = [it["name"] for it in box_client.list_folder(archive, limit=1000)
+                 if it["type"] == "file"]
+        assert names.count(name) == 1
+    finally:
+        client.folder(root).delete(recursive=True)
