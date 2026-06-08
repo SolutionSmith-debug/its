@@ -82,3 +82,16 @@ of documentation:
   written to the D1 `audit_log` table (`actor_username`, `action`, `target_username`,
   `detail`). Read out-of-band:
   `npx wrangler d1 execute its-safety-portal-db --remote --command "SELECT * FROM audit_log ORDER BY id DESC LIMIT 50"`.
+- **Submit-as ("filled out as").** When an admin fills a form on a field PM's behalf,
+  the submission records BOTH parties: `submissions.actor_username` = the admin who
+  hit submit (the true actor, never dropped) and `submissions.submitted_as` = the
+  attributed account (migration 0008). A real submit-as also writes an `audit_log`
+  row `action='submit_as'` (`actor_username`=admin, `target_username`=attributed,
+  `detail`={submission_uuid, job_id}). A normal self-submit sets both columns to the
+  same user and writes NO submit_as audit row. The server is the gate — a submitter
+  who forges `submitted_as` is rejected 403; an unknown/disabled attributed account is
+  422. This is **high-capability (impersonation) — Tier-3**: anything touching the
+  submit-as gate, the attribution columns, or the audit trail escalates to Seth (the
+  Successor-Operator does not modify it). The two attribution columns are NOT part of
+  the canonical HMAC and NOT returned by `/api/internal/pending`, so the downstream
+  pipeline (portal_poll → intake → Box → WSR) is unchanged.
