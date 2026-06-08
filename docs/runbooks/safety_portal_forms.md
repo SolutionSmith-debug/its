@@ -48,6 +48,12 @@ picklist appears. Only **Active** rows appear.
 - Editing a `<form_code>.json` is a **code change** (escalate). After it lands, both
   the on-screen form and the PDF update automatically (single source of truth).
 
+### Refresh the manual-fallback blank-form archive (after any `forms/*.json` change)
+- Re-run `python scripts/generate_form_archive.py --upload` to regenerate the blank
+  fillable PDFs + cover sheet and re-upload them to Box `00_Form_Archive`
+  (version-on-conflict, so it updates in place — no duplicates). Without `--upload` it
+  renders locally only. (Live upload is operator-gated — Tier-3/Seth.)
+
 ## Escalate to Seth (Tier 3) when
 
 - Authoring or editing any `safety_portal/forms/*.json` (code).
