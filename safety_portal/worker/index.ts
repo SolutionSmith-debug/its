@@ -2,8 +2,8 @@ import { Hono } from "hono";
 import { createMiddleware } from "hono/factory";
 import type { Context } from "hono";
 import { setSignedCookie, getSignedCookie, deleteCookie } from "hono/cookie";
-import type { Env, SessionClaims, Vars } from "./types";
-import { validateUser, newSessionClaims, hashPassword, normalizeUsername } from "./auth";
+import type { Env, Role, SessionClaims, Vars } from "./types";
+import { validateUser, newSessionClaims, hashPassword, normalizeUsername, coerceRole } from "./auth";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ITS Safety Portal — Worker API (Phase 2)
@@ -144,7 +144,9 @@ app.post("/api/login", async (c) => {
     path: "/",
     maxAge: MAX_AGE_S,
   });
-  return c.json({ user: { username: user.username } });
+  // `role` lets the SPA decide whether to render the admin tabs. It is display-only
+  // hinting — every admin action is independently re-gated server-side (requireRole).
+  return c.json({ user: { username: user.username, role: user.role } });
 });
 
 /** Verify the signed session cookie; 401 on absent/tampered/expired. */
@@ -176,26 +178,49 @@ const requireSession = createMiddleware<{ Bindings: Env; Variables: Vars }>(asyn
   // D1 error → 401 too (a DB blip must neither grant access nor crash the request).
   // ORDER DEPENDENCY: migration 0006 (users.disabled) must be live BEFORE this
   // deploys, else this read errors and 401s every session — see README activation.
+  // Read `role` in the SAME per-request lookup as `disabled` (migration 0007 adds
+  // the column; ORDER DEPENDENCY: it must be live before this deploys). Role is
+  // authoritative from D1 here — NOT from the cookie — so a demotion is effective
+  // immediately. coerceRole fails safe (unknown → 'submitter', never 'admin').
+  let role: Role;
   try {
     const row = await c.env.DB
-      .prepare("SELECT disabled FROM users WHERE username = ?")
+      .prepare("SELECT disabled, role FROM users WHERE username = ?")
       .bind(claims.username)
-      .first<{ disabled: number }>();
+      .first<{ disabled: number; role: string }>();
     if (!row || row.disabled) {
       return c.json({ error: "revoked" }, 401);
     }
+    role = coerceRole(row.role);
   } catch {
     return c.json({ error: "unauthenticated" }, 401);
   }
 
   c.set("session", claims);
+  c.set("role", role);
   await next();
 });
 
-/** GET /api/session — who am I (used by the SPA on load to restore session). */
+/**
+ * Session+role gate for the in-app admin surface (/api/admin/*). MUST chain AFTER
+ * requireSession, which sets the per-request `role` from D1. A non-admin session
+ * → 403 (authenticated but unauthorized). This is the REAL gate for the admin UI —
+ * the SPA hiding the admin tabs is never the boundary (Invariant 2: never trust the
+ * client). SEPARATE from requireAdminToken: that is a bearer secret for the operator
+ * CLI's /api/internal/admin/*; this is a logged-in admin acting in the browser.
+ */
+const requireRole = (role: Role) =>
+  createMiddleware<{ Bindings: Env; Variables: Vars }>(async (c, next) => {
+    if (c.get("role") !== role) return c.json({ error: "forbidden" }, 403);
+    await next();
+  });
+
+/** GET /api/session — who am I (used by the SPA on load to restore session). Returns
+ *  the live role (from requireSession's per-request D1 read), so a demotion drops the
+ *  admin tabs on the next session refresh. */
 app.get("/api/session", requireSession, (c) => {
   const s = c.get("session");
-  return c.json({ user: { username: s.username } });
+  return c.json({ user: { username: s.username, role: c.get("role") } });
 });
 
 /**
@@ -430,9 +455,20 @@ async function setUserDisabled(
   return c.json({ ok: true, username, disabled: value });
 }
 
-// POST /api/internal/admin/users — provision a new user (409 if it exists).
+/** Validate an optional `role` body field. undefined → `dflt`; 'admin'/'submitter'
+ *  → that value; anything else → null (caller returns 400 invalid_role). Never
+ *  coerces a junk value to a privilege — an unknown role is rejected, not defaulted. */
+function parseRole(value: unknown, dflt: Role = "submitter"): Role | null {
+  if (value === undefined) return dflt;
+  if (value === "admin" || value === "submitter") return value;
+  return null;
+}
+
+// POST /api/internal/admin/users — provision a new user (409 if it exists). Accepts
+// an optional `role` (default 'submitter') so the operator can bootstrap the two
+// admins via `portal_admin add-user --role admin`.
 app.post("/api/internal/admin/users", requireAdminToken, async (c) => {
-  let body: { username?: unknown; password?: unknown };
+  let body: { username?: unknown; password?: unknown; role?: unknown };
   try {
     body = await c.req.json();
   } catch {
@@ -440,16 +476,41 @@ app.post("/api/internal/admin/users", requireAdminToken, async (c) => {
   }
   const username = normalizeUsername(typeof body.username === "string" ? body.username : "");
   const password = typeof body.password === "string" ? body.password : "";
+  const role = parseRole(body.role);
   if (!username) return c.json({ error: "invalid_username" }, 400);
   if (password.length < 8 || password.length > 256) return c.json({ error: "invalid_password" }, 400);
+  if (role === null) return c.json({ error: "invalid_role" }, 400);
   const exists = await c.env.DB.prepare("SELECT 1 FROM users WHERE username=?").bind(username).first();
   if (exists) return c.json({ error: "exists" }, 409);
   const password_hash = await hashPassword(password); // plaintext never stored/logged
   await c.env.DB
-    .prepare("INSERT INTO users (username, password_hash) VALUES (?,?)")
-    .bind(username, password_hash)
+    .prepare("INSERT INTO users (username, password_hash, role) VALUES (?,?,?)")
+    .bind(username, password_hash, role)
     .run();
-  return c.json({ ok: true, username }, 201);
+  return c.json({ ok: true, username, role }, 201);
+});
+
+// POST /api/internal/admin/users/role — set an existing user's role (404 if absent).
+// Operator break-glass for the role model (e.g. restore an admin the UI demoted).
+// NO last-admin guard here on purpose: the CLI is the recovery path *out* of a
+// zero-admin lockout, so it must never refuse on admin-count grounds.
+app.post("/api/internal/admin/users/role", requireAdminToken, async (c) => {
+  let body: { username?: unknown; role?: unknown };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "bad_request" }, 400);
+  }
+  const username = normalizeUsername(typeof body.username === "string" ? body.username : "");
+  const role = parseRole(body.role, "submitter");
+  if (!username) return c.json({ error: "invalid_username" }, 400);
+  if (body.role === undefined || role === null) return c.json({ error: "invalid_role" }, 400);
+  const res = await c.env.DB
+    .prepare("UPDATE users SET role=? WHERE username=?")
+    .bind(role, username)
+    .run();
+  if ((res.meta?.changes ?? 0) === 0) return c.json({ error: "not_found" }, 404);
+  return c.json({ ok: true, username, role });
 });
 
 // POST /api/internal/admin/users/reset — re-hash an existing user's password (404 if absent).
@@ -480,9 +541,235 @@ app.post("/api/internal/admin/users/enable", requireAdminToken, (c) => setUserDi
 // GET /api/internal/admin/users — list users (NO password hashes).
 app.get("/api/internal/admin/users", requireAdminToken, async (c) => {
   const { results } = await c.env.DB
-    .prepare("SELECT username, disabled, created_at FROM users ORDER BY username")
-    .all<{ username: string; disabled: number; created_at: number }>();
+    .prepare("SELECT username, role, disabled, created_at FROM users ORDER BY username")
+    .all<{ username: string; role: string; disabled: number; created_at: number }>();
   return c.json({ users: results });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// In-app admin surface — /api/admin/* (requireSession + requireRole("admin")).
+//
+// This is the SESSION+ROLE-gated counterpart to the bearer /api/internal/admin/*
+// operator-CLI routes above. A logged-in admin (the CEO / head PM) manages accounts
+// from the browser; every route is re-gated server-side (the SPA hiding tabs is NOT
+// the boundary — Invariant 2). Each mutation + its audit_log row run in ONE atomic
+// D1 batch, so an account change can never land without its security-log entry.
+// Nothing here transmits anything externally (Invariant 1) — D1 writes only.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Build (not execute) the audit_log INSERT — included in the mutation's batch so
+ *  the record is atomic with the change it describes. `detail` is JSON-encoded. */
+function auditStmt(
+  c: Context<{ Bindings: Env; Variables: Vars }>,
+  actor: string,
+  action: string,
+  target: string | null,
+  detail: Record<string, unknown> | null,
+) {
+  return c.env.DB
+    .prepare("INSERT INTO audit_log (actor_username, action, target_username, detail) VALUES (?,?,?,?)")
+    .bind(actor, action, target, detail === null ? null : JSON.stringify(detail));
+}
+
+interface TargetRow { username: string; role: string; disabled: number }
+
+/**
+ * SQL guard fragment for the last-admin protection (operator's call, Q2 = ON).
+ *
+ * Appended to the demote/delete WHERE so the "is this the only ENABLED admin?" test
+ * is evaluated ATOMICALLY inside the mutation: the count subquery sees the row's
+ * pre-mutation state at write time. This is deliberately NOT a separate pre-SELECT —
+ * a check-then-act pair is a TOCTOU race (two concurrent demotes/deletes could both
+ * read count=2, both pass, and strand zero admins). With the guard inline, each
+ * UPDATE/DELETE re-evaluates the count and at most one matches a row; the loser
+ * matches 0 rows (meta.changes==0 ⇒ the caller returns 409 last_admin).
+ *
+ * Only an ENABLED admin target is guarded — a disabled admin isn't a functioning
+ * admin to protect (matches the count's `disabled=0`). The bearer break-glass routes
+ * are deliberately NOT guarded (they are the recovery path out of a zero-admin state).
+ */
+function lastAdminGuardClause(target: TargetRow): string {
+  return target.role === "admin" && !target.disabled
+    ? " AND (SELECT COUNT(*) FROM users WHERE role='admin' AND disabled=0) > 1"
+    : "";
+}
+
+const adminGate = [requireSession, requireRole("admin")] as const;
+
+// GET /api/admin/users — list all accounts (username, role, disabled, created_at). No hashes.
+app.get("/api/admin/users", ...adminGate, async (c) => {
+  const { results } = await c.env.DB
+    .prepare("SELECT username, role, disabled, created_at FROM users ORDER BY username")
+    .all<{ username: string; role: string; disabled: number; created_at: number }>();
+  return c.json({ users: results });
+});
+
+// POST /api/admin/users — create an account (role selectable; 409 if it exists).
+app.post("/api/admin/users", ...adminGate, async (c) => {
+  let body: { username?: unknown; password?: unknown; role?: unknown };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "bad_request" }, 400);
+  }
+  const username = normalizeUsername(typeof body.username === "string" ? body.username : "");
+  const password = typeof body.password === "string" ? body.password : "";
+  const role = parseRole(body.role);
+  if (!username) return c.json({ error: "invalid_username" }, 400);
+  if (password.length < 8 || password.length > 256) return c.json({ error: "invalid_password" }, 400);
+  if (role === null) return c.json({ error: "invalid_role" }, 400);
+  const exists = await c.env.DB.prepare("SELECT 1 FROM users WHERE username=?").bind(username).first();
+  if (exists) return c.json({ error: "exists" }, 409);
+  const password_hash = await hashPassword(password); // plaintext never stored/logged
+  await c.env.DB.batch([
+    c.env.DB.prepare("INSERT INTO users (username, password_hash, role) VALUES (?,?,?)")
+      .bind(username, password_hash, role),
+    auditStmt(c, c.get("session").username, "user_create", username, { role }),
+  ]);
+  return c.json({ ok: true, username, role }, 201);
+});
+
+// POST /api/admin/users/credentials — edit a login: new_username and/or new_password
+// (own or any other account). Editing YOUR OWN login re-issues the session (the
+// cookie is cleared → the SPA forces a re-login with the new credentials).
+app.post("/api/admin/users/credentials", ...adminGate, async (c) => {
+  let body: { username?: unknown; new_username?: unknown; new_password?: unknown };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "bad_request" }, 400);
+  }
+  const username = normalizeUsername(typeof body.username === "string" ? body.username : "");
+  if (!username) return c.json({ error: "invalid_username" }, 400);
+  const hasNewUsername = body.new_username !== undefined;
+  const hasNewPassword = body.new_password !== undefined;
+  if (!hasNewUsername && !hasNewPassword) return c.json({ error: "no_changes" }, 400);
+
+  const target = await c.env.DB
+    .prepare("SELECT username, role, disabled FROM users WHERE username=?")
+    .bind(username)
+    .first<TargetRow>();
+  if (!target) return c.json({ error: "not_found" }, 404);
+
+  const sets: string[] = [];
+  const binds: unknown[] = [];
+  let renamedTo: string | null = null;
+
+  if (hasNewUsername) {
+    const nu = normalizeUsername(typeof body.new_username === "string" ? body.new_username : "");
+    if (!nu) return c.json({ error: "invalid_new_username" }, 400);
+    if (nu !== target.username) {
+      const taken = await c.env.DB.prepare("SELECT 1 FROM users WHERE username=?").bind(nu).first();
+      if (taken) return c.json({ error: "username_taken" }, 409);
+      sets.push("username=?");
+      binds.push(nu);
+      renamedTo = nu;
+    }
+  }
+  if (hasNewPassword) {
+    const np = typeof body.new_password === "string" ? body.new_password : "";
+    if (np.length < 8 || np.length > 256) return c.json({ error: "invalid_password" }, 400);
+    sets.push("password_hash=?");
+    binds.push(await hashPassword(np)); // plaintext never stored/logged
+  }
+  if (sets.length === 0) return c.json({ error: "no_changes" }, 400); // new_username == current, no password
+
+  await c.env.DB.batch([
+    c.env.DB.prepare(`UPDATE users SET ${sets.join(", ")} WHERE username=?`).bind(...binds, target.username),
+    auditStmt(c, c.get("session").username, "user_edit", target.username, {
+      username_changed: renamedTo !== null,
+      renamed_to: renamedTo,
+      password_changed: hasNewPassword,
+    }),
+  ]);
+
+  // Self-edit → re-auth. A username change already invalidates the cookie (the
+  // per-request lookup is by the OLD username); a password change does not, so we
+  // clear it explicitly. Either way the SPA lands on the login screen.
+  if (target.username === c.get("session").username) {
+    deleteCookie(c, COOKIE, { path: "/" });
+    return c.json({ ok: true, reauth: true });
+  }
+  return c.json({ ok: true, username: renamedTo ?? target.username });
+});
+
+// POST /api/admin/users/role — change an account's role (submitter ⇄ admin).
+// Last-admin guard: cannot demote the only enabled admin (Q2). Self-demote re-auths.
+app.post("/api/admin/users/role", ...adminGate, async (c) => {
+  let body: { username?: unknown; role?: unknown };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "bad_request" }, 400);
+  }
+  const username = normalizeUsername(typeof body.username === "string" ? body.username : "");
+  const role = parseRole(body.role, "submitter");
+  if (!username) return c.json({ error: "invalid_username" }, 400);
+  if (body.role === undefined || role === null) return c.json({ error: "invalid_role" }, 400);
+
+  const target = await c.env.DB
+    .prepare("SELECT username, role, disabled FROM users WHERE username=?")
+    .bind(username)
+    .first<TargetRow>();
+  if (!target) return c.json({ error: "not_found" }, 404);
+  if (target.role === role) return c.json({ ok: true, username, role, changed: false });
+
+  // Atomic demote: the last-admin guard lives in the UPDATE's WHERE (see
+  // lastAdminGuardClause) so it can't race a concurrent demote. The audit row is
+  // inserted ONLY when the UPDATE matched — `changes()` reflects the prior statement
+  // within the batch's single transaction, so mutation+audit stay atomic and no audit
+  // is written for a guard-blocked attempt.
+  const res = await c.env.DB.batch([
+    c.env.DB.prepare(`UPDATE users SET role=? WHERE username=?${lastAdminGuardClause(target)}`)
+      .bind(role, target.username),
+    c.env.DB.prepare(
+      "INSERT INTO audit_log (actor_username, action, target_username, detail) SELECT ?,?,?,? WHERE changes()=1",
+    ).bind(c.get("session").username, "role_change", target.username, JSON.stringify({ from: target.role, to: role })),
+  ]);
+  if ((res[0]?.meta?.changes ?? 0) === 0) return c.json({ error: "last_admin" }, 409);
+
+  if (target.username === c.get("session").username) {
+    deleteCookie(c, COOKIE, { path: "/" });
+    return c.json({ ok: true, reauth: true });
+  }
+  return c.json({ ok: true, username, role, changed: true });
+});
+
+// POST /api/admin/users/delete — delete an account. Last-admin guard applies.
+// Self-delete is permitted (unless it strands no admin) and re-auths the caller.
+app.post("/api/admin/users/delete", ...adminGate, async (c) => {
+  let body: { username?: unknown };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "bad_request" }, 400);
+  }
+  const username = normalizeUsername(typeof body.username === "string" ? body.username : "");
+  if (!username) return c.json({ error: "invalid_username" }, 400);
+
+  const target = await c.env.DB
+    .prepare("SELECT username, role, disabled FROM users WHERE username=?")
+    .bind(username)
+    .first<TargetRow>();
+  if (!target) return c.json({ error: "not_found" }, 404);
+
+  // Atomic delete: same in-WHERE last-admin guard + changes()-conditional audit as
+  // the role route — the count subquery sees the pre-delete state, so concurrent
+  // deletes/demotes can't both strand the last enabled admin.
+  const res = await c.env.DB.batch([
+    c.env.DB.prepare(`DELETE FROM users WHERE username=?${lastAdminGuardClause(target)}`)
+      .bind(target.username),
+    c.env.DB.prepare(
+      "INSERT INTO audit_log (actor_username, action, target_username, detail) SELECT ?,?,?,? WHERE changes()=1",
+    ).bind(c.get("session").username, "user_delete", target.username, JSON.stringify({ role: target.role })),
+  ]);
+  if ((res[0]?.meta?.changes ?? 0) === 0) return c.json({ error: "last_admin" }, 409);
+
+  if (target.username === c.get("session").username) {
+    deleteCookie(c, COOKIE, { path: "/" });
+    return c.json({ ok: true, reauth: true });
+  }
+  return c.json({ ok: true, username: target.username });
 });
 
 // Unmatched /api/* → JSON 404 (never the SPA shell).

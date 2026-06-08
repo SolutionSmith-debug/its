@@ -34,7 +34,15 @@ export interface Env {
   PORTAL_ADMIN_API_TOKEN: string;
 }
 
-/** Claims signed (NOT encrypted) into the session cookie. Keep minimal — readable by the holder. */
+/** A portal user's authorization role. 'submitter' is the default for every field
+ *  PM; 'admin' unlocks the dashboard (account management + submit-as). */
+export type Role = "submitter" | "admin";
+
+/** Claims signed (NOT encrypted) into the session cookie. Keep minimal — readable by
+ *  the holder. Deliberately NO role here: role is read fresh from D1 per request
+ *  (see requireSession), so a demotion takes effect immediately rather than waiting
+ *  for the 90-day cookie to expire — same reasoning as the per-request `disabled`
+ *  check. A stale signed role in the cookie would be a privilege-escalation footgun. */
 export interface SessionClaims {
   /** users.id of the authenticated portal user. */
   sub: number;
@@ -47,4 +55,7 @@ export interface SessionClaims {
 /** Hono per-request variables. */
 export interface Vars {
   session: SessionClaims;
+  /** The acting user's role, read fresh from D1 by requireSession on every request
+   *  (NOT from the cookie). requireRole() and the submit-as gate read this. */
+  role: Role;
 }

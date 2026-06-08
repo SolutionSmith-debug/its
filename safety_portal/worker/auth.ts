@@ -13,7 +13,7 @@
  * Consumers: worker/index.ts (POST /api/login); the Phase 7 admin route (future).
  */
 import bcrypt from "bcryptjs";
-import type { Env, SessionClaims } from "./types";
+import type { Env, Role, SessionClaims } from "./types";
 
 /**
  * A valid bcrypt (cost 10) hash of a random throwaway string. We run a compare
@@ -28,11 +28,13 @@ interface UserRow {
   id: number;
   username: string;
   password_hash: string;
+  role: string;
 }
 
 export interface AuthedUser {
   id: number;
   username: string;
+  role: Role;
 }
 
 /**
@@ -53,7 +55,7 @@ export async function validateUser(
   password: string,
 ): Promise<AuthedUser | null> {
   const row = await env.DB.prepare(
-    "SELECT id, username, password_hash FROM users WHERE username = ?",
+    "SELECT id, username, password_hash, role FROM users WHERE username = ?",
   )
     .bind(username)
     .first<UserRow>();
@@ -63,7 +65,15 @@ export async function validateUser(
   const ok = await bcrypt.compare(password, stored);
 
   if (!row || !ok) return null;
-  return { id: row.id, username: row.username };
+  return { id: row.id, username: row.username, role: coerceRole(row.role) };
+}
+
+/** Narrow a raw DB role string to the Role union, defaulting unknown → 'submitter'
+ *  (fail-SAFE: an unexpected value must never be treated as 'admin'). The CHECK
+ *  constraint (migration 0007) makes 'unknown' unreachable in practice; this is the
+ *  belt to that suspenders so a future schema slip can't silently grant admin. */
+export function coerceRole(raw: string | null | undefined): Role {
+  return raw === "admin" ? "admin" : "submitter";
 }
 
 /** Build the claims object placed (signed) into the session cookie. */

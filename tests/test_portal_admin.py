@@ -32,7 +32,21 @@ def test_add_user_created(mocker, capsys):
     assert "created" in out and "smith.seth" in out
     assert req.call_args.args[2] == "POST"
     assert req.call_args.args[3] == "/api/internal/admin/users"
-    assert req.call_args.kwargs["json_body"] == {"username": "smith.seth", "password": "pw123456"}
+    # role defaults to 'submitter' and is always sent in the body.
+    assert req.call_args.kwargs["json_body"] == {
+        "username": "smith.seth", "password": "pw123456", "role": "submitter",
+    }
+
+
+def test_add_user_admin_role(mocker, capsys):
+    _passwords(mocker, "pw123456", "pw123456")
+    req = _admin(mocker, 201, {"username": "stephens.jacob", "role": "admin"})
+    portal_admin.cmd_add_user("https://w", "tok", "stephens.jacob", role="admin")
+    out = capsys.readouterr().out
+    assert "created" in out and "role=admin" in out
+    assert req.call_args.kwargs["json_body"] == {
+        "username": "stephens.jacob", "password": "pw123456", "role": "admin",
+    }
 
 
 def test_add_user_conflict_exits_1(mocker):
@@ -103,15 +117,37 @@ def test_set_disabled_not_found_exits_1(mocker):
     assert e.value.code == 1
 
 
+# ---- set-role ------------------------------------------------------------
+
+
+def test_set_role_ok_hits_role_endpoint(mocker, capsys):
+    req = _admin(mocker, 200, {"ok": True, "role": "admin"})
+    portal_admin.cmd_set_role("https://w", "tok", "stephens.jacob", "admin")
+    out = capsys.readouterr().out
+    assert "role=admin" in out and "stephens.jacob" in out
+    assert req.call_args.args[3] == "/api/internal/admin/users/role"
+    assert req.call_args.kwargs["json_body"] == {"username": "stephens.jacob", "role": "admin"}
+
+
+def test_set_role_not_found_exits_1(mocker):
+    _admin(mocker, 404)
+    with pytest.raises(SystemExit) as e:
+        portal_admin.cmd_set_role("https://w", "tok", "no.body", "admin")
+    assert e.value.code == 1
+
+
 def test_list_users_renders_flags(mocker, capsys):
     _admin(mocker, 200, {"users": [
-        {"username": "smith.seth", "disabled": 0},
+        {"username": "smith.seth", "role": "submitter", "disabled": 0},
+        {"username": "stephens.jacob", "role": "admin", "disabled": 0},
         {"username": "doe.jane", "disabled": 1},
     ]})
     portal_admin.cmd_list_users("https://w", "tok")
     out = capsys.readouterr().out
     assert "smith.seth" in out and "active" in out
-    assert "doe.jane" in out and "DISABLED" in out
+    assert "stephens.jacob" in out and "admin" in out
+    # a row missing 'role' falls back to submitter (no crash)
+    assert "doe.jane" in out and "DISABLED" in out and "submitter" in out
 
 
 def test_list_users_empty(mocker, capsys):
@@ -127,7 +163,27 @@ def test_main_routes_add_user(mocker):
     mocker.patch.object(portal_admin, "_resolve_creds", return_value=("https://w", "tok"))
     add = mocker.patch.object(portal_admin, "cmd_add_user")
     portal_admin.main(["add-user", "smith.seth"])
-    add.assert_called_once_with("https://w", "tok", "smith.seth")
+    add.assert_called_once_with("https://w", "tok", "smith.seth", "submitter")
+
+
+def test_main_routes_add_user_with_role(mocker):
+    mocker.patch.object(portal_admin, "_resolve_creds", return_value=("https://w", "tok"))
+    add = mocker.patch.object(portal_admin, "cmd_add_user")
+    portal_admin.main(["add-user", "stephens.jacob", "--role", "admin"])
+    add.assert_called_once_with("https://w", "tok", "stephens.jacob", "admin")
+
+
+def test_main_routes_set_role(mocker):
+    mocker.patch.object(portal_admin, "_resolve_creds", return_value=("https://w", "tok"))
+    sr = mocker.patch.object(portal_admin, "cmd_set_role")
+    portal_admin.main(["set-role", "stephens.jacob", "admin"])
+    sr.assert_called_once_with("https://w", "tok", "stephens.jacob", "admin")
+
+
+def test_main_set_role_rejects_bad_role(mocker):
+    mocker.patch.object(portal_admin, "_resolve_creds", return_value=("https://w", "tok"))
+    with pytest.raises(SystemExit):  # argparse choices=() rejects before dispatch
+        portal_admin.main(["set-role", "stephens.jacob", "superadmin"])
 
 
 def test_main_routes_disable_user(mocker):

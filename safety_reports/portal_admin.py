@@ -3,14 +3,21 @@
 
 Purpose
     Operator-run command line over the Worker's bearer-gated `/api/internal/admin/*`
-    routes — provision / reset-password / disable / enable / list portal users:
-        add-user <username>        provision (prompts for password)
+    routes — provision / reset-password / disable / enable / set-role / list portal
+    users:
+        add-user <username> [--role submitter|admin]
+                                   provision (prompts for password); default submitter
         reset-password <username>  re-hash an existing user's password (prompts)
         disable-user <username>    lock out (revocation, effective next request)
         enable-user <username>     restore access
-        list-users                 usernames + disabled flag (no hashes)
+        set-role <username> <role> change role (submitter|admin) — BREAK-GLASS for the
+                                   in-app admin dashboard (e.g. restore an admin the UI
+                                   demoted); deliberately NOT last-admin-guarded so it
+                                   is a recovery path OUT of a zero-admin lockout
+        list-users                 usernames + role + disabled flag (no hashes)
     Run `python -m safety_reports.portal_admin <subcommand> ...`. Usernames are
-    `lastname.firstname` (lowercased); the Worker validates the format.
+    `lastname.firstname` (lowercased); the Worker validates the format. The two
+    Phase-1 admins are bootstrapped with `add-user <name> --role admin`.
 
 Invariants
     - Operator-run, NOT a daemon (no kill-switch / @its_error_log decorator).
@@ -86,21 +93,36 @@ def _prompt_new_password() -> str:
     return p1
 
 
-def cmd_add_user(base_url: str, token: str, username: str) -> None:
+def cmd_add_user(base_url: str, token: str, username: str, role: str = "submitter") -> None:
     password = _prompt_new_password()
     status, data = portal_client.admin_request(
         base_url, token, "POST", "/api/internal/admin/users",
-        json_body={"username": username, "password": password},
+        json_body={"username": username, "password": password, "role": role},
     )
     if status == 201:
-        print(f"OK: created user {username!r}")
+        print(f"OK: created user {username!r} (role={role})")
     elif status == 409:
         _fail(f"user {username!r} already exists (use reset-password)")
     elif status == 400:
         _fail(
             f"rejected: username must be lastname.firstname (lowercased), "
-            f"password ≥ {MIN_PASSWORD_LEN} chars"
+            f"password ≥ {MIN_PASSWORD_LEN} chars, role submitter|admin"
         )
+    else:
+        _fail(f"unexpected status {status}")
+
+
+def cmd_set_role(base_url: str, token: str, username: str, role: str) -> None:
+    status, data = portal_client.admin_request(
+        base_url, token, "POST", "/api/internal/admin/users/role",
+        json_body={"username": username, "role": role},
+    )
+    if status == 200:
+        print(f"OK: set {username!r} role={role}")
+    elif status == 404:
+        _fail(f"user {username!r} not found (use add-user)")
+    elif status == 400:
+        _fail("rejected: role must be submitter|admin, username lastname.firstname")
     else:
         _fail(f"unexpected status {status}")
 
@@ -145,7 +167,8 @@ def cmd_list_users(base_url: str, token: str) -> None:
         return
     for u in users:
         flag = "DISABLED" if u.get("disabled") else "active"
-        print(f"  {str(u.get('username')):<32} {flag}")
+        role = str(u.get("role") or "submitter")
+        print(f"  {str(u.get('username')):<32} {role:<10} {flag}")
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -154,20 +177,28 @@ def main(argv: list[str] | None = None) -> None:
         description="Safety Portal user provisioning (operator; Phase 7).",
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
-    for name in ("add-user", "reset-password", "disable-user", "enable-user"):
+    p_add = sub.add_parser("add-user")
+    p_add.add_argument("username")
+    p_add.add_argument("--role", choices=("submitter", "admin"), default="submitter")
+    for name in ("reset-password", "disable-user", "enable-user"):
         sub.add_parser(name).add_argument("username")
+    p_role = sub.add_parser("set-role")
+    p_role.add_argument("username")
+    p_role.add_argument("role", choices=("submitter", "admin"))
     sub.add_parser("list-users")
     args = parser.parse_args(argv)
 
     base_url, token = _resolve_creds()
     if args.cmd == "add-user":
-        cmd_add_user(base_url, token, args.username)
+        cmd_add_user(base_url, token, args.username, args.role)
     elif args.cmd == "reset-password":
         cmd_reset_password(base_url, token, args.username)
     elif args.cmd == "disable-user":
         cmd_set_disabled(base_url, token, args.username, disable=True)
     elif args.cmd == "enable-user":
         cmd_set_disabled(base_url, token, args.username, disable=False)
+    elif args.cmd == "set-role":
+        cmd_set_role(base_url, token, args.username, args.role)
     elif args.cmd == "list-users":
         cmd_list_users(base_url, token)
 

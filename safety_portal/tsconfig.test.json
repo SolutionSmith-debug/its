@@ -1,0 +1,8 @@
+{
+  "// note": "Typecheck the Worker test suite (test/). NOT part of the build — it runs in CI's `portal` job (appended to the `typecheck` script) so a TS regression in the security-critical worker tests fails CI. vitest itself esbuild-transpiles tests and does NOT type-check them, so without this the auth/role assertions in test/admin.test.ts would be unchecked. The `cloudflare:test` ambient module is declared in @cloudflare/vitest-pool-workers/types/cloudflare-test.d.ts, included explicitly because the package's main types entry doesn't re-export it.",
+  "extends": "./tsconfig.worker.json",
+  "compilerOptions": {
+    "types": ["@cloudflare/workers-types"]
+  },
+  "include": ["test", "node_modules/@cloudflare/vitest-pool-workers/types/cloudflare-test.d.ts"]
+}

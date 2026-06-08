@@ -192,6 +192,72 @@ the admin route needs:
 
 ---
 
+## Admin dashboard (Phase 1 — role model + in-app account management)
+
+Adds an in-browser admin surface for the two admins (CEO + head PM) on top of the
+operator CLI above. **Migration 0007** adds `users.role` (`submitter` default | `admin`)
++ an `audit_log` table.
+
+**Role is read fresh from D1 per request** (`requireSession` now `SELECT`s `disabled, role`),
+**not** baked into the cookie — a demotion takes effect on the next request (same reasoning
+as the per-request `disabled` check). `/api/login` + `/api/session` return the role so the
+SPA can show/hide the admin tabs; that is display-only — every admin route is re-gated
+server-side by `requireRole("admin")`.
+
+**In-app surface** (`/api/admin/*`, gated by `requireSession` + `requireRole("admin")` —
+SESSION+role, distinct from the bearer `/api/internal/admin/*`): `GET users` ·
+`POST users` (create, role selectable) · `POST users/credentials` (edit username/password —
+self-edit clears the cookie → re-login) · `POST users/role` (change role) ·
+`POST users/delete`. Each mutation + its `audit_log` row run in one atomic D1 batch.
+
+**Last-admin guard** (operator's call, ON): the session routes refuse to demote / delete the
+**only enabled admin** (`409 last_admin`). The bearer operator routes are deliberately **NOT**
+guarded — they are the break-glass path *out* of a zero-admin lockout (see below).
+
+**Tab 1 "filled out as" (submit-as)** is a separate later slice — not in this PR.
+
+**CLI:** `portal_admin add-user <u> --role admin` bootstraps an admin; `portal_admin set-role
+<u> submitter|admin` is break-glass for the role model.
+
+### Activation (operator — needs Cloudflare/Keychain auth; on the LIVE portal)
+
+Mirrors the Phase-7 punch-list. The `worker_base_url` already points at the custom domain —
+do **not** re-point.
+
+1. Apply migration **0007** to the live D1 **BEFORE** the redeploy
+   (`npx wrangler d1 migrations apply its-safety-portal-db --remote`) — else the
+   `requireSession` `role`-read errors and (fail-closed) 401s every session. **ORDER-CRITICAL**,
+   same rule as 0006.
+2. **Redeploy** (`npm run deploy`).
+3. **Regression-check the LIVE portal:** existing users still log in + submit (role defaults
+   `submitter`; existing accounts keep access; the admin routes are additive). Do not regress.
+4. Provision the two admins:
+   `portal_admin add-user stephens.jacob --role admin` and `… finkhousen.ben --role admin`
+   (password = username at provision; no forced change).
+
+> **This is the secrets/auth + impersonation boundary** — review the diff before activating.
+
+### Lockout recovery (break-glass) — escalate to the Developer-Operator
+
+If both admins are ever locked out (e.g. passwords lost, or both disabled), recovery runs
+through the bearer CLI — **which reads the Keychain admin bearer (`ITS_PORTAL_ADMIN_TOKEN`),
+so it is a high-capability (secrets/auth) operation that escalates to Seth**, not a Tier-2
+repair: `portal_admin set-role <u> admin` / `enable-user <u>` / `reset-password <u>`. These
+bearer routes have **no** last-admin guard precisely so they can restore an admin when the UI
+can't. See `docs/runbooks/safety_portal_admin_dashboard.md`.
+
+### Testing
+
+Worker logic (the role gate, account CRUD, last-admin guard, self-edit re-auth, bearer
+break-glass, audit rows) is tested with **`@cloudflare/vitest-pool-workers`** — the tests run
+in **workerd (the real runtime) against a Miniflare D1** with the real migrations applied, not
+mocks (`test/admin.test.ts`). `npm test` runs them; CI runs them in the `portal` job
+(`npm ci` → `npm run typecheck` → `npm test`). The Python `test` job does not cover the
+Worker TS, so this job is what makes the four-part "main-CI green" verify meaningful for the
+auth code.
+
+---
+
 ## Security posture (Phase 2)
 
 - **Invariant 1 — External Send Gate:** the Worker performs **zero external

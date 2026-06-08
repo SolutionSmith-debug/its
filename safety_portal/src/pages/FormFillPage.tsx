@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import type { ReactNode } from "react";
 import { AppHeader } from "../components/AppHeader";
 import { useAuth } from "../lib/auth";
 import * as api from "../lib/api";
@@ -11,7 +12,14 @@ function todayIso(): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
-export function FormFillPage({ onBack }: { onBack: () => void }) {
+/**
+ * The daily-form fill flow. Used two ways:
+ *  - non-admin: <FormFillPage onBack={…} /> — HomePage ↔ form, with the back/Home
+ *    buttons (behaviour unchanged from before the admin dashboard).
+ *  - admin "Submit a form" tab: <FormFillPage tabBar={<AdminTabs …/>} /> — no onBack
+ *    (the tab bar handles navigation), and the tab bar renders under the header.
+ */
+export function FormFillPage({ onBack, tabBar }: { onBack?: () => void; tabBar?: ReactNode }) {
   const { logout } = useAuth();
   const catalog = useMemo(() => formCatalog(), []);
 
@@ -105,6 +113,7 @@ export function FormFillPage({ onBack }: { onBack: () => void }) {
     return (
       <div className="page">
         <AppHeader title="Safety Portal" />
+        {tabBar}
         <main className="page__main">
           <div className="card centered-card">
             <h1 className="page__heading">Submitted ✓</h1>
@@ -114,7 +123,7 @@ export function FormFillPage({ onBack }: { onBack: () => void }) {
             </p>
             <div className="jha__actions">
               <button className="btn btn--primary" onClick={reset}>Submit another</button>
-              <button className="btn btn--secondary" onClick={onBack}>Home</button>
+              {onBack ? <button className="btn btn--secondary" onClick={onBack}>Home</button> : null}
             </div>
           </div>
         </main>
@@ -128,8 +137,9 @@ export function FormFillPage({ onBack }: { onBack: () => void }) {
         title="New safety form"
         action={<button className="btn btn--ghost" onClick={() => void logout()}>Sign out</button>}
       />
+      {tabBar}
       <main className="page__main">
-        <button className="btn btn--ghost btn--back" onClick={onBack}>← Home</button>
+        {onBack ? <button className="btn btn--ghost btn--back" onClick={onBack}>← Home</button> : null}
 
         <section className="card fr__select">
           <label className="field">
