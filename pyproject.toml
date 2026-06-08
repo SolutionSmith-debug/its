@@ -9,7 +9,12 @@ description = "ITS — Integrated Technical System execution layer for Evergreen
 requires-python = ">=3.12"
 dependencies = [
     "anthropic>=0.40.0",
-    "smartsheet-python-sdk>=3.0.0",
+    # Upper-bounded <3.10: a smartsheet-python-sdk release >3.9.0 (2026-06-08)
+    # dropped/moved `smartsheet.exceptions`, which shared/smartsheet_client.py
+    # imports — an unpinned `>=3.0.0` let CI pull it and broke all 48 test modules
+    # at collection. 3.9.0 (last-green) is pin-compatible. Loosen once a newer SDK
+    # is verified against shared/smartsheet_client.py. See docs/tech_debt.md.
+    "smartsheet-python-sdk>=3.0.0,<3.10.0",
     # Pinned to legacy 3.x because the OAuth client (shared/box_client.py)
     # uses the `boxsdk.OAuth2` + `boxsdk.Client` API. The PyPI `boxsdk`
     # package jumped to a renamed Gen API at 10.x (imports as

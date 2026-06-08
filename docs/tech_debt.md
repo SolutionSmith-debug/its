@@ -48,6 +48,14 @@ PR-J (#188) added `routes: [{ pattern: "safety.evergreenmirror.com", custom_doma
 
 **Proposed fix:** (a) add the row to `seed_its_config.py`; (b) WARN-log to ITS_Errors when `_parse_scheduled_spec` hits the `except` branch (still fall back, but surface the bad value). ~30 min. **Revisit when:** next seeder pass or weekly_send hardening. Surfaced 2026-06-08 (operator asked to confirm the config-driven schedule during mirror activation).
 
+## `smartsheet-python-sdk` upper-bound pin (CI-break stopgap) [OPEN 2026-06-08]
+
+`pyproject.toml` now pins `smartsheet-python-sdk>=3.0.0,<3.10.0`. A release >3.9.0 (2026-06-08) dropped/moved `smartsheet.exceptions`, which `shared/smartsheet_client.py:46` imports (`import smartsheet.exceptions as sdk_exc`) — the previously-unpinned `>=3.0.0` let CI fresh-install the broken version and **all 48 test modules failed at collection** (`ModuleNotFoundError: No module named 'smartsheet.exceptions'`). main was last green at `d393ee6` (2026-06-07 19:35); the breaking SDK release landed after. Local + every prior green CI run used 3.9.0 (which has `smartsheet.exceptions`).
+
+**Stopgap (PR #192):** upper-bound `<3.10.0` keeps CI on a working SDK. Caps below 3.10 (the lowest possible breaker) rather than `<4.0.0`, since a minor *or* major could be the one that dropped the module.
+
+**Proper fix (deferred):** verify the newer SDK's exception surface, then either (a) update `shared/smartsheet_client.py`'s import to the new location and loosen the bound, or (b) make the import resilient (try/except across the old/new path). ~1 hr. **Revisit when:** next dependency-maintenance pass, or when a smartsheet SDK feature/security update is wanted.
+
 ## Pre-mirror-tree portal Box filings are sandbox orphans [OPEN 2026-06-07]
 
 **Mirror root activated 2026-06-08** — `safety_reports.box.portal_root_folder_id = 388017263015` (`ITS_Safety_Portal`) seeded in ITS_Config; new submissions now file to `ROOT → per-job → per-week`. The 3 submissions filed BEFORE activation (to the legacy tree) are confirmed orphans; left as-is (sandbox), per below.
