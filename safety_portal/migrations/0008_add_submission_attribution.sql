@@ -1,0 +1,30 @@
+-- Admin Safety Dashboard (Phase 1) — submit-as dual-attribution columns on `submissions`.
+--
+-- Adds the TWO-PARTY attribution an admin "filled out as" submission needs. The
+-- WHY (audit/safety): when an admin fills a form on behalf of a field PM, the
+-- DURABLE record must keep BOTH parties — the true actor is NEVER dropped, so a
+-- later audit can always answer "who actually hit submit, and on whose behalf?".
+--
+--   actor_username — the authenticated session user who hit POST /api/submit (the
+--                    TRUE actor; an admin on a submit-as, or the user themselves on
+--                    a normal self-submit).
+--   submitted_as   — the ATTRIBUTED account the submission is recorded against. For a
+--                    normal self-submit this EQUALS actor_username; on a real
+--                    submit-as it is the (validated, enabled) target account.
+--
+-- Both NULLABLE — existing rows pre-date submit-as and backfill NULL (no default
+-- value to invent; a NULL means "recorded before attribution tracking existed").
+-- The Worker always writes BOTH on every new/replaced row going forward.
+--
+-- DOWNSTREAM IS UNCHANGED: these columns are NOT part of the canonical HMAC payload
+-- (submission_uuid \n job_id \n form_code \n work_date \n payload_json) and are NOT
+-- returned by GET /api/internal/pending, so portal_poll / shared.portal_hmac / intake
+-- stay byte-for-byte unchanged. Attribution is a Worker-side audit concern only.
+--
+-- ORDER DEPENDENCY (activation): apply this migration to the live D1 BEFORE the
+-- Worker that WRITES these columns deploys — an INSERT naming a not-yet-existing
+-- column errors. Additive + nullable, so applying it ahead of the new Worker is safe
+-- (the old Worker never references the columns). Exact mirror of the 0005/0006/0007
+-- activation rule. See safety_portal/README.md "Deploy".
+ALTER TABLE submissions ADD COLUMN actor_username TEXT;
+ALTER TABLE submissions ADD COLUMN submitted_as   TEXT;

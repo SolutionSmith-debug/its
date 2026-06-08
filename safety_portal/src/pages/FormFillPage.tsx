@@ -20,7 +20,9 @@ function todayIso(): string {
  *    (the tab bar handles navigation), and the tab bar renders under the header.
  */
 export function FormFillPage({ onBack, tabBar }: { onBack?: () => void; tabBar?: ReactNode }) {
-  const { logout } = useAuth();
+  const { user, logout } = useAuth();
+  const isAdmin = user?.role === "admin";
+  const me = user?.username ?? "";
   const catalog = useMemo(() => formCatalog(), []);
 
   const [jobs, setJobs] = useState<api.Job[]>([]);
@@ -30,16 +32,33 @@ export function FormFillPage({ onBack, tabBar }: { onBack?: () => void; tabBar?:
   const [variantCode, setVariantCode] = useState("");
   const [workDate, setWorkDate] = useState(todayIso());
 
+  // Admin "filled out as" — the account this submission is attributed to (default =
+  // self). Only admins ever see / send this; submitters always submit as themselves.
+  // The list of accounts is fetched once when an admin opens the form. The server
+  // re-validates the choice (role + target enabled), so this selector is convenience,
+  // never the boundary.
+  const [accounts, setAccounts] = useState<api.Account[]>([]);
+  const [filledOutAs, setFilledOutAs] = useState("");
+
   const [values, setValues] = useState<FormValues>({});
   const [amendsUuid, setAmendsUuid] = useState<string | null>(null);
   const [prefillable, setPrefillable] = useState<api.RecentSubmission | null>(null);
   const [busy, setBusy] = useState(false);
   const [submitted, setSubmitted] = useState(false);
+  const [submittedAs, setSubmittedAs] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     api.fetchJobs().then(setJobs).catch((e) => setJobsErr(e instanceof Error ? e.message : "load failed"));
   }, []);
+
+  // Admins only: load the account list once and default the attribution to self.
+  // Submitters never call /api/admin/users (it would 403); they always submit as me.
+  useEffect(() => {
+    if (!isAdmin) return;
+    setFilledOutAs(me);
+    api.listAccounts().then(setAccounts).catch(() => setAccounts([]));
+  }, [isAdmin, me]);
 
   const parent = catalog.find((p) => p.parent_form_code === parentCode) ?? null;
   const formCode = parent ? (parent.variants.length ? variantCode : (parent.form_code ?? "")) : "";
@@ -78,6 +97,9 @@ export function FormFillPage({ onBack, tabBar }: { onBack?: () => void; tabBar?:
     if (!def || !jobId || !workDate) return;
     setBusy(true);
     setError(null);
+    // Only an admin attributes to someone else; for a self-submit (or any submitter)
+    // we omit submitted_as entirely so the server takes the normal self-submit path.
+    const attributeTo = isAdmin && filledOutAs && filledOutAs !== me ? filledOutAs : undefined;
     try {
       await api.submitForm({
         job_id: jobId,
@@ -87,7 +109,9 @@ export function FormFillPage({ onBack, tabBar }: { onBack?: () => void; tabBar?:
         values,
         submission_uuid: crypto.randomUUID(),
         amends_uuid: amendsUuid,
+        submitted_as: attributeTo,
       });
+      setSubmittedAs(attributeTo ?? null);
       setSubmitted(true);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Submission failed.");
@@ -98,10 +122,13 @@ export function FormFillPage({ onBack, tabBar }: { onBack?: () => void; tabBar?:
 
   function reset() {
     setSubmitted(false);
+    setSubmittedAs(null);
     setParentCode("");
     setVariantCode("");
     setValues({});
     setAmendsUuid(null);
+    // Reset the attribution back to self for the next submission (admins only).
+    if (isAdmin) setFilledOutAs(me);
   }
 
   if (submitted) {
@@ -121,6 +148,11 @@ export function FormFillPage({ onBack, tabBar }: { onBack?: () => void; tabBar?:
               Your {def?.form_name} for {projectName ? `${projectName} on ` : ""}
               {workDate} was submitted. The office will confirm it once it’s filed.
             </p>
+            {submittedAs ? (
+              // Admin filled-out-as note — surfaces the attributed account so the admin
+              // can confirm WHO it was recorded for (the true actor is still logged).
+              <p className="muted">Submitted as <strong>{submittedAs}</strong>.</p>
+            ) : null}
             <div className="jha__actions">
               <button className="btn btn--primary" onClick={reset}>Submit another</button>
               {onBack ? <button className="btn btn--secondary" onClick={onBack}>Home</button> : null}
@@ -174,6 +206,28 @@ export function FormFillPage({ onBack, tabBar }: { onBack?: () => void; tabBar?:
             <span className="field__label">Work date *</span>
             <input className="field__input" type="date" value={workDate} onChange={(e) => setWorkDate(e.target.value)} />
           </label>
+
+          {isAdmin ? (
+            // Admin-only "Filled out as": attribute this submission to another account.
+            // Default is the admin's own username. Submitters never see this (it isn't
+            // rendered), and even if a forged value reached the server it is rejected
+            // there (Invariant 2 — the selector is convenience, not the gate).
+            <label className="field">
+              <span className="field__label">Filled out as</span>
+              <select
+                className="field__input"
+                value={filledOutAs}
+                onChange={(e) => setFilledOutAs(e.target.value)}
+              >
+                <option value={me}>{me} (you)</option>
+                {accounts
+                  .filter((a) => a.username !== me)
+                  .map((a) => (
+                    <option key={a.username} value={a.username}>{a.username}</option>
+                  ))}
+              </select>
+            </label>
+          ) : null}
         </section>
 
         {prefillable ? (

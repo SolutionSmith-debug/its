@@ -300,24 +300,67 @@ app.post("/api/submit", requireSession, async (c) => {
   if (!job) return c.json({ error: "unknown_job" }, 422);
   const payload = JSON.stringify(values);
   if (payload.length > 1_000_000) return c.json({ error: "too_large" }, 413);
+
+  // ── Submit-as ("filled out as") dual-attribution ──────────────────────────
+  // The TRUE actor is the authenticated session user — always recorded, never
+  // dropped (safety/audit invariant). `submitted_as` is the OPTIONAL attributed
+  // account; absent or === actor means a normal self-submit. A non-self value is a
+  // privileged impersonation and the SERVER is the gate (Invariant 2 — the SPA
+  // hiding the selector for submitters is never the boundary):
+  //   - it REQUIRES the live D1 role be 'admin' (set by requireSession), else 403;
+  //   - the target must be a real, ENABLED account, else 422 (never attribute to a
+  //     non-existent / locked user).
+  const actor = c.get("session").username;
+  const requestedAs = typeof body.submitted_as === "string" ? body.submitted_as : "";
+  let attributed = actor; // default: self-submit
+  const isSubmitAs = requestedAs !== "" && normalizeUsername(requestedAs) !== actor;
+  if (isSubmitAs) {
+    // Forging submitted_as as a non-admin is REJECTED outright — a submitter must
+    // never be able to attribute a submission to someone else.
+    if (c.get("role") !== "admin") return c.json({ error: "forbidden" }, 403);
+    const target = normalizeUsername(requestedAs);
+    if (!target) return c.json({ error: "unknown_attributed_user" }, 422);
+    const row = await c.env.DB
+      .prepare("SELECT disabled FROM users WHERE username=?")
+      .bind(target)
+      .first<{ disabled: number }>();
+    if (!row || row.disabled) return c.json({ error: "unknown_attributed_user" }, 422);
+    attributed = target;
+  }
+
   // Fail closed on a misconfigured Worker: never sign with an undefined secret
   // (that would produce signatures the Mac side could never verify → silent loss).
   if (!c.env.HMAC_PAYLOAD_SECRET) return c.json({ error: "server_misconfigured" }, 503);
   // Sign the submission so the Mac-side portal_poll daemon can verify it before
   // intake files it. INSERT OR REPLACE resets box_verified=0 — an amended submission
-  // re-enters the queue for re-filing.
+  // re-enters the queue for re-filing. CRITICAL: the canonicalPayload (HMAC input) is
+  // UNCHANGED by submit-as — actor_username/submitted_as are NOT part of it — so the
+  // stored hmac is byte-identical to a normal submit and portal_poll's recompute still
+  // verifies. (Regression-locked in test/submit-as.test.ts.)
   const hmac = await hmacHex(
     c.env.HMAC_PAYLOAD_SECRET,
     canonicalPayload({ submission_uuid, job_id, form_code, work_date, payload_json: payload }),
   );
-  await c.env.DB
+  // The submission INSERT carries the two attribution columns (always written; on a
+  // self-submit both equal `actor`). On a REAL submit-as we also write an audit_log
+  // row in the SAME D1 batch, so the impersonation record can never land without its
+  // security-log entry (atomic — mirrors the /api/admin/* mutate+audit pattern).
+  const insertStmt = c.env.DB
     .prepare(
       "INSERT OR REPLACE INTO submissions " +
-        "(submission_uuid, job_id, form_code, work_date, payload_json, amends_uuid, hmac, box_verified) " +
-        "VALUES (?,?,?,?,?,?,?,0)",
+        "(submission_uuid, job_id, form_code, work_date, payload_json, amends_uuid, hmac, box_verified, " +
+        "actor_username, submitted_as) " +
+        "VALUES (?,?,?,?,?,?,?,0,?,?)",
     )
-    .bind(submission_uuid, job_id, form_code, work_date, payload, amends_uuid, hmac)
-    .run();
+    .bind(submission_uuid, job_id, form_code, work_date, payload, amends_uuid, hmac, actor, attributed);
+  if (isSubmitAs) {
+    await c.env.DB.batch([
+      insertStmt,
+      auditStmt(c, actor, "submit_as", attributed, { submission_uuid, job_id }),
+    ]);
+  } else {
+    await insertStmt.run();
+  }
   return c.json({ ok: true, status: "submitted", submission_uuid });
 });
 
