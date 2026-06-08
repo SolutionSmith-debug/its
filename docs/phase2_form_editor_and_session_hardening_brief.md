@@ -389,8 +389,18 @@ migration 401-trap.*
 Move the parent→Box-category map into the manifest so create-from-blank assigns a category at
 author time; `intake.py` reads it from the manifest, not the hardcoded dict.
 
-## C12. ⚙ THE decision to confirm on return — fully-automatic vs. the Tier-3 code-deploy doctrine
-You chose **fully-automatic** (no human merge gate), reasoning the closed vocabulary makes output
+## C12. RESOLVED (2026-06-08) = A — fully automatic, with a HIGH-guard-rails + detect-and-alert mandate
+**Decision: A (fully automatic publish, NO human merge gate).** Rationale the operator gave: he will
+NOT hand-review every form publish, so the safety lives in the AUTOMATED guard rails — which must be
+built **very high, defense-in-depth**. **MANDATE (load-bearing — this is what makes A safe, not
+optional polish):** (1) a bad/breaking publish MUST be caught + STOPPED by the gates — CI's 3-renderer
+non-degraded render smoke (C5) + server/daemon-side schema validation (C3) + the repo's existing guard
+rails (branch protection, the PreToolUse hooks, doctrine-drift + secret-scan CI); (2) the portal MUST
+**detect publish progress + ALERT** (operator CRITICAL triple-fire + the status monitor going red) the
+instant anything STOPS or fails the deployment — **no silent stall** (C6). Build the pipeline so
+flipping to (B) one-click-approval later stays a one-line change.
+
+Original framing (for the record): You chose **fully-automatic** (no human merge gate), reasoning the closed vocabulary makes output
 structurally valid. The red-team + CLAUDE.md flag that form-publish **commits + deploys CODE**,
 which doctrine classifies as the **highest capability class (Tier-3 — escalate to the
 Developer-Operator)**. Two reconciliations, designed so it's a one-line switch:
@@ -401,8 +411,8 @@ Developer-Operator)**. Two reconciliations, designed so it's a one-line switch:
 - **(B — doctrine-aligned middle)** The Mac daemon opens the PR + the **deploy waits for your
   one-click approval** on the PR (mirrors the human-in-loop Send-Gate philosophy). Still
   "automatic-feeling" — one click, CI already green.
-**Recommend confirming on return.** I lean (A) given your explicit choice + the strong validation
-stack, but (B) is the doctrine-literal default and the switch is trivial.
+**RESOLVED = A (see the heading mandate above).** The guard rails + the detect-and-alert are the
+load-bearing conditions; (B) one-click-approval remains a one-line switch if ever wanted.
 
 ## C13. Revised PR slicing (supersedes B11)
 - ~~slice 0 (admin shell)~~ — already built (PR-2).
