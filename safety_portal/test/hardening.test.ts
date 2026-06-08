@@ -5,7 +5,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 // Post-audit security hardening (2026-06-08). Real workerd + Miniflare D1.
 //  #1 null/non-object body → 400 (not 500) on every handler.
 //  #4 values:[] → 400 (typeof []==='object' slipped the object check).
-//  #2/#3/#8–11 security headers on /api/* (+ Report-Only CSP) + Cache-Control:no-store.
+//  #2/#3/#8–11 security headers on /api/* (+ enforcing CSP) + Cache-Control:no-store.
 //  #5/#6 concurrency error codes: duplicate create/rename → 409; missing delete → 404.
 // (Asset-document header presence is verified in the operator's post-deploy smoke —
 //  vitest-pool-workers does not serve the built static assets.)
@@ -99,15 +99,15 @@ describe("security headers (#2 CSP, #3 clickjacking, #8–11)", () => {
     expect(res.headers.get("cache-control")).toBe("no-store");
   });
 
-  it("CSP is shipped REPORT-ONLY (cannot break the SPA before the operator flips it)", async () => {
+  it("CSP is ENFORCING (flipped after a clean browser smoke)", async () => {
     const res = await call("/api/session");
-    const ro = res.headers.get("content-security-policy-report-only");
-    expect(ro).toBeTruthy();
-    expect(ro).toContain("default-src 'self'");
-    expect(ro).toContain("frame-ancestors 'none'");
-    expect(ro).toContain("'unsafe-inline'"); // style-src, for React inline styles
-    // No ENFORCING CSP yet — that is the operator's post-smoke flip.
-    expect(res.headers.get("content-security-policy")).toBeNull();
+    const csp = res.headers.get("content-security-policy");
+    expect(csp).toBeTruthy();
+    expect(csp).toContain("default-src 'self'");
+    expect(csp).toContain("frame-ancestors 'none'");
+    expect(csp).toContain("'unsafe-inline'"); // style-src, for React inline styles
+    // Report-Only retired now that it enforces.
+    expect(res.headers.get("content-security-policy-report-only")).toBeNull();
   });
 });
 

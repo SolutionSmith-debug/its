@@ -56,9 +56,9 @@ const app = new Hono<{ Bindings: Env; Variables: Vars }>();
 // RECONSTRUCT each response with a fresh, mutable Headers COPY and set ours on that.
 // The copy preserves the asset's own content-type/etag/cache headers; we only ADD.
 //
-// CSP is shipped REPORT-ONLY: it cannot block anything in the SPA before the operator's
-// post-deploy smoke (load SPA → sign a form → check the console), then the operator
-// flips it to enforcing. The other headers enforce immediately (low risk). The CSP allows
+// CSP is ENFORCING (flipped 2026-06-08 after a clean browser smoke: admin login →
+// dashboard → a form rendered WITH signature capture produced ZERO CSP violations). It
+// shipped Report-Only for one cycle first so the smoke couldn't break the live SPA. The CSP allows
 // React inline styles ('unsafe-inline' style-src) + the logo/inline-SVG signature
 // (img-src 'self' data:); the built index.html has NO inline <script> → script-src 'self'.
 // Cache-Control:no-store is /api/*-ONLY (the cacheable static assets keep their caching).
@@ -73,7 +73,7 @@ app.use("*", async (c, next) => {
   headers.set("X-Content-Type-Options", "nosniff");
   headers.set("Referrer-Policy", "strict-origin-when-cross-origin");
   headers.set("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
-  headers.set("Content-Security-Policy-Report-Only", CSP);
+  headers.set("Content-Security-Policy", CSP);
   if (new URL(c.req.url).pathname.startsWith("/api/")) headers.set("Cache-Control", "no-store");
   c.res = new Response(c.res.body, { status: c.res.status, statusText: c.res.statusText, headers });
 });
