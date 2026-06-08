@@ -57,6 +57,41 @@ jobs:
       - name: Doctrine-drift check (warn-only, mechanical tier)
         run: python -m scripts.check_doctrine_drift
 
+  # Safety Portal (Cloudflare Worker + React SPA) — TypeScript typecheck + Worker
+  # tests. BLOCKING, like `test`. The Python `test` job does NOT cover safety_portal/
+  # TS at all, so without this job the auth/role/impersonation code in the Worker
+  # would merge with zero automated coverage. Worker tests run in workerd via
+  # @cloudflare/vitest-pool-workers against a real Miniflare D1 (not mocks).
+  portal:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: safety_portal
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Node
+        # v6 is the current stable line (latest v6.4.0) and matches the repo's
+        # actions/checkout@v6 + setup-python@v6 pins. §41 review: v6's only breaking
+        # change vs v4 is that automatic caching is limited to npm — which is exactly
+        # this job's explicit `cache: npm`, so it is a no-op for us. (v5 bumped the
+        # action runtime to node24; GitHub-hosted ubuntu runners are well past the
+        # required runner version.)
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: safety_portal/package-lock.json
+
+      - name: Install (npm ci)
+        run: npm ci
+
+      - name: Typecheck (tsc — SPA + Worker)
+        run: npm run typecheck
+
+      - name: Worker tests (vitest-pool-workers — real workerd + D1)
+        run: npm test
+
   # Secret-scanning gate. BLOCKING (unlike the propose-only doc/drift steps) —
   # a committed secret must stop the merge. Separate job so it runs in parallel
   # with `test` and surfaces as its own PR check. Uses the pinned gitleaks

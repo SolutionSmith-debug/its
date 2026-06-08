@@ -18,6 +18,7 @@ convention has no separate `runbook` type).
 <!-- BEGIN AUTO-INDEX -->
 | Date | Type | Status | Workstream | Title | PRs |
 |------|------|--------|------------|-------|-----|
+| 2026-06-08 | operations | active | safety_portal | [Runbook — Safety Portal admin dashboard (account management + lockout recovery) (Successor-Remediation, Op Stds §43)](safety_portal_admin_dashboard.md) | _–_ |
 | 2026-06-05 | operations | active | safety_portal | [Runbook — Safety Portal forms (add / retire / update) (Successor-Remediation, Op Stds §43)](safety_portal_forms.md) | _–_ |
 | 2026-06-05 | operations | active | safety_portal | [Runbook — Safety Portal job management (add / retire jobs) (Successor-Remediation, Op Stds §43)](safety_portal_job_management.md) | _–_ |
 | 2026-06-03 | operations | active | safety_portal | [Runbook — Safety Portal config sheets (ITS_Active_Jobs + ITS_Forms_Catalog) (Successor-Remediation, Op Stds §43)](safety_portal_config_sheets.md) | _–_ |

@@ -1,0 +1,34 @@
+import { defineConfig } from "vitest/config";
+import { cloudflareTest, readD1Migrations } from "@cloudflare/vitest-pool-workers";
+import path from "node:path";
+
+// Worker tests run in workerd (the real runtime) with a Miniflare D1 — NOT mocks.
+// This is the antidote to the "SimpleNamespace mocks pass, live API rejects" class:
+// requireRole, the submit-as gate, and the last-admin guard are exercised against a
+// real D1 with the real migrations applied. See safety_portal/README.md "Testing".
+//
+// vitest-pool-workers 0.16 (vitest 4 line): cloudflareTest() is a Vite *plugin*
+// (the older defineWorkersConfig/`/config` subpath was removed). It reads bindings
+// from wrangler.jsonc; secrets (absent there) + TEST_MIGRATIONS are supplied below.
+export default defineConfig(async () => {
+  const migrations = await readD1Migrations(path.join(import.meta.dirname, "migrations"));
+  return {
+    plugins: [
+      cloudflareTest({
+        wrangler: { configPath: "./wrangler.jsonc" },
+        miniflare: {
+          bindings: {
+            TEST_MIGRATIONS: migrations,
+            SESSION_SIGNING_SECRET: "test-session-signing-secret",
+            HMAC_PAYLOAD_SECRET: "test-hmac-payload-secret",
+            PORTAL_INTERNAL_API_TOKEN: "test-internal-token",
+            PORTAL_ADMIN_API_TOKEN: "test-admin-token",
+          },
+        },
+      }),
+    ],
+    test: {
+      setupFiles: ["./test/apply-migrations.ts"],
+    },
+  };
+});
