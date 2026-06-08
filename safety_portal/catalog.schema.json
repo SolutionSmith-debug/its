@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://its.solutionsmith.org/safety_portal/catalog.schema.json",
+  "title": "Safety Portal form catalog manifest",
+  "description": "Git-committed source of truth for the ACTIVE form set, the current version per identity, the parent/variant grouping, and the display order. Phase-2 (the admin form editor) writes this manifest; slice 1b flips the SPA picker (src/forms/registry.ts) and the Python PDF renderer (safety_reports/form_pdf.py load_definition) to READ it instead of deriving everything from the all-bundled glob. The form *definitions* stay one-JSON-per-form under safety_portal/forms/<form_code>.json (the rendering contract consumed by all three renderers, byte-unchanged); this manifest is the active-set / version / order overlay layered on top. INVARIANT (red-team C1): definition files are append-only on disk — edit/retire/delete flip THIS manifest, never delete a .json, so every historical form_code resolves forever (filed AND in-flight submissions). The manifest lives at safety_portal/ (NOT safety_portal/forms/) on purpose: registry.ts and tests/test_form_definitions.py glob forms/*.json and would otherwise mis-ingest the manifest as a form definition.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["manifest_version", "parents"],
+  "properties": {
+    "manifest_version": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Format version of THIS manifest (data versioning). Bump on any breaking shape change so readers can reject an unknown version rather than silently mis-parse. Currently 1."
+    },
+    "parents": {
+      "type": "array",
+      "minItems": 1,
+      "description": "Form-type parents, each one row of the form-type dropdown. A parent with a single null-variant form renders that form directly; a parent with >1 variant shows the 3rd picklist of variant_labels.",
+      "items": { "$ref": "#/$defs/parent" }
+    }
+  },
+  "$defs": {
+    "parent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["parent_form_code", "name", "display_order", "forms"],
+      "properties": {
+        "parent_form_code": {
+          "type": "string",
+          "pattern": "^[a-z0-9-]+$",
+          "description": "The form-type parent key (e.g. 'jha', 'equipment-preinspection'); matches every member definition's parent_form_code."
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Operator-facing parent label shown in the form-type dropdown."
+        },
+        "display_order": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Ascending sort position among parents. Unique across parents."
+        },
+        "forms": {
+          "type": "array",
+          "minItems": 1,
+          "description": "Variant identities under this parent. A no-variant parent has EXACTLY ONE form with variant_label null; a variant parent has ALL non-null variant_labels — no mixing (mirrors registry.ts formCatalog()'s binary branch).",
+          "items": { "$ref": "#/$defs/form" }
+        }
+      }
+    },
+    "form": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["identity", "variant_label", "status", "current_version", "current_form_code", "versions", "display_order"],
+      "properties": {
+        "identity": {
+          "type": "string",
+          "pattern": "^[a-z0-9-]+$",
+          "description": "Version-independent stable key = a form_code minus its -vN suffix (e.g. 'jha', 'equipment-skid-steer'). EDIT bumps the version on a fixed identity; ADD-VERSION / CREATE-FROM-BLANK mint a NEW identity. Globally unique across the manifest."
+        },
+        "variant_label": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "description": "3rd-picklist label (e.g. 'Skid Steer'); null for a no-variant parent. Mirrors the definition file's variant_label. minLength constrains the string case only — an empty-string variant_label renders a blank, unselectable 3rd-picklist row (registry.ts treats '' as a present variant)."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["active", "retired"],
+          "description": "active = appears in the PM picker; retired = soft-removed (definition file + version history retained; reversible un-retire). The manifest status is the ONLY active-set gate."
+        },
+        "current_version": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "The version PMs currently fill. MUST equal the version of current_form_code and appear in versions[]."
+        },
+        "current_form_code": {
+          "type": "string",
+          "pattern": "^[a-z0-9-]+-v[0-9]+$",
+          "description": "Resolved form_code of the current version (= identity + '-v' + current_version). MUST resolve to a definition file at safety_portal/forms/<code>.json."
+        },
+        "versions": {
+          "type": "array",
+          "minItems": 1,
+          "description": "Every version ever published for this identity (append-only; retained for filed/in-flight submissions, rollback, and the Box history archive).",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["version", "form_code"],
+            "properties": {
+              "version": { "type": "integer", "minimum": 1 },
+              "form_code": {
+                "type": "string",
+                "pattern": "^[a-z0-9-]+-v[0-9]+$",
+                "description": "= identity + '-v' + version; resolves to a definition file under safety_portal/forms/."
+              }
+            }
+          }
+        },
+        "display_order": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Ascending sort position among the variants WITHIN this parent. Unique within the parent."
+        }
+      }
+    }
+  }
+}

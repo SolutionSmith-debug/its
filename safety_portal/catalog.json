@@ -1,0 +1,150 @@
+{
+  "manifest_version": 1,
+  "parents": [
+    {
+      "parent_form_code": "equipment-preinspection",
+      "name": "Equipment Pre-Inspection",
+      "display_order": 1,
+      "forms": [
+        {
+          "identity": "equipment-skid-steer",
+          "variant_label": "Skid Steer",
+          "status": "active",
+          "current_version": 1,
+          "current_form_code": "equipment-skid-steer-v1",
+          "versions": [
+            { "version": 1, "form_code": "equipment-skid-steer-v1" }
+          ],
+          "display_order": 1
+        },
+        {
+          "identity": "equipment-telehandler",
+          "variant_label": "Telehandler/Forklift",
+          "status": "active",
+          "current_version": 1,
+          "current_form_code": "equipment-telehandler-v1",
+          "versions": [
+            { "version": 1, "form_code": "equipment-telehandler-v1" }
+          ],
+          "display_order": 2
+        }
+      ]
+    },
+    {
+      "parent_form_code": "hsse-work-observation",
+      "name": "HSS&E Work Observation",
+      "display_order": 2,
+      "forms": [
+        {
+          "identity": "hsse-work-observation",
+          "variant_label": null,
+          "status": "active",
+          "current_version": 1,
+          "current_form_code": "hsse-work-observation-v1",
+          "versions": [
+            { "version": 1, "form_code": "hsse-work-observation-v1" }
+          ],
+          "display_order": 1
+        }
+      ]
+    },
+    {
+      "parent_form_code": "jha",
+      "name": "Job Hazard Analysis",
+      "display_order": 3,
+      "forms": [
+        {
+          "identity": "jha",
+          "variant_label": null,
+          "status": "active",
+          "current_version": 1,
+          "current_form_code": "jha-v1",
+          "versions": [
+            { "version": 1, "form_code": "jha-v1" }
+          ],
+          "display_order": 1
+        }
+      ]
+    },
+    {
+      "parent_form_code": "toolbox-talk",
+      "name": "Toolbox Talk",
+      "display_order": 4,
+      "forms": [
+        {
+          "identity": "toolbox-talk-back-sprains",
+          "variant_label": "Back Sprains and Strains",
+          "status": "active",
+          "current_version": 1,
+          "current_form_code": "toolbox-talk-back-sprains-v1",
+          "versions": [
+            { "version": 1, "form_code": "toolbox-talk-back-sprains-v1" }
+          ],
+          "display_order": 1
+        },
+        {
+          "identity": "toolbox-talk-electrical",
+          "variant_label": "Electrical Safety",
+          "status": "active",
+          "current_version": 1,
+          "current_form_code": "toolbox-talk-electrical-v1",
+          "versions": [
+            { "version": 1, "form_code": "toolbox-talk-electrical-v1" }
+          ],
+          "display_order": 2
+        },
+        {
+          "identity": "toolbox-talk-ergonomics",
+          "variant_label": "Ergonomics / Back Safety",
+          "status": "active",
+          "current_version": 1,
+          "current_form_code": "toolbox-talk-ergonomics-v1",
+          "versions": [
+            { "version": 1, "form_code": "toolbox-talk-ergonomics-v1" }
+          ],
+          "display_order": 3
+        },
+        {
+          "identity": "toolbox-talk-hard-hat",
+          "variant_label": "Hard Hat Safety",
+          "status": "active",
+          "current_version": 1,
+          "current_form_code": "toolbox-talk-hard-hat-v1",
+          "versions": [
+            { "version": 1, "form_code": "toolbox-talk-hard-hat-v1" }
+          ],
+          "display_order": 4
+        },
+        {
+          "identity": "toolbox-talk-ppe",
+          "variant_label": "Protective Clothing and Equipment (PPE)",
+          "status": "active",
+          "current_version": 1,
+          "current_form_code": "toolbox-talk-ppe-v1",
+          "versions": [
+            { "version": 1, "form_code": "toolbox-talk-ppe-v1" }
+          ],
+          "display_order": 5
+        }
+      ]
+    },
+    {
+      "parent_form_code": "visitor-sign-in",
+      "name": "Visitor Sign-In",
+      "display_order": 5,
+      "forms": [
+        {
+          "identity": "visitor-sign-in",
+          "variant_label": null,
+          "status": "active",
+          "current_version": 1,
+          "current_form_code": "visitor-sign-in-v1",
+          "versions": [
+            { "version": 1, "form_code": "visitor-sign-in-v1" }
+          ],
+          "display_order": 1
+        }
+      ]
+    }
+  ]
+}
