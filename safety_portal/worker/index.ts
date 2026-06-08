@@ -2,7 +2,6 @@ import { Hono } from "hono";
 import { createMiddleware } from "hono/factory";
 import type { Context } from "hono";
 import { setSignedCookie, getSignedCookie, deleteCookie } from "hono/cookie";
-import { secureHeaders } from "hono/secure-headers";
 import type { Env, Role, SessionClaims, Vars } from "./types";
 import { validateUser, newSessionClaims, hashPassword, normalizeUsername, coerceRole } from "./auth";
 
@@ -48,37 +47,35 @@ const app = new Hono<{ Bindings: Env; Variables: Vars }>();
 // ── Security response headers (audit 2026-06-08: #2 CSP, #3 clickjacking, #8–11) ─
 // wrangler.jsonc sets run_worker_first:true so EVERY request runs the Worker — these
 // reach the SPA document + static assets too (the platform otherwise serves them and
-// bypasses Hono). CSP is shipped REPORT-ONLY: it cannot break the live SPA before the
-// operator's post-deploy smoke (load SPA → sign a form → check the console), then the
-// operator flips it to enforcing. The other headers enforce immediately (low risk).
-// The CSP allows React inline styles ('unsafe-inline' style-src) + the logo/inline-SVG
-// signature (img-src 'self' data:); the built index.html has NO inline <script>, so
-// script-src stays 'self'.
-app.use(
-  "*",
-  secureHeaders({
-    contentSecurityPolicyReportOnly: {
-      defaultSrc: ["'self'"],
-      scriptSrc: ["'self'"],
-      styleSrc: ["'self'", "'unsafe-inline'"],
-      imgSrc: ["'self'", "data:"],
-      objectSrc: ["'none'"],
-      baseUri: ["'self'"],
-      frameAncestors: ["'none'"],
-      formAction: ["'self'"],
-    },
-    xFrameOptions: "DENY",
-    xContentTypeOptions: "nosniff",
-    referrerPolicy: "strict-origin-when-cross-origin",
-    strictTransportSecurity: "max-age=31536000; includeSubDomains",
-  }),
-);
-
-// API responses carry per-user data and must never be cached. Scoped to /api/* so the
-// cacheable static assets keep their own cache headers (no-store is API-only, #11).
-app.use("/api/*", async (c, next) => {
+// bypasses Hono).
+//
+// CRITICAL (the 2026-06-08 hotfix): responses from c.env.ASSETS.fetch() have IMMUTABLE
+// headers. Mutating them in place — which Hono's secureHeaders()/c.header() do — THROWS,
+// and under run_worker_first:true that 500'd every static asset AND the SPA document
+// (only the Hono-built /api/* responses, which have mutable headers, survived). So we
+// RECONSTRUCT each response with a fresh, mutable Headers COPY and set ours on that.
+// The copy preserves the asset's own content-type/etag/cache headers; we only ADD.
+//
+// CSP is shipped REPORT-ONLY: it cannot block anything in the SPA before the operator's
+// post-deploy smoke (load SPA → sign a form → check the console), then the operator
+// flips it to enforcing. The other headers enforce immediately (low risk). The CSP allows
+// React inline styles ('unsafe-inline' style-src) + the logo/inline-SVG signature
+// (img-src 'self' data:); the built index.html has NO inline <script> → script-src 'self'.
+// Cache-Control:no-store is /api/*-ONLY (the cacheable static assets keep their caching).
+const CSP =
+  "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
+  "img-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; " +
+  "form-action 'self'";
+app.use("*", async (c, next) => {
   await next();
-  c.header("Cache-Control", "no-store");
+  const headers = new Headers(c.res.headers); // mutable copy — preserves Set-Cookie, etag, etc.
+  headers.set("X-Frame-Options", "DENY");
+  headers.set("X-Content-Type-Options", "nosniff");
+  headers.set("Referrer-Policy", "strict-origin-when-cross-origin");
+  headers.set("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+  headers.set("Content-Security-Policy-Report-Only", CSP);
+  if (new URL(c.req.url).pathname.startsWith("/api/")) headers.set("Cache-Control", "no-store");
+  c.res = new Response(c.res.body, { status: c.res.status, statusText: c.res.statusText, headers });
 });
 
 // Global error handler (audit #1, defense-in-depth). Before this, an unguarded throw
