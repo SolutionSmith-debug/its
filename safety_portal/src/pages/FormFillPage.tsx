@@ -97,6 +97,11 @@ export function FormFillPage({ onBack }: { onBack: () => void }) {
   }
 
   if (submitted) {
+    // Surface the job (not just the date) in the confirmation — a PM filing for
+    // several jobs needs to see WHICH one was recorded. jobId/jobs are still in
+    // scope (reset() clears the form, not the job), so the lookup resolves; the
+    // fallback drops the clause if the job somehow isn't in the loaded list.
+    const projectName = jobs.find((j) => j.job_id === jobId)?.project_name;
     return (
       <div className="page">
         <AppHeader title="Safety Portal" />
@@ -104,8 +109,8 @@ export function FormFillPage({ onBack }: { onBack: () => void }) {
           <div className="card centered-card">
             <h1 className="page__heading">Submitted ✓</h1>
             <p className="muted">
-              Your {def?.form_name} for {workDate} was submitted. The office will confirm it
-              once it’s filed.
+              Your {def?.form_name} for {projectName ? `${projectName} on ` : ""}
+              {workDate} was submitted. The office will confirm it once it’s filed.
             </p>
             <div className="jha__actions">
               <button className="btn btn--primary" onClick={reset}>Submit another</button>
