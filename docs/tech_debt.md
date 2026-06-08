@@ -14,7 +14,9 @@ When to add an entry: a session deliberately chooses preservation-over-refactor 
 
 **Tag:** `smartsheet`, `sdk-vs-live`, `styling`. **Revisit when:** any new column-format code; `smartsheet_client.apply_column_styles` already uses the attribute path.
 
-## Safety Portal — admin route (PR-H) blocked on operator CodeQL dismissal [OPEN 2026-06-07]
+## Safety Portal — admin route (PR-H) blocked on operator CodeQL dismissal [CLOSED 2026-06-08]
+
+**Resolved + ACTIVATED on the mirror (2026-06-08).** PR-H (#185) merged (`f3ad814`, four-part verify clean: MERGED / mergedAt set / mergeCommit f3ad814 / main-CI SUCCESS), then activated this session: the 2 CodeQL FPs were dismissed; `PORTAL_ADMIN_API_TOKEN` (Worker) + `ITS_PORTAL_ADMIN_TOKEN` (Keychain) set **byte-equal** (via a paste-safe script — `security -w VALUE` argv form, because the bare `-w` flag reads the TTY and ignores piped stdin in an interactive shell → silently stored a 6-char garbage value twice; root cause of an early `list-users` 401); migration 0006 applied to live D1 **before** `npm run deploy`; admin route confirmed `401`-not-`404`; revocation **proven live** (`portal_admin disable-user test.pm` → the user's existing session 401'd `revoked` off `/api/jobs` on the next request). One follow-on finding surfaced during the revocation proof — see "`/api/login` does not gate on `users.disabled`" below. Original entry preserved:
 
 PR-H (#185) adds the admin route (user provision/reset/disable/enable/list + per-request D1 session revocation + migration 0006 `users.disabled` + `shared/portal_client.admin_request` + `safety_reports/portal_admin.py` CLI). CI is GREEN except 2 CodeQL `py/clear-text-logging` alerts (alert #11 `portal_admin.py:52`, alert #13 `portal_admin.py:148`) that are FALSE POSITIVES — interprocedural imprecision: the bearer token taints `admin_request`'s return value; `list-users` and `_fail` print that return; CodeQL flags all prints of it. The refactor already cleared 1 of 3 (stopped echoing the raw response dict); the remaining 2 are unfixable without contorting correct code.
 
@@ -22,7 +24,41 @@ PR-H (#185) adds the admin route (user provision/reset/disable/enable/list + per
 
 **Tag:** `safety-portal`, `phase-7`, `auth`, `codeql`.
 
+## Safety Portal — `/api/login` does not gate on `users.disabled` [OPEN 2026-06-08]
+
+PR-H's per-request revocation (`requireSession` → `SELECT disabled FROM users` → 401 `revoked`, `safety_portal/worker/index.ts:179-189`) locks a disabled user out of **every** protected endpoint (`/api/jobs`, `/api/recent`, `/api/submit`, `/api/session`). But `/api/login` → `validateUser` (`safety_portal/worker/auth.ts:50-67`) selects only `id, username, password_hash` and checks `!row || !ok` — it **never reads `disabled`**. So a disabled user with a valid password can still LOG IN and mint a fresh session cookie. That cookie is useless (every protected call 401s), so there is **no capability bypass** — the security boundary holds at `requireSession` — but login *appears* to succeed (misleading UX) and it's a defense-in-depth gap.
+
+**Observed live (2026-06-08 mirror revocation proof):** disabled `test.pm` → operator saw "could not load jobs" (the `requireSession` 401) but "could still login".
+
+**Proposed fix (small):** add `disabled` to the `validateUser` SELECT and return `null` when `row.disabled` (login fails closed, identical to a wrong password) — or a dedicated 403 "account disabled". ~15 min + a test.
+
+**Revisit when:** next Safety Portal hardening pass, or before a real PM is provisioned on a live tenant.
+
+## Safety Portal — `custom_domain` route disables the `workers.dev` URL on deploy [OPEN 2026-06-08]
+
+PR-J (#188) added `routes: [{ pattern: "safety.evergreenmirror.com", custom_domain: true }]` to `safety_portal/wrangler.jsonc` with **no `workers_dev` key**. On `npm run deploy`, wrangler warns *"Because 'workers_dev' is not in your Wrangler file, it will be disabled for this deployment by default"* and **turns off the `*.workers.dev` URL** — so `https://its-safety-portal.sethsmithusmc.workers.dev` then returns 404 with Cloudflare **`error code: 1042`** ("No Workers script was found for this host on workers.dev"). This is NOT a broken worker (the deploy succeeded; `@cloudflare/vite-plugin` correctly redirects `wrangler deploy` to its generated `dist/its_safety_portal/wrangler.json`); it's the workers.dev route being disabled. It stranded `portal_poll` + `portal_admin`, which read the base URL from ITS_Config `safety_reports.portal.worker_base_url` (then still the workers.dev URL) → ~15 `portal_pending_fetch_failed` ERRORs in ITS_Errors (2026-06-07).
+
+**Resolution applied (2026-06-08):** repointed `safety_reports.portal.worker_base_url` → `https://safety.evergreenmirror.com` (the proper end-state — per PR-J the portal lives on the custom domain). `portal_poll` recovered on its next cycle.
+
+**Residual / decision:** if BOTH the workers.dev URL and the custom domain are ever wanted live, add `"workers_dev": true` to `wrangler.jsonc` (a checked-in change that must be committed, else every future deploy re-disables workers.dev). For the custom-domain-only end-state (mirror + cutover), no change is needed. **Revisit when:** next Safety Portal deploy, or if a non-custom-domain access path is required.
+
+## Safety Portal — `scheduled_send_local` not seeded + silent fail-open on malformed value [OPEN 2026-06-08]
+
+`safety_reports.weekly_send.scheduled_send_local` (ITS_Config; e.g. `"MON 07:00"` — the Pacific weekday/time window in which `Approve for Scheduled Send` rows dispatch) is read live each cycle by `weekly_send_poll._read_str_setting` → `_parse_scheduled_spec` → `_is_scheduled_window`. Two minor gaps: (1) it is **not** in `scripts/seed_its_config.py` (added manually to the mirror) — a fresh tenant build would lack the row and fall back to the `DEFAULT_SCHEDULED_SEND_LOCAL = "MON 07:00"` constant (functionally safe, but undocumented in the seeder). (2) `_parse_scheduled_spec` **silently** coerces any malformed value (bad weekday, bad time, empty) to `(MON, 07:00)` with **no log** — an operator typo'd window would quietly send Monday 07:00 instead of erroring. The fallback is intentional + tested (`test_parse_scheduled_spec_defaults_on_malformed`), but it's a quiet-failure footgun for an operator-tuned schedule.
+
+**Proposed fix:** (a) add the row to `seed_its_config.py`; (b) WARN-log to ITS_Errors when `_parse_scheduled_spec` hits the `except` branch (still fall back, but surface the bad value). ~30 min. **Revisit when:** next seeder pass or weekly_send hardening. Surfaced 2026-06-08 (operator asked to confirm the config-driven schedule during mirror activation).
+
+## `smartsheet-python-sdk` upper-bound pin (CI-break stopgap) [OPEN 2026-06-08]
+
+`pyproject.toml` now pins `smartsheet-python-sdk>=3.0.0,<3.10.0`. A release >3.9.0 (2026-06-08) dropped/moved `smartsheet.exceptions`, which `shared/smartsheet_client.py:46` imports (`import smartsheet.exceptions as sdk_exc`) — the previously-unpinned `>=3.0.0` let CI fresh-install the broken version and **all 48 test modules failed at collection** (`ModuleNotFoundError: No module named 'smartsheet.exceptions'`). main was last green at `d393ee6` (2026-06-07 19:35); the breaking SDK release landed after. Local + every prior green CI run used 3.9.0 (which has `smartsheet.exceptions`).
+
+**Stopgap (PR #192):** upper-bound `<3.10.0` keeps CI on a working SDK. Caps below 3.10 (the lowest possible breaker) rather than `<4.0.0`, since a minor *or* major could be the one that dropped the module.
+
+**Proper fix (deferred):** verify the newer SDK's exception surface, then either (a) update `shared/smartsheet_client.py`'s import to the new location and loosen the bound, or (b) make the import resilient (try/except across the old/new path). ~1 hr. **Revisit when:** next dependency-maintenance pass, or when a smartsheet SDK feature/security update is wanted.
+
 ## Pre-mirror-tree portal Box filings are sandbox orphans [OPEN 2026-06-07]
+
+**Mirror root activated 2026-06-08** — `safety_reports.box.portal_root_folder_id = 388017263015` (`ITS_Safety_Portal`) seeded in ITS_Config; new submissions now file to `ROOT → per-job → per-week`. The 3 submissions filed BEFORE activation (to the legacy tree) are confirmed orphans; left as-is (sandbox), per below.
 
 PR-K mirrors the Smartsheet schema in Box (`ROOT → per-job → per-week → PDFs`),
 replacing the legacy `project_routing` → category-subfolder layout for the portal
