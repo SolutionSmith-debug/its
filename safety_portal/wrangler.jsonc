@@ -24,9 +24,12 @@
     "binding": "ASSETS",
     // Client-side routes (e.g. deep links) fall back to index.html with 200.
     "not_found_handling": "single-page-application",
-    // Run the Worker FIRST only for the API; everything else is served as a static
-    // asset directly (cheaper, and API paths can't be shadowed by a same-named asset).
-    "run_worker_first": ["/api/*"]
+    // run_worker_first:true (was ["/api/*"]) routes ALL requests through the Worker so
+    // the secureHeaders() middleware can set CSP / X-Frame-Options / etc. on the SPA
+    // DOCUMENT + static assets too (they would otherwise be platform-served, bypassing
+    // Hono — audit 2026-06-08 #2/#3). Cost: every request runs the Worker (negligible at
+    // this scale); the catch-all still serves assets via env.ASSETS.fetch.
+    "run_worker_first": true
   },
 
   "observability": { "enabled": true },

@@ -114,7 +114,10 @@ export function AccountsPage({ tabBar }: { tabBar: ReactNode }) {
     if (nu && nu !== original) changes.new_username = nu;
     if (edPass) changes.new_password = edPass;
     if (changes.new_username === undefined && changes.new_password === undefined) {
-      setBanner({ kind: "err", msg: explain("no_changes") });
+      // No actual change (editor opened, maybe accidentally, nothing edited) → just
+      // CLOSE it as a no-op instead of erroring + trapping it open. Blank password
+      // already means "keep current", so Submit-to-close is the natural gesture.
+      setEditing(null);
       return;
     }
     const ok = await run(() => api.editCredentials(original, changes), `Updated ${original}'s login.`);

@@ -44,6 +44,58 @@ const MAX_AGE_S = 60 * 60 * 24 * 90; // 90-day session (safety-portal/mission.md
 
 const app = new Hono<{ Bindings: Env; Variables: Vars }>();
 
+// ── Security response headers (audit 2026-06-08: #2 CSP, #3 clickjacking, #8–11) ─
+// wrangler.jsonc sets run_worker_first:true so EVERY request runs the Worker — these
+// reach the SPA document + static assets too (the platform otherwise serves them and
+// bypasses Hono).
+//
+// CRITICAL (the 2026-06-08 hotfix): responses from c.env.ASSETS.fetch() have IMMUTABLE
+// headers. Mutating them in place — which Hono's secureHeaders()/c.header() do — THROWS,
+// and under run_worker_first:true that 500'd every static asset AND the SPA document
+// (only the Hono-built /api/* responses, which have mutable headers, survived). So we
+// RECONSTRUCT each response with a fresh, mutable Headers COPY and set ours on that.
+// The copy preserves the asset's own content-type/etag/cache headers; we only ADD.
+//
+// CSP is ENFORCING (flipped 2026-06-08 after a clean browser smoke: admin login →
+// dashboard → a form rendered WITH signature capture produced ZERO CSP violations). It
+// shipped Report-Only for one cycle first so the smoke couldn't break the live SPA. The CSP allows
+// React inline styles ('unsafe-inline' style-src) + the logo/inline-SVG signature
+// (img-src 'self' data:); the built index.html has NO inline <script> → script-src 'self'.
+// Cache-Control:no-store is /api/*-ONLY (the cacheable static assets keep their caching).
+const CSP =
+  "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
+  "img-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; " +
+  "form-action 'self'";
+app.use("*", async (c, next) => {
+  await next();
+  const headers = new Headers(c.res.headers); // mutable copy — preserves Set-Cookie, etag, etc.
+  headers.set("X-Frame-Options", "DENY");
+  headers.set("X-Content-Type-Options", "nosniff");
+  headers.set("Referrer-Policy", "strict-origin-when-cross-origin");
+  headers.set("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+  headers.set("Content-Security-Policy", CSP);
+  if (new URL(c.req.url).pathname.startsWith("/api/")) headers.set("Cache-Control", "no-store");
+  c.res = new Response(c.res.body, { status: c.res.status, statusText: c.res.statusText, headers });
+});
+
+// Global error handler (audit #1, defense-in-depth). Before this, an unguarded throw
+// (e.g. a null-body deref) returned the runtime's bare 500. Return clean JSON with NO
+// stack leak; logged to the Worker log (observability), NOT paged — a malformed unauth
+// request must never Sentry-spam. This is the backstop BEHIND the per-handler
+// body-shape guards added below.
+app.onError((err, c) => {
+  console.error("worker_unhandled", err instanceof Error ? err.message : String(err));
+  return c.json({ error: "internal_error" }, 500);
+});
+
+/** True if a D1 error is a UNIQUE-constraint violation. Lets the create/rename routes
+ *  map a lost check-then-act race (the second writer hits UNIQUE) to a clean 409
+ *  instead of letting it bubble to a 500 (audit #5). */
+function isUniqueViolation(e: unknown): boolean {
+  const msg = e instanceof Error ? e.message : String(e);
+  return /UNIQUE constraint failed/i.test(msg);
+}
+
 // ── Phase 5 transport (pull model) — HMAC signing + internal-endpoint auth ──────
 
 /**
@@ -123,6 +175,12 @@ app.post("/api/login", async (c) => {
   try {
     body = await c.req.json();
   } catch {
+    return c.json({ error: "bad_request" }, 400);
+  }
+  // JSON `null`/arrays/scalars PARSE fine but aren't objects; dereferencing body.x on
+  // them threw → bare 500 (audit #1). Require a plain object (the `as unknown` cast
+  // dodges the no-overlap check on the typed body var).
+  if (typeof body !== "object" || (body as unknown) === null || Array.isArray(body)) {
     return c.json({ error: "bad_request" }, 400);
   }
 
@@ -281,6 +339,12 @@ app.post("/api/submit", requireSession, async (c) => {
   } catch {
     return c.json({ error: "bad_request" }, 400);
   }
+  // JSON `null`/arrays/scalars PARSE fine but aren't objects; dereferencing body.x on
+  // them threw → bare 500 (audit #1). Require a plain object (the `as unknown` cast
+  // dodges the no-overlap check on the typed body var).
+  if (typeof body !== "object" || (body as unknown) === null || Array.isArray(body)) {
+    return c.json({ error: "bad_request" }, 400);
+  }
   const str = (k: string) => (typeof body[k] === "string" ? (body[k] as string) : "");
   const job_id = str("job_id");
   const form_code = str("form_code");
@@ -292,7 +356,7 @@ app.post("/api/submit", requireSession, async (c) => {
     !job_id || !form_code || !work_date || !submission_uuid ||
     job_id.length > 64 || form_code.length > 64 || work_date.length > 10 || submission_uuid.length > 64 ||
     (amends_uuid !== null && amends_uuid.length > 64) ||
-    typeof values !== "object" || values === null
+    typeof values !== "object" || values === null || Array.isArray(values)
   ) {
     return c.json({ error: "invalid_submission" }, 400);
   }
@@ -393,6 +457,12 @@ app.post("/api/internal/mark-filed", requireInternalToken, async (c) => {
   } catch {
     return c.json({ error: "bad_request" }, 400);
   }
+  // JSON `null`/arrays/scalars PARSE fine but aren't objects; dereferencing body.x on
+  // them threw → bare 500 (audit #1). Require a plain object (the `as unknown` cast
+  // dodges the no-overlap check on the typed body var).
+  if (typeof body !== "object" || (body as unknown) === null || Array.isArray(body)) {
+    return c.json({ error: "bad_request" }, 400);
+  }
   const submission_uuid = typeof body.submission_uuid === "string" ? body.submission_uuid : "";
   const box_link = typeof body.box_link === "string" ? body.box_link.slice(0, 2000) : null;
   if (!submission_uuid || submission_uuid.length > 64) return c.json({ error: "invalid" }, 400);
@@ -427,6 +497,12 @@ app.post("/api/internal/sync", requireInternalToken, async (c) => {
   try {
     body = await c.req.json();
   } catch {
+    return c.json({ error: "bad_request" }, 400);
+  }
+  // JSON `null`/arrays/scalars PARSE fine but aren't objects; dereferencing body.x on
+  // them threw → bare 500 (audit #1). Require a plain object (the `as unknown` cast
+  // dodges the no-overlap check on the typed body var).
+  if (typeof body !== "object" || (body as unknown) === null || Array.isArray(body)) {
     return c.json({ error: "bad_request" }, 400);
   }
   const raw = body.jobs;
@@ -488,6 +564,12 @@ async function setUserDisabled(
   } catch {
     return c.json({ error: "bad_request" }, 400);
   }
+  // JSON `null`/arrays/scalars PARSE fine but aren't objects; dereferencing body.x on
+  // them threw → bare 500 (audit #1). Require a plain object (the `as unknown` cast
+  // dodges the no-overlap check on the typed body var).
+  if (typeof body !== "object" || (body as unknown) === null || Array.isArray(body)) {
+    return c.json({ error: "bad_request" }, 400);
+  }
   const username = normalizeUsername(typeof body.username === "string" ? body.username : "");
   if (!username) return c.json({ error: "invalid_username" }, 400);
   const res = await c.env.DB
@@ -517,6 +599,12 @@ app.post("/api/internal/admin/users", requireAdminToken, async (c) => {
   } catch {
     return c.json({ error: "bad_request" }, 400);
   }
+  // JSON `null`/arrays/scalars PARSE fine but aren't objects; dereferencing body.x on
+  // them threw → bare 500 (audit #1). Require a plain object (the `as unknown` cast
+  // dodges the no-overlap check on the typed body var).
+  if (typeof body !== "object" || (body as unknown) === null || Array.isArray(body)) {
+    return c.json({ error: "bad_request" }, 400);
+  }
   const username = normalizeUsername(typeof body.username === "string" ? body.username : "");
   const password = typeof body.password === "string" ? body.password : "";
   const role = parseRole(body.role);
@@ -526,10 +614,16 @@ app.post("/api/internal/admin/users", requireAdminToken, async (c) => {
   const exists = await c.env.DB.prepare("SELECT 1 FROM users WHERE username=?").bind(username).first();
   if (exists) return c.json({ error: "exists" }, 409);
   const password_hash = await hashPassword(password); // plaintext never stored/logged
-  await c.env.DB
-    .prepare("INSERT INTO users (username, password_hash, role) VALUES (?,?,?)")
-    .bind(username, password_hash, role)
-    .run();
+  try {
+    await c.env.DB
+      .prepare("INSERT INTO users (username, password_hash, role) VALUES (?,?,?)")
+      .bind(username, password_hash, role)
+      .run();
+  } catch (e) {
+    // Race backstop (audit #5): concurrent create → UNIQUE violation → 409, not 500.
+    if (isUniqueViolation(e)) return c.json({ error: "exists" }, 409);
+    throw e;
+  }
   return c.json({ ok: true, username, role }, 201);
 });
 
@@ -542,6 +636,12 @@ app.post("/api/internal/admin/users/role", requireAdminToken, async (c) => {
   try {
     body = await c.req.json();
   } catch {
+    return c.json({ error: "bad_request" }, 400);
+  }
+  // JSON `null`/arrays/scalars PARSE fine but aren't objects; dereferencing body.x on
+  // them threw → bare 500 (audit #1). Require a plain object (the `as unknown` cast
+  // dodges the no-overlap check on the typed body var).
+  if (typeof body !== "object" || (body as unknown) === null || Array.isArray(body)) {
     return c.json({ error: "bad_request" }, 400);
   }
   const username = normalizeUsername(typeof body.username === "string" ? body.username : "");
@@ -562,6 +662,12 @@ app.post("/api/internal/admin/users/reset", requireAdminToken, async (c) => {
   try {
     body = await c.req.json();
   } catch {
+    return c.json({ error: "bad_request" }, 400);
+  }
+  // JSON `null`/arrays/scalars PARSE fine but aren't objects; dereferencing body.x on
+  // them threw → bare 500 (audit #1). Require a plain object (the `as unknown` cast
+  // dodges the no-overlap check on the typed body var).
+  if (typeof body !== "object" || (body as unknown) === null || Array.isArray(body)) {
     return c.json({ error: "bad_request" }, 400);
   }
   const username = normalizeUsername(typeof body.username === "string" ? body.username : "");
@@ -655,6 +761,12 @@ app.post("/api/admin/users", ...adminGate, async (c) => {
   } catch {
     return c.json({ error: "bad_request" }, 400);
   }
+  // JSON `null`/arrays/scalars PARSE fine but aren't objects; dereferencing body.x on
+  // them threw → bare 500 (audit #1). Require a plain object (the `as unknown` cast
+  // dodges the no-overlap check on the typed body var).
+  if (typeof body !== "object" || (body as unknown) === null || Array.isArray(body)) {
+    return c.json({ error: "bad_request" }, 400);
+  }
   const username = normalizeUsername(typeof body.username === "string" ? body.username : "");
   const password = typeof body.password === "string" ? body.password : "";
   const role = parseRole(body.role);
@@ -664,11 +776,19 @@ app.post("/api/admin/users", ...adminGate, async (c) => {
   const exists = await c.env.DB.prepare("SELECT 1 FROM users WHERE username=?").bind(username).first();
   if (exists) return c.json({ error: "exists" }, 409);
   const password_hash = await hashPassword(password); // plaintext never stored/logged
-  await c.env.DB.batch([
-    c.env.DB.prepare("INSERT INTO users (username, password_hash, role) VALUES (?,?,?)")
-      .bind(username, password_hash, role),
-    auditStmt(c, c.get("session").username, "user_create", username, { role }),
-  ]);
+  try {
+    await c.env.DB.batch([
+      c.env.DB.prepare("INSERT INTO users (username, password_hash, role) VALUES (?,?,?)")
+        .bind(username, password_hash, role),
+      auditStmt(c, c.get("session").username, "user_create", username, { role }),
+    ]);
+  } catch (e) {
+    // Lost the check-then-act race (a concurrent create of the same username) → the
+    // UNIQUE constraint fires here. Map to 409, not a bubbled 500 (audit #5). The
+    // `if (exists)` pre-check above is the cheap path; this is the race backstop.
+    if (isUniqueViolation(e)) return c.json({ error: "exists" }, 409);
+    throw e;
+  }
   return c.json({ ok: true, username, role }, 201);
 });
 
@@ -680,6 +800,12 @@ app.post("/api/admin/users/credentials", ...adminGate, async (c) => {
   try {
     body = await c.req.json();
   } catch {
+    return c.json({ error: "bad_request" }, 400);
+  }
+  // JSON `null`/arrays/scalars PARSE fine but aren't objects; dereferencing body.x on
+  // them threw → bare 500 (audit #1). Require a plain object (the `as unknown` cast
+  // dodges the no-overlap check on the typed body var).
+  if (typeof body !== "object" || (body as unknown) === null || Array.isArray(body)) {
     return c.json({ error: "bad_request" }, 400);
   }
   const username = normalizeUsername(typeof body.username === "string" ? body.username : "");
@@ -717,14 +843,21 @@ app.post("/api/admin/users/credentials", ...adminGate, async (c) => {
   }
   if (sets.length === 0) return c.json({ error: "no_changes" }, 400); // new_username == current, no password
 
-  await c.env.DB.batch([
-    c.env.DB.prepare(`UPDATE users SET ${sets.join(", ")} WHERE username=?`).bind(...binds, target.username),
-    auditStmt(c, c.get("session").username, "user_edit", target.username, {
-      username_changed: renamedTo !== null,
-      renamed_to: renamedTo,
-      password_changed: hasNewPassword,
-    }),
-  ]);
+  try {
+    await c.env.DB.batch([
+      c.env.DB.prepare(`UPDATE users SET ${sets.join(", ")} WHERE username=?`).bind(...binds, target.username),
+      auditStmt(c, c.get("session").username, "user_edit", target.username, {
+        username_changed: renamedTo !== null,
+        renamed_to: renamedTo,
+        password_changed: hasNewPassword,
+      }),
+    ]);
+  } catch (e) {
+    // A concurrent rename into the same target username loses the UNIQUE race → 409
+    // (audit #5; the `taken` pre-check above is the cheap path, this is the backstop).
+    if (isUniqueViolation(e)) return c.json({ error: "username_taken" }, 409);
+    throw e;
+  }
 
   // Self-edit → re-auth. A username change already invalidates the cookie (the
   // per-request lookup is by the OLD username); a password change does not, so we
@@ -743,6 +876,12 @@ app.post("/api/admin/users/role", ...adminGate, async (c) => {
   try {
     body = await c.req.json();
   } catch {
+    return c.json({ error: "bad_request" }, 400);
+  }
+  // JSON `null`/arrays/scalars PARSE fine but aren't objects; dereferencing body.x on
+  // them threw → bare 500 (audit #1). Require a plain object (the `as unknown` cast
+  // dodges the no-overlap check on the typed body var).
+  if (typeof body !== "object" || (body as unknown) === null || Array.isArray(body)) {
     return c.json({ error: "bad_request" }, 400);
   }
   const username = normalizeUsername(typeof body.username === "string" ? body.username : "");
@@ -769,7 +908,13 @@ app.post("/api/admin/users/role", ...adminGate, async (c) => {
       "INSERT INTO audit_log (actor_username, action, target_username, detail) SELECT ?,?,?,? WHERE changes()=1",
     ).bind(c.get("session").username, "role_change", target.username, JSON.stringify({ from: target.role, to: role })),
   ]);
-  if ((res[0]?.meta?.changes ?? 0) === 0) return c.json({ error: "last_admin" }, 409);
+  // changes==0 is overloaded: the atomic last-admin guard blocked it, OR a concurrent
+  // delete removed the row after our load. Re-check existence so the code is honest
+  // (audit #6): 404 if gone, 409 last_admin if genuinely still the last enabled admin.
+  if ((res[0]?.meta?.changes ?? 0) === 0) {
+    const still = await c.env.DB.prepare("SELECT 1 FROM users WHERE username=?").bind(target.username).first();
+    return still ? c.json({ error: "last_admin" }, 409) : c.json({ error: "not_found" }, 404);
+  }
 
   if (target.username === c.get("session").username) {
     deleteCookie(c, COOKIE, { path: "/" });
@@ -785,6 +930,12 @@ app.post("/api/admin/users/delete", ...adminGate, async (c) => {
   try {
     body = await c.req.json();
   } catch {
+    return c.json({ error: "bad_request" }, 400);
+  }
+  // JSON `null`/arrays/scalars PARSE fine but aren't objects; dereferencing body.x on
+  // them threw → bare 500 (audit #1). Require a plain object (the `as unknown` cast
+  // dodges the no-overlap check on the typed body var).
+  if (typeof body !== "object" || (body as unknown) === null || Array.isArray(body)) {
     return c.json({ error: "bad_request" }, 400);
   }
   const username = normalizeUsername(typeof body.username === "string" ? body.username : "");
@@ -806,7 +957,12 @@ app.post("/api/admin/users/delete", ...adminGate, async (c) => {
       "INSERT INTO audit_log (actor_username, action, target_username, detail) SELECT ?,?,?,? WHERE changes()=1",
     ).bind(c.get("session").username, "user_delete", target.username, JSON.stringify({ role: target.role })),
   ]);
-  if ((res[0]?.meta?.changes ?? 0) === 0) return c.json({ error: "last_admin" }, 409);
+  // Same overloaded changes==0 as the role route (audit #6): guard-blocked (still the
+  // last enabled admin) vs already-deleted by a concurrent request. 404 if gone.
+  if ((res[0]?.meta?.changes ?? 0) === 0) {
+    const still = await c.env.DB.prepare("SELECT 1 FROM users WHERE username=?").bind(target.username).first();
+    return still ? c.json({ error: "last_admin" }, 409) : c.json({ error: "not_found" }, 404);
+  }
 
   if (target.username === c.get("session").username) {
     deleteCookie(c, COOKIE, { path: "/" });
