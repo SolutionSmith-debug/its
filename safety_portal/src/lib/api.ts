@@ -76,6 +76,10 @@ export interface SubmitBody {
   values: Record<string, unknown>;
   submission_uuid: string;
   amends_uuid?: string | null;
+  /** Admin "filled out as": the account this submission is attributed to. Omitted
+   *  (or === the caller) for a normal self-submit. The server re-gates: a non-admin
+   *  sending a non-self value is rejected 403, so this is never the security boundary. */
+  submitted_as?: string;
 }
 
 export async function submitForm(body: SubmitBody): Promise<void> {
