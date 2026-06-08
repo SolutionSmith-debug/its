@@ -106,6 +106,7 @@ describe("security headers (#2 CSP, #3 clickjacking, #8–11)", () => {
     expect(csp).toContain("default-src 'self'");
     expect(csp).toContain("frame-ancestors 'none'");
     expect(csp).toContain("'unsafe-inline'"); // style-src, for React inline styles
+    expect(csp).toContain("static.cloudflareinsights.com"); // CF Web Analytics beacon allowlisted
     // Report-Only retired now that it enforces.
     expect(res.headers.get("content-security-policy-report-only")).toBeNull();
   });

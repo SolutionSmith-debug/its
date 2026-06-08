@@ -62,10 +62,16 @@ const app = new Hono<{ Bindings: Env; Variables: Vars }>();
 // React inline styles ('unsafe-inline' style-src) + the logo/inline-SVG signature
 // (img-src 'self' data:); the built index.html has NO inline <script> → script-src 'self'.
 // Cache-Control:no-store is /api/*-ONLY (the cacheable static assets keep their caching).
+// script-src/connect-src allow Cloudflare's Web Analytics beacon (auto-injected at the
+// edge: static.cloudflareinsights.com serves beacon.min.js, which POSTs RUM data to
+// cloudflareinsights.com). Without these the enforcing CSP blocks the beacon → a console
+// error every load. Cloudflare's own first-party CDN; everything else stays 'self'.
 const CSP =
-  "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
-  "img-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; " +
-  "form-action 'self'";
+  "default-src 'self'; " +
+  "script-src 'self' https://static.cloudflareinsights.com; " +
+  "connect-src 'self' https://cloudflareinsights.com; " +
+  "style-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'none'; " +
+  "base-uri 'self'; frame-ancestors 'none'; form-action 'self'";
 app.use("*", async (c, next) => {
   await next();
   const headers = new Headers(c.res.headers); // mutable copy — preserves Set-Cookie, etag, etc.
