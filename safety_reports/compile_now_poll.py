@@ -12,9 +12,10 @@ Lifecycle (single-flight + fail-loud, reusing the existing compile's own behavio
     (on-demand; an unchecked job is skipped — this is NOT an auto-on-new-docs compiler).
   - The per-submission Compile Now boxes are the "include in this packet" SELECTION
     (default-all when none checked, Option 1); the compile narrows the packet to them.
-  - SUCCESS: `upsert_rollup_row` clears the Rollup trigger; we clear the submission selection
-    too. FAILURE: `_compile_job_week` raises BEFORE the trigger clears, so the trigger +
-    selection stay VISIBLY set (fail-loud) and the job routes to the Review Queue.
+  - SUCCESS: `_compile_job_week` APPENDS a new Rollup snapshot (append-only) + clears the
+    Rollup trigger(s); we clear the submission selection too. FAILURE: `_compile_job_week`
+    raises BEFORE the trigger clears, so the trigger + selection stay VISIBLY set (fail-loud)
+    and the job routes to the Review Queue.
 
 **Zero send. Zero AI.** Enrolled in `tests/test_capability_gating.py::GATED_SCRIPTS` alongside
 `weekly_generate` (same deterministic-actuation gate). It calls the same dual-write as the
@@ -137,13 +138,12 @@ def _compile_triggered_job(
     True if a compile ran, False if the job was skipped (no trigger). Raises on a compile
     failure — the caller's per-job fence routes it to the Review Queue (fail-loud)."""
     sheet_id = week_sheet.ensure_week_sheet(job.project_name, week.start)
-    rollup = week_sheet.get_rollup_row(sheet_id)
-    # The trigger lives on the Rollup row, which first appears at the FIRST compile (the
-    # pre-existing Compile-Now semantics — Part B only makes that existing checkbox actuate
-    # in ~90 s instead of next Friday). A never-compiled week has no Rollup row yet → nothing
-    # to trigger off, so the first compile is the Friday run; thereafter on-demand recompiles
-    # work. (Pre-creating an empty Rollup row at sheet creation is a tracked follow-up.)
-    if not week_sheet.compile_now_requested(rollup):
+    # The Compile-Now trigger lives on a Rollup row; the placeholder Rollup is pre-created at
+    # sheet creation so the checkbox exists even before the first compile. With append-only
+    # Rollups (one immutable snapshot per compile), the operator may check the trigger on the
+    # latest (or any) Rollup row, so we look across ALL of them.
+    rollup_rows = week_sheet.list_rollup_rows(sheet_id)
+    if not week_sheet.any_compile_now_requested(rollup_rows):
         return False  # on-demand only — an unchecked job is NOT auto-compiled
 
     submissions = week_sheet.list_submission_rows(sheet_id, active_only=True)
@@ -153,9 +153,10 @@ def _compile_triggered_job(
     weekly_generate._compile_job_week(
         job, week, summary, correlation_id, selection=(selection or None)
     )
-    # SUCCESS only (a failure raised above): the Rollup trigger self-cleared in
-    # upsert_rollup_row; clear the per-submission selection too so it cannot narrow a later
-    # compile. A clear failure RAISES → surfaced like any compile failure (fail-loud).
+    # SUCCESS only (a failure raised above): _compile_job_week appended the new Rollup
+    # snapshot and cleared the Rollup trigger(s) (clear_compile_now_on_rollups); clear the
+    # per-submission selection too so it cannot narrow a later compile. A clear failure
+    # RAISES → surfaced like any compile failure (fail-loud).
     week_sheet.clear_compile_now(sheet_id, selection)
     return True
 

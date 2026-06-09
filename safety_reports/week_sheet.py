@@ -251,12 +251,14 @@ def _ensure_rollup_placeholder(sheet_id: int) -> None:
     never-yet-compiled week, not only after the first Friday run.
 
     `compiled_at=""` keeps the no-new-docs skip honest (`prior_compiled_at='' <` any real
-    submission timestamp → compiles, never a spurious skip). Best-effort: a transient write
-    failure must NOT abort sheet creation (intake needs the sheet to file the submission); the
-    next compile creates the Rollup row via the same upsert. Runs only on the CREATE branch of
-    ensure_week_sheet, so it never double-writes an existing Rollup row."""
+    submission timestamp → compiles, never a spurious skip) and sorts FIRST in
+    `list_rollup_rows` so a real compilation is always the latest. Best-effort: a transient
+    write failure must NOT abort sheet creation (intake needs the sheet to file the
+    submission); the first compile then APPENDS the first real Rollup snapshot. Runs only on
+    the CREATE branch of ensure_week_sheet — the placeholder is the genesis row that hosts the
+    Compile Now trigger before the first compile (append-only: compiles never overwrite it)."""
     try:
-        upsert_rollup_row(
+        append_rollup_row(
             sheet_id, packet_link="", compiled_at="",
             manifest_note="not yet compiled (placeholder)",
         )
@@ -373,17 +375,38 @@ def list_submission_rows(sheet_id: int, *, active_only: bool = True) -> list[dic
     )
 
 
+def list_rollup_rows(sheet_id: int) -> list[dict[str, Any]]:
+    """All Row Type=Rollup snapshot rows, oldest-compiled first (sorted by Submitted At).
+
+    APPEND-ONLY (operator decision 2026-06-09): each compile writes a NEW immutable Rollup
+    snapshot — a prior compilation's row is NEVER overwritten, so the week sheet keeps the
+    full compile history. The placeholder (compiled_at='') sorts first; the most-recent real
+    compilation is last (`[-1]` = the no-new-docs watermark)."""
+    rows = [
+        r for r in smartsheet_client.get_rows(sheet_id)
+        if (r.get(COL_ROW_TYPE) or "") == ROW_TYPE_ROLLUP
+    ]
+    return sorted(rows, key=lambda r: str(r.get(COL_SUBMITTED_AT) or ""))
+
+
 def get_rollup_row(sheet_id: int) -> dict[str, Any] | None:
-    """Return the single Row Type=Rollup snapshot row, or None if not yet compiled."""
-    for r in smartsheet_client.get_rows(sheet_id):
-        if (r.get(COL_ROW_TYPE) or "") == ROW_TYPE_ROLLUP:
-            return r
-    return None
+    """Return the LATEST Row Type=Rollup snapshot row (most-recently compiled), or None.
+
+    With append-only Rollups (one per compile) this is the newest by Submitted At — the row
+    that carries the no-new-docs watermark. Use `list_rollup_rows` for the full history."""
+    rows = list_rollup_rows(sheet_id)
+    return rows[-1] if rows else None
 
 
 def compile_now_requested(rollup_row: dict[str, Any] | None) -> bool:
-    """True iff the operator checked Compile Now on the Rollup row (force recompile)."""
+    """True iff the operator checked Compile Now on the given Rollup row (force recompile)."""
     return bool(rollup_row and rollup_row.get(COL_COMPILE_NOW))
+
+
+def any_compile_now_requested(rollup_rows: list[dict[str, Any]]) -> bool:
+    """True iff ANY Rollup row has Compile Now checked — the operator may check the trigger
+    on the latest (or any) Rollup snapshot to force a fresh compilation."""
+    return any(compile_now_requested(r) for r in rollup_rows)
 
 
 def selected_submission_row_ids(submission_rows: list[dict[str, Any]]) -> set[int]:
@@ -402,14 +425,34 @@ def selected_submission_row_ids(submission_rows: list[dict[str, Any]]) -> set[in
 
 
 def clear_compile_now(sheet_id: int, row_ids: set[int]) -> None:
-    """Uncheck Compile Now on the given rows — called AFTER a compile consumed the
-    per-submission selection (the Rollup trigger self-clears via upsert_rollup_row). No-op
-    on an empty set. Raises on a Smartsheet error so a failed clear is visible (a stale
-    checkbox would silently narrow the next compile)."""
+    """Uncheck Compile Now on the given per-SUBMISSION rows — called AFTER a compile consumed
+    the per-submission selection. No-op on an empty set. Raises on a Smartsheet error so a
+    failed clear is visible (a stale checkbox would silently narrow the next compile)."""
     if not row_ids:
         return
     smartsheet_client.update_rows(
         sheet_id, [{"_row_id": rid, COL_COMPILE_NOW: False} for rid in sorted(row_ids)]
+    )
+
+
+def clear_compile_now_on_rollups(sheet_id: int, rollup_rows: list[dict[str, Any]]) -> None:
+    """Uncheck Compile Now on any ROLLUP rows that had it set — called AFTER an append-only
+    compile. The new snapshot is written with Compile Now=false, but the prior Rollup row the
+    operator checked to TRIGGER the recompile must be cleared, or `any_compile_now_requested`
+    stays True and it would re-fire every cycle. Clearing a transient trigger checkbox is NOT
+    a record mutation (the packet link + manifest on the snapshot are untouched — the
+    append-only invariant is about preserving compiled records, not the trigger). No-op when
+    none are set. Raises on a Smartsheet error so a failed clear is visible (a stale trigger
+    would loop)."""
+    ids = [
+        int(r["_row_id"])
+        for r in rollup_rows
+        if r.get("_row_id") is not None and r.get(COL_COMPILE_NOW)
+    ]
+    if not ids:
+        return
+    smartsheet_client.update_rows(
+        sheet_id, [{"_row_id": rid, COL_COMPILE_NOW: False} for rid in sorted(ids)]
     )
 
 
@@ -425,33 +468,35 @@ def latest_submitted_at(submission_rows: list[dict[str, Any]]) -> str:
     return max(stamps, default="")
 
 
-def upsert_rollup_row(
+def append_rollup_row(
     sheet_id: int,
     *,
     packet_link: str,
     compiled_at: str,
     manifest_note: str,
-    existing_rollup_row_id: int | None = None,
 ) -> int:
-    """Write/refresh the read-only Rollup snapshot row (Row Type=Rollup).
+    """APPEND a new read-only Rollup snapshot row (Row Type=Rollup); return its row ID.
 
-    The rollup row is a MANIFEST of what the compiled packet contains — NOT an
-    editable surface (that's the WSR_human_review row). `compiled_at` (Pacific ISO)
-    lands in Submitted At so the no-new-docs skip can compare it to submission
-    timestamps. Clears Compile Now on write (the recompile it requested is done).
+    APPEND-ONLY (operator decision 2026-06-09): every compile writes a NEW immutable
+    snapshot — a prior compilation's Rollup row, packet link, and manifest are NEVER
+    overwritten. Together with append-only WSR rows + distinct Box packet files, the week
+    sheet keeps the full compile history, the WSR keeps the full send history, and Box keeps
+    every weekly packet. The rollup row is a MANIFEST of what THIS packet contains — NOT an
+    editable surface (that's the WSR_human_review row). `compiled_at` (Pacific ISO) lands in
+    Submitted At so the no-new-docs skip can compare it to submission timestamps. Written
+    with Compile Now=false; a forced recompile's trigger on the PRIOR rows is cleared by
+    `clear_compile_now_on_rollups`.
     """
-    cells = {
-        COL_SUBMISSION: ROLLUP_LABEL,
-        COL_ROW_TYPE: ROW_TYPE_ROLLUP,
-        COL_STATUS: STATUS_ACTIVE,
-        COL_SUBMISSION_PDF: packet_link,
-        COL_SUBMITTED_AT: compiled_at,
-        COL_NOTES: manifest_note,
-        COL_COMPILE_NOW: False,
-    }
-    if existing_rollup_row_id is not None:
-        cells_with_id = {"_row_id": existing_rollup_row_id, **cells}
-        smartsheet_client.update_rows(sheet_id, [cells_with_id])
-        return existing_rollup_row_id
-    [row_id] = smartsheet_client.add_rows(sheet_id, [cells])
+    [row_id] = smartsheet_client.add_rows(
+        sheet_id,
+        [{
+            COL_SUBMISSION: ROLLUP_LABEL,
+            COL_ROW_TYPE: ROW_TYPE_ROLLUP,
+            COL_STATUS: STATUS_ACTIVE,
+            COL_SUBMISSION_PDF: packet_link,
+            COL_SUBMITTED_AT: compiled_at,
+            COL_NOTES: manifest_note,
+            COL_COMPILE_NOW: False,
+        }],
+    )
     return row_id

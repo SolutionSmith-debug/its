@@ -118,7 +118,7 @@ def find_row(sheet_id: int, job_id: str, week_of: date) -> dict[str, Any] | None
     return None
 
 
-def upsert_row(
+def add_wsr_row(
     sheet_id: int,
     *,
     job_project: str,
@@ -129,27 +129,18 @@ def upsert_row(
     cc_display: str,
     email_body: str,
     notes: str,
-) -> tuple[int, bool]:
-    """Create or update the (job, week) WSR row. Returns (row_id, created).
+) -> int:
+    """APPEND a new WSR_human_review row for (job, week); return its row ID.
 
-    CREATE seeds Email Body + Send Status=PENDING. UPDATE refreshes ONLY Compiled
-    PDF + Recipient TO/CC display + Notes — never the Email Body or any approval /
-    send-status column (see module write-discipline). `email_body` is used only on
-    create (the seed template).
+    APPEND-ONLY (operator decision 2026-06-09): every weekly compilation creates a NEW
+    PENDING row — a prior compilation's row (especially a SENT one) is NEVER overwritten, so
+    the send history is preserved (you can see WHAT was sent, WHEN, and which packet). Seeds
+    Email Body (the fixed template — the reviewer edits THIS row's body before approving) +
+    Send Status=PENDING. Multiple rows per (job, week) are expected; weekly_send_poll
+    dispatches each independently by row ID (a SENT row is skipped), so the reviewer approves
+    the latest compilation. (Supersedes the prior find-or-update `upsert_row`, whose in-place
+    UPDATE clobbered an already-SENT row's Compiled-PDF link — the bug this fixes.)
     """
-    existing = find_row(sheet_id, job_id, week_of)
-    if existing is not None:
-        smartsheet_client.update_rows(
-            sheet_id,
-            [{
-                "_row_id": existing["_row_id"],
-                COL_COMPILED_PDF: compiled_pdf_link,
-                COL_RECIPIENT_TO: recipient_to,
-                COL_CC: cc_display,
-                COL_NOTES: notes,
-            }],
-        )
-        return int(existing["_row_id"]), False
     [row_id] = smartsheet_client.add_rows(
         sheet_id,
         [{
@@ -164,4 +155,4 @@ def upsert_row(
             COL_NOTES: notes,
         }],
     )
-    return row_id, True
+    return row_id

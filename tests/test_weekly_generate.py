@@ -43,26 +43,24 @@ def stub(mocker) -> dict[str, MagicMock]:
     return {
         "list_jobs": mocker.patch.object(weekly_generate.active_jobs, "list_active_jobs", return_value=[_job()]),
         "ensure": mocker.patch.object(weekly_generate.week_sheet, "ensure_week_sheet", return_value=8001),
-        "rollup": mocker.patch.object(weekly_generate.week_sheet, "get_rollup_row", return_value=None),
+        # Append-only (operator decision 2026-06-09): list_rollup_rows returns the full
+        # (possibly multi-row) Rollup history; the REAL any_compile_now_requested runs on it
+        # (NOT mocked), so a {COMPILE_NOW: True} rollup drives `force`. append_rollup_row ADDS a
+        # new snapshot (never updates); clear_compile_now_on_rollups clears the trigger (no-op mock).
+        "rollup": mocker.patch.object(weekly_generate.week_sheet, "list_rollup_rows", return_value=[]),
         "subs": mocker.patch.object(weekly_generate.week_sheet, "list_submission_rows", return_value=[_sub()]),
-        "upsert_rollup": mocker.patch.object(weekly_generate.week_sheet, "upsert_rollup_row", return_value=99),
+        "append_rollup": mocker.patch.object(weekly_generate.week_sheet, "append_rollup_row", return_value=99),
+        "clear_rollup": mocker.patch.object(weekly_generate.week_sheet, "clear_compile_now_on_rollups"),
         "attach": mocker.patch.object(weekly_generate.smartsheet_client, "attach_pdf_to_row", return_value=1),
         "download": mocker.patch.object(weekly_generate.box_client, "download_file", return_value=b"%PDF-1.4 one"),
         "merge": mocker.patch.object(weekly_generate.form_pdf, "merge_pdfs", return_value=b"%PDF-merged"),
         "box_root": mocker.patch.object(weekly_generate, "_portal_box_root", return_value=""),  # gated OFF → legacy
         "get_root": mocker.patch.object(weekly_generate.project_routing, "get_folder_id", return_value="root1"),
         "mkfolder": mocker.patch.object(weekly_generate.box_client, "get_or_create_folder", return_value="wk1"),
-        # Mock the function weekly_generate ACTUALLY calls (the version-on-conflict
-        # upload). Formerly this patched plain `upload_bytes`, which production only
-        # hit indirectly via the real wrapper's happy path — so the recompile/409
-        # branch went unexercised here (fixture-fidelity gap, relied on live smoke).
-        "upload": mocker.patch.object(weekly_generate.box_client, "upload_bytes_or_new_version", return_value={"id": "pkt9", "name": "x", "size": 9}),
-        # Guard: weekly_generate must NOT call the plain (409-prone) upload_bytes
-        # directly — it 409s on the deterministic packet name and routed recompiles
-        # to the Review Queue (PR-G). Patched so a regression is inert (no live Box
-        # call) AND assertable via .assert_not_called().
-        "upload_plain": mocker.patch.object(weekly_generate.box_client, "upload_bytes"),
-        "wsr": mocker.patch.object(weekly_generate.wsr_review, "upsert_row", return_value=(123, True)),
+        # Append-only: each compile files a DISTINCT, timestamped packet via plain upload_bytes
+        # (the unique name can't 409, so the prior version-on-conflict upload is no longer used).
+        "upload": mocker.patch.object(weekly_generate.box_client, "upload_bytes", return_value={"id": "pkt9", "name": "x", "size": 9}),
+        "wsr": mocker.patch.object(weekly_generate.wsr_review, "add_wsr_row", return_value=123),
         "evergreen": mocker.patch.object(weekly_generate, "_read_str_setting", return_value="the office"),
         "review": mocker.patch.object(weekly_generate.review_queue, "add"),
         "marker": mocker.patch.object(weekly_generate, "_write_watchdog_marker"),
@@ -87,9 +85,9 @@ def test_box_file_id(link, expected):
 def test_its_week_folder_name_and_packet_name():
     wk = weekly_generate.safety_week.week_bounds(ANCHOR)
     assert weekly_generate._its_week_folder_name(wk) == "ITS Week of 2026-05-30 to 2026-06-05"
-    assert weekly_generate._packet_filename("Bradley 1", wk).startswith(
-        "Weekly Safety Report — Bradley 1 — 2026-05-30 to 2026-06-05"
-    )
+    name = weekly_generate._packet_filename("Bradley 1", wk, "20260605-090000-abc123")
+    assert name.startswith("Weekly Safety Report — Bradley 1 — 2026-05-30 to 2026-06-05")
+    assert name.endswith("20260605-090000-abc123.pdf")  # append-only: unique per-compile stamp
 
 
 def test_recipient_display():
@@ -108,7 +106,7 @@ def test_compile_merges_files_and_dual_writes(stub):
     stub["merge"].assert_called_once()
     stub["mkfolder"].assert_called_once_with("root1", "ITS Week of 2026-05-30 to 2026-06-05")
     stub["upload"].assert_called_once()
-    assert stub["upsert_rollup"].call_args.kwargs["packet_link"] == "https://app.box.com/file/pkt9"
+    assert stub["append_rollup"].call_args.kwargs["packet_link"] == "https://app.box.com/file/pkt9"
     assert stub["wsr"].call_args.kwargs["compiled_pdf_link"] == "https://app.box.com/file/pkt9"
     assert stub["wsr"].call_args.kwargs["job_id"] == "JOB-1"
     assert stub["wsr"].call_args.kwargs["recipient_to"] == "pm@evergreenmirror.com"
@@ -167,67 +165,69 @@ def test_two_submissions_merged_in_order(stub):
 
 
 def test_skip_when_already_compiled_no_new_docs(stub):
-    stub["rollup"].return_value = {
+    stub["rollup"].return_value = [{
         "_row_id": 5, week_sheet.COL_ROW_TYPE: week_sheet.ROW_TYPE_ROLLUP,
         week_sheet.COL_SUBMITTED_AT: "2026-06-05T09:00:00-07:00",
         week_sheet.COL_COMPILE_NOW: False,
-    }
+    }]
     out = weekly_generate._run_pipeline(week_start_override=ANCHOR)
     assert out["skipped_no_change"] == 1 and out["packets_compiled"] == 0
     stub["merge"].assert_not_called()
     stub["upload"].assert_not_called()
+    stub["append_rollup"].assert_not_called()  # append-only: no snapshot on an idle re-run
 
 
 def test_compile_now_forces_recompile(stub):
-    stub["rollup"].return_value = {
+    stub["rollup"].return_value = [{
         "_row_id": 5, week_sheet.COL_ROW_TYPE: week_sheet.ROW_TYPE_ROLLUP,
         week_sheet.COL_SUBMITTED_AT: "2026-06-05T09:00:00-07:00",
         week_sheet.COL_COMPILE_NOW: True,
-    }
+    }]
     out = weekly_generate._run_pipeline(week_start_override=ANCHOR)
     assert out["packets_compiled"] == 1
-    assert stub["upsert_rollup"].call_args.kwargs["existing_rollup_row_id"] == 5
+    # Append-only: Compile Now APPENDS a new Rollup snapshot (never updates the prior one) and
+    # clears the trigger on the prior row(s).
+    stub["append_rollup"].assert_called_once()
+    assert "existing_rollup_row_id" not in stub["append_rollup"].call_args.kwargs
+    stub["clear_rollup"].assert_called_once()
 
 
 def test_new_doc_since_compile_triggers_recompile(stub):
-    stub["rollup"].return_value = {
+    stub["rollup"].return_value = [{
         "_row_id": 5, week_sheet.COL_ROW_TYPE: week_sheet.ROW_TYPE_ROLLUP,
         week_sheet.COL_SUBMITTED_AT: "2026-06-04T09:00:00-07:00",
         week_sheet.COL_COMPILE_NOW: False,
-    }
+    }]
     out = weekly_generate._run_pipeline(week_start_override=ANCHOR)
     assert out["packets_compiled"] == 1
 
 
-def test_recompile_versions_packet_via_version_safe_upload(stub):
-    """A `Compile Now` mid-week run then a later Friday recompile must RE-VERSION
-    the one Box packet, never duplicate it. Locks the layering: weekly_generate
-    calls box_client.upload_bytes_or_new_version (409 → new Box VERSION, STABLE
-    file id) with a DETERMINISTIC filename + the same job/week folder on every
-    (re)compile — NOT the plain upload_bytes (409 → Review Queue, PR-G). The
-    version-on-conflict BEHAVIOUR itself is locked in test_box_client.py; this
-    guards that weekly_generate uses that version-safe entry point. Closes the
-    fixture-fidelity gap that left the recompile path covered only by live smoke."""
+def test_recompile_files_distinct_packet_never_overwrites(stub):
+    """APPEND-ONLY (operator decision 2026-06-09): a recompile files a NEW, DISTINCT Box
+    packet (a unique timestamp+correlation stamp), NEVER overwriting the prior packet — Box is
+    the master record and must keep every weekly compilation. Two compiles → two upload_bytes
+    calls with DIFFERENT filenames into the SAME job/week folder, and a NEW Rollup snapshot
+    each time (never an in-place update)."""
     stub["box_root"].return_value = "ROOT9"
     stub["mkfolder"].side_effect = ["jobP", "weekP", "jobP", "weekP"]  # two compiles
-    wk = weekly_generate.safety_week.week_bounds(ANCHOR)
-    expected_name = weekly_generate._packet_filename("Bradley 1", wk)
+    prefix = "Weekly Safety Report — Bradley 1 — 2026-05-30 to 2026-06-05 — "
 
-    weekly_generate._run_pipeline(week_start_override=ANCHOR)  # Wed: first compile
-    stub["rollup"].return_value = {  # a prior Rollup now exists; Compile Now forces recompile
+    weekly_generate._run_pipeline(week_start_override=ANCHOR)  # first compile
+    stub["rollup"].return_value = [{  # a prior Rollup now exists; Compile Now forces recompile
         "_row_id": 5, week_sheet.COL_ROW_TYPE: week_sheet.ROW_TYPE_ROLLUP,
         week_sheet.COL_SUBMITTED_AT: "2026-06-05T09:00:00-07:00",
         week_sheet.COL_COMPILE_NOW: True,
-    }
-    weekly_generate._run_pipeline(week_start_override=ANCHOR)  # Fri: recompile
+    }]
+    weekly_generate._run_pipeline(week_start_override=ANCHOR)  # recompile
 
-    # Both runs target the SAME job/week folder + SAME deterministic filename via the
-    # version-safe upload → Box versions the one packet, no duplicate accumulation.
     assert stub["upload"].call_count == 2
-    for call in stub["upload"].call_args_list:
-        assert call.args[0] == "weekP", "packet must file into the job/week folder"
-        assert call.args[1] == expected_name, "recompile must reuse the deterministic packet name"
-    stub["upload_plain"].assert_not_called()  # never the 409-prone plain upload
+    names = [c.args[1] for c in stub["upload"].call_args_list]
+    for n in names:
+        assert n.startswith(prefix) and n.endswith(".pdf")
+    assert names[0] != names[1], "each compilation must file a DISTINCT packet (never overwrite)"
+    for c in stub["upload"].call_args_list:
+        assert c.args[0] == "weekP", "packet must file into the job/week folder"
+    assert stub["append_rollup"].call_count == 2  # a NEW Rollup snapshot per compile
 
 
 # ---- empty week ----------------------------------------------------------
@@ -238,7 +238,7 @@ def test_empty_week_still_writes_rollup_and_wsr(stub):
     out = weekly_generate._run_pipeline(week_start_override=ANCHOR)
     assert out["empty_weeks"] == 1
     stub["merge"].assert_not_called()
-    stub["upsert_rollup"].assert_called_once()
+    stub["append_rollup"].assert_called_once()
     stub["wsr"].assert_called_once()
     assert stub["wsr"].call_args.kwargs["compiled_pdf_link"] == ""
 
@@ -274,11 +274,11 @@ def test_all_downloads_fail_writes_wsr_without_packet(stub):
 def test_blank_submitted_at_forces_recompile_not_skip(stub):
     # A prior compile exists; a submission row carries a BLANK Submitted At →
     # we cannot prove "no new docs", so we MUST recompile (never silently skip).
-    stub["rollup"].return_value = {
+    stub["rollup"].return_value = [{
         "_row_id": 5, week_sheet.COL_ROW_TYPE: week_sheet.ROW_TYPE_ROLLUP,
         week_sheet.COL_SUBMITTED_AT: "2026-06-05T09:00:00-07:00",
         week_sheet.COL_COMPILE_NOW: False,
-    }
+    }]
     stub["subs"].return_value = [_sub("jha-v1", "https://app.box.com/file/11", submitted="")]
     out = weekly_generate._run_pipeline(week_start_override=ANCHOR)
     assert out["packets_compiled"] == 1 and out["skipped_no_change"] == 0
@@ -287,14 +287,16 @@ def test_blank_submitted_at_forces_recompile_not_skip(stub):
     assert warns, "a blank Submitted At with submissions present must WARN, not skip silently"
 
 
-# ---- missing-contact flagged on CREATE, not on UPDATE (#8) ----------------
+# ---- missing-contact flagged on every append (append-only) -----------------
 
 
-def test_missing_to_contact_not_flagged_on_update(stub):
+def test_missing_to_contact_flagged_on_every_append(stub):
+    # Append-only (operator decision 2026-06-09): there is no "update" case any more — every
+    # compilation appends a new WSR row, so a job with no safety-reports contact is surfaced
+    # to the Review Queue on each compile (each unsendable row flagged, never silently lost).
     stub["list_jobs"].return_value = [_job(safety_reports_contact_email="")]
-    stub["wsr"].return_value = (123, False)  # existing WSR row (update, not create)
     weekly_generate._run_pipeline(week_start_override=ANCHOR)
-    stub["review"].assert_not_called()  # only CREATE flags a missing TO contact
+    stub["review"].assert_called_once()  # missing TO flagged
 
 
 def test_submission_with_no_box_link_excluded(stub):

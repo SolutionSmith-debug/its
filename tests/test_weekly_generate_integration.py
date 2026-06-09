@@ -7,8 +7,8 @@ EMPTY-WEEK path — which needs NO Box files and NO LLM:
   - active_jobs.list_active_jobs (patched to one sandbox job),
   - week_sheet.ensure_week_sheet (auto-provisions the per-job folder + week sheet
     under the ITS — Safety Portal workspace),
-  - week_sheet.upsert_rollup_row (the read-only Rollup snapshot row),
-  - wsr_review.upsert_row (the WSR_human_review row — the real Phase-5 review sheet).
+  - week_sheet.append_rollup_row (the read-only Rollup snapshot row — append-only),
+  - wsr_review.add_wsr_row (the WSR_human_review row — the real Phase-5 review sheet).
 
 The full Box-merge e2e (real submission PDFs → merge → packet upload) is
 deploy-gated (the next session's live smoke).

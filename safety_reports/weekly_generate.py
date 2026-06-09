@@ -8,23 +8,28 @@ Anthropic and wrote `WPR_Pending_Review`. The portal flow is DETERMINISTIC — t
 no narrative to draft and no LLM call. This module now COMPILES: for each Active job's
 Saturday→Friday week it gathers the per-submission PDFs recorded on the week sheet,
 merges them (`form_pdf.merge_pdfs`) into one weekly packet, files the packet to an
-`ITS`-prefixed Box week folder, and DUAL-WRITES:
-  (a) the week sheet's read-only **Rollup** row — a manifest snapshot of the packet;
-  (b) one **WSR_human_review** row per (job, week) — the editable Email Body (seeded
+`ITS`-prefixed Box week folder as a DISTINCT timestamped file, and APPENDS (operator
+decision 2026-06-09 — append-only, never overwrite):
+  (a) a NEW read-only **Rollup** snapshot row on the week sheet — a manifest of THIS packet;
+  (b) a NEW **WSR_human_review** row (per compilation) — the editable Email Body (seeded
       from a fixed template), the resolved Recipient TO/CC display, Send Status=PENDING.
-`weekly_send` (Phase 5c) reads the human-approved WSR row and transmits.
+A recompile NEVER overwrites a prior compilation's Box packet, Rollup row, or WSR row, so
+the master record keeps every weekly packet and the full send history. `weekly_send`
+(Phase 5c) reads the human-approved WSR row and transmits (a SENT row is never re-sent).
 
 Trigger + idempotency
 ---------------------
 - Friday 14:00 local via launchd `StartCalendarInterval` (the watchdog Check-I catch-up
   re-runs a missed Friday). `--week-start` backfills a specific week.
-- SKIP-if-already-compiled-and-no-new-docs: if a Rollup row exists and no submission
-  is newer than its `compiled_at` watermark, skip (unless the operator checked the
-  week sheet's `Compile Now` — an out-of-band recompile).
-- NEVER closes the week: a later submission + a recompile just refresh the packet +
-  the WSR Compiled-PDF link. The WSR Email Body + approval columns are NEVER touched on
-  an existing row (only a human flips approval; F22 verifies the actor).
-- Empty week → STILL writes the Rollup + WSR row (a silent skip would look like daemon
+- SKIP-if-already-compiled-and-no-new-docs: if a Rollup row exists and no submission is
+  newer than the LATEST Rollup's `compiled_at` watermark, skip (unless the operator checked
+  `Compile Now` on any Rollup row — an out-of-band recompile). The skip is what keeps
+  append-only from cluttering: a NEW packet/Rollup/WSR row is created ONLY for genuinely new
+  content (or a forced Compile Now), never on an idle re-run.
+- NEVER closes the week: a later submission + a recompile APPENDS a fresh packet + Rollup +
+  PENDING WSR row; prior compilations (incl. a SENT WSR row) are untouched (only a human
+  flips approval; F22 verifies the actor).
+- Empty week → STILL appends a Rollup + WSR row (a silent skip would look like daemon
   failure); the WSR row carries no packet, so `weekly_send` HELDs it.
 
 Capability gating (Invariant 1)
@@ -129,8 +134,17 @@ def _its_week_folder_name(week: safety_week.SafetyWeek) -> str:
     return f"ITS Week of {week.start.isoformat()} to {week.end.isoformat()}"
 
 
-def _packet_filename(project_name: str, week: safety_week.SafetyWeek) -> str:
-    return f"Weekly Safety Report — {project_name} — {week.start.isoformat()} to {week.end.isoformat()}.pdf"
+def _packet_filename(project_name: str, week: safety_week.SafetyWeek, stamp: str) -> str:
+    """Per-COMPILATION packet filename — unique per compile (`stamp` = compiled-at
+    YYYYMMDD-HHMMSS). APPEND-ONLY (operator decision 2026-06-09): each compilation files a
+    DISTINCT Box file, so a recompile NEVER overwrites the prior packet (Box is the master
+    record and must keep every weekly compilation). The unique name also means a plain
+    `upload_bytes` cannot 409 — the reason the prior code used upload_bytes_or_new_version
+    (which buried prior packets as file versions) is gone."""
+    return (
+        f"Weekly Safety Report — {project_name} — "
+        f"{week.start.isoformat()} to {week.end.isoformat()} — {stamp}.pdf"
+    )
 
 
 def _gather_submission_pdfs(
@@ -222,9 +236,13 @@ def _compile_job_week(
     workspace (find-or-create), so there is no per-project-folder config gap."""
     project_name = job.project_name
     sheet_id = week_sheet.ensure_week_sheet(project_name, week.start)
-    rollup = week_sheet.get_rollup_row(sheet_id)
+    # APPEND-ONLY (operator decision 2026-06-09): there can be MANY Rollup snapshots (one per
+    # compile). `rollup` = the LATEST (the no-new-docs watermark); `force` = Compile Now on
+    # ANY Rollup row (the trigger may sit on the latest or an older snapshot).
+    rollup_rows = week_sheet.list_rollup_rows(sheet_id)
+    rollup = rollup_rows[-1] if rollup_rows else None
     submissions = week_sheet.list_submission_rows(sheet_id, active_only=True)
-    force = week_sheet.compile_now_requested(rollup)
+    force = week_sheet.any_compile_now_requested(rollup_rows)
 
     # SKIP-if-already-compiled-and-no-new-docs (unless Compile Now forces it).
     if rollup is not None and not force:
@@ -256,18 +274,24 @@ def _compile_job_week(
     if selection is not None:
         submissions = [s for s in submissions if int(s.get("_row_id") or 0) in selection]
 
-    rollup_id = int(rollup["_row_id"]) if rollup is not None else None
-    compiled_at = _now_pacific_iso()
+    # One compiled-at instant for this compilation → the Submitted At watermark AND the
+    # unique packet-filename stamp (append-only: a distinct Box file per compile). The
+    # correlation_id suffix (per-run uuid4) guarantees uniqueness even if two compiles of the
+    # same (job, week) land in the same wall-clock second across runs — so a distinct file is
+    # ALWAYS created, never a same-name 409.
+    compiled_dt = datetime.now(ZoneInfo(DEFAULT_TZ))
+    compiled_at = compiled_dt.isoformat()
+    stamp = f"{compiled_dt.strftime('%Y%m%d-%H%M%S')}-{correlation_id[:6]}"
 
     if not submissions:
         # EMPTY WEEK — still write the Rollup + WSR row (never silently skip). No
         # packet PDF; weekly_send HELDs a WSR row with no Compiled PDF.
         summary.empty_weeks += 1
-        week_sheet.upsert_rollup_row(
+        week_sheet.append_rollup_row(
             sheet_id, packet_link="", compiled_at=compiled_at,
             manifest_note="0 submissions this week (empty-week placeholder)",
-            existing_rollup_row_id=rollup_id,
         )
+        week_sheet.clear_compile_now_on_rollups(sheet_id, rollup_rows)
         _write_wsr(job, week, packet_link="", manifest="no submissions this week",
                    summary=summary, correlation_id=correlation_id)
         return
@@ -278,12 +302,13 @@ def _compile_job_week(
     if pdfs:
         compiled = form_pdf.merge_pdfs(pdfs)
         folder_id = _ensure_its_week_folder(project_name, week, correlation_id)
-        # A recompile (Compile Now / a late submission) re-produces the SAME packet
-        # filename — `upload_bytes` 409s on that, which used to route the recompile to
-        # the Review Queue and break Compile Now (PR-G). Upload a new Box VERSION
-        # instead — preserving the packet's file-version history (system of record).
-        meta = box_client.upload_bytes_or_new_version(
-            folder_id, _packet_filename(project_name, week), compiled
+        # APPEND-ONLY (operator decision 2026-06-09): each compilation files a DISTINCT,
+        # timestamped packet, so a recompile NEVER overwrites the prior packet — Box is the
+        # master record and must keep every weekly compilation as its own file. The unique
+        # name also means a plain `upload_bytes` can't 409 (the reason the prior code used
+        # upload_bytes_or_new_version — which buried prior packets as file versions — is gone).
+        meta = box_client.upload_bytes(
+            folder_id, _packet_filename(project_name, week, stamp), compiled
         )
         packet_link = f"https://app.box.com/file/{meta['id']}"
         # Count ONLY a real packet (≥1 PDF merged + uploaded). The all-failed
@@ -303,10 +328,11 @@ def _compile_job_week(
         f"{len(submissions)} submissions ({len(pdfs)} in packet): "
         f"{', '.join(manifest_parts)}; compiled {compiled_at}"
     )
-    rollup_row_id = week_sheet.upsert_rollup_row(
+    rollup_row_id = week_sheet.append_rollup_row(
         sheet_id, packet_link=packet_link, compiled_at=compiled_at,
-        manifest_note=manifest_note, existing_rollup_row_id=rollup_id,
+        manifest_note=manifest_note,
     )
+    week_sheet.clear_compile_now_on_rollups(sheet_id, rollup_rows)
     wsr_row_id = _write_wsr(job, week, packet_link=packet_link, manifest=manifest_note,
                             summary=summary, correlation_id=correlation_id)
 
@@ -316,7 +342,7 @@ def _compile_job_week(
     # Compiled-PDF link cells are unchanged). Best-effort + only when a real packet
     # exists (an empty / all-downloads-failed week has no packet to attach).
     if compiled is not None:
-        packet_name = _packet_filename(project_name, week)
+        packet_name = _packet_filename(project_name, week, stamp)
         _attach_pdf_best_effort(sheet_id, rollup_row_id, packet_name, compiled, correlation_id)
         _attach_pdf_best_effort(wsr_review.SHEET_ID, wsr_row_id, packet_name, compiled, correlation_id)
 
@@ -378,7 +404,7 @@ def _write_wsr(
         job_name=job.project_name,
         evergreen_contact=evergreen,
     )
-    _row_id, created = wsr_review.upsert_row(
+    _row_id = wsr_review.add_wsr_row(
         wsr_review.SHEET_ID,
         job_project=job.project_name,
         job_id=job.job_id,
@@ -390,8 +416,10 @@ def _write_wsr(
         notes=manifest,
     )
     summary.wsr_written += 1
-    if created and not to_display:
+    if not to_display:
         # No safety-reports contact on the job → weekly_send will HELD it. Surface now.
+        # (Append-only: this fires per compilation that lacks a TO — each unsendable
+        # compilation row is surfaced; compiles only happen on genuinely new content.)
         review_queue.add(
             workstream=WORKSTREAM,
             summary=f"weekly compile: job {job.job_id} ({job.project_name}) has no safety-reports contact (TO) for week {week.start}",
