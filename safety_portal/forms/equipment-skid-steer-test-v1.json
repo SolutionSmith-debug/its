@@ -1,0 +1,239 @@
+{
+  "form_code": "equipment-skid-steer-test-v1",
+  "parent_form_code": "equipment-preinspection",
+  "form_name": "Equipment Pre-Inspection \u2014 Skid Steer",
+  "variant_label": "Skid Steer Test",
+  "version": 1,
+  "archetype": "grouped_checklist",
+  "source_pdf": "",
+  "branding": {
+    "logo": true,
+    "title": "Skid Steer Daily Pre-Inspection Checklist"
+  },
+  "sections": [
+    {
+      "type": "header",
+      "fields": [
+        {
+          "key": "work_date",
+          "label": "DATE",
+          "input": "date",
+          "required": true
+        },
+        {
+          "key": "unit",
+          "label": "UNIT",
+          "input": "text"
+        },
+        {
+          "key": "operator",
+          "label": "OPERATOR",
+          "input": "text",
+          "required": true
+        },
+        {
+          "key": "operator_signature",
+          "label": "OPERATOR'S SIGNATURE",
+          "input": "signature"
+        }
+      ]
+    },
+    {
+      "type": "checklist",
+      "key": "inspection",
+      "groups": [
+        {
+          "key": "before_startup",
+          "label": "CHECK BEFORE ENGINE START-UP",
+          "scale": [
+            "OK",
+            "NOT OK",
+            "N/A"
+          ],
+          "comment_per_item": false,
+          "items": [
+            {
+              "key": "bs_bucket",
+              "label": "BUCKET"
+            },
+            {
+              "key": "bs_cutting_edge",
+              "label": "CUTTING EDGE"
+            },
+            {
+              "key": "bs_mirror_windows",
+              "label": "MIRROR/WINDOWS"
+            },
+            {
+              "key": "bs_windshield",
+              "label": "WINDSHIELD"
+            },
+            {
+              "key": "bs_tires",
+              "label": "TIRES (CUTS, WEAR, PRESSURE, LUGS)"
+            },
+            {
+              "key": "bs_tracks",
+              "label": "TRACKS (IF LOADER)"
+            },
+            {
+              "key": "bs_ladder_handles",
+              "label": "LADDER/GRAB HANDLES"
+            },
+            {
+              "key": "bs_hyd_cyl_lines",
+              "label": "HYDRAULIC CYLINDER LINES"
+            },
+            {
+              "key": "bs_hyd_level",
+              "label": "HYDRAULIC LEVEL"
+            },
+            {
+              "key": "bs_leaks_exterior",
+              "label": "LEAKS \u2013 EXTERIOR"
+            },
+            {
+              "key": "bs_fops_rops",
+              "label": "FOPS/ROPS"
+            },
+            {
+              "key": "bs_engine_oil",
+              "label": "ENGINE OIL"
+            },
+            {
+              "key": "bs_coolant",
+              "label": "COOLANT"
+            },
+            {
+              "key": "bs_belts",
+              "label": "BELTS"
+            },
+            {
+              "key": "bs_air_filter",
+              "label": "AIR FILTER"
+            },
+            {
+              "key": "bs_next_oil_change",
+              "label": "NEXT OIL CHANGE \u2014 HOURS",
+              "kind": "numeric"
+            },
+            {
+              "key": "bs_leaks_motor",
+              "label": "LEAKS - MOTOR"
+            }
+          ]
+        },
+        {
+          "key": "after_startup",
+          "label": "CHECK AFTER START-UP",
+          "scale": [
+            "OK",
+            "NOT OK",
+            "N/A"
+          ],
+          "comment_per_item": false,
+          "items": [
+            {
+              "key": "as_owner_manual",
+              "label": "OWNER MANUAL"
+            },
+            {
+              "key": "as_seat_bar",
+              "label": "SEAT BAR"
+            },
+            {
+              "key": "as_seat_belt",
+              "label": "SEAT BELT"
+            },
+            {
+              "key": "as_park_brake",
+              "label": "PARK BRAKE"
+            },
+            {
+              "key": "as_vibrations",
+              "label": "VIBRATIONS"
+            },
+            {
+              "key": "as_engine_noise",
+              "label": "ENGINE NOISE"
+            },
+            {
+              "key": "as_horn",
+              "label": "HORN"
+            },
+            {
+              "key": "as_bucket_tilt",
+              "label": "BUCKET/ATTACHMENT \u2013 TILT UP/DOWN"
+            },
+            {
+              "key": "as_lift_arm",
+              "label": "LIFT ARM \u2013 UP/DOWN"
+            },
+            {
+              "key": "as_steering",
+              "label": "STEERING"
+            },
+            {
+              "key": "as_forward",
+              "label": "FORWARD"
+            },
+            {
+              "key": "as_reverse",
+              "label": "REVERSE"
+            },
+            {
+              "key": "as_backup_alarm",
+              "label": "BACKUP ALARM"
+            },
+            {
+              "key": "as_transmission_noise",
+              "label": "TRANSMISSION NOISE"
+            },
+            {
+              "key": "as_lights",
+              "label": "LIGHTS"
+            },
+            {
+              "key": "as_fuel",
+              "label": "FUEL",
+              "kind": "circle_one",
+              "options": [
+                "1/4",
+                "1/2",
+                "3/4",
+                "Full"
+              ]
+            },
+            {
+              "key": "as_hours",
+              "label": "HOURS ON MACHINE",
+              "kind": "numeric"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "freeform",
+      "key": "maintenance_done",
+      "label": "DESCRIBE MAINTENANCE DONE",
+      "input": "textarea"
+    },
+    {
+      "type": "freeform",
+      "key": "maintenance_required",
+      "label": "DESCRIBE MAINTENANCE REQUIRED",
+      "input": "textarea"
+    },
+    {
+      "type": "static_text",
+      "text": "Report any problems found to your supervisor/employer. ALWAYS lock/tag-out unsafe equipment.",
+      "emphasis": "legal"
+    },
+    {
+      "type": "static_text",
+      "text": "This is just a test to retire after complete",
+      "emphasis": "heading"
+    }
+  ]
+}
