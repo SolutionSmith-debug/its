@@ -414,10 +414,13 @@ def test_inactive_job_routes_to_orphaned_reports_when_enabled(orphan_on):
     orphan_on["review"].assert_not_called()
 
 
-def test_orphan_falls_back_to_review_when_disabled(stub):
-    # Part C OFF (SHEET_ORPHANED_REPORTS=0 default) → the generic Review Queue (pre-Part-C).
+def test_orphan_falls_back_to_review_when_disabled(stub, mocker):
+    # Part C OFF → the generic Review Queue (pre-Part-C). EXPLICITLY pin SHEET_ORPHANED_REPORTS
+    # to 0 — never rely on the module default, which the operator FLIPS at activation (a stale
+    # coupling to that default red-CI'd the activation PR #235).
+    mocker.patch.object(intake.sheet_ids, "SHEET_ORPHANED_REPORTS", 0)
     stub["get_job"].return_value = None
-    stub["box_root"].return_value = "boxroot1"  # box root set, but sheet id still 0 → OFF
+    stub["box_root"].return_value = "boxroot1"  # box root set, but sheet id 0 → OFF
     result = intake.process_portal_submission(dict(BASE_SUB))
     stub["review"].assert_called_once()
     assert result.status == "review_queue"
