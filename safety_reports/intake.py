@@ -136,6 +136,7 @@ from shared import (
     project_routing,
     quarantine,
     review_queue,
+    sheet_ids,
     smartsheet_client,
     trusted_contacts,
     untrusted_content,
@@ -1609,6 +1610,117 @@ def _portal_review(
     )
 
 
+# ---- Orphaned Reports (Part C) — job-orphan routing -----------------------
+# A submission whose job is unknown/inactive can't file to a week sheet. Instead of the
+# generic Review Queue, JOB-orphans get a dedicated Orphaned Reports sheet + Box folder so
+# the operator can re-home or discard them. Column titles mirror
+# scripts/migrations/build_orphaned_reports_sheet.py.
+_OR_COL_UUID = "Submission UUID"
+_OR_COL_JOB_ID = "Job ID"
+_OR_COL_FORM_CODE = "Form Code"
+_OR_COL_WORK_DATE = "Work Date"
+_OR_COL_SUBMITTED_AT = "Submitted At"
+_OR_COL_ACTOR = "Actor"
+_OR_COL_SUBMITTED_AS = "Submitted As"
+_OR_COL_REASON = "Reason"
+_OR_COL_BOX_LINK = "Box Link"
+_OR_COL_STATUS = "Status"
+_OR_COL_NOTES = "Notes"
+
+
+def _orphaned_reports_enabled() -> bool:
+    """Part C is ON only when the operator has flipped SHEET_ORPHANED_REPORTS (built the sheet)
+    AND the portal Box root is configured. OFF → orphans fall back to the Review Queue (the
+    pre-Part-C behaviour), so MERGING Part C changes nothing live until the operator activates."""
+    return sheet_ids.SHEET_ORPHANED_REPORTS != 0 and bool(_portal_box_root())
+
+
+def _orphaned_reports_box_folder() -> str:
+    """Find-or-create the "Orphaned Reports" Box folder under the portal Box root (mirrors how
+    the per-submission mirror tree resolves folders, PR-K). A BoxError propagates → the caller
+    (process_portal_submission) maps it to a transient 'error' so the orphan re-pulls."""
+    return box_client.get_or_create_folder(_portal_box_root(), "Orphaned Reports")
+
+
+def _portal_orphan(
+    submission: dict[str, Any],
+    *,
+    machine_reason: str,   # "job_not_found" | "job_inactive"
+    summary: str,
+    correlation_id: str,
+) -> ProcessResult:
+    """Route a JOB-orphan portal submission (unknown / inactive job) to the dedicated Orphaned
+    Reports sheet + Box folder instead of the generic Review Queue. SEND-FREE (no email, no AI).
+
+    Config-gated: if Part C is not activated, fall back to _portal_review (pre-Part-C behaviour).
+    Renders the submission PDF (data is in hand), files it to the Orphaned Reports Box folder
+    (version-on-conflict via _file_portal_pdf), and writes one Orphaned Reports row (Status=
+    Pending). A STRUCTURALLY-bad submission (unknown form / malformed payload / render failure)
+    is NOT a clean orphan → Review Queue, not Orphaned Reports. Drains (filed; re-pull can't fix).
+    A transient Box/Smartsheet error RAISES → process_portal_submission maps it to 'error' (re-pull)."""
+    submission_uuid = str(submission.get("submission_uuid") or "")
+    if not _orphaned_reports_enabled():
+        return _portal_review(
+            submission, machine_reason=machine_reason, summary=summary,
+            reason=review_queue.ReviewReason.AMBIGUOUS_CLASSIFICATION,
+            correlation_id=correlation_id,
+        )
+
+    job_id = str(submission.get("job_id") or "").strip()
+    form_code = str(submission.get("form_code") or "").strip()
+    work_date_raw = str(submission.get("work_date") or "").strip()
+
+    definition = form_pdf.load_definition(form_code)
+    try:
+        values = json.loads(submission.get("payload_json") or "")
+    except (json.JSONDecodeError, TypeError):
+        values = None
+    if definition is None or not isinstance(values, dict):
+        return _portal_review(
+            submission, machine_reason=f"{machine_reason}_unrenderable", summary=summary,
+            reason=review_queue.ReviewReason.STRUCTURED_OUTPUT_EDGE,
+            correlation_id=correlation_id, severity=Severity.ERROR,
+        )
+    render_submission = {"job_name": f"(orphan: job {job_id})", "work_date": work_date_raw, "values": values}
+    try:
+        pdf = form_pdf.render_submission_pdf(definition, render_submission)
+    except Exception as exc:  # noqa: BLE001 — a render failure must surface, not crash
+        return _portal_review(
+            submission, machine_reason=f"{machine_reason}_render_failed",
+            summary=f"{summary} (render failed: {exc!r})",
+            reason=review_queue.ReviewReason.STRUCTURED_OUTPUT_EDGE,
+            correlation_id=correlation_id, severity=Severity.ERROR,
+        )
+
+    parent_form_code = str(definition.get("parent_form_code") or form_code)
+    folder_id = _orphaned_reports_box_folder()
+    box_link = _file_portal_pdf(folder_id, work_date_raw, parent_form_code, submission_uuid, pdf)
+
+    smartsheet_client.add_rows(sheet_ids.SHEET_ORPHANED_REPORTS, [{
+        _OR_COL_UUID: submission_uuid,
+        _OR_COL_JOB_ID: job_id,
+        _OR_COL_FORM_CODE: form_code,
+        _OR_COL_WORK_DATE: work_date_raw,
+        _OR_COL_SUBMITTED_AT: _portal_submitted_at_pacific(submission.get("created_at")),
+        _OR_COL_ACTOR: str(submission.get("actor_username") or ""),
+        _OR_COL_SUBMITTED_AS: str(submission.get("submitted_as") or ""),
+        _OR_COL_REASON: machine_reason,
+        _OR_COL_BOX_LINK: box_link,
+        _OR_COL_STATUS: "Pending",
+        _OR_COL_NOTES: summary,
+    }])
+    error_log.log(
+        Severity.WARN, SCRIPT_NAME,
+        f"portal: orphan ({machine_reason}) → Orphaned Reports submission_uuid={submission_uuid}",
+        error_code=f"portal_orphan_{machine_reason}", correlation_id=correlation_id,
+    )
+    return ProcessResult(
+        status="review_queue",  # drain-eligible: filed to Orphaned Reports, re-pull can't fix
+        message_id=submission_uuid, correlation_id=correlation_id,
+        notes=f"orphan:{machine_reason} → Orphaned Reports", box_link=box_link,
+    )
+
+
 def process_portal_submission(submission: dict[str, Any]) -> ProcessResult:
     """Process one HMAC-verified portal submission (Phase-5 pull path).
 
@@ -1708,19 +1820,28 @@ def _run_portal_pipeline(
         )
 
     # Resolve the job (deny-by-default: unknown or not-Active → refuse, never file).
-    job = active_jobs.get_job(job_id)
-    if job is None:
+    if not job_id:
+        # An EMPTY Job ID is a marker-less / malformed submission, NOT an orphan of a known
+        # job (brief C3 split) → the generic Review Queue, never Orphaned Reports.
         return _portal_review(
-            submission, machine_reason="job_not_found",
-            summary=f"portal: unknown job_id={job_id!r} (submission {submission_uuid})",
+            submission, machine_reason="no_job_id",
+            summary=f"portal: empty job_id (submission {submission_uuid})",
             reason=review_queue.ReviewReason.AMBIGUOUS_CLASSIFICATION,
             correlation_id=correlation_id,
         )
+    job = active_jobs.get_job(job_id)
+    if job is None:
+        # JOB-orphan (unknown job) → dedicated Orphaned Reports, not the generic Review Queue
+        # (Part C). Config-gated: falls back to the Review Queue until the operator activates.
+        return _portal_orphan(
+            submission, machine_reason="job_not_found",
+            summary=f"portal: unknown job_id={job_id!r} (submission {submission_uuid})",
+            correlation_id=correlation_id,
+        )
     if not job.is_active:
-        return _portal_review(
+        return _portal_orphan(
             submission, machine_reason="job_inactive",
             summary=f"portal: inactive job_id={job_id!r} status={job.active_status!r} (submission {submission_uuid})",
-            reason=review_queue.ReviewReason.AMBIGUOUS_CLASSIFICATION,
             correlation_id=correlation_id,
         )
     project_name = job.project_name
