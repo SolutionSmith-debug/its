@@ -205,8 +205,16 @@ def _compile_job_week(
     week: safety_week.SafetyWeek,
     summary: RunSummary,
     correlation_id: str,
+    *,
+    selection: set[int] | None = None,
 ) -> None:
     """Compile one (job, week): merge → file → dual-write Rollup + WSR.
+
+    `selection` (Part B / on-demand compile) narrows the PACKET to the given submission row
+    IDs; None (the Friday run + a default Compile Now) = the full week. The narrowing applies
+    to the merged packet only — the no-new-docs skip below still reads the FULL set (a
+    selection narrows what is compiled, not whether anything changed). Behaviour is IDENTICAL
+    to before when selection is None.
 
     Raises SmartsheetError / BoxError on transient infra failure (the per-job fence
     in _run_pipeline catches + routes to the Review Queue). A brand-new job
@@ -242,6 +250,11 @@ def _compile_job_week(
                 correlation_id=correlation_id,
             )
             return
+
+    # Part B: narrow the packet to the explicit selection (default-all when None). Placed
+    # AFTER the skip check, which intentionally read the full set.
+    if selection is not None:
+        submissions = [s for s in submissions if int(s.get("_row_id") or 0) in selection]
 
     rollup_id = int(rollup["_row_id"]) if rollup is not None else None
     compiled_at = _now_pacific_iso()
