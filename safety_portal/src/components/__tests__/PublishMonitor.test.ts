@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { fmtTime } from "../PublishMonitor";
+import { fmtTime, stepsForOp } from "../PublishMonitor";
 
 // D3 regression: publish_requests timestamps are unix SECONDS (migration 0010 `unixepoch()`).
 // The monitor's old fmtTime did `new Date(seconds)`, which Date reads as MILLISECONDS, so a
@@ -18,5 +18,27 @@ describe("fmtTime (publish monitor timestamps)", () => {
 
   it("falls back to the raw value when unparseable", () => {
     expect(fmtTime("not-a-date")).toBe("not-a-date");
+  });
+});
+
+// A Retire (op=delete) reuses the status machine but reads differently: nothing goes "Live"
+// and the form is NOT deleted from the Box archive, so the last two steps are relabelled.
+describe("stepsForOp (operation-aware stepper labels)", () => {
+  const labels = (op: Parameters<typeof stepsForOp>[0]) => stepsForOp(op).map((s) => s.label);
+
+  it("relabels the last two steps for a Retire (delete): no 'Live'/'Archived'", () => {
+    expect(labels("delete")).toEqual(["Queued", "Validated", "Tested", "Removed", "Done"]);
+  });
+
+  it("keeps the publish labels for create/edit/add_version/rollback", () => {
+    for (const op of ["create", "edit", "add_version", "rollback"] as const) {
+      expect(labels(op)).toEqual(["Queued", "Validated", "Tested", "Live", "Archived"]);
+    }
+  });
+
+  it("keeps keys/length aligned with STATUS_INDEX across ops (so the stepper index still maps)", () => {
+    const keys = (op: Parameters<typeof stepsForOp>[0]) => stepsForOp(op).map((s) => s.key);
+    expect(keys("delete")).toEqual(keys("create"));
+    expect(stepsForOp("delete")).toHaveLength(5);
   });
 });
