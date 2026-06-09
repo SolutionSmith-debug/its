@@ -37,7 +37,7 @@
         {
           "identity": "equipment-skid-steer-test",
           "variant_label": "Skid Steer Test",
-          "status": "active",
+          "status": "retired",
           "current_version": 1,
           "current_form_code": "equipment-skid-steer-test-v1",
           "versions": [
