@@ -234,3 +234,12 @@ export async function fetchPublishStatus(): Promise<PublishRequest[]> {
   if (!res.ok) throw new Error("Could not load publish status.");
   return ((await res.json()) as { requests: PublishRequest[] }).requests;
 }
+
+/** Clear all TERMINAL (archived / failed) publish requests from the monitor. Returns the
+ *  count cleared. In-flight publishes are never touched (the Worker deletes only finished). */
+export async function dismissFinishedPublishes(): Promise<number> {
+  const res = await postJson("/api/admin/publish-dismiss");
+  if (res.status === 403) throw new AdminError("forbidden", 403);
+  if (!res.ok) throw new Error("Could not clear finished publishes.");
+  return ((await res.json()) as { cleared?: number }).cleared ?? 0;
+}

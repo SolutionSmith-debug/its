@@ -236,3 +236,53 @@ export function validateDefinition(def: unknown, ctx: DefinitionContext): Valida
   }
   return { ok: true };
 }
+
+// ── catalog-level parent grouping (mirrors apply_publish's variant-mixing rule) ──────
+// A "form type" (parent) is EITHER one standalone (no-variant) form OR a set of named
+// variants — never a mix. validateDefinition checks ONE definition in isolation and can't
+// see this; checked here against the DEPLOYED manifest (== live, since the daemon redeploys
+// after each publish). The daemon re-checks against live git HEAD authoritatively (C3) —
+// this is the enqueue-time guard so a doomed create/add-version is rejected with a clear
+// reason instead of queuing + failing at the daemon.
+
+interface ManifestForm {
+  variant_label: string | null;
+  status: string;
+}
+interface ManifestParent {
+  parent_form_code: string;
+  forms: ManifestForm[];
+}
+export interface CatalogManifest {
+  parents: ManifestParent[];
+}
+
+/** For a create / add_version, reject if adding the form to its parent would mix a
+ * standalone (null-variant) form with variant forms, or collide on a variant label. A
+ * brand-new parent is always fine (it becomes a new form type). */
+export function validateParentGrouping(
+  manifest: CatalogManifest,
+  parentFormCode: string,
+  variantLabel: string | null | undefined,
+): ValidationResult {
+  const parent = manifest.parents.find((p) => p.parent_form_code === parentFormCode);
+  if (!parent) return { ok: true };
+  const active = parent.forms.filter((f) => f.status === "active");
+  if (active.length === 0) return { ok: true };
+  if (active.some((f) => f.variant_label === null)) {
+    return fail(
+      `form type '${parentFormCode}' already has a standalone form — give this a new form ` +
+        `type, or pick a form type that uses variants`,
+    );
+  }
+  const label = variantLabel ?? null;
+  if (label === null) {
+    return fail(
+      `form type '${parentFormCode}' uses variants — give this form a variant label, or use a new form type`,
+    );
+  }
+  if (active.some((f) => f.variant_label === label)) {
+    return fail(`form type '${parentFormCode}' already has a '${label}' variant — choose a different label`);
+  }
+  return { ok: true };
+}

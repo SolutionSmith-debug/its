@@ -12,7 +12,7 @@ import {
   toClonedDraft,
   toEditDraft,
 } from "../forms/editorModel";
-import { validateDraft } from "../forms/editorValidation";
+import { validateDraft, checkParentGrouping } from "../forms/editorValidation";
 import * as api from "../lib/api";
 
 /**
@@ -151,8 +151,16 @@ export function FormsPage({ tabBar }: { tabBar: ReactNode }) {
 
   const clientErrors = useMemo(() => {
     if (!draft || !editorOp) return [];
-    return validateDraft(draft, { identity, parentFormCode: parent });
-  }, [draft, editorOp, identity, parent]);
+    const errs = validateDraft(draft, { identity, parentFormCode: parent });
+    // create/add_version add a NEW form to the parent → guard the catalog grouping rule
+    // up front (edit bumps an existing identity, so its grouping is unchanged). This is
+    // the rule that previously only surfaced at the daemon as a failed publish.
+    if (editorOp === "create" || editorOp === "add_version") {
+      const g = checkParentGrouping(catalog, parent, draft.variant_label ?? null);
+      if (g) errs.push(g);
+    }
+    return errs;
+  }, [draft, editorOp, identity, parent, catalog]);
 
   async function onPublish() {
     if (!draft || !editorOp) return;
