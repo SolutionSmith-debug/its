@@ -41,7 +41,11 @@ import { validateDefinition } from "./publishValidation";
 // ─────────────────────────────────────────────────────────────────────────────
 
 const COOKIE = "its_portal_session";
-const MAX_AGE_S = 60 * 60 * 24 * 90; // 90-day session (safety-portal/mission.md §3 — long-lived, no idle timeout)
+const MAX_AGE_S = 60 * 60 * 24 * 90; // 90-day session for submitters (field convenience)
+// Admins get a 5-minute IDLE window (slice 8b, C10): a SLIDING cookie re-issued on each
+// active request, so an idle (or captured) admin cookie dies at 5 min regardless. The SPA
+// pings on activity to keep an actively-used session alive (and logs out proactively at idle).
+const ADMIN_IDLE_S = 5 * 60;
 
 const app = new Hono<{ Bindings: Env; Variables: Vars }>();
 
@@ -207,7 +211,8 @@ app.post("/api/login", async (c) => {
     secure: new URL(c.req.url).protocol === "https:",
     sameSite: "Lax",
     path: "/",
-    maxAge: MAX_AGE_S,
+    // Admins start on the short idle window immediately; submitters keep 90 days (8b/C10).
+    maxAge: user.role === "admin" ? ADMIN_IDLE_S : MAX_AGE_S,
   });
   // `role` lets the SPA decide whether to render the admin tabs. It is display-only
   // hinting — every admin action is independently re-gated server-side (requireRole).
@@ -271,7 +276,26 @@ const requireSession = createMiddleware<{ Bindings: Env; Variables: Vars }>(asyn
     return c.json({ error: "unauthenticated" }, 401);
   }
 
-  c.set("session", claims);
+  // Admin 5-min idle timeout (slice 8b, C10) — a SLIDING window. An admin cookie idle
+  // past ADMIN_IDLE_S is rejected (a captured admin cookie dies at 5 min); an ACTIVE admin
+  // request SLIDES the window by re-issuing the cookie with a fresh iat + 5-min maxAge.
+  // Submitters keep the 90-day session. (The MAX_AGE check above already ran; this is the
+  // tighter admin window on top, and is authoritative regardless of the cookie's maxAge —
+  // a captured cookie whose browser-maxAge was tampered still dies via this iat check.)
+  let sessionClaims = claims;
+  if (role === "admin") {
+    if (ageS > ADMIN_IDLE_S) return c.json({ error: "idle" }, 401);
+    sessionClaims = { ...claims, iat: Math.floor(Date.now() / 1000) };
+    await setSignedCookie(c, COOKIE, JSON.stringify(sessionClaims), c.env.SESSION_SIGNING_SECRET, {
+      httpOnly: true,
+      secure: new URL(c.req.url).protocol === "https:",
+      sameSite: "Lax",
+      path: "/",
+      maxAge: ADMIN_IDLE_S,
+    });
+  }
+
+  c.set("session", sessionClaims);
   c.set("role", role);
   await next();
 });
