@@ -228,8 +228,12 @@ describe("parent-grouping guard at enqueue (mirrors apply_publish)", () => {
   it("allows a create under a brand-new form type (201)", async () => {
     await provision("admin.one", "admin");
     const cookie = await login("admin.one");
+    // validateParentGrouping reads the BUNDLED catalog.json (worker/index.ts), so the
+    // "brand-new type" must be a name that no real form will ever publish — else a future
+    // publish of that parent makes this 201 become a 400 and self-defeats the gate (the same
+    // live-catalog coupling that req-8's "incident-report" exposed in test_publish_manifest).
     const res = await callApi("/api/admin/publish", {
-      method: "POST", cookie, body: JSON.stringify(createUnder("incident", "incident", null)),
+      method: "POST", cookie, body: JSON.stringify(createUnder("zztest-brand-new-type", "zztest-brand-new-type", null)),
     });
     expect(res.status, await res.clone().text()).toBe(201);
   });
