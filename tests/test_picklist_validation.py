@@ -135,6 +135,17 @@ def test_registry_wpr_send_status_matches_pr68_picklist():
     assert REGISTRY[sheet_ids.SHEET_WPR_PENDING_REVIEW]["Send Status"] == expected
 
 
+def test_registry_wsr_send_status_includes_sending():
+    """WSR's Send Status adds the SENDING write-ahead marker (PR #247) to the WPR set. Without
+    it, weekly_send's pre-send SENDING write raises PicklistViolationError and the send is
+    blocked (the weekly_send_poll DEGRADED regression this fixes); WPR keeps the narrower set."""
+    allowed = REGISTRY[sheet_ids.SHEET_WSR_HUMAN_REVIEW]["Send Status"]
+    assert allowed == {"PENDING", "SENT", "FAILED", "HELD", "SENDING"}
+    # Regression guard: the value that was being rejected on the live send path.
+    from shared import picklist_validation
+    picklist_validation.validate_cell(sheet_ids.SHEET_WSR_HUMAN_REVIEW, "Send Status", "SENDING")
+
+
 # ---- Error formatting + integer-cast safety ------------------------------
 
 
