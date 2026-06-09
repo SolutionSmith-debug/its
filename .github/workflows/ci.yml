@@ -92,6 +92,13 @@ jobs:
       - name: Worker tests (vitest-pool-workers — real workerd + D1)
         run: npm test
 
+      - name: SPA render-smoke (vitest + jsdom — third renderer, brief C5)
+        # Renders every ACTIVE catalog form through the SPA <FormRenderer/> and asserts
+        # NON-DEGRADED DOM — the third leg of the render-smoke net (the two Python
+        # renderers are covered by tests/test_render_smoke.py in the `test` job). Runs
+        # in jsdom (a separate vitest config from the workerd worker pool above).
+        run: npm run test:spa
+
   # Secret-scanning gate. BLOCKING (unlike the propose-only doc/drift steps) —
   # a committed secret must stop the merge. Separate job so it runs in parallel
   # with `test` and surfaces as its own PR check. Uses the pinned gitleaks
