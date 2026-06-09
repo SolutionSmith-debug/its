@@ -182,6 +182,15 @@ def test_delete_retires_identity() -> None:
     assert "jha-v1" not in active
 
 
+def test_delete_already_retired_rejected() -> None:
+    # First retire flips jha active -> retired.
+    retired, _, _ = apply_publish(FIXTURE, op="delete", identity="jha", parent_form_code="jha")
+    # Re-retiring is a no-op mutation — it must be rejected at the validate stage, NOT reach
+    # the daemon's `git commit` (which exits 1 on the empty diff). Regression for req-15.
+    with pytest.raises(PublishApplyError, match="already retired"):
+        apply_publish(retired, op="delete", identity="jha", parent_form_code="jha")
+
+
 def test_rollback_re_promotes_a_prior_version() -> None:
     # First bump jha to v2, then roll back to v1.
     m2, _, _ = apply_publish(FIXTURE, op="edit", identity="jha", parent_form_code="jha",

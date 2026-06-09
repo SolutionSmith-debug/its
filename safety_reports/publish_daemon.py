@@ -272,6 +272,13 @@ def _commit_test_merge(request_id: int, identity: str, note: str) -> None:
                    capture_output=True, text=True)
     _git("checkout", "-b", branch)
     _git("add", "safety_portal/catalog.json", "safety_portal/forms")
+    # Defensive: a no-op apply (manifest already in the target state — e.g. retiring an
+    # already-retired form, or a rollback to the current version) stages nothing, and an
+    # unconditional `git commit` then exits 1 with a confusing "nothing added to commit /
+    # untracked files present" message. Surface a clean reason instead. (apply_publish
+    # rejects the common already-retired case earlier at validate; this is the backstop.)
+    if subprocess.run(["git", "-C", str(_ROOT), "diff", "--cached", "--quiet"]).returncode == 0:
+        raise RuntimeError("no catalog/forms change to publish (manifest already in target state)")
     _git("commit", "-m", f"chore(safety-portal): publish {note} (req {request_id})")
     _git("push", "-u", "origin", branch)
     _gh("pr", "create", "--fill", "--head", branch)

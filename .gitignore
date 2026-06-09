@@ -18,6 +18,10 @@ htmlcov/
 .vscode/
 .idea/
 
+# Local render output of scripts/generate_form_archive.py (the publish daemon's archive
+# step writes here on every cycle, even in --upload mode; the canonical copy is in Box).
+/form_archive_out/
+
 # ITS-specific
 logs/*.log
 logs/**/*.log
