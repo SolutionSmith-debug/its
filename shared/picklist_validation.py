@@ -89,6 +89,15 @@ _WPR_SEND_STATUS_VALUES: frozenset[str] = frozenset({
     "PENDING", "SENT", "FAILED", "HELD",
 })
 
+# WSR_human_review Send Status = the WPR set PLUS `SENDING` — the write-ahead intent marker
+# weekly_send flips the row to immediately BEFORE the irreversible Graph send (PR #247), then
+# to SENT. SENDING is NOT a poller dispatch candidate, so a post-send stamp failure leaves the
+# row in SENDING and it is never re-sent (no double-send). This registry gates every
+# update_rows, so SENDING MUST be allowed here or the marker write raises PicklistViolationError
+# and the send is blocked — the regression this fixes (weekly_send_poll went DEGRADED, approved
+# reports could not send). WPR (decommissioned) never writes SENDING, so it keeps the old set.
+_WSR_SEND_STATUS_VALUES: frozenset[str] = _WPR_SEND_STATUS_VALUES | frozenset({"SENDING"})
+
 # ITS_Quarantine disposition (operator review action). Not yet a picklist
 # in the live sheet — adding here so writes from `shared/quarantine.py`
 # (when it grows a disposition write path) are validated client-side
@@ -160,11 +169,11 @@ REGISTRY: dict[int, dict[str, frozenset[str]]] = {
     sheet_ids.SHEET_WPR_PENDING_REVIEW: {
         "Send Status": _WPR_SEND_STATUS_VALUES,
     },
-    # WSR_human_review (Phase-5 portal review surface) — same Send Status picklist
-    # as WPR (PENDING/SENT/FAILED/HELD). Supersedes WPR for the portal flow; both
-    # stay registered until the WPR sheet itself is operator-deleted (PR4 cleanup).
+    # WSR_human_review (Phase-5 portal review surface) — Send Status is the WPR set PLUS the
+    # SENDING write-ahead marker (PR #247; see _WSR_SEND_STATUS_VALUES). Supersedes WPR for the
+    # portal flow; both stay registered until the WPR sheet itself is operator-deleted.
     sheet_ids.SHEET_WSR_HUMAN_REVIEW: {
-        "Send Status": _WPR_SEND_STATUS_VALUES,
+        "Send Status": _WSR_SEND_STATUS_VALUES,
     },
 }
 
