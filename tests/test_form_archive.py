@@ -195,26 +195,67 @@ def test_script_definition_paths_match_registry_glob() -> None:
     assert all(p.name != "meta-schema.json" for p in paths)
 
 
-def test_script_filename_by_form_name() -> None:
+def test_script_filename_by_form_id() -> None:
     mod = _load_script()
-    assert mod._blank_pdf_filename("Job Hazard Analysis") == "Job Hazard Analysis (fillable).pdf"
-    # `/` (a Box path separator) is sanitized.
-    assert "/" not in mod._blank_pdf_filename("A/B Form")
+    # Keyed by the UNIQUE definition id (the forms/<id>.json stem), NOT the human
+    # form_name — so two definitions that share a form_name (a version bump, or a
+    # same-named variant) never collide in the archive. See the regression below.
+    assert mod._blank_pdf_filename("jha-v2") == "jha-v2 (fillable).pdf"
+    assert (mod._blank_pdf_filename("equipment-skid-steer-test-v1")
+            == "equipment-skid-steer-test-v1 (fillable).pdf")
+    # `/` (a Box path separator) is sanitized defensively (a stem can't contain one).
+    assert "/" not in mod._blank_pdf_filename("a/b")
 
 
 def test_script_render_only_writes_all_pdfs(tmp_path, monkeypatch) -> None:
     """Default mode renders the cover + every form to the out dir and touches NO Box.
     If anything tried to import box_client/smartsheet at render-time this would surface
-    as a real network attempt — render-only must stay pure."""
+    as a real network attempt — render-only must stay pure.
+
+    The count holds dynamically: each definition is named by its unique id (stem), so
+    one PDF lands per def + the cover, regardless of duplicate form_names. (Before the
+    id-keyed fix this assertion red-CI'd every version-bump / same-named-variant publish
+    — the file count came up one short — which blocked the publish daemon's merge gate.)
+    """
     mod = _load_script()
     out = tmp_path / "out"
     rc = mod.main(["--out-dir", str(out)])
     assert rc == 0
     pdfs = sorted(out.glob("*.pdf"))
-    assert len(pdfs) == len(DEF_PATHS) + 1  # one per form + the cover (dynamic count)
+    assert len(pdfs) == len(DEF_PATHS) + 1  # one per form (unique id) + the cover
     assert any(p.name.startswith("00") for p in pdfs)  # cover sorts first
     for p in pdfs:
         assert p.read_bytes()[:5] == b"%PDF-"
+
+
+def test_same_form_name_defs_do_not_collide(tmp_path, monkeypatch) -> None:
+    """Regression (req 9 + req 10): two definitions that SHARE a form_name — a version
+    bump (jha-v1 + jha-v2, both "Job Hazard Analysis") or a same-named variant (two
+    "Equipment Pre-Inspection — Skid Steer" rows) — must each get their OWN archive PDF,
+    keyed by the unique definition id. Naming by form_name made the second silently
+    OVERWRITE the first on write (a blank form vanished) AND failed the count assertion
+    above, red-CI'ing every such publish through the daemon's full-repo-CI merge gate.
+    """
+    mod = _load_script()
+    # Two real, valid definitions with IDENTICAL form_name but distinct ids/stems.
+    src = json.loads((FORMS_DIR / "jha-v1.json").read_text())
+    forms = tmp_path / "forms"
+    forms.mkdir()
+    for stem in ("widget-v1", "widget-v2"):
+        d = dict(src)
+        d["form_name"] = "Identical Widget Form"  # same name on purpose
+        (forms / f"{stem}.json").write_text(json.dumps(d))
+    monkeypatch.setattr(mod, "_FORMS_DIR", forms)
+
+    out = tmp_path / "out"
+    assert mod.main(["--out-dir", str(out)]) == 0
+    names = sorted(p.name for p in out.glob("*.pdf"))
+    # cover + one PER DEFINITION (no collision), keyed by id not form_name:
+    assert names == sorted([
+        mod._COVER_FILENAME,
+        "widget-v1 (fillable).pdf",
+        "widget-v2 (fillable).pdf",
+    ])
 
 
 def test_script_defaults_to_render_only(monkeypatch, tmp_path) -> None:

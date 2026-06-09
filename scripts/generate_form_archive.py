@@ -73,13 +73,22 @@ def _form_definition_paths() -> list[Path]:
     return sorted(p for p in _FORMS_DIR.glob("*.json") if p.name != "meta-schema.json")
 
 
-def _blank_pdf_filename(form_name: str) -> str:
-    """The archive filename for a form, named by its human Form Name.
+def _blank_pdf_filename(form_id: str) -> str:
+    """The archive filename for a form, keyed by its UNIQUE definition id (the
+    forms/<id>.json stem, e.g. "jha-v2" -> "jha-v2 (fillable).pdf").
 
-    e.g. "Job Hazard Analysis" -> "Job Hazard Analysis (fillable).pdf". `/` would be a
-    Box path separator, so it is replaced (mirrors safety_naming.job_folder_name's rule).
+    Keyed by id, NOT the human form_name, because two definitions legitimately share a
+    form_name: a version bump keeps the name (jha-v1 + jha-v2, both "Job Hazard
+    Analysis"), and a same-named variant repeats it (two "Equipment Pre-Inspection —
+    Skid Steer" rows). Naming by form_name made the second silently OVERWRITE the first
+    on write — a blank form vanished from the archive — AND red-CI'd every such publish,
+    because test_form_archive's file count came up one short (the daemon waits on the
+    full repo CI, so that one failing test blocked every version-bump / same-named-variant
+    publish: see req 9 + req 10). The id is unique by construction (it is the filename
+    stem within forms/), so every definition gets its own archive PDF. `/` cannot appear
+    in a stem, but we sanitize defensively (it is a Box path separator).
     """
-    safe = form_name.replace("/", "-").strip() or "form"
+    safe = form_id.replace("/", "-").strip() or "form"
     return f"{safe} (fillable).pdf"
 
 
@@ -97,7 +106,9 @@ def _render_all() -> list[tuple[str, bytes]]:
         try:
             definition = json.loads(path.read_text())
             pdf = form_pdf.render_blank_fillable(definition)
-            rendered.append((_blank_pdf_filename(definition.get("form_name", path.stem)), pdf))
+            # Name by the unique definition id (the file stem), NOT form_name — see
+            # _blank_pdf_filename: two defs can share a form_name and would collide.
+            rendered.append((_blank_pdf_filename(path.stem), pdf))
         except Exception as exc:  # noqa: BLE001 — one bad def must not abort the archive
             log(Severity.ERROR, _SCRIPT,
                 f"failed to render blank form {path.name!r}: {exc!r}",
