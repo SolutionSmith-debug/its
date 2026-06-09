@@ -41,6 +41,7 @@ def stub(mocker):
         "claim": mocker.patch.object(pd.portal_client, "claim_publish"),
         "stamp": mocker.patch.object(pd.portal_client, "stamp_publish", return_value=True),
         "reset": mocker.patch.object(pd, "_reset_to_main"),
+        "unstrand": mocker.patch.object(pd, "_unstrand_if_needed"),
         "apply_wt": mocker.patch.object(pd, "_apply_to_worktree"),
         "commit": mocker.patch.object(pd, "_commit_test_merge"),
         "deploy": mocker.patch.object(pd, "_deploy_land_health"),
@@ -144,6 +145,42 @@ def test_already_leased_row_is_skipped(stub):
     out = pd.publish_once()
     assert out.skipped_unclaimed == 1 and out.actuated == 0
     stub["commit"].assert_not_called()
+
+
+# ── _unstrand_if_needed (idle self-heal: recover a stranded tree at the top of a cycle) ──
+
+
+def test_unstrand_recovers_a_stray_branch(mocker):
+    """On a leftover publish/req-* branch (idle-stranded), recover via _reset_to_main."""
+    mocker.patch.object(pd, "_git", return_value="publish/req-7-incident\n")
+    reset = mocker.patch.object(pd, "_reset_to_main")
+    pd._unstrand_if_needed()
+    reset.assert_called_once()
+
+
+def test_unstrand_is_a_noop_on_main(mocker):
+    """The common idle case: already on main → no reset, no network pull (cheap rev-parse)."""
+    mocker.patch.object(pd, "_git", return_value="main\n")
+    reset = mocker.patch.object(pd, "_reset_to_main")
+    pd._unstrand_if_needed()
+    reset.assert_not_called()
+
+
+def test_publish_once_unstrands_before_actuating(stub, mocker):
+    """publish_once calls the idle self-heal at the top of every cycle (even with no rows)."""
+    stub["pending"].return_value = []
+    pd.publish_once()
+    stub["unstrand"].assert_called_once()
+
+
+def test_publish_once_halts_loud_when_unstrand_fails(stub):
+    """A recovery failure halts the cycle + logs ERROR — never silently actuates from a
+    stranded tree."""
+    stub["unstrand"].side_effect = RuntimeError("git checkout main failed")
+    out = pd.publish_once()
+    assert out.halted == "unstrand_failed"
+    stub["pending"].assert_not_called()
+    assert any(c.args and c.args[0] == pd.Severity.ERROR for c in stub["log"].call_args_list)
 
 
 # ── _wait_for_ci (the synchronous CI gate that replaced `gh pr merge --auto`) ────
