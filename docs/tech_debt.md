@@ -1914,3 +1914,31 @@ Surfaced: 2026-06-09 WSR ABSTRACT_DATETIME session (PR #245 sweep caught the mis
 **Revisit when:** the archive generation path is revisited, or a concurrent-process race is observed.
 
 Surfaced: 2026-06-09 WSR/publish-pipeline session (publish daemon archive step; gitignore is the current mitigation).
+
+## [OPEN 2026-06-09, low] Draft cache stores one draft per account — starting a new form replaces it
+
+`src/lib/draftCache.ts` (PR #250) stores exactly ONE draft per admin account (localStorage key `its-portal-draft:v1:<username>`). Opening the editor for a second form (or creating a brand-new form while a WIP edit exists) silently overwrites the cached draft for that account.
+
+This is accepted behavior — the operator builds one form at a time, and the confirm-discard dialog before starting a fresh form guards against accidental loss. However, the limitation is worth tracking: if concurrent multi-form editing is ever needed, the key scheme would need to include the form identity (e.g., `its-portal-draft:v1:<username>:<formId>`).
+
+**Fix (if multi-form editing is ever desired):** change the localStorage key to include the form identity; expose a "clear draft" call per form; update the editor mount logic to auto-restore the per-form draft.
+
+**Tag:** `safety-portal`, `form-editor`, `draft-cache`, `low`.
+
+**Revisit when:** operator requests concurrent multi-form edit capability, or a WIP draft-loss incident is reported.
+
+Surfaced: 2026-06-09 Form Editor UX + draft-caching session (PR #250; deliberate single-slot design).
+
+## [OPEN 2026-06-09, low] Worker publish-reject paths return bare error codes — no `reason` field for server-side parity with `explainPublish`
+
+The Worker's `POST /api/admin/publish` endpoint returns HTTP 400/401 with a bare JSON `{ error: "..." }` body for validation failures. `FormsPage.explainPublish` (PR #249) maps these codes on the client side, but the server never writes a human-readable `reason` alongside the code. If a new reject path is added on the Worker (or a Hono middleware fires before the handler), `explainPublish` may encounter an unmapped code and fall back to the "code + HTTP status" catch-all.
+
+The current fallback is explicit and non-silent (shows "code + HTTP status"), so this is low-severity. It is deferred because the client-side fix (PR #249) is self-contained and the Worker paths are stable.
+
+**Fix (optional):** add a `reason` field to the Worker's reject bodies so the client can display the server-authored message directly, removing the client-side mapping table entirely.
+
+**Tag:** `safety-portal`, `form-editor`, `error-messaging`, `low`.
+
+**Revisit when:** a new Worker reject path surfaces an unmapped code in production, or a UI polish pass is done on the publish flow.
+
+Surfaced: 2026-06-09 Form Editor UX + draft-caching session (PR #249; client fix is self-contained).
