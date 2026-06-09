@@ -1,4 +1,4 @@
-export type AdminTab = "submit" | "accounts";
+export type AdminTab = "submit" | "accounts" | "forms";
 
 /**
  * Admin section switcher, rendered just below the header on every admin page. The
@@ -21,6 +21,7 @@ export function AdminTabs({ tab, setTab }: { tab: AdminTab; setTab: (t: AdminTab
     <nav className="admin-tabs" role="tablist" aria-label="Admin sections">
       {item("submit", "Submit a form")}
       {item("accounts", "Accounts")}
+      {item("forms", "Forms")}
     </nav>
   );
 }

@@ -556,6 +556,77 @@ h3 {
   background: var(--c-surface);
 }
 
+/* ── Form Manager (admin "Forms" tab — read-only catalog + live preview) ─────── */
+.forms-mgr {
+  display: grid;
+  grid-template-columns: minmax(200px, 260px) 1fr;
+  gap: var(--gap);
+  align-items: start;
+}
+.forms-mgr__heading {
+  font-size: var(--fs-lg);
+  color: var(--c-brg);
+  margin: 0 0 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.forms-mgr__count {
+  font-size: var(--fs-sm);
+  font-weight: 700;
+  color: var(--c-muted);
+  background: var(--c-surface);
+  border: 1px solid var(--c-line);
+  border-radius: 999px;
+  padding: 1px 9px;
+}
+.forms-mgr__list { position: sticky; top: var(--gap); }
+.forms-mgr__items { list-style: none; margin: 0; padding: 0; }
+.forms-mgr__item {
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 12px;
+  min-height: var(--tap);
+  background: var(--c-white);
+  border: 1px solid var(--c-line);
+  border-radius: var(--radius-sm);
+  margin-bottom: 6px;
+  cursor: pointer;
+}
+.forms-mgr__item:hover { border-color: var(--c-brg); }
+.forms-mgr__item--active {
+  border-color: var(--c-brg);
+  border-left: 3px solid var(--c-gold);
+  background: var(--c-surface);
+}
+.forms-mgr__item-label { font-weight: 600; color: var(--c-black); }
+.forms-mgr__item-parent { font-size: var(--fs-sm); color: var(--c-muted); }
+.forms-mgr__meta { margin-bottom: var(--gap); }
+.forms-mgr__meta-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 8px 16px;
+  margin: 8px 0 10px;
+}
+.forms-mgr__meta-grid div { display: flex; flex-direction: column; }
+.forms-mgr__meta-grid dt {
+  font-size: var(--fs-sm);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--c-muted);
+}
+.forms-mgr__meta-grid dd { margin: 0; font-weight: 600; color: var(--c-black); }
+.forms-mgr__preview { margin-top: 8px; }
+@media (max-width: 720px) {
+  .forms-mgr { grid-template-columns: 1fr; }
+  .forms-mgr__list { position: static; }
+}
+
 @media (min-width: 640px) {
   .fr__grid { grid-template-columns: 1fr 1fr; }
   .fr__row { grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); align-items: start; }
