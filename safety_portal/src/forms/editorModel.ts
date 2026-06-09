@@ -116,7 +116,11 @@ export function blankGroup(key: string): Group {
 }
 
 export function blankBlock(): ContentBlock {
-  return { heading: "", body: "" };
+  // Omit heading (it's optional): an empty-string heading is rejected by the server
+  // validator (isStr("") is false) but the heading input is optional in the builder, so
+  // a default "" would compose a payload the server ALWAYS rejects. The heading onChange
+  // already maps "" → undefined; this keeps an untouched block valid too.
+  return { body: "" };
 }
 
 /** A blank section of the requested type, with one starter child where the schema
