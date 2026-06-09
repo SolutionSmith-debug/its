@@ -269,6 +269,8 @@ Discovered 2026-05-17 evening while provisioning `ITS_Errors`, `ITS_Quarantine`,
 
 **Revisit when:** Smartsheet API surfaces user-editable DATETIME columns, or a workstream finds DATE-only resolution genuinely insufficient and the `created_at` fallback isn't viable for the use case.
 
+_Update 2026-06-09 (PR #245 WSR Approved At / Sent At sweep):_ `ABSTRACT_DATETIME` (the "Date/Time" user type in the Smartsheet UI) **CAN** be created/retyped to via `update_column` and accepts a **naive** `YYYY-MM-DDTHH:MM:SS` value (stored/displayed literally). A plain `DATETIME` column is still rejected with errorCode 4000 — that restriction stands. `ABSTRACT_DATETIME` rejects any offset or 'Z' suffix (errorCode 5536). Existing DATE-only cells coerce to midnight on retype to ABSTRACT_DATETIME. The `WSR_human_review` sheet (id `5035670127988612`) columns "Approved At" (col `7944658226548612`) and "Sent At" (col `5129908459442052`) were live-retyped DATE → ABSTRACT_DATETIME, confirming the above. Write naive Pacific wall-clock (operator preference).
+
 ## Smartsheet API constraint: AUTO_NUMBER columns rejected at sheet creation [OPEN]
 
 Discovered same session. `systemColumnType: AUTO_NUMBER` is rejected at the "Create Sheet" endpoint, whether or not the column is primary, with or without an `autoNumberFormat` config. Other system column types (`MODIFIED_DATE`, `MODIFIED_BY`) are accepted in the same payload — so the rejection is specific to AUTO_NUMBER, not a generic system-column-at-create issue.
@@ -1876,3 +1878,39 @@ Surfaced: 2026-06-09 Part-B on-demand-compile session (B3 divergence — watchdo
 **Revisit when:** the operator finds the default widths inconvenient, or a styling pass is run across the Safety Portal sheets.
 
 Surfaced: 2026-06-09 Part-C session (functional done; cosmetic styling deferred).
+
+## [OPEN 2026-06-09] Portal admin still offers "Retire" on an already-retired form (frontend)
+
+`FormsPage.tsx` / `FormEditor.tsx` display the Retire action for all forms with status `live` OR `retired`. The backend (`apply_publish` in `publish_manifest.py`) now rejects a duplicate-retire cleanly at the validate stage ("is already retired"), but the UI should not offer it in the first place — offering a disabled/grayed-out action (or hiding it entirely) would prevent operator confusion.
+
+**Fix:** in `FormsPage.tsx` (and the editor's action menu), gate the Retire button on `status === 'live'` only — hide or disable it for `status === 'retired'`.
+
+**Tag:** `safety-portal`, `form-editor`, `ux`, `low`.
+
+**Revisit when:** a form editor polish pass is done, or an operator trips over the misleading UI.
+
+Surfaced: 2026-06-09 WSR/publish-pipeline session (PR #244 — backend rejects cleanly; frontend UX gap noted).
+
+## [OPEN 2026-06-09] `README.md:111` documents weekly-send idempotency key as "Sent At non-empty" — code keys on `Send Status == SENT`
+
+`safety_reports/README.md` line 111 (approximately) says the weekly-send idempotency guard keys on a non-empty "Sent At" column. The actual implementation in `weekly_send.py` keys on `Send Status == SENT`. These diverge when a send fails mid-way — "Sent At" may be empty while "Send Status" is FAILED, or vice versa. The doc-drift was caught during the WSR ABSTRACT_DATETIME sweep (PR #245).
+
+**Fix:** update `safety_reports/README.md` to describe the actual guard (`Send Status == SENT`) and note that "Sent At" is set atomically with the status change (so they should always agree, but the code's authoritative check is the status column).
+
+**Tag:** `safety-portal`, `weekly-send`, `doc-drift`, `low`.
+
+**Revisit when:** next doc-accuracy pass on `safety_reports/README.md`.
+
+Surfaced: 2026-06-09 WSR ABSTRACT_DATETIME session (PR #245 sweep caught the mismatch).
+
+## [OPEN 2026-06-09, low] `publish_daemon._regenerate_archive` writes `form_archive_out/` into `~/its`
+
+`safety_reports/publish_daemon.py` `_regenerate_archive` runs `generate_form_archive.py` as a subprocess, which writes its output to `form_archive_out/` inside the `~/its` working tree. This directory is now `.gitignore`d (PR #241 fix: added `form_archive_out/` to `.gitignore`), so it does not pollute commits. However, writing to a temp dir (e.g., `tempfile.mkdtemp()` and passing the path as an argument to `generate_form_archive.py`) would be cleaner and avoid any race with a concurrent process reading the working tree.
+
+**Fix:** add a `--output-dir <path>` flag to `generate_form_archive.py` and pass `tempfile.mkdtemp()` from `_regenerate_archive`; clean up the temp dir after the Box upload.
+
+**Tag:** `safety-portal`, `publish-daemon`, `cleanup`, `low`.
+
+**Revisit when:** the archive generation path is revisited, or a concurrent-process race is observed.
+
+Surfaced: 2026-06-09 WSR/publish-pipeline session (publish daemon archive step; gitignore is the current mitigation).
