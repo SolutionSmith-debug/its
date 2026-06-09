@@ -154,7 +154,7 @@ SHEET_EQUIPMENT_MASTER = 4132885031243652  # ITS — Operations / Master Databas
 SHEET_ACTIVE_JOBS   = 6223950341164932  # ITS_Active_Jobs   (built 2026-06-03 by build_its_active_jobs_sheet.py)
 SHEET_FORMS_CATALOG = 423274885369732   # ITS_Forms_Catalog (built 2026-06-03 by build_its_forms_catalog_sheet.py)
 SHEET_WSR_HUMAN_REVIEW = 5035670127988612  # WSR_human_review — Phase-5 weekly review/approve/send surface (amendment b; built 2026-06-05 by build_wsr_human_review_sheet.py). Supersedes WPR_Pending_Review for the portal flow.
-SHEET_ORPHANED_REPORTS = 0  # Orphaned Reports (Part C) — 0 = OFF: job_not_found/job_inactive portal submissions stay in ITS_Review_Queue until the OPERATOR flips this after build_orphaned_reports_sheet.py prints the real ID.
+SHEET_ORPHANED_REPORTS = 2577084374273924  # Orphaned Reports (Part C; built 2026-06-09 by build_orphaned_reports_sheet.py) — job_not_found/job_inactive portal submissions route here (ON) once ~/its is redeployed to this commit. ITS –– Safety Portal folder.
 
 
 # ---- Reverse-lookup maps ------------------------------------------------
