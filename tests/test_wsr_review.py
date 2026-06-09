@@ -60,16 +60,16 @@ def test_find_row_no_match(ss):
     assert wsr_review.find_row(123, "JOB-1", date(2026, 5, 30)) is None
 
 
-# ---- upsert (create) -----------------------------------------------------
+# ---- add_wsr_row (append-only — every compilation is a NEW PENDING row) ----
 
 
-def test_upsert_create_seeds_body_and_pending(ss):
-    row_id, created = wsr_review.upsert_row(
+def test_add_wsr_row_seeds_body_and_pending(ss):
+    row_id = wsr_review.add_wsr_row(
         123, job_project="Bradley 1", job_id="JOB-1", week_of=date(2026, 5, 30),
         compiled_pdf_link="https://app.box.com/file/9", recipient_to="to@x.com",
         cc_display="cc@x.com", email_body="BODY", notes="2 subs",
     )
-    assert (row_id, created) == (777, True)
+    assert row_id == 777
     payload = ss["add_rows"].call_args.args[1][0]
     assert payload[wsr_review.COL_EMAIL_BODY] == "BODY"
     assert payload[wsr_review.COL_SEND_STATUS] == wsr_review.STATUS_PENDING
@@ -77,30 +77,20 @@ def test_upsert_create_seeds_body_and_pending(ss):
     assert payload[wsr_review.COL_JOB_ID] == "JOB-1"
 
 
-# ---- upsert (update) — never touch body / approval / status --------------
-
-
-def test_upsert_update_refreshes_pdf_only_not_body_or_approval(ss):
+def test_add_wsr_row_always_appends_never_updates(ss):
+    # APPEND-ONLY (operator decision 2026-06-09): even when a prior (job, week) row exists,
+    # add_wsr_row ADDS a new PENDING row — it must NEVER update_rows, so an already-SENT row's
+    # Compiled-PDF link + send history is never clobbered (the exact bug this fixes).
     ss["get_rows"].return_value = [
         {"_row_id": 55, wsr_review.COL_JOB_ID: "JOB-1", wsr_review.COL_WEEK_OF: "2026-05-30"},
     ]
-    row_id, created = wsr_review.upsert_row(
+    wsr_review.add_wsr_row(
         123, job_project="Bradley 1", job_id="JOB-1", week_of=date(2026, 5, 30),
         compiled_pdf_link="https://app.box.com/file/NEW", recipient_to="to@x.com",
-        cc_display="cc@x.com", email_body="IGNORED ON UPDATE", notes="3 subs",
+        cc_display="cc@x.com", email_body="BODY2", notes="3 subs",
     )
-    assert (row_id, created) == (55, False)
-    ss["add_rows"].assert_not_called()
-    upd = ss["update_rows"].call_args.args[1][0]
-    assert upd["_row_id"] == 55
-    assert upd[wsr_review.COL_COMPILED_PDF] == "https://app.box.com/file/NEW"
-    # Exact-keys whitelist: an UPDATE touches ONLY the PDF link + recipient
-    # display + Notes — never Email Body, approval, or send-status (F22 / human
-    # source-of-truth). Asserting the full key set guards against future drift.
-    assert set(upd.keys()) == {
-        "_row_id", wsr_review.COL_COMPILED_PDF, wsr_review.COL_RECIPIENT_TO,
-        wsr_review.COL_CC, wsr_review.COL_NOTES,
-    }
+    ss["add_rows"].assert_called_once()
+    ss["update_rows"].assert_not_called()
 
 
 # ---- to_wsr_datetime (ABSTRACT_DATETIME cell formatting) ------------------

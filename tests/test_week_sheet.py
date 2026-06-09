@@ -341,11 +341,14 @@ from safety_reports.week_sheet import (  # noqa: E402
     COL_COMPILE_NOW,
     COL_WORK_DATE,
     ROLLUP_LABEL,
+    any_compile_now_requested,
+    append_rollup_row,
+    clear_compile_now_on_rollups,
     compile_now_requested,
     get_rollup_row,
     latest_submitted_at,
+    list_rollup_rows,
     list_submission_rows,
-    upsert_rollup_row,
 )
 
 
@@ -374,6 +377,19 @@ def test_get_rollup_row(stub_ss):
     assert r is not None and r["_row_id"] == 2
 
 
+def test_list_rollup_rows_orders_and_get_rollup_returns_latest(stub_ss):
+    # Append-only: many Rollup snapshots; ordered by Submitted At (placeholder '' first), and
+    # get_rollup_row returns the LATEST (the no-new-docs watermark).
+    stub_ss["get_rows"].return_value = [
+        {"_row_id": 1, "Row Type": ROW_TYPE_SUBMISSION},
+        {"_row_id": 2, "Row Type": ROW_TYPE_ROLLUP, week_sheet.COL_SUBMITTED_AT: "2026-06-05T09:00-07:00"},
+        {"_row_id": 9, "Row Type": ROW_TYPE_ROLLUP, week_sheet.COL_SUBMITTED_AT: ""},  # placeholder
+        {"_row_id": 3, "Row Type": ROW_TYPE_ROLLUP, week_sheet.COL_SUBMITTED_AT: "2026-06-06T09:00-07:00"},
+    ]
+    assert [r["_row_id"] for r in list_rollup_rows(8001)] == [9, 2, 3]
+    assert get_rollup_row(8001)["_row_id"] == 3  # latest by Submitted At
+
+
 @pytest.mark.parametrize("rollup,expected", [
     (None, False),
     ({COL_COMPILE_NOW: True}, True),
@@ -395,21 +411,48 @@ def test_latest_submitted_at_excludes_blanks():
     assert latest_submitted_at([]) == ""
 
 
-def test_upsert_rollup_row_create_sets_rollup_type_and_clears_compile_now(stub_ss):
+def test_append_rollup_row_sets_rollup_type_and_clears_compile_now(stub_ss):
     stub_ss["add_rows"].return_value = [42]
-    rid = upsert_rollup_row(8001, packet_link="L", compiled_at="2026-06-05T09:00-07:00",
+    rid = append_rollup_row(8001, packet_link="L", compiled_at="2026-06-05T09:00-07:00",
                             manifest_note="2 subs")
     assert rid == 42
     row = stub_ss["add_rows"].call_args.args[1][0]
     assert row["Row Type"] == ROW_TYPE_ROLLUP and row["Submission"] == ROLLUP_LABEL
-    assert row[COL_COMPILE_NOW] is False  # cleared on write
+    assert row[COL_COMPILE_NOW] is False  # the new snapshot is written un-triggered
     assert row[COL_SUBMISSION_PDF] == "L"
 
 
-def test_upsert_rollup_row_update_threads_row_id_and_clears_compile_now(stub_ss):
-    rid = upsert_rollup_row(8001, packet_link="L2", compiled_at="t", manifest_note="m",
-                            existing_rollup_row_id=77)
-    assert rid == 77
-    stub_ss["add_rows"].assert_not_called()
-    upd = stub_ss["update_rows"].call_args.args[1][0]
-    assert upd["_row_id"] == 77 and upd[COL_COMPILE_NOW] is False
+def test_append_rollup_row_always_adds_never_updates(stub_ss):
+    # APPEND-ONLY: append_rollup_row ADDS a new snapshot — it must never update_rows, so a
+    # prior compilation's Rollup row (packet link + manifest) is never overwritten.
+    stub_ss["add_rows"].return_value = [43]
+    append_rollup_row(8001, packet_link="L2", compiled_at="t", manifest_note="m")
+    stub_ss["add_rows"].assert_called_once()
+    stub_ss["update_rows"].assert_not_called()
+
+
+@pytest.mark.parametrize("rows,expected", [
+    ([], False),
+    ([{COL_COMPILE_NOW: False}, {COL_COMPILE_NOW: True}], True),
+    ([{COL_COMPILE_NOW: False}, {}], False),
+])
+def test_any_compile_now_requested(rows, expected):
+    assert any_compile_now_requested(rows) is expected
+
+
+def test_clear_compile_now_on_rollups_clears_only_checked(stub_ss):
+    rollup_rows = [
+        {"_row_id": 5, COL_COMPILE_NOW: True},
+        {"_row_id": 6, COL_COMPILE_NOW: False},
+        {"_row_id": 7, COL_COMPILE_NOW: True},
+        {COL_COMPILE_NOW: True},  # no _row_id → skipped
+    ]
+    clear_compile_now_on_rollups(8001, rollup_rows)
+    upd = stub_ss["update_rows"].call_args.args[1]
+    assert [u["_row_id"] for u in upd] == [5, 7]
+    assert all(u[COL_COMPILE_NOW] is False for u in upd)
+
+
+def test_clear_compile_now_on_rollups_noop_when_none_checked(stub_ss):
+    clear_compile_now_on_rollups(8001, [{"_row_id": 5, COL_COMPILE_NOW: False}])
+    stub_ss["update_rows"].assert_not_called()
