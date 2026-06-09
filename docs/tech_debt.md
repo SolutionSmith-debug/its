@@ -1840,3 +1840,15 @@ _Update 2026-06-09 (Part-D session): the tree was recovered manually (`git check
 **Tag:** `safety-portal`, `publish-daemon`, `resilience`.
 
 Surfaced: 2026-06-09 Part-D publish-CI-gate session (operator flag). Resolved same session.
+
+## [OPEN 2026-06-09] Safety Portal — no rate limiting on `/api/login` or `/api/*` (Part-A A2)
+
+Nothing throttles the portal Worker: `/api/login` runs `bcrypt.compare` at cost 10 per attempt (brute-force + a CPU-cost amplification vector), and `/api/submit` + all routes are unbounded.
+
+**Fix (operator, cutover):** add Cloudflare **rate-limiting rules** (dashboard → Security → WAF → Rate limiting rules) — tight on `/api/login` (~5 req / 10 s / IP → ~10 min block), looser blanket on `/api/*`. Documented as a cutover step in `safety_portal/README.md` ("Production hardening — operator cutover steps"). In-code alternative: the Workers **`ratelimit` binding** (in-repo + testable) — adopt if GA for the account at deploy time. **Operator-gated** (Cloudflare account/dashboard), so NOT implemented in code this session per the operator's call.
+
+**Tag:** `safety-portal`, `security`, `operator-action`, `cutover`.
+
+**Revisit when:** Evergreen production cutover, or when the `ratelimit` binding is confirmed GA.
+
+Surfaced: 2026-06-09 Part-A production-hardening session (A2).

@@ -5,6 +5,7 @@ import { setSignedCookie, getSignedCookie, deleteCookie } from "hono/cookie";
 import type { Env, Role, SessionClaims, Vars } from "./types";
 import { validateUser, newSessionClaims, hashPassword, normalizeUsername, coerceRole } from "./auth";
 import { validateDefinition, validateParentGrouping } from "./publishValidation";
+import { pruneOldData } from "./prune";
 import catalog from "../catalog.json";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1223,4 +1224,12 @@ app.all("/api/*", (c) => c.json({ error: "not_found" }, 404));
 // the Worker runs; this fallback covers the SPA shell where the Worker does run.
 app.get("*", (c) => c.env.ASSETS.fetch(c.req.raw));
 
-export default app;
+// ── scheduled (A3): the daily cron (wrangler.jsonc triggers.crons) prunes the D1 store.
+// SEND-FREE like every other path (Invariant 1) — it only deletes aged local rows. A prune
+// failure is logged via observability and does not affect the fetch path.
+const scheduled: ExportedHandlerScheduledHandler<Env> = async (_controller, env) => {
+  const pruned = await pruneOldData(env.DB, Math.floor(Date.now() / 1000));
+  console.log(`prune: removed ${pruned.submissions} filed submission(s) + ${pruned.audit} audit row(s)`);
+};
+
+export default { fetch: app.fetch, scheduled } satisfies ExportedHandler<Env>;

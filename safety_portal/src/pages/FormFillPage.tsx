@@ -5,6 +5,7 @@ import { useAuth } from "../lib/auth";
 import * as api from "../lib/api";
 import { formCatalog, getDefinition } from "../forms/registry";
 import { FormRenderer, initialValues, type FormValues } from "../forms/FormRenderer";
+import { useSubmissionId } from "./useSubmissionId";
 
 function todayIso(): string {
   const d = new Date();
@@ -47,6 +48,8 @@ export function FormFillPage({ onBack, tabBar }: { onBack?: () => void; tabBar?:
   const [submitted, setSubmitted] = useState(false);
   const [submittedAs, setSubmittedAs] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Stable across retries (lost-ACK idempotency); renewed only on a new submission (reset).
+  const { submissionUuid, renew: renewSubmissionId } = useSubmissionId();
 
   useEffect(() => {
     api.fetchJobs().then(setJobs).catch((e) => setJobsErr(e instanceof Error ? e.message : "load failed"));
@@ -107,7 +110,7 @@ export function FormFillPage({ onBack, tabBar }: { onBack?: () => void; tabBar?:
         variant_label: def.variant_label,
         work_date: workDate,
         values,
-        submission_uuid: crypto.randomUUID(),
+        submission_uuid: submissionUuid,
         amends_uuid: amendsUuid,
         submitted_as: attributeTo,
       });
@@ -127,6 +130,7 @@ export function FormFillPage({ onBack, tabBar }: { onBack?: () => void; tabBar?:
     setVariantCode("");
     setValues({});
     setAmendsUuid(null);
+    renewSubmissionId(); // a fresh id for the NEXT submission (the prior one succeeded)
     // Reset the attribution back to self for the next submission (admins only).
     if (isAdmin) setFilledOutAs(me);
   }
