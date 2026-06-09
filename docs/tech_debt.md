@@ -1782,3 +1782,49 @@ smoke to WSR, drop the picklist WPR entry + its test assertion, then delete
 **Tag:** `safety-portal`, `cleanup`, `phase-5`, `low`.
 
 Surfaced: 2026-06-05 WSR rewire (PR4).
+
+## [OPEN 2026-06-09] Publish daemon: rollback UI picker missing
+
+The backend rollback path is fully built: `apply_publish` supports a `rollback` op, the daemon handles it, and `PublishOp` carries the rollback target. The **editor's retired-version-history PICKER UI** is the only missing piece — there is no way to select a rollback target in the admin form without direct API calls. The rollback op is functional today via API.
+
+**Fix:** add a dropdown in `FormEditor.tsx` that populates from the retired form definitions (versions with `status: "retired"` in the catalog) and issues a `rollback` publish-request.
+
+**Tag:** `safety-portal`, `phase-2`, `form-editor`, `low`.
+
+**Revisit when:** a rollback is operationally needed, or at the start of Phase-3 form-editor polish.
+
+Surfaced: 2026-06-09 Phase-2 Form Manager build (PRs #203–#218).
+
+## [OPEN 2026-06-09] Publish daemon: privileged subprocess chain is operator-validated-live only
+
+`safety_reports/publish_daemon.py` orchestrates a chain of git/gh/wrangler subprocess calls (commit, create PR, wait for CI, merge, deploy). Unit tests mock at the subprocess boundary per Op Stds §30. PR #218's `_wait_for_ci` + `_reset_to_main` ran live for the first time during the operator's recovery session. No dedicated integration test harness for the full commit→merge→deploy chain exists.
+
+**Fix:** build a dry-run harness (flag `--dry-run`) that exercises the subprocess chain against a throwaway branch without merging or deploying, so CI can catch subprocess-interface regressions. Until then, every daemon code change to the privileged subprocess chain requires operator live-smoke before merge.
+
+**Tag:** `safety-portal`, `phase-2`, `publish-daemon`, `medium`.
+
+**Revisit when:** the publish daemon code is modified, or at the Phase-3 hardening pass.
+
+Surfaced: 2026-06-09 Phase-2 Form Manager build (PR #218).
+
+## [OPEN 2026-06-09] Form editor: S1 per-item scale/comment authoring from scratch
+
+The `hsse` form uses `scale` and `comment` item-level attributes. These survive an **edit** operation today (existing values are preserved in the round-trip through `apply_publish`). However, there is **no UI in the form editor** to set `scale` or `comment` values when creating a new item from scratch. A new `hsse`-type form authored through the editor would produce items without these attributes.
+
+**Fix:** add `scale` / `comment` optional fields to the item-creation widget in `editorModel.ts` / `FormEditor.tsx`. Scope: narrow UI change, no backend changes needed.
+
+**Tag:** `safety-portal`, `phase-2`, `form-editor`, `low`.
+
+**Revisit when:** a new HSSE-type form is authored via the editor.
+
+Surfaced: 2026-06-09 Phase-2 Form Manager build (PRs #203–#218).
+
+## [OPEN 2026-06-09] `~/its` stranded on `publish/req-5-incident-report` branch
+
+The publish daemon left `~/its` on branch `publish/req-5-incident-report` after a failed pre-`_reset_to_main` cycle. The launchd job is not loaded (RunAtLoad false, operator-gated), so automatic recovery has not run. **Operator action:** either load the publish-daemon launchd job (which will `_reset_to_main` on startup) OR run manually: `git -C ~/its checkout main && git pull origin main`.
+
+**Tag:** `safety-portal`, `publish-daemon`, `operator-action`, `high`.
+
+**Revisit when:** next session start, or when the publish daemon launchd job is loaded.
+
+Surfaced: 2026-06-09 Phase-2 Form Manager build session.
