@@ -209,6 +209,28 @@ def test_429_exhausted_after_retry_budget(mocker):
     assert sleeps.call_count == 2
 
 
+def test_request_passes_a_timeout(mocker):
+    # The alert path must never issue a timeout-less request (a hung socket would block the
+    # whole triple-fire CRITICAL path).
+    req = _patch_requests(mocker, _mock_response(status=200, json_body={"id": "ok"}))
+    resend_client.send_alert("s", "b", to="x@example.com")
+    assert req.call_args.kwargs.get("timeout") == resend_client.REQUEST_TIMEOUT
+
+
+def test_network_failure_raises_resenderror_and_does_not_retry(mocker):
+    # A timeout / connection failure must FAIL FAST: translated to ResendError (so the
+    # caller's broad-except isolates it) and NOT retried (a hang must not be amplified 3x).
+    sleeps = mocker.patch("shared.resend_client.time.sleep")
+    req = mocker.patch(
+        "shared.resend_client.requests.request",
+        side_effect=resend_client.requests.exceptions.ConnectTimeout("timed out"),
+    )
+    with pytest.raises(ResendError):
+        resend_client.send_alert("s", "b", to="x@example.com")
+    req.assert_called_once()  # no retry on a network failure
+    sleeps.assert_not_called()
+
+
 def test_429_then_success_succeeds(mocker):
     sleeps = mocker.patch("shared.resend_client.time.sleep")
     _patch_requests(

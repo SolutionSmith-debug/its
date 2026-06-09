@@ -99,6 +99,13 @@ HEARTBEAT_PATH = STATE_DIR / "portal_poll_heartbeat.txt"
 LOCK_PATH = STATE_DIR / "portal_poll.lock"
 SEEN_PATH = STATE_DIR / "portal_poll_seen.json"
 HEARTBEAT_ROW_STATE_PATH = STATE_DIR / "heartbeat_row_ids.json"
+# Consecutive pending-fetch failures before a TRANSIENT transport error escalates ERROR →
+# CRITICAL. The puller runs every ~60s, so 5 ≈ a 5-minute sustained filing outage — pages
+# promptly instead of waiting for the next daily watchdog. A one-off blip stays ERROR and the
+# counter resets on the next successful fetch. (Auth / missing-creds page IMMEDIATELY — they
+# never self-heal — so they don't go through this counter.)
+FETCH_FAIL_STATE_PATH = STATE_DIR / "portal_poll_fetch_failures.json"
+FETCH_FAIL_CRITICAL_THRESHOLD = 5
 
 DAEMON_NAME = "safety_reports.portal_poll"
 
@@ -185,6 +192,46 @@ def _file_lock(path: Path) -> Iterator[bool]:
 def _write_heartbeat() -> None:
     """Overwrite the heartbeat file with the current UTC ISO timestamp."""
     state_io.atomic_write_text(HEARTBEAT_PATH, datetime.now(UTC).isoformat())
+
+
+# ---- Consecutive pending-fetch failure counter (sustained-outage escalation) ----
+
+
+def _record_fetch_failure() -> int:
+    """Increment + persist the consecutive pending-fetch failure counter; return the new count.
+
+    Used ONLY for transient transport failures (auth / missing-creds page immediately). On any
+    state error, returns 1 (treat as a single failure — do NOT page off a state glitch; the
+    un-faked watchdog Check-C marker is the reliable backstop for a sustained outage)."""
+    try:
+        with state_io.with_path_lock(FETCH_FAIL_STATE_PATH):
+            count = 0
+            if FETCH_FAIL_STATE_PATH.exists():
+                try:
+                    count = int(json.loads(FETCH_FAIL_STATE_PATH.read_text()).get("count", 0))
+                except (OSError, json.JSONDecodeError, ValueError, TypeError, AttributeError):
+                    count = 0
+            count += 1
+            state_io.atomic_write_json(FETCH_FAIL_STATE_PATH, {"count": count})
+            return count
+    except Exception as exc:  # noqa: BLE001 — counter is best-effort; Check C is the backstop
+        error_log.log(
+            Severity.WARN, SCRIPT_NAME,
+            f"fetch-failure counter write failed (treating as #1): {exc!r}",
+            error_code="portal_fetch_counter_failed",
+        )
+        return 1
+
+
+def _reset_fetch_failures() -> None:
+    """Zero the consecutive-failure counter after a successful pending fetch. Best-effort: a
+    reset failure only risks one spurious CRITICAL next cycle, never a missed outage."""
+    try:
+        with state_io.with_path_lock(FETCH_FAIL_STATE_PATH):
+            if FETCH_FAIL_STATE_PATH.exists():
+                state_io.atomic_write_json(FETCH_FAIL_STATE_PATH, {"count": 0})
+    except Exception:  # noqa: BLE001 — best-effort reset
+        pass
 
 
 # ---- Seen-set (idempotency defense-in-depth) ----------------------------
@@ -598,39 +645,68 @@ def _poll_inside_lock() -> PollStats:
     """Body of poll_once running under the file lock."""
     creds = _resolve_credentials()
     if creds is None:
-        # FAIL-CLOSED: missing bearer / HMAC secret / base URL → do NOT poll.
+        # FAIL-CLOSED: missing bearer / HMAC secret / base URL → do NOT poll. This is a
+        # MISCONFIG that will NOT self-heal (a removed/rotated Keychain entry or an unset
+        # Worker base URL) and STOPS all filing → page immediately (CRITICAL). And do NOT
+        # write the watchdog freshness marker: a cycle that never polled must let Check C go
+        # stale, so a sustained no-creds state ALSO surfaces via the staleness floor (the
+        # marker was previously written here, which masked the outage from Check C).
         error_log.log(
-            Severity.ERROR, SCRIPT_NAME,
+            Severity.CRITICAL, SCRIPT_NAME,
             (
                 # Deliberately does NOT interpolate the ITS_Config key or the
                 # Keychain entry NAMES — naming secret-store entries in a log is
                 # both a CodeQL clear-text-logging trip and poor hygiene. The
                 # operator looks them up in the §43 runbook.
                 "fail-closed: missing portal credentials — the Worker base URL "
-                "(ITS_Config) and/or the bearer + HMAC-secret Keychain entries are "
-                "unset; not polling this cycle (see safety_reports/README.md §43)"
+                "(ITS_Config) and/or the bearer + HMAC-secret Keychain entries are unset; "
+                "NOT polling and filing is STOPPED until fixed (see safety_reports/README.md §43)"
             ),
             error_code="portal_creds_missing",
         )
         _write_heartbeat()
         _write_heartbeat_row(status="ERROR", items_processed=0,
                              error_summary="fail-closed: portal credentials missing")
-        _write_watchdog_marker()
         return PollStats(halted_no_creds=True)
 
     try:
         rows = portal_client.get_pending(creds.base_url, creds.bearer, limit=PENDING_LIMIT)
-    except portal_client.PortalTransportError as exc:
+    except portal_client.PortalAuthError as exc:
+        # 401 — bad/rotated/missing bearer. A MISCONFIG that will NOT self-heal and STOPS all
+        # filing → page immediately (CRITICAL). No watchdog marker (let Check C go stale too).
+        # Caught BEFORE PortalTransportError (its subclass) so auth never reads as transient.
         error_log.log(
-            Severity.ERROR, SCRIPT_NAME,
-            f"failed to GET pending: {exc!r}",
+            Severity.CRITICAL, SCRIPT_NAME,
+            f"portal pending fetch UNAUTHORIZED (401) — bearer token rejected; filing is "
+            f"STOPPED until the token is fixed: {exc!r}",
+            error_code="portal_pending_auth_failed", exc_info=repr(exc),
+        )
+        _write_heartbeat()
+        _write_heartbeat_row(status="ERROR", items_processed=0,
+                             error_summary="pending fetch UNAUTHORIZED (401) — bearer rejected")
+        return PollStats(errors=1)
+    except portal_client.PortalTransportError as exc:
+        # Transport failure (Worker down / wrong base URL / network). A one-off blip is ERROR
+        # and self-heals; a SUSTAINED outage (>= threshold consecutive cycles) escalates to
+        # CRITICAL — filing is stopped and that must PAGE, not just WARN at the next daily
+        # watchdog. No watchdog marker either way (the un-faked Check-C marker is the backstop).
+        n = _record_fetch_failure()
+        sustained = n >= FETCH_FAIL_CRITICAL_THRESHOLD
+        error_log.log(
+            Severity.CRITICAL if sustained else Severity.ERROR, SCRIPT_NAME,
+            f"failed to GET pending (consecutive failure #{n}"
+            + (f", SUSTAINED >={FETCH_FAIL_CRITICAL_THRESHOLD} cycles — filing STOPPED" if sustained else "")
+            + f"): {exc!r}",
             error_code="portal_pending_fetch_failed",
         )
         _write_heartbeat()
         _write_heartbeat_row(status="ERROR", items_processed=0,
-                             error_summary=f"pending fetch failed: {type(exc).__name__}")
-        _write_watchdog_marker()
+                             error_summary=f"pending fetch failed (#{n}): {type(exc).__name__}")
         return PollStats(errors=1)
+
+    # Fetch succeeded → clear the consecutive-failure counter (a recovered blip never
+    # accumulates toward the CRITICAL threshold).
+    _reset_fetch_failures()
 
     seen = _load_seen()
     counters = {"filed": 0, "reviewed": 0, "rejected": 0, "remarked": 0, "errors": 0}
