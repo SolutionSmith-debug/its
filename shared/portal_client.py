@@ -56,6 +56,9 @@ MAX_RETRIES = 3
 PENDING_PATH = "/api/internal/pending"
 MARK_FILED_PATH = "/api/internal/mark-filed"
 SYNC_PATH = "/api/internal/sync"
+PUBLISH_PENDING_PATH = "/api/internal/publish/pending"
+PUBLISH_CLAIM_PATH = "/api/internal/publish/claim"
+PUBLISH_STAMP_PATH = "/api/internal/publish/stamp"
 
 
 # ---- Typed exceptions ----------------------------------------------------
@@ -218,6 +221,57 @@ def push_jobs(base_url: str, token: str, jobs: list[dict[str, Any]]) -> dict[str
     `PortalTransportError` (any other failure).
     """
     return _request("POST", base_url, SYNC_PATH, token, json_body={"jobs": jobs})
+
+
+# ---- Form-editor publish pipeline (slice 3b — the Mac publish daemon's queue I/O) ----
+
+
+def get_publish_pending(base_url: str, token: str, *, limit: int = 20) -> list[dict[str, Any]]:
+    """Claimable publish requests: GET /api/internal/publish/pending (queued + unleased,
+    oldest-first), each row a dict incl. `definition_json`. Same typed-error contract as
+    get_pending."""
+    data = _request("GET", base_url, PUBLISH_PENDING_PATH, token, params={"limit": limit})
+    pending = data.get("pending")
+    if not isinstance(pending, list):
+        raise PortalTransportError(
+            f"GET {PUBLISH_PENDING_PATH} missing/invalid 'pending' (got {type(pending).__name__})"
+        )
+    return [row for row in pending if isinstance(row, dict)]
+
+
+def claim_publish(
+    base_url: str, token: str, *, request_id: int, lease_owner: str
+) -> dict[str, Any] | None:
+    """Atomically lease a publish request: POST /api/internal/publish/claim.
+
+    Returns the claimed row (incl. `definition_json`) on success, or None if it was
+    already leased / no longer queued (`claimed=false`) — a benign concurrent-claim
+    outcome the daemon skips."""
+    data = _request(
+        "POST", base_url, PUBLISH_CLAIM_PATH, token,
+        json_body={"id": request_id, "lease_owner": lease_owner},
+    )
+    if not data.get("claimed"):
+        return None
+    request = data.get("request")
+    return request if isinstance(request, dict) else None
+
+
+def stamp_publish(
+    base_url: str, token: str, *, request_id: int, status: str,
+    failed_stage: str | None = None, failure_reason: str | None = None,
+) -> bool:
+    """Advance a publish request's state machine: POST /api/internal/publish/stamp.
+
+    Returns `found`. failed_stage/failure_reason are sent only for status='failed'
+    (the Worker ignores them otherwise)."""
+    body: dict[str, Any] = {"id": request_id, "status": status}
+    if failed_stage is not None:
+        body["failed_stage"] = failed_stage
+    if failure_reason is not None:
+        body["failure_reason"] = failure_reason
+    data = _request("POST", base_url, PUBLISH_STAMP_PATH, token, json_body=body)
+    return bool(data.get("found"))
 
 
 def admin_request(

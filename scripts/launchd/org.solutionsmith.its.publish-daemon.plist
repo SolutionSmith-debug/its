@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Form-editor publish daemon (Phase-2 slice 3b) — the SOLE privileged actuator. Drains
+  the Cloudflare Worker's publish_requests queue: GET /api/internal/publish/pending ->
+  claim -> re-validate vs git HEAD -> commit + CI render-smoke + merge -> deploy via the
+  operator's LOCAL wrangler + fast-forward ~/its + health check -> Box archive, stamping
+  the state machine at each milestone (CRITICAL triple-fire on any stall). Zero external-
+  customer-send capability (enrolled in tests/test_capability_gating.py GATED_SCRIPTS);
+  the privileged git/wrangler ops are subprocess to the operator's own toolchain — so the
+  plist PATH includes /opt/homebrew/bin + /usr/local/bin (git, gh, npm, wrangler).
+
+  HIGH-CAPABILITY: this daemon COMMITS + DEPLOYS code. Activation is operator-gated +
+  Developer-Operator co-resolution (it needs git push + Cloudflare/wrangler auth). RunAtLoad
+  is false; the operator loads it consciously after the cred + smoke gate.
+
+  Install (operator):
+    scripts/launchd/install.sh load org.solutionsmith.its.publish-daemon
+  The installer substitutes __ITS_HOME__ before copying to ~/Library/LaunchAgents/. The
+  120s StartInterval is fixed (publishes are infrequent + the cycle is heavy); tune in-file.
+
+  See safety_reports/README.md §43 for the operator runbook (stuck/failed publish recovery).
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>org.solutionsmith.its.publish-daemon</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__ITS_HOME__/.venv/bin/python</string>
+        <string>-m</string>
+        <string>safety_reports.publish_daemon</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__ITS_HOME__</string>
+
+    <key>StandardOutPath</key>
+    <string>__ITS_HOME__/logs/launchd/publish_daemon.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>__ITS_HOME__/logs/launchd/publish_daemon.err.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>LANG</key>
+        <string>en_US.UTF-8</string>
+    </dict>
+
+    <key>StartInterval</key>
+    <integer>120</integer>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>

@@ -434,3 +434,28 @@ transient Graph/Box error.
 authorized-approver allowlist / Graph secrets (auth), doctrine, code. The
 authorized-approver set is config-driven but is part of the send-gate trust boundary
 — co-resolve approver changes with Seth.
+
+## §43 runbook — publish daemon (`publish_daemon.py`, slice 3b)
+
+The form-editor publish actuator. The admin's Publish enqueues a `publish_requests` row
+(send-free); this daemon pulls, re-validates vs git HEAD, commits, runs the CI render
+smoke, merges, deploys via the operator's local wrangler, health-checks, and stamps the
+admin Status Monitor through Queued→Validated→Tested→Live→Archived. Any stage failure
+stamps `failed(stage, reason)` (RED in the monitor) + fires an operator CRITICAL.
+
+**HIGH-CAPABILITY (Tier-3 / co-resolve with Seth):** this daemon COMMITS + DEPLOYS code.
+Activation (loading the launchd job) and every failure needing a git/secret/deploy action
+escalate to the Developer-Operator. The low-class repairs below are the only Tier-2-safe ones.
+
+| Symptom | Likely cause | Repair |
+|---------|--------------|--------|
+| A publish row stuck `queued` | daemon not loaded / `polling_enabled=false` | Confirm `safety_reports.publish_daemon.polling_enabled=true` in ITS_Config (low-class); if the job isn't loaded, that's a Tier-3 activation — **escalate to Seth**. |
+| `publish_daemon.creds_unresolved` (ERROR) | missing Worker base URL or `ITS_PORTAL_INTERNAL_TOKEN` | secrets/auth = high-class — **escalate to Seth**. |
+| `failed(validated)` | the form failed the meta-schema / manifest re-check vs live HEAD (e.g. a key collision against a form added since enqueue) | The admin re-edits + re-publishes in the editor (low-class); the reason is in the monitor + the CRITICAL. |
+| `failed(tested)` | CI red on the auto-opened PR (the 3-renderer render smoke caught a non-degraded render) OR merge blocked | Read the PR's CI; a real render regression is **code → escalate to Seth**; a transient CI/merge flake → the admin re-publishes (low-class). |
+| `failed(live)` | wrangler deploy / fast-forward / health check failed | deploy + Cloudflare auth = high-class — **escalate to Seth**. |
+| `failed(archived)` | the Box blank-archive regen failed (the form IS live; only the DR archive lagged) | Re-run `python -m scripts.generate_form_archive --upload` (low-class); if Box auth is the cause, **escalate to Seth**. |
+
+**Escalate-to-Seth boundary (high-class):** the publish deploy itself, git push / Cloudflare
+(wrangler) / Keychain auth, doctrine, and code (a real CI render-smoke failure). Loading
+the daemon is a Developer-Operator operation.

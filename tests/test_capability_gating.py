@@ -70,6 +70,15 @@ GATED_SCRIPTS: list[tuple[str, list[str]]] = [
         ["graph_client", "send_mail", "resend", "smtplib", "email.mime",
          "anthropic", "anthropic_client"],
     ),
+    (
+        # publish_daemon (slice 3b) is the privileged form-publish actuator: it COMMITS +
+        # DEPLOYS code but performs ZERO external customer transmission and no LLM step.
+        # Forbid the send substrings + anthropic (deterministic actuation). Its HTTP egress
+        # to OUR Worker lives in shared/portal_client.py (F02-allowlisted); the git/wrangler
+        # ops are subprocess to the operator's toolchain, not Python send imports.
+        "safety_reports/publish_daemon.py",
+        ["send_mail", "resend", "smtplib", "email.mime", "anthropic", "anthropic_client"],
+    ),
     # ("po_materials/standard_rfq_generate.py", ["graph_client", "send_mail"]),
     # ("po_materials/racking_module_rfq_generate.py", ["graph_client", "send_mail"]),
     # ("subcontracts/subcontract_generate.py", ["graph_client", "send_mail"]),
@@ -200,6 +209,14 @@ def test_lists_documented():
 #                                 WITHOUT importing `requests` itself — keeping the
 #                                 puller inside the capability gate the TS Worker
 #                                 was outside of.
+#   safety_reports/publish_daemon.py — the privileged form-publish ACTUATOR (slice
+#                                 3b). `subprocess` is its whole purpose: it runs the
+#                                 operator's own git / gh / wrangler to commit + deploy
+#                                 a published form (the CF credential never leaves the
+#                                 Mac). `socket.gethostname()` builds the per-host lease
+#                                 owner. Its Worker HTTP egress goes through the audited
+#                                 shared.portal_client (above), not `requests` directly,
+#                                 and it stays in GATED_SCRIPTS (no customer send, no LLM).
 NETWORK_LIB_ALLOWLIST: frozenset[str] = frozenset({
     "shared/graph_client.py",
     "shared/resend_client.py",
@@ -207,6 +224,7 @@ NETWORK_LIB_ALLOWLIST: frozenset[str] = frozenset({
     "shared/heartbeat_client.py",
     "shared/keychain.py",
     "shared/portal_client.py",
+    "safety_reports/publish_daemon.py",
 })
 
 # Import needles that constitute network-egress or process-spawn capability.
