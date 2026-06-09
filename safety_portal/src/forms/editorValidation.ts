@@ -8,6 +8,7 @@
 
 import type { FormDefinition, Section } from "./types";
 import { RESERVED_KEYS } from "./editorModel";
+import type { CatalogParent } from "./registry";
 
 const KEY_RE = /^[a-z0-9_]+$/;
 const FORM_CODE_RE = /^[a-z0-9-]+-v[0-9]+$/;
@@ -17,6 +18,30 @@ const INPUTS = new Set(["text", "textarea", "date", "time", "number", "select", 
 export interface ValidationContext {
   identity: string;
   parentFormCode: string;
+}
+
+/** Catalog-level parent-grouping guard (mirrors apply_publish + the Worker's
+ * validateParentGrouping): when CREATING / ADD-VERSIONing a form under an EXISTING form
+ * type, a standalone (no-variant) parent can't take a second form, and a variant parent
+ * needs a (unique) variant label. Returns a friendly inline error, or null if fine. A
+ * brand-new form type is always fine. (This is the rule that caught the "JHA test under
+ * jha" case at the daemon; surfacing it here blocks Publish up front.) */
+export function checkParentGrouping(
+  catalog: CatalogParent[], parentFormCode: string, variantLabel: string | null,
+): string | null {
+  const p = catalog.find((x) => x.parent_form_code === parentFormCode);
+  if (!p) return null;
+  if (p.variants.length === 0) {
+    return `Form type "${p.name}" already has a standalone form — give this a new form ` +
+      `type name, or pick a form type that uses variants.`;
+  }
+  if (!variantLabel) {
+    return `Form type "${p.name}" uses variants — give this form a variant label, or choose a new form type.`;
+  }
+  if (p.variants.some((v) => v.variant_label === variantLabel)) {
+    return `Form type "${p.name}" already has a "${variantLabel}" variant — choose a different label.`;
+  }
+  return null;
 }
 
 /** Return a flat list of human-readable problems. Empty array = clean (client-side). */

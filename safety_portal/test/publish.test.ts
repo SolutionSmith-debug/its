@@ -198,3 +198,64 @@ describe("GET /api/admin/publish-status", () => {
     expect((await callApi("/api/admin/publish-status", { cookie })).status).toBe(403);
   });
 });
+
+describe("parent-grouping guard at enqueue (mirrors apply_publish)", () => {
+  function createUnder(identity: string, parent: string, variant: string | null) {
+    const def = jha();
+    def.form_code = `${identity}-v1`;
+    def.parent_form_code = parent;
+    def.variant_label = variant;
+    def.version = 1;
+    return { op: "create", identity, parent_form_code: parent, definition: def };
+  }
+
+  it("rejects a create under an existing standalone parent (jha) with a clear reason", async () => {
+    await provision("admin.one", "admin");
+    const cookie = await login("admin.one");
+    const res = await callApi("/api/admin/publish", {
+      method: "POST", cookie, body: JSON.stringify(createUnder("jha-extra", "jha", "Extra")),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string; reason?: string };
+    expect(body.error).toBe("invalid_definition");
+    expect(body.reason).toMatch(/standalone form/i);
+    expect((await env.DB.prepare("SELECT COUNT(*) n FROM publish_requests").first<{ n: number }>())!.n).toBe(0);
+  });
+
+  it("allows a create under a brand-new form type (201)", async () => {
+    await provision("admin.one", "admin");
+    const cookie = await login("admin.one");
+    const res = await callApi("/api/admin/publish", {
+      method: "POST", cookie, body: JSON.stringify(createUnder("incident", "incident", null)),
+    });
+    expect(res.status, await res.clone().text()).toBe(201);
+  });
+});
+
+describe("POST /api/admin/publish-dismiss", () => {
+  async function seedReq(status: string): Promise<void> {
+    await env.DB
+      .prepare("INSERT INTO publish_requests (requested_by, op, parent_form_code, identity, target_form_code, status) VALUES (?,?,?,?,?,?)")
+      .bind("admin.one", "create", "jha", "x", "x-v1", status)
+      .run();
+  }
+
+  it("clears terminal (archived/failed) rows but leaves in-flight ones", async () => {
+    await provision("admin.one", "admin");
+    const cookie = await login("admin.one");
+    await seedReq("failed");
+    await seedReq("archived");
+    await seedReq("queued");
+    const res = await callApi("/api/admin/publish-dismiss", { method: "POST", cookie });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ cleared: 2 });
+    const { results } = await env.DB.prepare("SELECT status FROM publish_requests").all<{ status: string }>();
+    expect(results.map((r) => r.status)).toEqual(["queued"]);
+  });
+
+  it("a submitter is rejected (403)", async () => {
+    await provision("pm.bob", "submitter");
+    const cookie = await login("pm.bob");
+    expect((await callApi("/api/admin/publish-dismiss", { method: "POST", cookie })).status).toBe(403);
+  });
+});

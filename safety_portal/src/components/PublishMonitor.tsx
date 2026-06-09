@@ -51,6 +51,7 @@ function fmtTime(t: string | number): string {
 export function PublishMonitor({ refreshSignal }: { refreshSignal?: number }) {
   const [requests, setRequests] = useState<api.PublishRequest[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [clearing, setClearing] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const load = useCallback(async () => {
@@ -87,13 +88,35 @@ export function PublishMonitor({ refreshSignal }: { refreshSignal?: number }) {
     if (refreshSignal !== undefined) void load();
   }, [refreshSignal, load]);
 
+  // "Clear finished" — remove terminal (archived/failed) rows from the monitor. Only
+  // offered when there's something finished to clear; in-flight rows are never touched.
+  const hasFinished = (requests ?? []).some((r) => TERMINAL.has(r.status));
+  const onClear = useCallback(async () => {
+    setClearing(true);
+    try {
+      await api.dismissFinishedPublishes();
+      await load();
+    } catch {
+      setErr("Could not clear finished publishes.");
+    } finally {
+      setClearing(false);
+    }
+  }, [load]);
+
   return (
     <section className="card form-editor__monitor" aria-label="Publish status">
       <div className="form-editor__monitor-head">
         <h2 className="page__heading">Publish status</h2>
-        <button type="button" className="btn btn--secondary" onClick={() => void load()}>
-          Refresh
-        </button>
+        <div className="jha__actions" style={{ marginTop: 0 }}>
+          {hasFinished ? (
+            <button type="button" className="btn btn--secondary" disabled={clearing} onClick={() => void onClear()}>
+              {clearing ? "Clearing…" : "Clear finished"}
+            </button>
+          ) : null}
+          <button type="button" className="btn btn--secondary" onClick={() => void load()}>
+            Refresh
+          </button>
+        </div>
       </div>
       {err ? (
         <p className="login__error" role="alert">{err}</p>

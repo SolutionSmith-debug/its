@@ -4,7 +4,8 @@ import type { Context } from "hono";
 import { setSignedCookie, getSignedCookie, deleteCookie } from "hono/cookie";
 import type { Env, Role, SessionClaims, Vars } from "./types";
 import { validateUser, newSessionClaims, hashPassword, normalizeUsername, coerceRole } from "./auth";
-import { validateDefinition } from "./publishValidation";
+import { validateDefinition, validateParentGrouping } from "./publishValidation";
+import catalog from "../catalog.json";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ITS Safety Portal — Worker API (Phase 2)
@@ -1077,6 +1078,15 @@ app.post("/api/admin/publish", ...adminGate, async (c) => {
   if (op === "create" || op === "edit" || op === "add_version") {
     const result = validateDefinition(body.definition, { identity, parentFormCode: parent });
     if (!result.ok) return c.json({ error: "invalid_definition", reason: result.reason }, 400);
+    // Catalog-level parent-grouping guard: create/add_version add a NEW form to the parent,
+    // which must not mix a standalone form with variants (edit bumps an existing identity →
+    // grouping unchanged). Mirrors apply_publish; the daemon re-checks vs live git HEAD.
+    if (op !== "edit") {
+      const grouping = validateParentGrouping(
+        catalog, parent, (body.definition as { variant_label?: string | null }).variant_label,
+      );
+      if (!grouping.ok) return c.json({ error: "invalid_definition", reason: grouping.reason }, 400);
+    }
     targetFormCode = (body.definition as { form_code: string }).form_code;
     definitionJson = JSON.stringify(body.definition);
   } else if (targetFormCode !== null && !/^[a-z0-9-]+-v[0-9]+$/.test(targetFormCode)) {
@@ -1109,6 +1119,16 @@ app.get("/api/admin/publish-status", ...adminGate, async (c) => {
     )
     .all();
   return c.json({ requests: results });
+});
+
+// POST /api/admin/publish-dismiss — clear TERMINAL (archived | failed) requests from the
+// monitor. Send-free; only finished rows are removed — an in-flight publish is never
+// touched (the form files + audit_log remain the record). Returns the count cleared.
+app.post("/api/admin/publish-dismiss", ...adminGate, async (c) => {
+  const res = await c.env.DB
+    .prepare("DELETE FROM publish_requests WHERE status IN ('archived', 'failed')")
+    .run();
+  return c.json({ ok: true, cleared: res.meta?.changes ?? 0 });
 });
 
 // ── Publish daemon interface (Phase 2, slice 3b) ───────────────────────────────
