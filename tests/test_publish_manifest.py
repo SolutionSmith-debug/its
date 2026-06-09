@@ -12,8 +12,42 @@ import pytest
 from safety_reports.publish_manifest import PublishApplyError, apply_publish
 
 _ROOT = Path(__file__).resolve().parents[1]
-CATALOG = json.loads((_ROOT / "safety_portal" / "catalog.json").read_text())
+LIVE_CATALOG = json.loads((_ROOT / "safety_portal" / "catalog.json").read_text())
 SCHEMA = json.loads((_ROOT / "safety_portal" / "catalog.schema.json").read_text())
+
+# The apply_publish BEHAVIOR tests run against this FROZEN in-memory fixture, NOT the live
+# catalog.json. That decoupling is load-bearing: the tests hardcode identity/parent names as
+# "brand-new" or "already-exists" examples (e.g. "incident-report", "jha-special"), so if they
+# read the live catalog, a publish that adds a matching name (as req-8's incident-report-test
+# did) would collide and red-CI the gate — the very self-defeating failure mode the Part-D
+# fix set out to eliminate. The live catalog is validated separately (test_baseline_catalog_is_valid).
+# A standalone (jha), and two variant parents (equipment-preinspection, toolbox-talk) — enough
+# to exercise every op + rejection.
+def _single(identity: str, parent: str, variant: str | None, order: int) -> dict:
+    return {
+        "identity": identity, "variant_label": variant, "status": "active",
+        "current_version": 1, "current_form_code": f"{identity}-v1",
+        "versions": [{"version": 1, "form_code": f"{identity}-v1"}], "display_order": order,
+    }
+
+
+FIXTURE: dict = {
+    "manifest_version": 1,
+    "parents": [
+        {"parent_form_code": "jha", "name": "Job Hazard Analysis", "display_order": 1,
+         "forms": [_single("jha", "jha", None, 1)]},
+        {"parent_form_code": "equipment-preinspection", "name": "Equipment Pre-Inspection",
+         "display_order": 2, "forms": [
+             _single("equipment-skid-steer", "equipment-preinspection", "Skid Steer", 1),
+             _single("equipment-telehandler", "equipment-preinspection", "Telehandler", 2),
+         ]},
+        {"parent_form_code": "toolbox-talk", "name": "Toolbox Talk", "display_order": 3,
+         "forms": [
+             _single("toolbox-talk-ppe", "toolbox-talk", "PPE", 1),
+             _single("toolbox-talk-electrical", "toolbox-talk", "Electrical", 2),
+         ]},
+    ],
+}
 
 
 def _validate(m: dict) -> None:
@@ -53,13 +87,13 @@ def _def(form_code: str, parent: str, version: int, variant: str | None = None,
 
 
 def test_baseline_catalog_is_valid() -> None:
-    _validate(CATALOG)
+    _validate(LIVE_CATALOG)
 
 
 def test_create_new_parent_and_form() -> None:
     d = _def("incident-report-v1", "incident-report", 1)
     m, files, _ = apply_publish(
-        CATALOG, op="create", identity="incident-report",
+        FIXTURE, op="create", identity="incident-report",
         parent_form_code="incident-report", definition=d,
     )
     _validate(m)
@@ -69,11 +103,11 @@ def test_create_new_parent_and_form() -> None:
 
 
 def test_add_version_new_variant_coexists() -> None:
-    before = len(_parent(CATALOG, "toolbox-talk")["forms"])
+    before = len(_parent(FIXTURE, "toolbox-talk")["forms"])
     d = _def("toolbox-talk-ladders-v1", "toolbox-talk", 1, variant="Ladder Safety",
              archetype="content_signin")
     m, _, _ = apply_publish(
-        CATALOG, op="add_version", identity="toolbox-talk-ladders",
+        FIXTURE, op="add_version", identity="toolbox-talk-ladders",
         parent_form_code="toolbox-talk", definition=d,
     )
     _validate(m)
@@ -85,14 +119,14 @@ def test_add_version_new_variant_coexists() -> None:
 def test_create_into_no_variant_parent_rejects_mixing() -> None:
     d = _def("jha-special-v1", "jha", 1, variant="Special")
     with pytest.raises(PublishApplyError, match="mix"):
-        apply_publish(CATALOG, op="create", identity="jha-special",
+        apply_publish(FIXTURE, op="create", identity="jha-special",
                       parent_form_code="jha", definition=d)
 
 
 def test_create_duplicate_identity_rejected() -> None:
     d = _def("jha-v1", "jha", 1)
     with pytest.raises(PublishApplyError, match="already exists"):
-        apply_publish(CATALOG, op="create", identity="jha",
+        apply_publish(FIXTURE, op="create", identity="jha",
                       parent_form_code="jha", definition=d)
 
 
@@ -104,13 +138,13 @@ def test_create_new_parent_with_variant_label_rejected() -> None:
     re-check. Mirrors test_form_catalog.test_single_form_parent_is_null_variant."""
     d = _def("incident-report-v1", "incident-report", 1, variant="test")
     with pytest.raises(PublishApplyError, match="variant_label null"):
-        apply_publish(CATALOG, op="create", identity="incident-report",
+        apply_publish(FIXTURE, op="create", identity="incident-report",
                       parent_form_code="incident-report", definition=d)
 
 
 def test_edit_bumps_version_swaps_active_keeps_history() -> None:
     d = _def("jha-v2", "jha", 2)
-    m, files, _ = apply_publish(CATALOG, op="edit", identity="jha",
+    m, files, _ = apply_publish(FIXTURE, op="edit", identity="jha",
                                 parent_form_code="jha", definition=d)
     _validate(m)
     assert files == {"jha-v2": d}
@@ -121,25 +155,25 @@ def test_edit_bumps_version_swaps_active_keeps_history() -> None:
 
 def test_edit_nonexistent_identity_rejected() -> None:
     with pytest.raises(PublishApplyError, match="not found"):
-        apply_publish(CATALOG, op="edit", identity="ghost", parent_form_code="ghost",
+        apply_publish(FIXTURE, op="edit", identity="ghost", parent_form_code="ghost",
                       definition=_def("ghost-v2", "ghost", 2))
 
 
 def test_edit_non_bumping_version_rejected() -> None:
     with pytest.raises(PublishApplyError, match="bump"):
-        apply_publish(CATALOG, op="edit", identity="jha", parent_form_code="jha",
+        apply_publish(FIXTURE, op="edit", identity="jha", parent_form_code="jha",
                       definition=_def("jha-v1", "jha", 1))
 
 
 def test_edit_changing_variant_label_rejected() -> None:
     d = _def("equipment-skid-steer-v2", "equipment-preinspection", 2, variant="Renamed")
     with pytest.raises(PublishApplyError, match="variant_label"):
-        apply_publish(CATALOG, op="edit", identity="equipment-skid-steer",
+        apply_publish(FIXTURE, op="edit", identity="equipment-skid-steer",
                       parent_form_code="equipment-preinspection", definition=d)
 
 
 def test_delete_retires_identity() -> None:
-    m, files, _ = apply_publish(CATALOG, op="delete", identity="jha", parent_form_code="jha")
+    m, files, _ = apply_publish(FIXTURE, op="delete", identity="jha", parent_form_code="jha")
     _validate(m)
     assert files == {}
     _, form = _find(m, "jha")
@@ -150,7 +184,7 @@ def test_delete_retires_identity() -> None:
 
 def test_rollback_re_promotes_a_prior_version() -> None:
     # First bump jha to v2, then roll back to v1.
-    m2, _, _ = apply_publish(CATALOG, op="edit", identity="jha", parent_form_code="jha",
+    m2, _, _ = apply_publish(FIXTURE, op="edit", identity="jha", parent_form_code="jha",
                              definition=_def("jha-v2", "jha", 2))
     m3, files, _ = apply_publish(m2, op="rollback", identity="jha",
                                  parent_form_code="jha", target_form_code="jha-v1")
@@ -163,21 +197,21 @@ def test_rollback_re_promotes_a_prior_version() -> None:
 
 def test_rollback_unknown_version_rejected() -> None:
     with pytest.raises(PublishApplyError, match="not a known version"):
-        apply_publish(CATALOG, op="rollback", identity="jha", parent_form_code="jha",
+        apply_publish(FIXTURE, op="rollback", identity="jha", parent_form_code="jha",
                       target_form_code="jha-v9")
 
 
 def test_input_manifest_is_never_mutated() -> None:
-    before = json.dumps(CATALOG, sort_keys=True)
-    apply_publish(CATALOG, op="edit", identity="jha", parent_form_code="jha",
+    before = json.dumps(FIXTURE, sort_keys=True)
+    apply_publish(FIXTURE, op="edit", identity="jha", parent_form_code="jha",
                   definition=_def("jha-v2", "jha", 2))
-    apply_publish(CATALOG, op="delete", identity="jha", parent_form_code="jha")
-    assert json.dumps(CATALOG, sort_keys=True) == before
+    apply_publish(FIXTURE, op="delete", identity="jha", parent_form_code="jha")
+    assert json.dumps(FIXTURE, sort_keys=True) == before
 
 
 def test_unknown_op_rejected() -> None:
     with pytest.raises(PublishApplyError, match="unknown op"):
-        apply_publish(CATALOG, op="nuke", identity="jha", parent_form_code="jha")
+        apply_publish(FIXTURE, op="nuke", identity="jha", parent_form_code="jha")
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
