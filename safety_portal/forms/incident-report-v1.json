@@ -1,0 +1,21 @@
+{
+  "form_code": "incident-report-v1",
+  "parent_form_code": "incident-report",
+  "form_name": "Incident Report",
+  "variant_label": "test",
+  "version": 1,
+  "archetype": "sectioned_assessment",
+  "source_pdf": "",
+  "sections": [
+    {
+      "type": "header",
+      "fields": [
+        {
+          "key": "field_1",
+          "label": "test",
+          "input": "text"
+        }
+      ]
+    }
+  ]
+}
