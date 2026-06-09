@@ -80,8 +80,8 @@
           "identity": "jha",
           "variant_label": null,
           "status": "active",
-          "current_version": 2,
-          "current_form_code": "jha-v2",
+          "current_version": 3,
+          "current_form_code": "jha-v3",
           "versions": [
             {
               "version": 1,
@@ -90,6 +90,10 @@
             {
               "version": 2,
               "form_code": "jha-v2"
+            },
+            {
+              "version": 3,
+              "form_code": "jha-v3"
             }
           ],
           "display_order": 1
