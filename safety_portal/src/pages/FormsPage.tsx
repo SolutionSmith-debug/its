@@ -376,16 +376,24 @@ export function FormsPage({ tabBar }: { tabBar: ReactNode }) {
   );
 }
 
-/** Map a publish error to an operator-readable message, surfacing the server `reason`. */
-function explainPublish(e: unknown): string {
+/** Map a publish error to an operator-readable message — surfacing the server `reason`, and
+ *  NEVER falling through to a contentless message (the final branch names the code/status so a
+ *  bare rejection is always explainable). Exported for unit coverage. */
+export function explainPublish(e: unknown): string {
   if (e instanceof api.PublishError) {
+    // All 401s on this route mean the admin session is no longer valid (the 5-minute idle
+    // timeout is the common one) — the actionable fix is to sign in again.
+    if (e.status === 401) return "Your admin session expired (5-minute idle timeout). Sign in again, then re-publish.";
     if (e.status === 409) return "Another publish for this form type is still in progress — wait for it to finish.";
     if (e.status === 403) return "You're not authorized to publish forms.";
     if (e.reason) return `Rejected: ${e.reason}`;
     if (e.code === "invalid_op") return "Invalid operation.";
     if (e.code === "invalid_identity") return "Invalid identity slug.";
     if (e.code === "invalid_parent_form_code") return "Invalid form type (parent).";
-    return "Publish was rejected. Please review and try again.";
+    if (e.code === "invalid_target_form_code") return "Invalid target form code.";
+    if (e.code === "bad_request") return "The publish request was malformed. Reload the editor and try again.";
+    // No mapped reason/code — still tell the operator WHAT was rejected (never contentless).
+    return `Publish was rejected (${e.code}${e.status ? `, HTTP ${e.status}` : ""}). Please review and try again.`;
   }
   return "Something went wrong while publishing. Please try again.";
 }
