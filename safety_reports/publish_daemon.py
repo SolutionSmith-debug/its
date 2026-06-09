@@ -172,6 +172,23 @@ def _reset_to_main() -> None:
     _git("pull", "--ff-only", "origin", "main")
 
 
+def _unstrand_if_needed() -> None:
+    """Resilience: recover an IDLE-stranded tree at the top of every cycle.
+
+    `_actuate`'s Stage-0 `_reset_to_main` only runs when a request is CLAIMED, so a daemon
+    that fails a publish and then finds nothing to actuate leaves `~/its` on the leftover
+    `publish/req-*` branch INDEFINITELY (the "self-heal" never fires because no later publish
+    comes). This recovers without waiting for one.
+
+    Lighter than a blind per-cycle `_reset_to_main`: when HEAD is already on `main` (the
+    common idle case) this is a single `rev-parse` with NO network pull; only the genuinely-
+    stranded case pays the full reset. The full pull-to-current still happens in `_actuate`
+    when a request is actually claimed."""
+    branch = _git("rev-parse", "--abbrev-ref", "HEAD").strip()
+    if branch != "main":
+        _reset_to_main()
+
+
 _CI_FAIL_CONCLUSIONS = {"FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE"}
 
 # Log lines worth surfacing as the failure reason (the first match in a job's failing-step
@@ -392,6 +409,19 @@ def publish_once() -> PublishStats:
     stats = PublishStats()
     if not _polling_enabled():
         stats.halted = "polling_disabled"
+        return stats
+    # Recover an idle-stranded tree BEFORE doing anything else this cycle (after the kill-
+    # switch + polling gate, so a PAUSED/disabled daemon never mutates the tree). A recovery
+    # failure is loud + halts the cycle — we cannot safely actuate from a stranded tree.
+    try:
+        _unstrand_if_needed()
+    except Exception as exc:  # noqa: BLE001
+        error_log.log(
+            Severity.ERROR, SCRIPT_NAME,
+            f"publish daemon could not recover a stranded tree to main: {_exc_reason(exc)}",
+            error_code="publish_daemon.unstrand_failed",
+        )
+        stats.halted = "unstrand_failed"
         return stats
     creds = _resolve_creds()
     if creds is None:
