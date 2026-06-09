@@ -59,6 +59,11 @@ def _patch_all(mocker):
         "hb": mocker.patch.object(portal_poll, "_write_heartbeat"),
         "hb_row": mocker.patch.object(portal_poll, "_write_heartbeat_row"),
         "wd": mocker.patch.object(portal_poll, "_write_watchdog_marker"),
+        # Consecutive-fetch-failure counter (sustained-outage escalation) — mocked so tests
+        # neither touch real state nor depend on the on-disk counter; default count=1 (first
+        # failure → ERROR). A test raises the return to the threshold to exercise CRITICAL.
+        "rec_fail": mocker.patch.object(portal_poll, "_record_fetch_failure", return_value=1),
+        "reset_fail": mocker.patch.object(portal_poll, "_reset_fetch_failures"),
         "is_open": mocker.patch.object(portal_poll.circuit_breaker, "is_open", return_value=False),
         "log": mocker.patch.object(portal_poll.error_log, "log"),
         "review": mocker.patch.object(portal_poll.review_queue, "add"),
@@ -217,7 +222,14 @@ def test_missing_credentials_halts_without_polling(_patch_all):
     assert result.halted_no_creds is True
     _patch_all["get_pending"].assert_not_called()  # FAIL-CLOSED: no poll
     assert _patch_all["hb_row"].call_args.kwargs["status"] == "ERROR"
-    _patch_all["wd"].assert_called_once()
+    # A non-polling cycle must NOT fake the Check-C freshness marker (so a sustained no-creds
+    # state surfaces via the staleness floor) — and missing creds won't self-heal → CRITICAL.
+    _patch_all["wd"].assert_not_called()
+    assert any(
+        c.args and c.args[0] == portal_poll.Severity.CRITICAL
+        and c.kwargs.get("error_code") == "portal_creds_missing"
+        for c in _patch_all["log"].call_args_list
+    )
 
 
 # ---- pending fetch failure ------------------------------------------------
@@ -228,7 +240,42 @@ def test_pending_fetch_failure_writes_error_heartbeat(_patch_all):
     result = _poll_inside_lock()
     assert result.errors == 1
     assert _patch_all["hb_row"].call_args.kwargs["status"] == "ERROR"
-    _patch_all["wd"].assert_called_once()
+    _patch_all["wd"].assert_not_called()  # failed cycle must NOT fake Check-C freshness
+    _patch_all["rec_fail"].assert_called_once()  # consecutive-failure counter bumped
+    # First failure (count=1 < threshold) → ERROR, not CRITICAL.
+    assert any(
+        c.args and c.args[0] == portal_poll.Severity.ERROR
+        and c.kwargs.get("error_code") == "portal_pending_fetch_failed"
+        for c in _patch_all["log"].call_args_list
+    )
+
+
+def test_sustained_fetch_failure_escalates_to_critical(_patch_all):
+    _patch_all["get_pending"].side_effect = portal_poll.portal_client.PortalTransportError("500")
+    _patch_all["rec_fail"].return_value = portal_poll.FETCH_FAIL_CRITICAL_THRESHOLD  # sustained
+    result = _poll_inside_lock()
+    assert result.errors == 1
+    _patch_all["wd"].assert_not_called()
+    assert any(
+        c.args and c.args[0] == portal_poll.Severity.CRITICAL
+        and c.kwargs.get("error_code") == "portal_pending_fetch_failed"
+        for c in _patch_all["log"].call_args_list
+    )
+
+
+def test_pending_fetch_auth_failure_is_critical_immediately(_patch_all):
+    # 401 = bad/rotated bearer → won't self-heal → CRITICAL on the FIRST failure (not via the
+    # transient counter), and no faked Check-C marker.
+    _patch_all["get_pending"].side_effect = portal_poll.portal_client.PortalAuthError("401")
+    result = _poll_inside_lock()
+    assert result.errors == 1
+    _patch_all["wd"].assert_not_called()
+    _patch_all["rec_fail"].assert_not_called()  # auth bypasses the transient counter
+    assert any(
+        c.args and c.args[0] == portal_poll.Severity.CRITICAL
+        and c.kwargs.get("error_code") == "portal_pending_auth_failed"
+        for c in _patch_all["log"].call_args_list
+    )
 
 
 # ---- job-sync push leg ----------------------------------------------------

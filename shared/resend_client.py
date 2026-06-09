@@ -42,6 +42,11 @@ from . import keychain
 
 RESEND_BASE = "https://api.resend.com"
 MAX_RETRIES = 3
+# (connect, read) timeout — the CRITICAL operator-alert path must FAIL FAST, never hang on a
+# half-open socket. A hung send (no timeout) would block the whole triple-fire CRITICAL path
+# (graph_client documents the 88-min lock-starvation incident this class of bug caused), so
+# the page about an outage would itself be lost to the outage.
+REQUEST_TIMEOUT = (10.0, 30.0)
 
 # Sender — Resend's sandbox `onboarding@resend.dev`, which is pre-verified
 # on every Resend account and accepts any recipient. Right address for
@@ -130,7 +135,16 @@ def _request(method: str, path: str, *, json_body: dict[str, Any]) -> requests.R
 
     response: requests.Response | None = None
     for attempt in range(MAX_RETRIES):
-        response = requests.request(method, url, json=json_body, headers=headers)
+        try:
+            response = requests.request(
+                method, url, json=json_body, headers=headers, timeout=REQUEST_TIMEOUT
+            )
+        except requests.RequestException as exc:
+            # Network failure / timeout: FAIL FAST. Translate to ResendError so the caller's
+            # broad-except isolates it, and do NOT retry — a hung/unreachable host must not be
+            # amplified into 3× the wait on the alert path (the durable file + ITS_Errors legs
+            # of the triple-fire still land).
+            raise ResendError(f"request failed: {type(exc).__name__}: {exc}") from exc
         if response.status_code not in (429, 503):
             break
         if attempt == MAX_RETRIES - 1:
