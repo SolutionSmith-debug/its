@@ -56,21 +56,6 @@ def _load_form(code: str) -> dict:
     return json.loads((FORMS_DIR / f"{code}.json").read_text())
 
 
-def _registry_parent_name(parent: dict) -> str:
-    """Reproduce registry.ts formCatalog()'s parent-name derivation, so a 1a
-    snapshot can prove the manifest's authored parent.name equals what the SPA
-    derives from form_name TODAY (i.e. the slice-1b manifest-read flip is a
-    PM-visible no-op). registry.ts:52  no-variant parent -> defs[0].form_name;
-    registry.ts:56  variant parent -> variants[0].form_name split on the em-dash,
-    trimmed, where variants[0] is the first variant by variant_label."""
-    forms = parent["forms"]
-    variant_forms = [f for f in forms if f["variant_label"] is not None]
-    if not variant_forms:
-        return _load_form(forms[0]["current_form_code"])["form_name"]
-    first = min(variant_forms, key=lambda f: f["variant_label"])
-    return _load_form(first["current_form_code"])["form_name"].split("—")[0].strip()
-
-
 def _parents() -> list[dict]:
     return MANIFEST["parents"]
 
@@ -275,48 +260,15 @@ def test_variant_labels_non_empty() -> None:
             assert lbl.strip(), f"{form['identity']}: empty/whitespace variant_label"
 
 
-# ── 1a snapshot: the manifest is a perfect no-op vs today's renderer ──────────────
-# DELETE this test at slice 4/5/6 — the first admin-authored order/name, version-
-# bump, or retire. It is a DELIBERATE 1a-only snapshot proving the manifest
-# reproduces registry.formCatalog()'s CURRENT behaviour EXACTLY (same active set,
-# same dropdown order, same labels), so flipping registry.ts + load_definition to
-# read the manifest (slice 1b) changes NOTHING a PM sees. parent.name / display_order
-# are stored in the manifest precisely so admins can later DIVERGE from these derived
-# values; when they do, this snapshot is intentionally obsolete. The durable
-# invariants are the other tests in this file — do not fold parity into them.
-
-
-def test_slice1a_snapshot_reproduces_current_renderer_behavior() -> None:
-    # (a) every form active + single-version; active set == the bundled files.
-    active_current = {f["current_form_code"] for _, f in _forms() if f["status"] == "active"}
-    assert active_current == _form_files(), (
-        "active current_form_codes != bundled definition files\n"
-        f"  only active: {sorted(active_current - _form_files())}\n"
-        f"  only on disk: {sorted(_form_files() - active_current)}"
-    )
-    assert all(len(f["versions"]) == 1 for _, f in _forms()), "expected all single-version at 1a"
-    non_active = [f["identity"] for _, f in _forms() if f["status"] != "active"]
-    assert not non_active, f"unexpected non-active forms at slice 1a: {non_active}"
-
-    # (b) parent.name reproduces registry.ts's form_name-derived label (no relabel at 1b).
-    for parent in _parents():
-        derived = _registry_parent_name(parent)
-        assert parent["name"] == derived, (
-            f"{parent['parent_form_code']}: manifest name {parent['name']!r} != "
-            f"renderer-derived {derived!r}"
-        )
-
-    # (c) display_order reproduces registry's sort — parents by derived name, variants
-    #     by variant_label — so 1b does not reorder the PM dropdown.
-    by_order = [p["parent_form_code"] for p in sorted(_parents(), key=lambda p: p["display_order"])]
-    by_name = [p["parent_form_code"] for p in sorted(_parents(), key=_registry_parent_name)]
-    assert by_order == by_name, f"parent display_order != name order:\n  {by_order}\n  {by_name}"
-    for parent in _parents():
-        if not any(f["variant_label"] is not None for f in parent["forms"]):
-            continue
-        v_by_order = [f["identity"] for f in sorted(parent["forms"], key=lambda f: f["display_order"])]
-        v_by_label = [f["identity"] for f in sorted(parent["forms"], key=lambda f: (f["variant_label"] or ""))]
-        assert v_by_order == v_by_label, (
-            f"{parent['parent_form_code']}: variant display_order != label order:\n"
-            f"  {v_by_order}\n  {v_by_label}"
-        )
+# ── 1a snapshot: RETIRED (the Phase-2 publish pipeline is now live) ────────────────
+# `test_slice1a_snapshot_reproduces_current_renderer_behavior` proved the manifest was a
+# PERFECT no-op vs registry.formCatalog() at slice 1a (same active set / dropdown order /
+# labels). Its own docstring scheduled it for deletion "at slice 4/5/6 — the first admin-
+# authored order/name, version-bump, or retire": the admin form editor + auto-publish
+# pipeline IS that event. parent.name / display_order are stored precisely so admins can
+# DIVERGE from the derived values (a newly-published form type appends at the end, NOT
+# name-sorted), so the snapshot's parity asserts are intentionally obsolete and would
+# red-CI every new-form publish. The DURABLE invariants it bundled live on in the separate
+# tests above: active-set↔files parity in `test_manifest_indexes_every_form_file_and_vice_versa`,
+# variant grouping in `test_parent_has_no_variant_mixing`, and the lone-form-null renderer
+# guard in `test_single_form_parent_is_null_variant`.

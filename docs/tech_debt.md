@@ -1828,3 +1828,17 @@ The publish daemon left `~/its` on branch `publish/req-5-incident-report` after 
 **Revisit when:** next session start, or when the publish daemon launchd job is loaded.
 
 Surfaced: 2026-06-09 Phase-2 Form Manager build session.
+
+_Update 2026-06-09 (Part-D session): the tree was recovered manually (`git checkout main`) and the **root cause** — the self-defeating publish CI gate (hardcoded form-count assertions that red-CI'd the new-form publish) — is fixed in the Part-D PR. Residual: the daemon's idle self-heal gap below._
+
+## [OPEN 2026-06-09] Publish daemon: stranded tree only self-heals during an actuation, not when idle
+
+`_reset_to_main` (the recover-from-an-interrupted-cycle step) runs **inside `_actuate`**, i.e. only when a queued request is claimed. So a daemon that fails a publish and then has nothing to actuate leaves `~/its` stranded on the `publish/req-*` branch **indefinitely** — the "self-heal" fires only on the *next* publish, which may never come, and the operator's tree stays stuck until a manual `git checkout main`. This is exactly what stranded the tree on `publish/req-5-incident-report` (the resolved entry above; recovered manually 2026-06-09).
+
+**Fix:** move the recovery (`_reset_to_main`, or a lighter `git checkout main` guard) to the **top of `publish_once`** so it runs **every cycle**, immediately after the kill-switch / `polling_enabled` gate — a failed-then-idle daemon un-strands itself on the next tick instead of waiting for an actuation. Keep it after the gate so a PAUSED/disabled daemon never mutates the tree, and keep the daemon-managed-paths-only discipline (`checkout -- catalog.json` + `clean -fd safety_portal/forms`, never the operator's other untracked files).
+
+**Tag:** `safety-portal`, `publish-daemon`, `resilience`, `low`.
+
+**Revisit when:** the publish daemon is next modified (fold into that change), or before the publish-daemon launchd job is loaded for production.
+
+Surfaced: 2026-06-09 Part-D publish-CI-gate session (operator flag).

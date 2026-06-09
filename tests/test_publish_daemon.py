@@ -163,6 +163,36 @@ def test_wait_for_ci_raises_on_a_failed_check(mocker):
         pd._wait_for_ci("publish/req-1-jha")
 
 
+def test_wait_for_ci_dedupes_and_surfaces_detail(mocker):
+    """D2: a single failing job double-fires (push + pull_request) → the reason de-dupes by
+    NAME (no 'portal, portal'), and each failing check carries its real log excerpt rather
+    than a bare job name."""
+    rollup = {
+        "mergeStateStatus": "BLOCKED",
+        "statusCheckRollup": [
+            {"name": "test", "conclusion": "FAILURE", "detailsUrl": "https://x/actions/runs/1/job/111"},
+            {"name": "test", "conclusion": "FAILURE", "detailsUrl": "https://x/actions/runs/2/job/222"},
+            {"name": "portal", "conclusion": "FAILURE", "detailsUrl": "https://x/actions/runs/1/job/333"},
+            {"name": "portal", "conclusion": "FAILURE", "detailsUrl": "https://x/actions/runs/2/job/444"},
+        ],
+    }
+    fail_log = "test\tTests\t2026-06-09T05:15:55Z AssertionError: expected 11 to be 10\n"
+
+    def fake_gh(*a):
+        if a[:2] == ("pr", "view"):
+            return json.dumps(rollup)
+        if a[:2] == ("run", "view"):
+            return fail_log
+        return ""
+
+    mocker.patch.object(pd, "_gh", side_effect=fake_gh)
+    with pytest.raises(RuntimeError) as exc:
+        pd._wait_for_ci("publish/req-1-jha")
+    msg = str(exc.value)
+    assert msg.count("test:") == 1 and msg.count("portal:") == 1  # de-duped by name
+    assert "expected 11 to be 10" in msg  # the real reason, not a bare job name
+
+
 def test_wait_for_ci_updates_a_behind_branch_then_merges(mocker):
     views = [
         json.dumps({"mergeStateStatus": "BEHIND", "statusCheckRollup": []}),

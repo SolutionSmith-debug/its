@@ -57,9 +57,12 @@ def test_blank_form_renders_valid_fillable_pdf(path: Path) -> None:
     assert reader.get_fields(), f"{path.stem} produced no AcroForm fields"
 
 
-def test_all_ten_forms_present() -> None:
-    """The glob must pick up exactly the 10 form definitions (meta-schema excluded)."""
-    assert len(DEF_PATHS) == 10
+def test_form_definitions_present() -> None:
+    """The glob must pick up the form definitions (meta-schema excluded). The COUNT is
+    intentionally not asserted — the publish pipeline adds forms, so a hardcoded total
+    is self-defeating (it red-CIs every new-form publish). Per-form validity is covered
+    by the parametrized tests above."""
+    assert DEF_PATHS, "no form definitions found"
     assert all(p.name != "meta-schema.json" for p in DEF_PATHS)
 
 
@@ -186,7 +189,9 @@ def _load_script():
 def test_script_definition_paths_match_registry_glob() -> None:
     mod = _load_script()
     paths = mod._form_definition_paths()
-    assert len(paths) == 10
+    # The script's own glob must see exactly the same set as the registry glob (DEF_PATHS)
+    # — dynamic, so a new-form publish never trips it.
+    assert {p.name for p in paths} == {p.name for p in DEF_PATHS}
     assert all(p.name != "meta-schema.json" for p in paths)
 
 
@@ -198,7 +203,7 @@ def test_script_filename_by_form_name() -> None:
 
 
 def test_script_render_only_writes_all_pdfs(tmp_path, monkeypatch) -> None:
-    """Default mode renders the cover + 10 forms to the out dir and touches NO Box.
+    """Default mode renders the cover + every form to the out dir and touches NO Box.
     If anything tried to import box_client/smartsheet at render-time this would surface
     as a real network attempt — render-only must stay pure."""
     mod = _load_script()
@@ -206,7 +211,7 @@ def test_script_render_only_writes_all_pdfs(tmp_path, monkeypatch) -> None:
     rc = mod.main(["--out-dir", str(out)])
     assert rc == 0
     pdfs = sorted(out.glob("*.pdf"))
-    assert len(pdfs) == 11  # 10 forms + cover
+    assert len(pdfs) == len(DEF_PATHS) + 1  # one per form + the cover (dynamic count)
     assert any(p.name.startswith("00") for p in pdfs)  # cover sorts first
     for p in pdfs:
         assert p.read_bytes()[:5] == b"%PDF-"
