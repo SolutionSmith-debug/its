@@ -45,8 +45,11 @@ const OP_LABEL: Record<api.PublishOp, string> = {
 // Ops that carry a composed definition → a FAILED one can be re-opened in the editor.
 const DEFINITION_OPS = new Set<api.PublishOp>(["create", "edit", "add_version"]);
 
-function fmtTime(t: string | number): string {
-  const d = typeof t === "number" ? new Date(t) : new Date(t);
+export function fmtTime(t: string | number): string {
+  // publish_requests.created_at/updated_at are stored as unix SECONDS (migration 0010's
+  // `unixepoch()`), but Date() expects MILLISECONDS — without the ×1000 a 2026 stamp
+  // renders as ~Jan 1970 (the "1/21/1970" monitor bug). A string is treated as an ISO ts.
+  const d = typeof t === "number" ? new Date(t * 1000) : new Date(t);
   if (Number.isNaN(d.getTime())) return String(t);
   return d.toLocaleString();
 }

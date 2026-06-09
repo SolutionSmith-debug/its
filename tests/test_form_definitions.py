@@ -64,12 +64,16 @@ def test_checklist_groups_have_scale_and_items(path: Path) -> None:
                 assert g["items"], f"{path.stem}/{g['key']}: no items"
 
 
-def test_all_five_parent_types_present() -> None:
+def test_seed_parent_types_present() -> None:
+    """The five seed parent types must remain present. Asserted as a SUBSET, not an exact
+    set — the publish pipeline adds new parent types, so an equality check would be
+    self-defeating (red-CI every new-form-type publish)."""
     parents = {_load(p)["parent_form_code"] for p in DEF_PATHS}
-    assert parents == {
+    seed = {
         "jha", "equipment-preinspection", "toolbox-talk",
         "visitor-sign-in", "hsse-work-observation",
     }
+    assert seed <= parents, f"seed parent type(s) missing: {sorted(seed - parents)}"
 
 
 def test_jha_mandatory_footer_and_signature_present() -> None:
@@ -100,9 +104,14 @@ def test_hsse_has_eleven_assessment_categories() -> None:
     assert len(s1["groups"][0]["items"]) == 11
 
 
-def test_toolbox_five_variants_with_content_and_signin() -> None:
+def test_toolbox_variants_have_content_and_signin() -> None:
+    # Lower-bound, not exact: the 5 seed toolbox-talk variants must remain, but the publish
+    # pipeline adds variants (an add_version under the existing parent writes a 6th
+    # toolbox-talk-*.json into the globbed forms/ dir) — an `== 5` here would red-CI that
+    # publish, the self-defeating gate Part D set out to remove. Each variant (seed or new)
+    # must still carry the content_blocks + signature renderer contract.
     tb = [p for p in DEF_PATHS if _load(p)["parent_form_code"] == "toolbox-talk"]
-    assert len(tb) == 5
+    assert len(tb) >= 5
     for p in tb:
         d = _load(p)
         assert any(s["type"] == "content_blocks" and s["blocks"] for s in d["sections"])

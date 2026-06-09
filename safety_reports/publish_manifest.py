@@ -107,6 +107,20 @@ def apply_publish(
         }
         parent = _find_parent(m, parent_form_code)
         if parent is None:
+            # A brand-new parent's first form is its ONLY variant, so it must be the
+            # no-variant kind (variant_label null). registry.ts branches binary on
+            # variant_label; a lone form WITH a label renders a degenerate one-option
+            # 3rd picklist (the invariant tests/test_form_catalog.py
+            # test_single_form_parent_is_null_variant guards). Enforce it HERE — the
+            # authoritative manifest-level re-check — so a junk publish (e.g. a create-
+            # flow test with variant_label "test") is stamped `failed` at the daemon
+            # rather than committed to a branch and only caught (reddening CI) downstream.
+            if variant_label is not None:
+                raise PublishApplyError(
+                    f"a brand-new form type must have variant_label null (it is its own "
+                    f"only variant); got {variant_label!r} — add variants later via a "
+                    f"create under the existing parent"
+                )
             m["parents"].append({
                 "parent_form_code": parent_form_code,
                 "name": _parent_display_name(definition),

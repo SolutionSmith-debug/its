@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import socket
 import subprocess
 import time
@@ -173,6 +174,52 @@ def _reset_to_main() -> None:
 
 _CI_FAIL_CONCLUSIONS = {"FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE"}
 
+# Log lines worth surfacing as the failure reason (the first match in a job's failing-step
+# log). Ordered widest-first; we only need ONE actionable line per check.
+_LOG_SIGNAL_RE = re.compile(
+    r"(AssertionError|Error:|FAILED|expected .+ to be|✗|×|##\[error\])", re.IGNORECASE
+)
+
+
+def _dedupe_checks(checks: list[dict]) -> list[dict]:
+    """One entry per check NAME. CI double-fires on push + pull_request, so a single failing
+    job appears twice — surfacing 'portal, portal' is noise. Preserves first-seen order."""
+    seen: set[str] = set()
+    out: list[dict] = []
+    for c in checks:
+        name = str(c.get("name") or c.get("context") or "check")
+        if name not in seen:
+            seen.add(name)
+            out.append(c)
+    return out
+
+
+def _check_failure_detail(check: dict) -> str:
+    """A one-line actionable excerpt for ONE failing check — the first signal line of its
+    failing job's log (e.g. 'expected 11 to be 10'), so the request's failure_reason (and
+    the editor's 'Edit & re-publish') shows the REAL reason, not a bare job name. Best-
+    effort: any error falls back to the bare name so a detail-fetch failure never masks the
+    CI-failure signal."""
+    name = str(check.get("name") or check.get("context") or "check")
+    m = re.search(r"/job/(\d+)", str(check.get("detailsUrl") or ""))
+    if not m:
+        return name
+    try:
+        log = _gh("run", "view", "--job", m.group(1), "--log-failed")
+    except Exception:  # noqa: BLE001 — the detail is a bonus, never load-bearing
+        return name
+    for line in log.splitlines():
+        if _LOG_SIGNAL_RE.search(line):
+            msg = line.split("\t")[-1].strip()          # drop gh's 'job\tstep\t' prefix
+            msg = re.sub(r"^\S+Z\s+", "", msg)           # drop a leading ISO-8601 timestamp
+            return f"{name}: {msg[:160]}"
+    return name
+
+
+def _ci_failure_reason(bad: list[dict]) -> str:
+    """De-duped, per-check detailed reason for a set of failing checks (D2)."""
+    return "; ".join(_check_failure_detail(c) for c in _dedupe_checks(bad))
+
 
 def _wait_for_ci(branch: str) -> None:
     """Poll the branch's PR until CI is green (mergeStateStatus == CLEAN), then return. Raises
@@ -189,8 +236,7 @@ def _wait_for_ci(branch: str) -> None:
         rollup = data.get("statusCheckRollup") or []
         bad = [c for c in rollup if str(c.get("conclusion") or "").upper() in _CI_FAIL_CONCLUSIONS]
         if bad:
-            names = ", ".join(str(c.get("name") or c.get("context") or "check") for c in bad)
-            raise RuntimeError(f"CI failed for {branch}: {names}")
+            raise RuntimeError(f"CI failed for {branch}: {_ci_failure_reason(bad)}")
         if data.get("mergeStateStatus") == "BEHIND":
             _gh("pr", "update-branch", branch)
         time.sleep(CI_POLL_S)

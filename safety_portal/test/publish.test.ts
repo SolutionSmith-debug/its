@@ -11,7 +11,10 @@ import { validateDefinition } from "../worker/publishValidation";
 //     migration 0010 applied by test/apply-migrations.ts).
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Load the 10 shipped definitions the SAME way registry.ts does (Vite eager glob).
+// Load every shipped definition the SAME way registry.ts does (Vite eager glob). The
+// COUNT is intentionally not asserted — the publish pipeline adds forms, so a hardcoded
+// total is self-defeating (it red-CIs every new-form publish). The real gate is the
+// per-form validateDefinition loop below, which every shipped form must pass.
 const formModules = import.meta.glob("../forms/*.json", { eager: true, import: "default" });
 const FORMS: Record<string, Record<string, unknown>> = {};
 for (const [path, def] of Object.entries(formModules)) {
@@ -32,8 +35,8 @@ function sectionOfType(def: Record<string, unknown>, t: string): Record<string, 
 }
 
 describe("validateDefinition — every shipped form passes (editor clones them)", () => {
-  it("loaded all 10 shipped forms", () => {
-    expect(Object.keys(FORMS).length).toBe(10);
+  it("loaded at least the shipped forms (count is dynamic — the pipeline adds them)", () => {
+    expect(Object.keys(FORMS).length).toBeGreaterThan(0);
   });
   for (const [code, def] of Object.entries(FORMS)) {
     it(`${code} validates ok`, () => {

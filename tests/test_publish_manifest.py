@@ -69,6 +69,7 @@ def test_create_new_parent_and_form() -> None:
 
 
 def test_add_version_new_variant_coexists() -> None:
+    before = len(_parent(CATALOG, "toolbox-talk")["forms"])
     d = _def("toolbox-talk-ladders-v1", "toolbox-talk", 1, variant="Ladder Safety",
              archetype="content_signin")
     m, _, _ = apply_publish(
@@ -78,7 +79,7 @@ def test_add_version_new_variant_coexists() -> None:
     _validate(m)
     tb = _parent(m, "toolbox-talk")
     assert "toolbox-talk-ladders" in [f["identity"] for f in tb["forms"]]
-    assert len(tb["forms"]) == 6  # the 5 shipped + the new one
+    assert len(tb["forms"]) == before + 1  # adding a variant grows the parent by exactly one
 
 
 def test_create_into_no_variant_parent_rejects_mixing() -> None:
@@ -93,6 +94,18 @@ def test_create_duplicate_identity_rejected() -> None:
     with pytest.raises(PublishApplyError, match="already exists"):
         apply_publish(CATALOG, op="create", identity="jha",
                       parent_form_code="jha", definition=d)
+
+
+def test_create_new_parent_with_variant_label_rejected() -> None:
+    """A brand-new form type (new parent) is its own only variant, so it MUST be null-
+    variant. This is the authoritative guard that stops a junk publish — exactly the
+    create-flow test artifact (variant_label "test" on a lone new parent) that slipped
+    past the enqueue gate and only reddened CI downstream — at the daemon's manifest
+    re-check. Mirrors test_form_catalog.test_single_form_parent_is_null_variant."""
+    d = _def("incident-report-v1", "incident-report", 1, variant="test")
+    with pytest.raises(PublishApplyError, match="variant_label null"):
+        apply_publish(CATALOG, op="create", identity="incident-report",
+                      parent_form_code="incident-report", definition=d)
 
 
 def test_edit_bumps_version_swaps_active_keeps_history() -> None:
