@@ -1864,3 +1864,15 @@ Surfaced: 2026-06-09 Part-A production-hardening session (A2).
 **Revisit when:** the `shared/heartbeat.py` extraction lands, or before compile_now_poll's production activation.
 
 Surfaced: 2026-06-09 Part-B on-demand-compile session (B3 divergence — watchdog liveness done, daemon-health row deferred).
+
+## [OPEN 2026-06-09, low] Orphaned Reports sheet — column styling not applied (Part-C C1 cosmetic)
+
+`scripts/migrations/build_orphaned_reports_sheet.py` creates the Orphaned Reports sheet (built live 2026-06-09, `SHEET_ORPHANED_REPORTS=2577084374273924`) with the correct columns + types, but does NOT apply the cosmetic column WIDTHS/formats the brief C1 "styled" item mentioned (it mirrors `build_its_active_jobs_sheet.py`, which also doesn't style in-script). The sheet is fully functional with default widths.
+
+**Fix:** add a `_apply_styles_best_effort`-style pass (per-column width/format) to the migration AND a one-shot `update_column` styling run against the existing live sheet (find-or-create skips a re-create, so the existing sheet needs the columns updated directly), OR fold it into `scripts/style_safety_portal_sheets.py`.
+
+**Tag:** `safety-portal`, `orphaned-reports`, `cosmetic`.
+
+**Revisit when:** the operator finds the default widths inconvenient, or a styling pass is run across the Safety Portal sheets.
+
+Surfaced: 2026-06-09 Part-C session (functional done; cosmetic styling deferred).
