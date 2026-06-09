@@ -175,6 +175,11 @@ def apply_publish(
         _, form = _find_form(m, identity)
         if form is None:
             raise PublishApplyError(f"identity {identity!r} not found")
+        if form["status"] == "retired":
+            # Already retired → a no-op mutation. Reject here (the validate stage) with a
+            # clear reason, rather than letting an empty catalog diff reach the daemon's
+            # `git commit`, which exits 1 with a confusing "nothing to commit" message.
+            raise PublishApplyError(f"{identity!r} is already retired")
         form["status"] = "retired"
         return m, files, f"delete: retired {identity}"
 
