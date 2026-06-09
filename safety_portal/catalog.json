@@ -207,12 +207,16 @@
           "identity": "incident-report",
           "variant_label": null,
           "status": "active",
-          "current_version": 1,
-          "current_form_code": "incident-report-v1",
+          "current_version": 2,
+          "current_form_code": "incident-report-v2",
           "versions": [
             {
               "version": 1,
               "form_code": "incident-report-v1"
+            },
+            {
+              "version": 2,
+              "form_code": "incident-report-v2"
             }
           ],
           "display_order": 1
