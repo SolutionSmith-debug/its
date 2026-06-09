@@ -393,11 +393,15 @@ function FieldEditor({
   );
 }
 
-function OptionsEditor({ options, onChange }: { options: string[]; onChange: (o: string[]) => void }) {
+function OptionsEditor({
+  options,
+  onChange,
+  label = "Options",
+}: { options: string[]; onChange: (o: string[]) => void; label?: string }) {
   const update = (i: number, val: string) => onChange(options.map((o, idx) => (idx === i ? val : o)));
   return (
     <div className="form-editor__options">
-      <span className="field__label">Options</span>
+      <span className="field__label">{label}</span>
       {options.map((o, i) => (
         <div key={i} className="form-editor__option-row">
           <input className="field__input" value={o} placeholder="option value" onChange={(e) => update(i, e.target.value)} />
@@ -538,9 +542,7 @@ function ChecklistEditor({
   );
 }
 
-function GroupEditor({ group, onChange, onRemove }: { group: Group; onChange: (g: Group) => void; onRemove?: () => void }) {
-  const setScale = (raw: string) =>
-    onChange({ ...group, scale: raw.split(",").map((s) => s.trim()).filter((s) => s !== "") });
+export function GroupEditor({ group, onChange, onRemove }: { group: Group; onChange: (g: Group) => void; onRemove?: () => void }) {
   const updateItem = (i: number, it: Item) =>
     onChange({ ...group, items: group.items.map((x, idx) => (idx === i ? it : x)) });
   const addItem = () => onChange({ ...group, items: [...group.items, blankItem(`${group.key}_item_${group.items.length + 1}`)] });
@@ -568,10 +570,7 @@ function GroupEditor({ group, onChange, onRemove }: { group: Group; onChange: (g
           </button>
         ) : null}
       </div>
-      <label className="field">
-        <span className="field__label">Response scale <span className="muted">(comma-separated, e.g. OK, NOT OK, N/A)</span></span>
-        <input className="field__input" value={group.scale.join(", ")} onChange={(e) => setScale(e.target.value)} />
-      </label>
+      <OptionsEditor label="Response scale" options={group.scale} onChange={(scale) => onChange({ ...group, scale })} />
       <label className="form-editor__field-required">
         <input
           type="checkbox"
