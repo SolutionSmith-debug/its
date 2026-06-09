@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { AppHeader } from "../components/AppHeader";
 import { FormEditor } from "../components/FormEditor";
@@ -14,6 +14,8 @@ import {
 } from "../forms/editorModel";
 import { validateDraft, checkParentGrouping } from "../forms/editorValidation";
 import * as api from "../lib/api";
+import { useAuth } from "../lib/auth";
+import { type EditorMode, clearDraft, loadDraft, saveDraft } from "../lib/draftCache";
 
 /**
  * Admin "Forms" tab — the form catalog manager (Phase-2). VIEW mode lists every active
@@ -30,11 +32,7 @@ import * as api from "../lib/api";
  * the editor surfaces only create/edit/add_version/delete this slice.
  */
 
-type Mode =
-  | { kind: "view" }
-  | { kind: "create" }
-  | { kind: "edit"; sourceCode: string; identity: string }
-  | { kind: "add_version"; sourceCode: string };
+type Mode = { kind: "view" } | EditorMode;
 
 type Banner = { kind: "ok" | "err"; msg: string } | null;
 
@@ -45,6 +43,8 @@ function identityFromCode(formCode: string): string {
 
 export function FormsPage({ tabBar }: { tabBar: ReactNode }) {
   const catalog = useMemo(() => formCatalog(), []);
+  const { user } = useAuth();
+  const username = user?.username ?? "";
 
   // Flatten the parent→variant catalog into a selectable, parent-grouped list.
   const items = useMemo(() => {
@@ -129,11 +129,44 @@ export function FormsPage({ tabBar }: { tabBar: ReactNode }) {
     setMode({ kind: "add_version", sourceCode });
   }
 
+  // Cancel exits the editor but KEEPS the cached draft (recoverable on reopen) — only Discard
+  // or a successful publish clears it.
   function cancelEditor() {
     setDraft(null);
     setBanner(null);
     setMode({ kind: "view" });
   }
+
+  function discardDraft() {
+    if (!window.confirm("Discard this draft? This can't be undone.")) return;
+    clearDraft(username);
+    setDraft(null);
+    setBanner({ kind: "ok", msg: "Draft discarded." });
+    setMode({ kind: "view" });
+  }
+
+  // Restore a cached in-progress draft ONCE per mount — this is what survives the admin idle
+  // logout / reload (the draft otherwise lives only in the state cleared on unmount).
+  const didRestore = useRef(false);
+  useEffect(() => {
+    if (didRestore.current || !username) return; // wait for the session, then attempt once
+    didRestore.current = true;
+    if (draft || mode.kind !== "view") return; // already editing — don't clobber
+    const cached = loadDraft(username);
+    if (!cached) return;
+    setDraft(cached.draft);
+    setIdentity(cached.identity);
+    setParent(cached.parent);
+    setMode(cached.mode);
+    setBanner({ kind: "ok", msg: "Restored your unsaved draft — use Discard to start over." });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [username]);
+
+  // Auto-save the draft (per account) on every editor change, so nothing is lost on a timeout.
+  useEffect(() => {
+    if (!username || !draft || mode.kind === "view") return;
+    saveDraft(username, { mode, draft, identity, parent });
+  }, [username, draft, identity, parent, mode]);
 
   // Keep form_code + parent_form_code on the draft in lockstep with the identity/version
   // inputs (form_code is DERIVED, never typed — the server enforces this too).
@@ -177,6 +210,7 @@ export function FormsPage({ tabBar }: { tabBar: ReactNode }) {
       setRefreshSignal((n) => n + 1);
       setMode({ kind: "view" });
       setDraft(null);
+      clearDraft(username); // form is queued → the draft is done; don't re-restore it.
     } catch (e) {
       setBanner({ kind: "err", msg: explainPublish(e) });
     } finally {
@@ -265,6 +299,9 @@ export function FormsPage({ tabBar }: { tabBar: ReactNode }) {
                 </button>
                 <button type="button" className="btn btn--secondary" disabled={busy} onClick={cancelEditor}>
                   Cancel
+                </button>
+                <button type="button" className="btn btn--danger" disabled={busy} onClick={discardDraft}>
+                  Discard draft
                 </button>
               </div>
             </div>
