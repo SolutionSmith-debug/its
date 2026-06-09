@@ -171,9 +171,11 @@ HeartbeatStatus = Literal[
     "OK", "WARN", "ERROR", "DEGRADED", "SKIPPED", "CIRCUIT_OPEN"
 ]
 
-# Send Status values the poller dispatches on. SENT rows are skipped
-# (already done); HELD rows are skipped (operator-driven hold; reserved
-# for future use); PENDING + FAILED rows are dispatch candidates.
+# Send Status values the poller dispatches on. SENT rows are skipped (already done);
+# HELD rows are skipped (operator-driven hold); SENDING rows are skipped — that is the
+# LOAD-BEARING exclusion behind weekly_send's write-ahead marker: a row left in SENDING
+# (a post-send SENT-stamp failure) must NEVER be re-dispatched, or the customer is
+# double-sent. Do NOT add SENDING here. PENDING + FAILED rows are dispatch candidates.
 DISPATCH_STATUSES = frozenset({weekly_send.STATUS_PENDING, weekly_send.STATUS_FAILED})
 
 

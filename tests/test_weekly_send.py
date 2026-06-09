@@ -79,6 +79,24 @@ def test_send_resolves_recipients_from_active_jobs_and_attaches_pdf(stub):
     upd = stub["update_rows"].call_args.args[1][0]
     assert upd[wsr_review.COL_SEND_STATUS] == wsr_review.STATUS_SENT
     assert re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$", upd[wsr_review.COL_SENT_AT])
+    # Write-ahead marker: the FIRST update_rows call flipped the row to SENDING, the
+    # LAST flipped it to SENT (the irreversible send sits between them).
+    calls = stub["update_rows"].call_args_list
+    assert calls[0].args[1][0][wsr_review.COL_SEND_STATUS] == wsr_review.STATUS_SENDING
+    assert calls[-1].args[1][0][wsr_review.COL_SEND_STATUS] == wsr_review.STATUS_SENT
+
+
+def test_sending_marker_is_written_before_the_send(stub):
+    # At the moment send_mail fires, the row must ALREADY be marked SENDING — proving the
+    # write-ahead ordering (so a post-send stamp failure can never leave it re-dispatchable).
+    seen = {}
+
+    def _capture(*a, **k):
+        seen["status_at_send"] = stub["update_rows"].call_args.args[1][0][wsr_review.COL_SEND_STATUS]
+
+    stub["send_mail"].side_effect = _capture
+    weekly_send.send_one_row(50)
+    assert seen["status_at_send"] == wsr_review.STATUS_SENDING
 
 
 def test_download_uses_compiled_pdf_box_id(stub):
@@ -171,16 +189,33 @@ def test_graph_auth_error_critical_and_failed(stub):
     assert crits
 
 
-# ---- post-send row-update failure → double-send guard ---------------------
+# ---- write-ahead marker: post-send stamp failure must NOT double-send ------
 
 
-def test_post_send_update_failure_returns_sent_with_critical(stub):
+def test_post_send_stamp_failure_leaves_row_sending_no_double_send(stub):
     from shared.smartsheet_client import SmartsheetError
-    stub["update_rows"].side_effect = SmartsheetError("update failed after send")
+    # SENDING marker write succeeds (call 1); the post-send SENT-stamp fails (call 2).
+    stub["update_rows"].side_effect = [None, SmartsheetError("update failed after send")]
     result = weekly_send.send_one_row(50)
     assert result.status == "sent"  # the send DID fire
+    stub["send_mail"].assert_called_once()
     crits = [c for c in stub["log"].call_args_list if c.kwargs.get("error_code") == "weekly_send.post_send_row_update_failed"]
     assert crits
+    # The row is LEFT in SENDING (the write-ahead marker) — NOT a dispatch candidate, so
+    # the poller never re-sends it. The first (successful) update_rows call set SENDING.
+    calls = stub["update_rows"].call_args_list
+    assert calls[0].args[1][0][wsr_review.COL_SEND_STATUS] == wsr_review.STATUS_SENDING
+
+
+def test_pre_send_marker_failure_aborts_without_sending(stub):
+    from shared.smartsheet_client import SmartsheetError
+    # The SENDING-marker write (the FIRST update_rows call) fails → we must NOT send.
+    stub["update_rows"].side_effect = SmartsheetError("smartsheet down before send")
+    result = weekly_send.send_one_row(50)
+    assert result.status == "send_failed"
+    stub["send_mail"].assert_not_called()  # nothing irreversible happened — fail toward not-sending
+    warns = [c for c in stub["log"].call_args_list if c.kwargs.get("error_code") == "weekly_send.pre_send_marker_failed"]
+    assert warns
 
 
 # ---- resolved recipients are logged --------------------------------------

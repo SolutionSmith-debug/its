@@ -50,6 +50,14 @@ STATUS_PENDING = "PENDING"
 STATUS_SENT = "SENT"
 STATUS_FAILED = "FAILED"
 STATUS_HELD = "HELD"
+# Transient WRITE-AHEAD intent marker. weekly_send sets this immediately BEFORE the
+# irreversible Graph send, then flips it to SENT. It is NOT a dispatch candidate
+# (weekly_send_poll.DISPATCH_STATUSES = {PENDING, FAILED}), so a row left in SENDING
+# (a post-send SENT-stamp failure, or a daemon death mid-send) is NEVER re-dispatched
+# — converting the double-send failure mode into a fail-safe stuck-unsent state that
+# watchdog Check N surfaces. The live picklist has validation=false, so this value is
+# writable even before it is added as a formal dropdown option (a tidy follow-up).
+STATUS_SENDING = "SENDING"
 
 SHEET_ID = sheet_ids.SHEET_WSR_HUMAN_REVIEW
 

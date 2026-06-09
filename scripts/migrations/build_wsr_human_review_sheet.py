@@ -36,7 +36,10 @@ from shared import keychain, smartsheet_client  # noqa: E402
 
 FOLDER_SAFETY_PORTAL = 6663869084002180  # ITS –– Safety Portal / Safety Portal
 SHEET_NAME = "WSR_human_review"
-SEND_STATUS_OPTIONS = ["PENDING", "SENT", "FAILED", "HELD"]
+# Lifecycle: PENDING → SENDING (write-ahead marker, weekly_send Stage 6) → SENT;
+# FAILED (retryable) / HELD (operator hold) are off-path. SENDING is a transient
+# in-flight state the poller never dispatches on (weekly_send_poll.DISPATCH_STATUSES).
+SEND_STATUS_OPTIONS = ["PENDING", "SENDING", "SENT", "FAILED", "HELD"]
 
 COLUMN_SCHEMA: list[dict[str, Any]] = [
     {"title": "Job / Project", "type": "TEXT_NUMBER", "primary": True},

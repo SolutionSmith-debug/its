@@ -114,7 +114,9 @@ def test_checks_list_has_all_session_1_2_3_checks():
     Check H — the marker-file Check C is the staleness floor doctrine once
     named "Check H" (2026-06-01 doctrine correction). Checks J (circuit-breaker
     prolonged-open page) and K (guaranteed F09 cap-window summary sweep) shipped
-    in F08/F09 PR 2. Check L (token write-capability probe) shipped in B2."""
+    in F08/F09 PR 2. Check L (token write-capability probe) shipped in B2.
+    Check N (WSR rows stuck in SENDING) is the weekly_send write-ahead-marker
+    safety net."""
     assert watchdog.CHECKS == [
         watchdog._check_stale_review_queue,
         watchdog._check_open_criticals,
@@ -127,6 +129,7 @@ def test_checks_list_has_all_session_1_2_3_checks():
         watchdog._check_alert_rate_cap_window,
         watchdog._check_token_write_capability,  # Check L (B2)
         watchdog._check_blueprint_guard_symlinks,  # Check M (C3)
+        watchdog._check_stuck_wsr_send,  # Check N (WSR write-ahead-marker safety net)
     ]
 
 
@@ -385,6 +388,28 @@ def test_open_critical_under_cap(mock_get_rows):
     assert "uncaught_exception" in result.details
     assert "smartsheet-write-failed" in result.details
     assert "showing first" not in result.details
+
+
+# ---- Group N: _check_stuck_wsr_send (write-ahead-marker safety net) -------
+
+
+def test_no_wsr_rows_stuck_in_sending(mock_get_rows):
+    mock_get_rows.return_value = []
+
+    result = watchdog._check_stuck_wsr_send()
+
+    assert result.severity is Severity.INFO
+    assert "No WSR rows stuck in SENDING" in result.summary
+
+
+def test_wsr_rows_stuck_in_sending_warn(mock_get_rows):
+    mock_get_rows.return_value = [{"_row_id": 50}, {"_row_id": 51}]
+
+    result = watchdog._check_stuck_wsr_send()
+
+    assert result.severity is Severity.WARN
+    assert "2 WSR row(s) stuck in SENDING" in result.summary
+    assert "50" in result.details and "51" in result.details
 
 
 def test_open_critical_over_cap(mock_get_rows):
