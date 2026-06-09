@@ -246,13 +246,23 @@ const requireSession = createMiddleware<{ Bindings: Env; Variables: Vars }>(asyn
   // the column; ORDER DEPENDENCY: it must be live before this deploys). Role is
   // authoritative from D1 here — NOT from the cookie — so a demotion is effective
   // immediately. coerceRole fails safe (unknown → 'submitter', never 'admin').
+  // Read `session_epoch` (slice 8a, audit #7) in the SAME lookup — one SELECT returns
+  // `disabled + role + session_epoch` (migration 0009 adds the column; ORDER
+  // DEPENDENCY: it must be live before this deploys). The epoch is the captured-cookie
+  // kill switch: logout / password-change increment the DB column, so an outstanding
+  // cookie's snapshot falls BEHIND and is rejected here. A pre-#7 cookie carries NO
+  // epoch claim → treated as 0 (== the column DEFAULT), so existing sessions survive.
   let role: Role;
   try {
     const row = await c.env.DB
-      .prepare("SELECT disabled, role FROM users WHERE username = ?")
+      .prepare("SELECT disabled, role, session_epoch FROM users WHERE username = ?")
       .bind(claims.username)
-      .first<{ disabled: number; role: string }>();
+      .first<{ disabled: number; role: string; session_epoch: number }>();
     if (!row || row.disabled) {
+      return c.json({ error: "revoked" }, 401);
+    }
+    // Stale-epoch ⇒ revoked. `?? 0` keeps a pre-#7 (no-epoch-claim) cookie valid.
+    if ((claims.epoch ?? 0) < row.session_epoch) {
       return c.json({ error: "revoked" }, 401);
     }
     role = coerceRole(row.role);
@@ -288,16 +298,34 @@ app.get("/api/session", requireSession, (c) => {
 });
 
 /**
- * POST /api/logout — clear the session cookie (client-side invalidation only).
+ * POST /api/logout — clear the session cookie AND server-side revoke it.
  *
- * Rationale: Phase 2 has no server-side session revocation (no D1 session table /
- * blocklist), and requireSession does not re-check that the user still exists — so
- * a stolen or deprovisioned-user cookie stays valid until iat+MAX_AGE_S. Accepted
- * gap: no real PMs exist until they're provisioned via the Phase 7 admin route,
- * which also introduces the session table for explicit invalidation +
- * deprovisioning. (safety-portal/brief.md §14 Phase 7.)
+ * Slice 8a (audit #7): logout now bumps users.session_epoch, so the just-cleared
+ * cookie (which snapshotted the OLD epoch at issue) is now stale and rejected by
+ * requireSession on any subsequent request — closing the audit's "logout is
+ * client-side only / a captured cookie stays valid to iat+90d" gap. The epoch bump is
+ * keyed on the username read from the (verified-signed) cookie; a garbage/absent
+ * cookie or a D1 blip still clears the cookie and returns ok (logout must never fail
+ * closed — the worst case is a no-op bump, never a stuck-logged-in user).
  */
-app.post("/api/logout", (c) => {
+app.post("/api/logout", async (c) => {
+  // Best-effort epoch bump. getSignedCookie returns the value only if the HMAC
+  // verifies, so we never bump on a forged username. Any error here is swallowed —
+  // the cookie clear below is the contract; the bump is the revocation hardening.
+  try {
+    const raw = await getSignedCookie(c, c.env.SESSION_SIGNING_SECRET, COOKIE);
+    if (raw) {
+      const claims = JSON.parse(raw) as SessionClaims;
+      if (typeof claims.username === "string") {
+        await c.env.DB
+          .prepare("UPDATE users SET session_epoch = session_epoch + 1 WHERE username = ?")
+          .bind(claims.username)
+          .run();
+      }
+    }
+  } catch {
+    // swallow — logout still clears the cookie below regardless
+  }
   deleteCookie(c, COOKIE, { path: "/" });
   return c.json({ ok: true });
 });
@@ -681,8 +709,10 @@ app.post("/api/internal/admin/users/reset", requireAdminToken, async (c) => {
   if (!username) return c.json({ error: "invalid_username" }, 400);
   if (password.length < 8 || password.length > 256) return c.json({ error: "invalid_password" }, 400);
   const password_hash = await hashPassword(password); // plaintext never stored/logged
+  // Slice 8a (audit #7): a password change BUMPS session_epoch in the SAME UPDATE, so
+  // every outstanding cookie for this user is revoked on its next request.
   const res = await c.env.DB
-    .prepare("UPDATE users SET password_hash=? WHERE username=?")
+    .prepare("UPDATE users SET password_hash=?, session_epoch = session_epoch + 1 WHERE username=?")
     .bind(password_hash, username)
     .run();
   if ((res.meta?.changes ?? 0) === 0) return c.json({ error: "not_found" }, 404);
@@ -846,6 +876,10 @@ app.post("/api/admin/users/credentials", ...adminGate, async (c) => {
     if (np.length < 8 || np.length > 256) return c.json({ error: "invalid_password" }, 400);
     sets.push("password_hash=?");
     binds.push(await hashPassword(np)); // plaintext never stored/logged
+    // Slice 8a (audit #7): a password change BUMPS session_epoch, revoking every
+    // outstanding cookie for the target on its next request. No bind param (literal
+    // SET), so the binds-order ↔ sets-order alignment for the placeholders is intact.
+    sets.push("session_epoch = session_epoch + 1");
   }
   if (sets.length === 0) return c.json({ error: "no_changes" }, 400); // new_username == current, no password
 

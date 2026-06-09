@@ -1,0 +1,22 @@
+-- Phase 2 — slice 8a — real session revocation (deferred audit finding #7).
+--
+-- users.session_epoch: a per-user monotonic counter that makes "logout" and
+-- "password change" actually invalidate an outstanding cookie. The epoch is embedded
+-- in the session cookie at login (issue time) and re-read per request in
+-- requireSession, folded into the SAME lookup as `disabled` (0006) and `role` (0007)
+-- — one SELECT returns `disabled + role + session_epoch`. A request is rejected (401)
+-- when the cookie's epoch is BEHIND the DB epoch (cookie.epoch < users.session_epoch);
+-- logout AND password-change INCREMENT the column, so the previously-issued cookie is
+-- now stale and dies on its next request. This is the proper fix for the audit's
+-- "logout is client-side only / a captured cookie stays valid to iat+90d" finding.
+--
+-- DEFAULT 0 + pre-#7 survival: a cookie minted before this slice carries NO epoch
+-- claim; requireSession treats a missing claim as 0, which is == the column default,
+-- so existing (pre-#7) submitter sessions are NOT mass-logged-out by this migration.
+--
+-- ORDER DEPENDENCY (activation): apply this migration to the live D1 BEFORE the Worker
+-- code that SELECTs `session_epoch` deploys — otherwise the requireSession lookup
+-- errors and (fail-closed by design) 401s every session until the column exists. Exact
+-- mirror of the 0006/disabled + 0007/role activation rule. See safety_portal/README.md
+-- "Deploy".
+ALTER TABLE users ADD COLUMN session_epoch INTEGER NOT NULL DEFAULT 0;

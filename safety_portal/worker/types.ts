@@ -50,6 +50,13 @@ export interface SessionClaims {
   username: string;
   /** issued-at, unix seconds. */
   iat: number;
+  /** Revocation epoch (slice 8a, audit #7). Snapshot of users.session_epoch at issue
+   *  time; requireSession rejects when this is BEHIND the live DB epoch. UNLIKE `role`
+   *  this MUST live in the cookie — it is the captured-cookie kill switch (logout /
+   *  password-change bump the DB epoch, leaving the old cookie's snapshot stale). A
+   *  pre-#7 cookie has NO epoch claim → requireSession treats it as 0 (DEFAULT 0), so
+   *  existing sessions survive this migration. */
+  epoch?: number;
 }
 
 /** Hono per-request variables. */
