@@ -259,3 +259,37 @@ describe("POST /api/admin/publish-dismiss", () => {
     expect((await callApi("/api/admin/publish-dismiss", { method: "POST", cookie })).status).toBe(403);
   });
 });
+
+describe("GET /api/admin/publish-request (re-open a failed publish)", () => {
+  async function seedWithDef(definitionJson: string | null): Promise<number> {
+    const r = await env.DB
+      .prepare(
+        "INSERT INTO publish_requests (requested_by, op, parent_form_code, identity, target_form_code, status, definition_json) VALUES (?,?,?,?,?,?,?)",
+      )
+      .bind("admin.one", "create", "incident", "incident", "incident-v1", "failed", definitionJson)
+      .run();
+    return r.meta.last_row_id as number;
+  }
+
+  it("returns the saved definition_json for one request", async () => {
+    await provision("admin.one", "admin");
+    const cookie = await login("admin.one");
+    const id = await seedWithDef('{"form_code":"incident-v1"}');
+    const res = await callApi(`/api/admin/publish-request?id=${id}`, { cookie });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { request: { id: number; op: string; definition_json: string } };
+    expect(body.request).toMatchObject({ id, op: "create", definition_json: '{"form_code":"incident-v1"}' });
+  });
+
+  it("404s an unknown id", async () => {
+    await provision("admin.one", "admin");
+    const cookie = await login("admin.one");
+    expect((await callApi("/api/admin/publish-request?id=999999", { cookie })).status).toBe(404);
+  });
+
+  it("a submitter is rejected (403)", async () => {
+    await provision("pm.bob", "submitter");
+    const cookie = await login("pm.bob");
+    expect((await callApi("/api/admin/publish-request?id=1", { cookie })).status).toBe(403);
+  });
+});

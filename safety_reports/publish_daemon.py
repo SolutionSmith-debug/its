@@ -39,6 +39,7 @@ import json
 import os
 import socket
 import subprocess
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -65,6 +66,12 @@ _META_SCHEMA_PATH = _FORMS_DIR / "meta-schema.json"
 
 # A request still carrying a composed definition (vs delete/rollback which flip the manifest).
 _DEFINITION_OPS = frozenset({"create", "edit", "add_version"})
+
+# CI poll cadence for the publish merge. The repo has auto-merge DISABLED, so the daemon
+# waits for the render-smoke gate (C12) ITSELF and merges synchronously — bounded so one
+# stuck CI run can't wedge the daemon.
+CI_POLL_S = 20.0
+CI_TIMEOUT_S = 900.0  # 15 min — generous vs the ~3-5 min portal CI
 
 
 @dataclass
@@ -147,35 +154,75 @@ def _git(*args: str) -> str:
     ).stdout
 
 
-def _commit_test_merge(op: str, identity: str, note: str) -> None:
-    """Commit the worktree change on a branch, open a PR, wait for CI (the 3-renderer
-    render smoke gate), and merge on green — branch-protection-respecting. Raises if CI
-    red / merge blocked (the form does NOT go live). Real impl uses git + gh."""
-    branch = f"publish/{identity}-{op}"
+def _gh(*args: str) -> str:
+    return subprocess.run(["gh", *args], cwd=_ROOT, check=True, capture_output=True, text=True).stdout
+
+
+def _reset_to_main() -> None:
+    """Start each actuation from a CLEAN, current main — recover from any interrupted prior
+    cycle (a leftover branch + uncommitted catalog/forms edits, e.g. the failed-at-merge that
+    motivated this fix). Discards ONLY the daemon-managed paths (catalog + forms); the
+    operator's untracked files elsewhere in ~/its are never touched."""
+    _git("checkout", "--", "safety_portal/catalog.json")
+    # forms/ holds only tracked shipped forms + the meta-schema, so any UNTRACKED file here is
+    # a stray from an interrupted cycle — clean it so it can't ride into the next commit.
+    _git("clean", "-fd", "safety_portal/forms")
+    _git("checkout", "main")
+    _git("pull", "--ff-only", "origin", "main")
+
+
+_CI_FAIL_CONCLUSIONS = {"FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE"}
+
+
+def _wait_for_ci(branch: str) -> None:
+    """Poll the branch's PR until CI is green (mergeStateStatus == CLEAN), then return. Raises
+    on a failing required check or a timeout. This REPLACES `gh pr merge --auto` (which needs
+    the repo's auto-merge setting AND merges ASYNCHRONOUSLY, which broke the deploy ordering):
+    the daemon waits for the C12 render-smoke gate itself, then merges synchronously. Polls
+    mergeStateStatus (NOT `gh pr checks --watch` — a check can stick IN_PROGRESS while the PR
+    is already mergeable)."""
+    deadline = time.monotonic() + CI_TIMEOUT_S
+    while time.monotonic() < deadline:
+        data = json.loads(_gh("pr", "view", branch, "--json", "mergeStateStatus,statusCheckRollup"))
+        if data.get("mergeStateStatus") == "CLEAN":
+            return
+        rollup = data.get("statusCheckRollup") or []
+        bad = [c for c in rollup if str(c.get("conclusion") or "").upper() in _CI_FAIL_CONCLUSIONS]
+        if bad:
+            names = ", ".join(str(c.get("name") or c.get("context") or "check") for c in bad)
+            raise RuntimeError(f"CI failed for {branch}: {names}")
+        if data.get("mergeStateStatus") == "BEHIND":
+            _gh("pr", "update-branch", branch)
+        time.sleep(CI_POLL_S)
+    raise RuntimeError(f"CI did not pass for {branch} within {int(CI_TIMEOUT_S)}s")
+
+
+def _commit_test_merge(request_id: int, identity: str, note: str) -> None:
+    """Commit the worktree change on a per-request branch, open a PR, WAIT for CI (the
+    3-renderer render-smoke gate, C12), then MERGE on green — branch-protection-respecting,
+    no repo auto-merge needed. Raises if CI red / merge blocked (the form does NOT go live)."""
+    branch = f"publish/req-{request_id}-{identity}"
+    # Idempotent: clear a stale local/remote branch from a prior failed run of this request.
+    subprocess.run(["git", "-C", str(_ROOT), "branch", "-D", branch], capture_output=True, text=True)
+    subprocess.run(["git", "-C", str(_ROOT), "push", "origin", "--delete", branch],
+                   capture_output=True, text=True)
     _git("checkout", "-b", branch)
     _git("add", "safety_portal/catalog.json", "safety_portal/forms")
-    _git("commit", "-m", f"chore(safety-portal): publish {note}")
+    _git("commit", "-m", f"chore(safety-portal): publish {note} (req {request_id})")
     _git("push", "-u", "origin", branch)
-    # gh opens the PR, --auto merges on CI-green (the render smoke + validation are the gates).
-    subprocess.run(
-        ["gh", "pr", "create", "--fill", "--head", branch],
-        cwd=_ROOT, check=True, capture_output=True, text=True,
-    )
-    subprocess.run(
-        ["gh", "pr", "merge", branch, "--squash", "--auto", "--delete-branch"],
-        cwd=_ROOT, check=True, capture_output=True, text=True,
-    )
+    _gh("pr", "create", "--fill", "--head", branch)
+    _wait_for_ci(branch)
+    _gh("pr", "merge", branch, "--squash", "--delete-branch")
 
 
 def _deploy_land_health(creds: _Creds, current_form_code: str) -> None:
-    """Deploy the Worker/SPA via the operator's LOCAL wrangler (the CF credential never
-    leaves the Mac), fast-forward the live ~/its tree so load_definition sees the file,
-    then a post-deploy HEALTH CHECK (GET the live form). Raises on deploy/health failure."""
-    subprocess.run(["npm", "run", "deploy"], cwd=_ROOT / "safety_portal",
-                   check=True, capture_output=True, text=True)
+    """The merge has landed on main → land it locally (fast-forward ~/its so load_definition
+    sees the new file), deploy the Worker/SPA via the operator's LOCAL wrangler (the CF
+    credential never leaves the Mac), then a post-deploy liveness check. Raises on failure."""
     _git("checkout", "main")
     _git("pull", "--ff-only", "origin", "main")
-    # Health check: the just-published form must resolve at the live origin.
+    subprocess.run(["npm", "run", "deploy"], cwd=_ROOT / "safety_portal",
+                   check=True, capture_output=True, text=True)
     portal_client.get_publish_pending(creds.base_url, creds.bearer, limit=1)  # liveness ping
 
 
@@ -223,6 +270,15 @@ def _actuate(creds: _Creds, request: dict[str, Any], stats: PublishStats) -> Non
     parent = request["parent_form_code"]
     target = request.get("target_form_code")
 
+    # Stage 0 — sync to a clean, current main (recover from an interrupted prior cycle) so the
+    # catalog re-check + the commit start from live HEAD.
+    try:
+        _reset_to_main()
+    except Exception as exc:  # noqa: BLE001
+        _fail(creds, request_id, "validated", f"could not sync to main: {_exc_reason(exc)}")
+        stats.failed += 1
+        return
+
     # Stage 1 — re-validate against live HEAD (C3) → validated.
     try:
         definition = None
@@ -242,7 +298,7 @@ def _actuate(creds: _Creds, request: dict[str, Any], stats: PublishStats) -> Non
     # Stage 2 — commit + CI render-smoke gate + merge → tested.
     try:
         _apply_to_worktree(new_manifest, files)
-        _commit_test_merge(op, identity, note)
+        _commit_test_merge(request_id, identity, note)
         _stamp(creds, request_id, "tested")
     except Exception as exc:  # noqa: BLE001 — any actuation failure is terminal+alerted
         _fail(creds, request_id, "tested", _exc_reason(exc))

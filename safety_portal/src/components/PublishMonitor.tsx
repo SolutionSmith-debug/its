@@ -42,13 +42,22 @@ const OP_LABEL: Record<api.PublishOp, string> = {
   rollback: "Rollback",
 };
 
+// Ops that carry a composed definition → a FAILED one can be re-opened in the editor.
+const DEFINITION_OPS = new Set<api.PublishOp>(["create", "edit", "add_version"]);
+
 function fmtTime(t: string | number): string {
   const d = typeof t === "number" ? new Date(t) : new Date(t);
   if (Number.isNaN(d.getTime())) return String(t);
   return d.toLocaleString();
 }
 
-export function PublishMonitor({ refreshSignal }: { refreshSignal?: number }) {
+export function PublishMonitor({
+  refreshSignal,
+  onEditFailed,
+}: {
+  refreshSignal?: number;
+  onEditFailed?: (id: number) => void;
+}) {
   const [requests, setRequests] = useState<api.PublishRequest[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [clearing, setClearing] = useState(false);
@@ -127,7 +136,7 @@ export function PublishMonitor({ refreshSignal }: { refreshSignal?: number }) {
       ) : (
         <ul className="form-editor__monitor-list">
           {requests.map((r) => (
-            <RequestRow key={r.id} req={r} />
+            <RequestRow key={r.id} req={r} onEditFailed={onEditFailed} />
           ))}
         </ul>
       )}
@@ -135,7 +144,13 @@ export function PublishMonitor({ refreshSignal }: { refreshSignal?: number }) {
   );
 }
 
-function RequestRow({ req }: { req: api.PublishRequest }) {
+function RequestRow({
+  req,
+  onEditFailed,
+}: {
+  req: api.PublishRequest;
+  onEditFailed?: (id: number) => void;
+}) {
   const failed = req.status === "failed";
   const reached = STATUS_INDEX[req.status];
   const target = req.target_form_code ?? req.identity;
@@ -174,10 +189,22 @@ function RequestRow({ req }: { req: api.PublishRequest }) {
         })}
       </ol>
       {failed ? (
-        <p className="form-editor__req-failure" role="alert">
-          Failed{req.failed_stage ? ` at ${req.failed_stage}` : ""}
-          {req.failure_reason ? `: ${req.failure_reason}` : "."}
-        </p>
+        <div>
+          <p className="form-editor__req-failure" role="alert">
+            Failed{req.failed_stage ? ` at ${req.failed_stage}` : ""}
+            {req.failure_reason ? `: ${req.failure_reason}` : "."}
+          </p>
+          {onEditFailed && DEFINITION_OPS.has(req.op) ? (
+            <button
+              type="button"
+              className="btn btn--secondary"
+              style={{ marginTop: "0.4rem" }}
+              onClick={() => onEditFailed(req.id)}
+            >
+              Edit &amp; re-publish
+            </button>
+          ) : null}
+        </div>
       ) : null}
     </li>
   );

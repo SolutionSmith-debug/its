@@ -1131,6 +1131,23 @@ app.post("/api/admin/publish-dismiss", ...adminGate, async (c) => {
   return c.json({ ok: true, cleared: res.meta?.changes ?? 0 });
 });
 
+// GET /api/admin/publish-request?id=N — fetch ONE request's full record INCLUDING the
+// composed definition_json, so a FAILED publish can be re-opened in the editor and fixed
+// instead of losing the work. Send-free read.
+app.get("/api/admin/publish-request", ...adminGate, async (c) => {
+  const id = Number(c.req.query("id"));
+  if (!Number.isInteger(id) || id <= 0) return c.json({ error: "invalid_id" }, 400);
+  const row = await c.env.DB
+    .prepare(
+      "SELECT id, op, parent_form_code, identity, target_form_code, status, definition_json " +
+        "FROM publish_requests WHERE id = ?",
+    )
+    .bind(id)
+    .first();
+  if (!row) return c.json({ error: "not_found" }, 404);
+  return c.json({ request: row });
+});
+
 // ── Publish daemon interface (Phase 2, slice 3b) ───────────────────────────────
 // The Mac publish daemon's bearer-gated queue interface: pull queued requests, ATOMICALLY
 // LEASE one (so two daemon runs can't actuate the same row), and STAMP the state machine

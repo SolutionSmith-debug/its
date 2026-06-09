@@ -40,6 +40,7 @@ def stub(mocker):
         "pending": mocker.patch.object(pd.portal_client, "get_publish_pending"),
         "claim": mocker.patch.object(pd.portal_client, "claim_publish"),
         "stamp": mocker.patch.object(pd.portal_client, "stamp_publish", return_value=True),
+        "reset": mocker.patch.object(pd, "_reset_to_main"),
         "apply_wt": mocker.patch.object(pd, "_apply_to_worktree"),
         "commit": mocker.patch.object(pd, "_commit_test_merge"),
         "deploy": mocker.patch.object(pd, "_deploy_land_health"),
@@ -143,3 +144,31 @@ def test_already_leased_row_is_skipped(stub):
     out = pd.publish_once()
     assert out.skipped_unclaimed == 1 and out.actuated == 0
     stub["commit"].assert_not_called()
+
+
+# ── _wait_for_ci (the synchronous CI gate that replaced `gh pr merge --auto`) ────
+
+
+def test_wait_for_ci_returns_when_clean(mocker):
+    mocker.patch.object(pd, "_gh", return_value=json.dumps({"mergeStateStatus": "CLEAN", "statusCheckRollup": []}))
+    pd._wait_for_ci("publish/req-1-jha")  # returns without raising
+
+
+def test_wait_for_ci_raises_on_a_failed_check(mocker):
+    mocker.patch.object(pd, "_gh", return_value=json.dumps({
+        "mergeStateStatus": "BLOCKED",
+        "statusCheckRollup": [{"name": "portal", "conclusion": "FAILURE"}],
+    }))
+    with pytest.raises(RuntimeError, match="CI failed"):
+        pd._wait_for_ci("publish/req-1-jha")
+
+
+def test_wait_for_ci_updates_a_behind_branch_then_merges(mocker):
+    views = [
+        json.dumps({"mergeStateStatus": "BEHIND", "statusCheckRollup": []}),
+        json.dumps({"mergeStateStatus": "CLEAN", "statusCheckRollup": []}),
+    ]
+    gh = mocker.patch.object(pd, "_gh", side_effect=lambda *a: views.pop(0) if a[:2] == ("pr", "view") else "")
+    mocker.patch.object(pd.time, "sleep")
+    pd._wait_for_ci("publish/req-1-jha")
+    assert any(c.args[:2] == ("pr", "update-branch") for c in gh.call_args_list)
