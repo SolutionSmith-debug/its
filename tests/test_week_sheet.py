@@ -45,7 +45,9 @@ def stub_ss(mocker) -> dict[str, MagicMock]:
             week_sheet.smartsheet_client, "create_sheet_in_folder"
         ),
         "get_rows": mocker.patch.object(week_sheet.smartsheet_client, "get_rows"),
-        "add_rows": mocker.patch.object(week_sheet.smartsheet_client, "add_rows"),
+        "add_rows": mocker.patch.object(
+            week_sheet.smartsheet_client, "add_rows", return_value=[99999]
+        ),
         "update_rows": mocker.patch.object(week_sheet.smartsheet_client, "update_rows"),
         "apply_styles": mocker.patch.object(
             week_sheet.smartsheet_client, "apply_column_styles"
@@ -135,6 +137,37 @@ def test_ensure_week_sheet_race_warns_and_uses_first_match(stub_ss, stub_error_l
     assert call.args[0] == Severity.WARN
     assert call.kwargs.get("error_code") == "week_sheet_race_duplicate"
     assert "9999" in call.args[2] and "7000" in call.args[2]
+
+
+def test_ensure_week_sheet_precreates_rollup_placeholder(stub_ss):
+    """On CREATE, an empty Rollup row is written so the Compile Now trigger exists immediately
+    (an operator can request an on-demand compile for a never-yet-compiled week)."""
+    stub_ss["find_folder"].return_value = 4242
+    stub_ss["find_sheet"].side_effect = [None, None]
+    stub_ss["create_sheet"].return_value = 8002
+    ensure_week_sheet("Bradley 1", date(2026, 6, 5))
+    stub_ss["add_rows"].assert_called_once()
+    row = stub_ss["add_rows"].call_args.args[1][0]
+    assert row[week_sheet.COL_ROW_TYPE] == week_sheet.ROW_TYPE_ROLLUP
+    assert row[week_sheet.COL_COMPILE_NOW] is False  # trigger starts UNchecked
+
+
+def test_ensure_week_sheet_existing_does_not_precreate_rollup(stub_ss):
+    """The FIND path must NOT write a placeholder — the Rollup row already exists."""
+    stub_ss["find_sheet"].return_value = 8001
+    ensure_week_sheet("Bradley 1", date(2026, 6, 5))
+    stub_ss["add_rows"].assert_not_called()
+
+
+def test_ensure_week_sheet_rollup_placeholder_failure_does_not_block(stub_ss, stub_error_log):
+    """A transient placeholder-write failure WARNs but the sheet id is still returned (intake
+    needs the sheet; the next compile creates the Rollup row)."""
+    stub_ss["find_folder"].return_value = 4242
+    stub_ss["find_sheet"].side_effect = [None, None]
+    stub_ss["create_sheet"].return_value = 8002
+    stub_ss["add_rows"].side_effect = week_sheet.smartsheet_client.SmartsheetError("boom")
+    assert ensure_week_sheet("Bradley 1", date(2026, 6, 5)) == 8002
+    assert stub_error_log.called
 
 
 def test_ensure_week_sheet_unknown_project_auto_provisions(stub_ss):

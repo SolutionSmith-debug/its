@@ -241,7 +241,31 @@ def ensure_week_sheet(project_name: str, work_date: date) -> int:
         )
         return post_find
     _apply_styles_best_effort(sheet_id)  # cosmetic; only the create path (not find)
+    _ensure_rollup_placeholder(sheet_id)
     return sheet_id
+
+
+def _ensure_rollup_placeholder(sheet_id: int) -> None:
+    """Pre-create the empty Rollup row at sheet creation so the Compile Now TRIGGER checkbox
+    exists IMMEDIATELY — the operator can request an on-demand compile (compile_now_poll) for a
+    never-yet-compiled week, not only after the first Friday run.
+
+    `compiled_at=""` keeps the no-new-docs skip honest (`prior_compiled_at='' <` any real
+    submission timestamp → compiles, never a spurious skip). Best-effort: a transient write
+    failure must NOT abort sheet creation (intake needs the sheet to file the submission); the
+    next compile creates the Rollup row via the same upsert. Runs only on the CREATE branch of
+    ensure_week_sheet, so it never double-writes an existing Rollup row."""
+    try:
+        upsert_rollup_row(
+            sheet_id, packet_link="", compiled_at="",
+            manifest_note="not yet compiled (placeholder)",
+        )
+    except smartsheet_client.SmartsheetError as exc:
+        error_log.log(
+            Severity.WARN, SCRIPT_NAME,
+            f"could not pre-create the Rollup placeholder row on sheet {sheet_id}: {exc!r}",
+            error_code="rollup_placeholder_failed",
+        )
 
 
 def find_submission_row(sheet_id: int, submission_uuid: str) -> dict[str, Any] | None:
