@@ -79,6 +79,14 @@ GATED_SCRIPTS: list[tuple[str, list[str]]] = [
         "safety_reports/publish_daemon.py",
         ["send_mail", "resend", "smtplib", "email.mime", "anthropic", "anthropic_client"],
     ),
+    (
+        # compile_now_poll (Part B) is the on-demand compile poller: it reuses
+        # weekly_generate's DETERMINISTIC compile on a Compile-Now trigger. No Graph reads,
+        # no external send, no LLM — the same deterministic-actuation gate as weekly_generate.
+        "safety_reports/compile_now_poll.py",
+        ["graph_client", "send_mail", "resend", "smtplib", "email.mime",
+         "anthropic", "anthropic_client"],
+    ),
     # ("po_materials/standard_rfq_generate.py", ["graph_client", "send_mail"]),
     # ("po_materials/racking_module_rfq_generate.py", ["graph_client", "send_mail"]),
     # ("subcontracts/subcontract_generate.py", ["graph_client", "send_mail"]),

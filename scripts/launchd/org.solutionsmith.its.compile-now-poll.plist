@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  On-demand "Compile Now" poller (Part B). Every ~90s, for each Active job's CURRENT
+  Sat->Fri week sheet, reads the Rollup row's Compile Now trigger; if set, runs the SAME
+  deterministic compile as weekly_generate (reuses weekly_generate._compile_job_week,
+  narrowed by the per-submission Compile Now selection) within a minute or two instead of
+  waiting for the Friday 14:00 run. Single-flight (file lock); fail-loud (a failed compile
+  leaves the trigger SET + routes to the Review Queue). Zero external-send capability
+  (enrolled in tests/test_capability_gating.py GATED_SCRIPTS).
+
+  Install:
+    scripts/launchd/install.sh load org.solutionsmith.its.compile-now-poll
+
+  The installer reads safety_reports.compile_now_poll.poll_interval_seconds from ITS_Config
+  and substitutes both __ITS_HOME__ and __POLL_INTERVAL_SECONDS__ before copying to
+  ~/Library/LaunchAgents/. Default cadence 90s. Changes to the interval row take effect at
+  the next install run; the running daemon does not hot-reload (launchd holds the interval).
+
+  See safety_reports/README.md for the operator runbook.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>org.solutionsmith.its.compile-now-poll</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__ITS_HOME__/.venv/bin/python</string>
+        <string>-m</string>
+        <string>safety_reports.compile_now_poll</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__ITS_HOME__</string>
+
+    <key>StandardOutPath</key>
+    <string>__ITS_HOME__/logs/launchd/compile_now_poll.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>__ITS_HOME__/logs/launchd/compile_now_poll.err.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>LANG</key>
+        <string>en_US.UTF-8</string>
+    </dict>
+
+    <key>StartInterval</key>
+    <integer>__POLL_INTERVAL_SECONDS__</integer>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>

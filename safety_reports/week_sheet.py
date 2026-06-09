@@ -362,6 +362,33 @@ def compile_now_requested(rollup_row: dict[str, Any] | None) -> bool:
     return bool(rollup_row and rollup_row.get(COL_COMPILE_NOW))
 
 
+def selected_submission_row_ids(submission_rows: list[dict[str, Any]]) -> set[int]:
+    """Row IDs of the submission rows the operator checked Compile Now on — the per-
+    submission "include in this compile" selection (Part B / on-demand compile).
+
+    The SAME COL_COMPILE_NOW checkbox is row-type-dependent: on the Rollup row it is the
+    "compile now" TRIGGER (compile_now_requested); on a Submission row it means "include
+    this row in the packet". An EMPTY set = no narrowing → compile the full week (Option-1
+    default-all). A caller passes this set to weekly_generate._compile_job_week(selection=…)."""
+    return {
+        int(r["_row_id"])
+        for r in submission_rows
+        if r.get("_row_id") is not None and r.get(COL_COMPILE_NOW)
+    }
+
+
+def clear_compile_now(sheet_id: int, row_ids: set[int]) -> None:
+    """Uncheck Compile Now on the given rows — called AFTER a compile consumed the
+    per-submission selection (the Rollup trigger self-clears via upsert_rollup_row). No-op
+    on an empty set. Raises on a Smartsheet error so a failed clear is visible (a stale
+    checkbox would silently narrow the next compile)."""
+    if not row_ids:
+        return
+    smartsheet_client.update_rows(
+        sheet_id, [{"_row_id": rid, COL_COMPILE_NOW: False} for rid in sorted(row_ids)]
+    )
+
+
 def latest_submitted_at(submission_rows: list[dict[str, Any]]) -> str:
     """Max Submitted At across submission rows; '' if NONE has a usable value.
 

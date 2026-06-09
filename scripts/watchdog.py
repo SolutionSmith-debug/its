@@ -146,6 +146,12 @@ TRACKED_JOBS: list[str] = [
     # 2026-06-06 deploy session (previously a deferred "future addition") so a dead
     # puller surfaces via Check C.
     "safety_portal_poll",
+    # On-demand Compile-Now poller (safety_reports.compile_now_poll, Part B). Writes a
+    # safety_compile_now_poll.last_run marker each cycle. It is INTENDED to be always-loaded
+    # (on-demand compile only works while it runs); ACTIVATION is `install.sh load
+    # org.solutionsmith.its.compile-now-poll`. Until the operator loads it, this entry
+    # correctly WARNs (the daemon is not running) — register + load together.
+    "safety_compile_now_poll",
 ]
 
 # Per-job freshness windows. Jobs not in this map use the default 24h
@@ -172,6 +178,9 @@ TRACKED_JOB_WINDOWS: dict[str, timedelta] = {
     # coalesced/delayed runs, but a genuine stall surfaces at the next daily
     # watchdog. (Mirrors the high-frequency-poller window pattern.)
     "safety_portal_poll": timedelta(minutes=5),
+    # compile_now_poll runs every 90s (default). 8 min == ~5 cycles — same
+    # high-frequency-poller tolerance as portal_poll, scaled to the 90s cadence.
+    "safety_compile_now_poll": timedelta(minutes=8),
 }
 DEFAULT_TRACKED_JOB_WINDOW = timedelta(hours=24)
 

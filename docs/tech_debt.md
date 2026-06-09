@@ -1852,3 +1852,15 @@ Nothing throttles the portal Worker: `/api/login` runs `bcrypt.compare` at cost 
 **Revisit when:** Evergreen production cutover, or when the `ratelimit` binding is confirmed GA.
 
 Surfaced: 2026-06-09 Part-A production-hardening session (A2).
+
+## [OPEN 2026-06-09] compile_now_poll — ITS_Daemon_Health self-provision row deferred (Part-B B3)
+
+`safety_reports/compile_now_poll.py` (Part B) registers a watchdog Check-C liveness marker (`safety_compile_now_poll`, `scripts/watchdog.py`) — the LIVENESS safety net — but does NOT yet write an **ITS_Daemon_Health** operator-visibility row (the per-daemon update-in-place heartbeat the other pollers self-provision). Deferred to keep the Part-B PR focused: the daemon-health row is observability, not correctness, and the heartbeat-row machinery is ~150 lines replicated **verbatim** per daemon (`portal_poll` / `weekly_send_poll`) pending the already-tracked `shared/heartbeat.py` extraction — adding it here would replicate that machinery a third time.
+
+**Fix:** fold compile_now_poll's daemon-health heartbeat in **together with** the `shared/heartbeat.py` extraction (so all daemons share one implementation), or replicate the helpers if the extraction is still pending at the time. Self-provision a `safety_reports.compile_now_poll` row in ITS_Daemon_Health, update-in-place per cycle (ARCH-1/2/3 conventions).
+
+**Tag:** `safety-portal`, `compile-now-poll`, `observability`.
+
+**Revisit when:** the `shared/heartbeat.py` extraction lands, or before compile_now_poll's production activation.
+
+Surfaced: 2026-06-09 Part-B on-demand-compile session (B3 divergence — watchdog liveness done, daemon-health row deferred).
