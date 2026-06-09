@@ -158,3 +158,79 @@ export function setRole(username: string, role: Role): Promise<AdminResult> {
 export function deleteAccount(username: string): Promise<AdminResult> {
   return adminPost("/api/admin/users/delete", { username });
 }
+
+// ── Admin: form-editor publish pipeline (session + role-gated /api/admin/publish) ──
+// SEND-FREE enqueue: the Worker validates the composed definition and queues a
+// publish_requests row; the Mac daemon is the sole privileged actuator (it commits /
+// deploys). The SPA only ever (a) POSTs a request and (b) polls its status — it never
+// writes the catalog or any form file directly. Mirrors the External Send Gate: the
+// cloud can only queue.
+import type { FormDefinition } from "../forms/types";
+
+export type PublishOp = "create" | "edit" | "add_version" | "delete" | "rollback";
+
+/** The enqueue request. create/edit/add_version carry `definition`; delete/rollback
+ *  carry `target_form_code` only. `identity` + `parent_form_code` come from the row
+ *  identity (the server re-derives form_code = identity-v<version> from the definition). */
+export interface PublishPayload {
+  op: PublishOp;
+  identity: string;
+  parent_form_code: string;
+  target_form_code?: string;
+  definition?: FormDefinition;
+}
+
+/** A 400 from the publish gate carries a human-readable `reason` (the failing
+ *  validation rule) — surface it verbatim. Distinct from AdminError (no `reason`). */
+export class PublishError extends Error {
+  constructor(
+    public code: string,
+    public status: number,
+    public reason?: string,
+  ) {
+    super(reason ?? code);
+    this.name = "PublishError";
+  }
+}
+
+export interface PublishEnqueueResult {
+  ok: boolean;
+  id: number | null;
+  status: "queued";
+}
+
+/** Enqueue a publish request. Throws PublishError on 400 (with the server `reason`),
+ *  409 (publish_in_progress), or 403 (non-admin). */
+export async function publishForm(payload: PublishPayload): Promise<PublishEnqueueResult> {
+  const res = await postJson("/api/admin/publish", payload);
+  const data = (await res.json().catch(() => ({}))) as
+    & Partial<PublishEnqueueResult>
+    & { error?: string; reason?: string };
+  if (!res.ok) {
+    throw new PublishError(data.error ?? `http_${res.status}`, res.status, data.reason);
+  }
+  return { ok: data.ok ?? true, id: data.id ?? null, status: "queued" };
+}
+
+/** One row of the publish state machine, as the status monitor renders it. */
+export interface PublishRequest {
+  id: number;
+  created_at: string | number;
+  updated_at: string | number;
+  requested_by?: string;
+  op: PublishOp;
+  identity: string;
+  parent_form_code: string;
+  target_form_code: string | null;
+  status: "queued" | "validated" | "tested" | "merged" | "live" | "archived" | "failed";
+  failed_stage: string | null;
+  failure_reason: string | null;
+}
+
+/** Read the publish state machine (most-recent first) for the monitor. */
+export async function fetchPublishStatus(): Promise<PublishRequest[]> {
+  const res = await fetch("/api/admin/publish-status", { credentials: "same-origin" });
+  if (res.status === 403) throw new AdminError("forbidden", 403);
+  if (!res.ok) throw new Error("Could not load publish status.");
+  return ((await res.json()) as { requests: PublishRequest[] }).requests;
+}
