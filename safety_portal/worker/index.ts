@@ -1087,6 +1087,73 @@ app.get("/api/admin/publish-status", ...adminGate, async (c) => {
   return c.json({ requests: results });
 });
 
+// ── Publish daemon interface (Phase 2, slice 3b) ───────────────────────────────
+// The Mac publish daemon's bearer-gated queue interface: pull queued requests, ATOMICALLY
+// LEASE one (so two daemon runs can't actuate the same row), and STAMP the state machine
+// as it commits / deploys. The daemon is the sole privileged actuator; the Worker only
+// exposes the queue (send-free). Same PORTAL_INTERNAL_API_TOKEN as the portal_poll daemon.
+const PUBLISH_STATUSES = new Set(["queued", "validated", "tested", "merged", "live", "archived", "failed"]);
+
+// GET /api/internal/publish/pending — claimable rows (queued + unleased), oldest-first.
+app.get("/api/internal/publish/pending", requireInternalToken, async (c) => {
+  const limit = Math.min(Number(c.req.query("limit")) || 20, 100);
+  const { results } = await c.env.DB
+    .prepare(
+      "SELECT id, created_at, requested_by, op, parent_form_code, identity, target_form_code, definition_json " +
+        "FROM publish_requests WHERE status='queued' AND lease_owner IS NULL ORDER BY id ASC LIMIT ?",
+    )
+    .bind(limit)
+    .all();
+  return c.json({ pending: results });
+});
+
+// POST /api/internal/publish/claim — ATOMICALLY lease a queued row for one daemon run.
+// { id, lease_owner } leases ONLY if still queued + unleased (concurrent runs can't both
+// actuate). Returns the full row (incl. definition_json) when claimed.
+app.post("/api/internal/publish/claim", requireInternalToken, async (c) => {
+  let body: Record<string, unknown>;
+  try { body = await c.req.json(); } catch { return c.json({ error: "bad_request" }, 400); }
+  if (typeof body !== "object" || (body as unknown) === null || Array.isArray(body)) {
+    return c.json({ error: "bad_request" }, 400);
+  }
+  const id = typeof body.id === "number" && Number.isInteger(body.id) ? body.id : 0;
+  const lease_owner = typeof body.lease_owner === "string" ? body.lease_owner.slice(0, 128) : "";
+  if (!id || !lease_owner) return c.json({ error: "invalid" }, 400);
+  const res = await c.env.DB
+    .prepare("UPDATE publish_requests SET lease_owner=?, lease_at=unixepoch() WHERE id=? AND status='queued' AND lease_owner IS NULL")
+    .bind(lease_owner, id)
+    .run();
+  if ((res.meta?.changes ?? 0) === 0) return c.json({ ok: true, claimed: false });
+  const request = await c.env.DB
+    .prepare("SELECT id, op, parent_form_code, identity, target_form_code, definition_json, status FROM publish_requests WHERE id=?")
+    .bind(id)
+    .first();
+  return c.json({ ok: true, claimed: true, request });
+});
+
+// POST /api/internal/publish/stamp — advance the state machine. { id, status,
+// failed_stage?, failure_reason? }. The daemon stamps validated→tested→merged→live→
+// archived, or failed (with stage + reason) on any error. failed_stage/reason are kept
+// ONLY for a failed stamp (cleared otherwise).
+app.post("/api/internal/publish/stamp", requireInternalToken, async (c) => {
+  let body: Record<string, unknown>;
+  try { body = await c.req.json(); } catch { return c.json({ error: "bad_request" }, 400); }
+  if (typeof body !== "object" || (body as unknown) === null || Array.isArray(body)) {
+    return c.json({ error: "bad_request" }, 400);
+  }
+  const id = typeof body.id === "number" && Number.isInteger(body.id) ? body.id : 0;
+  const status = typeof body.status === "string" ? body.status : "";
+  if (!id || !PUBLISH_STATUSES.has(status)) return c.json({ error: "invalid" }, 400);
+  const failed = status === "failed";
+  const failed_stage = failed && typeof body.failed_stage === "string" ? body.failed_stage.slice(0, 64) : null;
+  const failure_reason = failed && typeof body.failure_reason === "string" ? body.failure_reason.slice(0, 2000) : null;
+  const res = await c.env.DB
+    .prepare("UPDATE publish_requests SET status=?, failed_stage=?, failure_reason=?, updated_at=unixepoch() WHERE id=?")
+    .bind(status, failed_stage, failure_reason, id)
+    .run();
+  return c.json({ ok: true, found: (res.meta?.changes ?? 0) > 0 });
+});
+
 // Unmatched /api/* → JSON 404 (never the SPA shell).
 app.all("/api/*", (c) => c.json({ error: "not_found" }, 404));
 
