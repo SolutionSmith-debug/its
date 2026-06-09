@@ -374,3 +374,67 @@ def test_portal_review_constructs_complete_payload(mocker):
         assert k in payload
     assert payload["reason"] == "unknown_form"
     assert add.call_args.kwargs["source_file"] == "u1"
+
+
+# ---- job-orphan routing → Orphaned Reports (Part C) ----------------------
+
+
+@pytest.fixture
+def orphan_on(stub, mocker):
+    """Activate Part C: SHEET_ORPHANED_REPORTS set + a portal Box root + add_rows mocked."""
+    mocker.patch.object(intake.sheet_ids, "SHEET_ORPHANED_REPORTS", 7777)
+    stub["box_root"].return_value = "boxroot1"
+    stub["add_rows"] = mocker.patch.object(
+        intake.smartsheet_client, "add_rows", return_value=[111]
+    )
+    return stub
+
+
+def test_unknown_job_routes_to_orphaned_reports_when_enabled(orphan_on):
+    orphan_on["get_job"].return_value = None
+    result = intake.process_portal_submission(dict(BASE_SUB))
+    # Rendered + filed to the Orphaned Reports Box folder + a sheet row written; NOT the queue.
+    orphan_on["render"].assert_called_once()
+    orphan_on["add_rows"].assert_called_once()
+    assert orphan_on["add_rows"].call_args.args[0] == 7777  # SHEET_ORPHANED_REPORTS
+    row = orphan_on["add_rows"].call_args.args[1][0]
+    assert row["Reason"] == "job_not_found" and row["Status"] == "Pending"
+    assert row["Box Link"] and row["Submission UUID"] == "u1"
+    orphan_on["review"].assert_not_called()
+    assert result.status == "review_queue" and result.box_link  # drains (filed)
+
+
+def test_inactive_job_routes_to_orphaned_reports_when_enabled(orphan_on):
+    orphan_on["get_job"].return_value = SimpleNamespace(
+        project_name="P", is_active=False, active_status="Inactive"
+    )
+    intake.process_portal_submission(dict(BASE_SUB))
+    orphan_on["add_rows"].assert_called_once()
+    assert orphan_on["add_rows"].call_args.args[1][0]["Reason"] == "job_inactive"
+    orphan_on["review"].assert_not_called()
+
+
+def test_orphan_falls_back_to_review_when_disabled(stub):
+    # Part C OFF (SHEET_ORPHANED_REPORTS=0 default) → the generic Review Queue (pre-Part-C).
+    stub["get_job"].return_value = None
+    stub["box_root"].return_value = "boxroot1"  # box root set, but sheet id still 0 → OFF
+    result = intake.process_portal_submission(dict(BASE_SUB))
+    stub["review"].assert_called_once()
+    assert result.status == "review_queue"
+
+
+def test_empty_job_id_stays_in_review_not_orphan(orphan_on):
+    # no_job_id is NOT a job-orphan (brief C3 split) → Review Queue even when Part C is ON.
+    result = intake.process_portal_submission(dict(BASE_SUB, job_id=""))
+    orphan_on["review"].assert_called_once()
+    orphan_on["add_rows"].assert_not_called()
+    assert result.status == "review_queue"
+
+
+def test_orphan_unrenderable_form_falls_back_to_review(orphan_on):
+    # A structurally-bad submission (unknown form) is not a clean orphan → Review Queue.
+    orphan_on["get_job"].return_value = None
+    orphan_on["load_def"].return_value = None
+    intake.process_portal_submission(dict(BASE_SUB))
+    orphan_on["review"].assert_called_once()
+    orphan_on["add_rows"].assert_not_called()
