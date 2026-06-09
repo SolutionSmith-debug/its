@@ -1,0 +1,105 @@
+{
+  "form_code": "jha-v2",
+  "parent_form_code": "jha",
+  "form_name": "Job Hazard Analysis",
+  "variant_label": null,
+  "version": 2,
+  "archetype": "rows_signatures",
+  "source_pdf": "Daily_JOB_HAZARD_ANALYSIS_template.pdf",
+  "branding": {
+    "logo": true,
+    "title": "JOB HAZARD ANALYSIS"
+  },
+  "sections": [
+    {
+      "type": "header",
+      "fields": [
+        {
+          "key": "work_date",
+          "label": "Date",
+          "input": "date",
+          "required": true
+        },
+        {
+          "key": "work_location",
+          "label": "Work Location",
+          "input": "text",
+          "required": true
+        },
+        {
+          "key": "job_being_performed",
+          "label": "Job Being Performed",
+          "input": "textarea"
+        },
+        {
+          "key": "crew_members",
+          "label": "Crew Members",
+          "input": "textarea"
+        }
+      ]
+    },
+    {
+      "type": "repeating_table",
+      "key": "hazard_analysis",
+      "title": "Job Hazard Analysis",
+      "min_rows": 8,
+      "allow_add": true,
+      "columns": [
+        {
+          "key": "task",
+          "label": "Tasks",
+          "input": "textarea"
+        },
+        {
+          "key": "hazards",
+          "label": "Major Hazards",
+          "input": "textarea"
+        },
+        {
+          "key": "mitigation",
+          "label": "Mitigation",
+          "input": "textarea"
+        }
+      ]
+    },
+    {
+      "type": "static_text",
+      "text": "IF CONDITIONS CHANGE\u2026REVIEW AND REVISE THE PLAN.",
+      "emphasis": "footer"
+    },
+    {
+      "type": "static_text",
+      "text": "Worker Acknowledgement of these Hazards and Safety Requirements Thereof:",
+      "emphasis": "heading"
+    },
+    {
+      "type": "signature_table",
+      "key": "worker_acknowledgement",
+      "title": "Worker Acknowledgement",
+      "min_rows": 4,
+      "allow_add": true,
+      "columns": [
+        {
+          "key": "worker_name",
+          "label": "Worker Name",
+          "input": "text"
+        },
+        {
+          "key": "company",
+          "label": "Company",
+          "input": "text"
+        },
+        {
+          "key": "signature",
+          "label": "Signature",
+          "input": "signature"
+        }
+      ]
+    },
+    {
+      "type": "static_text",
+      "text": "This is just a test",
+      "emphasis": "heading"
+    }
+  ]
+}
