@@ -243,3 +243,22 @@ export async function dismissFinishedPublishes(): Promise<number> {
   if (!res.ok) throw new Error("Could not clear finished publishes.");
   return ((await res.json()) as { cleared?: number }).cleared ?? 0;
 }
+
+/** One request's full record incl. the composed definition_json — used to re-open a FAILED
+ *  publish in the editor (so the admin's work isn't lost). */
+export interface PublishRequestDetail {
+  id: number;
+  op: PublishOp;
+  parent_form_code: string;
+  identity: string;
+  target_form_code: string | null;
+  status: PublishRequest["status"];
+  definition_json: string | null;
+}
+
+export async function fetchPublishRequest(id: number): Promise<PublishRequestDetail> {
+  const res = await fetch(`/api/admin/publish-request?id=${id}`, { credentials: "same-origin" });
+  if (res.status === 403) throw new AdminError("forbidden", 403);
+  if (!res.ok) throw new Error("Could not load the publish request.");
+  return ((await res.json()) as { request: PublishRequestDetail }).request;
+}

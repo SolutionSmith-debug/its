@@ -208,6 +208,28 @@ export function FormsPage({ tabBar }: { tabBar: ReactNode }) {
     }
   }
 
+  // Re-open a FAILED publish in the editor (its composed definition is saved in the queue
+  // row) so the admin can fix what tripped it and re-publish, instead of rebuilding it.
+  async function editFailedPublish(id: number) {
+    try {
+      const r = await api.fetchPublishRequest(id);
+      if (!r.definition_json) {
+        setBanner({ kind: "err", msg: "That request has no saved form to edit." });
+        return;
+      }
+      const def = JSON.parse(r.definition_json) as FormDefinition;
+      setDraft(def);
+      setIdentity(r.identity);
+      setParent(r.parent_form_code);
+      setBanner({ kind: "ok", msg: `Loaded the failed publish for ${r.identity} — fix it and re-publish.` });
+      if (r.op === "edit") setMode({ kind: "edit", sourceCode: def.form_code, identity: r.identity });
+      else if (r.op === "add_version") setMode({ kind: "add_version", sourceCode: def.form_code });
+      else setMode({ kind: "create" });
+    } catch {
+      setBanner({ kind: "err", msg: "Could not load that failed publish." });
+    }
+  }
+
   const inEditor = mode.kind === "create" || mode.kind === "edit" || mode.kind === "add_version";
 
   return (
@@ -348,7 +370,7 @@ export function FormsPage({ tabBar }: { tabBar: ReactNode }) {
           </>
         )}
 
-        <PublishMonitor refreshSignal={refreshSignal} />
+        <PublishMonitor refreshSignal={refreshSignal} onEditFailed={(id) => void editFailedPublish(id)} />
       </main>
     </div>
   );
