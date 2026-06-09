@@ -259,6 +259,25 @@ claim) is treated as `0`, so existing sessions survive the migration.
 
 > Out of scope here: the admin 5-minute idle timeout (slice 8b).
 
+### Form editor publish queue (slice 3a — `publish_requests`)
+
+**Migration 0010** adds the send-free `publish_requests` queue. The admin Forms editor's
+Publish calls `POST /api/admin/publish`, which VALIDATES the composed definition
+server-side (closed vocabulary + reserved-key denylist + cross-section-unique keys +
+hard bounds) and, only if valid, ENQUEUES a row — it never commits or deploys. The Mac
+publish daemon (slice 3b) is the sole privileged actuator (mirrors the External Send
+Gate). `GET /api/admin/publish-status` is the monitor read view.
+
+#### Activation (operator — secrets/auth + deploy boundary; escalates to the Developer-Operator)
+
+1. Apply migration **0010** to the live D1 **BEFORE** the redeploy
+   (`npx wrangler d1 migrations apply its-safety-portal-db --remote`) — else
+   `/api/admin/publish` errors on the missing table. **ORDER-CRITICAL**, same rule as 0006/0007/0009.
+2. **Redeploy** (`npm run deploy`) — activates the enqueue + status routes (still inert for
+   PMs without the Mac publish daemon, which is the privileged actuator that lands forms).
+
+> Out of scope here: the Mac publish daemon (slice 3b) + the editor UI (slices 4–6).
+
 ### Lockout recovery (break-glass) — escalate to the Developer-Operator
 
 If both admins are ever locked out (e.g. passwords lost, or both disabled), recovery runs

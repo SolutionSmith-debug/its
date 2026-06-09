@@ -4,6 +4,7 @@ import type { Context } from "hono";
 import { setSignedCookie, getSignedCookie, deleteCookie } from "hono/cookie";
 import type { Env, Role, SessionClaims, Vars } from "./types";
 import { validateUser, newSessionClaims, hashPassword, normalizeUsername, coerceRole } from "./auth";
+import { validateDefinition } from "./publishValidation";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ITS Safety Portal — Worker API (Phase 2)
@@ -1009,6 +1010,81 @@ app.post("/api/admin/users/delete", ...adminGate, async (c) => {
     return c.json({ ok: true, reauth: true });
   }
   return c.json({ ok: true, username: target.username });
+});
+
+// ── Form editor publish pipeline (Phase 2, slice 3a) ───────────────────────────
+// SEND-FREE: POST /api/admin/publish VALIDATES the composed definition server-side
+// (publishValidation, design C3) and, only if valid, ENQUEUES a publish_requests row.
+// It NEVER commits or deploys — the Mac daemon (slice 3b) is the sole privileged
+// actuator (mirrors the External Send Gate: the cloud can only queue). create / edit /
+// add_version carry a composed definition; delete / rollback flip the manifest at
+// actuation and carry only the target.
+const PUBLISH_OPS = new Set(["create", "edit", "add_version", "delete", "rollback"]);
+// A publish still in flight, for per-parent serialization (C8) — archived | failed are
+// terminal. 'live' still blocks (the Box-archive stage is pending; a stuck row is
+// failed by the daemon watchdog, never wedging a parent forever).
+const NON_TERMINAL_STATUSES = "('queued','validated','tested','merged','live')";
+
+app.post("/api/admin/publish", ...adminGate, async (c) => {
+  let body: {
+    op?: unknown; identity?: unknown; parent_form_code?: unknown;
+    target_form_code?: unknown; definition?: unknown;
+  };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "bad_request" }, 400);
+  }
+  if (typeof body !== "object" || (body as unknown) === null || Array.isArray(body)) {
+    return c.json({ error: "bad_request" }, 400);
+  }
+  const op = typeof body.op === "string" ? body.op : "";
+  if (!PUBLISH_OPS.has(op)) return c.json({ error: "invalid_op" }, 400);
+  const identity = typeof body.identity === "string" ? body.identity : "";
+  const parent = typeof body.parent_form_code === "string" ? body.parent_form_code : "";
+  if (!/^[a-z0-9-]+$/.test(identity)) return c.json({ error: "invalid_identity" }, 400);
+  if (!/^[a-z0-9-]+$/.test(parent)) return c.json({ error: "invalid_parent_form_code" }, 400);
+
+  // create/edit/add_version carry a composed definition → server-side validate it (C3).
+  // delete/rollback carry only the target (the daemon flips the manifest at actuation).
+  let definitionJson: string | null = null;
+  let targetFormCode: string | null =
+    typeof body.target_form_code === "string" ? body.target_form_code : null;
+  if (op === "create" || op === "edit" || op === "add_version") {
+    const result = validateDefinition(body.definition, { identity, parentFormCode: parent });
+    if (!result.ok) return c.json({ error: "invalid_definition", reason: result.reason }, 400);
+    targetFormCode = (body.definition as { form_code: string }).form_code;
+    definitionJson = JSON.stringify(body.definition);
+  } else if (targetFormCode !== null && !/^[a-z0-9-]+-v[0-9]+$/.test(targetFormCode)) {
+    return c.json({ error: "invalid_target_form_code" }, 400);
+  }
+
+  // Per-parent serialization (C8): reject a 2nd publish while one is in flight.
+  const inflight = await c.env.DB
+    .prepare(`SELECT id FROM publish_requests WHERE parent_form_code=? AND status IN ${NON_TERMINAL_STATUSES} LIMIT 1`)
+    .bind(parent)
+    .first();
+  if (inflight) return c.json({ error: "publish_in_progress" }, 409);
+
+  const res = await c.env.DB.batch([
+    c.env.DB.prepare(
+      "INSERT INTO publish_requests (requested_by, op, parent_form_code, identity, target_form_code, definition_json) VALUES (?,?,?,?,?,?)",
+    ).bind(c.get("session").username, op, parent, identity, targetFormCode, definitionJson),
+    auditStmt(c, c.get("session").username, "form_publish", identity, { op, target_form_code: targetFormCode }),
+  ]);
+  return c.json({ ok: true, id: res[0]?.meta?.last_row_id ?? null, status: "queued" }, 201);
+});
+
+// GET /api/admin/publish-status — the status-monitor read view (most-recent first).
+// Send-free read of the publish_requests state machine for the admin dashboard stepper.
+app.get("/api/admin/publish-status", ...adminGate, async (c) => {
+  const { results } = await c.env.DB
+    .prepare(
+      "SELECT id, created_at, updated_at, requested_by, op, parent_form_code, identity, " +
+        "target_form_code, status, failed_stage, failure_reason FROM publish_requests ORDER BY id DESC LIMIT 50",
+    )
+    .all();
+  return c.json({ requests: results });
 });
 
 // Unmatched /api/* → JSON 404 (never the SPA shell).
