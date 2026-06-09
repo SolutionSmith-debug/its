@@ -13,7 +13,7 @@ import * as api from "../lib/api";
 
 // Display order of the happy-path stages. `merged` is folded into the Live step (it is a
 // transient internal stage between tested and live); `archived` is the terminal success.
-const STEPS = [
+const PUBLISH_STEPS = [
   { key: "queued", label: "Queued" },
   { key: "validated", label: "Validated" },
   { key: "tested", label: "Tested" },
@@ -21,7 +21,25 @@ const STEPS = [
   { key: "archived", label: "Archived" },
 ] as const;
 
-// Map each status onto a 0-based index into STEPS (how far the happy path has advanced).
+// A Retire (op=delete) runs the SAME status machine, but the last two stages mean something
+// different: nothing "goes live" (the form is REMOVED from the live catalog), and the form is
+// NOT deleted from the Box 00_Form_Archive — the archive regen is upload-only, so a retired
+// form's blank PDF stays there until an operator removes it by hand. So relabel `live`→Removed
+// and `archived`→Done. Keys/length/order match PUBLISH_STEPS so STATUS_INDEX still aligns.
+const RETIRE_STEPS = [
+  { key: "queued", label: "Queued" },
+  { key: "validated", label: "Validated" },
+  { key: "tested", label: "Tested" },
+  { key: "live", label: "Removed" },
+  { key: "archived", label: "Done" },
+] as const;
+
+// The stepper labels for a request, chosen by op (Retire reads differently — see RETIRE_STEPS).
+export function stepsForOp(op: api.PublishOp): typeof PUBLISH_STEPS | typeof RETIRE_STEPS {
+  return op === "delete" ? RETIRE_STEPS : PUBLISH_STEPS;
+}
+
+// Map each status onto a 0-based index into the op's step list (how far the path advanced).
 const STATUS_INDEX: Record<api.PublishRequest["status"], number> = {
   queued: 0,
   validated: 1,
@@ -170,7 +188,7 @@ function RequestRow({
       {/* delete/rollback don't traverse the create stepper meaningfully, but the same
           status machine still applies — render the stepper for all ops. */}
       <ol className="form-editor__stepper" aria-label="Publish progress">
-        {STEPS.map((step, i) => {
+        {stepsForOp(req.op).map((step, i) => {
           let state: "done" | "current" | "todo" | "failed";
           if (failed) {
             // RED the stage it died at (reached index falls back to the recorded stage);
