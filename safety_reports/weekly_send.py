@@ -276,7 +276,9 @@ def send_one_row(row_id: int) -> SendResult:
             [{
                 "_row_id": row_id,
                 wsr_review.COL_SEND_STATUS: STATUS_SENT,
-                wsr_review.COL_SENT_AT: sent_at.replace(microsecond=0).isoformat(),
+                # ABSTRACT_DATETIME column: naive Pacific wall-clock (an offset-bearing
+                # value is rejected, errorCode 5536). The Notes `sent=` tag stays UTC.
+                wsr_review.COL_SENT_AT: wsr_review.to_wsr_datetime(sent_at),
                 wsr_review.COL_NOTES: new_notes,
             }],
         )

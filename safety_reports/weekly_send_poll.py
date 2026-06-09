@@ -680,9 +680,10 @@ def _stamp_approval(row_id: int, verdict: approval_verification.ApprovalVerdict)
 
     Best-effort AUDIT write — a stamp failure must NOT block a send the F22 gate
     already verified (the approval is real regardless of whether the stamp lands).
-    Approved By takes the actor email; Approved At takes the deciding-event date
-    (the DATE column wants YYYY-MM-DD), falling back to today (Pacific)."""
-    approved_at = (verdict.modified_at or datetime.now(ZoneInfo(SEND_TZ)).isoformat())[:10]
+    Approved By takes the actor email; Approved At takes the deciding-event datetime —
+    Pacific wall-clock in the ABSTRACT_DATETIME column (the verdict's UTC modified_at
+    converted to local), falling back to now."""
+    approved_at = wsr_review.to_wsr_datetime(verdict.modified_at)
     try:
         smartsheet_client.update_rows(
             sheet_ids.SHEET_WSR_HUMAN_REVIEW,
