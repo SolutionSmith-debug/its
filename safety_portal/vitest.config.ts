@@ -29,6 +29,13 @@ export default defineConfig(async () => {
     ],
     test: {
       setupFiles: ["./test/apply-migrations.ts"],
+      // Workers-pool suites live in test/ ONLY. Scope the include so this config never
+      // collects the SPA jsdom render-smoke suite under src/ (src/**/*.test.tsx) — that
+      // suite cannot load in workerd (no DOM / no jsdom) and runs via `npm run test:spa`
+      // (vitest.config.spa.ts). Without this scope the default `**/*.test.*` glob would
+      // pull in the SPA test and fail it here. Additive: the existing worker tests all
+      // live in test/*.test.ts, so this is the current set, unchanged.
+      include: ["test/**/*.test.ts"],
     },
   };
 });
