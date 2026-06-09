@@ -82,6 +82,19 @@ def test_delete_actuates_without_a_definition(stub):
     assert _statuses(stub) == ["validated", "tested", "live", "archived"]
 
 
+def test_regenerate_archive_uses_venv_interpreter_not_bare_python(mocker):
+    """Regression: the `archived` stage shells out with sys.executable, NOT a bare "python".
+    Under launchd (minimal PATH; macOS ships only `python3`, and the interpreter is really
+    ~/its/.venv/bin/python) a bare "python" raised FileNotFoundError, failing every publish
+    at `archived` AFTER the form had already gone live."""
+    run = mocker.patch.object(pd.subprocess, "run")
+    pd._regenerate_archive()
+    cmd = run.call_args.args[0]
+    assert cmd[0] == pd.sys.executable
+    assert cmd[0] != "python"  # the exact bug
+    assert cmd[1:] == ["-m", "scripts.generate_form_archive", "--upload"]
+
+
 # ── failures stamp failed(stage) + fire the operator CRITICAL ────────────────────
 
 

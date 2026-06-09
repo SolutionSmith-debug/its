@@ -40,6 +40,7 @@ import os
 import re
 import socket
 import subprocess
+import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -291,9 +292,15 @@ def _deploy_land_health(creds: _Creds, current_form_code: str) -> None:
 
 def _regenerate_archive() -> None:
     """Regenerate the Box blank-form archive (the DR storage of record) so it reflects the
-    new active set. Raises on failure."""
+    new active set. Raises on failure.
+
+    Uses sys.executable (the venv interpreter already running this daemon), NOT a bare
+    "python" — launchd's minimal PATH has no `python` (macOS ships only `python3`, and the
+    real interpreter is ~/its/.venv/bin/python), so a bare "python" raised
+    FileNotFoundError and failed every publish at the `archived` stage AFTER it had already
+    gone live. sys.executable also guarantees the same venv (with boxsdk/smartsheet deps)."""
     subprocess.run(
-        ["python", "-m", "scripts.generate_form_archive", "--upload"],
+        [sys.executable, "-m", "scripts.generate_form_archive", "--upload"],
         cwd=_ROOT, check=True, capture_output=True, text=True,
     )
 
