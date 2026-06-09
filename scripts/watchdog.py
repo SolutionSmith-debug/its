@@ -93,7 +93,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 
-from safety_reports import weekly_generate
+from safety_reports import weekly_generate, wsr_review
 from shared import (
     alert_dedupe,
     circuit_breaker,
@@ -1194,6 +1194,55 @@ def _check_blueprint_guard_symlinks() -> CheckResult:
     return CheckResult(Severity.INFO, "blueprint guard symlinks resolve OK.")
 
 
+# ---- Check N: WSR rows stuck in SENDING (write-ahead-marker safety net) --
+
+# Cap on the row-ID list in the WARN detail (mirrors REVIEW_QUEUE_ITEM_CAP); the full
+# set is one Smartsheet query away.
+WSR_SENDING_ITEM_CAP = 10
+
+
+def _check_stuck_wsr_send() -> CheckResult:
+    """Check N: WSR_human_review rows stuck in Send Status=SENDING.
+
+    weekly_send writes a SENDING write-ahead marker immediately BEFORE the
+    irreversible Graph send, then flips it to SENT (Stage 7). A row that stays in
+    SENDING means that SENT-stamp failed (the report WAS sent but not recorded) or
+    the daemon died mid-send. By design such a row is NOT re-dispatched — no
+    double-send (weekly_send_poll.DISPATCH_STATUSES excludes SENDING) — so without
+    this check it would sit SILENTLY unsent/unrecorded. A legitimate SENDING is
+    sub-second, so any row this (hourly) check catches is effectively stuck → WARN
+    (operator: confirm delivery, then mark SENT; or set back to PENDING to re-send).
+
+    READ-ONLY: never writes a WSR row and never sends — its only effect is the
+    returned CheckResult. A Smartsheet read failure is caught by the `_run_check`
+    fence (logged ERROR, other checks unaffected), so this check cannot break the
+    run, cause a send, or cause a missed send. WARN is paged-deferred during
+    MAINTENANCE and never triggers the CRITICAL-only Resend/Sentry legs.
+    """
+    rows = smartsheet_client.get_rows(
+        sheet_ids.SHEET_WSR_HUMAN_REVIEW,
+        filters={wsr_review.COL_SEND_STATUS: wsr_review.STATUS_SENDING},
+    )
+    if not rows:
+        return CheckResult(
+            severity=Severity.INFO,
+            summary="No WSR rows stuck in SENDING.",
+        )
+    row_ids = [str(r.get("_row_id")) for r in rows]
+    capped = row_ids[:WSR_SENDING_ITEM_CAP]
+    details = f"Row IDs: {', '.join(capped)}"
+    if len(row_ids) > WSR_SENDING_ITEM_CAP:
+        details += f" (showing first {WSR_SENDING_ITEM_CAP} of {len(row_ids)})"
+    return CheckResult(
+        severity=Severity.WARN,
+        summary=(
+            f"{len(rows)} WSR row(s) stuck in SENDING (sent-but-not-stamped, or daemon "
+            f"died mid-send) — confirm delivery + mark SENT, or set PENDING to re-send."
+        ),
+        details=details,
+    )
+
+
 # ---- Entrypoint ---------------------------------------------------------
 
 
@@ -1223,6 +1272,9 @@ CHECKS: list[Callable[..., CheckResult]] = [
     # Check M (C3): blueprint .claude guard-symlink resolution. Returns a
     # CheckResult (no inline alert); WARN-only if the symlinks dangle.
     _check_blueprint_guard_symlinks,
+    # Check N: WSR rows stuck in SENDING (weekly_send write-ahead-marker safety net).
+    # Read-only; returns a CheckResult (no inline alert); WARN-only.
+    _check_stuck_wsr_send,
     # Check E (Anthropic spend trend) deferred to a follow-on PR (the
     # Check E shipping PR) — requires an Admin API key (sk-ant-admin01-...
     # prefix) provisioned in Keychain under ITS_ANTHROPIC_ADMIN_API_KEY.

@@ -74,6 +74,7 @@ STATUS_PENDING = wsr_review.STATUS_PENDING
 STATUS_SENT = wsr_review.STATUS_SENT
 STATUS_FAILED = wsr_review.STATUS_FAILED
 STATUS_HELD = wsr_review.STATUS_HELD
+STATUS_SENDING = wsr_review.STATUS_SENDING  # write-ahead intent marker (see Stage 6)
 
 SHEET = wsr_review.SHEET_ID
 
@@ -239,6 +240,29 @@ def send_one_row(row_id: int) -> SendResult:
         f"sending WSR row_id={row_id} project={project_name!r} TO={to_addr!r} CC={cc_list}",
         error_code="weekly_send.dispatch",
     )
+    # WRITE-AHEAD intent marker — the idempotency guard for the irreversible send. Flip
+    # the row to SENDING *before* graph_client.send_mail. SENDING is NOT a dispatch
+    # candidate (weekly_send_poll.DISPATCH_STATUSES = {PENDING, FAILED}), so if the
+    # post-send SENT-stamp (Stage 7) fails, the row is left in SENDING and is NEVER
+    # re-dispatched — the customer is not double-sent. If THIS write fails we have NOT
+    # sent yet, so return without sending: the row stays PENDING/FAILED and retries next
+    # cycle (a sustained Smartsheet outage is backstopped by the circuit breaker, which
+    # also halts the poller's candidate read). Fail toward not-sending.
+    try:
+        smartsheet_client.update_rows(
+            SHEET, [{"_row_id": row_id, wsr_review.COL_SEND_STATUS: STATUS_SENDING}],
+        )
+    except SmartsheetError as exc:
+        error_log.log(
+            Severity.WARN, SCRIPT_NAME,
+            f"row_id={row_id} project={project_name!r}: pre-send SENDING marker write failed; "
+            f"NOT sending this cycle (will retry): {exc!r}",
+            error_code="weekly_send.pre_send_marker_failed",
+        )
+        return SendResult(
+            status="send_failed", row_id=row_id, project_name=project_name,
+            error=f"pre_send_marker_failed: {exc!r}", retry_count=retry_count,
+        )
     try:
         graph_client.send_mail(
             from_mailbox=from_mailbox, to=[to_addr], cc=cc_list or None,
@@ -285,7 +309,9 @@ def send_one_row(row_id: int) -> SendResult:
     except SmartsheetError as exc:
         error_log.log(
             Severity.CRITICAL, SCRIPT_NAME,
-            f"row_id={row_id} send fired but row update failed: {exc!r}. DOUBLE-SEND RISK — operator must mark this row SENT manually.",
+            f"row_id={row_id} send fired but SENT-stamp failed: {exc!r}. Row is left in "
+            f"SENDING (the write-ahead marker), so it is NOT re-dispatched — no double-send. "
+            f"Operator: confirm delivery, then mark SENT (watchdog Check N also flags this).",
             error_code="weekly_send.post_send_row_update_failed", exc_info=repr(exc),
         )
         return SendResult(status="sent", row_id=row_id, project_name=project_name, error=f"row_update_failed: {exc!r}", retry_count=retry_count)
