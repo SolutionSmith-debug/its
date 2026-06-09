@@ -29,12 +29,16 @@ interface UserRow {
   username: string;
   password_hash: string;
   role: string;
+  session_epoch: number;
 }
 
 export interface AuthedUser {
   id: number;
   username: string;
   role: Role;
+  /** Live revocation epoch (slice 8a, audit #7) — snapshotted into the cookie at
+   *  issue by newSessionClaims. */
+  session_epoch: number;
 }
 
 /**
@@ -55,7 +59,7 @@ export async function validateUser(
   password: string,
 ): Promise<AuthedUser | null> {
   const row = await env.DB.prepare(
-    "SELECT id, username, password_hash, role FROM users WHERE username = ?",
+    "SELECT id, username, password_hash, role, session_epoch FROM users WHERE username = ?",
   )
     .bind(username)
     .first<UserRow>();
@@ -65,7 +69,7 @@ export async function validateUser(
   const ok = await bcrypt.compare(password, stored);
 
   if (!row || !ok) return null;
-  return { id: row.id, username: row.username, role: coerceRole(row.role) };
+  return { id: row.id, username: row.username, role: coerceRole(row.role), session_epoch: row.session_epoch };
 }
 
 /** Narrow a raw DB role string to the Role union, defaulting unknown → 'submitter'
@@ -76,9 +80,16 @@ export function coerceRole(raw: string | null | undefined): Role {
   return raw === "admin" ? "admin" : "submitter";
 }
 
-/** Build the claims object placed (signed) into the session cookie. */
+/** Build the claims object placed (signed) into the session cookie. `epoch` snapshots
+ *  the user's live session_epoch at issue (slice 8a, audit #7) so a later logout /
+ *  password-change DB-side bump leaves this cookie's snapshot stale → rejected. */
 export function newSessionClaims(user: AuthedUser): SessionClaims {
-  return { sub: user.id, username: user.username, iat: Math.floor(Date.now() / 1000) };
+  return {
+    sub: user.id,
+    username: user.username,
+    iat: Math.floor(Date.now() / 1000),
+    epoch: user.session_epoch,
+  };
 }
 
 /**

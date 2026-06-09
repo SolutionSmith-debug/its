@@ -237,6 +237,28 @@ do **not** re-point.
 
 > **This is the secrets/auth + impersonation boundary** — review the diff before activating.
 
+### Session revocation (slice 8a — `users.session_epoch`, deferred audit #7)
+
+Real logout / password-change revocation. **Migration 0009** adds `users.session_epoch`
+(monotonic counter, `DEFAULT 0`); the epoch is snapshotted into the session cookie at login
+and re-read per request in `requireSession` (folded into the same `disabled + role` SELECT).
+A cookie whose epoch is **behind** the DB epoch is rejected (`401 revoked`); **logout** and
+**password-change** (both the bearer reset and the in-app credentials route) increment the
+column, so an outstanding/captured cookie dies on its next request. A pre-#7 cookie (no epoch
+claim) is treated as `0`, so existing sessions survive the migration.
+
+#### Activation (operator — secrets/auth boundary; escalates to the Developer-Operator)
+
+1. Apply migration **0009** to the live D1 **BEFORE** the redeploy
+   (`npx wrangler d1 migrations apply its-safety-portal-db --remote`) — else the
+   `requireSession` `session_epoch`-read errors and (fail-closed) 401s every session.
+   **ORDER-CRITICAL**, same rule as 0006/0007.
+2. **Redeploy** (`npm run deploy`) — activates the epoch check + the logout / password bumps.
+3. **Regression-check the LIVE portal:** existing users still log in + submit (pre-#7 cookies
+   survive; epoch defaults `0`); after a logout, re-using the old cookie is rejected (`401`).
+
+> Out of scope here: the admin 5-minute idle timeout (slice 8b).
+
 ### Lockout recovery (break-glass) — escalate to the Developer-Operator
 
 If both admins are ever locked out (e.g. passwords lost, or both disabled), recovery runs
