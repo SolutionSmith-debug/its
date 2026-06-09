@@ -143,6 +143,28 @@ see [the reconciliation note](#deploy-target-workers-static-assets-vs-pages-reco
 > Workers-constrained substitute for bcrypt). Honoring the mission's literal "bcrypt cost
 > 10" is why bcryptjs is used here.
 
+### Production hardening — operator cutover steps (Part-A findings)
+
+The in-code hardening (**A1** idempotent submit id, **A3** daily D1 prune cron) ships in the
+Worker and needs no operator action. Two items require the Cloudflare **dashboard/account** at
+cutover — do them on the production account (a fresh account defaults to the **Free** plan):
+
+- **A5 — Workers plan go/no-go (BLOCKER).** `/api/login` runs `bcrypt.compare` at cost 10,
+  which can exceed the Workers **Free** 10 ms CPU cap (Error 1102) → a total login outage.
+  **Confirm the production Worker is on the Workers Paid plan before go-live.** If Paid is not
+  available, the documented Workers-constrained substitute is **PBKDF2-SHA-256 @100k iters** in
+  `worker/auth.ts` — but that changes the mission-locked "bcrypt cost 10" parameter and needs a
+  password-rehash migration, so it is **developer + doctrine work, not a cutover toggle** (surface
+  to Seth; do not swap silently).
+
+- **A2 — rate limiting (add at cutover).** Nothing throttles `/api/login` (brute-force + bcrypt
+  CPU-cost amplification) or `/api/*` (unbounded). Add Cloudflare **rate-limiting rules** in the
+  dashboard (Security → WAF → Rate limiting rules): a tight rule on `/api/login` (e.g. ~5 req /
+  10 s per IP → block ~10 min) and a looser blanket rule on `/api/*`. The in-code alternative is
+  the Workers **`ratelimit` binding** (`wrangler.jsonc` + per-route `.limit()`), reproducible +
+  testable in-repo — adopt it if it is GA for the account at deploy time; until then the
+  dashboard rule is the cutover step (re-create it on any new account).
+
 ### Secrets
 
 All secrets are Workers Secrets / `.dev.vars` — **never committed**. Phase 2 needs only

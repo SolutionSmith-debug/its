@@ -55,7 +55,13 @@
       "database_id": "924f142b-c812-49fd-a262-2eb6fb34fe95",
       "migrations_dir": "migrations"
     }
-  ]
+  ],
+
+  // ── Scheduled prune (A3) — a daily cron prunes the D1 CACHE: filed submissions >90d
+  // (the durable record is Box + the week sheet) + audit_log >1y. The scheduled() handler
+  // in worker/index.ts calls prune.pruneOldData; an UNFILED submission (box_verified=0) is
+  // NEVER evicted. Cron triggers deploy with the Worker (`wrangler deploy`) — no dashboard step.
+  "triggers": { "crons": ["0 9 * * *"] }
 
   // R2 removed 2026-06-05: unused under Box-as-System-of-Record + Option-B render.
   // The Worker never holds a PDF — intake.py renders the submission PDF and stores it
