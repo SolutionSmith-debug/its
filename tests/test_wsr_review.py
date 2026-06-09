@@ -4,7 +4,8 @@ Smartsheet calls mocked. Live coverage: tests/test_wsr_review_integration.py.
 """
 from __future__ import annotations
 
-from datetime import date
+import re
+from datetime import UTC, date, datetime
 from unittest.mock import MagicMock
 
 import pytest
@@ -100,3 +101,35 @@ def test_upsert_update_refreshes_pdf_only_not_body_or_approval(ss):
         "_row_id", wsr_review.COL_COMPILED_PDF, wsr_review.COL_RECIPIENT_TO,
         wsr_review.COL_CC, wsr_review.COL_NOTES,
     }
+
+
+# ---- to_wsr_datetime (ABSTRACT_DATETIME cell formatting) ------------------
+# ABSTRACT_DATETIME is tz-naive and REJECTS an offset/'Z' (live-verified errorCode 5536),
+# so the value must be naive Pacific wall-clock `YYYY-MM-DDTHH:MM:SS`.
+
+_NAIVE_RE = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$"  # no offset, no 'Z', no microseconds
+
+
+def test_to_wsr_datetime_utc_string_to_naive_pacific():
+    # The F22 verdict.modified_at shape (UTC + offset). 16:39:18Z -> 09:39:18 PDT (June, UTC-7).
+    out = wsr_review.to_wsr_datetime("2026-06-09T16:39:18+00:00")
+    assert out == "2026-06-09T09:39:18"
+    assert re.match(_NAIVE_RE, out), "must be naive — ABSTRACT_DATETIME rejects an offset"
+
+
+def test_to_wsr_datetime_aware_datetime_to_naive_pacific():
+    assert wsr_review.to_wsr_datetime(datetime(2026, 6, 9, 16, 39, 18, tzinfo=UTC)) == "2026-06-09T09:39:18"
+
+
+def test_to_wsr_datetime_strips_microseconds():
+    assert wsr_review.to_wsr_datetime("2026-06-09T16:39:18.654321+00:00") == "2026-06-09T09:39:18"
+
+
+def test_to_wsr_datetime_handles_z_suffix():
+    assert wsr_review.to_wsr_datetime("2026-06-09T16:39:18Z") == "2026-06-09T09:39:18"
+
+
+def test_to_wsr_datetime_none_is_now_naive_pacific():
+    out = wsr_review.to_wsr_datetime(None)
+    assert re.match(_NAIVE_RE, out)
+    assert "+" not in out and "Z" not in out  # naive — no offset survives

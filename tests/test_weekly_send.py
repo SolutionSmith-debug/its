@@ -5,6 +5,7 @@ repoint. Live coverage: tests/test_weekly_send_integration.py.
 """
 from __future__ import annotations
 
+import re
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -73,9 +74,11 @@ def test_send_resolves_recipients_from_active_jobs_and_attaches_pdf(stub):
     assert kw["attachments"][0]["contentBytes"] == b"%PDF-packet"
     assert kw["attachments"][0]["contentType"] == "application/pdf"
     assert "Bradley 1" in kw["subject"] and "2026-05-30" in kw["subject"]
-    # Marked SENT.
+    # Marked SENT, with a naive-Pacific Sent At (ABSTRACT_DATETIME rejects an offset — a
+    # rejected write here fires the CRITICAL double-send path, so this format is load-bearing).
     upd = stub["update_rows"].call_args.args[1][0]
     assert upd[wsr_review.COL_SEND_STATUS] == wsr_review.STATUS_SENT
+    assert re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$", upd[wsr_review.COL_SENT_AT])
 
 
 def test_download_uses_compiled_pdf_box_id(stub):

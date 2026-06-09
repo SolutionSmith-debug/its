@@ -22,8 +22,9 @@ an updated packet is therefore a deliberate operator re-approval, never automati
 """
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from shared import sheet_ids, smartsheet_client
 
@@ -51,6 +52,34 @@ STATUS_FAILED = "FAILED"
 STATUS_HELD = "HELD"
 
 SHEET_ID = sheet_ids.SHEET_WSR_HUMAN_REVIEW
+
+# The "Approved At" / "Sent At" columns are Smartsheet ABSTRACT_DATETIME (the user-facing
+# "Date/Time" type). ABSTRACT_DATETIME is tz-NAIVE: it stores/displays the literal value and
+# REJECTS any UTC offset or 'Z' suffix (live-verified — a `...-07:00` value returns
+# errorCode 5536). So we write Pacific wall-clock as a naive `YYYY-MM-DDTHH:MM:SS` string and
+# the grid reads in local time (operator decision, 2026-06-09). The legacy plain "DATETIME"
+# type is NOT creatable on a user column (docs/tech_debt.md) — ABSTRACT_DATETIME is.
+WSR_DISPLAY_TZ = "America/Los_Angeles"
+
+
+def to_wsr_datetime(value: datetime | str | None) -> str:
+    """Format an instant as a Smartsheet ABSTRACT_DATETIME cell value — naive Pacific
+    wall-clock `YYYY-MM-DDTHH:MM:SS` (no offset, no 'Z', no microseconds; see WSR_DISPLAY_TZ).
+
+    Accepts an aware/naive datetime, an ISO-8601 string (e.g. the F22 verdict's UTC
+    `modified_at` `...+00:00`), or None (→ now). An aware value is converted to Pacific; a
+    naive value is taken as-is. Stripping the offset is load-bearing: ABSTRACT_DATETIME
+    rejects an offset-bearing string outright (errorCode 5536).
+    """
+    if value is None:
+        dt = datetime.now(ZoneInfo(WSR_DISPLAY_TZ))
+    elif isinstance(value, str):
+        dt = datetime.fromisoformat(value)
+    else:
+        dt = value
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(ZoneInfo(WSR_DISPLAY_TZ))
+    return dt.replace(tzinfo=None, microsecond=0).isoformat()
 
 
 def email_body_template(
