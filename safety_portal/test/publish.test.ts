@@ -93,6 +93,33 @@ describe("validateDefinition — rejections (the C3 gate)", () => {
     d.sections = Array.from({ length: 41 }, () => ({ type: "static_text", text: "x" }));
     expect(validateDefinition(d, jhaCtx()).ok).toBe(false);
   });
+
+  // ── Required-content legal floor (Brief 1 PR-1) — mirrors check_required_content ──
+  it("rejects a jha edit that drops the required signature_table (legal floor)", () => {
+    const d = jha();
+    d.sections = (d.sections as Record<string, unknown>[]).filter((s) => s.type !== "signature_table");
+    const r = validateDefinition(d, jhaCtx());
+    expect(r.ok).toBe(false);
+    expect((r as { reason: string }).reason).toMatch(/required content missing/);
+  });
+  it("rejects a jha edit that drops the mandatory legal/footer line", () => {
+    const d = jha();
+    d.sections = (d.sections as Record<string, unknown>[]).filter(
+      (s) => !(s.type === "static_text" && String((s as { text?: unknown }).text ?? "").includes("REVIEW AND REVISE THE PLAN")),
+    );
+    expect(validateDefinition(d, jhaCtx()).ok).toBe(false);
+  });
+  it("rejects a brand-new form type with no signature input (defaults_for_new_identities)", () => {
+    const d = jha();
+    d.form_code = "newkind-v1";
+    d.parent_form_code = "newkind";
+    d.version = 1;
+    d.variant_label = null;
+    d.sections = [{ type: "static_text", text: "hello" }];
+    const r = validateDefinition(d, { identity: "newkind", parentFormCode: "newkind" });
+    expect(r.ok).toBe(false);
+    expect((r as { reason: string }).reason).toMatch(/signature input/);
+  });
 });
 
 // ── endpoint harness (mirrors test/session-epoch.test.ts) ───────────────────────

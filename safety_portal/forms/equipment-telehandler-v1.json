@@ -116,7 +116,8 @@
       "title": "Sign-off",
       "fields": [
         { "key": "operator_initials", "label": "Operator's initials", "input": "text" },
-        { "key": "alt_operator_initials", "label": "Alternative operator's initials", "input": "text" }
+        { "key": "alt_operator_initials", "label": "Alternative operator's initials", "input": "text" },
+        { "key": "operator_signature", "label": "Operator's Signature", "input": "signature" }
       ]
     },
     {

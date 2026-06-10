@@ -7,16 +7,20 @@ TS display runtime + the Python PDF renderer) consume, so they MUST conform to
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import jsonschema
 import pytest
+
+from safety_reports.publish_manifest import PublishApplyError, check_required_content
 
 _ROOT = Path(__file__).resolve().parents[1]
 FORMS_DIR = _ROOT / "safety_portal" / "forms"
 REF_DIR = _ROOT / "safety_portal" / "reference_forms"
 META = json.loads((FORMS_DIR / "meta-schema.json").read_text())
 DEF_PATHS = sorted(p for p in FORMS_DIR.glob("*.json") if p.name != "meta-schema.json")
+REQUIRED_CONTENT = json.loads((_ROOT / "safety_portal" / "required-content.json").read_text())
 
 
 def _load(p: Path) -> dict:
@@ -116,3 +120,20 @@ def test_toolbox_variants_have_content_and_signin() -> None:
         d = _load(p)
         assert any(s["type"] == "content_blocks" and s["blocks"] for s in d["sections"])
         assert any(s["type"] == "signature_table" for s in d["sections"])
+
+
+@pytest.mark.parametrize("path", DEF_PATHS, ids=lambda p: p.stem)
+def test_live_definition_satisfies_required_content(path: Path) -> None:
+    """Every shipped definition satisfies its required-content legal floor (Brief 1 PR-1) — the
+    generalized form of the per-form footer/lockout/signature assertions above, driven by
+    safety_portal/required-content.json. check_required_content raises on a violation; a clean
+    return is the pass. This locks the floor against future shipped forms too."""
+    d = _load(path)
+    identity = re.sub(r"-v\d+$", "", d["form_code"])
+    try:
+        check_required_content(
+            d, identity=identity, parent_form_code=d["parent_form_code"],
+            required_content=REQUIRED_CONTENT,
+        )
+    except PublishApplyError as exc:
+        raise AssertionError(f"{path.stem}: {exc}") from exc

@@ -65,6 +65,7 @@ _ROOT = Path(__file__).resolve().parent.parent
 _CATALOG_PATH = _ROOT / "safety_portal" / "catalog.json"
 _FORMS_DIR = _ROOT / "safety_portal" / "forms"
 _META_SCHEMA_PATH = _FORMS_DIR / "meta-schema.json"
+_REQUIRED_CONTENT_PATH = _ROOT / "safety_portal" / "required-content.json"
 
 # A request still carrying a composed definition (vs delete/rollback which flip the manifest).
 _DEFINITION_OPS = frozenset({"create", "edit", "add_version"})
@@ -128,6 +129,12 @@ def _resolve_creds() -> _Creds | None:
 
 def _load_catalog() -> dict:
     return json.loads(_CATALOG_PATH.read_text())
+
+
+def _load_required_content() -> dict:
+    """The per-identity legal floor (Brief 1 PR-1), read from live HEAD so apply_publish's
+    re-check (C3) uses the same manifest CI gates."""
+    return json.loads(_REQUIRED_CONTENT_PATH.read_text())
 
 
 def _validate_definition(definition: Any) -> None:
@@ -365,6 +372,7 @@ def _actuate(creds: _Creds, request: dict[str, Any], stats: PublishStats) -> Non
         new_manifest, files, note = apply_publish(
             _load_catalog(), op=op, identity=identity, parent_form_code=parent,
             target_form_code=target, definition=definition,
+            required_content=_load_required_content(),
         )
         _stamp(creds, request_id, "validated")
     except (PublishApplyError, jsonschema.ValidationError, json.JSONDecodeError, KeyError) as exc:

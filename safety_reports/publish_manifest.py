@@ -68,6 +68,106 @@ def _next_form_order(parent: dict) -> int:
     return max((f["display_order"] for f in parent["forms"]), default=0) + 1
 
 
+# ── Required-content legal floor (Brief 1 PR-1) ───────────────────────────────────────
+# Structure alone (the meta-schema) never required a JHA to keep its "REVIEW AND REVISE THE
+# PLAN" footer, an equipment form its lock/tag-out line, or a roster a signature section — so
+# an operator edit could ship a legally-broken form. safety_portal/required-content.json is
+# that missing requirement, enforced at BOTH C3 layers: the Worker enqueue gate
+# (worker/publishValidation.ts validateRequiredContent) and apply_publish below (the daemon's
+# authoritative re-check vs live HEAD). Reason strings start "required content missing:" so the
+# editor's explainPublish surfaces them verbatim and docs/runbooks/safety_portal_forms.md keys
+# on them. This mirrors validateRequiredContent exactly — the two layers MUST agree.
+
+
+def _iter_field_objects(definition: dict) -> list[dict]:
+    """Every field/column object across a definition's sections (header fields + table cols)."""
+    out: list[dict] = []
+    for s in definition.get("sections", []):
+        if not isinstance(s, dict):
+            continue
+        for f in s.get("fields", []) or []:
+            if isinstance(f, dict):
+                out.append(f)
+        for c in s.get("columns", []) or []:
+            if isinstance(c, dict):
+                out.append(c)
+    return out
+
+
+def _required_content_spec(required_content: dict, *, identity: str, parent_form_code: str) -> dict:
+    """Effective spec: parents[parent] shallow-merged with identities[identity] (identity wins
+    per key). If NEITHER exists, defaults_for_new_identities (the brand-new-form-type path)."""
+    parent_spec = (required_content.get("parents") or {}).get(parent_form_code)
+    identity_spec = (required_content.get("identities") or {}).get(identity)
+    if parent_spec is None and identity_spec is None:
+        return dict(required_content.get("defaults_for_new_identities") or {})
+    spec: dict = {}
+    if isinstance(parent_spec, dict):
+        spec.update(parent_spec)
+    if isinstance(identity_spec, dict):
+        spec.update(identity_spec)
+    return spec
+
+
+def check_required_content(
+    definition: dict,
+    *,
+    identity: str,
+    parent_form_code: str,
+    required_content: dict,
+) -> None:
+    """Raise PublishApplyError if `definition` violates its required-content entry. Mirrors
+    worker/publishValidation.ts validateRequiredContent (the two C3 layers must agree)."""
+    spec = _required_content_spec(
+        required_content, identity=identity, parent_form_code=parent_form_code
+    )
+    if not spec:
+        return
+    sections = [s for s in definition.get("sections", []) if isinstance(s, dict)]
+    section_types = {s.get("type") for s in sections}
+    for req_type in spec.get("required_section_types", []):
+        if req_type not in section_types:
+            raise PublishApplyError(
+                f"required content missing: {identity} must contain a {req_type!r} section"
+            )
+    min_sigs = spec.get("required_signature_inputs_min", 0)
+    if isinstance(min_sigs, int) and min_sigs > 0:
+        sig_count = sum(1 for f in _iter_field_objects(definition) if f.get("input") == "signature")
+        if sig_count < min_sigs:
+            raise PublishApplyError(
+                f"required content missing: {identity} needs at least {min_sigs} signature input(s)"
+            )
+    legal_texts = [
+        str(s.get("text", ""))
+        for s in sections
+        if s.get("type") == "static_text" and s.get("emphasis") in ("legal", "footer")
+    ]
+    for required in spec.get("required_static_text", []):
+        if not any(required in t for t in legal_texts):
+            raise PublishApplyError(
+                f'required content missing: the mandatory legal/footer line "{required}" '
+                f"is absent from {identity}"
+            )
+    req_keys = spec.get("required_field_keys", [])
+    if req_keys:
+        keys = {str(f["key"]) for f in _iter_field_objects(definition) if "key" in f}
+        for s in sections:
+            if "key" in s:
+                keys.add(str(s["key"]))
+            for g in s.get("groups", []) or []:
+                if isinstance(g, dict):
+                    if "key" in g:
+                        keys.add(str(g["key"]))
+                    for it in g.get("items", []) or []:
+                        if isinstance(it, dict) and "key" in it:
+                            keys.add(str(it["key"]))
+        for req_key in req_keys:
+            if req_key not in keys:
+                raise PublishApplyError(
+                    f"required content missing: core field {req_key!r} absent from {identity}"
+                )
+
+
 def apply_publish(
     manifest: dict,
     *,
@@ -76,6 +176,7 @@ def apply_publish(
     parent_form_code: str,
     target_form_code: str | None = None,
     definition: dict | None = None,
+    required_content: dict | None = None,
 ) -> tuple[dict, dict[str, Any], str]:
     """Apply `op` to `manifest`. Returns (new_manifest, files_to_write, note).
 
@@ -85,6 +186,15 @@ def apply_publish(
     never mutated (deep-copied)."""
     m = copy.deepcopy(manifest)
     files: dict[str, Any] = {}
+
+    # Legal-floor re-check (Brief 1 PR-1): a create/edit/add_version definition must satisfy
+    # its required-content entry. Passed in to keep apply_publish pure; None skips (back-compat
+    # for callers/tests that don't exercise the legal floor). The daemon always passes it.
+    if required_content is not None and op in ("create", "add_version", "edit") and isinstance(definition, dict):
+        check_required_content(
+            definition, identity=identity, parent_form_code=parent_form_code,
+            required_content=required_content,
+        )
 
     if op in ("create", "add_version"):
         if not isinstance(definition, dict):

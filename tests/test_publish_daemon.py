@@ -46,6 +46,11 @@ def stub(mocker):
         "commit": mocker.patch.object(pd, "_commit_test_merge"),
         "deploy": mocker.patch.object(pd, "_deploy_land_health"),
         "archive": mocker.patch.object(pd, "_regenerate_archive"),
+        # PR-1: the daemon now passes required_content to apply_publish. These tests target the
+        # state machine / stamping / error-handling, NOT the legal floor (tested in
+        # test_publish_manifest + test_form_definitions), so stub the floor to an empty manifest
+        # (no requirements → any definition passes the C3 re-check) to keep them decoupled.
+        "req_content": mocker.patch.object(pd, "_load_required_content", return_value={}),
         "log": mocker.patch.object(pd.error_log, "log"),
     }
 
