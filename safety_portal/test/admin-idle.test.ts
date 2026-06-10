@@ -1,7 +1,7 @@
 import { env, SELF } from "cloudflare:test";
 import { describe, it, expect, beforeEach } from "vitest";
 
-// Slice 8b — admin 5-minute idle timeout (a SLIDING server-side cookie window, C10).
+// Slice 8b — admin 30-minute idle timeout (a SLIDING server-side cookie window, C10).
 // Admins: a cookie idle past ADMIN_IDLE_S is 401'd (captured-cookie kill); an active
 // request slides it. Submitters keep the 90-day session. Real workerd + Miniflare D1.
 
@@ -9,7 +9,7 @@ const BASE = "https://portal.test";
 const ADMIN_BEARER = "test-admin-token";
 const SIGNING_SECRET = "test-session-signing-secret";
 const COOKIE = "its_portal_session";
-const ADMIN_IDLE_S = 5 * 60;
+const ADMIN_IDLE_S = 30 * 60;
 
 type Init = RequestInit & { cookie?: string; bearer?: string };
 function call(path: string, init: Init = {}): Promise<Response> {
@@ -55,9 +55,9 @@ beforeEach(async () => {
 });
 
 describe("login cookie lifetime is role-scoped", () => {
-  it("an admin login issues a 5-minute (300s) Max-Age cookie", async () => {
+  it("an admin login issues a 30-minute (1800s) Max-Age cookie", async () => {
     await provision("admin.one", "admin");
-    expect(setCookie(await login("admin.one"))).toMatch(/max-age=300\b/i);
+    expect(setCookie(await login("admin.one"))).toMatch(/max-age=1800\b/i);
   });
   it("a submitter login keeps the 90-day cookie", async () => {
     await provision("pm.bob", "submitter");
@@ -73,11 +73,11 @@ describe("admin idle window (server-side, sliding)", () => {
     expect(res.status).toBe(200);
     // Active request slides: a new cookie is set with a fresh iat.
     const slid = setCookie(res);
-    expect(slid).toMatch(/max-age=300\b/i);
+    expect(slid).toMatch(/max-age=1800\b/i);
     expect((claimsOf(slid).iat as number)).toBeGreaterThanOrEqual(now() - 2);
   });
 
-  it("an admin cookie idle past 5 min is rejected (401 idle)", async () => {
+  it("an admin cookie idle past 30 min is rejected (401 idle)", async () => {
     const id = await provision("admin.one", "admin");
     const stale = await signCookie({ sub: id, username: "admin.one", iat: now() - (ADMIN_IDLE_S + 60), epoch: 0 });
     const res = await call("/api/session", { cookie: stale });
@@ -85,7 +85,7 @@ describe("admin idle window (server-side, sliding)", () => {
     expect(await res.json()).toMatchObject({ error: "idle" });
   });
 
-  it("a SUBMITTER cookie idle past 5 min still works (no admin idle window)", async () => {
+  it("a SUBMITTER cookie idle past 30 min still works (no admin idle window)", async () => {
     const id = await provision("pm.bob", "submitter");
     const stale = await signCookie({ sub: id, username: "pm.bob", iat: now() - (ADMIN_IDLE_S + 60), epoch: 0 });
     const res = await call("/api/session", { cookie: stale });

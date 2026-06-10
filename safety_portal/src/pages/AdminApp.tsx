@@ -18,13 +18,17 @@ import { useIdleLogout } from "../lib/useIdleLogout";
  */
 export function AdminApp() {
   const { logout } = useAuth();
-  // Admin 5-minute idle timeout (slice 8b, C10): proactive logout + keep-alive ping while
-  // active. Admin-scoped by construction (App.tsx only routes admins here); the server-side
-  // sliding window in requireSession is the real boundary.
-  useIdleLogout(logout);
+  const [editing, setEditing] = useState(false);
+  // Admin 30-minute idle timeout (slice 8b, C10): proactive logout + keep-alive ping while
+  // active. While an editor holds unsaved work (`editing`, reported up by FormsPage/AccountsPage),
+  // the hook adds a bounded wall-clock keep-alive so a dirty draft in a briefly-backgrounded tab
+  // isn't bounced mid-edit (an abandoned editor still idles out at 30 min). Admin-scoped by
+  // construction (App.tsx only routes admins here); the server-side sliding window in
+  // requireSession is the real boundary.
+  useIdleLogout(logout, editing);
   const [tab, setTab] = useState<AdminTab>("submit");
   const tabBar = <AdminTabs tab={tab} setTab={setTab} />;
-  if (tab === "accounts") return <AccountsPage tabBar={tabBar} />;
-  if (tab === "forms") return <FormsPage tabBar={tabBar} />;
+  if (tab === "accounts") return <AccountsPage tabBar={tabBar} onEditingChange={setEditing} />;
+  if (tab === "forms") return <FormsPage tabBar={tabBar} onEditingChange={setEditing} />;
   return <FormFillPage tabBar={tabBar} />;
 }

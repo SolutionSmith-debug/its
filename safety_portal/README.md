@@ -279,7 +279,7 @@ claim) is treated as `0`, so existing sessions survive the migration.
 3. **Regression-check the LIVE portal:** existing users still log in + submit (pre-#7 cookies
    survive; epoch defaults `0`); after a logout, re-using the old cookie is rejected (`401`).
 
-> Out of scope here: the admin 5-minute idle timeout (slice 8b).
+> Out of scope here: the admin 30-minute idle timeout (slice 8b).
 
 ### Form editor publish queue (slice 3a — `publish_requests`)
 

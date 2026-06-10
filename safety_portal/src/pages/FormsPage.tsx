@@ -41,7 +41,13 @@ function identityFromCode(formCode: string): string {
   return formCode.replace(/-v[0-9]+$/, "");
 }
 
-export function FormsPage({ tabBar }: { tabBar: ReactNode }) {
+export function FormsPage({
+  tabBar,
+  onEditingChange,
+}: {
+  tabBar: ReactNode;
+  onEditingChange?: (editing: boolean) => void;
+}) {
   const catalog = useMemo(() => formCatalog(), []);
   const { user } = useAuth();
   const username = user?.username ?? "";
@@ -266,6 +272,16 @@ export function FormsPage({ tabBar }: { tabBar: ReactNode }) {
 
   const inEditor = mode.kind === "create" || mode.kind === "edit" || mode.kind === "add_version";
 
+  // Report a dirty editor (open + unsaved draft) up to the admin shell so useIdleLogout switches
+  // to its wall-clock keep-alive and never bounces work-in-progress. Reset to false on unmount
+  // (tab switch) so a left-behind draft doesn't pin the shell "editing" and silently disable the
+  // proactive idle logout on the other tabs — the draft itself stays localStorage-cached and is
+  // restored on the next editor open.
+  useEffect(() => {
+    onEditingChange?.(inEditor && !!draft);
+  }, [inEditor, draft, onEditingChange]);
+  useEffect(() => () => onEditingChange?.(false), [onEditingChange]);
+
   return (
     <div className="page">
       <AppHeader title="Safety Portal" />
@@ -418,9 +434,9 @@ export function FormsPage({ tabBar }: { tabBar: ReactNode }) {
  *  bare rejection is always explainable). Exported for unit coverage. */
 export function explainPublish(e: unknown): string {
   if (e instanceof api.PublishError) {
-    // All 401s on this route mean the admin session is no longer valid (the 5-minute idle
+    // All 401s on this route mean the admin session is no longer valid (the 30-minute idle
     // timeout is the common one) — the actionable fix is to sign in again.
-    if (e.status === 401) return "Your admin session expired (5-minute idle timeout). Sign in again, then re-publish.";
+    if (e.status === 401) return "Your admin session expired (30-minute idle timeout). Sign in again, then re-publish.";
     if (e.status === 409) return "Another publish for this form type is still in progress — wait for it to finish.";
     if (e.status === 403) return "You're not authorized to publish forms.";
     if (e.reason) return `Rejected: ${e.reason}`;
