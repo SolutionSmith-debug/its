@@ -196,3 +196,23 @@ models:
   reasoning_default: claude-sonnet-4-6
   high_volume_classification: claude-haiku-4-5-20251001
   deep_reasoning: claude-opus-4-7
+
+# --- Agent doctrine-sync provenance (Brief 2.D) --------------------------------
+# DOCUMENTATION-ONLY, mirroring section_43: the mechanical check is check_version_drift's
+# M1 scan over .claude/agents/*.md (Brief 2.D added .claude/agents to the scanned roots),
+# which flags a stale Op Stds / FM version string in any agent. This block records the
+# version each doctrine-bearing agent's clause text was last reconciled against, so an
+# agent-vs-doctrine gap is attributable. Agents not listed (brief-validator,
+# pr-landed-verifier, session-log-writer, smartsheet-rest-fallback, sdk-integration-test-
+# scaffold) encode no doctrine version. Only ops-stds-enforcer PINS a version in its prose;
+# the others are version-agnostic or cite §N without a version.
+agents:
+  source: ".claude/agents/ (single-sourced in ~/its; ~/its-blueprint/.claude/agents is a directory symlink — watchdog Check M)"
+  mechanical_check: "check_version_drift M1 over .claude/agents/*.md"
+  last_doctrine_sync:
+    ops-stds-enforcer: 18              # Brief 2.A — version-agnostic; v18 at last sync
+    portal-worker-security-reviewer: 18  # Brief 2.B — clauses synced to the PR-2 Worker
+    form-definition-reviewer: 18      # Brief 2.C
+    doc-reconciliation-auditor: 18
+    codeql-fp-triager: 18
+    session-close-maintainer: 18
