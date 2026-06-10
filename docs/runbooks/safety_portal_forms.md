@@ -76,6 +76,27 @@ should not carry the required content, or a brand-new form type needs its own en
 `safety_portal/required-content.json` is the legal floor: a doctrine-adjacent,
 high-capability-class change — never edit it at Tier 2.**
 
+### Publish stuck — "a publish for this form is in progress" that never clears (Op Stds §43)
+
+**Symptom.** The admin Status Monitor shows a publish stuck in a non-terminal state
+(queued / validated / tested / live) that never finishes, and a new Publish for that form type
+is rejected with "a publish for this form is in progress" (HTTP 409). May be paired with a
+CRITICAL alert email naming `publish_daemon.stale_reclaimed`.
+
+**Why.** The Mac publish daemon claimed the row, then the process died (or a stage stalled)
+before reaching a terminal state. This **self-heals**: the Worker's lease TTL makes the row
+re-claimable, and the daemon's stale-row sweep stamps any row stalled past ~45 min to
+`failed('stale_reclaimed')`, which clears the in-progress block on that form type.
+
+**Low-class repair (Successor-Operator can do).** Wait one daemon cycle — the sweep reclaims
+the stuck row automatically and frees the form type. To not wait, ask Claude to run the publish
+daemon once ("Claude, please run the publish daemon once"). Once the row shows `failed`,
+re-publish the form from the editor.
+
+**Escalate to Seth (Tier 3) when** the SAME publish re-fails after a clean re-run, no
+`stale_reclaimed` appears after ~an hour, or any failure names the deploy / git / secrets / send
+path — those are code / secrets / deploy, high-capability-class.
+
 ## Escalate to Seth (Tier 3) when
 
 - Authoring or editing any `safety_portal/forms/*.json` (code).

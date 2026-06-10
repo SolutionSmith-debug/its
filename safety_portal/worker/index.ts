@@ -1050,8 +1050,11 @@ app.post("/api/admin/users/delete", ...adminGate, async (c) => {
 // actuation and carry only the target.
 const PUBLISH_OPS = new Set(["create", "edit", "add_version", "delete", "rollback"]);
 // A publish still in flight, for per-parent serialization (C8) — archived | failed are
-// terminal. 'live' still blocks (the Box-archive stage is pending; a stuck row is
-// failed by the daemon watchdog, never wedging a parent forever).
+// terminal. 'live' still blocks (the Box-archive stage is pending). A crashed publish no
+// longer wedges a parent forever: the Worker's LEASE_TTL_S makes a stale lease re-claimable
+// (pending/claim), and the Mac daemon's stale-row sweep (publish_daemon._sweep_stale_rows)
+// stamps any non-terminal row stalled past STALE_RECLAIM_S to failed('stale_reclaimed') — both
+// added in PR-2 to MAKE THIS TRUE (it previously described a daemon watchdog that did not exist).
 const NON_TERMINAL_STATUSES = "('queued','validated','tested','merged','live')";
 
 app.post("/api/admin/publish", ...adminGate, async (c) => {
@@ -1159,22 +1162,44 @@ app.get("/api/admin/publish-request", ...adminGate, async (c) => {
 // exposes the queue (send-free). Same PORTAL_INTERNAL_API_TOKEN as the portal_poll daemon.
 const PUBLISH_STATUSES = new Set(["queued", "validated", "tested", "merged", "live", "archived", "failed"]);
 
-// GET /api/internal/publish/pending — claimable rows (queued + unleased), oldest-first.
+// Lease TTL (PR-2): a claimed-but-stalled row (the daemon died after claim, before any stamp)
+// becomes re-claimable once its lease is older than this. Must exceed the daemon's CI wait +
+// deploy slack so a legitimately in-progress publish is never stolen. 30 min.
+const LEASE_TTL_S = 30 * 60;
+
+// Legal predecessors per stamp target (PR-2): the stamp endpoint only advances a row whose
+// CURRENT status is a legal predecessor of the requested status. Blocks a forged / out-of-order
+// stamp on the shared internal token (an archived→queued revert, a queued→archived skip) and a
+// re-stamp of a terminal row. 'queued' is absent (the initial state is never a stamp target);
+// 'live' accepts 'tested' (the daemon folds the merge into its tested stage) OR 'merged';
+// 'failed' accepts any non-terminal state.
+const LEGAL_PREDECESSORS: Record<string, string[]> = {
+  validated: ["queued"],
+  tested: ["validated"],
+  merged: ["tested"],
+  live: ["tested", "merged"],
+  archived: ["live"],
+  failed: ["queued", "validated", "tested", "merged", "live"],
+};
+
+// GET /api/internal/publish/pending — claimable rows (queued + unleased OR stale-leased), oldest-first.
 app.get("/api/internal/publish/pending", requireInternalToken, async (c) => {
   const limit = Math.min(Number(c.req.query("limit")) || 20, 100);
   const { results } = await c.env.DB
     .prepare(
       "SELECT id, created_at, requested_by, op, parent_form_code, identity, target_form_code, definition_json " +
-        "FROM publish_requests WHERE status='queued' AND lease_owner IS NULL ORDER BY id ASC LIMIT ?",
+        "FROM publish_requests WHERE status='queued' AND (lease_owner IS NULL OR lease_at < unixepoch() - ?) " +
+        "ORDER BY id ASC LIMIT ?",
     )
-    .bind(limit)
+    .bind(LEASE_TTL_S, limit)
     .all();
   return c.json({ pending: results });
 });
 
 // POST /api/internal/publish/claim — ATOMICALLY lease a queued row for one daemon run.
-// { id, lease_owner } leases ONLY if still queued + unleased (concurrent runs can't both
-// actuate). Returns the full row (incl. definition_json) when claimed.
+// { id, lease_owner } leases ONLY if still queued AND (unleased OR its lease is stale past
+// LEASE_TTL_S — takeover of a dead daemon's lease). Two LIVE runs still can't both actuate.
+// Returns the full row (incl. definition_json) when claimed.
 app.post("/api/internal/publish/claim", requireInternalToken, async (c) => {
   let body: Record<string, unknown>;
   try { body = await c.req.json(); } catch { return c.json({ error: "bad_request" }, 400); }
@@ -1185,8 +1210,8 @@ app.post("/api/internal/publish/claim", requireInternalToken, async (c) => {
   const lease_owner = typeof body.lease_owner === "string" ? body.lease_owner.slice(0, 128) : "";
   if (!id || !lease_owner) return c.json({ error: "invalid" }, 400);
   const res = await c.env.DB
-    .prepare("UPDATE publish_requests SET lease_owner=?, lease_at=unixepoch() WHERE id=? AND status='queued' AND lease_owner IS NULL")
-    .bind(lease_owner, id)
+    .prepare("UPDATE publish_requests SET lease_owner=?, lease_at=unixepoch() WHERE id=? AND status='queued' AND (lease_owner IS NULL OR lease_at < unixepoch() - ?)")
+    .bind(lease_owner, id, LEASE_TTL_S)
     .run();
   if ((res.meta?.changes ?? 0) === 0) return c.json({ ok: true, claimed: false });
   const request = await c.env.DB
@@ -1212,11 +1237,45 @@ app.post("/api/internal/publish/stamp", requireInternalToken, async (c) => {
   const failed = status === "failed";
   const failed_stage = failed && typeof body.failed_stage === "string" ? body.failed_stage.slice(0, 64) : null;
   const failure_reason = failed && typeof body.failure_reason === "string" ? body.failure_reason.slice(0, 2000) : null;
+  // State-machine guard (PR-2): only advance a row whose CURRENT status is a legal predecessor
+  // of the requested status — blocks a forged / out-of-order stamp on the shared internal token.
+  const preds = LEGAL_PREDECESSORS[status];
+  if (!preds) return c.json({ error: "invalid" }, 400); // 'queued' is never a stamp target
+  const placeholders = preds.map(() => "?").join(",");
   const res = await c.env.DB
-    .prepare("UPDATE publish_requests SET status=?, failed_stage=?, failure_reason=?, updated_at=unixepoch() WHERE id=?")
-    .bind(status, failed_stage, failure_reason, id)
+    .prepare(
+      "UPDATE publish_requests SET status=?, failed_stage=?, failure_reason=?, updated_at=unixepoch() " +
+        `WHERE id=? AND status IN (${placeholders})`,
+    )
+    .bind(status, failed_stage, failure_reason, id, ...preds)
     .run();
-  return c.json({ ok: true, found: (res.meta?.changes ?? 0) > 0 });
+  if ((res.meta?.changes ?? 0) === 0) {
+    // changes==0 is overloaded: the row is gone, OR its current status isn't a legal predecessor
+    // of `status` (a forged / out-of-order stamp). Re-read for an honest reason; the row was NOT
+    // advanced either way. 200 + found:false keeps the daemon's stamp contract (it never makes an
+    // illegal transition, so it never sees this; a forger is simply rejected).
+    const row = await c.env.DB.prepare("SELECT status FROM publish_requests WHERE id=?").bind(id).first<{ status: string }>();
+    if (!row) return c.json({ ok: true, found: false });
+    return c.json({ ok: true, found: false, reason: `illegal transition ${row.status} -> ${status}` });
+  }
+  return c.json({ ok: true, found: true });
+});
+
+// GET /api/internal/publish/stuck?older_than=<sec> — non-terminal rows whose updated_at is older
+// than the cutoff (a publish that crashed mid-actuation, or a stalled stage). The Mac daemon's
+// stale-row sweep (publish_daemon._sweep_stale_rows) reclaims these by stamping
+// failed('stale_reclaimed') so they stop wedging the parent's C8 in-flight check. Bearer-gated.
+app.get("/api/internal/publish/stuck", requireInternalToken, async (c) => {
+  const olderThan = Math.min(Math.max(Number(c.req.query("older_than")) || 0, 0), 86400);
+  const { results } = await c.env.DB
+    .prepare(
+      "SELECT id, status, lease_owner, lease_at, updated_at, op, parent_form_code, identity " +
+        `FROM publish_requests WHERE status IN ${NON_TERMINAL_STATUSES} AND updated_at < unixepoch() - ? ` +
+        "ORDER BY id ASC LIMIT 50",
+    )
+    .bind(olderThan)
+    .all();
+  return c.json({ stuck: results });
 });
 
 // Unmatched /api/* → JSON 404 (never the SPA shell).

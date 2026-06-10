@@ -17,7 +17,10 @@
 --   identity         the version-independent identity being published
 --   target_form_code the resulting form_code (e.g. jha-v2); NULL for delete/rollback-by-pointer
 --   definition_json  the composed FormDefinition (NULL for delete / rollback — no new file)
---   lease_owner/at   the daemon's per-row lease (C6 heartbeat; resume/fail a stuck row)
+--   lease_owner/at   the daemon's per-row lease. IMPLEMENTED in PR-2: a lease older than the
+--                    Worker's LEASE_TTL_S is re-claimable (pending/claim takeover), and a
+--                    non-terminal row stalled past the daemon's STALE_RECLAIM_S is swept to
+--                    failed('stale_reclaimed'), so a crashed publish never wedges its parent.
 --
 -- ORDER DEPENDENCY (activation): apply this to the live D1 BEFORE the Worker that
 -- writes/reads `publish_requests` deploys — else /api/admin/publish errors. Same rule

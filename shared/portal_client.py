@@ -59,6 +59,7 @@ SYNC_PATH = "/api/internal/sync"
 PUBLISH_PENDING_PATH = "/api/internal/publish/pending"
 PUBLISH_CLAIM_PATH = "/api/internal/publish/claim"
 PUBLISH_STAMP_PATH = "/api/internal/publish/stamp"
+PUBLISH_STUCK_PATH = "/api/internal/publish/stuck"
 
 
 # ---- Typed exceptions ----------------------------------------------------
@@ -272,6 +273,19 @@ def stamp_publish(
         body["failure_reason"] = failure_reason
     data = _request("POST", base_url, PUBLISH_STAMP_PATH, token, json_body=body)
     return bool(data.get("found"))
+
+
+def get_publish_stuck(base_url: str, token: str, *, older_than: int) -> list[dict[str, Any]]:
+    """Non-terminal publish requests whose updated_at is older than `older_than` seconds — the
+    stale-row sweep input (a daemon that claimed-then-died, or a stalled stage). Same typed-error
+    contract as get_publish_pending; rows are control-plane reads of OUR OWN Worker."""
+    data = _request("GET", base_url, PUBLISH_STUCK_PATH, token, params={"older_than": older_than})
+    stuck = data.get("stuck")
+    if not isinstance(stuck, list):
+        raise PortalTransportError(
+            f"GET {PUBLISH_STUCK_PATH} missing/invalid 'stuck' (got {type(stuck).__name__})"
+        )
+    return [row for row in stuck if isinstance(row, dict)]
 
 
 def admin_request(
