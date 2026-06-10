@@ -1,0 +1,60 @@
+{
+  "version": 1,
+  "comment": [
+    "LEGAL FLOOR for the form-publish pipeline (Brief 1 PR-1). publishValidation.ts only",
+    "checks STRUCTURE (a signature_table IF PRESENT has one signature column; a legal",
+    "static_text IF PRESENT is well-formed) — nothing made a JHA keep its 'REVIEW AND REVISE",
+    "THE PLAN' footer or an equipment form keep its lock/tag-out line. This manifest is that",
+    "missing requirement, enforced at BOTH the C3 layers: the Worker enqueue gate",
+    "(worker/publishValidation.ts validateDefinition) and the Mac daemon's authoritative",
+    "re-check vs live HEAD (safety_reports/publish_manifest.apply_publish).",
+    "APPLIES to create / edit / add_version (they carry a definition). delete / rollback are",
+    "unaffected (rollback returns to a historically-valid version).",
+    "EFFECTIVE SPEC for a definition = parents[parent_form_code] shallow-merged with",
+    "identities[identity] (identity keys win on collision). If NEITHER a parent nor an identity",
+    "entry exists (a brand-new form type under a brand-new parent), defaults_for_new_identities",
+    "applies — so the demonstrated operator create-new-type flow keeps working while the strict",
+    "entries protect the legal forms.",
+    "CHANGING A STRICT ENTRY IS A LEGAL-FLOOR (doctrine-adjacent) CHANGE: high-capability-class,",
+    "Tier-3/Seth only — the Successor-Operator must NOT edit this file. See",
+    "docs/runbooks/safety_portal_forms.md.",
+    "KNOWN GAP (Seth-confirm): equipment-telehandler-v1 currently has ZERO signature inputs, so",
+    "the equipment signature requirement is a per-IDENTITY override on equipment-skid-steer only,",
+    "never the equipment-preinspection parent. Decide: add a signature to telehandler (then lift",
+    "required_signature_inputs_min to the parent) OR accept telehandler as signature-free."
+  ],
+  "spec_keys": {
+    "required_section_types": "array of section `type` values (e.g. signature_table, content_blocks) at least one of EACH must be present",
+    "required_signature_inputs_min": "minimum count of fields/columns with input:'signature' across all sections",
+    "required_static_text": "array of byte-exact substrings, EACH must appear in some static_text whose emphasis is 'legal' or 'footer'",
+    "required_field_keys": "array of field keys (anywhere) that must be present"
+  },
+  "defaults_for_new_identities": {
+    "required_signature_inputs_min": 1
+  },
+  "parents": {
+    "jha": {
+      "required_section_types": ["signature_table"],
+      "required_signature_inputs_min": 1,
+      "required_static_text": ["REVIEW AND REVISE THE PLAN"]
+    },
+    "equipment-preinspection": {
+      "required_static_text": ["ALWAYS lock/tag-out unsafe equipment"]
+    },
+    "toolbox-talk": {
+      "required_section_types": ["content_blocks", "signature_table"],
+      "required_signature_inputs_min": 1
+    },
+    "incident-report": {
+      "required_section_types": ["signature_table"],
+      "required_signature_inputs_min": 1
+    },
+    "visitor-sign-in": {},
+    "hsse-work-observation": {}
+  },
+  "identities": {
+    "equipment-skid-steer": {
+      "required_signature_inputs_min": 1
+    }
+  }
+}

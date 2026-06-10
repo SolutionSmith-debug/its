@@ -54,6 +54,28 @@ picklist appears. Only **Active** rows appear.
   (version-on-conflict, so it updates in place — no duplicates). Without `--upload` it
   renders locally only. (Live upload is operator-gated — Tier-3/Seth.)
 
+### Publish rejected — "required content missing" (legal floor, Op Stds §43)
+
+**Symptom.** An admin's Publish fails in the Status Monitor (or the editor) with a reason
+starting `Rejected: required content missing: …` — e.g. "must contain a 'signature_table'
+section", "the mandatory legal/footer line \"REVIEW AND REVISE THE PLAN\" is absent", or
+"needs at least 1 signature input". The form does **not** go live.
+
+**Why.** Each form type carries a legal floor in `safety_portal/required-content.json` (a JHA
+must keep its review-and-revise footer; an equipment form its lock/tag-out line; most forms a
+signature mechanism). An edit that drops one is rejected at BOTH layers — the Worker enqueue
+gate and the Mac daemon's authoritative re-check — by design, so a content edit can never ship
+a legally-broken form.
+
+**Low-class repair (Successor-Operator can do).** In the editor, re-open the failed publish
+("Edit & re-publish"), restore the section or line the reason names, and re-publish. No code,
+no config.
+
+**Escalate to Seth (Tier 3) when** the requirement itself looks wrong — a form legitimately
+should not carry the required content, or a brand-new form type needs its own entry. **Editing
+`safety_portal/required-content.json` is the legal floor: a doctrine-adjacent,
+high-capability-class change — never edit it at Tier 2.**
+
 ## Escalate to Seth (Tier 3) when
 
 - Authoring or editing any `safety_portal/forms/*.json` (code).

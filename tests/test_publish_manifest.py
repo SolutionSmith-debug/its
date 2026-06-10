@@ -223,6 +223,83 @@ def test_unknown_op_rejected() -> None:
         apply_publish(FIXTURE, op="nuke", identity="jha", parent_form_code="jha")
 
 
+# ── Required-content legal floor (Brief 1 PR-1) ───────────────────────────────────────
+# A minimal required-content manifest exercising the merge precedence + every check.
+_REQ_CONTENT = {
+    "defaults_for_new_identities": {"required_signature_inputs_min": 1},
+    "parents": {
+        "jha": {
+            "required_section_types": ["signature_table"],
+            "required_signature_inputs_min": 1,
+            "required_static_text": ["REVIEW AND REVISE THE PLAN"],
+        },
+        "equipment-preinspection": {"required_static_text": ["lock/tag-out"]},
+    },
+    "identities": {"equipment-skid-steer": {"required_signature_inputs_min": 1}},
+}
+_SIG_TABLE = {
+    "type": "signature_table", "key": "ack", "columns": [
+        {"key": "name", "label": "Name", "input": "text"},
+        {"key": "signature", "label": "Signature", "input": "signature"},
+    ],
+}
+_FOOTER = {"type": "static_text",
+           "text": "IF CONDITIONS CHANGE…REVIEW AND REVISE THE PLAN.", "emphasis": "footer"}
+
+
+def _jha_def(version: int, sections: list) -> dict:
+    return {
+        "form_code": f"jha-v{version}", "parent_form_code": "jha", "form_name": "JHA",
+        "variant_label": None, "version": version, "archetype": "rows_signatures",
+        "source_pdf": "x.pdf", "sections": sections,
+    }
+
+
+def test_required_content_accepts_a_compliant_edit() -> None:
+    d = _jha_def(2, [_SIG_TABLE, _FOOTER])
+    m, files, _ = apply_publish(FIXTURE, op="edit", identity="jha", parent_form_code="jha",
+                                definition=d, required_content=_REQ_CONTENT)
+    _validate(m)
+    assert files == {"jha-v2": d}
+
+
+def test_required_content_rejects_missing_signature_section() -> None:
+    d = _jha_def(2, [_FOOTER])  # footer present, but no signature_table
+    with pytest.raises(PublishApplyError, match="required content missing"):
+        apply_publish(FIXTURE, op="edit", identity="jha", parent_form_code="jha",
+                      definition=d, required_content=_REQ_CONTENT)
+
+
+def test_required_content_rejects_missing_legal_line() -> None:
+    d = _jha_def(2, [_SIG_TABLE])  # signature present, but the footer dropped
+    with pytest.raises(PublishApplyError, match="legal/footer line"):
+        apply_publish(FIXTURE, op="edit", identity="jha", parent_form_code="jha",
+                      definition=d, required_content=_REQ_CONTENT)
+
+
+def test_required_content_new_type_requires_a_signature() -> None:
+    # Brand-new parent+identity → defaults_for_new_identities (min 1 signature). _def's
+    # sections carry no signature input → rejected.
+    d = _def("newkind-v1", "newkind", 1)
+    with pytest.raises(PublishApplyError, match="signature input"):
+        apply_publish(FIXTURE, op="create", identity="newkind", parent_form_code="newkind",
+                      definition=d, required_content=_REQ_CONTENT)
+
+
+def test_required_content_none_skips_enforcement() -> None:
+    # No required_content → legacy behavior, no legal-floor check (back-compat).
+    d = _jha_def(2, [_FOOTER])  # would fail the floor, but None skips it
+    m, _, _ = apply_publish(FIXTURE, op="edit", identity="jha", parent_form_code="jha", definition=d)
+    _validate(m)
+
+
+def test_required_content_delete_is_unaffected() -> None:
+    # delete carries no definition → the floor never applies even with required_content set.
+    _, files, _ = apply_publish(FIXTURE, op="delete", identity="jha", parent_form_code="jha",
+                                required_content=_REQ_CONTENT)
+    assert files == {}
+
+
 # ── helpers ───────────────────────────────────────────────────────────────────
 def _parent(m: dict, code: str) -> dict:
     return next(p for p in m["parents"] if p["parent_form_code"] == code)

@@ -1,3 +1,5 @@
+import requiredContent from "../required-content.json";
+
 // Server-side validation of a composed form definition at the POST /api/admin/publish
 // enqueue gate (design brief C3). The Worker is the FIRST gate; the Mac daemon (slice
 // 3b) RE-validates against the live git HEAD (authoritative) and CI runs the 3-renderer
@@ -48,6 +50,88 @@ function isStr(v: unknown, max = MAX_STR): v is string {
 }
 function fail(reason: string): ValidationResult {
   return { ok: false, reason };
+}
+
+// ── Required-content legal floor (Brief 1 PR-1) ──────────────────────────────────────
+// validateDefinition checks STRUCTURE; required-content.json adds the per-identity LEGAL
+// FLOOR — a JHA must keep its "REVIEW AND REVISE THE PLAN" footer, an equipment form its
+// lock/tag-out line, most forms a signature mechanism. Enforced HERE (the enqueue gate) AND
+// in safety_reports/publish_manifest.apply_publish (the daemon's authoritative re-check vs
+// live HEAD, C3). Reason strings start "required content missing:" so the editor's
+// explainPublish surfaces them verbatim. Effective spec = parents[parent] merged with
+// identities[identity] (identity wins); if NEITHER exists, defaults_for_new_identities.
+interface RequiredSpec {
+  required_section_types?: string[];
+  required_signature_inputs_min?: number;
+  required_static_text?: string[];
+  required_field_keys?: string[];
+}
+const REQUIRED_CONTENT = requiredContent as unknown as {
+  defaults_for_new_identities?: RequiredSpec;
+  parents?: Record<string, RequiredSpec>;
+  identities?: Record<string, RequiredSpec>;
+};
+
+function requiredSpecFor(identity: string, parentFormCode: string): RequiredSpec {
+  const parentSpec = REQUIRED_CONTENT.parents?.[parentFormCode];
+  const identitySpec = REQUIRED_CONTENT.identities?.[identity];
+  if (parentSpec === undefined && identitySpec === undefined) {
+    return REQUIRED_CONTENT.defaults_for_new_identities ?? {};
+  }
+  return { ...(parentSpec ?? {}), ...(identitySpec ?? {}) };
+}
+
+/** Every field/column object across a definition's sections (header fields + table columns). */
+function allFieldObjects(def: Record<string, unknown>): Record<string, unknown>[] {
+  const out: Record<string, unknown>[] = [];
+  for (const s of (def.sections as unknown[]) ?? []) {
+    if (!isObject(s)) continue;
+    for (const f of (s.fields as unknown[]) ?? []) if (isObject(f)) out.push(f);
+    for (const c of (s.columns as unknown[]) ?? []) if (isObject(c)) out.push(c);
+  }
+  return out;
+}
+
+/** The legal floor: a create/edit/add_version definition must satisfy its required-content
+ *  spec. Structure is already validated by validateSection before this runs. */
+function validateRequiredContent(def: Record<string, unknown>, ctx: DefinitionContext): ValidationResult {
+  const spec = requiredSpecFor(ctx.identity, ctx.parentFormCode);
+  const sections = ((def.sections as unknown[]) ?? []).filter(isObject);
+  const types = new Set(sections.map((s) => s.type));
+  for (const t of spec.required_section_types ?? []) {
+    if (!types.has(t)) return fail(`required content missing: ${ctx.identity} must contain a '${t}' section`);
+  }
+  const sigCount = allFieldObjects(def).filter((f) => f.input === "signature").length;
+  const minSigs = spec.required_signature_inputs_min ?? 0;
+  if (sigCount < minSigs) {
+    return fail(`required content missing: ${ctx.identity} needs at least ${minSigs} signature input(s)`);
+  }
+  const legalTexts = sections
+    .filter((s) => s.type === "static_text" && (s.emphasis === "legal" || s.emphasis === "footer"))
+    .map((s) => String(s.text ?? ""));
+  for (const required of spec.required_static_text ?? []) {
+    if (!legalTexts.some((t) => t.includes(required))) {
+      return fail(`required content missing: the mandatory legal/footer line "${required}" is absent from ${ctx.identity}`);
+    }
+  }
+  if ((spec.required_field_keys ?? []).length > 0) {
+    const keys = new Set<string>();
+    for (const f of allFieldObjects(def)) if (typeof f.key === "string") keys.add(f.key);
+    for (const s of sections) {
+      if (typeof s.key === "string") keys.add(s.key);
+      for (const g of (s.groups as unknown[]) ?? []) {
+        if (!isObject(g)) continue;
+        if (typeof g.key === "string") keys.add(g.key);
+        for (const it of (g.items as unknown[]) ?? []) {
+          if (isObject(it) && typeof it.key === "string") keys.add(it.key);
+        }
+      }
+    }
+    for (const k of spec.required_field_keys ?? []) {
+      if (!keys.has(k)) return fail(`required content missing: core field '${k}' absent from ${ctx.identity}`);
+    }
+  }
+  return { ok: true };
 }
 
 /** A header/table column field: { key, label, input, options?, required? }. */
@@ -234,6 +318,10 @@ export function validateDefinition(def: unknown, ctx: DefinitionContext): Valida
     if (seen.has(k)) return fail(`duplicate value key '${k}' across sections`);
     seen.add(k);
   }
+  // Legal-floor re-check (Brief 1 PR-1) — structure is valid above; now require the
+  // per-identity mandatory content (signature mechanism, legal/footer lines, core fields).
+  const rc = validateRequiredContent(def, ctx);
+  if (!rc.ok) return rc;
   return { ok: true };
 }
 
