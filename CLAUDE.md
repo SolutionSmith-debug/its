@@ -25,8 +25,8 @@ Two layers, deliberately separated:
    decisions, owner-facing artifacts, prompt designs, schemas. Canonical docs: Foundation Mission
    v11, Operational Standards v18, Vision & Roadmap v9, Handover Plan v9.
 
-   _Operational Standards is canonically at **v16** (`../its-blueprint/doctrine/operational-standards.md`,
-   `status: canonical`); **v16 is the governing version — every `Op Stds §N` citation in this file
+   _Operational Standards is canonically at **v18** (`../its-blueprint/doctrine/operational-standards.md`,
+   `status: canonical`); **v18 is the governing version — every `Op Stds §N` citation in this file
    resolves against it.** Numbering is append-only since v11, so no cited `§N` renumbered. Still-load-bearing
    reframes: §1 kill switch is an operator-convenience pause, fail-open by design, explicitly **not** a
    security control (audit F07) — the External Send Gate (FM Invariant 1) is the real security boundary;
@@ -128,7 +128,7 @@ entry) AND low-capability-class**. Anything **novel OR high-class** escalates to
 **high-capability-class categories are FIXED**: (1) External Send Gate, (2) secrets / auth, (3)
 doctrine, (4) code changes — high-class always escalates regardless of documentation.
 
-**Training-enforced, NOT structurally enforced** (the Op Stds v16 / FM v11 reframe). No
+**Training-enforced, NOT structurally enforced** (the Op Stds v18 §44 / FM v11 reframe). No
 "non-developer-safe enforcement layer" is built or required — the verified-in-code capability gating
 (Invariant 1, `tests/test_capability_gating.py`) and `.claude/hooks` guards protect developer /
 subagent sessions and fall *open* for the operator's own session, so they do not confine a Tier-2
