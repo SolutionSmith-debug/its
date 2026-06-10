@@ -112,6 +112,30 @@ describe("submit-as — submitter forging submitted_as", () => {
   });
 });
 
+describe("submit M1 — uuid overwrite guard (PR-4)", () => {
+  const FIXED = "11111111-1111-1111-1111-111111111111";
+  it("a DIFFERENT actor reusing a uuid → 409 uuid_conflict; the prior row is intact", async () => {
+    await provision("pm.bob", "password123", "submitter");
+    await provision("pm.carol", "password123", "submitter");
+    const bob = await login("pm.bob", "password123");
+    const carol = await login("pm.carol", "password123");
+    expect((await call("/api/submit", { method: "POST", cookie: bob, body: submitBody({ submission_uuid: FIXED }) })).status).toBe(200);
+    const res = await call("/api/submit", { method: "POST", cookie: carol, body: submitBody({ submission_uuid: FIXED }) });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ error: "uuid_conflict" });
+    const row = await env.DB.prepare("SELECT actor_username FROM submissions WHERE submission_uuid=?").bind(FIXED).first<{ actor_username: string }>();
+    expect(row!.actor_username).toBe("pm.bob");
+  });
+  it("a same-actor re-submit with CHANGED values writes a submission_replace audit", async () => {
+    await provision("pm.bob", "password123", "submitter");
+    const bob = await login("pm.bob", "password123");
+    await call("/api/submit", { method: "POST", cookie: bob, body: submitBody({ submission_uuid: FIXED, values: { hazards: "one" } }) });
+    await call("/api/submit", { method: "POST", cookie: bob, body: submitBody({ submission_uuid: FIXED, values: { hazards: "TWO" } }) });
+    const n = (await env.DB.prepare("SELECT COUNT(*) n FROM audit_log WHERE action='submission_replace'").first<{ n: number }>())!.n;
+    expect(n).toBe(1);
+  });
+});
+
 describe("submit-as — admin attribution", () => {
   beforeEach(async () => {
     await provision("admin.one", "password123", "admin");

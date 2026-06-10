@@ -162,3 +162,27 @@ describe("stamp state-machine guard (PR-2 — forged/out-of-order transitions)",
     }
   });
 });
+
+describe("POST /api/internal/mark-rejected (M4, PR-4)", () => {
+  beforeEach(async () => {
+    await env.DB.batch([env.DB.prepare("DELETE FROM submissions"), env.DB.prepare("DELETE FROM audit_log")]);
+  });
+  it("flips an unfiled row to box_verified=-1 + audits; found:false on a missing uuid", async () => {
+    await env.DB
+      .prepare("INSERT INTO submissions (submission_uuid, job_id, form_code, work_date, payload_json, created_at, box_verified, filed_at) VALUES (?,?,?,?,?,?,0,NULL)")
+      .bind("u-bad", "JOB", "jha-v1", "2026-01-01", "{}", 1780000000)
+      .run();
+    const res = await call("/api/internal/mark-rejected", {
+      method: "POST", bearer: TOKEN, body: JSON.stringify({ submission_uuid: "u-bad", reason: "HMAC verification failed" }),
+    });
+    expect(((await res.json()) as { found: boolean }).found).toBe(true);
+    const row = await env.DB.prepare("SELECT box_verified FROM submissions WHERE submission_uuid=?").bind("u-bad").first<{ box_verified: number }>();
+    expect(row!.box_verified).toBe(-1);
+    expect((await env.DB.prepare("SELECT COUNT(*) n FROM audit_log WHERE action='submission_rejected'").first<{ n: number }>())!.n).toBe(1);
+    const res2 = await call("/api/internal/mark-rejected", { method: "POST", bearer: TOKEN, body: JSON.stringify({ submission_uuid: "nope" }) });
+    expect(((await res2.json()) as { found: boolean }).found).toBe(false);
+  });
+  it("401 without the internal bearer", async () => {
+    expect((await call("/api/internal/mark-rejected", { method: "POST", body: "{}" })).status).toBe(401);
+  });
+});

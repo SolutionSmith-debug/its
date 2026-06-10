@@ -30,6 +30,7 @@ interface UserRow {
   password_hash: string;
   role: string;
   session_epoch: number;
+  disabled: number;
 }
 
 export interface AuthedUser {
@@ -59,7 +60,7 @@ export async function validateUser(
   password: string,
 ): Promise<AuthedUser | null> {
   const row = await env.DB.prepare(
-    "SELECT id, username, password_hash, role, session_epoch FROM users WHERE username = ?",
+    "SELECT id, username, password_hash, role, session_epoch, disabled FROM users WHERE username = ?",
   )
     .bind(username)
     .first<UserRow>();
@@ -68,7 +69,10 @@ export async function validateUser(
   const stored = row?.password_hash ?? DUMMY_HASH;
   const ok = await bcrypt.compare(password, stored);
 
-  if (!row || !ok) return null;
+  // Reject a missing, wrong-password, OR DISABLED user (PR-4). The disabled check is AFTER the
+  // compare so a disabled account is not a username-enumeration timing oracle. requireSession's
+  // per-request disabled check stays authoritative for already-live sessions.
+  if (!row || !ok || row.disabled) return null;
   return { id: row.id, username: row.username, role: coerceRole(row.role), session_epoch: row.session_epoch };
 }
 

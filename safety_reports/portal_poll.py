@@ -515,7 +515,9 @@ def _verify_row_hmac(row: dict[str, Any], provided_hmac: str, secret: str) -> bo
     )
 
 
-def _handle_hmac_failure(row: dict[str, Any], correlation_id: str) -> None:
+def _handle_hmac_failure(
+    row: dict[str, Any], correlation_id: str, *, base_url: str, bearer: str
+) -> None:
     """Reject a bad-HMAC row: anomaly-log + Review-Queue (security_flag) + CRITICAL.
 
     NEVER handed to intake (downgrade defense) and NEVER mark-filed (the row stays
@@ -554,6 +556,19 @@ def _handle_hmac_failure(row: dict[str, Any], correlation_id: str) -> None:
         error_code="portal_hmac_failure",
         correlation_id=correlation_id,
     )
+    # M4 (PR-4): flip the row to box_verified=-1 (terminal) so /pending stops re-serving it every
+    # cycle forever. The seen-set 'rejected' fast-path remains as belt-and-suspenders. Best-effort:
+    # a transport failure just re-pulls (+ re-flags, seen-set-suppressed) next cycle, not a loss.
+    try:
+        portal_client.mark_rejected(
+            base_url, bearer, submission_uuid=submission_uuid, reason="HMAC verification failed"
+        )
+    except portal_client.PortalTransportError as exc:
+        error_log.log(
+            Severity.WARN, SCRIPT_NAME,
+            f"portal could not mark submission {submission_uuid} rejected: {exc!r}",
+            error_code="portal_mark_rejected_failed", correlation_id=correlation_id,
+        )
 
 
 # ---- Public API ----------------------------------------------------------
@@ -839,7 +854,7 @@ def _process_row(
 
     # Downgrade defense: verify the HMAC BEFORE intake ever sees the row.
     if not _verify_row_hmac(row, provided_hmac, secret):
-        _handle_hmac_failure(row, correlation_id)
+        _handle_hmac_failure(row, correlation_id, base_url=base_url, bearer=bearer)
         seen[submission_uuid] = {"status": "rejected"}
         counters["rejected"] += 1
         return
