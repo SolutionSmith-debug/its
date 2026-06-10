@@ -1942,3 +1942,131 @@ The current fallback is explicit and non-silent (shows "code + HTTP status"), so
 **Revisit when:** a new Worker reject path surfaces an unmapped code in production, or a UI polish pass is done on the publish flow.
 
 Surfaced: 2026-06-09 Form Editor UX + draft-caching session (PR #249; client fix is self-contained).
+
+---
+
+## 2026-06-09 Evening Forensic Audit — Deferred Findings
+
+The following entries were surfaced by a read-only 12-dimension forensic audit of the Safety Portal this session. H2, M3, M8, and the SENDING-picklist regression were fixed in PRs #247/#252/#253 respectively. The findings below are explicitly deferred.
+
+## [OPEN 2026-06-09] Safety Portal M1 — authenticated submitter can overwrite a peer's PENDING submission
+
+`worker/index.ts` `/api/submit` accepts a client-controlled `submission_uuid` and executes `INSERT OR REPLACE` — this resets `box_verified=0` on an existing row. `/api/recent` leaks any job's latest UUID+payload (not scoped to the authenticated user). The intake dedup only guards already-filed UUIDs; a plain overwrite writes no `audit_log` row. An authenticated submitter can therefore silently replace a peer's un-filed submission with attacker-controlled content, leaving no audit trail.
+
+Not currently exploitable remotely (requires an authenticated session), but a defense-in-depth gap before multi-user production rollout.
+
+**Fix:** server-generate `submission_uuid` (remove client control) OR reject a UUID collision from a different actor. Stop `/api/recent` from leaking arbitrary-job UUIDs not owned by the caller. Add an `audit_log` row for every overwrite attempt.
+
+**Collision risk:** active SPA work shares `worker/index.ts`. Coordinate with any in-flight Worker edits before touching `/api/submit`.
+
+**Tag:** `safety-portal`, `security`, `adversarial-input`, `medium`.
+
+**Revisit when:** next Worker security hardening pass, or before real PM users are provisioned on a live tenant.
+
+Surfaced: 2026-06-09 12-dimension forensic audit (M1).
+
+## [OPEN 2026-06-09] Safety Portal M2 — capability gate is static-AST-import-only; transitive and dynamic paths are unchecked
+
+`tests/test_capability_gating.py::_imports_in` is static AST-import-only — blind to `importlib.__import__` dynamic imports, has no transitive closure over `shared/` + `safety_reports/`, and `WALKED_ROOTS` excludes `scripts/`. The docstring ("fails at CI before it can ship") overstates the gate's reach.
+
+**Fix:** add `importlib` / `__import__` needles to the banned-pattern scanner; build a transitive-closure walk over `shared/` + `safety_reports/` (not just the top-level file); add a `scripts/`-scoped check for the no-AI-and-send combination.
+
+**Tag:** `security`, `capability-gate`, `testing`.
+
+**Revisit when:** next `tests/test_capability_gating.py` hardening pass, or before Customer-1 launch.
+
+Surfaced: 2026-06-09 12-dimension forensic audit (M2).
+
+## [OPEN 2026-06-09] Safety Portal M4 — bad-HMAC rows are immortal in the D1 pending queue
+
+`worker/index.ts` `/api/internal/pending` fetches rows `ORDER BY created_at ASC LIMIT 50`; `prune.ts` only deletes rows where `box_verified=1`. A row that fails the HMAC check in `portal_poll.py` is never filed and never marked `box_verified=1` — so it permanently occupies a slot in every 50-row fetch window. With 50+ permanently-rejected rows, the window is wedged and new submissions never surface.
+
+Practical trigger: HMAC-secret rotation drift (unlikely without operator error). After the secret is corrected the queue does NOT self-heal — rows must be manually deleted from D1.
+
+**Fix:** introduce a terminal state for HMAC-rejected rows (e.g., `box_verified=-1`); exclude terminal rows from `/api/internal/pending`; prune after a retention window; add a watchdog alert on a growing `box_verified=0` backlog.
+
+**Tag:** `safety-portal`, `portal-poll`, `reliability`.
+
+**Revisit when:** HMAC secret rotation or next Worker hardening pass.
+
+Surfaced: 2026-06-09 12-dimension forensic audit (M4).
+
+## [OPEN 2026-06-09] Safety Portal M5 — `/api/internal/publish/stamp` enforces no state-machine transition
+
+`worker/index.ts` `/api/internal/publish/stamp` executes `UPDATE … WHERE id=?` with no check on the current state. The shared internal token (`ITS_PORTAL_INTERNAL_TOKEN`) can therefore forge a terminal state on a live request or revert a completed publish to `queued`.
+
+**Fix:** enforce legal predecessor states in the `WHERE` clause (e.g., `WHERE id=? AND status='actuating'`); consider a narrower stamp-only token separate from the pull/receipt token.
+
+**Tag:** `safety-portal`, `publish-daemon`, `security`, `medium`.
+
+**Revisit when:** next Worker security hardening pass.
+
+Surfaced: 2026-06-09 12-dimension forensic audit (M5).
+
+## [OPEN 2026-06-09] Safety Portal M6 — publish daemon has zero watchdog/health coverage
+
+`safety_reports/publish_daemon.py` (the sole privileged actuator) has no `write_last_run_marker` call, no `ITS_Daemon_Health` row, and is absent from `scripts/watchdog.py::TRACKED_JOBS`. A silent daemon death pages nothing. The SPA `PublishMonitor` gives only a partial "stuck queued" signal (stale after a network loss or operator-gated pause), not a dead-daemon signal.
+
+**Fix:** add `write_last_run_marker` at the end of `publish_once`; register `safety_publish_daemon` in `TRACKED_JOBS` with an appropriate freshness window; self-provision an `ITS_Daemon_Health` row (mirror `weekly_send_poll`'s pattern).
+
+**Tag:** `safety-portal`, `publish-daemon`, `observability`, `medium`.
+
+**Revisit when:** next publish-daemon or watchdog hardening pass. Before Evergreen production cutover.
+
+Surfaced: 2026-06-09 12-dimension forensic audit (M6).
+
+## [OPEN 2026-06-09] Safety Portal M7 — publish daemon runs destructive git on the live `~/its` tree without a lock or worktree
+
+`publish_daemon.py` runs `git clean -fd` / `git checkout` on the live `~/its` working tree with no exclusive lock and no guard against the `.claude` `PreToolUse` hook (which has zero reach into `subprocess.run`). `_reset_to_main` scopes the clean to `safety_portal/forms` only, but the tree was stranded in production earlier this session before `_unstrand_if_needed` was added. This violates the repo's own documented worktree discipline and could discard an operator's uncommitted work.
+
+**Fix:** run the daemon from a dedicated worktree + venv (the repo's canonical discipline for processes that write Python source); add a refuse-with-WARN on dirty managed paths instead of silently discarding.
+
+**Tag:** `safety-portal`, `publish-daemon`, `git-discipline`, `medium`.
+
+**Revisit when:** next publish-daemon hardening pass. Before Evergreen production cutover.
+
+Surfaced: 2026-06-09 12-dimension forensic audit (M7).
+
+## [OPEN 2026-06-09] CLAUDE.md asserts Op Stds v16 as governing — should be v18 (M9)
+
+`CLAUDE.md` contains a parenthetical around lines 28–29 and line 131 (the governing-version block) that reads "Operational Standards is canonically at v16 … v16 is the governing version." However, `~/its-blueprint/doctrine/operational-standards.md` frontmatter is `version: 18`, `status: canonical`; `docs/doctrine_manifest.yaml` lists `current: 18`; and ~12 other CLAUDE.md citations already say v18. The v16 parenthetical is stale.
+
+This is advisory text only (no runtime control), but §§45–49 (added in v17/v18, including the F22 approval mechanism at §46) are load-bearing. A reader relying solely on the governing-version claim would believe those sections don't apply.
+
+**Fix:** update the parenthetical and line 131 to `v18`. One-line change; no behavior impact.
+
+**Tag:** `doctrine`, `claude.md`, `docs`, `low`.
+
+**Revisit when:** next CLAUDE.md touch, or doc-reconciliation-auditor pass. Low effort, high confusion-reduction.
+
+Surfaced: 2026-06-09 12-dimension forensic audit (M9).
+
+## [OPEN 2026-06-09] ITS_Daemon_Health sheet observability drift
+
+The operator-visibility surface has drifted significantly from the live daemon topology:
+- The RETIRED `safety_reports.intake_poll` row is still present (frozen 2026-06-05, status "OK") — PENDING DELETE (row `7461022174478212`, operator-gated).
+- `weekly_generate`, `weekly_send`, `picklist_sync`, and `watchdog` rows read `NEVER_RAN` with pre-pivot WPR descriptions.
+- `publish_daemon`, `compile_now_poll`, and `picklist_audit` have NO rows.
+- `portal_poll`'s "Last Error Summary" column is not cleared on a successful cycle (stale-error display persists).
+
+A Tier-2 successor-operator reading this sheet would be misled about which daemons are live and healthy.
+
+**Fix (in priority order):** (1) operator deletes the `intake_poll` row via UI; (2) publish daemon gains `ITS_Daemon_Health` self-provision (M6 above); (3) compile_now_poll gains a health row (tracked in the Part-B entry at line ~1858 above); (4) portal_poll clears Last Error Summary on a clean cycle; (5) remaining unloaded daemons' descriptions updated when they are loaded.
+
+**Tag:** `observability`, `daemon-health`, `tier-2-successor`, `medium`.
+
+**Revisit when:** next daemon-health hardening pass. Before Evergreen production cutover.
+
+Surfaced: 2026-06-09 12-dimension forensic audit (live ITS_Daemon_Health inspection).
+
+## [OPEN 2026-06-09] Half-applied morning publishes — blank-form archive PDFs missing for reqs 11/12/13
+
+Publish requests 11 (equipment-skid-steer-test-v1), 12 (jha-v2), and 13 (retire equipment-skid-steer-test) were merged to main and deployed BEFORE the bare-`python` bug was fixed by PR #241. Their blank-form archive PDFs were never generated (the `_regenerate_archive` step failed with `FileNotFoundError: 'python'`). The forms are live in the catalog and the Worker but their Box archive entries are absent, leaving an audit-trail gap.
+
+**Fix:** one-time backfill — run `python scripts/generate_form_archive.py` for the affected definition IDs and upload the resulting PDFs to the `00_Form_Archive` Box folder (`ITS_Safety_Portal/00_Form_Archive`).
+
+**Tag:** `safety-portal`, `audit-trail`, `one-time-backfill`, `low`.
+
+**Revisit when:** a dedicated Box-archive reconciliation pass, or before Evergreen production cutover audit.
+
+Surfaced: 2026-06-09 publish-pipeline forensic audit (PRs #238/#239/#240 landed before #241 fixed the sys.executable issue).
