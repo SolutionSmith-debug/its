@@ -460,8 +460,10 @@ app.post("/api/submit", requireSession, async (c) => {
   // (that would produce signatures the Mac side could never verify → silent loss).
   if (!c.env.HMAC_PAYLOAD_SECRET) return c.json({ error: "server_misconfigured" }, 503);
   // Sign the submission so the Mac-side portal_poll daemon can verify it before
-  // intake files it. INSERT OR REPLACE resets box_verified=0 — an amended submission
-  // re-enters the queue for re-filing. CRITICAL: the canonicalPayload (HMAC input) is
+  // intake files it. The SPA mints a FRESH uuid per amendment (useSubmissionId), so a same-uuid
+  // re-submit is the designed lost-ACK RETRY, not an amendment; the M1 guard below rejects a
+  // cross-actor uuid reuse and audits a filed/changed same-actor replace. INSERT OR REPLACE resets
+  // box_verified=0 so a retry re-queues for filing. CRITICAL: the canonicalPayload (HMAC input) is
   // UNCHANGED by submit-as — actor_username/submitted_as are NOT part of it — so the
   // stored hmac is byte-identical to a normal submit and portal_poll's recompute still
   // verifies. (Regression-locked in test/submit-as.test.ts.)
@@ -473,6 +475,20 @@ app.post("/api/submit", requireSession, async (c) => {
   // self-submit both equal `actor`). On a REAL submit-as we also write an audit_log
   // row in the SAME D1 batch, so the impersonation record can never land without its
   // security-log entry (atomic — mirrors the /api/admin/* mutate+audit pattern).
+  // M1 (PR-4): an INSERT OR REPLACE silently overwrites any prior row for this uuid. Read it
+  // first — a DIFFERENT actor reusing the uuid is never legitimate (409); a SAME-actor re-submit is
+  // the designed retry (proceed) but is AUDITED when the prior row was already filed
+  // (box_verified=1) or the payload changed (the filed PDF would then diverge from the new D1 row).
+  const existing = await c.env.DB
+    .prepare("SELECT actor_username, payload_json, box_verified FROM submissions WHERE submission_uuid=?")
+    .bind(submission_uuid)
+    .first<{ actor_username: string; payload_json: string; box_verified: number }>();
+  if (existing && existing.actor_username !== actor) {
+    return c.json({ error: "uuid_conflict" }, 409);
+  }
+  const isReplace =
+    existing !== null && (existing.box_verified === 1 || existing.payload_json !== payload);
+
   const insertStmt = c.env.DB
     .prepare(
       "INSERT OR REPLACE INTO submissions " +
@@ -481,11 +497,17 @@ app.post("/api/submit", requireSession, async (c) => {
         "VALUES (?,?,?,?,?,?,?,0,?,?)",
     )
     .bind(submission_uuid, job_id, form_code, work_date, payload, amends_uuid, hmac, actor, attributed);
-  if (isSubmitAs) {
-    await c.env.DB.batch([
-      insertStmt,
-      auditStmt(c, actor, "submit_as", attributed, { submission_uuid, job_id }),
-    ]);
+  const stmts = [insertStmt];
+  if (isSubmitAs) stmts.push(auditStmt(c, actor, "submit_as", attributed, { submission_uuid, job_id }));
+  if (isReplace) {
+    stmts.push(auditStmt(c, actor, "submission_replace", attributed, {
+      submission_uuid, job_id,
+      was_filed: existing!.box_verified === 1,
+      payload_changed: existing!.payload_json !== payload,
+    }));
+  }
+  if (stmts.length > 1) {
+    await c.env.DB.batch(stmts);
   } else {
     await insertStmt.run();
   }
@@ -535,6 +557,37 @@ app.post("/api/internal/mark-filed", requireInternalToken, async (c) => {
     .bind(box_link, submission_uuid)
     .run();
   return c.json({ ok: true, found: (res.meta?.changes ?? 0) > 0 });
+});
+
+/**
+ * POST /api/internal/mark-rejected — terminal state (M4, PR-4) for a submission the Mac side
+ * refuses to file (a bad-HMAC row). Without this, a box_verified=0 row is re-served by /pending
+ * EVERY cycle forever. Sets box_verified=-1 (terminal — /pending selects =0, so it drops out) on
+ * an UNFILED row only; records the reason in audit_log (changes()=1 so a no-op write logs nothing).
+ * prune.ts deletes rejected rows after 30d. Idempotent. Bearer-token gated.
+ */
+app.post("/api/internal/mark-rejected", requireInternalToken, async (c) => {
+  let body: Record<string, unknown>;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "bad_request" }, 400);
+  }
+  if (typeof body !== "object" || (body as unknown) === null || Array.isArray(body)) {
+    return c.json({ error: "bad_request" }, 400);
+  }
+  const submission_uuid = typeof body.submission_uuid === "string" ? body.submission_uuid : "";
+  const reason = typeof body.reason === "string" ? body.reason.slice(0, 2000) : null;
+  if (!submission_uuid || submission_uuid.length > 64) return c.json({ error: "invalid" }, 400);
+  const res = await c.env.DB.batch([
+    c.env.DB.prepare(
+      "UPDATE submissions SET box_verified=-1, filed_at=unixepoch() WHERE submission_uuid=? AND box_verified=0",
+    ).bind(submission_uuid),
+    c.env.DB.prepare(
+      "INSERT INTO audit_log (actor_username, action, target_username, detail) SELECT ?,?,?,? WHERE changes()=1",
+    ).bind("portal_poll", "submission_rejected", null, JSON.stringify({ submission_uuid, reason })),
+  ]);
+  return c.json({ ok: true, found: (res[0]?.meta?.changes ?? 0) > 0 });
 });
 
 /**
@@ -1291,7 +1344,7 @@ app.get("*", (c) => c.env.ASSETS.fetch(c.req.raw));
 // failure is logged via observability and does not affect the fetch path.
 const scheduled: ExportedHandlerScheduledHandler<Env> = async (_controller, env) => {
   const pruned = await pruneOldData(env.DB, Math.floor(Date.now() / 1000));
-  console.log(`prune: removed ${pruned.submissions} filed submission(s) + ${pruned.audit} audit row(s)`);
+  console.log(`prune: removed ${pruned.submissions} filed + ${pruned.rejected} rejected submission(s) + ${pruned.audit} audit row(s)`);
 };
 
 export default { fetch: app.fetch, scheduled } satisfies ExportedHandler<Env>;
