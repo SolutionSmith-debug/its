@@ -33,7 +33,13 @@ function explain(code: string): string {
 
 type Banner = { kind: "ok" | "err"; msg: string } | null;
 
-export function AccountsPage({ tabBar }: { tabBar: ReactNode }) {
+export function AccountsPage({
+  tabBar,
+  onEditingChange,
+}: {
+  tabBar: ReactNode;
+  onEditingChange?: (editing: boolean) => void;
+}) {
   const { user, logout } = useAuth();
   const me = user?.username ?? "";
 
@@ -64,6 +70,15 @@ export function AccountsPage({ tabBar }: { tabBar: ReactNode }) {
   useEffect(() => {
     void load();
   }, []);
+
+  // Report an open per-row login editor up to the admin shell so useIdleLogout keeps the session
+  // alive while editing (and reset on unmount). Login edits are quick — unlike the Forms builder,
+  // little is lost on a timeout — but the uniform keep-alive contract keeps idle behaviour
+  // consistent across the admin tabs.
+  useEffect(() => {
+    onEditingChange?.(editing !== null);
+  }, [editing, onEditingChange]);
+  useEffect(() => () => onEditingChange?.(false), [onEditingChange]);
 
   /** Run a mutation, then reauth-or-refresh. Returns true on success. */
   async function run(fn: () => Promise<api.AdminResult>, okMsg: string): Promise<boolean> {

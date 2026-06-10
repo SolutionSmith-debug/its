@@ -44,10 +44,13 @@ import catalog from "../catalog.json";
 
 const COOKIE = "its_portal_session";
 const MAX_AGE_S = 60 * 60 * 24 * 90; // 90-day session for submitters (field convenience)
-// Admins get a 5-minute IDLE window (slice 8b, C10): a SLIDING cookie re-issued on each
-// active request, so an idle (or captured) admin cookie dies at 5 min regardless. The SPA
-// pings on activity to keep an actively-used session alive (and logs out proactively at idle).
-const ADMIN_IDLE_S = 5 * 60;
+// Admins get a 30-minute IDLE window (slice 8b, C10): a SLIDING cookie re-issued on each
+// active request, so an idle (or captured) admin cookie dies at 30 min regardless. The SPA
+// pings on activity to keep an actively-used session alive (and logs out proactively at idle);
+// while a dirty form-editor draft is open it ADDS a bounded wall-clock keep-alive so unsaved
+// work in a briefly-backgrounded tab isn't bounced mid-edit — but an abandoned editor still
+// idles out at 30 min (the keep-alive is bounded to the idle window; the draft is client-cached).
+const ADMIN_IDLE_S = 30 * 60;
 
 const app = new Hono<{ Bindings: Env; Variables: Vars }>();
 
@@ -278,9 +281,9 @@ const requireSession = createMiddleware<{ Bindings: Env; Variables: Vars }>(asyn
     return c.json({ error: "unauthenticated" }, 401);
   }
 
-  // Admin 5-min idle timeout (slice 8b, C10) — a SLIDING window. An admin cookie idle
-  // past ADMIN_IDLE_S is rejected (a captured admin cookie dies at 5 min); an ACTIVE admin
-  // request SLIDES the window by re-issuing the cookie with a fresh iat + 5-min maxAge.
+  // Admin 30-min idle timeout (slice 8b, C10) — a SLIDING window. An admin cookie idle
+  // past ADMIN_IDLE_S is rejected (a captured admin cookie dies at 30 min); an ACTIVE admin
+  // request SLIDES the window by re-issuing the cookie with a fresh iat + 30-min maxAge.
   // Submitters keep the 90-day session. (The MAX_AGE check above already ran; this is the
   // tighter admin window on top, and is authoritative regardless of the cookie's maxAge —
   // a captured cookie whose browser-maxAge was tampered still dies via this iat check.)

@@ -3,7 +3,7 @@ import type { FormDefinition } from "../forms/types";
 /**
  * Per-account localStorage cache of the in-progress Form Editor draft.
  *
- * The editor draft otherwise lives only in React state, so the admin 5-minute idle logout
+ * The editor draft otherwise lives only in React state, so the admin 30-minute idle logout
  * (or any reload/tab-close) unmounts the editor and the work-in-progress form is lost. This
  * persists it keyed by the admin's username so it survives logout → re-login, and restores on
  * the next editor open. Best-effort: every access is wrapped — localStorage being unavailable
