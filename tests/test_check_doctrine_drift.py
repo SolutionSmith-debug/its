@@ -26,7 +26,7 @@ def test_runs_and_emits_json():
     assert isinstance(data, list)
     for f in data:
         assert set(f) >= {"check", "severity", "location", "detail"}
-        assert f["check"] in {"M1", "M2", "M3", "M4", "M5"}
+        assert f["check"] in {"M1", "M2", "M3", "M4", "M5", "M6"}
         assert f["severity"] in {"drift", "coverage", "clean"}
 
 
