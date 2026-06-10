@@ -2027,7 +2027,7 @@ Surfaced: 2026-06-09 12-dimension forensic audit (M6).
 
 Surfaced: 2026-06-09 12-dimension forensic audit (M7).
 
-## [OPEN 2026-06-09] CLAUDE.md asserts Op Stds v16 as governing — should be v18 (M9)
+## [RESOLVED 2026-06-10] CLAUDE.md asserts Op Stds v16 as governing — should be v18 (M9)
 
 `CLAUDE.md` contains a parenthetical around lines 28–29 and line 131 (the governing-version block) that reads "Operational Standards is canonically at v16 … v16 is the governing version." However, `~/its-blueprint/doctrine/operational-standards.md` frontmatter is `version: 18`, `status: canonical`; `docs/doctrine_manifest.yaml` lists `current: 18`; and ~12 other CLAUDE.md citations already say v18. The v16 parenthetical is stale.
 
@@ -2037,7 +2037,7 @@ This is advisory text only (no runtime control), but §§45–49 (added in v17/v
 
 **Tag:** `doctrine`, `claude.md`, `docs`, `low`.
 
-**Revisit when:** next CLAUDE.md touch, or doc-reconciliation-auditor pass. Low effort, high confusion-reduction.
+**Resolved 2026-06-10:** the governing-version block (CLAUDE.md lines ~28–29) + the line-131 reframe attribution now read **v18** — completing the v16→v18 sweep begun in PR #191 (inline §N citations) and continued in #260 (ops-stds-enforcer agent). The 2026-06-10 doc-reconciliation audit confirmed M9 was the last residual; no behavior impact.
 
 Surfaced: 2026-06-09 12-dimension forensic audit (M9).
 
