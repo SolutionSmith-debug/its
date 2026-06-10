@@ -7,11 +7,11 @@
 # ~/Library/LaunchAgents/. The plist files in this directory stay generic; the
 # installed copies have concrete values.
 #
-# __POLL_INTERVAL_SECONDS__ (safety-intake, weekly-send, portal-poll, compile-now-poll):
+# __POLL_INTERVAL_SECONDS__ (weekly-send, portal-poll, compile-now-poll):
 # these plists carry the placeholder in <integer>StartInterval</integer>. `load`/`dry-run`
 # resolve it from the optional [interval] arg, else a per-daemon default
-# (60 / 900 / 60 / 90, matching the daemon's ITS_Config poll-interval row default —
-# safety_reports.intake / safety_reports.weekly_send / safety_reports.portal_poll /
+# (900 / 60 / 90, matching the daemon's ITS_Config poll-interval row default —
+# safety_reports.weekly_send / safety_reports.portal_poll /
 # safety_reports.compile_now_poll .poll_interval_seconds). The interval is BAKED into
 # the installed plist, so a later ITS_Config change needs a re-install (pass the
 # new value as [interval]). WITHOUT this substitution the installed plist keeps
@@ -43,8 +43,8 @@ usage: $0 {load|unload|status|dry-run} [plist] [interval]
   dry-run  <plist> [interval]   print the resolved plist content to stdout
 
   [interval] (positive integer seconds) overrides the StartInterval for the
-  poll-interval daemons (safety-intake → default 60, weekly-send → default 900,
-  portal-poll → default 60, compile-now-poll → default 90).
+  poll-interval daemons (weekly-send → default 900, portal-poll → default 60,
+  compile-now-poll → default 90).
 EOF
     exit 1
 }
@@ -60,7 +60,6 @@ resolve_plist_name() {
 # non-interval daemons (calendar-driven or no placeholder) → substitution skipped.
 poll_interval_config_key() {
     case "$1" in
-        org.solutionsmith.its.safety-intake) echo "safety_reports.intake.poll_interval_seconds" ;;
         org.solutionsmith.its.weekly-send)   echo "safety_reports.weekly_send.poll_interval_seconds" ;;
         org.solutionsmith.its.portal-poll)   echo "safety_reports.portal_poll.poll_interval_seconds" ;;
         org.solutionsmith.its.compile-now-poll) echo "safety_reports.compile_now_poll.poll_interval_seconds" ;;
@@ -69,7 +68,6 @@ poll_interval_config_key() {
 }
 poll_interval_default() {
     case "$1" in
-        org.solutionsmith.its.safety-intake) echo "60" ;;
         org.solutionsmith.its.weekly-send)   echo "900" ;;
         org.solutionsmith.its.portal-poll)   echo "60" ;;
         org.solutionsmith.its.compile-now-poll) echo "90" ;;
@@ -78,8 +76,7 @@ poll_interval_default() {
 }
 
 # Read a numeric ITS_Config setting via the venv python (reusing
-# shared.smartsheet_client + keychain, exactly like
-# scripts/install_safety_intake_daemon.sh). Echoes the value, or nothing on any
+# shared.smartsheet_client + keychain). Echoes the value, or nothing on any
 # failure — Smartsheet may be unreachable / the token unseeded at cutover time,
 # in which case the caller falls back to the per-daemon default.
 read_its_config_interval() {

@@ -117,15 +117,37 @@ After re-sharing the production workspace (item 1):
 3. **Each approver resolves.** Spot-check that each of the seven emails is a
    real, active Smartsheet user in the production workspace.
 
+### Cutover item 2 — Safety Portal production D1 hygiene (owned by the Portal PR)
+
+The sandbox D1 (`its-safety-portal-db`) carries **seed/test rows** that must NOT cross into production:
+
+- The **seed-data migrations** (sample jobs + the `test.pm` / sample `users`) are sandbox-only. On the
+  **production** D1, apply ONLY the schema migrations — **skip the seed migrations**, or immediately
+  `DELETE` the seeded `users` (especially `test.pm`) and any sample `jobs` / `submissions` rows. A
+  stray ENABLED `test.pm` is a live credential on the production portal (and login is now gated on
+  `disabled` — PR-4 — so a disabled stub is safe, but deletion is cleaner).
+- Verify post-cutover: `SELECT username, disabled FROM users` lists ONLY real field-PM accounts;
+  `SELECT COUNT(*) FROM submissions` is 0 (or only real submissions).
+
+### Cutover item 3 — Worker production guards (owned by the Portal PR)
+
+- **Branch protection** re-verified on the production deploy path: `main` requires `test` + `portal` +
+  `secrets` (the publish daemon merges on all-green — see Gate-0, set 2026-06-10).
+- **Cloudflare rate-limiting / WAF** on the production custom domain (the sandbox runs open) — at a
+  minimum a `/api/login` rate-limit, since that endpoint is unauthenticated and runs bcrypt cost-10.
+- The production Worker runs on the **Paid plan** (a cost-10 bcrypt compare can exceed the FREE plan's
+  10 ms CPU cap → Error 1102 — see `safety_portal/README.md`).
+
 ## Daemon (re)install — interval substitution (§43 note)
 
 A cutover that (re)installs the launchd daemons uses
 `scripts/launchd/install.sh load <plist> [interval]`. For the **interval**
-daemons (`org.solutionsmith.its.safety-intake`, `…weekly-send`) the installer
-substitutes `__POLL_INTERVAL_SECONDS__` in `<integer>StartInterval</integer>`
+daemons (`org.solutionsmith.its.weekly-send`, `…portal-poll`, `…compile-now-poll`) the
+installer substitutes `__POLL_INTERVAL_SECONDS__` in `<integer>StartInterval</integer>`
 from (priority): the optional `[interval]` arg → the daemon's ITS_Config
-poll-interval row (`safety_reports.intake` / `safety_reports.weekly_send`
-`.poll_interval_seconds`) → a per-daemon default (60 / 900). If the token /
+poll-interval row (`safety_reports.weekly_send` / `safety_reports.portal_poll` /
+`safety_reports.compile_now_poll` `.poll_interval_seconds`) → a per-daemon default
+(900 / 60 / 90). If the token /
 Smartsheet isn't ready yet at cutover time the read falls back to the default (a
 `note:` line on stderr — harmless). After each load, confirm with
 `install.sh status` and `plutil -lint` the installed copy under
