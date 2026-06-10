@@ -50,6 +50,9 @@ def _patch_all(mocker):
         "mark_filed": mocker.patch.object(
             portal_poll.portal_client, "mark_filed", return_value=True
         ),
+        "mark_rejected": mocker.patch.object(
+            portal_poll.portal_client, "mark_rejected", return_value=True
+        ),
         "process": mocker.patch.object(
             portal_poll.intake, "process_portal_submission", return_value=_processed()
         ),
@@ -140,6 +143,7 @@ def test_hmac_failure_rejects_without_dispatch_or_receipt(_patch_all):
     assert result.rejected == 1 and result.filed == 0
     _patch_all["process"].assert_not_called()   # NEVER handed to intake
     _patch_all["mark_filed"].assert_not_called()  # NEVER drained (kept for forensics)
+    _patch_all["mark_rejected"].assert_called_once()  # M4 (PR-4): flipped box_verified=-1 (stops the forever re-pull)
     _patch_all["review"].assert_called_once()     # flagged to Review Queue
     assert _patch_all["review"].call_args.kwargs["security_flag"] is True
     _patch_all["anomaly"].assert_called_once()    # tripwire fired

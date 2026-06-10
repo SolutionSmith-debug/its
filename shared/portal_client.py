@@ -55,6 +55,7 @@ MAX_RETRIES = 3
 
 PENDING_PATH = "/api/internal/pending"
 MARK_FILED_PATH = "/api/internal/mark-filed"
+MARK_REJECTED_PATH = "/api/internal/mark-rejected"
 SYNC_PATH = "/api/internal/sync"
 PUBLISH_PENDING_PATH = "/api/internal/publish/pending"
 PUBLISH_CLAIM_PATH = "/api/internal/publish/claim"
@@ -199,6 +200,20 @@ def mark_filed(base_url: str, token: str, *, submission_uuid: str, box_link: str
     data = _request(
         "POST", base_url, MARK_FILED_PATH, token,
         json_body={"submission_uuid": submission_uuid, "box_link": box_link},
+    )
+    return bool(data.get("found"))
+
+
+def mark_rejected(base_url: str, token: str, *, submission_uuid: str, reason: str) -> bool:
+    """Post the terminal-reject receipt (M4): POST /api/internal/mark-rejected → returns `found`.
+
+    Called by portal_poll after an HMAC failure so the bad row is flipped box_verified=-1 and
+    stops being re-served by /pending every cycle. Control-plane write to OUR OWN Worker (outside
+    the External Send Gate, like mark_filed). Idempotent. Raises the typed PortalTransportError
+    hierarchy."""
+    data = _request(
+        "POST", base_url, MARK_REJECTED_PATH, token,
+        json_body={"submission_uuid": submission_uuid, "reason": reason},
     )
     return bool(data.get("found"))
 

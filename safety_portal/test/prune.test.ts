@@ -62,4 +62,13 @@ describe("pruneOldData (A3 D1 housekeeping)", () => {
     expect(res.audit).toBe(1);
     expect((await env.DB.prepare("SELECT COUNT(*) n FROM audit_log").first<{ n: number }>())!.n).toBe(1);
   });
+
+  it("prunes REJECTED (box_verified=-1) rows after 30d, keeps recent + never the unfiled (M4/PR-4)", async () => {
+    await seedSub("rej-old", -1, NOW - 40 * DAY);
+    await seedSub("rej-recent", -1, NOW - 5 * DAY);
+    await seedSub("unfiled-old", 0, NOW - 200 * DAY); // box_verified=0 still NEVER evicted
+    const res = await pruneOldData(env.DB, NOW);
+    expect(res.rejected).toBe(1);
+    expect(await remaining()).toEqual(["rej-recent", "unfiled-old"]);
+  });
 });

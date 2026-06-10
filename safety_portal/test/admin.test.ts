@@ -64,6 +64,15 @@ describe("role foundation", () => {
     expect(await sess.json()).toEqual({ user: { username: "admin.one", role: "admin" } });
   });
 
+  it("a DISABLED user cannot log in (PR-4 — validateUser rejects disabled, not just requireSession)", async () => {
+    await provision("pm.bob", "password123", "submitter");
+    expect((await call("/api/login", { method: "POST", body: JSON.stringify({ username: "pm.bob", password: "password123" }) })).status).toBe(200);
+    await env.DB.prepare("UPDATE users SET disabled=1 WHERE username=?").bind("pm.bob").run();
+    const res = await call("/api/login", { method: "POST", body: JSON.stringify({ username: "pm.bob", password: "password123" }) });
+    expect(res.status).toBe(401);
+    expect(await res.json()).toMatchObject({ error: "invalid_credentials" });
+  });
+
   it("a submitter session is 403 on the admin surface; no session is 401", async () => {
     await provision("pm.bob", "password123", "submitter");
     const cookie = await login("pm.bob", "password123");
