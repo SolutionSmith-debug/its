@@ -113,7 +113,12 @@ SEND_SCRIPTS: list[tuple[str, list[str]]] = [
 
 
 def _imports_in(path: Path) -> set[str]:
-    """Return the set of imported module names + from-imports in a Python file."""
+    """Return the STATIC imports of a file: each `import X` yields `X`; each `from X import Y`
+    yields `X` AND `X.Y`. Honest reach limit: a DYNAMIC import — a bare `__import__(...)` builtin
+    call or `importlib.import_module(...)` — is NOT captured here (neither is an Import/ImportFrom
+    AST node). `importlib` is itself a NETWORK_NEEDLE, so a static `import importlib` is still
+    flagged; a bare `__import__` call on the walked surface is a documented residual gap (the M2
+    transitive-closure follow-up tightens it)."""
     tree = ast.parse(path.read_text())
     imports: set[str] = set()
     for node in ast.walk(tree):
@@ -225,6 +230,10 @@ def test_lists_documented():
 #                                 owner. Its Worker HTTP egress goes through the audited
 #                                 shared.portal_client (above), not `requests` directly,
 #                                 and it stays in GATED_SCRIPTS (no customer send, no LLM).
+#   shared/box_client.py        — Box SDK (`boxsdk`): client-document storage/retrieval.
+#   shared/anthropic_client.py  — Anthropic SDK (`anthropic`): the LLM reasoning egress (the
+#                                 GENERATION half of Invariant 1; GATED scripts forbid importing it).
+#   shared/sentry_client.py     — Sentry SDK (`sentry_sdk`): CRITICAL exception-capture egress.
 NETWORK_LIB_ALLOWLIST: frozenset[str] = frozenset({
     "shared/graph_client.py",
     "shared/resend_client.py",
@@ -232,6 +241,9 @@ NETWORK_LIB_ALLOWLIST: frozenset[str] = frozenset({
     "shared/heartbeat_client.py",
     "shared/keychain.py",
     "shared/portal_client.py",
+    "shared/box_client.py",
+    "shared/anthropic_client.py",
+    "shared/sentry_client.py",
     "safety_reports/publish_daemon.py",
 })
 
@@ -240,6 +252,14 @@ NETWORK_LIB_ALLOWLIST: frozenset[str] = frozenset({
 # `_import_matches_needle` — so `socket` does NOT collide with `socketserver`,
 # and `http.client` does NOT collide with `http.server`. `urllib.request`
 # (network) is gated but `urllib.parse` (pure string work) is not.
+#
+# F02 SDK blind-spot close (PR-5): the raw-HTTP needles above MISS egress-capable
+# SDKs — a module could `import boxsdk` / `anthropic` / `smartsheet` / `msal` /
+# `sentry_sdk` / `resend` and exfiltrate through a sanctioned channel without tripping
+# F02. The SDKs are added as needles; their legitimate `shared/*_client.py` homes are
+# allowlisted above. `importlib` is a needle too — a static `import importlib` is a
+# dynamic-import escape hatch around this very static analysis (a bare `__import__`
+# builtin call is a documented residual gap — see _imports_in + the M2 follow-up).
 NETWORK_NEEDLES: frozenset[str] = frozenset({
     "requests",
     "httpx",
@@ -248,6 +268,15 @@ NETWORK_NEEDLES: frozenset[str] = frozenset({
     "socket",
     "subprocess",
     "http.client",
+    # Egress-capable SDKs (F02 blind spot, PR-5) — each direct importer is allowlisted.
+    "boxsdk",
+    "anthropic",
+    "smartsheet",
+    "msal",
+    "sentry_sdk",
+    "resend",
+    # Dynamic-import escape hatch around static import analysis.
+    "importlib",
 })
 
 # Source roots walked by the network allowlist. See the scope rationale above.
