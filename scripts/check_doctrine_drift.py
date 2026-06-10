@@ -37,6 +37,7 @@ Consumers
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import re
 import sys
@@ -49,9 +50,12 @@ import yaml  # type: ignore[import-untyped]
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = REPO_ROOT / "docs" / "doctrine_manifest.yaml"
 
-# Current-doctrine prose: version citations here should be current.
+# Current-doctrine prose: version citations here should be current. Includes .claude/agents/
+# (agent definitions ARE current-doctrine prose — an agent pinning a stale Op Stds / FM version
+# is exactly the drift M1 should catch; this is where the ops-stds-enforcer "v13" staleness hid
+# undetected until Brief 2.A/2.D).
 CURRENT_DOCTRINE_FILES = ["CLAUDE.md", "README.md"]
-CURRENT_DOCTRINE_DIRS = ["docs/operations"]
+CURRENT_DOCTRINE_DIRS = ["docs/operations", ".claude/agents"]
 # Workstream entrypoints checked for §42 alongside shared/*.
 ENTRYPOINTS = [
     "safety_reports/intake.py",
@@ -102,7 +106,7 @@ def _current_doctrine_files() -> list[Path]:
 # window AROUND each match, not line-wide: a long table row can carry a current
 # citation AND, far away, an unrelated "superseded".
 _HIST_MARKERS = re.compile(
-    r"earlier|previously|originally|former|supersed|deprecat|no longer|retired|historical",
+    r"earlier|previously|originally|former|supersed|deprecat|no longer|retired|historical|moved|lagged|reframed",
     re.I,
 )
 
@@ -246,6 +250,55 @@ def check_section42(m: dict[str, Any]) -> list[Finding]:
     return findings
 
 
+def check_module_docstring_versions(m: dict[str, Any]) -> list[Finding]:
+    """M6 — non-canonical Op Stds / FM version citations in shared/* + safety_reports/* MODULE
+    docstrings (coverage; the semantic tier classifies).
+
+    A module's docstring is where it declares its doctrine framing, so a non-canonical version
+    there is a candidate stale citation. Reported at COVERAGE severity, NOT drift: most version
+    mentions in docstrings are correct historical ATTRIBUTIONS ("the discipline added in Op Stds
+    v13 §42"), which can't be distinguished from stale-current cites mechanically — so this
+    surfaces candidates for the semantic (opus) tier + the operator, and never false-alarms the
+    drift count. Skips a match near a historical marker (_near_historical) and a "vN §M"
+    section-attribution pattern (almost always historical-safe).
+    """
+    dv = m["doctrine_versions"]
+    ops = int(dv["operational_standards"]["current"])
+    fm = int(dv["foundation_mission"]["current"])
+    ops_re = re.compile(r"(?:Op Stds|Operational Standards)\s+v(\d+)")
+    fm_re = re.compile(r"(?:Foundation Mission|FM)\s+v(\d+)")
+    attribution_re = re.compile(r"^\s*§")  # "vN §M" — a section attribution, historical-safe
+    targets = sorted((REPO_ROOT / "shared").glob("*.py")) + sorted(
+        (REPO_ROOT / "safety_reports").glob("*.py")
+    )
+    findings: list[Finding] = []
+    for p in targets:
+        if p.name == "__init__.py":
+            continue
+        try:
+            doc = ast.get_docstring(ast.parse(p.read_text(errors="replace")))
+        except (SyntaxError, ValueError):
+            continue
+        if not doc:
+            continue
+        for ln, line in enumerate(doc.splitlines(), 1):
+            for canon, rx, label in ((ops, ops_re, "Op Stds"), (fm, fm_re, "Foundation Mission")):
+                for mo in rx.finditer(line):
+                    if int(mo.group(1)) == canon or _near_historical(line, mo.start(), mo.end()):
+                        continue
+                    if attribution_re.match(line[mo.end():]):
+                        continue
+                    findings.append(
+                        Finding(
+                            "M6", "coverage",
+                            f"{p.relative_to(REPO_ROOT)} (docstring ~L{ln})",
+                            f"{label} v{mo.group(1)} in module docstring; canonical is v{canon} "
+                            "(candidate stale cite — semantic tier / operator classifies)",
+                        )
+                    )
+    return findings
+
+
 def run_all() -> list[Finding]:
     m = _load_manifest()
     findings: list[Finding] = []
@@ -254,6 +307,7 @@ def run_all() -> list[Finding]:
     findings += check_sheet_ids(m)
     findings += check_workstream_coverage(m)
     findings += check_section42(m)
+    findings += check_module_docstring_versions(m)
     return findings
 
 
