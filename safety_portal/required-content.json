@@ -18,10 +18,9 @@
     "CHANGING A STRICT ENTRY IS A LEGAL-FLOOR (doctrine-adjacent) CHANGE: high-capability-class,",
     "Tier-3/Seth only — the Successor-Operator must NOT edit this file. See",
     "docs/runbooks/safety_portal_forms.md.",
-    "KNOWN GAP (Seth-confirm): equipment-telehandler-v1 currently has ZERO signature inputs, so",
-    "the equipment signature requirement is a per-IDENTITY override on equipment-skid-steer only,",
-    "never the equipment-preinspection parent. Decide: add a signature to telehandler (then lift",
-    "required_signature_inputs_min to the parent) OR accept telehandler as signature-free."
+    "Equipment signature: required at the equipment-preinspection PARENT (min 1) — every variant",
+    "(skid-steer, telehandler) carries an operator-signature input. Seth-confirmed 2026-06-10; a",
+    "signature field was added to equipment-telehandler-v1 in the same PR to close the prior gap."
   ],
   "spec_keys": {
     "required_section_types": "array of section `type` values (e.g. signature_table, content_blocks) at least one of EACH must be present",
@@ -39,7 +38,8 @@
       "required_static_text": ["REVIEW AND REVISE THE PLAN"]
     },
     "equipment-preinspection": {
-      "required_static_text": ["ALWAYS lock/tag-out unsafe equipment"]
+      "required_static_text": ["ALWAYS lock/tag-out unsafe equipment"],
+      "required_signature_inputs_min": 1
     },
     "toolbox-talk": {
       "required_section_types": ["content_blocks", "signature_table"],
@@ -52,9 +52,5 @@
     "visitor-sign-in": {},
     "hsse-work-observation": {}
   },
-  "identities": {
-    "equipment-skid-steer": {
-      "required_signature_inputs_min": 1
-    }
-  }
+  "identities": {}
 }
