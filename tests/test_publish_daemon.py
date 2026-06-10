@@ -40,6 +40,9 @@ def stub(mocker):
         "pending": mocker.patch.object(pd.portal_client, "get_publish_pending"),
         "claim": mocker.patch.object(pd.portal_client, "claim_publish"),
         "stamp": mocker.patch.object(pd.portal_client, "stamp_publish", return_value=True),
+        # PR-2: publish_once now sweeps stale rows (calls get_publish_stuck). Default to none so
+        # the existing tests' sweep is a no-op; the sweep tests below set a return value.
+        "stuck": mocker.patch.object(pd.portal_client, "get_publish_stuck", return_value=[]),
         "reset": mocker.patch.object(pd, "_reset_to_main"),
         "unstrand": mocker.patch.object(pd, "_unstrand_if_needed"),
         "apply_wt": mocker.patch.object(pd, "_apply_to_worktree"),
@@ -163,6 +166,42 @@ def test_already_leased_row_is_skipped(stub):
     out = pd.publish_once()
     assert out.skipped_unclaimed == 1 and out.actuated == 0
     stub["commit"].assert_not_called()
+
+
+# ── stale-row sweep (PR-2: reclaim a crashed/stalled publish before it wedges a parent) ──
+
+
+def test_sweep_reclaims_a_stale_row_and_fires_critical(stub):
+    stub["pending"].return_value = []
+    stub["stuck"].return_value = [
+        {"id": 9, "status": "tested", "lease_owner": "deadmac:123", "parent_form_code": "jha"},
+    ]
+    out = pd.publish_once()
+    assert out.reclaimed == 1
+    failed = [c for c in stub["stamp"].call_args_list if c.kwargs.get("status") == "failed"]
+    assert any(
+        c.kwargs.get("request_id") == 9 and c.kwargs.get("failed_stage") == "stale_reclaimed"
+        for c in failed
+    )
+    assert _critical_fired(stub)
+
+
+def test_sweep_is_a_noop_when_nothing_is_stuck(stub):
+    stub["pending"].return_value = []
+    stub["stuck"].return_value = []
+    out = pd.publish_once()
+    assert out.reclaimed == 0
+    assert not _critical_fired(stub)
+
+
+def test_sweep_fetch_failure_is_logged_not_fatal(stub):
+    # A sweep fetch failure must NOT wedge the cycle — log ERROR and let the pull proceed.
+    stub["stuck"].side_effect = pd.portal_client.PortalTransportError("boom")
+    stub["pending"].return_value = []
+    out = pd.publish_once()
+    assert out.reclaimed == 0
+    stub["pending"].assert_called_once()  # the cycle continued past the sweep to the pull
+    assert any(c.args and c.args[0] == pd.Severity.ERROR for c in stub["log"].call_args_list)
 
 
 # ── _unstrand_if_needed (idle self-heal: recover a stranded tree at the top of a cycle) ──

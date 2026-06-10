@@ -97,3 +97,68 @@ describe("POST /api/internal/publish/stamp", () => {
     expect(((await res.json()) as { found: boolean }).found).toBe(false);
   });
 });
+
+describe("lease TTL reclaim (PR-2)", () => {
+  async function seedLeased(identity: string, leaseAgeS: number): Promise<number> {
+    const r = await env.DB
+      .prepare(
+        "INSERT INTO publish_requests (requested_by, op, parent_form_code, identity, target_form_code, definition_json, status, lease_owner, lease_at) " +
+          "VALUES (?,?,?,?,?,?,?,?, unixepoch() - ?)",
+      )
+      .bind("admin.one", "create", "jha", identity, `${identity}-v1`, "{}", "queued", "deadmac", leaseAgeS)
+      .run();
+    return r.meta.last_row_id as number;
+  }
+  it("pending returns a queued row whose lease is older than the TTL (the daemon died)", async () => {
+    const fresh = await seedLeased("jha-fresh", 60); // leased 1 min ago — still held
+    const stale = await seedLeased("jha-stale", 4000); // leased >30 min ago — reclaimable
+    const { pending } = (await (await call("/api/internal/publish/pending", { bearer: TOKEN })).json()) as { pending: { id: number }[] };
+    const ids = pending.map((p) => p.id);
+    expect(ids).toContain(stale);
+    expect(ids).not.toContain(fresh);
+  });
+  it("claim takes over a stale-leased row; refuses a freshly-leased one", async () => {
+    const stale = await seedLeased("jha-takeover", 4000);
+    const fresh = await seedLeased("jha-held", 60);
+    const r1 = (await (await call("/api/internal/publish/claim", { method: "POST", bearer: TOKEN, body: JSON.stringify({ id: stale, lease_owner: "newmac" }) })).json()) as { claimed: boolean };
+    expect(r1.claimed).toBe(true);
+    const row = await env.DB.prepare("SELECT lease_owner FROM publish_requests WHERE id=?").bind(stale).first<{ lease_owner: string }>();
+    expect(row!.lease_owner).toBe("newmac");
+    const r2 = (await (await call("/api/internal/publish/claim", { method: "POST", bearer: TOKEN, body: JSON.stringify({ id: fresh, lease_owner: "intruder" }) })).json()) as { claimed: boolean };
+    expect(r2.claimed).toBe(false);
+  });
+});
+
+describe("stamp state-machine guard (PR-2 — forged/out-of-order transitions)", () => {
+  it("rejects a backward transition (live -> validated): found:false + reason, row unchanged", async () => {
+    const id = await seed("jha-back", "live");
+    const body = (await (await call("/api/internal/publish/stamp", { method: "POST", bearer: TOKEN, body: JSON.stringify({ id, status: "validated" }) })).json()) as { found: boolean; reason?: string };
+    expect(body.found).toBe(false);
+    expect(body.reason).toMatch(/illegal transition/);
+    const row = await env.DB.prepare("SELECT status FROM publish_requests WHERE id=?").bind(id).first<{ status: string }>();
+    expect(row!.status).toBe("live");
+  });
+  it("rejects a skip-ahead transition (queued -> archived), row unchanged", async () => {
+    const id = await seed("jha-skip", "queued");
+    const body = (await (await call("/api/internal/publish/stamp", { method: "POST", bearer: TOKEN, body: JSON.stringify({ id, status: "archived" }) })).json()) as { found: boolean };
+    expect(body.found).toBe(false);
+    const row = await env.DB.prepare("SELECT status FROM publish_requests WHERE id=?").bind(id).first<{ status: string }>();
+    expect(row!.status).toBe("queued");
+  });
+  it("rejects stamping a terminal row (archived -> failed)", async () => {
+    const id = await seed("jha-term", "archived");
+    const body = (await (await call("/api/internal/publish/stamp", { method: "POST", bearer: TOKEN, body: JSON.stringify({ id, status: "failed" }) })).json()) as { found: boolean };
+    expect(body.found).toBe(false);
+  });
+  it("rejects stamping TO queued (never a stamp target) with 400", async () => {
+    const id = await seed("jha-toq", "validated");
+    expect((await call("/api/internal/publish/stamp", { method: "POST", bearer: TOKEN, body: JSON.stringify({ id, status: "queued" }) })).status).toBe(400);
+  });
+  it("allows the legal happy-path chain queued->validated->tested->live->archived", async () => {
+    const id = await seed("jha-happy", "queued");
+    for (const s of ["validated", "tested", "live", "archived"]) {
+      const body = (await (await call("/api/internal/publish/stamp", { method: "POST", bearer: TOKEN, body: JSON.stringify({ id, status: s }) })).json()) as { found: boolean };
+      expect(body.found, `stamp ${s}`).toBe(true);
+    }
+  });
+});

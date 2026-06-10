@@ -76,6 +76,14 @@ _DEFINITION_OPS = frozenset({"create", "edit", "add_version"})
 CI_POLL_S = 20.0
 CI_TIMEOUT_S = 900.0  # 15 min — generous vs the ~3-5 min portal CI
 
+# Stale-row reclaim (PR-2): a non-terminal publish_requests row whose updated_at is older than this
+# is swept to failed('stale_reclaimed') at the top of each cycle — recovering a publish whose daemon
+# claimed-then-died (or stalled mid-stage), which otherwise wedges the parent forever via the
+# Worker's C8 in-flight check. MUST exceed CI_TIMEOUT_S + deploy slack (and the Worker's LEASE_TTL_S)
+# so a legitimately in-progress publish is never reclaimed — every stamp bumps updated_at, so a
+# healthy publish never looks stale.
+STALE_RECLAIM_S = 2700.0  # 45 min
+
 
 @dataclass
 class PublishStats:
@@ -85,6 +93,7 @@ class PublishStats:
     actuated: int = 0
     failed: int = 0
     skipped_unclaimed: int = 0
+    reclaimed: int = 0
     halted: str | None = None
     notes: list[str] = field(default_factory=list)
 
@@ -421,6 +430,56 @@ def _exc_reason(exc: Exception) -> str:
     return f"{type(exc).__name__}: {exc}"
 
 
+def _sweep_stale_rows(creds: _Creds, stats: PublishStats) -> None:
+    """Reclaim non-terminal publish rows stalled past STALE_RECLAIM_S (a daemon that
+    claimed-then-died, or a wedged stage): stamp failed('stale_reclaimed') + a CRITICAL once per
+    row, so the parent is unwedged (the Worker's C8 in-flight check) and the original death is
+    surfaced. Best-effort — a sweep failure logs + returns; it never blocks the cycle's real
+    work. The Worker's stamp guard accepts non-terminal → failed, so this can't revert a
+    terminal row. (PR-2 — makes the migration-0010 / index.ts 'stuck row is reclaimed' note true.)"""
+    try:
+        stuck = portal_client.get_publish_stuck(
+            creds.base_url, creds.bearer, older_than=int(STALE_RECLAIM_S)
+        )
+    except Exception as exc:  # noqa: BLE001 — housekeeping; never wedge the cycle
+        error_log.log(
+            Severity.ERROR, SCRIPT_NAME,
+            f"publish stale-row sweep could not fetch stuck rows: {_exc_reason(exc)}",
+            error_code="publish_daemon.sweep_fetch_failed",
+        )
+        return
+    for row in stuck:
+        rid = row.get("id")
+        if not isinstance(rid, int):
+            continue
+        was = row.get("status")
+        parent = row.get("parent_form_code")
+        reason = (
+            f"stale_reclaimed: non-terminal status {was!r} stalled > {int(STALE_RECLAIM_S)}s "
+            f"(lease_owner={row.get('lease_owner')}); the publish daemon likely died mid-actuation. "
+            f"Parent {parent!r} is now unwedged — re-publish if still needed."
+        )
+        try:
+            portal_client.stamp_publish(
+                creds.base_url, creds.bearer, request_id=rid,
+                status="failed", failed_stage="stale_reclaimed", failure_reason=reason,
+            )
+        except Exception as exc:  # noqa: BLE001
+            error_log.log(
+                Severity.ERROR, SCRIPT_NAME,
+                f"publish stale-row sweep could not stamp row {rid} failed: {_exc_reason(exc)}",
+                error_code="publish_daemon.sweep_stamp_failed",
+            )
+            continue
+        stats.reclaimed += 1
+        error_log.log(
+            Severity.CRITICAL, SCRIPT_NAME,
+            f"publish request {rid} reclaimed as STALE (was {was!r}, parent {parent!r}) — the "
+            f"daemon likely died mid-publish; the parent is now unwedged. {reason}",
+            error_code="publish_daemon.stale_reclaimed",
+        )
+
+
 @its_error_log(script_name=SCRIPT_NAME)
 @require_active
 def publish_once() -> PublishStats:
@@ -455,6 +514,10 @@ def publish_once() -> PublishStats:
         )
         stats.halted = "creds_unresolved"
         return stats
+
+    # PR-2: reclaim stale non-terminal rows (crashed/stalled publishes) BEFORE pulling new work,
+    # so a wedged parent is freed this cycle. Best-effort; never blocks the pull.
+    _sweep_stale_rows(creds, stats)
 
     rows = portal_client.get_publish_pending(creds.base_url, creds.bearer)
     stats.polled = len(rows)
