@@ -87,6 +87,17 @@ GATED_SCRIPTS: list[tuple[str, list[str]]] = [
         ["graph_client", "send_mail", "resend", "smtplib", "email.mime",
          "anthropic", "anthropic_client"],
     ),
+    (
+        # photo_screen (PR-2) is the §34 portal-photo trust boundary: it inspects
+        # UNTRUSTED inbound image bytes (magic/size → Pillow verify + re-encode →
+        # optional ClamAV) and is DETERMINISTIC — no customer send AND no LLM. Forbid
+        # the send substrings + graph_client (a pure screener needs no Graph) +
+        # anthropic (assert it stays LLM-free). Its only egress is the optional,
+        # config-gated clamd socket (pyclamd), allowlisted in NETWORK_LIB_ALLOWLIST.
+        "safety_reports/photo_screen.py",
+        ["graph_client", "send_mail", "resend", "smtplib", "email.mime",
+         "anthropic", "anthropic_client"],
+    ),
     # ("po_materials/standard_rfq_generate.py", ["graph_client", "send_mail"]),
     # ("po_materials/racking_module_rfq_generate.py", ["graph_client", "send_mail"]),
     # ("subcontracts/subcontract_generate.py", ["graph_client", "send_mail"]),
@@ -245,6 +256,11 @@ NETWORK_LIB_ALLOWLIST: frozenset[str] = frozenset({
     "shared/anthropic_client.py",
     "shared/sentry_client.py",
     "safety_reports/publish_daemon.py",
+    # photo_screen's §34 Layer-3 lazily imports `pyclamd` (a needle below) to scan
+    # uploaded portal photos against the LOCAL clamd daemon. config-gated OFF by default;
+    # the scan is local-only AV, not customer egress. It stays in GATED_SCRIPTS (no send,
+    # no LLM) — gating and the network allowlist are orthogonal (cf. publish_daemon).
+    "safety_reports/photo_screen.py",
 })
 
 # Import needles that constitute network-egress or process-spawn capability.
@@ -275,6 +291,10 @@ NETWORK_NEEDLES: frozenset[str] = frozenset({
     "msal",
     "sentry_sdk",
     "resend",
+    # ClamAV client (PR-2 §34 photo screening): talks to the clamd daemon over a
+    # unix/network socket. Treated as egress-capable surface; its sole importer
+    # (safety_reports/photo_screen.py) is allowlisted above.
+    "pyclamd",
     # Dynamic-import escape hatch around static import analysis.
     "importlib",
 })

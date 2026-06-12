@@ -42,6 +42,15 @@ dependencies = [
     # (safety_reports/form_pdf.merge_pdfs, consumed by weekly_generate in Phase 5);
     # also extracts text in tests/test_form_pdf.py for render-parity assertions.
     "pypdf>=4.0",
+    # §34 photo screening (safety_reports/photo_screen.py, PR-2): structural verify +
+    # decompression-bomb cap + forced re-encode to a clean JPEG (destroys appended/
+    # polyglot payloads, strips EXIF), and the in-PDF photo embed (form_pdf). The
+    # optional ClamAV layer (pyclamd) is operator-installed + config-gated, not pinned.
+    # §41 version-bump: latest upstream is 12.2.0 (2026-06); 11.x/12.x release notes
+    # reviewed — the open→verify→convert('RGB')→thumbnail→frombytes→save path used here is
+    # stable across 10–12 (the removed Image.ANTIALIAS/LINEAR constants are not used).
+    # Upper-bounded <13 so a future major can't silently introduce a breaking change.
+    "Pillow>=10.0,<13.0",
 ]
 
 [project.optional-dependencies]
@@ -90,5 +99,6 @@ markers = [
 # (the proper fix for `requests`) is in dev deps above; the others have
 # no maintained stubs upstream as of 2026-05.
 [[tool.mypy.overrides]]
-module = ["msal", "msal.*", "smartsheet", "smartsheet.*", "boxsdk", "boxsdk.*", "reportlab", "reportlab.*"]
+module = ["msal", "msal.*", "smartsheet", "smartsheet.*", "boxsdk", "boxsdk.*", "reportlab", "reportlab.*",
+          "PIL", "PIL.*", "pyclamd", "pyclamd.*"]
 ignore_missing_imports = true

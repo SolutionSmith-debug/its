@@ -123,7 +123,7 @@ from datetime import UTC, date, datetime
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
-from safety_reports import form_pdf, safety_naming, week_sheet
+from safety_reports import form_pdf, photo_screen, safety_naming, week_sheet
 from safety_reports.week_folder import ensure_current_week_folder
 from shared import (
     active_jobs,
@@ -160,6 +160,11 @@ CFG_BOX_FILING_ENABLED = "safety_reports.intake.box_filing_enabled"
 CFG_REVIEW_ON_LOW_CONFIDENCE = "safety_reports.intake.review_queue_on_low_confidence"
 CFG_CONFIDENCE_THRESHOLD = "safety_reports.intake.confidence_threshold"
 CFG_MAILBOX = "safety_reports.intake.mailbox"
+# §34 Layer-3 ClamAV scan of uploaded portal photos. Default OFF: the mirror has no
+# clamd daemon / pyclamd, and L1+L2 (magic/size + Pillow verify + forced re-encode) are
+# the in-process screen. The operator flips this on once clamd + pyclamd are provisioned
+# on the production Mac. See safety_reports/photo_screen._clamav_scan.
+CFG_PHOTO_CLAMAV = "safety_reports.photo_screen.clamav_enabled"
 
 # Defaults used when the ITS_Config row is missing or unparseable. Each fallback
 # is operationally safe: the default model is the documented Sonnet, Box filing
@@ -1721,6 +1726,190 @@ def _portal_orphan(
     )
 
 
+# ---- Portal photo screening (§34, Invariant 2 Layer 6 — portal adaptation) -------
+# Every site photo uploaded through the portal is UNTRUSTED inbound binary. Op Stds §34
+# (mission v4 §7) requires the four-sub-layer screen "before any Box upload or model
+# call". safety_reports/photo_screen runs the deterministic L1/L2 (+ optional L3 ClamAV)
+# and returns a verdict; the disposition (file vs refuse) is decided HERE, before the
+# renderer or Box ever sees the bytes. There is NO model call in this path. Malicious →
+# Review Queue (security_flag + CRITICAL page that names the account for operator
+# disable, the portal stand-in for §34's "sender DISABLED in ITS_Trusted_Contacts" —
+# the portal has no inbound mailbox/allowlist). Suspicious → Review Queue (no page).
+# Clean → re-encoded JPEGs flow to the PDF + Box originals.
+
+
+def _photo_clamav_enabled() -> bool:
+    """ITS_Config gate `safety_reports.photo_screen.clamav_enabled` (default OFF)."""
+    return _read_bool_setting(CFG_PHOTO_CLAMAV, False)
+
+
+def _portal_photo_refusal(
+    submission: dict[str, Any],
+    *,
+    disposition: str,   # "malicious" | "suspicious"
+    detail: str,
+    correlation_id: str,
+) -> ProcessResult:
+    """Refuse a whole submission on a photo-screening verdict (drain-eligible review).
+
+    The refused photo is NEVER rendered or uploaded — the submission is rejected whole.
+    MALICIOUS pages the operator (CRITICAL) with the account-disable instruction and
+    files a CRITICAL-severity, security-flagged Review Queue row; SUSPICIOUS files a
+    WARN-severity, security-flagged row without paging. The CRITICAL page fires BEFORE
+    the Smartsheet write so a Smartsheet outage cannot suppress it (a re-pull re-screens
+    and the error_log dedupe collapses the repeat page)."""
+    submission_uuid = str(submission.get("submission_uuid") or "")
+    actor = str(submission.get("actor_username") or submission.get("submitted_as") or "unknown")
+    malicious = disposition == "malicious"
+    severity = Severity.CRITICAL if malicious else Severity.WARN
+    if malicious:
+        summary = (
+            f"MALICIOUS photo rejected ({detail}); DISABLE portal account {actor!r} "
+            f"pending review (§34) — submission {submission_uuid}"
+        )
+        page = (
+            f"portal: MALICIOUS photo ({detail}) submission_uuid={submission_uuid} "
+            f"actor={actor!r} — disable this portal account pending review (§34)"
+        )
+    else:
+        summary = (
+            f"suspicious photo routed to review ({detail}) — submission "
+            f"{submission_uuid} actor {actor!r}"
+        )
+        page = (
+            f"portal: suspicious photo ({detail}) submission_uuid={submission_uuid} "
+            f"actor={actor!r}"
+        )
+    # Page/record FIRST (never blocked by a Smartsheet write failure).
+    error_log.log(
+        severity, SCRIPT_NAME, page,
+        error_code=f"portal_photo_{disposition}", correlation_id=correlation_id,
+    )
+    review_queue.add(
+        workstream=WORKSTREAM,
+        summary=summary,
+        payload={
+            "submission_uuid": submission_uuid,
+            "job_id": submission.get("job_id"),
+            "form_code": submission.get("form_code"),
+            "work_date": submission.get("work_date"),
+            "actor": actor,
+            "disposition": disposition,
+            "detail": detail,
+            # Durable copy: a review_queue submission DRAINS (mark-filed), so keep the
+            # full payload so the operator can inspect/discard. Bounded <1.8MB (Worker).
+            "payload_json": submission.get("payload_json"),
+        },
+        sla_tier=review_queue.SlaTier.SAFETY_INTAKE,
+        reason=review_queue.ReviewReason.SECURITY_TRIGGER,
+        severity=severity,
+        source_file=submission_uuid,
+        security_flag=True,
+    )
+    return ProcessResult(
+        status="review_queue",   # permanent refusal — re-pull re-screens to the same verdict
+        message_id=submission_uuid,
+        correlation_id=correlation_id,
+        notes=f"reason=photo_{disposition}",
+    )
+
+
+def _screen_portal_photos(
+    definition: dict[str, Any],
+    values: dict[str, Any],
+    submission: dict[str, Any],
+    *,
+    correlation_id: str,
+) -> tuple[ProcessResult | None, list[tuple[str, bytes]]]:
+    """§34-screen every header photo field BEFORE render/Box.
+
+    Returns (refusal, screened):
+      * refusal is a drain-eligible review_queue ProcessResult IFF any photo screens
+        malicious or suspicious — the whole submission is refused (screened is []).
+      * otherwise refusal is None and screened is [(caption, clean_jpeg), …] for the
+        renderer + Box originals. No photo fields, or a photo field with no photos,
+        yields (None, []) — the submission files exactly as before this feature.
+    """
+    fields = photo_screen.iter_photo_fields(definition)
+    if not fields:
+        return None, []
+    # The Worker caps total photos at MAX_PHOTOS_PER_SUBMISSION (8); a submission that
+    # exceeds it can only arrive by bypassing the Worker, so it is anomalous → refuse the
+    # WHOLE submission as suspicious rather than silently process a forged payload's first
+    # 8. (Per-field count is bounded by max_count below.)
+    total = sum(
+        min(len(items), max_count)
+        for _k, _l, max_count in fields
+        if isinstance(items := values.get(_k), list)
+    )
+    if total > photo_screen.MAX_PHOTOS_PER_SUBMISSION:
+        return _portal_photo_refusal(
+            submission, disposition="suspicious",
+            detail=f"over_submission_cap:{total}", correlation_id=correlation_id,
+        ), []
+    clamav_enabled = _photo_clamav_enabled()
+    screened: list[tuple[str, bytes]] = []
+    for key, _label, max_count in fields:
+        items = values.get(key)
+        if not isinstance(items, list) or not items:
+            continue
+        for raw_item in items[:max_count]:
+            if not isinstance(raw_item, dict):
+                return _portal_photo_refusal(
+                    submission, disposition="suspicious", detail="non_dict_photo",
+                    correlation_id=correlation_id,
+                ), []
+            decoded = photo_screen.decode_b64(str(raw_item.get("data") or ""))
+            if decoded is None:
+                return _portal_photo_refusal(
+                    submission, disposition="suspicious", detail="undecodable_base64",
+                    correlation_id=correlation_id,
+                ), []
+            result = photo_screen.screen_photo(decoded, clamav_enabled=clamav_enabled)
+            if result.disposition in ("malicious", "suspicious"):
+                return _portal_photo_refusal(
+                    submission, disposition=result.disposition,
+                    detail=f"{result.layer}:{result.detail}", correlation_id=correlation_id,
+                ), []
+            caption = photo_screen.build_caption(
+                str(raw_item.get("name") or ""),
+                str(raw_item.get("taken_at") or ""),
+                str(raw_item.get("gps") or ""),
+            )
+            # clean ⇒ clean_jpeg is set (photo_screen contract).
+            screened.append((caption, result.clean_jpeg or b""))
+    return None, screened
+
+
+def _file_portal_photos(
+    folder_id: str,
+    submission_uuid: str,
+    photos: list[tuple[str, bytes]],
+    correlation_id: str,
+) -> None:
+    """Best-effort: file the §34-screened photo ORIGINALS to
+    `<folder_id>/ITS Photos/<submission_uuid>/`.
+
+    The weekly packet embeds the photos in the PDF-of-record; these full-res Box copies
+    are supplementary, so ANY failure is a WARN that never sinks the already-filed
+    submission (mirrors `_attach_pdf_best_effort`). Deterministic names + version-on-
+    conflict make a re-pull-after-crash idempotent."""
+    if not photos:
+        return
+    try:
+        photos_root = box_client.get_or_create_folder(folder_id, "ITS Photos")
+        sub_folder = box_client.get_or_create_folder(photos_root, submission_uuid)
+        for i, (_caption, jpeg) in enumerate(photos, start=1):
+            box_client.upload_bytes_or_new_version(sub_folder, f"{i:02d}.jpg", jpeg)
+    except Exception as exc:  # noqa: BLE001 — supplementary; the PDF-of-record embeds the photos
+        error_log.log(
+            Severity.WARN, SCRIPT_NAME,
+            f"portal: site-photo Box upload failed (submission {submission_uuid}): "
+            f"{type(exc).__name__}: {exc!r}",
+            error_code="portal_photo_upload_failed", correlation_id=correlation_id,
+        )
+
+
 def process_portal_submission(submission: dict[str, Any]) -> ProcessResult:
     """Process one HMAC-verified portal submission (Phase-5 pull path).
 
@@ -1889,11 +2078,23 @@ def _run_portal_pipeline(
             correlation_id=correlation_id,
         )
 
-    # Render (deterministic; no LLM, no network).
+    # §34 photo screening (Invariant 2 Layer 6) — decode + screen every header photo
+    # field BEFORE the renderer or Box touches the bytes ("before any Box upload or
+    # model call"). A malicious/suspicious photo refuses the whole submission (drain);
+    # clean photos return as re-encoded JPEGs for the PDF + Box originals.
+    photo_refusal, screened_photos = _screen_portal_photos(
+        definition, values, submission, correlation_id=correlation_id
+    )
+    if photo_refusal is not None:
+        return photo_refusal
+
+    # Render (deterministic; no LLM, no network). Screened photos ride out-of-band so
+    # the renderer never parses the raw base64 in `values`.
     render_submission = {
         "job_name": project_name,
         "work_date": work_date_raw,
         "values": values,
+        "screened_photos": screened_photos,
     }
     try:
         pdf = form_pdf.render_submission_pdf(definition, render_submission)
@@ -1924,6 +2125,12 @@ def _run_portal_pipeline(
         folder_id, work_date_raw, parent_form_code, submission_uuid, pdf
     )
     notes = (notes + f" [box:{box_note}]").strip()
+
+    # Supplementary: file the §34-screened photo ORIGINALS to a Box subfolder (the PDF
+    # of record already embeds them). Best-effort — never sinks the filed submission.
+    if screened_photos:
+        _file_portal_photos(folder_id, submission_uuid, screened_photos, correlation_id)
+        notes = (notes + f" [photos:{len(screened_photos)}]").strip()
 
     # Write the durable per-submission row (a SmartsheetError here is transient →
     # raises → re-pull; the conflict-recovery in _file_portal_pdf de-dups the Box
