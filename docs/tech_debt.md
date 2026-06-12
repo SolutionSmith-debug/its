@@ -4,6 +4,34 @@ Items deliberately deferred. Each carries the rationale for deferral and the tri
 
 When to add an entry: a session deliberately chooses preservation-over-refactor (per Op Stds v11 §14), discovers an external-API constraint that forced a workaround, or defers a non-trivial cleanup that's larger than the current session can absorb. When to mark CLOSED: the underlying item is resolved in a commit; preserve the entry with resolution detail rather than deleting (history is cheap, context is expensive).
 
+## weekly_send upload-session threshold = 2.5 MB (heuristic, not measured) [OPEN 2026-06-12]
+
+**PR-3 (photo workstream tail).** `weekly_send` now switches transport by compiled-packet size: `≤ UPLOAD_SESSION_THRESHOLD_BYTES` (2.5 MB) sends **inline** via `graph_client.send_mail` (one request, base64-inline); `>` it sends via the Graph **upload-session** (`graph_client.send_mail_large_attachment` — draft → chunked PUT honoring `nextExpectedRanges` → send). The threshold is a **heuristic**: Graph's inline `/sendMail` ceiling is ~3 MB, and base64 inflates the payload ~33% plus message-envelope overhead, so 2.5 MB raw leaves headroom below the wire limit. It was **not** empirically measured against the live Graph tenant — the exact inline-reject boundary (and whether it counts raw or base64 bytes) is unverified. Low risk because the upload-session path is correct for ANY size 3–150 MB, so a too-low threshold just sends some sendable-inline packets the (slightly slower) chunked way; a too-high threshold is the only real failure (an inline send that Graph rejects ~3 MB → FAILED + retry, never a silent drop).
+
+**Tag:** `safety-reports`, `graph`, `send-gate`, `threshold-heuristic`. **Revisit when:** the first live photo-bearing packet crosses ~2.5 MB (confirm the inline/upload boundary against the real tenant and tune the constant), or a `weekly_send.graph_error` retry cluster appears on packets near 3 MB.
+
+## R2 upgrade path for portal photo transport (deferred) [OPEN 2026-06-12]
+
+**PR-3 / cross-ref [ADR-0001](adr/0001-portal-photo-transport-d1-vs-r2.md).** Site photos ride **D1-inline base64** today (owner decision 2026-06-12) — simplest transport within the current ≤8 × 400 KB per-submission budget, and it keeps the Worker a send-free queue holding no documents. The recorded **upgrade path is Cloudflare R2** (object storage; D1 carries only the object key, the Mac fetches bytes at screen time), to be adopted when **field crews need > 4 full-res photos per field** (or the per-submission photo budget is raised past what D1-inline base64 carries within the Worker body bound). Deferred because R2 means provisioning a second storage plane, an object-key scheme, lifecycle/expiry, and a Mac access path — non-trivial and unneeded at the current budget.
+
+**Tag:** `safety-portal`, `photo`, `r2`, `transport`, `adr`. **Revisit when:** the > 4-full-res-photos-per-field trigger fires, or the Worker body bound blocks a needed photo-budget increase. See ADR-0001 for the full decision + consequences.
+
+## weekly_send upload-session chunk-retry hardening (deferred) [OPEN 2026-06-12]
+
+**PR-3.** `graph_client._put_upload_chunk` mirrors `_request`'s retry shape (429/503 back off + retry; a hang fails fast as `GraphTimeoutError` without consuming the budget) and the chunk loop **honors `nextExpectedRanges`** so an interrupted transfer *can* resume to a server-reported offset within a single call. What is **deferred**: (a) no **session-resume across `send_one_row` calls** — a chunk failure that escapes the retry budget aborts the whole upload (the draft is left UNSENT in Drafts, fail-toward-not-sending), and the next poll cycle re-creates a fresh draft from byte 0 rather than resuming the prior `uploadUrl`; (b) no **explicit upload-session cancel** (`DELETE uploadUrl`) on abort — the abandoned draft + session simply expire (Graph TTL); (c) the anti-stall guard forces linear progress if a 200 body reports a non-advancing range rather than retrying the same range. Acceptable because a 3–150 MB packet uploads in a handful of chunks, restart-from-zero is cheap at that size, and the External Send Gate is unaffected (a failed upload never sends a partial packet).
+
+**Tag:** `safety-reports`, `graph`, `upload-session`, `retry`. **Revisit when:** live telemetry shows recurring mid-upload failures on large packets (then add cross-cycle session resume + an explicit cancel), or packet sizes grow toward the 150 MB ceiling where restart-from-zero becomes expensive.
+
+## [DOCTRINE-FLAG 2026-06-12] Mission v4→v5 delta — weekly-send transport now has two modes (inline ≤2.5 MB / upload-session >2.5 MB)
+
+**PR-3 (photo workstream tail).** Adding photos to the weekly packet means a packet can exceed Graph's ~3 MB inline `sendMail` ceiling, so `weekly_send` now sends via **one of two transports** chosen by packet size: **inline base64** (`send_mail`) at ≤2.5 MB, or the Graph **upload-session** (`send_mail_large_attachment`: draft → chunked PUT → send) above it, with an **oversized-HELD** refusal above Graph's ~150 MB hard ceiling. This is a behavioral change to the External-Send-Gate **send half** (the *transport*, not the gate: still human-approved, still two-process, still recipients-resolved-at-send-time, still capability-gated send-only). The Safety Portal / Safety Reports mission (v4) describes the weekly send as a single attached-PDF email; the **two-mode transport + the oversized-HELD terminal state** are a **planning-layer / Seth-owned** mission note, not made here. Proposed mission v4→v5 amendment: *"the weekly safety report is emailed with its compiled PDF attached — inline for small packets, via a Graph chunked upload-session for large (photo-bearing) packets, and **HELD** (operator-actionable, never silently dropped) for a packet beyond Graph's attachment ceiling."* Flagged for blueprint co-resolution **alongside the PR-4 receipt-cache delta + the PR-5 mission note** (fold them together).
+
+**Tag:** `safety-reports`, `doctrine`, `mission-delta`, `planning-layer`, `send-gate`.
+
+**Revisit when:** next blueprint mission-doctrine pass (fold the PR-3 transport delta + the PR-4 receipt-cache delta + PR-5 together).
+
+Surfaced: 2026-06-12 PR-3 implementation.
+
 ## Safety Portal — 2026-06-08 adversarial security audit: 11 findings remediated [CLOSED 2026-06-08]
 
 **Closed by the post-audit hardening PR (this session).** A grey-box adversarial audit of the live mirror Worker (`safety.evergreenmirror.com`) confirmed the core posture HELD — injection 0/4 (bound params), no auth bypass (HMAC cookie unforgeable), no privilege escalation, and the atomic last-admin guard survived the TOCTOU race — and surfaced 11 perimeter findings, all remediated:
@@ -2095,3 +2123,13 @@ PR-4 Part A introduces a **bounded exception** to the Safety Portal mission's "t
 **Revisit when:** next blueprint mission-doctrine pass (fold the PR-4 + PR-5 mission deltas together).
 
 Surfaced: 2026-06-12 PR-4 Part A implementation.
+
+## weekly_send upload-session — live-Graph integration smoke (deferred to pre-Customer-1) [OPEN 2026-06-12]
+
+**PR-3 review (§30 SDK-vs-Live).** `graph_client.send_mail_large_attachment` (draft → createUploadSession → chunked PUT honoring `nextExpectedRanges` → send) is covered ONLY by mocked unit tests (`tests/test_graph_client_upload_session.py`); there is no live-Graph integration smoke. The four-step Graph REST sequence + the pre-authed `uploadUrl` on a different domain (outlook.office.com, which rejects an `Authorization` header) + the 320 KiB-aligned chunk ranges are exactly the mocks-pass-but-live-fails surface §30 guards. Pre-Customer-1 (and as part of confirming the 2.5 MB threshold), run a live sandbox smoke with a throwaway 3–4 MB PDF fixture: create draft → createUploadSession → single-chunk PUT → send → assert the message lands in **Sent**, then clean it up. Add as `tests/test_graph_client_upload_session_integration.py` (skipif no live token, mirroring the integration-marker gating used elsewhere).
+
+**Tag:** `safety-reports`, `graph`, `integration-smoke`, `pre-customer-1`.
+
+**Revisit when:** the pre-Customer-1 live-tenant validation pass, or the first real photo-bearing weekly packet.
+
+Surfaced: 2026-06-12 PR-3 adversarial review.

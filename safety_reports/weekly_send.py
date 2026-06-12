@@ -23,9 +23,16 @@ send_one_row pipeline
      (refuse; never send a half-formed packet) — operator-actionable, no auto-retry.
   4. Attach the compiled packet: download the Compiled-PDF Box file. Missing link →
      **HELD** (recompile needed); a transient Box download failure → FAILED (retry).
+     A packet over Graph's ~150 MB upload-session ceiling → **HELD** (unsendable by
+     any path; reduce photos / split) — checked before the write-ahead marker.
   5. Body = the WSR `Email Body` (the human's edits are the source of truth).
      Subject `Weekly Safety Report — <project> — week of <Week Of>`.
   6. Send via Graph (TO + CC + the PDF attachment). Log the resolved TO+CC.
+     **Transport switch (PR-3):** a packet ≤ UPLOAD_SESSION_THRESHOLD_BYTES (2.5 MB)
+     sends inline via `graph_client.send_mail`; a larger (photo-bearing) packet sends
+     via `graph_client.send_mail_large_attachment` (the Graph upload-session: draft →
+     chunked PUT → send) so it clears the ~3 MB inline /sendMail ceiling. Both paths
+     are the same send capability and share the error fences below.
      GraphAuthError → CRITICAL + FAILED; GraphError → FAILED + retry (Notes-encoded);
      retry-exhaust → CRITICAL.
   7. SENT + Sent At + Notes(sent ts).
@@ -52,7 +59,7 @@ from typing import Any, Literal
 from safety_reports import wsr_review
 from shared import active_jobs, box_client, error_log, graph_client, smartsheet_client
 from shared.error_log import Severity, its_error_log
-from shared.graph_client import GraphAuthError, GraphError
+from shared.graph_client import GraphAttachmentTooLargeError, GraphAuthError, GraphError
 from shared.kill_switch import require_active
 from shared.smartsheet_client import SmartsheetError, SmartsheetNotFoundError
 
@@ -63,6 +70,14 @@ CFG_FROM_MAILBOX = "safety_reports.weekly_send.from_mailbox"
 DEFAULT_FROM_MAILBOX = "safety@evergreenmirror.com"
 
 MAX_SEND_RETRIES = 3
+
+# Transport switch: a compiled packet at or below this size sends inline via
+# graph_client.send_mail (one request, base64-inline). Above it, a photo-bearing
+# packet can blow past Graph's ~3 MB inline /sendMail ceiling, so we switch to the
+# upload-session path (graph_client.send_mail_large_attachment). 2.5 MB leaves
+# headroom below the 3 MB inline limit for the base64 (+33%) + envelope overhead.
+# See docs/adr/0001-portal-photo-transport-d1-vs-r2.md + docs/tech_debt.md.
+UPLOAD_SESSION_THRESHOLD_BYTES = int(2.5 * 1024 * 1024)  # 2,621,440
 
 _ADDR_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 _LAST_ERROR_TAG_RE = re.compile(r"\[LAST_SEND_ERROR: [^\]]*\]")
@@ -85,6 +100,7 @@ SendStatus = Literal[
     "skipped_held",
     "held_no_recipient",
     "held_missing_pdf",
+    "held_oversized_packet",
     "row_not_found",
     "send_failed",
     "invalid_recipients",
@@ -223,13 +239,29 @@ def send_one_row(row_id: int) -> SendResult:
     except box_client.BoxError as exc:
         return _mark_failed(row_id, project_name, notes, retry_count + 1, f"Box download failed: {exc!r}", "send_failed")
 
+    # Stage 4b: oversized-packet refusal. A packet over Graph's upload-session hard
+    # ceiling (~150 MB) cannot be emailed by ANY Graph path — so HELD (operator-
+    # actionable refusal), not FAILED-with-retry. Checked BEFORE the write-ahead
+    # SENDING marker so the row never enters the in-flight state for a send that
+    # can't happen. (The 2.5 MB inline/upload-session SWITCH is in Stage 6.)
+    packet_size = len(pdf_bytes)
+    if packet_size > graph_client.UPLOAD_SESSION_MAX_BYTES:
+        return _mark_held(
+            row_id, project_name, notes,
+            f"compiled packet is {packet_size} bytes, over Graph's "
+            f"{graph_client.UPLOAD_SESSION_MAX_BYTES}-byte upload-session ceiling — "
+            "cannot email; reduce photo count / split the packet",
+            "held_oversized_packet",
+        )
+
     # Stage 5: build the email (body = the human-edited Email Body, source of truth).
     body = str(row.get(wsr_review.COL_EMAIL_BODY) or "")
     week = _coerce_week(row.get(wsr_review.COL_WEEK_OF))
     subject = f"Weekly Safety Report — {project_name} — week of {week}"
     from_mailbox = _read_str_setting(CFG_FROM_MAILBOX, DEFAULT_FROM_MAILBOX)
+    attachment_name = f"Weekly Safety Report — {week}.pdf"
     attachment = {
-        "name": f"Weekly Safety Report — {week}.pdf",
+        "name": attachment_name,
         "contentType": "application/pdf",
         "contentBytes": pdf_bytes,
     }
@@ -263,10 +295,37 @@ def send_one_row(row_id: int) -> SendResult:
             status="send_failed", row_id=row_id, project_name=project_name,
             error=f"pre_send_marker_failed: {exc!r}", retry_count=retry_count,
         )
+    # Transport switch: inline send_mail at/below the threshold; upload-session above
+    # it (a photo-bearing packet can exceed Graph's ~3 MB inline /sendMail ceiling).
+    # Both paths are the SAME send capability (Invariant 1) and share the error fences.
     try:
-        graph_client.send_mail(
-            from_mailbox=from_mailbox, to=[to_addr], cc=cc_list or None,
-            subject=subject, body=body, content_type="Text", attachments=[attachment],
+        if packet_size > UPLOAD_SESSION_THRESHOLD_BYTES:
+            error_log.log(
+                Severity.INFO, SCRIPT_NAME,
+                f"row_id={row_id} packet={packet_size}B > {UPLOAD_SESSION_THRESHOLD_BYTES}B "
+                "— sending via Graph upload session (large attachment)",
+                error_code="weekly_send.upload_session",
+            )
+            graph_client.send_mail_large_attachment(
+                from_mailbox=from_mailbox, to=[to_addr], cc=cc_list or None,
+                subject=subject, body=body, content_type="Text",
+                attachment_name=attachment_name, attachment_bytes=pdf_bytes,
+                attachment_content_type="application/pdf",
+            )
+        else:
+            graph_client.send_mail(
+                from_mailbox=from_mailbox, to=[to_addr], cc=cc_list or None,
+                subject=subject, body=body, content_type="Text", attachments=[attachment],
+            )
+    except GraphAttachmentTooLargeError as exc:
+        # Belt-and-suspenders: Stage 4b already HELDs an over-ceiling packet, but if the
+        # threshold/ceiling constants ever drift, the upload-session layer's own guard
+        # still refuses rather than retrying forever. HELD (operator-actionable), and the
+        # row was already flipped to SENDING — _mark_held overwrites it back to HELD.
+        return _mark_held(
+            row_id, project_name, notes,
+            f"upload-session refused oversized attachment: {exc!r}",
+            "held_oversized_packet",
         )
     except GraphAuthError as exc:
         error_log.log(
