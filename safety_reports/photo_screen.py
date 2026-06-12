@@ -81,6 +81,11 @@ MAX_IMAGE_PIXELS = 24_000_000
 _REENCODE_QUALITY = 85
 _MAX_DIMENSION = 2400  # clamp the longest side: bounds weekly-packet size, keeps detail
 
+# Encoded base64 is ~4/3 the decoded size; cap the ENCODED length so decode_b64 refuses
+# an oversize photo WITHOUT first materializing the decoded bytes (a forged internal-API
+# submission could otherwise decode hundreds of MB before L1's size check rejects it).
+_MAX_ENCODED_LEN = MAX_DECODED_BYTES * 4 // 3 + 8
+
 
 class _DecompressionBombError(Exception):
     """Header pixel-count exceeds MAX_IMAGE_PIXELS — an active resource-exhaustion
@@ -102,9 +107,11 @@ def decode_b64(data: str) -> bytes | None:
     """Strict base64 decode (NO `data:` prefix, per the wire contract). None on failure.
 
     `validate=True` rejects any non-base64 character — the Worker already constrains the
-    charset, but this is the trust boundary so the decode is re-validated here.
+    charset, but this is the trust boundary so the decode is re-validated here. An
+    over-long encoding is refused BEFORE decoding so an oversize/forged photo never
+    materializes in memory (the decoded bytes are also size-checked at L1).
     """
-    if not data:
+    if not data or len(data) > _MAX_ENCODED_LEN:
         return None
     try:
         return base64.b64decode(data, validate=True)
@@ -135,8 +142,14 @@ def _verify_and_reencode(raw: bytes) -> bytes:
         img.load()                       # force full decode (raises on hidden truncation)
         rgb = img.convert("RGB")         # flatten palette/alpha → baseline-JPEG-safe
         rgb.thumbnail((_MAX_DIMENSION, _MAX_DIMENSION))  # clamp longest side, keep ratio
+        # Rebuild from the raw pixel buffer so NO source metadata survives into the
+        # output. open()/convert()/thumbnail() carry `.info` forward (EXIF, ICC, and
+        # crucially the JPEG COM *comment* marker — a payload-bearing field that Pillow
+        # RE-EMITS on save). A fresh frombytes() image has an empty `.info`, so the
+        # re-encoded JPEG carries decoded pixels only — the "strips ALL metadata" contract.
+        clean = Image.frombytes(rgb.mode, rgb.size, rgb.tobytes())
         out = io.BytesIO()
-        rgb.save(out, format="JPEG", quality=_REENCODE_QUALITY, optimize=True)
+        clean.save(out, format="JPEG", quality=_REENCODE_QUALITY, optimize=True)
         return out.getvalue()
 
 

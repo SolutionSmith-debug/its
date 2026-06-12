@@ -1833,26 +1833,27 @@ def _screen_portal_photos(
     fields = photo_screen.iter_photo_fields(definition)
     if not fields:
         return None, []
+    # The Worker caps total photos at MAX_PHOTOS_PER_SUBMISSION (8); a submission that
+    # exceeds it can only arrive by bypassing the Worker, so it is anomalous → refuse the
+    # WHOLE submission as suspicious rather than silently process a forged payload's first
+    # 8. (Per-field count is bounded by max_count below.)
+    total = sum(
+        min(len(items), max_count)
+        for _k, _l, max_count in fields
+        if isinstance(items := values.get(_k), list)
+    )
+    if total > photo_screen.MAX_PHOTOS_PER_SUBMISSION:
+        return _portal_photo_refusal(
+            submission, disposition="suspicious",
+            detail=f"over_submission_cap:{total}", correlation_id=correlation_id,
+        ), []
     clamav_enabled = _photo_clamav_enabled()
-    submission_uuid = str(submission.get("submission_uuid") or "")
     screened: list[tuple[str, bytes]] = []
-    total = 0
     for key, _label, max_count in fields:
         items = values.get(key)
         if not isinstance(items, list) or not items:
             continue
         for raw_item in items[:max_count]:
-            total += 1
-            if total > photo_screen.MAX_PHOTOS_PER_SUBMISSION:
-                # Worker caps at 8; a forged payload could carry more. Drop extras
-                # (never silent) rather than refuse the whole submission.
-                error_log.log(
-                    Severity.WARN, SCRIPT_NAME,
-                    f"portal: >{photo_screen.MAX_PHOTOS_PER_SUBMISSION} photos; extras "
-                    f"dropped submission_uuid={submission_uuid}",
-                    error_code="portal_photo_over_cap", correlation_id=correlation_id,
-                )
-                break
             if not isinstance(raw_item, dict):
                 return _portal_photo_refusal(
                     submission, disposition="suspicious", detail="non_dict_photo",

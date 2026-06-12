@@ -599,12 +599,13 @@ def test_no_photo_field_files_normally(stub):
     assert stub["render"].call_args.args[1]["screened_photos"] == []
 
 
-# ---- _screen_portal_photos clamps to the per-submission cap --------------
-def test_screen_clamps_to_max_per_submission(mocker):
+# ---- _screen_portal_photos refuses a submission past the per-submission cap ----
+def test_screen_over_cap_refuses_whole_submission(mocker):
     mocker.patch.object(intake, "_photo_clamav_enabled", return_value=False)
     review = mocker.patch.object(intake.review_queue, "add")
-    log = mocker.patch.object(intake.error_log, "log")
-    # Three photo fields × 3 photos = 9 > MAX_PHOTOS_PER_SUBMISSION (8): the 9th is dropped.
+    mocker.patch.object(intake.error_log, "log")
+    # Three photo fields × 3 photos = 9 > MAX_PHOTOS_PER_SUBMISSION (8). A submission past
+    # the Worker's cap can only arrive by bypassing the Worker → refuse the whole thing.
     img = _jpeg_b64()
     definition = {"sections": [{"type": "header", "fields": [
         {"key": "a", "input": "photo", "label": "A", "max_count": 4},
@@ -615,8 +616,26 @@ def test_screen_clamps_to_max_per_submission(mocker):
     refusal, screened = intake._screen_portal_photos(
         definition, values, dict(BASE_SUB), correlation_id="t"
     )
+    assert refusal is not None
+    assert refusal.status == "review_queue"
+    assert refusal.notes == "reason=photo_suspicious"
+    assert screened == []
+    kw = review.call_args.kwargs
+    assert kw["security_flag"] is True
+    assert "over_submission_cap" in kw["payload"]["detail"]
+
+
+def test_screen_at_cap_is_accepted(mocker):
+    # Exactly 8 photos (2 fields × 4) is allowed — no refusal.
+    mocker.patch.object(intake, "_photo_clamav_enabled", return_value=False)
+    img = _jpeg_b64()
+    definition = {"sections": [{"type": "header", "fields": [
+        {"key": "a", "input": "photo", "label": "A", "max_count": 4},
+        {"key": "b", "input": "photo", "label": "B", "max_count": 4},
+    ]}]}
+    values = {k: [_photo_obj(img) for _ in range(4)] for k in ("a", "b")}
+    refusal, screened = intake._screen_portal_photos(
+        definition, values, dict(BASE_SUB), correlation_id="t"
+    )
     assert refusal is None
-    assert len(screened) == photo_screen.MAX_PHOTOS_PER_SUBMISSION  # clamped to 8
-    review.assert_not_called()
-    over = [c for c in log.call_args_list if c.kwargs.get("error_code") == "portal_photo_over_cap"]
-    assert over
+    assert len(screened) == photo_screen.MAX_PHOTOS_PER_SUBMISSION

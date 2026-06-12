@@ -130,6 +130,21 @@ def test_reencode_destroys_appended_payload():
     assert payload not in res.clean_jpeg
 
 
+def test_reencode_strips_jpeg_comment_marker():
+    # A payload smuggled in a JPEG COM (comment) marker — Pillow RE-EMITS info['comment']
+    # on save, so a naive re-encode would carry it through. The frombytes() rebuild drops
+    # all source .info, so the payload must be absent from the clean output.
+    payload = b"PAYLOAD-IN-COM-MARKER-system($_GET)"
+    buf = io.BytesIO()
+    Image.new("RGB", (40, 40), (7, 7, 7)).save(buf, format="JPEG", comment=payload)
+    src = buf.getvalue()
+    assert payload in src  # the source JPEG genuinely carries the payload in its COM marker
+    res = photo_screen.screen_photo(src)
+    assert res.disposition == "clean"
+    assert res.clean_jpeg is not None
+    assert payload not in res.clean_jpeg
+
+
 # ── L3: ClamAV (mocked) ──────────────────────────────────────────────────────
 def test_clamav_disabled_does_not_scan(mocker):
     spy = mocker.patch("safety_reports.photo_screen._clamav_scan")
@@ -204,6 +219,13 @@ def test_decode_b64_rejects_garbage():
 def test_decode_b64_rejects_data_uri_prefix():
     # The wire contract carries NO `data:` prefix; the colon/semicolon are non-base64.
     assert photo_screen.decode_b64("data:image/jpeg;base64,AAAA") is None
+
+
+def test_decode_b64_rejects_oversize_without_decoding():
+    # A valid-charset base64 string past the encoded ceiling is refused BEFORE decode, so
+    # an oversize/forged photo never materializes in memory.
+    huge = "A" * (photo_screen._MAX_ENCODED_LEN + 4)
+    assert photo_screen.decode_b64(huge) is None
 
 
 # ── iter_photo_fields ────────────────────────────────────────────────────────

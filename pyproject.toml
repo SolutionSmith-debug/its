@@ -46,7 +46,11 @@ dependencies = [
     # decompression-bomb cap + forced re-encode to a clean JPEG (destroys appended/
     # polyglot payloads, strips EXIF), and the in-PDF photo embed (form_pdf). The
     # optional ClamAV layer (pyclamd) is operator-installed + config-gated, not pinned.
-    "Pillow>=10.0",
+    # §41 version-bump: latest upstream is 12.2.0 (2026-06); 11.x/12.x release notes
+    # reviewed — the open→verify→convert('RGB')→thumbnail→frombytes→save path used here is
+    # stable across 10–12 (the removed Image.ANTIALIAS/LINEAR constants are not used).
+    # Upper-bounded <13 so a future major can't silently introduce a breaking change.
+    "Pillow>=10.0,<13.0",
 ]
 
 [project.optional-dependencies]

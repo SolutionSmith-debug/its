@@ -313,3 +313,31 @@ def test_unrenderable_screened_photo_is_skipped_not_fatal() -> None:
         },
     )
     assert out[:5] == b"%PDF-"  # no crash; the bad photo is simply absent
+
+
+def test_illegal_photo_table_column_never_dumps_base64() -> None:
+    """A photo column in a repeating table is an illegal definition (photos are header-
+    only) — the table renderer must emit a placeholder, never the raw base64 list."""
+    import base64
+
+    blob = base64.b64encode(_tiny_jpeg()).decode()
+    definition = {
+        "form_name": "JHA",
+        "sections": [{
+            "type": "repeating_table",
+            "key": "rows",
+            "title": "Crew",
+            "columns": [
+                {"key": "name", "input": "text", "label": "Name"},
+                {"key": "pic", "input": "photo", "label": "Pic"},
+            ],
+        }],
+    }
+    submission = {
+        "job_name": "Bradley 1", "work_date": "2026-06-12",
+        "values": {"rows": [{"name": "Pat", "pic": [{"data": blob, "name": "x", "taken_at": "", "gps": ""}]}]},
+    }
+    out = render_submission_pdf(definition, submission)
+    text = _pdf_text(out)
+    assert blob[:40] not in text
+    assert "photo omitted" in _norm(text)

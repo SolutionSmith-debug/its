@@ -207,8 +207,15 @@ def _table_section(section: dict, values: dict, st: dict) -> list[Flowable]:
         cells: list[Any] = []
         for c in cols:
             v = row.get(c["key"], "")
-            cells.append(SignatureDrawing(str(v), width=140, height=44)
-                         if c["input"] == "signature" and v else _p(v, st["cell"]))
+            if c["input"] == "signature" and v:
+                cells.append(SignatureDrawing(str(v), width=140, height=44))
+            elif c["input"] == "photo":
+                # Photos are header-level only (publishValidation-enforced); a photo in a
+                # table column is an illegal/malformed definition. NEVER dump the raw
+                # base64 PhotoValue list as text — emit a placeholder instead.
+                cells.append(_p("[photo omitted]", st["cell"]))
+            else:
+                cells.append(_p(v, st["cell"]))
         body.append(cells)
     t = Table(body, repeatRows=1)
     t.setStyle(TableStyle([
