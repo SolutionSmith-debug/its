@@ -57,8 +57,10 @@
       "required_static_text": [
         "CRITICAL LIFT THRESHOLD: 50,000 LBS",
         "ANY LIFT EXCEEDING 75% OF CRANE RATED CAPACITY IS A CRITICAL LIFT",
-        "DOCUMENT RETENTION: Retain completed lift plan for minimum 3 years"
-      ]
+        "DOCUMENT RETENTION: Retain completed lift plan for minimum 3 years",
+        "All parties below must be signed before lift commences"
+      ],
+      "required_field_keys": ["pct_rated_capacity_used", "lift_director_name"]
     }
   },
   "identities": {}
