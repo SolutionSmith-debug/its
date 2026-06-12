@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { AppHeader } from "../components/AppHeader";
 import { useAuth } from "../lib/auth";
@@ -47,6 +47,10 @@ export function FormFillPage({ onBack, tabBar }: { onBack?: () => void; tabBar?:
   const [busy, setBusy] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [submittedAs, setSubmittedAs] = useState<string | null>(null);
+  // Receipt fields captured AT submit success (the submit response carries no
+  // timestamp, and the submission id renews on reset — so snapshot both here).
+  const [submittedUuid, setSubmittedUuid] = useState<string | null>(null);
+  const [submittedAt, setSubmittedAt] = useState<Date | null>(null);
   const [error, setError] = useState<string | null>(null);
   // Stable across retries (lost-ACK idempotency); renewed only on a new submission (reset).
   const { submissionUuid, renew: renewSubmissionId } = useSubmissionId();
@@ -115,6 +119,10 @@ export function FormFillPage({ onBack, tabBar }: { onBack?: () => void; tabBar?:
         submitted_as: attributeTo,
       });
       setSubmittedAs(attributeTo ?? null);
+      // Snapshot the receipt identity BEFORE reset() renews the submission id. The
+      // submit response carries no server timestamp, so capture a client one here.
+      setSubmittedUuid(submissionUuid);
+      setSubmittedAt(new Date());
       setSubmitted(true);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Submission failed.");
@@ -126,6 +134,8 @@ export function FormFillPage({ onBack, tabBar }: { onBack?: () => void; tabBar?:
   function reset() {
     setSubmitted(false);
     setSubmittedAs(null);
+    setSubmittedUuid(null);
+    setSubmittedAt(null);
     setParentCode("");
     setVariantCode("");
     setValues({});
@@ -152,11 +162,50 @@ export function FormFillPage({ onBack, tabBar }: { onBack?: () => void; tabBar?:
               Your {def?.form_name} for {projectName ? `${projectName} on ` : ""}
               {workDate} was submitted. The office will confirm it once it’s filed.
             </p>
-            {submittedAs ? (
-              // Admin filled-out-as note — surfaces the attributed account so the admin
-              // can confirm WHO it was recorded for (the true actor is still logged).
-              <p className="muted">Submitted as <strong>{submittedAs}</strong>.</p>
-            ) : null}
+
+            {/* Receipt — a record of exactly what was filed. `submittedAs` carries the
+                admin "filled out as" attribution (the true actor is still logged
+                server-side); both the id and the timestamp were snapshotted at submit
+                success, before reset() renews the submission id. */}
+            <dl className="receipt">
+              <div className="receipt__row">
+                <dt className="receipt__key">Form</dt>
+                <dd className="receipt__val">{def?.form_name ?? "—"}</dd>
+              </div>
+              {projectName ? (
+                <div className="receipt__row">
+                  <dt className="receipt__key">Job</dt>
+                  <dd className="receipt__val">{projectName}</dd>
+                </div>
+              ) : null}
+              <div className="receipt__row">
+                <dt className="receipt__key">Work date</dt>
+                <dd className="receipt__val">{workDate}</dd>
+              </div>
+              {submittedAt ? (
+                <div className="receipt__row">
+                  <dt className="receipt__key">Submitted at</dt>
+                  <dd className="receipt__val">{submittedAt.toLocaleString()}</dd>
+                </div>
+              ) : null}
+              {submittedAs ? (
+                <div className="receipt__row">
+                  <dt className="receipt__key">Submitted as</dt>
+                  <dd className="receipt__val"><strong>{submittedAs}</strong></dd>
+                </div>
+              ) : null}
+              {submittedUuid ? (
+                <div className="receipt__row">
+                  <dt className="receipt__key">Submission ID</dt>
+                  <dd className="receipt__val"><code>{submittedUuid}</code></dd>
+                </div>
+              ) : null}
+            </dl>
+
+            {/* Request-driven canonical PDF download (PR-4 Part A): nothing is cached
+                until the PM clicks "Make available for download". */}
+            {submittedUuid ? <PdfDownload uuid={submittedUuid} /> : null}
+
             <div className="jha__actions">
               <button className="btn btn--primary" onClick={reset}>Submit another</button>
               {onBack ? <button className="btn btn--secondary" onClick={onBack}>Home</button> : null}
@@ -258,6 +307,97 @@ export function FormFillPage({ onBack, tabBar }: { onBack?: () => void; tabBar?:
           <p className="muted">Pick a job and form to begin.</p>
         )}
       </main>
+    </div>
+  );
+}
+
+type PdfPhase = "idle" | "preparing" | "ready" | "error";
+
+/**
+ * "Make available for download" → canonical PDF download (PR-4 Part A).
+ *
+ * Request-driven: a click POSTs requestPdf (flips the server "cache this" flag), then
+ * we poll pdfStatus every 5s until the Mac daemon has uploaded every chunk and the
+ * cache is `ready`. The poll mirrors components/PublishMonitor.tsx — a recursive
+ * setTimeout guarded by an `active` flag with a useRef(timer) and cleanup, so an
+ * unmount (e.g. "Submit another") cancels the in-flight poll. The download itself is a
+ * same-origin navigation (downloadPdf): the cookie rides automatically and the Worker's
+ * Content-Disposition: attachment makes the browser save rather than navigate away.
+ */
+function PdfDownload({ uuid }: { uuid: string }) {
+  const [phase, setPhase] = useState<PdfPhase>("idle");
+  const [expiresAt, setExpiresAt] = useState<number | null>(null);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Poll only while preparing; stop the moment the cache is ready (or on unmount).
+  useEffect(() => {
+    if (phase !== "preparing") return;
+    let active = true;
+    const tick = async () => {
+      if (!active) return;
+      try {
+        const s = await api.pdfStatus(uuid);
+        if (!active) return;
+        if (s.ready) {
+          setExpiresAt(s.expires_at);
+          setPhase("ready");
+          return; // ready — stop polling
+        }
+      } catch {
+        // Transient status error: keep polling. A hard failure surfaces only from the
+        // initial requestPdf click (below), never from a single dropped poll.
+      }
+      if (!active) return;
+      timer.current = setTimeout(() => void tick(), 5000);
+    };
+    void tick();
+    return () => {
+      active = false;
+      if (timer.current) clearTimeout(timer.current);
+    };
+  }, [phase, uuid]);
+
+  const onRequest = useCallback(async () => {
+    setPhase("preparing");
+    try {
+      // The flip is idempotent; whether it returns ready:true (already cached) or
+      // false (just queued), the poll's first tick fetches status (which also carries
+      // expires_at) and settles the UI — so we don't branch on the result here.
+      await api.requestPdf(uuid);
+    } catch {
+      setPhase("error");
+    }
+  }, [uuid]);
+
+  if (phase === "preparing") {
+    return <p className="muted" role="status">Preparing… (usually under 2 min)</p>;
+  }
+
+  if (phase === "ready") {
+    const until = expiresAt ? new Date(expiresAt * 1000).toLocaleString() : null;
+    return (
+      <div className="jha__actions">
+        <button className="btn btn--primary" onClick={() => api.downloadPdf(uuid)}>
+          Download{until ? ` (available until ${until})` : ""}
+        </button>
+      </div>
+    );
+  }
+
+  if (phase === "error") {
+    return (
+      <div className="jha__actions">
+        <p className="login__error" role="alert">Couldn’t prepare the download.</p>
+        <button className="btn btn--secondary" onClick={() => void onRequest()}>Try again</button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="jha__actions">
+      <button className="btn btn--secondary" onClick={() => void onRequest()}>
+        Make available for download
+      </button>
     </div>
   );
 }

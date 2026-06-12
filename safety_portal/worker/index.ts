@@ -579,6 +579,153 @@ app.post("/api/submit", requireSession, async (c) => {
   return c.json({ ok: true, status: "submitted", submission_uuid });
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Request-driven canonical PDF download (PR-4 Part A).
+//
+// Owner decision: the PM's downloadable copy IS the Box-filed copy, byte-identical
+// (NO browser render). It is request-driven — nothing is cached until the user clicks
+// "Make available for download". The Worker is SEND-FREE and holds NO Box creds: the
+// Mac-side portal_poll daemon fetches the filed PDF from Box (by box_file_id),
+// base64-chunks it, and POSTs the chunks to D1 (POST /api/internal/filed-pdf); GET
+// /pdf reassembles the D1 chunks and serves the bytes. Cached chunks expire 24h past
+// pdf_ready_at (prune.ts) and are re-requestable.
+//
+// ACCESS (Part A): the session username must equal submissions.actor_username (the
+// TRUE actor who hit submit) OR submissions.submitted_as (the attributed account), OR
+// the session role is 'admin'. EVERYONE ELSE → 404 (no enumeration), NOT 403. A row
+// that does not exist is likewise 404 — the two are indistinguishable to the caller.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** The PDF-cache ownership row shape (the columns the 3 session routes select). */
+interface PdfOwnRow {
+  actor_username: string | null;
+  submitted_as: string | null;
+}
+/**
+ * Ownership gate for the session+ownership PDF routes. An admin sees any row; a
+ * non-admin must be the true actor OR the attributed account. A missing row (null)
+ * fails — the caller returns 404 (no 403, no enumeration).
+ */
+function ownsRow(row: PdfOwnRow | null, c: Context<{ Bindings: Env; Variables: Vars }>): boolean {
+  if (!row) return false;
+  if (c.get("role") === "admin") return true;
+  const me = c.get("session").username;
+  return row.actor_username === me || row.submitted_as === me;
+}
+
+/** Decode a base64 string to bytes (no length validation here — callers bound it). */
+function b64ToBytes(b64: string): Uint8Array {
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+/**
+ * POST /api/submissions/:uuid/request-pdf — mark a filed submission for caching.
+ * Flips pdf_requested 0→1 (idempotent: a second request is a no-op). Audits ONLY the
+ * real flip. Returns whether the cache is already ready. A rejected (box_verified=-1)
+ * row is treated as not-found (404) — there is no PDF to serve.
+ */
+app.post("/api/submissions/:uuid/request-pdf", requireSession, async (c) => {
+  const uuid = c.req.param("uuid");
+  if (!uuid || uuid.length > 64) return c.json({ error: "not_found" }, 404);
+  const row = await c.env.DB
+    .prepare(
+      "SELECT actor_username, submitted_as, job_id, box_verified, pdf_ready_at FROM submissions WHERE submission_uuid=?",
+    )
+    .bind(uuid)
+    .first<{ actor_username: string | null; submitted_as: string | null; job_id: string; box_verified: number; pdf_ready_at: number | null }>();
+  // Not found, not owned, or a rejected (bad-HMAC terminal) row → 404, no enumeration.
+  if (!ownsRow(row, c) || row!.box_verified === -1) return c.json({ error: "not_found" }, 404);
+
+  // changes() > 0 ⟺ a real 0→1 flip (the WHERE pdf_requested=0 makes a repeat a no-op);
+  // audit ONLY on the flip via the changes()=1 conditional insert (same atomic-batch
+  // pattern as mark-rejected). The flag-set + its audit run in ONE D1 batch.
+  const res = await c.env.DB.batch([
+    c.env.DB.prepare(
+      "UPDATE submissions SET pdf_requested=1 WHERE submission_uuid=? AND pdf_requested=0",
+    ).bind(uuid),
+    c.env.DB.prepare(
+      "INSERT INTO audit_log (actor_username, action, target_username, detail) SELECT ?,?,?,? WHERE changes()=1",
+    ).bind(c.get("session").username, "request_pdf", null, JSON.stringify({ job_id: row!.job_id })),
+  ]);
+  void res;
+  // ready = the cache is already populated (pdf_ready_at set AND a chunk row exists).
+  const chunk = row!.pdf_ready_at !== null
+    ? await c.env.DB.prepare("SELECT 1 FROM filed_pdfs WHERE submission_uuid=? LIMIT 1").bind(uuid).first()
+    : null;
+  return c.json({ ok: true, ready: row!.pdf_ready_at !== null && chunk !== null });
+});
+
+/**
+ * GET /api/submissions/:uuid/status — the SPA's 5s poll. Reports whether the user has
+ * requested caching, whether the cache is ready to download, and when it expires.
+ */
+app.get("/api/submissions/:uuid/status", requireSession, async (c) => {
+  const uuid = c.req.param("uuid");
+  if (!uuid || uuid.length > 64) return c.json({ error: "not_found" }, 404);
+  const row = await c.env.DB
+    .prepare(
+      "SELECT actor_username, submitted_as, box_verified, pdf_requested, pdf_ready_at FROM submissions WHERE submission_uuid=?",
+    )
+    .bind(uuid)
+    .first<{ actor_username: string | null; submitted_as: string | null; box_verified: number; pdf_requested: number; pdf_ready_at: number | null }>();
+  // Not owned, missing, OR rejected (box_verified=-1) → 404, consistent with request-pdf.
+  if (!ownsRow(row, c) || row!.box_verified === -1) return c.json({ error: "not_found" }, 404);
+
+  const chunk = row!.pdf_ready_at !== null
+    ? await c.env.DB.prepare("SELECT 1 FROM filed_pdfs WHERE submission_uuid=? LIMIT 1").bind(uuid).first()
+    : null;
+  const ready = row!.pdf_ready_at !== null && chunk !== null;
+  const expires_at = row!.pdf_ready_at !== null ? row!.pdf_ready_at + 86_400 : null;
+  return c.json({ requested: row!.pdf_requested === 1, ready, expires_at });
+});
+
+/**
+ * GET /api/submissions/:uuid/pdf — reassemble the cached chunks and serve the canonical
+ * PDF as an attachment. 404 if not owned / not found / not yet cached. The Response is
+ * BUILT DIRECTLY (a Hono-built Response with mutable headers) — never mutate an
+ * ASSETS.fetch() response (the immutable-headers gotcha); the outer middleware re-wraps
+ * it, preserving Content-Type/Content-Disposition and adding Cache-Control:no-store.
+ */
+app.get("/api/submissions/:uuid/pdf", requireSession, async (c) => {
+  const uuid = c.req.param("uuid");
+  if (!uuid || uuid.length > 64) return c.json({ error: "not_found" }, 404);
+  const row = await c.env.DB
+    .prepare(
+      "SELECT actor_username, submitted_as, box_verified, form_code, work_date, pdf_ready_at FROM submissions WHERE submission_uuid=?",
+    )
+    .bind(uuid)
+    .first<{ actor_username: string | null; submitted_as: string | null; box_verified: number; form_code: string; work_date: string; pdf_ready_at: number | null }>();
+  if (!ownsRow(row, c) || row!.box_verified === -1) return c.json({ error: "not_found" }, 404);
+  if (row!.pdf_ready_at === null) return c.json({ error: "not_ready" }, 404);
+
+  const { results } = await c.env.DB
+    .prepare("SELECT chunk_b64 FROM filed_pdfs WHERE submission_uuid=? ORDER BY chunk_index")
+    .bind(uuid)
+    .all<{ chunk_b64: string }>();
+  if (!results || results.length === 0) return c.json({ error: "not_ready" }, 404);
+
+  // Decode each chunk to bytes, then concat into a single Uint8Array (the original PDF).
+  const parts = results.map((r) => b64ToBytes(r.chunk_b64));
+  const total = parts.reduce((n, p) => n + p.length, 0);
+  const bytes = new Uint8Array(total);
+  let off = 0;
+  for (const p of parts) {
+    bytes.set(p, off);
+    off += p.length;
+  }
+  // Sanitize the filename to a safe set so it can never break the header.
+  const safe = `${row!.form_code}-${row!.work_date}.pdf`.replace(/[^A-Za-z0-9._-]/g, "");
+  return new Response(bytes, {
+    headers: {
+      "Content-Type": "application/pdf",
+      "Content-Disposition": `attachment; filename="${safe}"`,
+    },
+  });
+});
+
 /**
  * GET /api/internal/pending — the queue drain for the Mac-side portal_poll daemon.
  * Returns unfiled submissions (box_verified=0) oldest-first, each with the Worker's
@@ -616,10 +763,13 @@ app.post("/api/internal/mark-filed", requireInternalToken, async (c) => {
   }
   const submission_uuid = typeof body.submission_uuid === "string" ? body.submission_uuid : "";
   const box_link = typeof body.box_link === "string" ? body.box_link.slice(0, 2000) : null;
+  // box_file_id (PR-4): the filed Box file id the pdf-cache pass downloads + chunks. The
+  // daemon supplies it on the receipt; bounded like box_link. NULL when not supplied.
+  const boxFileId = typeof body.box_file_id === "string" ? body.box_file_id.slice(0, 200) : null;
   if (!submission_uuid || submission_uuid.length > 64) return c.json({ error: "invalid" }, 400);
   const res = await c.env.DB
-    .prepare("UPDATE submissions SET box_verified=1, filed_at=unixepoch(), box_link=? WHERE submission_uuid=?")
-    .bind(box_link, submission_uuid)
+    .prepare("UPDATE submissions SET box_verified=1, filed_at=unixepoch(), box_link=?, box_file_id=? WHERE submission_uuid=?")
+    .bind(box_link, boxFileId, submission_uuid)
     .run();
   return c.json({ ok: true, found: (res.meta?.changes ?? 0) > 0 });
 });
@@ -653,6 +803,123 @@ app.post("/api/internal/mark-rejected", requireInternalToken, async (c) => {
     ).bind("portal_poll", "submission_rejected", null, JSON.stringify({ submission_uuid, reason })),
   ]);
   return c.json({ ok: true, found: (res[0]?.meta?.changes ?? 0) > 0 });
+});
+
+// ── PR-4 Part A: the canonical-PDF cache servicing endpoints (Mac portal_poll pass) ──
+// Both bearer-gated (requireInternalToken — the daemon token, NOT the admin one). The
+// daemon GETs the serviceable set, downloads each from Box, base64-chunks it, and POSTs
+// the chunks here. Idempotent: a re-served request after a lost receipt is a no-op.
+const MAX_CHUNKS = 8;
+const CHUNK_B64_RE = /^[A-Za-z0-9+/]+={0,2}$/;
+const CHUNK_DECODED_MAX = 1_000_000;
+// Cap the b64 STRING length before the O(n) regex scan so an oversized chunk_b64 is
+// rejected in O(1) without traversing the whole string (defence-in-depth DoS guard).
+const MAX_CHUNK_B64_LEN = Math.ceil((CHUNK_DECODED_MAX * 4) / 3) + 4; // ~1,333,338
+
+/**
+ * GET /api/internal/pdf-requests — the serviceable set for the Mac pdf-cache pass:
+ * rows the user requested (pdf_requested=1), not yet cached (pdf_ready_at IS NULL), and
+ * filed (box_file_id IS NOT NULL — there is a Box file to download). Oldest-first.
+ * Returns a NAMED field (never a bare array — portal_client._request rejects non-object
+ * JSON). Bearer-token gated.
+ */
+app.get("/api/internal/pdf-requests", requireInternalToken, async (c) => {
+  const limit = Math.min(Math.max(parseInt(c.req.query("limit") || "25", 10) || 25, 1), 100);
+  const { results } = await c.env.DB
+    .prepare(
+      "SELECT submission_uuid, box_file_id, form_code, work_date FROM submissions " +
+        "WHERE pdf_requested=1 AND pdf_ready_at IS NULL AND box_file_id IS NOT NULL " +
+        "ORDER BY filed_at LIMIT ?",
+    )
+    .bind(limit)
+    .all();
+  return c.json({ pdf_requests: results });
+});
+
+/**
+ * POST /api/internal/filed-pdf — idempotent chunk upload. The daemon POSTs each
+ * base64 chunk (index + total + bytes); when the row count reaches chunk_total the
+ * cache is complete and pdf_ready_at is stamped. INSERT OR REPLACE makes a re-POST of
+ * the same chunk a no-op. If pdf_ready_at is already set the upload is a no-op
+ * (idempotent — already cached). Bearer-token gated.
+ */
+app.post("/api/internal/filed-pdf", requireInternalToken, async (c) => {
+  let body: Record<string, unknown>;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "bad_request" }, 400);
+  }
+  if (typeof body !== "object" || (body as unknown) === null || Array.isArray(body)) {
+    return c.json({ error: "bad_request" }, 400);
+  }
+  const submission_uuid = typeof body.submission_uuid === "string" ? body.submission_uuid : "";
+  const chunk_index = body.chunk_index;
+  const chunk_total = body.chunk_total;
+  const chunk_b64 = body.chunk_b64;
+  // Type + bounds validation (Invariant 2: all daemon input is untrusted too).
+  if (!submission_uuid || submission_uuid.length > 64) {
+    return c.json({ error: "invalid_chunk", detail: "submission_uuid" }, 400);
+  }
+  if (typeof chunk_index !== "number" || !Number.isInteger(chunk_index) || chunk_index < 0) {
+    return c.json({ error: "invalid_chunk", detail: "chunk_index" }, 400);
+  }
+  if (typeof chunk_total !== "number" || !Number.isInteger(chunk_total) || chunk_total < 1 || chunk_total > MAX_CHUNKS) {
+    return c.json({ error: "invalid_chunk", detail: "chunk_total" }, 400);
+  }
+  if (chunk_index >= chunk_total) {
+    return c.json({ error: "invalid_chunk", detail: "chunk_index_range" }, 400);
+  }
+  if (
+    typeof chunk_b64 !== "string" ||
+    chunk_b64.length === 0 ||
+    chunk_b64.length > MAX_CHUNK_B64_LEN ||
+    !CHUNK_B64_RE.test(chunk_b64)
+  ) {
+    return c.json({ error: "invalid_chunk", detail: "chunk_b64" }, 400);
+  }
+  if (b64DecodedLen(chunk_b64) > CHUNK_DECODED_MAX) {
+    return c.json({ error: "invalid_chunk", detail: "chunk_too_large" }, 400);
+  }
+
+  // The row must exist AND be filed (box_verified=1) — never cache an unfiled / rejected row.
+  const row = await c.env.DB
+    .prepare("SELECT box_verified, pdf_ready_at FROM submissions WHERE submission_uuid=?")
+    .bind(submission_uuid)
+    .first<{ box_verified: number; pdf_ready_at: number | null }>();
+  if (!row || row.box_verified !== 1) return c.json({ error: "not_found" }, 404);
+  // Already cached → idempotent no-op (a re-served request after a lost receipt).
+  if (row.pdf_ready_at !== null) return c.json({ ok: true, ready: true, stored: false });
+
+  await c.env.DB
+    .prepare(
+      "INSERT OR REPLACE INTO filed_pdfs (submission_uuid, chunk_index, chunk_total, chunk_b64) VALUES (?,?,?,?)",
+    )
+    .bind(submission_uuid, chunk_index, chunk_total, chunk_b64)
+    .run();
+  // Completion is gated on a CONSISTENT, GAP-FREE set — not a bare COUNT===chunk_total,
+  // which a buggy/forged daemon could satisfy with the wrong indices (e.g. {0,1,5} for
+  // chunk_total=3) and make GET /pdf serve a silently-truncated PDF as the canonical
+  // record. Require: all chunks agree on chunk_total (totals===1), there are exactly t
+  // chunks (n===t), and the highest index is t-1 (maxidx===t-1). Distinct indices (the
+  // PRIMARY KEY) with count t and max t-1 ⇒ exactly {0..t-1}, i.e. gap-free.
+  const agg = await c.env.DB
+    .prepare(
+      "SELECT COUNT(*) AS n, COUNT(DISTINCT chunk_total) AS totals, MAX(chunk_total) AS t, MAX(chunk_index) AS maxidx FROM filed_pdfs WHERE submission_uuid=?",
+    )
+    .bind(submission_uuid)
+    .first<{ n: number; totals: number; t: number; maxidx: number }>();
+  const n = agg?.n ?? 0;
+  const complete = agg?.totals === 1 && n === agg.t && agg.maxidx === agg.t - 1;
+  if (complete) {
+    // Stamp ready once, only on the first completion (the WHERE pdf_ready_at IS NULL
+    // guard keeps a racing duplicate completion idempotent).
+    await c.env.DB
+      .prepare("UPDATE submissions SET pdf_ready_at=unixepoch() WHERE submission_uuid=? AND pdf_ready_at IS NULL")
+      .bind(submission_uuid)
+      .run();
+  }
+  return c.json({ ok: true, ready: complete, stored: true, received: n });
 });
 
 /**
@@ -1409,7 +1676,10 @@ app.get("*", (c) => c.env.ASSETS.fetch(c.req.raw));
 // failure is logged via observability and does not affect the fetch path.
 const scheduled: ExportedHandlerScheduledHandler<Env> = async (_controller, env) => {
   const pruned = await pruneOldData(env.DB, Math.floor(Date.now() / 1000));
-  console.log(`prune: removed ${pruned.submissions} filed + ${pruned.rejected} rejected submission(s) + ${pruned.audit} audit row(s)`);
+  console.log(
+    `prune: removed ${pruned.submissions} filed + ${pruned.rejected} rejected submission(s) + ` +
+      `${pruned.audit} audit row(s) + ${pruned.pdfChunks} pdf chunk(s); D1 size ${pruned.dbSizeBytes} bytes`,
+  );
 };
 
 export default { fetch: app.fetch, scheduled } satisfies ExportedHandler<Env>;

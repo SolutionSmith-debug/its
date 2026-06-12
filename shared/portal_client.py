@@ -57,6 +57,8 @@ PENDING_PATH = "/api/internal/pending"
 MARK_FILED_PATH = "/api/internal/mark-filed"
 MARK_REJECTED_PATH = "/api/internal/mark-rejected"
 SYNC_PATH = "/api/internal/sync"
+PDF_REQUESTS_PATH = "/api/internal/pdf-requests"
+FILED_PDF_PATH = "/api/internal/filed-pdf"
 PUBLISH_PENDING_PATH = "/api/internal/publish/pending"
 PUBLISH_CLAIM_PATH = "/api/internal/publish/claim"
 PUBLISH_STAMP_PATH = "/api/internal/publish/stamp"
@@ -186,7 +188,10 @@ def get_pending(base_url: str, token: str, *, limit: int = 50) -> list[dict[str,
     return [row for row in pending if isinstance(row, dict)]
 
 
-def mark_filed(base_url: str, token: str, *, submission_uuid: str, box_link: str) -> bool:
+def mark_filed(
+    base_url: str, token: str, *, submission_uuid: str, box_link: str,
+    box_file_id: str | None = None,
+) -> bool:
     """Post the receipt: POST /api/internal/mark-filed → returns `found`.
 
     Called ONLY after intake has filed the submission to Box + Smartsheet
@@ -195,11 +200,20 @@ def mark_filed(base_url: str, token: str, *, submission_uuid: str, box_link: str
     `found=False` means the Worker has no row for that UUID (already drained by a
     concurrent actor, or an unknown UUID); the caller treats it as benign.
 
+    `box_file_id` (PR-4 Part A) is the filed Box file id — the Worker stores it so
+    the request-driven PDF-cache servicing pass (get_pdf_requests → download from
+    Box → upload_filed_pdf) knows which Box file to fetch. `None` leaves the
+    Worker's box_file_id column untouched on that path (it sends `box_file_id: null`).
+
     Raises `PortalAuthError` / `PortalRateLimitError` / `PortalTransportError`.
     """
     data = _request(
         "POST", base_url, MARK_FILED_PATH, token,
-        json_body={"submission_uuid": submission_uuid, "box_link": box_link},
+        json_body={
+            "submission_uuid": submission_uuid,
+            "box_link": box_link,
+            "box_file_id": box_file_id,
+        },
     )
     return bool(data.get("found"))
 
@@ -237,6 +251,69 @@ def push_jobs(base_url: str, token: str, jobs: list[dict[str, Any]]) -> dict[str
     `PortalTransportError` (any other failure).
     """
     return _request("POST", base_url, SYNC_PATH, token, json_body={"jobs": jobs})
+
+
+# ---- Request-driven PDF cache (PR-4 Part A — the Mac PDF-servicing pass I/O) ----
+
+
+def get_pdf_requests(
+    base_url: str, token: str, *, limit: int = 25
+) -> list[dict[str, Any]]:
+    """Pull serviceable PDF-cache requests: GET /api/internal/pdf-requests.
+
+    Each row is a dict `{submission_uuid, box_file_id, form_code, work_date}` for a
+    submission the user asked to "make available for download" that is filed
+    (box_file_id set) but not yet cached. The Mac pass downloads the Box file by
+    `box_file_id`, base64-chunks it, and POSTs each chunk via `upload_filed_pdf`.
+
+    Returns the `pdf_requests` list verbatim (dict rows only). Rows are control-plane
+    reads of OUR OWN Worker. Same typed-error contract as `get_pending` —
+    `PortalAuthError` (401) / `PortalRateLimitError` (429/503 exhausted) /
+    `PortalTransportError` (any other failure, incl. a non-object / missing-array body).
+    """
+    data = _request(
+        "GET", base_url, PDF_REQUESTS_PATH, token, params={"limit": limit}
+    )
+    pdf_requests = data.get("pdf_requests")
+    if not isinstance(pdf_requests, list):
+        raise PortalTransportError(
+            f"GET {PDF_REQUESTS_PATH} missing/invalid 'pdf_requests' array "
+            f"(got {type(pdf_requests).__name__})"
+        )
+    # Defensive: keep only dict rows; a non-dict element is malformed transport.
+    return [row for row in pdf_requests if isinstance(row, dict)]
+
+
+def upload_filed_pdf(
+    base_url: str, token: str, *, submission_uuid: str,
+    chunk_index: int, chunk_total: int, chunk_b64: str,
+) -> dict[str, Any]:
+    """Upload one base64 PDF chunk: POST /api/internal/filed-pdf → the ack dict.
+
+    The compiled PDF rides as base64 text inside the JSON body (mirroring the photo
+    wire) because `_request` is JSON-only — there is NO raw-binary/multipart path.
+    Chunked because a full PDF + base64 inflation can exceed D1's per-row ceiling;
+    the Worker reassembles by (submission_uuid, chunk_index) and flips the row to
+    ready once `chunk_total` chunks have arrived. Idempotent per chunk
+    (INSERT OR REPLACE), so a re-serviced row after a lost ack is a no-op.
+
+    Returns the Worker's ack dict (e.g. `{ok, ready, stored, received}`) verbatim —
+    NEVER interpolate `chunk_b64` into a log or error (never log PDF bytes).
+
+    A control-plane write to OUR OWN Worker (outside the External Send Gate,
+    Invariant 1 — like `mark_filed`). Raises the typed `PortalTransportError`
+    hierarchy on failure (an invalid-chunk 400 surfaces as `PortalTransportError`,
+    not a silent return).
+    """
+    return _request(
+        "POST", base_url, FILED_PDF_PATH, token,
+        json_body={
+            "submission_uuid": submission_uuid,
+            "chunk_index": chunk_index,
+            "chunk_total": chunk_total,
+            "chunk_b64": chunk_b64,
+        },
+    )
 
 
 # ---- Form-editor publish pipeline (slice 3b — the Mac publish daemon's queue I/O) ----

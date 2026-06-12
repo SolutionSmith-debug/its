@@ -47,8 +47,10 @@ portal flow is live-validated. Inline duplication keeps this ship focused.
 """
 from __future__ import annotations
 
+import base64
 import fcntl
 import json
+import re
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -61,6 +63,7 @@ from safety_reports import intake
 from shared import (
     active_jobs,
     anomaly_logger,
+    box_client,
     circuit_breaker,
     error_log,
     keychain,
@@ -91,6 +94,15 @@ DEFAULT_POLLING_ENABLED = True
 DEFAULT_POLL_INTERVAL = 60  # 60 s
 PENDING_LIMIT = 50  # Worker caps at 200; 50 drains a normal backlog per cycle.
 MAX_SEEN = 2000  # cap the seen-set file (oldest entries are harmless dead weight).
+
+# PR-4 Part A — request-driven PDF cache servicing pass.
+PDF_REQUEST_LIMIT = 25  # Worker caps at 100; 25 services a normal request backlog.
+# Raw bytes per chunk BEFORE base64. 700 KB raw → ~933 KB base64, comfortably under
+# the Worker's 1 MB decoded-chunk ceiling and D1's ~2 MB per-row practical limit.
+PDF_CHUNK_BYTES = 700_000
+# Recover the Box file id from a `https://app.box.com/file/<id>` link (the shape
+# intake._box_link produces). Same pattern as weekly_send._box_file_id.
+_BOX_FILE_LINK_RE = re.compile(r"/file/(\d+)")
 
 # State paths. HEARTBEAT_ROW_STATE_PATH is SHARED with the other daemons —
 # same JSON file, different daemon_name key.
@@ -142,6 +154,21 @@ class PollStats:
     rejected: int = 0   # HMAC verify failures (never filed)
     remarked: int = 0   # seen-as-filed rows whose mark-filed was re-posted
     errors: int = 0     # transient intake errors + per-row exceptions (NOT drained)
+    pdf_serviced: int = 0  # PR-4: request-driven PDF caches uploaded this cycle
+
+
+# ---- Box helper (PR-4 Part A) -------------------------------------------
+
+
+def _box_file_id(link: str) -> str | None:
+    """Recover the Box file id from a `_box_link` URL. None if not present.
+
+    Copy of weekly_send._box_file_id (Op Stds §14 preservation). Used only to
+    backstop a missing box_file_id on a re-served already-filed row — the canonical
+    id rides on ProcessResult.box_file_id from intake.
+    """
+    m = _BOX_FILE_LINK_RE.search(link or "")
+    return m.group(1) if m else None
 
 
 # ---- Config readers (replicated per preservation) -----------------------
@@ -724,7 +751,10 @@ def _poll_inside_lock() -> PollStats:
     _reset_fetch_failures()
 
     seen = _load_seen()
-    counters = {"filed": 0, "reviewed": 0, "rejected": 0, "remarked": 0, "errors": 0}
+    counters = {
+        "filed": 0, "reviewed": 0, "rejected": 0, "remarked": 0, "errors": 0,
+        "pdf_serviced": 0,
+    }
 
     for row in rows:
         # Split the HMAC off the row IMMEDIATELY: it is verified separately and
@@ -749,6 +779,20 @@ def _poll_inside_lock() -> PollStats:
             )
 
     _persist_seen(seen)
+
+    # Best-effort request-driven PDF cache servicing (PR-4 Part A). Placed AFTER the
+    # intake drain + _persist_seen so a PDF-service failure can NEVER affect filing,
+    # and FENCED identically to the job-sync below (a failure WARNs, never blocks the
+    # pull). The pass is idempotent end-to-end (per-chunk INSERT OR REPLACE Worker-side),
+    # so a skipped/failed cycle self-heals on the next.
+    try:
+        counters["pdf_serviced"] += _service_pdf_requests(creds.base_url, creds.bearer)
+    except Exception as exc:  # noqa: BLE001 — best-effort; must not block intake filing
+        error_log.log(
+            Severity.WARN, SCRIPT_NAME,
+            f"PDF-request servicing failed (intake unaffected): {type(exc).__name__}: {exc!r}",
+            error_code="portal_pdf_service_failed",
+        )
 
     # Best-effort job-set sync (ITS_Active_Jobs → the Worker's D1 dropdown cache).
     # FENCED so a sync failure never affects the intake drain above; the sync is
@@ -782,6 +826,10 @@ def _poll_inside_lock() -> PollStats:
                 if counters["errors"] == 0 and counters["rejected"] == 0
                 else f"errors={counters['errors']} rejected={counters['rejected']}"
             ),
+            notes=(
+                f"pdf_serviced={counters['pdf_serviced']}"
+                if counters["pdf_serviced"] else None
+            ),
         )
     except Exception as exc:  # noqa: BLE001 — heartbeat must never block
         error_log.log(
@@ -796,7 +844,8 @@ def _poll_inside_lock() -> PollStats:
         (
             f"poll cycle: scanned={len(rows)} filed={counters['filed']} "
             f"reviewed={counters['reviewed']} rejected={counters['rejected']} "
-            f"remarked={counters['remarked']} errors={counters['errors']}"
+            f"remarked={counters['remarked']} errors={counters['errors']} "
+            f"pdf_serviced={counters['pdf_serviced']}"
         ),
         error_code="poll_cycle_summary",
     )
@@ -807,6 +856,7 @@ def _poll_inside_lock() -> PollStats:
         rejected=counters["rejected"],
         remarked=counters["remarked"],
         errors=counters["errors"],
+        pdf_serviced=counters["pdf_serviced"],
     )
 
 
@@ -842,10 +892,14 @@ def _process_row(
             return
         if rec.get("status") == "filed":
             # Already filed but the row is being served again → the mark-filed
-            # receipt was lost. Re-post it (no re-file) to drain the queue.
+            # receipt was lost. Re-post it (no re-file) to drain the queue. Carry
+            # box_file_id (PR-4) so the cache handle survives the re-post; fall back
+            # to parsing the link for a seen-set record written before PR-4.
+            box_link = str(rec.get("box_link") or "")
+            box_file_id = str(rec.get("box_file_id") or "") or _box_file_id(box_link)
             if portal_client.mark_filed(
                 base_url, bearer, submission_uuid=submission_uuid,
-                box_link=str(rec.get("box_link") or ""),
+                box_link=box_link, box_file_id=box_file_id or None,
             ):
                 counters["remarked"] += 1
             return
@@ -868,11 +922,16 @@ def _process_row(
 
     if result.status in DRAIN_STATUSES:
         box_link = result.box_link or ""
+        box_file_id = result.box_file_id or ""
         marked = portal_client.mark_filed(
             base_url, bearer, submission_uuid=submission_uuid, box_link=box_link,
+            box_file_id=box_file_id or None,
         )
         # Record as filed so a future re-serve (lost receipt) re-posts without re-filing.
-        seen[submission_uuid] = {"status": "filed", "box_link": box_link}
+        # box_file_id rides too so the re-post (843-851) re-carries the cache handle.
+        seen[submission_uuid] = {
+            "status": "filed", "box_link": box_link, "box_file_id": box_file_id,
+        }
         if result.status == "review_queue":
             counters["reviewed"] += 1
         else:
@@ -887,6 +946,79 @@ def _process_row(
                 error_code="portal_mark_filed_not_found",
                 correlation_id=result.correlation_id,
             )
+
+
+# ---- PR-4 Part A: request-driven PDF cache servicing ---------------------
+
+
+def _service_pdf_requests(base_url: str, bearer: str) -> int:
+    """Service request-driven PDF caches → returns the count of items serviced.
+
+    A user who clicked "make available for download" flips pdf_requested=1 on a
+    FILED submission; the Worker exposes those rows (box_file_id known, not yet
+    cached) at GET /api/internal/pdf-requests. For each, this fetches the canonical
+    filed PDF from Box (by box_file_id), base64-chunks it, and POSTs each chunk to
+    POST /api/internal/filed-pdf — the Worker reassembles + serves the PM the
+    byte-identical Box-filed copy.
+
+    BEST-EFFORT + PER-ITEM FENCED: the whole pass is wrapped by the caller's
+    try/except (a total failure WARNs, never blocks the intake pull); inside, one bad
+    item (missing id / Box fetch error / upload error) is logged + skipped so it never
+    aborts servicing the rest. Idempotent end-to-end — the Worker INSERT-OR-REPLACEs
+    each chunk and a re-pulled request after a lost ack is a no-op.
+
+    Box fetch is generation-side (already used by intake); the HTTPS post-back rides
+    the F02-allowlisted portal_client. No send capability, no LLM (Invariant 1).
+    """
+    rows = portal_client.get_pdf_requests(base_url, bearer, limit=PDF_REQUEST_LIMIT)
+    serviced = 0
+    for row in rows:
+        submission_uuid = str(row.get("submission_uuid") or "")
+        box_file_id = str(row.get("box_file_id") or "")
+        if not submission_uuid or not box_file_id:
+            error_log.log(
+                Severity.WARN, SCRIPT_NAME,
+                f"pdf-request row missing submission_uuid/box_file_id; skipping "
+                f"(submission_uuid={submission_uuid!r})",
+                error_code="portal_pdf_request_malformed",
+            )
+            continue
+        try:
+            pdf = box_client.download_file(box_file_id)
+            if not pdf:
+                # A zero-byte filed PDF is a DATA error (a render/upload that produced
+                # nothing), not a chunk to ship — an empty chunk_b64 would only be 400'd by
+                # the Worker. Surface it as a WARN skip; the request stays unready and the
+                # operator can re-file. (Never the silent empty-chunk the Worker rejects.)
+                error_log.log(
+                    Severity.WARN, SCRIPT_NAME,
+                    f"pdf-request: Box file {box_file_id} returned 0 bytes; skipping "
+                    f"(submission_uuid={submission_uuid!r})",
+                    error_code="portal_pdf_empty_file",
+                )
+                continue
+            chunks = [
+                pdf[i:i + PDF_CHUNK_BYTES] for i in range(0, len(pdf), PDF_CHUNK_BYTES)
+            ]
+            total = len(chunks)
+            for index, chunk in enumerate(chunks):
+                portal_client.upload_filed_pdf(
+                    base_url, bearer,
+                    submission_uuid=submission_uuid,
+                    chunk_index=index,
+                    chunk_total=total,
+                    chunk_b64=base64.b64encode(chunk).decode(),
+                )
+            serviced += 1
+        except Exception as exc:  # noqa: BLE001 — per-item fence; one bad item never aborts the pass
+            # NEVER interpolate PDF bytes / chunk_b64 into the log line.
+            error_log.log(
+                Severity.WARN, SCRIPT_NAME,
+                f"pdf-request servicing failed for submission_uuid={submission_uuid}: "
+                f"{type(exc).__name__}: {exc!r}",
+                error_code="portal_pdf_request_item_failed",
+            )
+    return serviced
 
 
 if __name__ == "__main__":

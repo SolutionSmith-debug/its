@@ -1,0 +1,95 @@
+---
+type: operations
+date: 2026-06-12
+status: active
+related_prs: []
+workstream: safety_reports
+tags: [runbook, successor-remediation, safety-portal, pdf-download, tier-2]
+---
+
+# Runbook — Safety Portal filed-PDF download "stuck preparing" (Successor-Remediation, Op Stds §43)
+
+A §43 successor-remediation entry for the **Successor-Operator** (a trained operator who runs Claude
+Code and reads Smartsheet rows + alert emails, but does **not** read code). The §42 code-reader
+rationale lives in the `_service_pdf_requests` docstring in `safety_reports/portal_poll.py` and the
+`upload_filed_pdf` / `get_pdf_requests` docstrings in `shared/portal_client.py`.
+
+## Purpose
+
+PR-4 Part A added a **request-driven** PDF download to the portal: a PM on the submitted page (or, later,
+the Form-Request browse page) taps **"Make available for download"**, and within a couple of minutes a
+**Download** button appears. The plumbing: the click flips `submissions.pdf_requested=1` in D1; the
+Mac `portal_poll` daemon's best-effort `_service_pdf_requests` pass (one per 60s cycle) re-downloads the
+already-filed PDF from Box (via `box_file_id`), base64-chunks it, and POSTs the chunks to the Worker
+(`/api/internal/filed-pdf`); the final chunk sets `pdf_ready_at`; the SPA poll then shows Download. The
+cache is **best-effort and self-healing**: chunks expire 24h after they're ready, and a stuck/expired
+request is **re-requestable** (the button comes back). The Worker holds no Box credentials and the PDF is
+served from reassembled D1 chunks — **no new external-send path** (Invariant 1 untouched).
+
+The common "Preparing… forever" case is **benign** and needs no operator action: a transient cycle miss
+self-heals on the next 60s pass or on a re-request. This runbook is for when it **persists**.
+
+## Procedure
+
+### Symptom
+
+A PM reports the download stays on **"Preparing… (usually under 2 min)"** for well past a few minutes
+(several `portal_poll` cycles), and re-requesting does not help. (If it resolves on a re-request, it was a
+transient miss — benign, no action.)
+
+### What the Successor-Operator checks
+
+1. **Is the submission actually filed yet?** A PDF can only be cached once its form is filed to Box.
+   In the relevant week sheet, confirm the submission row has a **Box link** (it is filed). If it is not
+   yet filed (the ~minute intake latency), the download is not stuck — it is waiting on filing; wait one
+   more cycle. A submission that never files is a *separate* intake problem (see the intake runbook), not
+   a download problem.
+   - **1b. Was it filed BEFORE PR-4 Part A deployed?** The download needs `box_file_id`, which the
+     Worker only records at mark-filed *after* PR-4 Part A ships. A submission filed earlier has a Box
+     link but a NULL `box_file_id`, so the Worker silently excludes it from the serviceable set — the
+     download stays "Preparing…" forever with **no `portal_pdf_service_failed` WARN** (it never reaches
+     the Box-fetch step). Production (Evergreen) cuts over after PR-4, so its history is fully covered;
+     only a handful of pre-PR-4 mirror test rows are affected. This is a one-time historical gap that
+     closes going forward — **escalate to Seth (Tier 3)** to either back-fill `box_file_id` (a one-off
+     `mark-filed` re-post) or accept those specific old rows as non-downloadable.
+2. **ITS_Errors** — filter `Error = portal_pdf_service_failed` (`Severity = WARN`) for
+   `safety_reports.portal_poll`. Repeated rows mean the pass is reaching Box/the Worker but a step is
+   failing; the `Message` carries the underlying error type (a Box fetch error, or a Worker `/filed-pdf`
+   rejection). A *single* WARN that does not recur is the benign best-effort case.
+3. **Is `portal_poll` running and enabled?** Check **ITS_Daemon_Health** for a fresh
+   `safety_reports.portal_poll` heartbeat (its `Notes` show `pdf_serviced=N` on cycles that serviced a
+   request). If the daemon is dark or `ITS_Config safety_reports.portal_poll.polling_enabled` is off, the
+   pass never runs — the request waits.
+4. **ITS_Config `system.state`** — `PAUSED`/`MAINTENANCE` stops the daemon's primary work; rule it out.
+
+### The Claude prompt or UI action (low-capability-class)
+
+- **Daemon dark / disabled:** re-enable `safety_reports.portal_poll.polling_enabled` (ITS_Config) and/or
+  re-run the daemon once. The pass re-services every pending request on the next cycle — it is
+  **idempotent** (re-uploading the same chunks is a no-op), so re-running is always safe.
+- **Transient single WARN:** no action. The cache is best-effort; tell the PM to tap **Download** again
+  (re-request) — the next cycle re-fetches. Chunks self-expire after 24h, so nothing accumulates.
+- Re-running a daemon and toggling a runtime gate are **low-class** (re-run a job; read a sheet/Config; no
+  code, no secret, no external send) — Claude drives it; the operator approves.
+
+### Escalate-to-Seth condition
+
+Stop and escalate to the Developer-Operator (Seth, Tier 3) when **any** of:
+
+- **Persistent** `portal_pdf_service_failed` across many cycles for filed submissions — the Box re-fetch
+  path or the Worker `/api/internal/filed-pdf` endpoint is broken (**code / transport** = high-class).
+- The failure names a **Box auth / Keychain** problem (the daemon cannot fetch the filed PDF from Box).
+- The Worker returns errors on **`GET /api/submissions/<uuid>/pdf` for a submission that is ready** (the
+  reassembly/serve path is broken) — a Worker code issue.
+- A PM reports they can download **another account's** PDF, or are wrongly **denied their own** (the
+  ownership gate misbehaving) — a security-class Worker change.
+- The symptom is **novel** — it does not match this entry.
+
+Both-rule (Op Stds §44): "re-run the daemon / re-enable polling / tell the PM to re-request" is low-class +
+documented (Tier 2). "The post-back path is broken, Box auth failed, the serve/ownership logic is wrong, or
+it's novel" is **high-class or novel → Tier 3.**
+
+## Owner
+
+`@solutionsmith`. New download failure modes that become Tier-2-reachable should be added here as
+additional Symptom → checks → action → escalate blocks, per Op Stds §43.

@@ -401,6 +401,11 @@ class ProcessResult:
     # sets it. portal_poll posts mark-filed iff status is a drain status (see
     # process_portal_submission's return-contract docstring).
     box_link: str | None = None
+    # PR-4 Part A: the structural Box file id of the filed PDF — threaded to the
+    # mark-filed receipt so the Worker can later name the exact file for the
+    # request-driven PDF cache. Populated on processed (id in hand from the upload)
+    # and already_filed (recovered from the stored link); None otherwise.
+    box_file_id: str | None = None
 
 
 # ---- Graph ingest --------------------------------------------------------
@@ -1458,6 +1463,20 @@ def _box_link(file_id: str) -> str:
     return f"https://app.box.com/file/{file_id}"
 
 
+def _box_file_id_from_link(link: str) -> str | None:
+    """Recover the Box file id embedded in a `_box_link` URL.
+
+    `_box_link` produces `https://app.box.com/file/<id>`, so the id is the path
+    segment after `/file/`. Used by the already_filed path, where only the stored
+    week-sheet link (not a structural id) is in hand. Returns None when the link is
+    empty / not in the expected shape (the receipt then carries box_file_id=None).
+    """
+    if not link or "/file/" not in link:
+        return None
+    tail = link.split("/file/", 1)[1].strip("/")
+    return tail or None
+
+
 def _portal_box_root() -> str:
     """The Box "ITS Safety Portal" root folder ID (ITS_Config, config-GATED, PR-K).
 
@@ -1522,28 +1541,35 @@ def _file_portal_pdf(
     type_slug: str,
     submission_uuid: str,
     pdf: bytes,
-) -> str:
-    """Upload the rendered PDF to `folder_id`; return its Box link.
+) -> tuple[str, str]:
+    """Upload the rendered PDF to `folder_id`; return `(box_link, box_file_id)`.
 
     Names `<work_date>-<type>.pdf` (operator-readable). On a name conflict (a
     genuine same-day same-type submission, OR a retry of THIS submission after a
     downstream failure) it suffixes with the submission's short id; if THAT
     deterministic name ALSO exists (a prior partial attempt of this same
-    submission), it recovers + returns the existing file's link instead of
+    submission), it recovers + returns the existing file's link/id instead of
     re-uploading. Terminates; bounded duplication ("Box keeps both").
+
+    The structural Box file id rides alongside the link (PR-4 Part A) so the
+    request-driven PDF-cache receipt can name the exact filed file without parsing
+    it back out of the URL.
     """
     base = f"{work_date_iso}-{type_slug}.pdf"
     try:
-        return _box_link(box_client.upload_bytes(folder_id, base, pdf)["id"])
+        file_id = str(box_client.upload_bytes(folder_id, base, pdf)["id"])
+        return _box_link(file_id), file_id
     except box_client.BoxConflictError:
         pass
     suffixed = f"{work_date_iso}-{type_slug}-{submission_uuid[:8]}.pdf"
     try:
-        return _box_link(box_client.upload_bytes(folder_id, suffixed, pdf)["id"])
+        file_id = str(box_client.upload_bytes(folder_id, suffixed, pdf)["id"])
+        return _box_link(file_id), file_id
     except box_client.BoxConflictError:
         for item in box_client.list_folder(folder_id, limit=1000):
             if item["type"] == "file" and item["name"] == suffixed:
-                return _box_link(str(item["id"]))
+                file_id = str(item["id"])
+                return _box_link(file_id), file_id
         raise
 
 
@@ -1699,7 +1725,9 @@ def _portal_orphan(
 
     parent_form_code = str(definition.get("parent_form_code") or form_code)
     folder_id = _orphaned_reports_box_folder()
-    box_link = _file_portal_pdf(folder_id, work_date_raw, parent_form_code, submission_uuid, pdf)
+    # box_file_id unused on the orphan (review_queue) path — the PDF cache only
+    # services processed/already_filed rows (see ProcessResult.box_file_id).
+    box_link, _ = _file_portal_pdf(folder_id, work_date_raw, parent_form_code, submission_uuid, pdf)
 
     smartsheet_client.add_rows(sheet_ids.SHEET_ORPHANED_REPORTS, [{
         _OR_COL_UUID: submission_uuid,
@@ -2055,6 +2083,7 @@ def _run_portal_pipeline(
         return ProcessResult(
             status="already_filed", message_id=submission_uuid,
             correlation_id=correlation_id, notes="already filed", box_link=recovered,
+            box_file_id=_box_file_id_from_link(recovered),
         )
 
     # Load + validate against the Phase-4 form definition (Invariant 2, Layer 4).
@@ -2121,7 +2150,7 @@ def _run_portal_pipeline(
             reason=review_queue.ReviewReason.AMBIGUOUS_CLASSIFICATION,
             correlation_id=correlation_id, severity=Severity.ERROR,
         )
-    box_link = _file_portal_pdf(
+    box_link, box_file_id = _file_portal_pdf(
         folder_id, work_date_raw, parent_form_code, submission_uuid, pdf
     )
     notes = (notes + f" [box:{box_note}]").strip()
@@ -2181,6 +2210,7 @@ def _run_portal_pipeline(
         status="processed", message_id=submission_uuid,
         correlation_id=correlation_id,
         notes=f"project={project_name} form={form_code}", box_link=box_link,
+        box_file_id=box_file_id,
     )
 
 

@@ -117,6 +117,7 @@ def test_mark_filed_posts_body_and_returns_found(mocker):
     assert kwargs["json"] == {
         "submission_uuid": "u1",
         "box_link": "https://app.box.com/file/9",
+        "box_file_id": None,
     }
     assert kwargs["headers"]["Authorization"] == "Bearer fake-bearer"
 
@@ -124,6 +125,19 @@ def test_mark_filed_posts_body_and_returns_found(mocker):
 def test_mark_filed_found_false_when_worker_has_no_row(mocker):
     _patch_requests(mocker, _mock_response(json_body={"ok": True, "found": False}))
     assert portal_client.mark_filed(BASE, TOKEN, submission_uuid="u1", box_link="x") is False
+
+
+def test_mark_filed_carries_box_file_id_when_given(mocker):
+    req = _patch_requests(mocker, _mock_response(json_body={"ok": True, "found": True}))
+    portal_client.mark_filed(
+        BASE, TOKEN, submission_uuid="u1",
+        box_link="https://app.box.com/file/42", box_file_id="42",
+    )
+    assert req.call_args.kwargs["json"] == {
+        "submission_uuid": "u1",
+        "box_link": "https://app.box.com/file/42",
+        "box_file_id": "42",
+    }
 
 
 def test_mark_filed_401_raises_auth_error(mocker):
@@ -182,6 +196,131 @@ def test_push_jobs_503_then_success(mocker):
         BASE, TOKEN, [{"job_id": "J", "project_name": "P", "active": 1}]
     )
     assert out["upserted"] == 1
+
+
+# ---- get_pdf_requests (PR-4 Part A) --------------------------------------
+
+
+def test_get_pdf_requests_returns_rows_and_sends_bearer_and_limit(mocker):
+    rows = [
+        {"submission_uuid": "u1", "box_file_id": "f9",
+         "form_code": "jha-v1", "work_date": "2026-06-05"},
+    ]
+    req = _patch_requests(mocker, _mock_response(json_body={"pdf_requests": rows}))
+
+    out = portal_client.get_pdf_requests(BASE, TOKEN, limit=25)
+
+    assert out == rows
+    args, kwargs = req.call_args
+    assert args == ("GET", "https://portal.example.com/api/internal/pdf-requests")
+    assert kwargs["headers"]["Authorization"] == "Bearer fake-bearer"
+    assert kwargs["params"] == {"limit": 25}
+
+
+def test_get_pdf_requests_empty_returns_empty_list(mocker):
+    _patch_requests(mocker, _mock_response(json_body={"pdf_requests": []}))
+    assert portal_client.get_pdf_requests(BASE, TOKEN) == []
+
+
+def test_get_pdf_requests_drops_non_dict_rows(mocker):
+    _patch_requests(
+        mocker,
+        _mock_response(json_body={"pdf_requests": [{"submission_uuid": "u1"}, "x", 7]}),
+    )
+    assert portal_client.get_pdf_requests(BASE, TOKEN) == [{"submission_uuid": "u1"}]
+
+
+@pytest.mark.parametrize(
+    "body", [{"pdf_requests": {"x": 1}}, {"pdf_requests": "nope"}, {"pdf_requests": 5}, {}]
+)
+def test_get_pdf_requests_non_list_raises(mocker, body):
+    _patch_requests(mocker, _mock_response(json_body=body))
+    with pytest.raises(PortalTransportError, match="pdf_requests"):
+        portal_client.get_pdf_requests(BASE, TOKEN)
+
+
+def test_get_pdf_requests_401_raises_auth_without_retry(mocker):
+    req = _patch_requests(mocker, _mock_response(status=401))
+    with pytest.raises(PortalAuthError):
+        portal_client.get_pdf_requests(BASE, TOKEN)
+    assert req.call_count == 1
+
+
+def test_get_pdf_requests_non_200_raises_transport_error(mocker):
+    _patch_requests(mocker, _mock_response(status=500, text="boom"))
+    with pytest.raises(PortalTransportError, match="500"):
+        portal_client.get_pdf_requests(BASE, TOKEN)
+
+
+def test_get_pdf_requests_503_then_success(mocker):
+    mocker.patch("shared.portal_client.time.sleep")
+    _patch_requests(
+        mocker,
+        [_mock_response(status=503), _mock_response(json_body={"pdf_requests": []})],
+    )
+    assert portal_client.get_pdf_requests(BASE, TOKEN) == []
+
+
+# ---- upload_filed_pdf (PR-4 Part A) --------------------------------------
+
+
+def test_upload_filed_pdf_posts_chunk_body_and_returns_ack(mocker):
+    req = _patch_requests(
+        mocker,
+        _mock_response(json_body={"ok": True, "ready": False, "stored": True, "received": 1}),
+    )
+
+    out = portal_client.upload_filed_pdf(
+        BASE, TOKEN, submission_uuid="u1",
+        chunk_index=0, chunk_total=2, chunk_b64="QUJD",
+    )
+
+    assert out == {"ok": True, "ready": False, "stored": True, "received": 1}
+    args, kwargs = req.call_args
+    assert args == ("POST", "https://portal.example.com/api/internal/filed-pdf")
+    assert kwargs["json"] == {
+        "submission_uuid": "u1",
+        "chunk_index": 0,
+        "chunk_total": 2,
+        "chunk_b64": "QUJD",
+    }
+    assert kwargs["headers"]["Authorization"] == "Bearer fake-bearer"
+
+
+def test_upload_filed_pdf_401_raises_auth_error(mocker):
+    _patch_requests(mocker, _mock_response(status=401))
+    with pytest.raises(PortalAuthError):
+        portal_client.upload_filed_pdf(
+            BASE, TOKEN, submission_uuid="u1",
+            chunk_index=0, chunk_total=1, chunk_b64="QQ==",
+        )
+
+
+def test_upload_filed_pdf_invalid_chunk_400_raises_transport_error(mocker):
+    # A bad chunk (400 invalid_chunk) must SURFACE as a transport error, not a silent
+    # return — upload_filed_pdf delegates to the raise-on-non-200 `_request`.
+    _patch_requests(mocker, _mock_response(status=400, text='{"error":"invalid_chunk"}'))
+    with pytest.raises(PortalTransportError, match="400"):
+        portal_client.upload_filed_pdf(
+            BASE, TOKEN, submission_uuid="u1",
+            chunk_index=0, chunk_total=1, chunk_b64="QQ==",
+        )
+
+
+def test_upload_filed_pdf_503_then_success(mocker):
+    mocker.patch("shared.portal_client.time.sleep")
+    _patch_requests(
+        mocker,
+        [
+            _mock_response(status=503),
+            _mock_response(json_body={"ok": True, "ready": True, "stored": True, "received": 1}),
+        ],
+    )
+    out = portal_client.upload_filed_pdf(
+        BASE, TOKEN, submission_uuid="u1",
+        chunk_index=0, chunk_total=1, chunk_b64="QQ==",
+    )
+    assert out["ready"] is True
 
 
 # ---- admin_request -------------------------------------------------------
