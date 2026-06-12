@@ -1,0 +1,337 @@
+{
+  "form_code": "lifting-plan-v1",
+  "parent_form_code": "lifting-plan",
+  "form_name": "Crane & Rigging Critical Lift Plan",
+  "variant_label": null,
+  "version": 1,
+  "archetype": "sectioned_assessment",
+  "source_pdf": "Lifting_Plan_Evergreen_V2.pdf",
+  "branding": { "logo": true, "title": "CRANE & RIGGING CRITICAL LIFT PLAN" },
+  "sections": [
+    {
+      "type": "static_text",
+      "text": "CRITICAL LIFT THRESHOLD: 50,000 LBS — All fields must be completed before lift commences. This document must remain on site.",
+      "emphasis": "legal"
+    },
+    {
+      "type": "static_text",
+      "text": "ANY LIFT EXCEEDING 75% OF CRANE RATED CAPACITY IS A CRITICAL LIFT — REQUIRES ENGINEER-STAMPED PLAN & SECOND REVIEW",
+      "emphasis": "legal"
+    },
+    {
+      "type": "static_text",
+      "text": "Section 1 — Project & Lift Identification",
+      "emphasis": "heading"
+    },
+    {
+      "type": "header",
+      "fields": [
+        { "key": "project_name", "label": "Project Name", "input": "text" },
+        { "key": "project_address", "label": "Project Address / Location", "input": "text" },
+        { "key": "project_number_po", "label": "Project Number / PO #", "input": "text" },
+        { "key": "lift_plan_number", "label": "Lift Plan Number", "input": "text" },
+        { "key": "lift_plan_revision", "label": "Lift Plan Revision #", "input": "text" },
+        { "key": "date_of_lift", "label": "Date of Lift", "input": "date" },
+        { "key": "planned_start_time", "label": "Planned Start Time", "input": "time" },
+        { "key": "backup_rain_date", "label": "Backup / Rain Date", "input": "date" },
+        { "key": "general_contractor", "label": "General Contractor", "input": "text" },
+        { "key": "crane_rigging_company", "label": "Crane / Rigging Company", "input": "text" },
+        { "key": "lift_director_name", "label": "Lift Director Name", "input": "text" },
+        { "key": "lift_director_phone", "label": "Lift Director Phone", "input": "text" },
+        { "key": "site_superintendent", "label": "Site Superintendent", "input": "text" },
+        { "key": "safety_officer_on_site", "label": "Safety Officer on Site", "input": "text" }
+      ]
+    },
+    {
+      "type": "static_text",
+      "text": "Section 2 — Load Description",
+      "emphasis": "heading"
+    },
+    {
+      "type": "header",
+      "fields": [
+        { "key": "description_of_load", "label": "Description of Load", "input": "textarea" },
+        { "key": "load_dimensions", "label": "Load Dimensions (L x W x H)", "input": "text" },
+        { "key": "load_material_type", "label": "Load Material / Type", "input": "text" },
+        { "key": "center_of_gravity_described", "label": "Center of Gravity — Described", "input": "text" },
+        { "key": "cog_offset_from_center", "label": "Center of Gravity — Offset from Center?", "input": "text" },
+        { "key": "lifting_attachment_points", "label": "Lifting Attachment Points", "input": "text" },
+        { "key": "special_handling_requirements", "label": "Special Handling Requirements", "input": "textarea" },
+        { "key": "load_drawing_ref", "label": "Load Drawing / Ref Document #", "input": "text" }
+      ]
+    },
+    {
+      "type": "static_text",
+      "text": "Section 3 — Load Weight Calculation",
+      "emphasis": "heading"
+    },
+    {
+      "type": "header",
+      "fields": [
+        { "key": "bare_load_weight_lbs", "label": "Bare Load Weight (lbs.)", "input": "number" },
+        { "key": "rigging_weight_lbs", "label": "Rigging Weight (lbs.) — slings, shackles, hooks", "input": "number" },
+        { "key": "lifting_beam_spreader_bar_lbs", "label": "Lifting Beam / Spreader Bar (lbs.)", "input": "number" },
+        { "key": "crane_block_hook_weight_lbs", "label": "Crane Block / Hook Weight (lbs.)", "input": "number" },
+        { "key": "other_attachments_lbs", "label": "Other Attachments (lbs.)", "input": "number" },
+        { "key": "total_load_weight_lbs", "label": "TOTAL LOAD WEIGHT (lbs.)", "input": "number" },
+        { "key": "total_load_weight_tons", "label": "Total Load Weight (tons)", "input": "number" },
+        { "key": "crane_chart_rated_capacity_lbs", "label": "Crane Chart Rated Capacity at Config (lbs.)", "input": "number" },
+        { "key": "pct_rated_capacity_used", "label": "% of Rated Capacity Used", "input": "number" }
+      ]
+    },
+    {
+      "type": "static_text",
+      "text": "If >75% = CRITICAL LIFT",
+      "emphasis": "legal"
+    },
+    {
+      "type": "repeating_table",
+      "key": "cranes",
+      "title": "Section 4 — Crane Information",
+      "min_rows": 3,
+      "allow_add": true,
+      "columns": [
+        { "key": "crane_number", "label": "Crane #", "input": "text" },
+        { "key": "make_model", "label": "Make/Model", "input": "text" },
+        { "key": "capacity_tons", "label": "Capacity (tons)", "input": "number" },
+        { "key": "boom_jib_config", "label": "Boom/Jib Config", "input": "text" },
+        { "key": "operator_cert_no", "label": "Operator Cert #", "input": "text" }
+      ]
+    },
+    {
+      "type": "static_text",
+      "text": "Section 4 — Crane Configuration",
+      "emphasis": "heading"
+    },
+    {
+      "type": "header",
+      "fields": [
+        { "key": "lift_type", "label": "Lift Type", "input": "select", "options": ["Single", "Tandem", "Other"] },
+        { "key": "crane_radius_ft", "label": "Crane Radius (ft)", "input": "number" },
+        { "key": "boom_length_ft", "label": "Boom Length (ft)", "input": "number" },
+        { "key": "jib_length_ft", "label": "Jib Length (ft) if applicable", "input": "number" },
+        { "key": "counterweight_configuration", "label": "Counterweight Configuration", "input": "text" },
+        { "key": "outriggers_fully_extended", "label": "Outrigger Fully Extended? (Y/N)", "input": "select", "options": ["Yes", "No"] },
+        { "key": "outrigger_pad_size_bearing", "label": "Outrigger Pad Size & Bearing Capacity", "input": "text" },
+        { "key": "ground_bearing_pressure_psi", "label": "Ground Bearing Pressure Required (PSI)", "input": "number" },
+        { "key": "ground_bearing_capacity_verified_by", "label": "Ground Bearing Capacity Verified By", "input": "text" },
+        { "key": "mat_cribbing_required", "label": "Mat / Cribbing Required? Describe", "input": "text" },
+        { "key": "annual_inspection_current_doc", "label": "Annual Inspection Current? (Doc #)", "input": "text" },
+        { "key": "last_load_test_date", "label": "Last Load Test Date", "input": "date" }
+      ]
+    },
+    {
+      "type": "repeating_table",
+      "key": "rigging_equipment",
+      "title": "Section 5 — Rigging Equipment",
+      "min_rows": 4,
+      "allow_add": true,
+      "columns": [
+        { "key": "component", "label": "Component", "input": "text" },
+        { "key": "type_size", "label": "Type/Size", "input": "text" },
+        { "key": "wll_lbs", "label": "WLL (lbs)", "input": "number" },
+        { "key": "qty", "label": "Qty", "input": "number" },
+        { "key": "inspection_date", "label": "Inspection Date", "input": "date" }
+      ]
+    },
+    {
+      "type": "static_text",
+      "text": "Section 5 — Rigging Calculations",
+      "emphasis": "heading"
+    },
+    {
+      "type": "header",
+      "fields": [
+        { "key": "sling_angle_degrees", "label": "Sling Angle (degrees from horizontal)", "input": "number" },
+        { "key": "sling_tension_factor", "label": "Sling Tension Factor", "input": "number" },
+        { "key": "adjusted_sling_wll_lbs", "label": "Adjusted Sling WLL (lbs. each)", "input": "number" },
+        { "key": "lifting_beam_used", "label": "Lifting Beam / Spreader Bar Used? (Y/N)", "input": "select", "options": ["Yes", "No"] },
+        { "key": "spreader_bar_capacity_lbs", "label": "Spreader Bar Capacity (lbs.)", "input": "number" },
+        { "key": "shackle_size_wll", "label": "Shackle Size & WLL", "input": "text" },
+        { "key": "tag_line_requirements", "label": "Tag Line Requirements", "input": "text" }
+      ]
+    },
+    {
+      "type": "static_text",
+      "text": "Section 6 — Site Conditions & Hazards",
+      "emphasis": "heading"
+    },
+    {
+      "type": "header",
+      "fields": [
+        { "key": "wind_speed_limit_mph", "label": "Wind Speed Limit for This Lift (mph)", "input": "number" },
+        { "key": "forecasted_wind_speed_mph", "label": "Forecasted Wind Speed on Lift Date", "input": "number" },
+        { "key": "wind_direction", "label": "Wind Direction on Lift Date", "input": "text" },
+        { "key": "temperature_high_low", "label": "Temperature (°F) — Expected High/Low", "input": "text" },
+        { "key": "precipitation_icing", "label": "Precipitation / Icing Conditions", "input": "text" },
+        { "key": "soil_ground_condition", "label": "Soil / Ground Condition", "input": "text" },
+        { "key": "slopes_grade_near_crane", "label": "Slopes or Grade Near Crane Setup", "input": "text" },
+        { "key": "overhead_obstructions", "label": "Overhead Obstructions (describe)", "input": "textarea" },
+        { "key": "underground_utilities_julie811", "label": "Underground Utilities — JULIE/811 Called? (Y/N)", "input": "select", "options": ["Yes", "No"] },
+        { "key": "overhead_power_lines_distance", "label": "Overhead Power Lines? Distance to Boom", "input": "text" },
+        { "key": "min_clearance_power_lines_ft", "label": "Minimum Clearance from Power Lines (ft)", "input": "number" },
+        { "key": "exclusion_zone_established", "label": "Exclusion Zone Established? (Y/N)", "input": "select", "options": ["Yes", "No"] },
+        { "key": "exclusion_zone_dimensions", "label": "Exclusion Zone Dimensions", "input": "text" },
+        { "key": "personnel_in_exclusion_zone", "label": "Personnel in Exclusion Zone? (Y/N)", "input": "select", "options": ["Yes", "No"] },
+        { "key": "traffic_control_required", "label": "Traffic Control Required? (Y/N)", "input": "select", "options": ["Yes", "No"] },
+        { "key": "other_site_hazards", "label": "Other Site Hazards — Describe", "input": "textarea" }
+      ]
+    },
+    {
+      "type": "static_text",
+      "text": "Section 7 — Lift Sequence & Communication",
+      "emphasis": "heading"
+    },
+    {
+      "type": "header",
+      "fields": [
+        { "key": "step1_pre_lift_setup", "label": "Step 1 — Pre-Lift Setup", "input": "textarea" },
+        { "key": "step2_rig_load", "label": "Step 2 — Rig Load", "input": "textarea" },
+        { "key": "step3_trial_test_lift", "label": "Step 3 — Trial / Test Lift Height", "input": "textarea" },
+        { "key": "step4_travel_path", "label": "Step 4 — Travel Path Description", "input": "textarea" },
+        { "key": "step5_set_down_location", "label": "Step 5 — Set Down Location", "input": "textarea" },
+        { "key": "step6_derigging", "label": "Step 6 — De-Rigging Procedure", "input": "textarea" },
+        { "key": "hand_signal_protocol", "label": "Hand Signal Protocol (Y/N / Radio)", "input": "select", "options": ["Hand Signals", "Radio", "Both"] },
+        { "key": "radio_channel_frequency", "label": "Radio Channel / Frequency", "input": "text" },
+        { "key": "designated_signal_person", "label": "Designated Signal Person Name", "input": "text" },
+        { "key": "emergency_stop_signal", "label": "Emergency Stop Signal", "input": "text" },
+        { "key": "abort_criteria", "label": "Abort Criteria (list conditions)", "input": "textarea" }
+      ]
+    },
+    {
+      "type": "checklist",
+      "key": "pre_lift_checklist",
+      "title": "Section 8 — Pre-Lift Safety Checklist",
+      "groups": [
+        {
+          "key": "pre_lift",
+          "label": "Pre-Lift Safety Checklist",
+          "scale": ["YES", "NO"],
+          "comment_per_item": true,
+          "items": [
+            { "key": "plan_reviewed_approved", "label": "Lift plan reviewed and approved by all required parties" },
+            { "key": "load_chart_confirmed", "label": "Crane load chart confirmed for this configuration" },
+            { "key": "annual_inspection_current", "label": "Crane annual inspection current and on file" },
+            { "key": "operator_cert_verified", "label": "Operator certification verified and on file" },
+            { "key": "rigger_cert_verified", "label": "Rigger certification verified and on file" },
+            { "key": "rigging_inspected_tagged", "label": "All rigging inspected and tagged with current WLL" },
+            { "key": "rigging_good_condition", "label": "Rigging in good condition — no cuts, kinks, corrosion" },
+            { "key": "shackles_moused", "label": "Shackles moused / secured" },
+            { "key": "outriggers_extended_pads", "label": "Outriggers fully extended and pads set" },
+            { "key": "ground_bearing_verified", "label": "Ground bearing capacity verified" },
+            { "key": "crane_level_confirmed", "label": "Crane level confirmed (within spec)" },
+            { "key": "anti_two_block_operational", "label": "Anti-two-block device operational" },
+            { "key": "lmi_operational", "label": "Load moment indicator (LMI) operational" },
+            { "key": "swing_radius_barricaded", "label": "Swing radius exclusion zone barricaded" },
+            { "key": "power_line_clearance_confirmed", "label": "Overhead power line clearance confirmed" },
+            { "key": "julie_811_obtained", "label": "JULIE / 811 clearance obtained" },
+            { "key": "weather_within_limits", "label": "Weather conditions within acceptable limits" },
+            { "key": "wind_speed_below_limit", "label": "Wind speed verified below lift limit" },
+            { "key": "tag_lines_personnel_trained", "label": "Tag lines in place and personnel trained" },
+            { "key": "signal_person_briefed", "label": "Signal person in place and briefed" },
+            { "key": "non_essential_personnel_cleared", "label": "All non-essential personnel cleared from area" },
+            { "key": "emergency_action_plan_reviewed", "label": "Emergency action plan reviewed with crew" },
+            { "key": "first_aid_fire_extinguisher", "label": "First aid / fire extinguisher on site" },
+            { "key": "toolbox_talk_completed", "label": "Toolbox talk / pre-lift briefing completed" },
+            { "key": "load_attached_test_lift", "label": "Load securely attached — test lift performed (6 inches)" },
+            { "key": "load_cog_confirmed_stable", "label": "Load COG confirmed stable at test lift height" },
+            { "key": "critical_lift_engineer_stamp", "label": "Critical lift engineer stamp obtained (if >75% capacity)" },
+            { "key": "owner_gc_approval", "label": "Owner / GC approval obtained (if required)" }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "static_text",
+      "text": "Section 9 — Tandem Lift & Critical Lift Addendum (Complete if applicable)",
+      "emphasis": "heading"
+    },
+    {
+      "type": "header",
+      "fields": [
+        { "key": "is_tandem_dual_crane", "label": "Is this a Tandem / Dual Crane Lift? (Y/N)", "input": "select", "options": ["Yes", "No"] },
+        { "key": "lead_crane_load_share", "label": "Lead Crane Load Share (lbs. / %)", "input": "text" },
+        { "key": "tail_crane_load_share", "label": "Tail Crane Load Share (lbs. / %)", "input": "text" },
+        { "key": "communication_protocol_operators", "label": "Communication Protocol Between Operators", "input": "text" },
+        { "key": "unified_lift_coordinator", "label": "Unified Lift Coordinator Name", "input": "text" },
+        { "key": "is_critical_lift", "label": "Is this a Critical Lift? (>75% rated cap)", "input": "select", "options": ["Yes", "No"] },
+        { "key": "engineer_of_record_stamped", "label": "Engineer of Record (Stamped Plan Attached?)", "input": "text" },
+        { "key": "eor_license_state", "label": "EOR License / State", "input": "text" },
+        { "key": "owner_authority_approval_date", "label": "Owner / Authority Approval Date", "input": "date" },
+        { "key": "pre_lift_meeting_date_time_attendees", "label": "Pre-Lift Meeting Date / Time / Attendees", "input": "textarea" }
+      ]
+    },
+    {
+      "type": "static_text",
+      "text": "Section 10 — Incident / Abort / Near Miss Log",
+      "emphasis": "heading"
+    },
+    {
+      "type": "header",
+      "fields": [
+        { "key": "lift_aborted", "label": "Was Lift Aborted? (Y/N)", "input": "select", "options": ["Yes", "No"] },
+        { "key": "reason_for_abort", "label": "Reason for Abort", "input": "textarea" },
+        { "key": "time_of_abort", "label": "Time of Abort", "input": "time" },
+        { "key": "corrective_action_taken", "label": "Corrective Action Taken", "input": "textarea" },
+        { "key": "relift_authorization_by", "label": "Re-Lift Authorization By", "input": "text" },
+        { "key": "near_miss_or_incident", "label": "Any Near Miss or Incident? (Y/N)", "input": "select", "options": ["Yes", "No"] },
+        { "key": "incident_description", "label": "Incident Description", "input": "textarea" },
+        { "key": "incident_report_filed", "label": "Incident Report (if filed)", "input": "text" }
+      ]
+    },
+    {
+      "type": "static_text",
+      "text": "Section 11 — Post-Lift Notes & Close-Out",
+      "emphasis": "heading"
+    },
+    {
+      "type": "header",
+      "fields": [
+        { "key": "actual_lift_start_time", "label": "Actual Lift Start Time", "input": "time" },
+        { "key": "actual_lift_completion_time", "label": "Actual Lift Completion Time", "input": "time" },
+        { "key": "load_set_successfully", "label": "Load Set Successfully? (Y/N)", "input": "select", "options": ["Yes", "No"] },
+        { "key": "rigging_removed_stored", "label": "Rigging Removed and Stored?", "input": "text" },
+        { "key": "crane_area_secured", "label": "Crane Area Secured / Cleaned?", "input": "text" },
+        { "key": "damage_to_equipment_site", "label": "Any Damage to Equipment or Site?", "input": "textarea" },
+        { "key": "post_lift_notes", "label": "Post-Lift Notes", "input": "textarea" }
+      ]
+    },
+    {
+      "type": "static_text",
+      "text": "All parties below must be signed before lift commences. Digital signatures accepted if project allows.",
+      "emphasis": "legal"
+    },
+    {
+      "type": "signature_table",
+      "key": "authorizations",
+      "title": "Section 12 — Authorizations & Signatures",
+      "min_rows": 4,
+      "allow_add": true,
+      "columns": [
+        { "key": "role", "label": "Role", "input": "text" },
+        { "key": "signature", "label": "Signature", "input": "signature" },
+        { "key": "print_name", "label": "Print Name", "input": "text" },
+        { "key": "date_time", "label": "Date/Time", "input": "text" },
+        { "key": "cert_no", "label": "Cert #", "input": "text" }
+      ]
+    },
+    {
+      "type": "static_text",
+      "text": "DOCUMENT RETENTION: Retain completed lift plan for minimum 3 years or per contract requirements, whichever is longer.",
+      "emphasis": "footer"
+    },
+    {
+      "type": "static_text",
+      "text": "Form Provenance",
+      "emphasis": "heading"
+    },
+    {
+      "type": "header",
+      "fields": [
+        { "key": "prepared_by", "label": "Prepared By", "input": "text" },
+        { "key": "company", "label": "Company", "input": "text" },
+        { "key": "prepared_date", "label": "Date", "input": "date" }
+      ]
+    }
+  ]
+}

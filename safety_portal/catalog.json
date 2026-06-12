@@ -226,6 +226,27 @@
           "display_order": 1
         }
       ]
+    },
+    {
+      "parent_form_code": "lifting-plan",
+      "name": "Crane & Rigging Critical Lift Plan",
+      "display_order": 7,
+      "forms": [
+        {
+          "identity": "lifting-plan",
+          "variant_label": null,
+          "status": "active",
+          "current_version": 1,
+          "current_form_code": "lifting-plan-v1",
+          "versions": [
+            {
+              "version": 1,
+              "form_code": "lifting-plan-v1"
+            }
+          ],
+          "display_order": 1
+        }
+      ]
     }
   ]
 }
