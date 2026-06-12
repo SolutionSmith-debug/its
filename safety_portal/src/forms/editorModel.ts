@@ -32,6 +32,7 @@ export const FIELD_INPUTS: Input[] = [
   "number",
   "select",
   "signature",
+  "photo",
 ];
 
 export const ITEM_KINDS = ["rated", "numeric", "circle_one", "text"] as const;
