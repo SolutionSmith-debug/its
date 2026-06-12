@@ -50,7 +50,16 @@
       "required_signature_inputs_min": 1
     },
     "visitor-sign-in": {},
-    "hsse-work-observation": {}
+    "hsse-work-observation": {},
+    "lifting-plan": {
+      "required_section_types": ["signature_table", "checklist"],
+      "required_signature_inputs_min": 1,
+      "required_static_text": [
+        "CRITICAL LIFT THRESHOLD: 50,000 LBS",
+        "ANY LIFT EXCEEDING 75% OF CRANE RATED CAPACITY IS A CRITICAL LIFT",
+        "DOCUMENT RETENTION: Retain completed lift plan for minimum 3 years"
+      ]
+    }
   },
   "identities": {}
 }
