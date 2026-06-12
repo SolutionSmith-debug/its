@@ -1,6 +1,7 @@
 import type { Dispatch, SetStateAction } from "react";
+import { PhotoField } from "../components/PhotoField";
 import { SignaturePad } from "../components/SignaturePad";
-import type { Field, FormDefinition, Group, Section } from "./types";
+import type { Field, FormDefinition, Group, PhotoValue, Section } from "./types";
 
 // The fill state, keyed per section:
 //   header field key          -> string (signature field -> SVG path string)
@@ -21,7 +22,7 @@ export function initialValues(def: FormDefinition): FormValues {
   const v: FormValues = {};
   for (const s of def.sections) {
     if (s.type === "header") {
-      for (const f of s.fields) v[f.key] = "";
+      for (const f of s.fields) v[f.key] = f.input === "photo" ? [] : "";
     } else if (s.type === "repeating_table" || s.type === "signature_table") {
       const n = Math.max(1, s.min_rows ?? 1);
       v[s.key] = Array.from({ length: n }, () => emptyRow(s.columns));
@@ -45,6 +46,10 @@ interface Props {
 export function FormRenderer({ def, values, setValues }: Props) {
   const setField = (key: string, val: string) =>
     setValues((v) => ({ ...v, [key]: val }));
+
+  // Photo header fields hold PhotoValue[] (not string) — see types.PhotoValue.
+  const setPhotos = (key: string, next: PhotoValue[]) =>
+    setValues((v) => ({ ...v, [key]: next }));
 
   const setCell = (secKey: string, idx: number, colKey: string, val: string) =>
     setValues((v) => {
@@ -77,6 +82,7 @@ export function FormRenderer({ def, values, setValues }: Props) {
           section={s}
           values={values}
           setField={setField}
+          setPhotos={setPhotos}
           setCell={setCell}
           addRow={addRow}
           removeRow={removeRow}
@@ -91,6 +97,7 @@ interface SectionProps {
   section: Section;
   values: FormValues;
   setField: (k: string, v: string) => void;
+  setPhotos: (k: string, next: PhotoValue[]) => void;
   setCell: (sec: string, idx: number, col: string, v: string) => void;
   addRow: (sec: string, cols: Field[]) => void;
   removeRow: (sec: string, idx: number) => void;
@@ -107,10 +114,15 @@ function SectionView(p: SectionProps) {
         <section className="fr__section">
           {s.title ? <h2 className="fr__section-title">{s.title}</h2> : null}
           <div className="fr__grid">
-            {fields.map((f) => (
-              <FieldView key={f.key} field={f} value={String(p.values[f.key] ?? "")}
-                onChange={(v) => p.setField(f.key, v)} />
-            ))}
+            {fields.map((f) =>
+              f.input === "photo" ? (
+                <PhotoField key={f.key} field={f}
+                  photos={(p.values[f.key] as PhotoValue[]) ?? []}
+                  onChange={(next) => p.setPhotos(f.key, next)} />
+              ) : (
+                <FieldView key={f.key} field={f} value={String(p.values[f.key] ?? "")}
+                  onChange={(v) => p.setField(f.key, v)} />
+              ))}
           </div>
         </section>
       );

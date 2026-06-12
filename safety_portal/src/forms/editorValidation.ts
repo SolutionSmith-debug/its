@@ -138,6 +138,9 @@ function validateSection(s: Section, idx: number, topLevel: string[], errors: st
         if (local.has(c.key)) errors.push(`${where}: duplicate column key "${c.key}".`);
         local.add(c.key);
         if (c.input === "signature") sigCount++;
+        // Photo fields are header-level only (v1) — table rows hold strings, and the PDF
+        // renderer (PR-2) lays photos out as header-level figures, not table cells.
+        if (c.input === "photo") errors.push(`${where}: photo fields are header-level only (not table columns).`);
       }
       if (s.type === "signature_table" && sigCount !== 1) {
         errors.push(`${where} (signature table) must have exactly one signature column (has ${sigCount}).`);

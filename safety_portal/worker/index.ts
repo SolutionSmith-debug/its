@@ -396,6 +396,67 @@ app.get("/api/recent", requireSession, async (c) => {
  * forwards this payload to intake.py; it is NOT wired here. INVARIANT 2: the body
  * is type-checked + length-bounded; the job_id is verified against D1.
  */
+// ── Photo values (PR-1, 2026-06-12) ─────────────────────────────────────────────
+// D1-inline transport (owner decision 2026-06-12): site photos ride payload_json as
+// base64 JPEG/PNG inside `values`, so the canonicalPayload HMAC covers them with ZERO
+// signing changes (regression-locked in test/photos.test.ts). The Worker enforces
+// SHAPE/BOUNDS only — Invariant 2's trust boundary stays Mac-side (§34 screening in
+// intake, PR-2) before any Box upload or render. worker/types.ts "No R2" stance is
+// preserved: D1 remains the transient queue; Box remains the system of record; the
+// daily prune already cleans filed rows. Never log photo bytes.
+const PHOTO_MAX_PER_FIELD = 4;
+const PHOTO_MAX_PER_SUBMISSION = 8;
+const PHOTO_MAX_BYTES = 400_000; // decoded bytes, per photo (client targets ≤ this)
+// Pre-photos cap was 1_000_000 (audit #1 era). D1 row practical ceiling is ~2MB;
+// 1_800_000 leaves headroom for the non-photo values + SQL row overhead.
+const PAYLOAD_MAX = 1_800_000;
+const B64_RE = /^[A-Za-z0-9+/]+={0,2}$/;
+
+function b64DecodedLen(s: string): number {
+  const pad = s.endsWith("==") ? 2 : s.endsWith("=") ? 1 : 0;
+  return Math.floor((s.length * 3) / 4) - pad;
+}
+/** First decoded bytes must be JPEG (FF D8 FF) or PNG (89 50 4E 47). */
+function photoMagicOk(b64: string): boolean {
+  let head: string;
+  try {
+    head = atob(b64.slice(0, 8));
+  } catch {
+    return false;
+  }
+  if (head.length < 4) return false;
+  const b = [head.charCodeAt(0), head.charCodeAt(1), head.charCodeAt(2), head.charCodeAt(3)];
+  if (b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return true; // JPEG
+  return b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47; // PNG
+}
+const PHOTO_KEYS = ["data", "name", "taken_at", "gps"] as const;
+/** Exact-shape detection ({data,name,taken_at,gps}, all strings) so table-row arrays
+ *  (Record<colKey,string>[]) are never misread as photo arrays. */
+function isPhotoItem(x: unknown): x is Record<(typeof PHOTO_KEYS)[number], string> {
+  if (typeof x !== "object" || x === null || Array.isArray(x)) return false;
+  const o = x as Record<string, unknown>;
+  const keys = Object.keys(o);
+  return keys.length === PHOTO_KEYS.length && PHOTO_KEYS.every((k) => typeof o[k] === "string");
+}
+/** null = OK; string = machine reason for a 400 invalid_photo. */
+function validatePhotoValues(values: Record<string, unknown>): string | null {
+  let total = 0;
+  for (const v of Object.values(values)) {
+    if (!Array.isArray(v) || v.length === 0 || !v.some(isPhotoItem)) continue;
+    if (!v.every(isPhotoItem)) return "mixed_photo_array";
+    if (v.length > PHOTO_MAX_PER_FIELD) return "too_many_photos_in_field";
+    for (const p of v) {
+      if (p.name.length > 100 || p.taken_at.length > 40 || p.gps.length > 64) return "photo_meta_too_long";
+      if (p.data.length === 0 || p.data.length % 4 !== 0 || !B64_RE.test(p.data)) return "photo_not_base64";
+      if (b64DecodedLen(p.data) > PHOTO_MAX_BYTES) return "photo_too_large";
+      if (!photoMagicOk(p.data)) return "photo_bad_magic";
+      total += 1;
+      if (total > PHOTO_MAX_PER_SUBMISSION) return "too_many_photos";
+    }
+  }
+  return null;
+}
+
 app.post("/api/submit", requireSession, async (c) => {
   let body: Record<string, unknown>;
   try {
@@ -426,8 +487,12 @@ app.post("/api/submit", requireSession, async (c) => {
   }
   const job = await c.env.DB.prepare("SELECT 1 FROM jobs WHERE job_id=? AND active=1").bind(job_id).first();
   if (!job) return c.json({ error: "unknown_job" }, 422);
+  // Photo bounds/shape gate (PR-1) — see validatePhotoValues above. Returns the machine
+  // reason in `detail` (never the bytes) so the SPA can show a useful message.
+  const photoErr = validatePhotoValues(values as Record<string, unknown>);
+  if (photoErr) return c.json({ error: "invalid_photo", detail: photoErr }, 400);
   const payload = JSON.stringify(values);
-  if (payload.length > 1_000_000) return c.json({ error: "too_large" }, 413);
+  if (payload.length > PAYLOAD_MAX) return c.json({ error: "too_large" }, 413);
 
   // ── Submit-as ("filled out as") dual-attribution ──────────────────────────
   // The TRUE actor is the authenticated session user — always recorded, never

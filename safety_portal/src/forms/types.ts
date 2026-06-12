@@ -4,7 +4,7 @@
 // view of the one contract.
 
 export type Input =
-  | "text" | "textarea" | "date" | "time" | "number" | "select" | "signature";
+  | "text" | "textarea" | "date" | "time" | "number" | "select" | "signature" | "photo";
 
 export interface Field {
   key: string;
@@ -12,6 +12,21 @@ export interface Field {
   input: Input;
   options?: string[];
   required?: boolean;
+  /** photo input only: max photos a submitter may attach (1..4, default 4). */
+  max_count?: number;
+}
+
+/** One captured site photo riding payload_json (D1-inline transport, 2026-06-12).
+ *  `data` = base64 JPEG/PNG re-encoded client-side (canvas re-encode drops EXIF — the
+ *  "strip" half of caption-then-strip); `taken_at`/`gps` = EXIF sidecar extracted from
+ *  the ORIGINAL bytes BEFORE re-encode — UNTRUSTED display text downstream, never logic
+ *  input. Bounds re-enforced by the Worker; Mac-side §34 screening (PR-2) is the trust
+ *  boundary. */
+export interface PhotoValue {
+  data: string;
+  name: string;
+  taken_at: string;
+  gps: string;
 }
 
 export interface Item {

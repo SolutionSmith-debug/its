@@ -10,7 +10,9 @@ import requiredContent from "../required-content.json";
 // value keys, and hard bounds on adversarial input. It returns a STABLE reason string so
 // the editor can surface it; it never throws.
 
-const INPUTS = new Set(["text", "textarea", "date", "time", "number", "select", "signature"]);
+const INPUTS = new Set(["text", "textarea", "date", "time", "number", "select", "signature", "photo"]);
+// Photo bounds (PR-1, 2026-06-12) — mirror src/components/PhotoField.tsx + worker/index.ts.
+const PHOTO_MAX_COUNT = 4;
 const ITEM_KINDS = new Set(["rated", "numeric", "circle_one", "text"]);
 const FREEFORM_INPUTS = new Set(["textarea", "text"]);
 const EMPHASES = new Set(["footer", "heading", "legal"]);
@@ -149,6 +151,14 @@ function validateField(f: unknown, where: string): { key: string } | string {
     return `${where}: select field ${f.key as string} needs non-empty options`;
   }
   if (f.required !== undefined && typeof f.required !== "boolean") return `${where}: field ${f.key as string} invalid required`;
+  if (f.max_count !== undefined) {
+    if (
+      f.input !== "photo" || typeof f.max_count !== "number" ||
+      !Number.isInteger(f.max_count) || f.max_count < 1 || f.max_count > PHOTO_MAX_COUNT
+    ) {
+      return `${where}: field ${f.key as string} invalid max_count (photo fields only, 1..${PHOTO_MAX_COUNT})`;
+    }
+  }
   return { key: f.key as string };
 }
 
@@ -212,6 +222,9 @@ function validateSection(s: unknown, idx: number, topLevel: string[]): string | 
         if (typeof r === "string") return r;
         colKeys.push(r.key);
         if (isObject(col) && col.input === "signature") sigCount++;
+        // Header-level only (v1): table rows are Record<string,string> on the wire and the
+        // Python renderer (PR-2) lays photos out as figures, not cells.
+        if (isObject(col) && col.input === "photo") return `${where}: photo fields are header-level only`;
       }
       if (type === "signature_table" && sigCount !== 1) return `${where}: signature_table needs exactly one signature column`;
       if (s.min_rows !== undefined && (typeof s.min_rows !== "number" || !Number.isInteger(s.min_rows) || s.min_rows < 0)) {

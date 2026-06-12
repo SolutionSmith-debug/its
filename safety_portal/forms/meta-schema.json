@@ -21,7 +21,7 @@
     "sections": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/section" } }
   },
   "$defs": {
-    "input": { "type": "string", "enum": ["text", "textarea", "date", "time", "number", "select", "signature"] },
+    "input": { "type": "string", "enum": ["text", "textarea", "date", "time", "number", "select", "signature", "photo"] },
     "field": {
       "type": "object", "additionalProperties": false,
       "required": ["key", "label", "input"],
@@ -29,6 +29,7 @@
         "key": { "type": "string" }, "label": { "type": "string" },
         "input": { "$ref": "#/$defs/input" },
         "options": { "type": "array", "items": { "type": "string" } },
+        "max_count": { "type": "integer", "minimum": 1, "maximum": 4, "description": "photo input only: max photos a submitter may attach (default 4). Header-level fields only — enforced by publishValidation.ts." },
         "required": { "type": "boolean" }
       }
     },
