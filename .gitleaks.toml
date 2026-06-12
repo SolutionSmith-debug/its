@@ -1,0 +1,21 @@
+# gitleaks configuration for the `secrets` CI gate
+# (.github/workflows runs `gitleaks git . --redact --no-banner --exit-code 1` over the
+# FULL commit history). This EXTENDS the default ruleset — it does not replace it, so all
+# ~100 default secret-detection rules stay active.
+[extend]
+useDefault = true
+
+# Safety Portal form DEFINITIONS are public field schemas: the single source of truth both
+# renderers (the browser SPA + the Python PDF) consume. They contain only field keys,
+# labels, options, and static legal text — NEVER secrets, and they are served to the
+# browser as-is. Their snake_case field keys (e.g. "julie_811_obtained", a JULIE/811
+# pre-lift checklist item on the Crane & Rigging Critical Lift Plan) false-positive the
+# default `generic-api-key` heuristic, which reads `"key": "<entropy-ish token>"` as a
+# credential. Exempt the definitions directory from secret scanning; nothing secret is
+# ever committed there. (Path-scoped, so a real secret committed ANYWHERE ELSE is still
+# caught — and commit-independent, so it survives squash-merge.)
+[allowlist]
+description = "Safety Portal form definitions are public field-schema JSON (no secrets)."
+paths = [
+    '''safety_portal/forms/.*\.json$''',
+]
