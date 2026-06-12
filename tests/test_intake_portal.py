@@ -56,6 +56,7 @@ def stub(mocker) -> dict[str, MagicMock]:
         "get_or_create": mocker.patch.object(intake.box_client, "get_or_create_folder", return_value="fb1"),
         "review": mocker.patch.object(intake.review_queue, "add"),
         "log": mocker.patch.object(intake.error_log, "log"),
+        "clamav": mocker.patch.object(intake, "_photo_clamav_enabled", return_value=False),
     }
     return s
 
@@ -441,3 +442,181 @@ def test_orphan_unrenderable_form_falls_back_to_review(orphan_on):
     intake.process_portal_submission(dict(BASE_SUB))
     orphan_on["review"].assert_called_once()
     orphan_on["add_rows"].assert_not_called()
+
+
+# ==========================================================================
+# §34 portal photo screening (PR-2)
+# ==========================================================================
+import base64  # noqa: E402 — grouped with the photo tests for locality
+import io  # noqa: E402
+
+from safety_reports import photo_screen  # noqa: E402
+
+# A form definition with a header-level photo field.
+PHOTO_DEFINITION = {
+    "form_code": "jha-v1",
+    "parent_form_code": "jha",
+    "form_name": "Job Hazard Analysis",
+    "sections": [
+        {
+            "type": "header",
+            "fields": [
+                {"key": "work_location", "input": "text", "label": "Location"},
+                {"key": "site_photos", "input": "photo", "label": "Site Photos", "max_count": 4},
+            ],
+        }
+    ],
+}
+
+
+def _jpeg_b64(size=(48, 36), color=(10, 110, 60)) -> str:
+    from PIL import Image as _PILImage
+
+    buf = io.BytesIO()
+    _PILImage.new("RGB", size, color).save(buf, format="JPEG")
+    return base64.b64encode(buf.getvalue()).decode()
+
+
+def _photo_obj(data: str, name="front.jpg", taken_at="2026-06-12T09:30:00", gps="34.0,-118.2"):
+    return {"data": data, "name": name, "taken_at": taken_at, "gps": gps}
+
+
+def _payload(photos: list[dict]) -> str:
+    import json
+
+    return json.dumps({"work_location": "Array A", "site_photos": photos})
+
+
+# ---- clean photo: files + embeds + uploads originals ---------------------
+def test_clean_photo_files_embeds_and_uploads(stub, mocker):
+    stub["load_def"].return_value = PHOTO_DEFINITION
+    new_ver = mocker.patch.object(
+        intake.box_client, "upload_bytes_or_new_version", return_value={"id": "p1"}
+    )
+    # Let the REAL renderer run so we exercise the photo-grid embed end-to-end.
+    real_render = mocker.patch.object(
+        intake.form_pdf, "render_submission_pdf", wraps=intake.form_pdf.render_submission_pdf
+    )
+    sub = dict(BASE_SUB, payload_json=_payload([_photo_obj(_jpeg_b64())]))
+    result = intake.process_portal_submission(sub)
+
+    assert result.status == "processed"
+    # render received the SCREENED photos (a re-encoded JPEG + caption), not raw base64.
+    rendered = real_render.call_args.args[1]
+    screened = rendered["screened_photos"]
+    assert len(screened) == 1
+    caption, jpeg = screened[0]
+    assert "front.jpg" in caption and jpeg.startswith(b"\xff\xd8\xff")
+    # Box originals filed under ITS Photos/<uuid>/ via version-on-conflict.
+    new_ver.assert_called_once()
+    folder_arg, name_arg, bytes_arg = new_ver.call_args.args
+    assert name_arg == "01.jpg" and bytes_arg.startswith(b"\xff\xd8\xff")
+    stub["review"].assert_not_called()
+
+
+def test_clean_photo_creates_its_photos_subtree(stub, mocker):
+    stub["load_def"].return_value = PHOTO_DEFINITION
+    mocker.patch.object(intake.box_client, "upload_bytes_or_new_version", return_value={"id": "p1"})
+    intake.process_portal_submission(dict(BASE_SUB, payload_json=_payload([_photo_obj(_jpeg_b64())])))
+    folder_names = [c.args[1] for c in stub["get_or_create"].call_args_list]
+    assert "ITS Photos" in folder_names
+    assert "u1" in folder_names  # the per-submission subfolder
+
+
+# ---- malicious photo: refused, paged, not filed --------------------------
+def test_malicious_photo_refused_paged_not_filed(stub, mocker):
+    stub["load_def"].return_value = PHOTO_DEFINITION
+    # A solid PNG whose dimensions exceed the decompression-bomb cap (small encoded size).
+    buf = io.BytesIO()
+    from PIL import Image as _PILImage
+
+    _PILImage.new("RGB", (5001, 5001), (1, 1, 1)).save(buf, format="PNG")
+    bomb_b64 = base64.b64encode(buf.getvalue()).decode()
+    sub = dict(BASE_SUB, payload_json=_payload([_photo_obj(bomb_b64)]), actor_username="pm.jones")
+    result = intake.process_portal_submission(sub)
+
+    assert result.status == "review_queue"
+    assert result.notes == "reason=photo_malicious"
+    # Refused BEFORE render/file: neither the renderer nor the week-sheet writer ran.
+    stub["render"].assert_not_called()
+    stub["write"].assert_not_called()
+    # Review Queue row: security-flagged, CRITICAL, SECURITY_TRIGGER.
+    kw = stub["review"].call_args.kwargs
+    assert kw["security_flag"] is True
+    assert kw["severity"] is intake.Severity.CRITICAL
+    assert kw["reason"] is intake.review_queue.ReviewReason.SECURITY_TRIGGER
+    assert "pm.jones" in kw["summary"] and "DISABLE" in kw["summary"]
+    # CRITICAL page fired naming the account for operator disable.
+    crit = [c for c in stub["log"].call_args_list if c.args[0] is intake.Severity.CRITICAL]
+    assert crit and "disable this portal account" in crit[0].args[2]
+
+
+# ---- suspicious photo: refused to review, NOT paged ----------------------
+def test_suspicious_photo_routed_to_review_not_paged(stub):
+    stub["load_def"].return_value = PHOTO_DEFINITION
+    # Wrong magic (GIF) → suspicious (L1 magic_mismatch).
+    bad = base64.b64encode(b"GIF89a" + b"\x00" * 64).decode()
+    result = intake.process_portal_submission(dict(BASE_SUB, payload_json=_payload([_photo_obj(bad)])))
+
+    assert result.status == "review_queue"
+    assert result.notes == "reason=photo_suspicious"
+    kw = stub["review"].call_args.kwargs
+    assert kw["security_flag"] is True
+    assert kw["severity"] is intake.Severity.WARN          # suspicious does NOT page
+    assert kw["reason"] is intake.review_queue.ReviewReason.SECURITY_TRIGGER
+    crit = [c for c in stub["log"].call_args_list if c.args[0] is intake.Severity.CRITICAL]
+    assert not crit
+    stub["write"].assert_not_called()
+
+
+def test_undecodable_base64_is_suspicious(stub):
+    stub["load_def"].return_value = PHOTO_DEFINITION
+    sub = dict(BASE_SUB, payload_json=_payload([_photo_obj("!!! not base64 !!!")]))
+    result = intake.process_portal_submission(sub)
+    assert result.status == "review_queue"
+    assert result.notes == "reason=photo_suspicious"
+
+
+# ---- best-effort Box upload (never sinks the filed submission) -----------
+def test_photo_box_upload_failure_is_best_effort(stub, mocker):
+    stub["load_def"].return_value = PHOTO_DEFINITION
+    mocker.patch.object(
+        intake.box_client, "upload_bytes_or_new_version",
+        side_effect=box_client.BoxError("boom"),
+    )
+    result = intake.process_portal_submission(dict(BASE_SUB, payload_json=_payload([_photo_obj(_jpeg_b64())])))
+    assert result.status == "processed"  # the PDF-of-record already filed; photo upload WARNs
+    warns = [c for c in stub["log"].call_args_list
+             if c.kwargs.get("error_code") == "portal_photo_upload_failed"]
+    assert warns
+
+
+# ---- no photo field: unchanged behavior ----------------------------------
+def test_no_photo_field_files_normally(stub):
+    # The default DEFINITION has no photo field → screened_photos empty, no Box photo tree.
+    result = intake.process_portal_submission(dict(BASE_SUB))
+    assert result.status == "processed"
+    assert stub["render"].call_args.args[1]["screened_photos"] == []
+
+
+# ---- _screen_portal_photos clamps to the per-submission cap --------------
+def test_screen_clamps_to_max_per_submission(mocker):
+    mocker.patch.object(intake, "_photo_clamav_enabled", return_value=False)
+    review = mocker.patch.object(intake.review_queue, "add")
+    log = mocker.patch.object(intake.error_log, "log")
+    # Three photo fields × 3 photos = 9 > MAX_PHOTOS_PER_SUBMISSION (8): the 9th is dropped.
+    img = _jpeg_b64()
+    definition = {"sections": [{"type": "header", "fields": [
+        {"key": "a", "input": "photo", "label": "A", "max_count": 4},
+        {"key": "b", "input": "photo", "label": "B", "max_count": 4},
+        {"key": "c", "input": "photo", "label": "C", "max_count": 4},
+    ]}]}
+    values = {k: [_photo_obj(img) for _ in range(3)] for k in ("a", "b", "c")}
+    refusal, screened = intake._screen_portal_photos(
+        definition, values, dict(BASE_SUB), correlation_id="t"
+    )
+    assert refusal is None
+    assert len(screened) == photo_screen.MAX_PHOTOS_PER_SUBMISSION  # clamped to 8
+    review.assert_not_called()
+    over = [c for c in log.call_args_list if c.kwargs.get("error_code") == "portal_photo_over_cap"]
+    assert over

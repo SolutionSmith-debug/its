@@ -240,3 +240,76 @@ def test_load_definition_non_object_json_returns_none(tmp_path, monkeypatch) -> 
     (tmp_path / "arr-v1.json").write_text("[1, 2, 3]")
     monkeypatch.setattr(fp, "_FORMS_DIR", tmp_path)
     assert fp.load_definition("arr-v1") is None
+
+
+# ── site photos (PR-2) ────────────────────────────────────────────────────────
+def _tiny_jpeg() -> bytes:
+    from PIL import Image as _PILImage
+
+    buf = io.BytesIO()
+    _PILImage.new("RGB", (48, 36), (12, 100, 60)).save(buf, format="JPEG")
+    return buf.getvalue()
+
+
+_PHOTO_DEF = {
+    "form_name": "JHA",
+    "sections": [
+        {
+            "type": "header",
+            "fields": [
+                {"key": "job", "input": "text", "label": "Job"},
+                {"key": "site_photos", "input": "photo", "label": "Site Photos", "max_count": 4},
+            ],
+        }
+    ],
+}
+
+
+def test_screened_photos_render_grid_with_caption() -> None:
+    out = render_submission_pdf(
+        _PHOTO_DEF,
+        {
+            "job_name": "Bradley 1",
+            "work_date": "2026-06-12",
+            "values": {},
+            "screened_photos": [("front.jpg · 2026-06-12 09:30", _tiny_jpeg())],
+        },
+    )
+    assert out[:5] == b"%PDF-"
+    text = _norm(_pdf_text(out))
+    assert "Site Photos" in text
+    assert "front.jpg" in text
+
+
+def test_header_photo_field_never_dumps_base64() -> None:
+    """A header photo field whose value is raw base64 PhotoValue objects must NOT be
+    rendered inline (the renderer skips input=='photo' header fields). Without
+    screened_photos, no photo content appears and the base64 never leaks into the PDF."""
+    import base64
+
+    blob = base64.b64encode(_tiny_jpeg()).decode()
+    out = render_submission_pdf(
+        _PHOTO_DEF,
+        {
+            "job_name": "Bradley 1",
+            "work_date": "2026-06-12",
+            "values": {"site_photos": [{"data": blob, "name": "x.jpg", "taken_at": "", "gps": ""}]},
+        },
+    )
+    text = _pdf_text(out)
+    assert blob[:40] not in text          # the base64 payload never reaches the PDF
+    assert "Site Photos" not in _norm(text)  # no grid without screened_photos
+
+
+def test_unrenderable_screened_photo_is_skipped_not_fatal() -> None:
+    """A corrupt JPEG in screened_photos is dropped (logged) — the document still renders."""
+    out = render_submission_pdf(
+        _PHOTO_DEF,
+        {
+            "job_name": "Bradley 1",
+            "work_date": "2026-06-12",
+            "values": {},
+            "screened_photos": [("bad", b"\xff\xd8\xffnotanimage")],
+        },
+    )
+    assert out[:5] == b"%PDF-"  # no crash; the bad photo is simply absent

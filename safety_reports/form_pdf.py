@@ -51,8 +51,10 @@ from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import inch
+from reportlab.lib.utils import ImageReader
 from reportlab.platypus import (
     Flowable,
+    Image,
     Paragraph,
     SimpleDocTemplate,
     Spacer,
@@ -172,6 +174,13 @@ def _header_section(fields: list[dict], values: dict, st: dict) -> list[Flowable
     for f in fields:
         if f["key"] in _ENVELOPE_KEYS:
             continue
+        if f.get("input") == "photo":
+            # Photos are rendered separately as a screened image grid (see
+            # _photo_grid / render_submission_pdf). NEVER inline the raw value here —
+            # it is a list of base64 PhotoValue objects, and the renderer must never
+            # parse or dump untrusted upload bytes (form_pdf is deterministic; the
+            # §34-screened bytes arrive out-of-band via submission['screened_photos']).
+            continue
         val = values.get(f["key"], "")
         if f["input"] == "signature":
             cell: Any = SignatureDrawing(str(val)) if val else _p("", st["cell"])
@@ -273,12 +282,71 @@ def _section_flowables(section: dict, values: dict, st: dict) -> list[Flowable]:
     return []
 
 
+# ── site photos ───────────────────────────────────────────────────────────────
+_PHOTO_USABLE_W = 7.0 * inch   # letter minus the 0.6in side margins
+_PHOTO_COL_W = _PHOTO_USABLE_W / 2.0
+_PHOTO_BOX_W = _PHOTO_COL_W - 0.18 * inch
+_PHOTO_BOX_H = 2.6 * inch
+
+
+def _photo_cell(caption: str, jpeg: bytes, st: dict) -> list[Flowable] | None:
+    """One photo + caption as a Table cell (a list of flowables), scaled to fit the 2-up
+    grid cell preserving aspect ratio.
+
+    `jpeg` is ALREADY §34-screened, re-encoded clean JPEG bytes (safety_reports.
+    photo_screen) — the renderer never touches raw upload bytes. A photo that fails to
+    render is dropped + logged (length only, never the bytes or caption text), mirroring
+    the signature-PII discipline; one bad photo must never abort the document.
+
+    Dimensions are read via ImageReader; the Image flowable is then built from a FRESH
+    BytesIO with lazy=0 — lazy=1 (the default) re-opens the file at draw time, which a
+    consumed in-memory BytesIO cannot satisfy, yielding a degenerate, unplaceable height.
+    """
+    try:
+        iw, ih = ImageReader(io.BytesIO(jpeg)).getSize()
+        if not iw or not ih:
+            raise ValueError("zero dimension")
+        scale = min(_PHOTO_BOX_W / iw, _PHOTO_BOX_H / ih)
+        img = Image(io.BytesIO(jpeg), width=iw * scale, height=ih * scale, lazy=0)
+    except Exception:  # noqa: BLE001 — unrenderable photo is skipped, never fatal
+        logger.warning("form_pdf: site photo skipped (caption_len=%d, jpeg_len=%d) — unrenderable",
+                       len(caption or ""), len(jpeg or b""))
+        return None
+    cell: list[Flowable] = [img]
+    if caption:
+        cell.append(_p(caption, st["cell"]))
+    return cell
+
+
+def _photo_grid(photos: list[tuple[str, bytes]], st: dict) -> list[Flowable]:
+    """A 'Site Photos' heading + a 2-up grid of screened photos with captions."""
+    cells = [c for c in (_photo_cell(cap, jpeg, st) for cap, jpeg in photos) if c is not None]
+    if not cells:
+        return []
+    grid: list[list[Any]] = [cells[i:i + 2] for i in range(0, len(cells), 2)]
+    if len(grid[-1]) == 1:
+        grid[-1].append("")  # pad the final row so the Table is rectangular
+    table = Table(grid, colWidths=[_PHOTO_COL_W, _PHOTO_COL_W])
+    table.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
+        ("LEFTPADDING", (0, 0), (-1, -1), 2),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+    ]))
+    return [_p("Site Photos", st["section"]), table]
+
+
 # ── public API ────────────────────────────────────────────────────────────────
 def render_submission_pdf(definition: dict, submission: dict) -> bytes:
     """Render one submission to PDF bytes.
 
     submission keys: job_name (resolved by intake), work_date, values (the portal
-    fill state). Deterministic; raises only on a totally malformed definition.
+    fill state), and optional screened_photos — a list of (caption, clean_jpeg_bytes)
+    tuples that have ALREADY passed §34 screening + re-encode (safety_reports.
+    photo_screen). The renderer embeds those out-of-band; it never decodes the raw
+    base64 photos in `values` (form_pdf is deterministic and must not parse untrusted
+    input). Deterministic; raises only on a totally malformed definition.
     """
     st = _styles()
     values = submission.get("values", {}) or {}
@@ -300,6 +368,13 @@ def render_submission_pdf(definition: dict, submission: dict) -> bytes:
         except Exception:  # one bad section must not abort the whole document
             logger.exception("form_pdf: section render failed (type=%s) — skipped",
                              section.get("type"))
+
+    screened_photos = submission.get("screened_photos") or []
+    if screened_photos:
+        try:
+            flow.extend(_photo_grid(screened_photos, st))
+        except Exception:  # the photo grid must never abort the document of record
+            logger.exception("form_pdf: site-photo grid render failed — skipped")
 
     buf = io.BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=letter, title=definition.get("form_name", "Safety form"),
