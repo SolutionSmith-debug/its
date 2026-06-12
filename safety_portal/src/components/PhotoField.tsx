@@ -42,7 +42,16 @@ function safeName(raw: string, index: number): string {
 }
 
 async function fileToImage(file: File): Promise<ImageBitmap | HTMLImageElement> {
-  if (typeof createImageBitmap === "function") return createImageBitmap(file);
+  if (typeof createImageBitmap === "function") {
+    try {
+      // Live camera captures are often portrait with an EXIF orientation tag; honor it
+      // so the re-encode isn't sideways. (The re-encode then bakes the rotation in —
+      // correct, since it also strips the EXIF that carried the tag.)
+      return await createImageBitmap(file, { imageOrientation: "from-image" });
+    } catch {
+      return createImageBitmap(file); // older engines without the options bag
+    }
+  }
   return new Promise((resolve, reject) => {
     const url = URL.createObjectURL(file);
     const img = new Image();
