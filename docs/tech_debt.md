@@ -2070,3 +2070,28 @@ Publish requests 11 (equipment-skid-steer-test-v1), 12 (jha-v2), and 13 (retire 
 **Revisit when:** a dedicated Box-archive reconciliation pass, or before Evergreen production cutover audit.
 
 Surfaced: 2026-06-09 publish-pipeline forensic audit (PRs #238/#239/#240 landed before #241 fixed the sys.executable issue).
+
+## [OPEN 2026-06-12] PR-4 Part A — PDF download cache: deferred optimizations + PR-5 supersession
+
+PR-4 Part A shipped the request-driven canonical PDF download (D1-chunked `filed_pdfs` cache, `pdf_requested`/`box_file_id`/`pdf_ready_at` columns, the `portal_poll._service_pdf_requests` pass, the submitted-page receipt). Four deliberate deferrals:
+
+- **Timing-A post-back deferred.** The brief's "if `pdf_requested` is set when intake files, upload the just-rendered PDF" optimization was NOT built — it would force `intake.py` to acquire portal creds + call `portal_client` (breaking the intake/portal_poll separation, since intake holds the rendered bytes but not the creds, and portal_poll holds the creds but not the bytes). Instead the `portal_poll` `_service_pdf_requests` pass re-downloads the filed PDF from Box via `box_file_id` (one extra Box GET + up to one ~60s cycle of latency) for ALL requests, before or after filing. Within the "under 2 min" UI. **Revisit if** the request-before-filing case becomes latency-sensitive at scale.
+- **D1 size telemetry uses the `SUM(LENGTH(...))` fallback.** `PRAGMA page_count`/`page_size` throws `D1_ERROR: not authorized: SQLITE_AUTH` under Miniflare (verified in `prune.test.ts`); the Worker keeps a PRAGMA-first `try/catch` for real Cloudflare D1 (where it may be authorized) and falls back to summing `chunk_b64` + `payload_json` byte lengths. **Revisit if** Cloudflare authorizes `PRAGMA` through the D1 binding (then the byte sum, which under-counts indexes/overhead, can be dropped).
+- **Recent-submissions list affordance deferred to PR-5.** The brief's "recent-submissions list gains the same per-row affordance" has no surface today (the SPA has only the single-row amend-prefill notice). PR-5 builds the `FormRequestPage` browse list; Part A delivers the **submitted-page** receipt/download only. **Revisit:** PR-5.
+- **PR-5 supersession (forward note).** PR-5 refactors the single `submissions.pdf_requested`/`pdf_ready_at` columns into a `pdf_requests(submission_uuid, account, requested_at, ready_at)` table (downloads become **requester-bound, 24h**, not owner-set). Part A's submitter-request flow becomes the first row in that table — Part A behavior is preserved exactly. Do NOT change Part A's contract mid-flight; PR-5 supersedes it as its own reviewed change.
+
+**Tag:** `safety-portal`, `pdf-download`, `deferred-optimization`, `pr-5-supersession`.
+
+**Revisit when:** PR-5 (form-request browse) lands; or a latency/scale review of the download path.
+
+Surfaced: 2026-06-12 PR-4 Part A implementation.
+
+## [DOCTRINE-FLAG 2026-06-12] Mission v4→v5 delta — Worker now holds a transient filed-PDF receipt cache
+
+PR-4 Part A introduces a **bounded exception** to the Safety Portal mission's "the Worker never holds documents" stance: the Worker now stores **request-driven, 24h-expiring, D1-chunked filed-PDF chunks** so an authenticated owner can download their own canonical (Box-filed) PDF as a **receipt** (no new external-send path — Invariant 1 untouched; the Worker holds no Box creds and serves only reassembled D1 chunks the Mac daemon pushed). This is a **planning-layer / Seth-owned** doctrine edit, not made here. Proposed mission v4→v5 amendment: *"the Worker never holds documents — **except** the request-driven, 24h-expiring filed-PDF receipt cache (D1-chunked, browse scoped to active jobs, any authenticated account may browse + request)."* Flagged for blueprint co-resolution alongside the PR-5 mission note.
+
+**Tag:** `safety-portal`, `doctrine`, `mission-delta`, `planning-layer`.
+
+**Revisit when:** next blueprint mission-doctrine pass (fold the PR-4 + PR-5 mission deltas together).
+
+Surfaced: 2026-06-12 PR-4 Part A implementation.

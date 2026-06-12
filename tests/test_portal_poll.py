@@ -30,8 +30,13 @@ def _row(uuid: str = "u1") -> dict[str, Any]:
     }
 
 
-def _processed(uuid: str = "u1", link: str = "https://app.box.com/file/f9") -> ProcessResult:
-    return ProcessResult(status="processed", message_id=uuid, correlation_id="c", box_link=link)
+def _processed(
+    uuid: str = "u1", link: str = "https://app.box.com/file/f9", file_id: str = "f9"
+) -> ProcessResult:
+    return ProcessResult(
+        status="processed", message_id=uuid, correlation_id="c",
+        box_link=link, box_file_id=file_id,
+    )
 
 
 @pytest.fixture
@@ -80,6 +85,18 @@ def _patch_all(mocker):
             portal_poll.portal_client, "push_jobs",
             return_value={"ok": True, "upserted": 0, "deactivated": 0},
         ),
+        # PR-4 request-driven PDF cache servicing pass: default to NO pending PDF
+        # requests so the existing cycle tests neither hit Box nor POST any chunk.
+        "get_pdf_requests": mocker.patch.object(
+            portal_poll.portal_client, "get_pdf_requests", return_value=[]
+        ),
+        "upload_filed_pdf": mocker.patch.object(
+            portal_poll.portal_client, "upload_filed_pdf",
+            return_value={"ok": True, "ready": True, "stored": True, "received": 1},
+        ),
+        "download_file": mocker.patch.object(
+            portal_poll.box_client, "download_file", return_value=b"%PDF-1.4 bytes"
+        ),
     }
 
 
@@ -102,10 +119,13 @@ def test_verified_processed_row_is_filed_and_receipted(_patch_all):
     _patch_all["mark_filed"].assert_called_once_with(
         "https://portal.example.com", "bearer",
         submission_uuid="u1", box_link="https://app.box.com/file/f9",
+        box_file_id="f9",  # PR-4: the structural id threaded to the receipt
     )
     # Recorded as filed in the seen-set for a future lost-receipt re-post.
     persisted = _patch_all["persist_seen"].call_args.args[0]
-    assert persisted["u1"] == {"status": "filed", "box_link": "https://app.box.com/file/f9"}
+    assert persisted["u1"] == {
+        "status": "filed", "box_link": "https://app.box.com/file/f9", "box_file_id": "f9",
+    }
 
 
 def test_review_queue_result_is_drained_and_counted(_patch_all):
@@ -115,9 +135,11 @@ def test_review_queue_result_is_drained_and_counted(_patch_all):
     )
     result = _poll_inside_lock()
     assert result.reviewed == 1 and result.filed == 0
-    # Drained with an empty link (the Review Queue entry is the durable record).
+    # Drained with an empty link (the Review Queue entry is the durable record);
+    # no box_file_id on the review path → box_file_id=None.
     _patch_all["mark_filed"].assert_called_once_with(
         "https://portal.example.com", "bearer", submission_uuid="u1", box_link="",
+        box_file_id=None,
     )
     assert _patch_all["hb_row"].call_args.kwargs["status"] == "WARN"
 
@@ -176,16 +198,32 @@ def test_intake_error_is_not_receipted(_patch_all):
 def test_seen_filed_reposts_receipt_without_refiling(_patch_all):
     _patch_all["get_pending"].return_value = [_row("u1")]
     _patch_all["load_seen"].return_value = {
-        "u1": {"status": "filed", "box_link": "https://app.box.com/file/keep"}
+        "u1": {
+            "status": "filed", "box_link": "https://app.box.com/file/keep",
+            "box_file_id": "keep",
+        }
     }
     result = _poll_inside_lock()
     assert result.remarked == 1 and result.filed == 0
     _patch_all["verify"].assert_not_called()     # already verified before
     _patch_all["process"].assert_not_called()    # NOT re-filed
+    # PR-4: the stored box_file_id rides the lost-receipt re-post too.
     _patch_all["mark_filed"].assert_called_once_with(
         "https://portal.example.com", "bearer",
         submission_uuid="u1", box_link="https://app.box.com/file/keep",
+        box_file_id="keep",
     )
+
+
+def test_seen_filed_repost_recovers_box_file_id_from_link_when_absent(_patch_all):
+    # A seen-set record written BEFORE PR-4 has no box_file_id — recover it from the
+    # stored link (digits after /file/) so the cache handle survives the re-post.
+    _patch_all["get_pending"].return_value = [_row("u1")]
+    _patch_all["load_seen"].return_value = {
+        "u1": {"status": "filed", "box_link": "https://app.box.com/file/12345"}
+    }
+    _poll_inside_lock()
+    assert _patch_all["mark_filed"].call_args.kwargs["box_file_id"] == "12345"
 
 
 def test_seen_rejected_is_skipped_silently(_patch_all):
@@ -323,6 +361,104 @@ def test_job_sync_failure_is_swallowed_and_does_not_affect_intake(_patch_all):
     assert result.errors == 0           # the push failure is NOT an intake error
     codes = [c.kwargs.get("error_code") for c in _patch_all["log"].call_args_list]
     assert "portal_job_sync_failed" in codes
+
+
+# ---- PR-4 request-driven PDF cache servicing pass ------------------------
+
+
+def _pdf_req(uuid="u1", file_id="f9"):
+    return {
+        "submission_uuid": uuid, "box_file_id": file_id,
+        "form_code": "jha-v1", "work_date": "2026-06-05",
+    }
+
+
+def test_pdf_service_downloads_chunks_and_uploads(_patch_all):
+    _patch_all["get_pdf_requests"].return_value = [_pdf_req("u1", "f9")]
+    # 1.5 chunks worth of bytes → exactly 2 chunks at PDF_CHUNK_BYTES.
+    pdf = b"A" * (portal_poll.PDF_CHUNK_BYTES + 10)
+    _patch_all["download_file"].return_value = pdf
+
+    result = _poll_inside_lock()
+
+    assert result.pdf_serviced == 1
+    _patch_all["download_file"].assert_called_once_with("f9")
+    calls = _patch_all["upload_filed_pdf"].call_args_list
+    assert len(calls) == 2  # chunked across 2 POSTs
+    assert [c.kwargs["chunk_index"] for c in calls] == [0, 1]
+    assert all(c.kwargs["chunk_total"] == 2 for c in calls)
+    assert all(c.kwargs["submission_uuid"] == "u1" for c in calls)
+    # chunk_b64 round-trips back to the original PDF bytes (never logged raw).
+    import base64 as _b64
+    reassembled = b"".join(_b64.b64decode(c.kwargs["chunk_b64"]) for c in calls)
+    assert reassembled == pdf
+
+
+def test_pdf_service_single_chunk_for_small_pdf(_patch_all):
+    _patch_all["get_pdf_requests"].return_value = [_pdf_req("u1", "f9")]
+    _patch_all["download_file"].return_value = b"%PDF tiny"
+    result = _poll_inside_lock()
+    assert result.pdf_serviced == 1
+    calls = _patch_all["upload_filed_pdf"].call_args_list
+    assert len(calls) == 1 and calls[0].kwargs["chunk_total"] == 1
+
+
+def test_pdf_service_empty_box_file_is_skipped_not_uploaded(_patch_all):
+    # A zero-byte filed PDF is a DATA error → WARN skip, NEVER an empty-chunk upload
+    # (the Worker would 400 it). The request stays unready for re-file.
+    _patch_all["get_pdf_requests"].return_value = [_pdf_req("u1", "f9")]
+    _patch_all["download_file"].return_value = b""
+    result = _poll_inside_lock()
+    assert result.pdf_serviced == 0
+    _patch_all["upload_filed_pdf"].assert_not_called()
+    codes = [c.kwargs.get("error_code") for c in _patch_all["log"].call_args_list]
+    assert "portal_pdf_empty_file" in codes
+
+
+def test_pdf_service_per_item_fence_one_bad_item_does_not_abort(_patch_all):
+    _patch_all["get_pdf_requests"].return_value = [
+        _pdf_req("u1", "f1"), _pdf_req("u2", "f2"), _pdf_req("u3", "f3"),
+    ]
+    # The middle item's Box download blows up; the other two still service.
+    _patch_all["download_file"].side_effect = [b"one", RuntimeError("box boom"), b"three"]
+    result = _poll_inside_lock()
+    assert result.pdf_serviced == 2  # u1 + u3, not u2
+    codes = [c.kwargs.get("error_code") for c in _patch_all["log"].call_args_list]
+    assert "portal_pdf_request_item_failed" in codes
+
+
+def test_pdf_service_skips_row_missing_box_file_id(_patch_all):
+    _patch_all["get_pdf_requests"].return_value = [
+        {"submission_uuid": "u1", "box_file_id": "", "form_code": "x", "work_date": "d"},
+    ]
+    result = _poll_inside_lock()
+    assert result.pdf_serviced == 0
+    _patch_all["download_file"].assert_not_called()
+    codes = [c.kwargs.get("error_code") for c in _patch_all["log"].call_args_list]
+    assert "portal_pdf_request_malformed" in codes
+
+
+def test_pdf_service_failure_is_best_effort_and_does_not_block_intake(_patch_all):
+    # A filed submission + a failing PDF-request pull: the cycle still completes, the
+    # intake drain stats are intact, and the failure is a WARN (not an intake error).
+    _patch_all["get_pending"].return_value = [_row("u1")]
+    _patch_all["get_pdf_requests"].side_effect = (
+        portal_poll.portal_client.PortalTransportError("500")
+    )
+    result = _poll_inside_lock()
+    assert result.filed == 1          # intake drain unaffected
+    assert result.errors == 0         # the pass failure is NOT an intake error
+    assert result.pdf_serviced == 0
+    codes = [c.kwargs.get("error_code") for c in _patch_all["log"].call_args_list]
+    assert "portal_pdf_service_failed" in codes
+
+
+def test_pdf_service_no_requests_is_noop(_patch_all):
+    _patch_all["get_pdf_requests"].return_value = []
+    result = _poll_inside_lock()
+    assert result.pdf_serviced == 0
+    _patch_all["download_file"].assert_not_called()
+    _patch_all["upload_filed_pdf"].assert_not_called()
 
 
 # ---- poll_once outer gating ----------------------------------------------

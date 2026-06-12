@@ -68,6 +68,8 @@ def test_success_files_box_and_sheet_returns_processed(stub):
     result = intake.process_portal_submission(dict(BASE_SUB))
     assert result.status == "processed"
     assert result.box_link == "https://app.box.com/file/f9"
+    # PR-4: the structural Box file id rides on the receipt (id in hand from upload).
+    assert result.box_file_id == "f9"
     # Wrote the per-submission row with the parsed date + Box link.
     kwargs = stub["write"].call_args.kwargs
     assert kwargs["submission_uuid"] == "u1"
@@ -157,6 +159,8 @@ def test_dedupe_already_filed_skips_refile_and_recovers_link(stub):
     result = intake.process_portal_submission(dict(BASE_SUB))
     assert result.status == "already_filed"
     assert result.box_link == "https://app.box.com/file/old"
+    # PR-4: id derived from the recovered link (split on /file/) → no structural id stored.
+    assert result.box_file_id == "old"
     stub["write"].assert_not_called()
     stub["upload"].assert_not_called()
 
@@ -284,8 +288,9 @@ def test_incomplete_checklist_tagged_in_notes_but_still_files(stub):
 def test_file_portal_pdf_base_name_success(mocker):
     mocker.patch.object(intake.box_client, "upload_bytes",
                         return_value={"id": "f1", "name": "n", "size": 1})
-    link = intake._file_portal_pdf("fld", "2026-06-05", "jha", "u1abcdef00", b"x")
+    link, file_id = intake._file_portal_pdf("fld", "2026-06-05", "jha", "u1abcdef00", b"x")
     assert link == "https://app.box.com/file/f1"
+    assert file_id == "f1"  # PR-4: the structural id rides alongside the link
 
 
 def test_file_portal_pdf_conflict_then_suffix(mocker):
@@ -293,8 +298,9 @@ def test_file_portal_pdf_conflict_then_suffix(mocker):
         intake.box_client, "upload_bytes",
         side_effect=[box_client.BoxConflictError("dup"), {"id": "f2", "name": "n", "size": 1}],
     )
-    link = intake._file_portal_pdf("fld", "2026-06-05", "jha", "u1abcdef00", b"x")
+    link, file_id = intake._file_portal_pdf("fld", "2026-06-05", "jha", "u1abcdef00", b"x")
     assert link == "https://app.box.com/file/f2"
+    assert file_id == "f2"
     assert up.call_args_list[1].args[1] == "2026-06-05-jha-u1abcdef.pdf"  # short-uuid suffix
 
 
@@ -307,8 +313,9 @@ def test_file_portal_pdf_suffix_conflict_recovers_existing_link(mocker):
         intake.box_client, "list_folder",
         return_value=[{"id": "r9", "name": "2026-06-05-jha-u1abcdef.pdf", "type": "file"}],
     )
-    link = intake._file_portal_pdf("fld", "2026-06-05", "jha", "u1abcdef00", b"x")
+    link, file_id = intake._file_portal_pdf("fld", "2026-06-05", "jha", "u1abcdef00", b"x")
     assert link == "https://app.box.com/file/r9"  # recovered the prior partial upload
+    assert file_id == "r9"  # the recovered file's id rides too
 
 
 def test_file_portal_pdf_suffix_conflict_no_recovery_reraises(mocker):
@@ -319,6 +326,23 @@ def test_file_portal_pdf_suffix_conflict_no_recovery_reraises(mocker):
     mocker.patch.object(intake.box_client, "list_folder", return_value=[])
     with pytest.raises(box_client.BoxConflictError):
         intake._file_portal_pdf("fld", "2026-06-05", "jha", "u1abcdef00", b"x")
+
+
+# ---- _box_file_id_from_link (already_filed id recovery) -------------------
+
+
+@pytest.mark.parametrize(
+    "link,expected",
+    [
+        ("https://app.box.com/file/12345", "12345"),
+        ("https://app.box.com/file/old", "old"),
+        ("", None),
+        ("https://app.box.com/folder/9", None),  # no /file/ segment
+        ("https://app.box.com/file/", None),     # trailing slash, empty id
+    ],
+)
+def test_box_file_id_from_link(link, expected):
+    assert intake._box_file_id_from_link(link) == expected
 
 
 # ---- _resolve_portal_box_folder ------------------------------------------

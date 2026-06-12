@@ -94,6 +94,62 @@ export async function submitForm(body: SubmitBody): Promise<void> {
   }
 }
 
+// ── Request-driven canonical PDF download (PR-4 Part A) ──────────────────────
+// The PM's downloadable copy IS the Box-filed PDF, byte-identical — there is no
+// browser-side render. Nothing is cached until the user explicitly asks for it:
+//   requestPdf  → flips the server "user wants this cached" flag (idempotent).
+//   pdfStatus   → the 5s poll source for the "Preparing…" → "Download" transition.
+//   downloadPdf → triggers the browser download of the reassembled PDF.
+// The Mac daemon (not the Worker) fetches the filed PDF from Box, base64-chunks it
+// into D1; the Worker's GET …/pdf reassembles + streams it. Ownership is re-gated
+// server-side and a foreign uuid returns 404 (not 403 — no enumeration). The
+// HttpOnly session cookie rides automatically via credentials:"same-origin".
+
+export interface PdfRequestResult {
+  ok: boolean;
+  /** True when the cache is ALREADY populated (a prior request completed). */
+  ready: boolean;
+}
+
+/** Ask the server to cache this submission's filed PDF for download. Idempotent:
+ *  a repeat call on an already-cached submission just returns ready:true. */
+export async function requestPdf(uuid: string): Promise<PdfRequestResult> {
+  const res = await postJson(`/api/submissions/${encodeURIComponent(uuid)}/request-pdf`);
+  if (!res.ok) throw new Error("Could not request the download.");
+  const data = (await res.json().catch(() => ({}))) as { ok?: boolean; ready?: boolean };
+  return { ok: data.ok ?? true, ready: data.ready ?? false };
+}
+
+export interface PdfStatus {
+  requested: boolean;
+  ready: boolean;
+  /** Epoch seconds the cache is pruned (pdf_ready_at + 86400); null until ready. */
+  expires_at: number | null;
+}
+
+/** Poll the cache state. `ready` flips true once the Mac daemon has finished
+ *  uploading every chunk; `expires_at` is then the prune time. */
+export async function pdfStatus(uuid: string): Promise<PdfStatus> {
+  const res = await fetch(`/api/submissions/${encodeURIComponent(uuid)}/status`, {
+    credentials: "same-origin",
+  });
+  if (!res.ok) throw new Error("Could not check the download status.");
+  const data = (await res.json().catch(() => ({}))) as Partial<PdfStatus>;
+  return {
+    requested: data.requested ?? false,
+    ready: data.ready ?? false,
+    expires_at: data.expires_at ?? null,
+  };
+}
+
+/** Trigger the browser download of the reassembled PDF. Intentionally does NOT call
+ *  res.json(): the Worker streams application/pdf with Content-Disposition:
+ *  attachment, and the HttpOnly cookie rides automatically on a same-origin
+ *  navigation, so the browser honors the attachment without leaving the SPA. */
+export function downloadPdf(uuid: string): void {
+  window.location.assign(`/api/submissions/${encodeURIComponent(uuid)}/pdf`);
+}
+
 // ── Admin: account management (session + role-gated /api/admin/*) ─────────────
 
 export interface Account {

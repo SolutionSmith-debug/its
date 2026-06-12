@@ -12,6 +12,7 @@ beforeEach(async () => {
   await env.DB.batch([
     env.DB.prepare("DELETE FROM submissions"),
     env.DB.prepare("DELETE FROM audit_log"),
+    env.DB.prepare("DELETE FROM filed_pdfs"),
   ]);
 });
 
@@ -70,5 +71,57 @@ describe("pruneOldData (A3 D1 housekeeping)", () => {
     const res = await pruneOldData(env.DB, NOW);
     expect(res.rejected).toBe(1);
     expect(await remaining()).toEqual(["rej-recent", "unfiled-old"]);
+  });
+});
+
+// ── PR-4 Part A — the filed_pdfs cache prune branch + D1 size telemetry. ──────────
+async function seedChunk(uuid: string, index: number, total: number): Promise<void> {
+  await env.DB
+    .prepare("INSERT OR REPLACE INTO filed_pdfs (submission_uuid, chunk_index, chunk_total, chunk_b64) VALUES (?,?,?,?)")
+    .bind(uuid, index, total, "QUJD") // "ABC"
+    .run();
+}
+async function chunkUuids(): Promise<string[]> {
+  const r = await env.DB
+    .prepare("SELECT DISTINCT submission_uuid FROM filed_pdfs ORDER BY submission_uuid")
+    .all<{ submission_uuid: string }>();
+  return r.results.map((x) => x.submission_uuid);
+}
+
+describe("pruneOldData — PDF cache (filed_pdfs)", () => {
+  it("deletes chunks >24h past pdf_ready_at AND resets the request flags (re-requestable)", async () => {
+    // A filed submission whose cache aged out (pdf_ready_at 2 days ago).
+    await seedSub("cache-old", 1, NOW - 10 * DAY);
+    await env.DB.prepare("UPDATE submissions SET pdf_requested=1, pdf_ready_at=? WHERE submission_uuid='cache-old'").bind(NOW - 2 * DAY).run();
+    await seedChunk("cache-old", 0, 1);
+    // A fresh cache (just cached) — must survive.
+    await seedSub("cache-fresh", 1, NOW - 10 * DAY);
+    await env.DB.prepare("UPDATE submissions SET pdf_requested=1, pdf_ready_at=? WHERE submission_uuid='cache-fresh'").bind(NOW - 100).run();
+    await seedChunk("cache-fresh", 0, 1);
+
+    const res = await pruneOldData(env.DB, NOW);
+
+    expect(res.pdfChunks).toBe(1); // the one aged-out chunk
+    expect(await chunkUuids()).toEqual(["cache-fresh"]); // fresh chunk survives
+    // The aged-out submission's request flags were reset so it can be re-requested.
+    const reset = await env.DB.prepare("SELECT pdf_requested, pdf_ready_at FROM submissions WHERE submission_uuid='cache-old'").first<{ pdf_requested: number; pdf_ready_at: number | null }>();
+    expect(reset?.pdf_requested).toBe(0);
+    expect(reset?.pdf_ready_at).toBeNull();
+  });
+
+  it("deletes ORPHAN chunks whose parent submission is gone", async () => {
+    // No submission row for this uuid — a pure orphan (parent already pruned).
+    await seedChunk("orphan-uuid", 0, 1);
+    await seedChunk("orphan-uuid", 1, 2);
+    const res = await pruneOldData(env.DB, NOW);
+    expect(res.pdfChunks).toBe(2);
+    expect(await chunkUuids()).toEqual([]);
+  });
+
+  it("surfaces dbSizeBytes telemetry (present, non-negative)", async () => {
+    await seedSub("any", 1, NOW - 10 * DAY);
+    const res = await pruneOldData(env.DB, NOW);
+    expect(typeof res.dbSizeBytes).toBe("number");
+    expect(res.dbSizeBytes).toBeGreaterThanOrEqual(0);
   });
 });

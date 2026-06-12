@@ -54,9 +54,12 @@ GATED_SCRIPTS: list[tuple[str, list[str]]] = [
         # portal_poll is the Phase-5 pull-model daemon: it ingests untrusted portal
         # submissions (HMAC-verified) and files them via intake — generation-side,
         # ZERO external send. The point of the pull model is that the Python puller
-        # is INSIDE this AST gate (the TS Worker was outside it). HTTP egress lives
-        # in shared/portal_client.py (F02-allowlisted), so portal_poll itself imports
-        # no network library and no send capability.
+        # is INSIDE this AST gate (the TS Worker was outside it). Its TWO egress paths
+        # are both audited F02-allowlisted shared clients: shared/portal_client.py
+        # (control-plane HTTP to OUR Worker — pull/mark-filed/pdf-request servicing) and
+        # shared/box_client.py (Box read/upload, generation-side; added in PR-4 Part A for
+        # the filed-PDF re-fetch). portal_poll itself imports NO raw network library and
+        # no send capability — egress only through those two audited wrappers.
         "safety_reports/portal_poll.py",
         ["send_mail", "resend", "smtplib", "email.mime"],
     ),

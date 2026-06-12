@@ -300,6 +300,31 @@ Gate). `GET /api/admin/publish-status` is the monitor read view.
 
 > Out of scope here: the Mac publish daemon (slice 3b) + the editor UI (slices 4–6).
 
+### Request-driven canonical PDF download (PR-4 Part A — `0011`)
+
+**Migration 0011** adds the PDF-cache columns on `submissions` (`pdf_requested`,
+`box_file_id`, `pdf_ready_at`) + the `filed_pdfs` chunk table. A field PM (or the
+attributee / an admin) clicks "Make available for download"; `POST
+/api/submissions/:uuid/request-pdf` sets `pdf_requested=1`. The Worker holds NO Box
+creds and is SEND-FREE: the Mac-side portal_poll daemon GETs the serviceable set
+(`GET /api/internal/pdf-requests`), downloads the filed PDF from Box, base64-chunks it,
+and POSTs the chunks (`POST /api/internal/filed-pdf`); `GET /api/submissions/:uuid/pdf`
+reassembles the D1 chunks and serves the byte-identical Box copy as an attachment.
+Access is ownership-gated (actor / attributee / admin → else **404**, no enumeration);
+chunks expire 24h past `pdf_ready_at` (prune) and are re-requestable.
+
+#### Activation (operator — secrets/auth + deploy boundary; escalates to the Developer-Operator)
+
+1. Apply migration **0011** to the live D1 **BEFORE** the redeploy
+   (`npx wrangler d1 migrations apply its-safety-portal-db --remote`) — else the new
+   PDF routes error on the missing columns/table. **ORDER-CRITICAL**, same rule as
+   0006/0007/0009/0010.
+2. **Redeploy** (`npm run deploy`) — activates the request/status/pdf + internal
+   pdf-requests/filed-pdf routes (still inert until the Mac portal_poll PDF-cache pass
+   runs, which is what populates the chunks).
+
+> Out of scope here: the Mac portal_poll PDF-cache pass + the SPA download button (sibling surfaces).
+
 ### Lockout recovery (break-glass) — escalate to the Developer-Operator
 
 If both admins are ever locked out (e.g. passwords lost, or both disabled), recovery runs
