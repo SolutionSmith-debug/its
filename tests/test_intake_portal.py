@@ -13,7 +13,7 @@ import pytest
 
 from safety_reports import intake, week_sheet
 from shared import box_client
-from shared.smartsheet_client import SmartsheetError
+from shared.smartsheet_client import SmartsheetError, SmartsheetValidationError
 
 BASE_SUB = {
     "submission_uuid": "u1",
@@ -257,6 +257,19 @@ def test_transient_smartsheet_error_returns_error(stub):
     stub["ensure"].side_effect = SmartsheetError("503")
     result = intake.process_portal_submission(dict(BASE_SUB))
     assert result.status == "error"  # portal_poll will NOT mark-filed → re-pull
+
+
+def test_permanent_smartsheet_validation_error_routes_to_review(stub):
+    """A 400 (e.g. errorCode 1041 sheet-name-too-long) is PERMANENT — re-pull can
+    never fix it, so it must DRAIN to the Review Queue, not loop as transient
+    'error'. This is the regression for the live JOB-000013 infinite-loop."""
+    stub["ensure"].side_effect = SmartsheetValidationError(
+        "HTTP 400 (code 1041): The value for sheet.name must be 50 characters in "
+        "length or less, but was 57."
+    )
+    result = intake.process_portal_submission(dict(BASE_SUB))
+    assert result.status == "review_queue"  # drains (mark-filed), no infinite re-pull
+    assert stub["review"].call_args.kwargs["payload"]["reason"] == "smartsheet_validation"
 
 
 def test_transient_box_error_returns_error(stub):
