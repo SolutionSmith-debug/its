@@ -7,13 +7,18 @@
 // are the same.
 
 import type { FormDefinition, Section } from "./types";
-import { RESERVED_KEYS } from "./editorModel";
+import { FIELD_INPUTS, RESERVED_KEYS } from "./editorModel";
 import type { CatalogParent } from "./registry";
 
 const KEY_RE = /^[a-z0-9_]+$/;
 const FORM_CODE_RE = /^[a-z0-9-]+-v[0-9]+$/;
 const SLUG_RE = /^[a-z0-9-]+$/;
-const INPUTS = new Set(["text", "textarea", "date", "time", "number", "select", "signature"]);
+// Derived from the single source of truth (editorModel.FIELD_INPUTS, which mirrors
+// forms/meta-schema.json + types.ts Input). Previously a hand-copied literal, which drifted:
+// PR-1 (#271) added "photo" to FIELD_INPUTS + worker/publishValidation but missed THIS copy,
+// so every photo field tripped "has an invalid input type." and blocked Publish client-side.
+// Deriving here kills that three-copies drift class; the parity test in __tests__ locks it.
+const INPUTS = new Set<string>(FIELD_INPUTS);
 
 export interface ValidationContext {
   identity: string;
