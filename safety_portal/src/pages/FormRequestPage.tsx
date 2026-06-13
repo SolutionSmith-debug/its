@@ -2,17 +2,29 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import * as api from "../lib/api";
 import { AppHeader } from "../components/AppHeader";
 
+/** Render a "YYYY-MM" work-month as a human "Month YYYY" label (e.g. "June 2026"). */
+function monthLabel(ym: string): string {
+  const [y, m] = ym.split("-").map(Number);
+  if (!y || !m) return ym;
+  return new Date(y, m - 1, 1).toLocaleString(undefined, { month: "long", year: "numeric" });
+}
+
 /**
- * PR-5 Form Request — browse an ACTIVE job's filed safety forms and download them on the
+ * PR-5/PR-6 Form Request — browse an ACTIVE job's filed safety forms and download them on the
  * spot (random-inspection use case). Any authenticated account may browse + request; a
  * requested download is bound to THIS account for 24h (the Worker re-gates: a different
- * account gets 404). Pick a job → multi-select forms → "Request selected" → each row turns
- * into the PR-4 "Preparing… → Download" poll. No browser render: the downloaded PDF is the
- * Box-filed copy, byte-identical. The job dropdown is the same /api/jobs feed as the fill flow.
+ * account gets 404). PR-6 cascade: pick a job → pick a Month-Year → (optionally) a form type →
+ * multi-select forms → "Request selected" → each row turns into the PR-4 "Preparing… →
+ * Download" poll. The month step keeps a year-long job's hundreds of filed forms from dumping
+ * in one flat table. No browser render: the downloaded PDF is the Box-filed copy, byte-identical.
  */
 export function FormRequestPage({ onBack }: { onBack: () => void }) {
   const [jobs, setJobs] = useState<api.Job[]>([]);
   const [jobId, setJobId] = useState("");
+  const [months, setMonths] = useState<api.MonthBucket[]>([]);
+  const [formCodes, setFormCodes] = useState<string[]>([]);
+  const [selectedMonth, setSelectedMonth] = useState("");
+  const [selectedFormCode, setSelectedFormCode] = useState("");
   const [filed, setFiled] = useState<api.FiledForm[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [checked, setChecked] = useState<Set<string>>(new Set());
@@ -22,15 +34,16 @@ export function FormRequestPage({ onBack }: { onBack: () => void }) {
     api.fetchJobs().then(setJobs).catch(() => setJobs([]));
   }, []);
 
-  const loadFiled = useCallback(async (id: string) => {
-    setJobId(id);
+  // Fetch the filtered filed-forms table. Only fetches once a month is chosen (the cascade
+  // requires a month before any documents are shown). form_code "" means "All forms".
+  const loadFiled = useCallback(async (id: string, month: string, formCode: string) => {
     setChecked(new Set());
     setRequested(new Set());
     setFiled(null);
-    if (!id) return;
+    if (!id || !month) return;
     setLoading(true);
     try {
-      const rows = await api.fetchFiled(id);
+      const rows = await api.fetchFiled(id, { month, form_code: formCode || undefined });
       setFiled(rows);
       // Rows this account already requested (server-side, still live) start in the download flow.
       setRequested(new Set(rows.filter((r) => r.requested).map((r) => r.submission_uuid)));
@@ -38,6 +51,43 @@ export function FormRequestPage({ onBack }: { onBack: () => void }) {
       setLoading(false);
     }
   }, []);
+
+  // Job select → load the month + form dropdowns; reset month/form/table.
+  const onJobChange = useCallback(async (id: string) => {
+    setJobId(id);
+    setSelectedMonth("");
+    setSelectedFormCode("");
+    setMonths([]);
+    setFormCodes([]);
+    setFiled(null);
+    setChecked(new Set());
+    setRequested(new Set());
+    if (!id) return;
+    try {
+      const { months: m, form_codes } = await api.fetchFiledMonths(id);
+      setMonths(m);
+      setFormCodes(form_codes);
+    } catch {
+      setMonths([]);
+      setFormCodes([]);
+    }
+  }, []);
+
+  const onMonthChange = useCallback(
+    (month: string) => {
+      setSelectedMonth(month);
+      void loadFiled(jobId, month, selectedFormCode);
+    },
+    [jobId, selectedFormCode, loadFiled],
+  );
+
+  const onFormChange = useCallback(
+    (formCode: string) => {
+      setSelectedFormCode(formCode);
+      if (selectedMonth) void loadFiled(jobId, selectedMonth, formCode);
+    },
+    [jobId, selectedMonth, loadFiled],
+  );
 
   const toggle = useCallback((uuid: string) => {
     setChecked((prev) => {
@@ -81,8 +131,9 @@ export function FormRequestPage({ onBack }: { onBack: () => void }) {
           <span className="field__label">Job</span>
           <select
             className="field__input"
+            aria-label="Job"
             value={jobId}
-            onChange={(e) => void loadFiled(e.target.value)}
+            onChange={(e) => void onJobChange(e.target.value)}
           >
             <option value="">Select a job…</option>
             {jobs.map((j) => (
@@ -93,8 +144,52 @@ export function FormRequestPage({ onBack }: { onBack: () => void }) {
           </select>
         </label>
 
+        {jobId && months.length === 0 ? (
+          <p className="muted">No filed forms for this job yet.</p>
+        ) : null}
+
+        {jobId && months.length > 0 ? (
+          <>
+            <label className="field">
+              <span className="field__label">Month</span>
+              <select
+                className="field__input"
+                aria-label="Month"
+                value={selectedMonth}
+                onChange={(e) => onMonthChange(e.target.value)}
+              >
+                <option value="">Select a month…</option>
+                {months.map((mb) => (
+                  <option key={mb.month} value={mb.month}>
+                    {monthLabel(mb.month)} ({mb.count})
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="field">
+              <span className="field__label">Form type</span>
+              <select
+                className="field__input"
+                aria-label="Form type"
+                value={selectedFormCode}
+                onChange={(e) => onFormChange(e.target.value)}
+              >
+                <option value="">All forms</option>
+                {formCodes.map((fc) => (
+                  <option key={fc} value={fc}>
+                    {fc}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </>
+        ) : null}
+
         {loading ? <p className="muted">Loading…</p> : null}
-        {filed && filed.length === 0 ? <p className="muted">No filed forms for this job yet.</p> : null}
+        {selectedMonth && filed && filed.length === 0 ? (
+          <p className="muted">No filed forms for this month.</p>
+        ) : null}
 
         {filed && filed.length > 0 ? (
           <>

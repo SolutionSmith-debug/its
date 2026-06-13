@@ -166,10 +166,38 @@ export interface FiledForm {
   ready: boolean;
 }
 
-/** Browse an ACTIVE job's filed forms with THIS account's per-row request/ready state.
- *  A 404 (inactive/unknown job) returns [] so the UI degrades cleanly. */
-export async function fetchFiled(jobId: string): Promise<FiledForm[]> {
+/** One work-month bucket for the PR-6 Form Request cascade (Job → Month-Year → docs). */
+export interface MonthBucket {
+  /** "YYYY-MM" (the work-month, from work_date). */
+  month: string;
+  /** Filed-form count in that work-month. */
+  count: number;
+}
+
+/** PR-6 cascade source: the work-months that have filed forms (newest-first, with counts)
+ *  and the distinct form codes present for the job — populates the Month + Form dropdowns.
+ *  A 404 (inactive/unknown job) returns empty arrays so the UI degrades cleanly. */
+export async function fetchFiledMonths(
+  jobId: string,
+): Promise<{ months: MonthBucket[]; form_codes: string[] }> {
   const q = new URLSearchParams({ job_id: jobId });
+  const res = await fetch(`/api/filed/months?${q.toString()}`, { credentials: "same-origin" });
+  if (!res.ok) return { months: [], form_codes: [] };
+  const data = (await res.json()) as { months?: MonthBucket[]; form_codes?: string[] };
+  return { months: data.months ?? [], form_codes: data.form_codes ?? [] };
+}
+
+/** Browse an ACTIVE job's filed forms with THIS account's per-row request/ready state.
+ *  PR-6: optionally narrow to a work-month (`month` = "YYYY-MM") and/or a `form_code`.
+ *  With neither, the PR-5 all-filed behavior is unchanged. A 404 (inactive/unknown job)
+ *  returns [] so the UI degrades cleanly. */
+export async function fetchFiled(
+  jobId: string,
+  opts?: { month?: string; form_code?: string },
+): Promise<FiledForm[]> {
+  const q = new URLSearchParams({ job_id: jobId });
+  if (opts?.month) q.set("month", opts.month);
+  if (opts?.form_code) q.set("form_code", opts.form_code);
   const res = await fetch(`/api/filed?${q.toString()}`, { credentials: "same-origin" });
   if (!res.ok) return [];
   return ((await res.json()) as { filed: FiledForm[] }).filed;
