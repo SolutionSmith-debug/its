@@ -1,7 +1,7 @@
 import { applyD1Migrations, env } from "cloudflare:test";
 import type { D1Migration } from "cloudflare:test";
 
-// Apply the real SQL migrations (0001…0011) to the test D1 before the suite runs,
+// Apply the real SQL migrations (0001…0012) to the test D1 before the suite runs,
 // so every test starts from the production schema. Idempotent: applyD1Migrations
 // tracks applied migrations and skips ones already present. TEST_MIGRATIONS is the
 // readD1Migrations() array passed through as a binding in vitest.config.ts.

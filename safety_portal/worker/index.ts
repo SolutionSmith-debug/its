@@ -649,6 +649,14 @@ app.post("/api/submissions/:uuid/request-pdf", requireSession, async (c) => {
     c.env.DB.prepare(
       "INSERT INTO audit_log (actor_username, action, target_username, detail) SELECT ?,?,?,? WHERE changes()=1",
     ).bind(c.get("session").username, "request_pdf", null, JSON.stringify({ job_id: row!.job_id })),
+    // PR-5: downloads are REQUESTER-BOUND — the submitter's request is the first
+    // pdf_requests row (one row per submission+account). Re-request refreshes the 24h
+    // window. submissions.pdf_requested stays as the legacy flag; pdf_requests is now the
+    // authority for who may download and the Mac-serviceable set.
+    c.env.DB.prepare(
+      "INSERT INTO pdf_requests (submission_uuid, account, requested_at) VALUES (?,?,unixepoch()) " +
+        "ON CONFLICT(submission_uuid, account) DO UPDATE SET requested_at=unixepoch(), ready_at=NULL",
+    ).bind(uuid, c.get("session").username),
   ]);
   void res;
   // ready = the cache is already populated (pdf_ready_at set AND a chunk row exists).
@@ -666,20 +674,32 @@ app.get("/api/submissions/:uuid/status", requireSession, async (c) => {
   const uuid = c.req.param("uuid");
   if (!uuid || uuid.length > 64) return c.json({ error: "not_found" }, 404);
   const row = await c.env.DB
-    .prepare(
-      "SELECT actor_username, submitted_as, box_verified, pdf_requested, pdf_ready_at FROM submissions WHERE submission_uuid=?",
-    )
+    .prepare("SELECT actor_username, submitted_as, box_verified, pdf_ready_at FROM submissions WHERE submission_uuid=?")
     .bind(uuid)
-    .first<{ actor_username: string | null; submitted_as: string | null; box_verified: number; pdf_requested: number; pdf_ready_at: number | null }>();
-  // Not owned, missing, OR rejected (box_verified=-1) → 404, consistent with request-pdf.
-  if (!ownsRow(row, c) || row!.box_verified === -1) return c.json({ error: "not_found" }, 404);
+    .first<{ actor_username: string | null; submitted_as: string | null; box_verified: number; pdf_ready_at: number | null }>();
+  if (!row || row.box_verified === -1) return c.json({ error: "not_found" }, 404);
 
-  const chunk = row!.pdf_ready_at !== null
+  // PR-5: REQUESTER-CENTRIC body. `requested` + the 24h `expires_at` come from THIS account's
+  // own live pdf_requests row; `ready` additionally needs the cache populated.
+  const me = c.get("session").username;
+  const pr = await c.env.DB
+    .prepare("SELECT requested_at FROM pdf_requests WHERE submission_uuid=? AND account=? AND requested_at > unixepoch()-86400")
+    .bind(uuid, me)
+    .first<{ requested_at: number }>();
+  // Gate (no row-data enumeration): only an admin, the owner/attributee, or a live requester
+  // may poll; everyone else gets the same 404 as an unknown uuid, leaking no row contents. (A
+  // benign timing residual remains — an existing-but-unauthorized uuid does the second read —
+  // matching /pdf; accepted, since UUIDs are unguessable.)
+  const ownerOrAdmin = c.get("role") === "admin" || row.actor_username === me || row.submitted_as === me;
+  if (!ownerOrAdmin && pr === null) return c.json({ error: "not_found" }, 404);
+  const chunk = row.pdf_ready_at !== null
     ? await c.env.DB.prepare("SELECT 1 FROM filed_pdfs WHERE submission_uuid=? LIMIT 1").bind(uuid).first()
     : null;
-  const ready = row!.pdf_ready_at !== null && chunk !== null;
-  const expires_at = row!.pdf_ready_at !== null ? row!.pdf_ready_at + 86_400 : null;
-  return c.json({ requested: row!.pdf_requested === 1, ready, expires_at });
+  const cacheReady = row.pdf_ready_at !== null && chunk !== null;
+  const requested = pr !== null;
+  const ready = cacheReady && (requested || c.get("role") === "admin");
+  const expires_at = pr ? pr.requested_at + 86_400 : null;
+  return c.json({ requested, ready, expires_at });
 });
 
 /**
@@ -694,11 +714,22 @@ app.get("/api/submissions/:uuid/pdf", requireSession, async (c) => {
   if (!uuid || uuid.length > 64) return c.json({ error: "not_found" }, 404);
   const row = await c.env.DB
     .prepare(
-      "SELECT actor_username, submitted_as, box_verified, form_code, work_date, pdf_ready_at FROM submissions WHERE submission_uuid=?",
+      "SELECT box_verified, form_code, work_date, pdf_ready_at FROM submissions WHERE submission_uuid=?",
     )
     .bind(uuid)
-    .first<{ actor_username: string | null; submitted_as: string | null; box_verified: number; form_code: string; work_date: string; pdf_ready_at: number | null }>();
-  if (!ownsRow(row, c) || row!.box_verified === -1) return c.json({ error: "not_found" }, 404);
+    .first<{ box_verified: number; form_code: string; work_date: string; pdf_ready_at: number | null }>();
+  if (!row || row.box_verified === -1) return c.json({ error: "not_found" }, 404);
+  // PR-5: REQUESTER-BOUND. Admins always; otherwise the session account must hold a LIVE
+  // pdf_requests row (requested within 24h) for this uuid. A DIFFERENT authenticated account —
+  // even the actor/attributee who never requested — gets 404 (the staged PDF is private to
+  // its requester; no enumeration).
+  if (c.get("role") !== "admin") {
+    const pr = await c.env.DB
+      .prepare("SELECT 1 FROM pdf_requests WHERE submission_uuid=? AND account=? AND requested_at > unixepoch()-86400")
+      .bind(uuid, c.get("session").username)
+      .first();
+    if (!pr) return c.json({ error: "not_found" }, 404);
+  }
   if (row!.pdf_ready_at === null) return c.json({ error: "not_ready" }, 404);
 
   const { results } = await c.env.DB
@@ -724,6 +755,89 @@ app.get("/api/submissions/:uuid/pdf", requireSession, async (c) => {
       "Content-Disposition": `attachment; filename="${safe}"`,
     },
   });
+});
+
+/**
+ * GET /api/filed?job_id=… — PR-5 browse: an ACTIVE job's filed forms with THIS account's
+ * per-row request/ready state. requireSession. 404 unless the job is active (browse is
+ * scoped to active jobs). Metadata only — no payloads, no PDFs.
+ */
+app.get("/api/filed", requireSession, async (c) => {
+  const job_id = c.req.query("job_id") ?? "";
+  if (!job_id || job_id.length > 64) return c.json({ error: "not_found" }, 404);
+  const active = await c.env.DB
+    .prepare("SELECT 1 FROM jobs WHERE job_id=? AND active=1")
+    .bind(job_id)
+    .first();
+  if (!active) return c.json({ error: "not_found" }, 404);
+  // LEFT JOIN this account's LIVE request (the 24h window is in the ON clause, so an expired
+  // request stops matching). ready = the cache is populated AND this account has a live request.
+  const { results } = await c.env.DB
+    .prepare(
+      "SELECT s.submission_uuid, s.form_code, s.work_date, s.filed_at, " +
+        "(s.pdf_ready_at IS NOT NULL) AS cache_ready, (pr.requested_at IS NOT NULL) AS requested " +
+        "FROM submissions s " +
+        "LEFT JOIN pdf_requests pr ON pr.submission_uuid=s.submission_uuid AND pr.account=? " +
+        "AND pr.requested_at > unixepoch()-86400 " +
+        "WHERE s.job_id=? AND s.box_verified=1 " +
+        "ORDER BY s.filed_at DESC, s.created_at DESC LIMIT 500",
+    )
+    .bind(c.get("session").username, job_id)
+    .all<{ submission_uuid: string; form_code: string; work_date: string; filed_at: number | null; cache_ready: number; requested: number }>();
+  const filed = (results ?? []).map((r) => ({
+    submission_uuid: r.submission_uuid,
+    form_code: r.form_code,
+    work_date: r.work_date,
+    filed_at: r.filed_at,
+    requested: r.requested === 1,
+    ready: r.cache_ready === 1 && r.requested === 1,
+  }));
+  return c.json({ filed });
+});
+
+/**
+ * POST /api/request-pdfs — PR-5 batch request. requireSession. Body { uuids: string[] }
+ * (cap 20). For each uuid that is a FILED submission on an ACTIVE job, upsert a pdf_requests
+ * row for the session account (refreshing the 24h window). Any authenticated account may
+ * request any active-job filed form (mirrors the submit model); the download is then bound
+ * to THIS requester. ONE audit row per batch. Returns { requested: <count upserted> }.
+ */
+app.post("/api/request-pdfs", requireSession, async (c) => {
+  let body: Record<string, unknown>;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "bad_request" }, 400);
+  }
+  if (typeof body !== "object" || (body as unknown) === null || Array.isArray(body)) {
+    return c.json({ error: "bad_request" }, 400);
+  }
+  const raw = body.uuids;
+  if (!Array.isArray(raw) || raw.length === 0) return c.json({ error: "bad_request", detail: "uuids" }, 400);
+  if (raw.length > 20) return c.json({ error: "too_many", detail: "max 20 per batch" }, 400);
+  const clean = [...new Set(raw.filter((u): u is string => typeof u === "string" && u.length > 0 && u.length <= 64))];
+  if (clean.length === 0) return c.json({ requested: 0 });
+  // Only FILED submissions on ACTIVE jobs are requestable.
+  const placeholders = clean.map(() => "?").join(",");
+  const { results } = await c.env.DB
+    .prepare(
+      "SELECT s.submission_uuid FROM submissions s JOIN jobs j ON j.job_id=s.job_id " +
+        `WHERE s.submission_uuid IN (${placeholders}) AND s.box_verified=1 AND j.active=1`,
+    )
+    .bind(...clean)
+    .all<{ submission_uuid: string }>();
+  const valid = (results ?? []).map((r) => r.submission_uuid);
+  if (valid.length === 0) return c.json({ requested: 0 });
+  const account = c.get("session").username;
+  const stmts = valid.map((u) =>
+    c.env.DB.prepare(
+      "INSERT INTO pdf_requests (submission_uuid, account, requested_at) VALUES (?,?,unixepoch()) " +
+        "ON CONFLICT(submission_uuid, account) DO UPDATE SET requested_at=unixepoch(), ready_at=NULL",
+    ).bind(u, account),
+  );
+  stmts.push(auditStmt(c, account, "request_pdfs", null, { count: valid.length, uuids: valid }));
+  await c.env.DB.batch(stmts);
+  return c.json({ requested: valid.length });
 });
 
 /**
@@ -818,8 +932,9 @@ const MAX_CHUNK_B64_LEN = Math.ceil((CHUNK_DECODED_MAX * 4) / 3) + 4; // ~1,333,
 
 /**
  * GET /api/internal/pdf-requests — the serviceable set for the Mac pdf-cache pass:
- * rows the user requested (pdf_requested=1), not yet cached (pdf_ready_at IS NULL), and
- * filed (box_file_id IS NOT NULL — there is a Box file to download). Oldest-first.
+ * filed rows with a LIVE pdf_requests row (someone requested within 24h), not yet cached
+ * (pdf_ready_at IS NULL), and filed (box_file_id IS NOT NULL — a Box file to download).
+ * Oldest-first.
  * Returns a NAMED field (never a bare array — portal_client._request rejects non-object
  * JSON). Bearer-token gated.
  */
@@ -827,9 +942,11 @@ app.get("/api/internal/pdf-requests", requireInternalToken, async (c) => {
   const limit = Math.min(Math.max(parseInt(c.req.query("limit") || "25", 10) || 25, 1), 100);
   const { results } = await c.env.DB
     .prepare(
-      "SELECT submission_uuid, box_file_id, form_code, work_date FROM submissions " +
-        "WHERE pdf_requested=1 AND pdf_ready_at IS NULL AND box_file_id IS NOT NULL " +
-        "ORDER BY filed_at LIMIT ?",
+      "SELECT s.submission_uuid, s.box_file_id, s.form_code, s.work_date FROM submissions s " +
+        "WHERE s.pdf_ready_at IS NULL AND s.box_file_id IS NOT NULL AND s.box_verified=1 " +
+        "AND EXISTS (SELECT 1 FROM pdf_requests pr WHERE pr.submission_uuid=s.submission_uuid " +
+        "AND pr.requested_at > unixepoch()-86400) " +
+        "ORDER BY s.filed_at LIMIT ?",
     )
     .bind(limit)
     .all();
@@ -1677,8 +1794,9 @@ app.get("*", (c) => c.env.ASSETS.fetch(c.req.raw));
 const scheduled: ExportedHandlerScheduledHandler<Env> = async (_controller, env) => {
   const pruned = await pruneOldData(env.DB, Math.floor(Date.now() / 1000));
   console.log(
-    `prune: removed ${pruned.submissions} filed + ${pruned.rejected} rejected submission(s) + ` +
-      `${pruned.audit} audit row(s) + ${pruned.pdfChunks} pdf chunk(s); D1 size ${pruned.dbSizeBytes} bytes`,
+    `prune: stripped ${pruned.stripped} payload(s), removed ${pruned.submissions} inactive-job + ` +
+      `${pruned.rejected} rejected submission(s) + ${pruned.audit} audit row(s) + ` +
+      `${pruned.pdfRequests} pdf request(s) + ${pruned.pdfChunks} pdf chunk(s); D1 size ${pruned.dbSizeBytes} bytes`,
   );
 };
 
