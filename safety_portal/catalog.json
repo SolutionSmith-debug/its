@@ -247,6 +247,27 @@
           "display_order": 1
         }
       ]
+    },
+    {
+      "parent_form_code": "test",
+      "name": "photo test",
+      "display_order": 8,
+      "forms": [
+        {
+          "identity": "photo-test",
+          "variant_label": null,
+          "status": "active",
+          "current_version": 1,
+          "current_form_code": "photo-test-v1",
+          "versions": [
+            {
+              "version": 1,
+              "form_code": "photo-test-v1"
+            }
+          ],
+          "display_order": 1
+        }
+      ]
     }
   ]
 }
