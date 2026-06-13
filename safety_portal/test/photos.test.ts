@@ -1,6 +1,7 @@
 import { env, SELF } from "cloudflare:test";
 import { describe, it, expect, beforeEach } from "vitest";
 import { validateDefinition } from "../worker/publishValidation";
+import metaSchema from "../forms/meta-schema.json";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Photo upload PR-1 (2026-06-12) — the Worker bounds/shape gate + the HMAC lock.
@@ -219,5 +220,50 @@ describe("publishValidation — photo fields in form definitions", () => {
     const fields = (def.sections[0] as Record<string, unknown>).fields as Record<string, unknown>[];
     fields.push({ key: "foreman", label: "Foreman", input: "text", max_count: 2 });
     expect(validateDefinition(def, ctx).ok).toBe(false);
+  });
+});
+
+// ── INPUTS / meta-schema parity (kills the three-copies drift class) ──────────────
+// PR-1 (#271) added "photo" to the meta-schema enum + this Worker's INPUTS but NOT to the
+// SPA's editorValidation copy (fixed: derived from FIELD_INPUTS). publishValidation.INPUTS is
+// module-private, so this asserts the property behaviorally: every input the meta-schema
+// (the JSON-side source of truth) permits is ACCEPTED as a header field by validateDefinition.
+// If someone adds an input to meta-schema.json but forgets the Worker's INPUTS, this fails.
+describe("publishValidation accepts every meta-schema input enum member (parity)", () => {
+  const SCHEMA_INPUTS = (
+    metaSchema as { $defs: { input: { enum: string[] } } }
+  ).$defs.input.enum;
+  const ctx = { identity: "input-probe", parentFormCode: "input-probe" };
+
+  function defWithHeaderInput(input: string) {
+    const field: Record<string, unknown> = { key: "probe_field", label: "Probe", input };
+    if (input === "select") field.options = ["A"];
+    // Carry a signature field so the required-content legal floor
+    // (defaults_for_new_identities.required_signature_inputs_min = 1) is satisfied — this
+    // isolates the test to INPUT-TYPE acceptance, not the unrelated signature floor.
+    const sig = { key: "probe_signature", label: "Signature", input: "signature" };
+    return {
+      form_code: "input-probe-v1",
+      parent_form_code: "input-probe",
+      form_name: "Input Probe",
+      variant_label: null,
+      version: 1,
+      archetype: "sectioned_assessment",
+      source_pdf: "probe.pdf",
+      sections: [{ type: "header", fields: [field, sig] }],
+    };
+  }
+
+  it("has a non-empty enum (sanity)", () => {
+    expect(SCHEMA_INPUTS.length).toBeGreaterThan(0);
+    expect(SCHEMA_INPUTS).toContain("photo");
+  });
+
+  it.each(SCHEMA_INPUTS)("validateDefinition accepts a header field with input '%s'", (input) => {
+    expect(validateDefinition(defWithHeaderInput(input), ctx)).toEqual({ ok: true });
+  });
+
+  it("rejects an input NOT in the meta-schema enum (negative control)", () => {
+    expect(validateDefinition(defWithHeaderInput("bogus"), ctx).ok).toBe(false);
   });
 });
