@@ -53,6 +53,7 @@ def stub(mocker) -> dict[str, MagicMock]:
         "get_job": mocker.patch.object(weekly_send.active_jobs, "get_job", return_value=_job()),
         "download": mocker.patch.object(weekly_send.box_client, "download_file", return_value=b"%PDF-packet"),
         "send_mail": mocker.patch.object(weekly_send.graph_client, "send_mail"),
+        "send_large": mocker.patch.object(weekly_send.graph_client, "send_mail_large_attachment"),
         "from_mailbox": mocker.patch.object(weekly_send, "_read_str_setting", return_value="safety@evergreenmirror.com"),
         "log": mocker.patch.object(weekly_send.error_log, "log"),
     }
@@ -253,3 +254,83 @@ def test_held_outcomes_are_distinct(stub):
     stub["get_job"].return_value = _job()
     stub["get_row"].return_value = _row(**{wsr_review.COL_COMPILED_PDF: ""})
     assert weekly_send.send_one_row(50).status == "held_missing_pdf"
+
+
+# ---- PR-3: inline ≤2.5 MB / upload-session >2.5 MB transport switch --------
+
+
+def test_small_packet_sends_inline_not_upload_session(stub):
+    # A small (default fixture) packet → inline send_mail; the upload-session path
+    # is NOT taken.
+    result = weekly_send.send_one_row(50)
+    assert result.status == "sent"
+    stub["send_mail"].assert_called_once()
+    stub["send_large"].assert_not_called()
+
+
+def test_large_packet_uses_upload_session_not_inline(stub):
+    # A packet over the 2.5 MB threshold → upload-session path; inline NOT taken.
+    big = b"\x00" * (weekly_send.UPLOAD_SESSION_THRESHOLD_BYTES + 1)
+    stub["download"].return_value = big
+    result = weekly_send.send_one_row(50)
+    assert result.status == "sent"
+    stub["send_large"].assert_called_once()
+    stub["send_mail"].assert_not_called()
+    kw = stub["send_large"].call_args.kwargs
+    # Recipients resolved from active_jobs, same as the inline path; raw bytes passed.
+    assert kw["to"] == ["pm@evergreenmirror.com"]
+    assert kw["cc"] == ["cc1@x.com", "cc2@x.com"]
+    assert kw["attachment_bytes"] == big
+    assert kw["attachment_content_type"] == "application/pdf"
+    assert kw["body"] == "Good morning Dana — packet attached."
+    # The write-ahead SENDING marker still precedes the send; SENT follows.
+    calls = stub["update_rows"].call_args_list
+    assert calls[0].args[1][0][wsr_review.COL_SEND_STATUS] == wsr_review.STATUS_SENDING
+    assert calls[-1].args[1][0][wsr_review.COL_SEND_STATUS] == wsr_review.STATUS_SENT
+
+
+def test_threshold_boundary_inclusive_is_inline(stub):
+    # Exactly at the threshold (not strictly greater) → still inline.
+    stub["download"].return_value = b"\x00" * weekly_send.UPLOAD_SESSION_THRESHOLD_BYTES
+    weekly_send.send_one_row(50)
+    stub["send_mail"].assert_called_once()
+    stub["send_large"].assert_not_called()
+
+
+def test_oversized_packet_is_held_without_sending(stub, mocker):
+    # A packet over Graph's 150 MB upload-session ceiling → HELD; neither send fires,
+    # and the row is never flipped to SENDING. Constants monkeypatched small to avoid
+    # allocating 150 MB of fixture bytes.
+    mocker.patch.object(weekly_send.graph_client, "UPLOAD_SESSION_MAX_BYTES", 100)
+    mocker.patch.object(weekly_send, "UPLOAD_SESSION_THRESHOLD_BYTES", 10)
+    stub["download"].return_value = b"\x00" * 200  # > 100
+    result = weekly_send.send_one_row(50)
+    assert result.status == "held_oversized_packet"
+    stub["send_mail"].assert_not_called()
+    stub["send_large"].assert_not_called()
+    # The single status write is HELD — never SENDING (refused before the marker).
+    statuses = [c.args[1][0].get(wsr_review.COL_SEND_STATUS) for c in stub["update_rows"].call_args_list]
+    assert wsr_review.STATUS_SENDING not in statuses
+    assert stub["update_rows"].call_args.args[1][0][wsr_review.COL_SEND_STATUS] == wsr_review.STATUS_HELD
+
+
+def test_upload_session_too_large_error_is_held(stub, mocker):
+    # Belt-and-suspenders: if the layer below raises GraphAttachmentTooLargeError
+    # (constants drifted), weekly_send HELDs rather than retrying forever.
+    from shared.graph_client import GraphAttachmentTooLargeError
+    big = b"\x00" * (weekly_send.UPLOAD_SESSION_THRESHOLD_BYTES + 1)
+    stub["download"].return_value = big
+    stub["send_large"].side_effect = GraphAttachmentTooLargeError("too big at the wire")
+    result = weekly_send.send_one_row(50)
+    assert result.status == "held_oversized_packet"
+    assert stub["update_rows"].call_args.args[1][0][wsr_review.COL_SEND_STATUS] == wsr_review.STATUS_HELD
+
+
+def test_large_packet_graph_error_retries(stub):
+    # The upload-session path shares the FAILED/retry fence with the inline path.
+    big = b"\x00" * (weekly_send.UPLOAD_SESSION_THRESHOLD_BYTES + 1)
+    stub["download"].return_value = big
+    stub["send_large"].side_effect = GraphError("transient 503 mid-upload")
+    result = weekly_send.send_one_row(50)
+    assert result.status == "send_failed"
+    assert stub["update_rows"].call_args.args[1][0][wsr_review.COL_SEND_STATUS] == wsr_review.STATUS_FAILED
