@@ -8,6 +8,9 @@ export const AUDIT_LOG_RETENTION_DAYS = 365;
 // M4 (PR-4): a rejected (bad-HMAC) submission is terminal at box_verified=-1; keep it 30d for
 // forensics, then prune (it is never re-served — /pending selects box_verified=0).
 export const REJECTED_RETENTION_DAYS = 30;
+// PR-5: a filed form stays browseable/requestable as long as its job is ACTIVE. Once the job
+// is inactive, delete its filed rows 30d later (the inactive-job grace).
+export const INACTIVE_JOB_GRACE_DAYS = 30;
 const DAY_S = 86_400;
 // PR-4 Part A: a cached PDF (the filed_pdfs base64 chunks) is transient — re-requestable.
 // 24h past pdf_ready_at the chunks are deleted and the request flags reset, so a stale
@@ -41,22 +44,15 @@ const DB_SIZE_WARN_BYTES = 6_000_000_000;
 export async function pruneOldData(
   db: Env["DB"],
   nowSec: number,
-): Promise<{ submissions: number; rejected: number; audit: number; pdfChunks: number; dbSizeBytes: number }> {
-  const subCutoff = nowSec - SUBMISSION_RETENTION_DAYS * DAY_S;
+): Promise<{ submissions: number; stripped: number; rejected: number; audit: number; pdfRequests: number; pdfChunks: number; dbSizeBytes: number }> {
+  const subCutoff = nowSec - SUBMISSION_RETENTION_DAYS * DAY_S;          // Stage 1: strip payload
+  const inactiveCutoff = nowSec - INACTIVE_JOB_GRACE_DAYS * DAY_S;       // Stage 2: delete inactive-job rows
   const rejectedCutoff = nowSec - REJECTED_RETENTION_DAYS * DAY_S;
   const auditCutoff = nowSec - AUDIT_LOG_RETENTION_DAYS * DAY_S;
-  const pdfCutoff = nowSec - PDF_CACHE_TTL_S;
+  const pdfCutoff = nowSec - PDF_CACHE_TTL_S;                            // pdf_requests 24h window
 
-  const sub = await db
-    .prepare(
-      "DELETE FROM submissions WHERE box_verified = 1 AND filed_at IS NOT NULL AND filed_at < ?",
-    )
-    .bind(subCutoff)
-    .run();
   const rejected = await db
-    .prepare(
-      "DELETE FROM submissions WHERE box_verified = -1 AND filed_at IS NOT NULL AND filed_at < ?",
-    )
+    .prepare("DELETE FROM submissions WHERE box_verified = -1 AND filed_at IS NOT NULL AND filed_at < ?")
     .bind(rejectedCutoff)
     .run();
   const audit = await db
@@ -64,24 +60,45 @@ export async function pruneOldData(
     .bind(auditCutoff)
     .run();
 
-  // PR-4 PDF cache: (1) delete the chunks of any submission whose cache aged out, then
-  // reset its request flags so the user can re-request; (2) delete orphan chunks whose
-  // parent submission was already pruned. Order: expired-by-time first, then orphans.
-  const expiredChunks = await db
+  // PR-5 two-stage submission lifecycle.
+  // Stage 1 — at 90d STRIP payload_json (the bulk; photos ride in it) but KEEP the metadata
+  // row, so a filed form stays browseable/requestable as long as its job is active (downloads
+  // re-fetch the PDF from Box via box_file_id — they never need payload_json; amend-prefill
+  // only reads recent rows). Unfiled rows are never touched.
+  const stripped = await db
+    .prepare("UPDATE submissions SET payload_json='' WHERE box_verified = 1 AND filed_at IS NOT NULL AND filed_at < ? AND payload_json != ''")
+    .bind(subCutoff)
+    .run();
+  // Stage 2 — delete filed rows whose job is INACTIVE and that are 30d+ past filing (the
+  // inactive-job grace). An UNFILED row (box_verified=0) is NEVER evicted (still the only copy).
+  const sub = await db
     .prepare(
-      "DELETE FROM filed_pdfs WHERE submission_uuid IN " +
-        "(SELECT submission_uuid FROM submissions WHERE pdf_ready_at IS NOT NULL AND pdf_ready_at < ?)",
+      "DELETE FROM submissions WHERE box_verified = 1 AND filed_at IS NOT NULL AND filed_at < ? " +
+        "AND job_id IN (SELECT job_id FROM jobs WHERE active = 0)",
     )
-    .bind(pdfCutoff)
+    .bind(inactiveCutoff)
+    .run();
+
+  // pdf_requests: expire requests older than 24h, then drop any orphaned by a Stage-2 delete.
+  const expiredReq = await db.prepare("DELETE FROM pdf_requests WHERE requested_at < ?").bind(pdfCutoff).run();
+  const orphanReq = await db
+    .prepare("DELETE FROM pdf_requests WHERE submission_uuid NOT IN (SELECT submission_uuid FROM submissions)")
+    .run();
+  const pdfRequests = (expiredReq.meta.changes ?? 0) + (orphanReq.meta.changes ?? 0);
+
+  // filed_pdfs: a cached PDF is kept only while a LIVE pdf_requests row references it. Once no
+  // live request remains (all expired, or the parent was deleted), drop the chunks and reset
+  // pdf_ready_at/pdf_requested so a fresh request re-services the cache from Box.
+  const droppedChunks = await db
+    .prepare("DELETE FROM filed_pdfs WHERE submission_uuid NOT IN (SELECT submission_uuid FROM pdf_requests)")
     .run();
   await db
-    .prepare("UPDATE submissions SET pdf_requested=0, pdf_ready_at=NULL WHERE pdf_ready_at IS NOT NULL AND pdf_ready_at < ?")
-    .bind(pdfCutoff)
+    .prepare(
+      "UPDATE submissions SET pdf_ready_at=NULL, pdf_requested=0 WHERE pdf_ready_at IS NOT NULL " +
+        "AND submission_uuid NOT IN (SELECT submission_uuid FROM pdf_requests)",
+    )
     .run();
-  const orphanChunks = await db
-    .prepare("DELETE FROM filed_pdfs WHERE submission_uuid NOT IN (SELECT submission_uuid FROM submissions)")
-    .run();
-  const pdfChunks = (expiredChunks.meta.changes ?? 0) + (orphanChunks.meta.changes ?? 0);
+  const pdfChunks = droppedChunks.meta.changes ?? 0;
 
   const dbSizeBytes = await sampleDbSizeBytes(db);
   if (dbSizeBytes > DB_SIZE_WARN_BYTES) {
@@ -90,8 +107,10 @@ export async function pruneOldData(
 
   return {
     submissions: sub.meta.changes ?? 0,
+    stripped: stripped.meta.changes ?? 0,
     rejected: rejected.meta.changes ?? 0,
     audit: audit.meta.changes ?? 0,
+    pdfRequests,
     pdfChunks,
     dbSizeBytes,
   };

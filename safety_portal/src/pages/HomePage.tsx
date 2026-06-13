@@ -1,7 +1,13 @@
 import { useAuth } from "../lib/auth";
 import { AppHeader } from "../components/AppHeader";
 
-export function HomePage({ onOpenForm }: { onOpenForm: () => void }) {
+export function HomePage({
+  onOpenForm,
+  onOpenFormRequest,
+}: {
+  onOpenForm: () => void;
+  onOpenFormRequest: () => void;
+}) {
   const { user, logout } = useAuth();
   return (
     <div className="page">
@@ -25,6 +31,14 @@ export function HomePage({ onOpenForm }: { onOpenForm: () => void }) {
             <span className="form-card__desc">
               Pick a job and form — JHA, Toolbox Talk, Equipment Pre-Inspection, Visitor
               Sign-In, or HSS&amp;E Work Observation.
+            </span>
+          </button>
+          <button className="form-card" onClick={onOpenFormRequest}>
+            <span className="form-card__badge">Browse</span>
+            <span className="form-card__title">Form Request</span>
+            <span className="form-card__desc">
+              Find a job's filed safety forms and download them on the spot — last week's
+              JHAs, a crane lift plan, and more.
             </span>
           </button>
         </div>

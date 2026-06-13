@@ -13,6 +13,8 @@ beforeEach(async () => {
     env.DB.prepare("DELETE FROM submissions"),
     env.DB.prepare("DELETE FROM audit_log"),
     env.DB.prepare("DELETE FROM filed_pdfs"),
+    env.DB.prepare("DELETE FROM pdf_requests"),
+    env.DB.prepare("DELETE FROM jobs"),
   ]);
 });
 
@@ -33,25 +35,33 @@ async function remaining(): Promise<string[]> {
 }
 
 describe("pruneOldData (A3 D1 housekeeping)", () => {
-  it("deletes FILED submissions older than 90d, keeps recent ones", async () => {
+  it("STRIPS payload from FILED submissions older than 90d but KEEPS the metadata row (PR-5 Stage 1)", async () => {
     await seedSub("filed-old", 1, NOW - 100 * DAY);
     await seedSub("filed-recent", 1, NOW - 10 * DAY);
 
     const res = await pruneOldData(env.DB, NOW);
 
-    expect(res.submissions).toBe(1);
-    expect(await remaining()).toEqual(["filed-recent"]);
+    expect(res.stripped).toBe(1);
+    expect(res.submissions).toBe(0); // nothing DELETED (no inactive job)
+    expect(await remaining()).toEqual(["filed-old", "filed-recent"]); // both rows kept
+    const old = await env.DB.prepare("SELECT payload_json FROM submissions WHERE submission_uuid='filed-old'").first<{ payload_json: string }>();
+    const recent = await env.DB.prepare("SELECT payload_json FROM submissions WHERE submission_uuid='filed-recent'").first<{ payload_json: string }>();
+    expect(old?.payload_json).toBe(""); // stripped
+    expect(recent?.payload_json).toBe("{}"); // intact (within 90d)
   });
 
-  it("NEVER evicts an unfiled row (box_verified=0), even with an old filed_at", async () => {
-    // box_verified=0 means Box does not hold it yet — the D1 row is the only copy.
-    await seedSub("unfiled-old", 0, NOW - 200 * DAY);
-    await seedSub("filed-old", 1, NOW - 200 * DAY);
+  it("deletes an INACTIVE-job filed row (PR-5 Stage 2) but NEVER an unfiled row (box_verified=0)", async () => {
+    // JOB-1 is INACTIVE → its filed rows are deletable 30d after filing.
+    await env.DB.prepare("INSERT OR REPLACE INTO jobs (job_id, project_name, active) VALUES ('JOB-1','J',0)").run();
+    await seedSub("unfiled-old", 0, NOW - 200 * DAY); // box_verified=0 — Box has no copy → NEVER touched
+    await seedSub("filed-old", 1, NOW - 200 * DAY);   // inactive job + old → Stage-2 delete
 
     const res = await pruneOldData(env.DB, NOW);
 
-    expect(res.submissions).toBe(1); // only the FILED old one
+    expect(res.submissions).toBe(1); // the inactive-job filed row deleted
     expect(await remaining()).toEqual(["unfiled-old"]); // the unfiled one survives
+    const unf = await env.DB.prepare("SELECT payload_json FROM submissions WHERE submission_uuid='unfiled-old'").first<{ payload_json: string }>();
+    expect(unf?.payload_json).toBe("{}"); // unfiled payload NOT stripped either
   });
 
   it("keeps audit_log ~1 year, prunes older", async () => {
@@ -89,23 +99,24 @@ async function chunkUuids(): Promise<string[]> {
 }
 
 describe("pruneOldData — PDF cache (filed_pdfs)", () => {
-  it("deletes chunks >24h past pdf_ready_at AND resets the request flags (re-requestable)", async () => {
-    // A filed submission whose cache aged out (pdf_ready_at 2 days ago).
-    await seedSub("cache-old", 1, NOW - 10 * DAY);
-    await env.DB.prepare("UPDATE submissions SET pdf_requested=1, pdf_ready_at=? WHERE submission_uuid='cache-old'").bind(NOW - 2 * DAY).run();
-    await seedChunk("cache-old", 0, 1);
-    // A fresh cache (just cached) — must survive.
-    await seedSub("cache-fresh", 1, NOW - 10 * DAY);
-    await env.DB.prepare("UPDATE submissions SET pdf_requested=1, pdf_ready_at=? WHERE submission_uuid='cache-fresh'").bind(NOW - 100).run();
-    await seedChunk("cache-fresh", 0, 1);
+  it("drops chunks for a submission with NO live request, keeps those with a live request (PR-5)", async () => {
+    // cache-norequest: cached, but its only request EXPIRED (>24h) → chunks dropped + reset.
+    await seedSub("cache-norequest", 1, NOW - 10 * DAY);
+    await env.DB.prepare("UPDATE submissions SET pdf_ready_at=? WHERE submission_uuid='cache-norequest'").bind(NOW - 100).run();
+    await env.DB.prepare("INSERT INTO pdf_requests (submission_uuid, account, requested_at) VALUES ('cache-norequest','pm',?)").bind(NOW - 2 * DAY).run();
+    await seedChunk("cache-norequest", 0, 1);
+    // cache-live: cached WITH a live (within 24h) request → chunks survive.
+    await seedSub("cache-live", 1, NOW - 10 * DAY);
+    await env.DB.prepare("UPDATE submissions SET pdf_ready_at=? WHERE submission_uuid='cache-live'").bind(NOW - 100).run();
+    await env.DB.prepare("INSERT INTO pdf_requests (submission_uuid, account, requested_at) VALUES ('cache-live','pm',?)").bind(NOW - 100).run();
+    await seedChunk("cache-live", 0, 1);
 
     const res = await pruneOldData(env.DB, NOW);
 
-    expect(res.pdfChunks).toBe(1); // the one aged-out chunk
-    expect(await chunkUuids()).toEqual(["cache-fresh"]); // fresh chunk survives
-    // The aged-out submission's request flags were reset so it can be re-requested.
-    const reset = await env.DB.prepare("SELECT pdf_requested, pdf_ready_at FROM submissions WHERE submission_uuid='cache-old'").first<{ pdf_requested: number; pdf_ready_at: number | null }>();
-    expect(reset?.pdf_requested).toBe(0);
+    expect(res.pdfChunks).toBe(1); // the no-live-request chunk
+    expect(await chunkUuids()).toEqual(["cache-live"]); // live-request chunk survives
+    // The no-live-request submission's pdf_ready_at was reset so a fresh request re-services.
+    const reset = await env.DB.prepare("SELECT pdf_ready_at FROM submissions WHERE submission_uuid='cache-norequest'").first<{ pdf_ready_at: number | null }>();
     expect(reset?.pdf_ready_at).toBeNull();
   });
 

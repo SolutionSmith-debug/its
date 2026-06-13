@@ -325,6 +325,33 @@ chunks expire 24h past `pdf_ready_at` (prune) and are re-requestable.
 
 > Out of scope here: the Mac portal_poll PDF-cache pass + the SPA download button (sibling surfaces).
 
+### Form Request browse + requester-bound PDF (PR-5 — `0012`)
+
+**Migration 0012** adds the `pdf_requests` table (one row per `(submission_uuid, account)` —
+downloads are **requester-bound**, 24h). PR-5 adds the in-portal "Form Request" flow: any
+authenticated account browses an **ACTIVE** job's filed forms (`GET /api/filed?job_id=…`) and
+batch-requests their PDFs (`POST /api/request-pdfs`, ≤20/batch); each request upserts a
+`pdf_requests` row, the Mac PDF-cache pass services only forms with a **live** request
+(`GET /api/internal/pdf-requests` now requires one), and `GET /api/submissions/:uuid/pdf` is
+re-gated so only the **requesting** account (or an admin) may download within 24h — a different
+account, even the original submitter, gets **404** (no enumeration). Prune is now two-stage:
+strip `payload_json` at 90d (keep the metadata row so a filed form stays browseable while its job
+is active), delete the row 30d after the job goes **inactive**; `pdf_requests` expire at 24h and
+their chunks are evicted. The Worker remains SEND-FREE (no Box creds, no egress).
+
+#### Activation (operator — secrets/auth + deploy boundary; escalates to the Developer-Operator)
+
+1. Apply migration **0012** to the live D1 **BEFORE** the redeploy
+   (`npx wrangler d1 migrations apply its-safety-portal-db --remote`) — else `/api/filed`,
+   `/api/request-pdfs`, the requester-bound `/status` + `/pdf`, and the updated
+   `/api/internal/pdf-requests` error on the missing `pdf_requests` table. **ORDER-CRITICAL**,
+   same rule as 0006/0007/0009/0010/0011.
+2. **Redeploy** (`npm run deploy`) — activates the Form Request routes + the requester-bound
+   re-gate. The Mac portal_poll PDF-cache pass already services any live request.
+
+> Out of scope here: the Mac portal_poll PDF-cache pass (sibling surface, unchanged — it reads
+> `GET /api/internal/pdf-requests`, which now returns only live-requested forms).
+
 ### Lockout recovery (break-glass) — escalate to the Developer-Operator
 
 If both admins are ever locked out (e.g. passwords lost, or both disabled), recovery runs
