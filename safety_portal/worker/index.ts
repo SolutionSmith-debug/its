@@ -765,6 +765,16 @@ app.get("/api/submissions/:uuid/pdf", requireSession, async (c) => {
 app.get("/api/filed", requireSession, async (c) => {
   const job_id = c.req.query("job_id") ?? "";
   if (!job_id || job_id.length > 64) return c.json({ error: "not_found" }, 404);
+  // PR-6 optional cascade filters. Empty-string ("?month=") is treated as ABSENT (no filter,
+  // no 400). month → the work-month (substr of work_date); form_code → the exact form code.
+  const month = c.req.query("month") || undefined;
+  if (month !== undefined && !/^\d{4}-\d{2}$/.test(month)) {
+    return c.json({ error: "bad_request", detail: "month" }, 400);
+  }
+  const form_code = c.req.query("form_code") || undefined;
+  if (form_code !== undefined && form_code.length > 64) {
+    return c.json({ error: "bad_request", detail: "form_code" }, 400);
+  }
   const active = await c.env.DB
     .prepare("SELECT 1 FROM jobs WHERE job_id=? AND active=1")
     .bind(job_id)
@@ -772,6 +782,16 @@ app.get("/api/filed", requireSession, async (c) => {
   if (!active) return c.json({ error: "not_found" }, 404);
   // LEFT JOIN this account's LIVE request (the 24h window is in the ON clause, so an expired
   // request stops matching). ready = the cache is populated AND this account has a live request.
+  // month/form_code add BOUND WHERE terms only; the per-account join, ordering, defensive
+  // LIMIT 500, and response shape are unchanged from PR-5. Bind order follows placeholder order:
+  // [account (the JOIN's pr.account=?), job_id, month?, form_code?].
+  const where =
+    "WHERE s.job_id=? AND s.box_verified=1" +
+    (month !== undefined ? " AND substr(s.work_date,1,7) = ?" : "") +
+    (form_code !== undefined ? " AND s.form_code = ?" : "");
+  const binds: unknown[] = [c.get("session").username, job_id];
+  if (month !== undefined) binds.push(month);
+  if (form_code !== undefined) binds.push(form_code);
   const { results } = await c.env.DB
     .prepare(
       "SELECT s.submission_uuid, s.form_code, s.work_date, s.filed_at, " +
@@ -779,10 +799,10 @@ app.get("/api/filed", requireSession, async (c) => {
         "FROM submissions s " +
         "LEFT JOIN pdf_requests pr ON pr.submission_uuid=s.submission_uuid AND pr.account=? " +
         "AND pr.requested_at > unixepoch()-86400 " +
-        "WHERE s.job_id=? AND s.box_verified=1 " +
+        where + " " +
         "ORDER BY s.filed_at DESC, s.created_at DESC LIMIT 500",
     )
-    .bind(c.get("session").username, job_id)
+    .bind(...binds)
     .all<{ submission_uuid: string; form_code: string; work_date: string; filed_at: number | null; cache_ready: number; requested: number }>();
   const filed = (results ?? []).map((r) => ({
     submission_uuid: r.submission_uuid,
@@ -793,6 +813,40 @@ app.get("/api/filed", requireSession, async (c) => {
     ready: r.cache_ready === 1 && r.requested === 1,
   }));
   return c.json({ filed });
+});
+
+/**
+ * GET /api/filed/months?job_id=… — PR-6 cascade source for the Form Request page. Returns
+ * the work-months that actually have filed forms (newest-first, each with a count) and the
+ * distinct form codes present for the job, so a year-long job's hundreds of filed forms don't
+ * dump in one flat 500-capped table. requireSession. 404 unless the job is active (same guard
+ * + {error:"not_found"} shape as /api/filed — no enumeration). Job-scoped aggregates only; no
+ * per-account state leaks (unlike /api/filed's per-row request/ready flags).
+ */
+app.get("/api/filed/months", requireSession, async (c) => {
+  const job_id = c.req.query("job_id") ?? "";
+  if (!job_id || job_id.length > 64) return c.json({ error: "not_found" }, 404);
+  const active = await c.env.DB
+    .prepare("SELECT 1 FROM jobs WHERE job_id=? AND active=1")
+    .bind(job_id)
+    .first();
+  if (!active) return c.json({ error: "not_found" }, 404);
+  const monthsRes = await c.env.DB
+    .prepare(
+      "SELECT substr(work_date,1,7) AS month, COUNT(*) AS count " +
+        "FROM submissions WHERE job_id=? AND box_verified=1 " +
+        "GROUP BY month ORDER BY month DESC",
+    )
+    .bind(job_id)
+    .all<{ month: string; count: number }>();
+  const codesRes = await c.env.DB
+    .prepare("SELECT DISTINCT form_code FROM submissions WHERE job_id=? AND box_verified=1 ORDER BY form_code")
+    .bind(job_id)
+    .all<{ form_code: string }>();
+  return c.json({
+    months: (monthsRes.results ?? []).map((r) => ({ month: r.month, count: r.count })),
+    form_codes: (codesRes.results ?? []).map((r) => r.form_code),
+  });
 });
 
 /**

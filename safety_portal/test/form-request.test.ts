@@ -323,3 +323,122 @@ describe("GET /pdf — requester-bound download matrix", () => {
     expect(sa).toMatchObject({ requested: false, ready: false });
   });
 });
+
+// ── GET /api/filed/months — PR-6 cascade source (month buckets + form codes) ─────
+describe("GET /api/filed/months — PR-6 cascade", () => {
+  beforeEach(async () => {
+    await provision("pm.alice", "password123", "submitter");
+  });
+
+  it("no session → 401 (requireSession)", async () => {
+    const res = await call(`/api/filed/months?job_id=${ACTIVE}`);
+    expect(res.status).toBe(401);
+  });
+
+  it("missing/empty job_id → 404", async () => {
+    const c = await login("pm.alice", "password123");
+    for (const path of ["/api/filed/months", "/api/filed/months?job_id="]) {
+      expect((await call(path, { cookie: c })).status).toBe(404);
+    }
+  });
+
+  it("an INACTIVE/unknown job → 404 not_found (same guard as /api/filed, no enumeration)", async () => {
+    const c = await login("pm.alice", "password123");
+    const inact = await call(`/api/filed/months?job_id=${INACTIVE}`, { cookie: c });
+    expect(inact.status).toBe(404);
+    expect(await inact.json()).toMatchObject({ error: "not_found" });
+    expect((await call(`/api/filed/months?job_id=GHOST`, { cookie: c })).status).toBe(404);
+  });
+
+  it("returns months newest-first with counts + distinct form codes, FILED only", async () => {
+    await seedSubmission({ uuid: "jun-1", actor: "pm.alice", formCode: "jha", workDate: "2026-06-08" });
+    await seedSubmission({ uuid: "jun-2", actor: "pm.alice", formCode: "toolbox", workDate: "2026-06-20" });
+    await seedSubmission({ uuid: "may-1", actor: "pm.alice", formCode: "jha", workDate: "2026-05-15" });
+    await seedSubmission({ uuid: "may-2", actor: "pm.alice", formCode: "jha", workDate: "2026-05-31" });
+    // An UNFILED row (box_verified=0) must be excluded from both aggregates.
+    await seedSubmission({ uuid: "unf-1", actor: "pm.alice", formCode: "incident", workDate: "2026-06-01", boxVerified: 0 });
+    const c = await login("pm.alice", "password123");
+    const res = await call(`/api/filed/months?job_id=${ACTIVE}`, { cookie: c });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { months: { month: string; count: number }[]; form_codes: string[] };
+    expect(body.months).toEqual([
+      { month: "2026-06", count: 2 },
+      { month: "2026-05", count: 2 },
+    ]);
+    expect(body.form_codes).toEqual(["jha", "toolbox"]); // distinct, sorted, no "incident" (unfiled)
+  });
+
+  it("a job with no filed forms → empty arrays (200, not 404)", async () => {
+    const c = await login("pm.alice", "password123");
+    const res = await call(`/api/filed/months?job_id=${ACTIVE}`, { cookie: c });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ months: [], form_codes: [] });
+  });
+});
+
+// ── GET /api/filed — PR-6 month + form_code filters ──────────────────────────────
+describe("GET /api/filed — PR-6 month/form filters", () => {
+  beforeEach(async () => {
+    await provision("pm.alice", "password123", "submitter");
+    await provision("pm.bob", "password123", "submitter");
+    // June: jha (j-jha), toolbox (j-tb). May: jha (m-jha). A straddle pair around the boundary.
+    await seedSubmission({ uuid: "j-jha", actor: "pm.alice", formCode: "jha", workDate: "2026-06-08" });
+    await seedSubmission({ uuid: "j-tb", actor: "pm.alice", formCode: "toolbox", workDate: "2026-06-20" });
+    await seedSubmission({ uuid: "m-jha", actor: "pm.alice", formCode: "jha", workDate: "2026-05-15" });
+    await seedSubmission({ uuid: "edge-may", actor: "pm.alice", formCode: "jha", workDate: "2026-05-31" });
+    await seedSubmission({ uuid: "edge-jun", actor: "pm.alice", formCode: "jha", workDate: "2026-06-01" });
+  });
+
+  async function filedUuids(cookie: string, query: string): Promise<string[]> {
+    const res = await call(`/api/filed?${query}`, { cookie });
+    expect(res.status, await res.clone().text()).toBe(200);
+    const { filed } = (await res.json()) as { filed: { submission_uuid: string }[] };
+    return filed.map((f) => f.submission_uuid).sort();
+  }
+
+  it("month= narrows to that WORK-month (not filed_at)", async () => {
+    const c = await login("pm.alice", "password123");
+    expect(await filedUuids(c, `job_id=${ACTIVE}&month=2026-06`)).toEqual(["edge-jun", "j-jha", "j-tb"]);
+    expect(await filedUuids(c, `job_id=${ACTIVE}&month=2026-05`)).toEqual(["edge-may", "m-jha"]);
+  });
+
+  it("a work_date straddling the month boundary lands in the right bucket", async () => {
+    const c = await login("pm.alice", "password123");
+    expect(await filedUuids(c, `job_id=${ACTIVE}&month=2026-05`)).toContain("edge-may"); // 2026-05-31 → May
+    expect(await filedUuids(c, `job_id=${ACTIVE}&month=2026-05`)).not.toContain("edge-jun");
+    expect(await filedUuids(c, `job_id=${ACTIVE}&month=2026-06`)).toContain("edge-jun"); // 2026-06-01 → June
+  });
+
+  it("form_code= narrows to that form; combined with month= it intersects", async () => {
+    const c = await login("pm.alice", "password123");
+    expect(await filedUuids(c, `job_id=${ACTIVE}&form_code=toolbox`)).toEqual(["j-tb"]);
+    expect(await filedUuids(c, `job_id=${ACTIVE}&month=2026-06&form_code=jha`)).toEqual(["edge-jun", "j-jha"]);
+  });
+
+  it("a malformed month → 400 bad_request; an empty month param is ignored (no filter)", async () => {
+    const c = await login("pm.alice", "password123");
+    for (const bad of ["2026-6", "2026-13-01", "garbage", "26-06"]) {
+      const res = await call(`/api/filed?job_id=${ACTIVE}&month=${encodeURIComponent(bad)}`, { cookie: c });
+      expect(res.status, bad).toBe(400);
+      expect(await res.json()).toMatchObject({ error: "bad_request" });
+    }
+    // "?month=" (empty) is treated as ABSENT → all filed (5 rows), not a 400.
+    expect((await filedUuids(c, `job_id=${ACTIVE}&month=`)).length).toBe(5);
+  });
+
+  it("no params → unchanged PR-5 all-filed behavior (backward compatible)", async () => {
+    const c = await login("pm.alice", "password123");
+    expect((await filedUuids(c, `job_id=${ACTIVE}`)).length).toBe(5);
+  });
+
+  it("per-account requested/ready stays correct UNDER a month filter", async () => {
+    await seedCache("j-jha");
+    await requestAs("j-jha", "pm.alice"); // only alice requested
+    const ca = await login("pm.alice", "password123");
+    const cb = await login("pm.bob", "password123");
+    const ra = (await (await call(`/api/filed?job_id=${ACTIVE}&month=2026-06&form_code=jha`, { cookie: ca })).json()) as { filed: { submission_uuid: string; requested: boolean; ready: boolean }[] };
+    const rb = (await (await call(`/api/filed?job_id=${ACTIVE}&month=2026-06&form_code=jha`, { cookie: cb })).json()) as { filed: { submission_uuid: string; requested: boolean; ready: boolean }[] };
+    expect(ra.filed.find((f) => f.submission_uuid === "j-jha")).toMatchObject({ requested: true, ready: true });
+    expect(rb.filed.find((f) => f.submission_uuid === "j-jha")).toMatchObject({ requested: false, ready: false });
+  });
+});
