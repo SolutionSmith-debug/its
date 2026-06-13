@@ -78,6 +78,36 @@ def test_week_sheet_name_keys_on_saturday(work_date, expected_saturday):
     )
 
 
+def test_week_sheet_name_short_project_is_unchanged():
+    """A name already <= 50 chars is byte-identical to the pre-cap behavior
+    (so every existing week sheet still resolves find-or-create)."""
+    name = week_sheet_name("ZZ Portal Proof", date(2026, 6, 13))
+    assert name == "ZZ Portal Proof — week of 2026-06-13"
+    assert len(name) <= week_sheet.SHEET_NAME_MAX
+
+
+def test_week_sheet_name_long_project_is_truncated_to_cap():
+    """A 30+ char project name (the live JOB-000013 failure) is bounded to the
+    50-char Smartsheet cap — without this, create_sheet_in_folder 400s with
+    errorCode 1041 and the portal submission can never file."""
+    # The exact live regression: "I don't know project name Montgomery" (36) →
+    # composed 57 chars before the cap.
+    name = week_sheet_name("I don't know project name Montgomery", date(2026, 6, 13))
+    assert len(name) <= week_sheet.SHEET_NAME_MAX  # the hard requirement
+    # The week-label suffix is preserved WHOLE (it disambiguates weeks in the folder);
+    # only the project prefix is trimmed.
+    assert name.endswith(" — week of 2026-06-13")
+    assert name.startswith("I don't know project name")
+
+
+def test_week_sheet_name_preserves_full_week_label_under_truncation():
+    """Even with a pathologically long project name, the entire week label
+    survives — truncation only ever eats the project prefix, never the date key."""
+    name = week_sheet_name("X" * 200, date(2026, 5, 30))
+    assert len(name) == week_sheet.SHEET_NAME_MAX
+    assert name.endswith(" — week of 2026-05-30")
+
+
 # ---- ensure_week_sheet ---------------------------------------------------
 
 

@@ -70,6 +70,21 @@ class SmartsheetRateLimitError(SmartsheetError):
     """SDK retry budget exhausted (HTTP 429)."""
 
 
+class SmartsheetValidationError(SmartsheetError):
+    """Request rejected as malformed/invalid by Smartsheet (HTTP 400).
+
+    PERMANENT by definition — the API returns ``shouldRetry: false`` (e.g.
+    errorCode 1041 "sheet.name must be 50 characters or less"). A subclass of
+    ``SmartsheetError`` so every existing ``except SmartsheetError`` still catches
+    it unchanged; the distinct type lets a caller that retries-on-transient (the
+    portal intake drain) recognize "re-pulling will NEVER fix this" and route the
+    submission to the Review Queue instead of looping forever (see
+    ``safety_reports/intake.process_portal_submission``). NOTE: a 400 is a
+    client-side error, not a Smartsheet-health signal, so it still counts toward
+    the circuit breaker exactly as the base error did (behavior unchanged); only
+    the portal drain branches on the new type."""
+
+
 class SmartsheetCircuitOpenError(SmartsheetError):
     """Circuit breaker is OPEN — short-circuiting to spare a sustained-degraded
     Smartsheet API (F08).
@@ -125,6 +140,8 @@ def _translate(exc: sdk_exc.SmartsheetException) -> SmartsheetError:
         status = result.status_code
         message = result.message or "Smartsheet API error"
         detail = f"HTTP {status} (code {result.code}): {message}"
+        if status == 400:
+            return SmartsheetValidationError(detail)
         if status == 401:
             return SmartsheetAuthError(detail)
         if status == 403:
@@ -994,6 +1011,8 @@ def _translate_smartsheet_error(response: requests.Response, *, context: str) ->
         resp = e.response if e.response is not None else response
         status = resp.status_code if resp is not None else 0
         body_text = ((resp.text or "")[:200]) if resp is not None else str(e)
+        if status == 400:
+            raise SmartsheetValidationError(f"{context}: HTTP 400: {body_text}") from e
         if status == 401:
             raise SmartsheetAuthError(f"{context}: HTTP 401: {body_text}") from e
         if status == 403:

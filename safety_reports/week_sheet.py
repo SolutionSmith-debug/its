@@ -59,6 +59,14 @@ from . import safety_naming
 
 SCRIPT_NAME = "safety_reports.week_sheet"
 
+# Smartsheet hard cap on a sheet name — a longer name is rejected at create with
+# HTTP 400 errorCode 1041 ("must be 50 characters in length or less"). The
+# integration suites already shorten their sandbox names for this reason; the
+# production name-builder (`week_sheet_name`) MUST honor it too, or a long
+# `project_name` (e.g. a 30+ char job title) overflows the composed
+# "<project> — week of <Sat>" name and the portal submission can never file.
+SHEET_NAME_MAX = 50
+
 # ---- Column titles (single source of truth for reads + writes) ----------
 
 COL_SUBMISSION = "Submission"
@@ -145,12 +153,27 @@ def _apply_styles_best_effort(sheet_id: int) -> None:
 
 
 def week_sheet_name(project_name: str, work_date: date) -> str:
-    """Return the canonical week-sheet name for a (project, work-date).
+    """Return the canonical week-sheet name for a (project, work-date), bounded to
+    Smartsheet's 50-char sheet-name cap (`SHEET_NAME_MAX`; errorCode 1041).
 
     Name keys on the Saturday that opens the work-date's week, so every day
     Sat→Fri maps to one sheet, e.g. `"Bradley 1 — week of 2026-05-30"`.
+
+    When `"<project> — week of <Sat>"` would exceed the cap, the **project prefix**
+    is truncated — the ` — week of <Sat>` suffix is preserved WHOLE because it is
+    what disambiguates weeks within a per-job folder. Truncating the prefix loses
+    no identity: the per-job FOLDER already carries the full `project_name`, and a
+    week sheet is only ever resolved find-or-create WITHIN that folder, so two long
+    project names that share a truncated prefix never collide (they live in
+    different folders). For any name already ≤50 chars the output is byte-identical
+    to the pre-cap behavior, so existing sheets resolve unchanged.
     """
-    return f"{project_name} — {safety_naming.week_label(work_date)}"
+    suffix = f" — {safety_naming.week_label(work_date)}"
+    prefix = project_name.strip()
+    budget = SHEET_NAME_MAX - len(suffix)
+    if len(prefix) > budget:
+        prefix = prefix[:budget].rstrip()
+    return f"{prefix}{suffix}"
 
 
 def _folder_name(project_name: str) -> str:

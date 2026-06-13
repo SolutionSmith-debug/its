@@ -146,7 +146,7 @@ from shared.graph_client import GraphError
 from shared.header_forgery import HeaderAnalysis, HeaderVerdict
 from shared.kill_switch import require_active
 from shared.quarantine import QuarantineReason
-from shared.smartsheet_client import SmartsheetError
+from shared.smartsheet_client import SmartsheetError, SmartsheetValidationError
 from shared.trusted_contacts import ScopeVerdict
 
 SCRIPT_NAME = "safety_reports.intake"
@@ -1971,6 +1971,22 @@ def process_portal_submission(submission: dict[str, Any]) -> ProcessResult:
             work_date_raw=work_date_raw,
             amends_uuid=amends_uuid,
             correlation_id=correlation_id,
+        )
+    except SmartsheetValidationError as exc:
+        # PERMANENT — a 400 (e.g. errorCode 1041 "sheet.name must be <= 50 chars")
+        # returns shouldRetry=false; re-pulling can NEVER fix it. Drain to the Review
+        # Queue (the operator's action — shorten the job name / fix the payload — is
+        # the resolution, not time) instead of looping the submission every cycle and
+        # writing an ERROR row to ITS_Errors forever. Caught BEFORE the generic
+        # SmartsheetError below (it is a subclass) so a transient outage still retries.
+        return _portal_review(
+            submission, machine_reason="smartsheet_validation",
+            summary=(
+                f"portal: Smartsheet rejected the write as invalid ({exc}) for "
+                f"submission {submission_uuid} — re-pull cannot fix; needs operator action"
+            ),
+            reason=review_queue.ReviewReason.STRUCTURED_OUTPUT_EDGE,
+            correlation_id=correlation_id, severity=Severity.ERROR,
         )
     except SmartsheetError as exc:
         # TRANSIENT — Smartsheet auth/rate/5xx. Do NOT drain; re-pull retries.

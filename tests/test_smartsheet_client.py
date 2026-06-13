@@ -23,6 +23,7 @@ from shared.smartsheet_client import (
     SmartsheetNotFoundError,
     SmartsheetPermissionError,
     SmartsheetRateLimitError,
+    SmartsheetValidationError,
     SmartsheetWriteCapabilityError,
 )
 
@@ -88,6 +89,7 @@ def test_get_client_lazy_inits_once(mocker):
 @pytest.mark.parametrize(
     "status,expected",
     [
+        (400, SmartsheetValidationError),
         (401, SmartsheetAuthError),
         (403, SmartsheetPermissionError),
         (404, SmartsheetNotFoundError),
@@ -1301,12 +1303,13 @@ def test_translate_smartsheet_error_passes_through_2xx(mocker):
 
 
 def test_translate_smartsheet_error_raises_with_context_on_4xx(mocker):
-    """A 4xx response raises SmartsheetError; message carries context +
-    status code + body excerpt so operator triage doesn't need a stack."""
+    """A 400 response raises the typed SmartsheetValidationError (PERMANENT,
+    shouldRetry=false); message carries context + status code + body excerpt so
+    operator triage doesn't need a stack."""
     response = _rest_get_folder_response(None, status=400)
     response.text = "errorCode 1008: Unknown attribute 'destination'"
 
-    with pytest.raises(SmartsheetError) as exc_info:
+    with pytest.raises(SmartsheetValidationError) as exc_info:
         smartsheet_client._translate_smartsheet_error(
             response, context="copying sheet 99 into folder 42 as 'X'"
         )
