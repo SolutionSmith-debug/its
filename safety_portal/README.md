@@ -310,8 +310,13 @@ creds and is SEND-FREE: the Mac-side portal_poll daemon GETs the serviceable set
 (`GET /api/internal/pdf-requests`), downloads the filed PDF from Box, base64-chunks it,
 and POSTs the chunks (`POST /api/internal/filed-pdf`); `GET /api/submissions/:uuid/pdf`
 reassembles the D1 chunks and serves the byte-identical Box copy as an attachment.
-Access is ownership-gated (actor / attributee / admin → else **404**, no enumeration);
-chunks expire 24h past `pdf_ready_at` (prune) and are re-requestable.
+
+> **Superseded by PR-5 (Form Request, `0012`) below.** As of PR-5 the access model is
+> **requester-bound, not ownership-gated**: a non-admin must hold a live `pdf_requests`
+> row for *this* account to download (a different account — even the actor/attributee —
+> gets **404**), and the prune is **two-stage** (strip payload at 90d, delete the row 30d
+> after the job goes inactive; chunks evicted when no live request references them) rather
+> than a flat 24h-from-`pdf_ready_at` sweep. The PR-5 section is the single source of truth.
 
 #### Activation (operator — secrets/auth + deploy boundary; escalates to the Developer-Operator)
 
