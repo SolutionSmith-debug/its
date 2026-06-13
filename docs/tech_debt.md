@@ -22,7 +22,9 @@ When to add an entry: a session deliberately chooses preservation-over-refactor 
 
 **Tag:** `safety-reports`, `graph`, `upload-session`, `retry`. **Revisit when:** live telemetry shows recurring mid-upload failures on large packets (then add cross-cycle session resume + an explicit cancel), or packet sizes grow toward the 150 MB ceiling where restart-from-zero becomes expensive.
 
-## [DOCTRINE-FLAG 2026-06-12] Mission v4→v5 delta — weekly-send transport now has two modes (inline ≤2.5 MB / upload-session >2.5 MB)
+## [RESOLVED 2026-06-12 — folded into mission v5] Mission v4→v5 delta — weekly-send transport now has two modes (inline ≤2.5 MB / upload-session >2.5 MB)
+
+**Resolution (blueprint v5 reconciliation, 2026-06-12):** folded into `its-blueprint/workstreams/safety-portal/mission.md` v5 §7 (Invariant 1, "the transport changed, the gate did not") + the v5 Authority block. Gate unchanged. No further blueprint action; the flag is closed.
 
 **PR-3 (photo workstream tail).** Adding photos to the weekly packet means a packet can exceed Graph's ~3 MB inline `sendMail` ceiling, so `weekly_send` now sends via **one of two transports** chosen by packet size: **inline base64** (`send_mail`) at ≤2.5 MB, or the Graph **upload-session** (`send_mail_large_attachment`: draft → chunked PUT → send) above it, with an **oversized-HELD** refusal above Graph's ~150 MB hard ceiling. This is a behavioral change to the External-Send-Gate **send half** (the *transport*, not the gate: still human-approved, still two-process, still recipients-resolved-at-send-time, still capability-gated send-only). The Safety Portal / Safety Reports mission (v4) describes the weekly send as a single attached-PDF email; the **two-mode transport + the oversized-HELD terminal state** are a **planning-layer / Seth-owned** mission note, not made here. Proposed mission v4→v5 amendment: *"the weekly safety report is emailed with its compiled PDF attached — inline for small packets, via a Graph chunked upload-session for large (photo-bearing) packets, and **HELD** (operator-actionable, never silently dropped) for a packet beyond Graph's attachment ceiling."* Flagged for blueprint co-resolution **alongside the PR-4 receipt-cache delta + the PR-5 mission note** (fold them together).
 
@@ -158,7 +160,9 @@ This is a doc-characterization reword (relabel Layer 5 as a detection tripwire i
 
 **Revisit when:** the next session that has a natural reason to touch the Invariant 2 section of CLAUDE.md — a security-review pass, the Email-Triage Layer-6 build, or a `doc-reconciliation-auditor` semantic-tier sweep. Mirror FM v9: Layer 5 is a detection tripwire, not a barrier.
 
-## Invariant 2 Layer 6 (attachment screening) for safety reports — superseded by portal pivot [SUPERSEDED 2026-05-28]
+## Invariant 2 Layer 6 (attachment screening) for safety reports — superseded by portal pivot [SUPERSEDED 2026-05-28; PARTIALLY REVERSED 2026-06-12]
+
+**Update 2026-06-12 (PRs #271/#272) — the "no Layer 6 build for safety reports" conclusion below is now partly reversed.** The portal *did* gain a file-attachment capability — a constrained **image class** (header-level JPEG/PNG photos). Per the 2026-05-28 reasoning ("Layer 6 would apply only if the portal ever added file-attachment capability"), that capability now exists, and §34 **is** realized for safety reports as `safety_reports/photo_screen.py` (magic → Pillow verify/bomb-cap/forced metadata-destroying re-encode → ClamAV-on-raw, config-gated default OFF; MALICIOUS pages + refuses before filing). Two stale specifics in the body below are also corrected: (1) the "HMAC-verified **email shim** (`portal-noreply@` → unified `safety@`)" was **retired 2026-06-05** in favor of the Python PULL model (`portal_poll.py`); (2) "for safety reports there is no Layer 6 build to do" no longer holds — see blueprint `its-blueprint/workstreams/safety-portal/mission.md` §15 + §7 Layer 6. **Email Triage still carries the arbitrary-file (PDF/Office/executable) attachment surface** — that part is unchanged. The historical 2026-05-28 record is preserved below for provenance.
 
 The 2026-05-28 forensic audit (HIGH-2) flagged FM v8 Invariant 2 Layer 6 (attachment screening, Op Stds v11 §34) as doctrine-only for the safety-reports PDF-email intake, and this entry originally tracked an Option A (build) vs Option B (documented exception) decision. **That is superseded by the Safety Portal pivot**, already canonical in the blueprint (`its-blueprint/workstreams/safety-portal/mission.md` v1, 2026-05-25 canonical; `brief.md`).
 
@@ -170,7 +174,7 @@ So the four-sub-layer attachment screen is **not** a safety-reports cutover gate
 
 The NOT-WIRED `shared/attachment_screening.py` stub committed with the audit (#96) is **deleted** in this session (its docstring instructed deletion if not built for safety reports). The legacy PDF-email intake path remains the documented fallback during the portal transition; the portal-marker intake branches (brief §8 Step 4: Stage 1.5 HMAC gate, Stage 8' JSON parse, Stage 13' rollup) are PLANNED, not built.
 
-**Revisit when:** the Email Triage workstream build begins — Layer 6 implementation lands there (see its mission/brief). For safety reports there is no Layer 6 build to do; this item is closed as superseded.
+**Revisit when:** the Email Triage workstream build begins — the **arbitrary-file** Layer 6 implementation lands there (see its mission/brief). *(2026-06-12: the safety-reports **image-class** Layer 6 was built — `photo_screen.py`, PRs #271/#272 — see the Update at the top of this entry; the arbitrary-file surface remains Email-Triage-bound.)*
 
 ## State-file atomic-write + concurrent-writer lock [CLOSED 2026-05-25]
 
@@ -2114,7 +2118,9 @@ PR-4 Part A shipped the request-driven canonical PDF download (D1-chunked `filed
 
 Surfaced: 2026-06-12 PR-4 Part A implementation.
 
-## [DOCTRINE-FLAG 2026-06-12] Mission v4→v5 delta — Worker now holds a transient filed-PDF receipt cache
+## [RESOLVED 2026-06-12 — folded into mission v5] Mission v4→v5 delta — Worker now holds a transient filed-PDF receipt cache
+
+**Resolution (blueprint v5 reconciliation, 2026-06-12):** folded into `its-blueprint/workstreams/safety-portal/mission.md` v5 §9 (System-of-record filing-principle amendment) + §16. Box remains the system of record; the cache is a transient, request-driven, 24h copy. Flag closed.
 
 PR-4 Part A introduces a **bounded exception** to the Safety Portal mission's "the Worker never holds documents" stance: the Worker now stores **request-driven, 24h-expiring, D1-chunked filed-PDF chunks** so an authenticated owner can download their own canonical (Box-filed) PDF as a **receipt** (no new external-send path — Invariant 1 untouched; the Worker holds no Box creds and serves only reassembled D1 chunks the Mac daemon pushed). This is a **planning-layer / Seth-owned** doctrine edit, not made here. Proposed mission v4→v5 amendment: *"the Worker never holds documents — **except** the request-driven, 24h-expiring filed-PDF receipt cache (D1-chunked, browse scoped to active jobs, any authenticated account may browse + request)."* Flagged for blueprint co-resolution alongside the PR-5 mission note.
 
@@ -2163,7 +2169,9 @@ These are safe to delete once confirmed no-longer-needed: the `publish/req-*` br
 
 Surfaced: 2026-06-12 branch-cleanup session.
 
-## [DOCTRINE-FLAG 2026-06-12] Mission v4→v5 delta — PR-5 Form Request browse + requester-bound PDF download
+## [RESOLVED 2026-06-12 — folded into mission v5] Mission v4→v5 delta — PR-5 Form Request browse + requester-bound PDF download
+
+**Resolution (blueprint v5 reconciliation, 2026-06-12):** folded into `its-blueprint/workstreams/safety-portal/mission.md` v5 §16 (request-driven download + in-portal Form Request) — the `pdf_requests` table (supersedes the `pdf_requested` flag), any-authenticated-account browse, requester-bound 24h download, and two-stage prune are all recorded; the **declined email-delivery variant** is logged as an owner decision (in-portal only, send-free Invariant-1 default). Flag closed.
 
 PR-5 refactored the `submissions.pdf_requested`/`pdf_ready_at` ownership columns into a standalone `pdf_requests(submission_uuid, account, requested_at, ready_at)` table (migration 0012). Downloads are now **requester-bound for 24h** (any authenticated account may request; only the requesting account may download within the window — a different account, even the original submitter, gets 404). The Worker gained a **`GET /api/filed`** browse endpoint (active-job-scoped submissions list for the `FormRequestPage` SPA) and request lifecycle routes (`POST /api/request-pdfs`, `/status`, `/pdf`). Two-stage prune: **strip** payload at 90d (keep the row browseable while the job is active) → **delete** 30d after job goes inactive. Unfiled rows (`box_verified=0`) are never evicted.
 
