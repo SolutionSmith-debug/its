@@ -1,0 +1,26 @@
+{
+  "form_code": "photo-test-v1",
+  "parent_form_code": "test",
+  "form_name": "photo test",
+  "variant_label": null,
+  "version": 1,
+  "archetype": "sectioned_assessment",
+  "source_pdf": "",
+  "sections": [
+    {
+      "type": "header",
+      "fields": [
+        {
+          "key": "field_1",
+          "label": "t",
+          "input": "photo"
+        },
+        {
+          "key": "field_2",
+          "label": "I",
+          "input": "signature"
+        }
+      ]
+    }
+  ]
+}
