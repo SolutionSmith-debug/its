@@ -4,6 +4,16 @@ Items deliberately deferred. Each carries the rationale for deferral and the tri
 
 When to add an entry: a session deliberately chooses preservation-over-refactor (per Op Stds v11 §14), discovers an external-API constraint that forced a workaround, or defers a non-trivial cleanup that's larger than the current session can absorb. When to mark CLOSED: the underlying item is resolved in a commit; preserve the entry with resolution detail rather than deleting (history is cheap, context is expensive).
 
+## Orphan per-job Smartsheet folder from the JOB-000013 50-char-cap incident [OPEN 2026-06-13]
+
+**PR #283 (2026-06-13).** A field PM submitted a portal form for JOB-000013 ("I don't know project name Montgomery", 36 chars). `week_sheet.py` creates the per-job Smartsheet folder BEFORE the week-of sheet; the folder creation succeeded, but the sheet creation 400'd (`errorCode 1041` — name exceeded 50 chars). This left an **empty per-job folder** named "I don't know project name Montgomery" in the `ITS — Safety Portal` workspace (ITS — Safety Portal workspace), beside the now-populated truncated-name week sheet that succeeded after the fix was deployed and the stuck submission was re-drained.
+
+**Operator-manual cleanup:** delete the orphan folder "I don't know project name Montgomery" from the ITS — Safety Portal workspace via the Smartsheet UI. It is empty; nothing reads or writes it. Harmless but stray.
+
+**Not a code gap** — the fix (PR #283) adds `SHEET_NAME_MAX = 50` to `week_sheet.py`; `week_sheet_name` now truncates the project prefix so the composed name always fits. Future submissions with long project names will land in a truncated-name week sheet within the same per-job folder, without creating the orphan. The per-job folder name (from `safety_naming.job_folder_name`) is NOT subject to the 50-char sheet-name cap — it is a folder, not a sheet — so the folder always creates successfully regardless of project-name length.
+
+**Tag:** `safety-portal`, `smartsheet`, `operator-manual`. **Revisit when:** next ITS — Safety Portal workspace tidy pass.
+
 ## weekly_send upload-session threshold = 2.5 MB (heuristic, not measured) [OPEN 2026-06-12]
 
 **PR-3 (photo workstream tail).** `weekly_send` now switches transport by compiled-packet size: `≤ UPLOAD_SESSION_THRESHOLD_BYTES` (2.5 MB) sends **inline** via `graph_client.send_mail` (one request, base64-inline); `>` it sends via the Graph **upload-session** (`graph_client.send_mail_large_attachment` — draft → chunked PUT honoring `nextExpectedRanges` → send). The threshold is a **heuristic**: Graph's inline `/sendMail` ceiling is ~3 MB, and base64 inflates the payload ~33% plus message-envelope overhead, so 2.5 MB raw leaves headroom below the wire limit. It was **not** empirically measured against the live Graph tenant — the exact inline-reject boundary (and whether it counts raw or base64 bytes) is unverified. Low risk because the upload-session path is correct for ANY size 3–150 MB, so a too-low threshold just sends some sendable-inline packets the (slightly slower) chunked way; a too-high threshold is the only real failure (an inline send that Graph rejects ~3 MB → FAILED + retry, never a silent drop).
