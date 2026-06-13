@@ -150,6 +150,39 @@ export function downloadPdf(uuid: string): void {
   window.location.assign(`/api/submissions/${encodeURIComponent(uuid)}/pdf`);
 }
 
+// ── PR-5: in-portal filed-form browse + multi-download ───────────────────────
+// Any authenticated account may BROWSE an active job's filed forms and REQUEST their
+// PDFs (mirrors the submit model: any account can submit to any active job). A requested
+// download is bound to THIS account for 24h — a different account files its own request.
+
+export interface FiledForm {
+  submission_uuid: string;
+  form_code: string;
+  work_date: string;
+  filed_at: number | null;
+  /** This account holds a live (≤24h) request for this form. */
+  requested: boolean;
+  /** Downloadable now: the cache is populated AND this account has a live request. */
+  ready: boolean;
+}
+
+/** Browse an ACTIVE job's filed forms with THIS account's per-row request/ready state.
+ *  A 404 (inactive/unknown job) returns [] so the UI degrades cleanly. */
+export async function fetchFiled(jobId: string): Promise<FiledForm[]> {
+  const q = new URLSearchParams({ job_id: jobId });
+  const res = await fetch(`/api/filed?${q.toString()}`, { credentials: "same-origin" });
+  if (!res.ok) return [];
+  return ((await res.json()) as { filed: FiledForm[] }).filed;
+}
+
+/** Request caching for a batch of filed forms (≤20). The downloads are bound to THIS
+ *  account for 24h. Returns how many were actually requested. */
+export async function requestPdfs(uuids: string[]): Promise<number> {
+  const res = await postJson("/api/request-pdfs", { uuids });
+  if (!res.ok) throw new Error("Could not request the downloads.");
+  return ((await res.json().catch(() => ({}))) as { requested?: number }).requested ?? 0;
+}
+
 // ── Admin: account management (session + role-gated /api/admin/*) ─────────────
 
 export interface Account {

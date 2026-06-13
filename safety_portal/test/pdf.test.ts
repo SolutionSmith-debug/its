@@ -87,6 +87,15 @@ async function seedSubmission(opts: {
     .run();
 }
 
+/** PR-5: insert a live (or aged) pdf_requests row — downloads are requester-bound.
+ *  `ageSec` > 86400 makes an EXPIRED request (outside the 24h window). */
+async function requestAs(uuid: string, account: string, ageSec = 0): Promise<void> {
+  await env.DB
+    .prepare("INSERT OR REPLACE INTO pdf_requests (submission_uuid, account, requested_at) VALUES (?,?,unixepoch()-?)")
+    .bind(uuid, account, ageSec)
+    .run();
+}
+
 beforeEach(async () => {
   await env.DB.batch([
     env.DB.prepare("DELETE FROM users"),
@@ -202,7 +211,11 @@ describe("GET status — shape", () => {
     const c = await login("pm.owner", "password123");
     await call(`/api/submissions/${UUID}/request-pdf`, { method: "POST", cookie: c });
     const res = await call(`/api/submissions/${UUID}/status`, { cookie: c });
-    expect(await res.json()).toMatchObject({ requested: true, ready: false, expires_at: null });
+    const body = (await res.json()) as { requested: boolean; ready: boolean; expires_at: number | null };
+    expect(body.requested).toBe(true);
+    expect(body.ready).toBe(false);
+    // PR-5: the 24h window starts at request time (not at cache-ready), so expires_at is set.
+    expect(body.expires_at).toBeGreaterThan(0);
   });
 
   it("a rejected (box_verified=-1) row → 404 on status AND pdf (consistent with request-pdf)", async () => {
@@ -218,17 +231,21 @@ describe("GET status — shape", () => {
 // ── internal/pdf-requests filter ───────────────────────────────────────────────
 describe("GET internal/pdf-requests — serviceable filter", () => {
   it("returns ONLY requested + unready + filed (box_file_id) rows", async () => {
-    // requested + filed + unready → INCLUDED
+    // a LIVE pdf_requests row + filed + unready → INCLUDED
     await seedSubmission({ uuid: "svc-1", actor: "pm.owner", boxFileId: "box-1" });
-    await env.DB.prepare("UPDATE submissions SET pdf_requested=1 WHERE submission_uuid='svc-1'").run();
+    await requestAs("svc-1", "pm.foreign");
     // requested but NO box_file_id → excluded
     await seedSubmission({ uuid: "svc-2", actor: "pm.owner", boxFileId: null });
-    await env.DB.prepare("UPDATE submissions SET pdf_requested=1 WHERE submission_uuid='svc-2'").run();
+    await requestAs("svc-2", "pm.foreign");
     // requested + filed but ALREADY cached (pdf_ready_at set) → excluded
     await seedSubmission({ uuid: "svc-3", actor: "pm.owner", boxFileId: "box-3" });
-    await env.DB.prepare("UPDATE submissions SET pdf_requested=1, pdf_ready_at=unixepoch() WHERE submission_uuid='svc-3'").run();
-    // NOT requested → excluded
+    await requestAs("svc-3", "pm.foreign");
+    await env.DB.prepare("UPDATE submissions SET pdf_ready_at=unixepoch() WHERE submission_uuid='svc-3'").run();
+    // NO request → excluded (even though filed + unready)
     await seedSubmission({ uuid: "svc-4", actor: "pm.owner", boxFileId: "box-4" });
+    // an EXPIRED request (>24h) → excluded (the window closed)
+    await seedSubmission({ uuid: "svc-5", actor: "pm.owner", boxFileId: "box-5" });
+    await requestAs("svc-5", "pm.foreign", 90_000);
 
     const res = await call("/api/internal/pdf-requests", { bearer: INTERNAL_BEARER });
     expect(res.status).toBe(200);
@@ -335,6 +352,7 @@ describe("GET /pdf — reassembly + headers", () => {
     await provision("pm.owner", "password123", "submitter");
     await seedSubmission({ uuid: UUID, actor: "pm.owner", boxFileId: "box-e", formCode: "jha", workDate: "2026-06-08" });
     await env.DB.prepare("UPDATE submissions SET pdf_requested=1 WHERE submission_uuid=?").bind(UUID).run();
+    await requestAs(UUID, "pm.owner"); // PR-5: downloads are requester-bound — the owner holds a live request
   });
 
   it("404 when not yet ready", async () => {

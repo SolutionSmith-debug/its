@@ -3,9 +3,10 @@ import { useAuth } from "./lib/auth";
 import { LoginPage } from "./pages/LoginPage";
 import { HomePage } from "./pages/HomePage";
 import { FormFillPage } from "./pages/FormFillPage";
+import { FormRequestPage } from "./pages/FormRequestPage";
 import { AdminApp } from "./pages/AdminApp";
 
-type View = "home" | "fill";
+type View = "home" | "fill" | "request";
 
 /**
  * Minimal in-memory view switch (login → home → form fill). Phase 4 PR 2 replaced
@@ -32,5 +33,10 @@ export function App() {
   if (view === "fill") {
     return <FormFillPage onBack={() => setView("home")} />;
   }
-  return <HomePage onOpenForm={() => setView("fill")} />;
+  if (view === "request") {
+    return <FormRequestPage onBack={() => setView("home")} />;
+  }
+  return (
+    <HomePage onOpenForm={() => setView("fill")} onOpenFormRequest={() => setView("request")} />
+  );
 }
