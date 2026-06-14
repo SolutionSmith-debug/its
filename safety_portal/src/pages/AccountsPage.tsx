@@ -152,7 +152,6 @@ export function AccountsPage({
   return (
     <div className="page">
       <AppHeader
-        title="Manage accounts"
         action={<button className="btn btn--ghost" onClick={() => void logout()}>Sign out</button>}
       />
       {tabBar}

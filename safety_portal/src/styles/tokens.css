@@ -15,6 +15,7 @@
   /* Brand */
   --c-brg: #013d2b;        /* deep British racing green — headers, structural fills */
   --c-brg-700: #012a1e;    /* darker BRG — gradients / pressed states */
+  --c-brg-900: #011d14;    /* deepest BRG — maximalist header gradient floor */
   --c-gold: #c6a04d;       /* DECORATIVE accent ON GREEN only — never text on light */
 
   /* Ink + surfaces */

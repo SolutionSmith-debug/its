@@ -153,7 +153,7 @@ export function FormFillPage({ onBack, tabBar }: { onBack?: () => void; tabBar?:
     const projectName = jobs.find((j) => j.job_id === jobId)?.project_name;
     return (
       <div className="page">
-        <AppHeader title="Safety Portal" />
+        <AppHeader />
         {tabBar}
         <main className="page__main">
           <div className="card centered-card">
@@ -219,12 +219,12 @@ export function FormFillPage({ onBack, tabBar }: { onBack?: () => void; tabBar?:
   return (
     <div className="page">
       <AppHeader
-        title="New safety form"
         action={<button className="btn btn--ghost" onClick={() => void logout()}>Sign out</button>}
       />
       {tabBar}
       <main className="page__main">
         {onBack ? <button className="btn btn--ghost btn--back" onClick={onBack}>← Home</button> : null}
+        <h1 className="page__heading">New safety form</h1>
 
         <section className="card fr__select">
           <label className="field">

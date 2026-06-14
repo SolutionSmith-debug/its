@@ -284,7 +284,7 @@ export function FormsPage({
 
   return (
     <div className="page">
-      <AppHeader title="Safety Portal" />
+      <AppHeader />
       {tabBar}
       <main className="page__main">
         {banner ? (
