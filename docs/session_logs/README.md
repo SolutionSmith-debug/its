@@ -96,6 +96,17 @@ outside the sentinel block.
 <!-- BEGIN AUTO-INDEX -->
 | Date | Type | Status | Workstream | Title | PRs |
 |------|------|--------|------------|-------|-----|
+| 2026-06-10 | session_log | active | safety_portal | [Session — Agent Optimization (Brief 2) + Safety Portal Hardening (Brief 1)](2026-06-10_agent-optimization-and-portal-hardening.md) | #260, #261, #263, #264, #265, #266 |
+| 2026-06-14 | session_log | closed | safety_portal | [Session — feat(safety-portal): rebrand "Safety Portal" → "ITS Portal" (maximalist header, Phase A / B2)](2026-06-14_its-portal-rebrand.md) | #285 |
+| 2026-06-13 | session_log | closed | safety_portal | [Session — fix(safety-portal): bound week-sheet name to Smartsheet's 50-char cap + drain permanent 400s](2026-06-13_week-sheet-50-char-cap-drain-permanent-400s.md) | #283 |
+| 2026-06-12 | session_log | closed | safety_portal | [Session — PR-5 Form Request + PR-3 Graph upload-session merged; local tree cleanup](2026-06-12_pr5-form-request-pr3-graph-upload-tree-cleanup.md) | #275, #276 |
+| 2026-06-10 | session_log | closed | safety_portal | [Session log — Admin idle timeout widened to 30 min + bounded dirty-editor keep-alive (PR #258)](2026-06-10_admin-idle-timeout-bounded-keep-alive.md) | #258 |
+| 2026-06-09 | session_log | closed | safety_portal | [Session log — Form Editor UX fixes + per-account draft cache + live SPA deploy (PRs #249–#250)](2026-06-09_form-editor-ux-draft-cache.md) | #249, #250 |
+| 2026-06-09 | session_log | closed | safety_portal | [Session log — Part B: Compile Now poller + Part C: Orphaned Reports reroute (PRs #232–#235)](2026-06-09_part-b-compile-now-part-c-orphaned-reports.md) | #232, #233, #234, #235 |
+| 2026-06-09 | session_log | closed | safety_portal | [Session log — Publish CI gate hardening + idle self-heal + Part A production hardening (PRs #222, #224, #227, #228, #230)](2026-06-09_publish-ci-gate-hardening-and-part-a.md) | #222, #224, #227, #228, #230 |
+| 2026-06-09 | session_log | closed | safety_portal | [Session log — Publish pipeline bugfix chain + WSR Approved At / Sent At datetime (PRs #236, #241–#242, #244–#245)](2026-06-09_publish-pipeline-bugfix-chain-and-wsr-datetime.md) | #236, #241, #242, #244, #245 |
+| 2026-06-09 | session_log | closed | safety_portal | [Session log — Safety Portal Phase 2: Form Manager + automated publish pipeline (PRs #203–#218)](2026-06-09_safety-portal-phase2-form-manager-publish-pipeline.md) | #203, #204, #205, #206, #207, #208, #209, #210, #211, #212, #213, #214, #215, #216, #217, #218 |
+| 2026-06-09 | session_log | closed | safety_reports | [Session log — weekly_send hardening (audit H2/M3/M8) + append-only compile + picklist regression + incident-report E2E (PRs #247–#248, #252–#255)](2026-06-09_weekly-send-hardening-audit-findings-incident-report-e2e.md) | #247, #248, #252, #253, #254, #255 |
 | 2026-06-08 | session_log | closed | safety_portal | [Session log — Safety Portal Admin Dashboard (Phase 1) + security audit + post-audit hardening](2026-06-08_admin-dashboard-audit-and-security-hardening.md) | #193, #194, #195, #197 |
 | 2026-06-08 | session_log | closed | safety_portal | [Session log — Safety Portal mirror activation (end-to-end live proof on evergreenmirror.com)](2026-06-08_safety-portal-mirror-activation.md) | #185 |
 | 2026-06-07 | session_log | closed | safety_portal | [Session log — Safety Portal Phase 7: styling, Box schema, custom domain (PRs #186–#189 + #185 open)](2026-06-07_safety-portal-phase7-styling-box-schema.md) | #185, #186, #187, #188, #189 |
