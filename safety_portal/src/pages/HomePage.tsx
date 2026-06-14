@@ -12,7 +12,6 @@ export function HomePage({
   return (
     <div className="page">
       <AppHeader
-        title="Safety Portal"
         action={
           <button className="btn btn--ghost" onClick={() => void logout()}>
             Sign out

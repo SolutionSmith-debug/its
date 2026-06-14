@@ -113,7 +113,6 @@ export function FormRequestPage({ onBack }: { onBack: () => void }) {
   return (
     <div className="page">
       <AppHeader
-        title="Safety Portal"
         action={
           <button className="btn btn--ghost" onClick={onBack}>
             Back

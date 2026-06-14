@@ -25,7 +25,7 @@ export function LoginPage() {
 
   return (
     <div className="login">
-      <AppHeader title="Safety Portal" />
+      <AppHeader />
       <main className="login__main">
         <form className="card login__card" onSubmit={onSubmit} noValidate>
           <h1 className="login__heading">Sign in</h1>
