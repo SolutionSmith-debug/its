@@ -147,15 +147,43 @@ def _packet_filename(project_name: str, week: safety_week.SafetyWeek, stamp: str
     )
 
 
+def _form_display_name(form_code: str) -> str:
+    """Human form name for the weekly index, resolved from the form definition (the
+    same source the renderer uses). Falls back to the raw code if unresolvable —
+    deterministic, no network (load_definition reads a committed JSON file)."""
+    try:
+        definition = form_pdf.load_definition(form_code)
+    except Exception:  # noqa: BLE001 — index naming must never break the compile
+        definition = None
+    if not definition:
+        return form_code
+    # form_name is already variant-distinct (e.g. "Equipment Pre-Inspection — Skid Steer"),
+    # so it is NOT re-suffixed with variant_label (avoids "… — Telehandler/Forklift" tails).
+    name = definition.get("form_name") or definition.get("branding", {}).get("title") or form_code
+    return str(name)
+
+
+def _work_date_display(iso: str) -> str:
+    """'2026-06-12' → 'Fri, Jun 12, 2026' for the date-grouped index. Falls back to the
+    raw string if it isn't a parseable ISO date."""
+    try:
+        return date.fromisoformat(iso[:10]).strftime("%a, %b %-d, %Y")
+    except (ValueError, TypeError):
+        return iso or "—"
+
+
 def _gather_submission_pdfs(
     submission_rows: list[dict[str, Any]], summary: RunSummary, correlation_id: str
-) -> tuple[list[bytes], list[str]]:
+) -> tuple[list[bytes], list[str], list[dict[str, Any]]]:
     """Download each submission's per-submission PDF from Box (by its sheet-recorded
-    link). Returns (pdf_bytes_ordered, manifest_parts). A row with no link or a
-    failed download is SKIPPED + announced (never silently dropped) — the manifest
-    records the gap so the operator can see the packet is short."""
+    link). Returns (pdf_bytes_ordered, manifest_parts, metas) where `metas` is aligned
+    1:1 with `pdfs` (only the rows that made it into the packet) and carries the
+    date/form-name used to build the weekly index. A row with no link or a failed
+    download is SKIPPED + announced (never silently dropped) — the manifest records the
+    gap so the operator can see the packet is short."""
     pdfs: list[bytes] = []
     manifest: list[str] = []
+    metas: list[dict[str, Any]] = []
     for row in submission_rows:
         form_code = str(row.get(week_sheet.COL_FORM_CODE) or "?")
         link = str(row.get(week_sheet.COL_SUBMISSION_PDF) or "")
@@ -173,6 +201,10 @@ def _gather_submission_pdfs(
         try:
             pdfs.append(box_client.download_file(file_id))
             manifest.append(form_code)
+            metas.append({
+                "date_display": _work_date_display(str(row.get(week_sheet.COL_WORK_DATE) or "")),
+                "form_name": _form_display_name(form_code),
+            })
         except box_client.BoxError as exc:
             summary.download_errors += 1
             manifest.append(f"{form_code}[download-failed]")
@@ -182,7 +214,77 @@ def _gather_submission_pdfs(
                 error_code="weekly_generate.submission_download_failed",
                 correlation_id=correlation_id,
             )
-    return pdfs, manifest
+    return pdfs, manifest, metas
+
+
+# ---- Weekly packet front matter (branded cover + date-grouped index) ------
+
+
+def _week_label(week: safety_week.SafetyWeek) -> str:
+    """'Week of Jun 7 – 13, 2026' (collapsed when start/end share a month/year)."""
+    s, e = week.start, week.end
+    if s.year == e.year and s.month == e.month:
+        return f"Week of {s.strftime('%b %-d')} – {e.strftime('%-d, %Y')}"
+    if s.year == e.year:
+        return f"Week of {s.strftime('%b %-d')} – {e.strftime('%b %-d, %Y')}"
+    return f"Week of {s.strftime('%b %-d, %Y')} – {e.strftime('%b %-d, %Y')}"
+
+
+def _build_weekly_packet(
+    project_name: str,
+    week: safety_week.SafetyWeek,
+    pdfs: list[bytes],
+    metas: list[dict[str, Any]],
+    compiled_dt: datetime,
+    correlation_id: str,
+) -> bytes:
+    """Assemble the compiled weekly packet: a branded COVER page + a date-grouped
+    CONTENTS index + the per-submission PDFs (in the Sat→Fri packet order). The index
+    page numbers are ABSOLUTE packet pages (they match a PDF viewer's page counter), so
+    the index page count is resolved by iterating render→measure until it is stable.
+
+    FENCED: any front-matter failure degrades to the prior behaviour — a plain
+    forms-only `merge_pdfs(pdfs)` — so beautification can NEVER break the live compile/
+    send path. merge_pdfs itself stays a pure concatenation."""
+    try:
+        week_label = _week_label(week)
+        compiled_display = compiled_dt.strftime("%b %-d, %Y %-I:%M %p %Z").strip()
+        cover = form_pdf.render_weekly_cover(
+            project_name, week_label, len(pdfs), compiled_display=compiled_display
+        )
+        cover_pages = form_pdf.page_count(cover)
+        counts = [form_pdf.page_count(b) for b in pdfs]
+
+        def make_index(index_pages: int) -> bytes:
+            cur = cover_pages + index_pages + 1  # first form's 1-based packet page
+            entries: list[dict[str, Any]] = []
+            for m, c in zip(metas, counts, strict=True):
+                entries.append({"date_display": m.get("date_display", ""),
+                                "form_name": m.get("form_name", ""), "start_page": cur})
+                cur += c
+            return form_pdf.render_weekly_index(project_name, week_label, entries)
+
+        # Resolve the index's own page count: render→measure until the page count the
+        # start-page maths assumed equals the page count actually produced.
+        index_pages = 1
+        index_pdf = make_index(index_pages)
+        for _ in range(4):
+            actual = form_pdf.page_count(index_pdf)
+            if actual == index_pages:
+                break
+            index_pages = actual
+            index_pdf = make_index(index_pages)
+        else:
+            raise RuntimeError("weekly index pagination did not converge")
+        return form_pdf.merge_pdfs([cover, index_pdf, *pdfs])
+    except Exception as exc:  # noqa: BLE001 — front matter must never break the compile
+        error_log.log(
+            Severity.WARN, SCRIPT_NAME,
+            f"compile: weekly cover/index build failed ({exc!r}); packet falls back to forms-only",
+            error_code="weekly_generate.front_matter_failed",
+            correlation_id=correlation_id,
+        )
+        return form_pdf.merge_pdfs(pdfs)
 
 
 # ---- Recipient display ---------------------------------------------------
@@ -296,11 +398,12 @@ def _compile_job_week(
                    summary=summary, correlation_id=correlation_id)
         return
 
-    pdfs, manifest_parts = _gather_submission_pdfs(submissions, summary, correlation_id)
+    pdfs, manifest_parts, metas = _gather_submission_pdfs(submissions, summary, correlation_id)
     packet_link = ""
     compiled: bytes | None = None
     if pdfs:
-        compiled = form_pdf.merge_pdfs(pdfs)
+        compiled = _build_weekly_packet(project_name, week, pdfs, metas, compiled_dt,
+                                        correlation_id)
         folder_id = _ensure_its_week_folder(project_name, week, correlation_id)
         # APPEND-ONLY (operator decision 2026-06-09): each compilation files a DISTINCT,
         # timestamped packet, so a recompile NEVER overwrites the prior packet — Box is the

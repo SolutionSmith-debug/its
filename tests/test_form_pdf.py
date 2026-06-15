@@ -341,3 +341,91 @@ def test_illegal_photo_table_column_never_dumps_base64() -> None:
     text = _pdf_text(out)
     assert blob[:40] not in text
     assert "photo omitted" in _norm(text)
+
+
+# ── beautification (2026-06-15): branding · footer · weekly cover/index ─────────
+def test_brand_name_present_via_footer_on_every_page() -> None:
+    """The masthead is now a logo IMAGE (no extractable text), but the company name must
+    still appear in the text layer — the footer carries 'EVERGREEN RENEWABLES' on every
+    page (also what the legacy render-fidelity assertions rely on)."""
+    out = render_submission_pdf(
+        _load("equipment-skid-steer-v1.json"),
+        {"job_name": "Bradley 1", "work_date": "2026-06-03", "values": {}},
+    )
+    reader = pypdf.PdfReader(io.BytesIO(out))
+    assert len(reader.pages) >= 2
+    for page in reader.pages:
+        assert "EVERGREEN RENEWABLES" in _norm(page.extract_text())
+
+
+def test_footer_has_page_x_of_y() -> None:
+    out = render_submission_pdf(
+        _load("equipment-skid-steer-v1.json"),
+        {"job_name": "Bradley 1", "work_date": "2026-06-03", "values": {}},
+    )
+    n = len(pypdf.PdfReader(io.BytesIO(out)).pages)
+    text = _norm(_pdf_text(out))
+    assert f"Page {n} of {n}" in text  # last page's footer
+    assert "Page 1 of" in text
+
+
+def test_logo_missing_falls_back_to_text_wordmark(monkeypatch) -> None:
+    """A missing/unreadable logo asset must degrade to the text wordmark, never raise —
+    so the masthead still shows the brand and the renderer never fails on a bad asset."""
+    import safety_reports.form_pdf as fp
+
+    monkeypatch.setattr(fp, "_LOGO_PATH", Path("/nonexistent/evergreen-logo.png"))
+    monkeypatch.setattr(fp, "_LOGO_CACHE", [])  # fresh memo so the bad path is re-probed
+    out = fp.render_submission_pdf(_load("jha-v1.json"),
+                                   {"job_name": "B1", "work_date": "2026-06-03", "values": {}})
+    assert out[:5] == b"%PDF-"
+    # the masthead wordmark + the footer both carry the brand name
+    assert "EVERGREEN RENEWABLES" in _norm(_pdf_text(out))
+    fp._LOGO_CACHE.clear()  # don't leak the patched-None memo into later tests
+
+
+def test_na_vs_blank_still_distinct_after_colour_coding() -> None:
+    """Colour-coding responses must NOT change the N/A-vs-blank semantics: an N/A item
+    still PRINTS 'N/A' and is NOT flagged incomplete; a blank item prints nothing and IS
+    flagged incomplete."""
+    definition = _load("equipment-skid-steer-v1.json")
+    submission = {
+        "job_name": "B1", "work_date": "2026-06-03",
+        "values": {"inspection": {
+            "bs_tracks": {"response": "N/A"},     # deliberately not-applicable
+            "bs_belts": {},                        # blank / not-yet-inspected
+            "bs_bucket": {"response": "OK"},
+        }},
+    }
+    text = _norm(_pdf_text(render_submission_pdf(definition, submission)))
+    assert "N/A" in text
+    blanks = {k for _, k, _ in incomplete_checklist_items(definition, submission)}
+    assert "bs_belts" in blanks          # blank → incomplete
+    assert "bs_tracks" not in blanks     # N/A → complete
+
+
+def test_weekly_cover_and_index_render() -> None:
+    from safety_reports.form_pdf import render_weekly_cover, render_weekly_index
+    cover = render_weekly_cover("Bradley 1 Solar", "Week of Jun 7 – 13, 2026", 3,
+                                compiled_display="Jun 13, 2026 2:02 PM")
+    assert cover[:5] == b"%PDF-"
+    ctext = _norm(_pdf_text(cover))
+    assert "WEEKLY SAFETY REPORT" in ctext and "Bradley 1 Solar" in ctext
+    idx = render_weekly_index("Bradley 1 Solar", "Week of Jun 7 – 13, 2026", [
+        {"date_display": "Mon, Jun 8, 2026", "form_name": "Skid Steer", "start_page": 3},
+        {"date_display": "Wed, Jun 10, 2026", "form_name": "JHA", "start_page": 5},
+    ])
+    itext = _norm(_pdf_text(idx))
+    assert "Contents" in itext
+    assert "Mon, Jun 8, 2026" in itext and "Wed, Jun 10, 2026" in itext
+    assert "Page 3" in itext and "Page 5" in itext
+
+
+def test_page_count_helper() -> None:
+    from safety_reports.form_pdf import page_count
+    one = render_submission_pdf(_load("jha-v1.json"),
+                                {"job_name": "B1", "work_date": "2026-06-03", "values": {}})
+    multi = render_submission_pdf(_load("equipment-skid-steer-v1.json"),
+                                  {"job_name": "B1", "work_date": "2026-06-03", "values": {}})
+    assert page_count(one) == len(pypdf.PdfReader(io.BytesIO(one)).pages)
+    assert page_count(merge_pdfs([one, multi])) == page_count(one) + page_count(multi)

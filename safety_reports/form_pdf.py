@@ -52,9 +52,11 @@ from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import inch
 from reportlab.lib.utils import ImageReader
+from reportlab.pdfgen import canvas as _pdfcanvas
 from reportlab.platypus import (
     Flowable,
     Image,
+    KeepTogether,
     Paragraph,
     SimpleDocTemplate,
     Spacer,
@@ -66,9 +68,49 @@ logger = logging.getLogger(__name__)
 
 # Signature-pad source coordinate space (SignaturePad.tsx viewBox 0 0 600 180).
 _SIG_W, _SIG_H = 600.0, 180.0
-_BRG = colors.HexColor("#3a5a40")  # Evergreen brand green
-_GOLD = colors.HexColor("#b8860b")
-_LINE = colors.HexColor("#cfcfcf")
+
+# ── brand palette (2026-06-15 beautification) ──────────────────────────────────
+# Greens echo the Evergreen logo's gradient stops (#00441b→#147e7f); gold is the
+# requested section-divider accent. Kept as a small, named palette so every form
+# (and the weekly packet) shares ONE visual system.
+_BRG = colors.HexColor("#1f4d2e")   # deep evergreen — headlines / section titles
+_BRG_SOFT = colors.HexColor("#3a5a40")  # softer green — group labels / field labels
+_GOLD = colors.HexColor("#b8860b")  # divider rule + accents (operator-requested)
+_INK = colors.HexColor("#1f2421")   # near-black body text (softer than pure black)
+_LINE = colors.HexColor("#d7d9d6")  # light grid / hairline rules
+_TINT = colors.HexColor("#e8f0e9")  # table header fill (pale green)
+_ZEBRA = colors.HexColor("#f5f8f5")  # alternating table-row fill
+_FOOT = colors.HexColor("#7a7f7b")  # footer text (muted grey-green)
+# Response colours — improve scannability WITHOUT changing semantics. N/A stays a
+# distinct word (never blank); blank renders empty as before.
+_OK = colors.HexColor("#2c6e49")
+_BAD = colors.HexColor("#b54708")
+_NA = colors.HexColor("#6b6f6c")
+
+# Usable content width (Letter minus the 0.6in side margins) — section rules and
+# header bands span exactly this so everything lines up.
+_MARGIN = 0.6 * inch
+_CONTENT_W = letter[0] - 2 * _MARGIN
+
+# Committed logo asset (built once from safety_portal/public/evergreen-logo.svg via
+# scripts/rasterize_logo.py — qlmanage raster + autocrop). Embedding a committed PNG
+# keeps this renderer deterministic/no-network. Cached ImageReader; a missing or
+# unreadable asset falls back to a styled text wordmark so the renderer never fails.
+_LOGO_PATH = Path(__file__).resolve().parent / "assets" / "evergreen-logo.png"
+_BRAND_NAME = "EVERGREEN RENEWABLES"
+_LOGO_CACHE: list[Any] = []  # [ImageReader|None] memo; [] = not yet probed (clear() to re-probe)
+
+
+def _logo_reader() -> Any | None:
+    """Memoized ImageReader for the brand logo, or None if the asset is unusable."""
+    if not _LOGO_CACHE:
+        try:
+            _LOGO_CACHE.append(ImageReader(str(_LOGO_PATH)) if _LOGO_PATH.is_file() else None)
+        except Exception:  # noqa: BLE001 — a bad asset must degrade to text, never raise
+            logger.warning("form_pdf: logo asset unreadable (%s) — falling back to text wordmark",
+                           _LOGO_PATH)
+            _LOGO_CACHE.append(None)
+    return _LOGO_CACHE[0]
 
 
 # ── signatures ────────────────────────────────────────────────────────────────
@@ -140,23 +182,41 @@ class SignatureDrawing(Flowable):
 def _styles() -> dict[str, ParagraphStyle]:
     base = getSampleStyleSheet()
     s = {
+        # Brand wordmark — only used as the FALLBACK when the logo asset is missing.
         "brand": ParagraphStyle("brand", parent=base["Normal"], fontName="Helvetica-Bold",
-                                fontSize=14, textColor=_BRG, spaceAfter=2),
+                                fontSize=15, textColor=_BRG, spaceAfter=1, leading=17,
+                                tracking=0.5),
+        # Document title (the form name / branding.title).
         "title": ParagraphStyle("title", parent=base["Normal"], fontName="Helvetica-Bold",
-                                 fontSize=12, spaceAfter=8),
+                                 fontSize=15, textColor=_INK, spaceBefore=2, spaceAfter=2,
+                                 leading=18),
+        # Section headline — paired with a gold rule by _section_header().
         "section": ParagraphStyle("section", parent=base["Normal"], fontName="Helvetica-Bold",
-                                   fontSize=11, textColor=_BRG, spaceBefore=10, spaceAfter=4),
+                                   fontSize=11.5, textColor=_BRG, leading=14),
+        # Group headline (a tier below section) — also paired with a (thinner) gold rule.
         "group": ParagraphStyle("group", parent=base["Normal"], fontName="Helvetica-Bold",
-                                 fontSize=10, spaceBefore=6, spaceAfter=2),
-        "cell": ParagraphStyle("cell", parent=base["Normal"], fontSize=8.5, leading=11),
+                                 fontSize=10, textColor=_BRG_SOFT, leading=12.5),
+        "cell": ParagraphStyle("cell", parent=base["Normal"], fontSize=8.5, leading=11,
+                               textColor=_INK),
         "cellb": ParagraphStyle("cellb", parent=base["Normal"], fontName="Helvetica-Bold",
-                                 fontSize=8.5, leading=11),
-        "meta": ParagraphStyle("meta", parent=base["Normal"], fontSize=9.5, leading=13),
-        "body": ParagraphStyle("body", parent=base["Normal"], fontSize=9, leading=12, spaceAfter=4),
+                                 fontSize=8.5, leading=11, textColor=_INK),
+        # Column-header text inside tables (green, on the pale-green header fill).
+        "colhead": ParagraphStyle("colhead", parent=base["Normal"], fontName="Helvetica-Bold",
+                                   fontSize=8.5, leading=11, textColor=_BRG),
+        "meta": ParagraphStyle("meta", parent=base["Normal"], fontSize=9.5, leading=14,
+                               textColor=_INK),
+        # Small muted caption (e.g. a checklist group's response-scale legend).
+        "caption": ParagraphStyle("caption", parent=base["Normal"], fontSize=8,
+                                  leading=10, textColor=_FOOT),
+        "body": ParagraphStyle("body", parent=base["Normal"], fontSize=9.3, leading=13.2,
+                               textColor=_INK, spaceAfter=5),
+        "bullet": ParagraphStyle("bullet", parent=base["Normal"], fontSize=9.3, leading=13.2,
+                                 textColor=_INK, leftIndent=14, bulletIndent=2, spaceAfter=2),
         "legal": ParagraphStyle("legal", parent=base["Normal"], fontName="Helvetica-Bold",
-                                 fontSize=9, leading=12, textColor=colors.HexColor("#5a4500")),
+                                 fontSize=9, leading=12.5, textColor=colors.HexColor("#5a4500")),
         "heading": ParagraphStyle("heading", parent=base["Normal"], fontName="Helvetica-Bold",
-                                   fontSize=10, spaceBefore=6, spaceAfter=2),
+                                   fontSize=10.5, textColor=_INK, spaceBefore=6, spaceAfter=2,
+                                   leading=13),
     }
     return s
 
@@ -166,6 +226,202 @@ _ENVELOPE_KEYS = frozenset({"work_date", "job"})
 
 def _p(text: str, st: ParagraphStyle) -> Paragraph:
     return Paragraph(_esc(str(text)), st)
+
+
+# ── shared visual primitives (logo header · gold-rule headings · rich body) ─────
+def _logo_flowable(max_w: float = 2.3 * inch, max_h: float = 0.52 * inch) -> Flowable | None:
+    """The brand logo scaled to fit within (max_w, max_h), preserving aspect ratio and
+    LEFT-aligned as a letterhead. Returns None when the asset is unusable (caller falls
+    back to the text wordmark)."""
+    reader = _logo_reader()
+    if reader is None:
+        return None
+    try:
+        iw, ih = reader.getSize()
+        if not iw or not ih:
+            return None
+        scale = min(max_w / iw, max_h / ih)
+        img = Image(_LOGO_PATH, width=iw * scale, height=ih * scale, lazy=0)
+        img.hAlign = "LEFT"
+        return img
+    except Exception:  # noqa: BLE001 — never let a logo glitch abort a document
+        logger.warning("form_pdf: logo flowable build failed — falling back to text wordmark")
+        return None
+
+
+def _brand_header(title: str, st: dict, *, variant_label: str = "") -> list[Flowable]:
+    """The top-of-document brand band: logo (or text wordmark fallback) + form title,
+    closed by a thick gold rule spanning the content width. Shared by every renderer
+    so all forms + the weekly packet open identically. `variant_label` is shown ONLY
+    when it adds information the title doesn't already carry (avoids 'Skid Steer … —
+    Skid Steer'); callers also surface it in their meta/Type line."""
+    logo = _logo_flowable()
+    head: list[Flowable] = [logo] if logo is not None else [_p(_BRAND_NAME, st["brand"])]
+    head.append(Spacer(1, 4))
+    title_txt = title or ""
+    if variant_label and variant_label.lower() not in title_txt.lower():
+        title_txt = f"{title_txt} — {variant_label}" if title_txt else variant_label
+    if title_txt:
+        head.append(_p(title_txt, st["title"]))
+    # Thick gold rule under the masthead — the document's primary divider.
+    rule = Table([[""]], colWidths=[_CONTENT_W], rowHeights=[0.5])
+    rule.setStyle(TableStyle([("LINEABOVE", (0, 0), (-1, -1), 2.0, _GOLD),
+                              ("TOPPADDING", (0, 0), (-1, -1), 0),
+                              ("BOTTOMPADDING", (0, 0), (-1, -1), 0)]))
+    head.append(Spacer(1, 4))
+    head.append(rule)
+    head.append(Spacer(1, 6))
+    return head
+
+
+def _section_header(text: str, st: dict, *, level: str = "section") -> Flowable:
+    """A headline + gold underline as ONE keep-together unit (operator's requested
+    'headline text and gold underline' divider). `level` selects section vs group
+    weight. An optional right-aligned caption (e.g. a response scale) is appended via
+    _section_header_with_caption()."""
+    style = st["section"] if level == "section" else st["group"]
+    weight = 1.4 if level == "section" else 0.8
+    gap = 12 if level == "section" else 9
+    cell = Table([[_p(text, style)]], colWidths=[_CONTENT_W])
+    cell.setStyle(TableStyle([
+        ("LINEBELOW", (0, 0), (-1, -1), weight, _GOLD),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+        ("TOPPADDING", (0, 0), (-1, -1), 0), ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+    ]))
+    return KeepTogether([Spacer(1, gap), cell, Spacer(1, 4)])
+
+
+def _group_header(text: str, caption: str, st: dict) -> Flowable:
+    """Group headline (green) with the response-scale legend as a right-aligned muted
+    caption, underlined by a thin gold rule — keeps the scale legible without crowding
+    the headline the way the old inline '(response: …)' did."""
+    left = _p(text, st["group"])
+    right = _p(caption, st["caption"]) if caption else _p("", st["caption"])
+    row = Table([[left, right]], colWidths=[_CONTENT_W * 0.62, _CONTENT_W * 0.38])
+    row.setStyle(TableStyle([
+        ("LINEBELOW", (0, 0), (-1, -1), 0.8, _GOLD),
+        ("VALIGN", (0, 0), (-1, -1), "BOTTOM"),
+        ("ALIGN", (1, 0), (1, 0), "RIGHT"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+        ("TOPPADDING", (0, 0), (-1, -1), 0), ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+    ]))
+    return KeepTogether([Spacer(1, 9), row, Spacer(1, 4)])
+
+
+def _rich_body(text: str, st: dict) -> list[Flowable]:
+    """Render a body string with structure preserved: blank lines split paragraphs,
+    leading '-'/'•' lines become hanging-indent bullets. The TEXT is never altered —
+    only laid out (fixes toolbox-talk bullet lists running together as one blob)."""
+    out: list[Flowable] = []
+    if not text:
+        return out
+    for raw in str(text).split("\n"):
+        line = raw.strip()
+        if not line:
+            out.append(Spacer(1, 4))
+            continue
+        if line[0] in "-•*" and line[1:2] == " ":
+            out.append(Paragraph(_esc(line[2:].strip()), st["bullet"], bulletText="•"))
+        else:
+            out.append(Paragraph(_esc(line), st["body"]))
+    return out
+
+
+def _response_hex(resp: str, scale: list[str]) -> str:
+    """Scannability colour (hex) for a checklist response. Only true scale answers are
+    pass/fail-coloured: first scale value (OK/Acceptable/Yes) → green; explicit N/A →
+    grey; another scale value (NOT OK / NO) → amber. A numeric or free-text answer
+    (hours, fuel '3/4') is NOT a pass/fail signal → neutral ink. Purely cosmetic — never
+    changes whether an item counts as answered."""
+    r = (resp or "").strip().upper()
+    if r in ("N/A", "NA"):
+        return _NA.hexval().replace("0x", "#")
+    if (scale and resp == scale[0]) or r in ("OK", "YES", "ACCEPTABLE", "PASS", "GOOD"):
+        return _OK.hexval().replace("0x", "#")
+    if resp in (scale or []) or r in ("NOT OK", "NO", "FAIL", "BAD", "DEFECT"):
+        return _BAD.hexval().replace("0x", "#")
+    return _INK.hexval().replace("0x", "#")  # numeric / free-text answer — neutral
+
+
+def _resp_cell(resp: str, scale: list[str], st: dict) -> Paragraph:
+    """A checklist Response cell: empty when blank (distinct from N/A), else the
+    response word in its scannability colour. N/A-vs-blank distinction preserved."""
+    if not resp:
+        return _p("", st["cell"])
+    return Paragraph(f'<font color="{_response_hex(resp, scale)}">{_esc(str(resp))}</font>',
+                     st["cellb"])
+
+
+def _grid_style(n_rows: int, n_cols: int) -> TableStyle:
+    """Shared data-table look: pale-green header row, zebra body rows, soft hairline
+    grid. One definition so every table (header/repeating/checklist) matches."""
+    return TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), _TINT),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, _ZEBRA]),
+        ("LINEBELOW", (0, 0), (-1, -1), 0.4, _LINE),
+        ("LINEBELOW", (0, 0), (-1, 0), 0.8, _GOLD),  # gold rule under the column heads
+        ("LINEAFTER", (0, 0), (-2, -1), 0.3, _LINE),
+        ("BOX", (0, 0), (-1, -1), 0.6, _LINE),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("TOPPADDING", (0, 0), (-1, -1), 3.5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3.5),
+        ("LEFTPADDING", (0, 0), (-1, -1), 5),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+    ])
+
+
+# ── footer (brand · form · Page X of Y) ────────────────────────────────────────
+class _FooterCanvas(_pdfcanvas.Canvas):
+    """Canvas that stamps a footer (brand wordmark · form label · Page X of Y) on every
+    page. Two-pass save() defers drawing until the total page count is known. The brand
+    wordmark in the footer keeps the company name in the text layer on every page (the
+    masthead is now an image), which also satisfies the render-fidelity tests."""
+
+    def __init__(self, *args: Any, footer_label: str = "",
+                 show_page_numbers: bool = True, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._saved: list[dict] = []
+        self._footer_label = footer_label
+        self._show_page_numbers = show_page_numbers
+
+    def showPage(self) -> None:  # noqa: N802 — overrides reportlab Canvas.showPage (camelCase API)
+        self._saved.append(dict(self.__dict__))
+        self._startPage()
+
+    def save(self) -> None:
+        total = len(self._saved)
+        for i, state in enumerate(self._saved, start=1):
+            self.__dict__.update(state)
+            self._draw_footer(i, total)
+            super().showPage()
+        super().save()
+
+    def _draw_footer(self, page: int, total: int) -> None:
+        w = self._pagesize[0]
+        y = 0.42 * inch
+        self.saveState()
+        self.setStrokeColor(_LINE)
+        self.setLineWidth(0.5)
+        self.line(_MARGIN, y + 9, w - _MARGIN, y + 9)
+        self.setFont("Helvetica-Bold", 7)
+        self.setFillColor(_FOOT)
+        self.drawString(_MARGIN, y, _BRAND_NAME)
+        if self._footer_label:
+            self.setFont("Helvetica", 7)
+            label = self._footer_label if len(self._footer_label) <= 64 else self._footer_label[:61] + "…"
+            self.drawCentredString(w / 2.0, y, label)
+        if self._show_page_numbers:
+            self.setFont("Helvetica", 7)
+            self.drawRightString(w - _MARGIN, y, f"Page {page} of {total}")
+        self.restoreState()
+
+
+def _canvas_maker(label: str, *, show_page_numbers: bool = True) -> Any:
+    """A canvasmaker bound to a footer label, for SimpleDocTemplate.build(canvasmaker=)."""
+    def make(*args: Any, **kwargs: Any) -> _FooterCanvas:
+        return _FooterCanvas(*args, footer_label=label,
+                             show_page_numbers=show_page_numbers, **kwargs)
+    return make
 
 
 # ── section flowables ─────────────────────────────────────────────────────────
@@ -186,22 +442,24 @@ def _header_section(fields: list[dict], values: dict, st: dict) -> list[Flowable
             cell: Any = SignatureDrawing(str(val)) if val else _p("", st["cell"])
         else:
             cell = _p(val, st["cell"])
-        rows.append([_p(f["label"], st["cellb"]), cell])
+        rows.append([_p(f["label"], st["colhead"]), cell])
     if not rows:
         return []
-    t = Table(rows, colWidths=[2.2 * inch, 4.3 * inch])
+    t = Table(rows, colWidths=[2.2 * inch, _CONTENT_W - 2.2 * inch])
     t.setStyle(TableStyle([
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("LINEBELOW", (0, 0), (-1, -1), 0.25, _LINE),
-        ("TOPPADDING", (0, 0), (-1, -1), 3),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ("LINEBELOW", (0, 0), (-1, -1), 0.4, _LINE),
+        ("LINEBEFORE", (0, 0), (0, -1), 1.4, _TINT),  # subtle green accent rail
+        ("LEFTPADDING", (0, 0), (0, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), 4.5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4.5),
     ]))
     return [t]
 
 
 def _table_section(section: dict, values: dict, st: dict) -> list[Flowable]:
     cols = section["columns"]
-    head = [_p(c["label"], st["cellb"]) for c in cols]
+    head = [_p(c["label"], st["colhead"]) for c in cols]
     body: list[list[Any]] = [head]
     for row in values.get(section["key"], []) or []:
         cells: list[Any] = []
@@ -218,16 +476,10 @@ def _table_section(section: dict, values: dict, st: dict) -> list[Flowable]:
                 cells.append(_p(v, st["cell"]))
         body.append(cells)
     t = Table(body, repeatRows=1)
-    t.setStyle(TableStyle([
-        ("GRID", (0, 0), (-1, -1), 0.25, _LINE),
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#eef3ee")),
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("TOPPADDING", (0, 0), (-1, -1), 3),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
-    ]))
+    t.setStyle(_grid_style(len(body), len(cols)))
     out: list[Flowable] = []
     if section.get("title"):
-        out.append(_p(section["title"], st["section"]))
+        out.append(_section_header(section["title"], st))
     out.append(t)
     return out
 
@@ -235,29 +487,26 @@ def _table_section(section: dict, values: dict, st: dict) -> list[Flowable]:
 def _checklist_section(section: dict, values: dict, st: dict) -> list[Flowable]:
     out: list[Flowable] = []
     if section.get("title"):
-        out.append(_p(section["title"], st["section"]))
+        out.append(_section_header(section["title"], st))
     cl = values.get(section["key"], {}) or {}
     for g in section["groups"]:
-        rows: list[list[Any]] = [[_p("Item", st["cellb"]), _p("Response", st["cellb"]),
-                                  _p("Comments", st["cellb"])]]
+        scale = g["scale"]
+        rows: list[list[Any]] = [[_p("Item", st["colhead"]), _p("Response", st["colhead"]),
+                                  _p("Comments", st["colhead"])]]
         for it in g["items"]:
             cur = cl.get(it["key"], {}) if isinstance(cl, dict) else {}
             resp = cur.get("response", "")
-            # N/A prints "N/A"; blank prints an EMPTY cell — the two are distinct.
+            # N/A prints "N/A" (coloured grey); blank prints an EMPTY cell — distinct.
             rows.append([
                 _p(it["label"], st["cell"]),
-                _p(resp, st["cellb"]) if resp else _p("", st["cell"]),
+                _resp_cell(resp, scale, st),
                 _p(cur.get("comment", ""), st["cell"]),
             ])
-        t = Table(rows, colWidths=[3.7 * inch, 1.0 * inch, 1.8 * inch], repeatRows=1)
-        t.setStyle(TableStyle([
-            ("GRID", (0, 0), (-1, -1), 0.25, _LINE),
-            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#eef3ee")),
-            ("VALIGN", (0, 0), (-1, -1), "TOP"),
-            ("TOPPADDING", (0, 0), (-1, -1), 2.5),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5),
-        ]))
-        out.append(_p(g["label"] + f"   (response: {' / '.join(g['scale'])})", st["group"]))
+        t = Table(rows, colWidths=[_CONTENT_W - 2.85 * inch, 1.05 * inch, 1.8 * inch],
+                  repeatRows=1)
+        t.setStyle(_grid_style(len(rows), 3))
+        # group label (green) + the response-scale legend as a muted right-aligned caption
+        out.append(_group_header(g["label"], " / ".join(scale), st))
         out.append(t)
     return out
 
@@ -271,20 +520,31 @@ def _section_flowables(section: dict, values: dict, st: dict) -> list[Flowable]:
     if typ == "checklist":
         return _checklist_section(section, values, st)
     if typ == "freeform":
-        return [_p(f"{section['label']}", st["heading"]),
-                _p(values.get(section["key"], "") or "", st["body"])]
+        out: list[Flowable] = [_section_header(section["label"], st, level="group")]
+        out.extend(_rich_body(values.get(section["key"], "") or "", st))
+        return out
     if typ == "static_text":
-        style = st["legal"] if section.get("emphasis") in ("legal", "footer") else st["heading"]
-        return [Spacer(1, 4), _p(section["text"], style)]
+        # Legal/mandatory wording rendered VERBATIM. A legal/footer emphasis gets a
+        # subtle gold-edged callout box; plain emphasis stays a heading. Text unchanged.
+        if section.get("emphasis") in ("legal", "footer"):
+            box = Table([[_p(section["text"], st["legal"])]], colWidths=[_CONTENT_W])
+            box.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#fbf6e9")),
+                ("LINEBEFORE", (0, 0), (0, -1), 2.2, _GOLD),
+                ("LEFTPADDING", (0, 0), (-1, -1), 8), ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+                ("TOPPADDING", (0, 0), (-1, -1), 6), ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+            ]))
+            return [Spacer(1, 8), box]
+        return [Spacer(1, 4), _p(section["text"], st["heading"])]
     if typ == "content_blocks":
-        out: list[Flowable] = []
+        out2: list[Flowable] = []
         if section.get("title"):
-            out.append(_p(section["title"], st["section"]))
+            out2.append(_section_header(section["title"], st))
         for b in section["blocks"]:
             if b.get("heading"):
-                out.append(_p(b["heading"], st["heading"]))
-            out.append(_p(b.get("body", ""), st["body"]))
-        return out
+                out2.append(_p(b["heading"], st["heading"]))
+            out2.extend(_rich_body(b.get("body", ""), st))
+        return out2
     logger.warning("form_pdf: unknown section type %r — skipped", typ)
     return []
 
@@ -341,7 +601,7 @@ def _photo_grid(photos: list[tuple[str, bytes]], st: dict) -> list[Flowable]:
         ("LEFTPADDING", (0, 0), (-1, -1), 2),
         ("RIGHTPADDING", (0, 0), (-1, -1), 8),
     ]))
-    return [_p("Site Photos", st["section"]), table]
+    return [_section_header("Site Photos", st), table]
 
 
 # ── public API ────────────────────────────────────────────────────────────────
@@ -357,17 +617,19 @@ def render_submission_pdf(definition: dict, submission: dict) -> bytes:
     """
     st = _styles()
     values = submission.get("values", {}) or {}
-    flow: list[Flowable] = [
-        _p("EVERGREEN RENEWABLES", st["brand"]),
-        _p(definition.get("branding", {}).get("title") or definition.get("form_name", ""), st["title"]),
-    ]
+    form_title = definition.get("branding", {}).get("title") or definition.get("form_name", "")
+    # Variant is surfaced in the meta "Type:" line below, so it is NOT appended to the
+    # masthead title (avoids 'Skid Steer … — Skid Steer' / a doubled toolbox topic).
+    flow: list[Flowable] = _brand_header(form_title, st)
     meta = [("Job / Project", submission.get("job_name", "")), ("Date", submission.get("work_date", ""))]
     if definition.get("variant_label"):
         meta.insert(1, ("Type", definition["variant_label"]))
     # values escaped inside; <b>/&nbsp; are intentional markup, so build the
     # Paragraph directly rather than via _p() (which would escape the markup).
-    flow.append(Paragraph("&nbsp;&nbsp;".join(f"<b>{_esc(k)}:</b> {_esc(str(v))}" for k, v in meta), st["meta"]))
-    flow.append(Spacer(1, 6))
+    flow.append(Paragraph("&nbsp;&nbsp;&nbsp;".join(
+        f'<font color="#1f4d2e"><b>{_esc(k)}:</b></font> {_esc(str(v))}' for k, v in meta),
+        st["meta"]))
+    flow.append(Spacer(1, 4))
 
     for section in definition.get("sections", []):
         try:
@@ -385,9 +647,9 @@ def render_submission_pdf(definition: dict, submission: dict) -> bytes:
 
     buf = io.BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=letter, title=definition.get("form_name", "Safety form"),
-                            leftMargin=0.6 * inch, rightMargin=0.6 * inch,
-                            topMargin=0.6 * inch, bottomMargin=0.6 * inch)
-    doc.build(flow)
+                            leftMargin=_MARGIN, rightMargin=_MARGIN,
+                            topMargin=_MARGIN, bottomMargin=0.7 * inch)
+    doc.build(flow, canvasmaker=_canvas_maker(form_title))
     return buf.getvalue()
 
 
@@ -412,6 +674,99 @@ def merge_pdfs(pdfs: list[bytes]) -> bytes:
     out = io.BytesIO()
     writer.write(out)
     return out.getvalue()
+
+
+def page_count(pdf: bytes) -> int:
+    """Number of pages in a PDF byte string (used to compute weekly-index page numbers).
+    Deterministic; no AI / network."""
+    from pypdf import PdfReader
+    return len(PdfReader(io.BytesIO(pdf)).pages)
+
+
+# ── weekly-packet front matter (cover + date-grouped index) ─────────────────────
+def render_weekly_cover(project_name: str, week_label: str, submission_count: int,
+                        *, compiled_display: str = "") -> bytes:
+    """Render the weekly packet's branded COVER page (page 1 of the compiled packet).
+
+    Pure data → bytes — NO AI, NO network. The packet itself is assembled by
+    weekly_generate (cover + index + per-submission PDFs via merge_pdfs); this renders
+    only the cover. weekly_generate fences the call so a cover-render failure degrades
+    to the plain forms-only packet, never an aborted compile."""
+    st = _styles()
+    base = getSampleStyleSheet()["Normal"]
+    cover_title = ParagraphStyle("cover_title", parent=base, fontName="Helvetica-Bold",
+                                 fontSize=26, textColor=_BRG, leading=30, spaceBefore=6,
+                                 spaceAfter=10)
+    cover_job = ParagraphStyle("cover_job", parent=base, fontName="Helvetica-Bold",
+                               fontSize=16, textColor=_INK, leading=20, spaceAfter=4)
+    cover_meta = ParagraphStyle("cover_meta", parent=base, fontSize=12, textColor=_FOOT,
+                                leading=16)
+    flow: list[Flowable] = _brand_header("", st)  # logo + gold rule, no title here
+    flow.append(Spacer(1, 1.4 * inch))
+    flow.append(_p("WEEKLY SAFETY REPORT", cover_title))
+    flow.append(_p(project_name, cover_job))
+    flow.append(_p(week_label, cover_meta))
+    flow.append(Spacer(1, 10))
+    n = submission_count
+    flow.append(_p(f"{n} safety {'submission' if n == 1 else 'submissions'} filed this week",
+                   cover_meta))
+    if compiled_display:
+        flow.append(_p(f"Compiled {compiled_display}", st["caption"]))
+    flow.append(Spacer(1, 0.5 * inch))
+    note = Table([[_p("This packet is the compiled record of safety forms filed for the job "
+                      "and week named above. See the next page for contents.", st["caption"])]],
+                 colWidths=[_CONTENT_W])
+    note.setStyle(TableStyle([("LINEBEFORE", (0, 0), (0, -1), 2.2, _GOLD),
+                              ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                              ("TOPPADDING", (0, 0), (-1, -1), 4),
+                              ("BOTTOMPADDING", (0, 0), (-1, -1), 4)]))
+    flow.append(note)
+
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=letter, title=f"Weekly Safety Report — {project_name}",
+                            leftMargin=_MARGIN, rightMargin=_MARGIN,
+                            topMargin=_MARGIN, bottomMargin=0.7 * inch)
+    doc.build(flow, canvasmaker=_canvas_maker("Weekly Safety Report", show_page_numbers=False))
+    return buf.getvalue()
+
+
+def render_weekly_index(project_name: str, week_label: str,
+                        entries: list[dict[str, Any]]) -> bytes:
+    """Render the weekly packet's CONTENTS index (page 2+), grouped by work date then
+    form, each row carrying its absolute page number IN THE PACKET (matches the PDF
+    viewer's page counter). `entries` are in packet order; each is
+    {"date_display": str, "form_name": str, "start_page": int}.
+
+    Pure data → bytes — NO AI, NO network. weekly_generate computes start_page (it owns
+    the page-count arithmetic) and fences this call."""
+    st = _styles()
+    flow: list[Flowable] = _brand_header("Contents", st)
+    flow.append(_p(f"{project_name} — {week_label}", st["meta"]))
+    flow.append(Spacer(1, 4))
+    last_date = object()  # sentinel so the first date always emits a sub-header
+    for e in entries:
+        date_display = e.get("date_display", "")
+        if date_display != last_date:
+            flow.append(_group_header(date_display or "—", "", st))
+            last_date = date_display
+        row = Table([[_p(e.get("form_name", ""), st["cell"]),
+                      _p(f"Page {e.get('start_page', '')}", st["cell"])]],
+                    colWidths=[_CONTENT_W - 1.1 * inch, 1.1 * inch])
+        row.setStyle(TableStyle([
+            ("ALIGN", (1, 0), (1, 0), "RIGHT"),
+            ("LINEBELOW", (0, 0), (-1, -1), 0.4, _LINE),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("LEFTPADDING", (0, 0), (0, -1), 10),
+            ("TOPPADDING", (0, 0), (-1, -1), 3.5), ("BOTTOMPADDING", (0, 0), (-1, -1), 3.5),
+        ]))
+        flow.append(row)
+
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=letter, title=f"Contents — {project_name}",
+                            leftMargin=_MARGIN, rightMargin=_MARGIN,
+                            topMargin=_MARGIN, bottomMargin=0.7 * inch)
+    doc.build(flow, canvasmaker=_canvas_maker("Contents", show_page_numbers=False))
+    return buf.getvalue()
 
 
 # ── form-definition loader ──────────────────────────────────────────────────────
@@ -632,15 +987,17 @@ def _blank_header_section(fields: list[dict], st: dict, namer: _FieldNamer) -> l
     rows: list[list[Any]] = []
     for f in fields:
         label = f.get("label", "") + _format_hint(f.get("input", "text"))
-        rows.append([_p(label, st["cellb"]), _blank_field_cell(f, namer, 4.0 * inch)])
+        rows.append([_p(label, st["colhead"]), _blank_field_cell(f, namer, 4.0 * inch)])
     if not rows:
         return []
-    t = Table(rows, colWidths=[2.2 * inch, 4.3 * inch])
+    t = Table(rows, colWidths=[2.2 * inch, _CONTENT_W - 2.2 * inch])
     t.setStyle(TableStyle([
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("LINEBELOW", (0, 0), (-1, -1), 0.25, _LINE),
-        ("TOPPADDING", (0, 0), (-1, -1), 4),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("LINEBELOW", (0, 0), (-1, -1), 0.4, _LINE),
+        ("LINEBEFORE", (0, 0), (0, -1), 1.4, _TINT),
+        ("LEFTPADDING", (0, 0), (0, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
     ]))
     return [t]
 
@@ -651,23 +1008,20 @@ def _blank_table_section(section: dict, st: dict, namer: _FieldNamer) -> list[Fl
     is the available width split evenly across the columns."""
     cols = section["columns"]
     n_rows = _min_rows(section)
-    avail = 7.0 * inch  # letter minus 0.6in margins ≈ 7.3in; leave slack for borders
-    col_w = avail / max(len(cols), 1)
-    head = [_p(c["label"] + _format_hint(c.get("input", "text")), st["cellb"]) for c in cols]
+    col_w = _CONTENT_W / max(len(cols), 1)
+    head = [_p(c["label"] + _format_hint(c.get("input", "text")), st["colhead"]) for c in cols]
     body: list[list[Any]] = [head]
     for _ in range(n_rows):
         body.append([_blank_field_cell(c, namer, col_w - 8) for c in cols])
     t = Table(body, colWidths=[col_w] * len(cols), repeatRows=1)
-    t.setStyle(TableStyle([
-        ("GRID", (0, 0), (-1, -1), 0.25, _LINE),
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#eef3ee")),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("TOPPADDING", (0, 0), (-1, -1), 5),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
-    ]))
+    style = _grid_style(len(body), len(cols))
+    style.add("VALIGN", (0, 1), (-1, -1), "MIDDLE")  # center the fillable widgets
+    style.add("TOPPADDING", (0, 1), (-1, -1), 5)
+    style.add("BOTTOMPADDING", (0, 1), (-1, -1), 5)
+    t.setStyle(style)
     out: list[Flowable] = []
     if section.get("title"):
-        out.append(_p(section["title"], st["section"]))
+        out.append(_section_header(section["title"], st))
     out.append(t)
     return out
 
@@ -702,15 +1056,18 @@ def _blank_checklist_section(section: dict, st: dict, namer: _FieldNamer) -> lis
     comment text field. Matches the submission checklist's per-group table shape."""
     out: list[Flowable] = []
     if section.get("title"):
-        out.append(_p(section["title"], st["section"]))
+        out.append(_section_header(section["title"], st))
     for g in section["groups"]:
         want_comment = bool(g.get("comment_per_item")) or any(
             it.get("comment") for it in g["items"]
         )
-        head = [_p("Item", st["cellb"]), _p("Response", st["cellb"])]
-        col_w = [3.6 * inch, 1.6 * inch] if not want_comment else [3.0 * inch, 1.6 * inch, 1.9 * inch]
+        head = [_p("Item", st["colhead"]), _p("Response", st["colhead"])]
+        if not want_comment:
+            col_w = [_CONTENT_W - 1.9 * inch, 1.9 * inch]
+        else:
+            col_w = [_CONTENT_W - 3.5 * inch, 1.7 * inch, 1.8 * inch]
         if want_comment:
-            head.append(_p("Comments", st["cellb"]))
+            head.append(_p("Comments", st["colhead"]))
         rows: list[list[Any]] = [head]
         for it in g["items"]:
             # Per-item override: an explicit "comment": false suppresses the comment
@@ -727,14 +1084,10 @@ def _blank_checklist_section(section: dict, st: dict, namer: _FieldNamer) -> lis
                 )
             rows.append(row)
         t = Table(rows, colWidths=col_w, repeatRows=1)
-        t.setStyle(TableStyle([
-            ("GRID", (0, 0), (-1, -1), 0.25, _LINE),
-            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#eef3ee")),
-            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ("TOPPADDING", (0, 0), (-1, -1), 3.5),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 3.5),
-        ]))
-        out.append(_p(g["label"] + f"   (response: {' / '.join(g['scale'])})", st["group"]))
+        style = _grid_style(len(rows), len(col_w))
+        style.add("VALIGN", (0, 1), (-1, -1), "MIDDLE")
+        t.setStyle(style)
+        out.append(_group_header(g["label"], " / ".join(g["scale"]), st))
         out.append(t)
     return out
 
@@ -764,8 +1117,8 @@ def _blank_section_flowables(section: dict, st: dict, namer: _FieldNamer) -> lis
         return _blank_checklist_section(section, st, namer)
     if typ == "freeform":
         multiline = section.get("input", "textarea") == "textarea"
-        return [_p(section["label"], st["heading"]),
-                _TextFieldFlowable(namer, section.get("key", "freeform"), 6.8 * inch,
+        return [_section_header(section["label"], st, level="group"),
+                _TextFieldFlowable(namer, section.get("key", "freeform"), _CONTENT_W,
                                    multiline=multiline, height=_FIELD_H * 3 if multiline else None)]
     if typ in ("static_text", "content_blocks"):
         # VERBATIM via the submission path — guarantees no divergence.
@@ -791,10 +1144,7 @@ def render_blank_fillable(definition: dict) -> bytes:
     st = _styles()
     namer = _FieldNamer()
     title = definition.get("branding", {}).get("title") or definition.get("form_name", "")
-    flow: list[Flowable] = [
-        _p("EVERGREEN RENEWABLES", st["brand"]),
-        _p(title, st["title"]),
-    ]
+    flow: list[Flowable] = _brand_header(title, st)
     if definition.get("variant_label"):
         flow.append(_p(f"Type: {definition['variant_label']}", st["meta"]))
     # Manual-fallback hint line: this is the BLANK form, fill by hand or on screen.
@@ -812,9 +1162,9 @@ def render_blank_fillable(definition: dict) -> bytes:
     buf = io.BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=letter,
                             title=f"{definition.get('form_name', 'Safety form')} (fillable)",
-                            leftMargin=0.6 * inch, rightMargin=0.6 * inch,
-                            topMargin=0.6 * inch, bottomMargin=0.6 * inch)
-    doc.build(flow)
+                            leftMargin=_MARGIN, rightMargin=_MARGIN,
+                            topMargin=_MARGIN, bottomMargin=0.7 * inch)
+    doc.build(flow, canvasmaker=_canvas_maker(f"{title} — fillable"))
     return buf.getvalue()
 
 
@@ -845,14 +1195,10 @@ def render_cover_sheet() -> bytes:
     a field PM when the portal is unavailable. Pure bytes — NO AI, NO network, NO send.
     """
     st = _styles()
-    flow: list[Flowable] = [
-        _p("EVERGREEN RENEWABLES", st["brand"]),
-        _p("Safety Forms — Manual Fallback (portal unavailable)", st["title"]),
-        _p("Use these blank fillable forms only when the Safety Portal is down. "
-           "Normal filing is through the portal.", st["body"]),
-        Spacer(1, 8),
-        _p("What to do", st["section"]),
-    ]
+    flow: list[Flowable] = _brand_header("Safety Forms — Manual Fallback (portal unavailable)", st)
+    flow.append(_p("Use these blank fillable forms only when the Safety Portal is down. "
+                   "Normal filing is through the portal.", st["body"]))
+    flow.append(_section_header("What to do", st))
     for step in _COVER_STEPS:
         flow.append(_p(step, st["body"]))
     flow.append(Spacer(1, 10))
@@ -860,7 +1206,7 @@ def render_cover_sheet() -> bytes:
 
     buf = io.BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=letter, title="Safety Forms — Manual Fallback",
-                            leftMargin=0.8 * inch, rightMargin=0.8 * inch,
-                            topMargin=0.8 * inch, bottomMargin=0.8 * inch)
-    doc.build(flow)
+                            leftMargin=_MARGIN, rightMargin=_MARGIN,
+                            topMargin=_MARGIN, bottomMargin=0.7 * inch)
+    doc.build(flow, canvasmaker=_canvas_maker("Manual Fallback"))
     return buf.getvalue()
