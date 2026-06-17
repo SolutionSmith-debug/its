@@ -8,8 +8,9 @@ Anthropic and wrote `WPR_Pending_Review`. The portal flow is DETERMINISTIC — t
 no narrative to draft and no LLM call. This module now COMPILES: for each Active job's
 Saturday→Friday week it gathers the per-submission PDFs recorded on the week sheet,
 merges them (`form_pdf.merge_pdfs`) into one weekly packet, files the packet to an
-`ITS`-prefixed Box week folder as a DISTINCT timestamped file, and APPENDS (operator
-decision 2026-06-09 — append-only, never overwrite):
+`ITS`-prefixed Box week folder as a DISTINCT, version-numbered file (`<Job>_week of
+<Sat>_WSR.pdf`; recompiles bump `_v2`/`_v3`…), and APPENDS (operator decision
+2026-06-09 — append-only, never overwrite; naming refined 2026-06-17):
   (a) a NEW read-only **Rollup** snapshot row on the week sheet — a manifest of THIS packet;
   (b) a NEW **WSR_human_review** row (per compilation) — the editable Email Body (seeded
       from a fixed template), the resolved Recipient TO/CC display, Send Status=PENDING.
@@ -134,17 +135,44 @@ def _its_week_folder_name(week: safety_week.SafetyWeek) -> str:
     return f"ITS Week of {week.start.isoformat()} to {week.end.isoformat()}"
 
 
-def _packet_filename(project_name: str, week: safety_week.SafetyWeek, stamp: str) -> str:
-    """Per-COMPILATION packet filename — unique per compile (`stamp` = compiled-at
-    YYYYMMDD-HHMMSS). APPEND-ONLY (operator decision 2026-06-09): each compilation files a
-    DISTINCT Box file, so a recompile NEVER overwrites the prior packet (Box is the master
-    record and must keep every weekly compilation). The unique name also means a plain
-    `upload_bytes` cannot 409 — the reason the prior code used upload_bytes_or_new_version
-    (which buried prior packets as file versions) is gone."""
+_MAX_PACKET_VERSIONS = 200  # bound the recompile _vN probe; an absurd ceiling (real weeks see ≤ a handful)
+
+
+def _packet_basename(project_name: str, week: safety_week.SafetyWeek) -> str:
+    """Clean per-(job, week) packet base name (no version, no extension):
+    `<Job>_week of <Sat>_WSR`. Operator naming rule (2026-06-17): job-prefixed +
+    week-of-<Saturday> + `WSR` tag, so every packet is self-identifying and never collides
+    across jobs or weeks. Reuses `safety_naming` so the prefix + week key match the
+    Box/Smartsheet folder naming exactly. Recompiles of the SAME (job, week) get a
+    `_v2`/`_v3`… suffix in `_upload_packet` — each compile is still a DISTINCT Box file
+    (append-only master record), just with clean version-numbered names instead of the old
+    compiled-at timestamp."""
     return (
-        f"Weekly Safety Report — {project_name} — "
-        f"{week.start.isoformat()} to {week.end.isoformat()} — {stamp}.pdf"
+        f"{safety_naming.job_folder_name(project_name)}_"
+        f"{safety_naming.week_label(week.start)}_WSR"
     )
+
+
+def _upload_packet(
+    folder_id: str, basename: str, compiled: bytes, stamp: str
+) -> tuple[str, str]:
+    """Upload the compiled packet as a DISTINCT file with a clean, version-numbered name;
+    return `(filename, box_file_id)`. First compile → `<basename>.pdf`; each recompile of
+    the SAME (job, week) → `<basename>_v2.pdf`, `_v3.pdf`, … (the next name not already in
+    the Box week folder, found by trying in order and catching the 409). APPEND-ONLY: a
+    recompile NEVER overwrites a prior packet — Box is the master record. `stamp`
+    (compiled-at) is the last-resort disambiguator if the version ceiling is ever hit, so a
+    compile can NEVER silently lose a packet to an unresolved 409."""
+    for n in range(1, _MAX_PACKET_VERSIONS + 1):
+        name = f"{basename}.pdf" if n == 1 else f"{basename}_v{n}.pdf"
+        try:
+            meta = box_client.upload_bytes(folder_id, name, compiled)
+            return name, str(meta["id"])
+        except box_client.BoxConflictError:
+            continue
+    name = f"{basename}_{stamp}.pdf"  # ceiling hit (never expected) — fall back, never lose the packet
+    meta = box_client.upload_bytes(folder_id, name, compiled)
+    return name, str(meta["id"])
 
 
 def _form_display_name(form_code: str) -> str:
@@ -400,20 +428,22 @@ def _compile_job_week(
 
     pdfs, manifest_parts, metas = _gather_submission_pdfs(submissions, summary, correlation_id)
     packet_link = ""
+    packet_name = ""
     compiled: bytes | None = None
     if pdfs:
         compiled = _build_weekly_packet(project_name, week, pdfs, metas, compiled_dt,
                                         correlation_id)
         folder_id = _ensure_its_week_folder(project_name, week, correlation_id)
-        # APPEND-ONLY (operator decision 2026-06-09): each compilation files a DISTINCT,
-        # timestamped packet, so a recompile NEVER overwrites the prior packet — Box is the
-        # master record and must keep every weekly compilation as its own file. The unique
-        # name also means a plain `upload_bytes` can't 409 (the reason the prior code used
-        # upload_bytes_or_new_version — which buried prior packets as file versions — is gone).
-        meta = box_client.upload_bytes(
-            folder_id, _packet_filename(project_name, week, stamp), compiled
+        # APPEND-ONLY (operator decision 2026-06-09, naming refined 2026-06-17): each
+        # compilation files a DISTINCT Box file, so a recompile NEVER overwrites the prior
+        # packet — Box is the master record and must keep every weekly compilation as its own
+        # file. The name is the clean `<Job>_week of <Sat>_WSR.pdf`; recompiles of the same
+        # (job, week) bump `_v2`/`_v3`… (see _upload_packet), replacing the old compiled-at
+        # timestamp while keeping the append-only / never-overwrite guarantee.
+        packet_name, file_id = _upload_packet(
+            folder_id, _packet_basename(project_name, week), compiled, stamp
         )
-        packet_link = f"https://app.box.com/file/{meta['id']}"
+        packet_link = f"https://app.box.com/file/{file_id}"
         # Count ONLY a real packet (≥1 PDF merged + uploaded). The all-failed
         # branch below still dual-writes the Rollup/WSR rows but is NOT a packet.
         summary.packets_compiled += 1
@@ -445,7 +475,6 @@ def _compile_job_week(
     # Compiled-PDF link cells are unchanged). Best-effort + only when a real packet
     # exists (an empty / all-downloads-failed week has no packet to attach).
     if compiled is not None:
-        packet_name = _packet_filename(project_name, week, stamp)
         _attach_pdf_best_effort(sheet_id, rollup_row_id, packet_name, compiled, correlation_id)
         _attach_pdf_best_effort(wsr_review.SHEET_ID, wsr_row_id, packet_name, compiled, correlation_id)
 
