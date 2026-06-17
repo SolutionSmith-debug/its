@@ -2202,7 +2202,11 @@ def _run_portal_pipeline(
     # reviewer sees it without a Box round-trip (Box stays the SoR; the row's Box
     # link is unchanged). Best-effort — never fails an already-filed submission.
     _attach_pdf_best_effort(
-        sheet_id, sub_row_id, f"{work_date_raw}-{parent_form_code}.pdf", pdf, correlation_id
+        sheet_id, sub_row_id,
+        # Job-prefixed to match the Box-filed PDF name (2026-06-17 scheme); identical base
+        # so the inline week-sheet copy and the Box system-of-record copy read the same.
+        f"{safety_naming.job_folder_name(project_name)}_{work_date_raw}_{parent_form_code}.pdf",
+        pdf, correlation_id,
     )
 
     # Amend: supersede the prior submission's row (Box keeps BOTH PDFs).

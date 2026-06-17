@@ -84,7 +84,7 @@ def test_success_attaches_rendered_pdf_to_submission_row(stub):
     stub["attach"].assert_called_once()
     sheet_id, row_id, filename, pdf_bytes = stub["attach"].call_args.args
     assert sheet_id == 8001 and row_id == 555   # the week sheet + the submission row id
-    assert filename.endswith(".pdf")
+    assert filename == "Bradley 1_2026-06-05_jha.pdf"  # job-prefixed; matches the Box-filed name
     assert pdf_bytes == b"%PDF-1.4"             # the rendered bytes, inline on the row
 
 
