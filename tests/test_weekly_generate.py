@@ -57,8 +57,9 @@ def stub(mocker) -> dict[str, MagicMock]:
         "box_root": mocker.patch.object(weekly_generate, "_portal_box_root", return_value=""),  # gated OFF → legacy
         "get_root": mocker.patch.object(weekly_generate.project_routing, "get_folder_id", return_value="root1"),
         "mkfolder": mocker.patch.object(weekly_generate.box_client, "get_or_create_folder", return_value="wk1"),
-        # Append-only: each compile files a DISTINCT, timestamped packet via plain upload_bytes
-        # (the unique name can't 409, so the prior version-on-conflict upload is no longer used).
+        # Append-only: each compile files a DISTINCT packet via _upload_packet — the clean
+        # <Job>_week of <Sat>_WSR.pdf, bumping _v2/_v3 on a recompile 409. A clean first compile
+        # is a single non-conflicting upload_bytes call, which this return_value models.
         "upload": mocker.patch.object(weekly_generate.box_client, "upload_bytes", return_value={"id": "pkt9", "name": "x", "size": 9}),
         "wsr": mocker.patch.object(weekly_generate.wsr_review, "add_wsr_row", return_value=123),
         "evergreen": mocker.patch.object(weekly_generate, "_read_str_setting", return_value="the office"),
@@ -82,12 +83,42 @@ def test_box_file_id(link, expected):
     assert weekly_generate._box_file_id(link) == expected
 
 
-def test_its_week_folder_name_and_packet_name():
+def test_its_week_folder_name_and_packet_basename():
     wk = weekly_generate.safety_week.week_bounds(ANCHOR)
     assert weekly_generate._its_week_folder_name(wk) == "ITS Week of 2026-05-30 to 2026-06-05"
-    name = weekly_generate._packet_filename("Bradley 1", wk, "20260605-090000-abc123")
-    assert name.startswith("Weekly Safety Report — Bradley 1 — 2026-05-30 to 2026-06-05")
-    assert name.endswith("20260605-090000-abc123.pdf")  # append-only: unique per-compile stamp
+    # Operator naming rule (2026-06-17): clean job-prefixed packet name <Job>_week of <Sat>_WSR.
+    assert weekly_generate._packet_basename("Bradley 1", wk) == "Bradley 1_week of 2026-05-30_WSR"
+
+
+def test_upload_packet_first_compile_uses_clean_unversioned_name(mocker):
+    up = mocker.patch.object(weekly_generate.box_client, "upload_bytes",
+                             return_value={"id": "p1", "name": "n", "size": 1})
+    name, file_id = weekly_generate._upload_packet(
+        "fld", "Bradley 1_week of 2026-05-30_WSR", b"x", "20260605-090000-abc123"
+    )
+    assert (name, file_id) == ("Bradley 1_week of 2026-05-30_WSR.pdf", "p1")
+    assert up.call_args.args[1] == "Bradley 1_week of 2026-05-30_WSR.pdf"  # no _v suffix on first compile
+
+
+def test_upload_packet_recompile_bumps_to_next_version(mocker):
+    # base.pdf + _v2.pdf already in the folder (two prior compiles) → next DISTINCT file is _v3.pdf.
+    up = mocker.patch.object(
+        weekly_generate.box_client, "upload_bytes",
+        side_effect=[
+            weekly_generate.box_client.BoxConflictError("base exists"),
+            weekly_generate.box_client.BoxConflictError("_v2 exists"),
+            {"id": "p3", "name": "n", "size": 1},
+        ],
+    )
+    name, file_id = weekly_generate._upload_packet(
+        "fld", "Bradley 1_week of 2026-05-30_WSR", b"x", "20260605-090000-abc123"
+    )
+    assert (name, file_id) == ("Bradley 1_week of 2026-05-30_WSR_v3.pdf", "p3")
+    assert [c.args[1] for c in up.call_args_list] == [
+        "Bradley 1_week of 2026-05-30_WSR.pdf",
+        "Bradley 1_week of 2026-05-30_WSR_v2.pdf",
+        "Bradley 1_week of 2026-05-30_WSR_v3.pdf",
+    ]
 
 
 def test_recipient_display():
@@ -203,14 +234,22 @@ def test_new_doc_since_compile_triggers_recompile(stub):
 
 
 def test_recompile_files_distinct_packet_never_overwrites(stub):
-    """APPEND-ONLY (operator decision 2026-06-09): a recompile files a NEW, DISTINCT Box
-    packet (a unique timestamp+correlation stamp), NEVER overwriting the prior packet — Box is
-    the master record and must keep every weekly compilation. Two compiles → two upload_bytes
-    calls with DIFFERENT filenames into the SAME job/week folder, and a NEW Rollup snapshot
-    each time (never an in-place update)."""
+    """APPEND-ONLY (operator decision 2026-06-09, naming refined 2026-06-17): a recompile files a
+    NEW, DISTINCT Box packet — the clean `<Job>_week of <Sat>_WSR.pdf`, then `_v2`/`_v3`… on a
+    recompile 409 — NEVER overwriting the prior packet (Box is the master record). Two compiles →
+    distinct versioned filenames into the SAME job/week folder, and a NEW Rollup snapshot each
+    time (never an in-place update)."""
     stub["box_root"].return_value = "ROOT9"
     stub["mkfolder"].side_effect = ["jobP", "weekP", "jobP", "weekP"]  # two compiles
-    prefix = "Weekly Safety Report — Bradley 1 — 2026-05-30 to 2026-06-05 — "
+    base = "Bradley 1_week of 2026-05-30_WSR.pdf"
+    v2 = "Bradley 1_week of 2026-05-30_WSR_v2.pdf"
+    # 1st compile: base.pdf is free. 2nd compile: base.pdf 409s (already there) → _upload_packet
+    # retries the next version and files the DISTINCT _v2.pdf.
+    stub["upload"].side_effect = [
+        {"id": "pkt1", "name": base, "size": 9},
+        weekly_generate.box_client.BoxConflictError("base exists"),
+        {"id": "pkt2", "name": v2, "size": 9},
+    ]
 
     weekly_generate._run_pipeline(week_start_override=ANCHOR)  # first compile
     stub["rollup"].return_value = [{  # a prior Rollup now exists; Compile Now forces recompile
@@ -220,11 +259,9 @@ def test_recompile_files_distinct_packet_never_overwrites(stub):
     }]
     weekly_generate._run_pipeline(week_start_override=ANCHOR)  # recompile
 
-    assert stub["upload"].call_count == 2
+    assert stub["upload"].call_count == 3  # 1 (first) + 2 (recompile: base 409 → _v2)
     names = [c.args[1] for c in stub["upload"].call_args_list]
-    for n in names:
-        assert n.startswith(prefix) and n.endswith(".pdf")
-    assert names[0] != names[1], "each compilation must file a DISTINCT packet (never overwrite)"
+    assert names == [base, base, v2]  # recompile retries the base name, then files the distinct _v2
     for c in stub["upload"].call_args_list:
         assert c.args[0] == "weekP", "packet must file into the job/week folder"
     assert stub["append_rollup"].call_count == 2  # a NEW Rollup snapshot per compile

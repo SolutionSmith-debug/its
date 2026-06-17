@@ -1537,6 +1537,7 @@ def _resolve_portal_box_folder(
 
 def _file_portal_pdf(
     folder_id: str,
+    project_name: str,
     work_date_iso: str,
     type_slug: str,
     submission_uuid: str,
@@ -1544,24 +1545,28 @@ def _file_portal_pdf(
 ) -> tuple[str, str]:
     """Upload the rendered PDF to `folder_id`; return `(box_link, box_file_id)`.
 
-    Names `<work_date>-<type>.pdf` (operator-readable). On a name conflict (a
-    genuine same-day same-type submission, OR a retry of THIS submission after a
-    downstream failure) it suffixes with the submission's short id; if THAT
-    deterministic name ALSO exists (a prior partial attempt of this same
-    submission), it recovers + returns the existing file's link/id instead of
+    Names `<job>_<work_date>_<type>.pdf` (operator naming rule 2026-06-17). The job
+    prefix is what makes the filename globally unique: the same form filed on the same
+    day for DIFFERENT jobs used to share a name (`<work_date>-<type>.pdf`) and collide
+    whenever per-submission PDFs were gathered together (packet, download cache). On a
+    name conflict (a genuine same-day same-type submission for the SAME job, OR a retry
+    of THIS submission after a downstream failure) it suffixes with the submission's
+    short id; if THAT deterministic name ALSO exists (a prior partial attempt of this
+    same submission), it recovers + returns the existing file's link/id instead of
     re-uploading. Terminates; bounded duplication ("Box keeps both").
 
     The structural Box file id rides alongside the link (PR-4 Part A) so the
     request-driven PDF-cache receipt can name the exact filed file without parsing
     it back out of the URL.
     """
-    base = f"{work_date_iso}-{type_slug}.pdf"
+    job_slug = safety_naming.job_folder_name(project_name)
+    base = f"{job_slug}_{work_date_iso}_{type_slug}.pdf"
     try:
         file_id = str(box_client.upload_bytes(folder_id, base, pdf)["id"])
         return _box_link(file_id), file_id
     except box_client.BoxConflictError:
         pass
-    suffixed = f"{work_date_iso}-{type_slug}-{submission_uuid[:8]}.pdf"
+    suffixed = f"{job_slug}_{work_date_iso}_{type_slug}-{submission_uuid[:8]}.pdf"
     try:
         file_id = str(box_client.upload_bytes(folder_id, suffixed, pdf)["id"])
         return _box_link(file_id), file_id
@@ -1727,7 +1732,9 @@ def _portal_orphan(
     folder_id = _orphaned_reports_box_folder()
     # box_file_id unused on the orphan (review_queue) path — the PDF cache only
     # services processed/already_filed rows (see ProcessResult.box_file_id).
-    box_link, _ = _file_portal_pdf(folder_id, work_date_raw, parent_form_code, submission_uuid, pdf)
+    box_link, _ = _file_portal_pdf(
+        folder_id, job_id or "orphan", work_date_raw, parent_form_code, submission_uuid, pdf
+    )
 
     smartsheet_client.add_rows(sheet_ids.SHEET_ORPHANED_REPORTS, [{
         _OR_COL_UUID: submission_uuid,
@@ -2167,7 +2174,7 @@ def _run_portal_pipeline(
             correlation_id=correlation_id, severity=Severity.ERROR,
         )
     box_link, box_file_id = _file_portal_pdf(
-        folder_id, work_date_raw, parent_form_code, submission_uuid, pdf
+        folder_id, project_name, work_date_raw, parent_form_code, submission_uuid, pdf
     )
     notes = (notes + f" [box:{box_note}]").strip()
 

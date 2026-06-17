@@ -96,7 +96,7 @@ def test_attach_failure_does_not_fail_filing(stub):
     assert result.status == "processed"
 
 
-def test_success_uploads_to_category_subfolder_named_by_date_and_type(stub):
+def test_success_uploads_to_category_subfolder_named_by_job_date_and_type(stub):
     intake.process_portal_submission(dict(BASE_SUB))
     folder_id, name, content = (
         stub["upload"].call_args.args[0],
@@ -104,7 +104,7 @@ def test_success_uploads_to_category_subfolder_named_by_date_and_type(stub):
         stub["upload"].call_args.args[2],
     )
     assert folder_id == "leaf1"  # the resolved JSAs category subfolder
-    assert name == "2026-06-05-jha.pdf"  # <work_date>-<type>.pdf
+    assert name == "Bradley 1_2026-06-05_jha.pdf"  # <job>_<work_date>_<type>.pdf (2026-06-17 rule)
     assert content == b"%PDF-1.4"
 
 
@@ -299,11 +299,12 @@ def test_incomplete_checklist_tagged_in_notes_but_still_files(stub):
 
 
 def test_file_portal_pdf_base_name_success(mocker):
-    mocker.patch.object(intake.box_client, "upload_bytes",
-                        return_value={"id": "f1", "name": "n", "size": 1})
-    link, file_id = intake._file_portal_pdf("fld", "2026-06-05", "jha", "u1abcdef00", b"x")
+    up = mocker.patch.object(intake.box_client, "upload_bytes",
+                             return_value={"id": "f1", "name": "n", "size": 1})
+    link, file_id = intake._file_portal_pdf("fld", "Bradley 1", "2026-06-05", "jha", "u1abcdef00", b"x")
     assert link == "https://app.box.com/file/f1"
     assert file_id == "f1"  # PR-4: the structural id rides alongside the link
+    assert up.call_args.args[1] == "Bradley 1_2026-06-05_jha.pdf"  # job-prefixed clean base name
 
 
 def test_file_portal_pdf_conflict_then_suffix(mocker):
@@ -311,10 +312,10 @@ def test_file_portal_pdf_conflict_then_suffix(mocker):
         intake.box_client, "upload_bytes",
         side_effect=[box_client.BoxConflictError("dup"), {"id": "f2", "name": "n", "size": 1}],
     )
-    link, file_id = intake._file_portal_pdf("fld", "2026-06-05", "jha", "u1abcdef00", b"x")
+    link, file_id = intake._file_portal_pdf("fld", "Bradley 1", "2026-06-05", "jha", "u1abcdef00", b"x")
     assert link == "https://app.box.com/file/f2"
     assert file_id == "f2"
-    assert up.call_args_list[1].args[1] == "2026-06-05-jha-u1abcdef.pdf"  # short-uuid suffix
+    assert up.call_args_list[1].args[1] == "Bradley 1_2026-06-05_jha-u1abcdef.pdf"  # short-uuid suffix
 
 
 def test_file_portal_pdf_suffix_conflict_recovers_existing_link(mocker):
@@ -324,9 +325,9 @@ def test_file_portal_pdf_suffix_conflict_recovers_existing_link(mocker):
     )
     mocker.patch.object(
         intake.box_client, "list_folder",
-        return_value=[{"id": "r9", "name": "2026-06-05-jha-u1abcdef.pdf", "type": "file"}],
+        return_value=[{"id": "r9", "name": "Bradley 1_2026-06-05_jha-u1abcdef.pdf", "type": "file"}],
     )
-    link, file_id = intake._file_portal_pdf("fld", "2026-06-05", "jha", "u1abcdef00", b"x")
+    link, file_id = intake._file_portal_pdf("fld", "Bradley 1", "2026-06-05", "jha", "u1abcdef00", b"x")
     assert link == "https://app.box.com/file/r9"  # recovered the prior partial upload
     assert file_id == "r9"  # the recovered file's id rides too
 
@@ -338,7 +339,7 @@ def test_file_portal_pdf_suffix_conflict_no_recovery_reraises(mocker):
     )
     mocker.patch.object(intake.box_client, "list_folder", return_value=[])
     with pytest.raises(box_client.BoxConflictError):
-        intake._file_portal_pdf("fld", "2026-06-05", "jha", "u1abcdef00", b"x")
+        intake._file_portal_pdf("fld", "Bradley 1", "2026-06-05", "jha", "u1abcdef00", b"x")
 
 
 # ---- _box_file_id_from_link (already_filed id recovery) -------------------
