@@ -714,10 +714,11 @@ app.get("/api/submissions/:uuid/pdf", requireSession, async (c) => {
   if (!uuid || uuid.length > 64) return c.json({ error: "not_found" }, 404);
   const row = await c.env.DB
     .prepare(
-      "SELECT box_verified, form_code, work_date, pdf_ready_at FROM submissions WHERE submission_uuid=?",
+      "SELECT s.box_verified, s.form_code, s.work_date, s.pdf_ready_at, j.project_name " +
+        "FROM submissions s LEFT JOIN jobs j ON j.job_id = s.job_id WHERE s.submission_uuid=?",
     )
     .bind(uuid)
-    .first<{ box_verified: number; form_code: string; work_date: string; pdf_ready_at: number | null }>();
+    .first<{ box_verified: number; form_code: string; work_date: string; pdf_ready_at: number | null; project_name: string | null }>();
   if (!row || row.box_verified === -1) return c.json({ error: "not_found" }, 404);
   // PR-5: REQUESTER-BOUND. Admins always; otherwise the session account must hold a LIVE
   // pdf_requests row (requested within 24h) for this uuid. A DIFFERENT authenticated account —
@@ -747,8 +748,13 @@ app.get("/api/submissions/:uuid/pdf", requireSession, async (c) => {
     bytes.set(p, off);
     off += p.length;
   }
-  // Sanitize the filename to a safe set so it can never break the header.
-  const safe = `${row!.form_code}-${row!.work_date}.pdf`.replace(/[^A-Za-z0-9._-]/g, "");
+  // Job-prefixed <job>_<work_date>_<form>.pdf to match the Box-filed naming scheme
+  // (2026-06-17). Spaces are allowed (the header value is quoted); the rest is sanitized to
+  // a safe set so the filename can never break the Content-Disposition header. Falls back to
+  // the unprefixed name when the job row is gone (LEFT JOIN → project_name null).
+  const jobName = (row!.project_name ?? "").trim();
+  const safe = `${jobName ? jobName + "_" : ""}${row!.work_date}_${row!.form_code}.pdf`
+    .replace(/[^A-Za-z0-9._ -]/g, "");
   return new Response(bytes, {
     headers: {
       "Content-Type": "application/pdf",

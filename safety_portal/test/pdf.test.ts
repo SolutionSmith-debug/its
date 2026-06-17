@@ -377,7 +377,7 @@ describe("GET /pdf — reassembly + headers", () => {
     const res = await call(`/api/submissions/${UUID}/pdf`, { cookie: c });
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toBe("application/pdf");
-    expect(res.headers.get("content-disposition")).toBe('attachment; filename="jha-2026-06-08.pdf"');
+    expect(res.headers.get("content-disposition")).toBe('attachment; filename="PDF Test_2026-06-08_jha.pdf"');
 
     const got = new Uint8Array(await res.arrayBuffer());
     expect([...got]).toEqual([...original]);

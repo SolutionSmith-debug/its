@@ -280,7 +280,7 @@ describe("GET /pdf — requester-bound download matrix", () => {
     const res = await call(`/api/submissions/${UUID}/pdf`, { cookie: c });
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toBe("application/pdf");
-    expect(res.headers.get("content-disposition")).toBe('attachment; filename="jha-2026-06-08.pdf"');
+    expect(res.headers.get("content-disposition")).toBe('attachment; filename="Active Job_2026-06-08_jha.pdf"');
   });
 
   it("a DIFFERENT account — even the original actor — who never requested → 404 (the PDF is private to its requester)", async () => {
