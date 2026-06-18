@@ -34,6 +34,11 @@ const DB_SIZE_WARN_BYTES = 6_000_000_000;
  *  - filed_pdfs (PR-4 PDF cache): delete the base64 chunks of a submission whose cache
  *    aged out (>24h past pdf_ready_at) and RESET its request flags so it is re-requestable;
  *    also delete ORPHAN chunks whose parent submission was already pruned away.
+ *  - jobs: delete an INACTIVE job (active=0) once it has NO remaining submissions — it is not
+ *    in the dropdown (the form filters active=1) and has no data behind it, so the row is dead
+ *    weight. Keeps the jobs table from growing unbounded as test/decommissioned jobs accrue
+ *    (a re-add via /api/internal/sync's upsert recreates the row). Active jobs, and inactive
+ *    jobs still holding submissions within the 30d Stage-2 grace, are untouched.
  *
  * Also samples the D1 size (telemetry only — WARN above 6GB of the 10GB ceiling so the
  * chunk cache can never silently grow toward the limit).
@@ -44,7 +49,7 @@ const DB_SIZE_WARN_BYTES = 6_000_000_000;
 export async function pruneOldData(
   db: Env["DB"],
   nowSec: number,
-): Promise<{ submissions: number; stripped: number; rejected: number; audit: number; pdfRequests: number; pdfChunks: number; dbSizeBytes: number }> {
+): Promise<{ submissions: number; stripped: number; rejected: number; audit: number; pdfRequests: number; pdfChunks: number; jobs: number; dbSizeBytes: number }> {
   const subCutoff = nowSec - SUBMISSION_RETENTION_DAYS * DAY_S;          // Stage 1: strip payload
   const inactiveCutoff = nowSec - INACTIVE_JOB_GRACE_DAYS * DAY_S;       // Stage 2: delete inactive-job rows
   const rejectedCutoff = nowSec - REJECTED_RETENTION_DAYS * DAY_S;
@@ -100,6 +105,13 @@ export async function pruneOldData(
     .run();
   const pdfChunks = droppedChunks.meta.changes ?? 0;
 
+  // jobs: an INACTIVE job with no remaining submissions is dead weight (not in the dropdown,
+  // no data behind it). Delete it so the jobs table self-cleans instead of accumulating
+  // test/decommissioned rows forever; a re-add via /api/internal/sync's upsert recreates it.
+  const jobsDeleted = await db
+    .prepare("DELETE FROM jobs WHERE active = 0 AND job_id NOT IN (SELECT DISTINCT job_id FROM submissions)")
+    .run();
+
   const dbSizeBytes = await sampleDbSizeBytes(db);
   if (dbSizeBytes > DB_SIZE_WARN_BYTES) {
     console.warn(`prune: D1 size ${dbSizeBytes} bytes exceeds the ${DB_SIZE_WARN_BYTES}-byte WARN threshold`);
@@ -112,6 +124,7 @@ export async function pruneOldData(
     audit: audit.meta.changes ?? 0,
     pdfRequests,
     pdfChunks,
+    jobs: jobsDeleted.meta.changes ?? 0,
     dbSizeBytes,
   };
 }

@@ -171,6 +171,30 @@ def cmd_list_users(base_url: str, token: str) -> None:
         print(f"  {str(u.get('username')):<32} {role:<10} {flag}")
 
 
+def cmd_purge_job(base_url: str, token: str, job_id: str) -> None:
+    """Hard-delete a job + ALL its D1 rows (submissions, filed-PDF cache, pdf_requests).
+
+    For clearing a test / decommissioned job that the daemon /api/internal/sync can't: sync
+    refuses an empty set (so a transient empty ITS_Active_Jobs read can't wipe the dropdown),
+    which leaves a fully-removed job lingering active=1. D1 is a transport cache — Box + the
+    week sheet keep the durable record; this only clears the local copy. Idempotent: an
+    unknown job_id reports "nothing purged".
+    """
+    status, data = portal_client.admin_request(
+        base_url, token, "POST", "/api/internal/admin/purge-job",
+        json_body={"job_id": job_id},
+    )
+    if status != 200 or not data.get("ok"):
+        _fail(f"purge-job failed (HTTP {status}): {data}")
+    if not data.get("found"):
+        print(f"no job {job_id} in D1 — nothing purged")
+        return
+    print(
+        f"purged {job_id}: job={data.get('job_deleted')} submissions={data.get('submissions')} "
+        f"pdf_chunks={data.get('pdfChunks')} pdf_requests={data.get('pdfRequests')}"
+    )
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         prog="portal_admin",
@@ -186,6 +210,7 @@ def main(argv: list[str] | None = None) -> None:
     p_role.add_argument("username")
     p_role.add_argument("role", choices=("submitter", "admin"))
     sub.add_parser("list-users")
+    sub.add_parser("purge-job").add_argument("job_id")
     args = parser.parse_args(argv)
 
     base_url, token = _resolve_creds()
@@ -201,6 +226,8 @@ def main(argv: list[str] | None = None) -> None:
         cmd_set_role(base_url, token, args.username, args.role)
     elif args.cmd == "list-users":
         cmd_list_users(base_url, token)
+    elif args.cmd == "purge-job":
+        cmd_purge_job(base_url, token, args.job_id)
 
 
 if __name__ == "__main__":

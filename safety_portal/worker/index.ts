@@ -1323,6 +1323,43 @@ app.get("/api/internal/admin/users", requireAdminToken, async (c) => {
   return c.json({ users: results });
 });
 
+// POST /api/internal/admin/purge-job — operator hard-delete of a job + ALL its D1 rows
+// (submissions, the filed_pdfs PDF cache, and pdf_requests). This is the explicit operator
+// path the daemon /api/internal/sync deliberately CANNOT take: sync refuses an empty job set
+// (so a transient empty ITS_Active_Jobs read can never wipe the dropdown), which means a
+// fully-removed/test job otherwise lingers active=1 forever. D1 is a transport cache — Box +
+// the week sheet remain the system of record; this only clears the local copy. One atomic
+// batch (cascade children before parents) + an audit_log entry. Idempotent: an unknown job_id
+// returns ok:true, found:false with zero counts.
+app.post("/api/internal/admin/purge-job", requireAdminToken, async (c) => {
+  let body: { job_id?: unknown };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "bad_request" }, 400);
+  }
+  if (typeof body !== "object" || (body as unknown) === null || Array.isArray(body)) {
+    return c.json({ error: "bad_request" }, 400);
+  }
+  const job_id = typeof body.job_id === "string" ? body.job_id.trim() : "";
+  if (!job_id || job_id.length > 64) return c.json({ error: "invalid_job_id" }, 400);
+  const subSel = "SELECT submission_uuid FROM submissions WHERE job_id = ?";
+  const results = await c.env.DB.batch([
+    c.env.DB.prepare(`DELETE FROM filed_pdfs WHERE submission_uuid IN (${subSel})`).bind(job_id),
+    c.env.DB.prepare(`DELETE FROM pdf_requests WHERE submission_uuid IN (${subSel})`).bind(job_id),
+    c.env.DB.prepare("DELETE FROM submissions WHERE job_id = ?").bind(job_id),
+    c.env.DB.prepare("DELETE FROM jobs WHERE job_id = ?").bind(job_id),
+    c.env.DB
+      .prepare("INSERT INTO audit_log (actor_username, action, target_username, detail) VALUES (?,?,?,?)")
+      .bind("operator-cli", "purge-job", job_id, "hard-delete job + D1 cache"),
+  ]);
+  const pdfChunks = results[0]?.meta?.changes ?? 0;
+  const pdfRequests = results[1]?.meta?.changes ?? 0;
+  const submissions = results[2]?.meta?.changes ?? 0;
+  const job = results[3]?.meta?.changes ?? 0;
+  return c.json({ ok: true, found: job > 0, job_id, job_deleted: job, submissions, pdfChunks, pdfRequests });
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // In-app admin surface — /api/admin/* (requireSession + requireRole("admin")).
 //
@@ -1856,7 +1893,8 @@ const scheduled: ExportedHandlerScheduledHandler<Env> = async (_controller, env)
   console.log(
     `prune: stripped ${pruned.stripped} payload(s), removed ${pruned.submissions} inactive-job + ` +
       `${pruned.rejected} rejected submission(s) + ${pruned.audit} audit row(s) + ` +
-      `${pruned.pdfRequests} pdf request(s) + ${pruned.pdfChunks} pdf chunk(s); D1 size ${pruned.dbSizeBytes} bytes`,
+      `${pruned.pdfRequests} pdf request(s) + ${pruned.pdfChunks} pdf chunk(s) + ${pruned.jobs} empty job(s); ` +
+      `D1 size ${pruned.dbSizeBytes} bytes`,
   );
 };
 

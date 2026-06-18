@@ -156,6 +156,35 @@ def test_list_users_empty(mocker, capsys):
     assert "(no users)" in capsys.readouterr().out
 
 
+# ---- purge-job -----------------------------------------------------------
+
+
+def test_purge_job_ok_reports_counts(mocker, capsys):
+    req = _admin(mocker, 200, {
+        "ok": True, "found": True, "job_id": "JOB-000015",
+        "job_deleted": 1, "submissions": 2, "pdfChunks": 2, "pdfRequests": 1,
+    })
+    portal_admin.cmd_purge_job("https://w", "tok", "JOB-000015")
+    out = capsys.readouterr().out
+    assert "purged JOB-000015" in out and "submissions=2" in out and "pdf_chunks=2" in out
+    assert req.call_args.args[2] == "POST"
+    assert req.call_args.args[3] == "/api/internal/admin/purge-job"
+    assert req.call_args.kwargs["json_body"] == {"job_id": "JOB-000015"}
+
+
+def test_purge_job_unknown_reports_nothing(mocker, capsys):
+    _admin(mocker, 200, {"ok": True, "found": False, "job_deleted": 0})
+    portal_admin.cmd_purge_job("https://w", "tok", "NOPE")
+    assert "nothing purged" in capsys.readouterr().out
+
+
+def test_purge_job_failure_exits_1(mocker):
+    _admin(mocker, 500, {"error": "boom"})
+    with pytest.raises(SystemExit) as e:
+        portal_admin.cmd_purge_job("https://w", "tok", "JOB-000015")
+    assert e.value.code == 1
+
+
 # ---- main() routing ------------------------------------------------------
 
 
@@ -191,6 +220,13 @@ def test_main_routes_disable_user(mocker):
     dis = mocker.patch.object(portal_admin, "cmd_set_disabled")
     portal_admin.main(["disable-user", "smith.seth"])
     dis.assert_called_once_with("https://w", "tok", "smith.seth", disable=True)
+
+
+def test_main_routes_purge_job(mocker):
+    mocker.patch.object(portal_admin, "_resolve_creds", return_value=("https://w", "tok"))
+    pj = mocker.patch.object(portal_admin, "cmd_purge_job")
+    portal_admin.main(["purge-job", "JOB-000015"])
+    pj.assert_called_once_with("https://w", "tok", "JOB-000015")
 
 
 def test_main_requires_subcommand(mocker):
