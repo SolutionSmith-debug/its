@@ -185,14 +185,17 @@ def cmd_purge_job(base_url: str, token: str, job_id: str) -> None:
         json_body={"job_id": job_id},
     )
     if status != 200 or not data.get("ok"):
-        _fail(f"purge-job failed (HTTP {status}): {data}")
+        _fail(f"purge-job failed (HTTP {status})")  # status only — never log the raw response body
     if not data.get("found"):
         print(f"no job {job_id} in D1 — nothing purged")
         return
-    print(
-        f"purged {job_id}: job={data.get('job_deleted')} submissions={data.get('submissions')} "
-        f"pdf_chunks={data.get('pdfChunks')} pdf_requests={data.get('pdfRequests')}"
-    )
+    # Coerce the counts to plain ints (they ARE integers in the response): hardens the output
+    # and keeps the response dict out of the log line (clear-text-logging hygiene).
+    job = int(data.get("job_deleted") or 0)
+    subs = int(data.get("submissions") or 0)
+    chunks = int(data.get("pdfChunks") or 0)
+    reqs = int(data.get("pdfRequests") or 0)
+    print(f"purged {job_id}: job={job} submissions={subs} pdf_chunks={chunks} pdf_requests={reqs}")
 
 
 def main(argv: list[str] | None = None) -> None:
