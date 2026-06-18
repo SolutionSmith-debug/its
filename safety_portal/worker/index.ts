@@ -1343,10 +1343,17 @@ app.post("/api/internal/admin/purge-job", requireAdminToken, async (c) => {
   }
   const job_id = typeof body.job_id === "string" ? body.job_id.trim() : "";
   if (!job_id || job_id.length > 64) return c.json({ error: "invalid_job_id" }, 400);
-  const subSel = "SELECT submission_uuid FROM submissions WHERE job_id = ?";
+  // Full literal SQL (NO template interpolation) so the bound `?` is the only dynamic input:
+  // job_id is always parameterized, never concatenated — and there is no string-built query for
+  // CodeQL's injection sink to flag. The cascade deletes children (filed_pdfs, pdf_requests via
+  // the submissions subquery) BEFORE the parents (submissions, then jobs).
   const results = await c.env.DB.batch([
-    c.env.DB.prepare(`DELETE FROM filed_pdfs WHERE submission_uuid IN (${subSel})`).bind(job_id),
-    c.env.DB.prepare(`DELETE FROM pdf_requests WHERE submission_uuid IN (${subSel})`).bind(job_id),
+    c.env.DB
+      .prepare("DELETE FROM filed_pdfs WHERE submission_uuid IN (SELECT submission_uuid FROM submissions WHERE job_id = ?)")
+      .bind(job_id),
+    c.env.DB
+      .prepare("DELETE FROM pdf_requests WHERE submission_uuid IN (SELECT submission_uuid FROM submissions WHERE job_id = ?)")
+      .bind(job_id),
     c.env.DB.prepare("DELETE FROM submissions WHERE job_id = ?").bind(job_id),
     c.env.DB.prepare("DELETE FROM jobs WHERE job_id = ?").bind(job_id),
     c.env.DB
