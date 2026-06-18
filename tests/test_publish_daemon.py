@@ -96,11 +96,15 @@ def test_regenerate_archive_uses_venv_interpreter_not_bare_python(mocker):
     ~/its/.venv/bin/python) a bare "python" raised FileNotFoundError, failing every publish
     at `archived` AFTER the form had already gone live."""
     run = mocker.patch.object(pd.subprocess, "run")
+    mocker.patch.object(pd.tempfile, "mkdtemp", return_value="/tmp/its_form_archive_test")
+    rmtree = mocker.patch.object(pd.shutil, "rmtree")
     pd._regenerate_archive()
     cmd = run.call_args.args[0]
     assert cmd[0] == pd.sys.executable
     assert cmd[0] != "python"  # the exact bug
-    assert cmd[1:] == ["-m", "scripts.generate_form_archive", "--upload"]
+    # renders into a throwaway tempdir (--out-dir), NOT ~/its/form_archive_out, and cleans up
+    assert cmd[1:] == ["-m", "scripts.generate_form_archive", "--upload", "--out-dir", "/tmp/its_form_archive_test"]
+    rmtree.assert_called_once_with("/tmp/its_form_archive_test", ignore_errors=True)
 
 
 # ── failures stamp failed(stage) + fire the operator CRITICAL ────────────────────

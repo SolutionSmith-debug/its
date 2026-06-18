@@ -38,9 +38,11 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -321,11 +323,19 @@ def _regenerate_archive() -> None:
     "python" — launchd's minimal PATH has no `python` (macOS ships only `python3`, and the
     real interpreter is ~/its/.venv/bin/python), so a bare "python" raised
     FileNotFoundError and failed every publish at the `archived` stage AFTER it had already
-    gone live. sys.executable also guarantees the same venv (with boxsdk/smartsheet deps)."""
-    subprocess.run(
-        [sys.executable, "-m", "scripts.generate_form_archive", "--upload"],
-        cwd=_ROOT, check=True, capture_output=True, text=True,
-    )
+    gone live. sys.executable also guarantees the same venv (with boxsdk/smartsheet deps).
+
+    Renders into a throwaway tempdir (`--out-dir`) instead of the default `form_archive_out/`
+    under `~/its` — the daemon runs on the live tree, and the on-disk mirror is a throwaway
+    (the Box upload consumes the in-memory render, not the local copy). Cleaned up in `finally`."""
+    out_dir = tempfile.mkdtemp(prefix="its_form_archive_")
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "scripts.generate_form_archive", "--upload", "--out-dir", out_dir],
+            cwd=_ROOT, check=True, capture_output=True, text=True,
+        )
+    finally:
+        shutil.rmtree(out_dir, ignore_errors=True)
 
 
 # ── orchestration ─────────────────────────────────────────────────────────────────────

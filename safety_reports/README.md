@@ -108,7 +108,7 @@ Every Anthropic API call processing inbound mail:
 - **Notification cadence**: Friday 6:00 PM, Saturday 12:00 PM, Sunday 12:00 PM, Monday 6:00 AM
   ET. Recipients: Jacob Stephens + Teala Paradise (configurable in
   `ITS_Config.notification_recipients`).
-- **Send**: Monday 6:00 AM ET. Idempotent — rows with non-empty `Sent At` never re-sent.
+- **Send**: Monday 6:00 AM ET. Idempotent — the guard keys on `Send Status == SENT` (see `weekly_send.py`); `Sent At` is stamped atomically with the status, so they agree, but `Send Status` is the authoritative check.
 - **Late approval**: row approved after Monday 6:00 AM sends next business day with
   `Late Send` flag set; owner notified.
 - **Unapproved Monday morning**: row held indefinitely. Never auto-sent unreviewed.

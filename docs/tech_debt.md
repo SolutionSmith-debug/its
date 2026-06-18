@@ -4,7 +4,9 @@ Items deliberately deferred. Each carries the rationale for deferral and the tri
 
 When to add an entry: a session deliberately chooses preservation-over-refactor (per Op Stds v11 §14), discovers an external-API constraint that forced a workaround, or defers a non-trivial cleanup that's larger than the current session can absorb. When to mark CLOSED: the underlying item is resolved in a commit; preserve the entry with resolution detail rather than deleting (history is cheap, context is expensive).
 
-## Portal D1 test-job dropdown not cleared by empty-sync [OPEN 2026-06-17]
+## Portal D1 test-job dropdown not cleared by empty-sync [CLOSED 2026-06-18]
+
+**Resolved 2026-06-18 (tech-debt easy-wins pass):** PR #292 — pruneOldData now deletes inactive+empty jobs + a new purge-job admin endpoint/CLI; the clean-slate purge cleared the D1 jobs table. ITS_Active_Jobs + D1 jobs now 0.
 
 **2026-06-17 test-artifact cleanup session.** After clearing all rows from `ITS_Active_Jobs` (id `6223950341164932`), the portal job dropdown still shows test job entries. Root cause: `portal_poll.push_jobs` calls `POST /api/internal/sync` with the list of active jobs from Smartsheet — but the Worker rejects a sync payload with an empty `jobs` array (guard: `jobs.length === 0` → 400). So an empty `ITS_Active_Jobs` does NOT clear the D1 `jobs` table, and the portal dropdown retains stale test entries.
 
@@ -14,7 +16,9 @@ When to add an entry: a session deliberately chooses preservation-over-refactor 
 
 **Tag:** `safety-portal`, `d1`, `operator-manual`. **Revisit when:** production jobs are ready to seed, or a D1 management endpoint is added.
 
-## Portal D1 historical test submissions + filed-PDF cache not pruned [OPEN 2026-06-17]
+## Portal D1 historical test submissions + filed-PDF cache not pruned [CLOSED 2026-06-18]
+
+**Resolved 2026-06-18 (tech-debt easy-wins pass):** PR #292 + the clean-slate purge — all test submissions / filed_pdfs / pdf_requests removed (now 0); pruneOldData self-cleans inactive-job rows going forward.
 
 **2026-06-17 test-artifact cleanup session.** The Smartsheet and Box test artifacts were deleted, but the corresponding D1 rows were not touched. Residue in the Worker D1 (`its-safety-portal` remote):
 
@@ -108,7 +112,9 @@ PR-H (#185) adds the admin route (user provision/reset/disable/enable/list + per
 
 **Tag:** `safety-portal`, `phase-7`, `auth`, `codeql`.
 
-## Safety Portal — `/api/login` does not gate on `users.disabled` [OPEN 2026-06-08]
+## Safety Portal — `/api/login` does not gate on `users.disabled` [CLOSED 2026-06-18]
+
+**Resolved 2026-06-18 (tech-debt easy-wins pass):** Shipped: safety_portal/worker/auth.ts validateUser now SELECTs `disabled` and returns null when disabled (login fails closed).
 
 PR-H's per-request revocation (`requireSession` → `SELECT disabled FROM users` → 401 `revoked`, `safety_portal/worker/index.ts:179-189`) locks a disabled user out of **every** protected endpoint (`/api/jobs`, `/api/recent`, `/api/submit`, `/api/session`). But `/api/login` → `validateUser` (`safety_portal/worker/auth.ts:50-67`) selects only `id, username, password_hash` and checks `!row || !ok` — it **never reads `disabled`**. So a disabled user with a valid password can still LOG IN and mint a fresh session cookie. That cookie is useless (every protected call 401s), so there is **no capability bypass** — the security boundary holds at `requireSession` — but login *appears* to succeed (misleading UX) and it's a defense-in-depth gap.
 
@@ -186,7 +192,9 @@ The generic launchd installer `scripts/launchd/install.sh` substituted ONLY `__I
 
 Surfaced: 2026-05-29 F20 session close. Session log: `docs/session_logs/2026-05-29_f20-schema-version.md`. Audit finding F21.
 
-## Invariant 2 Layer 5 prose: "defense layer" framing vs FM v9 tripwire reframe [OPEN 2026-05-29]
+## Invariant 2 Layer 5 prose: "defense layer" framing vs FM v9 tripwire reframe [CLOSED 2026-06-18]
+
+**Resolved 2026-06-18 (tech-debt easy-wins pass):** CLAUDE.md's Invariant 2 section intro + the Layer 5 bullet already carry the FM v9 detection-tripwire reframe.
 
 FM v9 (blueprint, audit F13) reframed Invariant 2's Layer 5 (anomaly logging on extraction output) from a co-equal defense layer to a post-hoc **detection tripwire** — an honest characterization of a trivially-evadable substring matcher; the mechanism is unchanged and stays in production. The OBS-1 citation sweep (PR #127) recorded this reframe in CLAUDE.md's *governing-version block*, but the **Invariant 2 section itself** (the "Six-layer defense:" list) still describes Layer 5 as "Output validation and anomaly logging" — the pre-v9 framing — and still labels the whole set a "Six-layer defense."
 
@@ -749,7 +757,9 @@ The helper detects the duplicate on a post-create find: if the post-create looku
 
 Surfaced: R3 foundation PR brief, 2026-05-21.
 
-## Daily Reports schema gap — no Box Link column [OPEN 2026-05-21]
+## Daily Reports schema gap — no Box Link column [CLOSED 2026-06-18]
+
+**Resolved 2026-06-18 (tech-debt easy-wins pass):** Superseded by the portal pivot — intake.py writes Box URLs into structured columns via box_link + update_row_with_box_links, not embedded in Notes.
 
 The `Daily Reports — Week of <date>` sheet schema (cloned forward by `safety_reports/week_folder.ensure_current_week_folder` from the Bradley 1 / Week of 2026-03-09 template, sheet ID 7282977254887300) has no explicit column for the filed Box document URL.
 
@@ -917,7 +927,9 @@ Surfaced during the Check I (weekly_generate catch-up) build. `scripts/watchdog.
 
 **Revisit when:** the picklist scheduling/Tranche-0 work is next touched, or the first time a `safety_picklist_audit` stale WARN fires with no underlying cause.
 
-## Integration-test marker isolation — weekly_generate live test pollutes the shared watchdog marker [OPEN 2026-06-02]
+## Integration-test marker isolation — weekly_generate live test pollutes the shared watchdog marker [CLOSED 2026-06-18]
+
+**Resolved 2026-06-18 (tech-debt easy-wins pass):** This PR: an autouse fixture in test_weekly_generate_integration.py monkeypatches weekly_generate.WATCHDOG_MARKER_DIR to a tmp dir, so the live compile no longer touches the real marker.
 
 Surfaced during the Check I (weekly_generate catch-up) live smoke. The `@pytest.mark.integration` `weekly_generate` test (`tests/test_weekly_generate_integration.py`) runs real `weekly_generate` against the live Smartsheet sandbox, which writes the **real** shared `~/its/.watchdog/safety_weekly_generate.last_run` Check C marker (via `weekly_generate._write_watchdog_marker`). Unlike the unit tests, the integration test does NOT redirect `WATCHDOG_MARKER_DIR` to a tmp dir, so an operator running `pytest -m integration` refreshes the production marker for a *disposable* week.
 
@@ -1247,7 +1259,9 @@ Once configuration lives in Smartsheet (ITS_Config rows + future `ITS_Trusted_Co
 
 Surfaced: 2026-05-24 hardcoded-values audit brief, §C2.
 
-## CLAUDE.md doctrine version citations lag v14/v9 [OPEN 2026-05-29]
+## CLAUDE.md doctrine version citations lag v14/v9 [CLOSED 2026-06-18]
+
+**Resolved 2026-06-18 (tech-debt easy-wins pass):** CLAUDE.md cites Op Stds v18 / FM v11 throughout; docs/doctrine_manifest.yaml matches. No lagging v13/v8 (v14/v9) refs remain.
 
 Blueprint bumped Operational Standards v13 → v14 and Foundation Mission v8 → v9 on 2026-05-29 (blueprint PR #23, `29000f1`). This repo's `CLAUDE.md` still cites the old versions throughout:
 - `"Operational Standards v13"` / `"canonically at v13"` — ~9 occurrences in CLAUDE.md
@@ -1467,7 +1481,9 @@ The 6 rows seeded into ITS_Active_Jobs (PR #155) have blank Address values. Real
 
 Surfaced: 2026-06-03 Safety Portal config sheets session (PR #155). Related: `docs/runbooks/safety_portal_config_sheets.md`.
 
-## `scripts/lint_doc_conventions.py` missing `safety_portal` workstream tag [OPEN 2026-06-03]
+## `scripts/lint_doc_conventions.py` missing `safety_portal` workstream tag [CLOSED 2026-06-18]
+
+**Resolved 2026-06-18 (tech-debt easy-wins pass):** This PR: added safety_portal to CANONICAL_WORKSTREAMS (lint_doc_conventions.py) + the test's expected set (doctrine_manifest + doc_conventions already listed it).
 
 `docs/doctrine_manifest.yaml` lists `safety_portal` as a valid `doc_conventions.workstream_tags` entry, but `scripts/lint_doc_conventions.py`'s canonical workstream set does not include it. Any doc tagged `workstream: safety_portal` (including `docs/runbooks/safety_portal_config_sheets.md`) will produce a lint warning in CI.
 
@@ -1481,7 +1497,9 @@ Surfaced: 2026-06-03 Safety Portal config sheets session (PR #155). Related: `do
 
 Surfaced: 2026-06-03 Safety Portal config sheets session (PR #155 + PR #156 audit).
 
-## `ops-stds-enforcer` agent pinned at "Op Stds v13" — 3 majors behind v16 [OPEN 2026-06-03]
+## `ops-stds-enforcer` agent pinned at "Op Stds v13" — 3 majors behind v16 [CLOSED 2026-06-18]
+
+**Resolved 2026-06-18 (tech-debt easy-wins pass):** `.claude/agents/ops-stds-enforcer.md` re-synced to v18 (2026-06-09) and incorporates §§43–49; the v13 pin no longer exists. (The file is a symlink from `~/its-blueprint`, so the agent content is a blueprint artifact — but the documented gap is gone.)
 
 The `ops-stds-enforcer` subagent's system prompt (`.claude/agents/ops-stds-enforcer.md`, symlinked from `~/its-blueprint/.claude/agents/`) cites "Op Stds v13". The canonical version is v16. The agent is blind to:
 
@@ -1584,7 +1602,9 @@ The 10 PDF reference forms committed to `safety_portal/worker/public/forms/` did
 
 Surfaced: 2026-06-04 Safety Portal Phase 2 session (PR #158). Closed: PR #164, 2026-06-05.
 
-## Safety Portal — frontend build/lint CI step missing [OPEN 2026-06-04]
+## Safety Portal — frontend build/lint CI step missing [CLOSED 2026-06-18]
+
+**Resolved 2026-06-18 (tech-debt easy-wins pass):** CI has a blocking `portal` job: npm ci + `npm run typecheck` (SPA+Worker tsc) + vitest-pool-workers + SPA vitest. (An explicit vite-build step is still absent — minor.)
 
 PR #158 added the `safety_portal/` TypeScript/Node tree. The existing GitHub Actions CI (`ruff` + `pytest`) covers only Python. The TS tree has no CI job for `tsc --noEmit` (typecheck), `npm run build` (Vite bundle), or a lint step. Errors in the TS tree are invisible to CI until a developer manually runs `npm run build` locally.
 
@@ -1635,7 +1655,9 @@ Smartsheet forms are UI-configured (not API-creatable). A "New Job" form on ITS_
 
 Surfaced: 2026-06-05 Safety Portal Phase 3 session (PR #160). Related: `docs/tech_debt.md` AUTO_NUMBER entry above.
 
-## Safety Portal D1 dropdown sync (Phase-3 A.1.4) deferred to deploy session [OPEN 2026-06-05]
+## Safety Portal D1 dropdown sync (Phase-3 A.1.4) deferred to deploy session [CLOSED 2026-06-18]
+
+**Resolved 2026-06-18 (tech-debt easy-wins pass):** Live: portal_poll does the ITS_Active_Jobs -> D1 full-replace sync via POST /api/internal/sync (live-validated 2026-06-08).
 
 The Phase 3 architecture (PR #160) populates the Worker's D1 `active_jobs` table from ITS_Active_Jobs so the portal form's Job dropdown stays current. This sync step requires the portal D1 database (Phase 2 deploy deferred) plus a Python→D1 write mechanism (options: a Worker `/api/sync` HMAC-authed endpoint vs Cloudflare D1 HTTP API directly). The decision and implementation are deferred to the deploy session.
 
@@ -1749,7 +1771,9 @@ equivalent of `test_capability_gating.py`. Surfaced by `ops-stds-enforcer` (W2).
 
 Surfaced: 2026-06-05 Safety Portal Phase 5 PR 2 (transport queue).
 
-## Safety Portal Phase 5 — `portal_poll.py` Mac-side puller daemon [OPEN 2026-06-05]
+## Safety Portal Phase 5 — `portal_poll.py` Mac-side puller daemon [CLOSED 2026-06-18]
+
+**Resolved 2026-06-18 (tech-debt easy-wins pass):** Built + live-validated (2026-06-08 mirror); launchd plist org.solutionsmith.its.portal-poll present.
 
 The Phase 5 pull model (decision: `decision_phase5-portal-transport.md`) requires a new Mac-side polling daemon `portal_poll.py` (modeled on `safety_reports/intake_poll.py`). It polls the Worker's `/api/internal/pending` endpoint (bearer auth: `ITS_PORTAL_INTERNAL_TOKEN` from Keychain), iterates unprocessed submissions, verifies the `X-ITS-Portal-HMAC` using `shared/portal_hmac.py`, hands each to intake, then POSTs `/api/internal/mark-filed` with the receipt. Standard daemon contract: heartbeat to `ITS_Daemon_Health`, kill-switch gate, fcntl lock, `@its_error_log`. Locally testable on `wrangler dev --local`. launchd plist needed.
 
@@ -1759,7 +1783,9 @@ The Phase 5 pull model (decision: `decision_phase5-portal-transport.md`) require
 
 Surfaced: 2026-06-05 Safety Portal Phase 5 session. Session log: `docs/session_logs/2026-06-05_safety-portal-phase4-runtime-renderer-phase5-foundation-transport.md`.
 
-## Safety Portal Phase 5 — intake portal-marker branch (HMAC verify → file → receipt) [OPEN 2026-06-05]
+## Safety Portal Phase 5 — intake portal-marker branch (HMAC verify → file → receipt) [CLOSED 2026-06-18]
+
+**Resolved 2026-06-18 (tech-debt easy-wins pass):** Built + live: intake.process_portal_submission — HMAC verify -> UUID dedupe -> Box file -> mark-filed receipt.
 
 `safety_reports/intake.py` needs portal-marker branches (PLANNED, not built) for the pull-model flow: HMAC verify → submission UUID dedupe → Sat→Fri Job-ID week key via `safety_week` → `active_jobs` lookup → `form_pdf.render` (Option B) → per-job/week Box tree via `week_folder` (box_client needs a `get_or_create_folder` primitive — `canonical_job_path` is currently a stub) → file PDF → write week-sheet row → receipt POST back to Worker. `box_client.canonical_job_path()` is a stub (format unconfirmed with owner; see existing tech-debt entry). UUID idempotency guard needed (duplicate POST from the Worker must not double-file).
 
@@ -1769,7 +1795,9 @@ Surfaced: 2026-06-05 Safety Portal Phase 5 session. Session log: `docs/session_l
 
 Surfaced: 2026-06-05 Safety Portal Phase 5 session.
 
-## Safety Portal Phase 5 — weekly generate/send rewire for WSR (narrative→PDF-merge + dual-write + gated send) [OPEN 2026-06-05]
+## Safety Portal Phase 5 — weekly generate/send rewire for WSR (narrative→PDF-merge + dual-write + gated send) [CLOSED 2026-06-18]
+
+**Resolved 2026-06-18 (tech-debt easy-wins pass):** Built + live: weekly_generate is the deterministic WSR dual-write + merge_pdfs compile; weekly_send reads WSR; watchdog Check I catch-up landed.
 
 Three pieces:
 
@@ -1887,7 +1915,9 @@ The `hsse` form uses `scale` and `comment` item-level attributes. These survive 
 
 Surfaced: 2026-06-09 Phase-2 Form Manager build (PRs #203–#218).
 
-## [OPEN 2026-06-09] `~/its` stranded on `publish/req-5-incident-report` branch
+## [CLOSED 2026-06-18] `~/its` stranded on `publish/req-5-incident-report` branch
+
+**Resolved 2026-06-18 (tech-debt easy-wins pass):** ~/its is on main; the idle self-heal (_unstrand_if_needed at the top of publish_once) fixed the root cause.
 
 The publish daemon left `~/its` on branch `publish/req-5-incident-report` after a failed pre-`_reset_to_main` cycle. The launchd job is not loaded (RunAtLoad false, operator-gated), so automatic recovery has not run. **Operator action:** either load the publish-daemon launchd job (which will `_reset_to_main` on startup) OR run manually: `git -C ~/its checkout main && git pull origin main`.
 
@@ -1945,7 +1975,9 @@ Surfaced: 2026-06-09 Part-B on-demand-compile session (B3 divergence — watchdo
 
 Surfaced: 2026-06-09 Part-C session (functional done; cosmetic styling deferred).
 
-## [OPEN 2026-06-09] Portal admin still offers "Retire" on an already-retired form (frontend)
+## [CLOSED 2026-06-18] Portal admin still offers "Retire" on an already-retired form (frontend)
+
+**Resolved 2026-06-18 (tech-debt easy-wins pass):** Not reachable: registry.formCatalog() filters to status==='active', so a retired form drops from the picker; the backend also rejects a duplicate retire.
 
 `FormsPage.tsx` / `FormEditor.tsx` display the Retire action for all forms with status `live` OR `retired`. The backend (`apply_publish` in `publish_manifest.py`) now rejects a duplicate-retire cleanly at the validate stage ("is already retired"), but the UI should not offer it in the first place — offering a disabled/grayed-out action (or hiding it entirely) would prevent operator confusion.
 
@@ -1957,7 +1989,9 @@ Surfaced: 2026-06-09 Part-C session (functional done; cosmetic styling deferred)
 
 Surfaced: 2026-06-09 WSR/publish-pipeline session (PR #244 — backend rejects cleanly; frontend UX gap noted).
 
-## [OPEN 2026-06-09] `README.md:111` documents weekly-send idempotency key as "Sent At non-empty" — code keys on `Send Status == SENT`
+## [CLOSED 2026-06-18] `README.md:111` documents weekly-send idempotency key as "Sent At non-empty" — code keys on `Send Status == SENT`
+
+**Resolved 2026-06-18 (tech-debt easy-wins pass):** This PR: README.md updated — the guard keys on `Send Status == SENT` (authoritative); Sent At is stamped atomically with the status.
 
 `safety_reports/README.md` line 111 (approximately) says the weekly-send idempotency guard keys on a non-empty "Sent At" column. The actual implementation in `weekly_send.py` keys on `Send Status == SENT`. These diverge when a send fails mid-way — "Sent At" may be empty while "Send Status" is FAILED, or vice versa. The doc-drift was caught during the WSR ABSTRACT_DATETIME sweep (PR #245).
 
@@ -1969,7 +2003,9 @@ Surfaced: 2026-06-09 WSR/publish-pipeline session (PR #244 — backend rejects c
 
 Surfaced: 2026-06-09 WSR ABSTRACT_DATETIME session (PR #245 sweep caught the mismatch).
 
-## [OPEN 2026-06-09, low] `publish_daemon._regenerate_archive` writes `form_archive_out/` into `~/its`
+## [CLOSED 2026-06-18] `publish_daemon._regenerate_archive` writes `form_archive_out/` into `~/its`
+
+**Resolved 2026-06-18 (tech-debt easy-wins pass):** This PR: _regenerate_archive renders into a tempfile.mkdtemp --out-dir + shutil.rmtree cleanup; the live ~/its tree no longer accrues form_archive_out/.
 
 `safety_reports/publish_daemon.py` `_regenerate_archive` runs `generate_form_archive.py` as a subprocess, which writes its output to `form_archive_out/` inside the `~/its` working tree. This directory is now `.gitignore`d (PR #241 fix: added `form_archive_out/` to `.gitignore`), so it does not pollute commits. However, writing to a temp dir (e.g., `tempfile.mkdtemp()` and passing the path as an argument to `generate_form_archive.py`) would be cleaner and avoid any race with a concurrent process reading the working tree.
 
@@ -2043,7 +2079,9 @@ Surfaced: 2026-06-09 12-dimension forensic audit (M1).
 
 Surfaced: 2026-06-09 12-dimension forensic audit (M2).
 
-## [OPEN 2026-06-09] Safety Portal M4 — bad-HMAC rows are immortal in the D1 pending queue
+## [CLOSED 2026-06-18] Safety Portal M4 — bad-HMAC rows are immortal in the D1 pending queue
+
+**Resolved 2026-06-18 (tech-debt easy-wins pass):** box_verified=-1 terminal state + POST /api/internal/mark-rejected exist; /pending selects box_verified=0 so terminal rows drop out; prune deletes rejected after 30d.
 
 `worker/index.ts` `/api/internal/pending` fetches rows `ORDER BY created_at ASC LIMIT 50`; `prune.ts` only deletes rows where `box_verified=1`. A row that fails the HMAC check in `portal_poll.py` is never filed and never marked `box_verified=1` — so it permanently occupies a slot in every 50-row fetch window. With 50+ permanently-rejected rows, the window is wedged and new submissions never surface.
 
@@ -2057,7 +2095,9 @@ Practical trigger: HMAC-secret rotation drift (unlikely without operator error).
 
 Surfaced: 2026-06-09 12-dimension forensic audit (M4).
 
-## [OPEN 2026-06-09] Safety Portal M5 — `/api/internal/publish/stamp` enforces no state-machine transition
+## [CLOSED 2026-06-18] Safety Portal M5 — `/api/internal/publish/stamp` enforces no state-machine transition
+
+**Resolved 2026-06-18 (tech-debt easy-wins pass):** The LEGAL_PREDECESSORS state-machine guard (WHERE id=? AND status IN (legal predecessors)) was added to /api/internal/publish/stamp.
 
 `worker/index.ts` `/api/internal/publish/stamp` executes `UPDATE … WHERE id=?` with no check on the current state. The shared internal token (`ITS_PORTAL_INTERNAL_TOKEN`) can therefore forge a terminal state on a live request or revert a completed publish to `queued`.
 
@@ -2125,7 +2165,9 @@ A Tier-2 successor-operator reading this sheet would be misled about which daemo
 
 Surfaced: 2026-06-09 12-dimension forensic audit (live ITS_Daemon_Health inspection).
 
-## [OPEN 2026-06-09] Half-applied morning publishes — blank-form archive PDFs missing for reqs 11/12/13
+## [CLOSED 2026-06-18] Half-applied morning publishes — blank-form archive PDFs missing for reqs 11/12/13
+
+**Resolved 2026-06-18 (tech-debt easy-wins pass):** Resolved by the 2026-06-15 full-archive `generate_form_archive.py --upload` re-render (all current defs re-uploaded, version-on-conflict — covers reqs 11/12); req 13 is a retire, no blank PDF to backfill (moot).
 
 Publish requests 11 (equipment-skid-steer-test-v1), 12 (jha-v2), and 13 (retire equipment-skid-steer-test) were merged to main and deployed BEFORE the bare-`python` bug was fixed by PR #241. Their blank-form archive PDFs were never generated (the `_regenerate_archive` step failed with `FileNotFoundError: 'python'`). The forms are live in the catalog and the Worker but their Box archive entries are absent, leaving an audit-trail gap.
 
