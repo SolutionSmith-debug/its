@@ -162,7 +162,9 @@ mirror tree simply files NEW submissions into the new tree once activated.
 to leave or hand-move the handful of pre-activation PDFs. **Revisit when:** the Box
 root is activated for a live customer tenant.
 
-## Orphan Smartsheet week sheet from the pre-relocation smoke [OPEN 2026-06-06]
+## Orphan Smartsheet week sheet from the pre-relocation smoke [CLOSED 2026-06-18]
+
+**Resolved 2026-06-18:** deleted via the repo SDK (`smartsheet_client.delete_sheet(1966431334780804)`, name-guarded). Verified orphan first (zero code refs; not the clone template `7282977254887300`; the legacy Field Reports "Bradley 1" folder is a different workspace from the live portal filing path). The enclosing folder was left intact.
 
 The 2026-06-06 deploy smoke filed one test JHA (Bradley 1 / JOB-000001) through the pre-relocation `week_sheet.ensure_week_sheet`, creating week sheet **`1966431334780804`** in the legacy Field Reports "Bradley 1" folder (Forefront Portfolio workspace) instead of the ITS — Safety Portal workspace. PR-C (filing relocation) moved portal filing to auto-provisioned per-job folders under `WORKSPACE_SAFETY_PORTAL`, so that sheet is now an **orphan** — nothing reads or writes it. Harmless but stray.
 
@@ -901,7 +903,9 @@ Smartsheet MCP has no delete-sheet primitive; operator UI is the only path.
 
 **Revisit when:** next operator Smartsheet UI session; not blocking any code or workflow.
 
-## 1 empty duplicate ITS_Daemon_Health sheet [OPEN 2026-05-22 — operator UI delete required]
+## 1 empty duplicate ITS_Daemon_Health sheet [CLOSED 2026-06-18]
+
+**Resolved 2026-06-18:** the duplicate sheet `3717381690969988` is already gone (a live fetch returned 404 — it was cleaned up in a past workspace restructure; this entry was stale). Canonical `ITS_Daemon_Health` `4529351700729732` (shared/sheet_ids.py SHEET_DAEMON_HEALTH) is the live heartbeat surface, untouched. The "operator UI delete required / MCP has no delete-sheet primitive" note was also stale — `smartsheet_client.delete_sheet` exists.
 
 Parallel chat build of ITS_Daemon_Health surface created an extra empty sheet 3717381690969988 in System / 04 — Daemons. Canonical sheet is 4529351700729732. Empty duplicate requires operator UI delete (Smartsheet MCP no delete-sheet primitive).
 
@@ -1282,7 +1286,9 @@ The F02/F22 session deliberately scoped doctrine reconciliation out; the version
 
 Surfaced: 2026-05-29 F02/F22 session close (cross-repo supersession check). Session log: `docs/session_logs/2026-05-29_f02-f22-capability-approval.md`.
 
-## Remote branch `f02-f22` not auto-deleted after merge (worktree quirk) [OPEN 2026-05-29]
+## Remote branch `f02-f22` not auto-deleted after merge (worktree quirk) [CLOSED 2026-06-18]
+
+**Resolved 2026-06-18:** both merged orphan refs deleted (`origin/session-log-f02-f22` + `origin/f02-f22`, both via `gh api -X DELETE …/git/refs/heads/…`; PRs #118/#119 were MERGED, neither base/head of an open PR). `git ls-remote --heads origin` confirms both gone.
 
 When merging a PR from a git worktree (e.g., `~/its-f02-f22` on branch `f02-f22`), `gh pr merge --squash --delete-branch` successfully lands the squash merge on GitHub but cannot execute the post-merge local `checkout main` (main lives in `~/its`, not the worktree). As a side effect, `origin/f02-f22` is NOT deleted. The four-part verify still passes (GitHub-side merge is clean); the stale remote branch is cosmetic but should be cleaned up.
 
