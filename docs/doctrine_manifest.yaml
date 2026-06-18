@@ -38,8 +38,8 @@
 meta:
   manifest_version: 1
   generated: "2026-06-07"
-  its_head: 44370e1              # ~/its origin/main this manifest was validated against (2026-06-12 photo/download/Form-Request program, PRs #271–#276 + #279/#280/#281; refreshed from f3ad814 at the blueprint mission-v5 sync). Doctrine versions unchanged (no doctrine bump) — Op Stds v18 / FM v11 / Handover v9 / V&R v9 / Excellence v4.
-  blueprint_head: 0e85a1a        # ~/its-blueprint main this manifest is synced against (refreshed on doctrine bump, per UPDATE DISCIPLINE above); 0e85a1a = 2026-06-07 Safety Portal deploy reconciliation (Op Stds v18 / Handover v9 / FM v11 / V&R v9 / Excellence v4)
+  its_head: 44370e1              # ~/its origin/main this manifest was validated against (2026-06-12 photo/download/Form-Request program, PRs #271–#276 + #279/#280/#281; refreshed from f3ad814 at the blueprint mission-v5 sync). Exec code unchanged by the 2026-06-17 B5 blueprint doctrine cascade (blueprint-only) — Op Stds v18 / FM v11 / Handover v9 / V&R v9 / Excellence v5.
+  blueprint_head: ad8f563        # ~/its-blueprint main this manifest is synced against (refreshed on doctrine bump, per UPDATE DISCIPLINE above); ad8f563 = 2026-06-17 B5 doctrine cascade — Excellence Roadmap v5 (Track 3.4 platform fork-source / portal-template), tag excellence-roadmap-v5; other doctrine unchanged (Op Stds v18 / Handover v9 / FM v11 / V&R v9)
   seeded_by: "doc-reconciliation series PR 2 (manifest)"
 
 # --- Doctrine versions (the headline drift class) ------------------------------
