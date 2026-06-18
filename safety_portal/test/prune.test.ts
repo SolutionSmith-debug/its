@@ -82,6 +82,25 @@ describe("pruneOldData (A3 D1 housekeeping)", () => {
     expect(res.rejected).toBe(1);
     expect(await remaining()).toEqual(["rej-recent", "unfiled-old"]);
   });
+
+  it("deletes an INACTIVE job with NO submissions; keeps active jobs + inactive jobs that still hold submissions", async () => {
+    await env.DB.batch([
+      env.DB.prepare("INSERT INTO jobs (job_id, project_name, active) VALUES ('J-active','A',1)"),
+      env.DB.prepare("INSERT INTO jobs (job_id, project_name, active) VALUES ('J-empty','E',0)"),   // inactive, no subs → delete
+      env.DB.prepare("INSERT INTO jobs (job_id, project_name, active) VALUES ('J-withsub','W',0)"), // inactive, has a recent sub → keep
+    ]);
+    // A FILED sub within the 30d Stage-2 grace → not deleted → its inactive job is kept this run.
+    await env.DB
+      .prepare("INSERT INTO submissions (submission_uuid, job_id, form_code, work_date, payload_json, created_at, box_verified, filed_at) VALUES ('s-w','J-withsub','jha-v1','2026-01-01','{}',?,1,?)")
+      .bind(NOW, NOW - 5 * DAY)
+      .run();
+
+    const res = await pruneOldData(env.DB, NOW);
+
+    expect(res.jobs).toBe(1); // only J-empty
+    const left = await env.DB.prepare("SELECT job_id FROM jobs ORDER BY job_id").all<{ job_id: string }>();
+    expect(left.results.map((j) => j.job_id)).toEqual(["J-active", "J-withsub"]);
+  });
 });
 
 // ── PR-4 Part A — the filed_pdfs cache prune branch + D1 size telemetry. ──────────

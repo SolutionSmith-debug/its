@@ -353,6 +353,7 @@ Tier-2 repair; the Successor-Operator escalates.
 | Field PMs all 401 / can't log in right after a deploy | migration 0006 (`users.disabled`) wasn't applied BEFORE the Worker redeploy → `requireSession` fail-closes every session | **Escalate to Seth** (apply 0006 to live D1; the per-request read then succeeds). |
 | `portal_admin` CLI returns `(401) — admin bearer rejected` | Keychain `ITS_PORTAL_ADMIN_TOKEN` ≠ Worker `PORTAL_ADMIN_API_TOKEN`, or unset | **Escalate to Seth** (secrets/auth). |
 | Need to add / reset / disable a portal user | routine provisioning | **Escalate to Seth** — it's `python -m safety_reports.portal_admin …` with the admin bearer (developer-operator task). |
+| Need to clear a test / decommissioned job from the portal dropdown + its D1 data | a fully-removed job lingers `active=1` (the daemon `/sync` refuses an empty job set, so removing the last job from `ITS_Active_Jobs` can't deactivate it) | **Escalate to Seth** (admin-bearer + data delete = high-class). Fix is `python -m safety_reports.portal_admin purge-job <JOB-ID>` — hard-deletes the job + its D1 rows (submissions, filed-PDF cache, pdf_requests). Box + the week sheet keep the durable record; this only clears the D1 transport cache. The daily prune also auto-deletes any inactive job once it has no submissions, so this is only needed for an *immediate* clear. |
 
 Activation steps + the route/CLI reference live in `safety_portal/README.md` (Phase 7).
 
