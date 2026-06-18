@@ -78,6 +78,7 @@ def test_canonical_status_match_spec():
 def test_canonical_workstreams_match_spec():
     expected = {
         "safety_reports",
+        "safety_portal",
         "box",
         "ci",
         "security",

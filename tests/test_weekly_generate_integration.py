@@ -39,6 +39,14 @@ SANDBOX_JOB_ID = "_INT_WG_JOB"
 SANDBOX_ANCHOR = date(1970, 1, 7)  # Wed → Sat→Fri week opening 1970-01-03
 
 
+@pytest.fixture(autouse=True)
+def _isolate_watchdog_marker(monkeypatch, tmp_path):
+    """Redirect the watchdog marker to a tmp dir so this LIVE compile does not mtime-touch the
+    real ~/its/.watchdog/safety_weekly_generate.last_run — a refreshed marker would mask a
+    genuine Friday-crash catch-up (watchdog Check C staleness floor + Check I both key on it)."""
+    monkeypatch.setattr(weekly_generate, "WATCHDOG_MARKER_DIR", tmp_path / ".watchdog")
+
+
 @pytest.fixture
 def _token() -> str:
     try:

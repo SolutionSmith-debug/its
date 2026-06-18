@@ -76,6 +76,7 @@ CANONICAL_STATUS = frozenset({
 
 CANONICAL_WORKSTREAMS = frozenset({
     "safety_reports",
+    "safety_portal",
     "box",
     "ci",
     "security",

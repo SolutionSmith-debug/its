@@ -351,9 +351,10 @@ def fetch_latest_inbound_timestamp(mailbox: str) -> datetime | None:
     """Return UTC timestamp of the most recent message in `mailbox`'s Inbox.
 
     Returns None if the inbox has never received a message (empty `value`
-    list — distinct from an error). Used by `scripts/watchdog.py` Check F
-    to detect mailboxes that have gone silent past their idle threshold
-    (the Mail.app silent-disable pattern documented in `docs/tech_debt.md`).
+    list — distinct from an error). PRESERVED for the future Email Triage
+    workstream's mailbox-silence check; the original consumer (watchdog
+    Check F) was RETIRED 2026-06-05 with the safety email-intake retirement
+    (see decision_phase5-portal-transport).
 
     Raises:
         GraphError: any auth / network / policy / not-found failure
