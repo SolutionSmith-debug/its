@@ -4,6 +4,30 @@ Items deliberately deferred. Each carries the rationale for deferral and the tri
 
 When to add an entry: a session deliberately chooses preservation-over-refactor (per Op Stds v11 §14), discovers an external-API constraint that forced a workaround, or defers a non-trivial cleanup that's larger than the current session can absorb. When to mark CLOSED: the underlying item is resolved in a commit; preserve the entry with resolution detail rather than deleting (history is cheap, context is expensive).
 
+## Portal D1 test-job dropdown not cleared by empty-sync [OPEN 2026-06-17]
+
+**2026-06-17 test-artifact cleanup session.** After clearing all rows from `ITS_Active_Jobs` (id `6223950341164932`), the portal job dropdown still shows test job entries. Root cause: `portal_poll.push_jobs` calls `POST /api/internal/sync` with the list of active jobs from Smartsheet — but the Worker rejects a sync payload with an empty `jobs` array (guard: `jobs.length === 0` → 400). So an empty `ITS_Active_Jobs` does NOT clear the D1 `jobs` table, and the portal dropdown retains stale test entries.
+
+**Operator repair options:** (a) direct D1: `wrangler d1 execute its-safety-portal --remote --command "DELETE FROM jobs WHERE job_id IN ('bradley-1', 'teala-test', ...);"` (target test slugs explicitly — do NOT delete production job rows); (b) alternatively, seed one real production job in `ITS_Active_Jobs`, which will push-sync and override stale entries on the next poll cycle. Option (b) is safer if production jobs are ready.
+
+**Not a code bug per se** — the empty-sync guard exists to prevent accidental dropdown wipes. The gap is that there is no supported "clear all test entries" operator path. A future improvement could be a `DELETE /api/internal/jobs/:slug` endpoint or a `wrangler` script target.
+
+**Tag:** `safety-portal`, `d1`, `operator-manual`. **Revisit when:** production jobs are ready to seed, or a D1 management endpoint is added.
+
+## Portal D1 historical test submissions + filed-PDF cache not pruned [OPEN 2026-06-17]
+
+**2026-06-17 test-artifact cleanup session.** The Smartsheet and Box test artifacts were deleted, but the corresponding D1 rows were not touched. Residue in the Worker D1 (`its-safety-portal` remote):
+
+- `submissions` table: rows for test submissions (e.g., `teala test`, `ZZ Portal Proof` / JOB-000008 runs, etc.) — filed as `box_verified=1`, payload stripped at 90d lifecycle, but rows remain as browse-visible entries.
+- `filed_pdfs` table: chunked base64 PDF cache rows for any submission whose filed PDF was requested via the `FormRequestPage` download flow — keyed by `(submission_uuid, chunk_index)`.
+- `pdf_requests` table: rows for the 24h-window PDF-request grants associated with those submissions.
+
+The two-stage D1 prune lifecycle (`submissions`: payload stripped at 90d, row deleted at 30d after job-inactive; `filed_pdfs`/`pdf_requests`: pruned on `mark_filed` pass) will eventually clear these, but the job-inactive trigger requires the job rows to go inactive, which also requires the D1 `jobs` table to be updated (see "Portal D1 test-job dropdown not cleared" above).
+
+**Operator repair (if desired before natural prune):** direct D1 operations — identify test `submission_uuid` values (e.g., via `wrangler d1 execute ... --command "SELECT submission_uuid, job_id, form_type FROM submissions WHERE job_id IN ('jha-test', 'rockford', ...)"`), then `DELETE FROM submissions WHERE submission_uuid IN (...)`, `DELETE FROM filed_pdfs WHERE submission_uuid IN (...)`, `DELETE FROM pdf_requests WHERE submission_uuid IN (...)`. Low operational urgency — D1 space is not constrained at current volume; no capability impact.
+
+**Tag:** `safety-portal`, `d1`, `operator-manual`. **Revisit when:** D1 space becomes a concern, or a D1 test-fixture management story is added.
+
 ## Orphan per-job Smartsheet folder from the JOB-000013 50-char-cap incident [OPEN 2026-06-13]
 
 **PR #283 (2026-06-13).** A field PM submitted a portal form for JOB-000013 ("I don't know project name Montgomery", 36 chars). `week_sheet.py` creates the per-job Smartsheet folder BEFORE the week-of sheet; the folder creation succeeded, but the sheet creation 400'd (`errorCode 1041` — name exceeded 50 chars). This left an **empty per-job folder** named "I don't know project name Montgomery" in the `ITS — Safety Portal` workspace (ITS — Safety Portal workspace), beside the now-populated truncated-name week sheet that succeeded after the fix was deployed and the stuck submission was re-drained.
