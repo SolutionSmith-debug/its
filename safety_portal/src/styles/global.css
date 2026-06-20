@@ -110,20 +110,25 @@ h3 {
    face, sitting directly on the green field (replaces the old PNG lockup). Gold
    is the gradient FILL of the letterforms; -webkit-/standard background-clip:text
    keep older WebKit + modern engines in sync, and -webkit-text-fill-color makes
-   the fill transparent on WebKit. The phrase word-wraps and scales with the
-   viewport (min-width:0 lets the flex item shrink) so it never overflows. */
+   the fill transparent on WebKit. Matches the URS Marine fork's wordmark
+   treatment. flex:none + the brand-row wrap rules handle narrow widths (it drops
+   below the plate). */
 .app-header__wordmark {
   font-family: "ITS Wordmark", "Snell Roundhand", "Apple Chancery", cursive;
   font-weight: 400;
-  font-size: clamp(34px, 7vw, 62px);
-  line-height: 1.05;
-  min-width: 0;
-  background: linear-gradient(180deg, #f6e69a 0%, #e6c766 38%, var(--c-gold) 56%, #9c7a2e 100%);
+  font-size: clamp(26px, 5.4vw, 44px);
+  /* Great Vibes' intrinsic line is ~1.25 (tall capital swashes + deep descenders);
+     line-height MUST clear that or background-clip:text paints in a short box and
+     shears the cap tops (the bug this fixes — was 1.05). 1.5 seats the whole glyph
+     with margin. */
+  line-height: 1.5;
+  background: linear-gradient(180deg, #f6e7b4 0%, #e7c977 24%, #c6a04d 56%, #9b7a33 100%);
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
   -webkit-text-fill-color: transparent;
   filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.35));
+  flex: none;
 }
 
 .app-header__action {
@@ -142,7 +147,7 @@ h3 {
     height: 24px;
   }
   .app-header__wordmark {
-    font-size: 30px;
+    font-size: 23px;
   }
 }
 
