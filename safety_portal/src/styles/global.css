@@ -117,11 +117,12 @@ h3 {
   font-family: "ITS Wordmark", "Snell Roundhand", "Apple Chancery", cursive;
   font-weight: 400;
   font-size: clamp(26px, 5.4vw, 44px);
-  /* Great Vibes' intrinsic line is ~1.25 (tall capital swashes + deep descenders);
-     line-height MUST clear that or background-clip:text paints in a short box and
-     shears the cap tops (the bug this fixes — was 1.05). 1.5 seats the whole glyph
-     with margin. */
-  line-height: 1.5;
+  /* Great Vibes' capital loops (T/I/S swashes) overshoot the em box well past the
+     ascent, and deep descenders (g/y) drop below it. line-height is the background-
+     clip:text paint box here: too short and the loop tops fall outside it and render
+     transparent (= sheared). 1.5 still clipped the cap-T loop; 1.9 seats the whole
+     glyph — loop and descender — with a clear margin. */
+  line-height: 1.9;
   background: linear-gradient(180deg, #f6e7b4 0%, #e7c977 24%, #c6a04d 56%, #9b7a33 100%);
   -webkit-background-clip: text;
   background-clip: text;
