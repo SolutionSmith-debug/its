@@ -44,15 +44,28 @@ h3 {
   padding: var(--gap);
 }
 
-/* ── Header — ITS Portal maximalist brand field ──────────────────────────────
+/* Self-hosted gold-script wordmark face — "Great Vibes" (SIL OFL 1.1, by the
+   Great Vibes Pro Project Authors; license shipped at /great-vibes-OFL.txt). The
+   same formal roundhand the retired "Portal" lockup used. Served same-origin, so
+   default-src 'self' (worker/index.ts CSP) already covers it — no CSP change. */
+@font-face {
+  font-family: "ITS Wordmark";
+  src: url("/great-vibes.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* ── Header — maximalist brand field ──────────────────────────────────────────
    The header IS the deep-green field. It carries a FIXED brand lockup (no title
    prop): the Evergreen mark on a gold-bordered white plate (Evergreen's brand
-   green ≠ BRG and would clash directly on green), then the ITS crest +
-   gold-gradient "Portal" wordmark (transparent PNG). Gold is decorative framing
-   only — never text. Taller than the old 28px-logo bar to seat the ~3:1 lockup;
-   both the header and the brand row wrap (and the lockup scales) at ≤360px —
-   field phones — so nothing overflows and the lockup never distorts.
-   (cc-brief_its-portal-rebrand Phase A3/A5) */
+   green ≠ BRG and would clash directly on green), then the gold-gradient
+   "Integrated Technical System" wordmark — LIVE TEXT in the script face above
+   (.app-header__wordmark), replacing the old ITS-crest/"Portal" PNG lockup. The
+   gold gradient is the logotype fill (WCAG-1.4.3-exempt, same as the old PNG);
+   gold is otherwise decorative framing only — never UI text. Both the header and
+   the brand row wrap, and the wordmark scales + word-wraps, at ≤360px — field
+   phones — so the long phrase never overflows. */
 .app-header {
   background:
     radial-gradient(140% 120% at 50% 0%, rgba(255, 255, 255, 0.05) 0%, rgba(255, 255, 255, 0) 52%),
@@ -71,7 +84,7 @@ h3 {
 
 .app-header__brand {
   display: flex;
-  flex-wrap: wrap; /* lockup wraps below the plate on ultra-narrow viewports */
+  flex-wrap: wrap; /* wordmark wraps below the plate on ultra-narrow viewports */
   align-items: center;
   gap: clamp(12px, 3vw, 22px);
   min-width: 0;
@@ -93,14 +106,24 @@ h3 {
   width: auto;
 }
 
-/* ITS crest + gold-gradient "Portal" lockup — sits directly on the green field.
-   flex:none keeps the aspect ratio fixed (no shrink-distortion); the wrap rules
-   above handle narrow widths instead. */
-.app-header__lockup {
-  display: block;
-  height: clamp(48px, 9vw, 76px);
-  width: auto;
-  flex: none;
+/* Gold-gradient "Integrated Technical System" wordmark — live text in the script
+   face, sitting directly on the green field (replaces the old PNG lockup). Gold
+   is the gradient FILL of the letterforms; -webkit-/standard background-clip:text
+   keep older WebKit + modern engines in sync, and -webkit-text-fill-color makes
+   the fill transparent on WebKit. The phrase word-wraps and scales with the
+   viewport (min-width:0 lets the flex item shrink) so it never overflows. */
+.app-header__wordmark {
+  font-family: "ITS Wordmark", "Snell Roundhand", "Apple Chancery", cursive;
+  font-weight: 400;
+  font-size: clamp(34px, 7vw, 62px);
+  line-height: 1.05;
+  min-width: 0;
+  background: linear-gradient(180deg, #f6e69a 0%, #e6c766 38%, var(--c-gold) 56%, #9c7a2e 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.35));
 }
 
 .app-header__action {
@@ -118,8 +141,8 @@ h3 {
   .app-header__logo {
     height: 24px;
   }
-  .app-header__lockup {
-    height: 40px;
+  .app-header__wordmark {
+    font-size: 30px;
   }
 }
 
