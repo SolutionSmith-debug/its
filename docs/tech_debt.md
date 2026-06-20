@@ -2234,6 +2234,18 @@ PR-5 (#276, merge `213d076`) introduced the `pdf_requests` table (migration 0012
 
 Surfaced: 2026-06-12 PR-5 implementation (session close).
 
+## [OPEN 2026-06-20] Safety Portal browser-tab `<title>` + favicon still say "ITS Portal" after banner rebrand
+
+The 2026-06-20 banner rebrand (PRs #297–#300) dropped the ITS-crest PNG and replaced the "Portal" header text with "Integrated Technical System" (Great Vibes gold-script wordmark). However, the browser-tab `<title>` (`<title>ITS Portal</title>` in `safety_portal/worker/src/index.html` or the React root) and the ITS-crest favicon (`public/favicon.ico` / `<link rel="icon">`) were deliberately left unchanged — out of banner scope, operator's call.
+
+**Impact:** minor cosmetic inconsistency — the wordmark now says "Integrated Technical System" but the browser tab still shows "ITS Portal." Functionally inert.
+
+**Fix when:** next frontend cosmetic pass. Update `<title>` to "ITS — Safety Portal" (or "Integrated Technical System") and replace the favicon with an Evergreen-aligned icon.
+
+**Tag:** `safety-portal`, `frontend`, `cosmetic`, `low`.
+
+**Surfaced:** 2026-06-20 banner rebrand session (PRs #297–#300). Session log: `docs/session_logs/2026-06-20_safety-portal-banner-wordmark.md`.
+
 ## [OPEN 2026-06-12] 7 CLOSED-unmerged local branches preserved conservatively post-cleanup
 
 The 2026-06-12 session pruned 55 stale local branches using `git update-ref -d refs/heads/<branch>` (bypassing the `block-dangerous-git.sh` hook's `git branch -D` block, after per-branch PR=MERGED verification via `gh pr view`). Seven CLOSED-unmerged branches were left on disk conservatively:
