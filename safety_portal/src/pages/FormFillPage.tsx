@@ -14,11 +14,12 @@ function todayIso(): string {
 }
 
 /**
- * The daily-form fill flow. Used two ways:
- *  - non-admin: <FormFillPage onBack={…} /> — HomePage ↔ form, with the back/Home
- *    buttons (behaviour unchanged from before the admin dashboard).
- *  - admin "Submit a form" tab: <FormFillPage tabBar={<AdminTabs …/>} /> — no onBack
- *    (the tab bar handles navigation), and the tab bar renders under the header.
+ * The daily-form fill flow (unified shell, P1). Opened from the home "Submit a form"
+ * card as <FormFillPage onBack={…} />. Admins KEEP submit-as here: the "filled out as"
+ * account selector renders for admins (gated on role, server re-validates), so an admin
+ * can attribute a submission to any enabled account — unchanged by the home unification.
+ * (The optional `tabBar` mount is retained for any caller that renders its own nav above
+ * the form.)
  */
 export function FormFillPage({ onBack, tabBar }: { onBack?: () => void; tabBar?: ReactNode }) {
   const { user, logout } = useAuth();

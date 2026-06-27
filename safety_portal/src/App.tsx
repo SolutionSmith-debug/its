@@ -1,25 +1,43 @@
 import { useState } from "react";
+import type { ReactNode } from "react";
 import { useAuth } from "./lib/auth";
 import { LoginPage } from "./pages/LoginPage";
-import { HomePage } from "./pages/HomePage";
+import { HomePage, type HomeNav } from "./pages/HomePage";
 import { FormFillPage } from "./pages/FormFillPage";
 import { FormRequestPage } from "./pages/FormRequestPage";
-import { AdminApp } from "./pages/AdminApp";
+import { AccountsPage } from "./pages/AccountsPage";
+import { FormsPage } from "./pages/FormsPage";
+import { useIdleLogout } from "./lib/useIdleLogout";
 
-type View = "home" | "fill" | "request";
+type View = "home" | HomeNav;
 
 /**
- * Minimal in-memory view switch (login → home → form fill). Phase 4 PR 2 replaced
- * the hard-coded JHA stub with the definition-driven FormFillPage (renders any
- * catalog form from safety_portal/forms/*.json). A full client router is still
- * deferred; the SPA static-asset fallback serves index.html for any deep link.
- *
- * Admins (role from /api/session) get the tabbed AdminApp instead of the submitter
- * home→fill flow; submitters see exactly what they saw before the admin dashboard.
+ * Admin-scoped session guard. Mounts the 30-min idle-logout + keep-alive (useIdleLogout)
+ * ONLY for admins — rendered conditionally so the hook never runs for a submitter (who
+ * keeps the 90-day session). `editing` (a dirty editor draft is open, reported up by
+ * Accounts/Forms) adds the bounded wall-clock keep-alive. Renders nothing.
+ */
+function AdminSessionGuard({ editing }: { editing: boolean }) {
+  const { logout } = useAuth();
+  useIdleLogout(logout, editing);
+  return null;
+}
+
+/**
+ * Unified shell (P1). Every account — submitter or admin — lands on the SAME HomePage;
+ * the action cards and the views they open are capability-gated (migration 0013). An
+ * admin sees the same form cards as a field PM PLUS their management cards (Accounts /
+ * Forms), and KEEPS submit-as: "Submit a form" routes to FormFillPage, whose "filled
+ * out as" account selector still renders for admins. Every action is independently
+ * re-gated server-side (requireRole / requireCapability); the SPA gating is convenience,
+ * never the boundary (Invariant 2). Job Tracker / Equipment / Personnel / Materials views
+ * mount here as their phases ship.
  */
 export function App() {
   const { user, loading } = useAuth();
   const [view, setView] = useState<View>("home");
+  // A dirty editor (Accounts/Forms) is open — drives the admin keep-alive (see AdminSessionGuard).
+  const [editing, setEditing] = useState(false);
 
   if (loading) {
     return <div className="centered muted">Loading…</div>;
@@ -27,16 +45,45 @@ export function App() {
   if (!user) {
     return <LoginPage />;
   }
-  if (user.role === "admin") {
-    return <AdminApp />;
-  }
+
+  const caps = user.capabilities;
+  const has = (c: string) => caps.includes(c);
+  const home = () => {
+    setEditing(false);
+    setView("home");
+  };
+  const backNav = (
+    <nav className="admin-tabs" aria-label="Back">
+      <button type="button" className="admin-tabs__tab" onClick={home}>
+        ← Home
+      </button>
+    </nav>
+  );
+
+  let page: ReactNode;
   if (view === "fill") {
-    return <FormFillPage onBack={() => setView("home")} />;
+    page = <FormFillPage onBack={home} />;
+  } else if (view === "request") {
+    page = <FormRequestPage onBack={home} />;
+  } else if (view === "accounts" && has("cap.admin.accounts")) {
+    page = <AccountsPage tabBar={backNav} onEditingChange={setEditing} />;
+  } else if (view === "forms" && has("cap.admin.formbuilder")) {
+    page = <FormsPage tabBar={backNav} onEditingChange={setEditing} />;
+  } else {
+    page = (
+      <HomePage
+        onNavigate={(v) => {
+          setEditing(false);
+          setView(v);
+        }}
+      />
+    );
   }
-  if (view === "request") {
-    return <FormRequestPage onBack={() => setView("home")} />;
-  }
+
   return (
-    <HomePage onOpenForm={() => setView("fill")} onOpenFormRequest={() => setView("request")} />
+    <>
+      {user.role === "admin" && <AdminSessionGuard editing={editing} />}
+      {page}
+    </>
   );
 }
