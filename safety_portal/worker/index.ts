@@ -7,6 +7,8 @@ import type { FieldopsGates } from "./fieldops_gates";
 import { registerPersonnelRoutes } from "./fieldops_personnel";
 import { registerEquipmentRoutes } from "./fieldops_equipment";
 import { registerJobTrackerRoutes } from "./fieldops_jobtracker";
+import { auditStmt, isUniqueViolation } from "./audit";
+import { registerTimeWriteRoutes } from "./fieldops_time_write";
 import {
   validateUser,
   newSessionClaims,
@@ -114,14 +116,6 @@ app.onError((err, c) => {
   console.error("worker_unhandled", err instanceof Error ? err.message : String(err));
   return c.json({ error: "internal_error" }, 500);
 });
-
-/** True if a D1 error is a UNIQUE-constraint violation. Lets the create/rename routes
- *  map a lost check-then-act race (the second writer hits UNIQUE) to a clean 409
- *  instead of letting it bubble to a 500 (audit #5). */
-function isUniqueViolation(e: unknown): boolean {
-  const msg = e instanceof Error ? e.message : String(e);
-  return /UNIQUE constraint failed/i.test(msg);
-}
 
 // ── Phase 5 transport (pull model) — HMAC signing + internal-endpoint auth ──────
 
@@ -360,6 +354,8 @@ const fieldopsGates: FieldopsGates = { requireSession, requireCapability };
 registerPersonnelRoutes(app, fieldopsGates);
 registerEquipmentRoutes(app, fieldopsGates);
 registerJobTrackerRoutes(app, fieldopsGates);
+// — field-ops WRITE routes (P2.3); send-free D1 mutations, capability-gated, audit-batched —
+registerTimeWriteRoutes(app, fieldopsGates);
 
 /** GET /api/session — who am I (used by the SPA on load to restore session). Returns
  *  the live role (from requireSession's per-request D1 read), so a demotion drops the
@@ -1426,20 +1422,6 @@ app.post("/api/internal/admin/purge-job", requireAdminToken, async (c) => {
 // D1 batch, so an account change can never land without its security-log entry.
 // Nothing here transmits anything externally (Invariant 1) — D1 writes only.
 // ─────────────────────────────────────────────────────────────────────────────
-
-/** Build (not execute) the audit_log INSERT — included in the mutation's batch so
- *  the record is atomic with the change it describes. `detail` is JSON-encoded. */
-function auditStmt(
-  c: Context<{ Bindings: Env; Variables: Vars }>,
-  actor: string,
-  action: string,
-  target: string | null,
-  detail: Record<string, unknown> | null,
-) {
-  return c.env.DB
-    .prepare("INSERT INTO audit_log (actor_username, action, target_username, detail) VALUES (?,?,?,?)")
-    .bind(actor, action, target, detail === null ? null : JSON.stringify(detail));
-}
 
 interface TargetRow { username: string; role: string; disabled: number }
 
