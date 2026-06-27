@@ -7,6 +7,9 @@ import { FormFillPage } from "./pages/FormFillPage";
 import { FormRequestPage } from "./pages/FormRequestPage";
 import { AccountsPage } from "./pages/AccountsPage";
 import { FormsPage } from "./pages/FormsPage";
+import { FieldOpsJobTracker } from "./pages/FieldOpsJobTracker";
+import { FieldOpsEquipment } from "./pages/FieldOpsEquipment";
+import { FieldOpsPersonnel } from "./pages/FieldOpsPersonnel";
 import { useIdleLogout } from "./lib/useIdleLogout";
 
 type View = "home" | HomeNav;
@@ -69,6 +72,12 @@ export function App() {
     page = <AccountsPage tabBar={backNav} onEditingChange={setEditing} />;
   } else if (view === "forms" && has("cap.admin.formbuilder")) {
     page = <FormsPage tabBar={backNav} onEditingChange={setEditing} />;
+  } else if (view === "fieldops-jobs" && has("cap.jobtracker.read")) {
+    page = <FieldOpsJobTracker onBack={home} />;
+  } else if (view === "fieldops-equipment" && has("cap.equipment.field")) {
+    page = <FieldOpsEquipment onBack={home} />;
+  } else if (view === "fieldops-personnel" && has("cap.personnel.read")) {
+    page = <FieldOpsPersonnel onBack={home} />;
   } else {
     page = (
       <HomePage
