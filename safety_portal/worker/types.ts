@@ -32,6 +32,15 @@ export interface Env {
    * never committed.
    */
   PORTAL_ADMIN_API_TOKEN: string;
+  /**
+   * Bearer token the Mac-side field-ops mirror daemon (field_ops/fieldops_sync.py)
+   * presents to /api/internal/fieldops/* — SEPARATE from PORTAL_INTERNAL_API_TOKEN and
+   * PORTAL_ADMIN_API_TOKEN so the mirror daemon's token cannot drain the submission queue
+   * or provision users (privilege separation). Mirrored into the Keychain as
+   * ITS_PORTAL_FIELDOPS_TOKEN. The endpoints + bearer guard land in P2; this binding is
+   * declared in P0 so wrangler.jsonc / .dev.vars can carry it. Workers Secret — never committed.
+   */
+  PORTAL_FIELDOPS_API_TOKEN: string;
 }
 
 /** A portal user's authorization role. 'submitter' is the default for every field
@@ -65,4 +74,9 @@ export interface Vars {
   /** The acting user's role, read fresh from D1 by requireSession on every request
    *  (NOT from the cookie). requireRole() and the submit-as gate read this. */
   role: Role;
+  /** The acting user's capability SET, resolved fresh from D1 (migration 0013's
+   *  role_capabilities) by requireSession every request — same per-request,
+   *  change-effective-next-request posture as `role`. requireCapability() reads this.
+   *  FAIL-CLOSED: empty set on unknown role / D1 error (see auth.resolveCapabilities). */
+  capabilities: Set<string>;
 }

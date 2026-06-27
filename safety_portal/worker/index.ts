@@ -3,7 +3,14 @@ import { createMiddleware } from "hono/factory";
 import type { Context } from "hono";
 import { setSignedCookie, getSignedCookie, deleteCookie } from "hono/cookie";
 import type { Env, Role, SessionClaims, Vars } from "./types";
-import { validateUser, newSessionClaims, hashPassword, normalizeUsername, coerceRole } from "./auth";
+import {
+  validateUser,
+  newSessionClaims,
+  hashPassword,
+  normalizeUsername,
+  coerceRole,
+  resolveCapabilities,
+} from "./auth";
 import { validateDefinition, validateParentGrouping } from "./publishValidation";
 import { pruneOldData } from "./prune";
 import catalog from "../catalog.json";
@@ -219,9 +226,13 @@ app.post("/api/login", async (c) => {
     // Admins start on the short idle window immediately; submitters keep 90 days (8b/C10).
     maxAge: user.role === "admin" ? ADMIN_IDLE_S : MAX_AGE_S,
   });
-  // `role` lets the SPA decide whether to render the admin tabs. It is display-only
-  // hinting — every admin action is independently re-gated server-side (requireRole).
-  return c.json({ user: { username: user.username, role: user.role } });
+  // `role` + `capabilities` let the SPA decide which tabs/actions to render. Display-only
+  // hinting — every gated action is independently re-gated server-side (requireRole /
+  // requireCapability). Caps resolved from D1 (migration 0013); FAIL-CLOSED on error.
+  const capabilities = await resolveCapabilities(user.role, c.env.DB);
+  return c.json({
+    user: { username: user.username, role: user.role, capabilities: [...capabilities] },
+  });
 });
 
 /** Verify the signed session cookie; 401 on absent/tampered/expired. */
@@ -302,6 +313,11 @@ const requireSession = createMiddleware<{ Bindings: Env; Variables: Vars }>(asyn
 
   c.set("session", sessionClaims);
   c.set("role", role);
+  // Resolve the role KEY → capability SET (migration 0013) in the SAME
+  // change-effective-next-request posture as `role`. resolveCapabilities is FAIL-CLOSED
+  // (unknown role / D1 error → empty set, never privileged). ORDER DEPENDENCY: migration
+  // 0013's role_capabilities must be live before this deploys (mirror of 0006/0007/0009).
+  c.set("capabilities", await resolveCapabilities(role, c.env.DB));
   await next();
 });
 
@@ -324,7 +340,9 @@ const requireRole = (role: Role) =>
  *  admin tabs on the next session refresh. */
 app.get("/api/session", requireSession, (c) => {
   const s = c.get("session");
-  return c.json({ user: { username: s.username, role: c.get("role") } });
+  return c.json({
+    user: { username: s.username, role: c.get("role"), capabilities: [...c.get("capabilities")] },
+  });
 });
 
 /**
