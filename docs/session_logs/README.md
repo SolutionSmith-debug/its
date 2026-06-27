@@ -97,6 +97,11 @@ outside the sentinel block.
 | Date | Type | Status | Workstream | Title | PRs |
 |------|------|--------|------------|-------|-----|
 | 2026-06-10 | session_log | active | safety_portal | [Session — Agent Optimization (Brief 2) + Safety Portal Hardening (Brief 1)](2026-06-10_agent-optimization-and-portal-hardening.md) | #260, #261, #263, #264, #265, #266 |
+| 2026-06-27 | session_log | closed | safety_portal | [Session — Field-Ops P2.2 read views (Personnel / Equipment / Job Tracker), A/B/C landed](2026-06-27_field-ops-p2.2-read-views.md) | #308, #309, #310 |
+| 2026-06-20 | session_log | closed | safety_portal | [Session — feat/fix(safety-portal): banner wordmark rebrand — drop PNG lockup, render live gold-script "Integrated Technical System"](2026-06-20_safety-portal-banner-wordmark.md) | #297, #298, #299, #300 |
+| 2026-06-18 | session_log | closed | safety_portal | [Session — D1 job cleanup + clean-slate purge + tech-debt easy-wins (later arc, 2026-06-17 evening → 2026-06-18)](2026-06-18_d1-job-cleanup-and-tech-debt-easy-wins.md) | #292, #294, #295 |
+| 2026-06-17 | session_log | closed | safety_portal | [Session — Safety Portal test-artifact cleanup (live API) + daily/weekly PDF naming scheme (PRs #289 / #290)](2026-06-17_safety-portal-test-artifact-cleanup-and-pdf-naming.md) | #289, #290 |
+| 2026-06-15 | session_log | closed | safety_reports | [Session — feat(safety-reports): Safety Portal PDF beautification — Evergreen logo, gold section rules, branded weekly packet](2026-06-15_pdf-beautification-evergreen-logo-gold-rules.md) | #287 |
 | 2026-06-14 | session_log | closed | safety_portal | [Session — feat(safety-portal): rebrand "Safety Portal" → "ITS Portal" (maximalist header, Phase A / B2)](2026-06-14_its-portal-rebrand.md) | #285 |
 | 2026-06-13 | session_log | closed | safety_portal | [Session — fix(safety-portal): bound week-sheet name to Smartsheet's 50-char cap + drain permanent 400s](2026-06-13_week-sheet-50-char-cap-drain-permanent-400s.md) | #283 |
 | 2026-06-12 | session_log | closed | safety_portal | [Session — PR-5 Form Request + PR-3 Graph upload-session merged; local tree cleanup](2026-06-12_pr5-form-request-pr3-graph-upload-tree-cleanup.md) | #275, #276 |
