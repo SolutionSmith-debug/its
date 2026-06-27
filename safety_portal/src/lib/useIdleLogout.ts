@@ -19,8 +19,8 @@ import { useEffect, useRef } from "react";
 // unbounded-session). The draft is also localStorage-cached (draftCache), so an idle logout never
 // loses the work.
 //
-// Used only inside the admin shell (App.tsx routes admins to AdminApp), so it is
-// admin-scoped by construction; submitters keep their 90-day session untouched.
+// Mounted ONLY via AdminSessionGuard in App.tsx (rendered when role === "admin"), so it
+// is admin-scoped by construction; submitters keep their 90-day session untouched.
 
 const IDLE_MS = 30 * 60 * 1000;
 const PING_THROTTLE_MS = 60 * 1000; // slide the server window at most once a minute (active use)

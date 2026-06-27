@@ -5,9 +5,13 @@ export type Role = "submitter" | "admin";
 
 export interface SessionUser {
   username: string;
-  /** Authorization role from the server. Drives whether the SPA shows the admin
-   *  tabs — but every admin action is independently re-gated server-side. */
+  /** Authorization role from the server (coarse: submitter | admin). */
   role: Role;
+  /** Capability keys granted to this account (migration 0013), resolved server-side
+   *  per request. Drives the capability-gated nav/cards in the unified shell — but
+   *  every action is independently re-gated server-side (the SPA gating is convenience,
+   *  never the boundary). Defaults to [] for a pre-capability (old-Worker) session. */
+  capabilities: string[];
 }
 
 async function postJson(path: string, body?: unknown): Promise<Response> {
@@ -26,15 +30,15 @@ export async function login(username: string, password: string): Promise<Session
       res.status === 401 ? "Invalid username or password." : "Login failed. Please try again.",
     );
   }
-  const data = (await res.json()) as { user: SessionUser };
-  return data.user;
+  const data = (await res.json()) as { user: { username: string; role: Role; capabilities?: string[] } };
+  return { ...data.user, capabilities: data.user.capabilities ?? [] };
 }
 
 export async function fetchSession(): Promise<SessionUser | null> {
   const res = await fetch("/api/session", { credentials: "same-origin" });
   if (!res.ok) return null;
-  const data = (await res.json()) as { user: SessionUser };
-  return data.user;
+  const data = (await res.json()) as { user: { username: string; role: Role; capabilities?: string[] } };
+  return { ...data.user, capabilities: data.user.capabilities ?? [] };
 }
 
 export async function logout(): Promise<void> {
