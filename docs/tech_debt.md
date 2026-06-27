@@ -2276,3 +2276,17 @@ This is a **planning-layer / Seth-owned** mission delta: the Safety Portal missi
 **Revisit when:** next blueprint mission-doctrine pass (fold PR-3 + PR-4 + PR-5 deltas together).
 
 Surfaced: 2026-06-12 PR-5 implementation.
+
+## [OPEN 2026-06-27] Field-ops Smartsheet/Box source-of-truth integration (P2.4+ downstream)
+
+The P2.2 field-ops READ views (Personnel #308 / Equipment #309 / Job Tracker #310) read **D1 live** (the local primary) and are send-free — deliberately decoupled from the source-of-truth sync/filing layer (Invariant 1). Wiring Smartsheet (operator-SoR, structured) + Box (document-SoR, filing) in as canonical stores is downstream work the read layer does NOT block but does NOT yet implement. Three concrete pieces:
+
+1. **P2.4 mirror daemon** (`field_ops/fieldops_sync.py`, currently a skeleton) — push the field-ops tables (personnel / equipment / task_assignments / time_entries / inspections) UP to Smartsheet as the operator-visible SoR, AND the **origin-flip inversion**: the Worker `POST /api/internal/sync` UPSERT does NOT touch `jobs.origin`, so a promoted portal-created job stays permanently sweep-exempt unless the daemon flips `origin → 'smartsheet'` (+ `sync_state` / `canonical_job_id`). Jobs already flow Smartsheet→D1 via `/api/internal/sync`; `origin`/`sync_state` columns exist (migration 0017). Doctrine-critical → CC, with `ops-stds-enforcer` + a §30 live integration test.
+2. **Box document linkage** — add a `box_file_id` (or folder ref) column to the document-bearing field-ops records (inspections; later job docs) and surface it on the read routes. Mirrors how safety-report submissions carry `box_file_id`. Not yet on the field-ops tables/schema.
+3. **Op Stds §50 "D1-as-writer" doctrine blessing** — making D1 the primary that mirrors to Smartsheet is a doctrine decision; v18→v19 bump to FLAG to Seth. Plus the §43 successor-remediation runbook for the P2.4 daemon. (The read routes themselves are read-only Worker code → a break is high-capability-class category-4 code-fix-only → no Tier-2-reachable failure mode → **no §43 entry required for the read views**; planning layer to confirm.)
+
+**Optional cheap read-layer hook (deferred, NOT built):** surface jobs `origin`/`sync_state` in the Job-Tracker list/detail response so the portal shows provenance ("from Smartsheet" vs "created in portal") the moment the mirror daemon lands. Small response-shape extension to `fieldops_jobtracker.ts` + lib + page + tests.
+
+**Tag:** `field-ops`, `smartsheet`, `box`, `source-of-truth`, `doctrine`, `planning-layer`. **Revisit when:** P2.4 (mirror daemon) is scheduled, or the §50 doctrine bump reaches Seth.
+
+Surfaced: 2026-06-27 (operator forward-compatibility concern, P2.2 read-views session). See `project_fieldops-portal-program` memory + `docs/session_logs/2026-06-27_field-ops-p2.2-read-views.md`.
