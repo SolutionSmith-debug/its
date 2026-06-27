@@ -21,6 +21,29 @@ Verified target facts the briefs depend on:
 
 ---
 
+## ⚠️ SCHEMA CORRECTION (2026-06-27, post Brief A — READ BEFORE PORTING ANY SQL)
+
+The integrity-bar tables have **NO `recorded_at` column** — their server-authoritative record
+time is **`created_at`**. `recorded_at` exists **only** on `equipment_location` (migration 0014).
+The SQL snippets below were authored assuming `recorded_at` everywhere; that is wrong and **500s
+at runtime** (Brief A hit this on `time_entries`; landed fix = alias `created_at AS recorded_at`).
+
+Apply this mapping when porting (and verify against `migrations/0014`–`0017`, as the brief already requires):
+
+| Table | record-time column | porting rule |
+|---|---|---|
+| `time_entries` | `created_at` (no `recorded_at`) | `SELECT … t.created_at AS recorded_at …` |
+| `inspections` | `created_at` (+ `performed_at`; no `recorded_at`) | `i.created_at AS recorded_at` |
+| `equipment_logs` | `created_at` (+ `performed_at`; no `recorded_at`) | `el.created_at AS recorded_at` |
+| `equipment_location` | **`recorded_at`** (+ `read_at`) | use as written — no change |
+
+The detail-leg keyset cursors that page on `created_at` are correct as written; aliasing
+`created_at AS recorded_at` keeps the response field name while paging on the real column. Also
+note Brief 0's `cursor.ts` `decodeCursor` was hardened (Brief A, #308) to reject non-primitive
+cursor field values — it is already in place for B/C; do not re-touch it.
+
+---
+
 ## BRIEF 0 — Shared prerequisites (LANDS FIRST, single agent, must be green before A/B/C dispatch)
 
 **Goal:** add the P0-deferred `requireCapability` gate, the read-scalability index migration, the `.dash-*` CSS kit, the keyset-cursor helper, and the nav + stub scaffold — so A/B/C drop into a green, fully-wired skeleton.
