@@ -14,6 +14,9 @@ beforeEach(async () => {
     env.DB.prepare("DELETE FROM audit_log"),
     env.DB.prepare("DELETE FROM filed_pdfs"),
     env.DB.prepare("DELETE FROM pdf_requests"),
+    env.DB.prepare("DELETE FROM time_entries"),
+    env.DB.prepare("DELETE FROM task_assignments"),
+    env.DB.prepare("DELETE FROM inspections"),
     env.DB.prepare("DELETE FROM jobs"),
   ]);
 });
@@ -100,6 +103,23 @@ describe("pruneOldData (A3 D1 housekeeping)", () => {
     expect(res.jobs).toBe(1); // only J-empty
     const left = await env.DB.prepare("SELECT job_id FROM jobs ORDER BY job_id").all<{ job_id: string }>();
     expect(left.results.map((j) => j.job_id)).toEqual(["J-active", "J-withsub"]);
+  });
+
+  it("NEVER deletes an inactive job holding field-ops SoR (time_entries) with no submissions [P2.1 fence]", async () => {
+    await env.DB.batch([
+      env.DB.prepare("INSERT INTO jobs (job_id, project_name, active) VALUES ('J-fieldops','F',0)"), // inactive, no subs
+      env.DB.prepare("INSERT INTO jobs (job_id, project_name, active) VALUES ('J-bare','B',0)"),     // inactive, nothing → delete
+    ]);
+    // J-fieldops holds a time entry — D1-primary operational SoR, so the jobs-delete guard must keep it.
+    await env.DB
+      .prepare("INSERT INTO time_entries (uuid, job_id, actor_username) VALUES ('t-1','J-fieldops','pm.bob')")
+      .run();
+
+    const res = await pruneOldData(env.DB, NOW);
+
+    expect(res.jobs).toBe(1); // only J-bare deleted
+    const left = await env.DB.prepare("SELECT job_id FROM jobs ORDER BY job_id").all<{ job_id: string }>();
+    expect(left.results.map((j) => j.job_id)).toEqual(["J-fieldops"]);
   });
 });
 

@@ -1,8 +1,11 @@
 import type { Env } from "./types";
 
-// Retention windows for the D1 store. D1 here is a TRANSPORT CACHE / event log, NOT the
-// system of record (Box + the week sheet hold the durable submission; ITS_Errors / the
-// portal monitor surface security events). Nothing user-facing depends on old rows.
+// Retention windows for the D1 store. For SAFETY SUBMISSIONS, D1 is a TRANSPORT CACHE / event
+// log, NOT the system of record (Box + the week sheet hold the durable submission; ITS_Errors /
+// the portal monitor surface security events). HOWEVER the P2 field-ops integrity-bar tables
+// (time_entries, task_assignments, inspections — keyed on job_id) are D1-PRIMARY operational SoR
+// (mirrored UP to Smartsheet by the Mac daemon); their job-context rows must NEVER be evicted
+// while those records exist — the jobs-delete guard below enforces this.
 export const SUBMISSION_RETENTION_DAYS = 90;
 export const AUDIT_LOG_RETENTION_DAYS = 365;
 // M4 (PR-4): a rejected (bad-HMAC) submission is terminal at box_verified=-1; keep it 30d for
@@ -34,11 +37,12 @@ const DB_SIZE_WARN_BYTES = 6_000_000_000;
  *  - filed_pdfs (PR-4 PDF cache): delete the base64 chunks of a submission whose cache
  *    aged out (>24h past pdf_ready_at) and RESET its request flags so it is re-requestable;
  *    also delete ORPHAN chunks whose parent submission was already pruned away.
- *  - jobs: delete an INACTIVE job (active=0) once it has NO remaining submissions — it is not
- *    in the dropdown (the form filters active=1) and has no data behind it, so the row is dead
- *    weight. Keeps the jobs table from growing unbounded as test/decommissioned jobs accrue
- *    (a re-add via /api/internal/sync's upsert recreates the row). Active jobs, and inactive
- *    jobs still holding submissions within the 30d Stage-2 grace, are untouched.
+ *  - jobs: delete an INACTIVE job (active=0) only when it holds NO job-level records in ANY of
+ *    submissions / time_entries / task_assignments / inspections — not in the dropdown (the form
+ *    filters active=1) and nothing references it, so the row is dead weight. The field-ops
+ *    integrity-bar tables are D1-PRIMARY SoR (P2.1), so a job holding any of them is NEVER deleted
+ *    (it would orphan payroll/billing-grade records). A re-add via /api/internal/sync's upsert
+ *    recreates a truly-empty pruned row.
  *
  * Also samples the D1 size (telemetry only — WARN above 6GB of the 10GB ceiling so the
  * chunk cache can never silently grow toward the limit).
@@ -105,11 +109,21 @@ export async function pruneOldData(
     .run();
   const pdfChunks = droppedChunks.meta.changes ?? 0;
 
-  // jobs: an INACTIVE job with no remaining submissions is dead weight (not in the dropdown,
-  // no data behind it). Delete it so the jobs table self-cleans instead of accumulating
-  // test/decommissioned rows forever; a re-add via /api/internal/sync's upsert recreates it.
+  // jobs: an INACTIVE job with no remaining job-level records is dead weight (not in the
+  // dropdown, nothing behind it). PR-5 guarded on `submissions`; P2.1 added the field-ops
+  // integrity-bar tables (time_entries / task_assignments / inspections) keyed on job_id —
+  // those are D1-PRIMARY operational SoR (payroll/billing-grade), so a job holding ANY of them
+  // must NEVER be deleted here (it would orphan unrecoverable records). equipment_logs is keyed
+  // on equipment_id (not job_id), so it is not a job-context guard. A truly-empty pruned job is
+  // recreated by /api/internal/sync's upsert if it re-appears in Smartsheet.
   const jobsDeleted = await db
-    .prepare("DELETE FROM jobs WHERE active = 0 AND job_id NOT IN (SELECT DISTINCT job_id FROM submissions)")
+    .prepare(
+      "DELETE FROM jobs WHERE active = 0 AND job_id NOT IN (" +
+        "SELECT DISTINCT job_id FROM submissions " +
+        "UNION SELECT DISTINCT job_id FROM time_entries " +
+        "UNION SELECT DISTINCT job_id FROM task_assignments " +
+        "UNION SELECT DISTINCT job_id FROM inspections)",
+    )
     .run();
 
   const dbSizeBytes = await sampleDbSizeBytes(db);
