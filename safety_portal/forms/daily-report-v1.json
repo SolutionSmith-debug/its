@@ -1,0 +1,81 @@
+{
+  "form_code": "daily-report-v1",
+  "parent_form_code": "daily-report",
+  "form_name": "Daily Field Report",
+  "variant_label": null,
+  "version": 1,
+  "archetype": "sectioned_assessment",
+  "source_pdf": "daily-field-report.pdf",
+  "sections": [
+    {
+      "type": "header",
+      "fields": [
+        { "key": "job_name", "label": "Job Name", "input": "text" },
+        { "key": "report_date", "label": "Report Date", "input": "date" },
+        { "key": "prepared_by", "label": "Prepared By", "input": "text" },
+        { "key": "weather", "label": "Weather", "input": "text" },
+        { "key": "average_temp", "label": "Average Temp", "input": "number" }
+      ]
+    },
+    {
+      "type": "repeating_table",
+      "key": "crew_progress",
+      "title": "Crew / Subcontractor Progress",
+      "min_rows": 1,
+      "allow_add": true,
+      "columns": [
+        { "key": "crew_subcontractor", "label": "Crew / Subcontractor", "input": "text" },
+        { "key": "manpower", "label": "Manpower", "input": "number" },
+        { "key": "todays_progress", "label": "Today's Progress", "input": "textarea" }
+      ]
+    },
+    {
+      "type": "freeform",
+      "key": "tomorrows_goals",
+      "label": "Tomorrow's Progress Goals",
+      "input": "textarea"
+    },
+    {
+      "type": "repeating_table",
+      "key": "equipment_on_site",
+      "title": "Equipment On Site",
+      "allow_add": true,
+      "columns": [
+        { "key": "owner_rental", "label": "Owner / Rental Company", "input": "text" },
+        { "key": "equipment_type", "label": "Equipment Type", "input": "text" },
+        { "key": "inspector", "label": "Inspector", "input": "text" },
+        { "key": "inspection_detail", "label": "Inspection Detail", "input": "textarea" }
+      ]
+    },
+    {
+      "type": "repeating_table",
+      "key": "deliveries_received",
+      "title": "Deliveries Received",
+      "allow_add": true,
+      "columns": [
+        { "key": "item_material", "label": "Item / Material", "input": "text" },
+        { "key": "quantity", "label": "Quantity", "input": "text" },
+        { "key": "damages_shortages", "label": "Damages & Shortages", "input": "textarea" }
+      ]
+    },
+    {
+      "type": "repeating_table",
+      "key": "site_visitors",
+      "title": "Site Visitors",
+      "allow_add": true,
+      "columns": [
+        { "key": "visitor_name", "label": "Name", "input": "text" },
+        { "key": "organization", "label": "Organization", "input": "text" },
+        { "key": "role", "label": "Role", "input": "select", "options": ["Owner", "Inspector", "Other"] },
+        { "key": "discussion_summary", "label": "Discussion Summary", "input": "textarea" },
+        { "key": "result", "label": "Result", "input": "select", "options": ["Pass", "Fail", "N/A"] }
+      ]
+    },
+    {
+      "type": "freeform",
+      "key": "comments",
+      "label": "Comments",
+      "input": "textarea"
+    }
+  ]
+}

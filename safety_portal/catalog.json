@@ -276,6 +276,28 @@
           "display_order": 1
         }
       ]
+    },
+    {
+      "parent_form_code": "daily-report",
+      "category": "progress",
+      "name": "Daily Field Report",
+      "display_order": 9,
+      "forms": [
+        {
+          "identity": "daily-report",
+          "variant_label": null,
+          "status": "active",
+          "current_version": 1,
+          "current_form_code": "daily-report-v1",
+          "versions": [
+            {
+              "version": 1,
+              "form_code": "daily-report-v1"
+            }
+          ],
+          "display_order": 1
+        }
+      ]
     }
   ]
 }
