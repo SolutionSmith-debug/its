@@ -38,10 +38,13 @@ interface CatalogFormEntry {
   versions: { version: number; form_code: string }[];
   display_order: number;
 }
+/** Safety vs Progress form-type split (P1). Optional in the manifest; defaults to "safety". */
+export type FormCategory = "safety" | "progress";
 interface CatalogParentEntry {
   parent_form_code: string;
   name: string;
   display_order: number;
+  category?: FormCategory;
   forms: CatalogFormEntry[];
 }
 interface CatalogManifest {
@@ -68,6 +71,8 @@ export interface CatalogVariant {
 export interface CatalogParent {
   parent_form_code: string;
   name: string;
+  /** Safety vs Progress (P1); an absent manifest category defaults to "safety". */
+  category: FormCategory;
   /** definition code for a no-variant parent; null when the parent has variants */
   form_code: string | null;
   variants: CatalogVariant[];
@@ -96,6 +101,7 @@ export function formCatalog(): CatalogParent[] {
       parents.push({
         parent_form_code: parent.parent_form_code,
         name: parent.name,
+        category: parent.category ?? "safety",
         form_code: active[0].current_form_code,
         variants: [],
       });
@@ -103,6 +109,7 @@ export function formCatalog(): CatalogParent[] {
       parents.push({
         parent_form_code: parent.parent_form_code,
         name: parent.name,
+        category: parent.category ?? "safety",
         form_code: null,
         variants: variants.map((f) => ({
           variant_label: f.variant_label as string,

@@ -40,6 +40,11 @@
           "minimum": 1,
           "description": "Ascending sort position among parents. Unique across parents."
         },
+        "category": {
+          "type": "string",
+          "enum": ["safety", "progress"],
+          "description": "Form-type category — drives the Safety/Progress split in the form picker + Form Request. OPTIONAL: readers (registry.ts, form_pdf.py) default an absent category to 'safety'. The admin form editor sets it on new-parent creation (follow-up)."
+        },
         "forms": {
           "type": "array",
           "minItems": 1,

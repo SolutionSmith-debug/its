@@ -242,7 +242,17 @@ export function FormFillPage({ onBack, tabBar }: { onBack?: () => void; tabBar?:
             <select className="field__input" value={parentCode}
               onChange={(e) => { setParentCode(e.target.value); setVariantCode(""); }}>
               <option value="">Select a form…</option>
-              {catalog.map((p) => <option key={p.parent_form_code} value={p.parent_form_code}>{p.name}</option>)}
+              {(["safety", "progress"] as const).map((cat) => {
+                const inCat = catalog.filter((p) => p.category === cat);
+                if (inCat.length === 0) return null;
+                return (
+                  <optgroup key={cat} label={cat === "safety" ? "Safety" : "Progress"}>
+                    {inCat.map((p) => (
+                      <option key={p.parent_form_code} value={p.parent_form_code}>{p.name}</option>
+                    ))}
+                  </optgroup>
+                );
+              })}
             </select>
           </label>
 
