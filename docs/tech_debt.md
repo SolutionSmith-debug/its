@@ -2290,3 +2290,21 @@ The P2.2 field-ops READ views (Personnel #308 / Equipment #309 / Job Tracker #31
 **Tag:** `field-ops`, `smartsheet`, `box`, `source-of-truth`, `doctrine`, `planning-layer`. **Revisit when:** P2.4 (mirror daemon) is scheduled, or the §50 doctrine bump reaches Seth.
 
 Surfaced: 2026-06-27 (operator forward-compatibility concern, P2.2 read-views session). See `project_fieldops-portal-program` memory + `docs/session_logs/2026-06-27_field-ops-p2.2-read-views.md`.
+
+## [OPEN 2026-06-27] Field-ops P2.3 write-layer follow-ups (deferred sub-features + governance)
+
+The P2.3 write routes landed complete (PRs #312–#317; `docs/session_logs/2026-06-27_field-ops-p2.3-write-routes.md`). Five tracked follow-ups deferred out of the write slices:
+
+1. **Inspection quick-log** (the design's Slice 5 also). A lightweight equipment pre-use inspection write (`POST /api/fieldops/equipment/:id/inspection` → `inspections`, version-pinned) was NOT built: there is **no equipment-pre-inspection forms catalog** in the system to validate `form_code` against (the form-editor's published forms are the safety/progress ones, `identity-v<version>`-validated, not equipment inspections). **Blocked on an operator/domain input:** define the equipment pre-inspection forms + their `form_code`s (e.g. `skid-daily`, `telehandler-preuse`). Then it's a quick add — same integrity-bar pattern as the maintenance log + a `form_code` allow-list + server-side version-pin.
+
+2. **H1 — orphaned `cap.admin.equipment` capability key** (security-governance, from the Slice-6 review). Migration 0016 seeds `cap.admin.equipment` + grants it to admin, but **no worker route enforces it** — the roster routes gate on `cap.equipment.manage` (0013), per the design's F2 choice. Current access control is correct (fail-closed, submitter→403), so it was NOT a merge blocker. BUT the live `role_capabilities` table shows admin holding a key that doesn't control any access: an operator on the capability-management surface who grants/revokes `cap.admin.equipment` will silently affect nothing. **Fix before the cap-management UI becomes operator-reachable:** a cleanup migration (e.g. `0019`) `DELETE`ing `cap.admin.equipment` from `capabilities` + `role_capabilities` (touches the capability vocabulary → confirm with Seth). **Tag:** `field-ops`, `capabilities`, `governance`, `migration`.
+
+3. **`cap.tasks.own` 0013 label tidy.** The description says "View + complete OWN assigned + daily-checklist tasks" but the task-status route enforces a **broad** policy (any holder advances any task — field-PM-manages-the-board). Operator CONFIRMED broad (2026-06-27). Update the 0013 description string to match the enforced behavior (cosmetic; a migration-comment / description tidy, not a behavior change).
+
+4. **Write-UI phase.** All six P2.3 slices are **backend-only** (worker routes + worker tests; no lib clients, no pages). The forms that drive these routes (log-time, new-job, add-task, equipment-status/move/maintenance, roster CRUD) are a coherent next surface — they need a home in the SPA nav (UX decision shared across entities) and the same `cloudflare:test`/SPA-test discipline.
+
+5. **§50 D1-as-writer doctrine bump** (planning layer / Seth). P2.3 makes D1 an authoritative writer for payroll-grade field-ops data without per-entry human approval (send-free, audit-trailed). Built under the operator's "proceed" go-ahead; the formal Op Stds v18→v19 §50 blessing is the standing P0-ceremony item (see the SoR-integration entry above).
+
+**Tag:** `field-ops`, `p2.3`, `write-routes`. **Revisit when:** the cap-management UI is scheduled (H1), the write-UI phase begins (#4), or the equipment-inspection forms are defined (#1).
+
+Surfaced: 2026-06-27 (P2.3 write-routes session).

@@ -98,6 +98,7 @@ outside the sentinel block.
 |------|------|--------|------------|-------|-----|
 | 2026-06-10 | session_log | active | safety_portal | [Session — Agent Optimization (Brief 2) + Safety Portal Hardening (Brief 1)](2026-06-10_agent-optimization-and-portal-hardening.md) | #260, #261, #263, #264, #265, #266 |
 | 2026-06-27 | session_log | closed | safety_portal | [Session — Field-Ops P2.2 read views (Personnel / Equipment / Job Tracker), A/B/C landed](2026-06-27_field-ops-p2.2-read-views.md) | #308, #309, #310 |
+| 2026-06-27 | session_log | closed | safety_portal | [Session — Field-Ops P2.3 write routes (job/task/time/equipment CRUD), 6 slices landed](2026-06-27_field-ops-p2.3-write-routes.md) | #312, #313, #314, #315, #316, #317 |
 | 2026-06-20 | session_log | closed | safety_portal | [Session — feat/fix(safety-portal): banner wordmark rebrand — drop PNG lockup, render live gold-script "Integrated Technical System"](2026-06-20_safety-portal-banner-wordmark.md) | #297, #298, #299, #300 |
 | 2026-06-18 | session_log | closed | safety_portal | [Session — D1 job cleanup + clean-slate purge + tech-debt easy-wins (later arc, 2026-06-17 evening → 2026-06-18)](2026-06-18_d1-job-cleanup-and-tech-debt-easy-wins.md) | #292, #294, #295 |
 | 2026-06-17 | session_log | closed | safety_portal | [Session — Safety Portal test-artifact cleanup (live API) + daily/weekly PDF naming scheme (PRs #289 / #290)](2026-06-17_safety-portal-test-artifact-cleanup-and-pdf-naming.md) | #289, #290 |
