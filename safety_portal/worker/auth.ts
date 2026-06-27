@@ -84,6 +84,34 @@ export function coerceRole(raw: string | null | undefined): Role {
   return raw === "admin" ? "admin" : "submitter";
 }
 
+/**
+ * Resolve a user's role KEY to its granted capability SET (migration 0013's
+ * `role_capabilities`), read fresh per request — the SAME change-effective-next-request
+ * posture as `role` / `disabled` / `session_epoch` in requireSession.
+ *
+ * FAIL-CLOSED (Invariant 2; migration 0007's belt-to-suspenders, now load-bearing): a
+ * null / missing role, an unknown role, a role with no grants, OR a D1 error all yield
+ * the EMPTY set — never a privileged capability. Bound parameters only (Invariant 2).
+ *
+ * ORDER DEPENDENCY: migration 0013 (the `role_capabilities` table) MUST be live before
+ * this resolver ships, or every resolve hits a missing table → empty caps → 401s.
+ */
+export async function resolveCapabilities(
+  roleKey: string | null | undefined,
+  db: Env["DB"],
+): Promise<Set<string>> {
+  if (!roleKey) return new Set();
+  try {
+    const { results } = await db
+      .prepare("SELECT capability_key FROM role_capabilities WHERE role_key = ?")
+      .bind(roleKey)
+      .all<{ capability_key: string }>();
+    return new Set((results ?? []).map((r) => r.capability_key));
+  } catch {
+    return new Set();
+  }
+}
+
 /** Build the claims object placed (signed) into the session cookie. `epoch` snapshots
  *  the user's live session_epoch at issue (slice 8a, audit #7) so a later logout /
  *  password-change DB-side bump leaves this cookie's snapshot stale → rejected. */

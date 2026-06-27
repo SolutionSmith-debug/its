@@ -52,16 +52,23 @@ beforeEach(async () => {
 });
 
 describe("role foundation", () => {
-  it("login + /api/session expose the role", async () => {
+  it("login + /api/session expose the role + capabilities", async () => {
     await provision("admin.one", "password123", "admin");
     const res = await call("/api/login", {
       method: "POST",
       body: JSON.stringify({ username: "admin.one", password: "password123" }),
     });
-    expect(await res.json()).toEqual({ user: { username: "admin.one", role: "admin" } });
+    type UserBody = { user: { username: string; role: string; capabilities: string[] } };
+    const loginBody = (await res.json()) as UserBody;
+    expect(loginBody.user).toMatchObject({ username: "admin.one", role: "admin" });
+    // admin resolves the full grant set (migration 0013) — assert a representative cap
+    // rather than the exact list so the grant matrix can evolve without breaking this.
+    expect(loginBody.user.capabilities).toContain("cap.admin.accounts");
     const cookie = cookieFrom(res);
     const sess = await call("/api/session", { cookie });
-    expect(await sess.json()).toEqual({ user: { username: "admin.one", role: "admin" } });
+    const sessBody = (await sess.json()) as UserBody;
+    expect(sessBody.user).toMatchObject({ username: "admin.one", role: "admin" });
+    expect(sessBody.user.capabilities).toContain("cap.admin.accounts");
   });
 
   it("a DISABLED user cannot log in (PR-4 — validateUser rejects disabled, not just requireSession)", async () => {
