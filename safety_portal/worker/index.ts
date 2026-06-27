@@ -1183,7 +1183,12 @@ app.post("/api/internal/sync", requireInternalToken, async (c) => {
       ).bind(j.job_id, j.project_name, j.active),
     ),
     c.env.DB.prepare(
-      `UPDATE jobs SET active=0 WHERE active=1 AND job_id NOT IN (${ids.map(() => "?").join(",")})`,
+      // origin fence (migration 0017): only smartsheet-origin jobs participate in the
+      // full-replace deactivation. A portal-CREATED job (origin='portal') is absent from the
+      // Smartsheet payload until the mirror daemon promotes it, so it must never be deactivated here.
+      // ORDER DEPENDENCY: migration 0017 (the `origin` column) must be live BEFORE this Worker
+      // deploys, else this UPDATE 500s on an unknown column (mirror of the 0007/0009 activation rule).
+      `UPDATE jobs SET active=0 WHERE active=1 AND origin='smartsheet' AND job_id NOT IN (${ids.map(() => "?").join(",")})`,
     ).bind(...ids),
   ];
   const results = await c.env.DB.batch(statements);

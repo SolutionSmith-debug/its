@@ -357,6 +357,28 @@ their chunks are evicted. The Worker remains SEND-FREE (no Box creds, no egress)
 > Out of scope here: the Mac portal_poll PDF-cache pass (sibling surface, unchanged — it reads
 > `GET /api/internal/pdf-requests`, which now returns only live-requested forms).
 
+### Field-Ops schema + split-brain fence (P2.1 — `0014`–`0017`)
+
+**Migrations 0014–0016** port the URS-Marine field-ops tables into D1 (clients, personnel,
+equipment, task_assignments, equipment_location, time_entries, inspections, equipment_logs +
+additive ALTERs to `jobs`/`equipment`). **Migration 0017** adds `jobs.origin` / `sync_state` /
+`canonical_job_id` — the split-brain fence: a portal-CREATED job (`origin='portal'`) must NOT be
+deactivated by the Smartsheet down-sync (`/api/internal/sync`), which only deactivates
+`origin='smartsheet'` jobs absent from the payload. The field-ops integrity-bar tables
+(`time_entries`/`task_assignments`/`inspections`) are D1-PRIMARY operational SoR, so `prune` now
+protects any job holding them from deletion.
+
+#### Activation (operator — deploy boundary; escalates to the Developer-Operator)
+
+1. Apply migrations **0014–0017** to the live D1 **BEFORE** the redeploy
+   (`npx wrangler d1 migrations apply its-safety-portal-db --remote`) — else the scoped
+   `/api/internal/sync` deactivation 500s on the missing `origin` column and the field-ops-aware
+   `prune` 500s on the missing tables. **ORDER-CRITICAL**, same rule as 0006/0007/0009/0010/0011/0012.
+2. **Redeploy** (`npm run deploy`) — activates the origin-scoped down-sync + the field-ops-aware prune.
+
+> The field-ops READ/WRITE routes + the Mac mirror daemon (`field_ops/fieldops_sync`) that promotes
+> portal jobs into `ITS_Active_Jobs` land in later P2 slices — these migrations are inert until then.
+
 ### Lockout recovery (break-glass) — escalate to the Developer-Operator
 
 If both admins are ever locked out (e.g. passwords lost, or both disabled), recovery runs
