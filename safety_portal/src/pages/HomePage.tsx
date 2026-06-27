@@ -2,7 +2,14 @@ import { useAuth } from "../lib/auth";
 import { AppHeader } from "../components/AppHeader";
 
 /** Home navigation targets — the views a card can open. Kept in sync with App's view switch. */
-export type HomeNav = "fill" | "request" | "accounts" | "forms";
+export type HomeNav =
+  | "fill"
+  | "request"
+  | "accounts"
+  | "forms"
+  | "fieldops-jobs"
+  | "fieldops-equipment"
+  | "fieldops-personnel";
 
 interface HomeCard {
   key: HomeNav;
@@ -45,6 +52,27 @@ const HOME_CARDS: HomeCard[] = [
     badge: "Admin",
     title: "Forms",
     desc: "Manage the form catalog and publish new versions.",
+  },
+  {
+    key: "fieldops-jobs",
+    cap: "cap.jobtracker.read",
+    badge: "Field Ops",
+    title: "Job Tracker",
+    desc: "Jobs, crew, open tasks, and equipment on site.",
+  },
+  {
+    key: "fieldops-equipment",
+    cap: "cap.equipment.field",
+    badge: "Field Ops",
+    title: "Equipment",
+    desc: "Fleet readiness, current location, inspections, and machine logs.",
+  },
+  {
+    key: "fieldops-personnel",
+    cap: "cap.personnel.read",
+    badge: "Admin",
+    title: "Personnel",
+    desc: "Who is where, and per-person hour history.",
   },
 ];
 

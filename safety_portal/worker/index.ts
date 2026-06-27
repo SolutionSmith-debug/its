@@ -3,6 +3,10 @@ import { createMiddleware } from "hono/factory";
 import type { Context } from "hono";
 import { setSignedCookie, getSignedCookie, deleteCookie } from "hono/cookie";
 import type { Env, Role, SessionClaims, Vars } from "./types";
+import type { FieldopsGates } from "./fieldops_gates";
+import { registerPersonnelRoutes } from "./fieldops_personnel";
+import { registerEquipmentRoutes } from "./fieldops_equipment";
+import { registerJobTrackerRoutes } from "./fieldops_jobtracker";
 import {
   validateUser,
   newSessionClaims,
@@ -334,6 +338,28 @@ const requireRole = (role: Role) =>
     if (c.get("role") !== role) return c.json({ error: "forbidden" }, 403);
     await next();
   });
+
+/**
+ * Fine-grained capability gate (migration 0013). MUST chain AFTER requireSession, which
+ * resolves the per-request capability SET from D1. A session lacking the capability → 403.
+ * Field-ops READ/field actions gate on capability; admin-surface actions gate on requireRole.
+ * FAIL-CLOSED: an empty/missing capability set (unknown role, or a D1 blip in
+ * resolveCapabilities → empty Set) → 403. Never trust the client (Invariant 2) — the SPA
+ * hiding a card is hinting, this is the boundary. (Was deferred in P0 until its first consumer.)
+ */
+const requireCapability = (cap: string) =>
+  createMiddleware<{ Bindings: Env; Variables: Vars }>(async (c, next) => {
+    if (!c.get("capabilities").has(cap)) return c.json({ error: "forbidden" }, 403);
+    await next();
+  });
+
+// Field-ops READ layer (P2.2). Each tab owns its own route module; the gates are passed IN so
+// the per-tab modules never import index.ts (no import cycle). Registered here (before the SPA
+// catch-all). In Brief 0 these are no-op stubs; Briefs A/B/C implement them.
+const fieldopsGates: FieldopsGates = { requireSession, requireCapability };
+registerPersonnelRoutes(app, fieldopsGates);
+registerEquipmentRoutes(app, fieldopsGates);
+registerJobTrackerRoutes(app, fieldopsGates);
 
 /** GET /api/session — who am I (used by the SPA on load to restore session). Returns
  *  the live role (from requireSession's per-request D1 read), so a demotion drops the
