@@ -11,6 +11,7 @@ import { auditStmt, isUniqueViolation } from "./audit";
 import { registerTimeWriteRoutes } from "./fieldops_time_write";
 import { registerJobWriteRoutes } from "./fieldops_job_write";
 import { registerTaskWriteRoutes } from "./fieldops_task_write";
+import { registerEquipmentFieldWriteRoutes } from "./fieldops_equipment_write";
 import {
   validateUser,
   newSessionClaims,
@@ -360,6 +361,7 @@ registerJobTrackerRoutes(app, fieldopsGates);
 registerTimeWriteRoutes(app, fieldopsGates);
 registerJobWriteRoutes(app, fieldopsGates);
 registerTaskWriteRoutes(app, fieldopsGates);
+registerEquipmentFieldWriteRoutes(app, fieldopsGates);
 
 /** GET /api/session — who am I (used by the SPA on load to restore session). Returns
  *  the live role (from requireSession's per-request D1 read), so a demotion drops the
