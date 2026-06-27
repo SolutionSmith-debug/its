@@ -1,6 +1,296 @@
 import type { FieldopsApp, FieldopsGates } from "./fieldops_gates";
+import { encodeCursor, decodeCursor } from "./cursor";
 
-/** Field-ops Job-Tracker READ routes. STUB (Brief 0) — implemented in Brief C. */
-export function registerJobTrackerRoutes(_app: FieldopsApp, _gates: FieldopsGates): void {
-  /* implemented in Brief C */
+// Response shapes per BRIEF C (job tracker). The Job Tracker spans the job lifecycle, so the
+// LIST filters by a validated `status` param (NOT a hard active=1 gate) — F5.
+
+interface CrewMember {
+  id: number;
+  name: string;
+  trade: string | null;
+}
+
+interface OpenTask {
+  id: number;
+  description: string;
+  status: string;
+  personnel_name: string | null;
+}
+
+interface JobRow {
+  job_id: string;
+  project_name: string;
+  status: string;
+  progress: number;
+  client_name: string | null;
+  crew: CrewMember[];
+  open_tasks: OpenTask[];
+}
+
+const STATUS_VALUES = new Set(["active", "closed", "on_hold", "all"]);
+const NESTED_CAP = 20; // crew / open-tasks cap per job on the LIST card
+const LEG_CAP = 200; // crew / equipment-on-site cap on the DETAIL (non-paginated legs)
+
+function parseLimit(raw: string | undefined): number {
+  const n = parseInt(raw || "50");
+  return Math.min(Math.max(isNaN(n) ? 50 : n, 1), 200);
+}
+
+export function registerJobTrackerRoutes(app: FieldopsApp, gates: FieldopsGates): void {
+  // GET /api/fieldops/jobs — status-filtered keyset page + page-scoped crew/open-task batches
+  app.get(
+    "/api/fieldops/jobs",
+    gates.requireSession,
+    gates.requireCapability("cap.jobtracker.read"),
+    async (c) => {
+      const q = c.req.query();
+      const limit = parseLimit(q.limit);
+      // F5: validate status against the fixed set; default active. Never a hard active=1 gate.
+      const status = STATUS_VALUES.has(q.status ?? "") ? (q.status as string) : "active";
+      const cursor = decodeCursor(q.cursor);
+
+      // Jobs page (keyset on project_name ASC, job_id ASC; status filter via idx_jobs_status_name).
+      // `all` ⇒ the ?1='all' OR branch makes the status predicate a no-op. client_name comes from a
+      // LEFT JOIN to clients (jobs has client_id, not a denormalized name).
+      const sqlJobs = `
+        SELECT j.job_id, j.project_name, j.status, j.progress, c.name AS client_name
+        FROM jobs j
+        LEFT JOIN clients c ON c.id = j.client_id
+        WHERE (?1 = 'all' OR j.status = ?1)
+          AND (?2 IS NULL OR j.project_name > ?2 OR (j.project_name = ?2 AND j.job_id > ?3))
+        ORDER BY j.project_name ASC, j.job_id ASC
+        LIMIT ?4
+      `;
+      const jobsParams = cursor
+        ? [status, (cursor.p as string | null) ?? null, (cursor.j as string | null) ?? null, limit]
+        : [status, null, null, limit];
+
+      const jobsRes = await c.env.DB.prepare(sqlJobs).bind(...jobsParams).all<{
+        job_id: string;
+        project_name: string;
+        status: string;
+        progress: number;
+        client_name: string | null;
+      }>();
+
+      if (!jobsRes.results || jobsRes.results.length === 0) {
+        return c.json({ jobs: [], next_cursor: null }, 200);
+      }
+
+      const pageJobIds = jobsRes.results.map((r) => r.job_id);
+      const placeholders = pageJobIds.map(() => "?").join(",");
+
+      // Crew (distinct personnel) + open tasks, both page-scoped (idx_task_assignments_job).
+      // Both windowed to ≤NESTED_CAP per job IN SQL (bounded O(page·cap), not O(all crew/tasks)).
+      // NESTED_CAP is a code constant, not user input — safe to interpolate (matches Brief B's rn<=5).
+      const sqlCrew = `
+        SELECT job_id, id, name, trade FROM (
+          SELECT j.job_id, j.id, j.name, j.trade,
+                 ROW_NUMBER() OVER (PARTITION BY j.job_id ORDER BY j.name ASC, j.id ASC) AS rn
+          FROM (
+            SELECT DISTINCT ta.job_id, p.id, p.name, p.trade
+            FROM task_assignments ta JOIN personnel p ON p.id = ta.personnel_id
+            WHERE ta.job_id IN (${placeholders})
+          ) j
+        ) WHERE rn <= ${NESTED_CAP}
+      `;
+      const sqlOpenTasks = `
+        SELECT id, job_id, description, status, personnel_name FROM (
+          SELECT t.id, t.job_id, t.description, t.status, p.name AS personnel_name,
+                 ROW_NUMBER() OVER (PARTITION BY t.job_id ORDER BY t.created_at DESC, t.id DESC) AS rn
+          FROM task_assignments t LEFT JOIN personnel p ON p.id = t.personnel_id
+          WHERE t.job_id IN (${placeholders}) AND t.status != 'done'
+        ) WHERE rn <= ${NESTED_CAP}
+      `;
+
+      const [crewRes, tasksRes] = await c.env.DB.batch([
+        c.env.DB.prepare(sqlCrew).bind(...pageJobIds),
+        c.env.DB.prepare(sqlOpenTasks).bind(...pageJobIds),
+      ]);
+
+      // Group crew + open tasks by job_id, capped ≤NESTED_CAP per job in JS.
+      const crewByJob = new Map<string, CrewMember[]>();
+      for (const r of (crewRes.results ?? []) as { job_id: string; id: number; name: string; trade: string | null }[]) {
+        const arr = crewByJob.get(r.job_id) ?? [];
+        if (arr.length < NESTED_CAP) arr.push({ id: r.id, name: r.name, trade: r.trade });
+        crewByJob.set(r.job_id, arr);
+      }
+      const tasksByJob = new Map<string, OpenTask[]>();
+      for (const r of (tasksRes.results ?? []) as { id: number; job_id: string; description: string; status: string; personnel_name: string | null }[]) {
+        const arr = tasksByJob.get(r.job_id) ?? [];
+        if (arr.length < NESTED_CAP) arr.push({ id: r.id, description: r.description, status: r.status, personnel_name: r.personnel_name });
+        tasksByJob.set(r.job_id, arr);
+      }
+
+      const jobs: JobRow[] = jobsRes.results.map((j) => ({
+        job_id: j.job_id,
+        project_name: j.project_name,
+        status: j.status,
+        progress: j.progress,
+        client_name: j.client_name,
+        crew: crewByJob.get(j.job_id) ?? [],
+        open_tasks: tasksByJob.get(j.job_id) ?? [],
+      }));
+
+      const last = jobsRes.results[jobsRes.results.length - 1];
+      const nextCursor =
+        jobsRes.results.length === limit ? encodeCursor({ p: last.project_name, j: last.job_id }) : null;
+
+      return c.json({ jobs, next_cursor: nextCursor }, 200);
+    },
+  );
+
+  // GET /api/fieldops/jobs/:job_id — header (+ client) + five history legs (Promise.all via batch).
+  // F5: serves a job of ANY status (closed/on_hold included); 404 only on a truly unknown job_id.
+  app.get(
+    "/api/fieldops/jobs/:job_id",
+    gates.requireSession,
+    gates.requireCapability("cap.jobtracker.read"),
+    async (c) => {
+      const jobId = c.req.param("job_id");
+
+      // Header by PK + client join (jobs.client_id → clients).
+      const sqlHeader = `
+        SELECT j.job_id, j.project_name, j.status, j.progress,
+               c.name AS client_name, c.contact AS client_contact,
+               c.phone AS client_phone, c.email AS client_email
+        FROM jobs j
+        LEFT JOIN clients c ON c.id = j.client_id
+        WHERE j.job_id = ?
+      `;
+      const header = await c.env.DB.prepare(sqlHeader).bind(jobId).first<{
+        job_id: string;
+        project_name: string;
+        status: string;
+        progress: number;
+        client_name: string | null;
+        client_contact: string | null;
+        client_phone: string | null;
+        client_email: string | null;
+      }>();
+      if (!header) {
+        return c.json({ error: "not_found" }, 404);
+      }
+
+      const q = c.req.query();
+      const limit = parseLimit(q.limit);
+      const taskCursor = decodeCursor(q.task_cursor);
+      const timeCursor = decodeCursor(q.time_cursor);
+      const inspCursor = decodeCursor(q.insp_cursor);
+
+      // tasks (all statuses), keyset (created_at, id)
+      const sqlTasks = `
+        SELECT id, description, status, created_at,
+               (SELECT name FROM personnel WHERE id = task_assignments.personnel_id) AS personnel_name
+        FROM task_assignments
+        WHERE job_id = ?1
+          AND (?2 IS NULL OR created_at < ?2 OR (created_at = ?2 AND id < ?3))
+        ORDER BY created_at DESC, id DESC
+        LIMIT ?4
+      `;
+      // crew (distinct), bounded
+      const sqlCrew = `
+        SELECT DISTINCT p.id, p.name, p.trade
+        FROM task_assignments ta JOIN personnel p ON p.id = ta.personnel_id
+        WHERE ta.job_id = ?1
+        LIMIT ?2
+      `;
+      // time_entries (job-scoped), keyset (created_at, uuid). time_entries has no recorded_at →
+      // alias created_at AS recorded_at; the keyset pages on the real created_at.
+      const sqlTime = `
+        SELECT t.uuid, t.hours, t.work_started_at, t.work_ended_at,
+               t.created_at AS recorded_at, t.notes, p.name AS personnel_name
+        FROM time_entries t LEFT JOIN personnel p ON p.id = t.personnel_id
+        WHERE t.job_id = ?1
+          AND (?2 IS NULL OR t.created_at < ?2 OR (t.created_at = ?2 AND t.uuid < ?3))
+        ORDER BY t.created_at DESC, t.uuid DESC
+        LIMIT ?4
+      `;
+      // equipment-on-site — fan-out FIX: candidates restricted to equipment EVER on this job,
+      // windowed to each one's latest read, kept only if that latest is still THIS job.
+      const sqlEquip = `
+        SELECT e.id, e.name, e.kind, e.identifier, loc.label, loc.read_at
+        FROM (
+          SELECT equipment_id, label, read_at, job_id,
+                 ROW_NUMBER() OVER (PARTITION BY equipment_id ORDER BY recorded_at DESC, id DESC) rn
+          FROM equipment_location
+          WHERE equipment_id IN (SELECT DISTINCT equipment_id FROM equipment_location WHERE job_id = ?1)
+        ) loc JOIN equipment e ON e.id = loc.equipment_id
+        WHERE loc.rn = 1 AND loc.job_id = ?1
+        LIMIT ?2
+      `;
+      // inspections (job-scoped), keyset (created_at, uuid); scalar cols only (no payload_json).
+      const sqlInsp = `
+        SELECT i.uuid, i.form_code, i.version, i.performed_at,
+               i.created_at AS recorded_at,
+               (SELECT name FROM equipment WHERE id = i.equipment_id) AS equipment_name
+        FROM inspections i
+        WHERE i.job_id = ?1
+          AND (?2 IS NULL OR i.created_at < ?2 OR (i.created_at = ?2 AND i.uuid < ?3))
+        ORDER BY i.created_at DESC, i.uuid DESC
+        LIMIT ?4
+      `;
+
+      const taskParams = taskCursor
+        ? [jobId, (taskCursor.c as number | null) ?? null, (taskCursor.i as number | null) ?? null, limit]
+        : [jobId, null, null, limit];
+      const timeParams = timeCursor
+        ? [jobId, (timeCursor.c as number | null) ?? null, (timeCursor.u as string | null) ?? null, limit]
+        : [jobId, null, null, limit];
+      const inspParams = inspCursor
+        ? [jobId, (inspCursor.c as number | null) ?? null, (inspCursor.u as string | null) ?? null, limit]
+        : [jobId, null, null, limit];
+
+      const [tasksRes, crewRes, timeRes, equipRes, inspRes] = await c.env.DB.batch([
+        c.env.DB.prepare(sqlTasks).bind(...taskParams),
+        c.env.DB.prepare(sqlCrew).bind(jobId, LEG_CAP),
+        c.env.DB.prepare(sqlTime).bind(...timeParams),
+        c.env.DB.prepare(sqlEquip).bind(jobId, LEG_CAP),
+        c.env.DB.prepare(sqlInsp).bind(...inspParams),
+      ]);
+
+      const tasks = (tasksRes.results ?? []) as { id: number; description: string; status: string; created_at: number; personnel_name: string | null }[];
+      const timeEntries = (timeRes.results ?? []) as { uuid: string; recorded_at: number }[];
+      const inspections = (inspRes.results ?? []) as { uuid: string; recorded_at: number }[];
+
+      const tasksCursor =
+        tasks.length === limit
+          ? encodeCursor({ c: tasks[tasks.length - 1].created_at, i: tasks[tasks.length - 1].id })
+          : null;
+      const timeNext =
+        timeEntries.length === limit
+          ? encodeCursor({ c: timeEntries[timeEntries.length - 1].recorded_at, u: timeEntries[timeEntries.length - 1].uuid })
+          : null;
+      const inspNext =
+        inspections.length === limit
+          ? encodeCursor({ c: inspections[inspections.length - 1].recorded_at, u: inspections[inspections.length - 1].uuid })
+          : null;
+
+      return c.json(
+        {
+          job: {
+            job_id: header.job_id,
+            project_name: header.project_name,
+            status: header.status,
+            progress: header.progress,
+            client: header.client_name
+              ? {
+                  name: header.client_name,
+                  contact: header.client_contact,
+                  phone: header.client_phone,
+                  email: header.client_email,
+                }
+              : null,
+            crew: crewRes.results ?? [],
+            tasks,
+            time_entries: timeRes.results ?? [],
+            equipment_on_site: equipRes.results ?? [],
+            inspections: inspRes.results ?? [],
+          },
+          cursors: { tasks: tasksCursor, time: timeNext, insp: inspNext },
+        },
+        200,
+      );
+    },
+  );
 }
