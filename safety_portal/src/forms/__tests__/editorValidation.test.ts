@@ -8,10 +8,10 @@ import type { CatalogParent } from "../registry";
 // that surfaces the "JHA test under jha" mistake inline before Publish.
 
 const noVariant: CatalogParent = {
-  parent_form_code: "jha", name: "Job Hazard Analysis", form_code: "jha-v1", variants: [],
+  parent_form_code: "jha", name: "Job Hazard Analysis", category: "safety", form_code: "jha-v1", variants: [],
 };
 const variantParent: CatalogParent = {
-  parent_form_code: "toolbox-talk", name: "Toolbox Talk", form_code: null,
+  parent_form_code: "toolbox-talk", name: "Toolbox Talk", category: "safety", form_code: null,
   variants: [{ variant_label: "PPE", form_code: "toolbox-talk-ppe-v1" }],
 };
 const catalog = [noVariant, variantParent];

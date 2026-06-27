@@ -3,6 +3,7 @@
   "parents": [
     {
       "parent_form_code": "equipment-preinspection",
+      "category": "safety",
       "name": "Equipment Pre-Inspection",
       "display_order": 1,
       "forms": [
@@ -52,6 +53,7 @@
     },
     {
       "parent_form_code": "hsse-work-observation",
+      "category": "safety",
       "name": "HSS&E Work Observation",
       "display_order": 2,
       "forms": [
@@ -73,6 +75,7 @@
     },
     {
       "parent_form_code": "jha",
+      "category": "safety",
       "name": "Job Hazard Analysis",
       "display_order": 3,
       "forms": [
@@ -102,6 +105,7 @@
     },
     {
       "parent_form_code": "toolbox-talk",
+      "category": "safety",
       "name": "Toolbox Talk",
       "display_order": 4,
       "forms": [
@@ -179,6 +183,7 @@
     },
     {
       "parent_form_code": "visitor-sign-in",
+      "category": "safety",
       "name": "Visitor Sign-In",
       "display_order": 5,
       "forms": [
@@ -200,6 +205,7 @@
     },
     {
       "parent_form_code": "incident-report",
+      "category": "safety",
       "name": "Incident Report",
       "display_order": 6,
       "forms": [
@@ -229,6 +235,7 @@
     },
     {
       "parent_form_code": "lifting-plan",
+      "category": "safety",
       "name": "Crane & Rigging Critical Lift Plan",
       "display_order": 7,
       "forms": [
@@ -250,6 +257,7 @@
     },
     {
       "parent_form_code": "test",
+      "category": "safety",
       "name": "photo test",
       "display_order": 8,
       "forms": [
