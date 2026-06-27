@@ -19,6 +19,8 @@ const MAX_ID = 64;
 const MAX_NOTE = 512;
 const MAX_LABEL = 256;
 const EQUIP_STATUSES = new Set(["fmc", "degraded", "down"]);
+const LOG_TYPES = new Set(["maintenance", "fuel", "hours"]);
+const MAX_DETAIL = 2000;
 
 // Dual-attribution resolution (normalize + existence/disabled check), mirroring /api/submit. A
 // submit-as (attributing to another account) needs cap.submit_as AND a real, ENABLED, normalized
@@ -147,6 +149,64 @@ export function registerEquipmentFieldWriteRoutes(app: FieldopsApp, gates: Field
         auditStmt(c, actor, "equipment_move", String(id), { equipment_id: id, job_id: jobId }),
       ]);
       return c.json({ ok: true, equipment_id: id, job_id: jobId }, 201);
+    },
+  );
+
+  // POST /api/fieldops/equipment/:id/log — maintenance / fuel / hours event. Append-only integrity
+  // bar (server timestamps, amends_uuid edit chain, dual attribution); status_value NULL (not a
+  // status change — that's the /status route). Mutation + audit in one batch (W4).
+  app.post(
+    "/api/fieldops/equipment/:id/log",
+    gates.requireSession,
+    gates.requireCapability("cap.equipment.field"),
+    async (c) => {
+      const id = badId(c);
+      if (id === null) return c.json({ error: "invalid_id" }, 400);
+
+      let body: Record<string, unknown>;
+      try {
+        body = (await c.req.json()) as Record<string, unknown>;
+      } catch {
+        return c.json({ error: "bad_request" }, 400);
+      }
+      if (typeof body !== "object" || body === null || Array.isArray(body)) return c.json({ error: "bad_request" }, 400);
+
+      const uuid = typeof body.uuid === "string" ? body.uuid : "";
+      const logType = typeof body.log_type === "string" ? body.log_type : "";
+      const detail = typeof body.detail === "string" ? body.detail : null;
+      const amendsUuid = typeof body.amends_uuid === "string" ? body.amends_uuid : null;
+      const submittedAs = typeof body.submitted_as === "string" ? body.submitted_as : null;
+      const valueNum = typeof body.value_num === "number" && Number.isFinite(body.value_num) ? body.value_num : null;
+      const performedAt = typeof body.performed_at === "number" && Number.isFinite(body.performed_at) ? body.performed_at : null;
+      if (!uuid || uuid.length > MAX_ID) return c.json({ error: "invalid_uuid" }, 400);
+      if (!LOG_TYPES.has(logType)) return c.json({ error: "invalid_log_type" }, 400);
+      if (detail !== null && detail.length > MAX_DETAIL) return c.json({ error: "invalid_detail" }, 400);
+      if (amendsUuid !== null && amendsUuid.length > MAX_ID) return c.json({ error: "invalid_amends_uuid" }, 400);
+
+      const att = await resolveAttribution(c, submittedAs);
+      if ("res" in att) return att.res;
+      const actor = c.get("session").username;
+
+      const eq = await c.env.DB.prepare("SELECT id FROM equipment WHERE id = ?1 AND active = 1").bind(id).first();
+      if (!eq) return c.json({ error: "not_found" }, 404);
+
+      const action = amendsUuid ? "equipment_log_edit" : "equipment_log_create";
+      try {
+        await c.env.DB.batch([
+          c.env.DB
+            .prepare(
+              `INSERT INTO equipment_logs
+                 (uuid, equipment_id, log_type, value_num, detail, status_value, performed_at, actor_username, submitted_as, amends_uuid)
+               VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, ?7, ?8, ?9)`,
+            )
+            .bind(uuid, id, logType, valueNum, detail, performedAt, actor, att.attributed, amendsUuid),
+          auditStmt(c, actor, action, att.attributed, { equipment_id: id, log_type: logType, uuid }),
+        ]);
+      } catch (e) {
+        if (isUniqueViolation(e)) return c.json({ error: "uuid_conflict" }, 409);
+        throw e;
+      }
+      return c.json({ ok: true, uuid }, 201);
     },
   );
 }
