@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import * as api from "../lib/fieldops_personnel";
+import { PageShell } from "../components/PageShell";
 
 // Format helpers: epoch SECONDS (as stored in D1) → ×1000 for JS Date
 function fmtDateTime(epochSeconds: number | null): string {
@@ -103,9 +104,9 @@ export function FieldOpsPersonnel({ onBack }: { onBack: () => void }) {
 
   if (view === "detail" && selectedPersonnel) {
     return (
-      <div className="page">
-        <div className="dash-row dash-back-btn">
-          <button onClick={handleBack} className="btn--ghost">
+      <PageShell onHome={onBack}>
+        <div className="dash-back-btn">
+          <button onClick={handleBack} className="btn--secondary">
             ← Back to personnel
           </button>
         </div>
@@ -158,18 +159,13 @@ export function FieldOpsPersonnel({ onBack }: { onBack: () => void }) {
             </>
           )}
         </div>
-      </div>
+      </PageShell>
     );
   }
 
   // List view
   return (
-    <div className="page">
-      <div className="dash-row dash-back-btn">
-        <button onClick={handleBack} className="btn--ghost">
-          ← Back
-        </button>
-      </div>
+    <PageShell onHome={onBack}>
 
       <h2 className="page__heading">Personnel</h2>
       {error && <p className="muted" style={{ color: "red" }}>{error}</p>}
@@ -222,6 +218,6 @@ export function FieldOpsPersonnel({ onBack }: { onBack: () => void }) {
           )}
         </>
       )}
-    </div>
+    </PageShell>
   );
 }

@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import type { FormEvent } from "react";
 import * as api from "../lib/fieldops_equipment";
 import { useAuth } from "../lib/auth";
+import { PageShell } from "../components/PageShell";
 
 // Format helpers: epoch SECONDS (as stored in D1) → ×1000 for JS Date
 function fmtDateTime(epochSeconds: number | null): string {
@@ -330,9 +331,9 @@ export function FieldOpsEquipment({ onBack }: { onBack: () => void }) {
   if (view === "detail" && selectedEquipment) {
     const eq = selectedEquipment.header;
     return (
-      <div className="page">
-        <div className="dash-row dash-back-btn">
-          <button onClick={handleBack} className="btn--ghost">
+      <PageShell onHome={onBack}>
+        <div className="dash-back-btn">
+          <button onClick={handleBack} className="btn--secondary">
             ← Back to equipment
           </button>
         </div>
@@ -403,12 +404,12 @@ export function FieldOpsEquipment({ onBack }: { onBack: () => void }) {
                 <input value={editKind} onChange={(e) => setEditKind(e.target.value)} placeholder="Kind (optional)" maxLength={64} />{" "}
                 <input value={editIdent} onChange={(e) => setEditIdent(e.target.value)} placeholder="Identifier (optional)" maxLength={64} />{" "}
                 <button type="submit" disabled={actionBusy} className="btn--secondary">Save</button>{" "}
-                <button type="button" onClick={() => setEditOpen(false)} className="btn--ghost">Cancel</button>
+                <button type="button" onClick={() => setEditOpen(false)} className="btn--secondary">Cancel</button>
               </form>
             ) : (
               <div className="dash-row">
                 <button onClick={openEdit} className="btn--secondary">Edit details</button>{" "}
-                <button onClick={submitRetire} disabled={actionBusy} className="btn--ghost">Retire unit</button>
+                <button onClick={submitRetire} disabled={actionBusy} className="btn--secondary">Retire unit</button>
               </div>
             )}
           </section>
@@ -532,18 +533,13 @@ export function FieldOpsEquipment({ onBack }: { onBack: () => void }) {
             </>
           )}
         </div>
-      </div>
+      </PageShell>
     );
   }
 
   // List view
   return (
-    <div className="page">
-      <div className="dash-row dash-back-btn">
-        <button onClick={handleBack} className="btn--ghost">
-          ← Back
-        </button>
-      </div>
+    <PageShell onHome={onBack}>
 
       <h2 className="page__heading">Equipment</h2>
       {canManage && (
@@ -623,6 +619,6 @@ export function FieldOpsEquipment({ onBack }: { onBack: () => void }) {
           )}
         </>
       )}
-    </div>
+    </PageShell>
   );
 }
