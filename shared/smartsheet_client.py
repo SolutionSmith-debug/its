@@ -1067,6 +1067,38 @@ def find_sheet_by_name_in_folder(folder_id: int, name: str) -> int | None:
 
 
 @_breaker_guard
+def count_workspace_sheets(workspace_id: int) -> int:
+    """Count every sheet in a workspace, recursing nested folders.
+
+    Direct REST (`GET /workspaces/{id}?loadAll=true`) rather than the SDK's
+    deprecated `Workspaces.get_workspace()` — same DeprecationWarning + within-
+    session stale-read reasons documented on `find_sheet_by_name_in_folder`.
+
+    Used by `shared.sheet_capacity` to gate find-or-create against the per-workspace
+    sheet cap (Tier-A A1 / forensic scaling eval B1 — sheet proliferation).
+    """
+    token = keychain.get_secret("ITS_SMARTSHEET_TOKEN")
+    url = f"https://api.smartsheet.com/2.0/workspaces/{workspace_id}?loadAll=true"
+    context = f"counting sheets in workspace {workspace_id}"
+    try:
+        response = requests.get(
+            url, headers={"Authorization": f"Bearer {token}"}, timeout=30
+        )
+    except requests.RequestException as e:
+        raise SmartsheetError(f"{context}: {e!r}") from e
+    _translate_smartsheet_error(response, context=context)
+    return _count_sheets_in_node(response.json())
+
+
+def _count_sheets_in_node(node: dict[str, Any]) -> int:
+    """Recursively count `sheets[]` across a workspace/folder JSON node."""
+    total = len(node.get("sheets") or [])
+    for folder in node.get("folders") or []:
+        total += _count_sheets_in_node(folder)
+    return total
+
+
+@_breaker_guard
 def find_folder_by_name_in_folder(parent_folder_id: int, name: str) -> int | None:
     """Return the sub-folder ID with title `name` inside `parent_folder_id`, or None.
 
