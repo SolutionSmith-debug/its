@@ -42,6 +42,10 @@
         <integer>0</integer>
     </dict>
 
+    <!-- A2 (single-host resilience): RunAtLoad stays FALSE for a StartCalendarInterval
+         daemon. launchd fires a missed calendar job on wake; RunAtLoad=true would
+         MIS-fire it on every login (e.g. run a Friday compile on a Tuesday boot).
+         Reboot-recovery for the weekly compile is the watchdog Check-I catch-up. -->
     <key>RunAtLoad</key>
     <false/>
 

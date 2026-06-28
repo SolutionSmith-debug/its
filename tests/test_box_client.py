@@ -71,6 +71,7 @@ def _install_mocked_sdk(mocker):
     """
     oauth_cls = mocker.patch("shared.box_client.OAuth2")
     client_cls = mocker.patch("shared.box_client.Client")
+    mocker.patch("shared.box_client.AuthorizedSession")  # A2: don't build a real session in unit tests
     instance = MagicMock()
     client_cls.return_value = instance
     return oauth_cls, client_cls, instance
@@ -113,6 +114,22 @@ def test_get_client_wires_store_tokens_callback(mocker):
     box_client.get_client()
 
     assert oauth_cls.call_args.kwargs["store_tokens"] is box_client._store_tokens
+
+
+def test_get_client_wires_network_timeout(mocker):
+    """A2: every Box API call is bounded — boxsdk has no default network timeout.
+    The AuthorizedSession is built with default_network_request_kwargs carrying the
+    (connect, read) timeout and passed to Client as the session."""
+    mocker.patch("shared.box_client.OAuth2")
+    client_cls = mocker.patch("shared.box_client.Client")
+    sess_cls = mocker.patch("shared.box_client.AuthorizedSession")
+
+    box_client.get_client()
+
+    assert sess_cls.call_args.kwargs["default_network_request_kwargs"] == {
+        "timeout": box_client.BOX_NETWORK_TIMEOUT
+    }
+    assert client_cls.call_args.kwargs.get("session") is sess_cls.return_value
 
 
 def test_get_client_keychain_failure_raises_box_auth_error(mocker):

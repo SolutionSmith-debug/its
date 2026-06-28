@@ -59,6 +59,7 @@ from boxsdk.exception import (  # type: ignore[import-untyped]
     BoxAPIException,
     BoxOAuthException,
 )
+from boxsdk.session.session import AuthorizedSession  # type: ignore[import-untyped]
 
 from . import keychain
 
@@ -66,6 +67,14 @@ OAUTH_TOKEN_URL = "https://api.box.com/oauth2/token"  # noqa: S105 — public OA
 OAUTH_AUTHORIZE_URL = "https://account.box.com/api/oauth2/authorize"
 
 MAX_RETRIES = 3
+
+# (connect, read) network timeout in seconds for every Box API call. boxsdk has
+# NO default network timeout (eval A2 `host-daemon-no-timeout` /
+# `box-rate-limit-no-instrumentation`) — a stalled Box call would hang a daemon
+# indefinitely. Wired via the AuthorizedSession's `default_network_request_kwargs`
+# (the legacy-boxsdk timeout knob; `DefaultNetwork.request(**kwargs)` forwards it
+# to `requests`).
+BOX_NETWORK_TIMEOUT = (10, 30)
 
 # Keychain entry names. Single source of truth — also used by
 # setup_box_oauth.py and smoke_test_box.py.
@@ -153,7 +162,12 @@ def get_client() -> Client:
             refresh_token=refresh_token,
             store_tokens=_store_tokens,
         )
-        _client = Client(oauth)
+        # Bound every Box API call (boxsdk has no default network timeout) via the
+        # AuthorizedSession's default_network_request_kwargs — see BOX_NETWORK_TIMEOUT.
+        session = AuthorizedSession(
+            oauth, default_network_request_kwargs={"timeout": BOX_NETWORK_TIMEOUT}
+        )
+        _client = Client(oauth, session=session)
     return _client
 
 

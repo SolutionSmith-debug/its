@@ -54,8 +54,13 @@
     <key>StartInterval</key>
     <integer>3600</integer>
 
+    <!-- A2 (single-host resilience): RunAtLoad=true so this interval poll daemon
+         RESUMES immediately when launchd loads the agent after a reboot/OS-update
+         (eval host-no-runatload), then StartInterval re-fires on cadence. KeepAlive
+         is intentionally absent: ITS daemons are one-shot-per-fire, so KeepAlive=true
+         would restart on exit and destroy the interval cadence. -->
     <key>RunAtLoad</key>
-    <false/>
+    <true/>
 
     <key>ProcessType</key>
     <string>Background</string>

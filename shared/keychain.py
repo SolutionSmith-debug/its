@@ -20,6 +20,38 @@ class KeychainError(RuntimeError):
     """Raised when a Keychain entry is missing or inaccessible."""
 
 
+class KeychainLockedError(KeychainError):
+    """The `security` CLI could not access the keychain because it is LOCKED.
+
+    Distinct from a genuinely missing entry — common after a reboot before the
+    login keychain is unlocked (eval A2 `host-keychain-locked-after-reboot`). A
+    daemon should fail LOUD with this recognizable signal (and the operator
+    unlocks the keychain), not blindly retry or report a misleading
+    "entry not found".
+    """
+
+
+# `security` is a fast LOCAL CLI; a multi-second wait means it is hung or blocked
+# on a locked-keychain interaction prompt. Bound it so a daemon never hangs
+# indefinitely (eval A2 `host-daemon-no-timeout`). 10s is generous for a local call.
+KEYCHAIN_CLI_TIMEOUT = 10
+
+# Substrings in `security` stderr that indicate a LOCKED keychain
+# (errSecInteractionNotAllowed, -25308) rather than a missing item.
+_LOCKED_INDICATORS = (
+    "interaction is not allowed",
+    "interactionnotallowed",
+    "-25308",
+    "errsecinteractionnotallowed",
+)
+
+
+def _looks_locked(stderr: str) -> bool:
+    """True if `security` stderr indicates a locked keychain (vs. a missing item)."""
+    low = (stderr or "").lower()
+    return any(ind in low for ind in _LOCKED_INDICATORS)
+
+
 def get_secret(service: str, account: str | None = None) -> str:
     """Read a generic-password Keychain entry.
 
@@ -40,13 +72,27 @@ def get_secret(service: str, account: str | None = None) -> str:
             check=True,
             capture_output=True,
             text=True,
+            timeout=KEYCHAIN_CLI_TIMEOUT,
         )
         return result.stdout.rstrip("\n")
     except FileNotFoundError as e:
         raise KeychainError(
             "macOS `security` CLI not found. This module is macOS-only."
         ) from e
+    except subprocess.TimeoutExpired as e:
+        raise KeychainError(
+            f"`security` CLI timed out after {KEYCHAIN_CLI_TIMEOUT}s reading "
+            f"service={service!r} (keychain locked or hung?). Unlock the login "
+            f"keychain (`security unlock-keychain`) and retry."
+        ) from e
     except subprocess.CalledProcessError as e:
+        if _looks_locked(e.stderr or ""):
+            raise KeychainLockedError(
+                f"Keychain LOCKED — cannot read service={service!r}: "
+                f"{(e.stderr or '').strip() or 'interaction not allowed'}. Unlock "
+                f"the login keychain (`security unlock-keychain`) — common after a "
+                f"reboot before the keychain is unlocked."
+            ) from e
         raise KeychainError(
             f"Keychain entry not found: service={service!r}, account={account!r}. "
             f"Add it with: security add-generic-password -a \"$USER\" -s \"{service}\" -w"
@@ -97,15 +143,29 @@ def set_secret(service: str, value: str, account: str | None = None) -> None:
             capture_output=True,
             text=True,
             input=f"{value}\n{value}\n",  # password + retype; never in argv/ps
+            timeout=KEYCHAIN_CLI_TIMEOUT,
         )
     except FileNotFoundError as e:
         raise KeychainError(
             "macOS `security` CLI not found. This module is macOS-only."
         ) from e
+    except subprocess.TimeoutExpired as e:
+        # Never include `value` — a timeout message must not leak the secret.
+        raise KeychainError(
+            f"`security` CLI timed out after {KEYCHAIN_CLI_TIMEOUT}s writing "
+            f"service={service!r} (keychain locked or hung?). Unlock the login "
+            f"keychain (`security unlock-keychain`) and retry."
+        ) from e
     except subprocess.CalledProcessError as e:
         # stderr surfaces the actual reason (e.g., permission denied, locked
         # keychain). Don't include `value` in the message — that would leak
         # the secret into logs.
+        if _looks_locked(e.stderr or ""):
+            raise KeychainLockedError(
+                f"Keychain LOCKED — cannot write service={service!r}: "
+                f"{(e.stderr or '').strip() or 'interaction not allowed'}. Unlock "
+                f"the login keychain (`security unlock-keychain`)."
+            ) from e
         raise KeychainError(
             f"Keychain write failed for service={service!r}, account={account!r}: "
             f"{e.stderr.strip() or 'no detail'}"
