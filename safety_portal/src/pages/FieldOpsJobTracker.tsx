@@ -1,5 +1,7 @@
 import { useState, useEffect } from "react";
+import type { FormEvent } from "react";
 import * as api from "../lib/fieldops_jobtracker";
+import { useAuth } from "../lib/auth";
 
 // epoch SECONDS → ×1000 for JS Date
 function fmtDateTime(epochSeconds: number | null): string {
@@ -49,6 +51,22 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
   const [timeCursor, setTimeCursor] = useState<string | null>(null);
   const [inspCursor, setInspCursor] = useState<string | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+
+  // Write (P2.3; Worker re-gates server-side — these caps drive UI affordances only).
+  const { user } = useAuth();
+  const caps = user?.capabilities ?? [];
+  const canManage = caps.includes("cap.jobtracker.manage"); // create / close / progress / add-task
+  const canOwnTasks = caps.includes("cap.tasks.own"); // change a task's own status
+  const [actionBusy, setActionBusy] = useState(false);
+  const [actionMsg, setActionMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  // New-job form (list view)
+  const [newJobId, setNewJobId] = useState("");
+  const [newJobName, setNewJobName] = useState("");
+  const [newJobClient, setNewJobClient] = useState("");
+  const [newJobOpen, setNewJobOpen] = useState(false);
+  // Detail manage controls
+  const [progressVal, setProgressVal] = useState("");
+  const [taskDesc, setTaskDesc] = useState("");
 
   // Reload the list whenever the status filter changes (and on mount).
   useEffect(() => {
@@ -148,6 +166,129 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
     );
   }
 
+  // ── WRITE handlers (P2.3) ──────────────────────────────────────────────────────────────────────
+  // Re-fetch the open job from scratch (drops appended history legs back to the first page; the
+  // mutation just landed so the first page is what we want to show). Resets all three leg cursors.
+  async function reloadDetail() {
+    if (!selectedJob) return;
+    const res = await api.fetchJobDetail(selectedJob.job_id);
+    setSelectedJob(res.job);
+    setTaskCursor(res.cursors.tasks);
+    setTimeCursor(res.cursors.time);
+    setInspCursor(res.cursors.insp);
+  }
+
+  async function reloadList() {
+    const data = await api.fetchJobList(statusFilter);
+    setJobs(data.jobs);
+    setCursor(data.next_cursor);
+  }
+
+  async function submitNewJob(e: FormEvent) {
+    e.preventDefault();
+    if (actionBusy) return;
+    const jobId = newJobId.trim().toUpperCase();
+    const projectName = newJobName.trim();
+    if (!jobId || !projectName) {
+      setActionMsg({ ok: false, text: "Job ID and project name are required." });
+      return;
+    }
+    setActionBusy(true);
+    setActionMsg(null);
+    try {
+      const clientName = newJobClient.trim();
+      await api.createJob({
+        job_id: jobId,
+        project_name: projectName,
+        ...(clientName ? { new_client: { name: clientName } } : {}),
+      });
+      setNewJobId("");
+      setNewJobName("");
+      setNewJobClient("");
+      setNewJobOpen(false);
+      await reloadList();
+      setActionMsg({ ok: true, text: `Job ${jobId} created.` });
+    } catch (err) {
+      setActionMsg({ ok: false, text: err instanceof Error ? err.message : "Create failed." });
+    } finally {
+      setActionBusy(false);
+    }
+  }
+
+  async function submitClose() {
+    if (!selectedJob || actionBusy) return;
+    setActionBusy(true);
+    setActionMsg(null);
+    try {
+      await api.closeJob(selectedJob.job_id);
+      await reloadDetail();
+      setActionMsg({ ok: true, text: "Job closed." });
+    } catch (err) {
+      setActionMsg({ ok: false, text: err instanceof Error ? err.message : "Close failed." });
+    } finally {
+      setActionBusy(false);
+    }
+  }
+
+  async function submitProgress(e: FormEvent) {
+    e.preventDefault();
+    if (!selectedJob || actionBusy) return;
+    const pct = Number(progressVal);
+    if (progressVal.trim() === "" || !Number.isFinite(pct)) {
+      setActionMsg({ ok: false, text: "Progress must be a number (0–100)." });
+      return;
+    }
+    setActionBusy(true);
+    setActionMsg(null);
+    try {
+      await api.setJobProgress(selectedJob.job_id, pct);
+      setProgressVal("");
+      await reloadDetail();
+      setActionMsg({ ok: true, text: "Progress updated." });
+    } catch (err) {
+      setActionMsg({ ok: false, text: err instanceof Error ? err.message : "Update failed." });
+    } finally {
+      setActionBusy(false);
+    }
+  }
+
+  async function submitAddTask(e: FormEvent) {
+    e.preventDefault();
+    if (!selectedJob || actionBusy) return;
+    const description = taskDesc.trim();
+    if (!description) {
+      setActionMsg({ ok: false, text: "Task description is required." });
+      return;
+    }
+    setActionBusy(true);
+    setActionMsg(null);
+    try {
+      await api.addTask(selectedJob.job_id, { description });
+      setTaskDesc("");
+      await reloadDetail();
+      setActionMsg({ ok: true, text: "Task added." });
+    } catch (err) {
+      setActionMsg({ ok: false, text: err instanceof Error ? err.message : "Add task failed." });
+    } finally {
+      setActionBusy(false);
+    }
+  }
+
+  async function changeTaskStatus(taskId: number, status: api.TaskStatus) {
+    if (actionBusy) return;
+    setActionBusy(true);
+    setActionMsg(null);
+    try {
+      await api.setTaskStatus(taskId, status);
+      await reloadDetail();
+      setActionMsg({ ok: true, text: "Task updated." });
+    } catch (err) {
+      setActionMsg({ ok: false, text: err instanceof Error ? err.message : "Task update failed." });
+    } finally {
+      setActionBusy(false);
+    }
+  }
+
   if (view === "detail" && selectedJob) {
     const job = selectedJob;
     return (
@@ -162,12 +303,49 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
         </div>
         <p className="dash-card__sub muted">{(job.client?.name ?? "No client")} · {job.job_id}</p>
 
+        {actionMsg && (
+          <p className="muted" style={{ color: actionMsg.ok ? "green" : "red" }}>{actionMsg.text}</p>
+        )}
+
         <section className="card dash-section">
           <span className="dash-card__label">Progress — {job.progress}%</span>
           <div className="dash-progress">
             <div className="dash-progress__fill" style={{ width: `${clampPct(job.progress)}%` }} />
           </div>
         </section>
+
+        {canManage && (
+          <section className="card dash-section">
+            <h3 className="dash-detail__h2">Manage job</h3>
+            <form onSubmit={submitProgress} className="dash-row" aria-label="Update job progress">
+              <label className="dash-card__label">
+                Progress %:{" "}
+                <input
+                  value={progressVal}
+                  onChange={(e) => setProgressVal(e.target.value)}
+                  placeholder={String(job.progress)}
+                  inputMode="numeric"
+                  size={5}
+                />
+              </label>{" "}
+              <button type="submit" disabled={actionBusy} className="btn--secondary">Set progress</button>
+            </form>
+            <form onSubmit={submitAddTask} className="dash-row" aria-label="Add a task">
+              <input
+                value={taskDesc}
+                onChange={(e) => setTaskDesc(e.target.value)}
+                placeholder="New task description"
+                maxLength={256}
+              />{" "}
+              <button type="submit" disabled={actionBusy} className="btn--secondary">Add task</button>
+            </form>
+            {job.status === "active" && (
+              <div className="dash-row">
+                <button onClick={submitClose} disabled={actionBusy} className="btn--ghost">Close job</button>
+              </div>
+            )}
+          </section>
+        )}
 
         {job.client && (
           <section className="card dash-section">
@@ -200,6 +378,21 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
                 <li key={t.id}>
                   <span className={taskPillClass(t.status)}>{t.status}</span> {t.description}
                   {t.personnel_name ? <span className="muted"> — {t.personnel_name}</span> : null}
+                  {canOwnTasks && (
+                    <>
+                      {" "}
+                      <select
+                        aria-label={`Set status for task ${t.id}`}
+                        value={t.status}
+                        disabled={actionBusy}
+                        onChange={(e) => changeTaskStatus(t.id, e.target.value as api.TaskStatus)}
+                      >
+                        <option value="open">open</option>
+                        <option value="in_progress">in_progress</option>
+                        <option value="done">done</option>
+                      </select>
+                    </>
+                  )}
                 </li>
               ))}
             </ul>
@@ -301,6 +494,40 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
           </select>
         </label>
       </div>
+
+      {canManage && (
+        <div className="dash-row">
+          {newJobOpen ? (
+            <form onSubmit={submitNewJob} className="dash-row" aria-label="Create job">
+              <input
+                value={newJobId}
+                onChange={(e) => setNewJobId(e.target.value)}
+                placeholder="Job ID (e.g. JOB-1042)"
+                maxLength={64}
+              />{" "}
+              <input
+                value={newJobName}
+                onChange={(e) => setNewJobName(e.target.value)}
+                placeholder="Project name"
+                maxLength={256}
+              />{" "}
+              <input
+                value={newJobClient}
+                onChange={(e) => setNewJobClient(e.target.value)}
+                placeholder="Client name (optional)"
+                maxLength={256}
+              />{" "}
+              <button type="submit" disabled={actionBusy} className="btn--secondary">Create</button>{" "}
+              <button type="button" onClick={() => setNewJobOpen(false)} className="btn--ghost">Cancel</button>
+            </form>
+          ) : (
+            <button onClick={() => setNewJobOpen(true)} className="btn--secondary">+ New job</button>
+          )}
+        </div>
+      )}
+      {actionMsg && (
+        <p className="muted" style={{ color: actionMsg.ok ? "green" : "red" }}>{actionMsg.text}</p>
+      )}
       {error && <p className="muted" style={{ color: "red" }}>{error}</p>}
 
       {jobs.length === 0 ? (
