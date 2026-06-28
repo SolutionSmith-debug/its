@@ -2277,23 +2277,25 @@ This is a **planning-layer / Seth-owned** mission delta: the Safety Portal missi
 
 Surfaced: 2026-06-12 PR-5 implementation.
 
-## [OPEN 2026-06-27] Field-ops Smartsheet/Box source-of-truth integration (P2.4+ downstream)
+## [BLOCKED 2026-06-28] Field-ops Smartsheet/Box source-of-truth integration (P2.4+ downstream)
 
-The P2.2 field-ops READ views (Personnel #308 / Equipment #309 / Job Tracker #310) read **D1 live** (the local primary) and are send-free — deliberately decoupled from the source-of-truth sync/filing layer (Invariant 1). Wiring Smartsheet (operator-SoR, structured) + Box (document-SoR, filing) in as canonical stores is downstream work the read layer does NOT block but does NOT yet implement. Three concrete pieces:
+> **⛔ BLOCKED — PARKED 2026-06-28 (operator decision).** The P2.4 mirror daemon is blocked on **no access to the canonical/main Evergreen Smartsheet account**: Seth cannot currently see the real **schema** or the **source-of-record** for materials / deliverables / etc. A daemon whose whole job is to write D1 → the canonical Smartsheet, built against an *unseen* target schema, would encode **guesses** that will be wrong — worse than absent. **Do not build P2.4 until the SoR is visible.** This blocks ONLY the up-sync/filing layer; every D1-local phase (P3 materials admin-editable catalog, etc.) is unaffected. **Unblock condition:** access to the main Evergreen Smartsheet (real schema + SoR). See `decision_p2.4-parked-no-smartsheet-access` + `feedback_dont-build-against-unseen-sot` memories. The §50 doctrine bump (below) is a *separate* gate that also still needs Seth's sign-off.
 
-1. **P2.4 mirror daemon** (`field_ops/fieldops_sync.py`, currently a skeleton) — push the field-ops tables (personnel / equipment / task_assignments / time_entries / inspections) UP to Smartsheet as the operator-visible SoR, AND the **origin-flip inversion**: the Worker `POST /api/internal/sync` UPSERT does NOT touch `jobs.origin`, so a promoted portal-created job stays permanently sweep-exempt unless the daemon flips `origin → 'smartsheet'` (+ `sync_state` / `canonical_job_id`). Jobs already flow Smartsheet→D1 via `/api/internal/sync`; `origin`/`sync_state` columns exist (migration 0017). Doctrine-critical → CC, with `ops-stds-enforcer` + a §30 live integration test.
+The P2.2 field-ops READ views (Personnel #308 / Equipment #309 / Job Tracker #310) read **D1 live** (the local primary) and are send-free — deliberately decoupled from the source-of-truth sync/filing layer (Invariant 1). Wiring Smartsheet (operator-SoR, structured) + Box (document-SoR, filing) in as canonical stores is downstream work the read/write layer does NOT block but does NOT yet implement. Three concrete pieces:
+
+1. **P2.4 mirror daemon** (`field_ops/fieldops_sync.py`, currently a skeleton) — **⛔ BLOCKED on SoR visibility (above).** push the field-ops tables (personnel / equipment / task_assignments / time_entries / inspections) UP to Smartsheet as the operator-visible SoR, AND the **origin-flip inversion**: the Worker `POST /api/internal/sync` UPSERT does NOT touch `jobs.origin`, so a promoted portal-created job stays permanently sweep-exempt unless the daemon flips `origin → 'smartsheet'` (+ `sync_state` / `canonical_job_id`). Jobs already flow Smartsheet→D1 via `/api/internal/sync`; `origin`/`sync_state` columns exist (migration 0017). Doctrine-critical → CC, with `ops-stds-enforcer` + a §30 live integration test.
 2. **Box document linkage** — add a `box_file_id` (or folder ref) column to the document-bearing field-ops records (inspections; later job docs) and surface it on the read routes. Mirrors how safety-report submissions carry `box_file_id`. Not yet on the field-ops tables/schema.
 3. **Op Stds §50 "D1-as-writer" doctrine blessing** — making D1 the primary that mirrors to Smartsheet is a doctrine decision; v18→v19 bump to FLAG to Seth. Plus the §43 successor-remediation runbook for the P2.4 daemon. (The read routes themselves are read-only Worker code → a break is high-capability-class category-4 code-fix-only → no Tier-2-reachable failure mode → **no §43 entry required for the read views**; planning layer to confirm.)
 
 **Optional cheap read-layer hook (deferred, NOT built):** surface jobs `origin`/`sync_state` in the Job-Tracker list/detail response so the portal shows provenance ("from Smartsheet" vs "created in portal") the moment the mirror daemon lands. Small response-shape extension to `fieldops_jobtracker.ts` + lib + page + tests.
 
-**Tag:** `field-ops`, `smartsheet`, `box`, `source-of-truth`, `doctrine`, `planning-layer`. **Revisit when:** P2.4 (mirror daemon) is scheduled, or the §50 doctrine bump reaches Seth.
+**Tag:** `field-ops`, `smartsheet`, `box`, `source-of-truth`, `doctrine`, `planning-layer`, `blocked`. **Revisit when:** Seth gains access to the main Evergreen Smartsheet (real schema + SoR visible) — the hard prerequisite — AND/OR the §50 doctrine bump reaches Seth.
 
-Surfaced: 2026-06-27 (operator forward-compatibility concern, P2.2 read-views session). See `project_fieldops-portal-program` memory + `docs/session_logs/2026-06-27_field-ops-p2.2-read-views.md`.
+Surfaced: 2026-06-27 (operator forward-compatibility concern, P2.2 read-views session); **moved to BLOCKED 2026-06-28** (operator parked P2.4 — no canonical Smartsheet access). See `project_fieldops-portal-program` + `decision_p2.4-parked-no-smartsheet-access` memories + `docs/session_logs/2026-06-27_field-ops-p2.2-read-views.md`.
 
 ## [OPEN 2026-06-27] Field-ops P2.3 write-layer follow-ups (deferred sub-features + governance)
 
-The P2.3 write routes landed complete (PRs #312–#317; `docs/session_logs/2026-06-27_field-ops-p2.3-write-routes.md`). Five tracked follow-ups deferred out of the write slices:
+The P2.3 write routes landed complete (PRs #312–#317; `docs/session_logs/2026-06-27_field-ops-p2.3-write-routes.md`). Five tracked follow-ups deferred out of the write slices (item #4 write-UI **RESOLVED 2026-06-28**; four remain):
 
 1. **Inspection quick-log** (the design's Slice 5 also). A lightweight equipment pre-use inspection write (`POST /api/fieldops/equipment/:id/inspection` → `inspections`, version-pinned) was NOT built: there is **no equipment-pre-inspection forms catalog** in the system to validate `form_code` against (the form-editor's published forms are the safety/progress ones, `identity-v<version>`-validated, not equipment inspections). **Blocked on an operator/domain input:** define the equipment pre-inspection forms + their `form_code`s (e.g. `skid-daily`, `telehandler-preuse`). Then it's a quick add — same integrity-bar pattern as the maintenance log + a `form_code` allow-list + server-side version-pin.
 
@@ -2301,10 +2303,10 @@ The P2.3 write routes landed complete (PRs #312–#317; `docs/session_logs/2026-
 
 3. **`cap.tasks.own` 0013 label tidy.** The description says "View + complete OWN assigned + daily-checklist tasks" but the task-status route enforces a **broad** policy (any holder advances any task — field-PM-manages-the-board). Operator CONFIRMED broad (2026-06-27). Update the 0013 description string to match the enforced behavior (cosmetic; a migration-comment / description tidy, not a behavior change).
 
-4. **Write-UI phase.** All six P2.3 slices are **backend-only** (worker routes + worker tests; no lib clients, no pages). The forms that drive these routes (log-time, new-job, add-task, equipment-status/move/maintenance, roster CRUD) are a coherent next surface — they need a home in the SPA nav (UX decision shared across entities) and the same `cloudflare:test`/SPA-test discipline.
+4. ~~**Write-UI phase.**~~ **RESOLVED 2026-06-28** (PRs #319–#322, all four-part-verified). The forms that drive the P2.3 routes shipped as 4 pure-SPA slices: equipment status+machine-log #319, equipment move+roster admin #320, Job-Tracker create/close/progress/add-task/task-status #321, time-logging #322. Canonical write-UI pattern: `useAuth()` capability-gate (convenience — Worker re-gates) + `postJson` + `crypto.randomUUID` for integrity-bar uuids + reload-after + `vi.mock("../../lib/auth")` (default read-only) test pattern. See `project_fieldops-portal-program` memory.
 
 5. **§50 D1-as-writer doctrine bump** (planning layer / Seth). P2.3 makes D1 an authoritative writer for payroll-grade field-ops data without per-entry human approval (send-free, audit-trailed). Built under the operator's "proceed" go-ahead; the formal Op Stds v18→v19 §50 blessing is the standing P0-ceremony item (see the SoR-integration entry above).
 
-**Tag:** `field-ops`, `p2.3`, `write-routes`. **Revisit when:** the cap-management UI is scheduled (H1), the write-UI phase begins (#4), or the equipment-inspection forms are defined (#1).
+**Tag:** `field-ops`, `p2.3`, `write-routes`. **Revisit when:** the cap-management UI is scheduled (H1), or the equipment-inspection forms are defined (#1). _(Item #4 write-UI RESOLVED 2026-06-28.)_
 
-Surfaced: 2026-06-27 (P2.3 write-routes session).
+Surfaced: 2026-06-27 (P2.3 write-routes session); item #4 resolved 2026-06-28 (write-UI phase session).
