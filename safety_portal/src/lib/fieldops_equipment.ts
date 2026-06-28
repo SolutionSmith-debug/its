@@ -92,8 +92,8 @@ export async function fetchEquipmentDetail(id: number, cursors?: {
     { equipment: { header: { id, name: "", kind: null, identifier: null, status: "fmc", status_note: null, status_changed_at: null, status_actor: null }, locations: [], inspections: [], logs: [] }, cursors: { loc: null, insp: null, log: null } };
 }
 
-// ── WRITE (P2.3 field actions; cap.equipment.field) — same-origin cookie POST ──────────────────
-async function postJson(url: string, body: unknown): Promise<void> {
+// ── WRITE (P2.3; same-origin cookie POST) ───────────────────────────────────────────────────────
+async function postJson<T = { ok: boolean }>(url: string, body: unknown): Promise<T> {
   const res = await fetch(url, {
     method: "POST",
     credentials: "same-origin",
@@ -104,15 +104,43 @@ async function postJson(url: string, body: unknown): Promise<void> {
     const err = (await res.json().catch(() => ({}))) as { error?: string };
     throw new Error(err.error ?? `Request failed (${res.status})`);
   }
+  return (await res.json()) as T;
 }
 
 export type EquipStatus = "fmc" | "degraded" | "down";
 export type LogType = "maintenance" | "fuel" | "hours";
 
-export function setEquipmentStatus(id: number, body: { uuid: string; status: EquipStatus; status_note?: string }): Promise<void> {
-  return postJson(`/api/fieldops/equipment/${id}/status`, body);
+// field actions (cap.equipment.field)
+export async function setEquipmentStatus(id: number, body: { uuid: string; status: EquipStatus; status_note?: string }): Promise<void> {
+  await postJson(`/api/fieldops/equipment/${id}/status`, body);
+}
+export async function logEquipmentMaintenance(id: number, body: { uuid: string; log_type: LogType; value_num?: number; detail?: string }): Promise<void> {
+  await postJson(`/api/fieldops/equipment/${id}/log`, body);
+}
+export async function moveEquipment(id: number, body: { job_id: string; label?: string; lat?: number; lon?: number; read_at?: number }): Promise<void> {
+  await postJson(`/api/fieldops/equipment/${id}/location`, body);
 }
 
-export function logEquipmentMaintenance(id: number, body: { uuid: string; log_type: LogType; value_num?: number; detail?: string }): Promise<void> {
-  return postJson(`/api/fieldops/equipment/${id}/log`, body);
+// roster admin (cap.equipment.manage)
+export async function createEquipment(body: { name: string; kind?: string; identifier?: string; status?: EquipStatus; status_note?: string }): Promise<{ id: number }> {
+  return postJson<{ ok: boolean; id: number }>("/api/fieldops/equipment", body);
+}
+export async function updateEquipment(id: number, body: { name: string; kind?: string; identifier?: string }): Promise<void> {
+  await postJson(`/api/fieldops/equipment/${id}/update`, body);
+}
+export async function retireEquipment(id: number): Promise<void> {
+  await postJson(`/api/fieldops/equipment/${id}/delete`, {});
+}
+
+// Minimal active-job options for the "move to job" picker (reads /api/fieldops/jobs; a field PM
+// has cap.jobtracker.read per 0013, so this resolves — falls back to [] on any error/403).
+export interface JobOption {
+  job_id: string;
+  project_name: string;
+}
+export async function fetchActiveJobOptions(): Promise<JobOption[]> {
+  const res = await fetch("/api/fieldops/jobs?status=active", { credentials: "same-origin" });
+  if (!res.ok) return [];
+  const data = (await res.json()) as { jobs?: { job_id: string; project_name: string }[] };
+  return (data.jobs ?? []).map((j) => ({ job_id: j.job_id, project_name: j.project_name }));
 }
