@@ -146,3 +146,20 @@ export function normalizeUsername(raw: string): string | null {
   if (!/^[a-z][a-z'-]*\.[a-z][a-z'-]*$/.test(u)) return null;
   return u;
 }
+
+/**
+ * Parse a request-supplied role into the Role union. `undefined` → `dflt`
+ * (caller-chosen; 'submitter' unless overridden — fail-SAFE: a missing role is
+ * NEVER 'admin'). A recognized literal passes through; anything else → null so the
+ * caller rejects it (400 invalid_role).
+ *
+ * §42 — lives here (beside normalizeUsername/coerceRole, the credential/role parsers)
+ * rather than in index.ts so the field-ops WRITE modules can share it WITHOUT importing
+ * index.ts (index.ts registers those modules → that import would be a runtime cycle; the
+ * same constraint audit.ts documents). index.ts imports it from here.
+ */
+export function parseRole(value: unknown, dflt: Role = "submitter"): Role | null {
+  if (value === undefined) return dflt;
+  if (value === "admin" || value === "submitter") return value;
+  return null;
+}

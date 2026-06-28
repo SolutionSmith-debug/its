@@ -64,3 +64,44 @@ export async function fetchPersonnelDetail(id: number, cursor?: string): Promise
   return ((await res.json()) as { personnel: PersonnelDetail; next_cursor: string | null }) ??
     { personnel: { id, name: "", username: null, trade: "", time_entries: [] }, next_cursor: null };
 }
+
+// ── WRITE (task #22; cap.personnel.manage; same-origin cookie POST) ───────────────────────────────
+async function postJson<T = { ok: boolean }>(url: string, body: unknown): Promise<T> {
+  const res = await fetch(url, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const err = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(err.error ?? `Request failed (${res.status})`);
+  }
+  return (await res.json()) as T;
+}
+
+export type AccountRole = "submitter" | "admin";
+
+export interface NewAccount {
+  username: string;
+  password: string;
+  role: AccountRole;
+}
+
+/** Create a roster person. When `account` is present the server ALSO creates a login account and
+ *  links it (admin-only server-side); omit `account` for a non-login roster person. */
+export async function createPersonnel(body: { name: string; trade?: string; account?: NewAccount }): Promise<{ id: number }> {
+  return postJson<{ ok: boolean; id: number }>("/api/fieldops/personnel", body);
+}
+export async function updatePersonnel(id: number, body: { name: string; trade?: string }): Promise<void> {
+  await postJson(`/api/fieldops/personnel/${id}/update`, body);
+}
+export async function linkPersonnelAccount(id: number, username: string): Promise<void> {
+  await postJson(`/api/fieldops/personnel/${id}/link`, { username });
+}
+export async function unlinkPersonnelAccount(id: number): Promise<void> {
+  await postJson(`/api/fieldops/personnel/${id}/unlink`, {});
+}
+export async function retirePersonnel(id: number): Promise<void> {
+  await postJson(`/api/fieldops/personnel/${id}/retire`, {});
+}
