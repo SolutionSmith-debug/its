@@ -115,3 +115,59 @@ export async function fetchJobDetail(
   if (!res.ok) throw new Error("Could not load job detail.");
   return (await res.json()) as JobDetailResponse;
 }
+
+// ── WRITE (P2.3 routes; same-origin cookie POST) ─────────────────────────────────────────────────
+// NB: the READ routes are PLURAL (/api/fieldops/jobs…); the P2.3 WRITE routes are SINGULAR
+// (/api/fieldops/job…, /api/fieldops/task…). Mirror the worker exactly — see fieldops_job_write.ts /
+// fieldops_task_write.ts. The Worker re-gates every call server-side; UI capability checks are
+// convenience only. Create/close/progress/add-task → cap.jobtracker.manage; task status → cap.tasks.own.
+async function postJson<T = { ok: boolean }>(url: string, body: unknown): Promise<T> {
+  const res = await fetch(url, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const err = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(err.error ?? `Request failed (${res.status})`);
+  }
+  return (await res.json()) as T;
+}
+
+export type TaskStatus = "open" | "in_progress" | "done";
+
+// Optional inline client for a brand-new portal-origin job (worker INSERTs into `clients` first).
+export interface NewJobClient {
+  name: string;
+  contact?: string;
+  phone?: string;
+  email?: string;
+}
+
+// manage (cap.jobtracker.manage)
+export async function createJob(body: {
+  job_id: string;
+  project_name: string;
+  progress?: number;
+  new_client?: NewJobClient;
+}): Promise<{ job_id: string }> {
+  return postJson<{ ok: boolean; job_id: string }>("/api/fieldops/job", body);
+}
+export async function closeJob(jobId: string): Promise<void> {
+  await postJson(`/api/fieldops/job/${encodeURIComponent(jobId)}/close`, {});
+}
+export async function setJobProgress(jobId: string, progress: number): Promise<{ progress: number }> {
+  return postJson<{ ok: boolean; progress: number }>(`/api/fieldops/job/${encodeURIComponent(jobId)}/progress`, { progress });
+}
+export async function addTask(
+  jobId: string,
+  body: { description: string; personnel_id?: number },
+): Promise<{ id: number | null }> {
+  return postJson<{ ok: boolean; id: number | null }>(`/api/fieldops/job/${encodeURIComponent(jobId)}/task`, body);
+}
+
+// field action (cap.tasks.own)
+export async function setTaskStatus(taskId: number, status: TaskStatus): Promise<void> {
+  await postJson(`/api/fieldops/task/${taskId}/status`, { status });
+}
