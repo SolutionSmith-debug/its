@@ -53,10 +53,27 @@ export function FieldOpsEquipment({ onBack }: { onBack: () => void }) {
   const [maintDetail, setMaintDetail] = useState("");
   const [actionBusy, setActionBusy] = useState(false);
   const [actionMsg, setActionMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  // Roster admin (cap.equipment.manage) + move (cap.equipment.field, job picker)
+  const canManage = (user?.capabilities ?? []).includes("cap.equipment.manage");
+  const [jobOptions, setJobOptions] = useState<api.JobOption[]>([]);
+  const [moveJob, setMoveJob] = useState("");
+  const [moveLabel, setMoveLabel] = useState("");
+  const [newName, setNewName] = useState("");
+  const [newKind, setNewKind] = useState("");
+  const [newIdent, setNewIdent] = useState("");
+  const [newStatus, setNewStatus] = useState<api.EquipStatus>("fmc");
+  const [editName, setEditName] = useState("");
+  const [editKind, setEditKind] = useState("");
+  const [editIdent, setEditIdent] = useState("");
+  const [editOpen, setEditOpen] = useState(false);
 
   useEffect(() => {
     loadList();
   }, []);
+
+  useEffect(() => {
+    if (canField) api.fetchActiveJobOptions().then(setJobOptions).catch(() => {});
+  }, [canField]);
 
   async function loadList() {
     if (loading) return;
@@ -152,6 +169,89 @@ export function FieldOpsEquipment({ onBack }: { onBack: () => void }) {
     } catch (err) {
       setActionMsg({ ok: false, text: err instanceof Error ? err.message : "Log failed." });
     } finally {
+      setActionBusy(false);
+    }
+  }
+
+  async function reloadList() {
+    const data = await api.fetchEquipmentList(undefined);
+    setEquipment(data.equipment);
+    setCursor(data.next_cursor);
+  }
+
+  async function submitMove(e: FormEvent) {
+    e.preventDefault();
+    if (!selectedEquipment || actionBusy || !moveJob) return;
+    setActionBusy(true);
+    setActionMsg(null);
+    try {
+      await api.moveEquipment(selectedEquipment.header.id, { job_id: moveJob, label: moveLabel.trim() || undefined });
+      setMoveLabel("");
+      await reloadDetail();
+      setActionMsg({ ok: true, text: "Location recorded." });
+    } catch (err) {
+      setActionMsg({ ok: false, text: err instanceof Error ? err.message : "Move failed." });
+    } finally {
+      setActionBusy(false);
+    }
+  }
+
+  async function submitCreate(e: FormEvent) {
+    e.preventDefault();
+    if (actionBusy || newName.trim() === "") return;
+    setActionBusy(true);
+    setActionMsg(null);
+    try {
+      await api.createEquipment({ name: newName.trim(), kind: newKind.trim() || undefined, identifier: newIdent.trim() || undefined, status: newStatus });
+      setNewName("");
+      setNewKind("");
+      setNewIdent("");
+      await reloadList();
+      setActionMsg({ ok: true, text: "Equipment added." });
+    } catch (err) {
+      setActionMsg({ ok: false, text: err instanceof Error ? err.message : "Add failed." });
+    } finally {
+      setActionBusy(false);
+    }
+  }
+
+  function openEdit() {
+    if (!selectedEquipment) return;
+    const h = selectedEquipment.header;
+    setEditName(h.name);
+    setEditKind(h.kind ?? "");
+    setEditIdent(h.identifier ?? "");
+    setEditOpen(true);
+  }
+
+  async function submitEdit(e: FormEvent) {
+    e.preventDefault();
+    if (!selectedEquipment || actionBusy || editName.trim() === "") return;
+    setActionBusy(true);
+    setActionMsg(null);
+    try {
+      await api.updateEquipment(selectedEquipment.header.id, { name: editName.trim(), kind: editKind.trim() || undefined, identifier: editIdent.trim() || undefined });
+      setEditOpen(false);
+      await reloadDetail();
+      setActionMsg({ ok: true, text: "Equipment updated." });
+    } catch (err) {
+      setActionMsg({ ok: false, text: err instanceof Error ? err.message : "Update failed." });
+    } finally {
+      setActionBusy(false);
+    }
+  }
+
+  async function submitRetire() {
+    if (!selectedEquipment || actionBusy) return;
+    setActionBusy(true);
+    setActionMsg(null);
+    try {
+      await api.retireEquipment(selectedEquipment.header.id);
+      await reloadList();
+      setActionBusy(false);
+      handleBack(); // unit retired → back to the (refreshed) list
+    } catch (err) {
+      setActionMsg({ ok: false, text: err instanceof Error ? err.message : "Retire failed." });
       setActionBusy(false);
     }
   }
@@ -278,6 +378,39 @@ export function FieldOpsEquipment({ onBack }: { onBack: () => void }) {
               <input value={maintDetail} onChange={(e) => setMaintDetail(e.target.value)} placeholder="Detail (optional)" maxLength={2000} />{" "}
               <button type="submit" disabled={actionBusy} className="btn--secondary">Add log</button>
             </form>
+            <form onSubmit={submitMove} className="dash-row" aria-label="Move equipment to a job">
+              <label className="dash-card__label">
+                Move to job:{" "}
+                <select value={moveJob} onChange={(e) => setMoveJob(e.target.value)}>
+                  <option value="">Select a job…</option>
+                  {jobOptions.map((j) => (
+                    <option key={j.job_id} value={j.job_id}>{j.project_name} ({j.job_id})</option>
+                  ))}
+                </select>
+              </label>{" "}
+              <input value={moveLabel} onChange={(e) => setMoveLabel(e.target.value)} placeholder="Site label (optional)" maxLength={256} />{" "}
+              <button type="submit" disabled={actionBusy || !moveJob} className="btn--secondary">Record location</button>
+            </form>
+          </section>
+        )}
+
+        {canManage && (
+          <section className="card dash-section">
+            <h3 className="dash-detail__h2">Manage unit</h3>
+            {editOpen ? (
+              <form onSubmit={submitEdit} className="dash-row" aria-label="Edit equipment">
+                <input value={editName} onChange={(e) => setEditName(e.target.value)} placeholder="Name" maxLength={128} />{" "}
+                <input value={editKind} onChange={(e) => setEditKind(e.target.value)} placeholder="Kind (optional)" maxLength={64} />{" "}
+                <input value={editIdent} onChange={(e) => setEditIdent(e.target.value)} placeholder="Identifier (optional)" maxLength={64} />{" "}
+                <button type="submit" disabled={actionBusy} className="btn--secondary">Save</button>{" "}
+                <button type="button" onClick={() => setEditOpen(false)} className="btn--ghost">Cancel</button>
+              </form>
+            ) : (
+              <div className="dash-row">
+                <button onClick={openEdit} className="btn--secondary">Edit details</button>{" "}
+                <button onClick={submitRetire} disabled={actionBusy} className="btn--ghost">Retire unit</button>
+              </div>
+            )}
           </section>
         )}
 
@@ -413,6 +546,20 @@ export function FieldOpsEquipment({ onBack }: { onBack: () => void }) {
       </div>
 
       <h2 className="page__heading">Equipment</h2>
+      {canManage && (
+        <form onSubmit={submitCreate} className="dash-row" aria-label="Add equipment">
+          {actionMsg && <p className="muted" style={{ color: actionMsg.ok ? "green" : "red" }}>{actionMsg.text}</p>}
+          <input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="New unit name" maxLength={128} />{" "}
+          <input value={newKind} onChange={(e) => setNewKind(e.target.value)} placeholder="Kind (optional)" maxLength={64} />{" "}
+          <input value={newIdent} onChange={(e) => setNewIdent(e.target.value)} placeholder="Identifier (optional)" maxLength={64} />{" "}
+          <select value={newStatus} onChange={(e) => setNewStatus(e.target.value as api.EquipStatus)}>
+            <option value="fmc">FMC</option>
+            <option value="degraded">Degraded</option>
+            <option value="down">Down</option>
+          </select>{" "}
+          <button type="submit" disabled={actionBusy} className="btn--secondary">Add unit</button>
+        </form>
+      )}
       {error && <p className="muted" style={{ color: "red" }}>{error}</p>}
 
       {equipment.length === 0 ? (

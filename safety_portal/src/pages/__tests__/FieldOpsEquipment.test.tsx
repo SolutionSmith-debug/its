@@ -15,6 +15,11 @@ vi.mock("../../lib/fieldops_equipment", async (importOriginal) => {
     fetchEquipmentDetail: vi.fn(),
     setEquipmentStatus: vi.fn(),
     logEquipmentMaintenance: vi.fn(),
+    moveEquipment: vi.fn(),
+    createEquipment: vi.fn(),
+    updateEquipment: vi.fn(),
+    retireEquipment: vi.fn(),
+    fetchActiveJobOptions: vi.fn(),
   };
 });
 
@@ -33,6 +38,7 @@ beforeEach(() => {
     login: vi.fn(async () => {}),
     logout: vi.fn(async () => {}),
   });
+  vi.mocked(api.fetchActiveJobOptions).mockResolvedValue([]); // the move-picker useEffect
 });
 
 const EQUIPMENT_LIST: api.EquipmentListResponse["equipment"] = [
@@ -239,5 +245,72 @@ describe("FieldOpsEquipment — field actions (write, cap.equipment.field)", () 
     fireEvent.change(form.querySelector("select")!, { target: { value: "fuel" } });
     fireEvent.submit(form);
     await waitFor(() => expect(api.logEquipmentMaintenance).toHaveBeenCalledWith(1, expect.objectContaining({ log_type: "fuel" })));
+  });
+});
+
+describe("FieldOpsEquipment — roster admin + move (write)", () => {
+  function asManager() {
+    vi.mocked(useAuth).mockReturnValue({
+      user: { username: "admin.one", role: "admin", capabilities: ["cap.equipment.field", "cap.equipment.manage"] },
+      loading: false,
+      login: vi.fn(async () => {}),
+      logout: vi.fn(async () => {}),
+    });
+  }
+
+  it("admin sees the Add-unit form on the list; submitting calls createEquipment + reloads", async () => {
+    asManager();
+    vi.mocked(api.fetchEquipmentList).mockResolvedValue({ equipment: EQUIPMENT_LIST, next_cursor: null });
+    vi.mocked(api.createEquipment).mockResolvedValue({ id: 99 });
+    const { container } = render(<FieldOpsEquipment onBack={() => {}} />);
+    const form = (await waitFor(() => container.querySelector("form[aria-label='Add equipment']")))!;
+    fireEvent.change(form.querySelector("input")!, { target: { value: "New Skid" } });
+    fireEvent.submit(form);
+    await waitFor(() => expect(api.createEquipment).toHaveBeenCalledWith(expect.objectContaining({ name: "New Skid" })));
+    await waitFor(() => expect(vi.mocked(api.fetchEquipmentList).mock.calls.length).toBeGreaterThanOrEqual(2)); // reload
+  });
+
+  it("a field-only user (no manage cap) does NOT see the Add-unit form", async () => {
+    vi.mocked(api.fetchEquipmentList).mockResolvedValue({ equipment: EQUIPMENT_LIST, next_cursor: null }); // default caps = field only
+    const { container } = render(<FieldOpsEquipment onBack={() => {}} />);
+    await waitFor(() => expect(container.querySelectorAll(".dash-card--click")).toHaveLength(2));
+    expect(container.querySelector("form[aria-label='Add equipment']")).toBeNull();
+  });
+
+  it("admin retires a unit from the detail (calls retireEquipment)", async () => {
+    asManager();
+    vi.mocked(api.fetchEquipmentList).mockResolvedValue({ equipment: EQUIPMENT_LIST, next_cursor: null });
+    vi.mocked(api.fetchEquipmentDetail).mockResolvedValue({ equipment: DETAIL_DATA, cursors: NO_CURSORS });
+    vi.mocked(api.retireEquipment).mockResolvedValue(undefined);
+    const { container } = render(<FieldOpsEquipment onBack={() => {}} />);
+    await waitFor(() => expect(container.querySelectorAll(".dash-card--click")).toHaveLength(2));
+    fireEvent.click(container.querySelector(".dash-card--click")!);
+    const retireBtn = await waitFor(() => {
+      const b = Array.from(container.querySelectorAll("button")).find((x) => x.textContent === "Retire unit");
+      expect(b).toBeTruthy();
+      return b!;
+    });
+    fireEvent.click(retireBtn);
+    await waitFor(() => expect(api.retireEquipment).toHaveBeenCalledWith(1));
+  });
+
+  it("move form submits moveEquipment with the picked job", async () => {
+    asManager();
+    vi.mocked(api.fetchEquipmentList).mockResolvedValue({ equipment: EQUIPMENT_LIST, next_cursor: null });
+    vi.mocked(api.fetchEquipmentDetail).mockResolvedValue({ equipment: DETAIL_DATA, cursors: NO_CURSORS });
+    vi.mocked(api.fetchActiveJobOptions).mockResolvedValue([{ job_id: "JOB-A", project_name: "Alpha" }]);
+    vi.mocked(api.moveEquipment).mockResolvedValue(undefined);
+    const { container } = render(<FieldOpsEquipment onBack={() => {}} />);
+    await waitFor(() => expect(container.querySelectorAll(".dash-card--click")).toHaveLength(2));
+    fireEvent.click(container.querySelector(".dash-card--click")!);
+    const form = await waitFor(() => {
+      const f = container.querySelector("form[aria-label='Move equipment to a job']");
+      expect(f).not.toBeNull();
+      return f!;
+    });
+    await waitFor(() => expect(form.querySelector("option[value='JOB-A']")).not.toBeNull());
+    fireEvent.change(form.querySelector("select")!, { target: { value: "JOB-A" } });
+    fireEvent.submit(form);
+    await waitFor(() => expect(api.moveEquipment).toHaveBeenCalledWith(1, expect.objectContaining({ job_id: "JOB-A" })));
   });
 });
