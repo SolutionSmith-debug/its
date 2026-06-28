@@ -86,6 +86,7 @@ Trigger this script from a launchd plist. See `scripts/launchd/`.
 from __future__ import annotations
 
 import inspect
+import json
 import traceback
 import uuid
 from collections.abc import Callable
@@ -93,7 +94,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 
-from safety_reports import weekly_generate, wsr_review
+from safety_reports import portal_poll, weekly_generate, wsr_review
 from shared import (
     alert_dedupe,
     circuit_breaker,
@@ -1243,6 +1244,119 @@ def _check_stuck_wsr_send() -> CheckResult:
     )
 
 
+# ---- Check P: portal_poll sustained pending-fetch outage escalation ------
+
+
+def _check_portal_poll_fetch_outage() -> CheckResult:
+    """Check P (A4): re-raise a SUSTAINED portal_poll pending-fetch outage.
+
+    portal_poll counts consecutive failed `GET /api/internal/pending` cycles in
+    `portal_poll.FETCH_FAIL_STATE_PATH` and ALREADY fires an inline CRITICAL once the count
+    reaches `FETCH_FAIL_CRITICAL_THRESHOLD` (filing is stopped). This check is the daily
+    second-opinion backstop: if that inline page was lost / deferred (MAINTENANCE) / not-yet-
+    fired, the watchdog re-raises it. The counter RESETS to 0 on any successful fetch, so a
+    value at/over threshold means the MOST RECENT cycle also failed — the outage is ACTIVE,
+    not historical → CRITICAL (paged by `_run_check`; MAINTENANCE-deferred like every other).
+
+    FAIL-SOFT: a missing / unreadable counter is INFO (no data → no page). A watchdog read
+    error must never MASK an outage by erroring, nor INVENT one — INFO is the honest "unknown".
+    """
+    path = portal_poll.FETCH_FAIL_STATE_PATH
+    if not path.exists():
+        return CheckResult(
+            severity=Severity.INFO,
+            summary="portal_poll fetch-failure counter absent (no outage recorded).",
+        )
+    try:
+        count = int(json.loads(path.read_text()).get("count", 0))
+    except (OSError, ValueError, TypeError):
+        return CheckResult(
+            severity=Severity.INFO,
+            summary="portal_poll fetch-failure counter unreadable (transient).",
+        )
+    threshold = portal_poll.FETCH_FAIL_CRITICAL_THRESHOLD
+    if count >= threshold:
+        return CheckResult(
+            severity=Severity.CRITICAL,
+            summary=(
+                f"portal_poll pending-fetch OUTAGE: {count} consecutive failed cycles "
+                f"(>= {threshold}) — filing is STOPPED and submissions are accumulating."
+            ),
+        )
+    return CheckResult(
+        severity=Severity.INFO,
+        summary=f"portal_poll pending-fetch healthy ({count}/{threshold} consecutive failures).",
+    )
+
+
+# ---- Check Q: portal_poll unfiled pending-backlog (stuck-drain) ----------
+
+# How long a stuck-backlog latch must hold before the daily watchdog WARNs. A one-cycle burst
+# self-clears the latch; only a SUSTAINED stuck drain (intake erroring on every row) crosses this.
+_PENDING_BACKLOG_SUSTAINED = timedelta(hours=2)
+
+
+def _check_portal_poll_pending_backlog() -> CheckResult:
+    """Check Q (A4): WARN on a SUSTAINED unfiled backlog portal_poll can't drain.
+
+    portal_poll writes `portal_poll.PENDING_BACKLOG_STATE_PATH` each cycle, latching
+    `high_since_utc` whenever a saturated pending page (>= PENDING_LIMIT) drains NOTHING
+    (intake erroring on every row → nothing marked-filed; true depth masked by the page cap).
+    This WARNs only once that latch has held past `_PENDING_BACKLOG_SUSTAINED`, so a transient
+    burst never pages. Distinct from Check P (can't FETCH) and Check C (daemon stale): Check Q
+    is "fetching fine, draining nothing". WARN, not CRITICAL — operator-actionable ("why is
+    intake rejecting every row") and recoverable, not a host-down emergency.
+
+    FAIL-SOFT: missing / unreadable / unlatched / unparseable timestamp all read as INFO.
+    """
+    path = portal_poll.PENDING_BACKLOG_STATE_PATH
+    if not path.exists():
+        return CheckResult(
+            severity=Severity.INFO,
+            summary="portal_poll pending-backlog marker absent (no stuck backlog).",
+        )
+    try:
+        data = json.loads(path.read_text())
+        high_since_raw = data.get("high_since_utc")
+    except (OSError, ValueError, TypeError):
+        return CheckResult(
+            severity=Severity.INFO,
+            summary="portal_poll pending-backlog marker unreadable (transient).",
+        )
+    if not high_since_raw:
+        return CheckResult(
+            severity=Severity.INFO,
+            summary="portal_poll backlog draining normally (no stuck latch).",
+        )
+    try:
+        high_since = datetime.fromisoformat(high_since_raw)
+    except (ValueError, TypeError):
+        return CheckResult(
+            severity=Severity.INFO,
+            summary="portal_poll pending-backlog marker has an unparseable high_since_utc.",
+        )
+    if high_since.tzinfo is None:
+        high_since = high_since.replace(tzinfo=UTC)
+    stuck_for = datetime.now(UTC) - high_since
+    if stuck_for >= _PENDING_BACKLOG_SUSTAINED:
+        hrs = stuck_for.total_seconds() / 3600
+        count = data.get("count", "?")
+        return CheckResult(
+            severity=Severity.WARN,
+            summary=(
+                f"portal_poll unfiled backlog STUCK ~{hrs:.1f}h (page saturated at {count}, "
+                f"draining nothing) — intake is likely erroring on every row; submissions are "
+                f"piling up behind the {portal_poll.PENDING_LIMIT}-row page cap."
+            ),
+        )
+    return CheckResult(
+        severity=Severity.INFO,
+        summary=(
+            f"portal_poll backlog latched but under the {_PENDING_BACKLOG_SUSTAINED} window."
+        ),
+    )
+
+
 # ---- Entrypoint ---------------------------------------------------------
 
 
@@ -1275,6 +1389,13 @@ CHECKS: list[Callable[..., CheckResult]] = [
     # Check N: WSR rows stuck in SENDING (weekly_send write-ahead-marker safety net).
     # Read-only; returns a CheckResult (no inline alert); WARN-only.
     _check_stuck_wsr_send,
+    # Check P / Q (A4): portal_poll resilience. P re-raises a sustained pending-fetch outage
+    # (CRITICAL second-opinion to portal_poll's inline page); Q WARNs on a stuck unfiled
+    # backlog (saturated page draining nothing). Both return a CheckResult (no inline alert),
+    # so _run_check pages/MAINTENANCE-defers them normally. (O is reserved for the A5 row-cap
+    # watchdog; H was never built.)
+    _check_portal_poll_fetch_outage,
+    _check_portal_poll_pending_backlog,
     # Check E (Anthropic spend trend) deferred to a follow-on PR (the
     # Check E shipping PR) — requires an Admin API key (sk-ant-admin01-...
     # prefix) provisioned in Keychain under ITS_ANTHROPIC_ADMIN_API_KEY.

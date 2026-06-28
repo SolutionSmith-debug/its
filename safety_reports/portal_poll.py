@@ -119,6 +119,15 @@ HEARTBEAT_ROW_STATE_PATH = STATE_DIR / "heartbeat_row_ids.json"
 FETCH_FAIL_STATE_PATH = STATE_DIR / "portal_poll_fetch_failures.json"
 FETCH_FAIL_CRITICAL_THRESHOLD = 5
 
+# A4: "stuck backlog" marker for the daily watchdog (Check Q). A backlog is *stuck* when a
+# SATURATED pending page (len(rows) >= PENDING_LIMIT) drains NOTHING in a cycle — the daemon is
+# fetching fine but intake is erroring on every row, so nothing is marked-filed and submissions
+# pile up behind the page cap (which masks true depth). `high_since_utc` latches the first such
+# cycle and clears the instant the queue makes any progress; the watchdog WARNs only once that
+# latch holds past a sustained window, so a one-cycle burst never pages. Distinct from the
+# fetch-failure counter above (can't FETCH) — this is "fetches fine, drains nothing".
+PENDING_BACKLOG_STATE_PATH = STATE_DIR / "portal_poll_pending_backlog.json"
+
 DAEMON_NAME = "safety_reports.portal_poll"
 
 # A1 self-provision metadata (the ONLY per-daemon difference in the otherwise
@@ -683,6 +692,47 @@ def _push_active_jobs(base_url: str, bearer: str) -> None:
     )
 
 
+def _record_pending_backlog(scanned: int, drained: int) -> None:
+    """A4: persist a 'stuck backlog' marker for the daily watchdog (Check Q).
+
+    A backlog is *stuck* when a SATURATED pending page (``scanned >= PENDING_LIMIT``) drained
+    NOTHING (``drained == 0``) — the daemon is fetching fine but intake is erroring on every
+    row, so nothing is marked-filed and submissions pile up behind the page cap (which masks
+    true depth). ``high_since_utc`` latches the first cycle the condition holds and clears the
+    instant the queue makes ANY progress; the watchdog WARNs only when it stays latched past a
+    sustained window, so a one-cycle burst never pages. Read-modify-write under the same
+    path-lock + atomic-write discipline as ``_record_fetch_failure``.
+
+    FAIL-SOFT: a marker-write error is logged WARN and swallowed — it must NEVER block or delay
+    the intake drain (the marker is observability, not part of filing).
+    """
+    try:
+        now = datetime.now(UTC).isoformat()
+        stuck = scanned >= PENDING_LIMIT and drained == 0
+        with state_io.with_path_lock(PENDING_BACKLOG_STATE_PATH):
+            prior_high: str | None = None
+            if stuck and PENDING_BACKLOG_STATE_PATH.exists():
+                try:
+                    prior_high = json.loads(PENDING_BACKLOG_STATE_PATH.read_text()).get("high_since_utc")
+                except (OSError, ValueError):
+                    prior_high = None
+            state_io.atomic_write_json(
+                PENDING_BACKLOG_STATE_PATH,
+                {
+                    "count": scanned,
+                    "drained": drained,
+                    "last_scan_utc": now,
+                    "high_since_utc": (prior_high or now) if stuck else None,
+                },
+            )
+    except Exception as exc:  # noqa: BLE001 — best-effort observability; must never block filing
+        error_log.log(
+            Severity.WARN, SCRIPT_NAME,
+            f"pending-backlog marker write failed (filing unaffected): {exc!r}",
+            error_code="portal_backlog_marker_failed",
+        )
+
+
 def _poll_inside_lock() -> PollStats:
     """Body of poll_once running under the file lock."""
     creds = _resolve_credentials()
@@ -838,6 +888,15 @@ def _poll_inside_lock() -> PollStats:
             error_code="daemon_health_write_failed",
         )
     _write_watchdog_marker()
+
+    # A4: record the unfiled-backlog marker (drained = every disposition that gets the row
+    # marked-filed, i.e. any progress). A saturated page that drained nothing latches the
+    # stuck-backlog signal for watchdog Check Q. Fail-soft inside the helper — never blocks.
+    _record_pending_backlog(
+        len(rows),
+        counters["filed"] + counters["reviewed"]
+        + counters["rejected"] + counters["remarked"],
+    )
 
     error_log.log(
         Severity.INFO, SCRIPT_NAME,

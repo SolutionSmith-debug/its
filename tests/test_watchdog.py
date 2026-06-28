@@ -13,6 +13,7 @@ Run with: pytest -q tests/test_watchdog.py
 from __future__ import annotations
 
 import inspect
+import json
 import sys
 from datetime import UTC, date, datetime, timedelta, timezone
 from pathlib import Path
@@ -130,6 +131,8 @@ def test_checks_list_has_all_session_1_2_3_checks():
         watchdog._check_token_write_capability,  # Check L (B2)
         watchdog._check_blueprint_guard_symlinks,  # Check M (C3)
         watchdog._check_stuck_wsr_send,  # Check N (WSR write-ahead-marker safety net)
+        watchdog._check_portal_poll_fetch_outage,  # Check P (A4 fetch-outage escalation)
+        watchdog._check_portal_poll_pending_backlog,  # Check Q (A4 unfiled-backlog)
     ]
 
 
@@ -1847,3 +1850,89 @@ def test_cap_window_sweep_deferred_in_maintenance(mocker):
 
     fire.assert_not_called()
     assert "defer" in result.summary.lower()
+
+
+# ---- Check P: portal_poll pending-fetch outage escalation (A4) ------------
+
+
+def test_portal_poll_fetch_outage_absent_is_info(monkeypatch, tmp_path):
+    monkeypatch.setattr(watchdog.portal_poll, "FETCH_FAIL_STATE_PATH", tmp_path / "ff.json")
+    result = watchdog._check_portal_poll_fetch_outage()
+    assert result.severity is Severity.INFO
+
+
+def test_portal_poll_fetch_outage_below_threshold_is_info(monkeypatch, tmp_path):
+    p = tmp_path / "ff.json"
+    p.write_text(json.dumps({"count": 3}))
+    monkeypatch.setattr(watchdog.portal_poll, "FETCH_FAIL_STATE_PATH", p)
+    result = watchdog._check_portal_poll_fetch_outage()
+    assert result.severity is Severity.INFO
+
+
+def test_portal_poll_fetch_outage_at_threshold_is_critical(monkeypatch, tmp_path):
+    p = tmp_path / "ff.json"
+    p.write_text(json.dumps({"count": watchdog.portal_poll.FETCH_FAIL_CRITICAL_THRESHOLD}))
+    monkeypatch.setattr(watchdog.portal_poll, "FETCH_FAIL_STATE_PATH", p)
+    result = watchdog._check_portal_poll_fetch_outage()
+    assert result.severity is Severity.CRITICAL
+    assert "OUTAGE" in result.summary
+
+
+def test_portal_poll_fetch_outage_unreadable_is_info(monkeypatch, tmp_path):
+    p = tmp_path / "ff.json"
+    p.write_text("{not json")
+    monkeypatch.setattr(watchdog.portal_poll, "FETCH_FAIL_STATE_PATH", p)
+    result = watchdog._check_portal_poll_fetch_outage()
+    assert result.severity is Severity.INFO
+
+
+# ---- Check Q: portal_poll unfiled pending-backlog (A4) -------------------
+
+
+def test_portal_poll_backlog_absent_is_info(monkeypatch, tmp_path):
+    monkeypatch.setattr(watchdog.portal_poll, "PENDING_BACKLOG_STATE_PATH", tmp_path / "bl.json")
+    result = watchdog._check_portal_poll_pending_backlog()
+    assert result.severity is Severity.INFO
+
+
+def test_portal_poll_backlog_unlatched_is_info(monkeypatch, tmp_path):
+    p = tmp_path / "bl.json"
+    p.write_text(json.dumps({"count": 0, "drained": 5, "high_since_utc": None}))
+    monkeypatch.setattr(watchdog.portal_poll, "PENDING_BACKLOG_STATE_PATH", p)
+    result = watchdog._check_portal_poll_pending_backlog()
+    assert result.severity is Severity.INFO
+
+
+def test_portal_poll_backlog_latched_recent_is_info(monkeypatch, tmp_path):
+    recent = (datetime.now(UTC) - timedelta(minutes=30)).isoformat()
+    p = tmp_path / "bl.json"
+    p.write_text(json.dumps({"count": 50, "drained": 0, "high_since_utc": recent}))
+    monkeypatch.setattr(watchdog.portal_poll, "PENDING_BACKLOG_STATE_PATH", p)
+    result = watchdog._check_portal_poll_pending_backlog()
+    assert result.severity is Severity.INFO
+
+
+def test_portal_poll_backlog_latched_sustained_is_warn(monkeypatch, tmp_path):
+    old = (datetime.now(UTC) - timedelta(hours=3)).isoformat()
+    p = tmp_path / "bl.json"
+    p.write_text(json.dumps({"count": 50, "drained": 0, "high_since_utc": old}))
+    monkeypatch.setattr(watchdog.portal_poll, "PENDING_BACKLOG_STATE_PATH", p)
+    result = watchdog._check_portal_poll_pending_backlog()
+    assert result.severity is Severity.WARN
+    assert "STUCK" in result.summary
+
+
+def test_portal_poll_backlog_unreadable_is_info(monkeypatch, tmp_path):
+    p = tmp_path / "bl.json"
+    p.write_text("{not json")
+    monkeypatch.setattr(watchdog.portal_poll, "PENDING_BACKLOG_STATE_PATH", p)
+    result = watchdog._check_portal_poll_pending_backlog()
+    assert result.severity is Severity.INFO
+
+
+def test_portal_poll_backlog_unparseable_ts_is_info(monkeypatch, tmp_path):
+    p = tmp_path / "bl.json"
+    p.write_text(json.dumps({"count": 50, "drained": 0, "high_since_utc": "not-a-timestamp"}))
+    monkeypatch.setattr(watchdog.portal_poll, "PENDING_BACKLOG_STATE_PATH", p)
+    result = watchdog._check_portal_poll_pending_backlog()
+    assert result.severity is Severity.INFO
