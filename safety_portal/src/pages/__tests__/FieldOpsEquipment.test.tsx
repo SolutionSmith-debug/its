@@ -13,14 +13,27 @@ vi.mock("../../lib/fieldops_equipment", async (importOriginal) => {
     ...actual,
     fetchEquipmentList: vi.fn(),
     fetchEquipmentDetail: vi.fn(),
+    setEquipmentStatus: vi.fn(),
+    logEquipmentMaintenance: vi.fn(),
   };
 });
 
+vi.mock("../../lib/auth", () => ({ useAuth: vi.fn() }));
+
 import * as api from "../../lib/fieldops_equipment";
 import { FieldOpsEquipment } from "../FieldOpsEquipment";
+import { useAuth } from "../../lib/auth";
 
 afterEach(cleanup);
-beforeEach(() => vi.resetAllMocks());
+beforeEach(() => {
+  vi.resetAllMocks();
+  vi.mocked(useAuth).mockReturnValue({
+    user: { username: "submitter.jim", role: "submitter", capabilities: ["cap.equipment.field"] },
+    loading: false,
+    login: vi.fn(async () => {}),
+    logout: vi.fn(async () => {}),
+  });
+});
 
 const EQUIPMENT_LIST: api.EquipmentListResponse["equipment"] = [
   {
@@ -177,5 +190,54 @@ describe("FieldOpsEquipment — detail view", () => {
 
     fireEvent.click(container.querySelector(".dash-back-btn button")!);
     await waitFor(() => expect(container.querySelectorAll(".dash-card--click")).toHaveLength(2));
+  });
+});
+
+describe("FieldOpsEquipment — field actions (write, cap.equipment.field)", () => {
+  async function openDetail() {
+    vi.mocked(api.fetchEquipmentList).mockResolvedValue({ equipment: EQUIPMENT_LIST, next_cursor: null });
+    vi.mocked(api.fetchEquipmentDetail).mockResolvedValue({ equipment: DETAIL_DATA, cursors: NO_CURSORS });
+    const utils = render(<FieldOpsEquipment onBack={() => {}} />);
+    await waitFor(() => expect(utils.container.querySelectorAll(".dash-card--click")).toHaveLength(2));
+    fireEvent.click(utils.container.querySelector(".dash-card--click")!);
+    await waitFor(() => expect(api.fetchEquipmentDetail).toHaveBeenCalledWith(1, undefined));
+    return utils;
+  }
+
+  it("renders the field-action forms when the user has cap.equipment.field", async () => {
+    const { container } = await openDetail();
+    await waitFor(() => expect(container.querySelector("form[aria-label='Update readiness status']")).not.toBeNull());
+    expect(container.querySelector("form[aria-label='Add machine log']")).not.toBeNull();
+  });
+
+  it("hides the field-action forms when the user lacks the cap", async () => {
+    vi.mocked(useAuth).mockReturnValue({
+      user: { username: "x.y", role: "submitter", capabilities: [] },
+      loading: false,
+      login: vi.fn(async () => {}),
+      logout: vi.fn(async () => {}),
+    });
+    const { container } = await openDetail();
+    await waitFor(() => expect(container.querySelector(".page__heading")?.textContent).toBe("Unit Alpha"));
+    expect(container.querySelector("form[aria-label='Update readiness status']")).toBeNull();
+  });
+
+  it("submitting the status form calls setEquipmentStatus + refetches the detail", async () => {
+    vi.mocked(api.setEquipmentStatus).mockResolvedValue(undefined);
+    const { container } = await openDetail();
+    const form = (await waitFor(() => container.querySelector("form[aria-label='Update readiness status']")))!;
+    fireEvent.change(form.querySelector("select")!, { target: { value: "degraded" } });
+    fireEvent.submit(form);
+    await waitFor(() => expect(api.setEquipmentStatus).toHaveBeenCalledWith(1, expect.objectContaining({ status: "degraded" })));
+    await waitFor(() => expect(vi.mocked(api.fetchEquipmentDetail).mock.calls.length).toBeGreaterThanOrEqual(2)); // initial + reload
+  });
+
+  it("submitting the machine-log form calls logEquipmentMaintenance", async () => {
+    vi.mocked(api.logEquipmentMaintenance).mockResolvedValue(undefined);
+    const { container } = await openDetail();
+    const form = (await waitFor(() => container.querySelector("form[aria-label='Add machine log']")))!;
+    fireEvent.change(form.querySelector("select")!, { target: { value: "fuel" } });
+    fireEvent.submit(form);
+    await waitFor(() => expect(api.logEquipmentMaintenance).toHaveBeenCalledWith(1, expect.objectContaining({ log_type: "fuel" })));
   });
 });

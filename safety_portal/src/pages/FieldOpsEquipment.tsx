@@ -1,5 +1,7 @@
 import { useState, useEffect } from "react";
+import type { FormEvent } from "react";
 import * as api from "../lib/fieldops_equipment";
+import { useAuth } from "../lib/auth";
 
 // Format helpers: epoch SECONDS (as stored in D1) → ×1000 for JS Date
 function fmtDateTime(epochSeconds: number | null): string {
@@ -40,6 +42,17 @@ export function FieldOpsEquipment({ onBack }: { onBack: () => void }) {
   const [inspCursor, setInsppCursor] = useState<string | null>(null);
   const [logCursor, setLogCursor] = useState<string | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+
+  // Write (P2.3 field actions; gated by cap.equipment.field)
+  const { user } = useAuth();
+  const canField = (user?.capabilities ?? []).includes("cap.equipment.field");
+  const [statusVal, setStatusVal] = useState<api.EquipStatus>("fmc");
+  const [statusNote, setStatusNote] = useState("");
+  const [maintType, setMaintType] = useState<api.LogType>("maintenance");
+  const [maintValue, setMaintValue] = useState("");
+  const [maintDetail, setMaintDetail] = useState("");
+  const [actionBusy, setActionBusy] = useState(false);
+  const [actionMsg, setActionMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
   useEffect(() => {
     loadList();
@@ -83,6 +96,64 @@ export function FieldOpsEquipment({ onBack }: { onBack: () => void }) {
         setDetailLoading(false);
       })
       .catch(() => setError("Failed to load equipment details."));
+  }
+
+  async function reloadDetail() {
+    if (!selectedEquipment) return;
+    const res = await api.fetchEquipmentDetail(selectedEquipment.header.id, undefined);
+    setSelectedEquipment(res.equipment);
+    setLocCursor(res.cursors.loc);
+    setInsppCursor(res.cursors.insp);
+    setLogCursor(res.cursors.log);
+  }
+
+  async function submitStatus(e: FormEvent) {
+    e.preventDefault();
+    if (!selectedEquipment || actionBusy) return;
+    setActionBusy(true);
+    setActionMsg(null);
+    try {
+      await api.setEquipmentStatus(selectedEquipment.header.id, {
+        uuid: crypto.randomUUID(),
+        status: statusVal,
+        status_note: statusNote.trim() || undefined,
+      });
+      setStatusNote("");
+      await reloadDetail();
+      setActionMsg({ ok: true, text: "Readiness updated." });
+    } catch (err) {
+      setActionMsg({ ok: false, text: err instanceof Error ? err.message : "Update failed." });
+    } finally {
+      setActionBusy(false);
+    }
+  }
+
+  async function submitMaint(e: FormEvent) {
+    e.preventDefault();
+    if (!selectedEquipment || actionBusy) return;
+    const value = maintValue.trim() === "" ? undefined : Number(maintValue);
+    if (value !== undefined && !Number.isFinite(value)) {
+      setActionMsg({ ok: false, text: "Value must be a number." });
+      return;
+    }
+    setActionBusy(true);
+    setActionMsg(null);
+    try {
+      await api.logEquipmentMaintenance(selectedEquipment.header.id, {
+        uuid: crypto.randomUUID(),
+        log_type: maintType,
+        value_num: value,
+        detail: maintDetail.trim() || undefined,
+      });
+      setMaintValue("");
+      setMaintDetail("");
+      await reloadDetail();
+      setActionMsg({ ok: true, text: "Log entry recorded." });
+    } catch (err) {
+      setActionMsg({ ok: false, text: err instanceof Error ? err.message : "Log failed." });
+    } finally {
+      setActionBusy(false);
+    }
   }
 
   function handleBack() {
@@ -175,6 +246,40 @@ export function FieldOpsEquipment({ onBack }: { onBack: () => void }) {
           </span>
         </p>
         {eq.status_note && <p className="muted">{eq.status_note}</p>}
+
+        {canField && (
+          <section className="card dash-section">
+            <h3 className="dash-detail__h2">Field actions</h3>
+            {actionMsg && (
+              <p className="muted" style={{ color: actionMsg.ok ? "green" : "red" }}>{actionMsg.text}</p>
+            )}
+            <form onSubmit={submitStatus} className="dash-row" aria-label="Update readiness status">
+              <label className="dash-card__label">
+                Readiness:{" "}
+                <select value={statusVal} onChange={(e) => setStatusVal(e.target.value as api.EquipStatus)}>
+                  <option value="fmc">Full Mission Capable</option>
+                  <option value="degraded">Degraded</option>
+                  <option value="down">Down</option>
+                </select>
+              </label>{" "}
+              <input value={statusNote} onChange={(e) => setStatusNote(e.target.value)} placeholder="Note (optional)" maxLength={512} />{" "}
+              <button type="submit" disabled={actionBusy} className="btn--secondary">Update status</button>
+            </form>
+            <form onSubmit={submitMaint} className="dash-row" aria-label="Add machine log">
+              <label className="dash-card__label">
+                Log:{" "}
+                <select value={maintType} onChange={(e) => setMaintType(e.target.value as api.LogType)}>
+                  <option value="maintenance">Maintenance</option>
+                  <option value="fuel">Fuel</option>
+                  <option value="hours">Hours</option>
+                </select>
+              </label>{" "}
+              <input value={maintValue} onChange={(e) => setMaintValue(e.target.value)} placeholder="Value (optional)" inputMode="decimal" />{" "}
+              <input value={maintDetail} onChange={(e) => setMaintDetail(e.target.value)} placeholder="Detail (optional)" maxLength={2000} />{" "}
+              <button type="submit" disabled={actionBusy} className="btn--secondary">Add log</button>
+            </form>
+          </section>
+        )}
 
         {/* Location */}
         <div className="dash-section">
