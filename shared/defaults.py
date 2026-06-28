@@ -74,6 +74,19 @@ PICKLIST_SIZE_WARN_THRESHOLD       = 200
 PICKLIST_SIZE_HARD_HALT_THRESHOLD  = 400
 PICKLIST_SIZE_THRESHOLD_MAX        = 1000  # sanity ceiling on configured values
 
+# Smartsheet sheet-count guard (A1 / forensic scaling eval B1) — per-workspace
+# ceiling + margin for shared/sheet_capacity.check_create_headroom, which gates
+# find-or-create so a new week/period sheet never silently lands PAST the plan's
+# sheet cap (it routes to the Review Queue instead). Operator-tunable via ITS_Config
+# rows smartsheet.sheet_count_ceiling / smartsheet.sheet_count_margin (workstream=
+# "global"); these are the fallback when the row is missing or unreadable. The REAL
+# per-plan/per-workspace cap is NOT exposed by the Smartsheet API — set the ceiling
+# once confirmed with Smartsheet plan docs/support (scripts/verify_sheet_cap.py +
+# operator follow-up). Conservative defaults: signal well before any plausible cap;
+# the adopted MONTHLY sheet model keeps the real count far below this.
+SHEET_COUNT_CEILING = 1500
+SHEET_COUNT_MARGIN  = 50
+
 
 DEFAULT_REVIEWER_CHAINS: dict[str, ReviewerChainConfig] = {
     "safety_reports": {

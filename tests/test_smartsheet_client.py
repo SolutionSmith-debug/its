@@ -925,6 +925,41 @@ def _rest_get_folder_response(sheets: list[dict] | None, status: int = 200):
     return response
 
 
+def _rest_workspace_response(body: dict, status: int = 200):
+    """Mock requests.Response for GET /workspaces/{id}?loadAll=true."""
+    response = MagicMock()
+    response.status_code = status
+    response.json.return_value = body
+    response.raise_for_status.return_value = None
+    return response
+
+
+def test_count_workspace_sheets_recurses_nested_folders(mocker):
+    # 2 top-level sheets + a folder (3 sheets) with a sub-folder (1 sheet) = 6
+    body = {
+        "id": 99,
+        "sheets": [{"id": 1}, {"id": 2}],
+        "folders": [{
+            "id": 10,
+            "sheets": [{"id": 3}, {"id": 4}, {"id": 5}],
+            "folders": [{"id": 11, "sheets": [{"id": 6}], "folders": []}],
+        }],
+    }
+    mocker.patch(
+        "shared.smartsheet_client.requests.get",
+        return_value=_rest_workspace_response(body),
+    )
+    assert smartsheet_client.count_workspace_sheets(99) == 6
+
+
+def test_count_workspace_sheets_empty_workspace(mocker):
+    mocker.patch(
+        "shared.smartsheet_client.requests.get",
+        return_value=_rest_workspace_response({"id": 99}),
+    )
+    assert smartsheet_client.count_workspace_sheets(99) == 0
+
+
 def test_find_sheet_by_name_in_folder_matches_title(mocker):
     # PR #51: helper switched to direct REST; stub requests.get instead of SDK.
     mocker.patch(
