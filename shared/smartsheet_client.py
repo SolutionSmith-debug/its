@@ -117,18 +117,46 @@ _column_maps: dict[int, dict[str, int]] = {}
 # ---- Client + error translation -----------------------------------------
 
 
+# Default network timeout (seconds) for SDK-method calls. The direct-REST helpers
+# elsewhere in this module already pass `timeout=30` explicitly; the SDK methods
+# (get_sheet/get_rows/add_rows/...) go through the SDK's `requests.Session`, which
+# has NO default timeout — a stalled call would hang a daemon indefinitely (eval A2
+# `host-daemon-no-timeout`). We mount a default-timeout adapter on that session.
+SDK_NETWORK_TIMEOUT = 30
+
+
+class _TimeoutHTTPAdapter(requests.adapters.HTTPAdapter):
+    """A `requests` HTTPAdapter that injects a DEFAULT timeout when the caller
+    omits one — the standard way to bound every call on a `requests.Session`
+    (the SDK never passes a per-call timeout, so this default always applies)."""
+
+    def __init__(self, *args: Any, timeout: float, **kwargs: Any) -> None:
+        self._timeout = timeout
+        super().__init__(*args, **kwargs)
+
+    def send(self, request: Any, **kwargs: Any) -> Any:  # type: ignore[override]
+        if kwargs.get("timeout") is None:
+            kwargs["timeout"] = self._timeout
+        return super().send(request, **kwargs)
+
+
 def get_client() -> smartsheet.Smartsheet:
     """Return a process-wide Smartsheet SDK client, building it on first use.
 
     The SDK is configured with `errors_as_exceptions=True` so non-2xx
     responses surface as `smartsheet.exceptions.ApiError`, which we translate
-    in `_translate` below.
+    in `_translate` below. A default-timeout adapter is mounted on the SDK's
+    `requests` session so every SDK HTTP call is bounded (eval A2).
     """
     global _client
     if _client is None:
         token = keychain.get_secret("ITS_SMARTSHEET_TOKEN")
         client = smartsheet.Smartsheet(token, user_agent="its")
         client.errors_as_exceptions(True)
+        # Bound every SDK HTTP call — the SDK session has no default timeout.
+        adapter = _TimeoutHTTPAdapter(timeout=SDK_NETWORK_TIMEOUT)
+        client._session.mount("https://", adapter)  # noqa: SLF001 — SDK exposes no public session/timeout hook
+        client._session.mount("http://", adapter)  # noqa: SLF001
         _client = client
     return _client
 

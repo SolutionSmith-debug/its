@@ -16,7 +16,13 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from shared.keychain import KeychainError, get_secret, set_secret
+from shared.keychain import (
+    KEYCHAIN_CLI_TIMEOUT,
+    KeychainError,
+    KeychainLockedError,
+    get_secret,
+    set_secret,
+)
 
 # ---- Happy path ------------------------------------------------------------
 
@@ -99,6 +105,67 @@ def test_missing_security_cli_raises_keychain_error(mocker):
     # not FileNotFoundError, so callers only have one exception type to handle.
     with pytest.raises(KeychainError, match="macOS-only"):
         get_secret("ITS_TEST_KEY")
+
+
+# ---- A2: timeout + locked-keychain (host resilience) ----------------------
+
+
+def test_get_secret_passes_timeout_to_subprocess(mocker):
+    """A2: the `security` CLI call is bounded by KEYCHAIN_CLI_TIMEOUT so a hung
+    keychain interaction can't block a daemon indefinitely."""
+    mock_run = mocker.patch(
+        "shared.keychain.subprocess.run", return_value=MagicMock(stdout="x\n")
+    )
+    get_secret("ITS_TEST_KEY")
+    assert mock_run.call_args.kwargs["timeout"] == KEYCHAIN_CLI_TIMEOUT
+
+
+def test_security_cli_timeout_raises_keychain_error(mocker):
+    """A `security` CLI that exceeds the timeout surfaces a clear, non-leaking
+    KeychainError (not an indefinite hang)."""
+    mocker.patch(
+        "shared.keychain.subprocess.run",
+        side_effect=subprocess.TimeoutExpired(cmd="security", timeout=KEYCHAIN_CLI_TIMEOUT),
+    )
+    with pytest.raises(KeychainError, match="timed out"):
+        get_secret("ITS_TEST_KEY")
+
+
+def test_locked_keychain_raises_keychain_locked_error(mocker):
+    """A2: a LOCKED keychain (interaction not allowed) raises the distinct
+    KeychainLockedError, not a misleading 'entry not found' — so a daemon fails
+    loud with an actionable signal after a reboot before the keychain is unlocked."""
+    mocker.patch(
+        "shared.keychain.subprocess.run",
+        side_effect=subprocess.CalledProcessError(
+            returncode=36,
+            cmd="security",
+            output="",
+            stderr="SecKeychainSearchCopyNext: The user interaction is not allowed.",
+        ),
+    )
+    with pytest.raises(KeychainLockedError, match="LOCKED"):
+        get_secret("ITS_TEST_KEY")
+
+
+def test_set_secret_passes_timeout_and_locked_detection(mocker):
+    """set_secret is bounded too, and a locked keychain on WRITE raises
+    KeychainLockedError without leaking the value."""
+    mocker.patch("shared.keychain.getpass.getuser", return_value="u")
+    mock_run = mocker.patch("shared.keychain.subprocess.run")
+    set_secret("ITS_TEST_KEY", "v")
+    assert mock_run.call_args.kwargs["timeout"] == KEYCHAIN_CLI_TIMEOUT
+
+    mocker.patch(
+        "shared.keychain.subprocess.run",
+        side_effect=subprocess.CalledProcessError(
+            returncode=36, cmd="security", output="",
+            stderr="errSecInteractionNotAllowed (-25308)",
+        ),
+    )
+    with pytest.raises(KeychainLockedError) as exc:
+        set_secret("ITS_TEST_KEY", "super-secret-value")
+    assert "super-secret-value" not in str(exc.value)
 
 
 # ---- set_secret -----------------------------------------------------------

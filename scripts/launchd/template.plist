@@ -72,6 +72,11 @@
     <integer>3600</integer>
     -->
 
+    <!-- A2 RUNATLOAD RULE: <true/> for a StartInterval (poll) daemon so it resumes
+         immediately after a reboot/OS-update load; KEEP <false/> for a
+         StartCalendarInterval daemon (launchd fires missed calendar jobs on wake;
+         true would mis-fire on every login). NEVER set KeepAlive=true — ITS daemons
+         are one-shot-per-fire and KeepAlive would destroy the interval/calendar cadence. -->
     <key>RunAtLoad</key>
     <false/>
 

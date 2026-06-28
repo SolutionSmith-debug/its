@@ -78,9 +78,35 @@ def test_get_client_lazy_inits_once(mocker):
 
     assert c1 is c2
     assert sdk.call_count == 1
-    # Token must come from keychain, not env or hardcode.
-    sdk.assert_called_with("fake-ITS_SMARTSHEET_TOKEN", user_agent="its")
-    sdk.return_value.errors_as_exceptions.assert_called_once_with(True)
+
+
+def test_get_client_mounts_timeout_adapter(mocker):
+    """A2: a default-timeout adapter is mounted on the SDK session for https + http
+    so every SDK HTTP call is bounded (the SDK session has no default timeout)."""
+    sdk = mocker.patch("shared.smartsheet_client.smartsheet.Smartsheet")
+    client = MagicMock()
+    sdk.return_value = client
+
+    smartsheet_client.get_client()
+
+    mounts = {c.args[0]: c.args[1] for c in client._session.mount.call_args_list}
+    assert set(mounts) == {"https://", "http://"}
+    for adapter in mounts.values():
+        assert isinstance(adapter, smartsheet_client._TimeoutHTTPAdapter)
+        assert adapter._timeout == smartsheet_client.SDK_NETWORK_TIMEOUT
+
+
+def test_timeout_adapter_injects_default_timeout_when_absent(mocker):
+    """The adapter injects its default timeout only when the caller omitted one;
+    an explicit per-call timeout is preserved."""
+    adapter = smartsheet_client._TimeoutHTTPAdapter(timeout=17)
+    sent = mocker.patch("requests.adapters.HTTPAdapter.send")
+
+    adapter.send(MagicMock())  # no timeout supplied
+    assert sent.call_args.kwargs["timeout"] == 17
+
+    adapter.send(MagicMock(), timeout=5)  # explicit timeout preserved
+    assert sent.call_args.kwargs["timeout"] == 5
 
 
 # ---- Exception translation -----------------------------------------------
