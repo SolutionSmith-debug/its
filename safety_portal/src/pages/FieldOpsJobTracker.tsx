@@ -57,6 +57,7 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
   const caps = user?.capabilities ?? [];
   const canManage = caps.includes("cap.jobtracker.manage"); // create / close / progress / add-task
   const canOwnTasks = caps.includes("cap.tasks.own"); // change a task's own status
+  const canLogTime = caps.includes("cap.time.log"); // log a time entry against the open job
   const [actionBusy, setActionBusy] = useState(false);
   const [actionMsg, setActionMsg] = useState<{ ok: boolean; text: string } | null>(null);
   // New-job form (list view)
@@ -67,6 +68,10 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
   // Detail manage controls
   const [progressVal, setProgressVal] = useState("");
   const [taskDesc, setTaskDesc] = useState("");
+  // Time-log form (detail)
+  const [logHours, setLogHours] = useState("");
+  const [logNotes, setLogNotes] = useState("");
+  const [logTask, setLogTask] = useState("");
 
   // Reload the list whenever the status filter changes (and on mount).
   useEffect(() => {
@@ -289,6 +294,37 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
     }
   }
 
+  async function submitLogTime(e: FormEvent) {
+    e.preventDefault();
+    if (!selectedJob || actionBusy) return;
+    const hours = logHours.trim() === "" ? undefined : Number(logHours);
+    if (hours !== undefined && (!Number.isFinite(hours) || hours < 0)) {
+      setActionMsg({ ok: false, text: "Hours must be a non-negative number." });
+      return;
+    }
+    const taskId = logTask === "" ? undefined : Number(logTask);
+    setActionBusy(true);
+    setActionMsg(null);
+    try {
+      await api.logTime({
+        uuid: crypto.randomUUID(), // client-generated idempotency key (integrity-bar)
+        job_id: selectedJob.job_id,
+        ...(hours !== undefined ? { hours } : {}),
+        ...(taskId !== undefined ? { task_id: taskId } : {}),
+        ...(logNotes.trim() ? { notes: logNotes.trim() } : {}),
+      });
+      setLogHours("");
+      setLogNotes("");
+      setLogTask("");
+      await reloadDetail();
+      setActionMsg({ ok: true, text: "Time logged." });
+    } catch (err) {
+      setActionMsg({ ok: false, text: err instanceof Error ? err.message : "Time log failed." });
+    } finally {
+      setActionBusy(false);
+    }
+  }
+
   if (view === "detail" && selectedJob) {
     const job = selectedJob;
     return (
@@ -404,6 +440,33 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
 
         <section className="card dash-section">
           <h3 className="dash-detail__h2">Time entries</h3>
+          {canLogTime && job.status === "active" && (
+            <form onSubmit={submitLogTime} className="dash-row" aria-label="Log time">
+              <input
+                value={logHours}
+                onChange={(e) => setLogHours(e.target.value)}
+                placeholder="Hours"
+                inputMode="decimal"
+                size={5}
+              />{" "}
+              <label className="dash-card__label">
+                Task:{" "}
+                <select value={logTask} onChange={(e) => setLogTask(e.target.value)}>
+                  <option value="">— job-level —</option>
+                  {job.tasks.map((t) => (
+                    <option key={t.id} value={t.id}>{t.description}</option>
+                  ))}
+                </select>
+              </label>{" "}
+              <input
+                value={logNotes}
+                onChange={(e) => setLogNotes(e.target.value)}
+                placeholder="Notes (optional)"
+                maxLength={2000}
+              />{" "}
+              <button type="submit" disabled={actionBusy} className="btn--secondary">Log time</button>
+            </form>
+          )}
           {job.time_entries.length ? (
             <table className="dash-table">
               <thead>

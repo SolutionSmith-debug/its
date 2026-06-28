@@ -19,6 +19,7 @@ vi.mock("../../lib/fieldops_jobtracker", async (importOriginal) => {
     setJobProgress: vi.fn(),
     addTask: vi.fn(),
     setTaskStatus: vi.fn(),
+    logTime: vi.fn(),
   };
 });
 vi.mock("../../lib/auth", () => ({ useAuth: vi.fn() }));
@@ -274,5 +275,39 @@ describe("FieldOpsJobTracker — write UI", () => {
     expect(container.querySelector('[aria-label="Set status for task 1"]')).not.toBeNull();
     expect(container.querySelector('[aria-label="Update job progress"]')).toBeNull();
     expect(container.querySelector('[aria-label="Add a task"]')).toBeNull();
+  });
+
+  it("cap.time.log renders the Log time form and posts hours + task against the open job", async () => {
+    vi.mocked(api.logTime).mockResolvedValue({ uuid: "u-1" });
+    const { getByLabelText } = await openManagedDetail(["cap.time.log"]);
+    const form = getByLabelText("Log time") as HTMLFormElement;
+    fireEvent.change(form.querySelector('input[placeholder="Hours"]')!, { target: { value: "6.5" } });
+    fireEvent.change(form.querySelector("select")!, { target: { value: "1" } }); // task #1
+    fireEvent.change(form.querySelector('input[placeholder="Notes (optional)"]')!, { target: { value: "framing" } });
+    fireEvent.submit(form);
+    await waitFor(() =>
+      expect(api.logTime).toHaveBeenCalledWith(
+        expect.objectContaining({ job_id: "JOB-A", hours: 6.5, task_id: 1, notes: "framing" }),
+      ),
+    );
+    // uuid is a client-generated idempotency key (integrity-bar).
+    expect(vi.mocked(api.logTime).mock.calls[0][0].uuid).toBeTruthy();
+  });
+
+  it("Log time omits task_id for a job-level entry", async () => {
+    vi.mocked(api.logTime).mockResolvedValue({ uuid: "u-2" });
+    const { getByLabelText } = await openManagedDetail(["cap.time.log"]);
+    const form = getByLabelText("Log time") as HTMLFormElement;
+    fireEvent.change(form.querySelector('input[placeholder="Hours"]')!, { target: { value: "2" } });
+    fireEvent.submit(form);
+    await waitFor(() => expect(api.logTime).toHaveBeenCalled());
+    const arg = vi.mocked(api.logTime).mock.calls[0][0];
+    expect(arg).toMatchObject({ job_id: "JOB-A", hours: 2 });
+    expect(arg.task_id).toBeUndefined();
+  });
+
+  it("hides the Log time form without cap.time.log", async () => {
+    const { container } = await openManagedDetail(["cap.jobtracker.manage"]);
+    expect(container.querySelector('[aria-label="Log time"]')).toBeNull();
   });
 });
