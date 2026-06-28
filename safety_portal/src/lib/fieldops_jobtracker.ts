@@ -171,3 +171,17 @@ export async function addTask(
 export async function setTaskStatus(taskId: number, status: TaskStatus): Promise<void> {
   await postJson(`/api/fieldops/task/${taskId}/status`, { status });
 }
+
+// field action (cap.time.log). time_entries is an INTEGRITY-BAR table: the CLIENT generates `uuid`
+// (idempotency / amend key) but the Worker stamps the server-authoritative record time — a forged
+// body timestamp is ignored (see fieldops_time_write.ts). `hours` and `task_id` are optional; an
+// omitted task → job-level time.
+export async function logTime(body: {
+  uuid: string;
+  job_id: string;
+  hours?: number;
+  task_id?: number;
+  notes?: string;
+}): Promise<{ uuid: string }> {
+  return postJson<{ ok: boolean; uuid: string }>("/api/fieldops/time-entry", body);
+}
