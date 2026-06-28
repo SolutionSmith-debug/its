@@ -14,6 +14,13 @@ vi.mock("../../lib/fieldops_personnel", async (importOriginal) => {
   };
 });
 
+// PageShell (the shared header/back shell every page renders through) calls useAuth
+// for its Sign-out button. The Personnel page itself doesn't use auth, so we stub the
+// context here exactly like the other field-ops page tests do.
+vi.mock("../../lib/auth", () => ({
+  useAuth: vi.fn(() => ({ user: null, logout: vi.fn() })),
+}));
+
 import * as api from "../../lib/fieldops_personnel";
 import { FieldOpsPersonnel } from "../FieldOpsPersonnel";
 
@@ -127,9 +134,12 @@ describe("FieldOpsPersonnel — list view", () => {
     const backBtn = container.querySelector(".dash-back-btn button")!;
     fireEvent(backBtn, new MouseEvent("click", { bubbles: true }));
 
-    // Back button text should change to "← Back"
+    // We're back on the list: the detail's contextual "Back to personnel" control is
+    // gone and the Personnel list heading is shown again. (PageShell now owns the
+    // page-level "← Home", so the list no longer renders its own "← Back".)
     await waitFor(() => {
-      expect(getByText("← Back")).toBeTruthy();
+      expect(container.querySelector(".dash-back-btn")).toBeNull();
+      expect(getByText("Personnel")).toBeTruthy();
     });
   });
 

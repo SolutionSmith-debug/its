@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import type { FormEvent } from "react";
 import * as api from "../lib/fieldops_jobtracker";
 import { useAuth } from "../lib/auth";
+import { PageShell } from "../components/PageShell";
 
 // epoch SECONDS → ×1000 for JS Date
 function fmtDateTime(epochSeconds: number | null): string {
@@ -328,9 +329,9 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
   if (view === "detail" && selectedJob) {
     const job = selectedJob;
     return (
-      <div className="page">
-        <div className="dash-row dash-back-btn">
-          <button onClick={handleBack} className="btn--ghost">← Back to jobs</button>
+      <PageShell onHome={onBack}>
+        <div className="dash-back-btn">
+          <button onClick={handleBack} className="btn--secondary">← Back to jobs</button>
         </div>
 
         <div className="dash-detail__head">
@@ -377,7 +378,7 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
             </form>
             {job.status === "active" && (
               <div className="dash-row">
-                <button onClick={submitClose} disabled={actionBusy} className="btn--ghost">Close job</button>
+                <button onClick={submitClose} disabled={actionBusy} className="btn--secondary">Close job</button>
               </div>
             )}
           </section>
@@ -533,16 +534,13 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
           )}
           {inspCursor && <LoadMoreBtn leg="insp" />}
         </section>
-      </div>
+      </PageShell>
     );
   }
 
   // List view
   return (
-    <div className="page">
-      <div className="dash-row dash-back-btn">
-        <button onClick={handleBack} className="btn--ghost">← Back</button>
-      </div>
+    <PageShell onHome={onBack}>
 
       <h2 className="page__heading">Job Tracker</h2>
       <div className="dash-row">
@@ -581,7 +579,7 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
                 maxLength={256}
               />{" "}
               <button type="submit" disabled={actionBusy} className="btn--secondary">Create</button>{" "}
-              <button type="button" onClick={() => setNewJobOpen(false)} className="btn--ghost">Cancel</button>
+              <button type="button" onClick={() => setNewJobOpen(false)} className="btn--secondary">Cancel</button>
             </form>
           ) : (
             <button onClick={() => setNewJobOpen(true)} className="btn--secondary">+ New job</button>
@@ -649,6 +647,6 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
           )}
         </>
       )}
-    </div>
+    </PageShell>
   );
 }

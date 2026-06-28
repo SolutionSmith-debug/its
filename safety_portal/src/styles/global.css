@@ -1145,3 +1145,80 @@ h3 {
   color: var(--c-brg);
   margin: 0 0 10px;
 }
+
+/* ── Field-ops dash: classes the tracker pages referenced but were never defined.
+   The Job Tracker / Equipment / Personnel pages used bare modifier buttons
+   (no .btn base → no size), bare .dash-card--click (no card surface), and
+   undefined .dash-section / .dash-row(form) / .dash-back-btn / .dash-load-more.
+   These restore the established card/kit look without touching their markup. */
+
+/* Bare modifier buttons get the full button base (the trackers wrote class
+   "btn--secondary" without "btn"). .btn--ghost is intentionally NOT here — it is the
+   white-on-green HEADER ghost; the trackers' page-context ghosts are remapped to
+   --secondary in the markup so they are visible on the white page. */
+.btn--primary,
+.btn--secondary,
+.btn--danger {
+  font: inherit;
+  font-weight: 600;
+  min-height: var(--tap);
+  padding: 0 18px;
+  border-radius: var(--radius-sm);
+  border: 1.5px solid transparent;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+/* Stacked detail section that reads as a card (Equipment/Personnel used bare
+   .dash-section with no styling; Job Tracker used .card .dash-section — harmless). */
+.dash-section {
+  background: var(--c-white);
+  border: 1px solid var(--c-line);
+  border-radius: var(--radius);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  padding: clamp(16px, 4vw, 24px);
+  margin-top: var(--gap);
+}
+
+/* Clickable list cards had .dash-card--click WITHOUT .card → no surface. Give the
+   clickable dash card its own card surface (the hover lift is defined above). */
+.dash-card--click {
+  background: var(--c-white);
+  border: 1px solid var(--c-line);
+  border-radius: var(--radius);
+  padding: clamp(16px, 4vw, 22px);
+}
+
+/* Inline form / toolbar rows — div/form ONLY, never a table <tr class="dash-row">. */
+div.dash-row,
+form.dash-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: var(--gap);
+}
+div.dash-row input:not([type="checkbox"]),
+div.dash-row select,
+form.dash-row input:not([type="checkbox"]),
+form.dash-row select {
+  min-height: 44px;
+  border: 1.5px solid var(--c-line);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  font: inherit;
+  background: var(--c-white);
+}
+
+.dash-back-btn {
+  margin: 0 0 var(--gap);
+}
+
+.dash-load-more {
+  margin-top: var(--gap);
+  display: flex;
+  justify-content: center;
+}

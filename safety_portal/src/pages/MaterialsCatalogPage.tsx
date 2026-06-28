@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import type { FormEvent } from "react";
 import * as api from "../lib/fieldops_materials";
 import { useAuth } from "../lib/auth";
+import { PageShell } from "../components/PageShell";
 
 // P3 Materials (M1) — admin editor for the material_catalog TYPE vocabulary. cap.materials.manage
 // drives the write affordances (the Worker re-gates every call). List + create + per-row edit +
@@ -149,11 +150,7 @@ export function MaterialsCatalogPage({ onBack }: { onBack: () => void }) {
   }
 
   return (
-    <div className="page">
-      <main className="page__main">
-        <button type="button" className="btn btn--ghost" onClick={onBack}>
-          ← Home
-        </button>
+    <PageShell onHome={onBack}>
         <h1 className="page__heading">Materials Catalog</h1>
         <p className="muted">
           The datasheet-backed material type vocabulary. The per-job Material List draws from these types.
@@ -260,7 +257,6 @@ export function MaterialsCatalogPage({ onBack }: { onBack: () => void }) {
             </button>
           ) : null}
         </section>
-      </main>
-    </div>
+      </PageShell>
   );
 }
