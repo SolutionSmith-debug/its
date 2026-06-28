@@ -26,5 +26,7 @@ filename, frontmatter, and section conventions across every doc type.
 <!-- BEGIN AUTO-INDEX -->
 | Date | Type | Status | Workstream | Title | PRs |
 |------|------|--------|------------|-------|-----|
+| 2026-06-12 | design | draft | safety_portal | [Safety Portal — Form Request month-year + form-type filter (PR-6) · CC brief](cc-brief_form-request-month-filter.md) | _–_ |
+| 2026-06-08 | design | draft | safety_portal | [Safety Portal — Phase 2 Form Editor + Session Hardening · design brief (feeder)](phase2_form_editor_and_session_hardening_brief.md) | _–_ |
 | _(no frontmatter)_ | _–_ | _–_ | _–_ | [ITS — Tech Debt](tech_debt.md) | _–_ |
 <!-- END AUTO-INDEX -->

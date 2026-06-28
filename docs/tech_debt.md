@@ -4,6 +4,24 @@ Items deliberately deferred. Each carries the rationale for deferral and the tri
 
 When to add an entry: a session deliberately chooses preservation-over-refactor (per Op Stds v11 §14), discovers an external-API constraint that forced a workaround, or defers a non-trivial cleanup that's larger than the current session can absorb. When to mark CLOSED: the underlying item is resolved in a commit; preserve the entry with resolution detail rather than deleting (history is cheap, context is expensive).
 
+## ITS scaling hardening — 20-job/20-user Tier-A roadmap [OPEN 2026-06-28]
+
+2026-06-28 forensic scaling evaluation (read-only; `improve`-skill + multi-agent Workflows; full report at `docs/reports/2026-06-28_forensic-scaling-eval-20x20.md`). Audited the system for a planned ramp to 20+ active jobs / 20+ daily **photo-heavy** portal users this quarter. 98 findings (7 CRITICAL / 33 HIGH; **39 silent-failure**). No code changed — diagnosis + logged executable specs only.
+
+**Tier-A (must-fix-before-cutover) — full self-contained specs in the report's Part II; all 7 code specs are first-draft `needs-revision`:**
+- **A1 (gating, do first):** verify the real Smartsheet per-workspace sheet-count cap + design a week-sheet archival/rollup strategy. ~1,040 new sheets/yr (20×52) is the #1 dollar cost (plan-tier upgrade $600 Pro / $2,400 Business) and a possible hard cap. `smartsheet_client` has no list/count-sheets method yet. Gates the cost + cutover timing.
+- **A2:** single-host resilience — daemon auto-start after reboot (LaunchAgent-at-login gap), SDK network timeouts (boxsdk has none → indefinite daemon hang), Keychain-locked-after-reboot handling.
+- **A3:** Box OAuth refresh-token cross-process lock + `keychain.set_secret` lock + 50-day idle warning (silent 60-day auth-death risk).
+- **A4:** unfiled-submission backlog/age alert + portal_poll outage escalation (`box_verified=0` rows never pruned → silent loss if the host dies).
+- **A5:** ITS_Review_Queue + ITS_Errors 5,000-row cap rotation (silent drop at cap).
+- **A6:** weekly_generate hardening — per-job timeout + streamed merge + partial-write resumability. **CORRECTION:** the original "launchd kills it at >1h" CRITICAL is FALSE — the plist sets no `ExitTimeOut`; real risk is wall-clock + memory.
+- **A7:** photo/payload 413 reconciliation (raise PAYLOAD_MAX envelope, keep the four-way §34 photo mirror synced — `worker/index.ts` + `photo_screen.py` + `PhotoField.tsx` + `publishValidation.ts`) + amend-prefill empty-payload guard. Doctrine flag RESOLVED — see report Part III.
+- **A8 (P1, parallel):** Operator & User Enablement Documentation program — a PDF guide / user manual / comprehensive troubleshooting tree for every ITS function (Portal, ~17 Smartsheet surfaces incl. an `ITS_Config` data-dictionary PDF, daemons/CLIs, future workstreams). Enabling precondition for the distributed-Evergreen-operator model; needs a doc-currency discipline.
+
+Cost at 20×20 ≈ **$610–$2,410/mo hard ≈ the Smartsheet tier decision** + ~$8 Cloudflare; Anthropic ~$0 (portal deterministic); labor distributed across existing Evergreen staff (not a bottleneck).
+
+**Revisit when:** the 20-job ramp is scheduled (start with A1's read-only cap verification), or any Tier-A item is picked up for implementation.
+
 ## Portal D1 test-job dropdown not cleared by empty-sync [CLOSED 2026-06-18]
 
 **Resolved 2026-06-18 (tech-debt easy-wins pass):** PR #292 — pruneOldData now deletes inactive+empty jobs + a new purge-job admin endpoint/CLI; the clean-slate purge cleared the D1 jobs table. ITS_Active_Jobs + D1 jobs now 0.

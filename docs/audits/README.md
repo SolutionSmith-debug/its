@@ -14,6 +14,7 @@ indicate which mode it operates in.
 <!-- BEGIN AUTO-INDEX -->
 | Date | Type | Status | Workstream | Title | PRs |
 |------|------|--------|------------|-------|-----|
+| 2026-06-08 | audit | active | safety-portal | [Doc-reconciliation audit (2026-06-08) — PROPOSE-ONLY](2026-06-08_doc-reconciliation.md) | #185, #191 |
 | 2026-06-02 | audit | active | _–_ | [Picklist Drift Reconcile — Phase 1 Classification (2026-06-02)](picklist_drift_2026-06-02_classification.md) | _–_ |
 | 2026-05-29 | audit | active | infrastructure | [Agent + Workflow Optimization Audit (2026-05-29)](2026-05-29_agent-workflow-audit.md) | _–_ |
 | 2026-05-28 | audit | active | _–_ | [Doc-reconciliation audit (2026-05-28) — agent self-test](2026-05-28_doc-reconciliation.md) | #101, #103, #105 |
