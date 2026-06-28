@@ -9,7 +9,8 @@ export type HomeNav =
   | "forms"
   | "fieldops-jobs"
   | "fieldops-equipment"
-  | "fieldops-personnel";
+  | "fieldops-personnel"
+  | "materials-catalog";
 
 interface HomeCard {
   key: HomeNav;
@@ -73,6 +74,13 @@ const HOME_CARDS: HomeCard[] = [
     badge: "Admin",
     title: "Personnel",
     desc: "Who is where, and per-person hour history.",
+  },
+  {
+    key: "materials-catalog",
+    cap: "cap.materials.manage",
+    badge: "Admin",
+    title: "Materials Catalog",
+    desc: "The datasheet-backed material type catalog — add, edit, and retire types.",
   },
 ];
 

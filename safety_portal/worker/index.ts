@@ -7,12 +7,14 @@ import type { FieldopsGates } from "./fieldops_gates";
 import { registerPersonnelRoutes } from "./fieldops_personnel";
 import { registerEquipmentRoutes } from "./fieldops_equipment";
 import { registerJobTrackerRoutes } from "./fieldops_jobtracker";
+import { registerMaterialsRoutes } from "./fieldops_materials";
 import { auditStmt, isUniqueViolation } from "./audit";
 import { registerTimeWriteRoutes } from "./fieldops_time_write";
 import { registerJobWriteRoutes } from "./fieldops_job_write";
 import { registerTaskWriteRoutes } from "./fieldops_task_write";
 import { registerEquipmentFieldWriteRoutes } from "./fieldops_equipment_write";
 import { registerEquipmentRosterWriteRoutes } from "./fieldops_equipment_roster_write";
+import { registerMaterialWriteRoutes } from "./fieldops_material_write";
 import {
   validateUser,
   newSessionClaims,
@@ -358,12 +360,14 @@ const fieldopsGates: FieldopsGates = { requireSession, requireCapability };
 registerPersonnelRoutes(app, fieldopsGates);
 registerEquipmentRoutes(app, fieldopsGates);
 registerJobTrackerRoutes(app, fieldopsGates);
+registerMaterialsRoutes(app, fieldopsGates);
 // — field-ops WRITE routes (P2.3); send-free D1 mutations, capability-gated, audit-batched —
 registerTimeWriteRoutes(app, fieldopsGates);
 registerJobWriteRoutes(app, fieldopsGates);
 registerTaskWriteRoutes(app, fieldopsGates);
 registerEquipmentFieldWriteRoutes(app, fieldopsGates);
 registerEquipmentRosterWriteRoutes(app, fieldopsGates);
+registerMaterialWriteRoutes(app, fieldopsGates);
 
 /** GET /api/session — who am I (used by the SPA on load to restore session). Returns
  *  the live role (from requireSession's per-request D1 read), so a demotion drops the

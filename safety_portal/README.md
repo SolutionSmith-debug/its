@@ -379,6 +379,22 @@ protects any job holding them from deletion.
 > The field-ops READ/WRITE routes + the Mac mirror daemon (`field_ops/fieldops_sync`) that promotes
 > portal jobs into `ITS_Active_Jobs` land in later P2 slices — these migrations are inert until then.
 
+### P3 Materials catalog (M1 — `0019`)
+
+**Migration 0019** adds the `material_catalog` table — the datasheet-backed material TYPE vocabulary
+(36 operator-approved types seeded inline) the per-job Material List draws from (manifest model, M2).
+A plain reference table: admin CRUD gated `cap.materials.manage`; retire is a soft-delete (`active=0`)
+so a receipt/incident referencing a `catalog_id` keeps its target. Read gated `cap.materials.receive`.
+Both capabilities are already seeded in 0013 — 0019 seeds no capability vocabulary.
+
+#### Activation (operator — deploy boundary; escalates to the Developer-Operator)
+
+1. Apply migration **0019** to the live D1 **BEFORE** the redeploy
+   (`npx wrangler d1 migrations apply its-safety-portal-db --remote`) — else `GET /api/fieldops/materials`,
+   `POST /api/fieldops/material`, `…/:id/update`, `…/:id/delete` 500 on the missing `material_catalog`
+   table. **ORDER-CRITICAL**, same rule as 0013/0015/0016.
+2. **Redeploy** (`npm run deploy`) — activates the catalog CRUD routes + the Materials admin page.
+
 ### Lockout recovery (break-glass) — escalate to the Developer-Operator
 
 If both admins are ever locked out (e.g. passwords lost, or both disabled), recovery runs

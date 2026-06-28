@@ -10,6 +10,7 @@ import { FormsPage } from "./pages/FormsPage";
 import { FieldOpsJobTracker } from "./pages/FieldOpsJobTracker";
 import { FieldOpsEquipment } from "./pages/FieldOpsEquipment";
 import { FieldOpsPersonnel } from "./pages/FieldOpsPersonnel";
+import { MaterialsCatalogPage } from "./pages/MaterialsCatalogPage";
 import { useIdleLogout } from "./lib/useIdleLogout";
 
 type View = "home" | HomeNav;
@@ -78,6 +79,8 @@ export function App() {
     page = <FieldOpsEquipment onBack={home} />;
   } else if (view === "fieldops-personnel" && has("cap.personnel.read")) {
     page = <FieldOpsPersonnel onBack={home} />;
+  } else if (view === "materials-catalog" && has("cap.materials.manage")) {
+    page = <MaterialsCatalogPage onBack={home} />;
   } else {
     page = (
       <HomePage
