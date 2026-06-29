@@ -118,8 +118,9 @@ def test_checks_list_has_all_session_1_2_3_checks():
     prolonged-open page) and K (guaranteed F09 cap-window summary sweep) shipped
     in F08/F09 PR 2. Check L (token write-capability probe) shipped in B2.
     Check N (WSR rows stuck in SENDING) is the weekly_send write-ahead-marker
-    safety net. Check P (A3) is the Box OAuth refresh-token freshness probe
-    (Check O is reserved for the future A5 per-job row-cap watchdog). Check Q
+    safety net. Check P (A3) is the Box OAuth refresh-token freshness probe;
+    Checks Q/R (A4) are the portal_poll fetch-outage + unfiled-backlog probes
+    (Check O is reserved for the future A5 per-job row-cap watchdog). Check S
     (origin/main required-CI-green detector) shipped from the 2026-06-28 forensic
     lessons-learned (class #13, partial-PR-landed)."""
     assert watchdog.CHECKS == [
@@ -136,7 +137,9 @@ def test_checks_list_has_all_session_1_2_3_checks():
         watchdog._check_blueprint_guard_symlinks,  # Check M (C3)
         watchdog._check_stuck_wsr_send,  # Check N (WSR write-ahead-marker safety net)
         watchdog._check_box_token_freshness,  # Check P (A3) — Box OAuth freshness
-        watchdog._check_main_branch_ci_green,  # Check Q — origin/main required CI green (class #13)
+        watchdog._check_portal_poll_fetch_outage,  # Check Q (A4 fetch-outage escalation)
+        watchdog._check_portal_poll_pending_backlog,  # Check R (A4 unfiled-backlog)
+        watchdog._check_main_branch_ci_green,  # Check S — origin/main required CI green (class #13)
     ]
 
 
@@ -1909,7 +1912,7 @@ def test_cap_window_sweep_deferred_in_maintenance(mocker):
     assert "defer" in result.summary.lower()
 
 
-# ---- Check Q: origin/main required CI green (forensic class #13) ---------
+# ---- Check S: origin/main required CI green (forensic class #13) ---------
 
 
 def _fake_gh(monkeypatch, *, which="/usr/bin/gh", returncode=0, stdout="", stderr=""):
@@ -1921,11 +1924,11 @@ def _fake_gh(monkeypatch, *, which="/usr/bin/gh", returncode=0, stdout="", stder
     monkeypatch.setattr(watchdog.subprocess, "run", _run)
 
 
-def test_check_q_registered_in_checks():
+def test_check_s_registered_in_checks():
     assert watchdog._check_main_branch_ci_green in watchdog.CHECKS
 
 
-def test_check_q_green_main_is_info(monkeypatch):
+def test_check_s_green_main_is_info(monkeypatch):
     _fake_gh(
         monkeypatch,
         stdout=json.dumps([{"status": "completed", "conclusion": "success", "headSha": "abcdef1234"}]),
@@ -1935,7 +1938,7 @@ def test_check_q_green_main_is_info(monkeypatch):
     assert "green" in result.summary.lower()
 
 
-def test_check_q_red_main_is_critical(monkeypatch):
+def test_check_s_red_main_is_critical(monkeypatch):
     _fake_gh(
         monkeypatch,
         stdout=json.dumps([{"status": "completed", "conclusion": "failure", "headSha": "deadbeef99"}]),
@@ -1946,7 +1949,7 @@ def test_check_q_red_main_is_critical(monkeypatch):
     assert "deadbee" in result.summary  # truncated headSha surfaced
 
 
-def test_check_q_cancelled_main_is_critical(monkeypatch):
+def test_check_s_cancelled_main_is_critical(monkeypatch):
     _fake_gh(
         monkeypatch,
         stdout=json.dumps([{"status": "completed", "conclusion": "cancelled", "headSha": "0011223344"}]),
@@ -1954,7 +1957,7 @@ def test_check_q_cancelled_main_is_critical(monkeypatch):
     assert watchdog._check_main_branch_ci_green().severity is Severity.CRITICAL
 
 
-def test_check_q_in_progress_is_info_not_critical(monkeypatch):
+def test_check_s_in_progress_is_info_not_critical(monkeypatch):
     _fake_gh(
         monkeypatch,
         stdout=json.dumps([{"status": "in_progress", "conclusion": None, "headSha": "aabbccddee"}]),
@@ -1962,24 +1965,24 @@ def test_check_q_in_progress_is_info_not_critical(monkeypatch):
     assert watchdog._check_main_branch_ci_green().severity is Severity.INFO
 
 
-def test_check_q_gh_missing_is_info(monkeypatch):
+def test_check_s_gh_missing_is_info(monkeypatch):
     _fake_gh(monkeypatch, which=None)
     result = watchdog._check_main_branch_ci_green()
     assert result.severity is Severity.INFO
     assert "gh" in result.summary.lower()
 
 
-def test_check_q_gh_nonzero_is_info(monkeypatch):
+def test_check_s_gh_nonzero_is_info(monkeypatch):
     _fake_gh(monkeypatch, returncode=1, stderr="auth required")
     assert watchdog._check_main_branch_ci_green().severity is Severity.INFO
 
 
-def test_check_q_no_runs_is_info(monkeypatch):
+def test_check_s_no_runs_is_info(monkeypatch):
     _fake_gh(monkeypatch, stdout="[]")
     assert watchdog._check_main_branch_ci_green().severity is Severity.INFO
 
 
-def test_check_q_timeout_is_info(monkeypatch):
+def test_check_s_timeout_is_info(monkeypatch):
     monkeypatch.setattr(watchdog.shutil, "which", lambda _name: "/usr/bin/gh")
 
     def _boom(*_a, **_k):
@@ -1987,3 +1990,89 @@ def test_check_q_timeout_is_info(monkeypatch):
 
     monkeypatch.setattr(watchdog.subprocess, "run", _boom)
     assert watchdog._check_main_branch_ci_green().severity is Severity.INFO
+
+
+# ---- Check P: portal_poll pending-fetch outage escalation (A4) ------------
+
+
+def test_portal_poll_fetch_outage_absent_is_info(monkeypatch, tmp_path):
+    monkeypatch.setattr(watchdog.portal_poll, "FETCH_FAIL_STATE_PATH", tmp_path / "ff.json")
+    result = watchdog._check_portal_poll_fetch_outage()
+    assert result.severity is Severity.INFO
+
+
+def test_portal_poll_fetch_outage_below_threshold_is_info(monkeypatch, tmp_path):
+    p = tmp_path / "ff.json"
+    p.write_text(json.dumps({"count": 3}))
+    monkeypatch.setattr(watchdog.portal_poll, "FETCH_FAIL_STATE_PATH", p)
+    result = watchdog._check_portal_poll_fetch_outage()
+    assert result.severity is Severity.INFO
+
+
+def test_portal_poll_fetch_outage_at_threshold_is_critical(monkeypatch, tmp_path):
+    p = tmp_path / "ff.json"
+    p.write_text(json.dumps({"count": watchdog.portal_poll.FETCH_FAIL_CRITICAL_THRESHOLD}))
+    monkeypatch.setattr(watchdog.portal_poll, "FETCH_FAIL_STATE_PATH", p)
+    result = watchdog._check_portal_poll_fetch_outage()
+    assert result.severity is Severity.CRITICAL
+    assert "OUTAGE" in result.summary
+
+
+def test_portal_poll_fetch_outage_unreadable_is_info(monkeypatch, tmp_path):
+    p = tmp_path / "ff.json"
+    p.write_text("{not json")
+    monkeypatch.setattr(watchdog.portal_poll, "FETCH_FAIL_STATE_PATH", p)
+    result = watchdog._check_portal_poll_fetch_outage()
+    assert result.severity is Severity.INFO
+
+
+# ---- Check Q: portal_poll unfiled pending-backlog (A4) -------------------
+
+
+def test_portal_poll_backlog_absent_is_info(monkeypatch, tmp_path):
+    monkeypatch.setattr(watchdog.portal_poll, "PENDING_BACKLOG_STATE_PATH", tmp_path / "bl.json")
+    result = watchdog._check_portal_poll_pending_backlog()
+    assert result.severity is Severity.INFO
+
+
+def test_portal_poll_backlog_unlatched_is_info(monkeypatch, tmp_path):
+    p = tmp_path / "bl.json"
+    p.write_text(json.dumps({"count": 0, "drained": 5, "high_since_utc": None}))
+    monkeypatch.setattr(watchdog.portal_poll, "PENDING_BACKLOG_STATE_PATH", p)
+    result = watchdog._check_portal_poll_pending_backlog()
+    assert result.severity is Severity.INFO
+
+
+def test_portal_poll_backlog_latched_recent_is_info(monkeypatch, tmp_path):
+    recent = (datetime.now(UTC) - timedelta(minutes=30)).isoformat()
+    p = tmp_path / "bl.json"
+    p.write_text(json.dumps({"count": 50, "drained": 0, "high_since_utc": recent}))
+    monkeypatch.setattr(watchdog.portal_poll, "PENDING_BACKLOG_STATE_PATH", p)
+    result = watchdog._check_portal_poll_pending_backlog()
+    assert result.severity is Severity.INFO
+
+
+def test_portal_poll_backlog_latched_sustained_is_warn(monkeypatch, tmp_path):
+    old = (datetime.now(UTC) - timedelta(hours=3)).isoformat()
+    p = tmp_path / "bl.json"
+    p.write_text(json.dumps({"count": 50, "drained": 0, "high_since_utc": old}))
+    monkeypatch.setattr(watchdog.portal_poll, "PENDING_BACKLOG_STATE_PATH", p)
+    result = watchdog._check_portal_poll_pending_backlog()
+    assert result.severity is Severity.WARN
+    assert "STUCK" in result.summary
+
+
+def test_portal_poll_backlog_unreadable_is_info(monkeypatch, tmp_path):
+    p = tmp_path / "bl.json"
+    p.write_text("{not json")
+    monkeypatch.setattr(watchdog.portal_poll, "PENDING_BACKLOG_STATE_PATH", p)
+    result = watchdog._check_portal_poll_pending_backlog()
+    assert result.severity is Severity.INFO
+
+
+def test_portal_poll_backlog_unparseable_ts_is_info(monkeypatch, tmp_path):
+    p = tmp_path / "bl.json"
+    p.write_text(json.dumps({"count": 50, "drained": 0, "high_since_utc": "not-a-timestamp"}))
+    monkeypatch.setattr(watchdog.portal_poll, "PENDING_BACKLOG_STATE_PATH", p)
+    result = watchdog._check_portal_poll_pending_backlog()
+    assert result.severity is Severity.INFO

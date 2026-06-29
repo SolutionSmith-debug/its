@@ -47,15 +47,18 @@ jobs:
       - name: Doc-index freshness (warn-only)
         run: python -m scripts.regen_doc_indexes --check || echo "::warning::Doc indexes stale — run \`python -m scripts.regen_doc_indexes\` locally."
 
-      # Warn-only, like the doc linters above. check_doctrine_drift is the
-      # propose-only MECHANICAL tier of the cross-repo drift guard: it prints
-      # findings and exits 0 even when drift exists (the operator + the heavy
-      # semantic tier — the doc-reconciliation-auditor agent — decide). It exits
-      # non-zero ONLY on a fatal config error (e.g. an unreadable doctrine
-      # manifest), which SHOULD fail CI. Previously this ran only via unit tests
-      # + the on-demand agent; now every CI run surfaces mechanical drift.
-      - name: Doctrine-drift check (warn-only, mechanical tier)
-        run: python -m scripts.check_doctrine_drift
+      # BLOCKING on the precise mechanical drift checks only. check_doctrine_drift
+      # is the propose-only MECHANICAL tier of the cross-repo drift guard; in
+      # --strict mode it exits 1 if any BLOCKING finding exists — M1 (doctrine
+      # version cited stale in current-doctrine prose, the ops-stds-enforcer-staleness
+      # class), M4 (canonical sheet-id drift), or M7 (an `Op Stds §N` citation that
+      # resolves to no section). These three are false-positive-free by construction.
+      # The FP-prone M2 (tech_debt self-closure heuristic) and the M3/M5/M6 coverage
+      # tiers still PRINT (the operator + the semantic doc-reconciliation-auditor agent
+      # decide) but do NOT gate. The default (no --strict) invocation stays exit-0
+      # propose-only for the agent + unit tests.
+      - name: Doctrine-drift check (blocking — M1/M4/M7 mechanical drift)
+        run: python -m scripts.check_doctrine_drift --strict
 
   # Safety Portal (Cloudflare Worker + React SPA) — TypeScript typecheck + Worker
   # tests. BLOCKING, like `test`. The Python `test` job does NOT cover safety_portal/
