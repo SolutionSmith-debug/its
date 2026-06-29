@@ -75,6 +75,7 @@ def test_add_wsr_row_seeds_body_and_pending(ss):
     assert payload[wsr_review.COL_SEND_STATUS] == wsr_review.STATUS_PENDING
     assert payload[wsr_review.COL_COMPILED_PDF] == "https://app.box.com/file/9"
     assert payload[wsr_review.COL_JOB_ID] == "JOB-1"
+    assert payload[wsr_review.COL_WORKSTREAM] == "safety"  # P1b send-guard tag, seeded by default
 
 
 def test_add_wsr_row_always_appends_never_updates(ss):

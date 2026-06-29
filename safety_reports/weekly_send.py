@@ -4,12 +4,21 @@ Send half of the External Send Gate two-process model (Foundation Mission v11
 Invariant 1) for the Safety Portal pull flow. Invoked per row by
 `safety_reports/weekly_send_poll.py` (the launchd poller), which discovers WSR rows
 with `Approve for Scheduled Send` (scheduled) OR `Send Now` (immediate) checked,
-runs the F22 approval-attestation gate, then calls `send_one_row(row_id)`.
+runs the F22 approval-attestation gate, then calls `send_one_row(row_id, cfg)`.
 
 Phase-5 rewrite (2026-06-05): repointed WPR_Pending_Review → WSR_human_review.
 
 **Zero AI capability** — `anthropic_client` / `anthropic` AST-forbidden via
 `tests/test_capability_gating.py::SEND_SCRIPTS`.
+
+**Parameterized (P1b — parameterize-not-clone, Op Stds §14 deviation).** Every
+workstream-specific binding lives in a required, no-default `SendConfig`
+(`send_one_row(row_id, cfg)`), so a future `progress_send` reuses this dispatch logic
+WITHOUT cloning it. A cross-workstream **contamination guard** reads each row's
+`Workstream` tag and HARD-HELDs (+ CRITICAL) a row whose tag != the sender's
+(`safety`); an absent tag WARNs + proceeds (pre-backfill back-compat). See the
+`SendConfig` block + the Stage-2b guard for the §42 rationale; §43 runbook
+`docs/runbooks/safety_weekly_send.md`.
 
 send_one_row pipeline
 ---------------------
@@ -52,9 +61,10 @@ from __future__ import annotations
 import argparse
 import re
 import sys
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
-from typing import Any, Literal
+from typing import Any, Literal, Protocol, cast
 
 from safety_reports import wsr_review
 from shared import active_jobs, box_client, error_log, graph_client, smartsheet_client
@@ -101,6 +111,7 @@ SendStatus = Literal[
     "held_no_recipient",
     "held_missing_pdf",
     "held_oversized_packet",
+    "held_workstream_mismatch",
     "row_not_found",
     "send_failed",
     "invalid_recipients",
@@ -117,12 +128,84 @@ class SendResult:
     retry_count: int = 0
 
 
+# ---- SendConfig: the parameterize-not-clone binding (Op Stds §14 deviation) --
+#
+# weekly_send is the SEND half of the External Send Gate (FM v11 Invariant 1). To
+# let a future progress_send reuse this exact dispatch logic WITHOUT cloning it (the
+# cross-workstream contamination §14 warns of), every workstream-specific value is
+# bound in a required, NO-DEFAULT SendConfig. No field defaults to a safety value: a
+# default would let a new workstream silently inherit safety's recipients / sheet /
+# subject / tag — the precise cross-wiring this guards. Constructing a config forces
+# each workstream to NAME every binding explicitly; that *is* the gate.
+
+
+class _ReviewModule(Protocol):
+    """Structural type of a workstream review-sheet module (`wsr_review` for safety;
+    a future `wpr_review` for progress). Bound as `SendConfig.review`."""
+
+    SHEET_ID: int
+    COL_JOB_PROJECT: str
+    COL_JOB_ID: str
+    COL_WEEK_OF: str
+    COL_COMPILED_PDF: str
+    COL_EMAIL_BODY: str
+    COL_SEND_STATUS: str
+    COL_SENT_AT: str
+    COL_NOTES: str
+    COL_WORKSTREAM: str
+    STATUS_PENDING: str
+    STATUS_SENT: str
+    STATUS_FAILED: str
+    STATUS_HELD: str
+    STATUS_SENDING: str
+    to_wsr_datetime: Callable[[datetime | str | None], str]
+
+
+@dataclass(frozen=True)
+class SendConfig:
+    """Required, no-default per-workstream binding for `send_one_row` (see above)."""
+
+    script_name: str
+    workstream_tag: str          # the contamination-guard expected value ("safety")
+    config_workstream: str       # ITS_Config get_setting scope ("safety_reports")
+    review: _ReviewModule        # the review-sheet module (columns, statuses, sheet id)
+    recipient_resolver: Callable[[Any], tuple[str, Sequence[str]]]
+    report_label: str            # subject + attachment label ("Weekly Safety Report")
+    from_mailbox_cfg_key: str
+    from_mailbox_default: str
+    max_send_retries: int
+    upload_session_threshold_bytes: int
+
+
+def _resolve_safety_recipients(job: Any) -> tuple[str, Sequence[str]]:
+    """Safety recipient binding: TO = the job's safety-reports contact; CC = its CC 1–5
+    (already flattened / de-duped / validated by active_jobs). The stakeholder is NOT on
+    the envelope. `send_one_row` re-validates the resolved addresses."""
+    return (job.safety_reports_contact_email or "").strip(), job.cc_emails
+
+
+CONFIG = SendConfig(
+    script_name=SCRIPT_NAME,
+    workstream_tag="safety",
+    config_workstream=WORKSTREAM,
+    # cast: a module doesn't structurally match a Protocol in mypy, but wsr_review DOES
+    # satisfy _ReviewModule's surface (verified by the live tests + the structural contract).
+    review=cast(_ReviewModule, wsr_review),
+    recipient_resolver=_resolve_safety_recipients,
+    report_label="Weekly Safety Report",
+    from_mailbox_cfg_key=CFG_FROM_MAILBOX,
+    from_mailbox_default=DEFAULT_FROM_MAILBOX,
+    max_send_retries=MAX_SEND_RETRIES,
+    upload_session_threshold_bytes=UPLOAD_SESSION_THRESHOLD_BYTES,
+)
+
+
 # ---- Config reader -------------------------------------------------------
 
 
-def _read_str_setting(key: str, fallback: str) -> str:
+def _read_str_setting(key: str, fallback: str, *, workstream: str) -> str:
     try:
-        raw = smartsheet_client.get_setting(key, workstream=WORKSTREAM)
+        raw = smartsheet_client.get_setting(key, workstream=workstream)
     except SmartsheetNotFoundError:
         return fallback
     return raw if isinstance(raw, str) and raw else fallback
@@ -193,51 +276,100 @@ def _coerce_week(raw: Any) -> str:
 # ---- send_one_row --------------------------------------------------------
 
 
-def send_one_row(row_id: int) -> SendResult:
-    """Send (or HELD / FAIL) one approved WSR_human_review row.
+def send_one_row(row_id: int, cfg: SendConfig) -> SendResult:
+    """Send (or HELD / FAIL) one approved review row, per the workstream `cfg`.
 
-    SmartsheetError other than NotFound propagates to the caller (the poller's
-    per-row fence handles)."""
+    `cfg` is REQUIRED with no default — the sender cannot run without a workstream
+    binding (the contamination gate). SmartsheetError other than NotFound propagates
+    to the caller (the poller's per-row fence handles)."""
     try:
-        row = smartsheet_client.get_row(SHEET, row_id)
+        row = smartsheet_client.get_row(cfg.review.SHEET_ID, row_id)
     except SmartsheetNotFoundError:
         error_log.log(
-            Severity.INFO, SCRIPT_NAME,
+            Severity.INFO, cfg.script_name,
             f"row_id={row_id} not found (deleted by operator?)",
             error_code="weekly_send.row_not_found",
         )
         return SendResult(status="row_not_found", row_id=row_id)
 
-    project_name = str(row.get(wsr_review.COL_JOB_PROJECT) or "")
-    notes = row.get(wsr_review.COL_NOTES) or ""
-    send_status = row.get(wsr_review.COL_SEND_STATUS) or STATUS_PENDING
+    project_name = str(row.get(cfg.review.COL_JOB_PROJECT) or "")
+    notes = row.get(cfg.review.COL_NOTES) or ""
+    send_status = row.get(cfg.review.COL_SEND_STATUS) or cfg.review.STATUS_PENDING
     retry_count = _parse_retry_count(notes)
 
-    if send_status == STATUS_SENT:
+    if send_status == cfg.review.STATUS_SENT:
         return SendResult(status="skipped_already_sent", row_id=row_id, project_name=project_name, retry_count=retry_count)
-    if send_status == STATUS_HELD:
+    if send_status == cfg.review.STATUS_HELD:
         return SendResult(status="skipped_held", row_id=row_id, project_name=project_name, retry_count=retry_count)
 
-    # Stage 3: recipients RESOLVED AT SEND TIME from active_jobs (NOT the display cols).
-    job_id = str(row.get(wsr_review.COL_JOB_ID) or "").strip()
+    # Stage 2b: cross-workstream contamination guard (External Send Gate — defense-in-depth on top
+    # of Invariant 1's two-process boundary, NOT the primary boundary). A row tagged for a DIFFERENT
+    # workstream than this sender must NEVER transmit. Placed AFTER the SENT/HELD skip gates (a
+    # terminal row is never rewritten) and BEFORE recipient resolution + the write-ahead SENDING
+    # marker (a contaminated row never enters the in-flight state) — mirroring the Stage-4b oversized
+    # refusal's fail-toward-not-sending placement.
+    #
+    # Three cases, keyed on the RAW cell value:
+    #   - GENUINE-ABSENT (null / empty cell) → WARN + proceed. A deliberate, bounded fail-OPEN for
+    #     the pre-backfill window. Bounded-SAFE because the WSR sheet is single-workstream by
+    #     construction: a blank-tag row IS a safety row, sent to safety recipients via the safety
+    #     job + F22 — not cross-workstream contamination. (Tightening this to fail-CLOSED in the
+    #     post-backfill steady state is a Send-Gate POSTURE decision reserved for Seth — §43 runbook.)
+    #   - MALFORMED (a NON-empty raw value that STRIPS to empty — e.g. a U+00A0 / U+2007 whitespace
+    #     cell) → HARD-HELD. A non-null cell that isn't a clean tag is a contamination signal, never
+    #     the back-compat WARN path — closes the str().strip()-collapses-to-absent evasion.
+    #   - MISMATCH (strips to a non-empty value != the sender's tag) → HARD-HELD + CRITICAL.
+    # The review `Workstream` tag is the report-family value (`safety` / `progress`), DISTINCT from
+    # cfg.config_workstream (`safety_reports`, the ITS_Config scope) and the global Workstream
+    # picklist — do not unify them or the guard silently mis-compares.
+    raw_workstream = row.get(cfg.review.COL_WORKSTREAM)
+    stripped_workstream = str(raw_workstream).strip() if raw_workstream is not None else ""
+    if raw_workstream is None or str(raw_workstream) == "":
+        error_log.log(
+            Severity.WARN, cfg.script_name,
+            f"row_id={row_id} has no Workstream tag; proceeding as {cfg.workstream_tag!r} "
+            "(back-compat — pre-backfill row).",
+            error_code="weekly_send.workstream_absent",
+        )
+    elif stripped_workstream != cfg.workstream_tag:
+        malformed = stripped_workstream == ""
+        kind = "malformed whitespace Workstream tag" if malformed else "workstream contamination"
+        error_log.log(
+            Severity.CRITICAL, cfg.script_name,
+            f"WORKSTREAM {'MALFORMED' if malformed else 'CONTAMINATION'}: row_id={row_id} "
+            f"Workstream={raw_workstream!r} (stripped {stripped_workstream!r}) != sender "
+            f"{cfg.workstream_tag!r}; send BLOCKED (fail-closed).",
+            error_code="weekly_send.workstream_mismatch",
+        )
+        return _mark_held(
+            row_id, project_name, notes,
+            f"{kind}: row={raw_workstream!r} != sender {cfg.workstream_tag!r}",
+            "held_workstream_mismatch", cfg,
+        )
+    # else: present and exact-match → proceed
+
+    # Stage 3: recipients RESOLVED AT SEND TIME via the workstream resolver (NOT the display
+    # cols). For safety: TO = the job's safety-reports contact; CC = its CC 1–5.
+    job_id = str(row.get(cfg.review.COL_JOB_ID) or "").strip()
     job = active_jobs.get_job(job_id)
     if job is None:
-        return _mark_held(row_id, project_name, notes, f"unknown job_id={job_id!r} — cannot resolve recipients", "held_no_recipient")
-    to_addr = (job.safety_reports_contact_email or "").strip()
+        return _mark_held(row_id, project_name, notes, f"unknown job_id={job_id!r} — cannot resolve recipients", "held_no_recipient", cfg)
+    to_addr, cc_raw = cfg.recipient_resolver(job)
+    to_addr = (to_addr or "").strip()
     if not to_addr or not _valid_addr(to_addr):
-        return _mark_held(row_id, project_name, notes, f"empty/invalid safety-reports contact (TO) for job {job_id}", "held_no_recipient")
-    # CC already flattened + de-duped + validated by active_jobs; belt-and-suspenders re-filter.
-    cc_list = [a for a in job.cc_emails if _valid_addr(a)]
+        return _mark_held(row_id, project_name, notes, f"empty/invalid contact (TO) for job {job_id}", "held_no_recipient", cfg)
+    # CC already flattened + de-duped + validated by the resolver; belt-and-suspenders re-filter.
+    cc_list = [a for a in cc_raw if _valid_addr(a)]
 
     # Stage 4: the compiled packet (attach it; never send a half-formed packet).
-    compiled_link = str(row.get(wsr_review.COL_COMPILED_PDF) or "")
+    compiled_link = str(row.get(cfg.review.COL_COMPILED_PDF) or "")
     file_id = _box_file_id(compiled_link)
     if not file_id:
-        return _mark_held(row_id, project_name, notes, "no Compiled PDF on the WSR row — recompile needed", "held_missing_pdf")
+        return _mark_held(row_id, project_name, notes, "no Compiled PDF on the review row — recompile needed", "held_missing_pdf", cfg)
     try:
         pdf_bytes = box_client.download_file(file_id)
     except box_client.BoxError as exc:
-        return _mark_failed(row_id, project_name, notes, retry_count + 1, f"Box download failed: {exc!r}", "send_failed")
+        return _mark_failed(row_id, project_name, notes, retry_count + 1, f"Box download failed: {exc!r}", "send_failed", cfg)
 
     # Stage 4b: oversized-packet refusal. A packet over Graph's upload-session hard
     # ceiling (~150 MB) cannot be emailed by ANY Graph path — so HELD (operator-
@@ -251,15 +383,15 @@ def send_one_row(row_id: int) -> SendResult:
             f"compiled packet is {packet_size} bytes, over Graph's "
             f"{graph_client.UPLOAD_SESSION_MAX_BYTES}-byte upload-session ceiling — "
             "cannot email; reduce photo count / split the packet",
-            "held_oversized_packet",
+            "held_oversized_packet", cfg,
         )
 
     # Stage 5: build the email (body = the human-edited Email Body, source of truth).
-    body = str(row.get(wsr_review.COL_EMAIL_BODY) or "")
-    week = _coerce_week(row.get(wsr_review.COL_WEEK_OF))
-    subject = f"Weekly Safety Report — {project_name} — week of {week}"
-    from_mailbox = _read_str_setting(CFG_FROM_MAILBOX, DEFAULT_FROM_MAILBOX)
-    attachment_name = f"Weekly Safety Report — {week}.pdf"
+    body = str(row.get(cfg.review.COL_EMAIL_BODY) or "")
+    week = _coerce_week(row.get(cfg.review.COL_WEEK_OF))
+    subject = f"{cfg.report_label} — {project_name} — week of {week}"
+    from_mailbox = _read_str_setting(cfg.from_mailbox_cfg_key, cfg.from_mailbox_default, workstream=cfg.config_workstream)
+    attachment_name = f"{cfg.report_label} — {week}.pdf"
     attachment = {
         "name": attachment_name,
         "contentType": "application/pdf",
@@ -268,8 +400,8 @@ def send_one_row(row_id: int) -> SendResult:
 
     # Stage 6: send. Log the RESOLVED recipients (brief §E).
     error_log.log(
-        Severity.INFO, SCRIPT_NAME,
-        f"sending WSR row_id={row_id} project={project_name!r} TO={to_addr!r} CC={cc_list}",
+        Severity.INFO, cfg.script_name,
+        f"sending review row_id={row_id} project={project_name!r} TO={to_addr!r} CC={cc_list}",
         error_code="weekly_send.dispatch",
     )
     # WRITE-AHEAD intent marker — the idempotency guard for the irreversible send. Flip
@@ -282,11 +414,11 @@ def send_one_row(row_id: int) -> SendResult:
     # also halts the poller's candidate read). Fail toward not-sending.
     try:
         smartsheet_client.update_rows(
-            SHEET, [{"_row_id": row_id, wsr_review.COL_SEND_STATUS: STATUS_SENDING}],
+            cfg.review.SHEET_ID, [{"_row_id": row_id, cfg.review.COL_SEND_STATUS: cfg.review.STATUS_SENDING}],
         )
     except SmartsheetError as exc:
         error_log.log(
-            Severity.WARN, SCRIPT_NAME,
+            Severity.WARN, cfg.script_name,
             f"row_id={row_id} project={project_name!r}: pre-send SENDING marker write failed; "
             f"NOT sending this cycle (will retry): {exc!r}",
             error_code="weekly_send.pre_send_marker_failed",
@@ -299,10 +431,10 @@ def send_one_row(row_id: int) -> SendResult:
     # it (a photo-bearing packet can exceed Graph's ~3 MB inline /sendMail ceiling).
     # Both paths are the SAME send capability (Invariant 1) and share the error fences.
     try:
-        if packet_size > UPLOAD_SESSION_THRESHOLD_BYTES:
+        if packet_size > cfg.upload_session_threshold_bytes:
             error_log.log(
-                Severity.INFO, SCRIPT_NAME,
-                f"row_id={row_id} packet={packet_size}B > {UPLOAD_SESSION_THRESHOLD_BYTES}B "
+                Severity.INFO, cfg.script_name,
+                f"row_id={row_id} packet={packet_size}B > {cfg.upload_session_threshold_bytes}B "
                 "— sending via Graph upload session (large attachment)",
                 error_code="weekly_send.upload_session",
             )
@@ -325,49 +457,49 @@ def send_one_row(row_id: int) -> SendResult:
         return _mark_held(
             row_id, project_name, notes,
             f"upload-session refused oversized attachment: {exc!r}",
-            "held_oversized_packet",
+            "held_oversized_packet", cfg,
         )
     except GraphAuthError as exc:
         error_log.log(
-            Severity.CRITICAL, SCRIPT_NAME,
+            Severity.CRITICAL, cfg.script_name,
             f"Graph auth failure sending row_id={row_id} project={project_name!r}: {exc!r}. Operator credential rotation likely needed.",
             error_code="weekly_send.graph_auth_failed", exc_info=repr(exc),
         )
-        return _mark_failed(row_id, project_name, notes, retry_count + 1, f"GraphAuthError: {exc!r}", "send_failed")
+        return _mark_failed(row_id, project_name, notes, retry_count + 1, f"GraphAuthError: {exc!r}", "send_failed", cfg)
     except GraphError as exc:
         new_retry = retry_count + 1
-        if new_retry >= MAX_SEND_RETRIES:
+        if new_retry >= cfg.max_send_retries:
             error_log.log(
-                Severity.CRITICAL, SCRIPT_NAME,
-                f"row_id={row_id} project={project_name!r} hit MAX_SEND_RETRIES={MAX_SEND_RETRIES}; CRITICAL fire",
+                Severity.CRITICAL, cfg.script_name,
+                f"row_id={row_id} project={project_name!r} hit max_send_retries={cfg.max_send_retries}; CRITICAL fire",
                 error_code="weekly_send.retries_exhausted", exc_info=f"{type(exc).__name__}: {exc!r}",
             )
         else:
             error_log.log(
-                Severity.ERROR, SCRIPT_NAME,
-                f"GraphError sending row_id={row_id} project={project_name!r} (retry {new_retry}/{MAX_SEND_RETRIES}): {exc!r}",
+                Severity.ERROR, cfg.script_name,
+                f"GraphError sending row_id={row_id} project={project_name!r} (retry {new_retry}/{cfg.max_send_retries}): {exc!r}",
                 error_code="weekly_send.graph_error",
             )
-        return _mark_failed(row_id, project_name, notes, new_retry, f"{type(exc).__name__}: {exc!r}", "send_failed")
+        return _mark_failed(row_id, project_name, notes, new_retry, f"{type(exc).__name__}: {exc!r}", "send_failed", cfg)
 
     # Stage 7: mark SENT.
     sent_at = datetime.now(UTC)
     new_notes = _update_notes_tags(notes, append_sent_timestamp=True)
     try:
         smartsheet_client.update_rows(
-            SHEET,
+            cfg.review.SHEET_ID,
             [{
                 "_row_id": row_id,
-                wsr_review.COL_SEND_STATUS: STATUS_SENT,
+                cfg.review.COL_SEND_STATUS: cfg.review.STATUS_SENT,
                 # ABSTRACT_DATETIME column: naive Pacific wall-clock (an offset-bearing
                 # value is rejected, errorCode 5536). The Notes `sent=` tag stays UTC.
-                wsr_review.COL_SENT_AT: wsr_review.to_wsr_datetime(sent_at),
-                wsr_review.COL_NOTES: new_notes,
+                cfg.review.COL_SENT_AT: cfg.review.to_wsr_datetime(sent_at),
+                cfg.review.COL_NOTES: new_notes,
             }],
         )
     except SmartsheetError as exc:
         error_log.log(
-            Severity.CRITICAL, SCRIPT_NAME,
+            Severity.CRITICAL, cfg.script_name,
             f"row_id={row_id} send fired but SENT-stamp failed: {exc!r}. Row is left in "
             f"SENDING (the write-ahead marker), so it is NOT re-dispatched — no double-send. "
             f"Operator: confirm delivery, then mark SENT (watchdog Check N also flags this).",
@@ -376,7 +508,7 @@ def send_one_row(row_id: int) -> SendResult:
         return SendResult(status="sent", row_id=row_id, project_name=project_name, error=f"row_update_failed: {exc!r}", retry_count=retry_count)
 
     error_log.log(
-        Severity.INFO, SCRIPT_NAME,
+        Severity.INFO, cfg.script_name,
         f"sent row_id={row_id} project={project_name!r} to={to_addr!r} cc={len(cc_list)}",
         error_code="weekly_send.sent",
     )
@@ -385,24 +517,25 @@ def send_one_row(row_id: int) -> SendResult:
 
 def _mark_held(
     row_id: int, project_name: str, notes: str, reason: str, outcome: SendStatus,
+    cfg: SendConfig,
 ) -> SendResult:
     """Set Send Status=HELD (operator-actionable refusal; no auto-retry).
 
     `outcome` is passed explicitly by the caller (NOT sniffed from the reason
     string) so the SendResult status is unambiguous."""
     error_log.log(
-        Severity.WARN, SCRIPT_NAME,
+        Severity.WARN, cfg.script_name,
         f"HELD row_id={row_id} project={project_name!r}: {reason}",
         error_code="weekly_send.held",
     )
     new_notes = _update_notes_tags(notes, new_status_note=f"[HELD: {reason}]")
     try:
         smartsheet_client.update_rows(
-            SHEET, [{"_row_id": row_id, wsr_review.COL_SEND_STATUS: STATUS_HELD, wsr_review.COL_NOTES: new_notes}],
+            cfg.review.SHEET_ID, [{"_row_id": row_id, cfg.review.COL_SEND_STATUS: cfg.review.STATUS_HELD, cfg.review.COL_NOTES: new_notes}],
         )
     except SmartsheetError as exc:
         error_log.log(
-            Severity.WARN, SCRIPT_NAME,
+            Severity.WARN, cfg.script_name,
             f"failed to mark row_id={row_id} HELD: {exc!r}",
             error_code="weekly_send.mark_held_failed",
         )
@@ -411,16 +544,17 @@ def _mark_held(
 
 def _mark_failed(
     row_id: int, project_name: str, notes: str, retry_count: int, error_text: str, outcome_status: SendStatus,
+    cfg: SendConfig,
 ) -> SendResult:
     """Set Send Status=FAILED + Notes retry/error tags (transient → auto-retry)."""
     new_notes = _update_notes_tags(notes, new_retry_count=retry_count, new_last_error=error_text)
     try:
         smartsheet_client.update_rows(
-            SHEET, [{"_row_id": row_id, wsr_review.COL_SEND_STATUS: STATUS_FAILED, wsr_review.COL_NOTES: new_notes}],
+            cfg.review.SHEET_ID, [{"_row_id": row_id, cfg.review.COL_SEND_STATUS: cfg.review.STATUS_FAILED, cfg.review.COL_NOTES: new_notes}],
         )
     except SmartsheetError as exc:
         error_log.log(
-            Severity.WARN, SCRIPT_NAME,
+            Severity.WARN, cfg.script_name,
             f"failed to mark row_id={row_id} FAILED: {exc!r}. Retry counter may under-count by one.",
             error_code="weekly_send.mark_failed_failed",
         )
@@ -436,7 +570,7 @@ def main(row_id_override: int | None = None) -> dict[str, Any]:
     """Manual rerun of one approved WSR row via CLI (operator debugging)."""
     if row_id_override is None:
         raise SystemExit("usage: python -m safety_reports.weekly_send <row_id>")
-    result = send_one_row(row_id_override)
+    result = send_one_row(row_id_override, CONFIG)
     return {
         "row_id": result.row_id, "status": result.status,
         "project_name": result.project_name, "error": result.error,

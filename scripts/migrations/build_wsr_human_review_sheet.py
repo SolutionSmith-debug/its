@@ -40,6 +40,7 @@ SHEET_NAME = "WSR_human_review"
 # FAILED (retryable) / HELD (operator hold) are off-path. SENDING is a transient
 # in-flight state the poller never dispatches on (weekly_send_poll.DISPATCH_STATUSES).
 SEND_STATUS_OPTIONS = ["PENDING", "SENDING", "SENT", "FAILED", "HELD"]
+WORKSTREAM_OPTIONS = ["safety"]  # P1b cross-workstream send guard; WSR is the safety review sheet
 
 COLUMN_SCHEMA: list[dict[str, Any]] = [
     {"title": "Job / Project", "type": "TEXT_NUMBER", "primary": True},
@@ -62,6 +63,8 @@ COLUMN_SCHEMA: list[dict[str, Any]] = [
     {"title": "Sent At", "type": "ABSTRACT_DATETIME",
      "description": "Naive Pacific wall-clock (ABSTRACT_DATETIME). Written via wsr_review.to_wsr_datetime."},
     {"title": "Notes", "type": "TEXT_NUMBER", "description": "Retry state / late-send flags / failure context."},
+    {"title": "Workstream", "type": "PICKLIST", "options": WORKSTREAM_OPTIONS,
+     "description": "Report-family tag (P1b cross-workstream send guard). WSR is the safety sheet → 'safety'."},
     {"title": "Last Modified", "type": "DATETIME", "systemColumnType": "MODIFIED_DATE"},
     {"title": "Modified By", "type": "CONTACT_LIST", "systemColumnType": "MODIFIED_BY"},
 ]

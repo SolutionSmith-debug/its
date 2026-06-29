@@ -52,7 +52,8 @@ def main() -> int:
     # ---- Stage 2: ITS_Config readable ----------------------------------
     stage(2, "ITS_Config keys (from_mailbox + poll_interval + scheduled_send_local)")
     from_mailbox = weekly_send._read_str_setting(
-        weekly_send.CFG_FROM_MAILBOX, weekly_send.DEFAULT_FROM_MAILBOX
+        weekly_send.CFG_FROM_MAILBOX, weekly_send.DEFAULT_FROM_MAILBOX,
+        workstream=weekly_send.WORKSTREAM,
     )
     print(f"  OK — from_mailbox = {from_mailbox!r}")
     scheduled_spec = weekly_send_poll._read_str_setting(
@@ -97,6 +98,7 @@ def main() -> int:
         wsr_review.COL_SEND_STATUS,
         wsr_review.COL_SENT_AT,
         wsr_review.COL_NOTES,
+        wsr_review.COL_WORKSTREAM,
     }
     if rows:
         present = set(rows[0].keys()) - {"_row_id"}

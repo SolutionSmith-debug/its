@@ -40,7 +40,7 @@ Per-cycle behavior
      BLOCKS that row (fail-closed) with a forensic `approval_unverified`
      event; other rows still dispatch. Verified rows are stamped with the
      approver identity (Approved By/At) and invoke
-     `weekly_send.send_one_row(row_id)`. The handler returns a `SendResult`
+     `weekly_send.send_one_row(row_id, weekly_send.CONFIG)`. The handler returns a `SendResult`
      — the poller logs the outcome and continues. SmartsheetError raised by
      the handler caught per-row; the cycle continues to the next row.
   5. Write file heartbeat (`HEARTBEAT_PATH`).
@@ -565,7 +565,7 @@ def _poll_inside_lock() -> PollStats:
 
         counters["dispatched"] += 1
         try:
-            result = weekly_send.send_one_row(row_id)
+            result = weekly_send.send_one_row(row_id, weekly_send.CONFIG)
         except smartsheet_client.SmartsheetError as exc:
             counters["errors"] += 1
             error_log.log(

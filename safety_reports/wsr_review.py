@@ -44,6 +44,7 @@ COL_APPROVED_AT = "Approved At"
 COL_SEND_STATUS = "Send Status"              # PICKLIST
 COL_SENT_AT = "Sent At"
 COL_NOTES = "Notes"
+COL_WORKSTREAM = "Workstream"                # PICKLIST {safety} — cross-workstream send guard (P1b)
 
 # Send Status picklist values (match the migration's SEND_STATUS_OPTIONS).
 STATUS_PENDING = "PENDING"
@@ -129,6 +130,7 @@ def add_wsr_row(
     cc_display: str,
     email_body: str,
     notes: str,
+    workstream: str = "safety",
 ) -> int:
     """APPEND a new WSR_human_review row for (job, week); return its row ID.
 
@@ -153,6 +155,13 @@ def add_wsr_row(
             COL_CC: cc_display,
             COL_SEND_STATUS: STATUS_PENDING,
             COL_NOTES: notes,
+            # Cross-workstream send-guard tag (P1b). Defaults to "safety" so weekly_generate
+            # needs no change; every newly-compiled WSR row is PRESENT=safety, so the
+            # weekly_send guard's absent-WARN path only ever fires for pre-backfill rows.
+            # §42: this generation-side seed default is acceptable — the no-defaults rule targets the
+            # contamination-critical SendConfig/guard (the READ side), NOT this seed; defaulting it
+            # to "safety" GUARANTEES new safety rows are tagged, which is the fail-SAFE direction.
+            COL_WORKSTREAM: workstream,
         }],
     )
     return row_id
