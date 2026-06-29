@@ -23,11 +23,13 @@ Two layers, deliberately separated:
 
 1. **Planning & Foundation** (Claude.ai project, not in this repo). Mission files, architectural
    decisions, owner-facing artifacts, prompt designs, schemas. Canonical docs: Foundation Mission
-   v11, Operational Standards v18, Vision & Roadmap v9, Handover Plan v9.
+   v11, Operational Standards v19, Vision & Roadmap v9, Handover Plan v9.
 
-   _Operational Standards is canonically at **v18** (`../its-blueprint/doctrine/operational-standards.md`,
-   `status: canonical`); **v18 is the governing version — every `Op Stds §N` citation in this file
-   resolves against it.** Numbering is append-only since v11, so no cited `§N` renumbered. Still-load-bearing
+   _Operational Standards is canonically at **v19** (`../its-blueprint/doctrine/operational-standards.md`,
+   `status: canonical`); **v19 is the governing version — every `Op Stds §N` citation in this file
+   resolves against it.** Numbering is append-only since v11, so no cited `§N` renumbered (§§50–51 added
+   at v19 — the privileged code-actuation gate (§50) and ITS-owned structured-SoR write-back (§51), the
+   latter blessing the job-tracker→Active-Jobs write). Still-load-bearing
    reframes: §1 kill switch is an operator-convenience pause, fail-open by design, explicitly **not** a
    security control (audit F07) — the External Send Gate (FM Invariant 1) is the real security boundary;
    §44's Tier-2 boundary is **training-bounded co-resolution**, no structural maintenance enforcement layer
@@ -67,9 +69,9 @@ F13); the actual prevention is Layers 2–4 plus the two-process External Send G
 real security boundary):
 
 1. **Sender allowlist + scope enforcement + header-forgery detection.** The polling-daemon
-   pattern (canonical per Op Stds v18 §31; first exercised by the now-retired
+   pattern (canonical per Op Stds v19 §31; first exercised by the now-retired
    `safety_reports/intake_poll.py`, carried forward by Email Triage) fetches from allowlisted
-   senders via Graph; non-allowlisted email routes to Quarantine. ITS_Trusted_Contacts sheet (Op Stds v18 §33) is the canonical allowlist
+   senders via Graph; non-allowlisted email routes to Quarantine. ITS_Trusted_Contacts sheet (Op Stds v19 §33) is the canonical allowlist
    mechanism, replacing ITS_Config JSON lists at Phase 1.4 cutover. Header-forgery detection
    (SPF/DKIM/DMARC + Return-Path validation) precedes allowlist lookup. Helpers in
    `shared/quarantine.py`.
@@ -85,7 +87,7 @@ real security boundary):
    `ITS_Review_Queue` with `security_flag=True`. Never rely on it as a barrier; prevention is
    Layers 2–4 + Invariant 1. The code (`shared/anomaly_logger.py`) is unchanged.
 6. **Attachment screening pipeline.** Every attachment passes through four sub-layers per
-   Op Stds v18 §34: (a) static signatures (magic-number, size, filename); (b) format-aware
+   Op Stds v19 §34: (a) static signatures (magic-number, size, filename); (b) format-aware
    structural inspection (PDF JS/embedded, Office macros); (c) ClamAV scan via pyclamd;
    (d) optional VirusTotal hash check (Phase 2+ enhancement). Malicious → ITS_Quarantine +
    CRITICAL triple-fire + sender DISABLED in ITS_Trusted_Contacts pending operator review.
@@ -106,9 +108,9 @@ Residual risk: prompt injection is an unsolved research problem. The architectur
 injection might succeed at the AI layer and ensures the damage ceiling is "extracted data is
 wrong" rather than "data exfiltrated" or "external action taken on attacker's behalf."
 
-## Maintenance & successor-operator model (FM v11 · Op Stds v18 §§43–44)
+## Maintenance & successor-operator model (FM v11 · Op Stds v19 §§43–44)
 
-ITS is built to be maintained after the developer (Seth) departs. The model (FM v11; Op Stds v18
+ITS is built to be maintained after the developer (Seth) departs. The model (FM v11; Op Stds v19
 §44) has **three tiers**:
 
 1. **Tier 1 — self-heal.** Interval daemons recover via launchd re-invocation (one-shot-per-
@@ -133,7 +135,7 @@ entry) AND low-capability-class**. Anything **novel OR high-class** escalates to
 **high-capability-class categories are FIXED**: (1) External Send Gate, (2) secrets / auth, (3)
 doctrine, (4) code changes — high-class always escalates regardless of documentation.
 
-**Training-enforced, NOT structurally enforced** (the Op Stds v18 §44 / FM v11 reframe). No
+**Training-enforced, NOT structurally enforced** (the Op Stds v19 §44 / FM v11 reframe). No
 "non-developer-safe enforcement layer" is built or required — the verified-in-code capability gating
 (Invariant 1, `tests/test_capability_gating.py`) and `.claude/hooks` guards protect developer /
 subagent sessions and fall *open* for the operator's own session, so they do not confine a Tier-2
@@ -155,7 +157,7 @@ not invented locally.
   at script entry. PAUSED or MAINTENANCE → exit cleanly. `@require_active` is an operator-convenience
   pause, **not** a security control — it is fail-open by design (sheet-unreachable / row-missing /
   invalid-value all resolve to ACTIVE-with-WARN), so the External Send Gate (Invariant 1), not the
-  kill switch, is the security boundary (Op Stds v18 §1).
+  kill switch, is the security boundary (Op Stds v19 §1).
 - **Error log decorator.** Wrap every script's main function in `@its_error_log(script_name=...)`.
   Catches unhandled exceptions, writes to `ITS_Errors` sheet, surfaces CRITICAL via email + SMS.
 - **Confidence scoring on extractions.** Default threshold 0.85. Below threshold → routes to
@@ -194,7 +196,7 @@ Phase 1 → 1.5 gate, then again at Florida → customer-site hardware shipment.
 | Module | State | Notes |
 |--------|-------|-------|
 | `shared/keychain.py` | Working, tested | macOS-only; uses `security` CLI. |
-| `shared/error_log.py` | Working, tested | Local file + `ITS_Errors` write (recursion-guarded; INFO env-gated via `ITS_ERROR_LOG_INFO=1`) + triple-fire CRITICAL (Resend email + Sentry). Each leg independently recursion-guarded + broad-except isolated; one leg failing never blocks the others. `Correlation_ID` threaded across all three; Resend-leg dedupe via `alert_dedupe` on `(script, error_code)` (Op Stds v18 §3.1). |
+| `shared/error_log.py` | Working, tested | Local file + `ITS_Errors` write (recursion-guarded; INFO env-gated via `ITS_ERROR_LOG_INFO=1`) + triple-fire CRITICAL (Resend email + Sentry). Each leg independently recursion-guarded + broad-except isolated; one leg failing never blocks the others. `Correlation_ID` threaded across all three; Resend-leg dedupe via `alert_dedupe` on `(script, error_code)` (Op Stds v19 §3.1). |
 | `shared/alert_dedupe.py` | Working, tested | Resend-leg dedupe state at `~/its/state/alert_dedupe.json` via `state_io` atomic-write + path-lock. Window from `alerting.dedupe_window_minutes` ITS_Config (default 60). **Fail-open on every state error incl. `StateLockTimeoutError`** — false positives (extra emails) OK, false negatives (missed wake-ups) NOT. Watchdog Check G consumes the summary API. |
 | `shared/state_io.py` | Working, tested | **Canonical entry point for all `~/its/state/` writes.** `atomic_write_json`/`atomic_write_text` = temp-file + `os.replace` (crash-safe); `with_path_lock` = non-blocking `fcntl` flock on a **sidecar `.lock`** (load-bearing: `os.replace` swaps the inode, invalidating a lock on the data file itself) + bounded retry → typed `StateLockTimeoutError`. Closes audit F19 + F23. |
 | `shared/resend_client.py` | Working, tested | Transactional-email client for **operator alerts only**. Key from Keychain (`ITS_RESEND_API_KEY`). NOT for customer email — that's `graph_client.send_mail` (Invariant 1). |
@@ -216,7 +218,7 @@ Phase 1 → 1.5 gate, then again at Florida → customer-site hardware shipment.
 | `scripts/run_picklist_sync.py` | Working, tested | Hourly launchd entry point. CLI `--dry`/`--mapping`/`--smoke-test`. `@require_active` outer + `@its_error_log` inner. |
 | `safety_reports/intake.py` | Working, live-validated (engine) | 12-stage pipeline; `process_message(message_id)` is the public API. The legacy email caller `intake_poll` is RETIRED (2026-06-05); the email-PDF ingestion stages are LEGACY/dormant — superseded by the now-live portal-marker branch driven by `portal_poll.py` (built + live-validated 2026-06-08 mirror). `SmartsheetError`/`GraphError` soft-fail (return, not raise). Stages 1-9 + 11-12 live; Stage 10 (attachment screening, §34) is **realized for portal photos** (`photo_screen.py`, PRs #271/#272) and **planned for email attachments** at Phase 1.4. **Portal transport (2026-06-05, supersedes the 2026-05-28 email-shim pivot):** the Safety Portal feeds `intake.py` via a **Python PULL model** (`decision_phase5-portal-transport`), NOT an email shim. The Cloudflare Worker signs + queues each submission in D1 (send-free) and serves it over `GET /api/internal/pending`; the `portal_poll.py` daemon (built, loaded 60s, live-validated 2026-06-08) pulls over HTTPS, verifies the `X-ITS-Portal-HMAC` via `shared/portal_hmac.py`, hands the structured submission to `intake.py`, then POSTs `/api/internal/mark-filed` (the receipt). No `portal-noreply@` mailbox, no unified-`safety@` email shim. The intake portal-marker branch (HMAC verify → UUID dedupe → Sat→Fri Job-ID week/Box → render via `form_pdf` → file → receipt) is **built + live-validated (2026-06-08 mirror: submit → portal_poll pull → intake → Box mirror ROOT→job→week → weekly_generate compile → WSR staged → unattended timed send)**. **Photo screening (§34 Layer 6 for portal photos, PRs #271/#272):** `intake` imports `photo_screen` and screens every photo (magic → Pillow `verify()`/bomb-cap/forced metadata-destroying re-encode → ClamAV-on-raw, `safety_reports.photo_screen.clamav_enabled` default OFF) before render/Box; MALICIOUS → `Severity.CRITICAL` naming the account + a `security_flag=True` Review-Queue row, **refused before filing**; sanitized originals → Box `ITS Photos/<submission_uuid>/`; the renderer consumes only `screened_photos`. Email-attachment Stage 10 (arbitrary files) remains Email-Triage-bound. PR-4/PR-5 download cache is serviced by `portal_poll._service_pdf_requests` (below). |
 | `safety_reports/intake_poll.py` | **RETIRED 2026-06-05** (tombstone) | The safety email-intake poller is RETIRED — superseded by the Safety Portal PULL model (`portal_poll.py`, built + live; `decision_phase5-portal-transport`). The Graph email-polling engine (`list_inbox`/seen-set/`mark_read`/heartbeat) is REMOVED; the module is a tombstone whose `main()` raises `NotImplementedError` (visible non-zero exit, deliberately NOT `@its_error_log`-wrapped so the 60s launchd cadence doesn't CRITICAL-spam) — kept in-tree so an orphan-loaded job surfaces the retirement. **Operator-manual:** unload the launchd job (`scripts/uninstall_safety_intake_daemon.sh`). The shared Graph plumbing (`shared/graph_client.py`) is PRESERVED untouched for Email Triage. Watchdog Check F + Check-C `safety_intake` tracking removed with it. |
-| `safety_reports/photo_screen.py` | Working (PRs #271/#272, `5a979e2`) | **§34 Invariant-2 Layer-6 image-class screening** for Safety-Portal photo uploads — the canonical photo instantiation of Op Stds v18 §34. `screen_photo()` runs **L1** magic + size (`MAX_DECODED_BYTES=400_000`, `MAX_PHOTOS_PER_SUBMISSION=8`) → **L2** Pillow `verify()` + decompression-bomb cap (`MAX_IMAGE_PIXELS=24_000_000`) + a forced JPEG re-encode that destroys all metadata → **L3** ClamAV `_clamav_scan` on the **RAW original bytes** (a re-encode would strip a payload first), gated `safety_reports.photo_screen.clamav_enabled` (default **OFF**). Disposition `clean \| suspicious \| malicious`; `build_caption()` renders the EXIF `taken_at`/GPS sidecar (caption-then-strip). Called by `intake.py` before any PDF render or Box upload — MALICIOUS → CRITICAL naming the account + a security-flagged Review-Queue row, refused before filing; the renderer consumes only `screened_photos`. `Pillow>=10,<13` (`pyproject.toml`). Blueprint `workstreams/safety-portal/mission.md` §15. |
+| `safety_reports/photo_screen.py` | Working (PRs #271/#272, `5a979e2`) | **§34 Invariant-2 Layer-6 image-class screening** for Safety-Portal photo uploads — the canonical photo instantiation of Op Stds v19 §34. `screen_photo()` runs **L1** magic + size (`MAX_DECODED_BYTES=400_000`, `MAX_PHOTOS_PER_SUBMISSION=8`) → **L2** Pillow `verify()` + decompression-bomb cap (`MAX_IMAGE_PIXELS=24_000_000`) + a forced JPEG re-encode that destroys all metadata → **L3** ClamAV `_clamav_scan` on the **RAW original bytes** (a re-encode would strip a payload first), gated `safety_reports.photo_screen.clamav_enabled` (default **OFF**). Disposition `clean \| suspicious \| malicious`; `build_caption()` renders the EXIF `taken_at`/GPS sidecar (caption-then-strip). Called by `intake.py` before any PDF render or Box upload — MALICIOUS → CRITICAL naming the account + a security-flagged Review-Queue row, refused before filing; the renderer consumes only `screened_photos`. `Pillow>=10,<13` (`pyproject.toml`). Blueprint `workstreams/safety-portal/mission.md` §15. |
 | `safety_reports/portal_poll.py` | Working, live-validated (2026-06-08 mirror) | Portal PULL daemon (60s launchd, `org.solutionsmith.its.portal-poll`). `GET /api/internal/pending` (bearer Keychain `ITS_PORTAL_INTERNAL_TOKEN`) → per row recompute the canonical HMAC (`shared/portal_hmac.py`, constant-time) → `intake.process_message` → on DRAIN `POST /api/internal/mark-filed` (receipt); also `POST /api/internal/sync` full-replace of `ITS_Active_Jobs` → the D1 dropdown. Runtime gate `safety_reports.portal_poll.polling_enabled`; bad-HMAC one-shot-flagged (never filed, never mark-filed); self-provisions its `ITS_Daemon_Health` row. Worker base from ITS_Config `safety_reports.portal.worker_base_url` — **repointed to `https://safety.evergreenmirror.com` 2026-06-08** (PR-J's `custom_domain` route disabled the `*.workers.dev` URL on deploy; see `docs/tech_debt.md`). **Filed-PDF download cache (PRs #274/#276):** a `_service_pdf_requests` pass (via `shared/portal_client.py` `get_pdf_requests` + `upload_filed_pdf`) re-downloads each requested filed PDF from Box by `box_file_id`, chunks it to the D1 `filed_pdfs` cache, and sets ready — **fenced (`error_code=portal_pdf_service_failed`, WARN), never blocks the intake drain.** `box_file_id` threaded into `mark_filed`. (`intake.py` makes no `portal_client` call — the post-back is the daemon's.) |
 | `safety_reports/week_folder.py` | Working, tested | Per-project per-week Field/Daily/Rollup folder scaffolding. Idempotent find-or-create (find-after-create race tracked in tech-debt). |
 | `safety_reports/weekly_generate.py` | Working, live-validated (2026-06-08 mirror) | **DETERMINISTIC weekly compile** (Anthropic narrative core retired). Generation half of the External Send Gate (Invariant 1). Friday 14:00 launchd. Per Active job's Sat→Fri week: gather the week sheet's per-submission PDFs → `form_pdf.merge_pdfs` → file the packet to an `ITS`-prefixed Box week folder → DUAL-WRITE the week-sheet Rollup snapshot row + one `WSR_human_review` row per (job,week) (Email Body seeded from a fixed template; Send Status PENDING). Friday-fire + `Compile Now` checkbox + skip-if-already-compiled-and-no-new-docs + empty-week-still-writes + never-closes-the-week. Per-job fence → Review Queue. **Capability-gated: `anthropic`/`graph_client`/`send_mail`/`resend`/`smtplib`/`email.mime` AST-forbidden** (no LLM, no send). |
@@ -237,11 +239,11 @@ Phase 1 → 1.5 gate, then again at Florida → customer-site hardware shipment.
 7. Every extraction output passes through `shared.anomaly_logger.check()` before use.
 8. launchd plists live in `scripts/launchd/` as templates; `install.sh` copies them to
    `~/Library/LaunchAgents/` and loads them. **Polling daemons via launchd are canonical for
-   intake-bearing workstreams** (Op Stds v18 §31; `safety_reports/intake_poll.py` is the
+   intake-bearing workstreams** (Op Stds v19 §31; `safety_reports/intake_poll.py` is the
    canonical example). Shortcuts remain for manual operator-triggered jobs. Mail.app rules
    deprecated.
 9. **Ship the §43 successor-remediation runbook entry** for any capability with a Tier-2-reachable
-   failure mode (Op Stds v18 §43) — symptom, low-class repair steps, and escalate-to-Seth boundary.
+   failure mode (Op Stds v19 §43) — symptom, low-class repair steps, and escalate-to-Seth boundary.
    This is part of definition-of-done, not a follow-up. See "Maintenance & successor-operator model".
 
 ## Model selection
@@ -270,7 +272,7 @@ LangChain, Kubernetes.
 
 ITS_Daemon_Health sheet (System workspace / folder 04 — Daemons / sheet 4529351700729732) is
 the canonical operator-visibility surface for all polling daemons. One row per daemon,
-update-in-place per cycle. Push surface per Op Stds v18 §3.1 + §32.
+update-in-place per cycle. Push surface per Op Stds v19 §3.1 + §32.
 
 - Schema: 12 columns per `shared.sheet_ids.DAEMON_HEALTH_COLUMNS` dict. See
   `references/daemon-health-schema.md` in the its-blueprint repo for full schema reference.
@@ -416,4 +418,4 @@ Convention canonical in `../its-blueprint/CLAUDE.md` (planning layer wins). Don'
 For a **deeper cross-repo pass**, invoke `doc-reconciliation-auditor` (see [Agents](#agents)) — the heavy/on-demand counterpart to the lightweight session-close supersession check, not a replacement.
 
 If something here contradicts the planning project's canonical docs (Foundation Mission v11,
-Operational Standards v18), the planning project wins. Flag the inconsistency.
+Operational Standards v19), the planning project wins. Flag the inconsistency.
