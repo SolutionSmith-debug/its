@@ -46,6 +46,12 @@ meta:
 doctrine_versions:
   operational_standards:
     current: 18
+    # Highest existing §-section. Numbering is append-only since v11; v18 added
+    # §§45-49, so §1..§49 all resolve. The M7 citation-resolver flags any
+    # `Op Stds §N` in current-doctrine prose with N > max_section (a citation that
+    # resolves to no section — a typo or a forward-ref to unbuilt doctrine). Bump
+    # this the same PR a new §-section lands in canonical doctrine.
+    max_section: 49
     source: "../its-blueprint/doctrine/operational-standards.md"
     source_field: "frontmatter.version"
     blueprint_verified_against: 0e85a1a   # 2026-06-07 deploy reconciliation (Op Stds v18); prior: 8c708b9 (v16)
