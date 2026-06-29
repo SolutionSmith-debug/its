@@ -13,6 +13,7 @@ Read it back:
 from __future__ import annotations
 
 import getpass
+import os
 import subprocess
 from pathlib import Path
 
@@ -60,6 +61,22 @@ def _looks_locked(stderr: str) -> bool:
     """True if `security` stderr indicates a locked keychain (vs. a missing item)."""
     low = (stderr or "").lower()
     return any(ind in low for ind in _LOCKED_INDICATORS)
+
+
+def _has_controlling_tty() -> bool:
+    """True if the process has a controlling terminal.
+
+    Directly tests what `security ... -w` would do on write: when a controlling
+    /dev/tty exists it PROMPTS there (ignoring piped stdin — the TTY-trap); when
+    none exists (a launchd daemon) it reads stdin. `set_secret` uses this to pick
+    the write form (see `_do_write`).
+    """
+    try:
+        fd = os.open("/dev/tty", os.O_RDONLY)
+    except OSError:
+        return False
+    os.close(fd)
+    return True
 
 
 def get_secret(service: str, account: str | None = None) -> str:
@@ -119,12 +136,15 @@ def set_secret(service: str, value: str, account: str | None = None) -> None:
 
     Args:
         service: The service name (e.g., 'ITS_BOX_REFRESH_TOKEN').
-        value: The secret value to persist. Supplied to `security` on stdin
-            (`-w` is the last option, with no `-w VALUE` argv element), so the
-            secret is not visible to other local processes via `ps` /
-            `/proc/<pid>/cmdline` / EDR argv capture. Must be a single-line
-            value — the CLI's `-w` prompt is line-based (all ITS secrets are
-            single-line API keys / OAuth tokens). Reference: audit F04.
+        value: The secret value to persist. Must be a single-line value (all ITS
+            secrets are single-line API keys / OAuth tokens). The write FORM
+            depends on the controlling terminal (see `_do_write`): a daemon /
+            headless run (NO TTY — the frequent path) feeds the value on stdin
+            with `-w` last, so it never appears on argv / `ps` / `/proc/<pid>/
+            cmdline` / EDR capture (audit F04); a rare INTERACTIVE operator run
+            (TTY present) passes `-w VALUE` on argv to avoid the `/dev/tty` prompt
+            (the task-#8 trap), accepting brief argv exposure on the operator's
+            own machine. Reference: audit F04, task #8.
         account: Optional account; defaults to the current user.
 
     Raises:
@@ -133,28 +153,39 @@ def set_secret(service: str, value: str, account: str | None = None) -> None:
     account = account or getpass.getuser()
 
     def _do_write() -> None:
-        # `security add-generic-password` reads the password from stdin only when
-        # `-w` is the LAST option (`security add-generic-password -h`: "Specify -w
-        # as the last option to be prompted"). It then issues a password + retype
-        # confirmation prompt and reads one line per prompt, so the value is fed
-        # twice. `-U` (update-in-place) MUST precede `-w`; placed after `-w` it gets
-        # swallowed as the password value — verified live, the stored secret became
-        # the literal "-U". Feeding the value twice is robust whether the CLI
-        # prompts once or twice (a single-prompt build reads the first line and
-        # ignores the rest). Reference: audit F04.
+        # §42 — the macOS Keychain TTY-trap (task #8). `security add-generic-password
+        # -w` (bare, as the LAST option) reads the password from the controlling
+        # terminal (/dev/tty) when one is present, IGNORING piped stdin. Under
+        # launchd (no controlling TTY) it consumes stdin — so daemons work and the
+        # value never touches argv/ps (audit F04). But an INTERACTIVE operator run
+        # (e.g. a manual Box OAuth refresh-token rotation) then prompts the operator
+        # for "password data" they don't have, and any keystroke corrupts the secret
+        # (this corrupted ITS_BOX_REFRESH_TOKEN during the A3 smoke).
+        #
+        # Fix — detect the controlling TTY and split the write form:
+        #   * NO TTY (daemon/headless — the frequent, F04-sensitive path): UNCHANGED.
+        #     `-w` last + value fed on stdin twice (password + retype); never on argv.
+        #   * TTY present (rare interactive operator run): pass the value as `-w VALUE`
+        #     on argv so `security` never prompts. TRADEOFF: the secret is briefly
+        #     visible to `ps` / argv capture — accepted ONLY here because it is the
+        #     operator's own at-keyboard machine and the alternative is the
+        #     token-corrupting prompt; the unattended daemon path keeps the value off
+        #     argv. (`-U` update-in-place MUST precede `-w`; placed after `-w` it is
+        #     swallowed as the password value — verified live. audit F04, task #8.)
+        base = ["security", "add-generic-password", "-U", "-a", account, "-s", service]
+        if _has_controlling_tty():
+            args = [*base, "-w", value]  # interactive: value on argv, no /dev/tty prompt
+            input_data: str | None = None
+        else:
+            args = [*base, "-w"]  # daemon: -w last, value read from stdin (off argv/ps)
+            input_data = f"{value}\n{value}\n"  # password + retype; never in argv/ps
         try:
             subprocess.run(
-                [
-                    "security", "add-generic-password",
-                    "-U",
-                    "-a", account,
-                    "-s", service,
-                    "-w",  # MUST be last — value read from stdin, never argv
-                ],
+                args,
                 check=True,
                 capture_output=True,
                 text=True,
-                input=f"{value}\n{value}\n",  # password + retype; never in argv/ps
+                input=input_data,
                 timeout=KEYCHAIN_CLI_TIMEOUT,
             )
         except FileNotFoundError as e:
@@ -172,6 +203,16 @@ def set_secret(service: str, value: str, account: str | None = None) -> None:
             # stderr surfaces the actual reason (e.g., permission denied, locked
             # keychain). Don't include `value` in the message — that would leak
             # the secret into logs.
+            #
+            # §42 (task #8 security): on the INTERACTIVE argv path the value is in
+            # `e.cmd` (it was passed as `-w VALUE`); `raise ... from e` chains
+            # `e.cmd` into any full-traceback capture (the Sentry triple-fire
+            # CRITICAL path) and would leak the secret. Scrub argv elements equal
+            # to `value` to "***" BEFORE chaining — a NO-OP on the daemon branch
+            # (value is on stdin, not argv) and structure-preserving for
+            # debuggability on the interactive branch.
+            if isinstance(e.cmd, (list, tuple)):
+                e.cmd = ["***" if c == value else c for c in e.cmd]
             if _looks_locked(e.stderr or ""):
                 raise KeychainLockedError(
                     f"Keychain LOCKED — cannot write service={service!r}: "

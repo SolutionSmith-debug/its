@@ -36,6 +36,11 @@ def _isolate_state_io(mocker):
     """
     mocker.patch("shared.keychain.state_io.with_path_lock")
     mocker.patch("shared.error_log.log")
+    # Task #8: default the controlling-TTY check to False (the daemon/headless
+    # write path) so set_secret tests are deterministic regardless of whether
+    # pytest runs under a terminal; the interactive (argv) path is exercised
+    # explicitly in the TTY-trap tests below.
+    mocker.patch("shared.keychain._has_controlling_tty", return_value=False)
 
 
 # ---- Happy path ------------------------------------------------------------
@@ -204,6 +209,8 @@ def test_set_secret_calls_security_with_update_flag(mocker):
     assert cmd[1] == "add-generic-password"
     assert cmd[cmd.index("-a") + 1] == "someuser"
     assert cmd[cmd.index("-s") + 1] == "ITS_TEST_KEY"
+    # daemon path only (TTY=False via the autouse fixture); interactive equivalent:
+    # test_set_secret_interactive_uses_argv_not_stdin.
     # F04: the secret is NOT in argv (it's on stdin). `-w` MUST be the last
     # option — that's what makes `security` read from stdin instead of argv.
     # `-U` MUST precede `-w`; placed after it, the CLI swallows `-U` as the
@@ -297,6 +304,72 @@ def test_set_secret_lock_timeout_fails_open(mocker):
     set_secret("ITS_TEST_KEY", "v")
 
     run.assert_called_once()  # the write happened despite the lock timeout
+
+
+# ---- Task #8: TTY-trap fix (interactive vs daemon write form) --------------
+
+
+def test_set_secret_interactive_uses_argv_not_stdin(mocker):
+    """With a controlling TTY (interactive operator run), the value is passed as
+    `-w VALUE` on argv — NOT via stdin — so `security` never prompts /dev/tty (the
+    TTY-trap that corrupted ITS_BOX_REFRESH_TOKEN during the A3 smoke).
+    PROVE-IT-BITES: the value is on argv and `input` is None (no prompt-able
+    stdin to mis-read)."""
+    mocker.patch("shared.keychain._has_controlling_tty", return_value=True)
+    mock_run = mocker.patch("shared.keychain.subprocess.run")
+    mocker.patch("shared.keychain.getpass.getuser", return_value="someuser")
+
+    set_secret("ITS_TEST_KEY", "secret-value")
+
+    cmd = mock_run.call_args.args[0]
+    assert cmd[cmd.index("-w") + 1] == "secret-value"  # value on argv, -w not last
+    assert "-U" in cmd and cmd.index("-U") < cmd.index("-w")
+    assert mock_run.call_args.kwargs["input"] is None  # no stdin prompt fed
+    assert mock_run.call_args.kwargs["timeout"] == KEYCHAIN_CLI_TIMEOUT
+
+
+def test_set_secret_daemon_keeps_value_off_argv(mocker):
+    """With NO controlling TTY (launchd daemon — the frequent, F04-sensitive
+    path), the write is UNCHANGED: value on stdin twice, never on argv, `-w`
+    last. This guards against an argv-leak regression on the daemon path."""
+    mocker.patch("shared.keychain._has_controlling_tty", return_value=False)
+    mock_run = mocker.patch("shared.keychain.subprocess.run")
+    mocker.patch("shared.keychain.getpass.getuser", return_value="someuser")
+
+    set_secret("ITS_TEST_KEY", "secret-value")
+
+    cmd = mock_run.call_args.args[0]
+    assert cmd[-1] == "-w"
+    assert "secret-value" not in cmd
+    assert mock_run.call_args.kwargs["input"] == "secret-value\nsecret-value\n"
+
+
+def test_set_secret_interactive_scrubs_value_from_exception_chain(mocker):
+    """Task #8 security: on the interactive (argv) path the value lives in
+    CalledProcessError.cmd; the chained __cause__ must NOT carry the secret into a
+    full-traceback capture (the Sentry triple-fire CRITICAL path). The handler
+    scrubs argv elements equal to the value to '***' BEFORE `raise ... from e`."""
+    mocker.patch("shared.keychain._has_controlling_tty", return_value=True)
+    mocker.patch("shared.keychain.getpass.getuser", return_value="u")
+    secret = "super-secret-refresh-token-value"
+    mocker.patch(
+        "shared.keychain.subprocess.run",
+        side_effect=subprocess.CalledProcessError(
+            returncode=1,
+            cmd=["security", "add-generic-password", "-U", "-a", "u",
+                 "-s", "ITS_TEST_KEY", "-w", secret],
+            output="",
+            stderr="errSecAuthFailed",
+        ),
+    )
+    with pytest.raises(KeychainError) as exc:
+        set_secret("ITS_TEST_KEY", secret)
+    cause = exc.value.__cause__
+    assert isinstance(cause, subprocess.CalledProcessError)
+    assert secret not in cause.cmd      # the value element scrubbed out of argv
+    assert "***" in cause.cmd           # ...to '***'; structure preserved
+    assert secret not in str(cause)     # str(CalledProcessError) embeds cmd
+    assert secret not in str(exc.value)  # outer KeychainError never had it
 
 
 # ---- Real CLI integration (macOS only) ------------------------------------
