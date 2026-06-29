@@ -188,7 +188,7 @@ def test_per_row_fence_continues_after_error(_patch_all):
     _patch_all["get_rows"].return_value = [_row(row_id=30), _row(row_id=31), _row(row_id=32)]
     order: list[int] = []
 
-    def _se(row_id):
+    def _se(row_id, _cfg):  # poller now passes (row_id, weekly_send.CONFIG)
         order.append(row_id)
         if row_id == 31:
             raise SmartsheetError("transient")

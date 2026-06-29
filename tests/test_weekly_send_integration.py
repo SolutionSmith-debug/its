@@ -51,7 +51,7 @@ def test_unknown_job_helds_without_sending(_token):
         }],
     )
     try:
-        result = weekly_send.send_one_row(row_id)
+        result = weekly_send.send_one_row(row_id, weekly_send.CONFIG)
         # Unknown job → HELD refusal; no email was sent.
         assert result.status == "held_no_recipient"
         refreshed = smartsheet_client.get_row(wsr_review.SHEET_ID, row_id)

@@ -25,6 +25,14 @@ def test_validate_cell_registered_with_allowed_value_passes_through():
     validate_cell(sheet_ids.SHEET_ERRORS, "Severity", "WARN")
 
 
+def test_wsr_workstream_column_accepts_safety_rejects_others():
+    # P1b cross-workstream send guard: the WSR Workstream column is gated to {safety}.
+    validate_cell(sheet_ids.SHEET_WSR_HUMAN_REVIEW, "Workstream", "safety")
+    for bad in ("progress", "safety_reports", "Safety"):
+        with pytest.raises(PicklistViolationError):
+            validate_cell(sheet_ids.SHEET_WSR_HUMAN_REVIEW, "Workstream", bad)
+
+
 def test_validate_cell_registered_with_disallowed_value_raises():
     with pytest.raises(PicklistViolationError) as exc:
         validate_cell(sheet_ids.SHEET_ERRORS, "Severity", "BOGUS")

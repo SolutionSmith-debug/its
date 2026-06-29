@@ -98,6 +98,15 @@ _WPR_SEND_STATUS_VALUES: frozenset[str] = frozenset({
 # reports could not send). WPR (decommissioned) never writes SENDING, so it keeps the old set.
 _WSR_SEND_STATUS_VALUES: frozenset[str] = _WPR_SEND_STATUS_VALUES | frozenset({"SENDING"})
 
+# WSR_human_review Workstream tag (P1b cross-workstream contamination guard). A DEDICATED,
+# tight set: the WSR sheet is the SAFETY review sheet, so the only legal tag there is `safety`
+# (a `progress` value on WSR is itself a contamination signal — defense in depth; `progress`
+# joins the future WPR set in P2). This is the report-family vocabulary (`safety` / `progress`),
+# intentionally NOT _WORKSTREAM_VALUES_GLOBAL (`safety_reports`, the ITS_Config scope). The
+# weekly_send guard READS this column; add_wsr_row + the backfill migration WRITE `safety` — so
+# this entry gates those writes (a wrong tag raises PicklistViolationError, never silently routes).
+_WSR_WORKSTREAM_VALUES: frozenset[str] = frozenset({"safety"})
+
 # ITS_Quarantine disposition (operator review action). Not yet a picklist
 # in the live sheet — adding here so writes from `shared/quarantine.py`
 # (when it grows a disposition write path) are validated client-side
@@ -174,6 +183,7 @@ REGISTRY: dict[int, dict[str, frozenset[str]]] = {
     # portal flow; both stay registered until the WPR sheet itself is operator-deleted.
     sheet_ids.SHEET_WSR_HUMAN_REVIEW: {
         "Send Status": _WSR_SEND_STATUS_VALUES,
+        "Workstream": _WSR_WORKSTREAM_VALUES,
     },
 }
 
