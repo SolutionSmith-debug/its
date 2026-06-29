@@ -1,0 +1,93 @@
+---
+type: operations
+date: 2026-06-28
+status: active
+related_prs: []
+workstream: infrastructure
+tags: [runbook, successor-remediation, box, oauth, secrets, tier-2, tier-3]
+---
+
+# Runbook — Box OAuth token stale / refresh-lock contention (Successor-Remediation, Op Stds §43)
+
+A §43 successor-remediation entry for the **Successor-Operator**: a trained operator
+who runs Claude Code and reads Smartsheet rows + alert emails, but does **not** read
+code or touch secrets. The §42 code-reader rationale lives in
+`shared.box_client._store_tokens` / `_record_token_refresh`,
+`shared.keychain.set_secret`, and `scripts/watchdog.py::_check_box_token_freshness`.
+
+## Purpose
+
+What to do when the daily watchdog reports the **Box OAuth refresh token is going
+stale** (A3 — **Check P**), or when `box_oauth_refresh_lock_timeout` /
+`keychain_write_lock_timeout` WARNs appear. Box rotates the refresh token on every
+exchange and it **expires 60 days from last use**; once expired, **every** Box
+operation (filing PDFs, week folders, photo uploads) fails until the token is
+re-seeded. Check P turns the silent erosion into a LOUD signal: **WARN at 50 days
+idle** (10-day buffer) and **CRITICAL at 58 days** (2-day buffer). Re-seeding the
+token (`scripts/setup_box_oauth.py`) is a **secrets / auth** operation — a **FIXED
+high-capability-class category** that **always escalates to the Developer-Operator
+(Seth)**. The Successor-Operator's job is to **recognize, confirm, and escalate** —
+NOT to touch the token.
+
+## Procedure
+
+### Symptom
+
+- A **watchdog WARN/CRITICAL** (Check P) whose message contains
+  `Box OAuth refresh token idle <N>d` (or `Box OAuth refresh marker absent`).
+- In **ITS_Errors**: a `Script = scripts.watchdog` row at WARN/CRITICAL naming the
+  Box token idle days.
+- Box-writing daemons may also be failing outright: `BoxAuthError` mentioning
+  `setup_box_oauth.py`, and filing/compile rows routing to the Review Queue.
+- Possibly `box_oauth_refresh_lock_timeout` or `keychain_write_lock_timeout` **WARN**
+  rows in ITS_Errors (lock contention — see below).
+
+### What the Successor-Operator checks
+
+1. **Which signal is it?**
+   - **`idle >= 58d` CRITICAL** → the token is days from death. Urgent — escalate now.
+   - **`idle >= 50d` WARN** → 10-day runway. Confirm the Box-writing daemons are
+     actually running (Check C / ITS_Daemon_Health rows advancing). If a daemon is
+     simply down, the token isn't being exercised — restarting it (a low-class
+     daemon repair) makes the next refresh stamp the marker and clears Check P.
+   - **`marker absent` WARN** right after A3 shipped is expected until the first
+     refresh writes the marker; a **persistent** absence means Box has never authed
+     on this host → escalate (needs `setup_box_oauth.py`).
+2. **Recent host outage?** A multi-day host-down window is the usual cause of idle
+   growth. Note the window for Seth's context.
+3. **Lock-timeout WARNs (`*_lock_timeout`)?** These are **fail-open** by design — the
+   token/secret write proceeds anyway, so they do **not** block anything. The lock
+   lives on a sidecar `.lock` file whose mere existence is **not** a held lock (the
+   OS releases the flock when the holding process exits), so there is nothing to
+   "clear." Recurring timeouts mean two daemons genuinely overlapped on a write
+   (rare) — note it for Seth; do not delete state files.
+
+### The Claude prompt or UI action
+
+There is **no low-class repair that touches the token**. For the WARN-with-daemon-down
+case, restarting the stopped Box-writing daemon (launchd) is the only Tier-2 action,
+and only if Check C shows it down. Otherwise confirm + escalate:
+
+> "Claude, watchdog Check P reports the Box OAuth refresh token is idle `<N>` days
+> (WARN/CRITICAL in ITS_Errors). Please confirm it's the freshness check (not a
+> transient), check whether the Box-writing daemons are alive (ITS_Daemon_Health /
+> Check C), summarize any recent host outage, and draft the escalation to Seth — the
+> Box token needs re-seeding via setup_box_oauth.py before it expires at 60 days."
+
+### Escalate-to-Seth condition
+
+**Always, for the token itself.** Box OAuth / Keychain / auth is one of the four FIXED
+high-capability-class categories (Op Stds §44): the Successor-Operator confirms and
+escalates; **Seth re-runs `scripts/setup_box_oauth.py`** (browser OAuth flow) to seed a
+fresh refresh token into Keychain. A CRITICAL that recurs after a claimed fix is still
+Seth's — do not loop on it. (Restarting a merely-stopped Box daemon is the one Tier-2
+action; the credential re-seed is Tier-3.)
+
+Both-rule (Op Stds §44): "recognize + confirm + escalate" (and, at most, restart a
+down daemon) is the Tier-2 action; the token re-seed (secrets) is high-class → Tier 3.
+
+## Owner
+
+`@solutionsmith`. The thresholds (`BOX_TOKEN_FRESHNESS_WARN_DAYS` = 50 /
+`…_CRITICAL_DAYS` = 58 in `scripts/watchdog.py`) and the lock posture
+(`shared/box_client.py`, `shared/keychain.py`) are code changes (Tier 3).

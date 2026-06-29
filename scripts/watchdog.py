@@ -86,6 +86,7 @@ Trigger this script from a launchd plist. See `scripts/launchd/`.
 from __future__ import annotations
 
 import inspect
+import json
 import traceback
 import uuid
 from collections.abc import Callable
@@ -96,6 +97,7 @@ from pathlib import Path
 from safety_reports import weekly_generate, wsr_review
 from shared import (
     alert_dedupe,
+    box_client,
     circuit_breaker,
     defaults,
     heartbeat_client,
@@ -1243,6 +1245,70 @@ def _check_stuck_wsr_send() -> CheckResult:
     )
 
 
+# ---- Check P: Box OAuth refresh-token freshness -------------------------
+#
+# §42: Box rotates the refresh token on every exchange and it EXPIRES 60 days
+# from last use (see shared/box_client.py module docstring). Steady-state daily
+# workstreams refresh well inside that window, but a multi-day host outage — or a
+# daemon that quietly stopped touching Box — erodes the margin INVISIBLY, and the
+# failure mode is catastrophic: once expired, EVERY Box operation fails until the
+# operator re-runs setup_box_oauth.py. box_client._store_tokens stamps a freshness
+# marker on every successful persist (A3); this check reads it and escalates ahead
+# of expiry. WARN at 50d / CRITICAL at 58d give a 10-day then 2-day buffer.
+# Read-only — returns a CheckResult (no inline alert), so _run_check pages the
+# WARN/CRITICAL and MAINTENANCE-defers it like Checks L/M/N. (Check O is reserved
+# for the future A5 per-job row-cap watchdog; this is P.)
+BOX_TOKEN_FRESHNESS_WARN_DAYS = 50
+BOX_TOKEN_FRESHNESS_CRITICAL_DAYS = 58
+
+
+def _check_box_token_freshness() -> CheckResult:
+    """Check P: Box OAuth refresh token must be exercised inside the 60-day window.
+
+    Reads the freshness marker box_client._store_tokens writes on every persist.
+    Marker absent → WARN ("unknown"): expected briefly right after A3 ships (until
+    the first refresh writes it); a persistent absence means Box has never authed.
+    """
+    marker = box_client.BOX_TOKEN_REFRESH_MARKER
+    if not marker.exists():
+        return CheckResult(
+            Severity.WARN,
+            "Box OAuth refresh marker absent — token freshness unknown. Expected "
+            "briefly right after enabling A3 (until the first refresh writes it); a "
+            "persistent absence means Box has never authed — run "
+            "scripts/setup_box_oauth.py.",
+        )
+    try:
+        data = json.loads(marker.read_text())
+        last_refresh = datetime.fromisoformat(data["last_refresh_utc"])
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        return CheckResult(
+            Severity.WARN,
+            f"Box OAuth refresh marker unreadable ({exc!r}) — token freshness unknown.",
+        )
+    if last_refresh.tzinfo is None:
+        last_refresh = last_refresh.replace(tzinfo=UTC)
+    idle_days = (datetime.now(UTC) - last_refresh).days
+    if idle_days >= BOX_TOKEN_FRESHNESS_CRITICAL_DAYS:
+        return CheckResult(
+            Severity.CRITICAL,
+            f"Box OAuth refresh token idle {idle_days}d "
+            f"(>= {BOX_TOKEN_FRESHNESS_CRITICAL_DAYS}) — expires at 60d. Re-run "
+            f"scripts/setup_box_oauth.py NOW or all Box operations will fail "
+            f"(escalate to Seth — secrets/auth, a fixed high-capability-class category).",
+        )
+    if idle_days >= BOX_TOKEN_FRESHNESS_WARN_DAYS:
+        return CheckResult(
+            Severity.WARN,
+            f"Box OAuth refresh token idle {idle_days}d "
+            f"(>= {BOX_TOKEN_FRESHNESS_WARN_DAYS}) — approaching the 60d expiry; "
+            f"confirm the Box-writing daemons are running.",
+        )
+    return CheckResult(
+        Severity.INFO, f"Box OAuth refresh token fresh (idle {idle_days}d)."
+    )
+
+
 # ---- Entrypoint ---------------------------------------------------------
 
 
@@ -1275,6 +1341,10 @@ CHECKS: list[Callable[..., CheckResult]] = [
     # Check N: WSR rows stuck in SENDING (weekly_send write-ahead-marker safety net).
     # Read-only; returns a CheckResult (no inline alert); WARN-only.
     _check_stuck_wsr_send,
+    # Check P (A3): Box OAuth refresh-token freshness. Read-only marker read;
+    # returns a CheckResult, so its WARN/CRITICAL is paged + MAINTENANCE-deferred
+    # by _run_check. (Check O reserved for the future A5 row-cap watchdog.)
+    _check_box_token_freshness,
     # Check E (Anthropic spend trend) deferred to a follow-on PR (the
     # Check E shipping PR) — requires an Admin API key (sk-ant-admin01-...
     # prefix) provisioned in Keychain under ITS_ANTHROPIC_ADMIN_API_KEY.

@@ -116,7 +116,8 @@ def test_checks_list_has_all_session_1_2_3_checks():
     prolonged-open page) and K (guaranteed F09 cap-window summary sweep) shipped
     in F08/F09 PR 2. Check L (token write-capability probe) shipped in B2.
     Check N (WSR rows stuck in SENDING) is the weekly_send write-ahead-marker
-    safety net."""
+    safety net. Check P (A3) is the Box OAuth refresh-token freshness probe
+    (Check O is reserved for the future A5 per-job row-cap watchdog)."""
     assert watchdog.CHECKS == [
         watchdog._check_stale_review_queue,
         watchdog._check_open_criticals,
@@ -130,6 +131,7 @@ def test_checks_list_has_all_session_1_2_3_checks():
         watchdog._check_token_write_capability,  # Check L (B2)
         watchdog._check_blueprint_guard_symlinks,  # Check M (C3)
         watchdog._check_stuck_wsr_send,  # Check N (WSR write-ahead-marker safety net)
+        watchdog._check_box_token_freshness,  # Check P (A3) — Box OAuth freshness
     ]
 
 
@@ -270,6 +272,59 @@ def test_blueprint_guard_symlinks_skipped_when_absent(monkeypatch, tmp_path):
     result = watchdog._check_blueprint_guard_symlinks()
     assert result.severity is Severity.INFO
     assert "not on this host" in result.summary
+
+
+# ---- Check P (A3): Box OAuth refresh-token freshness --------------------
+
+
+def _write_box_freshness_marker(path: Path, *, days_ago: int) -> None:
+    """Write a Box freshness marker whose last_refresh is `days_ago` days old."""
+    import json
+
+    last = (datetime.now(UTC) - timedelta(days=days_ago)).isoformat()
+    path.write_text(json.dumps({"last_refresh_utc": last, "refresh_count": 1}))
+
+
+def test_check_box_token_freshness_fresh_is_info(monkeypatch, tmp_path):
+    marker = tmp_path / "box_oauth_last_refresh.json"
+    _write_box_freshness_marker(marker, days_ago=3)
+    monkeypatch.setattr("watchdog.box_client.BOX_TOKEN_REFRESH_MARKER", marker)
+    result = watchdog._check_box_token_freshness()
+    assert result.severity is Severity.INFO
+
+
+def test_check_box_token_freshness_warns_at_50d(monkeypatch, tmp_path):
+    marker = tmp_path / "box_oauth_last_refresh.json"
+    _write_box_freshness_marker(marker, days_ago=52)
+    monkeypatch.setattr("watchdog.box_client.BOX_TOKEN_REFRESH_MARKER", marker)
+    result = watchdog._check_box_token_freshness()
+    assert result.severity is Severity.WARN
+
+
+def test_check_box_token_freshness_critical_at_58d(monkeypatch, tmp_path):
+    marker = tmp_path / "box_oauth_last_refresh.json"
+    _write_box_freshness_marker(marker, days_ago=59)
+    monkeypatch.setattr("watchdog.box_client.BOX_TOKEN_REFRESH_MARKER", marker)
+    result = watchdog._check_box_token_freshness()
+    assert result.severity is Severity.CRITICAL
+
+
+def test_check_box_token_freshness_absent_marker_warns(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "watchdog.box_client.BOX_TOKEN_REFRESH_MARKER", tmp_path / "missing.json"
+    )
+    result = watchdog._check_box_token_freshness()
+    assert result.severity is Severity.WARN
+    assert "absent" in result.summary
+
+
+def test_check_box_token_freshness_unreadable_marker_warns(monkeypatch, tmp_path):
+    marker = tmp_path / "box_oauth_last_refresh.json"
+    marker.write_text("not valid json {{{")
+    monkeypatch.setattr("watchdog.box_client.BOX_TOKEN_REFRESH_MARKER", marker)
+    result = watchdog._check_box_token_freshness()
+    assert result.severity is Severity.WARN
+    assert "unreadable" in result.summary
 
 
 # ---- Group B: _check_stale_review_queue ---------------------------------
