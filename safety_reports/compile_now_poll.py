@@ -150,6 +150,9 @@ def _compile_triggered_job(
     selection = week_sheet.selected_submission_row_ids(submissions)
     # Reuse the EXISTING deterministic compile (no second compile path). selection or None
     # → default-all when no per-submission box is checked (Option 1).
+    # A6 deviation: unguarded — no SIGALRM fence, no memory ceiling (vs the scheduled run's
+    # compile_core.run_per_job). Single-job, operator-triggered, lower OOM risk; a hung
+    # Compile-Now needs a manual process kill.
     weekly_generate._compile_job_week(
         job, week, summary, correlation_id, selection=(selection or None)
     )
