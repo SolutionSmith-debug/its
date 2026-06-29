@@ -6,6 +6,7 @@ lives in tests/test_week_sheet_integration.py.
 from __future__ import annotations
 
 from datetime import date
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -18,7 +19,9 @@ from safety_reports.week_sheet import (
     COL_SUPERSEDED_BY,
     ROW_TYPE_ROLLUP,
     ROW_TYPE_SUBMISSION,
+    SAFETY_WEEK_SHEET_CONFIG,
     STATUS_SUPERSEDED,
+    WeekSheetConfig,
     ensure_week_sheet,
     find_submission_row,
     supersede_row,
@@ -114,7 +117,7 @@ def test_week_sheet_name_preserves_full_week_label_under_truncation():
 def test_ensure_week_sheet_existing_returns_without_create(stub_ss):
     stub_ss["find_folder"].return_value = 4242  # per-job folder already exists
     stub_ss["find_sheet"].return_value = 8001
-    sid = ensure_week_sheet("Bradley 1", date(2026, 6, 5))
+    sid = ensure_week_sheet(SAFETY_WEEK_SHEET_CONFIG, "Bradley 1", date(2026, 6, 5))
     assert sid == 8001
     stub_ss["create_folder"].assert_not_called()
     stub_ss["create_sheet"].assert_not_called()
@@ -124,7 +127,7 @@ def test_ensure_week_sheet_missing_creates_with_schema(stub_ss):
     stub_ss["find_folder"].return_value = 4242  # folder exists; sheet does not
     stub_ss["find_sheet"].side_effect = [None, None]  # pre-find, post-find
     stub_ss["create_sheet"].return_value = 8002
-    sid = ensure_week_sheet("Bradley 1", date(2026, 6, 5))
+    sid = ensure_week_sheet(SAFETY_WEEK_SHEET_CONFIG, "Bradley 1", date(2026, 6, 5))
     assert sid == 8002
     # Created INSIDE the per-job folder with the Saturday name + schema.
     args = stub_ss["create_sheet"].call_args.args
@@ -142,7 +145,7 @@ def test_ensure_week_sheet_missing_creates_with_schema(stub_ss):
 
 def test_ensure_week_sheet_existing_does_not_restyle(stub_ss):
     stub_ss["find_sheet"].return_value = 8001  # already exists → find path
-    ensure_week_sheet("Bradley 1", date(2026, 6, 5))
+    ensure_week_sheet(SAFETY_WEEK_SHEET_CONFIG, "Bradley 1", date(2026, 6, 5))
     stub_ss["apply_styles"].assert_not_called()
 
 
@@ -152,7 +155,7 @@ def test_ensure_week_sheet_styling_failure_does_not_block(stub_ss, stub_error_lo
     stub_ss["find_sheet"].side_effect = [None, None]
     stub_ss["create_sheet"].return_value = 8002
     stub_ss["apply_styles"].side_effect = week_sheet.smartsheet_client.SmartsheetError("boom")
-    assert ensure_week_sheet("Bradley 1", date(2026, 6, 5)) == 8002
+    assert ensure_week_sheet(SAFETY_WEEK_SHEET_CONFIG, "Bradley 1", date(2026, 6, 5)) == 8002
     assert stub_error_log.called
 
 
@@ -160,7 +163,7 @@ def test_ensure_week_sheet_race_warns_and_uses_first_match(stub_ss, stub_error_l
     stub_ss["find_folder"].return_value = 4242  # folder exists (no folder race here)
     stub_ss["find_sheet"].side_effect = [None, 7000]  # pre-find None, post-find 7000
     stub_ss["create_sheet"].return_value = 9999
-    sid = ensure_week_sheet("Bradley 1", date(2026, 6, 5))
+    sid = ensure_week_sheet(SAFETY_WEEK_SHEET_CONFIG, "Bradley 1", date(2026, 6, 5))
     assert sid == 7000  # the survivor, not the just-created 9999
     stub_error_log.assert_called_once()
     call = stub_error_log.call_args
@@ -175,7 +178,7 @@ def test_ensure_week_sheet_precreates_rollup_placeholder(stub_ss):
     stub_ss["find_folder"].return_value = 4242
     stub_ss["find_sheet"].side_effect = [None, None]
     stub_ss["create_sheet"].return_value = 8002
-    ensure_week_sheet("Bradley 1", date(2026, 6, 5))
+    ensure_week_sheet(SAFETY_WEEK_SHEET_CONFIG, "Bradley 1", date(2026, 6, 5))
     stub_ss["add_rows"].assert_called_once()
     row = stub_ss["add_rows"].call_args.args[1][0]
     assert row[week_sheet.COL_ROW_TYPE] == week_sheet.ROW_TYPE_ROLLUP
@@ -185,7 +188,7 @@ def test_ensure_week_sheet_precreates_rollup_placeholder(stub_ss):
 def test_ensure_week_sheet_existing_does_not_precreate_rollup(stub_ss):
     """The FIND path must NOT write a placeholder — the Rollup row already exists."""
     stub_ss["find_sheet"].return_value = 8001
-    ensure_week_sheet("Bradley 1", date(2026, 6, 5))
+    ensure_week_sheet(SAFETY_WEEK_SHEET_CONFIG, "Bradley 1", date(2026, 6, 5))
     stub_ss["add_rows"].assert_not_called()
 
 
@@ -196,7 +199,7 @@ def test_ensure_week_sheet_rollup_placeholder_failure_does_not_block(stub_ss, st
     stub_ss["find_sheet"].side_effect = [None, None]
     stub_ss["create_sheet"].return_value = 8002
     stub_ss["add_rows"].side_effect = week_sheet.smartsheet_client.SmartsheetError("boom")
-    assert ensure_week_sheet("Bradley 1", date(2026, 6, 5)) == 8002
+    assert ensure_week_sheet(SAFETY_WEEK_SHEET_CONFIG, "Bradley 1", date(2026, 6, 5)) == 8002
     assert stub_error_log.called
 
 
@@ -206,7 +209,7 @@ def test_ensure_week_sheet_unknown_project_auto_provisions(stub_ss):
     stub_ss["create_folder"].return_value = 5555
     stub_ss["find_sheet"].side_effect = [None, None]
     stub_ss["create_sheet"].return_value = 8003
-    sid = ensure_week_sheet("Atlantis", date(2026, 6, 5))
+    sid = ensure_week_sheet(SAFETY_WEEK_SHEET_CONFIG, "Atlantis", date(2026, 6, 5))
     assert sid == 8003
     stub_ss["create_folder"].assert_called_once_with(
         sheet_ids.WORKSPACE_SAFETY_PORTAL, "Atlantis"
@@ -219,7 +222,7 @@ def test_ensure_week_sheet_creates_folder_under_workspace_when_missing(stub_ss):
     stub_ss["find_folder"].side_effect = [None, None]
     stub_ss["create_folder"].return_value = 6001
     stub_ss["find_sheet"].return_value = 8010  # sheet already exists in the new folder
-    ensure_week_sheet("Bradley 1", date(2026, 6, 5))
+    ensure_week_sheet(SAFETY_WEEK_SHEET_CONFIG, "Bradley 1", date(2026, 6, 5))
     stub_ss["create_folder"].assert_called_once_with(
         sheet_ids.WORKSPACE_SAFETY_PORTAL, "Bradley 1"
     )
@@ -229,7 +232,7 @@ def test_ensure_week_sheet_folder_race_warns_and_uses_first_match(stub_ss, stub_
     stub_ss["find_folder"].side_effect = [None, 6000]  # pre None, post 6000 (folder race)
     stub_ss["create_folder"].return_value = 9090
     stub_ss["find_sheet"].return_value = 8050  # sheet exists in the survivor folder
-    sid = ensure_week_sheet("Bradley 1", date(2026, 6, 5))
+    sid = ensure_week_sheet(SAFETY_WEEK_SHEET_CONFIG, "Bradley 1", date(2026, 6, 5))
     assert sid == 8050
     # the sheet lookup used the survivor folder (6000), not the just-created 9090
     assert stub_ss["find_sheet"].call_args.args[0] == 6000
@@ -252,7 +255,7 @@ def test_folder_name_sanitizes(raw, expected):
 def test_ensure_week_sheet_uses_sanitized_folder_name(stub_ss):
     stub_ss["find_folder"].return_value = 4242
     stub_ss["find_sheet"].return_value = 8001
-    ensure_week_sheet("A/B Job", date(2026, 6, 5))
+    ensure_week_sheet(SAFETY_WEEK_SHEET_CONFIG, "A/B Job", date(2026, 6, 5))
     # folder lookup uses the sanitized name; the sheet name keeps the raw project.
     assert stub_ss["find_folder"].call_args.args == (
         sheet_ids.WORKSPACE_SAFETY_PORTAL, "A-B Job"
@@ -486,3 +489,44 @@ def test_clear_compile_now_on_rollups_clears_only_checked(stub_ss):
 def test_clear_compile_now_on_rollups_noop_when_none_checked(stub_ss):
     clear_compile_now_on_rollups(8001, [{"_row_id": 5, COL_COMPILE_NOW: False}])
     stub_ss["update_rows"].assert_not_called()
+
+
+# ── P1a parameterization: contamination gate + byte-identical safety binding ──
+
+
+def test_safety_config_reproduces_current_behavior_byte_identically():
+    """The safety binding is byte-identical: the exact workspace pin + the
+    unchanged name builder (object identity), so every find-or-create resolves the
+    SAME folders/sheets — zero behavior change, zero migration."""
+    cfg = SAFETY_WEEK_SHEET_CONFIG
+    assert cfg.workspace_id == sheet_ids.WORKSPACE_SAFETY_PORTAL
+    assert cfg.key_builder is week_sheet_name
+    assert week_sheet._folder_name("Bradley 1") == "Bradley 1"
+    assert (
+        cfg.key_builder("Bradley 1", date(2026, 6, 5))
+        == "Bradley 1 — week of 2026-05-30"
+    )
+    # the 50-char cap still bites identically (long prefix truncated, suffix whole)
+    assert len(cfg.key_builder("X" * 200, date(2026, 5, 30))) == week_sheet.SHEET_NAME_MAX
+
+
+def test_week_sheet_config_requires_all_fields():
+    """No field defaults to a safety value — a forgotten or malformed field fails
+    LOUDLY at construction (the contamination gate), never a silent fall-through."""
+    make: Any = WeekSheetConfig
+    with pytest.raises(TypeError):
+        make()  # both fields missing
+    with pytest.raises(TypeError):
+        make(workspace_id=sheet_ids.WORKSPACE_SAFETY_PORTAL)  # key_builder missing
+    with pytest.raises(TypeError):
+        make(workspace_id=123, key_builder="not-callable")  # malformed builder
+    with pytest.raises(ValueError):
+        make(workspace_id=0, key_builder=week_sheet_name)  # non-positive workspace
+
+
+def test_ensure_week_sheet_requires_config():
+    """`config` is a required first positional with NO default — omitting it raises
+    TypeError at the call, never a silent file into the safety workspace."""
+    call: Any = ensure_week_sheet
+    with pytest.raises(TypeError):
+        call("Bradley 1", date(2026, 6, 5))  # config omitted

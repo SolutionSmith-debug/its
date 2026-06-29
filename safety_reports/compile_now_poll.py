@@ -137,7 +137,9 @@ def _compile_triggered_job(
     """Compile ONE job's current week IFF its Rollup Compile-Now trigger is set. Returns
     True if a compile ran, False if the job was skipped (no trigger). Raises on a compile
     failure — the caller's per-job fence routes it to the Review Queue (fail-loud)."""
-    sheet_id = week_sheet.ensure_week_sheet(job.project_name, week.start)
+    sheet_id = week_sheet.ensure_week_sheet(
+        week_sheet.SAFETY_WEEK_SHEET_CONFIG, job.project_name, week.start
+    )
     # The Compile-Now trigger lives on a Rollup row; the placeholder Rollup is pre-created at
     # sheet creation so the checkbox exists even before the first compile. With append-only
     # Rollups (one immutable snapshot per compile), the operator may check the trigger on the

@@ -4,12 +4,15 @@
 The forensic scaling eval (2026-06-28) ranks per-job-per-week Smartsheet sheet
 proliferation as the #1 liability + the only hard deployment gate: at 20 active
 jobs the per-job-per-week model creates ~1,040 sheets/yr against an UNVERIFIED
-per-workspace/plan sheet cap, after which writes silently fail. We've adopted the
-MONTHLY sheet model (~240/yr) to cut that ~4-5x.
+per-workspace/plan sheet cap, after which writes silently fail. Sheets stay WEEKLY
+(the "monthly" proposal was reverted 2026-06-29); the operator confirmed Evergreen
+is on a Business/Enterprise plan (2026-06-29), so capacity is NOT limiting and the
+margin-check is a runaway tripwire. The monthly projection below is kept only as a
+fallback reference (the config-flip if proliferation ever bites).
 
 This script reports the CURRENT sheet count in the Safety Portal workspace and the
-weekly-vs-monthly projection at 20 jobs so the operator can finalize the Smartsheet
-plan-tier decision. It is READ-ONLY: no writes, no AI, no send.
+weekly-vs-monthly projection at 20 jobs so the operator can sanity-check headroom.
+It is READ-ONLY: no writes, no AI, no send.
 
 HONEST LIMIT: the Smartsheet API does NOT expose the per-plan/per-workspace hard
 sheet cap, and so this script does NOT invent one. It supplies the counts +
@@ -51,14 +54,14 @@ def main() -> int:
     print(f"\nProjection at {JOBS} active jobs (sheets created per year):")
     weekly = JOBS * WEEKLY_PER_JOB_YR
     monthly = JOBS * MONTHLY_PER_JOB_YR
-    print(f"  WEEKLY  (legacy):  {weekly:>5}/yr  ({WEEKLY_PER_JOB_YR}/job)   <- eval #1 liability")
-    print(f"  MONTHLY (adopted): {monthly:>5}/yr  ({MONTHLY_PER_JOB_YR}/job)   ~{weekly / monthly:.1f}x fewer")
+    print(f"  WEEKLY  (chosen):   {weekly:>5}/yr  ({WEEKLY_PER_JOB_YR}/job)   <- sheet=week, report cadence")
+    print(f"  MONTHLY (fallback): {monthly:>5}/yr  ({MONTHLY_PER_JOB_YR}/job)   ~{weekly / monthly:.1f}x fewer (config-flip if the cap ever bites)")
     print(f"  + standing per-job structured sheets: ~{JOBS * STANDING_PER_JOB} "
           f"(period-split + archive-on-closure bounds the live count)")
 
     print("\nHARD CAP + PLAN TIER  (operator follow-up — NOT exposed by the Smartsheet API):")
     print("  - Confirm the real per-workspace/account sheet cap with Smartsheet plan docs/support.")
-    print("  - Resolve the $600 (Pro) vs $2,400 (Business) tier from that cap + the MONTHLY projection.")
+    print("  - Operator confirmed Business/Enterprise (2026-06-29) → capacity non-limiting; weekly retained.")
     print("  - Set ITS_Config smartsheet.sheet_count_ceiling / smartsheet.sheet_count_margin once known")
     print(f"    (fallbacks: ceiling={defaults.SHEET_COUNT_CEILING}, "
           f"margin={defaults.SHEET_COUNT_MARGIN}).")

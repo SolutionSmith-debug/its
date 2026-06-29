@@ -2091,7 +2091,9 @@ def _run_portal_pipeline(
     # no per-project map → no config-gap path). A SmartsheetError (transient
     # folder/sheet create failure) propagates → the caller soft-fails the
     # submission to 'error' so it re-pulls next cycle (never silent).
-    sheet_id = week_sheet.ensure_week_sheet(project_name, work_date)
+    sheet_id = week_sheet.ensure_week_sheet(
+        week_sheet.SAFETY_WEEK_SHEET_CONFIG, project_name, work_date
+    )
 
     # Dedupe (the Python authority): a re-pull whose row already exists skips
     # re-filing but still drains (portal_poll posts the receipt with the link).
