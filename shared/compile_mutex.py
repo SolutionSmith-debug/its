@@ -1,5 +1,7 @@
 """Host-level compile mutex — serialize the safety + (future) progress weekly compiles.
 
+Purpose
+-------
 Both the safety ``weekly_generate`` (Fri 14:00) and the future progress
 ``progress_weekly_generate`` (staggered, Stage-2 P4) compile per-job packets and
 write them to Smartsheet/Box. If they overlap they contend on the Smartsheet API
@@ -15,6 +17,8 @@ no-policy / capability-clean invariant must hold) and is built on the proven
 ``state_io.with_path_lock`` sidecar flock — the same primitive the A3 Box
 refresh-lock uses.
 
+Invariants
+----------
 FAIL-OPEN, asymmetric by CALLER policy. ``hold()`` is pure mechanism: it yields
 ``True`` when the lock was acquired and ``False`` when another compile already
 holds it (``with_path_lock``'s bounded ~250ms retry backs off rather than blocking
@@ -25,10 +29,17 @@ for the other compile's full run). The caller decides what ``False`` means:
 * progress → skip and rely on its watchdog catch-up (fail-safe — it is the
   lower-priority, deferrable compile).
 
+Failure modes
+-------------
 On contention ``hold()`` logs a single WARN naming ``role`` (mirroring the A3
 fail-open precedent in ``shared/box_client.py``, which logs inside the helper).
 ``flock`` auto-releases on process death, so a crashed holder never strands the
 lock.
+
+Consumers
+---------
+- ``safety_reports.weekly_generate`` (Fri 14:00 compile, ``role="safety"`` — fail-open).
+- ``progress_weekly_generate`` (Stage-2 P4, ``role="progress"`` — fail-safe; not yet built).
 """
 from __future__ import annotations
 
