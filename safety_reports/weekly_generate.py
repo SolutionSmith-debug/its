@@ -59,7 +59,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from safety_reports import form_pdf, safety_naming, week_sheet, wsr_review
+from safety_reports import compile_core, form_pdf, safety_naming, week_sheet, wsr_review
 from shared import (
     active_jobs,
     box_client,
@@ -81,6 +81,15 @@ WORKSTREAM = "safety_reports"
 CFG_EVERGREEN_CONTACT = "safety_reports.evergreen_contact_name"
 DEFAULT_EVERGREEN_CONTACT = "the Evergreen Renewables office"
 
+# A6 single-host hardening (Stage-0): the per-job wall-clock budget + the pre-merge memory
+# ceiling, both deploy-tunable via ITS_Config. Defaults are GENEROUS — a hung SDK call or a
+# pathological week is the target, never normal operation — so the happy path is byte-identical
+# (the fences are no-ops below these bounds). See safety_reports.compile_core.
+CFG_JOB_TIMEOUT = "safety_reports.weekly_generate.job_timeout_seconds"
+DEFAULT_JOB_TIMEOUT = 600  # 10 min/job — one hung Box/Smartsheet call can't block the whole run
+CFG_MEMORY_CEILING = "safety_reports.weekly_generate.merge_memory_ceiling_bytes"
+DEFAULT_MEMORY_CEILING = 256 * 1024 * 1024  # 256 MiB of gathered source PDFs before merge
+
 DEFAULT_TZ = "America/Los_Angeles"  # everything Pacific (Brief v6.1)
 
 # Watchdog Check C marker — same pattern as the other daemons (preservation, §14).
@@ -99,7 +108,8 @@ class RunSummary:
     skipped_no_change: int = 0
     empty_weeks: int = 0
     wsr_written: int = 0
-    review_queue_entries: int = 0
+    review_queue_entries: int = 0  # "fenced" jobs (any per-job failure routed to Review Queue)
+    timed_out: int = 0  # A6: jobs killed by the per-job SIGALRM wall-clock budget
     download_errors: int = 0
     errors_per_job: dict[str, str] = field(default_factory=dict)
 
@@ -115,6 +125,16 @@ def _read_str_setting(key: str, fallback: str) -> str:
     except smartsheet_client.SmartsheetCircuitOpenError:
         return fallback
     return raw if isinstance(raw, str) and raw else fallback
+
+
+def _read_int_setting(key: str, fallback: int) -> int:
+    """Defensive int ITS_Config read, layered on `_read_str_setting` (so a missing row /
+    circuit-open / non-int value all resolve to `fallback`, never raising into the compile).
+    Reuses `_read_str_setting` deliberately — it is the one config seam the tests already mock."""
+    try:
+        return int(_read_str_setting(key, str(fallback)).strip())
+    except (TypeError, ValueError):
+        return fallback
 
 
 def _now_pacific_iso() -> str:
@@ -351,6 +371,7 @@ def _compile_job_week(
     correlation_id: str,
     *,
     selection: set[int] | None = None,
+    memory_ceiling: int = 0,
 ) -> None:
     """Compile one (job, week): merge → file → dual-write Rollup + WSR.
 
@@ -417,16 +438,24 @@ def _compile_job_week(
         # EMPTY WEEK — still write the Rollup + WSR row (never silently skip). No
         # packet PDF; weekly_send HELDs a WSR row with no Compiled PDF.
         summary.empty_weeks += 1
+        # Commit-point ordering (A6, §42): the WSR row FIRST, the Rollup row (the no-new-docs
+        # watermark) LAST. A crash before the watermark recompiles next run rather than leaving
+        # an empty week "compiled" but with no WSR row for weekly_send to HELD.
+        _write_wsr(job, week, packet_link="", manifest="no submissions this week",
+                   summary=summary, correlation_id=correlation_id)
         week_sheet.append_rollup_row(
             sheet_id, packet_link="", compiled_at=compiled_at,
             manifest_note="0 submissions this week (empty-week placeholder)",
         )
         week_sheet.clear_compile_now_on_rollups(sheet_id, rollup_rows)
-        _write_wsr(job, week, packet_link="", manifest="no submissions this week",
-                   summary=summary, correlation_id=correlation_id)
         return
 
     pdfs, manifest_parts, metas = _gather_submission_pdfs(submissions, summary, correlation_id)
+    # A6 memory guard (§42): fence an oversized week BEFORE merge_pdfs (which ~doubles peak
+    # memory) so a pathological week is routed to the Review Queue rather than OOMing the host.
+    # No-op on a normal week (total << ceiling) → byte-identical happy path. A breach raises
+    # compile_core.CompileMemoryExceededError → the per-job fence in run_per_job routes it to Review.
+    compile_core.enforce_memory_budget((len(p) for p in pdfs), memory_ceiling)
     packet_link = ""
     packet_name = ""
     compiled: bytes | None = None
@@ -461,13 +490,20 @@ def _compile_job_week(
         f"{len(submissions)} submissions ({len(pdfs)} in packet): "
         f"{', '.join(manifest_parts)}; compiled {compiled_at}"
     )
+    # Commit-point ordering (A6 resumable watermark, §42): write the WSR row FIRST, then the
+    # Rollup snapshot row (whose compiled_at is the no-new-docs watermark the next run reads)
+    # LAST. A crash mid-compile then leaves NO advanced watermark, so the (job, week) recompiles
+    # next run (a visible duplicate PENDING WSR row, caught at human approval) instead of being
+    # SILENTLY skipped with no WSR row ever written. The Box packet is already filed (append-only
+    # distinct file), so a WSR row never points at a missing packet. Happy-path output is
+    # unchanged — same rows, same content; only the write order hardens the crash path.
+    wsr_row_id = _write_wsr(job, week, packet_link=packet_link, manifest=manifest_note,
+                            summary=summary, correlation_id=correlation_id)
     rollup_row_id = week_sheet.append_rollup_row(
         sheet_id, packet_link=packet_link, compiled_at=compiled_at,
         manifest_note=manifest_note,
     )
     week_sheet.clear_compile_now_on_rollups(sheet_id, rollup_rows)
-    wsr_row_id = _write_wsr(job, week, packet_link=packet_link, manifest=manifest_note,
-                            summary=summary, correlation_id=correlation_id)
 
     # Supplementary: attach the compiled packet inline on the Rollup row (the
     # week-sheet preview) + the WSR_human_review row (the approve/send surface), so
@@ -607,28 +643,66 @@ def _run_pipeline(*, week_start_override: date | None) -> dict[str, Any]:
     ).date()
     week = safety_week.week_bounds(anchor)
 
-    for job in active_jobs.list_active_jobs():
+    # A6: per-run config for the single-host fences (defensive int reads → defaults in tests).
+    job_timeout = _read_int_setting(CFG_JOB_TIMEOUT, DEFAULT_JOB_TIMEOUT)
+    memory_ceiling = _read_int_setting(CFG_MEMORY_CEILING, DEFAULT_MEMORY_CEILING)
+
+    def _start(job: ActiveJob) -> None:
         summary.jobs_processed += 1
-        try:
-            _compile_job_week(job, week, summary, correlation_id)
-        except (SmartsheetError, box_client.BoxError) as exc:
-            summary.errors_per_job[job.project_name] = f"{type(exc).__name__}: {exc!r}"
-            error_log.log(
-                Severity.ERROR, SCRIPT_NAME,
-                f"compile failed for {job.project_name} (job {job.job_id}) week {week.start}: {exc!r}",
-                error_code="weekly_generate.compile_failed",
-                correlation_id=correlation_id,
-            )
-            _safe_review_queue(job, week, type(exc).__name__, correlation_id, summary)
-        except Exception as exc:  # noqa: BLE001 — per-job fence; one bad job never kills the run
-            summary.errors_per_job[job.project_name] = f"{type(exc).__name__}: {exc!r}"
-            error_log.log(
-                Severity.ERROR, SCRIPT_NAME,
-                f"unexpected compile error for {job.project_name}: {exc!r}",
-                error_code="weekly_generate.compile_unexpected",
-                correlation_id=correlation_id,
-            )
-            _safe_review_queue(job, week, type(exc).__name__, correlation_id, summary)
+
+    def _record(job: ActiveJob, error_class: str, exc: BaseException) -> None:
+        summary.errors_per_job[job.project_name] = f"{error_class}: {exc!r}"
+
+    def _on_timeout(job: ActiveJob, error_class: str, exc: BaseException) -> None:
+        # A6: a per-job SIGALRM fence fired — surface it (never a silent hang), then continue.
+        summary.timed_out += 1
+        _record(job, error_class, exc)
+        error_log.log(
+            Severity.ERROR, SCRIPT_NAME,
+            f"compile timed out for {job.project_name} (job {job.job_id}) week {week.start}: {exc!r}",
+            error_code="weekly_generate.compile_timeout",
+            correlation_id=correlation_id,
+        )
+        _safe_review_queue(job, week, error_class, correlation_id, summary)
+
+    def _on_infra(job: ActiveJob, error_class: str, exc: BaseException) -> None:
+        _record(job, error_class, exc)
+        error_log.log(
+            Severity.ERROR, SCRIPT_NAME,
+            f"compile failed for {job.project_name} (job {job.job_id}) week {week.start}: {exc!r}",
+            error_code="weekly_generate.compile_failed",
+            correlation_id=correlation_id,
+        )
+        _safe_review_queue(job, week, error_class, correlation_id, summary)
+
+    def _on_unexpected(job: ActiveJob, error_class: str, exc: BaseException) -> None:
+        # Catches CompileMemoryExceededError (A6 memory fence) + any other unexpected per-job error.
+        _record(job, error_class, exc)
+        error_log.log(
+            Severity.ERROR, SCRIPT_NAME,
+            f"unexpected compile error for {job.project_name}: {exc!r}",
+            error_code="weekly_generate.compile_unexpected",
+            correlation_id=correlation_id,
+        )
+        _safe_review_queue(job, week, error_class, correlation_id, summary)
+
+    # Instantiate the shared hardened core (A6): the per-job SIGALRM budget + per-job error
+    # fence live ONCE in compile_core; the future progress compile re-instantiates the same
+    # loop. one bad job never kills the run — semantics identical to the prior inline loop.
+    compile_core.run_per_job(
+        active_jobs.list_active_jobs(),
+        lambda job: _compile_job_week(
+            job, week, summary, correlation_id, memory_ceiling=memory_ceiling
+        ),
+        fences=compile_core.JobFences(
+            on_timeout=_on_timeout,
+            on_infra_error=_on_infra,
+            on_unexpected=_on_unexpected,
+            infra_errors=(SmartsheetError, box_client.BoxError),
+        ),
+        job_timeout_seconds=job_timeout,
+        on_job_start=_start,
+    )
 
     _write_watchdog_marker()
     return {

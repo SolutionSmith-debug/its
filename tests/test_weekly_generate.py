@@ -381,3 +381,62 @@ def test_unresolved_box_root_surfaces_to_review(stub):
 def test_watchdog_marker_written(stub):
     weekly_generate._run_pipeline(week_start_override=ANCHOR)
     stub["marker"].assert_called_once()
+
+
+# ---- A6 hardening: resumable watermark + per-job timeout + memory guard ----
+
+
+def test_wsr_row_written_before_rollup_watermark(stub):
+    # A6 commit-point ordering: the WSR row must be written BEFORE the Rollup snapshot row
+    # (whose compiled_at is the no-new-docs watermark), so a crash mid-compile recompiles next
+    # run instead of leaving an advanced watermark with no WSR row.
+    order: list[str] = []
+    stub["wsr"].side_effect = lambda *a, **k: order.append("wsr") or 123
+    stub["append_rollup"].side_effect = lambda *a, **k: order.append("rollup") or 99
+    weekly_generate._run_pipeline(week_start_override=ANCHOR)
+    assert order == ["wsr", "rollup"]  # WSR first, watermark last
+
+
+def test_empty_week_writes_wsr_before_rollup_watermark(stub):
+    stub["subs"].return_value = []
+    order: list[str] = []
+    stub["wsr"].side_effect = lambda *a, **k: order.append("wsr") or 123
+    stub["append_rollup"].side_effect = lambda *a, **k: order.append("rollup") or 99
+    weekly_generate._run_pipeline(week_start_override=ANCHOR)
+    assert order == ["wsr", "rollup"]
+
+
+def test_per_job_timeout_fenced_to_review_and_continues(stub, mocker):
+    # A SIGALRM timeout (simulated by raising CompileJobTimeoutError) on one job is fenced to the
+    # Review Queue + counted, and the run continues to the next job (never a silent hang).
+    stub["list_jobs"].return_value = [
+        _job(project_name="Bradley 1", job_id="JOB-1"),
+        _job(project_name="Huntley", job_id="JOB-2"),
+    ]
+    mocker.patch.object(
+        weekly_generate, "_compile_job_week",
+        side_effect=[weekly_generate.compile_core.CompileJobTimeoutError("hung"), None],
+    )
+    out = weekly_generate._run_pipeline(week_start_override=ANCHOR)
+    assert out["timed_out"] == 1
+    assert out["jobs_processed"] == 2  # JOB-2 still attempted after JOB-1 timed out
+    assert "Bradley 1" in out["errors_per_job"]
+    stub["review"].assert_called()  # timeout fenced to the Review Queue
+    assert any(
+        c.kwargs.get("error_code") == "weekly_generate.compile_timeout"
+        for c in stub["log"].call_args_list
+    )
+
+
+def test_memory_guard_fences_oversized_week_before_merge(stub, mocker):
+    # A tiny memory ceiling makes the gathered PDF breach the budget → the job is fenced to the
+    # Review Queue BEFORE merge_pdfs, never OOMing; no packet is produced.
+    mocker.patch.object(
+        weekly_generate, "_read_int_setting",
+        side_effect=lambda key, fallback: 1 if key == weekly_generate.CFG_MEMORY_CEILING else fallback,
+    )
+    out = weekly_generate._run_pipeline(week_start_override=ANCHOR)
+    assert out["packets_compiled"] == 0
+    stub["merge"].assert_not_called()  # fenced BEFORE the merge step
+    stub["review"].assert_called()     # routed to the Review Queue, not OOM
+    assert "Bradley 1" in out["errors_per_job"]

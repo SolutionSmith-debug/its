@@ -74,6 +74,15 @@ GATED_SCRIPTS: list[tuple[str, list[str]]] = [
          "anthropic", "anthropic_client"],
     ),
     (
+        # compile_core (Stage-0 A6) is the SHARED hardened compile loop both the safety weekly
+        # compile and the future progress compile instantiate. It is stdlib-only orchestration
+        # (per-job SIGALRM budget + pre-merge memory guard + per-job error fence) — no Graph,
+        # no external send, no LLM. Same deterministic-actuation gate as weekly_generate.
+        "safety_reports/compile_core.py",
+        ["graph_client", "send_mail", "resend", "smtplib", "email.mime",
+         "anthropic", "anthropic_client"],
+    ),
+    (
         # publish_daemon (slice 3b) is the privileged form-publish actuator: it COMMITS +
         # DEPLOYS code but performs ZERO external customer transmission and no LLM step.
         # Forbid the send substrings + anthropic (deterministic actuation). Its HTTP egress
