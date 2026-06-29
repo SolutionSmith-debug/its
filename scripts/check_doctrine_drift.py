@@ -66,6 +66,16 @@ ENTRYPOINTS = [
     "scripts/watchdog.py",
 ]
 
+# Checks whose findings are precise enough to BLOCK a merge under --strict (the CI
+# gate). Deliberately EXCLUDES M2 (tech_debt self-closure): it is a calibration-FP-prone
+# heuristic — its own docstring says so, and it produces live false positives on clean
+# main (legitimately-OPEN entries that mention adjacent completed PRs, e.g. the Phase-5
+# deploy-prerequisites and weekly_send-smoke entries). M2 still PRINTS as a 'drift'
+# finding for the doc-reconciliation-auditor; it just does not gate CI. M3/M5/M6 are
+# 'coverage' (informational). M1 (version), M4 (sheet-id), and M7 (citation-resolver)
+# are FP-free by construction and are the class-#4 core (forensic lessons-learned 2026-06-28).
+STRICT_BLOCKING_CHECKS: frozenset[str] = frozenset({"M1", "M4", "M7"})
+
 
 @dataclass
 class Finding:
@@ -142,6 +152,43 @@ def check_version_drift(m: dict[str, Any]) -> list[Finding]:
                     findings.append(
                         Finding("M1", "drift", f"{rel}:{ln}",
                                 f"Foundation Mission v{mo.group(1)} cited; canonical is v{fm}")
+                    )
+    return findings
+
+
+def check_citation_resolves(m: dict[str, Any]) -> list[Finding]:
+    """M7 — an `Op Stds §N` citation in current-doctrine prose that resolves to no section.
+
+    Op Stds numbering is append-only (manifest: "no cited section renumbered"), so
+    §1..§max_section all exist; a citation above max_section (or below 1) points at a
+    section that does NOT exist — a typo or a forward-reference to unbuilt doctrine
+    (e.g. a stray ``Op Stds §99``). This is the "citation-resolves-nowhere" leg of the
+    cross-repo drift guard, and it works in a fresh CI clone (no ~/its-blueprint) because
+    the section ceiling is a manifest fact, not a blueprint read.
+
+    Anchored on the ``Op Stds``/``Operational Standards`` prefix (optionally with the
+    ``vNN``) so bare ``§N`` tokens are not matched. A ``§§43-49`` range or a ``§3.1``
+    subsection yields the FIRST number (43, 3) — undercounting is safe (never a false
+    positive). FM is intentionally out of scope: it is structured as Invariants, not
+    §-numbered sections. Skips a match framed as historical.
+    """
+    ops_spec = m["doctrine_versions"]["operational_standards"]
+    max_section = ops_spec.get("max_section")
+    if max_section is None:
+        return []  # manifest hasn't declared the §-ceiling — nothing to resolve against
+    ceiling = int(max_section)
+    cite_re = re.compile(r"(?:Op Stds|Operational Standards)(?:\s+v\d+)?\s+§+\s*(\d+)")
+    findings: list[Finding] = []
+    for f in _current_doctrine_files():
+        rel = f.relative_to(REPO_ROOT)
+        for ln, line in enumerate(f.read_text(errors="replace").splitlines(), 1):
+            for mo in cite_re.finditer(line):
+                n = int(mo.group(1))
+                if (n < 1 or n > ceiling) and not _near_historical(line, mo.start(), mo.end()):
+                    findings.append(
+                        Finding("M7", "drift", f"{rel}:{ln}",
+                                f"Op Stds §{n} cited but resolves nowhere "
+                                f"(valid sections are §1..§{ceiling})")
                     )
     return findings
 
@@ -303,6 +350,7 @@ def run_all() -> list[Finding]:
     m = _load_manifest()
     findings: list[Finding] = []
     findings += check_version_drift(m)
+    findings += check_citation_resolves(m)
     findings += check_stale_tech_debt(m)
     findings += check_sheet_ids(m)
     findings += check_workstream_coverage(m)
@@ -314,6 +362,14 @@ def run_all() -> list[Finding]:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Mechanical doctrine-drift checks (propose-only).")
     ap.add_argument("--json", action="store_true", help="emit findings as JSON")
+    ap.add_argument(
+        "--strict",
+        action="store_true",
+        help=(
+            "exit 1 if any BLOCKING drift exists (M1 version / M4 sheet-id / M7 citation). "
+            "The CI gate. Default stays exit-0 propose-only for the agent + unit tests."
+        ),
+    )
     args = ap.parse_args(argv)
 
     findings = run_all()
@@ -339,6 +395,21 @@ def main(argv: list[str] | None = None) -> int:
         print("  none")
     print("\nMechanical tier only. The semantic (opus) tier + the operator decide; "
           "this script never writes.")
+
+    if args.strict:
+        blocking = [f for f in findings if f.check in STRICT_BLOCKING_CHECKS]
+        if blocking:
+            print(
+                f"\nSTRICT: {len(blocking)} BLOCKING drift finding(s) "
+                f"({'/'.join(sorted(STRICT_BLOCKING_CHECKS))}) — failing CI:"
+            )
+            for f in blocking:
+                print(f"  [{f.check}] {f.location} — {f.detail}")
+            return 1
+        print(
+            f"\nSTRICT: no blocking drift "
+            f"({'/'.join(sorted(STRICT_BLOCKING_CHECKS))} clean). M2/coverage are informational."
+        )
     return 0
 
 
