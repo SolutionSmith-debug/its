@@ -38,11 +38,38 @@ The conftest fix is the immediate hole-closer. A durable structural fix
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
 
 _KEYCHAIN_OPT_OUT_FILES = frozenset({"test_keychain.py", "test_helpers.py"})
+
+# --- Live-state write guard (forensic class #8 / #294) --------------------
+# A test that silently refreshed the REAL watchdog marker masked watchdog
+# Checks C+I (#294); more broadly, a unit test writing live state couples CI to
+# host state and can disable real safety checks. The `_forbid_live_state_writes`
+# autouse fixture below is the DRIFT-PROOF catch: it wraps the two write idioms
+# (`Path.write_text`/`write_bytes` for markers; `os.replace` for the sanctioned
+# `state_io` atomic-write) and raises on any write resolving under a protected
+# live dir — regardless of which module's per-daemon STATE_DIR / WATCHDOG_MARKER_DIR
+# constant produced the path. Real paths captured ONCE here, before any test-local
+# redirect, so the guard always compares against the genuine live locations.
+_REAL_STATE_DIR = (Path.home() / "its" / "state").resolve()
+_REAL_WATCHDOG_DIR = (Path.home() / "its" / ".watchdog").resolve()
+_PROTECTED_LIVE_DIRS = (_REAL_STATE_DIR, _REAL_WATCHDOG_DIR)
+
+_ORIG_WRITE_TEXT = Path.write_text
+_ORIG_WRITE_BYTES = Path.write_bytes
+_ORIG_OS_REPLACE = os.replace
+
+
+def _is_under_protected_live_dir(target: object) -> bool:
+    try:
+        resolved = Path(target).resolve()  # type: ignore[arg-type]
+    except (OSError, ValueError, TypeError):
+        return False
+    return any(resolved.is_relative_to(d) for d in _PROTECTED_LIVE_DIRS)
 
 
 @pytest.fixture(autouse=True)
@@ -142,3 +169,50 @@ def _mock_kill_switch_state(
     monkeypatch.setattr(
         "shared.kill_switch.check_system_state", lambda: SystemState.ACTIVE
     )
+
+
+@pytest.fixture(autouse=True)
+def _forbid_live_state_writes(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fail loud if a unit test writes under the REAL ~/its/state or ~/its/.watchdog.
+
+    The drift-proof complement to the per-test state redirects (e.g.
+    `_neutralize_circuit_breaker` above, which sends `circuit_breaker.STATE_FILE`
+    to tmp). Where a redirect must enumerate every per-daemon STATE_DIR /
+    WATCHDOG_MARKER_DIR constant (and silently drifts when a new one lands), this
+    guard catches ANY write resolving under a protected live dir at the
+    Path.write_text / write_bytes / os.replace layer — so a missed redirect fails
+    loud here instead of silently mutating host state (forensic class #8 / the
+    #294 watchdog-marker masking). A unit test that trips this must redirect its
+    state-path constant to `tmp_path`; a test that genuinely needs live state must
+    be marked `@pytest.mark.integration` (which opts out, like the other fixtures).
+    """
+    if request.node.get_closest_marker("integration") is not None:
+        return
+
+    def _guard(target: object, idiom: str) -> None:
+        if _is_under_protected_live_dir(target):
+            raise AssertionError(
+                f"test {request.node.nodeid} wrote LIVE state via {idiom}: {target!r}\n"
+                "Unit tests must not touch ~/its/state or ~/its/.watchdog (forensic "
+                "class #8 / #294 — silently refreshing a real marker masked watchdog "
+                "Checks C+I). Redirect the path constant to tmp_path with monkeypatch, "
+                "or mark the test @pytest.mark.integration if it genuinely needs live state."
+            )
+
+    def _guarded_write_text(self: Path, *args: object, **kwargs: object) -> int:
+        _guard(self, "Path.write_text")
+        return _ORIG_WRITE_TEXT(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    def _guarded_write_bytes(self: Path, *args: object, **kwargs: object) -> int:
+        _guard(self, "Path.write_bytes")
+        return _ORIG_WRITE_BYTES(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    def _guarded_os_replace(src: object, dst: object, *args: object, **kwargs: object) -> None:
+        _guard(dst, "os.replace")
+        return _ORIG_OS_REPLACE(src, dst, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "write_text", _guarded_write_text)
+    monkeypatch.setattr(Path, "write_bytes", _guarded_write_bytes)
+    monkeypatch.setattr(os, "replace", _guarded_os_replace)
