@@ -6,6 +6,7 @@ fast-paths. Structure mirrors tests/test_weekly_send_poll.py.
 """
 from __future__ import annotations
 
+import json
 from contextlib import contextmanager
 from types import SimpleNamespace
 from typing import Any
@@ -67,6 +68,9 @@ def _patch_all(mocker):
         "hb": mocker.patch.object(portal_poll, "_write_heartbeat"),
         "hb_row": mocker.patch.object(portal_poll, "_write_heartbeat_row"),
         "wd": mocker.patch.object(portal_poll, "_write_watchdog_marker"),
+        # A4 unfiled-backlog marker — mocked so existing cycle tests neither touch real
+        # state nor assert on it; dedicated tests below exercise the real helper on a tmp path.
+        "backlog": mocker.patch.object(portal_poll, "_record_pending_backlog"),
         # Consecutive-fetch-failure counter (sustained-outage escalation) — mocked so tests
         # neither touch real state nor depend on the on-disk counter; default count=1 (first
         # failure → ERROR). A test raises the return to the threshold to exercise CRITICAL.
@@ -543,3 +547,70 @@ def test_cycle_status_degraded_when_errors_and_reviewed(_patch_all):
     assert result.errors == 1 and result.reviewed == 1
     # errors (DEGRADED) takes precedence over reviewed (WARN).
     assert _patch_all["hb_row"].call_args.kwargs["status"] == "DEGRADED"
+
+
+# ---- A4: _record_pending_backlog stuck-backlog marker --------------------
+
+
+def _read_backlog(path):
+    return json.loads(path.read_text())
+
+
+def test_record_pending_backlog_saturated_no_drain_latches(monkeypatch, tmp_path):
+    """A saturated page (>= PENDING_LIMIT) that drained nothing latches high_since_utc."""
+    p = tmp_path / "backlog.json"
+    monkeypatch.setattr(portal_poll, "PENDING_BACKLOG_STATE_PATH", p)
+    portal_poll._record_pending_backlog(portal_poll.PENDING_LIMIT, 0)
+    data = _read_backlog(p)
+    assert data["count"] == portal_poll.PENDING_LIMIT
+    assert data["drained"] == 0
+    assert data["high_since_utc"] is not None
+
+
+def test_record_pending_backlog_progress_clears_latch(monkeypatch, tmp_path):
+    """Any drain progress clears the latch even on a full page."""
+    p = tmp_path / "backlog.json"
+    monkeypatch.setattr(portal_poll, "PENDING_BACKLOG_STATE_PATH", p)
+    portal_poll._record_pending_backlog(portal_poll.PENDING_LIMIT, 3)
+    assert _read_backlog(p)["high_since_utc"] is None
+
+
+def test_record_pending_backlog_unsaturated_clears_latch(monkeypatch, tmp_path):
+    """A page below the cap is not a stuck backlog regardless of drain."""
+    p = tmp_path / "backlog.json"
+    monkeypatch.setattr(portal_poll, "PENDING_BACKLOG_STATE_PATH", p)
+    portal_poll._record_pending_backlog(portal_poll.PENDING_LIMIT - 1, 0)
+    assert _read_backlog(p)["high_since_utc"] is None
+
+
+def test_record_pending_backlog_latch_persists_across_cycles(monkeypatch, tmp_path):
+    """A sustained stuck backlog keeps the FIRST high_since_utc across cycles."""
+    p = tmp_path / "backlog.json"
+    monkeypatch.setattr(portal_poll, "PENDING_BACKLOG_STATE_PATH", p)
+    portal_poll._record_pending_backlog(portal_poll.PENDING_LIMIT, 0)
+    first = _read_backlog(p)["high_since_utc"]
+    portal_poll._record_pending_backlog(portal_poll.PENDING_LIMIT, 0)
+    second = _read_backlog(p)
+    assert second["high_since_utc"] == first  # latch not reset
+    assert second["last_scan_utc"] >= first   # last_scan advances
+
+
+def test_record_pending_backlog_relatches_after_recovery(monkeypatch, tmp_path):
+    """Stuck → recovered (latch clears) → stuck again sets a NEW latch."""
+    p = tmp_path / "backlog.json"
+    monkeypatch.setattr(portal_poll, "PENDING_BACKLOG_STATE_PATH", p)
+    portal_poll._record_pending_backlog(portal_poll.PENDING_LIMIT, 0)
+    portal_poll._record_pending_backlog(portal_poll.PENDING_LIMIT, 5)  # recovered → clears
+    assert _read_backlog(p)["high_since_utc"] is None
+    portal_poll._record_pending_backlog(portal_poll.PENDING_LIMIT, 0)  # stuck again
+    assert _read_backlog(p)["high_since_utc"] is not None
+
+
+def test_record_pending_backlog_failsoft_on_write_error(monkeypatch, tmp_path, mocker):
+    """A marker write error is swallowed (WARN-logged), never raised into the drain."""
+    p = tmp_path / "backlog.json"
+    monkeypatch.setattr(portal_poll, "PENDING_BACKLOG_STATE_PATH", p)
+    mocker.patch.object(portal_poll.state_io, "atomic_write_json", side_effect=OSError("disk full"))
+    log = mocker.patch.object(portal_poll.error_log, "log")
+    portal_poll._record_pending_backlog(portal_poll.PENDING_LIMIT, 0)  # must not raise
+    assert log.called
