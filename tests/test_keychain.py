@@ -16,6 +16,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from shared import keychain
 from shared.keychain import (
     KEYCHAIN_CLI_TIMEOUT,
     KeychainError,
@@ -23,6 +24,19 @@ from shared.keychain import (
     get_secret,
     set_secret,
 )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_state_io(mocker):
+    """A3: keep the new keychain write-lock off the real filesystem in unit tests.
+
+    `set_secret` now wraps `subprocess.run` in `state_io.with_path_lock`; no-op it
+    so tests never flock a real ~/its/state sidecar, and stub `error_log.log` so
+    the fail-open WARN path never attempts a real ITS_Errors write.
+    """
+    mocker.patch("shared.keychain.state_io.with_path_lock")
+    mocker.patch("shared.error_log.log")
+
 
 # ---- Happy path ------------------------------------------------------------
 
@@ -254,6 +268,35 @@ def test_set_secret_missing_security_cli_raises_keychain_error(mocker):
 
     with pytest.raises(KeychainError, match="macOS-only"):
         set_secret("ITS_TEST_KEY", "x")
+
+
+# ---- A3: cross-process write-lock -----------------------------------------
+
+
+def test_set_secret_acquires_write_lock(mocker):
+    """A3: the write is serialized under the cross-process Keychain write-lock."""
+    lock = mocker.patch("shared.keychain.state_io.with_path_lock")
+    mocker.patch("shared.keychain.subprocess.run")
+    mocker.patch("shared.keychain.getpass.getuser", return_value="u")
+
+    set_secret("ITS_TEST_KEY", "v")
+
+    lock.assert_called_once_with(keychain._KEYCHAIN_WRITE_LOCK_ANCHOR)
+
+
+def test_set_secret_lock_timeout_fails_open(mocker):
+    """A3: a write-lock timeout still performs the write (fail-open) — a missed
+    secret rotation is worse than a lost lock."""
+    mocker.patch(
+        "shared.keychain.state_io.with_path_lock",
+        side_effect=keychain.state_io.StateLockTimeoutError("locked"),
+    )
+    run = mocker.patch("shared.keychain.subprocess.run")
+    mocker.patch("shared.keychain.getpass.getuser", return_value="u")
+
+    set_secret("ITS_TEST_KEY", "v")
+
+    run.assert_called_once()  # the write happened despite the lock timeout
 
 
 # ---- Real CLI integration (macOS only) ------------------------------------
