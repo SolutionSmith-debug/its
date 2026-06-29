@@ -52,6 +52,8 @@ fallback, cap `MAX_RETRIES=3`. Same pattern as resend_client.
 from __future__ import annotations
 
 import time
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from boxsdk import Client, OAuth2  # type: ignore[import-untyped]
@@ -61,7 +63,7 @@ from boxsdk.exception import (  # type: ignore[import-untyped]
 )
 from boxsdk.session.session import AuthorizedSession  # type: ignore[import-untyped]
 
-from . import keychain
+from . import keychain, state_io
 
 OAUTH_TOKEN_URL = "https://api.box.com/oauth2/token"  # noqa: S105 — public OAuth endpoint
 OAUTH_AUTHORIZE_URL = "https://account.box.com/api/oauth2/authorize"
@@ -81,6 +83,18 @@ BOX_NETWORK_TIMEOUT = (10, 30)
 KC_CLIENT_ID = "ITS_BOX_CLIENT_ID"
 KC_CLIENT_SECRET = "ITS_BOX_CLIENT_SECRET"  # noqa: S105 — Keychain entry NAME, not the secret itself
 KC_REFRESH_TOKEN = "ITS_BOX_REFRESH_TOKEN"  # noqa: S105 — Keychain entry NAME, not the secret itself
+
+# A3 — cross-process refresh-token coordination + freshness marker.
+# STATE_DIR mirrors the convention in shared/alert_dedupe.py + the daemons:
+# all daemon-managed state lives under ~/its/state/ (absolute, NOT cwd-relative),
+# so every process — wherever launched — coordinates on the same files.
+STATE_DIR = Path.home() / "its" / "state"
+# Anchor for the cross-process refresh-lock. `with_path_lock()` flocks
+# "{path}.lock", so the sidecar lives at ~/its/state/box_oauth_refresh.lock.
+_BOX_OAUTH_REFRESH_LOCK_ANCHOR = STATE_DIR / "box_oauth_refresh"
+# Freshness marker, written on every successful refresh-token persist; read by
+# watchdog Check P to WARN at 50d idle / CRITICAL at 58d (ahead of the 60d expiry).
+BOX_TOKEN_REFRESH_MARKER = STATE_DIR / "box_oauth_last_refresh.json"
 
 
 # ---- Typed exceptions ----------------------------------------------------
@@ -112,6 +126,38 @@ class BoxRateLimitError(BoxError):
 _client: Client | None = None
 
 
+def _record_token_refresh() -> None:
+    """Best-effort: stamp the Box refresh-token freshness marker.
+
+    §42: Box refresh tokens expire 60 days from last use. The daily-workstream
+    cadence exercises the token well inside that window, but a multi-day host
+    outage erodes the margin invisibly. This marker records the last successful
+    persist so watchdog Check P can WARN at 50d / CRITICAL at 58d *before* the
+    token dies (recovery = re-run `setup_box_oauth.py`, a Developer-Operator-only
+    credential operation). **Best-effort by design:** the Keychain write in
+    `_store_tokens` is the critical path, so a failed marker write must never
+    break token persistence — every failure here is swallowed (logged WARN).
+    """
+    try:
+        # Single atomic write of last_refresh_utc ONLY — no read-modify-write, so no
+        # state-file lock is needed (a refresh_count RMW would have required
+        # with_path_lock on every call, incl. _store_tokens' fail-open path which runs
+        # outside the refresh-lock anchor). The marker is freshness-only: watchdog
+        # Check P reads last_refresh_utc and nothing else.
+        state_io.atomic_write_json(
+            BOX_TOKEN_REFRESH_MARKER,
+            {"last_refresh_utc": datetime.now(UTC).isoformat()},
+        )
+    except Exception as exc:  # noqa: BLE001 — marker is best-effort, never break persistence
+        from .error_log import Severity, log
+        log(
+            Severity.WARN,
+            "shared.box_client",
+            f"Box token freshness marker write failed (non-fatal): {exc!r}",
+            error_code="box_token_marker_write_failed",
+        )
+
+
 def _store_tokens(access_token: str, refresh_token: str) -> None:
     """OAuth2 store_tokens callback — persists the rotated refresh token.
 
@@ -123,8 +169,32 @@ def _store_tokens(access_token: str, refresh_token: str) -> None:
 
     Access tokens are NOT persisted — they have a 60-minute TTL and
     boxsdk re-fetches them on demand within the process.
+
+    A3: the persist + freshness-marker write run under a cross-process sidecar
+    lock (`box_oauth_refresh.lock`) so two ITS daemons refreshing within the same
+    window cannot interleave their Keychain writes and persist a token the other
+    already invalidated (the `box-token-refresh-race`). boxsdk owns the token
+    *exchange* itself, so this serializes the persist seam — the realistic
+    cross-process coordination point — not the HTTP exchange. **FAIL-OPEN:** a
+    lock-acquire timeout logs WARN and persists anyway, because an un-persisted
+    rotated token GUARANTEES a 60-day death whereas a lost lock is merely a rare
+    race window.
     """
-    keychain.set_secret(KC_REFRESH_TOKEN, refresh_token)
+    try:
+        with state_io.with_path_lock(_BOX_OAUTH_REFRESH_LOCK_ANCHOR):
+            keychain.set_secret(KC_REFRESH_TOKEN, refresh_token)
+            _record_token_refresh()
+    except state_io.StateLockTimeoutError:
+        from .error_log import Severity, log
+        log(
+            Severity.WARN,
+            "shared.box_client",
+            "Box refresh-lock timeout — persisting rotated token UNLOCKED "
+            "(fail-open: an un-persisted token is fatal; a lost lock is not).",
+            error_code="box_oauth_refresh_lock_timeout",
+        )
+        keychain.set_secret(KC_REFRESH_TOKEN, refresh_token)
+        _record_token_refresh()
 
 
 def get_client() -> Client:
