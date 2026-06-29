@@ -146,6 +146,38 @@ def test_registry_wsr_send_status_includes_sending():
     picklist_validation.validate_cell(sheet_ids.SHEET_WSR_HUMAN_REVIEW, "Send Status", "SENDING")
 
 
+def test_every_wsr_send_status_writer_constant_is_registered():
+    """META-TEST — recurrence guard for the #247->#253 SENDING-omission (forensic
+    class #1: mocks-pass-but-live-fails).
+
+    The test above pins the EXPECTED literal set; this one closes the drift gap it
+    cannot: it DERIVES the writer-side source of truth — every ``STATUS_*`` string
+    constant in ``safety_reports/wsr_review.py`` (what the pipeline can actually
+    write) — and asserts each is registered in the REGISTRY that gates every
+    ``update_rows``. A future ``STATUS_FOO = "FOO"`` added without a matching REGISTRY
+    entry (exactly what #247 did with SENDING) makes the live send path raise
+    ``PicklistViolationError`` and fail-closes ALL sends — invisible to mocks, caught
+    here statically instead.
+    """
+    from safety_reports import wsr_review
+
+    writer_values = {
+        v for n, v in vars(wsr_review).items()
+        if n.startswith("STATUS_") and isinstance(v, str)
+    }
+    assert writer_values, "no STATUS_* constants found in wsr_review — test wiring broke"
+
+    registered = REGISTRY[sheet_ids.SHEET_WSR_HUMAN_REVIEW]["Send Status"]
+    missing = writer_values - set(registered)
+    assert not missing, (
+        f"wsr_review Send Status constant(s) {sorted(missing)} are NOT in "
+        f"REGISTRY[SHEET_WSR_HUMAN_REVIEW]['Send Status'] ({sorted(registered)}). "
+        "Register them in shared/picklist_validation.py in the SAME PR as the writer — "
+        "an unregistered value makes update_rows raise PicklistViolationError and blocks "
+        "the live send path (the #247->#253 SENDING regression)."
+    )
+
+
 # ---- Error formatting + integer-cast safety ------------------------------
 
 
