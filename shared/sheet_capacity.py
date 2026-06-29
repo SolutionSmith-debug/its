@@ -2,13 +2,17 @@
 
 The eval's #1 liability is per-job-per-week Smartsheet sheet proliferation
 (~1,040 sheets/yr at 20 jobs) marching toward an unverified per-workspace/plan
-sheet cap, after which a create silently fails. We've adopted MONTHLY sheets to
-cut proliferation ~4-5x; this module is the runtime backstop so a find-or-create
-NEVER silently creates a sheet past the cap — when headroom is thin it routes to
-the Review Queue (an operator signal) instead.
+sheet cap, after which a create silently fails. Sheets stay WEEKLY (the 2026-06-28
+"monthly" proposal was reverted 2026-06-29 — the sheet IS the week); the operator
+confirmed Evergreen is on a Business/Enterprise plan (2026-06-29), so capacity is
+NOT limiting. This module is the runtime backstop / runaway tripwire so a
+find-or-create NEVER silently creates a sheet past the cap — when headroom is thin
+it routes to the Review Queue (an operator signal) instead.
 
-Wired into the find-or-create call sites by P1a/P2/P7 (`ensure_week_sheet` etc.);
-this module supplies the check + the enqueue helper only.
+NOT yet wired into the find-or-create call sites: P1a parameterized `ensure_week_sheet`
+but is a pure byte-identical refactor that deliberately does NOT call this guard;
+wiring the margin-check in is a separate, separately-smoked slice (P2/P7 + a safety
+follow-up). This module supplies the check + the enqueue helper only.
 
 FAIL-OPEN by design (matches `shared.kill_switch` / the `defaults` fallback
 philosophy): a transient sheet-count read failure must NEVER block a create —
