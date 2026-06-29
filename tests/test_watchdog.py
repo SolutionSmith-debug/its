@@ -17,6 +17,7 @@ import json
 import sys
 from datetime import UTC, date, datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -119,7 +120,9 @@ def test_checks_list_has_all_session_1_2_3_checks():
     Check N (WSR rows stuck in SENDING) is the weekly_send write-ahead-marker
     safety net. Check P (A3) is the Box OAuth refresh-token freshness probe;
     Checks Q/R (A4) are the portal_poll fetch-outage + unfiled-backlog probes
-    (Check O is reserved for the future A5 per-job row-cap watchdog)."""
+    (Check O is reserved for the future A5 per-job row-cap watchdog). Check S
+    (origin/main required-CI-green detector) shipped from the 2026-06-28 forensic
+    lessons-learned (class #13, partial-PR-landed)."""
     assert watchdog.CHECKS == [
         watchdog._check_stale_review_queue,
         watchdog._check_open_criticals,
@@ -136,6 +139,7 @@ def test_checks_list_has_all_session_1_2_3_checks():
         watchdog._check_box_token_freshness,  # Check P (A3) — Box OAuth freshness
         watchdog._check_portal_poll_fetch_outage,  # Check Q (A4 fetch-outage escalation)
         watchdog._check_portal_poll_pending_backlog,  # Check R (A4 unfiled-backlog)
+        watchdog._check_main_branch_ci_green,  # Check S — origin/main required CI green (class #13)
     ]
 
 
@@ -1906,6 +1910,86 @@ def test_cap_window_sweep_deferred_in_maintenance(mocker):
 
     fire.assert_not_called()
     assert "defer" in result.summary.lower()
+
+
+# ---- Check S: origin/main required CI green (forensic class #13) ---------
+
+
+def _fake_gh(monkeypatch, *, which="/usr/bin/gh", returncode=0, stdout="", stderr=""):
+    monkeypatch.setattr(watchdog.shutil, "which", lambda _name: which)
+
+    def _run(*_a, **_k):
+        return SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr)
+
+    monkeypatch.setattr(watchdog.subprocess, "run", _run)
+
+
+def test_check_s_registered_in_checks():
+    assert watchdog._check_main_branch_ci_green in watchdog.CHECKS
+
+
+def test_check_s_green_main_is_info(monkeypatch):
+    _fake_gh(
+        monkeypatch,
+        stdout=json.dumps([{"status": "completed", "conclusion": "success", "headSha": "abcdef1234"}]),
+    )
+    result = watchdog._check_main_branch_ci_green()
+    assert result.severity is Severity.INFO
+    assert "green" in result.summary.lower()
+
+
+def test_check_s_red_main_is_critical(monkeypatch):
+    _fake_gh(
+        monkeypatch,
+        stdout=json.dumps([{"status": "completed", "conclusion": "failure", "headSha": "deadbeef99"}]),
+    )
+    result = watchdog._check_main_branch_ci_green()
+    assert result.severity is Severity.CRITICAL
+    assert "[main-ci-red]" in result.summary
+    assert "deadbee" in result.summary  # truncated headSha surfaced
+
+
+def test_check_s_cancelled_main_is_critical(monkeypatch):
+    _fake_gh(
+        monkeypatch,
+        stdout=json.dumps([{"status": "completed", "conclusion": "cancelled", "headSha": "0011223344"}]),
+    )
+    assert watchdog._check_main_branch_ci_green().severity is Severity.CRITICAL
+
+
+def test_check_s_in_progress_is_info_not_critical(monkeypatch):
+    _fake_gh(
+        monkeypatch,
+        stdout=json.dumps([{"status": "in_progress", "conclusion": None, "headSha": "aabbccddee"}]),
+    )
+    assert watchdog._check_main_branch_ci_green().severity is Severity.INFO
+
+
+def test_check_s_gh_missing_is_info(monkeypatch):
+    _fake_gh(monkeypatch, which=None)
+    result = watchdog._check_main_branch_ci_green()
+    assert result.severity is Severity.INFO
+    assert "gh" in result.summary.lower()
+
+
+def test_check_s_gh_nonzero_is_info(monkeypatch):
+    _fake_gh(monkeypatch, returncode=1, stderr="auth required")
+    assert watchdog._check_main_branch_ci_green().severity is Severity.INFO
+
+
+def test_check_s_no_runs_is_info(monkeypatch):
+    _fake_gh(monkeypatch, stdout="[]")
+    assert watchdog._check_main_branch_ci_green().severity is Severity.INFO
+
+
+def test_check_s_timeout_is_info(monkeypatch):
+    monkeypatch.setattr(watchdog.shutil, "which", lambda _name: "/usr/bin/gh")
+
+    def _boom(*_a, **_k):
+        raise watchdog.subprocess.TimeoutExpired(cmd="gh", timeout=30)
+
+    monkeypatch.setattr(watchdog.subprocess, "run", _boom)
+    assert watchdog._check_main_branch_ci_green().severity is Severity.INFO
 
 
 # ---- Check P: portal_poll pending-fetch outage escalation (A4) ------------
