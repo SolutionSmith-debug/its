@@ -82,8 +82,10 @@ PICKLIST_SIZE_THRESHOLD_MAX        = 1000  # sanity ceiling on configured values
 # "global"); these are the fallback when the row is missing or unreadable. The REAL
 # per-plan/per-workspace cap is NOT exposed by the Smartsheet API — set the ceiling
 # once confirmed with Smartsheet plan docs/support (scripts/verify_sheet_cap.py +
-# operator follow-up). Conservative defaults: signal well before any plausible cap;
-# the adopted MONTHLY sheet model keeps the real count far below this.
+# operator follow-up). Conservative defaults: signal well before any plausible cap.
+# Sheets stay WEEKLY (monthly reverted 2026-06-29); Evergreen is Business/Enterprise
+# (operator-confirmed 2026-06-29) so capacity is non-limiting — this is a runaway
+# tripwire, not a cost gate.
 SHEET_COUNT_CEILING = 1500
 SHEET_COUNT_MARGIN  = 50
 
