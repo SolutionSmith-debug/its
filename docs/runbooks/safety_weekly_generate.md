@@ -104,6 +104,59 @@ fails, or generation is erroring for an unknown reason" is **novel or
 high-class → Tier 3.** Re-running generation is Tier-2; fixing *why* it
 errors may be high-class (code) and is Tier-3.
 
+## Procedure — per-job compile fences (A6: timeout & memory)
+
+A6 added two per-job robustness fences to the **scheduled** weekly compile (via the
+shared `compile_core.run_per_job` loop). When a fence fires, that **one** job-week is
+surfaced to **ITS_Review_Queue** and skipped; the other jobs compile normally (one bad
+job never tears down the run). Both are Tier-2 re-runnable.
+
+> These fences bind only to the **scheduled** `weekly_generate` run. An operator-triggered
+> **Compile-Now** (`compile_now_poll`) runs a single job **unfenced** — if it hangs, it
+> needs a manual process kill, not a re-run.
+
+### Symptom — a job-week compile TIMED OUT
+
+- **ITS_Errors**: `Severity = ERROR`, `Script = safety_reports.weekly_generate`,
+  `Error = weekly_generate.compile_timeout`, message `compile timed out for <project>
+  (job <id>) week <date>` (note the `Correlation_ID`).
+- **ITS_Review_Queue**: a row `weekly compile failed for <project> … week <date>
+  (CompileJobTimeoutError)`.
+- That **one** project's weekly draft is missing for the week; others appeared.
+
+**What the Successor-Operator checks:** confirm in ITS_Errors it is a single
+`compile_timeout` (not many jobs at once), and the matching Review-Queue row exists.
+
+**The Claude prompt or UI action (low-class):** re-run the compile for that job-week. It
+is **resumable** — the Rollup watermark is written last, so a re-run skips already-compiled
+job-weeks and retries only the timed-out one:
+
+  > "Claude, the weekly compile timed out for `<project>` week `<date>` (ITS_Errors
+  > correlation `<id>`). Please re-run the compile for that job-week."
+
+**Escalate-to-Seth** if: the timeout recurs across **many** weeks or jobs (a performance /
+code defect = high-class), or fixing it needs a code change. Raising
+`safety_reports.weekly_generate.job_timeout_seconds` in ITS_Config is a low-class tweak,
+but a *persistent* need to raise it signals a code issue → escalate.
+
+### Symptom — a job-week compile hit the MEMORY fence
+
+- **ITS_Errors**: `Error = weekly_generate.compile_unexpected`, message `unexpected compile
+  error for <project>: CompileMemoryExceededError(…)` — the gathered PDFs for that week
+  exceeded the pre-merge byte ceiling.
+- **ITS_Review_Queue**: a row for that job-week; the job is **not lost**.
+
+**What the Successor-Operator checks:** confirm the exception is `CompileMemoryExceededError`
+(a genuine memory breach, not some other unexpected error), then inspect that week's
+submissions — is it genuinely large (many / huge photo PDFs)?
+
+**The Claude prompt or UI action (low-class):** if the week is genuinely large, raise
+`safety_reports.weekly_generate.merge_memory_ceiling_bytes` in ITS_Config **with care**,
+then re-run that job-week.
+
+**Escalate-to-Seth** if: the ceiling looks wrong for **all** weeks (a config-design or code
+issue = high-class), or `compile_unexpected` is **not** a memory error (novel → Tier 3).
+
 ## Owner
 
 `@solutionsmith`. New `weekly_generate` failure modes that become
