@@ -39,11 +39,12 @@ Per-cycle behavior (mirrors the canonical weekly_send_poll pattern)
   6. Heartbeat file + ITS_Daemon_Health row + watchdog Check C marker.
   No @its_error_log CRITICAL-spam on a clean empty poll (only real failures log).
 
-Tech-debt: the heartbeat-row helpers are replicated VERBATIM from weekly_send_poll
-(itself from the retired intake_poll) per preservation-over-refactor (Op Stds §14).
-portal_poll is now the 2nd LIVE consumer — the shared/heartbeat.py extraction
-(tracked in docs/tech_debt.md) approaches its trigger but is deferred until the
-portal flow is live-validated. Inline duplication keeps this ship focused.
+The ITS_Daemon_Health heartbeat helpers — once replicated VERBATIM from
+weekly_send_poll (itself from the retired intake_poll), the polling-daemon
+doctrine's 2nd-consumer extraction trigger (Op Stds §14) — now live in
+`shared/heartbeat.py` as `HeartbeatReporter`; this daemon keeps only the
+`_write_heartbeat` / `_write_heartbeat_row` mock seams as thin delegators to
+the module-level `_heartbeat_reporter`.
 """
 from __future__ import annotations
 
@@ -57,7 +58,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 from safety_reports import intake
 from shared import (
@@ -70,11 +71,11 @@ from shared import (
     portal_client,
     portal_hmac,
     review_queue,
-    sheet_ids,
     smartsheet_client,
     state_io,
 )
 from shared.error_log import Severity, its_error_log
+from shared.heartbeat import HeartbeatReporter, HeartbeatStatus
 from shared.kill_switch import require_active
 
 SCRIPT_NAME = "safety_reports.portal_poll"
@@ -127,15 +128,24 @@ DAEMON_NAME = "safety_reports.portal_poll"
 _REGISTRATION_INTERVAL_SECONDS = DEFAULT_POLL_INTERVAL
 _REGISTRATION_SOURCE_ID = "Safety Portal Worker /api/internal/pending"
 
+# Shared ITS_Daemon_Health reporter for this daemon. The per-daemon registration
+# values are the ONLY heartbeat difference between daemons (see shared/heartbeat.py).
+_heartbeat_reporter = HeartbeatReporter(
+    script_name=SCRIPT_NAME,
+    daemon_name=DAEMON_NAME,
+    workstream=WORKSTREAM,
+    liveness_path=HEARTBEAT_PATH,
+    interval_seconds=_REGISTRATION_INTERVAL_SECONDS,
+    source_id=_REGISTRATION_SOURCE_ID,
+    row_state_path=HEARTBEAT_ROW_STATE_PATH,  # shared file — make the contract explicit
+)
+
 # Watchdog Check C marker (TRACKED_JOBS registration in scripts/watchdog.py is
 # deferred to the deploy session — see docs/tech_debt.md; the marker write here is
 # forward-compatible and harmless if unregistered).
 WATCHDOG_MARKER_DIR = Path.home() / "its" / ".watchdog"
 WATCHDOG_JOB_SLUG = "safety_portal_poll"
 
-HeartbeatStatus = Literal[
-    "OK", "WARN", "ERROR", "DEGRADED", "SKIPPED", "CIRCUIT_OPEN"
-]
 
 # intake return statuses that mean "stop serving this row" — post the receipt.
 # 'error' is the ONLY non-drain status (transient → re-pull retries).
@@ -217,8 +227,36 @@ def _file_lock(path: Path) -> Iterator[bool]:
 
 
 def _write_heartbeat() -> None:
-    """Overwrite the heartbeat file with the current UTC ISO timestamp."""
-    state_io.atomic_write_text(HEARTBEAT_PATH, datetime.now(UTC).isoformat())
+    """Liveness file touch — thin delegator to the shared HeartbeatReporter.
+
+    Kept as a module-level function because it is the canonical test mock seam
+    (the suite patches this exact symbol). See shared/heartbeat.py (§42).
+    """
+    _heartbeat_reporter.write_liveness()
+
+
+def _write_heartbeat_row(
+    *,
+    status: HeartbeatStatus,
+    items_processed: int,
+    error_summary: str | None = None,
+    correlation_id: str | None = None,
+    notes: str | None = None,
+    daemon_name: str = DAEMON_NAME,
+) -> None:
+    """ITS_Daemon_Health per-cycle row update — thin delegator to the shared
+    HeartbeatReporter (the canonical test mock seam; the suite patches this exact
+    symbol). The ``daemon_name`` param is retained for signature back-compat and
+    always resolves to this daemon. See shared/heartbeat.py (§42).
+    """
+    _heartbeat_reporter.write_row(
+        status=status,
+        items_processed=items_processed,
+        error_summary=error_summary,
+        correlation_id=correlation_id,
+        notes=notes,
+        daemon_name=daemon_name,
+    )
 
 
 # ---- Consecutive pending-fetch failure counter (sustained-outage escalation) ----
@@ -296,214 +334,8 @@ def _persist_seen(seen: dict[str, dict[str, Any]]) -> None:
         )
 
 
-# ---- Heartbeat-row state cache (ITS_Daemon_Health) ----------------------
-# Replicated VERBATIM from weekly_send_poll per preservation-over-refactor (Op
-# Stds §14); the shared/heartbeat.py extraction is the tracked tech-debt follow-on.
-
-
-def _load_heartbeat_row_state(daemon_name: str) -> dict[str, Any] | None:
-    """Read `{daemon_name: {row_id, total_cycles}}` from the state file."""
-    if not HEARTBEAT_ROW_STATE_PATH.exists():
-        return None
-    try:
-        raw = HEARTBEAT_ROW_STATE_PATH.read_text()
-        parsed = json.loads(raw)
-    except (OSError, json.JSONDecodeError):
-        return None
-    if not isinstance(parsed, dict):
-        return None
-    entry = parsed.get(daemon_name)
-    if not isinstance(entry, dict):
-        return None
-    row_id = entry.get("row_id")
-    total_cycles = entry.get("total_cycles")
-    if not isinstance(row_id, int) or not isinstance(total_cycles, int):
-        return None
-    return {"row_id": row_id, "total_cycles": total_cycles}
-
-
-def _persist_heartbeat_row_state(
-    daemon_name: str, row_id: int, total_cycles: int
-) -> None:
-    """Atomically merge `{daemon_name: {row_id, total_cycles}}` into the state file."""
-    HEARTBEAT_ROW_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        with state_io.with_path_lock(HEARTBEAT_ROW_STATE_PATH):
-            current: dict[str, Any] = {}
-            if HEARTBEAT_ROW_STATE_PATH.exists():
-                try:
-                    parsed = json.loads(HEARTBEAT_ROW_STATE_PATH.read_text())
-                    if isinstance(parsed, dict):
-                        current = parsed
-                except (OSError, json.JSONDecodeError):
-                    current = {}
-            current[daemon_name] = {"row_id": row_id, "total_cycles": total_cycles}
-            state_io.atomic_write_json(HEARTBEAT_ROW_STATE_PATH, current)
-    except state_io.StateLockTimeoutError:
-        error_log.log(
-            Severity.WARN, SCRIPT_NAME,
-            f"could not acquire lock on {HEARTBEAT_ROW_STATE_PATH} after retries",
-            error_code="daemon_health_write_failed",
-        )
-
-
-def _invalidate_heartbeat_row_state(daemon_name: str) -> None:
-    """Remove a daemon's entry from the state file (forces re-lookup)."""
-    if not HEARTBEAT_ROW_STATE_PATH.exists():
-        return
-    try:
-        with state_io.with_path_lock(HEARTBEAT_ROW_STATE_PATH):
-            try:
-                parsed = json.loads(HEARTBEAT_ROW_STATE_PATH.read_text())
-            except (OSError, json.JSONDecodeError):
-                return
-            if not isinstance(parsed, dict):
-                return
-            parsed.pop(daemon_name, None)
-            state_io.atomic_write_json(HEARTBEAT_ROW_STATE_PATH, parsed)
-    except state_io.StateLockTimeoutError:
-        error_log.log(
-            Severity.WARN, SCRIPT_NAME,
-            f"could not acquire lock on {HEARTBEAT_ROW_STATE_PATH} after retries (invalidate)",
-            error_code="daemon_health_write_failed",
-        )
-
-
-def _create_heartbeat_row(daemon_name: str) -> int | None:
-    """Self-provision this daemon's ITS_Daemon_Health row (A1, find-or-create)."""
-    cols = sheet_ids.DAEMON_HEALTH_COLUMNS
-    payload: dict[int, Any] = {
-        cols["daemon_name"]: daemon_name,
-        cols["workstream"]: WORKSTREAM,
-        cols["enabled"]: True,
-        cols["interval_seconds"]: _REGISTRATION_INTERVAL_SECONDS,
-        cols["source_id"]: _REGISTRATION_SOURCE_ID,
-    }
-    try:
-        with circuit_breaker.bypass():
-            return smartsheet_client.add_row_by_id(
-                sheet_ids.SHEET_DAEMON_HEALTH, payload
-            )
-    except smartsheet_client.SmartsheetError as exc:
-        _log_heartbeat_failure(daemon_name, f"self-provision create failed: {exc!r}")
-        return None
-    except Exception as exc:  # noqa: BLE001 — heartbeat must never raise
-        _log_heartbeat_failure(daemon_name, f"self-provision unexpected: {exc!r}")
-        return None
-
-
-def _resolve_heartbeat_row_id(daemon_name: str) -> int | None:
-    """Return the ITS_Daemon_Health row id for `daemon_name`, find-or-create."""
-    state = _load_heartbeat_row_state(daemon_name)
-    if state is not None:
-        return state["row_id"]
-    row = smartsheet_client.find_row_by_primary(
-        sheet_ids.SHEET_DAEMON_HEALTH,
-        sheet_ids.DAEMON_HEALTH_COLUMNS["daemon_name"],
-        daemon_name,
-    )
-    if row is not None:
-        row_id = int(row["_row_id"])
-        _persist_heartbeat_row_state(daemon_name, row_id, total_cycles=0)
-        return row_id
-    created_id = _create_heartbeat_row(daemon_name)
-    if created_id is None:
-        return None
-    post_find = smartsheet_client.find_row_by_primary(
-        sheet_ids.SHEET_DAEMON_HEALTH,
-        sheet_ids.DAEMON_HEALTH_COLUMNS["daemon_name"],
-        daemon_name,
-    )
-    row_id = created_id
-    if post_find is not None and int(post_find["_row_id"]) != created_id:
-        error_log.log(
-            Severity.WARN, SCRIPT_NAME,
-            (
-                f"Duplicate ITS_Daemon_Health rows for daemon={daemon_name!r}; "
-                f"using first match {post_find['_row_id']}, manual cleanup "
-                f"needed for row {created_id}."
-            ),
-            error_code="daemon_health_race_duplicate",
-        )
-        row_id = int(post_find["_row_id"])
-    _persist_heartbeat_row_state(daemon_name, row_id, total_cycles=0)
-    return row_id
-
-
-def _write_heartbeat_row(
-    *,
-    status: HeartbeatStatus,
-    items_processed: int,
-    error_summary: str | None = None,
-    correlation_id: str | None = None,
-    notes: str | None = None,
-    daemon_name: str = DAEMON_NAME,
-) -> None:
-    """Write one row to ITS_Daemon_Health summarizing this cycle. Never blocks
-    the daemon's primary work — all failures are caught + logged."""
-    cols = sheet_ids.DAEMON_HEALTH_COLUMNS
-
-    state = _load_heartbeat_row_state(daemon_name)
-    if state is None:
-        try:
-            row_id = _resolve_heartbeat_row_id(daemon_name)
-        except smartsheet_client.SmartsheetError as exc:
-            _log_heartbeat_failure(daemon_name, f"row-id lookup failed: {exc!r}")
-            return
-        if row_id is None:
-            _log_heartbeat_failure(
-                daemon_name,
-                "row id unresolved after self-provision attempt — skipping write",
-            )
-            return
-        total_cycles = 0
-    else:
-        row_id = state["row_id"]
-        total_cycles = state["total_cycles"]
-
-    new_total = total_cycles + 1
-
-    cells: dict[int, Any] = {
-        cols["last_heartbeat"]: datetime.now(UTC).isoformat(),
-        cols["last_cycle_status"]: status,
-        cols["last_cycle_items_processed"]: items_processed,
-        cols["total_cycles"]: new_total,
-    }
-    if error_summary is not None:
-        cells[cols["last_error_summary"]] = error_summary
-    if correlation_id is not None:
-        cells[cols["last_error_correlation_id"]] = correlation_id
-    if notes is not None:
-        cells[cols["notes"]] = notes
-
-    try:
-        with circuit_breaker.bypass():
-            smartsheet_client.update_row_cells_by_id(
-                sheet_ids.SHEET_DAEMON_HEALTH, row_id, cells
-            )
-    except smartsheet_client.SmartsheetNotFoundError:
-        _invalidate_heartbeat_row_state(daemon_name)
-        _log_heartbeat_failure(daemon_name, f"row {row_id} not found — cache invalidated")
-        return
-    except smartsheet_client.SmartsheetError as exc:
-        _log_heartbeat_failure(daemon_name, f"SmartsheetError: {exc!r}")
-        return
-    except Exception as exc:  # noqa: BLE001 — heartbeat must never raise
-        _log_heartbeat_failure(daemon_name, f"unexpected: {exc!r}")
-        return
-
-    _persist_heartbeat_row_state(daemon_name, row_id, new_total)
-
-
-def _log_heartbeat_failure(daemon_name: str, detail: str) -> None:
-    """Log a heartbeat-write failure to ITS_Errors with the standard error code."""
-    error_log.log(
-        Severity.WARN, SCRIPT_NAME,
-        f"heartbeat write for daemon={daemon_name!r} failed: {detail}",
-        error_code="daemon_health_write_failed",
-    )
-
-
+# Watchdog Check C marker — replicated from weekly_send_poll per preservation
+# (Op Stds §14); out of P0 heartbeat-extraction scope.
 def _write_watchdog_marker() -> None:
     """Touch the Check C freshness marker for this run."""
     try:

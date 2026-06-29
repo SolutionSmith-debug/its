@@ -14,6 +14,7 @@ import { registerJobWriteRoutes } from "./fieldops_job_write";
 import { registerTaskWriteRoutes } from "./fieldops_task_write";
 import { registerEquipmentFieldWriteRoutes } from "./fieldops_equipment_write";
 import { registerEquipmentRosterWriteRoutes } from "./fieldops_equipment_roster_write";
+import { registerPersonnelWriteRoutes } from "./fieldops_personnel_write";
 import { registerMaterialWriteRoutes } from "./fieldops_material_write";
 import {
   validateUser,
@@ -22,6 +23,7 @@ import {
   normalizeUsername,
   coerceRole,
   resolveCapabilities,
+  parseRole,
 } from "./auth";
 import { validateDefinition, validateParentGrouping } from "./publishValidation";
 import { pruneOldData } from "./prune";
@@ -358,6 +360,7 @@ const requireCapability = (cap: string) =>
 // catch-all). In Brief 0 these are no-op stubs; Briefs A/B/C implement them.
 const fieldopsGates: FieldopsGates = { requireSession, requireCapability };
 registerPersonnelRoutes(app, fieldopsGates);
+registerPersonnelWriteRoutes(app, fieldopsGates);
 registerEquipmentRoutes(app, fieldopsGates);
 registerJobTrackerRoutes(app, fieldopsGates);
 registerMaterialsRoutes(app, fieldopsGates);
@@ -1266,12 +1269,6 @@ async function setUserDisabled(
 /** Validate an optional `role` body field. undefined → `dflt`; 'admin'/'submitter'
  *  → that value; anything else → null (caller returns 400 invalid_role). Never
  *  coerces a junk value to a privilege — an unknown role is rejected, not defaulted. */
-function parseRole(value: unknown, dflt: Role = "submitter"): Role | null {
-  if (value === undefined) return dflt;
-  if (value === "admin" || value === "submitter") return value;
-  return null;
-}
-
 // POST /api/internal/admin/users — provision a new user (409 if it exists). Accepts
 // an optional `role` (default 'submitter') so the operator can bootstrap the two
 // admins via `portal_admin add-user --role admin`.
