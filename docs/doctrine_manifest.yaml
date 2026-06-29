@@ -45,16 +45,16 @@ meta:
 # --- Doctrine versions (the headline drift class) ------------------------------
 doctrine_versions:
   operational_standards:
-    current: 18
+    current: 19
     # Highest existing §-section. Numbering is append-only since v11; v18 added
     # §§45-49, so §1..§49 all resolve. The M7 citation-resolver flags any
     # `Op Stds §N` in current-doctrine prose with N > max_section (a citation that
     # resolves to no section — a typo or a forward-ref to unbuilt doctrine). Bump
     # this the same PR a new §-section lands in canonical doctrine.
-    max_section: 49
+    max_section: 51
     source: "../its-blueprint/doctrine/operational-standards.md"
     source_field: "frontmatter.version"
-    blueprint_verified_against: 0e85a1a   # 2026-06-07 deploy reconciliation (Op Stds v18); prior: 8c708b9 (v16)
+    blueprint_verified_against: 7b24cda   # 2026-06-29 Op Stds v19 ratification (§§50–51); prior: 0e85a1a (v18)
     notes: >
       v12 added §§37-41; v13 added §42 (code-level self-documentation discipline);
       v14 reframed the kill switch as an operator-convenience pause that is fail-open
@@ -72,10 +72,14 @@ doctrine_versions:
       (ITS — Safety Portal) to §23/§24 — governing principle workspace-membership = approval
       authority. v18 (2026-06-07) added §§45-49: find-or-create-not-strand; workspace-membership
       = approval authority (in-code F22 mechanism); Box version-on-conflict; CodeQL-FP handling;
-      preservation-for-a-committed-future-workstream. Section numbering is append-only since v11
-      — no cited section renumbered (§§1-44 carry forward). Citations in ~/its should read
-      "Op Stds v18" / "Operational Standards v18".
-    drift_signal: 'Op Stds v(1[0-7]|[0-9])\b or Operational Standards v(1[0-7]|[0-9])\b in current-doctrine prose'
+      preservation-for-a-committed-future-workstream. v19 (2026-06-29) added §§50-51:
+      the privileged code-actuation gate (§50, ratifying the candidate raised first 2026-06-10,
+      realized in publish_daemon.py) and ITS-owned structured-SoR write-back (§51, blessing
+      D1-as-writer to an ITS-owned Smartsheet — incl. the job-tracker→Active-Jobs write).
+      Section numbering is append-only since v11
+      — no cited section renumbered (§§1-49 carry forward). Citations in ~/its should read
+      "Op Stds v19" / "Operational Standards v19".
+    drift_signal: 'Op Stds v(1[0-8]|[0-9])\b or Operational Standards v(1[0-8]|[0-9])\b in current-doctrine prose'
   foundation_mission:
     current: 11
     source: "../its-blueprint/doctrine/foundation-mission.md"
@@ -216,7 +220,7 @@ agents:
   source: ".claude/agents/ (single-sourced in ~/its; ~/its-blueprint/.claude/agents is a directory symlink — watchdog Check M)"
   mechanical_check: "check_version_drift M1 over .claude/agents/*.md"
   last_doctrine_sync:
-    ops-stds-enforcer: 18              # Brief 2.A — version-agnostic; v18 at last sync
+    ops-stds-enforcer: 19              # v19 at last sync (2026-06-29) — §§50-51 clauses added
     portal-worker-security-reviewer: 18  # Brief 2.B — clauses synced to the PR-2 Worker
     form-definition-reviewer: 18      # Brief 2.C
     doc-reconciliation-auditor: 18
