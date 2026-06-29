@@ -241,8 +241,8 @@ def _ensure_job_folder(config: WeekSheetConfig, project_name: str) -> int:
     """Find-or-create the per-job folder at the configured-workspace surface
     (`config.workspace_id`).
 
-    A direct child of the workspace (sibling of the "Safety Portal" / "Form
-    Catalog" folders), titled by `project_name`. Idempotent. Race-tolerant: two
+    A direct child of the configured workspace's root, titled by `project_name`.
+    Idempotent. Race-tolerant: two
     concurrent creators can both pass the find step (Smartsheet does not enforce
     folder-name uniqueness) — we re-find after create, adopt the first match, and
     WARN-log the duplicate for operator cleanup (mirrors the sheet-level guard
@@ -285,8 +285,7 @@ def ensure_week_sheet(
     `config` (REQUIRED, no default) binds the workspace + the per-week name/key
     builder for the calling workstream — safety passes `SAFETY_WEEK_SHEET_CONFIG`.
     Located in an auto-provisioned per-job folder named `project_name` at the
-    surface of `config.workspace_id` (a sibling of the "Safety Portal" / "Form
-    Catalog" folders). The per-job folder AND the week sheet are BOTH
+    surface of `config.workspace_id`. The per-job folder AND the week sheet are BOTH
     find-or-create, so a brand-new job self-provisions on first submission — there
     is no hardcoded per-project folder map.
 
