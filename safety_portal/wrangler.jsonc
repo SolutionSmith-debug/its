@@ -40,6 +40,13 @@
   // the OPERATOR activates it (dashboard custom-domain add, or `wrangler deploy`
   // with Cloudflare auth — NOT deployed by this PR). The SPA uses relative paths +
   // a host-default cookie, so no rebuild is needed.
+  // FOOTGUN (forensic class #2 — memory cloudflare-custom-domain-disables-workers-dev):
+  // custom_domain:true DISABLES the *.workers.dev URL on deploy (error 1042) unless
+  // `workers_dev: true` is ALSO set here. The portal is intentionally custom-domain-only,
+  // so the daemon base-URLs (ITS_Config safety_reports.portal.worker_base_url) MUST point
+  // at https://safety.evergreenmirror.com — repoint immediately after any deploy that
+  // toggles this route. Add `"workers_dev": true` ONLY if you deliberately want the public
+  // *.workers.dev URL back (it re-exposes a second auth surface for the portal).
   "routes": [{ "pattern": "safety.evergreenmirror.com", "custom_domain": true }],
 
   // ── D1 (env.DB). Phase 2 uses the `users` table only (migrations/). ──
