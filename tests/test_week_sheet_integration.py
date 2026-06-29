@@ -56,7 +56,9 @@ def _delete_folder(folder_id: int, token: str) -> None:
 
 def test_week_sheet_round_trip(_token):
     """auto-provision folder → create sheet → write → dedupe → amend → idempotent re-ensure."""
-    sheet_id = week_sheet.ensure_week_sheet(SANDBOX_PROJECT, SANDBOX_WORK_DATE)
+    sheet_id = week_sheet.ensure_week_sheet(
+        week_sheet.SAFETY_WEEK_SHEET_CONFIG, SANDBOX_PROJECT, SANDBOX_WORK_DATE
+    )
     # Capture the auto-created per-job folder up front so the finally can clean it.
     folder_id = smartsheet_client.find_folder_by_name_in_workspace(
         sheet_ids.WORKSPACE_SAFETY_PORTAL, SANDBOX_PROJECT
@@ -101,7 +103,9 @@ def test_week_sheet_round_trip(_token):
         assert prior[week_sheet.COL_SUPERSEDED_BY] == "int-u2"
 
         # Idempotent re-ensure returns the same sheet (find, not re-create).
-        assert week_sheet.ensure_week_sheet(SANDBOX_PROJECT, SANDBOX_WORK_DATE) == sheet_id
+        assert week_sheet.ensure_week_sheet(
+        week_sheet.SAFETY_WEEK_SHEET_CONFIG, SANDBOX_PROJECT, SANDBOX_WORK_DATE
+    ) == sheet_id
     finally:
         _delete_sheet(sheet_id, _token)
         if folder_id is not None:
@@ -113,7 +117,9 @@ def test_compile_now_selection_round_trip(_token):
     the live Smartsheet CHECKBOX column — `selected_submission_row_ids` reads a checked box,
     `clear_compile_now` unchecks it (Op Stds §30; mocks can't prove the SDK accepts a bool on
     a CHECKBOX cell + returns it truthy)."""
-    sheet_id = week_sheet.ensure_week_sheet(SANDBOX_PROJECT, SANDBOX_WORK_DATE)
+    sheet_id = week_sheet.ensure_week_sheet(
+        week_sheet.SAFETY_WEEK_SHEET_CONFIG, SANDBOX_PROJECT, SANDBOX_WORK_DATE
+    )
     folder_id = smartsheet_client.find_folder_by_name_in_workspace(
         sheet_ids.WORKSPACE_SAFETY_PORTAL, SANDBOX_PROJECT
     )

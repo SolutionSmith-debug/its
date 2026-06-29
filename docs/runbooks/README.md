@@ -18,6 +18,7 @@ convention has no separate `runbook` type).
 <!-- BEGIN AUTO-INDEX -->
 | Date | Type | Status | Workstream | Title | PRs |
 |------|------|--------|------------|-------|-----|
+| 2026-06-29 | operations | active | safety_reports | [Runbook — week_sheet config binding (submissions mis-file / week sheet names change) (Successor-Remediation, Op Stds §43)](week_sheet_config.md) | _–_ |
 | 2026-06-28 | operations | active | infrastructure | [Runbook — Box OAuth token stale / refresh-lock contention (Successor-Remediation, Op Stds §43)](box_token_freshness.md) | _–_ |
 | 2026-06-27 | operations | active | safety_portal | [Runbook — Field-Ops portal job create (portal-origin jobs "stuck pending") (Successor-Remediation, Op Stds §43)](fieldops_job_write.md) | _–_ |
 | 2026-06-12 | operations | active | safety_reports | [Runbook — Safety photo path (photo rejected / clamd down / oversized packet HELD) (Successor-Remediation, Op Stds §43)](safety_photo_path.md) | _–_ |
@@ -32,4 +33,5 @@ convention has no separate `runbook` type).
 | 2026-06-02 | operations | active | infrastructure | [Runbook — Smartsheet token cannot write (Successor-Remediation, Op Stds §43)](token_write_capability.md) | _–_ |
 | 2026-06-01 | operations | active | infrastructure | [Runbook — Smartsheet circuit breaker + alerts-per-hour cap (Successor-Remediation, Op Stds §43)](circuit_breaker.md) | _–_ |
 | 2026-06-01 | operations | active | safety_reports | [Runbook — weekly_generate catch-up (Successor-Remediation, Op Stds §43)](safety_weekly_generate.md) | _–_ |
+| _–_ | runbook | skeleton | field_ops | [Runbook — Materials Catalog admin (`material_catalog`)](material_catalog_admin.md) | _–_ |
 <!-- END AUTO-INDEX -->

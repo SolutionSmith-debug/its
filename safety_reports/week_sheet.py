@@ -49,6 +49,8 @@ Failure modes
 """
 from __future__ import annotations
 
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import date
 from typing import Any
 
@@ -58,6 +60,47 @@ from shared.error_log import Severity
 from . import safety_naming
 
 SCRIPT_NAME = "safety_reports.week_sheet"
+
+
+# ── Parameterize-not-clone (Op Stds §14 informed deviation) ──────────────────
+# `week_sheet` was Safety-Portal-hardcoded (the workspace pin + the Sat→Fri name
+# builder). To let a future progress workstream REUSE this find-or-create engine
+# without cloning it, the two workstream-VARIANT knobs are lifted into a required,
+# no-default config object. Everything else — the per-job folder convention, the
+# WEEK_SHEET_COLUMNS schema, the styles, and every sheet-id-scoped helper — is
+# workstream-INVARIANT and stays module-level, so the config is exactly two fields.
+#
+# WHY required + no default (the contamination gate): a caller that forgets a field
+# gets a TypeError at construction/call — it can NEVER silently fall through to a
+# Safety value and file a progress submission into the safety workspace. For the
+# same reason `ensure_week_sheet`'s `config` is a required first positional with NO
+# default; defaulting it to SAFETY_WEEK_SHEET_CONFIG would reintroduce exactly the
+# cross-workstream bleed this object exists to prevent.
+#
+# WHY weekly is hardcoded (no `sheet_period`): the 2026-06-28 "monthly sheets"
+# proposal was REVERTED 2026-06-29 — the sheet IS the week (keyed on the opening
+# Saturday, `shared/safety_week.py`), so the weekly compile reads exactly one week
+# sheet with no month-boundary straddle. Monthly stays a documented config-flip
+# fallback armed by the `shared/sheet_capacity` margin-check, NOT a code path here.
+#
+# WHY SAFETY_WEEK_SHEET_CONFIG.key_builder IS `week_sheet_name` (object identity):
+# binding the unchanged builder + the unchanged workspace pin makes every safety
+# find-or-create produce byte-identical folder/sheet names and resolve the SAME
+# existing sheet IDs — zero behavior change, zero migration.
+@dataclass(frozen=True)
+class WeekSheetConfig:
+    """The two workstream-variant knobs `ensure_week_sheet` needs, bound per
+    workstream. Frozen + no field defaults (the contamination gate)."""
+
+    workspace_id: int
+    # (project_name, work_date) -> the per-week sheet name / find-or-create key.
+    key_builder: Callable[[str, date], str]
+
+    def __post_init__(self) -> None:
+        if not callable(self.key_builder):
+            raise TypeError("WeekSheetConfig.key_builder must be callable")
+        if not isinstance(self.workspace_id, int) or self.workspace_id <= 0:
+            raise ValueError("WeekSheetConfig.workspace_id must be a positive int")
 
 # Smartsheet hard cap on a sheet name — a longer name is rejected at create with
 # HTTP 400 errorCode 1041 ("must be 50 characters in length or less"). The
@@ -176,6 +219,15 @@ def week_sheet_name(project_name: str, work_date: date) -> str:
     return f"{prefix}{suffix}"
 
 
+# The Safety-Portal binding: the exact current workspace pin + the unchanged
+# Sat→Fri name builder. `key_builder` IS `week_sheet_name` (identity), so safety's
+# find-or-create stays byte-identical — see the §14 note on WeekSheetConfig above.
+SAFETY_WEEK_SHEET_CONFIG = WeekSheetConfig(
+    workspace_id=sheet_ids.WORKSPACE_SAFETY_PORTAL,
+    key_builder=week_sheet_name,
+)
+
+
 def _folder_name(project_name: str) -> str:
     """The per-job folder title + find/create key under WORKSPACE_SAFETY_PORTAL
     (e.g. "Bradley 1"). Thin delegate to `safety_naming.job_folder_name` — the
@@ -185,8 +237,9 @@ def _folder_name(project_name: str) -> str:
     return safety_naming.job_folder_name(project_name)
 
 
-def _ensure_job_folder(project_name: str) -> int:
-    """Find-or-create the per-job folder at the WORKSPACE_SAFETY_PORTAL surface.
+def _ensure_job_folder(config: WeekSheetConfig, project_name: str) -> int:
+    """Find-or-create the per-job folder at the configured-workspace surface
+    (`config.workspace_id`).
 
     A direct child of the workspace (sibling of the "Safety Portal" / "Form
     Catalog" folders), titled by `project_name`. Idempotent. Race-tolerant: two
@@ -198,16 +251,16 @@ def _ensure_job_folder(project_name: str) -> int:
     """
     folder_name = _folder_name(project_name)
     existing = smartsheet_client.find_folder_by_name_in_workspace(
-        sheet_ids.WORKSPACE_SAFETY_PORTAL, folder_name
+        config.workspace_id, folder_name
     )
     if existing is not None:
         return existing
 
     folder_id = smartsheet_client.create_folder_in_workspace(
-        sheet_ids.WORKSPACE_SAFETY_PORTAL, folder_name
+        config.workspace_id, folder_name
     )
     post_find = smartsheet_client.find_folder_by_name_in_workspace(
-        sheet_ids.WORKSPACE_SAFETY_PORTAL, folder_name
+        config.workspace_id, folder_name
     )
     if post_find is not None and post_find != folder_id:
         error_log.log(
@@ -215,7 +268,7 @@ def _ensure_job_folder(project_name: str) -> int:
             SCRIPT_NAME,
             (
                 f"Duplicate per-job folder {folder_name!r} under workspace "
-                f"{sheet_ids.WORKSPACE_SAFETY_PORTAL} (project={project_name!r}); "
+                f"{config.workspace_id} (project={project_name!r}); "
                 f"using first match {post_find}, manual cleanup needed for {folder_id}."
             ),
             error_code="week_sheet_folder_race_duplicate",
@@ -224,14 +277,18 @@ def _ensure_job_folder(project_name: str) -> int:
     return folder_id
 
 
-def ensure_week_sheet(project_name: str, work_date: date) -> int:
+def ensure_week_sheet(
+    config: WeekSheetConfig, project_name: str, work_date: date
+) -> int:
     """Find-or-create the (project, week) sheet; return its sheet ID.
 
+    `config` (REQUIRED, no default) binds the workspace + the per-week name/key
+    builder for the calling workstream — safety passes `SAFETY_WEEK_SHEET_CONFIG`.
     Located in an auto-provisioned per-job folder named `project_name` at the
-    surface of `sheet_ids.WORKSPACE_SAFETY_PORTAL` (a sibling of the "Safety
-    Portal" / "Form Catalog" folders). The per-job folder AND the week sheet are
-    BOTH find-or-create, so a brand-new job self-provisions on first submission —
-    there is no hardcoded per-project folder map.
+    surface of `config.workspace_id` (a sibling of the "Safety Portal" / "Form
+    Catalog" folders). The per-job folder AND the week sheet are BOTH
+    find-or-create, so a brand-new job self-provisions on first submission — there
+    is no hardcoded per-project folder map.
 
     Idempotent: a second call in the same week returns the same sheet with no
     write. Race-tolerant at both levels: concurrent creators can each pass the
@@ -240,8 +297,8 @@ def ensure_week_sheet(project_name: str, work_date: date) -> int:
     duplicate for operator cleanup. Bounded blast radius: one extra empty folder
     and/or sheet.
     """
-    folder_id = _ensure_job_folder(project_name)
-    name = week_sheet_name(project_name, work_date)
+    folder_id = _ensure_job_folder(config, project_name)
+    name = config.key_builder(project_name, work_date)
 
     existing = smartsheet_client.find_sheet_by_name_in_folder(folder_id, name)
     if existing is not None:

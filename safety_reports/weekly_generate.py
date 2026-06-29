@@ -386,7 +386,9 @@ def _compile_job_week(
     self-provisions its per-job folder + week sheet under the Safety Portal
     workspace (find-or-create), so there is no per-project-folder config gap."""
     project_name = job.project_name
-    sheet_id = week_sheet.ensure_week_sheet(project_name, week.start)
+    sheet_id = week_sheet.ensure_week_sheet(
+        week_sheet.SAFETY_WEEK_SHEET_CONFIG, project_name, week.start
+    )
     # APPEND-ONLY (operator decision 2026-06-09): there can be MANY Rollup snapshots (one per
     # compile). `rollup` = the LATEST (the no-new-docs watermark); `force` = Compile Now on
     # ANY Rollup row (the trigger may sit on the latest or an older snapshot).
