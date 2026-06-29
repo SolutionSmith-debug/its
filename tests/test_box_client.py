@@ -37,13 +37,22 @@ from shared.box_client import (
 
 @pytest.fixture(autouse=True)
 def reset_box_state(mocker):
-    """Reset the module's client cache and stub Keychain reads for every test."""
+    """Reset the module's client cache and stub Keychain reads for every test.
+
+    A3: also isolate the new refresh-lock + freshness-marker writes from the real
+    filesystem — `with_path_lock` and `atomic_write_json` are no-op'd so tests
+    never flock or write under ~/its/state, and `error_log.log` is stubbed so the
+    fail-open WARN paths never attempt a real ITS_Errors write.
+    """
     mocker.patch.object(box_client, "_client", None)
     mocker.patch(
         "shared.box_client.keychain.get_secret",
         side_effect=lambda key, *a, **kw: f"fake-{key}",
     )
     mocker.patch("shared.box_client.keychain.set_secret")
+    mocker.patch("shared.box_client.state_io.with_path_lock")
+    mocker.patch("shared.box_client.state_io.atomic_write_json")
+    mocker.patch("shared.error_log.log")
 
 
 def _box_api_error(
@@ -191,6 +200,54 @@ def test_store_tokens_does_not_persist_access_token():
     # Access token must NOT appear anywhere in Keychain calls.
     for call in set_spy.call_args_list:
         assert "ephemeral-access-token" not in call.args
+
+
+# ---- A3: refresh-lock + freshness marker ---------------------------------
+
+
+def test_store_tokens_writes_freshness_marker(mocker):
+    """A3: a successful persist stamps the freshness marker (watchdog Check P)."""
+    awj = mocker.patch("shared.box_client.state_io.atomic_write_json")
+    box_client.keychain.set_secret = MagicMock()
+
+    box_client._store_tokens(access_token="a", refresh_token="r")
+
+    assert awj.called
+    path_arg, data_arg = awj.call_args.args
+    assert path_arg == box_client.BOX_TOKEN_REFRESH_MARKER
+    assert "last_refresh_utc" in data_arg
+
+
+def test_store_tokens_marker_failure_is_nonfatal(mocker):
+    """A3: a marker-write failure MUST NOT break refresh-token persistence —
+    the Keychain write is the critical path."""
+    mocker.patch(
+        "shared.box_client.state_io.atomic_write_json",
+        side_effect=OSError("disk full"),
+    )
+    set_spy = MagicMock()
+    box_client.keychain.set_secret = set_spy
+
+    box_client._store_tokens(access_token="a", refresh_token="r")  # must not raise
+
+    set_spy.assert_called_once_with("ITS_BOX_REFRESH_TOKEN", "r")
+
+
+def test_store_tokens_lock_timeout_fails_open(mocker):
+    """A3: a refresh-lock timeout persists the rotated token UNLOCKED (fail-open)
+    — an un-persisted token is fatal (60-day death), a lost lock is not."""
+    mocker.patch(
+        "shared.box_client.state_io.with_path_lock",
+        side_effect=box_client.state_io.StateLockTimeoutError("locked"),
+    )
+    awj = mocker.patch("shared.box_client.state_io.atomic_write_json")
+    set_spy = MagicMock()
+    box_client.keychain.set_secret = set_spy
+
+    box_client._store_tokens(access_token="a", refresh_token="r")
+
+    set_spy.assert_called_once_with("ITS_BOX_REFRESH_TOKEN", "r")
+    assert awj.called  # marker still written on the fail-open path
 
 
 # ---- Error translation ---------------------------------------------------

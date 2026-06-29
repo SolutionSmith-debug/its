@@ -14,6 +14,9 @@ from __future__ import annotations
 
 import getpass
 import subprocess
+from pathlib import Path
+
+from . import state_io
 
 
 class KeychainError(RuntimeError):
@@ -35,6 +38,13 @@ class KeychainLockedError(KeychainError):
 # on a locked-keychain interaction prompt. Bound it so a daemon never hangs
 # indefinitely (eval A2 `host-daemon-no-timeout`). 10s is generous for a local call.
 KEYCHAIN_CLI_TIMEOUT = 10
+
+# A3: anchor for the cross-process Keychain-WRITE lock. Multiple ITS daemons can
+# rotate the same secret (notably the Box refresh token) within one window; an
+# un-serialized write race can persist a stale value. `with_path_lock` flocks
+# "{anchor}.lock" → ~/its/state/keychain_write.lock. The write is FAIL-OPEN: a
+# lock-acquire timeout writes anyway (a missed rotation is worse than a lost lock).
+_KEYCHAIN_WRITE_LOCK_ANCHOR = Path.home() / "its" / "state" / "keychain_write"
 
 # Substrings in `security` stderr that indicate a LOCKED keychain
 # (errSecInteractionNotAllowed, -25308) rather than a missing item.
@@ -121,52 +131,72 @@ def set_secret(service: str, value: str, account: str | None = None) -> None:
         KeychainError: If the `security` CLI is unavailable or the write fails.
     """
     account = account or getpass.getuser()
-    # `security add-generic-password` reads the password from stdin only when
-    # `-w` is the LAST option (`security add-generic-password -h`: "Specify -w
-    # as the last option to be prompted"). It then issues a password + retype
-    # confirmation prompt and reads one line per prompt, so the value is fed
-    # twice. `-U` (update-in-place) MUST precede `-w`; placed after `-w` it gets
-    # swallowed as the password value — verified live, the stored secret became
-    # the literal "-U". Feeding the value twice is robust whether the CLI
-    # prompts once or twice (a single-prompt build reads the first line and
-    # ignores the rest). Reference: audit F04.
-    try:
-        subprocess.run(
-            [
-                "security", "add-generic-password",
-                "-U",
-                "-a", account,
-                "-s", service,
-                "-w",  # MUST be last — value read from stdin, never argv
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-            input=f"{value}\n{value}\n",  # password + retype; never in argv/ps
-            timeout=KEYCHAIN_CLI_TIMEOUT,
-        )
-    except FileNotFoundError as e:
-        raise KeychainError(
-            "macOS `security` CLI not found. This module is macOS-only."
-        ) from e
-    except subprocess.TimeoutExpired as e:
-        # Never include `value` — a timeout message must not leak the secret.
-        raise KeychainError(
-            f"`security` CLI timed out after {KEYCHAIN_CLI_TIMEOUT}s writing "
-            f"service={service!r} (keychain locked or hung?). Unlock the login "
-            f"keychain (`security unlock-keychain`) and retry."
-        ) from e
-    except subprocess.CalledProcessError as e:
-        # stderr surfaces the actual reason (e.g., permission denied, locked
-        # keychain). Don't include `value` in the message — that would leak
-        # the secret into logs.
-        if _looks_locked(e.stderr or ""):
-            raise KeychainLockedError(
-                f"Keychain LOCKED — cannot write service={service!r}: "
-                f"{(e.stderr or '').strip() or 'interaction not allowed'}. Unlock "
-                f"the login keychain (`security unlock-keychain`)."
+
+    def _do_write() -> None:
+        # `security add-generic-password` reads the password from stdin only when
+        # `-w` is the LAST option (`security add-generic-password -h`: "Specify -w
+        # as the last option to be prompted"). It then issues a password + retype
+        # confirmation prompt and reads one line per prompt, so the value is fed
+        # twice. `-U` (update-in-place) MUST precede `-w`; placed after `-w` it gets
+        # swallowed as the password value — verified live, the stored secret became
+        # the literal "-U". Feeding the value twice is robust whether the CLI
+        # prompts once or twice (a single-prompt build reads the first line and
+        # ignores the rest). Reference: audit F04.
+        try:
+            subprocess.run(
+                [
+                    "security", "add-generic-password",
+                    "-U",
+                    "-a", account,
+                    "-s", service,
+                    "-w",  # MUST be last — value read from stdin, never argv
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                input=f"{value}\n{value}\n",  # password + retype; never in argv/ps
+                timeout=KEYCHAIN_CLI_TIMEOUT,
+            )
+        except FileNotFoundError as e:
+            raise KeychainError(
+                "macOS `security` CLI not found. This module is macOS-only."
             ) from e
-        raise KeychainError(
-            f"Keychain write failed for service={service!r}, account={account!r}: "
-            f"{e.stderr.strip() or 'no detail'}"
-        ) from e
+        except subprocess.TimeoutExpired as e:
+            # Never include `value` — a timeout message must not leak the secret.
+            raise KeychainError(
+                f"`security` CLI timed out after {KEYCHAIN_CLI_TIMEOUT}s writing "
+                f"service={service!r} (keychain locked or hung?). Unlock the login "
+                f"keychain (`security unlock-keychain`) and retry."
+            ) from e
+        except subprocess.CalledProcessError as e:
+            # stderr surfaces the actual reason (e.g., permission denied, locked
+            # keychain). Don't include `value` in the message — that would leak
+            # the secret into logs.
+            if _looks_locked(e.stderr or ""):
+                raise KeychainLockedError(
+                    f"Keychain LOCKED — cannot write service={service!r}: "
+                    f"{(e.stderr or '').strip() or 'interaction not allowed'}. Unlock "
+                    f"the login keychain (`security unlock-keychain`)."
+                ) from e
+            raise KeychainError(
+                f"Keychain write failed for service={service!r}, account={account!r}: "
+                f"{e.stderr.strip() or 'no detail'}"
+            ) from e
+
+    # A3 §42: serialize the write across processes (fail-open). A lock-acquire
+    # timeout writes UNLOCKED rather than skipping — a missed secret rotation is
+    # worse than a lost lock. The `security`-CLI failure modes raised inside
+    # `_do_write` propagate untouched (the lock only handles its own timeout).
+    try:
+        with state_io.with_path_lock(_KEYCHAIN_WRITE_LOCK_ANCHOR):
+            _do_write()
+    except state_io.StateLockTimeoutError:
+        from .error_log import Severity, log
+        log(
+            Severity.WARN,
+            "shared.keychain",
+            f"Keychain write-lock timeout for service={service!r} — writing "
+            f"UNLOCKED (fail-open).",
+            error_code="keychain_write_lock_timeout",
+        )
+        _do_write()
