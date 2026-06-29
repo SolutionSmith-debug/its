@@ -440,3 +440,37 @@ def test_memory_guard_fences_oversized_week_before_merge(stub, mocker):
     stub["merge"].assert_not_called()  # fenced BEFORE the merge step
     stub["review"].assert_called()     # routed to the Review Queue, not OOM
     assert "Bradley 1" in out["errors_per_job"]
+
+
+# ---- P4-core: host-level compile mutex (fail-open for safety) -------------
+# The UNCONTENDED happy path is covered by the entire suite above — every test runs
+# _run_pipeline with the lock free and still passes, proving the mutex wrap is transparent.
+
+
+def test_compile_mutex_contended_safety_compiles_anyway(stub, tmp_path, mocker):
+    # When another compile holds the host mutex, the safety compile proceeds UNLOCKED
+    # (fail-open — never blocked) and logs a single contention WARN.
+    import fcntl
+
+    from shared import compile_mutex
+
+    # Anchor the mutex at a tmp sidecar so the test never touches ~/its/state.
+    anchor = tmp_path / "host_compile"
+    mocker.patch.object(compile_mutex, "_HOST_COMPILE_LOCK_ANCHOR", anchor)
+    mutex_warn = mocker.patch.object(compile_mutex, "log")
+    run_per_job = mocker.patch.object(weekly_generate.compile_core, "run_per_job")
+
+    # Another compile holds the lock (a separate fd → flock contends in-process).
+    sidecar = anchor.with_name(anchor.name + ".lock")
+    sidecar.parent.mkdir(parents=True, exist_ok=True)
+    holder = sidecar.open("a+")
+    fcntl.flock(holder.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        weekly_generate._run_pipeline(week_start_override=ANCHOR)
+    finally:
+        fcntl.flock(holder.fileno(), fcntl.LOCK_UN)
+        holder.close()
+
+    run_per_job.assert_called_once()  # fail-open: the compile ran despite contention
+    assert mutex_warn.call_count == 1
+    assert mutex_warn.call_args.kwargs["error_code"] == "compile_mutex.contended"

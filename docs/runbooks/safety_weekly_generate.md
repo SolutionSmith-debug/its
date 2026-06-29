@@ -157,6 +157,26 @@ then re-run that job-week.
 **Escalate-to-Seth** if: the ceiling looks wrong for **all** weeks (a config-design or code
 issue = high-class), or `compile_unexpected` is **not** a memory error (novel → Tier 3).
 
+## Procedure — host compile mutex contention (P4-core)
+
+**Symptom:** an `ITS_Errors` row from `shared.compile_mutex` with error code
+`compile_mutex.contended` and message `host compile mutex contended (role='safety')`.
+
+**What it means:** another compile (today only the future progress compile would do this;
+there is one host-level lock both share) was running when the safety compile started.
+The safety compile is **fail-open** — it logged this WARN and **ran anyway, unlocked**. No
+data is lost and no operator action is needed for a one-off.
+
+**Checks → action (Tier-2, low-class):** confirm the safety run otherwise completed (its
+Rollup snapshot + WSR row landed for the week — same checks as the catch-up procedure
+above). If this WARN appears **repeatedly**, the other compile may be hung holding the lock:
+check whether a progress compile process is stuck (launchd has no `ExitTimeOut`, so a hung
+compile is not auto-killed) and have it terminated. This involves **no** External Send Gate,
+secrets, or doctrine, so it stays Tier-2.
+
+**Escalate-to-Seth** if: the contention recurs every run (a scheduling-overlap design issue
+= code/config change = high-class), or you cannot identify/clear the other holder.
+
 ## Owner
 
 `@solutionsmith`. New `weekly_generate` failure modes that become

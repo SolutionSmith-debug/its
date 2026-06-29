@@ -63,6 +63,7 @@ from safety_reports import compile_core, form_pdf, safety_naming, week_sheet, ws
 from shared import (
     active_jobs,
     box_client,
+    compile_mutex,
     error_log,
     project_routing,
     review_queue,
@@ -691,20 +692,27 @@ def _run_pipeline(*, week_start_override: date | None) -> dict[str, Any]:
     # Instantiate the shared hardened core (A6): the per-job SIGALRM budget + per-job error
     # fence live ONCE in compile_core; the future progress compile re-instantiates the same
     # loop. one bad job never kills the run — semantics identical to the prior inline loop.
-    compile_core.run_per_job(
-        active_jobs.list_active_jobs(),
-        lambda job: _compile_job_week(
-            job, week, summary, correlation_id, memory_ceiling=memory_ceiling
-        ),
-        fences=compile_core.JobFences(
-            on_timeout=_on_timeout,
-            on_infra_error=_on_infra,
-            on_unexpected=_on_unexpected,
-            infra_errors=(SmartsheetError, box_client.BoxError),
-        ),
-        job_timeout_seconds=job_timeout,
-        on_job_start=_start,
-    )
+    #
+    # P4-core: serialize against any concurrent (future progress) compile on the host-level
+    # mutex so the two never contend on the Smartsheet rate limit. FAIL-OPEN for safety — we
+    # ignore the acquired flag and run REGARDLESS; on contention hold() logs a single WARN
+    # (compile_mutex.contended) and we proceed UNLOCKED, because blocking the live-critical
+    # Friday compile is worse than a rare contention window (A3 precedent).
+    with compile_mutex.hold(role="safety"):
+        compile_core.run_per_job(
+            active_jobs.list_active_jobs(),
+            lambda job: _compile_job_week(
+                job, week, summary, correlation_id, memory_ceiling=memory_ceiling
+            ),
+            fences=compile_core.JobFences(
+                on_timeout=_on_timeout,
+                on_infra_error=_on_infra,
+                on_unexpected=_on_unexpected,
+                infra_errors=(SmartsheetError, box_client.BoxError),
+            ),
+            job_timeout_seconds=job_timeout,
+            on_job_start=_start,
+        )
 
     _write_watchdog_marker()
     return {
