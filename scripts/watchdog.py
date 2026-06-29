@@ -87,6 +87,8 @@ from __future__ import annotations
 
 import inspect
 import json
+import shutil
+import subprocess
 import traceback
 import uuid
 from collections.abc import Callable
@@ -1309,6 +1311,83 @@ def _check_box_token_freshness() -> CheckResult:
     )
 
 
+# ---- Check Q: origin/main CI is green -----------------------------------
+#
+# This repo is Evergreen-specific (one customer per private repo), so the slug is
+# a constant. The watchdog launchd plist sets PATH=/opt/homebrew/bin:... so `gh`
+# resolves under launchd; on any gh/network failure the check is INFO-skipped.
+# Scoped to the ci.yml workflow = the REQUIRED suites (test/portal/secrets); the
+# separate CodeQL default-setup workflow (non-required, periodically infra-flaky)
+# is deliberately excluded so it can never false-page.
+GH_MAIN_CI_REPO = "SolutionSmith-debug/its"
+GH_MAIN_CI_WORKFLOW = "ci.yml"
+GH_MAIN_CI_TIMEOUT_SECONDS = 30
+
+
+def _check_main_branch_ci_green() -> CheckResult:
+    """Check Q: origin/main's required CI (ci.yml) is green on the latest commit.
+
+    Promotes the manual four-part-verify step 4 (docs/operations/pr_merge_discipline.md)
+    to a mechanical <=24h detector. A PR that lands but turns main RED — or a
+    concurrency-cancelled merge-commit run — otherwise sits undetected (forensic
+    class #13: six PRs once landed on a red main for days). Queries the LATEST ci.yml
+    run on origin/main via `gh`.
+
+    Fail-SAFE: `gh` missing / network error / no runs / a run that is not yet
+    complete all return INFO — never CRITICAL on our OWN inability to check. Only a
+    CONCLUSIVE non-success conclusion pages. The CRITICAL is paged + MAINTENANCE-
+    deferred by `_run_check`'s `log(CRITICAL)` (no inline alert).
+    """
+    gh = shutil.which("gh")
+    if gh is None:
+        return CheckResult(Severity.INFO, "main-CI check skipped — `gh` not on PATH.")
+    try:
+        proc = subprocess.run(
+            [
+                gh, "run", "list", "--repo", GH_MAIN_CI_REPO, "--branch", "main",
+                "--workflow", GH_MAIN_CI_WORKFLOW, "--limit", "1",
+                "--json", "status,conclusion,headSha",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=GH_MAIN_CI_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        return CheckResult(Severity.INFO, f"main-CI check skipped — gh error: {exc!r}")
+
+    if proc.returncode != 0:
+        return CheckResult(
+            Severity.INFO,
+            f"main-CI check skipped — gh exited {proc.returncode}: {proc.stderr.strip()[:160]}",
+        )
+    try:
+        runs = json.loads(proc.stdout or "[]")
+    except json.JSONDecodeError:
+        return CheckResult(Severity.INFO, "main-CI check skipped — unparseable gh output.")
+    if not runs:
+        return CheckResult(Severity.INFO, "main-CI check skipped — no ci.yml runs on main.")
+
+    run = runs[0]
+    status = str(run.get("status", ""))
+    conclusion = str(run.get("conclusion") or "")
+    sha = str(run.get("headSha", ""))[:7]
+
+    if status != "completed":
+        return CheckResult(Severity.INFO, f"main-CI run on {sha} is {status} (not yet conclusive).")
+    if conclusion == "success":
+        return CheckResult(Severity.INFO, f"main-CI green on {sha} (ci.yml: test/portal/secrets).")
+    return CheckResult(
+        Severity.CRITICAL,
+        f"[main-ci-red] origin/main CI is '{conclusion}' on {sha} — a PR landed on a red main.",
+        details=(
+            "The required ci.yml suites (test/portal/secrets) did not pass on the latest main "
+            "commit (four-part-verify step 4; forensic class #13 partial-PR-landed). Investigate: "
+            f"gh run list --repo {GH_MAIN_CI_REPO} --branch main --workflow {GH_MAIN_CI_WORKFLOW} --limit 3"
+        ),
+    )
+
+
 # ---- Entrypoint ---------------------------------------------------------
 
 
@@ -1345,6 +1424,11 @@ CHECKS: list[Callable[..., CheckResult]] = [
     # returns a CheckResult, so its WARN/CRITICAL is paged + MAINTENANCE-deferred
     # by _run_check. (Check O reserved for the future A5 row-cap watchdog.)
     _check_box_token_freshness,
+    # Check Q: origin/main required CI (ci.yml: test/portal/secrets) green on the
+    # latest commit — the mechanical four-part-verify step 4 (forensic class #13,
+    # partial-PR-landed). Returns a CheckResult; CRITICAL paged + MAINTENANCE-deferred
+    # by _run_check. Fail-safe to INFO on any gh/network/parse failure.
+    _check_main_branch_ci_green,
     # Check E (Anthropic spend trend) deferred to a follow-on PR (the
     # Check E shipping PR) — requires an Admin API key (sk-ant-admin01-...
     # prefix) provisioned in Keychain under ITS_ANTHROPIC_ADMIN_API_KEY.
