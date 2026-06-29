@@ -136,12 +136,15 @@ def set_secret(service: str, value: str, account: str | None = None) -> None:
 
     Args:
         service: The service name (e.g., 'ITS_BOX_REFRESH_TOKEN').
-        value: The secret value to persist. Supplied to `security` on stdin
-            (`-w` is the last option, with no `-w VALUE` argv element), so the
-            secret is not visible to other local processes via `ps` /
-            `/proc/<pid>/cmdline` / EDR argv capture. Must be a single-line
-            value — the CLI's `-w` prompt is line-based (all ITS secrets are
-            single-line API keys / OAuth tokens). Reference: audit F04.
+        value: The secret value to persist. Must be a single-line value (all ITS
+            secrets are single-line API keys / OAuth tokens). The write FORM
+            depends on the controlling terminal (see `_do_write`): a daemon /
+            headless run (NO TTY — the frequent path) feeds the value on stdin
+            with `-w` last, so it never appears on argv / `ps` / `/proc/<pid>/
+            cmdline` / EDR capture (audit F04); a rare INTERACTIVE operator run
+            (TTY present) passes `-w VALUE` on argv to avoid the `/dev/tty` prompt
+            (the task-#8 trap), accepting brief argv exposure on the operator's
+            own machine. Reference: audit F04, task #8.
         account: Optional account; defaults to the current user.
 
     Raises:
@@ -200,6 +203,16 @@ def set_secret(service: str, value: str, account: str | None = None) -> None:
             # stderr surfaces the actual reason (e.g., permission denied, locked
             # keychain). Don't include `value` in the message — that would leak
             # the secret into logs.
+            #
+            # §42 (task #8 security): on the INTERACTIVE argv path the value is in
+            # `e.cmd` (it was passed as `-w VALUE`); `raise ... from e` chains
+            # `e.cmd` into any full-traceback capture (the Sentry triple-fire
+            # CRITICAL path) and would leak the secret. Scrub argv elements equal
+            # to `value` to "***" BEFORE chaining — a NO-OP on the daemon branch
+            # (value is on stdin, not argv) and structure-preserving for
+            # debuggability on the interactive branch.
+            if isinstance(e.cmd, (list, tuple)):
+                e.cmd = ["***" if c == value else c for c in e.cmd]
             if _looks_locked(e.stderr or ""):
                 raise KeychainLockedError(
                     f"Keychain LOCKED — cannot write service={service!r}: "
