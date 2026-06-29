@@ -388,3 +388,75 @@ def test_network_allowlist_has_no_stale_entries():
             f"allowlisted file {rel} imports no network/subprocess library — "
             "stale allowlist entry, prune it"
         )
+
+
+# =========================================================================
+# Enrollment meta-test — convert opt-in gating to opt-out-with-a-reason
+# =========================================================================
+#
+# GATED_SCRIPTS / SEND_SCRIPTS above are HAND-MAINTAINED: the module docstring
+# concedes "Adding new entries is the entire enforcement mechanism." So a NEW
+# generation / send / daemon module that the author forgets to enroll is silently
+# UN-gated — the capability-gate enrollment gap (forensic class #12; same shape as
+# the #247 SENDING omission). This meta-test closes it for the documented naming
+# convention (CLAUDE.md "Adding a new workstream"): every module named
+# *_generate / *_send / *_poll on the workstream-runtime surface MUST be enrolled
+# in GATED_SCRIPTS or SEND_SCRIPTS, or listed in ENROLLMENT_EXEMPT with a reason.
+# A deliberately-MISnamed module still escapes (documented limit — the naming IS
+# the convention), but the common "forgot to enroll the new daemon" case now fails
+# at CI time rather than silently shipping an un-gated send path.
+
+# Directories NOT on the workstream-runtime surface (operator-run / non-source).
+_ENROLLMENT_SKIP_DIRS: frozenset[str] = frozenset({
+    "tests", "scripts", "migrations", "smartsheet_migration", "box_migration",
+    "docs", "prompts", "schemas", "node_modules", "build", "dist", "safety_portal",
+})
+
+# Suffixes that, by convention, denote a generation script, a send script, or an
+# intake / compile / send polling daemon.
+_ENROLLMENT_SUFFIXES: tuple[str, ...] = ("_generate.py", "_send.py", "_poll.py")
+
+# Convention-matching modules that are deliberately NOT gen/send/daemon code.
+# Each entry carries its reason. (Empty today — every current match is enrolled.)
+ENROLLMENT_EXEMPT: dict[str, str] = {}
+
+
+def _enrolled_paths() -> set[str]:
+    return {rel for rel, _ in GATED_SCRIPTS} | {rel for rel, _ in SEND_SCRIPTS}
+
+
+def _convention_named_modules() -> list[str]:
+    out: list[str] = []
+    for path in sorted(REPO_ROOT.rglob("*.py")):
+        rel = path.relative_to(REPO_ROOT)
+        if any(part.startswith(".") or part in _ENROLLMENT_SKIP_DIRS for part in rel.parts):
+            continue
+        if rel.name.endswith(_ENROLLMENT_SUFFIXES):
+            out.append(rel.as_posix())
+    return out
+
+
+def test_every_convention_named_script_is_enrolled_or_exempt():
+    """Every *_generate / *_send / *_poll module on the workstream surface is
+    enrolled in the External Send Gate (GATED_SCRIPTS / SEND_SCRIPTS) or explicitly
+    exempt with a reason — closes the opt-in enrollment gap (Invariant 1, class #12)."""
+    enrolled = _enrolled_paths()
+    unenrolled = [
+        rel for rel in _convention_named_modules()
+        if rel not in enrolled and rel not in ENROLLMENT_EXEMPT
+    ]
+    assert not unenrolled, (
+        "Convention-named generation/send/daemon module(s) NOT enrolled in the "
+        "External Send Gate:\n" + "\n".join(f"  {r}" for r in unenrolled)
+        + "\n\nAdd each to GATED_SCRIPTS (generation: must not import send capability) "
+        "or SEND_SCRIPTS (send: must not import AI), per Invariant 1. If a match is "
+        "genuinely neither, add it to ENROLLMENT_EXEMPT with a one-line reason."
+    )
+
+
+def test_enrollment_exempt_entries_still_exist():
+    """No stale ENROLLMENT_EXEMPT entry (file deleted) — keep the exempt list honest."""
+    for rel in sorted(ENROLLMENT_EXEMPT):
+        assert (REPO_ROOT / rel).exists(), (
+            f"ENROLLMENT_EXEMPT names a missing file: {rel} — prune it."
+        )
