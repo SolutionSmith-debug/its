@@ -73,6 +73,105 @@ def test_contact_name_and_cc_emails_projected(patch_rows):
     assert job.cc_emails == ("a@x.com", "b@x.com")
 
 
+# ── P4: progress-config parameterization (parameterize-not-clone) ─────────────
+
+
+def _progress_row(job_id: str, project: str, active: str = "Active", row_id: int = 1,
+                  **extra: Any) -> dict[str, Any]:
+    """A row as it appears on ITS_Active_Jobs_Progress — the PROGRESS contact columns are
+    DISTINCT from the safety ones (a real progress sheet has both, populated independently)."""
+    base = _row(job_id, project, active, row_id, **extra)
+    base["Progress Reports Contact Email"] = extra.get("p_contact", "")
+    base["Progress Reports Contact Name"] = extra.get("p_contact_name", "")
+    return base
+
+
+def test_progress_config_reads_progress_contact_columns(patch_rows):
+    patch_rows([_progress_row("JOB-0001", "Bradley 1",
+                              p_contact="progress@bradley.example", p_contact_name="Dana PM")])
+    jobs = active_jobs.list_active_jobs(active_jobs.PROGRESS_ACTIVE_JOBS_CONFIG)
+    assert len(jobs) == 1
+    assert jobs[0].reports_contact_email == "progress@bradley.example"
+    assert jobs[0].reports_contact_name == "Dana PM"
+
+
+def test_progress_config_ignores_the_safety_contact_column(monkeypatch):
+    # A row carrying BOTH contacts — the progress reader must (a) ROUTE to the progress sheet
+    # AND (b) pick the PROGRESS contact, never safety's. Asserting the sheet_id passed to
+    # get_rows proves the routing half; a bug that read the safety sheet regardless of config
+    # would fail here. This is the "can't get mixed up" guarantee at the recipient-SOURCE layer.
+    row = _progress_row("JOB-0001", "Bradley 1",
+                        contact="safety@x.example", p_contact="progress@x.example")
+    seen: list[int] = []
+
+    def fake_get_rows(sheet_id: int) -> list[dict[str, Any]]:
+        seen.append(sheet_id)
+        return [row]
+
+    monkeypatch.setattr(smartsheet_client, "get_rows", fake_get_rows)
+    job = active_jobs.get_job("JOB-0001", active_jobs.PROGRESS_ACTIVE_JOBS_CONFIG)
+    assert job is not None
+    assert seen == [active_jobs.PROGRESS_ACTIVE_JOBS_CONFIG.sheet_id]  # ROUTING proven
+    assert job.reports_contact_email == "progress@x.example"          # COLUMN proven
+    assert job.reports_contact_email != "safety@x.example"
+
+
+def test_safety_config_ignores_the_progress_contact_column(monkeypatch):
+    # The mirror guarantee: the safety reader (default config) ROUTES to the safety sheet and
+    # never picks up the progress contact.
+    row = _progress_row("JOB-0001", "Bradley 1",
+                        contact="safety@x.example", p_contact="progress@x.example")
+    seen: list[int] = []
+
+    def fake_get_rows(sheet_id: int) -> list[dict[str, Any]]:
+        seen.append(sheet_id)
+        return [row]
+
+    monkeypatch.setattr(smartsheet_client, "get_rows", fake_get_rows)
+    job = active_jobs.get_job("JOB-0001")  # safety default
+    assert job is not None
+    assert seen == [active_jobs.SAFETY_ACTIVE_JOBS_CONFIG.sheet_id]  # ROUTING proven
+    assert job.reports_contact_email == "safety@x.example"           # COLUMN proven
+
+
+def test_reports_contact_aliases_mirror_the_field(patch_rows):
+    patch_rows([_row("JOB-0001", "Bradley 1", contact="to@x.com", contact_name="Pat PM")])
+    job = active_jobs.get_job("JOB-0001")  # safety default
+    assert job is not None
+    assert job.reports_contact_email == job.safety_reports_contact_email == "to@x.com"
+    assert job.reports_contact_name == job.safety_reports_contact_name == "Pat PM"
+
+
+def test_safety_and_progress_caches_are_isolated(monkeypatch):
+    # Distinct sheet_ids → distinct cache slots → a safety read and a progress read never
+    # share state (return DISTINCT rows per sheet so any leak is visible), and each sheet is
+    # read exactly once then served from its own cache.
+    safety_rows = [_row("JOB-S", "Safety Job", contact="s@x.com")]
+    progress_rows = [_progress_row("JOB-P", "Progress Job", p_contact="p@x.com")]
+    calls = {"safety": 0, "progress": 0}
+
+    def fake_get_rows(sheet_id: int) -> list[dict[str, Any]]:
+        if sheet_id == active_jobs.SAFETY_ACTIVE_JOBS_CONFIG.sheet_id:
+            calls["safety"] += 1
+            return safety_rows
+        if sheet_id == active_jobs.PROGRESS_ACTIVE_JOBS_CONFIG.sheet_id:
+            calls["progress"] += 1
+            return progress_rows
+        return []
+
+    monkeypatch.setattr(smartsheet_client, "get_rows", fake_get_rows)
+    s = active_jobs.list_active_jobs()  # safety default
+    p = active_jobs.list_active_jobs(active_jobs.PROGRESS_ACTIVE_JOBS_CONFIG)
+    assert [j.job_id for j in s] == ["JOB-S"]
+    assert [j.job_id for j in p] == ["JOB-P"]
+    assert p[0].reports_contact_email == "p@x.com"
+    assert calls == {"safety": 1, "progress": 1}
+    # Repeat reads are served from each sheet's own cache — no extra fetches, no cross-fill.
+    active_jobs.list_active_jobs()
+    active_jobs.list_active_jobs(active_jobs.PROGRESS_ACTIVE_JOBS_CONFIG)
+    assert calls == {"safety": 1, "progress": 1}
+
+
 def test_cc_slot_splits_comma_separated_and_dedups_case_insensitively(patch_rows):
     patch_rows([_row("JOB-0001", "Bradley 1",
                      cc1="a@x.com, b@x.com", cc2="A@X.com", cc3="c@x.com")])
