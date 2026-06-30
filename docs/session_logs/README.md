@@ -97,7 +97,9 @@ outside the sentinel block.
 | Date | Type | Status | Workstream | Title | PRs |
 |------|------|--------|------------|-------|-----|
 | 2026-06-10 | session_log | active | safety_portal | [Session — Agent Optimization (Brief 2) + Safety Portal Hardening (Brief 1)](2026-06-10_agent-optimization-and-portal-hardening.md) | #260, #261, #263, #264, #265, #266 |
+| 2026-06-30 | session_log | closed | progress_reporting | [Session — P4 progress compile engine + form-builder workflow selector (PRs #372, #373, #375, #376)](2026-06-30_p4-progress-compile-and-workflow-selector.md) | #372, #373, #375, #376 |
 | 2026-06-30 | session_log | closed | progress_reporting | [Session — Stage 1 parameterize complete (PRs #353–#359)](2026-06-30_stage1-parameterize-complete.md) | #353, #354, #355, #356, #359 |
+| 2026-06-30 | session_log | closed | infrastructure | [Session — Tech-debt cleanup alongside in-flight Phase-2 (PRs #363–#368)](2026-06-30_tech-debt-cleanup-alongside-phase2.md) | #363, #364, #365, #366, #367, #368 |
 | 2026-06-29 | session_log | closed | field_ops | [Session — Tier-A Stage-0 foundation + Personnel CRUD landed (PRs #329, #344, #345, #346, #349)](2026-06-29_field-ops-progress-stage0-foundation-landed.md) | #329, #344, #345, #346, #349 |
 | 2026-06-29 | session_log | closed | infrastructure | [Session — Forensic lessons-learned retrospective → 6 standards-hardening PRs](2026-06-29_forensic-lessons-learned-hardening.md) | #330, #342, #343, #347, #348, #350, #351, #352 |
 | 2026-06-29 | session_log | closed | infrastructure | [Session — Op Stds v18→v19 (§50 code-actuation / §51 SoR write-back) + job-tracker pivot planning (P2.5) + Manager-tier folding (P2.6)](2026-06-29_opstds-v19-doctrine-and-jobtracker-pivot.md) | #358 |
