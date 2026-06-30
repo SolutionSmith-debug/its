@@ -187,7 +187,7 @@ describe("P2.5 — SoR create + lifecycle + contacts (version vector)", () => {
   it("rejects a JOB-#### (AUTO_NUMBER-shaped) job_id as reserved", async () => {
     const res = await j(admin, "/api/fieldops/job", { job_id: "JOB-42", project_name: "X" });
     expect(res.status).toBe(400);
-    expect((await res.json()).error).toBe("reserved_job_id");
+    expect(((await res.json()) as any).error).toBe("reserved_job_id");
   });
 
   it("rejects a malformed CC (not email-shaped) and an over-cap CC array", async () => {
