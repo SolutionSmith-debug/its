@@ -131,6 +131,7 @@ def test_checks_list_has_all_session_1_2_3_checks():
         # _check_mail_intake_silent_disable RETIRED 2026-06-05 (safety email intake retired).
         watchdog._check_alert_dedupe_summaries,
         watchdog._check_weekly_generate_catchup,
+        watchdog._check_progress_generate_catchup,  # Check I (progress, P5) — progress compile catch-up
         watchdog._check_circuit_breaker_prolonged_open,
         watchdog._check_alert_rate_cap_window,
         watchdog._check_token_write_capability,  # Check L (B2)
@@ -140,6 +141,8 @@ def test_checks_list_has_all_session_1_2_3_checks():
         watchdog._check_portal_poll_fetch_outage,  # Check Q (A4 fetch-outage escalation)
         watchdog._check_portal_poll_pending_backlog,  # Check R (A4 unfiled-backlog)
         watchdog._check_main_branch_ci_green,  # Check S — origin/main required CI green (class #13)
+        watchdog._check_stale_held_rows,  # Check T (P5) — WSR+WPR HELD-row staleness backstop
+        watchdog._check_approver_drift,  # Check U (P5) — send-workspace approver-set drift/empty
     ]
 
 
@@ -1793,10 +1796,16 @@ def test_catchup_empty_chain_returns_warn(
 
 def test_wsr_rows_exist_failsoft_returns_false(mock_get_rows, mock_log):
     """A Smartsheet read failure during evaluation fails soft → False (the
-    decision falls back to the marker signal) and logs a WARN."""
+    decision falls back to the marker signal) and logs a WARN. (P5: the helper is now
+    sheet-parameterized — `_review_rows_exist_for_week(sheet_id, week_start)`.)"""
     mock_get_rows.side_effect = SmartsheetError("boom")
 
-    assert watchdog._wsr_rows_exist_for_week(_TARGET_MONDAY) is False
+    assert (
+        watchdog._review_rows_exist_for_week(
+            watchdog.sheet_ids.SHEET_WSR_HUMAN_REVIEW, _TARGET_MONDAY
+        )
+        is False
+    )
 
     severities = [c.args[0] for c in mock_log.call_args_list]
     assert Severity.WARN in severities
@@ -2076,3 +2085,191 @@ def test_portal_poll_backlog_unparseable_ts_is_info(monkeypatch, tmp_path):
     monkeypatch.setattr(watchdog.portal_poll, "PENDING_BACKLOG_STATE_PATH", p)
     result = watchdog._check_portal_poll_pending_backlog()
     assert result.severity is Severity.INFO
+
+
+# ============================================================================
+# P5 watchdog operability — progress Check-I catch-up, Check-C wiring,
+# Check T (HELD-row staleness), Check U (approver-drift).
+# ============================================================================
+
+
+# ---- Check-C wiring: both progress slugs tracked + windowed ---------------
+
+
+def test_progress_slugs_tracked_for_check_c():
+    assert "progress_weekly_generate" in watchdog.TRACKED_JOBS
+    assert "progress_send_poll" in watchdog.TRACKED_JOBS
+    # Weekly compile mirrors safety (8-day window); the 15-min poll gets a 30-min (2-cycle) window.
+    assert watchdog.TRACKED_JOB_WINDOWS["progress_weekly_generate"] == timedelta(days=8)
+    assert watchdog.TRACKED_JOB_WINDOWS["progress_send_poll"] == timedelta(minutes=30)
+
+
+# ---- Check I (progress) catch-up ------------------------------------------
+
+
+@pytest.fixture
+def mock_progress_run_generate(mocker):
+    """Mock the PROGRESS refire (generate_core.run_generate) at the watchdog import path."""
+    return mocker.patch(
+        "watchdog.generate_core.run_generate",
+        return_value={
+            "drafts_written": 3,
+            "drafts_failed": 0,
+            "aborted_empty_chain": False,
+            "correlation_id": "prog123",
+            "week_start": _TARGET_MONDAY.isoformat(),
+        },
+    )
+
+
+def _write_pg_marker(ts: datetime) -> None:
+    watchdog.WATCHDOG_MARKER_DIR.mkdir(parents=True, exist_ok=True)
+    (watchdog.WATCHDOG_MARKER_DIR / "progress_weekly_generate.last_run").write_text(ts.isoformat())
+
+
+def test_progress_catchup_registered_after_safety_catchup():
+    assert watchdog._check_progress_generate_catchup in watchdog.CHECKS
+    assert watchdog.CHECKS.index(watchdog._check_progress_generate_catchup) > watchdog.CHECKS.index(
+        watchdog._check_weekly_generate_catchup
+    )
+
+
+def test_progress_catchup_fires_when_missing_in_window(
+    catchup_now, mock_progress_run_generate, mock_get_rows, monkeypatch
+):
+    catchup_now(_SAT_AFTER_TRIGGER)
+    # No progress marker → "did not run"; WPR has no rows → "produced nothing".
+    monkeypatch.setattr(
+        watchdog, "_read_marker_datetime", lambda slug: None
+    )
+    mock_get_rows.return_value = []
+    result = watchdog._check_progress_generate_catchup()
+    assert result.severity is Severity.INFO
+    # Re-fired the PROGRESS compile (generate_core.run_generate with the progress config).
+    mock_progress_run_generate.assert_called_once()
+    assert "progress_weekly_generate catch-up fired" in result.summary
+
+
+def test_progress_catchup_no_fire_when_marker_fresh(
+    catchup_now, mock_progress_run_generate
+):
+    catchup_now(_SAT_AFTER_TRIGGER)
+    _write_pg_marker(_SAT_AFTER_TRIGGER)  # marker >= trigger → ran
+    result = watchdog._check_progress_generate_catchup()
+    assert result.severity is Severity.INFO
+    mock_progress_run_generate.assert_not_called()
+    assert "progress_weekly_generate ran" in result.summary
+
+
+def test_progress_catchup_failure_uses_progress_error_code(
+    catchup_now, mock_progress_run_generate, mock_get_rows, mock_alert_critical, mock_log, monkeypatch
+):
+    catchup_now(_SAT_AFTER_TRIGGER)
+    monkeypatch.setattr(watchdog, "_read_marker_datetime", lambda slug: None)
+    mock_get_rows.return_value = []
+    mock_progress_run_generate.side_effect = RuntimeError("progress generation boom")
+    watchdog._check_progress_generate_catchup()
+    # The escalation error_code is label-derived → progress, NOT the safety constant.
+    codes = [c.kwargs.get("error_code") for c in mock_log.call_args_list]
+    assert "progress_weekly_generate_catchup_failed" in codes
+    assert "weekly_generate_catchup_failed" not in codes
+
+
+# ---- Check T: HELD-row staleness (WSR + WPR) ------------------------------
+
+
+@pytest.fixture
+def _held_state(monkeypatch, tmp_path):
+    """Redirect the Check-T first-seen state file to a tmp path."""
+    p = tmp_path / "held_first_seen.json"
+    monkeypatch.setattr(watchdog, "HELD_ROW_FIRST_SEEN_PATH", p)
+    return p
+
+
+def _held_rows_side_effect(wsr_held=(), wpr_held=()):
+    """get_rows side effect returning HELD rows keyed by which sheet is queried."""
+    def _se(sheet_id, filters=None):
+        if sheet_id == watchdog.sheet_ids.SHEET_WSR_HUMAN_REVIEW:
+            return [{"_row_id": r} for r in wsr_held]
+        if sheet_id == watchdog.sheet_ids.SHEET_WPR_HUMAN_REVIEW:
+            return [{"_row_id": r} for r in wpr_held]
+        return []
+    return _se
+
+
+def test_check_t_no_held_rows_is_info(mock_get_rows, _held_state):
+    mock_get_rows.side_effect = _held_rows_side_effect()
+    result = watchdog._check_stale_held_rows()
+    assert result.severity is Severity.INFO
+    assert "No review rows stuck HELD" in result.summary
+
+
+def test_check_t_fresh_held_not_yet_stale_is_info(mock_get_rows, _held_state):
+    # A just-seen HELD (state empty → stamped now) is under the threshold → INFO, not WARN.
+    mock_get_rows.side_effect = _held_rows_side_effect(wsr_held=[101], wpr_held=[202])
+    result = watchdog._check_stale_held_rows()
+    assert result.severity is Severity.INFO
+    assert "none past" in result.summary
+
+
+def test_check_t_stale_held_warns(mock_get_rows, _held_state):
+    # Pre-seed first-seen with an OLD timestamp → past HELD_ROW_STALE_AFTER → WARN.
+    old = (datetime.now(UTC) - timedelta(hours=48)).isoformat()
+    _held_state.write_text(json.dumps({"WSR:101": old, "WPR:202": old}))
+    mock_get_rows.side_effect = _held_rows_side_effect(wsr_held=[101], wpr_held=[202])
+    result = watchdog._check_stale_held_rows()
+    assert result.severity is Severity.WARN
+    assert "stuck HELD" in result.summary
+
+
+def test_check_t_total_read_failure_is_info(mock_get_rows, _held_state):
+    mock_get_rows.side_effect = SmartsheetError("both sheets down")
+    result = watchdog._check_stale_held_rows()
+    assert result.severity is Severity.INFO  # no data → no false WARN
+
+
+# ---- Check U: send-workspace approver-set drift --------------------------
+
+
+@pytest.fixture
+def _approver_state(monkeypatch, tmp_path):
+    p = tmp_path / "approver_baseline.json"
+    monkeypatch.setattr(watchdog, "APPROVER_BASELINE_PATH", p)
+    return p
+
+
+@pytest.fixture
+def mock_share_emails(mocker):
+    return mocker.patch("watchdog.smartsheet_client.list_workspace_share_emails")
+
+
+def test_check_u_empty_approver_set_warns(mock_share_emails, _approver_state):
+    mock_share_emails.return_value = frozenset()  # no approvers shared anywhere
+    result = watchdog._check_approver_drift()
+    assert result.severity is Severity.WARN
+    assert "EMPTY send-approver set" in result.summary
+
+
+def test_check_u_first_run_seeds_baseline_no_drift(mock_share_emails, _approver_state):
+    mock_share_emails.return_value = frozenset({"approver@evergreenmirror.com"})
+    result = watchdog._check_approver_drift()
+    assert result.severity is Severity.INFO  # first run seeds the baseline; no drift reported
+    assert _approver_state.exists()  # baseline persisted
+
+
+def test_check_u_membership_change_warns_drift(mock_share_emails, _approver_state):
+    # Seed a baseline, then change membership → WARN naming the delta.
+    _approver_state.write_text(json.dumps({
+        "Safety Portal": ["a@x.com"],
+        "Progress Reporting": ["a@x.com"],
+    }))
+    mock_share_emails.return_value = frozenset({"a@x.com", "b@x.com"})  # b@ added
+    result = watchdog._check_approver_drift()
+    assert result.severity is Severity.WARN
+    assert "CHANGED" in result.summary
+
+
+def test_check_u_read_failure_is_info(mock_share_emails, _approver_state):
+    mock_share_emails.side_effect = SmartsheetError("workspace read down")
+    result = watchdog._check_approver_drift()
+    assert result.severity is Severity.INFO  # no data → never invents drift
