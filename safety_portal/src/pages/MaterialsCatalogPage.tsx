@@ -222,10 +222,10 @@ export function MaterialsCatalogPage({ onBack }: { onBack: () => void }) {
                   {r.unit_cost != null ? <p className="muted">Ref. cost: {r.unit_cost}</p> : null}
                   {canManage && r.active === 1 && editId !== r.id ? (
                     <div className="accounts__actions">
-                      <button className="btn btn--secondary" onClick={() => openEdit(r)}>
+                      <button className="btn btn--edit" onClick={() => openEdit(r)}>
                         Edit
                       </button>
-                      <button className="btn btn--danger" onClick={() => void retire(r.id)}>
+                      <button className="btn btn--retire" onClick={() => void retire(r.id)}>
                         Retire
                       </button>
                     </div>

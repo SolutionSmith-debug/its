@@ -406,7 +406,7 @@ export function FormsPage({
                         <button type="button" className="btn btn--secondary" disabled={busy} onClick={() => startAddVersion(viewDef.form_code)}>
                           Add version (clone)
                         </button>
-                        <button type="button" className="btn btn--danger" disabled={busy} onClick={() => void onRetire(viewDef.form_code)}>
+                        <button type="button" className="btn btn--retire" disabled={busy} onClick={() => void onRetire(viewDef.form_code)}>
                           Retire
                         </button>
                       </div>
