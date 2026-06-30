@@ -61,6 +61,16 @@ when that contact is blank. CC = the job's CC 1–5.
 > error. That defect is **code-change territory → escalate to Seth.** The `held_no_recipient`
 > case below is the operator-fixable *data* case.
 
+**Related — the live stakeholder-fallback case (send succeeds, but to a different person).** If
+the **"Progress Reports Contact Email"** cell is blank but the job's **Stakeholder Email** is
+set, the send does **not** HELD — it succeeds, addressed to the **stakeholder** (the deliberate
+fallback). This is observable, not silent: the sender logs an INFO with `error_code =
+progress_send.stakeholder_fallback_used` each time the fallback fires. **If a report reaches the
+wrong inbox**, grep the logs / ITS_Errors for that `error_code` to spot a contact column that was
+accidentally cleared (fat-fingered edit, partial migration). **Low-class Tier-2 repair:** fill the
+"Progress Reports Contact Email" cell on the job's `ITS_Active_Jobs_Progress` row; the next weekly
+send uses it. (No HELD to clear — the prior sends already went out to the stakeholder.)
+
 **This is a low-class, documented Tier-2 repair (a data fix):**
 1. Open `ITS_Active_Jobs_Progress`. Find the row whose `Job ID` matches the HELD WPR row's Job ID.
    (If no such row exists → the job is unknown; escalate to Seth — a missing job is a routing /

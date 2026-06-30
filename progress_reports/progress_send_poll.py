@@ -1,51 +1,51 @@
 """Progress Reports weekly send polling daemon — the thin PROGRESS entry.
 
-The progress twin of ``safety_reports.weekly_send_poll``. Discovers
-``WPR_human_review`` rows with ``Send Now`` (immediate) OR ``Approve for Scheduled
-Send`` (the Monday-≥07:00-Pacific batch) checked, runs the F22 approval-attestation
-gate on the driving checkbox against the **Progress Reporting** workspace, stamps the
-verified approver, and dispatches each to ``progress_reports.progress_send.send_one_row``.
-The poller has zero send capability of its own; it is an iterator + dispatcher.
+Purpose
+-------
+The progress twin of ``safety_reports.weekly_send_poll``. Discovers ``WPR_human_review``
+rows with ``Send Now`` (immediate) OR ``Approve for Scheduled Send`` (the
+Monday-≥07:00-Pacific batch) checked, runs the F22 approval-attestation gate on the driving
+checkbox against the **Progress Reporting** workspace, stamps the verified approver, and
+dispatches each to ``progress_reports.progress_send.send_one_row``. The poller has zero send
+capability of its own; it is an iterator + dispatcher. ``poll_once()`` is the public API; the
+``__main__`` guard calls it exactly once and exits, launchd handling cadence via
+``StartInterval`` (default 900 s = 15 min, sourced from ITS_Config
+``progress_reports.progress_send.poll_interval_seconds`` at install).
 
-P5 — parameterize-not-clone (Op Stds §14). The dispatch BODY lives in
-``safety_reports/send_poll_core.py``, parameterized by a required no-default
-``DaemonConfig``; this module is the thin PROGRESS entry that binds the one config
-(``CONFIG``), constructs this daemon's ``HeartbeatReporter``, and re-exports the test
-mock seams — exactly as ``weekly_send_poll`` is the thin SAFETY entry. The F22
-fail-closed gate, the no-double-send SENDING exclusion, and the per-row fence are
-written ONCE in the core (§42 there).
+Invariants (§42 — why a thin binding, not a clone)
+--------------------------------------------------
+- **P5 parameterize-not-clone (Op Stds §14):** the dispatch BODY lives in
+  ``safety_reports/send_poll_core.py`` (a required no-default ``DaemonConfig``); this module
+  binds the one ``CONFIG``, constructs this daemon's ``HeartbeatReporter``, and re-exports the
+  test mock seams — exactly as ``weekly_send_poll`` is the thin SAFETY entry. The F22
+  fail-closed gate, the no-double-send ``SENDING`` exclusion, and the per-row fence are written
+  ONCE in the core.
+- **No cross-workstream mix-up:** ``poll_sheet_id`` is the **WPR** sheet; ``f22_workspace_id``
+  is the **Progress Reporting** workspace (approver set = membership of THAT workspace, never
+  the Safety Portal's); ``send_fn`` dispatches the progress ``SendConfig`` (which resolves
+  recipients only from ``ITS_Active_Jobs_Progress``). Independent lock + heartbeat + review
+  sheet from safety's send poll, so the two coexist without a shared mutex.
+- **Invariant 1 (External Send Gate):** zero AI capability. Dispatches via ``CONFIG.send_fn``
+  (bound ``progress_send.send_one_row`` → ``weekly_send.send_one_row``); the AST gate in
+  ``tests/test_capability_gating.py::SEND_SCRIPTS`` forbids ``anthropic_client`` / ``anthropic``
+  in this file and ``progress_send.py``.
 
-The ONE binding that prevents cross-workstream mix-up: ``poll_sheet_id`` is the
-**WPR** sheet, ``f22_workspace_id`` is the **Progress Reporting** workspace (so the
-approver set = membership of THAT workspace, NOT the Safety Portal's), and ``send_fn``
-dispatches the progress ``SendConfig`` (which itself resolves recipients only from
-``ITS_Active_Jobs_Progress``).
+Failure modes
+-------------
+Each candidate row is dispatched under a per-row fence; one failing row never tears down the
+cycle. The F22 gate is fail-CLOSED — a circuit-open / auth error reading the approver set
+propagates (cycle aborts, zero sends) and an empty approver set blocks all sends
+(``EMPTY_ALLOWLIST``). A disabled ``progress_reports.progress_send.polling_enabled`` ITS_Config
+value short-circuits the cycle (operator pause). Successor-remediation tree:
+``docs/runbooks/progress_send.md`` (Op Stds §43).
 
-launchd schedule
-----------------
-
-Single-cycle execution: ``poll_once()`` is the public API; the ``__main__`` guard calls
-it exactly once and exits. launchd handles cadence via ``StartInterval`` in
-``scripts/launchd/org.solutionsmith.its.progress-send.plist`` (default 900 s = 15 min;
-sourced from ITS_Config ``progress_reports.progress_send.poll_interval_seconds`` at
-install). Independent lock + heartbeat + review sheet from safety's send poll, so the
-two coexist without a shared mutex.
-
-Capability gating
------------------
-
-Zero AI capability. Dispatches a send via ``CONFIG.send_fn`` (bound
-``progress_send.send_one_row`` → ``weekly_send.send_one_row``). The AST gate in
-``tests/test_capability_gating.py::SEND_SCRIPTS`` forbids ``anthropic_client`` /
-``anthropic`` in this file (and in ``progress_send.py``).
-
-Watchdog
---------
-
-Writes a ``progress_send_poll.last_run`` marker each cycle. Registering that slug in
-``watchdog.TRACKED_JOBS`` (Check C staleness) lands in the P5 watchdog slice alongside
-the ``progress_weekly_generate`` Check-I/C wiring (deferred there exactly as P4 deferred
-the compile slug) — until then the marker is written but not monitored.
+Consumers
+---------
+- launchd daemon ``org.solutionsmith.its.progress-send`` (the 15-min interval poll).
+- Writes a ``progress_send_poll.last_run`` watchdog marker each cycle. Registering that slug in
+  ``watchdog.TRACKED_JOBS`` (Check-C staleness) lands in the P5 watchdog slice alongside the
+  ``progress_weekly_generate`` Check-I/C wiring (deferred there exactly as P4 deferred the
+  compile slug) — until then the marker is written but not yet monitored.
 """
 from __future__ import annotations
 

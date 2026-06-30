@@ -319,9 +319,11 @@ def send_one_row(row_id: int, cfg: SendConfig) -> SendResult:
     #
     # Three cases, keyed on the RAW cell value:
     #   - GENUINE-ABSENT (null / empty cell) → WARN + proceed. A deliberate, bounded fail-OPEN for
-    #     the pre-backfill window. Bounded-SAFE because the WSR sheet is single-workstream by
-    #     construction: a blank-tag row IS a safety row, sent to safety recipients via the safety
-    #     job + F22 — not cross-workstream contamination. (Tightening this to fail-CLOSED in the
+    #     the pre-backfill window. Bounded-SAFE because each review sheet bound here (WSR for safety,
+    #     WPR for progress — send_one_row is dual-tenant via cfg.review.SHEET_ID as of P5) is
+    #     single-workstream by construction: a blank-tag row IS a row for THIS sender's workstream
+    #     (cfg.workstream_tag), sent to that workstream's recipients via its job + F22 — not
+    #     cross-workstream contamination. (Tightening this to fail-CLOSED in the
     #     post-backfill steady state is a Send-Gate POSTURE decision reserved for Seth — §43 runbook.)
     #   - MALFORMED (a NON-empty raw value that STRIPS to empty — e.g. a U+00A0 / U+2007 whitespace
     #     cell) → HARD-HELD. A non-null cell that isn't a clean tag is a contamination signal, never

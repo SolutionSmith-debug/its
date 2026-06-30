@@ -99,22 +99,32 @@ def test_get_job_is_called_with_the_progress_active_jobs_config(stub):
 # ---- recipient resolution (progress contact w/ stakeholder fallback) -----
 
 
-def test_resolver_prefers_progress_contact():
+def test_resolver_prefers_progress_contact(mocker):
+    log = mocker.patch.object(progress_send.error_log, "log")
     to, cc = progress_send._resolve_progress_recipients(_job())
     assert to == "pm@evergreenmirror.com"
     assert list(cc) == ["cc1@x.com", "cc2@x.com"]
+    log.assert_not_called()  # contact present → no fallback → no log
 
 
-def test_resolver_falls_back_to_stakeholder_when_contact_blank():
+def test_resolver_falls_back_to_stakeholder_when_contact_blank(mocker):
+    log = mocker.patch.object(progress_send.error_log, "log")
     to, _cc = progress_send._resolve_progress_recipients(_job(reports_contact_email=""))
     assert to == "owner@client.example"
+    # Never-silent: the fallback (send to a DIFFERENT person than the named contact) is logged.
+    assert any(
+        c.kwargs.get("error_code") == "progress_send.stakeholder_fallback_used"
+        for c in log.call_args_list
+    )
 
 
-def test_resolver_returns_empty_when_both_blank():
+def test_resolver_returns_empty_when_both_blank(mocker):
+    log = mocker.patch.object(progress_send.error_log, "log")
     to, _cc = progress_send._resolve_progress_recipients(
         _job(reports_contact_email="", stakeholder_email="")
     )
     assert to == ""
+    log.assert_not_called()  # both blank → no usable fallback → HELD path surfaces it, no false log
 
 
 # ---- happy send ----------------------------------------------------------
