@@ -172,6 +172,61 @@ def test_safety_and_progress_caches_are_isolated(monkeypatch):
     assert calls == {"safety": 1, "progress": 1}
 
 
+# ── P2.5 Slice 3: Portal Job Key OR-match read bridge ─────────────────────────
+
+
+def test_row_to_job_populates_portal_job_key_from_cell():
+    row = _row("JOB-0001", "Bradley 1", row_id=11)
+    row["Portal Job Key"] = "PKEY-42"
+    job = active_jobs._row_to_job(row, active_jobs.SAFETY_ACTIVE_JOBS_CONFIG)
+    assert job is not None
+    assert job.portal_job_key == "PKEY-42"
+
+
+def test_row_to_job_portal_job_key_blank_when_column_absent():
+    # _row() builds no "Portal Job Key" cell → _cell() returns "".
+    job = active_jobs._row_to_job(
+        _row("JOB-0001", "Bradley 1", row_id=11), active_jobs.SAFETY_ACTIVE_JOBS_CONFIG
+    )
+    assert job is not None
+    assert job.portal_job_key == ""
+
+
+def test_get_job_resolves_by_portal_job_key_when_job_id_differs(patch_rows):
+    # The row's Job ID is the AUTO_NUMBER; its Portal Job Key is a DIFFERENT string (the
+    # P2.5 cross-sheet bridge). A lookup by the bridge key resolves the row.
+    row = _row("JOB-0001", "Bradley 1", row_id=11)
+    row["Portal Job Key"] = "PKEY-42"
+    patch_rows([row])
+    job = active_jobs.get_job("PKEY-42")
+    assert job is not None
+    assert job.project_name == "Bradley 1"
+    assert job.portal_job_key == "PKEY-42"
+
+
+def test_get_job_job_id_takes_precedence_over_portal_job_key(patch_rows):
+    # Row A's Job ID == key; row B's Portal Job Key == the SAME key. Job ID wins — row A
+    # is returned, never row B. Row B is placed first to prove Job ID is scanned across
+    # ALL rows before any Portal-Job-Key fallback (order-independent precedence).
+    row_a = _row("KEY-X", "Job ID Match", row_id=1)          # Job ID == "KEY-X"
+    row_b = _row("JOB-0002", "Portal Key Match", row_id=2)
+    row_b["Portal Job Key"] = "KEY-X"                         # Portal Job Key == "KEY-X"
+    patch_rows([row_b, row_a])
+    job = active_jobs.get_job("KEY-X")
+    assert job is not None
+    assert job.job_id == "KEY-X"
+    assert job.project_name == "Job ID Match"  # the Job ID row wins, not "Portal Key Match"
+
+
+def test_get_job_empty_portal_job_key_never_matches(patch_rows):
+    # A row with no Portal Job Key (→ "") must never resolve a blank query (short-circuited
+    # before any scan) nor a non-empty key that matches neither identity column.
+    patch_rows([_row("JOB-0001", "Bradley 1", row_id=1)])  # no Portal Job Key cell → ""
+    assert active_jobs.get_job("") is None
+    assert active_jobs.get_job("   ") is None
+    assert active_jobs.get_job("PKEY-NONE") is None  # "" portal key can't bind it
+
+
 def test_cc_slot_splits_comma_separated_and_dedups_case_insensitively(patch_rows):
     patch_rows([_row("JOB-0001", "Bradley 1",
                      cc1="a@x.com, b@x.com", cc2="A@X.com", cc3="c@x.com")])

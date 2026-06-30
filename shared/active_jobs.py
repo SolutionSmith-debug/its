@@ -27,9 +27,12 @@ Invariants
 - Deny-by-default: a row missing Job ID or Project Name is skipped; a blank Active
   status is treated as not-Active.
 - Join key is the `Job ID` column (a Smartsheet AUTO_NUMBER per the Phase-3
-  decision). The former kebab `Job Slug` key is RETIRED (no consumer); the Smartsheet
-  column delete is operator-manual. The lookup is agnostic to the key format — it
-  matches whatever string the `Job ID` cell holds.
+  decision), with a fallback to the `Portal Job Key` TEXT column — the P2.5
+  cross-sheet identity bridge the mirror daemon writes. `get_job` OR-matches
+  **Job ID first**, then (only if no Job ID matched) `Portal Job Key`; an empty
+  `Portal Job Key` never matches. The former kebab `Job Slug` key is RETIRED (no
+  consumer); the Smartsheet column delete is operator-manual. The lookup is
+  agnostic to the key format — it matches whatever string the cell holds.
 - 60-second TTL cache, keyed per sheet id (mirrors shared.project_routing, §33 family).
 
 Failure modes
@@ -124,6 +127,10 @@ class ActiveJob:
     cc_emails: tuple[str, ...]         # CC 1–5 flattened + de-duped (weekly_send CCs all)
     active_status: str   # "Active" / "Inactive" / "Archived" / "" (deny-by-default)
     row_id: int
+    # P2.5 cross-sheet identity bridge: the typed Job ID carried in this sheet's
+    # "Portal Job Key" TEXT column (written by the mirror daemon); "" when absent.
+    # `get_job` OR-matches on it after Job ID so either key resolves the row.
+    portal_job_key: str = ""
 
     @property
     def is_active(self) -> bool:
@@ -210,6 +217,7 @@ def _row_to_job(row: dict[str, Any], config: ActiveJobsConfig) -> ActiveJob | No
         cc_emails=_flatten_cc([_cell(row, slot) for slot in _CC_SLOTS], project_name),
         active_status=_cell(row, "Active"),
         row_id=row_id,
+        portal_job_key=_cell(row, "Portal Job Key"),
     )
 
 
@@ -253,7 +261,13 @@ def invalidate_cache() -> None:
 def get_job(
     job_id: str, config: ActiveJobsConfig = SAFETY_ACTIVE_JOBS_CONFIG
 ) -> ActiveJob | None:
-    """Return the job whose `Job ID` equals `job_id` (ANY status), or None.
+    """Return the job matching `job_id` (ANY status), or None.
+
+    OR-match over two identity columns, **Job ID first**: across all rows a
+    `Job ID == key` wins; only if no Job ID matched do we fall back to a row whose
+    `Portal Job Key` (the P2.5 cross-sheet bridge column the mirror daemon writes)
+    equals the key. An empty `Portal Job Key` never matches, so a key-less row can't
+    spuriously bind a missing key. Read-only — no write path, no new external call.
 
     Returns regardless of Active/Inactive/Archived so the caller can distinguish
     'unknown job' (None) from 'known but not Active' (job with `is_active` False) and
@@ -262,8 +276,12 @@ def get_job(
     key = (job_id or "").strip()
     if not key:
         return None
-    for job in _load_jobs(config):
+    jobs = _load_jobs(config)
+    for job in jobs:  # Job ID takes precedence
         if job.job_id == key:
+            return job
+    for job in jobs:  # fall back to the Portal Job Key bridge (skip empty keys)
+        if job.portal_job_key and job.portal_job_key == key:
             return job
     return None
 
