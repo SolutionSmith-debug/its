@@ -68,6 +68,7 @@ def stub(mocker) -> dict[str, MagicMock]:
         "send_large": mocker.patch.object(weekly_send.graph_client, "send_mail_large_attachment"),
         "from_mailbox": mocker.patch.object(weekly_send, "_read_str_setting", return_value="progress@evergreenmirror.com"),
         "log": mocker.patch.object(weekly_send.error_log, "log"),
+        "recipient_health": mocker.patch.object(weekly_send.recipient_health, "report_unhealthy_recipient"),
     }
 
 
@@ -158,6 +159,9 @@ def test_both_contacts_blank_is_held(stub):
     result = progress_send.send_one_row(70)
     assert result.status == "held_no_recipient"
     stub["send_mail"].assert_not_called()
+    # Never-silent: tagged with the PROGRESS workstream for the Review-Queue row.
+    stub["recipient_health"].assert_called_once()
+    assert stub["recipient_health"].call_args.kwargs["config_workstream"] == "progress_reports"
 
 
 # ---- cross-workstream contamination guard --------------------------------
