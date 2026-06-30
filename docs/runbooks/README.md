@@ -18,8 +18,8 @@ convention has no separate `runbook` type).
 <!-- BEGIN AUTO-INDEX -->
 | Date | Type | Status | Workstream | Title | PRs |
 |------|------|--------|------------|-------|-----|
-| 2026-06-29 | operations | active | safety_reports | [Runbook — week_sheet config binding (submissions mis-file / week sheet names change) (Successor-Remediation, Op Stds §43)](week_sheet_config.md) | _–_ |
 | 2026-06-29 | operations | active | safety_reports | [Runbook — Safety weekly-send Workstream guard (a row stuck HELD / "contamination") (Successor-Remediation, Op Stds §43)](safety_weekly_send.md) | _–_ |
+| 2026-06-29 | operations | active | safety_reports | [Runbook — week_sheet config binding (submissions mis-file / week sheet names change) (Successor-Remediation, Op Stds §43)](week_sheet_config.md) | _–_ |
 | 2026-06-28 | operations | active | infrastructure | [Runbook — Box OAuth token stale / refresh-lock contention (Successor-Remediation, Op Stds §43)](box_token_freshness.md) | _–_ |
 | 2026-06-27 | operations | active | safety_portal | [Runbook — Field-Ops portal job create (portal-origin jobs "stuck pending") (Successor-Remediation, Op Stds §43)](fieldops_job_write.md) | _–_ |
 | 2026-06-12 | operations | active | safety_reports | [Runbook — Safety photo path (photo rejected / clamd down / oversized packet HELD) (Successor-Remediation, Op Stds §43)](safety_photo_path.md) | _–_ |

@@ -2311,6 +2311,70 @@ The P2.3 write routes landed complete (PRs #312–#317; `docs/session_logs/2026-
 
 Surfaced: 2026-06-27 (P2.3 write-routes session); item #4 resolved 2026-06-28 (write-UI phase session).
 
+## [OPEN 2026-06-28] Field-ops portal UI polish follow-ups (post write-UI restyle)
+
+PR #328 (`9ef3d5b`) shipped the shared `PageShell` and a unified restyle of the four tracker pages. Three polish items deferred:
+
+1. **Route the form pages through `PageShell`.** The write-UI form pages (personnel create/edit, equipment roster admin, job create, time-entry) are not yet wrapped in `PageShell`. They use ad-hoc layout. Wrap them in a follow-up PR once the form page shape is stable (personnel creation task #22 will establish the canonical form-page pattern).
+
+2. **Tracker action messages → `.banner` class.** In-page action feedback (e.g., "Equipment status updated", "Time entry saved") is currently displayed via inline `ok`/`error` divs. These should use the `.banner` CSS class (defined in the design system) for visual consistency with the portal's other feedback surfaces.
+
+3. **`--danger` button variant for destructive actions.** "Close job", "Retire unit", "Retire personnel" actions use the default button style. Add a `--danger` modifier variant (red background or border) to visually distinguish destructive from constructive actions. Matches the UX standard for the admin panel's destructive ops.
+
+**Tag:** `field-ops`, `frontend`, `polish`, `low`. **Revisit when:** personnel creation (task #22) PR is in progress — wrap the new form page in `PageShell` at that point and batch the banner + danger-variant work in the same PR.
+
+Surfaced: 2026-06-28 Progress-Reporting program session (PR #328 restyle).
+
+## [OPEN 2026-06-28] `.dash-section` CSS class duplicates `.card`
+
+The `safety_portal/worker/src/styles/` tree contains a `.dash-section` utility class that is substantially identical to `.card` — same border, padding, border-radius, and box-shadow rules. The duplication is minor (2 classes, ~8 lines) and has no functional impact, but it is a maintenance surface: a future design-system change to `.card` must also update `.dash-section` or the two surfaces drift.
+
+**Fix:** alias `.dash-section` as `@apply .card` or consolidate at the next design-system pass. Not worth a standalone PR.
+
+**Tag:** `field-ops`, `frontend`, `css`, `minor`. **Revisit when:** next design-system consolidation pass.
+
+Surfaced: 2026-06-28 Progress-Reporting program session.
+
+## [OPEN 2026-06-28] §6a enablement-doc DoD owed per Progress-Reporting slice
+
+Per the approved plan (`~/.claude/plans/let-s-go-with-option-greedy-fiddle.md`), every progress-workstream slice that creates a sheet, compiles, or adds a daemon ships a **§43 successor-remediation runbook skeleton + §6a manifest registration in the same PR** (definition-of-done, not a follow-up). The polished distributable PDF (A8 documentation program) is a pre-20-job-cutover requirement.
+
+Currently: M1 (material_catalog, migration 0019 + Worker CRUD + admin SPA) was the first Track M slice and **did not ship a §6a manifest registration** — M1 is D1-local (no Smartsheet sheet, no daemon, no external send), so the §43/§6a DoD obligation is reduced, but the §6a capability manifest should still record the `material_catalog` capability. Track M slices that add daemon paths (M2 bidirectional sync, M3 incidents + photos) have a full §43/§6a obligation.
+
+**Rule going forward:** every slice brief for the Progress-Reporting program must explicitly call out the §6a registration step and the §43 runbook scope (often "None for this slice — read-only/D1-local" is the correct answer, but it must be stated, not omitted).
+
+**Tag:** `progress-reports`, `doctrine`, `§43`, `pre-cutover`. **Revisit when:** each Progress-Reporting slice brief is written.
+
+Surfaced: 2026-06-28 Progress-Reporting program session (approved plan §6/A8 clause).
+
+## [OPEN 2026-06-28] Exec session log gap — 2026-06-17 to 2026-06-18 arc still missing
+
+The 2026-06-17→18 session arc (#292 D1 job cleanup + #294 tech-debt easy-wins code/test fixes + #295 live-cleanup closes + the D1 clean-slate execution) has **no exec session log**. This gap was first noted in `project_safety_portal_state.md` memory ("No exec session log yet for the 2026-06-17→18 arc") and has not been filled.
+
+The arc is non-trivial: two PRs landed, a clean-slate was executed on live D1 + Smartsheet + Box, and CodeQL caught two real issues in PR #292. The decisions (purge-job endpoint design, CodeQL fixes, test-artifact scope decisions) are not reconstructable from git history alone without the session log narrative.
+
+**Fix:** operator invokes `session-log-writer` for this arc, using PR #292 (`22ab1db`) + PR #294 (`79c96b2`) + PR #295 (`974b111`) and the `project_safety_portal_state.md` memory as context.
+
+**Tag:** `housekeeping`, `session-log`, `documentation`. **Revisit when:** operator has bandwidth for a retroactive log write.
+
+Surfaced: 2026-06-28 session close (still missing after the 2026-06-17→18 arc + the 2026-06-20 banner session + the 2026-06-28 write-UI session all added their logs).
+
+## [OPEN 2026-06-29] `keychain.set_secret` TTY-trap — interactive Python session can silently corrupt the stored secret
+
+**Live incident (2026-06-29, A3 smoke).** During the A3 Box OAuth refresh-lock smoke, `setup_box_oauth.py`'s `_persist_tokens` called `keychain.set_secret` from an interactive Python session (run directly in a terminal, not via launchd). `set_secret` invokes `security add-generic-password -w` with the value fed via `stdin`. When a controlling TTY is present — as it is in any interactive terminal session — the macOS `security` CLI reads the password from `/dev/tty` and **silently ignores piped stdin**. A garbage/unexpected value was written to `ITS_BOX_REFRESH_TOKEN`; Box auth failed with a 401 until the token was manually re-seeded using the argv form.
+
+**Root cause:** `shared/keychain.set_secret` uses `subprocess.run([..., "-w"], input=...)` — the bare `-w` reads stdin correctly when the subprocess has no controlling TTY (correct behavior under launchd). But when the **parent process is an interactive terminal**, the subprocess inherits that controlling TTY, and `security` prefers the TTY over piped stdin for the bare `-w` form. The 2026-06-08 finding documented "bare `-w` in a TTY" for manual shell use; this extends it to `set_secret` itself when called interactively.
+
+**Class:** secrets/auth, HIGH. Affected callers: `shared/keychain.set_secret` (daemon and Python callers), `setup_box_oauth.py`'s `_persist_tokens`.
+
+**Proposed fix (standing task #8):** in `keychain.set_secret`, detect whether a controlling TTY is present (`os.isatty(0)` / `os.ctermid()`) and, if so, switch to the **argv form** (`[..., "-w", value]` — value as the next argv token, no stdin read). If TTY detection is unreliable, `raise RuntimeError` rather than silently writing the wrong value. Apply the same fix to `_persist_tokens` in `setup_box_oauth.py`.
+
+**Recovery:** re-seed the affected entry via argv: `security add-generic-password -U -a "$USER" -s <name> -w VALUE`. Verify with `security find-generic-password -w -s <name>`.
+
+**Tag:** `secrets`, `auth`, `keychain`, `high`. **Revisit when:** next `shared/keychain.py` touch (standing task #8).
+
+Surfaced: 2026-06-29 A3 smoke (Box OAuth refresh-lock hardening); live `ITS_BOX_REFRESH_TOKEN` corruption recovered via argv reseed.
+
 ## [OPEN 2026-06-29] Portal permission-model stale plumbing — vestigial + orphaned capabilities, coarse gate, missing crew→job link
 
 **Surfaced 2026-06-29** during a forensic investigation of the portal permission model (operator asked "what happened to my 3-tier permission model that broke my login and got reverted?"). Resolution: the capability system (migration `0013`, PR #302, `8bd9995`) is **live and was never reverted**; the 2026-06-28 login breakage was the deploy-order lockout, fixed operationally. The 5-agent read-only sweep + direct verification surfaced stale/half-wired permission plumbing to address later — **documented, not fixed** (preservation-over-refactor, §14). Relevant to the queued **P2.6 — Manager tier** slice and any future capability-management UI.
