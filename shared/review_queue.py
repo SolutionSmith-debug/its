@@ -111,8 +111,14 @@ class ReviewReason(StrEnum):
 
 # Valid Workstream picklist values for the `Workstream` column.
 # Same set as ITS_Errors / ITS_Config workstream coverage, plus `global`.
+# `progress_reports` joined at P5 (the Progress Reporting workstream): the progress
+# weekly compile's per-job fence (generate_core, GenerateConfig.workstream=
+# "progress_reports") and the P5 recipient_health send-time hook both call
+# review_queue.add(workstream="progress_reports", ...) — omitting it here raised a
+# ValueError at the first progress per-job fence (latent since P4; closed at P5).
 VALID_WORKSTREAMS = frozenset({
     "safety_reports",
+    "progress_reports",
     "po_materials",
     "subcontracts",
     "email_triage",

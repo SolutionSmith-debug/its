@@ -67,7 +67,14 @@ from datetime import UTC, date, datetime
 from typing import Any, Literal, Protocol, cast
 
 from safety_reports import wsr_review
-from shared import active_jobs, box_client, error_log, graph_client, smartsheet_client
+from shared import (
+    active_jobs,
+    box_client,
+    error_log,
+    graph_client,
+    recipient_health,
+    smartsheet_client,
+)
 from shared.error_log import Severity, its_error_log
 from shared.graph_client import GraphAttachmentTooLargeError, GraphAuthError, GraphError
 from shared.kill_switch import require_active
@@ -170,6 +177,13 @@ class SendConfig:
     config_workstream: str       # ITS_Config get_setting scope ("safety_reports")
     review: _ReviewModule        # the review-sheet module (columns, statuses, sheet id)
     recipient_resolver: Callable[[Any], tuple[str, Sequence[str]]]
+    # WHICH Active-Jobs sheet this workstream resolves recipients FROM. Required, no
+    # default: a default would let a new workstream silently resolve from safety's
+    # ITS_Active_Jobs (and thus its contacts) — the precise cross-wiring the no-default
+    # SendConfig guards. Safety binds SAFETY_ACTIVE_JOBS_CONFIG (byte-identical to the
+    # pre-P5 hardcoded default); progress binds PROGRESS_ACTIVE_JOBS_CONFIG. The
+    # per-sheet TTL cache (active_jobs._cache) keeps the two resolutions from colliding.
+    active_jobs_config: active_jobs.ActiveJobsConfig
     report_label: str            # subject + attachment label ("Weekly Safety Report")
     from_mailbox_cfg_key: str
     from_mailbox_default: str
@@ -192,6 +206,7 @@ CONFIG = SendConfig(
     # satisfy _ReviewModule's surface (verified by the live tests + the structural contract).
     review=cast(_ReviewModule, wsr_review),
     recipient_resolver=_resolve_safety_recipients,
+    active_jobs_config=active_jobs.SAFETY_ACTIVE_JOBS_CONFIG,
     report_label="Weekly Safety Report",
     from_mailbox_cfg_key=CFG_FROM_MAILBOX,
     from_mailbox_default=DEFAULT_FROM_MAILBOX,
@@ -311,9 +326,11 @@ def send_one_row(row_id: int, cfg: SendConfig) -> SendResult:
     #
     # Three cases, keyed on the RAW cell value:
     #   - GENUINE-ABSENT (null / empty cell) → WARN + proceed. A deliberate, bounded fail-OPEN for
-    #     the pre-backfill window. Bounded-SAFE because the WSR sheet is single-workstream by
-    #     construction: a blank-tag row IS a safety row, sent to safety recipients via the safety
-    #     job + F22 — not cross-workstream contamination. (Tightening this to fail-CLOSED in the
+    #     the pre-backfill window. Bounded-SAFE because each review sheet bound here (WSR for safety,
+    #     WPR for progress — send_one_row is dual-tenant via cfg.review.SHEET_ID as of P5) is
+    #     single-workstream by construction: a blank-tag row IS a row for THIS sender's workstream
+    #     (cfg.workstream_tag), sent to that workstream's recipients via its job + F22 — not
+    #     cross-workstream contamination. (Tightening this to fail-CLOSED in the
     #     post-backfill steady state is a Send-Gate POSTURE decision reserved for Seth — §43 runbook.)
     #   - MALFORMED (a NON-empty raw value that STRIPS to empty — e.g. a U+00A0 / U+2007 whitespace
     #     cell) → HARD-HELD. A non-null cell that isn't a clean tag is a contamination signal, never
@@ -351,15 +368,35 @@ def send_one_row(row_id: int, cfg: SendConfig) -> SendResult:
     # Stage 3: recipients RESOLVED AT SEND TIME via the workstream resolver (NOT the display
     # cols). For safety: TO = the job's safety-reports contact; CC = its CC 1–5.
     job_id = str(row.get(cfg.review.COL_JOB_ID) or "").strip()
-    job = active_jobs.get_job(job_id)
+    # Resolve from THIS workstream's Active-Jobs sheet (cfg.active_jobs_config), never a
+    # hardcoded default — a progress send can only ever read ITS_Active_Jobs_Progress, a
+    # safety send only ITS_Active_Jobs (the cross-workstream recipient-contamination gate).
+    job = active_jobs.get_job(job_id, cfg.active_jobs_config)
     if job is None:
-        return _mark_held(row_id, project_name, notes, f"unknown job_id={job_id!r} — cannot resolve recipients", "held_no_recipient", cfg)
+        return _held_no_recipient(
+            row_id, project_name, notes, cfg,
+            job_id=job_id, reason=f"unknown job_id={job_id!r} — cannot resolve recipients",
+        )
     to_addr, cc_raw = cfg.recipient_resolver(job)
     to_addr = (to_addr or "").strip()
     if not to_addr or not _valid_addr(to_addr):
-        return _mark_held(row_id, project_name, notes, f"empty/invalid contact (TO) for job {job_id}", "held_no_recipient", cfg)
-    # CC already flattened + de-duped + validated by the resolver; belt-and-suspenders re-filter.
+        return _held_no_recipient(
+            row_id, project_name, notes, cfg,
+            job_id=job_id, reason=f"empty/invalid contact (TO) for job {job_id}",
+        )
+    # CC already flattened + de-duped + validated by the resolver (active_jobs._flatten_cc
+    # WARNs on each malformed entry it drops). This belt-and-suspenders re-filter normally
+    # strips nothing; if it ever DOES (a resolver bug, or a non-active_jobs resolver), WARN
+    # rather than silently dropping a CC — "not a silent strip" (Op Stds never-silent).
     cc_list = [a for a in cc_raw if _valid_addr(a)]
+    dropped_cc = [a for a in cc_raw if not _valid_addr(a)]
+    if dropped_cc:
+        error_log.log(
+            Severity.WARN, cfg.script_name,
+            f"row_id={row_id} job={job_id}: dropped {len(dropped_cc)} malformed CC "
+            f"address(es) at send time: {dropped_cc!r} (resolver should have filtered these).",
+            error_code="weekly_send.cc_dropped_malformed",
+        )
 
     # Stage 4: the compiled packet (attach it; never send a half-formed packet).
     compiled_link = str(row.get(cfg.review.COL_COMPILED_PDF) or "")
@@ -513,6 +550,30 @@ def send_one_row(row_id: int, cfg: SendConfig) -> SendResult:
         error_code="weekly_send.sent",
     )
     return SendResult(status="sent", row_id=row_id, project_name=project_name, retry_count=retry_count)
+
+
+def _held_no_recipient(
+    row_id: int, project_name: str, notes: str, cfg: SendConfig,
+    *, job_id: str, reason: str,
+) -> SendResult:
+    """HELD for an unhealthy send recipient — surfaced as a tracked record, then HELD.
+
+    A bare HELD is operator-actionable but easy to miss (it sits in the review sheet until
+    someone notices). This wraps the HELD with `shared.recipient_health` so a stale / empty /
+    invalid recipient also files a queryable `ITS_Review_Queue` record ("never silent", the
+    cross-cutting ITS invariant — a §3.1 RECORD leg, idempotent on open-row state, NOT a
+    push-deduped alert; watchdog Check A escalates it if it goes stale). Built ONCE here so BOTH
+    workstreams (safety via WSR, progress via WPR) inherit it. `report_unhealthy_recipient` is
+    fail-soft (never raises), so the HELD below always happens regardless of the record leg."""
+    recipient_health.report_unhealthy_recipient(
+        config_workstream=cfg.config_workstream,
+        script_name=cfg.script_name,
+        row_id=row_id,
+        job_id=job_id,
+        project_name=project_name,
+        reason_detail=reason,
+    )
+    return _mark_held(row_id, project_name, notes, reason, "held_no_recipient", cfg)
 
 
 def _mark_held(

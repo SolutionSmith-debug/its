@@ -63,6 +63,7 @@ poll_interval_config_key() {
         org.solutionsmith.its.weekly-send)   echo "safety_reports.weekly_send.poll_interval_seconds" ;;
         org.solutionsmith.its.portal-poll)   echo "safety_reports.portal_poll.poll_interval_seconds" ;;
         org.solutionsmith.its.compile-now-poll) echo "safety_reports.compile_now_poll.poll_interval_seconds" ;;
+        org.solutionsmith.its.progress-send) echo "progress_reports.progress_send.poll_interval_seconds" ;;
         *) echo "" ;;
     esac
 }
@@ -71,6 +72,7 @@ poll_interval_default() {
         org.solutionsmith.its.weekly-send)   echo "900" ;;
         org.solutionsmith.its.portal-poll)   echo "60" ;;
         org.solutionsmith.its.compile-now-poll) echo "90" ;;
+        org.solutionsmith.its.progress-send) echo "900" ;;
         *) echo "" ;;
     esac
 }
@@ -87,7 +89,13 @@ import sys
 sys.path.insert(0, ".")
 try:
     from shared import smartsheet_client
-    raw = smartsheet_client.get_setting(sys.argv[1], workstream="safety_reports")
+    # The ITS_Config row is scoped to the workstream that owns the key; the key's
+    # leading dotted segment IS that workstream package ("safety_reports.…",
+    # "progress_reports.…"), so derive it rather than hardcoding safety. A read miss
+    # (workstream not yet seeded) just falls through to the caller's per-daemon default.
+    key = sys.argv[1]
+    workstream = key.split(".", 1)[0]
+    raw = smartsheet_client.get_setting(key, workstream=workstream)
     interval = int(str(raw).strip())
     if interval >= 1:
         print(interval)

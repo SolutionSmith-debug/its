@@ -1,0 +1,145 @@
+---
+type: operations
+date: 2026-06-30
+status: active
+related_prs: []
+workstream: progress_reports
+tags: [runbook, successor-remediation, progress_send, external-send-gate, workstream-guard, recipient-routing, f22, tier-2, tier-3]
+---
+
+# Runbook — Progress weekly-send (a WPR row stuck HELD / blocked / "contamination") (Successor-Remediation, Op Stds §43)
+
+`progress_reports/progress_send.py` is the **send half of the External Send Gate** (FM v11
+Invariant 1) for the progress workstream — the PROGRESS instantiation of the shared
+`safety_reports/weekly_send.send_one_row` engine. The poller
+`progress_reports/progress_send_poll.py` discovers approved `WPR_human_review` rows, runs the
+F22 approval-attestation gate against the **Progress Reporting** workspace, and dispatches each
+to the sender. The sender refuses to transmit a half-formed or wrong-workstream packet — it
+marks the row `Send Status = HELD` instead. This runbook covers the operator-visible symptoms.
+
+> **The both-rule (FM v11 / Op Stds §44).** A fault is Tier-2-eligible (Successor-Operator may
+> self-repair) only if it is **documented here AND low-capability-class**. Anything touching the
+> **External Send Gate, secrets/auth, doctrine, or code** is FIXED high-class → escalate to Seth
+> regardless of documentation.
+
+## Symptom A — a WPR row stuck `Send Status = HELD`, Notes `[HELD: workstream contamination …]`, and/or CRITICAL `weekly_send.workstream_mismatch`
+
+**What it means.** A `WPR_human_review` row was tagged for a **different** workstream than
+`progress` (e.g. `Workstream = safety`), so the sender **blocked the send** (fail-closed) and
+marked the row HELD. No email went out. The guard worked: a wrong-workstream packet nearly
+transmitted from the progress sender.
+
+**Boundary — FIXED high-capability-class → escalate to Seth.** A contamination HELD touches the
+External Send Gate. The Successor-Operator does **NOT** self-repair it (do not clear the HELD, do
+not re-tag the row, do not re-approve).
+
+**Read-only checks before escalating:**
+1. Open the HELD `WPR_human_review` row. Read the `Workstream` cell + Notes
+   `[HELD: workstream contamination row=… != sender 'progress']`.
+2. Confirm this is the **progress** review sheet (`WPR_human_review`).
+3. Change nothing. Capture the row ID, the `Workstream` value, and the Job ID.
+
+**Escalate to Seth** with that evidence — the likely cause is a code/config defect (a safety row
+mis-filed onto the WPR sheet, or a mis-bound `SendConfig`).
+
+## Symptom B — a WPR row stuck HELD `held_no_recipient` (the recipient-routing trap)
+
+**What it means.** The sender could not resolve a TO address for the row's Job ID, so it HELD
+(it never sends a packet with no recipient). Either the job is unknown on
+`ITS_Active_Jobs_Progress`, or **both** the progress contact **and** the stakeholder-fallback
+columns are blank.
+
+**How progress recipients resolve (read this — it is the most-bitten trap).** The progress
+sender resolves recipients from the **`ITS_Active_Jobs_Progress`** sheet via
+`PROGRESS_ACTIVE_JOBS_CONFIG`, reading the workstream-neutral `reports_contact_email` alias (the
+**"Progress Reports Contact Email"** column), and **falls back to the job's Stakeholder Email**
+when that contact is blank. CC = the job's CC 1–5.
+
+> If a developer ever rebinds the progress send to `SAFETY_ACTIVE_JOBS_CONFIG`, or reads
+> `job.safety_reports_contact_email` instead of `job.reports_contact_email`, progress reports
+> route silently to the **safety** contact column in a **different** sheet — there is NO runtime
+> error. That defect is **code-change territory → escalate to Seth.** The `held_no_recipient`
+> case below is the operator-fixable *data* case.
+
+**Related — the live stakeholder-fallback case (send succeeds, but to a different person).** If
+the **"Progress Reports Contact Email"** cell is blank but the job's **Stakeholder Email** is
+set, the send does **not** HELD — it succeeds, addressed to the **stakeholder** (the deliberate
+fallback). This is observable, not silent: the sender logs an INFO with `error_code =
+progress_send.stakeholder_fallback_used` each time the fallback fires. **If a report reaches the
+wrong inbox**, grep the logs / ITS_Errors for that `error_code` to spot a contact column that was
+accidentally cleared (fat-fingered edit, partial migration). **Low-class Tier-2 repair:** fill the
+"Progress Reports Contact Email" cell on the job's `ITS_Active_Jobs_Progress` row; the next weekly
+send uses it. (No HELD to clear — the prior sends already went out to the stakeholder.)
+
+**This is a low-class, documented Tier-2 repair (a data fix):**
+1. Open `ITS_Active_Jobs_Progress`. Find the row whose `Job ID` matches the HELD WPR row's Job ID.
+   (If no such row exists → the job is unknown; escalate to Seth — a missing job is a routing /
+   sync question, not a cell edit.)
+2. Fill the **"Progress Reports Contact Email"** cell with the correct address (or, if the
+   stakeholder is the intended recipient, confirm **Stakeholder Email** is set).
+3. The HELD row is **excluded from re-dispatch** (the poller skips HELD). To re-send, clear the
+   hold: set the row's `Send Status` back to `PENDING` and re-check the approval checkbox
+   (`Send Now` or `Approve for Scheduled Send`). The next poll cycle re-dispatches.
+4. Confirm the send: the row flips to `SENT` with a `Sent At` stamp.
+
+## Symptom C — every progress send blocked; F22 `EMPTY_ALLOWLIST` / a wake CRITICAL
+
+**What it means.** The F22 approver authority for progress sends is **membership of the
+`ITS — Progress Reporting` workspace**. If no individual approvers are shared into that workspace,
+the allowlist is empty and the gate **fails CLOSED** — every send is blocked. This is correct,
+not a bug; it is the expected state until the §46 re-share is done.
+
+**This is a low-class, documented Tier-2 repair (a workspace-share action):**
+1. Run `python scripts/smoke_test_progress_send.py` — Stage 6 reports the approver count. An
+   empty set confirms this symptom.
+2. In the Smartsheet UI, share each intended approver (the same people who approve safety weekly
+   reports) into the **`ITS — Progress Reporting`** workspace.
+3. Re-run the smoke — Stage 6 should now report a non-empty approver set. Sends dispatch on the
+   next cycle.
+
+If you lack workspace-share rights, or are unsure who the approvers should be → **escalate to
+Seth.** (The set of who-may-approve is a Send-Gate posture question.)
+
+## Symptom D — a WPR row stuck HELD `held_missing_pdf` or `held_oversized_packet`
+
+- **`held_missing_pdf`** — the row has no Compiled-PDF Box link, so there is nothing to attach.
+  **Low-class Tier-2:** re-run the progress compile — `python -m progress_reports.progress_weekly_generate`
+  (optionally `--week-start <any date in the Sat→Fri week>`) — then clear the hold as in Symptom B
+  step 3.
+- **`held_oversized_packet`** — the compiled packet exceeds Graph's ~150 MB upload-session
+  ceiling and cannot be emailed by any path. **Low-class Tier-2 with a note:** the packet must be
+  reduced (fewer / smaller photos) or split; this is a compile-input change, so coordinate with
+  whoever owns the week's submissions. If the size is unexpected, escalate to Seth.
+
+## Symptom E — a flood of WARN `weekly_send.workstream_absent` on progress rows
+
+**What it means.** Rows are reaching the sender with an **empty** `Workstream` tag; the sender
+proceeds (back-compat fail-open) but WARNs. The progress compile's writer
+(`wpr_review.add_wpr_row`) **always** seeds `Workstream = progress`, so a persistent flood means
+rows are being written to the WPR sheet by something other than the compile. **Capture a row ID +
+how it was created and escalate to Seth** (a non-compile writer on the send sheet is a defect).
+
+## Daemon won't run / appears stale
+
+- The poller is the launchd job **`org.solutionsmith.its.progress-send`** (interval, RunAtLoad=true).
+  Confirm it is loaded: `scripts/launchd/install.sh status org.solutionsmith.its.progress-send`.
+- Runtime gate: ITS_Config `progress_reports.progress_send.polling_enabled` (default ON). A
+  disabled value short-circuits the cycle (this is an operator pause, not an error).
+- Env prereqs: `python scripts/smoke_test_progress_send.py` (kill switch, Graph creds, WPR
+  schema, F22 approvers, ITS_Daemon_Health).
+- **Staleness-monitoring gap (known):** the marker slug `progress_send_poll` is **not yet in
+  `watchdog.TRACKED_JOBS`** (registered in the P5 watchdog slice, deferred exactly as P4 deferred
+  the compile slug). Until then, Check-C does **not** alert if this daemon stops — confirm
+  liveness via `ITS_Daemon_Health` (its self-provisioned row) rather than a watchdog page.
+- The daemon must NOT be reloaded from a feature-branch worktree. Reload only against `~/its` on
+  `main` (the live tree), per `docs/operations/worktree_discipline.md`.
+
+## Why the guard is shaped this way (pointer to §42)
+
+The code-reader rationale lives in `progress_reports/progress_send.py` (the `CONFIG` block —
+every `SendConfig` field is required with no default, so progress cannot silently inherit safety's
+sheet/contacts/tag; `active_jobs_config=PROGRESS_ACTIVE_JOBS_CONFIG` is the recipient-routing
+guard; `_resolve_progress_recipients` is the contact-then-stakeholder fallback) and in
+`safety_reports/weekly_send.py` (the shared Stage-2b contamination guard + the write-ahead
+`SENDING` marker that makes a post-send stamp failure non-re-dispatchable — no double-send).
+Companion runbook: `docs/runbooks/safety_weekly_send.md`.

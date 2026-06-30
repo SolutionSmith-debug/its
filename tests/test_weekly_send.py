@@ -57,6 +57,7 @@ def stub(mocker) -> dict[str, MagicMock]:
         "send_large": mocker.patch.object(weekly_send.graph_client, "send_mail_large_attachment"),
         "from_mailbox": mocker.patch.object(weekly_send, "_read_str_setting", return_value="safety@evergreenmirror.com"),
         "log": mocker.patch.object(weekly_send.error_log, "log"),
+        "recipient_health": mocker.patch.object(weekly_send.recipient_health, "report_unhealthy_recipient"),
     }
 
 
@@ -138,6 +139,9 @@ def test_unknown_job_is_held(stub):
     assert result.status == "held_no_recipient"
     stub["send_mail"].assert_not_called()
     assert stub["update_rows"].call_args.args[1][0][wsr_review.COL_SEND_STATUS] == wsr_review.STATUS_HELD
+    # Never-silent: the HELD also surfaces via recipient_health (Review-Queue + dedupe-gated alert).
+    stub["recipient_health"].assert_called_once()
+    assert stub["recipient_health"].call_args.kwargs["config_workstream"] == "safety_reports"
 
 
 def test_empty_to_contact_is_held(stub):
@@ -145,6 +149,7 @@ def test_empty_to_contact_is_held(stub):
     result = weekly_send.send_one_row(50, weekly_send.CONFIG)
     assert result.status == "held_no_recipient"
     stub["send_mail"].assert_not_called()
+    stub["recipient_health"].assert_called_once()
 
 
 def test_missing_compiled_pdf_is_held(stub):
