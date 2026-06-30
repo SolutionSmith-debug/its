@@ -3,7 +3,7 @@
   "parents": [
     {
       "parent_form_code": "equipment-preinspection",
-      "category": "safety",
+      "category": "progress",
       "name": "Equipment Pre-Inspection",
       "display_order": 1,
       "forms": [
