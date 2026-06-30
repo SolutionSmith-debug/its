@@ -95,8 +95,10 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
+from typing import Any
 
-from safety_reports import portal_poll, weekly_generate, wsr_review
+from progress_reports import progress_weekly_generate, wpr_review
+from safety_reports import generate_core, portal_poll, weekly_generate, wsr_review
 from shared import (
     alert_dedupe,
     box_client,
@@ -108,6 +110,7 @@ from shared import (
     safety_week,
     sheet_ids,
     smartsheet_client,
+    state_io,
 )
 from shared.error_log import (
     Severity,
@@ -134,6 +137,9 @@ CRITICAL_ITEMS_CAP = 5
 # scheduled job calls `write_last_run_marker(<job_name>)` on success;
 # Check C verifies the markers stay fresh for everything in TRACKED_JOBS.
 WATCHDOG_MARKER_DIR = Path.home() / "its" / ".watchdog"
+# Watchdog state dir (first-seen / baseline snapshots for the P5 operability checks T/U).
+# All writes go through shared.state_io (atomic + path-locked) per the state-write discipline.
+STATE_DIR = Path.home() / "its" / "state"
 TRACKED_JOBS: list[str] = [
     "safety_weekly_generate",
     "safety_weekly_send_poll",
@@ -156,6 +162,15 @@ TRACKED_JOBS: list[str] = [
     # org.solutionsmith.its.compile-now-poll`. Until the operator loads it, this entry
     # correctly WARNs (the daemon is not running) — register + load together.
     "safety_compile_now_poll",
+    # Progress Reporting daemons (P5). The compile is Friday 14:30 calendar-driven
+    # (progress_weekly_generate, mirrors the safety weekly compile → 8-day window + Check-I
+    # catch-up below); the send poll is a 15-min interval (progress_send_poll → 30-min window,
+    # mirrors safety_weekly_send_poll). Both write their markers now; like
+    # safety_compile_now_poll, these entries WARN until the operator LOADS the progress plists
+    # at the progress cutover (register + load together — the daemons are dark until intake is
+    # flipped on). Closes the P4/P5 "marker written but nothing reads it" gap.
+    "progress_weekly_generate",
+    "progress_send_poll",
 ]
 
 # Per-job freshness windows. Jobs not in this map use the default 24h
@@ -185,6 +200,13 @@ TRACKED_JOB_WINDOWS: dict[str, timedelta] = {
     # compile_now_poll runs every 90s (default). 8 min == ~5 cycles — same
     # high-frequency-poller tolerance as portal_poll, scaled to the 90s cadence.
     "safety_compile_now_poll": timedelta(minutes=8),
+    # progress_weekly_generate runs Friday 14:30 (StartCalendarInterval) — mirror the
+    # safety weekly compile's 8-day window (a missed Friday + the following Wednesday
+    # surfaces; a 1-day-late run does not false-positive). Check-I below auto-recovers it.
+    "progress_weekly_generate": timedelta(days=8),
+    # progress_send_poll runs every 15 min (default); 30 min == 2 cycles — mirror
+    # safety_weekly_send_poll (a single missed cycle tolerated; two consecutive fire).
+    "progress_send_poll": timedelta(minutes=30),
 }
 DEFAULT_TRACKED_JOB_WINDOW = timedelta(hours=24)
 
@@ -703,78 +725,103 @@ def _read_marker_datetime(job_slug: str) -> datetime | None:
     return parsed
 
 
-def _wsr_rows_exist_for_week(week_start: date) -> bool:
-    """True iff WSR_human_review has >=1 row for the target week (Phase-5).
+def _review_rows_exist_for_week(review_sheet_id: int, week_start: date) -> bool:
+    """True iff the review sheet (WSR for safety / WPR for progress) has >=1 row for the week.
 
-    The second "did it complete" signal alongside the marker's "did it run":
-    weekly_generate's marker write is fail-soft, so a successful run can leave a
-    stale/missing marker. Row presence catches that and prevents a wasteful
-    re-fire. `week_start` is the catch-up's Monday; the WSR `Week Of` column keys
-    on the Saturday that opens the Sat→Fri week, so we convert via safety_week.
-    Fail-soft: a read error logs WARN and returns False, so the decision falls
-    back to the marker signal — and a Smartsheet outage that hides the rows here
+    The second "did it complete" signal alongside the marker's "did it run": the compile's
+    marker write is fail-soft, so a successful run can leave a stale/missing marker. Row
+    presence catches that and prevents a wasteful re-fire. `week_start` is the catch-up's
+    Monday; the `Week Of` column keys on the Saturday that opens the Sat→Fri week, so we
+    convert via safety_week. Fail-soft: a read error logs WARN and returns False, so the
+    decision falls back to the marker signal — and a Smartsheet outage that hides the rows here
     resurfaces when the (also-Smartsheet) catch-up compile runs and fails loudly.
     """
     saturday = safety_week.week_bounds(week_start).start
     try:
         rows = smartsheet_client.get_rows(
-            sheet_ids.SHEET_WSR_HUMAN_REVIEW,
+            review_sheet_id,
             filters={"Week Of": saturday.isoformat()},
         )
     except Exception as exc:  # noqa: BLE001 — fail-soft to marker-only decision
         log(
             Severity.WARN,
-            f"{_SCRIPT}._wsr_rows_exist_for_week",
-            f"WSR_human_review read failed for week {saturday}: {exc!r}",
+            f"{_SCRIPT}._review_rows_exist_for_week",
+            f"review sheet {review_sheet_id} read failed for week {saturday}: {exc!r}",
         )
         return False
     return bool(rows)
 
 
-def _check_weekly_generate_catchup(*, alerts_suppressed: bool = False) -> CheckResult:
-    """Check I: re-fire a missed weekly_generate Friday run (Tier-1 self-heal).
+@dataclass(frozen=True)
+class _CatchupTarget:
+    """One Friday-calendar weekly compile the Check-I catch-up can recover (P5 generalized).
+
+    `slug` = the Check-C marker slug (in TRACKED_JOBS); `review_sheet_id` = the WSR/WPR sheet
+    whose row presence is the "produced output" signal; `refire` = the direct, decorator-free
+    re-fire entry (runs during MAINTENANCE — generation is internal, no external send);
+    `label` = the operator-facing job name + the `{label}_catchup_failed` error_code stem.
+    Both compiles share the Friday-trigger math (`_most_recent_friday_trigger`); progress's
+    actual 14:30 run produces a marker ≥ the 14:00 trigger instant, so the shared lower-bound
+    trigger is correct for both.
+    """
+
+    slug: str
+    review_sheet_id: int
+    refire: Callable[[date], dict[str, Any]]
+    label: str
+
+
+_SAFETY_CATCHUP_TARGET = _CatchupTarget(
+    slug=WEEKLY_GENERATE_JOB_SLUG,  # "safety_weekly_generate"
+    review_sheet_id=sheet_ids.SHEET_WSR_HUMAN_REVIEW,
+    refire=lambda wk: weekly_generate._run_pipeline(week_start_override=wk),
+    label="weekly_generate",
+)
+_PROGRESS_CATCHUP_TARGET = _CatchupTarget(
+    slug="progress_weekly_generate",
+    review_sheet_id=sheet_ids.SHEET_WPR_HUMAN_REVIEW,
+    # The progress compile has no `_run_pipeline` shim; its main() delegates to
+    # generate_core.run_generate(PROGRESS_GENERATE_CONFIG). Call that directly (decorator-free,
+    # MAINTENANCE-runnable) with the same RunSummary dict shape the safety path returns.
+    refire=lambda wk: generate_core.run_generate(
+        progress_weekly_generate.PROGRESS_GENERATE_CONFIG, week_start_override=wk
+    ),
+    label="progress_weekly_generate",
+)
+
+
+def _check_generate_catchup(
+    target: _CatchupTarget, *, alerts_suppressed: bool
+) -> CheckResult:
+    """Check I (generalized): re-fire a missed Friday weekly-compile run (Tier-1 self-heal).
 
     Catch-up fires iff ALL THREE hold for the current target week:
-      (a) we are within CATCHUP_WINDOW of the most recent Friday 14:00
-          trigger (don't recover an ancient week — Check C owns those);
-      (b) the Check C marker is missing or older than that trigger
-          ("did not run"); AND
-      (c) WSR_human_review has no row for that week ("produced nothing").
-    A fresh marker OR existing WSR rows means the run happened, so we do not
-    re-fire. Combining the two "ran" signals with OR (fire only when BOTH
-    are negative) is deliberately conservative: re-firing is safe but burns
-    Anthropic spend, and a fail-soft marker write must not look like a miss.
-    The "ran but every project errored" case is out of scope here — those
-    runs DID complete (rows + GENERATION_FAILED placeholders exist) and are
-    owned by the future generation-retry redesign (planning #1); Check I
-    closes only the "calendar run never executed" Tier-1 gap.
+      (a) we are within CATCHUP_WINDOW of the most recent Friday trigger (don't recover an
+          ancient week — Check C owns those);
+      (b) the Check C marker is missing or older than that trigger ("did not run"); AND
+      (c) the target's review sheet has no row for that week ("produced nothing").
+    A fresh marker OR existing review rows means the run happened, so we do not re-fire.
+    Combining the two "ran" signals with OR (fire only when BOTH are negative) is deliberately
+    conservative: re-firing is safe but burns compute, and a fail-soft marker write must not
+    look like a miss. The "ran but every project errored" case is out of scope (those runs DID
+    complete — rows + placeholders exist); Check I closes only the "calendar run never executed"
+    Tier-1 gap.
 
-    On fire, calls `weekly_generate._run_pipeline` directly — NOT the
-    `@require_active`-decorated `main()`. The watchdog's own `main()` has
-    already honored the kill switch, and `_run_pipeline` is weekly_generate's
-    documented direct-invocation entry point (its `main` docstring: "Logic
-    lives in `_run_pipeline` so unit tests can call it directly without the
-    decorator stack"). Calling it directly is what lets a catch-up run during
-    MAINTENANCE — which the Tier-1 brief requires, because generation is
-    internal (no external send); the decorated `main()` would be blocked by
-    `@require_active` during MAINTENANCE. Capability gate is unaffected: the
-    watchdog is neither a generation nor a send script in
-    tests/test_capability_gating.py (scripts/ is not walked), and Check I
-    drives generation only — it adds no send capability.
+    On fire, calls `target.refire` directly — NOT the `@require_active`-decorated `main()`. The
+    watchdog's own `main()` has already honored the kill switch, and the direct entry is what
+    lets a catch-up run during MAINTENANCE (generation is internal — no external send — so the
+    Tier-1 brief requires it; the decorated `main()` would be blocked by `@require_active`).
+    Capability gate is unaffected: the watchdog is neither a generation nor a send script in
+    tests/test_capability_gating.py (scripts/ is not walked), and Check I drives generation only.
 
-    MAINTENANCE (`alerts_suppressed=True`): generation still RUNS, but a
-    catch-up FAILURE's operator page (the Resend/Sentry `_alert_critical`
-    legs) is DEFERRED — only the ITS_Errors record row is written
-    (push-vs-record, Op Stds §3.1; same carve-out shape as Check G). The
-    deferred CRITICAL resurfaces post-MAINTENANCE via Check B (open
-    CRITICALs). `alerts_suppressed` is wired in by `_run_check`'s signature
-    inspection.
+    MAINTENANCE (`alerts_suppressed=True`): generation still RUNS, but a catch-up FAILURE's
+    operator page is DEFERRED — only the ITS_Errors record row is written (push-vs-record, Op
+    Stds §3.1; same carve-out as Check G). The deferred CRITICAL resurfaces via Check B.
+    `alerts_suppressed` is wired in by `_run_check`'s signature inspection.
 
-    At most one catch-up per watchdog run (no loop): this returns after a
-    single `_run_pipeline` call, and a successful run refreshes the marker so
-    the next watchdog run takes the "marker fresh" early-return. A persistent
-    failure re-attempts on the next daily run while still inside the window,
-    then falls to Check C / a human.
+    At most one catch-up per target per watchdog run (no loop): a successful run refreshes the
+    marker so the next run takes the "marker fresh" early-return; a persistent failure re-attempts
+    on the next daily run while still inside the window, then falls to Check C / a human.
     """
     now = _local_now()
     last_trigger = _most_recent_friday_trigger(now)
@@ -787,32 +834,46 @@ def _check_weekly_generate_catchup(*, alerts_suppressed: bool = False) -> CheckR
         return CheckResult(
             severity=Severity.INFO,
             summary=(
-                f"weekly_generate catch-up: week {target_week} is past the "
+                f"{target.label} catch-up: week {target_week} is past the "
                 f"catch-up window (Check C covers older misses)."
             ),
         )
 
-    marker_dt = _read_marker_datetime(WEEKLY_GENERATE_JOB_SLUG)
+    marker_dt = _read_marker_datetime(target.slug)
     if marker_dt is not None and marker_dt >= last_trigger:
         return CheckResult(
             severity=Severity.INFO,
-            summary=f"weekly_generate ran for week {target_week} (marker fresh).",
+            summary=f"{target.label} ran for week {target_week} (marker fresh).",
         )
 
-    if _wsr_rows_exist_for_week(target_week):
+    if _review_rows_exist_for_week(target.review_sheet_id, target_week):
         return CheckResult(
             severity=Severity.INFO,
             summary=(
-                f"weekly_generate produced WPR rows for week {target_week} "
+                f"{target.label} produced review rows for week {target_week} "
                 f"(marker stale but rows present); no catch-up."
             ),
         )
 
-    return _fire_weekly_generate_catchup(target_week, alerts_suppressed=alerts_suppressed)
+    return _fire_generate_catchup(target, target_week, alerts_suppressed=alerts_suppressed)
 
 
-def _fire_weekly_generate_catchup(
-    target_week: date, *, alerts_suppressed: bool
+def _check_weekly_generate_catchup(*, alerts_suppressed: bool = False) -> CheckResult:
+    """Check I (safety): re-fire a missed safety weekly_generate Friday run. Thin wrapper over
+    the generalized catch-up bound to the SAFETY target (byte-identical to the pre-P5 behavior)."""
+    return _check_generate_catchup(_SAFETY_CATCHUP_TARGET, alerts_suppressed=alerts_suppressed)
+
+
+def _check_progress_generate_catchup(*, alerts_suppressed: bool = False) -> CheckResult:
+    """Check I (progress, P5): re-fire a missed progress_weekly_generate Friday 14:30 run. Thin
+    wrapper over the generalized catch-up bound to the PROGRESS target — the Tier-1 self-heal
+    that recovers the one progress daemon launchd can't (calendar-scheduled, like the safety
+    compile). Re-fires generate_core.run_generate(PROGRESS_GENERATE_CONFIG); send-free + AI-free."""
+    return _check_generate_catchup(_PROGRESS_CATCHUP_TARGET, alerts_suppressed=alerts_suppressed)
+
+
+def _fire_generate_catchup(
+    target: _CatchupTarget, target_week: date, *, alerts_suppressed: bool
 ) -> CheckResult:
     """Re-run weekly_generate for a missed week; escalate on failure.
 
@@ -826,33 +887,32 @@ def _fire_weekly_generate_catchup(
     log(
         Severity.INFO,
         _SCRIPT,
-        f"[catch-up] weekly_generate did not run for week {target_week}; "
+        f"[catch-up] {target.label} did not run for week {target_week}; "
         f"re-firing generation",
     )
     try:
-        result = weekly_generate._run_pipeline(week_start_override=target_week)
+        result = target.refire(target_week)
     except Exception as exc:  # noqa: BLE001 — convert to a MAINTENANCE-aware CRITICAL
         tb = traceback.format_exc()
         return _escalate_catchup_failure(
-            target_week, exc, tb, alerts_suppressed=alerts_suppressed
+            target_week, exc, tb, label=target.label, alerts_suppressed=alerts_suppressed
         )
 
-    if result.get("aborted_empty_chain"):
-        return CheckResult(
-            severity=Severity.WARN,
-            summary=(
-                f"weekly_generate catch-up for week {target_week} aborted: "
-                f"empty reviewer chain (weekly_generate logged its own CRITICAL)."
-            ),
-        )
-
-    drafts = result.get("drafts_written", 0)
-    failed = result.get("drafts_failed", 0)
+    # `result` is generate_core.run_generate's dict: RunSummary.__dict__ + week bounds +
+    # correlation_id. Read the REAL counters (packets_compiled / wsr_written / errors_per_job) —
+    # the pre-P5 code read drafts_written/drafts_failed/aborted_empty_chain, which run_generate
+    # NEVER produces, so every success summary mis-reported "0 written" and the empty-chain WARN
+    # branch was dead code (it only fired in tests via a hand-rolled key). Fixed here while
+    # generalizing the catch-up to progress (it doubled that surface).
+    packets = result.get("packets_compiled", 0)
+    rows_written = result.get("wsr_written", 0)
+    job_errors = len(result.get("errors_per_job", {}) or {})
     return CheckResult(
         severity=Severity.INFO,
         summary=(
-            f"weekly_generate catch-up fired for week {target_week}: "
-            f"{drafts} draft(s) written, {failed} failed."
+            f"{target.label} catch-up fired for week {target_week}: "
+            f"{packets} packet(s) compiled, {rows_written} review row(s) written, "
+            f"{job_errors} job error(s)."
         ),
         details=f"correlation_id={result.get('correlation_id', '?')}",
     )
@@ -863,6 +923,7 @@ def _escalate_catchup_failure(
     exc: Exception,
     tb: str,
     *,
+    label: str,
     alerts_suppressed: bool,
 ) -> CheckResult:
     """Programmatic CRITICAL triple-fire for a failed catch-up generation.
@@ -880,7 +941,8 @@ def _escalate_catchup_failure(
     CRITICAL resurfaces post-MAINTENANCE via Check B (open CRITICALs).
     """
     correlation_id = str(uuid.uuid4())
-    message = f"weekly_generate catch-up FAILED for week {target_week}: {exc!r}"
+    error_code = f"{label}_catchup_failed"
+    message = f"{label} catch-up FAILED for week {target_week}: {exc!r}"
     # A3: alert=False — the watchdog manages its own operator page below
     # (deferred under MAINTENANCE via alerts_suppressed), so the record log
     # must NOT auto-fire the alert legs or it would page during MAINTENANCE
@@ -889,7 +951,7 @@ def _escalate_catchup_failure(
         Severity.CRITICAL,
         _SCRIPT,
         message,
-        error_code="weekly_generate_catchup_failed",
+        error_code=error_code,
         exc_info=tb,
         correlation_id=correlation_id,
         alert=False,
@@ -907,12 +969,12 @@ def _escalate_catchup_failure(
             message,
             tb,
             correlation_id=correlation_id,
-            error_code="weekly_generate_catchup_failed",
+            error_code=error_code,
         )
     return CheckResult(
         severity=Severity.INFO,
         summary=(
-            f"weekly_generate catch-up FAILED for week {target_week} — CRITICAL "
+            f"{label} catch-up FAILED for week {target_week} — CRITICAL "
             + (
                 "recorded (page deferred, MAINTENANCE)"
                 if alerts_suppressed
@@ -1501,6 +1563,251 @@ def _check_main_branch_ci_green() -> CheckResult:
     )
 
 
+# ---- Check T: review rows stuck HELD (WSR + WPR; P5 operability) ---------
+#
+# A HELD is an operator-actionable refusal (no recipient / missing PDF / oversized packet /
+# workstream contamination). The companion `shared/recipient_health` module (P5, PR #380) files
+# a per-incident ITS_Review_Queue RECORD at SEND time for the no-recipient subset; this DAILY
+# scan is the catch-all backstop for ALL HELD reasons across BOTH review sheets (today also
+# covered at HELD time by weekly_send's generic `weekly_send.held` WARN), so a HELD left
+# un-actioned never sits silently. Age-thresholded via a first-seen
+# state file so a just-created HELD (e.g. during a live smoke, or a row the operator is actively
+# resolving) does NOT false-fire — only a HELD that has SAT past HELD_ROW_STALE_AFTER WARNs.
+HELD_ROW_STALE_AFTER = timedelta(hours=24)
+HELD_ROW_FIRST_SEEN_PATH = STATE_DIR / "held_row_first_seen.json"
+HELD_ROW_ITEM_CAP = 10
+
+# (label, sheet id, send-status column, HELD value) for each review sheet.
+_HELD_SCAN_SHEETS: list[tuple[str, int, str, str]] = [
+    ("WSR", sheet_ids.SHEET_WSR_HUMAN_REVIEW, wsr_review.COL_SEND_STATUS, wsr_review.STATUS_HELD),
+    ("WPR", sheet_ids.SHEET_WPR_HUMAN_REVIEW, wpr_review.COL_SEND_STATUS, wpr_review.STATUS_HELD),
+]
+
+
+def _load_held_first_seen_unlocked() -> dict[str, str]:
+    """Read the first-seen map ({"WSR:123": iso_utc}); {} on any read/parse error."""
+    try:
+        if HELD_ROW_FIRST_SEEN_PATH.exists():
+            data = json.loads(HELD_ROW_FIRST_SEEN_PATH.read_text())
+            if isinstance(data, dict):
+                return {str(k): str(v) for k, v in data.items()}
+    except (OSError, ValueError, TypeError):
+        pass
+    return {}
+
+
+def _merge_held_first_seen(
+    prior: dict[str, str], held_now: set[str], scanned_labels: set[str], now: datetime
+) -> dict[str, str]:
+    """Merge the prior first-seen map with this round's HELD keys.
+
+    CRITICAL (Check-T state-loss guard): only prune keys whose sheet LABEL was scanned
+    SUCCESSFULLY this round — a key whose sheet had a transient read error is PRESERVED with its
+    prior timestamp, so a one-sheet read failure can never silently reset the OTHER (or the same,
+    next cycle) sheet's staleness clock. Cleared rows on a scanned sheet drop out; newly-seen
+    HELD keys are stamped `now`. (Mirrors Check U's baseline merge, which preserves an unread
+    workspace's prior snapshot.)"""
+    merged = dict(prior)
+    for key in list(merged):
+        label = key.split(":", 1)[0]
+        if label in scanned_labels and key not in held_now:
+            del merged[key]  # this sheet WAS read and the row is no longer HELD → cleared
+    for key in held_now:
+        merged.setdefault(key, now.isoformat())
+    return merged
+
+
+def _update_held_first_seen(
+    held_now: set[str], scanned_labels: set[str], now: datetime
+) -> dict[str, str]:
+    """Read-modify-write the first-seen map under a path lock; returns the merged map.
+
+    Fail-soft (never raises): on any state I/O error, WARN and return a best-effort in-memory
+    map (current keys stamped `now`), so age-thresholding degrades to "nothing stale yet" this
+    run rather than crashing the check or inventing staleness."""
+    try:
+        with state_io.with_path_lock(HELD_ROW_FIRST_SEEN_PATH):
+            prior = _load_held_first_seen_unlocked()
+            merged = _merge_held_first_seen(prior, held_now, scanned_labels, now)
+            state_io.atomic_write_json(HELD_ROW_FIRST_SEEN_PATH, merged)
+            return merged
+    except Exception as exc:  # noqa: BLE001 — fail-soft per state-write discipline
+        log(
+            Severity.WARN,
+            _SCRIPT,
+            f"held-row first-seen state I/O failed ({exc!r}); age-thresholding degraded this run.",
+        )
+        return {k: now.isoformat() for k in held_now}
+
+
+def _check_stale_held_rows() -> CheckResult:
+    """Check T: WSR + WPR rows stuck Send Status=HELD beyond HELD_ROW_STALE_AFTER → WARN.
+
+    READ-ONLY against Smartsheet (no row write, no send). A per-sheet read failure is recorded
+    and the other sheet still scans; a total read failure → INFO (no data, no false WARN). The
+    only persistent side effect is the first-seen state file (atomic + path-locked)."""
+    now = datetime.now(UTC)
+    held_now: set[str] = set()
+    scanned_labels: set[str] = set()
+    read_errors: list[str] = []
+    for label, sheet_id, status_col, held_val in _HELD_SCAN_SHEETS:
+        try:
+            rows = smartsheet_client.get_rows(sheet_id, filters={status_col: held_val})
+        except Exception as exc:  # noqa: BLE001 — per-sheet fail-soft; other sheet still scans
+            read_errors.append(f"{label}: {exc!r}")
+            continue
+        scanned_labels.add(label)  # this sheet read OK → its keys may be pruned-if-cleared
+        for r in rows:
+            held_now.add(f"{label}:{r.get('_row_id')}")
+
+    if not scanned_labels:
+        # BOTH sheets failed → no data; never invent a WARN, and don't touch the state file
+        # (so no successfully-scanned label exists to prune — the prior clocks are untouched).
+        return CheckResult(
+            severity=Severity.INFO,
+            summary=f"HELD-row scan: review sheet read failed ({'; '.join(read_errors)}); no data.",
+        )
+
+    first_seen = _update_held_first_seen(held_now, scanned_labels, now)
+    stale: list[str] = []
+    for key, iso in first_seen.items():
+        try:
+            seen = datetime.fromisoformat(iso)
+        except (ValueError, TypeError):
+            continue  # unparseable stamp → treat as just-seen (errs toward not-stale)
+        if seen.tzinfo is None:
+            seen = seen.replace(tzinfo=UTC)
+        if now - seen >= HELD_ROW_STALE_AFTER:
+            stale.append(key)
+
+    if not stale:
+        if held_now:
+            return CheckResult(
+                severity=Severity.INFO,
+                summary=f"{len(held_now)} review row(s) HELD but none past {HELD_ROW_STALE_AFTER} yet.",
+            )
+        return CheckResult(severity=Severity.INFO, summary="No review rows stuck HELD.")
+
+    capped = sorted(stale)[:HELD_ROW_ITEM_CAP]
+    details = f"Keys (sheet:row): {', '.join(capped)}"
+    if len(stale) > HELD_ROW_ITEM_CAP:
+        details += f" (showing {HELD_ROW_ITEM_CAP} of {len(stale)})"
+    if read_errors:
+        details += f" | partial scan (read errors: {'; '.join(read_errors)})"
+    return CheckResult(
+        severity=Severity.WARN,
+        summary=(
+            f"{len(stale)} review row(s) stuck HELD > {HELD_ROW_STALE_AFTER} (WSR/WPR) — "
+            f"operator action overdue (fix the contact / recompile / re-tag, then clear the HELD)."
+        ),
+        details=details,
+    )
+
+
+# ---- Check U: send-workspace approver-set drift (F22 authority; P5) ------
+#
+# The F22 approver set for a workstream's external sends IS the membership of its send
+# workspace (Op Stds §46): WSR sends → Safety Portal workspace, WPR sends → Progress Reporting
+# workspace. Two failure modes this surfaces: (a) an EMPTY set → every send for that workstream
+# fail-closed-blocks (EMPTY_ALLOWLIST) — silent until someone notices nothing sent; (b) a CHANGE
+# to who-may-approve since the last run — a security-relevant event (someone added/removed from
+# the send-approval authority) the operator should confirm was intentional. There is no stored
+# "intended" approver list (membership IS the source of truth), so "drift" = change-vs-baseline;
+# the first run seeds the baseline (no drift reported).
+APPROVER_BASELINE_PATH = STATE_DIR / "approver_set_baseline.json"
+_APPROVER_WORKSPACES: list[tuple[str, int]] = [
+    ("Safety Portal", sheet_ids.WORKSPACE_SAFETY_PORTAL),
+    ("Progress Reporting", sheet_ids.WORKSPACE_PROGRESS_REPORTING),
+]
+
+
+def _load_approver_baseline_unlocked() -> dict[str, list[str]]:
+    try:
+        if APPROVER_BASELINE_PATH.exists():
+            data = json.loads(APPROVER_BASELINE_PATH.read_text())
+            if isinstance(data, dict):
+                return {str(k): [str(e) for e in v] for k, v in data.items() if isinstance(v, list)}
+    except (OSError, ValueError, TypeError):
+        pass
+    return {}
+
+
+def _check_approver_drift() -> CheckResult:
+    """Check U: F22 send-approver set per send workspace — empty (sends blocked) or changed.
+
+    READ-ONLY against Smartsheet. Fail-soft: a per-workspace read error is recorded and the
+    other workspace still checks; a total failure / state-I/O failure → INFO (never invents
+    drift). WARN (not CRITICAL): an empty set is operator-actionable (re-share approvers, §46)
+    and a membership change wants confirmation, neither is a page-worthy host emergency."""
+    now_sets: dict[str, list[str]] = {}
+    empty: list[str] = []
+    read_errors: list[str] = []
+    for label, workspace_id in _APPROVER_WORKSPACES:
+        try:
+            emails = smartsheet_client.list_workspace_share_emails(workspace_id)
+        except Exception as exc:  # noqa: BLE001 — per-workspace fail-soft
+            read_errors.append(f"{label}: {exc!r}")
+            continue
+        now_sets[label] = sorted(emails)
+        if not emails:
+            empty.append(label)
+
+    if not now_sets:
+        return CheckResult(
+            severity=Severity.INFO,
+            summary=f"approver-drift scan: workspace read failed ({'; '.join(read_errors)}); no data.",
+        )
+
+    # Compare to the baseline + persist the new snapshot (fail-soft: on state error, skip drift
+    # detection this run but still report empties).
+    drift_notes: list[str] = []
+    try:
+        with state_io.with_path_lock(APPROVER_BASELINE_PATH):
+            baseline = _load_approver_baseline_unlocked()
+            for label, current in now_sets.items():
+                prior = baseline.get(label)
+                if prior is not None and set(prior) != set(current):
+                    added = sorted(set(current) - set(prior))
+                    removed = sorted(set(prior) - set(current))
+                    drift_notes.append(
+                        f"{label}: +{added or '[]'} -{removed or '[]'}"
+                    )
+            # Persist the union of prior (workspaces not read this run keep their baseline) + current.
+            merged = {**baseline, **now_sets}
+            state_io.atomic_write_json(APPROVER_BASELINE_PATH, merged)
+    except Exception as exc:  # noqa: BLE001 — fail-soft per state-write discipline
+        log(
+            Severity.WARN,
+            _SCRIPT,
+            f"approver-set baseline state I/O failed ({exc!r}); drift detection skipped this run.",
+        )
+
+    if empty:
+        details = f"changes: {'; '.join(drift_notes)}" if drift_notes else ""
+        return CheckResult(
+            severity=Severity.WARN,
+            summary=(
+                f"EMPTY send-approver set for {', '.join(empty)} workspace(s) — every "
+                f"send there is fail-closed-blocked (F22 EMPTY_ALLOWLIST). Re-share approvers (§46)."
+            ),
+            details=details,
+        )
+    if drift_notes:
+        return CheckResult(
+            severity=Severity.WARN,
+            summary=(
+                "Send-approver set CHANGED since last run — confirm intentional (who may "
+                "approve external sends changed)."
+            ),
+            details="; ".join(drift_notes),
+        )
+    suffix = f" (partial: {'; '.join(read_errors)})" if read_errors else ""
+    return CheckResult(
+        severity=Severity.INFO,
+        summary=f"Send-approver sets present + unchanged for {', '.join(now_sets)}.{suffix}",
+    )
+
+
 # ---- Entrypoint ---------------------------------------------------------
 
 
@@ -1517,6 +1824,11 @@ CHECKS: list[Callable[..., CheckResult]] = [
     # it takes alerts_suppressed (threaded by _run_check) to defer the
     # operator page during MAINTENANCE.
     _check_weekly_generate_catchup,
+    # Check I (progress, P5): the progress twin — recovers a missed progress_weekly_generate
+    # Friday 14:30 calendar run (the one progress daemon launchd can't self-recover). Re-fires
+    # generate_core.run_generate(PROGRESS_GENERATE_CONFIG) directly (send-free, AI-free,
+    # MAINTENANCE-runnable); takes alerts_suppressed like the safety catch-up.
+    _check_progress_generate_catchup,
     # Check J / K (F08/F09 PR 2): prolonged-open page + guaranteed cap-window
     # summary sweep. Both fire alerts inline (J via _alert_critical, K via
     # _maybe_fire_window_summary's _send_exempt_alert), so — like Check G / I —
@@ -1549,6 +1861,15 @@ CHECKS: list[Callable[..., CheckResult]] = [
     # Returns a CheckResult; CRITICAL paged + MAINTENANCE-deferred by _run_check. Fail-safe
     # to INFO on any gh/network/parse failure.
     _check_main_branch_ci_green,
+    # Check T (P5): WSR + WPR rows stuck HELD past HELD_ROW_STALE_AFTER — the daily catch-all
+    # backstop for every HELD reason (recipient_health is the hourly send-time signal for the
+    # no-recipient subset). Read-only + first-seen state file; returns a CheckResult (WARN-only).
+    _check_stale_held_rows,
+    # Check U (P5): F22 send-approver-set health per send workspace — EMPTY (sends blocked,
+    # §46 re-share) or CHANGED-since-baseline (who-may-approve drift). Read-only + baseline
+    # state file; returns a CheckResult (WARN-only). (O is still reserved for the A5 row-cap
+    # watchdog.)
+    _check_approver_drift,
     # Check E (Anthropic spend trend) deferred to a follow-on PR (the
     # Check E shipping PR) — requires an Admin API key (sk-ant-admin01-...
     # prefix) provisioned in Keychain under ITS_ANTHROPIC_ADMIN_API_KEY.
