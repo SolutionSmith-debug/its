@@ -4,6 +4,19 @@ Items deliberately deferred. Each carries the rationale for deferral and the tri
 
 When to add an entry: a session deliberately chooses preservation-over-refactor (per Op Stds v11 §14), discovers an external-API constraint that forced a workaround, or defers a non-trivial cleanup that's larger than the current session can absorb. When to mark CLOSED: the underlying item is resolved in a commit; preserve the entry with resolution detail rather than deleting (history is cheap, context is expensive).
 
+## P2.5 job-tracker up-sync — fast-follows [OPEN 2026-06-30]
+
+**P2.5 (PRs #383–#387).** The job-tracker → Smartsheet up-sync (`field_ops/fieldops_sync.py` + `shared/active_jobs_writer.py`, daemon ships `sync_enabled` OFF) landed with six tracked, non-blocking follow-ups:
+
+1. **`_ENROLLMENT_SUFFIXES += "_sync.py"` reverted-with-note.** Adding the `_sync.py` suffix to the capability-gating enrollment list cascaded and flagged the pre-existing `shared/picklist_sync.py` as unenrolled (breaking the meta-test). Correct fix: enroll `picklist_sync.py` in the appropriate gating list FIRST, then add the `_sync.py` suffix. `tests/test_capability_gating.py` carries the revert note.
+2. **Watchdog Check-C `fieldops_sync` slug not wired.** `fieldops_sync` writes a heartbeat/watchdog marker (slug `fieldops_sync`) that nothing reads yet — same shape as the P4 `progress_weekly_generate` gap. Add the slug + a staleness window to `scripts/watchdog.py` `TRACKED_JOBS`, a stale-pending check, and the `install.sh` interval — at cutover (register + load together, so it doesn't WARN before the plist is loaded).
+3. **`_route_to_review` partial-commit context.** When a per-job fence routes a job to the Review Queue mid-cycle, the queue row doesn't carry which sheet(s) already committed (`safety_mirrored_version` vs `progress_mirrored_version`) — an operator can't tell from the row whether it was a pre- or post-safety-write failure. Thread the per-sheet watermark state into the review payload.
+4. **Re-find-after-create race-dup hardening.** `active_jobs_writer.upsert_job`'s find-or-create has the same find-after-create race as `week_folder` (two near-simultaneous cycles could create two rows for one Portal Job Key). Low-likelihood (the daemon is single-host, serialized), tracked for symmetry with the `week_folder` entry.
+5. **401-on-mark-mirrored severity.** A `401` from `POST …/jobs-mark-mirrored` currently fences the job to Review Queue like any transient error; an auth failure (token rotated/mismatched) is operator-actionable and arguably warrants a louder signal (it would block ALL mark-mirrored, not one job). Decide severity at cutover once the live token path is exercised.
+6. **JOB-1042 placeholder UX nit.** The `FieldOpsJobTracker.tsx` routing form's Job-ID placeholder string `"JOB-1042"` is itself a `reserved_job_id` (a `JOB-####` shape the Worker rejects). Cosmetic — change the placeholder to a non-reserved example.
+
+**Revisit when:** the operator runs the P2.5 cutover (items 1, 2, 5 are cutover-time decisions); items 3, 4, 6 are opportunistic. **Tag:** `field_ops`, `job-tracker`, `smartsheet-upsync`, `watchdog`, `capability-gating`.
+
 ## Watchdog Check-C staleness + Check-I catch-up not wired to `progress_weekly_generate` slug [CLOSED 2026-06-30]
 
 **P4 Slice 2 (PR #376).** `progress_weekly_generate` wrote a marker that nothing read — `scripts/watchdog.py` tracked only `safety_weekly_generate`, so a stale/skipped progress compile fired no alert.
