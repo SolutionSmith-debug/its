@@ -38,6 +38,157 @@ const STATUS_OPTIONS: { value: api.JobStatusFilter; label: string }[] = [
   { value: "all", label: "All" },
 ];
 
+const MAX_CC = 5; // mirrors each Active-Jobs sheet's CC 1..5 columns (worker re-enforces)
+
+// ── Routing SoR form block (P2.5 Slice 2) ────────────────────────────────────────────────────────
+// The create form OWNS the full job source-of-truth; the contacts-edit form re-sends it. Both reuse
+// <RoutingFields/>. Local form-state keeps every field a controlled string / string[]; routingPayload
+// trims + drops empties so an UNTOUCHED routing block adds no keys to the create body (keeping the
+// minimal-create contract byte-identical) and is the full intended routing for an edit.
+interface RoutingForm {
+  address: string;
+  stakeholder_name: string;
+  stakeholder_email: string;
+  stakeholder_phone: string;
+  safety_contact_name: string;
+  safety_contact_email: string;
+  safety_cc: string[];
+  progress_contact_name: string;
+  progress_contact_email: string;
+  progress_cc: string[];
+}
+
+const EMPTY_ROUTING: RoutingForm = {
+  address: "",
+  stakeholder_name: "",
+  stakeholder_email: "",
+  stakeholder_phone: "",
+  safety_contact_name: "",
+  safety_contact_email: "",
+  safety_cc: [],
+  progress_contact_name: "",
+  progress_contact_email: "",
+  progress_cc: [],
+};
+
+function routingPayload(r: RoutingForm): api.JobRouting {
+  const out: Record<string, unknown> = {};
+  const scalars: [string, string][] = [
+    ["address", r.address],
+    ["stakeholder_name", r.stakeholder_name],
+    ["stakeholder_email", r.stakeholder_email],
+    ["stakeholder_phone", r.stakeholder_phone],
+    ["safety_contact_name", r.safety_contact_name],
+    ["safety_contact_email", r.safety_contact_email],
+    ["progress_contact_name", r.progress_contact_name],
+    ["progress_contact_email", r.progress_contact_email],
+  ];
+  for (const [k, v] of scalars) {
+    const t = v.trim();
+    if (t) out[k] = t;
+  }
+  const safetyCc = r.safety_cc.map((s) => s.trim()).filter(Boolean);
+  const progressCc = r.progress_cc.map((s) => s.trim()).filter(Boolean);
+  if (safetyCc.length) out.safety_cc = safetyCc;
+  if (progressCc.length) out.progress_cc = progressCc;
+  return out as api.JobRouting;
+}
+
+// CC editor: up to MAX_CC email rows, each independently editable / removable.
+function CcEditor({ label, ccs, onChange }: { label: string; ccs: string[]; onChange: (next: string[]) => void }) {
+  return (
+    <div className="dash-row" role="group" aria-label={label}>
+      <span className="dash-card__label">{label} (≤{MAX_CC}):</span>{" "}
+      {ccs.map((cc, i) => (
+        <span key={i}>
+          <input
+            aria-label={`${label} ${i + 1}`}
+            value={cc}
+            placeholder="email@example.com"
+            maxLength={320}
+            onChange={(e) => onChange(ccs.map((c, j) => (j === i ? e.target.value : c)))}
+          />{" "}
+          <button
+            type="button"
+            className="btn--ghost"
+            aria-label={`Remove ${label} ${i + 1}`}
+            onClick={() => onChange(ccs.filter((_, j) => j !== i))}
+          >
+            ✕
+          </button>{" "}
+        </span>
+      ))}
+      <button
+        type="button"
+        className="btn--secondary"
+        aria-label={`Add ${label}`}
+        disabled={ccs.length >= MAX_CC}
+        onClick={() => onChange([...ccs, ""])}
+      >
+        + Add CC
+      </button>
+    </div>
+  );
+}
+
+// The full routing block: address, stakeholder, a Safety Reports block + a Progress Reports block
+// (each contact name/email + CC editor), and a "Same as safety" copy button. After a copy the
+// progress block stays INDEPENDENTLY editable (it's plain form state).
+function RoutingFields({ routing, onChange }: { routing: RoutingForm; onChange: (next: RoutingForm) => void }) {
+  const set = (patch: Partial<RoutingForm>) => onChange({ ...routing, ...patch });
+  return (
+    <>
+      <div className="dash-row">
+        <input
+          value={routing.address}
+          onChange={(e) => set({ address: e.target.value })}
+          placeholder="Job address (optional)"
+          maxLength={512}
+        />
+      </div>
+      <fieldset className="dash-section" aria-label="Stakeholder">
+        <legend className="dash-card__label">Stakeholder</legend>
+        <div className="dash-row">
+          <input value={routing.stakeholder_name} onChange={(e) => set({ stakeholder_name: e.target.value })} placeholder="Stakeholder name" maxLength={256} />{" "}
+          <input value={routing.stakeholder_email} onChange={(e) => set({ stakeholder_email: e.target.value })} placeholder="Stakeholder email" maxLength={320} />{" "}
+          <input value={routing.stakeholder_phone} onChange={(e) => set({ stakeholder_phone: e.target.value })} placeholder="Stakeholder phone" maxLength={40} />
+        </div>
+      </fieldset>
+      <fieldset className="dash-section" aria-label="Safety Reports">
+        <legend className="dash-card__label">Safety Reports</legend>
+        <div className="dash-row">
+          <input value={routing.safety_contact_name} onChange={(e) => set({ safety_contact_name: e.target.value })} placeholder="Safety contact name" maxLength={256} />{" "}
+          <input value={routing.safety_contact_email} onChange={(e) => set({ safety_contact_email: e.target.value })} placeholder="Safety contact email" maxLength={320} />
+        </div>
+        <CcEditor label="Safety CC" ccs={routing.safety_cc} onChange={(safety_cc) => set({ safety_cc })} />
+      </fieldset>
+      <fieldset className="dash-section" aria-label="Progress Reports">
+        <legend className="dash-card__label">Progress Reports</legend>
+        <div className="dash-row">
+          <button
+            type="button"
+            className="btn--secondary"
+            onClick={() =>
+              set({
+                progress_contact_name: routing.safety_contact_name,
+                progress_contact_email: routing.safety_contact_email,
+                progress_cc: [...routing.safety_cc],
+              })
+            }
+          >
+            Same as safety
+          </button>
+        </div>
+        <div className="dash-row">
+          <input value={routing.progress_contact_name} onChange={(e) => set({ progress_contact_name: e.target.value })} placeholder="Progress contact name" maxLength={256} />{" "}
+          <input value={routing.progress_contact_email} onChange={(e) => set({ progress_contact_email: e.target.value })} placeholder="Progress contact email" maxLength={320} />
+        </div>
+        <CcEditor label="Progress CC" ccs={routing.progress_cc} onChange={(progress_cc) => set({ progress_cc })} />
+      </fieldset>
+    </>
+  );
+}
+
 export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
   const [view, setView] = useState<"list" | "detail">("list");
   const [jobs, setJobs] = useState<api.JobRow[]>([]);
@@ -66,9 +217,14 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
   const [newJobName, setNewJobName] = useState("");
   const [newJobClient, setNewJobClient] = useState("");
   const [newJobOpen, setNewJobOpen] = useState(false);
+  const [createRouting, setCreateRouting] = useState<RoutingForm>(EMPTY_ROUTING); // P2.5 routing SoR
   // Detail manage controls
   const [progressVal, setProgressVal] = useState("");
   const [taskDesc, setTaskDesc] = useState("");
+  // Detail lifecycle selector + routing/contacts editor (P2.5)
+  const [lifecycleSel, setLifecycleSel] = useState<api.JobLifecycle>("active");
+  const [editContactsOpen, setEditContactsOpen] = useState(false);
+  const [editRouting, setEditRouting] = useState<RoutingForm>(EMPTY_ROUTING);
   // Time-log form (detail)
   const [logHours, setLogHours] = useState("");
   const [logNotes, setLogNotes] = useState("");
@@ -111,10 +267,15 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
     setView("detail");
     setSelectedJob(null);
     setDetailLoading(true);
+    setEditContactsOpen(false);
+    setEditRouting(EMPTY_ROUTING);
     api
       .fetchJobDetail(job.job_id)
       .then((res) => {
         setSelectedJob(res.job);
+        // Seed the lifecycle selector from the legacy status (detail carries no lifecycle field):
+        // active → 'active', anything else → 'inactive'. An explicit selector change overrides it.
+        setLifecycleSel(res.job.status === "active" ? "active" : "inactive");
         setTaskCursor(res.cursors.tasks);
         setTimeCursor(res.cursors.time);
         setInspCursor(res.cursors.insp);
@@ -207,10 +368,12 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
         job_id: jobId,
         project_name: projectName,
         ...(clientName ? { new_client: { name: clientName } } : {}),
+        ...routingPayload(createRouting),
       });
       setNewJobId("");
       setNewJobName("");
       setNewJobClient("");
+      setCreateRouting(EMPTY_ROUTING);
       setNewJobOpen(false);
       await reloadList();
       setActionMsg({ ok: true, text: `Job ${jobId} created.` });
@@ -221,16 +384,37 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
     }
   }
 
-  async function submitClose() {
+  // Lifecycle selector (P2.5) — replaces the bare Close button. Setting it explicitly persists the
+  // chosen value through the reload (which would otherwise re-derive only active/inactive from status).
+  async function submitLifecycle(lifecycle: api.JobLifecycle) {
     if (!selectedJob || actionBusy) return;
     setActionBusy(true);
     setActionMsg(null);
     try {
-      await api.closeJob(selectedJob.job_id);
+      await api.setLifecycle(selectedJob.job_id, lifecycle);
+      setLifecycleSel(lifecycle);
       await reloadDetail();
-      setActionMsg({ ok: true, text: "Job closed." });
+      setActionMsg({ ok: true, text: `Lifecycle set to ${lifecycle}.` });
     } catch (err) {
-      setActionMsg({ ok: false, text: err instanceof Error ? err.message : "Close failed." });
+      setActionMsg({ ok: false, text: err instanceof Error ? err.message : "Lifecycle update failed." });
+    } finally {
+      setActionBusy(false);
+    }
+  }
+
+  async function submitEditContacts(e: FormEvent) {
+    e.preventDefault();
+    if (!selectedJob || actionBusy) return;
+    setActionBusy(true);
+    setActionMsg(null);
+    try {
+      await api.editContacts(selectedJob.job_id, routingPayload(editRouting));
+      setEditContactsOpen(false);
+      setEditRouting(EMPTY_ROUTING);
+      await reloadDetail();
+      setActionMsg({ ok: true, text: "Routing / contacts updated." });
+    } catch (err) {
+      setActionMsg({ ok: false, text: err instanceof Error ? err.message : "Routing update failed." });
     } finally {
       setActionBusy(false);
     }
@@ -376,11 +560,36 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
               />{" "}
               <button type="submit" disabled={actionBusy} className="btn--secondary">Add task</button>
             </form>
-            {job.status === "active" && (
-              <div className="dash-row">
-                <button onClick={submitClose} disabled={actionBusy} className="btn--secondary">Close job</button>
-              </div>
-            )}
+            <form className="dash-row" aria-label="Set job lifecycle">
+              <label className="dash-card__label">
+                Lifecycle:{" "}
+                <select
+                  aria-label="Job lifecycle"
+                  value={lifecycleSel}
+                  disabled={actionBusy}
+                  onChange={(e) => submitLifecycle(e.target.value as api.JobLifecycle)}
+                >
+                  <option value="active">Active</option>
+                  <option value="inactive">Inactive</option>
+                  <option value="archived">Archived</option>
+                </select>
+              </label>
+            </form>
+            <div className="dash-row">
+              {editContactsOpen ? (
+                <form onSubmit={submitEditContacts} aria-label="Edit routing and contacts">
+                  <RoutingFields routing={editRouting} onChange={setEditRouting} />
+                  <div className="dash-row">
+                    <button type="submit" disabled={actionBusy} className="btn--primary">Save routing</button>{" "}
+                    <button type="button" onClick={() => setEditContactsOpen(false)} className="btn--secondary">Cancel</button>
+                  </div>
+                </form>
+              ) : (
+                <button type="button" onClick={() => setEditContactsOpen(true)} className="btn--edit">
+                  Edit routing / contacts
+                </button>
+              )}
+            </div>
           </section>
         )}
 
@@ -559,27 +768,41 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
       {canManage && (
         <div className="dash-row">
           {newJobOpen ? (
-            <form onSubmit={submitNewJob} className="dash-row" aria-label="Create job">
-              <input
-                value={newJobId}
-                onChange={(e) => setNewJobId(e.target.value)}
-                placeholder="Job ID (e.g. JOB-1042)"
-                maxLength={64}
-              />{" "}
-              <input
-                value={newJobName}
-                onChange={(e) => setNewJobName(e.target.value)}
-                placeholder="Project name"
-                maxLength={256}
-              />{" "}
-              <input
-                value={newJobClient}
-                onChange={(e) => setNewJobClient(e.target.value)}
-                placeholder="Client name (optional)"
-                maxLength={256}
-              />{" "}
-              <button type="submit" disabled={actionBusy} className="btn--primary">Create</button>{" "}
-              <button type="button" onClick={() => setNewJobOpen(false)} className="btn--secondary">Cancel</button>
+            <form onSubmit={submitNewJob} aria-label="Create job">
+              <div className="dash-row">
+                <input
+                  value={newJobId}
+                  onChange={(e) => setNewJobId(e.target.value)}
+                  placeholder="Job ID (e.g. JOB-1042)"
+                  maxLength={64}
+                />{" "}
+                <input
+                  value={newJobName}
+                  onChange={(e) => setNewJobName(e.target.value)}
+                  placeholder="Project name"
+                  maxLength={256}
+                />{" "}
+                <input
+                  value={newJobClient}
+                  onChange={(e) => setNewJobClient(e.target.value)}
+                  placeholder="Client name (optional)"
+                  maxLength={256}
+                />
+              </div>
+              <RoutingFields routing={createRouting} onChange={setCreateRouting} />
+              <div className="dash-row">
+                <button type="submit" disabled={actionBusy} className="btn--primary">Create</button>{" "}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setNewJobOpen(false);
+                    setCreateRouting(EMPTY_ROUTING);
+                  }}
+                  className="btn--secondary"
+                >
+                  Cancel
+                </button>
+              </div>
             </form>
           ) : (
             <button onClick={() => setNewJobOpen(true)} className="btn--primary">+ New job</button>

@@ -16,6 +16,8 @@ vi.mock("../../lib/fieldops_jobtracker", async (importOriginal) => {
     fetchJobDetail: vi.fn(),
     createJob: vi.fn(),
     closeJob: vi.fn(),
+    setLifecycle: vi.fn(),
+    editContacts: vi.fn(),
     setJobProgress: vi.fn(),
     addTask: vi.fn(),
     setTaskStatus: vi.fn(),
@@ -231,12 +233,89 @@ describe("FieldOpsJobTracker — write UI", () => {
     await waitFor(() => expect(vi.mocked(api.fetchJobList).mock.calls.length).toBeGreaterThanOrEqual(2));
   });
 
-  it("manager sees progress / add-task / close controls and can set progress", async () => {
+  it("submits the full routing SoR (address, stakeholder, safety + progress contacts + CC) on create", async () => {
+    vi.mocked(useAuth).mockReturnValue(authWith(["cap.jobtracker.manage"]));
+    vi.mocked(api.fetchJobList).mockResolvedValue({ jobs: JOBS, next_cursor: null });
+    vi.mocked(api.createJob).mockResolvedValue({ job_id: "JOB-C" });
+    const { container, getByText, getAllByText, getByLabelText, getByPlaceholderText } = render(
+      <FieldOpsJobTracker onBack={() => {}} />,
+    );
+    await waitFor(() => expect(container.querySelectorAll(".dash-card--click")).toHaveLength(2));
+
+    fireEvent.click(getByText("+ New job"));
+    fireEvent.change(getByPlaceholderText("Job ID (e.g. JOB-1042)"), { target: { value: "job-c" } });
+    fireEvent.change(getByPlaceholderText("Project name"), { target: { value: "Charlie" } });
+    fireEvent.change(getByPlaceholderText("Job address (optional)"), { target: { value: "1 Main St" } });
+    fireEvent.change(getByPlaceholderText("Stakeholder name"), { target: { value: "Dana Owner" } });
+    fireEvent.change(getByPlaceholderText("Stakeholder email"), { target: { value: "dana@ex.com" } });
+    fireEvent.change(getByPlaceholderText("Stakeholder phone"), { target: { value: "555-0101" } });
+    fireEvent.change(getByPlaceholderText("Safety contact name"), { target: { value: "Sam Safety" } });
+    fireEvent.change(getByPlaceholderText("Safety contact email"), { target: { value: "sam@ex.com" } });
+    fireEvent.click(getAllByText("+ Add CC")[0]); // Safety CC
+    fireEvent.change(getByLabelText("Safety CC 1"), { target: { value: "scc@ex.com" } });
+    fireEvent.change(getByPlaceholderText("Progress contact name"), { target: { value: "Pat Progress" } });
+    fireEvent.change(getByPlaceholderText("Progress contact email"), { target: { value: "pat@ex.com" } });
+    fireEvent.click(getAllByText("+ Add CC")[1]); // Progress CC
+    fireEvent.change(getByLabelText("Progress CC 1"), { target: { value: "pcc@ex.com" } });
+
+    fireEvent.submit(container.querySelector('[aria-label="Create job"]')!);
+
+    await waitFor(() =>
+      expect(api.createJob).toHaveBeenCalledWith(
+        expect.objectContaining({
+          job_id: "JOB-C",
+          project_name: "Charlie",
+          address: "1 Main St",
+          stakeholder_name: "Dana Owner",
+          stakeholder_email: "dana@ex.com",
+          stakeholder_phone: "555-0101",
+          safety_contact_name: "Sam Safety",
+          safety_contact_email: "sam@ex.com",
+          safety_cc: ["scc@ex.com"],
+          progress_contact_name: "Pat Progress",
+          progress_contact_email: "pat@ex.com",
+          progress_cc: ["pcc@ex.com"],
+        }),
+      ),
+    );
+  });
+
+  it("'Same as safety' copies the safety contact + CC into progress, which then stays independently editable", async () => {
+    vi.mocked(useAuth).mockReturnValue(authWith(["cap.jobtracker.manage"]));
+    vi.mocked(api.fetchJobList).mockResolvedValue({ jobs: JOBS, next_cursor: null });
+    const { container, getByText, getAllByText, getByLabelText, getByPlaceholderText } = render(
+      <FieldOpsJobTracker onBack={() => {}} />,
+    );
+    await waitFor(() => expect(container.querySelectorAll(".dash-card--click")).toHaveLength(2));
+
+    fireEvent.click(getByText("+ New job"));
+    fireEvent.change(getByPlaceholderText("Safety contact name"), { target: { value: "Sam Safety" } });
+    fireEvent.change(getByPlaceholderText("Safety contact email"), { target: { value: "sam@ex.com" } });
+    fireEvent.click(getAllByText("+ Add CC")[0]); // Safety CC
+    fireEvent.change(getByLabelText("Safety CC 1"), { target: { value: "scc@ex.com" } });
+
+    fireEvent.click(getByText("Same as safety"));
+
+    expect((getByPlaceholderText("Progress contact name") as HTMLInputElement).value).toBe("Sam Safety");
+    expect((getByPlaceholderText("Progress contact email") as HTMLInputElement).value).toBe("sam@ex.com");
+    expect((getByLabelText("Progress CC 1") as HTMLInputElement).value).toBe("scc@ex.com");
+
+    // After the copy the progress block is independently editable; safety is unchanged.
+    fireEvent.change(getByPlaceholderText("Progress contact name"), { target: { value: "Pat Progress" } });
+    expect((getByPlaceholderText("Progress contact name") as HTMLInputElement).value).toBe("Pat Progress");
+    expect((getByPlaceholderText("Safety contact name") as HTMLInputElement).value).toBe("Sam Safety");
+  });
+
+  it("manager sees progress / add-task / lifecycle + routing controls and can set progress", async () => {
     vi.mocked(api.setJobProgress).mockResolvedValue({ progress: 75 });
     const { container, getByLabelText } = await openManagedDetail(["cap.jobtracker.manage"]);
     expect(container.querySelector('[aria-label="Update job progress"]')).not.toBeNull();
     expect(container.querySelector('[aria-label="Add a task"]')).not.toBeNull();
-    expect((container.textContent ?? "").includes("Close job")).toBe(true);
+    // The bare "Close job" button is gone — replaced by the lifecycle selector + routing editor.
+    expect((container.textContent ?? "").includes("Close job")).toBe(false);
+    expect(container.querySelector('[aria-label="Set job lifecycle"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label="Job lifecycle"]')).not.toBeNull();
+    expect((container.textContent ?? "").includes("Edit routing / contacts")).toBe(true);
 
     const form = getByLabelText("Update job progress");
     fireEvent.change(form.querySelector("input")!, { target: { value: "75" } });
@@ -254,11 +333,27 @@ describe("FieldOpsJobTracker — write UI", () => {
     void container;
   });
 
-  it("manager can close an active job", async () => {
-    vi.mocked(api.closeJob).mockResolvedValue(undefined);
-    const { getByText } = await openManagedDetail(["cap.jobtracker.manage"]);
-    fireEvent.click(getByText("Close job"));
-    await waitFor(() => expect(api.closeJob).toHaveBeenCalledWith("JOB-A"));
+  it("the lifecycle selector calls setLifecycle with the chosen value", async () => {
+    vi.mocked(api.setLifecycle).mockResolvedValue({ lifecycle: "archived" });
+    const { getByLabelText } = await openManagedDetail(["cap.jobtracker.manage"]);
+    const select = getByLabelText("Job lifecycle") as HTMLSelectElement;
+    expect(select.value).toBe("active"); // seeded from the active job's status
+    fireEvent.change(select, { target: { value: "archived" } });
+    await waitFor(() => expect(api.setLifecycle).toHaveBeenCalledWith("JOB-A", "archived"));
+  });
+
+  it("manager can edit routing / contacts on the open job", async () => {
+    vi.mocked(api.editContacts).mockResolvedValue({ job_id: "JOB-A" });
+    const { container, getByText, getByPlaceholderText } = await openManagedDetail(["cap.jobtracker.manage"]);
+    fireEvent.click(getByText("Edit routing / contacts"));
+    fireEvent.change(getByPlaceholderText("Safety contact email"), { target: { value: "new@ex.com" } });
+    fireEvent.submit(container.querySelector('[aria-label="Edit routing and contacts"]')!);
+    await waitFor(() =>
+      expect(api.editContacts).toHaveBeenCalledWith(
+        "JOB-A",
+        expect.objectContaining({ safety_contact_email: "new@ex.com" }),
+      ),
+    );
   });
 
   it("cap.tasks.own renders a per-task status select and dispatches a change", async () => {
@@ -275,6 +370,10 @@ describe("FieldOpsJobTracker — write UI", () => {
     expect(container.querySelector('[aria-label="Set status for task 1"]')).not.toBeNull();
     expect(container.querySelector('[aria-label="Update job progress"]')).toBeNull();
     expect(container.querySelector('[aria-label="Add a task"]')).toBeNull();
+    // The lifecycle selector + routing editor are manage-only, gated on cap.jobtracker.manage.
+    expect(container.querySelector('[aria-label="Set job lifecycle"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Job lifecycle"]')).toBeNull();
+    expect((container.textContent ?? "").includes("Edit routing / contacts")).toBe(false);
   });
 
   it("cap.time.log renders the Log time form and posts hours + task against the open job", async () => {
