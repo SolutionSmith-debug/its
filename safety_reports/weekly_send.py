@@ -170,6 +170,13 @@ class SendConfig:
     config_workstream: str       # ITS_Config get_setting scope ("safety_reports")
     review: _ReviewModule        # the review-sheet module (columns, statuses, sheet id)
     recipient_resolver: Callable[[Any], tuple[str, Sequence[str]]]
+    # WHICH Active-Jobs sheet this workstream resolves recipients FROM. Required, no
+    # default: a default would let a new workstream silently resolve from safety's
+    # ITS_Active_Jobs (and thus its contacts) — the precise cross-wiring the no-default
+    # SendConfig guards. Safety binds SAFETY_ACTIVE_JOBS_CONFIG (byte-identical to the
+    # pre-P5 hardcoded default); progress binds PROGRESS_ACTIVE_JOBS_CONFIG. The
+    # per-sheet TTL cache (active_jobs._cache) keeps the two resolutions from colliding.
+    active_jobs_config: active_jobs.ActiveJobsConfig
     report_label: str            # subject + attachment label ("Weekly Safety Report")
     from_mailbox_cfg_key: str
     from_mailbox_default: str
@@ -192,6 +199,7 @@ CONFIG = SendConfig(
     # satisfy _ReviewModule's surface (verified by the live tests + the structural contract).
     review=cast(_ReviewModule, wsr_review),
     recipient_resolver=_resolve_safety_recipients,
+    active_jobs_config=active_jobs.SAFETY_ACTIVE_JOBS_CONFIG,
     report_label="Weekly Safety Report",
     from_mailbox_cfg_key=CFG_FROM_MAILBOX,
     from_mailbox_default=DEFAULT_FROM_MAILBOX,
@@ -311,9 +319,11 @@ def send_one_row(row_id: int, cfg: SendConfig) -> SendResult:
     #
     # Three cases, keyed on the RAW cell value:
     #   - GENUINE-ABSENT (null / empty cell) → WARN + proceed. A deliberate, bounded fail-OPEN for
-    #     the pre-backfill window. Bounded-SAFE because the WSR sheet is single-workstream by
-    #     construction: a blank-tag row IS a safety row, sent to safety recipients via the safety
-    #     job + F22 — not cross-workstream contamination. (Tightening this to fail-CLOSED in the
+    #     the pre-backfill window. Bounded-SAFE because each review sheet bound here (WSR for safety,
+    #     WPR for progress — send_one_row is dual-tenant via cfg.review.SHEET_ID as of P5) is
+    #     single-workstream by construction: a blank-tag row IS a row for THIS sender's workstream
+    #     (cfg.workstream_tag), sent to that workstream's recipients via its job + F22 — not
+    #     cross-workstream contamination. (Tightening this to fail-CLOSED in the
     #     post-backfill steady state is a Send-Gate POSTURE decision reserved for Seth — §43 runbook.)
     #   - MALFORMED (a NON-empty raw value that STRIPS to empty — e.g. a U+00A0 / U+2007 whitespace
     #     cell) → HARD-HELD. A non-null cell that isn't a clean tag is a contamination signal, never
@@ -351,7 +361,10 @@ def send_one_row(row_id: int, cfg: SendConfig) -> SendResult:
     # Stage 3: recipients RESOLVED AT SEND TIME via the workstream resolver (NOT the display
     # cols). For safety: TO = the job's safety-reports contact; CC = its CC 1–5.
     job_id = str(row.get(cfg.review.COL_JOB_ID) or "").strip()
-    job = active_jobs.get_job(job_id)
+    # Resolve from THIS workstream's Active-Jobs sheet (cfg.active_jobs_config), never a
+    # hardcoded default — a progress send can only ever read ITS_Active_Jobs_Progress, a
+    # safety send only ITS_Active_Jobs (the cross-workstream recipient-contamination gate).
+    job = active_jobs.get_job(job_id, cfg.active_jobs_config)
     if job is None:
         return _mark_held(row_id, project_name, notes, f"unknown job_id={job_id!r} — cannot resolve recipients", "held_no_recipient", cfg)
     to_addr, cc_raw = cfg.recipient_resolver(job)
