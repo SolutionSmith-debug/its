@@ -40,7 +40,7 @@ WORKSPACE_SAFETY_PORTAL = 194283417429892
 # §46 — workspace membership = approval authority: the safety approvers are re-shared
 # here so they may approve WPR_human_review rows (P5-blocking operator prereq).
 # FLIP precedes SEED — flip the real ID after scripts/migrations/build_progress_reporting_workspace.py prints it.
-WORKSPACE_PROGRESS_REPORTING = 0  # OPERATOR: flip after build_progress_reporting_workspace.py creates the workspace
+WORKSPACE_PROGRESS_REPORTING = 5988851429730180  # ITS — Progress Reporting (created 2026-06-29 by build_progress_reporting_workspace.py)
 
 # ---- Portfolio sub-folders ----------------------------------------------
 
@@ -172,9 +172,9 @@ SHEET_ORPHANED_REPORTS = 2577084374273924  # Orphaned Reports (Part C; built 202
 # (A1 margin-checked), never pre-wired here (same dynamic-discovery model as the
 # safety week sheets). OPERATOR: flip each 0 after build_progress_reporting_workspace.py
 # prints the real ID (FLIP precedes SEED).
-FOLDER_PROGRESS_CONTROL = 0      # ITS — Progress Reporting / Control (holds WPR_human_review + ITS_Active_Jobs_Progress)
-SHEET_WPR_HUMAN_REVIEW = 0       # WPR_human_review — weekly progress review/approve/send surface (mirrors WSR_human_review). NOTE: distinct from the decommissioned SHEET_WPR_PENDING_REVIEW above.
-SHEET_ACTIVE_JOBS_PROGRESS = 0   # ITS_Active_Jobs_Progress — the progress workspace's own physical Active-Jobs sheet (job-tracker pivot, P2.5 Slice 4). Carries Progress Reports Contact/CC + a Portal Job Key bridge column.
+FOLDER_PROGRESS_CONTROL = 2747740519196548  # ITS — Progress Reporting / Control (holds WPR_human_review + ITS_Active_Jobs_Progress)
+SHEET_WPR_HUMAN_REVIEW = 2798573438586756       # WPR_human_review — weekly progress review/approve/send surface (mirrors WSR_human_review; created 2026-06-29). NOTE: distinct from the decommissioned SHEET_WPR_PENDING_REVIEW above.
+SHEET_ACTIVE_JOBS_PROGRESS = 3079764947455876   # ITS_Active_Jobs_Progress — the progress workspace's own physical Active-Jobs sheet (job-tracker pivot, P2.5 Slice 4; created 2026-06-29). Carries Progress Reports Contact/CC + a Portal Job Key bridge column.
 
 
 # ---- Reverse-lookup maps ------------------------------------------------
