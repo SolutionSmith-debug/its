@@ -1048,7 +1048,10 @@ Phase 1.4+ extension: render `Draft Body` to PDF (via reportlab or similar) or D
 
 **Revisit when:** explicit sponsor feedback requesting formatted attachment.
 
-## Automated mailbox cleanup for weekly_send integration smoke [OPEN 2026-05-23]
+## Automated mailbox cleanup for weekly_send integration smoke [CLOSED 2026-06-30 — premise obsolete]
+
+**Closed 2026-06-30 (verified against HEAD, lesson #1):** the premise is gone. This entry assumed `tests/test_weekly_send_integration.py` "sends a real email to `seths@evergreenmirror.com` per run" that lingers in the inbox. The **Phase-5 rewrite** repointed `weekly_send` `WPR_Pending_Review` → `WSR_human_review` and the integration test now exercises **only the HELD path** — its docstring states it "sends NO email and hits NO Box" (the unknown-job `held_no_recipient` refusal); the real end-to-end send is the operator's manual deploy smoke, not this automated file. With no automated send, there is **no inbox clutter to clean up**, so the proposed `graph_client.delete_message` + teardown would be unused code wired into a non-sending test (a §14 preservation violation). A `delete_message` Graph primitive is deferred to a **real consumer** (Email Triage mailbox hygiene), not added speculatively here. `graph_client.py` is unchanged.
+
 
 `tests/test_weekly_send_integration.py` test seed sends a real email to `seths@evergreenmirror.com` per run. Cleanup currently deletes the `WPR_Pending_Review` row in `finally`, but the email itself sits in the recipient's inbox until manually deleted. Acceptable for first few integration runs (rare; operator-driven) but eventually deserves programmatic cleanup.
 
