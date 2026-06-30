@@ -83,6 +83,15 @@ GATED_SCRIPTS: list[tuple[str, list[str]]] = [
          "anthropic", "anthropic_client"],
     ),
     (
+        # generate_core (P4) is the SHARED parameterized weekly-compile engine BOTH the safety
+        # and progress weekly compiles instantiate (gather → merge → file Box → dual-write the
+        # Rollup + review row), driven by a GenerateConfig. Deterministic: no Graph, no external
+        # send, no LLM — the same actuation gate as weekly_generate + compile_core.
+        "safety_reports/generate_core.py",
+        ["graph_client", "send_mail", "resend", "smtplib", "email.mime",
+         "anthropic", "anthropic_client"],
+    ),
+    (
         # publish_daemon (slice 3b) is the privileged form-publish actuator: it COMMITS +
         # DEPLOYS code but performs ZERO external customer transmission and no LLM step.
         # Forbid the send substrings + anthropic (deterministic actuation). Its HTTP egress
@@ -107,6 +116,15 @@ GATED_SCRIPTS: list[tuple[str, list[str]]] = [
         # anthropic (assert it stays LLM-free). Its only egress is the optional,
         # config-gated clamd socket (pyclamd), allowlisted in NETWORK_LIB_ALLOWLIST.
         "safety_reports/photo_screen.py",
+        ["graph_client", "send_mail", "resend", "smtplib", "email.mime",
+         "anthropic", "anthropic_client"],
+    ),
+    (
+        # progress_weekly_generate (P4) is the PROGRESS twin of weekly_generate — the thin
+        # progress binding of generate_core (the progress GenerateConfig). DETERMINISTIC: no
+        # Graph, no external send, no LLM. Generation half of the External Send Gate for the
+        # Progress-Reporting workstream.
+        "progress_reports/progress_weekly_generate.py",
         ["graph_client", "send_mail", "resend", "smtplib", "email.mime",
          "anthropic", "anthropic_client"],
     ),
