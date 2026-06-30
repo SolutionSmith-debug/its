@@ -1,0 +1,94 @@
+---
+type: operations
+date: 2026-06-30
+status: active
+related_prs: []
+workstream: field_ops
+tags: [runbook, successor-remediation, fieldops_sync, job-tracker-pivot, mirror-daemon, smartsheet-write, version-vector, tier-2, tier-3, "50", "51"]
+---
+
+# Runbook — Field-ops mirror daemon (`fieldops_sync`) (Successor-Remediation, Op Stds §43)
+
+`field_ops/fieldops_sync.py` (P2.5 Slice 5) is the Mac-side daemon that up-syncs portal-created
+jobs (`origin='portal'`) into BOTH ITS-owned Active-Jobs Smartsheets — `ITS_Active_Jobs` (safety)
+and `ITS_Active_Jobs_Progress` — via `shared/active_jobs_writer.py`. It is the first ITS-owned
+**structured-SoR write-back** (Op Stds §51) and runs under the §50 code-actuation gate. It is
+**send-free + AI-free** (GATED_SCRIPTS) — its only write capability is the two Active-Jobs sheets.
+
+**Runtime gate (ships OFF):** `field_ops.fieldops_sync.sync_enabled` in ITS_Config (default false →
+the daemon short-circuits to a no-op). The operator flips it ON only at the cutover, AFTER Slice 4
+(the `Portal Job Key` TEXT column exists on BOTH sheets). The daemon polls the Worker's
+`GET /api/internal/fieldops/pending-jobs` (bearer `ITS_PORTAL_FIELDOPS_TOKEN`), find-or-creates each
+dirty job in both sheets keyed on `Portal Job Key`, and commits per-sheet via
+`POST /api/internal/fieldops/jobs-mark-mirrored`.
+
+> **The both-rule (Op Stds §44).** Tier-2 (Successor-Operator) self-repair is allowed only for a
+> **documented + low-capability-class** fault. Anything touching **secrets/auth, doctrine (§50
+> enable), the External Send Gate, or code** is FIXED high-class → escalate to Seth.
+
+## Symptom A — a portal job is missing from a sheet, in one sheet only, or `sync_state` stuck `pending`
+
+**What it means.** The daemon hasn't successfully mirrored that job to one (or both) sheets. The
+version vector keeps a job `pending` until BOTH sheets confirm — a one-sheet failure is a
+first-class self-healing state (next cycle re-attempts; the succeeded sheet's find-or-create
+no-ops), so a transient blip clears itself.
+
+**Low-class Tier-2 checks (read-only first):**
+1. Confirm the daemon is enabled + running: ITS_Config `field_ops.fieldops_sync.sync_enabled` is
+   `true`, and the `ITS_Daemon_Health` row for **`field_ops.fieldops_sync`** is heartbeating
+   (recent Last Run, status not ERROR).
+2. Confirm **BOTH** sheets have a **`Portal Job Key`** column — the safety `ITS_Active_Jobs` one is
+   operator-manual (Slice 4). If it's missing, the writer can't find-or-create there → add the TEXT
+   column, then force a cycle.
+3. Check `ITS_Review_Queue` (workstream `progress_reports`): a job that hit a **permanent** error
+   (e.g. a picklist value the sheet rejects) is parked there with the reason — work that item.
+4. Force one cycle: unload→reload the `org.solutionsmith.its.fieldops-sync` launchd job, or run
+   `python -m field_ops.fieldops_sync` once from `~/its` (on `main`). Re-check the row in both
+   sheets shares the same `Portal Job Key` and `Active` value.
+
+**Escalate to Seth** if: the two sheets persistently DIVERGE for the same `Portal Job Key` (a
+version-vector bug), or the fix would require flipping `sync_enabled` (a §50 doctrine/code-actuation
+decision), or touching the fence/identity columns (`origin`/`sync_state`/`canonical_job_id`).
+
+## Symptom B — CRITICAL `fieldops_creds_missing` (daemon won't sync; no watchdog marker)
+
+**What it means.** Fail-CLOSED: the Worker base URL (ITS_Config `safety_reports.portal.worker_base_url`)
+or the `ITS_PORTAL_FIELDOPS_TOKEN` Keychain bearer is missing, so the daemon refuses to sync (it
+also writes NO watchdog marker, so Check C goes stale too — a deliberate double-signal).
+
+**Boundary.** Confirming the **config row** exists is low-class Tier-2 (a config check). **Setting or
+rotating the `ITS_PORTAL_FIELDOPS_TOKEN` secret is high-class → escalate to Seth** (secrets/auth is a
+fixed high-class category; it must match the Worker's `PORTAL_FIELDOPS_API_TOKEN`).
+
+## Symptom C — CRITICAL `fieldops_pending_auth_failed` (401 on pending-jobs)
+
+**What it means.** The daemon's `ITS_PORTAL_FIELDOPS_TOKEN` does not match the Worker's
+`PORTAL_FIELDOPS_API_TOKEN` secret (privilege-separated from the portal_poll + admin tokens).
+**Secrets/auth → escalate to Seth** (re-set the Keychain entry to match the Worker secret). The
+Successor-Operator does not handle token rotation.
+
+## Symptom D — a single job repeatedly `fieldops_job_transient` (stays dirty), or `fieldops_pending_fetch_failed`
+
+**What it means.** A transient Smartsheet error on that job (or fetching the queue). The per-job
+fence leaves the job `pending` and continues; the next cycle retries. **Low-class Tier-2:** confirm
+Smartsheet is reachable (the circuit breaker / `ITS_Errors`); if a single job is stuck transient for
+many cycles after Smartsheet is healthy, capture its `job_id` and escalate (likely a row-shape edge
+the §30 integration scaffold + a live smoke should reproduce).
+
+## Why the daemon is shaped this way (pointer to §42)
+
+The code-reader rationale lives in `field_ops/fieldops_sync.py` (the gate → fail-closed creds →
+per-job fence → per-sheet mark-mirrored commit point) and `shared/active_jobs_writer.py` (the
+non-clobbering find-or-create writes ONLY portal-owned columns by `Portal Job Key`; the version
+vector advances each sheet's watermark independently — a progress failure leaves the job dirty with
+safety already advanced, so it self-heals). Companion: `docs/runbooks/fieldops_job_write.md` (the
+portal-side write surface). **Live-API correctness (the SDK-vs-Live class) is covered by
+`tests/test_active_jobs_writer_integration.py` (Op Stds §30, `pytest -m integration`, operator-run).**
+
+## Known fast-follows (NOT live yet)
+
+- The watchdog `fieldops_sync` slug is registered in `TRACKED_JOBS` + a **stale-pending** check
+  wire at the cutover (register + load together, like the progress slugs) — until the daemon is
+  loaded, those would WARN, so they are deferred to activation.
+- The launchd plist hardcodes a 300 s interval; an `install.sh` ITS_Config-driven interval is a
+  tidy follow-up.

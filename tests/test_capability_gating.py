@@ -128,6 +128,19 @@ GATED_SCRIPTS: list[tuple[str, list[str]]] = [
         ["graph_client", "send_mail", "resend", "smtplib", "email.mime",
          "anthropic", "anthropic_client"],
     ),
+    (
+        # fieldops_sync (P2.5 Slice 5) is the D1→Smartsheet job up-sync daemon: it pulls
+        # dirty portal-created jobs and mirrors each UP into BOTH Active-Jobs sheets. SEND-FREE
+        # + AI-FREE — the Smartsheet WRITE is the intended SoR-mirror capability, NOT a customer
+        # send, and the HTTP egress to OUR Worker rides the F02-allowlisted shared.portal_client
+        # (so this module imports no raw network library). Forbid the send substrings +
+        # graph_client (a pure mirror needs no Graph) + anthropic (assert it stays LLM-free).
+        # NOTE: named *_sync.py, NOT a convention suffix, so the enrollment meta-test does NOT
+        # auto-flag it — this explicit entry is the enrollment.
+        "field_ops/fieldops_sync.py",
+        ["graph_client", "send_mail", "resend", "smtplib", "email.mime",
+         "anthropic", "anthropic_client"],
+    ),
     # ("po_materials/standard_rfq_generate.py", ["graph_client", "send_mail"]),
     # ("po_materials/racking_module_rfq_generate.py", ["graph_client", "send_mail"]),
     # ("subcontracts/subcontract_generate.py", ["graph_client", "send_mail"]),
@@ -356,8 +369,11 @@ NETWORK_NEEDLES: frozenset[str] = frozenset({
 # Source roots walked by the network allowlist. See the scope rationale above.
 # progress_reports joined at P2 (the Progress Reporting workstream — its thin wpr_review
 # module today, its *_generate/_send/_poll daemons at P4/P5, which the enrollment + F02
-# checks above must then cover).
-WALKED_ROOTS: tuple[str, ...] = ("shared", "safety_reports", "progress_reports")
+# checks above must then cover). field_ops joined at P2.5 Slice 5 (the job up-sync daemon
+# fieldops_sync — its egress to OUR Worker rides shared.portal_client, so it imports no raw
+# network library and trips no F02 needle, but the root is walked so a future field_ops module
+# that quietly acquires network capability is caught).
+WALKED_ROOTS: tuple[str, ...] = ("shared", "safety_reports", "progress_reports", "field_ops")
 
 
 def _import_matches_needle(imported: str, needle: str) -> bool:
@@ -460,6 +476,9 @@ _ENROLLMENT_SKIP_DIRS: frozenset[str] = frozenset({
 # Suffixes that, by convention, denote a generation script, a send script, or an
 # intake / compile / send polling daemon.
 _ENROLLMENT_SUFFIXES: tuple[str, ...] = ("_generate.py", "_send.py", "_poll.py")
+# Fast-follow: widen to include "_sync.py" so a future *_sync.py daemon auto-enrolls — it
+# requires enrolling the pre-existing shared/picklist_sync.py in the same change (out of scope
+# for the P2.5 Slice-5 PR; field_ops/fieldops_sync.py is already explicitly in GATED_SCRIPTS).
 
 # Convention-matching modules that are deliberately NOT gen/send/daemon code.
 # Each entry carries its reason. (Empty today — every current match is enrolled.)
