@@ -1,0 +1,90 @@
+---
+type: operations
+date: 2026-06-29
+status: active
+related_prs: []
+workstream: progress_reports
+tags: [runbook, successor-remediation, intake, routing, tier-2]
+---
+
+# Runbook — Progress intake routing (the `progress_reports.intake_enabled` gate) (Successor-Remediation, Op Stds §43)
+
+A §43 successor-remediation entry for the **Successor-Operator**. The §42 code-reader
+rationale lives in `safety_reports/intake.py` (the `_run_portal_pipeline` routing block +
+`_progress_intake_enabled`), `shared/form_category.py` (the form_code→category resolver),
+and `safety_reports/week_sheet.py` (`PROGRESS_WEEK_SHEET_CONFIG`).
+
+## What this controls
+
+When a field PM submits a portal form, intake decides which workspace the report files
+into. A form's **workflow category** (safety vs progress) is set in the form catalog
+(`safety_portal/catalog.json`, parent-level `category`). Intake routes a **progress** form
+to the **ITS — Progress Reporting** workspace's week-sheet — but **only when the runtime
+gate `progress_reports.intake_enabled` is ON**. The gate ships **OFF** (built dark): until
+the progress compile (P4) + send (P5) are live, every submission — including progress forms
+— files into the SAFETY workspace exactly as before. **Flipping this flag is the progress
+cutover.**
+
+The flag routes the **Smartsheet week-sheet** only. The per-submission report **PDF** files
+to the job's Box folder regardless of workflow (the workflow split lives in Smartsheet, not
+Box) — so seeing a progress report's PDF in the shared project/safety Box tree is **expected**
+in P3; a dedicated progress Box tree arrives with the compiled packets at P4.
+
+## Procedure
+
+### Fault A — Progress reports aren't reaching the Progress workspace (after cutover)
+
+**Symptom.** A Daily Field Report (or other progress form) was submitted, but it landed in
+the SAFETY workspace's week-sheet (or didn't appear in the Progress workspace).
+
+**Check (read-only).**
+1. `ITS_Config`: is there a row `Setting = progress_reports.intake_enabled`,
+   `Workstream = safety_reports`, `Value = true`? **Note the Workstream is `safety_reports`**
+   — the intake daemon reads ALL its config under `safety_reports` (its own workstream), so
+   this row is seeded there too, exactly like every other intake config row (NOT under
+   `progress_reports`). If it's missing/`false`/blank, routing is OFF (the default) →
+   progress files into safety. **This is the most common cause.**
+2. The form's catalog category: is the submitted form actually a **progress** form? Ask
+   Claude: "What category does `shared.form_category.resolve_category('<form_code>')` return?"
+   Only a form whose catalog parent `category` is `progress` is routed to progress; anything
+   else (and any uncatalogued form) routes safety by design (deny-by-route).
+
+**Action (Tier-2, low-class).** If the gate row is missing or `false` and you intend
+progress routing to be live: set `ITS_Config` `progress_reports.intake_enabled = true`
+(Workstream `safety_reports` — see the note above). This is a bounded enable-gate toggle — the canonical
+Tier-2 repair. Re-submit (or wait for the next portal poll). **Do NOT flip it ON before the
+progress compile + send are confirmed live** — that's the cutover sequence, co-resolve with
+Seth if unsure of readiness.
+
+### Fault B — A form is routing to the WRONG workflow (safety↔progress)
+
+**Symptom.** A form that should be progress is treated as safety (or vice-versa), even with
+the gate ON.
+
+**Check.** The form's `category` in `safety_portal/catalog.json` (parent level). A wrong
+category there is the cause.
+
+**Action — ESCALATE to Seth (Tier 3).** Changing a form's category means editing the form
+catalog, which goes through the **form builder + publish pipeline** (a §50 privileged
+code-actuation surface) — one of the FIXED high-capability-class categories (code/publish).
+Do not hand-edit `catalog.json`. The workflow/category is set in the form builder.
+
+### Fault C — Intake errors on EVERY submission after a catalog change
+
+**Symptom.** After a form publish, intake soft-fails submissions to `error` (they re-pull
+and never file).
+
+**Check.** Whether `safety_portal/catalog.json` is well-formed. The category resolver is
+**fail-safe** — a missing/malformed catalog resolves every form to `safety` (today's
+behavior), it does NOT crash intake — so a catalog problem manifests as "everything routes
+safety", NOT as an intake outage. An actual intake outage after a publish is a different
+fault (publish pipeline / form definition) → **ESCALATE to Seth**.
+
+**Both-rule (Op Stds §44):** toggling `progress_reports.intake_enabled` (a bounded gate) is
+low-class Tier-2; changing a form's category, the catalog, or the routing/resolver code is
+high-class Tier-3 (code/publish → co-resolve with Seth).
+
+## Owner
+
+`@solutionsmith`. The routing logic, the resolver, and `PROGRESS_WEEK_SHEET_CONFIG` are code
+(Tier 3); the `progress_reports.intake_enabled` ITS_Config gate is the operator surface.

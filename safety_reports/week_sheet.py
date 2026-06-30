@@ -227,6 +227,20 @@ SAFETY_WEEK_SHEET_CONFIG = WeekSheetConfig(
     key_builder=week_sheet_name,
 )
 
+# The Progress-Reporting binding (P3): the SAME workspace-agnostic Sat→Fri name builder,
+# pinned to the progress workspace. `week_sheet_name` carries zero safety semantics (pure
+# week-math + sanitization), so progress REUSES it by identity — no key_builder variant is
+# needed (safety/progress share the weekly cadence); only `workspace_id` differs. Defined
+# here (next to SAFETY, with the WeekSheetConfig type) rather than in `progress_reports/` so
+# `intake` — which routes BOTH workstreams — reaches both configs via the `week_sheet` import
+# it already holds, WITHOUT `safety_reports` importing the `progress_reports` package (this
+# only references a `shared.sheet_ids` constant). The required-no-default contamination gate
+# means a progress submission can never silently fall through to the safety workspace.
+PROGRESS_WEEK_SHEET_CONFIG = WeekSheetConfig(
+    workspace_id=sheet_ids.WORKSPACE_PROGRESS_REPORTING,
+    key_builder=week_sheet_name,
+)
+
 
 def _folder_name(project_name: str) -> str:
     """The per-job folder title + find/create key under WORKSPACE_SAFETY_PORTAL
