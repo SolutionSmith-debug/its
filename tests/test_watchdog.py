@@ -1528,17 +1528,25 @@ def catchup_now(monkeypatch):
 def mock_run_pipeline(mocker):
     """Mock weekly_generate._run_pipeline at the watchdog import path.
 
-    Default return = a healthy run (5 drafts). Tests override return_value
-    (empty-chain) or side_effect (failure).
+    Default return = the REAL generate_core.run_generate dict shape (RunSummary.__dict__ + week
+    bounds + correlation_id) for a healthy run (5 packets). Tests override return_value or
+    side_effect (failure).
     """
     return mocker.patch(
         "watchdog.weekly_generate._run_pipeline",
         return_value={
-            "drafts_written": 5,
-            "drafts_failed": 0,
-            "aborted_empty_chain": False,
-            "correlation_id": "abc123def456",
+            "jobs_processed": 1,
+            "packets_compiled": 5,
+            "skipped_no_change": 0,
+            "empty_weeks": 0,
+            "wsr_written": 5,
+            "review_queue_entries": 0,
+            "timed_out": 0,
+            "download_errors": 0,
+            "errors_per_job": {},
             "week_start": _TARGET_MONDAY.isoformat(),
+            "week_end": (_TARGET_MONDAY + timedelta(days=6)).isoformat(),
+            "correlation_id": "abc123def456",
         },
     )
 
@@ -1631,7 +1639,7 @@ def test_catchup_fires_when_missing_in_window(
     mock_run_pipeline.assert_called_once_with(week_start_override=_TARGET_MONDAY)
     assert result.severity is Severity.INFO
     assert "catch-up fired" in result.summary
-    assert "5 draft" in result.summary
+    assert "5 packet(s) compiled" in result.summary  # real run_generate counter
 
 
 def test_catchup_no_fire_outside_window(
@@ -1773,25 +1781,27 @@ def test_check_i_default_arg_alerts_suppressed_false(
     mock_alert_critical.assert_called_once()  # NOT deferred
 
 
-def test_catchup_empty_chain_returns_warn(
-    catchup_now, mock_run_pipeline, mock_get_rows, mock_alert_critical
+def test_catchup_summary_reports_real_run_counts(
+    catchup_now, mock_run_pipeline, mock_get_rows, monkeypatch
 ):
-    """Empty reviewer chain: weekly_generate already recorded its own
-    CRITICAL → Check I surfaces WARN and does NOT double-escalate."""
+    """The catch-up INFO summary reports the REAL run_generate counters (packets_compiled /
+    wsr_written / errors_per_job), not the never-produced drafts_written/drafts_failed keys.
+    (Replaces the old empty-chain test, which exercised a dead branch reading a key
+    run_generate never returns.)"""
     catchup_now(_SAT_AFTER_TRIGGER)
+    monkeypatch.setattr(watchdog, "_read_marker_datetime", lambda slug: None)
     mock_get_rows.return_value = []
     mock_run_pipeline.return_value = {
-        "aborted_empty_chain": True,
-        "drafts_written": 0,
-        "drafts_failed": 0,
-        "correlation_id": "x",
+        "packets_compiled": 4,
+        "wsr_written": 4,
+        "errors_per_job": {"JOB-7": "timeout"},
+        "correlation_id": "zzz",
     }
-
     result = watchdog._check_weekly_generate_catchup()
-
-    assert result.severity is Severity.WARN
-    assert "empty reviewer chain" in result.summary
-    mock_alert_critical.assert_not_called()
+    assert result.severity is Severity.INFO
+    assert "4 packet(s) compiled" in result.summary
+    assert "4 review row(s) written" in result.summary
+    assert "1 job error(s)" in result.summary  # len(errors_per_job)
 
 
 def test_wsr_rows_exist_failsoft_returns_false(mock_get_rows, mock_log):
@@ -2109,15 +2119,23 @@ def test_progress_slugs_tracked_for_check_c():
 
 @pytest.fixture
 def mock_progress_run_generate(mocker):
-    """Mock the PROGRESS refire (generate_core.run_generate) at the watchdog import path."""
+    """Mock the PROGRESS refire (generate_core.run_generate) at the watchdog import path —
+    the REAL dict shape (RunSummary.__dict__ + week + corr id)."""
     return mocker.patch(
         "watchdog.generate_core.run_generate",
         return_value={
-            "drafts_written": 3,
-            "drafts_failed": 0,
-            "aborted_empty_chain": False,
-            "correlation_id": "prog123",
+            "jobs_processed": 1,
+            "packets_compiled": 3,
+            "skipped_no_change": 0,
+            "empty_weeks": 0,
+            "wsr_written": 3,
+            "review_queue_entries": 0,
+            "timed_out": 0,
+            "download_errors": 0,
+            "errors_per_job": {},
             "week_start": _TARGET_MONDAY.isoformat(),
+            "week_end": (_TARGET_MONDAY + timedelta(days=6)).isoformat(),
+            "correlation_id": "prog123",
         },
     )
 
@@ -2226,6 +2244,26 @@ def test_check_t_total_read_failure_is_info(mock_get_rows, _held_state):
     mock_get_rows.side_effect = SmartsheetError("both sheets down")
     result = watchdog._check_stale_held_rows()
     assert result.severity is Severity.INFO  # no data → no false WARN
+
+
+def test_check_t_partial_read_failure_preserves_other_sheets_clock(mock_get_rows, _held_state):
+    # BLOCK regression: WSR:101 is genuinely stale (48h). WSR read FAILS this round; WPR succeeds.
+    # A partial read failure must NOT reset/prune the stale WSR clock — it must still WARN, and
+    # WSR:101 must survive in the persisted state (only successfully-scanned sheets get pruned).
+    old = (datetime.now(UTC) - timedelta(hours=48)).isoformat()
+    _held_state.write_text(json.dumps({"WSR:101": old}))
+
+    def _se(sheet_id, filters=None):
+        if sheet_id == watchdog.sheet_ids.SHEET_WSR_HUMAN_REVIEW:
+            raise SmartsheetError("transient WSR read failure")
+        return [{"_row_id": 202}]  # WPR scans fine, fresh HELD
+
+    mock_get_rows.side_effect = _se
+    result = watchdog._check_stale_held_rows()
+    assert result.severity is Severity.WARN
+    assert "WSR:101" in (result.details or "")
+    persisted = json.loads(_held_state.read_text())
+    assert "WSR:101" in persisted  # clock preserved through the WSR read failure
 
 
 # ---- Check U: send-workspace approver-set drift --------------------------

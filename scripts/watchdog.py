@@ -898,22 +898,21 @@ def _fire_generate_catchup(
             target_week, exc, tb, label=target.label, alerts_suppressed=alerts_suppressed
         )
 
-    if result.get("aborted_empty_chain"):
-        return CheckResult(
-            severity=Severity.WARN,
-            summary=(
-                f"{target.label} catch-up for week {target_week} aborted: "
-                f"empty reviewer chain ({target.label} logged its own CRITICAL)."
-            ),
-        )
-
-    drafts = result.get("drafts_written", 0)
-    failed = result.get("drafts_failed", 0)
+    # `result` is generate_core.run_generate's dict: RunSummary.__dict__ + week bounds +
+    # correlation_id. Read the REAL counters (packets_compiled / wsr_written / errors_per_job) —
+    # the pre-P5 code read drafts_written/drafts_failed/aborted_empty_chain, which run_generate
+    # NEVER produces, so every success summary mis-reported "0 written" and the empty-chain WARN
+    # branch was dead code (it only fired in tests via a hand-rolled key). Fixed here while
+    # generalizing the catch-up to progress (it doubled that surface).
+    packets = result.get("packets_compiled", 0)
+    rows_written = result.get("wsr_written", 0)
+    job_errors = len(result.get("errors_per_job", {}) or {})
     return CheckResult(
         severity=Severity.INFO,
         summary=(
             f"{target.label} catch-up fired for week {target_week}: "
-            f"{drafts} draft(s) written, {failed} failed."
+            f"{packets} packet(s) compiled, {rows_written} review row(s) written, "
+            f"{job_errors} job error(s)."
         ),
         details=f"correlation_id={result.get('correlation_id', '?')}",
     )
@@ -1567,9 +1566,11 @@ def _check_main_branch_ci_green() -> CheckResult:
 # ---- Check T: review rows stuck HELD (WSR + WPR; P5 operability) ---------
 #
 # A HELD is an operator-actionable refusal (no recipient / missing PDF / oversized packet /
-# workstream contamination). recipient_health fires the LOUD no-recipient signal at SEND time
-# (hourly-deduped); this DAILY scan is the catch-all backstop for ALL HELD reasons across BOTH
-# review sheets, so a HELD left un-actioned never sits silently. Age-thresholded via a first-seen
+# workstream contamination). The companion `shared/recipient_health` module (P5, PR #380) files
+# a per-incident ITS_Review_Queue RECORD at SEND time for the no-recipient subset; this DAILY
+# scan is the catch-all backstop for ALL HELD reasons across BOTH review sheets (today also
+# covered at HELD time by weekly_send's generic `weekly_send.held` WARN), so a HELD left
+# un-actioned never sits silently. Age-thresholded via a first-seen
 # state file so a just-created HELD (e.g. during a live smoke, or a row the operator is actively
 # resolving) does NOT false-fire — only a HELD that has SAT past HELD_ROW_STALE_AFTER WARNs.
 HELD_ROW_STALE_AFTER = timedelta(hours=24)
@@ -1595,17 +1596,39 @@ def _load_held_first_seen_unlocked() -> dict[str, str]:
     return {}
 
 
-def _update_held_first_seen(held_now: set[str], now: datetime) -> dict[str, str]:
-    """Read-modify-write the first-seen map under a path lock: keep only currently-HELD keys
-    (auto-prunes cleared rows), stamp newly-seen keys with `now`. Returns the merged map.
+def _merge_held_first_seen(
+    prior: dict[str, str], held_now: set[str], scanned_labels: set[str], now: datetime
+) -> dict[str, str]:
+    """Merge the prior first-seen map with this round's HELD keys.
+
+    CRITICAL (Check-T state-loss guard): only prune keys whose sheet LABEL was scanned
+    SUCCESSFULLY this round — a key whose sheet had a transient read error is PRESERVED with its
+    prior timestamp, so a one-sheet read failure can never silently reset the OTHER (or the same,
+    next cycle) sheet's staleness clock. Cleared rows on a scanned sheet drop out; newly-seen
+    HELD keys are stamped `now`. (Mirrors Check U's baseline merge, which preserves an unread
+    workspace's prior snapshot.)"""
+    merged = dict(prior)
+    for key in list(merged):
+        label = key.split(":", 1)[0]
+        if label in scanned_labels and key not in held_now:
+            del merged[key]  # this sheet WAS read and the row is no longer HELD → cleared
+    for key in held_now:
+        merged.setdefault(key, now.isoformat())
+    return merged
+
+
+def _update_held_first_seen(
+    held_now: set[str], scanned_labels: set[str], now: datetime
+) -> dict[str, str]:
+    """Read-modify-write the first-seen map under a path lock; returns the merged map.
 
     Fail-soft (never raises): on any state I/O error, WARN and return a best-effort in-memory
-    map (every current key stamped `now`), so age-thresholding degrades to "nothing stale yet"
-    this run rather than crashing the check or inventing staleness."""
+    map (current keys stamped `now`), so age-thresholding degrades to "nothing stale yet" this
+    run rather than crashing the check or inventing staleness."""
     try:
         with state_io.with_path_lock(HELD_ROW_FIRST_SEEN_PATH):
             prior = _load_held_first_seen_unlocked()
-            merged = {k: prior.get(k, now.isoformat()) for k in held_now}
+            merged = _merge_held_first_seen(prior, held_now, scanned_labels, now)
             state_io.atomic_write_json(HELD_ROW_FIRST_SEEN_PATH, merged)
             return merged
     except Exception as exc:  # noqa: BLE001 — fail-soft per state-write discipline
@@ -1625,6 +1648,7 @@ def _check_stale_held_rows() -> CheckResult:
     only persistent side effect is the first-seen state file (atomic + path-locked)."""
     now = datetime.now(UTC)
     held_now: set[str] = set()
+    scanned_labels: set[str] = set()
     read_errors: list[str] = []
     for label, sheet_id, status_col, held_val in _HELD_SCAN_SHEETS:
         try:
@@ -1632,16 +1656,19 @@ def _check_stale_held_rows() -> CheckResult:
         except Exception as exc:  # noqa: BLE001 — per-sheet fail-soft; other sheet still scans
             read_errors.append(f"{label}: {exc!r}")
             continue
+        scanned_labels.add(label)  # this sheet read OK → its keys may be pruned-if-cleared
         for r in rows:
             held_now.add(f"{label}:{r.get('_row_id')}")
 
-    if read_errors and not held_now:
+    if not scanned_labels:
+        # BOTH sheets failed → no data; never invent a WARN, and don't touch the state file
+        # (so no successfully-scanned label exists to prune — the prior clocks are untouched).
         return CheckResult(
             severity=Severity.INFO,
             summary=f"HELD-row scan: review sheet read failed ({'; '.join(read_errors)}); no data.",
         )
 
-    first_seen = _update_held_first_seen(held_now, now)
+    first_seen = _update_held_first_seen(held_now, scanned_labels, now)
     stale: list[str] = []
     for key, iso in first_seen.items():
         try:
