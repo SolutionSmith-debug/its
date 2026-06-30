@@ -9,11 +9,18 @@ import { auditStmt, isUniqueViolation } from "./audit";
 // jobs is a PLAIN (in-place mutable) table — NOT integrity-bar — so updates UPDATE in place, but
 // every mutation still writes an audit_log row in the SAME D1 batch (W4).
 //
-// P2.5 — PORTAL IS THE AUTHORITATIVE WRITER. The create form now owns the full job source-of-truth
+// P2.5 — PORTAL IS THE AUTHORITATIVE WRITER. The create form owns the full job source-of-truth
 // (address, stakeholder, Safety + Progress routing contacts + CC arrays, lifecycle). The Mac-side
 // mirror daemon (field_ops/fieldops_sync.py, Slice 5) reads dirty portal rows over
 // GET /api/internal/fieldops/pending-jobs and find-or-creates a row in BOTH ITS-owned Active-Jobs
-// sheets keyed by the typed job_id (each sheet's "Portal Job Key" column).
+// sheets keyed by job_id (each sheet's "Portal Job Key" column).
+//
+// P2.5 Slice 6 — THE PORTAL ASSIGNS THE CANONICAL NUMBER. The office employee no longer types a
+// Job ID; the create route allocates the next JOB-###### from the `job_counter` table (migration
+// 0022) and uses it as BOTH job_id (D1 PK) and canonical_job_id from birth. That single identity
+// shows everywhere — portal, both Active-Jobs sheets (Job ID column, retyped off AUTO_NUMBER),
+// every report, Box. There is no Smartsheet-generates-then-read-back handshake: see
+// allocateJobNumber() below and shared/active_jobs_writer.py (writes Job ID = job_id on upsert).
 //
 // 0017 ORIGIN FENCE: a portal-CREATED job is stamped origin='portal' FOREVER, so the 60s
 // `/api/internal/sync` full-replace (scoped to origin='smartsheet') can never deactivate it.
@@ -24,11 +31,6 @@ import { auditStmt, isUniqueViolation } from "./audit";
 // in index.ts). progress% is NOT a mirrored SoR field (the Active-Jobs sheets have no progress
 // column), so it deliberately does NOT bump the version — see the /progress route.
 
-// A portal job_id is a USER-TYPED key. Reject anything shaped like a Smartsheet AUTO_NUMBER
-// (JOB-####) so a typed key can never collide with / shadow a canonical sheet id (the
-// Portal Job Key bridge + canonical_job_id duplicate pre-pass both rely on this disjointness).
-const JOB_ID_RE = /^[A-Z0-9][A-Z0-9-]{0,63}$/;
-const CANONICAL_JOB_ID_RE = /^JOB-\d+$/i;
 const MAX_JOB_ID = 64;
 const MAX_NAME = 256;
 const MAX_PHONE = 40;
@@ -47,6 +49,29 @@ function clampPct(n: number): number {
 /** lifecycle → the legacy `active` int (the dropdown/down-sync flag): only 'active' is live. */
 function lifecycleToActive(lifecycle: string): number {
   return lifecycle === "active" ? 1 : 0;
+}
+
+/** Allocate the next portal-assigned canonical job number, atomically.
+ *
+ *  `UPDATE … SET last_value = last_value + 1 … RETURNING last_value` is a SINGLE atomic statement;
+ *  D1 serializes writes, so two concurrent creates receive distinct numbers (no read-then-write
+ *  race). Returns the formatted `JOB-######` (6-digit zero-pad, matching the legacy AUTO_NUMBER),
+ *  or null when the counter is UNAVAILABLE — either the seed row is missing OR the `job_counter`
+ *  table itself is absent (migration 0022 not applied before the Worker deployed; D1 THROWS
+ *  "no such table" rather than returning null, so we catch it). Both collapse to null so the caller
+ *  returns ONE clean fail-closed 500 `counter_unavailable` for the real deploy-order case — never a
+ *  malformed id, and never an opaque `internal_error` the runbook can't grep for. */
+async function allocateJobNumber(db: D1Database): Promise<string | null> {
+  let row: { last_value: number } | null;
+  try {
+    row = await db
+      .prepare("UPDATE job_counter SET last_value = last_value + 1 WHERE id = 1 RETURNING last_value")
+      .first<{ last_value: number }>();
+  } catch {
+    return null; // table absent (0022 not applied) → fail closed, identical to a missing row
+  }
+  if (!row) return null;
+  return `JOB-${String(row.last_value).padStart(6, "0")}`;
 }
 
 // ---- routing-block validation (shared by create + contacts edit) ----------
@@ -138,11 +163,9 @@ export function registerJobWriteRoutes(app: FieldopsApp, gates: FieldopsGates): 
         return c.json({ error: "bad_request" }, 400);
       }
 
-      const jobId = (typeof body.job_id === "string" ? body.job_id : "").trim().toUpperCase();
+      // Slice 6: the portal ASSIGNS the Job ID (allocated below); the office employee types only
+      // the Project Name. body.job_id is ignored.
       const projectName = typeof body.project_name === "string" ? body.project_name.trim() : "";
-      if (!JOB_ID_RE.test(jobId)) return c.json({ error: "invalid_job_id" }, 400);
-      // Reject an AUTO_NUMBER-shaped key so a typed portal id can never shadow a canonical JOB-####.
-      if (CANONICAL_JOB_ID_RE.test(jobId)) return c.json({ error: "reserved_job_id" }, 400);
       if (projectName.length < 1 || projectName.length > MAX_NAME) return c.json({ error: "invalid_project_name" }, 400);
       const progress = typeof body.progress === "number" && Number.isFinite(body.progress) ? clampPct(body.progress) : 0;
 
@@ -160,12 +183,6 @@ export function registerJobWriteRoutes(app: FieldopsApp, gates: FieldopsGates): 
       if (newClient && clientIdRaw !== null) return c.json({ error: "client_id_and_new_client" }, 400);
 
       const actor = c.get("session").username;
-
-      // Pre-check job uniqueness BEFORE any client insert (keeps the common dup case from orphaning a
-      // client). A rare TOCTOU race is caught by the UNIQUE → 409 below; residue is a harmless
-      // unreferenced clients row.
-      const dup = await c.env.DB.prepare("SELECT job_id FROM jobs WHERE job_id = ?1").bind(jobId).first();
-      if (dup) return c.json({ error: "job_exists" }, 409);
 
       let clientId: number | null = clientIdRaw;
       if (newClient) {
@@ -187,9 +204,17 @@ export function registerJobWriteRoutes(app: FieldopsApp, gates: FieldopsGates): 
         if (!client) return c.json({ error: "unknown_client" }, 422);
       }
 
+      // Allocate the canonical number LAST — after all validation + the optional client insert — so
+      // a 400/422 never burns a number. null ⇒ migration 0022 not applied → fail closed (500), never
+      // a malformed id (deploy-order discipline: apply 0022 --remote BEFORE the Worker deploys).
+      const jobId = await allocateJobNumber(c.env.DB);
+      if (jobId === null) return c.json({ error: "counter_unavailable" }, 500);
+
       // Mutation + audit in ONE batch. 0017 fence (origin='portal', sync_state='pending') + 0021
       // SoR fields + version vector (lifecycle='active', mirror_version=1; watermarks default 0 so the
-      // brand-new row is immediately dirty for the mirror daemon). Server-authoritative created_at.
+      // brand-new row is immediately dirty for the mirror daemon). canonical_job_id = job_id from
+      // birth (?1) — the portal owns the number, so there is no Smartsheet read-back to wait for.
+      // Server-authoritative created_at.
       try {
         await c.env.DB.batch([
           c.env.DB
@@ -202,7 +227,7 @@ export function registerJobWriteRoutes(app: FieldopsApp, gates: FieldopsGates): 
                  progress_contact_name, progress_contact_email, progress_cc,
                  lifecycle, mirror_version)
                VALUES (?1, ?2, 1, 'active', ?3, ?4, unixepoch(),
-                       'portal', 'pending', NULL,
+                       'portal', 'pending', ?1,
                        ?5, ?6, ?7, ?8,
                        ?9, ?10, ?11,
                        ?12, ?13, ?14,

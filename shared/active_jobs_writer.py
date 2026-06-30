@@ -28,9 +28,10 @@ sheet column titles to write AND the payload keys to read.
 
 Invariants
 ----------
-- **Non-clobber (§51).** `upsert_job` writes ONLY the portal-owned columns (Project Name,
-  Address, Stakeholder Name/Email/Phone, the workstream's reports-contact name+email,
-  CC 1–5, Active, Portal Job Key). It NEVER writes Notes or any operator/system column. On
+- **Non-clobber (§51).** `upsert_job` writes ONLY the portal-owned columns (Job ID,
+  Project Name, Address, Stakeholder Name/Email/Phone, the workstream's reports-contact
+  name+email, CC 1–5, Active, Portal Job Key). It NEVER writes Notes or any operator/system
+  column. (Slice 6: Job ID is portal-owned — the portal assigns it; see Identity below.) On
   the UPDATE branch this is structural: `smartsheet_client.update_rows` only touches the
   columns present in the payload — an unsupplied column is left exactly as the operator
   left it.
@@ -42,10 +43,12 @@ Invariants
 
 Identity / lifecycle
 --------------------
-- Find-or-create key = the "Portal Job Key" TEXT column == `job["job_id"]` (the typed D1
-  primary key, the crash-safe idempotency key + the cross-sheet identity bridge).
-- `canonical_job_id` (returned) = the row's read-back `Job ID` (the sheet AUTO_NUMBER) —
-  for the safety sheet this is what the Worker writes back into D1 as the canonical id.
+- Find-or-create key = the "Portal Job Key" TEXT column == `job["job_id"]` (the D1 primary
+  key, the crash-safe idempotency key + the cross-sheet identity bridge).
+- `canonical_job_id` (returned) == `job["job_id"]`. Slice 6: the portal ASSIGNS the canonical
+  JOB-###### (the worker `job_counter`, migration 0022), so this module WRITES it into the
+  "Job ID" column on every upsert — no Smartsheet AUTO_NUMBER, no read-back handshake. The two
+  Active-Jobs columns hold the same value: Job ID == Portal Job Key == job_id.
 - `lifecycle` (active|inactive|archived) maps to the `Active` PICKLIST
   (Active|Inactive|Archived). An unknown/blank lifecycle passes through verbatim and trips
   the `picklist_validation` REGISTRY at write time → `PicklistViolationError` (a permanent
@@ -76,7 +79,7 @@ from . import sheet_ids, smartsheet_client
 # ---- Portal-owned column titles (the ONLY columns this module writes) --------
 # Shared identity/stakeholder columns are common across both sheets; the
 # reports-contact columns are workstream-specific and carried on the WriteConfig.
-COL_JOB_ID = "Job ID"                  # AUTO_NUMBER — read-back only (never written)
+COL_JOB_ID = "Job ID"                  # TEXT (portal-owned, Slice 6) — WRITTEN = job_id (==Portal Job Key)
 COL_PROJECT_NAME = "Project Name"
 COL_ADDRESS = "Address"
 COL_STAKEHOLDER_NAME = "Stakeholder Name"
@@ -196,6 +199,9 @@ def _explode_cc(cc_value: Any) -> list[str]:
 def _build_cells(config: WriteConfig, job: Mapping[str, Any], portal_job_key: str) -> dict[str, Any]:
     """Build the portal-owned `{column_title: value}` payload (the ONLY columns written)."""
     cells: dict[str, Any] = {
+        # Slice 6: the portal owns the canonical number, so Job ID == Portal Job Key == job_id is
+        # WRITTEN on every upsert (create sets it; update self-heals it) — no AUTO_NUMBER, no read-back.
+        COL_JOB_ID: portal_job_key,
         COL_PROJECT_NAME: _coerce_str(job.get("project_name")),
         COL_ADDRESS: _coerce_str(job.get("address")),
         COL_STAKEHOLDER_NAME: _coerce_str(job.get("stakeholder_name")),
@@ -222,9 +228,9 @@ def upsert_job(config: WriteConfig, job: Mapping[str, Any]) -> tuple[int, str]:
 
     Find by "Portal Job Key" == `job["job_id"]`: on a hit → `update_rows` ONLY the
     portal-owned columns of that row (Notes / operator columns untouched); on a miss →
-    `add_rows` a new row. Returns `(row_id, canonical_job_id)` where `canonical_job_id` is
-    the row's read-back `Job ID` (the sheet AUTO_NUMBER — read from the matched row on
-    update, or fetched via `get_row` after create).
+    `add_rows` a new row. Returns `(row_id, canonical_job_id)` where `canonical_job_id` ==
+    `job["job_id"]` — Slice 6: the portal ASSIGNS the canonical JOB-###### and this module
+    WRITES it into the "Job ID" column (no Smartsheet AUTO_NUMBER, no read-back handshake).
 
     Raises:
         ValueError: the payload has no `job_id` (a job that can't be keyed/marked-mirrored).
@@ -241,8 +247,7 @@ def upsert_job(config: WriteConfig, job: Mapping[str, Any]) -> tuple[int, str]:
     if existing is not None:
         row_id = int(existing["_row_id"])
         smartsheet_client.update_rows(config.sheet_id, [{"_row_id": row_id, **cells}])
-        return row_id, _coerce_str(existing.get(COL_JOB_ID))
+        return row_id, portal_job_key
 
     [row_id] = smartsheet_client.add_rows(config.sheet_id, [cells])
-    created = smartsheet_client.get_row(config.sheet_id, row_id)
-    return row_id, _coerce_str(created.get(COL_JOB_ID))
+    return row_id, portal_job_key

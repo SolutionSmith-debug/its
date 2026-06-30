@@ -4,14 +4,13 @@ Why this file exists:
     `active_jobs_writer.upsert_job` is the WRITE half of the job-tracker pivot's
     dual-sheet mirror (Op Stds §§50/51): it CREATEs and UPDATEs rows on a real
     Active-Jobs sheet, explodes a CC list into 5 typed slots, maps a `lifecycle`
-    string onto an "Active" PICKLIST, and reads back the sheet's AUTO_NUMBER
-    "Job ID" as the canonical id every downstream consumer joins on. The unit
-    suite (tests/test_active_jobs_writer.py) mocks `shared.smartsheet_client`
-    wholesale — by design it cannot catch a live body-shape rejection, a
-    picklist the SDK silently coerces, or a create→read eventual-consistency
-    gap on the canonical-id read-back. Op Stds §30 makes this live-API
-    counterpart non-optional for any `shared/*` SDK wrapper with
-    create/update/delete on typed columns.
+    string onto an "Active" PICKLIST, and (Slice 6) WRITES the portal-assigned
+    "Job ID" (== job_id) — the canonical id every downstream consumer joins on.
+    The unit suite (tests/test_active_jobs_writer.py) mocks
+    `shared.smartsheet_client` wholesale — by design it cannot catch a live
+    body-shape rejection or a picklist the SDK silently coerces. Op Stds §30
+    makes this live-API counterpart non-optional for any `shared/*` SDK wrapper
+    with create/update/delete on typed columns.
 
 How to run:
     Default `pytest -q` SKIPS this file (per pyproject.toml addopts:
@@ -27,20 +26,14 @@ How to run:
     under FOLDER_SYSTEM_CONFIG and deletes it in a `finally` block — no
     orphan state, even on test failure.
 
-AUTO_NUMBER caveat (read before editing):
-    The live ITS_Active_Jobs "Job ID" column is a Smartsheet AUTO_NUMBER,
-    but AUTO_NUMBER columns CANNOT be created via the REST API (POST
-    /columns -> errorCode 1008; verified live — see
-    scripts/migrations/extend_its_active_jobs_phase3.py). The real sheet's
-    AUTO_NUMBER column was a one-time operator UI conversion, not
-    reproducible by an automated throwaway sheet. The scratch sheet here
-    therefore uses a plain TEXT_NUMBER "Job ID" column: the CREATE test
-    asserts the live create→read round trip inside `upsert_job` is
-    internally consistent even though the value is blank (the CREATE
-    branch never writes "Job ID" — it is read-back-only), and the UPDATE
-    test manually seeds a value to exercise the matched-row read-back path
-    (`_coerce_str(existing.get("Job ID"))`) that a real AUTO_NUMBER column
-    would otherwise have populated automatically.
+Job ID is portal-owned TEXT (Slice 6 — read before editing):
+    The portal now ASSIGNS the canonical JOB-###### and `upsert_job` WRITES it
+    into the "Job ID" column (no Smartsheet AUTO_NUMBER, no read-back). The live
+    ITS_Active_Jobs "Job ID" column is retyped AUTO_NUMBER → TEXT at the Slice-6
+    cutover, so the scratch sheet's plain TEXT_NUMBER "Job ID" column now MATCHES
+    the live column. The CREATE test asserts the written Job ID == job_id; the
+    UPDATE test seeds a DRIFTED value and asserts the upsert self-heals it back
+    to == job_id (the portal owns the column).
 
 When to run:
     - Before merging any change to shared/active_jobs_writer.py.
@@ -174,8 +167,8 @@ def _create_scratch_active_jobs_sheet(name: str) -> int:
     ITS_Active_Jobs / ITS_Active_Jobs_Progress column recipe in
     scripts/migrations/build_its_active_jobs_progress_sheet.py.
 
-    "Job ID" is TEXT_NUMBER, not a true AUTO_NUMBER — see the module
-    docstring's "AUTO_NUMBER caveat".
+    "Job ID" is TEXT_NUMBER, matching the live column post-Slice-6 retype —
+    see the module docstring's "Job ID is portal-owned TEXT" section.
     """
     return smartsheet_client.create_sheet_in_folder(
         sheet_ids.FOLDER_SYSTEM_CONFIG,
@@ -239,10 +232,9 @@ def test_upsert_job_create_branch_live_round_trip(_token_available: _SecretToken
     """CREATE: a new job lands on the live sheet with every portal-owned
     column populated, a 6-element CC list explodes losslessly (CC 1-4 one
     each, CC 5 comma-joined overflow), "Active" is set from `lifecycle`, and
-    the returned `canonical_job_id` matches an independent live read of the
-    same row's "Job ID" cell — the SDK-vs-Live create→read consistency point
-    this scaffold exists to catch (see the module docstring's AUTO_NUMBER
-    caveat for why the value itself is blank here).
+    (Slice 6) the portal-owned "Job ID" is WRITTEN == job_id, matching the
+    returned `canonical_job_id` — the SDK-vs-Live write→read consistency point
+    this scaffold exists to catch.
     """
     sheet_id = _create_scratch_active_jobs_sheet(_sandbox_name("ajw_create"))
     try:
@@ -272,12 +264,13 @@ def test_upsert_job_create_branch_live_round_trip(_token_available: _SecretToken
         assert row["CC 4"] == "d@x.com"
         assert row["CC 5"] == "e@x.com, f@x.com"  # >5 overflow, comma-joined, lossless
 
-        # canonical_job_id read-back consistency (see module docstring AUTO_NUMBER caveat):
-        # upsert_job's CREATE branch never writes "Job ID" itself, so both sides are blank —
-        # the point under test is that they AGREE, proving the post-add_rows get_row() call
-        # inside upsert_job sees the same live state an independent read sees right after.
+        # Slice 6: the portal owns the number — "Job ID" is WRITTEN == job_id (no AUTO_NUMBER,
+        # no read-back), and the returned canonical_job_id == job_id. An independent live read
+        # of the row sees the same value (SDK-vs-Live write→read consistency).
+        assert row["Job ID"] == job["job_id"]
+        assert canonical_job_id == job["job_id"]
         live_row = smartsheet_client.get_row(sheet_id, row_id)
-        assert canonical_job_id == (live_row.get("Job ID") or "")
+        assert live_row.get("Job ID") == job["job_id"]
     finally:
         _delete_sheet_rest(sheet_id, _token_available)
 
@@ -291,9 +284,8 @@ def test_upsert_job_update_branch_non_clobber_live_round_trip(
     """UPDATE: re-upserting the SAME `job_id` finds the existing row by
     "Portal Job Key" (no second row), overwrites only the portal-owned
     columns with the new contacts + lifecycle, leaves an operator-written
-    "Notes" cell untouched, and reads `canonical_job_id` back from the
-    matched row (no extra `get_row` call) — exercising
-    `_coerce_str(existing.get("Job ID"))` against a live read.
+    "Notes" cell untouched, and (Slice 6) self-heals a DRIFTED "Job ID" back
+    to == job_id — the portal owns the column; canonical_job_id == job_id.
     """
     sheet_id = _create_scratch_active_jobs_sheet(_sandbox_name("ajw_update"))
     try:
@@ -306,11 +298,11 @@ def test_upsert_job_update_branch_non_clobber_live_round_trip(
         # must survive the UPDATE branch untouched (the non-clobber invariant, §51).
         smartsheet_client.update_rows(sheet_id, [{"_row_id": row_id, "Notes": "operator note"}])
 
-        # Simulate what a real AUTO_NUMBER column would have auto-populated on create
-        # (can't be created live on a throwaway scratch sheet — see module docstring).
+        # Slice 6 self-heal: drift the portal-owned "Job ID" to a wrong value; the next upsert
+        # must overwrite it back to == job_id (the portal owns the column).
         cols = smartsheet_client.list_columns_with_options(sheet_id)
         job_id_col_id = next(c["id"] for c in cols if c["title"] == "Job ID")
-        smartsheet_client.update_row_cells_by_id(sheet_id, row_id, {job_id_col_id: "JOB-0001"})
+        smartsheet_client.update_row_cells_by_id(sheet_id, row_id, {job_id_col_id: "JOB-DRIFT"})
 
         updated_job = dict(job)
         updated_job["stakeholder_name"] = "New Stakeholder"
@@ -331,8 +323,9 @@ def test_upsert_job_update_branch_non_clobber_live_round_trip(
         assert row["Safety Reports Contact Email"] == "newsafety@example.com"
         assert row["Active"] == "Archived"
         assert row["Notes"] == "operator note"  # untouched — non-clobber invariant
+        assert row["Job ID"] == job["job_id"]   # self-heal: drifted Job ID overwritten to job_id
 
-        assert canonical_job_id == "JOB-0001"
+        assert canonical_job_id == job["job_id"]
     finally:
         _delete_sheet_rest(sheet_id, _token_available)
 

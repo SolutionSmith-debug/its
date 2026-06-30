@@ -165,9 +165,11 @@ export interface JobRouting {
 }
 
 // manage (cap.jobtracker.manage)
+// Slice 6: the portal ASSIGNS the canonical Job ID (the office employee no longer types one); the
+// request carries only Project Name (+ optional client/routing), and the assigned JOB-###### is
+// returned in the response.
 export async function createJob(
   body: {
-    job_id: string;
     project_name: string;
     progress?: number;
     new_client?: NewJobClient;

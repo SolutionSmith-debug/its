@@ -217,14 +217,13 @@ describe("FieldOpsJobTracker — write UI", () => {
     await waitFor(() => expect(container.querySelectorAll(".dash-card--click")).toHaveLength(2));
 
     fireEvent.click(getByText("+ New job"));
-    fireEvent.change(getByPlaceholderText("Job ID (e.g. JOB-1042)"), { target: { value: "job-c" } });
+    // Slice 6: no Job ID input — the office employee types only the Project Name; the portal assigns the id.
     fireEvent.change(getByPlaceholderText("Project name"), { target: { value: "Charlie" } });
     fireEvent.change(getByPlaceholderText("Client name (optional)"), { target: { value: "Globex" } });
     fireEvent.submit(container.querySelector('[aria-label="Create job"]')!);
 
     await waitFor(() =>
       expect(api.createJob).toHaveBeenCalledWith({
-        job_id: "JOB-C", // trimmed + upper-cased client-side
         project_name: "Charlie",
         new_client: { name: "Globex" },
       }),
@@ -243,7 +242,6 @@ describe("FieldOpsJobTracker — write UI", () => {
     await waitFor(() => expect(container.querySelectorAll(".dash-card--click")).toHaveLength(2));
 
     fireEvent.click(getByText("+ New job"));
-    fireEvent.change(getByPlaceholderText("Job ID (e.g. JOB-1042)"), { target: { value: "job-c" } });
     fireEvent.change(getByPlaceholderText("Project name"), { target: { value: "Charlie" } });
     fireEvent.change(getByPlaceholderText("Job address (optional)"), { target: { value: "1 Main St" } });
     fireEvent.change(getByPlaceholderText("Stakeholder name"), { target: { value: "Dana Owner" } });
@@ -263,7 +261,6 @@ describe("FieldOpsJobTracker — write UI", () => {
     await waitFor(() =>
       expect(api.createJob).toHaveBeenCalledWith(
         expect.objectContaining({
-          job_id: "JOB-C",
           project_name: "Charlie",
           address: "1 Main St",
           stakeholder_name: "Dana Owner",
