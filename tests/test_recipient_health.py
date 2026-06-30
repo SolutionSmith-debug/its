@@ -1,10 +1,13 @@
-"""Tests for shared/recipient_health.py — the loud-surface for an unhealthy send recipient.
+"""Tests for shared/recipient_health.py — the §3.1 record-leg for an unhealthy send recipient.
 
-Pins: the Review-Queue row is tagged with the caller's workstream; the alert + row are
-dedupe-gated (one per window, not one per poll cycle); and every leg is fail-soft (a
-Review-Queue / alert / dedupe failure never propagates — the caller has already HELD the row).
+Pins: the Review-Queue row is a RECORD (always attempted, never push-deduped) tagged with the
+caller's workstream; it is idempotent on OPEN-row state (a flapping re-HELD doesn't duplicate the
+row, but a genuinely new incident is never swallowed); and every leg is fail-soft (a get_pending
+/ add failure never propagates — the caller has already HELD the row).
 """
 from __future__ import annotations
+
+import json
 
 import pytest
 
@@ -14,10 +17,9 @@ from shared import recipient_health
 @pytest.fixture
 def stub(mocker):
     return {
-        "should_fire": mocker.patch.object(recipient_health.alert_dedupe, "should_fire", return_value=True),
-        "record_fire": mocker.patch.object(recipient_health.alert_dedupe, "record_fire"),
+        # Default: no existing open rows → not idempotent-suppressed → the add fires.
+        "get_pending": mocker.patch.object(recipient_health.review_queue, "get_pending", return_value=[]),
         "add": mocker.patch.object(recipient_health.review_queue, "add", return_value=123),
-        "log": mocker.patch.object(recipient_health.error_log, "log"),
     }
 
 
@@ -34,25 +36,20 @@ def _call(**kw):
     recipient_health.report_unhealthy_recipient(**base)
 
 
-# ---- happy surface -------------------------------------------------------
+def _open_row(*, row_id, source="recipient_health"):
+    return {"Item ID": "x", "Payload": json.dumps({"row_id": row_id, "source": source})}
+
+
+# ---- the record leg (always-write, workstream-tagged) --------------------
 
 
 def test_files_review_queue_row_tagged_with_caller_workstream(stub):
     _call(config_workstream="progress_reports")
     stub["add"].assert_called_once()
     assert stub["add"].call_args.kwargs["workstream"] == "progress_reports"
-    # The payload carries the routing keys the operator needs.
     payload = stub["add"].call_args.kwargs["payload"]
     assert payload["job_id"] == "JOB-9" and payload["row_id"] == 70
-
-
-def test_fires_a_dedupe_gated_alert_then_opens_the_window(stub):
-    _call()
-    assert any(
-        c.kwargs.get("error_code") == "recipient_health.unhealthy_recipient"
-        for c in stub["log"].call_args_list
-    )
-    stub["record_fire"].assert_called_once()
+    assert payload["source"] == "recipient_health"  # so the idempotency check recognises it
 
 
 def test_safety_workstream_tag_passthrough(stub):
@@ -60,35 +57,41 @@ def test_safety_workstream_tag_passthrough(stub):
     assert stub["add"].call_args.kwargs["workstream"] == "safety_reports"
 
 
-# ---- dedupe gate ---------------------------------------------------------
+# ---- record idempotency (open-row state, NOT push-dedup) ------------------
 
 
-def test_suppressed_within_window_files_nothing(stub):
-    stub["should_fire"].return_value = False
-    _call()
-    stub["add"].assert_not_called()
-    stub["log"].assert_not_called()
-    stub["record_fire"].assert_not_called()
+def test_skips_add_when_open_row_already_tracks_this_incident(stub):
+    stub["get_pending"].return_value = [_open_row(row_id=70)]
+    _call(row_id=70)
+    stub["add"].assert_not_called()  # an open record already tracks it — no duplicate
+
+
+def test_adds_when_open_row_is_for_a_different_incident(stub):
+    # An open row for a DIFFERENT row_id, or one not from recipient_health, must not suppress.
+    stub["get_pending"].return_value = [
+        _open_row(row_id=999),
+        _open_row(row_id=70, source="some_other_source"),
+    ]
+    _call(row_id=70)
+    stub["add"].assert_called_once()
 
 
 # ---- fail-soft (never raises) --------------------------------------------
 
 
-def test_review_queue_failure_does_not_block_the_alert(stub):
-    stub["add"].side_effect = RuntimeError("smartsheet down")
+def test_get_pending_failure_falls_through_to_add(stub):
+    # A read failure must fail TOWARD surfacing (a possible duplicate beats a swallowed record).
+    stub["get_pending"].side_effect = RuntimeError("smartsheet down")
     _call()  # must not raise
-    # The alert leg still fired despite the Review-Queue write failing.
-    assert any(
-        c.kwargs.get("error_code") == "recipient_health.unhealthy_recipient"
-        for c in stub["log"].call_args_list
-    )
-    stub["record_fire"].assert_called_once()
+    stub["add"].assert_called_once()
+
+
+def test_add_failure_never_raises(stub):
+    stub["add"].side_effect = RuntimeError("smartsheet down")
+    _call()  # must not raise (the caller has already HELD)
 
 
 def test_total_failure_never_raises(stub):
-    stub["should_fire"].side_effect = RuntimeError("dedupe state corrupt")
-    stub["add"].side_effect = RuntimeError("smartsheet down")
-    stub["log"].side_effect = RuntimeError("log down")
-    stub["record_fire"].side_effect = RuntimeError("record down")
-    # The send-path HELD has already happened; this surface must never crash the caller.
-    _call()
+    stub["get_pending"].side_effect = RuntimeError("read boom")
+    stub["add"].side_effect = RuntimeError("write boom")
+    _call()  # the send-path HELD already happened; this surface must never crash the caller

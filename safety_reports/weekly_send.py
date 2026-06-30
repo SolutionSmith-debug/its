@@ -556,15 +556,15 @@ def _held_no_recipient(
     row_id: int, project_name: str, notes: str, cfg: SendConfig,
     *, job_id: str, reason: str,
 ) -> SendResult:
-    """HELD for an unhealthy send recipient — surfaced LOUD, then HELD.
+    """HELD for an unhealthy send recipient — surfaced as a tracked record, then HELD.
 
-    A bare HELD is operator-actionable but SILENT (it sits in the review sheet until
-    someone notices). This wraps the HELD with `shared.recipient_health` so a stale /
-    empty / invalid recipient also files an `ITS_Review_Queue` row + fires a
-    dedupe-gated operator alert ("never silent", the cross-cutting ITS invariant).
-    Built ONCE here so BOTH workstreams (safety via WSR, progress via WPR) inherit it.
-    `recipient_health.report_unhealthy_recipient` is fail-soft (never raises), so the
-    HELD below always happens regardless of the Review-Queue / alert legs."""
+    A bare HELD is operator-actionable but easy to miss (it sits in the review sheet until
+    someone notices). This wraps the HELD with `shared.recipient_health` so a stale / empty /
+    invalid recipient also files a queryable `ITS_Review_Queue` record ("never silent", the
+    cross-cutting ITS invariant — a §3.1 RECORD leg, idempotent on open-row state, NOT a
+    push-deduped alert; watchdog Check A escalates it if it goes stale). Built ONCE here so BOTH
+    workstreams (safety via WSR, progress via WPR) inherit it. `report_unhealthy_recipient` is
+    fail-soft (never raises), so the HELD below always happens regardless of the record leg."""
     recipient_health.report_unhealthy_recipient(
         config_workstream=cfg.config_workstream,
         script_name=cfg.script_name,
