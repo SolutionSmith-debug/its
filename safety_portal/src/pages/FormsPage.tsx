@@ -442,10 +442,10 @@ export function FormsPage({
                         <div><dt>Sections</dt><dd>{viewDef.sections.length}</dd></div>
                       </dl>
                       <div className="jha__actions" style={{ marginTop: 8 }}>
-                        <button type="button" className="btn btn--secondary" disabled={busy} onClick={() => startEdit(viewDef.form_code)}>
+                        <button type="button" className="btn btn--edit" disabled={busy} onClick={() => startEdit(viewDef.form_code)}>
                           Edit (new version)
                         </button>
-                        <button type="button" className="btn btn--secondary" disabled={busy} onClick={() => startAddVersion(viewDef.form_code)}>
+                        <button type="button" className="btn btn--edit" disabled={busy} onClick={() => startAddVersion(viewDef.form_code)}>
                           Add version (clone)
                         </button>
                         <button type="button" className="btn btn--retire" disabled={busy} onClick={() => void onRetire(viewDef.form_code)}>

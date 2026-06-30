@@ -235,7 +235,7 @@ export function AccountsPage({
                     <button className="btn btn--secondary" disabled={busy} onClick={() => void onToggleRole(a)}>
                       {a.role === "admin" ? "Make submitter" : "Make admin"}
                     </button>
-                    <button className="btn btn--danger" disabled={busy} onClick={() => void onDelete(a.username)}>
+                    <button className="btn btn--retire" disabled={busy} onClick={() => void onDelete(a.username)}>
                       Delete
                     </button>
                   </div>
