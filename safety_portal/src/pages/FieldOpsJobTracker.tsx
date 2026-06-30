@@ -578,11 +578,11 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
                 placeholder="Client name (optional)"
                 maxLength={256}
               />{" "}
-              <button type="submit" disabled={actionBusy} className="btn--secondary">Create</button>{" "}
+              <button type="submit" disabled={actionBusy} className="btn--primary">Create</button>{" "}
               <button type="button" onClick={() => setNewJobOpen(false)} className="btn--secondary">Cancel</button>
             </form>
           ) : (
-            <button onClick={() => setNewJobOpen(true)} className="btn--secondary">+ New job</button>
+            <button onClick={() => setNewJobOpen(true)} className="btn--primary">+ New job</button>
           )}
         </div>
       )}

@@ -224,7 +224,6 @@ export function FormFillPage({ onBack, tabBar }: { onBack?: () => void; tabBar?:
       />
       {tabBar}
       <main className="page__main">
-        {onBack ? <button className="btn btn--ghost btn--back" onClick={onBack}>← Home</button> : null}
         <h1 className="page__heading">New safety form</h1>
 
         <section className="card fr__select">

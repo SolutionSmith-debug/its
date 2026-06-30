@@ -327,7 +327,7 @@ export function FieldOpsPersonnel({ onBack }: { onBack: () => void }) {
               </select>{" "}
             </>
           )}
-          <button type="submit" disabled={actionBusy} className="btn--secondary">Add personnel</button>
+          <button type="submit" disabled={actionBusy} className="btn--primary">Add personnel</button>
         </form>
       )}
 
@@ -386,13 +386,13 @@ export function FieldOpsPersonnel({ onBack }: { onBack: () => void }) {
                     <td className="dash-cell">{fmtHours(entry?.hours ?? null)}</td>
                     {canManage && (
                       <td className="dash-cell">
-                        <button className="btn--secondary" onClick={(e) => { e.stopPropagation(); openEdit(p); }}>Edit</button>{" "}
+                        <button className="btn--edit" onClick={(e) => { e.stopPropagation(); openEdit(p); }}>Edit</button>{" "}
                         {p.username ? (
                           <button className="btn--secondary" onClick={(e) => { e.stopPropagation(); doUnlink(p); }} disabled={actionBusy}>Unlink account</button>
                         ) : (
                           <button className="btn--secondary" onClick={(e) => { e.stopPropagation(); openLink(p); }}>Link account</button>
                         )}{" "}
-                        <button className="btn--secondary" onClick={(e) => { e.stopPropagation(); doRetire(p); }} disabled={actionBusy}>Retire</button>
+                        <button className="btn--retire" onClick={(e) => { e.stopPropagation(); doRetire(p); }} disabled={actionBusy}>Retire</button>
                       </td>
                     )}
                   </tr>

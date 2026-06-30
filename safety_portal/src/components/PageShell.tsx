@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { AppHeader } from "./AppHeader";
+import { BackHomeNav } from "./BackHomeNav";
 import { useAuth } from "../lib/auth";
 
 /**
@@ -21,13 +22,7 @@ export function PageShell({ onHome, children }: { onHome?: () => void; children:
           </button>
         }
       />
-      {onHome && (
-        <nav className="admin-tabs" aria-label="Navigation">
-          <button type="button" className="admin-tabs__tab" onClick={onHome}>
-            ← Home
-          </button>
-        </nav>
-      )}
+      {onHome && <BackHomeNav onHome={onHome} />}
       <main className="page__main">{children}</main>
     </div>
   );

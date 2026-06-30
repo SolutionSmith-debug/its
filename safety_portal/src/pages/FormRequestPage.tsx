@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import * as api from "../lib/api";
 import { AppHeader } from "../components/AppHeader";
+import { BackHomeNav } from "../components/BackHomeNav";
 
 /** Render a "YYYY-MM" work-month as a human "Month YYYY" label (e.g. "June 2026"). */
 function monthLabel(ym: string): string {
@@ -112,13 +113,8 @@ export function FormRequestPage({ onBack }: { onBack: () => void }) {
 
   return (
     <div className="page">
-      <AppHeader
-        action={
-          <button className="btn btn--ghost" onClick={onBack}>
-            Back
-          </button>
-        }
-      />
+      <AppHeader />
+      <BackHomeNav onHome={onBack} />
       <main className="page__main">
         <h1 className="page__heading">Form Request</h1>
         <p className="muted">

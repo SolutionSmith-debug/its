@@ -11,6 +11,7 @@ import { FieldOpsJobTracker } from "./pages/FieldOpsJobTracker";
 import { FieldOpsEquipment } from "./pages/FieldOpsEquipment";
 import { FieldOpsPersonnel } from "./pages/FieldOpsPersonnel";
 import { MaterialsCatalogPage } from "./pages/MaterialsCatalogPage";
+import { BackHomeNav } from "./components/BackHomeNav";
 import { useIdleLogout } from "./lib/useIdleLogout";
 
 type View = "home" | HomeNav;
@@ -56,17 +57,11 @@ export function App() {
     setEditing(false);
     setView("home");
   };
-  const backNav = (
-    <nav className="admin-tabs" aria-label="Back">
-      <button type="button" className="admin-tabs__tab" onClick={home}>
-        ← Home
-      </button>
-    </nav>
-  );
+  const backNav = <BackHomeNav onHome={home} />;
 
   let page: ReactNode;
   if (view === "fill") {
-    page = <FormFillPage onBack={home} />;
+    page = <FormFillPage onBack={home} tabBar={backNav} />;
   } else if (view === "request") {
     page = <FormRequestPage onBack={home} />;
   } else if (view === "accounts" && has("cap.admin.accounts")) {

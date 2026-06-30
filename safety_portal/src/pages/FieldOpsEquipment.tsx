@@ -408,8 +408,8 @@ export function FieldOpsEquipment({ onBack }: { onBack: () => void }) {
               </form>
             ) : (
               <div className="dash-row">
-                <button onClick={openEdit} className="btn--secondary">Edit details</button>{" "}
-                <button onClick={submitRetire} disabled={actionBusy} className="btn--secondary">Retire unit</button>
+                <button onClick={openEdit} className="btn--edit">Edit details</button>{" "}
+                <button onClick={submitRetire} disabled={actionBusy} className="btn--retire">Retire unit</button>
               </div>
             )}
           </section>
@@ -553,7 +553,7 @@ export function FieldOpsEquipment({ onBack }: { onBack: () => void }) {
             <option value="degraded">Degraded</option>
             <option value="down">Down</option>
           </select>{" "}
-          <button type="submit" disabled={actionBusy} className="btn--secondary">Add unit</button>
+          <button type="submit" disabled={actionBusy} className="btn--primary">Add unit</button>
         </form>
       )}
       {error && <p className="muted" style={{ color: "red" }}>{error}</p>}

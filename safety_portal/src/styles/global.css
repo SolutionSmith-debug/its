@@ -272,9 +272,12 @@ h3 {
   width: 100%;
 }
 
+/* Primary action (Add equipment, Add jobs, Publish, …): green fill, white text, GOLD
+   border — the canonical action button of the design language (persists site-wide). */
 .btn--primary {
   background: var(--c-brg);
   color: var(--c-on-brg);
+  border-color: var(--c-gold);
 }
 
 .btn--primary:hover {
@@ -306,6 +309,28 @@ h3 {
   color: var(--c-brg);
   border-color: var(--c-brg);
 }
+
+/* Design language — lifecycle action variants (persist site-wide):
+   Edit   = solid green fill + gold border (shares the primary fill by intent).
+   Retire = solid red fill + gold border (the deliberate destructive lifecycle action;
+            distinct from .btn--danger, the small white/red utility-delete style kept for
+            inline icon/remove controls). Gold is a BORDER only here — never gold text on
+            a light surface (tokens.css contrast doctrine). */
+.btn--edit {
+  background: var(--c-brg);
+  color: var(--c-on-brg);
+  border-color: var(--c-gold);
+}
+.btn--edit:hover { background: var(--c-brg-700); }
+.btn--edit:disabled { opacity: 0.6; cursor: default; }
+
+.btn--retire {
+  background: var(--c-danger);
+  color: var(--c-white);
+  border-color: var(--c-gold);
+}
+.btn--retire:hover { background: #7e1616; }
+.btn--retire:disabled { opacity: 0.6; cursor: default; }
 
 /* ── Home: form cards ─────────────────────────────────────────────────────── */
 .form-grid {
@@ -1158,13 +1183,19 @@ h3 {
    --secondary in the markup so they are visible on the white page. */
 .btn--primary,
 .btn--secondary,
-.btn--danger {
+.btn--danger,
+.btn--edit,
+.btn--retire {
   font: inherit;
   font-weight: 600;
   min-height: var(--tap);
   padding: 0 18px;
   border-radius: var(--radius-sm);
-  border: 1.5px solid transparent;
+  /* width/style only — NOT the `border` shorthand, which would reset border-color to
+     transparent and clobber each variant's color (gold/green/red). This fallback follows
+     the variant rules in source order, so resetting the color here would win. */
+  border-width: 1.5px;
+  border-style: solid;
   cursor: pointer;
   display: inline-flex;
   align-items: center;
