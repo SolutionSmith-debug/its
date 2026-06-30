@@ -97,7 +97,10 @@ outside the sentinel block.
 | Date | Type | Status | Workstream | Title | PRs |
 |------|------|--------|------------|-------|-----|
 | 2026-06-10 | session_log | active | safety_portal | [Session — Agent Optimization (Brief 2) + Safety Portal Hardening (Brief 1)](2026-06-10_agent-optimization-and-portal-hardening.md) | #260, #261, #263, #264, #265, #266 |
+| 2026-06-29 | session_log | closed | field_ops | [Session — Tier-A Stage-0 foundation + Personnel CRUD landed (PRs #329, #344, #345, #346, #349)](2026-06-29_field-ops-progress-stage0-foundation-landed.md) | #329, #344, #345, #346, #349 |
 | 2026-06-29 | session_log | closed | infrastructure | [Session — Forensic lessons-learned retrospective → 6 standards-hardening PRs](2026-06-29_forensic-lessons-learned-hardening.md) | #330, #342, #343, #347, #348, #350, #351, #352 |
+| 2026-06-29 | session_log | closed | infrastructure | [Session — Op Stds v18→v19 (§50 code-actuation / §51 SoR write-back) + job-tracker pivot planning (P2.5) + Manager-tier folding (P2.6)](2026-06-29_opstds-v19-doctrine-and-jobtracker-pivot.md) | #358 |
+| 2026-06-28 | session_log | closed | safety_portal | [Session — Field-Ops Progress-Reporting program design + Stage-0 slices (M1/P-A1/A2) + live lockout fix](2026-06-28_field-ops-progress-reporting-stage0_2.md) | #325, #326, #327, #328 |
 | 2026-06-28 | session_log | closed | safety_portal | [Session — Field-Ops write-UI phase complete (Slices 3–4, PRs #321–#322)](2026-06-28_field-ops-write-ui-phase.md) | #321, #322 |
 | 2026-06-27 | session_log | closed | safety_portal | [Session — Field-Ops P2.2 read views (Personnel / Equipment / Job Tracker), A/B/C landed](2026-06-27_field-ops-p2.2-read-views.md) | #308, #309, #310 |
 | 2026-06-27 | session_log | closed | safety_portal | [Session — Field-Ops P2.3 write routes (job/task/time/equipment CRUD), 6 slices landed](2026-06-27_field-ops-p2.3-write-routes.md) | #312, #313, #314, #315, #316, #317 |
