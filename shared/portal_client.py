@@ -63,6 +63,8 @@ PUBLISH_PENDING_PATH = "/api/internal/publish/pending"
 PUBLISH_CLAIM_PATH = "/api/internal/publish/claim"
 PUBLISH_STAMP_PATH = "/api/internal/publish/stamp"
 PUBLISH_STUCK_PATH = "/api/internal/publish/stuck"
+FIELDOPS_PENDING_JOBS_PATH = "/api/internal/fieldops/pending-jobs"
+FIELDOPS_JOBS_MARK_MIRRORED_PATH = "/api/internal/fieldops/jobs-mark-mirrored"
 
 
 # ---- Typed exceptions ----------------------------------------------------
@@ -251,6 +253,61 @@ def push_jobs(base_url: str, token: str, jobs: list[dict[str, Any]]) -> dict[str
     `PortalTransportError` (any other failure).
     """
     return _request("POST", base_url, SYNC_PATH, token, json_body={"jobs": jobs})
+
+
+# ---- Field-Ops job up-sync (P2.5 Slice 5 — the portal-as-writer mirror I/O) ----
+
+
+def get_fieldops_pending_jobs(base_url: str, token: str) -> list[dict[str, Any]]:
+    """Pull dirty portal jobs to mirror UP: GET /api/internal/fieldops/pending-jobs.
+
+    Returns the `jobs` list verbatim — each a dict with the full SoR payload + version
+    vector the `field_ops.fieldops_sync` daemon needs to find-or-create a row in BOTH
+    Active-Jobs sheets: `job_id, project_name, lifecycle, address, stakeholder_name/email/
+    phone, safety_contact_name/email, safety_cc (list), progress_contact_name/email,
+    progress_cc (list), mirror_version, safety_mirrored_version, progress_mirrored_version,
+    safety_row_id, progress_row_id, canonical_job_id`. The Worker caps the page at 200 rows
+    server-side (no client limit param); the daemon drains across cycles.
+
+    A control-plane read of OUR OWN Worker (bearer = the SEPARATE field-ops token
+    `PORTAL_FIELDOPS_API_TOKEN`; privilege-separated from the poller's internal token), NOT a
+    customer-facing send. Same typed-error contract as `get_pending` — `PortalAuthError`
+    (401) / `PortalRateLimitError` (429/503 exhausted) / `PortalTransportError` (any other,
+    incl. a non-object / missing-array body).
+    """
+    data = _request("GET", base_url, FIELDOPS_PENDING_JOBS_PATH, token)
+    jobs = data.get("jobs")
+    if not isinstance(jobs, list):
+        raise PortalTransportError(
+            f"GET {FIELDOPS_PENDING_JOBS_PATH} missing/invalid 'jobs' array "
+            f"(got {type(jobs).__name__})"
+        )
+    # Defensive: keep only dict rows; a non-dict element is malformed transport.
+    return [row for row in jobs if isinstance(row, dict)]
+
+
+def mark_fieldops_jobs_mirrored(
+    base_url: str, token: str, updates: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """Per-sheet mirror commit point: POST /api/internal/fieldops/jobs-mark-mirrored.
+
+    `updates` is a non-empty list of `{job_id, sheet: 'safety'|'progress', mirrored_version,
+    row_id, canonical_job_id?}`. The Worker MONOTONICALLY advances only that sheet's
+    watermark (MAX), caches the row_id, writes back `canonical_job_id` (SAFETY sheet only),
+    and flips `sync_state` to `synced` once BOTH watermarks reach `mirror_version`. The
+    daemon calls this ONCE PER SHEET (after that sheet's upsert confirms) so a progress
+    failure leaves the job dirty with only the safety watermark advanced — the version-vector
+    self-heal. The Worker rejects an EMPTY list (400) — the caller must never send one.
+
+    Like `push_jobs`/`mark_filed`, a control-plane write to OUR OWN Worker (outside the
+    External Send Gate, Invariant 1). Returns the Worker's `{ok, updated}` dict. Raises the
+    typed `PortalTransportError` hierarchy on failure (a 400 invalid/empty body surfaces as
+    `PortalTransportError`, never a silent return).
+    """
+    return _request(
+        "POST", base_url, FIELDOPS_JOBS_MARK_MIRRORED_PATH, token,
+        json_body={"updates": updates},
+    )
 
 
 # ---- Request-driven PDF cache (PR-4 Part A — the Mac PDF-servicing pass I/O) ----
