@@ -71,8 +71,13 @@ def test_sla_tier_values_match_live_picklist():
 
 
 def test_valid_workstreams_match_live_picklist():
+    # `progress_reports` added at P5 — the progress weekly compile's per-job fence and
+    # the recipient_health send-time hook both enqueue with workstream="progress_reports".
+    # Smartsheet accepts an unknown picklist value as a plain string (the write succeeds),
+    # but the operator should add "progress_reports" to the live ITS_Review_Queue Workstream
+    # picklist so pivot views bucket it (same pattern noted in the ReviewReason docstring).
     expected = {
-        "safety_reports", "po_materials", "subcontracts",
+        "safety_reports", "progress_reports", "po_materials", "subcontracts",
         "email_triage", "ai_employee", "global",
     }
     assert set(VALID_WORKSTREAMS) == expected

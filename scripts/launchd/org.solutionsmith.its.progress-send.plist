@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Progress Reports progress_send polling daemon. Dispatches approved
+  WPR_human_review rows to progress_send.send_one_row, which transmits via
+  Microsoft Graph send_mail. Zero AI capability (External Send Gate per
+  Foundation Mission v11 Invariant 1).
+
+  Independent of the safety weekly-send poll: its own lock
+  (state/progress_send.lock), its own heartbeat, its own review sheet
+  (WPR_human_review), and its own F22 approver authority (the Progress
+  Reporting workspace). The two send pollers therefore coexist without a
+  shared mutex; "staggered" here means independent resources + the operator
+  loading them at separate times, not phase-locked scheduling (StartInterval
+  fires from each daemon's own load instant).
+
+  Install:
+    scripts/launchd/install.sh load org.solutionsmith.its.progress-send.plist
+
+  The installer reads progress_reports.progress_send.poll_interval_seconds
+  from ITS_Config and substitutes both __ITS_HOME__ and
+  __POLL_INTERVAL_SECONDS__ before copying to ~/Library/LaunchAgents/.
+  Default cadence 900s (15 min). Changes to the interval row take effect at
+  the next install run; the running daemon does not hot-reload.
+
+  See docs/runbooks/progress_send.md for the operator runbook.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>org.solutionsmith.its.progress-send</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__ITS_HOME__/.venv/bin/python</string>
+        <string>-m</string>
+        <string>progress_reports.progress_send_poll</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__ITS_HOME__</string>
+
+    <key>StandardOutPath</key>
+    <string>__ITS_HOME__/logs/launchd/progress_send_poll.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>__ITS_HOME__/logs/launchd/progress_send_poll.err.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>LANG</key>
+        <string>en_US.UTF-8</string>
+    </dict>
+
+    <key>StartInterval</key>
+    <integer>__POLL_INTERVAL_SECONDS__</integer>
+
+    <!-- A2 (single-host resilience): RunAtLoad=true so this interval poll daemon
+         RESUMES immediately when launchd loads the agent after a reboot/OS-update
+         (eval host-no-runatload), then StartInterval re-fires on cadence. KeepAlive
+         is intentionally absent: ITS daemons are one-shot-per-fire, so KeepAlive=true
+         would restart on exit and destroy the interval cadence. Pinned green by
+         tests/test_daemon_scaffold.py::test_interval_daemons_run_at_load. -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>

@@ -158,6 +158,20 @@ SEND_SCRIPTS: list[tuple[str, list[str]]] = [
         "safety_reports/send_poll_core.py",
         ["anthropic_client", "anthropic"],
     ),
+    (
+        # P5: progress_send is the PROGRESS instantiation of the shared send engine —
+        # it imports safety_reports.weekly_send (the dispatch logic, which transitively
+        # brings in graph_client.send_mail, the intended send capability). anthropic /
+        # anthropic_client must not appear at all (no LLM in the send half).
+        "progress_reports/progress_send.py",
+        ["anthropic_client", "anthropic"],
+    ),
+    (
+        # P5: the progress send poller. Imports progress_send (→ weekly_send → graph
+        # send) + send_poll_core. anthropic / anthropic_client must not appear at all.
+        "progress_reports/progress_send_poll.py",
+        ["anthropic_client", "anthropic"],
+    ),
     # ("po_materials/rfq_send.py", ["anthropic_client", "anthropic"]),
     # ("subcontracts/subcontract_send.py", ["anthropic_client", "anthropic"]),
 ]
