@@ -145,17 +145,55 @@ export interface NewJobClient {
   email?: string;
 }
 
+// P2.5 — the portal is the authoritative writer of a job's routing source-of-truth. lifecycle is
+// the canonical job-state field (active|inactive|archived); the legacy `active`/`status` flags are
+// derived by the worker. Routing block + CC arrays mirror fieldops_job_write.ts parseRouting:
+// every field optional, each CC array ≤5 email-shaped strings. The worker re-validates + re-gates.
+export type JobLifecycle = "active" | "inactive" | "archived";
+
+export interface JobRouting {
+  address?: string;
+  stakeholder_name?: string;
+  stakeholder_email?: string;
+  stakeholder_phone?: string;
+  safety_contact_name?: string;
+  safety_contact_email?: string;
+  safety_cc?: string[];
+  progress_contact_name?: string;
+  progress_contact_email?: string;
+  progress_cc?: string[];
+}
+
 // manage (cap.jobtracker.manage)
-export async function createJob(body: {
-  job_id: string;
-  project_name: string;
-  progress?: number;
-  new_client?: NewJobClient;
-}): Promise<{ job_id: string }> {
+export async function createJob(
+  body: {
+    job_id: string;
+    project_name: string;
+    progress?: number;
+    new_client?: NewJobClient;
+  } & JobRouting,
+): Promise<{ job_id: string }> {
   return postJson<{ ok: boolean; job_id: string }>("/api/fieldops/job", body);
 }
 export async function closeJob(jobId: string): Promise<void> {
   await postJson(`/api/fieldops/job/${encodeURIComponent(jobId)}/close`, {});
+}
+// Set the canonical lifecycle (P2.5). Supersedes the bare /close in the UI; /close stays as a thin
+// 'inactive' alias. The worker derives the legacy active/status flags and bumps the mirror version.
+export async function setLifecycle(jobId: string, lifecycle: JobLifecycle): Promise<{ lifecycle: JobLifecycle }> {
+  return postJson<{ ok: boolean; lifecycle: JobLifecycle }>(
+    `/api/fieldops/job/${encodeURIComponent(jobId)}/lifecycle`,
+    { lifecycle },
+  );
+}
+// Edit the routing SoR block (address + stakeholder + safety/progress contacts + CC arrays). The
+// worker FULL-OVERWRITES the routing fields (an omitted field → ''), so send the complete intended
+// routing for the job. job_id/lifecycle/status are untouched.
+export async function editContacts(jobId: string, routing: JobRouting): Promise<{ job_id: string }> {
+  return postJson<{ ok: boolean; job_id: string }>(
+    `/api/fieldops/job/${encodeURIComponent(jobId)}/contacts`,
+    routing,
+  );
 }
 export async function setJobProgress(jobId: string, progress: number): Promise<{ progress: number }> {
   return postJson<{ ok: boolean; progress: number }>(`/api/fieldops/job/${encodeURIComponent(jobId)}/progress`, { progress });
