@@ -3,8 +3,9 @@
 This is the shared engine behind BOTH the safety weekly compile (`weekly_generate`) and the
 progress weekly compile (`progress_weekly_generate`) — the GENERATION half of the External
 Send Gate two-process model (Foundation Mission v11 Invariant 1). **Zero send capability.
-Zero AI.** (Capability gating is enforced on the thin per-workstream entry-point modules, which
-are the ones registered in `tests/test_capability_gating.py::GATED_SCRIPTS`.)
+Zero AI.** Capability gating is enforced BOTH on this module AND on the thin per-workstream
+entry-point modules that instantiate it — all are registered in
+`tests/test_capability_gating.py::GATED_SCRIPTS` (belt-and-suspenders).
 
 Parameterize-not-clone (Op Stds §14). Every workstream-specific binding — which Active-Jobs
 sheet to iterate, which week-sheet workspace, which review sheet + row-writer, which Box root,

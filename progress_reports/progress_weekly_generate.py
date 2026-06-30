@@ -1,31 +1,45 @@
 """Progress Reports weekly compile — the PROGRESS instantiation of the shared `generate_core`.
 
-Generation half of the External Send Gate two-process model (Foundation Mission v11
-Invariant 1) for the Progress-Reporting pull flow. **Zero send capability. Zero AI.**
+Purpose
+-------
+The progress twin of `safety_reports.weekly_generate` — the SAME deterministic compile engine
+(`safety_reports.generate_core.run_generate`), a different config. This module is the thin
+PROGRESS binding (`PROGRESS_GENERATE_CONFIG`, P4 parameterize-not-clone, Op Stds §14): it
+iterates the progress workspace's own `ITS_Active_Jobs_Progress` sheet, compiles each Active
+job's Sat→Fri week of submitted progress-form PDFs into a Box packet, and dual-writes a Rollup
+snapshot row + a PENDING `WPR_human_review` row (the progress twin of safety's WSR). The
+progress send (P5) reads the human-approved WPR row and transmits.
 
-P4 (parameterize-not-clone, Op Stds §14): the deterministic compile engine lives ONCE in
-`safety_reports.generate_core` (`run_generate`); this module is the thin PROGRESS binding
-(`PROGRESS_GENERATE_CONFIG`). It is the progress twin of `safety_reports.weekly_generate` —
-the SAME core, a different config: it iterates the progress workspace's own
-`ITS_Active_Jobs_Progress` sheet, compiles each Active job's Sat→Fri week of submitted
-progress-form PDFs into a Box packet, and dual-writes a Rollup snapshot row + a PENDING
-`WPR_human_review` row (the progress twin of safety's WSR). The progress send (P5) reads the
-human-approved WPR row and transmits.
+Invariants
+----------
+- GENERATION half of the External Send Gate (Foundation Mission v11 Invariant 1): **Zero send
+  capability. Zero AI.** `tests/test_capability_gating.py::GATED_SCRIPTS` AST-forbids
+  `anthropic` / `anthropic_client` / `graph_client` / `send_mail` / `resend` / `smtplib` /
+  `email.mime`. Box egress is the audited `shared.box_client` (via generate_core).
+- NO cross-workstream mix-up (operator requirement): the workstream binding is the ONE
+  `PROGRESS_GENERATE_CONFIG` — the review row goes to the WPR sheet via `wpr_review.add_wpr_row`
+  (which tags `Workstream=progress`), recipients resolve ONLY from `ITS_Active_Jobs_Progress`,
+  and the packet files under the progress Box root (`box_legacy_fallback=False` — no safety
+  fallback). A progress compile can never write a safety review row or resolve a safety recipient.
+- Deterministic over already-HMAC-verified PDFs + typed Smartsheet cells — NO LLM step, so
+  Invariant-2 Layer-2 untrusted-content tagging is N/A here.
+- Trigger/idempotency (in generate_core): Friday 14:30 local launchd `StartCalendarInterval`,
+  staggered 30 min after safety's 14:00 (both hold the host compile mutex);
+  SKIP-if-already-compiled-and-no-new-docs; NEVER closes the week; empty week → STILL appends a
+  Rollup + WPR row.
 
-No-mix-up (operator requirement): the workstream binding is the ONE `PROGRESS_GENERATE_CONFIG`
-— the review row goes to the WPR sheet via `wpr_review.add_wpr_row` (which tags the row
-`Workstream=progress`), recipients resolve ONLY from `ITS_Active_Jobs_Progress`, and the
-packet files under the progress Box root. A progress compile can never write a safety review
-row or resolve a safety recipient.
+Failure modes
+-------------
+Per-job timeout / memory fences route a single job-week to `ITS_Review_Queue` and continue (one
+bad job never tears down the run); an unset progress Box root surfaces a config gap to the
+per-job fence (no silent safety-tree fallback, `box_legacy_fallback=False`); a missed Friday run
+is operator-recovered by a manual re-run. Full successor-remediation fault tree:
+`docs/runbooks/progress_weekly_generate.md` (Op Stds §43).
 
-Trigger + idempotency (implemented in generate_core): Friday 14:30 local via launchd
-`StartCalendarInterval` — deliberately staggered 30 min after safety's 14:00 to avoid
-Smartsheet rate contention (both also hold the host compile mutex). SKIP-if-already-compiled-
-and-no-new-docs; NEVER closes the week; empty week → STILL appends a Rollup + WPR row.
-
-Capability gating (Invariant 1): no send, no AI. `tests/test_capability_gating.py::GATED_SCRIPTS`
-forbids `anthropic` / `anthropic_client` / `graph_client` / `send_mail` / `resend` / `smtplib`
-/ `email.mime` on this module. Box egress is the audited `shared.box_client` (via generate_core).
+Consumers
+---------
+- launchd daemon `org.solutionsmith.its.progress-generate` (the Friday 14:30 trigger).
+- The progress send poll (P5) reads the human-approved `WPR_human_review` rows this writes.
 """
 from __future__ import annotations
 

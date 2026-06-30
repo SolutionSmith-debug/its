@@ -64,7 +64,10 @@
     <!-- A2 (single-host resilience): RunAtLoad stays FALSE for a StartCalendarInterval
          daemon. launchd fires a missed calendar job on wake; RunAtLoad=true would
          MIS-fire it on every login (e.g. run a Friday compile on a Tuesday boot).
-         Reboot-recovery for the weekly compile is the watchdog Check-I catch-up. -->
+         Catch-up for a missed Friday run is a MANUAL re-run per
+         docs/runbooks/progress_weekly_generate.md — the watchdog Check-I catch-up + Check-C
+         staleness floor track only the safety slug today; wiring them to
+         `progress_weekly_generate` is a tracked fast-follow (NOT yet live). -->
     <key>RunAtLoad</key>
     <false/>
 
