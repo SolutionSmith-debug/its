@@ -18,9 +18,12 @@ cat <<EOF
 NOTE (ITS topology): this session is rooted at the LIVE daemon tree $its (branch: ${branch:-?}).
 The launchd daemons run this tree from disk every ~60s — uncommitted Python edits go live, and
 committing here mid-cycle can strand the publish daemon. For any Python-SOURCE edit, use a per-task
-worktree off origin/main with its OWN venv:
+worktree off origin/main with its OWN FRESH venv:
   git worktree add -b feat/<task> ../its-<task> origin/main
-  cp -R .venv ../its-<task>/.venv-wt && (cd ../its-<task> && .venv-wt/bin/pip install -e . --no-deps)
+  cd ../its-<task> && python3 -m venv .venv-wt && .venv-wt/bin/pip install -e '.[dev]'
+Do NOT 'cp -R .venv' — a copied venv's bin/pip keeps a shebang pointing at ~/its/.venv, so
+'.venv-wt/bin/pip install' silently repoints the LIVE editable install (corrupts the daemons).
+Verify isolation: '.venv-wt/bin/pip show its' must say its-<task>; '~/its/.venv' must be unchanged.
 Docs-only edits are fine here. See docs/operations/worktree_discipline.md.
 EOF
 exit 0

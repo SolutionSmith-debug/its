@@ -94,6 +94,44 @@ PYTHONPATH=~/its-<task> ruff check . \
   && PYTHONPATH=~/its-<task> pytest -q
 ```
 
+> **Caveat (verified 2026-06-30): `PYTHONPATH` alone is invocation-dependent.** Whether the
+> worktree wins depends on the launch CWD and the strict-editable finder's `sys.meta_path`
+> position, so a bare `python scripts/foo.py` (its own dir lands on `sys.path[0]`) can still
+> import `~/its`'s OLD code — a silent false-green that masquerades as a code bug. For anything
+> beyond a quick read-only check (any smoke that shells out, or that you'll trust a green from),
+> give the worktree its **own venv** below and run gates via `.venv-wt/bin/python`.
+
+### Isolated venv for a Python-source worktree — the SAFE recipe
+
+The bulletproof setup is a **fresh** `python -m venv` (zero finder/shebang ambiguity), then an
+editable install pointed at the worktree:
+
+```bash
+cd ~/its-<task>
+python3 -m venv .venv-wt
+.venv-wt/bin/pip install -e '.[dev]'          # quote the extras (zsh globs '.[dev]')
+# Run every gate via this venv's python — resolution is unambiguous:
+.venv-wt/bin/python -m pytest -q && .venv-wt/bin/mypy . && .venv-wt/bin/ruff check .
+```
+
+**ALWAYS assert isolation before trusting a run** (prove the control bites):
+
+```bash
+.venv-wt/bin/pip show its | grep 'Editable project location'        # MUST be …/its-<task>
+~/its/.venv/bin/pip show its | grep 'Editable project location'     # MUST be UNCHANGED (not your worktree)
+```
+
+> **Do NOT `cp -R ~/its/.venv` to make the worktree venv.** A copied venv's `bin/pip` keeps a
+> shebang hard-coded to `#!/…/its/.venv/bin/python3.x`, so `.venv-wt/bin/pip install -e .`
+> actually runs the **original** interpreter and writes to the **live `~/its/.venv`** —
+> silently repointing its editable finder at the worktree and breaking the daemons' imports
+> once the worktree is deleted. (Bit a session 2026-06-09 and again 2026-06-30.) If you must
+> copy for speed, the cp variant requires `.venv-wt/bin/python -m pip` (never `bin/pip`) **and**
+> a `pip uninstall its` first — see memory `reference_worktree-venv-for-python-source-edits`.
+> **If `~/its/.venv` got contaminated**, repair from the tree it should point at:
+> `cd <correct-tree> && /Users/<you>/its/.venv/bin/pip install -e . --no-deps --force-reinstall`,
+> then re-assert BOTH venvs above.
+
 ### Blueprint-repo pattern (`~/its-blueprint`) — the new rule
 
 The blueprint is markdown-native (doctrine, missions, references, scaffolds) — there is
