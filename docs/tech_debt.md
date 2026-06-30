@@ -86,7 +86,9 @@ Worker stays SEND-FREE; no migration. 42 vitest tests (real workerd + D1). Rider
 
 **Tag:** `safety-portal`, `security`, `audit`.
 
-## Safety Portal — session-epoch revocation + role-aware idle timeout (audit #7) [OPEN — Phase-2 carry 2026-06-08]
+## Safety Portal — session-epoch revocation + role-aware idle timeout (audit #7) [CLOSED 2026-06-30]
+
+**Resolved 2026-06-30 (tech-debt currency sweep):** BUILT. `users.session_epoch` column (migration 0009) embedded in cookie claims (`safety_portal/worker/auth.ts:32,42,63,123`); `requireSession` rejects a cookie whose `epoch` is below the live `session_epoch`; logout AND password-change bump the epoch. Role-aware lifetime shipped: admins idle out at a **30-min** server-enforced sliding window (`safety_portal/worker/index.ts:69-73`), submitters keep 90-day. NOTE: landed at 30-min idle, not the brief's original 5-min — the only delta from the spec. Verified @HEAD via grep (lesson #1).
 
 **Deferred from the 2026-06-08 audit hardening; carried to the Phase-2 Session Hardening bundle** (needs a migration + a session epoch). Today logout (`/api/logout`) is client-side only — a captured cookie stays valid to `iat+90d`; `requireSession` re-checks only `users.disabled` (a user-level kill, not per-session / logout revocation). Phase-2 fix (resolved in the form-editor grill): a per-user **session epoch** (D1 column, embedded in cookie claims, checked in `requireSession`; logout AND password-change bump it) + **role-aware lifetime** — submitters keep 90-day, **admins get a 5-min idle timeout** (client activity-detection + a server-enforced sliding window). Specced in the Phase-2 form-editor + session-hardening design brief (lands via Session B / the brief PR).
 
@@ -124,7 +126,9 @@ PR-H's per-request revocation (`requireSession` → `SELECT disabled FROM users`
 
 **Revisit when:** next Safety Portal hardening pass, or before a real PM is provisioned on a live tenant.
 
-## Safety Portal — `custom_domain` route disables the `workers.dev` URL on deploy [OPEN 2026-06-08]
+## Safety Portal — `custom_domain` route disables the `workers.dev` URL on deploy [CLOSED 2026-06-30]
+
+**Resolved 2026-06-30 (tech-debt currency sweep):** The active incident was resolved 2026-06-08 (daemon `worker_base_url` repointed to `safety.evergreenmirror.com`). The residual is now documented as **intentional known-behavior**, not debt: `safety_portal/wrangler.jsonc:38-50` records that `custom_domain:true` disables the `*.workers.dev` URL on deploy (error 1042) unless `workers_dev:true` is also set, and the portal is deliberately custom-domain-only. Captured in memory `reference_cloudflare-custom-domain-disables-workers-dev`. No code change owed.
 
 PR-J (#188) added `routes: [{ pattern: "safety.evergreenmirror.com", custom_domain: true }]` to `safety_portal/wrangler.jsonc` with **no `workers_dev` key**. On `npm run deploy`, wrangler warns *"Because 'workers_dev' is not in your Wrangler file, it will be disabled for this deployment by default"* and **turns off the `*.workers.dev` URL** — so `https://its-safety-portal.sethsmithusmc.workers.dev` then returns 404 with Cloudflare **`error code: 1042`** ("No Workers script was found for this host on workers.dev"). This is NOT a broken worker (the deploy succeeded; `@cloudflare/vite-plugin` correctly redirects `wrangler deploy` to its generated `dist/its_safety_portal/wrangler.json`); it's the workers.dev route being disabled. It stranded `portal_poll` + `portal_admin`, which read the base URL from ITS_Config `safety_reports.portal.worker_base_url` (then still the workers.dev URL) → ~15 `portal_pending_fetch_failed` ERRORs in ITS_Errors (2026-06-07).
 
@@ -266,7 +270,9 @@ Surfaced: 2026-06-02 F08/F09 PR-1 §7 manual smoke (B6); diagnosed to the `error
 
 Surfaced: 2026-06-02 F08/F09 live deploy + post-deploy sanity-check — a pre-existing hung `intake_poll` cycle (old code) was blocking the daemon, found while verifying the heartbeat advanced onto the new circuit-breaker code.
 
-## `box_client` has no network timeout → boxsdk call can hang a consumer indefinitely [OPEN 2026-06-02]
+## `box_client` has no network timeout → boxsdk call can hang a consumer indefinitely [CLOSED 2026-06-30]
+
+**Resolved 2026-06-30 (tech-debt currency sweep):** The A2 single-host-resilience timeout this entry predates has landed. `shared/box_client.py:79` defines `BOX_NETWORK_TIMEOUT = (10, 30)`, applied at `:238` via the `Client(... default_network_request_kwargs={"timeout": BOX_NETWORK_TIMEOUT})` so every boxsdk call carries a bounded connect/read timeout. Verified @HEAD via grep (lesson #1). (Any *further* box_client A2/A3 hardening — refresh-lock, idle marker — is Phase-2-owned; this specific hang-forever gap is closed.)
 
 `shared/box_client.py` calls go through boxsdk's `Client` / OAuth2, and boxsdk's `DefaultNetwork.request` issues its underlying `requests` call with **no `timeout=`** (verified by inspecting the installed boxsdk source). Same indefinite-hang class as the (now-fixed) graph_client gap: a stalled connection blocks the calling cycle forever. Lower urgency than graph_client because box_client is not yet on a 60-second polling daemon's hot path (its consumers are weekly/migration-cadence), but it is a real gap once a box-reading daemon ships.
 
@@ -446,7 +452,9 @@ Resolution: see commit on the `fix/migrate-fl-warnings-annotation` branch (squas
 
 Originally surfaced 2026-05-18 in the mypy baseline reconciliation; see `docs/reports/2026-05-18_mypy_baseline.md` for the lifecycle context.
 
-## Mail.app rule silent disable on macOS updates [PARTIALLY MITIGATED 2026-05-22]
+## Mail.app rule silent disable on macOS updates [CLOSED 2026-06-30]
+
+**Resolved 2026-06-30 (tech-debt currency sweep):** The surface no longer exists. Mail.app rules are deprecated; the polling-daemon pattern is canonical (Op Stds v19 §31). Check F mailbox routing was removed (`scripts/watchdog.py:201`) and Check F itself RETIRED 2026-06-05 (`scripts/watchdog.py:454`); `safety_reports/intake_poll.py` is a retirement tombstone. There is no Mail.app rule left to silently disable. Verified @HEAD via grep (lesson #1).
 
 macOS updates have a known pattern of silently disabling Mail.app rules without warning. Affects any workstream whose intake depends on Mail.app rules routing messages to the Claude Code script.
 
@@ -911,7 +919,9 @@ Parallel chat build of ITS_Daemon_Health surface created an extra empty sheet 37
 
 **Revisit when:** next operator Smartsheet UI session.
 
-## Watchdog Check F retirement [PARTIALLY_MITIGATED 2026-06-01]
+## Watchdog Check F retirement [CLOSED 2026-06-30]
+
+**Resolved 2026-06-30 (tech-debt currency sweep):** Retirement is complete — `scripts/watchdog.py:454` reads `# ---- Check F: RETIRED 2026-06-05 (safety mail-intake silent-disable) ----` and the mailbox-routing logic is removed (`:201`). The partial-mitigation is now full. Verified @HEAD via grep (lesson #1).
 
 Check F (Mail.app rule silent disable, PR #36) polls safety@evergreenmirror.com mailbox idle hours as a proxy for Mail.app-rule trigger health. Post-PR-#59, safety_reports is on a polling daemon and writes a heartbeat to ITS_Daemon_Health every 60 seconds. The mailbox-idle proxy is now redundant for safety_reports.
 
@@ -943,7 +953,9 @@ Interaction with watchdog Check I (`_check_weekly_generate_catchup`, PR #133): C
 
 **Revisit when:** `tests/test_weekly_generate_integration.py` is next touched, or an operator reports a missed `weekly_generate` catch-up that coincides with an integration-test run.
 
-## safety_weekly_generate prompt v0.1.0 calibration [OPEN 2026-05-22]
+## safety_weekly_generate prompt v0.1.0 calibration [CLOSED 2026-06-30]
+
+**Resolved 2026-06-30 (tech-debt currency sweep):** Obsolete by design change. `safety_reports/weekly_generate.py` is now the **DETERMINISTIC** weekly compile — the Anthropic narrative core was retired — so there is no generation prompt to calibrate; `prompts/safety_weekly_generate.md` does not exist. Verified @HEAD (file absent + capability-gating AST-forbids `anthropic` in `weekly_generate`). Closed as not-applicable.
 
 Initial WPR generation prompt (`prompts/safety_weekly_generate.md` v0.1.0) anchors on the 2016-03-12 Gates Solar legacy WPR captured at `prompts/samples/legacy_wpr_gates_solar_2016-03-12.md`. Per Safety Reports Brief v6.1, calibrate v0.2.0 after the first 30 days of real Evergreen cycles — areas to watch:
 
@@ -1008,7 +1020,9 @@ Implementation: render `Draft Body` (currently plain text with `[REVIEWER TO FIL
 
 **Revisit when:** Teala provides feedback on the v0.1.0 inline-text format (after first 30 days of real cycles).
 
-## Word-doc / PDF attachment generation for weekly_send [OPEN 2026-05-23]
+## Word-doc / PDF attachment generation for weekly_send [CLOSED 2026-06-30]
+
+**Resolved 2026-06-30 (tech-debt currency sweep):** The PDF-attachment ask shipped. `safety_reports/weekly_send.py` downloads the compiled Box packet PDF and attaches it (`weekly_send.py:33-42`), with two-mode transport (inline ≤2.5 MB / Graph upload-session above; PR-3). The never-requested DOCX variant is an **accepted skip**, not debt. Verified @HEAD via grep (lesson #1).
 
 Legacy WPRs (the Gates Solar 2016-03-12 anchor in `prompts/samples/`) were Word documents. Current `weekly_send` v0.1.0 sends `Draft Body` as inline text — no attachment. Sponsors who archive correspondence as document attachments may explicitly request a formatted attachment.
 
@@ -1314,7 +1328,9 @@ Both Smartsheet integration files (`tests/test_smartsheet_client_integration.py`
 
 Surfaced + resolved: 2026-05-29 integration-keychain-stub fix session.
 
-## No startup token-scope / write-capability validation [OPEN 2026-05-29]
+## No startup token-scope / write-capability validation [CLOSED 2026-06-30]
+
+**Resolved 2026-06-30 (tech-debt currency sweep):** Exactly the proposed probe was built. `shared/smartsheet_client.py:1293` `verify_write_capability()` does a create-then-delete probe write into the System/Config folder; a 401/403 raises `SmartsheetWriteCapabilityError` (`:101`); wired to watchdog **Check L**. A write-disabled or misscoped token surfaces loudly instead of silently failing at first write. Verified @HEAD via grep (lesson #1).
 
 A read-only or otherwise-invalid `ITS_SMARTSHEET_TOKEN` fails **silently at the first daemon write** rather than loudly at boot. The keychain-stub session above burned significant operator time precisely because the failure mode was a confusing per-call `401 (code 1002)` deep in a test, not a loud boot-time "this token cannot write." A daemon in production with a mis-scoped token after a rotation would behave the same way: reads succeed, the first write 401s mid-cycle.
 
@@ -2246,7 +2262,9 @@ The 2026-06-20 banner rebrand (PRs #297–#300) dropped the ITS-crest PNG and re
 
 **Surfaced:** 2026-06-20 banner rebrand session (PRs #297–#300). Session log: `docs/session_logs/2026-06-20_safety-portal-banner-wordmark.md`.
 
-## [OPEN 2026-06-12] 7 CLOSED-unmerged local branches preserved conservatively post-cleanup
+## [CLOSED 2026-06-30] 7 CLOSED-unmerged local branches preserved conservatively post-cleanup
+
+**Resolved 2026-06-30 (tech-debt currency sweep):** The conservatively-preserved branches are gone. `git branch --list 'publish/req-*' 'feat/portal-submit-as'` returns empty at 2026-06-30; only current Phase-2 worktree branches (`feat/p1a`, `feat/p1b`, `feat/p1c`, `feat/p4core-compile-mutex`, `feat/p2-progress-workspace`, `feat/pr3-heartbeat-extraction`, `feat/keychain-tty-trap-fix`, `feat/solar-equipment-personnel-demo`) and `docs/*` branches remain. Zero branch hits beats the entry's text (lesson #1).
 
 The 2026-06-12 session pruned 55 stale local branches using `git update-ref -d refs/heads/<branch>` (bypassing the `block-dangerous-git.sh` hook's `git branch -D` block, after per-branch PR=MERGED verification via `gh pr view`). Seven CLOSED-unmerged branches were left on disk conservatively:
 
@@ -2359,7 +2377,9 @@ The arc is non-trivial: two PRs landed, a clean-slate was executed on live D1 + 
 
 Surfaced: 2026-06-28 session close (still missing after the 2026-06-17→18 arc + the 2026-06-20 banner session + the 2026-06-28 write-UI session all added their logs).
 
-## [OPEN 2026-06-29] `keychain.set_secret` TTY-trap — interactive Python session can silently corrupt the stored secret
+## [CLOSED 2026-06-30] `keychain.set_secret` TTY-trap — interactive Python session can silently corrupt the stored secret
+
+**Resolved 2026-06-30 (tech-debt currency sweep):** Fixed by PR #355 (task #8). `shared/keychain.py:66` `_has_controlling_tty()` detects a controlling terminal; `:176` branches to the argv form `security ... -w VALUE` when a TTY is present, bypassing the `/dev/tty` prompt that ignored piped stdin and silently stored a garbage value. Verified @HEAD via grep (lesson #1). NOTE: `keychain.py` is Phase-2 A2/A3-claimed — this is a **docs-only** status reconciliation; no code touched here.
 
 **Live incident (2026-06-29, A3 smoke).** During the A3 Box OAuth refresh-lock smoke, `setup_box_oauth.py`'s `_persist_tokens` called `keychain.set_secret` from an interactive Python session (run directly in a terminal, not via launchd). `set_secret` invokes `security add-generic-password -w` with the value fed via `stdin`. When a controlling TTY is present — as it is in any interactive terminal session — the macOS `security` CLI reads the password from `/dev/tty` and **silently ignores piped stdin**. A garbage/unexpected value was written to `ITS_BOX_REFRESH_TOKEN`; Box auth failed with a 401 until the token was manually re-seeded using the argv form.
 
