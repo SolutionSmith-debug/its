@@ -76,6 +76,18 @@ def test_adds_when_open_row_is_for_a_different_incident(stub):
     stub["add"].assert_called_once()
 
 
+def test_malformed_or_missing_payload_row_does_not_crash_idempotency(stub):
+    # A pending row with a non-JSON / empty Payload must be skipped by the parse (not crash),
+    # so the new incident still gets its record. Fail-soft parse robustness.
+    stub["get_pending"].return_value = [
+        {"Item ID": "a", "Payload": "{not valid json"},
+        {"Item ID": "b", "Payload": ""},
+        {"Item ID": "c"},  # no Payload key at all
+    ]
+    _call(row_id=70)
+    stub["add"].assert_called_once()
+
+
 # ---- fail-soft (never raises) --------------------------------------------
 
 
