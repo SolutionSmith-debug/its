@@ -65,6 +65,24 @@ If the migration errors (e.g. "exists but type … not PICKLIST"), that is a sch
 > reserved for the Developer-Operator (Seth)**. The Successor-Operator must NOT change this
 > posture; the current bounded fail-open is deliberate.
 
+## Symptom C — an `ITS_Review_Queue` row "Unhealthy send recipient HELD"
+
+**What it means.** The sender could not resolve a usable recipient for an approved row, so it
+HELD it (`Send Status = HELD`, outcome `held_no_recipient`) **and** — as of the P5
+`shared/recipient_health.py` upgrade (built once over both the safety WSR and progress WPR send
+paths) — surfaced it as a tracked record so the HELD is not silent: an `ITS_Review_Queue` row
+(reason `policy-edge`, SLA tier `4h`, tagged `safety_reports`) whose `Summary` names the Job ID +
+the reason (unknown job, or empty/invalid TO contact). This is a **queryable record, not a page**
+— it appears in the operator review queue, and watchdog **Check A** WARNs if it sits past 2× SLA.
+(The row is idempotent: a re-HELD of the same row each poll cycle does not duplicate it while the
+original is still open — §3.1 record-state idempotency, not a push-dedup window.)
+
+**This is a low-class, documented Tier-2 repair (a data fix):** open `ITS_Active_Jobs`, find the
+row for that Job ID, fill/fix the **Safety Reports Contact Email** cell, then clear the HELD on
+the WSR row (set `Send Status` back to `PENDING` and re-check the approval checkbox) so the next
+poll cycle re-dispatches, and resolve the Review-Queue row. If the Job ID is *unknown* on
+`ITS_Active_Jobs` (no such row) → that is a routing/sync question, **escalate to Seth**.
+
 ## Why the guard is shaped this way (pointer to §42)
 
 The code-reader rationale lives in `safety_reports/weekly_send.py` (the `SendConfig` block and

@@ -67,7 +67,14 @@ from datetime import UTC, date, datetime
 from typing import Any, Literal, Protocol, cast
 
 from safety_reports import wsr_review
-from shared import active_jobs, box_client, error_log, graph_client, smartsheet_client
+from shared import (
+    active_jobs,
+    box_client,
+    error_log,
+    graph_client,
+    recipient_health,
+    smartsheet_client,
+)
 from shared.error_log import Severity, its_error_log
 from shared.graph_client import GraphAttachmentTooLargeError, GraphAuthError, GraphError
 from shared.kill_switch import require_active
@@ -366,13 +373,30 @@ def send_one_row(row_id: int, cfg: SendConfig) -> SendResult:
     # safety send only ITS_Active_Jobs (the cross-workstream recipient-contamination gate).
     job = active_jobs.get_job(job_id, cfg.active_jobs_config)
     if job is None:
-        return _mark_held(row_id, project_name, notes, f"unknown job_id={job_id!r} — cannot resolve recipients", "held_no_recipient", cfg)
+        return _held_no_recipient(
+            row_id, project_name, notes, cfg,
+            job_id=job_id, reason=f"unknown job_id={job_id!r} — cannot resolve recipients",
+        )
     to_addr, cc_raw = cfg.recipient_resolver(job)
     to_addr = (to_addr or "").strip()
     if not to_addr or not _valid_addr(to_addr):
-        return _mark_held(row_id, project_name, notes, f"empty/invalid contact (TO) for job {job_id}", "held_no_recipient", cfg)
-    # CC already flattened + de-duped + validated by the resolver; belt-and-suspenders re-filter.
+        return _held_no_recipient(
+            row_id, project_name, notes, cfg,
+            job_id=job_id, reason=f"empty/invalid contact (TO) for job {job_id}",
+        )
+    # CC already flattened + de-duped + validated by the resolver (active_jobs._flatten_cc
+    # WARNs on each malformed entry it drops). This belt-and-suspenders re-filter normally
+    # strips nothing; if it ever DOES (a resolver bug, or a non-active_jobs resolver), WARN
+    # rather than silently dropping a CC — "not a silent strip" (Op Stds never-silent).
     cc_list = [a for a in cc_raw if _valid_addr(a)]
+    dropped_cc = [a for a in cc_raw if not _valid_addr(a)]
+    if dropped_cc:
+        error_log.log(
+            Severity.WARN, cfg.script_name,
+            f"row_id={row_id} job={job_id}: dropped {len(dropped_cc)} malformed CC "
+            f"address(es) at send time: {dropped_cc!r} (resolver should have filtered these).",
+            error_code="weekly_send.cc_dropped_malformed",
+        )
 
     # Stage 4: the compiled packet (attach it; never send a half-formed packet).
     compiled_link = str(row.get(cfg.review.COL_COMPILED_PDF) or "")
@@ -526,6 +550,30 @@ def send_one_row(row_id: int, cfg: SendConfig) -> SendResult:
         error_code="weekly_send.sent",
     )
     return SendResult(status="sent", row_id=row_id, project_name=project_name, retry_count=retry_count)
+
+
+def _held_no_recipient(
+    row_id: int, project_name: str, notes: str, cfg: SendConfig,
+    *, job_id: str, reason: str,
+) -> SendResult:
+    """HELD for an unhealthy send recipient — surfaced as a tracked record, then HELD.
+
+    A bare HELD is operator-actionable but easy to miss (it sits in the review sheet until
+    someone notices). This wraps the HELD with `shared.recipient_health` so a stale / empty /
+    invalid recipient also files a queryable `ITS_Review_Queue` record ("never silent", the
+    cross-cutting ITS invariant — a §3.1 RECORD leg, idempotent on open-row state, NOT a
+    push-deduped alert; watchdog Check A escalates it if it goes stale). Built ONCE here so BOTH
+    workstreams (safety via WSR, progress via WPR) inherit it. `report_unhealthy_recipient` is
+    fail-soft (never raises), so the HELD below always happens regardless of the record leg."""
+    recipient_health.report_unhealthy_recipient(
+        config_workstream=cfg.config_workstream,
+        script_name=cfg.script_name,
+        row_id=row_id,
+        job_id=job_id,
+        project_name=project_name,
+        reason_detail=reason,
+    )
+    return _mark_held(row_id, project_name, notes, reason, "held_no_recipient", cfg)
 
 
 def _mark_held(
