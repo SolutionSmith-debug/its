@@ -251,6 +251,69 @@ def test_sheet_empty_returns_unknown_sender(mocker):
     assert verdict.reason == "unknown_sender"
 
 
+# ---- Layer-1 email-format validation (allowlist-drift, Invariant 2 §33) ---
+# A FORMAT-invalid Email cell (missing/duplicate '@', no domain dot, embedded
+# whitespace) is skipped + WARNed with the greppable `trusted_contacts_row_malformed`
+# marker, instead of silently materializing an un-matchable trusted contact (which
+# would route a legitimate sender to Quarantine with no operator signal). A
+# format-VALID transposition is deliberately NOT caught here — that is the deferred
+# Layer-2 Levenshtein sweep (docs/tech_debt.md).
+
+
+@pytest.mark.parametrize(
+    "bad_email",
+    [
+        "joe@@evergreenrenewables.com",   # duplicate '@'
+        "joenoatsign.com",                # missing '@'
+        "joe@localhost",                  # no domain dot
+        "joe smith@evergreen.com",        # embedded whitespace
+        "@evergreen.com",                 # empty local part
+        "joe@",                           # empty domain
+    ],
+)
+def test_malformed_email_format_row_skipped_and_warned(mocker, caplog, bad_email):
+    import logging
+
+    _patch_get_rows(mocker, [_row(email=bad_email)])
+    with caplog.at_level(logging.WARNING):
+        contact = lookup(bad_email)
+    # The malformed row never materializes as a trusted contact.
+    assert contact is None
+    # Operator gets a greppable signal naming the marker (not silent).
+    warns = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert any("trusted_contacts_row_malformed" in r.getMessage() for r in warns)
+
+
+def test_valid_email_still_loads(mocker):
+    # Regression: a well-formed address is unaffected by the new gate.
+    _patch_get_rows(mocker, [_row(email="joe.smith@evergreenrenewables.com")])
+    contact = lookup("joe.smith@evergreenrenewables.com")
+    assert contact is not None
+    assert contact.email == "joe.smith@evergreenrenewables.com"
+
+
+def test_format_valid_typo_still_loads_documents_layer2_boundary(mocker):
+    # `joe.smtih@…` (transposed) is a VALID email FORMAT, so Layer-1 does NOT
+    # catch it — it still loads. This pins the scope boundary: catching this
+    # is the deferred Layer-2 Levenshtein reconciliation sweep.
+    _patch_get_rows(mocker, [_row(email="joe.smtih@evergreenrenewables.com")])
+    assert lookup("joe.smtih@evergreenrenewables.com") is not None
+
+
+def test_malformed_row_does_not_poison_other_valid_rows(mocker):
+    # A bad row in the sheet must not block the good rows from loading.
+    _patch_get_rows(
+        mocker,
+        [
+            _row(email="joe@@evergreenrenewables.com", row_id=1),   # malformed
+            _row(email="ok@evergreenrenewables.com", row_id=2),     # valid
+        ],
+    )
+    assert lookup("joe@@evergreenrenewables.com") is None
+    good = lookup("ok@evergreenrenewables.com")
+    assert good is not None and good.row_id == 2
+
+
 # ---- module hygiene ------------------------------------------------------
 
 

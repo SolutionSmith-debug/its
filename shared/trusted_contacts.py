@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass
 from enum import StrEnum
@@ -37,6 +38,24 @@ LOGGER = logging.getLogger(__name__)
 
 CACHE_TTL_SECONDS = 60.0
 WILDCARD = "*"
+
+# Layer-1 allowlist-drift gate (Invariant 2 §33). A FORMAT-invalid `Email` cell —
+# missing or duplicate '@', no dot in the domain, embedded whitespace — is skipped
+# at sheet read and WARNed with the greppable `trusted_contacts_row_malformed`
+# marker, so a typo that mangles the address SHAPE surfaces instead of silently
+# materializing an un-matchable contact (which would route a legitimate sender to
+# Quarantine with no operator signal). Deliberately *basic*: a format-VALID
+# transposition (`joe.smtih@…`) passes here — catching that is the deferred Layer-2
+# Levenshtein reconciliation sweep (see docs/tech_debt.md "Allowlist drift
+# detection"). The push-to-ITS_Errors part of the original entry is folded into
+# Layer 2: the intake daemon is one-shot-every-60s, so a per-cache-load sheet write
+# would spam ITS_Errors; the spam-free operator surface is the periodic Layer-2 sweep.
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def _is_valid_email_format(email: str) -> bool:
+    """True if `email` has a basic well-formed address shape. See `_EMAIL_RE`."""
+    return _EMAIL_RE.match(email) is not None
 
 
 class ContactStatus(StrEnum):
@@ -128,6 +147,19 @@ def _row_to_contact(row: dict[str, Any]) -> TrustedContact | None:
     if not isinstance(raw_email, str) or not raw_email.strip():
         return None
     email = _normalize_email(raw_email)
+    if not _is_valid_email_format(email):
+        # Allowlist-drift Layer 1: a malformed Email cell silently quarantines a
+        # legitimate sender. Skip the row and surface a greppable WARN so the
+        # operator can repair the typo (rather than discovering it via a missed
+        # report downstream).
+        LOGGER.warning(
+            "trusted_contacts: Email %r is not a valid address format "
+            "(error_code=trusted_contacts_row_malformed); skipping row — "
+            "a typo in the Email cell silently quarantines a legitimate sender "
+            "(Invariant 2 §33)",
+            raw_email,
+        )
+        return None
     raw_status = row.get("Status") or ""
     try:
         status = ContactStatus(raw_status)

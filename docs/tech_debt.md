@@ -1155,7 +1155,14 @@ Adequate for the solo-operator stage. Becomes a gap when:
 
 Surfaced: 2026-05-24 hardcoded-values audit brief, §A4. Note: the brief's premise (hardcoded recipients in `shared/alert.py`) was inaccurate — that file doesn't exist; recipient is already ITS_Config-sourced. This entry reframes the spirit of the concern: future multi-recipient + severity-tiered routing, not present-day hardcoding.
 
-## Allowlist drift detection — typo'd trusted-contacts entry silently quarantines [OPEN 2026-05-24]
+## Allowlist drift detection — typo'd trusted-contacts entry silently quarantines [PARTIALLY DONE 2026-06-30]
+
+**Layer 1 shipped 2026-06-30 (package A).** `shared/trusted_contacts._row_to_contact` now validates the `Email` cell against a basic format regex (`_EMAIL_RE = ^[^@\s]+@[^@\s]+\.[^@\s]+$`); a FORMAT-invalid cell (missing/duplicate `@`, no domain dot, embedded whitespace, empty local/domain) is **skipped + WARNed** with the greppable marker `error_code=trusted_contacts_row_malformed`, so a typo that mangles the address shape surfaces instead of silently quarantining a legitimate sender. 7 unit tests (RED-verified before implement). A format-VALID transposition (`joe.smtih@…`) is intentionally NOT caught — that's Layer 2.
+
+**Scope correction (one-shot-daemon spam):** the original Layer-1 ask said "log to ITS_Errors." That is **wrong for the now-locked one-shot-every-60s intake daemon** — `error_log.log(WARN, …)` appends an ITS_Errors row with no dedup, so a persistent typo would spam ~60 rows/hr. The spam-free operator-push surface is a *periodic, naturally-deduped* sweep — i.e. **Layer 2** (below). So Layer 1 surfaces via a greppable WARN; the ITS_Errors/Review-Queue push moves into Layer 2.
+
+**Still OPEN — Layer 2 (deferred; touches `scripts/watchdog.py`, currently in the Phase-2 A4/A5 blast radius):** the weekly Levenshtein reconciliation sweep over `ITS_Quarantine` senders vs active `ITS_Trusted_Contacts` emails (distance ≤2 → one `near_miss_quarantine` Review-Queue row) — catches format-valid transpositions and IS the deduped operator-push. Build when the watchdog is next touched (Phase 1.6 / post-Phase-2).
+
 
 `ITS_Trusted_Contacts` entries with a typo in the Email field silently route legitimate senders to quarantine. Operator has no signal that the list itself is wrong vs. the sender being legitimately untrusted. Same shape applies to the legacy `safety_reports.intake.allowed_senders` JSON list still alive as the dead-fallback path (per the existing "Fallback path removal after ITS_Config cutover [OPEN 2026-05-23]" entry — that fallback should be removed soon, narrowing this surface).
 
