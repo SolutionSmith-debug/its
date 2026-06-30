@@ -4,6 +4,38 @@ Items deliberately deferred. Each carries the rationale for deferral and the tri
 
 When to add an entry: a session deliberately chooses preservation-over-refactor (per Op Stds v11 §14), discovers an external-API constraint that forced a workaround, or defers a non-trivial cleanup that's larger than the current session can absorb. When to mark CLOSED: the underlying item is resolved in a commit; preserve the entry with resolution detail rather than deleting (history is cheap, context is expensive).
 
+## Watchdog Check-C staleness + Check-I catch-up not wired to `progress_weekly_generate` slug [OPEN 2026-06-30]
+
+**P4 Slice 2 (PR #376, 2026-06-30).** `progress_weekly_generate` writes a `progress_weekly_generate` marker via `write_last_run_marker` on each compile run, but `scripts/watchdog.py` only tracks `safety_weekly_generate` in `WEEKLY_GENERATE_JOB_SLUG` (the Check-I Friday-crash catch-up target) and `TRACKED_JOBS` (the Check-C staleness floor set). The progress compile running stale or silently skipping Friday would not be caught — no alert fires. The §43 runbook (`docs/runbooks/progress_weekly_generate.md`) is honest about this deferral.
+
+**Fix (low-class):** extend `TRACKED_JOBS` with the `progress_weekly_generate` slug and replicate the Check-I logic to cover it (or generalize the existing Check-I loop). ~30-line change to `scripts/watchdog.py` + corresponding assertion in `tests/test_watchdog.py`. No daemon reload required.
+
+**Tag:** `progress_reports`, `watchdog`. **Revisit when:** `progress_weekly_generate` daemon is loaded for production (the §43 runbook references this as a pending step before the daemon is activated).
+
+## P5 progress_send must use `job.reports_contact_email` alias and pass `PROGRESS_ACTIVE_JOBS_CONFIG` [OPEN 2026-06-30]
+
+**P4 Slice 1 (PR #375, 2026-06-30).** `shared/active_jobs.py` now exposes a workstream-neutral `reports_contact_email` alias alongside the legacy `safety_reports_contact_email`. A P5 progress-send script that omits the config argument or passes `SAFETY_ACTIVE_JOBS_CONFIG` will resolve `job.safety_reports_contact_email` instead of `job.reports_contact_email`, silently routing weekly progress reports to the safety contact rather than the progress one. There is no runtime error — the alias resolves to a different column in a different Smartsheet.
+
+**Rule (for P5 author):** (a) always import and pass `PROGRESS_ACTIVE_JOBS_CONFIG`; (b) read `job.reports_contact_email`, NOT `job.safety_reports_contact_email`; (c) name this trap explicitly in the progress-send §43 runbook (parallel to `docs/runbooks/safety_weekly_send.md`). Session summary note from this session flagged this forward.
+
+**Tag:** `progress_reports`. **Revisit when:** P5 `progress_reports/progress_send.py` is scoped — cite this entry in the engineering brief.
+
+## Doctrine drift M6 — FM v8 cites in `safety_reports/intake.py` + `weekly_summary.py` docstrings [OPEN — pre-existing, flagged 2026-06-30]
+
+**Pre-existing (not introduced this session).** `safety_reports/intake.py` and `safety_reports/weekly_summary.py` contain module-level docstrings citing "Foundation Mission v8"; the canonical version is FM v11. This is the doctrine-drift class M6 pattern (stale in-code version pin) surfaced in `docs/audits/2026-06-29_forensic-retrospective.md`. The CI doctrine-drift check (`scripts/check_doctrine_drift.py --strict`) does not catch in-code comment/docstring version pins — it checks YAML frontmatter and cited-section numbers.
+
+**Fix (trivial):** update the module docstrings to cite FM v11. No behavior change. Two files: `safety_reports/intake.py` + `safety_reports/weekly_summary.py`.
+
+**Tag:** `safety_reports`, `docs`, `doctrine`. **Revisit when:** next safety_reports maintenance pass.
+
+## `docs/session_logs/README.md` index missing the #370 session-log row [CLOSED 2026-06-30]
+
+**Pre-existing (not introduced this session).** The session-log index at `docs/session_logs/README.md` was missing the row for PR #370 (`eb110c1`), which committed the session log for the tech-debt cleanup pass alongside Phase-2 (#363–#368, 2026-06-30). The `scripts/regen_doc_indexes.py` script regenerates the index correctly; `--check` is warn-only in CI, so this did not block merges.
+
+**Resolution:** the P4 close-docs PR ran `python scripts/regen_doc_indexes.py`, which re-added both the missing #370 row and the new P4 session-log row to `docs/session_logs/README.md` in the same commit.
+
+**Tag:** `docs`. **Revisit when:** next session log is written — verify index currency before committing.
+
 ## §23/§24 topology text + version bump owed for the 7th workspace (ITS — Progress Reporting) [OPEN 2026-06-29]
 
 **P2 (PR #362).** Standing up the `ITS — Progress Reporting` workspace makes it the **7th** standalone Smartsheet workspace. Op Stds **v19 §51** already names "the ITS — Progress Reporting workspace" explicitly (so its existence is doctrine-contemplated), but §23's topology *enumeration* still lists six and was not synced — the same gap the v17 bump closed when the Safety Portal (the 6th) was added. The `ops-stds-enforcer` review flagged this as a pre-merge gate; the operator approved (2026-06-29) landing P2 on §51's basis and deferring the §23 text-sync as a fast-follow.
