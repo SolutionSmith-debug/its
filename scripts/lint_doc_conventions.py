@@ -77,12 +77,15 @@ CANONICAL_STATUS = frozenset({
 CANONICAL_WORKSTREAMS = frozenset({
     "safety_reports",
     "safety_portal",
+    "progress_reports",  # Progress Reporting workstream (P2+)
+    "field_ops",         # field-ops portal capture + job-tracker→Active-Jobs SoR mirror
     "box",
     "ci",
     "security",
     "docs",
     "infrastructure",
-})  # `null` is also valid (as Python None in YAML)
+})  # `null` is also valid (as Python None in YAML). Keep in sync with the table in
+# docs/operations/doc_conventions.md (#workstream-taxonomy).
 
 # Types that require a `date` field.
 DATE_REQUIRED_TYPES = frozenset({"session_log", "brief", "report"})

@@ -218,6 +218,8 @@ opening a small PR before the value is used elsewhere.
 |-------------------|-------|
 | `safety_reports`  | intake / weekly_generate / weekly_send + trusted_contacts |
 | `safety_portal`   | Cloudflare-hosted portal, sync Worker, email shim, form schemas, prune Worker, intake.py portal-marker branch |
+| `progress_reports`| Progress Reporting workstream — WPR_human_review, ITS_Active_Jobs_Progress, progress compile/send, materials |
+| `field_ops`       | Field-ops portal capture surface, job tracker, personnel/equipment, the job-tracker→Active-Jobs SoR mirror |
 | `box`             | 1111A/1111B, migrations, parse_job_v3 |
 | `ci`              | CI workflows, verification discipline, conftest |
 | `security`        | picklist hardening, header forgery, attachment screening |

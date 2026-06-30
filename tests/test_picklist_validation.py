@@ -186,6 +186,52 @@ def test_every_wsr_send_status_writer_constant_is_registered():
     )
 
 
+def test_registry_progress_sheets_conditional_on_real_sheet_id():
+    """SHEET_WPR_HUMAN_REVIEW / SHEET_ACTIVE_JOBS_PROGRESS = 0 placeholders are skipped
+    (no REGISTRY entry) until the operator flips the real ids post-build; once flipped the
+    guarded entries activate. Same placeholder-0 guard as Trusted Contacts above (P2)."""
+    for sid in (sheet_ids.SHEET_WPR_HUMAN_REVIEW, sheet_ids.SHEET_ACTIVE_JOBS_PROGRESS):
+        if sid == 0:
+            assert sid not in REGISTRY
+        else:
+            assert sid in REGISTRY
+
+
+def test_wpr_workstream_value_set_is_progress_only():
+    """The WPR Workstream tag is gated to {progress} — the progress-family counterpart to
+    the WSR {safety} set (a 'safety' tag on the progress sheet is contamination). Checked on
+    the value set directly so it bites at CI while SHEET_WPR_HUMAN_REVIEW is the 0 placeholder."""
+    assert picklist_validation._WPR_WORKSTREAM_VALUES == frozenset({"progress"})
+    assert "safety" not in picklist_validation._WPR_WORKSTREAM_VALUES
+
+
+def test_every_wpr_send_status_writer_constant_is_registered():
+    """Progress twin of the #247->#253 recurrence guard (META-TEST). DERIVES every
+    ``STATUS_*`` string the progress writer (``progress_reports.wpr_review``, which
+    re-exports them from wsr_review) can emit and asserts the value set the REGISTRY binds
+    for the WPR sheet covers them. Checks the VALUE SET directly
+    (``_WPR_HR_SEND_STATUS_VALUES``) rather than the live-sheet-id REGISTRY key, so it bites
+    at CI even while SHEET_WPR_HUMAN_REVIEW is the 0 placeholder (the guarded REGISTRY entry
+    is absent then)."""
+    from progress_reports import wpr_review
+
+    writer_values = {
+        v for n, v in vars(wpr_review).items()
+        if n.startswith("STATUS_") and isinstance(v, str)
+    }
+    assert writer_values, "no STATUS_* constants found in wpr_review — test wiring broke"
+
+    registered = picklist_validation._WPR_HR_SEND_STATUS_VALUES
+    missing = writer_values - set(registered)
+    assert not missing, (
+        f"wpr_review Send Status constant(s) {sorted(missing)} are NOT in "
+        f"_WPR_HR_SEND_STATUS_VALUES ({sorted(registered)}). Register them in "
+        "shared/picklist_validation.py in the SAME PR as the writer — an unregistered "
+        "value makes update_rows raise PicklistViolationError and blocks the progress "
+        "send path (the #247->#253 SENDING regression, progress edition)."
+    )
+
+
 # ---- Error formatting + integer-cast safety ------------------------------
 
 

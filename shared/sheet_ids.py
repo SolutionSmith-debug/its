@@ -33,6 +33,15 @@ WORKSPACE_ARCHIVE = 5528280611743620
 # approval authority — sharing it is the send gate.
 WORKSPACE_SAFETY_PORTAL = 194283417429892
 
+# ITS — Progress Reporting — standalone workspace (2026-06-30, P2). The structural
+# twin of the Safety Portal: an ITS-OWNED Smartsheet system-of-record ITS creates
+# and writes (Op Stds v19 §51 — ITS-owned structured-SoR write-back). Like the
+# Safety Portal it sits OUTSIDE the §23 audience-separation model and is governed by
+# §46 — workspace membership = approval authority: the safety approvers are re-shared
+# here so they may approve WPR_human_review rows (P5-blocking operator prereq).
+# FLIP precedes SEED — flip the real ID after scripts/migrations/build_progress_reporting_workspace.py prints it.
+WORKSPACE_PROGRESS_REPORTING = 0  # OPERATOR: flip after build_progress_reporting_workspace.py creates the workspace
+
 # ---- Portfolio sub-folders ----------------------------------------------
 
 FOLDER_ACTIVE_PROJECTS = 5819628569028484
@@ -155,6 +164,17 @@ SHEET_ACTIVE_JOBS   = 6223950341164932  # ITS_Active_Jobs   (built 2026-06-03 by
 SHEET_FORMS_CATALOG = 423274885369732   # ITS_Forms_Catalog (built 2026-06-03 by build_its_forms_catalog_sheet.py)
 SHEET_WSR_HUMAN_REVIEW = 5035670127988612  # WSR_human_review — Phase-5 weekly review/approve/send surface (amendment b; built 2026-06-05 by build_wsr_human_review_sheet.py). Supersedes WPR_Pending_Review for the portal flow.
 SHEET_ORPHANED_REPORTS = 2577084374273924  # Orphaned Reports (Part C; built 2026-06-09 by build_orphaned_reports_sheet.py) — job_not_found/job_inactive portal submissions route here (ON) once ~/its is redeployed to this commit. ITS –– Safety Portal folder.
+
+# ---- Progress Reporting sheets (ITS — Progress Reporting / Control) ------
+# The cross-job control surfaces for the Progress Reporting flow — the structural
+# twin of the Safety Portal sheets above. The "Control" folder holds the only two
+# cross-job sheets; per-<Job> folders + per-week sheets are RUNTIME find-or-create
+# (A1 margin-checked), never pre-wired here (same dynamic-discovery model as the
+# safety week sheets). OPERATOR: flip each 0 after build_progress_reporting_workspace.py
+# prints the real ID (FLIP precedes SEED).
+FOLDER_PROGRESS_CONTROL = 0      # ITS — Progress Reporting / Control (holds WPR_human_review + ITS_Active_Jobs_Progress)
+SHEET_WPR_HUMAN_REVIEW = 0       # WPR_human_review — weekly progress review/approve/send surface (mirrors WSR_human_review). NOTE: distinct from the decommissioned SHEET_WPR_PENDING_REVIEW above.
+SHEET_ACTIVE_JOBS_PROGRESS = 0   # ITS_Active_Jobs_Progress — the progress workspace's own physical Active-Jobs sheet (job-tracker pivot, P2.5 Slice 4). Carries Progress Reports Contact/CC + a Portal Job Key bridge column.
 
 
 # ---- Reverse-lookup maps ------------------------------------------------

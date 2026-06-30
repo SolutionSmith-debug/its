@@ -27,9 +27,10 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # Runtime surface walked — the same untrusted-content / daemon surface as the F02
-# network allowlist (shared/ helpers + the workstream package). scripts/ is
-# operator-run and writes only ~/its/.watchdog markers (not state).
-WALKED_ROOTS: tuple[str, ...] = ("shared", "safety_reports")
+# network allowlist (shared/ helpers + the workstream packages). scripts/ is
+# operator-run and writes only ~/its/.watchdog markers (not state). progress_reports
+# joined at P2 (kept in sync with the F02 WALKED_ROOTS in test_capability_gating.py).
+WALKED_ROOTS: tuple[str, ...] = ("shared", "safety_reports", "progress_reports")
 
 _WRITE_METHODS: frozenset[str] = frozenset({"write_text", "write_bytes"})
 
