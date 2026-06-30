@@ -677,3 +677,89 @@ def test_screen_at_cap_is_accepted(mocker):
     )
     assert refusal is None
     assert len(screened) == photo_screen.MAX_PHOTOS_PER_SUBMISSION
+
+
+# ── P3: workstream category routing (safety|progress) ──────────────────────
+
+
+def test_progress_form_routes_to_progress_when_flag_on(stub, mocker):
+    """A progress-category form (daily-report) routes to the PROGRESS workspace's
+    week-sheet when progress_reports.intake_enabled is ON."""
+    mocker.patch.object(intake, "_progress_intake_enabled", return_value=True)
+    res = intake.process_portal_submission(dict(BASE_SUB, form_code="daily-report-v1"))
+    assert res.status == "processed"
+    assert stub["ensure"].call_args.args[0] is week_sheet.PROGRESS_WEEK_SHEET_CONFIG
+
+
+def test_progress_form_routes_to_safety_when_flag_off(stub, mocker):
+    """Built-dark default: flag OFF → a progress submission files into the SAFETY
+    workspace exactly as it does today (byte-identical pre-P3 behavior)."""
+    mocker.patch.object(intake, "_progress_intake_enabled", return_value=False)
+    res = intake.process_portal_submission(dict(BASE_SUB, form_code="daily-report-v1"))
+    assert res.status == "processed"
+    assert stub["ensure"].call_args.args[0] is week_sheet.SAFETY_WEEK_SHEET_CONFIG
+
+
+def test_safety_form_routes_to_safety_and_skips_the_flag_read(stub, mocker):
+    """A safety form ALWAYS routes safety; the `and` short-circuits the flag read (so the
+    safety path is byte-identical and never even hits ITS_Config), even with the flag ON."""
+    gate = mocker.patch.object(intake, "_progress_intake_enabled", return_value=True)
+    res = intake.process_portal_submission(dict(BASE_SUB, form_code="jha-v1"))
+    assert res.status == "processed"
+    assert stub["ensure"].call_args.args[0] is week_sheet.SAFETY_WEEK_SHEET_CONFIG
+    gate.assert_not_called()
+
+
+def test_unknown_form_routes_to_safety_when_flag_on(stub, mocker):
+    """An uncatalogued form_code defaults to safety (deny-by-route) even with the flag ON."""
+    mocker.patch.object(intake, "_progress_intake_enabled", return_value=True)
+    res = intake.process_portal_submission(dict(BASE_SUB, form_code="totally-unknown-form"))
+    assert res.status == "processed"
+    assert stub["ensure"].call_args.args[0] is week_sheet.SAFETY_WEEK_SHEET_CONFIG
+
+
+def test_golden_mixed_week_routes_each_submission_by_category(stub, mocker):
+    """One Sat→Fri week, a safety + a progress submission, flag ON: each routes to its own
+    workspace's week-sheet, and the resolved sheet id flows downstream to the row write."""
+    mocker.patch.object(intake, "_progress_intake_enabled", return_value=True)
+    stub["ensure"].side_effect = lambda cfg, proj, wd: (
+        9001 if cfg is week_sheet.PROGRESS_WEEK_SHEET_CONFIG else 8001
+    )
+    safety_sub = dict(BASE_SUB, submission_uuid="s1", form_code="jha-v1", work_date="2026-06-05")
+    progress_sub = dict(  # SAME Sat→Fri week (opens 2026-05-30)
+        BASE_SUB, submission_uuid="p1", form_code="daily-report-v1", work_date="2026-06-04"
+    )
+
+    assert intake.process_portal_submission(safety_sub).status == "processed"
+    assert intake.process_portal_submission(progress_sub).status == "processed"
+
+    assert [c.args[0] for c in stub["ensure"].call_args_list] == [
+        week_sheet.SAFETY_WEEK_SHEET_CONFIG,
+        week_sheet.PROGRESS_WEEK_SHEET_CONFIG,
+    ]
+    # The routed sheet id flows downstream: each per-submission row write hit its own sheet.
+    assert [c.args[0] for c in stub["write"].call_args_list] == [8001, 9001]
+
+
+def test_progress_intake_enabled_flag_read_contract(mocker):
+    """The gate reads progress_reports.intake_enabled under the intake daemon's
+    (safety_reports) workstream — NOT progress_reports. 'true' → ON; a missing row → OFF
+    (the built-dark default); a non-NotFound SmartsheetError (e.g. circuit-open) PROPAGATES
+    so the submission soft-fails to 'error' and re-pulls, never a silent misroute."""
+    from shared import smartsheet_client
+
+    g = mocker.patch.object(intake.smartsheet_client, "get_setting")
+
+    g.return_value = "true"
+    assert intake._progress_intake_enabled() is True
+    assert g.call_args.kwargs.get("workstream") == "safety_reports"  # the footgun guard
+
+    g.return_value = "false"
+    assert intake._progress_intake_enabled() is False
+
+    g.side_effect = smartsheet_client.SmartsheetNotFoundError("no row")
+    assert intake._progress_intake_enabled() is False  # missing row → built-dark default
+
+    g.side_effect = smartsheet_client.SmartsheetCircuitOpenError("breaker open")
+    with pytest.raises(smartsheet_client.SmartsheetError):
+        intake._progress_intake_enabled()  # propagates → process_portal_submission → 'error'

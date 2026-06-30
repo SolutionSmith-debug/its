@@ -12,6 +12,7 @@ Operations docs use `topic-slug.md` filenames (no date prefix); the
 <!-- BEGIN AUTO-INDEX -->
 | Date | Type | Status | Workstream | Title | PRs |
 |------|------|--------|------------|-------|-----|
+| 2026-06-30 | operations | active | _–_ | [Operator Action Checklist — Tech-Debt Cleanup (2026-06-30)](operator_action_checklist_2026-06-30.md) | #363, #365, #366 |
 | 2026-05-29 | operations | active | _–_ | [ITS Cutover Checklist](cutover_checklist.md) | _–_ |
 | 2026-05-29 | operations | active | infrastructure | [Worktree Discipline (parallel CC sessions)](worktree_discipline.md) | _–_ |
 | 2026-05-24 | operations | active | docs | [ITS Doc Conventions](doc_conventions.md) | _–_ |

@@ -530,3 +530,17 @@ def test_ensure_week_sheet_requires_config():
     call: Any = ensure_week_sheet
     with pytest.raises(TypeError):
         call("Bradley 1", date(2026, 6, 5))  # config omitted
+
+
+def test_progress_config_targets_progress_workspace():
+    """P3: the progress binding pins the PROGRESS workspace + REUSES the safety name
+    builder by identity (safety/progress share the weekly Sat→Fri cadence) — only the
+    workspace differs, so the same (project, date) yields the same sheet NAME in a
+    different workspace, and the contamination gate's positive-int rule still holds."""
+    cfg = week_sheet.PROGRESS_WEEK_SHEET_CONFIG
+    assert cfg.workspace_id == sheet_ids.WORKSPACE_PROGRESS_REPORTING
+    assert cfg.workspace_id != sheet_ids.WORKSPACE_SAFETY_PORTAL
+    assert cfg.workspace_id > 0
+    assert cfg.key_builder is week_sheet_name  # same builder, by identity (no clone)
+    d = date(2026, 6, 5)
+    assert cfg.key_builder("Bradley 1", d) == SAFETY_WEEK_SHEET_CONFIG.key_builder("Bradley 1", d)

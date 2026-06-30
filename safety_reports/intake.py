@@ -131,6 +131,7 @@ from shared import (
     anthropic_client,
     box_client,
     error_log,
+    form_category,
     graph_client,
     header_forgery,
     project_routing,
@@ -956,6 +957,26 @@ def _read_float_setting(key: str, fallback: float) -> float:
         return float(raw)
     except (TypeError, ValueError):
         return fallback
+
+
+# ---- P3 progress-routing gate -------------------------------------------
+# The portal pipeline routes a 'progress'-category submission to the PROGRESS workspace's
+# week-sheet only when this flag is ON. Default OFF — P3 is "built dark"; the flag flips at
+# the cutover, AFTER the progress compile (P4) + send (P5) are live. Read per submission via
+# the SAME _read_bool_setting contract every other intake config key uses, so it is scoped
+# under the intake daemon's WORKSTREAM ('safety_reports') — the operator seeds it exactly
+# where they seed every other intake row: (Setting='progress_reports.intake_enabled',
+# Workstream='safety_reports'). This avoids the footgun of a divergently-scoped row read.
+# A missing row → default OFF (the built-dark default, not a misconfig to WARN on); a
+# Smartsheet-unreachable read (circuit-open is a SmartsheetError, NOT caught by
+# _read_str_setting) propagates → the submission soft-fails to 'error' and re-pulls, never a
+# silent misroute. (Systematic startup REQUIRED_CONFIG resolution-logging is issue #336.)
+CFG_PROGRESS_INTAKE_ENABLED = "progress_reports.intake_enabled"
+DEFAULT_PROGRESS_INTAKE_ENABLED = False
+
+
+def _progress_intake_enabled() -> bool:
+    return _read_bool_setting(CFG_PROGRESS_INTAKE_ENABLED, DEFAULT_PROGRESS_INTAKE_ENABLED)
 
 
 # ---- process_message + main ---------------------------------------------
@@ -2086,14 +2107,40 @@ def _run_portal_pipeline(
         )
     project_name = job.project_name
 
+    # P3 — workstream routing. Resolve safety|progress from the form_code's catalog
+    # category and route a 'progress' submission to the PROGRESS workspace's week-sheet —
+    # but only when progress_reports.intake_enabled is ON (built dark until P4/P5 are live).
+    # A safety form, the flag-OFF default, an uncatalogued form (form_category defaults to
+    # 'safety'), or a Smartsheet-unreachable flag read ALL route SAFETY — i.e. today's
+    # behavior, byte-identical (the `and` short-circuits the flag read for safety forms).
+    # The WeekSheetConfig required-no-default contamination gate means a forgotten binding
+    # is a TypeError, never a silent progress→safety leak. The job lookup above stays on the
+    # shared ITS_Active_Jobs (job identity is shared across workstreams; the progress
+    # recipients on ITS_Active_Jobs_Progress are resolved at send time, P5, not here).
+    # SCOPE: P3 routes ONLY the Smartsheet week-sheet. The Box per-submission PDF is
+    # deliberately NOT workstream-routed here — it files via the existing
+    # _resolve_portal_box_folder (project-rooted, or the safety-portal Box root when the
+    # mirror tree is on) and the progress week-sheet row's box_link points to it; the P4
+    # compile gathers by box_link, location-agnostic. A dedicated progress Box tree for
+    # per-submission PDFs is deferred to P4 (which provisions the progress Box week-folder
+    # for compiled packets). Documented so it's an explicit deferral, not a silent surface.
+    if form_category.resolve_category(form_code) == "progress" and _progress_intake_enabled():
+        week_config = week_sheet.PROGRESS_WEEK_SHEET_CONFIG
+        error_log.log(
+            Severity.INFO, SCRIPT_NAME,
+            f"portal: routing submission {submission_uuid} (form {form_code!r}) to the "
+            "PROGRESS workspace (progress_reports.intake_enabled=ON).",
+            error_code="portal.progress_routed", correlation_id=correlation_id,
+        )
+    else:
+        week_config = week_sheet.SAFETY_WEEK_SHEET_CONFIG
+
     # Resolve the (job, week) sheet. A brand-new job self-provisions its per-job
-    # folder + week sheet under the ITS — Safety Portal workspace (find-or-create,
-    # no per-project map → no config-gap path). A SmartsheetError (transient
-    # folder/sheet create failure) propagates → the caller soft-fails the
-    # submission to 'error' so it re-pulls next cycle (never silent).
-    sheet_id = week_sheet.ensure_week_sheet(
-        week_sheet.SAFETY_WEEK_SHEET_CONFIG, project_name, work_date
-    )
+    # folder + week sheet under the RESOLVED workspace (find-or-create, no per-project
+    # map → no config-gap path). A SmartsheetError (transient folder/sheet create
+    # failure) propagates → the caller soft-fails the submission to 'error' so it
+    # re-pulls next cycle (never silent).
+    sheet_id = week_sheet.ensure_week_sheet(week_config, project_name, work_date)
 
     # Dedupe (the Python authority): a re-pull whose row already exists skips
     # re-filing but still drains (portal_poll posts the receipt with the link).
