@@ -47,6 +47,9 @@ STATE_WRITE_ALLOWLIST: dict[str, str] = {
         "the watchdog marker write moved here from weekly_send_poll.py in P1c",
     "safety_reports/weekly_generate.py":
         "writes the ~/its/.watchdog liveness marker (NOT ~/its/state/)",
+    "safety_reports/generate_core.py":
+        "writes the ~/its/.watchdog/<job>.last_run liveness marker (NOT ~/its/state/) — "
+        "the watchdog marker write is parameterized here (P4); both weekly compiles use it",
     "safety_reports/portal_poll.py":
         "writes the ~/its/.watchdog liveness marker (NOT ~/its/state/)",
     "safety_reports/publish_daemon.py":
