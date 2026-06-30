@@ -33,6 +33,7 @@ already-HMAC-verified PDFs + typed Smartsheet cells — there is NO LLM step (La
 from __future__ import annotations
 
 import re
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
@@ -123,12 +124,11 @@ def _read_str_setting(config: GenerateConfig, key: str, fallback: str) -> str:
 
 
 def _read_int_setting(config: GenerateConfig, key: str, fallback: int) -> int:
+    """Defensive int ITS_Config read, LAYERED ON _read_str_setting (the one config seam the
+    tests mock) — missing row / circuit-open / non-int all resolve to fallback, never raising
+    into the compile. Matches the pre-P4 weekly_generate behavior."""
     try:
-        raw = smartsheet_client.get_setting(key, workstream=config.workstream)
-    except (smartsheet_client.SmartsheetNotFoundError, smartsheet_client.SmartsheetCircuitOpenError):
-        return fallback
-    try:
-        return int(raw)  # type: ignore[arg-type]
+        return int(_read_str_setting(config, key, str(fallback)).strip())
     except (TypeError, ValueError):
         return fallback
 
@@ -404,11 +404,16 @@ def _write_watchdog_marker(config: GenerateConfig) -> None:
 
 def _compile_job_week(
     config: GenerateConfig, job: ActiveJob, week: safety_week.SafetyWeek,
-    summary: RunSummary, correlation_id: str, *, memory_ceiling: int = 0,
+    summary: RunSummary, correlation_id: str, *, selection: set[int] | None = None,
+    memory_ceiling: int = 0,
 ) -> None:
     """Compile one (job, week): merge → file → dual-write Rollup + review row. Raises
     SmartsheetError / BoxError on transient infra failure (the per-job fence catches + routes
-    to the Review Queue)."""
+    to the Review Queue).
+
+    `selection` (Compile-Now Part-B / on-demand) narrows the PACKET to the given submission
+    row IDs; None (the Friday run + a default Compile Now) = the full week. The narrowing
+    applies to the merged packet only — the no-new-docs skip below still reads the FULL set."""
     project_name = job.project_name
     sheet_id = week_sheet.ensure_week_sheet(
         config.week_sheet_config, project_name, week.start
@@ -437,6 +442,11 @@ def _compile_job_week(
                 error_code=f"{short}.skip_no_change", correlation_id=correlation_id,
             )
             return
+
+    # Part B: narrow the packet to the explicit selection (default-all when None). Placed
+    # AFTER the skip check, which intentionally read the full set.
+    if selection is not None:
+        submissions = [s for s in submissions if int(s.get("_row_id") or 0) in selection]
 
     compiled_dt = datetime.now(ZoneInfo(DEFAULT_TZ))
     compiled_at = compiled_dt.isoformat()
@@ -483,13 +493,15 @@ def _compile_job_week(
     review_row_id = _write_review_row(config, job, week, packet_link=packet_link,
                                       manifest=manifest_note, summary=summary,
                                       correlation_id=correlation_id)
-    week_sheet.append_rollup_row(
+    rollup_row_id = week_sheet.append_rollup_row(
         sheet_id, packet_link=packet_link, compiled_at=compiled_at, manifest_note=manifest_note,
     )
     week_sheet.clear_compile_now_on_rollups(sheet_id, rollup_rows)
 
+    # Inline-attach the packet to BOTH surfaces: the week-sheet ROLLUP row (rollup_row_id) and
+    # the review-sheet review row (review_row_id) — two DISTINCT rows on two DISTINCT sheets.
     if compiled is not None:
-        _attach_pdf_best_effort(config, sheet_id, review_row_id, packet_name, compiled, correlation_id)
+        _attach_pdf_best_effort(config, sheet_id, rollup_row_id, packet_name, compiled, correlation_id)
         _attach_pdf_best_effort(config, config.review_sheet_id, review_row_id, packet_name,
                                 compiled, correlation_id)
 
@@ -526,10 +538,11 @@ def _safe_review_queue(
 # ---- Pipeline ------------------------------------------------------------
 
 
-def run_generate(config: GenerateConfig, *, correlation_id: str,
+def run_generate(config: GenerateConfig, *,
                  week_start_override: date | None) -> dict[str, Any]:
     """Compile weekly packets + dual-write Rollup/review-row for each Active job of `config`'s
     workstream. Returns the RunSummary dict + week bounds + correlation id."""
+    correlation_id = uuid.uuid4().hex[:12]
     summary = RunSummary()
 
     anchor = week_start_override if week_start_override is not None else datetime.now(

@@ -12,7 +12,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from safety_reports import week_sheet, weekly_generate
+from safety_reports import generate_core, week_sheet, weekly_generate
 
 ANCHOR = date(2026, 6, 5)  # Friday → Sat→Fri week 2026-05-30 … 2026-06-05
 
@@ -25,6 +25,10 @@ def _job(**kw):
         cc_emails=("a@x.com", "b@x.com"), is_active=True, active_status="Active",
     )
     base.update(kw)
+    # generate_core reads the Slice-1 workstream-neutral aliases; mirror them on the mock
+    # (the real ActiveJob aliases these to the same underlying value).
+    base["reports_contact_email"] = base["safety_reports_contact_email"]
+    base["reports_contact_name"] = base["safety_reports_contact_name"]
     return SimpleNamespace(**base)
 
 
@@ -41,31 +45,31 @@ def _sub(form_code="jha-v1", link="https://app.box.com/file/11", submitted="2026
 @pytest.fixture
 def stub(mocker) -> dict[str, MagicMock]:
     return {
-        "list_jobs": mocker.patch.object(weekly_generate.active_jobs, "list_active_jobs", return_value=[_job()]),
-        "ensure": mocker.patch.object(weekly_generate.week_sheet, "ensure_week_sheet", return_value=8001),
+        "list_jobs": mocker.patch.object(generate_core.active_jobs, "list_active_jobs", return_value=[_job()]),
+        "ensure": mocker.patch.object(generate_core.week_sheet, "ensure_week_sheet", return_value=8001),
         # Append-only (operator decision 2026-06-09): list_rollup_rows returns the full
         # (possibly multi-row) Rollup history; the REAL any_compile_now_requested runs on it
         # (NOT mocked), so a {COMPILE_NOW: True} rollup drives `force`. append_rollup_row ADDS a
         # new snapshot (never updates); clear_compile_now_on_rollups clears the trigger (no-op mock).
-        "rollup": mocker.patch.object(weekly_generate.week_sheet, "list_rollup_rows", return_value=[]),
-        "subs": mocker.patch.object(weekly_generate.week_sheet, "list_submission_rows", return_value=[_sub()]),
-        "append_rollup": mocker.patch.object(weekly_generate.week_sheet, "append_rollup_row", return_value=99),
-        "clear_rollup": mocker.patch.object(weekly_generate.week_sheet, "clear_compile_now_on_rollups"),
-        "attach": mocker.patch.object(weekly_generate.smartsheet_client, "attach_pdf_to_row", return_value=1),
-        "download": mocker.patch.object(weekly_generate.box_client, "download_file", return_value=b"%PDF-1.4 one"),
-        "merge": mocker.patch.object(weekly_generate.form_pdf, "merge_pdfs", return_value=b"%PDF-merged"),
-        "box_root": mocker.patch.object(weekly_generate, "_portal_box_root", return_value=""),  # gated OFF → legacy
-        "get_root": mocker.patch.object(weekly_generate.project_routing, "get_folder_id", return_value="root1"),
-        "mkfolder": mocker.patch.object(weekly_generate.box_client, "get_or_create_folder", return_value="wk1"),
+        "rollup": mocker.patch.object(generate_core.week_sheet, "list_rollup_rows", return_value=[]),
+        "subs": mocker.patch.object(generate_core.week_sheet, "list_submission_rows", return_value=[_sub()]),
+        "append_rollup": mocker.patch.object(generate_core.week_sheet, "append_rollup_row", return_value=99),
+        "clear_rollup": mocker.patch.object(generate_core.week_sheet, "clear_compile_now_on_rollups"),
+        "attach": mocker.patch.object(generate_core.smartsheet_client, "attach_pdf_to_row", return_value=1),
+        "download": mocker.patch.object(generate_core.box_client, "download_file", return_value=b"%PDF-1.4 one"),
+        "merge": mocker.patch.object(generate_core.form_pdf, "merge_pdfs", return_value=b"%PDF-merged"),
+        "box_root": mocker.patch.object(generate_core, "_portal_box_root", return_value=""),  # gated OFF → legacy
+        "get_root": mocker.patch.object(generate_core.project_routing, "get_folder_id", return_value="root1"),
+        "mkfolder": mocker.patch.object(generate_core.box_client, "get_or_create_folder", return_value="wk1"),
         # Append-only: each compile files a DISTINCT packet via _upload_packet — the clean
         # <Job>_week of <Sat>_WSR.pdf, bumping _v2/_v3 on a recompile 409. A clean first compile
         # is a single non-conflicting upload_bytes call, which this return_value models.
-        "upload": mocker.patch.object(weekly_generate.box_client, "upload_bytes", return_value={"id": "pkt9", "name": "x", "size": 9}),
+        "upload": mocker.patch.object(generate_core.box_client, "upload_bytes", return_value={"id": "pkt9", "name": "x", "size": 9}),
         "wsr": mocker.patch.object(weekly_generate.wsr_review, "add_wsr_row", return_value=123),
-        "evergreen": mocker.patch.object(weekly_generate, "_read_str_setting", return_value="the office"),
-        "review": mocker.patch.object(weekly_generate.review_queue, "add"),
-        "marker": mocker.patch.object(weekly_generate, "_write_watchdog_marker"),
-        "log": mocker.patch.object(weekly_generate.error_log, "log"),
+        "evergreen": mocker.patch.object(generate_core, "_read_str_setting", return_value="the office"),
+        "review": mocker.patch.object(generate_core.review_queue, "add"),
+        "marker": mocker.patch.object(generate_core, "_write_watchdog_marker"),
+        "log": mocker.patch.object(generate_core.error_log, "log"),
     }
 
 
@@ -80,20 +84,20 @@ def stub(mocker) -> dict[str, MagicMock]:
     ("https://app.box.com/folder/5", None),
 ])
 def test_box_file_id(link, expected):
-    assert weekly_generate._box_file_id(link) == expected
+    assert generate_core._box_file_id(link) == expected
 
 
 def test_its_week_folder_name_and_packet_basename():
-    wk = weekly_generate.safety_week.week_bounds(ANCHOR)
-    assert weekly_generate._its_week_folder_name(wk) == "ITS Week of 2026-05-30 to 2026-06-05"
+    wk = generate_core.safety_week.week_bounds(ANCHOR)
+    assert generate_core._its_week_folder_name(wk) == "ITS Week of 2026-05-30 to 2026-06-05"
     # Operator naming rule (2026-06-17): clean job-prefixed packet name <Job>_week of <Sat>_WSR.
-    assert weekly_generate._packet_basename("Bradley 1", wk) == "Bradley 1_week of 2026-05-30_WSR"
+    assert generate_core._packet_basename("Bradley 1", wk) == "Bradley 1_week of 2026-05-30_WSR"
 
 
 def test_upload_packet_first_compile_uses_clean_unversioned_name(mocker):
-    up = mocker.patch.object(weekly_generate.box_client, "upload_bytes",
+    up = mocker.patch.object(generate_core.box_client, "upload_bytes",
                              return_value={"id": "p1", "name": "n", "size": 1})
-    name, file_id = weekly_generate._upload_packet(
+    name, file_id = generate_core._upload_packet(
         "fld", "Bradley 1_week of 2026-05-30_WSR", b"x", "20260605-090000-abc123"
     )
     assert (name, file_id) == ("Bradley 1_week of 2026-05-30_WSR.pdf", "p1")
@@ -103,14 +107,14 @@ def test_upload_packet_first_compile_uses_clean_unversioned_name(mocker):
 def test_upload_packet_recompile_bumps_to_next_version(mocker):
     # base.pdf + _v2.pdf already in the folder (two prior compiles) → next DISTINCT file is _v3.pdf.
     up = mocker.patch.object(
-        weekly_generate.box_client, "upload_bytes",
+        generate_core.box_client, "upload_bytes",
         side_effect=[
-            weekly_generate.box_client.BoxConflictError("base exists"),
-            weekly_generate.box_client.BoxConflictError("_v2 exists"),
+            generate_core.box_client.BoxConflictError("base exists"),
+            generate_core.box_client.BoxConflictError("_v2 exists"),
             {"id": "p3", "name": "n", "size": 1},
         ],
     )
-    name, file_id = weekly_generate._upload_packet(
+    name, file_id = generate_core._upload_packet(
         "fld", "Bradley 1_week of 2026-05-30_WSR", b"x", "20260605-090000-abc123"
     )
     assert (name, file_id) == ("Bradley 1_week of 2026-05-30_WSR_v3.pdf", "p3")
@@ -122,7 +126,7 @@ def test_upload_packet_recompile_bumps_to_next_version(mocker):
 
 
 def test_recipient_display():
-    to, cc = weekly_generate._recipient_display(_job())
+    to, cc = generate_core._recipient_display(_job())
     assert to == "pm@evergreenmirror.com"
     assert cc == "a@x.com, b@x.com"
 
@@ -247,7 +251,7 @@ def test_recompile_files_distinct_packet_never_overwrites(stub):
     # retries the next version and files the DISTINCT _v2.pdf.
     stub["upload"].side_effect = [
         {"id": "pkt1", "name": base, "size": 9},
-        weekly_generate.box_client.BoxConflictError("base exists"),
+        generate_core.box_client.BoxConflictError("base exists"),
         {"id": "pkt2", "name": v2, "size": 9},
     ]
 
@@ -288,7 +292,7 @@ def test_partial_download_failure_still_compiles_available(stub):
         _sub("jha-v1", "https://app.box.com/file/11"),
         _sub("toolbox-talk-ppe-v1", "https://app.box.com/file/22"),
     ]
-    stub["download"].side_effect = [b"%PDF-A", weekly_generate.box_client.BoxError("404")]
+    stub["download"].side_effect = [b"%PDF-A", generate_core.box_client.BoxError("404")]
     out = weekly_generate._run_pipeline(week_start_override=ANCHOR)
     assert out["packets_compiled"] == 1 and out["download_errors"] == 1
     assert stub["merge"].call_args.args[0] == [b"%PDF-A"]
@@ -296,7 +300,7 @@ def test_partial_download_failure_still_compiles_available(stub):
 
 def test_all_downloads_fail_writes_wsr_without_packet(stub):
     stub["subs"].return_value = [_sub("jha-v1", "https://app.box.com/file/11")]
-    stub["download"].side_effect = weekly_generate.box_client.BoxError("404")
+    stub["download"].side_effect = generate_core.box_client.BoxError("404")
     out = weekly_generate._run_pipeline(week_start_override=ANCHOR)
     stub["merge"].assert_not_called()
     stub["wsr"].assert_called_once()
@@ -414,8 +418,8 @@ def test_per_job_timeout_fenced_to_review_and_continues(stub, mocker):
         _job(project_name="Huntley", job_id="JOB-2"),
     ]
     mocker.patch.object(
-        weekly_generate, "_compile_job_week",
-        side_effect=[weekly_generate.compile_core.CompileJobTimeoutError("hung"), None],
+        generate_core, "_compile_job_week",
+        side_effect=[generate_core.compile_core.CompileJobTimeoutError("hung"), None],
     )
     out = weekly_generate._run_pipeline(week_start_override=ANCHOR)
     assert out["timed_out"] == 1
@@ -432,8 +436,10 @@ def test_memory_guard_fences_oversized_week_before_merge(stub, mocker):
     # A tiny memory ceiling makes the gathered PDF breach the budget → the job is fenced to the
     # Review Queue BEFORE merge_pdfs, never OOMing; no packet is produced.
     mocker.patch.object(
-        weekly_generate, "_read_int_setting",
-        side_effect=lambda key, fallback: 1 if key == weekly_generate.CFG_MEMORY_CEILING else fallback,
+        generate_core, "_read_int_setting",
+        side_effect=lambda config, key, fallback: (
+            1 if key == weekly_generate.SAFETY_GENERATE_CONFIG.cfg_memory_ceiling else fallback
+        ),
     )
     out = weekly_generate._run_pipeline(week_start_override=ANCHOR)
     assert out["packets_compiled"] == 0
@@ -458,7 +464,7 @@ def test_compile_mutex_contended_safety_compiles_anyway(stub, tmp_path, mocker):
     anchor = tmp_path / "host_compile"
     mocker.patch.object(compile_mutex, "_HOST_COMPILE_LOCK_ANCHOR", anchor)
     mutex_warn = mocker.patch.object(compile_mutex, "log")
-    run_per_job = mocker.patch.object(weekly_generate.compile_core, "run_per_job")
+    run_per_job = mocker.patch.object(generate_core.compile_core, "run_per_job")
 
     # Another compile holds the lock (a separate fd → flock contends in-process).
     sidecar = anchor.with_name(anchor.name + ".lock")

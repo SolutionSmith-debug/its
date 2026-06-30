@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Progress Reports progress_weekly_generate — Friday 14:30 local time. Drafts a
+  Weekly Progress Report per active progress job, writes to WPR_human_review with
+  the review row PENDING (Approve for Send unchecked). Zero send capability
+  (External Send Gate per Foundation Mission v11 Invariant 1).
+
+  Deliberately staggered 30 minutes AFTER the safety weekly-generate (14:00) to
+  avoid Smartsheet rate-limit contention; both compiles also hold the single
+  host-level compile mutex (shared.compile_mutex), which fails open with a
+  `compile_mutex.contended` WARN if the earlier run is still holding it.
+
+  Install:
+    scripts/launchd/install.sh load org.solutionsmith.its.progress-generate.plist
+
+  Calendar-driven (StartCalendarInterval), NOT interval-driven — runs
+  exactly once per Friday at 14:30 local time. launchd handles
+  missed-while-asleep by firing on wake when the schedule has lapsed.
+  No __POLL_INTERVAL_SECONDS__ substitution; the installer only
+  substitutes __ITS_HOME__.
+
+  See docs/runbooks/progress_weekly_generate.md for the operator runbook.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>org.solutionsmith.its.progress-generate</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__ITS_HOME__/.venv/bin/python</string>
+        <string>-m</string>
+        <string>progress_reports.progress_weekly_generate</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__ITS_HOME__</string>
+
+    <key>StandardOutPath</key>
+    <string>__ITS_HOME__/logs/launchd/progress_generate.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>__ITS_HOME__/logs/launchd/progress_generate.err.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>LANG</key>
+        <string>en_US.UTF-8</string>
+    </dict>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Weekday</key>
+        <integer>5</integer>
+        <key>Hour</key>
+        <integer>14</integer>
+        <key>Minute</key>
+        <integer>30</integer>
+    </dict>
+
+    <!-- A2 (single-host resilience): RunAtLoad stays FALSE for a StartCalendarInterval
+         daemon. launchd fires a missed calendar job on wake; RunAtLoad=true would
+         MIS-fire it on every login (e.g. run a Friday compile on a Tuesday boot).
+         Reboot-recovery for the weekly compile is the watchdog Check-I catch-up. -->
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>
