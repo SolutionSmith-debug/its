@@ -98,6 +98,7 @@ outside the sentinel block.
 |------|------|--------|------------|-------|-----|
 | 2026-06-10 | session_log | active | safety_portal | [Session — Agent Optimization (Brief 2) + Safety Portal Hardening (Brief 1)](2026-06-10_agent-optimization-and-portal-hardening.md) | #260, #261, #263, #264, #265, #266 |
 | 2026-06-30 | session_log | closed | field_ops | [Session — P2.5 job-tracker → Smartsheet up-sync (PRs #383, #384, #385, #386, #387)](2026-06-30_p2.5-job-tracker-upsync.md) | #383, #384, #385, #386, #387 |
+| 2026-06-30 | session_log | closed | field_ops | [Session — P2.5 Slice 6: portal-owned canonical job number (PR #389)](2026-06-30_p2.5-slice6-portal-number.md) | #389 |
 | 2026-06-30 | session_log | closed | progress_reporting | [Session — P4 progress compile engine + form-builder workflow selector (PRs #372, #373, #375, #376)](2026-06-30_p4-progress-compile-and-workflow-selector.md) | #372, #373, #375, #376 |
 | 2026-06-30 | session_log | closed | progress_reporting | [Session — P5 progress SEND half + operability guards (PRs #379, #380, #381)](2026-06-30_p5-progress-send-and-operability-guards.md) | #379, #380, #381 |
 | 2026-06-30 | session_log | closed | progress_reporting | [Session — Stage 1 parameterize complete (PRs #353–#359)](2026-06-30_stage1-parameterize-complete.md) | #353, #354, #355, #356, #359 |
