@@ -98,6 +98,7 @@ outside the sentinel block.
 |------|------|--------|------------|-------|-----|
 | 2026-06-10 | session_log | active | safety_portal | [Session — Agent Optimization (Brief 2) + Safety Portal Hardening (Brief 1)](2026-06-10_agent-optimization-and-portal-hardening.md) | #260, #261, #263, #264, #265, #266 |
 | 2026-06-30 | session_log | closed | progress_reporting | [Session — P4 progress compile engine + form-builder workflow selector (PRs #372, #373, #375, #376)](2026-06-30_p4-progress-compile-and-workflow-selector.md) | #372, #373, #375, #376 |
+| 2026-06-30 | session_log | closed | progress_reporting | [Session — P5 progress SEND half + operability guards (PRs #379, #380, #381)](2026-06-30_p5-progress-send-and-operability-guards.md) | #379, #380, #381 |
 | 2026-06-30 | session_log | closed | progress_reporting | [Session — Stage 1 parameterize complete (PRs #353–#359)](2026-06-30_stage1-parameterize-complete.md) | #353, #354, #355, #356, #359 |
 | 2026-06-30 | session_log | closed | infrastructure | [Session — Tech-debt cleanup alongside in-flight Phase-2 (PRs #363–#368)](2026-06-30_tech-debt-cleanup-alongside-phase2.md) | #363, #364, #365, #366, #367, #368 |
 | 2026-06-29 | session_log | closed | field_ops | [Session — Tier-A Stage-0 foundation + Personnel CRUD landed (PRs #329, #344, #345, #346, #349)](2026-06-29_field-ops-progress-stage0-foundation-landed.md) | #329, #344, #345, #346, #349 |
