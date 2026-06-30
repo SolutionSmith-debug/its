@@ -2,8 +2,8 @@
 
 Mocks `shared.smartsheet_client` wholesale (get_rows / add_rows / update_rows / get_row) —
 no live Smartsheet. Covers: find-or-create BOTH branches, CC explosion into CC 1..5 (incl.
-lossless >5 overflow), lifecycle→Active picklist mapping, canonical Job-ID read-back, the
-non-clobber invariant (only portal-owned columns written), and the progress-config block.
+lossless >5 overflow), lifecycle→Active picklist mapping, the Slice-6 portal-owned Job-ID
+(written = job_id, no read-back), the non-clobber invariant, and the progress-config block.
 """
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from shared import active_jobs_writer
 
 def _job(**over: Any) -> dict[str, Any]:
     base: dict[str, Any] = {
-        "job_id": "acme-solar-01",
+        "job_id": "JOB-000017",
         "project_name": "Acme Solar 01",
         "lifecycle": "active",
         "address": "1 Main St",
@@ -37,7 +37,7 @@ def _job(**over: Any) -> dict[str, Any]:
 
 # The full portal-owned column set this module is allowed to write (no Notes / system cols).
 _PORTAL_COLUMNS = {
-    "Project Name", "Address", "Stakeholder Name", "Stakeholder Email", "Stakeholder Phone",
+    "Job ID", "Project Name", "Address", "Stakeholder Name", "Stakeholder Email", "Stakeholder Phone",
     "Active", "Portal Job Key", "CC 1", "CC 2", "CC 3", "CC 4", "CC 5",
 }
 _SAFETY_CONTACT_COLUMNS = {"Safety Reports Contact Name", "Safety Reports Contact Email"}
@@ -65,23 +65,25 @@ def _added_cells(ss) -> dict[str, Any]:
 # ---- find-or-create: CREATE branch ---------------------------------------
 
 
-def test_create_branch_finds_then_adds_and_reads_back_canonical(ss):
+def test_create_branch_finds_then_adds_and_writes_job_id(ss):
     row_id, canonical = active_jobs_writer.upsert_job(
         active_jobs_writer.SAFETY_WRITE_CONFIG, _job()
     )
     # find-or-create keyed on Portal Job Key == job_id
-    assert ss["get_rows"].call_args.kwargs["filters"] == {"Portal Job Key": "acme-solar-01"}
+    assert ss["get_rows"].call_args.kwargs["filters"] == {"Portal Job Key": "JOB-000017"}
     ss["add_rows"].assert_called_once()
     ss["update_rows"].assert_not_called()
     cells = _added_cells(ss)
     assert cells["Project Name"] == "Acme Solar 01"
     assert cells["Address"] == "1 Main St"
-    assert cells["Portal Job Key"] == "acme-solar-01"
+    assert cells["Portal Job Key"] == "JOB-000017"
     assert cells["Safety Reports Contact Email"] == "pat@acme.example"
     assert cells["Safety Reports Contact Name"] == "Pat Safety"
-    # canonical Job ID is the AUTO_NUMBER read back via get_row after create
-    ss["get_row"].assert_called_once()
-    assert (row_id, canonical) == (999, "JOB-NEW")
+    # Slice 6: the portal owns the number → Job ID is WRITTEN (== job_id), NOT auto-numbered, and
+    # canonical is returned directly with NO read-back round-trip.
+    assert cells["Job ID"] == "JOB-000017"
+    ss["get_row"].assert_not_called()
+    assert (row_id, canonical) == (999, "JOB-000017")
 
 
 def test_create_only_writes_portal_owned_columns(ss):
@@ -89,7 +91,7 @@ def test_create_only_writes_portal_owned_columns(ss):
     keys = set(_added_cells(ss).keys())
     assert keys == _PORTAL_COLUMNS | _SAFETY_CONTACT_COLUMNS
     assert "Notes" not in keys  # never clobber the operator's column
-    assert "Job ID" not in keys  # AUTO_NUMBER is read-back-only, never written
+    assert "Job ID" in keys  # Slice 6: portal-owned, WRITTEN = job_id (no AUTO_NUMBER)
 
 
 # ---- find-or-create: UPDATE branch (non-clobber) -------------------------
@@ -98,8 +100,8 @@ def test_create_only_writes_portal_owned_columns(ss):
 def test_update_branch_updates_existing_row_without_clobbering(ss):
     ss["get_rows"].return_value = [{
         "_row_id": 42,
-        "Job ID": "JOB-0042",
-        "Notes": "operator-owned note",   # must survive untouched
+        "Job ID": "JOB-000099",            # a drifted Job ID — Slice 6 self-heals it to == job_id
+        "Notes": "operator-owned note",     # must survive untouched
         "Project Name": "stale name",
     }]
     row_id, canonical = active_jobs_writer.upsert_job(
@@ -107,15 +109,16 @@ def test_update_branch_updates_existing_row_without_clobbering(ss):
     )
     ss["update_rows"].assert_called_once()
     ss["add_rows"].assert_not_called()
-    ss["get_row"].assert_not_called()  # canonical comes from the matched row, no extra read
+    ss["get_row"].assert_not_called()  # canonical == job_id, no extra read
     _sheet_id, updates = ss["update_rows"].call_args.args
     payload = updates[0]
     assert payload["_row_id"] == 42
-    # Non-clobber: only _row_id + the portal-owned columns are present.
+    # Non-clobber: only _row_id + the portal-owned columns are present (Job ID is now portal-owned).
     assert set(payload.keys()) == {"_row_id"} | _PORTAL_COLUMNS | _SAFETY_CONTACT_COLUMNS
     assert "Notes" not in payload
     assert payload["Project Name"] == "Acme Solar 01"  # portal value overwrites the stale one
-    assert (row_id, canonical) == (42, "JOB-0042")
+    assert payload["Job ID"] == "JOB-000017"           # self-heal: drifted Job ID → job_id
+    assert (row_id, canonical) == (42, "JOB-000017")   # canonical == job_id, not the drifted value
 
 
 # ---- CC explosion --------------------------------------------------------

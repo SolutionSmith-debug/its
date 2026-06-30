@@ -17,18 +17,20 @@ secrets). The §42 code-reader rationale lives in `safety_portal/worker/fieldops
 ## Purpose
 
 An office admin can now create a job **in the portal** (the Job Tracker, `cap.jobtracker.manage`,
-admin-only) instead of only in Smartsheet's `ITS_Active_Jobs`. A portal-created job is stamped
-`origin='portal'`, `sync_state='pending'`, `canonical_job_id=NULL` so the 60-second
-`ITS_Active_Jobs → portal` sync (which only replaces `origin='smartsheet'` jobs) can never delete
-it. The **P2.4 mirror daemon** later promotes a `pending` job UP into `ITS_Active_Jobs` (Smartsheet
-auto-assigns its permanent `JOB-####`), writes that into `canonical_job_id`, and flips
-`sync_state` to `'synced'`.
+admin-only) instead of only in Smartsheet's `ITS_Active_Jobs`. **Slice 6: the portal ASSIGNS the
+canonical job number itself** — on create it allocates the next `JOB-######` from the `job_counter`
+table (migration 0022) and stamps it as BOTH the `job_id` AND `canonical_job_id` from birth (no
+Smartsheet AUTO_NUMBER, no read-back handshake). The job is stamped `origin='portal'`,
+`sync_state='pending'` so the 60-second `ITS_Active_Jobs → portal` sync (which only replaces
+`origin='smartsheet'` jobs) can never delete it. The **P2.5 mirror daemon**
+(`field_ops/fieldops_sync`) later writes the row UP into both Active-Jobs sheets — writing that same
+`JOB-######` into each sheet's "Job ID" column — and flips `sync_state` to `'synced'`.
 
 ## Symptom
 
-A job created in the portal works fine locally (it shows in the Job Tracker, accepts time
-entries / tasks) **but never appears in `ITS_Active_Jobs`, never gets a `JOB-####`, and stays
-`sync_state='pending'`.**
+A job created in the portal works fine locally (it shows in the Job Tracker with its assigned
+`JOB-######`, accepts time entries / tasks) **but never appears in `ITS_Active_Jobs` /
+`ITS_Active_Jobs_Progress` and stays `sync_state='pending'`.**
 
 ## What the Successor-Operator checks
 
@@ -74,3 +76,32 @@ deploy ahead of the migration caused the 2026-06-28 universal lockout (forensic 
 Until Slice 5's daemon exists + its `field_ops.fieldops_sync.sync_enabled` flag is ON, the new
 `/api/internal/fieldops/*` routes simply have no caller — portal-created jobs accumulate as dirty
 (`origin='portal'`, `sync_state='pending'`) and stay correctly fenced from the down-sync sweep.
+
+## Activation — P2.5 Slice 6 (operator, one-time, ORDER-DEPENDENT)
+
+Slice 6 makes the **portal own the canonical number**, replacing the Smartsheet AUTO_NUMBER on
+`ITS_Active_Jobs."Job ID"`. Activate in THIS order at cutover (same stale-checkout discipline):
+
+1. Pull `~/its` to current `main` (never deploy from a stale tree).
+2. In Smartsheet, **retype `ITS_Active_Jobs."Job ID"` from AUTO_NUMBER → TEXT_NUMBER** (it stops
+   auto-generating; the existing `JOB-000016` value persists as text). Also add the **"Portal Job
+   Key" TEXT** column to `ITS_Active_Jobs` (the daemon's find-or-create key; the progress sheet
+   already has it).
+3. Apply migration `0022_job_counter.sql` to live D1 **remotely** — this **creates + seeds** the
+   `job_counter` table, and must run **BEFORE** the Worker redeploy (a missing table → the create
+   route returns 500 `counter_unavailable`, fail-closed).
+4. **Now that the table exists**, confirm the live `ITS_Active_Jobs` max Job ID is **≤ JOB-000016**.
+   If a higher number exists (more jobs were auto-created since), bump the counter to match BEFORE
+   the first portal create: `UPDATE job_counter SET last_value = <live max> WHERE id = 1;`.
+5. Redeploy the Worker.
+
+## New failure mode — create returns `counter_unavailable` (500)
+
+**Symptom:** the office PM clicks Create and gets a server error; the create **response** is a 500
+with body `{"error":"counter_unavailable"}` (the Worker handles it cleanly — there is no
+`worker_unhandled` log line, so read the response body, not just the logs). **Cause:** the
+`job_counter` table (migration 0022) is missing OR its seed row was deleted — most likely the Worker
+was deployed ahead of its migration (the forensic-#2 stale-deploy class). **This is fail-closed by
+design — no job is created and no number is burned.** **Repair:** apply `0022 --remote`, then
+redeploy. This is a deploy/migration fault (code/high-capability-class) — the Successor-Operator
+escalates to Seth; it is NOT a Tier-2 repair.

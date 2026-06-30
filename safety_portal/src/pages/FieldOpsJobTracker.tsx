@@ -213,7 +213,6 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
   const [actionBusy, setActionBusy] = useState(false);
   const [actionMsg, setActionMsg] = useState<{ ok: boolean; text: string } | null>(null);
   // New-job form (list view)
-  const [newJobId, setNewJobId] = useState("");
   const [newJobName, setNewJobName] = useState("");
   const [newJobClient, setNewJobClient] = useState("");
   const [newJobOpen, setNewJobOpen] = useState(false);
@@ -354,29 +353,27 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
   async function submitNewJob(e: FormEvent) {
     e.preventDefault();
     if (actionBusy) return;
-    const jobId = newJobId.trim().toUpperCase();
     const projectName = newJobName.trim();
-    if (!jobId || !projectName) {
-      setActionMsg({ ok: false, text: "Job ID and project name are required." });
+    if (!projectName) {
+      setActionMsg({ ok: false, text: "Project name is required." });
       return;
     }
     setActionBusy(true);
     setActionMsg(null);
     try {
       const clientName = newJobClient.trim();
-      await api.createJob({
-        job_id: jobId,
+      // Slice 6: no job_id in the body — the worker assigns the next JOB-###### and returns it.
+      const created = await api.createJob({
         project_name: projectName,
         ...(clientName ? { new_client: { name: clientName } } : {}),
         ...routingPayload(createRouting),
       });
-      setNewJobId("");
       setNewJobName("");
       setNewJobClient("");
       setCreateRouting(EMPTY_ROUTING);
       setNewJobOpen(false);
       await reloadList();
-      setActionMsg({ ok: true, text: `Job ${jobId} created.` });
+      setActionMsg({ ok: true, text: `Job ${created.job_id} created.` });
     } catch (err) {
       setActionMsg({ ok: false, text: err instanceof Error ? err.message : "Create failed." });
     } finally {
@@ -769,13 +766,8 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
         <div className="dash-row">
           {newJobOpen ? (
             <form onSubmit={submitNewJob} aria-label="Create job">
+              <p className="dash-card__sub muted">A Job ID (JOB-######) is assigned automatically on create.</p>
               <div className="dash-row">
-                <input
-                  value={newJobId}
-                  onChange={(e) => setNewJobId(e.target.value)}
-                  placeholder="Job ID (e.g. JOB-1042)"
-                  maxLength={64}
-                />{" "}
                 <input
                   value={newJobName}
                   onChange={(e) => setNewJobName(e.target.value)}

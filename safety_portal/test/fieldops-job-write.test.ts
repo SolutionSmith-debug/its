@@ -2,9 +2,11 @@ import { env, SELF } from "cloudflare:test";
 import { describe, it, expect, beforeEach } from "vitest";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// P2.3 Slice 2 — JOB WRITE (create/close/progress). cap.jobtracker.manage (admin-only).
-// Locks the 0017 origin fence (portal-created jobs are origin='portal'/sync_state='pending'),
-// TOCTOU-safe close, progress clamp, and mutation+audit atomicity.
+// P2.3 Slice 2 + P2.5 Slice 1/6 — JOB WRITE (create/close/progress/lifecycle/contacts).
+// cap.jobtracker.manage (admin-only). Locks the 0017 origin fence (portal-created jobs are
+// origin='portal'/sync_state='pending'), the version vector, the W5 cross-origin scope, and
+// Slice 6 — the PORTAL ASSIGNS the canonical JOB-###### from the job_counter (the client no
+// longer supplies a job_id; the server returns the assigned one + sets canonical_job_id == job_id).
 // ─────────────────────────────────────────────────────────────────────────────
 
 const BASE = "https://portal.test";
@@ -33,6 +35,13 @@ async function login(username: string, password: string): Promise<string> {
 const j = (cookie: string, path: string, body?: unknown) =>
   call(path, { method: "POST", cookie, body: body === undefined ? undefined : JSON.stringify(body) });
 
+// Slice 6: the portal assigns the Job ID. Create a job and return the SERVER-assigned JOB-######.
+async function createOk(cookie: string, body: Record<string, unknown>): Promise<string> {
+  const res = await j(cookie, "/api/fieldops/job", body);
+  expect(res.status, await res.clone().text()).toBe(201);
+  return ((await res.json()) as { job_id: string }).job_id;
+}
+
 async function jobRow(jobId: string) {
   return await env.DB.prepare("SELECT * FROM jobs WHERE job_id=?").bind(jobId).first<any>();
 }
@@ -51,6 +60,11 @@ beforeEach(async () => {
     env.DB.prepare("DELETE FROM audit_log"),
     env.DB.prepare("DELETE FROM jobs"),
     env.DB.prepare("DELETE FROM clients"),
+    // Reset the Slice-6 allocator to its 0022 seed so each test's first create is JOB-000017.
+    // CREATE IF NOT EXISTS + INSERT OR REPLACE self-heal even if a test DROPPED or emptied the
+    // table (see the two counter_unavailable cases).
+    env.DB.prepare("CREATE TABLE IF NOT EXISTS job_counter (id INTEGER PRIMARY KEY CHECK (id = 1), last_value INTEGER NOT NULL)"),
+    env.DB.prepare("INSERT OR REPLACE INTO job_counter (id, last_value) VALUES (1, 16)"),
   ]);
   await provision("admin.one", "password123", "admin");
   await provision("submitter.jim", "password123", "submitter");
@@ -60,17 +74,31 @@ beforeEach(async () => {
 
 describe("POST /api/fieldops/job (create)", () => {
   it("gate: anon → 401, submitter (no manage cap) → 403, admin → 201", async () => {
-    expect((await call("/api/fieldops/job", { method: "POST", body: JSON.stringify({ job_id: "JOB-X", project_name: "X" }) })).status).toBe(401);
-    expect((await j(submitter, "/api/fieldops/job", { job_id: "JOB-X", project_name: "X" })).status).toBe(403);
-    expect((await j(admin, "/api/fieldops/job", { job_id: "JOB-X", project_name: "X" })).status).toBe(201);
+    expect((await call("/api/fieldops/job", { method: "POST", body: JSON.stringify({ project_name: "X" }) })).status).toBe(401);
+    expect((await j(submitter, "/api/fieldops/job", { project_name: "X" })).status).toBe(403);
+    expect((await j(admin, "/api/fieldops/job", { project_name: "X" })).status).toBe(201);
   });
 
-  it("stamps the 0017 portal-origin fence + server created_at, and audits", async () => {
-    expect((await j(admin, "/api/fieldops/job", { job_id: "job-new", project_name: "New Job", progress: 40 })).status).toBe(201);
-    const row = await jobRow("JOB-NEW"); // job_id upper-cased
+  it("Slice 6: assigns sequential JOB-###### from the counter (seed 16 → first JOB-000017)", async () => {
+    const a = await createOk(admin, { project_name: "A" });
+    const b = await createOk(admin, { project_name: "B" });
+    expect(a).toBe("JOB-000017");
+    expect(b).toBe("JOB-000018");
+  });
+
+  it("Slice 6: ignores any client-supplied job_id — the portal assigns it", async () => {
+    const id = await createOk(admin, { job_id: "CLIENT-CHOSEN", project_name: "X" });
+    expect(id).toMatch(/^JOB-\d{6}$/); // server-assigned shape, not the client's string
+    expect(await jobRow("CLIENT-CHOSEN")).toBeNull(); // the client's id never reaches D1
+  });
+
+  it("stamps the 0017 portal-origin fence + server created_at + canonical=job_id, and audits", async () => {
+    const id = await createOk(admin, { project_name: "New Job", progress: 40 });
+    expect(id).toMatch(/^JOB-\d{6}$/);
+    const row = await jobRow(id);
     expect(row.origin).toBe("portal");
     expect(row.sync_state).toBe("pending");
-    expect(row.canonical_job_id).toBeNull();
+    expect(row.canonical_job_id).toBe(id); // Slice 6: portal owns the number from birth (not NULL)
     expect(row.active).toBe(1);
     expect(row.status).toBe("active");
     expect(row.progress).toBe(40);
@@ -79,42 +107,59 @@ describe("POST /api/fieldops/job (create)", () => {
   });
 
   it("inline new_client writes a clients row linked to the job", async () => {
-    expect((await j(admin, "/api/fieldops/job", { job_id: "JOB-C", project_name: "C", new_client: { name: "Acme Co", phone: "555" } })).status).toBe(201);
-    const row = await jobRow("JOB-C");
+    const id = await createOk(admin, { project_name: "C", new_client: { name: "Acme Co", phone: "555" } });
+    const row = await jobRow(id);
     const client = await env.DB.prepare("SELECT * FROM clients WHERE id=?").bind(row.client_id).first<any>();
     expect(client.name).toBe("Acme Co");
   });
 
   it("client_id is verified (422 unknown_client) / linked when valid", async () => {
-    expect((await j(admin, "/api/fieldops/job", { job_id: "JOB-Z", project_name: "Z", client_id: 99999 })).status).toBe(422);
+    expect((await j(admin, "/api/fieldops/job", { project_name: "Z", client_id: 99999 })).status).toBe(422);
     await env.DB.prepare("INSERT INTO clients (name) VALUES ('Real')").run();
     const cid = (await env.DB.prepare("SELECT id FROM clients WHERE name='Real'").first<{ id: number }>())!.id;
-    expect((await j(admin, "/api/fieldops/job", { job_id: "JOB-Y", project_name: "Y", client_id: cid })).status).toBe(201);
-    expect((await jobRow("JOB-Y")).client_id).toBe(cid);
+    const id = await createOk(admin, { project_name: "Y", client_id: cid });
+    expect((await jobRow(id)).client_id).toBe(cid);
   });
 
-  it("duplicate job_id → 409 job_exists", async () => {
-    await seedJob("JOB-A", "active");
-    expect((await j(admin, "/api/fieldops/job", { job_id: "JOB-A", project_name: "dup" })).status).toBe(409);
-  });
-
-  it("body guards: bad job_id / missing project_name → 400", async () => {
-    expect((await j(admin, "/api/fieldops/job", { job_id: "JOB A", project_name: "X" })).status).toBe(400); // space
-    expect((await j(admin, "/api/fieldops/job", { job_id: "JOB-X", project_name: "" })).status).toBe(400);
+  it("body guard: missing project_name → 400 (no number is burned)", async () => {
+    expect((await j(admin, "/api/fieldops/job", { project_name: "" })).status).toBe(400);
+    expect((await j(admin, "/api/fieldops/job", {})).status).toBe(400);
+    // A rejected create never advances the counter — the first valid create is still JOB-000017.
+    expect(await createOk(admin, { project_name: "ok" })).toBe("JOB-000017");
   });
 
   it("new_client over-long fields → 400 (every body string reaching D1 is bounded)", async () => {
-    const res = await j(admin, "/api/fieldops/job", { job_id: "JOB-LONG", project_name: "X", new_client: { name: "Acme Co", email: "x".repeat(321) } });
+    const res = await j(admin, "/api/fieldops/job", { project_name: "X", new_client: { name: "Acme Co", email: "x".repeat(321) } });
     expect(res.status).toBe(400);
+  });
+
+  it("counter_unavailable → 500 fail-closed when the job_counter ROW is missing (no malformed id)", async () => {
+    await env.DB.prepare("DELETE FROM job_counter").run(); // seed row gone, table present
+    const res = await j(admin, "/api/fieldops/job", { project_name: "X" });
+    expect(res.status).toBe(500);
+    expect(((await res.json()) as any).error).toBe("counter_unavailable");
+    expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM jobs").first<{ n: number }>()).toMatchObject({ n: 0 });
+    // beforeEach's INSERT OR REPLACE restores the row for the next test.
+  });
+
+  it("counter_unavailable → 500 when the job_counter TABLE is missing (0022 not applied before deploy)", async () => {
+    // The literal deploy-order fault: D1 throws "no such table" — allocateJobNumber catches it and
+    // collapses to the SAME clean counter_unavailable (not an opaque internal_error). Fail-closed.
+    await env.DB.prepare("DROP TABLE job_counter").run();
+    const res = await j(admin, "/api/fieldops/job", { project_name: "X" });
+    expect(res.status).toBe(500);
+    expect(((await res.json()) as any).error).toBe("counter_unavailable");
+    expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM jobs").first<{ n: number }>()).toMatchObject({ n: 0 });
+    // beforeEach's CREATE TABLE IF NOT EXISTS + INSERT OR REPLACE restores it for later tests.
   });
 });
 
 describe("POST /api/fieldops/job/:job_id/close (P2.5: thin lifecycle='inactive' alias)", () => {
   it("closes an active PORTAL job (200) → lifecycle='inactive', active=0, status='closed', audits job_lifecycle", async () => {
-    // /close is now origin='portal'-scoped (W5), so the job must be portal-created.
-    await j(admin, "/api/fieldops/job", { job_id: "PJOB-A", project_name: "X" });
-    expect((await j(admin, "/api/fieldops/job/PJOB-A/close")).status).toBe(200);
-    const row = await jobRow("PJOB-A");
+    // /close is origin='portal'-scoped (W5), so the job must be portal-created (assigned id).
+    const id = await createOk(admin, { project_name: "X" });
+    expect((await j(admin, `/api/fieldops/job/${id}/close`)).status).toBe(200);
+    const row = await jobRow(id);
     expect(row.lifecycle).toBe("inactive");
     expect(row.status).toBe("closed");
     expect(row.active).toBe(0);
@@ -124,13 +169,13 @@ describe("POST /api/fieldops/job/:job_id/close (P2.5: thin lifecycle='inactive' 
   });
   it("unknown job → 404; an already-inactive portal job is an idempotent 200 (not active-guarded)", async () => {
     expect((await j(admin, "/api/fieldops/job/NOPE/close")).status).toBe(404);
-    await j(admin, "/api/fieldops/job", { job_id: "PJOB-Z", project_name: "X" });
-    expect((await j(admin, "/api/fieldops/job/PJOB-Z/close")).status).toBe(200); // first close
+    const id = await createOk(admin, { project_name: "X" });
+    expect((await j(admin, `/api/fieldops/job/${id}/close`)).status).toBe(200); // first close
     // P2.5: the lifecycle model makes set-inactive idempotent — re-closing returns 200 (re-dirties
     // + bumps the mirror version), NOT the old 409 not_active (that active-guard was TOCTOU-era).
-    const res = await j(admin, "/api/fieldops/job/PJOB-Z/close");
+    const res = await j(admin, `/api/fieldops/job/${id}/close`);
     expect(res.status).toBe(200);
-    const row = await jobRow("PJOB-Z");
+    const row = await jobRow(id);
     expect(row.lifecycle).toBe("inactive");
     expect(row.sync_state).toBe("pending");
   });
@@ -156,12 +201,11 @@ describe("POST /api/fieldops/job/:job_id/progress", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// P2.5 Slice 1 — SoR routing fields on create, the JOB-#### reserve guard, and the
-// lifecycle / contacts routes with the mirror version-vector dirty-flag.
+// P2.5 Slice 1 — SoR routing fields on create + the lifecycle / contacts routes with the mirror
+// version-vector dirty-flag. (Slice 6: the client-supplied job_id is ignored; the server assigns it.)
 // ─────────────────────────────────────────────────────────────────────────────
 describe("P2.5 — SoR create + lifecycle + contacts (version vector)", () => {
   const FULL = {
-    job_id: "PROG-1",
     project_name: "Solar Ridge",
     address: "1 Solar Way",
     stakeholder_name: "Stake Holder",
@@ -175,8 +219,8 @@ describe("P2.5 — SoR create + lifecycle + contacts (version vector)", () => {
   };
 
   it("persists the full routing SoR + lifecycle='active' + mirror_version=1 + dirty", async () => {
-    expect((await j(admin, "/api/fieldops/job", FULL)).status).toBe(201);
-    const row = await jobRow("PROG-1");
+    const id = await createOk(admin, FULL);
+    const row = await jobRow(id);
     expect(row.address).toBe("1 Solar Way");
     expect(row.safety_contact_email).toBe("safety@x.com");
     expect(JSON.parse(row.safety_cc)).toEqual(["sc1@x.com", "sc2@x.com"]);
@@ -186,24 +230,18 @@ describe("P2.5 — SoR create + lifecycle + contacts (version vector)", () => {
     expect(row.sync_state).toBe("pending");
   });
 
-  it("rejects a JOB-#### (AUTO_NUMBER-shaped) job_id as reserved", async () => {
-    const res = await j(admin, "/api/fieldops/job", { job_id: "JOB-42", project_name: "X" });
-    expect(res.status).toBe(400);
-    expect(((await res.json()) as any).error).toBe("reserved_job_id");
-  });
-
   it("rejects a malformed CC (not email-shaped) and an over-cap CC array", async () => {
-    expect((await j(admin, "/api/fieldops/job", { ...FULL, job_id: "PROG-2", safety_cc: ["not-an-email"] })).status).toBe(400);
-    expect((await j(admin, "/api/fieldops/job", { ...FULL, job_id: "PROG-3", progress_cc: ["a@x.com", "b@x.com", "c@x.com", "d@x.com", "e@x.com", "f@x.com"] })).status).toBe(400);
+    expect((await j(admin, "/api/fieldops/job", { ...FULL, safety_cc: ["not-an-email"] })).status).toBe(400);
+    expect((await j(admin, "/api/fieldops/job", { ...FULL, progress_cc: ["a@x.com", "b@x.com", "c@x.com", "d@x.com", "e@x.com", "f@x.com"] })).status).toBe(400);
   });
 
   it("/lifecycle sets lifecycle + derived active + bumps the mirror version + re-dirties", async () => {
-    await j(admin, "/api/fieldops/job", FULL); // mirror_version=1, sync_state pending
+    const id = await createOk(admin, FULL); // mirror_version=1, sync_state pending
     // Simulate the daemon having mirrored it clean, then change lifecycle.
-    await env.DB.prepare("UPDATE jobs SET sync_state='synced', safety_mirrored_version=1, progress_mirrored_version=1 WHERE job_id='PROG-1'").run();
-    const res = await j(admin, "/api/fieldops/job/PROG-1/lifecycle", { lifecycle: "archived" });
+    await env.DB.prepare("UPDATE jobs SET sync_state='synced', safety_mirrored_version=1, progress_mirrored_version=1 WHERE job_id=?").bind(id).run();
+    const res = await j(admin, `/api/fieldops/job/${id}/lifecycle`, { lifecycle: "archived" });
     expect(res.status, await res.clone().text()).toBe(200);
-    const row = await jobRow("PROG-1");
+    const row = await jobRow(id);
     expect(row.lifecycle).toBe("archived");
     expect(row.active).toBe(0); // only 'active' lifecycle keeps active=1
     expect(row.mirror_version).toBe(2); // bumped
@@ -212,20 +250,20 @@ describe("P2.5 — SoR create + lifecycle + contacts (version vector)", () => {
   });
 
   it("/lifecycle rejects an invalid value; /close is a thin inactive alias", async () => {
-    await j(admin, "/api/fieldops/job", FULL);
-    expect((await j(admin, "/api/fieldops/job/PROG-1/lifecycle", { lifecycle: "bogus" })).status).toBe(400);
-    expect((await j(admin, "/api/fieldops/job/PROG-1/close")).status).toBe(200);
-    const row = await jobRow("PROG-1");
+    const id = await createOk(admin, FULL);
+    expect((await j(admin, `/api/fieldops/job/${id}/lifecycle`, { lifecycle: "bogus" })).status).toBe(400);
+    expect((await j(admin, `/api/fieldops/job/${id}/close`)).status).toBe(200);
+    const row = await jobRow(id);
     expect(row.lifecycle).toBe("inactive");
     expect(row.active).toBe(0);
   });
 
   it("/contacts edits routing + bumps the mirror version (job_id/lifecycle untouched)", async () => {
-    await j(admin, "/api/fieldops/job", FULL);
-    await env.DB.prepare("UPDATE jobs SET sync_state='synced' WHERE job_id='PROG-1'").run();
-    const res = await j(admin, "/api/fieldops/job/PROG-1/contacts", { ...FULL, progress_contact_email: "newprog@x.com" });
+    const id = await createOk(admin, FULL);
+    await env.DB.prepare("UPDATE jobs SET sync_state='synced' WHERE job_id=?").bind(id).run();
+    const res = await j(admin, `/api/fieldops/job/${id}/contacts`, { ...FULL, progress_contact_email: "newprog@x.com" });
     expect(res.status, await res.clone().text()).toBe(200);
-    const row = await jobRow("PROG-1");
+    const row = await jobRow(id);
     expect(row.progress_contact_email).toBe("newprog@x.com");
     expect(row.lifecycle).toBe("active"); // untouched
     expect(row.mirror_version).toBe(2);
@@ -233,16 +271,16 @@ describe("P2.5 — SoR create + lifecycle + contacts (version vector)", () => {
   });
 
   it("/lifecycle + /contacts gate on cap.jobtracker.manage (submitter → 403)", async () => {
-    await j(admin, "/api/fieldops/job", FULL);
-    expect((await j(submitter, "/api/fieldops/job/PROG-1/lifecycle", { lifecycle: "inactive" })).status).toBe(403);
-    expect((await j(submitter, "/api/fieldops/job/PROG-1/contacts", FULL)).status).toBe(403);
+    const id = await createOk(admin, FULL);
+    expect((await j(submitter, `/api/fieldops/job/${id}/lifecycle`, { lifecycle: "inactive" })).status).toBe(403);
+    expect((await j(submitter, `/api/fieldops/job/${id}/contacts`, FULL)).status).toBe(403);
   });
 
   it("W5: edit routes REFUSE a smartsheet-origin job (no cross-origin corruption)", async () => {
     await seedJob("SS-9", "active"); // origin='smartsheet'
     expect((await j(admin, "/api/fieldops/job/SS-9/lifecycle", { lifecycle: "archived" })).status).toBe(404);
     expect((await j(admin, "/api/fieldops/job/SS-9/close")).status).toBe(404);
-    expect((await j(admin, "/api/fieldops/job/SS-9/contacts", { ...FULL, job_id: "SS-9" })).status).toBe(404);
+    expect((await j(admin, "/api/fieldops/job/SS-9/contacts", FULL)).status).toBe(404);
     const row = await jobRow("SS-9");
     expect(row.lifecycle).toBe("active"); // untouched (the origin='portal' scope refused every edit)
     expect(row.address).toBe("");
@@ -250,7 +288,7 @@ describe("P2.5 — SoR create + lifecycle + contacts (version vector)", () => {
   });
 
   it("W2: /lifecycle with a null JSON body → 400 (not a 500)", async () => {
-    await j(admin, "/api/fieldops/job", FULL);
-    expect((await j(admin, "/api/fieldops/job/PROG-1/lifecycle", null)).status).toBe(400);
+    const id = await createOk(admin, FULL);
+    expect((await j(admin, `/api/fieldops/job/${id}/lifecycle`, null)).status).toBe(400);
   });
 });

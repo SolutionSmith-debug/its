@@ -41,12 +41,12 @@ portal exactly as before; you just enter it once.
 
 ## Data dictionary — the "New job" form fields
 
-Every field below is on the create form. **Only Job ID and Project name are required**; everything
+Every field below is on the create form. **Only the Project name is required**; everything
 else is optional but recommended (the report routing only works if the contacts are filled in).
 
 | Form field | Required? | Rules | What it feeds downstream |
 |---|---|---|---|
-| **Job ID** | Yes | Your own short code. Letters, digits, and hyphens only; up to 64 characters; it is stored upper-cased. **Must NOT look like `JOB-####`** (e.g. `JOB-1042`) — that shape is reserved for Smartsheet's own auto-number and the portal will reject it. Pick something like `EVG-MAPLE-2026` or `MAPLEST-RENO`. | The job's permanent key in the portal. It is also written into the **"Portal Job Key"** column on **both** Active-Jobs sheets — that column is how the two sheets (and the safety/progress pipelines) recognise the same job. Each Smartsheet *also* auto-assigns its own separate "Job ID" (`JOB-####`); that is automatic and not something you type. |
+| **Job ID** | — (assigned) | **You do not type this.** When you click Create, the portal assigns the next number automatically — `JOB-000017`, `JOB-000018`, … — and shows it to you on the confirmation. | The job's one permanent identifier — the **same number everywhere**: the portal, **both** Active-Jobs sheets' "Job ID" column, every weekly safety/progress report, and the Box folders. There is no separate typed code and no second auto-number — **one job, one number**. (It is also written into the **"Portal Job Key"** column on both sheets, which carries the same value — that column is how the two sheets and the safety/progress pipelines recognise the same job.) |
 | **Project name** | Yes | 1–256 characters. | The **Project Name** column on both sheets; shown throughout the portal and on reports. |
 | **Address** | No | Up to 512 characters. | Job-site address, recorded on the job for reference. |
 | **Stakeholder — name / email / phone** | No | Name ≤256, email ≤320 (must look like an email if filled), phone ≤40. | Recorded on the job as the owner/stakeholder of record. **Note:** the stakeholder is *not* auto-CC'd on the weekly safety/progress emails — those go to the report contacts + CCs below. |
@@ -85,8 +85,8 @@ you, inside the Active-Jobs Smartsheets:
 - **Do NOT edit a portal-origin row directly in `ITS_Active_Jobs` or `ITS_Active_Jobs_Progress`.**
   The mirror daemon writes those rows from the portal's data. A change you type into a sheet cell
   is **not authoritative** — it will be overwritten the next time that job changes in the portal.
-- **How to tell a portal-origin row:** it has a value in the **"Portal Job Key"** column (your
-  typed Job ID). Legacy rows have a **blank** Portal Job Key.
+- **How to tell a portal-origin row:** it has a value in the **"Portal Job Key"** column (the
+  assigned `JOB-######`, the same as its Job ID). Legacy rows have a **blank** Portal Job Key.
 - **To change a portal job** — contacts, CCs, address, or status — make the change **in the
   portal**: the **"Edit routing/contacts"** form for the contacts, and the **Lifecycle** selector
   for Active / Inactive / Archived. The change flows up to both sheets on the next sync.

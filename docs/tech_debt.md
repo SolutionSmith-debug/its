@@ -4,6 +4,15 @@ Items deliberately deferred. Each carries the rationale for deferral and the tri
 
 When to add an entry: a session deliberately chooses preservation-over-refactor (per Op Stds v11 §14), discovers an external-API constraint that forced a workaround, or defers a non-trivial cleanup that's larger than the current session can absorb. When to mark CLOSED: the underlying item is resolved in a commit; preserve the entry with resolution detail rather than deleting (history is cheap, context is expensive).
 
+## P2.5 Slice 6 — portal-owned canonical number: residual redundancy [OPEN 2026-06-30]
+
+**Slice 6 (P2.5 revision).** The portal now ASSIGNS the canonical `JOB-######` (worker `job_counter`, migration 0022) and writes it as BOTH `job_id` and `canonical_job_id` from birth; `active_jobs_writer` writes it into the Smartsheet "Job ID" column (retyped AUTO_NUMBER → TEXT at cutover). Two deliberate §14-preservation leftovers — both harmless, both candidates for a later cleanup:
+
+1. **`Portal Job Key` column == `Job ID`.** Both Active-Jobs columns now carry the identical `JOB-######`. The daemon's find-or-create still keys on Portal Job Key (unchanged, tested), so the column is redundant-but-load-bearing. A future simplification could drop Portal Job Key and key find-or-create on Job ID directly (and drop the `active_jobs.get_job` second-loop fallback) — deferred to avoid churn on a working, reviewed path.
+2. **`canonical_job_id` mirror machinery is now always-set.** The down-sync canonical-aware pre-pass (`index.ts`) and the `jobs-mark-mirrored` `COALESCE(?4, canonical_job_id)` were built for the old NULL-until-read-back model; with canonical set at birth they are idempotent no-ops, not removed (they still correctly fence portal jobs off the smartsheet down-sweep).
+
+**Revisit when:** a later slice consolidates the identity columns, or the canonical machinery is otherwise touched. **Tag:** `field_ops`, `job-tracker`, `smartsheet-upsync`, `preservation`.
+
 ## P2.5 job-tracker up-sync — fast-follows [OPEN 2026-06-30]
 
 **P2.5 (PRs #383–#387).** The job-tracker → Smartsheet up-sync (`field_ops/fieldops_sync.py` + `shared/active_jobs_writer.py`, daemon ships `sync_enabled` OFF) landed with six tracked, non-blocking follow-ups:
@@ -13,7 +22,7 @@ When to add an entry: a session deliberately chooses preservation-over-refactor 
 3. **`_route_to_review` partial-commit context.** When a per-job fence routes a job to the Review Queue mid-cycle, the queue row doesn't carry which sheet(s) already committed (`safety_mirrored_version` vs `progress_mirrored_version`) — an operator can't tell from the row whether it was a pre- or post-safety-write failure. Thread the per-sheet watermark state into the review payload.
 4. **Re-find-after-create race-dup hardening.** `active_jobs_writer.upsert_job`'s find-or-create has the same find-after-create race as `week_folder` (two near-simultaneous cycles could create two rows for one Portal Job Key). Low-likelihood (the daemon is single-host, serialized), tracked for symmetry with the `week_folder` entry.
 5. **401-on-mark-mirrored severity.** A `401` from `POST …/jobs-mark-mirrored` currently fences the job to Review Queue like any transient error; an auth failure (token rotated/mismatched) is operator-actionable and arguably warrants a louder signal (it would block ALL mark-mirrored, not one job). Decide severity at cutover once the live token path is exercised.
-6. **JOB-1042 placeholder UX nit.** The `FieldOpsJobTracker.tsx` routing form's Job-ID placeholder string `"JOB-1042"` is itself a `reserved_job_id` (a `JOB-####` shape the Worker rejects). Cosmetic — change the placeholder to a non-reserved example.
+6. **JOB-1042 placeholder UX nit — RESOLVED by Slice 6.** The Job-ID input was removed entirely (the portal now assigns the number on create), so the placeholder no longer exists.
 
 **Revisit when:** the operator runs the P2.5 cutover (items 1, 2, 5 are cutover-time decisions); items 3, 4, 6 are opportunistic. **Tag:** `field_ops`, `job-tracker`, `smartsheet-upsync`, `watchdog`, `capability-gating`.
 
