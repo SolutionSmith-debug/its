@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import { AppHeader } from "../components/AppHeader";
 import { FormEditor } from "../components/FormEditor";
 import { PublishMonitor } from "../components/PublishMonitor";
-import { formCatalog, getDefinition } from "../forms/registry";
+import { DEFAULT_WORKFLOW, formCatalog, getDefinition, WORKFLOWS_ORDERED, workflowLabel } from "../forms/registry";
 import { FormRenderer, initialValues, type FormValues } from "../forms/FormRenderer";
 import type { FormDefinition } from "../forms/types";
 import {
@@ -88,6 +88,7 @@ export function FormsPage({
   const [draft, setDraft] = useState<FormDefinition | null>(null);
   const [identity, setIdentity] = useState("");
   const [parent, setParent] = useState("");
+  const [category, setCategory] = useState<string>(DEFAULT_WORKFLOW);
   const [banner, setBanner] = useState<Banner>(null);
   const [busy, setBusy] = useState(false);
   const [refreshSignal, setRefreshSignal] = useState(0);
@@ -106,6 +107,7 @@ export function FormsPage({
     setDraft(d);
     setIdentity("");
     setParent("");
+    setCategory(DEFAULT_WORKFLOW);
     setBanner(null);
     setMode({ kind: "create" });
   }
@@ -118,6 +120,7 @@ export function FormsPage({
     setDraft(d);
     setIdentity(id);
     setParent(src.parent_form_code);
+    setCategory(catalog.find((p) => p.parent_form_code === src.parent_form_code)?.category ?? DEFAULT_WORKFLOW);
     setBanner(null);
     setMode({ kind: "edit", sourceCode, identity: id });
   }
@@ -131,6 +134,7 @@ export function FormsPage({
     setDraft(d);
     setIdentity(newIdentity);
     setParent(src.parent_form_code);
+    setCategory(catalog.find((p) => p.parent_form_code === src.parent_form_code)?.category ?? DEFAULT_WORKFLOW);
     setBanner(null);
     setMode({ kind: "add_version", sourceCode });
   }
@@ -163,6 +167,7 @@ export function FormsPage({
     setDraft(cached.draft);
     setIdentity(cached.identity);
     setParent(cached.parent);
+    setCategory(cached.category ?? DEFAULT_WORKFLOW);
     setMode(cached.mode);
     setBanner({ kind: "ok", msg: "Restored your unsaved draft — use Discard to start over." });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -171,7 +176,7 @@ export function FormsPage({
   // Auto-save the draft (per account) on every editor change, so nothing is lost on a timeout.
   useEffect(() => {
     if (!username || !draft || mode.kind === "view") return;
-    saveDraft(username, { mode, draft, identity, parent });
+    saveDraft(username, { mode, draft, identity, parent, category });
   }, [username, draft, identity, parent, mode]);
 
   // Keep form_code + parent_form_code on the draft in lockstep with the identity/version
@@ -211,6 +216,7 @@ export function FormsPage({
         identity,
         parent_form_code: parent,
         definition: draft,
+        category,
       });
       setBanner({ kind: "ok", msg: `Publish queued for ${draft.form_code}. Track it below.` });
       setRefreshSignal((n) => n + 1);
@@ -248,6 +254,39 @@ export function FormsPage({
     }
   }
 
+  // Move a form TYPE between workflows (parent-wide). The backend `recategorize` op flips the
+  // catalog parent's category — every form/variant under it moves together. Queued like a
+  // publish; takes effect after the daemon commits + the catalog reloads.
+  async function onRecategorize(parentFormCode: string, newCategory: string) {
+    const current =
+      catalog.find((p) => p.parent_form_code === parentFormCode)?.category ?? DEFAULT_WORKFLOW;
+    if (newCategory === current) return;
+    if (
+      !window.confirm(
+        `Move the "${parentFormCode}" form type to the ${workflowLabel(newCategory)} workflow? ` +
+          "All its forms move together.",
+      )
+    ) {
+      return;
+    }
+    setBusy(true);
+    setBanner(null);
+    try {
+      await api.publishForm({
+        op: "recategorize",
+        identity: parentFormCode,
+        parent_form_code: parentFormCode,
+        category: newCategory,
+      });
+      setBanner({ kind: "ok", msg: `Workflow change queued for ${parentFormCode}. Track it below.` });
+      setRefreshSignal((n) => n + 1);
+    } catch (e) {
+      setBanner({ kind: "err", msg: explainPublish(e) });
+    } finally {
+      setBusy(false);
+    }
+  }
+
   // Re-open a FAILED publish in the editor (its composed definition is saved in the queue
   // row) so the admin can fix what tripped it and re-publish, instead of rebuilding it.
   async function editFailedPublish(id: number) {
@@ -261,6 +300,7 @@ export function FormsPage({
       setDraft(def);
       setIdentity(r.identity);
       setParent(r.parent_form_code);
+      setCategory(r.category ?? DEFAULT_WORKFLOW);
       setBanner({ kind: "ok", msg: `Loaded the failed publish for ${r.identity} — fix it and re-publish.` });
       if (r.op === "edit") setMode({ kind: "edit", sourceCode: def.form_code, identity: r.identity });
       else if (r.op === "add_version") setMode({ kind: "add_version", sourceCode: def.form_code });
@@ -346,6 +386,8 @@ export function FormsPage({
                   parentFormCode={parent}
                   onParentChange={setParent}
                   knownParents={knownParents}
+                  category={category}
+                  onCategoryChange={setCategory}
                 />
               </div>
               <div className="form-editor__preview-pane">
@@ -409,6 +451,20 @@ export function FormsPage({
                         <button type="button" className="btn btn--retire" disabled={busy} onClick={() => void onRetire(viewDef.form_code)}>
                           Retire
                         </button>
+                        <label className="forms-mgr__recat" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                          <span className="muted">Workflow</span>
+                          <select
+                            className="field__input"
+                            value={catalog.find((p) => p.parent_form_code === viewDef.parent_form_code)?.category ?? DEFAULT_WORKFLOW}
+                            disabled={busy}
+                            aria-label="Change workflow"
+                            onChange={(e) => void onRecategorize(viewDef.parent_form_code, e.target.value)}
+                          >
+                            {WORKFLOWS_ORDERED.map((w) => (
+                              <option key={w.id} value={w.id}>{w.label}</option>
+                            ))}
+                          </select>
+                        </label>
                       </div>
                     </header>
                     <div className="forms-mgr__preview card" aria-label="Live preview">
@@ -444,6 +500,7 @@ export function explainPublish(e: unknown): string {
     if (e.code === "invalid_identity") return "Invalid identity slug.";
     if (e.code === "invalid_parent_form_code") return "Invalid form type (parent).";
     if (e.code === "invalid_target_form_code") return "Invalid target form code.";
+    if (e.code === "invalid_category") return "Unknown workflow — pick one from the list.";
     if (e.code === "bad_request") return "The publish request was malformed. Reload the editor and try again.";
     // No mapped reason/code — still tell the operator WHAT was rejected (never contentless).
     return `Publish was rejected (${e.code}${e.status ? `, HTTP ${e.status}` : ""}). Please review and try again.`;

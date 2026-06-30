@@ -42,8 +42,8 @@
         },
         "category": {
           "type": "string",
-          "enum": ["safety", "progress"],
-          "description": "Form-type category — drives the Safety/Progress split in the form picker + Form Request. OPTIONAL: readers (registry.ts, form_pdf.py) default an absent category to 'safety'. The admin form editor sets it on new-parent creation (follow-up)."
+          "pattern": "^[a-z0-9-]+$",
+          "description": "Workflow id — the form-type's workflow (Safety / Progress / …). OPTIONAL: readers (registry.ts, shared/form_category.py) default an absent category to the workflows.json `default`. The valid SET is single-sourced in safety_portal/workflows.json and enforced at the two runtime C3 layers (worker/publishValidation.ts validateCategory + safety_reports/publish_manifest.apply_publish) — a JSON Schema can't import the registry, so this is a pattern, not an enum. Set by the form-builder workflow selector on create + recategorize."
         },
         "forms": {
           "type": "array",

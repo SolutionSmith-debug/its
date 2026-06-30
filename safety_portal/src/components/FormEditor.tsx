@@ -21,6 +21,7 @@ import {
   slugifyKey,
   type SectionType,
 } from "../forms/editorModel";
+import { WORKFLOWS_ORDERED } from "../forms/registry";
 
 /**
  * The B8 sectioned form builder (Phase-2 slice 3). A controlled editor over a
@@ -48,6 +49,10 @@ interface Props {
   /** Known parent_form_codes (for the datalist), so a new identity can join an existing
    *  form type without typos. */
   knownParents: string[];
+  /** The form type's workflow (workflows.json id). Editable on CREATE (sets a new parent's
+   *  workflow); read-only on edit/add_version (a form type's workflow is changed from its card). */
+  category: string;
+  onCategoryChange: (category: string) => void;
 }
 
 export function FormEditor(props: Props) {
@@ -128,6 +133,8 @@ function IdentityPanel({
   parentFormCode,
   onParentChange,
   knownParents,
+  category,
+  onCategoryChange,
 }: Props) {
   const lockIdentity = mode === "edit"; // edit keeps the same identity, bumps version
   return (
@@ -206,6 +213,27 @@ function IdentityPanel({
               </option>
             ))}
           </select>
+        </label>
+
+        <label className="field">
+          <span className="field__label">Workflow *</span>
+          <select
+            className="field__input"
+            value={category}
+            disabled={mode !== "create"}
+            onChange={(e) => onCategoryChange(e.target.value)}
+          >
+            {WORKFLOWS_ORDERED.map((w) => (
+              <option key={w.id} value={w.id}>
+                {w.label}
+              </option>
+            ))}
+          </select>
+          {mode !== "create" && (
+            <p className="muted form-editor__hint">
+              A form type&rsquo;s workflow is changed from its card (&ldquo;Change workflow&rdquo;).
+            </p>
+          )}
         </label>
 
         <div className="field">

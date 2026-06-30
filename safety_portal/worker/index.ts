@@ -25,7 +25,7 @@ import {
   resolveCapabilities,
   parseRole,
 } from "./auth";
-import { validateDefinition, validateParentGrouping } from "./publishValidation";
+import { validateCategory, validateDefinition, validateParentGrouping } from "./publishValidation";
 import { pruneOldData } from "./prune";
 import catalog from "../catalog.json";
 
@@ -1694,7 +1694,7 @@ app.post("/api/admin/users/delete", ...adminGate, async (c) => {
 // actuator (mirrors the External Send Gate: the cloud can only queue). create / edit /
 // add_version carry a composed definition; delete / rollback flip the manifest at
 // actuation and carry only the target.
-const PUBLISH_OPS = new Set(["create", "edit", "add_version", "delete", "rollback"]);
+const PUBLISH_OPS = new Set(["create", "edit", "add_version", "delete", "rollback", "recategorize"]);
 // A publish still in flight, for per-parent serialization (C8) — archived | failed are
 // terminal. 'live' still blocks (the Box-archive stage is pending). A crashed publish no
 // longer wedges a parent forever: the Worker's LEASE_TTL_S makes a stale lease re-claimable
@@ -1706,7 +1706,7 @@ const NON_TERMINAL_STATUSES = "('queued','validated','tested','merged','live')";
 app.post("/api/admin/publish", ...adminGate, async (c) => {
   let body: {
     op?: unknown; identity?: unknown; parent_form_code?: unknown;
-    target_form_code?: unknown; definition?: unknown;
+    target_form_code?: unknown; definition?: unknown; category?: unknown;
   };
   try {
     body = await c.req.json();
@@ -1722,6 +1722,16 @@ app.post("/api/admin/publish", ...adminGate, async (c) => {
   const parent = typeof body.parent_form_code === "string" ? body.parent_form_code : "";
   if (!/^[a-z0-9-]+$/.test(identity)) return c.json({ error: "invalid_identity" }, 400);
   if (!/^[a-z0-9-]+$/.test(parent)) return c.json({ error: "invalid_parent_form_code" }, 400);
+
+  // Workflow category — REQUIRED for recategorize; OPTIONAL for create (absent → apply_publish
+  // defaults the new parent to safety; the SPA selector always sends it). Validated against the
+  // workflows.json registry (mirrors apply_publish's re-check). The other ops ignore it → null.
+  let category: string | null = null;
+  if (op === "recategorize" || (op === "create" && body.category !== undefined)) {
+    const cat = validateCategory(body.category);
+    if (!cat.ok) return c.json({ error: "invalid_category", reason: cat.reason }, 400);
+    category = body.category as string;
+  }
 
   // create/edit/add_version carry a composed definition → server-side validate it (C3).
   // delete/rollback carry only the target (the daemon flips the manifest at actuation).
@@ -1755,9 +1765,11 @@ app.post("/api/admin/publish", ...adminGate, async (c) => {
 
   const res = await c.env.DB.batch([
     c.env.DB.prepare(
-      "INSERT INTO publish_requests (requested_by, op, parent_form_code, identity, target_form_code, definition_json) VALUES (?,?,?,?,?,?)",
-    ).bind(c.get("session").username, op, parent, identity, targetFormCode, definitionJson),
-    auditStmt(c, c.get("session").username, "form_publish", identity, { op, target_form_code: targetFormCode }),
+      "INSERT INTO publish_requests (requested_by, op, parent_form_code, identity, target_form_code, definition_json, category) VALUES (?,?,?,?,?,?,?)",
+    ).bind(c.get("session").username, op, parent, identity, targetFormCode, definitionJson, category),
+    auditStmt(c, c.get("session").username, "form_publish", identity, {
+      op, target_form_code: targetFormCode, ...(category !== null ? { category } : {}),
+    }),
   ]);
   return c.json({ ok: true, id: res[0]?.meta?.last_row_id ?? null, status: "queued" }, 201);
 });
@@ -1792,7 +1804,7 @@ app.get("/api/admin/publish-request", ...adminGate, async (c) => {
   if (!Number.isInteger(id) || id <= 0) return c.json({ error: "invalid_id" }, 400);
   const row = await c.env.DB
     .prepare(
-      "SELECT id, op, parent_form_code, identity, target_form_code, status, definition_json " +
+      "SELECT id, op, parent_form_code, identity, target_form_code, status, definition_json, category " +
         "FROM publish_requests WHERE id = ?",
     )
     .bind(id)
@@ -1861,7 +1873,7 @@ app.post("/api/internal/publish/claim", requireInternalToken, async (c) => {
     .run();
   if ((res.meta?.changes ?? 0) === 0) return c.json({ ok: true, claimed: false });
   const request = await c.env.DB
-    .prepare("SELECT id, op, parent_form_code, identity, target_form_code, definition_json, status FROM publish_requests WHERE id=?")
+    .prepare("SELECT id, op, parent_form_code, identity, target_form_code, definition_json, category, status FROM publish_requests WHERE id=?")
     .bind(id)
     .first();
   return c.json({ ok: true, claimed: true, request });

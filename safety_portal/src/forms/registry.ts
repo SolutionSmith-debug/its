@@ -38,8 +38,43 @@ interface CatalogFormEntry {
   versions: { version: number; form_code: string }[];
   display_order: number;
 }
-/** Safety vs Progress form-type split (P1). Optional in the manifest; defaults to "safety". */
-export type FormCategory = "safety" | "progress";
+// ── workflow registry: the single source of truth for the workflow SET ──────────
+// safety_portal/workflows.json (mirrored by shared/form_category.py + worker/publishValidation.ts).
+// Drives the form-builder workflow selector + the submitter picker tabs. Adding a workflow there
+// is a DATA change, not a code change across the stack. Loaded via the same Vite glob as the
+// catalog manifest below.
+interface WorkflowEntry {
+  id: string;
+  label: string;
+  display_order?: number;
+}
+interface WorkflowRegistry {
+  registry_version: number;
+  default: string;
+  workflows: WorkflowEntry[];
+}
+const workflowModules = import.meta.glob<WorkflowRegistry>("../../workflows.json", {
+  eager: true,
+  import: "default",
+});
+const WORKFLOWS = Object.values(workflowModules)[0];
+if (!WORKFLOWS?.workflows?.length) {
+  throw new Error("safety_portal/workflows.json failed to load (Vite glob matched no registry)");
+}
+/** Workflow entries in display order — drives the form-builder selector + the submitter tabs. */
+export const WORKFLOWS_ORDERED: WorkflowEntry[] = [...WORKFLOWS.workflows].sort(
+  (a, b) => (a.display_order ?? 0) - (b.display_order ?? 0),
+);
+export const WORKFLOW_IDS: ReadonlySet<string> = new Set(WORKFLOWS_ORDERED.map((w) => w.id));
+export const DEFAULT_WORKFLOW: string = WORKFLOWS.default;
+export function workflowLabel(id: string): string {
+  return WORKFLOWS_ORDERED.find((w) => w.id === id)?.label ?? id;
+}
+
+/** A workflow id (e.g. "safety", "progress"). A runtime-validated string, NOT a compile-time
+ *  union — the valid SET is config-driven in workflows.json (so a future workflow is data, not a
+ *  5-surface code change). An absent catalog `category` defaults to DEFAULT_WORKFLOW. */
+export type FormCategory = string;
 interface CatalogParentEntry {
   parent_form_code: string;
   name: string;
@@ -101,7 +136,7 @@ export function formCatalog(): CatalogParent[] {
       parents.push({
         parent_form_code: parent.parent_form_code,
         name: parent.name,
-        category: parent.category ?? "safety",
+        category: parent.category ?? DEFAULT_WORKFLOW,
         form_code: active[0].current_form_code,
         variants: [],
       });
@@ -109,7 +144,7 @@ export function formCatalog(): CatalogParent[] {
       parents.push({
         parent_form_code: parent.parent_form_code,
         name: parent.name,
-        category: parent.category ?? "safety",
+        category: parent.category ?? DEFAULT_WORKFLOW,
         form_code: null,
         variants: variants.map((f) => ({
           variant_label: f.variant_label as string,

@@ -27,6 +27,9 @@ export interface CachedDraft {
   draft: FormDefinition;
   identity: string;
   parent: string;
+  /** Optional: a draft cached by a pre-workflow-selector build lacks it; loadDraft callers
+   *  default it (?? DEFAULT_WORKFLOW). */
+  category?: string;
 }
 
 function keyFor(username: string): string {

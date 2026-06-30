@@ -3,6 +3,7 @@ tests/test_form_catalog.py enforces — the daemon's manifest-mutation core (sli
 must never produce a manifest the CI consistency check would reject."""
 from __future__ import annotations
 
+import copy
 import json
 from pathlib import Path
 
@@ -88,6 +89,104 @@ def _def(form_code: str, parent: str, version: int, variant: str | None = None,
 
 def test_baseline_catalog_is_valid() -> None:
     _validate(LIVE_CATALOG)
+
+
+# ── workflow category: recategorize op + create-category (form-builder workflow selector) ──
+_WORKFLOWS = frozenset({"safety", "progress"})
+
+
+def test_recategorize_flips_parent_category_parent_wide() -> None:
+    m, files, note = apply_publish(
+        FIXTURE, op="recategorize", identity="jha", parent_form_code="jha",
+        category="progress", valid_categories=_WORKFLOWS,
+    )
+    parent = next(p for p in m["parents"] if p["parent_form_code"] == "jha")
+    assert parent["category"] == "progress"
+    assert files == {}  # manifest-only flip, no form file written
+    assert "recategorize" in note
+    _validate(m)
+    # input deep-copied, never mutated
+    assert "category" not in next(p for p in FIXTURE["parents"] if p["parent_form_code"] == "jha")
+
+
+def test_recategorize_requires_a_category() -> None:
+    with pytest.raises(PublishApplyError, match="requires a category"):
+        apply_publish(FIXTURE, op="recategorize", identity="jha", parent_form_code="jha",
+                      valid_categories=_WORKFLOWS)
+
+
+def test_recategorize_unknown_category_rejected() -> None:
+    with pytest.raises(PublishApplyError, match="unknown workflow"):
+        apply_publish(FIXTURE, op="recategorize", identity="jha", parent_form_code="jha",
+                      category="bogus", valid_categories=_WORKFLOWS)
+
+
+def test_recategorize_unknown_parent_rejected() -> None:
+    with pytest.raises(PublishApplyError, match="not found"):
+        apply_publish(FIXTURE, op="recategorize", identity="ghost", parent_form_code="ghost",
+                      category="progress", valid_categories=_WORKFLOWS)
+
+
+def test_recategorize_to_same_workflow_rejected() -> None:
+    # jha has no explicit category → defaults to "safety"; recategorizing to "safety" is a no-op.
+    with pytest.raises(PublishApplyError, match="already in workflow"):
+        apply_publish(FIXTURE, op="recategorize", identity="jha", parent_form_code="jha",
+                      category="safety", valid_categories=_WORKFLOWS)
+
+
+def test_create_new_parent_sets_category() -> None:
+    d = _def("incident-report-v1", "incident-report", 1)
+    m, _, _ = apply_publish(
+        FIXTURE, op="create", identity="incident-report", parent_form_code="incident-report",
+        definition=d, category="progress", valid_categories=_WORKFLOWS,
+    )
+    parent = next(p for p in m["parents"] if p["parent_form_code"] == "incident-report")
+    assert parent["category"] == "progress"
+    _validate(m)
+
+
+def test_create_new_parent_defaults_category_safety() -> None:
+    d = _def("incident-report-v1", "incident-report", 1)
+    m, _, _ = apply_publish(
+        FIXTURE, op="create", identity="incident-report",
+        parent_form_code="incident-report", definition=d,  # no category
+    )
+    parent = next(p for p in m["parents"] if p["parent_form_code"] == "incident-report")
+    assert parent["category"] == "safety"
+
+
+def test_create_new_parent_unknown_category_rejected() -> None:
+    d = _def("incident-report-v1", "incident-report", 1)
+    with pytest.raises(PublishApplyError, match="unknown workflow"):
+        apply_publish(FIXTURE, op="create", identity="incident-report",
+                      parent_form_code="incident-report", definition=d,
+                      category="bogus", valid_categories=_WORKFLOWS)
+
+
+def test_create_existing_parent_ignores_category() -> None:
+    # Adding a variant to an EXISTING parent must NOT touch the parent's workflow.
+    d = _def("equipment-new-v1", "equipment-preinspection", 1, variant="New Rig")
+    m, _, _ = apply_publish(
+        FIXTURE, op="create", identity="equipment-new",
+        parent_form_code="equipment-preinspection", definition=d,
+        category="progress", valid_categories=_WORKFLOWS,
+    )
+    parent = next(p for p in m["parents"] if p["parent_form_code"] == "equipment-preinspection")
+    assert "category" not in parent  # a category-less parent stays category-less
+
+    # ...and a parent that ALREADY carries an explicit category keeps it. The live catalog parent
+    # has category:"safety"; adding a variant must not silently re-file the whole parent's workflow.
+    fixture2 = copy.deepcopy(FIXTURE)
+    next(
+        p for p in fixture2["parents"] if p["parent_form_code"] == "equipment-preinspection"
+    )["category"] = "safety"
+    m2, _, _ = apply_publish(
+        fixture2, op="create", identity="equipment-new",
+        parent_form_code="equipment-preinspection", definition=d,
+        category="progress", valid_categories=_WORKFLOWS,
+    )
+    parent2 = next(p for p in m2["parents"] if p["parent_form_code"] == "equipment-preinspection")
+    assert parent2["category"] == "safety"  # explicit category preserved, NOT flipped to progress
 
 
 def test_create_new_parent_and_form() -> None:

@@ -58,6 +58,7 @@ const OP_LABEL: Record<api.PublishOp, string> = {
   add_version: "Add version",
   delete: "Retire",
   rollback: "Rollback",
+  recategorize: "Change workflow",
 };
 
 // Ops that carry a composed definition → a FAILED one can be re-opened in the editor.

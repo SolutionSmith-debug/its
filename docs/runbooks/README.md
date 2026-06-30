@@ -18,6 +18,7 @@ convention has no separate `runbook` type).
 <!-- BEGIN AUTO-INDEX -->
 | Date | Type | Status | Workstream | Title | PRs |
 |------|------|--------|------------|-------|-----|
+| 2026-06-29 | operations | active | safety_portal | [Runbook — Form workflow selector + the `recategorize` publish op (Successor-Remediation, Op Stds §43)](form_workflow_recategorize.md) | _–_ |
 | 2026-06-29 | operations | active | progress_reports | [Runbook — Progress intake routing (the `progress_reports.intake_enabled` gate) (Successor-Remediation, Op Stds §43)](progress_intake_routing.md) | _–_ |
 | 2026-06-29 | operations | active | progress_reports | [Runbook — Progress Reporting config sheets (WPR_human_review + ITS_Active_Jobs_Progress) (Successor-Remediation, Op Stds §43)](progress_reporting_config_sheets.md) | _–_ |
 | 2026-06-29 | operations | active | safety_reports | [Runbook — Safety weekly-send Workstream guard (a row stuck HELD / "contamination") (Successor-Remediation, Op Stds §43)](safety_weekly_send.md) | _–_ |
