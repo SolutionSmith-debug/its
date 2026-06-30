@@ -4,13 +4,27 @@ Items deliberately deferred. Each carries the rationale for deferral and the tri
 
 When to add an entry: a session deliberately chooses preservation-over-refactor (per Op Stds v11 §14), discovers an external-API constraint that forced a workaround, or defers a non-trivial cleanup that's larger than the current session can absorb. When to mark CLOSED: the underlying item is resolved in a commit; preserve the entry with resolution detail rather than deleting (history is cheap, context is expensive).
 
-## Watchdog Check-C staleness + Check-I catch-up not wired to `progress_weekly_generate` slug [OPEN 2026-06-30]
+## Watchdog Check-C staleness + Check-I catch-up not wired to `progress_weekly_generate` slug [CLOSED 2026-06-30]
 
-**P4 Slice 2 (PR #376, 2026-06-30).** `progress_weekly_generate` writes a `progress_weekly_generate` marker via `write_last_run_marker` on each compile run, but `scripts/watchdog.py` only tracks `safety_weekly_generate` in `WEEKLY_GENERATE_JOB_SLUG` (the Check-I Friday-crash catch-up target) and `TRACKED_JOBS` (the Check-C staleness floor set). The progress compile running stale or silently skipping Friday would not be caught — no alert fires. The §43 runbook (`docs/runbooks/progress_weekly_generate.md`) is honest about this deferral.
+**P4 Slice 2 (PR #376).** `progress_weekly_generate` wrote a marker that nothing read — `scripts/watchdog.py` tracked only `safety_weekly_generate`, so a stale/skipped progress compile fired no alert.
 
-**Fix (low-class):** extend `TRACKED_JOBS` with the `progress_weekly_generate` slug and replicate the Check-I logic to cover it (or generalize the existing Check-I loop). ~30-line change to `scripts/watchdog.py` + corresponding assertion in `tests/test_watchdog.py`. No daemon reload required.
+**Resolution (PR #381, P5 watchdog slice):** `TRACKED_JOBS` + `TRACKED_JOB_WINDOWS` now include both `progress_weekly_generate` (8-day) and `progress_send_poll` (30-min) for Check-C staleness; Check-I was generalized via a `_CatchupTarget` so a missed `progress_weekly_generate` Friday run is auto-recovered (the safety wrapper stays byte-identical). Both progress slugs WARN until the operator loads their plists at cutover (register + load together). Also fixed a pre-existing Check-I summary bug surfaced during the generalization (it read `drafts_written`/`aborted_empty_chain`, keys `run_generate` never produces).
 
-**Tag:** `progress_reports`, `watchdog`. **Revisit when:** `progress_weekly_generate` daemon is loaded for production (the §43 runbook references this as a pending step before the daemon is activated).
+**Tag:** `progress_reports`, `watchdog`.
+
+## P5 progress_send must use `job.reports_contact_email` alias and pass `PROGRESS_ACTIVE_JOBS_CONFIG` [CLOSED 2026-06-30]
+
+**P4 Slice 1 (PR #375).** Forward-note: a P5 progress send that omitted the config or passed `SAFETY_ACTIVE_JOBS_CONFIG` would silently route progress reports to the safety contact (no runtime error — a different column in a different sheet).
+
+**Resolution (PR #379, P5 core):** `progress_send.CONFIG` binds `active_jobs_config=PROGRESS_ACTIVE_JOBS_CONFIG`; the resolver reads the neutral `reports_contact_email` alias; the trap is named explicitly in `docs/runbooks/progress_send.md` Symptom B; and `tests/test_progress_send.py` asserts `get_job` is called with the progress config. The `weekly_send.SendConfig.active_jobs_config` field is required no-default (a missing binding is a construction-time error, not a silent safety inheritance).
+
+**Tag:** `progress_reports`.
+
+## Progress (and safety) no-recipient HELD surfaces a record, not an operator page [OPEN 2026-06-30]
+
+**P5 (PR #380).** `shared/recipient_health.report_unhealthy_recipient` files an `ITS_Review_Queue` RECORD on a no-recipient HELD (visible in the operator review queue; watchdog Check A WARNs if it sits past 2× SLA; watchdog Check T WARNs on a HELD older than 24h). It deliberately does **not** fire an operator PAGE — per Op Stds §3.1 the only §3.1-compliant push leg `alert_dedupe` may gate is a `Severity.CRITICAL`, and a missing-contact config issue was judged not CRITICAL-class (consistent with `_mark_held`'s existing WARN treatment of HELDs).
+
+**Revisit when:** the operator decides a blocked customer-facing weekly send warrants an active page rather than a queue item — at which point add a dedicated CRITICAL push leg (a Send-Gate severity-posture decision, Seth-owned). **Tag:** `progress_reports`, `safety_reports`, `external-send-gate`.
 
 ## P5 progress_send must use `job.reports_contact_email` alias and pass `PROGRESS_ACTIVE_JOBS_CONFIG` [OPEN 2026-06-30]
 

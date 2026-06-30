@@ -127,10 +127,11 @@ how it was created and escalate to Seth** (a non-compile writer on the send shee
   disabled value short-circuits the cycle (this is an operator pause, not an error).
 - Env prereqs: `python scripts/smoke_test_progress_send.py` (kill switch, Graph creds, WPR
   schema, F22 approvers, ITS_Daemon_Health).
-- **Staleness-monitoring gap (known):** the marker slug `progress_send_poll` is **not yet in
-  `watchdog.TRACKED_JOBS`** (registered in the P5 watchdog slice, deferred exactly as P4 deferred
-  the compile slug). Until then, Check-C does **not** alert if this daemon stops — confirm
-  liveness via `ITS_Daemon_Health` (its self-provisioned row) rather than a watchdog page.
+- **Staleness monitoring:** the marker slug `progress_send_poll` **is** in `watchdog.TRACKED_JOBS`
+  (Check-C staleness, 30-min window) as of the P5 watchdog slice (PR #381) — so a stale/stopped
+  daemon surfaces. Note Check-C correctly WARNs about it **until the operator loads the
+  `progress-send` plist** at cutover (register + load together); that WARN is expected pre-cutover,
+  not a fault. The HELD-row backstop (Check T) + approver-drift (Check U) also landed in #381.
 - The daemon must NOT be reloaded from a feature-branch worktree. Reload only against `~/its` on
   `main` (the live tree), per `docs/operations/worktree_discipline.md`.
 
