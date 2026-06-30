@@ -47,7 +47,19 @@ import requests  # type: ignore[import-untyped]
 
 from shared import keychain, sheet_ids, smartsheet_client
 
-pytestmark = pytest.mark.integration
+# Every test here creates a sandbox sheet then immediately reads/writes/deletes it,
+# so all are exposed to Smartsheet's create→read/write eventual-consistency flapping
+# (transient errorCode 1006 / HTTP 404 for several seconds after create; see
+# docs/tech_debt.md "Smartsheet integration tests flake on create→read/write"). The
+# entry's approach 1 (test-level reruns, no SUT churn — the retry must NOT live in
+# shared/smartsheet_client.py, where a 404 must surface in production): each rerun
+# re-runs the whole test against a FRESH sheet, so a transient not-found clears. A
+# real assertion failure still surfaces after the reruns are exhausted. reruns_delay
+# gives the lagging replica time to catch up before the retry.
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.flaky(reruns=3, reruns_delay=2),
+]
 
 
 class _SecretToken:
