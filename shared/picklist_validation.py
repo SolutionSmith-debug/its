@@ -107,6 +107,17 @@ _WSR_SEND_STATUS_VALUES: frozenset[str] = _WPR_SEND_STATUS_VALUES | frozenset({"
 # this entry gates those writes (a wrong tag raises PicklistViolationError, never silently routes).
 _WSR_WORKSTREAM_VALUES: frozenset[str] = frozenset({"safety"})
 
+# WPR_human_review (the PROGRESS review surface, P2) mirrors WSR exactly: the Send Status
+# set is SENDING-inclusive (the same write-ahead-marker contract; progress_send flips a row
+# to SENDING immediately before the irreversible Graph send, then to SENT), and the
+# Workstream tag is the report family `progress` — the dedicated tight counterpart to
+# _WSR_WORKSTREAM_VALUES={"safety"} (a `safety` tag on the WPR sheet is itself a
+# contamination signal the progress send guard HARD-HELDs). Realises the anticipation noted
+# above ("`progress` joins the future WPR set in P2"). add_wpr_row WRITES `progress` → this
+# entry gates that write (a wrong tag raises PicklistViolationError, never silently routes).
+_WPR_HR_SEND_STATUS_VALUES: frozenset[str] = _WSR_SEND_STATUS_VALUES
+_WPR_WORKSTREAM_VALUES: frozenset[str] = frozenset({"progress"})
+
 # ITS_Quarantine disposition (operator review action). Not yet a picklist
 # in the live sheet — adding here so writes from `shared/quarantine.py`
 # (when it grows a disposition write path) are validated client-side
@@ -207,6 +218,19 @@ if sheet_ids.SHEET_ACTIVE_JOBS:
     REGISTRY[sheet_ids.SHEET_ACTIVE_JOBS] = {"Active": _ACTIVE_LIFECYCLE_VALUES}
 if sheet_ids.SHEET_FORMS_CATALOG:
     REGISTRY[sheet_ids.SHEET_FORMS_CATALOG] = {"Active": _ACTIVE_LIFECYCLE_VALUES}
+
+# Progress Reporting sheets (ITS — Progress Reporting / Control). Registered only once the
+# operator flips the real sheet ID in (the build migration prints it) — registering against
+# the placeholder 0 would fire spurious violations on unrelated sheet IDs in tests, the same
+# guard as Trusted Contacts / the Safety-Portal sheets above. WPR_human_review mirrors the WSR
+# Send Status + Workstream entry; ITS_Active_Jobs_Progress reuses the Active lifecycle set.
+if sheet_ids.SHEET_WPR_HUMAN_REVIEW:
+    REGISTRY[sheet_ids.SHEET_WPR_HUMAN_REVIEW] = {
+        "Send Status": _WPR_HR_SEND_STATUS_VALUES,
+        "Workstream": _WPR_WORKSTREAM_VALUES,
+    }
+if sheet_ids.SHEET_ACTIVE_JOBS_PROGRESS:
+    REGISTRY[sheet_ids.SHEET_ACTIVE_JOBS_PROGRESS] = {"Active": _ACTIVE_LIFECYCLE_VALUES}
 
 REGISTRY.update(_build_per_project_entries())
 

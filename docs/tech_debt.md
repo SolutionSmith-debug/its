@@ -4,6 +4,22 @@ Items deliberately deferred. Each carries the rationale for deferral and the tri
 
 When to add an entry: a session deliberately chooses preservation-over-refactor (per Op Stds v11 §14), discovers an external-API constraint that forced a workaround, or defers a non-trivial cleanup that's larger than the current session can absorb. When to mark CLOSED: the underlying item is resolved in a commit; preserve the entry with resolution detail rather than deleting (history is cheap, context is expensive).
 
+## §23/§24 topology text + version bump owed for the 7th workspace (ITS — Progress Reporting) [OPEN 2026-06-29]
+
+**P2 (PR #362).** Standing up the `ITS — Progress Reporting` workspace makes it the **7th** standalone Smartsheet workspace. Op Stds **v19 §51** already names "the ITS — Progress Reporting workspace" explicitly (so its existence is doctrine-contemplated), but §23's topology *enumeration* still lists six and was not synced — the same gap the v17 bump closed when the Safety Portal (the 6th) was added. The `ops-stds-enforcer` review flagged this as a pre-merge gate; the operator approved (2026-06-29) landing P2 on §51's basis and deferring the §23 text-sync as a fast-follow.
+
+**Fix (doctrine — Seth's):** add `ITS — Progress Reporting` to §23/§24 as a standalone, §46-governed workspace exception (mirror the v17 Safety Portal paragraph), bump Op Stds → v20, propagate `docs/doctrine_manifest.yaml` (`current: 20`; the blueprint `workstreams.slugs`/`count` if the canonical set is updated), re-verify the exec tree. The mechanical doctrine-drift check (M1/M4/M7) does NOT catch this (a semantic enumeration gap); `doc-reconciliation-auditor` / `ops-stds-enforcer` do.
+
+**Tag:** `docs`, `doctrine`, `progress_reports`. **Revisit when:** the next doctrine pass (before/with P5 progress-send — the mission's draft→canonical promotion trigger).
+
+## build_wsr_human_review_sheet.py would fail on a fresh create (ABSTRACT_DATETIME not API-creatable) [OPEN 2026-06-29]
+
+**P2 (PR #362).** Building the progress twin `WPR_human_review` surfaced that `scripts/migrations/build_wsr_human_review_sheet.py` declares `Approved At` / `Sent At` as `type: ABSTRACT_DATETIME`, which the Smartsheet API **rejects on create** (`errorCode 1142`, "reserved for project sheets and may not be manually set on a column"). The build only succeeds today because it is idempotent and the live WSR sheet already exists — masking the bug. The **live** WSR `Approved At`/`Sent At` columns are in fact `type=DATE` (verified 2026-06-29); the ABSTRACT_DATETIME schema in the builder + the detailed ABSTRACT_DATETIME rationale comment in `safety_reports/wsr_review.py` are **doc-vs-live drift** (the intended retype-to-ABSTRACT_DATETIME via `update_column` was never applied to the live WSR sheet). `build_wpr_human_review_sheet.py` was therefore created with `DATE` columns, matching the working live WSR exactly (live WPR-vs-WSR parity verified 2026-06-29).
+
+**Fix (low-class):** change `build_wsr_human_review_sheet.py`'s two columns to `DATE` (matching live) — OR, if Date/Time (time-of-day) display is actually wanted, add a create-as-DATE-then-`update_column`-retype step to BOTH builders + a retype migration for the live WSR + WPR sheets, and correct the `wsr_review.py` comment. Today's behavior is correct (DATE accepts `to_wsr_datetime`'s naive string end-to-end); this is cleanup + a comment-accuracy fix.
+
+**Tag:** `safety_reports`, `progress_reports`, `smartsheet`, `migration`. **Revisit when:** the safety build migrations are next touched, or if time-of-day display is desired on the approval/sent stamps.
+
 ## Portal D1 test-job dropdown not cleared by empty-sync [CLOSED 2026-06-18]
 
 **Resolved 2026-06-18 (tech-debt easy-wins pass):** PR #292 — pruneOldData now deletes inactive+empty jobs + a new purge-job admin endpoint/CLI; the clean-slate purge cleared the D1 jobs table. ITS_Active_Jobs + D1 jobs now 0.

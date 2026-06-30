@@ -67,7 +67,7 @@ dev = [
 [tool.setuptools]
 # Python packages that ship with the project.
 # Asset directories (schemas, prompts, scripts, logs) are NOT Python packages.
-packages = ["shared", "safety_reports", "field_ops"]
+packages = ["shared", "safety_reports", "field_ops", "progress_reports"]
 
 [tool.ruff]
 line-length = 100

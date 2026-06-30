@@ -322,7 +322,10 @@ NETWORK_NEEDLES: frozenset[str] = frozenset({
 })
 
 # Source roots walked by the network allowlist. See the scope rationale above.
-WALKED_ROOTS: tuple[str, ...] = ("shared", "safety_reports")
+# progress_reports joined at P2 (the Progress Reporting workstream — its thin wpr_review
+# module today, its *_generate/_send/_poll daemons at P4/P5, which the enrollment + F02
+# checks above must then cover).
+WALKED_ROOTS: tuple[str, ...] = ("shared", "safety_reports", "progress_reports")
 
 
 def _import_matches_needle(imported: str, needle: str) -> bool:
