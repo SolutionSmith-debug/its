@@ -47,4 +47,38 @@ describe("/api/internal/sync — origin fence (migration 0017)", () => {
     expect(ss1?.active).toBe(0); // smartsheet-origin + absent ⇒ deactivated
     expect(pjob?.active).toBe(1); // portal-origin ⇒ fence keeps it active (the split-brain fix)
   });
+
+  it("P2.5 canonical pre-pass: a promoted portal job's JOB-#### in the payload is NOT re-inserted as a duplicate", async () => {
+    // A portal job already promoted: its D1 row is origin='portal' keyed by the typed id, with the
+    // safety sheet's read-back JOB-99 in canonical_job_id. list_all_jobs() will push JOB-99.
+    await env.DB.prepare(
+      "INSERT INTO jobs (job_id, project_name, active, origin, sync_state, canonical_job_id) " +
+        "VALUES ('PJOB-1','Promoted Portal Job',1,'portal','synced','JOB-99')",
+    ).run();
+
+    const res = await call("/api/internal/sync", {
+      method: "POST",
+      bearer: INTERNAL_BEARER,
+      body: JSON.stringify({
+        jobs: [
+          { job_id: "JOB-99", project_name: "Promoted Portal Job", active: 1 }, // the canonical dup
+          { job_id: "SS-2", project_name: "Real Smartsheet Job", active: 1 }, // a genuine smartsheet job
+        ],
+      }),
+    });
+    const out = (await res.json()) as { ok: boolean; upserted: number };
+    expect(res.status).toBe(200);
+    expect(out.upserted).toBe(1); // only SS-2 upserted; JOB-99 dropped by the pre-pass
+
+    // No ghost origin='smartsheet' row was created for the canonical id.
+    const ghost = await env.DB.prepare("SELECT COUNT(*) AS n FROM jobs WHERE job_id='JOB-99'").first<{ n: number }>();
+    expect(ghost?.n).toBe(0); // the portal row (PJOB-1) carries JOB-99 as canonical, not as a row id
+    // The portal row is untouched + still active (fence + pre-pass).
+    const pjob = await env.DB.prepare("SELECT active, origin FROM jobs WHERE job_id='PJOB-1'").first<{ active: number; origin: string }>();
+    expect(pjob?.active).toBe(1);
+    expect(pjob?.origin).toBe("portal");
+    // The genuine smartsheet job did upsert.
+    const ss2 = await env.DB.prepare("SELECT project_name FROM jobs WHERE job_id='SS-2'").first<{ project_name: string }>();
+    expect(ss2?.project_name).toBe("Real Smartsheet Job");
+  });
 });

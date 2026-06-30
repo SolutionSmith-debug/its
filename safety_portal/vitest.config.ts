@@ -23,6 +23,7 @@ export default defineConfig(async () => {
             HMAC_PAYLOAD_SECRET: "test-hmac-payload-secret",
             PORTAL_INTERNAL_API_TOKEN: "test-internal-token",
             PORTAL_ADMIN_API_TOKEN: "test-admin-token",
+            PORTAL_FIELDOPS_API_TOKEN: "test-fieldops-token",
           },
         },
       }),

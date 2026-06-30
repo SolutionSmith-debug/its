@@ -195,6 +195,23 @@ const requireAdminToken = createMiddleware<{ Bindings: Env; Variables: Vars }>(a
 });
 
 /**
+ * Bearer-token gate for /api/internal/fieldops/* — the Mac-side field-ops mirror daemon
+ * (field_ops/fieldops_sync.py, P2.5). SEPARATE secret from PORTAL_INTERNAL_API_TOKEN and
+ * PORTAL_ADMIN_API_TOKEN (privilege separation): the mirror daemon's token must NOT be able to
+ * drain the submission queue (/api/internal/*) or provision users (/api/internal/admin/*), and
+ * neither of those tokens may read/advance the job-mirror queue. Same fail-closed-on-missing-secret
+ * + constant-time posture as requireInternalToken.
+ */
+const requireFieldopsToken = createMiddleware<{ Bindings: Env; Variables: Vars }>(async (c, next) => {
+  const auth = c.req.header("Authorization") ?? "";
+  const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+  if (!token || !c.env.PORTAL_FIELDOPS_API_TOKEN || !(await safeTokenEqual(token, c.env.PORTAL_FIELDOPS_API_TOKEN))) {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+  await next();
+});
+
+/**
  * POST /api/login — validate credentials, issue a signed session cookie.
  * `secure` is conditional on HTTPS so login works over http://localhost in
  * `vite dev` while staying Secure on the deployed HTTPS origin.
@@ -1209,11 +1226,25 @@ app.post("/api/internal/sync", requireInternalToken, async (c) => {
     jobs.push({ job_id, project_name, active });
   }
 
-  // One atomic batch: upsert every supplied row, then deactivate any active D1
-  // job_id NOT in the payload (the NOT-IN list is bound, never interpolated).
+  // P2.5 canonical-aware pre-pass: once the mirror daemon promotes a portal job, the SAFETY sheet
+  // assigns it a JOB-#### and list_all_jobs() pushes that JOB-#### here — but the D1 row is
+  // origin='portal' keyed by the TYPED job_id, so a naive ON CONFLICT(job_id) would MISS and INSERT
+  // a duplicate origin='smartsheet' row (a persistent ghost in the dropdown). Drop any pushed row
+  // whose job_id equals a portal row's canonical_job_id (the safety read-back) from the UPSERT set.
+  // The DEACTIVATION still uses the FULL pushed id list: those canonical JOB-####s correspond to
+  // origin='portal' rows (never origin='smartsheet'), so they're inert in the smartsheet-scoped
+  // sweep, and keeping them keeps the bound NOT-IN list non-empty + the sweep correct.
+  const canonRows = await c.env.DB
+    .prepare("SELECT canonical_job_id FROM jobs WHERE origin='portal' AND canonical_job_id IS NOT NULL")
+    .all<{ canonical_job_id: string }>();
+  const canonical = new Set((canonRows.results ?? []).map((r) => r.canonical_job_id));
+  const toUpsert = jobs.filter((j) => !canonical.has(j.job_id));
+
+  // One atomic batch: upsert every NON-canonical supplied row, then deactivate any active D1
+  // job_id NOT in the (full) payload (the NOT-IN list is bound, never interpolated).
   const ids = jobs.map((j) => j.job_id);
   const statements = [
-    ...jobs.map((j) =>
+    ...toUpsert.map((j) =>
       c.env.DB.prepare(
         "INSERT INTO jobs (job_id, project_name, active) VALUES (?,?,?) " +
           "ON CONFLICT(job_id) DO UPDATE SET project_name=excluded.project_name, active=excluded.active",
@@ -1230,7 +1261,129 @@ app.post("/api/internal/sync", requireInternalToken, async (c) => {
   ];
   const results = await c.env.DB.batch(statements);
   const deactivated = results[results.length - 1]?.meta?.changes ?? 0;
-  return c.json({ ok: true, upserted: jobs.length, deactivated });
+  return c.json({ ok: true, upserted: toUpsert.length, deactivated });
+});
+
+/**
+ * Field-ops job-mirror queue — /api/internal/fieldops/* (requireFieldopsToken, the mirror
+ * daemon's OWN secret; privilege-separated from the portal_poll + admin tokens). P2.5 up-sync.
+ *
+ * GET /pending-jobs — dirty portal jobs (origin='portal' AND sync_state='pending'): the full SoR
+ * payload + the version vector + cached Smartsheet row ids the daemon needs to find-or-create a row
+ * in BOTH Active-Jobs sheets. Read-only; bound SQL; capped at 200 rows/cycle (the daemon drains
+ * across cycles). CC arrays are returned parsed (JSON → string[]).
+ */
+const FIELDOPS_PENDING_CAP = 200;
+app.get("/api/internal/fieldops/pending-jobs", requireFieldopsToken, async (c) => {
+  const rows = await c.env.DB
+    .prepare(
+      `SELECT job_id, project_name, lifecycle, address,
+              stakeholder_name, stakeholder_email, stakeholder_phone,
+              safety_contact_name, safety_contact_email, safety_cc,
+              progress_contact_name, progress_contact_email, progress_cc,
+              mirror_version, safety_mirrored_version, progress_mirrored_version,
+              safety_row_id, progress_row_id, canonical_job_id
+         FROM jobs
+        WHERE origin='portal' AND sync_state='pending'
+        ORDER BY mirror_version ASC, job_id ASC
+        LIMIT ?1`,
+    )
+    .bind(FIELDOPS_PENDING_CAP)
+    .all<Record<string, unknown>>();
+  const parseCcJson = (v: unknown): string[] => {
+    if (typeof v !== "string" || !v) return [];
+    try {
+      const a = JSON.parse(v);
+      return Array.isArray(a) ? a.filter((x) => typeof x === "string") : [];
+    } catch {
+      return [];
+    }
+  };
+  const jobs = (rows.results ?? []).map((r) => ({
+    ...r,
+    safety_cc: parseCcJson(r.safety_cc),
+    progress_cc: parseCcJson(r.progress_cc),
+  }));
+  return c.json({ jobs });
+});
+
+/**
+ * POST /jobs-mark-mirrored — the daemon's per-sheet commit point. Body:
+ *   { updates: [{ job_id, sheet: 'safety'|'progress', mirrored_version, row_id, canonical_job_id? }] }
+ * For each update: MONOTONICALLY advance ONLY that sheet's watermark (MAX, so a stale/replayed call
+ * can never regress it), cache that sheet's row_id, and — for the SAFETY sheet only — write back the
+ * canonical_job_id (the sheet's read-back JOB-####, COALESCE so a null never erases it). Then flip
+ * sync_state→'synced' IFF both watermarks have reached mirror_version (else it stays 'pending' and
+ * the job is re-attempted next cycle — the partial-failure self-heal). One atomic batch + a single
+ * summary audit row. row-set is disjoint from the down-sync (origin='portal'), so no write conflict.
+ */
+app.post("/api/internal/fieldops/jobs-mark-mirrored", requireFieldopsToken, async (c) => {
+  let body: { updates?: unknown };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "bad_request" }, 400);
+  }
+  if (typeof body !== "object" || (body as unknown) === null || Array.isArray(body)) {
+    return c.json({ error: "bad_request" }, 400);
+  }
+  const raw = body.updates;
+  if (!Array.isArray(raw)) return c.json({ error: "invalid_updates" }, 400);
+  if (raw.length === 0) return c.json({ error: "empty_updates" }, 400);
+  if (raw.length > FIELDOPS_PENDING_CAP) return c.json({ error: "too_many_updates" }, 413);
+
+  const statements = [];
+  const touched: string[] = [];
+  for (const u of raw) {
+    if (typeof u !== "object" || u === null || Array.isArray(u)) return c.json({ error: "invalid_update" }, 400);
+    const row = u as Record<string, unknown>;
+    const jobId = typeof row.job_id === "string" ? row.job_id : "";
+    const sheet = row.sheet === "safety" || row.sheet === "progress" ? row.sheet : "";
+    const version = typeof row.mirrored_version === "number" && Number.isInteger(row.mirrored_version) ? row.mirrored_version : -1;
+    const rowId = typeof row.row_id === "number" && Number.isInteger(row.row_id) ? row.row_id : null;
+    const canonical = typeof row.canonical_job_id === "string" && row.canonical_job_id ? row.canonical_job_id : null;
+    if (!jobId || jobId.length > 64 || !sheet || version < 0 || rowId === null) {
+      return c.json({ error: "invalid_update" }, 400);
+    }
+    if (sheet === "safety") {
+      statements.push(
+        c.env.DB
+          .prepare(
+            "UPDATE jobs SET safety_mirrored_version=MAX(safety_mirrored_version, ?2), safety_row_id=?3, " +
+              "canonical_job_id=COALESCE(?4, canonical_job_id) WHERE job_id=?1 AND origin='portal'",
+          )
+          .bind(jobId, version, rowId, canonical),
+      );
+    } else {
+      statements.push(
+        c.env.DB
+          .prepare(
+            "UPDATE jobs SET progress_mirrored_version=MAX(progress_mirrored_version, ?2), progress_row_id=?3 " +
+              "WHERE job_id=?1 AND origin='portal'",
+          )
+          .bind(jobId, version, rowId),
+      );
+    }
+    // Flip the dirty flag only when BOTH sheets have caught up to the current mirror_version.
+    statements.push(
+      c.env.DB
+        .prepare(
+          "UPDATE jobs SET sync_state=CASE WHEN safety_mirrored_version>=mirror_version " +
+            "AND progress_mirrored_version>=mirror_version THEN 'synced' ELSE 'pending' END " +
+            "WHERE job_id=?1 AND origin='portal'",
+        )
+        .bind(jobId),
+    );
+    touched.push(`${jobId}:${sheet}`);
+  }
+  // One summary audit row for the whole batch (system actor — token-gated daemon, no session).
+  statements.push(
+    c.env.DB
+      .prepare("INSERT INTO audit_log (actor_username, action, target_username, detail) VALUES (?1,?2,?3,?4)")
+      .bind("system:fieldops_sync", "jobs_mark_mirrored", "", JSON.stringify({ count: touched.length, touched: touched.slice(0, 50) })),
+  );
+  await c.env.DB.batch(statements);
+  return c.json({ ok: true, updated: raw.length });
 });
 
 /**

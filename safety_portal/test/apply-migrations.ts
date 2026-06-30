@@ -20,6 +20,7 @@ declare global {
       HMAC_PAYLOAD_SECRET: string;
       PORTAL_INTERNAL_API_TOKEN: string;
       PORTAL_ADMIN_API_TOKEN: string;
+      PORTAL_FIELDOPS_API_TOKEN: string;
     }
   }
 }

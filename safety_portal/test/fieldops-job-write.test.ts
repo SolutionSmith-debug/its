@@ -109,22 +109,28 @@ describe("POST /api/fieldops/job (create)", () => {
   });
 });
 
-describe("POST /api/fieldops/job/:job_id/close", () => {
-  it("closes an active job (200), audits, and is no longer active", async () => {
+describe("POST /api/fieldops/job/:job_id/close (P2.5: thin lifecycle='inactive' alias)", () => {
+  it("closes an active job (200) → lifecycle='inactive', active=0, status='closed', audits job_lifecycle", async () => {
     await seedJob("JOB-A", "active");
     expect((await j(admin, "/api/fieldops/job/JOB-A/close")).status).toBe(200);
     const row = await jobRow("JOB-A");
+    expect(row.lifecycle).toBe("inactive");
     expect(row.status).toBe("closed");
     expect(row.active).toBe(0);
-    expect(await audits("job_close")).toHaveLength(1);
+    // P2.5: /close routes through the shared lifecycle setter → audits 'job_lifecycle' (not 'job_close').
+    expect(await audits("job_lifecycle")).toHaveLength(1);
+    expect(await audits("job_close")).toHaveLength(0);
   });
-  it("TOCTOU: unknown → 404, already-closed → 409 not_active, and neither writes an audit row", async () => {
+  it("unknown job → 404; an already-inactive job is an idempotent 200 (lifecycle set is not active-guarded)", async () => {
     expect((await j(admin, "/api/fieldops/job/NOPE/close")).status).toBe(404);
     await seedJob("JOB-Z", "closed");
+    // P2.5: the lifecycle model makes set-inactive idempotent — re-closing returns 200 (re-dirties
+    // + bumps the mirror version), NOT the old 409 not_active (that active-guard was TOCTOU-era).
     const res = await j(admin, "/api/fieldops/job/JOB-Z/close");
-    expect(res.status).toBe(409);
-    expect((await res.json() as any).error).toBe("not_active");
-    expect(await audits("job_close")).toHaveLength(0); // no-op writes no audit (changes()=1 guard)
+    expect(res.status).toBe(200);
+    const row = await jobRow("JOB-Z");
+    expect(row.lifecycle).toBe("inactive");
+    expect(row.sync_state).toBe("pending");
   });
   it("submitter → 403", async () => {
     await seedJob("JOB-A", "active");
@@ -144,5 +150,89 @@ describe("POST /api/fieldops/job/:job_id/progress", () => {
     await seedJob("JOB-A", "active");
     expect((await j(admin, "/api/fieldops/job/JOB-A/progress", { progress: "high" })).status).toBe(400);
     expect((await j(submitter, "/api/fieldops/job/JOB-A/progress", { progress: 50 })).status).toBe(403);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// P2.5 Slice 1 — SoR routing fields on create, the JOB-#### reserve guard, and the
+// lifecycle / contacts routes with the mirror version-vector dirty-flag.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("P2.5 — SoR create + lifecycle + contacts (version vector)", () => {
+  const FULL = {
+    job_id: "PROG-1",
+    project_name: "Solar Ridge",
+    address: "1 Solar Way",
+    stakeholder_name: "Stake Holder",
+    stakeholder_email: "stake@x.com",
+    safety_contact_name: "Sam Safety",
+    safety_contact_email: "safety@x.com",
+    safety_cc: ["sc1@x.com", "sc2@x.com"],
+    progress_contact_name: "Pat Progress",
+    progress_contact_email: "prog@x.com",
+    progress_cc: ["pc1@x.com"],
+  };
+
+  it("persists the full routing SoR + lifecycle='active' + mirror_version=1 + dirty", async () => {
+    expect((await j(admin, "/api/fieldops/job", FULL)).status).toBe(201);
+    const row = await jobRow("PROG-1");
+    expect(row.address).toBe("1 Solar Way");
+    expect(row.safety_contact_email).toBe("safety@x.com");
+    expect(JSON.parse(row.safety_cc)).toEqual(["sc1@x.com", "sc2@x.com"]);
+    expect(JSON.parse(row.progress_cc)).toEqual(["pc1@x.com"]);
+    expect(row.lifecycle).toBe("active");
+    expect(row.mirror_version).toBe(1);
+    expect(row.sync_state).toBe("pending");
+  });
+
+  it("rejects a JOB-#### (AUTO_NUMBER-shaped) job_id as reserved", async () => {
+    const res = await j(admin, "/api/fieldops/job", { job_id: "JOB-42", project_name: "X" });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe("reserved_job_id");
+  });
+
+  it("rejects a malformed CC (not email-shaped) and an over-cap CC array", async () => {
+    expect((await j(admin, "/api/fieldops/job", { ...FULL, job_id: "PROG-2", safety_cc: ["not-an-email"] })).status).toBe(400);
+    expect((await j(admin, "/api/fieldops/job", { ...FULL, job_id: "PROG-3", progress_cc: ["a@x.com", "b@x.com", "c@x.com", "d@x.com", "e@x.com", "f@x.com"] })).status).toBe(400);
+  });
+
+  it("/lifecycle sets lifecycle + derived active + bumps the mirror version + re-dirties", async () => {
+    await j(admin, "/api/fieldops/job", FULL); // mirror_version=1, sync_state pending
+    // Simulate the daemon having mirrored it clean, then change lifecycle.
+    await env.DB.prepare("UPDATE jobs SET sync_state='synced', safety_mirrored_version=1, progress_mirrored_version=1 WHERE job_id='PROG-1'").run();
+    const res = await j(admin, "/api/fieldops/job/PROG-1/lifecycle", { lifecycle: "archived" });
+    expect(res.status, await res.clone().text()).toBe(200);
+    const row = await jobRow("PROG-1");
+    expect(row.lifecycle).toBe("archived");
+    expect(row.active).toBe(0); // only 'active' lifecycle keeps active=1
+    expect(row.mirror_version).toBe(2); // bumped
+    expect(row.sync_state).toBe("pending"); // re-dirtied for the daemon
+    expect((await audits("job_lifecycle")).length).toBe(1);
+  });
+
+  it("/lifecycle rejects an invalid value; /close is a thin inactive alias", async () => {
+    await j(admin, "/api/fieldops/job", FULL);
+    expect((await j(admin, "/api/fieldops/job/PROG-1/lifecycle", { lifecycle: "bogus" })).status).toBe(400);
+    expect((await j(admin, "/api/fieldops/job/PROG-1/close")).status).toBe(200);
+    const row = await jobRow("PROG-1");
+    expect(row.lifecycle).toBe("inactive");
+    expect(row.active).toBe(0);
+  });
+
+  it("/contacts edits routing + bumps the mirror version (job_id/lifecycle untouched)", async () => {
+    await j(admin, "/api/fieldops/job", FULL);
+    await env.DB.prepare("UPDATE jobs SET sync_state='synced' WHERE job_id='PROG-1'").run();
+    const res = await j(admin, "/api/fieldops/job/PROG-1/contacts", { ...FULL, progress_contact_email: "newprog@x.com" });
+    expect(res.status, await res.clone().text()).toBe(200);
+    const row = await jobRow("PROG-1");
+    expect(row.progress_contact_email).toBe("newprog@x.com");
+    expect(row.lifecycle).toBe("active"); // untouched
+    expect(row.mirror_version).toBe(2);
+    expect(row.sync_state).toBe("pending");
+  });
+
+  it("/lifecycle + /contacts gate on cap.jobtracker.manage (submitter → 403)", async () => {
+    await j(admin, "/api/fieldops/job", FULL);
+    expect((await j(submitter, "/api/fieldops/job/PROG-1/lifecycle", { lifecycle: "inactive" })).status).toBe(403);
+    expect((await j(submitter, "/api/fieldops/job/PROG-1/contacts", FULL)).status).toBe(403);
   });
 });
