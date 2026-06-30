@@ -476,6 +476,9 @@ _ENROLLMENT_SKIP_DIRS: frozenset[str] = frozenset({
 # Suffixes that, by convention, denote a generation script, a send script, or an
 # intake / compile / send polling daemon.
 _ENROLLMENT_SUFFIXES: tuple[str, ...] = ("_generate.py", "_send.py", "_poll.py")
+# Fast-follow: widen to include "_sync.py" so a future *_sync.py daemon auto-enrolls — it
+# requires enrolling the pre-existing shared/picklist_sync.py in the same change (out of scope
+# for the P2.5 Slice-5 PR; field_ops/fieldops_sync.py is already explicitly in GATED_SCRIPTS).
 
 # Convention-matching modules that are deliberately NOT gen/send/daemon code.
 # Each entry carries its reason. (Empty today — every current match is enrolled.)

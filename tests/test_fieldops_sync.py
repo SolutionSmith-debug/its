@@ -112,6 +112,20 @@ def test_dirty_job_mirrors_both_sheets_per_sheet_commit(_patch):
     _patch["marker"].assert_called_once()
 
 
+def test_malformed_mirror_version_warns_and_coerces_to_zero(_patch):
+    # Never-silent: a missing/malformed mirror_version (a Worker payload defect) coerces to 0
+    # — which would leave the job permanently dirty — so it must WARN, not silently coerce.
+    _patch["pending"].return_value = [_job(mirror_version="not-an-int")]
+    _patch["upsert"].side_effect = _upsert_ok
+    fieldops_sync._sync_inside_lock()
+    assert any(
+        c.kwargs.get("error_code") == "fieldops_mirror_version_malformed"
+        for c in _patch["log"].call_args_list
+    )
+    # the coerced 0 is what's sent to the Worker watermark (vector stays consistent).
+    assert _patch["mark"].call_args_list[0].args[2][0]["mirrored_version"] == 0
+
+
 # ---- per-job permanent fence → Review Queue -------------------------------
 
 

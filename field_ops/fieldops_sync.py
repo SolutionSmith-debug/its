@@ -284,7 +284,7 @@ def _sync_inside_lock() -> SyncStats:
                 # NAME (naming secret-store entries in a log is a CodeQL clear-text trip).
                 "fail-closed: missing field-ops portal credentials — the Worker base URL "
                 "(ITS_Config) and/or the field-ops bearer Keychain entry are unset; NOT "
-                "syncing until fixed (see field_ops/README.md)"
+                "syncing until fixed (see docs/runbooks/fieldops_sync.md Symptom B)"
             ),
             error_code="fieldops_creds_missing",
         )
@@ -391,8 +391,22 @@ def _mirror_job(
         )
         return
 
-    mirror_version = job.get("mirror_version")
-    mirror_version = mirror_version if isinstance(mirror_version, int) else 0
+    raw_mirror_version = job.get("mirror_version")
+    if isinstance(raw_mirror_version, int):
+        mirror_version = raw_mirror_version
+    else:
+        # Never-silent: a missing/malformed mirror_version (vs the Worker's monotonic-MAX
+        # watermark) coerces to 0 → the job would stay permanently dirty (re-attempted every
+        # cycle, never escalated). WARN so the cause is observable instead of an invisible loop.
+        mirror_version = 0
+        error_log.log(
+            Severity.WARN,
+            SCRIPT_NAME,
+            f"job {job.get('job_id')!r} has a missing/malformed mirror_version "
+            f"({raw_mirror_version!r}); coercing to 0 — it will stay dirty until a well-formed "
+            f"version arrives (likely a Worker pending-jobs payload defect).",
+            error_code="fieldops_mirror_version_malformed",
+        )
     correlation_id = uuid.uuid4().hex[:12]
 
     try:

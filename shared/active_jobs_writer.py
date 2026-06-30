@@ -26,13 +26,19 @@ keys) and its *destination* is the sheet (with "Safety Reports Contact …" /
 "Progress Reports Contact …" columns) — two distinct namespaces — so it carries BOTH the
 sheet column titles to write AND the payload keys to read.
 
-Non-clobber invariant (§51)
----------------------------
-`upsert_job` writes ONLY the portal-owned columns (Project Name, Address, Stakeholder
-Name/Email/Phone, the workstream's reports-contact name+email, CC 1–5, Active, Portal Job
-Key). It NEVER writes Notes or any operator/system column. On the UPDATE branch this is
-structural: `smartsheet_client.update_rows` only touches the columns present in the
-payload — an unsupplied column is left exactly as the operator left it.
+Invariants
+----------
+- **Non-clobber (§51).** `upsert_job` writes ONLY the portal-owned columns (Project Name,
+  Address, Stakeholder Name/Email/Phone, the workstream's reports-contact name+email,
+  CC 1–5, Active, Portal Job Key). It NEVER writes Notes or any operator/system column. On
+  the UPDATE branch this is structural: `smartsheet_client.update_rows` only touches the
+  columns present in the payload — an unsupplied column is left exactly as the operator
+  left it.
+- **One writer, no drift.** The find-or-create key is the "Portal Job Key" bridge column;
+  a row without a matching Portal Job Key (a hand-created / legacy smartsheet-origin row)
+  is never touched, so the portal can only ever write its OWN rows.
+- See "Identity / lifecycle" + "Failure modes" below for the remaining invariants (typed
+  identity, never-silent picklist mapping).
 
 Identity / lifecycle
 --------------------
@@ -51,6 +57,13 @@ Failure modes (typed, never silent)
 reject) propagate to the caller as PERMANENT failures; any other `SmartsheetError` propagates
 as TRANSIENT. The daemon (`field_ops.fieldops_sync`) fences per job: permanent → Review Queue,
 transient → leave the job dirty for the next cycle (find-or-create no-ops on the existing row).
+
+Consumers
+---------
+- `field_ops.fieldops_sync` (the P2.5 mirror daemon) — the sole caller today. It pulls each
+  dirty portal job from the Worker and calls `upsert_job` once per workstream sheet
+  (`SAFETY_WRITE_CONFIG` then `PROGRESS_WRITE_CONFIG`), then commits each sheet's watermark.
+  (A future field-ops crew/equipment/materials up-sync would add itself here.)
 """
 from __future__ import annotations
 

@@ -50,6 +50,7 @@ Consumers:
 
 - ``safety_reports.portal_poll`` (intake PULL daemon)
 - ``safety_reports.weekly_send_poll`` (send-dispatch daemon)
+- ``field_ops.fieldops_sync`` (P2.5 job-mirror up-sync daemon)
 
 Any new polling daemon should construct its own ``HeartbeatReporter`` (passing its
 registration metadata + ``row_state_path=HEARTBEAT_ROW_STATE_PATH``) and add itself
