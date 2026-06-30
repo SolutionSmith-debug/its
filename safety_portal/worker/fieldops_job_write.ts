@@ -240,6 +240,11 @@ export function registerJobWriteRoutes(app: FieldopsApp, gates: FieldopsGates): 
       } catch {
         return c.json({ error: "bad_request" }, 400);
       }
+      // JSON `null`/arrays parse fine but aren't objects; dereferencing body.lifecycle on them
+      // would throw → bare 500 (the "audit #1" class). Require a plain object first.
+      if (typeof body !== "object" || body === null || Array.isArray(body)) {
+        return c.json({ error: "bad_request" }, 400);
+      }
       const lifecycle = typeof body.lifecycle === "string" ? body.lifecycle.trim().toLowerCase() : "";
       if (!LIFECYCLE_VALUES.has(lifecycle)) return c.json({ error: "invalid_lifecycle" }, 400);
       const res = await setLifecycle(c, jobId, lifecycle);
@@ -285,12 +290,14 @@ export function registerJobWriteRoutes(app: FieldopsApp, gates: FieldopsGates): 
       const res = await c.env.DB.batch([
         c.env.DB
           .prepare(
+            // SCOPED TO origin='portal' (security, W5): never edit a smartsheet-origin job's SoR —
+            // the down-sync can't reconcile these fields, so a stray write would corrupt it forever.
             `UPDATE jobs SET
                address=?2, stakeholder_name=?3, stakeholder_email=?4, stakeholder_phone=?5,
                safety_contact_name=?6, safety_contact_email=?7, safety_cc=?8,
                progress_contact_name=?9, progress_contact_email=?10, progress_cc=?11,
                mirror_version=mirror_version+1, sync_state='pending'
-             WHERE job_id=?1`,
+             WHERE job_id=?1 AND origin='portal'`,
           )
           .bind(
             jobId,
@@ -347,7 +354,12 @@ export function registerJobWriteRoutes(app: FieldopsApp, gates: FieldopsGates): 
 
 /** Set lifecycle + the derived `active` flag (+ legacy `status` for back-compat: inactive/archived
  *  → 'closed', active → 'active'), bump mirror_version, re-dirty (sync_state='pending'), audit.
- *  Idempotent-friendly: a no-op same-value set still bumps the version (cheap; the daemon no-ops). */
+ *  Idempotent-friendly: a no-op same-value set still bumps the version (cheap; the daemon no-ops).
+ *
+ *  SCOPED TO origin='portal' (security): the portal is the SOLE writer of portal-created jobs;
+ *  these edit routes must NEVER touch an origin='smartsheet' row (the down-sync only reconciles
+ *  project_name/active, so a stray lifecycle/SoR write to a smartsheet job would corrupt it
+ *  permanently, with no self-heal). A non-portal (or unknown) job_id → 0 changes → 404. */
 async function setLifecycle(
   c: Context<{ Bindings: Env; Variables: Vars }>,
   jobId: string,
@@ -359,7 +371,8 @@ async function setLifecycle(
   const res = await c.env.DB.batch([
     c.env.DB
       .prepare(
-        "UPDATE jobs SET lifecycle=?2, active=?3, status=?4, mirror_version=mirror_version+1, sync_state='pending' WHERE job_id=?1",
+        "UPDATE jobs SET lifecycle=?2, active=?3, status=?4, mirror_version=mirror_version+1, sync_state='pending' " +
+          "WHERE job_id=?1 AND origin='portal'",
       )
       .bind(jobId, lifecycle, active, status),
     c.env.DB

@@ -110,10 +110,11 @@ describe("POST /api/fieldops/job (create)", () => {
 });
 
 describe("POST /api/fieldops/job/:job_id/close (P2.5: thin lifecycle='inactive' alias)", () => {
-  it("closes an active job (200) → lifecycle='inactive', active=0, status='closed', audits job_lifecycle", async () => {
-    await seedJob("JOB-A", "active");
-    expect((await j(admin, "/api/fieldops/job/JOB-A/close")).status).toBe(200);
-    const row = await jobRow("JOB-A");
+  it("closes an active PORTAL job (200) → lifecycle='inactive', active=0, status='closed', audits job_lifecycle", async () => {
+    // /close is now origin='portal'-scoped (W5), so the job must be portal-created.
+    await j(admin, "/api/fieldops/job", { job_id: "PJOB-A", project_name: "X" });
+    expect((await j(admin, "/api/fieldops/job/PJOB-A/close")).status).toBe(200);
+    const row = await jobRow("PJOB-A");
     expect(row.lifecycle).toBe("inactive");
     expect(row.status).toBe("closed");
     expect(row.active).toBe(0);
@@ -121,14 +122,15 @@ describe("POST /api/fieldops/job/:job_id/close (P2.5: thin lifecycle='inactive' 
     expect(await audits("job_lifecycle")).toHaveLength(1);
     expect(await audits("job_close")).toHaveLength(0);
   });
-  it("unknown job → 404; an already-inactive job is an idempotent 200 (lifecycle set is not active-guarded)", async () => {
+  it("unknown job → 404; an already-inactive portal job is an idempotent 200 (not active-guarded)", async () => {
     expect((await j(admin, "/api/fieldops/job/NOPE/close")).status).toBe(404);
-    await seedJob("JOB-Z", "closed");
+    await j(admin, "/api/fieldops/job", { job_id: "PJOB-Z", project_name: "X" });
+    expect((await j(admin, "/api/fieldops/job/PJOB-Z/close")).status).toBe(200); // first close
     // P2.5: the lifecycle model makes set-inactive idempotent — re-closing returns 200 (re-dirties
     // + bumps the mirror version), NOT the old 409 not_active (that active-guard was TOCTOU-era).
-    const res = await j(admin, "/api/fieldops/job/JOB-Z/close");
+    const res = await j(admin, "/api/fieldops/job/PJOB-Z/close");
     expect(res.status).toBe(200);
-    const row = await jobRow("JOB-Z");
+    const row = await jobRow("PJOB-Z");
     expect(row.lifecycle).toBe("inactive");
     expect(row.sync_state).toBe("pending");
   });
@@ -234,5 +236,21 @@ describe("P2.5 — SoR create + lifecycle + contacts (version vector)", () => {
     await j(admin, "/api/fieldops/job", FULL);
     expect((await j(submitter, "/api/fieldops/job/PROG-1/lifecycle", { lifecycle: "inactive" })).status).toBe(403);
     expect((await j(submitter, "/api/fieldops/job/PROG-1/contacts", FULL)).status).toBe(403);
+  });
+
+  it("W5: edit routes REFUSE a smartsheet-origin job (no cross-origin corruption)", async () => {
+    await seedJob("SS-9", "active"); // origin='smartsheet'
+    expect((await j(admin, "/api/fieldops/job/SS-9/lifecycle", { lifecycle: "archived" })).status).toBe(404);
+    expect((await j(admin, "/api/fieldops/job/SS-9/close")).status).toBe(404);
+    expect((await j(admin, "/api/fieldops/job/SS-9/contacts", { ...FULL, job_id: "SS-9" })).status).toBe(404);
+    const row = await jobRow("SS-9");
+    expect(row.lifecycle).toBe("active"); // untouched (the origin='portal' scope refused every edit)
+    expect(row.address).toBe("");
+    expect(row.mirror_version).toBe(0);
+  });
+
+  it("W2: /lifecycle with a null JSON body → 400 (not a 500)", async () => {
+    await j(admin, "/api/fieldops/job", FULL);
+    expect((await j(admin, "/api/fieldops/job/PROG-1/lifecycle", null)).status).toBe(400);
   });
 });

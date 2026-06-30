@@ -55,3 +55,22 @@ entries / tasks) **but never appears in `ITS_Active_Jobs`, never gets a `JOB-###
   failure).
 - Anything that would touch the **origin fence** values (`origin` / `sync_state` /
   `canonical_job_id`) directly — that is doctrine + code (high-capability-class), always Seth.
+
+## Activation — P2.5 Slice 1 (operator, one-time, ORDER-DEPENDENT)
+
+Slice 1 adds migration `0021_jobs_sor_fields.sql` (the SoR/lifecycle/version-vector columns the
+expanded create + the new `/job/:id/lifecycle` and `/job/:id/contacts` routes write) and a new
+bearer-gated internal queue (`/api/internal/fieldops/*`). Activate in THIS order — a stale-checkout
+deploy ahead of the migration caused the 2026-06-28 universal lockout (forensic class #2):
+
+1. Pull `~/its` to current `main` first (the deploy must never run from a stale tree).
+2. Apply migration `0021` to live D1 **remotely BEFORE** the Worker redeploy — else the new routes
+   500 on the unknown columns (the same activation rule as 0017).
+3. Set the mirror daemon's bearer secret `PORTAL_FIELDOPS_API_TOKEN` as a Worker secret
+   (privilege-separated from the portal_poll + admin tokens), and mirror the SAME value into the
+   macOS Keychain as `ITS_PORTAL_FIELDOPS_TOKEN` for the Slice-5 daemon.
+4. Redeploy the Worker.
+
+Until Slice 5's daemon exists + its `field_ops.fieldops_sync.sync_enabled` flag is ON, the new
+`/api/internal/fieldops/*` routes simply have no caller — portal-created jobs accumulate as dirty
+(`origin='portal'`, `sync_state='pending'`) and stay correctly fenced from the down-sync sweep.
