@@ -130,6 +130,16 @@ SEND_SCRIPTS: list[tuple[str, list[str]]] = [
         "safety_reports/weekly_send_poll.py",
         ["anthropic_client", "anthropic"],
     ),
+    (
+        # P1c: the parameterized dispatch core. It dispatches a send via the
+        # bound `DaemonConfig.send_fn` (a partial of weekly_send.send_one_row) —
+        # so it is a SEND script. NOTE: it ends in `_core.py`, not `_poll.py`, so
+        # the convention-suffix enrollment meta-test does NOT auto-flag it; this
+        # explicit entry is the enrollment. anthropic / anthropic_client must not
+        # appear at all (the core imports no AI surface).
+        "safety_reports/send_poll_core.py",
+        ["anthropic_client", "anthropic"],
+    ),
     # ("po_materials/rfq_send.py", ["anthropic_client", "anthropic"]),
     # ("subcontracts/subcontract_send.py", ["anthropic_client", "anthropic"]),
 ]

@@ -1,7 +1,10 @@
 """Unit tests for safety_reports/weekly_send_poll.py — the Phase-5 WSR dispatcher.
 
-All external services mocked. Covers the WSR filter, Send-Now/Scheduled timing,
-the F22 approval-attestation gate, the approver stamp, heartbeat status, and gating.
+P1c: the dispatch body lives in `safety_reports/send_poll_core.py` (parameterized
+by `DaemonConfig`); this module is the thin SAFETY entry. Data-plane mocks target
+`send_poll_core.*` (where the body calls them); the heartbeat / watchdog / stamp /
+scheduled-window SEAMS stay patched on the entry (the core resolves them by
+injection from the entry at call time). Behavior is asserted byte-equivalent.
 """
 from __future__ import annotations
 
@@ -9,7 +12,7 @@ from typing import Any
 
 import pytest
 
-from safety_reports import weekly_send, weekly_send_poll, wsr_review
+from safety_reports import send_poll_core, weekly_send, weekly_send_poll, wsr_review
 from safety_reports.weekly_send import SendResult
 from safety_reports.weekly_send_poll import (
     DAEMON_NAME,
@@ -41,29 +44,31 @@ def _row(
 @pytest.fixture
 def _patch_all(mocker):
     return {
-        "get_rows": mocker.patch("safety_reports.weekly_send_poll.smartsheet_client.get_rows", return_value=[]),
+        # --- data-plane: now lives in send_poll_core ---
+        "get_rows": mocker.patch("safety_reports.send_poll_core.smartsheet_client.get_rows", return_value=[]),
         "send_one_row": mocker.patch(
-            "safety_reports.weekly_send_poll.weekly_send.send_one_row",
+            "safety_reports.weekly_send.send_one_row",  # CONFIG.send_fn late-binds to this
             return_value=SendResult(status="sent", row_id=0, project_name="Bradley 1"),
         ),
         "get_setting": mocker.patch(
-            "safety_reports.weekly_send_poll.smartsheet_client.get_setting",
+            "safety_reports.send_poll_core.smartsheet_client.get_setting",
             side_effect=SmartsheetNotFoundError("default test stub"),
         ),
         "workspace_shares": mocker.patch(
-            "safety_reports.weekly_send_poll.smartsheet_client.list_workspace_share_emails",
+            "safety_reports.send_poll_core.smartsheet_client.list_workspace_share_emails",
             return_value=frozenset({"seths@evergreenmirror.com"}),
         ),
+        "error_log": mocker.patch("safety_reports.send_poll_core.error_log.log", return_value=None),
+        "verify_approval": mocker.patch(
+            "safety_reports.send_poll_core.approval_verification.verify_approval",
+            return_value=ApprovalVerdict(verified=True, reason=VerdictReason.AUTHORIZED, actor="seths@evergreenmirror.com"),
+        ),
+        "alert_critical": mocker.patch("safety_reports.send_poll_core.error_log._alert_critical", return_value=None),
+        # --- injected seams: stay on the entry (core resolves them by injection) ---
         "write_heartbeat": mocker.patch("safety_reports.weekly_send_poll._write_heartbeat", return_value=None),
         "write_heartbeat_row": mocker.patch("safety_reports.weekly_send_poll._write_heartbeat_row", return_value=None),
         "write_watchdog_marker": mocker.patch("safety_reports.weekly_send_poll._write_watchdog_marker", return_value=None),
-        "error_log": mocker.patch("safety_reports.weekly_send_poll.error_log.log", return_value=None),
-        "verify_approval": mocker.patch(
-            "safety_reports.weekly_send_poll.approval_verification.verify_approval",
-            return_value=ApprovalVerdict(verified=True, reason=VerdictReason.AUTHORIZED, actor="seths@evergreenmirror.com"),
-        ),
         "stamp": mocker.patch("safety_reports.weekly_send_poll._stamp_approval", return_value=None),
-        "alert_critical": mocker.patch("safety_reports.weekly_send_poll.error_log._alert_critical", return_value=None),
     }
 
 
@@ -122,7 +127,7 @@ def test_is_scheduled_window():
 
 def test_load_authorized_approvers_reads_workspace_shares(mocker):
     shares = mocker.patch(
-        "safety_reports.weekly_send_poll.smartsheet_client.list_workspace_share_emails",
+        "safety_reports.send_poll_core.smartsheet_client.list_workspace_share_emails",
         return_value=frozenset({"a@x.com", "b@x.com"}),
     )
     out = weekly_send_poll._load_authorized_approvers()
@@ -134,7 +139,7 @@ def test_load_authorized_approvers_empty_workspace_is_fail_closed_empty(mocker):
     # No individual shares → empty set → verify_approval treats it as
     # EMPTY_ALLOWLIST → block all sends (fail-closed, never fail-open).
     mocker.patch(
-        "safety_reports.weekly_send_poll.smartsheet_client.list_workspace_share_emails",
+        "safety_reports.send_poll_core.smartsheet_client.list_workspace_share_emails",
         return_value=frozenset(),
     )
     assert weekly_send_poll._load_authorized_approvers() == frozenset()
@@ -144,7 +149,7 @@ def test_load_authorized_approvers_smartsheet_error_propagates(mocker):
     # A membership-read infra failure must surface (→ @its_error_log CRITICAL,
     # cycle aborts with zero sends), never silently fail-open.
     mocker.patch(
-        "safety_reports.weekly_send_poll.smartsheet_client.list_workspace_share_emails",
+        "safety_reports.send_poll_core.smartsheet_client.list_workspace_share_emails",
         side_effect=SmartsheetError("boom"),
     )
     with pytest.raises(SmartsheetError):
@@ -188,7 +193,7 @@ def test_per_row_fence_continues_after_error(_patch_all):
     _patch_all["get_rows"].return_value = [_row(row_id=30), _row(row_id=31), _row(row_id=32)]
     order: list[int] = []
 
-    def _se(row_id, _cfg):  # poller now passes (row_id, weekly_send.CONFIG)
+    def _se(row_id, _cfg):  # CONFIG.send_fn calls send_one_row(row_id, weekly_send.CONFIG)
         order.append(row_id)
         if row_id == 31:
             raise SmartsheetError("transient")
@@ -355,8 +360,8 @@ def test_parse_scheduled_spec_defaults_on_malformed(spec):
 
 def test_stamp_approval_non_fatal_on_error(mocker):
     """A stamp write failure must NEVER raise (it would block a verified send)."""
-    mocker.patch.object(weekly_send_poll.smartsheet_client, "update_rows", side_effect=RuntimeError("boom"))
-    log = mocker.patch.object(weekly_send_poll.error_log, "log")
+    mocker.patch.object(send_poll_core.smartsheet_client, "update_rows", side_effect=RuntimeError("boom"))
+    log = mocker.patch.object(send_poll_core.error_log, "log")
     v = ApprovalVerdict(verified=True, reason=VerdictReason.AUTHORIZED,
                         actor="a@b.com", modified_at="2026-06-01T09:00:00-07:00")
     weekly_send_poll._stamp_approval(5, v)  # must NOT raise
