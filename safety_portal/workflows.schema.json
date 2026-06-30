@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://its.solutionsmith.org/safety_portal/workflows.schema.json",
+  "title": "ITS Portal workflow registry",
+  "description": "Single source of truth for the workflow SET (safety | progress | future). Read by BOTH runtimes: TypeScript (src/forms/registry.ts -> the form-builder workflow selector + the submitter picker tabs + worker/publishValidation.ts validateCategory) and Python (shared/form_category valid-set + safety_reports/publish_manifest.apply_publish). ROUTING (workflow id -> Smartsheet workspace + WeekSheetConfig + intake flag) is NOT here -- it stays Python-side keyed by id (it needs live sheet IDs). Adding a workflow = a new entry here + one Python routing binding. Lives at safety_portal/ (NOT forms/) so the forms/*.json glob never mis-ingests it.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["registry_version", "default", "workflows"],
+  "properties": {
+    "registry_version": { "type": "integer", "minimum": 1 },
+    "default": {
+      "type": "string",
+      "pattern": "^[a-z0-9-]+$",
+      "description": "The workflow a form falls under when its catalog `category` is absent (the registry.ts `?? safety` / form_category DEFAULT_CATEGORY contract). MUST equal one of workflows[].id."
+    },
+    "workflows": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "label"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]+$",
+            "description": "Stable workflow slug; matches the catalog parent `category` values + the Python routing keys."
+          },
+          "label": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Display name shown in the form-builder selector + the submitter picker tabs."
+          },
+          "display_order": {
+            "type": "integer",
+            "description": "Sort order for the selector + tabs."
+          }
+        }
+      }
+    }
+  }
+}

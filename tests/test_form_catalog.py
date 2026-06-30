@@ -85,6 +85,23 @@ def test_manifest_conforms_to_schema() -> None:
     jsonschema.validate(MANIFEST, SCHEMA)
 
 
+def test_catalog_categories_are_registered_workflows() -> None:
+    """Compensating CI gate (form-builder workflow selector): catalog.schema.json relaxed the
+    parent `category` from an enum to a `^[a-z0-9-]+$` pattern (a JSON Schema can't import the
+    registry), so `test_manifest_conforms_to_schema` no longer proves a category is a REGISTERED
+    workflow. Assert every catalog parent's explicit category is in form_category.workflow_ids()
+    (= workflows.json ids ∪ the fail-safe floor)."""
+    from shared.form_category import workflow_ids
+
+    valid = workflow_ids()
+    bad = [
+        f"{p['parent_form_code']}: {p['category']!r}"
+        for p in _parents()
+        if "category" in p and p["category"] not in valid
+    ]
+    assert not bad, f"catalog parent(s) with an unregistered workflow category: {bad}"
+
+
 # ── uniqueness ──────────────────────────────────────────────────────────────────
 
 

@@ -266,6 +266,104 @@ describe("parent-grouping guard at enqueue (mirrors apply_publish)", () => {
   });
 });
 
+describe("workflow category (form-builder workflow selector)", () => {
+  function createNewType(category?: string) {
+    const def = jha();
+    def.form_code = "zzcat-brand-new-v1";
+    def.parent_form_code = "zzcat-brand-new";
+    def.variant_label = null;
+    def.version = 1;
+    const base: Record<string, unknown> = {
+      op: "create", identity: "zzcat-brand-new", parent_form_code: "zzcat-brand-new", definition: def,
+    };
+    if (category !== undefined) base.category = category;
+    return base;
+  }
+
+  it("recategorize with a valid workflow → 201 + queues op=recategorize with the category", async () => {
+    await provision("admin.one", "admin");
+    const cookie = await login("admin.one");
+    const res = await callApi("/api/admin/publish", {
+      method: "POST", cookie,
+      body: JSON.stringify({ op: "recategorize", identity: "jha", parent_form_code: "jha", category: "progress" }),
+    });
+    expect(res.status, await res.clone().text()).toBe(201);
+    const row = await env.DB.prepare("SELECT op, parent_form_code, category FROM publish_requests").first();
+    expect(row).toMatchObject({ op: "recategorize", parent_form_code: "jha", category: "progress" });
+  });
+
+  it("recategorize with an unknown workflow → 400 invalid_category, STATIC reason (no input reflected)", async () => {
+    await provision("admin.one", "admin");
+    const cookie = await login("admin.one");
+    const res = await callApi("/api/admin/publish", {
+      method: "POST", cookie,
+      body: JSON.stringify({ op: "recategorize", identity: "jha", parent_form_code: "jha", category: "bogus" }),
+    });
+    expect(res.status).toBe(400);
+    const j = await res.json() as { error: string; reason?: string };
+    expect(j).toMatchObject({ error: "invalid_category" });
+    // W8: the failure reason is a STATIC string — caller input is never echoed back.
+    expect(j.reason).toBe("unknown workflow category");
+    expect(j.reason).not.toContain("bogus");
+  });
+
+  it("recategorize with an oversized category → 400, no multi-KB body reflected (W8)", async () => {
+    await provision("admin.one", "admin");
+    const cookie = await login("admin.one");
+    const huge = "x".repeat(5000);
+    const res = await callApi("/api/admin/publish", {
+      method: "POST", cookie,
+      body: JSON.stringify({ op: "recategorize", identity: "jha", parent_form_code: "jha", category: huge }),
+    });
+    expect(res.status).toBe(400);
+    const text = await res.text();
+    expect(JSON.parse(text)).toMatchObject({ error: "invalid_category", reason: "unknown workflow category" });
+    expect(text).not.toContain(huge);        // the 5 KB input is NOT reflected
+    expect(text.length).toBeLessThan(200);
+  });
+
+  it("recategorize without a category → 400 invalid_category", async () => {
+    await provision("admin.one", "admin");
+    const cookie = await login("admin.one");
+    const res = await callApi("/api/admin/publish", {
+      method: "POST", cookie,
+      body: JSON.stringify({ op: "recategorize", identity: "jha", parent_form_code: "jha" }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: "invalid_category" });
+  });
+
+  it("create with a valid category persists it on the queued row", async () => {
+    await provision("admin.one", "admin");
+    const cookie = await login("admin.one");
+    const res = await callApi("/api/admin/publish", {
+      method: "POST", cookie, body: JSON.stringify(createNewType("progress")),
+    });
+    expect(res.status, await res.clone().text()).toBe(201);
+    const row = await env.DB.prepare("SELECT op, category FROM publish_requests").first();
+    expect(row).toMatchObject({ op: "create", category: "progress" });
+  });
+
+  it("create with an unknown category → 400 invalid_category", async () => {
+    await provision("admin.one", "admin");
+    const cookie = await login("admin.one");
+    const res = await callApi("/api/admin/publish", {
+      method: "POST", cookie, body: JSON.stringify(createNewType("bogus")),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: "invalid_category" });
+  });
+
+  it("create WITHOUT a category still succeeds (defaults safety) — backward-compatible", async () => {
+    await provision("admin.one", "admin");
+    const cookie = await login("admin.one");
+    const res = await callApi("/api/admin/publish", {
+      method: "POST", cookie, body: JSON.stringify(createNewType()),
+    });
+    expect(res.status, await res.clone().text()).toBe(201);
+  });
+});
+
 describe("POST /api/admin/publish-dismiss", () => {
   async function seedReq(status: string): Promise<void> {
     await env.DB

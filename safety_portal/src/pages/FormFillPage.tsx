@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import { AppHeader } from "../components/AppHeader";
 import { useAuth } from "../lib/auth";
 import * as api from "../lib/api";
-import { formCatalog, getDefinition } from "../forms/registry";
+import { formCatalog, getDefinition, WORKFLOWS_ORDERED } from "../forms/registry";
 import { FormRenderer, initialValues, type FormValues } from "../forms/FormRenderer";
 import { useSubmissionId } from "./useSubmissionId";
 
@@ -241,11 +241,11 @@ export function FormFillPage({ onBack, tabBar }: { onBack?: () => void; tabBar?:
             <select className="field__input" value={parentCode}
               onChange={(e) => { setParentCode(e.target.value); setVariantCode(""); }}>
               <option value="">Select a form…</option>
-              {(["safety", "progress"] as const).map((cat) => {
-                const inCat = catalog.filter((p) => p.category === cat);
+              {WORKFLOWS_ORDERED.map((w) => {
+                const inCat = catalog.filter((p) => p.category === w.id);
                 if (inCat.length === 0) return null;
                 return (
-                  <optgroup key={cat} label={cat === "safety" ? "Safety" : "Progress"}>
+                  <optgroup key={w.id} label={w.label}>
                     {inCat.map((p) => (
                       <option key={p.parent_form_code} value={p.parent_form_code}>{p.name}</option>
                     ))}

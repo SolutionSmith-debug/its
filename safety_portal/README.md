@@ -395,6 +395,25 @@ Both capabilities are already seeded in 0013 — 0019 seeds no capability vocabu
    table. **ORDER-CRITICAL**, same rule as 0013/0015/0016.
 2. **Redeploy** (`npm run deploy`) — activates the catalog CRUD routes + the Materials admin page.
 
+### Form workflow selector (Phase-2 — `0020`)
+
+**Migration 0020** rebuilds `publish_requests` to add a `category` column and extend the `op`
+CHECK with the new `recategorize` op (the form-builder **workflow selector** — a form's workflow,
+today `safety` / `progress`, is chosen at create and changeable afterwards). The registry of valid
+workflows is `safety_portal/workflows.json`, read by both the Worker and Python. No FK
+dependencies; existing rows carry `category` as NULL.
+
+#### Activation (operator — deploy boundary; escalates to the Developer-Operator)
+
+1. Apply migration **0020** to the live D1 **BEFORE** the redeploy
+   (`npx wrangler d1 migrations apply its-safety-portal-db --remote`) — else `POST /api/admin/publish`,
+   `GET /api/admin/publish-request`, and `POST /api/internal/publish/claim` 500 on the missing
+   `category` column (the INSERT + both SELECTs name it). **ORDER-CRITICAL**, same rule as 0010.
+   (Always `git pull` `~/its` to latest `main` BEFORE `wrangler d1 migrations apply` — the
+   stale-migrations-list lockout class.)
+2. **Redeploy** (`npm run deploy`) — activates the `recategorize` op + the Workflow selector in the
+   Forms editor.
+
 ### Lockout recovery (break-glass) — escalate to the Developer-Operator
 
 If both admins are ever locked out (e.g. passwords lost, or both disabled), recovery runs

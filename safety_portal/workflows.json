@@ -1,0 +1,8 @@
+{
+  "registry_version": 1,
+  "default": "safety",
+  "workflows": [
+    { "id": "safety", "label": "Safety", "display_order": 1 },
+    { "id": "progress", "label": "Progress", "display_order": 2 }
+  ]
+}

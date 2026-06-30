@@ -177,6 +177,8 @@ def apply_publish(
     target_form_code: str | None = None,
     definition: dict | None = None,
     required_content: dict | None = None,
+    category: str | None = None,
+    valid_categories: frozenset[str] | None = None,
 ) -> tuple[dict, dict[str, Any], str]:
     """Apply `op` to `manifest`. Returns (new_manifest, files_to_write, note).
 
@@ -231,10 +233,21 @@ def apply_publish(
                     f"only variant); got {variant_label!r} — add variants later via a "
                     f"create under the existing parent"
                 )
+            # The new parent's workflow category (form-builder workflow selector). The
+            # registry SET is passed in (apply_publish stays pure — no disk read); a provided
+            # category is re-validated against it (authoritative C3 re-check behind the
+            # Worker's validateCategory). A legacy/category-less create defaults to safety.
+            if (
+                category is not None
+                and valid_categories is not None
+                and category not in valid_categories
+            ):
+                raise PublishApplyError(f"unknown workflow category {category!r}")
             m["parents"].append({
                 "parent_form_code": parent_form_code,
                 "name": _parent_display_name(definition),
                 "display_order": _next_parent_order(m),
+                "category": category or "safety",
                 "forms": [new_form],
             })
         else:
@@ -292,6 +305,25 @@ def apply_publish(
             raise PublishApplyError(f"{identity!r} is already retired")
         form["status"] = "retired"
         return m, files, f"delete: retired {identity}"
+
+    if op == "recategorize":
+        # Parent-wide workflow change (the form-builder "Change workflow" control): flips the
+        # catalog PARENT's `category`, moving EVERY form/variant under it between workflows at
+        # once. No definition, no file — a manifest-only flip, like delete/rollback. The
+        # Worker's validateCategory is the first gate; this is the authoritative re-check.
+        if not category:
+            raise PublishApplyError("recategorize requires a category")
+        if valid_categories is not None and category not in valid_categories:
+            raise PublishApplyError(f"unknown workflow category {category!r}")
+        parent = _find_parent(m, parent_form_code)
+        if parent is None:
+            raise PublishApplyError(f"parent {parent_form_code!r} not found")
+        if parent.get("category", "safety") == category:
+            # Already in this workflow → an empty manifest diff. Reject at this validate stage
+            # so a no-op never reaches the daemon's `git commit` (mirrors delete's guard).
+            raise PublishApplyError(f"{parent_form_code!r} is already in workflow {category!r}")
+        parent["category"] = category
+        return m, files, f"recategorize: {parent_form_code} -> {category}"
 
     if op == "rollback":
         if not target_form_code:

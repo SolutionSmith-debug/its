@@ -51,7 +51,7 @@ from typing import Any
 import jsonschema
 
 from safety_reports.publish_manifest import PublishApplyError, apply_publish
-from shared import error_log, keychain, portal_client, smartsheet_client
+from shared import error_log, form_category, keychain, portal_client, smartsheet_client
 from shared.error_log import Severity, its_error_log
 from shared.kill_switch import require_active
 
@@ -372,6 +372,7 @@ def _actuate(creds: _Creds, request: dict[str, Any], stats: PublishStats) -> Non
     identity = request["identity"]
     parent = request["parent_form_code"]
     target = request.get("target_form_code")
+    category = request.get("category")  # set only for create(new-parent) + recategorize
 
     # Stage 0 — sync to a clean, current main (recover from an interrupted prior cycle) so the
     # catalog re-check + the commit start from live HEAD.
@@ -392,6 +393,7 @@ def _actuate(creds: _Creds, request: dict[str, Any], stats: PublishStats) -> Non
             _load_catalog(), op=op, identity=identity, parent_form_code=parent,
             target_form_code=target, definition=definition,
             required_content=_load_required_content(),
+            category=category, valid_categories=form_category.workflow_ids(),
         )
         _stamp(creds, request_id, "validated")
     except (PublishApplyError, jsonschema.ValidationError, json.JSONDecodeError, KeyError) as exc:

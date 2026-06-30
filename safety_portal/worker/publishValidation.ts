@@ -1,4 +1,5 @@
 import requiredContent from "../required-content.json";
+import workflows from "../workflows.json";
 
 // Server-side validation of a composed form definition at the POST /api/admin/publish
 // enqueue gate (design brief C3). The Worker is the FIRST gate; the Mac daemon (slice
@@ -52,6 +53,27 @@ function isStr(v: unknown, max = MAX_STR): v is string {
 }
 function fail(reason: string): ValidationResult {
   return { ok: false, reason };
+}
+
+// The valid workflow id set (form-builder workflow selector / catalog parent `category`) —
+// single-sourced in safety_portal/workflows.json, mirrored by shared/form_category.py. Adding
+// a workflow there updates BOTH runtimes' validation.
+const WORKFLOW_IDS: ReadonlySet<string> = new Set(
+  (workflows as { workflows: { id: string }[] }).workflows.map((w) => w.id),
+);
+
+/** Validate a workflow category against the registry — the POST /api/admin/publish gate for
+ *  create + recategorize. Mirrors shared.form_category.is_valid_category.
+ *  A workflow id is short (`^[a-z0-9-]+$`, workflows.schema.json); we cap length so a
+ *  hostile/oversized `category` can't be reflected back in the 400 body, and keep the failure
+ *  reason a STATIC string (never echo caller input back into the response). */
+const MAX_CATEGORY_LEN = 64;
+
+export function validateCategory(value: unknown): ValidationResult {
+  if (typeof value !== "string" || value.length > MAX_CATEGORY_LEN || !WORKFLOW_IDS.has(value)) {
+    return fail("unknown workflow category");
+  }
+  return { ok: true };
 }
 
 // ── Required-content legal floor (Brief 1 PR-1) ──────────────────────────────────────

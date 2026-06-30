@@ -288,17 +288,20 @@ export function deleteAccount(username: string): Promise<AdminResult> {
 // cloud can only queue.
 import type { FormDefinition } from "../forms/types";
 
-export type PublishOp = "create" | "edit" | "add_version" | "delete" | "rollback";
+export type PublishOp = "create" | "edit" | "add_version" | "delete" | "rollback" | "recategorize";
 
 /** The enqueue request. create/edit/add_version carry `definition`; delete/rollback
- *  carry `target_form_code` only. `identity` + `parent_form_code` come from the row
- *  identity (the server re-derives form_code = identity-v<version> from the definition). */
+ *  carry `target_form_code` only; recategorize carries `category` only. `category` is also
+ *  sent on `create` (the new parent's workflow). `identity` + `parent_form_code` come from the
+ *  row identity (the server re-derives form_code = identity-v<version> from the definition). */
 export interface PublishPayload {
   op: PublishOp;
   identity: string;
   parent_form_code: string;
   target_form_code?: string;
   definition?: FormDefinition;
+  /** Workflow id (workflows.json) — required for create + recategorize; ignored otherwise. */
+  category?: string;
 }
 
 /** A 400 from the publish gate carries a human-readable `reason` (the failing
@@ -375,6 +378,7 @@ export interface PublishRequestDetail {
   target_form_code: string | null;
   status: PublishRequest["status"];
   definition_json: string | null;
+  category?: string | null;
 }
 
 export async function fetchPublishRequest(id: number): Promise<PublishRequestDetail> {
