@@ -383,7 +383,7 @@ export function FieldOpsPersonnel({ onBack }: { onBack: () => void }) {
         <form onSubmit={submitEdit} className="dash-row" aria-label="Edit personnel">
           <input name="name" value={editName} onChange={(e) => setEditName(e.target.value)} placeholder="Full name" maxLength={128} />{" "}
           <input name="trade" value={editTrade} onChange={(e) => setEditTrade(e.target.value)} placeholder="Trade (optional)" maxLength={64} />{" "}
-          <button type="submit" disabled={actionBusy} className="btn--secondary">Save</button>{" "}
+          <button type="submit" disabled={actionBusy} className="btn--primary">Save</button>{" "}
           <button type="button" onClick={() => setEditId(null)} className="btn--secondary">Cancel</button>
         </form>
       )}
@@ -391,7 +391,7 @@ export function FieldOpsPersonnel({ onBack }: { onBack: () => void }) {
       {canManage && linkId !== null && (
         <form onSubmit={submitLink} className="dash-row" aria-label="Link personnel account">
           <input name="username" value={linkUsername} onChange={(e) => setLinkUsername(e.target.value)} placeholder="account username" maxLength={64} />{" "}
-          <button type="submit" disabled={actionBusy} className="btn--secondary">Link</button>{" "}
+          <button type="submit" disabled={actionBusy} className="btn--primary">Link</button>{" "}
           <button type="button" onClick={() => setLinkId(null)} className="btn--secondary">Cancel</button>
         </form>
       )}
@@ -404,7 +404,7 @@ export function FieldOpsPersonnel({ onBack }: { onBack: () => void }) {
               <option key={j.job_id} value={j.job_id}>{j.project_name} ({j.job_id})</option>
             ))}
           </select>{" "}
-          <button type="submit" disabled={actionBusy} className="btn--secondary">Save placement</button>{" "}
+          <button type="submit" disabled={actionBusy} className="btn--primary">Save placement</button>{" "}
           <button type="button" onClick={() => setAssignId(null)} className="btn--secondary">Cancel</button>
         </form>
       )}

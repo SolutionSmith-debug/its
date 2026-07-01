@@ -1,8 +1,13 @@
 /**
- * Field Ops Equipment page (BRIEF B).
- * List renders dash-grid of dash-card--click with status pill; detail shows location/inspections/logs.
- * Mirrors FieldOpsPersonnel.test.tsx: vi.mock the lib, mock BOTH fetchers before render, query by
- * specific classes. resetAllMocks (not clearAllMocks) so mockResolvedValueOnce queues don't leak.
+ * Field Ops Equipment page — URS-Marine-style DASHBOARD → DETAIL → MANAGE multi-view.
+ * Dashboard renders a dash-grid of dash-card--click cards with a readiness status pill; clicking a
+ * card (or Enter/Space) opens the detail (field actions + history). An admin "Manage equipment"
+ * button (cap.equipment.manage) opens the roster screen (add / edit / retire). Field actions
+ * (status / log / move) are gated on cap.equipment.field.
+ *
+ * Mirrors the sibling tracker tests: vi.mock the lib + auth, mock the fetchers before render, query
+ * by specific classes / aria-labels. resetAllMocks (not clearAllMocks) so mockResolvedValueOnce
+ * queues don't leak.
  */
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -81,7 +86,14 @@ const DETAIL_DATA: api.EquipmentDetail = {
 
 const NO_CURSORS = { loc: null, insp: null, log: null };
 
-describe("FieldOpsEquipment — list view", () => {
+/** Find a button by its trimmed visible text. */
+function buttonByText(container: HTMLElement, text: string): HTMLButtonElement | undefined {
+  return Array.from(container.querySelectorAll("button")).find((b) => b.textContent?.trim() === text) as
+    | HTMLButtonElement
+    | undefined;
+}
+
+describe("FieldOpsEquipment — dashboard view", () => {
   it("renders empty state when no equipment", async () => {
     vi.mocked(api.fetchEquipmentList).mockResolvedValue({ equipment: [], next_cursor: null });
     const { container } = render(<FieldOpsEquipment onBack={() => {}} />);
@@ -120,6 +132,21 @@ describe("FieldOpsEquipment — list view", () => {
     });
   });
 
+  it("keyboard (Enter) on a card opens detail", async () => {
+    vi.mocked(api.fetchEquipmentList).mockResolvedValue({ equipment: EQUIPMENT_LIST, next_cursor: null });
+    vi.mocked(api.fetchEquipmentDetail).mockResolvedValue({ equipment: DETAIL_DATA, cursors: NO_CURSORS });
+    const { container } = render(<FieldOpsEquipment onBack={() => {}} />);
+
+    await waitFor(() => expect(container.querySelector(".dash-card--click")).not.toBeNull());
+    const card = container.querySelector<HTMLElement>(".dash-card--click")!;
+    expect(card.getAttribute("role")).toBe("button");
+    expect(card.getAttribute("tabindex")).toBe("0");
+    fireEvent.keyDown(card, { key: "Enter" });
+
+    await waitFor(() => expect(api.fetchEquipmentDetail).toHaveBeenCalledWith(1, undefined));
+    await waitFor(() => expect(container.querySelector(".page__heading")?.textContent).toBe("Unit Alpha"));
+  });
+
   it("Load more button fetches next page", async () => {
     vi.mocked(api.fetchEquipmentList)
       .mockResolvedValueOnce({ equipment: EQUIPMENT_LIST.slice(0, 1), next_cursor: "cursor-1" })
@@ -153,8 +180,6 @@ describe("FieldOpsEquipment — detail view", () => {
   });
 
   it("location section renders the location row", async () => {
-    // Detail has a location table AND an inspection table; assert the location data by its label
-    // rather than a cross-section tbody count.
     const { container } = await openDetail();
     await waitFor(() => expect(container.textContent ?? "").toContain("Site A"));
     expect(container.querySelector("table.dash-table")).not.toBeNull();
@@ -190,7 +215,7 @@ describe("FieldOpsEquipment — detail view", () => {
     await waitFor(() => expect(api.fetchEquipmentDetail).toHaveBeenCalledWith(1, { loc: "loc-cursor" }));
   });
 
-  it("back button returns to list", async () => {
+  it("back button returns to the dashboard", async () => {
     const { container } = await openDetail();
     await waitFor(() => expect(container.querySelectorAll(".dash-card--click")).toHaveLength(0));
 
@@ -214,6 +239,7 @@ describe("FieldOpsEquipment — field actions (write, cap.equipment.field)", () 
     const { container } = await openDetail();
     await waitFor(() => expect(container.querySelector("form[aria-label='Update readiness status']")).not.toBeNull());
     expect(container.querySelector("form[aria-label='Add machine log']")).not.toBeNull();
+    expect(container.querySelector("form[aria-label='Move equipment to a job']")).not.toBeNull();
   });
 
   it("hides the field-action forms when the user lacks the cap", async () => {
@@ -246,9 +272,30 @@ describe("FieldOpsEquipment — field actions (write, cap.equipment.field)", () 
     fireEvent.submit(form);
     await waitFor(() => expect(api.logEquipmentMaintenance).toHaveBeenCalledWith(1, expect.objectContaining({ log_type: "fuel" })));
   });
+
+  it("move form submits moveEquipment with the picked job", async () => {
+    vi.mocked(useAuth).mockReturnValue({
+      user: { username: "field.pm", role: "submitter", capabilities: ["cap.equipment.field"] },
+      loading: false,
+      login: vi.fn(async () => {}),
+      logout: vi.fn(async () => {}),
+    });
+    vi.mocked(api.fetchActiveJobOptions).mockResolvedValue([{ job_id: "JOB-A", project_name: "Alpha" }]);
+    vi.mocked(api.moveEquipment).mockResolvedValue(undefined);
+    const { container } = await openDetail();
+    const form = (await waitFor(() => {
+      const f = container.querySelector("form[aria-label='Move equipment to a job']");
+      expect(f).not.toBeNull();
+      return f!;
+    })) as HTMLFormElement;
+    await waitFor(() => expect(form.querySelector("option[value='JOB-A']")).not.toBeNull());
+    fireEvent.change(form.querySelector("select")!, { target: { value: "JOB-A" } });
+    fireEvent.submit(form);
+    await waitFor(() => expect(api.moveEquipment).toHaveBeenCalledWith(1, expect.objectContaining({ job_id: "JOB-A" })));
+  });
 });
 
-describe("FieldOpsEquipment — roster admin + move (write)", () => {
+describe("FieldOpsEquipment — Manage screen (roster CRUD, cap.equipment.manage)", () => {
   function asManager() {
     vi.mocked(useAuth).mockReturnValue({
       user: { username: "admin.one", role: "admin", capabilities: ["cap.equipment.field", "cap.equipment.manage"] },
@@ -258,59 +305,81 @@ describe("FieldOpsEquipment — roster admin + move (write)", () => {
     });
   }
 
-  it("admin sees the Add-unit form on the list; submitting calls createEquipment + reloads", async () => {
+  async function openManage(container: HTMLElement) {
+    await waitFor(() => expect(buttonByText(container, "Manage equipment")).toBeTruthy());
+    fireEvent.click(buttonByText(container, "Manage equipment")!);
+    await waitFor(() => expect(container.querySelector("form[aria-label='Add equipment']")).not.toBeNull());
+  }
+
+  it("a manager sees the 'Manage equipment' button; a field-only user does not", async () => {
+    // manager
+    asManager();
+    vi.mocked(api.fetchEquipmentList).mockResolvedValue({ equipment: EQUIPMENT_LIST, next_cursor: null });
+    const mgr = render(<FieldOpsEquipment onBack={() => {}} />);
+    await waitFor(() => expect(mgr.container.querySelectorAll(".dash-card--click")).toHaveLength(2));
+    expect(buttonByText(mgr.container, "Manage equipment")).toBeTruthy();
+    cleanup();
+
+    // field-only (default caps in beforeEach = cap.equipment.field only)
+    vi.mocked(useAuth).mockReturnValue({
+      user: { username: "field.pm", role: "submitter", capabilities: ["cap.equipment.field"] },
+      loading: false,
+      login: vi.fn(async () => {}),
+      logout: vi.fn(async () => {}),
+    });
+    vi.mocked(api.fetchEquipmentList).mockResolvedValue({ equipment: EQUIPMENT_LIST, next_cursor: null });
+    const field = render(<FieldOpsEquipment onBack={() => {}} />);
+    await waitFor(() => expect(field.container.querySelectorAll(".dash-card--click")).toHaveLength(2));
+    expect(buttonByText(field.container, "Manage equipment")).toBeUndefined();
+    expect(field.container.querySelector("form[aria-label='Add equipment']")).toBeNull();
+  });
+
+  it("Manage screen: submitting the Add form calls createEquipment + reloads the roster", async () => {
     asManager();
     vi.mocked(api.fetchEquipmentList).mockResolvedValue({ equipment: EQUIPMENT_LIST, next_cursor: null });
     vi.mocked(api.createEquipment).mockResolvedValue({ id: 99 });
     const { container } = render(<FieldOpsEquipment onBack={() => {}} />);
-    const form = (await waitFor(() => container.querySelector("form[aria-label='Add equipment']")))!;
+    await openManage(container);
+
+    const form = container.querySelector("form[aria-label='Add equipment']")!;
     fireEvent.change(form.querySelector("input")!, { target: { value: "New Skid" } });
     fireEvent.submit(form);
     await waitFor(() => expect(api.createEquipment).toHaveBeenCalledWith(expect.objectContaining({ name: "New Skid" })));
-    await waitFor(() => expect(vi.mocked(api.fetchEquipmentList).mock.calls.length).toBeGreaterThanOrEqual(2)); // reload
+    await waitFor(() => expect(vi.mocked(api.fetchEquipmentList).mock.calls.length).toBeGreaterThanOrEqual(2)); // dashboard + manage-mount + reload
   });
 
-  it("a field-only user (no manage cap) does NOT see the Add-unit form", async () => {
-    vi.mocked(api.fetchEquipmentList).mockResolvedValue({ equipment: EQUIPMENT_LIST, next_cursor: null }); // default caps = field only
-    const { container } = render(<FieldOpsEquipment onBack={() => {}} />);
-    await waitFor(() => expect(container.querySelectorAll(".dash-card--click")).toHaveLength(2));
-    expect(container.querySelector("form[aria-label='Add equipment']")).toBeNull();
-  });
-
-  it("admin retires a unit from the detail (calls retireEquipment)", async () => {
+  it("Manage screen: editing a unit calls updateEquipment", async () => {
     asManager();
     vi.mocked(api.fetchEquipmentList).mockResolvedValue({ equipment: EQUIPMENT_LIST, next_cursor: null });
-    vi.mocked(api.fetchEquipmentDetail).mockResolvedValue({ equipment: DETAIL_DATA, cursors: NO_CURSORS });
+    vi.mocked(api.updateEquipment).mockResolvedValue(undefined);
+    const { container } = render(<FieldOpsEquipment onBack={() => {}} />);
+    await openManage(container);
+
+    fireEvent.click(buttonByText(container, "Edit details")!); // first roster card = Unit Alpha (id 1)
+    const editForm = (await waitFor(() => container.querySelector("form[aria-label='Edit Unit Alpha']")))!;
+    fireEvent.change(editForm.querySelector("input")!, { target: { value: "Alpha Prime" } });
+    fireEvent.submit(editForm);
+    await waitFor(() => expect(api.updateEquipment).toHaveBeenCalledWith(1, expect.objectContaining({ name: "Alpha Prime" })));
+  });
+
+  it("Manage screen: retiring a unit calls retireEquipment", async () => {
+    asManager();
+    vi.mocked(api.fetchEquipmentList).mockResolvedValue({ equipment: EQUIPMENT_LIST, next_cursor: null });
     vi.mocked(api.retireEquipment).mockResolvedValue(undefined);
     const { container } = render(<FieldOpsEquipment onBack={() => {}} />);
-    await waitFor(() => expect(container.querySelectorAll(".dash-card--click")).toHaveLength(2));
-    fireEvent.click(container.querySelector(".dash-card--click")!);
-    const retireBtn = await waitFor(() => {
-      const b = Array.from(container.querySelectorAll("button")).find((x) => x.textContent === "Retire unit");
-      expect(b).toBeTruthy();
-      return b!;
-    });
-    fireEvent.click(retireBtn);
+    await openManage(container);
+
+    fireEvent.click(buttonByText(container, "Retire unit")!); // first roster card = Unit Alpha (id 1)
     await waitFor(() => expect(api.retireEquipment).toHaveBeenCalledWith(1));
   });
 
-  it("move form submits moveEquipment with the picked job", async () => {
+  it("Manage screen: back button returns to the dashboard", async () => {
     asManager();
     vi.mocked(api.fetchEquipmentList).mockResolvedValue({ equipment: EQUIPMENT_LIST, next_cursor: null });
-    vi.mocked(api.fetchEquipmentDetail).mockResolvedValue({ equipment: DETAIL_DATA, cursors: NO_CURSORS });
-    vi.mocked(api.fetchActiveJobOptions).mockResolvedValue([{ job_id: "JOB-A", project_name: "Alpha" }]);
-    vi.mocked(api.moveEquipment).mockResolvedValue(undefined);
     const { container } = render(<FieldOpsEquipment onBack={() => {}} />);
+    await openManage(container);
+
+    fireEvent.click(container.querySelector(".dash-back-btn button")!);
     await waitFor(() => expect(container.querySelectorAll(".dash-card--click")).toHaveLength(2));
-    fireEvent.click(container.querySelector(".dash-card--click")!);
-    const form = await waitFor(() => {
-      const f = container.querySelector("form[aria-label='Move equipment to a job']");
-      expect(f).not.toBeNull();
-      return f!;
-    });
-    await waitFor(() => expect(form.querySelector("option[value='JOB-A']")).not.toBeNull());
-    fireEvent.change(form.querySelector("select")!, { target: { value: "JOB-A" } });
-    fireEvent.submit(form);
-    await waitFor(() => expect(api.moveEquipment).toHaveBeenCalledWith(1, expect.objectContaining({ job_id: "JOB-A" })));
   });
 });
