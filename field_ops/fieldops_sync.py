@@ -46,9 +46,11 @@ Failure modes
   ERROR heartbeat. 401 on pending-jobs → CRITICAL; other transport error → ERROR; both
   leave every job dirty for the next cycle.
 - Per-job fence: `PicklistViolationError` / `SmartsheetValidationError` (permanent) → a
-  `progress_reports` Review-Queue row, job left dirty; any other `SmartsheetError` /
-  `PortalTransportError` (transient) → ERROR-logged, job left dirty. One bad job never kills
-  the cycle.
+  `progress_reports` Review-Queue row (carrying the partial-commit state — which sheet failed and
+  whether safety already mirrored), job left dirty; `PortalAuthError` on the mark-mirrored
+  write-back (401, non-transient) → CRITICAL (`fieldops_mark_mirrored_unauthorized`, see runbook
+  Symptom E), job left dirty; any other `SmartsheetError` / `PortalTransportError` (transient) →
+  ERROR-logged, job left dirty. One bad job never kills the cycle.
 
 Consumers
 ---------
@@ -417,6 +419,9 @@ def _mirror_job(
             error_code="fieldops_mirror_version_malformed",
         )
     correlation_id = uuid.uuid4().hex[:12]
+    # Track the dual-sheet commit point so a permanent failure's Review-Queue ticket records the
+    # PARTIAL state (safety already mirrored vs nothing mirrored) — the operator's fix differs.
+    mirrored_safety = False
 
     try:
         # ── SAFETY sheet ──────────────────────────────────────────────────────
@@ -433,6 +438,7 @@ def _mirror_job(
                 "canonical_job_id": canonical or None,
             }],
         )
+        mirrored_safety = True
         # ── PROGRESS sheet ────────────────────────────────────────────────────
         # Commit point already advanced safety; if this raises, the job stays dirty with
         # only safety mirrored and next cycle re-attempts both (safety find-or-create no-ops).
@@ -456,7 +462,25 @@ def _mirror_job(
         # PERMANENT — the row will never succeed as-is (a bad lifecycle value, an HTTP-400
         # reject). Route to the Review Queue; leave the job dirty (the operator has a ticket).
         counters["reviewed"] += 1
-        _route_to_review(job, job_id, exc, correlation_id)
+        _route_to_review(job, job_id, exc, correlation_id, mirrored_safety=mirrored_safety)
+    except portal_client.PortalAuthError:
+        # 401 on mark-mirrored — the field-ops bearer was rejected while writing back the
+        # watermark. NOT transient: a bad/rotated bearer will NOT self-heal → page (CRITICAL),
+        # same posture as the pending-jobs 401. The sheet write itself already SUCCEEDED (upsert
+        # is a Smartsheet write, not a Worker call), so only the Worker watermark is missing — the
+        # job stays dirty and is safely re-attempted (find-or-create no-ops) once the bearer is
+        # fixed. PortalAuthError is a PortalTransportError SUBCLASS, so this MUST precede the
+        # transient clause below or a 401 would be mis-classified as a self-healing blip.
+        counters["errors"] += 1
+        error_log.log(
+            Severity.CRITICAL, SCRIPT_NAME,
+            f"mark-mirrored UNAUTHORIZED (401) — field-ops bearer rejected during write-back for "
+            f"job_id={job_id!r}; the sheet write landed but the Worker watermark did not, so the "
+            f"job is left dirty (safe re-attempt once the bearer is fixed). "
+            f"See docs/runbooks/fieldops_sync.md Symptom E.",
+            error_code="fieldops_mark_mirrored_unauthorized",
+            correlation_id=correlation_id,
+        )
     except (smartsheet_client.SmartsheetError, portal_client.PortalTransportError) as exc:
         # TRANSIENT — leave the job dirty (do NOT mark-mirrored); next cycle retries.
         counters["errors"] += 1
@@ -478,19 +502,34 @@ def _mirror_job(
 
 
 def _route_to_review(
-    job: dict[str, Any], job_id: str, exc: Exception, correlation_id: str
+    job: dict[str, Any], job_id: str, exc: Exception, correlation_id: str,
+    *, mirrored_safety: bool,
 ) -> None:
-    """Route a permanently-failed job to ITS_Review_Queue (workstream progress_reports)."""
+    """Route a permanently-failed job to ITS_Review_Queue (workstream progress_reports).
+
+    `mirrored_safety` records the dual-sheet PARTIAL-commit state at the point of failure so the
+    operator's ticket says WHERE the job stands: if the safety sheet already mirrored, only the
+    PROGRESS sheet failed (safety is live + correct); otherwise nothing mirrored yet (the failure
+    was on the safety sheet). The remediation differs between the two, so name it explicitly.
+    """
+    failed_sheet = "progress" if mirrored_safety else "safety"
+    partial = (
+        "safety sheet already mirrored — only the progress sheet failed"
+        if mirrored_safety
+        else "nothing mirrored yet — failed on the safety sheet"
+    )
     review_queue.add(
         workstream="progress_reports",
         summary=(
-            f"field-ops up-sync: PERMANENT failure mirroring job {job_id!r} "
-            f"({type(exc).__name__}) — left dirty, needs operator fix"
+            f"field-ops up-sync: PERMANENT failure mirroring job {job_id!r} on the {failed_sheet} "
+            f"sheet ({type(exc).__name__}) — {partial}; left dirty, needs operator fix"
         ),
         payload={
             "job_id": job_id,
             "project_name": job.get("project_name"),
             "lifecycle": job.get("lifecycle"),
+            "failed_sheet": failed_sheet,
+            "safety_mirrored": mirrored_safety,
             "error": f"{type(exc).__name__}: {exc!r}",
         },
         sla_tier=review_queue.SlaTier.SAFETY_INTAKE,
@@ -500,7 +539,8 @@ def _route_to_review(
     )
     error_log.log(
         Severity.WARN, SCRIPT_NAME,
-        f"job_id={job_id!r} routed to Review Queue (permanent): {type(exc).__name__}: {exc!r}",
+        f"job_id={job_id!r} routed to Review Queue (permanent, failed on the {failed_sheet} "
+        f"sheet): {type(exc).__name__}: {exc!r}",
         error_code="fieldops_job_permanent",
         correlation_id=correlation_id,
     )

@@ -75,6 +75,16 @@ Smartsheet is reachable (the circuit breaker / `ITS_Errors`); if a single job is
 many cycles after Smartsheet is healthy, capture its `job_id` and escalate (likely a row-shape edge
 the §30 integration scaffold + a live smoke should reproduce).
 
+## Symptom E — CRITICAL `fieldops_mark_mirrored_unauthorized` (401 on the mark-mirrored write-back)
+
+**What it means.** The same auth mismatch as Symptom C, but caught on the *write-back* call (the
+daemon telling the Worker a job was mirrored) instead of the initial pending-jobs fetch: the
+`ITS_PORTAL_FIELDOPS_TOKEN` no longer matches the Worker's `PORTAL_FIELDOPS_API_TOKEN` secret. The
+Smartsheet sheet write ALREADY landed (the job is in the sheet), so **nothing is lost** — only the
+Worker's watermark is missing, so the job stays `pending` and is safely re-attempted next cycle
+(find-or-create no-ops) once the token is fixed. **Secrets/auth → escalate to Seth** (re-set the
+Keychain entry to match the Worker secret); the Successor-Operator does not handle token rotation.
+
 ## Why the daemon is shaped this way (pointer to §42)
 
 The code-reader rationale lives in `field_ops/fieldops_sync.py` (the gate → fail-closed creds →
