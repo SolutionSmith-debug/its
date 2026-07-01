@@ -1014,7 +1014,7 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
         </div>
       )}
       {actionMsg && (
-        <p className="muted" style={{ color: actionMsg.ok ? "green" : "red" }}>{actionMsg.text}</p>
+        <p className={`banner ${actionMsg.ok ? "banner--ok" : "banner--err"}`}>{actionMsg.text}</p>
       )}
       {error && <p className="banner banner--err">{error}</p>}
 
