@@ -210,3 +210,44 @@ def test_row_missing_job_id_is_skipped(_patch):
     assert stats.errors == 1
     _patch["upsert"].assert_not_called()
     _patch["mark"].assert_not_called()
+
+
+# ---- shared base-URL key is read under its owning workstream --------------
+
+
+def test_worker_base_url_read_under_safety_reports_workstream(mocker):
+    # The Worker base-URL key is SHARED with portal_poll and OWNED by safety_reports; reading
+    # it under field_ops would force a duplicate ITS_Config row that can silently diverge from
+    # the canonical safety_reports row. This proves the control bites: the base-URL key is
+    # requested under workstream="safety_reports", while a field_ops-scoped key (the
+    # sync_enabled gate) is still read under workstream="field_ops".
+    def _get_setting(key, *, workstream):
+        if key == fieldops_sync.CFG_WORKER_BASE_URL:
+            return "https://safety.example"
+        if key == fieldops_sync.CFG_SYNC_ENABLED:
+            return "true"
+        return None
+
+    get_setting = mocker.patch(
+        "field_ops.fieldops_sync.smartsheet_client.get_setting", side_effect=_get_setting
+    )
+    mocker.patch(
+        "field_ops.fieldops_sync.keychain.get_secret", return_value="bearer-tok"
+    )
+
+    creds = fieldops_sync._resolve_credentials()
+    assert creds == ("https://safety.example", "bearer-tok")
+
+    base_url_calls = [
+        c for c in get_setting.call_args_list if c.args[0] == fieldops_sync.CFG_WORKER_BASE_URL
+    ]
+    assert base_url_calls, "expected the Worker base-URL key to be read"
+    assert all(c.kwargs["workstream"] == "safety_reports" for c in base_url_calls)
+
+    # A field_ops-owned key stays under field_ops (byte-identical default behavior).
+    assert fieldops_sync._sync_enabled() is True
+    sync_calls = [
+        c for c in get_setting.call_args_list if c.args[0] == fieldops_sync.CFG_SYNC_ENABLED
+    ]
+    assert sync_calls, "expected the sync_enabled gate to be read"
+    assert all(c.kwargs["workstream"] == "field_ops" for c in sync_calls)
