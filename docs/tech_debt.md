@@ -2532,3 +2532,13 @@ Surfaced: 2026-06-29 A3 smoke (Box OAuth refresh-lock hardening); live `ITS_BOX_
 **Tag:** `safety-portal`, `capabilities`, `auth`, `field-ops`, `P2.6`. **Revisit when:** items 1-2 are still-open cheap cleanups (no trigger yet); items 3-4 RESOLVED 2026-07-01 (crew-query convergence spun out as its own tracked follow-up, see item 4 note).
 
 Surfaced: 2026-06-29 permission-model forensic investigation; full spec at `~/.claude/plans/what-happened-to-my-floating-porcupine.md`; reusable inventory in the `reference_portal-capability-enforcement-gaps` memory.
+
+---
+
+## [OPEN 2026-07-01] Manager tier over-permissioned on personnel — can retire/delete, should only create + assign
+
+**Operator-reported 2026-07-01.** The `manager` role holds `cap.personnel.manage`, which currently bundles **create / edit / link / unlink / retire** of personnel. The operator wants a manager to be able to **create** a person and **assign** them to a job (`cap.crew.assign`, already correct), but **NOT retire/delete** personnel — retire stays admin-only. Today the retire route (`POST /api/fieldops/personnel/:id/retire` in `fieldops_personnel_write.ts`, gated `cap.personnel.manage`) is reachable by a manager, and the SPA renders the Retire button for anyone with `cap.personnel.manage` (`FieldOpsPersonnel.tsx`).
+
+**Fix options (decide at build):** (a) split `cap.personnel.manage` → keep create/edit/link for manager, move **retire** behind a new `cap.personnel.retire` granted admin-only (a migration + a route re-gate + SPA gate); or (b) a lighter `role==='admin'` hard-check on the retire route + SPA button (mirrors the login-account-mint self-gate pattern) without a new cap. Option (a) is the cleaner capability-model fit; (b) is faster. Either way: re-gate the Worker route (the real boundary) AND the SPA button (convenience). Add a gate-bites test (a manager gets 403 on retire).
+
+**Operator direction:** park OR **fold into the next big website update** (the Assigned-Tasks tab work — thematically a manager-facing permission change). **Tag:** `field_ops`, `capabilities`, `auth`, `manager`, `p2.6`, `personnel`. **Revisit when:** building the Assigned-Tasks tab / next manager-facing update.

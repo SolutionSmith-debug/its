@@ -3,35 +3,36 @@ import type { FormEvent } from "react";
 import * as api from "../lib/fieldops_personnel";
 import { fetchJobs, type Job } from "../lib/api";
 import { PageShell } from "../components/PageShell";
+import { PersonnelDetailView } from "./PersonnelDetailView";
 import { useAuth } from "../lib/auth";
 
-// Format helpers: epoch SECONDS (as stored in D1) → ×1000 for JS Date
-function fmtDateTime(epochSeconds: number | null): string {
-  if (!epochSeconds) return "—";
-  const d = new Date(epochSeconds * 1000);
-  return d.toLocaleString();
-}
-
+// Format helper: hours → 2dp; null/NaN → em-dash. (Date formatting lives in the detail view.)
 function fmtHours(hours: number | null): string {
   if (hours == null || isNaN(hours)) return "—";
   return hours.toFixed(2);
 }
 
+/**
+ * Field-Ops PERSONNEL surface — a URS-Marine-style refinement matching the just-ported Equipment
+ * page: a card-grid ROSTER ("who's on the crew, who's placed where") → click a card → the
+ * PersonnelDetailView sibling (full time history). App.tsx/HomePage.tsx routing + the `{ onBack }`
+ * prop contract are unchanged. Every roster manage control keeps its exact capability gate and API
+ * call: create (cap.personnel.manage, admin-only login sub-form on role==='admin'), edit, link /
+ * unlink account, retire, and the P2.6 crew→job Assign control (cap.crew.assign). All cap gates
+ * here are a CONVENIENCE — the Worker re-gates every write server-side (Invariant 2).
+ */
 export function FieldOpsPersonnel({ onBack }: { onBack: () => void }) {
   const [view, setView] = useState<"list" | "detail">("list");
+  const [selectedId, setSelectedId] = useState<number | null>(null);
+
   const [personnel, setPersonnel] = useState<api.PersonnelRow[]>([]);
   const [latestEntries, setLatestEntries] = useState<Record<number, api.LatestEntry>>({});
   const [cursor, setCursor] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Detail state
-  const [selectedPersonnel, setSelectedPersonnel] = useState<api.PersonnelDetail | null>(null);
-  const [detailCursor, setDetailCursor] = useState<string | null>(null);
-  const [detailLoading, setDetailLoading] = useState(false);
-
-  // Manage state (task #22; cap.personnel.manage). The capability gate here is a CONVENIENCE — the
-  // Worker re-gates every write route server-side (Invariant 2: never trust the client).
+  // Manage state (cap.personnel.manage). The capability gate here is a CONVENIENCE — the Worker
+  // re-gates every write route server-side (Invariant 2: never trust the client).
   const { user } = useAuth();
   const canManage = (user?.capabilities ?? []).includes("cap.personnel.manage");
   // P2.6: cap.crew.assign drives the crew→job placement control; role==='admin' gates the
@@ -236,180 +237,67 @@ export function FieldOpsPersonnel({ onBack }: { onBack: () => void }) {
     await loadList();
   }
 
-  function handleRowClick(p: api.PersonnelRow) {
+  function openDetail(id: number) {
+    setSelectedId(id);
+    setError(null);
     setView("detail");
-    setSelectedPersonnel(null);
-    setDetailLoading(true);
-    api
-      .fetchPersonnelDetail(p.id, undefined)
-      .then((res) => {
-        setSelectedPersonnel(res.personnel);
-        setDetailCursor(res.next_cursor);
-        setDetailLoading(false);
-      })
-      .catch(() => setError("Failed to load personnel details."));
   }
 
-  function handleBack() {
-    if (view === "detail") {
-      setView("list");
-      setDetailCursor(null);
-      setSelectedPersonnel(null);
-      setError(null);
-    } else {
-      onBack();
-    }
+  function backToList() {
+    setView("list");
+    setSelectedId(null);
+    setError(null);
   }
 
-  // Detail loading more entries
-  async function loadMoreEntries() {
-    if (!selectedPersonnel || !detailCursor) return;
-    setDetailLoading(true);
-    try {
-      const res = await api.fetchPersonnelDetail(selectedPersonnel.id, detailCursor);
-      setSelectedPersonnel((prev) => {
-        if (!prev) return res.personnel;
-        // Prepend new entries (detail uses DESC order, so newer results come first in next page)
-        const mergedEntries = [...res.personnel.time_entries, ...prev.time_entries];
-        return { ...prev, time_entries: mergedEntries };
-      });
-      setDetailCursor(res.next_cursor);
-    } catch {
-      setError("Failed to load more entries.");
-    } finally {
-      setDetailLoading(false);
-    }
+  if (view === "detail" && selectedId != null) {
+    return <PersonnelDetailView id={selectedId} onBack={backToList} onHome={onBack} />;
   }
 
-  if (view === "detail" && selectedPersonnel) {
-    return (
-      <PageShell onHome={onBack}>
-        <div className="dash-back-btn">
-          <button onClick={handleBack} className="btn--secondary">
-            ← Back to personnel
-          </button>
-        </div>
-
-        <h2 className="page__heading">{selectedPersonnel.name}</h2>
-        <p className="muted">
-          {selectedPersonnel.username ? `@${selectedPersonnel.username}` : "No account linked"}
-          {" • "}
-          {selectedPersonnel.trade}
-          {selectedPersonnel.current_job ? ` • Placed on ${selectedPersonnel.current_job_name ?? selectedPersonnel.current_job}` : ""}
-        </p>
-
-        <div className="dash-section">
-          <h3>Time history</h3>
-          {selectedPersonnel.time_entries.length === 0 ? (
-            <div className="dash-unavail">No time logged.</div>
-          ) : (
-            <>
-              <table className="dash-table">
-                <thead>
-                  <tr>
-                    <th className="dash-header">Job</th>
-                    <th className="dash-header">Work started</th>
-                    <th className="dash-header">Work ended</th>
-                    <th className="dash-header">Hours</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {selectedPersonnel.time_entries.map((e) => (
-                    <tr key={e.uuid} className="dash-row">
-                      <td className="dash-cell">{e.project_name ?? e.job_id}</td>
-                      <td className="dash-cell">{fmtDateTime(e.work_started_at)}</td>
-                      <td className="dash-cell">{fmtDateTime(e.work_ended_at)}</td>
-                      <td className="dash-cell">{fmtHours(e.hours)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-
-              {detailCursor && (
-                <div className="dash-row dash-load-more">
-                  <button
-                    onClick={loadMoreEntries}
-                    disabled={detailLoading}
-                    className="btn--secondary"
-                  >
-                    {detailLoading ? "Loading..." : "Load more"}
-                  </button>
-                </div>
-              )}
-            </>
-          )}
-        </div>
-      </PageShell>
-    );
-  }
-
-  // List view
+  // ── ROSTER (card grid) ──
   return (
     <PageShell onHome={onBack}>
-
       <h2 className="page__heading">Personnel</h2>
+      <p className="dash__intro">
+        The active crew roster — who's on the team, their trade, standing job placement, and most
+        recent logged job. Select a card for a person's full time history.
+      </p>
+
+      {actionMsg && (
+        <div className={`banner ${actionMsg.ok ? "banner--ok" : "banner--err"}`}>{actionMsg.text}</div>
+      )}
+      {error && <div className="banner banner--err">{error}</div>}
 
       {canManage && (
-        <form onSubmit={submitCreate} className="dash-row" aria-label="Add personnel">
-          {actionMsg && <p className="muted" style={{ color: actionMsg.ok ? "green" : "red" }}>{actionMsg.text}</p>}
-          <input name="name" value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="Full name" maxLength={128} />{" "}
-          <input name="trade" value={newTrade} onChange={(e) => setNewTrade(e.target.value)} placeholder="Trade (optional)" maxLength={64} />{" "}
-          {/* Login-account minting is admin-only (the Worker 403s a non-admin, e.g. a manager);
-              hide the whole sub-form for non-admins so there's no dead control. */}
-          {isAdmin && (
-            <>
-              <label>
-                <input name="withAccount" type="checkbox" checked={withAccount} onChange={(e) => setWithAccount(e.target.checked)} />{" "}
-                Also create a login account
-              </label>{" "}
-              {withAccount && (
-                <>
-                  <input name="username" value={newUsername} onChange={(e) => setNewUsername(e.target.value)} placeholder="username (lastname.firstname)" maxLength={64} />{" "}
-                  <input name="password" type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder="temp password" maxLength={256} />{" "}
-                  <select name="role" value={newRole} onChange={(e) => setNewRole(e.target.value as api.AccountRole)}>
-                    <option value="submitter">Field PM (submitter)</option>
-                    <option value="manager">Manager (crew lead)</option>
-                    <option value="admin">Admin</option>
-                  </select>{" "}
-                </>
-              )}
-            </>
-          )}
-          <button type="submit" disabled={actionBusy} className="btn--primary">Add personnel</button>
-        </form>
+        <section className="card dash-section">
+          <h3 className="dash-detail__h2">Add personnel</h3>
+          <form onSubmit={submitCreate} className="dash-row" aria-label="Add personnel">
+            <input name="name" value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="Full name" maxLength={128} />{" "}
+            <input name="trade" value={newTrade} onChange={(e) => setNewTrade(e.target.value)} placeholder="Trade (optional)" maxLength={64} />{" "}
+            {/* Login-account minting is admin-only (the Worker 403s a non-admin, e.g. a manager);
+                hide the whole sub-form for non-admins so there's no dead control. */}
+            {isAdmin && (
+              <>
+                <label>
+                  <input name="withAccount" type="checkbox" checked={withAccount} onChange={(e) => setWithAccount(e.target.checked)} />{" "}
+                  Also create a login account
+                </label>{" "}
+                {withAccount && (
+                  <>
+                    <input name="username" value={newUsername} onChange={(e) => setNewUsername(e.target.value)} placeholder="username (lastname.firstname)" maxLength={64} />{" "}
+                    <input name="password" type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder="temp password" maxLength={256} />{" "}
+                    <select name="role" value={newRole} onChange={(e) => setNewRole(e.target.value as api.AccountRole)}>
+                      <option value="submitter">Field PM (submitter)</option>
+                      <option value="manager">Manager (crew lead)</option>
+                      <option value="admin">Admin</option>
+                    </select>{" "}
+                  </>
+                )}
+              </>
+            )}
+            <button type="submit" disabled={actionBusy} className="btn--primary">Add personnel</button>
+          </form>
+        </section>
       )}
-
-      {canManage && editId !== null && (
-        <form onSubmit={submitEdit} className="dash-row" aria-label="Edit personnel">
-          <input name="name" value={editName} onChange={(e) => setEditName(e.target.value)} placeholder="Full name" maxLength={128} />{" "}
-          <input name="trade" value={editTrade} onChange={(e) => setEditTrade(e.target.value)} placeholder="Trade (optional)" maxLength={64} />{" "}
-          <button type="submit" disabled={actionBusy} className="btn--primary">Save</button>{" "}
-          <button type="button" onClick={() => setEditId(null)} className="btn--secondary">Cancel</button>
-        </form>
-      )}
-
-      {canManage && linkId !== null && (
-        <form onSubmit={submitLink} className="dash-row" aria-label="Link personnel account">
-          <input name="username" value={linkUsername} onChange={(e) => setLinkUsername(e.target.value)} placeholder="account username" maxLength={64} />{" "}
-          <button type="submit" disabled={actionBusy} className="btn--primary">Link</button>{" "}
-          <button type="button" onClick={() => setLinkId(null)} className="btn--secondary">Cancel</button>
-        </form>
-      )}
-
-      {canAssign && assignId !== null && (
-        <form onSubmit={submitAssign} className="dash-row" aria-label="Assign crew to job">
-          <select value={assignJob} onChange={(e) => setAssignJob(e.target.value)} aria-label="Job placement">
-            <option value="">— Unassign —</option>
-            {jobs.map((j) => (
-              <option key={j.job_id} value={j.job_id}>{j.project_name} ({j.job_id})</option>
-            ))}
-          </select>{" "}
-          <button type="submit" disabled={actionBusy} className="btn--primary">Save placement</button>{" "}
-          <button type="button" onClick={() => setAssignId(null)} className="btn--secondary">Cancel</button>
-        </form>
-      )}
-
-      {error && <p className="muted" style={{ color: "red" }}>{error}</p>}
 
       {personnel.length === 0 ? (
         loading ? (
@@ -419,51 +307,107 @@ export function FieldOpsPersonnel({ onBack }: { onBack: () => void }) {
         )
       ) : (
         <>
-          <table className="dash-table">
-            <thead>
-              <tr>
-                <th className="dash-header">Name</th>
-                <th className="dash-header">Trade</th>
-                <th className="dash-header">Placed on</th>
-                <th className="dash-header">Latest job</th>
-                <th className="dash-header">Hours</th>
-                {(canManage || canAssign) && <th className="dash-header">Manage</th>}
-              </tr>
-            </thead>
-            <tbody>
-              {personnel.map((p) => {
-                const entry = latestEntries[p.id];
-                return (
-                  <tr
-                    key={p.id}
-                    onClick={() => handleRowClick(p)}
-                    className="dash-row dash-row--click"
-                  >
-                    <td className="dash-cell">
-                      <div>{p.name}</div>
-                      {p.username && <span className="muted">@{p.username}</span>}
-                    </td>
-                    <td className="dash-cell">{p.trade}</td>
-                    <td className="dash-cell">{p.current_job_name ?? p.current_job ?? "—"}</td>
-                    <td className="dash-cell">{entry ? entry.project_name ?? entry.job_id : "—"}</td>
-                    <td className="dash-cell">{fmtHours(entry?.hours ?? null)}</td>
-                    {(canManage || canAssign) && (
-                      <td className="dash-cell">
-                        {canManage && <button className="btn--edit" onClick={(e) => { e.stopPropagation(); openEdit(p); }}>Edit</button>}{" "}
+          <div className="dash-grid">
+            {personnel.map((p) => {
+              const entry = latestEntries[p.id];
+              const placedLabel = p.current_job_name ?? p.current_job ?? null;
+              return (
+                <section
+                  key={p.id}
+                  className="card dash-card--click"
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => openDetail(p.id)}
+                  onKeyDown={(e) => {
+                    // Only the card ITSELF (not a focused manage button/field inside it) toggles the
+                    // detail view — so Space typed in an inline manage field never navigates away.
+                    if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) {
+                      e.preventDefault();
+                      openDetail(p.id);
+                    }
+                  }}
+                >
+                  <div className="dash-card__head">
+                    <h3 className="dash-card__title">{p.name}</h3>
+                    <span className={placedLabel ? "dash-pill dash-pill--ok" : "dash-pill"}>
+                      {placedLabel ? "Placed" : "Unassigned"}
+                    </span>
+                  </div>
+                  <div className="dash-card__sub">{p.username ? `@${p.username}` : "No account linked"}</div>
+
+                  <div className="dash-card__row dash-chips">
+                    <span className="dash-chip">{p.trade || "No trade"}</span>
+                    {placedLabel && <span className="dash-chip">Placed on {placedLabel}</span>}
+                  </div>
+
+                  <div className="dash-card__row">
+                    <span className="dash-card__label">Latest job</span>
+                    {entry ? (
+                      <span>
+                        {entry.project_name ?? entry.job_id}
+                        <span className="dash-card__sub"> · {fmtHours(entry.hours)} h</span>
+                      </span>
+                    ) : (
+                      <span className="dash-unavail">No time logged</span>
+                    )}
+                  </div>
+
+                  {(canManage || canAssign) && (
+                    // stopPropagation on the whole manage well so clicking a control / typing in an
+                    // inline form never bubbles to the card's open-detail handler.
+                    <div className="dash-card__row" onClick={(e) => e.stopPropagation()}>
+                      <div className="dash-chips">
+                        {canManage && (
+                          <button className="btn--edit" onClick={(e) => { e.stopPropagation(); openEdit(p); }}>Edit</button>
+                        )}
                         {canManage && (p.username ? (
                           <button className="btn--secondary" onClick={(e) => { e.stopPropagation(); doUnlink(p); }} disabled={actionBusy}>Unlink account</button>
                         ) : (
                           <button className="btn--secondary" onClick={(e) => { e.stopPropagation(); openLink(p); }}>Link account</button>
-                        ))}{" "}
-                        {canAssign && <button className="btn--edit" onClick={(e) => { e.stopPropagation(); openAssign(p); }}>Assign</button>}{" "}
-                        {canManage && <button className="btn--retire" onClick={(e) => { e.stopPropagation(); doRetire(p); }} disabled={actionBusy}>Retire</button>}
-                      </td>
-                    )}
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+                        ))}
+                        {canAssign && (
+                          <button className="btn--edit" onClick={(e) => { e.stopPropagation(); openAssign(p); }}>Assign</button>
+                        )}
+                        {canManage && (
+                          <button className="btn--retire" onClick={(e) => { e.stopPropagation(); doRetire(p); }} disabled={actionBusy}>Retire</button>
+                        )}
+                      </div>
+
+                      {canManage && editId === p.id && (
+                        <form onSubmit={submitEdit} className="dash-row" aria-label="Edit personnel">
+                          <input name="name" value={editName} onChange={(e) => setEditName(e.target.value)} placeholder="Full name" maxLength={128} />{" "}
+                          <input name="trade" value={editTrade} onChange={(e) => setEditTrade(e.target.value)} placeholder="Trade (optional)" maxLength={64} />{" "}
+                          <button type="submit" disabled={actionBusy} className="btn--primary">Save</button>{" "}
+                          <button type="button" onClick={() => setEditId(null)} className="btn--secondary">Cancel</button>
+                        </form>
+                      )}
+
+                      {canManage && linkId === p.id && (
+                        <form onSubmit={submitLink} className="dash-row" aria-label="Link personnel account">
+                          <input name="username" value={linkUsername} onChange={(e) => setLinkUsername(e.target.value)} placeholder="account username" maxLength={64} />{" "}
+                          <button type="submit" disabled={actionBusy} className="btn--primary">Link</button>{" "}
+                          <button type="button" onClick={() => setLinkId(null)} className="btn--secondary">Cancel</button>
+                        </form>
+                      )}
+
+                      {canAssign && assignId === p.id && (
+                        <form onSubmit={submitAssign} className="dash-row" aria-label="Assign crew to job">
+                          <select value={assignJob} onChange={(e) => setAssignJob(e.target.value)} aria-label="Job placement">
+                            <option value="">— Unassign —</option>
+                            {jobs.map((j) => (
+                              <option key={j.job_id} value={j.job_id}>{j.project_name} ({j.job_id})</option>
+                            ))}
+                          </select>{" "}
+                          <button type="submit" disabled={actionBusy} className="btn--primary">Save placement</button>{" "}
+                          <button type="button" onClick={() => setAssignId(null)} className="btn--secondary">Cancel</button>
+                        </form>
+                      )}
+                    </div>
+                  )}
+                </section>
+              );
+            })}
+          </div>
 
           {cursor && (
             <div className="dash-row dash-load-more">

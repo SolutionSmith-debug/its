@@ -6,7 +6,10 @@ import { PageShell } from "../components/PageShell";
 
 // P3 Materials (M1) — admin editor for the material_catalog TYPE vocabulary. cap.materials.manage
 // drives the write affordances (the Worker re-gates every call). List + create + per-row edit +
-// soft-retire, mirroring the AccountsPage / equipment-roster shape; reload-after-write + banner.
+// soft-retire; reload-after-write + banner. VISUAL: the refined URS-Marine dash look (matching the
+// FieldOps Equipment port) — a `.dash-grid` of `.card` type-cards (title + category/unit `.dash-chip`s,
+// retired `.dash-pill--warn`), design-language buttons (add=`.btn--primary`, edit=`.btn--edit`,
+// retire=`.btn--retire`, cancel/load-more=`.btn--secondary`). Behavior/caps/API unchanged.
 
 type FormState = { model_id: string; manufacturer: string; category: string; key_specs: string; unit_cost: string };
 const EMPTY_FORM: FormState = { model_id: "", manufacturer: "", category: "", key_specs: "", unit_cost: "" };
@@ -151,112 +154,122 @@ export function MaterialsCatalogPage({ onBack }: { onBack: () => void }) {
 
   return (
     <PageShell onHome={onBack}>
-        <h1 className="page__heading">Materials Catalog</h1>
-        <p className="muted">
-          The datasheet-backed material type vocabulary. The per-job Material List draws from these types.
-        </p>
+      <h2 className="page__heading">Materials Catalog</h2>
+      <p className="dash__intro">
+        The datasheet-backed material type vocabulary. The per-job Material List draws from these types.
+      </p>
 
-        {msg && (
-          <p className="muted" style={{ color: msg.ok ? "green" : "red" }}>
-            {msg.text}
-          </p>
-        )}
-        {error && <p className="muted" style={{ color: "red" }}>{error}</p>}
+      {msg && <div className={`banner ${msg.ok ? "banner--ok" : "banner--err"}`}>{msg.text}</div>}
+      {error && <div className="banner banner--err">{error}</div>}
 
-        <label className="field">
-          <span className="field__label">
-            <input type="checkbox" checked={showRetired} onChange={(e) => setShowRetired(e.target.checked)} /> Show retired
-          </span>
-        </label>
+      <label className="field">
+        <span className="field__label">
+          <input type="checkbox" checked={showRetired} onChange={(e) => setShowRetired(e.target.checked)} /> Show retired
+        </span>
+      </label>
 
-        {canManage && (
-          <section className="card">
-            {!createOpen ? (
-              <button
-                className="btn btn--primary"
-                onClick={() => {
-                  setCreateOpen(true);
-                  setCf({ ...EMPTY_FORM });
-                }}
-              >
-                + Add a type
-              </button>
-            ) : (
-              <form onSubmit={submitCreate}>
-                <h2 className="page__heading">Add a material type</h2>
-                <FieldInput label="Model / type (required)" value={cf.model_id} onChange={(v) => setCf({ ...cf, model_id: v })} />
-                <FieldInput label="Manufacturer" value={cf.manufacturer} onChange={(v) => setCf({ ...cf, manufacturer: v })} />
-                <FieldInput label="Category (required, e.g. module / inverter)" value={cf.category} onChange={(v) => setCf({ ...cf, category: v })} />
-                <FieldInput label="Key specs" value={cf.key_specs} onChange={(v) => setCf({ ...cf, key_specs: v })} />
-                <FieldInput label="Reference unit cost (optional)" value={cf.unit_cost} onChange={(v) => setCf({ ...cf, unit_cost: v })} />
-                <div className="jha__actions">
-                  <button className="btn btn--primary" type="submit">
-                    {busy ? "Working…" : "Add type"}
-                  </button>
-                  <button className="btn btn--secondary" type="button" onClick={() => setCreateOpen(false)}>
-                    Cancel
-                  </button>
-                </div>
-              </form>
-            )}
-          </section>
-        )}
-
-        <section className="card">
-          <h2 className="page__heading">Types</h2>
-          {loading && rows.length === 0 ? (
-            <p className="muted">Loading…</p>
-          ) : rows.length === 0 ? (
-            <p className="muted">No material types.</p>
-          ) : (
-            <ul className="accounts__list">
-              {rows.map((r) => (
-                <li key={r.id} className="accounts__row">
-                  <div className="accounts__id">
-                    <span className="accounts__name">{r.model_id}</span>
-                    <span className="dash-pill">{r.category}</span>
-                    {r.manufacturer ? <span className="muted">{r.manufacturer}</span> : null}
-                    {r.active ? null : <span className="dash-pill dash-pill--warn">retired</span>}
-                  </div>
-                  {r.key_specs ? <p className="muted">{r.key_specs}</p> : null}
-                  {r.unit_cost != null ? <p className="muted">Ref. cost: {r.unit_cost}</p> : null}
-                  {canManage && r.active === 1 && editId !== r.id ? (
-                    <div className="accounts__actions">
-                      <button className="btn btn--edit" onClick={() => openEdit(r)}>
-                        Edit
-                      </button>
-                      <button className="btn btn--retire" onClick={() => void retire(r.id)}>
-                        Retire
-                      </button>
-                    </div>
-                  ) : null}
-                  {canManage && editId === r.id ? (
-                    <div className="accounts__editor">
-                      <FieldInput label="Model / type" value={ef.model_id} onChange={(v) => setEf({ ...ef, model_id: v })} />
-                      <FieldInput label="Manufacturer" value={ef.manufacturer} onChange={(v) => setEf({ ...ef, manufacturer: v })} />
-                      <FieldInput label="Category" value={ef.category} onChange={(v) => setEf({ ...ef, category: v })} />
-                      <FieldInput label="Key specs" value={ef.key_specs} onChange={(v) => setEf({ ...ef, key_specs: v })} />
-                      <FieldInput label="Reference unit cost" value={ef.unit_cost} onChange={(v) => setEf({ ...ef, unit_cost: v })} />
-                      <div className="jha__actions">
-                        <button className="btn btn--primary" onClick={() => void saveEdit(r.id)}>
-                          {busy ? "Saving…" : "Save"}
-                        </button>
-                        <button className="btn btn--secondary" onClick={() => setEditId(null)}>
-                          Cancel
-                        </button>
-                      </div>
-                    </div>
-                  ) : null}
-                </li>
-              ))}
-            </ul>
-          )}
-          {cursor ? (
-            <button className="btn btn--secondary" onClick={() => void loadMore()} disabled={loading}>
-              Load more
+      {canManage && (
+        <section className="card dash-section">
+          {!createOpen ? (
+            <button
+              className="btn btn--primary"
+              onClick={() => {
+                setCreateOpen(true);
+                setCf({ ...EMPTY_FORM });
+              }}
+            >
+              + Add a type
             </button>
-          ) : null}
+          ) : (
+            <form onSubmit={submitCreate}>
+              <h3 className="dash-detail__h2">Add a material type</h3>
+              <FieldInput label="Model / type (required)" value={cf.model_id} onChange={(v) => setCf({ ...cf, model_id: v })} />
+              <FieldInput label="Manufacturer" value={cf.manufacturer} onChange={(v) => setCf({ ...cf, manufacturer: v })} />
+              <FieldInput label="Category (required, e.g. module / inverter)" value={cf.category} onChange={(v) => setCf({ ...cf, category: v })} />
+              <FieldInput label="Key specs" value={cf.key_specs} onChange={(v) => setCf({ ...cf, key_specs: v })} />
+              <FieldInput label="Reference unit cost (optional)" value={cf.unit_cost} onChange={(v) => setCf({ ...cf, unit_cost: v })} />
+              <div className="jha__actions">
+                <button className="btn btn--primary" type="submit">
+                  {busy ? "Working…" : "Add type"}
+                </button>
+                <button className="btn btn--secondary" type="button" onClick={() => setCreateOpen(false)}>
+                  Cancel
+                </button>
+              </div>
+            </form>
+          )}
         </section>
-      </PageShell>
+      )}
+
+      {loading && rows.length === 0 ? (
+        <p className="muted">Loading…</p>
+      ) : rows.length === 0 ? (
+        <div className="dash-empty">No material types.</div>
+      ) : (
+        <>
+          <div className="dash-grid">
+            {rows.map((r) => (
+              <section key={r.id} className="card">
+                <div className="dash-card__head">
+                  <h3 className="dash-card__title">{r.model_id}</h3>
+                  {r.active ? null : <span className="dash-pill dash-pill--warn">Retired</span>}
+                </div>
+                {r.manufacturer ? <div className="dash-card__sub">{r.manufacturer}</div> : null}
+
+                <div className="dash-card__row">
+                  <div className="dash-chips">
+                    <span className="dash-chip">{r.category}</span>
+                    {r.unit_cost != null ? <span className="dash-chip">Ref. cost: {r.unit_cost}</span> : null}
+                  </div>
+                </div>
+
+                {r.key_specs ? (
+                  <div className="dash-card__row">
+                    <span className="dash-card__label">Key specs</span>
+                    <span>{r.key_specs}</span>
+                  </div>
+                ) : null}
+
+                {canManage && r.active === 1 && editId !== r.id ? (
+                  <div className="dash-row">
+                    <button className="btn btn--edit" onClick={() => openEdit(r)}>
+                      Edit
+                    </button>
+                    <button className="btn btn--retire" onClick={() => void retire(r.id)}>
+                      Retire
+                    </button>
+                  </div>
+                ) : null}
+
+                {canManage && editId === r.id ? (
+                  <div className="accounts__editor">
+                    <FieldInput label="Model / type" value={ef.model_id} onChange={(v) => setEf({ ...ef, model_id: v })} />
+                    <FieldInput label="Manufacturer" value={ef.manufacturer} onChange={(v) => setEf({ ...ef, manufacturer: v })} />
+                    <FieldInput label="Category" value={ef.category} onChange={(v) => setEf({ ...ef, category: v })} />
+                    <FieldInput label="Key specs" value={ef.key_specs} onChange={(v) => setEf({ ...ef, key_specs: v })} />
+                    <FieldInput label="Reference unit cost" value={ef.unit_cost} onChange={(v) => setEf({ ...ef, unit_cost: v })} />
+                    <div className="jha__actions">
+                      <button className="btn btn--primary" onClick={() => void saveEdit(r.id)}>
+                        {busy ? "Saving…" : "Save"}
+                      </button>
+                      <button className="btn btn--secondary" onClick={() => setEditId(null)}>
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
+              </section>
+            ))}
+          </div>
+          {cursor ? (
+            <div className="dash-row dash-load-more">
+              <button className="btn btn--secondary" onClick={() => void loadMore()} disabled={loading}>
+                Load more
+              </button>
+            </div>
+          ) : null}
+        </>
+      )}
+    </PageShell>
   );
 }

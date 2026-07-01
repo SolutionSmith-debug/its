@@ -42,10 +42,11 @@ beforeEach(() => {
 describe("MaterialsCatalogPage", () => {
   it("renders the catalog; a read-only account (no manage cap) sees no write controls", async () => {
     vi.mocked(useAuth).mockReturnValue(authWith(["cap.materials.receive"]));
-    const { container, queryByText } = render(<MaterialsCatalogPage onBack={() => {}} />);
+    const { queryByText } = render(<MaterialsCatalogPage onBack={() => {}} />);
     await waitFor(() => expect(queryByText("MOD-1")).not.toBeNull());
     expect(queryByText("+ Add a type")).toBeNull();
-    expect(container.querySelector(".accounts__actions")).toBeNull();
+    expect(queryByText("Edit")).toBeNull();
+    expect(queryByText("Retire")).toBeNull();
   });
 
   it("manager can add a type; reloads the list on success", async () => {

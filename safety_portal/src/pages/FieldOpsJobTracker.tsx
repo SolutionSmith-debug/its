@@ -659,7 +659,7 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
         )}
 
         {actionMsg && (
-          <p className="muted" style={{ color: actionMsg.ok ? "green" : "red" }}>{actionMsg.text}</p>
+          <p className={`banner ${actionMsg.ok ? "banner--ok" : "banner--err"}`}>{actionMsg.text}</p>
         )}
 
         {canManage && (
@@ -1014,9 +1014,9 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
         </div>
       )}
       {actionMsg && (
-        <p className="muted" style={{ color: actionMsg.ok ? "green" : "red" }}>{actionMsg.text}</p>
+        <p className={`banner ${actionMsg.ok ? "banner--ok" : "banner--err"}`}>{actionMsg.text}</p>
       )}
-      {error && <p className="muted" style={{ color: "red" }}>{error}</p>}
+      {error && <p className="banner banner--err">{error}</p>}
 
       {jobs.length === 0 ? (
         loading ? (

@@ -7,12 +7,13 @@
 # ~/Library/LaunchAgents/. The plist files in this directory stay generic; the
 # installed copies have concrete values.
 #
-# __POLL_INTERVAL_SECONDS__ (weekly-send, portal-poll, compile-now-poll):
-# these plists carry the placeholder in <integer>StartInterval</integer>. `load`/`dry-run`
-# resolve it from the optional [interval] arg, else a per-daemon default
-# (900 / 60 / 90, matching the daemon's ITS_Config poll-interval row default —
-# safety_reports.weekly_send / safety_reports.portal_poll /
-# safety_reports.compile_now_poll .poll_interval_seconds). The interval is BAKED into
+# __POLL_INTERVAL_SECONDS__ (weekly-send, portal-poll, compile-now-poll, progress-send,
+# fieldops-sync): these plists carry the placeholder in <integer>StartInterval</integer>.
+# `load`/`dry-run` resolve it from the optional [interval] arg, else a per-daemon default
+# (900 / 60 / 90 / 900 / 90 respectively, matching the daemon's ITS_Config poll-interval row
+# default — safety_reports.weekly_send / safety_reports.portal_poll /
+# safety_reports.compile_now_poll / progress_reports.progress_send /
+# field_ops.fieldops_sync .poll_interval_seconds). The interval is BAKED into
 # the installed plist, so a later ITS_Config change needs a re-install (pass the
 # new value as [interval]). WITHOUT this substitution the installed plist keeps
 # the literal placeholder and fails `plutil -lint` → the daemon won't load.
@@ -44,7 +45,8 @@ usage: $0 {load|unload|status|dry-run} [plist] [interval]
 
   [interval] (positive integer seconds) overrides the StartInterval for the
   poll-interval daemons (weekly-send → default 900, portal-poll → default 60,
-  compile-now-poll → default 90).
+  compile-now-poll → default 90, progress-send → default 900,
+  fieldops-sync → default 90).
 EOF
     exit 1
 }
