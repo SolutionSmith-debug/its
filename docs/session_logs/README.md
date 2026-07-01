@@ -97,6 +97,7 @@ outside the sentinel block.
 | Date | Type | Status | Workstream | Title | PRs |
 |------|------|--------|------------|-------|-----|
 | 2026-06-10 | session_log | active | safety_portal | [Session — Agent Optimization (Brief 2) + Safety Portal Hardening (Brief 1)](2026-06-10_agent-optimization-and-portal-hardening.md) | #260, #261, #263, #264, #265, #266 |
+| 2026-07-01 | session_log | closed | field_ops | [Session — P2.5 job up-sync CUT OVER LIVE + P6 rollup + concurrency audit (PRs #391–#393)](2026-07-01_p2.5-cutover-live-p6-rollup.md) | #391, #392, #393 |
 | 2026-06-30 | session_log | closed | field_ops | [Session — P2.5 job-tracker → Smartsheet up-sync (PRs #383, #384, #385, #386, #387)](2026-06-30_p2.5-job-tracker-upsync.md) | #383, #384, #385, #386, #387 |
 | 2026-06-30 | session_log | closed | field_ops | [Session — P2.5 Slice 6: portal-owned canonical job number (PR #389)](2026-06-30_p2.5-slice6-portal-number.md) | #389 |
 | 2026-06-30 | session_log | closed | progress_reporting | [Session — P4 progress compile engine + form-builder workflow selector (PRs #372, #373, #375, #376)](2026-06-30_p4-progress-compile-and-workflow-selector.md) | #372, #373, #375, #376 |
