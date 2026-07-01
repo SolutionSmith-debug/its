@@ -65,6 +65,7 @@ PUBLISH_STAMP_PATH = "/api/internal/publish/stamp"
 PUBLISH_STUCK_PATH = "/api/internal/publish/stuck"
 FIELDOPS_PENDING_JOBS_PATH = "/api/internal/fieldops/pending-jobs"
 FIELDOPS_JOBS_MARK_MIRRORED_PATH = "/api/internal/fieldops/jobs-mark-mirrored"
+PROGRESS_ROLLUP_PATH = "/api/internal/progress-rollup"
 
 
 # ---- Typed exceptions ----------------------------------------------------
@@ -371,6 +372,59 @@ def upload_filed_pdf(
             "chunk_b64": chunk_b64,
         },
     )
+
+
+# ---- Progress rollup numbers (P6 — the progress weekly-compile's read I/O) ----
+
+
+def get_progress_rollup(
+    base_url: str, token: str, *, job_id: str, week_from: int, week_to: int
+) -> dict[str, Any]:
+    """Fetch the field-ops rollup aggregate for one job-week: GET /api/internal/progress-rollup.
+
+    Reads the send-free Worker route (P6) that aggregates the structured field-ops D1 tables
+    for `job_id` over the Sat→Fri epoch window `[week_from, week_to)`: labor hours
+    (`SUM(time_entries.hours)`, amend-collapsed), the DISTINCT equipment on site
+    (`equipment_location`), and the open-tasks count (`task_assignments status != 'done'`).
+    Returns the Worker's JSON dict verbatim — `{job_id, window:{from,to}, labor_hours,
+    equipment:[{name,kind}], open_tasks, materials, generated_at}` — for
+    `form_pdf.render_progress_rollup` to lay out. There is NO progress-% (operator decision
+    2026-06-30); `materials` is a null M2 placeholder.
+
+    A control-plane READ of OUR OWN Worker (bearer = the poller's `PORTAL_INTERNAL_API_TOKEN`;
+    same privilege class as `get_pending`), NOT a customer-facing send — outside the External
+    Send Gate (Invariant 1). The Worker computes graceful zeros on empty data, so an
+    activity-free week returns `labor_hours=0` / `equipment=[]` / `open_tasks=0`, never an error.
+
+    Typed-shape guard: a malformed body (missing/invalid `labor_hours` / `equipment` /
+    `open_tasks`) raises `PortalTransportError` — the daemon's rollup fence then falls back to
+    a no-rollup packet (never a wrong number). Same typed-error contract as `get_pending` —
+    `PortalAuthError` (401) / `PortalRateLimitError` (429/503 exhausted) / `PortalTransportError`
+    (any other failure).
+    """
+    data = _request(
+        "GET", base_url, PROGRESS_ROLLUP_PATH, token,
+        params={"job_id": job_id, "from": week_from, "to": week_to},
+    )
+    labor_hours = data.get("labor_hours")
+    # bool is an int subclass — exclude it so a stray `true`/`false` is not read as a number.
+    if not isinstance(labor_hours, (int, float)) or isinstance(labor_hours, bool):
+        raise PortalTransportError(
+            f"GET {PROGRESS_ROLLUP_PATH} missing/invalid 'labor_hours' "
+            f"(got {type(labor_hours).__name__})"
+        )
+    if not isinstance(data.get("equipment"), list):
+        raise PortalTransportError(
+            f"GET {PROGRESS_ROLLUP_PATH} missing/invalid 'equipment' array "
+            f"(got {type(data.get('equipment')).__name__})"
+        )
+    open_tasks = data.get("open_tasks")
+    if not isinstance(open_tasks, int) or isinstance(open_tasks, bool):
+        raise PortalTransportError(
+            f"GET {PROGRESS_ROLLUP_PATH} missing/invalid 'open_tasks' "
+            f"(got {type(open_tasks).__name__})"
+        )
+    return data
 
 
 # ---- Form-editor publish pipeline (slice 3b — the Mac publish daemon's queue I/O) ----

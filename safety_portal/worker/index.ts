@@ -16,6 +16,7 @@ import { registerEquipmentFieldWriteRoutes } from "./fieldops_equipment_write";
 import { registerEquipmentRosterWriteRoutes } from "./fieldops_equipment_roster_write";
 import { registerPersonnelWriteRoutes } from "./fieldops_personnel_write";
 import { registerMaterialWriteRoutes } from "./fieldops_material_write";
+import { registerProgressRollupRoutes } from "./fieldops_rollup";
 import {
   validateUser,
   newSessionClaims,
@@ -388,6 +389,8 @@ registerTaskWriteRoutes(app, fieldopsGates);
 registerEquipmentFieldWriteRoutes(app, fieldopsGates);
 registerEquipmentRosterWriteRoutes(app, fieldopsGates);
 registerMaterialWriteRoutes(app, fieldopsGates);
+// — P6 progress rollup read (bearer-gated /api/internal/*, NOT a session gate) —
+registerProgressRollupRoutes(app, requireInternalToken);
 
 /** GET /api/session — who am I (used by the SPA on load to restore session). Returns
  *  the live role (from requireSession's per-request D1 read), so a demotion drops the

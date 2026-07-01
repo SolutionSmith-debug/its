@@ -769,6 +769,96 @@ def render_weekly_index(project_name: str, week_label: str,
     return buf.getvalue()
 
 
+def render_progress_rollup(project_name: str, week_label: str, numbers: dict[str, Any],
+                           *, include_costs: bool = False) -> bytes:
+    """Render the PROGRESS packet's rollup-numbers page (P6) — a single branded page
+    spliced AFTER the cover, BEFORE the index by `generate_core._build_weekly_packet`
+    (progress binding only; safety never passes a provider, so the safety packet is
+    byte-identical).
+
+    Pure data → bytes — NO AI, NO network (the module-wide contract). `numbers` is the
+    already-fetched aggregate dict from the SEND-FREE Worker rollup route
+    (`shared.portal_client.get_progress_rollup`): `{labor_hours, equipment:[{name,kind}],
+    open_tasks, materials, ...}`. The Worker owns the D1 aggregation; this owns only layout.
+
+    Adversarial Input Handling (Invariant 2): every value is interpolated as PLAIN,
+    reportlab-escaped text via `_p` (equipment names can carry field-reported free text — a
+    hostile name CANNOT inject markup). Every field is defensively coerced because `numbers`
+    rides untrusted JSON transport (a malformed shape degrades, never raises).
+
+    Sections: **Labor hours / Equipment on site / Open tasks / Materials (coming soon)**.
+    There is deliberately **NO progress-%** section (operator decision 2026-06-30: a single
+    current `jobs.progress` value is a misleading guess, not a measurement). Graceful
+    zero-state: no labor + no equipment + no open tasks → "No field-ops activity recorded
+    for this week." (matches the Worker's graceful-zeros contract), never an empty grid.
+
+    `include_costs` (default False) reserves the cost-flip gate (Open Question 3): labor-cost
+    / materials-value columns stay OFF until the cost-flip ITS_Config + M2 `material_list`
+    land. v1 carries no cost data in `numbers`, so True today only annotates that costs are
+    pending — it never fabricates a number.
+    """
+    st = _styles()
+    flow: list[Flowable] = _brand_header("Weekly Progress Rollup", st)
+    flow.append(_p(f"{project_name} — {week_label}", st["meta"]))
+    flow.append(Spacer(1, 6))
+
+    # Defensive coercion — `numbers` is the Worker's JSON aggregate over untrusted transport.
+    try:
+        hours = float(numbers.get("labor_hours") or 0)
+    except (TypeError, ValueError):
+        hours = 0.0
+    raw_equipment = numbers.get("equipment")
+    equipment = (
+        [e for e in raw_equipment if isinstance(e, dict)]
+        if isinstance(raw_equipment, list) else []
+    )
+    try:
+        open_tasks = int(numbers.get("open_tasks") or 0)
+    except (TypeError, ValueError):
+        open_tasks = 0
+
+    if hours == 0 and not equipment and open_tasks == 0:
+        flow.append(Spacer(1, 12))
+        flow.append(_p("No field-ops activity recorded for this week.", st["body"]))
+    else:
+        # Labor hours (total for the Sat→Fri window, amend-collapsed server-side).
+        flow.append(_section_header("Labor hours", st))
+        flow.append(_p(f"{hours:g} {'hour' if hours == 1 else 'hours'} logged this week",
+                       st["body"]))
+        if include_costs:
+            flow.append(_p("Labor cost: pending (enable the cost-flip config + M2).",
+                           st["caption"]))
+
+        # Equipment on site (DISTINCT equipment seen on the job in the window).
+        flow.append(_section_header("Equipment on site", st))
+        if equipment:
+            rows: list[list[Any]] = [[_p("Equipment", st["colhead"]), _p("Type", st["colhead"])]]
+            for e in equipment:
+                rows.append([_p(str(e.get("name") or "—"), st["cell"]),
+                             _p(str(e.get("kind") or "—"), st["cell"])])
+            table = Table(rows, colWidths=[_CONTENT_W * 0.6, _CONTENT_W * 0.4], repeatRows=1)
+            table.setStyle(_grid_style(len(rows), 2))
+            flow.append(table)
+        else:
+            flow.append(_p("No equipment recorded on site this week.", st["body"]))
+
+        # Open tasks (current bounded status != 'done' count; NOT windowed — no completed-this-week).
+        flow.append(_section_header("Open tasks", st))
+        flow.append(_p(f"{open_tasks} open {'task' if open_tasks == 1 else 'tasks'} "
+                       "(not yet done)", st["body"]))
+
+        # Materials — placeholder until M2 builds material_list.
+        flow.append(_section_header("Materials", st))
+        flow.append(_p("— (coming soon)", st["body"]))
+
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=letter, title=f"Progress Rollup — {project_name}",
+                            leftMargin=_MARGIN, rightMargin=_MARGIN,
+                            topMargin=_MARGIN, bottomMargin=0.7 * inch)
+    doc.build(flow, canvasmaker=_canvas_maker("Progress Rollup", show_page_numbers=False))
+    return buf.getvalue()
+
+
 # ── form-definition loader ──────────────────────────────────────────────────────
 # The Phase-4 definitions are the single source of truth shared with the TS display
 # runtime; they live as JSON under safety_portal/forms/<form_code>.json. The TS side

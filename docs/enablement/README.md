@@ -15,4 +15,5 @@ convention has no separate `enablement` type; see
 | Date | Type | Status | Workstream | Title | PRs |
 |------|------|--------|------------|-------|-----|
 | 2026-06-30 | operations | active | field_ops | [Office-PM Guide — Creating jobs in the ITS Portal (P2.5)](portal_job_creation.md) | #383, #384, #385 |
+| 2026-06-30 | operations | active | progress_reports | [Guide — The weekly progress rollup numbers (P6)](progress_rollup_numbers.md) | _–_ |
 <!-- END AUTO-INDEX -->

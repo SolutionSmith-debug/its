@@ -92,6 +92,21 @@ class GenerateConfig:
     cfg_evergreen_contact: str
     default_evergreen_contact: str
 
+    # ── Optional trailing hooks (§14: byte-identical when unset) ──────────────────────
+    # A workstream may bind an OPTIONAL rollup-numbers page provider (P6). When set, the
+    # compile splices its returned page into the packet AFTER the cover, BEFORE the index
+    # (FENCED — see `_maybe_rollup_page` / `_build_weekly_packet`). The SAFETY config binds
+    # NOTHING (default None) → the provider is never called, the merge list is unchanged, and
+    # the safety packet stays byte-identical (the preservation invariant pinned by
+    # tests/test_weekly_generate.py). The provider is a `(job, week) -> bytes | None` closure;
+    # PROGRESS binds one in `progress_weekly_generate` that fetches the send-free Worker rollup
+    # route and renders it — so `generate_core` itself gains NO new import (no portal_client, no
+    # keychain, no form_pdf render coupling) and stays a pure engine (§42: the fetch closure
+    # lives in the progress module, not here, to keep the shared engine import-pure + gate-clean).
+    rollup_page_provider: (
+        Callable[[ActiveJob, safety_week.SafetyWeek], bytes | None] | None
+    ) = None
+
     @property
     def watchdog_marker_dir(self) -> Path:
         return Path.home() / "its" / ".watchdog"
@@ -278,12 +293,44 @@ def _week_label(week: safety_week.SafetyWeek) -> str:
     return f"Week of {s.strftime('%b %-d, %Y')} – {e.strftime('%b %-d, %Y')}"
 
 
+def _maybe_rollup_page(
+    config: GenerateConfig, job: ActiveJob, week: safety_week.SafetyWeek, correlation_id: str,
+) -> bytes | None:
+    """Build the optional rollup-numbers page (P6) via `config.rollup_page_provider`, FENCED.
+
+    SAFETY (provider None) → returns None immediately with ZERO side effect, so the packet is
+    byte-identical (§14). PROGRESS binds a provider that fetches the send-free Worker rollup
+    route + renders it. This fence is DISTINCT from (and nested inside) the front-matter fence:
+    any provider/fetch/render exception here logs `<slug>.rollup_page_failed` (WARN) and returns
+    None → the packet falls back to NO rollup page but KEEPS its cover + index. A rollup failure
+    (Worker down, creds unset, transport error) must NEVER break the compile — the numbers page
+    is an enhancement, not a gate."""
+    provider = config.rollup_page_provider
+    if provider is None:
+        return None
+    try:
+        return provider(job, week)
+    except Exception as exc:  # noqa: BLE001 — the rollup page must never break the compile
+        error_log.log(
+            Severity.WARN, config.script_name,
+            f"compile: rollup-numbers page failed for {job.project_name} week {week.start} "
+            f"({exc!r}); packet compiled WITHOUT the rollup page",
+            error_code=f"{config.script_name.split('.')[-1]}.rollup_page_failed",
+            correlation_id=correlation_id,
+        )
+        return None
+
+
 def _build_weekly_packet(
-    config: GenerateConfig, project_name: str, week: safety_week.SafetyWeek,
+    config: GenerateConfig, job: ActiveJob, project_name: str, week: safety_week.SafetyWeek,
     pdfs: list[bytes], metas: list[dict[str, Any]], compiled_dt: datetime, correlation_id: str,
 ) -> bytes:
-    """Branded COVER + date-grouped CONTENTS index + the per-submission PDFs. FENCED: any
-    front-matter failure degrades to a plain forms-only `merge_pdfs(pdfs)`."""
+    """Branded COVER + (optional P6 rollup page) + date-grouped CONTENTS index + the
+    per-submission PDFs. FENCED: any front-matter failure degrades to a plain forms-only
+    `merge_pdfs(pdfs)`. The optional rollup page (progress only) is spliced AFTER the cover and
+    BEFORE the index; its page count is absorbed by the index-pagination convergence loop below
+    so the index's absolute page numbers stay correct. Safety binds no provider → `rollup_page`
+    is None → the merge list + page math are UNCHANGED (byte-identical, §14)."""
     try:
         week_label = _week_label(week)
         compiled_display = compiled_dt.strftime("%b %-d, %Y %-I:%M %p %Z").strip()
@@ -291,10 +338,13 @@ def _build_weekly_packet(
             project_name, week_label, len(pdfs), compiled_display=compiled_display
         )
         cover_pages = form_pdf.page_count(cover)
+        # P6: optional rollup-numbers page after the cover, before the index (progress only).
+        rollup_page = _maybe_rollup_page(config, job, week, correlation_id)
+        rollup_pages = form_pdf.page_count(rollup_page) if rollup_page is not None else 0
         counts = [form_pdf.page_count(b) for b in pdfs]
 
         def make_index(index_pages: int) -> bytes:
-            cur = cover_pages + index_pages + 1
+            cur = cover_pages + rollup_pages + index_pages + 1
             entries: list[dict[str, Any]] = []
             for m, c in zip(metas, counts, strict=True):
                 entries.append({"date_display": m.get("date_display", ""),
@@ -312,7 +362,8 @@ def _build_weekly_packet(
             index_pdf = make_index(index_pages)
         else:
             raise RuntimeError("weekly index pagination did not converge")
-        return form_pdf.merge_pdfs([cover, index_pdf, *pdfs])
+        front = [cover] if rollup_page is None else [cover, rollup_page]
+        return form_pdf.merge_pdfs([*front, index_pdf, *pdfs])
     except Exception as exc:  # noqa: BLE001 — front matter must never break the compile
         error_log.log(
             Severity.WARN, config.script_name,
@@ -470,7 +521,7 @@ def _compile_job_week(
     packet_name = ""
     compiled: bytes | None = None
     if pdfs:
-        compiled = _build_weekly_packet(config, project_name, week, pdfs, metas, compiled_dt,
+        compiled = _build_weekly_packet(config, job, project_name, week, pdfs, metas, compiled_dt,
                                         correlation_id)
         folder_id = _ensure_box_week_folder(config, project_name, week, correlation_id)
         packet_name, file_id = _upload_packet(

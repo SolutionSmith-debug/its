@@ -475,3 +475,54 @@ def test_429_unparseable_retry_after_falls_back_to_backoff(mocker):
     )
     portal_client.get_pending(BASE, TOKEN)
     sleeps.assert_called_once_with(1.0)  # 2**0 backoff when Retry-After is garbage
+
+
+# ---- get_progress_rollup (P6) --------------------------------------------
+
+_ROLLUP_OK = {
+    "job_id": "JOB-1", "window": {"from": 100, "to": 200},
+    "labor_hours": 42.5, "equipment": [{"name": "Skid Steer", "kind": "skid-steer"}],
+    "open_tasks": 4, "materials": None, "generated_at": 199,
+}
+
+
+def test_get_progress_rollup_returns_dict_and_sends_params(mocker):
+    req = _patch_requests(mocker, _mock_response(json_body=_ROLLUP_OK))
+    out = portal_client.get_progress_rollup(
+        BASE, TOKEN, job_id="JOB-1", week_from=100, week_to=200
+    )
+    assert out == _ROLLUP_OK
+    args, kwargs = req.call_args
+    assert args == ("GET", "https://portal.example.com/api/internal/progress-rollup")
+    assert kwargs["headers"]["Authorization"] == "Bearer fake-bearer"
+    assert kwargs["params"] == {"job_id": "JOB-1", "from": 100, "to": 200}
+
+
+def test_get_progress_rollup_graceful_zeros_pass_the_guard(mocker):
+    # An activity-free week returns 0 / [] / 0 — a VALID body, not an error.
+    _patch_requests(mocker, _mock_response(json_body={
+        **_ROLLUP_OK, "labor_hours": 0, "equipment": [], "open_tasks": 0}))
+    out = portal_client.get_progress_rollup(BASE, TOKEN, job_id="J", week_from=1, week_to=2)
+    assert out["labor_hours"] == 0 and out["equipment"] == [] and out["open_tasks"] == 0
+
+
+@pytest.mark.parametrize("bad,match", [
+    ({**_ROLLUP_OK, "labor_hours": "nan"}, "labor_hours"),
+    ({**_ROLLUP_OK, "labor_hours": True}, "labor_hours"),  # bool is not a number here
+    ({k: v for k, v in _ROLLUP_OK.items() if k != "labor_hours"}, "labor_hours"),
+    ({**_ROLLUP_OK, "equipment": "oops"}, "equipment"),
+    ({k: v for k, v in _ROLLUP_OK.items() if k != "equipment"}, "equipment"),
+    ({**_ROLLUP_OK, "open_tasks": "4"}, "open_tasks"),
+    ({**_ROLLUP_OK, "open_tasks": False}, "open_tasks"),
+])
+def test_get_progress_rollup_malformed_body_raises(mocker, bad, match):
+    _patch_requests(mocker, _mock_response(json_body=bad))
+    with pytest.raises(PortalTransportError, match=match):
+        portal_client.get_progress_rollup(BASE, TOKEN, job_id="J", week_from=1, week_to=2)
+
+
+def test_get_progress_rollup_401_raises_auth_error_without_retry(mocker):
+    req = _patch_requests(mocker, _mock_response(status=401))
+    with pytest.raises(PortalAuthError):
+        portal_client.get_progress_rollup(BASE, TOKEN, job_id="J", week_from=1, week_to=2)
+    assert req.call_count == 1  # 401 is NOT retried
