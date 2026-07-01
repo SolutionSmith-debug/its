@@ -1,7 +1,7 @@
 // Thin fetch wrappers over the same-origin Worker API. Cookies are same-origin;
 // the signed session cookie is HttpOnly (set by the Worker) so it's never read here.
 
-export type Role = "submitter" | "admin";
+export type Role = "submitter" | "manager" | "admin";
 
 export interface SessionUser {
   username: string;

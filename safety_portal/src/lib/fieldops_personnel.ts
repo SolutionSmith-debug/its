@@ -16,6 +16,8 @@ export interface PersonnelRow {
   name: string;
   trade: string;
   username: string | null;
+  /** P2.6 — standing crew→job placement ("who is where"); NULL = unplaced. */
+  current_job: string | null;
 }
 
 export interface PersonnelListResponse {
@@ -40,6 +42,8 @@ export interface PersonnelDetail {
   name: string;
   username: string | null;
   trade: string;
+  /** P2.6 — standing crew→job placement; NULL = unplaced. */
+  current_job: string | null;
   time_entries: TimeEntry[];
 }
 
@@ -62,7 +66,7 @@ export async function fetchPersonnelDetail(id: number, cursor?: string): Promise
   });
   if (!res.ok) throw new Error("Could not load personnel detail.");
   return ((await res.json()) as { personnel: PersonnelDetail; next_cursor: string | null }) ??
-    { personnel: { id, name: "", username: null, trade: "", time_entries: [] }, next_cursor: null };
+    { personnel: { id, name: "", username: null, trade: "", current_job: null, time_entries: [] }, next_cursor: null };
 }
 
 // ── WRITE (task #22; cap.personnel.manage; same-origin cookie POST) ───────────────────────────────
@@ -80,7 +84,7 @@ async function postJson<T = { ok: boolean }>(url: string, body: unknown): Promis
   return (await res.json()) as T;
 }
 
-export type AccountRole = "submitter" | "admin";
+export type AccountRole = "submitter" | "manager" | "admin";
 
 export interface NewAccount {
   username: string;
@@ -104,4 +108,9 @@ export async function unlinkPersonnelAccount(id: number): Promise<void> {
 }
 export async function retirePersonnel(id: number): Promise<void> {
   await postJson(`/api/fieldops/personnel/${id}/retire`, {});
+}
+/** P2.6 — set (jobId string) or clear (jobId null) a person's standing job placement. Gated
+ *  server-side on cap.crew.assign (Manager + admin). ORTHOGONAL to time logging — placement only. */
+export async function assignPersonnel(id: number, jobId: string | null): Promise<void> {
+  await postJson(`/api/fieldops/personnel/${id}/assign`, { job_id: jobId });
 }

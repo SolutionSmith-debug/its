@@ -232,3 +232,26 @@ def test_main_routes_purge_job(mocker):
 def test_main_requires_subcommand(mocker):
     with pytest.raises(SystemExit):
         portal_admin.main([])
+
+
+# ---- P2.6: the CLI accepts the new `manager` role ------------------------
+
+
+def test_main_add_user_accepts_manager_role(mocker):
+    mocker.patch.object(portal_admin, "_resolve_creds", return_value=("https://w", "tok"))
+    add = mocker.patch.object(portal_admin, "cmd_add_user")
+    portal_admin.main(["add-user", "lead.crew", "--role", "manager"])  # no SystemExit
+    add.assert_called_once_with("https://w", "tok", "lead.crew", "manager")
+
+
+def test_main_set_role_accepts_manager(mocker):
+    mocker.patch.object(portal_admin, "_resolve_creds", return_value=("https://w", "tok"))
+    sr = mocker.patch.object(portal_admin, "cmd_set_role")
+    portal_admin.main(["set-role", "lead.crew", "manager"])  # no SystemExit
+    sr.assert_called_once_with("https://w", "tok", "lead.crew", "manager")
+
+
+def test_main_add_user_rejects_bad_role(mocker):
+    mocker.patch.object(portal_admin, "_resolve_creds", return_value=("https://w", "tok"))
+    with pytest.raises(SystemExit):  # argparse choices=() rejects an unknown role before dispatch
+        portal_admin.main(["add-user", "lead.crew", "--role", "superadmin"])

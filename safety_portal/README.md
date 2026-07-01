@@ -414,6 +414,30 @@ dependencies; existing rows carry `category` as NULL.
 2. **Redeploy** (`npm run deploy`) — activates the `recategorize` op + the Workflow selector in the
    Forms editor.
 
+### Manager tier — third portal role (P2.6 — `0023`)
+
+**Migration 0023** seeds a third role `manager` (crew lead), a new capability `cap.crew.assign`
+(granted to `manager` + `admin`), the manager's 11 grants (submitter's 8 + `cap.personnel.read` +
+`cap.personnel.manage` + `cap.crew.assign`), and adds `personnel.current_job` (the crew→job
+placement). The role is a pure INSERT — migration 0013 already replaced 0007's role CHECK with an FK
+to `roles(key)`, so seeding the role satisfies it (no `users` rebuild). New Worker route
+`POST /api/fieldops/personnel/:id/assign` (cap.crew.assign). See `docs/runbooks/manager_tier.md`
+(§43) + `docs/enablement/manager_tier.md` (§6/A8).
+
+#### Activation (operator — deploy boundary; escalates to the Developer-Operator)
+
+1. Apply migration **0023** to the live D1 **BEFORE** the redeploy
+   (`npx wrangler d1 migrations apply its-safety-portal-db --remote`) — else a user set to
+   `manager` resolves to the EMPTY capability set (fail-closed) → blank tabs / 401, and
+   `POST /api/fieldops/personnel/:id/assign` 500s on the missing `personnel.current_job` column.
+   **ORDER-CRITICAL**, same rule as 0013/0020. (Always `git pull` `~/its` to latest `main` BEFORE
+   `wrangler d1 migrations apply` — the stale-migrations-list lockout class.)
+2. **Redeploy** (`npm run deploy`) — activates the `manager` role vocabulary, the Accounts 3-way
+   role control, the crew-assign route, and the Personnel "Assign" control.
+3. **Smoke** (`wrangler dev` or live): set a user to `manager` (Accounts page or
+   `portal_admin set-role <u> manager`); confirm they see Personnel + can assign crew (201), but
+   get 403 on job-create / task-create / login-mint, and cannot open the admin dashboard.
+
 ### Lockout recovery (break-glass) — escalate to the Developer-Operator
 
 If both admins are ever locked out (e.g. passwords lost, or both disabled), recovery runs
