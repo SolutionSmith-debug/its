@@ -141,8 +141,59 @@ def test_permanent_failure_routes_to_review_queue(_patch):
     assert _patch["review"].call_args.kwargs["workstream"] == "progress_reports"
     # permanent failure on the safety upsert → nothing was ever mark-mirrored
     _patch["mark"].assert_not_called()
+    # the ticket records the partial state: failed on the safety sheet, nothing mirrored yet.
+    payload = _patch["review"].call_args.kwargs["payload"]
+    assert payload["failed_sheet"] == "safety"
+    assert payload["safety_mirrored"] is False
     assert _patch["hb_row"].call_args.kwargs["status"] == "WARN"
     _patch["marker"].assert_called_once()
+
+
+def test_permanent_failure_on_progress_records_safety_already_mirrored(_patch):
+    # Safety mirrors fine; the PROGRESS upsert permanently fails → the Review ticket must record
+    # that safety is already live and ONLY progress failed (the operator's remediation differs).
+    _patch["pending"].return_value = [_job()]
+
+    def _upsert(config, job):
+        if config is active_jobs_writer.SAFETY_WRITE_CONFIG:
+            return (111, "JOB-0007")
+        raise smartsheet_client.SmartsheetValidationError("HTTP 400 progress reject")
+
+    _patch["upsert"].side_effect = _upsert
+
+    stats = fieldops_sync._sync_inside_lock()
+
+    assert stats.reviewed == 1 and stats.mirrored == 0
+    # safety WAS committed (mark-mirrored once) before the progress upsert failed
+    assert _patch["mark"].call_count == 1
+    assert _patch["mark"].call_args_list[0].args[2][0]["sheet"] == "safety"
+    payload = _patch["review"].call_args.kwargs["payload"]
+    assert payload["failed_sheet"] == "progress"
+    assert payload["safety_mirrored"] is True
+
+
+def test_mark_mirrored_401_pages_critical_not_transient(_patch):
+    # A 401 on the mark-mirrored write-back (bad/rotated field-ops bearer) is NOT transient — it
+    # must page CRITICAL, not fall into the self-healing PortalTransportError bucket (its parent).
+    _patch["pending"].return_value = [_job()]
+    _patch["upsert"].side_effect = _upsert_ok
+    _patch["mark"].side_effect = fieldops_sync.portal_client.PortalAuthError("401")
+
+    stats = fieldops_sync._sync_inside_lock()
+
+    assert stats.errors == 1
+    assert stats.mirrored == 0 and stats.reviewed == 0
+    _patch["upsert"].assert_called()  # the sheet write ran before the mark-mirrored 401
+    assert any(
+        c.args and c.args[0] == fieldops_sync.Severity.CRITICAL
+        and c.kwargs.get("error_code") == "fieldops_mark_mirrored_unauthorized"
+        for c in _patch["log"].call_args_list
+    )
+    # and it is NOT mis-classified as the self-healing transient error
+    assert not any(
+        c.kwargs.get("error_code") == "fieldops_job_transient"
+        for c in _patch["log"].call_args_list
+    )
 
 
 # ---- partial-failure self-heal -------------------------------------------
