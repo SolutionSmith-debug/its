@@ -13,6 +13,7 @@ import { registerTimeWriteRoutes } from "./fieldops_time_write";
 import { registerJobWriteRoutes } from "./fieldops_job_write";
 import { registerTaskWriteRoutes } from "./fieldops_task_write";
 import { registerMyTasksRoutes } from "./fieldops_tasks";
+import { registerChecklistRoutes } from "./fieldops_checklist";
 import { registerEquipmentFieldWriteRoutes } from "./fieldops_equipment_write";
 import { registerEquipmentRosterWriteRoutes } from "./fieldops_equipment_roster_write";
 import { registerPersonnelWriteRoutes } from "./fieldops_personnel_write";
@@ -400,6 +401,8 @@ registerJobTrackerRoutes(app, fieldopsGates);
 registerMaterialsRoutes(app, fieldopsGates);
 // — Assigned-Tasks tab (P4 S1) "My Tasks" read (cap.tasks.own) —
 registerMyTasksRoutes(app, fieldopsGates);
+// — Assigned-Tasks tab (P4 S2) checklist engine + per-job template editor (cap.checklist.manage) —
+registerChecklistRoutes(app, fieldopsGates);
 // — field-ops WRITE routes (P2.3); send-free D1 mutations, capability-gated, audit-batched —
 registerTimeWriteRoutes(app, fieldopsGates);
 registerJobWriteRoutes(app, fieldopsGates);

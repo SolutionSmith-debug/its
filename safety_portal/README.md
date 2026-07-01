@@ -465,6 +465,29 @@ still appear in the job's TASKS list with their assignee. This is the intended c
 3. **Smoke** (live): create a job → assign a person + a piece of equipment + a task → all three show
    on the job; the person's "Placed on" (Personnel page) shows the job.
 
+### Assigned-Tasks — manager task authority (`0025`) + checklist engine (`0026`)
+
+**Migration 0025** grants the `manager` role `cap.tasks.assign` — managers can now create / assign /
+complete tasks (only to subcontractor-role accounts, guarded), and the task create/reassign routes gate
+on `cap.jobtracker.manage` OR `cap.tasks.assign`. **Migration 0026** adds the checklist-engine tables
+(`checklist_templates` / `checklist_items` / `checklist_instances` / `checklist_item_states`) + seeds the
+`daily_default` template from `daily-report-v1.json`; the admin per-job checklist editor + template routes
+read them (`cap.checklist.manage`, admin-only).
+
+#### Activation (operator — deploy boundary; escalates to the Developer-Operator)
+
+1. Apply migrations **0025 then 0026** to the live D1 **BEFORE** the redeploy
+   (`npx wrangler d1 migrations apply its-safety-portal-db --remote`). 0026's tables are read by every
+   checklist route (`GET /api/fieldops/checklist/*`), so a premature deploy 500s them; 0025 grants the
+   manager cap that the re-gated task routes accept. Both are additive + guarded (`IF NOT EXISTS` +
+   NOT-EXISTS-guarded seed), so a stale re-apply is safe. (Always `git pull` `~/its` to latest `main`
+   BEFORE `wrangler d1 migrations apply` — the stale-migrations-list lockout class.)
+2. **Redeploy** (`npm run deploy`) — activates the "My Tasks" tab, the manager task controls, and the
+   admin Daily-checklist editor on the Job Tracker job detail.
+3. **Smoke** (live): a manager creates/assigns a task to a subcontractor (not to an admin/manager);
+   the "My Tasks" tab shows a user's assigned tasks; an admin edits the default checklist + adds/removes
+   a per-job item on a job's detail.
+
 ### Lockout recovery (break-glass) — escalate to the Developer-Operator
 
 If both admins are ever locked out (e.g. passwords lost, or both disabled), recovery runs
