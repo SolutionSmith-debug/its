@@ -4,6 +4,27 @@ Items deliberately deferred. Each carries the rationale for deferral and the tri
 
 When to add an entry: a session deliberately chooses preservation-over-refactor (per Op Stds v11 §14), discovers an external-API constraint that forced a workaround, or defers a non-trivial cleanup that's larger than the current session can absorb. When to mark CLOSED: the underlying item is resolved in a commit; preserve the entry with resolution detail rather than deleting (history is cheap, context is expensive).
 
+## Job routing form — "Same as stakeholder" copy button on the Safety block [OPEN 2026-07-01]
+
+**Operator-parked 2026-07-01 (was mid-build, deferred).** The job-creation routing form (`safety_portal/src/pages/FieldOpsJobTracker.tsx`, `RoutingFields`) has a "Same as safety" copy button on the **Progress** contact block (copies Safety → Progress, ~line 179). Add a parallel **"Same as stakeholder"** button on the **Safety** contact block (~:158-161) that copies the Stakeholder name/email into the Safety contact, and KEEP "Same as safety" on Progress — giving the chain Stakeholder → Safety → Progress for the common single-contact case. Small SPA change: mirror the existing copy handler + an SPA test. **Tag:** `field_ops`, `job-tracker`, `spa`, `ux`.
+
+## Remove the progress-% estimate system-wide [OPEN 2026-07-01]
+
+**Operator-locked 2026-07-01: the `jobs.progress` %-complete estimate is a misleading single-value guess and should be removed EVERYWHERE, not just omitted from the P6 rollup** (P6 already excludes it). A **multi-surface** removal — enumerate ALL consumers first (the multi-surface fan-out discipline):
+- SPA: the progress bar / slider control in the Job Tracker (`FieldOpsJobTracker.tsx` — `setJobProgress`, the progress input, `clampPct`) + any read display.
+- Worker: `POST /api/fieldops/job/:job_id/progress` route (`fieldops_job_write.ts`) + `progress` in the create body.
+- D1: the `jobs.progress` column (`0014`) — leave the column vs. drop via migration (decide; a drop needs care).
+- Any read route/response surfacing `progress`.
+Grep `progress` across worker + SPA and distinguish `jobs.progress` (the %-estimate to remove) from the unrelated `sync_state` mirror progress. **Tag:** `field_ops`, `job-tracker`, `cleanup`, `multi-surface`.
+
+## Unified job-creation flow — bundle task creation + crew assign + equipment assign [OPEN 2026-07-01, Stage 2]
+
+**Operator-locked 2026-07-01** (concretizes the plan's "unified create-flow extension"). The portal "New job" workflow should let the office PM, AT creation time, also **create tasks/deliverables**, **assign crew**, and **assign equipment** to the job — not just set routing/contacts. All three ride EXISTING §50-ungated field-ops write routes (tasks `fieldops_task_write.ts` #314; equipment `fieldops_equipment_write.ts` #315–#316; crew-assign = the P2.6 `POST /api/fieldops/personnel/:id/assign` route [NEW], or existing assign paths). So it is primarily **multi-step create-UX wiring** (a wizard/stepper in `FieldOpsJobTracker.tsx`) — no new daemon/doctrine surface beyond P2.6's crew-assign route. **Depends on P2.6 Manager tier** if crew-assign is included. Plans: `~/.claude/plans/ok-we-are-going-scalable-flamingo.md`, `~/.claude/plans/what-happened-to-my-floating-porcupine.md`. **Tag:** `field_ops`, `job-tracker`, `unified-create`, `stage-2`.
+
+## Time entries can't attribute hours to a specific crew member (UI gap) [OPEN 2026-07-01]
+
+**Operator-reported 2026-07-01.** A logged time entry records the submitting ACCOUNT (`actor_username` + optional `submitted_as`) but in practice can't record WHICH personnel/crew member the hours are FOR. The **data model already supports it** — `time_entries.personnel_id INTEGER REFERENCES personnel(id)` (`0015:36`) AND the write route accepts + inserts it (`fieldops_time_write.ts:50,102-107`). The gap is that the **time-logging UI has no personnel selector**, so `personnel_id` is never set and hours can't attribute to a roster crew member. Fix = add a personnel picker to the time-log form (+ confirm the SPA time lib passes `personnel_id` through). Relates to **P2.6 Manager tier** (crew time logging via `personnel_id`; time entries stay ORTHOGONAL to job assignment). **Tag:** `field_ops`, `time-entries`, `personnel`, `spa`, `p2.6`.
+
 ## P2.5 Slice 6 — portal-owned canonical number: residual redundancy [OPEN 2026-06-30]
 
 **Slice 6 (P2.5 revision).** The portal now ASSIGNS the canonical `JOB-######` (worker `job_counter`, migration 0022) and writes it as BOTH `job_id` and `canonical_job_id` from birth; `active_jobs_writer` writes it into the Smartsheet "Job ID" column (retyped AUTO_NUMBER → TEXT at cutover). Two deliberate §14-preservation leftovers — both harmless, both candidates for a later cleanup:
