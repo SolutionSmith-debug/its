@@ -240,6 +240,23 @@ def test_portal_poll_marker_slug_matches_writer_and_window():
     )
 
 
+def test_fieldops_sync_marker_slug_matches_writer_and_window():
+    """Same Check-C consistency guard for the P2.5 job up-sync dual-sheet mirror
+    daemon: the slug fieldops_sync writes (fieldops_sync.last_run) must match the
+    slug the watchdog tracks, or Check C either watches a marker nothing writes
+    (permanent false WARN) or — worse — a dead mirror daemon goes unnoticed.
+    Registered at the 2026-07-01 cutover deploy (the daemon is already loaded +
+    live, so it does NOT WARN spuriously). 8-min window == ~5 poll cycles at the
+    90s default — same high-frequency-poller tolerance as safety_compile_now_poll."""
+    from field_ops import fieldops_sync
+
+    assert fieldops_sync.WATCHDOG_JOB_SLUG == "fieldops_sync"
+    assert fieldops_sync.WATCHDOG_JOB_SLUG in watchdog.TRACKED_JOBS
+    assert watchdog.TRACKED_JOB_WINDOWS[fieldops_sync.WATCHDOG_JOB_SLUG] == timedelta(
+        minutes=8
+    )
+
+
 def test_run_picklist_sync_write_marker_round_trips(monkeypatch, tmp_path):
     """C4: run_picklist_sync writes a parseable ISO timestamp to its marker
     (fail-soft path mirrors audit_picklist_drift's, proven elsewhere)."""
