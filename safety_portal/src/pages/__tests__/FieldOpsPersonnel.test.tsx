@@ -66,9 +66,9 @@ const MOCK_LATEST_ENTRIES: api.LatestEntry[] = [
 ];
 
 function clickRow(container: HTMLElement) {
-  // The clickable data rows carry .dash-row--click; querySelector("tr") would grab the
-  // <thead> header row (no onClick) and the detail view would never open.
-  const row = container.querySelector(".dash-row--click");
+  // The roster is now a card grid: each clickable person card carries .dash-card--click
+  // (the inline manage forms are form.dash-row, so this only ever matches a person card).
+  const row = container.querySelector(".dash-card--click");
   if (row) fireEvent(row, new MouseEvent("click", { bubbles: true }));
 }
 
@@ -416,15 +416,10 @@ describe("FieldOpsPersonnel — P2.6 manager tier (cap.crew.assign)", () => {
 
     const { container } = render(<FieldOpsPersonnel onBack={() => {}} />);
     await waitFor(() => expect(api.fetchPersonnelList).toHaveBeenCalled());
-    // the "Placed on" cell shows the resolved project name (no time entry → Latest job is "—")
-    const placedCell = await waitFor(() => {
-      const cell = Array.from(container.querySelectorAll("td.dash-cell")).find((c) => c.textContent === "Pier 7 Rebuild");
-      expect(cell).toBeTruthy();
-      return cell!;
-    });
-    expect(placedCell.textContent).toBe("Pier 7 Rebuild");
-    // the raw id must NOT surface where a name resolved
-    expect(Array.from(container.querySelectorAll("td.dash-cell")).some((c) => c.textContent === "JOB-000017")).toBe(false);
+    // the person card shows the resolved project name for the standing placement …
+    await waitFor(() => expect(container.textContent ?? "").toContain("Pier 7 Rebuild"));
+    // … and the raw id must NOT surface anywhere (the assign dropdown is closed)
+    expect(container.textContent ?? "").not.toContain("JOB-000017");
   });
 
   it("falls back to the JOB-#### id in 'Placed on' when current_job_name is missing", async () => {
@@ -439,9 +434,7 @@ describe("FieldOpsPersonnel — P2.6 manager tier (cap.crew.assign)", () => {
 
     const { container } = render(<FieldOpsPersonnel onBack={() => {}} />);
     await waitFor(() => expect(api.fetchPersonnelList).toHaveBeenCalled());
-    await waitFor(() => {
-      const cell = Array.from(container.querySelectorAll("td.dash-cell")).find((c) => c.textContent === "JOB-000017");
-      expect(cell).toBeTruthy();
-    });
+    // no resolved name → the standing placement falls back to the raw JOB-#### id on the card
+    await waitFor(() => expect(container.textContent ?? "").toContain("JOB-000017"));
   });
 });

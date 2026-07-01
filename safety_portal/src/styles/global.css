@@ -618,6 +618,9 @@ h3 {
   padding: 2px 10px;
 }
 .role-badge--admin { color: var(--c-on-brg); background: var(--c-brg); border-color: var(--c-brg); }
+/* Manager (crew lead) — mid-tier between submitter (plain) and admin (solid green): green text on a
+   faint warm ground with the design language's gold border. */
+.role-badge--manager { color: var(--c-brg); background: #fbf6e9; border-color: var(--c-gold); }
 .role-badge--off { color: var(--c-danger); border-color: var(--c-danger); background: #fdecea; }
 
 /* Accounts list. */
