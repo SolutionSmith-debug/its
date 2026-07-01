@@ -175,8 +175,13 @@ cmd_load() {
     launchctl bootstrap "gui/${UID_NUM}" "$dst"
     echo "loaded: ${label}"
     echo "  plist:  $dst"
-    echo "  stdout: ${LOG_DIR}/${label##*.}.out.log"
-    echo "  stderr: ${LOG_DIR}/${label##*.}.err.log"
+    # Read the real log paths straight from the installed plist. The label's last
+    # segment is hyphenated (portal-poll, fieldops-sync) but StandardOutPath/
+    # StandardErrorPath use underscores (portal_poll.out.log), so reconstructing
+    # from "${label##*.}" printed a path that doesn't exist. $dst is already
+    # rendered (__ITS_HOME__ substituted) and passed plutil -lint above.
+    echo "  stdout: $(plutil -extract StandardOutPath raw "$dst")"
+    echo "  stderr: $(plutil -extract StandardErrorPath raw "$dst")"
 }
 
 cmd_unload() {
