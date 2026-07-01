@@ -161,9 +161,15 @@ export function registerPersonnelWriteRoutes(app: FieldopsApp, gates: FieldopsGa
       // that's missing (422); no personnel row → bad id (404). 422 = well-formed username, no such
       // account (vs 400 = malformed username, handled above).
       const actor = c.get("session").username;
+      // (W2) One username → at most ONE active personnel row: reject linking a username already linked to a
+      // DIFFERENT active personnel (the `NOT EXISTS` clause). Without it a manager could attach another
+      // crew member's account to their own record and read that person's tasks via GET /tasks/mine (which
+      // keys on personnel.username, un-UNIQUE at the schema level). Atomic in the same UPDATE.
       const res = await c.env.DB.batch([
         c.env.DB
-          .prepare("UPDATE personnel SET username = ?2 WHERE id = ?1 AND active = 1 AND EXISTS (SELECT 1 FROM users WHERE username = ?2)")
+          .prepare(
+            "UPDATE personnel SET username = ?2 WHERE id = ?1 AND active = 1 AND EXISTS (SELECT 1 FROM users WHERE username = ?2) AND NOT EXISTS (SELECT 1 FROM personnel WHERE username = ?2 AND active = 1 AND id != ?1)",
+          )
           .bind(id, username),
         c.env.DB
           .prepare("INSERT INTO audit_log (actor_username, action, target_username, detail) SELECT ?1,?2,?3,?4 WHERE changes()=1")
@@ -171,7 +177,15 @@ export function registerPersonnelWriteRoutes(app: FieldopsApp, gates: FieldopsGa
       ]);
       if ((res[0].meta.changes ?? 0) === 0) {
         const row = await c.env.DB.prepare("SELECT id FROM personnel WHERE id = ?1 AND active = 1").bind(id).first();
-        return row ? c.json({ error: "unknown_account" }, 422) : c.json({ error: "not_found" }, 404);
+        if (!row) return c.json({ error: "not_found" }, 404);
+        // Row present + 0 changes → either the account is missing (422) or the username is already
+        // linked to a different active personnel (409 conflict). Disambiguate.
+        const taken = await c.env.DB
+          .prepare("SELECT id FROM personnel WHERE username = ?1 AND active = 1 AND id != ?2")
+          .bind(username, id)
+          .first();
+        if (taken) return c.json({ error: "username_already_linked" }, 409);
+        return c.json({ error: "unknown_account" }, 422);
       }
       return c.json({ ok: true, id, username }, 200);
     },
@@ -200,11 +214,15 @@ export function registerPersonnelWriteRoutes(app: FieldopsApp, gates: FieldopsGa
 
   // POST /api/fieldops/personnel/:id/retire — SOFT-retire (active=0). Idempotent; preserves history
   // (time_entries.personnel_id keeps its target). Mirrors the equipment roster retire.
+  // manager-no-retire (operator 2026-07-01): retiring/deleting personnel is ADMIN-ONLY. cap.personnel.manage
+  // is held by manager (0023) — so gate the ACTION on role==='admin' (the login-mint self-gate pattern,
+  // line ~72), not on the cap. A manager creates + assigns personnel but cannot retire them.
   app.post(
     "/api/fieldops/personnel/:id/retire",
     gates.requireSession,
     gates.requireCapability("cap.personnel.manage"),
     async (c) => {
+      if (c.get("role") !== "admin") return c.json({ error: "forbidden" }, 403);
       const id = badId(c);
       if (id === null) return c.json({ error: "invalid_id" }, 400);
       const actor = c.get("session").username;

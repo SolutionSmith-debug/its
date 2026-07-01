@@ -24,9 +24,11 @@ docs/enablement/portal_job_creation.md. Do not fabricate a registration in the m
 | Submit safety/progress forms, log time, field actions | ✅ | ✅ | ✅ |
 | See the Job Tracker (read) | ✅ | ✅ | ✅ |
 | See the **Personnel** tab | — | ✅ | ✅ |
-| Add/edit **non-login** crew, retire, link | — | ✅ | ✅ |
+| Add/edit **non-login** crew, link | — | ✅ | ✅ |
 | **Assign / move crew to a job** ("who is where") | — | ✅ | ✅ |
-| **Create / close jobs, create tasks** | — | — | ✅ |
+| **Create / assign / complete tasks** (subcontractors only) | — | ✅ | ✅ |
+| **Create / close jobs** | — | — | ✅ |
+| **Retire personnel** | — | — | ✅ |
 | **Create login accounts, set roles** | — | — | ✅ |
 | Admin dashboard, submit-as, form builder | — | — | ✅ |
 
@@ -56,6 +58,9 @@ where." Neither constrains the other.
 
 ## What a manager deliberately can't do
 
-Create or close jobs, create tasks, mint or disable login accounts, change roles, open the admin
-dashboard, or submit-as another user. If a crew lead needs any of those, an admin does it. This
-keeps job creation and credential/role management as an office (admin) power.
+Create or close jobs, **retire personnel**, mint or disable login accounts, change roles, open the
+admin dashboard, or submit-as another user. If a crew lead needs any of those, an admin does it. This
+keeps job creation, personnel retirement, and credential/role management as an office (admin) power.
+
+A manager **can** now create, assign, and complete **tasks** — but only assign them to
+**subcontractor** accounts (field PMs), not to another manager or an admin.

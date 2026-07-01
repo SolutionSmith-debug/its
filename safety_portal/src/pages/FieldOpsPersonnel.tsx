@@ -368,7 +368,8 @@ export function FieldOpsPersonnel({ onBack }: { onBack: () => void }) {
                         {canAssign && (
                           <button className="btn--edit" onClick={(e) => { e.stopPropagation(); openAssign(p); }}>Assign</button>
                         )}
-                        {canManage && (
+                        {/* manager-no-retire: retiring personnel is admin-only (the Worker 403s a manager) */}
+                        {isAdmin && (
                           <button className="btn--retire" onClick={(e) => { e.stopPropagation(); doRetire(p); }} disabled={actionBusy}>Retire</button>
                         )}
                       </div>

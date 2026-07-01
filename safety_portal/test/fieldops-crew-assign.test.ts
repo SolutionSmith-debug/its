@@ -93,8 +93,10 @@ describe("P2.6 — manager capability matrix", () => {
     expect((await p(manager, "/api/fieldops/job", { project_name: "Nope" })).status).toBe(403);
   });
 
-  it("manager CANNOT create a task (no cap.jobtracker.manage) → 403", async () => {
-    expect((await p(manager, "/api/fieldops/job/JOB-A/task", { description: "Dig" })).status).toBe(403);
+  it("manager CAN create an unassigned task (cap.tasks.assign, Assigned-Tasks S1) → 201", async () => {
+    // Reversal of the P2.6 "no task create" invariant (migration 0025). An unassigned task has no
+    // personnel target, so the subcontractor-target guard doesn't apply — the manager just creates it.
+    expect((await p(manager, "/api/fieldops/job/JOB-A/task", { description: "Dig" })).status).toBe(201);
   });
 
   it("manager CAN log time (cap.time.log) → 201", async () => {
@@ -208,6 +210,10 @@ describe("migration 0023 — manager grant matrix", () => {
     "cap.personnel.read",
     "cap.personnel.manage",
     "cap.crew.assign",
+    // Assigned-Tasks S1 (migration 0025): manager gains task authority — create / assign / reassign
+    // tasks (subcontractor-target guarded). Deliberate, operator-approved reversal of 0023's
+    // "no task create" (see 0025 header). cap.jobtracker.manage stays withheld (job create/lifecycle).
+    "cap.tasks.assign",
   ];
   const WITHHELD = [
     "cap.jobtracker.manage",
@@ -216,7 +222,6 @@ describe("migration 0023 — manager grant matrix", () => {
     "cap.submit_as",
     "cap.equipment.manage",
     "cap.materials.manage",
-    "cap.tasks.assign",
     "cap.checklist.manage",
   ];
 
@@ -225,7 +230,7 @@ describe("migration 0023 — manager grant matrix", () => {
     return new Set(rows.map((r) => r.capability_key));
   }
 
-  it("manager's grant is EXACTLY the 11 expected capabilities", async () => {
+  it("manager's grant is EXACTLY the 12 expected capabilities", async () => {
     const caps = await managerCaps();
     expect([...caps].sort()).toEqual([...EXPECTED_MANAGER_CAPS].sort());
   });

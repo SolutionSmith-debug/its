@@ -22,7 +22,7 @@ function call(path: string, init: Init = {}): Promise<Response> {
 function cookieFrom(res: Response): string {
   return (res.headers.get("set-cookie") ?? "").split(";")[0];
 }
-async function provision(username: string, password: string, role: "submitter" | "admin"): Promise<void> {
+async function provision(username: string, password: string, role: "submitter" | "manager" | "admin"): Promise<void> {
   const res = await call("/api/internal/admin/users", { method: "POST", bearer: ADMIN_BEARER, body: JSON.stringify({ username, password, role }) });
   expect(res.status, await res.clone().text()).toBe(201);
 }
@@ -205,5 +205,32 @@ describe("POST /api/fieldops/personnel/:id/retire (soft-retire)", () => {
     expect(await audits("personnel_retire")).toHaveLength(1);
 
     expect((await p(admin, "/api/fieldops/personnel/999999/retire")).status).toBe(404);
+  });
+});
+
+describe("S1 auth fixes — manager-no-retire + double-link guard (W2)", () => {
+  it("manager-no-retire: a manager CANNOT retire personnel → 403; an admin CAN → 200", async () => {
+    await provision("manager.mo", "password123", "manager");
+    const manager = await login("manager.mo", "password123");
+    const id = await createId(admin, { name: "Retire Me" });
+    // manager holds cap.personnel.manage (0023) but retiring is admin-only → 403, row unchanged.
+    const mgrRes = await p(manager, `/api/fieldops/personnel/${id}/retire`, {});
+    expect(mgrRes.status).toBe(403);
+    expect((await personRow(id)).active).toBe(1);
+    // admin can.
+    const adminRes = await p(admin, `/api/fieldops/personnel/${id}/retire`, {});
+    expect(adminRes.status, await adminRes.clone().text()).toBe(200);
+    expect((await personRow(id)).active).toBe(0);
+  });
+
+  it("W2: a username already linked to an active personnel can't be linked to a second → 409", async () => {
+    await provision("crew.carl", "password123", "submitter"); // a real account to link
+    const a = await createId(admin, { name: "Person A" });
+    const b = await createId(admin, { name: "Person B" });
+    expect((await p(admin, `/api/fieldops/personnel/${a}/link`, { username: "crew.carl" })).status).toBe(200);
+    const dup = await p(admin, `/api/fieldops/personnel/${b}/link`, { username: "crew.carl" });
+    expect(dup.status).toBe(409);
+    expect(((await dup.json()) as { error: string }).error).toBe("username_already_linked");
+    expect((await personRow(b)).username).toBeNull(); // B stays unlinked
   });
 });

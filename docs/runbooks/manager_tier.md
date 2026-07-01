@@ -51,12 +51,31 @@ Tier-2 operations — no code, no secrets.
    deployed. This is the **deploy-order lockout class** and is **NOT a Tier-2 repair — escalate to
    Seth** (applying a migration + redeploying the Worker is code/deploy = high-capability-class).
 
-### B. "A manager can do too much" (create jobs/tasks, mint logins, see the admin dashboard)
+### B. "A manager can do too much" — what's now expected vs. still a red flag
 
-This should be impossible — job/task create gate on `cap.jobtracker.manage`, login-minting and the
-admin surface hard-check `role==='admin'`, none of which a manager has. If you observe it, treat it
-as a **security regression → escalate to Seth immediately** (do not attempt a repair; it implies the
-grant matrix or an admin hard-check is wrong — code, high-class).
+**Expected (NOT a fault): a manager creating / assigning / completing a TASK.** As of the S1
+Assigned-Tasks build (`cap.tasks.assign`, migration `0025`) the task create/reassign routes accept
+`cap.jobtracker.manage` **OR** `cap.tasks.assign`, so a manager can now create tasks, assign them,
+and mark them complete — but only for **subcontractor-role (field-PM / `submitter`) accounts**.
+This is the role working as designed; nothing to repair, nothing to escalate.
+
+**Still should be impossible → escalate to Seth immediately.** A manager must NOT be able to:
+create or close a **JOB** (job create / close / lifecycle / routing still gate on
+`cap.jobtracker.manage`, admin-only), mint a login account, reach the admin dashboard, or **retire
+personnel** (retire is admin-only after the S1 "manager-no-retire" fold-in). If you observe any of
+those from a manager, treat it as a **security regression → escalate to Seth immediately** (do not
+attempt a repair; it implies the grant matrix or an admin hard-check is wrong — code, high-class).
+
+**Symptom (NOT a fault): a manager gets 403 `forbidden_target` or 403 `forbidden_task` on a task.**
+Both are the subcontractor-target guard working as intended — a manager may only touch tasks owned by
+subcontractors and may only assign to subcontractors:
+
+- **403 `forbidden_target`** when a manager tries to **assign a task to a non-subcontractor account**
+  (an admin or another manager). **Repair: pick a subcontractor (`submitter`) target.** Low-class,
+  Tier-2; nothing to escalate.
+- **403 `forbidden_task`** when a manager tries to **touch a task currently owned by an
+  admin/manager**. **Repair: a manager only handles tasks owned by subcontractors — leave others'
+  tasks to the office.** Low-class, Tier-2; nothing to escalate.
 
 ### C. "Assign crew to a job" fails
 
@@ -87,9 +106,9 @@ placed.
 
 ### E. "Can't assign a task to a person" / "can't log time for a crew member"
 
-Both are **office (`cap.jobtracker.manage` / `cap.time.log`) actions**, not manager actions —
-assigning *who does a task* is job management, which a manager does NOT have (item B). If the office
-can't do it:
+A manager can assign / complete tasks for **subcontractor** accounts (item B); assigning a task to
+**any** account and logging a crew member's time stay **office actions**
+(`cap.jobtracker.manage` / `cap.time.log`). If the person who should be able to do it can't:
 
 - **Add-task / reassign 422 `unknown_personnel`** — the chosen person isn't a valid roster member.
   Pick someone from the dropdown (the options are the job's placed crew — **place the crew first**).
