@@ -1253,3 +1253,50 @@ form.dash-row select {
   display: flex;
   justify-content: center;
 }
+
+/* ── Equipment multi-view refinement (Dashboard → Detail → Manage) ────────────
+   Ported look from the URS-Marine equipment refinement. The readiness pill
+   (fmc = .dash-pill--ok, degraded = .dash-pill--warn, down = .dash-pill--danger)
+   reuses the pills already defined above — no new pill variant needed. These
+   classes only add card-internal rhythm; they never override the shared
+   .dash-card--click surface / hover / focus rules. */
+.equip-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.equip-card .dash-card__head {
+  align-items: center; /* the long "Full Mission Capable" pill centers against the title */
+}
+.equip-card .dash-card__row {
+  margin-top: 10px;
+}
+.equip-card .dash-loglist {
+  margin-top: 4px;
+}
+
+/* Manage-screen roster cards — non-clickable card surface with edit/retire controls. */
+.equip-manage-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.equip-manage-card .dash-card__head {
+  align-items: center;
+  margin-bottom: 2px;
+}
+
+/* Detail field-action card: give the three inline forms a little vertical breathing room. */
+.equip-detail__actions .dash-row + .dash-row {
+  margin-top: 4px;
+}
+
+/* Respect reduced-motion — kill the clickable-card lift/transition for users who ask for it. */
+@media (prefers-reduced-motion: reduce) {
+  .dash-card--click {
+    transition: none;
+  }
+  .dash-card--click:hover {
+    transform: none;
+  }
+}
