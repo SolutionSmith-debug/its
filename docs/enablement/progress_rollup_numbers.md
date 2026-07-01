@@ -48,6 +48,17 @@ log in the portal — **NOT** the free-text of the Daily Field Report. That mean
 - **Costs are off** for now (no labor-cost or materials-value columns) until a later cost-tracking
   phase turns them on.
 
+## One known limitation — late-synced equipment
+
+**Equipment** is counted by **when its location reached the server**, while **labor hours** are
+counted by **when the work actually happened** (the crew-reported start time). For a crew with a
+live connection these agree. But if a crew logs equipment locations **offline** (e.g. a remote site
+with no signal) and the device syncs a day or more later, that equipment can land in the **week it
+synced** rather than the week it was on site — while the same crew's labor hours still land in the
+correct week. So on rare occasions the two numbers can disagree about which week a crew's activity
+belongs to. This is a deliberate tradeoff (server-receipt time can't be shifted by a wrong
+field-set clock); flag it if an offline-heavy crew's equipment count ever looks off.
+
 If a packet is missing its numbers page entirely, that is a wiring/health matter for the operator
 — see the successor-remediation runbook
 [`docs/runbooks/progress_weekly_generate.md`](../runbooks/progress_weekly_generate.md) (Fault D).

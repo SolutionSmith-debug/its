@@ -157,7 +157,24 @@ def test_resolve_creds_none_on_setting_not_found(monkeypatch) -> None:
         raise pwg.smartsheet_client.SmartsheetNotFoundError("no row")
     monkeypatch.setattr(pwg.smartsheet_client, "get_setting", boom)
     monkeypatch.setattr(pwg.keychain, "get_secret", lambda name: "tok")
+    warns: list = []
+    monkeypatch.setattr(pwg, "error_log_log", lambda *a, **k: warns.append((a, k)))
     assert pwg._resolve_rollup_creds() is None
+    assert warns == []  # not-cut-over is a QUIET no-op — no WARN spam (distinct from circuit-open)
+
+
+def test_resolve_creds_circuit_open_warns_and_fails_closed(monkeypatch) -> None:
+    # A missing config row is silent (above); an OPEN circuit breaker (Smartsheet degraded NOW) is
+    # a live signal → it WARNs `rollup_creds_circuit_open` before failing closed (never-silent).
+    def boom(key, workstream):  # type: ignore[no-untyped-def]
+        raise pwg.smartsheet_client.SmartsheetCircuitOpenError("breaker open")
+    monkeypatch.setattr(pwg.smartsheet_client, "get_setting", boom)
+    monkeypatch.setattr(pwg.keychain, "get_secret", lambda name: "tok")
+    warns: list = []
+    monkeypatch.setattr(pwg, "error_log_log", lambda *a, **k: warns.append((a, k)))
+    assert pwg._resolve_rollup_creds() is None  # fail-closed: still no rollup this cycle
+    assert len(warns) == 1
+    assert warns[0][1]["error_code"] == "rollup_creds_circuit_open"
 
 
 def test_resolve_creds_none_when_bearer_missing(monkeypatch) -> None:

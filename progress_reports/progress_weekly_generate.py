@@ -54,7 +54,8 @@ from safety_reports import form_pdf, generate_core
 from safety_reports.week_sheet import PROGRESS_WEEK_SHEET_CONFIG
 from shared import active_jobs, keychain, portal_client, review_queue, smartsheet_client
 from shared.active_jobs import ActiveJob
-from shared.error_log import its_error_log
+from shared.error_log import Severity, its_error_log
+from shared.error_log import log as error_log_log
 from shared.kill_switch import require_active
 from shared.safety_week import SafetyWeek
 
@@ -91,14 +92,31 @@ def _week_epoch_window(week: SafetyWeek) -> tuple[int, int]:
 
 def _resolve_rollup_creds() -> tuple[str, str] | None:
     """Resolve (base_url, bearer) for the rollup read, fail-CLOSED. None when EITHER is unset —
-    the progress workstream may not be fully cut over yet, so an unwired rollup is a quiet no-op
+    the progress workstream may not be fully cut over yet, so an UNWIRED rollup is a quiet no-op
     (no page), NOT an error. A wired-but-broken rollup (transport/500) instead RAISES from
-    `get_progress_rollup` and is surfaced by the compile's rollup fence (never silent)."""
+    `get_progress_rollup` → the compile's rollup fence WARNs (never silent).
+
+    Never-silent nuance: a config-row-absent read (`SmartsheetNotFoundError` = not cut over) stays
+    quiet, but an OPEN circuit breaker (`SmartsheetCircuitOpenError` = Smartsheet degraded RIGHT
+    NOW) is a LIVE signal, not the same as "not wired" — so it WARNs (`rollup_creds_circuit_open`)
+    before failing closed, so an operator scanning ITS_Errors isn't left inferring silence."""
     try:
         raw = smartsheet_client.get_setting(CFG_WORKER_BASE_URL, workstream="progress_reports")
         base_url = raw.strip() if isinstance(raw, str) else ""
-    except (smartsheet_client.SmartsheetNotFoundError,
-            smartsheet_client.SmartsheetCircuitOpenError):
+    except smartsheet_client.SmartsheetNotFoundError:
+        # Config row absent — the progress workstream isn't cut over yet. Quiet no-op (no page).
+        base_url = ""
+    except smartsheet_client.SmartsheetCircuitOpenError:
+        # DISTINCT from "not configured": Smartsheet is actively degraded (breaker open). WARN so
+        # the live signal is observable, then fail closed (no page this cycle; self-heals when the
+        # breaker closes and the next Friday compile re-reads). error_log is fail-soft, so this
+        # never crashes the fenced compile even while Smartsheet is down.
+        error_log_log(
+            Severity.WARN, SCRIPT_NAME,
+            "rollup creds unresolved: Smartsheet circuit breaker OPEN (degraded) — progress rollup "
+            "numbers page SKIPPED this cycle; it returns when Smartsheet recovers.",
+            error_code="rollup_creds_circuit_open",
+        )
         base_url = ""
     try:
         bearer = keychain.get_secret(KC_BEARER)
