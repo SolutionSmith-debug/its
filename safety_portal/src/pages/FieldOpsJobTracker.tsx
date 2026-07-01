@@ -108,7 +108,7 @@ function CcEditor({ label, ccs, onChange }: { label: string; ccs: string[]; onCh
           />{" "}
           <button
             type="button"
-            className="btn--ghost"
+            className="btn--danger"
             aria-label={`Remove ${label} ${i + 1}`}
             onClick={() => onChange(ccs.filter((_, j) => j !== i))}
           >
@@ -681,7 +681,7 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
                   ))}
                 </select>
               </label>{" "}
-              <button type="submit" disabled={actionBusy} className="btn--secondary">Add task</button>
+              <button type="submit" disabled={actionBusy} className="btn--primary">Add task</button>
             </form>
             <form className="dash-row" aria-label="Set job lifecycle">
               <label className="dash-card__label">
@@ -743,7 +743,7 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
                       {" "}
                       <button
                         type="button"
-                        className="btn--ghost"
+                        className="btn--danger"
                         aria-label={`Remove ${p.name} from crew`}
                         disabled={actionBusy}
                         onClick={() => removeCrew(p.id)}
@@ -772,7 +772,7 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
                     <option key={p.id} value={p.id}>{p.name}{p.trade ? ` · ${p.trade}` : ""}</option>
                   ))}
               </select>{" "}
-              <button type="submit" disabled={actionBusy} className="btn--secondary">Add to crew</button>
+              <button type="submit" disabled={actionBusy} className="btn--primary">Add to crew</button>
             </form>
           )}
         </section>
@@ -863,7 +863,7 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
                 placeholder="Notes (optional)"
                 maxLength={2000}
               />{" "}
-              <button type="submit" disabled={actionBusy} className="btn--secondary">Log time</button>
+              <button type="submit" disabled={actionBusy} className="btn--primary">Log time</button>
             </form>
           )}
           {job.time_entries.length ? (
@@ -921,7 +921,7 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
                   <option key={eq.id} value={eq.id}>{eq.name}{eq.identifier ? ` · ${eq.identifier}` : ""}</option>
                 ))}
               </select>{" "}
-              <button type="submit" disabled={actionBusy} className="btn--secondary">Move here</button>
+              <button type="submit" disabled={actionBusy} className="btn--primary">Move here</button>
             </form>
           )}
         </section>

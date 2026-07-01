@@ -230,7 +230,7 @@ export function AccountsPage({
                     {a.disabled ? <span className="role-badge role-badge--off">disabled</span> : null}
                   </div>
                   <div className="accounts__actions">
-                    <button className="btn btn--secondary" disabled={busy} onClick={() => openEditor(a.username)}>
+                    <button className="btn btn--edit" disabled={busy} onClick={() => openEditor(a.username)}>
                       Edit login
                     </button>
                     <select
