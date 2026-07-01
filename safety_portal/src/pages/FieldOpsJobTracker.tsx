@@ -1,6 +1,8 @@
 import { useState, useEffect } from "react";
 import type { FormEvent } from "react";
 import * as api from "../lib/fieldops_jobtracker";
+import { fetchPersonnelList, assignPersonnel, type PersonnelRow } from "../lib/fieldops_personnel";
+import { fetchEquipmentList, moveEquipment } from "../lib/fieldops_equipment";
 import { useAuth } from "../lib/auth";
 import { PageShell } from "../components/PageShell";
 
@@ -210,6 +212,11 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
   const canManage = caps.includes("cap.jobtracker.manage"); // create / close / progress / add-task
   const canOwnTasks = caps.includes("cap.tasks.own"); // change a task's own status
   const canLogTime = caps.includes("cap.time.log"); // log a time entry against the open job
+  // Unified job-create flow: per-control caps (convenience — the Worker re-gates every call). A
+  // manager (P2.6) holds crew.assign + equipment.field but NOT jobtracker.manage → can place crew /
+  // move equipment on a job WITHOUT the add-task control (which stays under canManage).
+  const canAssignCrew = caps.includes("cap.crew.assign"); // place / remove crew on this job
+  const canFieldEquip = caps.includes("cap.equipment.field"); // move a piece of equipment to this job
   const [actionBusy, setActionBusy] = useState(false);
   const [actionMsg, setActionMsg] = useState<{ ok: boolean; text: string } | null>(null);
   // New-job form (list view)
@@ -228,6 +235,13 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
   const [logHours, setLogHours] = useState("");
   const [logNotes, setLogNotes] = useState("");
   const [logTask, setLogTask] = useState("");
+  // Unified job-create flow (Slice 2/3): assign-crew + assign-equipment pickers on the detail view,
+  // plus the one-shot "finish setting up" nudge shown when a create routes into the new job's detail.
+  const [crewOpts, setCrewOpts] = useState<PersonnelRow[]>([]);
+  const [equipOpts, setEquipOpts] = useState<{ id: number; name: string; identifier: string | null }[]>([]);
+  const [crewToAdd, setCrewToAdd] = useState("");
+  const [equipToAdd, setEquipToAdd] = useState("");
+  const [setupBanner, setSetupBanner] = useState<string | null>(null);
 
   // Reload the list whenever the status filter changes (and on mount).
   useEffect(() => {
@@ -247,6 +261,33 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
       live = false;
     };
   }, [statusFilter]);
+
+  // Load the crew + equipment pickers when the detail view is open and the actor can assign. These
+  // are the full active roster / equipment set (not job-scoped); reloaded after each mutation so the
+  // "already placed here" exclusion stays current. A load failure falls back to an empty option list
+  // (the control still renders) — it never blocks the detail view.
+  async function reloadPickers() {
+    if (canAssignCrew) {
+      try {
+        setCrewOpts((await fetchPersonnelList()).personnel);
+      } catch {
+        setCrewOpts([]);
+      }
+    }
+    if (canFieldEquip) {
+      try {
+        const r = await fetchEquipmentList();
+        setEquipOpts(r.equipment.map((eq) => ({ id: eq.id, name: eq.name, identifier: eq.identifier })));
+      } catch {
+        setEquipOpts([]);
+      }
+    }
+  }
+
+  useEffect(() => {
+    if (view === "detail" && selectedJob && (canAssignCrew || canFieldEquip)) void reloadPickers();
+    // reloadPickers is recreated each render and reads the current caps; job_id keys the reload.
+  }, [view, selectedJob?.job_id, canAssignCrew, canFieldEquip]);
 
   async function loadMore() {
     if (!cursor || loading) return;
@@ -268,6 +309,9 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
     setDetailLoading(true);
     setEditContactsOpen(false);
     setEditRouting(EMPTY_ROUTING);
+    setSetupBanner(null); // opening an existing job from the list is not the create-nudge path
+    setCrewToAdd("");
+    setEquipToAdd("");
     api
       .fetchJobDetail(job.job_id)
       .then((res) => {
@@ -291,6 +335,7 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
       setTimeCursor(null);
       setInspCursor(null);
       setError(null);
+      setSetupBanner(null);
     } else {
       onBack();
     }
@@ -373,6 +418,25 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
       setCreateRouting(EMPTY_ROUTING);
       setNewJobOpen(false);
       await reloadList();
+      // Slice 3: route into the new job's detail with a one-shot "finish setting up" nudge so the
+      // office immediately assigns crew / equipment / tasks. If the detail fetch fails, stay on the
+      // list — the job is created and the success toast still shows.
+      try {
+        const res = await api.fetchJobDetail(created.job_id);
+        setSelectedJob(res.job);
+        setLifecycleSel(res.job.status === "active" ? "active" : "inactive");
+        setTaskCursor(res.cursors.tasks);
+        setTimeCursor(res.cursors.time);
+        setInspCursor(res.cursors.insp);
+        setEditContactsOpen(false);
+        setEditRouting(EMPTY_ROUTING);
+        setCrewToAdd("");
+        setEquipToAdd("");
+        setSetupBanner(created.job_id);
+        setView("detail");
+      } catch {
+        /* detail fetch failed — stay on the list; the job was still created */
+      }
       setActionMsg({ ok: true, text: `Job ${created.job_id} created.` });
     } catch (err) {
       setActionMsg({ ok: false, text: err instanceof Error ? err.message : "Create failed." });
@@ -507,6 +571,72 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
     }
   }
 
+  // ── Unified job-create flow: assign crew + equipment to the open job (Slice 2) ───────────────────
+  // Reuse the P2.6 assignPersonnel (cap.crew.assign) and the equipment move (cap.equipment.field)
+  // routes — already security-reviewed. Each reloads the detail (crew / equipment_on_site reflect
+  // the change via the Slice-1 crew-convergence + the equipment-on-site leg) and the pickers.
+  async function submitAssignCrew(e: FormEvent) {
+    e.preventDefault();
+    if (!selectedJob || actionBusy) return;
+    const pid = Number(crewToAdd);
+    if (crewToAdd === "" || !Number.isInteger(pid)) {
+      setActionMsg({ ok: false, text: "Select a crew member to place on this job." });
+      return;
+    }
+    setActionBusy(true);
+    setActionMsg(null);
+    try {
+      await assignPersonnel(pid, selectedJob.job_id);
+      setCrewToAdd("");
+      await reloadDetail();
+      await reloadPickers();
+      setActionMsg({ ok: true, text: "Crew member placed on this job." });
+    } catch (err) {
+      setActionMsg({ ok: false, text: err instanceof Error ? err.message : "Assign failed." });
+    } finally {
+      setActionBusy(false);
+    }
+  }
+
+  async function removeCrew(personId: number) {
+    if (!selectedJob || actionBusy) return;
+    setActionBusy(true);
+    setActionMsg(null);
+    try {
+      await assignPersonnel(personId, null); // clear the placement (unassign)
+      await reloadDetail();
+      await reloadPickers();
+      setActionMsg({ ok: true, text: "Crew member removed from this job." });
+    } catch (err) {
+      setActionMsg({ ok: false, text: err instanceof Error ? err.message : "Remove failed." });
+    } finally {
+      setActionBusy(false);
+    }
+  }
+
+  async function submitAssignEquip(e: FormEvent) {
+    e.preventDefault();
+    if (!selectedJob || actionBusy) return;
+    const eid = Number(equipToAdd);
+    if (equipToAdd === "" || !Number.isInteger(eid)) {
+      setActionMsg({ ok: false, text: "Select a piece of equipment to move to this job." });
+      return;
+    }
+    setActionBusy(true);
+    setActionMsg(null);
+    try {
+      await moveEquipment(eid, { job_id: selectedJob.job_id });
+      setEquipToAdd("");
+      await reloadDetail();
+      await reloadPickers();
+      setActionMsg({ ok: true, text: "Equipment moved to this job." });
+    } catch (err) {
+      setActionMsg({ ok: false, text: err instanceof Error ? err.message : "Move failed." });
+    } finally {
+      setActionBusy(false);
+    }
+  }
+
   if (view === "detail" && selectedJob) {
     const job = selectedJob;
     return (
@@ -520,6 +650,14 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
           <span className={jobPillClass(job.status)}>{job.status}</span>
         </div>
         <p className="dash-card__sub muted">{(job.client?.name ?? "No client")} · {job.job_id}</p>
+
+        {setupBanner === job.job_id && (
+          <section className="card dash-section" aria-label="Finish setting up job">
+            <strong>Finish setting up {job.job_id}</strong> — assign crew, equipment, and tasks below to
+            get this job ready.{" "}
+            <button type="button" className="btn--secondary" onClick={() => setSetupBanner(null)}>Done</button>
+          </section>
+        )}
 
         {actionMsg && (
           <p className="muted" style={{ color: actionMsg.ok ? "green" : "red" }}>{actionMsg.text}</p>
@@ -601,15 +739,53 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
         )}
 
         <section className="card dash-section">
-          <h3 className="dash-detail__h2">Assigned crew ({job.crew.length})</h3>
+          <h3 className="dash-detail__h2">
+            Assigned crew ({job.crew.length})
+            {setupBanner === job.job_id && job.crew.length === 0 && (
+              <span className="dash-pill dash-pill--warn"> needs crew</span>
+            )}
+          </h3>
           {job.crew.length ? (
             <div className="dash-chips">
               {job.crew.map((p) => (
-                <span className="dash-chip" key={p.id}>{p.name}{p.trade ? ` · ${p.trade}` : ""}</span>
+                <span className="dash-chip" key={p.id}>
+                  {p.name}{p.trade ? ` · ${p.trade}` : ""}
+                  {canAssignCrew && (
+                    <>
+                      {" "}
+                      <button
+                        type="button"
+                        className="btn--ghost"
+                        aria-label={`Remove ${p.name} from crew`}
+                        disabled={actionBusy}
+                        onClick={() => removeCrew(p.id)}
+                      >
+                        ✕
+                      </button>
+                    </>
+                  )}
+                </span>
               ))}
             </div>
           ) : (
             <div className="dash-unavail">No crew assigned.</div>
+          )}
+          {canAssignCrew && (
+            <form onSubmit={submitAssignCrew} className="dash-row" aria-label="Assign crew to job">
+              <select
+                value={crewToAdd}
+                onChange={(ev) => setCrewToAdd(ev.target.value)}
+                aria-label="Crew member to place"
+              >
+                <option value="">— select crew member —</option>
+                {crewOpts
+                  .filter((p) => p.current_job !== job.job_id)
+                  .map((p) => (
+                    <option key={p.id} value={p.id}>{p.name}{p.trade ? ` · ${p.trade}` : ""}</option>
+                  ))}
+              </select>{" "}
+              <button type="submit" disabled={actionBusy} className="btn--secondary">Add to crew</button>
+            </form>
           )}
         </section>
 
@@ -702,7 +878,12 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
         </section>
 
         <section className="card dash-section">
-          <h3 className="dash-detail__h2">Equipment on site ({job.equipment_on_site.length})</h3>
+          <h3 className="dash-detail__h2">
+            Equipment on site ({job.equipment_on_site.length})
+            {setupBanner === job.job_id && job.equipment_on_site.length === 0 && (
+              <span className="dash-pill dash-pill--warn"> needs equipment</span>
+            )}
+          </h3>
           {job.equipment_on_site.length ? (
             <div className="dash-chips">
               {job.equipment_on_site.map((e) => (
@@ -711,6 +892,21 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
             </div>
           ) : (
             <div className="dash-unavail">No equipment on site.</div>
+          )}
+          {canFieldEquip && (
+            <form onSubmit={submitAssignEquip} className="dash-row" aria-label="Assign equipment to job">
+              <select
+                value={equipToAdd}
+                onChange={(ev) => setEquipToAdd(ev.target.value)}
+                aria-label="Equipment to move here"
+              >
+                <option value="">— select equipment —</option>
+                {equipOpts.map((eq) => (
+                  <option key={eq.id} value={eq.id}>{eq.name}{eq.identifier ? ` · ${eq.identifier}` : ""}</option>
+                ))}
+              </select>{" "}
+              <button type="submit" disabled={actionBusy} className="btn--secondary">Move here</button>
+            </form>
           )}
         </section>
 

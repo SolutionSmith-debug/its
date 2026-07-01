@@ -25,8 +25,15 @@ vi.mock("../../lib/fieldops_jobtracker", async (importOriginal) => {
   };
 });
 vi.mock("../../lib/auth", () => ({ useAuth: vi.fn() }));
+// Unified job-create flow: the detail-view assign controls call these two libs (P2.6 crew.assign +
+// the equipment move). Mock the four fns the component imports; types are erased so the type-only
+// PersonnelRow import needs no runtime stub.
+vi.mock("../../lib/fieldops_personnel", () => ({ fetchPersonnelList: vi.fn(), assignPersonnel: vi.fn() }));
+vi.mock("../../lib/fieldops_equipment", () => ({ fetchEquipmentList: vi.fn(), moveEquipment: vi.fn() }));
 
 import * as api from "../../lib/fieldops_jobtracker";
+import { fetchPersonnelList, assignPersonnel, type PersonnelRow } from "../../lib/fieldops_personnel";
+import { fetchEquipmentList, moveEquipment } from "../../lib/fieldops_equipment";
 import { useAuth } from "../../lib/auth";
 import { FieldOpsJobTracker } from "../FieldOpsJobTracker";
 
@@ -45,7 +52,27 @@ beforeEach(() => {
   vi.resetAllMocks();
   // Default: no write caps → read-only shell (existing read tests behave exactly as before).
   vi.mocked(useAuth).mockReturnValue(authWith([]));
+  // Safe empty defaults so the detail-view picker-load effect never rejects; assign tests override.
+  vi.mocked(fetchPersonnelList).mockResolvedValue({ personnel: [], latest_entries: [], next_cursor: null });
+  vi.mocked(fetchEquipmentList).mockResolvedValue({ equipment: [], next_cursor: null });
 });
+
+// Picker fixtures for the assign controls. Pat is unplaced; "Al Already" is already on JOB-A (so the
+// crew-assign <select> should exclude him). The equipment item carries the full EquipmentHeader shape.
+const PERSONNEL_OPTS: PersonnelRow[] = [
+  { id: 10, name: "Pat Placed", trade: "operator", username: null, current_job: null },
+  { id: 11, name: "Al Already", trade: "laborer", username: null, current_job: "JOB-A" },
+];
+const EQUIP_LIST = {
+  equipment: [
+    {
+      id: 20, name: "Skid 1", kind: "skid-steer", identifier: "S1",
+      status: "fmc" as const, status_note: null, status_changed_at: null, status_actor: null,
+      location: null, latest_inspection: null, recent_logs: [],
+    },
+  ],
+  next_cursor: null,
+};
 
 const JOBS: api.JobRow[] = [
   {
@@ -213,6 +240,11 @@ describe("FieldOpsJobTracker — write UI", () => {
     vi.mocked(useAuth).mockReturnValue(authWith(["cap.jobtracker.manage"]));
     vi.mocked(api.fetchJobList).mockResolvedValue({ jobs: JOBS, next_cursor: null });
     vi.mocked(api.createJob).mockResolvedValue({ job_id: "JOB-C" });
+    // Slice 3: create routes into the new job's detail — mock the follow-up detail fetch.
+    vi.mocked(api.fetchJobDetail).mockResolvedValue({
+      job: { ...DETAIL, job_id: "JOB-C", project_name: "Charlie", crew: [], equipment_on_site: [] },
+      cursors: NO_CURSORS,
+    });
     const { container, getByText, getByPlaceholderText } = render(<FieldOpsJobTracker onBack={() => {}} />);
     await waitFor(() => expect(container.querySelectorAll(".dash-card--click")).toHaveLength(2));
 
@@ -405,5 +437,98 @@ describe("FieldOpsJobTracker — write UI", () => {
   it("hides the Log time form without cap.time.log", async () => {
     const { container } = await openManagedDetail(["cap.jobtracker.manage"]);
     expect(container.querySelector('[aria-label="Log time"]')).toBeNull();
+  });
+});
+
+describe("FieldOpsJobTracker — unified job-create flow (assign crew / equipment + create nudge)", () => {
+  async function openDetailWith(caps: string[], detail: api.JobDetail = DETAIL) {
+    vi.mocked(useAuth).mockReturnValue(authWith(caps));
+    vi.mocked(api.fetchJobList).mockResolvedValue({ jobs: JOBS, next_cursor: null });
+    vi.mocked(api.fetchJobDetail).mockResolvedValue({ job: detail, cursors: NO_CURSORS });
+    const utils = render(<FieldOpsJobTracker onBack={() => {}} />);
+    await waitFor(() => expect(utils.container.querySelectorAll(".dash-card--click")).toHaveLength(2));
+    fireEvent.click(utils.container.querySelector(".dash-card--click")!);
+    await waitFor(() => expect(api.fetchJobDetail).toHaveBeenCalledWith("JOB-A"));
+    return utils;
+  }
+
+  it("a manager (crew.assign + equipment.field, no jobtracker.manage) sees assign controls but NOT add-task", async () => {
+    const { container } = await openDetailWith(["cap.crew.assign", "cap.equipment.field"]);
+    await waitFor(() => expect(container.querySelector('[aria-label="Assign crew to job"]')).not.toBeNull());
+    expect(container.querySelector('[aria-label="Assign equipment to job"]')).not.toBeNull();
+    // No jobtracker.manage → the whole "Manage job" section (incl. Add a task + progress) is withheld.
+    expect(container.querySelector('[aria-label="Add a task"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Update job progress"]')).toBeNull();
+  });
+
+  it("assign-crew posts assignPersonnel(personId, job_id); excludes an already-placed person", async () => {
+    vi.mocked(fetchPersonnelList).mockResolvedValue({ personnel: PERSONNEL_OPTS, latest_entries: [], next_cursor: null });
+    vi.mocked(assignPersonnel).mockResolvedValue(undefined);
+    const { getByLabelText } = await openDetailWith(["cap.crew.assign"]);
+    // Wait for the async picker load to populate the <select> (assert INSIDE waitFor so it retries).
+    await waitFor(() => {
+      const s = getByLabelText("Crew member to place") as HTMLSelectElement;
+      const values = Array.from(s.options).map((o) => o.value);
+      expect(values).toContain("10"); // Pat Placed (unplaced) offered
+      expect(values).not.toContain("11"); // Al Already (already on JOB-A) excluded
+    });
+    fireEvent.change(getByLabelText("Crew member to place"), { target: { value: "10" } });
+    fireEvent.submit(getByLabelText("Assign crew to job"));
+    await waitFor(() => expect(assignPersonnel).toHaveBeenCalledWith(10, "JOB-A"));
+  });
+
+  it("remove-crew posts assignPersonnel(personId, null) (unassign)", async () => {
+    vi.mocked(assignPersonnel).mockResolvedValue(undefined);
+    const { getByLabelText } = await openDetailWith(["cap.crew.assign"]);
+    // DETAIL.crew has Alice Chen (id 1); the ✕ remove button carries her aria-label.
+    const removeBtn = await waitFor(() => getByLabelText("Remove Alice Chen from crew"));
+    fireEvent.click(removeBtn);
+    await waitFor(() => expect(assignPersonnel).toHaveBeenCalledWith(1, null));
+  });
+
+  it("assign-equipment posts moveEquipment(equipId, { job_id })", async () => {
+    vi.mocked(fetchEquipmentList).mockResolvedValue(EQUIP_LIST);
+    vi.mocked(moveEquipment).mockResolvedValue(undefined);
+    const { getByLabelText } = await openDetailWith(["cap.equipment.field"]);
+    await waitFor(() => {
+      const s = getByLabelText("Equipment to move here") as HTMLSelectElement;
+      expect(Array.from(s.options).map((o) => o.value)).toContain("20");
+    });
+    fireEvent.change(getByLabelText("Equipment to move here"), { target: { value: "20" } });
+    fireEvent.submit(getByLabelText("Assign equipment to job"));
+    await waitFor(() => expect(moveEquipment).toHaveBeenCalledWith(20, { job_id: "JOB-A" }));
+  });
+
+  it("hides the assign controls (and crew remove) without their caps", async () => {
+    const { container } = await openDetailWith(["cap.jobtracker.manage"]); // manage, but not crew/equipment.field
+    expect(container.querySelector('[aria-label="Assign crew to job"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Assign equipment to job"]')).toBeNull();
+    expect(container.querySelector('[aria-label^="Remove "]')).toBeNull();
+  });
+
+  it("Slice 3: creating a job opens its detail with a dismissible 'finish setting up' nudge", async () => {
+    vi.mocked(useAuth).mockReturnValue(authWith(["cap.jobtracker.manage"]));
+    vi.mocked(api.fetchJobList).mockResolvedValue({ jobs: JOBS, next_cursor: null });
+    vi.mocked(api.createJob).mockResolvedValue({ job_id: "JOB-C" });
+    vi.mocked(api.fetchJobDetail).mockResolvedValue({
+      job: { ...DETAIL, job_id: "JOB-C", project_name: "Charlie", crew: [], equipment_on_site: [] },
+      cursors: NO_CURSORS,
+    });
+    const { container, getByText, getByPlaceholderText } = render(<FieldOpsJobTracker onBack={() => {}} />);
+    await waitFor(() => expect(container.querySelectorAll(".dash-card--click")).toHaveLength(2));
+
+    fireEvent.click(getByText("+ New job"));
+    fireEvent.change(getByPlaceholderText("Project name"), { target: { value: "Charlie" } });
+    fireEvent.submit(container.querySelector('[aria-label="Create job"]')!);
+
+    await waitFor(() => expect(container.querySelector('[aria-label="Finish setting up job"]')).not.toBeNull());
+    expect(container.textContent ?? "").toContain("Finish setting up JOB-C");
+    expect(container.querySelector(".page__heading")?.textContent).toBe("Charlie");
+    // The nudge highlights the empty crew/equipment sections.
+    expect(container.textContent ?? "").toContain("needs crew");
+    expect(container.textContent ?? "").toContain("needs equipment");
+    // Dismissible.
+    fireEvent.click(getByText("Done"));
+    await waitFor(() => expect(container.querySelector('[aria-label="Finish setting up job"]')).toBeNull());
   });
 });

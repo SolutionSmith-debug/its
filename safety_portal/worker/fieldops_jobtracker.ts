@@ -80,18 +80,19 @@ export function registerJobTrackerRoutes(app: FieldopsApp, gates: FieldopsGates)
       const pageJobIds = jobsRes.results.map((r) => r.job_id);
       const placeholders = pageJobIds.map(() => "?").join(",");
 
-      // Crew (distinct personnel) + open tasks, both page-scoped (idx_task_assignments_job).
-      // Both windowed to ≤NESTED_CAP per job IN SQL (bounded O(page·cap), not O(all crew/tasks)).
-      // NESTED_CAP is a code constant, not user input — safe to interpolate (matches Brief B's rn<=5).
+      // Crew = the people PLACED on each job (personnel.current_job, migration 0023 — the P2.6
+      // crew→job placement), NOT the distinct assignees of task_assignments. The unified job-create
+      // flow converged crew onto placement: `assignPersonnel` sets current_job, so THIS is the crew
+      // that the assign controls drive. Page-scoped (idx_personnel_current_job), windowed to
+      // ≤NESTED_CAP per job IN SQL (bounded O(page·cap), not O(all placed personnel)). NESTED_CAP is
+      // a code constant, not user input — safe to interpolate (matches Brief B's rn<=5). (Open tasks
+      // stay task_assignments-based, page-scoped on idx_task_assignments_job — tasks ARE task-based.)
       const sqlCrew = `
         SELECT job_id, id, name, trade FROM (
-          SELECT j.job_id, j.id, j.name, j.trade,
-                 ROW_NUMBER() OVER (PARTITION BY j.job_id ORDER BY j.name ASC, j.id ASC) AS rn
-          FROM (
-            SELECT DISTINCT ta.job_id, p.id, p.name, p.trade
-            FROM task_assignments ta JOIN personnel p ON p.id = ta.personnel_id
-            WHERE ta.job_id IN (${placeholders})
-          ) j
+          SELECT p.current_job AS job_id, p.id, p.name, p.trade,
+                 ROW_NUMBER() OVER (PARTITION BY p.current_job ORDER BY p.name ASC, p.id ASC) AS rn
+          FROM personnel p
+          WHERE p.current_job IN (${placeholders}) AND p.active = 1
         ) WHERE rn <= ${NESTED_CAP}
       `;
       const sqlOpenTasks = `
@@ -188,11 +189,13 @@ export function registerJobTrackerRoutes(app: FieldopsApp, gates: FieldopsGates)
         ORDER BY created_at DESC, id DESC
         LIMIT ?4
       `;
-      // crew (distinct), bounded
+      // crew = people PLACED on this job (personnel.current_job, migration 0023), bounded. Converged
+      // onto placement to match the assign controls (see the list route's crew leg for the rationale);
+      // NOT task_assignments (tasks stay their own leg above). idx_personnel_current_job keys it.
       const sqlCrew = `
-        SELECT DISTINCT p.id, p.name, p.trade
-        FROM task_assignments ta JOIN personnel p ON p.id = ta.personnel_id
-        WHERE ta.job_id = ?1
+        SELECT p.id, p.name, p.trade
+        FROM personnel p
+        WHERE p.current_job = ?1 AND p.active = 1
         LIMIT ?2
       `;
       // time_entries (job-scoped), keyset (created_at, uuid). time_entries has no recorded_at →

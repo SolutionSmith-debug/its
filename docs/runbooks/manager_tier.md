@@ -70,6 +70,21 @@ grant matrix or an admin hard-check is wrong — code, high-class).
   (`current_job`) and their *time entries* are **orthogonal**. Someone placed on Job A can log a day
   against Job B without being reassigned. Nothing to repair.
 
+### D. "A job's crew list is empty or looks wrong after the unified-create-flow update"
+
+After the unified job-create flow (migration `0024`), a job's **crew = the people currently PLACED
+on it** (`personnel.current_job`), **not** whoever has a task assigned. An existing job that had
+task-assignment "crew" but nobody *placed* on it now shows an **empty crew list** until someone is
+placed.
+
+- **Repair (low-class, Tier-2):** open the job in the Job Tracker → **Assigned crew** → pick the
+  person → **Add to crew** (or use the Personnel page **Assign** control). They appear in the crew
+  list immediately; the **✕** next to a crew member removes (unassigns) them.
+- **No data was lost** — those people still show in the job's **Tasks** list with their name; only
+  the *crew* view changed to mean "placed on this job." Nothing to escalate — this is the intended
+  convergence. (The detail-view **Assign crew** / **Assign equipment** controls are gated on
+  `cap.crew.assign` / `cap.equipment.field`, so a manager sees them; add-task stays `admin`/office.)
+
 ## Escalate-to-Seth boundary (observable terms)
 
 Escalate (do **not** self-repair) when: migration `0023` needs applying / the Worker needs
