@@ -83,6 +83,41 @@ progress compile started (14:30). The progress compile is **fail-open** — it l
 progress run otherwise completed (its Rollup + WPR row landed). If it recurs every run, a compile
 may be hung holding the lock — check for a stuck compile process and have it terminated.
 
+## Fault D — the rollup-numbers page is missing or all-zeros (P6)
+
+**What it is.** Each compiled **progress** packet carries a **rollup-numbers page** (P6) right
+after the cover, before the contents index: **Labor hours / Equipment on site / Open tasks /
+Materials (coming soon)**. Those numbers come from the structured field-ops data (crews logging
+time, equipment, and tasks in the portal) — **NOT** from the Daily Field Report narrative.
+
+**Symptom.** The compiled packet PDF opens with the cover, then jumps straight to the contents
+index — **no numbers page** — OR the numbers page renders **"No field-ops activity recorded for
+this week."** for a job you expected numbers on. A wired-but-broken rollup also leaves an
+`ITS_Errors` row `Script=progress_reports.progress_weekly_generate`,
+`Error=progress_weekly_generate.rollup_page_failed`.
+
+**This never breaks the compile.** The rollup page is FENCED — a failure logs the WARN above and
+the packet still compiles + files + gets its WPR row, just without the numbers page. So this is
+never urgent; the packet is still valid and sendable.
+
+**Check (read-only).** (1) `ITS_Errors` — is there a `…rollup_page_failed` WARN (wired but
+failing) or **nothing at all** (not wired yet)? (2) Did crews actually log time / equipment /
+tasks in the portal for that job this week? If not, **"No field-ops activity recorded"** is the
+CORRECT, honest output — nothing is broken. (3) `ITS_Config` — is
+`safety_reports.portal.worker_base_url` set? Is the Keychain entry `ITS_PORTAL_INTERNAL_TOKEN`
+present (the SAME base-URL + token the portal poller already uses)?
+
+**Repair (Tier-2, low-class).** If the numbers page is simply **absent** and `worker_base_url`
+is blank, the rollup isn't wired yet — set `safety_reports.portal.worker_base_url` in `ITS_Config`
+to the portal Worker origin (the value the portal poller uses) and re-run the compile for that
+week (Fault A's idempotent re-run). If the page reads all-zeros but crews DID log field-ops data,
+confirm the token/base-URL, then force a re-run. Confirming a crew used the time/equipment/task
+surfaces is a normal read; toggling the ITS_Config URL and re-running are low-class.
+
+**Escalate to Seth** when: the `…rollup_page_failed` WARN persists AFTER the base-URL + token are
+confirmed correct (the rollup endpoint is erroring — a code/deploy issue); or the numbers are
+**wrong** (not just zero or absent) — a wrong number is never a Tier-2 config tweak.
+
 ## Escalate-to-Seth boundary (observable terms)
 
 Escalate — do **not** attempt — when: catch-up failed **twice**; the failure/diagnosis names the

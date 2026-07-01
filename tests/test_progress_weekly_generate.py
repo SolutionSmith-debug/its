@@ -7,14 +7,16 @@ requirement at the compile level — plus that main() delegates to the shared co
 """
 from __future__ import annotations
 
+from datetime import date, datetime, time
 from types import SimpleNamespace
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import pytest
 
 from progress_reports import progress_weekly_generate as pwg
 from safety_reports import generate_core
-from shared import active_jobs, review_queue
+from shared import active_jobs, review_queue, safety_week
 
 
 def test_progress_config_binds_only_progress_surfaces() -> None:
@@ -111,6 +113,115 @@ def test_empty_week_via_progress_config_writes_wpr_and_reads_progress_jobs(monke
 def test_sla_tier_is_a_real_tier() -> None:
     # Reuses the 4h SAFETY_INTAKE window; the Workstream tag (progress) is the real label.
     assert pwg.PROGRESS_GENERATE_CONFIG.sla_tier in set(review_queue.SlaTier)
+
+
+# ── P6 rollup-numbers page (progress-only hook) ───────────────────────────────────
+def _active_job(job_id: str = "JOB-P", project_name: str = "Prog One") -> active_jobs.ActiveJob:
+    return active_jobs.ActiveJob(
+        job_id=job_id, project_name=project_name, address="", stakeholder_name="",
+        stakeholder_email="", stakeholder_phone="",
+        safety_reports_contact_email="pm@x.com", safety_reports_contact_name="PM",
+        cc_emails=(), active_status="Active", row_id=1,
+    )
+
+
+def test_progress_config_binds_the_rollup_provider() -> None:
+    # Progress binds the closure; safety binds nothing (byte-identical, §14 — pinned separately
+    # in tests/test_generate_core.py::test_safety_config_binds_no_rollup_provider).
+    assert pwg.PROGRESS_GENERATE_CONFIG.rollup_page_provider is pwg._rollup_page_provider
+
+
+def test_week_epoch_window_is_pacific_midnight_seven_days() -> None:
+    wk = safety_week.week_bounds(date(2026, 6, 5))  # Sat 2026-05-30 → Fri 2026-06-05, no DST edge
+    frm, to = pwg._week_epoch_window(wk)
+    assert to - frm == 7 * 86400  # exactly one Pacific week (no DST transition in this window)
+    expected_from = int(datetime.combine(
+        date(2026, 5, 30), time.min, tzinfo=ZoneInfo("America/Los_Angeles")).timestamp())
+    assert frm == expected_from  # from = the Saturday's Pacific midnight (inclusive)
+
+
+def test_resolve_creds_present(monkeypatch) -> None:
+    monkeypatch.setattr(pwg.smartsheet_client, "get_setting", lambda key, workstream: "  https://w  ")
+    monkeypatch.setattr(pwg.keychain, "get_secret", lambda name: "tok")
+    assert pwg._resolve_rollup_creds() == ("https://w", "tok")  # base_url trimmed
+
+
+def test_resolve_creds_none_when_base_url_empty(monkeypatch) -> None:
+    monkeypatch.setattr(pwg.smartsheet_client, "get_setting", lambda key, workstream: "")
+    monkeypatch.setattr(pwg.keychain, "get_secret", lambda name: "tok")
+    assert pwg._resolve_rollup_creds() is None  # fail-closed: no base_url → no rollup
+
+
+def test_resolve_creds_none_on_setting_not_found(monkeypatch) -> None:
+    def boom(key, workstream):  # type: ignore[no-untyped-def]
+        raise pwg.smartsheet_client.SmartsheetNotFoundError("no row")
+    monkeypatch.setattr(pwg.smartsheet_client, "get_setting", boom)
+    monkeypatch.setattr(pwg.keychain, "get_secret", lambda name: "tok")
+    warns: list = []
+    monkeypatch.setattr(pwg, "error_log_log", lambda *a, **k: warns.append((a, k)))
+    assert pwg._resolve_rollup_creds() is None
+    assert warns == []  # not-cut-over is a QUIET no-op — no WARN spam (distinct from circuit-open)
+
+
+def test_resolve_creds_circuit_open_warns_and_fails_closed(monkeypatch) -> None:
+    # A missing config row is silent (above); an OPEN circuit breaker (Smartsheet degraded NOW) is
+    # a live signal → it WARNs `rollup_creds_circuit_open` before failing closed (never-silent).
+    def boom(key, workstream):  # type: ignore[no-untyped-def]
+        raise pwg.smartsheet_client.SmartsheetCircuitOpenError("breaker open")
+    monkeypatch.setattr(pwg.smartsheet_client, "get_setting", boom)
+    monkeypatch.setattr(pwg.keychain, "get_secret", lambda name: "tok")
+    warns: list = []
+    monkeypatch.setattr(pwg, "error_log_log", lambda *a, **k: warns.append((a, k)))
+    assert pwg._resolve_rollup_creds() is None  # fail-closed: still no rollup this cycle
+    assert len(warns) == 1
+    assert warns[0][1]["error_code"] == "rollup_creds_circuit_open"
+
+
+def test_resolve_creds_none_when_bearer_missing(monkeypatch) -> None:
+    monkeypatch.setattr(pwg.smartsheet_client, "get_setting", lambda key, workstream: "https://w")
+
+    def boom(name):  # type: ignore[no-untyped-def]
+        raise pwg.keychain.KeychainError("no keychain entry")
+    monkeypatch.setattr(pwg.keychain, "get_secret", boom)
+    assert pwg._resolve_rollup_creds() is None  # fail-closed: no bearer → no rollup
+
+
+def test_rollup_provider_returns_none_when_creds_unset(monkeypatch) -> None:
+    # Unwired (pre-cutover) progress workstream → quiet no-op (no page), NOT an error.
+    monkeypatch.setattr(pwg, "_resolve_rollup_creds", lambda: None)
+    job = _active_job()
+    assert pwg._rollup_page_provider(job, safety_week.week_bounds(date(2026, 6, 5))) is None
+
+
+def test_rollup_provider_fetches_and_renders(monkeypatch) -> None:
+    monkeypatch.setattr(pwg, "_resolve_rollup_creds", lambda: ("https://w", "tok"))
+    captured: dict[str, Any] = {}
+
+    def fake_get(base_url, bearer, *, job_id, week_from, week_to):  # type: ignore[no-untyped-def]
+        captured.update(base_url=base_url, bearer=bearer, job_id=job_id,
+                        week_from=week_from, week_to=week_to)
+        return {"labor_hours": 8, "equipment": [], "open_tasks": 2}
+    monkeypatch.setattr(pwg.portal_client, "get_progress_rollup", fake_get)
+    monkeypatch.setattr(pwg.form_pdf, "render_progress_rollup",
+                        lambda proj, label, numbers: b"%PDF-roll")
+    job = _active_job()
+    out = pwg._rollup_page_provider(job, safety_week.week_bounds(date(2026, 6, 5)))
+    assert out == b"%PDF-roll"
+    assert captured["job_id"] == "JOB-P"
+    assert captured["base_url"] == "https://w" and captured["bearer"] == "tok"
+    assert captured["week_to"] - captured["week_from"] == 7 * 86400  # the Sat→Fri epoch window
+
+
+def test_rollup_provider_transport_error_propagates(monkeypatch) -> None:
+    # A wired-but-broken rollup RAISES so generate_core's fence WARNs (never silent).
+    monkeypatch.setattr(pwg, "_resolve_rollup_creds", lambda: ("https://w", "tok"))
+
+    def boom(*a, **k):  # type: ignore[no-untyped-def]
+        raise pwg.portal_client.PortalTransportError("worker 500")
+    monkeypatch.setattr(pwg.portal_client, "get_progress_rollup", boom)
+    job = _active_job()
+    with pytest.raises(pwg.portal_client.PortalTransportError):
+        pwg._rollup_page_provider(job, safety_week.week_bounds(date(2026, 6, 5)))
 
 
 if __name__ == "__main__":  # pragma: no cover

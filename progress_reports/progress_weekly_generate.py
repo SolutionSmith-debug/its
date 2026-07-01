@@ -45,15 +45,19 @@ from __future__ import annotations
 
 import argparse
 import sys
-from datetime import date
+from datetime import date, datetime, time, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from progress_reports import wpr_review
-from safety_reports import generate_core
+from safety_reports import form_pdf, generate_core
 from safety_reports.week_sheet import PROGRESS_WEEK_SHEET_CONFIG
-from shared import active_jobs, review_queue
-from shared.error_log import its_error_log
+from shared import active_jobs, keychain, portal_client, review_queue, smartsheet_client
+from shared.active_jobs import ActiveJob
+from shared.error_log import Severity, its_error_log
+from shared.error_log import log as error_log_log
 from shared.kill_switch import require_active
+from shared.safety_week import SafetyWeek
 
 SCRIPT_NAME = "progress_reports.progress_weekly_generate"
 
@@ -62,6 +66,82 @@ SCRIPT_NAME = "progress_reports.progress_weekly_generate"
 # project_routing fallback (box_legacy_fallback=False), so an unset root surfaces a config gap
 # to the per-job fence rather than silently filing into a safety/legacy tree.
 CFG_BOX_PORTAL_ROOT = "progress_reports.box.portal_root_folder_id"
+
+# ── P6 rollup-numbers page: creds + provider closure ──────────────────────────────────
+# The rollup page reads the SEND-FREE Worker route (GET /api/internal/progress-rollup) via the
+# F02-allowlisted `shared.portal_client` — the SAME base_url + bearer `safety_reports.portal_poll`
+# resolves (ITS_Config `safety_reports.portal.worker_base_url` + Keychain
+# `ITS_PORTAL_INTERNAL_TOKEN`). The closure lives HERE (already in GATED_SCRIPTS), NOT in
+# generate_core, so the shared engine gains no portal_client / keychain / form_pdf-render import
+# and stays a pure, gate-clean engine (§42). The fetch is a READ of our own send-free Worker,
+# structurally identical to the portal_poll pull — NOT an external transmission (Invariant 1).
+CFG_WORKER_BASE_URL = "safety_reports.portal.worker_base_url"
+KC_BEARER = "ITS_PORTAL_INTERNAL_TOKEN"  # noqa: S105 — Keychain entry NAME, not a secret
+_PACIFIC = ZoneInfo("America/Los_Angeles")
+
+
+def _week_epoch_window(week: SafetyWeek) -> tuple[int, int]:
+    """The Sat→Fri week as a `[from, to)` epoch-seconds window at Pacific-local midnight
+    boundaries (`from` = Saturday 00:00 Pacific inclusive; `to` = the following Saturday 00:00
+    Pacific exclusive). D1 stores event/record times as `unixepoch()` (UTC seconds); anchoring
+    the window on Pacific midnight (the workstream tz) makes it the operator's calendar week."""
+    start = datetime.combine(week.start, time.min, tzinfo=_PACIFIC)
+    end = datetime.combine(week.end + timedelta(days=1), time.min, tzinfo=_PACIFIC)
+    return int(start.timestamp()), int(end.timestamp())
+
+
+def _resolve_rollup_creds() -> tuple[str, str] | None:
+    """Resolve (base_url, bearer) for the rollup read, fail-CLOSED. None when EITHER is unset —
+    the progress workstream may not be fully cut over yet, so an UNWIRED rollup is a quiet no-op
+    (no page), NOT an error. A wired-but-broken rollup (transport/500) instead RAISES from
+    `get_progress_rollup` → the compile's rollup fence WARNs (never silent).
+
+    Never-silent nuance: a config-row-absent read (`SmartsheetNotFoundError` = not cut over) stays
+    quiet, but an OPEN circuit breaker (`SmartsheetCircuitOpenError` = Smartsheet degraded RIGHT
+    NOW) is a LIVE signal, not the same as "not wired" — so it WARNs (`rollup_creds_circuit_open`)
+    before failing closed, so an operator scanning ITS_Errors isn't left inferring silence."""
+    try:
+        raw = smartsheet_client.get_setting(CFG_WORKER_BASE_URL, workstream="progress_reports")
+        base_url = raw.strip() if isinstance(raw, str) else ""
+    except smartsheet_client.SmartsheetNotFoundError:
+        # Config row absent — the progress workstream isn't cut over yet. Quiet no-op (no page).
+        base_url = ""
+    except smartsheet_client.SmartsheetCircuitOpenError:
+        # DISTINCT from "not configured": Smartsheet is actively degraded (breaker open). WARN so
+        # the live signal is observable, then fail closed (no page this cycle; self-heals when the
+        # breaker closes and the next Friday compile re-reads). error_log is fail-soft, so this
+        # never crashes the fenced compile even while Smartsheet is down.
+        error_log_log(
+            Severity.WARN, SCRIPT_NAME,
+            "rollup creds unresolved: Smartsheet circuit breaker OPEN (degraded) — progress rollup "
+            "numbers page SKIPPED this cycle; it returns when Smartsheet recovers.",
+            error_code="rollup_creds_circuit_open",
+        )
+        base_url = ""
+    try:
+        bearer = keychain.get_secret(KC_BEARER)
+    except keychain.KeychainError:
+        bearer = ""
+    if not (base_url and bearer):
+        return None
+    return base_url, bearer
+
+
+def _rollup_page_provider(job: ActiveJob, week: SafetyWeek) -> bytes | None:
+    """PROGRESS rollup-numbers page provider (P6). Bound into `PROGRESS_GENERATE_CONFIG`;
+    `generate_core` calls it FENCED (`_maybe_rollup_page`) after the cover, before the index.
+    Returns None (no page) when creds are unset; otherwise fetches the send-free Worker rollup
+    aggregate and renders the numbers page. A transport error PROPAGATES (→ the fence WARNs
+    `rollup_page_failed` and compiles WITHOUT the page) so a broken-but-wired rollup is loud."""
+    creds = _resolve_rollup_creds()
+    if creds is None:
+        return None
+    base_url, bearer = creds
+    week_from, week_to = _week_epoch_window(week)
+    numbers = portal_client.get_progress_rollup(
+        base_url, bearer, job_id=job.job_id, week_from=week_from, week_to=week_to
+    )
+    return form_pdf.render_progress_rollup(job.project_name, generate_core._week_label(week), numbers)
 
 PROGRESS_GENERATE_CONFIG = generate_core.GenerateConfig(
     script_name=SCRIPT_NAME,
@@ -84,6 +164,8 @@ PROGRESS_GENERATE_CONFIG = generate_core.GenerateConfig(
     default_memory_ceiling=256 * 1024 * 1024,
     cfg_evergreen_contact="progress_reports.evergreen_contact_name",
     default_evergreen_contact="the Evergreen Renewables office",
+    # P6: the optional rollup-numbers page (progress only). Safety binds nothing → byte-identical.
+    rollup_page_provider=_rollup_page_provider,
 )
 
 

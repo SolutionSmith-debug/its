@@ -429,3 +429,58 @@ def test_page_count_helper() -> None:
                                   {"job_name": "B1", "work_date": "2026-06-03", "values": {}})
     assert page_count(one) == len(pypdf.PdfReader(io.BytesIO(one)).pages)
     assert page_count(merge_pdfs([one, multi])) == page_count(one) + page_count(multi)
+
+
+# ── P6 progress rollup-numbers page ─────────────────────────────────────────────
+def test_progress_rollup_renders_all_sections() -> None:
+    from safety_reports.form_pdf import render_progress_rollup
+    out = render_progress_rollup(
+        "Bradley 1 Solar", "Week of Jun 7 – 13, 2026",
+        {"labor_hours": 42.5,
+         "equipment": [{"name": "Skid Steer 3", "kind": "skid-steer"},
+                       {"name": "Telehandler A", "kind": "telehandler"}],
+         "open_tasks": 4, "materials": None},
+    )
+    assert out[:5] == b"%PDF-"
+    text = _norm(_pdf_text(out))
+    assert "Weekly Progress Rollup" in text and "Bradley 1 Solar" in text
+    assert "Labor hours" in text and "42.5" in text
+    assert "Equipment on site" in text and "Skid Steer 3" in text and "Telehandler A" in text
+    assert "Open tasks" in text and "4 open" in text
+    assert "Materials" in text and "coming soon" in text
+    # NO progress-% anywhere (operator decision 2026-06-30).
+    assert "% complete" not in text.lower() and "progress %" not in text.lower()
+
+
+def test_progress_rollup_graceful_zero_state() -> None:
+    from safety_reports.form_pdf import render_progress_rollup
+    out = render_progress_rollup(
+        "Empty Job", "Week of Jun 7 – 13, 2026",
+        {"labor_hours": 0, "equipment": [], "open_tasks": 0, "materials": None},
+    )
+    assert out[:5] == b"%PDF-"
+    text = _norm(_pdf_text(out))
+    assert "No field-ops activity recorded for this week" in text
+
+
+def test_progress_rollup_tolerates_malformed_numbers() -> None:
+    # Untrusted JSON transport: a malformed shape must degrade, never raise.
+    from safety_reports.form_pdf import render_progress_rollup
+    out = render_progress_rollup(
+        "Job X", "Week", {"labor_hours": "not-a-number", "equipment": "oops", "open_tasks": None},
+    )
+    assert out[:5] == b"%PDF-"
+    # All-unparseable → treated as zeros → graceful zero-state.
+    assert "No field-ops activity recorded for this week" in _norm(_pdf_text(out))
+
+
+def test_progress_rollup_escapes_equipment_names() -> None:
+    # Invariant 2: a field-reported equipment name with markup must render as plain text.
+    from safety_reports.form_pdf import render_progress_rollup
+    out = render_progress_rollup(
+        "Job X", "Week",
+        {"labor_hours": 8, "equipment": [{"name": "<b>Loader</b>", "kind": "&amp;"}],
+         "open_tasks": 0},
+    )
+    assert out[:5] == b"%PDF-"  # no XML-parse blow-up from the raw markup
+    assert "Loader" in _norm(_pdf_text(out))
