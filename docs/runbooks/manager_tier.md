@@ -85,6 +85,21 @@ placed.
   convergence. (The detail-view **Assign crew** / **Assign equipment** controls are gated on
   `cap.crew.assign` / `cap.equipment.field`, so a manager sees them; add-task stays `admin`/office.)
 
+### E. "Can't assign a task to a person" / "can't log time for a crew member"
+
+Both are **office (`cap.jobtracker.manage` / `cap.time.log`) actions**, not manager actions —
+assigning *who does a task* is job management, which a manager does NOT have (item B). If the office
+can't do it:
+
+- **Add-task / reassign 422 `unknown_personnel`** — the chosen person isn't a valid roster member.
+  Pick someone from the dropdown (the options are the job's placed crew — **place the crew first**).
+  **Low-class.**
+- **The assignee / "For" dropdown is empty** — the job has no crew placed yet. Place crew via
+  **Assigned crew → Add to crew**, then the task-assignee and time-"For" dropdowns populate. **Low-class.**
+- **"Where did the progress % go?"** — the job **progress-percentage bar was removed on purpose** (it
+  reflected nothing). Track a job by its **lifecycle** (Active/Inactive/Archived) + its real tasks and
+  logged time. Not a fault; nothing to repair.
+
 ## Escalate-to-Seth boundary (observable terms)
 
 Escalate (do **not** self-repair) when: migration `0023` needs applying / the Worker needs

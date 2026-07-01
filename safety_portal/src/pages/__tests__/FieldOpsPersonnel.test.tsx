@@ -405,18 +405,43 @@ describe("FieldOpsPersonnel — P2.6 manager tier (cap.crew.assign)", () => {
     await waitFor(() => expect(container.querySelector("input[name='withAccount']")).toBeTruthy());
   });
 
-  it("renders the 'Placed on' job for a person whose current_job is set", async () => {
+  it("renders the 'Placed on' job NAME (not the JOB-#### id) when current_job_name is present", async () => {
     asRole("manager", ["cap.personnel.read", "cap.crew.assign"]);
-    vi.mocked(fetchJobs).mockResolvedValue([{ job_id: "JOB-A", project_name: "Alpha" }]);
+    vi.mocked(fetchJobs).mockResolvedValue([{ job_id: "JOB-000017", project_name: "Pier 7 Rebuild" }]);
     vi.mocked(api.fetchPersonnelList).mockResolvedValue({
-      personnel: [{ id: 7, name: "Dana Reed", trade: "operator", username: null, current_job: "JOB-A" }],
+      personnel: [{ id: 7, name: "Dana Reed", trade: "operator", username: null, current_job: "JOB-000017", current_job_name: "Pier 7 Rebuild" }],
       latest_entries: [],
       next_cursor: null,
     });
 
     const { container } = render(<FieldOpsPersonnel onBack={() => {}} />);
     await waitFor(() => expect(api.fetchPersonnelList).toHaveBeenCalled());
-    // the "Placed on" cell shows the standing placement (no time entry → Latest job is "—")
-    await waitFor(() => expect(container.textContent ?? "").toContain("JOB-A"));
+    // the "Placed on" cell shows the resolved project name (no time entry → Latest job is "—")
+    const placedCell = await waitFor(() => {
+      const cell = Array.from(container.querySelectorAll("td.dash-cell")).find((c) => c.textContent === "Pier 7 Rebuild");
+      expect(cell).toBeTruthy();
+      return cell!;
+    });
+    expect(placedCell.textContent).toBe("Pier 7 Rebuild");
+    // the raw id must NOT surface where a name resolved
+    expect(Array.from(container.querySelectorAll("td.dash-cell")).some((c) => c.textContent === "JOB-000017")).toBe(false);
+  });
+
+  it("falls back to the JOB-#### id in 'Placed on' when current_job_name is missing", async () => {
+    asRole("manager", ["cap.personnel.read", "cap.crew.assign"]);
+    vi.mocked(fetchJobs).mockResolvedValue([{ job_id: "JOB-000017", project_name: "Pier 7 Rebuild" }]);
+    vi.mocked(api.fetchPersonnelList).mockResolvedValue({
+      // current_job set but no resolved name (worker returned null/undefined) → show the raw id
+      personnel: [{ id: 8, name: "Evan Cole", trade: "operator", username: null, current_job: "JOB-000017", current_job_name: null }],
+      latest_entries: [],
+      next_cursor: null,
+    });
+
+    const { container } = render(<FieldOpsPersonnel onBack={() => {}} />);
+    await waitFor(() => expect(api.fetchPersonnelList).toHaveBeenCalled());
+    await waitFor(() => {
+      const cell = Array.from(container.querySelectorAll("td.dash-cell")).find((c) => c.textContent === "JOB-000017");
+      expect(cell).toBeTruthy();
+    });
   });
 });

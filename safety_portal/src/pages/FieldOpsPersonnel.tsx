@@ -295,7 +295,7 @@ export function FieldOpsPersonnel({ onBack }: { onBack: () => void }) {
           {selectedPersonnel.username ? `@${selectedPersonnel.username}` : "No account linked"}
           {" • "}
           {selectedPersonnel.trade}
-          {selectedPersonnel.current_job ? ` • Placed on ${selectedPersonnel.current_job}` : ""}
+          {selectedPersonnel.current_job ? ` • Placed on ${selectedPersonnel.current_job_name ?? selectedPersonnel.current_job}` : ""}
         </p>
 
         <div className="dash-section">
@@ -444,7 +444,7 @@ export function FieldOpsPersonnel({ onBack }: { onBack: () => void }) {
                       {p.username && <span className="muted">@{p.username}</span>}
                     </td>
                     <td className="dash-cell">{p.trade}</td>
-                    <td className="dash-cell">{p.current_job ?? "—"}</td>
+                    <td className="dash-cell">{p.current_job_name ?? p.current_job ?? "—"}</td>
                     <td className="dash-cell">{entry ? entry.project_name ?? entry.job_id : "—"}</td>
                     <td className="dash-cell">{fmtHours(entry?.hours ?? null)}</td>
                     {(canManage || canAssign) && (

@@ -258,3 +258,47 @@ describe("GET /api/fieldops/personnel/:id", () => {
     }
   });
 });
+
+// ── current_job_name resolution (LEFT JOIN jobs) ───────────────────────────────
+describe("personnel current_job_name resolution", () => {
+  beforeEach(async () => {
+    await env.DB.prepare("DELETE FROM jobs").run();
+    await provision("admin.one", "password123", "admin");
+    await env.DB.prepare("INSERT INTO jobs (job_id, project_name, active, status, created_at) VALUES (?,?,?,?,?)")
+      .bind("JOB-77", "Solar Rooftop 77", 1, "active", 1_700_000_000)
+      .run();
+  });
+
+  it("list resolves current_job_name for a placed person; null for an unplaced one", async () => {
+    const { aliceId, bobId } = await seedPersonnel();
+    await env.DB.prepare("UPDATE personnel SET current_job = ? WHERE id = ?").bind("JOB-77", aliceId).run();
+    const c = await login("admin.one", "password123");
+
+    const res = await call("/api/fieldops/personnel", { cookie: c });
+    expect(res.status, await res.clone().text()).toBe(200);
+    const body = (await res.json()) as { personnel: any[] };
+    const alice = body.personnel.find((p) => p.id === aliceId);
+    const bob = body.personnel.find((p) => p.id === bobId);
+    expect(alice.current_job).toBe("JOB-77");
+    expect(alice.current_job_name).toBe("Solar Rooftop 77");
+    expect(bob.current_job).toBeNull();
+    expect(bob.current_job_name).toBeNull();
+  });
+
+  it("detail resolves current_job_name for a placed person; null for an unplaced one", async () => {
+    const { aliceId, bobId } = await seedPersonnel();
+    await env.DB.prepare("UPDATE personnel SET current_job = ? WHERE id = ?").bind("JOB-77", aliceId).run();
+    const c = await login("admin.one", "password123");
+
+    const aliceRes = await call(`/api/fieldops/personnel/${aliceId}`, { cookie: c });
+    expect(aliceRes.status).toBe(200);
+    const aliceBody = (await aliceRes.json()) as { personnel: any };
+    expect(aliceBody.personnel.current_job).toBe("JOB-77");
+    expect(aliceBody.personnel.current_job_name).toBe("Solar Rooftop 77");
+
+    const bobRes = await call(`/api/fieldops/personnel/${bobId}`, { cookie: c });
+    const bobBody = (await bobRes.json()) as { personnel: any };
+    expect(bobBody.personnel.current_job).toBeNull();
+    expect(bobBody.personnel.current_job_name).toBeNull();
+  });
+});

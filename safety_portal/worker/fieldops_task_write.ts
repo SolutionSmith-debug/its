@@ -41,9 +41,12 @@ export function registerTaskWriteRoutes(app: FieldopsApp, gates: FieldopsGates):
       const job = await c.env.DB.prepare("SELECT active FROM jobs WHERE job_id = ?1").bind(jobId).first<{ active: number }>();
       if (!job) return c.json({ error: "not_found" }, 404);
       if (job.active === 0) return c.json({ error: "not_active" }, 409);
-      // A given personnel_id must be a real roster member.
+      // A given personnel_id must be an ACTIVE roster member (a retired person — soft-deleted via
+      // active=0 — can't be assigned new work). Check-then-act is race-free: personnel are only ever
+      // soft-deleted, never hard-DELETEd (see fieldops_personnel_write retire), so an id that passes
+      // here can't vanish before the batch. (If a hard DELETE is ever added, fold this into the WHERE.)
       if (personnelId !== null) {
-        const p = await c.env.DB.prepare("SELECT id FROM personnel WHERE id = ?1").bind(personnelId).first();
+        const p = await c.env.DB.prepare("SELECT id FROM personnel WHERE id = ?1 AND active = 1").bind(personnelId).first();
         if (!p) return c.json({ error: "unknown_personnel" }, 422);
       }
 
@@ -92,6 +95,56 @@ export function registerTaskWriteRoutes(app: FieldopsApp, gates: FieldopsGates):
       ]);
       if ((res[0].meta.changes ?? 0) === 0) return c.json({ error: "not_found" }, 404);
       return c.json({ ok: true, id, status }, 200);
+    },
+  );
+
+  // POST /api/fieldops/task/:id/assign — (re)assign or clear a task's assignee. Assigning who does a
+  // task is MANAGEMENT (same cap as add-task) → cap.jobtracker.manage (admin). Body { personnel_id }:
+  // null unassigns; an integer places (roster-verified). Mutation + audit in ONE D1 batch (W4). Send-free.
+  app.post(
+    "/api/fieldops/task/:id/assign",
+    gates.requireSession,
+    gates.requireCapability("cap.jobtracker.manage"),
+    async (c) => {
+      const id = parseInt(c.req.param("id"), 10);
+      if (isNaN(id)) return c.json({ error: "invalid_id" }, 400);
+
+      let body: Record<string, unknown>;
+      try {
+        body = (await c.req.json()) as Record<string, unknown>;
+      } catch {
+        return c.json({ error: "bad_request" }, 400);
+      }
+      // A literal `null`/array body parses without throwing — reject before any property access.
+      if (typeof body !== "object" || body === null || Array.isArray(body)) {
+        return c.json({ error: "bad_request" }, 400);
+      }
+
+      // personnel_id must be present and be null OR an integer (mirrors crew-assign's job_id guard:
+      // the key must be present — `undefined`, a string, or a float is ambiguous → 400).
+      const raw = body.personnel_id;
+      if (raw !== null && !(typeof raw === "number" && Number.isInteger(raw))) {
+        return c.json({ error: "invalid_personnel_id" }, 400);
+      }
+      const personnelId = raw as number | null;
+
+      // A given personnel_id must be an ACTIVE roster member (mirrors the add-task check above;
+      // retired personnel aren't assignable). Check-then-act is race-free — personnel are soft-deleted
+      // (active=0), never hard-DELETEd — so this matches the atomic guarantee of fieldops_crew_assign.
+      if (personnelId !== null) {
+        const p = await c.env.DB.prepare("SELECT id FROM personnel WHERE id = ?1 AND active = 1").bind(personnelId).first();
+        if (!p) return c.json({ error: "unknown_personnel" }, 422);
+      }
+
+      const actor = c.get("session").username;
+      const res = await c.env.DB.batch([
+        c.env.DB.prepare("UPDATE task_assignments SET personnel_id = ?2 WHERE id = ?1").bind(id, personnelId),
+        c.env.DB
+          .prepare("INSERT INTO audit_log (actor_username, action, target_username, detail) SELECT ?1,?2,?3,?4 WHERE changes()=1")
+          .bind(actor, "task_assign", String(id), JSON.stringify({ task_id: id, personnel_id: personnelId })),
+      ]);
+      if ((res[0].meta.changes ?? 0) === 0) return c.json({ error: "not_found" }, 404);
+      return c.json({ ok: true, id, personnel_id: personnelId }, 200);
     },
   );
 }

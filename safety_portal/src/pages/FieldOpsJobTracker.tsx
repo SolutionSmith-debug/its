@@ -29,10 +29,6 @@ function taskPillClass(s: string): string {
   return "dash-pill"; // open
 }
 
-function clampPct(n: number): number {
-  return Math.max(0, Math.min(100, n));
-}
-
 const STATUS_OPTIONS: { value: api.JobStatusFilter; label: string }[] = [
   { value: "active", label: "Active" },
   { value: "closed", label: "Closed" },
@@ -209,7 +205,7 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
   // Write (P2.3; Worker re-gates server-side — these caps drive UI affordances only).
   const { user } = useAuth();
   const caps = user?.capabilities ?? [];
-  const canManage = caps.includes("cap.jobtracker.manage"); // create / close / progress / add-task
+  const canManage = caps.includes("cap.jobtracker.manage"); // create / close / add-task / reassign-task
   const canOwnTasks = caps.includes("cap.tasks.own"); // change a task's own status
   const canLogTime = caps.includes("cap.time.log"); // log a time entry against the open job
   // Unified job-create flow: per-control caps (convenience — the Worker re-gates every call). A
@@ -225,8 +221,8 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
   const [newJobOpen, setNewJobOpen] = useState(false);
   const [createRouting, setCreateRouting] = useState<RoutingForm>(EMPTY_ROUTING); // P2.5 routing SoR
   // Detail manage controls
-  const [progressVal, setProgressVal] = useState("");
   const [taskDesc, setTaskDesc] = useState("");
+  const [taskPerson, setTaskPerson] = useState(""); // add-task assignee (personnel id, "" = unassigned)
   // Detail lifecycle selector + routing/contacts editor (P2.5)
   const [lifecycleSel, setLifecycleSel] = useState<api.JobLifecycle>("active");
   const [editContactsOpen, setEditContactsOpen] = useState(false);
@@ -235,6 +231,7 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
   const [logHours, setLogHours] = useState("");
   const [logNotes, setLogNotes] = useState("");
   const [logTask, setLogTask] = useState("");
+  const [logPerson, setLogPerson] = useState(""); // log-time subject (personnel id, "" = me/unassigned)
   // Unified job-create flow (Slice 2/3): assign-crew + assign-equipment pickers on the detail view,
   // plus the one-shot "finish setting up" nudge shown when a create routes into the new job's detail.
   const [crewOpts, setCrewOpts] = useState<PersonnelRow[]>([]);
@@ -481,28 +478,6 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
     }
   }
 
-  async function submitProgress(e: FormEvent) {
-    e.preventDefault();
-    if (!selectedJob || actionBusy) return;
-    const pct = Number(progressVal);
-    if (progressVal.trim() === "" || !Number.isFinite(pct)) {
-      setActionMsg({ ok: false, text: "Progress must be a number (0–100)." });
-      return;
-    }
-    setActionBusy(true);
-    setActionMsg(null);
-    try {
-      await api.setJobProgress(selectedJob.job_id, pct);
-      setProgressVal("");
-      await reloadDetail();
-      setActionMsg({ ok: true, text: "Progress updated." });
-    } catch (err) {
-      setActionMsg({ ok: false, text: err instanceof Error ? err.message : "Update failed." });
-    } finally {
-      setActionBusy(false);
-    }
-  }
-
   async function submitAddTask(e: FormEvent) {
     e.preventDefault();
     if (!selectedJob || actionBusy) return;
@@ -511,15 +486,36 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
       setActionMsg({ ok: false, text: "Task description is required." });
       return;
     }
+    const personnelId = taskPerson === "" ? undefined : Number(taskPerson);
     setActionBusy(true);
     setActionMsg(null);
     try {
-      await api.addTask(selectedJob.job_id, { description });
+      await api.addTask(selectedJob.job_id, {
+        description,
+        ...(personnelId !== undefined ? { personnel_id: personnelId } : {}),
+      });
       setTaskDesc("");
+      setTaskPerson("");
       await reloadDetail();
       setActionMsg({ ok: true, text: "Task added." });
     } catch (err) {
       setActionMsg({ ok: false, text: err instanceof Error ? err.message : "Add task failed." });
+    } finally {
+      setActionBusy(false);
+    }
+  }
+
+  // (Re)assign or clear a task's assignee (cap.jobtracker.manage). Options are the job's placed crew.
+  async function submitReassignTask(taskId: number, personId: number | null) {
+    if (!selectedJob || actionBusy) return;
+    setActionBusy(true);
+    setActionMsg(null);
+    try {
+      await api.reassignTask(taskId, personId);
+      await reloadDetail();
+      setActionMsg({ ok: true, text: personId === null ? "Task unassigned." : "Task reassigned." });
+    } catch (err) {
+      setActionMsg({ ok: false, text: err instanceof Error ? err.message : "Reassign failed." });
     } finally {
       setActionBusy(false);
     }
@@ -549,6 +545,7 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
       return;
     }
     const taskId = logTask === "" ? undefined : Number(logTask);
+    const personnelId = logPerson === "" ? undefined : Number(logPerson);
     setActionBusy(true);
     setActionMsg(null);
     try {
@@ -557,11 +554,13 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
         job_id: selectedJob.job_id,
         ...(hours !== undefined ? { hours } : {}),
         ...(taskId !== undefined ? { task_id: taskId } : {}),
+        ...(personnelId !== undefined ? { personnel_id: personnelId } : {}),
         ...(logNotes.trim() ? { notes: logNotes.trim() } : {}),
       });
       setLogHours("");
       setLogNotes("");
       setLogTask("");
+      setLogPerson("");
       await reloadDetail();
       setActionMsg({ ok: true, text: "Time logged." });
     } catch (err) {
@@ -663,29 +662,9 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
           <p className="muted" style={{ color: actionMsg.ok ? "green" : "red" }}>{actionMsg.text}</p>
         )}
 
-        <section className="card dash-section">
-          <span className="dash-card__label">Progress — {job.progress}%</span>
-          <div className="dash-progress">
-            <div className="dash-progress__fill" style={{ width: `${clampPct(job.progress)}%` }} />
-          </div>
-        </section>
-
         {canManage && (
           <section className="card dash-section">
             <h3 className="dash-detail__h2">Manage job</h3>
-            <form onSubmit={submitProgress} className="dash-row" aria-label="Update job progress">
-              <label className="dash-card__label">
-                Progress %:{" "}
-                <input
-                  value={progressVal}
-                  onChange={(e) => setProgressVal(e.target.value)}
-                  placeholder={String(job.progress)}
-                  inputMode="numeric"
-                  size={5}
-                />
-              </label>{" "}
-              <button type="submit" disabled={actionBusy} className="btn--secondary">Set progress</button>
-            </form>
             <form onSubmit={submitAddTask} className="dash-row" aria-label="Add a task">
               <input
                 value={taskDesc}
@@ -693,6 +672,15 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
                 placeholder="New task description"
                 maxLength={256}
               />{" "}
+              <label className="dash-card__label">
+                Assign to:{" "}
+                <select value={taskPerson} onChange={(e) => setTaskPerson(e.target.value)} aria-label="Assign new task to">
+                  <option value="">— unassigned —</option>
+                  {job.crew.map((p) => (
+                    <option key={p.id} value={p.id}>{p.name}</option>
+                  ))}
+                </select>
+              </label>{" "}
               <button type="submit" disabled={actionBusy} className="btn--secondary">Add task</button>
             </form>
             <form className="dash-row" aria-label="Set job lifecycle">
@@ -796,7 +784,7 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
               {job.tasks.map((t) => (
                 <li key={t.id}>
                   <span className={taskPillClass(t.status)}>{t.status}</span> {t.description}
-                  {t.personnel_name ? <span className="muted"> — {t.personnel_name}</span> : null}
+                  {t.personnel_name && !canManage ? <span className="muted"> — {t.personnel_name}</span> : null}
                   {canOwnTasks && (
                     <>
                       {" "}
@@ -809,6 +797,25 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
                         <option value="open">open</option>
                         <option value="in_progress">in_progress</option>
                         <option value="done">done</option>
+                      </select>
+                    </>
+                  )}
+                  {canManage && (
+                    <>
+                      {" "}
+                      <select
+                        aria-label={`Assign task ${t.id}`}
+                        value={t.personnel_id != null ? String(t.personnel_id) : ""}
+                        disabled={actionBusy}
+                        onChange={(e) => submitReassignTask(t.id, e.target.value === "" ? null : Number(e.target.value))}
+                      >
+                        <option value="">— unassigned —</option>
+                        {job.crew.map((p) => (
+                          <option key={p.id} value={p.id}>{p.name}</option>
+                        ))}
+                        {t.personnel_id != null && !job.crew.some((p) => p.id === t.personnel_id) && (
+                          <option value={t.personnel_id}>{t.personnel_name ?? `#${t.personnel_id}`}</option>
+                        )}
                       </select>
                     </>
                   )}
@@ -833,8 +840,17 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
                 size={5}
               />{" "}
               <label className="dash-card__label">
+                For:{" "}
+                <select value={logPerson} onChange={(e) => setLogPerson(e.target.value)} aria-label="Log time for">
+                  <option value="">— me / unassigned —</option>
+                  {job.crew.map((p) => (
+                    <option key={p.id} value={p.id}>{p.name}</option>
+                  ))}
+                </select>
+              </label>{" "}
+              <label className="dash-card__label">
                 Task:{" "}
-                <select value={logTask} onChange={(e) => setLogTask(e.target.value)}>
+                <select value={logTask} onChange={(e) => setLogTask(e.target.value)} aria-label="Log time task">
                   <option value="">— job-level —</option>
                   {job.tasks.map((t) => (
                     <option key={t.id} value={t.id}>{t.description}</option>
@@ -1023,10 +1039,6 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
                   <span className={jobPillClass(job.status)}>{job.status}</span>
                 </div>
                 <div className="dash-card__sub">{(job.client_name ?? "No client")} · {job.job_id}</div>
-
-                <div className="dash-progress">
-                  <div className="dash-progress__fill" style={{ width: `${clampPct(job.progress)}%` }} />
-                </div>
 
                 {job.crew.length > 0 && (
                   <div className="dash-chips">

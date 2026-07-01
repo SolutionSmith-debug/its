@@ -131,6 +131,23 @@ describe("POST /api/fieldops/time-entry — referential", () => {
     expect(res.status).toBe(422);
     expect((await res.json() as any).error).toBe("unknown_task");
   });
+  it("bogus personnel_id → 422 unknown_personnel; a real roster member → 201", async () => {
+    const c = await login("submitter.jim", "password123");
+    const bogus = await post(c, { uuid: "tp1", job_id: "JOB-A", personnel_id: 99999, hours: 8 });
+    expect(bogus.status).toBe(422);
+    expect((await bogus.json() as any).error).toBe("unknown_personnel");
+
+    await env.DB.prepare("INSERT INTO personnel (name, active) VALUES (?,1)").bind("Real Person").run();
+    const pid = (await env.DB.prepare("SELECT id FROM personnel WHERE name='Real Person'").first<{ id: number }>())!.id;
+    const ok = await post(c, { uuid: "tp2", job_id: "JOB-A", personnel_id: pid, hours: 8 });
+    expect(ok.status, await ok.clone().text()).toBe(201);
+
+    // A retired (active=0) roster member can't have new time logged against them → 422.
+    await env.DB.prepare("UPDATE personnel SET active = 0 WHERE id = ?").bind(pid).run();
+    const retired = await post(c, { uuid: "tp3", job_id: "JOB-A", personnel_id: pid, hours: 8 });
+    expect(retired.status).toBe(422);
+    expect((await retired.json() as any).error).toBe("unknown_personnel");
+  });
 });
 
 describe("POST /api/fieldops/time-entry — integrity bar", () => {
