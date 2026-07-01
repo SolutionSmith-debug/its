@@ -88,6 +88,9 @@ WORKSTREAM = "field_ops"
 # ITS_Config keys.
 CFG_SYNC_ENABLED = "field_ops.fieldops_sync.sync_enabled"
 CFG_WORKER_BASE_URL = "safety_reports.portal.worker_base_url"  # shared with portal_poll
+# The shared Worker base-URL key is owned by the safety_reports workstream (matches
+# portal_poll) — read it there so no duplicate field_ops ITS_Config row is needed.
+CFG_WORKER_BASE_URL_WORKSTREAM = "safety_reports"
 
 # Keychain entry name (mirrors the Worker's PORTAL_FIELDOPS_API_TOKEN; the Mac-side name is
 # distinct on purpose, and SEPARATE from portal_poll's ITS_PORTAL_INTERNAL_TOKEN).
@@ -142,9 +145,13 @@ class SyncStats:
 # ---- Config readers (replicated per preservation, mirror portal_poll) ----------
 
 
-def _read_str_setting(key: str, fallback: str) -> str:
+def _read_str_setting(key: str, fallback: str, workstream: str | None = None) -> str:
+    # workstream defaults to this daemon's WORKSTREAM (field_ops); pass an explicit owner for
+    # a key owned by a different workstream (e.g. the shared safety_reports base-URL key).
     try:
-        raw = smartsheet_client.get_setting(key, workstream=WORKSTREAM)
+        raw = smartsheet_client.get_setting(
+            key, workstream=workstream if workstream is not None else WORKSTREAM
+        )
     except smartsheet_client.SmartsheetNotFoundError:
         return fallback
     except smartsheet_client.SmartsheetCircuitOpenError:
@@ -231,7 +238,9 @@ def _write_watchdog_marker() -> None:
 
 def _resolve_credentials() -> tuple[str, str] | None:
     """Resolve (base_url, bearer) fail-CLOSED. None if either is absent."""
-    base_url = _read_str_setting(CFG_WORKER_BASE_URL, "")
+    base_url = _read_str_setting(
+        CFG_WORKER_BASE_URL, "", workstream=CFG_WORKER_BASE_URL_WORKSTREAM
+    )
     try:
         bearer = keychain.get_secret(KC_FIELDOPS_TOKEN)
     except keychain.KeychainError:
