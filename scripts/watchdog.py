@@ -171,6 +171,12 @@ TRACKED_JOBS: list[str] = [
     # flipped on). Closes the P4/P5 "marker written but nothing reads it" gap.
     "progress_weekly_generate",
     "progress_send_poll",
+    # P2.5 job up-sync dual-sheet mirror daemon (field_ops.fieldops_sync). Writes a
+    # fieldops_sync.last_run marker each cycle; registered here at the 2026-07-01 cutover
+    # deploy. Unlike the compile-now / progress entries above, it is ALREADY loaded + live
+    # (sync_enabled=true, running each ~90s), so it will NOT WARN spuriously — its marker is
+    # fresh. Check C surfaces a silent death of this live daemon.
+    "fieldops_sync",
 ]
 
 # Per-job freshness windows. Jobs not in this map use the default 24h
@@ -207,6 +213,12 @@ TRACKED_JOB_WINDOWS: dict[str, timedelta] = {
     # progress_send_poll runs every 15 min (default); 30 min == 2 cycles — mirror
     # safety_weekly_send_poll (a single missed cycle tolerated; two consecutive fire).
     "progress_send_poll": timedelta(minutes=30),
+    # fieldops_sync runs every 90s (default). 8 min == ~5 cycles — same high-frequency-poller
+    # tolerance as safety_compile_now_poll, scaled to the 90s cadence. The interval is TUNABLE
+    # (default 90s, via field_ops.fieldops_sync.poll_interval_seconds / the install.sh arg): an
+    # operator who raises it well above 90s should widen this window to match; 8 min fits the
+    # default 90s cadence.
+    "fieldops_sync": timedelta(minutes=8),
 }
 DEFAULT_TRACKED_JOB_WINDOW = timedelta(hours=24)
 
