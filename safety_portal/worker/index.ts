@@ -12,6 +12,7 @@ import { auditStmt, isUniqueViolation } from "./audit";
 import { registerTimeWriteRoutes } from "./fieldops_time_write";
 import { registerJobWriteRoutes } from "./fieldops_job_write";
 import { registerTaskWriteRoutes } from "./fieldops_task_write";
+import { registerMyTasksRoutes } from "./fieldops_tasks";
 import { registerEquipmentFieldWriteRoutes } from "./fieldops_equipment_write";
 import { registerEquipmentRosterWriteRoutes } from "./fieldops_equipment_roster_write";
 import { registerPersonnelWriteRoutes } from "./fieldops_personnel_write";
@@ -374,15 +375,31 @@ const requireCapability = (cap: string) =>
     await next();
   });
 
+/**
+ * OR-capability gate — authorizes if the session holds ANY of `caps`. Chains AFTER requireSession
+ * (same as requireCapability). FAIL-CLOSED identically: an empty/missing capability set → none
+ * match → 403. Used where a route accepts more than one capability (e.g. task create/assign accepts
+ * cap.jobtracker.manage OR cap.tasks.assign). A finer-grained per-target guard (e.g. the
+ * subcontractor-target check) lives IN the handler, which reads c.get("capabilities") directly.
+ */
+const requireAnyCapability = (caps: readonly string[]) =>
+  createMiddleware<{ Bindings: Env; Variables: Vars }>(async (c, next) => {
+    const held = c.get("capabilities");
+    if (!caps.some((cap) => held.has(cap))) return c.json({ error: "forbidden" }, 403);
+    await next();
+  });
+
 // Field-ops READ layer (P2.2). Each tab owns its own route module; the gates are passed IN so
 // the per-tab modules never import index.ts (no import cycle). Registered here (before the SPA
 // catch-all). In Brief 0 these are no-op stubs; Briefs A/B/C implement them.
-const fieldopsGates: FieldopsGates = { requireSession, requireCapability };
+const fieldopsGates: FieldopsGates = { requireSession, requireCapability, requireAnyCapability };
 registerPersonnelRoutes(app, fieldopsGates);
 registerPersonnelWriteRoutes(app, fieldopsGates);
 registerEquipmentRoutes(app, fieldopsGates);
 registerJobTrackerRoutes(app, fieldopsGates);
 registerMaterialsRoutes(app, fieldopsGates);
+// — Assigned-Tasks tab (P4 S1) "My Tasks" read (cap.tasks.own) —
+registerMyTasksRoutes(app, fieldopsGates);
 // — field-ops WRITE routes (P2.3); send-free D1 mutations, capability-gated, audit-batched —
 registerTimeWriteRoutes(app, fieldopsGates);
 registerJobWriteRoutes(app, fieldopsGates);

@@ -390,6 +390,29 @@ describe("FieldOpsJobTracker — write UI", () => {
     expect((container.textContent ?? "").includes("Edit routing / contacts")).toBe(false);
   });
 
+  it("a manager (cap.tasks.assign, no jobtracker.manage) sees add-task + per-task assign but NOT job-create/lifecycle", async () => {
+    // Assigned-Tasks S1: task authority widened to cap.tasks.assign, but job create / lifecycle /
+    // routing stay cap.jobtracker.manage (admin).
+    vi.mocked(useAuth).mockReturnValue(authWith(["cap.tasks.assign"]));
+    vi.mocked(api.fetchJobList).mockResolvedValue({ jobs: JOBS, next_cursor: null });
+    vi.mocked(api.fetchJobDetail).mockResolvedValue({ job: DETAIL, cursors: NO_CURSORS });
+    const { container } = render(<FieldOpsJobTracker onBack={() => {}} />);
+    await waitFor(() => expect(container.querySelectorAll(".dash-card--click")).toHaveLength(2));
+    // List view: no "+ New job" affordance (job create stays admin-only).
+    expect(container.textContent ?? "").not.toContain("+ New job");
+    expect(container.querySelector('[aria-label="Create job"]')).toBeNull();
+    // Open the detail.
+    fireEvent.click(container.querySelector(".dash-card--click")!);
+    await waitFor(() => expect(api.fetchJobDetail).toHaveBeenCalledWith("JOB-A"));
+    // Add-task + per-task assign ARE present…
+    expect(container.querySelector('[aria-label="Add a task"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label="Assign task 1"]')).not.toBeNull();
+    // …but lifecycle + routing are withheld (admin-only).
+    expect(container.querySelector('[aria-label="Set job lifecycle"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Job lifecycle"]')).toBeNull();
+    expect((container.textContent ?? "").includes("Edit routing / contacts")).toBe(false);
+  });
+
   it("cap.time.log renders the Log time form and posts hours + task against the open job", async () => {
     vi.mocked(api.logTime).mockResolvedValue({ uuid: "u-1" });
     const { getByLabelText } = await openManagedDetail(["cap.time.log"]);

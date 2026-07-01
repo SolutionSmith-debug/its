@@ -205,7 +205,11 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
   // Write (P2.3; Worker re-gates server-side — these caps drive UI affordances only).
   const { user } = useAuth();
   const caps = user?.capabilities ?? [];
-  const canManage = caps.includes("cap.jobtracker.manage"); // create / close / add-task / reassign-task
+  const canManage = caps.includes("cap.jobtracker.manage"); // create / close / lifecycle / routing (admin)
+  // Assigned-Tasks S1: task authority (create + reassign a task) is cap.jobtracker.manage OR
+  // cap.tasks.assign, so a manager gets the add-task + per-task-assign controls (the Worker re-gates,
+  // incl. the subcontractor-target guard). Job create / close / lifecycle / routing stay canManage-only.
+  const canAssignTasks = canManage || caps.includes("cap.tasks.assign");
   const canOwnTasks = caps.includes("cap.tasks.own"); // change a task's own status
   const canLogTime = caps.includes("cap.time.log"); // log a time entry against the open job
   // Unified job-create flow: per-control caps (convenience — the Worker re-gates every call). A
@@ -662,7 +666,7 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
           <p className={`banner ${actionMsg.ok ? "banner--ok" : "banner--err"}`}>{actionMsg.text}</p>
         )}
 
-        {canManage && (
+        {canAssignTasks && (
           <section className="card dash-section">
             <h3 className="dash-detail__h2">Manage job</h3>
             <form onSubmit={submitAddTask} className="dash-row" aria-label="Add a task">
@@ -683,36 +687,42 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
               </label>{" "}
               <button type="submit" disabled={actionBusy} className="btn--primary">Add task</button>
             </form>
-            <form className="dash-row" aria-label="Set job lifecycle">
-              <label className="dash-card__label">
-                Lifecycle:{" "}
-                <select
-                  aria-label="Job lifecycle"
-                  value={lifecycleSel}
-                  disabled={actionBusy}
-                  onChange={(e) => submitLifecycle(e.target.value as api.JobLifecycle)}
-                >
-                  <option value="active">Active</option>
-                  <option value="inactive">Inactive</option>
-                  <option value="archived">Archived</option>
-                </select>
-              </label>
-            </form>
-            <div className="dash-row">
-              {editContactsOpen ? (
-                <form onSubmit={submitEditContacts} aria-label="Edit routing and contacts">
-                  <RoutingFields routing={editRouting} onChange={setEditRouting} />
-                  <div className="dash-row">
-                    <button type="submit" disabled={actionBusy} className="btn--primary">Save routing</button>{" "}
-                    <button type="button" onClick={() => setEditContactsOpen(false)} className="btn--secondary">Cancel</button>
-                  </div>
+            {/* Lifecycle + routing are job-lifecycle authority — admin-only (cap.jobtracker.manage).
+                A manager (cap.tasks.assign) gets the add-task control above but NOT these. */}
+            {canManage && (
+              <>
+                <form className="dash-row" aria-label="Set job lifecycle">
+                  <label className="dash-card__label">
+                    Lifecycle:{" "}
+                    <select
+                      aria-label="Job lifecycle"
+                      value={lifecycleSel}
+                      disabled={actionBusy}
+                      onChange={(e) => submitLifecycle(e.target.value as api.JobLifecycle)}
+                    >
+                      <option value="active">Active</option>
+                      <option value="inactive">Inactive</option>
+                      <option value="archived">Archived</option>
+                    </select>
+                  </label>
                 </form>
-              ) : (
-                <button type="button" onClick={() => setEditContactsOpen(true)} className="btn--edit">
-                  Edit routing / contacts
-                </button>
-              )}
-            </div>
+                <div className="dash-row">
+                  {editContactsOpen ? (
+                    <form onSubmit={submitEditContacts} aria-label="Edit routing and contacts">
+                      <RoutingFields routing={editRouting} onChange={setEditRouting} />
+                      <div className="dash-row">
+                        <button type="submit" disabled={actionBusy} className="btn--primary">Save routing</button>{" "}
+                        <button type="button" onClick={() => setEditContactsOpen(false)} className="btn--secondary">Cancel</button>
+                      </div>
+                    </form>
+                  ) : (
+                    <button type="button" onClick={() => setEditContactsOpen(true)} className="btn--edit">
+                      Edit routing / contacts
+                    </button>
+                  )}
+                </div>
+              </>
+            )}
           </section>
         )}
 
@@ -784,7 +794,7 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
               {job.tasks.map((t) => (
                 <li key={t.id}>
                   <span className={taskPillClass(t.status)}>{t.status}</span> {t.description}
-                  {t.personnel_name && !canManage ? <span className="muted"> — {t.personnel_name}</span> : null}
+                  {t.personnel_name && !canAssignTasks ? <span className="muted"> — {t.personnel_name}</span> : null}
                   {canOwnTasks && (
                     <>
                       {" "}
@@ -800,7 +810,7 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
                       </select>
                     </>
                   )}
-                  {canManage && (
+                  {canAssignTasks && (
                     <>
                       {" "}
                       <select

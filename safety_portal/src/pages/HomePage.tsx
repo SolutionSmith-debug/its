@@ -8,6 +8,7 @@ export type HomeNav =
   | "accounts"
   | "forms"
   | "fieldops-jobs"
+  | "fieldops-tasks"
   | "fieldops-equipment"
   | "fieldops-personnel"
   | "materials-catalog";
@@ -60,6 +61,13 @@ const HOME_CARDS: HomeCard[] = [
     badge: "Field Ops",
     title: "Job Tracker",
     desc: "Jobs, crew, open tasks, and equipment on site.",
+  },
+  {
+    key: "fieldops-tasks",
+    cap: "cap.tasks.own",
+    badge: "Field Ops",
+    title: "My Tasks",
+    desc: "The tasks assigned to you, grouped by job — update each as you work it.",
   },
   {
     key: "fieldops-equipment",

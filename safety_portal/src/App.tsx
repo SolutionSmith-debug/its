@@ -8,6 +8,7 @@ import { FormRequestPage } from "./pages/FormRequestPage";
 import { AccountsPage } from "./pages/AccountsPage";
 import { FormsPage } from "./pages/FormsPage";
 import { FieldOpsJobTracker } from "./pages/FieldOpsJobTracker";
+import { FieldOpsMyTasks } from "./pages/FieldOpsMyTasks";
 import { FieldOpsEquipment } from "./pages/FieldOpsEquipment";
 import { FieldOpsPersonnel } from "./pages/FieldOpsPersonnel";
 import { MaterialsCatalogPage } from "./pages/MaterialsCatalogPage";
@@ -70,6 +71,8 @@ export function App() {
     page = <FormsPage tabBar={backNav} onEditingChange={setEditing} />;
   } else if (view === "fieldops-jobs" && has("cap.jobtracker.read")) {
     page = <FieldOpsJobTracker onBack={home} />;
+  } else if (view === "fieldops-tasks" && has("cap.tasks.own")) {
+    page = <FieldOpsMyTasks onBack={home} />;
   } else if (view === "fieldops-equipment" && has("cap.equipment.field")) {
     page = <FieldOpsEquipment onBack={home} />;
   } else if (view === "fieldops-personnel" && has("cap.personnel.read")) {
