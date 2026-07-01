@@ -278,6 +278,73 @@ def test_missing_credentials_halts_without_polling(_patch_all):
     )
 
 
+def test_transient_circuit_open_warns_and_skips_without_paging(_patch_all):
+    # base URL unreadable because the Smartsheet circuit is OPEN → CREDS_TRANSIENT, NOT None.
+    _patch_all["creds"].return_value = portal_poll.CREDS_TRANSIENT
+    result = _poll_inside_lock()
+    assert result.halted_transient is True
+    assert result.halted_no_creds is False
+    _patch_all["get_pending"].assert_not_called()  # FAIL-CLOSED: no poll
+    # transient → WARN heartbeat (NOT ERROR), and NO watchdog marker (a SUSTAINED outage still
+    # surfaces via the Check-C staleness floor — same as the no-creds path).
+    assert _patch_all["hb_row"].call_args.kwargs["status"] == "WARN"
+    _patch_all["wd"].assert_not_called()
+    # It WARNs (portal_creds_transient) and must NOT fire the misconfig CRITICAL.
+    assert any(
+        c.args and c.args[0] == portal_poll.Severity.WARN
+        and c.kwargs.get("error_code") == "portal_creds_transient"
+        for c in _patch_all["log"].call_args_list
+    )
+    assert not any(
+        c.kwargs.get("error_code") == "portal_creds_missing"
+        for c in _patch_all["log"].call_args_list
+    )
+
+
+# ---- _resolve_credentials 3-state (transient vs genuinely-absent) ----------
+
+
+def test_resolve_credentials_circuit_open_returns_transient(mocker):
+    # A Smartsheet circuit-open on the base-URL read is TRANSIENT — never confused with a misconfig.
+    mocker.patch.object(
+        portal_poll.smartsheet_client, "get_setting",
+        side_effect=portal_poll.smartsheet_client.SmartsheetCircuitOpenError("open"),
+    )
+    assert portal_poll._resolve_credentials() is portal_poll.CREDS_TRANSIENT
+
+
+def test_resolve_credentials_missing_row_returns_none(mocker):
+    # base-URL row genuinely absent (NotFound) → None (misconfig), NOT transient.
+    mocker.patch.object(
+        portal_poll.smartsheet_client, "get_setting",
+        side_effect=portal_poll.smartsheet_client.SmartsheetNotFoundError("nope"),
+    )
+    mocker.patch.object(portal_poll.keychain, "get_secret", return_value="x")
+    assert portal_poll._resolve_credentials() is None
+
+
+def test_resolve_credentials_missing_keychain_returns_none(mocker):
+    # base URL fine, but the Keychain bearer/secret are absent → None (misconfig), NOT transient.
+    mocker.patch.object(
+        portal_poll.smartsheet_client, "get_setting", return_value="https://portal.example.com",
+    )
+    mocker.patch.object(
+        portal_poll.keychain, "get_secret",
+        side_effect=portal_poll.keychain.KeychainError("missing"),
+    )
+    assert portal_poll._resolve_credentials() is None
+
+
+def test_resolve_credentials_all_present_returns_creds(mocker):
+    mocker.patch.object(
+        portal_poll.smartsheet_client, "get_setting", return_value="https://portal.example.com",
+    )
+    mocker.patch.object(portal_poll.keychain, "get_secret", return_value="secret-val")
+    creds = portal_poll._resolve_credentials()
+    assert isinstance(creds, portal_poll._PortalCreds)
+    assert creds.base_url == "https://portal.example.com"
+
+
 # ---- pending fetch failure ------------------------------------------------
 
 
