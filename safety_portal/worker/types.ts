@@ -44,8 +44,12 @@ export interface Env {
 }
 
 /** A portal user's authorization role. 'submitter' is the default for every field
- *  PM; 'admin' unlocks the dashboard (account management + submit-as). */
-export type Role = "submitter" | "admin";
+ *  PM; 'manager' (P2.6) is the mid-tier crew lead (personnel + crew-assign, NO job/task
+ *  create, NO login minting); 'admin' unlocks the dashboard (account management + submit-as).
+ *  The granted capability SET — not this role string — is what routes gate on; role is used
+ *  only for the few admin-ONLY hard-checks (idle-timeout, admin surface, submit-as, login
+ *  minting), which correctly exclude 'manager'. */
+export type Role = "submitter" | "manager" | "admin";
 
 /** Claims signed (NOT encrypted) into the session cookie. Keep minimal — readable by
  *  the holder. Deliberately NO role here: role is read fresh from D1 per request

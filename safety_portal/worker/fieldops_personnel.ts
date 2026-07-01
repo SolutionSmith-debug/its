@@ -1,12 +1,14 @@
 import type { FieldopsApp, FieldopsGates } from "./fieldops_gates";
 import { encodeCursor, decodeCursor } from "./cursor";
 
-// Response shapes per BRIEF A
+// Response shapes per BRIEF A (P2.6: + current_job standing crew→job placement)
 interface PersonnelRow {
   id: number;
   name: string;
   trade: string;
   username: string | null;
+  /** P2.6 — standing job placement ("who is where"); NULL = unplaced. Soft-ref to jobs.job_id. */
+  current_job: string | null;
 }
 
 interface LatestEntry {
@@ -34,7 +36,7 @@ export function registerPersonnelRoutes(app: FieldopsApp, gates: FieldopsGates):
 
       // Roster page (keyset on name ASC, id ASC, active=1)
       const sqlRoster = `
-        SELECT id, name, trade, username
+        SELECT id, name, trade, username, current_job
         FROM personnel
         WHERE active = 1
           AND (?1 IS NULL OR name > ?1 OR (name = ?1 AND id > ?2))
@@ -45,7 +47,7 @@ export function registerPersonnelRoutes(app: FieldopsApp, gates: FieldopsGates):
         ? [cursor.n as string | null, cursor.i as number | null, limit]
         : [null, null, limit];
 
-      const rosterRes = await c.env.DB.prepare(sqlRoster).bind(...rosterParams).all<{ id: number; name: string; trade: string; username: string | null }>();
+      const rosterRes = await c.env.DB.prepare(sqlRoster).bind(...rosterParams).all<{ id: number; name: string; trade: string; username: string | null; current_job: string | null }>();
 
       if (!rosterRes.results || rosterRes.results.length === 0) {
         return c.json({ personnel: [], latest_entries: [], next_cursor: null }, 200);
@@ -96,6 +98,7 @@ export function registerPersonnelRoutes(app: FieldopsApp, gates: FieldopsGates):
         name: row.name,
         trade: row.trade,
         username: row.username,
+        current_job: row.current_job,
       }));
 
       const last = rosterRes.results[rosterRes.results.length - 1];
@@ -124,8 +127,8 @@ export function registerPersonnelRoutes(app: FieldopsApp, gates: FieldopsGates):
       }
 
       // Header by PK
-      const sqlHeader = `SELECT id, name, username, trade FROM personnel WHERE id = ?`;
-      const headerRes = await c.env.DB.prepare(sqlHeader).bind(id).first<{ id: number; name: string; username: string | null; trade: string }>();
+      const sqlHeader = `SELECT id, name, username, trade, current_job FROM personnel WHERE id = ?`;
+      const headerRes = await c.env.DB.prepare(sqlHeader).bind(id).first<{ id: number; name: string; username: string | null; trade: string; current_job: string | null }>();
       if (!headerRes) {
         return c.json({ error: "not_found" }, 404);
       }
@@ -180,6 +183,7 @@ export function registerPersonnelRoutes(app: FieldopsApp, gates: FieldopsGates):
             name: headerRes.name,
             username: headerRes.username,
             trade: headerRes.trade,
+            current_job: headerRes.current_job,
             time_entries: entriesRes.results ?? [],
           },
           next_cursor: nextCursor,

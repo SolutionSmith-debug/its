@@ -139,8 +139,8 @@ export function AccountsPage({
     if (ok) setEditing(null);
   }
 
-  async function onToggleRole(a: api.Account) {
-    const next: api.Role = a.role === "admin" ? "submitter" : "admin";
+  async function onChangeRole(a: api.Account, next: api.Role) {
+    if (next === a.role) return;
     await run(() => api.setRole(a.username, next), `${a.username} is now ${next}.`);
   }
 
@@ -194,6 +194,7 @@ export function AccountsPage({
               onChange={(e) => setCuRole(e.target.value as api.Role)}
             >
               <option value="submitter">Submitter (field PM)</option>
+              <option value="manager">Manager (crew lead)</option>
               <option value="admin">Admin (dashboard access)</option>
             </select>
           </label>
@@ -223,7 +224,7 @@ export function AccountsPage({
                       {a.username}
                       {a.username === me ? <span className="accounts__you"> (you)</span> : null}
                     </span>
-                    <span className={`role-badge${a.role === "admin" ? " role-badge--admin" : ""}`}>
+                    <span className={`role-badge${a.role === "admin" ? " role-badge--admin" : a.role === "manager" ? " role-badge--manager" : ""}`}>
                       {a.role}
                     </span>
                     {a.disabled ? <span className="role-badge role-badge--off">disabled</span> : null}
@@ -232,9 +233,17 @@ export function AccountsPage({
                     <button className="btn btn--secondary" disabled={busy} onClick={() => openEditor(a.username)}>
                       Edit login
                     </button>
-                    <button className="btn btn--secondary" disabled={busy} onClick={() => void onToggleRole(a)}>
-                      {a.role === "admin" ? "Make submitter" : "Make admin"}
-                    </button>
+                    <select
+                      className="btn btn--secondary accounts__role-select"
+                      aria-label={`Role for ${a.username}`}
+                      value={a.role}
+                      disabled={busy}
+                      onChange={(e) => void onChangeRole(a, e.target.value as api.Role)}
+                    >
+                      <option value="submitter">Submitter</option>
+                      <option value="manager">Manager</option>
+                      <option value="admin">Admin</option>
+                    </select>
                     <button className="btn btn--retire" disabled={busy} onClick={() => void onDelete(a.username)}>
                       Delete
                     </button>

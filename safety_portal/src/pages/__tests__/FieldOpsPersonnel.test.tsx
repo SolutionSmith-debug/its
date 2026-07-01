@@ -24,9 +24,18 @@ vi.mock("../../lib/fieldops_personnel", async (importOriginal) => {
 // resetAllMocks + a default (no-caps) useAuth in beforeEach; manage tests override per-test.
 vi.mock("../../lib/auth", () => ({ useAuth: vi.fn() }));
 
+// P2.6: the page now fetches the active-job set (for the crew-assign dropdown) via
+// fetchJobs from ../../lib/api. Partial-mock so the assign <select> can render without a
+// real network call; leave the rest of the api module intact.
+vi.mock("../../lib/api", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../lib/api")>();
+  return { ...actual, fetchJobs: vi.fn() };
+});
+
 import * as api from "../../lib/fieldops_personnel";
 import { FieldOpsPersonnel } from "../FieldOpsPersonnel";
 import { useAuth } from "../../lib/auth";
+import { fetchJobs } from "../../lib/api";
 
 afterEach(cleanup);
 beforeEach(() => {
@@ -40,8 +49,8 @@ beforeEach(() => {
 });
 
 const MOCK_PERSONNEL = [
-  { id: 1, name: "Alice Chen", trade: "operator", username: "alice.chen" },
-  { id: 2, name: "Bob Martinez", trade: "foreman", username: "bob.martinez" },
+  { id: 1, name: "Alice Chen", trade: "operator", username: "alice.chen", current_job: null },
+  { id: 2, name: "Bob Martinez", trade: "foreman", username: "bob.martinez", current_job: null },
 ];
 
 const MOCK_LATEST_ENTRIES: api.LatestEntry[] = [
@@ -109,6 +118,7 @@ describe("FieldOpsPersonnel — list view", () => {
         name: "Alice Chen",
         username: "alice.chen",
         trade: "operator",
+        current_job: null,
         time_entries: [],
       },
       next_cursor: null,
@@ -136,7 +146,7 @@ describe("FieldOpsPersonnel — list view", () => {
     // personnel (the back-control lives there), so mock it here rather than leaning on cross-test
     // mock leakage (beforeEach now resetAllMocks).
     vi.mocked(api.fetchPersonnelDetail).mockResolvedValue({
-      personnel: { id: 1, name: "Alice Chen", username: "alice.chen", trade: "operator", time_entries: [] },
+      personnel: { id: 1, name: "Alice Chen", username: "alice.chen", trade: "operator", current_job: null, time_entries: [] },
       next_cursor: null,
     });
 
@@ -170,7 +180,7 @@ describe("FieldOpsPersonnel — list view", () => {
         next_cursor: "next-page-token",
       })
       .mockResolvedValueOnce({
-        personnel: [{ id: 3, name: "Carol Davis", trade: "laborer", username: null }],
+        personnel: [{ id: 3, name: "Carol Davis", trade: "laborer", username: null, current_job: null }],
         latest_entries: [],
         next_cursor: null,
       });
@@ -199,6 +209,7 @@ describe("FieldOpsPersonnel — list view", () => {
         name: "Alice Chen",
         username: "alice.chen",
         trade: "operator",
+        current_job: null,
         time_entries: [],
       },
       next_cursor: null,
@@ -286,7 +297,7 @@ describe("FieldOpsPersonnel — manage (cap.personnel.manage)", () => {
   it("Link account (unlinked person) opens the link form; submit calls linkPersonnelAccount", async () => {
     asManager();
     vi.mocked(api.fetchPersonnelList).mockResolvedValue({
-      personnel: [{ id: 3, name: "Carol Davis", trade: "laborer", username: null }],
+      personnel: [{ id: 3, name: "Carol Davis", trade: "laborer", username: null, current_job: null }],
       latest_entries: [],
       next_cursor: null,
     });
@@ -307,7 +318,7 @@ describe("FieldOpsPersonnel — manage (cap.personnel.manage)", () => {
   it("Unlink account (linked person) calls unlinkPersonnelAccount", async () => {
     asManager();
     vi.mocked(api.fetchPersonnelList).mockResolvedValue({
-      personnel: [{ id: 1, name: "Alice Chen", trade: "operator", username: "alice.chen" }],
+      personnel: [{ id: 1, name: "Alice Chen", trade: "operator", username: "alice.chen", current_job: null }],
       latest_entries: [],
       next_cursor: null,
     });
@@ -336,5 +347,76 @@ describe("FieldOpsPersonnel — manage (cap.personnel.manage)", () => {
     await waitFor(() => expect(api.retirePersonnel).toHaveBeenCalledWith(1));
     // stopPropagation kept us on the list (no detail fetch)
     expect(api.fetchPersonnelDetail).not.toHaveBeenCalled();
+  });
+});
+
+describe("FieldOpsPersonnel — P2.6 manager tier (cap.crew.assign)", () => {
+  function asRole(role: "manager" | "admin", capabilities: string[]) {
+    vi.mocked(useAuth).mockReturnValue({
+      user: { username: "u.one", role, capabilities },
+      loading: false,
+      login: vi.fn(async () => {}),
+      logout: vi.fn(async () => {}),
+    });
+  }
+
+  it("manager (cap.crew.assign, role manager): the Assign button renders, opens a job <select>, and the admin-only login sub-form is NOT rendered", async () => {
+    asRole("manager", ["cap.personnel.read", "cap.crew.assign"]);
+    vi.mocked(fetchJobs).mockResolvedValue([{ job_id: "JOB-A", project_name: "Alpha" }]);
+    vi.mocked(api.fetchPersonnelList).mockResolvedValue({ personnel: MOCK_PERSONNEL, latest_entries: [], next_cursor: null });
+
+    const { container } = render(<FieldOpsPersonnel onBack={() => {}} />);
+
+    const assignBtn = await waitFor(() => {
+      const b = Array.from(container.querySelectorAll("button")).find((x) => x.textContent === "Assign");
+      expect(b).toBeTruthy();
+      return b!;
+    });
+    // role≠admin (and no cap.personnel.manage) → the login-account minting sub-form is hidden
+    expect(container.querySelector("input[name='withAccount']")).toBeNull();
+
+    // clicking Assign opens the placement <select>
+    fireEvent.click(assignBtn);
+    await waitFor(() => {
+      const form = container.querySelector("form[aria-label='Assign crew to job']");
+      expect(form).toBeTruthy();
+      expect(form!.querySelector("select[aria-label='Job placement']")).toBeTruthy();
+    });
+  });
+
+  it("manager WITH cap.personnel.manage: the Add-personnel form renders, but the admin-only 'create a login account' checkbox stays hidden (role≠admin)", async () => {
+    asRole("manager", ["cap.personnel.read", "cap.personnel.manage", "cap.crew.assign"]);
+    vi.mocked(fetchJobs).mockResolvedValue([{ job_id: "JOB-A", project_name: "Alpha" }]);
+    vi.mocked(api.fetchPersonnelList).mockResolvedValue({ personnel: MOCK_PERSONNEL, latest_entries: [], next_cursor: null });
+
+    const { container } = render(<FieldOpsPersonnel onBack={() => {}} />);
+    // the manage form itself renders (cap.personnel.manage present) …
+    await waitFor(() => expect(container.querySelector("form[aria-label='Add personnel']")).toBeTruthy());
+    // … but the login-minting checkbox is gated on role==='admin', which a manager is not.
+    expect(container.querySelector("input[name='withAccount']")).toBeNull();
+  });
+
+  it("admin regression: the 'create a login account' checkbox IS rendered", async () => {
+    asRole("admin", ["cap.personnel.read", "cap.personnel.manage", "cap.crew.assign"]);
+    vi.mocked(fetchJobs).mockResolvedValue([{ job_id: "JOB-A", project_name: "Alpha" }]);
+    vi.mocked(api.fetchPersonnelList).mockResolvedValue({ personnel: MOCK_PERSONNEL, latest_entries: [], next_cursor: null });
+
+    const { container } = render(<FieldOpsPersonnel onBack={() => {}} />);
+    await waitFor(() => expect(container.querySelector("input[name='withAccount']")).toBeTruthy());
+  });
+
+  it("renders the 'Placed on' job for a person whose current_job is set", async () => {
+    asRole("manager", ["cap.personnel.read", "cap.crew.assign"]);
+    vi.mocked(fetchJobs).mockResolvedValue([{ job_id: "JOB-A", project_name: "Alpha" }]);
+    vi.mocked(api.fetchPersonnelList).mockResolvedValue({
+      personnel: [{ id: 7, name: "Dana Reed", trade: "operator", username: null, current_job: "JOB-A" }],
+      latest_entries: [],
+      next_cursor: null,
+    });
+
+    const { container } = render(<FieldOpsPersonnel onBack={() => {}} />);
+    await waitFor(() => expect(api.fetchPersonnelList).toHaveBeenCalled());
+    // the "Placed on" cell shows the standing placement (no time entry → Latest job is "—")
+    await waitFor(() => expect(container.textContent ?? "").toContain("JOB-A"));
   });
 });

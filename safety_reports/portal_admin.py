@@ -5,12 +5,12 @@ Purpose
     Operator-run command line over the Worker's bearer-gated `/api/internal/admin/*`
     routes — provision / reset-password / disable / enable / set-role / list portal
     users:
-        add-user <username> [--role submitter|admin]
+        add-user <username> [--role submitter|manager|admin]
                                    provision (prompts for password); default submitter
         reset-password <username>  re-hash an existing user's password (prompts)
         disable-user <username>    lock out (revocation, effective next request)
         enable-user <username>     restore access
-        set-role <username> <role> change role (submitter|admin) — BREAK-GLASS for the
+        set-role <username> <role> change role (submitter|manager|admin) — BREAK-GLASS for the
                                    in-app admin dashboard (e.g. restore an admin the UI
                                    demoted); deliberately NOT last-admin-guarded so it
                                    is a recovery path OUT of a zero-admin lockout
@@ -106,7 +106,7 @@ def cmd_add_user(base_url: str, token: str, username: str, role: str = "submitte
     elif status == 400:
         _fail(
             f"rejected: username must be lastname.firstname (lowercased), "
-            f"password ≥ {MIN_PASSWORD_LEN} chars, role submitter|admin"
+            f"password ≥ {MIN_PASSWORD_LEN} chars, role submitter|manager|admin"
         )
     else:
         _fail(f"unexpected status {status}")
@@ -122,7 +122,7 @@ def cmd_set_role(base_url: str, token: str, username: str, role: str) -> None:
     elif status == 404:
         _fail(f"user {username!r} not found (use add-user)")
     elif status == 400:
-        _fail("rejected: role must be submitter|admin, username lastname.firstname")
+        _fail("rejected: role must be submitter|manager|admin, username lastname.firstname")
     else:
         _fail(f"unexpected status {status}")
 
@@ -206,12 +206,12 @@ def main(argv: list[str] | None = None) -> None:
     sub = parser.add_subparsers(dest="cmd", required=True)
     p_add = sub.add_parser("add-user")
     p_add.add_argument("username")
-    p_add.add_argument("--role", choices=("submitter", "admin"), default="submitter")
+    p_add.add_argument("--role", choices=("submitter", "manager", "admin"), default="submitter")
     for name in ("reset-password", "disable-user", "enable-user"):
         sub.add_parser(name).add_argument("username")
     p_role = sub.add_parser("set-role")
     p_role.add_argument("username")
-    p_role.add_argument("role", choices=("submitter", "admin"))
+    p_role.add_argument("role", choices=("submitter", "manager", "admin"))
     sub.add_parser("list-users")
     sub.add_parser("purge-job").add_argument("job_id")
     args = parser.parse_args(argv)

@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import type { FormEvent } from "react";
 import * as api from "../lib/fieldops_personnel";
+import { fetchJobs, type Job } from "../lib/api";
 import { PageShell } from "../components/PageShell";
 import { useAuth } from "../lib/auth";
 
@@ -33,6 +34,11 @@ export function FieldOpsPersonnel({ onBack }: { onBack: () => void }) {
   // Worker re-gates every write route server-side (Invariant 2: never trust the client).
   const { user } = useAuth();
   const canManage = (user?.capabilities ?? []).includes("cap.personnel.manage");
+  // P2.6: cap.crew.assign drives the crew→job placement control; role==='admin' gates the
+  // login-account minting sub-form (the Worker 403s a non-admin there, so hide the dead control).
+  // Both are CONVENIENCE gates — the Worker re-checks every write (Invariant 2).
+  const canAssign = (user?.capabilities ?? []).includes("cap.crew.assign");
+  const isAdmin = user?.role === "admin";
   const [actionBusy, setActionBusy] = useState(false);
   const [actionMsg, setActionMsg] = useState<{ ok: boolean; text: string } | null>(null);
   // Create form
@@ -48,10 +54,19 @@ export function FieldOpsPersonnel({ onBack }: { onBack: () => void }) {
   const [editTrade, setEditTrade] = useState("");
   const [linkId, setLinkId] = useState<number | null>(null);
   const [linkUsername, setLinkUsername] = useState("");
+  // P2.6 crew→job placement (only one assign control open at a time; jobs = the active-job dropdown)
+  const [assignId, setAssignId] = useState<number | null>(null);
+  const [assignJob, setAssignJob] = useState<string>("");
+  const [jobs, setJobs] = useState<Job[]>([]);
 
   useEffect(() => {
     loadList();
   }, []);
+
+  // Load the active-job set for the assign dropdown (only when the actor can assign crew).
+  useEffect(() => {
+    if (canAssign) fetchJobs().then(setJobs).catch(() => setJobs([]));
+  }, [canAssign]);
 
   // Replace-style refresh after a mutation (loadList APPENDS; this resets to page 1).
   async function reloadList() {
@@ -170,6 +185,31 @@ export function FieldOpsPersonnel({ onBack }: { onBack: () => void }) {
     }
   }
 
+  function openAssign(p: api.PersonnelRow) {
+    setEditId(null);
+    setLinkId(null);
+    setAssignId(p.id);
+    setAssignJob(p.current_job ?? "");
+  }
+
+  async function submitAssign(e: FormEvent) {
+    e.preventDefault();
+    if (assignId === null || actionBusy) return;
+    setActionBusy(true);
+    setActionMsg(null);
+    try {
+      // "" (the Unassign option) → null clears the placement; a job_id sets it.
+      await api.assignPersonnel(assignId, assignJob || null);
+      setAssignId(null);
+      await reloadList();
+      setActionMsg({ ok: true, text: assignJob ? "Crew placement updated." : "Crew unassigned." });
+    } catch (err) {
+      setActionMsg({ ok: false, text: err instanceof Error ? err.message : "Assign failed." });
+    } finally {
+      setActionBusy(false);
+    }
+  }
+
   async function loadList() {
     if (loading) return;
     setLoading(true);
@@ -255,6 +295,7 @@ export function FieldOpsPersonnel({ onBack }: { onBack: () => void }) {
           {selectedPersonnel.username ? `@${selectedPersonnel.username}` : "No account linked"}
           {" • "}
           {selectedPersonnel.trade}
+          {selectedPersonnel.current_job ? ` • Placed on ${selectedPersonnel.current_job}` : ""}
         </p>
 
         <div className="dash-section">
@@ -313,18 +354,25 @@ export function FieldOpsPersonnel({ onBack }: { onBack: () => void }) {
           {actionMsg && <p className="muted" style={{ color: actionMsg.ok ? "green" : "red" }}>{actionMsg.text}</p>}
           <input name="name" value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="Full name" maxLength={128} />{" "}
           <input name="trade" value={newTrade} onChange={(e) => setNewTrade(e.target.value)} placeholder="Trade (optional)" maxLength={64} />{" "}
-          <label>
-            <input name="withAccount" type="checkbox" checked={withAccount} onChange={(e) => setWithAccount(e.target.checked)} />{" "}
-            Also create a login account
-          </label>{" "}
-          {withAccount && (
+          {/* Login-account minting is admin-only (the Worker 403s a non-admin, e.g. a manager);
+              hide the whole sub-form for non-admins so there's no dead control. */}
+          {isAdmin && (
             <>
-              <input name="username" value={newUsername} onChange={(e) => setNewUsername(e.target.value)} placeholder="username (lastname.firstname)" maxLength={64} />{" "}
-              <input name="password" type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder="temp password" maxLength={256} />{" "}
-              <select name="role" value={newRole} onChange={(e) => setNewRole(e.target.value as api.AccountRole)}>
-                <option value="submitter">Field PM (submitter)</option>
-                <option value="admin">Admin</option>
-              </select>{" "}
+              <label>
+                <input name="withAccount" type="checkbox" checked={withAccount} onChange={(e) => setWithAccount(e.target.checked)} />{" "}
+                Also create a login account
+              </label>{" "}
+              {withAccount && (
+                <>
+                  <input name="username" value={newUsername} onChange={(e) => setNewUsername(e.target.value)} placeholder="username (lastname.firstname)" maxLength={64} />{" "}
+                  <input name="password" type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder="temp password" maxLength={256} />{" "}
+                  <select name="role" value={newRole} onChange={(e) => setNewRole(e.target.value as api.AccountRole)}>
+                    <option value="submitter">Field PM (submitter)</option>
+                    <option value="manager">Manager (crew lead)</option>
+                    <option value="admin">Admin</option>
+                  </select>{" "}
+                </>
+              )}
             </>
           )}
           <button type="submit" disabled={actionBusy} className="btn--primary">Add personnel</button>
@@ -348,6 +396,19 @@ export function FieldOpsPersonnel({ onBack }: { onBack: () => void }) {
         </form>
       )}
 
+      {canAssign && assignId !== null && (
+        <form onSubmit={submitAssign} className="dash-row" aria-label="Assign crew to job">
+          <select value={assignJob} onChange={(e) => setAssignJob(e.target.value)} aria-label="Job placement">
+            <option value="">— Unassign —</option>
+            {jobs.map((j) => (
+              <option key={j.job_id} value={j.job_id}>{j.project_name} ({j.job_id})</option>
+            ))}
+          </select>{" "}
+          <button type="submit" disabled={actionBusy} className="btn--secondary">Save placement</button>{" "}
+          <button type="button" onClick={() => setAssignId(null)} className="btn--secondary">Cancel</button>
+        </form>
+      )}
+
       {error && <p className="muted" style={{ color: "red" }}>{error}</p>}
 
       {personnel.length === 0 ? (
@@ -363,9 +424,10 @@ export function FieldOpsPersonnel({ onBack }: { onBack: () => void }) {
               <tr>
                 <th className="dash-header">Name</th>
                 <th className="dash-header">Trade</th>
+                <th className="dash-header">Placed on</th>
                 <th className="dash-header">Latest job</th>
                 <th className="dash-header">Hours</th>
-                {canManage && <th className="dash-header">Manage</th>}
+                {(canManage || canAssign) && <th className="dash-header">Manage</th>}
               </tr>
             </thead>
             <tbody>
@@ -382,17 +444,19 @@ export function FieldOpsPersonnel({ onBack }: { onBack: () => void }) {
                       {p.username && <span className="muted">@{p.username}</span>}
                     </td>
                     <td className="dash-cell">{p.trade}</td>
+                    <td className="dash-cell">{p.current_job ?? "—"}</td>
                     <td className="dash-cell">{entry ? entry.project_name ?? entry.job_id : "—"}</td>
                     <td className="dash-cell">{fmtHours(entry?.hours ?? null)}</td>
-                    {canManage && (
+                    {(canManage || canAssign) && (
                       <td className="dash-cell">
-                        <button className="btn--edit" onClick={(e) => { e.stopPropagation(); openEdit(p); }}>Edit</button>{" "}
-                        {p.username ? (
+                        {canManage && <button className="btn--edit" onClick={(e) => { e.stopPropagation(); openEdit(p); }}>Edit</button>}{" "}
+                        {canManage && (p.username ? (
                           <button className="btn--secondary" onClick={(e) => { e.stopPropagation(); doUnlink(p); }} disabled={actionBusy}>Unlink account</button>
                         ) : (
                           <button className="btn--secondary" onClick={(e) => { e.stopPropagation(); openLink(p); }}>Link account</button>
-                        )}{" "}
-                        <button className="btn--retire" onClick={(e) => { e.stopPropagation(); doRetire(p); }} disabled={actionBusy}>Retire</button>
+                        ))}{" "}
+                        {canAssign && <button className="btn--edit" onClick={(e) => { e.stopPropagation(); openAssign(p); }}>Assign</button>}{" "}
+                        {canManage && <button className="btn--retire" onClick={(e) => { e.stopPropagation(); doRetire(p); }} disabled={actionBusy}>Retire</button>}
                       </td>
                     )}
                   </tr>

@@ -77,11 +77,15 @@ export async function validateUser(
 }
 
 /** Narrow a raw DB role string to the Role union, defaulting unknown → 'submitter'
- *  (fail-SAFE: an unexpected value must never be treated as 'admin'). The CHECK
- *  constraint (migration 0007) makes 'unknown' unreachable in practice; this is the
- *  belt to that suspenders so a future schema slip can't silently grant admin. */
+ *  (fail-SAFE: an unexpected value must never be treated as 'admin' OR 'manager'). The
+ *  roles-FK (migration 0013, superseding 0007's value-list CHECK) makes 'unknown'
+ *  unreachable in practice; this is the belt to that suspenders so a future schema slip
+ *  can't silently grant a privileged tier. Every recognized non-submitter tier must be
+ *  matched EXPLICITLY here — an unlisted value fails safe to 'submitter', never upward. */
 export function coerceRole(raw: string | null | undefined): Role {
-  return raw === "admin" ? "admin" : "submitter";
+  if (raw === "admin") return "admin";
+  if (raw === "manager") return "manager";
+  return "submitter";
 }
 
 /**
@@ -160,6 +164,6 @@ export function normalizeUsername(raw: string): string | null {
  */
 export function parseRole(value: unknown, dflt: Role = "submitter"): Role | null {
   if (value === undefined) return dflt;
-  if (value === "admin" || value === "submitter") return value;
+  if (value === "admin" || value === "manager" || value === "submitter") return value;
   return null;
 }
