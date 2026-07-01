@@ -56,6 +56,11 @@ async function seedPersonnel(name: string, trade: string): Promise<number> {
     .bind(name, name.toLowerCase().replace(/\s+/g, "."), trade).run();
   return (await env.DB.prepare("SELECT id FROM personnel WHERE name=?").bind(name).first<{ id: number }>())!.id;
 }
+// Crew is the people PLACED on a job (personnel.current_job, migration 0023) — set placement here.
+// This is what the crew legs now read (converged onto placement); NULL = unplaced (not on any crew).
+async function placePersonnel(personnelId: number, jobId: string): Promise<void> {
+  await env.DB.prepare("UPDATE personnel SET current_job = ? WHERE id = ?").bind(jobId, personnelId).run();
+}
 async function seedTask(jobId: string, personnelId: number | null, description: string, status: string, createdAt: number): Promise<void> {
   await env.DB.prepare(
     "INSERT INTO task_assignments (job_id, personnel_id, description, status, created_at) VALUES (?,?,?,?,?)",
@@ -151,6 +156,7 @@ describe("GET /api/fieldops/jobs", () => {
     const clientId = await seedClient("Acme Co");
     await seedJob("JOB-A", "Alpha", "active", 40, clientId);
     const pid = await seedPersonnel("Alice Chen", "operator");
+    await placePersonnel(pid, "JOB-A"); // crew = placed personnel
     await seedTask("JOB-A", pid, "Dig footings", "open", 100);
     await seedTask("JOB-A", pid, "Finished item", "done", 90);
     const c = await login("admin.one", "password123");
@@ -160,6 +166,40 @@ describe("GET /api/fieldops/jobs", () => {
     expect(job.crew.map((p: any) => p.name)).toContain("Alice Chen");
     expect(job.open_tasks).toHaveLength(1); // 'done' excluded
     expect(job.open_tasks[0].description).toBe("Dig footings");
+  });
+
+  it("crew = PLACED personnel: a task-assigned-but-unplaced person is NOT crew (convergence)", async () => {
+    await seedJob("JOB-A", "Alpha", "active");
+    const placed = await seedPersonnel("Placed Pat", "operator");
+    await placePersonnel(placed, "JOB-A"); // on the crew
+    const assignedOnly = await seedPersonnel("Task Tom", "laborer");
+    await seedTask("JOB-A", assignedOnly, "Dig footings", "open", 100); // task, but NOT placed
+    const c = await login("admin.one", "password123");
+    const body = (await (await call("/api/fieldops/jobs?status=active", { cookie: c })).json()) as { jobs: any[] };
+    const job = body.jobs.find((j) => j.job_id === "JOB-A");
+    const crewNames = job.crew.map((p: any) => p.name);
+    expect(crewNames).toContain("Placed Pat");
+    expect(crewNames).not.toContain("Task Tom"); // assigned a task but not placed → not crew
+    // The task assignment is unaffected: it still surfaces as an open task with its assignee.
+    expect(job.open_tasks.map((t: any) => t.personnel_name)).toContain("Task Tom");
+  });
+
+  it("crew excludes a retired (inactive) placement and scopes to the right job", async () => {
+    await seedJob("JOB-A", "Alpha", "active");
+    await seedJob("JOB-B", "Bravo", "active");
+    const onA = await seedPersonnel("Anna A", "operator");
+    await placePersonnel(onA, "JOB-A");
+    const onB = await seedPersonnel("Bob B", "operator");
+    await placePersonnel(onB, "JOB-B");
+    const retired = await seedPersonnel("Gone Gwen", "operator");
+    await placePersonnel(retired, "JOB-A");
+    await env.DB.prepare("UPDATE personnel SET active = 0 WHERE id = ?").bind(retired).run();
+    const c = await login("admin.one", "password123");
+    const body = (await (await call("/api/fieldops/jobs?status=all", { cookie: c })).json()) as { jobs: any[] };
+    const jobA = body.jobs.find((j) => j.job_id === "JOB-A");
+    const jobB = body.jobs.find((j) => j.job_id === "JOB-B");
+    expect(jobA.crew.map((p: any) => p.name)).toEqual(["Anna A"]); // Bob is JOB-B, Gwen is inactive
+    expect(jobB.crew.map((p: any) => p.name)).toEqual(["Bob B"]);
   });
 
   it("keyset walks page 2 with no overlap", async () => {
@@ -223,6 +263,7 @@ describe("GET /api/fieldops/jobs/:job_id", () => {
     const clientId = await seedClient("Acme Co");
     await seedJob("JOB-A", "Alpha", "active", 60, clientId);
     const pid = await seedPersonnel("Alice Chen", "operator");
+    await placePersonnel(pid, "JOB-A"); // crew = placed personnel
     await seedTask("JOB-A", pid, "Dig", "open", 100);
     await seedTimeEntry("JOB-A", pid, "te-1", 200);
     const eq = await seedEquipment("unit-a");
@@ -236,6 +277,21 @@ describe("GET /api/fieldops/jobs/:job_id", () => {
     expect(body.job.time_entries[0].recorded_at).toBe(200); // created_at AS recorded_at
     expect(body.job.inspections).toHaveLength(1);
     expect(body.cursors).toHaveProperty("tasks");
+  });
+
+  it("detail crew = PLACED personnel: task-assigned-but-unplaced excluded (convergence)", async () => {
+    await seedJob("JOB-A", "Alpha", "active");
+    const placed = await seedPersonnel("Placed Pat", "operator");
+    await placePersonnel(placed, "JOB-A");
+    const assignedOnly = await seedPersonnel("Task Tom", "laborer");
+    await seedTask("JOB-A", assignedOnly, "Dig", "open", 100); // task, not placed
+    const c = await login("admin.one", "password123");
+    const body = (await (await call("/api/fieldops/jobs/JOB-A", { cookie: c })).json()) as { job: any };
+    const crewNames = body.job.crew.map((p: any) => p.name);
+    expect(crewNames).toContain("Placed Pat");
+    expect(crewNames).not.toContain("Task Tom");
+    // Tom's task still shows in the tasks leg with his name.
+    expect(body.job.tasks.map((t: any) => t.personnel_name)).toContain("Task Tom");
   });
 
   it("equipment-on-site: includes a unit whose LATEST location is this job, excludes one moved away", async () => {

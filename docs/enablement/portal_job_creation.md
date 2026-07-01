@@ -77,6 +77,32 @@ Anything other than **Active** is treated as "not active" downstream (a blank st
 treated as not active — the system is deny-by-default). You only ever pick one of the three; the
 portal handles the rest of the bookkeeping behind the scenes.
 
+## Setting up a new job — assign crew, equipment, and tasks
+
+Creating a job is step one. Right after you click **Create**, the portal opens the new job's
+**detail view** with a **"Finish setting up JOB-######"** banner so you can get it ready in one
+sitting. (You can also do all of this any time later by opening any job from the Job Tracker — the
+same controls live on every job's detail view.)
+
+On the job detail view:
+
+- **Assign crew** — under **Assigned crew**, pick a person from the dropdown and click **Add to
+  crew**. That person is now *placed* on this job (their Personnel-page "Placed on" shows
+  `JOB-######`). Click the **✕** next to a crew member to remove them. **A job's crew = the people
+  currently placed on it.** Placing someone on a job does **not** lock their time — a person placed
+  on Job A can still log a day against Job B.
+- **Assign equipment** — under **Equipment on site**, pick a piece of equipment and click **Move
+  here**. It now shows on this job (and drops off whatever job it was on before).
+- **Add tasks** — under **Manage job**, use **Add a task** for the job's deliverables / to-dos.
+
+**Who can do what (permissions):** assigning crew needs the *crew-assign* permission, moving
+equipment needs the *equipment-field* permission, and adding tasks needs the *job-manage*
+permission. A **Manager** (crew lead) can assign crew and move equipment but **not** add tasks or
+create jobs — the office keeps job/task creation. You only see the controls your account may use.
+
+> **Materials** (per-job material lists) are **coming in a later phase** — there is no per-job
+> materials step on the create flow yet.
+
 ## The golden rule — don't hand-edit portal jobs in Smartsheet
 
 Once the up-sync is live (see below), a job you created in the portal is **owned by ITS**, not by

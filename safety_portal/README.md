@@ -438,6 +438,33 @@ to `roles(key)`, so seeding the role satisfies it (no `users` rebuild). New Work
    `portal_admin set-role <u> manager`); confirm they see Personnel + can assign crew (201), but
    get 403 on job-create / task-create / login-mint, and cannot open the admin dashboard.
 
+### Unified job-create flow — crew converges on placement (`0024`)
+
+**Migration 0024** adds `idx_personnel_current_job` on `personnel(current_job)`. This backs the
+**crew-convergence** change: a job's "crew" (both the Job Tracker LIST card and the DETAIL view)
+now MEANS the people currently **placed** on it (`personnel.current_job`, from 0023), NOT the
+distinct assignees of its `task_assignments`. The Job Tracker detail view gains reusable
+**Assign crew** (`cap.crew.assign`) and **Assign equipment** (`cap.equipment.field`) controls, and
+creating a job routes into its detail with a "finish setting up" nudge — all reusing the already
+security-reviewed `assign` / equipment-`location` routes (no new routes).
+
+**SEMANTICS SHIFT (call out to the operator):** after this deploys, an existing job that had
+task-assignment "crew" but nobody *placed* on it shows an EMPTY crew list until someone is placed
+(via the new Assign-crew control or the Personnel page). No data is lost — those task assignments
+still appear in the job's TASKS list with their assignee. This is the intended convergence.
+
+#### Activation (operator — deploy boundary; escalates to the Developer-Operator)
+
+1. Apply migration **0024** to the live D1 **BEFORE** the redeploy
+   (`npx wrangler d1 migrations apply its-safety-portal-db --remote`). The index is additive and
+   `IF NOT EXISTS`, so a stale deploy won't hard-fail (the crew query is correct without the index,
+   just slower); still apply-before-deploy per the standing rule. (Always `git pull` `~/its` to
+   latest `main` BEFORE `wrangler d1 migrations apply` — the stale-migrations-list lockout class.)
+2. **Redeploy** (`npm run deploy`) — activates the crew-convergence query + the detail-view
+   Assign-crew / Assign-equipment controls + the create nudge.
+3. **Smoke** (live): create a job → assign a person + a piece of equipment + a task → all three show
+   on the job; the person's "Placed on" (Personnel page) shows the job.
+
 ### Lockout recovery (break-glass) — escalate to the Developer-Operator
 
 If both admins are ever locked out (e.g. passwords lost, or both disabled), recovery runs
