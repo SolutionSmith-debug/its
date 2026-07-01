@@ -46,9 +46,11 @@ Failure modes
   ERROR heartbeat. 401 on pending-jobs → CRITICAL; other transport error → ERROR; both
   leave every job dirty for the next cycle.
 - Per-job fence: `PicklistViolationError` / `SmartsheetValidationError` (permanent) → a
-  `progress_reports` Review-Queue row, job left dirty; any other `SmartsheetError` /
-  `PortalTransportError` (transient) → ERROR-logged, job left dirty. One bad job never kills
-  the cycle.
+  `progress_reports` Review-Queue row (carrying the partial-commit state — which sheet failed and
+  whether safety already mirrored), job left dirty; `PortalAuthError` on the mark-mirrored
+  write-back (401, non-transient) → CRITICAL (`fieldops_mark_mirrored_unauthorized`, see runbook
+  Symptom E), job left dirty; any other `SmartsheetError` / `PortalTransportError` (transient) →
+  ERROR-logged, job left dirty. One bad job never kills the cycle.
 
 Consumers
 ---------
@@ -475,7 +477,7 @@ def _mirror_job(
             f"mark-mirrored UNAUTHORIZED (401) — field-ops bearer rejected during write-back for "
             f"job_id={job_id!r}; the sheet write landed but the Worker watermark did not, so the "
             f"job is left dirty (safe re-attempt once the bearer is fixed). "
-            f"See safety_reports/README.md §43.",
+            f"See docs/runbooks/fieldops_sync.md Symptom E.",
             error_code="fieldops_mark_mirrored_unauthorized",
             correlation_id=correlation_id,
         )
