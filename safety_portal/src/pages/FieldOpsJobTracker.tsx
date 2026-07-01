@@ -1,10 +1,283 @@
 import { useState, useEffect } from "react";
 import type { FormEvent } from "react";
 import * as api from "../lib/fieldops_jobtracker";
+import * as checklist from "../lib/fieldops_checklist";
 import { fetchPersonnelList, assignPersonnel, type PersonnelRow } from "../lib/fieldops_personnel";
 import { fetchEquipmentList, moveEquipment } from "../lib/fieldops_equipment";
 import { useAuth } from "../lib/auth";
 import { PageShell } from "../components/PageShell";
+
+const ITEM_TYPES: checklist.ChecklistItemType[] = ["form_linked", "manual_attest", "count", "inspection"];
+
+// Short human summary of an item's type-specific payload for the list rows.
+function itemMeta(item: { item_type: string; form_code: string | null; target_count: number | null }): string {
+  if (item.item_type === "form_linked" || item.item_type === "inspection") return `${item.item_type} · ${item.form_code ?? "—"}`;
+  if (item.item_type === "count") return `count ≥ ${item.target_count ?? "?"}`;
+  return item.item_type;
+}
+
+// A reusable "add / edit a checklist item" form: label + type, plus form_code (form_linked/inspection)
+// or target_count (count). Controlled by the parent's draft state. onSubmit gets the built ItemInput.
+function ItemForm({
+  label,
+  draft,
+  onChange,
+  onSubmit,
+  busy,
+  submitLabel,
+}: {
+  label: string;
+  draft: checklist.ItemInput;
+  onChange: (next: checklist.ItemInput) => void;
+  onSubmit: (e: FormEvent) => void;
+  busy: boolean;
+  submitLabel: string;
+}) {
+  const set = (patch: Partial<checklist.ItemInput>) => onChange({ ...draft, ...patch });
+  return (
+    <form onSubmit={onSubmit} className="dash-row" aria-label={label}>
+      <input
+        aria-label={`${label} label`}
+        value={draft.label}
+        onChange={(e) => set({ label: e.target.value })}
+        placeholder="Item label"
+        maxLength={256}
+      />{" "}
+      <select
+        aria-label={`${label} type`}
+        value={draft.item_type}
+        onChange={(e) => set({ item_type: e.target.value as checklist.ChecklistItemType })}
+      >
+        {ITEM_TYPES.map((t) => (
+          <option key={t} value={t}>{t}</option>
+        ))}
+      </select>{" "}
+      {(draft.item_type === "form_linked" || draft.item_type === "inspection") && (
+        <input
+          aria-label={`${label} form code`}
+          value={draft.form_code ?? ""}
+          onChange={(e) => set({ form_code: e.target.value })}
+          placeholder="Form code"
+          maxLength={64}
+        />
+      )}
+      {draft.item_type === "count" && (
+        <input
+          aria-label={`${label} target count`}
+          value={draft.target_count ?? ""}
+          onChange={(e) => set({ target_count: e.target.value === "" ? undefined : Number(e.target.value) })}
+          placeholder="Target N"
+          inputMode="numeric"
+          size={5}
+        />
+      )}{" "}
+      <button type="submit" disabled={busy} className="btn--primary">{submitLabel}</button>
+    </form>
+  );
+}
+
+const EMPTY_ITEM: checklist.ItemInput = { item_type: "manual_attest", label: "" };
+
+// ── Daily checklist editor (Assigned-Tasks S2) ─────────────────────────────────────────────────────
+// Mounted on the Job Tracker job detail, gated cap.checklist.manage (admin). Renders the job's
+// EFFECTIVE merged checklist (default ⊕ this job's overrides), and lets the admin: add a job-specific
+// item, hide (suppress) / un-hide a default item for the job, and edit the global default (add / delete
+// its items — propagating to every un-overridden job). Self-contained state; the Worker re-gates.
+function DailyChecklistEditor({ jobId }: { jobId: string }) {
+  const [job, setJob] = useState<checklist.JobChecklist | null>(null);
+  const [def, setDef] = useState<checklist.DefaultChecklist | null>(null);
+  const [editDefaultOpen, setEditDefaultOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [jobDraft, setJobDraft] = useState<checklist.ItemInput>(EMPTY_ITEM);
+  const [defDraft, setDefDraft] = useState<checklist.ItemInput>(EMPTY_ITEM);
+
+  async function reload() {
+    try {
+      setJob(await checklist.fetchJobChecklist(jobId));
+    } catch {
+      setMsg({ ok: false, text: "Could not load the job checklist." });
+    }
+  }
+  async function reloadDefault() {
+    try {
+      setDef(await checklist.fetchDefaultChecklist());
+    } catch {
+      setMsg({ ok: false, text: "Could not load the default checklist." });
+    }
+  }
+
+  useEffect(() => {
+    void reload();
+    // Reloads whenever the open job changes.
+  }, [jobId]);
+
+  useEffect(() => {
+    if (editDefaultOpen && def === null) void reloadDefault();
+  }, [editDefaultOpen]);
+
+  // Run a mutation, surface a message, and reload the affected view(s). `also` reloads the default too.
+  async function run(fn: () => Promise<unknown>, okText: string, also = false) {
+    if (busy) return;
+    setBusy(true);
+    setMsg(null);
+    try {
+      await fn();
+      await reload();
+      if (also) await reloadDefault();
+      setMsg({ ok: true, text: okText });
+    } catch (err) {
+      setMsg({ ok: false, text: err instanceof Error ? err.message : "Checklist update failed." });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function submitAddJobItem(e: FormEvent) {
+    e.preventDefault();
+    if (!jobDraft.label.trim()) {
+      setMsg({ ok: false, text: "Item label is required." });
+      return;
+    }
+    void run(async () => {
+      await checklist.addJobItem(jobId, jobDraft);
+      setJobDraft(EMPTY_ITEM);
+    }, "Checklist item added.");
+  }
+
+  function submitAddDefaultItem(e: FormEvent) {
+    e.preventDefault();
+    if (!defDraft.label.trim()) {
+      setMsg({ ok: false, text: "Item label is required." });
+      return;
+    }
+    void run(async () => {
+      await checklist.addDefaultItem(defDraft);
+      setDefDraft(EMPTY_ITEM);
+    }, "Default item added.", true);
+  }
+
+  return (
+    <section className="card dash-section" aria-label="Daily checklist">
+      <h3 className="dash-detail__h2">Daily checklist</h3>
+      <p className="dash-card__sub muted">
+        The manager's daily Progress-Report checklist for this job — the shared default, tailored here.
+      </p>
+      {msg && <p className={`banner ${msg.ok ? "banner--ok" : "banner--err"}`}>{msg.text}</p>}
+
+      {job === null ? (
+        <div className="muted">Loading checklist…</div>
+      ) : (
+        <>
+          {job.items.length ? (
+            <ul className="dash-tasklist" aria-label="Effective checklist">
+              {job.items.map((it) => (
+                <li key={`${it.origin}-${it.source_item_id}`}>
+                  <span className={it.origin === "override" ? "dash-pill dash-pill--warn" : "dash-pill"}>{it.origin}</span>{" "}
+                  {it.label} <span className="muted">— {itemMeta(it)}</span>{" "}
+                  {it.origin === "default" ? (
+                    <button
+                      type="button"
+                      className="btn--secondary"
+                      aria-label={`Hide ${it.label}`}
+                      disabled={busy}
+                      onClick={() => run(() => checklist.suppressDefaultItem(jobId, it.source_item_id), "Item hidden for this job.")}
+                    >
+                      Hide
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      className="btn--danger"
+                      aria-label={`Remove ${it.label}`}
+                      disabled={busy}
+                      onClick={() => run(() => checklist.deleteJobItem(jobId, it.source_item_id), "Item removed.")}
+                    >
+                      Remove
+                    </button>
+                  )}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <div className="dash-unavail">No checklist items.</div>
+          )}
+
+          {job.suppressed.length > 0 && (
+            <div className="dash-row" aria-label="Hidden default items">
+              <span className="dash-card__label">Hidden here:</span>{" "}
+              {job.suppressed.map((s) => (
+                <span className="dash-chip" key={s.source_item_id}>
+                  {s.label}{" "}
+                  <button
+                    type="button"
+                    className="btn--edit"
+                    aria-label={`Unhide ${s.label}`}
+                    disabled={busy}
+                    onClick={() => run(() => checklist.unsuppressDefaultItem(jobId, s.source_item_id), "Item restored for this job.")}
+                  >
+                    Unhide
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
+
+          <ItemForm
+            label="Add checklist item"
+            draft={jobDraft}
+            onChange={setJobDraft}
+            onSubmit={submitAddJobItem}
+            busy={busy}
+            submitLabel="Add item"
+          />
+        </>
+      )}
+
+      <div className="dash-row">
+        <button type="button" className="btn--edit" onClick={() => setEditDefaultOpen((v) => !v)}>
+          {editDefaultOpen ? "Hide default editor" : "Edit shared default"}
+        </button>
+      </div>
+
+      {editDefaultOpen && (
+        <fieldset className="dash-section" aria-label="Default checklist">
+          <legend className="dash-card__label">Shared default (applies to every un-tailored job)</legend>
+          {def === null ? (
+            <div className="muted">Loading default…</div>
+          ) : def.items.length ? (
+            <ul className="dash-tasklist">
+              {def.items.map((it) => (
+                <li key={it.id}>
+                  {it.label} <span className="muted">— {itemMeta(it)}</span>{" "}
+                  <button
+                    type="button"
+                    className="btn--danger"
+                    aria-label={`Delete default ${it.label}`}
+                    disabled={busy}
+                    onClick={() => run(() => checklist.deleteDefaultItem(it.id), "Default item deleted.", true)}
+                  >
+                    Delete
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <div className="dash-unavail">No default items.</div>
+          )}
+          <ItemForm
+            label="Add default checklist item"
+            draft={defDraft}
+            onChange={setDefDraft}
+            onSubmit={submitAddDefaultItem}
+            busy={busy}
+            submitLabel="Add to default"
+          />
+        </fieldset>
+      )}
+    </section>
+  );
+}
 
 // epoch SECONDS → ×1000 for JS Date
 function fmtDateTime(epochSeconds: number | null): string {
@@ -211,6 +484,7 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
   // incl. the subcontractor-target guard). Job create / close / lifecycle / routing stay canManage-only.
   const canAssignTasks = canManage || caps.includes("cap.tasks.assign");
   const canOwnTasks = caps.includes("cap.tasks.own"); // change a task's own status
+  const canManageChecklist = caps.includes("cap.checklist.manage"); // S2: edit the daily-checklist template
   const canLogTime = caps.includes("cap.time.log"); // log a time entry against the open job
   // Unified job-create flow: per-control caps (convenience — the Worker re-gates every call). A
   // manager (P2.6) holds crew.assign + equipment.field but NOT jobtracker.manage → can place crew /
@@ -837,6 +1111,8 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
           )}
           {taskCursor && <LoadMoreBtn leg="task" />}
         </section>
+
+        {canManageChecklist && <DailyChecklistEditor jobId={job.job_id} />}
 
         <section className="card dash-section">
           <h3 className="dash-detail__h2">Time entries</h3>
