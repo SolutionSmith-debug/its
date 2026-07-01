@@ -167,6 +167,7 @@ class PollStats:
     skipped_disabled: bool = False
     skipped_locked: bool = False
     halted_no_creds: bool = False
+    halted_transient: bool = False  # base URL temporarily unreadable (Smartsheet circuit OPEN)
     scanned: int = 0
     filed: int = 0      # processed + already_filed
     reviewed: int = 0   # review_queue (flagged + drained)
@@ -482,9 +483,40 @@ class _PortalCreds:
     secret: str
 
 
-def _resolve_credentials() -> _PortalCreds | None:
-    """Resolve portal credentials fail-CLOSED. None if any is absent."""
-    base_url = _read_str_setting(CFG_WORKER_BASE_URL, "")
+class _TransientUnavailable:
+    """Sentinel distinct from None: credentials couldn't be resolved because Smartsheet was
+    TEMPORARILY unreachable (circuit OPEN) when reading the Worker base URL — NOT a misconfig.
+    The ITS_Config row is fine; Smartsheet is just briefly down. Self-heals when the circuit
+    closes, so the caller WARNs + skips the cycle instead of paging (CRITICAL)."""
+
+
+# Singleton sentinel (compared via isinstance, so the exact identity is not load-bearing).
+CREDS_TRANSIENT = _TransientUnavailable()
+
+
+def _resolve_credentials() -> _PortalCreds | _TransientUnavailable | None:
+    """Resolve portal credentials fail-CLOSED.
+
+    Returns one of three states so the caller can page ONLY on a genuine misconfig:
+      * `_PortalCreds`      — all three present.
+      * `CREDS_TRANSIENT`   — the Worker base URL couldn't be READ because the Smartsheet circuit
+        is OPEN (transient — the config row exists, Smartsheet is momentarily unreachable). This
+        SELF-HEALS; the caller WARNs + skips, it does NOT page. Previously this swallowed to `""`
+        and looked identical to a genuine misconfig → a false CRITICAL on every transient outage.
+      * `None`              — a credential is GENUINELY absent: a missing/blank ITS_Config base-URL
+        row, or a rotated-out Keychain bearer/secret. A misconfig that will NOT self-heal → page.
+
+    Bearer + secret come from the macOS Keychain (local — unaffected by a Smartsheet outage), so
+    only the base-URL read distinguishes transient-vs-absent. `SmartsheetNotFoundError` (the row is
+    genuinely absent) falls through to `None`, NOT transient.
+    """
+    try:
+        raw = smartsheet_client.get_setting(CFG_WORKER_BASE_URL, workstream=WORKSTREAM)
+    except smartsheet_client.SmartsheetCircuitOpenError:
+        return CREDS_TRANSIENT
+    except smartsheet_client.SmartsheetNotFoundError:
+        raw = None
+    base_url = raw if isinstance(raw, str) and raw else ""
     try:
         bearer = keychain.get_secret(KC_BEARER)
         secret = keychain.get_secret(KC_HMAC_SECRET)
@@ -568,6 +600,22 @@ def _record_pending_backlog(scanned: int, drained: int) -> None:
 def _poll_inside_lock() -> PollStats:
     """Body of poll_once running under the file lock."""
     creds = _resolve_credentials()
+    if isinstance(creds, _TransientUnavailable):
+        # Smartsheet was TEMPORARILY unreachable (circuit OPEN) when reading the Worker base URL —
+        # NOT a misconfig, and it self-heals when the circuit closes. WARN + skip this cycle; do
+        # NOT page (paging here was a false CRITICAL on every transient Smartsheet/network blip).
+        # Skip the watchdog freshness marker exactly like the no-creds path, so a SUSTAINED outage
+        # STILL surfaces via the Check-C staleness floor — just without per-cycle CRITICAL spam.
+        error_log.log(
+            Severity.WARN, SCRIPT_NAME,
+            "portal base URL temporarily unreadable (Smartsheet circuit OPEN) — skipping this "
+            "cycle; will retry next interval (transient, self-heals)",
+            error_code="portal_creds_transient",
+        )
+        _write_heartbeat()
+        _write_heartbeat_row(status="WARN", items_processed=0,
+                             error_summary="base URL unreadable (Smartsheet circuit open) — transient")
+        return PollStats(halted_transient=True)
     if creds is None:
         # FAIL-CLOSED: missing bearer / HMAC secret / base URL → do NOT poll. This is a
         # MISCONFIG that will NOT self-heal (a removed/rotated Keychain entry or an unset
