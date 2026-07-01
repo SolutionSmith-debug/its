@@ -64,6 +64,7 @@ poll_interval_config_key() {
         org.solutionsmith.its.portal-poll)   echo "safety_reports.portal_poll.poll_interval_seconds" ;;
         org.solutionsmith.its.compile-now-poll) echo "safety_reports.compile_now_poll.poll_interval_seconds" ;;
         org.solutionsmith.its.progress-send) echo "progress_reports.progress_send.poll_interval_seconds" ;;
+        org.solutionsmith.its.fieldops-sync) echo "field_ops.fieldops_sync.poll_interval_seconds" ;;
         *) echo "" ;;
     esac
 }
@@ -73,6 +74,7 @@ poll_interval_default() {
         org.solutionsmith.its.portal-poll)   echo "60" ;;
         org.solutionsmith.its.compile-now-poll) echo "90" ;;
         org.solutionsmith.its.progress-send) echo "900" ;;
+        org.solutionsmith.its.fieldops-sync) echo "90" ;;
         *) echo "" ;;
     esac
 }
