@@ -13,10 +13,12 @@
   Install:
     scripts/launchd/install.sh load org.solutionsmith.its.fieldops-sync
 
-  StartInterval is hardcoded to 300s (5 min) — distinct from portal-poll (60s) /
-  weekly-send (900s) so the daemons stagger. (Not ITS_Config-driven: this plist carries no
-  poll-interval placeholder, so install.sh only substitutes the ITS home path;
-  parameterizing the cadence via ITS_Config is a tidy follow-up.)
+  StartInterval is PARAMETERIZED (install.sh __POLL_INTERVAL_SECONDS__): resolution is
+  [interval] arg > ITS_Config field_ops.fieldops_sync.poll_interval_seconds > default 90s.
+  Default 90s (not 60s) keeps a small stagger off portal-poll (60s) / weekly-send (900s);
+  set a tighter cadence at load time, e.g.
+    scripts/launchd/install.sh load org.solutionsmith.its.fieldops-sync 60
+  (the resolved value is BAKED into the installed plist, so a later change needs a re-load).
 
   See field_ops/README.md for the operator runbook.
 -->
@@ -50,7 +52,7 @@
     </dict>
 
     <key>StartInterval</key>
-    <integer>300</integer>
+    <integer>__POLL_INTERVAL_SECONDS__</integer>
 
     <!-- A2 (single-host resilience): RunAtLoad=true so this interval daemon RESUMES
          immediately when launchd loads the agent after a reboot/OS-update, then
