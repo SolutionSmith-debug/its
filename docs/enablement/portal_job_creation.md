@@ -93,13 +93,25 @@ On the job detail view:
   on Job A can still log a day against Job B.
 - **Assign equipment** — under **Equipment on site**, pick a piece of equipment and click **Move
   here**. It now shows on this job (and drops off whatever job it was on before).
-- **Add tasks** — under **Manage job**, use **Add a task** for the job's deliverables / to-dos.
+- **Add tasks (and assign them to a person)** — under **Manage job**, use **Add a task** for the
+  job's deliverables / to-dos. The **Assign to** dropdown next to it lets you hand the task to one of
+  the job's crew as you create it. On each task in the **Tasks** list, an assignee dropdown lets you
+  **reassign** it to a different crew member or set it back to **— unassigned —** at any time. (The
+  people offered are the crew currently placed on the job, so place your crew first.)
+- **Log time for a person** — under **Time entries**, the **For** dropdown lets you record time
+  against a specific crew member (not just "yourself"), and the **Task** dropdown ties it to a
+  specific task or leaves it job-level.
 
 **Who can do what (permissions):** assigning crew needs the *crew-assign* permission, moving
-equipment needs the *equipment-field* permission, and adding tasks needs the *job-manage*
-permission. A **Manager** (crew lead) can assign crew and move equipment but **not** add tasks or
-create jobs — the office keeps job/task creation. You only see the controls your account may use.
+equipment needs the *equipment-field* permission, adding/assigning tasks needs the *job-manage*
+permission, and logging time needs the *time-log* permission. A **Manager** (crew lead) can assign
+crew and move equipment but **not** add or assign tasks or create jobs — the office keeps
+job/task creation. You only see the controls your account may use.
 
+> **No progress %:** the old job "progress percentage" bar has been **removed** everywhere — it was a
+> meaningless guess. Job status is tracked by **lifecycle** (Active / Inactive / Archived) and by the
+> real tasks + time on the job, not by a made-up number.
+>
 > **Materials** (per-job material lists) are **coming in a later phase** — there is no per-job
 > materials step on the create flow yet.
 

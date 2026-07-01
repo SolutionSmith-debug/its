@@ -34,6 +34,7 @@ export interface Task {
   description: string;
   status: string;
   created_at: number;
+  personnel_id: number | null;
   personnel_name: string | null;
 }
 
@@ -120,7 +121,7 @@ export async function fetchJobDetail(
 // NB: the READ routes are PLURAL (/api/fieldops/jobs…); the P2.3 WRITE routes are SINGULAR
 // (/api/fieldops/job…, /api/fieldops/task…). Mirror the worker exactly — see fieldops_job_write.ts /
 // fieldops_task_write.ts. The Worker re-gates every call server-side; UI capability checks are
-// convenience only. Create/close/progress/add-task → cap.jobtracker.manage; task status → cap.tasks.own.
+// convenience only. Create/close/add-task/reassign-task → cap.jobtracker.manage; task status → cap.tasks.own.
 async function postJson<T = { ok: boolean }>(url: string, body: unknown): Promise<T> {
   const res = await fetch(url, {
     method: "POST",
@@ -212,6 +213,13 @@ export async function setTaskStatus(taskId: number, status: TaskStatus): Promise
   await postJson(`/api/fieldops/task/${taskId}/status`, { status });
 }
 
+// (re)assign or clear a task's assignee (cap.jobtracker.manage — assigning who does a task is
+// management, the same cap as add-task). `personnelId` null = unassign. The Worker validates the
+// personnel_id is a real roster member and re-gates the capability.
+export async function reassignTask(taskId: number, personnelId: number | null): Promise<void> {
+  await postJson(`/api/fieldops/task/${taskId}/assign`, { personnel_id: personnelId });
+}
+
 // field action (cap.time.log). time_entries is an INTEGRITY-BAR table: the CLIENT generates `uuid`
 // (idempotency / amend key) but the Worker stamps the server-authoritative record time — a forged
 // body timestamp is ignored (see fieldops_time_write.ts). `hours` and `task_id` are optional; an
@@ -221,6 +229,7 @@ export async function logTime(body: {
   job_id: string;
   hours?: number;
   task_id?: number;
+  personnel_id?: number;
   notes?: string;
 }): Promise<{ uuid: string }> {
   return postJson<{ ok: boolean; uuid: string }>("/api/fieldops/time-entry", body);

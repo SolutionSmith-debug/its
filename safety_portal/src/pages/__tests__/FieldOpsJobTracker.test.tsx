@@ -21,6 +21,7 @@ vi.mock("../../lib/fieldops_jobtracker", async (importOriginal) => {
     setJobProgress: vi.fn(),
     addTask: vi.fn(),
     setTaskStatus: vi.fn(),
+    reassignTask: vi.fn(),
     logTime: vi.fn(),
   };
 });
@@ -102,7 +103,7 @@ const DETAIL: api.JobDetail = {
   progress: 60,
   client: { name: "Acme Co", contact: "Pat", phone: "555-0100", email: "pat@example.com" },
   crew: [{ id: 1, name: "Alice Chen", trade: "operator" }],
-  tasks: [{ id: 1, description: "Dig footings", status: "open", created_at: 100, personnel_name: "Alice Chen" }],
+  tasks: [{ id: 1, description: "Dig footings", status: "open", created_at: 100, personnel_id: 1, personnel_name: "Alice Chen" }],
   time_entries: [{ uuid: "te-1", hours: 8, work_started_at: 1, work_ended_at: 2, recorded_at: 200, notes: "note", personnel_name: "Alice Chen" }],
   equipment_on_site: [{ id: 5, name: "here-unit", kind: "skid-steer", identifier: "H1", label: "Site", read_at: 200 }],
   inspections: [{ uuid: "in-1", form_code: "skid-daily", version: 1, performed_at: 150, recorded_at: 150, equipment_name: "here-unit" }],
@@ -118,7 +119,7 @@ describe("FieldOpsJobTracker — list view", () => {
     expect(container.textContent ?? "").toContain("No jobs for this status.");
   });
 
-  it("renders job cards with pill, progress bar, crew chips, open tasks", async () => {
+  it("renders job cards with pill, crew chips, open tasks (no progress bar)", async () => {
     vi.mocked(api.fetchJobList).mockResolvedValue({ jobs: JOBS, next_cursor: null });
     const { container } = render(<FieldOpsJobTracker onBack={() => {}} />);
 
@@ -126,8 +127,7 @@ describe("FieldOpsJobTracker — list view", () => {
     const pills = Array.from(container.querySelectorAll(".dash-pill"));
     expect(pills.some((p) => p.classList.contains("dash-pill--ok"))).toBe(true); // active
     expect(pills.some((p) => p.classList.contains("dash-pill--warn"))).toBe(true); // on_hold
-    const fill = container.querySelector(".dash-progress__fill") as HTMLElement | null;
-    expect(fill?.style.width).toBe("40%");
+    expect(container.querySelector(".dash-progress")).toBeNull(); // progress % removed
     expect(container.querySelector(".dash-chip")?.textContent).toContain("Alice Chen");
     expect(container.querySelector(".dash-tasklist")?.textContent).toContain("Dig footings");
     expect(container.textContent ?? "").toContain("Acme Co");
@@ -175,7 +175,7 @@ describe("FieldOpsJobTracker — detail view", () => {
     return utils;
   }
 
-  it("renders header, progress, client, crew, tasks, time, equipment, inspections", async () => {
+  it("renders header, client, crew, tasks, time, equipment, inspections (no progress bar)", async () => {
     const { container } = await openDetail();
     await waitFor(() => expect(container.querySelector(".page__heading")?.textContent).toBe("Alpha"));
     const txt = container.textContent ?? "";
@@ -184,20 +184,8 @@ describe("FieldOpsJobTracker — detail view", () => {
     expect(txt).toContain("Dig footings"); // task
     expect(txt).toContain("here-unit"); // equipment on site
     expect(txt).toContain("skid-daily"); // inspection
-    const fill = container.querySelector(".dash-progress__fill") as HTMLElement | null;
-    expect(fill?.style.width).toBe("60%");
-  });
-
-  it("progress fill clamps out-of-range values to 0–100", async () => {
-    vi.mocked(api.fetchJobList).mockResolvedValue({ jobs: JOBS, next_cursor: null });
-    vi.mocked(api.fetchJobDetail).mockResolvedValue({ job: { ...DETAIL, progress: 150 }, cursors: NO_CURSORS });
-    const { container } = render(<FieldOpsJobTracker onBack={() => {}} />);
-    await waitFor(() => expect(container.querySelectorAll(".dash-card--click")).toHaveLength(2));
-    fireEvent.click(container.querySelector(".dash-card--click")!);
-    await waitFor(() => {
-      const fill = container.querySelector(".dash-progress__fill") as HTMLElement | null;
-      expect(fill?.style.width).toBe("100%");
-    });
+    expect(container.querySelector(".dash-progress")).toBeNull(); // progress % removed
+    expect(txt).not.toContain("Progress —");
   });
 
   it("per-leg Load more re-fetches that leg's cursor", async () => {
@@ -216,10 +204,10 @@ describe("FieldOpsJobTracker — detail view", () => {
 });
 
 describe("FieldOpsJobTracker — write UI", () => {
-  async function openManagedDetail(caps: string[]) {
+  async function openManagedDetail(caps: string[], detail: api.JobDetail = DETAIL) {
     vi.mocked(useAuth).mockReturnValue(authWith(caps));
     vi.mocked(api.fetchJobList).mockResolvedValue({ jobs: JOBS, next_cursor: null });
-    vi.mocked(api.fetchJobDetail).mockResolvedValue({ job: DETAIL, cursors: NO_CURSORS });
+    vi.mocked(api.fetchJobDetail).mockResolvedValue({ job: detail, cursors: NO_CURSORS });
     const utils = render(<FieldOpsJobTracker onBack={() => {}} />);
     await waitFor(() => expect(utils.container.querySelectorAll(".dash-card--click")).toHaveLength(2));
     fireEvent.click(utils.container.querySelector(".dash-card--click")!);
@@ -335,21 +323,18 @@ describe("FieldOpsJobTracker — write UI", () => {
     expect((getByPlaceholderText("Safety contact name") as HTMLInputElement).value).toBe("Sam Safety");
   });
 
-  it("manager sees progress / add-task / lifecycle + routing controls and can set progress", async () => {
-    vi.mocked(api.setJobProgress).mockResolvedValue({ progress: 75 });
-    const { container, getByLabelText } = await openManagedDetail(["cap.jobtracker.manage"]);
-    expect(container.querySelector('[aria-label="Update job progress"]')).not.toBeNull();
+  it("manager sees add-task / lifecycle + routing controls; the progress % is fully removed", async () => {
+    const { container } = await openManagedDetail(["cap.jobtracker.manage"]);
     expect(container.querySelector('[aria-label="Add a task"]')).not.toBeNull();
     // The bare "Close job" button is gone — replaced by the lifecycle selector + routing editor.
     expect((container.textContent ?? "").includes("Close job")).toBe(false);
     expect(container.querySelector('[aria-label="Set job lifecycle"]')).not.toBeNull();
     expect(container.querySelector('[aria-label="Job lifecycle"]')).not.toBeNull();
     expect((container.textContent ?? "").includes("Edit routing / contacts")).toBe(true);
-
-    const form = getByLabelText("Update job progress");
-    fireEvent.change(form.querySelector("input")!, { target: { value: "75" } });
-    fireEvent.submit(form);
-    await waitFor(() => expect(api.setJobProgress).toHaveBeenCalledWith("JOB-A", 75));
+    // Progress % is removed everywhere: no set-progress control, no progress bar, no "Progress —" label.
+    expect(container.querySelector('[aria-label="Update job progress"]')).toBeNull();
+    expect(container.querySelector(".dash-progress")).toBeNull();
+    expect(container.textContent ?? "").not.toContain("Progress —");
   });
 
   it("manager can add a task to the open job", async () => {
@@ -410,7 +395,7 @@ describe("FieldOpsJobTracker — write UI", () => {
     const { getByLabelText } = await openManagedDetail(["cap.time.log"]);
     const form = getByLabelText("Log time") as HTMLFormElement;
     fireEvent.change(form.querySelector('input[placeholder="Hours"]')!, { target: { value: "6.5" } });
-    fireEvent.change(form.querySelector("select")!, { target: { value: "1" } }); // task #1
+    fireEvent.change(getByLabelText("Log time task"), { target: { value: "1" } }); // task #1 (form now has 2 selects)
     fireEvent.change(form.querySelector('input[placeholder="Notes (optional)"]')!, { target: { value: "framing" } });
     fireEvent.submit(form);
     await waitFor(() =>
@@ -437,6 +422,53 @@ describe("FieldOpsJobTracker — write UI", () => {
   it("hides the Log time form without cap.time.log", async () => {
     const { container } = await openManagedDetail(["cap.jobtracker.manage"]);
     expect(container.querySelector('[aria-label="Log time"]')).toBeNull();
+  });
+
+  it("add-task can assign the new task to a crew member (personnel_id)", async () => {
+    vi.mocked(api.addTask).mockResolvedValue({ id: 100 });
+    const { getByLabelText } = await openManagedDetail(["cap.jobtracker.manage"]);
+    fireEvent.change(getByLabelText("Add a task").querySelector("input")!, { target: { value: "Pour slab" } });
+    fireEvent.change(getByLabelText("Assign new task to"), { target: { value: "1" } }); // Alice Chen (crew id 1)
+    fireEvent.submit(getByLabelText("Add a task"));
+    await waitFor(() =>
+      expect(api.addTask).toHaveBeenCalledWith("JOB-A", { description: "Pour slab", personnel_id: 1 }),
+    );
+  });
+
+  it("the per-task assignee select reassigns to another crew member", async () => {
+    vi.mocked(api.reassignTask).mockResolvedValue(undefined);
+    const twoCrew: api.JobDetail = {
+      ...DETAIL,
+      crew: [
+        { id: 1, name: "Alice Chen", trade: "operator" },
+        { id: 2, name: "Bob Vance", trade: "laborer" },
+      ],
+      tasks: [{ id: 1, description: "Dig footings", status: "open", created_at: 100, personnel_id: 1, personnel_name: "Alice Chen" }],
+    };
+    const { getByLabelText } = await openManagedDetail(["cap.jobtracker.manage"], twoCrew);
+    const sel = getByLabelText("Assign task 1") as HTMLSelectElement;
+    expect(sel.value).toBe("1"); // currently Alice
+    fireEvent.change(sel, { target: { value: "2" } }); // reassign to Bob
+    await waitFor(() => expect(api.reassignTask).toHaveBeenCalledWith(1, 2));
+  });
+
+  it("the per-task assignee select can unassign (personnel_id null)", async () => {
+    vi.mocked(api.reassignTask).mockResolvedValue(undefined);
+    const { getByLabelText } = await openManagedDetail(["cap.jobtracker.manage"]);
+    fireEvent.change(getByLabelText("Assign task 1"), { target: { value: "" } });
+    await waitFor(() => expect(api.reassignTask).toHaveBeenCalledWith(1, null));
+  });
+
+  it("log time can be attributed to a specific person (personnel_id)", async () => {
+    vi.mocked(api.logTime).mockResolvedValue({ uuid: "u-3" });
+    const { getByLabelText } = await openManagedDetail(["cap.time.log"]);
+    const form = getByLabelText("Log time") as HTMLFormElement;
+    fireEvent.change(form.querySelector('input[placeholder="Hours"]')!, { target: { value: "4" } });
+    fireEvent.change(getByLabelText("Log time for"), { target: { value: "1" } }); // Alice (crew id 1)
+    fireEvent.submit(form);
+    await waitFor(() =>
+      expect(api.logTime).toHaveBeenCalledWith(expect.objectContaining({ job_id: "JOB-A", hours: 4, personnel_id: 1 })),
+    );
   });
 });
 

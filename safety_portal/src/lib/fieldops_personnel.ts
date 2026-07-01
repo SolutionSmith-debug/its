@@ -18,6 +18,8 @@ export interface PersonnelRow {
   username: string | null;
   /** P2.6 — standing crew→job placement ("who is where"); NULL = unplaced. */
   current_job: string | null;
+  /** Resolved project name for `current_job` (worker-joined); NULL when unplaced or unresolved. */
+  current_job_name?: string | null;
 }
 
 export interface PersonnelListResponse {
@@ -44,6 +46,8 @@ export interface PersonnelDetail {
   trade: string;
   /** P2.6 — standing crew→job placement; NULL = unplaced. */
   current_job: string | null;
+  /** Resolved project name for `current_job` (worker-joined); NULL when unplaced or unresolved. */
+  current_job_name?: string | null;
   time_entries: TimeEntry[];
 }
 

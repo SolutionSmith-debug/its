@@ -84,6 +84,16 @@ export function registerTimeWriteRoutes(app: FieldopsApp, gates: FieldopsGates):
         .first<{ job_id: string }>();
       if (!job) return c.json({ error: "unknown_job" }, 422);
 
+      // A personnel_id, if given, must be an ACTIVE roster member (soft ref re-validated, per 0016
+      // note; retired personnel — active=0 — can't have new time logged against them, matching the
+      // task-write + crew-assign guards). Bound param.
+      if (personnelId !== null) {
+        const person = await c.env.DB.prepare("SELECT id FROM personnel WHERE id = ?1 AND active = 1")
+          .bind(personnelId)
+          .first<{ id: number }>();
+        if (!person) return c.json({ error: "unknown_personnel" }, 422);
+      }
+
       // A task_id, if given, must belong to THIS job (soft ref re-validated, per 0016 note).
       if (taskId !== null) {
         const task = await c.env.DB.prepare("SELECT id FROM task_assignments WHERE id = ?1 AND job_id = ?2")

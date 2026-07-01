@@ -9,6 +9,8 @@ interface PersonnelRow {
   username: string | null;
   /** P2.6 — standing job placement ("who is where"); NULL = unplaced. Soft-ref to jobs.job_id. */
   current_job: string | null;
+  /** Resolved project_name for current_job (LEFT JOIN jobs); NULL when unplaced or job absent. */
+  current_job_name: string | null;
 }
 
 interface LatestEntry {
@@ -34,20 +36,25 @@ export function registerPersonnelRoutes(app: FieldopsApp, gates: FieldopsGates):
       let limit = Math.min(Math.max(isNaN(limitRaw) ? 50 : limitRaw, 1), 200);
       const cursor = decodeCursor(q.cursor);
 
-      // Roster page (keyset on name ASC, id ASC, active=1)
+      // Roster page (keyset on name ASC, id ASC, active=1). LEFT JOIN jobs to resolve the standing
+      // placement's project_name (current_job_name). The join is 1:1 on personnel.current_job →
+      // jobs.job_id (a soft ref), so it never expands the keyset page; personnel columns are qualified
+      // because `active` exists on both tables.
       const sqlRoster = `
-        SELECT id, name, trade, username, current_job
+        SELECT personnel.id, personnel.name, personnel.trade, personnel.username, personnel.current_job,
+               cj.project_name AS current_job_name
         FROM personnel
-        WHERE active = 1
-          AND (?1 IS NULL OR name > ?1 OR (name = ?1 AND id > ?2))
-        ORDER BY name ASC, id ASC
+        LEFT JOIN jobs cj ON cj.job_id = personnel.current_job
+        WHERE personnel.active = 1
+          AND (?1 IS NULL OR personnel.name > ?1 OR (personnel.name = ?1 AND personnel.id > ?2))
+        ORDER BY personnel.name ASC, personnel.id ASC
         LIMIT ?3
       `;
       const rosterParams = cursor
         ? [cursor.n as string | null, cursor.i as number | null, limit]
         : [null, null, limit];
 
-      const rosterRes = await c.env.DB.prepare(sqlRoster).bind(...rosterParams).all<{ id: number; name: string; trade: string; username: string | null; current_job: string | null }>();
+      const rosterRes = await c.env.DB.prepare(sqlRoster).bind(...rosterParams).all<{ id: number; name: string; trade: string; username: string | null; current_job: string | null; current_job_name: string | null }>();
 
       if (!rosterRes.results || rosterRes.results.length === 0) {
         return c.json({ personnel: [], latest_entries: [], next_cursor: null }, 200);
@@ -99,6 +106,7 @@ export function registerPersonnelRoutes(app: FieldopsApp, gates: FieldopsGates):
         trade: row.trade,
         username: row.username,
         current_job: row.current_job,
+        current_job_name: row.current_job_name,
       }));
 
       const last = rosterRes.results[rosterRes.results.length - 1];
@@ -126,9 +134,16 @@ export function registerPersonnelRoutes(app: FieldopsApp, gates: FieldopsGates):
         return c.json({ error: "invalid_id" }, 400);
       }
 
-      // Header by PK
-      const sqlHeader = `SELECT id, name, username, trade, current_job FROM personnel WHERE id = ?`;
-      const headerRes = await c.env.DB.prepare(sqlHeader).bind(id).first<{ id: number; name: string; username: string | null; trade: string; current_job: string | null }>();
+      // Header by PK. LEFT JOIN jobs resolves the standing placement's project_name (current_job_name);
+      // personnel columns are qualified (`active`, and defensively the rest, exist on both tables).
+      const sqlHeader = `
+        SELECT personnel.id, personnel.name, personnel.username, personnel.trade, personnel.current_job,
+               cj.project_name AS current_job_name
+        FROM personnel
+        LEFT JOIN jobs cj ON cj.job_id = personnel.current_job
+        WHERE personnel.id = ?
+      `;
+      const headerRes = await c.env.DB.prepare(sqlHeader).bind(id).first<{ id: number; name: string; username: string | null; trade: string; current_job: string | null; current_job_name: string | null }>();
       if (!headerRes) {
         return c.json({ error: "not_found" }, 404);
       }
@@ -184,6 +199,7 @@ export function registerPersonnelRoutes(app: FieldopsApp, gates: FieldopsGates):
             username: headerRes.username,
             trade: headerRes.trade,
             current_job: headerRes.current_job,
+            current_job_name: headerRes.current_job_name,
             time_entries: entriesRes.results ?? [],
           },
           next_cursor: nextCursor,

@@ -181,7 +181,7 @@ export function registerJobTrackerRoutes(app: FieldopsApp, gates: FieldopsGates)
 
       // tasks (all statuses), keyset (created_at, id)
       const sqlTasks = `
-        SELECT id, description, status, created_at,
+        SELECT id, description, status, created_at, personnel_id,
                (SELECT name FROM personnel WHERE id = task_assignments.personnel_id) AS personnel_name
         FROM task_assignments
         WHERE job_id = ?1
@@ -252,7 +252,7 @@ export function registerJobTrackerRoutes(app: FieldopsApp, gates: FieldopsGates)
         c.env.DB.prepare(sqlInsp).bind(...inspParams),
       ]);
 
-      const tasks = (tasksRes.results ?? []) as { id: number; description: string; status: string; created_at: number; personnel_name: string | null }[];
+      const tasks = (tasksRes.results ?? []) as { id: number; description: string; status: string; created_at: number; personnel_id: number | null; personnel_name: string | null }[];
       const timeEntries = (timeRes.results ?? []) as { uuid: string; recorded_at: number }[];
       const inspections = (inspRes.results ?? []) as { uuid: string; recorded_at: number }[];
 
