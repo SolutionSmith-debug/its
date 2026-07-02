@@ -20,6 +20,11 @@ import { normalizeUsername } from "./auth";
 const SUBMIT_AS = "cap.submit_as";
 const MAX_ID = 64;
 const MAX_NOTES = 2000;
+// (R1) hours is REQUIRED and bounded to one work day. Unit is HOURS (time_entries.hours REAL,
+// migration 0015). Before this, a completely empty submit created an un-editable NULL-hours
+// payroll-grade row (the A3 finding); now missing/non-numeric/NaN/<=0/>24 → 422 invalid_hours.
+// work_started_at/work_ended_at stay optional field-reported claims, stored verbatim.
+const MAX_HOURS = 24;
 
 export function registerTimeWriteRoutes(app: FieldopsApp, gates: FieldopsGates): void {
   app.post(
@@ -57,6 +62,8 @@ export function registerTimeWriteRoutes(app: FieldopsApp, gates: FieldopsGates):
       if (!jobId || jobId.length > MAX_ID) return c.json({ error: "invalid_job_id" }, 400);
       if (amendsUuid !== null && amendsUuid.length > MAX_ID) return c.json({ error: "invalid_amends_uuid" }, 400);
       if (notes !== null && notes.length > MAX_NOTES) return c.json({ error: "invalid_notes" }, 400);
+      // (R1) hours required + bounded (0, MAX_HOURS]. asNum already maps missing/non-number/NaN → null.
+      if (hours === null || hours <= 0 || hours > MAX_HOURS) return c.json({ error: "invalid_hours" }, 422);
 
       // (2) ATTRIBUTION — a submit-as (attributing to another account) requires cap.submit_as AND a
       //     real, ENABLED portal user as the target, normalized + existence-checked exactly like

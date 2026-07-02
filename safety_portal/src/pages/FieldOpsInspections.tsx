@@ -217,8 +217,8 @@ function AssignForm({
       onMessage({ ok: true, text: `Assigned (${res.item_count} item${res.item_count === 1 ? "" : "s"}).` });
       setDueDate("");
     } catch (err) {
-      const text = err instanceof Error ? err.message : "Assign failed.";
-      onMessage({ ok: false, text: text === "already_assigned" ? "That checklist is already assigned for this job + date." : text });
+      // R1: user copy comes from errorCopy.ts via err.message — never duplicated in pages.
+      onMessage({ ok: false, text: err instanceof Error ? err.message : "Assign failed." });
     } finally {
       setBusy(false);
     }

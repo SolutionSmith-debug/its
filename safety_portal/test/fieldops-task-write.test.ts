@@ -96,8 +96,13 @@ describe("POST /api/fieldops/job/:job_id/task (add — cap.jobtracker.manage)", 
 });
 
 describe("POST /api/fieldops/task/:id/status (status — cap.tasks.own)", () => {
-  it("MIXED CAP: a submitter CANNOT add but CAN change status (200)", async () => {
+  it("MIXED CAP: a submitter CANNOT add but CAN change status of THEIR OWN task (200)", async () => {
+    // (R1) the ownership guard means an own-only actor must be the task's assignee — link the
+    // submitter to a personnel row and assign the task to it (the cap-split intent is unchanged).
+    await env.DB.prepare("INSERT INTO personnel (name, username, active) VALUES ('Jim Sub','submitter.jim',1)").run();
+    const pid = (await env.DB.prepare("SELECT id FROM personnel WHERE username='submitter.jim'").first<{ id: number }>())!.id;
     const id = await seedTask("JOB-A");
+    await env.DB.prepare("UPDATE task_assignments SET personnel_id=? WHERE id=?").bind(pid, id).run();
     // proven 403 on add (above); here the same submitter succeeds on status
     const res = await j(submitter, `/api/fieldops/task/${id}/status`, { status: "in_progress" });
     expect(res.status).toBe(200);

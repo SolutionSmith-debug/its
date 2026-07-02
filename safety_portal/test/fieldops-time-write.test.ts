@@ -83,7 +83,7 @@ describe("POST /api/fieldops/time-entry — gate", () => {
   });
   it("admin → 201", async () => {
     const c = await login("admin.one", "password123");
-    expect((await post(c, { uuid: "t2", job_id: "JOB-A" })).status).toBe(201);
+    expect((await post(c, { uuid: "t2", job_id: "JOB-A", hours: 8 })).status).toBe(201);
   });
 });
 
@@ -114,12 +114,12 @@ describe("POST /api/fieldops/time-entry — body guard", () => {
 describe("POST /api/fieldops/time-entry — referential", () => {
   it("unknown job_id → 422 unknown_job", async () => {
     const c = await login("submitter.jim", "password123");
-    expect((await post(c, { uuid: "t1", job_id: "NOPE" })).status).toBe(422);
+    expect((await post(c, { uuid: "t1", job_id: "NOPE", hours: 8 })).status).toBe(422);
   });
   it("closed (inactive) job → 422 unknown_job", async () => {
     await seedJob("JOB-Z", "closed");
     const c = await login("submitter.jim", "password123");
-    const res = await post(c, { uuid: "t1", job_id: "JOB-Z" });
+    const res = await post(c, { uuid: "t1", job_id: "JOB-Z", hours: 8 });
     expect(res.status).toBe(422);
     expect((await res.json() as any).error).toBe("unknown_job");
   });
@@ -127,7 +127,7 @@ describe("POST /api/fieldops/time-entry — referential", () => {
     await seedJob("JOB-B", "active");
     const otherTask = await seedTask("JOB-B");
     const c = await login("submitter.jim", "password123");
-    const res = await post(c, { uuid: "t1", job_id: "JOB-A", task_id: otherTask });
+    const res = await post(c, { uuid: "t1", job_id: "JOB-A", task_id: otherTask, hours: 8 });
     expect(res.status).toBe(422);
     expect((await res.json() as any).error).toBe("unknown_task");
   });
@@ -167,7 +167,7 @@ describe("POST /api/fieldops/time-entry — integrity bar", () => {
 
   it("server-authoritative created_at: a forged body timestamp is ignored; event time stored verbatim", async () => {
     const c = await login("submitter.jim", "password123");
-    await post(c, { uuid: "t1", job_id: "JOB-A", created_at: 100, edited_at: 100, work_started_at: 1700000000, work_ended_at: 1700003600 });
+    await post(c, { uuid: "t1", job_id: "JOB-A", hours: 1, created_at: 100, edited_at: 100, work_started_at: 1700000000, work_ended_at: 1700003600 });
     const row = (await rowsByUuid("t1"))[0];
     expect(row.created_at).toBeGreaterThan(1_000_000_000); // server unixepoch(), not the forged 100
     expect(row.work_started_at).toBe(1700000000); // event claim stored verbatim
@@ -193,15 +193,15 @@ describe("POST /api/fieldops/time-entry — integrity bar", () => {
   it("dual attribution: submit-as needs cap.submit_as + a real ENABLED, normalized target", async () => {
     // submitter lacks cap.submit_as → 403 (the cap check precedes the user lookup — no oracle)
     const sub = await login("submitter.jim", "password123");
-    expect((await post(sub, { uuid: "t1", job_id: "JOB-A", submitted_as: "admin.one" })).status).toBe(403);
+    expect((await post(sub, { uuid: "t1", job_id: "JOB-A", hours: 8, submitted_as: "admin.one" })).status).toBe(403);
 
     const adm = await login("admin.one", "password123");
     // a phantom (well-formed but non-existent) target → 422; integrity bar rejects phantom attribution
-    expect((await post(adm, { uuid: "t2", job_id: "JOB-A", submitted_as: "no.body" })).status).toBe(422);
+    expect((await post(adm, { uuid: "t2", job_id: "JOB-A", hours: 8, submitted_as: "no.body" })).status).toBe(422);
     // a malformed username (no dot) → 400
-    expect((await post(adm, { uuid: "t3", job_id: "JOB-A", submitted_as: "nodot" })).status).toBe(400);
+    expect((await post(adm, { uuid: "t3", job_id: "JOB-A", hours: 8, submitted_as: "nodot" })).status).toBe(400);
     // a real enabled user (mixed-case) → 201, and the stored attribution is NORMALIZED
-    expect((await post(adm, { uuid: "t4", job_id: "JOB-A", submitted_as: "Submitter.Jim" })).status).toBe(201);
+    expect((await post(adm, { uuid: "t4", job_id: "JOB-A", hours: 8, submitted_as: "Submitter.Jim" })).status).toBe(201);
     const row = (await rowsByUuid("t4"))[0];
     expect(row.actor_username).toBe("admin.one"); // the real actor
     expect(row.submitted_as).toBe("submitter.jim"); // normalized attributed account
@@ -210,11 +210,42 @@ describe("POST /api/fieldops/time-entry — integrity bar", () => {
   it("uuid collision → 409 and the batch rolls back (no 2nd data row, no 2nd audit row)", async () => {
     const c = await login("submitter.jim", "password123");
     expect((await post(c, { uuid: "dup", job_id: "JOB-A", hours: 8 })).status).toBe(201);
-    const res = await post(c, { uuid: "dup", job_id: "JOB-A", hours: 99 });
+    const res = await post(c, { uuid: "dup", job_id: "JOB-A", hours: 9 });
     expect(res.status).toBe(409);
     expect((await res.json() as any).error).toBe("uuid_conflict");
     expect(await rowsByUuid("dup")).toHaveLength(1); // INSERT rejected → still one row
     expect((await rowsByUuid("dup"))[0].hours).toBe(8); // the original, unchanged
     expect(await auditRows("time_entry_create", "dup")).toHaveLength(1); // audit rolled back with the failed INSERT
+  });
+});
+
+// ── R1 — hours bounds: a payroll-grade row must carry real hours ─────────────────────────────────
+// The A3 finding: a completely EMPTY submit created an un-editable NULL-hours time entry. hours is
+// now REQUIRED and bounded (0, 24] — missing / null / non-numeric / NaN / 0 / negative / >24 all
+// 422 invalid_hours; boundary values pass. work_started_at/work_ended_at stay optional claims.
+describe("POST /api/fieldops/time-entry — hours bounds (R1)", () => {
+  it("missing / null / non-numeric / zero / negative / >24 hours → 422 invalid_hours (no row)", async () => {
+    const c = await login("submitter.jim", "password123");
+    const bad: unknown[] = [
+      { uuid: "h1", job_id: "JOB-A" }, // missing (the empty-submit case)
+      { uuid: "h2", job_id: "JOB-A", hours: null },
+      { uuid: "h3", job_id: "JOB-A", hours: "8" },
+      { uuid: "h4", job_id: "JOB-A", hours: 0 },
+      { uuid: "h5", job_id: "JOB-A", hours: -1 },
+      { uuid: "h6", job_id: "JOB-A", hours: 24.5 },
+    ];
+    for (const body of bad) {
+      const res = await post(c, body);
+      expect(res.status, JSON.stringify(body)).toBe(422);
+      expect((await res.json() as any).error).toBe("invalid_hours");
+    }
+    const n = await env.DB.prepare("SELECT COUNT(*) n FROM time_entries").first<{ n: number }>();
+    expect(n!.n).toBe(0); // nothing persisted
+  });
+
+  it("boundary values pass: 0.5 and 24 → 201", async () => {
+    const c = await login("submitter.jim", "password123");
+    expect((await post(c, { uuid: "hb1", job_id: "JOB-A", hours: 0.5 })).status).toBe(201);
+    expect((await post(c, { uuid: "hb2", job_id: "JOB-A", hours: 24 })).status).toBe(201);
   });
 });

@@ -1,5 +1,9 @@
 // Job Tracker read API client for Field Ops tab (BRIEF C).
 // Same-origin fetch with session cookie; no auth header.
+//
+// (R1) Errors throw ApiError (src/lib/errorCopy.ts): err.message is HUMAN copy, err.code the raw
+// wire code for page-level branching. Pages must branch on err.code, never err.message.
+import { raiseApiError } from "./errorCopy";
 
 export interface CrewMember {
   id: number;
@@ -98,7 +102,7 @@ export async function fetchJobList(status?: JobStatusFilter, cursor?: string): P
   if (status) q.set("status", status);
   if (cursor) q.set("cursor", cursor);
   const res = await fetch(`/api/fieldops/jobs?${q.toString()}`, { credentials: "same-origin" });
-  if (!res.ok) throw new Error("Could not load jobs.");
+  if (!res.ok) return raiseApiError(res);
   return ((await res.json()) as JobListResponse) ?? { jobs: [], next_cursor: null };
 }
 
@@ -113,7 +117,7 @@ export async function fetchJobDetail(
   const res = await fetch(`/api/fieldops/jobs/${encodeURIComponent(jobId)}?${q.toString()}`, {
     credentials: "same-origin",
   });
-  if (!res.ok) throw new Error("Could not load job detail.");
+  if (!res.ok) return raiseApiError(res);
   return (await res.json()) as JobDetailResponse;
 }
 
@@ -129,10 +133,7 @@ async function postJson<T = { ok: boolean }>(url: string, body: unknown): Promis
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
   });
-  if (!res.ok) {
-    const err = (await res.json().catch(() => ({}))) as { error?: string };
-    throw new Error(err.error ?? `Request failed (${res.status})`);
-  }
+  if (!res.ok) return raiseApiError(res);
   return (await res.json()) as T;
 }
 

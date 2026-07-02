@@ -2,6 +2,7 @@ import type { Context } from "hono";
 import type { Env, Vars } from "./types";
 import type { FieldopsApp, FieldopsGates } from "./fieldops_gates";
 import { auditStmt } from "./audit";
+import catalog from "../catalog.json";
 
 // Assigned-Tasks tab (P4 field-ops feature) S2 — the checklist ENGINE + the admin per-job template
 // editor. One templates→instances engine (spec Q6) serves the daily "Progress Report" checklist and
@@ -43,6 +44,13 @@ const ROLLUP_LEG_CAP = 200;
 const ITEM_TYPES = new Set(["form_linked", "manual_attest", "count", "inspection"]);
 // form_code identifies the target form — required for the two form-bearing types.
 const FORM_REQUIRED = new Set(["form_linked", "inspection"]);
+// (R1) The REAL form catalog, bundled into the Worker build (same import index.ts already uses for
+// publish validation). Checklist items store the PARENT family code (the loop-closure convention
+// above), so item writes validate against the parent set — a free-text typo used to create an item
+// the assignee could NEVER complete (no submission would ever family-match it). 422 unknown_form_code.
+const CATALOG_PARENT_CODES: ReadonlySet<string> = new Set(
+  (catalog as { parents: { parent_form_code: string }[] }).parents.map((p) => p.parent_form_code),
+);
 const CAP_CHECKLIST = "cap.checklist.manage";
 // S3 surfacing + completion are the OWNER's tab (a placed manager), gated by cap.tasks.own — the same
 // cap the "My Tasks" read (fieldops_tasks.ts) uses. Distinct from the admin authoring cap above.
@@ -139,6 +147,8 @@ function parseItem(
   if (FORM_REQUIRED.has(itemType)) {
     formCode = typeof body.form_code === "string" ? body.form_code.trim() : "";
     if (formCode.length < 1 || formCode.length > MAX_FORM_CODE) return c.json({ error: "form_code_required" }, 400);
+    // (R1) Must be a REAL catalog parent code — otherwise the item can never auto-close.
+    if (!CATALOG_PARENT_CODES.has(formCode)) return c.json({ error: "unknown_form_code" }, 422);
   }
 
   // target_count required for count; ignored (stored null) otherwise.
@@ -266,10 +276,16 @@ async function resolveActorPersonnel(
   return row ?? null;
 }
 
+// (R1) WHY the daily section is empty — the three generation preconditions below, each mapped to a
+// wire reason code so the UI can explain instead of showing a lying blank ("no tasks" vs "your
+// account isn't linked" vs "you aren't placed on a job"). Returned by /checklist/mine as `reason`
+// (null when an instance is returned).
+type DailyEmptyReason = "not_manager" | "no_personnel_link" | "not_placed";
+
 // Materialize TODAY's daily checklist instance for the logged-in user — MANAGER-ONLY, idempotent,
-// send-free. Returns the instance id (existing or just-created) + its job/date, or null when the actor
-// is NOT a placed manager (a submitter, or a manager with no current_job) → the tab shows no daily
-// section. Generation gates on THREE conditions, all required:
+// send-free. Returns the instance id (existing or just-created) + its job/date, or the R1 reason
+// code when the actor is NOT a placed manager (a submitter, or a manager with no current_job) → the
+// tab shows no daily section, with the reason. Generation gates on THREE conditions, all required:
 //   (1) the account role is 'manager' (read fresh from D1 by requireSession — c.get("role"));
 //   (2) the account has an active LINKED personnel row (the daily instance's assignee); AND
 //   (3) that personnel is PLACED on a job (personnel.current_job set) — the daily instance's job.
@@ -281,10 +297,11 @@ async function resolveActorPersonnel(
 // shows) so a later template edit never mutates an in-flight instance (source_item_id records lineage).
 async function generateDailyInstance(
   c: Context<{ Bindings: Env; Variables: Vars }>,
-): Promise<{ instanceId: number; jobId: string; instanceDate: string } | null> {
-  if (c.get("role") !== "manager") return null;
+): Promise<{ instanceId: number; jobId: string; instanceDate: string } | { reason: DailyEmptyReason }> {
+  if (c.get("role") !== "manager") return { reason: "not_manager" };
   const person = await resolveActorPersonnel(c);
-  if (!person || !person.current_job) return null;
+  if (!person) return { reason: "no_personnel_link" };
+  if (!person.current_job) return { reason: "not_placed" };
   const jobId = person.current_job;
   const personnelId = person.id;
   const today = pacificToday();
@@ -337,7 +354,14 @@ async function generateDailyInstance(
 // UPDATE is bound-param (job_id + instance_date passed positionally, not spliced) and correlates the
 // EXISTS subquery on the target row's own form_code. Persisted (not computed) so S5's rollup + the
 // instance-complete recompute observe the closure. ?1 = instance id, ?2 = job_id, ?3 = instance_date.
-const AUTO_CHECK_SQL = `
+//
+// (R1, spec Q3) DATE SEMANTICS split by instance kind. A DAILY item matches a submission filed ON the
+// instance's day (`=` — "today's checklist closes on today's filings", unchanged). An INSPECTION
+// instance's date is a DUE date, so a filing ON OR BEFORE it satisfies the item (`<=`) — before this,
+// filing the linked form a day early left the inspection permanently open. `dateOp` is one of two
+// module-CONSTANT literals (never caller/user input), so the template splice is bound-param-safe.
+function buildAutoCheckSql(dateOp: "=" | "<="): string {
+  return `
         UPDATE checklist_item_states
         SET status = 'done', completed_by = '${AUTO_COMPLETED_BY}', completed_at = unixepoch()
         WHERE instance_id = ?1
@@ -347,11 +371,14 @@ const AUTO_CHECK_SQL = `
           AND EXISTS (
             SELECT 1 FROM submissions sub
             WHERE sub.job_id = ?2
-              AND sub.work_date = ?3
+              AND sub.work_date ${dateOp} ?3
               AND (sub.form_code = checklist_item_states.form_code
                    OR sub.form_code LIKE checklist_item_states.form_code || '-v%')
           )
       `;
+}
+const AUTO_CHECK_SQL_DAILY = buildAutoCheckSql("=");
+const AUTO_CHECK_SQL_INSPECTION = buildAutoCheckSql("<=");
 
 // S5 rolled-up linkage (reconcile — the SAME submission-existence pattern S4 uses for loop-closure).
 // Stamp checklist_instances.rolled_up_submission_uuid with the day's Daily Report submission for this
@@ -389,13 +416,50 @@ async function reconcileFormLinked(
   instanceId: number,
   jobId: string,
   instanceDate: string,
+  kind: "daily" | "inspection" = "daily",
 ): Promise<void> {
+  // Q3: daily = exact-date match; inspection = on-or-before the due date. The rollup leg is a no-op
+  // for inspection instances (its WHERE is kind='daily') — harmless to keep in the one batch.
+  const autoCheckSql = kind === "inspection" ? AUTO_CHECK_SQL_INSPECTION : AUTO_CHECK_SQL_DAILY;
   await c.env.DB.batch([
-    c.env.DB.prepare(AUTO_CHECK_SQL).bind(instanceId, jobId, instanceDate),
+    c.env.DB.prepare(autoCheckSql).bind(instanceId, jobId, instanceDate),
     c.env.DB.prepare(ROLLUP_LINK_SQL).bind(instanceId, jobId, instanceDate, DAILY_REPORT_FORM),
     recomputeInstanceStatusStmt(c, instanceId),
   ]);
 }
+
+// (R1) Item-state read with `filed_by` ATTRIBUTION for auto-closed items. An item whose
+// completed_by = '(auto)' was closed by a SUBMISSION, not a person — this derives WHO filed it, so
+// the UI can say "closed by Sam's Daily Report" instead of "(auto)". Best-effort by construction:
+// the closure itself is an EXISTS (no submission id is stored), so we re-run the SAME family match
+// and pick the most-recent matching submission, mapping its submitted_as → the personnel display
+// name ONLY — no raw-username fallback (security review W9: a raw account id could surface an
+// unrelated/orphaned identity to the assignee; an unmatched account yields NULL and the UI keeps
+// its generic "(auto)" caption). `dateOp` mirrors the Q3 reconcile
+// split (daily `=`, inspection `<=`) — module-constant literal, never caller input, bound-param
+// otherwise. ?1 = instance id, ?2 = job_id, ?3 = instance_date (NULLs → filed_by NULL, never a row
+// drop). ORDER BY id ASC == snapshot insertion order == the seq order the snapshot emitted.
+function buildItemStatesSql(dateOp: "=" | "<="): string {
+  return `
+        SELECT id, source_item_id, item_type, label, form_code, target_count, status, note, photo_ref,
+               completed_by, completed_at, value_num,
+               CASE WHEN status = 'done' AND completed_by = '${AUTO_COMPLETED_BY}' AND form_code IS NOT NULL THEN (
+                 SELECT (SELECT p.name FROM personnel p WHERE p.username = sub.submitted_as ORDER BY p.id ASC LIMIT 1)
+                 FROM submissions sub
+                 WHERE sub.job_id = ?2
+                   AND sub.work_date ${dateOp} ?3
+                   AND (sub.form_code = checklist_item_states.form_code
+                        OR sub.form_code LIKE checklist_item_states.form_code || '-v%')
+                 ORDER BY sub.created_at DESC, sub.submission_uuid DESC
+                 LIMIT 1
+               ) ELSE NULL END AS filed_by
+        FROM checklist_item_states
+        WHERE instance_id = ?1
+        ORDER BY id ASC
+      `;
+}
+const ITEM_STATES_SQL_DAILY = buildItemStatesSql("=");
+const ITEM_STATES_SQL_INSPECTION = buildItemStatesSql("<=");
 
 // Recompute-instance-status statement (built, not run): 'complete' iff NO item_state on the instance
 // is still open, else 'open'. Appended LAST in a completion batch (after the item-state mutation +
@@ -728,34 +792,41 @@ export function registerChecklistRoutes(app: FieldopsApp, gates: FieldopsGates):
 
   // ── GET /api/fieldops/checklist/mine — TODAY's daily checklist for the logged-in placed manager. ──
   // Runs generation on read (materializes + snapshots the instance if absent, idempotent on the UNIQUE
-  // key). Returns { instance: {id, job_id, instance_date, status} | null, items: [...] }. `instance` is
-  // NULL (empty daily section) when the actor isn't a placed manager (a submitter, or an unplaced one).
+  // key). Returns { instance: {id, job_id, project_name, instance_date, status, …} | null, items: [...],
+  // reason }. `instance` is NULL (empty daily section) when the actor isn't a placed manager (a
+  // submitter, or an unplaced one) — with the R1 `reason` code ('not_manager' | 'no_personnel_link' |
+  // 'not_placed') so the UI can explain WHY; reason is null when an instance is returned.
   app.get(
     "/api/fieldops/checklist/mine",
     gates.requireSession,
     gates.requireCapability(CAP_TASKS_OWN),
     async (c) => {
       const gen = await generateDailyInstance(c);
-      if (gen === null) return c.json({ instance: null, items: [] }, 200);
+      if ("reason" in gen) return c.json({ instance: null, items: [], reason: gen.reason }, 200);
       // S4 loop-closure: reconcile form_linked/inspection items against the day's submissions BEFORE
       // reading them back, so a form filed since the last open shows as done (and the instance status
       // reflects it). Idempotent on re-read; persisted so S5's rollup sees the closure.
-      await reconcileFormLinked(c, gen.instanceId, gen.jobId, gen.instanceDate);
+      await reconcileFormLinked(c, gen.instanceId, gen.jobId, gen.instanceDate, "daily");
       // rolled_up_submission_uuid (S5): non-null once a Daily Report has been filed for this job+date
       // (set by the reconcile above). The SPA shows "Daily Report filed ✓" when present, else the
-      // "Review & file" affordance on a complete instance.
+      // "Review & file" affordance on a complete instance. (R1) project_name joined (a raw job id is
+      // not a heading) + rolled_up_by = WHO filed the rolled-up Daily Report (personnel display name
+      // ONLY — no raw-username fallback, per security review W9; unmatched account → NULL).
       const instance = await c.env.DB.prepare(
-        "SELECT id, job_id, instance_date, status, rolled_up_submission_uuid FROM checklist_instances WHERE id = ?1",
+        `SELECT i.id, i.job_id, j.project_name, i.instance_date, i.status, i.rolled_up_submission_uuid,
+                (SELECT (SELECT p.name FROM personnel p WHERE p.username = sub.submitted_as ORDER BY p.id ASC LIMIT 1)
+                 FROM submissions sub WHERE sub.submission_uuid = i.rolled_up_submission_uuid) AS rolled_up_by
+         FROM checklist_instances i
+         LEFT JOIN jobs j ON j.job_id = i.job_id
+         WHERE i.id = ?1`,
       )
         .bind(gen.instanceId)
         .first();
-      // ORDER BY id ASC == snapshot insertion order == the seq order EFFECTIVE_MERGE_SQL emitted.
-      const items = await c.env.DB.prepare(
-        "SELECT id, source_item_id, item_type, label, form_code, target_count, status, note, photo_ref, completed_by, completed_at, value_num FROM checklist_item_states WHERE instance_id = ?1 ORDER BY id ASC",
-      )
-        .bind(gen.instanceId)
+      // Item states + R1 filed_by attribution (daily = exact-date submission match).
+      const items = await c.env.DB.prepare(ITEM_STATES_SQL_DAILY)
+        .bind(gen.instanceId, gen.jobId, gen.instanceDate)
         .all();
-      return c.json({ instance, items: items.results ?? [] }, 200);
+      return c.json({ instance, items: items.results ?? [], reason: null }, 200);
     },
   );
 
@@ -917,47 +988,71 @@ export function registerChecklistRoutes(app: FieldopsApp, gates: FieldopsGates):
       // form_linked / inspection close via a submission, never a manual action — refuse a manual complete.
       if (AUTO_CLOSE_TYPES.has(owned.item_type)) return c.json({ error: "auto_close_only" }, 400);
 
-      // count: value_num required + numeric + bounded; done ONLY when it meets the target.
+      // count: value_num required + numeric + bounded; done when it meets the target, OR (R1) when
+      // the shortfall is explicitly ACKNOWLEDGED with a required explanatory note.
       let valueNum: number | null = null;
+      let belowTargetAck = false;
       if (owned.item_type === "count") {
         const v = body.value_num;
         if (typeof v !== "number" || !Number.isFinite(v) || v < 0 || v > MAX_VALUE) {
           return c.json({ error: "invalid_value_num" }, 400);
         }
         valueNum = v;
-        // Below target → record the value but leave the item OPEN (not a completion). (W4) Audit the
-        // value write in the SAME batch — matches every other mutation in this file, so a repeated
-        // below-target overwrite leaves a forensic trail rather than silently clobbering value_num.
         if (owned.target_count !== null && v < owned.target_count) {
-          await c.env.DB.batch([
-            c.env.DB.prepare("UPDATE checklist_item_states SET value_num=?2 WHERE id=?1").bind(stateId, valueNum),
-            auditStmt(c, actor, "checklist_item_value_recorded", String(stateId), {
-              item_state_id: stateId,
-              instance_id: owned.instance_id,
-              value_num: valueNum,
-              target_count: owned.target_count,
-            }),
-            recomputeInstanceStatusStmt(c, owned.instance_id),
-          ]);
-          return c.json({ error: "below_target", id: stateId, value_num: valueNum, target_count: owned.target_count }, 400);
+          // (R1) Acknowledged shortfall: `{ acknowledge_below_target: true, note }` completes the item
+          // BELOW target — the A1 "a below-target count permanently blocks the checklist" fix. The
+          // note is REQUIRED (the shortfall must be explained on the record); the distinct audit
+          // action below keeps an acknowledged shortfall forensically separate from a met target.
+          if (body.acknowledge_below_target === true) {
+            if (note === null || note.trim().length === 0) return c.json({ error: "note_required" }, 400);
+            belowTargetAck = true;
+          } else {
+            // Below target WITHOUT acknowledgment → record the value but leave the item OPEN (not a
+            // completion), exactly as before. (W4) Audit the value write in the SAME batch — matches
+            // every other mutation in this file, so a repeated below-target overwrite leaves a
+            // forensic trail rather than silently clobbering value_num.
+            await c.env.DB.batch([
+              c.env.DB.prepare("UPDATE checklist_item_states SET value_num=?2 WHERE id=?1").bind(stateId, valueNum),
+              auditStmt(c, actor, "checklist_item_value_recorded", String(stateId), {
+                item_state_id: stateId,
+                instance_id: owned.instance_id,
+                value_num: valueNum,
+                target_count: owned.target_count,
+              }),
+              recomputeInstanceStatusStmt(c, owned.instance_id),
+            ]);
+            return c.json({ error: "below_target", id: stateId, value_num: valueNum, target_count: owned.target_count }, 400);
+          }
         }
       }
 
       // Pre-checked existence + ownership + type, so the UPDATE applies → unconditional audit (mirrors
-      // the suppress route). Recompute the instance status LAST so it reflects this completion.
+      // the suppress route). Recompute the instance status LAST so it reflects this completion. An
+      // acknowledged-below-target completion audits under its OWN action, carrying value + target.
       await c.env.DB.batch([
         c.env.DB
           .prepare(
             "UPDATE checklist_item_states SET status='done', completed_by=?2, completed_at=unixepoch(), note=?3, photo_ref=?4, value_num=COALESCE(?5, value_num) WHERE id=?1",
           )
           .bind(stateId, actor, note, photoRef, valueNum),
-        auditStmt(c, actor, "checklist_item_complete", String(stateId), { item_state_id: stateId, instance_id: owned.instance_id, value_num: valueNum }),
+        belowTargetAck
+          ? auditStmt(c, actor, "checklist_item_complete_below_target", String(stateId), {
+              item_state_id: stateId,
+              instance_id: owned.instance_id,
+              value_num: valueNum,
+              target_count: owned.target_count,
+              acknowledged_below_target: true,
+            })
+          : auditStmt(c, actor, "checklist_item_complete", String(stateId), { item_state_id: stateId, instance_id: owned.instance_id, value_num: valueNum }),
         recomputeInstanceStatusStmt(c, owned.instance_id),
       ]);
       const inst = await c.env.DB.prepare("SELECT status FROM checklist_instances WHERE id=?1")
         .bind(owned.instance_id)
         .first<{ status: string }>();
-      return c.json({ ok: true, id: stateId, status: "done", value_num: valueNum, instance_status: inst?.status ?? "open" }, 200);
+      return c.json(
+        { ok: true, id: stateId, status: "done", value_num: valueNum, instance_status: inst?.status ?? "open", acknowledged_below_target: belowTargetAck },
+        200,
+      );
     },
   );
 
@@ -1239,12 +1334,29 @@ export function registerChecklistRoutes(app: FieldopsApp, gates: FieldopsGates):
       }
 
       // The template must be a generic_inspection (not a daily_default/job_override/specific one).
+      // (R1) title fetched too — it is SNAPSHOTTED onto the instance (template_title, migration 0029)
+      // so the assignee's tab shows the authored name, not "Inspection #<id>", even after the library
+      // template is renamed or deleted.
       const tpl = await c.env.DB.prepare(
-        "SELECT id FROM checklist_templates WHERE id = ?1 AND kind = 'generic_inspection'",
+        "SELECT id, title FROM checklist_templates WHERE id = ?1 AND kind = 'generic_inspection'",
       )
         .bind(templateId)
-        .first<{ id: number }>();
+        .first<{ id: number; title: string | null }>();
       if (!tpl) return c.json({ error: "template_not_found" }, 404);
+
+      // (R1) ASSIGN-TIME VALIDATION — refuse assignments that create work nobody can ever complete:
+      //   • a 0-item template snapshots an EMPTY instance (permanently 'open', invisible work) → 422;
+      //   • form_linked/inspection items auto-close ONLY on a (job, date) submission match, so a
+      //     template containing any needs BOTH a job and a due date at assign time → 422.
+      const comp = await c.env.DB.prepare(
+        "SELECT COUNT(*) AS n, SUM(CASE WHEN item_type IN ('form_linked','inspection') THEN 1 ELSE 0 END) AS form_bearing FROM checklist_items WHERE template_id = ?1 AND suppresses_default_item_id IS NULL",
+      )
+        .bind(templateId)
+        .first<{ n: number; form_bearing: number | null }>();
+      if ((comp?.n ?? 0) === 0) return c.json({ error: "empty_template" }, 422);
+      if ((comp?.form_bearing ?? 0) > 0 && (jobId === null || dueDate === null)) {
+        return c.json({ error: "job_and_date_required" }, 422);
+      }
 
       // The assignee must be a real ACTIVE roster person (a retired person can't own a live instance).
       const person = await c.env.DB.prepare("SELECT id FROM personnel WHERE id = ?1 AND active = 1")
@@ -1261,9 +1373,9 @@ export function registerChecklistRoutes(app: FieldopsApp, gates: FieldopsGates):
       const insBatch = await c.env.DB.batch([
         c.env.DB
           .prepare(
-            "INSERT OR IGNORE INTO checklist_instances (kind, job_id, assignee_personnel_id, instance_date, status) VALUES ('inspection', ?1, ?2, ?3, 'open')",
+            "INSERT OR IGNORE INTO checklist_instances (kind, job_id, assignee_personnel_id, instance_date, status, template_title) VALUES ('inspection', ?1, ?2, ?3, 'open', ?4)",
           )
-          .bind(jobId, assigneeId, dueDate),
+          .bind(jobId, assigneeId, dueDate, tpl.title),
         c.env.DB
           .prepare(
             "INSERT INTO audit_log (actor_username, action, target_username, detail) SELECT ?1,?2,?3,?4 WHERE changes()=1",
@@ -1332,30 +1444,37 @@ export function registerChecklistRoutes(app: FieldopsApp, gates: FieldopsGates):
     gates.requireCapability(CAP_TASKS_OWN),
     async (c) => {
       const person = await resolveActorPersonnel(c);
-      if (!person) return c.json({ inspections: [] }, 200);
+      // (R1) `linked` — same empty-state disambiguation flag as /tasks/mine: no ACTIVE linked
+      // personnel row means the actor CANNOT have assignments (vs "linked but nothing assigned").
+      if (!person) return c.json({ inspections: [], linked: false }, 200);
 
+      // (R1) OPEN work first (status CASE, mirroring /tasks/mine — the old `status ASC` floated
+      // 'complete' above 'open' lexicographically), tiebreak created_at DESC. template_title (0029,
+      // snapshotted at assign time) gives the card its authored name.
       const instRes = await c.env.DB.prepare(
-        `SELECT i.id, i.job_id, i.instance_date, i.status, i.created_at, j.project_name
+        `SELECT i.id, i.job_id, i.instance_date, i.status, i.created_at, i.template_title, j.project_name
          FROM checklist_instances i
          LEFT JOIN jobs j ON j.job_id = i.job_id
          WHERE i.kind = 'inspection' AND i.assignee_personnel_id = ?1
-         ORDER BY i.status ASC, i.created_at DESC, i.id DESC
+         ORDER BY CASE i.status WHEN 'open' THEN 0 WHEN 'in_progress' THEN 1 ELSE 2 END ASC,
+                  i.created_at DESC, i.id DESC
          LIMIT 500`,
       )
         .bind(person.id)
-        .all<{ id: number; job_id: string | null; instance_date: string | null; status: string; created_at: number; project_name: string | null }>();
+        .all<{ id: number; job_id: string | null; instance_date: string | null; status: string; created_at: number; template_title: string | null; project_name: string | null }>();
       const instances = instRes.results ?? [];
 
       const inspections = [];
       for (const inst of instances) {
         // Loop-closure only makes sense with a concrete (job, date) to match a submission against.
+        // (R1, Q3) kind='inspection' → the date is a DUE date; a filing ON OR BEFORE it closes the item.
         if (inst.job_id && inst.instance_date) {
-          await reconcileFormLinked(c, inst.id, inst.job_id, inst.instance_date);
+          await reconcileFormLinked(c, inst.id, inst.job_id, inst.instance_date, "inspection");
         }
-        const items = await c.env.DB.prepare(
-          "SELECT id, source_item_id, item_type, label, form_code, target_count, status, note, photo_ref, completed_by, completed_at, value_num FROM checklist_item_states WHERE instance_id = ?1 ORDER BY id ASC",
-        )
-          .bind(inst.id)
+        // Item states + R1 filed_by attribution (inspection = on-or-before due-date match; NULL
+        // job/date binds → filed_by NULL, rows unaffected).
+        const items = await c.env.DB.prepare(ITEM_STATES_SQL_INSPECTION)
+          .bind(inst.id, inst.job_id, inst.instance_date)
           .all();
         // Re-read the (possibly reconciled) instance status so a just-auto-closed item is reflected.
         const fresh = await c.env.DB.prepare("SELECT status FROM checklist_instances WHERE id = ?1")
@@ -1368,11 +1487,13 @@ export function registerChecklistRoutes(app: FieldopsApp, gates: FieldopsGates):
             project_name: inst.project_name,
             instance_date: inst.instance_date,
             status: fresh?.status ?? inst.status,
+            template_title: inst.template_title,
+            created_at: inst.created_at,
           },
           items: items.results ?? [],
         });
       }
-      return c.json({ inspections }, 200);
+      return c.json({ inspections, linked: true }, 200);
     },
   );
 }
