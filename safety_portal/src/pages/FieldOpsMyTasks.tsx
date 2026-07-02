@@ -60,7 +60,7 @@ function DailyChecklistSection({ onOpenForm }: { onOpenForm?: (p: FormPrefill) =
     checklist
       .fetchMyChecklist()
       .then(setData)
-      .catch(() => setData({ instance: null, items: [] }));
+      .catch(() => setData({ instance: null, items: [], reason: null }));
   }, []);
 
   // manual_attest complete (optional note).
@@ -109,8 +109,8 @@ function DailyChecklistSection({ onOpenForm }: { onOpenForm?: (p: FormPrefill) =
       setData(await checklist.fetchMyChecklist());
       setMsg({ ok: true, text: res.instance_status === "complete" ? "Checklist complete." : "Count recorded." });
     } catch (err) {
-      const text = err instanceof Error ? err.message : "Update failed.";
-      setMsg({ ok: false, text: text === "below_target" ? "Value is below the target." : text });
+      // R1: user copy comes from errorCopy.ts via err.message — never duplicated in pages.
+      setMsg({ ok: false, text: err instanceof Error ? err.message : "Update failed." });
     } finally {
       setBusyId(null);
     }
@@ -280,8 +280,8 @@ function AssignedInspectionsSection({ onOpenForm }: { onOpenForm?: (p: FormPrefi
       await reload();
       setMsg({ ok: true, text: "Count recorded." });
     } catch (err) {
-      const text = err instanceof Error ? err.message : "Update failed.";
-      setMsg({ ok: false, text: text === "below_target" ? "Value is below the target." : text });
+      // R1: user copy comes from errorCopy.ts via err.message — never duplicated in pages.
+      setMsg({ ok: false, text: err instanceof Error ? err.message : "Update failed." });
     } finally {
       setBusyId(null);
     }
@@ -370,14 +370,8 @@ function AddCrewSection() {
       setTrade("");
       setMsg({ ok: true, text: `Added ${n} to your crew on ${res.current_job}.` });
     } catch (err) {
-      const code = err instanceof Error ? err.message : "";
-      const text =
-        code === "not_placed"
-          ? "You must be placed on a job before you can add crew. Ask your crew lead or the office to place you."
-          : code === "login_not_allowed"
-            ? "Crew added here are field-only (no login)."
-            : "Could not add crew.";
-      setMsg({ ok: false, text });
+      // R1: user copy comes from errorCopy.ts via err.message — never duplicated in pages.
+      setMsg({ ok: false, text: err instanceof Error ? err.message : "Could not add crew." });
     } finally {
       setBusy(false);
     }

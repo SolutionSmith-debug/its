@@ -1,5 +1,9 @@
 // Personnel read API client for Field Ops tab (BRIEF A).
 // Same-origin fetch with session cookie; no auth header.
+//
+// (R1) Write errors throw ApiError (src/lib/errorCopy.ts): err.message is HUMAN copy, err.code the
+// raw wire code for page-level branching (e.g. 'not_placed', 'login_not_allowed' on createCrew).
+import { raiseApiError } from "./errorCopy";
 
 export interface LatestEntry {
   personnel_id: number;
@@ -81,10 +85,7 @@ async function postJson<T = { ok: boolean }>(url: string, body: unknown): Promis
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
   });
-  if (!res.ok) {
-    const err = (await res.json().catch(() => ({}))) as { error?: string };
-    throw new Error(err.error ?? `Request failed (${res.status})`);
-  }
+  if (!res.ok) return raiseApiError(res);
   return (await res.json()) as T;
 }
 
@@ -122,7 +123,7 @@ export async function assignPersonnel(id: number, jobId: string | null): Promise
 // ── Slice T — subcontractor scoped crew-create (cap.crew.create; server-gated) ────────────────────
 /** Create a NON-LOGIN roster person auto-placed on the ACTOR's own current job. Server rejects any
  *  account/login payload (login-mint stays admin-only) and 422 `not_placed` when the actor isn't
- *  placed on a job. Throws the server error code (e.g. "not_placed") for the caller to explain. */
+ *  placed on a job. Throws ApiError — branch on err.code (e.g. 'not_placed'); err.message is copy. */
 export async function createCrew(body: { name: string; trade?: string }): Promise<{ id: number; current_job: string }> {
   return postJson<{ ok: boolean; id: number; current_job: string }>("/api/fieldops/crew", body);
 }

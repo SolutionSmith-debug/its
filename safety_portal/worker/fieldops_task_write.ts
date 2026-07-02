@@ -82,6 +82,33 @@ async function checkTaskCurrentOwner(
   return null;
 }
 
+// (R1 SECURITY) OWNERSHIP GUARD for the status route: an actor whose ONLY task authority is
+// cap.tasks.own (holds NEITHER cap.jobtracker.manage NOR cap.tasks.assign — i.e. a subcontractor)
+// may change the status of a task ONLY when it is currently assigned to THEIR OWN linked ACTIVE
+// personnel row. Before this guard, ANY cap.tasks.own holder could flip ANY task's status (the A3
+// blocker). Managers/admins are unrestricted here — their task-authority caps already gate them.
+// Task-not-found → null so the mutation's changes()=0 returns 404 (same shape as
+// checkTaskCurrentOwner); an unassigned task or one whose owner link is retired (p.active=0) is NOT
+// the actor's → 403 forbidden_task.
+async function checkTaskStatusOwnership(
+  c: Context<{ Bindings: Env; Variables: Vars }>,
+  taskId: number,
+): Promise<Response | null> {
+  const caps = c.get("capabilities");
+  if (caps.has(CAP_MANAGE) || caps.has(CAP_ASSIGN)) return null; // manager/admin: unrestricted
+  const username = c.get("session").username;
+  const row = await c.env.DB.prepare(
+    "SELECT ta.personnel_id, p.username AS owner_username FROM task_assignments ta LEFT JOIN personnel p ON p.id = ta.personnel_id AND p.active = 1 WHERE ta.id = ?1",
+  )
+    .bind(taskId)
+    .first<{ personnel_id: number | null; owner_username: string | null }>();
+  if (!row) return null; // unknown task → the UPDATE's changes()=0 → 404 (no existence leak)
+  if (row.personnel_id === null || row.owner_username !== username) {
+    return c.json({ error: "forbidden_task" }, 403);
+  }
+  return null;
+}
+
 export function registerTaskWriteRoutes(app: FieldopsApp, gates: FieldopsGates): void {
   // POST /api/fieldops/job/:job_id/task — add a task (optionally assigned to a person) to a live job.
   app.post(
@@ -156,6 +183,10 @@ export function registerTaskWriteRoutes(app: FieldopsApp, gates: FieldopsGates):
       const status = typeof body.status === "string" ? body.status : "";
       if (!STATUSES.has(status)) return c.json({ error: "invalid_status" }, 400);
 
+      // (R1 SECURITY) own-only actors may only touch tasks assigned to their linked personnel.
+      const ownErr = await checkTaskStatusOwnership(c, id);
+      if (ownErr) return ownErr;
+
       const actor = c.get("session").username;
       const res = await c.env.DB.batch([
         c.env.DB.prepare("UPDATE task_assignments SET status = ?2 WHERE id = ?1").bind(id, status),
@@ -213,8 +244,11 @@ export function registerTaskWriteRoutes(app: FieldopsApp, gates: FieldopsGates):
       }
 
       const actor = c.get("session").username;
+      // (R1) Re-stamp assigned_by on every (re/un)assign — the column means "who last placed this
+      // task" (the /tasks/mine context field), not just the original creator. Additive: historical
+      // rows keep whatever the create route stamped (or NULL, pre-0014-stamping).
       const res = await c.env.DB.batch([
-        c.env.DB.prepare("UPDATE task_assignments SET personnel_id = ?2 WHERE id = ?1").bind(id, personnelId),
+        c.env.DB.prepare("UPDATE task_assignments SET personnel_id = ?2, assigned_by = ?3 WHERE id = ?1").bind(id, personnelId, actor),
         c.env.DB
           .prepare("INSERT INTO audit_log (actor_username, action, target_username, detail) SELECT ?1,?2,?3,?4 WHERE changes()=1")
           .bind(actor, "task_assign", String(id), JSON.stringify({ task_id: id, personnel_id: personnelId })),

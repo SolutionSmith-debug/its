@@ -550,6 +550,33 @@ NOT-EXISTS-guarded (an admin-created same-title library template is never duplic
    order (photos item target 50, check-ins target 2); the inspection library lists the 6 seeded
    templates; a placed manager's next-day "My Tasks" daily checklist rolls the new items.
 
+### Assigned-Tasks R1 — instance template title (`0029`) + worker contract fixes
+
+**Migration 0029** adds `checklist_instances.template_title` — the assigned inspection template's
+title, SNAPSHOTTED at assign time (same lineage rule as the item snapshot: renaming/deleting the
+library template never mutates an in-flight instance) — and best-effort BACKFILLS existing
+`kind='inspection'` instances through the item-snapshot lineage (`source_item_id` →
+`checklist_items.template_id` → `checklist_templates.title`); instances whose lineage no longer
+resolves stay NULL (the UI falls back to "Inspection #id"). Ships with the R1 worker contract pass:
+task-status ownership guard (403 `forbidden_task`), open-first list ordering, assign-time
+validation (`empty_template` / `job_and_date_required` / catalog-checked `unknown_form_code`),
+below-target acknowledge (`note_required`), `/checklist/mine` reason codes + `/tasks/mine` `linked`,
+Q3 on-or-before due-date reconcile for inspections, `filed_by`/`rolled_up_by` attribution, and
+required-bounded time-entry hours (422 `invalid_hours`).
+
+#### Activation (operator — deploy boundary; escalates to the Developer-Operator)
+
+1. Apply migration **0029** to the live D1 **BEFORE** the redeploy
+   (`npx wrangler d1 migrations apply its-safety-portal-db --remote`) — else `POST
+   /api/fieldops/checklist/assign` and `GET /api/fieldops/checklist/assigned` 500 on the missing
+   `template_title` column. **ORDER-CRITICAL**, same rule as 0026. (Always `git pull` `~/its` to
+   latest `main` BEFORE `wrangler d1 migrations apply` — the stale-migrations-list lockout class.)
+2. **Redeploy** (`npm run deploy`) — activates the R1 contract (ownership guard, ordering, assign
+   validation, reasons/attribution fields, hours bounds).
+3. **Smoke** (live): assign an inspection → the assignee's My Tasks card shows the template's title;
+   a subcontractor flipping another person's task gets a permission message; a time entry without
+   hours is refused.
+
 ### Lockout recovery (break-glass) — escalate to the Developer-Operator
 
 If both admins are ever locked out (e.g. passwords lost, or both disabled), recovery runs

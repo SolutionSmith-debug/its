@@ -1,6 +1,10 @@
 // Assigned-Tasks tab (P4 field-ops feature) S2 — checklist template editor client.
 // Same-origin fetch with the session cookie (no auth header). The Worker re-gates every call on
 // cap.checklist.manage; these caps drive UI affordances only. Send-free (D1 reads/writes).
+//
+// (R1) Errors: getJson/postJson throw ApiError (src/lib/errorCopy.ts) — err.message is HUMAN copy,
+// err.code is the raw wire code pages branch on (e.g. 'below_target', 'already_assigned').
+import { raiseApiError } from "./errorCopy";
 
 export type ChecklistItemType = "form_linked" | "manual_attest" | "count" | "inspection";
 
@@ -66,7 +70,7 @@ export interface ItemInput {
 
 async function getJson<T>(url: string): Promise<T> {
   const res = await fetch(url, { credentials: "same-origin" });
-  if (!res.ok) throw new Error(`Request failed (${res.status})`);
+  if (!res.ok) return raiseApiError(res);
   return (await res.json()) as T;
 }
 
@@ -77,10 +81,7 @@ async function postJson<T = { ok: boolean }>(url: string, body?: unknown): Promi
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body ?? {}),
   });
-  if (!res.ok) {
-    const err = (await res.json().catch(() => ({}))) as { error?: string };
-    throw new Error(err.error ?? `Request failed (${res.status})`);
-  }
+  if (!res.ok) return raiseApiError(res);
   return (await res.json()) as T;
 }
 
@@ -146,21 +147,35 @@ export interface ChecklistItemState {
   completed_by: string | null;
   completed_at: number | null;
   value_num: number | null;
+  // R1: WHO filed the submission that auto-closed this item (completed_by === '(auto)') — the
+  // personnel display name, falling back to the raw attributed account. NULL for manually-completed
+  // / still-open items, or when no matching submission is resolvable (best-effort attribution).
+  filed_by: string | null;
 }
+
+// R1: WHY the daily section is empty — mirrors the server's three generation preconditions so the
+// UI can explain instead of rendering a lying blank. null whenever `instance` is non-null.
+export type DailyEmptyReason = "not_manager" | "no_personnel_link" | "not_placed";
 
 export interface DailyInstance {
   id: number;
   job_id: string;
+  // R1: the job's project name (LEFT JOIN; null if the job row is gone) — headings shouldn't show a
+  // raw job id.
+  project_name: string | null;
   instance_date: string;
   status: "open" | "complete";
   // S5: the auto-filed / manager-filed Daily Report submission this instance rolled up into. Non-null
   // once a daily-report (family) submission exists for the instance's job+date (server reconcile).
   rolled_up_submission_uuid: string | null;
+  // R1: WHO filed that rolled-up Daily Report (display name, fallback raw account); null until rolled up.
+  rolled_up_by: string | null;
 }
 
 export interface MyChecklist {
   instance: DailyInstance | null;
   items: ChecklistItemState[];
+  reason: DailyEmptyReason | null;
 }
 
 export interface CompleteResult {
@@ -169,6 +184,8 @@ export interface CompleteResult {
   status: ChecklistItemStatus;
   value_num?: number | null;
   instance_status: "open" | "complete";
+  // R1: true when the completion was an acknowledged below-target count (see recordCountItem).
+  acknowledged_below_target?: boolean;
 }
 
 // Today's daily checklist for the logged-in placed manager (instance:null for anyone else).
@@ -186,9 +203,21 @@ export function completeChecklistItem(
 }
 
 // Record a count item's value (P4 S4). The Worker completes it iff value_num >= target_count; below
-// target it throws (the postJson error carries the server 'below_target' code). Same /complete route.
-export function recordCountItem(stateId: number, valueNum: number): Promise<CompleteResult> {
-  return postJson<CompleteResult>(`${BASE}/item-state/${stateId}/complete`, { value_num: valueNum });
+// target it throws (the ApiError's err.code is 'below_target'; the value IS recorded, item stays
+// open). (R1) Passing { acknowledgeBelowTarget: true, note } completes the item BELOW target — the
+// note is REQUIRED server-side (err.code 'note_required' without one) and the completion audits
+// under its own action. Same /complete route.
+export function recordCountItem(
+  stateId: number,
+  valueNum: number,
+  opts?: { acknowledgeBelowTarget?: boolean; note?: string },
+): Promise<CompleteResult> {
+  const body: Record<string, unknown> = { value_num: valueNum };
+  if (opts?.acknowledgeBelowTarget) {
+    body.acknowledge_below_target = true;
+    if (opts.note !== undefined) body.note = opts.note;
+  }
+  return postJson<CompleteResult>(`${BASE}/item-state/${stateId}/complete`, body);
 }
 
 // Toggle a manually-completed item (manual_attest / count) back to open. form_linked/inspection reject.
@@ -273,7 +302,9 @@ export function deleteInspectionItem(templateId: number, itemId: number): Promis
 }
 
 // Assign a generic_inspection template to a person (optional job + due date). Returns the new instance
-// id + snapshotted item count. Throws 'already_assigned' on an exact (job+date) duplicate.
+// id + snapshotted item count. Throws ApiError err.code 'already_assigned' on an exact (job+date)
+// duplicate; (R1) 'empty_template' on a 0-item template, and 'job_and_date_required' when the
+// template contains form_linked/inspection items but job_id + due_date aren't BOTH supplied.
 export interface AssignInput {
   template_id: number;
   assignee_personnel_id: number;
@@ -295,6 +326,10 @@ export interface AssignedInstance {
   project_name: string | null;
   instance_date: string | null;
   status: "open" | "complete";
+  // R1: the assigned template's title, SNAPSHOTTED at assign time (migration 0029) — render this,
+  // never "Inspection #<id>". NULL only on legacy instances the backfill couldn't resolve.
+  template_title: string | null;
+  created_at: number;
 }
 
 export interface AssignedInspection {
@@ -302,6 +337,15 @@ export interface AssignedInspection {
   items: ChecklistItemState[];
 }
 
-export function fetchAssignedInspections(): Promise<{ inspections: AssignedInspection[] }> {
-  return getJson<{ inspections: AssignedInspection[] }>(`${BASE}/assigned`);
+// R1 response contract: `linked` = whether the session has an ACTIVE linked personnel row — an
+// unlinked account CANNOT have assignments, so the UI can explain the empty list ("your account
+// isn't linked to the roster") instead of a bare "no inspections". Instances arrive OPEN-FIRST
+// (server CASE ordering), newest first within a status band.
+export interface AssignedInspectionsResponse {
+  inspections: AssignedInspection[];
+  linked: boolean;
+}
+
+export function fetchAssignedInspections(): Promise<AssignedInspectionsResponse> {
+  return getJson<AssignedInspectionsResponse>(`${BASE}/assigned`);
 }
