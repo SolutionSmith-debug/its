@@ -31,6 +31,14 @@ const MAX_VALUE = 100_000;
 const AUTO_COMPLETED_BY = "(auto)";
 // Item types that auto-close on a matching submission (loop-closure) and CANNOT be manually completed.
 const AUTO_CLOSE_TYPES = new Set(["form_linked", "inspection"]);
+// S5 rollup — the Daily Report the daily checklist rolls up into (catalog 'daily-report' parent family;
+// matches the daily_default seed's source_form_code). Used for the rolled_up_submission_uuid reconcile
+// AND the assembled draft's form_code. A submission matches iff its form_code EQUALS this OR is a
+// versioned variant (`|| '-v%'`) — the SAME family match as S4 loop-closure.
+const DAILY_REPORT_FORM = "daily-report";
+// S5 rollup-draft assembly — bound ceiling on the crew / equipment legs (a day's roster/equipment is
+// small; this is a defensive cap, not a paginated surface).
+const ROLLUP_LEG_CAP = 200;
 
 const ITEM_TYPES = new Set(["form_linked", "manual_attest", "count", "inspection"]);
 // form_code identifies the target form — required for the two form-bearing types.
@@ -317,10 +325,37 @@ const AUTO_CHECK_SQL = `
           )
       `;
 
+// S5 rolled-up linkage (reconcile — the SAME submission-existence pattern S4 uses for loop-closure).
+// Stamp checklist_instances.rolled_up_submission_uuid with the day's Daily Report submission for this
+// (job, date) — matched on the 'daily-report' PARENT FAMILY (= parent OR versioned variant, exactly the
+// S4 form-code match). So once the manager files (or auto-files) the Daily Report, the instance shows it
+// as rolled-up — no new stamp route needed. Set-ONCE (WHERE rolled_up_submission_uuid IS NULL) + guarded
+// by EXISTS so a read with no daily-report submission is a pure no-op; picks the most-recent submission
+// deterministically. Bound-param: ?1 = instance id, ?2 = job_id, ?3 = instance_date, ?4 = 'daily-report'.
+const ROLLUP_LINK_SQL = `
+        UPDATE checklist_instances
+        SET rolled_up_submission_uuid = (
+          SELECT sub.submission_uuid FROM submissions sub
+          WHERE sub.job_id = ?2 AND sub.work_date = ?3
+            AND (sub.form_code = ?4 OR sub.form_code LIKE ?4 || '-v%')
+          ORDER BY sub.created_at DESC, sub.submission_uuid DESC
+          LIMIT 1
+        )
+        WHERE id = ?1
+          AND kind = 'daily'
+          AND rolled_up_submission_uuid IS NULL
+          AND EXISTS (
+            SELECT 1 FROM submissions sub
+            WHERE sub.job_id = ?2 AND sub.work_date = ?3
+              AND (sub.form_code = ?4 OR sub.form_code LIKE ?4 || '-v%')
+          )
+      `;
+
 // Reconcile the instance's form_linked/inspection items against the day's submissions (loop-closure),
-// then recompute the instance status — in ONE batch so a just-auto-closed item is reflected. Idempotent:
-// re-running with no new submissions changes nothing (the UPDATE matches zero rows, the recompute is a
-// no-op re-write of the same status). Called each read of /checklist/mine, right after generation.
+// stamp the rolled-up Daily Report link (S5), then recompute the instance status — in ONE batch so a
+// just-auto-closed item is reflected. Idempotent: re-running with no new submissions changes nothing
+// (each UPDATE matches zero rows, the recompute re-writes the same status). Called each read of
+// /checklist/mine, right after generation.
 async function reconcileFormLinked(
   c: Context<{ Bindings: Env; Variables: Vars }>,
   instanceId: number,
@@ -329,6 +364,7 @@ async function reconcileFormLinked(
 ): Promise<void> {
   await c.env.DB.batch([
     c.env.DB.prepare(AUTO_CHECK_SQL).bind(instanceId, jobId, instanceDate),
+    c.env.DB.prepare(ROLLUP_LINK_SQL).bind(instanceId, jobId, instanceDate, DAILY_REPORT_FORM),
     recomputeInstanceStatusStmt(c, instanceId),
   ]);
 }
@@ -677,8 +713,11 @@ export function registerChecklistRoutes(app: FieldopsApp, gates: FieldopsGates):
       // reading them back, so a form filed since the last open shows as done (and the instance status
       // reflects it). Idempotent on re-read; persisted so S5's rollup sees the closure.
       await reconcileFormLinked(c, gen.instanceId, gen.jobId, gen.instanceDate);
+      // rolled_up_submission_uuid (S5): non-null once a Daily Report has been filed for this job+date
+      // (set by the reconcile above). The SPA shows "Daily Report filed ✓" when present, else the
+      // "Review & file" affordance on a complete instance.
       const instance = await c.env.DB.prepare(
-        "SELECT id, job_id, instance_date, status FROM checklist_instances WHERE id = ?1",
+        "SELECT id, job_id, instance_date, status, rolled_up_submission_uuid FROM checklist_instances WHERE id = ?1",
       )
         .bind(gen.instanceId)
         .first();
@@ -689,6 +728,118 @@ export function registerChecklistRoutes(app: FieldopsApp, gates: FieldopsGates):
         .bind(gen.instanceId)
         .all();
       return c.json({ instance, items: items.results ?? [] }, 200);
+    },
+  );
+
+  // ══ S5 — auto-rollup → Daily Report (assemble a DRAFT; the manager reviews/confirms + files) ══════
+  // ── GET /api/fieldops/checklist/mine/rollup-draft — a best-effort Daily Report draft assembled from
+  // the day's data, returned ONLY when the actor's daily instance is COMPLETE (else 409). READ-ONLY
+  // (no INSERT/UPDATE): it never materializes an instance — a complete instance already exists (the
+  // manager only reaches this after /mine showed it complete). The manager reviews/edits the draft in
+  // the prefilled Daily Report form and files it via the existing /api/submit path (send-free; the Mac
+  // intake files to Box/Smartsheet). The filed submission then stamps rolled_up_submission_uuid via the
+  // /mine reconcile — NO send path here (Invariant 1). Data → daily-report-v1 fields:
+  //   • header.job_name    ← the job's project_name (fallback: job_id)
+  //   • header.report_date ← the instance date
+  //   • header.prepared_by ← the placed manager's personnel name
+  //   • crew_progress[]    ← the crew placed on the job (name/trade seeded; manpower + progress BLANK)
+  //   • equipment_on_site[]← the equipment currently on the job (type seeded; owner/inspector BLANK)
+  //   • comments           ← a FACTUAL (non-narrative) checklist + filed-forms summary
+  // Narrative/subjective fields (weather, temp, tomorrow's goals, deliveries, visitors, and every
+  // per-row detail column) are LEFT BLANK — the SPA merges the draft over the form's empty defaults, so
+  // an omitted key stays empty for the manager to fill. Nothing is fabricated. Bound-param throughout.
+  app.get(
+    "/api/fieldops/checklist/mine/rollup-draft",
+    gates.requireSession,
+    gates.requireCapability(CAP_TASKS_OWN),
+    async (c) => {
+      // Same gate as generation: manager role + an active linked personnel PLACED on a job.
+      if (c.get("role") !== "manager") return c.json({ error: "no_instance" }, 409);
+      const person = await resolveActorPersonnel(c);
+      if (!person || !person.current_job) return c.json({ error: "no_instance" }, 409);
+      const jobId = person.current_job;
+      const today = pacificToday();
+
+      const inst = await c.env.DB.prepare(
+        "SELECT id, status FROM checklist_instances WHERE kind='daily' AND job_id=?1 AND assignee_personnel_id=?2 AND instance_date=?3",
+      )
+        .bind(jobId, person.id, today)
+        .first<{ id: number; status: string }>();
+      // No instance yet, or not COMPLETE → nothing to roll up (the button only shows on a complete one).
+      if (!inst || inst.status !== "complete") return c.json({ error: "not_complete" }, 409);
+
+      // Job project name + the placed manager's personnel name (the "Prepared By").
+      const [jobRow, mgrRow] = await c.env.DB.batch([
+        c.env.DB.prepare("SELECT project_name FROM jobs WHERE job_id=?1").bind(jobId),
+        c.env.DB.prepare("SELECT name FROM personnel WHERE id=?1").bind(person.id),
+      ]);
+      const projectName = (jobRow.results?.[0] as { project_name: string | null } | undefined)?.project_name ?? null;
+      const managerName = (mgrRow.results?.[0] as { name: string | null } | undefined)?.name ?? "";
+
+      // Crew placed on the job + equipment currently on the job (the jobtracker equipment-on-site
+      // window: candidates ever on the job → each one's latest read → kept iff still THIS job) + the
+      // instance's item states (for the summary) + the day's filed form families.
+      const equipSql = `
+        SELECT e.name, e.identifier
+        FROM (
+          SELECT equipment_id, job_id,
+                 ROW_NUMBER() OVER (PARTITION BY equipment_id ORDER BY recorded_at DESC, id DESC) rn
+          FROM equipment_location
+          WHERE equipment_id IN (SELECT DISTINCT equipment_id FROM equipment_location WHERE job_id = ?1)
+        ) loc JOIN equipment e ON e.id = loc.equipment_id
+        WHERE loc.rn = 1 AND loc.job_id = ?1
+        ORDER BY e.name ASC
+        LIMIT ?2
+      `;
+      const [crewRes, equipRes, stateRes, subRes] = await c.env.DB.batch([
+        c.env.DB.prepare("SELECT name, trade FROM personnel WHERE current_job=?1 AND active=1 ORDER BY name ASC LIMIT ?2").bind(jobId, ROLLUP_LEG_CAP),
+        c.env.DB.prepare(equipSql).bind(jobId, ROLLUP_LEG_CAP),
+        c.env.DB.prepare("SELECT label, item_type, status, value_num FROM checklist_item_states WHERE instance_id=?1 ORDER BY id ASC").bind(inst.id),
+        c.env.DB.prepare("SELECT DISTINCT form_code FROM submissions WHERE job_id=?1 AND work_date=?2 ORDER BY form_code ASC").bind(jobId, today),
+      ]);
+      const crew = (crewRes.results ?? []) as { name: string | null; trade: string | null }[];
+      const equipment = (equipRes.results ?? []) as { name: string | null; identifier: string | null }[];
+      const states = (stateRes.results ?? []) as { label: string | null; item_type: string; status: string; value_num: number | null }[];
+      const filedForms = ((subRes.results ?? []) as { form_code: string }[]).map((r) => r.form_code);
+
+      // FACTUAL (non-narrative) summary: checklist item outcomes + count values + which form families
+      // were filed today. Data-derived — NOT fabricated prose. The manager edits it before filing.
+      const itemLines = states
+        .map((s) => {
+          const cnt = s.item_type === "count" && s.value_num !== null ? ` (recorded ${s.value_num})` : "";
+          return `- ${s.label ?? "(item)"}: ${s.status}${cnt}`;
+        })
+        .join("\n");
+      const comments =
+        `Daily checklist completed for ${projectName ?? jobId} (${jobId}) on ${today}.\n` +
+        `Forms filed today: ${filedForms.length ? filedForms.join(", ") : "none"}.\n` +
+        (itemLines ? `Checklist items:\n${itemLines}` : "Checklist items: none.");
+
+      const values: Record<string, unknown> = {
+        job_name: projectName ?? jobId,
+        report_date: today,
+        prepared_by: managerName,
+        comments,
+      };
+      // Only seed repeating tables that have data; an omitted key falls back to the form's empty default
+      // row (see the SPA merge) so we never fabricate blank crew/equipment rows.
+      if (crew.length > 0) {
+        values.crew_progress = crew.map((p) => ({
+          crew_subcontractor: p.trade ? `${p.name ?? ""} (${p.trade})` : (p.name ?? ""),
+          manpower: "",
+          todays_progress: "",
+        }));
+      }
+      if (equipment.length > 0) {
+        values.equipment_on_site = equipment.map((e) => ({
+          owner_rental: "",
+          equipment_type: e.identifier ? `${e.name ?? ""} (${e.identifier})` : (e.name ?? ""),
+          inspector: "",
+          inspection_detail: "",
+        }));
+      }
+
+      return c.json({ job_id: jobId, work_date: today, form_code: DAILY_REPORT_FORM, values }, 200);
     },
   );
 

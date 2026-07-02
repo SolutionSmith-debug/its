@@ -23,12 +23,15 @@ function todayIso(): string {
  */
 /** Deep-link prefill (P4 S4 loop-closure): a form_linked/inspection checklist item opens FormFillPage
  * with the instance's job + the item's form + the instance date pre-selected, so filing the linked form
- * auto-checks the item on the next checklist read. All fields optional; each seeds the matching state. */
+ * auto-checks the item on the next checklist read. All fields optional; each seeds the matching state.
+ * S5 auto-rollup adds `values`: an assembled Daily Report draft (FormRenderer FormValues), merged over
+ * the form's empty defaults on first render so the manager reviews/edits a pre-populated form. */
 export interface FormPrefill {
   jobId?: string;
   parentCode?: string;
   variantCode?: string;
   workDate?: string;
+  values?: FormValues;
 }
 
 export function FormFillPage({
@@ -90,10 +93,21 @@ export function FormFillPage({
   const formCode = parent ? (parent.variants.length ? variantCode : (parent.form_code ?? "")) : "";
   const def = formCode ? getDefinition(formCode) : null;
 
-  // (Re)initialize the fill state whenever the chosen form changes.
+  // S5: an assembled draft to seed ONCE, on the first form definition load (the prefilled form the
+  // manager opened into). Cleared after the first apply so switching forms afterward resets cleanly —
+  // and the App-level keyed remount guarantees this ref is fresh for each deep-link open.
+  const pendingPrefillValues = useRef<FormValues | null>(prefill?.values ?? null);
+
+  // (Re)initialize the fill state whenever the chosen form changes. On the first load, merge any
+  // assembled prefill values (S5 rollup draft) over the empty defaults so the form opens pre-populated.
   useEffect(() => {
     const d = formCode ? getDefinition(formCode) : null;
-    setValues(d ? initialValues(d) : {});
+    if (d && pendingPrefillValues.current) {
+      setValues({ ...initialValues(d), ...pendingPrefillValues.current });
+      pendingPrefillValues.current = null; // one-shot; later form switches reset to empty defaults
+    } else {
+      setValues(d ? initialValues(d) : {});
+    }
     setAmendsUuid(null);
   }, [formCode]);
 

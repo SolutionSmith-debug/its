@@ -1118,6 +1118,18 @@ h3 {
   border-bottom: none;
 }
 
+/* S5 auto-rollup → Daily Report action row (below the daily checklist items). */
+.dash-rollup {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--c-line);
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  flex-wrap: wrap;
+  font-size: var(--fs-sm);
+}
+
 .dash-empty {
   border: 1px dashed var(--c-line);
   border-radius: var(--radius);

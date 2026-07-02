@@ -105,3 +105,31 @@ describe("FormFillPage — submitted receipt + request-driven PDF download", () 
     expect(api.downloadPdf).toHaveBeenCalledWith(uuid);
   });
 });
+
+// S5 auto-rollup: a Daily Report DRAFT is deep-linked into FormFillPage via prefill.values (an assembled
+// FormValues object). The prefill's parentCode selects the form; values seed the fields for the manager
+// to review/edit before filing via the normal submit path.
+describe("FormFillPage — S5 rollup prefill seeds the form fields", () => {
+  it("pre-populates header + freeform fields from prefill.values", async () => {
+    const { container } = render(
+      <FormFillPage
+        onBack={() => {}}
+        prefill={{
+          jobId: "J1",
+          parentCode: "daily-report",
+          workDate: "2026-07-01",
+          values: { prepared_by: "Mo Manager", comments: "Daily checklist completed. Forms filed today: daily-report-v1." },
+        }}
+      />,
+    );
+    // Jobs load async; the prefilled parent resolves the Daily Report definition on mount.
+    await waitFor(() => expect(container.querySelector('option[value="J1"]')).not.toBeNull());
+    await waitFor(() => {
+      const values = Array.from(container.querySelectorAll("input, textarea")).map((el) => (el as HTMLInputElement).value);
+      // prepared_by (header text input) seeded from the draft.
+      expect(values).toContain("Mo Manager");
+      // comments (freeform textarea) seeded from the factual checklist summary.
+      expect(values.some((v) => v.includes("Forms filed today"))).toBe(true);
+    });
+  });
+});

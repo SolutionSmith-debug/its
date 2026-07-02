@@ -153,6 +153,9 @@ export interface DailyInstance {
   job_id: string;
   instance_date: string;
   status: "open" | "complete";
+  // S5: the auto-filed / manager-filed Daily Report submission this instance rolled up into. Non-null
+  // once a daily-report (family) submission exists for the instance's job+date (server reconcile).
+  rolled_up_submission_uuid: string | null;
 }
 
 export interface MyChecklist {
@@ -191,4 +194,21 @@ export function recordCountItem(stateId: number, valueNum: number): Promise<Comp
 // Toggle a manually-completed item (manual_attest / count) back to open. form_linked/inspection reject.
 export function uncompleteChecklistItem(stateId: number): Promise<CompleteResult> {
   return postJson<CompleteResult>(`${BASE}/item-state/${stateId}/uncomplete`);
+}
+
+// ── S5 — auto-rollup → Daily Report ────────────────────────────────────────────────────────────────
+// A best-effort Daily Report DRAFT assembled from the day's data (job/crew/equipment/date/manager +
+// a factual checklist summary). Returned only for a COMPLETE daily instance (else the Worker 409s).
+// `values` is a FormRenderer FormValues object keyed to daily-report-v1 (header keys + repeating-table
+// row arrays + comments); the FormFillPage merges it over the form's empty defaults. NO send happens
+// here — the manager reviews/edits and files via the normal /api/submit path.
+export interface RollupDraft {
+  job_id: string;
+  work_date: string;
+  form_code: string; // 'daily-report' (the catalog parent family)
+  values: Record<string, unknown>;
+}
+
+export function fetchRollupDraft(): Promise<RollupDraft> {
+  return getJson<RollupDraft>(`${BASE}/mine/rollup-draft`);
 }
