@@ -9,6 +9,7 @@ export type HomeNav =
   | "forms"
   | "fieldops-jobs"
   | "fieldops-tasks"
+  | "fieldops-inspections"
   | "fieldops-equipment"
   | "fieldops-personnel"
   | "materials-catalog";
@@ -68,6 +69,13 @@ const HOME_CARDS: HomeCard[] = [
     badge: "Field Ops",
     title: "My Tasks",
     desc: "The tasks assigned to you, grouped by job — update each as you work it.",
+  },
+  {
+    key: "fieldops-inspections",
+    cap: "cap.checklist.manage",
+    badge: "Admin",
+    title: "Inspection checklists",
+    desc: "Author reusable inspection checklists and assign them to a manager or subcontractor.",
   },
   {
     key: "fieldops-equipment",

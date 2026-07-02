@@ -212,3 +212,96 @@ export interface RollupDraft {
 export function fetchRollupDraft(): Promise<RollupDraft> {
   return getJson<RollupDraft>(`${BASE}/mine/rollup-draft`);
 }
+
+// ── S6 — generic-inspection library (admin authoring + assign; cap.checklist.manage) ────────────────
+// A library of generic_inspection templates the admin authors (title + items, reusing the same
+// ItemInput shape) and ASSIGNS ad-hoc to a manager/subcontractor. Distinct from the daily_default:
+// MANY templates, no job_override merge. The Worker re-gates every call on cap.checklist.manage.
+
+// A library template header + its item count (GET /checklist/inspections list row).
+export interface InspectionTemplate {
+  id: number;
+  title: string | null;
+  active: number;
+  created_at: number;
+  item_count: number;
+}
+
+// One library template + its items (GET /checklist/inspection/:id).
+export interface InspectionDetail {
+  template: { id: number; title: string | null; active: number };
+  items: DefaultItem[];
+}
+
+export function fetchInspectionTemplates(): Promise<{ templates: InspectionTemplate[] }> {
+  return getJson<{ templates: InspectionTemplate[] }>(`${BASE}/inspections`);
+}
+
+export function fetchInspectionTemplate(templateId: number): Promise<InspectionDetail> {
+  return getJson<InspectionDetail>(`${BASE}/inspection/${templateId}`);
+}
+
+export function createInspectionTemplate(title: string): Promise<{ ok: boolean; id: number | null }> {
+  return postJson(`${BASE}/inspection`, { title });
+}
+
+export function editInspectionTemplate(
+  templateId: number,
+  patch: { title: string; active?: boolean },
+): Promise<{ ok: boolean; id: number }> {
+  return postJson(`${BASE}/inspection/${templateId}/edit`, patch);
+}
+
+export function deleteInspectionTemplate(templateId: number): Promise<{ ok: boolean; id: number }> {
+  return postJson(`${BASE}/inspection/${templateId}/delete`);
+}
+
+export function addInspectionItem(templateId: number, item: ItemInput): Promise<{ ok: boolean; id: number | null }> {
+  return postJson(`${BASE}/inspection/${templateId}/item`, item);
+}
+
+export function editInspectionItem(
+  templateId: number,
+  itemId: number,
+  item: ItemInput,
+): Promise<{ ok: boolean; id: number }> {
+  return postJson(`${BASE}/inspection/${templateId}/item/${itemId}/edit`, item);
+}
+
+export function deleteInspectionItem(templateId: number, itemId: number): Promise<{ ok: boolean; id: number }> {
+  return postJson(`${BASE}/inspection/${templateId}/item/${itemId}/delete`);
+}
+
+// Assign a generic_inspection template to a person (optional job + due date). Returns the new instance
+// id + snapshotted item count. Throws 'already_assigned' on an exact (job+date) duplicate.
+export interface AssignInput {
+  template_id: number;
+  assignee_personnel_id: number;
+  job_id?: string;
+  due_date?: string;
+}
+
+export function assignInspection(input: AssignInput): Promise<{ ok: boolean; instance_id: number; item_count: number }> {
+  return postJson(`${BASE}/assign`, input);
+}
+
+// ── S6 — the assignee's Assigned-Tasks tab surface (cap.tasks.own; manager OR subcontractor) ────────
+// The inspection instances assigned to the logged-in person + their item states. Completion reuses the
+// existing completeChecklistItem / recordCountItem / uncompleteChecklistItem calls (the item-state
+// routes are ownership-scoped, kind-agnostic).
+export interface AssignedInstance {
+  id: number;
+  job_id: string | null;
+  project_name: string | null;
+  instance_date: string | null;
+  status: "open" | "complete";
+}
+
+export interface AssignedInspection {
+  instance: AssignedInstance;
+  items: ChecklistItemState[];
+}
+
+export function fetchAssignedInspections(): Promise<{ inspections: AssignedInspection[] }> {
+  return getJson<{ inspections: AssignedInspection[] }>(`${BASE}/assigned`);
+}

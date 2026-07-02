@@ -47,6 +47,10 @@ const CAP_CHECKLIST = "cap.checklist.manage";
 // S3 surfacing + completion are the OWNER's tab (a placed manager), gated by cap.tasks.own — the same
 // cap the "My Tasks" read (fieldops_tasks.ts) uses. Distinct from the admin authoring cap above.
 const CAP_TASKS_OWN = "cap.tasks.own";
+// S6 inspection-library: a template title bound + a due-date format (a Pacific calendar date, the same
+// 'YYYY-MM-DD' shape the daily instance_date uses — no time component, no offset).
+const MAX_TITLE = 256;
+const DUE_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 // THE MERGE (S2, load-bearing) — a job's EFFECTIVE daily checklist =
 //   [ daily_default items NOT suppressed by the job ] ∪ [ the job_override's own added items ], seq-ordered.
@@ -204,6 +208,30 @@ async function requireJob(
   const job = await c.env.DB.prepare("SELECT job_id FROM jobs WHERE job_id = ?1").bind(jobId).first();
   if (!job) return c.json({ error: "not_found" }, 404);
   return null;
+}
+
+// ── S6 generic-inspection library (a MANY-template generalization of the S2 single daily_default) ──
+// The S2 item CRUD was scoped to the ONE daily_default template (getDailyDefaultTemplateId); S6 authors
+// MANY generic_inspection templates and assigns them ad-hoc. The item write/edit/delete routes below
+// reuse parseItem + the same batch(mutation, conditional-audit) shape — the only new thing is that the
+// template_id is a caller-supplied library template rather than the singleton default.
+
+// Load a generic_inspection template by id, or a JSON error Response (400 bad id / 404 unknown /
+// 404 wrong-kind — a daily_default/job_override id is NOT a library template and must not be editable
+// through the inspection routes). Returns the row's id + title + active on success.
+async function requireGenericTemplate(
+  c: Context<{ Bindings: Env; Variables: Vars }>,
+  rawId: string,
+): Promise<{ id: number; title: string | null; active: number } | Response> {
+  const tplId = parseInt(rawId, 10);
+  if (isNaN(tplId)) return c.json({ error: "invalid_id" }, 400);
+  const row = await c.env.DB.prepare(
+    "SELECT id, title, active FROM checklist_templates WHERE id = ?1 AND kind = 'generic_inspection'",
+  )
+    .bind(tplId)
+    .first<{ id: number; title: string | null; active: number }>();
+  if (!row) return c.json({ error: "not_found" }, 404);
+  return row;
 }
 
 // ── S3 daily-instance generation (Worker-on-read) ──────────────────────────────────────────────────
@@ -961,6 +989,390 @@ export function registerChecklistRoutes(app: FieldopsApp, gates: FieldopsGates):
         .bind(owned.instance_id)
         .first<{ status: string }>();
       return c.json({ ok: true, id: stateId, status: "open", instance_status: inst?.status ?? "open" }, 200);
+    },
+  );
+
+  // ══ S6 — generic-inspection library (author MANY templates) + admin compose/assign ══════════════
+  // The inspection library is the FOURTH consumer of the one checklist engine (spec Q6/Q8): admins
+  // author generic_inspection templates (title + items, reusing parseItem), then ASSIGN one to a
+  // manager OR subcontractor ad-hoc — creating a kind='inspection' instance that SNAPSHOTS the
+  // template's items into checklist_item_states (the SAME snapshot the S3 daily generation does). The
+  // assignee surfaces + completes it in their Assigned-Tasks tab via the EXISTING S3/S4 complete/
+  // uncomplete routes (ownership = instance.assignee = actor, kind-agnostic — see loadOwnedItemState).
+  // Authoring/assign = cap.checklist.manage (admin); the assignee fetch = cap.tasks.own.
+
+  // ── GET /api/fieldops/checklist/inspections — list the generic_inspection library (+ item counts). ─
+  app.get(
+    "/api/fieldops/checklist/inspections",
+    gates.requireSession,
+    gates.requireCapability(CAP_CHECKLIST),
+    async (c) => {
+      const res = await c.env.DB.prepare(
+        `SELECT t.id, t.title, t.active, t.created_at,
+                (SELECT COUNT(*) FROM checklist_items i
+                 WHERE i.template_id = t.id AND i.suppresses_default_item_id IS NULL) AS item_count
+         FROM checklist_templates t
+         WHERE t.kind = 'generic_inspection'
+         ORDER BY t.created_at DESC, t.id DESC`,
+      ).all();
+      return c.json({ templates: res.results ?? [] }, 200);
+    },
+  );
+
+  // ── POST /api/fieldops/checklist/inspection — create a generic_inspection library template. ───────
+  app.post(
+    "/api/fieldops/checklist/inspection",
+    gates.requireSession,
+    gates.requireCapability(CAP_CHECKLIST),
+    async (c) => {
+      const body = await readBody(c);
+      if (body instanceof Response) return body;
+      const title = typeof body.title === "string" ? body.title.trim() : "";
+      if (title.length < 1 || title.length > MAX_TITLE) return c.json({ error: "invalid_title" }, 400);
+      const actor = c.get("session").username;
+      const res = await c.env.DB.batch([
+        c.env.DB
+          .prepare("INSERT INTO checklist_templates (kind, job_id, title, active) VALUES ('generic_inspection', NULL, ?1, 1) RETURNING id")
+          .bind(title),
+        auditStmt(c, actor, "checklist_inspection_create", null, { title }),
+      ]);
+      const newId = (res[0].results?.[0] as { id: number } | undefined)?.id ?? null;
+      return c.json({ ok: true, id: newId }, 201);
+    },
+  );
+
+  // ── GET /api/fieldops/checklist/inspection/:template_id — one library template + its items. ───────
+  app.get(
+    "/api/fieldops/checklist/inspection/:template_id",
+    gates.requireSession,
+    gates.requireCapability(CAP_CHECKLIST),
+    async (c) => {
+      const tpl = await requireGenericTemplate(c, c.req.param("template_id"));
+      if (tpl instanceof Response) return tpl;
+      const items = await c.env.DB.prepare(
+        "SELECT id, seq, item_type, label, form_code, target_count, config_json FROM checklist_items WHERE template_id = ?1 AND suppresses_default_item_id IS NULL ORDER BY seq ASC, id ASC",
+      )
+        .bind(tpl.id)
+        .all<ItemRow>();
+      return c.json({ template: tpl, items: items.results ?? [] }, 200);
+    },
+  );
+
+  // ── POST /api/fieldops/checklist/inspection/:template_id/edit — rename / (de)activate a template. ─
+  app.post(
+    "/api/fieldops/checklist/inspection/:template_id/edit",
+    gates.requireSession,
+    gates.requireCapability(CAP_CHECKLIST),
+    async (c) => {
+      const tpl = await requireGenericTemplate(c, c.req.param("template_id"));
+      if (tpl instanceof Response) return tpl;
+      const body = await readBody(c);
+      if (body instanceof Response) return body;
+      const title = typeof body.title === "string" ? body.title.trim() : "";
+      if (title.length < 1 || title.length > MAX_TITLE) return c.json({ error: "invalid_title" }, 400);
+      // active optional; when present must be a boolean-ish 0/1.
+      let active = tpl.active;
+      if (body.active !== undefined) {
+        if (typeof body.active !== "boolean") return c.json({ error: "invalid_active" }, 400);
+        active = body.active ? 1 : 0;
+      }
+      const actor = c.get("session").username;
+      await c.env.DB.batch([
+        c.env.DB
+          .prepare("UPDATE checklist_templates SET title = ?2, active = ?3 WHERE id = ?1 AND kind = 'generic_inspection'")
+          .bind(tpl.id, title, active),
+        auditStmt(c, actor, "checklist_inspection_edit", String(tpl.id), { template_id: tpl.id, title, active }),
+      ]);
+      return c.json({ ok: true, id: tpl.id }, 200);
+    },
+  );
+
+  // ── POST /api/fieldops/checklist/inspection/:template_id/delete — drop a library template + items. ─
+  // Instances already assigned keep working: an inspection instance references its snapshot item-states
+  // (checklist_item_states.source_item_id is lineage only, no FK), so deleting the template + its
+  // authoring items never touches a live assigned instance.
+  app.post(
+    "/api/fieldops/checklist/inspection/:template_id/delete",
+    gates.requireSession,
+    gates.requireCapability(CAP_CHECKLIST),
+    async (c) => {
+      const tpl = await requireGenericTemplate(c, c.req.param("template_id"));
+      if (tpl instanceof Response) return tpl;
+      const actor = c.get("session").username;
+      // (W4) items first (unaudited), then the template as the statement immediately before the audit.
+      await c.env.DB.batch([
+        c.env.DB.prepare("DELETE FROM checklist_items WHERE template_id = ?1").bind(tpl.id),
+        c.env.DB.prepare("DELETE FROM checklist_templates WHERE id = ?1 AND kind = 'generic_inspection'").bind(tpl.id),
+        auditStmt(c, actor, "checklist_inspection_delete", String(tpl.id), { template_id: tpl.id }),
+      ]);
+      return c.json({ ok: true, id: tpl.id }, 200);
+    },
+  );
+
+  // ── POST /api/fieldops/checklist/inspection/:template_id/item — add an item to a library template. ─
+  app.post(
+    "/api/fieldops/checklist/inspection/:template_id/item",
+    gates.requireSession,
+    gates.requireCapability(CAP_CHECKLIST),
+    async (c) => {
+      const tpl = await requireGenericTemplate(c, c.req.param("template_id"));
+      if (tpl instanceof Response) return tpl;
+      const body = await readBody(c);
+      if (body instanceof Response) return body;
+      const item = parseItem(c, body);
+      if (item instanceof Response) return item;
+      const actor = c.get("session").username;
+      const res = await c.env.DB.batch([
+        c.env.DB
+          .prepare(
+            "INSERT INTO checklist_items (template_id, seq, item_type, label, form_code, target_count, config_json) VALUES (?1,?2,?3,?4,?5,?6,?7) RETURNING id",
+          )
+          .bind(tpl.id, item.seq, item.item_type, item.label, item.form_code, item.target_count, item.config_json),
+        auditStmt(c, actor, "checklist_inspection_item_add", String(tpl.id), { template_id: tpl.id, ...item }),
+      ]);
+      const newId = (res[0].results?.[0] as { id: number } | undefined)?.id ?? null;
+      return c.json({ ok: true, id: newId }, 201);
+    },
+  );
+
+  // ── POST /api/fieldops/checklist/inspection/:template_id/item/:item_id/edit — replace item fields. ─
+  app.post(
+    "/api/fieldops/checklist/inspection/:template_id/item/:item_id/edit",
+    gates.requireSession,
+    gates.requireCapability(CAP_CHECKLIST),
+    async (c) => {
+      const tpl = await requireGenericTemplate(c, c.req.param("template_id"));
+      if (tpl instanceof Response) return tpl;
+      const itemId = parseInt(c.req.param("item_id"), 10);
+      if (isNaN(itemId)) return c.json({ error: "invalid_id" }, 400);
+      const body = await readBody(c);
+      if (body instanceof Response) return body;
+      const item = parseItem(c, body);
+      if (item instanceof Response) return item;
+      const actor = c.get("session").username;
+      // Scope the UPDATE to THIS template's own content rows so it can't rewrite another template's
+      // item. changes()=0 → 404 (unknown item on this template).
+      const res = await c.env.DB.batch([
+        c.env.DB
+          .prepare(
+            "UPDATE checklist_items SET seq=?2, item_type=?3, label=?4, form_code=?5, target_count=?6, config_json=?7 WHERE id=?1 AND template_id=?8 AND suppresses_default_item_id IS NULL",
+          )
+          .bind(itemId, item.seq, item.item_type, item.label, item.form_code, item.target_count, item.config_json, tpl.id),
+        c.env.DB
+          .prepare(
+            "INSERT INTO audit_log (actor_username, action, target_username, detail) SELECT ?1,?2,?3,?4 WHERE changes()=1",
+          )
+          .bind(actor, "checklist_inspection_item_edit", String(itemId), JSON.stringify({ template_id: tpl.id, item_id: itemId, ...item })),
+      ]);
+      if ((res[0].meta.changes ?? 0) === 0) return c.json({ error: "not_found" }, 404);
+      return c.json({ ok: true, id: itemId }, 200);
+    },
+  );
+
+  // ── POST /api/fieldops/checklist/inspection/:template_id/item/:item_id/delete — remove one item. ──
+  app.post(
+    "/api/fieldops/checklist/inspection/:template_id/item/:item_id/delete",
+    gates.requireSession,
+    gates.requireCapability(CAP_CHECKLIST),
+    async (c) => {
+      const tpl = await requireGenericTemplate(c, c.req.param("template_id"));
+      if (tpl instanceof Response) return tpl;
+      const itemId = parseInt(c.req.param("item_id"), 10);
+      if (isNaN(itemId)) return c.json({ error: "invalid_id" }, 400);
+      const actor = c.get("session").username;
+      const res = await c.env.DB.batch([
+        c.env.DB.prepare("DELETE FROM checklist_items WHERE id=?1 AND template_id=?2").bind(itemId, tpl.id),
+        c.env.DB
+          .prepare(
+            "INSERT INTO audit_log (actor_username, action, target_username, detail) SELECT ?1,?2,?3,?4 WHERE changes()=1",
+          )
+          .bind(actor, "checklist_inspection_item_delete", String(itemId), JSON.stringify({ template_id: tpl.id, item_id: itemId })),
+      ]);
+      if ((res[0].meta.changes ?? 0) === 0) return c.json({ error: "not_found" }, 404);
+      return c.json({ ok: true, id: itemId }, 200);
+    },
+  );
+
+  // ── POST /api/fieldops/checklist/assign — assign a generic_inspection to a manager/subcontractor. ─
+  // Body { template_id (a generic_inspection), assignee_personnel_id (an ACTIVE personnel), job_id?,
+  // due_date? ('YYYY-MM-DD') }. Creates a kind='inspection' instance (assignee, instance_date=due_date
+  // or NULL, job_id optional) + SNAPSHOTS the template's items into checklist_item_states.
+  //
+  // RE-ASSIGN / DEDUP: the UNIQUE(kind, job_id, assignee_personnel_id, instance_date) governs. With a
+  // NULL job_id or NULL due_date, SQLite treats NULLs as DISTINCT → repeat assignments are ALLOWED
+  // (each is a fresh instance snapshotting the template as it stands — an inspection can recur). When
+  // BOTH job_id and due_date are set, a duplicate exact assignment is DEDUPED: INSERT OR IGNORE …
+  // RETURNING yields no row on collision → 409 'already_assigned'. Snapshot runs ONLY when the INSERT
+  // actually created the row (RETURNING id present) — no orphaned/duplicate states on a deduped repeat.
+  app.post(
+    "/api/fieldops/checklist/assign",
+    gates.requireSession,
+    gates.requireCapability(CAP_CHECKLIST),
+    async (c) => {
+      const body = await readBody(c);
+      if (body instanceof Response) return body;
+
+      const templateId = typeof body.template_id === "number" && Number.isInteger(body.template_id) ? body.template_id : NaN;
+      if (isNaN(templateId)) return c.json({ error: "invalid_template_id" }, 400);
+      const assigneeId =
+        typeof body.assignee_personnel_id === "number" && Number.isInteger(body.assignee_personnel_id)
+          ? body.assignee_personnel_id
+          : NaN;
+      if (isNaN(assigneeId)) return c.json({ error: "invalid_assignee" }, 400);
+
+      // Optional job_id: when present must be a real job (any lifecycle — a checklist can target any job).
+      let jobId: string | null = null;
+      if (body.job_id !== undefined && body.job_id !== null) {
+        if (typeof body.job_id !== "string") return c.json({ error: "invalid_job_id" }, 400);
+        const jobErr = await requireJob(c, body.job_id);
+        if (jobErr) return jobErr;
+        jobId = body.job_id;
+      }
+
+      // Optional due_date: a Pacific calendar date (same shape as the daily instance_date).
+      let dueDate: string | null = null;
+      if (body.due_date !== undefined && body.due_date !== null && body.due_date !== "") {
+        if (typeof body.due_date !== "string" || !DUE_DATE_RE.test(body.due_date)) {
+          return c.json({ error: "invalid_due_date" }, 400);
+        }
+        dueDate = body.due_date;
+      }
+
+      // The template must be a generic_inspection (not a daily_default/job_override/specific one).
+      const tpl = await c.env.DB.prepare(
+        "SELECT id FROM checklist_templates WHERE id = ?1 AND kind = 'generic_inspection'",
+      )
+        .bind(templateId)
+        .first<{ id: number }>();
+      if (!tpl) return c.json({ error: "template_not_found" }, 404);
+
+      // The assignee must be a real ACTIVE roster person (a retired person can't own a live instance).
+      const person = await c.env.DB.prepare("SELECT id FROM personnel WHERE id = ?1 AND active = 1")
+        .bind(assigneeId)
+        .first<{ id: number }>();
+      if (!person) return c.json({ error: "assignee_not_found" }, 404);
+
+      const actor = c.get("session").username;
+      // (W4) Create the instance + its audit ATOMICALLY in ONE batch — the instance is created iff the
+      // assign is audited (no window where a row exists with no forensic record). The audit keys on the
+      // natural (template/assignee/job/date) tuple, NOT the surrogate id, because D1's batch() can't
+      // thread a RETURNING id into a later statement's binds. Deduped on the UNIQUE key when job+date
+      // are both set (NULLs are distinct → a no-job/no-date inspection may recur).
+      const insBatch = await c.env.DB.batch([
+        c.env.DB
+          .prepare(
+            "INSERT OR IGNORE INTO checklist_instances (kind, job_id, assignee_personnel_id, instance_date, status) VALUES ('inspection', ?1, ?2, ?3, 'open')",
+          )
+          .bind(jobId, assigneeId, dueDate),
+        c.env.DB
+          .prepare(
+            "INSERT INTO audit_log (actor_username, action, target_username, detail) SELECT ?1,?2,?3,?4 WHERE changes()=1",
+          )
+          .bind(
+            actor,
+            "checklist_inspection_assign",
+            String(assigneeId),
+            JSON.stringify({ template_id: templateId, assignee_personnel_id: assigneeId, job_id: jobId, due_date: dueDate }),
+          ),
+      ]);
+      const created = (insBatch[0].meta.changes ?? 0) === 1;
+
+      // Resolve the instance (just-created, or the pre-existing one on the same natural key; IS = null-safe).
+      const inst = await c.env.DB
+        .prepare(
+          "SELECT id FROM checklist_instances WHERE kind = 'inspection' AND assignee_personnel_id = ?1 AND job_id IS ?2 AND instance_date IS ?3 ORDER BY id DESC LIMIT 1",
+        )
+        .bind(assigneeId, jobId, dueDate)
+        .first<{ id: number }>();
+      if (!inst) return c.json({ error: "internal_error" }, 500);
+      const instanceId = inst.id;
+
+      // Snapshot the template's items — but only if this instance has NONE yet. So a genuine duplicate
+      // (job+date already fully assigned) 409s, while an existing-but-EMPTY instance (a prior partial
+      // that failed after the audited INSERT but before the snapshot) SELF-HEALS by backfilling rather
+      // than orphaning a permanent un-completable row.
+      let itemCount =
+        (await c.env.DB.prepare("SELECT COUNT(*) AS n FROM checklist_item_states WHERE instance_id = ?1").bind(instanceId).first<{ n: number }>())?.n ?? 0;
+      if (!created && itemCount > 0) return c.json({ error: "already_assigned" }, 409);
+      if (itemCount === 0) {
+        const srcItems = await c.env.DB.prepare(
+          "SELECT id AS source_item_id, item_type, label, form_code, target_count FROM checklist_items WHERE template_id = ?1 AND suppresses_default_item_id IS NULL ORDER BY seq ASC, id ASC",
+        )
+          .bind(templateId)
+          .all<{ source_item_id: number; item_type: string; label: string | null; form_code: string | null; target_count: number | null }>();
+        const rows = srcItems.results ?? [];
+        if (rows.length) {
+          await c.env.DB.batch(
+            rows.map((it) =>
+              c.env.DB
+                .prepare(
+                  "INSERT INTO checklist_item_states (instance_id, source_item_id, item_type, label, form_code, target_count, status) VALUES (?1,?2,?3,?4,?5,?6,'open')",
+                )
+                .bind(instanceId, it.source_item_id, it.item_type, it.label, it.form_code, it.target_count),
+            ),
+          );
+        }
+        itemCount = rows.length;
+      }
+      return c.json({ ok: true, instance_id: instanceId, item_count: itemCount }, created ? 201 : 200);
+    },
+  );
+
+  // ── GET /api/fieldops/checklist/assigned — the actor's ASSIGNED inspection instances + item-states. ─
+  // Works for ANY linked personnel (manager OR subcontractor) — NOT gated on role, unlike the daily
+  // /mine surface. Resolves session → linked ACTIVE personnel; no link → empty list. For each
+  // inspection instance the actor is the assignee of, it reconciles form_linked/inspection items
+  // against the day's submissions (S4 loop-closure) WHEN the instance carries both a job_id AND a
+  // due_date (otherwise there's no (job, date) to match a submission) — reusing reconcileFormLinked
+  // (whose daily-only rollup leg no-ops on kind='inspection'). Completion of these items reuses the
+  // EXISTING S3/S4 /item-state/:id/complete + /uncomplete routes (ownership = instance.assignee = actor).
+  app.get(
+    "/api/fieldops/checklist/assigned",
+    gates.requireSession,
+    gates.requireCapability(CAP_TASKS_OWN),
+    async (c) => {
+      const person = await resolveActorPersonnel(c);
+      if (!person) return c.json({ inspections: [] }, 200);
+
+      const instRes = await c.env.DB.prepare(
+        `SELECT i.id, i.job_id, i.instance_date, i.status, i.created_at, j.project_name
+         FROM checklist_instances i
+         LEFT JOIN jobs j ON j.job_id = i.job_id
+         WHERE i.kind = 'inspection' AND i.assignee_personnel_id = ?1
+         ORDER BY i.status ASC, i.created_at DESC, i.id DESC
+         LIMIT 500`,
+      )
+        .bind(person.id)
+        .all<{ id: number; job_id: string | null; instance_date: string | null; status: string; created_at: number; project_name: string | null }>();
+      const instances = instRes.results ?? [];
+
+      const inspections = [];
+      for (const inst of instances) {
+        // Loop-closure only makes sense with a concrete (job, date) to match a submission against.
+        if (inst.job_id && inst.instance_date) {
+          await reconcileFormLinked(c, inst.id, inst.job_id, inst.instance_date);
+        }
+        const items = await c.env.DB.prepare(
+          "SELECT id, source_item_id, item_type, label, form_code, target_count, status, note, photo_ref, completed_by, completed_at, value_num FROM checklist_item_states WHERE instance_id = ?1 ORDER BY id ASC",
+        )
+          .bind(inst.id)
+          .all();
+        // Re-read the (possibly reconciled) instance status so a just-auto-closed item is reflected.
+        const fresh = await c.env.DB.prepare("SELECT status FROM checklist_instances WHERE id = ?1")
+          .bind(inst.id)
+          .first<{ status: string }>();
+        inspections.push({
+          instance: {
+            id: inst.id,
+            job_id: inst.job_id,
+            project_name: inst.project_name,
+            instance_date: inst.instance_date,
+            status: fresh?.status ?? inst.status,
+          },
+          items: items.results ?? [],
+        });
+      }
+      return c.json({ inspections }, 200);
     },
   );
 }
