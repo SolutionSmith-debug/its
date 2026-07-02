@@ -520,6 +520,36 @@ managers/admins stay unrestricted. See `docs/runbooks/subcontractor_tier.md` (§
    refused (403). An unplaced subcontractor gets a "must be placed on a job" message. A manager/admin is
    unaffected (full job-crew picker, no scoping).
 
+### SOP checklist content seed (`0028`)
+
+**Migration 0028** is CONTENT-ONLY (no schema change, no new routes): it replaces the migration-0026
+placeholder `daily_default` items with the **13-item Site-Supervisor-SOP daily checklist**
+(`Site_Supervisor_SOP 2.docx` — incl. the count-50 site-photos item, the count-2 CM check-ins item,
+and the two form_linked items: `jha` + the `Daily Field Report filed` capstone) and seeds the S6
+inspection library with **6 `generic_inspection` templates** from the ER Safety Manual
+(Box 2265234453251): Excavation/Trench, Scaffold, Crane & Rigging, Aerial Lift/MEWP,
+Ladder & Fall-Gear, Hot-Work/Welding. Guarded + idempotent: the delete+reseed runs only while the
+`daily_default` lacks the `'Daily Field Report filed'` sentinel item, and every INSERT is
+NOT-EXISTS-guarded (an admin-created same-title library template is never duplicated).
+
+#### Activation (operator — deploy boundary; escalates to the Developer-Operator)
+
+1. Apply migration **0028** to the live D1
+   (`npx wrangler d1 migrations apply its-safety-portal-db --remote`) **BEFORE** the next redeploy
+   per the standing rule — though this one is **LOW-RISK either order** (content-only: the deployed
+   Worker renders the new rows exactly like the old ones). (Always `git pull` `~/its` to latest
+   `main` BEFORE `wrangler d1 migrations apply` — the stale-migrations-list lockout class.)
+2. **No redeploy required** — the change is data. Notes:
+   - **Already-generated daily instances keep their snapshot** (S3 snapshots items at generation);
+     the new 13-item default takes effect on the **next day's roll** of each manager's checklist.
+   - **Per-job overrides authored against the OLD placeholder items are cleared** by the migration's
+     orphan-marker cleanup (suppression markers pointing at deleted default item ids); per-job ADDED
+     items survive. Re-author any wanted suppressions against the new items via the Job Tracker
+     checklist editor.
+3. **Smoke** (live): admin → Job Tracker → a job's Daily-checklist editor shows the 13 SOP items in
+   order (photos item target 50, check-ins target 2); the inspection library lists the 6 seeded
+   templates; a placed manager's next-day "My Tasks" daily checklist rolls the new items.
+
 ### Lockout recovery (break-glass) — escalate to the Developer-Operator
 
 If both admins are ever locked out (e.g. passwords lost, or both disabled), recovery runs

@@ -147,18 +147,23 @@ describe("checklist S4 — form_linked loop-closure (auto-check on a matching su
   });
 
   it("the instance flips to COMPLETE once every item (incl. the auto-checked form_linked) is done", async () => {
-    // Complete every seeded item WITHOUT mutating the shared daily_default seed: manually complete each
-    // manual_attest item, then file the daily-report submission to auto-check the form_linked one.
+    // Complete every seeded item WITHOUT mutating the shared daily_default seed (0028 SOP content):
+    // manually complete each manual_attest item, meet each count item's target, then file the jha +
+    // daily-report submissions that auto-check the two form_linked items.
     const before = await mine(manager);
     expect(before.instance!.status).toBe("open");
     for (const it of before.items.filter((i) => i.item_type === "manual_attest")) {
       expect((await post(manager, `/api/fieldops/checklist/item-state/${it.id}/complete`)).status).toBe(200);
     }
-    // Still open — the form_linked item hasn't closed yet.
+    for (const it of before.items.filter((i) => i.item_type === "count")) {
+      expect((await post(manager, `/api/fieldops/checklist/item-state/${it.id}/complete`, { value_num: it.target_count ?? 1 })).status).toBe(200);
+    }
+    await seedSubmission("JOB-A", "jha-v3", before.instance!.instance_date);
+    // Still open — the daily-report form_linked item hasn't closed yet.
     expect((await mine(manager)).instance!.status).toBe("open");
     await seedSubmission("JOB-A", "daily-report-v1", before.instance!.instance_date);
     const after = await mine(manager);
-    expect(after.items.find((i) => i.item_type === "form_linked")!.status).toBe("done");
+    expect(after.items.filter((i) => i.item_type === "form_linked").every((i) => i.status === "done")).toBe(true);
     expect(after.instance!.status).toBe("complete");
   });
 });
@@ -167,7 +172,9 @@ describe("checklist S4 — count completion (value ≥ target)", () => {
   async function countItemId(target: number): Promise<{ id: number; instanceStatus: string }> {
     await addJobItem("JOB-A", "count", "Log deliveries", null, target);
     const body = await mine(manager);
-    const it = body.items.find((i) => i.item_type === "count")!;
+    // Find OUR job-added count item by label — the 0028 daily_default seed carries its own count
+    // items (photos target 50, check-ins target 2), so "first count item" is no longer ours.
+    const it = body.items.find((i) => i.item_type === "count" && i.label === "Log deliveries")!;
     return { id: it.id, instanceStatus: body.instance!.status };
   }
 
@@ -240,7 +247,8 @@ describe("checklist S4 — manual_attest still works; auto-close types reject ma
 
   it("an uncomplete on an auto-checked form_linked item → 400 'auto_close_only' (stays done)", async () => {
     const before = await mine(manager);
-    const fl = before.items.find((i) => i.item_type === "form_linked")!;
+    // Pick the daily-report form_linked item explicitly — the 0028 seed also carries a jha one.
+    const fl = before.items.find((i) => i.item_type === "form_linked" && i.form_code === "daily-report")!;
     await seedSubmission("JOB-A", "daily-report-v1", before.instance!.instance_date);
     expect((await mine(manager)).items.find((i) => i.id === fl.id)!.status).toBe("done");
     const res = await post(manager, `/api/fieldops/checklist/item-state/${fl.id}/uncomplete`);
