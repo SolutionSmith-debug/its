@@ -25,7 +25,7 @@ function cookieFrom(res: Response): string {
   return (res.headers.get("set-cookie") ?? "").split(";")[0];
 }
 
-async function provision(username: string, password: string, role: "submitter" | "admin"): Promise<void> {
+async function provision(username: string, password: string, role: "submitter" | "manager" | "admin"): Promise<void> {
   const res = await call("/api/internal/admin/users", {
     method: "POST",
     bearer: ADMIN_BEARER,
@@ -61,15 +61,24 @@ async function seedPersonnel(name: string, trade: string): Promise<number> {
 async function placePersonnel(personnelId: number, jobId: string): Promise<void> {
   await env.DB.prepare("UPDATE personnel SET current_job = ? WHERE id = ?").bind(jobId, personnelId).run();
 }
-async function seedTask(jobId: string, personnelId: number | null, description: string, status: string, createdAt: number): Promise<void> {
+async function seedTask(jobId: string, personnelId: number | null, description: string, status: string, createdAt: number): Promise<number> {
   await env.DB.prepare(
     "INSERT INTO task_assignments (job_id, personnel_id, description, status, created_at) VALUES (?,?,?,?,?)",
   ).bind(jobId, personnelId, description, status, createdAt).run();
+  return (await env.DB.prepare("SELECT id FROM task_assignments WHERE job_id=? AND description=?")
+    .bind(jobId, description).first<{ id: number }>())!.id;
 }
-async function seedTimeEntry(jobId: string, personnelId: number, uuid: string, createdAt: number): Promise<void> {
+// R7: optional task_id (the attribution join source) + actor (the recorded-by stamp).
+async function seedTimeEntry(
+  jobId: string,
+  personnelId: number | null,
+  uuid: string,
+  createdAt: number,
+  opts: { taskId?: number | null; actor?: string } = {},
+): Promise<void> {
   await env.DB.prepare(
-    "INSERT INTO time_entries (uuid, job_id, personnel_id, work_started_at, work_ended_at, hours, notes, created_at, actor_username) VALUES (?,?,?,?,?,?,?,?,?)",
-  ).bind(uuid, jobId, personnelId, createdAt - 3600, createdAt, 8, "note", createdAt, "admin.one").run();
+    "INSERT INTO time_entries (uuid, job_id, personnel_id, task_id, work_started_at, work_ended_at, hours, notes, created_at, actor_username) VALUES (?,?,?,?,?,?,?,?,?,?)",
+  ).bind(uuid, jobId, personnelId, opts.taskId ?? null, createdAt - 3600, createdAt, 8, "note", createdAt, opts.actor ?? "admin.one").run();
 }
 async function seedEquipment(name: string): Promise<number> {
   await env.DB.prepare("INSERT INTO equipment (name, kind, identifier, active) VALUES (?,?,?,1)")
@@ -91,8 +100,10 @@ beforeEach(async () => {
   // 0004 dev-seeds jobs; clear everything for deterministic status-filter assertions.
   await env.DB.batch([
     env.DB.prepare("DELETE FROM users"),
-    env.DB.prepare("DELETE FROM task_assignments"),
+    // time_entries.task_id REFERENCES task_assignments(id) → children first (R7 seeds task-linked
+    // time entries).
     env.DB.prepare("DELETE FROM time_entries"),
+    env.DB.prepare("DELETE FROM task_assignments"),
     env.DB.prepare("DELETE FROM inspections"),
     env.DB.prepare("DELETE FROM equipment_location"),
     env.DB.prepare("DELETE FROM equipment"),
@@ -322,5 +333,101 @@ describe("GET /api/fieldops/jobs/:job_id", () => {
     const body2 = (await (await call(`/api/fieldops/jobs/JOB-A?limit=50&time_cursor=${body.cursors.time}`, { cookie: c })).json()) as { job: any };
     expect(body2.job.time_entries).toHaveLength(25);
     for (const t of body2.job.time_entries) expect(page1.has(t.uuid)).toBe(false);
+  });
+});
+
+// ── R7 — detail attribution contract (time-leg joins, crew assignability, viewer_personnel) ────
+describe("GET /api/fieldops/jobs/:job_id — R7 attribution contract", () => {
+  beforeEach(async () => {
+    await provision("admin.one", "password123", "admin");
+    await provision("submitter.jim", "password123", "submitter");
+  });
+
+  it("time entries carry task_description (task_id join) and a display-name-only recorded_by", async () => {
+    await seedJob("JOB-A", "Alpha", "active");
+    const pid = await seedPersonnel("Alice Chen", "operator"); // username alice.chen
+    const taskId = await seedTask("JOB-A", pid, "Dig footings", "open", 100);
+    // "Admin One" links to the admin.one account → recorded_by_name resolves through the roster.
+    await seedPersonnel("Admin One", "office");
+    await seedTimeEntry("JOB-A", pid, "te-task", 200, { taskId, actor: "admin.one" });
+    // Job-level entry (no task) recorded by an account with NO roster row → honest nulls:
+    // task_description null, recorded_by_name null; the raw username is never exposed.
+    await seedTimeEntry("JOB-A", null, "te-plain", 190, { actor: "ghost.user" });
+
+    const c = await login("admin.one", "password123");
+    const body = (await (await call("/api/fieldops/jobs/JOB-A", { cookie: c })).json()) as { job: any };
+    const byUuid = new Map(body.job.time_entries.map((t: any) => [t.uuid, t]));
+
+    const withTask = byUuid.get("te-task") as any;
+    expect(withTask.task_id).toBe(taskId);
+    expect(withTask.task_description).toBe("Dig footings");
+    expect(withTask.recorded_by_username).toBeUndefined(); // display-name-only (R7 review BLOCK fix)
+    expect(withTask.recorded_by_name).toBe("Admin One");
+
+    const plain = byUuid.get("te-plain") as any;
+    expect(plain.task_id).toBeNull();
+    expect(plain.task_description).toBeNull();
+    // (R7 review BLOCK fix) display-name-only: the raw username is NEVER exposed — an unresolved
+    // recorder yields NULL name and no username field at all.
+    expect(plain.recorded_by_username).toBeUndefined();
+    expect(plain.recorded_by_name).toBeNull(); // creator genuinely has no roster row
+    expect(plain.personnel_name).toBeNull(); // job-level subject
+  });
+
+  it("detail crew rows carry account_role: submitter / manager / null for a no-login person", async () => {
+    await provision("mo.manager", "password123", "manager");
+    await seedJob("JOB-A", "Alpha", "active");
+    // seedPersonnel derives username from the name → these link to the accounts above.
+    const sub = await seedPersonnel("Submitter Jim", "laborer"); // username submitter.jim
+    const mgr = await seedPersonnel("Mo Manager", "foreman"); // username mo.manager
+    const noLogin = await seedPersonnel("No Login Ned", "laborer");
+    await env.DB.prepare("UPDATE personnel SET username = NULL WHERE id = ?").bind(noLogin).run();
+    for (const id of [sub, mgr, noLogin]) await placePersonnel(id, "JOB-A");
+
+    const c = await login("admin.one", "password123");
+    const body = (await (await call("/api/fieldops/jobs/JOB-A", { cookie: c })).json()) as { job: any };
+    const roleByName = new Map(body.job.crew.map((p: any) => [p.name, p.account_role]));
+    expect(roleByName.get("Submitter Jim")).toBe("submitter");
+    expect(roleByName.get("Mo Manager")).toBe("manager");
+    expect(roleByName.get("No Login Ned")).toBeNull();
+
+    // (R7 review WARN fix) account_role is org-hierarchy metadata — a plain reader (submitter,
+    // cap.jobtracker.read only) gets NULL for every crew row; only assign-capable viewers see roles.
+    const cSub = await login("submitter.jim", "password123");
+    const subBody = (await (await call("/api/fieldops/jobs/JOB-A", { cookie: cSub })).json()) as { job: any };
+    for (const row of subBody.job.crew) expect(row.account_role).toBeNull();
+  });
+
+  it("LIST returns viewer_current_job (the viewer's own placement) — null when unlinked", async () => {
+    await seedJob("JOB-A", "Alpha", "active");
+    const mine = await seedPersonnel("Admin One", "office"); // username admin.one
+    await placePersonnel(mine, "JOB-A");
+
+    const cAdmin = await login("admin.one", "password123");
+    const placed = (await (await call("/api/fieldops/jobs", { cookie: cAdmin })).json()) as any;
+    expect(placed.viewer_current_job).toBe("JOB-A");
+
+    const cSub = await login("submitter.jim", "password123"); // no roster row
+    const unlinked = (await (await call("/api/fieldops/jobs", { cookie: cSub })).json()) as any;
+    expect(unlinked.viewer_current_job).toBeNull();
+  });
+
+  it("viewer_personnel resolves the session user's linked ACTIVE roster row; null when unlinked", async () => {
+    await seedJob("JOB-A", "Alpha", "active");
+    const mine = await seedPersonnel("Admin One", "office"); // username admin.one → the viewer's row
+
+    const cAdmin = await login("admin.one", "password123");
+    const withLink = (await (await call("/api/fieldops/jobs/JOB-A", { cookie: cAdmin })).json()) as any;
+    expect(withLink.viewer_personnel).toEqual({ id: mine, name: "Admin One" });
+
+    // submitter.jim has no personnel row → null (the SPA says so instead of a phantom "Me").
+    const cSub = await login("submitter.jim", "password123");
+    const noLink = (await (await call("/api/fieldops/jobs/JOB-A", { cookie: cSub })).json()) as any;
+    expect(noLink.viewer_personnel).toBeNull();
+
+    // A RETIRED (active=0) link also resolves to null — retired personnel can't take new time.
+    await env.DB.prepare("UPDATE personnel SET active = 0 WHERE id = ?").bind(mine).run();
+    const retired = (await (await call("/api/fieldops/jobs/JOB-A", { cookie: cAdmin })).json()) as any;
+    expect(retired.viewer_personnel).toBeNull();
   });
 });

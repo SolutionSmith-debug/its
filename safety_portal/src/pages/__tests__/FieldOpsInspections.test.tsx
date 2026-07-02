@@ -590,16 +590,19 @@ describe("FieldOpsInspections — outstanding assignments (R5)", () => {
   });
 });
 
-describe("HomePage — Inspection checklists card gate", () => {
+describe("HomePage — Checklists card gate (R7 rename: was 'Inspection checklists')", () => {
   it("renders the card for a holder of cap.checklist.manage", () => {
     vi.mocked(useAuth).mockReturnValue(authWith(["cap.checklist.manage"]));
     const { container } = render(<HomePage onNavigate={() => {}} />);
-    expect(container.textContent ?? "").toContain("Inspection checklists");
+    const titles = Array.from(container.querySelectorAll(".form-card__title")).map((el) => el.textContent);
+    expect(titles).toContain("Checklists");
+    expect(titles).not.toContain("Inspection checklists"); // renamed per Open Q4
   });
 
   it("hides the card without cap.checklist.manage", () => {
     vi.mocked(useAuth).mockReturnValue(authWith(["cap.tasks.own"]));
     const { container } = render(<HomePage onNavigate={() => {}} />);
-    expect(container.textContent ?? "").not.toContain("Inspection checklists");
+    const titles = Array.from(container.querySelectorAll(".form-card__title")).map((el) => el.textContent);
+    expect(titles).not.toContain("Checklists");
   });
 });

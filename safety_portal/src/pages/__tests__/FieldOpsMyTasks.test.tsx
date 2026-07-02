@@ -553,3 +553,64 @@ describe("HomePage — My Tasks card gate", () => {
     expect(container.textContent ?? "").not.toContain("My Tasks");
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// R7 — "Log time" quick action + job-group links (via App's onOpenJob callback).
+// ─────────────────────────────────────────────────────────────────────────────
+describe("FieldOpsMyTasks — R7 Log time quick action + job links", () => {
+  it("with cap.time.log + onOpenJob, 'Log time' deep-links to the placed manager's job", async () => {
+    vi.mocked(useAuth).mockReturnValue(authWith(["cap.tasks.own", "cap.time.log"]));
+    tasksOk();
+    vi.mocked(checklist.fetchMyChecklist).mockResolvedValue({ instance: INSTANCE, items: CHECKLIST_ITEMS, reason: null });
+    const onOpenJob = vi.fn();
+    const { getByLabelText, container } = render(<FieldOpsMyTasks onBack={() => {}} onOpenJob={onOpenJob} />);
+    await waitFor(() => expect(getByLabelText("Log time in the Job Tracker")).not.toBeNull());
+    // The daily instance names the placement → the caption names the job and the click carries it.
+    await waitFor(() => expect(container.textContent ?? "").toContain("Opens Alpha to log hours."));
+    fireEvent.click(getByLabelText("Log time in the Job Tracker"));
+    expect(onOpenJob).toHaveBeenCalledWith("JOB-A");
+  });
+
+  it("without a known placement the quick action opens the Job Tracker plainly (undefined)", async () => {
+    vi.mocked(useAuth).mockReturnValue(authWith(["cap.tasks.own", "cap.time.log"]));
+    tasksOk();
+    const onOpenJob = vi.fn();
+    const { getByLabelText, container } = render(<FieldOpsMyTasks onBack={() => {}} onOpenJob={onOpenJob} />);
+    await waitFor(() => expect(getByLabelText("Log time in the Job Tracker")).not.toBeNull());
+    expect(container.textContent ?? "").toContain("pick your job to log hours");
+    fireEvent.click(getByLabelText("Log time in the Job Tracker"));
+    expect(onOpenJob).toHaveBeenCalledWith(undefined);
+  });
+
+  it("hides the quick action without cap.time.log, and without onOpenJob", async () => {
+    // No cap.time.log → no button even with the callback.
+    vi.mocked(useAuth).mockReturnValue(authWith(["cap.tasks.own"]));
+    tasksOk();
+    const a = render(<FieldOpsMyTasks onBack={() => {}} onOpenJob={vi.fn()} />);
+    await waitFor(() => expect(a.container.textContent ?? "").toContain("Dig footings"));
+    expect(a.queryByLabelText("Log time in the Job Tracker")).toBeNull();
+    a.unmount();
+    // cap.time.log but NO callback (actor can't read the tracker) → no button either.
+    vi.mocked(useAuth).mockReturnValue(authWith(["cap.tasks.own", "cap.time.log"]));
+    tasksOk();
+    const b = render(<FieldOpsMyTasks onBack={() => {}} />);
+    await waitFor(() => expect(b.container.textContent ?? "").toContain("Dig footings"));
+    expect(b.queryByLabelText("Log time in the Job Tracker")).toBeNull();
+  });
+
+  it("job-group headers link to the Job Tracker detail when onOpenJob is present, plain text when absent", async () => {
+    tasksOk();
+    const onOpenJob = vi.fn();
+    const { getByLabelText } = render(<FieldOpsMyTasks onBack={() => {}} onOpenJob={onOpenJob} />);
+    const link = await waitFor(() => getByLabelText("Open Alpha in the Job Tracker"));
+    fireEvent.click(link);
+    expect(onOpenJob).toHaveBeenCalledWith("JOB-A");
+  });
+
+  it("group headers render unlinked without the callback (no dead buttons)", async () => {
+    tasksOk();
+    const { container, queryByLabelText } = render(<FieldOpsMyTasks onBack={() => {}} />);
+    await waitFor(() => expect(container.textContent ?? "").toContain("Alpha"));
+    expect(queryByLabelText("Open Alpha in the Job Tracker")).toBeNull();
+  });
+});
