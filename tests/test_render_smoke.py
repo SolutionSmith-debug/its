@@ -223,6 +223,18 @@ def _expected_structural_strings(definition: dict, *, mode: str) -> list[str]:
             for b in section.get("blocks", [])[:2]:
                 add(b.get("heading"))
                 add(b.get("body"))
+        elif typ == "guidance":
+            # Both PDF renderers deliberately render a guidance section as its HEADING
+            # + CALLOUT one-liners ONLY (form_pdf._section_flowables — the p/bullets
+            # prose is on-screen-only, or the weekly packet would bloat). So heading +
+            # callouts are the needles; p/bullets text must NOT be expected here.
+            add(section.get("heading"))
+            for b in section.get("blocks", []):
+                if b.get("type") == "callout":
+                    add(b.get("text"))
+        elif typ == "form_link":
+            # Rendered as the label + a fixed "see filed forms" pointer line.
+            add(section.get("label"))
     # De-dupe while preserving order; drop empties.
     seen: set[str] = set()
     uniq: list[str] = []

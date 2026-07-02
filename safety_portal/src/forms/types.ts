@@ -51,6 +51,14 @@ export interface ContentBlock {
   body: string;
 }
 
+/** One block of read-only SOP guidance (SOP daily form, slice D1) — plain text only
+ *  (paragraph / bullet list / styled callout), transcribed VERBATIM from the source
+ *  document. Guidance contributes NO submission value keys. */
+export type GuidanceBlock =
+  | { type: "p"; text: string }
+  | { type: "bullets"; items: string[] }
+  | { type: "callout"; style: "critical" | "quality" | "note"; text: string };
+
 export type Section =
   | { type: "header"; title?: string; fields: Field[] }
   | { type: "static_text"; text: string; emphasis?: "footer" | "heading" | "legal" }
@@ -58,7 +66,11 @@ export type Section =
   | { type: "signature_table"; key: string; title?: string; columns: Field[]; min_rows?: number; allow_add?: boolean }
   | { type: "checklist"; key: string; title?: string; groups: Group[] }
   | { type: "freeform"; key: string; label: string; input?: "textarea" | "text" }
-  | { type: "content_blocks"; key: string; title?: string; source_pdf?: string; blocks: ContentBlock[] };
+  | { type: "content_blocks"; key: string; title?: string; source_pdf?: string; blocks: ContentBlock[] }
+  // Read-only SOP guidance + deep link to another form type (SOP daily form, slice D1).
+  // Neither contributes a value key — the fill state is unaffected by their presence.
+  | { type: "guidance"; heading: string; blocks: GuidanceBlock[] }
+  | { type: "form_link"; label: string; parent_form_code: string; helper?: string };
 
 export interface FormDefinition {
   form_code: string;

@@ -153,6 +153,12 @@ function expectedCounts(def: FormDefinition): ExpectedCounts {
         for (const g of s.groups) items += g.items.length; // one `.fr__item` per item
         break;
       }
+      case "guidance":
+        sections += 1; // read-only SOP text — no interactive control
+        break;
+      case "form_link":
+        sections += 1; // the "Create <form> →" button section — no value control
+        break;
     }
   }
   return { sections, fields, cells, items, signaturePads };
@@ -197,6 +203,19 @@ function expectedNeedles(def: FormDefinition): string[] {
           add(g.label);
           for (const it of g.items.slice(0, 3)) add(it.label);
         }
+        break;
+      case "guidance":
+        // The SPA renders the FULL guidance prose (unlike the PDF's heading+callouts
+        // truncation) — heading + a representative subset of block text are needles.
+        add(s.heading);
+        for (const b of s.blocks.slice(0, 2)) {
+          if (b.type === "p" || b.type === "callout") add(b.text);
+          else add(b.items[0]);
+        }
+        for (const b of s.blocks) if (b.type === "callout") add(b.text);
+        break;
+      case "form_link":
+        add(s.label);
         break;
     }
   }

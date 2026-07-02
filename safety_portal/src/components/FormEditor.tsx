@@ -294,6 +294,17 @@ function SectionEditor({ section, onChange }: { section: Section; onChange: (s: 
       return <FreeformEditor section={section} onChange={onChange} />;
     case "content_blocks":
       return <ContentBlocksEditor section={section} onChange={onChange} />;
+    // guidance / form_link (SOP daily form, slice D1) are authored in the form
+    // DEFINITION via the git publish pipeline — the builder shows them read-only so an
+    // Edit of a form that carries them (daily-report-v2) never crashes the section list.
+    case "guidance":
+    case "form_link":
+      return (
+        <p className="muted">
+          This section is maintained in the form definition (publish pipeline) and is not
+          editable in the builder. Other sections of this form can still be edited.
+        </p>
+      );
   }
 }
 

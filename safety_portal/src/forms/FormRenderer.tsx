@@ -37,13 +37,28 @@ export function initialValues(def: FormDefinition): FormValues {
 
 const emptyRow = (cols: Field[]): Row => Object.fromEntries(cols.map((c) => [c.key, ""]));
 
+/** Deep-link adapter for `form_link` sections (SOP daily form, slice D1). The renderer
+ *  itself never navigates or fetches — the HOST (the Daily tab, slice D2) supplies this
+ *  to wire the "Create <form> →" button to the existing openForm prefill flow and the
+ *  filed-indicator to the family-match loop-closure query. With NO adapter the button
+ *  renders disabled with a "available from the Daily tab" helper — so the plain
+ *  Submit-a-Form fill path stays inert and send-free. */
+export interface FormLinkAdapter {
+  /** Open the create-form flow for the linked parent form type. */
+  open: (parentFormCode: string) => void;
+  /** Filed indicator (e.g. "Filed ✓ 2:14 PM") for the linked parent, or null. */
+  filedLabel?: (parentFormCode: string) => string | null;
+}
+
 interface Props {
   def: FormDefinition;
   values: FormValues;
   setValues: Dispatch<SetStateAction<FormValues>>;
+  /** Optional D2 hook — see FormLinkAdapter. Absent on the generic fill page. */
+  formLinks?: FormLinkAdapter;
 }
 
-export function FormRenderer({ def, values, setValues }: Props) {
+export function FormRenderer({ def, values, setValues, formLinks }: Props) {
   const setField = (key: string, val: string) =>
     setValues((v) => ({ ...v, [key]: val }));
 
@@ -87,6 +102,7 @@ export function FormRenderer({ def, values, setValues }: Props) {
           addRow={addRow}
           removeRow={removeRow}
           setChecklist={setChecklist}
+          formLinks={formLinks}
         />
       ))}
     </div>
@@ -102,6 +118,7 @@ interface SectionProps {
   addRow: (sec: string, cols: Field[]) => void;
   removeRow: (sec: string, idx: number) => void;
   setChecklist: (sec: string, item: string, patch: { response?: string; comment?: string }) => void;
+  formLinks?: FormLinkAdapter;
 }
 
 function SectionView(p: SectionProps) {
@@ -159,6 +176,58 @@ function SectionView(p: SectionProps) {
     case "checklist":
       return <ChecklistView section={s} state={(p.values[s.key] as ChecklistState) ?? {}}
         onChange={(item, patch) => p.setChecklist(s.key, item, patch)} />;
+    // Read-only SOP guidance (slice D1): heading + paragraphs / bullet lists / styled
+    // callouts, VERBATIM from the definition. Contributes no fill state.
+    case "guidance":
+      return (
+        <section className="fr__section fr__guidance">
+          <h2 className="fr__section-title">{s.heading}</h2>
+          {s.blocks.map((b, i) => {
+            if (b.type === "p") return <p key={i} className="fr__guidance-p">{b.text}</p>;
+            if (b.type === "bullets") {
+              return (
+                <ul key={i} className="fr__guidance-bullets">
+                  {b.items.map((item, j) => <li key={j}>{item}</li>)}
+                </ul>
+              );
+            }
+            // callout — visually distinct per style (gold legal look for note/quality,
+            // danger edge for critical); the TEXT itself already carries its own
+            // "CRITICAL RULE:" / "QUALITY RULE:" / "NOTE:" prefix verbatim.
+            return (
+              <div key={i} role="note" className={`fr__callout fr__callout--${b.style}`}>
+                {b.text}
+              </div>
+            );
+          })}
+        </section>
+      );
+    // Deep link to another form type (slice D1). With no adapter (the generic fill
+    // page) the button is disabled and explains where the live link lives; the Daily
+    // tab (D2) supplies FormLinkAdapter to wire the real deep-link + filed indicator.
+    case "form_link": {
+      const filed = p.formLinks?.filedLabel?.(s.parent_form_code) ?? null;
+      return (
+        <section className="fr__section fr__form-link">
+          <button
+            type="button"
+            className="btn btn--primary"
+            disabled={!p.formLinks}
+            onClick={p.formLinks ? () => p.formLinks?.open(s.parent_form_code) : undefined}
+          >
+            {/* The arrow is button CHROME (the definition label stays plain text so the
+                PDF renderer / needle tests never depend on a non-WinAnsi glyph). */}
+            {s.label} →
+          </button>
+          {filed ? <span className="fr__form-link-filed">{filed}</span> : null}
+          {p.formLinks ? (
+            s.helper ? <p className="fr__form-link-helper muted">{s.helper}</p> : null
+          ) : (
+            <p className="fr__form-link-helper muted">available from the Daily tab</p>
+          )}
+        </section>
+      );
+    }
   }
 }
 

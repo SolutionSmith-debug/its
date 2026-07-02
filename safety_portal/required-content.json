@@ -63,9 +63,30 @@
       "required_field_keys": ["pct_rated_capacity_used", "lift_director_name"]
     },
     "daily-report": {
-      "comment": "[PENDING OPERATOR CONFIRMATION] Progress form with NO signature requirements.",
+      "comment": [
+        "[PENDING OPERATOR CONFIRMATION — SOP daily form D1, 2026-07-02] Progress form with NO",
+        "signature requirements. required_field_keys is the DFR legal floor CARRIED FROM v1 into",
+        "the SOP-guided v2: the data keys BOTH versions share. It is deliberately the v1∩v2 set —",
+        "this spec is identity-keyed, so every daily-report-*.json (v1 AND v2) must satisfy it",
+        "(tests/test_form_definitions.py applies it to each shipped version). v1-only keys",
+        "(job_name, report_date) moved to the submission envelope (job / work_date) in v2 and",
+        "therefore cannot be required here; v2-only additions (guidance/form_link sections, the",
+        "SOP duty confirms) likewise cannot. The floor guarantees no DFR data field is lost by a",
+        "future edit of either version."
+      ],
       "required_signature_inputs_min": 0,
-      "required_section_types": []
+      "required_section_types": [],
+      "required_field_keys": [
+        "weather",
+        "average_temp",
+        "prepared_by",
+        "crew_progress",
+        "tomorrows_goals",
+        "equipment_on_site",
+        "deliveries_received",
+        "site_visitors",
+        "comments"
+      ]
     }
   },
   "identities": {}

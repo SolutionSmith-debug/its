@@ -80,6 +80,8 @@ interface CatalogParentEntry {
   name: string;
   display_order: number;
   category?: FormCategory;
+  /** OPTIONAL launch surface ("daily-tab") — see catalog.schema.json. D2 consumes it. */
+  launch?: string;
   forms: CatalogFormEntry[];
 }
 interface CatalogManifest {
@@ -108,6 +110,10 @@ export interface CatalogParent {
   name: string;
   /** Safety vs Progress (P1); an absent manifest category defaults to "safety". */
   category: FormCategory;
+  /** OPTIONAL launch surface (SOP daily form D1): "daily-tab" = launched from the Daily
+   *  tab experience. Slice D2 consumes it (hide from the Submit-a-Form CREATE picker);
+   *  carried through here so pickers can read it without re-parsing the manifest. */
+  launch?: string;
   /** definition code for a no-variant parent; null when the parent has variants */
   form_code: string | null;
   variants: CatalogVariant[];
@@ -161,6 +167,7 @@ export function formCatalog(): CatalogParent[] {
         parent_form_code: parent.parent_form_code,
         name: parent.name,
         category: parent.category ?? DEFAULT_WORKFLOW,
+        ...(parent.launch !== undefined ? { launch: parent.launch } : {}),
         form_code: active[0].current_form_code,
         variants: [],
       });
@@ -169,6 +176,7 @@ export function formCatalog(): CatalogParent[] {
         parent_form_code: parent.parent_form_code,
         name: parent.name,
         category: parent.category ?? DEFAULT_WORKFLOW,
+        ...(parent.launch !== undefined ? { launch: parent.launch } : {}),
         form_code: null,
         variants: variants.map((f) => ({
           variant_label: f.variant_label as string,

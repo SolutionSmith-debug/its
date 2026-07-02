@@ -137,3 +137,92 @@ def test_live_definition_satisfies_required_content(path: Path) -> None:
         )
     except PublishApplyError as exc:
         raise AssertionError(f"{path.stem}: {exc}") from exc
+
+
+# ── guidance + form_link sections (SOP daily form, slice D1) ────────────────────
+_CATALOG = json.loads((_ROOT / "safety_portal" / "catalog.json").read_text())
+_CATALOG_PARENTS = {p["parent_form_code"] for p in _CATALOG["parents"]}
+
+
+@pytest.mark.parametrize("path", DEF_PATHS, ids=lambda p: p.stem)
+def test_form_link_parents_exist_in_catalog(path: Path) -> None:
+    """Every form_link section's parent_form_code must resolve to a catalog form type —
+    the repo-side (live-HEAD) twin of the worker enqueue gate's KNOWN_PARENT_FORM_CODES
+    check (a JSON Schema can't cross-file check, so this test is the enforcement)."""
+    for s in _load(path)["sections"]:
+        if s["type"] == "form_link":
+            assert s["parent_form_code"] in _CATALOG_PARENTS, (
+                f"{path.stem}: form_link → {s['parent_form_code']!r} is not a catalog form type"
+            )
+
+
+def test_daily_report_v2_sop_structure() -> None:
+    """daily-report-v2 (the SOP daily form) carries the spec's structure: the SOP part
+    headings verbatim, the three deep links, and the duty-confirm sections."""
+    d = _load(FORMS_DIR / "daily-report-v2.json")
+    headings = [s["heading"] for s in d["sections"] if s["type"] == "guidance"]
+    for expected in (
+        "7:30 AM — Arrive On Site — You Set the Tone",
+        "A. Morning Kickoff — 1. Sign Workers In",
+        "2. PPE Verification",
+        "3. Complete the Daily JHA (Job Hazard Analysis)",
+        "4. Visitor Log",
+        "6. Electrical Safety",
+        "7. General OSHA Compliance",
+        "C. Quality Control — Verifying the Work",
+        "13. Material & Equipment Deliveries",
+        "14. Safety Oversight",
+        "END OF DAY — Before Leaving the Site",
+        "F. General Expectations & Standards of Conduct",
+    ):
+        assert expected in headings, f"missing SOP guidance heading: {expected!r}"
+    # The three deep links (spec rows 4, 5, 12).
+    links = [s["parent_form_code"] for s in d["sections"] if s["type"] == "form_link"]
+    assert links == ["jha", "visitor-sign-in", "incident-report"]
+    # The named callouts are present with their styles.
+    callouts = {
+        (b["style"], b["text"].split(":")[0])
+        for s in d["sections"] if s["type"] == "guidance"
+        for b in s["blocks"] if b["type"] == "callout"
+    }
+    assert ("note", "NOTE") in callouts
+    assert ("critical", "CRITICAL RULE") in callouts
+    assert ("quality", "QUALITY RULE") in callouts
+    assert ("note", "FINAL STATEMENT") in callouts
+
+
+def test_daily_report_v2_dfr_field_coverage() -> None:
+    """Nothing lost vs the v1 Daily Field Report (the spec's coverage checklist):
+    job_name/report_date moved to the submission envelope (job / work_date header
+    fields); every other DFR datum keeps a value key in v2."""
+    d = _load(FORMS_DIR / "daily-report-v2.json")
+    keys: set[str] = set()
+    for s in d["sections"]:
+        if s["type"] == "header":
+            keys.update(f["key"] for f in s["fields"])
+        elif s["type"] == "checklist":
+            keys.add(s["key"])
+            for g in s["groups"]:
+                keys.update(it["key"] for it in g["items"])
+        elif s["type"] in ("repeating_table", "signature_table", "freeform"):
+            keys.add(s["key"])
+    # Envelope-bound header fields (the fill page / Daily tab provide these).
+    assert {"job", "work_date"} <= keys
+    # DFR coverage (spec): weather, average_temp, prepared_by, crew_progress,
+    # tomorrows_goals, equipment_on_site, deliveries_received, site_visitors, comments.
+    assert {
+        "weather", "average_temp", "prepared_by", "crew_progress", "tomorrows_goals",
+        "equipment_on_site", "deliveries_received", "site_visitors", "comments",
+    } <= keys
+    # The SOP duty confirms + tables added by v2 (spec rows 1-14).
+    assert {
+        "arrived_walkthrough", "workers_signed_in", "manpower_total", "ppe_verified",
+        "trenching_inspected", "electrical_safe", "osha_walk_done", "qc_spot_checks",
+        "photos_taken", "photos_uploaded", "safety_observations", "incidents_none",
+        "cm_checkin_am", "cm_checkin_pm", "eod_secure",
+    } <= keys
+    # crew_progress keeps the v1 column keys (the S5 rollup prefill targets them).
+    crew = next(s for s in d["sections"] if s.get("key") == "crew_progress")
+    assert [c["key"] for c in crew["columns"]] == [
+        "crew_subcontractor", "manpower", "todays_progress",
+    ]

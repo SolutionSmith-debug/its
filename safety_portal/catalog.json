@@ -282,17 +282,22 @@
       "category": "progress",
       "name": "Daily Field Report",
       "display_order": 9,
+      "launch": "daily-tab",
       "forms": [
         {
           "identity": "daily-report",
           "variant_label": null,
           "status": "active",
-          "current_version": 1,
-          "current_form_code": "daily-report-v1",
+          "current_version": 2,
+          "current_form_code": "daily-report-v2",
           "versions": [
             {
               "version": 1,
               "form_code": "daily-report-v1"
+            },
+            {
+              "version": 2,
+              "form_code": "daily-report-v2"
             }
           ],
           "display_order": 1

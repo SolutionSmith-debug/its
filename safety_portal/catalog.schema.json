@@ -45,6 +45,11 @@
           "pattern": "^[a-z0-9-]+$",
           "description": "Workflow id — the form-type's workflow (Safety / Progress / …). OPTIONAL: readers (registry.ts, shared/form_category.py) default an absent category to the workflows.json `default`. The valid SET is single-sourced in safety_portal/workflows.json and enforced at the two runtime C3 layers (worker/publishValidation.ts validateCategory + safety_reports/publish_manifest.apply_publish) — a JSON Schema can't import the registry, so this is a pattern, not an enum. Set by the form-builder workflow selector on create + recategorize."
         },
+        "launch": {
+          "type": "string",
+          "enum": ["daily-tab"],
+          "description": "OPTIONAL launch surface for this form type (SOP daily form, slice D1). 'daily-tab' = the parent launches from the Daily tab experience (slice D2 consumes it: hidden from the Submit-a-Form CREATE picker, still visible in Form Request / download surfaces). Absent = the normal picker."
+        },
         "forms": {
           "type": "array",
           "minItems": 1,
