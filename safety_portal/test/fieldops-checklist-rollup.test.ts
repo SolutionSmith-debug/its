@@ -62,20 +62,25 @@ async function seedSubmission(jobId: string, formCode: string, workDate: string)
   ).bind(`sub-${jobId}-${formCode}-${workDate}-${Math.random()}`, jobId, formCode, workDate, "{}").run();
 }
 
-interface ItemState { id: number; item_type: string; status: string; }
+interface ItemState { id: number; item_type: string; status: string; target_count: number | null; }
 interface MineResp { instance: { id: number; job_id: string; instance_date: string; status: string; rolled_up_submission_uuid: string | null } | null; items: ItemState[]; }
 async function mine(cookie: string): Promise<MineResp> {
   const res = await get(cookie, "/api/fieldops/checklist/mine");
   expect(res.status, await res.clone().text()).toBe(200);
   return (await res.json()) as MineResp;
 }
-// Drive the seeded instance to COMPLETE: manually complete each manual_attest item, then file the
-// daily-report submission that auto-closes the seeded form_linked item.
+// Drive the seeded instance to COMPLETE (0028 SOP content): manually complete each manual_attest
+// item, meet each count item's target, then file the jha + daily-report submissions that auto-close
+// the two seeded form_linked items.
 async function completeInstance(cookie: string, jobId: string): Promise<MineResp> {
   const before = await mine(cookie);
   for (const it of before.items.filter((i) => i.item_type === "manual_attest")) {
     expect((await post(cookie, `/api/fieldops/checklist/item-state/${it.id}/complete`)).status).toBe(200);
   }
+  for (const it of before.items.filter((i) => i.item_type === "count")) {
+    expect((await post(cookie, `/api/fieldops/checklist/item-state/${it.id}/complete`, { value_num: it.target_count ?? 1 })).status).toBe(200);
+  }
+  await seedSubmission(jobId, "jha-v3", before.instance!.instance_date);
   await seedSubmission(jobId, "daily-report-v1", before.instance!.instance_date);
   const after = await mine(cookie);
   expect(after.instance!.status).toBe("complete");

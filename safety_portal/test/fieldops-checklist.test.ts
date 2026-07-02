@@ -92,7 +92,7 @@ describe("checklist S2 — capability gating", () => {
 });
 
 describe("checklist S2 — default template CRUD + seed", () => {
-  it("GET /default returns the migration-0026 seed (form_linked + manual_attest items)", async () => {
+  it("GET /default returns the seeded daily default (0026 engine, 0028 SOP content: form_linked + manual_attest items)", async () => {
     const res = await get(admin, "/api/fieldops/checklist/default");
     const body = (await res.json()) as { template: { source_form_code: string } | null; items: { item_type: string; label: string }[] };
     expect(body.template?.source_form_code).toBe("daily-report");
