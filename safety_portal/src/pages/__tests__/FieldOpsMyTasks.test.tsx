@@ -9,9 +9,14 @@ vi.mock("../../lib/fieldops_tasks", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../lib/fieldops_tasks")>();
   return { ...actual, fetchMyTasks: vi.fn(), setTaskStatus: vi.fn() };
 });
+vi.mock("../../lib/fieldops_checklist", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../lib/fieldops_checklist")>();
+  return { ...actual, fetchMyChecklist: vi.fn(), completeChecklistItem: vi.fn(), uncompleteChecklistItem: vi.fn() };
+});
 vi.mock("../../lib/auth", () => ({ useAuth: vi.fn() }));
 
 import * as api from "../../lib/fieldops_tasks";
+import * as checklist from "../../lib/fieldops_checklist";
 import { FieldOpsMyTasks } from "../FieldOpsMyTasks";
 import { HomePage } from "../HomePage";
 import { useAuth } from "../../lib/auth";
@@ -29,7 +34,15 @@ afterEach(cleanup);
 beforeEach(() => {
   vi.resetAllMocks();
   vi.mocked(useAuth).mockReturnValue(authWith(["cap.tasks.own"]));
+  // Default: no daily checklist (not a placed manager) → the S3 section renders nothing.
+  vi.mocked(checklist.fetchMyChecklist).mockResolvedValue({ instance: null, items: [] });
 });
+
+const INSTANCE = { id: 7, job_id: "JOB-A", instance_date: "2026-07-01", status: "open" as const };
+const CHECKLIST_ITEMS: checklist.ChecklistItemState[] = [
+  { id: 11, source_item_id: 1, item_type: "form_linked", label: "File the Daily Field Report", form_code: "daily-report", target_count: null, status: "open", note: null, photo_ref: null, completed_by: null, completed_at: null, value_num: null },
+  { id: 12, source_item_id: 2, item_type: "manual_attest", label: "Record crew progress", form_code: null, target_count: null, status: "open", note: null, photo_ref: null, completed_by: null, completed_at: null, value_num: null },
+];
 
 const TASKS: api.MyTask[] = [
   { id: 1, job_id: "JOB-A", project_name: "Alpha", description: "Dig footings", status: "open", created_at: 100 },
@@ -71,6 +84,39 @@ describe("FieldOpsMyTasks", () => {
     await waitFor(() => expect(container.querySelector(".dash-unavail")).not.toBeNull());
     expect(container.textContent ?? "").toContain("No tasks are assigned to you");
     expect(container.querySelector(".dash-tasklist")).toBeNull();
+  });
+});
+
+describe("FieldOpsMyTasks — S3 daily checklist section", () => {
+  it("renders the Today's checklist section for a placed manager (instance present)", async () => {
+    vi.mocked(api.fetchMyTasks).mockResolvedValue({ tasks: [] });
+    vi.mocked(checklist.fetchMyChecklist).mockResolvedValue({ instance: INSTANCE, items: CHECKLIST_ITEMS });
+    const { container, getByLabelText } = render(<FieldOpsMyTasks onBack={() => {}} />);
+    await waitFor(() => expect(container.querySelector('[aria-label="Today\'s checklist"]')).not.toBeNull());
+    const txt = container.textContent ?? "";
+    expect(txt).toContain("Record crew progress");
+    expect(txt).toContain("File the Daily Field Report");
+    // manual_attest gets a complete control; form_linked does not (S4).
+    expect(getByLabelText("Complete item 12")).not.toBeNull();
+    expect(() => getByLabelText("Complete item 11")).toThrow();
+  });
+
+  it("hides the section entirely when instance is null (not a placed manager)", async () => {
+    vi.mocked(api.fetchMyTasks).mockResolvedValue({ tasks: [] });
+    vi.mocked(checklist.fetchMyChecklist).mockResolvedValue({ instance: null, items: [] });
+    const { container } = render(<FieldOpsMyTasks onBack={() => {}} />);
+    await waitFor(() => expect(container.querySelector(".dash-unavail")).not.toBeNull());
+    expect(container.querySelector('[aria-label="Today\'s checklist"]')).toBeNull();
+  });
+
+  it("completing a manual_attest item fires completeChecklistItem", async () => {
+    vi.mocked(api.fetchMyTasks).mockResolvedValue({ tasks: [] });
+    vi.mocked(checklist.fetchMyChecklist).mockResolvedValue({ instance: INSTANCE, items: CHECKLIST_ITEMS });
+    vi.mocked(checklist.completeChecklistItem).mockResolvedValue({ ok: true, id: 12, status: "done", instance_status: "open" });
+    const { getByLabelText } = render(<FieldOpsMyTasks onBack={() => {}} />);
+    const btn = await waitFor(() => getByLabelText("Complete item 12"));
+    fireEvent.click(btn);
+    await waitFor(() => expect(checklist.completeChecklistItem).toHaveBeenCalledWith(12, undefined));
   });
 });
 

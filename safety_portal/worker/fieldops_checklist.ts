@@ -21,11 +21,58 @@ const MAX_LABEL = 256;
 const MAX_FORM_CODE = 64;
 const MAX_SEQ = 100_000;
 const MAX_COUNT = 100_000;
+// S3 completion inputs (bounded per Invariant 2 — untrusted body).
+const MAX_NOTE = 2000;
+const MAX_PHOTO_REF = 256;
 
 const ITEM_TYPES = new Set(["form_linked", "manual_attest", "count", "inspection"]);
 // form_code identifies the target form — required for the two form-bearing types.
 const FORM_REQUIRED = new Set(["form_linked", "inspection"]);
 const CAP_CHECKLIST = "cap.checklist.manage";
+// S3 surfacing + completion are the OWNER's tab (a placed manager), gated by cap.tasks.own — the same
+// cap the "My Tasks" read (fieldops_tasks.ts) uses. Distinct from the admin authoring cap above.
+const CAP_TASKS_OWN = "cap.tasks.own";
+
+// THE MERGE (S2, load-bearing) — a job's EFFECTIVE daily checklist =
+//   [ daily_default items NOT suppressed by the job ] ∪ [ the job_override's own added items ], seq-ordered.
+// ?1 = job_id, bound ONCE but referenced twice (positional re-use). Suppression markers
+// (suppresses_default_item_id NOT NULL) are excluded from both legs. `origin` distinguishes a default
+// (suppressable) item from an override (deletable) one for the editor UI.
+// REUSED by BOTH the S2 per-job editor route (GET /checklist/job/:job_id) AND S3 daily-instance
+// snapshot generation, so a generated instance captures exactly the items the editor shows.
+const EFFECTIVE_MERGE_SQL = `
+        SELECT di.id AS source_item_id, di.seq AS seq, di.item_type AS item_type, di.label AS label,
+               di.form_code AS form_code, di.target_count AS target_count, di.config_json AS config_json,
+               'default' AS origin
+        FROM checklist_items di
+        JOIN checklist_templates dt ON dt.id = di.template_id AND dt.kind = 'daily_default'
+        WHERE di.suppresses_default_item_id IS NULL
+          AND di.id NOT IN (
+            SELECT s.suppresses_default_item_id
+            FROM checklist_items s
+            JOIN checklist_templates ot ON ot.id = s.template_id AND ot.kind = 'job_override' AND ot.job_id = ?1
+            WHERE s.suppresses_default_item_id IS NOT NULL
+          )
+        UNION ALL
+        SELECT oi.id AS source_item_id, oi.seq AS seq, oi.item_type AS item_type, oi.label AS label,
+               oi.form_code AS form_code, oi.target_count AS target_count, oi.config_json AS config_json,
+               'override' AS origin
+        FROM checklist_items oi
+        JOIN checklist_templates ot ON ot.id = oi.template_id AND ot.kind = 'job_override' AND ot.job_id = ?1
+        WHERE oi.suppresses_default_item_id IS NULL
+        ORDER BY seq ASC, source_item_id ASC
+      `;
+
+// A merged effective item (the row shape EFFECTIVE_MERGE_SQL yields), used by S3 snapshot generation.
+interface MergedItem {
+  source_item_id: number;
+  seq: number;
+  item_type: string;
+  label: string | null;
+  form_code: string | null;
+  target_count: number | null;
+  config_json: string | null;
+}
 
 interface ItemRow {
   id: number;
@@ -142,6 +189,127 @@ async function requireJob(
   const job = await c.env.DB.prepare("SELECT job_id FROM jobs WHERE job_id = ?1").bind(jobId).first();
   if (!job) return c.json({ error: "not_found" }, 404);
   return null;
+}
+
+// ── S3 daily-instance generation (Worker-on-read) ──────────────────────────────────────────────────
+// instance_date is the LOCAL (Pacific) calendar date 'YYYY-MM-DD'. The Worker's clock is UTC, so we
+// format `now` in the America/Los_Angeles zone (Intl carries full IANA tz data on Workers) — otherwise
+// a submission logged during the evening Pacific hours would land on the next UTC day and split "today"
+// across two instances. One canonical "today" per Pacific work day keeps the UNIQUE key stable.
+function pacificToday(now: Date = new Date()): string {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Los_Angeles",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(now);
+  const part = (t: string) => parts.find((p) => p.type === t)?.value ?? "";
+  return `${part("year")}-${part("month")}-${part("day")}`;
+}
+
+// Resolve the acting session → its linked personnel row (personnel.username == users.username; the
+// nullable soft link from migration 0014). Returns the personnel id + current_job placement, or null
+// when the account has no active linked personnel row. active=1 so a retired roster person can't own
+// a live instance. LIMIT 1 on the (unconstrained) username link — deterministic lowest id.
+async function resolveActorPersonnel(
+  c: Context<{ Bindings: Env; Variables: Vars }>,
+): Promise<{ id: number; current_job: string | null } | null> {
+  const username = c.get("session").username;
+  const row = await c.env.DB.prepare(
+    "SELECT id, current_job FROM personnel WHERE username = ?1 AND active = 1 ORDER BY id ASC LIMIT 1",
+  )
+    .bind(username)
+    .first<{ id: number; current_job: string | null }>();
+  return row ?? null;
+}
+
+// Materialize TODAY's daily checklist instance for the logged-in user — MANAGER-ONLY, idempotent,
+// send-free. Returns the instance id (existing or just-created) + its job/date, or null when the actor
+// is NOT a placed manager (a submitter, or a manager with no current_job) → the tab shows no daily
+// section. Generation gates on THREE conditions, all required:
+//   (1) the account role is 'manager' (read fresh from D1 by requireSession — c.get("role"));
+//   (2) the account has an active LINKED personnel row (the daily instance's assignee); AND
+//   (3) that personnel is PLACED on a job (personnel.current_job set) — the daily instance's job.
+// Idempotency rests on the checklist_instances UNIQUE(kind, job_id, assignee_personnel_id,
+// instance_date): INSERT OR IGNORE creates at most one row per (job, manager, Pacific-day). The
+// EFFECTIVE-item snapshot into checklist_item_states runs ONLY when this call actually inserted
+// (meta.changes === 1) — a re-open the same day returns the existing instance + its states with NO
+// duplicate rows. The snapshot uses EFFECTIVE_MERGE_SQL (the SAME default⊕override merge the S2 editor
+// shows) so a later template edit never mutates an in-flight instance (source_item_id records lineage).
+async function generateDailyInstance(
+  c: Context<{ Bindings: Env; Variables: Vars }>,
+): Promise<{ instanceId: number; jobId: string; instanceDate: string } | null> {
+  if (c.get("role") !== "manager") return null;
+  const person = await resolveActorPersonnel(c);
+  if (!person || !person.current_job) return null;
+  const jobId = person.current_job;
+  const personnelId = person.id;
+  const today = pacificToday();
+
+  const ins = await c.env.DB.prepare(
+    "INSERT OR IGNORE INTO checklist_instances (kind, job_id, assignee_personnel_id, instance_date, status) VALUES ('daily', ?1, ?2, ?3, 'open')",
+  )
+    .bind(jobId, personnelId, today)
+    .run();
+
+  const inst = await c.env.DB.prepare(
+    "SELECT id FROM checklist_instances WHERE kind='daily' AND job_id=?1 AND assignee_personnel_id=?2 AND instance_date=?3",
+  )
+    .bind(jobId, personnelId, today)
+    .first<{ id: number }>();
+  const instanceId = inst!.id;
+
+  // FIRST creation only → snapshot the effective merged items. A lost INSERT-OR-IGNORE race (a second
+  // concurrent read) sees changes()===0 and skips, reading the winner's states — no duplicates.
+  if ((ins.meta.changes ?? 0) === 1) {
+    const merged = await c.env.DB.prepare(EFFECTIVE_MERGE_SQL).bind(jobId).all<MergedItem>();
+    const rows = merged.results ?? [];
+    if (rows.length > 0) {
+      await c.env.DB.batch(
+        rows.map((it) =>
+          c.env.DB
+            .prepare(
+              "INSERT INTO checklist_item_states (instance_id, source_item_id, item_type, label, form_code, target_count, status) VALUES (?1,?2,?3,?4,?5,?6,'open')",
+            )
+            .bind(instanceId, it.source_item_id, it.item_type, it.label, it.form_code, it.target_count),
+        ),
+      );
+    }
+  }
+  return { instanceId, jobId, instanceDate: today };
+}
+
+// Recompute-instance-status statement (built, not run): 'complete' iff NO item_state on the instance
+// is still open, else 'open'. Appended LAST in a completion batch (after the item-state mutation +
+// its audit), so the just-applied change is reflected. ?1 = instance id.
+function recomputeInstanceStatusStmt(c: Context<{ Bindings: Env; Variables: Vars }>, instanceId: number) {
+  return c.env.DB
+    .prepare(
+      "UPDATE checklist_instances SET status = CASE WHEN NOT EXISTS (SELECT 1 FROM checklist_item_states WHERE instance_id=?1 AND status<>'done') THEN 'complete' ELSE 'open' END WHERE id=?1",
+    )
+    .bind(instanceId);
+}
+
+// Load an item_state + its owning instance's assignee for the completion routes. Returns the row, or a
+// JSON error Response (404 unknown, 403 not-your-instance, 400 non-manual_attest in S3). Ownership is
+// scoped to the ACTOR's linked personnel id: a manager can only complete items on THEIR OWN daily
+// instance. form_linked/count/inspection completion is S4 — rejected here with a clear error.
+async function loadOwnedManualItemState(
+  c: Context<{ Bindings: Env; Variables: Vars }>,
+  stateId: number,
+): Promise<{ id: number; instance_id: number } | Response> {
+  const person = await resolveActorPersonnel(c);
+  // No linked personnel → the actor owns no instance → forbidden (not 404: the row may well exist).
+  if (!person) return c.json({ error: "forbidden" }, 403);
+  const st = await c.env.DB.prepare(
+    "SELECT s.id, s.item_type, s.instance_id, i.assignee_personnel_id FROM checklist_item_states s JOIN checklist_instances i ON i.id = s.instance_id WHERE s.id = ?1",
+  )
+    .bind(stateId)
+    .first<{ id: number; item_type: string; instance_id: number; assignee_personnel_id: number | null }>();
+  if (!st) return c.json({ error: "not_found" }, 404);
+  if (st.assignee_personnel_id !== person.id) return c.json({ error: "forbidden" }, 403);
+  if (st.item_type !== "manual_attest") return c.json({ error: "unsupported_item_type" }, 400);
+  return { id: st.id, instance_id: st.instance_id };
 }
 
 export function registerChecklistRoutes(app: FieldopsApp, gates: FieldopsGates): void {
@@ -273,33 +441,11 @@ export function registerChecklistRoutes(app: FieldopsApp, gates: FieldopsGates):
       const jobErr = await requireJob(c, jobId);
       if (jobErr) return jobErr;
 
-      // THE MERGE. ?1 = job_id (repeated positional bind). The default leg excludes any default item
-      // whose id appears in this job's override suppression set; the override leg adds the job's own
-      // content items (suppression markers — suppresses_default_item_id NOT NULL — are excluded from
-      // both legs). origin distinguishes default (suppressable) from override (deletable) for the UI.
-      const mergeSql = `
-        SELECT di.id AS source_item_id, di.seq AS seq, di.item_type AS item_type, di.label AS label,
-               di.form_code AS form_code, di.target_count AS target_count, di.config_json AS config_json,
-               'default' AS origin
-        FROM checklist_items di
-        JOIN checklist_templates dt ON dt.id = di.template_id AND dt.kind = 'daily_default'
-        WHERE di.suppresses_default_item_id IS NULL
-          AND di.id NOT IN (
-            SELECT s.suppresses_default_item_id
-            FROM checklist_items s
-            JOIN checklist_templates ot ON ot.id = s.template_id AND ot.kind = 'job_override' AND ot.job_id = ?1
-            WHERE s.suppresses_default_item_id IS NOT NULL
-          )
-        UNION ALL
-        SELECT oi.id AS source_item_id, oi.seq AS seq, oi.item_type AS item_type, oi.label AS label,
-               oi.form_code AS form_code, oi.target_count AS target_count, oi.config_json AS config_json,
-               'override' AS origin
-        FROM checklist_items oi
-        JOIN checklist_templates ot ON ot.id = oi.template_id AND ot.kind = 'job_override' AND ot.job_id = ?1
-        WHERE oi.suppresses_default_item_id IS NULL
-        ORDER BY seq ASC, source_item_id ASC
-      `;
-      const merged = await c.env.DB.prepare(mergeSql).bind(jobId).all();
+      // THE MERGE (EFFECTIVE_MERGE_SQL, module-level — also reused by S3 snapshot generation). The
+      // default leg excludes any default item whose id is in this job's override suppression set; the
+      // override leg adds the job's own content items. origin distinguishes default (suppressable)
+      // from override (deletable) for the UI.
+      const merged = await c.env.DB.prepare(EFFECTIVE_MERGE_SQL).bind(jobId).all();
 
       // The default items this job currently hides (so the editor can offer "unhide").
       const suppressedSql = `
@@ -456,6 +602,116 @@ export function registerChecklistRoutes(app: FieldopsApp, gates: FieldopsGates):
       ]);
       if ((res[0].meta.changes ?? 0) === 0) return c.json({ error: "not_found" }, 404);
       return c.json({ ok: true, unsuppressed: defaultItemId }, 200);
+    },
+  );
+
+  // ══ S3 — daily-checklist SURFACING + manual_attest COMPLETION (cap.tasks.own — the owner's tab) ══
+
+  // ── GET /api/fieldops/checklist/mine — TODAY's daily checklist for the logged-in placed manager. ──
+  // Runs generation on read (materializes + snapshots the instance if absent, idempotent on the UNIQUE
+  // key). Returns { instance: {id, job_id, instance_date, status} | null, items: [...] }. `instance` is
+  // NULL (empty daily section) when the actor isn't a placed manager (a submitter, or an unplaced one).
+  app.get(
+    "/api/fieldops/checklist/mine",
+    gates.requireSession,
+    gates.requireCapability(CAP_TASKS_OWN),
+    async (c) => {
+      const gen = await generateDailyInstance(c);
+      if (gen === null) return c.json({ instance: null, items: [] }, 200);
+      const instance = await c.env.DB.prepare(
+        "SELECT id, job_id, instance_date, status FROM checklist_instances WHERE id = ?1",
+      )
+        .bind(gen.instanceId)
+        .first();
+      // ORDER BY id ASC == snapshot insertion order == the seq order EFFECTIVE_MERGE_SQL emitted.
+      const items = await c.env.DB.prepare(
+        "SELECT id, source_item_id, item_type, label, form_code, target_count, status, note, photo_ref, completed_by, completed_at, value_num FROM checklist_item_states WHERE instance_id = ?1 ORDER BY id ASC",
+      )
+        .bind(gen.instanceId)
+        .all();
+      return c.json({ instance, items: items.results ?? [] }, 200);
+    },
+  );
+
+  // ── POST /api/fieldops/checklist/item-state/:id/complete — mark a manual_attest item done. ────────
+  // Ownership-scoped (the item's instance assignee MUST be the actor's linked personnel — else 403);
+  // S3 accepts only item_type='manual_attest' (form_linked/count/inspection completion is S4 → 400).
+  // Optional bounded { note, photo_ref }. Mutation + audit + instance-status recompute in ONE batch.
+  app.post(
+    "/api/fieldops/checklist/item-state/:id/complete",
+    gates.requireSession,
+    gates.requireCapability(CAP_TASKS_OWN),
+    async (c) => {
+      const stateId = parseInt(c.req.param("id"), 10);
+      if (isNaN(stateId)) return c.json({ error: "invalid_id" }, 400);
+
+      // Body is OPTIONAL (a bare check carries none) — a missing/blank body is empty, not a 400.
+      let body: Record<string, unknown> = {};
+      try {
+        const b: unknown = await c.req.json();
+        if (typeof b === "object" && b !== null && !Array.isArray(b)) body = b as Record<string, unknown>;
+      } catch {
+        /* no body → empty */
+      }
+      let note: string | null = null;
+      if (body.note !== undefined && body.note !== null) {
+        if (typeof body.note !== "string" || body.note.length > MAX_NOTE) return c.json({ error: "invalid_note" }, 400);
+        note = body.note;
+      }
+      let photoRef: string | null = null;
+      if (body.photo_ref !== undefined && body.photo_ref !== null) {
+        if (typeof body.photo_ref !== "string" || body.photo_ref.length > MAX_PHOTO_REF) {
+          return c.json({ error: "invalid_photo_ref" }, 400);
+        }
+        photoRef = body.photo_ref;
+      }
+
+      const owned = await loadOwnedManualItemState(c, stateId);
+      if (owned instanceof Response) return owned;
+      const actor = c.get("session").username;
+      // Pre-checked existence + ownership + type, so the UPDATE applies → unconditional audit (mirrors
+      // the suppress route). Recompute the instance status LAST so it reflects this completion.
+      await c.env.DB.batch([
+        c.env.DB
+          .prepare(
+            "UPDATE checklist_item_states SET status='done', completed_by=?2, completed_at=unixepoch(), note=?3, photo_ref=?4 WHERE id=?1",
+          )
+          .bind(stateId, actor, note, photoRef),
+        auditStmt(c, actor, "checklist_item_complete", String(stateId), { item_state_id: stateId, instance_id: owned.instance_id }),
+        recomputeInstanceStatusStmt(c, owned.instance_id),
+      ]);
+      const inst = await c.env.DB.prepare("SELECT status FROM checklist_instances WHERE id=?1")
+        .bind(owned.instance_id)
+        .first<{ status: string }>();
+      return c.json({ ok: true, id: stateId, status: "done", instance_status: inst?.status ?? "open" }, 200);
+    },
+  );
+
+  // ── POST /api/fieldops/checklist/item-state/:id/uncomplete — toggle a done manual_attest item back
+  // to open (clears the completion stamp). Same ownership + type scoping as /complete. ──────────────
+  app.post(
+    "/api/fieldops/checklist/item-state/:id/uncomplete",
+    gates.requireSession,
+    gates.requireCapability(CAP_TASKS_OWN),
+    async (c) => {
+      const stateId = parseInt(c.req.param("id"), 10);
+      if (isNaN(stateId)) return c.json({ error: "invalid_id" }, 400);
+      const owned = await loadOwnedManualItemState(c, stateId);
+      if (owned instanceof Response) return owned;
+      const actor = c.get("session").username;
+      await c.env.DB.batch([
+        c.env.DB
+          .prepare(
+            "UPDATE checklist_item_states SET status='open', completed_by=NULL, completed_at=NULL WHERE id=?1",
+          )
+          .bind(stateId),
+        auditStmt(c, actor, "checklist_item_uncomplete", String(stateId), { item_state_id: stateId, instance_id: owned.instance_id }),
+        recomputeInstanceStatusStmt(c, owned.instance_id),
+      ]);
+      const inst = await c.env.DB.prepare("SELECT status FROM checklist_instances WHERE id=?1")
+        .bind(owned.instance_id)
+        .first<{ status: string }>();
+      return c.json({ ok: true, id: stateId, status: "open", instance_status: inst?.status ?? "open" }, 200);
     },
   );
 }
