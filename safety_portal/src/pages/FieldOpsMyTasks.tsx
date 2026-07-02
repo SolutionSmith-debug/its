@@ -1,9 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import * as api from "../lib/fieldops_tasks";
-import * as checklist from "../lib/fieldops_checklist";
 import { statusLabel } from "../lib/labels";
 import { PageShell } from "../components/PageShell";
-import { DailyChecklistSection } from "../components/DailyChecklistSection";
+import { DailyReportTab, type DailyPlacement } from "../components/DailyReportTab";
 import { AssignedInspectionsSection } from "../components/AssignedInspectionsSection";
 import { AddCrewSection } from "../components/AddCrewSection";
 import {
@@ -53,16 +52,18 @@ function groupByJob(tasks: api.MyTask[]): JobGroup[] {
 type Tab = "assigned" | "daily";
 
 /**
- * "My Tasks" (P4 S1 + R2 restructure) — TWO TABS:
+ * "My Tasks" (P4 S1 + R2 restructure; Daily tab rebuilt in D2) — TWO TABS:
  *   • "Assigned tasks" — the one-off tasks assigned to the actor (grouped by job, open-first per
  *     the R1 server ordering), the Assigned-inspections section, and the Add-crew disclosure
  *     (cap.crew.create).
- *   • "Daily checklist" — the placed manager's daily checklist (DailyChecklistSection), with the
- *     R1 reason codes explaining WHY it's empty for everyone else (Mandatory A).
+ *   • "Daily report" (D2, SOP daily form) — the placed manager's daily SOP FORM rendered inline
+ *     (DailyReportTab: date selector + the daily-report-v2 definition + form_link deep-links),
+ *     replacing the retired R2 checkbox checklist. The R2 explanatory empty states carry over
+ *     for everyone else (Mandatory A).
  *
  * Both tab panels stay MOUNTED (the inactive one is `hidden`) so each section's single fetch runs
- * once and the daily section can report its instance up for the auto-switch: on first load, an
- * actor with a daily instance and no open one-off tasks lands on the Daily tab.
+ * once and the daily tab can report its placement up for the auto-switch: on first load, a placed
+ * manager with no open one-off tasks lands on the Daily tab.
  *
  * R2 never-silent hardening (Mandatory B): the tasks fetch has distinct loading / error+Retry /
  * empty states (error and empty mutually exclusive); `linked:false` (R1) explains the roster-link
@@ -70,8 +71,8 @@ type Tab = "assigned" | "daily";
  * scoped to the row) with contextual Start / Done / Reopen buttons per the portal button standard.
  *
  * Refresh: a header Refresh control + visibilitychange/focus refetch bump `refreshToken`, which
- * re-runs the page's own tasks fetch and every section's fetch (day-rollover recovery lives in
- * DailyChecklistSection).
+ * re-runs the page's own tasks fetch and every section's fetch (the Daily tab refetches its
+ * placement + filed status on the same token).
  *
  * "Assigned to me" is resolved server-side via the personnel↔account link. The cap gates here are
  * a CONVENIENCE — the Worker re-gates every read + status write (Invariant 2).
@@ -101,12 +102,11 @@ export function FieldOpsMyTasks({
   const [error, setError] = useState<string | null>(null);
   const [busyIds, setBusyIds] = useState<ReadonlySet<number>>(new Set());
   const [rowMsgs, setRowMsgs] = useState<Record<number, RowFeedback>>({});
-  // What the daily section last loaded — drives the one-time auto-tab-switch + the Add-crew
-  // placement hint. Reported up via DailyChecklistSection's onLoaded.
-  const [dailyInfo, setDailyInfo] = useState<{
-    instance: checklist.DailyInstance | null;
-    reason: checklist.DailyEmptyReason | null;
-  } | null>(null);
+  // What the Daily tab last resolved (D2: the actor's PLACEMENT, not a checklist instance) —
+  // drives the one-time auto-tab-switch + the Add-crew placement hint + the Log-time deep-link.
+  // Reported up via DailyReportTab's onLoaded; null = not landed yet, { placement: null } = landed
+  // with no placement (non-manager / unlinked / unplaced).
+  const [dailyInfo, setDailyInfo] = useState<{ placement: DailyPlacement | null } | null>(null);
   const autoSwitched = useRef(false);
   const lastWakeRef = useRef(0);
 
@@ -154,16 +154,16 @@ export function FieldOpsMyTasks({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // One-time auto-switch (judgment call, kept simple): once BOTH first loads land, an actor with a
-  // daily instance and no open one-off tasks starts on the Daily tab. Never fires again (no tab
-  // yanking after the user interacts).
+  // One-time auto-switch (judgment call, kept simple): once BOTH first loads land, a PLACED
+  // manager with no open one-off tasks starts on the Daily tab (D2: placement replaces the old
+  // checklist-instance signal). Never fires again (no tab yanking after the user interacts).
   useEffect(() => {
     if (autoSwitched.current || !resp || !dailyInfo) return;
     autoSwitched.current = true;
     // (An explicit user tab click also sets autoSwitched — see pickTab — so a slow first load can
     // never yank the user off a tab they chose; review WARN.)
     const hasOpenTasks = resp.tasks.some((t) => t.status !== "done");
-    if (dailyInfo.instance && !hasOpenTasks) setTab("daily");
+    if (dailyInfo.placement && !hasOpenTasks) setTab("daily");
   }, [resp, dailyInfo]);
 
   // Explicit tab choice pins the tab: the one-time auto-switch may never override it.
@@ -337,8 +337,8 @@ export function FieldOpsMyTasks({
         </button>
       </div>
       <p className="dash__intro">
-        Your assigned work — one-off tasks and inspections under Assigned tasks; placed crew leads also get a
-        Daily checklist.
+        Your assigned work — one-off tasks and inspections under Assigned tasks; placed crew leads also file
+        their Daily report here.
       </p>
 
       {/* Tab strip — the admin-nav banner-extension pattern (.admin-tabs), same look site-wide. */}
@@ -359,7 +359,7 @@ export function FieldOpsMyTasks({
           className={`admin-tabs__tab${tab === "daily" ? " admin-tabs__tab--active" : ""}`}
           onClick={() => pickTab("daily")}
         >
-          Daily checklist
+          Daily report
         </button>
       </nav>
 
@@ -368,7 +368,7 @@ export function FieldOpsMyTasks({
       <div role="tabpanel" aria-label="Assigned tasks" hidden={tab !== "assigned"}>
         {/* R7 — "Log time" quick action (the subcontractor's direct path to logging hours, A3):
             deep-links to the Job Tracker detail of the actor's current placement when known (the
-            placed manager's daily instance names it); otherwise opens the tracker plainly. The
+            Daily tab's placement resolve names it, D2); otherwise opens the tracker plainly. The
             log-time form itself lives on the job detail. */}
         {canLogTime && onOpenJob && (
           <div className="dash-row">
@@ -376,13 +376,13 @@ export function FieldOpsMyTasks({
               type="button"
               className="btn btn--secondary"
               aria-label="Log time in the Job Tracker"
-              onClick={() => onOpenJob(dailyInfo?.instance?.job_id ?? undefined)}
+              onClick={() => onOpenJob(dailyInfo?.placement?.job_id ?? undefined)}
             >
               Log time
             </button>{" "}
             <span className="dash-card__sub muted">
-              {dailyInfo?.instance
-                ? `Opens ${dailyInfo.instance.project_name ?? dailyInfo.instance.job_id} to log hours.`
+              {dailyInfo?.placement
+                ? `Opens ${dailyInfo.placement.project_name ?? dailyInfo.placement.job_id} to log hours.`
                 : "Opens the Job Tracker — pick your job to log hours."}
             </span>
           </div>
@@ -395,15 +395,21 @@ export function FieldOpsMyTasks({
         {/* Slice T — a subcontractor adds field-only crew, auto-placed on their current job. */}
         {canCreateCrew && (
           <AddCrewSection
-            placementJob={dailyInfo?.instance?.job_id ?? null}
-            placementProject={dailyInfo?.instance?.project_name ?? null}
+            placementJob={dailyInfo?.placement?.job_id ?? null}
+            placementProject={dailyInfo?.placement?.project_name ?? null}
           />
         )}
       </div>
 
-      <div role="tabpanel" aria-label="Daily checklist" hidden={tab !== "daily"}>
-        {/* S3/S4 — the placed manager's daily checklist; reason-coded empty states for everyone else. */}
-        <DailyChecklistSection onOpenForm={onOpenForm} refreshToken={refreshToken} onLoaded={setDailyInfo} />
+      <div role="tabpanel" aria-label="Daily report" hidden={tab !== "daily"}>
+        {/* D2 (SOP daily form) — the placed manager's daily SOP form rendered inline; the R2
+            reason-coded explanatory empty states carry over for everyone else. */}
+        <DailyReportTab
+          linked={resp?.linked ?? null}
+          onOpenForm={onOpenForm}
+          refreshToken={refreshToken}
+          onLoaded={setDailyInfo}
+        />
       </div>
     </PageShell>
   );

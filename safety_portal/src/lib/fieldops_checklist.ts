@@ -89,6 +89,10 @@ async function postJson<T = { ok: boolean }>(url: string, body?: unknown): Promi
 const BASE = "/api/fieldops/checklist";
 
 // ── Default template ─────────────────────────────────────────────────────────────────────────────
+// DEPRECATED-FOR-DAILY (D2, SOP daily form): the admin "Default daily checklist" editor + the
+// Job-Tracker per-job editor were retired — no SPA surface calls the default/job-override fns
+// below anymore. The Worker routes they wrap STAY (§14/§49; the engine serves assigned
+// inspections), so these thin clients are kept in-tree rather than deleted.
 export function fetchDefaultChecklist(): Promise<DefaultChecklist> {
   return getJson<DefaultChecklist>(`${BASE}/default`);
 }
@@ -190,6 +194,8 @@ export interface CompleteResult {
 }
 
 // Today's daily checklist for the logged-in placed manager (instance:null for anyone else).
+// DEPRECATED-FOR-DAILY (D2): the Daily tab is the SOP form now (DailyReportTab reads
+// /api/fieldops/daily-form/status instead) — no SPA caller remains. Kept with the preserved route.
 export function fetchMyChecklist(): Promise<MyChecklist> {
   return getJson<MyChecklist>(`${BASE}/mine`);
 }
@@ -239,6 +245,8 @@ export interface RollupDraft {
   values: Record<string, unknown>;
 }
 
+// DEPRECATED-FOR-DAILY (D2): the S5 "Review & file Daily Report" rollup flow retired with the
+// checkbox checklist — the Daily tab fills the form directly. No SPA caller remains.
 export function fetchRollupDraft(): Promise<RollupDraft> {
   return getJson<RollupDraft>(`${BASE}/mine/rollup-draft`);
 }

@@ -14,12 +14,13 @@ import { ChecklistItemForm,
   nextSeq,
   planRenumber, ConfirmDelete } from "../components/ChecklistItemForm";
 
-// R4 — the consolidated admin "Checklists" area (same 'fieldops-inspections' view key / Home card).
-// ONE surface owns both checklist kinds (spec Q4):
-//   1. the company-wide DEFAULT daily checklist (full add/edit/reorder/delete — moved here from the
-//      Job Tracker job detail, which keeps only the per-job tailoring: add-for-this-job / hide / unhide);
-//   2. the generic_inspection LIBRARY (create / rename / deactivate / delete / per-template item
-//      editing) + the assign control.
+// R4 — the admin "Checklists" area (same 'fieldops-inspections' view key / Home card), now
+// INSPECTIONS-ONLY after the D2 retirement: the generic_inspection LIBRARY (create / rename /
+// deactivate / delete / per-template item editing) + the assign control + the outstanding
+// assignments list. The company-wide "Default daily checklist" editor that used to live here is
+// RETIRED (D2, SOP daily form): the daily content moved into the daily-report-v2 FORM DEFINITION
+// (edited via the form builder / publish pipeline), so there is no daily checklist template to
+// tailor anymore. The checklist ENGINE (and these library surfaces) stays — inspections use it.
 // Gated cap.checklist.manage (admin). Every call is re-gated server-side (Invariant 2); caps here
 // drive UI affordances only. Send-free (D1 reads/writes). Feedback is per-section inline (no single
 // top-of-page banner); loading is rendered distinct from empty everywhere.
@@ -53,174 +54,6 @@ function previewState(it: checklist.DefaultItem): checklist.ChecklistItemState {
 }
 
 const NOOP = () => {};
-
-// ── Section 1 — the company-wide default daily checklist (full CRUD, moved from Job Tracker) ──────
-function DefaultChecklistSection() {
-  const [def, setDef] = useState<checklist.DefaultChecklist | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState<Msg | null>(null);
-  const [addDraft, setAddDraft] = useState<checklist.ItemInput>(EMPTY_ITEM);
-  const [editingId, setEditingId] = useState<number | null>(null);
-  const [editDraft, setEditDraft] = useState<checklist.ItemInput>(EMPTY_ITEM);
-
-  async function reload() {
-    try {
-      setDef(await checklist.fetchDefaultChecklist());
-    } catch {
-      setMsg({ ok: false, text: "Could not load the default checklist." });
-    } finally {
-      setLoading(false);
-    }
-  }
-  useEffect(() => {
-    void reload();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  async function run(fn: () => Promise<unknown>, okText: string) {
-    if (busy) return;
-    setBusy(true);
-    setMsg(null);
-    try {
-      await fn();
-      await reload();
-      setMsg({ ok: true, text: okText });
-    } catch (err) {
-      setMsg({ ok: false, text: err instanceof Error ? err.message : "Update failed." });
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  const items = def?.items ?? [];
-
-  function submitAdd(e: FormEvent) {
-    e.preventDefault();
-    if (!addDraft.label.trim()) {
-      setMsg({ ok: false, text: "Item label is required." });
-      return;
-    }
-    void run(async () => {
-      await checklist.addDefaultItem({ ...addDraft, seq: addDraft.seq ?? nextSeq(items) });
-      setAddDraft(EMPTY_ITEM);
-    }, "Default item added — every job's checklist picks it up tomorrow.");
-  }
-
-  function startEdit(it: checklist.DefaultItem) {
-    setEditingId(it.id);
-    setEditDraft(itemInputFromRow(it)); // carries the row's seq — the edit route replaces EVERY field
-  }
-
-  function submitEdit(e: FormEvent) {
-    e.preventDefault();
-    if (editingId === null) return;
-    if (!editDraft.label.trim()) {
-      setMsg({ ok: false, text: "Item label is required." });
-      return;
-    }
-    const id = editingId;
-    void run(async () => {
-      await checklist.editDefaultItem(id, editDraft);
-      setEditingId(null);
-    }, "Default item updated.");
-  }
-
-  function move(index: number, dir: -1 | 1) {
-    const plan = planRenumber(items, index, dir);
-    if (plan.length === 0) return;
-    void run(async () => {
-      for (const p of plan) {
-        await checklist.editDefaultItem(p.row.id, { ...itemInputFromRow(p.row), seq: p.seq });
-      }
-    }, "Order updated.");
-  }
-
-  return (
-    <section className="card dash-section" aria-label="Default daily checklist">
-      <h3 className="dash-detail__h2">Default daily checklist</h3>
-      <p className="dash-card__sub muted">
-        The company-wide checklist every placed manager gets each day. Changes here take effect
-        tomorrow — today's already-generated checklists keep their snapshot. Per-job tailoring
-        (add an item for one job, hide a shared item) lives in Job Tracker → job detail.
-      </p>
-      <MsgLine msg={msg} />
-
-      {loading ? (
-        <div className="muted">Loading default checklist…</div>
-      ) : items.length === 0 ? (
-        <div className="dash-unavail">No default items yet — add the first one below.</div>
-      ) : (
-        <ul className="dash-tasklist" aria-label="Default checklist items">
-          {items.map((it, idx) => (
-            <li key={it.id}>
-              {editingId === it.id ? (
-                <ChecklistItemForm
-                  label="Edit default item"
-                  draft={editDraft}
-                  onChange={setEditDraft}
-                  onSubmit={submitEdit}
-                  busy={busy}
-                  submitLabel="Save"
-                  onCancel={() => setEditingId(null)}
-                />
-              ) : (
-                <>
-                  {it.label} <span className="dash-card__sub"> · {itemMetaLabel(it)}</span>{" "}
-                  <button
-                    type="button"
-                    className="btn btn--secondary"
-                    aria-label={`Move ${it.label ?? `item ${it.id}`} up`}
-                    disabled={busy || idx === 0}
-                    onClick={() => move(idx, -1)}
-                  >
-                    ↑
-                  </button>{" "}
-                  <button
-                    type="button"
-                    className="btn btn--secondary"
-                    aria-label={`Move ${it.label ?? `item ${it.id}`} down`}
-                    disabled={busy || idx === items.length - 1}
-                    onClick={() => move(idx, 1)}
-                  >
-                    ↓
-                  </button>{" "}
-                  <button
-                    type="button"
-                    className="btn btn--edit"
-                    aria-label={`Edit ${it.label ?? `item ${it.id}`}`}
-                    disabled={busy}
-                    onClick={() => startEdit(it)}
-                  >
-                    Edit
-                  </button>{" "}
-                  <ConfirmDelete
-                    actionLabel="Remove from all jobs"
-                    ariaLabel={`Delete default ${it.label ?? `item ${it.id}`}`}
-                    copy={`Delete “${it.label ?? `item ${it.id}`}”? This removes it from EVERY job's daily checklist starting tomorrow.`}
-                    busy={busy}
-                    onConfirm={() => run(() => checklist.deleteDefaultItem(it.id), "Default item deleted.")}
-                  />
-                </>
-              )}
-            </li>
-          ))}
-        </ul>
-      )}
-
-      {!loading && (
-        <ChecklistItemForm
-          label="Add default item"
-          draft={addDraft}
-          onChange={setAddDraft}
-          onSubmit={submitAdd}
-          busy={busy}
-          submitLabel="Add to default"
-        />
-      )}
-    </section>
-  );
-}
 
 // ── Section 2 (per-template) — one library template's item editor + read-only assignee preview ────
 function TemplateItemsEditor({
@@ -821,11 +654,12 @@ function AssignmentsSection({ refreshKey }: { refreshKey: number }) {
 }
 
 /**
- * R4 — the consolidated admin "Checklists" page (view key 'fieldops-inspections' unchanged).
- * Two clearly-headed areas: the company-wide Default daily checklist (full CRUD, extracted from the
- * Job Tracker job detail) and the Inspection-checklists library (author / rename / deactivate /
- * delete / per-template items) + the assign control. cap.checklist.manage gates the Home card +
- * every call (the Worker re-gates — Invariant 2).
+ * R4 — the admin "Checklists" page (view key 'fieldops-inspections' unchanged), inspections-only
+ * since D2: the Inspection-checklists library (author / rename / deactivate / delete / per-template
+ * items) + the assign control + outstanding assignments. The Default-daily-checklist editor is
+ * RETIRED (the daily content lives in the daily-report-v2 form definition — edit it via the form
+ * builder). cap.checklist.manage gates the Home card + every call (the Worker re-gates —
+ * Invariant 2).
  */
 export function FieldOpsInspections({ onBack }: { onBack: () => void }) {
   const [templates, setTemplates] = useState<checklist.InspectionTemplate[]>([]);
@@ -924,13 +758,11 @@ export function FieldOpsInspections({ onBack }: { onBack: () => void }) {
     <PageShell onHome={onBack}>
       <h2 className="page__heading">Checklists</h2>
       <p className="dash__intro">
-        One place for both checklist kinds: the shared <strong>default daily checklist</strong> every
-        placed manager gets, and the <strong>inspection checklists</strong> you author and assign to a
-        manager or subcontractor (they appear in that person's My Tasks tab). Per-job tailoring of the
-        daily checklist lives in Job Tracker → job detail.
+        The <strong>inspection checklists</strong> you author and assign to a manager or subcontractor
+        (they appear in that person's My Tasks tab). The daily report's content is no longer a
+        checklist edited here — it lives in the Daily Field Report <strong>form definition</strong>{" "}
+        (edit it in Forms, the form builder).
       </p>
-
-      <DefaultChecklistSection />
 
       <section className="card dash-section" aria-label="Inspection library">
         <h3 className="dash-detail__h2">Inspection checklists</h3>

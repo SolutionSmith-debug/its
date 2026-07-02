@@ -212,6 +212,17 @@ describe("FieldOpsJobTracker — detail view", () => {
     fireEvent.click(container.querySelector(".dash-back-btn button")!);
     await waitFor(() => expect(container.querySelectorAll(".dash-card--click")).toHaveLength(2));
   });
+
+  it("D2 retirement: the per-job Daily-checklist editor is GONE from the detail (even for the admin cap)", async () => {
+    // Full-cap admin view — the strongest case: if the editor were still mounted anywhere, this
+    // cap set would render it. The daily content lives in the daily-report-v2 form definition now.
+    vi.mocked(useAuth).mockReturnValue(authWith(["cap.jobtracker.manage", "cap.checklist.manage", "cap.tasks.own", "cap.time.log"]));
+    const { container } = await openDetail();
+    await waitFor(() => expect(container.querySelector(".page__heading")?.textContent).toBe("Alpha"));
+    expect(container.querySelector('[aria-label="Daily checklist"]')).toBeNull();
+    expect(container.textContent ?? "").not.toContain("Daily checklist");
+    expect(container.textContent ?? "").not.toContain("Add checklist item");
+  });
 });
 
 describe("FieldOpsJobTracker — write UI", () => {

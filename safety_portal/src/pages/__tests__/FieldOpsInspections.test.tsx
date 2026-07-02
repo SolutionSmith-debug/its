@@ -1,11 +1,11 @@
 /**
- * R4 — the consolidated admin "Checklists" page (FieldOpsInspections, view key unchanged).
- * Gated cap.checklist.manage. Mirrors FieldOpsChecklistEditor.test.tsx: mock the libs the page
- * imports, render, drive. Covers: both areas render; loading distinct from empty; default-checklist
- * CRUD (add with auto-seq, prefilled inline edit, reorder, confirm-gated delete); the catalog-driven
- * form_code select (names shown, codes submitted); library rename / deactivate / confirm-gated
- * delete; the per-template item editor (add/edit/reorder/remove) + assignee preview; assign; and
- * the HomePage card gate (HomePage untouched by R4 — R7 owns its copy).
+ * R4 (inspections-only since D2) — the admin "Checklists" page (FieldOpsInspections, view key
+ * unchanged). Gated cap.checklist.manage. Mock the libs the page imports, render, drive. Covers:
+ * the D2 retirement (the "Default daily checklist" editor is GONE — daily content lives in the
+ * daily-report-v2 form definition); loading distinct from empty; library rename / deactivate /
+ * confirm-gated delete; the per-template item editor (add/edit/reorder/remove) + assignee preview
+ * (the catalog-driven form_code select is covered at the component level,
+ * ChecklistItemForm.test.tsx); assign; and the HomePage card gate.
  */
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -67,25 +67,15 @@ const TEMPLATE_ITEMS: checklist.DefaultItem[] = [
   { id: 12, seq: 20, item_type: "count", label: "Anchor points", form_code: null, target_count: 4, config_json: null },
 ];
 
-const DEFAULT_CHECKLIST: checklist.DefaultChecklist = {
-  template: { id: 1, kind: "daily_default", title: "Daily default", source_form_code: null, active: 1 },
-  items: [
-    { id: 21, seq: 10, item_type: "form_linked", label: "File the Daily Field Report", form_code: "daily-report", target_count: null, config_json: null },
-    { id: 22, seq: 20, item_type: "manual_attest", label: "Walk the site", form_code: null, target_count: null, config_json: null },
-  ],
-};
-
 afterEach(cleanup);
 beforeEach(() => {
   vi.resetAllMocks();
   vi.mocked(useAuth).mockReturnValue(authWith(["cap.checklist.manage"]));
-  vi.mocked(checklist.fetchDefaultChecklist).mockResolvedValue(DEFAULT_CHECKLIST);
   vi.mocked(checklist.fetchInspectionTemplates).mockResolvedValue({ templates: TEMPLATES });
   vi.mocked(checklist.fetchInspectionTemplate).mockResolvedValue({
     template: { id: 1, title: "Fall protection", active: 1 },
     items: TEMPLATE_ITEMS,
   });
-  vi.mocked(checklist.editDefaultItem).mockResolvedValue({ ok: true, id: 22 });
   vi.mocked(checklist.editInspectionItem).mockResolvedValue({ ok: true, id: 11 });
   // R5: the assign picker pages the FULL roster (login-linked AND non-login people both offered —
   // /assign requires active personnel only), annotated with current placement.
@@ -98,123 +88,31 @@ beforeEach(() => {
   vi.mocked(fetchJobList).mockResolvedValue({ jobs: [{ job_id: "JOB-A", project_name: "Alpha", status: "active", progress: 0, client_name: null, crew: [], open_tasks: [] }], next_cursor: null });
 });
 
-describe("FieldOpsInspections — consolidated Checklists page", () => {
-  it("renders BOTH areas under one heading: the default daily checklist and the inspection library", async () => {
+describe("FieldOpsInspections — inspections-only Checklists page (D2 retirement)", () => {
+  it("renders the inspection library and the intro pointing daily content at the form definition", async () => {
     const { container } = render(<FieldOpsInspections onBack={() => {}} />);
     expect(container.textContent ?? "").toContain("Checklists");
-    await waitFor(() => expect(container.textContent ?? "").toContain("Default daily checklist"));
-    expect(container.querySelector('[aria-label="Default daily checklist"]')).not.toBeNull();
+    await waitFor(() => expect(container.textContent ?? "").toContain("Fall protection"));
     expect(container.querySelector('[aria-label="Inspection library"]')).not.toBeNull();
-    expect(container.textContent ?? "").toContain("File the Daily Field Report");
-    expect(container.textContent ?? "").toContain("Walk the site");
-    expect(container.textContent ?? "").toContain("Fall protection");
     expect(container.textContent ?? "").toContain("Crane pre-lift");
-    // The "take effect tomorrow" snapshot copy ships in the default area.
-    expect(container.textContent ?? "").toContain("take effect");
-    expect(container.textContent ?? "").toContain("tomorrow");
+    // The intro names the new home of the daily content: the form definition (form builder).
+    expect(container.textContent ?? "").toContain("form definition");
+  });
+
+  it("the retired 'Default daily checklist' editor is GONE (D2): no section, no CRUD, no lib call", async () => {
+    const { container, queryByLabelText } = render(<FieldOpsInspections onBack={() => {}} />);
+    await waitFor(() => expect(container.textContent ?? "").toContain("Fall protection"));
+    expect(container.textContent ?? "").not.toContain("Default daily checklist");
+    expect(container.querySelector('[aria-label="Default daily checklist"]')).toBeNull();
+    expect(queryByLabelText("Add default item label")).toBeNull();
+    expect(checklist.fetchDefaultChecklist).not.toHaveBeenCalled();
   });
 
   it("renders loading states distinct from empty (no 'No … yet' flash while fetches are pending)", () => {
-    vi.mocked(checklist.fetchDefaultChecklist).mockReturnValue(new Promise(() => {}));
     vi.mocked(checklist.fetchInspectionTemplates).mockReturnValue(new Promise(() => {}));
     const { container } = render(<FieldOpsInspections onBack={() => {}} />);
-    expect(container.textContent ?? "").toContain("Loading default checklist");
     expect(container.textContent ?? "").toContain("Loading inspection checklists");
-    expect(container.textContent ?? "").not.toContain("No default items yet");
     expect(container.textContent ?? "").not.toContain("No inspection checklists yet");
-  });
-});
-
-describe("FieldOpsInspections — default daily checklist CRUD", () => {
-  it("adding a default item auto-suggests seq = max+10 and fires addDefaultItem", async () => {
-    vi.mocked(checklist.addDefaultItem).mockResolvedValue({ ok: true, id: 23 });
-    const { getByLabelText } = render(<FieldOpsInspections onBack={() => {}} />);
-    const input = await waitFor(() => getByLabelText("Add default item label") as HTMLInputElement);
-    fireEvent.change(input, { target: { value: "Check the gate" } });
-    fireEvent.submit(input.closest("form")!);
-    await waitFor(() =>
-      expect(checklist.addDefaultItem).toHaveBeenCalledWith(
-        expect.objectContaining({ item_type: "manual_attest", label: "Check the gate", seq: 30 }),
-      ),
-    );
-  });
-
-  it("Edit opens a PREFILLED form (carrying the row's own seq) and Save fires editDefaultItem", async () => {
-    const { getByLabelText } = render(<FieldOpsInspections onBack={() => {}} />);
-    const editBtn = await waitFor(() => getByLabelText("Edit Walk the site"));
-    fireEvent.click(editBtn);
-    const labelInput = getByLabelText("Edit default item label") as HTMLInputElement;
-    expect(labelInput.value).toBe("Walk the site"); // prefilled — a typo is fixable without re-typing
-    fireEvent.change(labelInput, { target: { value: "Walk the whole site" } });
-    fireEvent.submit(labelInput.closest("form")!);
-    await waitFor(() =>
-      expect(checklist.editDefaultItem).toHaveBeenCalledWith(
-        22,
-        expect.objectContaining({ label: "Walk the whole site", item_type: "manual_attest", seq: 20 }),
-      ),
-    );
-  });
-
-  it("cancelling an edit closes the form without any lib call", async () => {
-    const { getByLabelText, queryByLabelText } = render(<FieldOpsInspections onBack={() => {}} />);
-    fireEvent.click(await waitFor(() => getByLabelText("Edit Walk the site")));
-    fireEvent.click(getByLabelText("Edit default item cancel"));
-    expect(queryByLabelText("Edit default item label")).toBeNull();
-    expect(checklist.editDefaultItem).not.toHaveBeenCalled();
-  });
-
-  it("Move up swaps the two rows' seq via editDefaultItem (existing edit route — no new routes)", async () => {
-    const { getByLabelText } = render(<FieldOpsInspections onBack={() => {}} />);
-    const upBtn = await waitFor(() => getByLabelText("Move Walk the site up"));
-    fireEvent.click(upBtn);
-    await waitFor(() => expect(checklist.editDefaultItem).toHaveBeenCalledTimes(2));
-    expect(checklist.editDefaultItem).toHaveBeenCalledWith(22, expect.objectContaining({ seq: 10 }));
-    expect(checklist.editDefaultItem).toHaveBeenCalledWith(21, expect.objectContaining({ seq: 20 }));
-  });
-
-  it("first/last rows cannot move off the ends", async () => {
-    const { getByLabelText } = render(<FieldOpsInspections onBack={() => {}} />);
-    const up = await waitFor(() => getByLabelText("Move File the Daily Field Report up") as HTMLButtonElement);
-    const down = getByLabelText("Move Walk the site down") as HTMLButtonElement;
-    expect(up.disabled).toBe(true);
-    expect(down.disabled).toBe(true);
-  });
-
-  it("delete is confirm-gated with EVERY-job blast-radius copy; cancel leaves the data untouched", async () => {
-    vi.mocked(checklist.deleteDefaultItem).mockResolvedValue({ ok: true, id: 22 });
-    const { container, getByLabelText } = render(<FieldOpsInspections onBack={() => {}} />);
-    const del = await waitFor(() => getByLabelText("Delete default Walk the site"));
-    fireEvent.click(del);
-    expect(container.textContent ?? "").toContain("EVERY job");
-    // Cancel path — nothing fires.
-    fireEvent.click(getByLabelText("Cancel Delete default Walk the site"));
-    expect(checklist.deleteDefaultItem).not.toHaveBeenCalled();
-    // Confirm path.
-    fireEvent.click(getByLabelText("Delete default Walk the site"));
-    fireEvent.click(getByLabelText("Confirm Delete default Walk the site"));
-    await waitFor(() => expect(checklist.deleteDefaultItem).toHaveBeenCalledWith(22));
-  });
-
-  it("form_code is a catalog select — names shown, codes submitted", async () => {
-    vi.mocked(checklist.addDefaultItem).mockResolvedValue({ ok: true, id: 24 });
-    const { getByLabelText } = render(<FieldOpsInspections onBack={() => {}} />);
-    const typeSel = await waitFor(() => getByLabelText("Add default item type") as HTMLSelectElement);
-    // Human type labels, raw keys as values.
-    const typeTexts = Array.from(typeSel.options).map((o) => o.textContent);
-    expect(typeTexts).toEqual(expect.arrayContaining(["Check", "Count", "Form", "Inspection"]));
-    fireEvent.change(typeSel, { target: { value: "form_linked" } });
-    const codeSel = getByLabelText("Add default item form code") as HTMLSelectElement;
-    const opts = Array.from(codeSel.options).map((o) => ({ v: o.value, t: o.textContent }));
-    expect(opts).toEqual(expect.arrayContaining([expect.objectContaining({ v: "jha", t: "Job Hazard Analysis" })]));
-    // No free-text form code anywhere — the select's values are real catalog parents only.
-    fireEvent.change(codeSel, { target: { value: "jha" } });
-    fireEvent.change(getByLabelText("Add default item label"), { target: { value: "Attach the JHA" } });
-    fireEvent.submit(codeSel.closest("form")!);
-    await waitFor(() =>
-      expect(checklist.addDefaultItem).toHaveBeenCalledWith(
-        expect.objectContaining({ item_type: "form_linked", label: "Attach the JHA", form_code: "jha" }),
-      ),
-    );
   });
 });
 

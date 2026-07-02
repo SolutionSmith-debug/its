@@ -1,12 +1,13 @@
 /**
- * "My Tasks" page (P4 S1 + R2 two-tab restructure) + its HomePage card gate.
- * Mirrors FieldOpsPersonnel.test.tsx: vi.mock the lib + useAuth, render, query.
+ * "My Tasks" page (P4 S1 + R2 two-tab restructure; Daily tab rebuilt in D2) + its HomePage card
+ * gate. Mirrors FieldOpsPersonnel.test.tsx: vi.mock the lib + useAuth, render, query.
  *
- * R2: the page is two tabs (Assigned tasks / Daily checklist), never-silent (Mandatory B — every
- * fetch has loading / error+Retry / empty, mutually exclusive), reason-coded daily empty states
- * (Mandatory A), per-row busy + inline feedback, contextual Start/Done/Reopen buttons, completed
- * collapse, Refresh + focus refetch, and the mutation/refetch try-split. Section-level detail
- * tests live beside the extracted components (src/components/__tests__/).
+ * R2: the page is two tabs (Assigned tasks / Daily report), never-silent (Mandatory B — every
+ * fetch has loading / error+Retry / empty, mutually exclusive), per-row busy + inline feedback,
+ * contextual Start/Done/Reopen buttons, completed collapse, Refresh + focus refetch, and the
+ * mutation/refetch try-split. D2: the Daily tab is the inline SOP daily FORM (DailyReportTab) —
+ * placement-driven auto-switch + quick actions; section-level detail tests live beside the
+ * component (src/components/__tests__/DailyReportTab.test.tsx).
  */
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -17,23 +18,40 @@ vi.mock("../../lib/fieldops_tasks", async (importOriginal) => {
 });
 vi.mock("../../lib/fieldops_checklist", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../lib/fieldops_checklist")>();
-  return { ...actual, fetchMyChecklist: vi.fn(), completeChecklistItem: vi.fn(), uncompleteChecklistItem: vi.fn(), recordCountItem: vi.fn(), fetchRollupDraft: vi.fn(), fetchAssignedInspections: vi.fn() };
+  return { ...actual, completeChecklistItem: vi.fn(), uncompleteChecklistItem: vi.fn(), recordCountItem: vi.fn(), fetchAssignedInspections: vi.fn() };
 });
 vi.mock("../../lib/fieldops_personnel", () => ({ createCrew: vi.fn(), fetchMyCrew: vi.fn() }));
+// D2: the Daily tab (DailyReportTab) resolves placement via the Job Tracker viewer data, reads the
+// daily-form status endpoint, and submits through the standard api path — mock all three libs.
+vi.mock("../../lib/fieldops_jobtracker", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../lib/fieldops_jobtracker")>();
+  return { ...actual, fetchJobList: vi.fn(), fetchJobDetail: vi.fn() };
+});
+vi.mock("../../lib/fieldops_daily_form", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../lib/fieldops_daily_form")>();
+  return { ...actual, fetchDailyFormStatus: vi.fn() };
+});
+vi.mock("../../lib/api", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../lib/api")>();
+  return { ...actual, fetchRecent: vi.fn(), submitForm: vi.fn() };
+});
 vi.mock("../../lib/auth", () => ({ useAuth: vi.fn() }));
 
 import * as api from "../../lib/fieldops_tasks";
 import * as personnel from "../../lib/fieldops_personnel";
 import * as checklist from "../../lib/fieldops_checklist";
+import * as jobtracker from "../../lib/fieldops_jobtracker";
+import * as portalApi from "../../lib/api";
+import { fetchDailyFormStatus } from "../../lib/fieldops_daily_form";
 import { ApiError } from "../../lib/errorCopy";
 import { pacificToday } from "../../components/myTasksShared";
 import { FieldOpsMyTasks } from "../FieldOpsMyTasks";
 import { HomePage } from "../HomePage";
 import { useAuth } from "../../lib/auth";
 
-function authWith(capabilities: string[]) {
+function authWith(capabilities: string[], role: "submitter" | "manager" | "admin" = "submitter") {
   return {
-    user: { username: "sam", role: "submitter" as const, capabilities },
+    user: { username: "sam", role, capabilities },
     loading: false,
     login: vi.fn(async () => {}),
     logout: vi.fn(async () => {}),
@@ -43,23 +61,38 @@ function authWith(capabilities: string[]) {
 afterEach(cleanup);
 beforeEach(() => {
   vi.resetAllMocks();
+  // Default: a submitter → the Daily tab renders the not-a-manager explanatory copy, no fetches.
   vi.mocked(useAuth).mockReturnValue(authWith(["cap.tasks.own"]));
-  // Default: no daily checklist (not a placed manager) → the Daily tab shows the reason copy.
-  vi.mocked(checklist.fetchMyChecklist).mockResolvedValue({ instance: null, items: [], reason: "not_manager" });
   // Default: no assigned inspections → the S6 section renders nothing.
   vi.mocked(checklist.fetchAssignedInspections).mockResolvedValue({ inspections: [], linked: true });
   // Default: empty crew list (AddCrewSection's auxiliary fetch).
   vi.mocked(personnel.fetchMyCrew).mockResolvedValue([]);
+  // D2 Daily-tab defaults: an unplaced viewer + an empty filed map (placed tests override).
+  vi.mocked(jobtracker.fetchJobList).mockResolvedValue({ jobs: [], next_cursor: null, viewer_current_job: null });
+  vi.mocked(jobtracker.fetchJobDetail).mockResolvedValue(JOB_DETAIL);
+  vi.mocked(fetchDailyFormStatus).mockResolvedValue({ filed: {}, daily_filed: null });
+  vi.mocked(portalApi.fetchRecent).mockResolvedValue(null);
 });
 
-// The daily instance must carry TODAY's Pacific date — a past date is the day-rollover state,
-// which deliberately disables every completion control (see the stale-day tests).
 const TODAY = pacificToday();
-const INSTANCE = { id: 7, job_id: "JOB-A", project_name: "Alpha", instance_date: TODAY, status: "open" as const, rolled_up_submission_uuid: null, rolled_up_by: null };
-const CHECKLIST_ITEMS: checklist.ChecklistItemState[] = [
-  { id: 11, source_item_id: 1, item_type: "form_linked", label: "File the Daily Field Report", form_code: "daily-report", target_count: null, status: "open", note: null, photo_ref: null, completed_by: null, completed_at: null, value_num: null, filed_by: null },
-  { id: 12, source_item_id: 2, item_type: "manual_attest", label: "Record crew progress", form_code: null, target_count: null, status: "open", note: null, photo_ref: null, completed_by: null, completed_at: null, value_num: null, filed_by: null },
-];
+
+// D2 Daily-tab fixtures: a manager PLACED on JOB-A (the Job Tracker viewer data source) + a
+// minimal detail for the best-effort prefill leg.
+const PLACED_LIST: jobtracker.JobListResponse = {
+  jobs: [{ job_id: "JOB-A", project_name: "Alpha", status: "active", progress: 0, client_name: null, crew: [], open_tasks: [] }],
+  next_cursor: null,
+  viewer_current_job: "JOB-A",
+};
+const JOB_DETAIL: jobtracker.JobDetailResponse = {
+  job: { job_id: "JOB-A", project_name: "Alpha", status: "active", progress: 0, client: null, crew: [], tasks: [], time_entries: [], equipment_on_site: [], inspections: [] },
+  cursors: { tasks: null, time: null, insp: null },
+  viewer_personnel: { id: 1, name: "Mo Manager" },
+};
+// A PLACED MANAGER session (extra caps as the test needs them).
+function placedManager(caps: string[] = ["cap.tasks.own", "cap.jobtracker.read"]) {
+  vi.mocked(useAuth).mockReturnValue(authWith(caps, "manager"));
+  vi.mocked(jobtracker.fetchJobList).mockResolvedValue(PLACED_LIST);
+}
 
 const TASKS: api.MyTask[] = [
   { id: 1, job_id: "JOB-A", project_name: "Alpha", description: "Dig footings", status: "open", created_at: 100, assigned_by: "boss.bob" },
@@ -77,33 +110,33 @@ describe("FieldOpsMyTasks — tabs", () => {
     const { getByRole, queryByRole } = render(<FieldOpsMyTasks onBack={() => {}} />);
     await waitFor(() => expect(getByRole("tab", { name: "Assigned tasks" })).not.toBeNull());
     expect(getByRole("tab", { name: "Assigned tasks" }).getAttribute("aria-selected")).toBe("true");
-    expect(getByRole("tab", { name: "Daily checklist" }).getAttribute("aria-selected")).toBe("false");
+    expect(getByRole("tab", { name: "Daily report" }).getAttribute("aria-selected")).toBe("false");
     // Only the assigned panel is visible (the daily panel is mounted but hidden).
     expect(getByRole("tabpanel", { name: "Assigned tasks" })).not.toBeNull();
-    expect(queryByRole("tabpanel", { name: "Daily checklist" })).toBeNull();
+    expect(queryByRole("tabpanel", { name: "Daily report" })).toBeNull();
   });
 
-  it("switches to the Daily checklist tab on click", async () => {
+  it("switches to the Daily report tab on click", async () => {
     tasksOk();
     const { getByRole, queryByRole } = render(<FieldOpsMyTasks onBack={() => {}} />);
-    await waitFor(() => expect(getByRole("tab", { name: "Daily checklist" })).not.toBeNull());
-    fireEvent.click(getByRole("tab", { name: "Daily checklist" }));
-    expect(getByRole("tab", { name: "Daily checklist" }).getAttribute("aria-selected")).toBe("true");
-    expect(getByRole("tabpanel", { name: "Daily checklist" })).not.toBeNull();
+    await waitFor(() => expect(getByRole("tab", { name: "Daily report" })).not.toBeNull());
+    fireEvent.click(getByRole("tab", { name: "Daily report" }));
+    expect(getByRole("tab", { name: "Daily report" }).getAttribute("aria-selected")).toBe("true");
+    expect(getByRole("tabpanel", { name: "Daily report" })).not.toBeNull();
     expect(queryByRole("tabpanel", { name: "Assigned tasks" })).toBeNull();
   });
 
-  it("auto-switches to Daily checklist when the actor has a daily instance and no open tasks", async () => {
+  it("auto-switches to Daily report when the actor is a PLACED MANAGER with no open tasks (D2)", async () => {
+    placedManager();
     tasksOk([]); // no open one-off tasks
-    vi.mocked(checklist.fetchMyChecklist).mockResolvedValue({ instance: INSTANCE, items: CHECKLIST_ITEMS, reason: null });
     const { getByRole } = render(<FieldOpsMyTasks onBack={() => {}} />);
-    await waitFor(() => expect(getByRole("tab", { name: "Daily checklist" }).getAttribute("aria-selected")).toBe("true"));
-    expect(getByRole("tabpanel", { name: "Daily checklist" })).not.toBeNull();
+    await waitFor(() => expect(getByRole("tab", { name: "Daily report" }).getAttribute("aria-selected")).toBe("true"));
+    expect(getByRole("tabpanel", { name: "Daily report" })).not.toBeNull();
   });
 
   it("does NOT auto-switch while open tasks exist", async () => {
+    placedManager();
     tasksOk(); // has open tasks
-    vi.mocked(checklist.fetchMyChecklist).mockResolvedValue({ instance: INSTANCE, items: CHECKLIST_ITEMS, reason: null });
     const { getByRole, container } = render(<FieldOpsMyTasks onBack={() => {}} />);
     await waitFor(() => expect(container.textContent ?? "").toContain("Dig footings"));
     expect(getByRole("tab", { name: "Assigned tasks" }).getAttribute("aria-selected")).toBe("true");
@@ -242,16 +275,17 @@ describe("FieldOpsMyTasks — tasks list (Assigned tasks tab)", () => {
 });
 
 describe("FieldOpsMyTasks — Refresh + wake refetch", () => {
-  it("the header Refresh control refetches the tasks AND every section", async () => {
+  it("the header Refresh control refetches the tasks AND every section (incl. the Daily tab)", async () => {
+    placedManager();
     tasksOk();
     const { getByLabelText, container } = render(<FieldOpsMyTasks onBack={() => {}} />);
     await waitFor(() => expect(container.textContent ?? "").toContain("Dig footings"));
     expect(api.fetchMyTasks).toHaveBeenCalledTimes(1);
-    expect(checklist.fetchMyChecklist).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(jobtracker.fetchJobList).toHaveBeenCalledTimes(1));
     expect(checklist.fetchAssignedInspections).toHaveBeenCalledTimes(1);
     fireEvent.click(getByLabelText("Refresh"));
     await waitFor(() => expect(api.fetchMyTasks).toHaveBeenCalledTimes(2));
-    await waitFor(() => expect(checklist.fetchMyChecklist).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(jobtracker.fetchJobList).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(checklist.fetchAssignedInspections).toHaveBeenCalledTimes(2));
   });
 
@@ -265,179 +299,59 @@ describe("FieldOpsMyTasks — Refresh + wake refetch", () => {
   });
 });
 
-describe("FieldOpsMyTasks — S3 daily checklist tab", () => {
-  it("renders the Today's checklist section for a placed manager (instance present)", async () => {
+describe("FieldOpsMyTasks — D2 Daily report tab (page integration)", () => {
+  // Section-level detail (prefill, filed banner, amend, submit, past dates) lives in
+  // components/__tests__/DailyReportTab.test.tsx — these prove the PAGE wiring.
+
+  it("renders the inline SOP form (date selector + v2 definition) for a placed manager", async () => {
+    placedManager();
     tasksOk([]);
-    vi.mocked(checklist.fetchMyChecklist).mockResolvedValue({ instance: INSTANCE, items: CHECKLIST_ITEMS, reason: null });
-    const { container, getByLabelText } = render(<FieldOpsMyTasks onBack={() => {}} />);
-    await waitFor(() => expect(container.querySelector('[aria-label="Today\'s checklist"]')).not.toBeNull());
-    const txt = container.textContent ?? "";
-    expect(txt).toContain("Record crew progress");
-    expect(txt).toContain("File the Daily Field Report");
-    // manual_attest gets a complete control; form_linked does not (S4).
-    expect(getByLabelText("Complete item 12")).not.toBeNull();
-    expect(() => getByLabelText("Complete item 11")).toThrow();
+    const { getByRole, getByLabelText } = render(<FieldOpsMyTasks onBack={() => {}} onOpenForm={vi.fn()} />);
+    const panel = await waitFor(() => getByRole("tabpanel", { name: "Daily report" })); // auto-switched
+    await waitFor(() => expect(panel.textContent ?? "").toContain("SITE SUPERVISOR"));
+    expect(panel.querySelector('input[type="date"]')).not.toBeNull();
+    expect((panel.querySelector('input[type="date"]') as HTMLInputElement).value).toBe(TODAY);
+    expect(panel.textContent ?? "").toContain("Alpha");
+    expect(getByLabelText("Submit daily report")).not.toBeNull();
+    // The retired R2 checkbox checklist is GONE from the tab.
+    expect(panel.textContent ?? "").not.toContain("Today's checklist");
   });
 
-  it("explains the Daily tab instead of a blank when instance is null (reason codes, Mandatory A)", async () => {
-    tasksOk([]);
-    const cases: Array<[checklist.DailyEmptyReason, string]> = [
-      ["not_manager", "crew-lead managers"],
-      ["no_personnel_link", "isn't linked to a roster person"],
-      ["not_placed", "not placed on a job yet"],
-    ];
-    for (const [reason, copy] of cases) {
-      vi.mocked(checklist.fetchMyChecklist).mockResolvedValue({ instance: null, items: [], reason });
-      const { container, unmount } = render(<FieldOpsMyTasks onBack={() => {}} />);
-      await waitFor(() => expect(container.querySelector('[aria-label="Daily checklist status"]')).not.toBeNull());
-      expect(container.textContent ?? "").toContain(copy);
-      expect(container.querySelector('[aria-label="Today\'s checklist"]')).toBeNull();
-      unmount();
-    }
+  it("explains the Daily tab instead of a blank for a non-manager (Mandatory A carried from R2)", async () => {
+    tasksOk([]); // default submitter session
+    const { getByRole } = render(<FieldOpsMyTasks onBack={() => {}} />);
+    await waitFor(() => expect(getByRole("tab", { name: "Daily report" })).not.toBeNull());
+    fireEvent.click(getByRole("tab", { name: "Daily report" }));
+    const panel = getByRole("tabpanel", { name: "Daily report" });
+    await waitFor(() => expect(panel.textContent ?? "").toContain("crew-lead managers"));
+    expect(panel.querySelector('input[type="date"]')).toBeNull();
   });
 
-  it("completing a manual_attest item fires completeChecklistItem", async () => {
+  it("an unplaced manager gets the not-placed copy; an unlinked account the roster copy", async () => {
+    // Unplaced (linked:true from /tasks/mine, no viewer_current_job).
+    vi.mocked(useAuth).mockReturnValue(authWith(["cap.tasks.own", "cap.jobtracker.read"], "manager"));
     tasksOk([]);
-    vi.mocked(checklist.fetchMyChecklist).mockResolvedValue({ instance: INSTANCE, items: CHECKLIST_ITEMS, reason: null });
-    vi.mocked(checklist.completeChecklistItem).mockResolvedValue({ ok: true, id: 12, status: "done", instance_status: "open" });
-    const { getByLabelText } = render(<FieldOpsMyTasks onBack={() => {}} />);
-    const btn = await waitFor(() => getByLabelText("Complete item 12"));
-    fireEvent.click(btn);
-    await waitFor(() => expect(checklist.completeChecklistItem).toHaveBeenCalledWith(12, undefined));
+    const a = render(<FieldOpsMyTasks onBack={() => {}} />);
+    fireEvent.click(await waitFor(() => a.getByRole("tab", { name: "Daily report" })));
+    await waitFor(() => expect(a.container.textContent ?? "").toContain("not placed on a job yet"));
+    a.unmount();
+    // Unlinked (linked:false) → the one roster-link explanation, not the placement copy.
+    vi.mocked(api.fetchMyTasks).mockResolvedValue({ tasks: [], linked: false });
+    const b = render(<FieldOpsMyTasks onBack={() => {}} />);
+    fireEvent.click(await waitFor(() => b.getByRole("tab", { name: "Daily report" })));
+    await waitFor(() => expect(b.getByRole("tabpanel", { name: "Daily report" }).textContent ?? "").toContain("isn't linked to a roster person"));
   });
 
-  it("mutation success + refetch failure: shows success, keeps the locally-applied data, soft-warns", async () => {
+  it("a form_link deep-links through the page's onOpenForm with the placement job + selected date", async () => {
+    placedManager();
     tasksOk([]);
-    vi.mocked(checklist.fetchMyChecklist)
-      .mockResolvedValueOnce({ instance: INSTANCE, items: CHECKLIST_ITEMS, reason: null })
-      .mockRejectedValue(new ApiError(null, 500)); // every refetch fails
-    vi.mocked(checklist.completeChecklistItem).mockResolvedValue({ ok: true, id: 12, status: "done", instance_status: "open" });
-    const { getByLabelText, container } = render(<FieldOpsMyTasks onBack={() => {}} />);
-    const btn = await waitFor(() => getByLabelText("Complete item 12"));
-    fireEvent.click(btn);
-    // NEVER "Update failed." for a write that landed: success feedback + soft warn instead.
-    await waitFor(() => expect(container.textContent ?? "").toContain("Item updated."));
-    await waitFor(() => expect(container.textContent ?? "").toContain("Saved — but the checklist couldn't refresh"));
-    expect(container.textContent ?? "").not.toContain("Update failed.");
-    // The CompleteResult was applied locally: item 12 now sits in the Completed disclosure.
-    expect(container.textContent ?? "").toContain("Completed (1)");
-    expect(container.textContent ?? "").toContain("Record crew progress");
-  });
-});
-
-describe("FieldOpsMyTasks — S4 loop-closure + count/inspection", () => {
-  const FORM_LINKED: checklist.ChecklistItemState = CHECKLIST_ITEMS[0]; // id 11, form_linked, 'daily-report'
-  const COUNT_ITEM: checklist.ChecklistItemState = {
-    id: 20, source_item_id: 5, item_type: "count", label: "Log deliveries", form_code: null, target_count: 3,
-    status: "open", note: null, photo_ref: null, completed_by: null, completed_at: null, value_num: null, filed_by: null,
-  };
-
-  it("a form_linked item renders a deep-link (not a checkbox) and fires onOpenForm pre-filled", async () => {
-    tasksOk([]);
-    vi.mocked(checklist.fetchMyChecklist).mockResolvedValue({ instance: INSTANCE, items: [FORM_LINKED], reason: null });
     const onOpenForm = vi.fn();
-    const { getByLabelText, queryByLabelText } = render(<FieldOpsMyTasks onBack={() => {}} onOpenForm={onOpenForm} />);
-    // No manual-check control for a form_linked item; a "Complete <label>" deep-link instead.
-    await waitFor(() => expect(getByLabelText("Complete File the Daily Field Report")).not.toBeNull());
-    expect(queryByLabelText("Complete item 11")).toBeNull();
-    fireEvent.click(getByLabelText("Complete File the Daily Field Report"));
-    // 'daily-report' is a no-variant parent → variantCode omitted; job + date come from the instance.
-    expect(onOpenForm).toHaveBeenCalledWith({
-      jobId: "JOB-A",
-      parentCode: "daily-report",
-      variantCode: undefined,
-      workDate: TODAY,
-    });
-  });
-
-  it("a done form_linked item shows a done badge (auto-checked) and no manual-complete control", async () => {
-    tasksOk([]);
-    vi.mocked(checklist.fetchMyChecklist).mockResolvedValue({
-      instance: INSTANCE,
-      items: [{ ...FORM_LINKED, status: "done", completed_by: "(auto)", filed_by: "Sam Submitter" }],
-      reason: null,
-    });
-    const { container } = render(<FieldOpsMyTasks onBack={() => {}} onOpenForm={vi.fn()} />);
-    await waitFor(() => expect(container.querySelector('[aria-label="Today\'s checklist"]')).not.toBeNull());
-    // Done items collapse; the badge (and R1 filed-by caption) render inside the disclosure.
-    const details = container.querySelector('[aria-label="Today\'s checklist"] details.dash-completed')!;
-    expect(details).not.toBeNull();
-    expect(details.querySelector(".dash-pill--ok")?.textContent).toBe("done");
-    expect(details.textContent ?? "").toContain("filed by Sam Submitter");
-  });
-
-  it("a count item renders a number input + Record, firing recordCountItem(id, value)", async () => {
-    tasksOk([]);
-    vi.mocked(checklist.fetchMyChecklist).mockResolvedValue({ instance: INSTANCE, items: [COUNT_ITEM], reason: null });
-    vi.mocked(checklist.recordCountItem).mockResolvedValue({ ok: true, id: 20, status: "done", value_num: 5, instance_status: "open" });
-    const { getByLabelText } = render(<FieldOpsMyTasks onBack={() => {}} onOpenForm={vi.fn()} />);
-    const input = await waitFor(() => getByLabelText("Count for item 20") as HTMLInputElement);
-    expect(input.type).toBe("number");
-    fireEvent.change(input, { target: { value: "5" } });
-    fireEvent.click(getByLabelText("Record item 20"));
-    await waitFor(() => expect(checklist.recordCountItem).toHaveBeenCalledWith(20, 5));
-  });
-});
-
-describe("FieldOpsMyTasks — S5 auto-rollup → Daily Report", () => {
-  const COMPLETE_INSTANCE = { ...INSTANCE, status: "complete" as const };
-  const DONE_ITEM: checklist.ChecklistItemState = {
-    ...CHECKLIST_ITEMS[1], status: "done", completed_by: "mgr.mo", completed_at: 1,
-  };
-
-  it("shows 'Review & file Daily Report' only when the instance is complete + NOT rolled up", async () => {
-    tasksOk([]);
-    vi.mocked(checklist.fetchMyChecklist).mockResolvedValue({ instance: COMPLETE_INSTANCE, items: [DONE_ITEM], reason: null });
-    const { getByLabelText } = render(<FieldOpsMyTasks onBack={() => {}} onOpenForm={vi.fn()} />);
-    await waitFor(() => expect(getByLabelText("Review and file Daily Report")).not.toBeNull());
-  });
-
-  it("does NOT show the review button while the instance is still open", async () => {
-    tasksOk([]);
-    vi.mocked(checklist.fetchMyChecklist).mockResolvedValue({ instance: INSTANCE, items: CHECKLIST_ITEMS, reason: null });
-    const { queryByLabelText, container } = render(<FieldOpsMyTasks onBack={() => {}} onOpenForm={vi.fn()} />);
-    await waitFor(() => expect(container.querySelector('[aria-label="Today\'s checklist"]')).not.toBeNull());
-    expect(queryByLabelText("Review and file Daily Report")).toBeNull();
-  });
-
-  it("clicking Review & file fetches the draft and opens the Daily Report form pre-filled", async () => {
-    tasksOk([]);
-    vi.mocked(checklist.fetchMyChecklist).mockResolvedValue({ instance: COMPLETE_INSTANCE, items: [DONE_ITEM], reason: null });
-    vi.mocked(checklist.fetchRollupDraft).mockResolvedValue({
-      job_id: "JOB-A",
-      work_date: TODAY,
-      form_code: "daily-report",
-      values: { job_name: "Alpha", report_date: TODAY, prepared_by: "Mo Manager", comments: "summary" },
-    });
-    const onOpenForm = vi.fn();
-    const { getByLabelText } = render(<FieldOpsMyTasks onBack={() => {}} onOpenForm={onOpenForm} />);
-    const btn = await waitFor(() => getByLabelText("Review and file Daily Report"));
+    const { getByRole } = render(<FieldOpsMyTasks onBack={() => {}} onOpenForm={onOpenForm} />);
+    const btn = await waitFor(() => getByRole("button", { name: /Create Job Hazard Analysis/ }));
     fireEvent.click(btn);
-    await waitFor(() => expect(checklist.fetchRollupDraft).toHaveBeenCalled());
-    // 'daily-report' is a no-variant parent → variantCode omitted; job/date from the draft; values carried.
-    await waitFor(() =>
-      expect(onOpenForm).toHaveBeenCalledWith({
-        jobId: "JOB-A",
-        parentCode: "daily-report",
-        variantCode: undefined,
-        workDate: TODAY,
-        values: { job_name: "Alpha", report_date: TODAY, prepared_by: "Mo Manager", comments: "summary" },
-      }),
+    expect(onOpenForm).toHaveBeenCalledWith(
+      expect.objectContaining({ jobId: "JOB-A", parentCode: "jha", workDate: TODAY }),
     );
-  });
-
-  it("shows the 'Daily Report filed ✓' state (no review button) once rolled up", async () => {
-    tasksOk([]);
-    vi.mocked(checklist.fetchMyChecklist).mockResolvedValue({
-      instance: { ...COMPLETE_INSTANCE, rolled_up_submission_uuid: "sub-123", rolled_up_by: "Mo Manager" },
-      items: [DONE_ITEM],
-      reason: null,
-    });
-    const { container, queryByLabelText } = render(<FieldOpsMyTasks onBack={() => {}} onOpenForm={vi.fn()} />);
-    await waitFor(() => expect(container.querySelector('[aria-label="Daily Report filed"]')).not.toBeNull());
-    expect(container.textContent ?? "").toContain("Daily Report filed");
-    expect(container.textContent ?? "").toContain("by Mo Manager");
-    expect(queryByLabelText("Review and file Daily Report")).toBeNull();
   });
 });
 
@@ -559,13 +473,12 @@ describe("HomePage — My Tasks card gate", () => {
 // ─────────────────────────────────────────────────────────────────────────────
 describe("FieldOpsMyTasks — R7 Log time quick action + job links", () => {
   it("with cap.time.log + onOpenJob, 'Log time' deep-links to the placed manager's job", async () => {
-    vi.mocked(useAuth).mockReturnValue(authWith(["cap.tasks.own", "cap.time.log"]));
+    placedManager(["cap.tasks.own", "cap.jobtracker.read", "cap.time.log"]);
     tasksOk();
-    vi.mocked(checklist.fetchMyChecklist).mockResolvedValue({ instance: INSTANCE, items: CHECKLIST_ITEMS, reason: null });
     const onOpenJob = vi.fn();
     const { getByLabelText, container } = render(<FieldOpsMyTasks onBack={() => {}} onOpenJob={onOpenJob} />);
     await waitFor(() => expect(getByLabelText("Log time in the Job Tracker")).not.toBeNull());
-    // The daily instance names the placement → the caption names the job and the click carries it.
+    // The Daily tab's placement resolve (D2) names the job → the caption + the click carry it.
     await waitFor(() => expect(container.textContent ?? "").toContain("Opens Alpha to log hours."));
     fireEvent.click(getByLabelText("Log time in the Job Tracker"));
     expect(onOpenJob).toHaveBeenCalledWith("JOB-A");

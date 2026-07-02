@@ -80,11 +80,11 @@ describe("ChecklistItemForm — form_code catalog select", () => {
     const codeSel = getByLabelText("Test item form code") as HTMLSelectElement;
     const opts = Array.from(codeSel.options).map((o) => ({ v: o.value, t: o.textContent }));
     expect(opts).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ v: "jha", t: "Job Hazard Analysis" }),
-        expect.objectContaining({ v: "daily-report", t: "Daily Field Report" }),
-      ]),
+      expect.arrayContaining([expect.objectContaining({ v: "jha", t: "Job Hazard Analysis" })]),
     );
+    // (D2) tab-launched parents are EXCLUDED — an inspection item deep-linking at the SOP daily form
+    // would land on a blank one-way fill page (the Daily tab owns that form).
+    expect(opts.some((o) => o.v === "daily-report")).toBe(false);
     fireEvent.change(getByLabelText("Test item label"), { target: { value: "Attach the JHA" } });
     fireEvent.change(codeSel, { target: { value: "jha" } });
     fireEvent.submit(codeSel.closest("form")!);

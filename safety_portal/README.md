@@ -488,6 +488,10 @@ read them (`cap.checklist.manage`, admin-only).
    the "My Tasks" tab shows a user's assigned tasks; an admin edits the default checklist + adds/removes
    a per-job item on a job's detail.
 
+_Historical note (D2, 2026-07): the daily-checklist SPA surfaces described above were retired by the
+SOP daily form (see "SOP daily form — the Daily tab IS the form" below); the engine + tables stay for
+assigned inspections._
+
 ### Subcontractor tier — scoped crew-create + time scoping (`0027`)
 
 **Migration 0027** adds one capability `cap.crew.create` (granted to `submitter` + `admin`) and the
@@ -550,6 +554,10 @@ NOT-EXISTS-guarded (an admin-created same-title library template is never duplic
    order (photos item target 50, check-ins target 2); the inspection library lists the 6 seeded
    templates; a placed manager's next-day "My Tasks" daily checklist rolls the new items.
 
+_Historical note (D2, 2026-07): the 0028 daily_default rows are now DORMANT — the SOP content lives in
+the `daily-report-v2` form definition and the Daily tab renders it as a form (see "SOP daily form —
+the Daily tab IS the form" below). The 6 inspection-library templates stay live._
+
 ### Assigned-Tasks R1 — instance template title (`0029`) + worker contract fixes
 
 **Migration 0029** adds `checklist_instances.template_title` — the assigned inspection template's
@@ -576,6 +584,41 @@ required-bounded time-entry hours (422 `invalid_hours`).
 3. **Smoke** (live): assign an inspection → the assignee's My Tasks card shows the template's title;
    a subcontractor flipping another person's task gets a permission message; a time entry without
    hours is refused.
+
+### SOP daily form — the Daily tab IS the form (D1 `daily-report-v2` + D2 — no migration)
+
+**No migration.** D1 shipped the `daily-report-v2` definition (the full Site-Supervisor SOP as
+`guidance`/`form_link` sections with the DFR data fields interleaved) + catalog bump +
+`launch:"daily-tab"`. **D2** makes the My-Tasks **Daily tab the form itself**: date selector
+(Pacific today default, past dates show the filed state first) + the v2 form rendered inline
+(job from the manager's placement via the Job Tracker viewer data; crew/equipment/prepared_by
+prefilled best-effort from the job detail) + `form_link` deep-links riding the existing openForm
+machinery with live "Filed ✓ \<time> by \<name>" indicators from the NEW read-only endpoint
+`GET /api/fieldops/daily-form/status?job_id&date` (`cap.tasks.own`; latest submission per parent
+family via the S4 family match; display-name-only attribution). Filing goes through the unchanged
+send-free `/api/submit` → Mac intake → weekly packet.
+
+**RETIRED SPA surfaces (D2):** the R2 checkbox daily checklist (DailyChecklistSection), the admin
+"Default daily checklist" editor (Checklists page — now inspections-only), the Job-Tracker per-job
+Daily-checklist editor + its cross-link, and the Daily Report's entry in the Submit-a-Form CREATE
+picker (`launch:"daily-tab"` parents are hidden there; Form Request / download / history surfaces
+untouched). **The checklist ENGINE + all its Worker routes stay** (assigned inspections use them;
+§14/§49) — the daily generation route (`/checklist/mine`) simply has no SPA caller anymore
+(deprecation note in `worker/fieldops_checklist.ts`). Daily content edits now happen in the
+**form definition** via the form builder / publish pipeline.
+
+#### Activation (operator — deploy boundary; escalates to the Developer-Operator)
+
+1. **No D1 migration** — the `checklist_templates` `daily_default` rows (0026/0028) stay in place,
+   dormant for the daily flow (inspections keep their tables live).
+2. **Redeploy** (`npm run deploy`) — activates the status endpoint + the rebuilt Daily tab + the
+   retirements in one step (SPA assets + Worker deploy together).
+3. **Smoke** (live): a placed manager's My Tasks → Daily report shows the date selector + the SOP
+   form with crew/equipment prefilled; "Create Job Hazard Analysis" opens the JHA prefilled and,
+   after filing it, the button shows "Filed ✓" on return; submitting the daily report flips the
+   "Daily report filed ✓" banner; the Submit-a-Form picker no longer lists Daily Field Report; the
+   Checklists page shows no "Default daily checklist" area; a Job Tracker job detail shows no
+   Daily-checklist editor; an assigned inspection still renders and auto-checks.
 
 ### Lockout recovery (break-glass) — escalate to the Developer-Operator
 
