@@ -11,7 +11,7 @@ vi.mock("../../lib/fieldops_tasks", async (importOriginal) => {
 });
 vi.mock("../../lib/fieldops_checklist", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../lib/fieldops_checklist")>();
-  return { ...actual, fetchMyChecklist: vi.fn(), completeChecklistItem: vi.fn(), uncompleteChecklistItem: vi.fn() };
+  return { ...actual, fetchMyChecklist: vi.fn(), completeChecklistItem: vi.fn(), uncompleteChecklistItem: vi.fn(), recordCountItem: vi.fn() };
 });
 vi.mock("../../lib/auth", () => ({ useAuth: vi.fn() }));
 
@@ -117,6 +117,56 @@ describe("FieldOpsMyTasks — S3 daily checklist section", () => {
     const btn = await waitFor(() => getByLabelText("Complete item 12"));
     fireEvent.click(btn);
     await waitFor(() => expect(checklist.completeChecklistItem).toHaveBeenCalledWith(12, undefined));
+  });
+});
+
+describe("FieldOpsMyTasks — S4 loop-closure + count/inspection", () => {
+  const FORM_LINKED: checklist.ChecklistItemState = CHECKLIST_ITEMS[0]; // id 11, form_linked, 'daily-report'
+  const COUNT_ITEM: checklist.ChecklistItemState = {
+    id: 20, source_item_id: 5, item_type: "count", label: "Log deliveries", form_code: null, target_count: 3,
+    status: "open", note: null, photo_ref: null, completed_by: null, completed_at: null, value_num: null,
+  };
+
+  it("a form_linked item renders a deep-link (not a checkbox) and fires onOpenForm pre-filled", async () => {
+    vi.mocked(api.fetchMyTasks).mockResolvedValue({ tasks: [] });
+    vi.mocked(checklist.fetchMyChecklist).mockResolvedValue({ instance: INSTANCE, items: [FORM_LINKED] });
+    const onOpenForm = vi.fn();
+    const { getByLabelText, queryByLabelText } = render(<FieldOpsMyTasks onBack={() => {}} onOpenForm={onOpenForm} />);
+    // No manual-check control for a form_linked item; a "Complete <label>" deep-link instead.
+    await waitFor(() => expect(getByLabelText("Complete File the Daily Field Report")).not.toBeNull());
+    expect(queryByLabelText("Complete item 11")).toBeNull();
+    fireEvent.click(getByLabelText("Complete File the Daily Field Report"));
+    // 'daily-report' is a no-variant parent → variantCode omitted; job + date come from the instance.
+    expect(onOpenForm).toHaveBeenCalledWith({
+      jobId: "JOB-A",
+      parentCode: "daily-report",
+      variantCode: undefined,
+      workDate: "2026-07-01",
+    });
+  });
+
+  it("a done form_linked item shows a done badge (auto-checked) and no manual-complete control", async () => {
+    vi.mocked(api.fetchMyTasks).mockResolvedValue({ tasks: [] });
+    vi.mocked(checklist.fetchMyChecklist).mockResolvedValue({
+      instance: INSTANCE,
+      items: [{ ...FORM_LINKED, status: "done", completed_by: "(auto)" }],
+    });
+    const { container } = render(<FieldOpsMyTasks onBack={() => {}} onOpenForm={vi.fn()} />);
+    await waitFor(() => expect(container.querySelector('[aria-label="Today\'s checklist"]')).not.toBeNull());
+    const li = container.querySelector(".dash-tasklist li")!;
+    expect(li.querySelector(".dash-pill--ok")?.textContent).toBe("done");
+  });
+
+  it("a count item renders a number input + Record, firing recordCountItem(id, value)", async () => {
+    vi.mocked(api.fetchMyTasks).mockResolvedValue({ tasks: [] });
+    vi.mocked(checklist.fetchMyChecklist).mockResolvedValue({ instance: INSTANCE, items: [COUNT_ITEM] });
+    vi.mocked(checklist.recordCountItem).mockResolvedValue({ ok: true, id: 20, status: "done", value_num: 5, instance_status: "open" });
+    const { getByLabelText } = render(<FieldOpsMyTasks onBack={() => {}} onOpenForm={vi.fn()} />);
+    const input = await waitFor(() => getByLabelText("Count for item 20") as HTMLInputElement);
+    expect(input.type).toBe("number");
+    fireEvent.change(input, { target: { value: "5" } });
+    fireEvent.click(getByLabelText("Record item 20"));
+    await waitFor(() => expect(checklist.recordCountItem).toHaveBeenCalledWith(20, 5));
   });
 });
 

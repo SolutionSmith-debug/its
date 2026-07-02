@@ -164,6 +164,7 @@ export interface CompleteResult {
   ok: boolean;
   id: number;
   status: ChecklistItemStatus;
+  value_num?: number | null;
   instance_status: "open" | "complete";
 }
 
@@ -172,7 +173,8 @@ export function fetchMyChecklist(): Promise<MyChecklist> {
   return getJson<MyChecklist>(`${BASE}/mine`);
 }
 
-// Mark a manual_attest item done (optional note/photo_ref); the Worker rejects other item types in S3.
+// Mark a manual_attest item done (optional note/photo_ref). The Worker refuses form_linked/inspection
+// items (they auto-close on a matching submission — see recordCountItem for count).
 export function completeChecklistItem(
   stateId: number,
   opts?: { note?: string; photo_ref?: string },
@@ -180,7 +182,13 @@ export function completeChecklistItem(
   return postJson<CompleteResult>(`${BASE}/item-state/${stateId}/complete`, opts ?? {});
 }
 
-// Toggle a done item back to open.
+// Record a count item's value (P4 S4). The Worker completes it iff value_num >= target_count; below
+// target it throws (the postJson error carries the server 'below_target' code). Same /complete route.
+export function recordCountItem(stateId: number, valueNum: number): Promise<CompleteResult> {
+  return postJson<CompleteResult>(`${BASE}/item-state/${stateId}/complete`, { value_num: valueNum });
+}
+
+// Toggle a manually-completed item (manual_attest / count) back to open. form_linked/inspection reject.
 export function uncompleteChecklistItem(stateId: number): Promise<CompleteResult> {
   return postJson<CompleteResult>(`${BASE}/item-state/${stateId}/uncomplete`);
 }

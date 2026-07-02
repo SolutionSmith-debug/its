@@ -21,7 +21,25 @@ function todayIso(): string {
  * (The optional `tabBar` mount is retained for any caller that renders its own nav above
  * the form.)
  */
-export function FormFillPage({ onBack, tabBar }: { onBack?: () => void; tabBar?: ReactNode }) {
+/** Deep-link prefill (P4 S4 loop-closure): a form_linked/inspection checklist item opens FormFillPage
+ * with the instance's job + the item's form + the instance date pre-selected, so filing the linked form
+ * auto-checks the item on the next checklist read. All fields optional; each seeds the matching state. */
+export interface FormPrefill {
+  jobId?: string;
+  parentCode?: string;
+  variantCode?: string;
+  workDate?: string;
+}
+
+export function FormFillPage({
+  onBack,
+  tabBar,
+  prefill,
+}: {
+  onBack?: () => void;
+  tabBar?: ReactNode;
+  prefill?: FormPrefill;
+}) {
   const { user, logout } = useAuth();
   const isAdmin = user?.role === "admin";
   const me = user?.username ?? "";
@@ -29,10 +47,10 @@ export function FormFillPage({ onBack, tabBar }: { onBack?: () => void; tabBar?:
 
   const [jobs, setJobs] = useState<api.Job[]>([]);
   const [jobsErr, setJobsErr] = useState<string | null>(null);
-  const [jobId, setJobId] = useState("");
-  const [parentCode, setParentCode] = useState("");
-  const [variantCode, setVariantCode] = useState("");
-  const [workDate, setWorkDate] = useState(todayIso());
+  const [jobId, setJobId] = useState(prefill?.jobId ?? "");
+  const [parentCode, setParentCode] = useState(prefill?.parentCode ?? "");
+  const [variantCode, setVariantCode] = useState(prefill?.variantCode ?? "");
+  const [workDate, setWorkDate] = useState(prefill?.workDate ?? todayIso());
 
   // Admin "filled out as" — the account this submission is attributed to (default =
   // self). Only admins ever see / send this; submitters always submit as themselves.
