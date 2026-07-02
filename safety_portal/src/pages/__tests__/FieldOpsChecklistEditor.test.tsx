@@ -1,8 +1,10 @@
 /**
- * Assigned-Tasks tab (P4 field-ops feature) S2 — the Daily-checklist editor on the Job Tracker detail.
- * Gated cap.checklist.manage. Renders the job's EFFECTIVE merged checklist (default ⊕ this job's
- * overrides); add-item / hide (suppress) / remove fire the right fieldops_checklist lib calls. Mirrors
- * FieldOpsJobTracker.test.tsx: mock every lib the page imports before render, then drive the detail view.
+ * Assigned-Tasks tab (P4 field-ops feature) S2 — the Daily-checklist editor on the Job Tracker detail,
+ * post-R4 extraction: the job detail keeps ONLY the per-job tailoring (add-for-this-job / hide /
+ * unhide) with Shared vs This-job-only labeling and a cross-link to the consolidated Checklists area;
+ * the shared-default editing (Edit-shared-default toggle, default add/delete) is GONE — it lives in
+ * FieldOpsInspections now. Gated cap.checklist.manage. Mirrors FieldOpsJobTracker.test.tsx: mock every
+ * lib the page imports before render, then drive the detail view.
  */
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -112,13 +114,16 @@ describe("FieldOpsJobTracker — Daily checklist editor (S2)", () => {
     expect(checklist.fetchJobChecklist).not.toHaveBeenCalled();
   });
 
-  it("renders the merged checklist (default + override rows) for cap.checklist.manage", async () => {
+  it("renders the merged checklist with Shared / This-job-only labeling for cap.checklist.manage", async () => {
     const { container } = await openDetail(["cap.checklist.manage"]);
     await waitFor(() => expect(checklist.fetchJobChecklist).toHaveBeenCalledWith("JOB-A"));
     const section = container.querySelector('[aria-label="Daily checklist"]')!;
     expect(section).not.toBeNull();
     expect(section.textContent).toContain("File the Daily Field Report");
     expect(section.textContent).toContain("Job-specific step");
+    // R4: origin pills render the HUMAN labels (labels.ts originLabel), not raw default/override.
+    const pills = Array.from(section.querySelectorAll(".dash-pill")).map((el) => el.textContent);
+    expect(pills).toEqual(expect.arrayContaining(["Shared", "This job only"]));
     // The override row is deletable, the default row is suppressable.
     expect(container.querySelector('[aria-label="Hide File the Daily Field Report"]')).not.toBeNull();
     expect(container.querySelector('[aria-label="Remove Job-specific step"]')).not.toBeNull();
@@ -126,13 +131,27 @@ describe("FieldOpsJobTracker — Daily checklist editor (S2)", () => {
     expect(container.querySelector('[aria-label="Unhide Record crew progress"]')).not.toBeNull();
   });
 
-  it("adding a job item calls addJobItem with the drafted item + reloads", async () => {
+  it("the shared-default editor is GONE from the job detail; a cross-link names the Checklists area", async () => {
+    const { container } = await openDetail(["cap.checklist.manage"]);
+    await waitFor(() => expect(checklist.fetchJobChecklist).toHaveBeenCalled());
+    const section = container.querySelector('[aria-label="Daily checklist"]')!;
+    // No Edit-shared-default toggle, no default-editor fieldset, no default fetch.
+    expect(section.textContent).not.toContain("Edit shared default");
+    expect(container.querySelector('[aria-label="Default checklist"]')).toBeNull();
+    expect(checklist.fetchDefaultChecklist).not.toHaveBeenCalled();
+    // Cross-link copy: where the shared default IS edited now (the Home card, by name).
+    expect(section.textContent).toContain("Edit the shared default itself in Checklists");
+    expect(section.textContent).toContain("Inspection checklists");
+  });
+
+  it("adding a job item calls addJobItem with the drafted item + auto-suggested seq (max+10) + reloads", async () => {
     const { container, getByLabelText } = await openDetail(["cap.checklist.manage"]);
     await waitFor(() => expect(checklist.fetchJobChecklist).toHaveBeenCalledTimes(1));
     fireEvent.change(getByLabelText("Add checklist item label"), { target: { value: "Torque check" } });
     fireEvent.submit(container.querySelector('[aria-label="Add checklist item"]')!);
     await waitFor(() =>
-      expect(checklist.addJobItem).toHaveBeenCalledWith("JOB-A", expect.objectContaining({ item_type: "manual_attest", label: "Torque check" })),
+      // effective items carry seq 10 + 25 → the new item lands at the end (35).
+      expect(checklist.addJobItem).toHaveBeenCalledWith("JOB-A", expect.objectContaining({ item_type: "manual_attest", label: "Torque check", seq: 35 })),
     );
     await waitFor(() => expect(checklist.fetchJobChecklist).toHaveBeenCalledTimes(2)); // reloaded after the write
   });
@@ -142,18 +161,26 @@ describe("FieldOpsJobTracker — Daily checklist editor (S2)", () => {
     await waitFor(() => expect(checklist.fetchJobChecklist).toHaveBeenCalled());
     fireEvent.click(container.querySelector('[aria-label="Hide File the Daily Field Report"]')!);
     await waitFor(() => expect(checklist.suppressDefaultItem).toHaveBeenCalledWith("JOB-A", 1));
+    // Remove is confirm-gated (R4 review): first tap opens the confirm, Confirm fires the delete.
     fireEvent.click(container.querySelector('[aria-label="Remove Job-specific step"]')!);
+    expect(checklist.deleteJobItem).not.toHaveBeenCalled();
+    fireEvent.click(container.querySelector('[aria-label="Confirm Remove Job-specific step"]')!);
     await waitFor(() => expect(checklist.deleteJobItem).toHaveBeenCalledWith("JOB-A", 7));
     fireEvent.click(container.querySelector('[aria-label="Unhide Record crew progress"]')!);
     await waitFor(() => expect(checklist.unsuppressDefaultItem).toHaveBeenCalledWith("JOB-A", 3));
   });
 
-  it("form_linked draft reveals a form-code field the add uses", async () => {
+  it("form_linked draft reveals the shared catalog form-code SELECT (names shown, codes submitted)", async () => {
     const { container, getByLabelText } = await openDetail(["cap.checklist.manage"]);
     await waitFor(() => expect(checklist.fetchJobChecklist).toHaveBeenCalled());
     fireEvent.change(getByLabelText("Add checklist item type"), { target: { value: "form_linked" } });
     fireEvent.change(getByLabelText("Add checklist item label"), { target: { value: "Attach JHA" } });
-    fireEvent.change(getByLabelText("Add checklist item form code"), { target: { value: "jha" } });
+    // R4: the shared ChecklistItemForm renders form_code as a catalog select, not free text.
+    const codeSel = getByLabelText("Add checklist item form code") as HTMLSelectElement;
+    expect(codeSel.tagName).toBe("SELECT");
+    const opts = Array.from(codeSel.options).map((o) => ({ v: o.value, t: o.textContent }));
+    expect(opts).toEqual(expect.arrayContaining([expect.objectContaining({ v: "jha", t: "Job Hazard Analysis" })]));
+    fireEvent.change(codeSel, { target: { value: "jha" } });
     fireEvent.submit(container.querySelector('[aria-label="Add checklist item"]')!);
     await waitFor(() =>
       expect(checklist.addJobItem).toHaveBeenCalledWith("JOB-A", expect.objectContaining({ item_type: "form_linked", label: "Attach JHA", form_code: "jha" })),
