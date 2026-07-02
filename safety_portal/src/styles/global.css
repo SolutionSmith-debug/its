@@ -605,6 +605,25 @@ h3 {
 .btn--danger:hover { background: #fdecea; }
 .btn--danger:disabled { opacity: 0.6; cursor: default; }
 
+/* Tiny inline "dismiss" ✕ for use INSIDE a .dash-chip or an inline field row (remove a crew
+   member, a CC address, …). ~¼ the footprint of a full .btn--danger — no tap-target min-height,
+   minimal padding — so it doesn't dwarf the small chip it sits in. Red glyph, subtle hover. */
+.chip-x {
+  font: inherit;
+  font-size: 0.72rem;
+  line-height: 1;
+  padding: 1px 5px;
+  margin-left: 3px;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--c-danger);
+  cursor: pointer;
+  vertical-align: baseline;
+}
+.chip-x:hover { background: #fdecea; }
+.chip-x:disabled { opacity: 0.45; cursor: default; }
+
 /* Role / status pills. */
 .role-badge {
   display: inline-block;

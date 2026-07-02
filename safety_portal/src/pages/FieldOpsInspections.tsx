@@ -337,7 +337,7 @@ export function FieldOpsInspections({ onBack }: { onBack: () => void }) {
               <li key={t.id}>
                 <button
                   type="button"
-                  className={selectedId === t.id ? "btn btn--primary" : "btn btn--ghost"}
+                  className={selectedId === t.id ? "btn btn--primary" : "btn btn--secondary"}
                   aria-label={`Edit ${t.title}`}
                   onClick={() => setSelectedId(selectedId === t.id ? null : t.id)}
                 >

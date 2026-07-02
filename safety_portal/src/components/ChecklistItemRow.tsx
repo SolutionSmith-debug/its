@@ -62,7 +62,7 @@ export function ChecklistItemRow({
           )}{" "}
           <button
             type="button"
-            className={done ? "btn btn--ghost" : "btn btn--primary"}
+            className={done ? "btn btn--secondary" : "btn btn--primary"}
             aria-label={done ? `Undo item ${item.id}` : `Complete item ${item.id}`}
             disabled={busy}
             onClick={() => (done ? onUncomplete(item) : onComplete(item, note || undefined))}
@@ -103,7 +103,7 @@ export function ChecklistItemRow({
           {" "}
           <button
             type="button"
-            className={done ? "btn btn--ghost" : "btn btn--primary"}
+            className={done ? "btn btn--secondary" : "btn btn--primary"}
             aria-label={`Complete ${item.label ?? `item ${item.id}`}`}
             disabled={busy || !canOpenForm}
             onClick={() => onOpenForm(item)}
