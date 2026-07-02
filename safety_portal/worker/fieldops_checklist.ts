@@ -733,6 +733,7 @@ export function registerChecklistRoutes(app: FieldopsApp, gates: FieldopsGates):
 
       const owned = await loadOwnedItemState(c, stateId);
       if (owned instanceof Response) return owned;
+      const actor = c.get("session").username;
 
       // form_linked / inspection close via a submission, never a manual action — refuse a manual complete.
       if (AUTO_CLOSE_TYPES.has(owned.item_type)) return c.json({ error: "auto_close_only" }, 400);
@@ -763,7 +764,6 @@ export function registerChecklistRoutes(app: FieldopsApp, gates: FieldopsGates):
         }
       }
 
-      const actor = c.get("session").username;
       // Pre-checked existence + ownership + type, so the UPDATE applies → unconditional audit (mirrors
       // the suppress route). Recompute the instance status LAST so it reflects this completion.
       await c.env.DB.batch([
