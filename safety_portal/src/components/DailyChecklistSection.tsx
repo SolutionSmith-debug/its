@@ -162,11 +162,12 @@ export function DailyChecklistSection({
     }
   }
 
-  // manual_attest complete (optional note).
-  function completeItem(item: checklist.ChecklistItemState, note?: string) {
+  // manual_attest complete (optional note). photoRef is threaded through (R3 3-arg contract) so a
+  // note-edit re-complete never NULLs existing photo evidence on the worker UPDATE.
+  function completeItem(item: checklist.ChecklistItemState, note?: string, photoRef?: string) {
     void runItemAction(
       item,
-      () => checklist.completeChecklistItem(item.id, note ? { note } : undefined),
+      () => checklist.completeChecklistItem(item.id, note || photoRef ? { note, photo_ref: photoRef } : undefined),
       (res) => (res.instance_status === "complete" ? "Checklist complete." : "Item updated."),
     );
   }
@@ -268,6 +269,7 @@ export function DailyChecklistSection({
         onComplete={completeItem}
         onUncomplete={uncompleteItem}
         onRecordCount={recordCount}
+        onCountRecorded={() => void load()}
         onOpenForm={openLinkedForm}
       />
       {/* R1 filed_by: who filed the submission that auto-closed this item (render half). */}

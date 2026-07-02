@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ReactNode } from "react";
+import type { Dispatch, ReactNode, SetStateAction } from "react";
 import { AppHeader } from "../components/AppHeader";
 import { useAuth } from "../lib/auth";
 import * as api from "../lib/api";
@@ -34,14 +34,30 @@ export interface FormPrefill {
   values?: FormValues;
 }
 
+/** R3: the deep-link return target — present ONLY when App captured an originating view in openForm
+ * (a checklist deep-link / rollup draft). Drives the Submitted screen's primary "Back to My Tasks"
+ * and the pre-submit "← Back …" control; absent for a home-card form fill (default flow unchanged). */
+export interface FormReturnTo {
+  label: string;
+  onReturn: () => void;
+}
+
+const DISCARD_PROMPT = "Discard this form? Your entries haven't been submitted.";
+
 export function FormFillPage({
   onBack,
   tabBar,
   prefill,
+  returnTo,
+  onDirtyChange,
 }: {
   onBack?: () => void;
   tabBar?: ReactNode;
   prefill?: FormPrefill;
+  returnTo?: FormReturnTo;
+  /** R3: reports unsaved-input state up (dirty = any form field touched since load/submit) so App's
+   * popstate handler can confirm before discarding on hardware back. */
+  onDirtyChange?: (dirty: boolean) => void;
 }) {
   const { user, logout } = useAuth();
   const isAdmin = user?.role === "admin";
@@ -74,8 +90,34 @@ export function FormFillPage({
   const [submittedUuid, setSubmittedUuid] = useState<string | null>(null);
   const [submittedAt, setSubmittedAt] = useState<Date | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // R3: any form field touched since load/submit — drives the beforeunload guard + the confirm on
+  // the pre-submit return control, and is reported up via onDirtyChange for App's popstate guard.
+  const [dirty, setDirty] = useState(false);
   // Stable across retries (lost-ACK idempotency); renewed only on a new submission (reset).
   const { submissionUuid, renew: renewSubmissionId } = useSubmissionId();
+
+  // R3: report dirtiness up (mount reports false, so a fresh form clears App's stale ref).
+  useEffect(() => {
+    onDirtyChange?.(dirty);
+  }, [dirty, onDirtyChange]);
+
+  // R3: native beforeunload guard while dirty (tab close / reload — popstate is App's half).
+  useEffect(() => {
+    if (!dirty) return;
+    const handler = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = ""; // legacy engines require a set returnValue to show the prompt
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [dirty]);
+
+  // R3: FormRenderer writes go through this wrapper so any field edit marks the form dirty; the
+  // programmatic (re)initializations below call setValues directly and stay clean.
+  const editValues: Dispatch<SetStateAction<FormValues>> = (v) => {
+    setDirty(true);
+    setValues(v);
+  };
 
   useEffect(() => {
     api.fetchJobs().then(setJobs).catch((e) => setJobsErr(e instanceof Error ? e.message : "load failed"));
@@ -92,6 +134,12 @@ export function FormFillPage({
   const parent = catalog.find((p) => p.parent_form_code === parentCode) ?? null;
   const formCode = parent ? (parent.variants.length ? variantCode : (parent.form_code ?? "")) : "";
   const def = formCode ? getDefinition(formCode) : null;
+  // R3: the human name of the deep-linked form — drives the heading for a prefilled fill. Dismissed
+  // on "Submit another" (reset) so the heading doesn't keep naming the old form over an open picker.
+  const [prefillDismissed, setPrefillDismissed] = useState(false);
+  const prefillFormName = !prefillDismissed && prefill?.parentCode
+    ? catalog.find((p) => p.parent_form_code === prefill.parentCode)?.name ?? null
+    : null;
 
   // S5: an assembled draft to seed ONCE, on the first form definition load (the prefilled form the
   // manager opened into). Cleared after the first apply so switching forms afterward resets cleanly —
@@ -157,6 +205,7 @@ export function FormFillPage({
       setSubmittedUuid(submissionUuid);
       setSubmittedAt(new Date());
       setSubmitted(true);
+      setDirty(false); // filed — nothing unsaved to guard
     } catch (e) {
       setError(e instanceof Error ? e.message : "Submission failed.");
     } finally {
@@ -165,6 +214,7 @@ export function FormFillPage({
   }
 
   function reset() {
+    setPrefillDismissed(true);
     setSubmitted(false);
     setSubmittedAs(null);
     setSubmittedUuid(null);
@@ -173,9 +223,17 @@ export function FormFillPage({
     setVariantCode("");
     setValues({});
     setAmendsUuid(null);
+    setDirty(false);
     renewSubmissionId(); // a fresh id for the NEXT submission (the prior one succeeded)
     // Reset the attribution back to self for the next submission (admins only).
     if (isAdmin) setFilledOutAs(me);
+  }
+
+  // R3: pre-submit return to the deep-link origin (confirm first when fields were touched).
+  function onReturnGuarded() {
+    if (!returnTo) return;
+    if (dirty && !window.confirm(DISCARD_PROMPT)) return;
+    returnTo.onReturn();
   }
 
   if (submitted) {
@@ -239,10 +297,24 @@ export function FormFillPage({
                 until the PM clicks "Make available for download". */}
             {submittedUuid ? <PdfDownload uuid={submittedUuid} /> : null}
 
-            <div className="jha__actions">
-              <button className="btn btn--primary" onClick={reset}>Submit another</button>
-              {onBack ? <button className="btn btn--secondary" onClick={onBack}>Home</button> : null}
-            </div>
+            {returnTo ? (
+              // R3 — deep-link round trip: one tap back to the originating view. The checklist item
+              // auto-closes via the server loop-closure reconcile on that page's next load.
+              <>
+                <p className="muted">
+                  Filing this form checks off your checklist item on the next load.
+                </p>
+                <div className="jha__actions">
+                  <button className="btn btn--primary" onClick={returnTo.onReturn}>{returnTo.label}</button>
+                  <button className="btn btn--secondary" onClick={reset}>Submit another</button>
+                </div>
+              </>
+            ) : (
+              <div className="jha__actions">
+                <button className="btn btn--primary" onClick={reset}>Submit another</button>
+                {onBack ? <button className="btn btn--secondary" onClick={onBack}>Home</button> : null}
+              </div>
+            )}
           </div>
         </main>
       </div>
@@ -256,16 +328,32 @@ export function FormFillPage({
       />
       {tabBar}
       <main className="page__main">
-        <h1 className="page__heading">New safety form</h1>
+        {returnTo ? (
+          // R3 — pre-submit back/cancel returns to the deep-link origin (not Home); confirms first
+          // when fields were touched.
+          <button type="button" className="btn btn--ghost" onClick={onReturnGuarded}>
+            ← {returnTo.label}
+          </button>
+        ) : null}
+        {/* R3 — a deep-linked fill names the form it opened into instead of the generic heading. */}
+        <h1 className="page__heading">{prefillFormName ?? "New safety form"}</h1>
 
         <section className="card fr__select">
-          <label className="field">
-            <span className="field__label">Job *</span>
-            <select className="field__input" value={jobId} onChange={(e) => setJobId(e.target.value)}>
-              <option value="">Select a job…</option>
-              {jobs.map((j) => <option key={j.job_id} value={j.job_id}>{j.project_name}</option>)}
-            </select>
-          </label>
+          {prefill?.jobId && jobs.length === 0 && !jobsErr ? (
+            // R3 — while jobs load, the deep-linked job renders as read-only text, not a blank select.
+            <div className="field">
+              <span className="field__label">Job *</span>
+              <div className="field__input" aria-label="Job (from your checklist)">{prefill.jobId}</div>
+            </div>
+          ) : (
+            <label className="field">
+              <span className="field__label">Job *</span>
+              <select className="field__input" value={jobId} onChange={(e) => setJobId(e.target.value)}>
+                <option value="">Select a job…</option>
+                {jobs.map((j) => <option key={j.job_id} value={j.job_id}>{j.project_name}</option>)}
+              </select>
+            </label>
+          )}
           {jobsErr ? <p className="login__error" role="alert">{jobsErr}</p> : null}
 
           <label className="field">
@@ -336,7 +424,7 @@ export function FormFillPage({
           <>
             {amendsUuid ? <p className="jha__notice"><strong>Amending</strong> a previous submission.</p> : null}
             <section className="card">
-              <FormRenderer def={def} values={values} setValues={setValues} />
+              <FormRenderer def={def} values={values} setValues={editValues} />
             </section>
             {error ? <p className="login__error" role="alert">{error}</p> : null}
             <div className="jha__actions">
