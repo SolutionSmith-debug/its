@@ -62,6 +62,10 @@ export function App() {
   // R3: the view a form deep-link fired FROM (captured inside openForm — callers pass nothing).
   // null = the fill wasn't deep-linked (home-card flow) → FormFillPage keeps its default screens.
   const [returnTo, setReturnTo] = useState<View | null>(null);
+  // R7: a one-shot job preselect for the Job Tracker (the My Tasks "Log time" quick action and
+  // job-group links). Cleared on any other route into the tracker so a stale deep link never
+  // re-opens; the `key` on FieldOpsJobTracker re-mounts it when the target changes.
+  const [jobTrackerJob, setJobTrackerJob] = useState<string | null>(null);
   // Synchronous mirror of `view` for the (stable) popstate listener + push-dedupe in navigate().
   const viewRef = useRef<View>("home");
   // R3: FormFillPage's unsaved-input flag, consulted by the popstate guard before discarding.
@@ -88,6 +92,8 @@ export function App() {
         setFormPrefill(null);
         setReturnTo(null);
       }
+      // R7: a history pop lands on the tracker's plain list — never a revived job deep link.
+      setJobTrackerJob(null);
       setEditing(false);
       setView(target);
     };
@@ -135,6 +141,13 @@ export function App() {
     setReturnTo(null);
     navigate(dest);
   };
+  // R7: open the Job Tracker, optionally preselecting a job's detail (My Tasks "Log time" quick
+  // action / job-group links). No job → the plain list.
+  const openJobTracker = (jobId?: string) => {
+    setEditing(false);
+    setJobTrackerJob(jobId ?? null);
+    navigate("fieldops-jobs");
+  };
 
   let page: ReactNode;
   if (view === "fill") {
@@ -157,9 +170,16 @@ export function App() {
   } else if (view === "forms" && has("cap.admin.formbuilder")) {
     page = <FormsPage tabBar={backNav} onEditingChange={setEditing} />;
   } else if (view === "fieldops-jobs" && has("cap.jobtracker.read")) {
-    page = <FieldOpsJobTracker onBack={home} />;
+    // R7: keyed by the deep-link target so a fresh preselect re-mounts (one-shot consumption).
+    page = <FieldOpsJobTracker key={jobTrackerJob ?? "list"} onBack={home} initialJobId={jobTrackerJob} />;
   } else if (view === "fieldops-tasks" && has("cap.tasks.own")) {
-    page = <FieldOpsMyTasks onBack={home} onOpenForm={openForm} />;
+    page = (
+      <FieldOpsMyTasks
+        onBack={home}
+        onOpenForm={openForm}
+        onOpenJob={has("cap.jobtracker.read") ? openJobTracker : undefined}
+      />
+    );
   } else if (view === "fieldops-inspections" && has("cap.checklist.manage")) {
     page = <FieldOpsInspections onBack={home} />;
   } else if (view === "fieldops-equipment" && has("cap.equipment.field")) {
@@ -173,6 +193,7 @@ export function App() {
       <HomePage
         onNavigate={(v) => {
           setEditing(false);
+          setJobTrackerJob(null); // a Home-card open is always the plain tracker list (R7)
           navigate(v);
         }}
       />

@@ -139,9 +139,10 @@ describe("FieldOpsJobTracker — Daily checklist editor (S2)", () => {
     expect(section.textContent).not.toContain("Edit shared default");
     expect(container.querySelector('[aria-label="Default checklist"]')).toBeNull();
     expect(checklist.fetchDefaultChecklist).not.toHaveBeenCalled();
-    // Cross-link copy: where the shared default IS edited now (the Home card, by name).
+    // Cross-link copy: where the shared default IS edited now (the Home card, by its R7 name —
+    // the card was renamed "Inspection checklists" → "Checklists" per Open Q4).
     expect(section.textContent).toContain("Edit the shared default itself in Checklists");
-    expect(section.textContent).toContain("Inspection checklists");
+    expect(section.textContent).toContain("the “Checklists” card on Home");
   });
 
   it("adding a job item calls addJobItem with the drafted item + auto-suggested seq (max+10) + reloads", async () => {

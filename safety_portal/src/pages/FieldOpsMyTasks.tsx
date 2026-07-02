@@ -79,14 +79,20 @@ type Tab = "assigned" | "daily";
 export function FieldOpsMyTasks({
   onBack,
   onOpenForm,
+  onOpenJob,
 }: {
   onBack: () => void;
   onOpenForm?: (p: FormPrefill) => void;
+  /** R7 — open the Job Tracker via App's navigation; a jobId preselects that job's detail
+   *  (the "Log time" quick action + job-group links). Absent when the actor can't read the
+   *  tracker (App gates on cap.jobtracker.read) — the affordances then don't render. */
+  onOpenJob?: (jobId?: string) => void;
 }) {
   const { user } = useAuth();
   const caps = user?.capabilities ?? [];
   const canOwn = caps.includes("cap.tasks.own");
   const canCreateCrew = caps.includes("cap.crew.create");
+  const canLogTime = caps.includes("cap.time.log");
 
   const [tab, setTab] = useState<Tab>("assigned");
   const [refreshToken, setRefreshToken] = useState(0);
@@ -292,11 +298,22 @@ export function FieldOpsMyTasks({
               const doneTasks = g.tasks.filter((t) => t.status === "done");
               return (
                 <section key={g.job_id} className="card dash-section">
-                  {/* R2: no job-navigation prop exists on this page (App owns routing — out of R2's
-                      surface), so the group header renders UNLINKED. R7: link it to the Job Tracker
-                      detail view once App passes a navigation callback. */}
+                  {/* R7 (the R2 deferral): App now passes onOpenJob — the group header links to the
+                      job's detail in the Job Tracker. Without the prop (no cap.jobtracker.read) it
+                      renders as plain text exactly as before. */}
                   <h3 className="dash-detail__h2">
-                    {g.project_name ?? g.job_id}
+                    {onOpenJob ? (
+                      <button
+                        type="button"
+                        className="btn btn--secondary"
+                        aria-label={`Open ${g.project_name ?? g.job_id} in the Job Tracker`}
+                        onClick={() => onOpenJob(g.job_id)}
+                      >
+                        {g.project_name ?? g.job_id}
+                      </button>
+                    ) : (
+                      g.project_name ?? g.job_id
+                    )}
                     <span className="dash-card__sub"> · {g.job_id}</span>
                   </h3>
                   {openTasks.length > 0 && <ul className="dash-tasklist">{openTasks.map(renderTaskRow)}</ul>}
@@ -349,6 +366,27 @@ export function FieldOpsMyTasks({
       {/* Both panels stay mounted (inactive hidden) — single fetch per section + the daily section
           reports its instance up for the auto-switch even while its tab is inactive. */}
       <div role="tabpanel" aria-label="Assigned tasks" hidden={tab !== "assigned"}>
+        {/* R7 — "Log time" quick action (the subcontractor's direct path to logging hours, A3):
+            deep-links to the Job Tracker detail of the actor's current placement when known (the
+            placed manager's daily instance names it); otherwise opens the tracker plainly. The
+            log-time form itself lives on the job detail. */}
+        {canLogTime && onOpenJob && (
+          <div className="dash-row">
+            <button
+              type="button"
+              className="btn btn--secondary"
+              aria-label="Log time in the Job Tracker"
+              onClick={() => onOpenJob(dailyInfo?.instance?.job_id ?? undefined)}
+            >
+              Log time
+            </button>{" "}
+            <span className="dash-card__sub muted">
+              {dailyInfo?.instance
+                ? `Opens ${dailyInfo.instance.project_name ?? dailyInfo.instance.job_id} to log hours.`
+                : "Opens the Job Tracker — pick your job to log hours."}
+            </span>
+          </div>
+        )}
         {tasksBlock}
 
         {/* S6 — admin-assigned inspection checklists (renders nothing when confirmed-empty). */}

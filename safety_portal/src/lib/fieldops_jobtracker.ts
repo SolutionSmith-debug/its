@@ -11,6 +11,14 @@ export interface CrewMember {
   trade: string | null;
 }
 
+/** (R7) Detail crew row: + the linked account's role so pickers can pre-disable task-assign
+ *  options the Worker's subcontractor-target guard will 403 (an assign-only manager may only
+ *  target 'submitter'-linked personnel; no login → null → also rejected). Presentation only —
+ *  the Worker re-gates. */
+export interface DetailCrewMember extends CrewMember {
+  account_role: string | null;
+}
+
 export interface OpenTask {
   id: number;
   description: string;
@@ -31,6 +39,9 @@ export interface JobRow {
 export interface JobListResponse {
   jobs: JobRow[];
   next_cursor: string | null;
+  /** (R7) Where the viewer's own linked roster row is placed — drives the "Your job" list badge.
+   *  null = unlinked/unplaced. Optional for back-compat; the live worker always sends it. */
+  viewer_current_job?: string | null;
 }
 
 export interface Task {
@@ -50,6 +61,13 @@ export interface JobTimeEntry {
   recorded_at: number;
   notes: string | null;
   personnel_name: string | null;
+  /** (R7) The task the entry was logged against (task_assignments.description); null = job-level. */
+  task_id: number | null;
+  task_description: string | null;
+  /** (R7) WHO CREATED the entry — the write's actor_username stamp (always present) plus the
+   *  roster display name resolved through the personnel↔account link (null when unlinked). */
+  // Display name ONLY (R1 W9 posture) — null when the recorder has no roster row; never a raw username.
+  recorded_by_name: string | null;
 }
 
 export interface EquipmentOnSite {
@@ -83,16 +101,25 @@ export interface JobDetail {
   status: string;
   progress: number;
   client: JobClient | null;
-  crew: CrewMember[];
+  crew: DetailCrewMember[];
   tasks: Task[];
   time_entries: JobTimeEntry[];
   equipment_on_site: EquipmentOnSite[];
   inspections: JobInspection[];
 }
 
+/** (R7) The session user's own linked ACTIVE roster row — backs the log-time "Me (<name>)"
+ *  default. null = no linked personnel (the form says so instead of guessing). */
+export interface ViewerPersonnel {
+  id: number;
+  name: string;
+}
+
 export interface JobDetailResponse {
   job: JobDetail;
   cursors: { tasks: string | null; time: string | null; insp: string | null };
+  /** Optional for back-compat with cached/older responses; the live worker always sends it. */
+  viewer_personnel?: ViewerPersonnel | null;
 }
 
 export type JobStatusFilter = "active" | "closed" | "on_hold" | "all";

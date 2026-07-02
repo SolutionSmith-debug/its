@@ -620,9 +620,24 @@ h3 {
   color: var(--c-danger);
   cursor: pointer;
   vertical-align: baseline;
+  /* R7 — the VISUAL stays chip-sized; the ::before overlay below expands the EFFECTIVE tap
+     target to ~40px (a ~15px glyph was a destructive-action touch hazard, A4). */
+  position: relative;
+}
+.chip-x::before {
+  content: "";
+  position: absolute;
+  inset: -12px;
 }
 .chip-x:hover { background: #fdecea; }
 .chip-x:disabled { opacity: 0.45; cursor: default; }
+/* R7 — armed first-tap state of the two-step chip remove (components/ChipX.tsx): the second tap
+   confirms; auto-disarms after a beat. */
+.chip-x--armed {
+  background: #fdecea;
+  font-weight: 700;
+  padding: 1px 7px;
+}
 
 /* Role / status pills. */
 .role-badge {
@@ -1017,6 +1032,38 @@ h3 {
 .dash-table__name {
   font-weight: 600;
   color: var(--c-black);
+}
+
+/* R7 — stacked variant for wide attribution tables (Job Tracker time entries: Recorded / Who /
+   Task / By / Hours / Notes). On phones the header row is dropped and each entry renders as a
+   compact ~two-line block: the lead cells (Who / Hours) flow on the first line, the labelled
+   attribution cells (`data-cell` → muted inline label) wrap to the next. */
+@media (max-width: 640px) {
+  .dash-table--stack thead {
+    display: none;
+  }
+  .dash-table--stack,
+  .dash-table--stack tbody {
+    display: block;
+  }
+  .dash-table--stack tr {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    column-gap: 12px;
+    padding: 8px 2px;
+    border-bottom: 1px solid var(--c-line);
+  }
+  .dash-table--stack td {
+    display: inline-block;
+    border: none;
+    padding: 1px 0;
+  }
+  .dash-table--stack td[data-cell]::before {
+    content: attr(data-cell) " ";
+    color: var(--c-muted);
+    font-weight: 600;
+  }
 }
 
 .dash-grid {
