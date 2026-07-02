@@ -137,10 +137,11 @@ export function AssignedInspectionsSection({
     }
   }
 
-  function complete(item: checklist.ChecklistItemState, note?: string) {
+  // photoRef threaded through (R3 3-arg contract) — a note-edit never NULLs photo evidence.
+  function complete(item: checklist.ChecklistItemState, note?: string, photoRef?: string) {
     void runItemAction(
       item,
-      () => checklist.completeChecklistItem(item.id, note ? { note } : undefined),
+      () => checklist.completeChecklistItem(item.id, note || photoRef ? { note, photo_ref: photoRef } : undefined),
       (res) => (res.instance_status === "complete" ? "Inspection complete." : "Item updated."),
     );
   }
@@ -205,6 +206,7 @@ export function AssignedInspectionsSection({
               onComplete={complete}
               onUncomplete={uncomplete}
               onRecordCount={recordCount}
+              onCountRecorded={() => void load()}
               onOpenForm={(item) => openLinkedForm(insp.instance, item)}
             />
             {it.filed_by ? <span className="dash-card__sub"> · filed by {it.filed_by}</span> : null}
