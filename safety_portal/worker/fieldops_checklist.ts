@@ -59,6 +59,11 @@ const CAP_TASKS_OWN = "cap.tasks.own";
 // 'YYYY-MM-DD' shape the daily instance_date uses — no time component, no offset).
 const MAX_TITLE = 256;
 const DUE_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+// R5 admin assignments list — defensive page bound (newest first; an admin triaging outstanding
+// inspections never needs more than the most recent few hundred; no pagination surface).
+const INSTANCES_LIMIT = 300;
+// R5 GET /checklist/instances ?status= filter values (anything else → 400, never silently coerced).
+const INSTANCE_STATUS_FILTERS = new Set(["open", "complete", "all"]);
 
 // THE MERGE (S2, load-bearing) — a job's EFFECTIVE daily checklist =
 //   [ daily_default items NOT suppressed by the job ] ∪ [ the job_override's own added items ], seq-ordered.
@@ -1494,6 +1499,124 @@ export function registerChecklistRoutes(app: FieldopsApp, gates: FieldopsGates):
         });
       }
       return c.json({ inspections, linked: true }, 200);
+    },
+  );
+
+  // ══ R5 — assignment LIFECYCLE: admin visibility + revocation (cap.checklist.manage) ══════════════
+  // Before R5 an assignment was fire-and-forget: POST /assign created the instance and no admin
+  // surface could ever list or revoke it (a mistaken assignment was invisible and irrevocable — the
+  // A2/A4 finding). These two routes close the loop: the admin lists outstanding inspection-kind
+  // instances and cancels one. Both are cap.checklist.manage (the same admin cap as /assign),
+  // send-free (D1 only), bound-param.
+
+  // ── GET /api/fieldops/checklist/instances — the admin "outstanding assignments" list. ────────────
+  // INSPECTION-kind ONLY: daily instances are auto-generated per (placed manager × day) and would
+  // drown the list in noise nobody assigned (they also regenerate on the next /mine read, so listing
+  // them here as "assignments" would be a lie). Each row carries the snapshot title, the assignee's
+  // personnel name, the job's project name, the due date (instance_date), status, and the item
+  // aggregate (done/total) so the admin can see progress without opening anything. `?status=` filters
+  // open (default — the working set) | complete | all; unknown values 400 (never a silent default).
+  // Bounded LIMIT + newest-first (created_at DESC): the triage surface, not an archive query.
+  app.get(
+    "/api/fieldops/checklist/instances",
+    gates.requireSession,
+    gates.requireCapability(CAP_CHECKLIST),
+    async (c) => {
+      const filter = c.req.query("status") ?? "open";
+      if (!INSTANCE_STATUS_FILTERS.has(filter)) return c.json({ error: "invalid_status_filter" }, 400);
+      // The status predicate switches between two FIXED SQL strings; the filter value itself is only
+      // ever a bound parameter (never spliced).
+      const baseSql = `
+        SELECT i.id, i.template_title, i.assignee_personnel_id, p.name AS assignee_name,
+               i.job_id, j.project_name, i.instance_date, i.status, i.created_at,
+               (SELECT COUNT(*) FROM checklist_item_states s WHERE s.instance_id = i.id) AS items_total,
+               (SELECT COUNT(*) FROM checklist_item_states s
+                WHERE s.instance_id = i.id AND s.status = 'done') AS items_done
+        FROM checklist_instances i
+        LEFT JOIN personnel p ON p.id = i.assignee_personnel_id
+        LEFT JOIN jobs j ON j.job_id = i.job_id
+        WHERE i.kind = 'inspection'`;
+      const res =
+        filter === "all"
+          ? await c.env.DB.prepare(`${baseSql} ORDER BY i.created_at DESC, i.id DESC LIMIT ?1`)
+              .bind(INSTANCES_LIMIT)
+              .all()
+          : await c.env.DB.prepare(
+              `${baseSql} AND i.status = ?1 ORDER BY i.created_at DESC, i.id DESC LIMIT ?2`,
+            )
+              .bind(filter, INSTANCES_LIMIT)
+              .all();
+      return c.json({ instances: res.results ?? [], status_filter: filter }, 200);
+    },
+  );
+
+  // ── POST /api/fieldops/checklist/instance/:id/cancel — revoke an assigned inspection. ────────────
+  // INSPECTION-kind only — a daily instance (auto-generated, regenerates on the next /mine read) is
+  // NOT cancellable through this route and 404s indistinguishably from an unknown id (the same
+  // wrong-kind-is-not-found posture as requireGenericTemplate). HARD DELETE, not a soft
+  // status='cancelled': no consumer of historical inspection instances exists (verified — the only
+  // readers of checklist_instances are this file's routes: /assigned scopes to the assignee, the
+  // list above scopes to live rows, and the S5 rollup is kind='daily'), a soft state would leak into
+  // the UNIQUE(kind, job, assignee, date) dedupe key blocking a legitimate RE-assign of the same
+  // (job, date), and the audit_log rows (assign + this cancel) already preserve the forensic history.
+  // Completed instances are cancellable too (admin cleanup) — the UI names the discard in its confirm.
+  // (W4) item-states delete first (unaudited), the INSTANCE delete is the statement immediately
+  // before the audit INSERT, so `changes()=1` gates the audit on the row actually going away; a
+  // concurrent double-cancel loses the race, audits nothing, and 404s.
+  app.post(
+    "/api/fieldops/checklist/instance/:id/cancel",
+    gates.requireSession,
+    gates.requireCapability(CAP_CHECKLIST),
+    async (c) => {
+      const instanceId = parseInt(c.req.param("id"), 10);
+      if (isNaN(instanceId)) return c.json({ error: "invalid_id" }, 400);
+      // Pre-read for the audit detail (title/assignee/job/date live on the row being destroyed).
+      const row = await c.env.DB.prepare(
+        `SELECT i.id, i.kind, i.template_title, i.assignee_personnel_id, i.job_id, i.instance_date,
+                i.status, p.name AS assignee_name
+         FROM checklist_instances i
+         LEFT JOIN personnel p ON p.id = i.assignee_personnel_id
+         WHERE i.id = ?1`,
+      )
+        .bind(instanceId)
+        .first<{
+          id: number;
+          kind: string;
+          template_title: string | null;
+          assignee_personnel_id: number | null;
+          job_id: string | null;
+          instance_date: string | null;
+          status: string;
+          assignee_name: string | null;
+        }>();
+      if (!row || row.kind !== "inspection") return c.json({ error: "not_found" }, 404);
+      const actor = c.get("session").username;
+      const res = await c.env.DB.batch([
+        c.env.DB.prepare("DELETE FROM checklist_item_states WHERE instance_id = ?1").bind(instanceId),
+        c.env.DB
+          .prepare("DELETE FROM checklist_instances WHERE id = ?1 AND kind = 'inspection'")
+          .bind(instanceId),
+        c.env.DB
+          .prepare(
+            "INSERT INTO audit_log (actor_username, action, target_username, detail) SELECT ?1,?2,?3,?4 WHERE changes()=1",
+          )
+          .bind(
+            actor,
+            "checklist_inspection_cancel",
+            row.assignee_personnel_id !== null ? String(row.assignee_personnel_id) : null,
+            JSON.stringify({
+              instance_id: instanceId,
+              template_title: row.template_title,
+              assignee_personnel_id: row.assignee_personnel_id,
+              assignee_name: row.assignee_name,
+              job_id: row.job_id,
+              instance_date: row.instance_date,
+              status_at_cancel: row.status,
+            }),
+          ),
+      ]);
+      if ((res[1].meta.changes ?? 0) === 0) return c.json({ error: "not_found" }, 404);
+      return c.json({ ok: true, id: instanceId }, 200);
     },
   );
 }

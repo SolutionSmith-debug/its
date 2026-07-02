@@ -5,6 +5,7 @@
 // (R1) Errors: getJson/postJson throw ApiError (src/lib/errorCopy.ts) — err.message is HUMAN copy,
 // err.code is the raw wire code pages branch on (e.g. 'below_target', 'already_assigned').
 import { raiseApiError } from "./errorCopy";
+import { fetchPersonnelList, type PersonnelRow } from "./fieldops_personnel";
 
 export type ChecklistItemType = "form_linked" | "manual_attest" | "count" | "inspection";
 
@@ -348,4 +349,61 @@ export interface AssignedInspectionsResponse {
 
 export function fetchAssignedInspections(): Promise<AssignedInspectionsResponse> {
   return getJson<AssignedInspectionsResponse>(`${BASE}/assigned`);
+}
+
+// ── R5 — assignment lifecycle (admin visibility + revocation; cap.checklist.manage) ─────────────────
+// GET /checklist/instances lists OUTSTANDING inspection-kind instances (daily instances are
+// auto-generated noise and excluded server-side); POST /instance/:id/cancel revokes one (hard delete
+// of the instance + its item states; the audit_log keeps the forensic record). A cancelled assignment
+// disappears from the assignee's /checklist/assigned on their next load.
+
+export type InstanceStatusFilter = "open" | "complete" | "all";
+
+// One admin assignments-list row (GET /checklist/instances). items_done/items_total is the item-state
+// aggregate so the list can show progress without loading any instance detail.
+export interface AdminInstanceRow {
+  id: number;
+  template_title: string | null;
+  assignee_personnel_id: number | null;
+  assignee_name: string | null;
+  job_id: string | null;
+  project_name: string | null;
+  instance_date: string | null;
+  status: "open" | "complete";
+  created_at: number;
+  items_total: number;
+  items_done: number;
+}
+
+export function fetchChecklistInstances(
+  status: InstanceStatusFilter = "open",
+): Promise<{ instances: AdminInstanceRow[]; status_filter: InstanceStatusFilter }> {
+  return getJson<{ instances: AdminInstanceRow[]; status_filter: InstanceStatusFilter }>(
+    `${BASE}/instances?status=${status}`,
+  );
+}
+
+// Cancel (revoke) an assigned inspection instance. Throws ApiError err.code 'not_found' when the id
+// is unknown OR names a daily instance (not cancellable — it would regenerate on the next read).
+export function cancelChecklistInstance(instanceId: number): Promise<{ ok: boolean; id: number }> {
+  return postJson(`${BASE}/instance/${instanceId}/cancel`);
+}
+
+// R5 — the assign picker must offer the FULL active roster, not the first personnel page. The roster
+// endpoint is keyset-paginated (default 50/page); this loops the cursor to exhaustion, bounded at
+// maxPages as a runaway guard (10 × 50 = 500 people ≫ the 10–50-person firm this serves). NOTE the
+// verified assign rule: POST /checklist/assign requires an ACTIVE personnel row only — a portal
+// LOGIN is NOT required — so callers should offer every active person, unfiltered.
+export const ROSTER_MAX_PAGES = 10;
+
+export async function fetchFullRoster(maxPages: number = ROSTER_MAX_PAGES): Promise<PersonnelRow[]> {
+  const all: PersonnelRow[] = [];
+  let cursor: string | undefined;
+  for (let page = 0; page < maxPages; page++) {
+    const res = await fetchPersonnelList(cursor);
+    all.push(...res.personnel);
+    if (!res.next_cursor) break;
+    cursor = res.next_cursor;
+  }
+  return all;
 }
