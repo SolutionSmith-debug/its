@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import * as api from "../lib/fieldops_tasks";
+import * as checklist from "../lib/fieldops_checklist";
 import { PageShell } from "../components/PageShell";
 import { useAuth } from "../lib/auth";
 
@@ -31,6 +32,113 @@ function groupByJob(tasks: api.MyTask[]): JobGroup[] {
     g.tasks.push(t);
   }
   return order.map((id) => byJob.get(id)!);
+}
+
+// Status → pill class for a checklist item state (done = ok, else neutral).
+function itemPill(status: string): string {
+  return status === "done" ? "dash-pill dash-pill--ok" : "dash-pill";
+}
+
+/**
+ * S3 — "Today's checklist" for a placed manager. Self-contained: fetches GET /checklist/mine, which
+ * runs Worker-on-read generation and returns `instance: null` for anyone who isn't a placed manager
+ * (a subcontractor, or a manager with no current_job) — in which case this renders NOTHING (the
+ * My-Tasks list stays exactly as S1). manual_attest items get a done/undo control (S3); the other
+ * three item types are shown read-only (loop-closure + count/inspection completion arrive in S4).
+ */
+function DailyChecklistSection() {
+  const [data, setData] = useState<checklist.MyChecklist | null>(null);
+  const [busyId, setBusyId] = useState<number | null>(null);
+  const [notes, setNotes] = useState<Record<number, string>>({});
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  useEffect(() => {
+    checklist
+      .fetchMyChecklist()
+      .then(setData)
+      .catch(() => setData({ instance: null, items: [] }));
+  }, []);
+
+  async function toggle(item: checklist.ChecklistItemState) {
+    if (busyId !== null) return;
+    setBusyId(item.id);
+    setMsg(null);
+    try {
+      const res =
+        item.status === "done"
+          ? await checklist.uncompleteChecklistItem(item.id)
+          : await checklist.completeChecklistItem(item.id, notes[item.id] ? { note: notes[item.id] } : undefined);
+      // Refresh from the server (also picks up the recomputed instance status).
+      const fresh = await checklist.fetchMyChecklist();
+      setData(fresh);
+      setMsg({ ok: true, text: res.instance_status === "complete" ? "Checklist complete." : "Item updated." });
+    } catch (err) {
+      setMsg({ ok: false, text: err instanceof Error ? err.message : "Update failed." });
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  // Not a placed manager → no daily section at all.
+  if (!data || data.instance === null) return null;
+
+  return (
+    <section className="card dash-section" aria-label="Today's checklist">
+      <h3 className="dash-detail__h2">
+        Today&apos;s checklist
+        <span className="dash-card__sub"> · {data.instance.job_id} · {data.instance.instance_date}</span>{" "}
+        <span className={data.instance.status === "complete" ? "dash-pill dash-pill--ok" : "dash-pill dash-pill--warn"}>
+          {data.instance.status}
+        </span>
+      </h3>
+      {msg && <div className={`banner ${msg.ok ? "banner--ok" : "banner--err"}`}>{msg.text}</div>}
+      {data.items.length === 0 ? (
+        <div className="muted">No checklist items for today.</div>
+      ) : (
+        <ul className="dash-tasklist">
+          {data.items.map((it) => {
+            const isManual = it.item_type === "manual_attest";
+            const done = it.status === "done";
+            return (
+              <li key={it.id}>
+                <span className={itemPill(it.status)}>{it.status}</span> {it.label}
+                <span className="dash-card__sub"> · {it.item_type}</span>
+                {isManual ? (
+                  <>
+                    {!done && (
+                      <>
+                        {" "}
+                        <input
+                          type="text"
+                          aria-label={`Note for item ${it.id}`}
+                          placeholder="note (optional)"
+                          value={notes[it.id] ?? ""}
+                          onChange={(e) => setNotes((n) => ({ ...n, [it.id]: e.target.value }))}
+                          disabled={busyId !== null}
+                        />
+                      </>
+                    )}{" "}
+                    <button
+                      type="button"
+                      className={done ? "btn btn--ghost" : "btn btn--primary"}
+                      aria-label={done ? `Undo item ${it.id}` : `Complete item ${it.id}`}
+                      disabled={busyId !== null}
+                      onClick={() => toggle(it)}
+                    >
+                      {done ? "Undo" : "Mark done"}
+                    </button>
+                    {done && it.note ? <span className="dash-card__sub"> · {it.note}</span> : null}
+                  </>
+                ) : (
+                  <span className="dash-card__sub"> · completion arrives soon</span>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </section>
+  );
 }
 
 /**
@@ -98,6 +206,9 @@ export function FieldOpsMyTasks({ onBack }: { onBack: () => void }) {
         <div className={`banner ${actionMsg.ok ? "banner--ok" : "banner--err"}`}>{actionMsg.text}</div>
       )}
       {error && <div className="banner banner--err">{error}</div>}
+
+      {/* S3 — the placed manager's daily checklist (renders nothing for anyone else). */}
+      <DailyChecklistSection />
 
       {loading && tasks.length === 0 ? (
         <div className="muted">Loading your tasks…</div>

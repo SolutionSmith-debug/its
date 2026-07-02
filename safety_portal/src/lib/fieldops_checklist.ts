@@ -123,3 +123,64 @@ export function suppressDefaultItem(jobId: string, defaultItemId: number): Promi
 export function unsuppressDefaultItem(jobId: string, defaultItemId: number): Promise<{ ok: boolean }> {
   return postJson(`${BASE}/job/${encodeURIComponent(jobId)}/item/${defaultItemId}/unsuppress`);
 }
+
+// ── S3 — the placed manager's daily "Progress Report" checklist (cap.tasks.own; the OWNER's tab) ────
+// Distinct surface from the admin editor above: GET /checklist/mine runs Worker-on-read generation for
+// a placed manager and returns { instance: null } for everyone else (a submitter, an unplaced manager)
+// so the My-Tasks page hides the section entirely. Completion is manual_attest-only in S3 + scoped
+// server-side to the actor's OWN daily instance.
+
+export type ChecklistItemStatus = "open" | "done";
+
+// One per-instance item state (the snapshot + completion row, migration 0026 checklist_item_states).
+export interface ChecklistItemState {
+  id: number;
+  source_item_id: number | null;
+  item_type: string;
+  label: string | null;
+  form_code: string | null;
+  target_count: number | null;
+  status: ChecklistItemStatus;
+  note: string | null;
+  photo_ref: string | null;
+  completed_by: string | null;
+  completed_at: number | null;
+  value_num: number | null;
+}
+
+export interface DailyInstance {
+  id: number;
+  job_id: string;
+  instance_date: string;
+  status: "open" | "complete";
+}
+
+export interface MyChecklist {
+  instance: DailyInstance | null;
+  items: ChecklistItemState[];
+}
+
+export interface CompleteResult {
+  ok: boolean;
+  id: number;
+  status: ChecklistItemStatus;
+  instance_status: "open" | "complete";
+}
+
+// Today's daily checklist for the logged-in placed manager (instance:null for anyone else).
+export function fetchMyChecklist(): Promise<MyChecklist> {
+  return getJson<MyChecklist>(`${BASE}/mine`);
+}
+
+// Mark a manual_attest item done (optional note/photo_ref); the Worker rejects other item types in S3.
+export function completeChecklistItem(
+  stateId: number,
+  opts?: { note?: string; photo_ref?: string },
+): Promise<CompleteResult> {
+  return postJson<CompleteResult>(`${BASE}/item-state/${stateId}/complete`, opts ?? {});
+}
+
+// Toggle a done item back to open.
+export function uncompleteChecklistItem(stateId: number): Promise<CompleteResult> {
+  return postJson<CompleteResult>(`${BASE}/item-state/${stateId}/uncomplete`);
+}
