@@ -58,6 +58,7 @@ function DailyChecklistSection({ onOpenForm }: { onOpenForm?: (p: FormPrefill) =
   const [notes, setNotes] = useState<Record<number, string>>({});
   const [counts, setCounts] = useState<Record<number, string>>({});
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [rollupBusy, setRollupBusy] = useState(false);
 
   useEffect(() => {
     checklist
@@ -122,8 +123,35 @@ function DailyChecklistSection({ onOpenForm }: { onOpenForm?: (p: FormPrefill) =
     });
   }
 
+  // S5 — assemble the Daily Report draft from the completed checklist + day's data, then deep-link into
+  // the prefilled Daily Report form. The manager reviews/edits/submits via the normal form-submit; the
+  // instance shows "filed ✓" on the next load once the reconcile stamps rolled_up_submission_uuid.
+  async function reviewAndFileDailyReport() {
+    if (rollupBusy || !onOpenForm) return;
+    setRollupBusy(true);
+    setMsg(null);
+    try {
+      const draft = await checklist.fetchRollupDraft();
+      const { parentCode, variantCode } = resolveFormTarget(draft.form_code);
+      onOpenForm({
+        jobId: draft.job_id,
+        parentCode,
+        variantCode: variantCode || undefined,
+        workDate: draft.work_date,
+        values: draft.values,
+      });
+    } catch (err) {
+      setMsg({ ok: false, text: err instanceof Error ? err.message : "Could not assemble the Daily Report." });
+    } finally {
+      setRollupBusy(false);
+    }
+  }
+
   // Not a placed manager → no daily section at all.
   if (!data || data.instance === null) return null;
+
+  const rolledUp = data.instance.rolled_up_submission_uuid !== null;
+  const complete = data.instance.status === "complete";
 
   return (
     <section className="card dash-section" aria-label="Today's checklist">
@@ -220,6 +248,27 @@ function DailyChecklistSection({ onOpenForm }: { onOpenForm?: (p: FormPrefill) =
           })}
         </ul>
       )}
+
+      {/* S5 auto-rollup → Daily Report. Once every item is done, assemble + review/file the Daily
+          Report. After it's filed, the reconcile stamps rolled_up_submission_uuid → the filed state. */}
+      {rolledUp ? (
+        <div className="dash-rollup" aria-label="Daily Report filed">
+          <span className="dash-pill dash-pill--ok">Daily Report filed ✓</span>
+        </div>
+      ) : complete ? (
+        <div className="dash-rollup">
+          <button
+            type="button"
+            className="btn btn--primary"
+            aria-label="Review and file Daily Report"
+            disabled={rollupBusy || !onOpenForm}
+            onClick={reviewAndFileDailyReport}
+          >
+            {rollupBusy ? "Assembling…" : "Review & file Daily Report"}
+          </button>
+          <span className="dash-card__sub"> · pre-filled from today&apos;s checklist; you confirm before filing</span>
+        </div>
+      ) : null}
     </section>
   );
 }

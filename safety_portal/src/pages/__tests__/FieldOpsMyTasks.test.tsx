@@ -11,7 +11,7 @@ vi.mock("../../lib/fieldops_tasks", async (importOriginal) => {
 });
 vi.mock("../../lib/fieldops_checklist", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../lib/fieldops_checklist")>();
-  return { ...actual, fetchMyChecklist: vi.fn(), completeChecklistItem: vi.fn(), uncompleteChecklistItem: vi.fn(), recordCountItem: vi.fn() };
+  return { ...actual, fetchMyChecklist: vi.fn(), completeChecklistItem: vi.fn(), uncompleteChecklistItem: vi.fn(), recordCountItem: vi.fn(), fetchRollupDraft: vi.fn() };
 });
 vi.mock("../../lib/auth", () => ({ useAuth: vi.fn() }));
 
@@ -38,7 +38,7 @@ beforeEach(() => {
   vi.mocked(checklist.fetchMyChecklist).mockResolvedValue({ instance: null, items: [] });
 });
 
-const INSTANCE = { id: 7, job_id: "JOB-A", instance_date: "2026-07-01", status: "open" as const };
+const INSTANCE = { id: 7, job_id: "JOB-A", instance_date: "2026-07-01", status: "open" as const, rolled_up_submission_uuid: null };
 const CHECKLIST_ITEMS: checklist.ChecklistItemState[] = [
   { id: 11, source_item_id: 1, item_type: "form_linked", label: "File the Daily Field Report", form_code: "daily-report", target_count: null, status: "open", note: null, photo_ref: null, completed_by: null, completed_at: null, value_num: null },
   { id: 12, source_item_id: 2, item_type: "manual_attest", label: "Record crew progress", form_code: null, target_count: null, status: "open", note: null, photo_ref: null, completed_by: null, completed_at: null, value_num: null },
@@ -167,6 +167,66 @@ describe("FieldOpsMyTasks — S4 loop-closure + count/inspection", () => {
     fireEvent.change(input, { target: { value: "5" } });
     fireEvent.click(getByLabelText("Record item 20"));
     await waitFor(() => expect(checklist.recordCountItem).toHaveBeenCalledWith(20, 5));
+  });
+});
+
+describe("FieldOpsMyTasks — S5 auto-rollup → Daily Report", () => {
+  const COMPLETE_INSTANCE = { ...INSTANCE, status: "complete" as const };
+  const DONE_ITEM: checklist.ChecklistItemState = {
+    ...CHECKLIST_ITEMS[1], status: "done", completed_by: "mgr.mo", completed_at: 1,
+  };
+
+  it("shows 'Review & file Daily Report' only when the instance is complete + NOT rolled up", async () => {
+    vi.mocked(api.fetchMyTasks).mockResolvedValue({ tasks: [] });
+    vi.mocked(checklist.fetchMyChecklist).mockResolvedValue({ instance: COMPLETE_INSTANCE, items: [DONE_ITEM] });
+    const { getByLabelText } = render(<FieldOpsMyTasks onBack={() => {}} onOpenForm={vi.fn()} />);
+    await waitFor(() => expect(getByLabelText("Review and file Daily Report")).not.toBeNull());
+  });
+
+  it("does NOT show the review button while the instance is still open", async () => {
+    vi.mocked(api.fetchMyTasks).mockResolvedValue({ tasks: [] });
+    vi.mocked(checklist.fetchMyChecklist).mockResolvedValue({ instance: INSTANCE, items: CHECKLIST_ITEMS });
+    const { queryByLabelText, container } = render(<FieldOpsMyTasks onBack={() => {}} onOpenForm={vi.fn()} />);
+    await waitFor(() => expect(container.querySelector('[aria-label="Today\'s checklist"]')).not.toBeNull());
+    expect(queryByLabelText("Review and file Daily Report")).toBeNull();
+  });
+
+  it("clicking Review & file fetches the draft and opens the Daily Report form pre-filled", async () => {
+    vi.mocked(api.fetchMyTasks).mockResolvedValue({ tasks: [] });
+    vi.mocked(checklist.fetchMyChecklist).mockResolvedValue({ instance: COMPLETE_INSTANCE, items: [DONE_ITEM] });
+    vi.mocked(checklist.fetchRollupDraft).mockResolvedValue({
+      job_id: "JOB-A",
+      work_date: "2026-07-01",
+      form_code: "daily-report",
+      values: { job_name: "Alpha", report_date: "2026-07-01", prepared_by: "Mo Manager", comments: "summary" },
+    });
+    const onOpenForm = vi.fn();
+    const { getByLabelText } = render(<FieldOpsMyTasks onBack={() => {}} onOpenForm={onOpenForm} />);
+    const btn = await waitFor(() => getByLabelText("Review and file Daily Report"));
+    fireEvent.click(btn);
+    await waitFor(() => expect(checklist.fetchRollupDraft).toHaveBeenCalled());
+    // 'daily-report' is a no-variant parent → variantCode omitted; job/date from the draft; values carried.
+    await waitFor(() =>
+      expect(onOpenForm).toHaveBeenCalledWith({
+        jobId: "JOB-A",
+        parentCode: "daily-report",
+        variantCode: undefined,
+        workDate: "2026-07-01",
+        values: { job_name: "Alpha", report_date: "2026-07-01", prepared_by: "Mo Manager", comments: "summary" },
+      }),
+    );
+  });
+
+  it("shows the 'Daily Report filed ✓' state (no review button) once rolled up", async () => {
+    vi.mocked(api.fetchMyTasks).mockResolvedValue({ tasks: [] });
+    vi.mocked(checklist.fetchMyChecklist).mockResolvedValue({
+      instance: { ...COMPLETE_INSTANCE, rolled_up_submission_uuid: "sub-123" },
+      items: [DONE_ITEM],
+    });
+    const { container, queryByLabelText } = render(<FieldOpsMyTasks onBack={() => {}} onOpenForm={vi.fn()} />);
+    await waitFor(() => expect(container.querySelector('[aria-label="Daily Report filed"]')).not.toBeNull());
+    expect(container.textContent ?? "").toContain("Daily Report filed");
+    expect(queryByLabelText("Review and file Daily Report")).toBeNull();
   });
 });
 
