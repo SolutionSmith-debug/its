@@ -180,3 +180,22 @@ describe("FormFillPage — R3 dirty guard", () => {
     confirmSpy.mockRestore();
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// D2 (SOP daily form) — the Submit-a-Form CREATE picker hides launch:"daily-tab" parents.
+// The Daily Report is filed from My Tasks → Daily report; the office's retrieval surfaces
+// (Form Request / download / history) are untouched, and the definition itself stays resolvable
+// (the FormFillPage.pdf.test.tsx prefill spec proves a daily-report deep-link still renders).
+// ─────────────────────────────────────────────────────────────────────────────
+describe("FormFillPage — D2 CREATE picker hides daily-tab parents", () => {
+  it("offers the other parents but NOT the Daily Report (launch:'daily-tab')", async () => {
+    const { container } = render(<FormFillPage onBack={() => {}} />);
+    await waitFor(() => expect(container.querySelector('option[value="J1"]')).not.toBeNull());
+    const formSelect = Array.from(container.querySelectorAll("select"))[1];
+    const options = Array.from(formSelect.querySelectorAll("option")).map((o) => o.value);
+    expect(options).toContain("jha");
+    expect(options).toContain("incident-report");
+    expect(options).not.toContain("daily-report");
+    expect(formSelect.textContent ?? "").not.toContain("Daily Field Report");
+  });
+});

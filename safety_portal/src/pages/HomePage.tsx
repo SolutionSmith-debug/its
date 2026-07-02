@@ -59,9 +59,9 @@ const HOME_CARDS: HomeCard[] = [
     key: "fieldops-tasks",
     cap: "cap.tasks.own",
     badge: "Field Ops",
-    // R7 (R2 finding): the card copy now names the daily checklist — the tab lives here too.
+    // R7 (R2 finding) + D2: the card copy names the Daily report — the tab lives here too.
     title: "My Tasks",
-    desc: "Your assigned tasks and inspections, plus your daily checklist — grouped by job, updated as you work.",
+    desc: "Your assigned tasks and inspections, plus your Daily report — grouped by job, updated as you work.",
     section: "field",
   },
   {
@@ -100,10 +100,10 @@ const HOME_CARDS: HomeCard[] = [
     key: "fieldops-inspections",
     cap: "cap.checklist.manage",
     badge: "Admin",
-    // R7 (Open Q4): ONE admin card named "Checklists" — it owns the company default daily
-    // checklist AND the inspection-checklist library (the R4 consolidated page; key unchanged).
+    // R7 (Open Q4) → D2: the card is inspections-only now (the daily content lives in the
+    // Daily Field Report form definition; the default-checklist editor was retired). Key unchanged.
     title: "Checklists",
-    desc: "Author the company daily checklist and reusable inspection checklists, and assign them to a manager or subcontractor.",
+    desc: "Author reusable inspection checklists and assign them to a manager or subcontractor.",
     section: "admin",
   },
   {

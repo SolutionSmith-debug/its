@@ -1,183 +1,18 @@
 import { useState, useEffect, useRef } from "react";
 import type { FormEvent } from "react";
 import * as api from "../lib/fieldops_jobtracker";
-import * as checklist from "../lib/fieldops_checklist";
 import { fetchPersonnelList, assignPersonnel, fetchMyCrew, type PersonnelRow, type MyCrewMember } from "../lib/fieldops_personnel";
 import { fetchEquipmentList, moveEquipment } from "../lib/fieldops_equipment";
 import { useAuth } from "../lib/auth";
 import { PageShell } from "../components/PageShell";
-import { ChecklistItemForm, ConfirmDelete, EMPTY_ITEM, itemMetaLabel, nextSeq } from "../components/ChecklistItemForm";
 import { ChipX } from "../components/ChipX";
-import { InlineRowMsg, SectionError, SectionRefreshWarn, errMsg, type RowFeedback } from "../components/myTasksShared";
-import { originLabel, statusLabel } from "../lib/labels";
+import { InlineRowMsg, SectionError, errMsg, type RowFeedback } from "../components/myTasksShared";
+import { statusLabel } from "../lib/labels";
 
 // R7 — a load-failure that owns a working Retry (never a dead banner, never a lying empty state).
 interface RetryableError {
   text: string;
   retry: () => void;
-}
-
-// ── Daily checklist editor (Assigned-Tasks S2 · per-job HALF after the R4 extraction) ──────────────
-// Mounted on the Job Tracker job detail, gated cap.checklist.manage (admin). Renders the job's
-// EFFECTIVE merged checklist (shared default ⊕ this job's overrides) and owns ONLY the per-job
-// tailoring: add a job-specific item, hide (suppress) / un-hide a shared item for this job. Editing
-// the shared default itself (add / edit / reorder / delete — propagating to every un-overridden job)
-// moved to the consolidated Checklists admin area (FieldOpsInspections, the "Inspection checklists"
-// Home card). Self-contained state; the Worker re-gates.
-function DailyChecklistEditor({ jobId }: { jobId: string }) {
-  const [job, setJob] = useState<checklist.JobChecklist | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
-  const [jobDraft, setJobDraft] = useState<checklist.ItemInput>(EMPTY_ITEM);
-  // R7 never-silent: a failed INITIAL load gets an error+Retry block (not an eternal "Loading…");
-  // a failed RE-load after a successful mutation gets a soft warn while the previous data stays up.
-  const [loadFailed, setLoadFailed] = useState(false);
-  const [staleWarn, setStaleWarn] = useState(false);
-
-  async function reload() {
-    try {
-      setJob(await checklist.fetchJobChecklist(jobId));
-      setLoadFailed(false);
-      setStaleWarn(false);
-    } catch {
-      if (job === null) setLoadFailed(true);
-      else setStaleWarn(true);
-    }
-  }
-
-  useEffect(() => {
-    void reload();
-    // Reloads whenever the open job changes.
-  }, [jobId]);
-
-  // Run a mutation, surface a message, and reload the merged view. Mutation and refetch are
-  // TRY-SPLIT (R7, the R2 standard): a refetch hiccup must never report a landed mutation as
-  // failed — the ok message stands and reload()'s own staleWarn covers the refresh gap.
-  async function run(fn: () => Promise<unknown>, okText: string) {
-    if (busy) return;
-    setBusy(true);
-    setMsg(null);
-    try {
-      await fn();
-    } catch (err) {
-      setMsg({ ok: false, text: err instanceof Error ? err.message : "Checklist update failed." });
-      setBusy(false);
-      return;
-    }
-    setMsg({ ok: true, text: okText });
-    await reload();
-    setBusy(false);
-  }
-
-  function submitAddJobItem(e: FormEvent) {
-    e.preventDefault();
-    if (!jobDraft.label.trim()) {
-      setMsg({ ok: false, text: "Item label is required." });
-      return;
-    }
-    void run(async () => {
-      // seq auto-suggested to land the new item at the end of the effective list (max + 10).
-      await checklist.addJobItem(jobId, { ...jobDraft, seq: jobDraft.seq ?? nextSeq(job?.items ?? []) });
-      setJobDraft(EMPTY_ITEM);
-    }, "Checklist item added.");
-  }
-
-  return (
-    <section className="card dash-section" aria-label="Daily checklist">
-      <h3 className="dash-detail__h2">Daily checklist</h3>
-      <p className="dash-card__sub muted">
-        The manager's daily checklist for this job, tailored here. <strong>Shared</strong> items come
-        from the company-wide default (hide one to exclude it for this job); <strong>This job only</strong>{" "}
-        items were added just for this job.
-      </p>
-      <p className="dash-card__sub muted">
-        Edit the shared default itself in Checklists — the “Checklists” card on Home.
-      </p>
-      {msg && <p className={`banner ${msg.ok ? "banner--ok" : "banner--err"}`}>{msg.text}</p>}
-      {staleWarn && (
-        <SectionRefreshWarn
-          message="Refreshing the checklist failed — the list below may be stale."
-          onRetry={() => void reload()}
-          what="loading the job checklist"
-        />
-      )}
-
-      {job === null ? (
-        loadFailed ? (
-          <SectionError
-            message="Could not load the job checklist."
-            onRetry={() => void reload()}
-            what="loading the job checklist"
-          />
-        ) : (
-          <div className="muted">Loading checklist…</div>
-        )
-      ) : (
-        <>
-          {job.items.length ? (
-            <ul className="dash-tasklist" aria-label="Effective checklist">
-              {job.items.map((it) => (
-                <li key={`${it.origin}-${it.source_item_id}`}>
-                  <span className={it.origin === "override" ? "dash-pill dash-pill--warn" : "dash-pill"}>{originLabel(it.origin)}</span>{" "}
-                  {it.label} <span className="muted">— {itemMetaLabel(it)}</span>{" "}
-                  {it.origin === "default" ? (
-                    <button
-                      type="button"
-                      className="btn btn--secondary"
-                      aria-label={`Hide ${it.label}`}
-                      disabled={busy}
-                      onClick={() => run(() => checklist.suppressDefaultItem(jobId, it.source_item_id), "Item hidden for this job.")}
-                    >
-                      Hide
-                    </button>
-                  ) : (
-                    <ConfirmDelete
-                      actionLabel="Remove"
-                      ariaLabel={`Remove ${it.label}`}
-                      copy="Removes this job-only item from this job's checklist starting tomorrow."
-                      busy={busy}
-                      onConfirm={() => run(() => checklist.deleteJobItem(jobId, it.source_item_id), "Item removed.")}
-                    />
-                  )}
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <div className="dash-unavail">No checklist items.</div>
-          )}
-
-          {job.suppressed.length > 0 && (
-            <div className="dash-row" aria-label="Hidden default items">
-              <span className="dash-card__label">Hidden here:</span>{" "}
-              {job.suppressed.map((s) => (
-                <span className="dash-chip" key={s.source_item_id}>
-                  {s.label}{" "}
-                  <button
-                    type="button"
-                    className="btn btn--edit"
-                    aria-label={`Unhide ${s.label}`}
-                    disabled={busy}
-                    onClick={() => run(() => checklist.unsuppressDefaultItem(jobId, s.source_item_id), "Item restored for this job.")}
-                  >
-                    Unhide
-                  </button>
-                </span>
-              ))}
-            </div>
-          )}
-
-          <ChecklistItemForm
-            label="Add checklist item"
-            draft={jobDraft}
-            onChange={setJobDraft}
-            onSubmit={submitAddJobItem}
-            busy={busy}
-            submitLabel="Add item"
-          />
-        </>
-      )}
-    </section>
-  );
 }
 
 // epoch SECONDS → ×1000 for JS Date
@@ -399,7 +234,6 @@ export function FieldOpsJobTracker({
   // incl. the subcontractor-target guard). Job create / close / lifecycle / routing stay canManage-only.
   const canAssignTasks = canManage || caps.includes("cap.tasks.assign");
   const canOwnTasks = caps.includes("cap.tasks.own"); // change a task's own status
-  const canManageChecklist = caps.includes("cap.checklist.manage"); // S2: edit the daily-checklist template
   const canLogTime = caps.includes("cap.time.log"); // log a time entry against the open job
   // Unified job-create flow: per-control caps (convenience — the Worker re-gates every call). A
   // manager (P2.6) holds crew.assign + equipment.field but NOT jobtracker.manage → can place crew /
@@ -1214,8 +1048,6 @@ export function FieldOpsJobTracker({
           )}
           {taskCursor && <LoadMoreBtn leg="task" />}
         </section>
-
-        {canManageChecklist && <DailyChecklistEditor jobId={job.job_id} />}
 
         <section className="card dash-section">
           <h3 className="dash-detail__h2">Time entries</h3>

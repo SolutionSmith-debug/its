@@ -40,6 +40,12 @@ const DAILY_REPORT_FORM = "daily-report";
 // S5 rollup-draft assembly — bound ceiling on the crew / equipment legs (a day's roster/equipment is
 // small; this is a defensive cap, not a paginated surface).
 const ROLLUP_LEG_CAP = 200;
+// D2 (SOP daily form) — the parent-form families the Daily tab's status endpoint reports. These are
+// the families the daily-report-v2 definition either deep-links to (form_link sections: jha /
+// visitor-sign-in / incident-report) or IS (daily-report — drives the "already filed today" banner).
+// A fixed module constant, never caller input: the endpoint reports exactly these four, so a forged
+// query can't turn it into an arbitrary-submission probe.
+const DAILY_STATUS_FAMILIES = ["jha", "visitor-sign-in", "incident-report", "daily-report"] as const;
 
 const ITEM_TYPES = new Set(["form_linked", "manual_attest", "count", "inspection"]);
 // form_code identifies the target form — required for the two form-bearing types.
@@ -793,6 +799,63 @@ export function registerChecklistRoutes(app: FieldopsApp, gates: FieldopsGates):
     },
   );
 
+  // ══ D2 (SOP daily form) — the Daily tab's filed-status read ═══════════════════════════════════════
+
+  // ── GET /api/fieldops/daily-form/status?job_id=…&date=… — LATEST submission per parent family. ────
+  // Backs the Daily tab's form_link "Filed ✓ <time> by <name>" indicators + the "already filed today"
+  // banner. For each family in DAILY_STATUS_FAMILIES, returns the newest submission for
+  // (job_id, work_date = date) matched on the S4 family convention (form_code = parent OR a versioned
+  // variant `parent || '-v%'` — the SAME match the loop-closure reconcile uses). `filed_by_name` is the
+  // personnel DISPLAY NAME resolved through submitted_as — no raw-username fallback (the W9 posture;
+  // an unmatched account yields NULL and the UI drops the "by …" clause). Read-only, bound-param.
+  // OWNERSHIP SCOPE (security review BLOCK fix): cap.tasks.own alone would let ANY portal account
+  // probe other jobs' filing activity (incident reports especially). The read is confined to the
+  // actor's OWN placement (linked ACTIVE personnel.current_job === job_id — the same resolution the
+  // daily generation used); cap.jobtracker.manage / cap.checklist.manage holders (admins) may query
+  // any job. Job existence + date shape validated so an unknown job 404s.
+  app.get(
+    "/api/fieldops/daily-form/status",
+    gates.requireSession,
+    gates.requireCapability(CAP_TASKS_OWN),
+    async (c) => {
+      const q = c.req.query();
+      const date = q.date ?? "";
+      if (!DUE_DATE_RE.test(date)) return c.json({ error: "invalid_date" }, 400);
+      const jobId = q.job_id ?? "";
+      const jobErr = await requireJob(c, jobId); // 400 bad shape / 404 unknown job
+      if (jobErr) return jobErr;
+
+      // Per-job ownership scope (see header comment): non-admin actors only read their OWN placement.
+      const caps = c.get("capabilities");
+      if (!caps.has("cap.jobtracker.manage") && !caps.has("cap.checklist.manage")) {
+        const person = await resolveActorPersonnel(c);
+        if (!person || person.current_job !== jobId) return c.json({ error: "forbidden_job" }, 403);
+      }
+
+      // One statement per family (a fixed, module-constant set of four) in a single D1 batch.
+      // Newest-first tiebreak mirrors ROLLUP_LINK_SQL (created_at DESC, submission_uuid DESC).
+      const statusSql = `
+        SELECT sub.created_at AS filed_at,
+               (SELECT p.name FROM personnel p WHERE p.username = sub.submitted_as ORDER BY p.id ASC LIMIT 1) AS filed_by_name
+        FROM submissions sub
+        WHERE sub.job_id = ?1 AND sub.work_date = ?2
+          AND (sub.form_code = ?3 OR sub.form_code LIKE ?3 || '-v%')
+        ORDER BY sub.created_at DESC, sub.submission_uuid DESC
+        LIMIT 1
+      `;
+      const legs = await c.env.DB.batch(
+        DAILY_STATUS_FAMILIES.map((family) => c.env.DB.prepare(statusSql).bind(jobId, date, family)),
+      );
+      const filed: Record<string, { filed_at: number; filed_by_name: string | null }> = {};
+      DAILY_STATUS_FAMILIES.forEach((family, i) => {
+        const row = legs[i].results?.[0] as { filed_at: number; filed_by_name: string | null } | undefined;
+        if (row) filed[family] = { filed_at: row.filed_at, filed_by_name: row.filed_by_name ?? null };
+      });
+      // daily_filed = the daily-report family's entry, surfaced separately for the banner.
+      return c.json({ filed, daily_filed: filed[DAILY_REPORT_FORM] ?? null }, 200);
+    },
+  );
+
   // ══ S3 — daily-checklist SURFACING + manual_attest COMPLETION (cap.tasks.own — the owner's tab) ══
 
   // ── GET /api/fieldops/checklist/mine — TODAY's daily checklist for the logged-in placed manager. ──
@@ -801,6 +864,12 @@ export function registerChecklistRoutes(app: FieldopsApp, gates: FieldopsGates):
   // reason }. `instance` is NULL (empty daily section) when the actor isn't a placed manager (a
   // submitter, or an unplaced one) — with the R1 `reason` code ('not_manager' | 'no_personnel_link' |
   // 'not_placed') so the UI can explain WHY; reason is null when an instance is returned.
+  //
+  // DEPRECATED-FOR-DAILY (D2, SOP daily form): the Daily tab no longer calls this — the daily SOP
+  // content now lives in the daily-report-v2 FORM definition and the tab reads
+  // /api/fieldops/daily-form/status instead. The route STAYS (§14/§49 preservation): the checklist
+  // ENGINE it fronts still serves assigned inspections, and deleting the daily generation path would
+  // be a behavior change beyond D2's scope. Do not remove without a doctrine-level decision.
   app.get(
     "/api/fieldops/checklist/mine",
     gates.requireSession,

@@ -121,7 +121,10 @@ export function ChecklistItemForm({
   onCancel?: () => void;
 }) {
   const set = (patch: Partial<checklist.ItemInput>) => onChange({ ...draft, ...patch });
-  const catalog = formCatalog();
+  // Tab-launched parents (launch:"daily-tab" — the SOP daily form) are excluded from the picker: an
+  // inspection item deep-linking there would land on a blank one-way fill page (D2 regression review).
+  // A stored value pointing at one still round-trips via the orphan path below (marked, never swapped).
+  const catalog = formCatalog().filter((p) => p.launch !== "daily-tab");
   // Prefilled code that fell out of the catalog (retired / legacy): keep it selectable + marked,
   // never silently swap the stored value on open.
   const orphanCode =

@@ -362,7 +362,12 @@ export function FormFillPage({
               onChange={(e) => { setParentCode(e.target.value); setVariantCode(""); }}>
               <option value="">Select a form…</option>
               {WORKFLOWS_ORDERED.map((w) => {
-                const inCat = catalog.filter((p) => p.category === w.id);
+                // D2 (SOP daily form): parents launched from a dedicated surface (catalog
+                // launch:"daily-tab" — the Daily Report lives on My Tasks → Daily report) are
+                // HIDDEN from this CREATE picker only. `catalog` itself stays complete, so
+                // deep-link prefills and the Form Request / download / history surfaces (which
+                // the office still uses to retrieve filed dailies) are untouched.
+                const inCat = catalog.filter((p) => p.category === w.id && p.launch !== "daily-tab");
                 if (inCat.length === 0) return null;
                 return (
                   <optgroup key={w.id} label={w.label}>

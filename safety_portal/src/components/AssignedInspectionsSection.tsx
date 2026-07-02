@@ -107,7 +107,8 @@ export function AssignedInspectionsSection({
     };
   }
 
-  /** Mutation/refetch try-split — see DailyChecklistSection.runItemAction (same Mandatory-B contract). */
+  /** Mutation/refetch try-split — the R2 Mandatory-B contract (the mutation and the follow-up
+   *  refetch fail independently; a landed write is never reported as failed). */
   async function runItemAction(
     item: checklist.ChecklistItemState,
     call: () => Promise<checklist.CompleteResult>,

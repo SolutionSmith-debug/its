@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 
 /**
  * R2 — shared local helpers for the My Tasks page and its extracted sections
- * (DailyChecklistSection / AssignedInspectionsSection / AddCrewSection).
+ * (DailyReportTab / AssignedInspectionsSection / AddCrewSection).
  *
  * Deliberately page-scoped (NOT src/lib): these encode My-Tasks copy + render conventions
  * (loading/error/Retry blocks, per-row inline feedback, the Completed disclosure, Pacific

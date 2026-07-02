@@ -112,13 +112,16 @@ describe("HomePage — R7 sections", () => {
     }
   });
 
-  it("named copy edits: My Tasks mentions the daily checklist; the admin card is 'Checklists' (renamed)", () => {
+  it("named copy edits: My Tasks names the Daily report (D2); the admin card is 'Checklists' (renamed)", () => {
     vi.mocked(useAuth).mockReturnValue(authWith(ALL_CAPS));
     const { container } = render(<HomePage onNavigate={() => {}} />);
     const myTasks = Array.from(container.querySelectorAll(".form-card")).find(
       (el) => el.querySelector(".form-card__title")?.textContent === "My Tasks",
     )!;
-    expect(myTasks.textContent ?? "").toContain("daily checklist");
+    // D2: the tab is the SOP daily FORM now — the card copy names the Daily report, not the
+    // retired checkbox checklist.
+    expect(myTasks.textContent ?? "").toContain("Daily report");
+    expect(myTasks.textContent ?? "").not.toContain("daily checklist");
     expect(cardTitles(container)).toContain("Checklists");
     expect(cardTitles(container)).not.toContain("Inspection checklists");
   });
