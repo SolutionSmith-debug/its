@@ -484,3 +484,129 @@ def test_progress_rollup_escapes_equipment_names() -> None:
     )
     assert out[:5] == b"%PDF-"  # no XML-parse blow-up from the raw markup
     assert "Loader" in _norm(_pdf_text(out))
+
+
+# ── guidance + form_link sections (SOP daily form, slice D1) ────────────────────
+_GUIDANCE_FIXTURE: dict = {
+    "form_code": "sop-fixture-v1",
+    "parent_form_code": "sop-fixture",
+    "form_name": "SOP Fixture",
+    "variant_label": None,
+    "version": 1,
+    "archetype": "sectioned_assessment",
+    "source_pdf": "daily-field-report.pdf",
+    "sections": [
+        {
+            "type": "guidance",
+            "heading": "Trenching Duties",
+            "blocks": [
+                {"type": "p", "text": "Prose paragraph that stays on screen only."},
+                {"type": "bullets", "items": ["Bullet alpha stays on screen.",
+                                              "Bullet beta stays on screen."]},
+                {"type": "callout", "style": "critical",
+                 "text": "CRITICAL RULE: never enter an unprotected trench."},
+            ],
+        },
+        {"type": "form_link", "label": "Create Job Hazard Analysis",
+         "parent_form_code": "jha", "helper": "File before work begins."},
+    ],
+}
+
+
+def test_guidance_renders_heading_and_callouts_only() -> None:
+    """A guidance section renders its HEADING + CALLOUT one-liners ONLY — the p/bullets
+    prose is the on-screen SOP walk and must NOT bloat the PDF / weekly packet
+    (form_pdf._section_flowables, slice D1)."""
+    out = render_submission_pdf(
+        _GUIDANCE_FIXTURE, {"job_name": "B1", "work_date": "2026-07-02", "values": {}}
+    )
+    assert out[:5] == b"%PDF-"
+    text = _norm(_pdf_text(out))
+    assert "Trenching Duties" in text                                       # heading
+    assert "CRITICAL RULE: never enter an unprotected trench." in text      # callout
+    assert "Prose paragraph that stays on screen only." not in text        # p dropped
+    assert "Bullet alpha stays on screen." not in text                     # bullets dropped
+
+
+def test_form_link_renders_label_and_status_line() -> None:
+    """A form_link renders the label + the fixed 'see filed forms' pointer — the
+    submission payload carries no link state (the linked form files separately)."""
+    out = render_submission_pdf(
+        _GUIDANCE_FIXTURE, {"job_name": "B1", "work_date": "2026-07-02", "values": {}}
+    )
+    text = _norm(_pdf_text(out))
+    assert "Create Job Hazard Analysis" in text
+    assert "Linked form — see the forms filed for this job and date." in text
+
+
+def test_guidance_and_form_link_render_blank_mode_identically() -> None:
+    """Blank/fillable mode routes guidance + form_link through the SAME submission
+    path (value-free) — heading + callout + label + pointer, no prose."""
+    from safety_reports.form_pdf import render_blank_fillable
+    out = render_blank_fillable(_GUIDANCE_FIXTURE)
+    assert out[:5] == b"%PDF-"
+    text = _norm(_pdf_text(out))
+    assert "Trenching Duties" in text
+    assert "CRITICAL RULE: never enter an unprotected trench." in text
+    assert "Prose paragraph that stays on screen only." not in text
+    assert "Create Job Hazard Analysis" in text
+
+
+def test_daily_report_v2_renders_sop_structure_and_values() -> None:
+    """The shipped daily-report-v2: SOP guidance headings + a filled duty confirm + the
+    carried-over DFR tables all render; guidance prose stays out."""
+    definition = _load("daily-report-v2.json")
+    submission = {
+        "job_name": "Bradley 1", "work_date": "2026-07-02",
+        "values": {
+            "weather": "Sunny", "average_temp": "88", "prepared_by": "Casey PM",
+            "arrival": {"arrived_walkthrough": {"response": "Confirmed"},
+                        "walkthrough_notes": {"response": "Gate lock replaced"}},
+            "crew_progress": [{"crew_subcontractor": "Sun Crew", "manpower": "12",
+                               "todays_progress": "Rows 40-44 racked"}],
+            "tomorrows_goals": "Finish rows 45-48.",
+            "comments": "None.",
+        },
+    }
+    out = render_submission_pdf(definition, submission)
+    assert out[:5] == b"%PDF-"
+    text = _norm(_pdf_text(out))
+    # SOP guidance headings (verbatim) render…
+    assert "7:30 AM — Arrive On Site — You Set the Tone" in text
+    assert "END OF DAY — Before Leaving the Site" in text
+    # …with the safety-critical callouts kept…
+    assert "CRITICAL RULE: Never allow workers in an unprotected trench." in text
+    assert "Hold the line." in text
+    # …but the guidance prose deliberately dropped (heading + callouts only).
+    assert "Unlock the site and open all access points before workers arrive." not in text
+    # form_link label + pointer line render.
+    assert "Create Job Hazard Analysis" in text
+    assert "Linked form — see the forms filed" in text
+    # Filled values + the carried DFR fields render.
+    assert "Casey PM" in text and "Sun Crew" in text and "Rows 40-44 racked" in text
+    assert "Finish rows 45-48." in text
+
+
+def test_daily_report_v1_still_renders_unchanged() -> None:
+    """Regression: the v1 definition stays in-tree (append-only) and historical
+    submissions must keep rendering with their own field set."""
+    definition = _load("daily-report-v1.json")
+    submission = {
+        "job_name": "Bradley 1", "work_date": "2026-06-03",
+        "values": {
+            "job_name": "Bradley 1", "report_date": "2026-06-03",
+            "prepared_by": "Casey PM", "weather": "Overcast", "average_temp": "71",
+            "crew_progress": [{"crew_subcontractor": "Old Crew", "manpower": "8",
+                               "todays_progress": "Piles driven"}],
+            "tomorrows_goals": "Keep driving piles.",
+            "comments": "Historical record.",
+        },
+    }
+    out = render_submission_pdf(definition, submission)
+    assert out[:5] == b"%PDF-"
+    text = _norm(_pdf_text(out))
+    assert "Crew / Subcontractor Progress" in text and "Old Crew" in text
+    assert "Tomorrow's Progress Goals" in text and "Keep driving piles." in text
+    assert "Historical record." in text
+    # v1 has no guidance/form_link — none of the D1 chrome may appear.
+    assert "Linked form — see the forms filed" not in text

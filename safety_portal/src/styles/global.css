@@ -533,6 +533,24 @@ h3 {
 .fr__content-heading { font-size: var(--fs-base); font-weight: 700; color: var(--c-brg); margin: 0 0 4px; }
 .fr__content-body { white-space: pre-line; margin: 0; }
 
+/* ── SOP guidance + form-link sections (SOP daily form, slice D1) ─────────────
+   Guidance = read-only SOP text under the gold-ruled section title; callouts get the
+   gold legal-callout look (note/quality) or a danger edge (critical — life-safety
+   rules). form_link = the "Create <form> →" primary button + helper/filed line. */
+.fr__guidance-p { margin: 10px 0; }
+.fr__guidance-bullets { margin: 10px 0; padding-left: 22px; }
+.fr__guidance-bullets li { margin: 6px 0; }
+.fr__callout {
+  background: #fff8e8; border: 1px solid var(--c-gold); border-left: 4px solid var(--c-gold);
+  border-radius: var(--radius-sm); padding: 10px 14px; margin: 12px 0;
+  font-size: var(--fs-sm); font-weight: 600;
+}
+.fr__callout--critical { border-color: var(--c-danger); border-left-color: var(--c-danger); background: #fdf1f1; }
+.fr__callout--quality { border-left-color: var(--c-brg); }
+.fr__form-link { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.fr__form-link-filed { font-weight: 700; color: var(--c-brg); }
+.fr__form-link-helper { flex-basis: 100%; margin: 0; font-size: var(--fs-sm); }
+
 .fr__rows { display: flex; flex-direction: column; gap: 12px; }
 /* "+ Add row" sits directly after .fr__rows — drop it down with a clear gap
    from the bottom of the last repeating-group block (e.g. the last worker row). */

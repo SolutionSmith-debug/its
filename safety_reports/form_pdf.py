@@ -545,6 +545,35 @@ def _section_flowables(section: dict, values: dict, st: dict) -> list[Flowable]:
                 out2.append(_p(b["heading"], st["heading"]))
             out2.extend(_rich_body(b.get("body", ""), st))
         return out2
+    if typ == "guidance":
+        # SOP guidance (slice D1) renders as its HEADING + callout one-liners ONLY —
+        # DELIBERATE truncation: the full p/bullets prose is the on-screen SOP walk in
+        # the portal; reprinting it in every daily PDF would bloat the weekly packet
+        # (the SOP daily form carries ~20 guidance sections). The callouts (CRITICAL
+        # RULE / QUALITY RULE / NOTE / FINAL STATEMENT) are the safety-critical
+        # one-liners and stay in the document of record, in the gold callout box the
+        # legal static_text sections already use. Text VERBATIM, never altered.
+        out3: list[Flowable] = [_section_header(section["heading"], st)]
+        for b in section.get("blocks", []):
+            if b.get("type") == "callout":
+                box = Table([[_p(b.get("text", ""), st["legal"])]], colWidths=[_CONTENT_W])
+                box.setStyle(TableStyle([
+                    ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#fbf6e9")),
+                    ("LINEBEFORE", (0, 0), (0, -1), 2.2, _GOLD),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 8), ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+                    ("TOPPADDING", (0, 0), (-1, -1), 6), ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+                ]))
+                out3.extend([Spacer(1, 6), box])
+        return out3
+    if typ == "form_link":
+        # Deep link to another form type (slice D1): the submission payload carries no
+        # link state (the linked form files as its OWN submission), so render just the
+        # label + a pointer to where the linked record lives. The live filed-indicator
+        # is an on-screen (Daily tab, D2) affordance only.
+        return [
+            _section_header(section["label"], st, level="group"),
+            _p("Linked form — see the forms filed for this job and date.", st["caption"]),
+        ]
     logger.warning("form_pdf: unknown section type %r — skipped", typ)
     return []
 
@@ -1210,8 +1239,10 @@ def _blank_section_flowables(section: dict, st: dict, namer: _FieldNamer) -> lis
         return [_section_header(section["label"], st, level="group"),
                 _TextFieldFlowable(namer, section.get("key", "freeform"), _CONTENT_W,
                                    multiline=multiline, height=_FIELD_H * 3 if multiline else None)]
-    if typ in ("static_text", "content_blocks"):
-        # VERBATIM via the submission path — guarantees no divergence.
+    if typ in ("static_text", "content_blocks", "guidance", "form_link"):
+        # Value-free section types render VERBATIM via the submission path —
+        # guarantees no divergence (guidance/form_link added for the SOP daily form,
+        # slice D1: same heading + callout-only / label + pointer rendering).
         return _section_flowables(section, {}, st)
     logger.warning("form_pdf: unknown section type %r — skipped (blank)", typ)
     return []

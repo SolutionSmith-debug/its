@@ -122,6 +122,89 @@ describe("validateDefinition — rejections (the C3 gate)", () => {
   });
 });
 
+// ── guidance + form_link sections (SOP daily form, slice D1) ──────────────────────
+describe("validateDefinition — guidance / form_link (SOP daily form D1)", () => {
+  // Base: the shipped daily-report-v2 (carries both new section types) — mutate a
+  // deep clone per rejection case, exactly like the jha() cases above.
+  const dr2 = () => structuredClone(FORMS["daily-report-v2"]);
+  const dr2Ctx = () => ctxFor(FORMS["daily-report-v2"]);
+
+  it("daily-report-v2 (guidance + form_link + fields interleaved) validates ok", () => {
+    expect(validateDefinition(dr2(), dr2Ctx())).toEqual({ ok: true });
+  });
+  it("rejects a guidance section with a missing heading", () => {
+    const d = dr2();
+    const g = sectionOfType(d, "guidance");
+    delete g.heading;
+    const r = validateDefinition(d, dr2Ctx());
+    expect(r.ok).toBe(false);
+    expect((r as { reason: string }).reason).toMatch(/guidance missing heading/);
+  });
+  it("rejects an unknown guidance block type (no free HTML vocabulary)", () => {
+    const d = dr2();
+    const g = sectionOfType(d, "guidance");
+    (g.blocks as Record<string, unknown>[]).push({ type: "html", text: "<b>x</b>" });
+    const r = validateDefinition(d, dr2Ctx());
+    expect(r.ok).toBe(false);
+    expect((r as { reason: string }).reason).toMatch(/unknown guidance block type/);
+  });
+  it("rejects a callout with an invalid style (closed enum)", () => {
+    const d = dr2();
+    const g = sectionOfType(d, "guidance");
+    (g.blocks as Record<string, unknown>[]).push({ type: "callout", style: "loud", text: "x" });
+    const r = validateDefinition(d, dr2Ctx());
+    expect(r.ok).toBe(false);
+    expect((r as { reason: string }).reason).toMatch(/callout invalid style/);
+  });
+  it("rejects a bullets block with a non-string / empty item", () => {
+    const d = dr2();
+    const g = sectionOfType(d, "guidance");
+    (g.blocks as Record<string, unknown>[]).push({ type: "bullets", items: ["ok", ""] });
+    expect(validateDefinition(d, dr2Ctx()).ok).toBe(false);
+  });
+  it("rejects an empty guidance blocks array", () => {
+    const d = dr2();
+    const g = sectionOfType(d, "guidance");
+    g.blocks = [];
+    expect(validateDefinition(d, dr2Ctx()).ok).toBe(false);
+  });
+  it("rejects a form_link whose parent_form_code is not in the catalog", () => {
+    const d = dr2();
+    const fl = sectionOfType(d, "form_link");
+    fl.parent_form_code = "no-such-form-type";
+    const r = validateDefinition(d, dr2Ctx());
+    expect(r.ok).toBe(false);
+    expect((r as { reason: string }).reason).toMatch(/not a known form type/);
+  });
+  it("rejects a form_link with a malformed parent_form_code slug", () => {
+    const d = dr2();
+    const fl = sectionOfType(d, "form_link");
+    fl.parent_form_code = "Not A Slug!";
+    expect(validateDefinition(d, dr2Ctx()).ok).toBe(false);
+  });
+  it("rejects a form_link with no label", () => {
+    const d = dr2();
+    const fl = sectionOfType(d, "form_link");
+    delete fl.label;
+    expect(validateDefinition(d, dr2Ctx()).ok).toBe(false);
+  });
+  it("accepts a form_link to a known catalog parent (jha)", () => {
+    const d = dr2();
+    const fl = sectionOfType(d, "form_link");
+    fl.parent_form_code = "jha";
+    expect(validateDefinition(d, dr2Ctx())).toEqual({ ok: true });
+  });
+  it("guidance/form_link contribute NO top-level value keys (no duplicate-key clash)", () => {
+    // Two guidance sections with identical headings + two form_links to the same parent
+    // must NOT trip the cross-section-unique-value-key rule (they are keyless).
+    const d = dr2();
+    const g = structuredClone(sectionOfType(d, "guidance"));
+    const fl = structuredClone(sectionOfType(d, "form_link"));
+    (d.sections as Record<string, unknown>[]).push(g, fl);
+    expect(validateDefinition(d, dr2Ctx())).toEqual({ ok: true });
+  });
+});
+
 // ── endpoint harness (mirrors test/session-epoch.test.ts) ───────────────────────
 const BASE = "https://portal.test";
 const ADMIN_BEARER = "test-admin-token";
