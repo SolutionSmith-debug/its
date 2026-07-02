@@ -3,6 +3,20 @@
 
 export type Role = "submitter" | "manager" | "admin";
 
+/** Human display label for a role KEY. DISPLAY-ONLY (Slice T): the 'submitter' tier is presented as
+ *  "Subcontractor", but the KEY stays 'submitter' everywhere (option values, the API, the
+ *  security-load-bearing fail-safe default in worker/auth.ts). Change the label here, never the key. */
+export function roleLabel(role: Role): string {
+  switch (role) {
+    case "submitter":
+      return "Subcontractor";
+    case "manager":
+      return "Manager";
+    case "admin":
+      return "Admin";
+  }
+}
+
 export interface SessionUser {
   username: string;
   /** Authorization role from the server (coarse: submitter | admin). */

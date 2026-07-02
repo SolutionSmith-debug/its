@@ -286,7 +286,7 @@ export function FieldOpsPersonnel({ onBack }: { onBack: () => void }) {
                     <input name="username" value={newUsername} onChange={(e) => setNewUsername(e.target.value)} placeholder="username (lastname.firstname)" maxLength={64} />{" "}
                     <input name="password" type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder="temp password" maxLength={256} />{" "}
                     <select name="role" value={newRole} onChange={(e) => setNewRole(e.target.value as api.AccountRole)}>
-                      <option value="submitter">Field PM (submitter)</option>
+                      <option value="submitter">Subcontractor (field PM)</option>
                       <option value="manager">Manager (crew lead)</option>
                       <option value="admin">Admin</option>
                     </select>{" "}

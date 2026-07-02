@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
+import type { FormEvent } from "react";
 import * as api from "../lib/fieldops_tasks";
+import * as personnel from "../lib/fieldops_personnel";
 import * as checklist from "../lib/fieldops_checklist";
 import { PageShell } from "../components/PageShell";
 import { ChecklistItemRow } from "../components/ChecklistItemRow";
@@ -340,6 +342,66 @@ function AssignedInspectionsSection({ onOpenForm }: { onOpenForm?: (p: FormPrefi
 }
 
 /**
+ * Slice T — "Add crew" for a SUBCONTRACTOR (cap.crew.create). Creates a NON-LOGIN roster person
+ * auto-placed on the subcontractor's OWN current job (POST /api/fieldops/crew). The Worker resolves
+ * the job from the actor's placement and refuses (422 not_placed) if the subcontractor isn't placed —
+ * surfaced here as a clear "must be placed on a job" message. The cap gate is a CONVENIENCE; the
+ * Worker re-gates + enforces the non-login + auto-place rules (Invariant 2).
+ */
+function AddCrewSection() {
+  const [name, setName] = useState("");
+  const [trade, setTrade] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    if (busy) return;
+    const n = name.trim();
+    if (n.length < 1) {
+      setMsg({ ok: false, text: "Enter a name." });
+      return;
+    }
+    setBusy(true);
+    setMsg(null);
+    try {
+      const res = await personnel.createCrew({ name: n, trade: trade.trim() || undefined });
+      setName("");
+      setTrade("");
+      setMsg({ ok: true, text: `Added ${n} to your crew on ${res.current_job}.` });
+    } catch (err) {
+      const code = err instanceof Error ? err.message : "";
+      const text =
+        code === "not_placed"
+          ? "You must be placed on a job before you can add crew. Ask your crew lead or the office to place you."
+          : code === "login_not_allowed"
+            ? "Crew added here are field-only (no login)."
+            : "Could not add crew.";
+      setMsg({ ok: false, text });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="card dash-section" aria-label="Add crew">
+      <h3 className="dash-detail__h2">Add crew</h3>
+      <p className="dash-card__sub">
+        Add a field-only crew member — they&apos;re placed on your current job automatically.
+      </p>
+      {msg && <div className={`banner ${msg.ok ? "banner--ok" : "banner--err"}`}>{msg.text}</div>}
+      <form onSubmit={submit} className="dash-row" aria-label="Add crew form">
+        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Name" maxLength={128} />{" "}
+        <input value={trade} onChange={(e) => setTrade(e.target.value)} placeholder="Trade (optional)" maxLength={64} />{" "}
+        <button type="submit" disabled={busy} className="btn--primary">
+          {busy ? "Adding…" : "Add crew"}
+        </button>
+      </form>
+    </section>
+  );
+}
+
+/**
  * Assigned-Tasks tab (P4 S1) — "My Tasks". A subcontractor (submitter) or manager sees the one-off
  * tasks assigned to THEM, grouped by job, and can advance each task's status (cap.tasks.own, reusing
  * the existing setTaskStatus route). "Assigned to me" is resolved server-side via the personnel↔account
@@ -354,7 +416,9 @@ export function FieldOpsMyTasks({
   onOpenForm?: (p: FormPrefill) => void;
 }) {
   const { user } = useAuth();
-  const canOwn = (user?.capabilities ?? []).includes("cap.tasks.own");
+  const caps = user?.capabilities ?? [];
+  const canOwn = caps.includes("cap.tasks.own");
+  const canCreateCrew = caps.includes("cap.crew.create");
 
   const [tasks, setTasks] = useState<api.MyTask[]>([]);
   const [loading, setLoading] = useState(false);
@@ -416,6 +480,9 @@ export function FieldOpsMyTasks({
 
       {/* S6 — admin-assigned inspection checklists (renders nothing when none are assigned). */}
       <AssignedInspectionsSection onOpenForm={onOpenForm} />
+
+      {/* Slice T — a subcontractor adds field-only crew, auto-placed on their current job. */}
+      {canCreateCrew && <AddCrewSection />}
 
       {loading && tasks.length === 0 ? (
         <div className="muted">Loading your tasks…</div>

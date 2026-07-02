@@ -29,11 +29,11 @@ vi.mock("../../lib/auth", () => ({ useAuth: vi.fn() }));
 // Unified job-create flow: the detail-view assign controls call these two libs (P2.6 crew.assign +
 // the equipment move). Mock the four fns the component imports; types are erased so the type-only
 // PersonnelRow import needs no runtime stub.
-vi.mock("../../lib/fieldops_personnel", () => ({ fetchPersonnelList: vi.fn(), assignPersonnel: vi.fn() }));
+vi.mock("../../lib/fieldops_personnel", () => ({ fetchPersonnelList: vi.fn(), assignPersonnel: vi.fn(), fetchMyCrew: vi.fn() }));
 vi.mock("../../lib/fieldops_equipment", () => ({ fetchEquipmentList: vi.fn(), moveEquipment: vi.fn() }));
 
 import * as api from "../../lib/fieldops_jobtracker";
-import { fetchPersonnelList, assignPersonnel, type PersonnelRow } from "../../lib/fieldops_personnel";
+import { fetchPersonnelList, assignPersonnel, fetchMyCrew, type PersonnelRow } from "../../lib/fieldops_personnel";
 import { fetchEquipmentList, moveEquipment } from "../../lib/fieldops_equipment";
 import { useAuth } from "../../lib/auth";
 import { FieldOpsJobTracker } from "../FieldOpsJobTracker";
@@ -56,6 +56,8 @@ beforeEach(() => {
   // Safe empty defaults so the detail-view picker-load effect never rejects; assign tests override.
   vi.mocked(fetchPersonnelList).mockResolvedValue({ personnel: [], latest_entries: [], next_cursor: null });
   vi.mocked(fetchEquipmentList).mockResolvedValue({ equipment: [], next_cursor: null });
+  // Slice T: a subcontractor's log-time picker fetches its own loggable crew; default empty.
+  vi.mocked(fetchMyCrew).mockResolvedValue([]);
 });
 
 // Picker fixtures for the assign controls. Pat is unplaced; "Al Already" is already on JOB-A (so the
@@ -447,6 +449,30 @@ describe("FieldOpsJobTracker — write UI", () => {
     expect(container.querySelector('[aria-label="Log time"]')).toBeNull();
   });
 
+  // Slice T — a SUBCONTRACTOR (cap.time.log, NOT cap.personnel.manage) is offered self + the crew THEY
+  // created (fetchMyCrew), not the job's full placed crew (which the Worker would 403 anyway).
+  it("subcontractor time-log picker offers self + created crew (fetchMyCrew), not job.crew", async () => {
+    vi.mocked(fetchMyCrew).mockResolvedValue([
+      { id: 77, name: "Helper Hank", trade: "laborer", current_job: "JOB-A" },
+    ]);
+    const { getByLabelText } = await openManagedDetail(["cap.jobtracker.read", "cap.time.log"]);
+    await waitFor(() => expect(fetchMyCrew).toHaveBeenCalled());
+    const select = getByLabelText("Log time for") as HTMLSelectElement;
+    const opts = Array.from(select.options).map((o) => o.textContent ?? "");
+    // The created crew member is offered; the job's placed crew (Alice Chen) is NOT.
+    expect(opts).toContain("Helper Hank");
+    expect(opts).not.toContain("Alice Chen");
+  });
+
+  // A MANAGER/admin (holds cap.personnel.manage) keeps the job's placed-crew picker (no fetchMyCrew).
+  it("manager/admin time-log picker keeps the job's placed crew", async () => {
+    const { getByLabelText } = await openManagedDetail(["cap.time.log", "cap.personnel.manage"]);
+    const select = getByLabelText("Log time for") as HTMLSelectElement;
+    const opts = Array.from(select.options).map((o) => o.textContent ?? "");
+    expect(opts).toContain("Alice Chen"); // job.crew
+    expect(fetchMyCrew).not.toHaveBeenCalled();
+  });
+
   it("add-task can assign the new task to a crew member (personnel_id)", async () => {
     vi.mocked(api.addTask).mockResolvedValue({ id: 100 });
     const { getByLabelText } = await openManagedDetail(["cap.jobtracker.manage"]);
@@ -484,7 +510,9 @@ describe("FieldOpsJobTracker — write UI", () => {
 
   it("log time can be attributed to a specific person (personnel_id)", async () => {
     vi.mocked(api.logTime).mockResolvedValue({ uuid: "u-3" });
-    const { getByLabelText } = await openManagedDetail(["cap.time.log"]);
+    // Attributing time to a member of the JOB's placed crew is a manager/admin power (Slice T: a
+    // subcontractor is scoped to self + crew they created). cap.personnel.manage → the job.crew picker.
+    const { getByLabelText } = await openManagedDetail(["cap.time.log", "cap.personnel.manage"]);
     const form = getByLabelText("Log time") as HTMLFormElement;
     fireEvent.change(form.querySelector('input[placeholder="Hours"]')!, { target: { value: "4" } });
     fireEvent.change(getByLabelText("Log time for"), { target: { value: "1" } }); // Alice (crew id 1)

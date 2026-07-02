@@ -137,7 +137,9 @@ describe("POST /api/fieldops/time-entry — referential", () => {
     expect(bogus.status).toBe(422);
     expect((await bogus.json() as any).error).toBe("unknown_personnel");
 
-    await env.DB.prepare("INSERT INTO personnel (name, active) VALUES (?,1)").bind("Real Person").run();
+    // Slice T scoping: a submitter (subcontractor) may log time only for a person they OWN (own
+    // linked personnel OR created_by = them). Stamp created_by so the referential 201 path holds.
+    await env.DB.prepare("INSERT INTO personnel (name, active, created_by) VALUES (?,1,?)").bind("Real Person", "submitter.jim").run();
     const pid = (await env.DB.prepare("SELECT id FROM personnel WHERE name='Real Person'").first<{ id: number }>())!.id;
     const ok = await post(c, { uuid: "tp2", job_id: "JOB-A", personnel_id: pid, hours: 8 });
     expect(ok.status, await ok.clone().text()).toBe(201);

@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import type { FormEvent } from "react";
 import * as api from "../lib/fieldops_jobtracker";
 import * as checklist from "../lib/fieldops_checklist";
-import { fetchPersonnelList, assignPersonnel, type PersonnelRow } from "../lib/fieldops_personnel";
+import { fetchPersonnelList, assignPersonnel, fetchMyCrew, type PersonnelRow, type MyCrewMember } from "../lib/fieldops_personnel";
 import { fetchEquipmentList, moveEquipment } from "../lib/fieldops_equipment";
 import { useAuth } from "../lib/auth";
 import { PageShell } from "../components/PageShell";
@@ -491,6 +491,10 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
   // move equipment on a job WITHOUT the add-task control (which stays under canManage).
   const canAssignCrew = caps.includes("cap.crew.assign"); // place / remove crew on this job
   const canFieldEquip = caps.includes("cap.equipment.field"); // move a piece of equipment to this job
+  // Slice T: a SUBCONTRACTOR (logs time, but NOT a manager/admin — no cap.personnel.manage) may log
+  // time only for THEMSELVES or crew THEY created. Their log-time picker offers that scoped list
+  // (fetched below) rather than the job's full placed crew (which the Worker would 403 anyway).
+  const isSubcontractor = canLogTime && !caps.includes("cap.personnel.manage");
   const [actionBusy, setActionBusy] = useState(false);
   const [actionMsg, setActionMsg] = useState<{ ok: boolean; text: string } | null>(null);
   // New-job form (list view)
@@ -517,6 +521,8 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
   const [crewToAdd, setCrewToAdd] = useState("");
   const [equipToAdd, setEquipToAdd] = useState("");
   const [setupBanner, setSetupBanner] = useState<string | null>(null);
+  // Slice T — a subcontractor's own loggable crew (self + created), for the time-log person picker.
+  const [myCrew, setMyCrew] = useState<MyCrewMember[]>([]);
 
   // Reload the list whenever the status filter changes (and on mount).
   useEffect(() => {
@@ -563,6 +569,15 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
     if (view === "detail" && selectedJob && (canAssignCrew || canFieldEquip)) void reloadPickers();
     // reloadPickers is recreated each render and reads the current caps; job_id keys the reload.
   }, [view, selectedJob?.job_id, canAssignCrew, canFieldEquip]);
+
+  // Slice T — load a subcontractor's own loggable crew (self + created) for the time-log picker.
+  useEffect(() => {
+    if (view === "detail" && selectedJob && isSubcontractor) {
+      fetchMyCrew()
+        .then(setMyCrew)
+        .catch(() => setMyCrew([]));
+    }
+  }, [view, selectedJob?.job_id, isSubcontractor]);
 
   async function loadMore() {
     if (!cursor || loading) return;
@@ -1129,7 +1144,7 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
                 For:{" "}
                 <select value={logPerson} onChange={(e) => setLogPerson(e.target.value)} aria-label="Log time for">
                   <option value="">— me / unassigned —</option>
-                  {job.crew.map((p) => (
+                  {(isSubcontractor ? myCrew : job.crew).map((p) => (
                     <option key={p.id} value={p.id}>{p.name}</option>
                   ))}
                 </select>

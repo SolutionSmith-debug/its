@@ -193,7 +193,7 @@ export function AccountsPage({
               value={cuRole}
               onChange={(e) => setCuRole(e.target.value as api.Role)}
             >
-              <option value="submitter">Submitter (field PM)</option>
+              <option value="submitter">Subcontractor (field PM)</option>
               <option value="manager">Manager (crew lead)</option>
               <option value="admin">Admin (dashboard access)</option>
             </select>
@@ -225,7 +225,7 @@ export function AccountsPage({
                       {a.username === me ? <span className="accounts__you"> (you)</span> : null}
                     </span>
                     <span className={`role-badge${a.role === "admin" ? " role-badge--admin" : a.role === "manager" ? " role-badge--manager" : ""}`}>
-                      {a.role}
+                      {api.roleLabel(a.role)}
                     </span>
                     {a.disabled ? <span className="role-badge role-badge--off">disabled</span> : null}
                   </div>
@@ -240,7 +240,7 @@ export function AccountsPage({
                       disabled={busy}
                       onChange={(e) => void onChangeRole(a, e.target.value as api.Role)}
                     >
-                      <option value="submitter">Submitter</option>
+                      <option value="submitter">Subcontractor</option>
                       <option value="manager">Manager</option>
                       <option value="admin">Admin</option>
                     </select>
