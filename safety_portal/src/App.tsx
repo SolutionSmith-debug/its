@@ -9,6 +9,7 @@ import { AccountsPage } from "./pages/AccountsPage";
 import { FormsPage } from "./pages/FormsPage";
 import { FieldOpsJobTracker } from "./pages/FieldOpsJobTracker";
 import { FieldOpsMyTasks } from "./pages/FieldOpsMyTasks";
+import { FieldOpsInspections } from "./pages/FieldOpsInspections";
 import { FieldOpsEquipment } from "./pages/FieldOpsEquipment";
 import { FieldOpsPersonnel } from "./pages/FieldOpsPersonnel";
 import { MaterialsCatalogPage } from "./pages/MaterialsCatalogPage";
@@ -91,6 +92,8 @@ export function App() {
     page = <FieldOpsJobTracker onBack={home} />;
   } else if (view === "fieldops-tasks" && has("cap.tasks.own")) {
     page = <FieldOpsMyTasks onBack={home} onOpenForm={openForm} />;
+  } else if (view === "fieldops-inspections" && has("cap.checklist.manage")) {
+    page = <FieldOpsInspections onBack={home} />;
   } else if (view === "fieldops-equipment" && has("cap.equipment.field")) {
     page = <FieldOpsEquipment onBack={home} />;
   } else if (view === "fieldops-personnel" && has("cap.personnel.read")) {

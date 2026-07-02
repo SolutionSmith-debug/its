@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import * as api from "../lib/fieldops_tasks";
 import * as checklist from "../lib/fieldops_checklist";
 import { PageShell } from "../components/PageShell";
+import { ChecklistItemRow } from "../components/ChecklistItemRow";
 import { useAuth } from "../lib/auth";
 import { resolveFormTarget } from "../forms/registry";
 import type { FormPrefill } from "./FormFillPage";
@@ -36,11 +37,6 @@ function groupByJob(tasks: api.MyTask[]): JobGroup[] {
   return order.map((id) => byJob.get(id)!);
 }
 
-// Status → pill class for a checklist item state (done = ok, else neutral).
-function itemPill(status: string): string {
-  return status === "done" ? "dash-pill dash-pill--ok" : "dash-pill";
-}
-
 /**
  * S3/S4 — "Today's checklist" for a placed manager. Self-contained: fetches GET /checklist/mine, which
  * runs Worker-on-read generation + S4 loop-closure reconcile, and returns `instance: null` for anyone
@@ -55,8 +51,6 @@ function itemPill(status: string): string {
 function DailyChecklistSection({ onOpenForm }: { onOpenForm?: (p: FormPrefill) => void }) {
   const [data, setData] = useState<checklist.MyChecklist | null>(null);
   const [busyId, setBusyId] = useState<number | null>(null);
-  const [notes, setNotes] = useState<Record<number, string>>({});
-  const [counts, setCounts] = useState<Record<number, string>>({});
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [rollupBusy, setRollupBusy] = useState(false);
 
@@ -67,18 +61,30 @@ function DailyChecklistSection({ onOpenForm }: { onOpenForm?: (p: FormPrefill) =
       .catch(() => setData({ instance: null, items: [] }));
   }, []);
 
-  // manual_attest complete/undo.
-  async function toggle(item: checklist.ChecklistItemState) {
+  // manual_attest complete (optional note).
+  async function completeItem(item: checklist.ChecklistItemState, note?: string) {
     if (busyId !== null) return;
     setBusyId(item.id);
     setMsg(null);
     try {
-      const res =
-        item.status === "done"
-          ? await checklist.uncompleteChecklistItem(item.id)
-          : await checklist.completeChecklistItem(item.id, notes[item.id] ? { note: notes[item.id] } : undefined);
-      const fresh = await checklist.fetchMyChecklist();
-      setData(fresh);
+      const res = await checklist.completeChecklistItem(item.id, note ? { note } : undefined);
+      setData(await checklist.fetchMyChecklist());
+      setMsg({ ok: true, text: res.instance_status === "complete" ? "Checklist complete." : "Item updated." });
+    } catch (err) {
+      setMsg({ ok: false, text: err instanceof Error ? err.message : "Update failed." });
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  // manual_attest / count undo.
+  async function uncompleteItem(item: checklist.ChecklistItemState) {
+    if (busyId !== null) return;
+    setBusyId(item.id);
+    setMsg(null);
+    try {
+      const res = await checklist.uncompleteChecklistItem(item.id);
+      setData(await checklist.fetchMyChecklist());
       setMsg({ ok: true, text: res.instance_status === "complete" ? "Checklist complete." : "Item updated." });
     } catch (err) {
       setMsg({ ok: false, text: err instanceof Error ? err.message : "Update failed." });
@@ -88,11 +94,9 @@ function DailyChecklistSection({ onOpenForm }: { onOpenForm?: (p: FormPrefill) =
   }
 
   // count — record a value (server completes iff value ≥ target_count, else 'below_target' error).
-  async function recordCount(item: checklist.ChecklistItemState) {
+  async function recordCount(item: checklist.ChecklistItemState, value: number) {
     if (busyId !== null) return;
-    const raw = counts[item.id];
-    const value = Number(raw);
-    if (raw === undefined || raw === "" || !Number.isFinite(value)) {
+    if (!Number.isFinite(value)) {
       setMsg({ ok: false, text: "Enter a number." });
       return;
     }
@@ -100,8 +104,7 @@ function DailyChecklistSection({ onOpenForm }: { onOpenForm?: (p: FormPrefill) =
     setMsg(null);
     try {
       const res = await checklist.recordCountItem(item.id, value);
-      const fresh = await checklist.fetchMyChecklist();
-      setData(fresh);
+      setData(await checklist.fetchMyChecklist());
       setMsg({ ok: true, text: res.instance_status === "complete" ? "Checklist complete." : "Count recorded." });
     } catch (err) {
       const text = err instanceof Error ? err.message : "Update failed.";
@@ -167,85 +170,19 @@ function DailyChecklistSection({ onOpenForm }: { onOpenForm?: (p: FormPrefill) =
         <div className="muted">No checklist items for today.</div>
       ) : (
         <ul className="dash-tasklist">
-          {data.items.map((it) => {
-            const done = it.status === "done";
-            const isManual = it.item_type === "manual_attest";
-            const isCount = it.item_type === "count";
-            const isLinked = it.item_type === "form_linked" || it.item_type === "inspection";
-            return (
-              <li key={it.id}>
-                <span className={itemPill(it.status)}>{done ? "done" : "pending"}</span> {it.label}
-                <span className="dash-card__sub"> · {it.item_type}</span>
-                {isManual ? (
-                  <>
-                    {!done && (
-                      <>
-                        {" "}
-                        <input
-                          type="text"
-                          aria-label={`Note for item ${it.id}`}
-                          placeholder="note (optional)"
-                          value={notes[it.id] ?? ""}
-                          onChange={(e) => setNotes((n) => ({ ...n, [it.id]: e.target.value }))}
-                          disabled={busyId !== null}
-                        />
-                      </>
-                    )}{" "}
-                    <button
-                      type="button"
-                      className={done ? "btn btn--ghost" : "btn btn--primary"}
-                      aria-label={done ? `Undo item ${it.id}` : `Complete item ${it.id}`}
-                      disabled={busyId !== null}
-                      onClick={() => toggle(it)}
-                    >
-                      {done ? "Undo" : "Mark done"}
-                    </button>
-                    {done && it.note ? <span className="dash-card__sub"> · {it.note}</span> : null}
-                  </>
-                ) : isCount ? (
-                  <>
-                    {it.target_count !== null ? (
-                      <span className="dash-card__sub"> · target {it.target_count}</span>
-                    ) : null}{" "}
-                    <input
-                      type="number"
-                      min={0}
-                      aria-label={`Count for item ${it.id}`}
-                      placeholder="count"
-                      value={counts[it.id] ?? (it.value_num !== null ? String(it.value_num) : "")}
-                      onChange={(e) => setCounts((cnt) => ({ ...cnt, [it.id]: e.target.value }))}
-                      disabled={busyId !== null}
-                    />{" "}
-                    <button
-                      type="button"
-                      className="btn btn--primary"
-                      aria-label={`Record item ${it.id}`}
-                      disabled={busyId !== null}
-                      onClick={() => recordCount(it)}
-                    >
-                      Record
-                    </button>
-                    {done && it.value_num !== null ? (
-                      <span className="dash-card__sub"> · recorded {it.value_num}</span>
-                    ) : null}
-                  </>
-                ) : isLinked ? (
-                  <>
-                    {" "}
-                    <button
-                      type="button"
-                      className={done ? "btn btn--ghost" : "btn btn--primary"}
-                      aria-label={`Complete ${it.label ?? `item ${it.id}`}`}
-                      disabled={busyId !== null || !onOpenForm}
-                      onClick={() => openLinkedForm(it)}
-                    >
-                      {done ? "Filed ✓ — file again" : `Complete ${it.label ?? "form"}`}
-                    </button>
-                  </>
-                ) : null}
-              </li>
-            );
-          })}
+          {data.items.map((it) => (
+            <li key={it.id}>
+              <ChecklistItemRow
+                item={it}
+                busy={busyId !== null}
+                canOpenForm={!!onOpenForm}
+                onComplete={completeItem}
+                onUncomplete={uncompleteItem}
+                onRecordCount={recordCount}
+                onOpenForm={openLinkedForm}
+              />
+            </li>
+          ))}
         </ul>
       )}
 
@@ -269,6 +206,135 @@ function DailyChecklistSection({ onOpenForm }: { onOpenForm?: (p: FormPrefill) =
           <span className="dash-card__sub"> · pre-filled from today&apos;s checklist; you confirm before filing</span>
         </div>
       ) : null}
+    </section>
+  );
+}
+
+/**
+ * S6 — "Assigned inspections" for ANYONE with an assigned inspection (manager OR subcontractor). Fetches
+ * GET /checklist/assigned and renders each assigned inspection instance + its items with the SAME
+ * completion controls as the daily section (via ChecklistItemRow — manual_attest check, count input,
+ * form_linked/inspection deep-link + auto-close). Renders NOTHING when the actor has no assigned
+ * inspections (or on any fetch error), so it's invisible for users the feature doesn't touch. Completion
+ * reuses the SAME ownership-scoped item-state routes as the daily checklist (kind-agnostic server-side).
+ */
+function AssignedInspectionsSection({ onOpenForm }: { onOpenForm?: (p: FormPrefill) => void }) {
+  const [inspections, setInspections] = useState<checklist.AssignedInspection[]>([]);
+  const [busyId, setBusyId] = useState<number | null>(null);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  async function reload() {
+    try {
+      const { inspections: ins } = await checklist.fetchAssignedInspections();
+      setInspections(ins);
+    } catch {
+      setInspections([]);
+    }
+  }
+  useEffect(() => {
+    void reload();
+  }, []);
+
+  async function complete(item: checklist.ChecklistItemState, note?: string) {
+    if (busyId !== null) return;
+    setBusyId(item.id);
+    setMsg(null);
+    try {
+      await checklist.completeChecklistItem(item.id, note ? { note } : undefined);
+      await reload();
+      setMsg({ ok: true, text: "Item updated." });
+    } catch (err) {
+      setMsg({ ok: false, text: err instanceof Error ? err.message : "Update failed." });
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function uncomplete(item: checklist.ChecklistItemState) {
+    if (busyId !== null) return;
+    setBusyId(item.id);
+    setMsg(null);
+    try {
+      await checklist.uncompleteChecklistItem(item.id);
+      await reload();
+      setMsg({ ok: true, text: "Item updated." });
+    } catch (err) {
+      setMsg({ ok: false, text: err instanceof Error ? err.message : "Update failed." });
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function recordCount(item: checklist.ChecklistItemState, value: number) {
+    if (busyId !== null) return;
+    if (!Number.isFinite(value)) {
+      setMsg({ ok: false, text: "Enter a number." });
+      return;
+    }
+    setBusyId(item.id);
+    setMsg(null);
+    try {
+      await checklist.recordCountItem(item.id, value);
+      await reload();
+      setMsg({ ok: true, text: "Count recorded." });
+    } catch (err) {
+      const text = err instanceof Error ? err.message : "Update failed.";
+      setMsg({ ok: false, text: text === "below_target" ? "Value is below the target." : text });
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  // A form_linked/inspection item in an assignment only auto-closes when the instance carries a concrete
+  // (job, date) — otherwise there's no submission to match. Build the deep-link from those; the row
+  // disables the button when canOpenForm is false.
+  function openLinkedForm(inst: checklist.AssignedInstance, item: checklist.ChecklistItemState) {
+    if (!onOpenForm || !item.form_code || !inst.job_id || !inst.instance_date) return;
+    const { parentCode, variantCode } = resolveFormTarget(item.form_code);
+    onOpenForm({ jobId: inst.job_id, parentCode, variantCode: variantCode || undefined, workDate: inst.instance_date });
+  }
+
+  if (inspections.length === 0) return null;
+
+  return (
+    <section className="card dash-section" aria-label="Assigned inspections">
+      <h3 className="dash-detail__h2">Assigned inspections</h3>
+      {msg && <div className={`banner ${msg.ok ? "banner--ok" : "banner--err"}`}>{msg.text}</div>}
+      {inspections.map((insp) => (
+        <div key={insp.instance.id} className="dash-subsection">
+          <h4 className="dash-detail__h2">
+            Inspection #{insp.instance.id}
+            {insp.instance.project_name || insp.instance.job_id ? (
+              <span className="dash-card__sub"> · {insp.instance.project_name ?? insp.instance.job_id}</span>
+            ) : null}
+            {insp.instance.instance_date ? (
+              <span className="dash-card__sub"> · due {insp.instance.instance_date}</span>
+            ) : null}{" "}
+            <span className={insp.instance.status === "complete" ? "dash-pill dash-pill--ok" : "dash-pill dash-pill--warn"}>
+              {insp.instance.status}
+            </span>
+          </h4>
+          {insp.items.length === 0 ? (
+            <div className="muted">No items on this inspection.</div>
+          ) : (
+            <ul className="dash-tasklist">
+              {insp.items.map((it) => (
+                <li key={it.id}>
+                  <ChecklistItemRow
+                    item={it}
+                    busy={busyId !== null}
+                    canOpenForm={!!onOpenForm && !!insp.instance.job_id && !!insp.instance.instance_date}
+                    onComplete={complete}
+                    onUncomplete={uncomplete}
+                    onRecordCount={recordCount}
+                    onOpenForm={(item) => openLinkedForm(insp.instance, item)}
+                  />
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      ))}
     </section>
   );
 }
@@ -347,6 +413,9 @@ export function FieldOpsMyTasks({
 
       {/* S3/S4 — the placed manager's daily checklist (renders nothing for anyone else). */}
       <DailyChecklistSection onOpenForm={onOpenForm} />
+
+      {/* S6 — admin-assigned inspection checklists (renders nothing when none are assigned). */}
+      <AssignedInspectionsSection onOpenForm={onOpenForm} />
 
       {loading && tasks.length === 0 ? (
         <div className="muted">Loading your tasks…</div>

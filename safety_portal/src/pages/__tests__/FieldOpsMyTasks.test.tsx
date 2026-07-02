@@ -11,7 +11,7 @@ vi.mock("../../lib/fieldops_tasks", async (importOriginal) => {
 });
 vi.mock("../../lib/fieldops_checklist", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../lib/fieldops_checklist")>();
-  return { ...actual, fetchMyChecklist: vi.fn(), completeChecklistItem: vi.fn(), uncompleteChecklistItem: vi.fn(), recordCountItem: vi.fn(), fetchRollupDraft: vi.fn() };
+  return { ...actual, fetchMyChecklist: vi.fn(), completeChecklistItem: vi.fn(), uncompleteChecklistItem: vi.fn(), recordCountItem: vi.fn(), fetchRollupDraft: vi.fn(), fetchAssignedInspections: vi.fn() };
 });
 vi.mock("../../lib/auth", () => ({ useAuth: vi.fn() }));
 
@@ -36,6 +36,8 @@ beforeEach(() => {
   vi.mocked(useAuth).mockReturnValue(authWith(["cap.tasks.own"]));
   // Default: no daily checklist (not a placed manager) → the S3 section renders nothing.
   vi.mocked(checklist.fetchMyChecklist).mockResolvedValue({ instance: null, items: [] });
+  // Default: no assigned inspections → the S6 section renders nothing.
+  vi.mocked(checklist.fetchAssignedInspections).mockResolvedValue({ inspections: [] });
 });
 
 const INSTANCE = { id: 7, job_id: "JOB-A", instance_date: "2026-07-01", status: "open" as const, rolled_up_submission_uuid: null };
@@ -227,6 +229,58 @@ describe("FieldOpsMyTasks — S5 auto-rollup → Daily Report", () => {
     await waitFor(() => expect(container.querySelector('[aria-label="Daily Report filed"]')).not.toBeNull());
     expect(container.textContent ?? "").toContain("Daily Report filed");
     expect(queryByLabelText("Review and file Daily Report")).toBeNull();
+  });
+});
+
+describe("FieldOpsMyTasks — S6 assigned inspections", () => {
+  const INSPECTION: checklist.AssignedInspection = {
+    instance: { id: 30, job_id: "JOB-A", project_name: "Alpha", instance_date: "2026-07-10", status: "open" },
+    items: [
+      { id: 40, source_item_id: 1, item_type: "manual_attest", label: "Harness checked", form_code: null, target_count: null, status: "open", note: null, photo_ref: null, completed_by: null, completed_at: null, value_num: null },
+      { id: 41, source_item_id: 2, item_type: "form_linked", label: "File JHA", form_code: "jha", target_count: null, status: "open", note: null, photo_ref: null, completed_by: null, completed_at: null, value_num: null },
+    ],
+  };
+
+  it("renders the Assigned inspections section with its items", async () => {
+    vi.mocked(api.fetchMyTasks).mockResolvedValue({ tasks: [] });
+    vi.mocked(checklist.fetchAssignedInspections).mockResolvedValue({ inspections: [INSPECTION] });
+    const { container, getByLabelText } = render(<FieldOpsMyTasks onBack={() => {}} onOpenForm={vi.fn()} />);
+    await waitFor(() => expect(container.querySelector('[aria-label="Assigned inspections"]')).not.toBeNull());
+    const txt = container.textContent ?? "";
+    expect(txt).toContain("Harness checked");
+    expect(txt).toContain("File JHA");
+    // manual_attest gets a complete control; form_linked gets a deep-link (no manual-check).
+    expect(getByLabelText("Complete item 40")).not.toBeNull();
+    expect(() => getByLabelText("Complete item 41")).toThrow();
+  });
+
+  it("renders nothing when there are no assigned inspections", async () => {
+    vi.mocked(api.fetchMyTasks).mockResolvedValue({ tasks: [] });
+    vi.mocked(checklist.fetchAssignedInspections).mockResolvedValue({ inspections: [] });
+    const { container } = render(<FieldOpsMyTasks onBack={() => {}} onOpenForm={vi.fn()} />);
+    await waitFor(() => expect(container.querySelector(".dash-unavail")).not.toBeNull());
+    expect(container.querySelector('[aria-label="Assigned inspections"]')).toBeNull();
+  });
+
+  it("completing an assigned-inspection manual_attest item fires completeChecklistItem", async () => {
+    vi.mocked(api.fetchMyTasks).mockResolvedValue({ tasks: [] });
+    vi.mocked(checklist.fetchAssignedInspections).mockResolvedValue({ inspections: [INSPECTION] });
+    vi.mocked(checklist.completeChecklistItem).mockResolvedValue({ ok: true, id: 40, status: "done", instance_status: "open" });
+    const { getByLabelText } = render(<FieldOpsMyTasks onBack={() => {}} onOpenForm={vi.fn()} />);
+    const btn = await waitFor(() => getByLabelText("Complete item 40"));
+    fireEvent.click(btn);
+    await waitFor(() => expect(checklist.completeChecklistItem).toHaveBeenCalledWith(40, undefined));
+  });
+
+  it("a form_linked inspection item deep-links pre-filled from the instance's job + date", async () => {
+    vi.mocked(api.fetchMyTasks).mockResolvedValue({ tasks: [] });
+    vi.mocked(checklist.fetchAssignedInspections).mockResolvedValue({ inspections: [INSPECTION] });
+    const onOpenForm = vi.fn();
+    const { getByLabelText } = render(<FieldOpsMyTasks onBack={() => {}} onOpenForm={onOpenForm} />);
+    const link = await waitFor(() => getByLabelText("Complete File JHA"));
+    fireEvent.click(link);
+    // 'jha' resolves to its versioned variant; job + date come from the inspection instance.
+    await waitFor(() => expect(onOpenForm).toHaveBeenCalledWith(expect.objectContaining({ jobId: "JOB-A", parentCode: "jha", workDate: "2026-07-10" })));
   });
 });
 
