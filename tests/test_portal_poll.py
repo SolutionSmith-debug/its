@@ -301,6 +301,48 @@ def test_transient_circuit_open_warns_and_skips_without_paging(_patch_all):
     )
 
 
+def test_transient_raw_error_warns_and_skips_without_paging(_patch_all):
+    # FF4: a raw pre-trip Smartsheet blip (rate-limit/5xx BEFORE the breaker opens) gets the
+    # SAME transient treatment as circuit-open — WARN + skip, never the misconfig CRITICAL —
+    # and the sentinel's reason is surfaced in the WARN message and heartbeat summary.
+    _patch_all["creds"].return_value = portal_poll._TransientUnavailable(
+        reason="SmartsheetRateLimitError: SmartsheetRateLimitError('429')"
+    )
+    result = _poll_inside_lock()
+    assert result.halted_transient is True
+    assert result.halted_no_creds is False
+    _patch_all["get_pending"].assert_not_called()  # FAIL-CLOSED: no poll
+    assert _patch_all["hb_row"].call_args.kwargs["status"] == "WARN"
+    assert "SmartsheetRateLimitError" in _patch_all["hb_row"].call_args.kwargs["error_summary"]
+    _patch_all["wd"].assert_not_called()  # sustained outage still surfaces via Check-C staleness
+    warns = [
+        c for c in _patch_all["log"].call_args_list
+        if c.kwargs.get("error_code") == "portal_creds_transient"
+    ]
+    assert len(warns) == 1
+    assert warns[0].args[0] == portal_poll.Severity.WARN
+    assert "SmartsheetRateLimitError" in warns[0].args[2]  # reason named in the WARN
+    assert not any(
+        c.kwargs.get("error_code") == "portal_creds_missing"
+        for c in _patch_all["log"].call_args_list
+    )
+
+
+def test_transient_recovers_next_cycle(_patch_all):
+    # FF4 recovery: cycle 1 transient → clean skip; cycle 2 Smartsheet back → normal poll.
+    # Self-heals with NO operator action (the CRITICAL would have implied one).
+    good = portal_poll._PortalCreds(
+        base_url="https://portal.example.com", bearer="bearer", secret="secret",
+    )
+    _patch_all["creds"].side_effect = [portal_poll.CREDS_TRANSIENT, good]
+    first = _poll_inside_lock()
+    assert first.halted_transient is True
+    _patch_all["get_pending"].assert_not_called()
+    second = _poll_inside_lock()
+    assert second.halted_transient is False and second.halted_no_creds is False
+    _patch_all["get_pending"].assert_called_once()  # recovered cycle polls normally
+
+
 # ---- _resolve_credentials 3-state (transient vs genuinely-absent) ----------
 
 
@@ -311,6 +353,56 @@ def test_resolve_credentials_circuit_open_returns_transient(mocker):
         side_effect=portal_poll.smartsheet_client.SmartsheetCircuitOpenError("open"),
     )
     assert portal_poll._resolve_credentials() is portal_poll.CREDS_TRANSIENT
+
+
+def test_resolve_credentials_raw_transient_returns_transient(mocker):
+    # FF4: a raw SmartsheetError subclass (rate-limit/5xx BEFORE the breaker trips — the breaker
+    # needs failure_threshold consecutive failures, so early-outage cycles raise the raw class)
+    # is TRANSIENT too. Previously it propagated → @its_error_log CRITICAL `uncaught_exception`.
+    mocker.patch.object(
+        portal_poll.smartsheet_client, "get_setting",
+        side_effect=portal_poll.smartsheet_client.SmartsheetRateLimitError("429"),
+    )
+    creds = portal_poll._resolve_credentials()
+    assert isinstance(creds, portal_poll._TransientUnavailable)
+    assert "SmartsheetRateLimitError" in creds.reason  # named condition for the WARN/heartbeat
+
+
+def test_resolve_credentials_auth_error_propagates(mocker):
+    # Auth/permission failures are DETERMINISTIC misconfigs (the breaker's own ignore-list) —
+    # they will NOT self-heal, so they must NEVER read as transient; propagate → page.
+    mocker.patch.object(
+        portal_poll.smartsheet_client, "get_setting",
+        side_effect=portal_poll.smartsheet_client.SmartsheetAuthError("401"),
+    )
+    with pytest.raises(portal_poll.smartsheet_client.SmartsheetAuthError):
+        portal_poll._resolve_credentials()
+
+
+def test_read_str_setting_transient_warns_and_falls_back(mocker):
+    # FF4: the polling-gate config read gets the same transient classification — WARN-loud
+    # (observable config resolution) + fallback, instead of propagating to a CRITICAL.
+    mocker.patch.object(
+        portal_poll.smartsheet_client, "get_setting",
+        side_effect=portal_poll.smartsheet_client.SmartsheetError("503 backend"),
+    )
+    log = mocker.patch.object(portal_poll.error_log, "log")
+    assert portal_poll._read_str_setting("some.key", "fb") == "fb"
+    assert any(
+        c.args[0] == portal_poll.Severity.WARN
+        and c.kwargs.get("error_code") == "portal_config_transient"
+        for c in log.call_args_list
+    )
+
+
+def test_read_str_setting_auth_error_propagates(mocker):
+    # Deterministic misconfig on the config read still pages (never collapses to fallback).
+    mocker.patch.object(
+        portal_poll.smartsheet_client, "get_setting",
+        side_effect=portal_poll.smartsheet_client.SmartsheetPermissionError("403"),
+    )
+    with pytest.raises(portal_poll.smartsheet_client.SmartsheetPermissionError):
+        portal_poll._read_str_setting("some.key", "fb")
 
 
 def test_resolve_credentials_missing_row_returns_none(mocker):

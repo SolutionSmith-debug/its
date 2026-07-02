@@ -198,8 +198,29 @@ def _read_str_setting(key: str, fallback: str) -> str:
     try:
         raw = smartsheet_client.get_setting(key, workstream=WORKSTREAM)
     except smartsheet_client.SmartsheetNotFoundError:
+        # Row genuinely absent — the documented fallback case (config never set).
         return fallback
-    except smartsheet_client.SmartsheetCircuitOpenError:
+    except (smartsheet_client.SmartsheetAuthError, smartsheet_client.SmartsheetPermissionError):
+        # Deterministic misconfig (revoked API token / lost share) — will NOT
+        # self-heal. Propagate so @its_error_log pages CRITICAL, exactly like a
+        # rotated-out credential. Must precede the generic SmartsheetError catch
+        # below (both are subclasses of it).
+        raise
+    except smartsheet_client.SmartsheetError as exc:
+        # TRANSIENT Smartsheet failure — circuit OPEN, or a rate-limit/5xx blip
+        # BEFORE the breaker trips (the breaker needs `failure_threshold`
+        # consecutive failures, so early-outage cycles raise the raw error, not
+        # SmartsheetCircuitOpenError). The row exists and self-heals; previously
+        # the raw class propagated → a misleading CRITICAL `uncaught_exception`
+        # on every one-cycle blip. WARN-loud (observable config resolution — the
+        # collapse to fallback must never be silent) and use the fallback; the
+        # subsequent base-URL read routes the cycle to the transient-skip path.
+        error_log.log(
+            Severity.WARN, SCRIPT_NAME,
+            f"ITS_Config read failed transiently for a portal setting — using fallback "
+            f"this cycle (self-heals): {type(exc).__name__}: {exc!r}",
+            error_code="portal_config_transient",
+        )
         return fallback
     return raw if isinstance(raw, str) and raw else fallback
 
@@ -485,9 +506,14 @@ class _PortalCreds:
 
 class _TransientUnavailable:
     """Sentinel distinct from None: credentials couldn't be resolved because Smartsheet was
-    TEMPORARILY unreachable (circuit OPEN) when reading the Worker base URL — NOT a misconfig.
-    The ITS_Config row is fine; Smartsheet is just briefly down. Self-heals when the circuit
-    closes, so the caller WARNs + skips the cycle instead of paging (CRITICAL)."""
+    TEMPORARILY unreachable (circuit OPEN, or a raw rate-limit/5xx blip before the breaker
+    trips) when reading the Worker base URL — NOT a misconfig. The ITS_Config row is fine;
+    Smartsheet is just briefly down. Self-heals when the backend recovers, so the caller
+    WARNs + skips the cycle instead of paging (CRITICAL). ``reason`` names the specific
+    transient condition for the WARN log / heartbeat summary."""
+
+    def __init__(self, reason: str = "Smartsheet circuit OPEN") -> None:
+        self.reason = reason
 
 
 # Singleton sentinel (compared via isinstance, so the exact identity is not load-bearing).
@@ -499,10 +525,13 @@ def _resolve_credentials() -> _PortalCreds | _TransientUnavailable | None:
 
     Returns one of three states so the caller can page ONLY on a genuine misconfig:
       * `_PortalCreds`      — all three present.
-      * `CREDS_TRANSIENT`   — the Worker base URL couldn't be READ because the Smartsheet circuit
-        is OPEN (transient — the config row exists, Smartsheet is momentarily unreachable). This
-        SELF-HEALS; the caller WARNs + skips, it does NOT page. Previously this swallowed to `""`
-        and looked identical to a genuine misconfig → a false CRITICAL on every transient outage.
+      * `_TransientUnavailable` (e.g. `CREDS_TRANSIENT`) — the Worker base URL couldn't be READ
+        because Smartsheet is TEMPORARILY unreachable: the circuit is OPEN, or a raw
+        rate-limit/5xx blip hit before the breaker tripped (transient — the config row exists,
+        Smartsheet is momentarily unreachable). This SELF-HEALS; the caller WARNs + skips, it
+        does NOT page. Previously the circuit-open case swallowed to `""` and looked identical
+        to a genuine misconfig → a false CRITICAL on every transient outage — and the pre-trip
+        raw-error case propagated → a CRITICAL `uncaught_exception`.
       * `None`              — a credential is GENUINELY absent: a missing/blank ITS_Config base-URL
         row, or a rotated-out Keychain bearer/secret. A misconfig that will NOT self-heal → page.
 
@@ -516,6 +545,20 @@ def _resolve_credentials() -> _PortalCreds | _TransientUnavailable | None:
         return CREDS_TRANSIENT
     except smartsheet_client.SmartsheetNotFoundError:
         raw = None
+    except (smartsheet_client.SmartsheetAuthError, smartsheet_client.SmartsheetPermissionError):
+        # Deterministic misconfig (revoked API token / lost share) — will NOT self-heal, so
+        # it must PAGE, not read as transient. Propagate → @its_error_log CRITICAL. Mirrors
+        # the circuit breaker's own ignore-list; must precede the generic catch below.
+        raise
+    except smartsheet_client.SmartsheetError as exc:
+        # TRANSIENT (non-circuit-open) Smartsheet failure — a rate-limit/5xx blip BEFORE the
+        # breaker trips: the breaker needs `failure_threshold` consecutive failures, so the
+        # first cycles of any outage (and every one-cycle blip) raise the raw error class,
+        # not SmartsheetCircuitOpenError. Same self-healing condition → same transient
+        # sentinel; previously this propagated → a misleading CRITICAL `uncaught_exception`
+        # (with no heartbeat row) while the creds were fine. Genuinely-absent config
+        # (NotFoundError above) still resolves to None → CRITICAL.
+        return _TransientUnavailable(reason=f"{type(exc).__name__}: {exc!r}")
     base_url = raw if isinstance(raw, str) and raw else ""
     try:
         bearer = keychain.get_secret(KC_BEARER)
@@ -601,20 +644,21 @@ def _poll_inside_lock() -> PollStats:
     """Body of poll_once running under the file lock."""
     creds = _resolve_credentials()
     if isinstance(creds, _TransientUnavailable):
-        # Smartsheet was TEMPORARILY unreachable (circuit OPEN) when reading the Worker base URL —
+        # Smartsheet was TEMPORARILY unreachable (circuit OPEN, or a raw pre-trip blip —
+        # see creds.reason) when reading the Worker base URL —
         # NOT a misconfig, and it self-heals when the circuit closes. WARN + skip this cycle; do
         # NOT page (paging here was a false CRITICAL on every transient Smartsheet/network blip).
         # Skip the watchdog freshness marker exactly like the no-creds path, so a SUSTAINED outage
         # STILL surfaces via the Check-C staleness floor — just without per-cycle CRITICAL spam.
         error_log.log(
             Severity.WARN, SCRIPT_NAME,
-            "portal base URL temporarily unreadable (Smartsheet circuit OPEN) — skipping this "
-            "cycle; will retry next interval (transient, self-heals)",
+            f"portal base URL temporarily unreadable ({creds.reason}) — skipping this "
+            f"cycle; will retry next interval (transient, self-heals)",
             error_code="portal_creds_transient",
         )
         _write_heartbeat()
         _write_heartbeat_row(status="WARN", items_processed=0,
-                             error_summary="base URL unreadable (Smartsheet circuit open) — transient")
+                             error_summary=f"base URL unreadable ({creds.reason}) — transient")
         return PollStats(halted_transient=True)
     if creds is None:
         # FAIL-CLOSED: missing bearer / HMAC secret / base URL → do NOT poll. This is a
