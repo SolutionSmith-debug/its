@@ -393,7 +393,7 @@ function AddCrewSection() {
       <form onSubmit={submit} className="dash-row" aria-label="Add crew form">
         <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Name" maxLength={128} />{" "}
         <input value={trade} onChange={(e) => setTrade(e.target.value)} placeholder="Trade (optional)" maxLength={64} />{" "}
-        <button type="submit" disabled={busy} className="btn--primary">
+        <button type="submit" disabled={busy} className="btn btn--primary">
           {busy ? "Adding…" : "Add crew"}
         </button>
       </form>

@@ -71,7 +71,7 @@ function ItemForm({
           size={5}
         />
       )}{" "}
-      <button type="submit" disabled={busy} className="btn--primary">{submitLabel}</button>
+      <button type="submit" disabled={busy} className="btn btn--primary">{submitLabel}</button>
     </form>
   );
 }
@@ -178,7 +178,7 @@ function DailyChecklistEditor({ jobId }: { jobId: string }) {
                   {it.origin === "default" ? (
                     <button
                       type="button"
-                      className="btn--secondary"
+                      className="btn btn--secondary"
                       aria-label={`Hide ${it.label}`}
                       disabled={busy}
                       onClick={() => run(() => checklist.suppressDefaultItem(jobId, it.source_item_id), "Item hidden for this job.")}
@@ -188,7 +188,7 @@ function DailyChecklistEditor({ jobId }: { jobId: string }) {
                   ) : (
                     <button
                       type="button"
-                      className="btn--danger"
+                      className="btn btn--danger"
                       aria-label={`Remove ${it.label}`}
                       disabled={busy}
                       onClick={() => run(() => checklist.deleteJobItem(jobId, it.source_item_id), "Item removed.")}
@@ -211,7 +211,7 @@ function DailyChecklistEditor({ jobId }: { jobId: string }) {
                   {s.label}{" "}
                   <button
                     type="button"
-                    className="btn--edit"
+                    className="btn btn--edit"
                     aria-label={`Unhide ${s.label}`}
                     disabled={busy}
                     onClick={() => run(() => checklist.unsuppressDefaultItem(jobId, s.source_item_id), "Item restored for this job.")}
@@ -235,7 +235,7 @@ function DailyChecklistEditor({ jobId }: { jobId: string }) {
       )}
 
       <div className="dash-row">
-        <button type="button" className="btn--edit" onClick={() => setEditDefaultOpen((v) => !v)}>
+        <button type="button" className="btn btn--edit" onClick={() => setEditDefaultOpen((v) => !v)}>
           {editDefaultOpen ? "Hide default editor" : "Edit shared default"}
         </button>
       </div>
@@ -252,7 +252,7 @@ function DailyChecklistEditor({ jobId }: { jobId: string }) {
                   {it.label} <span className="muted">— {itemMeta(it)}</span>{" "}
                   <button
                     type="button"
-                    className="btn--danger"
+                    className="btn btn--danger"
                     aria-label={`Delete default ${it.label}`}
                     disabled={busy}
                     onClick={() => run(() => checklist.deleteDefaultItem(it.id), "Default item deleted.", true)}
@@ -381,7 +381,7 @@ function CcEditor({ label, ccs, onChange }: { label: string; ccs: string[]; onCh
           />{" "}
           <button
             type="button"
-            className="btn--danger"
+            className="chip-x"
             aria-label={`Remove ${label} ${i + 1}`}
             onClick={() => onChange(ccs.filter((_, j) => j !== i))}
           >
@@ -974,7 +974,7 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
                   ))}
                 </select>
               </label>{" "}
-              <button type="submit" disabled={actionBusy} className="btn--primary">Add task</button>
+              <button type="submit" disabled={actionBusy} className="btn btn--primary">Add task</button>
             </form>
             {/* Lifecycle + routing are job-lifecycle authority — admin-only (cap.jobtracker.manage).
                 A manager (cap.tasks.assign) gets the add-task control above but NOT these. */}
@@ -1042,7 +1042,7 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
                       {" "}
                       <button
                         type="button"
-                        className="btn--danger"
+                        className="chip-x"
                         aria-label={`Remove ${p.name} from crew`}
                         disabled={actionBusy}
                         onClick={() => removeCrew(p.id)}
