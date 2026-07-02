@@ -118,3 +118,25 @@ export async function retirePersonnel(id: number): Promise<void> {
 export async function assignPersonnel(id: number, jobId: string | null): Promise<void> {
   await postJson(`/api/fieldops/personnel/${id}/assign`, { job_id: jobId });
 }
+
+// ── Slice T — subcontractor scoped crew-create (cap.crew.create; server-gated) ────────────────────
+/** Create a NON-LOGIN roster person auto-placed on the ACTOR's own current job. Server rejects any
+ *  account/login payload (login-mint stays admin-only) and 422 `not_placed` when the actor isn't
+ *  placed on a job. Throws the server error code (e.g. "not_placed") for the caller to explain. */
+export async function createCrew(body: { name: string; trade?: string }): Promise<{ id: number; current_job: string }> {
+  return postJson<{ ok: boolean; id: number; current_job: string }>("/api/fieldops/crew", body);
+}
+
+export interface MyCrewMember {
+  id: number;
+  name: string;
+  trade: string | null;
+  current_job: string | null;
+}
+/** The crew a subcontractor may log time for: their own linked personnel + anyone they created. Backs
+ *  the time-log person picker so only server-acceptable people are offered. cap.crew.create-gated. */
+export async function fetchMyCrew(): Promise<MyCrewMember[]> {
+  const res = await fetch("/api/fieldops/crew/mine", { credentials: "same-origin" });
+  if (!res.ok) throw new Error("Could not load your crew.");
+  return ((await res.json()) as { personnel: MyCrewMember[] }).personnel ?? [];
+}

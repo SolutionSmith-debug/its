@@ -13,9 +13,11 @@ vi.mock("../../lib/fieldops_checklist", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../lib/fieldops_checklist")>();
   return { ...actual, fetchMyChecklist: vi.fn(), completeChecklistItem: vi.fn(), uncompleteChecklistItem: vi.fn(), recordCountItem: vi.fn(), fetchRollupDraft: vi.fn(), fetchAssignedInspections: vi.fn() };
 });
+vi.mock("../../lib/fieldops_personnel", () => ({ createCrew: vi.fn(), fetchMyCrew: vi.fn() }));
 vi.mock("../../lib/auth", () => ({ useAuth: vi.fn() }));
 
 import * as api from "../../lib/fieldops_tasks";
+import * as personnel from "../../lib/fieldops_personnel";
 import * as checklist from "../../lib/fieldops_checklist";
 import { FieldOpsMyTasks } from "../FieldOpsMyTasks";
 import { HomePage } from "../HomePage";
@@ -281,6 +283,41 @@ describe("FieldOpsMyTasks — S6 assigned inspections", () => {
     fireEvent.click(link);
     // 'jha' resolves to its versioned variant; job + date come from the inspection instance.
     await waitFor(() => expect(onOpenForm).toHaveBeenCalledWith(expect.objectContaining({ jobId: "JOB-A", parentCode: "jha", workDate: "2026-07-10" })));
+  });
+});
+
+describe("FieldOpsMyTasks — Slice T subcontractor Add crew", () => {
+  it("hides the Add crew control without cap.crew.create", async () => {
+    vi.mocked(useAuth).mockReturnValue(authWith(["cap.tasks.own"]));
+    vi.mocked(api.fetchMyTasks).mockResolvedValue({ tasks: [] });
+    const { container } = render(<FieldOpsMyTasks onBack={() => {}} />);
+    await waitFor(() => expect(container.querySelector(".dash-unavail")).not.toBeNull());
+    expect(container.querySelector('[aria-label="Add crew"]')).toBeNull();
+  });
+
+  it("shows the Add crew control for a subcontractor (cap.crew.create) and posts to createCrew", async () => {
+    vi.mocked(useAuth).mockReturnValue(authWith(["cap.tasks.own", "cap.crew.create"]));
+    vi.mocked(api.fetchMyTasks).mockResolvedValue({ tasks: [] });
+    vi.mocked(personnel.createCrew).mockResolvedValue({ id: 5, current_job: "JOB-A" });
+    const { container, getByLabelText } = render(<FieldOpsMyTasks onBack={() => {}} />);
+    await waitFor(() => expect(container.querySelector('[aria-label="Add crew"]')).not.toBeNull());
+    const form = getByLabelText("Add crew form") as HTMLFormElement;
+    fireEvent.change(form.querySelector('input[placeholder="Name"]')!, { target: { value: "Helper Hank" } });
+    fireEvent.change(form.querySelector('input[placeholder="Trade (optional)"]')!, { target: { value: "laborer" } });
+    fireEvent.submit(form);
+    await waitFor(() => expect(personnel.createCrew).toHaveBeenCalledWith({ name: "Helper Hank", trade: "laborer" }));
+    await waitFor(() => expect(container.textContent ?? "").toContain("Added Helper Hank to your crew on JOB-A"));
+  });
+
+  it("surfaces a clear 'must be placed on a job' message on a 422 not_placed", async () => {
+    vi.mocked(useAuth).mockReturnValue(authWith(["cap.tasks.own", "cap.crew.create"]));
+    vi.mocked(api.fetchMyTasks).mockResolvedValue({ tasks: [] });
+    vi.mocked(personnel.createCrew).mockRejectedValue(new Error("not_placed"));
+    const { getByLabelText, container } = render(<FieldOpsMyTasks onBack={() => {}} />);
+    const form = await waitFor(() => getByLabelText("Add crew form") as HTMLFormElement);
+    fireEvent.change(form.querySelector('input[placeholder="Name"]')!, { target: { value: "Nope" } });
+    fireEvent.submit(form);
+    await waitFor(() => expect(container.textContent ?? "").toContain("must be placed on a job"));
   });
 });
 

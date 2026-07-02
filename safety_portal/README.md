@@ -488,6 +488,38 @@ read them (`cap.checklist.manage`, admin-only).
    the "My Tasks" tab shows a user's assigned tasks; an admin edits the default checklist + adds/removes
    a per-job item on a job's detail.
 
+### Subcontractor tier — scoped crew-create + time scoping (`0027`)
+
+**Migration 0027** adds one capability `cap.crew.create` (granted to `submitter` + `admin`) and the
+`personnel.created_by` provenance column. The `submitter` tier is re-presented to users as
+**"Subcontractor"** — a **DISPLAY-LABEL-ONLY** rename: the role **KEY stays `'submitter'`** (the
+security-load-bearing fail-safe default in `worker/auth.ts` — "unknown → submitter, never upward"), so
+NO role/vocabulary row changes and the grant matrix is preserved. A subcontractor keeps all 8 of its
+0013 caps + gains `cap.crew.create`. New Worker route `POST /api/fieldops/crew` (`cap.crew.create`)
+creates a **NON-LOGIN** roster person auto-placed on the ACTOR's own current job (`created_by` stamped;
+422 `not_placed` if the actor isn't placed; any account/login payload → 400 `login_not_allowed`).
+`GET /api/fieldops/crew/mine` backs the subcontractor time-log picker. The time-entry route now SCOPES a
+subcontractor (`cap.time.log` WITHOUT `cap.personnel.manage`) to logging only for their OWN linked
+personnel OR a person they created (`created_by = them`) → else 403 `forbidden_personnel`;
+managers/admins stay unrestricted. See `docs/runbooks/subcontractor_tier.md` (§43) +
+`docs/enablement/subcontractor_tier.md` (§6/A8).
+
+#### Activation (operator — deploy boundary; escalates to the Developer-Operator)
+
+1. Apply migration **0027** to the live D1 **BEFORE** the redeploy
+   (`npx wrangler d1 migrations apply its-safety-portal-db --remote`) — else `POST /api/fieldops/crew`
+   403s every caller (fail-closed empty cap) and the crew-create INSERT + the time-scoping SELECT 500
+   on the missing `created_by` column. **ORDER-CRITICAL**, same rule as 0013/0023/0025. (Always
+   `git pull` `~/its` to latest `main` BEFORE `wrangler d1 migrations apply` — the stale-migrations-list
+   lockout class.)
+2. **Redeploy** (`npm run deploy`) — activates the "Subcontractor" display label, the My-Tasks
+   Add-crew control, the scoped crew-create route, and the subcontractor time-log picker/scoping.
+3. **Smoke** (live): set a user to `submitter`, place them on a job (Personnel → Assign, or a manager
+   places them); they see **Add crew** on My Tasks → add a field-only helper (lands on their job); the
+   helper appears in their time-log "For" picker; logging time for a stranger they didn't create is
+   refused (403). An unplaced subcontractor gets a "must be placed on a job" message. A manager/admin is
+   unaffected (full job-crew picker, no scoping).
+
 ### Lockout recovery (break-glass) — escalate to the Developer-Operator
 
 If both admins are ever locked out (e.g. passwords lost, or both disabled), recovery runs

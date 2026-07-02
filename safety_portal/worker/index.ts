@@ -18,6 +18,7 @@ import { registerEquipmentFieldWriteRoutes } from "./fieldops_equipment_write";
 import { registerEquipmentRosterWriteRoutes } from "./fieldops_equipment_roster_write";
 import { registerPersonnelWriteRoutes } from "./fieldops_personnel_write";
 import { registerCrewAssignRoutes } from "./fieldops_crew_assign";
+import { registerCrewWriteRoutes } from "./fieldops_crew_write";
 import { registerMaterialWriteRoutes } from "./fieldops_material_write";
 import { registerProgressRollupRoutes } from "./fieldops_rollup";
 import {
@@ -411,6 +412,8 @@ registerEquipmentFieldWriteRoutes(app, fieldopsGates);
 registerEquipmentRosterWriteRoutes(app, fieldopsGates);
 // — P2.6 crew→job placement (cap.crew.assign; Manager + admin), send-free D1 mutation —
 registerCrewAssignRoutes(app, fieldopsGates);
+// — Assigned-Tasks Slice T: subcontractor scoped crew-create (cap.crew.create), send-free D1 mutation —
+registerCrewWriteRoutes(app, fieldopsGates);
 registerMaterialWriteRoutes(app, fieldopsGates);
 // — P6 progress rollup read (bearer-gated /api/internal/*, NOT a session gate) —
 registerProgressRollupRoutes(app, requireInternalToken);

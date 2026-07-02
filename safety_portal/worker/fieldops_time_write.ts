@@ -87,11 +87,24 @@ export function registerTimeWriteRoutes(app: FieldopsApp, gates: FieldopsGates):
       // A personnel_id, if given, must be an ACTIVE roster member (soft ref re-validated, per 0016
       // note; retired personnel — active=0 — can't have new time logged against them, matching the
       // task-write + crew-assign guards). Bound param.
+      //
+      // SUBCONTRACTOR SCOPING (Slice T): an actor holding cap.time.log but NOT cap.personnel.manage
+      // (a subcontractor — managers/admins hold cap.personnel.manage and stay UNRESTRICTED) may log
+      // time only against their OWN linked personnel OR a personnel they created (created_by = actor).
+      // A well-formed, ACTIVE personnel that is neither → 403 forbidden_personnel (existence 422 first,
+      // so a non-subcontractor-owned id is distinguishable from a bogus one — same shape as the
+      // task-write subcontractor-target guard). personnel_id NULL (job-level / self) is always allowed.
       if (personnelId !== null) {
-        const person = await c.env.DB.prepare("SELECT id FROM personnel WHERE id = ?1 AND active = 1")
+        const scoped = c.get("capabilities").has("cap.time.log") && !c.get("capabilities").has("cap.personnel.manage");
+        const person = await c.env.DB.prepare(
+          "SELECT username, created_by FROM personnel WHERE id = ?1 AND active = 1",
+        )
           .bind(personnelId)
-          .first<{ id: number }>();
+          .first<{ username: string | null; created_by: string | null }>();
         if (!person) return c.json({ error: "unknown_personnel" }, 422);
+        if (scoped && person.username !== actor && person.created_by !== actor) {
+          return c.json({ error: "forbidden_personnel" }, 403);
+        }
       }
 
       // A task_id, if given, must belong to THIS job (soft ref re-validated, per 0016 note).
