@@ -1,12 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import * as checklist from "../lib/fieldops_checklist";
-import { fetchPersonnelList, type PersonnelRow } from "../lib/fieldops_personnel";
+import type { PersonnelRow } from "../lib/fieldops_personnel";
 import { fetchJobList, type JobRow } from "../lib/fieldops_jobtracker";
+import { statusLabel } from "../lib/labels";
 import { PageShell } from "../components/PageShell";
 import { ChecklistItemRow } from "../components/ChecklistItemRow";
 import { ChecklistItemForm,
   EMPTY_ITEM,
+  isFormBearing,
   itemInputFromRow,
   itemMetaLabel,
   nextSeq,
@@ -444,33 +446,97 @@ function TemplateItemsEditor({
   );
 }
 
-// ── Section 3 — the assign control (existing routes; the guarded flow + assignments list are R5) ──
+// The device's local calendar date as 'YYYY-MM-DD' (the same shape instance_date carries) — used
+// for the overdue check on the assignments list. Local, not UTC: an admin looks at this in Pacific
+// working hours and "overdue" must not flip at 5pm because UTC rolled over.
+function localTodayISO(): string {
+  const d = new Date();
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+// The persistent post-assign confirmation (replaces the old transient banner — an admin who looks
+// up from their phone mid-task must still be able to see WHAT they just assigned and to WHOM).
+interface AssignConfirmation {
+  assignee: string;
+  title: string;
+  job: string | null;
+  due: string | null;
+  itemCount: number;
+}
+
+// ── Section 3 — the GUARDED assign control (R5 — the client halves of the R1 assign-time 422s) ────
+// The Worker independently rejects all four stuck-assignment classes (R1); this form makes them
+// unreachable from the UI in the first place:
+//   • empty template        → its picker option is disabled "(no items yet)";
+//   • form-linked w/o job+date → job + due date flip to REQUIRED (with inline copy) the moment a
+//     selected template's detail shows form-bearing items; submit blocks client-side;
+//   • unknown form code     → not producible here (the item editors use a catalog select, R4);
+//   • duplicate double-tap  → busy-guard during submit + a FULL form reset after success (a repeat
+//     assign requires deliberate re-selection), plus the persistent confirmation card.
 function AssignForm({
   templates,
-  onDone,
+  onAssigned,
 }: {
   templates: checklist.InspectionTemplate[];
-  onDone?: () => void;
+  onAssigned?: () => void;
 }) {
   const [people, setPeople] = useState<PersonnelRow[]>([]);
   const [jobs, setJobs] = useState<JobRow[]>([]);
+  const [pickersError, setPickersError] = useState(false);
   const [templateId, setTemplateId] = useState<string>("");
   const [assignee, setAssignee] = useState<string>("");
   const [jobId, setJobId] = useState<string>("");
   const [dueDate, setDueDate] = useState<string>("");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<Msg | null>(null);
+  const [detail, setDetail] = useState<checklist.InspectionDetail | null>(null);
+  const [detailWarn, setDetailWarn] = useState(false);
+  const [confirmation, setConfirmation] = useState<AssignConfirmation | null>(null);
 
+  // VERIFIED (R5): POST /checklist/assign requires an ACTIVE personnel row only — a portal login is
+  // NOT required (worker/fieldops_checklist.ts: `SELECT id FROM personnel WHERE id=? AND active=1`).
+  // So the FULL active roster is offered (fetchFullRoster pages the cursor to exhaustion — the old
+  // single-page fetch silently dropped everyone past #50) with no login filter and no "can't be
+  // assigned" hint. Each option carries the person's current placement for context. Never silent:
+  // a load failure renders an error with Retry (A4 silent-swallow site #3), not an empty picker.
+  async function loadPickers() {
+    setPickersError(false);
+    try {
+      const [roster, jobsRes] = await Promise.all([checklist.fetchFullRoster(), fetchJobList("active")]);
+      setPeople(roster);
+      setJobs(jobsRes.jobs);
+    } catch {
+      setPickersError(true);
+    }
+  }
   useEffect(() => {
-    // Only offer login-linked people: an assigned inspection surfaces via the session→personnel link,
-    // so a non-login roster person could never see or complete one.
-    fetchPersonnelList()
-      .then((r) => setPeople(r.personnel.filter((p) => p.username !== null)))
-      .catch(() => setPeople([]));
-    fetchJobList("active")
-      .then((r) => setJobs(r.jobs))
-      .catch(() => setJobs([]));
+    void loadPickers();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // On template selection, fetch its detail: form-bearing items make job + due date REQUIRED (the
+  // client half of the R1 'job_and_date_required' 422). Best-effort — a failed detail fetch warns
+  // (with Retry) but never blocks the form; the Worker re-validates on assign regardless.
+  function loadDetail(tid: number) {
+    setDetailWarn(false);
+    checklist
+      .fetchInspectionTemplate(tid)
+      .then((d) => setDetail((cur) => (String(tid) === templateIdRef.current ? d : cur)))
+      .catch(() => setDetailWarn(true));
+  }
+  // Ref mirror so a slow detail response for a PREVIOUS selection can't clobber the current one.
+  const templateIdRef = useRef(templateId);
+  useEffect(() => {
+    templateIdRef.current = templateId;
+    setDetail(null);
+    setDetailWarn(false);
+    const tid = Number(templateId);
+    if (Number.isInteger(tid) && tid > 0) loadDetail(tid);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [templateId]);
+
+  const needsJobDate = (detail?.items ?? []).some((i) => isFormBearing(i.item_type));
 
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -485,6 +551,14 @@ function AssignForm({
       setMsg({ ok: false, text: "Pick a person." });
       return;
     }
+    // Client half of the R1 server 422 — same rule, caught BEFORE the request with inline copy.
+    if (needsJobDate && (jobId === "" || dueDate === "")) {
+      setMsg({
+        ok: false,
+        text: "Pick a job and a due date — this checklist auto-checks from filed forms, so it needs both.",
+      });
+      return;
+    }
     setBusy(true);
     setMsg(null);
     try {
@@ -492,9 +566,24 @@ function AssignForm({
       if (jobId) input.job_id = jobId;
       if (dueDate) input.due_date = dueDate;
       const res = await checklist.assignInspection(input);
-      setMsg({ ok: true, text: `Assigned (${res.item_count} item${res.item_count === 1 ? "" : "s"}).` });
+      const person = people.find((p) => p.id === aid);
+      const tpl = templates.find((t) => t.id === tid);
+      const job = jobId ? jobs.find((j) => j.job_id === jobId) : undefined;
+      setConfirmation({
+        assignee: person?.name ?? `person #${aid}`,
+        title: tpl?.title ?? `checklist ${tid}`,
+        job: jobId ? (job?.project_name ?? jobId) : null,
+        due: dueDate || null,
+        itemCount: res.item_count,
+      });
+      // FULL reset (not just the date) — a repeat assign must be a deliberate fresh selection, so a
+      // double-tap after success can't silently create a duplicate no-job/no-date instance.
+      setTemplateId("");
+      setAssignee("");
+      setJobId("");
       setDueDate("");
-      onDone?.();
+      setDetail(null);
+      onAssigned?.();
     } catch (err) {
       // R1: user copy comes from errorCopy.ts via err.message — never duplicated in pages.
       setMsg({ ok: false, text: err instanceof Error ? err.message : "Assign failed." });
@@ -503,20 +592,42 @@ function AssignForm({
     }
   }
 
-  // Inactive templates are retired — not assignable, so not offered.
+  // Inactive templates are retired — not assignable, so not offered. Empty (0-item) templates stay
+  // VISIBLE but disabled "(no items yet)" — hiding them entirely would read as a missing checklist.
   const assignable = templates.filter((t) => t.active);
 
   return (
     <section className="card dash-section" aria-label="Assign an inspection">
       <h3 className="dash-detail__h2">Assign an inspection checklist</h3>
       <MsgLine msg={msg} />
+      {pickersError && (
+        <p className="banner banner--err">
+          Couldn't load the people and jobs to assign to.{" "}
+          <button type="button" className="btn btn--secondary" aria-label="Retry loading assign pickers" onClick={() => void loadPickers()}>
+            Retry
+          </button>
+        </p>
+      )}
+      {confirmation && (
+        <div className="dash-subsection" role="status" aria-label="Assignment confirmation">
+          <strong>Assigned to {confirmation.assignee} ✓</strong>
+          <span className="dash-card__sub" style={{ display: "block" }}>
+            “{confirmation.title}” ({confirmation.itemCount} item{confirmation.itemCount === 1 ? "" : "s"})
+            {confirmation.job !== null ? <> · {confirmation.job}</> : null}
+            {confirmation.due !== null ? <> · due {confirmation.due}</> : null}
+          </span>
+        </div>
+      )}
       <form onSubmit={submit} className="dash-row" aria-label="Assign form">
         <label className="field">
           <span className="field__label">Checklist</span>
           <select aria-label="Checklist" value={templateId} onChange={(e) => setTemplateId(e.target.value)}>
             <option value="">— checklist —</option>
             {assignable.map((t) => (
-              <option key={t.id} value={t.id}>{t.title}</option>
+              <option key={t.id} value={t.id} disabled={t.item_count === 0}>
+                {t.title}
+                {t.item_count === 0 ? " (no items yet)" : ""}
+              </option>
             ))}
           </select>
         </label>{" "}
@@ -525,30 +636,186 @@ function AssignForm({
           <select aria-label="Assignee" value={assignee} onChange={(e) => setAssignee(e.target.value)}>
             <option value="">— person —</option>
             {people.map((p) => (
-              <option key={p.id} value={p.id}>{p.name}{p.trade ? ` (${p.trade})` : ""}</option>
+              <option key={p.id} value={p.id}>
+                {p.name}
+                {p.trade ? ` (${p.trade})` : ""}
+                {p.current_job ? ` — on ${p.current_job_name ?? p.current_job}` : ""}
+              </option>
             ))}
           </select>
         </label>{" "}
         <label className="field">
-          <span className="field__label">Job (optional)</span>
-          <select aria-label="Job (optional)" value={jobId} onChange={(e) => setJobId(e.target.value)}>
-            <option value="">— job (optional) —</option>
+          <span className="field__label">{needsJobDate ? "Job (required)" : "Job (optional)"}</span>
+          <select aria-label="Job" value={jobId} onChange={(e) => setJobId(e.target.value)}>
+            <option value="">{needsJobDate ? "— pick a job —" : "— job (optional) —"}</option>
             {jobs.map((j) => (
               <option key={j.job_id} value={j.job_id}>{j.project_name ?? j.job_id}</option>
             ))}
           </select>
         </label>{" "}
         <label className="field">
-          <span className="field__label">Due date (optional)</span>
+          <span className="field__label">{needsJobDate ? "Due date (required)" : "Due date (optional)"}</span>
           <input
             type="date"
-            aria-label="Due date (optional)"
+            aria-label="Due date"
             value={dueDate}
             onChange={(e) => setDueDate(e.target.value)}
           />
         </label>{" "}
         <button type="submit" className="btn btn--primary" disabled={busy}>Assign</button>
+        {needsJobDate && (
+          <span className="dash-card__sub" style={{ display: "block", width: "100%" }}>
+            This checklist auto-checks from filed forms — it needs a job and a date so filings can be
+            matched to it. The due date is the date the work must be filed by.
+          </span>
+        )}
+        {detailWarn && (
+          <span className="dash-card__sub" style={{ display: "block", width: "100%" }}>
+            Couldn't check this checklist's items — you can still assign; the server verifies.{" "}
+            <button
+              type="button"
+              className="btn btn--secondary"
+              aria-label="Retry loading checklist detail"
+              onClick={() => {
+                const tid = Number(templateId);
+                if (Number.isInteger(tid) && tid > 0) loadDetail(tid);
+              }}
+            >
+              Retry
+            </button>
+          </span>
+        )}
       </form>
+    </section>
+  );
+}
+
+// ── Section 4 — outstanding assignments (R5 — the admin list + cancel; GET /checklist/instances) ──
+// Every outstanding inspection assignment is listable, its progress visible, and cancellable — the
+// close of the old fire-and-forget loop where a mistaken assignment was invisible and irrevocable.
+// Loading ≠ empty; a fetch failure renders an error with Retry (never a lying blank).
+function AssignmentsSection({ refreshKey }: { refreshKey: number }) {
+  const [rows, setRows] = useState<checklist.AdminInstanceRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
+  const [filter, setFilter] = useState<"open" | "all">("open");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<Msg | null>(null);
+
+  async function load(f: "open" | "all") {
+    setLoading(true);
+    setLoadError(false);
+    try {
+      const res = await checklist.fetchChecklistInstances(f);
+      setRows(res.instances);
+    } catch {
+      setLoadError(true);
+    } finally {
+      setLoading(false);
+    }
+  }
+  useEffect(() => {
+    void load(filter);
+    // refreshKey: bumped by AssignForm after a successful assign so the new row appears immediately.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filter, refreshKey]);
+
+  function cancel(row: checklist.AdminInstanceRow) {
+    if (busy) return;
+    setBusy(true);
+    setMsg(null);
+    void (async () => {
+      try {
+        await checklist.cancelChecklistInstance(row.id);
+        await load(filter);
+        setMsg({
+          ok: true,
+          text: `Cancelled “${row.template_title ?? `Inspection #${row.id}`}” for ${row.assignee_name ?? "the assignee"}.`,
+        });
+      } catch (err) {
+        setMsg({ ok: false, text: err instanceof Error ? err.message : "Cancel failed." });
+      } finally {
+        setBusy(false);
+      }
+    })();
+  }
+
+  const today = localTodayISO();
+
+  return (
+    <section className="card dash-section" aria-label="Outstanding assignments">
+      <h3 className="dash-detail__h2">Outstanding assignments</h3>
+      <p className="dash-card__sub muted">
+        Every assigned inspection checklist — who has it, which job, when it's due, and how far along
+        it is. Cancel removes it from the person's Assigned inspections.
+      </p>
+      <div className="dash-row">
+        <button
+          type="button"
+          className={filter === "open" ? "btn btn--primary" : "btn btn--secondary"}
+          aria-label="Show open assignments"
+          onClick={() => setFilter("open")}
+        >
+          Open
+        </button>{" "}
+        <button
+          type="button"
+          className={filter === "all" ? "btn btn--primary" : "btn btn--secondary"}
+          aria-label="Show all assignments"
+          onClick={() => setFilter("all")}
+        >
+          All
+        </button>
+      </div>
+      <MsgLine msg={msg} />
+      {loading ? (
+        <div className="muted">Loading assignments…</div>
+      ) : loadError ? (
+        <p className="banner banner--err">
+          Couldn't load the assignments.{" "}
+          <button type="button" className="btn btn--secondary" aria-label="Retry loading assignments" onClick={() => void load(filter)}>
+            Retry
+          </button>
+        </p>
+      ) : rows.length === 0 ? (
+        <div className="dash-unavail">
+          {filter === "open"
+            ? "No open assignments — everything assigned has been completed (or nothing is assigned yet)."
+            : "No assignments yet."}
+        </div>
+      ) : (
+        <ul className="dash-tasklist" aria-label="Assignment rows">
+          {rows.map((r) => {
+            const title = r.template_title ?? `Inspection #${r.id}`;
+            const who = r.assignee_name ?? "(unknown assignee)";
+            const overdue = r.status === "open" && r.instance_date !== null && r.instance_date < today;
+            return (
+              <li key={r.id}>
+                <strong>{title}</strong>
+                <span className="dash-card__sub"> · {who}</span>
+                {r.job_id !== null && (
+                  <span className="dash-card__sub"> · {r.project_name ?? r.job_id}</span>
+                )}
+                {r.instance_date !== null && <span className="dash-card__sub"> · due {r.instance_date}</span>}{" "}
+                {overdue && <span className="dash-pill dash-pill--warn">overdue</span>}{" "}
+                <span className={r.status === "complete" ? "dash-pill dash-pill--ok" : "dash-pill"}>
+                  {statusLabel(r.status)}
+                </span>
+                <span className="dash-card__sub">
+                  {" "}· {r.items_done}/{r.items_total} item{r.items_total === 1 ? "" : "s"} done
+                </span>{" "}
+                <ConfirmDelete
+                  actionLabel="Cancel"
+                  ariaLabel={`Cancel assignment ${title} for ${who}`}
+                  copy={`Cancel “${title}” for ${who}? This removes it from ${who}'s Assigned inspections — any completed items are discarded.`}
+                  busy={busy}
+                  onConfirm={() => cancel(r)}
+                />
+              </li>
+            );
+          })}
+        </ul>
+      )}
     </section>
   );
 }
@@ -570,6 +837,8 @@ export function FieldOpsInspections({ onBack }: { onBack: () => void }) {
   const [renameTitle, setRenameTitle] = useState("");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<Msg | null>(null);
+  // R5: bumped after each successful assign so the Outstanding-assignments section refetches.
+  const [assignmentsRefresh, setAssignmentsRefresh] = useState(0);
 
   async function reload() {
     try {
@@ -781,7 +1050,9 @@ export function FieldOpsInspections({ onBack }: { onBack: () => void }) {
         </section>
       )}
 
-      <AssignForm templates={templates} />
+      <AssignForm templates={templates} onAssigned={() => setAssignmentsRefresh((k) => k + 1)} />
+
+      <AssignmentsSection refreshKey={assignmentsRefresh} />
     </PageShell>
   );
 }
