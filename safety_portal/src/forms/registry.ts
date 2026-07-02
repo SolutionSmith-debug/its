@@ -122,6 +122,30 @@ export interface CatalogParent {
  * the manifest now OWNS the active set / order / names, so slices 4–6 + rollback can
  * change them without touching this code.
  */
+/**
+ * Resolve a checklist item's stored form_code (the PARENT family, e.g. 'daily-report') to the
+ * FormFillPage deep-link selection: { parentCode, variantCode }.
+ *   • The daily checklist stores the parent form_code (catalog.json parent_form_code); FormFillPage
+ *     selects a parent + (for variant parents) the current variant's form_code.
+ *   • No-variant parent (e.g. daily-report) → variantCode '' (FormFillPage renders the parent directly).
+ *   • Single-variant parent → pre-select that variant. Multi-variant (e.g. equipment-preinspection) →
+ *     variantCode '' so the user picks the type (we cannot know which one the item means).
+ *   • Robust to an item that (unusually) stored a VARIANT current_form_code: match it to its parent.
+ *   • Unknown code → { parentCode: formCode, variantCode: '' } (a harmless best-effort; the picker
+ *     simply shows nothing selected).
+ */
+export function resolveFormTarget(formCode: string): { parentCode: string; variantCode: string } {
+  const catalog = formCatalog();
+  const asParent = catalog.find((p) => p.parent_form_code === formCode);
+  if (asParent) {
+    const variantCode = asParent.variants.length === 1 ? asParent.variants[0].form_code : "";
+    return { parentCode: formCode, variantCode };
+  }
+  const owningParent = catalog.find((p) => p.variants.some((v) => v.form_code === formCode));
+  if (owningParent) return { parentCode: owningParent.parent_form_code, variantCode: formCode };
+  return { parentCode: formCode, variantCode: "" };
+}
+
 export function formCatalog(): CatalogParent[] {
   const parents: CatalogParent[] = [];
   const ordered = [...MANIFEST.parents].sort((a, b) => a.display_order - b.display_order);

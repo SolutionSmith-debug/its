@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import { useAuth } from "./lib/auth";
 import { LoginPage } from "./pages/LoginPage";
 import { HomePage, type HomeNav } from "./pages/HomePage";
-import { FormFillPage } from "./pages/FormFillPage";
+import { FormFillPage, type FormPrefill } from "./pages/FormFillPage";
 import { FormRequestPage } from "./pages/FormRequestPage";
 import { AccountsPage } from "./pages/AccountsPage";
 import { FormsPage } from "./pages/FormsPage";
@@ -44,6 +44,9 @@ export function App() {
   const [view, setView] = useState<View>("home");
   // A dirty editor (Accounts/Forms) is open — drives the admin keep-alive (see AdminSessionGuard).
   const [editing, setEditing] = useState(false);
+  // Deep-link prefill for FormFillPage (P4 S4): set when a form_linked/inspection checklist item is
+  // opened from My Tasks, cleared on navigating home. Passed through to FormFillPage as initial state.
+  const [formPrefill, setFormPrefill] = useState<FormPrefill | null>(null);
 
   if (loading) {
     return <div className="centered muted">Loading…</div>;
@@ -56,13 +59,28 @@ export function App() {
   const has = (c: string) => caps.includes(c);
   const home = () => {
     setEditing(false);
+    setFormPrefill(null);
     setView("home");
   };
   const backNav = <BackHomeNav onHome={home} />;
+  // Open FormFillPage pre-filled from a checklist deep-link (P4 S4). The keyed remount (see `key`
+  // below) guarantees the prefill seeds initial state even if FormFillPage was already mounted.
+  const openForm = (p: FormPrefill) => {
+    setEditing(false);
+    setFormPrefill(p);
+    setView("fill");
+  };
 
   let page: ReactNode;
   if (view === "fill") {
-    page = <FormFillPage onBack={home} tabBar={backNav} />;
+    page = (
+      <FormFillPage
+        key={formPrefill ? `${formPrefill.jobId ?? ""}|${formPrefill.parentCode ?? ""}|${formPrefill.variantCode ?? ""}|${formPrefill.workDate ?? ""}` : "blank"}
+        onBack={home}
+        tabBar={backNav}
+        prefill={formPrefill ?? undefined}
+      />
+    );
   } else if (view === "request") {
     page = <FormRequestPage onBack={home} />;
   } else if (view === "accounts" && has("cap.admin.accounts")) {
@@ -72,7 +90,7 @@ export function App() {
   } else if (view === "fieldops-jobs" && has("cap.jobtracker.read")) {
     page = <FieldOpsJobTracker onBack={home} />;
   } else if (view === "fieldops-tasks" && has("cap.tasks.own")) {
-    page = <FieldOpsMyTasks onBack={home} />;
+    page = <FieldOpsMyTasks onBack={home} onOpenForm={openForm} />;
   } else if (view === "fieldops-equipment" && has("cap.equipment.field")) {
     page = <FieldOpsEquipment onBack={home} />;
   } else if (view === "fieldops-personnel" && has("cap.personnel.read")) {

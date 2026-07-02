@@ -24,6 +24,13 @@ const MAX_COUNT = 100_000;
 // S3 completion inputs (bounded per Invariant 2 — untrusted body).
 const MAX_NOTE = 2000;
 const MAX_PHOTO_REF = 256;
+// S4 count completion: value_num upper bound (shares the MAX_COUNT ceiling used for target_count).
+const MAX_VALUE = 100_000;
+// S4 loop-closure sentinel — a form_linked/inspection item is closed by a matching SUBMISSION, not a
+// human action, so its completed_by is this marker rather than a username.
+const AUTO_COMPLETED_BY = "(auto)";
+// Item types that auto-close on a matching submission (loop-closure) and CANNOT be manually completed.
+const AUTO_CLOSE_TYPES = new Set(["form_linked", "inspection"]);
 
 const ITEM_TYPES = new Set(["form_linked", "manual_attest", "count", "inspection"]);
 // form_code identifies the target form — required for the two form-bearing types.
@@ -279,6 +286,53 @@ async function generateDailyInstance(
   return { instanceId, jobId, instanceDate: today };
 }
 
+// ── S4 loop-closure (form_linked / inspection auto-check) ──────────────────────────────────────────
+// A form_linked / inspection item closes when a SUBMISSION exists for (this instance's job, the item's
+// form-code FAMILY, this instance's date) — true loop-closure, not a manual action. The FAMILY match
+// mirrors the catalog's parent→variant convention (catalog.json): the checklist item stores the PARENT
+// form_code (e.g. 'daily-report') while a submission carries the versioned VARIANT (e.g.
+// 'daily-report-v1'). So a submission matches iff its form_code EQUALS the item's parent form_code OR
+// is a versioned variant of it (`= parent OR LIKE parent || '-v%'`). Form codes use hyphens (never `_`),
+// so no LIKE metacharacter escaping is needed. The `-v` anchor keeps the wildcard precise: 'daily-report'
+// matches 'daily-report-v1' but never 'daily-report-extra'.
+//
+// Runs on EVERY /checklist/mine read (idempotent): it only flips OPEN→done (WHERE status<>'done'), so an
+// already-closed item — auto or manual — is untouched, and a submission never "un-closes" an item. The
+// UPDATE is bound-param (job_id + instance_date passed positionally, not spliced) and correlates the
+// EXISTS subquery on the target row's own form_code. Persisted (not computed) so S5's rollup + the
+// instance-complete recompute observe the closure. ?1 = instance id, ?2 = job_id, ?3 = instance_date.
+const AUTO_CHECK_SQL = `
+        UPDATE checklist_item_states
+        SET status = 'done', completed_by = '${AUTO_COMPLETED_BY}', completed_at = unixepoch()
+        WHERE instance_id = ?1
+          AND item_type IN ('form_linked', 'inspection')
+          AND status <> 'done'
+          AND form_code IS NOT NULL
+          AND EXISTS (
+            SELECT 1 FROM submissions sub
+            WHERE sub.job_id = ?2
+              AND sub.work_date = ?3
+              AND (sub.form_code = checklist_item_states.form_code
+                   OR sub.form_code LIKE checklist_item_states.form_code || '-v%')
+          )
+      `;
+
+// Reconcile the instance's form_linked/inspection items against the day's submissions (loop-closure),
+// then recompute the instance status — in ONE batch so a just-auto-closed item is reflected. Idempotent:
+// re-running with no new submissions changes nothing (the UPDATE matches zero rows, the recompute is a
+// no-op re-write of the same status). Called each read of /checklist/mine, right after generation.
+async function reconcileFormLinked(
+  c: Context<{ Bindings: Env; Variables: Vars }>,
+  instanceId: number,
+  jobId: string,
+  instanceDate: string,
+): Promise<void> {
+  await c.env.DB.batch([
+    c.env.DB.prepare(AUTO_CHECK_SQL).bind(instanceId, jobId, instanceDate),
+    recomputeInstanceStatusStmt(c, instanceId),
+  ]);
+}
+
 // Recompute-instance-status statement (built, not run): 'complete' iff NO item_state on the instance
 // is still open, else 'open'. Appended LAST in a completion batch (after the item-state mutation +
 // its audit), so the just-applied change is reflected. ?1 = instance id.
@@ -290,26 +344,27 @@ function recomputeInstanceStatusStmt(c: Context<{ Bindings: Env; Variables: Vars
     .bind(instanceId);
 }
 
-// Load an item_state + its owning instance's assignee for the completion routes. Returns the row, or a
-// JSON error Response (404 unknown, 403 not-your-instance, 400 non-manual_attest in S3). Ownership is
-// scoped to the ACTOR's linked personnel id: a manager can only complete items on THEIR OWN daily
-// instance. form_linked/count/inspection completion is S4 — rejected here with a clear error.
-async function loadOwnedManualItemState(
+// Load an item_state + its owning instance's assignee for the completion routes. Returns the row
+// (incl. item_type + target_count so the caller can branch per-type), or a JSON error Response (404
+// unknown, 403 not-your-instance). Ownership is scoped to the ACTOR's linked personnel id: a manager
+// can only touch items on THEIR OWN daily instance. Per-type completability (manual_attest = check,
+// count = value ≥ target, form_linked/inspection = auto-close-only reject) is decided by the CALLER
+// (S4), not here — this only enforces existence + ownership.
+async function loadOwnedItemState(
   c: Context<{ Bindings: Env; Variables: Vars }>,
   stateId: number,
-): Promise<{ id: number; instance_id: number } | Response> {
+): Promise<{ id: number; instance_id: number; item_type: string; target_count: number | null } | Response> {
   const person = await resolveActorPersonnel(c);
   // No linked personnel → the actor owns no instance → forbidden (not 404: the row may well exist).
   if (!person) return c.json({ error: "forbidden" }, 403);
   const st = await c.env.DB.prepare(
-    "SELECT s.id, s.item_type, s.instance_id, i.assignee_personnel_id FROM checklist_item_states s JOIN checklist_instances i ON i.id = s.instance_id WHERE s.id = ?1",
+    "SELECT s.id, s.item_type, s.target_count, s.instance_id, i.assignee_personnel_id FROM checklist_item_states s JOIN checklist_instances i ON i.id = s.instance_id WHERE s.id = ?1",
   )
     .bind(stateId)
-    .first<{ id: number; item_type: string; instance_id: number; assignee_personnel_id: number | null }>();
+    .first<{ id: number; item_type: string; target_count: number | null; instance_id: number; assignee_personnel_id: number | null }>();
   if (!st) return c.json({ error: "not_found" }, 404);
   if (st.assignee_personnel_id !== person.id) return c.json({ error: "forbidden" }, 403);
-  if (st.item_type !== "manual_attest") return c.json({ error: "unsupported_item_type" }, 400);
-  return { id: st.id, instance_id: st.instance_id };
+  return { id: st.id, instance_id: st.instance_id, item_type: st.item_type, target_count: st.target_count };
 }
 
 export function registerChecklistRoutes(app: FieldopsApp, gates: FieldopsGates): void {
@@ -618,6 +673,10 @@ export function registerChecklistRoutes(app: FieldopsApp, gates: FieldopsGates):
     async (c) => {
       const gen = await generateDailyInstance(c);
       if (gen === null) return c.json({ instance: null, items: [] }, 200);
+      // S4 loop-closure: reconcile form_linked/inspection items against the day's submissions BEFORE
+      // reading them back, so a form filed since the last open shows as done (and the instance status
+      // reflects it). Idempotent on re-read; persisted so S5's rollup sees the closure.
+      await reconcileFormLinked(c, gen.instanceId, gen.jobId, gen.instanceDate);
       const instance = await c.env.DB.prepare(
         "SELECT id, job_id, instance_date, status FROM checklist_instances WHERE id = ?1",
       )
@@ -633,10 +692,15 @@ export function registerChecklistRoutes(app: FieldopsApp, gates: FieldopsGates):
     },
   );
 
-  // ── POST /api/fieldops/checklist/item-state/:id/complete — mark a manual_attest item done. ────────
-  // Ownership-scoped (the item's instance assignee MUST be the actor's linked personnel — else 403);
-  // S3 accepts only item_type='manual_attest' (form_linked/count/inspection completion is S4 → 400).
-  // Optional bounded { note, photo_ref }. Mutation + audit + instance-status recompute in ONE batch.
+  // ── POST /api/fieldops/checklist/item-state/:id/complete — mark an item done (S4: per-type). ──────
+  // Ownership-scoped (the item's instance assignee MUST be the actor's linked personnel — else 403).
+  // Per-type completion:
+  //   • manual_attest — a check with optional bounded { note, photo_ref }.
+  //   • count         — requires { value_num }; done iff value_num >= target_count, else 400
+  //                     'below_target' (value recorded, item stays open).
+  //   • form_linked / inspection — NOT manually completable: they close via a matching submission
+  //     (loop-closure, /checklist/mine reconcile). Manual complete → 400 'auto_close_only'.
+  // Mutation + audit + instance-status recompute in ONE batch.
   app.post(
     "/api/fieldops/checklist/item-state/:id/complete",
     gates.requireSession,
@@ -645,7 +709,8 @@ export function registerChecklistRoutes(app: FieldopsApp, gates: FieldopsGates):
       const stateId = parseInt(c.req.param("id"), 10);
       if (isNaN(stateId)) return c.json({ error: "invalid_id" }, 400);
 
-      // Body is OPTIONAL (a bare check carries none) — a missing/blank body is empty, not a 400.
+      // Body is OPTIONAL for manual_attest (a bare check carries none); count REQUIRES value_num. A
+      // missing/blank body is empty, not a 400 — the per-type checks below decide what's required.
       let body: Record<string, unknown> = {};
       try {
         const b: unknown = await c.req.json();
@@ -666,29 +731,61 @@ export function registerChecklistRoutes(app: FieldopsApp, gates: FieldopsGates):
         photoRef = body.photo_ref;
       }
 
-      const owned = await loadOwnedManualItemState(c, stateId);
+      const owned = await loadOwnedItemState(c, stateId);
       if (owned instanceof Response) return owned;
       const actor = c.get("session").username;
+
+      // form_linked / inspection close via a submission, never a manual action — refuse a manual complete.
+      if (AUTO_CLOSE_TYPES.has(owned.item_type)) return c.json({ error: "auto_close_only" }, 400);
+
+      // count: value_num required + numeric + bounded; done ONLY when it meets the target.
+      let valueNum: number | null = null;
+      if (owned.item_type === "count") {
+        const v = body.value_num;
+        if (typeof v !== "number" || !Number.isFinite(v) || v < 0 || v > MAX_VALUE) {
+          return c.json({ error: "invalid_value_num" }, 400);
+        }
+        valueNum = v;
+        // Below target → record the value but leave the item OPEN (not a completion). (W4) Audit the
+        // value write in the SAME batch — matches every other mutation in this file, so a repeated
+        // below-target overwrite leaves a forensic trail rather than silently clobbering value_num.
+        if (owned.target_count !== null && v < owned.target_count) {
+          await c.env.DB.batch([
+            c.env.DB.prepare("UPDATE checklist_item_states SET value_num=?2 WHERE id=?1").bind(stateId, valueNum),
+            auditStmt(c, actor, "checklist_item_value_recorded", String(stateId), {
+              item_state_id: stateId,
+              instance_id: owned.instance_id,
+              value_num: valueNum,
+              target_count: owned.target_count,
+            }),
+            recomputeInstanceStatusStmt(c, owned.instance_id),
+          ]);
+          return c.json({ error: "below_target", id: stateId, value_num: valueNum, target_count: owned.target_count }, 400);
+        }
+      }
+
       // Pre-checked existence + ownership + type, so the UPDATE applies → unconditional audit (mirrors
       // the suppress route). Recompute the instance status LAST so it reflects this completion.
       await c.env.DB.batch([
         c.env.DB
           .prepare(
-            "UPDATE checklist_item_states SET status='done', completed_by=?2, completed_at=unixepoch(), note=?3, photo_ref=?4 WHERE id=?1",
+            "UPDATE checklist_item_states SET status='done', completed_by=?2, completed_at=unixepoch(), note=?3, photo_ref=?4, value_num=COALESCE(?5, value_num) WHERE id=?1",
           )
-          .bind(stateId, actor, note, photoRef),
-        auditStmt(c, actor, "checklist_item_complete", String(stateId), { item_state_id: stateId, instance_id: owned.instance_id }),
+          .bind(stateId, actor, note, photoRef, valueNum),
+        auditStmt(c, actor, "checklist_item_complete", String(stateId), { item_state_id: stateId, instance_id: owned.instance_id, value_num: valueNum }),
         recomputeInstanceStatusStmt(c, owned.instance_id),
       ]);
       const inst = await c.env.DB.prepare("SELECT status FROM checklist_instances WHERE id=?1")
         .bind(owned.instance_id)
         .first<{ status: string }>();
-      return c.json({ ok: true, id: stateId, status: "done", instance_status: inst?.status ?? "open" }, 200);
+      return c.json({ ok: true, id: stateId, status: "done", value_num: valueNum, instance_status: inst?.status ?? "open" }, 200);
     },
   );
 
-  // ── POST /api/fieldops/checklist/item-state/:id/uncomplete — toggle a done manual_attest item back
-  // to open (clears the completion stamp). Same ownership + type scoping as /complete. ──────────────
+  // ── POST /api/fieldops/checklist/item-state/:id/uncomplete — toggle a manually-completed item back
+  // to open (clears the completion stamp + count value). Ownership-scoped. form_linked/inspection are
+  // auto-closed by a submission, not manual, so un-completing one is refused (400 'auto_close_only') —
+  // the item re-closes on the next reconcile anyway; a human toggle would be meaningless. ────────────
   app.post(
     "/api/fieldops/checklist/item-state/:id/uncomplete",
     gates.requireSession,
@@ -696,13 +793,14 @@ export function registerChecklistRoutes(app: FieldopsApp, gates: FieldopsGates):
     async (c) => {
       const stateId = parseInt(c.req.param("id"), 10);
       if (isNaN(stateId)) return c.json({ error: "invalid_id" }, 400);
-      const owned = await loadOwnedManualItemState(c, stateId);
+      const owned = await loadOwnedItemState(c, stateId);
       if (owned instanceof Response) return owned;
+      if (AUTO_CLOSE_TYPES.has(owned.item_type)) return c.json({ error: "auto_close_only" }, 400);
       const actor = c.get("session").username;
       await c.env.DB.batch([
         c.env.DB
           .prepare(
-            "UPDATE checklist_item_states SET status='open', completed_by=NULL, completed_at=NULL WHERE id=?1",
+            "UPDATE checklist_item_states SET status='open', completed_by=NULL, completed_at=NULL, value_num=NULL WHERE id=?1",
           )
           .bind(stateId),
         auditStmt(c, actor, "checklist_item_uncomplete", String(stateId), { item_state_id: stateId, instance_id: owned.instance_id }),

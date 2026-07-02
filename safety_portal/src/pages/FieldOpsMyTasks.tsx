@@ -3,6 +3,8 @@ import * as api from "../lib/fieldops_tasks";
 import * as checklist from "../lib/fieldops_checklist";
 import { PageShell } from "../components/PageShell";
 import { useAuth } from "../lib/auth";
+import { resolveFormTarget } from "../forms/registry";
+import type { FormPrefill } from "./FormFillPage";
 
 // Status → pill class (mirrors the Job Tracker task-list styling): done = ok, in_progress = warn.
 function statusPill(status: string): string {
@@ -40,16 +42,21 @@ function itemPill(status: string): string {
 }
 
 /**
- * S3 — "Today's checklist" for a placed manager. Self-contained: fetches GET /checklist/mine, which
- * runs Worker-on-read generation and returns `instance: null` for anyone who isn't a placed manager
- * (a subcontractor, or a manager with no current_job) — in which case this renders NOTHING (the
- * My-Tasks list stays exactly as S1). manual_attest items get a done/undo control (S3); the other
- * three item types are shown read-only (loop-closure + count/inspection completion arrive in S4).
+ * S3/S4 — "Today's checklist" for a placed manager. Self-contained: fetches GET /checklist/mine, which
+ * runs Worker-on-read generation + S4 loop-closure reconcile, and returns `instance: null` for anyone
+ * who isn't a placed manager (a subcontractor, or a manager with no current_job) — in which case this
+ * renders NOTHING (the My-Tasks list stays exactly as S1). Per item type (S4):
+ *   • manual_attest — a check with an optional note (+ undo).
+ *   • count         — a number input + "Record" (done when value ≥ target_count).
+ *   • form_linked / inspection — a deep-link ("Complete <label>") into FormFillPage pre-filled with the
+ *     instance's job + date + the item's form. NOT manually checkable — the item auto-closes on the next
+ *     load once a matching form is filed (server loop-closure). A done/pending badge reflects that.
  */
-function DailyChecklistSection() {
+function DailyChecklistSection({ onOpenForm }: { onOpenForm?: (p: FormPrefill) => void }) {
   const [data, setData] = useState<checklist.MyChecklist | null>(null);
   const [busyId, setBusyId] = useState<number | null>(null);
   const [notes, setNotes] = useState<Record<number, string>>({});
+  const [counts, setCounts] = useState<Record<number, string>>({});
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
   useEffect(() => {
@@ -59,6 +66,7 @@ function DailyChecklistSection() {
       .catch(() => setData({ instance: null, items: [] }));
   }, []);
 
+  // manual_attest complete/undo.
   async function toggle(item: checklist.ChecklistItemState) {
     if (busyId !== null) return;
     setBusyId(item.id);
@@ -68,7 +76,6 @@ function DailyChecklistSection() {
         item.status === "done"
           ? await checklist.uncompleteChecklistItem(item.id)
           : await checklist.completeChecklistItem(item.id, notes[item.id] ? { note: notes[item.id] } : undefined);
-      // Refresh from the server (also picks up the recomputed instance status).
       const fresh = await checklist.fetchMyChecklist();
       setData(fresh);
       setMsg({ ok: true, text: res.instance_status === "complete" ? "Checklist complete." : "Item updated." });
@@ -77,6 +84,42 @@ function DailyChecklistSection() {
     } finally {
       setBusyId(null);
     }
+  }
+
+  // count — record a value (server completes iff value ≥ target_count, else 'below_target' error).
+  async function recordCount(item: checklist.ChecklistItemState) {
+    if (busyId !== null) return;
+    const raw = counts[item.id];
+    const value = Number(raw);
+    if (raw === undefined || raw === "" || !Number.isFinite(value)) {
+      setMsg({ ok: false, text: "Enter a number." });
+      return;
+    }
+    setBusyId(item.id);
+    setMsg(null);
+    try {
+      const res = await checklist.recordCountItem(item.id, value);
+      const fresh = await checklist.fetchMyChecklist();
+      setData(fresh);
+      setMsg({ ok: true, text: res.instance_status === "complete" ? "Checklist complete." : "Count recorded." });
+    } catch (err) {
+      const text = err instanceof Error ? err.message : "Update failed.";
+      setMsg({ ok: false, text: text === "below_target" ? "Value is below the target." : text });
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  // form_linked / inspection — deep-link into the fill flow, pre-filled from the instance + the item's form.
+  function openLinkedForm(item: checklist.ChecklistItemState) {
+    if (!onOpenForm || !data?.instance || !item.form_code) return;
+    const { parentCode, variantCode } = resolveFormTarget(item.form_code);
+    onOpenForm({
+      jobId: data.instance.job_id,
+      parentCode,
+      variantCode: variantCode || undefined,
+      workDate: data.instance.instance_date,
+    });
   }
 
   // Not a placed manager → no daily section at all.
@@ -97,11 +140,13 @@ function DailyChecklistSection() {
       ) : (
         <ul className="dash-tasklist">
           {data.items.map((it) => {
-            const isManual = it.item_type === "manual_attest";
             const done = it.status === "done";
+            const isManual = it.item_type === "manual_attest";
+            const isCount = it.item_type === "count";
+            const isLinked = it.item_type === "form_linked" || it.item_type === "inspection";
             return (
               <li key={it.id}>
-                <span className={itemPill(it.status)}>{it.status}</span> {it.label}
+                <span className={itemPill(it.status)}>{done ? "done" : "pending"}</span> {it.label}
                 <span className="dash-card__sub"> · {it.item_type}</span>
                 {isManual ? (
                   <>
@@ -129,9 +174,47 @@ function DailyChecklistSection() {
                     </button>
                     {done && it.note ? <span className="dash-card__sub"> · {it.note}</span> : null}
                   </>
-                ) : (
-                  <span className="dash-card__sub"> · completion arrives soon</span>
-                )}
+                ) : isCount ? (
+                  <>
+                    {it.target_count !== null ? (
+                      <span className="dash-card__sub"> · target {it.target_count}</span>
+                    ) : null}{" "}
+                    <input
+                      type="number"
+                      min={0}
+                      aria-label={`Count for item ${it.id}`}
+                      placeholder="count"
+                      value={counts[it.id] ?? (it.value_num !== null ? String(it.value_num) : "")}
+                      onChange={(e) => setCounts((cnt) => ({ ...cnt, [it.id]: e.target.value }))}
+                      disabled={busyId !== null}
+                    />{" "}
+                    <button
+                      type="button"
+                      className="btn btn--primary"
+                      aria-label={`Record item ${it.id}`}
+                      disabled={busyId !== null}
+                      onClick={() => recordCount(it)}
+                    >
+                      Record
+                    </button>
+                    {done && it.value_num !== null ? (
+                      <span className="dash-card__sub"> · recorded {it.value_num}</span>
+                    ) : null}
+                  </>
+                ) : isLinked ? (
+                  <>
+                    {" "}
+                    <button
+                      type="button"
+                      className={done ? "btn btn--ghost" : "btn btn--primary"}
+                      aria-label={`Complete ${it.label ?? `item ${it.id}`}`}
+                      disabled={busyId !== null || !onOpenForm}
+                      onClick={() => openLinkedForm(it)}
+                    >
+                      {done ? "Filed ✓ — file again" : `Complete ${it.label ?? "form"}`}
+                    </button>
+                  </>
+                ) : null}
               </li>
             );
           })}
@@ -148,7 +231,13 @@ function DailyChecklistSection() {
  * link; an account with no linked personnel row simply has no tasks (empty state). The cap gate here is
  * a CONVENIENCE — the Worker re-gates every read + status write (Invariant 2).
  */
-export function FieldOpsMyTasks({ onBack }: { onBack: () => void }) {
+export function FieldOpsMyTasks({
+  onBack,
+  onOpenForm,
+}: {
+  onBack: () => void;
+  onOpenForm?: (p: FormPrefill) => void;
+}) {
   const { user } = useAuth();
   const canOwn = (user?.capabilities ?? []).includes("cap.tasks.own");
 
@@ -207,8 +296,8 @@ export function FieldOpsMyTasks({ onBack }: { onBack: () => void }) {
       )}
       {error && <div className="banner banner--err">{error}</div>}
 
-      {/* S3 — the placed manager's daily checklist (renders nothing for anyone else). */}
-      <DailyChecklistSection />
+      {/* S3/S4 — the placed manager's daily checklist (renders nothing for anyone else). */}
+      <DailyChecklistSection onOpenForm={onOpenForm} />
 
       {loading && tasks.length === 0 ? (
         <div className="muted">Loading your tasks…</div>

@@ -184,14 +184,16 @@ describe("checklist S3 — completion (ownership-scoped, manual_attest-only, sta
     expect(res.status).toBe(403);
   });
 
-  it("form_linked / count / inspection completion is REJECTED in S3 (400)", async () => {
-    // The seeded form_linked item on the manager's instance.
+  it("a manual complete on a form_linked item is REJECTED (auto-close only, 400)", async () => {
+    // The seeded form_linked item closes via a matching SUBMISSION (S4 loop-closure), never a manual
+    // action, so a direct /complete is refused. (S4 full loop-closure coverage lives in
+    // fieldops-checklist-loop-closure.test.ts.)
     const body = await mine(manager);
     const formLinked = body.items.find((i) => i.item_type === "form_linked");
     expect(formLinked).toBeDefined();
     const res = await post(manager, `/api/fieldops/checklist/item-state/${formLinked!.id}/complete`);
     expect(res.status).toBe(400);
-    expect(((await res.json()) as { error: string }).error).toBe("unsupported_item_type");
+    expect(((await res.json()) as { error: string }).error).toBe("auto_close_only");
   });
 
   it("instance flips to 'complete' when ALL items done, back to 'open' when one is undone", async () => {
