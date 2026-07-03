@@ -11,10 +11,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../lib/fieldops_checklist", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../lib/fieldops_checklist")>();
-  return { ...actual, recordCountItem: vi.fn() };
+  return { ...actual, recordCountItem: vi.fn(), uploadItemPhoto: vi.fn() };
+});
+// G1: encodePhoto is PhotoField's downscale ladder (jsdom has no canvas/createImageBitmap) —
+// mocked to a deterministic PhotoValue so the row's capture flow is unit-testable.
+vi.mock("../PhotoField", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../PhotoField")>();
+  return { ...actual, encodePhoto: vi.fn() };
 });
 
 import * as checklist from "../../lib/fieldops_checklist";
+import { encodePhoto } from "../PhotoField";
 import { ApiError } from "../../lib/errorCopy";
 import {
   ChecklistItemRow,
@@ -40,6 +47,7 @@ function makeItem(over: Partial<checklist.ChecklistItemState> = {}): checklist.C
     completed_at: null,
     value_num: null,
     filed_by: null,
+    photo_status: null,
     ...over,
   };
 }
@@ -162,7 +170,9 @@ describe("ChecklistItemRow — manual_attest", () => {
     const { getByLabelText, props } = renderRow(item);
     fireEvent.change(getByLabelText("Note for item 12"), { target: { value: "wet deck" } });
     fireEvent.click(getByLabelText("Complete item 12"));
-    expect(props.onComplete).toHaveBeenCalledWith(item, "wet deck");
+    // G1: "Mark done" now threads the existing photo_ref (undefined here — none attached) so a
+    // pending 'pending:<id>' stamp isn't clobbered by a plain completion.
+    expect(props.onComplete).toHaveBeenCalledWith(item, "wet deck", undefined);
   });
 
   it("done: shows the note evidence, humanized subtitle, and Edit note re-completes threading photo_ref", () => {
@@ -186,13 +196,93 @@ describe("ChecklistItemRow — manual_attest", () => {
     expect(props.onComplete).toHaveBeenCalledWith(item, "new note", "box:123");
   });
 
-  it("done: a renderable data-URI photo_ref renders a thumbnail", () => {
+  it("done: a data-URI photo_ref renders the neutral marker, NEVER an <img> (G1/Option D — the raw passthrough is retired)", () => {
     const ref = "data:image/jpeg;base64,abc123";
     const { container } = renderRow(
       makeItem({ id: 12, item_type: "manual_attest", target_count: null, status: "done", photo_ref: ref }),
     );
-    const img = container.querySelector("img");
-    expect(img?.getAttribute("src")).toBe(ref);
+    expect(container.querySelector("img")).toBeNull();
+    expect(container.textContent).toContain("photo attached");
+  });
+});
+
+describe("ChecklistItemRow — G1 photo capture states (Option D: status-only, no image ever)", () => {
+  const withPhoto = (over: Partial<checklist.ChecklistItemState> = {}, props: Record<string, unknown> = {}) =>
+    renderRow(makeItem({ id: 30, item_type: "manual_attest", target_count: null, ...over }), {
+      onPhotoUploaded: vi.fn(),
+      ...props,
+    });
+
+  it("no photo UI at all when the parent doesn't opt in (byte-identical to pre-G1)", () => {
+    const { container } = renderRow(makeItem({ id: 30, item_type: "manual_attest", target_count: null }));
+    expect(container.querySelector('[data-testid="item-photo-input-30"]')).toBeNull();
+    expect(container.textContent).not.toContain("Add photo");
+  });
+
+  it("none → an [Add photo] affordance (opted in)", () => {
+    const { getByLabelText, container } = withPhoto({ photo_status: null });
+    expect(getByLabelText("Add photo for item 30")).toBeTruthy();
+    expect(container.querySelector('[data-testid="item-photo-input-30"]')).toBeTruthy();
+    expect(container.querySelector("img")).toBeNull();
+  });
+
+  it("pending → 'photo attached — screening…', no button, no image", () => {
+    const { container, queryByLabelText } = withPhoto({ photo_status: "pending" });
+    expect(container.textContent).toContain("screening");
+    expect(queryByLabelText("Add photo for item 30")).toBeNull();
+    expect(container.querySelector("img")).toBeNull();
+  });
+
+  it("clean → 'photo on file ✓' with the one-time scale-in class, no image", () => {
+    const { container, queryByLabelText } = withPhoto({ photo_status: "clean" });
+    expect(container.textContent).toContain("photo on file ✓");
+    expect(container.querySelector(".checklist-photo-filed")).toBeTruthy();
+    expect(queryByLabelText("Add photo for item 30")).toBeNull();
+    expect(container.querySelector("img")).toBeNull();
+  });
+
+  it("refused → the refusal copy + a retry affordance ('Add a different photo')", () => {
+    const { container, getByLabelText } = withPhoto({ photo_status: "refused" });
+    expect(container.textContent).toContain("refused by the security screen");
+    expect(getByLabelText("Add photo for item 30")).toBeTruthy();
+    expect(getByLabelText("Add photo for item 30").textContent).toContain("different photo");
+  });
+
+  it("upload flow: encodePhoto → uploadItemPhoto → onPhotoUploaded refetch", async () => {
+    vi.mocked(encodePhoto).mockResolvedValue({ data: "x", name: "p.jpg", taken_at: "", gps: "" });
+    vi.mocked(checklist.uploadItemPhoto).mockResolvedValue({
+      ok: true, photo_id: 7, photo_status: "pending", photo_ref: "pending:7",
+    });
+    const onPhotoUploaded = vi.fn();
+
+    const { container } = withPhoto({ photo_status: null }, { onPhotoUploaded });
+    const input = container.querySelector('[data-testid="item-photo-input-30"]') as HTMLInputElement;
+    const file = new File([new Uint8Array([1, 2, 3])], "p.jpg", { type: "image/jpeg" });
+    fireEvent.change(input, { target: { files: [file] } });
+
+    await waitFor(() =>
+      expect(checklist.uploadItemPhoto).toHaveBeenCalledWith(30, expect.objectContaining({ name: "p.jpg" })),
+    );
+    await waitFor(() => expect(onPhotoUploaded).toHaveBeenCalled());
+  });
+
+  it("upload error surfaces the human copy (e.g. the one-photo 409) inline, never silently", async () => {
+    vi.mocked(encodePhoto).mockResolvedValue({ data: "x", name: "p.jpg", taken_at: "", gps: "" });
+    vi.mocked(checklist.uploadItemPhoto).mockRejectedValue(new ApiError("photo_already_attached", 409));
+
+    const { container } = withPhoto({ photo_status: null });
+    const input = container.querySelector('[data-testid="item-photo-input-30"]') as HTMLInputElement;
+    fireEvent.change(input, { target: { files: [new File([new Uint8Array([1])], "p.jpg")] } });
+
+    await waitFor(() => expect(container.textContent).toContain("one photo per item"));
+  });
+
+  it("no photo affordance on a form_linked item even when opted in (its evidence is the filed form)", () => {
+    const { container } = renderRow(
+      makeItem({ id: 31, item_type: "form_linked", form_code: "daily-report", target_count: null }),
+      { onPhotoUploaded: vi.fn(), canOpenForm: false },
+    );
+    expect(container.querySelector('[data-testid="item-photo-input-31"]')).toBeNull();
   });
 });
 

@@ -1,9 +1,11 @@
 import type { Context } from "hono";
 import type { Env, Vars } from "./types";
 import type { FieldopsApp, FieldopsGates } from "./fieldops_gates";
-import { auditStmt, auditStmtIfChanged } from "./audit";
+import { auditStmt, auditStmtIfChanged, isUniqueViolation } from "./audit";
 import { requireJob, resolveActorPersonnel } from "./fieldops_scope";
-import type { AssignedInspectionsResponse, ChecklistItemState } from "./wire-types";
+import type { AssignedInspectionsResponse, ChecklistItemState, ItemPhotoUploadResult } from "./wire-types";
+import { hmacHex } from "./hmac";
+import { b64DecodedLen, isPhotoItem, validateSinglePhoto } from "./photo_bounds";
 import catalog from "../catalog.json";
 
 // Assigned-Tasks tab (P4 field-ops feature) S2 — the checklist ENGINE + the admin per-job template
@@ -30,6 +32,38 @@ const MAX_COUNT = 100_000;
 // S3 completion inputs (bounded per Invariant 2 — untrusted body).
 const MAX_NOTE = 2000;
 const MAX_PHOTO_REF = 256;
+// ── G1 Slice 1 — item-photo capture (Option D RATIFIED 2026-07-03: record-only, no serving
+// route ever, delete-on-screen). ──────────────────────────────────────────────────────────────
+// SINGLE CONSISTENT BODY BOUND (the A7 413-mismatch class): the request body is exactly ONE
+// photo + its meta, so the body bound is DERIVED from the photo bound — never set independently.
+//   PHOTO_MAX_BYTES = 400_000 decoded → 4 × ceil(400_000 / 3) = 533_336 base64 chars
+//   + meta caps (name 100 + taken_at 40 + gps 64) + the JSON envelope (keys/quotes/braces ≲ 60)
+//   → every VALID photo body fits in ≤ ~533_600 chars; 560_000 leaves slack without admitting
+//   a second photo's worth of bytes. Over the bound → 413 photo_upload_too_large (checked on the
+//   raw text BEFORE JSON.parse, so a hostile 10 MB body never reaches the parser).
+const ITEM_PHOTO_BODY_MAX = 560_000;
+
+/**
+ * ITEM-PHOTO HMAC CANONICAL STRING (G1 — mirrored by the Slice-2 Mac verifier, the sibling of
+ * shared/portal_hmac.py's submission recompute). ORDER + SEPARATOR are load-bearing:
+ *
+ *   "item_photo:v1" \n <item_state_id (decimal)> \n <photo_json>
+ *
+ * joined with "\n"; HMAC-SHA256(HMAC_PAYLOAD_SECRET) → lowercase hex — the SAME key + encoding
+ * as the submission HMAC so the Mac side reuses its keychain secret + hexdigest helper.
+ *   • The "item_photo:v1" literal DOMAIN-SEPARATES this protocol from submission HMACs (a
+ *     submission canonical starts with its uuid — cross-protocol signature confusion is
+ *     structurally impossible) and versions the string for Slice-2 evolution.
+ *   • item_state_id binds the photo to its item (a valid signed photo cannot be replayed onto a
+ *     different item without failing verification).
+ *   • photo_json is the EXACT stored JSON string ({data,name,taken_at,gps,uploaded_by} — the
+ *     4-key wire PhotoValue + the authenticated uploader), used verbatim on both sides, exactly
+ *     like the submission payload_json contract. uploaded_by rides INSIDE photo_json so the
+ *     Slice-2 malicious-disposition CRITICAL can name the account from HMAC-covered data.
+ */
+function itemPhotoCanonical(itemStateId: number, photoJson: string): string {
+  return ["item_photo:v1", String(itemStateId), photoJson].join("\n");
+}
 // S4 count completion: value_num upper bound (shares the MAX_COUNT ceiling used for target_count).
 const MAX_VALUE = 100_000;
 // S4 loop-closure sentinel — a form_linked/inspection item is closed by a matching SUBMISSION, not a
@@ -330,6 +364,9 @@ function buildItemStatesSql(dateOp: "=" | "<="): string {
   return `
         SELECT id, source_item_id, item_type, label, form_code, target_count, status, note, photo_ref,
                completed_by, completed_at, value_num,
+               (SELECT ip.status FROM item_photos ip
+                WHERE ip.item_state_id = checklist_item_states.id
+                ORDER BY ip.id DESC LIMIT 1) AS photo_status,
                CASE WHEN status = 'done' AND completed_by = '${AUTO_COMPLETED_BY}' AND form_code IS NOT NULL THEN (
                  SELECT (SELECT p.name FROM personnel p WHERE p.username = sub.submitted_as ORDER BY p.id ASC LIMIT 1)
                  FROM submissions sub
@@ -817,6 +854,127 @@ export function registerChecklistRoutes(app: FieldopsApp, gates: FieldopsGates):
         .bind(owned.instance_id)
         .first<{ status: string }>();
       return c.json({ ok: true, id: stateId, status: "open", instance_status: inst?.status ?? "open" }, 200);
+    },
+  );
+
+  // ── POST /api/fieldops/checklist/item-state/:id/photo — attach ONE photo to an item (G1 S1). ─────
+  // Option D (RATIFIED 2026-07-03): record-only evidence CAPTURE. The photo enters the item_photos
+  // pending queue (0036) for the Slice-2 Mac §34 screen (photo_screen, byte-identical pipeline);
+  // it is NEVER served back to any browser — the SPA renders lifecycle status only. Gates: session
+  // + cap.tasks.own + assignee-ownership (loadOwnedItemState — the exact S3/S4 completion
+  // contract). Bounds: the VERBATIM validatePhotoValues per-photo gate (photo_bounds) behind the
+  // single derived body bound (ITEM_PHOTO_BODY_MAX). One photo per item state (409 while
+  // pending/clean; refused vacates the slot — retry allowed). HMAC-signed like submissions
+  // (itemPhotoCanonical above). Mutation + photo_ref stamp + audit in ONE batch (W4).
+  app.post(
+    "/api/fieldops/checklist/item-state/:id/photo",
+    gates.requireSession,
+    gates.requireCapability(CAP_TASKS_OWN),
+    async (c) => {
+      const stateId = parseInt(c.req.param("id"), 10);
+      if (isNaN(stateId)) return c.json({ error: "invalid_id" }, 400);
+
+      // SINGLE CONSISTENT BODY BOUND — enforced on the RAW text BEFORE JSON.parse, so a hostile
+      // oversized body never reaches the parser (see the ITEM_PHOTO_BODY_MAX derivation).
+      let raw: string;
+      try {
+        raw = await c.req.text();
+      } catch {
+        return c.json({ error: "bad_request" }, 400);
+      }
+      if (raw.length > ITEM_PHOTO_BODY_MAX) return c.json({ error: "photo_upload_too_large" }, 413);
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        return c.json({ error: "bad_request" }, 400);
+      }
+      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+        return c.json({ error: "bad_request" }, 400);
+      }
+      const photo = (parsed as Record<string, unknown>).photo;
+      // Exact wire shape: the 4-key PhotoValue ({data,name,taken_at,gps}, all strings) — the same
+      // isPhotoItem the submit gate runs.
+      if (!isPhotoItem(photo)) return c.json({ error: "invalid_photo", detail: "invalid_photo_shape" }, 400);
+      // The VERBATIM per-photo bounds gate (photo_bounds.validateSinglePhoto — the exact
+      // /api/submit checks in the exact order): meta caps (name 100 / taken_at 40 / gps 64) →
+      // base64 shape → ≤400,000 decoded bytes → JPEG/PNG magic. Machine reason rides `detail`
+      // (never the bytes), the /api/submit convention.
+      const photoErr = validateSinglePhoto(photo);
+      if (photoErr) return c.json({ error: "invalid_photo", detail: photoErr }, 400);
+
+      // Ownership: existence + assignee-only — 404 unknown, 403 not-your-instance (the same
+      // loadOwnedItemState the completion routes use; Invariant 2 — the SPA is never the boundary).
+      const owned = await loadOwnedItemState(c, stateId);
+      if (owned instanceof Response) return owned;
+      // Evidence attaches to CHECKABLE items (manual_attest / count). A form_linked/inspection
+      // item's evidence IS its filed submission — which carries its own §34-screened photos.
+      if (AUTO_CLOSE_TYPES.has(owned.item_type)) return c.json({ error: "photo_not_supported" }, 400);
+
+      // ONE PHOTO PER ITEM STATE: a live (pending|clean) photo blocks a second upload; a REFUSED
+      // photo vacated the slot (retry allowed). Pre-checked for a clean 409; the partial unique
+      // index (0036 idx_item_photos_one_live) makes the rule race-proof — a lost check-then-act
+      // race hits UNIQUE in the batch below and maps to the same 409.
+      const live = await c.env.DB.prepare(
+        "SELECT id, status FROM item_photos WHERE item_state_id = ?1 AND status IN ('pending','clean') LIMIT 1",
+      )
+        .bind(stateId)
+        .first<{ id: number; status: string }>();
+      if (live) return c.json({ error: "photo_already_attached", photo_status: live.status }, 409);
+
+      // Fail closed on a misconfigured Worker: never sign with an undefined secret — a signature
+      // the Mac side could never verify would be silent evidence loss (mirrors /api/submit).
+      if (!c.env.HMAC_PAYLOAD_SECRET) return c.json({ error: "server_misconfigured" }, 503);
+      const actor = c.get("session").username;
+      // photo_json = the EXACT stored string the HMAC covers (itemPhotoCanonical): the wire
+      // PhotoValue + the AUTHENTICATED uploader — so the Slice-2 malicious-disposition CRITICAL
+      // names the account from HMAC-covered data, not from a spoofable sidecar.
+      const photoJson = JSON.stringify({
+        data: photo.data,
+        name: photo.name,
+        taken_at: photo.taken_at,
+        gps: photo.gps,
+        uploaded_by: actor,
+      });
+      const hmac = await hmacHex(c.env.HMAC_PAYLOAD_SECRET, itemPhotoCanonical(stateId, photoJson));
+
+      // (W4) ONE atomic batch: the queue INSERT, the item's photo_ref='pending:<id>' stamp, and
+      // the audit row — no window where a queued photo exists un-marked or un-audited. D1's
+      // batch() can't thread the RETURNING id into a later statement's binds, so the photo_ref
+      // stamp derives the id in SQL — deterministic because the partial unique index guarantees
+      // at most ONE pending row per item state. The audit carries the natural tuple + sizes,
+      // NEVER the photo bytes.
+      let res;
+      try {
+        res = await c.env.DB.batch([
+          c.env.DB
+            .prepare(
+              "INSERT INTO item_photos (item_state_id, status, photo_json, hmac) VALUES (?1, 'pending', ?2, ?3) RETURNING id",
+            )
+            .bind(stateId, photoJson, hmac),
+          c.env.DB
+            .prepare(
+              "UPDATE checklist_item_states SET photo_ref = 'pending:' || (SELECT id FROM item_photos WHERE item_state_id = ?1 AND status = 'pending' ORDER BY id DESC LIMIT 1) WHERE id = ?1",
+            )
+            .bind(stateId),
+          auditStmt(c, actor, "checklist_item_photo_add", String(stateId), {
+            item_state_id: stateId,
+            instance_id: owned.instance_id,
+            photo_name: photo.name,
+            decoded_bytes: b64DecodedLen(photo.data),
+          }),
+        ]);
+      } catch (e) {
+        // The lost check-then-act race: a concurrent upload won the live slot → the same 409.
+        if (isUniqueViolation(e)) return c.json({ error: "photo_already_attached" }, 409);
+        throw e;
+      }
+      const photoId = (res[0].results?.[0] as { id: number } | undefined)?.id;
+      if (photoId === undefined) return c.json({ error: "internal_error" }, 500);
+      return c.json(
+        { ok: true, photo_id: photoId, photo_status: "pending", photo_ref: `pending:${photoId}` } satisfies ItemPhotoUploadResult,
+        201,
+      );
     },
   );
 
@@ -1331,6 +1489,15 @@ export function registerChecklistRoutes(app: FieldopsApp, gates: FieldopsGates):
       if (!row || row.kind !== "inspection") return c.json({ error: "not_found" }, 404);
       const actor = c.get("session").username;
       const res = await c.env.DB.batch([
+        // (G1) item photos die with their item states — deepest child first, so a cancelled
+        // instance never orphans queued photo bytes (the prune orphan-drop is the backstop, not
+        // the path). Unaudited cleanup legs run BEFORE the changes()-gated instance delete (the
+        // same W4 shape as the orphan-marker cleanup in the default-item delete route).
+        c.env.DB
+          .prepare(
+            "DELETE FROM item_photos WHERE item_state_id IN (SELECT id FROM checklist_item_states WHERE instance_id = ?1)",
+          )
+          .bind(instanceId),
         c.env.DB.prepare("DELETE FROM checklist_item_states WHERE instance_id = ?1").bind(instanceId),
         c.env.DB
           .prepare("DELETE FROM checklist_instances WHERE id = ?1 AND kind = 'inspection'")
@@ -1345,7 +1512,9 @@ export function registerChecklistRoutes(app: FieldopsApp, gates: FieldopsGates):
               status_at_cancel: row.status,
             }),
       ]);
-      if ((res[1].meta.changes ?? 0) === 0) return c.json({ error: "not_found" }, 404);
+      // The INSTANCE delete is res[2] (item_photos + item_states cleanup legs precede it) — the
+      // statement immediately before the audit, so auditStmtIfChanged still gates on it.
+      if ((res[2].meta.changes ?? 0) === 0) return c.json({ error: "not_found" }, 404);
       return c.json({ ok: true, id: instanceId }, 200);
     },
   );

@@ -565,3 +565,105 @@ def test_get_prune_status_401_raises_auth(mocker):
     _patch_requests(mocker, _mock_response(status=401))
     with pytest.raises(PortalAuthError):
         portal_client.get_prune_status(BASE, TOKEN)
+
+
+# ---- get_item_photos_pending (G1 Slice 2) ---------------------------------
+
+
+def test_get_item_photos_pending_returns_rows_and_sends_bearer_and_limit(mocker):
+    rows = [
+        {"id": 5, "item_state_id": 7, "photo_json": '{"data":"QUJD"}',
+         "hmac": "abc", "created_at": 1},
+    ]
+    req = _patch_requests(mocker, _mock_response(json_body={"item_photos": rows}))
+
+    out = portal_client.get_item_photos_pending(BASE, TOKEN, limit=25)
+
+    assert out == rows
+    args, kwargs = req.call_args
+    assert args == ("GET", "https://portal.example.com/api/internal/item-photos/pending")
+    assert kwargs["headers"]["Authorization"] == "Bearer fake-bearer"
+    assert kwargs["params"] == {"limit": 25}
+
+
+def test_get_item_photos_pending_empty_returns_empty_list(mocker):
+    _patch_requests(mocker, _mock_response(json_body={"item_photos": []}))
+    assert portal_client.get_item_photos_pending(BASE, TOKEN) == []
+
+
+def test_get_item_photos_pending_drops_non_dict_rows(mocker):
+    _patch_requests(
+        mocker,
+        _mock_response(json_body={"item_photos": [{"id": 5}, "x", 7]}),
+    )
+    assert portal_client.get_item_photos_pending(BASE, TOKEN) == [{"id": 5}]
+
+
+@pytest.mark.parametrize(
+    "body", [{"item_photos": {"x": 1}}, {"item_photos": "nope"}, {"item_photos": 5}, {}]
+)
+def test_get_item_photos_pending_non_list_raises(mocker, body):
+    _patch_requests(mocker, _mock_response(json_body=body))
+    with pytest.raises(PortalTransportError, match="item_photos"):
+        portal_client.get_item_photos_pending(BASE, TOKEN)
+
+
+def test_get_item_photos_pending_401_raises_auth_without_retry(mocker):
+    req = _patch_requests(mocker, _mock_response(status=401))
+    with pytest.raises(PortalAuthError):
+        portal_client.get_item_photos_pending(BASE, TOKEN)
+    assert req.call_count == 1
+
+
+# ---- post_item_photo_result (G1 Slice 2) ----------------------------------
+
+
+def test_post_item_photo_result_clean_posts_box_file_id_and_returns_found(mocker):
+    req = _patch_requests(mocker, _mock_response(json_body={"ok": True, "found": True}))
+
+    found = portal_client.post_item_photo_result(
+        BASE, TOKEN, photo_id=5, status="clean", box_file_id="box-9",
+    )
+
+    assert found is True
+    args, kwargs = req.call_args
+    assert args == ("POST", "https://portal.example.com/api/internal/item-photos/5/result")
+    assert kwargs["json"] == {"status": "clean", "box_file_id": "box-9"}
+    assert kwargs["headers"]["Authorization"] == "Bearer fake-bearer"
+
+
+def test_post_item_photo_result_refused_posts_detail_only(mocker):
+    req = _patch_requests(mocker, _mock_response(json_body={"ok": True, "found": True}))
+
+    found = portal_client.post_item_photo_result(
+        BASE, TOKEN, photo_id=6, status="refused", detail="L1:magic_mismatch",
+    )
+
+    assert found is True
+    args, kwargs = req.call_args
+    assert args == ("POST", "https://portal.example.com/api/internal/item-photos/6/result")
+    # box_file_id is OMITTED on refused (the Worker 400s a refused-with-box_file_id).
+    assert kwargs["json"] == {"status": "refused", "detail": "L1:magic_mismatch"}
+
+
+def test_post_item_photo_result_found_false_is_returned_not_raised(mocker):
+    # Idempotent re-screen: an already-applied disposition returns found=False (benign).
+    _patch_requests(mocker, _mock_response(json_body={"ok": True, "found": False}))
+    assert portal_client.post_item_photo_result(
+        BASE, TOKEN, photo_id=5, status="clean", box_file_id="box-9",
+    ) is False
+
+
+def test_post_item_photo_result_invalid_400_raises_transport_error(mocker):
+    # A contract violation (400 invalid_result) must SURFACE, never a silent return.
+    _patch_requests(mocker, _mock_response(status=400, text='{"error":"invalid_result"}'))
+    with pytest.raises(PortalTransportError, match="400"):
+        portal_client.post_item_photo_result(BASE, TOKEN, photo_id=5, status="refused")
+
+
+def test_post_item_photo_result_401_raises_auth_error(mocker):
+    _patch_requests(mocker, _mock_response(status=401))
+    with pytest.raises(PortalAuthError):
+        portal_client.post_item_photo_result(
+            BASE, TOKEN, photo_id=5, status="clean", box_file_id="box-9",
+        )

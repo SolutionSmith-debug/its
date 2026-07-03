@@ -59,6 +59,8 @@ MARK_REJECTED_PATH = "/api/internal/mark-rejected"
 SYNC_PATH = "/api/internal/sync"
 PDF_REQUESTS_PATH = "/api/internal/pdf-requests"
 FILED_PDF_PATH = "/api/internal/filed-pdf"
+ITEM_PHOTOS_PENDING_PATH = "/api/internal/item-photos/pending"
+ITEM_PHOTO_RESULT_PATH_TEMPLATE = "/api/internal/item-photos/{photo_id}/result"
 PUBLISH_PENDING_PATH = "/api/internal/publish/pending"
 PUBLISH_CLAIM_PATH = "/api/internal/publish/claim"
 PUBLISH_STAMP_PATH = "/api/internal/publish/stamp"
@@ -373,6 +375,72 @@ def upload_filed_pdf(
             "chunk_b64": chunk_b64,
         },
     )
+
+
+# ---- Checklist item-photo screening queue (G1 Slice 2 — the Mac screening-pass I/O) ----
+
+
+def get_item_photos_pending(
+    base_url: str, token: str, *, limit: int = 25
+) -> list[dict[str, Any]]:
+    """Pull the unscreened checklist item-photo queue: GET /api/internal/item-photos/pending.
+
+    Each row is a dict `{id, item_state_id, photo_json, hmac, created_at}` — one
+    `item_photos` row (migration 0036) at `status='pending'`, oldest-first. Rows are
+    UNTRUSTED until the caller verifies each row's `hmac` against the item-photo
+    canonical string (`shared.portal_hmac.verify_item_photo` — the same
+    verify-before-anything contract as `get_pending`); `photo_json` is the VERBATIM
+    HMAC-covered string and must never be re-serialized before verification.
+
+    A control-plane read of OUR OWN Worker (bearer = the poller's
+    `PORTAL_INTERNAL_API_TOKEN` tier — same privilege class as `get_pending`), NOT a
+    customer-facing send. Same typed-error contract as `get_pending` —
+    `PortalAuthError` (401) / `PortalRateLimitError` (429/503 exhausted) /
+    `PortalTransportError` (any other failure, incl. a non-object / missing-array body).
+    """
+    data = _request(
+        "GET", base_url, ITEM_PHOTOS_PENDING_PATH, token, params={"limit": limit}
+    )
+    item_photos = data.get("item_photos")
+    if not isinstance(item_photos, list):
+        raise PortalTransportError(
+            f"GET {ITEM_PHOTOS_PENDING_PATH} missing/invalid 'item_photos' array "
+            f"(got {type(item_photos).__name__})"
+        )
+    # Defensive: keep only dict rows; a non-dict element is malformed transport.
+    return [row for row in item_photos if isinstance(row, dict)]
+
+
+def post_item_photo_result(
+    base_url: str, token: str, *, photo_id: int, status: str,
+    box_file_id: str | None = None, detail: str | None = None,
+) -> bool:
+    """Post one screening disposition: POST /api/internal/item-photos/:id/result → `found`.
+
+    `status` is `'clean'` (MUST carry `box_file_id` — the Box record already exists;
+    the Worker 400s a clean result without it) or `'refused'` (MUST NOT carry
+    `box_file_id`; optional `detail` rides the audit row — the machine reason, NEVER
+    photo bytes). The Worker applies the disposition in ONE atomic batch (W4):
+    `item_photos.status` flip + **photo_json NULLed (delete-on-screen — the bytes
+    leave D1)** + `checklist_item_states.photo_ref` → `'<status>:<id>'` + audit row.
+
+    Idempotent: `found=False` means the row was already screened (a re-post after a
+    lost ack) or no longer exists — the caller treats it as benign, exactly like
+    `mark_filed`. A control-plane write to OUR OWN Worker (outside the External Send
+    Gate, Invariant 1). Raises the typed `PortalTransportError` hierarchy on failure
+    (an invalid-result 400 surfaces as `PortalTransportError`, never a silent return).
+    """
+    body: dict[str, Any] = {"status": status}
+    if box_file_id is not None:
+        body["box_file_id"] = box_file_id
+    if detail is not None:
+        body["detail"] = detail
+    data = _request(
+        "POST", base_url,
+        ITEM_PHOTO_RESULT_PATH_TEMPLATE.format(photo_id=int(photo_id)), token,
+        json_body=body,
+    )
+    return bool(data.get("found"))
 
 
 # ---- Progress rollup numbers (P6 — the progress weekly-compile's read I/O) ----

@@ -20,7 +20,7 @@ beforeEach(() => {
   vi.resetAllMocks();
 });
 
-const ITEM: checklist.ChecklistItemState = { id: 40, source_item_id: 1, item_type: "manual_attest", label: "Harness checked", form_code: null, target_count: null, status: "open", note: null, photo_ref: null, completed_by: null, completed_at: null, value_num: null, filed_by: null };
+const ITEM: checklist.ChecklistItemState = { id: 40, source_item_id: 1, item_type: "manual_attest", label: "Harness checked", form_code: null, target_count: null, status: "open", note: null, photo_ref: null, completed_by: null, completed_at: null, value_num: null, filed_by: null, photo_status: null };
 
 function inspection(overrides: Partial<checklist.AssignedInstance> = {}, items: checklist.ChecklistItemState[] = [ITEM]): checklist.AssignedInspection {
   return {

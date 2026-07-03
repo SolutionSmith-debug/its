@@ -34,6 +34,8 @@ import {
 } from "./auth";
 import { validateCategory, validateDefinition, validateParentGrouping } from "./publishValidation";
 import { pruneOldData, writePruneMeta } from "./prune";
+import { hmacHex } from "./hmac";
+import { PHOTO_MAX_BYTES, b64DecodedLen, photoMagicOk, isPhotoItem, B64_RE } from "./photo_bounds";
 import catalog from "../catalog.json";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -148,14 +150,8 @@ function canonicalPayload(p: {
   return [p.submission_uuid, p.job_id, p.form_code, p.work_date, p.payload_json].join("\n");
 }
 
-/** HMAC-SHA256(secret, message) → lowercase hex. */
-async function hmacHex(secret: string, message: string): Promise<string> {
-  const key = await crypto.subtle.importKey(
-    "raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"],
-  );
-  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(message));
-  return [...new Uint8Array(sig)].map((b) => b.toString(16).padStart(2, "0")).join("");
-}
+// hmacHex — extracted to worker/hmac.ts (G1: the item-photo route signs with the same primitive
+// without importing index.ts). Imported above; contract unchanged.
 
 /**
  * Length-independent constant-time compare: compares the SHA-256 digests, so the
@@ -515,38 +511,12 @@ app.get("/api/recent", requireSession, async (c) => {
 // daily prune already cleans filed rows. Never log photo bytes.
 const PHOTO_MAX_PER_FIELD = 4;
 const PHOTO_MAX_PER_SUBMISSION = 8;
-const PHOTO_MAX_BYTES = 400_000; // decoded bytes, per photo (client targets ≤ this)
+// PHOTO_MAX_BYTES / B64_RE / b64DecodedLen / photoMagicOk / isPhotoItem — extracted to
+// worker/photo_bounds.ts (G1) so the item-photo route enforces the EXACT same per-photo gate;
+// imported above, behavior byte-identical.
 // Pre-photos cap was 1_000_000 (audit #1 era). D1 row practical ceiling is ~2MB;
 // 1_800_000 leaves headroom for the non-photo values + SQL row overhead.
 const PAYLOAD_MAX = 1_800_000;
-const B64_RE = /^[A-Za-z0-9+/]+={0,2}$/;
-
-function b64DecodedLen(s: string): number {
-  const pad = s.endsWith("==") ? 2 : s.endsWith("=") ? 1 : 0;
-  return Math.floor((s.length * 3) / 4) - pad;
-}
-/** First decoded bytes must be JPEG (FF D8 FF) or PNG (89 50 4E 47). */
-function photoMagicOk(b64: string): boolean {
-  let head: string;
-  try {
-    head = atob(b64.slice(0, 8));
-  } catch {
-    return false;
-  }
-  if (head.length < 4) return false;
-  const b = [head.charCodeAt(0), head.charCodeAt(1), head.charCodeAt(2), head.charCodeAt(3)];
-  if (b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return true; // JPEG
-  return b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47; // PNG
-}
-const PHOTO_KEYS = ["data", "name", "taken_at", "gps"] as const;
-/** Exact-shape detection ({data,name,taken_at,gps}, all strings) so table-row arrays
- *  (Record<colKey,string>[]) are never misread as photo arrays. */
-function isPhotoItem(x: unknown): x is Record<(typeof PHOTO_KEYS)[number], string> {
-  if (typeof x !== "object" || x === null || Array.isArray(x)) return false;
-  const o = x as Record<string, unknown>;
-  const keys = Object.keys(o);
-  return keys.length === PHOTO_KEYS.length && PHOTO_KEYS.every((k) => typeof o[k] === "string");
-}
 /** null = OK; string = machine reason for a 400 invalid_photo. */
 function validatePhotoValues(values: Record<string, unknown>): string | null {
   let total = 0;
@@ -1230,6 +1200,126 @@ app.post("/api/internal/filed-pdf", requireInternalToken, async (c) => {
       .run();
   }
   return c.json({ ok: true, ready: complete, stored: true, received: n });
+});
+
+// ── G1 Slice 2: the checklist item-photo screening queue (Mac portal_poll pass) ──
+// Both bearer-gated with requireInternalToken — the SAME middleware instance as
+// GET /api/internal/pending (byte-identical gate: fail-closed on a missing secret,
+// constant-time compare). The Mac's _service_item_photos pass GETs the pending queue,
+// verifies each row's HMAC (shared/portal_hmac.verify_item_photo), runs the
+// byte-identical §34 photo_screen pipeline, files a CLEAN sanitized re-encode to Box,
+// and POSTs the disposition back here. Option D (RATIFIED 2026-07-03): no route ever
+// serves these bytes to a browser; DELETE-ON-SCREEN — the result application NULLs
+// photo_json, so D1 holds photo bytes only while status='pending'.
+const ITEM_PHOTO_RESULT_STATUSES = new Set(["clean", "refused"]);
+
+/**
+ * GET /api/internal/item-photos/pending — the unscreened queue, oldest-first.
+ * Each row carries the VERBATIM stored photo_json + the Worker's HMAC so the Mac
+ * verifies integrity before any byte is decoded (the get_pending contract). The
+ * `photo_json IS NOT NULL` predicate is belt-and-suspenders: a pending row without
+ * bytes (schema-impossible on the write path) is unscreenable and must not be served
+ * — the stuck-pending prune stage is its terminal path. Returns a NAMED field
+ * (portal_client._request rejects non-object JSON). Bearer-token gated.
+ */
+app.get("/api/internal/item-photos/pending", requireInternalToken, async (c) => {
+  const limit = Math.min(Math.max(parseInt(c.req.query("limit") || "25", 10) || 25, 1), 100);
+  const { results } = await c.env.DB
+    .prepare(
+      "SELECT id, item_state_id, photo_json, hmac, created_at FROM item_photos " +
+        "WHERE status = 'pending' AND photo_json IS NOT NULL ORDER BY created_at ASC, id ASC LIMIT ?",
+    )
+    .bind(limit)
+    .all();
+  return c.json({ item_photos: results });
+});
+
+/**
+ * POST /api/internal/item-photos/:id/result — apply one screening disposition.
+ * Body: { status: 'clean'|'refused', box_file_id? (clean ONLY — required; the Box
+ * record must already exist), detail? (refused machine reason — audit only, never bytes) }.
+ *
+ * ONE atomic batch (W4): photo_ref flip on the owning item state + the item_photos
+ * disposition (status + **photo_json=NULL — delete-on-screen, the bytes leave D1** +
+ * box_file_id + screened_at) + the changes()-gated audit row. The item state's
+ * COMPLETION STATUS is never touched — a refused photo means evidence refused, NOT
+ * work not done (the item completion stands; refused vacates the one-photo slot so
+ * the crew can retry).
+ *
+ * Idempotent: a re-post for an already-screened / unknown row returns
+ * { ok:true, found:false } with NO writes (the status='pending' guards make the
+ * batch a structural no-op even under a lost race between the SELECT and the batch,
+ * and a LATE re-post can never clobber a newer retry's 'pending:<newid>' ref — the
+ * photo_ref UPDATE resolves its target through the still-pending row). Bearer-token gated.
+ */
+app.post("/api/internal/item-photos/:id/result", requireInternalToken, async (c) => {
+  const photoId = parseInt(c.req.param("id"), 10);
+  if (isNaN(photoId) || photoId < 1) return c.json({ error: "invalid_id" }, 400);
+  let body: Record<string, unknown>;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "bad_request" }, 400);
+  }
+  if (typeof body !== "object" || (body as unknown) === null || Array.isArray(body)) {
+    return c.json({ error: "bad_request" }, 400);
+  }
+  const status = typeof body.status === "string" && ITEM_PHOTO_RESULT_STATUSES.has(body.status)
+    ? (body.status as "clean" | "refused")
+    : "";
+  if (!status) return c.json({ error: "invalid_result", detail: "status" }, 400);
+  const boxFileId =
+    typeof body.box_file_id === "string" && body.box_file_id ? body.box_file_id.slice(0, 200) : null;
+  // detail: the refused machine reason (e.g. "L2:unreadable:OSError") — bounded, audit-only.
+  const detail = typeof body.detail === "string" && body.detail ? body.detail.slice(0, 200) : null;
+  // Tight contract (Invariant 2 — daemon input is untrusted too): clean MUST name the Box
+  // record it just filed; refused must NOT carry one (a refused photo is never filed).
+  if (status === "clean" && !boxFileId) {
+    return c.json({ error: "invalid_result", detail: "box_file_id_required" }, 400);
+  }
+  if (status === "refused" && boxFileId) {
+    return c.json({ error: "invalid_result", detail: "box_file_id_forbidden" }, 400);
+  }
+
+  const row = await c.env.DB
+    .prepare("SELECT id, item_state_id, status FROM item_photos WHERE id = ?1")
+    .bind(photoId)
+    .first<{ id: number; item_state_id: number; status: string }>();
+  // Unknown OR already-screened → idempotent no-op (mark_filed's found=false semantics: a
+  // re-post after a lost ack — or a row the prune already deleted — is benign, never an error).
+  if (!row || row.status !== "pending") {
+    return c.json({ ok: true, found: false, status: row?.status ?? null });
+  }
+
+  // (W4) ONE atomic batch. Statement order is load-bearing:
+  //   1. photo_ref flip FIRST — its subselect requires the item_photos row to still be
+  //      'pending', so a duplicate application (lost race past the SELECT above) resolves to
+  //      no target row and cannot clobber a newer retry's 'pending:<newid>' stamp.
+  //   2. the disposition UPDATE (guarded status='pending') — flips status, NULLs photo_json
+  //      (DELETE-ON-SCREEN), stamps box_file_id + screened_at.
+  //   3. the changes()=1-gated audit row, directly after the mutation it describes.
+  const res = await c.env.DB.batch([
+    c.env.DB
+      .prepare(
+        "UPDATE checklist_item_states SET photo_ref = ?1 WHERE id = " +
+          "(SELECT item_state_id FROM item_photos WHERE id = ?2 AND status = 'pending')",
+      )
+      .bind(`${status}:${photoId}`, photoId),
+    c.env.DB
+      .prepare(
+        "UPDATE item_photos SET status = ?1, photo_json = NULL, box_file_id = ?2, " +
+          "screened_at = unixepoch() WHERE id = ?3 AND status = 'pending'",
+      )
+      .bind(status, boxFileId, photoId),
+    auditStmtIfChanged(c, "portal_poll", "checklist_item_photo_result", String(photoId), {
+      item_photo_id: photoId,
+      item_state_id: row.item_state_id,
+      status,
+      box_file_id: boxFileId,
+      detail,
+    }),
+  ]);
+  return c.json({ ok: true, found: (res[1]?.meta?.changes ?? 0) > 0 });
 });
 
 /**
@@ -2233,7 +2323,8 @@ const scheduled: ExportedHandlerScheduledHandler<Env> = async (_controller, env)
     `prune: stripped ${pruned.stripped} payload(s), removed ${pruned.submissions} inactive-job + ` +
       `${pruned.rejected} rejected submission(s) + ${pruned.audit} audit row(s) + ` +
       `${pruned.pdfRequests} pdf request(s) + ${pruned.pdfChunks} pdf chunk(s) + ` +
-      `${pruned.publishRequests} terminal publish request(s) + ${pruned.jobs} empty job(s); ` +
+      `${pruned.publishRequests} terminal publish request(s) + ` +
+      `${pruned.itemPhotos} stuck/orphaned item photo(s) + ${pruned.jobs} empty job(s); ` +
       `D1 size ${pruned.dbSizeBytes} bytes` +
       (pruned.failedStages.length > 0 ? `; FAILED stages: ${pruned.failedStages.join(", ")}` : ""),
   );

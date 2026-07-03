@@ -1642,6 +1642,13 @@ h3,
   animation: filed-pop 120ms ease-out;
 }
 
+/* G1 "photo on file ✓" — the SAME one-time filed-pop scale-in at a second mount site (a shared
+   motion, not a third one; the motion doctrine's two-motion budget is unchanged). */
+.checklist-photo-filed {
+  display: inline-block;
+  animation: filed-pop 120ms ease-out;
+}
+
 /* Reduced motion kills both micro-interactions (the only two on the site). */
 @media (prefers-reduced-motion: reduce) {
   .btn,
@@ -1660,7 +1667,8 @@ h3,
   .btn--retire:active:not(:disabled) {
     transform: none;
   }
-  .fr__form-link-filed {
+  .fr__form-link-filed,
+  .checklist-photo-filed {
     animation: none;
   }
 }

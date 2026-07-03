@@ -31,6 +31,15 @@ export const PUBLISH_TERMINAL_RETENTION_DAYS = 90;
 // RECORDED in prune_meta (size_warn) and the Mac watchdog (Check V) escalates it to a
 // CRITICAL page. The console.warn stays as the local trace.
 export const DB_SIZE_WARN_BYTES = 6_000_000_000;
+// G1 Slice 1 (item_photos, migration 0036): a PENDING item photo still holding bytes after 7d
+// means the Mac screening loop (Slice 2 portal_poll pass) has been dead for a week — the growth
+// cap deletes it (delete + WARN; the item returns to its no-photo state so the crew can retry).
+// This is the GROWTH CAP, not the alerting path: a dead portal_poll pages via watchdog Check C /
+// ITS_Daemon_Health within hours, and the Slice-2 backlog/staleness signal owns queue-depth
+// paging. Clean/refused rows hold no bytes (delete-on-screen — photo_json NULLed on disposition),
+// so no retention rider is needed for them; refused markers die with their item state (cancel
+// cascade) or as orphans below.
+export const ITEM_PHOTO_STUCK_PENDING_DAYS = 7;
 
 /**
  * Prune aged rows from the D1 store (A3 housekeeping). Pure on (db, nowSec) so it is
@@ -76,6 +85,7 @@ export interface PruneResult {
   pdfRequests: number;
   pdfChunks: number;
   publishRequests: number;
+  itemPhotos: number;
   jobs: number;
   dbSizeBytes: number;
   sizeWarn: boolean;
@@ -190,6 +200,40 @@ export async function pruneOldData(db: Env["DB"], nowSec: number): Promise<Prune
     return r.meta.changes ?? 0;
   });
 
+  // item_photos (G1 Slice 1 — the stuck-pending rider + orphan drop; see the constant's note):
+  //   1. STUCK-PENDING (>7d, screening loop dead): clear the dangling 'pending:<id>' refs on
+  //      their item states FIRST (so the item returns to its no-photo state and the crew can
+  //      re-attach), then DELETE the rows — the pending bytes are the only unbounded-growth
+  //      vector this table has (delete-on-screen keeps clean/refused rows byte-free). WARN loud:
+  //      each deletion is evidence the crew believed was queued; the count also rides
+  //      prune_meta counters_json (Check V payload).
+  //   2. ORPHANS: rows whose item state no longer exists (any future deletion path that misses
+  //      the instance-cancel cascade) — same belt-and-suspenders as the filed_pdfs orphan drop.
+  const itemPhotoCutoff = nowSec - ITEM_PHOTO_STUCK_PENDING_DAYS * DAY_S;
+  const itemPhotos = await runStage("item_photos", failedStages, async () => {
+    await db
+      .prepare(
+        "UPDATE checklist_item_states SET photo_ref = NULL WHERE photo_ref IN " +
+          "(SELECT 'pending:' || ip.id FROM item_photos ip WHERE ip.status = 'pending' AND ip.created_at < ?)",
+      )
+      .bind(itemPhotoCutoff)
+      .run();
+    const stuck = await db
+      .prepare("DELETE FROM item_photos WHERE status = 'pending' AND created_at < ?")
+      .bind(itemPhotoCutoff)
+      .run();
+    const stuckN = stuck.meta.changes ?? 0;
+    if (stuckN > 0) {
+      console.warn(
+        `prune: deleted ${stuckN} stuck-pending item photo(s) (>${ITEM_PHOTO_STUCK_PENDING_DAYS}d unscreened — is the Mac screening loop down?)`,
+      );
+    }
+    const orphans = await db
+      .prepare("DELETE FROM item_photos WHERE item_state_id NOT IN (SELECT id FROM checklist_item_states)")
+      .run();
+    return stuckN + (orphans.meta.changes ?? 0);
+  });
+
   // jobs: an INACTIVE job with no remaining job-level records is dead weight (not in the
   // dropdown, nothing behind it). PR-5 guarded on `submissions`; P2.1 added the field-ops
   // integrity-bar tables (time_entries / task_assignments / inspections) keyed on job_id —
@@ -244,6 +288,7 @@ export async function pruneOldData(db: Env["DB"], nowSec: number): Promise<Prune
     pdfRequests,
     pdfChunks,
     publishRequests,
+    itemPhotos,
     jobs,
     dbSizeBytes,
     sizeWarn,
@@ -275,6 +320,7 @@ export async function writePruneMeta(
     pdfRequests: result.pdfRequests,
     pdfChunks: result.pdfChunks,
     publishRequests: result.publishRequests,
+    itemPhotos: result.itemPhotos,
     jobs: result.jobs,
   };
   try {
@@ -323,7 +369,12 @@ async function sampleDbSizeBytes(db: Env["DB"]): Promise<number> {
     const subs = await db
       .prepare("SELECT COALESCE(SUM(LENGTH(payload_json)), 0) AS n FROM submissions")
       .first<{ n: number }>();
-    return (chunks?.n ?? 0) + (subs?.n ?? 0);
+    // G1: pending item-photo bytes join the tripwire (the third payload-bearing table; clean/
+    // refused rows are byte-free by delete-on-screen, so photo_json sums only the pending queue).
+    const itemPhotos = await db
+      .prepare("SELECT COALESCE(SUM(LENGTH(photo_json)), 0) AS n FROM item_photos")
+      .first<{ n: number }>();
+    return (chunks?.n ?? 0) + (subs?.n ?? 0) + (itemPhotos?.n ?? 0);
   } catch {
     return 0;
   }

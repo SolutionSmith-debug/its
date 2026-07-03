@@ -4,9 +4,14 @@
 //
 // (R1) Errors: getJson/postJson throw ApiError (src/lib/errorCopy.ts) — err.message is HUMAN copy,
 // err.code is the raw wire code pages branch on (e.g. 'below_target', 'already_assigned').
-import { raiseApiError } from "./errorCopy";
+import { ApiError, raiseApiError } from "./errorCopy";
 import { fetchPersonnelList, type PersonnelRow } from "./fieldops_personnel";
-import type { ChecklistItemStatus, AssignedInspectionsResponse } from "../../worker/wire-types";
+import type {
+  ChecklistItemStatus,
+  AssignedInspectionsResponse,
+  ItemPhotoUploadResult,
+} from "../../worker/wire-types";
+import type { PhotoValue } from "../forms/types";
 
 export type ChecklistItemType = "form_linked" | "manual_attest" | "count" | "inspection";
 
@@ -70,6 +75,8 @@ export type {
   AssignedInstance,
   AssignedInspection,
   AssignedInspectionsResponse,
+  ItemPhotoStatus,
+  ItemPhotoUploadResult,
 } from "../../worker/wire-types";
 
 export interface CompleteResult {
@@ -112,6 +119,37 @@ export function recordCountItem(
 // Toggle a manually-completed item (manual_attest / count) back to open. form_linked/inspection reject.
 export function uncompleteChecklistItem(stateId: number): Promise<CompleteResult> {
   return postJson<CompleteResult>(`${BASE}/item-state/${stateId}/uncomplete`);
+}
+
+// ── G1 Slice 1 — item-photo capture (record-only; Option D) ─────────────────────────────────────
+// Attach ONE photo (the PhotoField-encoded PhotoValue) to a checklist item state. The photo is
+// queued for the Mac §34 screen — it is never served back; the UI renders `photo_status` only.
+// 409 err.code 'photo_already_attached' while a photo is pending/clean (one photo per item);
+// a REFUSED photo may be retried. The Worker's bounds 400 carries the actionable machine reason
+// in `detail` (photo_too_large / photo_bad_magic / …, the /api/submit convention) — prefer it
+// over the generic 'invalid_photo' so the crew gets field-actionable copy.
+export async function uploadItemPhoto(stateId: number, photo: PhotoValue): Promise<ItemPhotoUploadResult> {
+  const res = await fetch(`${BASE}/item-state/${stateId}/photo`, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ photo }),
+  });
+  if (!res.ok) {
+    let detail: string | null = null;
+    try {
+      const body = (await res.clone().json()) as { error?: unknown; detail?: unknown };
+      if (body.error === "invalid_photo" && typeof body.detail === "string") detail = body.detail;
+    } catch {
+      /* non-JSON body → the shared handler below */
+    }
+    if (detail) {
+      console.warn(`API error ${res.status}: invalid_photo/${detail} (${res.url})`);
+      throw new ApiError(detail, res.status);
+    }
+    return raiseApiError(res);
+  }
+  return (await res.json()) as ItemPhotoUploadResult;
 }
 
 // ── S6 — generic-inspection library (admin authoring + assign; cap.checklist.manage) ────────────────

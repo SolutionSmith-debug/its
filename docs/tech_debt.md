@@ -2651,3 +2651,10 @@ Item 1 blocks nothing; it is a dead-weight-vs-preservation-over-refactor call th
   per review; the right fix is ONE shared-level catch inside `shared/heartbeat.py::write_liveness`
   (never-blocks-primary-work applied to the liveness half too), not six call-site wraps. (CS3 ops-stds
   review WARN, 2026-07-03.)
+
+- **[OPEN 2026-07-03] G1 item-photo queue: no explicit queue-AGE signal + refusal-spam window** — the
+  stuck-pending >7d prune WARN + the portal_poll heartbeat notes are the only backlog signals (the
+  brief's req-5 wanted an age signal; deferred as minimal-viable). A hostile account spamming refused
+  photos pages once per dedupe window (Sentry+Resend deduped post-#449; ITS_Errors records per
+  occurrence, bounded by Check O rotation) — accepted posture, revisit if it fires in practice.
+  (G1 regression review WARNs, 2026-07-03.)

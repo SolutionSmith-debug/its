@@ -31,6 +31,12 @@ runbook covers the three Tier-2-reachable failure modes that photos introduce:
 3. **An oversized weekly packet is HELD** — a photo-bearing packet too large to
    email.
 
+**Checklist ITEM photos (G1, 2026-07-03)** ride the same Mac screening pipeline:
+a crew member attaches one evidence photo to a checklist item in the Field-Ops
+portal; it queues as "screening…" until the Mac clears it (Symptoms 5–6 below).
+The photo is never shown in the app — a cleared photo lives in Box
+(`ITS Photos/checklist/<item id>/`) and the item shows "photo on file ✓".
+
 Each block below follows the §43 four-part shape (Symptom → checks → Claude/UI
 action → escalate-to-Seth).
 
@@ -233,6 +239,99 @@ size, but the Graph upload-session **send itself** is failing.
 Status, or touch the transport. Hand Seth the WSR row + the `weekly_send.graph_error`
 detail. (A single transient Graph blip self-heals on the next retry — only a
 **persistent** FAILED+retry across cycles is the escalation.)
+
+## Symptom 5 — a checklist item photo is stuck at "screening…" (G1)
+
+### Symptom
+
+- A crew member attached a photo to a checklist item and the item still shows
+  **"photo attached — screening"** long after upload (normal is **1–3 minutes**).
+- Nothing else looks wrong for a while — that is expected: a stuck photo waits
+  safely in the portal's queue; it is never lost and never shown unscreened.
+
+### What the Successor-Operator checks
+
+1. **Is the Mac poller alive?** The same daemon that files submissions screens
+   item photos (`safety_reports.portal_poll`, every ~60 s). Check the
+   **ITS_Daemon_Health** row for `safety_reports.portal_poll` — a stale
+   `Last Run` / ERROR status means the daemon (or the whole Mac) is down, and the
+   watchdog / UptimeRobot pages will already be firing. Fix the daemon (the
+   standard "re-run a daemon" Tier-2 repair) and the backlog drains itself on the
+   next cycles — no photo action needed.
+2. **Are submissions filing but photos NOT?** If submissions flow fine, look in
+   **ITS_Errors** for `portal_item_photo_service_failed` /
+   `portal_item_photo_item_failed` WARN rows — the screening pass is failing on
+   its own. Two documented causes:
+   - **Portal Box root unset** — the WARN detail says `portal Box root unset
+     (ITS_Config safety_reports.box.portal_root_folder_id)`. Set that ITS_Config
+     value (the same key the submission mirror tree uses). Toggling a documented
+     ITS_Config value is the canonical Tier-2 action.
+   - **Box/transport blips** — transient WARNs that self-heal; only a persistent
+     repeat matters.
+3. **Did the photo eventually vanish?** After **7 days** stuck-pending, the
+   portal deletes the queued photo (growth cap) and the item returns to
+   "no photo" so the crew can re-attach. If you see that, the screening loop was
+   down for a week — check why the daemon-down paging didn't reach anyone.
+
+### The Claude prompt or UI action
+
+> "Claude, checklist item photos are stuck at 'screening…'. Check the
+> ITS_Daemon_Health row for safety_reports.portal_poll and ITS_Errors for
+> portal_item_photo_* codes, tell me whether this is a dead daemon or a
+> misconfig, and walk me through the documented low-class repair."
+
+The backlog needs **no manual replay** — screening is idempotent; once the cause
+is fixed, every still-pending photo screens on the next cycle.
+
+### Escalate-to-Seth condition
+
+- The daemon is healthy and the Box root is set, yet photos still stick
+  (**novel** — code territory).
+- The stuck queue coincides with HMAC-failure rows (`portal_item_photo_hmac_failure`
+  — see Symptom 6; **security**, high-class).
+- Photos were auto-deleted by the 7-day cap and the crew needs the evidence
+  restored — there is nothing to restore (the bytes were never cleared for
+  filing); how to re-collect evidence is Seth's call.
+
+Both-rule: "restart the daemon / set a documented ITS_Config value" is low-class
+(Tier 2). Anything touching the screening code, HMAC secrets, or a security
+verdict is high-class → Tier 3.
+
+---
+
+## Symptom 6 — a checklist item photo shows "refused" (G1)
+
+### Symptom
+
+- The checklist item shows the **refused** photo state and the crew can retry.
+- **ITS_Errors** has `portal_item_photo_malicious` (CRITICAL — paged, names the
+  uploading account with the disable instruction) or
+  `portal_item_photo_suspicious` (WARN), and **ITS_Review_Queue** has a matching
+  security-flagged row naming the item photo, the item state, and the account.
+- `portal_item_photo_hmac_failure` (CRITICAL) is the tampered-row variant: the
+  photo's signature did not verify — it was refused **without being screened**.
+
+### What this means (and what it does NOT mean)
+
+- **The item's completion STANDS.** A refused photo means *the evidence was
+  refused*, not *the work wasn't done* — the checklist item stays exactly as the
+  crew completed it. Nothing needs un-doing.
+- The refused bytes were **deleted from the portal** (delete-on-screen) and were
+  never filed to Box or shown to anyone. The Review-Queue row is the record.
+
+### The Claude prompt or UI action
+
+Same decision tree as **Symptom 1** (it is the same screening pipeline with the
+same verdicts): `suspicious` + a genuine crew photo → ask the crew to **re-take
+and re-attach** (the refused state allows retry); `malicious` → **disable the
+named portal account** in the admin dashboard pending review, leave the
+Review-Queue row for Seth.
+
+### Escalate-to-Seth condition
+
+As Symptom 1, plus: **any** `portal_item_photo_hmac_failure` row — a signature
+that fails verification means row tampering or a secret mismatch, which is
+**secrets/security** = fixed high-class → Tier 3 always.
 
 ## Owner
 

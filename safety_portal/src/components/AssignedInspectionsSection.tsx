@@ -208,6 +208,7 @@ export function AssignedInspectionsSection({
               onUncomplete={uncomplete}
               onRecordCount={recordCount}
               onCountRecorded={() => void load()}
+              onPhotoUploaded={() => void load()}
               onOpenForm={(item) => openLinkedForm(insp.instance, item)}
             />
             {it.filed_by ? <span className="dash-card__sub"> · filed by {it.filed_by}</span> : null}

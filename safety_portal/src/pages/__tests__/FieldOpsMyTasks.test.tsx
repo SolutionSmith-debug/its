@@ -361,8 +361,8 @@ describe("FieldOpsMyTasks — S6 assigned inspections", () => {
   const INSPECTION: checklist.AssignedInspection = {
     instance: { id: 30, job_id: "JOB-A", project_name: "Alpha", instance_date: "2099-07-10", status: "open", template_title: "Fall protection", created_at: 100 },
     items: [
-      { id: 40, source_item_id: 1, item_type: "manual_attest", label: "Harness checked", form_code: null, target_count: null, status: "open", note: null, photo_ref: null, completed_by: null, completed_at: null, value_num: null, filed_by: null },
-      { id: 41, source_item_id: 2, item_type: "form_linked", label: "File JHA", form_code: "jha", target_count: null, status: "open", note: null, photo_ref: null, completed_by: null, completed_at: null, value_num: null, filed_by: null },
+      { id: 40, source_item_id: 1, item_type: "manual_attest", label: "Harness checked", form_code: null, target_count: null, status: "open", note: null, photo_ref: null, completed_by: null, completed_at: null, value_num: null, filed_by: null, photo_status: null },
+      { id: 41, source_item_id: 2, item_type: "form_linked", label: "File JHA", form_code: "jha", target_count: null, status: "open", note: null, photo_ref: null, completed_by: null, completed_at: null, value_num: null, filed_by: null, photo_status: null },
     ],
   };
 

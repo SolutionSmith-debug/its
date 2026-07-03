@@ -228,11 +228,18 @@ export interface ExpectedMaterialsResponse {
 
 export type ChecklistItemStatus = "open" | "done";
 
+/** G1 — the item's photo lifecycle (latest item_photos row, migration 0036): pending = queued
+ *  for the Mac §34 screen ("screening…"), clean = screened + filed to Box ("photo on file ✓"),
+ *  refused = the screen refused it (retry allowed). NULL = no photo. Option D (RATIFIED): the
+ *  SPA renders STATUS ONLY — no image bytes are ever served to a browser. */
+export type ItemPhotoStatus = "pending" | "clean" | "refused";
+
 /** One per-instance item state (the snapshot + completion row, migration 0026
  *  checklist_item_states). `filed_by` — WHO filed the submission that auto-closed this item
  *  (completed_by === '(auto)'): the personnel DISPLAY NAME only (W9 — no raw-username fallback);
  *  NULL for manually-completed / still-open items, or when no matching submission resolves
- *  (best-effort attribution). */
+ *  (best-effort attribution). `photo_status` — the G1 photo lifecycle (derived from item_photos,
+ *  NOT from photo_ref prefix parsing, so a clobbered/legacy photo_ref never lies about state). */
 export interface ChecklistItemState {
   id: number;
   source_item_id: number | null;
@@ -247,6 +254,15 @@ export interface ChecklistItemState {
   completed_at: number | null;
   value_num: number | null;
   filed_by: string | null;
+  photo_status: ItemPhotoStatus | null;
+}
+
+/** POST /api/fieldops/checklist/item-state/:id/photo success body (G1 Slice 1). */
+export interface ItemPhotoUploadResult {
+  ok: boolean;
+  photo_id: number;
+  photo_status: "pending";
+  photo_ref: string; // 'pending:<photo_id>' — stamped on the item state in the same batch
 }
 
 export interface AssignedInstance {

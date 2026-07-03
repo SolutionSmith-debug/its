@@ -50,6 +50,7 @@ function previewState(it: checklist.DefaultItem): checklist.ChecklistItemState {
     completed_at: null,
     value_num: null,
     filed_by: null,
+    photo_status: null,
   };
 }
 

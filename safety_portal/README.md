@@ -38,6 +38,7 @@ its migration fail-closes `resolveCapabilities` → the universal-lockout class 
 | `0033_prune_meta` | GS2 prune observability — [section](#prune-observability-gs2--0033) | #447 | ☐ pending |
 | `0034_time_amend_index` | G2.3 crew edit/retire + time amend/void — [section](#crew-editretire--time-amendvoid-g23--0034) | #451 | ☐ pending |
 | `0035_task_due_date` | G2.6 task due dates — [section](#task-due-dates--overdue-pills-g26--0035) | #450 | ☐ pending |
+| `0036_item_photos` | G1 Slice 1 item-photo capture queue — [section](#checklist-item-photos--capture--pending-queue-g1-slice-1--0036) | #452 | ☐ pending |
 
 Canonical apply-and-deploy sequence (applies **all** pending migrations, in order — never a
 subset):
@@ -835,6 +836,35 @@ See `docs/runbooks/fieldops_time_amend.md` (§43) + `docs/enablement/crew_time_c
    Void with a reason strikes it through. As a manager: correct someone else's entry. In the
    network tab: retiring a person someone else logged time on 409s `crew_has_foreign_time`;
    amending a superseded entry 409s `not_head`.
+### Checklist item photos — capture + pending queue (G1 Slice 1 — `0036`)
+
+**Migration 0036** adds `item_photos` — the record-only photo-capture queue for checklist
+items (**Option D, RATIFIED 2026-07-03**: photo evidence goes ON THE RECORD — screened on the
+Mac, filed to Box — and the app shows only its status; **no serving route exists, ever**, and
+**delete-on-screen** supersedes retention: D1 holds photo bytes only while `pending`). The
+assignee attaches ONE photo per checklist item (`POST
+/api/fieldops/checklist/item-state/:id/photo` — session + `cap.tasks.own` +
+assignee-ownership; the verbatim `validatePhotoValues` bounds; HMAC-signed like submissions;
+`photo_ref='pending:<id>'` stamped atomically with the queue INSERT + audit). The SPA renders
+the lifecycle only: *"photo attached — screening…"* → *"photo on file ✓"* / refusal copy +
+retry. A prune stage (`item_photos`) deletes stuck-pending rows (>7 d — the Mac screening
+loop is down; the growth cap, not the alerting path) + orphans, and pending bytes join the D1
+size tripwire. **Slice 2 (ships in this same PR)** is the Mac screening pass
+(`portal_poll` + `photo_screen`, the byte-identical §34 pipeline) + the Box filing + the
+clean/refused post-back; until it ships, uploads sit visibly `pending` (never lost, never
+shown).
+
+#### Activation (operator — deploy boundary; escalates to the Developer-Operator)
+
+1. Apply migration **0036** to the live D1 **BEFORE** the redeploy
+   (`npx wrangler d1 migrations apply its-safety-portal-db --remote`) — else the photo route
+   and the extended `/checklist/assigned` read 500. (Always `git pull` `~/its` to latest
+   `main` FIRST — the stale-migrations-list lockout class.)
+2. **Redeploy** (`npm run deploy`).
+3. **Smoke** (live): as an assignee with an assigned inspection, attach a photo to a
+   manual/count item → the row flips to *"photo attached — screening…"*; a second attach on
+   the same item is refused ("one photo per item"); the audit log gains a
+   `checklist_item_photo_add` row. (The pending state clears within ~1-3 minutes once the portal_poll daemon — Slice 2, this PR — screens the photo; a persistently-pending photo means the daemon is not running.)
 
 ### Lockout recovery (break-glass) — escalate to the Developer-Operator
 
