@@ -443,3 +443,83 @@ def test_whitespace_only_workstream_is_malformed_held(stub):
     warns = [c for c in stub["log"].call_args_list if c.kwargs.get("error_code") == "weekly_send.workstream_absent"]
     assert not warns
     assert stub["update_rows"].call_args.args[1][0][wsr_review.COL_SEND_STATUS] == wsr_review.STATUS_HELD
+
+
+# ---- Growth Slice 4b: packet-size early warning (~100 MB, pre-HELD) --------
+#
+# A packet over defaults.PACKET_SIZE_WARN_BYTES (but under Graph's 150 MB
+# ceiling) still SENDS via the upload-session path, and additionally lands a
+# WARN record (error_code weekly_send.packet_size_warn) pointing at the manual
+# packet-split runbook — the 150 MB HELD wall is forecast, not discovered on
+# Friday. HELD semantics above the ceiling are untouched. Constants are
+# monkeypatched small to avoid 100 MB fixtures.
+
+
+def _packet_warn_calls(stub):
+    return [
+        c for c in stub["log"].call_args_list
+        if c.kwargs.get("error_code") == "weekly_send.packet_size_warn"
+    ]
+
+
+def test_packet_over_warn_threshold_warns_and_still_sends(stub, mocker):
+    # (The inline/upload-session transport switch reads the threshold BOUND
+    # into CONFIG at import time, so this 200-byte packet takes the inline
+    # path — the transport choice is orthogonal to the early warning.)
+    mocker.patch.object(weekly_send.defaults, "PACKET_SIZE_WARN_BYTES", 100)
+    mocker.patch.object(weekly_send.graph_client, "UPLOAD_SESSION_MAX_BYTES", 1000)
+    stub["download"].return_value = b"\x00" * 200  # warn < 200 ≤ ceiling
+
+    result = weekly_send.send_one_row(50, weekly_send.CONFIG)
+
+    assert result.status == "sent"  # ← the WARN never blocks the send
+    stub["send_mail"].assert_called_once()
+    warns = _packet_warn_calls(stub)
+    assert len(warns) == 1
+    assert warns[0].args[0] is weekly_send.Severity.WARN
+    message = warns[0].args[2]
+    assert "docs/runbooks/safety_weekly_send.md" in message
+    assert "200 bytes" in message
+
+
+def test_packet_under_warn_threshold_no_warning(stub, mocker):
+    mocker.patch.object(weekly_send.defaults, "PACKET_SIZE_WARN_BYTES", 100)
+    stub["download"].return_value = b"\x00" * 50
+
+    result = weekly_send.send_one_row(50, weekly_send.CONFIG)
+
+    assert result.status == "sent"
+    assert _packet_warn_calls(stub) == []
+
+
+def test_packet_over_ceiling_helds_without_the_extra_warn(stub, mocker):
+    # HELD semantics identical to pre-slice: over 150 MB → held BEFORE the
+    # SENDING marker; the early-warning branch is unreachable (already
+    # returned), so exactly one loud signal fires — the HELD itself.
+    mocker.patch.object(weekly_send.defaults, "PACKET_SIZE_WARN_BYTES", 100)
+    mocker.patch.object(weekly_send.graph_client, "UPLOAD_SESSION_MAX_BYTES", 150)
+    mocker.patch.object(weekly_send, "UPLOAD_SESSION_THRESHOLD_BYTES", 10)
+    stub["download"].return_value = b"\x00" * 200  # > ceiling
+
+    result = weekly_send.send_one_row(50, weekly_send.CONFIG)
+
+    assert result.status == "held_oversized_packet"
+    stub["send_mail"].assert_not_called()
+    stub["send_large"].assert_not_called()
+    assert _packet_warn_calls(stub) == []
+    statuses = [
+        c.args[1][0].get(wsr_review.COL_SEND_STATUS)
+        for c in stub["update_rows"].call_args_list
+    ]
+    assert wsr_review.STATUS_SENDING not in statuses
+
+
+def test_packet_warn_threshold_boundary_exact_size_no_warning(stub, mocker):
+    # Strictly-greater comparison: exactly AT the threshold does not warn
+    # (mirrors the upload-session threshold's strict `>` convention).
+    mocker.patch.object(weekly_send.defaults, "PACKET_SIZE_WARN_BYTES", 100)
+    stub["download"].return_value = b"\x00" * 100
+
+    weekly_send.send_one_row(50, weekly_send.CONFIG)
+
+    assert _packet_warn_calls(stub) == []

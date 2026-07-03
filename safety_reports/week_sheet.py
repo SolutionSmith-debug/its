@@ -54,7 +54,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Any
 
-from shared import error_log, sheet_ids, smartsheet_client
+from shared import error_log, sheet_capacity, sheet_ids, smartsheet_client
 from shared.error_log import Severity
 
 from . import safety_naming
@@ -291,6 +291,80 @@ def _ensure_job_folder(config: WeekSheetConfig, project_name: str) -> int:
     return folder_id
 
 
+# Review-Queue Workstream tag for the sheet-capacity breach row, derived from
+# the config's workspace pin (the one workstream-variant datum ensure_week_sheet
+# holds). Falls back to "global" for a workspace this map doesn't know — the
+# breach row must still land (never a ValueError from review_queue.add blocking
+# the tripwire), and "global" is the honest tag for an unmapped workspace.
+_WORKSTREAM_BY_WORKSPACE: dict[int, str] = {
+    sheet_ids.WORKSPACE_SAFETY_PORTAL: "safety_reports",
+    sheet_ids.WORKSPACE_PROGRESS_REPORTING: "progress_reports",
+}
+
+
+def _warn_on_thin_headroom(config: WeekSheetConfig, sheet_name: str) -> None:
+    """Growth Slice 3 (eval B1): the sheet-count tripwire, run before each CREATE.
+
+    ADVISORY, never blocking: `shared.sheet_capacity.check_create_headroom` is
+    consulted before the create; on a margin breach we WARN (an ITS_Errors
+    record) AND enqueue the operator signal via `route_breach_to_review_queue`
+    — then the create PROCEEDS. Blocking here would fail the compile/intake
+    filing path on a soft ceiling (the configured 1500 is a conservative
+    tripwire well before any plausible plan cap, and Evergreen's
+    Business/Enterprise tier makes capacity non-limiting) — the operator acts
+    on the Review-Queue row (archive-on-closure / period-split / raise the
+    tier) before the REAL cap is ever in play. Belt-and-suspenders fail-open:
+    any exception in the check or the enqueue is reduced to a WARN — a
+    tripwire failure must never take down the filing path.
+    """
+    try:
+        headroom = sheet_capacity.check_create_headroom(config.workspace_id)
+    except Exception as exc:  # noqa: BLE001 — advisory tripwire; never block the create
+        error_log.log(
+            Severity.WARN,
+            SCRIPT_NAME,
+            f"sheet-capacity headroom check raised (create proceeds unguarded): {exc!r}",
+            error_code="sheet_capacity_check_failed",
+        )
+        return
+    if headroom.note:
+        # check_create_headroom's fail-open path: count read failed, create
+        # allowed — the module contract says the CALLER logs the WARN.
+        error_log.log(
+            Severity.WARN,
+            SCRIPT_NAME,
+            f"sheet-capacity check fail-open before creating {sheet_name!r}: {headroom.note}",
+            error_code="sheet_capacity_check_failed",
+        )
+        return
+    if headroom.ok:
+        return
+
+    workstream = _WORKSTREAM_BY_WORKSPACE.get(config.workspace_id, "global")
+    error_log.log(
+        Severity.WARN,
+        SCRIPT_NAME,
+        (
+            f"sheet-count margin breach in workspace {config.workspace_id}: "
+            f"{headroom.current}/{headroom.ceiling} (margin {headroom.margin}) — "
+            f"creating {sheet_name!r} anyway (advisory tripwire; see the Review-Queue "
+            f"row for the operator action)."
+        ),
+        error_code="sheet_capacity_margin_breach",
+    )
+    try:
+        sheet_capacity.route_breach_to_review_queue(
+            config.workspace_id, headroom, workstream=workstream
+        )
+    except Exception as exc:  # noqa: BLE001 — the enqueue failing must not block the create
+        error_log.log(
+            Severity.WARN,
+            SCRIPT_NAME,
+            f"could not enqueue the sheet-capacity breach to ITS_Review_Queue: {exc!r}",
+            error_code="sheet_capacity_rq_failed",
+        )
+
+
 def ensure_week_sheet(
     config: WeekSheetConfig, project_name: str, work_date: date
 ) -> int:
@@ -316,6 +390,10 @@ def ensure_week_sheet(
     existing = smartsheet_client.find_sheet_by_name_in_folder(folder_id, name)
     if existing is not None:
         return existing
+
+    # Growth Slice 3 (eval B1): sheet-count tripwire — advisory, never blocks.
+    # Runs ONLY on the create branch (a find costs nothing against the cap).
+    _warn_on_thin_headroom(config, name)
 
     sheet_id = smartsheet_client.create_sheet_in_folder(
         folder_id, name, WEEK_SHEET_COLUMNS

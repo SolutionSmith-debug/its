@@ -75,6 +75,15 @@ Checks shipped:
        "Check H", but that mechanism was never built — the marker-file Check
        C is the staleness floor. Corrected in the 2026-06-01 blueprint
        doctrine pass; the next free check letter is therefore I.)
+    O. Row-cap rotation for ITS_Errors + ITS_Review_Queue (eval A5, growth
+       Slice 1). The Smartsheet per-sheet row cap is a verified 20,000 (not
+       the eval's 5,000); past it add_rows fails, losing the forensic record
+       and blinding Check B. WARN at 15,000; at 16,000 delete TERMINAL rows
+       older than 90d, oldest-first, batches of 450 (thresholds in
+       shared/defaults.py). NEVER deletes open CRITICALs (blank Resolved At)
+       or PENDING / IN_REVIEW / ESCALATED queue rows. Every rotation writes
+       an ITS_Errors summary record (never silent); CRITICAL when over the
+       rotate mark with nothing deletable. `--dry` CLI flag previews.
 
 Planned (NOT in this file, scheduled for a follow-on PR — the Check E
 shipping PR; see `docs/tech_debt.md`):
@@ -1447,8 +1456,8 @@ def _check_portal_poll_pending_backlog() -> CheckResult:
 # marker on every successful persist (A3); this check reads it and escalates ahead
 # of expiry. WARN at 50d / CRITICAL at 58d give a 10-day then 2-day buffer.
 # Read-only — returns a CheckResult (no inline alert), so _run_check pages the
-# WARN/CRITICAL and MAINTENANCE-defers it like Checks L/M/N. (Check O is reserved
-# for the future A5 per-job row-cap watchdog; this is P.)
+# WARN/CRITICAL and MAINTENANCE-defers it like Checks L/M/N. (Check O is the A5
+# row-cap rotation, built in the 2026-07 growth slice; this is P.)
 BOX_TOKEN_FRESHNESS_WARN_DAYS = 50
 BOX_TOKEN_FRESHNESS_CRITICAL_DAYS = 58
 
@@ -1981,6 +1990,226 @@ def _check_portal_prune_health() -> CheckResult:
         ),
     )
 
+# ---- Check O: ITS_Errors + ITS_Review_Queue row-cap rotation (A5) --------
+#
+# Motivating finding (2026-07 unbounded-growth audit, ranked rows #2/#10;
+# eval A5). Both sheets grow monotonically with NO deleter anywhere in the
+# codebase: ITS_Errors is record-per-occurrence by design (the §3.1 forensic
+# surface even bypasses the circuit breaker), and a drained Review-Queue row
+# is a status flip, not a delete. The Smartsheet per-sheet row cap is a
+# VERIFIED 20,000 at these column widths (not the eval text's 5,000 — that
+# spec lives on unmerged branch c0cbf3b and is corrected here). Past the cap
+# `add_rows` fails: the forensic record is LOST and Check B (open-CRITICALs)
+# goes blind — the "am I on fire" surface dies quietly. Measured build-rate
+# puts ITS_Errors 4.5–11 months out; a persistent failure loop on a 60s
+# daemon ("storm") burns it in ~13 days.
+#
+# Mechanism (boring, rides the daily watchdog): count each sheet; WARN at
+# SHEET_ROW_WARN_THRESHOLD (15,000); at SHEET_ROW_ROTATE_THRESHOLD (16,000)
+# delete TERMINAL rows older than SHEET_ROW_ROTATION_RETENTION_DAYS (90d),
+# oldest first, in delete_rows batches of 450 (the Smartsheet per-call cap),
+# bounded per run — the next daily run re-counts and continues (Smartsheet's
+# eventual-consistency window makes an in-run recount unreliable anyway).
+# Every rotation writes a WARN summary record to ITS_Errors (never silent);
+# over the rotate mark with NOTHING deletable → CRITICAL (paged via
+# _run_check; MAINTENANCE-deferred like every CheckResult page).
+#
+# "Terminal" is defined from each sheet's REAL columns:
+#   ITS_Errors (written by error_log._smartsheet_log; resolution = operator
+#   stamping `Resolved At`, blank-means-open per Check B):
+#     terminal ⇔ Severity != "CRITICAL"  (records; nothing is ever "open")
+#              OR Severity == "CRITICAL" AND `Resolved At` non-blank.
+#     An OPEN CRITICAL (blank `Resolved At`) is NEVER deleted — it is Check
+#     B's working set.
+#   ITS_Review_Queue (shared/review_queue.py; Status picklist):
+#     terminal ⇔ Status ∈ {APPROVED, REJECTED} (drained/reviewed).
+#     PENDING and IN_REVIEW are live work; ESCALATED is deliberately treated
+#     as OPEN too (it awaits Tier-3 action — the A5 spec's suggestion to
+#     rotate ESCALATED rows is rejected as unsafe; an old escalation is an
+#     operator signal, not debris).
+# Age comes from the sheet's own date column (`Timestamp` / `Created At`,
+# ISO YYYY-MM-DD). A row with a missing/unparseable date is NOT eligible —
+# we cannot prove it is past retention (conservative, never-guess).
+#
+# Failure isolation (§27): every Smartsheet call is fenced. A breaker-OPEN
+# read → INFO skip (an outage is not a rotation verdict); any other
+# SmartsheetError → WARN, never a raise. Deletion failures stop the batch
+# loop and report a partial rotation — the next run continues.
+#
+# §43 (successor-operator): symptom = daily watchdog WARN "row-cap" naming a
+# sheet, or CRITICAL "nothing deletable". Low-class repair = none needed for
+# WARN (rotation is automatic; verify next-day count fell). For the CRITICAL:
+# the sheet is full of rows the rotation refuses to touch (open CRITICALs /
+# un-drained queue rows younger than 90d) — resolve/drain them in Smartsheet
+# (stamp `Resolved At` on stale CRITICALs after review; drain queue rows),
+# then re-run `python3 scripts/watchdog.py --dry` to preview. Escalate to
+# Seth if the CRITICAL persists after draining (retention/threshold change =
+# a code change, high-class).
+
+
+def _errors_row_is_terminal(row: dict[str, Any]) -> bool:
+    """ITS_Errors terminality — see the Check O rationale block above."""
+    severity = str(row.get("Severity") or "").strip()
+    if severity != Severity.CRITICAL.value:
+        return True
+    resolved_at = row.get("Resolved At")
+    return bool(str(resolved_at).strip()) if resolved_at is not None else False
+
+
+def _review_queue_row_is_terminal(row: dict[str, Any]) -> bool:
+    """ITS_Review_Queue terminality — drained/reviewed only, NEVER PENDING /
+    IN_REVIEW / ESCALATED (see the Check O rationale block above)."""
+    status = str(row.get("Status") or "").strip()
+    return status in {"APPROVED", "REJECTED"}
+
+
+def _row_age_date(row: dict[str, Any], date_column: str) -> date | None:
+    """Parse the row's ISO date cell; None = unprovable age (not eligible)."""
+    raw = row.get(date_column)
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    try:
+        # Cells are written as date.today().isoformat(); tolerate a datetime
+        # prefix (YYYY-MM-DDTHH:MM:SS) if the column type ever drifts.
+        return date.fromisoformat(raw.strip()[:10])
+    except ValueError:
+        return None
+
+
+# The per-sheet rotation policy table: (label, sheet id, terminal-predicate,
+# date-column title). Predicates take the get_rows row dict.
+_ROTATION_POLICIES: list[tuple[str, int, Callable[[dict[str, Any]], bool], str]] = [
+    ("ITS_Errors", sheet_ids.SHEET_ERRORS, _errors_row_is_terminal, "Timestamp"),
+    ("ITS_Review_Queue", sheet_ids.SHEET_REVIEW_QUEUE, _review_queue_row_is_terminal, "Created At"),
+]
+
+_SEVERITY_ORDER = {Severity.INFO: 0, Severity.WARN: 1, Severity.CRITICAL: 2}
+
+
+def _rotate_one_sheet(
+    label: str,
+    sheet_id: int,
+    is_terminal: Callable[[dict[str, Any]], bool],
+    date_column: str,
+    *,
+    dry_run: bool,
+) -> tuple[Severity, str]:
+    """Count one sheet and rotate if over the mark. Returns (severity, note).
+
+    Never raises: breaker-OPEN → INFO skip; other SmartsheetError → WARN.
+    """
+    try:
+        rows = smartsheet_client.get_rows(sheet_id)
+    except smartsheet_client.SmartsheetCircuitOpenError:
+        return (Severity.INFO, f"{label}: breaker OPEN — count skipped, no rotation verdict")
+    except smartsheet_client.SmartsheetError as e:
+        return (Severity.WARN, f"{label}: row-count read failed ({e!r}) — no rotation this run")
+
+    count = len(rows)
+    if count < defaults.SHEET_ROW_WARN_THRESHOLD:
+        return (
+            Severity.INFO,
+            f"{label}: {count} rows (< {defaults.SHEET_ROW_WARN_THRESHOLD} warn mark)",
+        )
+    if count < defaults.SHEET_ROW_ROTATE_THRESHOLD:
+        return (
+            Severity.WARN,
+            f"{label}: {count} rows past the {defaults.SHEET_ROW_WARN_THRESHOLD} warn mark "
+            f"(rotate at {defaults.SHEET_ROW_ROTATE_THRESHOLD}; hard cap "
+            f"{defaults.SHEET_ROW_HARD_CAP})",
+        )
+
+    # Over the rotate mark — select eligible rows: TERMINAL and older than
+    # the retention window, oldest first (date, then row id for a stable order).
+    cutoff = date.today() - timedelta(days=defaults.SHEET_ROW_ROTATION_RETENTION_DAYS)
+    eligible: list[tuple[date, int]] = []
+    for row in rows:
+        row_id = row.get("_row_id")
+        if not isinstance(row_id, int):
+            continue
+        if not is_terminal(row):
+            continue
+        aged = _row_age_date(row, date_column)
+        if aged is None or aged >= cutoff:
+            continue
+        eligible.append((aged, row_id))
+    eligible.sort()
+
+    if not eligible:
+        return (
+            Severity.CRITICAL,
+            f"{label}: {count} rows over rotate mark {defaults.SHEET_ROW_ROTATE_THRESHOLD} but "
+            f"NOTHING is deletable (no terminal rows older than "
+            f"{defaults.SHEET_ROW_ROTATION_RETENTION_DAYS}d) — resolve/drain rows or escalate; "
+            f"hard cap {defaults.SHEET_ROW_HARD_CAP} approaching",
+        )
+
+    batch_size = defaults.SHEET_ROW_ROTATION_DELETE_BATCH
+    per_run_cap = batch_size * defaults.SHEET_ROW_ROTATION_MAX_BATCHES_PER_RUN
+    to_delete = [row_id for _, row_id in eligible[:per_run_cap]]
+
+    if dry_run:
+        return (
+            Severity.WARN,
+            f"{label}: DRY RUN — {count} rows over rotate mark; would delete "
+            f"{len(to_delete)} of {len(eligible)} eligible terminal rows "
+            f"(oldest-first, batches of {batch_size})",
+        )
+
+    deleted = 0
+    delete_error = ""
+    for start in range(0, len(to_delete), batch_size):
+        chunk = to_delete[start : start + batch_size]
+        try:
+            smartsheet_client.delete_rows(sheet_id, chunk)
+        except smartsheet_client.SmartsheetError as e:
+            # Partial rotation: report what landed; next daily run continues.
+            delete_error = f"; delete failed after {deleted} rows: {e!r}"
+            break
+        deleted += len(chunk)
+
+    note = (
+        f"{label}: rotated {deleted} of {len(eligible)} eligible terminal rows "
+        f"(was {count} rows, rotate mark {defaults.SHEET_ROW_ROTATE_THRESHOLD}, "
+        f"retention {defaults.SHEET_ROW_ROTATION_RETENTION_DAYS}d, oldest-first"
+        f"{', per-run cap ' + str(per_run_cap) if len(eligible) > per_run_cap else ''})"
+        f"{delete_error}"
+    )
+    # The never-silent rotation record: an explicit ITS_Errors row (WARN always
+    # writes to Smartsheet) with a stable error_code, IN ADDITION to the
+    # CheckResult line _run_check routes through log(). A rotation that deleted
+    # nothing (first batch failed) is still recorded — it names the failure.
+    log(Severity.WARN, _SCRIPT, f"[row-cap-rotation] {note}", error_code="row_cap_rotation")
+    return (Severity.WARN, note)
+
+
+def _check_row_cap_rotation(dry_run: bool = False) -> CheckResult:
+    """Check O (A5): row-cap rotation for ITS_Errors + ITS_Review_Queue.
+
+    See the rationale block above for the terminality definitions and the
+    threshold mechanism. `dry_run=True` (the `--dry` CLI flag) previews the
+    rotation — counts + would-delete numbers, zero deletes, zero rotation
+    records. Rotation itself proceeds during MAINTENANCE (it is a safety
+    measure; only the *page* is deferred, by _run_check's downgrade).
+    """
+    severities: list[Severity] = []
+    notes: list[str] = []
+    for label, sheet_id, is_terminal, date_column in _ROTATION_POLICIES:
+        severity, note = _rotate_one_sheet(
+            label, sheet_id, is_terminal, date_column, dry_run=dry_run
+        )
+        severities.append(severity)
+        notes.append(note)
+
+    worst = max(severities, key=lambda s: _SEVERITY_ORDER[s])
+    if worst is Severity.INFO:
+        summary = "Row caps healthy for ITS_Errors + ITS_Review_Queue."
+    elif worst is Severity.CRITICAL:
+        summary = "Row-cap rotation BLOCKED — sheet(s) over rotate mark with nothing deletable."
+    else:
+        summary = "Row-cap threshold crossed — see per-sheet rotation notes."
+    return CheckResult(severity=worst, summary=summary, details=" | ".join(notes))
+
 
 # ---- Entrypoint ---------------------------------------------------------
 
@@ -2019,15 +2248,22 @@ CHECKS: list[Callable[..., CheckResult]] = [
     # Check N: WSR rows stuck in SENDING (weekly_send write-ahead-marker safety net).
     # Read-only; returns a CheckResult (no inline alert); WARN-only.
     _check_stuck_wsr_send,
+    # Check O (A5, growth Slice 1): ITS_Errors + ITS_Review_Queue row-cap
+    # rotation. Registered before the sheet-consuming letter-neighbors purely
+    # by letter order; rotation deletes TERMINAL rows only (never open
+    # CRITICALs / PENDING queue rows) and writes a rotation record to
+    # ITS_Errors. Returns a CheckResult (WARN on rotation/approach; CRITICAL
+    # when over-mark with nothing deletable) — paged + MAINTENANCE-deferred
+    # by _run_check.
+    _check_row_cap_rotation,
     # Check P (A3): Box OAuth refresh-token freshness. Read-only marker read;
     # returns a CheckResult, so its WARN/CRITICAL is paged + MAINTENANCE-deferred
-    # by _run_check. (Check O reserved for the future A5 row-cap watchdog.)
+    # by _run_check. (Check O is the A5 row-cap rotation above.)
     _check_box_token_freshness,
     # Check Q / R (A4): portal_poll resilience. Q re-raises a sustained pending-fetch outage
     # (CRITICAL second-opinion to portal_poll's inline page); R WARNs on a stuck unfiled
     # backlog (saturated page draining nothing). Both return a CheckResult (no inline alert),
-    # so _run_check pages/MAINTENANCE-defers them normally. (O is reserved for the A5 row-cap
-    # watchdog; H was never built.)
+    # so _run_check pages/MAINTENANCE-defers them normally. (H was never built.)
     _check_portal_poll_fetch_outage,
     _check_portal_poll_pending_backlog,
     # Check S: origin/main required CI (ci.yml: test/portal/secrets) green on the latest
@@ -2041,8 +2277,7 @@ CHECKS: list[Callable[..., CheckResult]] = [
     _check_stale_held_rows,
     # Check U (P5): F22 send-approver-set health per send workspace — EMPTY (sends blocked,
     # §46 re-share) or CHANGED-since-baseline (who-may-approve drift). Read-only + baseline
-    # state file; returns a CheckResult (WARN-only). (O is still reserved for the A5 row-cap
-    # watchdog.)
+    # state file; returns a CheckResult (WARN-only).
     _check_approver_drift,
     # Check V (GS2): D1 prune heartbeat via GET /api/internal/prune-status. Read-only;
     # returns a CheckResult (no inline alert), so its WARN/CRITICAL is paged +
@@ -2127,4 +2362,27 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    import argparse
+
+    parser = argparse.ArgumentParser(description="ITS daily watchdog")
+    parser.add_argument(
+        "--dry",
+        action="store_true",
+        help=(
+            "Preview Check O (row-cap rotation) ONLY: print per-sheet counts and "
+            "would-delete numbers without deleting rows, writing rotation records, "
+            "or running the other checks."
+        ),
+    )
+    args = parser.parse_args()
+    if args.dry:
+        # Operator preview surface — runs the one check with deletes disabled and
+        # prints the CheckResult instead of routing it through log() (no records,
+        # no pages; the daily launchd run never passes --dry).
+        _result = _check_row_cap_rotation(dry_run=True)
+        _line = f"{_result.severity.value}: {_result.summary}"
+        if _result.details:
+            _line += f" | {_result.details}"
+        print(_line)
+    else:
+        main()

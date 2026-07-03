@@ -7,12 +7,18 @@ sheet cap, after which a create silently fails. Sheets stay WEEKLY (the 2026-06-
 confirmed Evergreen is on a Business/Enterprise plan (2026-06-29), so capacity is
 NOT limiting. This module is the runtime backstop / runaway tripwire so a
 find-or-create NEVER silently creates a sheet past the cap — when headroom is thin
-it routes to the Review Queue (an operator signal) instead.
+it routes a breach signal to the Review Queue (an operator signal).
 
-NOT yet wired into the find-or-create call sites: P1a parameterized `ensure_week_sheet`
-but is a pure byte-identical refactor that deliberately does NOT call this guard;
-wiring the margin-check in is a separate, separately-smoked slice (P2/P7 + a safety
-follow-up). This module supplies the check + the enqueue helper only.
+WIRED (growth Slice 3, 2026-07): `safety_reports.week_sheet.ensure_week_sheet` —
+the ONE parameterized find-or-create engine both safety and progress compile paths
+use (via `generate_core` / `intake` / `compile_now_poll`) — calls
+`check_create_headroom` on its CREATE branch (`_warn_on_thin_headroom`). The
+posture is ADVISORY: on a margin breach the caller WARNs + enqueues
+`route_breach_to_review_queue`, and the create STILL PROCEEDS — the tripwire is
+an operator signal (archive / period-split / raise the tier), never a compile
+blocker. The ceiling is a conservative soft mark well before any plausible plan
+cap, so blocking a filing path on it would trade a hypothetical cap breach for a
+real outage.
 
 FAIL-OPEN by design (matches `shared.kill_switch` / the `defaults` fallback
 philosophy): a transient sheet-count read failure must NEVER block a create —
@@ -41,8 +47,9 @@ class Headroom:
 
     `ok=True`  → safe to create one more sheet in this workspace.
     `ok=False` → creating one more would cross `ceiling - margin`; the caller
-                 should route to the Review Queue (`route_breach_to_review_queue`)
-                 instead of silently creating past the cap.
+                 routes the breach to the Review Queue
+                 (`route_breach_to_review_queue`) + WARNs, then proceeds with
+                 the create anyway — advisory, never silent, never blocking.
 
     On a fail-open read error `ok=True`, `current=-1`, and `note` carries the
     reason (the caller logs the WARN; the create proceeds unguarded — never blocked).
@@ -113,7 +120,8 @@ def route_breach_to_review_queue(
         summary=(
             f"Smartsheet sheet-count near cap in workspace {workspace_id}: "
             f"{headroom.current}/{headroom.ceiling} (margin {headroom.margin}). "
-            f"Sheet create deferred — archive-on-closure / period-split, or raise the plan tier."
+            f"Creates still proceed (advisory tripwire) — archive-on-closure / "
+            f"period-split, or raise the plan tier before the real cap bites."
         ),
         payload={
             "workspace_id": workspace_id,
