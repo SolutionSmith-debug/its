@@ -2606,7 +2606,8 @@ Original entry (item 1 still awaiting green-light):
 
 **`~/.claude/plans/optimization-plan.md` "Needs-operator" #2 and #3** — two propose-only options CC is explicitly barred from executing unilaterally:
 
-1. **Historical form-definition registry split** — `src/forms/registry.ts` currently guarantees "any historical `form_code` must always render," which costs ~76.6 kB minified today and grows ~24 kB per SOP edit (v2→v5 in ~30h of this arc alone). A chunk-fetch-on-admin-editor split would reverse an explicitly documented C1/C9 design decision and likely touches the Phase-2 publish actuator + catalog tests. Real growth evidence exists; the decision is doctrine-owned, not a unilateral refactor.
+1. **[RESOLVED 2026-07-03 — the D5 registry split PR]** Operator-APPROVED ("absolutely need to split the registry — that would very quickly become a problem and crash our website") and BUILT: active current+previous versions eager, historical lazy (`getDefinitionFor`), the sliding window keeps the main chunk ~constant. The C1 brief carries a dated amendment; the approval is quoted in `src/forms/registry.ts`.
+
 2. ~~**Deprecated daily-checklist Worker surfaces + dormant 0028 `daily_default` rows**~~ — RESOLVED above (route deletion executed; 0028 rows + editor routes deliberately kept).
 
 Item 1 blocks nothing; it is a dead-weight-vs-preservation-over-refactor call that only Seth should greenlight. **Tag:** `field_ops`, `optimization`, `doctrine-adjacent`, `preservation-over-refactor`. **Revisit when:** Seth reviews the optimization-plan's Needs-operator section.
