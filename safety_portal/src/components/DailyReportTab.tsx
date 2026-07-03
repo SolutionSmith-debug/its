@@ -666,6 +666,9 @@ export function DailyReportTab({
           formLinks={formLinks}
           requirements={requirements ?? undefined}
           expectedMaterials={expectedAdapter}
+          /* The daily SOP's chronological day-rail — presentational, Daily tab only
+             (the generic fill page renders the same definition without it). */
+          dayRail
         />
       </section>
       {submitError ? (

@@ -156,7 +156,9 @@ export function HomePage({ onNavigate }: { onNavigate: (v: HomeNav) => void }) {
           if (visible.length === 0) return null;
           return (
             <section key={s.key} aria-label={s.heading}>
-              <h2 className="page__heading">{s.heading}</h2>
+              {/* --eyebrow is ADDITIVE (design refinement 2026-07): the section header
+                  renders as a letterspaced signage eyebrow; .page__heading is unrenamed. */}
+              <h2 className="page__heading page__heading--eyebrow">{s.heading}</h2>
               <div className="form-grid">
                 {visible.map((c) => (
                   <button key={c.key} className="form-card" onClick={() => onNavigate(c.key)}>
