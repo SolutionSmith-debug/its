@@ -1,9 +1,11 @@
 import { env } from "cloudflare:test";
 import { describe, it, expect, beforeEach } from "vitest";
-import { pruneOldData } from "../worker/prune";
+import { pruneOldData, writePruneMeta, type PruneResult } from "../worker/prune";
 
 // A3 — the daily D1 prune. Verifies the retention windows AND the load-bearing guard:
 // an UNFILED submission (box_verified=0) is NEVER evicted, even when old.
+// GS2 adds: per-stage failure isolation, the prune_meta heartbeat, the terminal
+// publish_requests rider, and the checklist_instances/equipment_location guard union.
 
 const NOW = 1_780_000_000; // a fixed "now" (~2026) so the test never drifts with wall clock
 const DAY = 86_400;
@@ -19,6 +21,11 @@ beforeEach(async () => {
     env.DB.prepare("DELETE FROM inspections"),
     env.DB.prepare("DELETE FROM job_daily_requirements"),
     env.DB.prepare("DELETE FROM job_expected_materials"),
+    env.DB.prepare("DELETE FROM checklist_instances"),
+    env.DB.prepare("DELETE FROM equipment_location"),
+    env.DB.prepare("DELETE FROM equipment"),
+    env.DB.prepare("DELETE FROM publish_requests"),
+    env.DB.prepare("DELETE FROM prune_meta"),
     env.DB.prepare("DELETE FROM jobs"),
   ]);
 });
@@ -198,5 +205,193 @@ describe("pruneOldData — PDF cache (filed_pdfs)", () => {
     const res = await pruneOldData(env.DB, NOW);
     expect(typeof res.dbSizeBytes).toBe("number");
     expect(res.dbSizeBytes).toBeGreaterThanOrEqual(0);
+  });
+});
+
+// ── GS2 — stage isolation: one stage throwing must not skip later stages. ────────
+//
+// The forced throw rides a poisoned D1 façade: prepare() delegates to the real DB except
+// for SQL matching the target stage, whose statement rejects at run(). No schema mutation,
+// no isolated-storage coupling — pruneOldData only ever calls db.prepare().
+function poisonedDb(pattern: RegExp): typeof env.DB {
+  const facade = {
+    prepare(sql: string) {
+      if (pattern.test(sql)) {
+        const poisoned = {
+          bind: () => poisoned,
+          run: () => Promise.reject(new Error("forced stage failure (test)")),
+          first: () => Promise.reject(new Error("forced stage failure (test)")),
+          all: () => Promise.reject(new Error("forced stage failure (test)")),
+        };
+        return poisoned;
+      }
+      return env.DB.prepare(sql);
+    },
+  };
+  return facade as unknown as typeof env.DB;
+}
+
+describe("pruneOldData — GS2 stage isolation", () => {
+  it("a throw in an early stage (audit) no longer skips later stages; the failure is flagged", async () => {
+    // Old-enough audit row (stage will throw before touching it) + an old FILED submission
+    // the LATER strip stage must still process.
+    await env.DB.prepare("INSERT INTO audit_log (created_at, actor_username, action) VALUES (?,?,?)").bind(NOW - 400 * DAY, "admin.one", "old").run();
+    await seedSub("filed-old", 1, NOW - 100 * DAY);
+
+    const res = await pruneOldData(poisonedDb(/DELETE FROM audit_log/), NOW);
+
+    expect(res.failedStages).toEqual(["audit"]); // the failed stage is NAMED
+    expect(res.audit).toBe(0);                   // its counter reads 0 (nothing deleted)
+    expect(res.stripped).toBe(1);                // the LATER strip stage still ran
+    const old = await env.DB.prepare("SELECT payload_json FROM submissions WHERE submission_uuid='filed-old'").first<{ payload_json: string }>();
+    expect(old?.payload_json).toBe("");          // ...and really stripped the payload
+    const auditLeft = await env.DB.prepare("SELECT COUNT(*) n FROM audit_log").first<{ n: number }>();
+    expect(auditLeft!.n).toBe(1);                // the poisoned stage really did nothing
+  });
+
+  it("multiple failing stages all accumulate; the function never throws", async () => {
+    await seedSub("filed-old", 1, NOW - 100 * DAY);
+    const res = await pruneOldData(poisonedDb(/audit_log|publish_requests/), NOW);
+    expect(res.failedStages).toEqual(["audit", "publish_requests"]);
+    expect(res.stripped).toBe(1); // stages between/after the failures still ran
+  });
+
+  it("a clean run reports an empty failedStages", async () => {
+    const res = await pruneOldData(env.DB, NOW);
+    expect(res.failedStages).toEqual([]);
+  });
+});
+
+// ── GS2 rider — terminal publish_requests hygiene prune (90d). ───────────────────
+async function seedPublish(id: number, status: string, updatedAt: number): Promise<void> {
+  await env.DB
+    .prepare(
+      "INSERT INTO publish_requests (id, created_at, updated_at, requested_by, op, parent_form_code, identity, status, definition_json) " +
+        "VALUES (?,?,?,?,?,?,?,?,?)",
+    )
+    .bind(id, updatedAt - DAY, updatedAt, "admin.one", "edit", "jha", `jha-v${id}`, status, '{"blob":true}')
+    .run();
+}
+async function publishIds(): Promise<number[]> {
+  const r = await env.DB.prepare("SELECT id FROM publish_requests ORDER BY id").all<{ id: number }>();
+  return r.results.map((x) => x.id);
+}
+
+describe("pruneOldData — GS2 terminal publish_requests retention", () => {
+  it("deletes TERMINAL (archived/failed) rows >90d; keeps recent-terminal and ALL non-terminal", async () => {
+    await seedPublish(1, "archived", NOW - 100 * DAY); // terminal + old → delete
+    await seedPublish(2, "failed", NOW - 100 * DAY);   // terminal + old → delete
+    await seedPublish(3, "archived", NOW - 10 * DAY);  // terminal + recent → keep
+    await seedPublish(4, "queued", NOW - 100 * DAY);   // NON-terminal, however old → keep
+    await seedPublish(5, "live", NOW - 100 * DAY);     // NON-terminal → keep
+
+    const res = await pruneOldData(env.DB, NOW);
+
+    expect(res.publishRequests).toBe(2);
+    expect(await publishIds()).toEqual([3, 4, 5]);
+  });
+});
+
+// ── GS2 rider — checklist_instances + equipment_location join the jobs-delete guard. ──
+describe("pruneOldData — GS2 jobs-delete guard union", () => {
+  it("NEVER deletes an inactive job whose only records are checklist instances / equipment locations", async () => {
+    await env.DB.batch([
+      env.DB.prepare("INSERT INTO jobs (job_id, project_name, active) VALUES ('J-check','C',0)"), // holds a checklist instance → keep
+      env.DB.prepare("INSERT INTO jobs (job_id, project_name, active) VALUES ('J-loc','L',0)"),   // holds an equipment location → keep
+      env.DB.prepare("INSERT INTO jobs (job_id, project_name, active) VALUES ('J-bare','B',0)"),  // nothing → delete
+    ]);
+    await env.DB
+      .prepare("INSERT INTO checklist_instances (kind, job_id, instance_date, status) VALUES ('daily','J-check','2026-01-01','complete')")
+      .run();
+    await env.DB.prepare("INSERT INTO equipment (id, name) VALUES (1,'Skid steer')").run();
+    await env.DB
+      .prepare("INSERT INTO equipment_location (equipment_id, job_id, label, recorded_at) VALUES (1,'J-loc','yard',?)")
+      .bind(NOW)
+      .run();
+
+    const res = await pruneOldData(env.DB, NOW);
+
+    expect(res.jobs).toBe(1); // only J-bare
+    const left = await env.DB.prepare("SELECT job_id FROM jobs ORDER BY job_id").all<{ job_id: string }>();
+    expect(left.results.map((j) => j.job_id)).toEqual(["J-check", "J-loc"]);
+  });
+
+  it("a NULL job_id row in a nullable guard table does NOT poison the NOT-IN (empty jobs still delete)", async () => {
+    // checklist_instances.job_id / equipment_location.job_id are NULLABLE (unlike the other
+    // guard tables). Without the IS NOT NULL filter, one NULL row makes `x NOT IN (…NULL…)`
+    // evaluate NULL for EVERY x — silently disabling the whole jobs stage forever.
+    await env.DB.prepare("INSERT INTO jobs (job_id, project_name, active) VALUES ('J-bare','B',0)").run();
+    await env.DB
+      .prepare("INSERT INTO checklist_instances (kind, job_id, instance_date, status) VALUES ('inspection',NULL,NULL,'open')")
+      .run();
+    await env.DB.prepare("INSERT INTO equipment (id, name) VALUES (1,'Barge')").run();
+    await env.DB
+      .prepare("INSERT INTO equipment_location (equipment_id, job_id, label, recorded_at) VALUES (1,NULL,'unavailable',?)")
+      .bind(NOW)
+      .run();
+
+    const res = await pruneOldData(env.DB, NOW);
+
+    expect(res.failedStages).toEqual([]);
+    expect(res.jobs).toBe(1); // J-bare still deleted despite the NULL rows
+  });
+});
+
+// ── GS2 — the prune_meta heartbeat row (migration 0033 + writePruneMeta). ────────
+function syntheticResult(overrides: Partial<PruneResult> = {}): PruneResult {
+  return {
+    submissions: 1,
+    stripped: 2,
+    rejected: 3,
+    audit: 4,
+    pdfRequests: 5,
+    pdfChunks: 6,
+    publishRequests: 7,
+    jobs: 8,
+    dbSizeBytes: 4096,
+    sizeWarn: false,
+    failedStages: [],
+    ...overrides,
+  };
+}
+async function metaRows(): Promise<
+  { id: number; last_run_at: number; db_size_bytes: number; size_warn: number; counters_json: string; failed_stages_json: string }[]
+> {
+  const r = await env.DB
+    .prepare("SELECT id, last_run_at, db_size_bytes, size_warn, counters_json, failed_stages_json FROM prune_meta")
+    .all<{ id: number; last_run_at: number; db_size_bytes: number; size_warn: number; counters_json: string; failed_stages_json: string }>();
+  return r.results;
+}
+
+describe("writePruneMeta — GS2 heartbeat record", () => {
+  it("writes the one-row record with per-stage counters + failure flag", async () => {
+    await writePruneMeta(env.DB, NOW, syntheticResult({ failedStages: ["audit"], sizeWarn: true, dbSizeBytes: 7_000_000_000 }));
+
+    const rows = await metaRows();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].id).toBe(1);
+    expect(rows[0].last_run_at).toBe(NOW);
+    expect(rows[0].db_size_bytes).toBe(7_000_000_000);
+    expect(rows[0].size_warn).toBe(1);
+    expect(JSON.parse(rows[0].counters_json)).toEqual({
+      submissions: 1, stripped: 2, rejected: 3, audit: 4,
+      pdfRequests: 5, pdfChunks: 6, publishRequests: 7, jobs: 8,
+    });
+    expect(JSON.parse(rows[0].failed_stages_json)).toEqual(["audit"]);
+  });
+
+  it("UPSERTs — a second run overwrites the single row (heartbeat, not history)", async () => {
+    await writePruneMeta(env.DB, NOW - DAY, syntheticResult({ failedStages: ["jobs"] }));
+    await writePruneMeta(env.DB, NOW, syntheticResult());
+
+    const rows = await metaRows();
+    expect(rows).toHaveLength(1); // still ONE row — no unbounded history
+    expect(rows[0].last_run_at).toBe(NOW);
+    expect(JSON.parse(rows[0].failed_stages_json)).toEqual([]); // clean run replaced the flag
+  });
+
+  it("is FENCED — a write failure (poisoned db) resolves without throwing", async () => {
+    await expect(writePruneMeta(poisonedDb(/prune_meta/), NOW, syntheticResult())).resolves.toBeUndefined();
+    expect(await metaRows()).toHaveLength(0); // and really wrote nothing
   });
 });

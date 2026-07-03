@@ -35,6 +35,7 @@ its migration fail-closes `resolveCapabilities` → the universal-lockout class 
 | `0030_job_daily_requirements` | D4 per-job daily-form requirements — [section](#per-job-daily-form-requirements-d4--0030) | #427 | ☐ pending |
 | `0031_job_expected_materials` | M1 expected materials — [section](#expected-materials--per-job-receipt-list-material-receipts-m1--0031) | #426 | ☐ pending |
 | `0032_job_daily_requirements_kinds` | D5 requirement kinds (number/date/select) — [section](#requirement-kinds-widened-d5--0032) | #435 | ☐ pending |
+| `0033_prune_meta` | GS2 prune observability — [section](#prune-observability-gs2--0033) | — | ☐ pending |
 
 Canonical apply-and-deploy sequence (applies **all** pending migrations, in order — never a
 subset):
@@ -732,6 +733,40 @@ both are additive, so apply order is safe.)*
    catalog and one free-text; a manager placed on that job sees the read-only list (and a manager
    on another job does NOT — 403 `forbidden_job` in the network tab); the Materials Catalog page
    shows the cross-note pointing at the Job Tracker.
+
+### Prune observability (GS2 — `0033`)
+
+**Migration 0033** adds `prune_meta` — the one-row heartbeat the daily scheduled D1 prune
+UPSERTs after **every** run (`last_run_at`, sampled `db_size_bytes`, the 6 GB `size_warn`
+condition, per-stage delete counters, and `failed_stages` — the stage names whose fenced
+try/catch caught a throw). This closes the unbounded-growth audit's #4 time bomb: the prune
+cron was a single point of *silent* failure (one throw mid-sequence skipped every later
+retention stage forever; success was a `console.log` nobody tails), and a dead prune at
+20×20 scale is a 10 GB D1 wall → every INSERT fails → total field-capture outage. Alongside
+the heartbeat: each prune stage now runs isolated (a throw is recorded, later stages still
+run), terminal `publish_requests` rows (`archived`/`failed`) are pruned 90 d after their
+terminal stamp (blob hygiene), and `checklist_instances` + `equipment_location` join the
+jobs-delete guard (an inactive job holding either is never deleted; their nullable `job_id`
+is `IS NOT NULL`-filtered so a NULL row can't poison the `NOT IN`). The Mac watchdog's
+**Check V** reads `GET /api/internal/prune-status` (bearer: the internal token tier, same as
+`/api/internal/pending`) and pages: **CRITICAL** on `failed_stages` non-empty or
+`db_size_bytes` > 6 GB; **WARN** on `last_run_at` > 48 h stale or an absent meta row.
+
+#### Activation (operator — deploy boundary; escalates to the Developer-Operator)
+
+1. Apply migration **0033** to the live D1 **BEFORE** the redeploy
+   (`npx wrangler d1 migrations apply its-safety-portal-db --remote`) — else the scheduled
+   prune's meta write fails (fenced — the prune itself still runs) and
+   `GET /api/internal/prune-status` 500s, which Check V reports as "unreachable" instead of
+   real health. (Always `git pull` `~/its` to latest `main` BEFORE
+   `wrangler d1 migrations apply` — the stale-migrations-list lockout class.)
+2. **Redeploy** (`npm run deploy`) — activates the stage-isolated prune + meta write + the
+   prune-status route.
+3. **Smoke** (live): `curl -H "Authorization: Bearer $ITS_PORTAL_INTERNAL_TOKEN"
+   https://safety.evergreenmirror.com/api/internal/prune-status` → `{"prune":null}` (or the
+   last run's record); after the next 09:00 UTC cron (or a `wrangler` triggered scheduled
+   test), the same call returns `last_run_at` + counters with `failed_stages: []`; the next
+   morning's watchdog run logs Check V INFO "D1 prune healthy".
 
 ### Lockout recovery (break-glass) — escalate to the Developer-Operator
 

@@ -19,9 +19,18 @@ const DAY_S = 86_400;
 // 24h past pdf_ready_at the chunks are deleted and the request flags reset, so a stale
 // cache never lingers and the user can re-request.
 export const PDF_CACHE_TTL_S = 86_400;
+// GS2 rider: a TERMINAL publish_requests row (status archived | failed — the two statuses
+// outside index.ts NON_TERMINAL_STATUSES; the admin publish-dismiss button clears the same
+// set) keeps its full definition_json blob (~33 KB/version) forever unless a human dismisses
+// it. 90d after it last moved (updated_at — the terminal-state stamp) the row is hygiene-
+// pruned. NON-terminal rows (queued/validated/tested/merged/live) are NEVER touched — the
+// publish daemon / stuck-sweep own those.
+export const PUBLISH_TERMINAL_RETENTION_DAYS = 90;
 // WARN above 6GB of D1 usage (Cloudflare's per-DB ceiling is 10GB) so the chunk cache
-// never silently approaches the limit. Telemetry-only — prune still runs.
-const DB_SIZE_WARN_BYTES = 6_000_000_000;
+// never silently approaches the limit. GS2: no longer console-only — the condition is
+// RECORDED in prune_meta (size_warn) and the Mac watchdog (Check V) escalates it to a
+// CRITICAL page. The console.warn stays as the local trace.
+export const DB_SIZE_WARN_BYTES = 6_000_000_000;
 
 /**
  * Prune aged rows from the D1 store (A3 housekeeping). Pure on (db, nowSec) so it is
@@ -44,70 +53,142 @@ const DB_SIZE_WARN_BYTES = 6_000_000_000;
  *    (it would orphan payroll/billing-grade records). A re-add via /api/internal/sync's upsert
  *    recreates a truly-empty pruned row.
  *
- * Also samples the D1 size (telemetry only — WARN above 6GB of the 10GB ceiling so the
- * chunk cache can never silently grow toward the limit).
+ * Also samples the D1 size (telemetry — WARN above 6GB of the 10GB ceiling so the
+ * chunk cache can never silently grow toward the limit; GS2 records the condition in
+ * the result so prune_meta / watchdog Check V escalate it).
  *
- * Returns the per-table delete counts + pdfChunks deleted + dbSizeBytes (surfaced for
- * the scheduled-handler log).
+ * STAGE ISOLATION (GS2): each retention stage runs in its OWN try/catch. Before GS2 a
+ * single throw mid-sequence silently skipped every later stage — forever, if the cause was
+ * persistent (the unbounded-growth audit's #4 time bomb: a dead prune at 20×20 scale is a
+ * 10 GB D1 wall → every INSERT fails → total field-capture outage). Now a failed stage is
+ * counted in `failedStages` (its counter reads 0), later stages still run, and the failure
+ * flag rides the prune_meta record to the Mac watchdog, which pages CRITICAL. This function
+ * therefore NEVER throws for a per-stage SQL failure.
+ *
+ * Returns the per-table delete counts + pdfChunks deleted + dbSizeBytes + sizeWarn +
+ * failedStages (surfaced for the scheduled-handler log AND the prune_meta record).
  */
-export async function pruneOldData(
-  db: Env["DB"],
-  nowSec: number,
-): Promise<{ submissions: number; stripped: number; rejected: number; audit: number; pdfRequests: number; pdfChunks: number; jobs: number; dbSizeBytes: number }> {
+export interface PruneResult {
+  submissions: number;
+  stripped: number;
+  rejected: number;
+  audit: number;
+  pdfRequests: number;
+  pdfChunks: number;
+  publishRequests: number;
+  jobs: number;
+  dbSizeBytes: number;
+  sizeWarn: boolean;
+  failedStages: string[];
+}
+
+/**
+ * Run one prune stage inside its own fence. A throw is RECORDED (stage name pushed onto
+ * `failedStages`, console.error trace) and converted to a 0-count so every later stage
+ * still runs — never-silent is provided by the prune_meta record + watchdog Check V, not
+ * by crashing the scheduled handler.
+ */
+async function runStage(
+  name: string,
+  failedStages: string[],
+  fn: () => Promise<number>,
+): Promise<number> {
+  try {
+    return await fn();
+  } catch (err) {
+    failedStages.push(name);
+    console.error(`prune: stage '${name}' FAILED (later stages still run): ${String(err)}`);
+    return 0;
+  }
+}
+
+export async function pruneOldData(db: Env["DB"], nowSec: number): Promise<PruneResult> {
   const subCutoff = nowSec - SUBMISSION_RETENTION_DAYS * DAY_S;          // Stage 1: strip payload
   const inactiveCutoff = nowSec - INACTIVE_JOB_GRACE_DAYS * DAY_S;       // Stage 2: delete inactive-job rows
   const rejectedCutoff = nowSec - REJECTED_RETENTION_DAYS * DAY_S;
   const auditCutoff = nowSec - AUDIT_LOG_RETENTION_DAYS * DAY_S;
   const pdfCutoff = nowSec - PDF_CACHE_TTL_S;                            // pdf_requests 24h window
+  const publishCutoff = nowSec - PUBLISH_TERMINAL_RETENTION_DAYS * DAY_S;
 
-  const rejected = await db
-    .prepare("DELETE FROM submissions WHERE box_verified = -1 AND filed_at IS NOT NULL AND filed_at < ?")
-    .bind(rejectedCutoff)
-    .run();
-  const audit = await db
-    .prepare("DELETE FROM audit_log WHERE created_at < ?")
-    .bind(auditCutoff)
-    .run();
+  const failedStages: string[] = [];
+
+  const rejected = await runStage("rejected", failedStages, async () => {
+    const r = await db
+      .prepare("DELETE FROM submissions WHERE box_verified = -1 AND filed_at IS NOT NULL AND filed_at < ?")
+      .bind(rejectedCutoff)
+      .run();
+    return r.meta.changes ?? 0;
+  });
+
+  const audit = await runStage("audit", failedStages, async () => {
+    const r = await db.prepare("DELETE FROM audit_log WHERE created_at < ?").bind(auditCutoff).run();
+    return r.meta.changes ?? 0;
+  });
 
   // PR-5 two-stage submission lifecycle.
   // Stage 1 — at 90d STRIP payload_json (the bulk; photos ride in it) but KEEP the metadata
   // row, so a filed form stays browseable/requestable as long as its job is active (downloads
   // re-fetch the PDF from Box via box_file_id — they never need payload_json; amend-prefill
   // only reads recent rows). Unfiled rows are never touched.
-  const stripped = await db
-    .prepare("UPDATE submissions SET payload_json='' WHERE box_verified = 1 AND filed_at IS NOT NULL AND filed_at < ? AND payload_json != ''")
-    .bind(subCutoff)
-    .run();
+  const stripped = await runStage("strip", failedStages, async () => {
+    const r = await db
+      .prepare("UPDATE submissions SET payload_json='' WHERE box_verified = 1 AND filed_at IS NOT NULL AND filed_at < ? AND payload_json != ''")
+      .bind(subCutoff)
+      .run();
+    return r.meta.changes ?? 0;
+  });
+
   // Stage 2 — delete filed rows whose job is INACTIVE and that are 30d+ past filing (the
   // inactive-job grace). An UNFILED row (box_verified=0) is NEVER evicted (still the only copy).
-  const sub = await db
-    .prepare(
-      "DELETE FROM submissions WHERE box_verified = 1 AND filed_at IS NOT NULL AND filed_at < ? " +
-        "AND job_id IN (SELECT job_id FROM jobs WHERE active = 0)",
-    )
-    .bind(inactiveCutoff)
-    .run();
+  const submissions = await runStage("inactive_delete", failedStages, async () => {
+    const r = await db
+      .prepare(
+        "DELETE FROM submissions WHERE box_verified = 1 AND filed_at IS NOT NULL AND filed_at < ? " +
+          "AND job_id IN (SELECT job_id FROM jobs WHERE active = 0)",
+      )
+      .bind(inactiveCutoff)
+      .run();
+    return r.meta.changes ?? 0;
+  });
 
   // pdf_requests: expire requests older than 24h, then drop any orphaned by a Stage-2 delete.
-  const expiredReq = await db.prepare("DELETE FROM pdf_requests WHERE requested_at < ?").bind(pdfCutoff).run();
-  const orphanReq = await db
-    .prepare("DELETE FROM pdf_requests WHERE submission_uuid NOT IN (SELECT submission_uuid FROM submissions)")
-    .run();
-  const pdfRequests = (expiredReq.meta.changes ?? 0) + (orphanReq.meta.changes ?? 0);
+  const pdfRequests = await runStage("pdf_requests", failedStages, async () => {
+    const expiredReq = await db.prepare("DELETE FROM pdf_requests WHERE requested_at < ?").bind(pdfCutoff).run();
+    const orphanReq = await db
+      .prepare("DELETE FROM pdf_requests WHERE submission_uuid NOT IN (SELECT submission_uuid FROM submissions)")
+      .run();
+    return (expiredReq.meta.changes ?? 0) + (orphanReq.meta.changes ?? 0);
+  });
 
   // filed_pdfs: a cached PDF is kept only while a LIVE pdf_requests row references it. Once no
   // live request remains (all expired, or the parent was deleted), drop the chunks and reset
   // pdf_ready_at/pdf_requested so a fresh request re-services the cache from Box.
-  const droppedChunks = await db
-    .prepare("DELETE FROM filed_pdfs WHERE submission_uuid NOT IN (SELECT submission_uuid FROM pdf_requests)")
-    .run();
-  await db
-    .prepare(
-      "UPDATE submissions SET pdf_ready_at=NULL, pdf_requested=0 WHERE pdf_ready_at IS NOT NULL " +
-        "AND submission_uuid NOT IN (SELECT submission_uuid FROM pdf_requests)",
-    )
-    .run();
-  const pdfChunks = droppedChunks.meta.changes ?? 0;
+  const pdfChunks = await runStage("pdf_chunks", failedStages, async () => {
+    const droppedChunks = await db
+      .prepare("DELETE FROM filed_pdfs WHERE submission_uuid NOT IN (SELECT submission_uuid FROM pdf_requests)")
+      .run();
+    await db
+      .prepare(
+        "UPDATE submissions SET pdf_ready_at=NULL, pdf_requested=0 WHERE pdf_ready_at IS NOT NULL " +
+          "AND submission_uuid NOT IN (SELECT submission_uuid FROM pdf_requests)",
+      )
+      .run();
+    return droppedChunks.meta.changes ?? 0;
+  });
+
+  // publish_requests (GS2 rider): hygiene-prune TERMINAL rows (archived | failed — exactly the
+  // set the admin publish-dismiss button clears) 90d after their terminal-state stamp
+  // (updated_at). Their definition_json blobs are the true sibling of the bundle-bloat class
+  // (~33 KB/publish op, never auto-pruned before this). NON-terminal statuses (queued /
+  // validated / tested / merged / live — index.ts NON_TERMINAL_STATUSES) are NEVER touched:
+  // the publish daemon + stuck-sweep own live rows.
+  const publishRequests = await runStage("publish_requests", failedStages, async () => {
+    const r = await db
+      .prepare("DELETE FROM publish_requests WHERE status IN ('archived', 'failed') AND updated_at < ?")
+      .bind(publishCutoff)
+      .run();
+    return r.meta.changes ?? 0;
+  });
 
   // jobs: an INACTIVE job with no remaining job-level records is dead weight (not in the
   // dropdown, nothing behind it). PR-5 guarded on `submissions`; P2.1 added the field-ops
@@ -116,42 +197,106 @@ export async function pruneOldData(
   // must NEVER be deleted here (it would orphan unrecoverable records). Slice 1 (R3-F4) added
   // job_daily_requirements (0030/0032) + job_expected_materials (0031) — also D1-PRIMARY
   // (admin-authored per-job content with no copy outside D1; restore path is D1 Time Travel),
-  // so they join the guard: deleting their job would orphan them invisibly. The explicit
-  // operator cleanup path is POST /api/internal/admin/purge-job (cascades both). equipment_logs
+  // so they join the guard: deleting their job would orphan them invisibly. GS2 added
+  // checklist_instances (0026) + equipment_location (0014) — both job-context D1-PRIMARY
+  // records (a checklist trail / a location trail behind an inactive job would otherwise be
+  // orphaned invisibly by this delete). The explicit operator cleanup path is
+  // POST /api/internal/admin/purge-job (cascades both). equipment_logs
   // is keyed on equipment_id (not job_id), so it is not a job-context guard. A truly-empty
   // pruned job is recreated by /api/internal/sync's upsert if it re-appears in Smartsheet.
   // Shape note: one NOT IN per table, NOT a single UNION — D1 caps compound-SELECT terms at
   // 5 (SQLITE_MAX_COMPOUND_SELECT), and the 6th guard table blew it up ("too many terms in
   // compound SELECT", caught by test/prune.test.ts). Per-table NOT IN is set-equivalent
-  // (job_id ∉ A∪B∪… ⇔ ∉A ∧ ∉B ∧ …; every guard table's job_id is NOT NULL) and each
-  // subquery can use its own job_id index.
-  const jobsDeleted = await db
-    .prepare(
-      "DELETE FROM jobs WHERE active = 0 " +
-        "AND job_id NOT IN (SELECT job_id FROM submissions) " +
-        "AND job_id NOT IN (SELECT job_id FROM time_entries) " +
-        "AND job_id NOT IN (SELECT job_id FROM task_assignments) " +
-        "AND job_id NOT IN (SELECT job_id FROM inspections) " +
-        "AND job_id NOT IN (SELECT job_id FROM job_daily_requirements) " +
-        "AND job_id NOT IN (SELECT job_id FROM job_expected_materials)",
-    )
-    .run();
+  // (job_id ∉ A∪B∪… ⇔ ∉A ∧ ∉B ∧ …) and each subquery can use its own job_id index.
+  // NULL discipline: the original six guard tables declare job_id NOT NULL; the two GS2
+  // tables declare job_id NULLABLE (0026 / 0014 — rows can exist without a job context),
+  // and a single NULL inside a NOT-IN subquery poisons the whole predicate to NULL
+  // (nothing would EVER be deleted — a silent full-stage disable). Their subqueries
+  // therefore filter `WHERE job_id IS NOT NULL`.
+  const jobs = await runStage("jobs", failedStages, async () => {
+    const r = await db
+      .prepare(
+        "DELETE FROM jobs WHERE active = 0 " +
+          "AND job_id NOT IN (SELECT job_id FROM submissions) " +
+          "AND job_id NOT IN (SELECT job_id FROM time_entries) " +
+          "AND job_id NOT IN (SELECT job_id FROM task_assignments) " +
+          "AND job_id NOT IN (SELECT job_id FROM inspections) " +
+          "AND job_id NOT IN (SELECT job_id FROM job_daily_requirements) " +
+          "AND job_id NOT IN (SELECT job_id FROM job_expected_materials) " +
+          "AND job_id NOT IN (SELECT job_id FROM checklist_instances WHERE job_id IS NOT NULL) " +
+          "AND job_id NOT IN (SELECT job_id FROM equipment_location WHERE job_id IS NOT NULL)",
+      )
+      .run();
+    return r.meta.changes ?? 0;
+  });
 
   const dbSizeBytes = await sampleDbSizeBytes(db);
-  if (dbSizeBytes > DB_SIZE_WARN_BYTES) {
+  const sizeWarn = dbSizeBytes > DB_SIZE_WARN_BYTES;
+  if (sizeWarn) {
     console.warn(`prune: D1 size ${dbSizeBytes} bytes exceeds the ${DB_SIZE_WARN_BYTES}-byte WARN threshold`);
   }
 
   return {
-    submissions: sub.meta.changes ?? 0,
-    stripped: stripped.meta.changes ?? 0,
-    rejected: rejected.meta.changes ?? 0,
-    audit: audit.meta.changes ?? 0,
+    submissions,
+    stripped,
+    rejected,
+    audit,
     pdfRequests,
     pdfChunks,
-    jobs: jobsDeleted.meta.changes ?? 0,
+    publishRequests,
+    jobs,
     dbSizeBytes,
+    sizeWarn,
+    failedStages,
   };
+}
+
+/**
+ * Persist the one-row prune_meta record (migration 0033) after a prune run — the
+ * observability half of GS2. The Mac watchdog reads it back over the bearer-gated
+ * GET /api/internal/prune-status (Check V): WARN when last_run_at goes >48h stale,
+ * CRITICAL on failed_stages non-empty or db_size_bytes over the 6 GB threshold.
+ *
+ * FENCED: a meta-write failure must never take down the scheduled handler (the prune
+ * itself already ran). It is also NOT silent-by-fence — an unwritable meta row simply
+ * stops advancing last_run_at, which is EXACTLY the staleness condition Check V WARNs
+ * on within 48h. console.error keeps the local trace.
+ */
+export async function writePruneMeta(
+  db: Env["DB"],
+  nowSec: number,
+  result: PruneResult,
+): Promise<void> {
+  const counters = {
+    submissions: result.submissions,
+    stripped: result.stripped,
+    rejected: result.rejected,
+    audit: result.audit,
+    pdfRequests: result.pdfRequests,
+    pdfChunks: result.pdfChunks,
+    publishRequests: result.publishRequests,
+    jobs: result.jobs,
+  };
+  try {
+    await db
+      .prepare(
+        "INSERT INTO prune_meta (id, last_run_at, db_size_bytes, size_warn, counters_json, failed_stages_json) " +
+          "VALUES (1, ?, ?, ?, ?, ?) " +
+          "ON CONFLICT(id) DO UPDATE SET last_run_at=excluded.last_run_at, " +
+          "db_size_bytes=excluded.db_size_bytes, size_warn=excluded.size_warn, " +
+          "counters_json=excluded.counters_json, failed_stages_json=excluded.failed_stages_json",
+      )
+      .bind(
+        nowSec,
+        result.dbSizeBytes,
+        result.sizeWarn ? 1 : 0,
+        JSON.stringify(counters),
+        JSON.stringify(result.failedStages),
+      )
+      .run();
+  } catch (err) {
+    console.error(`prune: prune_meta write FAILED (Check V will WARN on staleness): ${String(err)}`);
+  }
 }
 
 /**

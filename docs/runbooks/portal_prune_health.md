@@ -1,0 +1,25 @@
+---
+title: "Portal D1 prune health (watchdog Check V)"
+workstream: safety_portal
+status: active
+related_prs: []
+---
+
+# Portal D1 prune health — watchdog Check V (§43 successor-remediation)
+
+The portal's D1 database has a hard 10 GB ceiling. A single daily Worker cron (`pruneOldData`)
+enforces every retention rule; if it dies silently, the database fills and **every form submission
+starts failing** weeks later. Check V watches its heartbeat (`prune_meta`, migration 0033) via
+`GET /api/internal/prune-status`.
+
+| Symptom (watchdog record) | Likely cause | Low-class repair |
+|---|---|---|
+| **WARN — prune last ran >48 h ago** | The Worker cron isn't firing (deploy skew, cron disabled) or the meta write is failing | Confirm the latest deploy went out (`safety_portal/README.md` punch-list); redeploy if the punch-list shows pending items. Persists past one more day → **escalate to Seth**. |
+| **WARN — meta row absent / malformed** | Migration 0033 not applied to live D1, or a first run hasn't happened yet | Apply pending migrations per the punch-list (operator command block), redeploy, wait one cron cycle. |
+| **CRITICAL — failed prune stages named** | A retention stage is throwing (schema drift, D1 error) | **Escalate to Seth** (code-class). Later stages still ran — the isolation is working; the named stage is the broken one. |
+| **CRITICAL — DB size > 6 GB** | Retention can't keep up, or a stage has been failing for a while | **Escalate to Seth immediately** (capacity-class; the 10 GB wall stops field capture). Interim relief is operator-run photo/pdf cleanup only under Seth's direction. |
+| **INFO — portal unreachable (transport)** | Transient network, or the portal itself is down | None if transient (self-heals next daily run). If it repeats across days, the PORTAL is the problem — see the portal_poll §43 entry (`safety_reports/README.md`); Check C + the daemon heartbeats cover a real portal outage, so Check V deliberately stays INFO here rather than double-paging. |
+
+**Escalate-to-Seth boundary:** any CRITICAL from this check (code or capacity class), or a stale-WARN
+that survives a redeploy. The restore path for D1-primary tables is Cloudflare D1 Time Travel
+(30-day PITR) — see the D1-restore note in `docs/tech_debt.md`.

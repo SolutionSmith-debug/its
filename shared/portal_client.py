@@ -66,6 +66,7 @@ PUBLISH_STUCK_PATH = "/api/internal/publish/stuck"
 FIELDOPS_PENDING_JOBS_PATH = "/api/internal/fieldops/pending-jobs"
 FIELDOPS_JOBS_MARK_MIRRORED_PATH = "/api/internal/fieldops/jobs-mark-mirrored"
 PROGRESS_ROLLUP_PATH = "/api/internal/progress-rollup"
+PRUNE_STATUS_PATH = "/api/internal/prune-status"
 
 
 # ---- Typed exceptions ----------------------------------------------------
@@ -425,6 +426,41 @@ def get_progress_rollup(
             f"(got {type(open_tasks).__name__})"
         )
     return data
+
+
+# ---- D1 prune observability (GS2 — the watchdog Check V read I/O) ----
+
+
+def get_prune_status(base_url: str, token: str) -> dict[str, Any] | None:
+    """Fetch the D1 prune heartbeat: GET /api/internal/prune-status (GS2).
+
+    Reads the one-row `prune_meta` record the Worker's scheduled daily prune UPSERTs
+    after every run (migration 0033) — `{last_run_at, db_size_bytes, size_warn,
+    counters, failed_stages}`. Returns the `prune` dict verbatim, or ``None`` when the
+    Worker reports no record yet (`prune: null` — the prune has never run since the
+    migration; the caller treats that as its own signal, NOT as healthy).
+
+    A control-plane READ of OUR OWN Worker (bearer = the poller's
+    `PORTAL_INTERNAL_API_TOKEN` tier, Keychain `ITS_PORTAL_INTERNAL_TOKEN` — same
+    privilege class as `get_pending`), NOT a customer-facing send — outside the
+    External Send Gate (Invariant 1). Read-only and bounded (single row by schema).
+
+    Consumed by `scripts/watchdog.py` Check V: WARN when `last_run_at` is >48h stale,
+    CRITICAL on `failed_stages` non-empty or `db_size_bytes` over the 6 GB threshold.
+
+    Raises `PortalAuthError` (401) / `PortalRateLimitError` (429/503 exhausted) /
+    `PortalTransportError` (any other failure, incl. a non-object `prune` value).
+    """
+    data = _request("GET", base_url, PRUNE_STATUS_PATH, token)
+    prune = data.get("prune")
+    if prune is None:
+        return None
+    if not isinstance(prune, dict):
+        raise PortalTransportError(
+            f"GET {PRUNE_STATUS_PATH} missing/invalid 'prune' object "
+            f"(got {type(prune).__name__})"
+        )
+    return prune
 
 
 # ---- Form-editor publish pipeline (slice 3b — the Mac publish daemon's queue I/O) ----
