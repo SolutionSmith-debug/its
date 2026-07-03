@@ -39,8 +39,9 @@ ALERTING_DEDUPE_WINDOW_MINUTES = 60
 # unbounded email. Read at runtime via
 # smartsheet_client.get_setting("alerting.max_alerts_per_hour", workstream="global");
 # this constant is the fallback when the row is missing or the read fails.
-# Records (ITS_Errors + Sentry) are never capped — only the Resend fan-out is
-# (Op Stds v16 §3.1 push-vs-record separation).
+# The record (ITS_Errors) is never capped — only the Resend fan-out is
+# (Op Stds §3.1 push-vs-record separation, as amended 2026-07-03: Sentry is
+# a deduped push leg gated per-key by should_fire, not by this hourly cap).
 ALERTING_MAX_ALERTS_PER_HOUR = 15
 
 # Operator alert recipient — build-time FALLBACK for shared/resend_client.send_alert

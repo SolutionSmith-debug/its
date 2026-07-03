@@ -2781,3 +2781,26 @@ def test_compose_summary_plain_resend_key_untagged():
     )
     subject, _ = watchdog._compose_summary(entry, "2026-07-02T07:00:00+00:00")
     assert "safety_reports.intake" in subject
+    # A plain (Resend-leg) key must NOT carry the Sentry-leg tag.
+    assert "[sentry-leg]" not in subject
+
+
+def test_compose_summary_sentry_key_tagged_and_prefix_stripped():
+    # A `sentry::`-namespaced dedupe key (Sentry reclassified
+    # record→deduped-push, operator-ratified 2026-07-03): the summary
+    # subject is tagged `[sentry-leg]` and the prefix is stripped so the
+    # script/error_code display like the Resend-leg summaries.
+    entry = watchdog.alert_dedupe.ExpiredEntry(
+        key="sentry::safety_reports.intake::uncaught_exception",
+        first_fired_at="2026-07-01T00:00:00+00:00",
+        last_fired_at="2026-07-01T00:30:00+00:00",
+        suppressed_count=3,
+        window_ends_at="2026-07-01T01:00:00+00:00",
+        summarized=False,
+    )
+    subject, body = watchdog._compose_summary(entry, "2026-07-02T07:00:00+00:00")
+    assert "[sentry-leg]" in subject
+    assert "safety_reports.intake" in subject
+    assert "sentry::" not in subject  # prefix stripped, not displayed raw
+    assert "Error code:       uncaught_exception" in body
+    assert "Script:           safety_reports.intake" in body

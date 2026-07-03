@@ -1,13 +1,19 @@
-"""Alert-routing dedupe — Resend-leg suppression for flapping CRITICALs.
+"""Alert-routing dedupe — push-leg suppression for flapping CRITICALs.
 
 Purpose
 -------
-Gates the Resend operator-email leg of the Op Stds v13 §3 triple-fire
-CRITICAL alert path behind a windowed dedupe. The Resend leg is the only
-one that wakes the operator; without suppression a flapping CRITICAL
-produces N emails into the inbox. Within `window_minutes` of the first
-fire of a given `(script, error_code)` key, subsequent fires are
-suppressed at the Resend leg only.
+Gates BOTH push legs of the Op Stds §3 triple-fire CRITICAL alert path
+behind a windowed dedupe: the Resend operator email (key
+`f"{script}::{error_code}"`) and the Sentry structured event (namespaced
+key `f"sentry::{script}::{error_code}"`). Sentry reclassified
+record→deduped-push, operator-ratified 2026-07-03 (option 1); §3.1
+rider: blueprint PR its-blueprint#55; ITS_Errors remains the sole
+per-occurrence record. Without suppression a flapping CRITICAL produces
+N emails into the inbox and burns the Sentry free-tier event quota.
+Within `window_minutes` of the first fire of a given key, subsequent
+fires are suppressed at that push leg only. The two legs deliberately do
+NOT share a state entry — each opens its window only on its own success
+(see `error_log._fire_sentry_leg` for the coupling rationale).
 
 Two gates live here. The per-key dedupe (`should_fire`/`record_fire`)
 suppresses ONE flapping `(script, error_code)`. F09 adds a SECOND, global
@@ -18,10 +24,11 @@ operator email.
 
 Invariants
 ----------
-- **Push-vs-record separation (Op Stds v13 §3.1).** Dedupe AND the F09 cap
-  apply ONLY to push, never to records. The Smartsheet `ITS_Errors` row and
-  the Sentry event fire every time (upstream of this module, in
-  `error_log._alert_critical`); only the operator's inbox is suppressed.
+- **Push-vs-record separation (Op Stds §3.1, as amended 2026-07-03).**
+  Dedupe AND the F09 cap apply ONLY to push, never to records. The
+  Smartsheet `ITS_Errors` row — the SOLE per-occurrence record — fires
+  every time (upstream of this module, in `error_log._smartsheet_log`);
+  the push legs (Resend inbox + Sentry event stream) are dedupe-subject.
   This module must never gate a record-write.
 - **F09 cap is the ONE deliberate fail-CLOSED point in this module.** At the
   clean `count >= max_alerts_per_hour` ceiling, `check_hourly_cap` suppresses a
@@ -33,8 +40,9 @@ Invariants
   except this single, deliberate, capped ceiling.
 - **State-file integrity is non-load-bearing for correctness.** Loss,
   truncation, or corruption of `~/its/state/alert_dedupe.json` degrades
-  only to EXTRA emails, never to a missed CRITICAL. The file is an
-  optimisation (suppress duplicates), not a source of truth.
+  only to EXTRA pushes (emails / Sentry events), never to a missed
+  CRITICAL. The file is an optimisation (suppress duplicates), not a
+  source of truth.
 - **All writes route through `shared/state_io.py`.** Writers use
   `state_io.atomic_write_json` (temp-file + `os.replace`) inside
   `state_io.with_path_lock` (sidecar `.lock`). Direct `Path.write_text`
@@ -45,7 +53,7 @@ Invariants
 Failure modes
 -------------
 - **All functions fail OPEN.** Any exception is caught and routed to a
-  per-function fail-open return: `should_fire` → `True` (send the email);
+  per-function fail-open return: `should_fire` → `True` (fire the push);
   `record_fire` / `mark_summarized` / `delete_entry` → silent no-op;
   `list_expired_summaries` → `[]`. Each writes an
   `[alert-dedupe-state-error]` marker via `error_log._local_log`.
@@ -64,9 +72,12 @@ Consumers
 ---------
 - `shared/error_log._fire_resend_leg` — calls `should_fire` (the gate)
   and `record_fire` (opens the next window after a successful send).
+- `shared/error_log._fire_sentry_leg` — same pair on the namespaced
+  `sentry::`-prefixed key; `record_fire` only after a successful capture.
 - `scripts/watchdog.py` Check G (`_check_alert_dedupe_summaries`) —
   calls `list_expired_summaries`, `mark_summarized`, `delete_entry` for
-  the two-phase summary sweep.
+  the two-phase summary sweep (a `sentry::`-prefixed key gets its
+  summary subject tagged `[sentry-leg]`).
 
 State
 -----
@@ -89,11 +100,13 @@ there for forward-compat.
 
 Public API (PR α — push-suppression):
     should_fire(key: str) -> bool
-        True if the Resend leg should send; False if suppressed.
+        True if the calling push leg (Resend or Sentry) should fire;
+        False if suppressed.
         Increments `suppressed_count` on the suppressed path.
     record_fire(key: str) -> None
-        Called by `_fire_resend_leg` after a SUCCESSFUL send to open
-        (or no-op on already-open) the dedupe window.
+        Called by a push leg (`_fire_resend_leg` / `_fire_sentry_leg`)
+        after ITS OWN successful send/capture to open (or no-op on
+        already-open) the dedupe window for its key.
 
 Public API (PR β — summary-sweep lifecycle):
     list_expired_summaries() -> list[ExpiredEntry]
@@ -110,7 +123,8 @@ Public API (PR β — summary-sweep lifecycle):
 
 Out of scope:
     - Multi-machine state sync — file is per-host.
-    - Sentry / Smartsheet leg dedupe — single-leg suppression only.
+    - Smartsheet (ITS_Errors) leg dedupe — that is the sole always-write
+      record surface and must NEVER be gated here (§3.1).
 
 Cross-references:
     - `shared/error_log._fire_resend_leg` — the call site.
@@ -228,15 +242,17 @@ def _load_state_from_path() -> dict[str, dict[str, Any]]:
 
 
 def should_fire(key: str) -> bool:
-    """Return True if the Resend leg should send for this dedupe key.
+    """Return True if the calling push leg should fire for this dedupe key.
 
+    Keys are per-leg: the Resend leg passes `f"{script}::{error_code}"`,
+    the Sentry leg the namespaced `f"sentry::{script}::{error_code}"`.
     Increments `suppressed_count` and refreshes `last_fired_at` on the
     suppressed path. Fail-open on any exception → returns True and
     writes a marker line so the operator sees the dedupe path degraded
-    (and still gets the email).
+    (and the push still fires).
 
     A True return DOES NOT open the dedupe window — that's `record_fire`'s
-    job, called after a successful Resend send.
+    job, called after the leg's own successful send/capture.
     """
     try:
         with state_io.with_path_lock(STATE_FILE):
@@ -273,9 +289,10 @@ def should_fire(key: str) -> bool:
 def record_fire(key: str) -> None:
     """Open a fresh dedupe window for this key (or no-op if already open).
 
-    Called by `_fire_resend_leg` AFTER a successful Resend send so the
-    state file never claims a window for a send that didn't actually
-    happen. No-op on any exception.
+    Called by `_fire_resend_leg` AFTER a successful Resend send, and by
+    `_fire_sentry_leg` AFTER a successful Sentry capture (each on its own
+    key), so the state file never claims a window for a push that didn't
+    actually happen. No-op on any exception.
     """
     try:
         window_minutes = _resolve_window_minutes()
