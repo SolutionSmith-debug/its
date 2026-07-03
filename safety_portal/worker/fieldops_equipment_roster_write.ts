@@ -1,7 +1,7 @@
 import type { Context } from "hono";
 import type { FieldopsApp, FieldopsGates } from "./fieldops_gates";
 import type { Env, Vars } from "./types";
-import { auditStmt } from "./audit";
+import { auditStmt, auditStmtIfChanged } from "./audit";
 
 // P2.3 Slice 6 — EQUIPMENT ROSTER CRUD (create / edit / retire). cap.equipment.manage (admin-only).
 // `equipment` is a PLAIN reference table: create INSERTs, edit UPDATEs in place, retire is a
@@ -87,9 +87,7 @@ export function registerEquipmentRosterWriteRoutes(app: FieldopsApp, gates: Fiel
       const actor = c.get("session").username;
       const res = await c.env.DB.batch([
         c.env.DB.prepare("UPDATE equipment SET name = ?2, kind = ?3, identifier = ?4 WHERE id = ?1 AND active = 1").bind(id, name, kind, identifier),
-        c.env.DB
-          .prepare("INSERT INTO audit_log (actor_username, action, target_username, detail) SELECT ?1,?2,?3,?4 WHERE changes()=1")
-          .bind(actor, "equipment_update", String(id), JSON.stringify({ equipment_id: id, name })),
+        auditStmtIfChanged(c, actor, "equipment_update", String(id), { equipment_id: id, name }),
       ]);
       if ((res[0].meta.changes ?? 0) === 0) return c.json({ error: "not_found" }, 404);
       return c.json({ ok: true, id }, 200);
@@ -107,9 +105,7 @@ export function registerEquipmentRosterWriteRoutes(app: FieldopsApp, gates: Fiel
       const actor = c.get("session").username;
       const res = await c.env.DB.batch([
         c.env.DB.prepare("UPDATE equipment SET active = 0 WHERE id = ?1 AND active = 1").bind(id),
-        c.env.DB
-          .prepare("INSERT INTO audit_log (actor_username, action, target_username, detail) SELECT ?1,?2,?3,?4 WHERE changes()=1")
-          .bind(actor, "equipment_retire", String(id), JSON.stringify({ equipment_id: id })),
+        auditStmtIfChanged(c, actor, "equipment_retire", String(id), { equipment_id: id }),
       ]);
       if ((res[0].meta.changes ?? 0) === 0) {
         // 0 changes = either unknown id (404) or already-retired (idempotent 200).

@@ -1,7 +1,11 @@
 import type { Context } from "hono";
 import type { Env, Vars } from "./types";
 import type { FieldopsApp, FieldopsGates } from "./fieldops_gates";
-import { auditStmt } from "./audit";
+import { auditStmt, auditStmtIfChanged } from "./audit";
+import { requireJob, requireJobScope } from "./fieldops_scope";
+import { DAILY_REPORT_FORM } from "./fieldops_checklist";
+import { DAILY_STATUS_FAMILIES } from "../src/shared/daily_families";
+import type { DailyFormStatus, DailyRequirementItem, DailyRequirementsResponse, FiledEntry } from "./wire-types";
 import catalog from "../catalog.json";
 
 // SOP daily form slice D4 — per-job daily-form REQUIREMENTS (migration 0030
@@ -49,15 +53,16 @@ const DAILY_TAB_PARENT_CODES: ReadonlySet<string> = new Set(
 
 const CAP_MANAGE = "cap.checklist.manage"; // admin authoring (same cap as the checklist editors)
 const CAP_TASKS_OWN = "cap.tasks.own"; // the tab read (the placed manager's surface)
+// The caps that bypass the per-job ownership scope on this surface (see fieldops_scope.requireJobScope
+// — the same admin set for BOTH daily-form reads below; expected-materials diverges to
+// materials.manage on purpose).
+const SCOPE_BYPASS_CAPS = ["cap.jobtracker.manage", "cap.checklist.manage"] as const;
+// Work-date shape for /daily-form/status — a Pacific calendar date, the same 'YYYY-MM-DD' shape the
+// checklist instance_date uses (no time component, no offset).
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
-// One requirement row as served to BOTH surfaces (the tab render and the admin editor).
-interface RequirementRow {
-  id: number;
-  seq: number;
-  kind: string;
-  label: string;
-  form_code: string | null;
-}
+// One requirement row as served to BOTH surfaces (the tab render and the admin editor) —
+// single-sourced as DailyRequirementItem in wire-types.ts (the SPA re-exports the same type).
 
 // The normalized, validated write payload.
 interface ParsedRequirement {
@@ -117,46 +122,78 @@ async function readBody(
   return body as Record<string, unknown>;
 }
 
-// job must exist (active or not — requirements can be authored ahead on any real job). Returns the
-// error Response, or null on success. Same contract as fieldops_checklist.requireJob.
-async function requireJob(
-  c: Context<{ Bindings: Env; Variables: Vars }>,
-  jobId: string,
-): Promise<Response | null> {
-  if (jobId.length < 1 || jobId.length > 64) return c.json({ error: "invalid_job_id" }, 400);
-  const job = await c.env.DB.prepare("SELECT job_id FROM jobs WHERE job_id = ?1").bind(jobId).first();
-  if (!job) return c.json({ error: "not_found" }, 404);
-  return null;
-}
-
-// The acting session's linked ACTIVE personnel row (the same resolution /daily-form/status uses for
-// its ownership scope). LIMIT 1 on the unconstrained username link — deterministic lowest id.
-async function resolveActorPersonnel(
-  c: Context<{ Bindings: Env; Variables: Vars }>,
-): Promise<{ id: number; current_job: string | null } | null> {
-  const username = c.get("session").username;
-  const row = await c.env.DB.prepare(
-    "SELECT id, current_job FROM personnel WHERE username = ?1 AND active = 1 ORDER BY id ASC LIMIT 1",
-  )
-    .bind(username)
-    .first<{ id: number; current_job: string | null }>();
-  return row ?? null;
-}
+// requireJob / the ownership-scope gate — shared scope machinery, see fieldops_scope.ts (extracted
+// from the local copies this module used to carry; contracts unchanged).
 
 // Active requirements for a job, display-ordered and bounded — the ONE read both surfaces share.
 async function activeRequirements(
   c: Context<{ Bindings: Env; Variables: Vars }>,
   jobId: string,
-): Promise<RequirementRow[]> {
+): Promise<DailyRequirementItem[]> {
   const rows = await c.env.DB.prepare(
     "SELECT id, seq, kind, label, form_code FROM job_daily_requirements WHERE job_id = ?1 AND active = 1 ORDER BY seq ASC, id ASC LIMIT ?2",
   )
     .bind(jobId, REQUIREMENTS_LIMIT)
-    .all<RequirementRow>();
+    .all<DailyRequirementItem>();
   return rows.results ?? [];
 }
 
 export function registerDailyRequirementsRoutes(app: FieldopsApp, gates: FieldopsGates): void {
+  // ── GET /api/fieldops/daily-form/status?job_id=…&date=… — LATEST submission per parent family. ────
+  // (D2; moved here from fieldops_checklist.ts — it never belonged to the checklist engine, it only
+  // lived there for the now-shared fieldops_scope.ts gate helpers.)
+  // Backs the Daily tab's form_link "Filed ✓ <time> by <name>" indicators + the "already filed today"
+  // banner. For each family in DAILY_STATUS_FAMILIES, returns the newest submission for
+  // (job_id, work_date = date) matched on the S4 family convention (form_code = parent OR a versioned
+  // variant `parent || '-v%'` — the SAME match the loop-closure reconcile uses). `filed_by_name` is the
+  // personnel DISPLAY NAME resolved through submitted_as — no raw-username fallback (the W9 posture;
+  // an unmatched account yields NULL and the UI drops the "by …" clause). Read-only, bound-param.
+  // OWNERSHIP SCOPE (security review BLOCK fix): cap.tasks.own alone would let ANY portal account
+  // probe other jobs' filing activity (incident reports especially). The read is confined to the
+  // actor's OWN placement (linked ACTIVE personnel.current_job === job_id — the same resolution the
+  // daily generation used); cap.jobtracker.manage / cap.checklist.manage holders (admins) may query
+  // any job. Job existence + date shape validated so an unknown job 404s.
+  app.get(
+    "/api/fieldops/daily-form/status",
+    gates.requireSession,
+    gates.requireCapability(CAP_TASKS_OWN),
+    async (c) => {
+      const q = c.req.query();
+      const date = q.date ?? "";
+      if (!DATE_RE.test(date)) return c.json({ error: "invalid_date" }, 400);
+      const jobId = q.job_id ?? "";
+      const jobErr = await requireJob(c, jobId); // 400 bad shape / 404 unknown job
+      if (jobErr) return jobErr;
+
+      // Per-job ownership scope (see header comment): non-admin actors only read their OWN placement.
+      const scopeErr = await requireJobScope(c, jobId, SCOPE_BYPASS_CAPS);
+      if (scopeErr) return scopeErr;
+
+      // One statement per family (a fixed, module-constant set of five) in a single D1 batch.
+      // Newest-first tiebreak mirrors ROLLUP_LINK_SQL (created_at DESC, submission_uuid DESC).
+      const statusSql = `
+        SELECT sub.created_at AS filed_at,
+               (SELECT p.name FROM personnel p WHERE p.username = sub.submitted_as ORDER BY p.id ASC LIMIT 1) AS filed_by_name
+        FROM submissions sub
+        WHERE sub.job_id = ?1 AND sub.work_date = ?2
+          AND (sub.form_code = ?3 OR sub.form_code LIKE ?3 || '-v%')
+        ORDER BY sub.created_at DESC, sub.submission_uuid DESC
+        LIMIT 1
+      `;
+      const legs = await c.env.DB.batch(
+        DAILY_STATUS_FAMILIES.map((family) => c.env.DB.prepare(statusSql).bind(jobId, date, family)),
+      );
+      const filed: Record<string, FiledEntry> = {};
+      DAILY_STATUS_FAMILIES.forEach((family, i) => {
+        const row = legs[i].results?.[0] as FiledEntry | undefined;
+        if (row) filed[family] = { filed_at: row.filed_at, filed_by_name: row.filed_by_name ?? null };
+      });
+      // daily_filed = the daily-report family's entry, surfaced separately for the banner.
+      const payload: DailyFormStatus = { filed, daily_filed: filed[DAILY_REPORT_FORM] ?? null };
+      return c.json(payload, 200);
+    },
+  );
+
   // ── GET /api/fieldops/daily-form/requirements?job_id=… — the job's ACTIVE requirement items. ─────
   // Serves BOTH the Daily tab (renders them inside the daily form's job_requirements section) and
   // the admin job-detail editor (which needs the ids for edit/reorder/deactivate). cap.tasks.own +
@@ -174,14 +211,12 @@ export function registerDailyRequirementsRoutes(app: FieldopsApp, gates: Fieldop
       const jobErr = await requireJob(c, jobId); // 400 bad shape / 404 unknown job
       if (jobErr) return jobErr;
 
-      const caps = c.get("capabilities");
-      if (!caps.has("cap.jobtracker.manage") && !caps.has("cap.checklist.manage")) {
-        const person = await resolveActorPersonnel(c);
-        if (!person || person.current_job !== jobId) return c.json({ error: "forbidden_job" }, 403);
-      }
+      const scopeErr = await requireJobScope(c, jobId, SCOPE_BYPASS_CAPS);
+      if (scopeErr) return scopeErr;
 
       const items = await activeRequirements(c, jobId);
-      return c.json({ job_id: jobId, items }, 200);
+      const payload: DailyRequirementsResponse = { job_id: jobId, items };
+      return c.json(payload, 200);
     },
   );
 
@@ -247,11 +282,7 @@ export function registerDailyRequirementsRoutes(app: FieldopsApp, gates: Fieldop
             "UPDATE job_daily_requirements SET seq=?3, kind=?4, label=?5, form_code=?6 WHERE id=?1 AND job_id=?2 AND active=1",
           )
           .bind(itemId, jobId, item.seq, item.kind, item.label, item.form_code),
-        c.env.DB
-          .prepare(
-            "INSERT INTO audit_log (actor_username, action, target_username, detail) SELECT ?1,?2,?3,?4 WHERE changes()=1",
-          )
-          .bind(actor, "daily_requirement_edit", jobId, JSON.stringify({ job_id: jobId, item_id: itemId, ...item })),
+        auditStmtIfChanged(c, actor, "daily_requirement_edit", jobId, { job_id: jobId, item_id: itemId, ...item }),
       ]);
       if ((res[0].meta.changes ?? 0) === 0) return c.json({ error: "not_found" }, 404);
       return c.json({ ok: true, id: itemId }, 200);
@@ -276,11 +307,7 @@ export function registerDailyRequirementsRoutes(app: FieldopsApp, gates: Fieldop
         c.env.DB
           .prepare("UPDATE job_daily_requirements SET active=0 WHERE id=?1 AND job_id=?2 AND active=1")
           .bind(itemId, jobId),
-        c.env.DB
-          .prepare(
-            "INSERT INTO audit_log (actor_username, action, target_username, detail) SELECT ?1,?2,?3,?4 WHERE changes()=1",
-          )
-          .bind(actor, "daily_requirement_deactivate", jobId, JSON.stringify({ job_id: jobId, item_id: itemId })),
+        auditStmtIfChanged(c, actor, "daily_requirement_deactivate", jobId, { job_id: jobId, item_id: itemId }),
       ]);
       if ((res[0].meta.changes ?? 0) === 0) return c.json({ error: "not_found" }, 404);
       return c.json({ ok: true, id: itemId }, 200);

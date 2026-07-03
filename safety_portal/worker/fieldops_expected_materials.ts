@@ -1,7 +1,9 @@
 import type { Context } from "hono";
 import type { FieldopsApp, FieldopsGates } from "./fieldops_gates";
 import type { Env, Vars } from "./types";
-import { auditStmt } from "./audit";
+import { auditStmt, auditStmtIfChanged } from "./audit";
+import { requireJob, requireJobScope } from "./fieldops_scope";
+import type { ExpectedMaterialRow, ExpectedMaterialsResponse } from "./wire-types";
 
 // Material receipts (M1) — per-job EXPECTED-materials list (`job_expected_materials`, migration
 // 0031). The office records what a job is expecting; managers confirm receipt against that list.
@@ -50,36 +52,9 @@ function badId(c: Ctx): number | null {
   return isNaN(id) ? null : id;
 }
 
-// Job must exist (active or not — expectations can be authored on any real job, the checklist
-// convention). Returns the error Response, or null on success.
-async function requireJob(c: Ctx, jobId: string): Promise<Response | null> {
-  if (jobId.length < 1 || jobId.length > 64) return c.json({ error: "invalid_job_id" }, 400);
-  const job = await c.env.DB.prepare("SELECT job_id FROM jobs WHERE job_id = ?1").bind(jobId).first();
-  if (!job) return c.json({ error: "not_found" }, 404);
-  return null;
-}
-
-// Resolve the acting session → its linked ACTIVE personnel row (the checklist resolution: the
-// nullable soft username link, lowest id deterministic). null = no active linked roster person.
-async function resolveActorPersonnel(c: Ctx): Promise<{ id: number; current_job: string | null } | null> {
-  const username = c.get("session").username;
-  const row = await c.env.DB.prepare(
-    "SELECT id, current_job FROM personnel WHERE username = ?1 AND active = 1 ORDER BY id ASC LIMIT 1",
-  )
-    .bind(username)
-    .first<{ id: number; current_job: string | null }>();
-  return row ?? null;
-}
-
-// Per-job ownership scope (the /daily-form/status pattern): a non-bypass actor may only touch a
-// job that is their OWN placement. Returns the 403 Response, or null when the actor is in scope.
-async function requireJobScope(c: Ctx, jobId: string): Promise<Response | null> {
-  const caps = c.get("capabilities");
-  if (SCOPE_BYPASS_CAPS.some((cap) => caps.has(cap))) return null;
-  const person = await resolveActorPersonnel(c);
-  if (!person || person.current_job !== jobId) return c.json({ error: "forbidden_job" }, 403);
-  return null;
-}
+// requireJob / requireJobScope — shared scope machinery, see fieldops_scope.ts (extracted from the
+// local copies this module used to carry; contracts unchanged; SCOPE_BYPASS_CAPS above stays THIS
+// module's own divergent admin set, passed explicitly at each gate site).
 
 // Shared expectation-field validation for create + update (content fields; seq is create-only —
 // reorder has its own route). Returns the cleaned tuple or an error string. material_id is only
@@ -192,21 +167,8 @@ function readActionFields(body: Record<string, unknown>): ActionFields | string 
   return { qty_received, note };
 }
 
-interface ExpectedRow {
-  id: number;
-  material_id: number | null;
-  material_name: string | null;
-  description: string | null;
-  qty: number | null;
-  unit: string | null;
-  expected_date: string | null;
-  status: string;
-  received_at: number | null;
-  received_by_name: string | null;
-  qty_received: number | null;
-  note: string | null;
-  seq: number;
-}
+// The read row — single-sourced as ExpectedMaterialRow in wire-types.ts (the SPA re-exports the
+// same type, so a drift here fails the typecheck on both sides).
 
 export function registerExpectedMaterialsRoutes(app: FieldopsApp, gates: FieldopsGates): void {
   // ── GET /api/fieldops/expected-materials?job_id — the job's active expectation list. ─────────────
@@ -222,7 +184,7 @@ export function registerExpectedMaterialsRoutes(app: FieldopsApp, gates: Fieldop
       const jobId = c.req.query("job_id") ?? "";
       const jobErr = await requireJob(c, jobId); // 400 bad shape / 404 unknown job
       if (jobErr) return jobErr;
-      const scopeErr = await requireJobScope(c, jobId); // 403 forbidden_job outside own placement
+      const scopeErr = await requireJobScope(c, jobId, SCOPE_BYPASS_CAPS); // 403 forbidden_job outside own placement
       if (scopeErr) return scopeErr;
 
       const res = await c.env.DB.prepare(
@@ -239,8 +201,9 @@ export function registerExpectedMaterialsRoutes(app: FieldopsApp, gates: Fieldop
          LIMIT 500`,
       )
         .bind(jobId)
-        .all<ExpectedRow>();
-      return c.json({ expected_materials: res.results ?? [] }, 200);
+        .all<ExpectedMaterialRow>();
+      const payload: ExpectedMaterialsResponse = { expected_materials: res.results ?? [] };
+      return c.json(payload, 200);
     },
   );
 
@@ -314,9 +277,7 @@ export function registerExpectedMaterialsRoutes(app: FieldopsApp, gates: Fieldop
              WHERE id = ?1 AND active = 1 AND status = 'expected'`,
           )
           .bind(id, f.material_id, f.description, f.qty, f.unit, f.expected_date),
-        c.env.DB
-          .prepare("INSERT INTO audit_log (actor_username, action, target_username, detail) SELECT ?1,?2,?3,?4 WHERE changes()=1")
-          .bind(actor, "expected_material_update", String(id), JSON.stringify({ expectation_id: id, material_id: f.material_id, description: f.description })),
+        auditStmtIfChanged(c, actor, "expected_material_update", String(id), { expectation_id: id, material_id: f.material_id, description: f.description }),
       ]);
       if ((res[0].meta.changes ?? 0) === 0) {
         // 0 changes = unknown/deactivated (404) or already received/incident (409 — say which).
@@ -349,9 +310,7 @@ export function registerExpectedMaterialsRoutes(app: FieldopsApp, gates: Fieldop
         c.env.DB
           .prepare("UPDATE job_expected_materials SET seq = ?2 WHERE id = ?1 AND active = 1")
           .bind(id, body.seq),
-        c.env.DB
-          .prepare("INSERT INTO audit_log (actor_username, action, target_username, detail) SELECT ?1,?2,?3,?4 WHERE changes()=1")
-          .bind(actor, "expected_material_reorder", String(id), JSON.stringify({ expectation_id: id, seq: body.seq })),
+        auditStmtIfChanged(c, actor, "expected_material_reorder", String(id), { expectation_id: id, seq: body.seq }),
       ]);
       if ((res[0].meta.changes ?? 0) === 0) return c.json({ error: "not_found" }, 404);
       return c.json({ ok: true, id }, 200);
@@ -371,9 +330,7 @@ export function registerExpectedMaterialsRoutes(app: FieldopsApp, gates: Fieldop
       const actor = c.get("session").username;
       const res = await c.env.DB.batch([
         c.env.DB.prepare("UPDATE job_expected_materials SET active = 0 WHERE id = ?1 AND active = 1").bind(id),
-        c.env.DB
-          .prepare("INSERT INTO audit_log (actor_username, action, target_username, detail) SELECT ?1,?2,?3,?4 WHERE changes()=1")
-          .bind(actor, "expected_material_deactivate", String(id), JSON.stringify({ expectation_id: id })),
+        auditStmtIfChanged(c, actor, "expected_material_deactivate", String(id), { expectation_id: id }),
       ]);
       if ((res[0].meta.changes ?? 0) === 0) {
         const row = await c.env.DB.prepare("SELECT id FROM job_expected_materials WHERE id = ?1").bind(id).first();
@@ -408,7 +365,7 @@ export function registerExpectedMaterialsRoutes(app: FieldopsApp, gates: Fieldop
       .bind(id)
       .first<{ id: number; job_id: string }>();
     if (!row) return c.json({ error: "not_found" }, 404);
-    const scopeErr = await requireJobScope(c, row.job_id);
+    const scopeErr = await requireJobScope(c, row.job_id, SCOPE_BYPASS_CAPS);
     if (scopeErr) return scopeErr;
 
     const actor = c.get("session").username;
@@ -420,9 +377,7 @@ export function registerExpectedMaterialsRoutes(app: FieldopsApp, gates: Fieldop
            WHERE id = ?1 AND active = 1 AND status = 'expected'`,
         )
         .bind(id, nextStatus, actor, f.qty_received, f.note),
-      c.env.DB
-        .prepare("INSERT INTO audit_log (actor_username, action, target_username, detail) SELECT ?1,?2,?3,?4 WHERE changes()=1")
-        .bind(actor, auditAction, row.job_id, JSON.stringify({ expectation_id: id, job_id: row.job_id, qty_received: f.qty_received })),
+      auditStmtIfChanged(c, actor, auditAction, row.job_id, { expectation_id: id, job_id: row.job_id, qty_received: f.qty_received }),
     ]);
     if ((res[0].meta.changes ?? 0) === 0) return c.json({ error: "already_actioned" }, 409);
     return c.json({ ok: true, id, status: nextStatus }, 200);

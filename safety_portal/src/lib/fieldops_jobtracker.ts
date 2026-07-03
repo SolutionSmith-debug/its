@@ -4,123 +4,27 @@
 // (R1) Errors throw ApiError (src/lib/errorCopy.ts): err.message is HUMAN copy, err.code the raw
 // wire code for page-level branching. Pages must branch on err.code, never err.message.
 import { raiseApiError } from "./errorCopy";
+import type { JobDetailResponse, JobListResponse } from "../../worker/wire-types";
 
-export interface CrewMember {
-  id: number;
-  name: string;
-  trade: string | null;
-}
-
-/** (R7) Detail crew row: + the linked account's role so pickers can pre-disable task-assign
- *  options the Worker's subcontractor-target guard will 403 (an assign-only manager may only
- *  target 'submitter'-linked personnel; no login → null → also rejected). Presentation only —
- *  the Worker re-gates. */
-export interface DetailCrewMember extends CrewMember {
-  account_role: string | null;
-}
-
-export interface OpenTask {
-  id: number;
-  description: string;
-  status: string;
-  personnel_name: string | null;
-}
-
-export interface JobRow {
-  job_id: string;
-  project_name: string;
-  status: string;
-  progress: number;
-  client_name: string | null;
-  crew: CrewMember[];
-  open_tasks: OpenTask[];
-}
-
-export interface JobListResponse {
-  jobs: JobRow[];
-  next_cursor: string | null;
-  /** (R7) Where the viewer's own linked roster row is placed — drives the "Your job" list badge.
-   *  null = unlinked/unplaced. Optional for back-compat; the live worker always sends it. */
-  viewer_current_job?: string | null;
-}
-
-export interface Task {
-  id: number;
-  description: string;
-  status: string;
-  created_at: number;
-  personnel_id: number | null;
-  personnel_name: string | null;
-}
-
-export interface JobTimeEntry {
-  uuid: string;
-  hours: number | null;
-  work_started_at: number | null;
-  work_ended_at: number | null;
-  recorded_at: number;
-  notes: string | null;
-  personnel_name: string | null;
-  /** (R7) The task the entry was logged against (task_assignments.description); null = job-level. */
-  task_id: number | null;
-  task_description: string | null;
-  /** (R7) WHO CREATED the entry — the write's actor_username stamp (always present) plus the
-   *  roster display name resolved through the personnel↔account link (null when unlinked). */
-  // Display name ONLY (R1 W9 posture) — null when the recorder has no roster row; never a raw username.
-  recorded_by_name: string | null;
-}
-
-export interface EquipmentOnSite {
-  id: number;
-  name: string;
-  kind: string | null;
-  identifier: string | null;
-  label: string | null;
-  read_at: number | null;
-}
-
-export interface JobInspection {
-  uuid: string;
-  form_code: string;
-  version: number;
-  performed_at: number | null;
-  recorded_at: number;
-  equipment_name: string | null;
-}
-
-export interface JobClient {
-  name: string;
-  contact: string | null;
-  phone: string | null;
-  email: string | null;
-}
-
-export interface JobDetail {
-  job_id: string;
-  project_name: string;
-  status: string;
-  progress: number;
-  client: JobClient | null;
-  crew: DetailCrewMember[];
-  tasks: Task[];
-  time_entries: JobTimeEntry[];
-  equipment_on_site: EquipmentOnSite[];
-  inspections: JobInspection[];
-}
-
-/** (R7) The session user's own linked ACTIVE roster row — backs the log-time "Me (<name>)"
- *  default. null = no linked personnel (the form says so instead of guessing). */
-export interface ViewerPersonnel {
-  id: number;
-  name: string;
-}
-
-export interface JobDetailResponse {
-  job: JobDetail;
-  cursors: { tasks: string | null; time: string | null; insp: string | null };
-  /** Optional for back-compat with cached/older responses; the live worker always sends it. */
-  viewer_personnel?: ViewerPersonnel | null;
-}
+// Wire shapes — SINGLE-SOURCED in worker/wire-types.ts (the Worker types its c.json payloads with
+// the same definitions, so a shape drift fails the typecheck on both sides — and the DailyReportTab
+// fixture now type-checks against what the Worker actually sends); re-exported here so existing
+// importers keep their path.
+export type {
+  CrewMember,
+  DetailCrewMember,
+  EquipmentOnSite,
+  JobClient,
+  JobDetail,
+  JobDetailResponse,
+  JobInspection,
+  JobListResponse,
+  JobRow,
+  JobTimeEntry,
+  OpenTask,
+  Task,
+  ViewerPersonnel,
+} from "../../worker/wire-types";
 
 export type JobStatusFilter = "active" | "closed" | "on_hold" | "all";
 
