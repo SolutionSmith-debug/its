@@ -197,11 +197,17 @@ function RoutingFields({ routing, onChange }: { routing: RoutingForm; onChange: 
 export function FieldOpsJobTracker({
   onBack,
   initialJobId,
+  onJobViewChange,
 }: {
   onBack: () => void;
   /** R7 — deep-link straight into a job's detail (the My Tasks "Log time" quick action / job-group
    *  links, routed through App). Consumed once on mount; absent → the normal list. */
   initialJobId?: string | null;
+  /** G2.5 — reports USER-initiated list↔detail transitions up so App keeps the address bar
+   *  shareable (/jobs/JOB-000018 ↔ /jobs). Deliberately NOT called for the initialJobId mount
+   *  consumption (that navigation came FROM the URL — reporting it back would double-push).
+   *  App syncs the URL only; this never re-renders or remounts the tracker. */
+  onJobViewChange?: (jobId: string | null) => void;
 }) {
   const [view, setView] = useState<"list" | "detail">("list");
   const [jobs, setJobs] = useState<api.JobRow[]>([]);
@@ -437,6 +443,7 @@ export function FieldOpsJobTracker({
   }
 
   function handleCardClick(job: api.JobRow) {
+    onJobViewChange?.(job.job_id); // G2.5: App pushes /jobs/<id> — the texted-link moment
     openJobById(job.job_id);
   }
 
@@ -453,6 +460,7 @@ export function FieldOpsJobTracker({
 
   function handleBack() {
     if (view === "detail") {
+      onJobViewChange?.(null); // G2.5: App REPLACES the URL back to /jobs (dismiss, not deeper)
       setView("list");
       setSelectedJob(null);
       setViewerPersonnel(null);

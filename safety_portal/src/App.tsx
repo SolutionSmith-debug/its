@@ -12,6 +12,14 @@ import { FieldOpsEquipment } from "./pages/FieldOpsEquipment";
 import { FieldOpsPersonnel } from "./pages/FieldOpsPersonnel";
 import { BackHomeNav } from "./components/BackHomeNav";
 import { useIdleLogout } from "./lib/useIdleLogout";
+import {
+  HOME_ROUTE,
+  VIEW_CAPS,
+  formatRoute,
+  parseRoute,
+  type AppRoute,
+  type RoutePrefill,
+} from "./lib/router";
 
 // ── Admin-only route chunks (optimization #8) ────────────────────────────────────────────────────
 // Exactly the three ADMIN-ONLY views are code-split: Forms (which pulls the whole FormEditor /
@@ -54,9 +62,20 @@ class ChunkBoundary extends Component<{ children: ReactNode }, { failed: boolean
   }
 }
 
-type View = "home" | HomeNav;
-
 const DISCARD_PROMPT = "Discard this form? Your entries haven't been submitted.";
+
+/** Current pathname+search — what formatRoute() output is compared against for push dedupe. */
+const currentUrl = () => window.location.pathname + window.location.search;
+
+/** Project a rich FormPrefill down to its URL-shareable fields (S5 `values` stay in memory). */
+function toRoutePrefill(p: FormPrefill): RoutePrefill | undefined {
+  const rp: RoutePrefill = {};
+  if (p.jobId) rp.jobId = p.jobId;
+  if (p.parentCode) rp.parentCode = p.parentCode;
+  if (p.variantCode) rp.variantCode = p.variantCode;
+  if (p.workDate) rp.workDate = p.workDate;
+  return Object.keys(rp).length > 0 ? rp : undefined;
+}
 
 /**
  * Admin-scoped session guard. Mounts the 30-min idle-logout + keep-alive (useIdleLogout)
@@ -80,159 +99,242 @@ function AdminSessionGuard({ editing }: { editing: boolean }) {
  * never the boundary (Invariant 2). Job Tracker / Equipment / Personnel / Materials views
  * mount here as their phases ship.
  *
- * R3 — minimal history integration (deliberately NOT a router, deferred item #9): every
- * top-level view change pushes a `{ view }` history entry via navigate(); popstate restores
- * the popped view (closing an open form view in the process), so the phone back button walks
- * the in-app view stack instead of exiting the site. A dirty form (FormFillPage reports
- * unsaved input up through onDirtyChange → formDirtyRef) gets a confirm before the popped
- * discard; declining re-pushes the fill entry. R3 — returnTo: openForm captures the view it
- * fired from (no caller changes needed), and FormFillPage gets a { label, onReturn } so its
- * Submitted screen and pre-submit back land on the origin (My Tasks), not Home.
+ * G2.5 — real URL router (supersedes the R3 minimal history shim; deferred item #9 done).
+ * The URL is now the navigation source of truth: src/lib/router.ts maps every top-level
+ * view to a PATH-BASED deep link (/jobs/JOB-000018, /tasks/daily, /submit?job=…&form=…),
+ * served cold by the Worker's existing SPA fallback (wrangler.jsonc
+ * not_found_handling: "single-page-application" — zero Worker changes). Semantics:
+ *   • In-app navigation pushes the destination URL (navigate); within-page state the
+ *     pages report up (Job Tracker selected job, My Tasks tab) syncs the URL WITHOUT a
+ *     re-render — push for "deeper" (open a job's detail), replace for tab flips and
+ *     in-page back (syncRouteUp).
+ *   • popstate parses the browser's restored URL and remounts the routed page fresh
+ *     (popEpoch in the page keys) — back/forward are natural, and a popped
+ *     /jobs/JOB-000018 entry revives THAT job (the URL now encodes it; R7's
+ *     "pop lands on the plain list" note predates URL-encoded jobs).
+ *   • The R3 dirty-guard is preserved EXACTLY: a dirty FormFillPage (onDirtyChange →
+ *     formDirtyRef) confirms before a popstate discard; declining re-pushes the fill URL.
+ *   • Cold-loading any URL lands there AFTER auth: while signed out the LoginPage renders
+ *     and the URL is left untouched, so the intended destination survives the login.
+ *     Unknown or unauthorized URLs render Home and normalize the address bar — never a
+ *     blank page. Capability gating is driven by router.VIEW_CAPS (one source, no drift).
+ * R3 — returnTo (unchanged in spirit, now a full route): openForm captures the route it
+ * fired from, so FormFillPage's Submitted screen / pre-submit back land on the origin
+ * (My Tasks — including its tab), not Home.
  */
 export function App() {
   const { user, loading } = useAuth();
-  const [view, setView] = useState<View>("home");
+  // The routed location. Initialized from the address bar so a cold deep link lands
+  // directly; unrecognized paths fall home (the mount effect below normalizes the URL).
+  const [route, setRoute] = useState<AppRoute>(() => parseRoute(window.location) ?? HOME_ROUTE);
   // A dirty editor (Accounts/Forms) is open — drives the admin keep-alive (see AdminSessionGuard).
   const [editing, setEditing] = useState(false);
-  // Deep-link prefill for FormFillPage (P4 S4): set when a form_linked/inspection checklist item is
-  // opened from My Tasks, cleared on navigating home. Passed through to FormFillPage as initial state.
-  const [formPrefill, setFormPrefill] = useState<FormPrefill | null>(null);
-  // R3: the view a form deep-link fired FROM (captured inside openForm — callers pass nothing).
+  // The S5 rollup draft (FormRenderer FormValues) for a deep-linked fill — far too large for a
+  // URL, so it rides in memory next to the route's shareable prefill projection. Cleared on any
+  // navigation away from the fill (a cold-loaded /submit URL simply has no draft — by design).
+  const [formValues, setFormValues] = useState<FormPrefill["values"]>(undefined);
+  // R3: the route a form deep-link fired FROM (captured inside openForm — callers pass nothing).
   // null = the fill wasn't deep-linked (home-card flow) → FormFillPage keeps its default screens.
-  const [returnTo, setReturnTo] = useState<View | null>(null);
-  // R7: a one-shot job preselect for the Job Tracker (the My Tasks "Log time" quick action and
-  // job-group links). Cleared on any other route into the tracker so a stale deep link never
-  // re-opens; the `key` on FieldOpsJobTracker re-mounts it when the target changes.
-  const [jobTrackerJob, setJobTrackerJob] = useState<string | null>(null);
-  // Synchronous mirror of `view` for the (stable) popstate listener + push-dedupe in navigate().
-  const viewRef = useRef<View>("home");
+  const [returnTo, setReturnTo] = useState<AppRoute | null>(null);
+  // R7: a one-shot job preselect for the Job Tracker (deep links, the My Tasks "Log time" quick
+  // action, and popped /jobs/:id history entries). The `key` on FieldOpsJobTracker re-mounts it
+  // when the target changes; the tracker's own in-page navigation syncs the URL upward instead
+  // (syncRouteUp), which deliberately does NOT touch this state — no remount, no refetch.
+  const [jobTrackerJob, setJobTrackerJob] = useState<string | null>(
+    () => {
+      const r = parseRoute(window.location);
+      return r?.view === "fieldops-jobs" ? (r.jobId ?? null) : null;
+    },
+  );
+  // Bumped on every popstate: keyed into the routed pages so a history traversal always
+  // remounts the page fresh from the URL (a popped entry is authoritative, never stale UI).
+  const [popEpoch, setPopEpoch] = useState(0);
+  // Synchronous mirror of the live route for the (stable) popstate listener, push dedupe,
+  // and returnTo capture. syncRouteUp updates it without a re-render (see below).
+  const routeRef = useRef<AppRoute>(route);
   // R3: FormFillPage's unsaved-input flag, consulted by the popstate guard before discarding.
   const formDirtyRef = useRef(false);
 
-  // R3 history integration: tag the initial entry, then restore views on popstate. Registered once;
-  // reads state through refs so the listener never goes stale.
+  // G2.5 history integration: canonicalize the entry URL, then restore routes on popstate.
+  // Registered once; reads state through refs so the listener never goes stale.
   useEffect(() => {
-    window.history.replaceState({ view: viewRef.current }, "");
-    const onPop = (ev: PopStateEvent) => {
-      const s = ev.state as { view?: unknown } | null;
-      const target = (s && typeof s.view === "string" ? s.view : "home") as View;
-      if (viewRef.current === "fill" && formDirtyRef.current) {
+    window.history.replaceState(null, "", formatRoute(routeRef.current));
+    const onPop = () => {
+      // The browser has already moved the address bar; parse it (unknown → home + normalize).
+      const parsed = parseRoute(window.location);
+      const target = parsed ?? HOME_ROUTE;
+      if (routeRef.current.view === "fill" && formDirtyRef.current) {
         if (!window.confirm(DISCARD_PROMPT)) {
-          // Stay on the form: restore the history entry the pop consumed.
-          window.history.pushState({ view: "fill" }, "");
+          // Stay on the form: re-push the fill URL the pop consumed (R3 semantics, exact).
+          window.history.pushState(null, "", formatRoute(routeRef.current));
           return;
         }
         formDirtyRef.current = false;
       }
-      viewRef.current = target;
-      if (target !== "fill") {
-        // Leaving the form view closes it: drop the deep-link state.
-        setFormPrefill(null);
-        setReturnTo(null);
-      }
-      // R7: a history pop lands on the tracker's plain list — never a revived job deep link.
-      setJobTrackerJob(null);
+      if (parsed === null) window.history.replaceState(null, "", formatRoute(target));
+      // Any traversal drops the in-memory fill payload + captured origin: the popped URL is
+      // the whole state (a popped /submit?… entry re-seeds its prefill from the URL alone).
+      setFormValues(undefined);
+      setReturnTo(null);
       setEditing(false);
-      setView(target);
+      routeRef.current = target;
+      setJobTrackerJob(target.view === "fieldops-jobs" ? (target.jobId ?? null) : null);
+      setRoute(target);
+      setPopEpoch((e) => e + 1);
     };
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
   }, []);
 
+  // Never land on a view the account can't see (or on /login while signed in): render falls
+  // back to Home immediately (below), and this normalizes the address bar to match.
+  const cap = VIEW_CAPS[route.view];
+  const blocked =
+    !!user && (route.view === "login" || (cap !== null && !user.capabilities.includes(cap)));
+  useEffect(() => {
+    if (!blocked) return;
+    window.history.replaceState(null, "", formatRoute(HOME_ROUTE));
+    routeRef.current = HOME_ROUTE;
+    setJobTrackerJob(null);
+    setRoute(HOME_ROUTE);
+  }, [blocked]);
+
   if (loading) {
     return <div className="centered muted">Loading…</div>;
   }
   if (!user) {
+    // The address bar keeps the intended destination (e.g. a texted /jobs/JOB-000018):
+    // once login succeeds, `route` — parsed from that same URL — renders it directly.
     return <LoginPage />;
   }
 
   const caps = user.capabilities;
   const has = (c: string) => caps.includes(c);
-  // R3: every top-level view change goes through here so each gets its own history entry.
-  const navigate = (next: View) => {
-    if (next !== viewRef.current) window.history.pushState({ view: next }, "");
-    viewRef.current = next;
-    setView(next);
+  // Capability gate for the CURRENT route — same map the URL-entry normalizer uses.
+  const allowed = cap === null || has(cap);
+
+  // Every in-app top-level navigation goes through here: push the destination URL (deduped
+  // against the current address) and apply the route. `replace` for normalizations.
+  const navigate = (next: AppRoute, replace = false) => {
+    const url = formatRoute(next);
+    if (url !== currentUrl()) {
+      if (replace) window.history.replaceState(null, "", url);
+      else window.history.pushState(null, "", url);
+    }
+    routeRef.current = next;
+    setJobTrackerJob(next.view === "fieldops-jobs" ? (next.jobId ?? null) : null);
+    setRoute(next);
   };
+  // Within-page state reported UP by a mounted page (Job Tracker selected job, My Tasks tab):
+  // sync the address bar + routeRef WITHOUT setState — the page already shows the new state,
+  // so a re-render/remount would only refetch. push = "deeper" step, replace = tab flip/back.
+  const syncRouteUp = (next: AppRoute, replace: boolean) => {
+    const url = formatRoute(next);
+    if (url !== currentUrl()) {
+      if (replace) window.history.replaceState(null, "", url);
+      else window.history.pushState(null, "", url);
+    }
+    routeRef.current = next;
+  };
+
   const home = () => {
     setEditing(false);
-    setFormPrefill(null);
+    setFormValues(undefined);
     setReturnTo(null);
-    navigate("home");
+    navigate(HOME_ROUTE);
   };
   const backNav = <BackHomeNav onHome={home} />;
-  // Open FormFillPage pre-filled from a checklist deep-link (P4 S4). The keyed remount (see `key`
-  // below) guarantees the prefill seeds initial state even if FormFillPage was already mounted.
-  // R3: capture the view this fired from — the round-trip return target (no caller changes needed).
+  // Open FormFillPage pre-filled from a checklist deep-link (P4 S4). The URL carries the
+  // shareable projection (/submit?job=…&form=…&date=…); the S5 draft values ride in memory.
+  // The keyed remount (see `key` below) guarantees the prefill seeds initial state even if
+  // FormFillPage was already mounted. R3: capture the route this fired from — the round-trip
+  // return target (no caller changes needed) — now tab/job-exact since routes encode them.
   const openForm = (p: FormPrefill) => {
     setEditing(false);
-    setFormPrefill(p);
-    if (viewRef.current !== "fill") setReturnTo(viewRef.current);
-    navigate("fill");
+    setFormValues(p.values);
+    if (routeRef.current.view !== "fill") setReturnTo(routeRef.current);
+    navigate({ view: "fill", prefill: toRoutePrefill(p) });
   };
-  // R3: the deep-link round trip back to the captured origin view.
-  const returnLabel = returnTo === "fieldops-tasks" ? "Back to My Tasks" : "Back";
+  // R3: the deep-link round trip back to the captured origin route.
+  const returnLabel = returnTo?.view === "fieldops-tasks" ? "Back to My Tasks" : "Back";
   const returnToOrigin = () => {
-    const dest = returnTo ?? "home";
+    const dest = returnTo ?? HOME_ROUTE;
     setEditing(false);
-    setFormPrefill(null);
+    setFormValues(undefined);
     setReturnTo(null);
     navigate(dest);
   };
   // R7: open the Job Tracker, optionally preselecting a job's detail (My Tasks "Log time" quick
-  // action / job-group links). No job → the plain list.
+  // action / job-group links). No job → the plain list. The URL gets the job id — shareable.
   const openJobTracker = (jobId?: string) => {
     setEditing(false);
-    setJobTrackerJob(jobId ?? null);
-    navigate("fieldops-jobs");
+    navigate({ view: "fieldops-jobs", jobId });
   };
 
+  // The effective FormFillPage prefill: the route's shareable fields + the in-memory S5 draft.
+  let fillPrefill: FormPrefill | undefined;
+  if (route.view === "fill" && (route.prefill || formValues)) {
+    fillPrefill = { ...route.prefill, values: formValues };
+  }
+
   let page: ReactNode;
-  if (view === "fill") {
+  if (route.view === "fill") {
     page = (
       <FormFillPage
-        key={formPrefill ? `${formPrefill.jobId ?? ""}|${formPrefill.parentCode ?? ""}|${formPrefill.variantCode ?? ""}|${formPrefill.workDate ?? ""}` : "blank"}
+        key={`${popEpoch}:${fillPrefill ? `${fillPrefill.jobId ?? ""}|${fillPrefill.parentCode ?? ""}|${fillPrefill.variantCode ?? ""}|${fillPrefill.workDate ?? ""}` : "blank"}`}
         onBack={home}
         tabBar={backNav}
-        prefill={formPrefill ?? undefined}
+        prefill={fillPrefill}
         returnTo={returnTo !== null ? { label: returnLabel, onReturn: returnToOrigin } : undefined}
         onDirtyChange={(d) => {
           formDirtyRef.current = d;
         }}
       />
     );
-  } else if (view === "request") {
+  } else if (route.view === "request") {
     page = <FormRequestPage onBack={home} />;
-  } else if (view === "accounts" && has("cap.admin.accounts")) {
+  } else if (route.view === "accounts" && allowed) {
     page = <AccountsPage tabBar={backNav} onEditingChange={setEditing} />;
-  } else if (view === "forms" && has("cap.admin.formbuilder")) {
+  } else if (route.view === "forms" && allowed) {
     page = <FormsPage tabBar={backNav} onEditingChange={setEditing} />;
-  } else if (view === "fieldops-jobs" && has("cap.jobtracker.read")) {
-    // R7: keyed by the deep-link target so a fresh preselect re-mounts (one-shot consumption).
-    page = <FieldOpsJobTracker key={jobTrackerJob ?? "list"} onBack={home} initialJobId={jobTrackerJob} />;
-  } else if (view === "fieldops-tasks" && has("cap.tasks.own")) {
+  } else if (route.view === "fieldops-jobs" && allowed) {
+    // R7: keyed by the deep-link target (one-shot consumption) + popEpoch (a history pop
+    // remounts fresh from the URL — including back INTO a job detail, which the URL encodes).
+    page = (
+      <FieldOpsJobTracker
+        key={`${popEpoch}:${jobTrackerJob ?? "list"}`}
+        onBack={home}
+        initialJobId={jobTrackerJob}
+        onJobViewChange={(id) =>
+          syncRouteUp({ view: "fieldops-jobs", jobId: id ?? undefined }, id === null)
+        }
+      />
+    );
+  } else if (route.view === "fieldops-tasks" && allowed) {
     page = (
       <FieldOpsMyTasks
+        key={`${popEpoch}:tasks`}
         onBack={home}
         onOpenForm={openForm}
         onOpenJob={has("cap.jobtracker.read") ? openJobTracker : undefined}
+        initialTab={route.tab}
+        onTabChange={(t) => syncRouteUp({ view: "fieldops-tasks", tab: t }, true)}
       />
     );
-  } else if (view === "fieldops-inspections" && has("cap.checklist.manage")) {
+  } else if (route.view === "fieldops-inspections" && allowed) {
     page = <FieldOpsInspections onBack={home} />;
-  } else if (view === "fieldops-equipment" && has("cap.equipment.field")) {
+  } else if (route.view === "fieldops-equipment" && allowed) {
     page = <FieldOpsEquipment onBack={home} />;
-  } else if (view === "fieldops-personnel" && has("cap.personnel.read")) {
+  } else if (route.view === "fieldops-personnel" && allowed) {
     page = <FieldOpsPersonnel onBack={home} />;
-  } else if (view === "materials-catalog" && has("cap.materials.manage")) {
+  } else if (route.view === "materials-catalog" && allowed) {
     page = <MaterialsCatalogPage onBack={home} />;
   } else {
     page = (
       <HomePage
-        onNavigate={(v) => {
+        onNavigate={(v: HomeNav) => {
           setEditing(false);
-          setJobTrackerJob(null); // a Home-card open is always the plain tracker list (R7)
-          navigate(v);
+          navigate({ view: v } as AppRoute); // every HomeNav is a param-less route entry
         }}
       />
     );
