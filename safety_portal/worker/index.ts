@@ -14,6 +14,7 @@ import { registerJobWriteRoutes } from "./fieldops_job_write";
 import { registerTaskWriteRoutes } from "./fieldops_task_write";
 import { registerMyTasksRoutes } from "./fieldops_tasks";
 import { registerChecklistRoutes } from "./fieldops_checklist";
+import { registerDailyRequirementsRoutes } from "./fieldops_daily_requirements";
 import { registerEquipmentFieldWriteRoutes } from "./fieldops_equipment_write";
 import { registerEquipmentRosterWriteRoutes } from "./fieldops_equipment_roster_write";
 import { registerPersonnelWriteRoutes } from "./fieldops_personnel_write";
@@ -405,6 +406,10 @@ registerMaterialsRoutes(app, fieldopsGates);
 registerMyTasksRoutes(app, fieldopsGates);
 // — Assigned-Tasks tab (P4 S2) checklist engine + per-job template editor (cap.checklist.manage) —
 registerChecklistRoutes(app, fieldopsGates);
+// — SOP daily form D4: per-job daily-form requirements (admin CRUD cap.checklist.manage + the
+//   ownership-scoped tab read) — the D1 overlay rendered inside the daily form's
+//   job_requirements section —
+registerDailyRequirementsRoutes(app, fieldopsGates);
 // — field-ops WRITE routes (P2.3); send-free D1 mutations, capability-gated, audit-batched —
 registerTimeWriteRoutes(app, fieldopsGates);
 registerJobWriteRoutes(app, fieldopsGates);

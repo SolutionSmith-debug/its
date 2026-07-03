@@ -638,3 +638,93 @@ def test_daily_report_v1_still_renders_unchanged() -> None:
     assert "Historical record." in text
     # v1 has no guidance/form_link — none of the D1 chrome may appear.
     assert "Linked form — see the forms filed" not in text
+
+
+# ── job_requirements section (per-job daily-form requirements, slice D4) ─────────
+_REQS_FIXTURE: dict = {
+    "form_code": "reqs-fixture-v1",
+    "parent_form_code": "reqs-fixture",
+    "form_name": "Requirements Fixture",
+    "variant_label": None,
+    "version": 1,
+    "archetype": "sectioned_assessment",
+    "source_pdf": "daily-field-report.pdf",
+    "sections": [
+        {"type": "job_requirements", "key": "job_requirements",
+         "title": "Job-specific requirements"},
+    ],
+}
+
+
+def test_job_requirements_renders_values_array_generically() -> None:
+    """The filed values array (values.job_requirements = [{label, kind, response}]) renders
+    as generic label→response rows under the section title — the filed PDF shows the client
+    requirements + answers exactly as answered (self-describing; stable regardless of later
+    requirement edits)."""
+    submission = {
+        "job_name": "B1", "work_date": "2026-07-02",
+        "values": {"job_requirements": [
+            {"label": "Client requires FR clothing", "kind": "note", "response": ""},
+            {"label": "Badge in at the client gate", "kind": "confirm",
+             "response": "Confirmed"},
+            {"label": "Client rep spoken to today", "kind": "text", "response": "Ana R."},
+        ]},
+    }
+    out = render_submission_pdf(_REQS_FIXTURE, submission)
+    assert out[:5] == b"%PDF-"
+    text = _norm(_pdf_text(out))
+    assert "Job-specific requirements" in text
+    assert "Client requires FR clothing" in text          # a note rides along (label only)
+    assert "Badge in at the client gate" in text and "Confirmed" in text
+    assert "Client rep spoken to today" in text and "Ana R." in text
+
+
+def test_job_requirements_absent_or_empty_is_skipped() -> None:
+    """A job with no requirements adds NOTHING to the PDF: an absent key, an empty array,
+    and a malformed (non-list) value all skip the whole section — title included."""
+    cases: list[dict] = [{}, {"job_requirements": []}, {"job_requirements": "garbage"},
+                         {"job_requirements": ["not-a-dict"]}]
+    for values in cases:
+        out = render_submission_pdf(
+            _REQS_FIXTURE, {"job_name": "B1", "work_date": "2026-07-02", "values": values}
+        )
+        assert out[:5] == b"%PDF-"
+        assert "Job-specific requirements" not in _norm(_pdf_text(out)), values
+
+
+def test_job_requirements_blank_mode_renders_title_and_placeholder() -> None:
+    """Blank/fillable mode can't know a job's runtime overlay — it renders the title + an
+    explicit placeholder line instead of silently omitting the section."""
+    from safety_reports.form_pdf import render_blank_fillable
+    out = render_blank_fillable(_REQS_FIXTURE)
+    assert out[:5] == b"%PDF-"
+    text = _norm(_pdf_text(out))
+    assert "Job-specific requirements" in text
+    assert "(job-specific items appear here)" in text
+
+
+def test_daily_report_v4_renders_with_requirements_and_v3_content() -> None:
+    """The shipped daily-report-v4: the v3 SOP content still renders AND the filed
+    requirements array renders in the new section; a submission WITHOUT the array (a job
+    with no requirements) renders the same document minus that section."""
+    definition = _load("daily-report-v4.json")
+    base_values = {
+        "prepared_by": "Casey PM", "weather": "Sunny", "average_temp": "88",
+        "comments": "All good.",
+    }
+    with_reqs = {
+        "job_name": "Bradley 1", "work_date": "2026-07-02",
+        "values": {**base_values, "job_requirements": [
+            {"label": "Badge in at the client gate", "kind": "confirm",
+             "response": "Confirmed"},
+        ]},
+    }
+    text = _norm(_pdf_text(render_submission_pdf(definition, with_reqs)))
+    assert "SITE SUPERVISOR — STANDARD OPERATING PROCEDURE" in text  # v3 content intact
+    assert "Job-specific requirements" in text
+    assert "Badge in at the client gate" in text and "Confirmed" in text
+
+    without = {"job_name": "Bradley 1", "work_date": "2026-07-02", "values": base_values}
+    text2 = _norm(_pdf_text(render_submission_pdf(definition, without)))
+    assert "SITE SUPERVISOR — STANDARD OPERATING PROCEDURE" in text2
+    assert "Job-specific requirements" not in text2

@@ -288,3 +288,39 @@ def test_daily_report_v3_photo_upload_replaces_minimum() -> None:
     assert [c["key"] for c in crew["columns"]] == [
         "crew_subcontractor", "manpower", "todays_progress",
     ]
+
+
+def test_daily_report_v4_job_requirements_placeholder() -> None:
+    """daily-report-v4 (slice D4): v3 + ONE `job_requirements` placeholder section near the
+    end (immediately before the F. General Expectations guidance), keyed `job_requirements`.
+    The section carries NO content of its own — the per-job overlay (D1
+    job_daily_requirements) is fetched at render time and the answers file under
+    values.job_requirements. v3 stays in-tree unchanged (append-only) and keeps its own
+    tests above; all SOP text is unchanged from v3."""
+    d = _load(FORMS_DIR / "daily-report-v4.json")
+    assert d["version"] == 4 and d["form_code"] == "daily-report-v4"
+    # The dated D4 note rides the definition (meta-schema `comment`).
+    assert any("SLICE D4" in line for line in d.get("comment", []))
+
+    mounts = [s for s in d["sections"] if s["type"] == "job_requirements"]
+    assert len(mounts) == 1, "exactly one job_requirements mount"
+    assert mounts[0]["key"] == "job_requirements"
+    assert mounts[0]["title"] == "Job-specific requirements"
+    # Placement: near the end — immediately before the final F guidance section.
+    idx = d["sections"].index(mounts[0])
+    assert idx == len(d["sections"]) - 2
+    last = d["sections"][-1]
+    assert last["type"] == "guidance"
+    assert last["heading"].startswith("F. General Expectations")
+
+    # Everything else is v3 verbatim: same sections in the same order, the one insertion aside.
+    v3 = _load(FORMS_DIR / "daily-report-v3.json")
+    v4_minus_mount = [s for s in d["sections"] if s["type"] != "job_requirements"]
+    assert v4_minus_mount == v3["sections"], "v4 must be v3 + ONLY the placeholder section"
+
+    # The DFR legal floor (required-content.json parents['daily-report']) is untouched, and
+    # job_requirements is NOT part of it — check_required_content already passes via the
+    # glob-parametrized test above; assert the floor spec itself doesn't name the new section.
+    spec = REQUIRED_CONTENT["parents"]["daily-report"]
+    assert "job_requirements" not in spec.get("required_field_keys", [])
+    assert "job_requirements" not in spec.get("required_section_types", [])

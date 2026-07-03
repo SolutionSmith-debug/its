@@ -574,6 +574,33 @@ def _section_flowables(section: dict, values: dict, st: dict) -> list[Flowable]:
             _section_header(section["label"], st, level="group"),
             _p("Linked form — see the forms filed for this job and date.", st["caption"]),
         ]
+    if typ == "job_requirements":
+        # Per-job daily-form requirements (slice D4). The section itself is an EMPTY
+        # placeholder in the definition — the content is the submission's SELF-DESCRIBING
+        # values array (values[<key>] = [{label, kind, response}], captured by the portal
+        # from the job's D1 overlay at fill time). Rendered GENERICALLY as label→response
+        # rows, so the filed PDF shows the client requirements + answers exactly as
+        # answered, stable regardless of later requirement edits. Absent/empty → the
+        # whole section is skipped (a job with no requirements adds nothing to the PDF).
+        entries = values.get(section.get("key", "job_requirements"))
+        if not isinstance(entries, list) or not entries:
+            return []
+        rows: list[list[Any]] = [[_p("Requirement", st["colhead"]),
+                                  _p("Response", st["colhead"])]]
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue  # defensive: a malformed entry is dropped, never fatal
+            rows.append([
+                _p(str(entry.get("label", "") or ""), st["cell"]),
+                _p(str(entry.get("response", "") or ""), st["cell"]),
+            ])
+        if len(rows) == 1:
+            return []
+        out4: list[Flowable] = [_section_header(section.get("title", "Job-specific requirements"), st)]
+        t = Table(rows, colWidths=[_CONTENT_W - 2.2 * inch, 2.2 * inch], repeatRows=1)
+        t.setStyle(_grid_style(len(rows), 2))
+        out4.append(t)
+        return out4
     logger.warning("form_pdf: unknown section type %r — skipped", typ)
     return []
 
@@ -1244,6 +1271,13 @@ def _blank_section_flowables(section: dict, st: dict, namer: _FieldNamer) -> lis
         # guarantees no divergence (guidance/form_link added for the SOP daily form,
         # slice D1: same heading + callout-only / label + pointer rendering).
         return _section_flowables(section, {}, st)
+    if typ == "job_requirements":
+        # Per-job daily-form requirements (slice D4): the items are per-JOB runtime data
+        # (D1 overlay), unknowable to a blank template — render the title + an explicit
+        # placeholder line so the manual-fallback form says what belongs here instead of
+        # silently omitting the section.
+        return [_section_header(section.get("title", "Job-specific requirements"), st),
+                _p("(job-specific items appear here)", st["caption"])]
     logger.warning("form_pdf: unknown section type %r — skipped (blank)", typ)
     return []
 

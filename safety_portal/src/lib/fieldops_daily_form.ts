@@ -31,3 +31,40 @@ export async function fetchDailyFormStatus(jobId: string, date: string): Promise
   if (!res.ok) return raiseApiError(res);
   return (await res.json()) as DailyFormStatus;
 }
+
+// ── Per-job daily-form requirements (slice D4) ─────────────────────────────────────────────────
+
+/** The parent-form families the status endpoint reports (client mirror of the Worker's
+ *  DAILY_STATUS_FAMILIES module constant — fieldops_checklist.ts). A form_link REQUIREMENT whose
+ *  form_code is outside this set still deep-links fine, but has NO live filed indicator — the
+ *  renderer notes that instead of showing a lying blank. */
+export const DAILY_STATUS_FAMILIES: readonly string[] = [
+  "jha",
+  "visitor-sign-in",
+  "incident-report",
+  "daily-report",
+];
+
+/** The closed requirement-item vocabulary (D1 job_daily_requirements.kind, migration 0030). */
+export type DailyRequirementKind = "note" | "confirm" | "text" | "form_link";
+
+/** One admin-authored per-job requirement item, as served by
+ *  GET /api/fieldops/daily-form/requirements (active items only, seq order, bounded). */
+export interface DailyRequirementItem {
+  id: number;
+  seq: number;
+  kind: DailyRequirementKind;
+  label: string;
+  form_code: string | null; // form_link only: a catalog PARENT family code
+}
+
+/** The job's ACTIVE requirement items — rendered inside the daily form's `job_requirements`
+ *  section (FormRenderer `requirements` prop). Worker-gated cap.tasks.own + the SAME per-job
+ *  ownership scope as the status read (non-admin actors: own placement only, 403 forbidden_job). */
+export async function fetchDailyRequirements(jobId: string): Promise<DailyRequirementItem[]> {
+  const q = new URLSearchParams({ job_id: jobId });
+  const res = await fetch(`/api/fieldops/daily-form/requirements?${q.toString()}`, { credentials: "same-origin" });
+  if (!res.ok) return raiseApiError(res);
+  const body = (await res.json()) as { job_id: string; items: DailyRequirementItem[] };
+  return body.items;
+}

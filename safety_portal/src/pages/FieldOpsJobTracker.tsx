@@ -8,6 +8,7 @@ import { PageShell } from "../components/PageShell";
 import { ChipX } from "../components/ChipX";
 import { ExpectedMaterialsSection } from "../components/ExpectedMaterialsSection";
 import { InlineRowMsg, SectionError, errMsg, type RowFeedback } from "../components/myTasksShared";
+import { JobDailyRequirementsSection } from "../components/JobDailyRequirementsSection";
 import { statusLabel } from "../lib/labels";
 
 // R7 — a load-failure that owns a working Retry (never a dead banner, never a lying empty state).
@@ -230,6 +231,8 @@ export function FieldOpsJobTracker({
   const { user } = useAuth();
   const caps = user?.capabilities ?? [];
   const canManage = caps.includes("cap.jobtracker.manage"); // create / close / lifecycle / routing (admin)
+  // D4: the per-job daily-form requirements editor (admin authoring — the Worker re-gates).
+  const canChecklist = caps.includes("cap.checklist.manage");
   // Assigned-Tasks S1: task authority (create + reassign a task) is cap.jobtracker.manage OR
   // cap.tasks.assign, so a manager gets the add-task + per-task-assign controls (the Worker re-gates,
   // incl. the subcontractor-target guard). Job create / close / lifecycle / routing stay canManage-only.
@@ -1230,6 +1233,9 @@ export function FieldOpsJobTracker({
           )}
           {inspCursor && <LoadMoreBtn leg="insp" />}
         </section>
+
+        {/* D4 — per-job daily-form requirements (self-contained section; cap.checklist.manage). */}
+        {canChecklist && <JobDailyRequirementsSection jobId={job.job_id} />}
       </PageShell>
     );
   }
