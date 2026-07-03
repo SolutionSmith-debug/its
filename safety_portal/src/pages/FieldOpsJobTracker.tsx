@@ -6,6 +6,7 @@ import { fetchEquipmentList, moveEquipment } from "../lib/fieldops_equipment";
 import { useAuth } from "../lib/auth";
 import { PageShell } from "../components/PageShell";
 import { ChipX } from "../components/ChipX";
+import { ExpectedMaterialsSection } from "../components/ExpectedMaterialsSection";
 import { InlineRowMsg, SectionError, errMsg, type RowFeedback } from "../components/myTasksShared";
 import { statusLabel } from "../lib/labels";
 
@@ -843,8 +844,8 @@ export function FieldOpsJobTracker({
 
         {setupBanner === job.job_id && (
           <section className="card dash-section" aria-label="Finish setting up job">
-            <strong>Finish setting up {job.job_id}</strong> — assign crew, equipment, and tasks below to
-            get this job ready.{" "}
+            <strong>Finish setting up {job.job_id}</strong> — assign crew, equipment, tasks, and the
+            expected materials below to get this job ready.{" "}
             <button type="button" className="btn--secondary" onClick={() => setSetupBanner(null)}>Done</button>
           </section>
         )}
@@ -1199,6 +1200,9 @@ export function FieldOpsJobTracker({
             </form>
           )}
         </section>
+
+        {/* Material receipts M1 — self-contained (own caps/fetch/state; the D4 parallel-build rule). */}
+        <ExpectedMaterialsSection jobId={job.job_id} />
 
         <section className="card dash-section">
           <h3 className="dash-detail__h2">Inspections</h3>

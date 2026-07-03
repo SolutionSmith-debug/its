@@ -77,7 +77,7 @@ Anything other than **Active** is treated as "not active" downstream (a blank st
 treated as not active — the system is deny-by-default). You only ever pick one of the three; the
 portal handles the rest of the bookkeeping behind the scenes.
 
-## Setting up a new job — assign crew, equipment, and tasks
+## Setting up a new job — assign crew, equipment, tasks, and expected materials
 
 Creating a job is step one. Right after you click **Create**, the portal opens the new job's
 **detail view** with a **"Finish setting up JOB-######"** banner so you can get it ready in one
@@ -101,19 +101,31 @@ On the job detail view:
 - **Log time for a person** — under **Time entries**, the **For** dropdown lets you record time
   against a specific crew member (not just "yourself"), and the **Task** dropdown ties it to a
   specific task or leaves it job-level.
+- **Record expected materials** — under **Expected materials**, list what the job is waiting on:
+  click **+ Add expected material**, pick a type **from the catalog** (the Materials Catalog
+  vocabulary) or switch to **Custom (free text)** and describe it, add a quantity/unit and an
+  expected date if you know them, then **Add**. You can add these at job creation or any time as
+  the job develops; rows can be edited while still *Expected*, reordered with ▲/▼, and removed
+  (removal keeps the history). Managers and field PMs on the job see this list read-only — the
+  step where they **confirm each delivery arrived** (or flag a damaged/short delivery) lands in
+  the daily report in an upcoming phase; each confirmed row will then show **Received**, when, and
+  by whom.
 
 **Who can do what (permissions):** assigning crew needs the *crew-assign* permission, moving
 equipment needs the *equipment-field* permission, adding/assigning tasks needs the *job-manage*
-permission, and logging time needs the *time-log* permission. A **Manager** (crew lead) can assign
-crew and move equipment but **not** add or assign tasks or create jobs — the office keeps
-job/task creation. You only see the controls your account may use.
+permission, logging time needs the *time-log* permission, and editing the expected-materials list
+needs the *materials-manage* permission (office/admin; everyone with *materials-receive* — all
+roles — can view it on their own job). A **Manager** (crew lead) can assign crew and move
+equipment but **not** add or assign tasks or create jobs — the office keeps job/task creation.
+You only see the controls your account may use.
 
 > **No progress %:** the old job "progress percentage" bar has been **removed** everywhere — it was a
 > meaningless guess. Job status is tracked by **lifecycle** (Active / Inactive / Archived) and by the
 > real tasks + time on the job, not by a made-up number.
 >
-> **Materials** (per-job material lists) are **coming in a later phase** — there is no per-job
-> materials step on the create flow yet.
+> **Materials:** the per-job **expected materials** list is live on every job's detail (see the
+> setup step above). The field-side receipt confirmation inside the daily report — and the
+> material-incident report — arrive in the next materials phase (M2).
 
 ## The golden rule — don't hand-edit portal jobs in Smartsheet
 

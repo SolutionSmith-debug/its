@@ -20,6 +20,7 @@ import { registerPersonnelWriteRoutes } from "./fieldops_personnel_write";
 import { registerCrewAssignRoutes } from "./fieldops_crew_assign";
 import { registerCrewWriteRoutes } from "./fieldops_crew_write";
 import { registerMaterialWriteRoutes } from "./fieldops_material_write";
+import { registerExpectedMaterialsRoutes } from "./fieldops_expected_materials";
 import { registerProgressRollupRoutes } from "./fieldops_rollup";
 import {
   validateUser,
@@ -415,6 +416,8 @@ registerCrewAssignRoutes(app, fieldopsGates);
 // — Assigned-Tasks Slice T: subcontractor scoped crew-create (cap.crew.create), send-free D1 mutation —
 registerCrewWriteRoutes(app, fieldopsGates);
 registerMaterialWriteRoutes(app, fieldopsGates);
+// — Material receipts M1: per-job expected-materials CRUD + receive/flag (send-free D1) —
+registerExpectedMaterialsRoutes(app, fieldopsGates);
 // — P6 progress rollup read (bearer-gated /api/internal/*, NOT a session gate) —
 registerProgressRollupRoutes(app, requireInternalToken);
 
