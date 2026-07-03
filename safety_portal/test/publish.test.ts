@@ -2,6 +2,7 @@
 import { env, SELF } from "cloudflare:test";
 import { describe, it, expect, beforeEach } from "vitest";
 import { validateDefinition } from "../worker/publishValidation";
+import catalogJson from "../catalog.json";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Slice 3a — the publish enqueue gate + the C3 server-side validator.
@@ -14,12 +15,25 @@ import { validateDefinition } from "../worker/publishValidation";
 // Load every shipped definition the SAME way registry.ts does (Vite eager glob). The
 // COUNT is intentionally not asserted — the publish pipeline adds forms, so a hardcoded
 // total is self-defeating (it red-CIs every new-form publish). The real gate is the
-// per-form validateDefinition loop below, which every shipped form must pass.
+// per-form validateDefinition loop below, which every EDITOR-REACHABLE shipped form must
+// pass.
 const formModules = import.meta.glob("../forms/*.json", { eager: true, import: "default" });
 const FORMS: Record<string, Record<string, unknown>> = {};
 for (const [path, def] of Object.entries(formModules)) {
   if (path.endsWith("meta-schema.json")) continue;
   FORMS[(def as { form_code: string }).form_code] = def as Record<string, unknown>;
+}
+
+// The editor-reachable set: each ACTIVE identity's current_form_code — the builder's Edit /
+// Add-version open ONLY these (FormsPage startEdit/startAddVersion take viewDef.form_code
+// from the formCatalog() active set). Historical/retired files stay shipped (append-only,
+// renderable for filed submissions) but are NOT validated here: required-content floors may
+// legitimately postdate them (Slice 1, R3-F3 — daily-report v1-v4 predate the
+// job_requirements/expected_materials mounts the floor now requires), and they re-enter
+// service only via rollback, which is deliberately floor-exempt.
+const CURRENT_CODES = new Set<string>();
+for (const p of (catalogJson as { parents: { forms: { status: string; current_form_code: string }[] }[] }).parents) {
+  for (const f of p.forms) if (f.status === "active") CURRENT_CODES.add(f.current_form_code);
 }
 
 function ctxFor(def: Record<string, unknown>) {
@@ -34,11 +48,16 @@ function sectionOfType(def: Record<string, unknown>, t: string): Record<string, 
   return (def.sections as Record<string, unknown>[]).find((s) => s.type === t)!;
 }
 
-describe("validateDefinition — every shipped form passes (editor clones them)", () => {
+describe("validateDefinition — every editor-reachable (current) form passes", () => {
   it("loaded at least the shipped forms (count is dynamic — the pipeline adds them)", () => {
     expect(Object.keys(FORMS).length).toBeGreaterThan(0);
+    expect(CURRENT_CODES.size).toBeGreaterThan(0);
+  });
+  it("every current_form_code has a shipped definition file", () => {
+    for (const code of CURRENT_CODES) expect(FORMS[code], code).toBeDefined();
   });
   for (const [code, def] of Object.entries(FORMS)) {
+    if (!CURRENT_CODES.has(code)) continue; // historical/retired — see CURRENT_CODES note
     it(`${code} validates ok`, () => {
       expect(validateDefinition(def, ctxFor(def))).toEqual({ ok: true });
     });
@@ -124,12 +143,15 @@ describe("validateDefinition — rejections (the C3 gate)", () => {
 
 // ── guidance + form_link sections (SOP daily form, slice D1) ──────────────────────
 describe("validateDefinition — guidance / form_link (SOP daily form D1)", () => {
-  // Base: the shipped daily-report-v2 (carries both new section types) — mutate a
-  // deep clone per rejection case, exactly like the jha() cases above.
-  const dr2 = () => structuredClone(FORMS["daily-report-v2"]);
-  const dr2Ctx = () => ctxFor(FORMS["daily-report-v2"]);
+  // Base: the CURRENT daily-report (v5) — it carries the D1 guidance + form_link sections
+  // (inherited verbatim from v2) AND the mounts the Slice-1 floor now requires, so a clean
+  // clone validates ok and each rejection case isolates ONE mutation. (The block originally
+  // based on daily-report-v2; v2 is now floor-rejected as a pre-mount historical version —
+  // see the amputation-guard block below.)
+  const dr2 = () => structuredClone(FORMS["daily-report-v5"]);
+  const dr2Ctx = () => ctxFor(FORMS["daily-report-v5"]);
 
-  it("daily-report-v2 (guidance + form_link + fields interleaved) validates ok", () => {
+  it("the current daily-report (guidance + form_link + fields interleaved) validates ok", () => {
     expect(validateDefinition(dr2(), dr2Ctx())).toEqual({ ok: true });
   });
   it("rejects a guidance section with a missing heading", () => {
@@ -207,11 +229,14 @@ describe("validateDefinition — guidance / form_link (SOP daily form D1)", () =
 
 // ── job_requirements section (SOP daily form, slice D4) ───────────────────────────
 describe("validateDefinition — job_requirements (per-job requirements D4)", () => {
-  // Base: the shipped daily-report-v4 (carries the placeholder section).
-  const dr4 = () => structuredClone(FORMS["daily-report-v4"]);
-  const dr4Ctx = () => ctxFor(FORMS["daily-report-v4"]);
+  // Base: the CURRENT daily-report (v5) — carries the D4 placeholder section (inherited
+  // verbatim from v4) and passes the Slice-1 section-type floor, so each rejection case
+  // isolates ONE mutation. (Originally based on daily-report-v4; v4 is now floor-rejected —
+  // it predates the expected_materials mount — see the amputation-guard block below.)
+  const dr4 = () => structuredClone(FORMS["daily-report-v5"]);
+  const dr4Ctx = () => ctxFor(FORMS["daily-report-v5"]);
 
-  it("daily-report-v4 (with the job_requirements placeholder) validates ok", () => {
+  it("the current daily-report (with the job_requirements placeholder) validates ok", () => {
     expect(validateDefinition(dr4(), dr4Ctx())).toEqual({ ok: true });
   });
   it("rejects a job_requirements section with a missing / malformed key", () => {
@@ -309,6 +334,44 @@ describe("validateDefinition — expected_materials (Material receipts M2)", () 
     const r = validateDefinition(d, dr5Ctx());
     expect(r.ok).toBe(false);
     expect((r as { reason: string }).reason).toMatch(/expected_materials invalid title/);
+  });
+});
+
+// ── required_section_types floor — the mount amputation guard (Slice 1, R3-F3) ─────
+// required-content.json parents['daily-report'] now floors the D4/M2 mounts, so a
+// form-builder edit can never silently amputate the per-job requirements / expected-
+// materials sections. This is the Worker C3 half; the Mac half is
+// tests/test_form_definitions.py::test_amputated_daily_report_rejected_by_the_mac_c3_layer.
+describe("validateDefinition — daily-report mount amputation is floor-rejected (Slice 1)", () => {
+  const cur = () => structuredClone(FORMS["daily-report-v5"]);
+  const curCtx = () => ctxFor(FORMS["daily-report-v5"]);
+
+  for (const mount of ["job_requirements", "expected_materials"] as const) {
+    it(`rejects a daily-report edit that drops the ${mount} mount`, () => {
+      const d = cur();
+      d.sections = (d.sections as Record<string, unknown>[]).filter((s) => s.type !== mount);
+      const r = validateDefinition(d, curCtx());
+      expect(r.ok).toBe(false);
+      expect((r as { reason: string }).reason).toMatch(
+        new RegExp(`must contain a '${mount}' section`),
+      );
+    });
+  }
+
+  it("historical pre-mount versions (v2 / v4) are floor-rejected — not editor-reachable", () => {
+    // v2 predates BOTH mounts; v4 predates expected_materials. Neither is openable in the
+    // builder (Edit/Add-version take only current_form_code), so rejecting them costs
+    // nothing and proves the floor bites on any pre-mount shape.
+    const v2 = validateDefinition(
+      structuredClone(FORMS["daily-report-v2"]), ctxFor(FORMS["daily-report-v2"]),
+    );
+    expect(v2.ok).toBe(false);
+    expect((v2 as { reason: string }).reason).toMatch(/must contain a 'job_requirements' section/);
+    const v4 = validateDefinition(
+      structuredClone(FORMS["daily-report-v4"]), ctxFor(FORMS["daily-report-v4"]),
+    );
+    expect(v4.ok).toBe(false);
+    expect((v4 as { reason: string }).reason).toMatch(/must contain a 'expected_materials' section/);
   });
 });
 

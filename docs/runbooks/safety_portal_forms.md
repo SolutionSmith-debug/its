@@ -58,8 +58,11 @@ picklist appears. Only **Active** rows appear.
 
 **Symptom.** An admin's Publish fails in the Status Monitor (or the editor) with a reason
 starting `Rejected: required content missing: …` — e.g. "must contain a 'signature_table'
-section", "the mandatory legal/footer line \"REVIEW AND REVISE THE PLAN\" is absent", or
-"needs at least 1 signature input". The form does **not** go live.
+section", "the mandatory legal/footer line \"REVIEW AND REVISE THE PLAN\" is absent",
+"needs at least 1 signature input", or "must contain a 'job_requirements' /
+'expected_materials' section" (the daily-report mounts — the builder shows these sections
+read-only and offers no Remove control, so this reason normally appears only on a draft
+saved before that guard). The form does **not** go live.
 
 **Why.** Each form type carries a legal floor in `safety_portal/required-content.json` (a JHA
 must keep its review-and-revise footer; an equipment form its lock/tag-out line; most forms a
@@ -96,6 +99,28 @@ re-publish the form from the editor.
 **Escalate to Seth (Tier 3) when** the SAME publish re-fails after a clean re-run, no
 `stale_reclaimed` appears after ~an hour, or any failure names the deploy / git / secrets / send
 path — those are code / secrets / deploy, high-capability-class.
+
+### Publish halted — "unapplied remote D1 migration(s)" (deploy gate, Op Stds §43)
+
+**Symptom.** A CRITICAL alert email naming
+`publish_daemon.deploy_blocked_pending_migrations` (or, rarer,
+`publish_daemon.migration_check_failed`), listing one or more `NNNN_*.sql` migration files.
+The publish request stays visible in the Status Monitor (still queued — it is NOT failed)
+and nothing goes live.
+
+**Why.** The daemon refuses to deploy the portal Worker while the live database is missing
+migrations the new code expects — deploying ahead of them breaks live portal pages
+(forensic class #2; publish request #434 did exactly this). The queued publish retries
+every cycle automatically, so once the migrations are applied it completes on its own — no
+re-publish, no daemon poke.
+
+**Low-class repair (Successor-Operator can do).** Nothing to repair in the portal or the
+queue — do not cancel or re-publish the request. Forward the alert to Seth.
+
+**Escalate to Seth (Tier 3) — always.** Applying a live database migration is deploy-class
+work (the exact command is in the alert). `migration_check_failed` after several
+consecutive cycles is also Seth's: it means the daemon cannot even verify the database
+state (network / Cloudflare auth).
 
 ## Escalate to Seth (Tier 3) when
 

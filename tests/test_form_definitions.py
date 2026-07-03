@@ -122,18 +122,42 @@ def test_toolbox_variants_have_content_and_signin() -> None:
         assert any(s["type"] == "signature_table" for s in d["sections"])
 
 
+def _floor_without_section_types(rc: dict) -> dict:
+    """The floor minus `required_section_types` — applied to HISTORICAL (non-current) shipped
+    versions only. Section-type floors are the one key that is deliberately NOT the
+    all-shipped-versions intersection (Slice 1, R3-F3: daily-report's job_requirements /
+    expected_materials mounts were floored when v5 was already current, and v1-v4
+    legitimately predate them). Historical files are frozen (append-only design), are not
+    editor-reachable (the builder opens only current_form_code), and re-enter service only
+    via rollback — which is deliberately floor-exempt (returns to a historically-valid
+    version). Publish-time enforcement (both C3 layers) always applies the FULL floor."""
+    rc = json.loads(json.dumps(rc))  # deep copy
+    for group in ("parents", "identities"):
+        for spec in (rc.get(group) or {}).values():
+            spec.pop("required_section_types", None)
+    (rc.get("defaults_for_new_identities") or {}).pop("required_section_types", None)
+    return rc
+
+
 @pytest.mark.parametrize("path", DEF_PATHS, ids=lambda p: p.stem)
 def test_live_definition_satisfies_required_content(path: Path) -> None:
     """Every shipped definition satisfies its required-content legal floor (Brief 1 PR-1) — the
     generalized form of the per-form footer/lockout/signature assertions above, driven by
     safety_portal/required-content.json. check_required_content raises on a violation; a clean
-    return is the pass. This locks the floor against future shipped forms too."""
+    return is the pass. This locks the floor against future shipped forms too. CURRENT versions
+    get the full floor; historical versions are exempt from `required_section_types` only
+    (see _floor_without_section_types)."""
     d = _load(path)
     identity = re.sub(r"-v\d+$", "", d["form_code"])
+    floor = (
+        REQUIRED_CONTENT
+        if d["form_code"] in CURRENT_FORM_CODES
+        else _floor_without_section_types(REQUIRED_CONTENT)
+    )
     try:
         check_required_content(
             d, identity=identity, parent_form_code=d["parent_form_code"],
-            required_content=REQUIRED_CONTENT,
+            required_content=floor,
         )
     except PublishApplyError as exc:
         raise AssertionError(f"{path.stem}: {exc}") from exc
@@ -142,6 +166,16 @@ def test_live_definition_satisfies_required_content(path: Path) -> None:
 # ── guidance + form_link sections (SOP daily form, slice D1) ────────────────────
 _CATALOG = json.loads((_ROOT / "safety_portal" / "catalog.json").read_text())
 _CATALOG_PARENTS = {p["parent_form_code"] for p in _CATALOG["parents"]}
+
+# The editor-reachable set: each ACTIVE identity's current_form_code (the builder's Edit /
+# Add-version open only these). Shipped files NOT in this set are historical/retired —
+# exempt from section-type floors in the glob test above (Slice 1, R3-F3).
+CURRENT_FORM_CODES = {
+    f["current_form_code"]
+    for p in _CATALOG["parents"]
+    for f in p["forms"]
+    if f["status"] == "active"
+}
 
 
 @pytest.mark.parametrize("path", DEF_PATHS, ids=lambda p: p.stem)
@@ -318,12 +352,13 @@ def test_daily_report_v4_job_requirements_placeholder() -> None:
     v4_minus_mount = [s for s in d["sections"] if s["type"] != "job_requirements"]
     assert v4_minus_mount == v3["sections"], "v4 must be v3 + ONLY the placeholder section"
 
-    # The DFR legal floor (required-content.json parents['daily-report']) is untouched, and
-    # job_requirements is NOT part of it — check_required_content already passes via the
-    # glob-parametrized test above; assert the floor spec itself doesn't name the new section.
+    # The DFR field-key legal floor is untouched (the mount is a section, not a data field) —
+    # but the section-TYPE floor now NAMES the mount (Slice 1, R3-F3): a future edit can never
+    # silently amputate it. v4 itself is a historical version (current is v5), exempt from the
+    # section-type floor in the glob test above.
     spec = REQUIRED_CONTENT["parents"]["daily-report"]
     assert "job_requirements" not in spec.get("required_field_keys", [])
-    assert "job_requirements" not in spec.get("required_section_types", [])
+    assert "job_requirements" in spec.get("required_section_types", [])
 
 
 def test_daily_report_v5_expected_materials_mount() -> None:
@@ -358,11 +393,35 @@ def test_daily_report_v5_expected_materials_mount() -> None:
     v5_minus_mount = [s for s in d["sections"] if s["type"] != "expected_materials"]
     assert v5_minus_mount == v4["sections"], "v5 must be v4 + ONLY the placeholder section"
 
-    # The DFR legal floor (required-content.json parents['daily-report']) is untouched, and
-    # the new mount is NOT part of it.
+    # The DFR field-key legal floor is untouched (the mount's key files no values) — but the
+    # section-TYPE floor now NAMES the mount (Slice 1, R3-F3): a future edit can never
+    # silently amputate it.
     spec = REQUIRED_CONTENT["parents"]["daily-report"]
     assert "expected_materials_receipt" not in spec.get("required_field_keys", [])
-    assert "expected_materials" not in spec.get("required_section_types", [])
+    assert "expected_materials" in spec.get("required_section_types", [])
+
+
+def test_amputated_daily_report_rejected_by_the_mac_c3_layer() -> None:
+    """Slice 1, R3-F3 — the amputation guard, Mac half (publish_manifest.check_required_content;
+    the Worker half is safety_portal/test/publish.test.ts). Stripping either definition-managed
+    mount (job_requirements / expected_materials) from the CURRENT daily-report must be rejected
+    with the floor's verbatim reason — a form-builder edit can never silently drop the D4/M2
+    mounts. The intact v5 passes (positive control; also covered by the glob test above)."""
+    v5 = _load(FORMS_DIR / "daily-report-v5.json")
+
+    check_required_content(  # intact → clean return
+        v5, identity="daily-report", parent_form_code="daily-report",
+        required_content=REQUIRED_CONTENT,
+    )
+
+    for mount in ("job_requirements", "expected_materials"):
+        amputated = json.loads(json.dumps(v5))
+        amputated["sections"] = [s for s in amputated["sections"] if s["type"] != mount]
+        with pytest.raises(PublishApplyError, match=f"must contain a '{mount}' section"):
+            check_required_content(
+                amputated, identity="daily-report", parent_form_code="daily-report",
+                required_content=REQUIRED_CONTENT,
+            )
 
 
 def test_material_incident_v1_structure_and_floor() -> None:

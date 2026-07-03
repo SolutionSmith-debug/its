@@ -172,7 +172,8 @@ def cmd_list_users(base_url: str, token: str) -> None:
 
 
 def cmd_purge_job(base_url: str, token: str, job_id: str) -> None:
-    """Hard-delete a job + ALL its D1 rows (submissions, filed-PDF cache, pdf_requests).
+    """Hard-delete a job + ALL its D1 rows (submissions, filed-PDF cache, pdf_requests,
+    per-job daily requirements + expected materials).
 
     For clearing a test / decommissioned job that the daemon /api/internal/sync can't: sync
     refuses an empty set (so a transient empty ITS_Active_Jobs read can't wipe the dropdown),
@@ -195,7 +196,13 @@ def cmd_purge_job(base_url: str, token: str, job_id: str) -> None:
     subs = int(data.get("submissions") or 0)
     chunks = int(data.get("pdfChunks") or 0)
     reqs = int(data.get("pdfRequests") or 0)
-    print(f"purged {job_id}: job={job} submissions={subs} pdf_chunks={chunks} pdf_requests={reqs}")
+    # Slice 1 (R3-F4): the Worker cascade also purges the two per-job content tables.
+    dreqs = int(data.get("requirements") or 0)
+    mats = int(data.get("expectedMaterials") or 0)
+    print(
+        f"purged {job_id}: job={job} submissions={subs} pdf_chunks={chunks} "
+        f"pdf_requests={reqs} daily_requirements={dreqs} expected_materials={mats}"
+    )
 
 
 def main(argv: list[str] | None = None) -> None:
