@@ -11,10 +11,6 @@ import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../lib/fieldops_checklist", () => ({
-  fetchDefaultChecklist: vi.fn(),
-  addDefaultItem: vi.fn(),
-  editDefaultItem: vi.fn(),
-  deleteDefaultItem: vi.fn(),
   fetchInspectionTemplates: vi.fn(),
   fetchInspectionTemplate: vi.fn(),
   createInspectionTemplate: vi.fn(),
@@ -99,13 +95,14 @@ describe("FieldOpsInspections — inspections-only Checklists page (D2 retiremen
     expect(container.textContent ?? "").toContain("form definition");
   });
 
-  it("the retired 'Default daily checklist' editor is GONE (D2): no section, no CRUD, no lib call", async () => {
+  it("the retired 'Default daily checklist' editor is GONE (D2): no section, no CRUD", async () => {
+    // (The fetchDefaultChecklist not-called assertion retired with the fn itself — the retired-flow
+    // client fns were REMOVED from the lib in the optimization pass, so no call site can exist.)
     const { container, queryByLabelText } = render(<FieldOpsInspections onBack={() => {}} />);
     await waitFor(() => expect(container.textContent ?? "").toContain("Fall protection"));
     expect(container.textContent ?? "").not.toContain("Default daily checklist");
     expect(container.querySelector('[aria-label="Default daily checklist"]')).toBeNull();
     expect(queryByLabelText("Add default item label")).toBeNull();
-    expect(checklist.fetchDefaultChecklist).not.toHaveBeenCalled();
   });
 
   it("renders loading states distinct from empty (no 'No … yet' flash while fetches are pending)", () => {

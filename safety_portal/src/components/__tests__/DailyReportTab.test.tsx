@@ -9,7 +9,7 @@
  * past-date filed-state-first collapse. Page-level integration (tabs, auto-switch, refresh) lives
  * in pages/__tests__/FieldOpsMyTasks.test.tsx.
  */
-import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../lib/auth", () => ({ useAuth: vi.fn() }));
@@ -351,6 +351,77 @@ describe("DailyReportTab — draft persistence (the deep-link data-loss BLOCK fi
     const second = render(<DailyReportTab linked={true} onOpenForm={vi.fn()} />);
     await waitFor(() => expect(second.container.textContent ?? "").toContain("SITE SUPERVISOR"));
     expect((second.getByLabelText("Weather") as HTMLInputElement).value).toBe(""); // draft cleared on filing
+  });
+
+  // ── Optimization #1: the write path is debounced + photo-stripped. The unmount/remount test
+  // above now exercises the FLUSH path (an unmount inside the debounce window persists the
+  // pending write — the deep-link loss-moment); the per-date test below exercises the
+  // key-change flush (a date switch mid-window must not drop the old date's keystrokes).
+  it("draft writes are DEBOUNCED: no per-keystroke sessionStorage write; one window timer; the write carries the LATEST values", async () => {
+    // Observed through sessionStorage CONTENT + the fake-timer queue (a Storage.prototype spy is
+    // not reliably reached from inside the fake-timer tick in this jsdom setup — counts would lie).
+    const KEY = `its-daily-draft:JOB-A:${TODAY}`;
+    const view = render(<DailyReportTab linked={true} onOpenForm={vi.fn()} />);
+    await waitFor(() => expect(view.container.textContent ?? "").toContain("SITE SUPERVISOR"));
+    vi.useFakeTimers();
+    try {
+      fireEvent.change(view.getByLabelText("Weather"), { target: { value: "S" } });
+      fireEvent.change(view.getByLabelText("Weather"), { target: { value: "Su" } });
+      fireEvent.change(view.getByLabelText("Weather"), { target: { value: "Sunny" } });
+      // The pre-fix bug: a full-values JSON.stringify + write on EVERY keystroke. Now: nothing
+      // persisted yet, and the three keystrokes share ONE pending window timer (not one each).
+      expect(sessionStorage.getItem(KEY)).toBeNull();
+      expect(vi.getTimerCount()).toBe(1);
+      vi.advanceTimersByTime(600);
+      const raw = sessionStorage.getItem(KEY);
+      expect(raw).not.toBeNull(); // the window elapsed -> the ONE debounced write landed...
+      expect((JSON.parse(raw!) as Record<string, unknown>).weather).toBe("Sunny"); // ...with the latest, not the first
+      expect(vi.getTimerCount()).toBe(0); // and nothing further is queued
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("photo-typed keys are STRIPPED from the persisted draft (the base64 quota fix): text survives, photos re-seed empty", async () => {
+    const first = render(<DailyReportTab linked={true} onOpenForm={vi.fn()} />);
+    await waitFor(() => expect(first.container.textContent ?? "").toContain("SITE SUPERVISOR"));
+    fireEvent.change(first.getByLabelText("Weather"), { target: { value: "Hazy" } });
+    first.unmount(); // the unmount flush writes the draft
+    await act(async () => {}); // flush React's (possibly deferred) passive unmount cleanup
+    const raw = sessionStorage.getItem(`its-daily-draft:JOB-A:${TODAY}`);
+    expect(raw).not.toBeNull();
+    const draft = JSON.parse(raw!) as Record<string, unknown>;
+    expect(draft.weather).toBe("Hazy");
+    // The v5 site_photos header key is IN values (seeded []) but NEVER in the persisted draft —
+    // the documented honest regression: attached-but-unsubmitted photos don't survive a restore.
+    expect("site_photos" in draft).toBe(false);
+    const second = render(<DailyReportTab linked={true} onOpenForm={vi.fn()} />);
+    await waitFor(() => expect((second.getByLabelText("Weather") as HTMLInputElement).value).toBe("Hazy"));
+    expect(second.container.querySelector(".photo-field")).not.toBeNull(); // photo section intact, just empty
+  });
+
+  it("a quota-blown write is non-fatal: the flush swallows the error and the form keeps working", async () => {
+    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new DOMException("quota exceeded", "QuotaExceededError");
+    });
+    try {
+      const view = render(<DailyReportTab linked={true} onOpenForm={vi.fn()} />);
+      await waitFor(() => expect(view.container.textContent ?? "").toContain("SITE SUPERVISOR"));
+      fireEvent.change(view.getByLabelText("Weather"), { target: { value: "Stormy" } });
+      expect(() => view.unmount()).not.toThrow(); // the unmount flush hits the throwing write
+      // React can DEFER the passive-effect unmount cleanup — flush it while the throwing spy is
+      // still active, so the flush provably hit the quota error (review BLOCK: without this, the
+      // deferred flush sometimes ran after mockRestore and silently persisted the draft).
+      await act(async () => {});
+    } finally {
+      setItem.mockRestore();
+    }
+    // Belt-and-braces: no draft may survive into the second mount regardless of scheduling.
+    sessionStorage.clear();
+    // Worst case = pre-fix behavior (no draft), never a crash.
+    const second = render(<DailyReportTab linked={true} onOpenForm={vi.fn()} />);
+    await waitFor(() => expect(second.container.textContent ?? "").toContain("SITE SUPERVISOR"));
+    expect((second.getByLabelText("Weather") as HTMLInputElement).value).toBe("");
   });
 
   it("drafts are per-date: switching the date swaps to that date's draft (or the seed), and back", async () => {

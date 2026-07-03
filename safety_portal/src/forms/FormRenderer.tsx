@@ -1,3 +1,4 @@
+import { memo } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import { PhotoField } from "../components/PhotoField";
 import { SignaturePad } from "../components/SignaturePad";
@@ -223,8 +224,13 @@ function SectionView(p: SectionProps) {
         </section>
       );
     }
+    // Value-independent sections short-circuit through the memo'd StaticSectionView (below) —
+    // they read only the section object + the dayRail flag, never `values`, so a keystroke
+    // re-render never re-renders them.
     case "static_text":
-      return <p className={`fr__static fr__static--${s.emphasis ?? "heading"}`}>{s.text}</p>;
+    case "content_blocks":
+    case "guidance":
+      return <StaticSectionView section={s} dayRail={p.dayRail} />;
     case "freeform":
       return (
         <section className="fr__section">
@@ -235,18 +241,6 @@ function SectionView(p: SectionProps) {
           </label>
         </section>
       );
-    case "content_blocks":
-      return (
-        <section className="fr__section fr__content">
-          {s.title ? <h2 className="fr__section-title">{s.title}</h2> : null}
-          {s.blocks.map((b, i) => (
-            <div className="fr__content-block" key={i}>
-              {b.heading ? <h3 className="fr__content-heading">{b.heading}</h3> : null}
-              <p className="fr__content-body">{b.body}</p>
-            </div>
-          ))}
-        </section>
-      );
     case "repeating_table":
     case "signature_table":
       return <TableView section={s} rows={(p.values[s.key] as Row[]) ?? []}
@@ -255,42 +249,6 @@ function SectionView(p: SectionProps) {
     case "checklist":
       return <ChecklistView section={s} state={(p.values[s.key] as ChecklistState) ?? {}}
         onChange={(item, patch) => p.setChecklist(s.key, item, patch)} />;
-    // Read-only SOP guidance (slice D1): heading + paragraphs / bullet lists / styled
-    // callouts, VERBATIM from the definition. Contributes no fill state.
-    // With the host's `dayRail` (the Daily tab): a presentational left rail on every
-    // guidance section + a time-of-day eyebrow on the five phase openers (dayPhase.ts).
-    // The eyebrow is aria-hidden — it restates the heading's own phase for the eye only.
-    case "guidance": {
-      const phase = p.dayRail ? dayPhaseFor(s.heading) : null;
-      return (
-        <section className={`fr__section fr__guidance${p.dayRail ? " fr__guidance--rail" : ""}`}>
-          {phase ? (
-            <p className="fr__day-eyebrow" aria-hidden="true">
-              {phase}
-            </p>
-          ) : null}
-          <h2 className="fr__section-title">{s.heading}</h2>
-          {s.blocks.map((b, i) => {
-            if (b.type === "p") return <p key={i} className="fr__guidance-p">{b.text}</p>;
-            if (b.type === "bullets") {
-              return (
-                <ul key={i} className="fr__guidance-bullets">
-                  {b.items.map((item, j) => <li key={j}>{item}</li>)}
-                </ul>
-              );
-            }
-            // callout — visually distinct per style (gold legal look for note/quality,
-            // danger edge for critical); the TEXT itself already carries its own
-            // "CRITICAL RULE:" / "QUALITY RULE:" / "NOTE:" prefix verbatim.
-            return (
-              <div key={i} role="note" className={`fr__callout fr__callout--${b.style}`}>
-                {b.text}
-              </div>
-            );
-          })}
-        </section>
-      );
-    }
     // Deep link to another form type (slice D1). With no adapter (the generic fill
     // page) the button is disabled and explains where the live link lives; the Daily
     // tab (D2) supplies FormLinkAdapter to wire the real deep-link + filed indicator.
@@ -473,6 +431,76 @@ function SectionView(p: SectionProps) {
     }
   }
 }
+
+// ── Value-independent sections (optimization #5) ─────────────────────────────────────────────────
+// static_text / content_blocks / guidance read ONLY the section object (a referentially-stable
+// slice of the build-time-bundled definition) plus the stable dayRail flag — never `values` and
+// no callbacks. React.memo's default shallow compare therefore short-circuits all of them on the
+// per-keystroke FormRenderer re-render: the SOP daily form alone carries ~20 guidance sections
+// that would otherwise re-render on every key press. Markup is byte-identical to the pre-memo
+// inline cases (the day-rail / eyebrow contract included). Interactive sections are deliberately
+// NOT memoized — values-slicing comparators + useCallback plumbing without profile evidence
+// (rejected in the optimization plan, §14 preservation-over-refactor).
+const StaticSectionView = memo(function StaticSectionView({
+  section: s,
+  dayRail,
+}: {
+  section: Extract<Section, { type: "static_text" | "content_blocks" | "guidance" }>;
+  dayRail?: boolean;
+}) {
+  switch (s.type) {
+    case "static_text":
+      return <p className={`fr__static fr__static--${s.emphasis ?? "heading"}`}>{s.text}</p>;
+    case "content_blocks":
+      return (
+        <section className="fr__section fr__content">
+          {s.title ? <h2 className="fr__section-title">{s.title}</h2> : null}
+          {s.blocks.map((b, i) => (
+            <div className="fr__content-block" key={i}>
+              {b.heading ? <h3 className="fr__content-heading">{b.heading}</h3> : null}
+              <p className="fr__content-body">{b.body}</p>
+            </div>
+          ))}
+        </section>
+      );
+    // Read-only SOP guidance (slice D1): heading + paragraphs / bullet lists / styled
+    // callouts, VERBATIM from the definition. Contributes no fill state.
+    // With the host's `dayRail` (the Daily tab): a presentational left rail on every
+    // guidance section + a time-of-day eyebrow on the five phase openers (dayPhase.ts).
+    // The eyebrow is aria-hidden — it restates the heading's own phase for the eye only.
+    case "guidance": {
+      const phase = dayRail ? dayPhaseFor(s.heading) : null;
+      return (
+        <section className={`fr__section fr__guidance${dayRail ? " fr__guidance--rail" : ""}`}>
+          {phase ? (
+            <p className="fr__day-eyebrow" aria-hidden="true">
+              {phase}
+            </p>
+          ) : null}
+          <h2 className="fr__section-title">{s.heading}</h2>
+          {s.blocks.map((b, i) => {
+            if (b.type === "p") return <p key={i} className="fr__guidance-p">{b.text}</p>;
+            if (b.type === "bullets") {
+              return (
+                <ul key={i} className="fr__guidance-bullets">
+                  {b.items.map((item, j) => <li key={j}>{item}</li>)}
+                </ul>
+              );
+            }
+            // callout — visually distinct per style (gold legal look for note/quality,
+            // danger edge for critical); the TEXT itself already carries its own
+            // "CRITICAL RULE:" / "QUALITY RULE:" / "NOTE:" prefix verbatim.
+            return (
+              <div key={i} role="note" className={`fr__callout fr__callout--${b.style}`}>
+                {b.text}
+              </div>
+            );
+          })}
+        </section>
+      );
+    }
+  }
+});
 
 function FieldView({ field, value, onChange }: { field: Field; value: string; onChange: (v: string) => void }) {
   if (field.input === "signature") {

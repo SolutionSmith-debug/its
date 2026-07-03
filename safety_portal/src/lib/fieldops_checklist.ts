@@ -9,7 +9,9 @@ import { fetchPersonnelList, type PersonnelRow } from "./fieldops_personnel";
 
 export type ChecklistItemType = "form_linked" | "manual_attest" | "count" | "inspection";
 
-// One item as returned by GET /checklist/default (the default template's own items).
+// One checklist-template item (the shape GET /checklist/inspection/:id returns per item; named
+// for the daily_default template it originally served — the retired-flow clients are gone but
+// the S6 inspection surfaces still speak this shape).
 export interface DefaultItem {
   id: number;
   seq: number;
@@ -18,46 +20,6 @@ export interface DefaultItem {
   form_code: string | null;
   target_count: number | null;
   config_json: string | null;
-}
-
-export interface DefaultChecklist {
-  template: {
-    id: number;
-    kind: string;
-    title: string | null;
-    source_form_code: string | null;
-    active: number;
-  } | null;
-  items: DefaultItem[];
-}
-
-// One row of a job's EFFECTIVE (merged) checklist. `origin` tells the editor whether the row is a
-// default item (suppressable) or one of the job's own added items (deletable).
-export interface EffectiveItem {
-  source_item_id: number;
-  seq: number;
-  item_type: string;
-  label: string | null;
-  form_code: string | null;
-  target_count: number | null;
-  config_json: string | null;
-  origin: "default" | "override";
-}
-
-// A default item currently hidden for the job (can be un-hidden).
-export interface SuppressedItem {
-  source_item_id: number;
-  seq: number;
-  item_type: string;
-  label: string | null;
-  form_code: string | null;
-  target_count: number | null;
-}
-
-export interface JobChecklist {
-  job_id: string;
-  items: EffectiveItem[];
-  suppressed: SuppressedItem[];
 }
 
 // The write payload for an item (add-default / edit-default / add-job). Bounds re-enforced server-side.
@@ -88,54 +50,14 @@ async function postJson<T = { ok: boolean }>(url: string, body?: unknown): Promi
 
 const BASE = "/api/fieldops/checklist";
 
-// ── Default template ─────────────────────────────────────────────────────────────────────────────
-// DEPRECATED-FOR-DAILY (D2, SOP daily form): the admin "Default daily checklist" editor + the
-// Job-Tracker per-job editor were retired — no SPA surface calls the default/job-override fns
-// below anymore. The Worker routes they wrap STAY (§14/§49; the engine serves assigned
-// inspections), so these thin clients are kept in-tree rather than deleted.
-export function fetchDefaultChecklist(): Promise<DefaultChecklist> {
-  return getJson<DefaultChecklist>(`${BASE}/default`);
-}
+// RETIRED-FLOW CLIENTS REMOVED (D2, SOP daily form → optimization #6, 2026-07): the admin
+// "Default daily checklist" editor, the Job-Tracker per-job override editor, the manager daily
+// checklist (GET /checklist/mine), and the S5 rollup-draft flow all retired with D2 — their 11
+// thin client fns + result types sat here unused, a live autocomplete hazard for retired routes.
+// Grep-verified zero importers before removal. The WORKER routes they wrapped STAY (§14/§49 —
+// removal there is a doctrine-level decision; the checklist ENGINE serves assigned inspections).
 
-export function addDefaultItem(item: ItemInput): Promise<{ ok: boolean; id: number | null }> {
-  return postJson(`${BASE}/default/item`, item);
-}
-
-export function editDefaultItem(itemId: number, item: ItemInput): Promise<{ ok: boolean; id: number }> {
-  return postJson(`${BASE}/default/item/${itemId}/edit`, item);
-}
-
-export function deleteDefaultItem(itemId: number): Promise<{ ok: boolean; id: number }> {
-  return postJson(`${BASE}/default/item/${itemId}/delete`);
-}
-
-// ── Per-job effective checklist + overrides ──────────────────────────────────────────────────────
-export function fetchJobChecklist(jobId: string): Promise<JobChecklist> {
-  return getJson<JobChecklist>(`${BASE}/job/${encodeURIComponent(jobId)}`);
-}
-
-export function addJobItem(jobId: string, item: ItemInput): Promise<{ ok: boolean; id: number | null }> {
-  return postJson(`${BASE}/job/${encodeURIComponent(jobId)}/item`, item);
-}
-
-export function deleteJobItem(jobId: string, itemId: number): Promise<{ ok: boolean; id: number }> {
-  return postJson(`${BASE}/job/${encodeURIComponent(jobId)}/item/${itemId}/delete`);
-}
-
-export function suppressDefaultItem(jobId: string, defaultItemId: number): Promise<{ ok: boolean }> {
-  return postJson(`${BASE}/job/${encodeURIComponent(jobId)}/item/${defaultItemId}/suppress`);
-}
-
-export function unsuppressDefaultItem(jobId: string, defaultItemId: number): Promise<{ ok: boolean }> {
-  return postJson(`${BASE}/job/${encodeURIComponent(jobId)}/item/${defaultItemId}/unsuppress`);
-}
-
-// ── S3 — the placed manager's daily "Progress Report" checklist (cap.tasks.own; the OWNER's tab) ────
-// Distinct surface from the admin editor above: GET /checklist/mine runs Worker-on-read generation for
-// a placed manager and returns { instance: null } for everyone else (a submitter, an unplaced manager)
-// so the My-Tasks page hides the section entirely. Completion is manual_attest-only in S3 + scoped
-// server-side to the actor's OWN daily instance.
-
+// ── Per-item completion (shared by the assigned-inspections surface below) ──────────────────────
 export type ChecklistItemStatus = "open" | "done";
 
 // One per-instance item state (the snapshot + completion row, migration 0026 checklist_item_states).
@@ -158,31 +80,6 @@ export interface ChecklistItemState {
   filed_by: string | null;
 }
 
-// R1: WHY the daily section is empty — mirrors the server's three generation preconditions so the
-// UI can explain instead of rendering a lying blank. null whenever `instance` is non-null.
-export type DailyEmptyReason = "not_manager" | "no_personnel_link" | "not_placed";
-
-export interface DailyInstance {
-  id: number;
-  job_id: string;
-  // R1: the job's project name (LEFT JOIN; null if the job row is gone) — headings shouldn't show a
-  // raw job id.
-  project_name: string | null;
-  instance_date: string;
-  status: "open" | "complete";
-  // S5: the auto-filed / manager-filed Daily Report submission this instance rolled up into. Non-null
-  // once a daily-report (family) submission exists for the instance's job+date (server reconcile).
-  rolled_up_submission_uuid: string | null;
-  // R1: WHO filed that rolled-up Daily Report (display name, fallback raw account); null until rolled up.
-  rolled_up_by: string | null;
-}
-
-export interface MyChecklist {
-  instance: DailyInstance | null;
-  items: ChecklistItemState[];
-  reason: DailyEmptyReason | null;
-}
-
 export interface CompleteResult {
   ok: boolean;
   id: number;
@@ -191,13 +88,6 @@ export interface CompleteResult {
   instance_status: "open" | "complete";
   // R1: true when the completion was an acknowledged below-target count (see recordCountItem).
   acknowledged_below_target?: boolean;
-}
-
-// Today's daily checklist for the logged-in placed manager (instance:null for anyone else).
-// DEPRECATED-FOR-DAILY (D2): the Daily tab is the SOP form now (DailyReportTab reads
-// /api/fieldops/daily-form/status instead) — no SPA caller remains. Kept with the preserved route.
-export function fetchMyChecklist(): Promise<MyChecklist> {
-  return getJson<MyChecklist>(`${BASE}/mine`);
 }
 
 // Mark a manual_attest item done (optional note/photo_ref). The Worker refuses form_linked/inspection
@@ -230,25 +120,6 @@ export function recordCountItem(
 // Toggle a manually-completed item (manual_attest / count) back to open. form_linked/inspection reject.
 export function uncompleteChecklistItem(stateId: number): Promise<CompleteResult> {
   return postJson<CompleteResult>(`${BASE}/item-state/${stateId}/uncomplete`);
-}
-
-// ── S5 — auto-rollup → Daily Report ────────────────────────────────────────────────────────────────
-// A best-effort Daily Report DRAFT assembled from the day's data (job/crew/equipment/date/manager +
-// a factual checklist summary). Returned only for a COMPLETE daily instance (else the Worker 409s).
-// `values` is a FormRenderer FormValues object keyed to daily-report-v1 (header keys + repeating-table
-// row arrays + comments); the FormFillPage merges it over the form's empty defaults. NO send happens
-// here — the manager reviews/edits and files via the normal /api/submit path.
-export interface RollupDraft {
-  job_id: string;
-  work_date: string;
-  form_code: string; // 'daily-report' (the catalog parent family)
-  values: Record<string, unknown>;
-}
-
-// DEPRECATED-FOR-DAILY (D2): the S5 "Review & file Daily Report" rollup flow retired with the
-// checkbox checklist — the Daily tab fills the form directly. No SPA caller remains.
-export function fetchRollupDraft(): Promise<RollupDraft> {
-  return getJson<RollupDraft>(`${BASE}/mine/rollup-draft`);
 }
 
 // ── S6 — generic-inspection library (admin authoring + assign; cap.checklist.manage) ────────────────
