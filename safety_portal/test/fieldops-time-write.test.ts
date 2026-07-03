@@ -11,6 +11,10 @@ import { call, provision, login, seedJob as seedJobRow } from "./helpers";
 function post(cookie: string, body: unknown): Promise<Response> {
   return call("/api/fieldops/time-entry", { method: "POST", cookie, body: JSON.stringify(body) });
 }
+// G2.3 — the chain writes moved to the amend route (head-only + authorship enforced there).
+function amend(cookie: string, target: string, body: unknown): Promise<Response> {
+  return call(`/api/fieldops/time-entry/${target}/amend`, { method: "POST", cookie, body: JSON.stringify(body) });
+}
 
 const seedJob = (jobId: string, status: string): Promise<void> => seedJobRow(jobId, { status });
 async function seedTask(jobId: string): Promise<number> {
@@ -143,20 +147,30 @@ describe("POST /api/fieldops/time-entry — integrity bar", () => {
     expect(row.work_ended_at).toBe(1700003600);
   });
 
-  it("append-only edit chain: an amend is a NEW row; the original is untouched", async () => {
+  it("append-only edit chain (G2.3: via the amend route): an amend is a NEW row; the original is untouched", async () => {
     const c = await login("submitter.jim", "password123");
     await post(c, { uuid: "orig", job_id: "JOB-A", hours: 8, notes: "first" });
     const r1 = (await rowsByUuid("orig"))[0];
-    const res = await post(c, { uuid: "amend", job_id: "JOB-A", hours: 9, notes: "corrected", amends_uuid: "orig" });
-    expect(res.status).toBe(201);
+    const res = await amend(c, "orig", { uuid: "amend", hours: 9, notes: "corrected" });
+    expect(res.status, await res.clone().text()).toBe(201);
     const orig = (await rowsByUuid("orig"))[0];
     expect(orig.hours).toBe(8); // original NEVER mutated
     expect(orig.notes).toBe("first");
     expect(orig.created_at).toBe(r1.created_at);
-    const amend = (await rowsByUuid("amend"))[0];
-    expect(amend.amends_uuid).toBe("orig");
-    expect(amend.hours).toBe(9);
+    const amendRow = (await rowsByUuid("amend"))[0];
+    expect(amendRow.amends_uuid).toBe("orig");
+    expect(amendRow.hours).toBe(9);
+    expect(amendRow.job_id).toBe("JOB-A"); // inherited from the target, not client-supplied
     expect(await auditRows("time_entry_edit", "amend")).toHaveLength(1); // amend logs an edit action
+  });
+
+  it("G2.3: the create route REJECTS a body amends_uuid (400 use_amend_route) — no chain-rule bypass", async () => {
+    const c = await login("submitter.jim", "password123");
+    await post(c, { uuid: "orig", job_id: "JOB-A", hours: 8 });
+    const res = await post(c, { uuid: "sneak", job_id: "JOB-A", hours: 9, amends_uuid: "orig" });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as any).error).toBe("use_amend_route");
+    expect(await rowsByUuid("sneak")).toHaveLength(0); // nothing persisted
   });
 
   it("dual attribution: submit-as needs cap.submit_as + a real ENABLED, normalized target", async () => {

@@ -68,6 +68,8 @@ export function registerPersonnelRoutes(app: FieldopsApp, gates: FieldopsGates):
       }
 
       const placeholders = pageIds.map(() => "?").join(",");
+      // (G2.3) HEADS ONLY — a superseded (amended) entry must not surface as someone's "latest"
+      // (NOT EXISTS, never NOT IN — the NULL-poisoning class; idx_time_entries_amends keys it).
       const sqlLatest = `
         SELECT personnel_id, job_id, project_name, hours, work_started_at,
                work_ended_at, recorded_at
@@ -79,6 +81,7 @@ export function registerPersonnelRoutes(app: FieldopsApp, gates: FieldopsGates):
           FROM time_entries t
           LEFT JOIN jobs j ON j.job_id = t.job_id
           WHERE t.personnel_id IN (${placeholders})
+            AND NOT EXISTS (SELECT 1 FROM time_entries x WHERE x.amends_uuid = t.uuid)
         ) WHERE rn = 1
       `;
 
@@ -154,12 +157,15 @@ export function registerPersonnelRoutes(app: FieldopsApp, gates: FieldopsGates):
       const limit = Math.min(Math.max(isNaN(limitRaw) ? 50 : limitRaw, 1), 200);
       const cursor = decodeCursor(q.cursor);
 
+      // (G2.3) HEADS ONLY — the person's history lists each entry's newest version once (NOT
+      // EXISTS, never NOT IN — the NULL-poisoning class; idx_time_entries_amends keys it).
       const sqlEntries = `
         SELECT t.uuid, t.job_id, j.project_name, t.hours, t.work_started_at,
                t.work_ended_at, t.created_at AS recorded_at, t.notes
         FROM time_entries t
         LEFT JOIN jobs j ON j.job_id = t.job_id
         WHERE t.personnel_id = ?1
+          AND NOT EXISTS (SELECT 1 FROM time_entries x WHERE x.amends_uuid = t.uuid)
           AND (?2 IS NULL OR t.created_at < ?2 OR (t.created_at = ?2 AND t.uuid < ?3))
         ORDER BY t.created_at DESC, t.uuid DESC
         LIMIT ?4

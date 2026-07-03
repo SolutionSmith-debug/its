@@ -21,6 +21,7 @@ vi.mock("../../lib/fieldops_jobtracker", async (importOriginal) => {
     setTaskStatus: vi.fn(),
     reassignTask: vi.fn(),
     logTime: vi.fn(),
+    amendTimeEntry: vi.fn(), // G2.3
   };
 });
 vi.mock("../../lib/auth", () => ({ useAuth: vi.fn() }));
@@ -126,7 +127,8 @@ const DETAIL: api.JobDetail = {
   time_entries: [
     {
       uuid: "te-1", hours: 8, work_started_at: 1, work_ended_at: 2, recorded_at: 200, notes: "note",
-      personnel_name: "Alice Chen", task_id: 1, task_description: "Dig footings", recorded_by_name: "Boss Bob",
+      personnel_id: 1, personnel_name: "Alice Chen", task_id: 1, task_description: "Dig footings", recorded_by_name: "Boss Bob",
+      amended: false, voided: false, can_amend: false,
     },
   ],
   equipment_on_site: [{ id: 5, name: "here-unit", kind: "skid-steer", identifier: "H1", label: "Site", read_at: 200 }],
@@ -1111,5 +1113,119 @@ describe("FieldOpsJobTracker — G2.6 task due dates", () => {
     await waitFor(() => expect(container.querySelectorAll(".dash-card--click")).toHaveLength(2));
     const alpha = Array.from(container.querySelectorAll(".dash-card--click")).find((c) => c.textContent?.includes("Alpha"))!;
     expect(alpha.textContent).toContain("Overdue");
+  });
+});
+
+// ── G2.3 — time-entry amend/void UI (Edit/Void gated on can_amend; the Worker re-gates) ───────────
+describe("FieldOpsJobTracker — G2.3 time amend/void", () => {
+  const AMENDABLE: api.JobTimeEntry = { ...DETAIL.time_entries[0], can_amend: true };
+  const DETAIL_AMENDABLE: api.JobDetail = { ...DETAIL, time_entries: [AMENDABLE] };
+
+  async function openWith(detail: api.JobDetail, caps: string[] = ["cap.jobtracker.read", "cap.time.log"]) {
+    vi.mocked(useAuth).mockReturnValue(authWith(caps));
+    vi.mocked(api.fetchJobList).mockResolvedValue({ jobs: JOBS, next_cursor: null });
+    vi.mocked(api.fetchJobDetail).mockResolvedValue({ job: detail, cursors: NO_CURSORS, viewer_personnel: VIEWER });
+    const utils = render(<FieldOpsJobTracker onBack={() => {}} />);
+    await waitFor(() => expect(utils.container.querySelectorAll(".dash-card--click")).toHaveLength(2));
+    fireEvent.click(utils.container.querySelector(".dash-card--click")!);
+    await waitFor(() => expect(api.fetchJobDetail).toHaveBeenCalledWith("JOB-A"));
+    return utils;
+  }
+
+  it("Edit/Void are HIDDEN when can_amend is false (and no Fix column renders)", async () => {
+    const { container } = await openWith(DETAIL); // fixture entry: can_amend false
+    expect(container.querySelector('[aria-label="Edit time entry te-1"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Void time entry te-1"]')).toBeNull();
+    expect((container.textContent ?? "")).not.toContain("Fix");
+  });
+
+  it("Edit puts the form in amend mode (prefilled) and submits amendTimeEntry against the row's uuid", async () => {
+    vi.mocked(api.amendTimeEntry).mockResolvedValue({ uuid: "new-1" });
+    const { container, getByLabelText } = await openWith(DETAIL_AMENDABLE);
+    fireEvent.click(getByLabelText("Edit time entry te-1"));
+    // Amend mode: banner + relabeled form, prefilled from the row (8h, task 1, person 1, note).
+    await waitFor(() => expect(container.textContent ?? "").toContain("Correcting the 8.00h entry"));
+    const form = getByLabelText("Correct time entry") as HTMLFormElement;
+    expect((form.querySelector('input[placeholder="Hours"]') as HTMLInputElement).value).toBe("8");
+    expect((getByLabelText("Log time for") as HTMLSelectElement).value).toBe("1");
+    expect((getByLabelText("Log time task") as HTMLSelectElement).value).toBe("1");
+    fireEvent.change(form.querySelector('input[placeholder="Hours"]')!, { target: { value: "6" } });
+    fireEvent.submit(form);
+    await waitFor(() =>
+      expect(api.amendTimeEntry).toHaveBeenCalledWith(
+        "te-1",
+        expect.objectContaining({ hours: 6, personnel_id: 1, task_id: 1, work_started_at: 1, work_ended_at: 2 }),
+      ),
+    );
+    expect(vi.mocked(api.amendTimeEntry).mock.calls[0][1].uuid).toBeTruthy(); // fresh idempotency key
+    expect(api.logTime).not.toHaveBeenCalled(); // amend NEVER rides the create route
+    await waitFor(() => expect(container.textContent ?? "").toContain("Entry corrected."));
+  });
+
+  it("Cancel leaves amend mode and restores the plain Log time form", async () => {
+    const { container, getByLabelText, queryByLabelText } = await openWith(DETAIL_AMENDABLE);
+    fireEvent.click(getByLabelText("Edit time entry te-1"));
+    await waitFor(() => expect(queryByLabelText("Correct time entry")).not.toBeNull());
+    fireEvent.click(Array.from(container.querySelectorAll("button")).find((b) => b.textContent === "Cancel")!);
+    await waitFor(() => expect(queryByLabelText("Correct time entry")).toBeNull());
+    expect(queryByLabelText("Log time")).not.toBeNull();
+  });
+
+  it("Void requires a reason (inline, never posts empty) then submits hours 0 + the reason + the carried subject", async () => {
+    vi.mocked(api.amendTimeEntry).mockResolvedValue({ uuid: "v-1" });
+    const { container, getByLabelText } = await openWith(DETAIL_AMENDABLE);
+    fireEvent.click(getByLabelText("Void time entry te-1"));
+    fireEvent.click(getByLabelText("Confirm void te-1"));
+    await waitFor(() => expect(container.textContent ?? "").toContain("Add a short reason to void this entry."));
+    expect(api.amendTimeEntry).not.toHaveBeenCalled();
+    fireEvent.change(getByLabelText("Void reason for te-1"), { target: { value: "logged twice" } });
+    fireEvent.click(getByLabelText("Confirm void te-1"));
+    await waitFor(() =>
+      expect(api.amendTimeEntry).toHaveBeenCalledWith(
+        "te-1",
+        expect.objectContaining({ hours: 0, notes: "logged twice", personnel_id: 1, task_id: 1 }),
+      ),
+    );
+    await waitFor(() => expect(container.textContent ?? "").toContain("Entry voided."));
+  });
+
+  it("a void failure surfaces inline on the row (never silent)", async () => {
+    vi.mocked(api.amendTimeEntry).mockRejectedValue(
+      new Error("This entry was already corrected — refresh to see the newest version."),
+    );
+    const { container, getByLabelText } = await openWith(DETAIL_AMENDABLE);
+    fireEvent.click(getByLabelText("Void time entry te-1"));
+    fireEvent.change(getByLabelText("Void reason for te-1"), { target: { value: "dup" } });
+    fireEvent.click(getByLabelText("Confirm void te-1"));
+    await waitFor(() => expect(container.textContent ?? "").toContain("already corrected — refresh"));
+  });
+
+  it("renders the corrected pill on amended heads, strike-through + voided pill on voids (Edit stays, Void hides)", async () => {
+    const detail: api.JobDetail = {
+      ...DETAIL,
+      time_entries: [
+        { ...AMENDABLE, uuid: "te-c", amended: true, voided: false },
+        { ...AMENDABLE, uuid: "te-v", hours: 0, amended: true, voided: true, notes: "logged twice" },
+      ],
+    };
+    const { container, queryByLabelText } = await openWith(detail);
+    expect(container.textContent ?? "").toContain("corrected");
+    expect(container.textContent ?? "").toContain("voided");
+    const voidedRow = Array.from(container.querySelectorAll("tbody tr")).find((r) =>
+      r.textContent?.includes("voided"),
+    ) as HTMLElement;
+    expect(voidedRow.style.textDecoration).toBe("line-through");
+    expect(queryByLabelText("Edit time entry te-v")).not.toBeNull(); // amend-a-void = the recovery path
+    expect(queryByLabelText("Void time entry te-v")).toBeNull(); // a void of a void is meaningless
+    expect(queryByLabelText("Void time entry te-c")).not.toBeNull();
+  });
+
+  it("a CLOSED job hides the log form but keeps Edit working (amend mode brings the form back)", async () => {
+    const closed: api.JobDetail = { ...DETAIL_AMENDABLE, status: "closed" };
+    const { container, getByLabelText, queryByLabelText } = await openWith(closed);
+    expect(queryByLabelText("Log time")).toBeNull(); // no NEW time on a closed job
+    expect(container.textContent ?? "").toContain("Existing entries can still be corrected");
+    fireEvent.click(getByLabelText("Edit time entry te-1"));
+    await waitFor(() => expect(queryByLabelText("Correct time entry")).not.toBeNull());
   });
 });

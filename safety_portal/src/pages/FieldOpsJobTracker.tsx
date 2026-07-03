@@ -284,6 +284,15 @@ export function FieldOpsJobTracker({
   const [logNotes, setLogNotes] = useState("");
   const [logTask, setLogTask] = useState("");
   const [logPerson, setLogPerson] = useState("");
+  // G2.3 — non-destructive amend/void. amendTarget puts the log-time form in AMEND MODE (prefilled
+  // from the row; submit → POST /time-entry/:uuid/amend, a NEW chain row — the old one is never
+  // mutated). voidUuid opens the per-row required-reason input; timeRowBusy/timeRowMsgs are the
+  // per-row busy + inline feedback (the R7 task-row pattern — never-silent, feedback on the row).
+  const [amendTarget, setAmendTarget] = useState<api.JobTimeEntry | null>(null);
+  const [voidUuid, setVoidUuid] = useState<string | null>(null);
+  const [voidReason, setVoidReason] = useState("");
+  const [timeRowBusy, setTimeRowBusy] = useState<string | null>(null);
+  const [timeRowMsgs, setTimeRowMsgs] = useState<Record<string, RowFeedback>>({});
   // Unified job-create flow (Slice 2/3): assign-crew + assign-equipment pickers on the detail view,
   // plus the one-shot "finish setting up" nudge shown when a create routes into the new job's detail.
   const [crewOpts, setCrewOpts] = useState<PersonnelRow[]>([]);
@@ -397,6 +406,14 @@ export function FieldOpsJobTracker({
     setEquipToAdd("");
     setTaskRowMsgs({});
     setHoursError(null);
+    // G2.3 — a stale amend/void context must never survive a job switch.
+    setAmendTarget(null);
+    setVoidUuid(null);
+    setVoidReason("");
+    setTimeRowMsgs({});
+    setLogHours("");
+    setLogNotes("");
+    setLogTask("");
     api
       .fetchJobDetail(jobId)
       .then((res) => {
@@ -714,7 +731,8 @@ export function FieldOpsJobTracker({
     e.preventDefault();
     if (!selectedJob || actionBusy) return;
     // R7 — hours is REQUIRED, 0 < h ≤ 24, validated inline (the server independently 422s
-    // invalid_hours per R1; this is the client half of the same bound).
+    // invalid_hours per R1; this is the client half of the same bound). Voiding (hours = 0) rides
+    // the per-row Void control, not this form, so the Edit path keeps the same lower bound.
     const hours = Number(logHours);
     if (logHours.trim() === "" || !Number.isFinite(hours) || hours <= 0 || hours > 24) {
       setHoursError("Enter the hours worked — more than 0, at most 24 (e.g. 7.5).");
@@ -726,26 +744,105 @@ export function FieldOpsJobTracker({
     setActionBusy(true);
     setActionMsg(null);
     try {
-      await api.logTime({
-        uuid: crypto.randomUUID(), // client-generated idempotency key (integrity-bar)
-        job_id: selectedJob.job_id,
-        hours,
-        ...(taskId !== undefined ? { task_id: taskId } : {}),
-        ...(personnelId !== undefined ? { personnel_id: personnelId } : {}),
-        ...(logNotes.trim() ? { notes: logNotes.trim() } : {}),
-      });
+      if (amendTarget) {
+        // G2.3 AMEND — a NEW chain row replacing the target as head (the Worker inherits job_id +
+        // submitted_as from the target and re-gates recorder-or-manager). Full-replacement body;
+        // the untouched-in-form event-time claims carry over so a correction can't silently shift
+        // the entry across a rollup week (work_started_at windows the labor sum).
+        await api.amendTimeEntry(amendTarget.uuid, {
+          uuid: crypto.randomUUID(), // client-generated idempotency key (integrity-bar)
+          hours,
+          ...(taskId !== undefined ? { task_id: taskId } : {}),
+          ...(personnelId !== undefined ? { personnel_id: personnelId } : {}),
+          ...(logNotes.trim() ? { notes: logNotes.trim() } : {}),
+          ...(amendTarget.work_started_at !== null ? { work_started_at: amendTarget.work_started_at } : {}),
+          ...(amendTarget.work_ended_at !== null ? { work_ended_at: amendTarget.work_ended_at } : {}),
+        });
+      } else {
+        await api.logTime({
+          uuid: crypto.randomUUID(), // client-generated idempotency key (integrity-bar)
+          job_id: selectedJob.job_id,
+          hours,
+          ...(taskId !== undefined ? { task_id: taskId } : {}),
+          ...(personnelId !== undefined ? { personnel_id: personnelId } : {}),
+          ...(logNotes.trim() ? { notes: logNotes.trim() } : {}),
+        });
+      }
     } catch (err) {
       setActionMsg({ ok: false, text: err instanceof Error ? err.message : "Time log failed." });
       setActionBusy(false);
       return;
     }
+    const wasAmend = amendTarget !== null;
+    resetTimeForm();
+    setActionMsg({ ok: true, text: wasAmend ? "Entry corrected." : "Time logged." });
+    await refreshDetailAfterMutation();
+    setActionBusy(false);
+  }
+
+  // ── G2.3 — amend/void helpers ────────────────────────────────────────────────────────────────────
+  function resetTimeForm() {
+    setAmendTarget(null);
     setLogHours("");
     setLogNotes("");
     setLogTask("");
     setLogPerson(viewerPersonnel ? String(viewerPersonnel.id) : ""); // back to the Me default
-    setActionMsg({ ok: true, text: "Time logged." });
+    setHoursError(null);
+  }
+
+  /** Put the log-time form into AMEND MODE, prefilled from the row being corrected. */
+  function startAmend(t: api.JobTimeEntry) {
+    setAmendTarget(t);
+    setVoidUuid(null);
+    setVoidReason("");
+    setLogHours(t.hours !== null ? String(t.hours) : "");
+    setLogNotes(t.notes ?? "");
+    setLogTask(t.task_id !== null ? String(t.task_id) : "");
+    setLogPerson(t.personnel_id !== null ? String(t.personnel_id) : "");
+    setHoursError(null);
+  }
+
+  function setTimeRowMsg(uuid: string, msg: RowFeedback | null) {
+    setTimeRowMsgs((prev) => {
+      const next = { ...prev };
+      if (msg === null) delete next[uuid];
+      else next[uuid] = msg;
+      return next;
+    });
+  }
+
+  /** VOID = an amend with hours 0 + the REQUIRED reason. Carries the row's subject/task/event-time
+   *  over so the struck-through head still says who/what it was about. Per-row busy + inline
+   *  feedback (never-silent); the Worker re-gates (recorder-or-manager, head-only). */
+  async function submitVoid(t: api.JobTimeEntry) {
+    const reason = voidReason.trim();
+    if (reason === "") {
+      setTimeRowMsg(t.uuid, { ok: false, text: "Add a short reason to void this entry." });
+      return;
+    }
+    if (timeRowBusy !== null) return;
+    setTimeRowBusy(t.uuid);
+    setTimeRowMsg(t.uuid, null);
+    try {
+      await api.amendTimeEntry(t.uuid, {
+        uuid: crypto.randomUUID(),
+        hours: 0,
+        notes: reason,
+        ...(t.task_id !== null ? { task_id: t.task_id } : {}),
+        ...(t.personnel_id !== null ? { personnel_id: t.personnel_id } : {}),
+        ...(t.work_started_at !== null ? { work_started_at: t.work_started_at } : {}),
+        ...(t.work_ended_at !== null ? { work_ended_at: t.work_ended_at } : {}),
+      });
+    } catch (err) {
+      setTimeRowMsg(t.uuid, { ok: false, text: err instanceof Error ? err.message : "Void failed." });
+      setTimeRowBusy(null);
+      return;
+    }
+    setVoidUuid(null);
+    setVoidReason("");
+    setTimeRowBusy(null);
+    setActionMsg({ ok: true, text: "Entry voided." });
     await refreshDetailAfterMutation();
-    setActionBusy(false);
   }
 
   // ── Unified job-create flow: assign crew + equipment to the open job (Slice 2) ───────────────────
@@ -1073,16 +1170,29 @@ export function FieldOpsJobTracker({
         <section className="card dash-section">
           <h3 className="dash-detail__h2">Time entries</h3>
           {/* R7 — a closed job (legacy status 'closed' ⟺ jobs.active=0, which the Worker's
-              time-write job guard rejects) says so instead of silently dropping the form. */}
+              time-write job guard rejects) says so instead of silently dropping the form.
+              G2.3 — EXCEPT in amend mode: corrections are deliberately allowed on a closed job
+              (the amend inherits its job binding server-side; blocking would recreate the
+              "a wrong entry can't be corrected by anyone" problem this epic exists to fix). */}
+          {canLogTime && job.status === "closed" && !amendTarget && (
+            <div className="dash-unavail">This job is closed — time can't be logged. Existing entries can still be corrected.</div>
+          )}
           {canLogTime &&
-            (job.status === "closed" ? (
-              <div className="dash-unavail">This job is closed — time can't be logged.</div>
-            ) : (
+            (job.status !== "closed" || amendTarget) && (
               <>
                 {isSubcontractor && myCrewError && (
                   <SectionError message={myCrewError} onRetry={loadMyCrew} what="loading your crew" />
                 )}
-                <form onSubmit={submitLogTime} className="dash-row" aria-label="Log time">
+                {amendTarget && (
+                  <div className="banner banner--ok" role="status">
+                    Correcting the {fmtHours(amendTarget.hours)}h entry for {amendTarget.personnel_name ?? "Job-level"} recorded{" "}
+                    {fmtDateTime(amendTarget.recorded_at)} — saving creates a corrected copy; the original stays in the record.{" "}
+                    <button type="button" className="btn btn--secondary" onClick={resetTimeForm}>
+                      Cancel
+                    </button>
+                  </div>
+                )}
+                <form onSubmit={submitLogTime} className="dash-row" aria-label={amendTarget ? "Correct time entry" : "Log time"}>
                   <input
                     value={logHours}
                     onChange={(e) => {
@@ -1153,10 +1263,12 @@ export function FieldOpsJobTracker({
                     placeholder="Notes (optional)"
                     maxLength={2000}
                   />{" "}
-                  <button type="submit" disabled={actionBusy} className="btn--primary">Log time</button>
+                  <button type="submit" disabled={actionBusy} className="btn--primary">
+                    {amendTarget ? "Save correction" : "Log time"}
+                  </button>
                 </form>
               </>
-            ))}
+            )}
           {job.time_entries.length ? (
             <table className="dash-table dash-table--stack">
               <thead>
@@ -1167,17 +1279,98 @@ export function FieldOpsJobTracker({
                   <th className="dash-header">By</th>
                   <th className="dash-header">Recorded</th>
                   <th className="dash-header">Notes</th>
+                  {job.time_entries.some((t) => t.can_amend) && <th className="dash-header">Fix</th>}
                 </tr>
               </thead>
               <tbody>
+                {/* G2.3 — the list shows chain HEADS only (worker-filtered). A head that IS a
+                    correction gets a "corrected" pill; a VOID (corrected to 0h) renders struck
+                    through. Edit/Void render only when the Worker would accept (can_amend =
+                    recorder-or-manager, worker-computed) — Edit stays on a voided row (amending a
+                    void is the recovery path); Void hides there (a void of a void is meaningless). */}
                 {job.time_entries.map((t) => (
-                  <tr key={t.uuid} className="dash-row">
-                    <td className="dash-cell dash-table__name">{t.personnel_name ?? "Job-level"}</td>
+                  <tr key={t.uuid} className="dash-row" style={t.voided ? { textDecoration: "line-through", opacity: 0.6 } : undefined}>
+                    <td className="dash-cell dash-table__name">
+                      {t.personnel_name ?? "Job-level"}
+                      {t.voided ? (
+                        <>
+                          {" "}
+                          <span className="dash-pill dash-pill--danger" style={{ textDecoration: "none" }}>voided</span>
+                        </>
+                      ) : t.amended ? (
+                        <>
+                          {" "}
+                          <span className="dash-pill" title="This entry is a correction of an earlier one.">corrected</span>
+                        </>
+                      ) : null}
+                    </td>
                     <td className="dash-cell">{fmtHours(t.hours)}</td>
                     <td className="dash-cell" data-cell="Task">{t.task_description ?? "—"}</td>
                     <td className="dash-cell" data-cell="By">{t.recorded_by_name ?? "—"}</td>
                     <td className="dash-cell" data-cell="Recorded">{fmtDateTime(t.recorded_at)}</td>
                     <td className="dash-cell">{t.notes ?? ""}</td>
+                    {job.time_entries.some((x) => x.can_amend) && (
+                      <td className="dash-cell" data-cell="Fix" style={{ textDecoration: "none" }}>
+                        {t.can_amend && (
+                          <>
+                            <button
+                              type="button"
+                              className="btn btn--secondary"
+                              disabled={timeRowBusy !== null || actionBusy}
+                              aria-label={`Edit time entry ${t.uuid}`}
+                              onClick={() => startAmend(t)}
+                            >
+                              Edit
+                            </button>
+                            {!t.voided && (
+                              <>
+                                {" "}
+                                <button
+                                  type="button"
+                                  className="btn btn--secondary"
+                                  disabled={timeRowBusy !== null || actionBusy}
+                                  aria-label={`Void time entry ${t.uuid}`}
+                                  onClick={() => {
+                                    setVoidUuid(voidUuid === t.uuid ? null : t.uuid);
+                                    setVoidReason("");
+                                    setTimeRowMsg(t.uuid, null);
+                                  }}
+                                >
+                                  Void
+                                </button>
+                              </>
+                            )}
+                            {voidUuid === t.uuid && !t.voided && (
+                              <>
+                                {" "}
+                                <input
+                                  value={voidReason}
+                                  onChange={(e) => setVoidReason(e.target.value)}
+                                  placeholder="Reason (required)"
+                                  maxLength={2000}
+                                  aria-label={`Void reason for ${t.uuid}`}
+                                />{" "}
+                                <button
+                                  type="button"
+                                  className="btn btn--danger"
+                                  disabled={timeRowBusy !== null}
+                                  aria-label={`Confirm void ${t.uuid}`}
+                                  onClick={() => void submitVoid(t)}
+                                >
+                                  {timeRowBusy === t.uuid ? "Voiding…" : "Confirm void"}
+                                </button>
+                              </>
+                            )}
+                            {timeRowMsgs[t.uuid] && (
+                              <>
+                                {" "}
+                                <InlineRowMsg msg={timeRowMsgs[t.uuid]} />
+                              </>
+                            )}
+                          </>
+                        )}
+                      </td>
+                    )}
                   </tr>
                 ))}
               </tbody>

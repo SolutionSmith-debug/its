@@ -36,6 +36,7 @@ its migration fail-closes `resolveCapabilities` → the universal-lockout class 
 | `0031_job_expected_materials` | M1 expected materials — [section](#expected-materials--per-job-receipt-list-material-receipts-m1--0031) | #426 | ☐ pending |
 | `0032_job_daily_requirements_kinds` | D5 requirement kinds (number/date/select) — [section](#requirement-kinds-widened-d5--0032) | #435 | ☐ pending |
 | `0033_prune_meta` | GS2 prune observability — [section](#prune-observability-gs2--0033) | #447 | ☐ pending |
+| `0034_time_amend_index` | G2.3 crew edit/retire + time amend/void — [section](#crew-editretire--time-amendvoid-g23--0034) | #451 | ☐ pending |
 | `0035_task_due_date` | G2.6 task due dates — [section](#task-due-dates--overdue-pills-g26--0035) | #450 | ☐ pending |
 
 Canonical apply-and-deploy sequence (applies **all** pending migrations, in order — never a
@@ -791,6 +792,49 @@ date input. Historical tasks are not backfilled — no date, no pill, sorted aft
 3. **Smoke** (live): add a task with a past due date from the Job Tracker → the task row shows
    `due <date>` + an Overdue pill; the assignee's My Tasks lists it FIRST in the open band;
    reassign it → the due date survives.
+
+### Crew edit/retire + time amend/void (G2.3 — `0034`)
+
+The operator-confirmed G2.3 epic: *"a subcontractor who typos a crew name can't fix it, and a
+wrong time entry can't be corrected by anyone."* Full semantics in `docs/g23_crew_time_spec.md`
+(G2.3). What ships:
+
+- **Scoped crew EDIT/RETIRE** (`POST /api/fieldops/crew/:id/update` + `/retire`,
+  cap.crew.create): a subcontractor fixes name/trade on — or soft-retires — crew **they
+  created** (`personnel.created_by = actor`, ownership folded into the UPDATE). Retire is
+  refused 409 when anyone **else** has logged time on the person (`crew_has_foreign_time`) or
+  the person is placed on a **different** job (`crew_on_other_job`) — real workers escalate to
+  the office. The manager/admin cap.personnel.manage routes are unchanged.
+- **Non-destructive time AMEND/VOID** (`POST /api/fieldops/time-entry/:uuid/amend`,
+  cap.time.log): a NEW chain row (`amends_uuid` = the target — the 0015 append-only chain),
+  original never mutated; recorder-or-cap.personnel.manage only; **head-only** (409
+  `not_head`, folded atomically into the INSERT); **void** = amend to `hours 0` + a required
+  reason in `notes`. The create route now REJECTS a body `amends_uuid` (400
+  `use_amend_route`). All time reads (job detail, personnel list/detail; the rollup already
+  did) resolve to chain **heads only** via `NOT EXISTS` — never `NOT IN` (NULL-poison class).
+- **Migration 0034** is a partial index on `time_entries(amends_uuid)` — performance-only
+  (the head probes); **no lockout risk** if the apply is missed (slower scans, not 500s).
+- SPA: Job-Tracker time rows gain Edit (prefilled amend form) / Void (inline required reason),
+  shown only when the worker-computed `can_amend` is true; "corrected" pill + struck-through
+  "voided" rows. The My-Tasks Add-crew list gains Edit/Retire on `created_by_me` rows.
+
+See `docs/runbooks/fieldops_time_amend.md` (§43) + `docs/enablement/crew_time_corrections.md` (office guide).
+
+#### Activation (operator — deploy boundary; escalates to the Developer-Operator)
+
+1. Apply migration **0034** to the live D1 BEFORE the redeploy
+   (`npx wrangler d1 migrations apply its-safety-portal-db --remote`). (Always `git pull`
+   `~/its` to latest `main` first — the stale-migrations-list lockout class.) A missed apply
+   here degrades to slower time-leg reads, not an outage — but apply-before-deploy stays the
+   rule.
+2. **Redeploy** (`npm run deploy`) — activates the amend/void + crew edit/retire routes and
+   the heads-only reads (SPA + Worker deploy together).
+3. **Smoke** (live): as a subcontractor — add a crew member with a typo'd name on your job →
+   Edit fixes it; add a duplicate → Retire removes it; log a wrong time entry on your job →
+   Edit corrects it (the old row disappears from the table, the new one wears "corrected");
+   Void with a reason strikes it through. As a manager: correct someone else's entry. In the
+   network tab: retiring a person someone else logged time on 409s `crew_has_foreign_time`;
+   amending a superseded entry 409s `not_head`.
 
 ### Lockout recovery (break-glass) — escalate to the Developer-Operator
 

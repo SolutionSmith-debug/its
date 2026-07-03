@@ -1,0 +1,24 @@
+---
+title: "Crew corrections + time amend/void (G2.3)"
+workstream: safety_portal
+status: active
+related_prs: []
+---
+
+# Crew edit/retire + time amend/void — §43 successor-remediation
+
+Subcontractors can correct crew they created (edit name/trade, retire) and anyone with the right
+scope can correct a time entry non-destructively (an amendment is a NEW chained row; a void is an
+amendment to 0 hours with a required reason; the original row is never changed).
+
+| Symptom (what the field reports) | Meaning | Low-class repair |
+|---|---|---|
+| "Retire says the person has time from someone else" (`crew_has_foreign_time`, 409) | Another account logged time against this person — they're a real worker, not a typo | Working as designed. Route to the office: an admin retires via the personnel page if genuinely correct. |
+| "Retire says they're on another job" (`crew_on_other_job`, 409) | The office moved this person to a different job | Working as designed — same office route. |
+| "Void won't submit" (`void_requires_reason`, 422) | A void must say why | Have them type a reason. No repair. |
+| "Amend says not the newest version" (`not_head`, 409) | Someone already corrected this entry | Refresh — amend the newest row (the error points at it). No repair. |
+| Amended entries double-show, or totals look inflated | The heads-only read isn't in effect — almost certainly a stale deploy | Confirm the latest deploy landed (README punch-list). Persists → **escalate to Seth**. |
+| Time lists noticeably slow after 0034 | Migration 0034 (the amends index) not applied — slow reads, NOT a lockout | Apply pending migrations per the punch-list, redeploy. Order confusion → **escalate to Seth**. |
+
+**Escalate-to-Seth boundary:** anything not in this table; any suspicion an original entry was
+MUTATED (structurally impossible by design — treat as code-class); migration-order questions.

@@ -1,5 +1,5 @@
 import type { FieldopsApp, FieldopsGates } from "./fieldops_gates";
-import { auditStmt } from "./audit";
+import { auditStmt, auditStmtIfChanged } from "./audit";
 
 // Assigned-Tasks (P4) Slice T — SUBCONTRACTOR scoped crew-create (cap.crew.create; migration 0027).
 //
@@ -89,6 +89,8 @@ export function registerCrewWriteRoutes(app: FieldopsApp, gates: FieldopsGates):
   // GET /api/fieldops/crew/mine — the crew a subcontractor may log time for: their OWN linked personnel
   // OR anyone they created (created_by = them), active only. Backs the time-log person picker so a
   // subcontractor is only offered people the time-route scoping will accept. cap.crew.create-gated.
+  // G2.3: created_by_me (1/0) gates the SPA's Edit/Retire controls to rows the actor CREATED (their
+  // own linked row gets none) WITHOUT exposing raw created_by usernames on the wire.
   app.get(
     "/api/fieldops/crew/mine",
     gates.requireSession,
@@ -96,11 +98,104 @@ export function registerCrewWriteRoutes(app: FieldopsApp, gates: FieldopsGates):
     async (c) => {
       const actor = c.get("session").username;
       const res = await c.env.DB.prepare(
-        "SELECT id, name, trade, current_job FROM personnel WHERE active = 1 AND (username = ?1 OR created_by = ?1) ORDER BY name ASC LIMIT ?2",
+        "SELECT id, name, trade, current_job, CASE WHEN created_by = ?1 THEN 1 ELSE 0 END AS created_by_me FROM personnel WHERE active = 1 AND (username = ?1 OR created_by = ?1) ORDER BY name ASC LIMIT ?2",
       )
         .bind(actor, MY_CREW_CAP)
-        .all<{ id: number; name: string; trade: string | null; current_job: string | null }>();
+        .all<{ id: number; name: string; trade: string | null; current_job: string | null; created_by_me: number }>();
       return c.json({ personnel: res.results ?? [] }, 200);
+    },
+  );
+
+  // ── G2.3 — POST /api/fieldops/crew/:id/update — scoped crew EDIT (name/trade) ───────────────────
+  // A cap.crew.create holder fixes a typo on crew THEY created (created_by = actor) while the row
+  // is still active. Managers/admins keep the unrestricted cap.personnel.manage route
+  // (fieldops_personnel_write.ts /personnel/:id/update) — this route never widens their power.
+  // Ownership is FOLDED INTO the UPDATE's WHERE (atomic — no check-then-act), and changes()=0
+  // collapses unknown-id / retired / not-created-by-me into ONE 404 (no existence oracle: a
+  // subcontractor can't probe the roster through this route). SPEC.md §2.1 / §4.1.
+  app.post(
+    "/api/fieldops/crew/:id/update",
+    gates.requireSession,
+    gates.requireCapability("cap.crew.create"),
+    async (c) => {
+      const id = parseInt(c.req.param("id") ?? "", 10);
+      if (isNaN(id)) return c.json({ error: "invalid_id" }, 400);
+      let body: Record<string, unknown>;
+      try {
+        body = (await c.req.json()) as Record<string, unknown>;
+      } catch {
+        return c.json({ error: "bad_request" }, 400);
+      }
+      if (typeof body !== "object" || body === null || Array.isArray(body)) return c.json({ error: "bad_request" }, 400);
+      // Bounded fields, create-route rules. LOGIN_KEYS stay rejected — the scoped tier can never
+      // touch the account link; 'name'/'trade' are the ONLY writable columns here.
+      for (const k of LOGIN_KEYS) {
+        if (body[k] !== undefined) return c.json({ error: "login_not_allowed" }, 400);
+      }
+      const name = typeof body.name === "string" ? body.name.trim() : "";
+      const trade = typeof body.trade === "string" && body.trade.trim() !== "" ? body.trade.trim() : null;
+      if (name.length < 1 || name.length > MAX_NAME) return c.json({ error: "invalid_name" }, 400);
+      if (trade !== null && trade.length > MAX_SHORT) return c.json({ error: "invalid_trade" }, 400);
+
+      const actor = c.get("session").username;
+      const res = await c.env.DB.batch([
+        c.env.DB
+          .prepare("UPDATE personnel SET name = ?2, trade = ?3 WHERE id = ?1 AND active = 1 AND created_by = ?4")
+          .bind(id, name, trade, actor),
+        auditStmtIfChanged(c, actor, "crew_update", String(id), { personnel_id: id, name, trade }),
+      ]);
+      if ((res[0].meta.changes ?? 0) === 0) return c.json({ error: "not_found" }, 404);
+      return c.json({ ok: true, id }, 200);
+    },
+  );
+
+  // ── G2.3 — POST /api/fieldops/crew/:id/retire — scoped crew soft-RETIRE (active=0) ──────────────
+  // The typo'd-duplicate escape hatch: a cap.crew.create holder may retire crew they created IFF
+  //   (a) nobody ELSE has logged time against the person (the actor's OWN entries don't block — a
+  //       duplicate the sub logged time on is still theirs to retire; history keeps its target,
+  //       soft-delete semantics identical to the admin retire), and
+  //   (b) the person isn't placed on a DIFFERENT job than the actor (someone the office moved
+  //       elsewhere is a real worker — escalate to the office).
+  // Both guards are FOLDED INTO the UPDATE (atomic); changes()=0 is then disambiguated read-back
+  // (the personnel-link route's pattern) into 404 not_found (unknown / not mine — no oracle),
+  // 200 already_retired (idempotent, admin-retire parity), 409 crew_has_foreign_time, or
+  // 409 crew_on_other_job. Admin/manager retire (role==='admin'-gated) is UNCHANGED. SPEC.md §2.2/§4.2.
+  app.post(
+    "/api/fieldops/crew/:id/retire",
+    gates.requireSession,
+    gates.requireCapability("cap.crew.create"),
+    async (c) => {
+      const id = parseInt(c.req.param("id") ?? "", 10);
+      if (isNaN(id)) return c.json({ error: "invalid_id" }, 400);
+      const actor = c.get("session").username;
+      const res = await c.env.DB.batch([
+        c.env.DB
+          .prepare(
+            `UPDATE personnel SET active = 0
+             WHERE id = ?1 AND active = 1 AND created_by = ?2
+               AND NOT EXISTS (SELECT 1 FROM time_entries WHERE personnel_id = ?1 AND actor_username != ?2)
+               AND (current_job IS NULL OR current_job =
+                     (SELECT current_job FROM personnel WHERE username = ?2 AND active = 1 ORDER BY id ASC LIMIT 1))`,
+          )
+          .bind(id, actor),
+        auditStmtIfChanged(c, actor, "crew_retire", String(id), { personnel_id: id }),
+      ]);
+      if ((res[0].meta.changes ?? 0) === 0) {
+        // Disambiguate deterministically, narrowest first. Not-owned and unknown collapse to 404.
+        const row = await c.env.DB.prepare("SELECT active, current_job FROM personnel WHERE id = ?1 AND created_by = ?2")
+          .bind(id, actor)
+          .first<{ active: number; current_job: string | null }>();
+        if (!row) return c.json({ error: "not_found" }, 404);
+        if (row.active === 0) return c.json({ ok: true, id, already_retired: true }, 200);
+        const foreign = await c.env.DB.prepare(
+          "SELECT 1 AS x FROM time_entries WHERE personnel_id = ?1 AND actor_username != ?2 LIMIT 1",
+        )
+          .bind(id, actor)
+          .first();
+        if (foreign) return c.json({ error: "crew_has_foreign_time" }, 409);
+        return c.json({ error: "crew_on_other_job" }, 409);
+      }
+      return c.json({ ok: true, id }, 200);
     },
   );
 }

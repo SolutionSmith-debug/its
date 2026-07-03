@@ -168,3 +168,27 @@ export async function logTime(body: {
 }): Promise<{ uuid: string }> {
   return postJson<{ ok: boolean; uuid: string }>("/api/fieldops/time-entry", body);
 }
+
+// G2.3 — NON-DESTRUCTIVE amend/void (cap.time.log; recorder-or-manager, Worker re-gates). Creates a
+// NEW chain row: fresh client `uuid`, amends_uuid = `targetUuid` (the :uuid param), job_id INHERITED
+// server-side. FULL-REPLACEMENT body — an omitted personnel_id/task_id means job-level, NOT "keep
+// old" (the caller prefills from the displayed row). `hours: 0` is the VOID and requires `notes`
+// (the reason) — the Worker 422s `void_requires_reason` without it. Only the chain HEAD can be
+// amended (409 `not_head` → refresh, the row was already corrected).
+export async function amendTimeEntry(
+  targetUuid: string,
+  body: {
+    uuid: string;
+    hours: number;
+    task_id?: number;
+    personnel_id?: number;
+    notes?: string;
+    work_started_at?: number;
+    work_ended_at?: number;
+  },
+): Promise<{ uuid: string }> {
+  return postJson<{ ok: boolean; uuid: string }>(
+    `/api/fieldops/time-entry/${encodeURIComponent(targetUuid)}/amend`,
+    body,
+  );
+}
