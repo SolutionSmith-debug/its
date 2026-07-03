@@ -34,9 +34,10 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from safety_reports import week_sheet, weekly_generate
-from shared import active_jobs, error_log, safety_week, smartsheet_client
+from shared import active_jobs, circuit_breaker, error_log, safety_week, smartsheet_client
 from shared.active_jobs import ActiveJob
 from shared.error_log import Severity, its_error_log
+from shared.heartbeat import HeartbeatReporter, HeartbeatStatus
 from shared.kill_switch import require_active
 
 SCRIPT_NAME = "safety_reports.compile_now_poll"
@@ -48,6 +49,28 @@ DEFAULT_POLLING_ENABLED = True
 
 STATE_DIR = Path.home() / "its" / "state"
 LOCK_PATH = STATE_DIR / "compile_now_poll.lock"
+
+# ITS_Daemon_Health heartbeat (R4-F1 — closes the deferred Part-B B3 self-provision row).
+# HEARTBEAT_ROW_STATE_PATH is SHARED with the other daemons — same JSON file, different
+# daemon_name key (ARCH-2). POLL_INTERVAL_SECONDS mirrors the plist StartInterval.
+HEARTBEAT_PATH = STATE_DIR / "compile_now_poll_heartbeat.txt"
+HEARTBEAT_ROW_STATE_PATH = STATE_DIR / "heartbeat_row_ids.json"
+DAEMON_NAME = "safety_reports.compile_now_poll"
+POLL_INTERVAL_SECONDS = 90
+
+# A1 self-provision metadata (the ONLY per-daemon difference in the heartbeat helpers).
+_REGISTRATION_SOURCE_ID = "Week-sheet Rollup 'Compile Now' triggers (Smartsheet)"
+
+# Shared ITS_Daemon_Health reporter for this daemon (mirrors fieldops_sync / portal_poll).
+_heartbeat_reporter = HeartbeatReporter(
+    script_name=SCRIPT_NAME,
+    daemon_name=DAEMON_NAME,
+    workstream=WORKSTREAM,
+    liveness_path=HEARTBEAT_PATH,
+    interval_seconds=POLL_INTERVAL_SECONDS,
+    source_id=_REGISTRATION_SOURCE_ID,
+    row_state_path=HEARTBEAT_ROW_STATE_PATH,  # shared file — make the contract explicit
+)
 
 # Watchdog Check C marker — same pattern as the other daemons (preservation, §14).
 WATCHDOG_MARKER_DIR = Path.home() / "its" / ".watchdog"
@@ -107,6 +130,34 @@ def _file_lock(path: Path) -> Iterator[bool]:
         except Exception:  # noqa: BLE001 — cleanup best-effort
             pass
         handle.close()
+
+
+def _write_heartbeat() -> None:
+    """Liveness file touch — thin delegator to the shared HeartbeatReporter.
+
+    Kept as a module-level function because it is the canonical test mock seam
+    (the suite patches this exact symbol). See shared/heartbeat.py (§42).
+    """
+    _heartbeat_reporter.write_liveness()
+
+
+def _write_heartbeat_row(
+    *,
+    status: HeartbeatStatus,
+    items_processed: int,
+    error_summary: str | None = None,
+    correlation_id: str | None = None,
+    notes: str | None = None,
+) -> None:
+    """ITS_Daemon_Health per-cycle row update — thin delegator to the shared
+    HeartbeatReporter (the canonical test mock seam). See shared/heartbeat.py (§42)."""
+    _heartbeat_reporter.write_row(
+        status=status,
+        items_processed=items_processed,
+        error_summary=error_summary,
+        correlation_id=correlation_id,
+        notes=notes,
+    )
 
 
 def _write_watchdog_marker() -> None:
@@ -193,6 +244,26 @@ def _poll_inside_lock() -> CompileStats:
                 job, week, type(exc).__name__, correlation_id, summary
             )
 
+    _write_heartbeat()
+    if stats.errors > 0:
+        cycle_status: HeartbeatStatus = "DEGRADED"
+    else:
+        cycle_status = "OK"
+    if circuit_breaker.is_open():
+        cycle_status = "CIRCUIT_OPEN"
+
+    try:
+        _write_heartbeat_row(
+            status=cycle_status,
+            items_processed=stats.compiled,
+            error_summary=(None if stats.errors == 0 else f"errors={stats.errors}"),
+        )
+    except Exception as exc:  # noqa: BLE001 — heartbeat must never block
+        error_log.log(
+            Severity.WARN, SCRIPT_NAME,
+            f"heartbeat write outer-catch tripped: {exc!r}",
+            error_code="daemon_health_write_failed",
+        )
     _write_watchdog_marker()
     return stats
 

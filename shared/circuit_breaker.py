@@ -70,9 +70,10 @@ Consumers:
     - ``shared/error_log.py`` — wraps the ITS_Errors record write
       (``_smartsheet_log``) in ``bypass()`` so the §3.1 always-write forensic
       surface is never short-circuited by an OPEN breaker (the third bypass site).
-    - ``safety_reports/intake_poll.py`` / ``weekly_send_poll.py`` — call
-      ``is_open()`` (lock-free) to surface ``CIRCUIT_OPEN`` heartbeat status,
-      and wrap their heartbeat write in ``bypass()``.
+    - the polling daemons (via ``shared/heartbeat.py`` + per-daemon cycle code,
+      e.g. ``portal_poll`` / ``weekly_send_poll``) — call ``is_open()``
+      (lock-free) to surface ``CIRCUIT_OPEN`` heartbeat status, and wrap the
+      heartbeat write in ``bypass()``.
     - ``scripts/watchdog.py`` (PR 2) — calls ``seconds_open()`` (lock-free LOCAL
       read, works during a Smartsheet outage) for the prolonged-open alert, and
       drives the guaranteed F09 cap-window-summary sweep.

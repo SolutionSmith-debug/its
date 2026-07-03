@@ -110,7 +110,7 @@ SHEET_DAEMON_HEALTH       = 4529351700729732  # ITS — System / 04 — Daemons 
 # ITS_Daemon_Health column IDs (PR #59.5). Operator-visible heartbeat sheet
 # written per poll cycle by each daemon. Source IDs are stable across column
 # renames, so heartbeat writes pin them here rather than going through
-# title-based resolution. See safety_reports/intake_poll.py:_write_heartbeat_row
+# title-based resolution. See shared/heartbeat.py (HeartbeatReporter)
 # for the canonical consumer and safety_reports/README.md for the operator
 # read-side runbook. Schema brief (ITS_Daemon_Health_Schema_2026-05-21): 12
 # columns capturing daemon identity, current run state, and last-error context.

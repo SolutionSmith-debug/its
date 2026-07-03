@@ -110,9 +110,12 @@ export async function createJob(
 ): Promise<{ job_id: string }> {
   return postJson<{ ok: boolean; job_id: string }>("/api/fieldops/job", body);
 }
-export async function closeJob(jobId: string): Promise<void> {
-  await postJson(`/api/fieldops/job/${encodeURIComponent(jobId)}/close`, {});
-}
+// TOMBSTONE (R4-F5, 2026-07-03): the dead client fns `closeJob` (POST …/close) and
+// `setJobProgress` (POST …/progress) were DELETED — zero SPA callers since setLifecycle (P2.5)
+// superseded /close and the P6 rollup removed the manual progress slider. The WORKER routes
+// (`POST /api/fieldops/job/:id/close` + `/progress`) deliberately REMAIN — removing dead API
+// surface is an operator decision (B3, §14/§49 doctrine-adjacent; see docs/tech_debt.md
+// "Optimization-plan doctrine-adjacent decisions").
 // Set the canonical lifecycle (P2.5). Supersedes the bare /close in the UI; /close stays as a thin
 // 'inactive' alias. The worker derives the legacy active/status flags and bumps the mirror version.
 export async function setLifecycle(jobId: string, lifecycle: JobLifecycle): Promise<{ lifecycle: JobLifecycle }> {
@@ -129,9 +132,6 @@ export async function editContacts(jobId: string, routing: JobRouting): Promise<
     `/api/fieldops/job/${encodeURIComponent(jobId)}/contacts`,
     routing,
   );
-}
-export async function setJobProgress(jobId: string, progress: number): Promise<{ progress: number }> {
-  return postJson<{ ok: boolean; progress: number }>(`/api/fieldops/job/${encodeURIComponent(jobId)}/progress`, { progress });
 }
 export async function addTask(
   jobId: string,

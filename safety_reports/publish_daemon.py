@@ -58,8 +58,16 @@ from typing import Any
 import jsonschema
 
 from safety_reports.publish_manifest import PublishApplyError, apply_publish
-from shared import error_log, form_category, keychain, portal_client, smartsheet_client
+from shared import (
+    circuit_breaker,
+    error_log,
+    form_category,
+    keychain,
+    portal_client,
+    smartsheet_client,
+)
 from shared.error_log import Severity, its_error_log
+from shared.heartbeat import HeartbeatReporter, HeartbeatStatus
 from shared.kill_switch import require_active
 
 SCRIPT_NAME = "publish_daemon"
@@ -69,6 +77,30 @@ WORKSTREAM = "safety_reports"
 KC_BEARER = "ITS_PORTAL_INTERNAL_TOKEN"  # noqa: S105 — Keychain entry NAME, not a secret
 CFG_WORKER_BASE_URL = "safety_reports.portal.worker_base_url"
 CFG_POLLING_ENABLED = "safety_reports.publish_daemon.polling_enabled"
+
+# ITS_Daemon_Health heartbeat (R4-F1 — the operator-visibility row the other pollers
+# self-provision). HEARTBEAT_ROW_STATE_PATH is SHARED with the other daemons — same JSON
+# file, different daemon_name key (ARCH-2). POLL_INTERVAL_SECONDS mirrors the plist
+# StartInterval (120s; publishes are infrequent + the cycle is heavy).
+STATE_DIR = Path.home() / "its" / "state"
+HEARTBEAT_PATH = STATE_DIR / "publish_daemon_heartbeat.txt"
+HEARTBEAT_ROW_STATE_PATH = STATE_DIR / "heartbeat_row_ids.json"
+DAEMON_NAME = "safety_reports.publish_daemon"
+POLL_INTERVAL_SECONDS = 120
+
+# A1 self-provision metadata (the ONLY per-daemon difference in the heartbeat helpers).
+_REGISTRATION_SOURCE_ID = "Safety Portal Worker /api/internal/publish/pending"
+
+# Shared ITS_Daemon_Health reporter for this daemon (mirrors fieldops_sync / portal_poll).
+_heartbeat_reporter = HeartbeatReporter(
+    script_name=SCRIPT_NAME,
+    daemon_name=DAEMON_NAME,
+    workstream=WORKSTREAM,
+    liveness_path=HEARTBEAT_PATH,
+    interval_seconds=POLL_INTERVAL_SECONDS,
+    source_id=_REGISTRATION_SOURCE_ID,
+    row_state_path=HEARTBEAT_ROW_STATE_PATH,  # shared file — make the contract explicit
+)
 
 _ROOT = Path(__file__).resolve().parent.parent
 _CATALOG_PATH = _ROOT / "safety_portal" / "catalog.json"
@@ -161,6 +193,34 @@ def _resolve_creds() -> _Creds | None:
     if not bearer:
         return None
     return _Creds(base_url=base_url, bearer=bearer)
+
+
+def _write_heartbeat() -> None:
+    """Liveness file touch — thin delegator to the shared HeartbeatReporter.
+
+    Kept as a module-level function because it is the canonical test mock seam
+    (the suite patches this exact symbol). See shared/heartbeat.py (§42).
+    """
+    _heartbeat_reporter.write_liveness()
+
+
+def _write_heartbeat_row(
+    *,
+    status: HeartbeatStatus,
+    items_processed: int,
+    error_summary: str | None = None,
+    correlation_id: str | None = None,
+    notes: str | None = None,
+) -> None:
+    """ITS_Daemon_Health per-cycle row update — thin delegator to the shared
+    HeartbeatReporter (the canonical test mock seam). See shared/heartbeat.py (§42)."""
+    _heartbeat_reporter.write_row(
+        status=status,
+        items_processed=items_processed,
+        error_summary=error_summary,
+        correlation_id=correlation_id,
+        notes=notes,
+    )
 
 
 def _load_catalog() -> dict:
@@ -576,6 +636,9 @@ def publish_once() -> PublishStats:
             f"publish daemon could not recover a stranded tree to main: {_exc_reason(exc)}",
             error_code="publish_daemon.unstrand_failed",
         )
+        _write_heartbeat()
+        _write_heartbeat_row(status="ERROR", items_processed=0,
+                             error_summary="halted: could not recover stranded tree to main")
         stats.halted = "unstrand_failed"
         return stats
     creds = _resolve_creds()
@@ -586,6 +649,9 @@ def publish_once() -> PublishStats:
             "publish daemon halted: missing Worker base URL or internal bearer (fail-closed)",
             error_code="publish_daemon.creds_unresolved",
         )
+        _write_heartbeat()
+        _write_heartbeat_row(status="ERROR", items_processed=0,
+                             error_summary="halted: missing Worker base URL or internal bearer")
         stats.halted = "creds_unresolved"
         return stats
 
@@ -620,6 +686,9 @@ def publish_once() -> PublishStats:
                 f"retries next cycle): {_exc_reason(exc)}",
                 error_code=ERR_MIGRATION_CHECK,
             )
+            _write_heartbeat()
+            _write_heartbeat_row(status="ERROR", items_processed=0,
+                                 error_summary="halted: could not verify remote D1 migration state")
             stats.halted = "migration_check_failed"
             return stats
         if pending:
@@ -632,6 +701,14 @@ def publish_once() -> PublishStats:
                 f"retry next cycle automatically. Never deploy the Worker ahead of its "
                 f"migrations (forensic class #2; publish #434).",
                 error_code=ERR_PENDING_MIGRATIONS,
+            )
+            # WARN, not ERROR: a deliberate, bounded refusal (the portal_poll
+            # halted_transient precedent) — rows stay queued; the operator's
+            # `migrations apply` unblocks the next cycle automatically.
+            _write_heartbeat()
+            _write_heartbeat_row(
+                status="WARN", items_processed=0,
+                error_summary=f"deploy blocked: {len(pending)} unapplied remote D1 migration(s)",
             )
             stats.halted = "pending_migrations"
             return stats
@@ -647,6 +724,33 @@ def publish_once() -> PublishStats:
             stats.skipped_unclaimed += 1
             continue
         _actuate(creds, claimed, stats)
+
+    _write_heartbeat()
+    if stats.failed > 0:
+        cycle_status: HeartbeatStatus = "DEGRADED"
+    elif stats.reclaimed > 0:
+        cycle_status = "WARN"
+    else:
+        cycle_status = "OK"
+    if circuit_breaker.is_open():
+        cycle_status = "CIRCUIT_OPEN"
+
+    try:
+        _write_heartbeat_row(
+            status=cycle_status,
+            items_processed=stats.actuated,
+            error_summary=(
+                None
+                if stats.failed == 0 and stats.reclaimed == 0
+                else f"failed={stats.failed} reclaimed={stats.reclaimed}"
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001 — heartbeat must never block
+        error_log.log(
+            Severity.WARN, SCRIPT_NAME,
+            f"heartbeat write outer-catch tripped: {exc!r}",
+            error_code="daemon_health_write_failed",
+        )
     return stats
 
 

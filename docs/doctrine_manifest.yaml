@@ -127,7 +127,7 @@ section_42:
     - Consumers
   applies_to:
     - "new shared/*.py modules (from the v13 bump forward)"
-    - "workstream entrypoints (e.g. safety_reports/intake_poll.py, weekly_generate.py)"
+    - "workstream entrypoints (e.g. safety_reports/portal_poll.py, weekly_generate.py)"
   retrofit_policy: "existing modules: opportunistic per §14 (retrofit-when-touched), NOT a sweep PR"
   inventory: "docs/reports/2026-05-28_section42_compliance_inventory.md"
 

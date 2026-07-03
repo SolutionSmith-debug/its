@@ -59,7 +59,7 @@ CURRENT_DOCTRINE_DIRS = ["docs/operations", ".claude/agents"]
 # Workstream entrypoints checked for §42 alongside shared/*.
 ENTRYPOINTS = [
     "safety_reports/intake.py",
-    "safety_reports/intake_poll.py",
+    "safety_reports/portal_poll.py",
     "safety_reports/weekly_generate.py",
     "safety_reports/weekly_send.py",
     "safety_reports/weekly_send_poll.py",

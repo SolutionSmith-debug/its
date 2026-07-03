@@ -30,11 +30,12 @@ Sidecar-lock semantics:
 Single-host single-writer assumption:
     Real contention is rare. The bounded retry exists for the narrow case
     where two daemons happen to overlap on the shared heartbeat-row state
-    file (``~/its/state/heartbeat_row_ids.json`` is shared between
-    ``safety_reports/intake_poll.py`` and ``safety_reports/weekly_send_poll.py``).
+    file (``~/its/state/heartbeat_row_ids.json`` is shared across every
+    ``shared/heartbeat.py`` HeartbeatReporter consumer, keyed by daemon name).
 
 Consumers:
-    - ``safety_reports/intake_poll.py``  — seen-set + local heartbeat + row-state writes.
+    - ``shared/heartbeat.py`` — the shared HeartbeatReporter row-state writes
+      (all polling daemons; the original per-daemon copies are consolidated).
     - ``safety_reports/weekly_send_poll.py`` — local heartbeat + row-state writes.
     - ``shared/alert_dedupe.py`` — dedupe-state read-modify-write under
       ``with_path_lock`` + ``atomic_write_json`` (migrated PR #104); its

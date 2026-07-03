@@ -175,6 +175,12 @@ migration or Worker deploy (`0030` **and** `0032` must be applied to live D1 **b
 Worker that serves these routes deploys — the deploy-lockout class; see the migration headers);
 any request for a **photo** requirement kind (§34 screening design first — see Item kinds above).
 
+**Data loss / restore (Seth-only):** `job_daily_requirements` is **D1-primary** (no Smartsheet/Box
+mirror). The restore path is Cloudflare **D1 Time Travel** (30-day point-in-time restore of the
+whole database, `npx wrangler d1 time-travel …`); beyond that window the blast radius is
+re-enterable admin data — the office re-keys each job's items. See `docs/tech_debt.md`
+"D1-primary tables have no ITS-side backup" (R3-F7).
+
 ---
 
 ## Boundary (Op Stds §44 both-rule)
