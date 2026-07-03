@@ -587,6 +587,34 @@ def test_daily_report_v2_renders_sop_structure_and_values() -> None:
     assert "Finish rows 45-48." in text
 
 
+def test_daily_report_v3_photo_section_renders_without_minimum() -> None:
+    """daily-report-v3 (slice D3): the D.12 photo minimum is gone from the rendered PDF;
+    the manager's uploaded photos render as the screened-photos grid (out-of-band, §34),
+    never inline from `values`."""
+    definition = _load("daily-report-v3.json")
+    submission = {
+        "job_name": "Bradley 1", "work_date": "2026-07-02",
+        "values": {
+            "weather": "Sunny", "average_temp": "88", "prepared_by": "Casey PM",
+            "site_photos": [],  # the SPA initialValues shape for an untouched photo field
+            "tomorrows_goals": "Finish rows 45-48.",
+        },
+        "screened_photos": [("rows40-44.jpg · 2026-07-02 15:10", _tiny_jpeg())],
+    }
+    out = render_submission_pdf(definition, submission)
+    assert out[:5] == b"%PDF-"
+    text = _norm(_pdf_text(out))
+    # The D.12 guidance heading renders WITHOUT the minimum clause…
+    assert "12. Photo Documentation" in text
+    assert "Minimum 50" not in text and "50+ photos" not in text and "at least 50" not in text
+    # …the manager's screened photos render as the grid with their caption…
+    assert "Site Photos" in text and "rows40-44.jpg" in text
+    # …and the SOP structure + values still render (same contract as the v2 test).
+    assert "END OF DAY — Before Leaving the Site" in text
+    assert "Create Job Hazard Analysis" in text
+    assert "Casey PM" in text and "Finish rows 45-48." in text
+
+
 def test_daily_report_v1_still_renders_unchanged() -> None:
     """Regression: the v1 definition stays in-tree (append-only) and historical
     submissions must keep rendering with their own field set."""

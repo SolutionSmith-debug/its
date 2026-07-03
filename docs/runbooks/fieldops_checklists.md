@@ -12,7 +12,8 @@ tags: [runbook, successor-remediation, checklist, daily-report, sop-daily-form, 
 Two related surfaces live on the portal's **My Tasks** page:
 
 - **Daily report (SOP daily form — D1/D2, 2026-07)** — MANAGER-ONLY. The **Daily report tab IS the
-  form**: a date selector + the `daily-report-v2` form definition rendered inline (the full
+  form**: a date selector + the current `daily-report` definition (`daily-report-v3` since D3,
+  2026-07-02 — the catalog's current version) rendered inline (the full
   Site-Supervisor SOP text with the data fields under each section), pre-filled with the manager's
   placed job, crew, and equipment. "Create JHA / Visitor Sign-In / Incident Report" buttons
   deep-link into those forms and show a live **"Filed ✓ \<time> by \<name>"** indicator once one is
@@ -108,7 +109,8 @@ returns a 500 or nothing happens (a Worker regression, high-class).
 
 ## Symptom E — "The daily report's questions/text are wrong or need to change" (reference, not a fault)
 
-The daily content lives in the **`daily-report-v2` form definition**, edited exactly like any other
+The daily content lives in the **current `daily-report` form definition** (`daily-report-v3` since
+D3, 2026-07-02 — the 50-photo minimum removed, a "Site photos" upload added), edited exactly like any other
 form: Home → **Forms** (the form builder, `cap.admin.formbuilder`) → Daily Field Report → edit →
 publish. The publish pipeline (Worker validation → Mac daemon actuator) applies it; already-filed
 submissions keep the version they were filed under (definitions are append-only). There is **no
