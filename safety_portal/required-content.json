@@ -64,7 +64,7 @@
     },
     "daily-report": {
       "comment": [
-        "[PENDING OPERATOR CONFIRMATION — SOP daily form D1, 2026-07-02] Progress form with NO",
+        "[OPERATOR-CONFIRMED 2026-07-03 (proceed-with-defaults directive) — SOP daily form D1] Progress form with NO",
         "signature requirements. required_field_keys is the DFR legal floor CARRIED FROM v1 into",
         "the SOP-guided v2: the data keys BOTH versions share. It is deliberately the v1∩v2 set —",
         "this spec is identity-keyed, so every daily-report-*.json (v1 AND v2) must satisfy it",
@@ -100,7 +100,7 @@
     },
     "material-incident": {
       "comment": [
-        "[PENDING OPERATOR CONFIRMATION — Material receipts M2, 2026-07-02] Progress-category",
+        "[OPERATOR-CONFIRMED 2026-07-03 (proceed-with-defaults directive; category: progress stands) — Material receipts M2] Progress-category",
         "(commercial) form with NO signature requirement — strict entry per the M2 protocol,",
         "flagged for operator veto alongside the category choice. The floor is the incident's",
         "evidentiary minimum: WHAT material (material_description), WHAT KIND of problem",
