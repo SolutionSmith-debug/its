@@ -1586,7 +1586,9 @@ app.post("/api/internal/admin/purge-job", requireAdminToken, async (c) => {
   // Full literal SQL (NO template interpolation) so the bound `?` is the only dynamic input:
   // job_id is always parameterized, never concatenated — and there is no string-built query for
   // CodeQL's injection sink to flag. The cascade deletes children (filed_pdfs, pdf_requests via
-  // the submissions subquery) BEFORE the parents (submissions, then jobs).
+  // the submissions subquery; the job-keyed per-job content tables job_daily_requirements +
+  // job_expected_materials — Slice 1, R3-F4, mirroring their prune.ts guard-union entries)
+  // BEFORE the parents (submissions, then jobs).
   const results = await c.env.DB.batch([
     c.env.DB
       .prepare("DELETE FROM filed_pdfs WHERE submission_uuid IN (SELECT submission_uuid FROM submissions WHERE job_id = ?)")
@@ -1594,6 +1596,8 @@ app.post("/api/internal/admin/purge-job", requireAdminToken, async (c) => {
     c.env.DB
       .prepare("DELETE FROM pdf_requests WHERE submission_uuid IN (SELECT submission_uuid FROM submissions WHERE job_id = ?)")
       .bind(job_id),
+    c.env.DB.prepare("DELETE FROM job_daily_requirements WHERE job_id = ?").bind(job_id),
+    c.env.DB.prepare("DELETE FROM job_expected_materials WHERE job_id = ?").bind(job_id),
     c.env.DB.prepare("DELETE FROM submissions WHERE job_id = ?").bind(job_id),
     c.env.DB.prepare("DELETE FROM jobs WHERE job_id = ?").bind(job_id),
     c.env.DB
@@ -1602,9 +1606,14 @@ app.post("/api/internal/admin/purge-job", requireAdminToken, async (c) => {
   ]);
   const pdfChunks = results[0]?.meta?.changes ?? 0;
   const pdfRequests = results[1]?.meta?.changes ?? 0;
-  const submissions = results[2]?.meta?.changes ?? 0;
-  const job = results[3]?.meta?.changes ?? 0;
-  return c.json({ ok: true, found: job > 0, job_id, job_deleted: job, submissions, pdfChunks, pdfRequests });
+  const requirements = results[2]?.meta?.changes ?? 0;
+  const expectedMaterials = results[3]?.meta?.changes ?? 0;
+  const submissions = results[4]?.meta?.changes ?? 0;
+  const job = results[5]?.meta?.changes ?? 0;
+  return c.json({
+    ok: true, found: job > 0, job_id, job_deleted: job, submissions, pdfChunks, pdfRequests,
+    requirements, expectedMaterials,
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

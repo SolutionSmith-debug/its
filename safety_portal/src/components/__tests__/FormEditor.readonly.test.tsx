@@ -1,0 +1,91 @@
+import { cleanup, render } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import type { FormDefinition } from "../../forms/types";
+import { READ_ONLY_SECTION_TYPES } from "../../forms/editorModel";
+import { FormEditor } from "../FormEditor";
+
+afterEach(cleanup);
+
+// Slice 1 (R3-F3) — the builder must not even OFFER the amputation the C3 gates now refuse:
+// definition-managed (read-only) section types (guidance / form_link / job_requirements /
+// expected_materials) get NO Remove/Move controls, while ordinary sections keep them. The
+// server-side floor (required-content.json required_section_types, enforced in
+// worker/publishValidation.ts + safety_reports/publish_manifest.py) is the boundary; this
+// is the UI half.
+
+function makeDef(): FormDefinition {
+  return {
+    form_code: "daily-report-v6",
+    parent_form_code: "daily-report",
+    form_name: "Daily Field Report",
+    variant_label: null,
+    version: 6,
+    archetype: "rows_signatures",
+    source_pdf: "",
+    sections: [
+      { type: "freeform", key: "comments", label: "Comments" },
+      { type: "guidance", heading: "A. Morning", blocks: [{ type: "p", text: "x" }] },
+      { type: "form_link", label: "Create a JHA", parent_form_code: "jha" },
+      { type: "job_requirements", key: "job_requirements", title: "Job-specific requirements" },
+      { type: "expected_materials", key: "expected_materials_receipt", title: "Expected materials" },
+    ],
+  };
+}
+
+function renderEditor(def: FormDefinition) {
+  return render(
+    <FormEditor
+      def={def}
+      onChange={vi.fn()}
+      mode="edit"
+      identity="daily-report"
+      onIdentityChange={vi.fn()}
+      parentFormCode="daily-report"
+      onParentChange={vi.fn()}
+      knownParents={["daily-report", "jha"]}
+      category="progress"
+      onCategoryChange={vi.fn()}
+    />,
+  );
+}
+
+describe("FormEditor — read-only sections have no Remove/Move controls (Slice 1, R3-F3)", () => {
+  it("covers all four definition-managed types (guard against list drift)", () => {
+    expect([...READ_ONLY_SECTION_TYPES].sort()).toEqual([
+      "expected_materials",
+      "form_link",
+      "guidance",
+      "job_requirements",
+    ]);
+  });
+
+  it("suppresses Remove/Move on read-only sections; ordinary sections keep them", () => {
+    const { getByLabelText, queryByLabelText, getAllByText } = renderEditor(makeDef());
+
+    // Section 1 (freeform) is ordinary — its controls are present.
+    expect(getByLabelText("Move section 1 up")).toBeTruthy();
+    expect(getByLabelText("Move section 1 down")).toBeTruthy();
+    expect(getByLabelText("Remove section 1")).toBeTruthy();
+
+    // Sections 2-5 are definition-managed — NO Remove/Move controls, a lock note instead.
+    for (const i of [2, 3, 4, 5]) {
+      expect(queryByLabelText(`Move section ${i} up`)).toBeNull();
+      expect(queryByLabelText(`Move section ${i} down`)).toBeNull();
+      expect(queryByLabelText(`Remove section ${i}`)).toBeNull();
+    }
+    expect(getAllByText("definition-managed")).toHaveLength(4);
+  });
+
+  it("a definition of ONLY ordinary sections keeps all controls (no regression)", () => {
+    const def = makeDef();
+    def.sections = [
+      { type: "freeform", key: "one", label: "One" },
+      { type: "freeform", key: "two", label: "Two" },
+    ];
+    const { getByLabelText } = renderEditor(def);
+    expect(getByLabelText("Remove section 1")).toBeTruthy();
+    expect(getByLabelText("Remove section 2")).toBeTruthy();
+    expect(getByLabelText("Move section 2 up")).toBeTruthy();
+  });
+});

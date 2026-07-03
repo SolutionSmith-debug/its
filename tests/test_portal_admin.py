@@ -163,10 +163,13 @@ def test_purge_job_ok_reports_counts(mocker, capsys):
     req = _admin(mocker, 200, {
         "ok": True, "found": True, "job_id": "JOB-000015",
         "job_deleted": 1, "submissions": 2, "pdfChunks": 2, "pdfRequests": 1,
+        "requirements": 3, "expectedMaterials": 4,
     })
     portal_admin.cmd_purge_job("https://w", "tok", "JOB-000015")
     out = capsys.readouterr().out
     assert "purged JOB-000015" in out and "submissions=2" in out and "pdf_chunks=2" in out
+    # Slice 1 (R3-F4): the two per-job content tables joined the cascade — counts surfaced.
+    assert "daily_requirements=3" in out and "expected_materials=4" in out
     assert req.call_args.args[2] == "POST"
     assert req.call_args.args[3] == "/api/internal/admin/purge-job"
     assert req.call_args.kwargs["json_body"] == {"job_id": "JOB-000015"}

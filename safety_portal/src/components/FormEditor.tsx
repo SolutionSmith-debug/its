@@ -11,6 +11,7 @@ import {
   ARCHETYPES,
   FIELD_INPUTS,
   ITEM_KINDS,
+  READ_ONLY_SECTION_TYPES,
   SECTION_TYPES,
   SECTION_TYPE_LABELS,
   blankBlock,
@@ -82,35 +83,43 @@ export function FormEditor(props: Props) {
           <li key={i} className="form-editor__section card">
             <div className="form-editor__section-head">
               <span className="form-editor__section-type">{SECTION_TYPE_LABELS[s.type]}</span>
-              <div className="form-editor__section-controls">
-                <button
-                  type="button"
-                  className="btn btn--secondary form-editor__icon-btn"
-                  aria-label={`Move section ${i + 1} up`}
-                  disabled={i === 0}
-                  onClick={() => moveSection(i, -1)}
-                >
-                  ↑
-                </button>
-                <button
-                  type="button"
-                  className="btn btn--secondary form-editor__icon-btn"
-                  aria-label={`Move section ${i + 1} down`}
-                  disabled={i === def.sections.length - 1}
-                  onClick={() => moveSection(i, 1)}
-                >
-                  ↓
-                </button>
-                <button
-                  type="button"
-                  className="btn btn--danger form-editor__icon-btn"
-                  aria-label={`Remove section ${i + 1}`}
-                  disabled={def.sections.length === 1}
-                  onClick={() => removeSection(i)}
-                >
-                  ✕
-                </button>
-              </div>
+              {/* Definition-managed (read-only) sections get NO Remove/Move controls (Slice 1,
+                  R3-F3): the required-content floor rejects a daily-report definition missing
+                  its job_requirements / expected_materials mounts, so the builder must not
+                  even offer the amputation the C3 gates would refuse. */}
+              {READ_ONLY_SECTION_TYPES.has(s.type) ? (
+                <span className="muted form-editor__section-locked">definition-managed</span>
+              ) : (
+                <div className="form-editor__section-controls">
+                  <button
+                    type="button"
+                    className="btn btn--secondary form-editor__icon-btn"
+                    aria-label={`Move section ${i + 1} up`}
+                    disabled={i === 0}
+                    onClick={() => moveSection(i, -1)}
+                  >
+                    ↑
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn--secondary form-editor__icon-btn"
+                    aria-label={`Move section ${i + 1} down`}
+                    disabled={i === def.sections.length - 1}
+                    onClick={() => moveSection(i, 1)}
+                  >
+                    ↓
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn--danger form-editor__icon-btn"
+                    aria-label={`Remove section ${i + 1}`}
+                    disabled={def.sections.length === 1}
+                    onClick={() => removeSection(i)}
+                  >
+                    ✕
+                  </button>
+                </div>
+              )}
             </div>
             <SectionEditor section={s} onChange={(next) => updateSection(i, next)} />
           </li>

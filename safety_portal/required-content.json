@@ -72,10 +72,20 @@
         "(job_name, report_date) moved to the submission envelope (job / work_date) in v2 and",
         "therefore cannot be required here; v2-only additions (guidance/form_link sections, the",
         "SOP duty confirms) likewise cannot. The floor guarantees no DFR data field is lost by a",
-        "future edit of either version."
+        "future edit of either version.",
+        "[Slice 1 amputation guard, 2026-07-03 — R3-F3] required_section_types floors the D4/M2",
+        "MOUNTS (job_requirements + expected_materials): a form-builder edit can never silently",
+        "amputate the per-job requirements / expected-materials sections — both C3 layers",
+        "(worker/publishValidation.ts + publish_manifest.check_required_content) reject a NEW",
+        "daily-report definition missing either mount. This is the one floor key that is NOT the",
+        "v1∩v2 intersection: shipped HISTORICAL versions (v1-v4) predate the mounts, are not",
+        "editor-reachable (the builder opens only current_form_code), and re-enter service only",
+        "via rollback (deliberately floor-exempt) — so tests/test_form_definitions.py exempts",
+        "non-current shipped versions from required_section_types ONLY; every publish-time check",
+        "applies the full floor."
       ],
       "required_signature_inputs_min": 0,
-      "required_section_types": [],
+      "required_section_types": ["job_requirements", "expected_materials"],
       "required_field_keys": [
         "weather",
         "average_temp",

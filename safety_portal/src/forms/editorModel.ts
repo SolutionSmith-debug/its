@@ -53,6 +53,19 @@ export const SECTION_TYPES = [
 ] as const;
 export type SectionType = (typeof SECTION_TYPES)[number];
 
+/** Section types authored ONLY in the git-owned form definition (publish pipeline) — the
+ *  builder renders them read-only AND suppresses their Remove/Move controls (Slice 1,
+ *  R3-F3): the required-content floor now REJECTS a daily-report definition missing its
+ *  job_requirements / expected_materials mounts, so the UI must not even offer the
+ *  amputation the C3 gates would refuse. Complement of SECTION_TYPES by design — keep the
+ *  two in sync when the meta-schema grows a definition-managed type. */
+export const READ_ONLY_SECTION_TYPES: ReadonlySet<Section["type"]> = new Set([
+  "guidance",
+  "form_link",
+  "job_requirements",
+  "expected_materials",
+]);
+
 /** Human labels for EVERY section type (the builder picker uses the SECTION_TYPES
  *  subset; the section-list header must label the read-only types too). */
 export const SECTION_TYPE_LABELS: Record<Section["type"], string> = {
