@@ -20,6 +20,7 @@ function result(overrides: Partial<PruneResult> = {}): PruneResult {
     pdfRequests: 0,
     pdfChunks: 0,
     publishRequests: 0,
+    itemPhotos: 0,
     jobs: 0,
     dbSizeBytes: 1234,
     sizeWarn: false,

@@ -21,6 +21,8 @@ beforeEach(async () => {
     env.DB.prepare("DELETE FROM inspections"),
     env.DB.prepare("DELETE FROM job_daily_requirements"),
     env.DB.prepare("DELETE FROM job_expected_materials"),
+    env.DB.prepare("DELETE FROM item_photos"),
+    env.DB.prepare("DELETE FROM checklist_item_states"),
     env.DB.prepare("DELETE FROM checklist_instances"),
     env.DB.prepare("DELETE FROM equipment_location"),
     env.DB.prepare("DELETE FROM equipment"),
@@ -337,6 +339,86 @@ describe("pruneOldData — GS2 jobs-delete guard union", () => {
   });
 });
 
+// ── G1 Slice 1 — the item_photos stuck-pending rider + orphan drop (migration 0036). ──
+async function seedItemState(instanceId: number, label = "Walk the site"): Promise<number> {
+  await env.DB
+    .prepare("INSERT INTO checklist_item_states (instance_id, item_type, label, status) VALUES (?1,'manual_attest',?2,'open')")
+    .bind(instanceId, label)
+    .run();
+  return (await env.DB.prepare("SELECT id FROM checklist_item_states ORDER BY id DESC LIMIT 1").first<{ id: number }>())!.id;
+}
+async function seedItemPhoto(itemStateId: number, status: string, createdAt: number, photoJson: string | null = '{"data":"x"}'): Promise<number> {
+  await env.DB
+    .prepare("INSERT INTO item_photos (item_state_id, status, photo_json, hmac, created_at) VALUES (?1,?2,?3,'testhmac',?4)")
+    .bind(itemStateId, status, photoJson, createdAt)
+    .run();
+  return (await env.DB.prepare("SELECT id FROM item_photos ORDER BY id DESC LIMIT 1").first<{ id: number }>())!.id;
+}
+async function photoIds(): Promise<number[]> {
+  const r = await env.DB.prepare("SELECT id FROM item_photos ORDER BY id").all<{ id: number }>();
+  return r.results.map((x) => x.id);
+}
+
+describe("pruneOldData — G1 item_photos stuck-pending rider", () => {
+  it("deletes PENDING rows older than 7d and clears their dangling 'pending:<id>' refs; fresh pending survives", async () => {
+    await env.DB
+      .prepare("INSERT INTO checklist_instances (id, kind, status) VALUES (77,'inspection','open')")
+      .run();
+    const stuckState = await seedItemState(77, "stuck");
+    const freshState = await seedItemState(77, "fresh");
+    const stuckId = await seedItemPhoto(stuckState, "pending", NOW - 8 * DAY);
+    const freshId = await seedItemPhoto(freshState, "pending", NOW - 1 * DAY);
+    // Bind the ref as TEXT (mirror the route's integer-column concat 'pending:<id>' exactly — a
+    // numeric bind would concat as 'pending:1.0' and never match the prune's integer ref).
+    await env.DB.prepare("UPDATE checklist_item_states SET photo_ref=?2 WHERE id=?1").bind(stuckState, `pending:${stuckId}`).run();
+    await env.DB.prepare("UPDATE checklist_item_states SET photo_ref=?2 WHERE id=?1").bind(freshState, `pending:${freshId}`).run();
+
+    const res = await pruneOldData(env.DB, NOW);
+
+    expect(res.itemPhotos).toBe(1);
+    expect(res.failedStages).toEqual([]);
+    expect(await photoIds()).toEqual([freshId]); // only the fresh pending row remains
+    // The stuck item returned to its no-photo state (ref cleared → the crew can re-attach)…
+    const stuck = await env.DB.prepare("SELECT photo_ref FROM checklist_item_states WHERE id=?1").bind(stuckState).first<{ photo_ref: string | null }>();
+    expect(stuck?.photo_ref).toBeNull();
+    // …while the fresh item's ref is untouched.
+    const fresh = await env.DB.prepare("SELECT photo_ref FROM checklist_item_states WHERE id=?1").bind(freshState).first<{ photo_ref: string | null }>();
+    expect(fresh?.photo_ref).toBe(`pending:${freshId}`);
+  });
+
+  it("NEVER deletes clean/refused rows by age (delete-on-screen made them byte-free; Box holds the record)", async () => {
+    await env.DB.prepare("INSERT INTO checklist_instances (id, kind, status) VALUES (78,'inspection','open')").run();
+    const s1 = await seedItemState(78);
+    const s2 = await seedItemState(78);
+    const cleanId = await seedItemPhoto(s1, "clean", NOW - 400 * DAY, null);
+    const refusedId = await seedItemPhoto(s2, "refused", NOW - 400 * DAY, null);
+
+    const res = await pruneOldData(env.DB, NOW);
+
+    expect(res.itemPhotos).toBe(0);
+    expect(await photoIds()).toEqual([cleanId, refusedId]);
+  });
+
+  it("drops ORPHANS whose item state no longer exists (any deletion path that missed the cancel cascade)", async () => {
+    await env.DB.prepare("INSERT INTO checklist_instances (id, kind, status) VALUES (79,'inspection','open')").run();
+    const liveState = await seedItemState(79);
+    const liveId = await seedItemPhoto(liveState, "pending", NOW - 1 * DAY);
+    // An orphan: points at an item state id that does not exist (recent — age alone wouldn't catch it).
+    await seedItemPhoto(999_999, "refused", NOW - 1 * DAY, null);
+
+    const res = await pruneOldData(env.DB, NOW);
+
+    expect(res.itemPhotos).toBe(1); // the orphan
+    expect(await photoIds()).toEqual([liveId]);
+  });
+
+  it("a throw in the item_photos stage is isolated + NAMED (GS2 fence)", async () => {
+    const res = await pruneOldData(poisonedDb(/DELETE FROM item_photos/), NOW);
+    expect(res.failedStages).toEqual(["item_photos"]);
+    expect(res.itemPhotos).toBe(0);
+  });
+});
+
 // ── GS2 — the prune_meta heartbeat row (migration 0033 + writePruneMeta). ────────
 function syntheticResult(overrides: Partial<PruneResult> = {}): PruneResult {
   return {
@@ -347,6 +429,7 @@ function syntheticResult(overrides: Partial<PruneResult> = {}): PruneResult {
     pdfRequests: 5,
     pdfChunks: 6,
     publishRequests: 7,
+    itemPhotos: 9,
     jobs: 8,
     dbSizeBytes: 4096,
     sizeWarn: false,
@@ -375,7 +458,7 @@ describe("writePruneMeta — GS2 heartbeat record", () => {
     expect(rows[0].size_warn).toBe(1);
     expect(JSON.parse(rows[0].counters_json)).toEqual({
       submissions: 1, stripped: 2, rejected: 3, audit: 4,
-      pdfRequests: 5, pdfChunks: 6, publishRequests: 7, jobs: 8,
+      pdfRequests: 5, pdfChunks: 6, publishRequests: 7, itemPhotos: 9, jobs: 8,
     });
     expect(JSON.parse(rows[0].failed_stages_json)).toEqual(["audit"]);
   });

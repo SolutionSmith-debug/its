@@ -1,9 +1,10 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type * as checklist from "../lib/fieldops_checklist";
-import { recordCountItem } from "../lib/fieldops_checklist";
+import { recordCountItem, uploadItemPhoto } from "../lib/fieldops_checklist";
 import { ApiError } from "../lib/errorCopy";
 import { itemTypeLabel } from "../lib/labels";
 import { formCatalog, resolveFormTarget } from "../forms/registry";
+import { encodePhoto } from "./PhotoField";
 
 // Assigned-Tasks tab (P4 field-ops) — the shared per-item completion controls, used by BOTH the S3/S4
 // daily checklist section AND the S6 assigned-inspection section (spec: the assigned section uses "the
@@ -26,15 +27,20 @@ import { formCatalog, resolveFormTarget } from "../forms/registry";
 // typecheck and simply ignore it); `onCountRecorded` is NEW and OPTIONAL with a safe default (absent →
 // the exact legacy count flow). Existing callers keep working unchanged.
 //
-// R3 PHOTO NOTE (Q2a — honest gap): `photo_ref` is a BOUNDED reference string (worker MAX_PHOTO_REF =
-// 256 chars, migration 0026) — it cannot carry image bytes. The existing photo pipeline (PhotoField →
-// base64 PhotoValue inside a form submission's payload_json → worker validatePhotoValues → Mac §34
-// photo_screen) is SUBMISSION-BOUND: there is no worker route that stores a standalone photo for a
-// checklist item state and returns a ref, and none that serves one back. Photo CAPTURE here therefore
-// requires a worker change (e.g. POST /checklist/item-state/:id/photo → ≤256-char ref + a GET to serve
-// it) and is NOT faked; what ships is the evidence-rendering half (a photo_ref that is a renderable
-// data URI gets a thumbnail, anything else a "photo attached" marker) plus the photoRef pass-through
-// plumbing on onComplete, so a future capture path needs zero prop changes.
+// G1 PHOTO CAPTURE (supersedes the R3 "render half only" note — Option D RATIFIED 2026-07-03):
+// the capture path now EXISTS — POST /api/fieldops/checklist/item-state/:id/photo queues ONE
+// bounds-gated photo per item for the Mac §34 screen, and `photo_status` (pending|clean|refused,
+// derived server-side from item_photos) drives the row's states:
+//   none    → [Add photo] (reuses PhotoField's encodePhoto downscale/EXIF-sidecar ladder)
+//   pending → "photo attached — screening…"
+//   clean   → "photo on file ✓" (one-time 120ms scale-in — the same filed-pop motion, no third motion)
+//   refused → refusal copy + retry (the refused slot is vacated server-side)
+// NO IMAGE IS EVER RENDERED (Option D: no serving route exists, delete-on-screen; the photo's
+// permanent record is Box). The former raw `data:image/` passthrough branch is RETIRED — an
+// attacker-writable photo_ref must never place bytes in a viewer's DOM; any legacy ref renders
+// the neutral "photo attached" marker. The affordance renders ONLY when the parent opts in via
+// `onPhotoUploaded` (the assigned-inspections surface); other callers (admin preview) are
+// pixel-identical to pre-G1.
 
 // Status → pill class for a checklist item state (done = ok, else neutral).
 function itemPill(status: string): string {
@@ -45,6 +51,13 @@ function itemPill(status: string): string {
 export const DEADEND_FORM_UNAVAILABLE = "This item points at a form that isn't available — tell the office.";
 export const DEADEND_NO_JOB_DATE = "This item needs a job and date before its form can be opened — tell the office.";
 
+/** G1 item-photo lifecycle copy (status-only rendering — no image is ever shown; Option D). */
+export const PHOTO_PENDING_COPY = "photo attached — screening…";
+export const PHOTO_ON_FILE_COPY = "photo on file ✓";
+export const PHOTO_REFUSED_COPY =
+  "This photo was refused by the security screen and wasn't saved — you can attach a different one.";
+export const PHOTO_UNUSABLE_COPY = "That file could not be processed as a photo.";
+
 export function ChecklistItemRow({
   item,
   busy,
@@ -54,6 +67,7 @@ export function ChecklistItemRow({
   onRecordCount,
   onOpenForm,
   onCountRecorded,
+  onPhotoUploaded,
 }: {
   item: checklist.ChecklistItemState;
   busy: boolean;
@@ -68,6 +82,11 @@ export function ChecklistItemRow({
    * 'below_target' drives the inline acknowledge-with-note flow; called after each successful
    * record/acknowledge so the parent can refetch. Absent → the legacy onRecordCount path, unchanged. */
   onCountRecorded?: () => void | Promise<void>;
+  /** G1 opt-in: when present, the ROW owns the photo capture flow (encodePhoto → uploadItemPhoto)
+   * and renders the photo affordance/states; called after a successful upload so the parent can
+   * refetch (photo_status flips to 'pending' server-side). Absent → no photo UI, byte-identical
+   * to the pre-G1 row (prop-compat: OPTIONAL, the frozen prop set is untouched). */
+  onPhotoUploaded?: () => void | Promise<void>;
 }) {
   const [note, setNote] = useState("");
   const [count, setCount] = useState(item.value_num !== null ? String(item.value_num) : "");
@@ -79,6 +98,10 @@ export function ChecklistItemRow({
   const [countErr, setCountErr] = useState<string | null>(null);
   const [belowTarget, setBelowTarget] = useState<{ value: number } | null>(null);
   const [ackNote, setAckNote] = useState("");
+  // G1 — row-owned photo capture flow (only used when onPhotoUploaded is provided).
+  const photoInputRef = useRef<HTMLInputElement>(null);
+  const [photoBusy, setPhotoBusy] = useState(false);
+  const [photoErr, setPhotoErr] = useState<string | null>(null);
 
   const done = item.status === "done";
   const isManual = item.item_type === "manual_attest";
@@ -128,18 +151,81 @@ export function ChecklistItemRow({
     }
   }
 
-  // R3 photo evidence (render-only half; see the module note for the capture gap).
-  const photoEvidence = item.photo_ref ? (
-    item.photo_ref.startsWith("data:image/") ? (
-      <img
-        src={item.photo_ref}
-        alt={`Photo for item ${item.id}`}
-        style={{ maxWidth: 96, maxHeight: 96, verticalAlign: "middle", borderRadius: 4 }}
-      />
-    ) : (
+  // G1 — photo capture flow (row-owned; see the module header). encodePhoto is PhotoField's
+  // downscale/EXIF-sidecar ladder (reused, not cloned); the Worker re-enforces every bound.
+  async function onPhotoFile(list: FileList | null) {
+    if (!list || list.length === 0) return;
+    setPhotoBusy(true);
+    setPhotoErr(null);
+    try {
+      const encoded = await encodePhoto(list[0], 1);
+      if (!encoded) {
+        setPhotoErr(PHOTO_UNUSABLE_COPY);
+        return;
+      }
+      await uploadItemPhoto(item.id, encoded);
+      await onPhotoUploaded?.();
+    } catch (err) {
+      // errorCopy human copy rides err.message (bounds details, the one-photo 409, ownership).
+      setPhotoErr(err instanceof Error ? err.message : "The photo could not be uploaded.");
+    } finally {
+      setPhotoBusy(false);
+      if (photoInputRef.current) photoInputRef.current.value = "";
+    }
+  }
+
+  // G1 — the photo affordance + lifecycle states (STATUS-ONLY — no image is ever rendered;
+  // Option D). Only when the parent opts in AND the item is a checkable (evidence-bearing) type;
+  // form_linked/inspection evidence is the filed submission itself (the Worker refuses them too).
+  const photoCapture =
+    onPhotoUploaded && (isManual || isCount) ? (
+      item.photo_status === "pending" ? (
+        <span className="dash-card__sub"> · {PHOTO_PENDING_COPY}</span>
+      ) : item.photo_status === "clean" ? (
+        <span className="dash-card__sub checklist-photo-filed"> · {PHOTO_ON_FILE_COPY}</span>
+      ) : (
+        <>
+          {item.photo_status === "refused" ? (
+            <span className="dash-card__sub" role="alert">
+              {" "}· {PHOTO_REFUSED_COPY}
+            </span>
+          ) : null}{" "}
+          <input
+            ref={photoInputRef}
+            type="file"
+            accept="image/*"
+            hidden
+            data-testid={`item-photo-input-${item.id}`}
+            onChange={(e) => {
+              void onPhotoFile(e.target.files);
+            }}
+          />
+          <button
+            type="button"
+            className="btn btn--ghost"
+            aria-label={`Add photo for item ${item.id}`}
+            disabled={busy || photoBusy}
+            onClick={() => photoInputRef.current?.click()}
+          >
+            {photoBusy ? "Uploading…" : item.photo_status === "refused" ? "Add a different photo" : "Add photo"}
+          </button>
+          {photoErr ? (
+            <span className="login__error" role="alert">
+              {" "}{photoErr}
+            </span>
+          ) : null}
+        </>
+      )
+    ) : null;
+
+  // Legacy photo_ref marker (pre-G1 refs, e.g. a box:<id> stamped by a completion body). The G1
+  // lifecycle states above own anything with an item_photos row (photo_status non-null); this
+  // renders only for refs WITHOUT one, and NEVER as an image — the raw `data:image/` passthrough
+  // is retired (an attacker-writable ref must not place bytes in a viewer's DOM; Option D).
+  const photoEvidence =
+    item.photo_ref && item.photo_status == null ? (
       <span className="dash-card__sub" title={item.photo_ref}> · photo attached</span>
-    )
-  ) : null;
+    ) : null;
 
   // R3 — an acknowledged shortfall stays flagged after completion (value below target, but done).
   const doneBelowTarget =
@@ -229,7 +315,12 @@ export function ChecklistItemRow({
             className={done ? "btn btn--secondary" : "btn btn--primary"}
             aria-label={done ? `Undo item ${item.id}` : `Complete item ${item.id}`}
             disabled={busy}
-            onClick={() => (done ? onUncomplete(item) : onComplete(item, note || undefined))}
+            onClick={() =>
+              // G1: thread the EXISTING photo_ref through a plain "Mark done" (the complete route
+              // overwrites photo_ref from the body — omitting it would NULL the 'pending:<id>'
+              // stamp; same threading the edit-note path below always did).
+              done ? onUncomplete(item) : onComplete(item, note || undefined, item.photo_ref ?? undefined)
+            }
           >
             {done ? "Undo" : "Mark done"}
           </button>
@@ -390,6 +481,7 @@ export function ChecklistItemRow({
       ) : isLinked ? (
         linkedControls
       ) : null}
+      {photoCapture}
     </>
   );
 }

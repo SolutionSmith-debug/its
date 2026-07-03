@@ -3,19 +3,29 @@
 All external services mocked. Exercises the verify → dispatch → receipt cycle,
 the fail-closed credential gate, the HMAC-reject path, and the seen-set
 fast-paths. Structure mirrors tests/test_weekly_send_poll.py.
+
+The G1 item-photo screening-pass tests (bottom section) run REAL crypto
+(shared.portal_hmac item-photo protocol) + the REAL photo_screen pipeline on real
+bytes — only transport, Box, and state files are mocked.
 """
 from __future__ import annotations
 
+import base64 as _b64lib
+import io as _io
 import json
 from contextlib import contextmanager
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from PIL import Image as _PILImage
 
 from safety_reports import portal_poll
 from safety_reports.intake import ProcessResult
+from safety_reports.photo_screen import PhotoScreenResult
 from safety_reports.portal_poll import DAEMON_NAME, _poll_inside_lock, poll_once
+from shared import portal_hmac as _portal_hmac
+from shared.error_log import Severity as _Sev
 
 
 def _row(uuid: str = "u1") -> dict[str, Any]:
@@ -100,6 +110,35 @@ def _patch_all(mocker):
         ),
         "download_file": mocker.patch.object(
             portal_poll.box_client, "download_file", return_value=b"%PDF-1.4 bytes"
+        ),
+        # G1 item-photo screening pass: default to an EMPTY pending queue so the
+        # existing cycle tests neither screen nor file anything.
+        "get_item_photos": mocker.patch.object(
+            portal_poll.portal_client, "get_item_photos_pending", return_value=[]
+        ),
+        "post_photo_result": mocker.patch.object(
+            portal_poll.portal_client, "post_item_photo_result", return_value=True
+        ),
+        "box_folder": mocker.patch.object(
+            portal_poll.box_client, "get_or_create_folder",
+            side_effect=["FOLD-1", "FOLD-2", "FOLD-3"] * 50,
+        ),
+        "box_upload": mocker.patch.object(
+            portal_poll.box_client, "upload_bytes_or_new_version",
+            return_value={"id": "box-9", "name": "photo_5.jpg", "size": 100},
+        ),
+        # Bad-HMAC one-shot flag state — mocked so tests never touch real state files.
+        "photo_flags_load": mocker.patch.object(
+            portal_poll, "_load_item_photo_flags", return_value={}
+        ),
+        "photo_flags_persist": mocker.patch.object(
+            portal_poll, "_persist_item_photo_flags"
+        ),
+        # ITS_Config reads (ClamAV gate + portal Box root): default to the declared
+        # fallback ("" → clamav default-OFF, Box root unset). Tests override per-key.
+        "read_setting": mocker.patch.object(
+            portal_poll, "_read_str_setting",
+            side_effect=lambda key, fallback: fallback,
         ),
     }
 
@@ -622,6 +661,301 @@ def test_pdf_service_no_requests_is_noop(_patch_all):
     assert result.pdf_serviced == 0
     _patch_all["download_file"].assert_not_called()
     _patch_all["upload_filed_pdf"].assert_not_called()
+
+
+# ---- G1 Slice 2: checklist item-photo screening pass ----------------------
+#
+# REAL crypto + REAL screening end-to-end: rows are signed with the actual
+# shared.portal_hmac item-photo protocol (secret matches the fixture creds), and the
+# happy/refused paths run the actual photo_screen pipeline on real bytes (a Pillow
+# JPEG / junk bytes) — the §34-parity claim is exercised, not mocked. Only transport
+# (portal_client), Box, and state files are mocked.
+
+def _real_jpeg_b64() -> str:
+    buf = _io.BytesIO()
+    _PILImage.new("RGB", (8, 8), (200, 30, 30)).save(buf, format="JPEG")
+    return _b64lib.b64encode(buf.getvalue()).decode()
+
+
+def _photo_row(
+    photo_id=5, item_state_id=7, data_b64=None, uploaded_by="sub.sam",
+    secret="secret", hmac_override=None,
+):
+    """One pulled item_photos row, signed with the REAL item-photo protocol
+    (secret defaults to the fixture creds' 'secret')."""
+    photo_json = json.dumps({
+        "data": data_b64 if data_b64 is not None else _real_jpeg_b64(),
+        "name": "site.jpg", "taken_at": "", "gps": "", "uploaded_by": uploaded_by,
+    })
+    return {
+        "id": photo_id,
+        "item_state_id": item_state_id,
+        "photo_json": photo_json,
+        "hmac": hmac_override if hmac_override is not None else _portal_hmac.sign_item_photo(
+            secret, item_state_id=item_state_id, photo_json=photo_json,
+        ),
+        "created_at": 1_717_600_000,
+    }
+
+
+def _with_box_root(_patch_all):
+    """Point the mocked ITS_Config reader at a configured portal Box root."""
+    def _settings(key, fallback):
+        if key == portal_poll.safety_naming.CFG_BOX_PORTAL_ROOT:
+            return "ROOT-77"
+        return fallback
+    _patch_all["read_setting"].side_effect = _settings
+
+
+def _log_codes(_patch_all):
+    return [c.kwargs.get("error_code") for c in _patch_all["log"].call_args_list]
+
+
+def test_item_photo_clean_screens_files_to_box_then_posts_back(_patch_all):
+    _with_box_root(_patch_all)
+    _patch_all["get_item_photos"].return_value = [_photo_row(photo_id=5, item_state_id=7)]
+
+    result = _poll_inside_lock()
+
+    assert result.item_photos_screened == 1
+    # Box chain: <root>/ITS Photos/checklist/<item_state_id>/ — find-or-create at
+    # every level (intake._file_portal_photos' shape).
+    assert _patch_all["box_folder"].call_args_list[0].args == ("ROOT-77", "ITS Photos")
+    assert _patch_all["box_folder"].call_args_list[1].args == ("FOLD-1", "checklist")
+    assert _patch_all["box_folder"].call_args_list[2].args == ("FOLD-2", "7")
+    # Version-on-conflict upload of the SANITIZED RE-ENCODE (fresh baseline JPEG),
+    # never the raw upload bytes.
+    up_args = _patch_all["box_upload"].call_args.args
+    assert up_args[0] == "FOLD-3" and up_args[1] == "photo_5.jpg"
+    assert up_args[2][:3] == b"\xff\xd8\xff"  # JPEG magic — the re-encode output
+    # Box FIRST, then the delete-on-screen post-back naming the Box record.
+    _patch_all["post_photo_result"].assert_called_once_with(
+        "https://portal.example.com", "bearer",
+        photo_id=5, status="clean", box_file_id="box-9",
+    )
+    # No refusal machinery fired.
+    _patch_all["review"].assert_not_called()
+    # The pass rides the heartbeat notes.
+    assert "item_photos_screened=1" in (_patch_all["hb_row"].call_args.kwargs["notes"] or "")
+
+
+def test_item_photo_clean_reencode_differs_from_raw(_patch_all):
+    # The filed bytes are photo_screen's L2 re-encode, NOT the uploaded original —
+    # metadata/appended payloads cannot survive into Box.
+    _with_box_root(_patch_all)
+    raw_b64 = _real_jpeg_b64()
+    _patch_all["get_item_photos"].return_value = [_photo_row(data_b64=raw_b64)]
+    _poll_inside_lock()
+    uploaded = _patch_all["box_upload"].call_args.args[2]
+    assert uploaded != _b64lib.b64decode(raw_b64)
+
+
+def test_item_photo_suspicious_bad_magic_refused_and_reviewed(_patch_all):
+    _with_box_root(_patch_all)
+    junk = _b64lib.b64encode(b"\x00\x01\x02\x03 not an image").decode()
+    _patch_all["get_item_photos"].return_value = [
+        _photo_row(photo_id=6, item_state_id=9, data_b64=junk),
+    ]
+
+    result = _poll_inside_lock()
+
+    assert result.item_photos_screened == 1  # refused IS a terminal disposition
+    # The _portal_photo_refusal pattern: security-flagged Review-Queue row, WARN (no
+    # page) for suspicious.
+    _patch_all["review"].assert_called_once()
+    kw = _patch_all["review"].call_args.kwargs
+    assert kw["security_flag"] is True
+    assert kw["severity"] == _Sev.WARN
+    assert kw["payload"]["disposition"] == "suspicious"
+    assert kw["payload"]["actor"] == "sub.sam"
+    assert "item completion stands" in kw["summary"]
+    assert "portal_item_photo_suspicious" in _log_codes(_patch_all)
+    # Refused bytes are NEVER filed; the refused disposition drains the row.
+    _patch_all["box_upload"].assert_not_called()
+    _patch_all["post_photo_result"].assert_called_once_with(
+        "https://portal.example.com", "bearer",
+        photo_id=6, status="refused", detail="L1:magic_mismatch",
+    )
+
+
+def test_item_photo_malicious_pages_critical_naming_the_account(_patch_all, mocker):
+    _with_box_root(_patch_all)
+    _patch_all["get_item_photos"].return_value = [
+        _photo_row(photo_id=8, item_state_id=3, uploaded_by="evil.eve"),
+    ]
+    mocker.patch.object(
+        portal_poll.photo_screen, "screen_photo",
+        return_value=PhotoScreenResult("malicious", None, "L2", "decompression_bomb:99999x99999"),
+    )
+
+    result = _poll_inside_lock()
+
+    assert result.item_photos_screened == 1
+    crit = [
+        c for c in _patch_all["log"].call_args_list
+        if c.kwargs.get("error_code") == "portal_item_photo_malicious"
+    ]
+    assert len(crit) == 1
+    assert crit[0].args[0] == _Sev.CRITICAL
+    # Names the account (from the HMAC-covered photo_json) + the disable instruction.
+    assert "'evil.eve'" in crit[0].args[2]
+    assert "disable this portal account" in crit[0].args[2]
+    kw = _patch_all["review"].call_args.kwargs
+    assert kw["severity"] == _Sev.CRITICAL and kw["security_flag"] is True
+    _patch_all["post_photo_result"].assert_called_once_with(
+        "https://portal.example.com", "bearer",
+        photo_id=8, status="refused", detail="L2:decompression_bomb:99999x99999",
+    )
+    _patch_all["box_upload"].assert_not_called()
+
+
+def test_item_photo_bad_hmac_one_shot_flag_never_screens(_patch_all, mocker):
+    _with_box_root(_patch_all)
+    screen = mocker.patch.object(portal_poll.photo_screen, "screen_photo")
+    _patch_all["get_item_photos"].return_value = [
+        _photo_row(photo_id=5, item_state_id=7, hmac_override="0" * 64),
+    ]
+
+    result = _poll_inside_lock()
+
+    # NEVER screened or filed (downgrade defense) — and not counted as dispositioned.
+    assert result.item_photos_screened == 0
+    screen.assert_not_called()
+    _patch_all["box_upload"].assert_not_called()
+    # First sighting: anomaly tripwire + CRITICAL + security-flagged review row.
+    _patch_all["anomaly"].assert_called_once()
+    _patch_all["review"].assert_called_once()
+    assert _patch_all["review"].call_args.kwargs["security_flag"] is True
+    assert "portal_item_photo_hmac_failure" in _log_codes(_patch_all)
+    # The refused post-back drains the row (delete-on-screen destroys tampered bytes).
+    _patch_all["post_photo_result"].assert_called_once_with(
+        "https://portal.example.com", "bearer",
+        photo_id=5, status="refused", detail="hmac_verification_failed",
+    )
+    # Flag persisted for the one-shot suppression.
+    persisted = _patch_all["photo_flags_persist"].call_args.args[0]
+    assert persisted == {"5": "flagged"}
+
+
+def test_item_photo_bad_hmac_second_cycle_does_not_reflag_but_retries_drain(_patch_all):
+    _with_box_root(_patch_all)
+    _patch_all["get_item_photos"].return_value = [
+        _photo_row(photo_id=5, item_state_id=7, hmac_override="0" * 64),
+    ]
+    _patch_all["photo_flags_load"].return_value = {"5": "flagged"}
+
+    _poll_inside_lock()
+
+    # No re-flag spam (the one-shot), but the drain post RETRIES until it lands.
+    _patch_all["review"].assert_not_called()
+    _patch_all["anomaly"].assert_not_called()
+    assert "portal_item_photo_hmac_failure" not in _log_codes(_patch_all)
+    _patch_all["post_photo_result"].assert_called_once()
+
+
+def test_item_photo_transport_error_is_fenced_and_never_blocks_drain(_patch_all):
+    _patch_all["get_pending"].return_value = [_row("u1")]
+    _patch_all["get_item_photos"].side_effect = (
+        portal_poll.portal_client.PortalTransportError("500")
+    )
+    result = _poll_inside_lock()
+    assert result.filed == 1            # submission drain unaffected
+    assert result.errors == 0           # the pass failure is NOT an intake error
+    assert result.item_photos_screened == 0
+    assert "portal_item_photo_service_failed" in _log_codes(_patch_all)
+
+
+def test_item_photo_result_found_false_is_benign_idempotent_rescreen(_patch_all):
+    # A re-pulled row whose disposition already applied (lost ack): the post returns
+    # found=False → WARN, no exception, still counted as dispositioned this cycle.
+    _with_box_root(_patch_all)
+    _patch_all["get_item_photos"].return_value = [_photo_row()]
+    _patch_all["post_photo_result"].return_value = False
+    result = _poll_inside_lock()
+    assert result.item_photos_screened == 1
+    assert "portal_item_photo_result_not_found" in _log_codes(_patch_all)
+
+
+def test_item_photo_box_root_unset_row_stays_pending(_patch_all):
+    # Box root unconfigured → the clean photo CANNOT be filed → the per-item fence
+    # WARNs and NO result is posted (delete-on-screen must never destroy the only copy).
+    _patch_all["get_item_photos"].return_value = [_photo_row()]
+    result = _poll_inside_lock()
+    assert result.item_photos_screened == 0
+    _patch_all["post_photo_result"].assert_not_called()
+    assert "portal_item_photo_item_failed" in _log_codes(_patch_all)
+
+
+def test_item_photo_per_item_fence_one_bad_item_does_not_abort(_patch_all):
+    _with_box_root(_patch_all)
+    _patch_all["get_item_photos"].return_value = [
+        _photo_row(photo_id=1, item_state_id=11),
+        _photo_row(photo_id=2, item_state_id=12),
+        _photo_row(photo_id=3, item_state_id=13),
+    ]
+    _patch_all["box_upload"].side_effect = [
+        {"id": "b1"}, RuntimeError("box boom"), {"id": "b3"},
+    ]
+    result = _poll_inside_lock()
+    assert result.item_photos_screened == 2  # 1 + 3; the middle row stays pending
+    assert "portal_item_photo_item_failed" in _log_codes(_patch_all)
+    assert _patch_all["post_photo_result"].call_count == 2
+
+
+def test_item_photo_malformed_row_is_skipped(_patch_all):
+    _with_box_root(_patch_all)
+    _patch_all["get_item_photos"].return_value = [{"item_state_id": 7}]  # no id
+    result = _poll_inside_lock()
+    assert result.item_photos_screened == 0
+    _patch_all["post_photo_result"].assert_not_called()
+    assert "portal_item_photo_malformed" in _log_codes(_patch_all)
+
+
+def test_item_photo_config_resolution_is_observable_and_gates_clamav(_patch_all, mocker):
+    # Observable-config rule (forensic #7): the resolved ClamAV gate + its source are
+    # logged, and the SAME flag value is what screen_photo actually receives.
+    def _settings(key, fallback):
+        if key == portal_poll.safety_naming.CFG_BOX_PORTAL_ROOT:
+            return "ROOT-77"
+        if key == portal_poll.intake.CFG_PHOTO_CLAMAV:
+            return "true"
+        return fallback
+    _patch_all["read_setting"].side_effect = _settings
+    screen = mocker.patch.object(
+        portal_poll.photo_screen, "screen_photo",
+        return_value=PhotoScreenResult("clean", b"\xff\xd8\xff-reencoded", "L3", "ok"),
+    )
+    _patch_all["get_item_photos"].return_value = [_photo_row()]
+
+    _poll_inside_lock()
+
+    assert screen.call_args.kwargs["clamav_enabled"] is True
+    resolved = [
+        c for c in _patch_all["log"].call_args_list
+        if c.kwargs.get("error_code") == "portal_item_photo_config_resolved"
+    ]
+    assert len(resolved) == 1
+    assert "clamav_enabled=True (source=ITS_Config" in resolved[0].args[2]
+
+
+def test_item_photo_config_default_source_logged(_patch_all):
+    # Key absent → default OFF, and the log SAYS it fell back (never silent).
+    _with_box_root(_patch_all)
+    _patch_all["get_item_photos"].return_value = [_photo_row()]
+    _poll_inside_lock()
+    resolved = [
+        c for c in _patch_all["log"].call_args_list
+        if c.kwargs.get("error_code") == "portal_item_photo_config_resolved"
+    ]
+    assert len(resolved) == 1
+    assert "clamav_enabled=False (source=default" in resolved[0].args[2]
+
+
+def test_item_photo_empty_queue_is_noop_and_logs_no_config(_patch_all):
+    result = _poll_inside_lock()
+    assert result.item_photos_screened == 0
+    assert "portal_item_photo_config_resolved" not in _log_codes(_patch_all)
+    _patch_all["post_photo_result"].assert_not_called()
 
 
 # ---- poll_once outer gating ----------------------------------------------

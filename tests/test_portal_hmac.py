@@ -47,3 +47,61 @@ def test_verify_rejects_wrong_secret() -> None:
 def test_verify_rejects_empty_or_none() -> None:
     assert portal_hmac.verify(SECRET, None, **FIELDS) is False
     assert portal_hmac.verify(SECRET, "", **FIELDS) is False
+
+
+# ---- Item-photo protocol (G1 Slice 2) -------------------------------------
+# Mirrors the Worker's itemPhotoCanonical (fieldops_checklist.ts); the Worker-side
+# vitest (fieldops-item-photo.test.ts) locks the TS half against the SAME canonical
+# string + secret, so a drift on either side breaks its CI.
+
+PHOTO_JSON = '{"data":"QUJD","name":"site.jpg","taken_at":"","gps":"","uploaded_by":"sub.sam"}'
+ITEM_CANONICAL = f"item_photo:v1\n7\n{PHOTO_JSON}"
+
+
+def test_item_photo_canonical_format_is_stable() -> None:
+    assert (
+        portal_hmac.item_photo_canonical(item_state_id=7, photo_json=PHOTO_JSON)
+        == ITEM_CANONICAL
+    )
+
+
+def test_item_photo_sign_matches_independent_hmac() -> None:
+    expected = _hmac.new(SECRET.encode(), ITEM_CANONICAL.encode(), hashlib.sha256).hexdigest()
+    assert (
+        portal_hmac.sign_item_photo(SECRET, item_state_id=7, photo_json=PHOTO_JSON)
+        == expected
+    )
+
+
+def test_item_photo_verify_round_trip_and_tamper() -> None:
+    sig = portal_hmac.sign_item_photo(SECRET, item_state_id=7, photo_json=PHOTO_JSON)
+    assert portal_hmac.verify_item_photo(
+        SECRET, sig, item_state_id=7, photo_json=PHOTO_JSON
+    ) is True
+    # Replay onto a DIFFERENT item state fails (item binding).
+    assert portal_hmac.verify_item_photo(
+        SECRET, sig, item_state_id=8, photo_json=PHOTO_JSON
+    ) is False
+    # Tampered photo_json fails.
+    assert portal_hmac.verify_item_photo(
+        SECRET, sig, item_state_id=7, photo_json=PHOTO_JSON.replace("QUJD", "WFla")
+    ) is False
+    # Absent/empty signature fails, never raises.
+    assert portal_hmac.verify_item_photo(
+        SECRET, None, item_state_id=7, photo_json=PHOTO_JSON
+    ) is False
+    assert portal_hmac.verify_item_photo(
+        SECRET, "", item_state_id=7, photo_json=PHOTO_JSON
+    ) is False
+
+
+def test_item_photo_domain_separation_from_submission_protocol() -> None:
+    # A signature minted by ONE protocol can never verify under the other, even over
+    # byte-identical field material — the "item_photo:v1" literal domain-separates.
+    sub_sig = portal_hmac.sign(
+        SECRET, submission_uuid="item_photo:v1", job_id="7",
+        form_code=PHOTO_JSON, work_date="", payload_json="",
+    )
+    assert portal_hmac.verify_item_photo(
+        SECRET, sub_sig, item_state_id=7, photo_json=PHOTO_JSON
+    ) is False

@@ -36,6 +36,11 @@ Per-cycle behavior (mirrors the canonical weekly_send_poll pattern)
   5. seen-set (state file) — fast-path re-receipt for an already-filed UUID whose
      mark-filed was lost, and one-shot flagging for a rejected (bad-HMAC) UUID, so
      neither re-files nor re-spams the Review Queue every cycle.
+  5b. Best-effort fenced passes (never block the drain): the PR-4 PDF-cache
+      servicing pass (_service_pdf_requests) and the G1 checklist item-photo
+      screening pass (_service_item_photos — HMAC verify → the byte-identical §34
+      photo_screen pipeline → clean files to Box + refused pages/reviews → the
+      delete-on-screen disposition post-back).
   6. Heartbeat file + ITS_Daemon_Health row + watchdog Check C marker.
   No @its_error_log CRITICAL-spam on a clean empty poll (only real failures log).
 
@@ -60,7 +65,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from safety_reports import intake
+from safety_reports import intake, photo_screen, safety_naming
 from shared import (
     active_jobs,
     anomaly_logger,
@@ -105,6 +110,18 @@ PDF_CHUNK_BYTES = 700_000
 # intake._box_link produces). Same pattern as weekly_send._box_file_id.
 _BOX_FILE_LINK_RE = re.compile(r"/file/(\d+)")
 
+# G1 Slice 2 — checklist item-photo screening pass (_service_item_photos), a fenced
+# sibling of the PDF pass above. Rows per cycle (Worker caps at 100; 25 drains a
+# normal backlog — a saturated page self-heals across cycles, and the >7d
+# stuck-pending prune stage is the Worker-side growth cap).
+ITEM_PHOTO_LIMIT = 25
+# Box filing target: <portal root>/ITS Photos/checklist/<item_state_id>/photo_<id>.jpg.
+# The path is derived ONLY from HMAC-covered data (item_state_id + the photo id served
+# with the signed row) — never from an unsigned D1 field. "ITS Photos" mirrors
+# intake._file_portal_photos' operator naming rule (ITS-prefixed system folders).
+ITEM_PHOTO_BOX_FOLDER = "ITS Photos"
+ITEM_PHOTO_BOX_SUBFOLDER = "checklist"
+
 # State paths. HEARTBEAT_ROW_STATE_PATH is SHARED with the other daemons —
 # same JSON file, different daemon_name key.
 STATE_DIR = Path.home() / "its" / "state"
@@ -119,6 +136,14 @@ HEARTBEAT_ROW_STATE_PATH = STATE_DIR / "heartbeat_row_ids.json"
 # never self-heal — so they don't go through this counter.)
 FETCH_FAIL_STATE_PATH = STATE_DIR / "portal_poll_fetch_failures.json"
 FETCH_FAIL_CRITICAL_THRESHOLD = 5
+
+# G1: one-shot flag state for BAD-HMAC item-photo rows — the item-photo analog of the
+# submission seen-set's 'rejected' fast-path. The first failure fires the full
+# anomaly-log + Review-Queue + CRITICAL and posts the refused disposition (which drains
+# the row); the flag file only matters when that post-back is LOST — it suppresses the
+# per-cycle re-flag spam while the post keeps retrying every cycle until the drain lands.
+ITEM_PHOTO_FLAGGED_PATH = STATE_DIR / "portal_poll_item_photo_flagged.json"
+MAX_ITEM_PHOTO_FLAGS = 500  # cap the flag file (drained rows leave dead weight only)
 
 # A4: "stuck backlog" marker for the daily watchdog (Check Q). A backlog is *stuck* when a
 # SATURATED pending page (len(rows) >= PENDING_LIMIT) drains NOTHING in a cycle — the daemon is
@@ -175,6 +200,7 @@ class PollStats:
     remarked: int = 0   # seen-as-filed rows whose mark-filed was re-posted
     errors: int = 0     # transient intake errors + per-row exceptions (NOT drained)
     pdf_serviced: int = 0  # PR-4: request-driven PDF caches uploaded this cycle
+    item_photos_screened: int = 0  # G1: item photos dispositioned (clean+refused) this cycle
 
 
 # ---- Box helper (PR-4 Part A) -------------------------------------------
@@ -727,7 +753,7 @@ def _poll_inside_lock() -> PollStats:
     seen = _load_seen()
     counters = {
         "filed": 0, "reviewed": 0, "rejected": 0, "remarked": 0, "errors": 0,
-        "pdf_serviced": 0,
+        "pdf_serviced": 0, "item_photos": 0,
     }
 
     for row in rows:
@@ -768,6 +794,29 @@ def _poll_inside_lock() -> PollStats:
             error_code="portal_pdf_service_failed",
         )
 
+    # Best-effort checklist item-photo screening pass (G1 Slice 2). CLONED from the PDF
+    # pass above: placed AFTER the intake drain + _persist_seen so a pass failure can
+    # NEVER affect submission filing, and FENCED identically (its own error_code, WARN,
+    # never blocks the drain). Idempotent end-to-end: the Worker serves only
+    # status='pending' rows, the disposition post-back is a found=false no-op on a
+    # re-screened row, and Box filing is version-on-conflict — so a skipped/failed
+    # cycle self-heals on the next. An unscreened backlog is NEVER silent: a dead pass
+    # leaves rows pending → watchdog Check C / ITS_Daemon_Health page the dead daemon
+    # within hours, and the Worker's >7d stuck-pending prune stage is the loud growth
+    # cap (prune.ts ITEM_PHOTO_STUCK_PENDING_DAYS — the deleting backstop, not a page;
+    # Check V does not page on prune counters, so the two signals never double-page).
+    try:
+        counters["item_photos"] += _service_item_photos(
+            creds.base_url, creds.bearer, creds.secret
+        )
+    except Exception as exc:  # noqa: BLE001 — best-effort; must not block intake filing
+        error_log.log(
+            Severity.WARN, SCRIPT_NAME,
+            f"item-photo screening pass failed (intake unaffected): "
+            f"{type(exc).__name__}: {exc!r}",
+            error_code="portal_item_photo_service_failed",
+        )
+
     # Best-effort job-set sync (ITS_Active_Jobs → the Worker's D1 dropdown cache).
     # FENCED so a sync failure never affects the intake drain above; the sync is
     # idempotent (full-replace), so a skipped/failed cycle self-heals next time.
@@ -800,10 +849,7 @@ def _poll_inside_lock() -> PollStats:
                 if counters["errors"] == 0 and counters["rejected"] == 0
                 else f"errors={counters['errors']} rejected={counters['rejected']}"
             ),
-            notes=(
-                f"pdf_serviced={counters['pdf_serviced']}"
-                if counters["pdf_serviced"] else None
-            ),
+            notes=_cycle_notes(counters),
         )
     except Exception as exc:  # noqa: BLE001 — heartbeat must never block
         error_log.log(
@@ -828,7 +874,8 @@ def _poll_inside_lock() -> PollStats:
             f"poll cycle: scanned={len(rows)} filed={counters['filed']} "
             f"reviewed={counters['reviewed']} rejected={counters['rejected']} "
             f"remarked={counters['remarked']} errors={counters['errors']} "
-            f"pdf_serviced={counters['pdf_serviced']}"
+            f"pdf_serviced={counters['pdf_serviced']} "
+            f"item_photos_screened={counters['item_photos']}"
         ),
         error_code="poll_cycle_summary",
     )
@@ -840,6 +887,7 @@ def _poll_inside_lock() -> PollStats:
         remarked=counters["remarked"],
         errors=counters["errors"],
         pdf_serviced=counters["pdf_serviced"],
+        item_photos_screened=counters["item_photos"],
     )
 
 
@@ -1001,6 +1049,425 @@ def _service_pdf_requests(base_url: str, bearer: str) -> int:
                 f"{type(exc).__name__}: {exc!r}",
                 error_code="portal_pdf_request_item_failed",
             )
+    return serviced
+
+
+def _cycle_notes(counters: dict[str, int]) -> str | None:
+    """Compose the optional ITS_Daemon_Health Notes fragment from the best-effort
+    pass counters (PDF servicing + item-photo screening). None when both are zero
+    (a quiet cycle writes no note — the pre-G1 behavior)."""
+    parts = []
+    if counters["pdf_serviced"]:
+        parts.append(f"pdf_serviced={counters['pdf_serviced']}")
+    if counters["item_photos"]:
+        parts.append(f"item_photos_screened={counters['item_photos']}")
+    return "; ".join(parts) if parts else None
+
+
+# ---- G1 Slice 2: checklist item-photo screening pass ----------------------
+#
+# The Mac half of the G1 item-photo capture queue (Option D, RATIFIED 2026-07-03:
+# record-only — the photo's permanent home is Box; NO route ever serves the bytes to a
+# browser; DELETE-ON-SCREEN — D1 holds bytes only while pending). Worker-side capture
+# is fieldops_checklist.ts POST /api/fieldops/checklist/item-state/:id/photo
+# (migration 0036). This pass is a fenced clone of _service_pdf_requests:
+#
+#   GET /api/internal/item-photos/pending
+#     → per row: verify the item-photo HMAC (shared.portal_hmac.verify_item_photo,
+#       constant-time — the downgrade defense; a bad row is one-shot-flagged and NEVER
+#       screened or filed)
+#     → run the BYTE-IDENTICAL §34 pipeline the submission photos get:
+#       photo_screen.decode_b64 → photo_screen.screen_photo — same module, same
+#       layers (L1 magic/size → L2 verify+bomb-cap+metadata-destroying re-encode →
+#       optional L3 ClamAV), same ITS_Config gate
+#       (safety_reports.photo_screen.clamav_enabled via intake.CFG_PHOTO_CLAMAV — one
+#       operator flag governs BOTH photo classes), same disposition ladder
+#       (clean | suspicious | malicious).
+#     → CLEAN: file the SANITIZED re-encode to Box
+#       <portal root>/ITS Photos/checklist/<item_state_id>/photo_<id>.jpg
+#       (version-on-conflict — idempotent re-screen), THEN post
+#       {status:'clean', box_file_id} — Box-before-post-back is load-bearing: the
+#       post-back deletes the D1 bytes (delete-on-screen), so the permanent record
+#       must exist first or a crash window destroys the only copy.
+#     → SUSPICIOUS/MALICIOUS: the intake._portal_photo_refusal pattern — page/record
+#       FIRST (malicious → CRITICAL naming the account for operator disable;
+#       suspicious → WARN), security-flagged Review-Queue row, then post
+#       {status:'refused'}. The refused bytes are NEVER filed anywhere; the item's
+#       COMPLETION STANDS (evidence refused ≠ work not done — the Worker touches only
+#       photo_ref, never the item status).
+
+
+def _resolve_item_photo_clamav() -> tuple[bool, str]:
+    """Resolve the §34 L3 ClamAV gate for the item-photo pass — the SAME ITS_Config
+    key intake's submission-photo screening reads (intake.CFG_PHOTO_CLAMAV =
+    `safety_reports.photo_screen.clamav_enabled`, default OFF), referenced through
+    intake's constant so the two surfaces can never drift apart (multi-surface
+    fan-out class). Returns `(enabled, source)` — source is `"ITS_Config"` or
+    `"default"` — so the caller logs the resolution observably (config resolution is
+    never silent, forensic class #7; the §43 runbook's clamd Symptom 2 applies to
+    item photos unchanged)."""
+    raw = _read_str_setting(intake.CFG_PHOTO_CLAMAV, "")
+    if not raw.strip():
+        return False, "default"
+    return raw.strip().lower() in ("true", "1", "yes", "on"), "ITS_Config"
+
+
+def _load_item_photo_flags() -> dict[str, str]:
+    """Load the bad-HMAC one-shot flag set `{photo_id: 'flagged'}`. {} on any read
+    error (fail-open: the only cost is one redundant re-flag, never a missed alert)."""
+    if not ITEM_PHOTO_FLAGGED_PATH.exists():
+        return {}
+    try:
+        parsed = json.loads(ITEM_PHOTO_FLAGGED_PATH.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _persist_item_photo_flags(flags: dict[str, str]) -> None:
+    """Atomically persist the flag set, capped to MAX_ITEM_PHOTO_FLAGS (drained rows
+    leave dead weight only). Lock-timeout fails OPEN with a WARN — a lost flag set
+    costs a duplicate Review-Queue flag next cycle, never a missed one."""
+    if len(flags) > MAX_ITEM_PHOTO_FLAGS:
+        flags = dict(list(flags.items())[-MAX_ITEM_PHOTO_FLAGS:])
+    ITEM_PHOTO_FLAGGED_PATH.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with state_io.with_path_lock(ITEM_PHOTO_FLAGGED_PATH):
+            state_io.atomic_write_json(ITEM_PHOTO_FLAGGED_PATH, flags)
+    except state_io.StateLockTimeoutError:
+        error_log.log(
+            Severity.WARN, SCRIPT_NAME,
+            f"could not acquire lock on {ITEM_PHOTO_FLAGGED_PATH} after retries; "
+            f"item-photo flag set not persisted",
+            error_code="portal_item_photo_flags_persist_failed",
+        )
+
+
+def _handle_item_photo_hmac_failure(
+    photo_id: int,
+    item_state_id: int,
+    correlation_id: str,
+    *,
+    base_url: str,
+    bearer: str,
+    flags: dict[str, str],
+) -> None:
+    """Reject a bad-HMAC item-photo row — the item-photo twin of _handle_hmac_failure.
+
+    NEVER screened, NEVER filed (downgrade defense). One-shot: the anomaly-log +
+    Review-Queue + CRITICAL fire only on the FIRST sighting (the `flags` set
+    suppresses per-cycle re-flag spam if the drain below is lost); the refused
+    post-back retries EVERY cycle until the Worker drains the row (photo_json NULLed,
+    photo_ref 'refused:<id>' — the crew sees a refused marker and can retry)."""
+    key = str(photo_id)
+    if key not in flags:
+        # Tripwire (Invariant 2, Layer 5) — record the suspicious pattern.
+        anomaly_logger.check({
+            "portal_item_photo_hmac_failure": photo_id, "item_state_id": item_state_id,
+        })
+        review_queue.add(
+            workstream=WORKSTREAM,
+            summary=(
+                f"portal: HMAC verification FAILED for checklist item photo {photo_id} "
+                f"(item_state_id={item_state_id}) — rejected, NOT screened or filed"
+            ),
+            payload={
+                "item_photo_id": photo_id,
+                "item_state_id": item_state_id,
+                # The HMAC value is deliberately NOT recorded (signature material —
+                # same posture as the submission twin); photo bytes NEVER ride a
+                # Review-Queue payload.
+            },
+            sla_tier=review_queue.SlaTier.SAFETY_INTAKE,
+            reason=review_queue.ReviewReason.SECURITY_TRIGGER,
+            severity=Severity.CRITICAL,
+            source_file=f"item_photo:{photo_id}",
+            security_flag=True,
+        )
+        error_log.log(
+            Severity.CRITICAL, SCRIPT_NAME,
+            (
+                f"portal item-photo HMAC FAIL photo_id={photo_id} "
+                f"item_state_id={item_state_id} — rejected, not screened or filed "
+                f"(downgrade defense)"
+            ),
+            error_code="portal_item_photo_hmac_failure",
+            correlation_id=correlation_id,
+        )
+        flags[key] = "flagged"
+    # Drain the row (terminal refused; delete-on-screen NULLs the tampered bytes; the
+    # Review-Queue row above is the forensic record). Best-effort: a transport failure
+    # re-pulls next cycle — the flag set keeps the re-flag suppressed while this retries.
+    try:
+        portal_client.post_item_photo_result(
+            base_url, bearer, photo_id=photo_id, status="refused",
+            detail="hmac_verification_failed",
+        )
+    except portal_client.PortalTransportError as exc:
+        error_log.log(
+            Severity.WARN, SCRIPT_NAME,
+            f"portal could not post refused result for bad-HMAC item photo {photo_id}: {exc!r}",
+            error_code="portal_item_photo_mark_refused_failed",
+            correlation_id=correlation_id,
+        )
+
+
+def _item_photo_refusal(
+    photo_id: int,
+    item_state_id: int,
+    uploaded_by: str,
+    *,
+    disposition: str,   # "malicious" | "suspicious"
+    detail: str,
+    correlation_id: str,
+) -> None:
+    """Refuse ONE checklist item photo on a screening verdict — the item-photo
+    application of intake._portal_photo_refusal (same severities, same page-first
+    ordering, same account-naming CRITICAL).
+
+    The refused bytes are NEVER re-encoded, filed to Box, or served — the caller
+    posts {status:'refused'} and the Worker NULLs photo_json (delete-on-screen).
+    MALICIOUS pages the operator (CRITICAL) naming the uploading account (from the
+    HMAC-covered photo_json, not a spoofable sidecar) with the disable instruction;
+    SUSPICIOUS files a WARN-severity, security-flagged row without paging. The page
+    fires BEFORE the Smartsheet write so an outage cannot suppress it. The ITEM
+    COMPLETION STANDS — evidence refused ≠ work not done; a re-pulled row re-screens
+    to the same verdict (deterministic pipeline) and the post-back is idempotent."""
+    malicious = disposition == "malicious"
+    severity = Severity.CRITICAL if malicious else Severity.WARN
+    if malicious:
+        summary = (
+            f"MALICIOUS checklist item photo rejected ({detail}); DISABLE portal "
+            f"account {uploaded_by!r} pending review (§34) — item photo {photo_id} "
+            f"(item_state_id={item_state_id}); item completion stands"
+        )
+        page = (
+            f"portal: MALICIOUS checklist item photo ({detail}) photo_id={photo_id} "
+            f"item_state_id={item_state_id} actor={uploaded_by!r} — disable this "
+            f"portal account pending review (§34)"
+        )
+    else:
+        summary = (
+            f"suspicious checklist item photo routed to review ({detail}) — item "
+            f"photo {photo_id} (item_state_id={item_state_id}) actor "
+            f"{uploaded_by!r}; item completion stands"
+        )
+        page = (
+            f"portal: suspicious checklist item photo ({detail}) photo_id={photo_id} "
+            f"item_state_id={item_state_id} actor={uploaded_by!r}"
+        )
+    # Page/record FIRST (never blocked by a Smartsheet write failure).
+    error_log.log(
+        severity, SCRIPT_NAME, page,
+        error_code=f"portal_item_photo_{disposition}", correlation_id=correlation_id,
+    )
+    review_queue.add(
+        workstream=WORKSTREAM,
+        summary=summary,
+        payload={
+            "item_photo_id": photo_id,
+            "item_state_id": item_state_id,
+            "actor": uploaded_by,
+            "disposition": disposition,
+            "detail": detail,
+            # Photo BYTES deliberately absent: delete-on-screen means D1 drops them on
+            # the refused post-back and nothing durable retains attacker-controlled
+            # binary. The verdict detail + actor are the forensic handle.
+        },
+        sla_tier=review_queue.SlaTier.SAFETY_INTAKE,
+        reason=review_queue.ReviewReason.SECURITY_TRIGGER,
+        severity=severity,
+        source_file=f"item_photo:{photo_id}",
+        security_flag=True,
+    )
+
+
+def _file_item_photo(item_state_id: int, photo_id: int, clean_jpeg: bytes) -> str:
+    """File the §34-SANITIZED re-encode (never the raw upload) to Box under
+    `<portal root>/ITS Photos/checklist/<item_state_id>/photo_<photo_id>.jpg`;
+    return the Box file id.
+
+    intake._file_portal_photos' shape: find-or-create at every level +
+    version-on-conflict upload (a re-screen after a lost ack re-uploads a new VERSION
+    of the same file — idempotent, stable file id). Raises on any failure —
+    including an unset portal Box root (ITS_Config
+    `safety_reports.box.portal_root_folder_id`, the same key intake's mirror tree
+    reads) — so the caller's per-item fence WARNs and the row STAYS PENDING (Box is
+    the permanent record; a clean result may never be posted without it)."""
+    root = _read_str_setting(safety_naming.CFG_BOX_PORTAL_ROOT, "").strip()
+    if not root:
+        raise RuntimeError(
+            "portal Box root unset (ITS_Config safety_reports.box.portal_root_folder_id) "
+            "— cannot file item photo; row stays pending until configured"
+        )
+    photos_root = box_client.get_or_create_folder(root, ITEM_PHOTO_BOX_FOLDER)
+    checklist_root = box_client.get_or_create_folder(photos_root, ITEM_PHOTO_BOX_SUBFOLDER)
+    leaf = box_client.get_or_create_folder(checklist_root, str(item_state_id))
+    uploaded = box_client.upload_bytes_or_new_version(
+        leaf, f"photo_{photo_id}.jpg", clean_jpeg
+    )
+    return str(uploaded["id"])
+
+
+def _screen_one_item_photo(
+    row: dict[str, Any],
+    *,
+    base_url: str,
+    bearer: str,
+    secret: str,
+    clamav_enabled: bool,
+    flags: dict[str, str],
+) -> bool:
+    """Verify + screen + disposition ONE pulled item-photo row. Returns True when the
+    photo reached a terminal disposition post-back (clean or refused) this cycle.
+    Raises only on transport/Box failures the per-item fence should WARN about (the
+    row stays pending and re-pulls next cycle)."""
+    photo_id = row.get("id")
+    item_state_id = row.get("item_state_id")
+    photo_json = row.get("photo_json")
+    if (
+        not isinstance(photo_id, int)
+        or not isinstance(item_state_id, int)
+        or not isinstance(photo_json, str)
+        or not photo_json
+    ):
+        error_log.log(
+            Severity.WARN, SCRIPT_NAME,
+            f"item-photo row malformed (id={row.get('id')!r}); skipping",
+            error_code="portal_item_photo_malformed",
+        )
+        return False
+
+    correlation_id = uuid.uuid4().hex[:12]
+
+    # Downgrade defense: verify the HMAC BEFORE any byte is decoded. photo_json is
+    # the VERBATIM stored string (re-serializing would change the bytes); the compare
+    # is constant-time (shared.portal_hmac).
+    provided_hmac = str(row.get("hmac") or "")
+    if not portal_hmac.verify_item_photo(
+        secret, provided_hmac, item_state_id=item_state_id, photo_json=photo_json
+    ):
+        _handle_item_photo_hmac_failure(
+            photo_id, item_state_id, correlation_id,
+            base_url=base_url, bearer=bearer, flags=flags,
+        )
+        return False
+
+    # HMAC verified — parse the covered JSON. uploaded_by rides INSIDE photo_json so
+    # the malicious CRITICAL names the account from HMAC-covered data.
+    try:
+        parsed: Any = json.loads(photo_json)
+    except ValueError:
+        parsed = None
+    if not isinstance(parsed, dict):
+        # Authenticated but structurally impossible (the Worker only signs the exact
+        # 5-key JSON it built) — refuse as suspicious rather than crash the pass.
+        _item_photo_refusal(
+            photo_id, item_state_id, "unknown",
+            disposition="suspicious", detail="unparseable_photo_json",
+            correlation_id=correlation_id,
+        )
+        portal_client.post_item_photo_result(
+            base_url, bearer, photo_id=photo_id, status="refused",
+            detail="unparseable_photo_json",
+        )
+        return True
+    uploaded_by = str(parsed.get("uploaded_by") or "unknown")
+
+    decoded = photo_screen.decode_b64(str(parsed.get("data") or ""))
+    if decoded is None:
+        _item_photo_refusal(
+            photo_id, item_state_id, uploaded_by,
+            disposition="suspicious", detail="undecodable_base64",
+            correlation_id=correlation_id,
+        )
+        portal_client.post_item_photo_result(
+            base_url, bearer, photo_id=photo_id, status="refused",
+            detail="undecodable_base64",
+        )
+        return True
+
+    # The §34 trust boundary — the BYTE-IDENTICAL pipeline submission photos get
+    # (same module, same layers, same config gate, same disposition ladder).
+    result = photo_screen.screen_photo(decoded, clamav_enabled=clamav_enabled)
+    if result.disposition in ("malicious", "suspicious"):
+        detail = f"{result.layer}:{result.detail}"
+        _item_photo_refusal(
+            photo_id, item_state_id, uploaded_by,
+            disposition=result.disposition, detail=detail,
+            correlation_id=correlation_id,
+        )
+        portal_client.post_item_photo_result(
+            base_url, bearer, photo_id=photo_id, status="refused", detail=detail,
+        )
+        return True
+
+    # CLEAN — Box FIRST, post-back SECOND (delete-on-screen: the post-back deletes the
+    # D1 bytes, so the permanent Box record must exist before it). A Box failure
+    # raises to the per-item fence: WARN, row stays pending, next cycle retries.
+    box_file_id = _file_item_photo(item_state_id, photo_id, result.clean_jpeg or b"")
+    found = portal_client.post_item_photo_result(
+        base_url, bearer, photo_id=photo_id, status="clean", box_file_id=box_file_id,
+    )
+    if not found:
+        # Benign: the disposition was already applied by a prior cycle whose ack was
+        # lost (idempotent re-screen), or the row was pruned. The Box upload above was
+        # version-on-conflict, so no duplicate artifact either way.
+        error_log.log(
+            Severity.WARN, SCRIPT_NAME,
+            (
+                f"item-photo result post found=False for photo_id={photo_id} "
+                f"(already screened or pruned) — benign no-op"
+            ),
+            error_code="portal_item_photo_result_not_found",
+            correlation_id=correlation_id,
+        )
+    return True
+
+
+def _service_item_photos(base_url: str, bearer: str, secret: str) -> int:
+    """Screen queued checklist item photos → returns the count dispositioned.
+
+    The fenced pass CLONED from _service_pdf_requests (see the block comment above
+    for the full contract). BEST-EFFORT + PER-ITEM FENCED: the whole pass is wrapped
+    by the caller's try/except (a total failure WARNs with
+    error_code=portal_item_photo_service_failed and NEVER blocks the submission
+    drain); inside, one bad item is logged + skipped so it never aborts the rest.
+
+    Config resolution is OBSERVABLE (forensic class #7): the ClamAV gate's resolved
+    value + source are logged whenever the pass has work — the same
+    `safety_reports.photo_screen.clamav_enabled` flag that governs submission photos.
+    """
+    rows = portal_client.get_item_photos_pending(base_url, bearer, limit=ITEM_PHOTO_LIMIT)
+    if not rows:
+        return 0
+    clamav_enabled, clamav_source = _resolve_item_photo_clamav()
+    error_log.log(
+        Severity.INFO, SCRIPT_NAME,
+        (
+            f"item-photo screen: {len(rows)} pending; clamav_enabled={clamav_enabled} "
+            f"(source={clamav_source}, key={intake.CFG_PHOTO_CLAMAV})"
+        ),
+        error_code="portal_item_photo_config_resolved",
+    )
+    flags = _load_item_photo_flags()
+    serviced = 0
+    for row in rows:
+        try:
+            if _screen_one_item_photo(
+                row, base_url=base_url, bearer=bearer, secret=secret,
+                clamav_enabled=clamav_enabled, flags=flags,
+            ):
+                serviced += 1
+        except Exception as exc:  # noqa: BLE001 — per-item fence; one bad item never aborts the pass
+            # NEVER interpolate photo bytes / photo_json into the log line.
+            error_log.log(
+                Severity.WARN, SCRIPT_NAME,
+                f"item-photo screening failed for photo_id={row.get('id')!r}: "
+                f"{type(exc).__name__}: {exc!r}",
+                error_code="portal_item_photo_item_failed",
+            )
+    _persist_item_photo_flags(flags)
     return serviced
 
 

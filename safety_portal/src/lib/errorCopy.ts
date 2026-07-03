@@ -129,6 +129,12 @@ export const ERROR_COPY: Record<string, string> = {
   photo_not_base64: "A photo didn't upload correctly — remove it and attach it again.",
   photo_bad_magic: "That file isn't a JPEG or PNG photo — attach a photo taken with your camera.",
 
+  // ── checklist item photos (G1 Slice 1 — record-only capture; POST /item-state/:id/photo) ───────
+  photo_already_attached: "This item already has a photo on file or in screening — one photo per item.",
+  photo_not_supported: "Photos can't be attached to form-linked items — the filed form itself is the evidence.",
+  invalid_photo_shape: "The photo didn't come through correctly — attach it again.",
+  photo_upload_too_large: "That photo is too large to upload — retake it at a lower quality.",
+
   // ── equipment / materials / rollup (the remaining field-ops write vocabulary) ──────────────────
   invalid_kind: "That isn't a valid equipment kind.",
   invalid_identifier: "The identifier is too long.",
