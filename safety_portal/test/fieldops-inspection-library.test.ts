@@ -246,3 +246,52 @@ describe("S6 assigned tab — the assignee sees only their own; completion reuse
     expect(mine.inspections[0].instance.status).toBe("complete");
   });
 });
+
+// PORTED COVERAGE (2026-07-03): these item-state behaviors were previously locked by the daily
+// (/checklist/mine) suites — fieldops-checklist-instance / -loop-closure, deleted with the
+// daily-generation routes (operator approval 2026-07-03). The /complete + /uncomplete routes STAY
+// (the inspection engine uses them), so their contracts are re-pinned here via the assigned path.
+describe("S3/S4 item-state routes via assigned inspections (coverage ported from the daily suites)", () => {
+  it("a manual complete on a form_linked item → 400 'auto_close_only' (submission-closed types reject manual)", async () => {
+    const t = await createTemplate(admin, "JHA manual-reject");
+    await addItem(admin, t, { item_type: "form_linked", label: "File JHA", form_code: "jha" });
+    await post(admin, "/api/fieldops/checklist/assign", { template_id: t, assignee_personnel_id: subPersonId, job_id: "JOB-A", due_date: "2026-07-10" });
+    const mine = await assigned(submitter);
+    const stateId = mine.inspections[0].items[0].id;
+    const res = await post(submitter, `/api/fieldops/checklist/item-state/${stateId}/complete`, {});
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toBe("auto_close_only");
+  });
+
+  it("un-completes a done manual_attest item back to open (instance recomputes to open)", async () => {
+    const t = await createTemplate(admin, "Walkthrough");
+    await addItem(admin, t, { item_type: "manual_attest", label: "Walk the site" });
+    await post(admin, "/api/fieldops/checklist/assign", { template_id: t, assignee_personnel_id: subPersonId });
+    const mine = await assigned(submitter);
+    const stateId = mine.inspections[0].items[0].id;
+    expect((await post(submitter, `/api/fieldops/checklist/item-state/${stateId}/complete`, {})).status).toBe(200);
+    const undo = await post(submitter, `/api/fieldops/checklist/item-state/${stateId}/uncomplete`, {});
+    expect(undo.status, await undo.clone().text()).toBe(200);
+    expect(((await undo.json()) as { status: string; instance_status: string })).toMatchObject({ status: "open", instance_status: "open" });
+    const after = await assigned(submitter);
+    expect(after.inspections[0].items[0].status).toBe("open");
+    expect(after.inspections[0].instance.status).toBe("open");
+  });
+
+  it("an uncomplete on an AUTO-closed form_linked item → 400 'auto_close_only' (stays done)", async () => {
+    const t = await createTemplate(admin, "JHA sticky");
+    await addItem(admin, t, { item_type: "form_linked", label: "File JHA", form_code: "jha" });
+    await post(admin, "/api/fieldops/checklist/assign", { template_id: t, assignee_personnel_id: subPersonId, job_id: "JOB-A", due_date: "2026-07-10" });
+    await env.DB.prepare(
+      "INSERT INTO submissions (submission_uuid, job_id, form_code, work_date, payload_json, created_at) VALUES (?,?,?,?,?,?)",
+    ).bind("uuid-jha-sticky", "JOB-A", "jha-v3", "2026-07-10", "{}", 1_700_000_100).run();
+    const mine = await assigned(submitter); // reconcile auto-closes the item
+    const item = mine.inspections[0].items[0];
+    expect(item.status).toBe("done");
+    const res = await post(submitter, `/api/fieldops/checklist/item-state/${item.id}/uncomplete`, {});
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toBe("auto_close_only");
+    const after = await assigned(submitter);
+    expect(after.inspections[0].items[0].status).toBe("done");
+  });
+});

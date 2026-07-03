@@ -7,9 +7,12 @@ import type { AssignedInspectionsResponse, ChecklistItemState } from "./wire-typ
 import catalog from "../catalog.json";
 
 // Assigned-Tasks tab (P4 field-ops feature) S2 — the checklist ENGINE + the admin per-job template
-// editor. One templates→instances engine (spec Q6) serves the daily "Progress Report" checklist and
-// (later, S6) the inspection library. S2 owns ONLY the template side: the global daily_default row +
-// per-job job_override rows. Instance generation / completion / rollup are S3–S5. All routes are
+// editor. One templates→instances engine (spec Q6) originally served the daily "Progress Report"
+// checklist and (S6) the inspection library; the DAILY flow was retired by D2 (the SOP daily form)
+// and its generation surfaces (GET /checklist/mine + /mine/rollup-draft) were DELETED with operator
+// approval 2026-07-03 — the inspection library is now the engine's live consumer. S2 owns ONLY the
+// template side: the global daily_default row + per-job job_override rows. Item completion is
+// S3–S4; the S5 rollup-link survives in the /assigned reconcile. Template routes are
 // cap.checklist.manage (admin; seeded 0013), send-free (D1 only), bound-param, mutation+audit in one
 // D1 batch — the same discipline as fieldops_task_write / fieldops_crew_assign.
 //
@@ -34,15 +37,12 @@ const MAX_VALUE = 100_000;
 const AUTO_COMPLETED_BY = "(auto)";
 // Item types that auto-close on a matching submission (loop-closure) and CANNOT be manually completed.
 const AUTO_CLOSE_TYPES = new Set(["form_linked", "inspection"]);
-// S5 rollup — the Daily Report the daily checklist rolls up into (catalog 'daily-report' parent family;
-// matches the daily_default seed's source_form_code). Used for the rolled_up_submission_uuid reconcile
-// AND the assembled draft's form_code. A submission matches iff its form_code EQUALS this OR is a
-// versioned variant (`|| '-v%'`) — the SAME family match as S4 loop-closure. Exported: the
-// /daily-form/status handler (fieldops_daily_requirements.ts) keys its `daily_filed` on it.
+// S5 rollup — the Daily Report family (catalog 'daily-report' parent; matches the daily_default
+// seed's source_form_code). Used for the rolled_up_submission_uuid reconcile (ROLLUP_LINK_SQL). A
+// submission matches iff its form_code EQUALS this OR is a versioned variant (`|| '-v%'`) — the
+// SAME family match as S4 loop-closure. Exported: the /daily-form/status handler
+// (fieldops_daily_requirements.ts) keys its `daily_filed` on it.
 export const DAILY_REPORT_FORM = "daily-report";
-// S5 rollup-draft assembly — bound ceiling on the crew / equipment legs (a day's roster/equipment is
-// small; this is a defensive cap, not a paginated surface).
-const ROLLUP_LEG_CAP = 200;
 const ITEM_TYPES = new Set(["form_linked", "manual_attest", "count", "inspection"]);
 // form_code identifies the target form — required for the two form-bearing types.
 const FORM_REQUIRED = new Set(["form_linked", "inspection"]);
@@ -72,8 +72,9 @@ const INSTANCE_STATUS_FILTERS = new Set(["open", "complete", "all"]);
 // ?1 = job_id, bound ONCE but referenced twice (positional re-use). Suppression markers
 // (suppresses_default_item_id NOT NULL) are excluded from both legs. `origin` distinguishes a default
 // (suppressable) item from an override (deletable) one for the editor UI.
-// REUSED by BOTH the S2 per-job editor route (GET /checklist/job/:job_id) AND S3 daily-instance
-// snapshot generation, so a generated instance captures exactly the items the editor shows.
+// Consumed by the S2 per-job editor route (GET /checklist/job/:job_id). (It was also the S3
+// daily-instance snapshot source until the daily-generation surfaces were deleted — see the
+// tombstone below the merge SQL.)
 const EFFECTIVE_MERGE_SQL = `
         SELECT di.id AS source_item_id, di.seq AS seq, di.item_type AS item_type, di.label AS label,
                di.form_code AS form_code, di.target_count AS target_count, di.config_json AS config_json,
@@ -96,17 +97,6 @@ const EFFECTIVE_MERGE_SQL = `
         WHERE oi.suppresses_default_item_id IS NULL
         ORDER BY seq ASC, source_item_id ASC
       `;
-
-// A merged effective item (the row shape EFFECTIVE_MERGE_SQL yields), used by S3 snapshot generation.
-interface MergedItem {
-  source_item_id: number;
-  seq: number;
-  item_type: string;
-  label: string | null;
-  form_code: string | null;
-  target_count: number | null;
-  config_json: string | null;
-}
 
 interface ItemRow {
   id: number;
@@ -242,84 +232,15 @@ async function requireGenericTemplate(
   return row;
 }
 
-// ── S3 daily-instance generation (Worker-on-read) ──────────────────────────────────────────────────
-// instance_date is the LOCAL (Pacific) calendar date 'YYYY-MM-DD'. The Worker's clock is UTC, so we
-// format `now` in the America/Los_Angeles zone (Intl carries full IANA tz data on Workers) — otherwise
-// a submission logged during the evening Pacific hours would land on the next UTC day and split "today"
-// across two instances. One canonical "today" per Pacific work day keeps the UNIQUE key stable.
-function pacificToday(now: Date = new Date()): string {
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone: "America/Los_Angeles",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).formatToParts(now);
-  const part = (t: string) => parts.find((p) => p.type === t)?.value ?? "";
-  return `${part("year")}-${part("month")}-${part("day")}`;
-}
-
-// (R1) WHY the daily section is empty — the three generation preconditions below, each mapped to a
-// wire reason code so the UI can explain instead of showing a lying blank ("no tasks" vs "your
-// account isn't linked" vs "you aren't placed on a job"). Returned by /checklist/mine as `reason`
-// (null when an instance is returned).
-type DailyEmptyReason = "not_manager" | "no_personnel_link" | "not_placed";
-
-// Materialize TODAY's daily checklist instance for the logged-in user — MANAGER-ONLY, idempotent,
-// send-free. Returns the instance id (existing or just-created) + its job/date, or the R1 reason
-// code when the actor is NOT a placed manager (a submitter, or a manager with no current_job) → the
-// tab shows no daily section, with the reason. Generation gates on THREE conditions, all required:
-//   (1) the account role is 'manager' (read fresh from D1 by requireSession — c.get("role"));
-//   (2) the account has an active LINKED personnel row (the daily instance's assignee); AND
-//   (3) that personnel is PLACED on a job (personnel.current_job set) — the daily instance's job.
-// Idempotency rests on the checklist_instances UNIQUE(kind, job_id, assignee_personnel_id,
-// instance_date): INSERT OR IGNORE creates at most one row per (job, manager, Pacific-day). The
-// EFFECTIVE-item snapshot into checklist_item_states runs ONLY when this call actually inserted
-// (meta.changes === 1) — a re-open the same day returns the existing instance + its states with NO
-// duplicate rows. The snapshot uses EFFECTIVE_MERGE_SQL (the SAME default⊕override merge the S2 editor
-// shows) so a later template edit never mutates an in-flight instance (source_item_id records lineage).
-async function generateDailyInstance(
-  c: Context<{ Bindings: Env; Variables: Vars }>,
-): Promise<{ instanceId: number; jobId: string; instanceDate: string } | { reason: DailyEmptyReason }> {
-  if (c.get("role") !== "manager") return { reason: "not_manager" };
-  const person = await resolveActorPersonnel(c);
-  if (!person) return { reason: "no_personnel_link" };
-  if (!person.current_job) return { reason: "not_placed" };
-  const jobId = person.current_job;
-  const personnelId = person.id;
-  const today = pacificToday();
-
-  const ins = await c.env.DB.prepare(
-    "INSERT OR IGNORE INTO checklist_instances (kind, job_id, assignee_personnel_id, instance_date, status) VALUES ('daily', ?1, ?2, ?3, 'open')",
-  )
-    .bind(jobId, personnelId, today)
-    .run();
-
-  const inst = await c.env.DB.prepare(
-    "SELECT id FROM checklist_instances WHERE kind='daily' AND job_id=?1 AND assignee_personnel_id=?2 AND instance_date=?3",
-  )
-    .bind(jobId, personnelId, today)
-    .first<{ id: number }>();
-  const instanceId = inst!.id;
-
-  // FIRST creation only → snapshot the effective merged items. A lost INSERT-OR-IGNORE race (a second
-  // concurrent read) sees changes()===0 and skips, reading the winner's states — no duplicates.
-  if ((ins.meta.changes ?? 0) === 1) {
-    const merged = await c.env.DB.prepare(EFFECTIVE_MERGE_SQL).bind(jobId).all<MergedItem>();
-    const rows = merged.results ?? [];
-    if (rows.length > 0) {
-      await c.env.DB.batch(
-        rows.map((it) =>
-          c.env.DB
-            .prepare(
-              "INSERT INTO checklist_item_states (instance_id, source_item_id, item_type, label, form_code, target_count, status) VALUES (?1,?2,?3,?4,?5,?6,'open')",
-            )
-            .bind(instanceId, it.source_item_id, it.item_type, it.label, it.form_code, it.target_count),
-        ),
-      );
-    }
-  }
-  return { instanceId, jobId, instanceDate: today };
-}
+// ══ TOMBSTONE (operator-approved deletion, 2026-07-03) ═════════════════════════════════════════════
+// The S3 DAILY-instance generation machinery — `pacificToday`, `DailyEmptyReason`,
+// `generateDailyInstance` (Worker-on-read materialization + EFFECTIVE_MERGE_SQL snapshot into
+// checklist_item_states, kind='daily') — was DELETED here with its sole caller, GET
+// /api/fieldops/checklist/mine (below). Deprecated-for-daily since D2 (the SOP daily form replaced
+// the checkbox checklist), it still WROTE daily instances + snapshots when called — a junk-data
+// footgun with zero SPA/Python callers. Operator approval 2026-07-03; recover from git history
+// (this file, pre-deletion). The inspection engine (assign/assigned/instances/cancel/item-state)
+// is untouched.
 
 // ── S4 loop-closure (form_linked / inspection auto-check) ──────────────────────────────────────────
 // A form_linked / inspection item closes when a SUBMISSION exists for (this instance's job, the item's
@@ -331,17 +252,17 @@ async function generateDailyInstance(
 // so no LIKE metacharacter escaping is needed. The `-v` anchor keeps the wildcard precise: 'daily-report'
 // matches 'daily-report-v1' but never 'daily-report-extra'.
 //
-// Runs on EVERY /checklist/mine read (idempotent): it only flips OPEN→done (WHERE status<>'done'), so an
-// already-closed item — auto or manual — is untouched, and a submission never "un-closes" an item. The
-// UPDATE is bound-param (job_id + instance_date passed positionally, not spliced) and correlates the
+// Runs on EVERY /checklist/assigned read (idempotent): it only flips OPEN→done (WHERE status<>'done'),
+// so an already-closed item — auto or manual — is untouched, and a submission never "un-closes" an item.
+// The UPDATE is bound-param (job_id + instance_date passed positionally, not spliced) and correlates the
 // EXISTS subquery on the target row's own form_code. Persisted (not computed) so S5's rollup + the
 // instance-complete recompute observe the closure. ?1 = instance id, ?2 = job_id, ?3 = instance_date.
 //
-// (R1, spec Q3) DATE SEMANTICS split by instance kind. A DAILY item matches a submission filed ON the
-// instance's day (`=` — "today's checklist closes on today's filings", unchanged). An INSPECTION
-// instance's date is a DUE date, so a filing ON OR BEFORE it satisfies the item (`<=`) — before this,
-// filing the linked form a day early left the inspection permanently open. `dateOp` is one of two
-// module-CONSTANT literals (never caller/user input), so the template splice is bound-param-safe.
+// (R1, spec Q3) DATE SEMANTICS: an INSPECTION instance's date is a DUE date, so a filing ON OR
+// BEFORE it satisfies the item (`<=`) — before this, filing the linked form a day early left the
+// inspection permanently open. (The `=` exact-date variant served the retired DAILY flow — its
+// AUTO_CHECK_SQL_DAILY constant was deleted with /checklist/mine, 2026-07-03.) `dateOp` is a
+// module-CONSTANT literal (never caller/user input), so the template splice is bound-param-safe.
 function buildAutoCheckSql(dateOp: "=" | "<="): string {
   return `
         UPDATE checklist_item_states
@@ -359,14 +280,14 @@ function buildAutoCheckSql(dateOp: "=" | "<="): string {
           )
       `;
 }
-const AUTO_CHECK_SQL_DAILY = buildAutoCheckSql("=");
 const AUTO_CHECK_SQL_INSPECTION = buildAutoCheckSql("<=");
 
 // S5 rolled-up linkage (reconcile — the SAME submission-existence pattern S4 uses for loop-closure).
 // Stamp checklist_instances.rolled_up_submission_uuid with the day's Daily Report submission for this
 // (job, date) — matched on the 'daily-report' PARENT FAMILY (= parent OR versioned variant, exactly the
-// S4 form-code match). So once the manager files (or auto-files) the Daily Report, the instance shows it
-// as rolled-up — no new stamp route needed. Set-ONCE (WHERE rolled_up_submission_uuid IS NULL) + guarded
+// S4 form-code match). Kind-scoped to 'daily' — batched into the /checklist/assigned reconcile where it
+// no-ops on inspection instances (harmless leg, kept for statement-shape parity with the retired daily
+// reconcile). Set-ONCE (WHERE rolled_up_submission_uuid IS NULL) + guarded
 // by EXISTS so a read with no daily-report submission is a pure no-op; picks the most-recent submission
 // deterministically. Bound-param: ?1 = instance id, ?2 = job_id, ?3 = instance_date, ?4 = 'daily-report'.
 const ROLLUP_LINK_SQL = `
@@ -388,27 +309,11 @@ const ROLLUP_LINK_SQL = `
           )
       `;
 
-// Reconcile the instance's form_linked/inspection items against the day's submissions (loop-closure),
-// stamp the rolled-up Daily Report link (S5), then recompute the instance status — in ONE batch so a
-// just-auto-closed item is reflected. Idempotent: re-running with no new submissions changes nothing
-// (each UPDATE matches zero rows, the recompute re-writes the same status). Called each read of
-// /checklist/mine, right after generation.
-async function reconcileFormLinked(
-  c: Context<{ Bindings: Env; Variables: Vars }>,
-  instanceId: number,
-  jobId: string,
-  instanceDate: string,
-  kind: "daily" | "inspection" = "daily",
-): Promise<void> {
-  // Q3: daily = exact-date match; inspection = on-or-before the due date. The rollup leg is a no-op
-  // for inspection instances (its WHERE is kind='daily') — harmless to keep in the one batch.
-  const autoCheckSql = kind === "inspection" ? AUTO_CHECK_SQL_INSPECTION : AUTO_CHECK_SQL_DAILY;
-  await c.env.DB.batch([
-    c.env.DB.prepare(autoCheckSql).bind(instanceId, jobId, instanceDate),
-    c.env.DB.prepare(ROLLUP_LINK_SQL).bind(instanceId, jobId, instanceDate, DAILY_REPORT_FORM),
-    recomputeInstanceStatusStmt(c, instanceId),
-  ]);
-}
+// TOMBSTONE (operator-approved deletion, 2026-07-03): `reconcileFormLinked` — the 3-statement
+// daily reconcile wrapper (auto-check → rollup-link → status recompute) — was DELETED with its sole
+// caller, GET /checklist/mine. The inspection surface never called it: GET /checklist/assigned
+// phase-batches the SAME three statements inline (AUTO_CHECK_SQL_INSPECTION + ROLLUP_LINK_SQL +
+// recomputeInstanceStatusStmt), which is why those building blocks remain. Git history has the body.
 
 // (R1) Item-state read with `filed_by` ATTRIBUTION for auto-closed items. An item whose
 // completed_by = '(auto)' was closed by a SUBMISSION, not a person — this derives WHO filed it, so
@@ -440,7 +345,7 @@ function buildItemStatesSql(dateOp: "=" | "<="): string {
         ORDER BY id ASC
       `;
 }
-const ITEM_STATES_SQL_DAILY = buildItemStatesSql("=");
+// (The `=` daily variant, ITEM_STATES_SQL_DAILY, was deleted with /checklist/mine — 2026-07-03.)
 const ITEM_STATES_SQL_INSPECTION = buildItemStatesSql("<=");
 
 // Recompute-instance-status statement (built, not run): 'complete' iff NO item_state on the instance
@@ -456,8 +361,8 @@ function recomputeInstanceStatusStmt(c: Context<{ Bindings: Env; Variables: Vars
 
 // Load an item_state + its owning instance's assignee for the completion routes. Returns the row
 // (incl. item_type + target_count so the caller can branch per-type), or a JSON error Response (404
-// unknown, 403 not-your-instance). Ownership is scoped to the ACTOR's linked personnel id: a manager
-// can only touch items on THEIR OWN daily instance. Per-type completability (manual_attest = check,
+// unknown, 403 not-your-instance). Ownership is scoped to the ACTOR's linked personnel id: an
+// assignee can only touch items on THEIR OWN instance. Per-type completability (manual_attest = check,
 // count = value ≥ target, form_linked/inspection = auto-close-only reject) is decided by the CALLER
 // (S4), not here — this only enforces existence + ownership.
 async function loadOwnedItemState(
@@ -758,165 +663,17 @@ export function registerChecklistRoutes(app: FieldopsApp, gates: FieldopsGates):
   // fieldops_daily_requirements.ts (the daily-form module) — it never belonged to the checklist
   // engine; it only lived here for the (now-extracted, fieldops_scope.ts) gate helpers. ═══════════
 
-  // ══ S3 — daily-checklist SURFACING + manual_attest COMPLETION (cap.tasks.own — the owner's tab) ══
-
-  // ── GET /api/fieldops/checklist/mine — TODAY's daily checklist for the logged-in placed manager. ──
-  // Runs generation on read (materializes + snapshots the instance if absent, idempotent on the UNIQUE
-  // key). Returns { instance: {id, job_id, project_name, instance_date, status, …} | null, items: [...],
-  // reason }. `instance` is NULL (empty daily section) when the actor isn't a placed manager (a
-  // submitter, or an unplaced one) — with the R1 `reason` code ('not_manager' | 'no_personnel_link' |
-  // 'not_placed') so the UI can explain WHY; reason is null when an instance is returned.
+  // ══ S3/S4 — manual_attest / count COMPLETION (cap.tasks.own — the owner's tab) ═══════════════════
   //
-  // DEPRECATED-FOR-DAILY (D2, SOP daily form): the Daily tab no longer calls this — the daily SOP
-  // content now lives in the daily-report-v2 FORM definition and the tab reads
-  // /api/fieldops/daily-form/status instead. The route STAYS (§14/§49 preservation): the checklist
-  // ENGINE it fronts still serves assigned inspections, and deleting the daily generation path would
-  // be a behavior change beyond D2's scope. Do not remove without a doctrine-level decision.
-  app.get(
-    "/api/fieldops/checklist/mine",
-    gates.requireSession,
-    gates.requireCapability(CAP_TASKS_OWN),
-    async (c) => {
-      const gen = await generateDailyInstance(c);
-      if ("reason" in gen) return c.json({ instance: null, items: [], reason: gen.reason }, 200);
-      // S4 loop-closure: reconcile form_linked/inspection items against the day's submissions BEFORE
-      // reading them back, so a form filed since the last open shows as done (and the instance status
-      // reflects it). Idempotent on re-read; persisted so S5's rollup sees the closure.
-      await reconcileFormLinked(c, gen.instanceId, gen.jobId, gen.instanceDate, "daily");
-      // rolled_up_submission_uuid (S5): non-null once a Daily Report has been filed for this job+date
-      // (set by the reconcile above). The SPA shows "Daily Report filed ✓" when present, else the
-      // "Review & file" affordance on a complete instance. (R1) project_name joined (a raw job id is
-      // not a heading) + rolled_up_by = WHO filed the rolled-up Daily Report (personnel display name
-      // ONLY — no raw-username fallback, per security review W9; unmatched account → NULL).
-      const instance = await c.env.DB.prepare(
-        `SELECT i.id, i.job_id, j.project_name, i.instance_date, i.status, i.rolled_up_submission_uuid,
-                (SELECT (SELECT p.name FROM personnel p WHERE p.username = sub.submitted_as ORDER BY p.id ASC LIMIT 1)
-                 FROM submissions sub WHERE sub.submission_uuid = i.rolled_up_submission_uuid) AS rolled_up_by
-         FROM checklist_instances i
-         LEFT JOIN jobs j ON j.job_id = i.job_id
-         WHERE i.id = ?1`,
-      )
-        .bind(gen.instanceId)
-        .first();
-      // Item states + R1 filed_by attribution (daily = exact-date submission match).
-      const items = await c.env.DB.prepare(ITEM_STATES_SQL_DAILY)
-        .bind(gen.instanceId, gen.jobId, gen.instanceDate)
-        .all();
-      return c.json({ instance, items: items.results ?? [], reason: null }, 200);
-    },
-  );
-
-  // ══ S5 — auto-rollup → Daily Report (assemble a DRAFT; the manager reviews/confirms + files) ══════
-  // ── GET /api/fieldops/checklist/mine/rollup-draft — a best-effort Daily Report draft assembled from
-  // the day's data, returned ONLY when the actor's daily instance is COMPLETE (else 409). READ-ONLY
-  // (no INSERT/UPDATE): it never materializes an instance — a complete instance already exists (the
-  // manager only reaches this after /mine showed it complete). The manager reviews/edits the draft in
-  // the prefilled Daily Report form and files it via the existing /api/submit path (send-free; the Mac
-  // intake files to Box/Smartsheet). The filed submission then stamps rolled_up_submission_uuid via the
-  // /mine reconcile — NO send path here (Invariant 1). Data → daily-report-v1 fields:
-  //   • header.job_name    ← the job's project_name (fallback: job_id)
-  //   • header.report_date ← the instance date
-  //   • header.prepared_by ← the placed manager's personnel name
-  //   • crew_progress[]    ← the crew placed on the job (name/trade seeded; manpower + progress BLANK)
-  //   • equipment_on_site[]← the equipment currently on the job (type seeded; owner/inspector BLANK)
-  //   • comments           ← a FACTUAL (non-narrative) checklist + filed-forms summary
-  // Narrative/subjective fields (weather, temp, tomorrow's goals, deliveries, visitors, and every
-  // per-row detail column) are LEFT BLANK — the SPA merges the draft over the form's empty defaults, so
-  // an omitted key stays empty for the manager to fill. Nothing is fabricated. Bound-param throughout.
-  app.get(
-    "/api/fieldops/checklist/mine/rollup-draft",
-    gates.requireSession,
-    gates.requireCapability(CAP_TASKS_OWN),
-    async (c) => {
-      // Same gate as generation: manager role + an active linked personnel PLACED on a job.
-      if (c.get("role") !== "manager") return c.json({ error: "no_instance" }, 409);
-      const person = await resolveActorPersonnel(c);
-      if (!person || !person.current_job) return c.json({ error: "no_instance" }, 409);
-      const jobId = person.current_job;
-      const today = pacificToday();
-
-      const inst = await c.env.DB.prepare(
-        "SELECT id, status FROM checklist_instances WHERE kind='daily' AND job_id=?1 AND assignee_personnel_id=?2 AND instance_date=?3",
-      )
-        .bind(jobId, person.id, today)
-        .first<{ id: number; status: string }>();
-      // No instance yet, or not COMPLETE → nothing to roll up (the button only shows on a complete one).
-      if (!inst || inst.status !== "complete") return c.json({ error: "not_complete" }, 409);
-
-      // Job project name + the placed manager's personnel name (the "Prepared By").
-      const [jobRow, mgrRow] = await c.env.DB.batch([
-        c.env.DB.prepare("SELECT project_name FROM jobs WHERE job_id=?1").bind(jobId),
-        c.env.DB.prepare("SELECT name FROM personnel WHERE id=?1").bind(person.id),
-      ]);
-      const projectName = (jobRow.results?.[0] as { project_name: string | null } | undefined)?.project_name ?? null;
-      const managerName = (mgrRow.results?.[0] as { name: string | null } | undefined)?.name ?? "";
-
-      // Crew placed on the job + equipment currently on the job (the jobtracker equipment-on-site
-      // window: candidates ever on the job → each one's latest read → kept iff still THIS job) + the
-      // instance's item states (for the summary) + the day's filed form families.
-      const equipSql = `
-        SELECT e.name, e.identifier
-        FROM (
-          SELECT equipment_id, job_id,
-                 ROW_NUMBER() OVER (PARTITION BY equipment_id ORDER BY recorded_at DESC, id DESC) rn
-          FROM equipment_location
-          WHERE equipment_id IN (SELECT DISTINCT equipment_id FROM equipment_location WHERE job_id = ?1)
-        ) loc JOIN equipment e ON e.id = loc.equipment_id
-        WHERE loc.rn = 1 AND loc.job_id = ?1
-        ORDER BY e.name ASC
-        LIMIT ?2
-      `;
-      const [crewRes, equipRes, stateRes, subRes] = await c.env.DB.batch([
-        c.env.DB.prepare("SELECT name, trade FROM personnel WHERE current_job=?1 AND active=1 ORDER BY name ASC LIMIT ?2").bind(jobId, ROLLUP_LEG_CAP),
-        c.env.DB.prepare(equipSql).bind(jobId, ROLLUP_LEG_CAP),
-        c.env.DB.prepare("SELECT label, item_type, status, value_num FROM checklist_item_states WHERE instance_id=?1 ORDER BY id ASC").bind(inst.id),
-        c.env.DB.prepare("SELECT DISTINCT form_code FROM submissions WHERE job_id=?1 AND work_date=?2 ORDER BY form_code ASC").bind(jobId, today),
-      ]);
-      const crew = (crewRes.results ?? []) as { name: string | null; trade: string | null }[];
-      const equipment = (equipRes.results ?? []) as { name: string | null; identifier: string | null }[];
-      const states = (stateRes.results ?? []) as { label: string | null; item_type: string; status: string; value_num: number | null }[];
-      const filedForms = ((subRes.results ?? []) as { form_code: string }[]).map((r) => r.form_code);
-
-      // FACTUAL (non-narrative) summary: checklist item outcomes + count values + which form families
-      // were filed today. Data-derived — NOT fabricated prose. The manager edits it before filing.
-      const itemLines = states
-        .map((s) => {
-          const cnt = s.item_type === "count" && s.value_num !== null ? ` (recorded ${s.value_num})` : "";
-          return `- ${s.label ?? "(item)"}: ${s.status}${cnt}`;
-        })
-        .join("\n");
-      const comments =
-        `Daily checklist completed for ${projectName ?? jobId} (${jobId}) on ${today}.\n` +
-        `Forms filed today: ${filedForms.length ? filedForms.join(", ") : "none"}.\n` +
-        (itemLines ? `Checklist items:\n${itemLines}` : "Checklist items: none.");
-
-      const values: Record<string, unknown> = {
-        job_name: projectName ?? jobId,
-        report_date: today,
-        prepared_by: managerName,
-        comments,
-      };
-      // Only seed repeating tables that have data; an omitted key falls back to the form's empty default
-      // row (see the SPA merge) so we never fabricate blank crew/equipment rows.
-      if (crew.length > 0) {
-        values.crew_progress = crew.map((p) => ({
-          crew_subcontractor: p.trade ? `${p.name ?? ""} (${p.trade})` : (p.name ?? ""),
-          manpower: "",
-          todays_progress: "",
-        }));
-      }
-      if (equipment.length > 0) {
-        values.equipment_on_site = equipment.map((e) => ({
-          owner_rental: "",
-          equipment_type: e.identifier ? `${e.name ?? ""} (${e.identifier})` : (e.name ?? ""),
-          inspector: "",
-          inspection_detail: "",
-        }));
-      }
-
-      return c.json({ job_id: jobId, work_date: today, form_code: DAILY_REPORT_FORM, values }, 200);
-    },
-  );
+  // TOMBSTONE (operator-approved deletion, 2026-07-03): two daily-flow routes were DELETED here —
+  //   • GET /api/fieldops/checklist/mine — the S3 daily surfacing read. Deprecated-for-daily since
+  //     D2 (the SOP daily form replaced it; zero SPA/Python callers), but it still GENERATED a
+  //     kind='daily' checklist_instances row + item-state snapshot on every call (the junk-data
+  //     footgun that motivated the removal).
+  //   • GET /api/fieldops/checklist/mine/rollup-draft — the S5 Daily-Report draft assembler,
+  //     superseded by the SOP form's own prefill.
+  // Both live in git history (this file, pre-deletion). The completion routes below and the whole
+  // inspection engine (assign/assigned/instances/cancel) are UNTOUCHED.
 
   // ── POST /api/fieldops/checklist/item-state/:id/complete — mark an item done (S4: per-type). ──────
   // Ownership-scoped (the item's instance assignee MUST be the actor's linked personnel — else 403).
@@ -925,7 +682,7 @@ export function registerChecklistRoutes(app: FieldopsApp, gates: FieldopsGates):
   //   • count         — requires { value_num }; done iff value_num >= target_count, else 400
   //                     'below_target' (value recorded, item stays open).
   //   • form_linked / inspection — NOT manually completable: they close via a matching submission
-  //     (loop-closure, /checklist/mine reconcile). Manual complete → 400 'auto_close_only'.
+  //     (loop-closure, the /checklist/assigned reconcile). Manual complete → 400 'auto_close_only'.
   // Mutation + audit + instance-status recompute in ONE batch.
   app.post(
     "/api/fieldops/checklist/item-state/:id/complete",
@@ -1067,7 +824,8 @@ export function registerChecklistRoutes(app: FieldopsApp, gates: FieldopsGates):
   // The inspection library is the FOURTH consumer of the one checklist engine (spec Q6/Q8): admins
   // author generic_inspection templates (title + items, reusing parseItem), then ASSIGN one to a
   // manager OR subcontractor ad-hoc — creating a kind='inspection' instance that SNAPSHOTS the
-  // template's items into checklist_item_states (the SAME snapshot the S3 daily generation does). The
+  // template's items into checklist_item_states (the same snapshot shape the retired S3 daily
+  // generation used). The
   // assignee surfaces + completes it in their Assigned-Tasks tab via the EXISTING S3/S4 complete/
   // uncomplete routes (ownership = instance.assignee = actor, kind-agnostic — see loadOwnedItemState).
   // Authoring/assign = cap.checklist.manage (admin); the assignee fetch = cap.tasks.own.
@@ -1390,12 +1148,13 @@ export function registerChecklistRoutes(app: FieldopsApp, gates: FieldopsGates):
   );
 
   // ── GET /api/fieldops/checklist/assigned — the actor's ASSIGNED inspection instances + item-states. ─
-  // Works for ANY linked personnel (manager OR subcontractor) — NOT gated on role, unlike the daily
-  // /mine surface. Resolves session → linked ACTIVE personnel; no link → empty list. For each
-  // inspection instance the actor is the assignee of, it reconciles form_linked/inspection items
-  // against the day's submissions (S4 loop-closure) WHEN the instance carries both a job_id AND a
-  // due_date (otherwise there's no (job, date) to match a submission) — reconcileFormLinked's exact
-  // statements, phase-batched below (the daily-only rollup leg no-ops on kind='inspection').
+  // Works for ANY linked personnel (manager OR subcontractor) — NOT gated on role (unlike the
+  // retired daily /mine surface). Resolves session → linked ACTIVE personnel; no link → empty list.
+  // For each inspection instance the actor is the assignee of, it reconciles form_linked/inspection
+  // items against the day's submissions (S4 loop-closure) WHEN the instance carries both a job_id
+  // AND a due_date (otherwise there's no (job, date) to match a submission) — the 3-statement
+  // reconcile (auto-check → rollup-link → status recompute), phase-batched below (the daily-only
+  // rollup leg no-ops on kind='inspection').
   // Completion of these items reuses the EXISTING S3/S4 /item-state/:id/complete + /uncomplete
   // routes (ownership = instance.assignee = actor).
   app.get(
@@ -1430,8 +1189,8 @@ export function registerChecklistRoutes(app: FieldopsApp, gates: FieldopsGates):
       // PHASE-BATCHED (was 3 sequential D1 round trips PER instance — O(N) on a LIMIT-500 live
       // read path). Same statements, same SQL strings, same per-instance order; only the round-trip
       // composition changes: first ONE batch carrying every instance's 3-statement reconcile
-      // (auto-check → rollup-link → status recompute — reconcileFormLinked's exact statements, in
-      // its exact order; D1 runs a batch sequentially in one transaction, and every statement is
+      // (auto-check → rollup-link → status recompute — the retired daily reconcile's exact
+      // statements, in its exact order; D1 runs a batch sequentially in one transaction, and every statement is
       // instance-scoped so cross-instance interleaving cannot change any outcome), then ONE batch
       // of the per-instance reads. 3N+2 round trips → 4.
       //
@@ -1489,9 +1248,9 @@ export function registerChecklistRoutes(app: FieldopsApp, gates: FieldopsGates):
   // send-free (D1 only), bound-param.
 
   // ── GET /api/fieldops/checklist/instances — the admin "outstanding assignments" list. ────────────
-  // INSPECTION-kind ONLY: daily instances are auto-generated per (placed manager × day) and would
-  // drown the list in noise nobody assigned (they also regenerate on the next /mine read, so listing
-  // them here as "assignments" would be a lie). Each row carries the snapshot title, the assignee's
+  // INSPECTION-kind ONLY: legacy kind='daily' rows (auto-generated per placed manager × day by the
+  // retired /mine route, deleted 2026-07-03) are historical noise nobody assigned — listing them
+  // here as "assignments" would be a lie. Each row carries the snapshot title, the assignee's
   // personnel name, the job's project name, the due date (instance_date), status, and the item
   // aggregate (done/total) so the admin can see progress without opening anything. `?status=` filters
   // open (default — the working set) | complete | all; unknown values 400 (never a silent default).
@@ -1530,7 +1289,8 @@ export function registerChecklistRoutes(app: FieldopsApp, gates: FieldopsGates):
   );
 
   // ── POST /api/fieldops/checklist/instance/:id/cancel — revoke an assigned inspection. ────────────
-  // INSPECTION-kind only — a daily instance (auto-generated, regenerates on the next /mine read) is
+  // INSPECTION-kind only — a legacy kind='daily' instance (auto-generated by the retired /mine
+  // route, deleted 2026-07-03) is
   // NOT cancellable through this route and 404s indistinguishably from an unknown id (the same
   // wrong-kind-is-not-found posture as requireGenericTemplate). HARD DELETE, not a soft
   // status='cancelled': no consumer of historical inspection instances exists (verified — the only

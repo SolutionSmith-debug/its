@@ -55,8 +55,10 @@ const BASE = "/api/fieldops/checklist";
 // "Default daily checklist" editor, the Job-Tracker per-job override editor, the manager daily
 // checklist (GET /checklist/mine), and the S5 rollup-draft flow all retired with D2 — their 11
 // thin client fns + result types sat here unused, a live autocomplete hazard for retired routes.
-// Grep-verified zero importers before removal. The WORKER routes they wrapped STAY (§14/§49 —
-// removal there is a doctrine-level decision; the checklist ENGINE serves assigned inspections).
+// Grep-verified zero importers before removal. UPDATE (operator approval 2026-07-03, B3): the two
+// daily-generation WORKER routes (GET /checklist/mine + /mine/rollup-draft) were then ALSO deleted
+// (tombstones in worker/fieldops_checklist.ts); the template-editor routes + the checklist ENGINE
+// (assigned inspections) remain live.
 
 // ── Per-item completion (shared by the assigned-inspections surface below) ──────────────────────
 // Wire shapes — SINGLE-SOURCED in worker/wire-types.ts (the Worker types its c.json payloads with

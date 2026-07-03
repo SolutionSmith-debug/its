@@ -622,9 +622,15 @@ send-free `/api/submit` → Mac intake → weekly packet.
 "Default daily checklist" editor (Checklists page — now inspections-only), the Job-Tracker per-job
 Daily-checklist editor + its cross-link, and the Daily Report's entry in the Submit-a-Form CREATE
 picker (`launch:"daily-tab"` parents are hidden there; Form Request / download / history surfaces
-untouched). **The checklist ENGINE + all its Worker routes stay** (assigned inspections use them;
-§14/§49) — the daily generation route (`/checklist/mine`) simply has no SPA caller anymore
-(deprecation note in `worker/fieldops_checklist.ts`). Daily content edits now happen in the
+untouched). **The checklist ENGINE stays** (assigned inspections use it; §14/§49). *Update
+2026-07-03 (operator-approved, B3):* the two dead daily-generation Worker routes — `GET
+/checklist/mine` (which still WROTE daily instances + snapshots when called) and `GET
+/checklist/mine/rollup-draft` — were **deleted**, along with the dead job-write back-compat routes
+`POST /job/:id/close` (the `/lifecycle` route is the live close path) and `POST /job/:id/progress`
+(nothing displayed the value since #403). Tombstones at each site in
+`worker/fieldops_checklist.ts` / `worker/fieldops_job_write.ts`; handlers recoverable from git
+history. The template-editor routes, inspection engine (assign/assigned/instances/cancel/
+item-state), and their tables are untouched. Daily content edits now happen in the
 **form definition** via the form builder / publish pipeline.
 
 #### Activation (operator — deploy boundary; escalates to the Developer-Operator)

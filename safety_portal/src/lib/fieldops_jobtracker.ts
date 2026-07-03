@@ -112,12 +112,11 @@ export async function createJob(
 }
 // TOMBSTONE (R4-F5, 2026-07-03): the dead client fns `closeJob` (POST …/close) and
 // `setJobProgress` (POST …/progress) were DELETED — zero SPA callers since setLifecycle (P2.5)
-// superseded /close and the P6 rollup removed the manual progress slider. The WORKER routes
-// (`POST /api/fieldops/job/:id/close` + `/progress`) deliberately REMAIN — removing dead API
-// surface is an operator decision (B3, §14/§49 doctrine-adjacent; see docs/tech_debt.md
-// "Optimization-plan doctrine-adjacent decisions").
-// Set the canonical lifecycle (P2.5). Supersedes the bare /close in the UI; /close stays as a thin
-// 'inactive' alias. The worker derives the legacy active/status flags and bumps the mirror version.
+// superseded /close and the P6 rollup removed the manual progress slider. The WORKER routes were
+// then ALSO deleted (operator approval 2026-07-03, the B3 green-light) — see the tombstones in
+// worker/fieldops_job_write.ts; git history has both handlers.
+// Set the canonical lifecycle (P2.5). THE close path: { lifecycle: 'inactive' } (the old bare
+// /close alias is gone). The worker derives the legacy active/status flags and bumps the mirror version.
 export async function setLifecycle(jobId: string, lifecycle: JobLifecycle): Promise<{ lifecycle: JobLifecycle }> {
   return postJson<{ ok: boolean; lifecycle: JobLifecycle }>(
     `/api/fieldops/job/${encodeURIComponent(jobId)}/lifecycle`,
