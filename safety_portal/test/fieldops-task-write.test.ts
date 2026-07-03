@@ -1,5 +1,6 @@
-import { env, SELF } from "cloudflare:test";
+import { env } from "cloudflare:test";
 import { describe, it, expect, beforeEach } from "vitest";
+import { call, provision, login, p as j, seedJob as seedJobRow } from "./helpers";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // P2.3 Slice 3 — TASK WRITE (add / status). MIXED CAP: add = cap.jobtracker.manage (admin),
@@ -7,36 +8,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 // change a task's status but cannot create one.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const BASE = "https://portal.test";
-const ADMIN_BEARER = "test-admin-token";
-type Init = RequestInit & { cookie?: string; bearer?: string };
-
-function call(path: string, init: Init = {}): Promise<Response> {
-  const headers = new Headers(init.headers);
-  if (init.cookie) headers.set("Cookie", init.cookie);
-  if (init.bearer) headers.set("Authorization", `Bearer ${init.bearer}`);
-  if (init.body && !headers.has("content-type")) headers.set("content-type", "application/json");
-  return SELF.fetch(BASE + path, { ...init, headers });
-}
-function cookieFrom(res: Response): string {
-  return (res.headers.get("set-cookie") ?? "").split(";")[0];
-}
-async function provision(username: string, password: string, role: "submitter" | "admin"): Promise<void> {
-  const res = await call("/api/internal/admin/users", { method: "POST", bearer: ADMIN_BEARER, body: JSON.stringify({ username, password, role }) });
-  expect(res.status, await res.clone().text()).toBe(201);
-}
-async function login(username: string, password: string): Promise<string> {
-  const res = await call("/api/login", { method: "POST", body: JSON.stringify({ username, password }) });
-  expect(res.status, await res.clone().text()).toBe(200);
-  return cookieFrom(res);
-}
-const j = (cookie: string, path: string, body?: unknown) =>
-  call(path, { method: "POST", cookie, body: body === undefined ? undefined : JSON.stringify(body) });
-
-async function seedJob(jobId: string, status: string) {
-  await env.DB.prepare("INSERT INTO jobs (job_id, project_name, active, status, created_at) VALUES (?,?,?,?,?)")
-    .bind(jobId, `P ${jobId}`, status === "closed" ? 0 : 1, status, 1_700_000_000).run();
-}
+const seedJob = (jobId: string, status: string): Promise<void> => seedJobRow(jobId, { status, projectName: `P ${jobId}` });
 async function seedPersonnel(name: string): Promise<number> {
   await env.DB.prepare("INSERT INTO personnel (name, active) VALUES (?,1)").bind(name).run();
   return (await env.DB.prepare("SELECT id FROM personnel WHERE name=?").bind(name).first<{ id: number }>())!.id;
@@ -96,8 +68,13 @@ describe("POST /api/fieldops/job/:job_id/task (add — cap.jobtracker.manage)", 
 });
 
 describe("POST /api/fieldops/task/:id/status (status — cap.tasks.own)", () => {
-  it("MIXED CAP: a submitter CANNOT add but CAN change status (200)", async () => {
+  it("MIXED CAP: a submitter CANNOT add but CAN change status of THEIR OWN task (200)", async () => {
+    // (R1) the ownership guard means an own-only actor must be the task's assignee — link the
+    // submitter to a personnel row and assign the task to it (the cap-split intent is unchanged).
+    await env.DB.prepare("INSERT INTO personnel (name, username, active) VALUES ('Jim Sub','submitter.jim',1)").run();
+    const pid = (await env.DB.prepare("SELECT id FROM personnel WHERE username='submitter.jim'").first<{ id: number }>())!.id;
     const id = await seedTask("JOB-A");
+    await env.DB.prepare("UPDATE task_assignments SET personnel_id=? WHERE id=?").bind(pid, id).run();
     // proven 403 on add (above); here the same submitter succeeds on status
     const res = await j(submitter, `/api/fieldops/task/${id}/status`, { status: "in_progress" });
     expect(res.status).toBe(200);

@@ -1410,7 +1410,7 @@ def test_find_row_by_primary_returns_matching_row_dict(mocker):
         ],
         rows=[
             _row(101, [(10, "other"), (20, "other_ws")]),
-            _row(102, [(10, "safety_reports.intake_poll"), (20, "safety_reports"),
+            _row(102, [(10, "safety_reports.portal_poll"), (20, "safety_reports"),
                        (30, "2026-05-21T19:00:00Z")]),
         ],
     )
@@ -1418,11 +1418,11 @@ def test_find_row_by_primary_returns_matching_row_dict(mocker):
     row = smartsheet_client.find_row_by_primary(
         sheet_id=4529351700729732,
         primary_column_id=10,
-        value="safety_reports.intake_poll",
+        value="safety_reports.portal_poll",
     )
     assert row is not None
     assert row["_row_id"] == 102
-    assert row["Daemon Name"] == "safety_reports.intake_poll"
+    assert row["Daemon Name"] == "safety_reports.portal_poll"
     assert row["Workstream"] == "safety_reports"
     assert row["Last Heartbeat"] == "2026-05-21T19:00:00Z"
 
@@ -1434,7 +1434,7 @@ def test_find_row_by_primary_returns_none_on_miss(mocker):
         rows=[_row(101, [(10, "other")])],
     )
     assert (
-        smartsheet_client.find_row_by_primary(99, 10, "safety_reports.intake_poll")
+        smartsheet_client.find_row_by_primary(99, 10, "safety_reports.portal_poll")
         is None
     )
 

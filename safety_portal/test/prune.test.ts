@@ -17,6 +17,8 @@ beforeEach(async () => {
     env.DB.prepare("DELETE FROM time_entries"),
     env.DB.prepare("DELETE FROM task_assignments"),
     env.DB.prepare("DELETE FROM inspections"),
+    env.DB.prepare("DELETE FROM job_daily_requirements"),
+    env.DB.prepare("DELETE FROM job_expected_materials"),
     env.DB.prepare("DELETE FROM jobs"),
   ]);
 });
@@ -120,6 +122,29 @@ describe("pruneOldData (A3 D1 housekeeping)", () => {
     expect(res.jobs).toBe(1); // only J-bare deleted
     const left = await env.DB.prepare("SELECT job_id FROM jobs ORDER BY job_id").all<{ job_id: string }>();
     expect(left.results.map((j) => j.job_id)).toEqual(["J-fieldops"]);
+  });
+
+  it("NEVER deletes an inactive job holding per-job content (job_daily_requirements / job_expected_materials) [Slice 1 R3-F4 fence]", async () => {
+    await env.DB.batch([
+      env.DB.prepare("INSERT INTO jobs (job_id, project_name, active) VALUES ('J-reqs','R',0)"), // inactive, holds a requirement → keep
+      env.DB.prepare("INSERT INTO jobs (job_id, project_name, active) VALUES ('J-mats','M',0)"), // inactive, holds an expected material → keep
+      env.DB.prepare("INSERT INTO jobs (job_id, project_name, active) VALUES ('J-bare','B',0)"), // inactive, nothing → delete
+    ]);
+    // Both tables are D1-PRIMARY (admin-authored per-job content, no copy outside D1;
+    // restore path is D1 Time Travel) — deleting their job would orphan them invisibly.
+    // A soft-deleted (active=0) row still guards: the forensic history is the record.
+    await env.DB.batch([
+      env.DB
+        .prepare("INSERT INTO job_daily_requirements (job_id, seq, kind, label, active) VALUES ('J-reqs',10,'confirm','Client daily brief',0)"),
+      env.DB
+        .prepare("INSERT INTO job_expected_materials (job_id, description, seq) VALUES ('J-mats','Panels pallet',10)"),
+    ]);
+
+    const res = await pruneOldData(env.DB, NOW);
+
+    expect(res.jobs).toBe(1); // only J-bare deleted
+    const left = await env.DB.prepare("SELECT job_id FROM jobs ORDER BY job_id").all<{ job_id: string }>();
+    expect(left.results.map((j) => j.job_id)).toEqual(["J-mats", "J-reqs"]);
   });
 });
 

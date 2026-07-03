@@ -157,6 +157,18 @@ def _synthesize_submission(definition: dict) -> dict:
             values[section["key"]] = cl
         elif typ == "freeform":
             values[section["key"]] = "Synthesized freeform answer."
+        elif typ == "job_requirements":
+            # Slice D4: the per-job overlay's SELF-DESCRIBING answers array — the portal
+            # captures it at fill time; the smoke synthesizes one of each answerable kind
+            # so the generic label→response table branch renders (empty → section skipped,
+            # which would silently drop the title needle below).
+            values[section["key"]] = [
+                {"label": "Synthesized client note", "kind": "note", "response": ""},
+                {"label": "Synthesized confirm requirement", "kind": "confirm",
+                 "response": "Confirmed"},
+                {"label": "Synthesized text requirement", "kind": "text",
+                 "response": "Synthesized requirement answer."},
+            ]
         # static_text / content_blocks: nothing to fill.
     return {"job_name": "Bradley 1", "work_date": "2026-06-03", "values": values}
 
@@ -171,7 +183,7 @@ def _expected_structural_strings(definition: dict, *, mode: str) -> list[str]:
     normalize and substring-match (some labels wrap / get escaped), and we cap very long
     labels to a stable prefix so PDF line-wrapping inside a cell can't split the needle.
 
-    Two renderer facts are modeled so the needles match ACTUAL renderer behavior (a
+    Three renderer facts are modeled so the needles match ACTUAL renderer behavior (a
     needle the renderer is designed never to draw would be a false positive):
       * A `header` section's `title` is NOT rendered by either header builder
         (`_header_section` / `_blank_header_section` draw only the field table) — so a
@@ -179,6 +191,11 @@ def _expected_structural_strings(definition: dict, *, mode: str) -> list[str]:
       * The envelope-key field labels (work_date / job) are SKIPPED by the submission
         header builder (intake resolves those), but the BLANK builder DOES render them.
         So they're needles in blank mode, not in submission mode.
+      * A `photo` header field is SKIPPED by the submission header builder (`_header_section`
+        never inlines the untrusted base64 value; photos render out-of-band as the §34
+        screened-photos grid), but the BLANK builder DOES render its label as a fillable
+        row. So a photo label (e.g. daily-report-v3 "Site photos") is a needle in blank
+        mode, not in submission mode.
     """
     out: list[str] = []
 
@@ -201,8 +218,12 @@ def _expected_structural_strings(definition: dict, *, mode: str) -> list[str]:
             add(section.get("title"))
         if typ == "header":
             for f in section.get("fields", []):
-                # In submission mode the envelope-key labels are intentionally skipped.
-                if mode == "submission" and f.get("key") in _ENVELOPE_KEYS:
+                # In submission mode the envelope-key labels are intentionally skipped,
+                # and photo fields render out-of-band (screened-photos grid), never as
+                # a labeled header row — see the renderer facts in the docstring.
+                if mode == "submission" and (
+                    f.get("key") in _ENVELOPE_KEYS or f.get("input") == "photo"
+                ):
                     continue
                 add(f.get("label"))
         elif typ in ("repeating_table", "signature_table"):
@@ -223,6 +244,18 @@ def _expected_structural_strings(definition: dict, *, mode: str) -> list[str]:
             for b in section.get("blocks", [])[:2]:
                 add(b.get("heading"))
                 add(b.get("body"))
+        elif typ == "guidance":
+            # Both PDF renderers deliberately render a guidance section as its HEADING
+            # + CALLOUT one-liners ONLY (form_pdf._section_flowables — the p/bullets
+            # prose is on-screen-only, or the weekly packet would bloat). So heading +
+            # callouts are the needles; p/bullets text must NOT be expected here.
+            add(section.get("heading"))
+            for b in section.get("blocks", []):
+                if b.get("type") == "callout":
+                    add(b.get("text"))
+        elif typ == "form_link":
+            # Rendered as the label + a fixed "see filed forms" pointer line.
+            add(section.get("label"))
     # De-dupe while preserving order; drop empties.
     seen: set[str] = set()
     uniq: list[str] = []

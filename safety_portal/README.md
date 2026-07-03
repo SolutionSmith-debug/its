@@ -17,6 +17,43 @@ intake pipeline.
 
 ---
 
+## Pending live activation (operator punch-list)
+
+One table, one command block — the consolidated view of which shipped D1 migrations are
+applied on the **live** D1 vs still pending. This exists because a Worker deployed ahead of
+its migration fail-closes `resolveCapabilities` → the universal-lockout class (2026-06-28).
+
+| Migration | Slice | PR | Applied live? |
+|---|---|---|---|
+| `0023_manager_role` | P2.6 Manager tier — [section](#manager-tier--third-portal-role-p26--0023) | #398 | ✅ |
+| `0024_index_personnel_current_job` | Unified job-create — [section](#unified-job-create-flow--crew-converges-on-placement-0024) | #402 | ✅ |
+| `0025_manager_task_assign` | S1 Assigned-Tasks — [section](#assigned-tasks--manager-task-authority-0025--checklist-engine-0026) | #406 | ✅ 2026-07-02 |
+| `0026_checklist_engine` | S2 checklist engine — [section](#assigned-tasks--manager-task-authority-0025--checklist-engine-0026) | #407 | ✅ 2026-07-02 |
+| `0027_subcontractor_crew_create` | Slice T subcontractor tier — [section](#subcontractor-tier--scoped-crew-create--time-scoping-0027) | #412 | ✅ 2026-07-02 |
+| `0028_sop_checklist_content` | SOP content seed — [section](#sop-checklist-content-seed-0028) | #414 | ✅ (R-series deploy) |
+| `0029_checklist_instance_template_title` | R1 worker contracts — [section](#assigned-tasks-r1--instance-template-title-0029--worker-contract-fixes) | #416 | ✅ (R-series deploy) |
+| `0030_job_daily_requirements` | D4 per-job daily-form requirements — [section](#per-job-daily-form-requirements-d4--0030) | #427 | ☐ pending |
+| `0031_job_expected_materials` | M1 expected materials — [section](#expected-materials--per-job-receipt-list-material-receipts-m1--0031) | #426 | ☐ pending |
+| `0032_job_daily_requirements_kinds` | D5 requirement kinds (number/date/select) — [section](#requirement-kinds-widened-d5--0032) | #435 | ☐ pending |
+
+Canonical apply-and-deploy sequence (applies **all** pending migrations, in order — never a
+subset):
+
+```bash
+cd ~/its && git pull origin main   # ALWAYS first — the stale-migrations-list lockout class
+cd safety_portal
+npx wrangler d1 migrations apply its-safety-portal-db --remote
+npm run deploy
+```
+
+Each linked per-slice **Activation** section carries that slice's post-deploy live smoke.
+
+> **Convention:** every future slice that ships a migration adds one row here (unchecked) in
+> the same PR; the operator flips it to ✅ (with the date) at cutover. Rows older than `0023`
+> predate this table and are all long since applied — see the per-slice sections below.
+
+---
+
 ## Architecture
 
 A **single Cloudflare Worker** serves the built React SPA (static assets) **and**
@@ -31,27 +68,10 @@ handles same-origin `/api/*` routes — zero CORS, one deployment unit.
 | Database | Cloudflare D1 (`migrations/`) |
 | PDF storage | **Box** (system of record). No R2 — under Option-B render the Worker never holds a PDF; `intake.py` renders + stores it in Box. |
 
-### Deploy target: Workers Static Assets vs Pages (reconciliation)
-
-The blueprint topology (`brief.md` §11, authored 2026-05-25) names a **Cloudflare
-Pages** project and a `*.pages.dev` URL. Since then, Cloudflare's guidance changed:
-**Workers Static Assets is the recommended path for new full-stack projects; Pages is
-in maintenance mode** ("If you are starting a new project, use Workers instead of
-Pages" — Cloudflare docs). This scaffold therefore uses the **Workers + Static Assets**
-shape (`wrangler.jsonc` `assets` binding, `wrangler deploy`).
-
-**Operator decision pending at deploy time** (deploy was deferred this session):
-
-- **Workers path (this scaffold):** free URL is `https://its-safety-portal.<account>.workers.dev`
-  (workers.dev, **not** pages.dev). The custom domain `safety.evergreenmirror.com` attaches
-  to the Worker as a Custom Domain (auto CNAME + Universal SSL) — but any DNS already wired
-  `CNAME → its-safety-portal.pages.dev` would need re-pointing to the Worker.
-- **Pages path (blueprint-literal):** keep `*.pages.dev`; convert `worker/index.ts` to a
-  `functions/` directory and deploy with `wrangler pages deploy ./dist/client`. The
-  application code is otherwise identical.
-
-This is a topology-reconciliation item to confirm with the operator / fold back into the
-blueprint before/at first deploy. The application code is deploy-mechanism-agnostic.
+> **Deploy target (historical note):** live as a **Workers + Static Assets** deploy at
+> `https://safety.evergreenmirror.com` since 2026-06-08 (the pre-first-deploy Workers-vs-Pages
+> reconciliation resolved to Workers — Pages is in maintenance mode). Note `custom_domain: true`
+> in `wrangler.jsonc` disables the `*.workers.dev` URL on deploy (error 1042).
 
 ---
 
@@ -488,6 +508,10 @@ read them (`cap.checklist.manage`, admin-only).
    the "My Tasks" tab shows a user's assigned tasks; an admin edits the default checklist + adds/removes
    a per-job item on a job's detail.
 
+_Historical note (D2, 2026-07): the daily-checklist SPA surfaces described above were retired by the
+SOP daily form (see "SOP daily form — the Daily tab IS the form" below); the engine + tables stay for
+assigned inspections._
+
 ### Subcontractor tier — scoped crew-create + time scoping (`0027`)
 
 **Migration 0027** adds one capability `cap.crew.create` (granted to `submitter` + `admin`) and the
@@ -519,6 +543,189 @@ managers/admins stay unrestricted. See `docs/runbooks/subcontractor_tier.md` (§
    helper appears in their time-log "For" picker; logging time for a stranger they didn't create is
    refused (403). An unplaced subcontractor gets a "must be placed on a job" message. A manager/admin is
    unaffected (full job-crew picker, no scoping).
+
+### SOP checklist content seed (`0028`)
+
+**Migration 0028** is CONTENT-ONLY (no schema change, no new routes): it replaces the migration-0026
+placeholder `daily_default` items with the **13-item Site-Supervisor-SOP daily checklist**
+(`Site_Supervisor_SOP 2.docx` — incl. the count-50 site-photos item, the count-2 CM check-ins item,
+and the two form_linked items: `jha` + the `Daily Field Report filed` capstone) and seeds the S6
+inspection library with **6 `generic_inspection` templates** from the ER Safety Manual
+(Box 2265234453251): Excavation/Trench, Scaffold, Crane & Rigging, Aerial Lift/MEWP,
+Ladder & Fall-Gear, Hot-Work/Welding. Guarded + idempotent: the delete+reseed runs only while the
+`daily_default` lacks the `'Daily Field Report filed'` sentinel item, and every INSERT is
+NOT-EXISTS-guarded (an admin-created same-title library template is never duplicated).
+
+#### Activation (operator — deploy boundary; escalates to the Developer-Operator)
+
+1. Apply migration **0028** to the live D1
+   (`npx wrangler d1 migrations apply its-safety-portal-db --remote`) **BEFORE** the next redeploy
+   per the standing rule — though this one is **LOW-RISK either order** (content-only: the deployed
+   Worker renders the new rows exactly like the old ones). (Always `git pull` `~/its` to latest
+   `main` BEFORE `wrangler d1 migrations apply` — the stale-migrations-list lockout class.)
+2. **No redeploy required** — the change is data. Notes:
+   - **Already-generated daily instances keep their snapshot** (S3 snapshots items at generation);
+     the new 13-item default takes effect on the **next day's roll** of each manager's checklist.
+   - **Per-job overrides authored against the OLD placeholder items are cleared** by the migration's
+     orphan-marker cleanup (suppression markers pointing at deleted default item ids); per-job ADDED
+     items survive. Re-author any wanted suppressions against the new items via the Job Tracker
+     checklist editor.
+3. **Smoke** (live): admin → Job Tracker → a job's Daily-checklist editor shows the 13 SOP items in
+   order (photos item target 50, check-ins target 2); the inspection library lists the 6 seeded
+   templates; a placed manager's next-day "My Tasks" daily checklist rolls the new items.
+
+_Historical note (D2, 2026-07): the 0028 daily_default rows are now DORMANT — the SOP content lives in
+the `daily-report-v2` form definition and the Daily tab renders it as a form (see "SOP daily form —
+the Daily tab IS the form" below). The 6 inspection-library templates stay live._
+
+### Assigned-Tasks R1 — instance template title (`0029`) + worker contract fixes
+
+**Migration 0029** adds `checklist_instances.template_title` — the assigned inspection template's
+title, SNAPSHOTTED at assign time (same lineage rule as the item snapshot: renaming/deleting the
+library template never mutates an in-flight instance) — and best-effort BACKFILLS existing
+`kind='inspection'` instances through the item-snapshot lineage (`source_item_id` →
+`checklist_items.template_id` → `checklist_templates.title`); instances whose lineage no longer
+resolves stay NULL (the UI falls back to "Inspection #id"). Ships with the R1 worker contract pass:
+task-status ownership guard (403 `forbidden_task`), open-first list ordering, assign-time
+validation (`empty_template` / `job_and_date_required` / catalog-checked `unknown_form_code`),
+below-target acknowledge (`note_required`), `/checklist/mine` reason codes + `/tasks/mine` `linked`,
+Q3 on-or-before due-date reconcile for inspections, `filed_by`/`rolled_up_by` attribution, and
+required-bounded time-entry hours (422 `invalid_hours`).
+
+#### Activation (operator — deploy boundary; escalates to the Developer-Operator)
+
+1. Apply migration **0029** to the live D1 **BEFORE** the redeploy
+   (`npx wrangler d1 migrations apply its-safety-portal-db --remote`) — else `POST
+   /api/fieldops/checklist/assign` and `GET /api/fieldops/checklist/assigned` 500 on the missing
+   `template_title` column. **ORDER-CRITICAL**, same rule as 0026. (Always `git pull` `~/its` to
+   latest `main` BEFORE `wrangler d1 migrations apply` — the stale-migrations-list lockout class.)
+2. **Redeploy** (`npm run deploy`) — activates the R1 contract (ownership guard, ordering, assign
+   validation, reasons/attribution fields, hours bounds).
+3. **Smoke** (live): assign an inspection → the assignee's My Tasks card shows the template's title;
+   a subcontractor flipping another person's task gets a permission message; a time entry without
+   hours is refused.
+
+### SOP daily form — the Daily tab IS the form (D1 `daily-report-v2` + D2 — no migration)
+
+**No migration.** D1 shipped the `daily-report-v2` definition (the full Site-Supervisor SOP as
+`guidance`/`form_link` sections with the DFR data fields interleaved) + catalog bump +
+`launch:"daily-tab"`. **D2** makes the My-Tasks **Daily tab the form itself**: date selector
+(Pacific today default, past dates show the filed state first) + the v2 form rendered inline
+(job from the manager's placement via the Job Tracker viewer data; crew/equipment/prepared_by
+prefilled best-effort from the job detail) + `form_link` deep-links riding the existing openForm
+machinery with live "Filed ✓ \<time> by \<name>" indicators from the NEW read-only endpoint
+`GET /api/fieldops/daily-form/status?job_id&date` (`cap.tasks.own`; latest submission per parent
+family via the S4 family match; display-name-only attribution). Filing goes through the unchanged
+send-free `/api/submit` → Mac intake → weekly packet.
+
+**RETIRED SPA surfaces (D2):** the R2 checkbox daily checklist (DailyChecklistSection), the admin
+"Default daily checklist" editor (Checklists page — now inspections-only), the Job-Tracker per-job
+Daily-checklist editor + its cross-link, and the Daily Report's entry in the Submit-a-Form CREATE
+picker (`launch:"daily-tab"` parents are hidden there; Form Request / download / history surfaces
+untouched). **The checklist ENGINE + all its Worker routes stay** (assigned inspections use them;
+§14/§49) — the daily generation route (`/checklist/mine`) simply has no SPA caller anymore
+(deprecation note in `worker/fieldops_checklist.ts`). Daily content edits now happen in the
+**form definition** via the form builder / publish pipeline.
+
+#### Activation (operator — deploy boundary; escalates to the Developer-Operator)
+
+1. **No D1 migration** — the `checklist_templates` `daily_default` rows (0026/0028) stay in place,
+   dormant for the daily flow (inspections keep their tables live).
+2. **Redeploy** (`npm run deploy`) — activates the status endpoint + the rebuilt Daily tab + the
+   retirements in one step (SPA assets + Worker deploy together).
+3. **Smoke** (live): a placed manager's My Tasks → Daily report shows the date selector + the SOP
+   form with crew/equipment prefilled; "Create Job Hazard Analysis" opens the JHA prefilled and,
+   after filing it, the button shows "Filed ✓" on return; submitting the daily report flips the
+   "Daily report filed ✓" banner; the Submit-a-Form picker no longer lists Daily Field Report; the
+   Checklists page shows no "Default daily checklist" area; a Job Tracker job detail shows no
+   Daily-checklist editor; an assigned inspection still renders and auto-checks.
+
+### Per-job daily-form requirements (D4 — `0030`)
+
+**Migration 0030** adds `job_daily_requirements` — the admin-authored **additive overlay** of
+per-job requirement items (kinds: `note` / `confirm` / `text` / `form_link`) that the portal
+fetches at render time and injects into the daily form's `job_requirements` section. Answers
+file WITH the submission (`values.job_requirements`, self-describing), so filed PDFs stay
+stable regardless of later requirement edits. Authoring is `cap.checklist.manage` (admin);
+the tab read (`GET /api/fieldops/daily-form/requirements`) is `cap.tasks.own` with the same
+per-job ownership scope as `/api/fieldops/daily-form/status`. Full detail in the migration
+header + `docs/runbooks/fieldops_checklists.md` (§ per-job daily-form requirements).
+
+#### Activation (operator — deploy boundary; escalates to the Developer-Operator)
+
+1. Apply migration **0030** to the live D1 **BEFORE** the redeploy
+   (`npx wrangler d1 migrations apply its-safety-portal-db --remote`) — else the
+   daily-requirements routes 500 on the missing `job_daily_requirements` table.
+   **ORDER-CRITICAL**, same rule as 0026. (Always `git pull` `~/its` to latest `main` BEFORE
+   `wrangler d1 migrations apply` — the stale-migrations-list lockout class.)
+2. **Redeploy** (`npm run deploy`) — activates the requirements routes + the admin editor +
+   the `job_requirements` section in the daily form (SPA + Worker deploy together).
+3. **Smoke** (live): an admin adds a requirement to a job (Job Tracker job detail); a manager
+   placed on that job sees it rendered in the Daily tab's form and their answer files with the
+   submission; a manager on another job does NOT see it.
+
+### Requirement kinds widened (D5 — `0032`)
+
+**Migration 0032** rebuilds `job_daily_requirements` (SQLite can't widen a CHECK in place — the
+`0020` rebuild precedent) to extend the requirement-kind vocabulary from four to seven:
+`note` / `confirm` / `text` / `form_link` plus **`number`** (numeric answer), **`date`**
+(calendar-date answer), and **`select`** (pick-one from an admin-authored option list — the new
+`options` column, a JSON array bounded route-side to 1–20 non-empty choices of ≤120 chars;
+NULL for every other kind). Existing rows are preserved (options copied NULL). Answers still
+file as the self-describing `values.job_requirements = [{label, kind, response}]` strings, so
+the filed-PDF rendering (generic label→response rows) needed **no change**. Photo is
+deliberately excluded — an untrusted image upload needs the §34 image-class screening design
+first (see `docs/tech_debt.md`, "Checklist item-state photo CAPTURE"). Full detail in the
+migration header + `docs/runbooks/fieldops_checklists.md` (Symptom F).
+
+#### Activation (operator — deploy boundary; escalates to the Developer-Operator)
+
+1. Apply migrations to the live D1 **BEFORE** the redeploy
+   (`npx wrangler d1 migrations apply its-safety-portal-db --remote`) — the one command applies
+   **`0030` then `0031` then `0032` in sequence** (none are live yet; 0030 creates the 4-kind
+   table and 0032 immediately rebuilds it to the 7-kind + `options` shape — zero rows to copy).
+   **ORDER-CRITICAL**, same rule as 0026: a Worker serving the new kinds against a pre-0032
+   table 500s on the missing `options` column. (Always `git pull` `~/its` to latest `main`
+   BEFORE `wrangler d1 migrations apply` — the stale-migrations-list lockout class.)
+2. **Redeploy** (`npm run deploy`) — activates the 7-kind validation + the options editor +
+   the number/date/select rendering (SPA + Worker deploy together).
+3. **Smoke** (live): an admin adds a **Choice** requirement with two options to a job (Job
+   Tracker job detail) plus a **Number** and a **Date** one; a manager placed on that job sees
+   a dropdown / numeric input / date picker in the Daily tab's "Job-specific requirements",
+   answers all three, files — the filed PDF shows the three label → answer rows.
+
+### Expected materials — per-job receipt list (Material receipts M1 — `0031`)
+
+**Migration 0031** adds `job_expected_materials` — the per-job list of what materials a job is
+expecting (recorded by the office at job creation or as the job develops), which managers later
+confirm receipt against. One row per expected arrival: catalog-picked (`material_id` → the 0019
+`material_catalog`, validated ACTIVE at write) or free-text (`description` required);
+qty/unit/expected-date; `status ∈ expected|received|incident` with `received_at`/`received_by`
+stamped by the receive/flag routes (`received_by` stores the account username; reads resolve the
+personnel **display name only** — W9). Expectation CRUD is `cap.materials.manage` (the Job
+Tracker job-detail "Expected materials" section); the read + `POST …/:id/receive` /
+`…/:id/flag-incident` are `cap.materials.receive` with the **per-job ownership scope** (a
+non-admin only touches the job they're placed on). Both capabilities were already seeded
+(0013/0023) — 0031 seeds no capability vocabulary. The receive/flag routes are wired into the
+daily form (D.13 deliveries) + the material-incident form in **M2**; in M1 the admin section +
+read surface carry the state. *(Numbering: `0030` belongs to the D4 slice, built in parallel —
+both are additive, so apply order is safe.)*
+
+#### Activation (operator — deploy boundary; escalates to the Developer-Operator)
+
+1. Apply migration **0031** to the live D1 **BEFORE** the redeploy
+   (`npx wrangler d1 migrations apply its-safety-portal-db --remote`) — else
+   `GET /api/fieldops/expected-materials`, `POST /api/fieldops/expected-material` (+ `…/update`,
+   `…/seq`, `…/delete`, `…/receive`, `…/flag-incident`) 500 on the missing
+   `job_expected_materials` table. **ORDER-CRITICAL**, same rule as 0019. (Always `git pull`
+   `~/its` to latest `main` BEFORE `wrangler d1 migrations apply` — the stale-migrations-list
+   lockout class.)
+2. **Redeploy** (`npm run deploy`) — activates the expected-materials routes + the Job Tracker
+   "Expected materials" section (SPA + Worker deploy together).
+3. **Smoke** (live): an admin opens a job's detail → "Expected materials" → adds one from the
+   catalog and one free-text; a manager placed on that job sees the read-only list (and a manager
+   on another job does NOT — 403 `forbidden_job` in the network tab); the Materials Catalog page
+   shows the cross-note pointing at the Job Tracker.
 
 ### Lockout recovery (break-glass) — escalate to the Developer-Operator
 

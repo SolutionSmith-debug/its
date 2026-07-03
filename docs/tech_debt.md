@@ -73,7 +73,7 @@ The actual per-daemon resolution logic (`poll_interval_config_key()` + `poll_int
 
 **P4 Slice 1 (PR #375).** Forward-note: a P5 progress send that omitted the config or passed `SAFETY_ACTIVE_JOBS_CONFIG` would silently route progress reports to the safety contact (no runtime error — a different column in a different sheet).
 
-**Resolution (PR #379, P5 core):** `progress_send.CONFIG` binds `active_jobs_config=PROGRESS_ACTIVE_JOBS_CONFIG`; the resolver reads the neutral `reports_contact_email` alias; the trap is named explicitly in `docs/runbooks/progress_send.md` Symptom B; and `tests/test_progress_send.py` asserts `get_job` is called with the progress config. The `weekly_send.SendConfig.active_jobs_config` field is required no-default (a missing binding is a construction-time error, not a silent safety inheritance).
+**Resolution (PR #379, P5 core):** `progress_send.CONFIG` binds `active_jobs_config=PROGRESS_ACTIVE_JOBS_CONFIG`; the resolver reads the neutral `reports_contact_email` alias; the trap is named explicitly in `docs/runbooks/progress_send.md` Symptom B; and `tests/test_progress_send.py` asserts `get_job` is called with the progress config. The `weekly_send.SendConfig.active_jobs_config` field is required no-default (a missing binding is a construction-time error, not a silent safety inheritance). *(A duplicate OPEN copy of this entry — the original P4 forward-note — sat further down this file; collapsed into this one 2026-07-03 after re-verifying the resolution against `progress_reports/progress_send.py` at HEAD: the resolver reads `job.reports_contact_email` and `CONFIG` binds `active_jobs.PROGRESS_ACTIVE_JOBS_CONFIG`.)*
 
 **Tag:** `progress_reports`.
 
@@ -82,14 +82,6 @@ The actual per-daemon resolution logic (`poll_interval_config_key()` + `poll_int
 **P5 (PR #380).** `shared/recipient_health.report_unhealthy_recipient` files an `ITS_Review_Queue` RECORD on a no-recipient HELD (visible in the operator review queue; watchdog Check A WARNs if it sits past 2× SLA; watchdog Check T WARNs on a HELD older than 24h). It deliberately does **not** fire an operator PAGE — per Op Stds §3.1 the only §3.1-compliant push leg `alert_dedupe` may gate is a `Severity.CRITICAL`, and a missing-contact config issue was judged not CRITICAL-class (consistent with `_mark_held`'s existing WARN treatment of HELDs).
 
 **Revisit when:** the operator decides a blocked customer-facing weekly send warrants an active page rather than a queue item — at which point add a dedicated CRITICAL push leg (a Send-Gate severity-posture decision, Seth-owned). **Tag:** `progress_reports`, `safety_reports`, `external-send-gate`.
-
-## P5 progress_send must use `job.reports_contact_email` alias and pass `PROGRESS_ACTIVE_JOBS_CONFIG` [OPEN 2026-06-30]
-
-**P4 Slice 1 (PR #375, 2026-06-30).** `shared/active_jobs.py` now exposes a workstream-neutral `reports_contact_email` alias alongside the legacy `safety_reports_contact_email`. A P5 progress-send script that omits the config argument or passes `SAFETY_ACTIVE_JOBS_CONFIG` will resolve `job.safety_reports_contact_email` instead of `job.reports_contact_email`, silently routing weekly progress reports to the safety contact rather than the progress one. There is no runtime error — the alias resolves to a different column in a different Smartsheet.
-
-**Rule (for P5 author):** (a) always import and pass `PROGRESS_ACTIVE_JOBS_CONFIG`; (b) read `job.reports_contact_email`, NOT `job.safety_reports_contact_email`; (c) name this trap explicitly in the progress-send §43 runbook (parallel to `docs/runbooks/safety_weekly_send.md`). Session summary note from this session flagged this forward.
-
-**Tag:** `progress_reports`. **Revisit when:** P5 `progress_reports/progress_send.py` is scoped — cite this entry in the engineering brief.
 
 ## Doctrine drift M6 — FM v8 cites in `safety_reports/intake.py` + `weekly_summary.py` docstrings [OPEN — pre-existing, flagged 2026-06-30]
 
@@ -1115,7 +1107,9 @@ Mobilization Date is project-scoped not week-scoped — better captured as a pro
 
 **Revisit when:** Phase 1.4 security hardening cluster ships and operator feedback drives WPR template v0.2.0 calibration.
 
-## `shared/heartbeat.py` + `shared/runner.py` extraction [OPEN 2026-05-23]
+## `shared/heartbeat.py` + `shared/runner.py` extraction [CLOSED 2026-07-03]
+
+**Resolved 2026-07-03 (CS Slice 3, R4-F1 — split-close):** the **heartbeat half is DONE.** The extraction LANDED as `shared/heartbeat.py` (`HeartbeatReporter`, PR #344 `334ea9e`) — the eight replicated helpers consolidated with the A1 self-provision metadata as constructor config; consumers migrated to thin `_write_heartbeat`/`_write_heartbeat_row` delegators (the canonical test mock seams). Six consumers at close: `portal_poll`, `weekly_send_poll`, `fieldops_sync`, `progress_send_poll`, and — added by CS Slice 3 — `compile_now_poll` + `publish_daemon` (the two designed-for daemons that lacked it). Split remainders, both deliberate non-debt: (a) `_write_watchdog_marker` stays replicated per-daemon (a 10-line marker touch with per-daemon write-condition policy — the exact API-churn risk this entry's own "risk of premature extraction" paragraph predicted; §14 says leave it); (b) **`shared/runner.py` was never built and is dropped** — no consumer ever demanded a shared runner loop (launchd one-shot-per-`StartInterval` IS the runner), so building it would violate §14 preservation-over-refactor.
 
 R3 Session 3 (`weekly_send_poll.py`) is the 2nd polling-daemon consumer that triggers the polling-daemon doctrine's 2nd-consumer extraction signal (Op Stds v11 §14). The heartbeat helpers (`_load_heartbeat_row_state`, `_persist_heartbeat_row_state`, `_invalidate_heartbeat_row_state`, `_resolve_heartbeat_row_id`, `_write_heartbeat`, `_write_heartbeat_row`, `_log_heartbeat_failure`) were copied VERBATIM from `safety_reports/intake_poll.py` into `weekly_send_poll.py` rather than extracted, to keep the R3 Session 3 ship focused on the send-capability code.
 
@@ -2098,7 +2092,9 @@ Nothing throttles the portal Worker: `/api/login` runs `bcrypt.compare` at cost 
 
 Surfaced: 2026-06-09 Part-A production-hardening session (A2).
 
-## [OPEN 2026-06-09] compile_now_poll — ITS_Daemon_Health self-provision row deferred (Part-B B3)
+## [CLOSED 2026-07-03] compile_now_poll — ITS_Daemon_Health self-provision row deferred (Part-B B3)
+
+**Resolved 2026-07-03 (CS Slice 3, R4-F1):** exactly the fix this entry prescribed — folded in **together with** the `shared/heartbeat.py` extraction (which landed as `HeartbeatReporter`, PR #344), so no third verbatim copy was ever made. `compile_now_poll` now constructs its own module-level reporter (daemon `safety_reports.compile_now_poll`, 90s interval, shared `heartbeat_row_ids.json` ARCH-2 state) and writes the per-cycle row at the end of `_poll_inside_lock` (OK / DEGRADED-on-per-job-errors / CIRCUIT_OPEN), broad-except fenced so a heartbeat failure never blocks a compile. `publish_daemon` gained the same reporter in the same slice. Self-provision (A1) rides the shared reporter's find-or-create. Operator live smoke (first real cycle self-provisions the two new rows) rides the PR per the mandatory-live-smoke rule.
 
 `safety_reports/compile_now_poll.py` (Part B) registers a watchdog Check-C liveness marker (`safety_compile_now_poll`, `scripts/watchdog.py`) — the LIVENESS safety net — but does NOT yet write an **ITS_Daemon_Health** operator-visibility row (the per-daemon update-in-place heartbeat the other pollers self-provision). Deferred to keep the Part-B PR focused: the daemon-health row is observability, not correctness, and the heartbeat-row machinery is ~150 lines replicated **verbatim** per daemon (`portal_poll` / `weekly_send_poll`) pending the already-tracked `shared/heartbeat.py` extraction — adding it here would replicate that machinery a third time.
 
@@ -2524,12 +2520,12 @@ Surfaced: 2026-06-29 A3 smoke (Box OAuth refresh-lock hardening); live `ITS_BOX_
 
 **Surfaced 2026-06-29** during a forensic investigation of the portal permission model (operator asked "what happened to my 3-tier permission model that broke my login and got reverted?"). Resolution: the capability system (migration `0013`, PR #302, `8bd9995`) is **live and was never reverted**; the 2026-06-28 login breakage was the deploy-order lockout, fixed operationally. The 5-agent read-only sweep + direct verification surfaced stale/half-wired permission plumbing to address later — **documented, not fixed** (preservation-over-refactor, §14). Relevant to the queued **P2.6 — Manager tier** slice and any future capability-management UI.
 
-1. **4 granted-but-never-enforced capabilities** (defined in `0013`, granted to a role, but no route gates on them — routes use `requireSession` or `requireRole('admin')` instead, so the cap is not a security boundary): `cap.form.submit` + `cap.form.request` (`POST /api/submit`, `POST /api/request-pdfs` in `worker/index.ts` gate on `requireSession` only), `cap.inspection.job` (no inspection route exists yet), `cap.checklist.manage` (no route references it). `cap.tasks.assign` — **RESOLVED by the S1 Assigned-Tasks build (migration `0025`):** the task create/reassign routes now gate on `cap.jobtracker.manage` OR `cap.tasks.assign` (with a subcontractor-target guard), so it is now a real security boundary. Decide enforce-or-remove on the remaining four when the relevant features / cap-management UI ship.
+1. **Granted-but-never-enforced capabilities** (defined in `0013`, granted to a role, but no route gates on them — routes use `requireSession` or `requireRole('admin')` instead, so the cap is not a security boundary). Originally 4 named: `cap.form.submit`, `cap.form.request`, `cap.inspection.job`, `cap.checklist.manage` (plus `cap.tasks.assign`, tracked as a 5th in the same sweep). Two are now RESOLVED: **`cap.tasks.assign`** by the S1 Assigned-Tasks build (migration `0025`) — task create/reassign routes gate on `cap.jobtracker.manage` OR `cap.tasks.assign` (with a subcontractor-target guard); **`cap.checklist.manage`** by the S2 checklist-engine build (PR #407), carried through R1/R4/R5 (PRs #416/#417/#420) — every checklist CRUD/assign/cancel route in `fieldops_checklist.ts` (`gates.requireCapability(CAP_CHECKLIST)`, ~19 call sites) now gates on it. **Still ungated (1 remains, deliberately):** `cap.inspection.job` — NO surface exists to gate (nothing writes the `inspections` table; job-level inspection forms ride `/api/submit` under `cap.form.submit`). `cap.form.submit` + `cap.form.request` are now ENFORCED (PR #440, 2026-07-03 — intended as a held PR, merged via a disclosed staging error; the deep security review's lockout analysis proved all three roles hold both caps, so no ability was lost): `/api/submit` + the six form-request/download surfaces. Decide enforce-or-remove on `cap.inspection.job` when a job-level inspection surface ships.
 2. **3 orphaned capability references** appearing ONLY in `migration 0016_equipment_management.sql` comments (lines 54-55), never defined in `0013`: `cap.inspection.fill`, `cap.dashboard.equipment`, `cap.machine.log` — URS-Marine port leftovers; granting any would fail the `role_capabilities` FK. Clean the comments. (Companion to the already-tracked `cap.admin.equipment` orphan-key cleanup in the "Field-ops P2.3 write-layer follow-ups" entry above.)
 3. **Coarse `cap.jobtracker.manage` — RESOLVED by P2.6 (PR #398, 2026-07-01).** `cap.crew.assign` (the 19th capability) + `POST /api/fieldops/personnel/:id/assign` shipped, letting a Manager assign/move crew without granting `cap.jobtracker.manage` (job/task creation stays admin-only). Time entries confirmed orthogonal as designed — a person placed on Job A can log time against Job B without reassignment.
 4. **No `personnel.current_job` column / standalone crew→job assignment route — RESOLVED by P2.6 (PR #398, 2026-07-01).** `personnel.current_job TEXT` (migration `0023`) + the assign route above are live. **New finding surfaced scoping the next slice (unified job-create flow):** the job-list and job-detail crew queries in `fieldops_jobtracker.ts` still compute crew from `task_assignments`, NOT from the new `current_job` column — a person placed via the P2.6 route would not show up as crew until that's converged. Tracked as its own slice: see the "Unified job-creation flow" entry above (spec at `~/.claude/plans/spec_unified-job-create-flow.md`, Slice 1) and `memory-archive.md` §G49.6.
 
-**Tag:** `safety-portal`, `capabilities`, `auth`, `field-ops`, `P2.6`. **Revisit when:** items 1-2 are still-open cheap cleanups (no trigger yet); items 3-4 RESOLVED 2026-07-01 (crew-query convergence spun out as its own tracked follow-up, see item 4 note).
+**Tag:** `safety-portal`, `capabilities`, `auth`, `field-ops`, `P2.6`. **Revisit when:** item 1 is 2-of-5 RESOLVED 2026-07-01/07-02 (`cap.tasks.assign` by S1, `cap.checklist.manage` by S2/R1/R4/R5) — 3 caps still cheap-open (no trigger yet); item 2 still-open cheap cleanup (no trigger yet); items 3-4 RESOLVED 2026-07-01 (crew-query convergence spun out as its own tracked follow-up, see item 4 note).
 
 Surfaced: 2026-06-29 permission-model forensic investigation; full spec at `~/.claude/plans/what-happened-to-my-floating-porcupine.md`; reusable inventory in the `reference_portal-capability-enforcement-gaps` memory.
 
@@ -2545,6 +2541,108 @@ Surfaced: 2026-06-29 permission-model forensic investigation; full spec at `~/.c
 
 ---
 
-## [OPEN 2026-07-01] Task-authority guards read account role check-then-act (TOCTOU, low-severity)
+## [RESOLVED 2026-07-03 — CS4 Slice 4 Part A] Task-authority guards read account role check-then-act (TOCTOU, low-severity)
+
+**Resolution (CS4 Slice 4 Part A):** the tracked fold is built, matching the `fieldops_crew_assign` atomic-guard pattern. The role predicates now live IN the mutating statements' WHERE clauses (`worker/fieldops_task_write.ts`): the assign UPDATE carries both the W1 current-owner predicate and the target predicate (conditional on an assign-only actor via a bound 0/1 flag); the create INSERT is `INSERT … SELECT … WHERE` with the same target predicate; the status UPDATE additionally folds the R1 ownership predicate. `checkTaskTarget` / `checkTaskCurrentOwner` / `checkTaskStatusOwnership` remain as **post-refusal diagnostics** — on `changes()=0` they re-read in the old pre-check order so the response codes (403 forbidden_task / 403 forbidden_target / 422 unknown_personnel / 404 not_found) are byte-identical; audits ride `changes()=1`, so a refused write audits nothing. Atomicity + boundary locked by `test/fieldops-toctou-folds.test.ts`; the pre-existing task-write/task-authority suites pass UNMODIFIED. Original entry below.
 
 **Surfaced by the S1 Assigned-Tasks security re-review.** `checkTaskTarget` + `checkTaskCurrentOwner` in `safety_portal/worker/fieldops_task_write.ts` read the target/current-owner account **role** (`personnel.username → users.role`) in a SELECT separate from the mutating UPDATE, to constrain a `cap.tasks.assign`-only actor (manager) to submitter-owned tasks/targets. Unlike the `active=1` roster checks (race-free — `active` only flips 1→0), `role` is **bidirectional**, so an admin promoting/demoting an account in the window between the SELECT and the UPDATE could shift the boundary. **NOT a self-service escalation** — the manager can't trigger the concurrent role change; it requires an independent admin action in a window the actor doesn't control. **Accepted + documented in-code.** **Fix (fast-follow):** fold the role predicate into the assign/create UPDATE's WHERE (conditional for an assign-only actor) so check+write are atomic, matching the `fieldops_crew_assign` pattern. **Tag:** `field_ops`, `auth`, `manager`, `task-authority`, `toctou`. **Revisit when:** treating manager task-scope as a hard security boundary / next task-authority change.
+
+---
+
+## Checklist item-state photo CAPTURE — render-half only, capture route not built [OPEN 2026-07-02]
+
+**Surfaced by R3 (PR #419, 2026-07-02).** Open-question Q2 (photo evidence) was answered **(a)** during the R-series program — optional photo on every check-type item, no migration — and R3 shipped the **render half only**: the checklist UI displays a photo when a `photo_ref` is present on an item state. The **capture half was NOT built**: there is no Worker route to store an uploaded item-state photo, and nothing writes `photo_ref`.
+
+Capture needs to be **designed against §34 image-class screening** (Op Stds v19 §34, `safety_reports/photo_screen.py` is the canonical instantiation for portal photos), not just wired ad hoc: an untrusted image uploaded by a field worker → D1 (or Box) → served back to other viewers is exactly the shape §34 exists to gate (magic-byte check, Pillow `verify()`/decompression-bomb cap, metadata-destroying re-encode, optional ClamAV). Open design questions: (1) does this route through the existing Python-side `photo_screen.py` pipeline (implying a queue/pull hop back to the Mac, mirroring the portal-submission PULL model) or does it need a **Worker-native** lightweight screening pass (send-free, §50/§51-shaped) since checklist items are D1-native and have no `intake.py` touchpoint today; (2) do item-state photos flow to Box like submission photos, or stay D1-only; (3) size/count caps analogous to `MAX_DECODED_BYTES`/`MAX_PHOTOS_PER_SUBMISSION`. **NOT autonomous-safe** — this is a new untrusted-input surface and needs an explicit adversarial-review pass (attacker/auditor/skeptic per CLAUDE.md's "Adversarial review is definition-of-done on any trust-boundary surface") before any capture route ships, not just a design doc.
+
+**Tag:** `field_ops`, `checklist`, `photo`, `security`, `§34`, `r-series`. **Revisit when:** building checklist photo capture (R-series Q2 follow-through) — do the §34 design decision FIRST, in its own reviewed slice, before writing the storage route.
+
+---
+
+## R-series spec Deferred #5–#10 — named follow-ups, not in this program [OPEN 2026-07-02]
+
+**Surfaced 2026-07-02**, `~/.claude/plans/refinement-spec-r-series.md` §3 "Deferred / won't-do." Six items were explicitly scoped OUT of the R-series refinement program (R1–R5, R7) as named follow-ups, not silent gaps:
+
+5. **Mid-day template re-sync into open instances.** Admin edits to a checklist template take effect "tomorrow," not on today's already-generated instances (R4 ships copy-only — "changes take effect tomorrow" — snapshot semantics kept as-is).
+6. **Mid-day job-reassignment orphan-instance surfacing/auto-cancel.** If a person is reassigned off a job mid-day, their already-generated daily-checklist instance for that job is not auto-cancelled or flagged orphaned; R2's day-rollover refetch narrows the confusion window but doesn't close the gap.
+7. **Scoped crew edit/retire for subcontractor-created crew + time amend/void UI** via the `amends_uuid` chain — a data-correction follow-up epic. R2 ships the crew list + duplicate warning; R1/R7 stop new junk rows, but no amend/void UI exists yet.
+8. **Server-side completed-history cutoff/deletion.** R2 ships client-side collapse only; history stays queryable/unbounded server-side.
+9. **Full URL router.** R3 ships minimal hash/history integration only (push-per-view-change, popstate restore, `beforeunload` dirty-form guard) — not a real router.
+10. **`task_assignments.due_date` column.** Considered and deferred per audit; `created_at`/`assigned_by` rendering (R2) covers the urgency-signal gap for now, but there is no due-date field on task assignments.
+
+None of these are regressions — they were locked-decision scope cuts made explicitly, with the reasoning captured in the spec. Listed here so they don't get silently rediscovered as "bugs" in a future session.
+
+**Tag:** `field_ops`, `checklist`, `tasks`, `r-series`, `deferred`. **Revisit when:** planning the next field-ops UX pass — check this list before re-scoping any of the six from scratch.
+
+---
+
+## Checklist template identity is title-keyed (0026 design) — a same-title admin template collides on re-seed [OPEN 2026-07-02]
+
+**Flagged during the #414 review** (migration `0028_sop_checklist_content.sql`, R-seed). Checklist template find-or-create is keyed on `(kind, title)` — every seed `INSERT` is guarded `WHERE NOT EXISTS (SELECT 1 FROM checklist_templates WHERE kind = 'generic_inspection' AND title = '<exact title>')`, and the `daily_default` re-seed logic is sentinel-guarded on an exact item **label** match. This is a deliberate 0026 design choice (no template "code"/slug column), and it works cleanly for migration idempotency (a re-apply is a no-op).
+
+The edge case: if an **admin authors a template through the UI** with a title that happens to exactly match a future seed migration's title (e.g., re-creates "Excavation / Trench Daily Inspection" by hand), a later migration re-apply — or a future seed migration reusing that exact title — will treat the admin's template as "already exists" and silently **merge items into it** (via the per-item `NOT EXISTS (template, label)` guard) rather than creating a separate template. Blast radius is low today: templates are seeded once (0026 placeholder → 0028 real content) and there's no evidence of an admin having hand-authored a colliding title.
+
+**Fix (if it becomes live):** add a stable template `code`/slug column distinct from the human-editable `title`, and key find-or-create on `code`. Only worth doing if the inspection/checklist template library grows past the current seeded set and admin-authored templates become common — preservation-over-refactor (§14) says don't build this speculatively.
+
+**Tag:** `field_ops`, `checklist`, `templates`, `data-model`, `r-series`. **Revisit when:** the checklist/inspection template library grows beyond the seeded set, or an admin reports items merging into the wrong template.
+
+---
+
+## [RESOLVED 2026-07-03 — CS4 Slice 4 Part A] DailyReportTab 2-stage waterfall — `fetchJobList` fetch NOT yet collapsed
+
+**Resolution (CS4 Slice 4 Part A, built in worktree `feat/cs4-hardening`):** `/api/fieldops/tasks/mine` now carries `viewer_placement` `{job_id, project_name, personnel_id, name}` — the caller's OWN placement, resolved server-side (the same personnel resolution `fieldops_scope.resolveActorPersonnel` uses + one indexed jobs lookup; SELF-information only, security note in the route header, `worker/fieldops_tasks.ts`). `DailyReportTab` takes the placement as a PROP from `FieldOpsMyTasks`'s existing `/tasks/mine` read; the `fetchJobList("active")` stage is deleted from the daily path (`fetchJobList` remains the Job Tracker page's own source). 6 fetches → tasks/mine + 5 parallel. New worker suite `test/fieldops-tasks-mine-placement.test.ts` (self-only exposure, unplaced/unlinked/retired/soft-ref/duplicate-link cases). The mandatory `/security-review` merge gate applies to the landing PR. Original entry below.
+
+**Optimization plan finding #12** (`~/.claude/plans/optimization-plan.md`, Slice 3 tail item). `DailyReportTab.tsx` still opens with `jobs.fetchJobList("active")` (a full jobs-list page) purely to read `viewer_current_job` before it can fetch anything daily-specific — confirmed still present at exec HEAD `d7ba70f` (`DailyReportTab.tsx:280-281`). The plan's fix (add `viewer_current_job` + `project_name` to `/api/fieldops/tasks/mine` and drop the `fetchJobList` stage) was explicitly scoped to **serialize after Slice 2** and carries the plan's only medium-risk rating plus its own mandatory `/security-review` gate (it widens a capability-gated read route — `cap.tasks.own` would start returning placement data that today rides `cap.jobtracker.read`). Slice 2 (#432) has now landed; this tail item was correctly NOT bundled into #431/#432 and remains unbuilt.
+
+**Fix:** implement optimization-plan.md Slice 3 item 7 in its own PR, with the `/security-review` pass as a merge gate, not advisory. **Tag:** `field_ops`, `performance`, `daily-form`, `optimization`, `security-review-gated`. **Revisit when:** picking up the next optimization slice, or if field-crew load on `/api/fieldops/jobs` becomes measurable.
+
+---
+
+## Optimization-plan doctrine-adjacent decisions awaiting operator green-light [OPEN 2026-07-03]
+
+**`~/.claude/plans/optimization-plan.md` "Needs-operator" #2 and #3** — two propose-only options CC is explicitly barred from executing unilaterally:
+
+1. **Historical form-definition registry split** — `src/forms/registry.ts` currently guarantees "any historical `form_code` must always render," which costs ~76.6 kB minified today and grows ~24 kB per SOP edit (v2→v5 in ~30h of this arc alone). A chunk-fetch-on-admin-editor split would reverse an explicitly documented C1/C9 design decision and likely touches the Phase-2 publish actuator + catalog tests. Real growth evidence exists; the decision is doctrine-owned, not a unilateral refactor.
+2. **Deprecated daily-checklist Worker surfaces + dormant 0028 `daily_default` rows** — the route header says "Do not remove without a doctrine-level decision" (§14/§49). Options on the table: (a) one removal PR for the daily-generation branch of `/checklist/mine` + `/mine/rollup-draft` + default/job-override editor routes + their tests + the 0028 placeholder rows, or (b) a formal keep-deprecated register entry. The checklist **engine** underneath (`reconcileFormLinked`/`ITEM_STATES_SQL`/instance machinery) stays live-inspection load-bearing regardless of which option is chosen.
+
+Neither blocks anything; both are dead-weight-vs-preservation-over-refactor calls that only Seth should greenlight. **Tag:** `field_ops`, `optimization`, `doctrine-adjacent`, `preservation-over-refactor`. **Revisit when:** Seth reviews the optimization-plan's Needs-operator section.
+
+---
+
+## [RESOLVED 2026-07-03 — CS4 Slice 4 Part A] `fieldops_checklist.ts` still hand-maintains `AssignedInspectionsResponse` instead of re-exporting `wire-types.ts`
+
+**Resolution (CS4 Slice 4 Part A):** all five assigned-inspections shapes (`ChecklistItemStatus`, `ChecklistItemState`, `AssignedInstance`, `AssignedInspection`, `AssignedInspectionsResponse`) are now `export type { … } from "../../worker/wire-types"` re-exports in `src/lib/fieldops_checklist.ts`; the hand-maintained local copies are deleted and the `wire-types.ts` header's "NOT yet re-exported" caveat is removed (the tasks/mine shapes are single-sourced there too). Original entry below.
+
+**`worker/wire-types.ts` header note, Slice 3 (#431).** The header explicitly flags: "the assigned-inspections shapes are worker-typed here but NOT yet re-exported by `src/lib/fieldops_checklist.ts` — that file is Slice 2's dead-code removal surface; converting its kept types to re-exports is a follow-up after Slice 2 lands." Slice 2 (#432) has now landed, and `fieldops_checklist.ts:224` still defines its own `AssignedInspectionsResponse` interface rather than re-exporting the Worker-authoritative one from `wire-types.ts` — the one drift-guard `wire-types.ts` was built to close (finding #11) is not yet fully closed for this one shape.
+
+**Fix:** small follow-up — replace the local `AssignedInspectionsResponse` interface in `fieldops_checklist.ts` with a re-export from `wire-types.ts`, matching the pattern already used by `fieldops_jobtracker.ts`/`fieldops_daily_form.ts`/`fieldops_expected_materials.ts`. **Tag:** `field_ops`, `optimization`, `wire-types`, `low-risk`. **Revisit when:** next touching `fieldops_checklist.ts` or `wire-types.ts`.
+
+---
+
+## [RESOLVED 2026-07-03 — CS4 Slice 4 Part A] D4 job-requirements ceiling check is TOCTOU (admin-only, accepted)
+
+**Resolution (CS4 Slice 4 Part A):** the count predicate is folded into the INSERT's `WHERE` exactly as tracked — `INSERT INTO job_daily_requirements … SELECT … WHERE (SELECT COUNT(*) … active = 1) < REQUIREMENTS_LIMIT RETURNING id` — so check + write are one atomic statement; `changes()=0` → the same `409 too_many_items`, and the audit rides `auditStmtIfChanged` (a refused add audits nothing, as before). Boundary + atomicity locked by `test/fieldops-toctou-folds.test.ts` (199→201, 200→409, deactivated rows excluded). Original entry below.
+
+**Surfaced by the D4 security review (PR #427), accepted as a WARN.** `fieldops_daily_requirements.ts`'s `REQUIREMENTS_LIMIT = 200` ceiling on a job's ACTIVE requirement-item list is enforced as a read-then-check-then-insert, not atomically in the mutating statement's `WHERE` clause — mirrors the existing "Task-authority guards read account role check-then-act" TOCTOU entry above, but on a resource ceiling rather than a role predicate. Two concurrent admin adds could both pass the count check before either commits, momentarily exceeding 200 active rows. **Admin-only actor, resource-exhaustion-shaped, not a privilege-escalation path** — accepted at review as low-severity.
+
+**Fix (fast-follow, same shape as the task-authority entry):** fold the count predicate into the INSERT's `WHERE` (a conditional insert keyed on a live `COUNT(*)` subquery) so check+write are atomic. **Tag:** `field_ops`, `security`, `toctou`, `daily-form`, `low-severity`. **Revisit when:** treating the requirements ceiling as a hard bound, or alongside the existing task-authority TOCTOU fix.
+
+---
+
+## D1-primary tables have no ITS-side backup — Cloudflare D1 Time Travel is the restore path (accepted) [OPEN 2026-07-03]
+
+**R3-F7 (resiliency audit), decision: don't build a backup job — document the restore path.** Two tables are **D1-primary** (no Smartsheet/Box mirror; ITS holds no other copy): `job_daily_requirements` (per-job daily-form requirement overlay, migration `0030`/`0032`) and `job_expected_materials` (per-job expected-receipts list, migration `0031`). Everything else in D1 is either a queue drained to the Mac (submissions → filed PDFs), a mirror of Smartsheet (`ITS_Active_Jobs` sync), or re-derivable. Receipt EVIDENCE already survives outside D1 — a confirmed receipt appends a `deliveries_received` row into the filed daily PDF, and an incident files its own material-incident submission — so a D1 loss cannot silently erase what was received.
+
+**Restore path (operator, Tier-3/Seth):** Cloudflare **D1 Time Travel** — every D1 database keeps 30 days of point-in-time restore (`npx wrangler d1 time-travel info its-safety-portal-db`, then `… time-travel restore its-safety-portal-db --timestamp=<unix|ISO>`). Restore rolls back the WHOLE database, not one table — expect to replay any submissions queued after the restore point (the Worker re-serves unfiled rows; already-filed PDFs are safe on Box/Smartsheet).
+
+**Blast radius if lost outright (>30 days / Time Travel unavailable):** re-enterable admin data — the office re-keys each job's requirement items and expected-materials rows from the client's punch list. Bounded, annoying, not evidence-destroying. That bound is WHY no ITS-side backup job is built (§14; the audit explicitly rejected one).
+
+**Tag:** `field_ops`, `d1`, `resilience`, `runbook`, `accepted`. **Revisit when:** a third D1-primary table lands (re-evaluate the no-backup call), or Cloudflare changes the Time Travel retention window.
+
+- **[OPEN 2026-07-03] `_write_heartbeat()` liveness-touch called bare across all 6 daemon consumers** — a
+  local-disk `OSError` from `HeartbeatReporter.write_liveness()` (`state_io.atomic_write_text` raises
+  natively) would propagate out of the poll/publish loop and skip that cycle's health-row +
+  watchdog-marker writes. Pre-existing live pattern (PR #344) replicated verbatim by the CS3 consumers
+  per review; the right fix is ONE shared-level catch inside `shared/heartbeat.py::write_liveness`
+  (never-blocks-primary-work applied to the liveness half too), not six call-site wraps. (CS3 ops-stds
+  review WARN, 2026-07-03.)

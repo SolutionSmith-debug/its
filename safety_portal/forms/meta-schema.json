@@ -14,6 +14,7 @@
     "version": { "type": "integer", "minimum": 1 },
     "archetype": { "type": "string", "enum": ["rows_signatures", "grouped_checklist", "content_signin", "visitor_rows", "sectioned_assessment"] },
     "source_pdf": { "type": "string", "description": "Reference PDF filename in safety_portal/reference_forms/ this definition was transcribed from." },
+    "comment": { "type": "array", "items": { "type": "string" }, "description": "Maintainer notes, never rendered by either renderer — e.g. a dated operator-directed deviation from the source PDF (daily-report-v3, 2026-07-02). The form editor does not carry this forward when composing a new version." },
     "branding": {
       "type": "object", "additionalProperties": false,
       "properties": { "logo": { "type": "boolean" }, "title": { "type": "string" } }
@@ -44,10 +45,29 @@
         "comment": { "type": "boolean", "description": "per-item override of group comment_per_item." }
       }
     },
+    "guidance_block": {
+      "type": "object",
+      "required": ["type"],
+      "properties": { "type": { "type": "string", "enum": ["p", "bullets", "callout"] } },
+      "oneOf": [
+        {
+          "additionalProperties": false, "required": ["type", "text"],
+          "properties": { "type": { "const": "p" }, "text": { "type": "string", "minLength": 1 } }
+        },
+        {
+          "additionalProperties": false, "required": ["type", "items"],
+          "properties": { "type": { "const": "bullets" }, "items": { "type": "array", "minItems": 1, "maxItems": 250, "items": { "type": "string", "minLength": 1 } } }
+        },
+        {
+          "additionalProperties": false, "required": ["type", "style", "text"],
+          "properties": { "type": { "const": "callout" }, "style": { "type": "string", "enum": ["critical", "quality", "note"] }, "text": { "type": "string", "minLength": 1 } }
+        }
+      ]
+    },
     "section": {
       "type": "object",
       "required": ["type"],
-      "properties": { "type": { "type": "string", "enum": ["header", "static_text", "repeating_table", "signature_table", "checklist", "freeform", "content_blocks"] } },
+      "properties": { "type": { "type": "string", "enum": ["header", "static_text", "repeating_table", "signature_table", "checklist", "freeform", "content_blocks", "guidance", "form_link", "job_requirements", "expected_materials"] } },
       "oneOf": [
         {
           "additionalProperties": false, "required": ["type", "fields"],
@@ -82,6 +102,24 @@
         {
           "additionalProperties": false, "required": ["type", "key", "blocks"],
           "properties": { "type": { "const": "content_blocks" }, "key": { "type": "string" }, "title": { "type": "string" }, "source_pdf": { "type": "string" }, "blocks": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["body"], "properties": { "heading": { "type": "string" }, "body": { "type": "string" } } } } }
+        },
+        {
+          "additionalProperties": false, "required": ["type", "heading", "blocks"],
+          "properties": { "type": { "const": "guidance" }, "heading": { "type": "string", "minLength": 1 }, "blocks": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/guidance_block" }, "description": "Read-only SOP/guidance rich text (SOP daily form, slice D1): paragraphs, bullet lists, and styled callouts — transcribed VERBATIM from the source document. Plain text only (no HTML); contributes NO submission value keys." } }
+        },
+        {
+          "additionalProperties": false, "required": ["type", "label", "parent_form_code"],
+          "properties": { "type": { "const": "form_link" }, "label": { "type": "string", "minLength": 1 }, "parent_form_code": { "type": "string", "pattern": "^[a-z0-9-]+$", "description": "The linked form-type parent (must exist in catalog.json — enforced by publishValidation.ts + tests/test_form_definitions.py; JSON Schema cannot cross-file check)." }, "helper": { "type": "string", "minLength": 1 } }
+        },
+        {
+          "additionalProperties": false, "required": ["type", "key"],
+          "properties": { "type": { "const": "job_requirements" }, "key": { "type": "string", "description": "The section's top-level value key — the manager's answers file under values.<key> = [{label, kind, response}] (self-describing; SOP daily form slice D4)." }, "title": { "type": "string" } },
+          "description": "Per-job daily-form requirements placeholder (slice D4). Carries NO content of its own: at render time the portal fetches the job's admin-authored requirement items (D1 job_daily_requirements, migration 0030; edited on the Job Tracker job detail) and renders them here. AT MOST ONE per definition — enforced by publishValidation.ts (a second overlay mount would double-file the answers); JSON Schema cannot count across the sections array."
+        },
+        {
+          "additionalProperties": false, "required": ["type", "key"],
+          "properties": { "type": { "const": "expected_materials" }, "key": { "type": "string", "description": "Mount identity, RESERVED in the top-level value namespace (uniqueness-checked like every keyed section) but the section files NO values under it — receipt data lands in the deliveries_received table + the material-incident form's own submission (Material receipts M2)." }, "title": { "type": "string" } },
+          "description": "Expected-materials receipt placeholder (Material receipts M2). Carries NO content of its own: at render time the Daily tab fetches the job's expected materials (D1 job_expected_materials, migration 0031, M1) and renders them here with 'Confirm receipt' / 'Report a problem' actions. Captures NO form values (self-describing filed PDFs stay stable); the confirm action appends a deliveries_received row instead. AT MOST ONE per definition — enforced by publishValidation.ts; JSON Schema cannot count across the sections array."
         }
       ]
     }

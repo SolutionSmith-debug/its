@@ -1,5 +1,6 @@
-import { env, SELF } from "cloudflare:test";
+import { env } from "cloudflare:test";
 import { describe, it, expect, beforeEach } from "vitest";
+import { provision, login, get, post, seedJob, seedPersonnel } from "./helpers";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Assigned-Tasks tab (P4 field-ops feature) S4 — loop-closure + count / inspection completion.
@@ -14,42 +15,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 // isolated per-test (vitest-pool-workers) so the migration-0026 daily_default seed is fresh each test.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const BASE = "https://portal.test";
-const ADMIN_BEARER = "test-admin-token";
-type Init = RequestInit & { cookie?: string; bearer?: string };
 
-function call(path: string, init: Init = {}): Promise<Response> {
-  const headers = new Headers(init.headers);
-  if (init.cookie) headers.set("Cookie", init.cookie);
-  if (init.bearer) headers.set("Authorization", `Bearer ${init.bearer}`);
-  if (init.body && !headers.has("content-type")) headers.set("content-type", "application/json");
-  return SELF.fetch(BASE + path, { ...init, headers });
-}
-function cookieFrom(res: Response): string {
-  return (res.headers.get("set-cookie") ?? "").split(";")[0];
-}
-async function provision(username: string, password: string, role: "submitter" | "manager" | "admin"): Promise<void> {
-  const res = await call("/api/internal/admin/users", { method: "POST", bearer: ADMIN_BEARER, body: JSON.stringify({ username, password, role }) });
-  expect(res.status, await res.clone().text()).toBe(201);
-}
-async function login(username: string, password: string): Promise<string> {
-  const res = await call("/api/login", { method: "POST", body: JSON.stringify({ username, password }) });
-  expect(res.status, await res.clone().text()).toBe(200);
-  return cookieFrom(res);
-}
-const get = (cookie: string, path: string) => call(path, { cookie });
-const post = (cookie: string, path: string, body?: unknown) =>
-  call(path, { method: "POST", cookie, body: body === undefined ? undefined : JSON.stringify(body) });
-
-async function seedJob(jobId: string): Promise<void> {
-  await env.DB.prepare("INSERT INTO jobs (job_id, project_name, active, status, created_at) VALUES (?,?,1,'active',?)")
-    .bind(jobId, `Project ${jobId}`, 1_700_000_000).run();
-}
-async function seedPersonnel(name: string, username: string | null, currentJob: string | null): Promise<number> {
-  await env.DB.prepare("INSERT INTO personnel (name, username, current_job, active) VALUES (?,?,?,1)")
-    .bind(name, username, currentJob).run();
-  return (await env.DB.prepare("SELECT id FROM personnel WHERE name=? ORDER BY id DESC LIMIT 1").bind(name).first<{ id: number }>())!.id;
-}
 // Insert a submission for the day (the durable record is Smartsheet/Box; this is the portal cache).
 async function seedSubmission(jobId: string, formCode: string, workDate: string): Promise<void> {
   await env.DB.prepare(
@@ -147,18 +113,23 @@ describe("checklist S4 — form_linked loop-closure (auto-check on a matching su
   });
 
   it("the instance flips to COMPLETE once every item (incl. the auto-checked form_linked) is done", async () => {
-    // Complete every seeded item WITHOUT mutating the shared daily_default seed: manually complete each
-    // manual_attest item, then file the daily-report submission to auto-check the form_linked one.
+    // Complete every seeded item WITHOUT mutating the shared daily_default seed (0028 SOP content):
+    // manually complete each manual_attest item, meet each count item's target, then file the jha +
+    // daily-report submissions that auto-check the two form_linked items.
     const before = await mine(manager);
     expect(before.instance!.status).toBe("open");
     for (const it of before.items.filter((i) => i.item_type === "manual_attest")) {
       expect((await post(manager, `/api/fieldops/checklist/item-state/${it.id}/complete`)).status).toBe(200);
     }
-    // Still open — the form_linked item hasn't closed yet.
+    for (const it of before.items.filter((i) => i.item_type === "count")) {
+      expect((await post(manager, `/api/fieldops/checklist/item-state/${it.id}/complete`, { value_num: it.target_count ?? 1 })).status).toBe(200);
+    }
+    await seedSubmission("JOB-A", "jha-v3", before.instance!.instance_date);
+    // Still open — the daily-report form_linked item hasn't closed yet.
     expect((await mine(manager)).instance!.status).toBe("open");
     await seedSubmission("JOB-A", "daily-report-v1", before.instance!.instance_date);
     const after = await mine(manager);
-    expect(after.items.find((i) => i.item_type === "form_linked")!.status).toBe("done");
+    expect(after.items.filter((i) => i.item_type === "form_linked").every((i) => i.status === "done")).toBe(true);
     expect(after.instance!.status).toBe("complete");
   });
 });
@@ -167,7 +138,9 @@ describe("checklist S4 — count completion (value ≥ target)", () => {
   async function countItemId(target: number): Promise<{ id: number; instanceStatus: string }> {
     await addJobItem("JOB-A", "count", "Log deliveries", null, target);
     const body = await mine(manager);
-    const it = body.items.find((i) => i.item_type === "count")!;
+    // Find OUR job-added count item by label — the 0028 daily_default seed carries its own count
+    // items (photos target 50, check-ins target 2), so "first count item" is no longer ours.
+    const it = body.items.find((i) => i.item_type === "count" && i.label === "Log deliveries")!;
     return { id: it.id, instanceStatus: body.instance!.status };
   }
 
@@ -240,7 +213,8 @@ describe("checklist S4 — manual_attest still works; auto-close types reject ma
 
   it("an uncomplete on an auto-checked form_linked item → 400 'auto_close_only' (stays done)", async () => {
     const before = await mine(manager);
-    const fl = before.items.find((i) => i.item_type === "form_linked")!;
+    // Pick the daily-report form_linked item explicitly — the 0028 seed also carries a jha one.
+    const fl = before.items.find((i) => i.item_type === "form_linked" && i.form_code === "daily-report")!;
     await seedSubmission("JOB-A", "daily-report-v1", before.instance!.instance_date);
     expect((await mine(manager)).items.find((i) => i.id === fl.id)!.status).toBe("done");
     const res = await post(manager, `/api/fieldops/checklist/item-state/${fl.id}/uncomplete`);

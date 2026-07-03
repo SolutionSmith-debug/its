@@ -3,7 +3,7 @@
   "parents": [
     {
       "parent_form_code": "equipment-preinspection",
-      "category": "progress",
+      "category": "safety",
       "name": "Equipment Pre-Inspection",
       "display_order": 1,
       "forms": [
@@ -282,17 +282,56 @@
       "category": "progress",
       "name": "Daily Field Report",
       "display_order": 9,
+      "launch": "daily-tab",
       "forms": [
         {
           "identity": "daily-report",
           "variant_label": null,
           "status": "active",
-          "current_version": 1,
-          "current_form_code": "daily-report-v1",
+          "current_version": 5,
+          "current_form_code": "daily-report-v5",
           "versions": [
             {
               "version": 1,
               "form_code": "daily-report-v1"
+            },
+            {
+              "version": 2,
+              "form_code": "daily-report-v2"
+            },
+            {
+              "version": 3,
+              "form_code": "daily-report-v3"
+            },
+            {
+              "version": 4,
+              "form_code": "daily-report-v4"
+            },
+            {
+              "version": 5,
+              "form_code": "daily-report-v5"
+            }
+          ],
+          "display_order": 1
+        }
+      ]
+    },
+    {
+      "parent_form_code": "material-incident",
+      "category": "progress",
+      "name": "Material Incident Report",
+      "display_order": 10,
+      "forms": [
+        {
+          "identity": "material-incident",
+          "variant_label": null,
+          "status": "active",
+          "current_version": 1,
+          "current_form_code": "material-incident-v1",
+          "versions": [
+            {
+              "version": 1,
+              "form_code": "material-incident-v1"
             }
           ],
           "display_order": 1

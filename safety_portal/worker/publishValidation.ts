@@ -1,3 +1,4 @@
+import catalogManifest from "../catalog.json";
 import requiredContent from "../required-content.json";
 import workflows from "../workflows.json";
 
@@ -30,9 +31,23 @@ const KEY_RE = /^[a-z0-9_]+$/; // every field/section key in the shipped forms i
 const FORM_CODE_RE = /^[a-z0-9-]+-v[0-9]+$/;
 const SLUG_RE = /^[a-z0-9-]+$/;
 
+// guidance sections (SOP daily form, slice D1): read-only rich text — the closed block
+// vocabulary and callout styles. Plain text only; no HTML block type exists on purpose.
+const GUIDANCE_BLOCK_TYPES = new Set(["p", "bullets", "callout"]);
+const CALLOUT_STYLES = new Set(["critical", "quality", "note"]);
+// form_link parent targets must exist in the DEPLOYED catalog manifest (bundled at build
+// time, same vintage as the `catalog` the publish endpoint checks grouping against). The
+// repo-side twin is tests/test_form_definitions.py's form_link-parent check vs live HEAD.
+const KNOWN_PARENT_FORM_CODES: ReadonlySet<string> = new Set(
+  (catalogManifest as { parents: { parent_form_code: string }[] }).parents.map(
+    (p) => p.parent_form_code,
+  ),
+);
+
 // Hard bounds — bound adversarial input; generous vs the real forms (the telehandler
-// checklist has 64 items; HSS&E has 8 sections).
-const MAX_SECTIONS = 40;
+// checklist has 64 items; HSS&E has 8 sections; the SOP daily form — guidance ⊕ fields
+// interleaved — has 42 sections, which forced the 40 → 60 bump).
+const MAX_SECTIONS = 60;
 const MAX_FIELDS = 250;
 const MAX_GROUPS = 40;
 const MAX_ITEMS = 250;
@@ -307,6 +322,77 @@ function validateSection(s: unknown, idx: number, topLevel: string[]): string | 
       }
       return null;
     }
+    // Read-only SOP guidance (slice D1): heading + p/bullets/callout blocks, all plain
+    // strings (no HTML vocabulary exists). Contributes NO top-level value keys.
+    case "guidance": {
+      if (!isStr(s.heading)) return `${where}: guidance missing heading`;
+      if (!Array.isArray(s.blocks) || s.blocks.length === 0 || s.blocks.length > MAX_BLOCKS) {
+        return `${where}: invalid guidance blocks`;
+      }
+      for (const b of s.blocks) {
+        if (!isObject(b)) return `${where}: guidance block is not an object`;
+        if (typeof b.type !== "string" || !GUIDANCE_BLOCK_TYPES.has(b.type)) {
+          return `${where}: unknown guidance block type`;
+        }
+        switch (b.type) {
+          case "p":
+            if (!isStr(b.text)) return `${where}: guidance paragraph missing text`;
+            break;
+          case "bullets":
+            // Bounded like every sibling repeatable array (security review: an unbounded item list
+            // is an authenticated-admin resource-exhaustion vector through publish_requests).
+            if (!Array.isArray(b.items) || b.items.length === 0 || b.items.length > MAX_ITEMS || !b.items.every((x) => isStr(x))) {
+              return `${where}: guidance bullets need 1-${MAX_ITEMS} non-empty string items`;
+            }
+            break;
+          case "callout":
+            if (typeof b.style !== "string" || !CALLOUT_STYLES.has(b.style)) {
+              return `${where}: guidance callout invalid style`;
+            }
+            if (!isStr(b.text)) return `${where}: guidance callout missing text`;
+            break;
+        }
+      }
+      return null;
+    }
+    // Deep link to another form type (slice D1): label + a parent_form_code that must
+    // exist in the deployed catalog. Contributes NO top-level value keys.
+    case "form_link": {
+      if (!isStr(s.label)) return `${where}: form_link missing label`;
+      if (!isStr(s.parent_form_code) || !SLUG_RE.test(s.parent_form_code)) {
+        return `${where}: form_link invalid parent_form_code`;
+      }
+      if (!KNOWN_PARENT_FORM_CODES.has(s.parent_form_code)) {
+        return `${where}: form_link parent_form_code is not a known form type`;
+      }
+      if (s.helper !== undefined && !isStr(s.helper)) return `${where}: form_link invalid helper`;
+      return null;
+    }
+    // Per-job daily-form requirements placeholder (slice D4): a keyed mount point with NO
+    // content of its own — the D1 overlay (job_daily_requirements) is fetched at render time
+    // and the answers file under values.<key>. The key IS a top-level value key (the answers
+    // array lands there), so it goes through keyedSectionKey like every value-bearing section.
+    // AT MOST ONE per definition — enforced in validateDefinition (a per-section check can't
+    // count); documented in forms/meta-schema.json.
+    case "job_requirements": {
+      const e = keyedSectionKey();
+      if (e) return e;
+      if (s.title !== undefined && !isStr(s.title)) return `${where}: job_requirements invalid title`;
+      return null;
+    }
+    // Expected-materials receipt placeholder (Material receipts M2): a keyed mount point with
+    // NO content of its own — the Daily tab renders the job's expected materials (D1
+    // job_expected_materials, M1) here. It files NO values under its key, but the key still
+    // goes through keyedSectionKey: reserving it in the value namespace keeps the mount from
+    // colliding with (or being shadowed by) a future value-bearing section of the same name.
+    // AT MOST ONE per definition — enforced in validateDefinition, same discipline as
+    // job_requirements; documented in forms/meta-schema.json.
+    case "expected_materials": {
+      const e = keyedSectionKey();
+      if (e) return e;
+      if (s.title !== undefined && !isStr(s.title)) return `${where}: expected_materials invalid title`;
+      return null;
+    }
     default:
       return `${where}: unknown section type '${type}'`;
   }
@@ -353,6 +439,15 @@ export function validateDefinition(def: unknown, ctx: DefinitionContext): Valida
     if (seen.has(k)) return fail(`duplicate value key '${k}' across sections`);
     seen.add(k);
   }
+  // AT MOST ONE job_requirements section (slice D4): the per-job overlay has one mount point —
+  // two would double-render the same fetched items and double-file the answers. (The unique-key
+  // check above can't catch this: two mounts could carry different keys.)
+  const reqMounts = def.sections.filter((s) => isObject(s) && s.type === "job_requirements").length;
+  if (reqMounts > 1) return fail("multiple job_requirements sections (at most one)");
+  // AT MOST ONE expected_materials section (Material receipts M2): one receipt mount — two would
+  // double-render the same fetched rows and double-append deliveries_received rows on confirm.
+  const emMounts = def.sections.filter((s) => isObject(s) && s.type === "expected_materials").length;
+  if (emMounts > 1) return fail("multiple expected_materials sections (at most one)");
   // Legal-floor re-check (Brief 1 PR-1) — structure is valid above; now require the
   // per-identity mandatory content (signature mechanism, legal/footer lines, core fields).
   const rc = validateRequiredContent(def, ctx);

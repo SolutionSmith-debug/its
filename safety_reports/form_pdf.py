@@ -545,6 +545,78 @@ def _section_flowables(section: dict, values: dict, st: dict) -> list[Flowable]:
                 out2.append(_p(b["heading"], st["heading"]))
             out2.extend(_rich_body(b.get("body", ""), st))
         return out2
+    if typ == "guidance":
+        # SOP guidance (slice D1) renders as its HEADING + callout one-liners ONLY —
+        # DELIBERATE truncation: the full p/bullets prose is the on-screen SOP walk in
+        # the portal; reprinting it in every daily PDF would bloat the weekly packet
+        # (the SOP daily form carries ~20 guidance sections). The callouts (CRITICAL
+        # RULE / QUALITY RULE / NOTE / FINAL STATEMENT) are the safety-critical
+        # one-liners and stay in the document of record, in the gold callout box the
+        # legal static_text sections already use. Text VERBATIM, never altered.
+        out3: list[Flowable] = [_section_header(section["heading"], st)]
+        for b in section.get("blocks", []):
+            if b.get("type") == "callout":
+                box = Table([[_p(b.get("text", ""), st["legal"])]], colWidths=[_CONTENT_W])
+                box.setStyle(TableStyle([
+                    ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#fbf6e9")),
+                    ("LINEBEFORE", (0, 0), (0, -1), 2.2, _GOLD),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 8), ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+                    ("TOPPADDING", (0, 0), (-1, -1), 6), ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+                ]))
+                out3.extend([Spacer(1, 6), box])
+        return out3
+    if typ == "form_link":
+        # Deep link to another form type (slice D1): the submission payload carries no
+        # link state (the linked form files as its OWN submission), so render just the
+        # label + a pointer to where the linked record lives. The live filed-indicator
+        # is an on-screen (Daily tab, D2) affordance only.
+        return [
+            _section_header(section["label"], st, level="group"),
+            _p("Linked form — see the forms filed for this job and date.", st["caption"]),
+        ]
+    if typ == "job_requirements":
+        # Per-job daily-form requirements (slice D4). The section itself is an EMPTY
+        # placeholder in the definition — the content is the submission's SELF-DESCRIBING
+        # values array (values[<key>] = [{label, kind, response}], captured by the portal
+        # from the job's D1 overlay at fill time). Rendered GENERICALLY as label→response
+        # rows, so the filed PDF shows the client requirements + answers exactly as
+        # answered, stable regardless of later requirement edits — and new kinds render
+        # for free (D5 / migration 0032 added number/date/select; every kind's response is
+        # a plain string, so no per-kind branch exists or is needed here). Absent/empty →
+        # the whole section is skipped (a job with no requirements adds nothing to the PDF).
+        entries = values.get(section.get("key", "job_requirements"))
+        if not isinstance(entries, list) or not entries:
+            return []
+        rows: list[list[Any]] = [[_p("Requirement", st["colhead"]),
+                                  _p("Response", st["colhead"])]]
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue  # defensive: a malformed entry is dropped, never fatal
+            rows.append([
+                _p(str(entry.get("label", "") or ""), st["cell"]),
+                _p(str(entry.get("response", "") or ""), st["cell"]),
+            ])
+        if len(rows) == 1:
+            return []
+        out4: list[Flowable] = [_section_header(section.get("title", "Job-specific requirements"), st)]
+        t = Table(rows, colWidths=[_CONTENT_W - 2.2 * inch, 2.2 * inch], repeatRows=1)
+        t.setStyle(_grid_style(len(rows), 2))
+        out4.append(t)
+        return out4
+    if typ == "expected_materials":
+        # Expected-materials receipt list (Material receipts M2). DELIBERATELY a note line
+        # only: the section is an on-screen affordance (the Daily tab renders the job's live
+        # D1 expected-materials rows with Confirm-receipt / Report-a-problem actions) and
+        # files NO values under its own key — the receipt DATA the document of record needs
+        # already lands in the Deliveries Received table (the confirm action appends a row
+        # there) and in the material-incident form's OWN filed submission. Reprinting the
+        # live D1 list here would snapshot mutable state the submission never carried.
+        return [
+            _section_header(section.get("title", "Expected materials"), st, level="group"),
+            _p("Receipts recorded under Deliveries Received above; delivery problems are "
+               "filed as Material Incident Report submissions for this job and date.",
+               st["caption"]),
+        ]
     logger.warning("form_pdf: unknown section type %r — skipped", typ)
     return []
 
@@ -1210,9 +1282,25 @@ def _blank_section_flowables(section: dict, st: dict, namer: _FieldNamer) -> lis
         return [_section_header(section["label"], st, level="group"),
                 _TextFieldFlowable(namer, section.get("key", "freeform"), _CONTENT_W,
                                    multiline=multiline, height=_FIELD_H * 3 if multiline else None)]
-    if typ in ("static_text", "content_blocks"):
-        # VERBATIM via the submission path — guarantees no divergence.
+    if typ in ("static_text", "content_blocks", "guidance", "form_link"):
+        # Value-free section types render VERBATIM via the submission path —
+        # guarantees no divergence (guidance/form_link added for the SOP daily form,
+        # slice D1: same heading + callout-only / label + pointer rendering).
         return _section_flowables(section, {}, st)
+    if typ == "job_requirements":
+        # Per-job daily-form requirements (slice D4): the items are per-JOB runtime data
+        # (D1 overlay), unknowable to a blank template — render the title + an explicit
+        # placeholder line so the manual-fallback form says what belongs here instead of
+        # silently omitting the section.
+        return [_section_header(section.get("title", "Job-specific requirements"), st),
+                _p("(job-specific items appear here)", st["caption"])]
+    if typ == "expected_materials":
+        # Expected-materials receipt list (Material receipts M2): the rows are per-JOB
+        # runtime data (D1 job_expected_materials), unknowable to a blank template — title
+        # + an explicit placeholder, mirroring job_requirements (never a silent omission).
+        return [_section_header(section.get("title", "Expected materials"), st),
+                _p("(this job's expected materials appear here on screen — record receipts "
+                   "under Deliveries Received)", st["caption"])]
     logger.warning("form_pdf: unknown section type %r — skipped (blank)", typ)
     return []
 

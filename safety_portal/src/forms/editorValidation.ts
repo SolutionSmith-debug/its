@@ -193,6 +193,44 @@ function validateSection(s: Section, idx: number, topLevel: string[], errors: st
         if (!b.body || !b.body.trim()) errors.push(`${where}: block ${bi + 1} has no body text.`);
       });
       return;
+    // guidance / form_link (SOP daily form, slice D1): read-only in the builder — the
+    // definition is authored via the git publish pipeline. Mirror the worker's
+    // structural checks only (no catalog lookup client-side; the server backstops the
+    // form_link parent-existence rule). Neither contributes a top-level value key.
+    case "guidance":
+      if (!s.heading || !s.heading.trim()) errors.push(`${where} (guidance) needs a heading.`);
+      if (!s.blocks || s.blocks.length === 0) {
+        errors.push(`${where} (guidance) needs at least one block.`);
+        return;
+      }
+      s.blocks.forEach((b, bi) => {
+        if (b.type === "p" && (!b.text || !b.text.trim())) {
+          errors.push(`${where}: guidance paragraph ${bi + 1} is empty.`);
+        } else if (b.type === "bullets" && (!b.items || b.items.length === 0 || b.items.some((x) => !x || !x.trim()))) {
+          errors.push(`${where}: guidance bullet list ${bi + 1} has an empty item.`);
+        } else if (b.type === "callout" && (!b.text || !b.text.trim())) {
+          errors.push(`${where}: guidance callout ${bi + 1} is empty.`);
+        }
+      });
+      return;
+    case "form_link":
+      if (!s.label || !s.label.trim()) errors.push(`${where} (form link) needs a label.`);
+      if (!s.parent_form_code || !SLUG_RE.test(s.parent_form_code)) {
+        errors.push(`${where} (form link) needs a valid form-type code (lowercase letters, digits, hyphens).`);
+      }
+      return;
+    // job_requirements (slice D4): read-only in the builder like guidance/form_link — the
+    // placeholder is authored in the definition via the git publish pipeline. Its key IS a
+    // top-level value key (the answers array files there), so it joins the uniqueness check.
+    case "job_requirements":
+      checkSectionKey(s.key, where, topLevel, errors);
+      return;
+    // expected_materials (Material receipts M2): read-only in the builder like
+    // job_requirements. It files NO values under its key, but the key is still RESERVED in
+    // the value namespace (mirrors worker/publishValidation.ts), so it joins the check.
+    case "expected_materials":
+      checkSectionKey(s.key, where, topLevel, errors);
+      return;
   }
 }
 

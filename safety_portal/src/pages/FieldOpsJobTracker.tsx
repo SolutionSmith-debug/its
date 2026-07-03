@@ -1,282 +1,20 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import type { FormEvent } from "react";
 import * as api from "../lib/fieldops_jobtracker";
-import * as checklist from "../lib/fieldops_checklist";
 import { fetchPersonnelList, assignPersonnel, fetchMyCrew, type PersonnelRow, type MyCrewMember } from "../lib/fieldops_personnel";
 import { fetchEquipmentList, moveEquipment } from "../lib/fieldops_equipment";
 import { useAuth } from "../lib/auth";
 import { PageShell } from "../components/PageShell";
+import { ChipX } from "../components/ChipX";
+import { ExpectedMaterialsSection } from "../components/ExpectedMaterialsSection";
+import { InlineRowMsg, SectionError, errMsg, type RowFeedback } from "../components/myTasksShared";
+import { JobDailyRequirementsSection } from "../components/JobDailyRequirementsSection";
+import { statusLabel } from "../lib/labels";
 
-const ITEM_TYPES: checklist.ChecklistItemType[] = ["form_linked", "manual_attest", "count", "inspection"];
-
-// Short human summary of an item's type-specific payload for the list rows.
-function itemMeta(item: { item_type: string; form_code: string | null; target_count: number | null }): string {
-  if (item.item_type === "form_linked" || item.item_type === "inspection") return `${item.item_type} · ${item.form_code ?? "—"}`;
-  if (item.item_type === "count") return `count ≥ ${item.target_count ?? "?"}`;
-  return item.item_type;
-}
-
-// A reusable "add / edit a checklist item" form: label + type, plus form_code (form_linked/inspection)
-// or target_count (count). Controlled by the parent's draft state. onSubmit gets the built ItemInput.
-function ItemForm({
-  label,
-  draft,
-  onChange,
-  onSubmit,
-  busy,
-  submitLabel,
-}: {
-  label: string;
-  draft: checklist.ItemInput;
-  onChange: (next: checklist.ItemInput) => void;
-  onSubmit: (e: FormEvent) => void;
-  busy: boolean;
-  submitLabel: string;
-}) {
-  const set = (patch: Partial<checklist.ItemInput>) => onChange({ ...draft, ...patch });
-  return (
-    <form onSubmit={onSubmit} className="dash-row" aria-label={label}>
-      <input
-        aria-label={`${label} label`}
-        value={draft.label}
-        onChange={(e) => set({ label: e.target.value })}
-        placeholder="Item label"
-        maxLength={256}
-      />{" "}
-      <select
-        aria-label={`${label} type`}
-        value={draft.item_type}
-        onChange={(e) => set({ item_type: e.target.value as checklist.ChecklistItemType })}
-      >
-        {ITEM_TYPES.map((t) => (
-          <option key={t} value={t}>{t}</option>
-        ))}
-      </select>{" "}
-      {(draft.item_type === "form_linked" || draft.item_type === "inspection") && (
-        <input
-          aria-label={`${label} form code`}
-          value={draft.form_code ?? ""}
-          onChange={(e) => set({ form_code: e.target.value })}
-          placeholder="Form code"
-          maxLength={64}
-        />
-      )}
-      {draft.item_type === "count" && (
-        <input
-          aria-label={`${label} target count`}
-          value={draft.target_count ?? ""}
-          onChange={(e) => set({ target_count: e.target.value === "" ? undefined : Number(e.target.value) })}
-          placeholder="Target N"
-          inputMode="numeric"
-          size={5}
-        />
-      )}{" "}
-      <button type="submit" disabled={busy} className="btn btn--primary">{submitLabel}</button>
-    </form>
-  );
-}
-
-const EMPTY_ITEM: checklist.ItemInput = { item_type: "manual_attest", label: "" };
-
-// ── Daily checklist editor (Assigned-Tasks S2) ─────────────────────────────────────────────────────
-// Mounted on the Job Tracker job detail, gated cap.checklist.manage (admin). Renders the job's
-// EFFECTIVE merged checklist (default ⊕ this job's overrides), and lets the admin: add a job-specific
-// item, hide (suppress) / un-hide a default item for the job, and edit the global default (add / delete
-// its items — propagating to every un-overridden job). Self-contained state; the Worker re-gates.
-function DailyChecklistEditor({ jobId }: { jobId: string }) {
-  const [job, setJob] = useState<checklist.JobChecklist | null>(null);
-  const [def, setDef] = useState<checklist.DefaultChecklist | null>(null);
-  const [editDefaultOpen, setEditDefaultOpen] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
-  const [jobDraft, setJobDraft] = useState<checklist.ItemInput>(EMPTY_ITEM);
-  const [defDraft, setDefDraft] = useState<checklist.ItemInput>(EMPTY_ITEM);
-
-  async function reload() {
-    try {
-      setJob(await checklist.fetchJobChecklist(jobId));
-    } catch {
-      setMsg({ ok: false, text: "Could not load the job checklist." });
-    }
-  }
-  async function reloadDefault() {
-    try {
-      setDef(await checklist.fetchDefaultChecklist());
-    } catch {
-      setMsg({ ok: false, text: "Could not load the default checklist." });
-    }
-  }
-
-  useEffect(() => {
-    void reload();
-    // Reloads whenever the open job changes.
-  }, [jobId]);
-
-  useEffect(() => {
-    if (editDefaultOpen && def === null) void reloadDefault();
-  }, [editDefaultOpen]);
-
-  // Run a mutation, surface a message, and reload the affected view(s). `also` reloads the default too.
-  async function run(fn: () => Promise<unknown>, okText: string, also = false) {
-    if (busy) return;
-    setBusy(true);
-    setMsg(null);
-    try {
-      await fn();
-      await reload();
-      if (also) await reloadDefault();
-      setMsg({ ok: true, text: okText });
-    } catch (err) {
-      setMsg({ ok: false, text: err instanceof Error ? err.message : "Checklist update failed." });
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  function submitAddJobItem(e: FormEvent) {
-    e.preventDefault();
-    if (!jobDraft.label.trim()) {
-      setMsg({ ok: false, text: "Item label is required." });
-      return;
-    }
-    void run(async () => {
-      await checklist.addJobItem(jobId, jobDraft);
-      setJobDraft(EMPTY_ITEM);
-    }, "Checklist item added.");
-  }
-
-  function submitAddDefaultItem(e: FormEvent) {
-    e.preventDefault();
-    if (!defDraft.label.trim()) {
-      setMsg({ ok: false, text: "Item label is required." });
-      return;
-    }
-    void run(async () => {
-      await checklist.addDefaultItem(defDraft);
-      setDefDraft(EMPTY_ITEM);
-    }, "Default item added.", true);
-  }
-
-  return (
-    <section className="card dash-section" aria-label="Daily checklist">
-      <h3 className="dash-detail__h2">Daily checklist</h3>
-      <p className="dash-card__sub muted">
-        The manager's daily Progress-Report checklist for this job — the shared default, tailored here.
-      </p>
-      {msg && <p className={`banner ${msg.ok ? "banner--ok" : "banner--err"}`}>{msg.text}</p>}
-
-      {job === null ? (
-        <div className="muted">Loading checklist…</div>
-      ) : (
-        <>
-          {job.items.length ? (
-            <ul className="dash-tasklist" aria-label="Effective checklist">
-              {job.items.map((it) => (
-                <li key={`${it.origin}-${it.source_item_id}`}>
-                  <span className={it.origin === "override" ? "dash-pill dash-pill--warn" : "dash-pill"}>{it.origin}</span>{" "}
-                  {it.label} <span className="muted">— {itemMeta(it)}</span>{" "}
-                  {it.origin === "default" ? (
-                    <button
-                      type="button"
-                      className="btn btn--secondary"
-                      aria-label={`Hide ${it.label}`}
-                      disabled={busy}
-                      onClick={() => run(() => checklist.suppressDefaultItem(jobId, it.source_item_id), "Item hidden for this job.")}
-                    >
-                      Hide
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      className="btn btn--danger"
-                      aria-label={`Remove ${it.label}`}
-                      disabled={busy}
-                      onClick={() => run(() => checklist.deleteJobItem(jobId, it.source_item_id), "Item removed.")}
-                    >
-                      Remove
-                    </button>
-                  )}
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <div className="dash-unavail">No checklist items.</div>
-          )}
-
-          {job.suppressed.length > 0 && (
-            <div className="dash-row" aria-label="Hidden default items">
-              <span className="dash-card__label">Hidden here:</span>{" "}
-              {job.suppressed.map((s) => (
-                <span className="dash-chip" key={s.source_item_id}>
-                  {s.label}{" "}
-                  <button
-                    type="button"
-                    className="btn btn--edit"
-                    aria-label={`Unhide ${s.label}`}
-                    disabled={busy}
-                    onClick={() => run(() => checklist.unsuppressDefaultItem(jobId, s.source_item_id), "Item restored for this job.")}
-                  >
-                    Unhide
-                  </button>
-                </span>
-              ))}
-            </div>
-          )}
-
-          <ItemForm
-            label="Add checklist item"
-            draft={jobDraft}
-            onChange={setJobDraft}
-            onSubmit={submitAddJobItem}
-            busy={busy}
-            submitLabel="Add item"
-          />
-        </>
-      )}
-
-      <div className="dash-row">
-        <button type="button" className="btn btn--edit" onClick={() => setEditDefaultOpen((v) => !v)}>
-          {editDefaultOpen ? "Hide default editor" : "Edit shared default"}
-        </button>
-      </div>
-
-      {editDefaultOpen && (
-        <fieldset className="dash-section" aria-label="Default checklist">
-          <legend className="dash-card__label">Shared default (applies to every un-tailored job)</legend>
-          {def === null ? (
-            <div className="muted">Loading default…</div>
-          ) : def.items.length ? (
-            <ul className="dash-tasklist">
-              {def.items.map((it) => (
-                <li key={it.id}>
-                  {it.label} <span className="muted">— {itemMeta(it)}</span>{" "}
-                  <button
-                    type="button"
-                    className="btn btn--danger"
-                    aria-label={`Delete default ${it.label}`}
-                    disabled={busy}
-                    onClick={() => run(() => checklist.deleteDefaultItem(it.id), "Default item deleted.", true)}
-                  >
-                    Delete
-                  </button>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <div className="dash-unavail">No default items.</div>
-          )}
-          <ItemForm
-            label="Add default checklist item"
-            draft={defDraft}
-            onChange={setDefDraft}
-            onSubmit={submitAddDefaultItem}
-            busy={busy}
-            submitLabel="Add to default"
-          />
-        </fieldset>
-      )}
-    </section>
-  );
+// R7 — a load-failure that owns a working Retry (never a dead banner, never a lying empty state).
+interface RetryableError {
+  text: string;
+  retry: () => void;
 }
 
 // epoch SECONDS → ×1000 for JS Date
@@ -379,14 +117,10 @@ function CcEditor({ label, ccs, onChange }: { label: string; ccs: string[]; onCh
             maxLength={320}
             onChange={(e) => onChange(ccs.map((c, j) => (j === i ? e.target.value : c)))}
           />{" "}
-          <button
-            type="button"
-            className="chip-x"
-            aria-label={`Remove ${label} ${i + 1}`}
-            onClick={() => onChange(ccs.filter((_, j) => j !== i))}
-          >
-            ✕
-          </button>{" "}
+          <ChipX
+            ariaLabel={`Remove ${label} ${i + 1}`}
+            onConfirm={() => onChange(ccs.filter((_, j) => j !== i))}
+          />{" "}
         </span>
       ))}
       <button
@@ -460,31 +194,50 @@ function RoutingFields({ routing, onChange }: { routing: RoutingForm; onChange: 
   );
 }
 
-export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
+export function FieldOpsJobTracker({
+  onBack,
+  initialJobId,
+}: {
+  onBack: () => void;
+  /** R7 — deep-link straight into a job's detail (the My Tasks "Log time" quick action / job-group
+   *  links, routed through App). Consumed once on mount; absent → the normal list. */
+  initialJobId?: string | null;
+}) {
   const [view, setView] = useState<"list" | "detail">("list");
   const [jobs, setJobs] = useState<api.JobRow[]>([]);
   const [statusFilter, setStatusFilter] = useState<api.JobStatusFilter>("active");
   const [cursor, setCursor] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // R7 never-silent: list-area failures carry a working Retry (initial load / load-more / a failed
+  // detail open all land here); reloadToken re-runs the list effect for the initial-load Retry.
+  const [listError, setListError] = useState<RetryableError | null>(null);
+  const [reloadToken, setReloadToken] = useState(0);
+  // R7 — the viewer's own placement (worker viewer_current_job): the list badges "Your job".
+  const [viewerCurrentJob, setViewerCurrentJob] = useState<string | null>(null);
 
   // Detail state
   const [selectedJob, setSelectedJob] = useState<api.JobDetail | null>(null);
+  // R7 — the viewer's own linked roster row (worker-resolved), backing the "Me (<name>)" log-time
+  // default. null = the account has no linked active personnel (the form says so explicitly).
+  const [viewerPersonnel, setViewerPersonnel] = useState<api.ViewerPersonnel | null>(null);
   const [taskCursor, setTaskCursor] = useState<string | null>(null);
   const [timeCursor, setTimeCursor] = useState<string | null>(null);
   const [inspCursor, setInspCursor] = useState<string | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  // R7 never-silent: detail-area failures (leg load-more, post-mutation refresh) with Retry.
+  const [detailError, setDetailError] = useState<RetryableError | null>(null);
 
   // Write (P2.3; Worker re-gates server-side — these caps drive UI affordances only).
   const { user } = useAuth();
   const caps = user?.capabilities ?? [];
   const canManage = caps.includes("cap.jobtracker.manage"); // create / close / lifecycle / routing (admin)
+  // D4: the per-job daily-form requirements editor (admin authoring — the Worker re-gates).
+  const canChecklist = caps.includes("cap.checklist.manage");
   // Assigned-Tasks S1: task authority (create + reassign a task) is cap.jobtracker.manage OR
   // cap.tasks.assign, so a manager gets the add-task + per-task-assign controls (the Worker re-gates,
   // incl. the subcontractor-target guard). Job create / close / lifecycle / routing stay canManage-only.
   const canAssignTasks = canManage || caps.includes("cap.tasks.assign");
   const canOwnTasks = caps.includes("cap.tasks.own"); // change a task's own status
-  const canManageChecklist = caps.includes("cap.checklist.manage"); // S2: edit the daily-checklist template
   const canLogTime = caps.includes("cap.time.log"); // log a time entry against the open job
   // Unified job-create flow: per-control caps (convenience — the Worker re-gates every call). A
   // manager (P2.6) holds crew.assign + equipment.field but NOT jobtracker.manage → can place crew /
@@ -495,8 +248,20 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
   // time only for THEMSELVES or crew THEY created. Their log-time picker offers that scoped list
   // (fetched below) rather than the job's full placed crew (which the Worker would 403 anyway).
   const isSubcontractor = canLogTime && !caps.includes("cap.personnel.manage");
+  // R7 — mirror of the Worker's task-authority tiers (fieldops_task_write.ts), UI-convenience only:
+  //   • assign-only (manager: cap.tasks.assign without cap.jobtracker.manage) — checkTaskTarget 403s
+  //     any assign target whose linked account role isn't 'submitter' (no login → no role → 403),
+  //     and checkTaskCurrentOwner 403s touching a task held by a non-submitter. Options disable.
+  //   • own-only (cap.tasks.own without either authority cap) — checkTaskStatusOwnership 403s any
+  //     task not assigned to the actor's own linked personnel. Status control renders only there.
+  const isAssignOnlyActor = canAssignTasks && !canManage;
+  const isOwnOnlyActor = canOwnTasks && !canAssignTasks;
   const [actionBusy, setActionBusy] = useState(false);
   const [actionMsg, setActionMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  // R7 — per-task busy + inline feedback for the OPTIMISTIC status update (the R2 My-Tasks
+  // pattern: apply locally, revert ONLY the acted-on row on failure, feedback lands on the row).
+  const [taskBusyIds, setTaskBusyIds] = useState<ReadonlySet<number>>(new Set());
+  const [taskRowMsgs, setTaskRowMsgs] = useState<Record<number, RowFeedback>>({});
   // New-job form (list view)
   const [newJobName, setNewJobName] = useState("");
   const [newJobClient, setNewJobClient] = useState("");
@@ -509,11 +274,15 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
   const [lifecycleSel, setLifecycleSel] = useState<api.JobLifecycle>("active");
   const [editContactsOpen, setEditContactsOpen] = useState(false);
   const [editRouting, setEditRouting] = useState<RoutingForm>(EMPTY_ROUTING);
-  // Time-log form (detail)
+  // Time-log form (detail). logPerson holds the SUBJECT personnel id as a string; "" = the explicit
+  // "Job-level (no person)" option. R7: the ambiguous "— me / unassigned —" default is gone — when
+  // the viewer has a linked roster row the default is their own id ("Me (<name>)"); hoursError is
+  // the inline client-side 0<h≤24 validation (the server independently 422s invalid_hours, R1).
   const [logHours, setLogHours] = useState("");
+  const [hoursError, setHoursError] = useState<string | null>(null);
   const [logNotes, setLogNotes] = useState("");
   const [logTask, setLogTask] = useState("");
-  const [logPerson, setLogPerson] = useState(""); // log-time subject (personnel id, "" = me/unassigned)
+  const [logPerson, setLogPerson] = useState("");
   // Unified job-create flow (Slice 2/3): assign-crew + assign-equipment pickers on the detail view,
   // plus the one-shot "finish setting up" nudge shown when a create routes into the new job's detail.
   const [crewOpts, setCrewOpts] = useState<PersonnelRow[]>([]);
@@ -523,36 +292,47 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
   const [setupBanner, setSetupBanner] = useState<string | null>(null);
   // Slice T — a subcontractor's own loggable crew (self + created), for the time-log person picker.
   const [myCrew, setMyCrew] = useState<MyCrewMember[]>([]);
+  // R7 never-silent: picker/myCrew load failures surface with Retry instead of a silent empty list.
+  const [pickerError, setPickerError] = useState<string | null>(null);
+  const [myCrewError, setMyCrewError] = useState<string | null>(null);
 
-  // Reload the list whenever the status filter changes (and on mount).
+  // Reload the list whenever the status filter changes (and on mount); reloadToken re-runs it for
+  // the error-block Retry.
   useEffect(() => {
     let live = true;
     setLoading(true);
-    setError(null);
+    setListError(null);
     api
       .fetchJobList(statusFilter)
       .then((data) => {
         if (!live) return;
         setJobs(data.jobs);
         setCursor(data.next_cursor);
+        setViewerCurrentJob(data.viewer_current_job ?? null);
       })
-      .catch(() => live && setError("Failed to load jobs."))
+      .catch(
+        () =>
+          live &&
+          setListError({ text: "Failed to load jobs.", retry: () => setReloadToken((t) => t + 1) }),
+      )
       .finally(() => live && setLoading(false));
     return () => {
       live = false;
     };
-  }, [statusFilter]);
+  }, [statusFilter, reloadToken]);
 
   // Load the crew + equipment pickers when the detail view is open and the actor can assign. These
   // are the full active roster / equipment set (not job-scoped); reloaded after each mutation so the
-  // "already placed here" exclusion stays current. A load failure falls back to an empty option list
-  // (the control still renders) — it never blocks the detail view.
+  // "already placed here" exclusion stays current. R7 never-silent: a load failure keeps the control
+  // rendered on the previous options AND surfaces a visible error with Retry (it was a silent
+  // catch-into-empty — A4 swallow site 3). It still never blocks the detail view.
   async function reloadPickers() {
+    const failed: string[] = [];
     if (canAssignCrew) {
       try {
         setCrewOpts((await fetchPersonnelList()).personnel);
       } catch {
-        setCrewOpts([]);
+        failed.push("crew");
       }
     }
     if (canFieldEquip) {
@@ -560,9 +340,10 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
         const r = await fetchEquipmentList();
         setEquipOpts(r.equipment.map((eq) => ({ id: eq.id, name: eq.name, identifier: eq.identifier })));
       } catch {
-        setEquipOpts([]);
+        failed.push("equipment");
       }
     }
+    setPickerError(failed.length ? `Couldn't load the ${failed.join(" and ")} picker options.` : null);
   }
 
   useEffect(() => {
@@ -571,12 +352,17 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
   }, [view, selectedJob?.job_id, canAssignCrew, canFieldEquip]);
 
   // Slice T — load a subcontractor's own loggable crew (self + created) for the time-log picker.
+  // R7 never-silent: failure surfaces next to the log-time form with Retry (A4 swallow site 4).
+  function loadMyCrew() {
+    fetchMyCrew()
+      .then((m) => {
+        setMyCrew(m);
+        setMyCrewError(null);
+      })
+      .catch(() => setMyCrewError("Couldn't load your crew for the time log."));
+  }
   useEffect(() => {
-    if (view === "detail" && selectedJob && isSubcontractor) {
-      fetchMyCrew()
-        .then(setMyCrew)
-        .catch(() => setMyCrew([]));
-    }
+    if (view === "detail" && selectedJob && isSubcontractor) loadMyCrew();
   }, [view, selectedJob?.job_id, isSubcontractor]);
 
   async function loadMore() {
@@ -586,26 +372,37 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
       const data = await api.fetchJobList(statusFilter, cursor);
       setJobs((prev) => [...prev, ...data.jobs]);
       setCursor(data.next_cursor);
+      setListError(null);
     } catch {
-      setError("Failed to load more jobs.");
+      setListError({ text: "Failed to load more jobs.", retry: () => void loadMore() });
     } finally {
       setLoading(false);
     }
   }
 
-  function handleCardClick(job: api.JobRow) {
+  // Open a job's detail by id (card click, deep-link, retry, post-create). R7: a failed detail
+  // fetch RETURNS to the list with an error+Retry — the old path stranded the view mid-open with
+  // the failure banner rendered only on the (hidden) list (A4 swallow adjacent).
+  function openJobById(jobId: string) {
     setView("detail");
     setSelectedJob(null);
+    setViewerPersonnel(null);
     setDetailLoading(true);
+    setDetailError(null);
     setEditContactsOpen(false);
     setEditRouting(EMPTY_ROUTING);
     setSetupBanner(null); // opening an existing job from the list is not the create-nudge path
     setCrewToAdd("");
     setEquipToAdd("");
+    setTaskRowMsgs({});
+    setHoursError(null);
     api
-      .fetchJobDetail(job.job_id)
+      .fetchJobDetail(jobId)
       .then((res) => {
         setSelectedJob(res.job);
+        setViewerPersonnel(res.viewer_personnel ?? null);
+        // R7 — the log-time subject defaults to the viewer's OWN roster row when linked ("Me").
+        setLogPerson(res.viewer_personnel ? String(res.viewer_personnel.id) : "");
         // Seed the lifecycle selector from the legacy status (detail carries no lifecycle field):
         // active → 'active', anything else → 'inactive'. An explicit selector change overrides it.
         setLifecycleSel(res.job.status === "active" ? "active" : "inactive");
@@ -614,18 +411,40 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
         setInspCursor(res.cursors.insp);
         setDetailLoading(false);
       })
-      .catch(() => setError("Failed to load job details."));
+      .catch(() => {
+        setView("list");
+        setDetailLoading(false);
+        setListError({ text: "Failed to load job details.", retry: () => openJobById(jobId) });
+      });
   }
+
+  function handleCardClick(job: api.JobRow) {
+    openJobById(job.job_id);
+  }
+
+  // R7 — deep-link consumption: mount with an initialJobId → open that job's detail directly.
+  const deepLinked = useRef(false);
+  useEffect(() => {
+    if (initialJobId && !deepLinked.current) {
+      deepLinked.current = true;
+      openJobById(initialJobId);
+    }
+    // Mount-only by design (the prop is a one-shot deep link, keyed by App on change).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   function handleBack() {
     if (view === "detail") {
       setView("list");
       setSelectedJob(null);
+      setViewerPersonnel(null);
       setTaskCursor(null);
       setTimeCursor(null);
       setInspCursor(null);
-      setError(null);
+      setListError(null);
+      setDetailError(null);
       setSetupBanner(null);
+      setTaskRowMsgs({});
     } else {
       onBack();
     }
@@ -650,8 +469,11 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
       if (leg === "task") setTaskCursor(res.cursors.tasks);
       else if (leg === "time") setTimeCursor(res.cursors.time);
       else setInspCursor(res.cursors.insp);
+      setDetailError(null);
     } catch {
-      setError("Failed to load more.");
+      // R7: this error used to land in the LIST-only banner — invisible from the open detail
+      // (A4 swallow adjacent). It now renders in the detail with a working Retry.
+      setDetailError({ text: "Failed to load more.", retry: () => void loadMoreLeg(leg) });
     } finally {
       setDetailLoading(false);
     }
@@ -674,9 +496,25 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
     if (!selectedJob) return;
     const res = await api.fetchJobDetail(selectedJob.job_id);
     setSelectedJob(res.job);
+    setViewerPersonnel(res.viewer_personnel ?? null);
     setTaskCursor(res.cursors.tasks);
     setTimeCursor(res.cursors.time);
     setInspCursor(res.cursors.insp);
+  }
+
+  // R7 — post-mutation refresh, TRY-SPLIT from the mutation itself (the R2 standard): the mutation
+  // LANDED, so a refetch hiccup must never flip the success message into a failure — the on-screen
+  // data just goes stale, and this says so with a working Retry.
+  async function refreshDetailAfterMutation() {
+    try {
+      await reloadDetail();
+      setDetailError(null);
+    } catch {
+      setDetailError({
+        text: "Saved, but refreshing the job failed — the view may be out of date.",
+        retry: () => void refreshDetailAfterMutation(),
+      });
+    }
   }
 
   async function reloadList() {
@@ -710,10 +548,13 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
       await reloadList();
       // Slice 3: route into the new job's detail with a one-shot "finish setting up" nudge so the
       // office immediately assigns crew / equipment / tasks. If the detail fetch fails, stay on the
-      // list — the job is created and the success toast still shows.
+      // list — the job is created and the success toast still shows, and (R7, A4 swallow site 5)
+      // the failed open is SAID OUT LOUD with a Retry instead of silently dumping back to the list.
       try {
         const res = await api.fetchJobDetail(created.job_id);
         setSelectedJob(res.job);
+        setViewerPersonnel(res.viewer_personnel ?? null);
+        setLogPerson(res.viewer_personnel ? String(res.viewer_personnel.id) : "");
         setLifecycleSel(res.job.status === "active" ? "active" : "inactive");
         setTaskCursor(res.cursors.tasks);
         setTimeCursor(res.cursors.time);
@@ -725,7 +566,11 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
         setSetupBanner(created.job_id);
         setView("detail");
       } catch {
-        /* detail fetch failed — stay on the list; the job was still created */
+        // The job WAS created — only the detail open failed. Stay on the list, say so, offer Retry.
+        setListError({
+          text: `Job ${created.job_id} was created, but opening it failed.`,
+          retry: () => openJobById(created.job_id),
+        });
       }
       setActionMsg({ ok: true, text: `Job ${created.job_id} created.` });
     } catch (err) {
@@ -737,20 +582,23 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
 
   // Lifecycle selector (P2.5) — replaces the bare Close button. Setting it explicitly persists the
   // chosen value through the reload (which would otherwise re-derive only active/inactive from status).
+  // R7: every handler below TRY-SPLITS mutation vs refetch (refreshDetailAfterMutation) — a landed
+  // mutation keeps its success message even when the follow-up refetch fails.
   async function submitLifecycle(lifecycle: api.JobLifecycle) {
     if (!selectedJob || actionBusy) return;
     setActionBusy(true);
     setActionMsg(null);
     try {
       await api.setLifecycle(selectedJob.job_id, lifecycle);
-      setLifecycleSel(lifecycle);
-      await reloadDetail();
-      setActionMsg({ ok: true, text: `Lifecycle set to ${lifecycle}.` });
     } catch (err) {
       setActionMsg({ ok: false, text: err instanceof Error ? err.message : "Lifecycle update failed." });
-    } finally {
       setActionBusy(false);
+      return;
     }
+    setLifecycleSel(lifecycle);
+    setActionMsg({ ok: true, text: `Lifecycle set to ${lifecycle}.` });
+    await refreshDetailAfterMutation();
+    setActionBusy(false);
   }
 
   async function submitEditContacts(e: FormEvent) {
@@ -760,15 +608,16 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
     setActionMsg(null);
     try {
       await api.editContacts(selectedJob.job_id, routingPayload(editRouting));
-      setEditContactsOpen(false);
-      setEditRouting(EMPTY_ROUTING);
-      await reloadDetail();
-      setActionMsg({ ok: true, text: "Routing / contacts updated." });
     } catch (err) {
       setActionMsg({ ok: false, text: err instanceof Error ? err.message : "Routing update failed." });
-    } finally {
       setActionBusy(false);
+      return;
     }
+    setEditContactsOpen(false);
+    setEditRouting(EMPTY_ROUTING);
+    setActionMsg({ ok: true, text: "Routing / contacts updated." });
+    await refreshDetailAfterMutation();
+    setActionBusy(false);
   }
 
   async function submitAddTask(e: FormEvent) {
@@ -787,56 +636,86 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
         description,
         ...(personnelId !== undefined ? { personnel_id: personnelId } : {}),
       });
-      setTaskDesc("");
-      setTaskPerson("");
-      await reloadDetail();
-      setActionMsg({ ok: true, text: "Task added." });
     } catch (err) {
       setActionMsg({ ok: false, text: err instanceof Error ? err.message : "Add task failed." });
-    } finally {
       setActionBusy(false);
+      return;
     }
+    setTaskDesc("");
+    setTaskPerson("");
+    setActionMsg({ ok: true, text: "Task added." });
+    await refreshDetailAfterMutation();
+    setActionBusy(false);
   }
 
-  // (Re)assign or clear a task's assignee (cap.jobtracker.manage). Options are the job's placed crew.
+  // (Re)assign or clear a task's assignee (task authority). Options are the job's placed crew;
+  // R7: ineligible options are pre-disabled for an assign-only manager (see assignOptionState).
   async function submitReassignTask(taskId: number, personId: number | null) {
     if (!selectedJob || actionBusy) return;
     setActionBusy(true);
     setActionMsg(null);
     try {
       await api.reassignTask(taskId, personId);
-      await reloadDetail();
-      setActionMsg({ ok: true, text: personId === null ? "Task unassigned." : "Task reassigned." });
     } catch (err) {
       setActionMsg({ ok: false, text: err instanceof Error ? err.message : "Reassign failed." });
-    } finally {
       setActionBusy(false);
+      return;
     }
+    setActionMsg({ ok: true, text: personId === null ? "Task unassigned." : "Task reassigned." });
+    await refreshDetailAfterMutation();
+    setActionBusy(false);
+  }
+
+  // R7 — OPTIMISTIC per-row status change (the R2 My-Tasks pattern): apply locally, revert ONLY
+  // this row on failure, per-row busy + inline feedback. No whole-detail refetch — the applied
+  // local state IS the mutation's result.
+  function setTaskRowMsg(id: number, msg: RowFeedback | null) {
+    setTaskRowMsgs((m) => {
+      const next = { ...m };
+      if (msg) next[id] = msg;
+      else delete next[id];
+      return next;
+    });
   }
 
   async function changeTaskStatus(taskId: number, status: api.TaskStatus) {
-    if (actionBusy) return;
-    setActionBusy(true);
-    setActionMsg(null);
+    if (taskBusyIds.has(taskId)) return;
+    setTaskBusyIds((s) => new Set(s).add(taskId));
+    setTaskRowMsg(taskId, null);
+    const prevStatus = selectedJob?.tasks.find((t) => t.id === taskId)?.status;
+    setSelectedJob((j) =>
+      j ? { ...j, tasks: j.tasks.map((t) => (t.id === taskId ? { ...t, status } : t)) } : j,
+    );
     try {
       await api.setTaskStatus(taskId, status);
-      await reloadDetail();
-      setActionMsg({ ok: true, text: "Task updated." });
+      setTaskRowMsg(taskId, { ok: true, text: "Updated." });
     } catch (err) {
-      setActionMsg({ ok: false, text: err instanceof Error ? err.message : "Task update failed." });
+      if (prevStatus !== undefined) {
+        setSelectedJob((j) =>
+          j ? { ...j, tasks: j.tasks.map((t) => (t.id === taskId ? { ...t, status: prevStatus } : t)) } : j,
+        );
+      }
+      setTaskRowMsg(taskId, { ok: false, text: errMsg(err, "Update failed.") });
     } finally {
-      setActionBusy(false);
+      setTaskBusyIds((s) => {
+        const next = new Set(s);
+        next.delete(taskId);
+        return next;
+      });
     }
   }
 
   async function submitLogTime(e: FormEvent) {
     e.preventDefault();
     if (!selectedJob || actionBusy) return;
-    const hours = logHours.trim() === "" ? undefined : Number(logHours);
-    if (hours !== undefined && (!Number.isFinite(hours) || hours < 0)) {
-      setActionMsg({ ok: false, text: "Hours must be a non-negative number." });
+    // R7 — hours is REQUIRED, 0 < h ≤ 24, validated inline (the server independently 422s
+    // invalid_hours per R1; this is the client half of the same bound).
+    const hours = Number(logHours);
+    if (logHours.trim() === "" || !Number.isFinite(hours) || hours <= 0 || hours > 24) {
+      setHoursError("Enter the hours worked — more than 0, at most 24 (e.g. 7.5).");
       return;
     }
+    setHoursError(null);
     const taskId = logTask === "" ? undefined : Number(logTask);
     const personnelId = logPerson === "" ? undefined : Number(logPerson);
     setActionBusy(true);
@@ -845,22 +724,23 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
       await api.logTime({
         uuid: crypto.randomUUID(), // client-generated idempotency key (integrity-bar)
         job_id: selectedJob.job_id,
-        ...(hours !== undefined ? { hours } : {}),
+        hours,
         ...(taskId !== undefined ? { task_id: taskId } : {}),
         ...(personnelId !== undefined ? { personnel_id: personnelId } : {}),
         ...(logNotes.trim() ? { notes: logNotes.trim() } : {}),
       });
-      setLogHours("");
-      setLogNotes("");
-      setLogTask("");
-      setLogPerson("");
-      await reloadDetail();
-      setActionMsg({ ok: true, text: "Time logged." });
     } catch (err) {
       setActionMsg({ ok: false, text: err instanceof Error ? err.message : "Time log failed." });
-    } finally {
       setActionBusy(false);
+      return;
     }
+    setLogHours("");
+    setLogNotes("");
+    setLogTask("");
+    setLogPerson(viewerPersonnel ? String(viewerPersonnel.id) : ""); // back to the Me default
+    setActionMsg({ ok: true, text: "Time logged." });
+    await refreshDetailAfterMutation();
+    setActionBusy(false);
   }
 
   // ── Unified job-create flow: assign crew + equipment to the open job (Slice 2) ───────────────────
@@ -879,15 +759,16 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
     setActionMsg(null);
     try {
       await assignPersonnel(pid, selectedJob.job_id);
-      setCrewToAdd("");
-      await reloadDetail();
-      await reloadPickers();
-      setActionMsg({ ok: true, text: "Crew member placed on this job." });
     } catch (err) {
       setActionMsg({ ok: false, text: err instanceof Error ? err.message : "Assign failed." });
-    } finally {
       setActionBusy(false);
+      return;
     }
+    setCrewToAdd("");
+    setActionMsg({ ok: true, text: "Crew member placed on this job." });
+    await refreshDetailAfterMutation();
+    await reloadPickers();
+    setActionBusy(false);
   }
 
   async function removeCrew(personId: number) {
@@ -896,14 +777,15 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
     setActionMsg(null);
     try {
       await assignPersonnel(personId, null); // clear the placement (unassign)
-      await reloadDetail();
-      await reloadPickers();
-      setActionMsg({ ok: true, text: "Crew member removed from this job." });
     } catch (err) {
       setActionMsg({ ok: false, text: err instanceof Error ? err.message : "Remove failed." });
-    } finally {
       setActionBusy(false);
+      return;
     }
+    setActionMsg({ ok: true, text: "Crew member removed from this job." });
+    await refreshDetailAfterMutation();
+    await reloadPickers();
+    setActionBusy(false);
   }
 
   async function submitAssignEquip(e: FormEvent) {
@@ -918,19 +800,39 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
     setActionMsg(null);
     try {
       await moveEquipment(eid, { job_id: selectedJob.job_id });
-      setEquipToAdd("");
-      await reloadDetail();
-      await reloadPickers();
-      setActionMsg({ ok: true, text: "Equipment moved to this job." });
     } catch (err) {
       setActionMsg({ ok: false, text: err instanceof Error ? err.message : "Move failed." });
-    } finally {
       setActionBusy(false);
+      return;
     }
+    setEquipToAdd("");
+    setActionMsg({ ok: true, text: "Equipment moved to this job." });
+    await refreshDetailAfterMutation();
+    await reloadPickers();
+    setActionBusy(false);
   }
 
   if (view === "detail" && selectedJob) {
     const job = selectedJob;
+    // R7 — assign-picker option state, mirroring the Worker's checkTaskTarget: an assign-only
+    // manager may only target 'submitter'-linked personnel; a no-login person has NO role (NULL)
+    // and is 403'd too. Ineligible options render DISABLED with a hint instead of a guaranteed 403.
+    const assignOptionState = (p: api.DetailCrewMember): { disabled: boolean; hint: string } => {
+      if (!isAssignOnlyActor || p.account_role === "submitter") return { disabled: false, hint: "" };
+      return { disabled: true, hint: p.account_role ? ` (${p.account_role})` : " (no login)" };
+    };
+    // (W1 mirror) an assign-only manager may not touch a task currently HELD by a non-submitter —
+    // the whole assign select locks for such a task (owner resolved through the crew leg; an
+    // out-of-crew owner is unknown here, so it stays enabled and the Worker re-gates).
+    const taskAssignLocked = (t: api.Task): boolean => {
+      if (!isAssignOnlyActor || t.personnel_id == null) return false;
+      const owner = job.crew.find((p) => p.id === t.personnel_id);
+      return owner !== undefined && owner.account_role !== "submitter";
+    };
+    // R7 — status-control gating, mirroring checkTaskStatusOwnership: an own-only actor may only
+    // move tasks assigned to their OWN linked personnel; managers/admins are unrestricted.
+    const canTouchStatus = (t: api.Task): boolean =>
+      canOwnTasks && (!isOwnOnlyActor || (viewerPersonnel !== null && t.personnel_id === viewerPersonnel.id));
     return (
       <PageShell onHome={onBack}>
         <div className="dash-back-btn">
@@ -939,20 +841,26 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
 
         <div className="dash-detail__head">
           <h2 className="page__heading">{job.project_name}</h2>
-          <span className={jobPillClass(job.status)}>{job.status}</span>
+          <span className={jobPillClass(job.status)}>{statusLabel(job.status)}</span>
         </div>
         <p className="dash-card__sub muted">{(job.client?.name ?? "No client")} · {job.job_id}</p>
 
         {setupBanner === job.job_id && (
           <section className="card dash-section" aria-label="Finish setting up job">
-            <strong>Finish setting up {job.job_id}</strong> — assign crew, equipment, and tasks below to
-            get this job ready.{" "}
+            <strong>Finish setting up {job.job_id}</strong> — assign crew, equipment, tasks, and the
+            expected materials below to get this job ready.{" "}
             <button type="button" className="btn--secondary" onClick={() => setSetupBanner(null)}>Done</button>
           </section>
         )}
 
         {actionMsg && (
           <p className={`banner ${actionMsg.ok ? "banner--ok" : "banner--err"}`}>{actionMsg.text}</p>
+        )}
+        {detailError && (
+          <SectionError message={detailError.text} onRetry={detailError.retry} what="refreshing this job" />
+        )}
+        {pickerError && (
+          <SectionError message={pickerError} onRetry={() => void reloadPickers()} what="loading picker options" />
         )}
 
         {canAssignTasks && (
@@ -969,9 +877,15 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
                 Assign to:{" "}
                 <select value={taskPerson} onChange={(e) => setTaskPerson(e.target.value)} aria-label="Assign new task to">
                   <option value="">— unassigned —</option>
-                  {job.crew.map((p) => (
-                    <option key={p.id} value={p.id}>{p.name}</option>
-                  ))}
+                  {job.crew.map((p) => {
+                    const s = assignOptionState(p);
+                    return (
+                      <option key={p.id} value={p.id} disabled={s.disabled}>
+                        {p.name}
+                        {s.hint}
+                      </option>
+                    );
+                  })}
                 </select>
               </label>{" "}
               <button type="submit" disabled={actionBusy} className="btn btn--primary">Add task</button>
@@ -1040,15 +954,11 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
                   {canAssignCrew && (
                     <>
                       {" "}
-                      <button
-                        type="button"
-                        className="chip-x"
-                        aria-label={`Remove ${p.name} from crew`}
+                      <ChipX
+                        ariaLabel={`Remove ${p.name} from crew`}
                         disabled={actionBusy}
-                        onClick={() => removeCrew(p.id)}
-                      >
-                        ✕
-                      </button>
+                        onConfirm={() => removeCrew(p.id)}
+                      />
                     </>
                   )}
                 </span>
@@ -1080,46 +990,62 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
           <h3 className="dash-detail__h2">Tasks</h3>
           {job.tasks.length ? (
             <ul className="dash-tasklist">
-              {job.tasks.map((t) => (
-                <li key={t.id}>
-                  <span className={taskPillClass(t.status)}>{t.status}</span> {t.description}
-                  {t.personnel_name && !canAssignTasks ? <span className="muted"> — {t.personnel_name}</span> : null}
-                  {canOwnTasks && (
-                    <>
-                      {" "}
-                      <select
-                        aria-label={`Set status for task ${t.id}`}
-                        value={t.status}
-                        disabled={actionBusy}
-                        onChange={(e) => changeTaskStatus(t.id, e.target.value as api.TaskStatus)}
-                      >
-                        <option value="open">open</option>
-                        <option value="in_progress">in_progress</option>
-                        <option value="done">done</option>
-                      </select>
-                    </>
-                  )}
-                  {canAssignTasks && (
-                    <>
-                      {" "}
-                      <select
-                        aria-label={`Assign task ${t.id}`}
-                        value={t.personnel_id != null ? String(t.personnel_id) : ""}
-                        disabled={actionBusy}
-                        onChange={(e) => submitReassignTask(t.id, e.target.value === "" ? null : Number(e.target.value))}
-                      >
-                        <option value="">— unassigned —</option>
-                        {job.crew.map((p) => (
-                          <option key={p.id} value={p.id}>{p.name}</option>
-                        ))}
-                        {t.personnel_id != null && !job.crew.some((p) => p.id === t.personnel_id) && (
-                          <option value={t.personnel_id}>{t.personnel_name ?? `#${t.personnel_id}`}</option>
-                        )}
-                      </select>
-                    </>
-                  )}
-                </li>
-              ))}
+              {job.tasks.map((t) => {
+                const rowBusy = taskBusyIds.has(t.id);
+                const assignLocked = taskAssignLocked(t);
+                return (
+                  <li key={t.id}>
+                    <span className={taskPillClass(t.status)}>{statusLabel(t.status)}</span> {t.description}
+                    {t.personnel_name && !canAssignTasks ? <span className="muted"> — {t.personnel_name}</span> : null}
+                    {canTouchStatus(t) && (
+                      <>
+                        {" "}
+                        <select
+                          aria-label={`Set status for task ${t.id}`}
+                          value={t.status}
+                          disabled={rowBusy}
+                          onChange={(e) => changeTaskStatus(t.id, e.target.value as api.TaskStatus)}
+                        >
+                          <option value="open">{statusLabel("open")}</option>
+                          <option value="in_progress">{statusLabel("in_progress")}</option>
+                          <option value="done">{statusLabel("done")}</option>
+                        </select>
+                      </>
+                    )}
+                    {canAssignTasks && (
+                      <>
+                        {" "}
+                        <select
+                          aria-label={`Assign task ${t.id}`}
+                          value={t.personnel_id != null ? String(t.personnel_id) : ""}
+                          disabled={actionBusy || rowBusy || assignLocked}
+                          title={
+                            assignLocked
+                              ? "Managers can only reassign tasks held by subcontractor accounts."
+                              : undefined
+                          }
+                          onChange={(e) => submitReassignTask(t.id, e.target.value === "" ? null : Number(e.target.value))}
+                        >
+                          <option value="">— unassigned —</option>
+                          {job.crew.map((p) => {
+                            const s = assignOptionState(p);
+                            return (
+                              <option key={p.id} value={p.id} disabled={s.disabled}>
+                                {p.name}
+                                {s.hint}
+                              </option>
+                            );
+                          })}
+                          {t.personnel_id != null && !job.crew.some((p) => p.id === t.personnel_id) && (
+                            <option value={t.personnel_id}>{t.personnel_name ?? `#${t.personnel_id}`}</option>
+                          )}
+                        </select>
+                      </>
+                    )}
+                    {taskRowMsgs[t.id] ? <> <InlineRowMsg msg={taskRowMsgs[t.id]} /></> : null}
+                  </li>
+                );
+              })}
             </ul>
           ) : (
             <div className="dash-unavail">No tasks.</div>
@@ -1127,62 +1053,113 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
           {taskCursor && <LoadMoreBtn leg="task" />}
         </section>
 
-        {canManageChecklist && <DailyChecklistEditor jobId={job.job_id} />}
-
         <section className="card dash-section">
           <h3 className="dash-detail__h2">Time entries</h3>
-          {canLogTime && job.status === "active" && (
-            <form onSubmit={submitLogTime} className="dash-row" aria-label="Log time">
-              <input
-                value={logHours}
-                onChange={(e) => setLogHours(e.target.value)}
-                placeholder="Hours"
-                inputMode="decimal"
-                size={5}
-              />{" "}
-              <label className="dash-card__label">
-                For:{" "}
-                <select value={logPerson} onChange={(e) => setLogPerson(e.target.value)} aria-label="Log time for">
-                  <option value="">— me / unassigned —</option>
-                  {(isSubcontractor ? myCrew : job.crew).map((p) => (
-                    <option key={p.id} value={p.id}>{p.name}</option>
-                  ))}
-                </select>
-              </label>{" "}
-              <label className="dash-card__label">
-                Task:{" "}
-                <select value={logTask} onChange={(e) => setLogTask(e.target.value)} aria-label="Log time task">
-                  <option value="">— job-level —</option>
-                  {job.tasks.map((t) => (
-                    <option key={t.id} value={t.id}>{t.description}</option>
-                  ))}
-                </select>
-              </label>{" "}
-              <input
-                value={logNotes}
-                onChange={(e) => setLogNotes(e.target.value)}
-                placeholder="Notes (optional)"
-                maxLength={2000}
-              />{" "}
-              <button type="submit" disabled={actionBusy} className="btn--primary">Log time</button>
-            </form>
-          )}
+          {/* R7 — a closed job (legacy status 'closed' ⟺ jobs.active=0, which the Worker's
+              time-write job guard rejects) says so instead of silently dropping the form. */}
+          {canLogTime &&
+            (job.status === "closed" ? (
+              <div className="dash-unavail">This job is closed — time can't be logged.</div>
+            ) : (
+              <>
+                {isSubcontractor && myCrewError && (
+                  <SectionError message={myCrewError} onRetry={loadMyCrew} what="loading your crew" />
+                )}
+                <form onSubmit={submitLogTime} className="dash-row" aria-label="Log time">
+                  <input
+                    value={logHours}
+                    onChange={(e) => {
+                      setLogHours(e.target.value);
+                      if (hoursError) setHoursError(null);
+                    }}
+                    placeholder="Hours"
+                    inputMode="decimal"
+                    size={5}
+                    aria-invalid={hoursError ? true : undefined}
+                  />{" "}
+                  {hoursError && (
+                    <span className="dash-pill dash-pill--danger" role="alert">
+                      {hoursError}
+                    </span>
+                  )}{" "}
+                  <label className="dash-card__label">
+                    For:{" "}
+                    {/* R7 — explicit attribution: "Me (<name>)" resolves the viewer's OWN linked
+                        personnel id (the default when linked); "Job-level (no person)" is the
+                        deliberate no-subject choice. The old "— me / unassigned —" default logged
+                        payroll-grade time attributed to nobody. Subcontractor options annotate
+                        people currently placed on OTHER jobs (the Worker's 403 stays the gate). */}
+                    <select value={logPerson} onChange={(e) => setLogPerson(e.target.value)} aria-label="Log time for">
+                      {viewerPersonnel && (
+                        <option value={String(viewerPersonnel.id)}>Me ({viewerPersonnel.name})</option>
+                      )}
+                      <option value="">Job-level (no person)</option>
+                      {(isSubcontractor ? myCrew : job.crew)
+                        .filter((p) => !viewerPersonnel || p.id !== viewerPersonnel.id)
+                        .map((p) => {
+                          const placement = isSubcontractor
+                            ? (p as MyCrewMember).current_job === job.job_id
+                              ? ""
+                              : (p as MyCrewMember).current_job
+                                ? ` — on ${(p as MyCrewMember).current_job}`
+                                : " — unplaced"
+                            : "";
+                          return (
+                            <option key={p.id} value={p.id}>
+                              {p.name}
+                              {placement}
+                            </option>
+                          );
+                        })}
+                    </select>
+                  </label>{" "}
+                  {!viewerPersonnel && (
+                    <span className="muted">
+                      Your account isn't linked to a roster person — this logs job-level unless you pick someone.
+                    </span>
+                  )}{" "}
+                  <label className="dash-card__label">
+                    Task:{" "}
+                    <select value={logTask} onChange={(e) => setLogTask(e.target.value)} aria-label="Log time task">
+                      <option value="">— job-level —</option>
+                      {job.tasks.map((t) => (
+                        <option key={t.id} value={t.id}>
+                          {t.description}
+                          {t.status === "done" ? " (done)" : ""}
+                        </option>
+                      ))}
+                    </select>
+                  </label>{" "}
+                  <input
+                    value={logNotes}
+                    onChange={(e) => setLogNotes(e.target.value)}
+                    placeholder="Notes (optional)"
+                    maxLength={2000}
+                  />{" "}
+                  <button type="submit" disabled={actionBusy} className="btn--primary">Log time</button>
+                </form>
+              </>
+            ))}
           {job.time_entries.length ? (
-            <table className="dash-table">
+            <table className="dash-table dash-table--stack">
               <thead>
                 <tr>
-                  <th className="dash-header">Recorded</th>
                   <th className="dash-header">Who</th>
                   <th className="dash-header">Hours</th>
+                  <th className="dash-header">Task</th>
+                  <th className="dash-header">By</th>
+                  <th className="dash-header">Recorded</th>
                   <th className="dash-header">Notes</th>
                 </tr>
               </thead>
               <tbody>
                 {job.time_entries.map((t) => (
                   <tr key={t.uuid} className="dash-row">
-                    <td className="dash-cell">{fmtDateTime(t.recorded_at)}</td>
-                    <td className="dash-cell">{t.personnel_name ?? "—"}</td>
+                    <td className="dash-cell dash-table__name">{t.personnel_name ?? "Job-level"}</td>
                     <td className="dash-cell">{fmtHours(t.hours)}</td>
+                    <td className="dash-cell" data-cell="Task">{t.task_description ?? "—"}</td>
+                    <td className="dash-cell" data-cell="By">{t.recorded_by_name ?? "—"}</td>
+                    <td className="dash-cell" data-cell="Recorded">{fmtDateTime(t.recorded_at)}</td>
                     <td className="dash-cell">{t.notes ?? ""}</td>
                   </tr>
                 ))}
@@ -1227,6 +1204,9 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
           )}
         </section>
 
+        {/* Material receipts M1 — self-contained (own caps/fetch/state; the D4 parallel-build rule). */}
+        <ExpectedMaterialsSection jobId={job.job_id} />
+
         <section className="card dash-section">
           <h3 className="dash-detail__h2">Inspections</h3>
           {job.inspections.length ? (
@@ -1253,6 +1233,9 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
           )}
           {inspCursor && <LoadMoreBtn leg="insp" />}
         </section>
+
+        {/* D4 — per-job daily-form requirements (self-contained section; cap.checklist.manage). */}
+        {canChecklist && <JobDailyRequirementsSection jobId={job.job_id} />}
       </PageShell>
     );
   }
@@ -1317,12 +1300,14 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
       {actionMsg && (
         <p className={`banner ${actionMsg.ok ? "banner--ok" : "banner--err"}`}>{actionMsg.text}</p>
       )}
-      {error && <p className="banner banner--err">{error}</p>}
+      {/* R7 never-silent: list failures carry a working Retry, and the error is mutually exclusive
+          with the empty state (an error must never masquerade as "no jobs"). */}
+      {listError && <SectionError message={listError.text} onRetry={listError.retry} what="loading jobs" />}
 
       {jobs.length === 0 ? (
         loading ? (
           <div className="muted">Loading jobs…</div>
-        ) : (
+        ) : listError ? null : (
           <div className="dash-unavail">No jobs for this status.</div>
         )
       ) : (
@@ -1337,7 +1322,9 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
               >
                 <div className="dash-card__head">
                   <h3 className="dash-card__title">{job.project_name}</h3>
-                  <span className={jobPillClass(job.status)}>{job.status}</span>
+                  {/* R7 — "Your job": the viewer's own placement, their direct path to log time. */}
+                  {viewerCurrentJob === job.job_id && <span className="dash-pill dash-pill--ok">Your job</span>}
+                  <span className={jobPillClass(job.status)}>{statusLabel(job.status)}</span>
                 </div>
                 <div className="dash-card__sub">{(job.client_name ?? "No client")} · {job.job_id}</div>
 
@@ -1353,7 +1340,7 @@ export function FieldOpsJobTracker({ onBack }: { onBack: () => void }) {
                   <ul className="dash-tasklist">
                     {job.open_tasks.map((t) => (
                       <li key={t.id}>
-                        <span className={taskPillClass(t.status)}>{t.status}</span> {t.description}
+                        <span className={taskPillClass(t.status)}>{statusLabel(t.status)}</span> {t.description}
                       </li>
                     ))}
                   </ul>

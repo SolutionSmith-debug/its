@@ -1,7 +1,7 @@
 import type { Context } from "hono";
 import type { Env, Vars } from "./types";
 import type { FieldopsApp, FieldopsGates } from "./fieldops_gates";
-import { auditStmt } from "./audit";
+import { auditStmtIfChanged } from "./audit";
 
 // P2.3 Slice 3 — TASK WRITE (add / status). task_assignments is a PLAIN table (in-place mutable,
 // not integrity-bar): add INSERTs, status UPDATEs in place, each with its audit_log row in ONE
@@ -32,18 +32,16 @@ function isAssignOnly(c: Context<{ Bindings: Env; Variables: Vars }>): boolean {
   return !caps.has(CAP_MANAGE) && caps.has(CAP_ASSIGN);
 }
 
-// Resolve + validate a target personnel_id: must be an ACTIVE roster member (else 422), and for a
-// cap.tasks.assign-only actor its LINKED account role must be 'submitter' (else 403). Returns null on
-// success, or the JSON error Response to return. Single query (LEFT JOIN users) — no extra round-trip.
-//
-// TOCTOU (accepted, low-severity — applies to both this guard and checkTaskCurrentOwner): the account
-// ROLE is read here and re-checked separately from the mutating UPDATE, unlike the file's `active=1`
-// checks (race-free because `active` only flips 1→0). `role` is bidirectional, so an admin promoting/
-// demoting an account in the millisecond window between this SELECT and the UPDATE could shift the
-// boundary. This is NOT a self-service escalation — the manager cannot trigger the concurrent role
-// change; it requires an independent admin action landing in a window the actor doesn't control.
-// Accepted for now; fast-follow tracked in docs/tech_debt.md to fold the role predicate into the
-// UPDATE's WHERE (conditional for an assign-only actor) if this is ever treated as a hard boundary.
+// DIAGNOSTIC read for a target personnel_id (CS4 TOCTOU fold — see the route bodies): the target
+// predicate itself now lives INSIDE the mutating statement's WHERE (target must be an ACTIVE roster
+// member; for a cap.tasks.assign-only actor its LINKED account role must be 'submitter'), so
+// check + write are atomic — the tracked role-TOCTOU (an admin promoting/demoting an account in the
+// window between a pre-check SELECT and the UPDATE) can no longer shift the boundary of a write.
+// This helper runs ONLY AFTER a refused mutation (changes()=0) to pick the SAME response code the
+// old pre-check produced: 422 unknown_personnel (missing/retired) or 403 forbidden_target
+// (assign-only actor, non-submitter target). A race that RESOLVES between the refused write and
+// this read yields a best-guess retryable code — never a wrong write (the crew-assign
+// disambiguation pattern). Single query (LEFT JOIN users) — no extra round-trip on success paths.
 async function checkTaskTarget(
   c: Context<{ Bindings: Env; Variables: Vars }>,
   personnelId: number,
@@ -65,6 +63,10 @@ async function checkTaskTarget(
 // owned by an admin/manager account or an unlinked roster person (symmetric with checkTaskTarget on the
 // DESTINATION; without this, a manager could unassign any task or reassign an admin's task away). Admins
 // (unrestricted) skip it. Task-not-found → null so the mutation's changes()=0 returns 404 (no existence leak).
+//
+// CS4 TOCTOU fold: like checkTaskTarget, this is now a post-refusal DIAGNOSTIC — the current-owner
+// predicate lives in the assign UPDATE's WHERE; this read only picks the response code (403
+// forbidden_task) after changes()=0.
 async function checkTaskCurrentOwner(
   c: Context<{ Bindings: Env; Variables: Vars }>,
   taskId: number,
@@ -77,6 +79,37 @@ async function checkTaskCurrentOwner(
     .first<{ personnel_id: number | null; owner_role: string | null }>();
   if (!row) return null;
   if (row.personnel_id !== null && row.owner_role !== "submitter") {
+    return c.json({ error: "forbidden_task" }, 403);
+  }
+  return null;
+}
+
+// (R1 SECURITY) OWNERSHIP GUARD for the status route: an actor whose ONLY task authority is
+// cap.tasks.own (holds NEITHER cap.jobtracker.manage NOR cap.tasks.assign — i.e. a subcontractor)
+// may change the status of a task ONLY when it is currently assigned to THEIR OWN linked ACTIVE
+// personnel row. Before this guard, ANY cap.tasks.own holder could flip ANY task's status (the A3
+// blocker). Managers/admins are unrestricted here — their task-authority caps already gate them.
+// Task-not-found → null so the mutation's changes()=0 returns 404 (same shape as
+// checkTaskCurrentOwner); an unassigned task or one whose owner link is retired (p.active=0) is NOT
+// the actor's → 403 forbidden_task.
+//
+// CS4 TOCTOU fold: post-refusal DIAGNOSTIC only — the ownership predicate lives in the status
+// UPDATE's WHERE (a task reassigned away in the pre-check window can no longer be flipped by its
+// former owner); this read picks 403-vs-404 after changes()=0.
+async function checkTaskStatusOwnership(
+  c: Context<{ Bindings: Env; Variables: Vars }>,
+  taskId: number,
+): Promise<Response | null> {
+  const caps = c.get("capabilities");
+  if (caps.has(CAP_MANAGE) || caps.has(CAP_ASSIGN)) return null; // manager/admin: unrestricted
+  const username = c.get("session").username;
+  const row = await c.env.DB.prepare(
+    "SELECT ta.personnel_id, p.username AS owner_username FROM task_assignments ta LEFT JOIN personnel p ON p.id = ta.personnel_id AND p.active = 1 WHERE ta.id = ?1",
+  )
+    .bind(taskId)
+    .first<{ personnel_id: number | null; owner_username: string | null }>();
+  if (!row) return null; // unknown task → the UPDATE's changes()=0 → 404 (no existence leak)
+  if (row.personnel_id === null || row.owner_username !== username) {
     return c.json({ error: "forbidden_task" }, 403);
   }
   return null;
@@ -111,25 +144,37 @@ export function registerTaskWriteRoutes(app: FieldopsApp, gates: FieldopsGates):
       const job = await c.env.DB.prepare("SELECT active FROM jobs WHERE job_id = ?1").bind(jobId).first<{ active: number }>();
       if (!job) return c.json({ error: "not_found" }, 404);
       if (job.active === 0) return c.json({ error: "not_active" }, 409);
-      // A given personnel_id must be an ACTIVE roster member (a retired person — soft-deleted via
-      // active=0 — can't be assigned new work). Check-then-act is race-free: personnel are only ever
-      // soft-deleted, never hard-DELETEd (see fieldops_personnel_write retire), so an id that passes
-      // here can't vanish before the batch. (If a hard DELETE is ever added, fold this into the WHERE.)
-      if (personnelId !== null) {
-        const guardErr = await checkTaskTarget(c, personnelId);
-        if (guardErr) return guardErr;
-      }
 
       const actor = c.get("session").username;
-      // INSERT omits created_at → schema DEFAULT (unixepoch()). RETURNING the new id for the response;
-      // the audit (same batch) keys on job_id + description (the auto-id isn't available to it).
+      // CS4 TOCTOU fold: the TARGET predicate (given personnel_id must be an ACTIVE roster member;
+      // for a cap.tasks.assign-only actor its linked account role must be 'submitter') lives IN the
+      // INSERT's WHERE (INSERT … SELECT … WHERE), so check + write are one atomic statement — a
+      // concurrent role change or (future) hard delete can no longer land between check and write.
+      // INSERT omits created_at → schema DEFAULT (unixepoch()). RETURNING the new id for the
+      // response; the audit rides changes()=1 in the SAME batch (a refused create audits nothing,
+      // exactly as the old pre-check-then-return did).
       const res = await c.env.DB.batch([
         c.env.DB
-          .prepare("INSERT INTO task_assignments (job_id, personnel_id, description, status, assigned_by) VALUES (?1,?2,?3,'open',?4) RETURNING id")
-          .bind(jobId, personnelId, description, actor),
-        auditStmt(c, actor, "task_create", jobId, { job_id: jobId, description, personnel_id: personnelId }),
+          .prepare(
+            `INSERT INTO task_assignments (job_id, personnel_id, description, status, assigned_by)
+             SELECT ?1, ?2, ?3, 'open', ?4
+             WHERE ?2 IS NULL OR EXISTS (
+               SELECT 1 FROM personnel p LEFT JOIN users u ON u.username = p.username
+               WHERE p.id = ?2 AND p.active = 1 AND (?5 = 0 OR u.role = 'submitter'))
+             RETURNING id`,
+          )
+          .bind(jobId, personnelId, description, actor, isAssignOnly(c) ? 1 : 0),
+        auditStmtIfChanged(c, actor, "task_create", jobId, { job_id: jobId, description, personnel_id: personnelId }),
       ]);
       const newId = (res[0].results?.[0] as { id: number } | undefined)?.id ?? null;
+      if (newId === null) {
+        // Refused by the in-WHERE target predicate. Diagnose with the SAME read the old pre-check
+        // used so the response codes are identical: 422 unknown_personnel / 403 forbidden_target.
+        // A race that resolved since the refusal falls back to 422 (retryable best-guess — only
+        // the target predicate can zero this INSERT); no row was written either way.
+        const guardErr = personnelId !== null ? await checkTaskTarget(c, personnelId) : null;
+        return guardErr ?? c.json({ error: "unknown_personnel" }, 422);
+      }
       return c.json({ ok: true, id: newId }, 201);
     },
   );
@@ -156,14 +201,31 @@ export function registerTaskWriteRoutes(app: FieldopsApp, gates: FieldopsGates):
       const status = typeof body.status === "string" ? body.status : "";
       if (!STATUSES.has(status)) return c.json({ error: "invalid_status" }, 400);
 
+      // (R1 SECURITY / CS4 TOCTOU fold) own-only actors may only touch tasks assigned to their
+      // linked ACTIVE personnel row — and the predicate lives IN the UPDATE's WHERE, so a task
+      // reassigned away between check and write can no longer be flipped by its former owner.
+      // Managers/admins (?3 = 1) are unrestricted, exactly as the old pre-check short-circuited.
+      const caps = c.get("capabilities");
+      const privileged = caps.has(CAP_MANAGE) || caps.has(CAP_ASSIGN) ? 1 : 0;
       const actor = c.get("session").username;
       const res = await c.env.DB.batch([
-        c.env.DB.prepare("UPDATE task_assignments SET status = ?2 WHERE id = ?1").bind(id, status),
         c.env.DB
-          .prepare("INSERT INTO audit_log (actor_username, action, target_username, detail) SELECT ?1,?2,?3,?4 WHERE changes()=1")
-          .bind(actor, "task_status", String(id), JSON.stringify({ task_id: id, status })),
+          .prepare(
+            `UPDATE task_assignments SET status = ?2
+             WHERE id = ?1 AND (?3 = 1 OR EXISTS (
+               SELECT 1 FROM personnel p
+               WHERE p.id = task_assignments.personnel_id AND p.active = 1 AND p.username = ?4))`,
+          )
+          .bind(id, status, privileged, actor),
+        auditStmtIfChanged(c, actor, "task_status", String(id), { task_id: id, status }),
       ]);
-      if ((res[0].meta.changes ?? 0) === 0) return c.json({ error: "not_found" }, 404);
+      if ((res[0].meta.changes ?? 0) === 0) {
+        // Refused: diagnose with the SAME read the old pre-check used — 403 forbidden_task when
+        // the task exists but isn't the actor's; 404 not_found otherwise (unknown task — no
+        // existence leak; a resolved race best-guesses 404, and no row was written either way).
+        const ownErr = await checkTaskStatusOwnership(c, id);
+        return ownErr ?? c.json({ error: "not_found" }, 404);
+      }
       return c.json({ ok: true, id, status }, 200);
     },
   );
@@ -199,27 +261,47 @@ export function registerTaskWriteRoutes(app: FieldopsApp, gates: FieldopsGates):
       }
       const personnelId = raw as number | null;
 
-      // (W1) A manager may only touch a task currently unassigned or held by a submitter — covers both
-      // reassign and unassign (the null branch below). Admins skip this.
-      const ownerErr = await checkTaskCurrentOwner(c, id);
-      if (ownerErr) return ownerErr;
-
-      // A given personnel_id must be an ACTIVE roster member (mirrors the add-task check above;
-      // retired personnel aren't assignable). Check-then-act is race-free — personnel are soft-deleted
-      // (active=0), never hard-DELETEd — so this matches the atomic guarantee of fieldops_crew_assign.
-      if (personnelId !== null) {
-        const guardErr = await checkTaskTarget(c, personnelId);
-        if (guardErr) return guardErr;
-      }
-
       const actor = c.get("session").username;
+      const assignOnly = isAssignOnly(c) ? 1 : 0;
+      // CS4 TOCTOU fold — BOTH role predicates live IN the UPDATE's WHERE, so check + write are one
+      // atomic statement (the tracked fast-follow; fieldops_crew_assign's atomic-guard pattern):
+      //   • (W1) current owner: an assign-only actor (?4 = 1) may only touch a task currently
+      //     unassigned or held by a submitter-linked personnel (the subquery reads the row's OLD
+      //     personnel_id — UPDATE's WHERE evaluates pre-assignment). Covers reassign AND unassign.
+      //   • target: a given personnel_id (?2) must be an ACTIVE roster member, and for an
+      //     assign-only actor its linked account role must be 'submitter' (mirrors the add-task
+      //     fold above). An admin-window role flip can no longer shift either boundary mid-write.
+      // (R1) Re-stamp assigned_by on every (re/un)assign — the column means "who last placed this
+      // task" (the /tasks/mine context field), not just the original creator. Additive: historical
+      // rows keep whatever the create route stamped (or NULL, pre-0014-stamping).
       const res = await c.env.DB.batch([
-        c.env.DB.prepare("UPDATE task_assignments SET personnel_id = ?2 WHERE id = ?1").bind(id, personnelId),
         c.env.DB
-          .prepare("INSERT INTO audit_log (actor_username, action, target_username, detail) SELECT ?1,?2,?3,?4 WHERE changes()=1")
-          .bind(actor, "task_assign", String(id), JSON.stringify({ task_id: id, personnel_id: personnelId })),
+          .prepare(
+            `UPDATE task_assignments SET personnel_id = ?2, assigned_by = ?3
+             WHERE id = ?1
+               AND (?4 = 0 OR task_assignments.personnel_id IS NULL OR EXISTS (
+                 SELECT 1 FROM personnel p JOIN users u ON u.username = p.username
+                 WHERE p.id = task_assignments.personnel_id AND u.role = 'submitter'))
+               AND (?2 IS NULL OR EXISTS (
+                 SELECT 1 FROM personnel p LEFT JOIN users u ON u.username = p.username
+                 WHERE p.id = ?2 AND p.active = 1 AND (?4 = 0 OR u.role = 'submitter')))`,
+          )
+          .bind(id, personnelId, actor, assignOnly),
+        auditStmtIfChanged(c, actor, "task_assign", String(id), { task_id: id, personnel_id: personnelId }),
       ]);
-      if ((res[0].meta.changes ?? 0) === 0) return c.json({ error: "not_found" }, 404);
+      if ((res[0].meta.changes ?? 0) === 0) {
+        // Refused: diagnose in the OLD pre-check ORDER so the response codes are identical —
+        // current-owner first (403 forbidden_task), then target (422 unknown_personnel / 403
+        // forbidden_target), then 404 not_found (unknown task; also the resolved-race best-guess).
+        // No row was written on any of these paths.
+        const ownerErr = await checkTaskCurrentOwner(c, id);
+        if (ownerErr) return ownerErr;
+        if (personnelId !== null) {
+          const targetErr = await checkTaskTarget(c, personnelId);
+          if (targetErr) return targetErr;
+        }
+        return c.json({ error: "not_found" }, 404);
+      }
       return c.json({ ok: true, id, personnel_id: personnelId }, 200);
     },
   );

@@ -113,16 +113,27 @@ export async function pruneOldData(
   // dropdown, nothing behind it). PR-5 guarded on `submissions`; P2.1 added the field-ops
   // integrity-bar tables (time_entries / task_assignments / inspections) keyed on job_id —
   // those are D1-PRIMARY operational SoR (payroll/billing-grade), so a job holding ANY of them
-  // must NEVER be deleted here (it would orphan unrecoverable records). equipment_logs is keyed
-  // on equipment_id (not job_id), so it is not a job-context guard. A truly-empty pruned job is
-  // recreated by /api/internal/sync's upsert if it re-appears in Smartsheet.
+  // must NEVER be deleted here (it would orphan unrecoverable records). Slice 1 (R3-F4) added
+  // job_daily_requirements (0030/0032) + job_expected_materials (0031) — also D1-PRIMARY
+  // (admin-authored per-job content with no copy outside D1; restore path is D1 Time Travel),
+  // so they join the guard: deleting their job would orphan them invisibly. The explicit
+  // operator cleanup path is POST /api/internal/admin/purge-job (cascades both). equipment_logs
+  // is keyed on equipment_id (not job_id), so it is not a job-context guard. A truly-empty
+  // pruned job is recreated by /api/internal/sync's upsert if it re-appears in Smartsheet.
+  // Shape note: one NOT IN per table, NOT a single UNION — D1 caps compound-SELECT terms at
+  // 5 (SQLITE_MAX_COMPOUND_SELECT), and the 6th guard table blew it up ("too many terms in
+  // compound SELECT", caught by test/prune.test.ts). Per-table NOT IN is set-equivalent
+  // (job_id ∉ A∪B∪… ⇔ ∉A ∧ ∉B ∧ …; every guard table's job_id is NOT NULL) and each
+  // subquery can use its own job_id index.
   const jobsDeleted = await db
     .prepare(
-      "DELETE FROM jobs WHERE active = 0 AND job_id NOT IN (" +
-        "SELECT DISTINCT job_id FROM submissions " +
-        "UNION SELECT DISTINCT job_id FROM time_entries " +
-        "UNION SELECT DISTINCT job_id FROM task_assignments " +
-        "UNION SELECT DISTINCT job_id FROM inspections)",
+      "DELETE FROM jobs WHERE active = 0 " +
+        "AND job_id NOT IN (SELECT job_id FROM submissions) " +
+        "AND job_id NOT IN (SELECT job_id FROM time_entries) " +
+        "AND job_id NOT IN (SELECT job_id FROM task_assignments) " +
+        "AND job_id NOT IN (SELECT job_id FROM inspections) " +
+        "AND job_id NOT IN (SELECT job_id FROM job_daily_requirements) " +
+        "AND job_id NOT IN (SELECT job_id FROM job_expected_materials)",
     )
     .run();
 

@@ -1,7 +1,7 @@
 import type { Context } from "hono";
 import type { FieldopsApp, FieldopsGates } from "./fieldops_gates";
 import type { Env, Vars } from "./types";
-import { auditStmt } from "./audit";
+import { auditStmt, auditStmtIfChanged } from "./audit";
 
 // P3 Materials (M1) — material_catalog CRUD. cap.materials.manage (admin-only).
 // `material_catalog` is the datasheet-backed TYPE vocabulary the per-job Material List draws from
@@ -115,9 +115,7 @@ export function registerMaterialWriteRoutes(app: FieldopsApp, gates: FieldopsGat
              WHERE id = ?1 AND active = 1`,
           )
           .bind(id, f.model_id, f.manufacturer, f.category, f.key_specs, f.unit_cost),
-        c.env.DB
-          .prepare("INSERT INTO audit_log (actor_username, action, target_username, detail) SELECT ?1,?2,?3,?4 WHERE changes()=1")
-          .bind(actor, "material_catalog_update", String(id), JSON.stringify({ catalog_id: id, model_id: f.model_id })),
+        auditStmtIfChanged(c, actor, "material_catalog_update", String(id), { catalog_id: id, model_id: f.model_id }),
       ]);
       if ((res[0].meta.changes ?? 0) === 0) return c.json({ error: "not_found" }, 404);
       return c.json({ ok: true, id }, 200);
@@ -135,9 +133,7 @@ export function registerMaterialWriteRoutes(app: FieldopsApp, gates: FieldopsGat
       const actor = c.get("session").username;
       const res = await c.env.DB.batch([
         c.env.DB.prepare("UPDATE material_catalog SET active = 0, updated_at = unixepoch() WHERE id = ?1 AND active = 1").bind(id),
-        c.env.DB
-          .prepare("INSERT INTO audit_log (actor_username, action, target_username, detail) SELECT ?1,?2,?3,?4 WHERE changes()=1")
-          .bind(actor, "material_catalog_retire", String(id), JSON.stringify({ catalog_id: id })),
+        auditStmtIfChanged(c, actor, "material_catalog_retire", String(id), { catalog_id: id }),
       ]);
       if ((res[0].meta.changes ?? 0) === 0) {
         // 0 changes = unknown id (404) or already-retired (idempotent 200).

@@ -1,5 +1,6 @@
-import { env, SELF } from "cloudflare:test";
+import { env } from "cloudflare:test";
 import { describe, it, expect, beforeEach } from "vitest";
+import { call as callInit, json, seedJob as seedJobRow } from "./helpers";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // P6 — GET /api/internal/progress-rollup (bearer-gated, send-free D1 aggregation).
@@ -9,7 +10,6 @@ import { describe, it, expect, beforeEach } from "vitest";
 // progress-% (dropped by operator decision). Materials → null.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const BASE = "https://portal.test";
 const INTERNAL_BEARER = "test-internal-token";
 
 // A comfortable Sat→Fri window (epoch seconds). Events INSIDE fall in [FROM, TO).
@@ -26,24 +26,14 @@ type RollupBody = {
   generated_at: number;
 };
 
-async function rollupJson(res: Response): Promise<RollupBody> {
-  return (await res.json()) as RollupBody;
-}
-async function errJson(res: Response): Promise<{ error: string }> {
-  return (await res.json()) as { error: string };
-}
+const rollupJson = (res: Response) => json<RollupBody>(res);
+const errJson = (res: Response) => json<{ error: string }>(res);
 
-function call(path: string, bearer?: string): Promise<Response> {
-  const headers = new Headers();
-  if (bearer) headers.set("Authorization", `Bearer ${bearer}`);
-  return SELF.fetch(BASE + path, { headers });
-}
+const call = (path: string, bearer?: string): Promise<Response> =>
+  callInit(path, bearer === undefined ? {} : { bearer });
 
-async function seedJob(jobId: string): Promise<void> {
-  await env.DB.prepare(
-    "INSERT INTO jobs (job_id, project_name, active, status, progress, created_at) VALUES (?,?,?,?,?,?)",
-  ).bind(jobId, "Prog Job", 1, "active", 40, 1_600_000_000).run();
-}
+const seedJob = (jobId: string): Promise<void> =>
+  seedJobRow(jobId, { projectName: "Prog Job", progress: 40, createdAt: 1_600_000_000 });
 async function seedEquipment(name: string, kind: string): Promise<number> {
   await env.DB.prepare("INSERT INTO equipment (name, kind, active) VALUES (?,?,1)").bind(name, kind).run();
   return (await env.DB.prepare("SELECT id FROM equipment WHERE name=?").bind(name).first<{ id: number }>())!.id;

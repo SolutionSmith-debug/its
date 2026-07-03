@@ -21,6 +21,8 @@ beforeEach(async () => {
     env.DB.prepare("DELETE FROM submissions"),
     env.DB.prepare("DELETE FROM filed_pdfs"),
     env.DB.prepare("DELETE FROM pdf_requests"),
+    env.DB.prepare("DELETE FROM job_daily_requirements"),
+    env.DB.prepare("DELETE FROM job_expected_materials"),
     env.DB.prepare("DELETE FROM jobs"),
     env.DB.prepare("DELETE FROM audit_log"),
   ]);
@@ -40,6 +42,17 @@ async function seedJobWithData(job: string, uuid: string): Promise<void> {
     env.DB
       .prepare("INSERT INTO pdf_requests (submission_uuid, account, requested_at) VALUES (?,?,?)")
       .bind(uuid, "pm", TS),
+    // Slice 1 (R3-F4): the two per-job content tables join the cascade — 2 requirements +
+    // 1 expected material give the response counts distinct values.
+    env.DB
+      .prepare("INSERT INTO job_daily_requirements (job_id, seq, kind, label) VALUES (?,10,'confirm','Client daily brief')")
+      .bind(job),
+    env.DB
+      .prepare("INSERT INTO job_daily_requirements (job_id, seq, kind, label) VALUES (?,20,'text','Crane hours')")
+      .bind(job),
+    env.DB
+      .prepare("INSERT INTO job_expected_materials (job_id, description, seq) VALUES (?, 'Panels pallet', 10)")
+      .bind(job),
   ]);
 }
 
@@ -51,11 +64,13 @@ async function counts(job: string, uuid: string) {
     subs: await q("SELECT COUNT(*) n FROM submissions WHERE job_id=?", job),
     pdfs: await q("SELECT COUNT(*) n FROM filed_pdfs WHERE submission_uuid=?", uuid),
     reqs: await q("SELECT COUNT(*) n FROM pdf_requests WHERE submission_uuid=?", uuid),
+    dailyReqs: await q("SELECT COUNT(*) n FROM job_daily_requirements WHERE job_id=?", job),
+    materials: await q("SELECT COUNT(*) n FROM job_expected_materials WHERE job_id=?", job),
   };
 }
 
 describe("POST /api/internal/admin/purge-job", () => {
-  it("hard-deletes the job + cascades submissions/filed_pdfs/pdf_requests, audits, leaves OTHER jobs", async () => {
+  it("hard-deletes the job + cascades submissions/filed_pdfs/pdf_requests/requirements/materials, audits, leaves OTHER jobs", async () => {
     await seedJobWithData("JOB-PURGE", "u-purge");
     await seedJobWithData("JOB-KEEP", "u-keep");
 
@@ -67,10 +82,15 @@ describe("POST /api/internal/admin/purge-job", () => {
     expect(res.status, await res.clone().text()).toBe(200);
     expect(await res.json()).toMatchObject({
       ok: true, found: true, job_id: "JOB-PURGE", job_deleted: 1, submissions: 1, pdfChunks: 1, pdfRequests: 1,
+      requirements: 2, expectedMaterials: 1, // Slice 1 (R3-F4): per-job content cascades too
     });
 
-    expect(await counts("JOB-PURGE", "u-purge")).toEqual({ jobs: 0, subs: 0, pdfs: 0, reqs: 0 });
-    expect(await counts("JOB-KEEP", "u-keep")).toEqual({ jobs: 1, subs: 1, pdfs: 1, reqs: 1 });
+    expect(await counts("JOB-PURGE", "u-purge")).toEqual({
+      jobs: 0, subs: 0, pdfs: 0, reqs: 0, dailyReqs: 0, materials: 0,
+    });
+    expect(await counts("JOB-KEEP", "u-keep")).toEqual({
+      jobs: 1, subs: 1, pdfs: 1, reqs: 1, dailyReqs: 2, materials: 1,
+    });
     const audit = await env.DB
       .prepare("SELECT action, target_username FROM audit_log WHERE action='purge-job'")
       .first<{ action: string; target_username: string }>();
@@ -82,7 +102,10 @@ describe("POST /api/internal/admin/purge-job", () => {
       method: "POST", bearer: ADMIN_BEARER, body: JSON.stringify({ job_id: "NOPE" }),
     });
     expect(res.status).toBe(200);
-    expect(await res.json()).toMatchObject({ ok: true, found: false, job_deleted: 0, submissions: 0, pdfChunks: 0, pdfRequests: 0 });
+    expect(await res.json()).toMatchObject({
+      ok: true, found: false, job_deleted: 0, submissions: 0, pdfChunks: 0, pdfRequests: 0,
+      requirements: 0, expectedMaterials: 0,
+    });
   });
 
   it("blank job_id → 400 invalid_job_id; non-object body → 400 bad_request", async () => {

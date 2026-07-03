@@ -1,95 +1,30 @@
 // Job Tracker read API client for Field Ops tab (BRIEF C).
 // Same-origin fetch with session cookie; no auth header.
+//
+// (R1) Errors throw ApiError (src/lib/errorCopy.ts): err.message is HUMAN copy, err.code the raw
+// wire code for page-level branching. Pages must branch on err.code, never err.message.
+import { raiseApiError } from "./errorCopy";
+import type { JobDetailResponse, JobListResponse } from "../../worker/wire-types";
 
-export interface CrewMember {
-  id: number;
-  name: string;
-  trade: string | null;
-}
-
-export interface OpenTask {
-  id: number;
-  description: string;
-  status: string;
-  personnel_name: string | null;
-}
-
-export interface JobRow {
-  job_id: string;
-  project_name: string;
-  status: string;
-  progress: number;
-  client_name: string | null;
-  crew: CrewMember[];
-  open_tasks: OpenTask[];
-}
-
-export interface JobListResponse {
-  jobs: JobRow[];
-  next_cursor: string | null;
-}
-
-export interface Task {
-  id: number;
-  description: string;
-  status: string;
-  created_at: number;
-  personnel_id: number | null;
-  personnel_name: string | null;
-}
-
-export interface JobTimeEntry {
-  uuid: string;
-  hours: number | null;
-  work_started_at: number | null;
-  work_ended_at: number | null;
-  recorded_at: number;
-  notes: string | null;
-  personnel_name: string | null;
-}
-
-export interface EquipmentOnSite {
-  id: number;
-  name: string;
-  kind: string | null;
-  identifier: string | null;
-  label: string | null;
-  read_at: number | null;
-}
-
-export interface JobInspection {
-  uuid: string;
-  form_code: string;
-  version: number;
-  performed_at: number | null;
-  recorded_at: number;
-  equipment_name: string | null;
-}
-
-export interface JobClient {
-  name: string;
-  contact: string | null;
-  phone: string | null;
-  email: string | null;
-}
-
-export interface JobDetail {
-  job_id: string;
-  project_name: string;
-  status: string;
-  progress: number;
-  client: JobClient | null;
-  crew: CrewMember[];
-  tasks: Task[];
-  time_entries: JobTimeEntry[];
-  equipment_on_site: EquipmentOnSite[];
-  inspections: JobInspection[];
-}
-
-export interface JobDetailResponse {
-  job: JobDetail;
-  cursors: { tasks: string | null; time: string | null; insp: string | null };
-}
+// Wire shapes — SINGLE-SOURCED in worker/wire-types.ts (the Worker types its c.json payloads with
+// the same definitions, so a shape drift fails the typecheck on both sides — and the DailyReportTab
+// fixture now type-checks against what the Worker actually sends); re-exported here so existing
+// importers keep their path.
+export type {
+  CrewMember,
+  DetailCrewMember,
+  EquipmentOnSite,
+  JobClient,
+  JobDetail,
+  JobDetailResponse,
+  JobInspection,
+  JobListResponse,
+  JobRow,
+  JobTimeEntry,
+  OpenTask,
+  Task,
+  ViewerPersonnel,
+} from "../../worker/wire-types";
 
 export type JobStatusFilter = "active" | "closed" | "on_hold" | "all";
 
@@ -98,7 +33,7 @@ export async function fetchJobList(status?: JobStatusFilter, cursor?: string): P
   if (status) q.set("status", status);
   if (cursor) q.set("cursor", cursor);
   const res = await fetch(`/api/fieldops/jobs?${q.toString()}`, { credentials: "same-origin" });
-  if (!res.ok) throw new Error("Could not load jobs.");
+  if (!res.ok) return raiseApiError(res);
   return ((await res.json()) as JobListResponse) ?? { jobs: [], next_cursor: null };
 }
 
@@ -113,7 +48,7 @@ export async function fetchJobDetail(
   const res = await fetch(`/api/fieldops/jobs/${encodeURIComponent(jobId)}?${q.toString()}`, {
     credentials: "same-origin",
   });
-  if (!res.ok) throw new Error("Could not load job detail.");
+  if (!res.ok) return raiseApiError(res);
   return (await res.json()) as JobDetailResponse;
 }
 
@@ -129,10 +64,7 @@ async function postJson<T = { ok: boolean }>(url: string, body: unknown): Promis
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
   });
-  if (!res.ok) {
-    const err = (await res.json().catch(() => ({}))) as { error?: string };
-    throw new Error(err.error ?? `Request failed (${res.status})`);
-  }
+  if (!res.ok) return raiseApiError(res);
   return (await res.json()) as T;
 }
 
@@ -178,9 +110,12 @@ export async function createJob(
 ): Promise<{ job_id: string }> {
   return postJson<{ ok: boolean; job_id: string }>("/api/fieldops/job", body);
 }
-export async function closeJob(jobId: string): Promise<void> {
-  await postJson(`/api/fieldops/job/${encodeURIComponent(jobId)}/close`, {});
-}
+// TOMBSTONE (R4-F5, 2026-07-03): the dead client fns `closeJob` (POST …/close) and
+// `setJobProgress` (POST …/progress) were DELETED — zero SPA callers since setLifecycle (P2.5)
+// superseded /close and the P6 rollup removed the manual progress slider. The WORKER routes
+// (`POST /api/fieldops/job/:id/close` + `/progress`) deliberately REMAIN — removing dead API
+// surface is an operator decision (B3, §14/§49 doctrine-adjacent; see docs/tech_debt.md
+// "Optimization-plan doctrine-adjacent decisions").
 // Set the canonical lifecycle (P2.5). Supersedes the bare /close in the UI; /close stays as a thin
 // 'inactive' alias. The worker derives the legacy active/status flags and bumps the mirror version.
 export async function setLifecycle(jobId: string, lifecycle: JobLifecycle): Promise<{ lifecycle: JobLifecycle }> {
@@ -197,9 +132,6 @@ export async function editContacts(jobId: string, routing: JobRouting): Promise<
     `/api/fieldops/job/${encodeURIComponent(jobId)}/contacts`,
     routing,
   );
-}
-export async function setJobProgress(jobId: string, progress: number): Promise<{ progress: number }> {
-  return postJson<{ ok: boolean; progress: number }>(`/api/fieldops/job/${encodeURIComponent(jobId)}/progress`, { progress });
 }
 export async function addTask(
   jobId: string,

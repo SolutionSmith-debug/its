@@ -38,6 +38,10 @@ export const FIELD_INPUTS: Input[] = [
 export const ITEM_KINDS = ["rated", "numeric", "circle_one", "text"] as const;
 export type ItemKind = (typeof ITEM_KINDS)[number];
 
+// The BUILDER-COMPOSABLE section types (the "+ add section" buttons). `guidance` and
+// `form_link` (SOP daily form, slice D1) are deliberately NOT here: they are authored
+// in the form DEFINITION via the git publish pipeline, not composed in the builder —
+// the editor renders them read-only (see FormEditor SectionEditor's fallback pane).
 export const SECTION_TYPES = [
   "header",
   "static_text",
@@ -49,8 +53,22 @@ export const SECTION_TYPES = [
 ] as const;
 export type SectionType = (typeof SECTION_TYPES)[number];
 
-/** Human labels for the section-type picker (the closed set, surfaced as-is). */
-export const SECTION_TYPE_LABELS: Record<SectionType, string> = {
+/** Section types authored ONLY in the git-owned form definition (publish pipeline) — the
+ *  builder renders them read-only AND suppresses their Remove/Move controls (Slice 1,
+ *  R3-F3): the required-content floor now REJECTS a daily-report definition missing its
+ *  job_requirements / expected_materials mounts, so the UI must not even offer the
+ *  amputation the C3 gates would refuse. Complement of SECTION_TYPES by design — keep the
+ *  two in sync when the meta-schema grows a definition-managed type. */
+export const READ_ONLY_SECTION_TYPES: ReadonlySet<Section["type"]> = new Set([
+  "guidance",
+  "form_link",
+  "job_requirements",
+  "expected_materials",
+]);
+
+/** Human labels for EVERY section type (the builder picker uses the SECTION_TYPES
+ *  subset; the section-list header must label the read-only types too). */
+export const SECTION_TYPE_LABELS: Record<Section["type"], string> = {
   header: "Header fields",
   static_text: "Static text",
   repeating_table: "Repeating table",
@@ -58,6 +76,10 @@ export const SECTION_TYPE_LABELS: Record<SectionType, string> = {
   checklist: "Checklist",
   freeform: "Free-form text",
   content_blocks: "Content blocks",
+  guidance: "SOP guidance (read-only)",
+  form_link: "Form link (read-only)",
+  job_requirements: "Per-job requirements (read-only)",
+  expected_materials: "Expected materials (read-only)",
 };
 
 // The validator's KEY_RE: every field/section/group/item key is snake_case lowercase.
@@ -223,7 +245,8 @@ export function topLevelKeys(def: FormDefinition): string[] {
   for (const s of def.sections) {
     if (s.type === "header") {
       for (const f of s.fields) if (!RESERVED_KEYS.has(f.key)) out.push(f.key);
-    } else if (s.type !== "static_text") {
+    } else if (s.type !== "static_text" && s.type !== "guidance" && s.type !== "form_link") {
+      // static_text / guidance / form_link are keyless (no value contribution).
       out.push(s.key);
     }
   }

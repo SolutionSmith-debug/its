@@ -122,18 +122,358 @@ def test_toolbox_variants_have_content_and_signin() -> None:
         assert any(s["type"] == "signature_table" for s in d["sections"])
 
 
+def _floor_without_section_types(rc: dict) -> dict:
+    """The floor minus `required_section_types` — applied to HISTORICAL (non-current) shipped
+    versions only. Section-type floors are the one key that is deliberately NOT the
+    all-shipped-versions intersection (Slice 1, R3-F3: daily-report's job_requirements /
+    expected_materials mounts were floored when v5 was already current, and v1-v4
+    legitimately predate them). Historical files are frozen (append-only design), are not
+    editor-reachable (the builder opens only current_form_code), and re-enter service only
+    via rollback — which is deliberately floor-exempt (returns to a historically-valid
+    version). Publish-time enforcement (both C3 layers) always applies the FULL floor."""
+    rc = json.loads(json.dumps(rc))  # deep copy
+    for group in ("parents", "identities"):
+        for spec in (rc.get(group) or {}).values():
+            spec.pop("required_section_types", None)
+    (rc.get("defaults_for_new_identities") or {}).pop("required_section_types", None)
+    return rc
+
+
 @pytest.mark.parametrize("path", DEF_PATHS, ids=lambda p: p.stem)
 def test_live_definition_satisfies_required_content(path: Path) -> None:
     """Every shipped definition satisfies its required-content legal floor (Brief 1 PR-1) — the
     generalized form of the per-form footer/lockout/signature assertions above, driven by
     safety_portal/required-content.json. check_required_content raises on a violation; a clean
-    return is the pass. This locks the floor against future shipped forms too."""
+    return is the pass. This locks the floor against future shipped forms too. CURRENT versions
+    get the full floor; historical versions are exempt from `required_section_types` only
+    (see _floor_without_section_types)."""
     d = _load(path)
     identity = re.sub(r"-v\d+$", "", d["form_code"])
+    floor = (
+        REQUIRED_CONTENT
+        if d["form_code"] in CURRENT_FORM_CODES
+        else _floor_without_section_types(REQUIRED_CONTENT)
+    )
     try:
         check_required_content(
             d, identity=identity, parent_form_code=d["parent_form_code"],
-            required_content=REQUIRED_CONTENT,
+            required_content=floor,
         )
     except PublishApplyError as exc:
         raise AssertionError(f"{path.stem}: {exc}") from exc
+
+
+# ── guidance + form_link sections (SOP daily form, slice D1) ────────────────────
+_CATALOG = json.loads((_ROOT / "safety_portal" / "catalog.json").read_text())
+_CATALOG_PARENTS = {p["parent_form_code"] for p in _CATALOG["parents"]}
+
+# The editor-reachable set: each ACTIVE identity's current_form_code (the builder's Edit /
+# Add-version open only these). Shipped files NOT in this set are historical/retired —
+# exempt from section-type floors in the glob test above (Slice 1, R3-F3).
+CURRENT_FORM_CODES = {
+    f["current_form_code"]
+    for p in _CATALOG["parents"]
+    for f in p["forms"]
+    if f["status"] == "active"
+}
+
+
+@pytest.mark.parametrize("path", DEF_PATHS, ids=lambda p: p.stem)
+def test_form_link_parents_exist_in_catalog(path: Path) -> None:
+    """Every form_link section's parent_form_code must resolve to a catalog form type —
+    the repo-side (live-HEAD) twin of the worker enqueue gate's KNOWN_PARENT_FORM_CODES
+    check (a JSON Schema can't cross-file check, so this test is the enforcement)."""
+    for s in _load(path)["sections"]:
+        if s["type"] == "form_link":
+            assert s["parent_form_code"] in _CATALOG_PARENTS, (
+                f"{path.stem}: form_link → {s['parent_form_code']!r} is not a catalog form type"
+            )
+
+
+def test_daily_report_v2_sop_structure() -> None:
+    """daily-report-v2 (the SOP daily form) carries the spec's structure: the SOP part
+    headings verbatim, the three deep links, and the duty-confirm sections."""
+    d = _load(FORMS_DIR / "daily-report-v2.json")
+    headings = [s["heading"] for s in d["sections"] if s["type"] == "guidance"]
+    for expected in (
+        "7:30 AM — Arrive On Site — You Set the Tone",
+        "A. Morning Kickoff — 1. Sign Workers In",
+        "2. PPE Verification",
+        "3. Complete the Daily JHA (Job Hazard Analysis)",
+        "4. Visitor Log",
+        "6. Electrical Safety",
+        "7. General OSHA Compliance",
+        "C. Quality Control — Verifying the Work",
+        "13. Material & Equipment Deliveries",
+        "14. Safety Oversight",
+        "END OF DAY — Before Leaving the Site",
+        "F. General Expectations & Standards of Conduct",
+    ):
+        assert expected in headings, f"missing SOP guidance heading: {expected!r}"
+    # The three deep links (spec rows 4, 5, 12).
+    links = [s["parent_form_code"] for s in d["sections"] if s["type"] == "form_link"]
+    assert links == ["jha", "visitor-sign-in", "incident-report"]
+    # The named callouts are present with their styles.
+    callouts = {
+        (b["style"], b["text"].split(":")[0])
+        for s in d["sections"] if s["type"] == "guidance"
+        for b in s["blocks"] if b["type"] == "callout"
+    }
+    assert ("note", "NOTE") in callouts
+    assert ("critical", "CRITICAL RULE") in callouts
+    assert ("quality", "QUALITY RULE") in callouts
+    assert ("note", "FINAL STATEMENT") in callouts
+
+
+def test_daily_report_v2_dfr_field_coverage() -> None:
+    """Nothing lost vs the v1 Daily Field Report (the spec's coverage checklist):
+    job_name/report_date moved to the submission envelope (job / work_date header
+    fields); every other DFR datum keeps a value key in v2."""
+    d = _load(FORMS_DIR / "daily-report-v2.json")
+    keys: set[str] = set()
+    for s in d["sections"]:
+        if s["type"] == "header":
+            keys.update(f["key"] for f in s["fields"])
+        elif s["type"] == "checklist":
+            keys.add(s["key"])
+            for g in s["groups"]:
+                keys.update(it["key"] for it in g["items"])
+        elif s["type"] in ("repeating_table", "signature_table", "freeform"):
+            keys.add(s["key"])
+    # Envelope-bound header fields (the fill page / Daily tab provide these).
+    assert {"job", "work_date"} <= keys
+    # DFR coverage (spec): weather, average_temp, prepared_by, crew_progress,
+    # tomorrows_goals, equipment_on_site, deliveries_received, site_visitors, comments.
+    assert {
+        "weather", "average_temp", "prepared_by", "crew_progress", "tomorrows_goals",
+        "equipment_on_site", "deliveries_received", "site_visitors", "comments",
+    } <= keys
+    # The SOP duty confirms + tables added by v2 (spec rows 1-14).
+    assert {
+        "arrived_walkthrough", "workers_signed_in", "manpower_total", "ppe_verified",
+        "trenching_inspected", "electrical_safe", "osha_walk_done", "qc_spot_checks",
+        "photos_taken", "photos_uploaded", "safety_observations", "incidents_none",
+        "cm_checkin_am", "cm_checkin_pm", "eod_secure",
+    } <= keys
+    # crew_progress keeps the v1 column keys (the S5 rollup prefill targets them).
+    crew = next(s for s in d["sections"] if s.get("key") == "crew_progress")
+    assert [c["key"] for c in crew["columns"]] == [
+        "crew_subcontractor", "manpower", "todays_progress",
+    ]
+
+
+def test_daily_report_v3_photo_upload_replaces_minimum() -> None:
+    """daily-report-v3 (slice D3, operator-directed 2026-07-02): the 50-photo daily
+    minimum is removed and the photos_taken / photos_uploaded confirms are replaced by
+    a direct 'Site photos' header photo field — the manager attaches the day's work
+    photos inside the daily document. The DFR legal floor is untouched; v2 stays
+    in-tree unchanged (append-only) and keeps its own tests above."""
+    d = _load(FORMS_DIR / "daily-report-v3.json")
+    assert d["version"] == 3 and d["form_code"] == "daily-report-v3"
+    # The dated operator-deviation note rides the definition (meta-schema `comment`).
+    assert any("OPERATOR-DIRECTED" in line for line in d.get("comment", []))
+
+    # D.12: heading drops the minimum clause; no guidance text asserts 50 photos.
+    headings = [s["heading"] for s in d["sections"] if s["type"] == "guidance"]
+    assert "D. Throughout the Day — 12. Photo Documentation" in headings
+    all_guidance_text = " ".join(
+        text
+        for s in d["sections"] if s["type"] == "guidance"
+        for b in s["blocks"]
+        for text in ([b["text"]] if "text" in b else b.get("items", []))
+    )
+    assert "Minimum 50" not in all_guidance_text and "50 photos" not in all_guidance_text
+    assert "50+ photos" not in all_guidance_text
+    # The WHAT-to-photograph guidance is kept.
+    assert "progress milestones" in all_guidance_text
+    assert "before and after correction" in all_guidance_text
+
+    keys: set[str] = set()
+    for s in d["sections"]:
+        if s["type"] == "header":
+            keys.update(f["key"] for f in s["fields"])
+        elif s["type"] == "checklist":
+            keys.add(s["key"])
+            for g in s["groups"]:
+                keys.update(it["key"] for it in g["items"])
+        elif s["type"] in ("repeating_table", "signature_table", "freeform"):
+            keys.add(s["key"])
+    # The minimum-framed confirms are gone; the photo upload takes their place.
+    assert "photos_taken" not in keys and "photos_uploaded" not in keys
+    photo_section = next(
+        s for s in d["sections"]
+        if s["type"] == "header" and any(f["input"] == "photo" for f in s["fields"])
+    )
+    assert photo_section["title"] == "Site photos"
+    assert [f["key"] for f in photo_section["fields"]] == ["site_photos"]
+    # …at the D.12 position: immediately after the Photo Documentation guidance.
+    idx = next(
+        i for i, s in enumerate(d["sections"])
+        if s.get("heading") == "D. Throughout the Day — 12. Photo Documentation"
+    )
+    assert d["sections"][idx + 1] is photo_section
+    # DFR legal floor (required-content.json parents['daily-report']) still satisfied.
+    assert {
+        "weather", "average_temp", "prepared_by", "crew_progress", "tomorrows_goals",
+        "equipment_on_site", "deliveries_received", "site_visitors", "comments",
+    } <= keys
+    # crew_progress keeps the v1 column keys (the S5 rollup prefill targets them).
+    crew = next(s for s in d["sections"] if s.get("key") == "crew_progress")
+    assert [c["key"] for c in crew["columns"]] == [
+        "crew_subcontractor", "manpower", "todays_progress",
+    ]
+
+
+def test_daily_report_v4_job_requirements_placeholder() -> None:
+    """daily-report-v4 (slice D4): v3 + ONE `job_requirements` placeholder section near the
+    end (immediately before the F. General Expectations guidance), keyed `job_requirements`.
+    The section carries NO content of its own — the per-job overlay (D1
+    job_daily_requirements) is fetched at render time and the answers file under
+    values.job_requirements. v3 stays in-tree unchanged (append-only) and keeps its own
+    tests above; all SOP text is unchanged from v3."""
+    d = _load(FORMS_DIR / "daily-report-v4.json")
+    assert d["version"] == 4 and d["form_code"] == "daily-report-v4"
+    # The dated D4 note rides the definition (meta-schema `comment`).
+    assert any("SLICE D4" in line for line in d.get("comment", []))
+
+    mounts = [s for s in d["sections"] if s["type"] == "job_requirements"]
+    assert len(mounts) == 1, "exactly one job_requirements mount"
+    assert mounts[0]["key"] == "job_requirements"
+    assert mounts[0]["title"] == "Job-specific requirements"
+    # Placement: near the end — immediately before the final F guidance section.
+    idx = d["sections"].index(mounts[0])
+    assert idx == len(d["sections"]) - 2
+    last = d["sections"][-1]
+    assert last["type"] == "guidance"
+    assert last["heading"].startswith("F. General Expectations")
+
+    # Everything else is v3 verbatim: same sections in the same order, the one insertion aside.
+    v3 = _load(FORMS_DIR / "daily-report-v3.json")
+    v4_minus_mount = [s for s in d["sections"] if s["type"] != "job_requirements"]
+    assert v4_minus_mount == v3["sections"], "v4 must be v3 + ONLY the placeholder section"
+
+    # The DFR field-key legal floor is untouched (the mount is a section, not a data field) —
+    # but the section-TYPE floor now NAMES the mount (Slice 1, R3-F3): a future edit can never
+    # silently amputate it. v4 itself is a historical version (current is v5), exempt from the
+    # section-type floor in the glob test above.
+    spec = REQUIRED_CONTENT["parents"]["daily-report"]
+    assert "job_requirements" not in spec.get("required_field_keys", [])
+    assert "job_requirements" in spec.get("required_section_types", [])
+
+
+def test_daily_report_v5_expected_materials_mount() -> None:
+    """daily-report-v5 (Material receipts M2): v4 + ONE `expected_materials` placeholder
+    section in the D.13 deliveries region — immediately after the '13. Material & Equipment
+    Deliveries' guidance and immediately before the Deliveries Received table — keyed
+    `expected_materials_receipt`. The section carries NO content of its own AND files NO
+    values under its key (the key is reserved for namespace uniqueness only): the Daily tab
+    renders the job's expected materials (D1 job_expected_materials, migration 0031, M1)
+    there; confirm-receipt appends a deliveries_received row instead, and problems file as
+    material-incident submissions. v4 stays in-tree unchanged (append-only) and keeps its
+    own tests above; all SOP text is unchanged from v4."""
+    d = _load(FORMS_DIR / "daily-report-v5.json")
+    assert d["version"] == 5 and d["form_code"] == "daily-report-v5"
+    # The dated M2 note rides the definition (meta-schema `comment`).
+    assert any("SLICE M2" in line for line in d.get("comment", []))
+
+    mounts = [s for s in d["sections"] if s["type"] == "expected_materials"]
+    assert len(mounts) == 1, "exactly one expected_materials mount"
+    assert mounts[0]["key"] == "expected_materials_receipt"
+    assert mounts[0]["title"] == "Expected materials"
+    # Placement: the D.13 region — right after the deliveries guidance, before the table.
+    idx = d["sections"].index(mounts[0])
+    before = d["sections"][idx - 1]
+    assert before["type"] == "guidance"
+    assert before["heading"] == "13. Material & Equipment Deliveries"
+    after = d["sections"][idx + 1]
+    assert after["type"] == "repeating_table" and after["key"] == "deliveries_received"
+
+    # Everything else is v4 verbatim: same sections in the same order, the one insertion aside.
+    v4 = _load(FORMS_DIR / "daily-report-v4.json")
+    v5_minus_mount = [s for s in d["sections"] if s["type"] != "expected_materials"]
+    assert v5_minus_mount == v4["sections"], "v5 must be v4 + ONLY the placeholder section"
+
+    # The DFR field-key legal floor is untouched (the mount's key files no values) — but the
+    # section-TYPE floor now NAMES the mount (Slice 1, R3-F3): a future edit can never
+    # silently amputate it.
+    spec = REQUIRED_CONTENT["parents"]["daily-report"]
+    assert "expected_materials_receipt" not in spec.get("required_field_keys", [])
+    assert "expected_materials" in spec.get("required_section_types", [])
+
+
+def test_amputated_daily_report_rejected_by_the_mac_c3_layer() -> None:
+    """Slice 1, R3-F3 — the amputation guard, Mac half (publish_manifest.check_required_content;
+    the Worker half is safety_portal/test/publish.test.ts). Stripping either definition-managed
+    mount (job_requirements / expected_materials) from the CURRENT daily-report must be rejected
+    with the floor's verbatim reason — a form-builder edit can never silently drop the D4/M2
+    mounts. The intact v5 passes (positive control; also covered by the glob test above)."""
+    v5 = _load(FORMS_DIR / "daily-report-v5.json")
+
+    check_required_content(  # intact → clean return
+        v5, identity="daily-report", parent_form_code="daily-report",
+        required_content=REQUIRED_CONTENT,
+    )
+
+    for mount in ("job_requirements", "expected_materials"):
+        amputated = json.loads(json.dumps(v5))
+        amputated["sections"] = [s for s in amputated["sections"] if s["type"] != mount]
+        with pytest.raises(PublishApplyError, match=f"must contain a '{mount}' section"):
+            check_required_content(
+                amputated, identity="daily-report", parent_form_code="daily-report",
+                required_content=REQUIRED_CONTENT,
+            )
+
+
+def test_material_incident_v1_structure_and_floor() -> None:
+    """material-incident-v1 (Material receipts M2): the manager-side delivery-problem form,
+    deep-linked from the daily form's Expected-materials section and normally pickable from
+    Submit-a-Form. NEW parent `material-incident`, catalog category 'progress' (commercial,
+    not safety — operator-vetoable, noted in the definition comment). Fields per the M2
+    spec; `issue` uses the meta-schema's SUPPORTED `select` input (verified: enum member +
+    SPA FieldView dropdown + blank-mode AcroForm choice). Required-content floor (strict
+    entry, PENDING OPERATOR CONFIRMATION): material_description + issue + details."""
+    d = _load(FORMS_DIR / "material-incident-v1.json")
+    assert d["form_code"] == "material-incident-v1"
+    assert d["parent_form_code"] == "material-incident"
+    assert d["version"] == 1
+    # Net-new form — no reference PDF exists (the photo-test-v1 precedent).
+    assert d["source_pdf"] == ""
+    assert any("PENDING OPERATOR CONFIRMATION" in line for line in d.get("comment", []))
+    assert any("progress" in line for line in d.get("comment", []))
+
+    # Header fields: description/ref/quantities/issue — issue is a bounded select.
+    header = next(s for s in d["sections"] if s["type"] == "header" and "title" not in s)
+    fields = {f["key"]: f for f in header["fields"]}
+    assert fields["material_description"]["input"] == "text"
+    assert fields["material_description"].get("required") is True
+    assert fields["delivery_ref"]["input"] == "text"
+    assert fields["qty_expected"]["input"] == "number"
+    assert fields["qty_received"]["input"] == "number"
+    assert fields["issue"]["input"] == "select"
+    assert fields["issue"]["options"] == ["Damaged", "Short", "Wrong item", "Other"]
+    assert fields["issue"].get("required") is True
+
+    # details / action_taken are full-width textareas; photos is a header-level photo field
+    # (the ONLY placement publishValidation allows photos — rides the §34 pipeline, D3).
+    details = next(s for s in d["sections"] if s.get("key") == "details")
+    assert details["type"] == "freeform" and details.get("input", "textarea") == "textarea"
+    action = next(s for s in d["sections"] if s.get("key") == "action_taken")
+    assert action["type"] == "freeform" and action.get("input", "textarea") == "textarea"
+    photos = next(
+        s for s in d["sections"]
+        if s["type"] == "header" and any(f["input"] == "photo" for f in s["fields"])
+    )
+    assert [f["key"] for f in photos["fields"]] == ["photos"]
+
+    # The catalog carries the new parent as category 'progress', normally pickable
+    # (NO launch:'daily-tab' — that key is the daily-report parent's alone).
+    parent = next(p for p in _CATALOG["parents"] if p["parent_form_code"] == "material-incident")
+    assert parent["category"] == "progress"
+    assert "launch" not in parent
+    assert parent["forms"][0]["current_form_code"] == "material-incident-v1"
+
+    # The required-content floor exists and names exactly the three floor fields; the
+    # glob-parametrized test above proves the shipped definition satisfies it.
+    spec = REQUIRED_CONTENT["parents"]["material-incident"]
+    assert spec["required_field_keys"] == ["material_description", "issue", "details"]
+    assert spec["required_signature_inputs_min"] == 0

@@ -1,6 +1,11 @@
+import { memo } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import { PhotoField } from "../components/PhotoField";
 import { SignaturePad } from "../components/SignaturePad";
+import { statusPill, rowTitle } from "../components/ExpectedMaterialsSection";
+import { DAILY_STATUS_FAMILIES, type DailyRequirementItem } from "../lib/fieldops_daily_form";
+import type { ExpectedMaterialRow } from "../lib/fieldops_expected_materials";
+import { dayPhaseFor } from "./dayPhase";
 import type { Field, FormDefinition, Group, PhotoValue, Section } from "./types";
 
 // The fill state, keyed per section:
@@ -37,13 +42,84 @@ export function initialValues(def: FormDefinition): FormValues {
 
 const emptyRow = (cols: Field[]): Row => Object.fromEntries(cols.map((c) => [c.key, ""]));
 
+/** Deep-link adapter for `form_link` sections (SOP daily form, slice D1). The renderer
+ *  itself never navigates or fetches — the HOST (the Daily tab, slice D2) supplies this
+ *  to wire the "Create <form> →" button to the existing openForm prefill flow and the
+ *  filed-indicator to the family-match loop-closure query. With NO adapter the button
+ *  renders disabled with a "available from the Daily tab" helper — so the plain
+ *  Submit-a-Form fill path stays inert and send-free. */
+export interface FormLinkAdapter {
+  /** Open the create-form flow for the linked parent form type. */
+  open: (parentFormCode: string) => void;
+  /** Filed indicator (e.g. "Filed ✓ 2:14 PM") for the linked parent, or null. */
+  filedLabel?: (parentFormCode: string) => string | null;
+}
+
+/** One filed answer in a `job_requirements` section's values array (slice D4). SELF-DESCRIBING
+ *  on purpose: the submission carries the label + kind it answered, so the filed payload (and the
+ *  PDF rendered from it) is stable regardless of later requirement edits. note items ride along
+ *  with an empty response (they were shown, not answered); confirm = "Confirmed" | "";
+ *  text = the typed answer; form_link = "" (the linked form files as its OWN submission);
+ *  number/date (D5) = the typed value as a string; select (D5) = the chosen option string.
+ *  Every kind's response is a STRING — the PDF's generic label→response rows need no new
+ *  handling when kinds are added. */
+export interface JobRequirementResponse {
+  label: string;
+  kind: string;
+  response: string;
+}
+
+/** A fresh (all-empty) values array for a fetched requirement set — the HOST seeds
+ *  values[<section key>] with this when the items load, so a submission filed with zero
+ *  interaction still carries the requirements it displayed. */
+export function seedRequirementResponses(items: DailyRequirementItem[]): JobRequirementResponse[] {
+  return items.map((it) => ({ label: it.label, kind: it.kind, response: "" }));
+}
+
+/** Adapter for `expected_materials` sections (Material receipts M2). Like FormLinkAdapter, the
+ *  renderer itself never fetches or mutates — the HOST (the Daily tab) supplies the job's
+ *  expected-material rows (M1's read) plus the two receipt actions, and owns the per-row busy
+ *  state and any action error. With NO adapter the section renders NOTHING — the generic fill
+ *  page (and every non-daily form) is unaffected. The section files NO form values of its own:
+ *  the host's onConfirmReceipt appends a deliveries_received row; problems file as the
+ *  material-incident form's OWN submission (deep-linked by the host). The live
+ *  "Filed ✓" indicator for that incident form rides the EXISTING FormLinkAdapter.filedLabel
+ *  ('material-incident' is a DAILY_STATUS_FAMILIES member since M2). */
+export interface ExpectedMaterialsAdapter {
+  /** The job's expected materials, seq order (fetch state — including errors — is the host's). */
+  rows: ExpectedMaterialRow[];
+  /** Rows with an in-flight receive/flag call — their action buttons render disabled. */
+  busyIds: ReadonlySet<number>;
+  /** A failed action's message, rendered inline in the section (never silent). */
+  actionError?: string | null;
+  /** "Confirm receipt" — the host calls the M1 receive route + appends the deliveries row. */
+  onConfirmReceipt: (row: ExpectedMaterialRow) => void;
+  /** "Report a problem →" — the host flags the row + deep-links material-incident prefilled. */
+  onReportProblem: (row: ExpectedMaterialRow) => void;
+}
+
 interface Props {
   def: FormDefinition;
   values: FormValues;
   setValues: Dispatch<SetStateAction<FormValues>>;
+  /** Optional D2 hook — see FormLinkAdapter. Absent on the generic fill page. */
+  formLinks?: FormLinkAdapter;
+  /** Optional D4 hook — the job's fetched per-job requirement items, rendered by any
+   *  `job_requirements` section. Absent (the generic fill page) or empty → the section
+   *  renders NOTHING, so every other form is unaffected. */
+  requirements?: DailyRequirementItem[];
+  /** Optional M2 hook — see ExpectedMaterialsAdapter. Absent on the generic fill page
+   *  (the `expected_materials` section renders NOTHING without it). */
+  expectedMaterials?: ExpectedMaterialsAdapter;
+  /** Optional, PRESENTATIONAL ONLY — the daily SOP's chronological day-rail (design
+   *  refinement, 2026-07). When set (the Daily tab), guidance sections render with a
+   *  slim left rail, and the five phase-opening sections (dayPhase.ts, derived from
+   *  the definition's own headings) carry a time-of-day eyebrow. Absent (the generic
+   *  fill page and every other form) → markup is byte-identical to before. */
+  dayRail?: boolean;
 }
 
-export function FormRenderer({ def, values, setValues }: Props) {
+export function FormRenderer({ def, values, setValues, formLinks, requirements, expectedMaterials, dayRail }: Props) {
   const setField = (key: string, val: string) =>
     setValues((v) => ({ ...v, [key]: val }));
 
@@ -74,6 +150,20 @@ export function FormRenderer({ def, values, setValues }: Props) {
       return { ...v, [secKey]: cl };
     });
 
+  // D4 — one requirement answered: rebuild the FULL self-describing array from the CURRENT item
+  // set (preserving other answers by label+kind), so the written value always mirrors what the
+  // manager saw — even if a draft predates a mid-day requirement edit.
+  const setRequirement = (secKey: string, items: DailyRequirementItem[], targetId: number, response: string) =>
+    setValues((v) => {
+      const prev = Array.isArray(v[secKey]) ? (v[secKey] as JobRequirementResponse[]) : [];
+      const next = items.map((it) => {
+        if (it.id === targetId) return { label: it.label, kind: it.kind, response };
+        const existing = prev.find((r) => r.label === it.label && r.kind === it.kind);
+        return { label: it.label, kind: it.kind, response: existing?.response ?? "" };
+      });
+      return { ...v, [secKey]: next };
+    });
+
   return (
     <div className="fr">
       {def.sections.map((s, i) => (
@@ -87,6 +177,11 @@ export function FormRenderer({ def, values, setValues }: Props) {
           addRow={addRow}
           removeRow={removeRow}
           setChecklist={setChecklist}
+          formLinks={formLinks}
+          requirements={requirements}
+          setRequirement={setRequirement}
+          expectedMaterials={expectedMaterials}
+          dayRail={dayRail}
         />
       ))}
     </div>
@@ -102,6 +197,11 @@ interface SectionProps {
   addRow: (sec: string, cols: Field[]) => void;
   removeRow: (sec: string, idx: number) => void;
   setChecklist: (sec: string, item: string, patch: { response?: string; comment?: string }) => void;
+  formLinks?: FormLinkAdapter;
+  requirements?: DailyRequirementItem[];
+  setRequirement: (sec: string, items: DailyRequirementItem[], targetId: number, response: string) => void;
+  expectedMaterials?: ExpectedMaterialsAdapter;
+  dayRail?: boolean;
 }
 
 function SectionView(p: SectionProps) {
@@ -127,8 +227,13 @@ function SectionView(p: SectionProps) {
         </section>
       );
     }
+    // Value-independent sections short-circuit through the memo'd StaticSectionView (below) —
+    // they read only the section object + the dayRail flag, never `values`, so a keystroke
+    // re-render never re-renders them.
     case "static_text":
-      return <p className={`fr__static fr__static--${s.emphasis ?? "heading"}`}>{s.text}</p>;
+    case "content_blocks":
+    case "guidance":
+      return <StaticSectionView section={s} dayRail={p.dayRail} />;
     case "freeform":
       return (
         <section className="fr__section">
@@ -139,6 +244,241 @@ function SectionView(p: SectionProps) {
           </label>
         </section>
       );
+    case "repeating_table":
+    case "signature_table":
+      return <TableView section={s} rows={(p.values[s.key] as Row[]) ?? []}
+        onCell={(i, c, v) => p.setCell(s.key, i, c, v)}
+        onAdd={() => p.addRow(s.key, s.columns)} onRemove={(i) => p.removeRow(s.key, i)} />;
+    case "checklist":
+      return <ChecklistView section={s} state={(p.values[s.key] as ChecklistState) ?? {}}
+        onChange={(item, patch) => p.setChecklist(s.key, item, patch)} />;
+    // Deep link to another form type (slice D1). With no adapter (the generic fill
+    // page) the button is disabled and explains where the live link lives; the Daily
+    // tab (D2) supplies FormLinkAdapter to wire the real deep-link + filed indicator.
+    // Per-job daily-form requirements (slice D4): the D1 overlay the HOST fetched (the
+    // `requirements` prop). No prop / zero items → NOTHING renders (other forms unaffected).
+    case "job_requirements": {
+      const items = p.requirements ?? [];
+      if (items.length === 0) return null;
+      const current = Array.isArray(p.values[s.key]) ? (p.values[s.key] as JobRequirementResponse[]) : [];
+      const responseFor = (it: DailyRequirementItem): string =>
+        current.find((r) => r.label === it.label && r.kind === it.kind)?.response ?? "";
+      return (
+        <section className="fr__section fr__job-reqs">
+          <h2 className="fr__section-title">{s.title ?? "Job-specific requirements"}</h2>
+          {items.map((it) => {
+            if (it.kind === "note") {
+              // Guidance-paragraph style — read-only client instruction (no answer control).
+              return <p key={it.id} className="fr__guidance-p">{it.label}</p>;
+            }
+            if (it.kind === "confirm") {
+              const on = responseFor(it) === "Confirmed";
+              return (
+                <label key={it.id} className="field fr__req-confirm">
+                  <input
+                    type="checkbox"
+                    checked={on}
+                    onChange={(e) =>
+                      p.setRequirement(s.key, items, it.id, e.target.checked ? "Confirmed" : "")}
+                  />{" "}
+                  <span className="field__label">{it.label}</span>
+                </label>
+              );
+            }
+            // text / number / date all capture a plain string answer through the same
+            // self-describing {label, kind, response} shape (D5 added number + date) — only the
+            // input control differs, so the filed values array (and the PDF's generic
+            // label→response rows) need no new handling.
+            if (it.kind === "text" || it.kind === "number" || it.kind === "date") {
+              return (
+                <label key={it.id} className="field">
+                  <span className="field__label">{it.label}</span>
+                  <input
+                    className="field__input"
+                    type={it.kind === "text" ? "text" : it.kind}
+                    inputMode={it.kind === "number" ? "numeric" : undefined}
+                    value={responseFor(it)}
+                    onChange={(e) => p.setRequirement(s.key, items, it.id, e.target.value)}
+                  />
+                </label>
+              );
+            }
+            // select (D5) — pick-one from the item's admin-authored options; the chosen option
+            // string IS the response (the empty default files as "", i.e. unanswered).
+            if (it.kind === "select") {
+              const opts = it.options ?? [];
+              return (
+                <label key={it.id} className="field">
+                  <span className="field__label">{it.label}</span>
+                  <select
+                    className="field__input"
+                    value={responseFor(it)}
+                    onChange={(e) => p.setRequirement(s.key, items, it.id, e.target.value)}
+                  >
+                    <option value="">— select —</option>
+                    {opts.map((o, oi) => (
+                      <option key={oi} value={o}>{o}</option>
+                    ))}
+                  </select>
+                </label>
+              );
+            }
+            // form_link — the existing deep-link affordance. The filed indicator only exists for
+            // the DAILY_STATUS_FAMILIES the status endpoint reports; other catalog parents get
+            // the link with an honest "no live indicator" note instead of a lying blank.
+            const code = it.form_code;
+            const tracked = code !== null && DAILY_STATUS_FAMILIES.includes(code);
+            const filed = code !== null && tracked ? p.formLinks?.filedLabel?.(code) ?? null : null;
+            return (
+              <div key={it.id} className="fr__form-link">
+                <button
+                  type="button"
+                  className="btn btn--primary"
+                  disabled={!p.formLinks || code === null}
+                  onClick={p.formLinks && code !== null ? () => p.formLinks?.open(code) : undefined}
+                >
+                  {it.label} →
+                </button>
+                {filed ? <span className="fr__form-link-filed">{filed}</span> : null}
+                {!p.formLinks ? (
+                  <p className="fr__form-link-helper muted">available from the Daily tab</p>
+                ) : !tracked ? (
+                  <p className="fr__form-link-helper muted">
+                    No live filed indicator for this form type — check Form Request for filed copies.
+                  </p>
+                ) : null}
+              </div>
+            );
+          })}
+        </section>
+      );
+    }
+    // Expected-materials receipt list (Material receipts M2): the M1 rows the HOST fetched
+    // (the `expectedMaterials` adapter). No adapter → NOTHING renders — the generic fill page
+    // and every other form are unaffected. The section files NO form values of its own:
+    // "Confirm receipt" flips the D1 row + appends a deliveries_received table row (both the
+    // host's duty); "Report a problem →" flags the row + deep-links the material-incident
+    // form, which files as its OWN submission.
+    case "expected_materials": {
+      const em = p.expectedMaterials;
+      if (!em) return null;
+      // Live "Filed ✓" for the incident form this section deep-links to — material-incident
+      // is a DAILY_STATUS_FAMILIES member (M2), served by the same status read form_link uses.
+      const incidentFiled = p.formLinks?.filedLabel?.("material-incident") ?? null;
+      return (
+        <section className="fr__section fr__expected-materials">
+          <h2 className="fr__section-title">{s.title ?? "Expected materials"}</h2>
+          {incidentFiled ? (
+            <p className="fr__form-link-filed">Material incident report: {incidentFiled}</p>
+          ) : null}
+          {em.actionError ? (
+            <p className="banner banner--err" role="alert">
+              {em.actionError}
+            </p>
+          ) : null}
+          {em.rows.length === 0 ? (
+            <p className="muted">No expected materials for this job.</p>
+          ) : (
+            <ul className="dash-tasklist">
+              {em.rows.map((r) => {
+                const pill = statusPill(r.status);
+                const busy = em.busyIds.has(r.id);
+                return (
+                  <li key={r.id}>
+                    <span className={pill.className}>{pill.label}</span> <strong>{rowTitle(r)}</strong>
+                    {r.qty != null ? (
+                      <span className="dash-chip">
+                        {r.qty}
+                        {r.unit ? ` ${r.unit}` : ""}
+                      </span>
+                    ) : r.unit ? (
+                      <span className="dash-chip">{r.unit}</span>
+                    ) : null}
+                    {r.expected_date ? <span className="dash-chip">expected {r.expected_date}</span> : null}
+                    {r.status === "expected" ? (
+                      <div className="dash-row">
+                        <button
+                          type="button"
+                          className="btn btn--primary"
+                          disabled={busy}
+                          aria-label={`Confirm receipt of ${rowTitle(r)}`}
+                          onClick={() => em.onConfirmReceipt(r)}
+                        >
+                          {busy ? "Working…" : "Confirm receipt"}
+                        </button>{" "}
+                        <button
+                          type="button"
+                          className="btn btn--secondary"
+                          disabled={busy}
+                          aria-label={`Report a problem with ${rowTitle(r)}`}
+                          onClick={() => em.onReportProblem(r)}
+                        >
+                          Report a problem →
+                        </button>
+                      </div>
+                    ) : (
+                      // Received/incident rows are receipt RECORDS: pill + who/when (+ note).
+                      <div className="dash-card__sub muted">
+                        {r.status === "received" ? "Received" : "Flagged"}
+                        {r.received_at ? ` ${new Date(r.received_at * 1000).toLocaleString()}` : ""}
+                        {r.received_by_name ? ` by ${r.received_by_name}` : ""}
+                        {r.qty_received != null ? ` · qty received ${r.qty_received}` : ""}
+                        {r.note ? ` · ${r.note}` : ""}
+                      </div>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </section>
+      );
+    }
+    case "form_link": {
+      const filed = p.formLinks?.filedLabel?.(s.parent_form_code) ?? null;
+      return (
+        <section className="fr__section fr__form-link">
+          <button
+            type="button"
+            className="btn btn--primary"
+            disabled={!p.formLinks}
+            onClick={p.formLinks ? () => p.formLinks?.open(s.parent_form_code) : undefined}
+          >
+            {/* The arrow is button CHROME (the definition label stays plain text so the
+                PDF renderer / needle tests never depend on a non-WinAnsi glyph). */}
+            {s.label} →
+          </button>
+          {filed ? <span className="fr__form-link-filed">{filed}</span> : null}
+          {p.formLinks ? (
+            s.helper ? <p className="fr__form-link-helper muted">{s.helper}</p> : null
+          ) : (
+            <p className="fr__form-link-helper muted">available from the Daily tab</p>
+          )}
+        </section>
+      );
+    }
+  }
+}
+
+// ── Value-independent sections (optimization #5) ─────────────────────────────────────────────────
+// static_text / content_blocks / guidance read ONLY the section object (a referentially-stable
+// slice of the build-time-bundled definition) plus the stable dayRail flag — never `values` and
+// no callbacks. React.memo's default shallow compare therefore short-circuits all of them on the
+// per-keystroke FormRenderer re-render: the SOP daily form alone carries ~20 guidance sections
+// that would otherwise re-render on every key press. Markup is byte-identical to the pre-memo
+// inline cases (the day-rail / eyebrow contract included). Interactive sections are deliberately
+// NOT memoized — values-slicing comparators + useCallback plumbing without profile evidence
+// (rejected in the optimization plan, §14 preservation-over-refactor).
+const StaticSectionView = memo(function StaticSectionView({
+  section: s,
+  dayRail,
+}: {
+  section: Extract<Section, { type: "static_text" | "content_blocks" | "guidance" }>;
+  dayRail?: boolean;
+}) {
+  switch (s.type) {
+    case "static_text":
+      return <p className={`fr__static fr__static--${s.emphasis ?? "heading"}`}>{s.text}</p>;
     case "content_blocks":
       return (
         <section className="fr__section fr__content">
@@ -151,16 +491,44 @@ function SectionView(p: SectionProps) {
           ))}
         </section>
       );
-    case "repeating_table":
-    case "signature_table":
-      return <TableView section={s} rows={(p.values[s.key] as Row[]) ?? []}
-        onCell={(i, c, v) => p.setCell(s.key, i, c, v)}
-        onAdd={() => p.addRow(s.key, s.columns)} onRemove={(i) => p.removeRow(s.key, i)} />;
-    case "checklist":
-      return <ChecklistView section={s} state={(p.values[s.key] as ChecklistState) ?? {}}
-        onChange={(item, patch) => p.setChecklist(s.key, item, patch)} />;
+    // Read-only SOP guidance (slice D1): heading + paragraphs / bullet lists / styled
+    // callouts, VERBATIM from the definition. Contributes no fill state.
+    // With the host's `dayRail` (the Daily tab): a presentational left rail on every
+    // guidance section + a time-of-day eyebrow on the five phase openers (dayPhase.ts).
+    // The eyebrow is aria-hidden — it restates the heading's own phase for the eye only.
+    case "guidance": {
+      const phase = dayRail ? dayPhaseFor(s.heading) : null;
+      return (
+        <section className={`fr__section fr__guidance${dayRail ? " fr__guidance--rail" : ""}`}>
+          {phase ? (
+            <p className="fr__day-eyebrow" aria-hidden="true">
+              {phase}
+            </p>
+          ) : null}
+          <h2 className="fr__section-title">{s.heading}</h2>
+          {s.blocks.map((b, i) => {
+            if (b.type === "p") return <p key={i} className="fr__guidance-p">{b.text}</p>;
+            if (b.type === "bullets") {
+              return (
+                <ul key={i} className="fr__guidance-bullets">
+                  {b.items.map((item, j) => <li key={j}>{item}</li>)}
+                </ul>
+              );
+            }
+            // callout — visually distinct per style (gold legal look for note/quality,
+            // danger edge for critical); the TEXT itself already carries its own
+            // "CRITICAL RULE:" / "QUALITY RULE:" / "NOTE:" prefix verbatim.
+            return (
+              <div key={i} role="note" className={`fr__callout fr__callout--${b.style}`}>
+                {b.text}
+              </div>
+            );
+          })}
+        </section>
+      );
+    }
   }
-}
+});
 
 function FieldView({ field, value, onChange }: { field: Field; value: string; onChange: (v: string) => void }) {
   if (field.input === "signature") {

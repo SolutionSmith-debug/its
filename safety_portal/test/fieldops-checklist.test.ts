@@ -1,5 +1,6 @@
-import { env, SELF } from "cloudflare:test";
+import { env } from "cloudflare:test";
 import { describe, it, expect, beforeEach } from "vitest";
+import { provision, login, get, post, seedJob } from "./helpers";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Assigned-Tasks tab (P4 field-ops feature) S2 — the checklist ENGINE + per-job template editor.
@@ -10,37 +11,6 @@ import { describe, it, expect, beforeEach } from "vitest";
 // Runs against the REAL worker with Miniflare D1 (migrations incl. 0026 auto-apply).
 // ─────────────────────────────────────────────────────────────────────────────
 
-const BASE = "https://portal.test";
-const ADMIN_BEARER = "test-admin-token";
-type Init = RequestInit & { cookie?: string; bearer?: string };
-
-function call(path: string, init: Init = {}): Promise<Response> {
-  const headers = new Headers(init.headers);
-  if (init.cookie) headers.set("Cookie", init.cookie);
-  if (init.bearer) headers.set("Authorization", `Bearer ${init.bearer}`);
-  if (init.body && !headers.has("content-type")) headers.set("content-type", "application/json");
-  return SELF.fetch(BASE + path, { ...init, headers });
-}
-function cookieFrom(res: Response): string {
-  return (res.headers.get("set-cookie") ?? "").split(";")[0];
-}
-async function provision(username: string, password: string, role: "submitter" | "manager" | "admin"): Promise<void> {
-  const res = await call("/api/internal/admin/users", { method: "POST", bearer: ADMIN_BEARER, body: JSON.stringify({ username, password, role }) });
-  expect(res.status, await res.clone().text()).toBe(201);
-}
-async function login(username: string, password: string): Promise<string> {
-  const res = await call("/api/login", { method: "POST", body: JSON.stringify({ username, password }) });
-  expect(res.status, await res.clone().text()).toBe(200);
-  return cookieFrom(res);
-}
-const get = (cookie: string, path: string) => call(path, { cookie });
-const post = (cookie: string, path: string, body?: unknown) =>
-  call(path, { method: "POST", cookie, body: body === undefined ? undefined : JSON.stringify(body) });
-
-async function seedJob(jobId: string): Promise<void> {
-  await env.DB.prepare("INSERT INTO jobs (job_id, project_name, active, status, created_at) VALUES (?,?,1,'active',?)")
-    .bind(jobId, `Project ${jobId}`, 1_700_000_000).run();
-}
 async function defaultTemplateId(): Promise<number> {
   return (await env.DB.prepare("SELECT id FROM checklist_templates WHERE kind='daily_default'").first<{ id: number }>())!.id;
 }
@@ -92,7 +62,7 @@ describe("checklist S2 — capability gating", () => {
 });
 
 describe("checklist S2 — default template CRUD + seed", () => {
-  it("GET /default returns the migration-0026 seed (form_linked + manual_attest items)", async () => {
+  it("GET /default returns the seeded daily default (0026 engine, 0028 SOP content: form_linked + manual_attest items)", async () => {
     const res = await get(admin, "/api/fieldops/checklist/default");
     const body = (await res.json()) as { template: { source_form_code: string } | null; items: { item_type: string; label: string }[] };
     expect(body.template?.source_form_code).toBe("daily-report");

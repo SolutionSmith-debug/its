@@ -10,6 +10,17 @@
    GOLD IS DECORATIVE ONLY. gold-on-white = 2.46:1 (FAILS even the 3:1 UI floor),
    gold-on-BRG = 5.01:1 (marginal). Gold is used only as an accent rule ON GREEN,
    never as text and never as a focus indicator on light surfaces.
+
+   Design-refinement pass (2026-07) — display-face (--font-display, Barlow Semi
+   Condensed) text pairs, verified by the same method. Barlow renders in --c-black /
+   --c-brg on light surfaces or white-on-green ONLY:
+     brg-on-white        12.33:1  PASS   (headings, table headers, tab labels)
+     brg-on-surface      ~11.4:1  PASS   (headings/eyebrows on the page ground)
+     muted-on-white       ~7.9:1  PASS   (day-phase eyebrows inside white cards —
+                                          0.78rem/600: small text, ≥4.5:1 required)
+     danger-on-#fdf1f1    ~7.4:1  PASS   (critical-callout red ink on its tint)
+   The day-rail's gold TICKS and the critical callout's BRG/gold hazard STRIPES are
+   gold-as-decoration (non-text, no AA floor); gold text stays banned on light.
    ───────────────────────────────────────────────────────────────────────────── */
 :root {
   /* Brand */
@@ -38,6 +49,23 @@
   --lh: 1.5;
   --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial,
     sans-serif;
+  /* Display / signage face — "signage for structure, system for prose". Barlow Semi
+     Condensed (DIN lineage — the subject's own industrial/highway letterforms;
+     condensed = more heading per phone-width) carries STRUCTURE ONLY: headings,
+     eyebrows, pills/badges, tabs, table headers, button labels, big numerics.
+     Body/prose/inputs stay on --font (the 17px system stack is a deliberate field
+     choice — outdoor legibility, zero payload). Self-hosted; fallbacks condensed-first. */
+  --font-display: "Barlow Semi Condensed", "Avenir Next Condensed", "Arial Narrow",
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+
+  /* Spacing scale — 8px grid with a 4px half-step. New spacing reaches for these
+     instead of ad-hoc pixel values; --gap (16px) remains and equals --space-4. */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
 
   /* Geometry */
   --tap: 48px;             /* min tap target */

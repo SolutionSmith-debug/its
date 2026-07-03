@@ -18,6 +18,13 @@ publish_requests state machine at each milestone so the admin Status Monitor tra
     ANY stage failure → STAMP failed(stage, reason) + an operator CRITICAL triple-fire
     (detect-and-alert, C12 mandate: never a silent stall an idle-logged-out admin can't see).
 
+Deploy gate (Slice 1, R3-F1): the daemon REFUSES to deploy the Worker ahead of unapplied
+remote D1 migrations (forensic class #2 — publish #434 shipped the Worker while
+0030/0031/0032 sat unapplied, 500ing live routes). Checked pre-claim each cycle with work
+(rows stay pending → the operator's `migrations apply` unblocks the next cycle
+automatically) AND authoritatively post-pull in _deploy_land_health. Refusal only — a live
+D1 apply is operator-gated (mirrors .claude/hooks/block-stale-cloudflare-deploy.sh).
+
 Capability gating (Invariant 1): enrolled in tests/test_capability_gating.py — it actuates
 code (commit/deploy) but performs ZERO external customer transmission, so it imports no
 send capability (anthropic / send_mail / resend / smtplib / email.mime). The privileged
@@ -51,8 +58,16 @@ from typing import Any
 import jsonschema
 
 from safety_reports.publish_manifest import PublishApplyError, apply_publish
-from shared import error_log, form_category, keychain, portal_client, smartsheet_client
+from shared import (
+    circuit_breaker,
+    error_log,
+    form_category,
+    keychain,
+    portal_client,
+    smartsheet_client,
+)
 from shared.error_log import Severity, its_error_log
+from shared.heartbeat import HeartbeatReporter, HeartbeatStatus
 from shared.kill_switch import require_active
 
 SCRIPT_NAME = "publish_daemon"
@@ -62,6 +77,30 @@ WORKSTREAM = "safety_reports"
 KC_BEARER = "ITS_PORTAL_INTERNAL_TOKEN"  # noqa: S105 — Keychain entry NAME, not a secret
 CFG_WORKER_BASE_URL = "safety_reports.portal.worker_base_url"
 CFG_POLLING_ENABLED = "safety_reports.publish_daemon.polling_enabled"
+
+# ITS_Daemon_Health heartbeat (R4-F1 — the operator-visibility row the other pollers
+# self-provision). HEARTBEAT_ROW_STATE_PATH is SHARED with the other daemons — same JSON
+# file, different daemon_name key (ARCH-2). POLL_INTERVAL_SECONDS mirrors the plist
+# StartInterval (120s; publishes are infrequent + the cycle is heavy).
+STATE_DIR = Path.home() / "its" / "state"
+HEARTBEAT_PATH = STATE_DIR / "publish_daemon_heartbeat.txt"
+HEARTBEAT_ROW_STATE_PATH = STATE_DIR / "heartbeat_row_ids.json"
+DAEMON_NAME = "safety_reports.publish_daemon"
+POLL_INTERVAL_SECONDS = 120
+
+# A1 self-provision metadata (the ONLY per-daemon difference in the heartbeat helpers).
+_REGISTRATION_SOURCE_ID = "Safety Portal Worker /api/internal/publish/pending"
+
+# Shared ITS_Daemon_Health reporter for this daemon (mirrors fieldops_sync / portal_poll).
+_heartbeat_reporter = HeartbeatReporter(
+    script_name=SCRIPT_NAME,
+    daemon_name=DAEMON_NAME,
+    workstream=WORKSTREAM,
+    liveness_path=HEARTBEAT_PATH,
+    interval_seconds=POLL_INTERVAL_SECONDS,
+    source_id=_REGISTRATION_SOURCE_ID,
+    row_state_path=HEARTBEAT_ROW_STATE_PATH,  # shared file — make the contract explicit
+)
 
 _ROOT = Path(__file__).resolve().parent.parent
 _CATALOG_PATH = _ROOT / "safety_portal" / "catalog.json"
@@ -85,6 +124,24 @@ CI_TIMEOUT_S = 900.0  # 15 min — generous vs the ~3-5 min portal CI
 # so a legitimately in-progress publish is never reclaimed — every stamp bumps updated_at, so a
 # healthy publish never looks stale.
 STALE_RECLAIM_S = 2700.0  # 45 min
+
+# D1 pending-migrations deploy gate (Complete-State Slice 1, R3-F1 — forensic class #2).
+# The publish deploy must NEVER ship the Worker ahead of unapplied remote D1 migrations:
+# publish #434 auto-deployed the Worker while 0030/0031/0032 sat unapplied, 500ing the
+# daily-requirements + expected-materials routes on the live portal (the 2026-06-28
+# stale-tree universal lockout was the same class through a different door —
+# .claude/hooks/block-stale-cloudflare-deploy.sh guards CC sessions; THIS guards the
+# daemon's own §50 actuator, which runs outside any CC session). Posture mirrors the hook:
+# REFUSE, never auto-apply — a live D1 `migrations apply` is operator-gated (README
+# punch-list order: pull → apply → deploy).
+D1_DATABASE_NAME = "its-safety-portal-db"  # wrangler.jsonc d1_databases[0].database_name
+_MIGRATIONS_DIR = _ROOT / "safety_portal" / "migrations"
+ERR_PENDING_MIGRATIONS = "publish_daemon.deploy_blocked_pending_migrations"
+ERR_MIGRATION_CHECK = "publish_daemon.migration_check_failed"
+
+
+class PendingMigrationsError(RuntimeError):
+    """A deploy would ship the Worker ahead of unapplied remote D1 migrations (refused)."""
 
 
 @dataclass
@@ -136,6 +193,34 @@ def _resolve_creds() -> _Creds | None:
     if not bearer:
         return None
     return _Creds(base_url=base_url, bearer=bearer)
+
+
+def _write_heartbeat() -> None:
+    """Liveness file touch — thin delegator to the shared HeartbeatReporter.
+
+    Kept as a module-level function because it is the canonical test mock seam
+    (the suite patches this exact symbol). See shared/heartbeat.py (§42).
+    """
+    _heartbeat_reporter.write_liveness()
+
+
+def _write_heartbeat_row(
+    *,
+    status: HeartbeatStatus,
+    items_processed: int,
+    error_summary: str | None = None,
+    correlation_id: str | None = None,
+    notes: str | None = None,
+) -> None:
+    """ITS_Daemon_Health per-cycle row update — thin delegator to the shared
+    HeartbeatReporter (the canonical test mock seam). See shared/heartbeat.py (§42)."""
+    _heartbeat_reporter.write_row(
+        status=status,
+        items_processed=items_processed,
+        error_summary=error_summary,
+        correlation_id=correlation_id,
+        notes=notes,
+    )
 
 
 def _load_catalog() -> dict:
@@ -304,12 +389,49 @@ def _commit_test_merge(request_id: int, identity: str, note: str) -> None:
     _gh("pr", "merge", branch, "--squash", "--delete-branch")
 
 
+def _pending_migrations() -> list[str]:
+    """On-disk D1 migrations (safety_portal/migrations/*.sql) NOT yet applied to the REMOTE
+    database — the deploy gate's evidence (Slice 1, R3-F1 / forensic class #2, publish #434).
+
+    Reuses the deploy stage's exact invocation surface: same cwd (safety_portal/), the LOCAL
+    wrangler via npx (`npm run deploy` resolves the same node_modules/.bin binary), under the
+    operator's Cloudflare auth — the daemon already deploys, so the credential is present.
+    `wrangler d1 migrations list … --remote` prints ONLY unapplied migrations, so
+    cross-checking the on-disk filenames against its output is robust to its table-format
+    drift (we only look for our own filenames). Raises on any wrangler failure — callers
+    fail CLOSED: cannot verify ⇒ must not deploy."""
+    disk = sorted(p.name for p in _MIGRATIONS_DIR.glob("*.sql"))
+    out = subprocess.run(
+        ["npx", "wrangler", "d1", "migrations", "list", D1_DATABASE_NAME, "--remote"],
+        cwd=_ROOT / "safety_portal", check=True, capture_output=True, text=True,
+    ).stdout
+    return [name for name in disk if name in out]
+
+
 def _deploy_land_health(creds: _Creds, current_form_code: str) -> None:
     """The merge has landed on main → land it locally (fast-forward ~/its so load_definition
     sees the new file), deploy the Worker/SPA via the operator's LOCAL wrangler (the CF
-    credential never leaves the Mac), then a post-deploy liveness check. Raises on failure."""
+    credential never leaves the Mac), then a post-deploy liveness check. Raises on failure.
+
+    Refuses to deploy ahead of unapplied remote D1 migrations (Slice 1, R3-F1): the check
+    runs AFTER the pull (so the on-disk migration set is current main's — new migrations can
+    arrive WITH the pull, exactly forensic class #2) and BEFORE `wrangler deploy`. Refusal
+    only, never auto-apply; the raise is fenced by _actuate's stage-3 handler (stamps
+    failed('live') + CRITICAL), so a refused deploy never wedges the daemon."""
     _git("checkout", "main")
     _git("pull", "--ff-only", "origin", "main")
+    pending = _pending_migrations()
+    if pending:
+        error_log.log(
+            Severity.CRITICAL, SCRIPT_NAME,
+            f"deploy REFUSED: {len(pending)} unapplied remote D1 migration(s) {pending} — "
+            f"apply them first (cd ~/its && git pull origin main && cd safety_portal && "
+            f"npx wrangler d1 migrations apply {D1_DATABASE_NAME} --remote), then re-run the "
+            f"deploy (npm run deploy) or re-publish. Deploying the Worker ahead of its "
+            f"migrations 500s the live portal (forensic class #2; publish #434).",
+            error_code=ERR_PENDING_MIGRATIONS,
+        )
+        raise PendingMigrationsError(f"unapplied remote D1 migrations: {', '.join(pending)}")
     subprocess.run(["npm", "run", "deploy"], cwd=_ROOT / "safety_portal",
                    check=True, capture_output=True, text=True)
     portal_client.get_publish_pending(creds.base_url, creds.bearer, limit=1)  # liveness ping
@@ -514,6 +636,9 @@ def publish_once() -> PublishStats:
             f"publish daemon could not recover a stranded tree to main: {_exc_reason(exc)}",
             error_code="publish_daemon.unstrand_failed",
         )
+        _write_heartbeat()
+        _write_heartbeat_row(status="ERROR", items_processed=0,
+                             error_summary="halted: could not recover stranded tree to main")
         stats.halted = "unstrand_failed"
         return stats
     creds = _resolve_creds()
@@ -524,6 +649,9 @@ def publish_once() -> PublishStats:
             "publish daemon halted: missing Worker base URL or internal bearer (fail-closed)",
             error_code="publish_daemon.creds_unresolved",
         )
+        _write_heartbeat()
+        _write_heartbeat_row(status="ERROR", items_processed=0,
+                             error_summary="halted: missing Worker base URL or internal bearer")
         stats.halted = "creds_unresolved"
         return stats
 
@@ -533,6 +661,57 @@ def publish_once() -> PublishStats:
 
     rows = portal_client.get_publish_pending(creds.base_url, creds.bearer)
     stats.polled = len(rows)
+    if rows:
+        # Pre-claim deploy gate (Slice 1, R3-F1 / forensic class #2, publish #434): if the
+        # remote D1 is missing on-disk migrations, actuating ANY publish would end in a
+        # refused deploy at stage 'live' — so refuse the whole cycle BEFORE claiming. The
+        # rows stay `pending` on the Worker, the next launchd cycle retries, and the
+        # operator's `migrations apply` unblocks publishing automatically (no re-publish
+        # needed, no lease burned, no terminal-failed row). Checked only when there is work
+        # (an idle cycle never deploys, so it never shells out to wrangler). Fail-CLOSED on
+        # a check failure: cannot verify ⇒ must not deploy. The authoritative post-pull
+        # re-check lives in _deploy_land_health — this pre-claim copy reads the CURRENT
+        # tree, which can be behind the pull _actuate performs mid-cycle.
+        try:
+            pending = _pending_migrations()
+        except Exception as exc:  # noqa: BLE001 — any check failure is a fail-closed halt
+            error_log.log(
+                # CRITICAL, not ERROR (ops review): a sustained check failure (expired CF auth,
+                # network fault) blocks EVERY publish indefinitely — ERROR never pages and the
+                # watchdog only surfaces CRITICAL, so this would be a silent stall. The Resend-leg
+                # alert_dedupe on (script, error_code) bounds the every-120s repetition to one page
+                # per window; the §43 runbook's both-codes-page promise is now true.
+                Severity.CRITICAL, SCRIPT_NAME,
+                "publish halted: could not verify remote D1 migration state (fail-closed, "
+                f"retries next cycle): {_exc_reason(exc)}",
+                error_code=ERR_MIGRATION_CHECK,
+            )
+            _write_heartbeat()
+            _write_heartbeat_row(status="ERROR", items_processed=0,
+                                 error_summary="halted: could not verify remote D1 migration state")
+            stats.halted = "migration_check_failed"
+            return stats
+        if pending:
+            error_log.log(
+                Severity.CRITICAL, SCRIPT_NAME,
+                f"publish halted: {len(pending)} unapplied remote D1 migration(s) {pending} "
+                f"block the deploy stage — apply them (cd ~/its && git pull origin main && "
+                f"cd safety_portal && npx wrangler d1 migrations apply {D1_DATABASE_NAME} "
+                f"--remote). The {stats.polled} pending publish request(s) stay queued and "
+                f"retry next cycle automatically. Never deploy the Worker ahead of its "
+                f"migrations (forensic class #2; publish #434).",
+                error_code=ERR_PENDING_MIGRATIONS,
+            )
+            # WARN, not ERROR: a deliberate, bounded refusal (the portal_poll
+            # halted_transient precedent) — rows stay queued; the operator's
+            # `migrations apply` unblocks the next cycle automatically.
+            _write_heartbeat()
+            _write_heartbeat_row(
+                status="WARN", items_processed=0,
+                error_summary=f"deploy blocked: {len(pending)} unapplied remote D1 migration(s)",
+            )
+            stats.halted = "pending_migrations"
+            return stats
     owner = _lease_owner()
     for row in rows:
         request_id = row.get("id")
@@ -545,6 +724,33 @@ def publish_once() -> PublishStats:
             stats.skipped_unclaimed += 1
             continue
         _actuate(creds, claimed, stats)
+
+    _write_heartbeat()
+    if stats.failed > 0:
+        cycle_status: HeartbeatStatus = "DEGRADED"
+    elif stats.reclaimed > 0:
+        cycle_status = "WARN"
+    else:
+        cycle_status = "OK"
+    if circuit_breaker.is_open():
+        cycle_status = "CIRCUIT_OPEN"
+
+    try:
+        _write_heartbeat_row(
+            status=cycle_status,
+            items_processed=stats.actuated,
+            error_summary=(
+                None
+                if stats.failed == 0 and stats.reclaimed == 0
+                else f"failed={stats.failed} reclaimed={stats.reclaimed}"
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001 — heartbeat must never block
+        error_log.log(
+            Severity.WARN, SCRIPT_NAME,
+            f"heartbeat write outer-catch tripped: {exc!r}",
+            error_code="daemon_health_write_failed",
+        )
     return stats
 
 

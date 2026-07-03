@@ -8,18 +8,20 @@ import { registerPersonnelRoutes } from "./fieldops_personnel";
 import { registerEquipmentRoutes } from "./fieldops_equipment";
 import { registerJobTrackerRoutes } from "./fieldops_jobtracker";
 import { registerMaterialsRoutes } from "./fieldops_materials";
-import { auditStmt, isUniqueViolation } from "./audit";
+import { auditStmt, isUniqueViolation, auditStmtIfChanged } from "./audit";
 import { registerTimeWriteRoutes } from "./fieldops_time_write";
 import { registerJobWriteRoutes } from "./fieldops_job_write";
 import { registerTaskWriteRoutes } from "./fieldops_task_write";
 import { registerMyTasksRoutes } from "./fieldops_tasks";
 import { registerChecklistRoutes } from "./fieldops_checklist";
+import { registerDailyRequirementsRoutes } from "./fieldops_daily_requirements";
 import { registerEquipmentFieldWriteRoutes } from "./fieldops_equipment_write";
 import { registerEquipmentRosterWriteRoutes } from "./fieldops_equipment_roster_write";
 import { registerPersonnelWriteRoutes } from "./fieldops_personnel_write";
 import { registerCrewAssignRoutes } from "./fieldops_crew_assign";
 import { registerCrewWriteRoutes } from "./fieldops_crew_write";
 import { registerMaterialWriteRoutes } from "./fieldops_material_write";
+import { registerExpectedMaterialsRoutes } from "./fieldops_expected_materials";
 import { registerProgressRollupRoutes } from "./fieldops_rollup";
 import {
   validateUser,
@@ -404,6 +406,10 @@ registerMaterialsRoutes(app, fieldopsGates);
 registerMyTasksRoutes(app, fieldopsGates);
 // — Assigned-Tasks tab (P4 S2) checklist engine + per-job template editor (cap.checklist.manage) —
 registerChecklistRoutes(app, fieldopsGates);
+// — SOP daily form D4: per-job daily-form requirements (admin CRUD cap.checklist.manage + the
+//   ownership-scoped tab read) — the D1 overlay rendered inside the daily form's
+//   job_requirements section —
+registerDailyRequirementsRoutes(app, fieldopsGates);
 // — field-ops WRITE routes (P2.3); send-free D1 mutations, capability-gated, audit-batched —
 registerTimeWriteRoutes(app, fieldopsGates);
 registerJobWriteRoutes(app, fieldopsGates);
@@ -415,6 +421,8 @@ registerCrewAssignRoutes(app, fieldopsGates);
 // — Assigned-Tasks Slice T: subcontractor scoped crew-create (cap.crew.create), send-free D1 mutation —
 registerCrewWriteRoutes(app, fieldopsGates);
 registerMaterialWriteRoutes(app, fieldopsGates);
+// — Material receipts M1: per-job expected-materials CRUD + receive/flag (send-free D1) —
+registerExpectedMaterialsRoutes(app, fieldopsGates);
 // — P6 progress rollup read (bearer-gated /api/internal/*, NOT a session gate) —
 registerProgressRollupRoutes(app, requireInternalToken);
 
@@ -558,7 +566,35 @@ function validatePhotoValues(values: Record<string, unknown>): string | null {
   return null;
 }
 
-app.post("/api/submit", requireSession, async (c) => {
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+// CS4 Slice 4 Part B — vestigial-cap ENFORCEMENT (cap.form.submit / cap.form.request).
+//
+// Both capabilities were seeded in migration 0013 and granted to every role, but no route ever
+// called requireCapability on them (grep-verified zero enforcement hits) — the grants were
+// display-only while the routes gated on bare requireSession. Enforced here at the natural
+// surfaces: POST /api/submit → cap.form.submit; the six form-request/download routes
+// (/api/submissions/:uuid/{request-pdf,status,pdf}, /api/filed, /api/filed/months,
+// /api/request-pdfs — 0013's "Browse + request + download a job's filed forms") →
+// cap.form.request.
+//
+// LOCKOUT ANALYSIS (proved from the migrations before enforcing; the role vocabulary is CLOSED —
+// roles are migration-seeded only, no roles-CRUD route exists, parseRole/coerceRole accept only
+// the three keys, and users.role is FK-bound to the seeded rows):
+//   • cap.form.submit  — submitter (0013 explicit grant) + admin (0013 `SELECT key FROM
+//     capabilities` catch-all) + manager (0023 explicit grant). ALL THREE roles hold it.
+//   • cap.form.request — the same three grant sources. ALL THREE roles hold it.
+// So no existing role loses any current ability: every session that could reach these routes
+// yesterday passes the new gate today. What the gate buys: a future scoped role (or a live
+// role_capabilities edit) can actually withhold form access, and the FAIL-CLOSED
+// resolveCapabilities posture (unknown role / D1 blip → empty set → 403) now covers the portal's
+// core submit/request surfaces, not only the field-ops ones.
+// (cap.inspection.job — 0013 "File job-level inspections (trenching/QC/etc.)" — is deliberately
+// NOT enforced: no dedicated surface exists. Nothing writes the `inspections` table today, and
+// job-level inspection FORMS ride this same /api/submit path under cap.form.submit. Enforcement
+// waits for the surface to exist rather than inventing one.)
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+
+app.post("/api/submit", requireSession, requireCapability("cap.form.submit"), async (c) => {
   let body: Record<string, unknown>;
   try {
     body = await c.req.json();
@@ -728,7 +764,7 @@ function b64ToBytes(b64: string): Uint8Array {
  * real flip. Returns whether the cache is already ready. A rejected (box_verified=-1)
  * row is treated as not-found (404) — there is no PDF to serve.
  */
-app.post("/api/submissions/:uuid/request-pdf", requireSession, async (c) => {
+app.post("/api/submissions/:uuid/request-pdf", requireSession, requireCapability("cap.form.request"), async (c) => {
   const uuid = c.req.param("uuid");
   if (!uuid || uuid.length > 64) return c.json({ error: "not_found" }, 404);
   const row = await c.env.DB
@@ -747,9 +783,7 @@ app.post("/api/submissions/:uuid/request-pdf", requireSession, async (c) => {
     c.env.DB.prepare(
       "UPDATE submissions SET pdf_requested=1 WHERE submission_uuid=? AND pdf_requested=0",
     ).bind(uuid),
-    c.env.DB.prepare(
-      "INSERT INTO audit_log (actor_username, action, target_username, detail) SELECT ?,?,?,? WHERE changes()=1",
-    ).bind(c.get("session").username, "request_pdf", null, JSON.stringify({ job_id: row!.job_id })),
+    auditStmtIfChanged(c, c.get("session").username, "request_pdf", null, { job_id: row!.job_id }),
     // PR-5: downloads are REQUESTER-BOUND — the submitter's request is the first
     // pdf_requests row (one row per submission+account). Re-request refreshes the 24h
     // window. submissions.pdf_requested stays as the legacy flag; pdf_requests is now the
@@ -771,7 +805,7 @@ app.post("/api/submissions/:uuid/request-pdf", requireSession, async (c) => {
  * GET /api/submissions/:uuid/status — the SPA's 5s poll. Reports whether the user has
  * requested caching, whether the cache is ready to download, and when it expires.
  */
-app.get("/api/submissions/:uuid/status", requireSession, async (c) => {
+app.get("/api/submissions/:uuid/status", requireSession, requireCapability("cap.form.request"), async (c) => {
   const uuid = c.req.param("uuid");
   if (!uuid || uuid.length > 64) return c.json({ error: "not_found" }, 404);
   const row = await c.env.DB
@@ -810,7 +844,7 @@ app.get("/api/submissions/:uuid/status", requireSession, async (c) => {
  * ASSETS.fetch() response (the immutable-headers gotcha); the outer middleware re-wraps
  * it, preserving Content-Type/Content-Disposition and adding Cache-Control:no-store.
  */
-app.get("/api/submissions/:uuid/pdf", requireSession, async (c) => {
+app.get("/api/submissions/:uuid/pdf", requireSession, requireCapability("cap.form.request"), async (c) => {
   const uuid = c.req.param("uuid");
   if (!uuid || uuid.length > 64) return c.json({ error: "not_found" }, 404);
   const row = await c.env.DB
@@ -869,7 +903,7 @@ app.get("/api/submissions/:uuid/pdf", requireSession, async (c) => {
  * per-row request/ready state. requireSession. 404 unless the job is active (browse is
  * scoped to active jobs). Metadata only — no payloads, no PDFs.
  */
-app.get("/api/filed", requireSession, async (c) => {
+app.get("/api/filed", requireSession, requireCapability("cap.form.request"), async (c) => {
   const job_id = c.req.query("job_id") ?? "";
   if (!job_id || job_id.length > 64) return c.json({ error: "not_found" }, 404);
   // PR-6 optional cascade filters. Empty-string ("?month=") is treated as ABSENT (no filter,
@@ -930,7 +964,7 @@ app.get("/api/filed", requireSession, async (c) => {
  * + {error:"not_found"} shape as /api/filed — no enumeration). Job-scoped aggregates only; no
  * per-account state leaks (unlike /api/filed's per-row request/ready flags).
  */
-app.get("/api/filed/months", requireSession, async (c) => {
+app.get("/api/filed/months", requireSession, requireCapability("cap.form.request"), async (c) => {
   const job_id = c.req.query("job_id") ?? "";
   if (!job_id || job_id.length > 64) return c.json({ error: "not_found" }, 404);
   const active = await c.env.DB
@@ -963,7 +997,7 @@ app.get("/api/filed/months", requireSession, async (c) => {
  * request any active-job filed form (mirrors the submit model); the download is then bound
  * to THIS requester. ONE audit row per batch. Returns { requested: <count upserted> }.
  */
-app.post("/api/request-pdfs", requireSession, async (c) => {
+app.post("/api/request-pdfs", requireSession, requireCapability("cap.form.request"), async (c) => {
   let body: Record<string, unknown>;
   try {
     body = await c.req.json();
@@ -1073,9 +1107,7 @@ app.post("/api/internal/mark-rejected", requireInternalToken, async (c) => {
     c.env.DB.prepare(
       "UPDATE submissions SET box_verified=-1, filed_at=unixepoch() WHERE submission_uuid=? AND box_verified=0",
     ).bind(submission_uuid),
-    c.env.DB.prepare(
-      "INSERT INTO audit_log (actor_username, action, target_username, detail) SELECT ?,?,?,? WHERE changes()=1",
-    ).bind("portal_poll", "submission_rejected", null, JSON.stringify({ submission_uuid, reason })),
+    auditStmtIfChanged(c, "portal_poll", "submission_rejected", null, { submission_uuid, reason }),
   ]);
   return c.json({ ok: true, found: (res[0]?.meta?.changes ?? 0) > 0 });
 });
@@ -1582,7 +1614,9 @@ app.post("/api/internal/admin/purge-job", requireAdminToken, async (c) => {
   // Full literal SQL (NO template interpolation) so the bound `?` is the only dynamic input:
   // job_id is always parameterized, never concatenated — and there is no string-built query for
   // CodeQL's injection sink to flag. The cascade deletes children (filed_pdfs, pdf_requests via
-  // the submissions subquery) BEFORE the parents (submissions, then jobs).
+  // the submissions subquery; the job-keyed per-job content tables job_daily_requirements +
+  // job_expected_materials — Slice 1, R3-F4, mirroring their prune.ts guard-union entries)
+  // BEFORE the parents (submissions, then jobs).
   const results = await c.env.DB.batch([
     c.env.DB
       .prepare("DELETE FROM filed_pdfs WHERE submission_uuid IN (SELECT submission_uuid FROM submissions WHERE job_id = ?)")
@@ -1590,6 +1624,8 @@ app.post("/api/internal/admin/purge-job", requireAdminToken, async (c) => {
     c.env.DB
       .prepare("DELETE FROM pdf_requests WHERE submission_uuid IN (SELECT submission_uuid FROM submissions WHERE job_id = ?)")
       .bind(job_id),
+    c.env.DB.prepare("DELETE FROM job_daily_requirements WHERE job_id = ?").bind(job_id),
+    c.env.DB.prepare("DELETE FROM job_expected_materials WHERE job_id = ?").bind(job_id),
     c.env.DB.prepare("DELETE FROM submissions WHERE job_id = ?").bind(job_id),
     c.env.DB.prepare("DELETE FROM jobs WHERE job_id = ?").bind(job_id),
     c.env.DB
@@ -1598,9 +1634,14 @@ app.post("/api/internal/admin/purge-job", requireAdminToken, async (c) => {
   ]);
   const pdfChunks = results[0]?.meta?.changes ?? 0;
   const pdfRequests = results[1]?.meta?.changes ?? 0;
-  const submissions = results[2]?.meta?.changes ?? 0;
-  const job = results[3]?.meta?.changes ?? 0;
-  return c.json({ ok: true, found: job > 0, job_id, job_deleted: job, submissions, pdfChunks, pdfRequests });
+  const requirements = results[2]?.meta?.changes ?? 0;
+  const expectedMaterials = results[3]?.meta?.changes ?? 0;
+  const submissions = results[4]?.meta?.changes ?? 0;
+  const job = results[5]?.meta?.changes ?? 0;
+  return c.json({
+    ok: true, found: job > 0, job_id, job_deleted: job, submissions, pdfChunks, pdfRequests,
+    requirements, expectedMaterials,
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1802,9 +1843,7 @@ app.post("/api/admin/users/role", ...adminGate, async (c) => {
   const res = await c.env.DB.batch([
     c.env.DB.prepare(`UPDATE users SET role=? WHERE username=?${lastAdminGuardClause(target)}`)
       .bind(role, target.username),
-    c.env.DB.prepare(
-      "INSERT INTO audit_log (actor_username, action, target_username, detail) SELECT ?,?,?,? WHERE changes()=1",
-    ).bind(c.get("session").username, "role_change", target.username, JSON.stringify({ from: target.role, to: role })),
+    auditStmtIfChanged(c, c.get("session").username, "role_change", target.username, { from: target.role, to: role }),
   ]);
   // changes==0 is overloaded: the atomic last-admin guard blocked it, OR a concurrent
   // delete removed the row after our load. Re-check existence so the code is honest
@@ -1851,9 +1890,7 @@ app.post("/api/admin/users/delete", ...adminGate, async (c) => {
   const res = await c.env.DB.batch([
     c.env.DB.prepare(`DELETE FROM users WHERE username=?${lastAdminGuardClause(target)}`)
       .bind(target.username),
-    c.env.DB.prepare(
-      "INSERT INTO audit_log (actor_username, action, target_username, detail) SELECT ?,?,?,? WHERE changes()=1",
-    ).bind(c.get("session").username, "user_delete", target.username, JSON.stringify({ role: target.role })),
+    auditStmtIfChanged(c, c.get("session").username, "user_delete", target.username, { role: target.role }),
   ]);
   // Same overloaded changes==0 as the role route (audit #6): guard-blocked (still the
   // last enabled admin) vs already-deleted by a concurrent request. 404 if gone.

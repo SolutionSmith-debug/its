@@ -90,7 +90,7 @@ class SmartsheetCircuitOpenError(SmartsheetError):
     Smartsheet API (F08).
 
     A subclass of ``SmartsheetError`` BY DESIGN: every existing consumer that
-    catches ``SmartsheetError`` (kill_switch, intake_poll, weekly_send_poll,
+    catches ``SmartsheetError`` (kill_switch, portal_poll, weekly_send_poll,
     weekly_generate, picklist_sync) handles it unchanged, and
     ``weekly_generate``'s NotFound-only retry deliberately excludes it (so a
     short-circuit never triggers a retry-hammer). Raised by the

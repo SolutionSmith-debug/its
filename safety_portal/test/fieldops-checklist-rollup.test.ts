@@ -1,5 +1,6 @@
-import { env, SELF } from "cloudflare:test";
+import { env } from "cloudflare:test";
 import { describe, it, expect, beforeEach } from "vitest";
+import { provision, login, get, post, seedJob as seedJobRow, seedPersonnel as seedPersonnelRow } from "./helpers";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Assigned-Tasks tab (P4 field-ops feature) S5 — auto-rollup → Daily Report.
@@ -14,42 +15,9 @@ import { describe, it, expect, beforeEach } from "vitest";
 // per isolated test). NO send path — filing is the existing /api/submit (Invariant 1).
 // ─────────────────────────────────────────────────────────────────────────────
 
-const BASE = "https://portal.test";
-const ADMIN_BEARER = "test-admin-token";
-type Init = RequestInit & { cookie?: string; bearer?: string };
-
-function call(path: string, init: Init = {}): Promise<Response> {
-  const headers = new Headers(init.headers);
-  if (init.cookie) headers.set("Cookie", init.cookie);
-  if (init.bearer) headers.set("Authorization", `Bearer ${init.bearer}`);
-  if (init.body && !headers.has("content-type")) headers.set("content-type", "application/json");
-  return SELF.fetch(BASE + path, { ...init, headers });
-}
-function cookieFrom(res: Response): string {
-  return (res.headers.get("set-cookie") ?? "").split(";")[0];
-}
-async function provision(username: string, password: string, role: "submitter" | "manager" | "admin"): Promise<void> {
-  const res = await call("/api/internal/admin/users", { method: "POST", bearer: ADMIN_BEARER, body: JSON.stringify({ username, password, role }) });
-  expect(res.status, await res.clone().text()).toBe(201);
-}
-async function login(username: string, password: string): Promise<string> {
-  const res = await call("/api/login", { method: "POST", body: JSON.stringify({ username, password }) });
-  expect(res.status, await res.clone().text()).toBe(200);
-  return cookieFrom(res);
-}
-const get = (cookie: string, path: string) => call(path, { cookie });
-const post = (cookie: string, path: string, body?: unknown) =>
-  call(path, { method: "POST", cookie, body: body === undefined ? undefined : JSON.stringify(body) });
-
-async function seedJob(jobId: string, projectName: string): Promise<void> {
-  await env.DB.prepare("INSERT INTO jobs (job_id, project_name, active, status, created_at) VALUES (?,?,1,'active',?)")
-    .bind(jobId, projectName, 1_700_000_000).run();
-}
-async function seedPersonnel(name: string, username: string | null, currentJob: string | null, trade: string | null = null): Promise<number> {
-  await env.DB.prepare("INSERT INTO personnel (name, username, current_job, trade, active) VALUES (?,?,?,?,1)")
-    .bind(name, username, currentJob, trade).run();
-  return (await env.DB.prepare("SELECT id FROM personnel WHERE name=? ORDER BY id DESC LIMIT 1").bind(name).first<{ id: number }>())!.id;
-}
+const seedJob = (jobId: string, projectName: string): Promise<void> => seedJobRow(jobId, { projectName });
+const seedPersonnel = (name: string, username: string | null, currentJob: string | null, trade: string | null = null): Promise<number> =>
+  seedPersonnelRow(name, username, currentJob, { trade });
 async function seedEquipmentOnJob(name: string, identifier: string, jobId: string): Promise<void> {
   await env.DB.prepare("INSERT INTO equipment (name, kind, identifier, active) VALUES (?,?,?,1)").bind(name, "skid-steer", identifier).run();
   const eid = (await env.DB.prepare("SELECT id FROM equipment WHERE name=? ORDER BY id DESC LIMIT 1").bind(name).first<{ id: number }>())!.id;
@@ -62,20 +30,25 @@ async function seedSubmission(jobId: string, formCode: string, workDate: string)
   ).bind(`sub-${jobId}-${formCode}-${workDate}-${Math.random()}`, jobId, formCode, workDate, "{}").run();
 }
 
-interface ItemState { id: number; item_type: string; status: string; }
+interface ItemState { id: number; item_type: string; status: string; target_count: number | null; }
 interface MineResp { instance: { id: number; job_id: string; instance_date: string; status: string; rolled_up_submission_uuid: string | null } | null; items: ItemState[]; }
 async function mine(cookie: string): Promise<MineResp> {
   const res = await get(cookie, "/api/fieldops/checklist/mine");
   expect(res.status, await res.clone().text()).toBe(200);
   return (await res.json()) as MineResp;
 }
-// Drive the seeded instance to COMPLETE: manually complete each manual_attest item, then file the
-// daily-report submission that auto-closes the seeded form_linked item.
+// Drive the seeded instance to COMPLETE (0028 SOP content): manually complete each manual_attest
+// item, meet each count item's target, then file the jha + daily-report submissions that auto-close
+// the two seeded form_linked items.
 async function completeInstance(cookie: string, jobId: string): Promise<MineResp> {
   const before = await mine(cookie);
   for (const it of before.items.filter((i) => i.item_type === "manual_attest")) {
     expect((await post(cookie, `/api/fieldops/checklist/item-state/${it.id}/complete`)).status).toBe(200);
   }
+  for (const it of before.items.filter((i) => i.item_type === "count")) {
+    expect((await post(cookie, `/api/fieldops/checklist/item-state/${it.id}/complete`, { value_num: it.target_count ?? 1 })).status).toBe(200);
+  }
+  await seedSubmission(jobId, "jha-v3", before.instance!.instance_date);
   await seedSubmission(jobId, "daily-report-v1", before.instance!.instance_date);
   const after = await mine(cookie);
   expect(after.instance!.status).toBe("complete");

@@ -4,45 +4,74 @@ date: 2026-07-01
 status: active
 related_prs: []
 workstream: field_ops
-tags: [enablement, a8, checklist, daily-checklist, inspection-library, assigned-tasks, office-pm, manager]
+tags: [enablement, a8, daily-report, sop-daily-form, job-requirements, inspection-library, assigned-tasks, office-pm, manager]
 ---
 
 <!-- TODO(operator): register this doc in the §6a enablement-doc manifest once that artifact
 exists (tracked OPEN in docs/tech_debt.md — "§6a enablement-doc DoD owed"). Same status as
 docs/enablement/manager_tier.md. Do not fabricate a registration in the meantime. -->
 
-# Enablement — Field-Ops checklists: daily Progress Report + assigned inspections · Op Stds §6/A8
+# Enablement — Field-Ops daily report (SOP form) + assigned inspections · Op Stds §6/A8
 
-**Audience:** office admins + managers. **What this is:** the portal's Assigned-Tasks tab ("My Tasks")
-now carries structured **checklists**, on top of the one-off tasks. There are two kinds.
+**Audience:** office admins + managers. **What this is:** the portal's "My Tasks" page carries two
+kinds of structured daily work on top of the one-off tasks: the manager's **Daily report** (the SOP
+form) and **assigned inspection checklists**.
 
-## 1. The daily "Progress Report" checklist (managers)
+## 1. The Daily report (managers) — the SOP form, filled in place
 
-A **manager placed on a job** sees a **Today's checklist** section in My Tasks — a short daily
-SOP checklist for that job/day. Items can be:
+A **manager placed on a job** opens My Tasks → the **Daily report** tab and gets the whole daily
+flow on one screen:
 
-- a **form to file** (e.g. the Daily Field Report) — a button deep-links to the form pre-filled with the
-  job + date; it **auto-checks** once filed (no double-entry);
-- a **manual check** (with an optional note);
-- a **count** (e.g. "≥ 3 anchor points") — type the number and Record.
+- a **date selector** at the top (defaults to today; pick a past date to see what was filed);
+- the **full Site-Supervisor SOP**, rendered as a form — every section's guidance text with its
+  fill-in fields directly underneath (weather, manpower, PPE confirmation, QC spot checks, photos
+  count, end-of-day, and so on);
+- **"Create …" buttons** where the SOP calls for another form (JHA, Visitor Sign-In, Incident
+  Report) — tapping one opens that form pre-filled with the job + date, and once it's filed the
+  button shows **"Filed ✓ \<time> by \<name>"** so the manager can see at a glance what's done;
+- the **crew and equipment tables arrive pre-filled** from the Job Tracker (best-effort — if that
+  lookup fails the tables just start blank);
+- **Submit daily report** files it exactly like any other form (the office confirms it once filed;
+  it lands in the weekly packet as before). Filing again the same day amends or adds — the tab
+  shows a **"Daily report filed ✓"** banner once one exists for the selected date.
 
-When every item is done, a **"Review & file Daily Report"** button assembles a draft Daily Report from
-the day's data (crew, equipment, which forms were filed) for the manager to review, edit, and file the
-usual way. **Nothing sends automatically** — the manager confirms and files, exactly like any other form.
+**Editing the daily content** (changing the SOP text, adding/removing a question): it lives in the
+**Daily Field Report form definition** — Home → **Forms** (the form builder) → Daily Field Report →
+edit → publish. There is no separate daily-checklist editor anymore; what the form says IS what the
+manager sees. (The old checkbox daily checklist, the "Default daily checklist" editor, and the
+per-job checklist editor on the Job Tracker were retired when this shipped.)
 
-The daily checklist's **default items** (and per-job tweaks) are edited by an admin on the **Job Tracker
-job detail** page.
+### Job-specific requirements (per-job additions — admins)
+
+When a **client outlines requirements for one job** ("badge in at our gate", "call our rep before
+leaving", "file our JHA form daily"), you don't edit the form definition — you add them to **that
+job**: Home → **Job Tracker** → open the job → **"Daily form — job requirements"**.
+
+- Add an item and pick its kind: **Note** (guidance text the manager reads), **Confirm** (a
+  checkbox), **Text answer** (a fill-in), **Number answer** (a numeric fill-in), **Date answer**
+  (a calendar-date picker), **Choice — pick one** (a dropdown; list the options one per line, up
+  to 20), or **Form link** (a "Create <form> →" button to another form type). *(There is no Photo
+  kind — image uploads need a separate security screening design first; see the runbook.)*
+- Every manager placed on that job sees the items inside their Daily report under
+  **"Job-specific requirements"** on their next load, and their answers **file with the daily
+  report** (they appear in the filed PDF as requirement → answer rows).
+- **Reorder** with the ↑/↓ arrows; **Edit** in place; **Remove** takes a confirmation and only
+  affects new reports — already-filed dailies keep their answers.
+- A job with no items shows nothing extra — other jobs' daily forms are untouched.
+
+Note: the Daily Report no longer appears in the **Submit a form** picker — it's filed from the
+Daily report tab. The office still retrieves filed dailies from **Form Request** as always.
 
 ## 2. Assigned inspection checklists (managers + subcontractors)
 
 Admins can build a **library of reusable inspection checklists** and hand them to a specific person.
 
-**Admin — author the library:** Home → **Inspection checklists**. Create a checklist (give it a title),
-click it to add items (the same four item types as above), and it's saved for re-use.
+**Admin — author the library:** Home → **Checklists**. Create a checklist (give it a title),
+click it to add items (manual check, count, or form-to-file), and it's saved for re-use.
 
 **Admin — assign one:** on the same page, use **"Assign an inspection checklist"** — pick a checklist +
-a person (only people with a portal login are listed), optionally a **job** and a **due date**, then
-**Assign**. It shows up in that person's My Tasks under **"Assigned inspections"**.
+a person, optionally a **job** and a **due date**, then **Assign**. It shows up in that person's My
+Tasks under **"Assigned inspections"**.
 
 - Assign the **same** checklist to as many people as you like.
 - Assigning it again to the **same person for the same job + due date** is prevented (it's already there);
@@ -52,21 +81,27 @@ a person (only people with a portal login are listed), optionally a **job** and 
   auto-check when the form is filed.
 
 **The assignee (manager OR subcontractor):** opens My Tasks → **Assigned inspections** → works each item
-with the same controls as the daily checklist (check, count, or file-the-form deep-link). It marks
-complete once every item is done.
+(check, count, or file-the-form deep-link). It marks complete once every item is done.
 
 ## Who sees what
 
 - **Subcontractor (field PM):** their one-off tasks + any inspections assigned to them.
-- **Manager (crew lead):** the above **plus** the daily Progress Report checklist for the job they're
-  placed on.
-- **Admin (office):** authors the daily default + the inspection library, and assigns inspections.
+- **Manager (crew lead):** the above **plus** the Daily report tab for the job they're placed on.
+- **Admin (office):** edits the Daily Field Report form definition (Forms), adds per-job
+  daily-form requirements (Job Tracker → the job), authors the inspection library, and assigns
+  inspections (Checklists).
 
 ## Common questions
 
-- **"A manager's daily checklist isn't showing."** They must be role **manager**, **linked** to a roster
-  person, and **placed on a job**. See the runbook (`docs/runbooks/fieldops_checklists.md`, Symptom A).
-- **"A form item won't check off."** Someone must file that form for the same job + date; it auto-checks
-  on the next open. It can't be checked by hand (that prevents faking loop-closure).
-- **"The person isn't in the assign dropdown."** They have no portal login linked to their roster record —
-  link it on the Personnel page first.
+- **"A manager's Daily report tab says they're not placed."** They must be role **manager**, **linked**
+  to a roster person, and **placed on a job**. See the runbook
+  (`docs/runbooks/fieldops_checklists.md`, Symptom A).
+- **"We filed a JHA but the button still doesn't say Filed ✓."** It must be for the same job + date the
+  tab shows; tap Refresh. See the runbook, Symptom B.
+- **"How do I change what the daily report asks?"** Edit the Daily Field Report form definition in the
+  form builder (Forms) and publish — that's the single source of the daily content now.
+- **"One client wants extra daily items on just their job."** Don't edit the definition — add them on
+  the job's detail page (Job Tracker → the job → "Daily form — job requirements"). See the runbook,
+  Symptom F.
+- **"The person isn't in the assign dropdown."** They have no roster record — add/link them on the
+  Personnel page first.

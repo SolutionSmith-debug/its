@@ -97,6 +97,8 @@ outside the sentinel block.
 | Date | Type | Status | Workstream | Title | PRs |
 |------|------|--------|------------|-------|-----|
 | 2026-06-10 | session_log | active | safety_portal | [Session — Agent Optimization (Brief 2) + Safety Portal Hardening (Brief 1)](2026-06-10_agent-optimization-and-portal-hardening.md) | #260, #261, #263, #264, #265, #266 |
+| 2026-07-02 | session_log | closed | field_ops | [Session — Assigned-Tasks feature (S1–S6+T) + R-series UX refinement program (PRs #406–#421, #415 held)](2026-07-02_assigned-tasks-and-r-series-refinement.md) | #406, #407, #408, #409, #410, #411, #412, #413, #414, #415, #416, #417, #418, #419, #420, #421 |
+| 2026-07-01 | session_log | closed | field_ops | [Session — P2.5 cutover LIVE + P2.6 Manager tier + FF4/FF5 daemon hardening (PRs #395–#400)](2026-07-01_manager-tier-ff4-ff5-cutover.md) | #395, #396, #397, #398, #399, #400 |
 | 2026-07-01 | session_log | closed | field_ops | [Session — P2.5 job up-sync CUT OVER LIVE + P6 rollup + concurrency audit (PRs #391–#393)](2026-07-01_p2.5-cutover-live-p6-rollup.md) | #391, #392, #393 |
 | 2026-06-30 | session_log | closed | field_ops | [Session — P2.5 job-tracker → Smartsheet up-sync (PRs #383, #384, #385, #386, #387)](2026-06-30_p2.5-job-tracker-upsync.md) | #383, #384, #385, #386, #387 |
 | 2026-06-30 | session_log | closed | field_ops | [Session — P2.5 Slice 6: portal-owned canonical job number (PR #389)](2026-06-30_p2.5-slice6-portal-number.md) | #389 |

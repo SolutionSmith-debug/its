@@ -56,6 +56,37 @@ h3 {
   font-display: swap;
 }
 
+/* Self-hosted structural/signage face — "Barlow Semi Condensed" 500/600/700 (SIL OFL
+   1.1, by the Barlow Project Authors; license shipped at /barlow-OFL.txt, same pattern
+   as great-vibes-OFL.txt). DIN-lineage industrial letterforms — literally the subject's
+   signage vernacular — consumed via var(--font-display) for STRUCTURE only (headings,
+   eyebrows, pills, tabs, table headers, button labels); prose stays on the system stack.
+   Latin-subset woff2 only (~16KB per weight, ~48KB total). Served same-origin, so
+   default-src 'self' (worker/index.ts CSP) already covers it — no CSP change. */
+@font-face {
+  font-family: "Barlow Semi Condensed";
+  src: url("/barlow-semicondensed-500.woff2") format("woff2");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Barlow Semi Condensed";
+  src: url("/barlow-semicondensed-600.woff2") format("woff2");
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Barlow Semi Condensed";
+  src: url("/barlow-semicondensed-700.woff2") format("woff2");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
 /* ── Header — maximalist brand field ──────────────────────────────────────────
    The header IS the deep-green field. It carries a FIXED brand lockup (no title
    prop): the Evergreen mark on a gold-bordered white plate (Evergreen's brand
@@ -183,12 +214,14 @@ h3 {
 }
 
 /* ── Card ─────────────────────────────────────────────────────────────────── */
+/* Padding sits on the 8px grid (16→24px), matching .dash-section — one card rhythm
+   everywhere (was clamp(18px, 4vw, 28px), off-grid and drifted from the dash kit). */
 .card {
   background: var(--c-white);
   border: 1px solid var(--c-line);
   border-radius: var(--radius);
   box-shadow: var(--shadow);
-  padding: clamp(18px, 4vw, 28px);
+  padding: clamp(16px, 4vw, 24px);
 }
 
 /* ── Login ────────────────────────────────────────────────────────────────── */
@@ -403,7 +436,7 @@ h3 {
 }
 
 .jha__section {
-  margin: 22px 0 0;
+  margin: var(--space-6) 0 0;
 }
 
 .jha__section-title {
@@ -514,7 +547,7 @@ h3 {
 .fr__select { margin-bottom: var(--gap); }
 .btn--back { margin-bottom: var(--gap); padding-left: 0; color: var(--c-brg); }
 
-.fr__section { margin: 22px 0 0; }
+.fr__section { margin: var(--space-6) 0 0; }
 .fr__section-title {
   font-size: var(--fs-lg); color: var(--c-brg);
   border-bottom: 2px solid var(--c-gold); padding-bottom: 4px;
@@ -532,6 +565,51 @@ h3 {
 .fr__content-block { margin: 14px 0; }
 .fr__content-heading { font-size: var(--fs-base); font-weight: 700; color: var(--c-brg); margin: 0 0 4px; }
 .fr__content-body { white-space: pre-line; margin: 0; }
+
+/* ── SOP guidance + form-link sections (SOP daily form, slice D1) ─────────────
+   Guidance = read-only SOP text under the gold-ruled section title; callouts get the
+   gold legal-callout look (note/quality) or a danger edge (critical — life-safety
+   rules). form_link = the "Create <form> →" primary button + helper/filed line. */
+.fr__guidance-p { margin: 10px 0; }
+.fr__guidance-bullets { margin: 10px 0; padding-left: 22px; }
+.fr__guidance-bullets li { margin: 6px 0; }
+.fr__callout {
+  background: #fff8e8; border: 1px solid var(--c-gold); border-left: 4px solid var(--c-gold);
+  border-radius: var(--radius-sm); padding: 10px 14px; margin: 12px 0;
+  font-size: var(--fs-sm); font-weight: 600;
+}
+/* CRITICAL callouts — the ONE hazard treatment (life-safety rules only; quality/note
+   stay quiet). Safety-tape left edge: BRG/gold diagonal stripes (gold-as-decoration —
+   never text) painted by ::before inside the padding box (the left border is dropped so
+   the tape IS the edge; overflow:hidden clips it to the radius), plus firmer red ink —
+   danger-on-#fdf1f1 ≈ 7.4:1, AA (tokens.css). Used nowhere else — boldness spent once. */
+.fr__callout--critical {
+  border-color: var(--c-danger);
+  border-left-width: 0;
+  background: #fdf1f1;
+  color: var(--c-danger);
+  font-weight: 700;
+  position: relative;
+  overflow: hidden;
+  padding-left: 20px; /* 14px text inset + the 6px tape edge */
+}
+.fr__callout--critical::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 6px;
+  background: repeating-linear-gradient(
+    135deg,
+    var(--c-brg) 0 7px,
+    var(--c-gold) 7px 14px
+  );
+}
+.fr__callout--quality { border-left-color: var(--c-brg); }
+.fr__form-link { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.fr__form-link-filed { font-weight: 700; color: var(--c-brg); }
+.fr__form-link-helper { flex-basis: 100%; margin: 0; font-size: var(--fs-sm); }
 
 .fr__rows { display: flex; flex-direction: column; gap: 12px; }
 /* "+ Add row" sits directly after .fr__rows — drop it down with a clear gap
@@ -620,9 +698,24 @@ h3 {
   color: var(--c-danger);
   cursor: pointer;
   vertical-align: baseline;
+  /* R7 — the VISUAL stays chip-sized; the ::before overlay below expands the EFFECTIVE tap
+     target to ~40px (a ~15px glyph was a destructive-action touch hazard, A4). */
+  position: relative;
+}
+.chip-x::before {
+  content: "";
+  position: absolute;
+  inset: -12px;
 }
 .chip-x:hover { background: #fdecea; }
 .chip-x:disabled { opacity: 0.45; cursor: default; }
+/* R7 — armed first-tap state of the two-step chip remove (components/ChipX.tsx): the second tap
+   confirms; auto-disarms after a beat. */
+.chip-x--armed {
+  background: #fdecea;
+  font-weight: 700;
+  padding: 1px 7px;
+}
 
 /* Role / status pills. */
 .role-badge {
@@ -1019,6 +1112,38 @@ h3 {
   color: var(--c-black);
 }
 
+/* R7 — stacked variant for wide attribution tables (Job Tracker time entries: Recorded / Who /
+   Task / By / Hours / Notes). On phones the header row is dropped and each entry renders as a
+   compact ~two-line block: the lead cells (Who / Hours) flow on the first line, the labelled
+   attribution cells (`data-cell` → muted inline label) wrap to the next. */
+@media (max-width: 640px) {
+  .dash-table--stack thead {
+    display: none;
+  }
+  .dash-table--stack,
+  .dash-table--stack tbody {
+    display: block;
+  }
+  .dash-table--stack tr {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    column-gap: 12px;
+    padding: 8px 2px;
+    border-bottom: 1px solid var(--c-line);
+  }
+  .dash-table--stack td {
+    display: inline-block;
+    border: none;
+    padding: 1px 0;
+  }
+  .dash-table--stack td[data-cell]::before {
+    content: attr(data-cell) " ";
+    color: var(--c-muted);
+    font-weight: 600;
+  }
+}
+
 .dash-grid {
   display: grid;
   gap: var(--gap);
@@ -1332,5 +1457,210 @@ form.dash-row select {
   }
   .dash-card--click:hover {
     transform: none;
+  }
+}
+
+/* ══ Design-refinement pass (2026-07) — "signage for structure, system for prose" ══
+   Appended LAST on purpose: these are additive typographic-role and rhythm refinements
+   over the component rules above (equal specificity → source order wins), so no existing
+   rule needed rewriting. Barlow Semi Condensed (--font-display, self-hosted above)
+   carries STRUCTURE — headings, eyebrows, pills, tabs, table headers, button labels —
+   while body/prose/inputs stay on the system stack (--font). Every text treatment's
+   contrast pair is documented in tokens.css. The wordmark (.app-header__wordmark, a
+   <span>) is untouched by every rule here. */
+
+/* Headings — signage face, weight 600, a whisker of tracking to keep condensed caps
+   open. Sizes are unchanged; color stays each rule's own (BRG/black per component). */
+h1,
+h2,
+h3,
+.page__heading,
+.login__heading,
+.dash-detail__h2,
+.fr__section-title,
+.jha__section-title,
+.form-card__title,
+.dash-card__title,
+.forms-mgr__heading,
+.form-editor__sub-heading,
+.form-editor__sections-heading,
+.fr__static--heading,
+.fr__content-heading,
+.fr__group-title {
+  font-family: var(--font-display);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+/* Pills / badges / status chips — stencil-plate face; each keeps its own size,
+   casing, tracking, and color pair (all pre-verified AA above). */
+.form-card__badge,
+.role-badge,
+.dash-pill,
+.dash-card__label,
+.forms-mgr__count,
+.form-editor__req-status {
+  font-family: var(--font-display);
+}
+
+/* Tables — header row as small signage caps; digits align in columns everywhere
+   (tabular-nums covers counts, hours, dates in both header and data cells). */
+.dash-table {
+  font-variant-numeric: tabular-nums;
+}
+.dash-table th {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.dash-chip {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Tabs (admin strip, My Tasks, Back/Home nav — all .admin-tabs__tab) — signage labels;
+   the active banner-extension look (gold underline on BRG text) is kept, sharpened by
+   weight only. No new colors. */
+.admin-tabs__tab {
+  font-family: var(--font-display);
+  letter-spacing: 0.03em;
+}
+.admin-tabs__tab--active {
+  font-weight: 700;
+}
+
+/* Buttons — signage labels + the press micro-state (one of exactly two motions on the
+   site). The bare-modifier block above re-declares `font: inherit`, so the face is set
+   here, after it, for both spellings. Pressed = a half-pixel settle + shadow collapse;
+   NO color changes. The solid lifecycle variants get a 1px resting shadow so the
+   collapse reads under a glove. */
+.btn,
+.btn--primary,
+.btn--secondary,
+.btn--danger,
+.btn--edit,
+.btn--retire {
+  font-family: var(--font-display);
+  font-weight: 600;
+  letter-spacing: 0.025em;
+  transition: transform 80ms ease, box-shadow 80ms ease;
+}
+.btn--primary,
+.btn--edit,
+.btn--retire {
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.18);
+}
+.btn:active:not(:disabled),
+.btn--primary:active:not(:disabled),
+.btn--secondary:active:not(:disabled),
+.btn--danger:active:not(:disabled),
+.btn--edit:active:not(:disabled),
+.btn--retire:active:not(:disabled) {
+  transform: translateY(0.5px);
+  box-shadow: none;
+}
+
+/* HomePage section headers — letterspaced signage eyebrows (BRG on light, ~11.4:1)
+   closed by a short gold rule: the same decorative-gold-rule class as the section-title
+   underlines above, never gold text. Additive class — .page__heading is unrenamed. */
+.page__heading--eyebrow {
+  font-size: 0.95rem;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--c-brg);
+  margin: var(--space-6) 0 var(--space-3);
+}
+.page__heading--eyebrow::after {
+  content: "";
+  display: block;
+  width: 34px;
+  height: 3px;
+  margin-top: 6px;
+  border-radius: 2px;
+  background: var(--c-gold); /* decorative rule — gold is never text */
+}
+
+/* ── The day-rail (THE signature element) ──────────────────────────────────────
+   The daily SOP is a chronological day; the rail encodes that structurally. Rendered
+   ONLY when the host passes FormRenderer's `dayRail` prop (the Daily tab) — guidance
+   sections get a slim BRG rail down the left; the five phase-opening sections
+   (src/forms/dayPhase.ts) additionally carry a stenciled time-of-day eyebrow whose
+   gold tick sits ON the rail (gold-as-decoration). Mid-scroll, the rail + the last
+   eyebrow tell a supervisor where they are in the day. Mobile-first: 3px rail +
+   16px inset, nothing to collapse. */
+.fr__guidance--rail {
+  position: relative;
+  padding-left: var(--space-4);
+}
+.fr__guidance--rail::before {
+  content: "";
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  left: 0;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--c-brg);
+}
+.fr__day-eyebrow {
+  position: relative;
+  margin: 0 0 var(--space-1);
+  font-family: var(--font-display);
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--c-muted); /* ~7.9:1 on the white card — AA at small size */
+}
+.fr__day-eyebrow::before {
+  content: "";
+  position: absolute;
+  left: calc(-1 * var(--space-4)); /* start at the rail's x — the tick sits ON it */
+  top: 50%;
+  transform: translateY(-50%);
+  width: 11px;
+  height: 3px;
+  background: var(--c-gold);
+}
+
+/* "Filed ✓" indicator — the second (and last) motion: a one-time 120ms scale-in when
+   the loop-closure label mounts. inline-block so the transform has a box. */
+@keyframes filed-pop {
+  from {
+    transform: scale(0.9);
+    opacity: 0;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+.fr__form-link-filed {
+  display: inline-block;
+  animation: filed-pop 120ms ease-out;
+}
+
+/* Reduced motion kills both micro-interactions (the only two on the site). */
+@media (prefers-reduced-motion: reduce) {
+  .btn,
+  .btn--primary,
+  .btn--secondary,
+  .btn--danger,
+  .btn--edit,
+  .btn--retire {
+    transition: none;
+  }
+  .btn:active:not(:disabled),
+  .btn--primary:active:not(:disabled),
+  .btn--secondary:active:not(:disabled),
+  .btn--danger:active:not(:disabled),
+  .btn--edit:active:not(:disabled),
+  .btn--retire:active:not(:disabled) {
+    transform: none;
+  }
+  .fr__form-link-filed {
+    animation: none;
   }
 }

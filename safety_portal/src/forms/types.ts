@@ -51,6 +51,14 @@ export interface ContentBlock {
   body: string;
 }
 
+/** One block of read-only SOP guidance (SOP daily form, slice D1) — plain text only
+ *  (paragraph / bullet list / styled callout), transcribed VERBATIM from the source
+ *  document. Guidance contributes NO submission value keys. */
+export type GuidanceBlock =
+  | { type: "p"; text: string }
+  | { type: "bullets"; items: string[] }
+  | { type: "callout"; style: "critical" | "quality" | "note"; text: string };
+
 export type Section =
   | { type: "header"; title?: string; fields: Field[] }
   | { type: "static_text"; text: string; emphasis?: "footer" | "heading" | "legal" }
@@ -58,7 +66,23 @@ export type Section =
   | { type: "signature_table"; key: string; title?: string; columns: Field[]; min_rows?: number; allow_add?: boolean }
   | { type: "checklist"; key: string; title?: string; groups: Group[] }
   | { type: "freeform"; key: string; label: string; input?: "textarea" | "text" }
-  | { type: "content_blocks"; key: string; title?: string; source_pdf?: string; blocks: ContentBlock[] };
+  | { type: "content_blocks"; key: string; title?: string; source_pdf?: string; blocks: ContentBlock[] }
+  // Read-only SOP guidance + deep link to another form type (SOP daily form, slice D1).
+  // Neither contributes a value key — the fill state is unaffected by their presence.
+  | { type: "guidance"; heading: string; blocks: GuidanceBlock[] }
+  | { type: "form_link"; label: string; parent_form_code: string; helper?: string }
+  // Per-job daily-form requirements placeholder (slice D4): a keyed mount point with no content
+  // of its own — the D1 overlay (job_daily_requirements) is fetched at render time (FormRenderer
+  // `requirements` prop) and the answers file under values.<key> = [{label, kind, response}].
+  // At most one per definition (publishValidation.ts).
+  | { type: "job_requirements"; key: string; title?: string }
+  // Expected-materials receipt placeholder (Material receipts M2): a keyed mount point with no
+  // content of its own — the Daily tab fetches the job's expected materials (M1) and supplies
+  // them via the FormRenderer `expectedMaterials` adapter. Unlike job_requirements it files NO
+  // values under its key (the key is reserved for namespace uniqueness only): confirm-receipt
+  // appends a deliveries_received row; problems file as the material-incident form's OWN
+  // submission. At most one per definition (publishValidation.ts).
+  | { type: "expected_materials"; key: string; title?: string };
 
 export interface FormDefinition {
   form_code: string;
@@ -68,6 +92,9 @@ export interface FormDefinition {
   version: number;
   archetype: string;
   source_pdf: string;
+  /** Maintainer notes, never rendered (meta-schema `comment`) — e.g. a dated
+   *  operator-directed deviation from the source PDF (daily-report-v3, 2026-07-02). */
+  comment?: string[];
   branding?: { logo?: boolean; title?: string };
   sections: Section[];
 }

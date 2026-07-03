@@ -1,5 +1,6 @@
-import { env, SELF } from "cloudflare:test";
+import { env } from "cloudflare:test";
 import { describe, it, expect, beforeEach } from "vitest";
+import { call } from "./helpers";
 
 // P2.5 Slice 1 — the field-ops job-mirror queue (/api/internal/fieldops/*). The Mac-side mirror
 // daemon reads dirty portal jobs (pending-jobs), find-or-creates a row in BOTH Active-Jobs sheets,
@@ -8,17 +9,10 @@ import { describe, it, expect, beforeEach } from "vitest";
 // daemon's OWN token (PORTAL_FIELDOPS_API_TOKEN), privilege-separated from the portal_poll +
 // admin tokens.
 
-const BASE = "https://portal.test";
 const FIELDOPS_BEARER = "test-fieldops-token"; // == PORTAL_FIELDOPS_API_TOKEN (vitest.config.ts)
 const INTERNAL_BEARER = "test-internal-token"; // portal_poll's token — must be REJECTED here
 const ADMIN_BEARER = "test-admin-token"; // operator token — must be REJECTED here
 
-function call(path: string, init: RequestInit & { bearer?: string } = {}): Promise<Response> {
-  const headers = new Headers(init.headers);
-  if (init.bearer) headers.set("Authorization", `Bearer ${init.bearer}`);
-  if (init.body && !headers.has("content-type")) headers.set("content-type", "application/json");
-  return SELF.fetch(BASE + path, { ...init, headers });
-}
 
 /** Seed a dirty portal job directly (the create route needs a session; the internal routes don't). */
 async function seedPortalJob(jobId: string, over: Partial<Record<string, unknown>> = {}) {

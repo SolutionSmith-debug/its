@@ -21,9 +21,9 @@ real Smartsheet calls. `_mock_keychain` auto-opts-out of the stub for any
 test carrying the `integration` marker (module-level `pytestmark` OR a
 per-test `@pytest.mark.integration` decorator) — so a new integration test
 gets the real keychain automatically, with no filename list to maintain.
-The marker check resolves per-test, so MIXED files (e.g.
-`tests/test_intake_poll.py`, whose unit tests must keep the stub but whose
-`@pytest.mark.integration` tests must not) are handled correctly.
+The marker check resolves per-test, so MIXED files (one whose unit tests
+must keep the stub but whose `@pytest.mark.integration` tests must not)
+are handled correctly.
 
 Why conftest.py rather than per-test mocks: the per-call-site mock
 strategy is fragile when a downstream library (`shared.kill_switch`)

@@ -39,6 +39,11 @@ def stub(mocker):
         "compile": mocker.patch.object(cnp.weekly_generate, "_compile_job_week"),
         "rq": mocker.patch.object(cnp.weekly_generate, "_safe_review_queue"),
         "marker": mocker.patch.object(cnp, "_write_watchdog_marker"),
+        # R4-F1: the daemon now writes an ITS_Daemon_Health heartbeat per cycle. Mock the
+        # two thin-delegator seams so no test touches live state / Smartsheet.
+        "hb": mocker.patch.object(cnp, "_write_heartbeat"),
+        "hb_row": mocker.patch.object(cnp, "_write_heartbeat_row"),
+        "circuit": mocker.patch.object(cnp.circuit_breaker, "is_open", return_value=False),
         "log": mocker.patch.object(cnp.error_log, "log"),
     }
 
@@ -110,3 +115,71 @@ def test_per_job_fence_one_bad_job_does_not_block_others(stub):
     stub["compile"].side_effect = [RuntimeError("boom"), None]  # job A fails, B compiles
     out = cnp.poll_once()
     assert out.errors == 1 and out.compiled == 1  # B still compiled
+
+
+# ---- ITS_Daemon_Health heartbeat (R4-F1) ----------------------------------
+
+
+def test_cycle_writes_ok_heartbeat_before_the_marker(stub):
+    stub["jobs"].return_value = [_job()]
+    stub["requested"].return_value = True
+    cnp.poll_once()
+    stub["hb"].assert_called_once()
+    assert stub["hb_row"].call_args.kwargs["status"] == "OK"
+    assert stub["hb_row"].call_args.kwargs["items_processed"] == 1
+    assert stub["hb_row"].call_args.kwargs["error_summary"] is None
+    stub["marker"].assert_called_once()
+
+
+def test_per_job_error_writes_degraded_heartbeat(stub):
+    stub["jobs"].return_value = [_job()]
+    stub["requested"].return_value = True
+    stub["compile"].side_effect = RuntimeError("boom")
+    cnp.poll_once()
+    assert stub["hb_row"].call_args.kwargs["status"] == "DEGRADED"
+    assert stub["hb_row"].call_args.kwargs["error_summary"] == "errors=1"
+
+
+def test_open_circuit_writes_circuit_open_heartbeat(stub):
+    stub["circuit"].return_value = True
+    cnp.poll_once()
+    assert stub["hb_row"].call_args.kwargs["status"] == "CIRCUIT_OPEN"
+
+
+def test_disabled_cycle_skips_heartbeat(stub):
+    stub["enabled"].return_value = False
+    cnp.poll_once()
+    stub["hb"].assert_not_called()
+    stub["hb_row"].assert_not_called()
+
+
+def test_locked_cycle_skips_heartbeat(stub):
+    stub["lock"].side_effect = lambda *a, **k: _cm(False)
+    cnp.poll_once()
+    stub["hb"].assert_not_called()
+    stub["hb_row"].assert_not_called()
+
+
+def test_heartbeat_row_failure_never_blocks_the_cycle(stub):
+    # The reporter itself never raises, but the outer-catch fence must still hold if the
+    # delegator does (heartbeat-never-blocks; mirrors fieldops_sync).
+    stub["jobs"].return_value = [_job()]
+    stub["requested"].return_value = True
+    stub["hb_row"].side_effect = RuntimeError("sheet down")
+    out = cnp.poll_once()
+    assert out.compiled == 1  # primary work already done; the fence swallowed the raise
+    stub["marker"].assert_called_once()  # cycle continued through to the marker
+    assert any(
+        c.kwargs.get("error_code") == "daemon_health_write_failed"
+        for c in stub["log"].call_args_list
+    )
+
+
+def test_reporter_registration_metadata_is_self_provisioning_config(stub):
+    # A1 self-provision rides constructor config — pin the registration identity so the
+    # ITS_Daemon_Health row this daemon creates is stable (shared row-state file, ARCH-2).
+    r = cnp._heartbeat_reporter
+    assert r.daemon_name == "safety_reports.compile_now_poll"
+    assert r.workstream == "safety_reports"
+    assert r.interval_seconds == 90
+    assert r.row_state_path.name == "heartbeat_row_ids.json"

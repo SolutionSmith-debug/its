@@ -18,6 +18,9 @@ convention has no separate `runbook` type).
 <!-- BEGIN AUTO-INDEX -->
 | Date | Type | Status | Workstream | Title | PRs |
 |------|------|--------|------------|-------|-----|
+| 2026-07-01 | operations | active | field_ops | [Runbook — Field-Ops daily report (SOP form) + assigned inspections (Successor-Remediation, Op Stds §43)](fieldops_checklists.md) | _–_ |
+| 2026-07-01 | operations | active | field_ops | [Runbook — Manager tier + crew→job assignment (Successor-Remediation, Op Stds §43)](manager_tier.md) | _–_ |
+| 2026-07-01 | operations | active | field_ops | [Runbook — Subcontractor tier (scoped crew-create + time scoping) · Op Stds §43](subcontractor_tier.md) | _–_ |
 | 2026-06-30 | operations | active | field_ops | [Runbook — Field-ops mirror daemon (`fieldops_sync`) (Successor-Remediation, Op Stds §43)](fieldops_sync.md) | _–_ |
 | 2026-06-30 | operations | active | progress_reports | [Runbook — Progress weekly-send (a WPR row stuck HELD / blocked / "contamination") (Successor-Remediation, Op Stds §43)](progress_send.md) | _–_ |
 | 2026-06-30 | operations | active | progress_reports | [Runbook — progress_weekly_generate (the progress weekly compile) (Successor-Remediation, Op Stds §43)](progress_weekly_generate.md) | _–_ |

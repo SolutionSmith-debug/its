@@ -1,31 +1,23 @@
 import type { FieldopsApp, FieldopsGates } from "./fieldops_gates";
 import { encodeCursor, decodeCursor } from "./cursor";
+import type {
+  CrewMember,
+  DetailCrewMember,
+  EquipmentOnSite,
+  JobDetailResponse,
+  JobInspection,
+  JobListResponse,
+  JobRow,
+  JobTimeEntry,
+  OpenTask,
+  Task,
+  ViewerPersonnel,
+} from "./wire-types";
 
-// Response shapes per BRIEF C (job tracker). The Job Tracker spans the job lifecycle, so the
-// LIST filters by a validated `status` param (NOT a hard active=1 gate) — F5.
-
-interface CrewMember {
-  id: number;
-  name: string;
-  trade: string | null;
-}
-
-interface OpenTask {
-  id: number;
-  description: string;
-  status: string;
-  personnel_name: string | null;
-}
-
-interface JobRow {
-  job_id: string;
-  project_name: string;
-  status: string;
-  progress: number;
-  client_name: string | null;
-  crew: CrewMember[];
-  open_tasks: OpenTask[];
-}
+// Response shapes per BRIEF C (job tracker) — single-sourced in wire-types.ts (the SPA re-exports
+// the same types, so a payload edit that drifts a shape fails the typecheck on both sides). The
+// Job Tracker spans the job lifecycle, so the LIST filters by a validated `status` param (NOT a
+// hard active=1 gate) — F5.
 
 const STATUS_VALUES = new Set(["active", "closed", "on_hold", "all"]);
 const NESTED_CAP = 20; // crew / open-tasks cap per job on the LIST card
@@ -73,8 +65,19 @@ export function registerJobTrackerRoutes(app: FieldopsApp, gates: FieldopsGates)
         client_name: string | null;
       }>();
 
+      // (R7) viewer_current_job — where the SESSION user's own linked ACTIVE roster row is placed
+      // (personnel.current_job), so the list can badge "Your job" (the subcontractor's direct path
+      // to logging time). NULL when unlinked or unplaced. Deterministic pick on the soft link.
+      const viewerRow = await c.env.DB.prepare(
+        "SELECT current_job FROM personnel WHERE username = ?1 AND active = 1 ORDER BY id ASC LIMIT 1",
+      )
+        .bind(c.get("session").username)
+        .first<{ current_job: string | null }>();
+      const viewerCurrentJob = viewerRow?.current_job ?? null;
+
       if (!jobsRes.results || jobsRes.results.length === 0) {
-        return c.json({ jobs: [], next_cursor: null }, 200);
+        const empty: JobListResponse = { jobs: [], next_cursor: null, viewer_current_job: viewerCurrentJob };
+        return c.json(empty, 200);
       }
 
       const pageJobIds = jobsRes.results.map((r) => r.job_id);
@@ -137,7 +140,8 @@ export function registerJobTrackerRoutes(app: FieldopsApp, gates: FieldopsGates)
       const nextCursor =
         jobsRes.results.length === limit ? encodeCursor({ p: last.project_name, j: last.job_id }) : null;
 
-      return c.json({ jobs, next_cursor: nextCursor }, 200);
+      const payload: JobListResponse = { jobs, next_cursor: nextCursor, viewer_current_job: viewerCurrentJob };
+      return c.json(payload, 200);
     },
   );
 
@@ -192,17 +196,33 @@ export function registerJobTrackerRoutes(app: FieldopsApp, gates: FieldopsGates)
       // crew = people PLACED on this job (personnel.current_job, migration 0023), bounded. Converged
       // onto placement to match the assign controls (see the list route's crew leg for the rationale);
       // NOT task_assignments (tasks stay their own leg above). idx_personnel_current_job keys it.
+      // (R7) + account_role via users (users.username is UNIQUE → no row fanout): the SPA disables
+      // task-assign options an assign-only manager would 403 on (see DetailCrewMember).
       const sqlCrew = `
-        SELECT p.id, p.name, p.trade
+        SELECT p.id, p.name, p.trade, u.role AS account_role
         FROM personnel p
+        LEFT JOIN users u ON u.username = p.username
         WHERE p.current_job = ?1 AND p.active = 1
         LIMIT ?2
       `;
       // time_entries (job-scoped), keyset (created_at, uuid). time_entries has no recorded_at →
       // alias created_at AS recorded_at; the keyset pages on the real created_at.
+      // (R7) attribution joins:
+      //   • task_description — the label of the task the entry was logged against (time_entries.task_id
+      //     → task_assignments.description, migration 0016). Scalar subquery: no fanout, NULL when job-level.
+      //   • recorded_by_name — WHO CREATED the entry (display name ONLY — no raw-username
+      //     fallback, per the R1 W9 posture in fieldops_checklist.ts; unresolved → NULL). The write stamps
+      //     actor_username (the authenticated session user — fieldops_time_write rule 3), which is a
+      //     users.username, not a personnel id; resolve a display name through the personnel link
+      //     (personnel.username is a soft non-unique link → scalar subquery, prefer the active row).
+      //     NULL name (recorder has no roster row) renders as "—" in the SPA — never the raw username.
       const sqlTime = `
         SELECT t.uuid, t.hours, t.work_started_at, t.work_ended_at,
-               t.created_at AS recorded_at, t.notes, p.name AS personnel_name
+               t.created_at AS recorded_at, t.notes, p.name AS personnel_name,
+               t.task_id,
+               (SELECT description FROM task_assignments WHERE id = t.task_id) AS task_description,
+               (SELECT name FROM personnel WHERE username = t.actor_username
+                ORDER BY active DESC, id ASC LIMIT 1) AS recorded_by_name
         FROM time_entries t LEFT JOIN personnel p ON p.id = t.personnel_id
         WHERE t.job_id = ?1
           AND (?2 IS NULL OR t.created_at < ?2 OR (t.created_at = ?2 AND t.uuid < ?3))
@@ -244,17 +264,32 @@ export function registerJobTrackerRoutes(app: FieldopsApp, gates: FieldopsGates)
         ? [jobId, (inspCursor.c as number | null) ?? null, (inspCursor.u as string | null) ?? null, limit]
         : [jobId, null, null, limit];
 
-      const [tasksRes, crewRes, timeRes, equipRes, inspRes] = await c.env.DB.batch([
+      // (R7) viewer_personnel — the SESSION user's own linked ACTIVE roster row (id + name), so the
+      // SPA's log-time form can offer an explicit "Me (<name>)" default that resolves to a REAL
+      // personnel_id (replacing the ambiguous "— me / unassigned —" that attributed time to nobody).
+      // NULL when the viewer has no linked active personnel — the SPA then says so explicitly.
+      // personnel.username is a soft non-unique link → deterministic pick (lowest active id).
+      const viewer = c.get("session").username;
+      const sqlViewer = `
+        SELECT id, name FROM personnel
+        WHERE username = ?1 AND active = 1
+        ORDER BY id ASC LIMIT 1
+      `;
+
+      const caps = c.get("capabilities");
+      const canSeeRoles = caps.has("cap.tasks.assign") || caps.has("cap.jobtracker.manage");
+      const [tasksRes, crewRes, timeRes, equipRes, inspRes, viewerRes] = await c.env.DB.batch([
         c.env.DB.prepare(sqlTasks).bind(...taskParams),
         c.env.DB.prepare(sqlCrew).bind(jobId, LEG_CAP),
         c.env.DB.prepare(sqlTime).bind(...timeParams),
         c.env.DB.prepare(sqlEquip).bind(jobId, LEG_CAP),
         c.env.DB.prepare(sqlInsp).bind(...inspParams),
+        c.env.DB.prepare(sqlViewer).bind(viewer),
       ]);
 
-      const tasks = (tasksRes.results ?? []) as { id: number; description: string; status: string; created_at: number; personnel_id: number | null; personnel_name: string | null }[];
-      const timeEntries = (timeRes.results ?? []) as { uuid: string; recorded_at: number }[];
-      const inspections = (inspRes.results ?? []) as { uuid: string; recorded_at: number }[];
+      const tasks = (tasksRes.results ?? []) as Task[];
+      const timeEntries = (timeRes.results ?? []) as JobTimeEntry[];
+      const inspections = (inspRes.results ?? []) as JobInspection[];
 
       const tasksCursor =
         tasks.length === limit
@@ -269,31 +304,34 @@ export function registerJobTrackerRoutes(app: FieldopsApp, gates: FieldopsGates)
           ? encodeCursor({ c: inspections[inspections.length - 1].recorded_at, u: inspections[inspections.length - 1].uuid })
           : null;
 
-      return c.json(
-        {
-          job: {
-            job_id: header.job_id,
-            project_name: header.project_name,
-            status: header.status,
-            progress: header.progress,
-            client: header.client_name
-              ? {
-                  name: header.client_name,
-                  contact: header.client_contact,
-                  phone: header.client_phone,
-                  email: header.client_email,
-                }
-              : null,
-            crew: crewRes.results ?? [],
-            tasks,
-            time_entries: timeRes.results ?? [],
-            equipment_on_site: equipRes.results ?? [],
-            inspections: inspRes.results ?? [],
-          },
-          cursors: { tasks: tasksCursor, time: timeNext, insp: inspNext },
+      const payload: JobDetailResponse = {
+        job: {
+          job_id: header.job_id,
+          project_name: header.project_name,
+          status: header.status,
+          progress: header.progress,
+          client: header.client_name
+            ? {
+                name: header.client_name,
+                contact: header.client_contact,
+                phone: header.client_phone,
+                email: header.client_email,
+              }
+            : null,
+          // (R7 review) account_role is org-hierarchy metadata — expose it ONLY to actors who can
+          // actually assign tasks (the pickers that consume it); other readers get null.
+          crew: ((crewRes.results ?? []) as DetailCrewMember[]).map((m) =>
+            canSeeRoles ? m : { ...m, account_role: null },
+          ),
+          tasks,
+          time_entries: timeEntries,
+          equipment_on_site: (equipRes.results ?? []) as EquipmentOnSite[],
+          inspections,
         },
-        200,
-      );
+        cursors: { tasks: tasksCursor, time: timeNext, insp: inspNext },
+        viewer_personnel: (viewerRes.results?.[0] as ViewerPersonnel | undefined) ?? null,
+      };
+      return c.json(payload, 200);
     },
   );
 }

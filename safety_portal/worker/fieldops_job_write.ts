@@ -1,7 +1,7 @@
 import type { Context } from "hono";
 import type { FieldopsApp, FieldopsGates } from "./fieldops_gates";
 import type { Env, Vars } from "./types";
-import { auditStmt, isUniqueViolation } from "./audit";
+import { auditStmt, auditStmtIfChanged, isUniqueViolation } from "./audit";
 
 // P2.3 Slice 2 + P2.5 Slice 1 — JOB WRITE (create / lifecycle / contacts / progress).
 // cap.jobtracker.manage (admin-only). Send-free (D1 only).
@@ -330,11 +330,7 @@ export function registerJobWriteRoutes(app: FieldopsApp, gates: FieldopsGates): 
             r.safety_contact_name, r.safety_contact_email, JSON.stringify(r.safety_cc),
             r.progress_contact_name, r.progress_contact_email, JSON.stringify(r.progress_cc),
           ),
-        c.env.DB
-          .prepare(
-            "INSERT INTO audit_log (actor_username, action, target_username, detail) SELECT ?1,?2,?3,?4 WHERE changes()=1",
-          )
-          .bind(actor, "job_contacts", jobId, JSON.stringify({ job_id: jobId })),
+        auditStmtIfChanged(c, actor, "job_contacts", jobId, { job_id: jobId }),
       ]);
       if ((res[0].meta.changes ?? 0) === 0) return c.json({ error: "not_found" }, 404);
       return c.json({ ok: true, job_id: jobId }, 200);
@@ -363,11 +359,7 @@ export function registerJobWriteRoutes(app: FieldopsApp, gates: FieldopsGates): 
       const actor = c.get("session").username;
       const res = await c.env.DB.batch([
         c.env.DB.prepare("UPDATE jobs SET progress=?2 WHERE job_id=?1").bind(jobId, progress),
-        c.env.DB
-          .prepare(
-            "INSERT INTO audit_log (actor_username, action, target_username, detail) SELECT ?1,?2,?3,?4 WHERE changes()=1",
-          )
-          .bind(actor, "job_progress", jobId, JSON.stringify({ job_id: jobId, progress })),
+        auditStmtIfChanged(c, actor, "job_progress", jobId, { job_id: jobId, progress }),
       ]);
       if ((res[0].meta.changes ?? 0) === 0) return c.json({ error: "not_found" }, 404);
       return c.json({ ok: true, job_id: jobId, progress }, 200);
@@ -400,11 +392,7 @@ async function setLifecycle(
           "WHERE job_id=?1 AND origin='portal'",
       )
       .bind(jobId, lifecycle, active, status),
-    c.env.DB
-      .prepare(
-        "INSERT INTO audit_log (actor_username, action, target_username, detail) SELECT ?1,?2,?3,?4 WHERE changes()=1",
-      )
-      .bind(actor, "job_lifecycle", jobId, JSON.stringify({ job_id: jobId, lifecycle })),
+    auditStmtIfChanged(c, actor, "job_lifecycle", jobId, { job_id: jobId, lifecycle }),
   ]);
   if ((res[0].meta.changes ?? 0) === 0) return c.json({ error: "not_found" }, 404);
   return c.json({ ok: true, job_id: jobId, lifecycle }, 200);
