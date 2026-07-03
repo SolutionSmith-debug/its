@@ -34,7 +34,7 @@ its migration fail-closes `resolveCapabilities` → the universal-lockout class 
 | `0029_checklist_instance_template_title` | R1 worker contracts — [section](#assigned-tasks-r1--instance-template-title-0029--worker-contract-fixes) | #416 | ✅ (R-series deploy) |
 | `0030_job_daily_requirements` | D4 per-job daily-form requirements — [section](#per-job-daily-form-requirements-d4--0030) | #427 | ☐ pending |
 | `0031_job_expected_materials` | M1 expected materials — [section](#expected-materials--per-job-receipt-list-material-receipts-m1--0031) | #426 | ☐ pending |
-| `0032_job_daily_requirements_kinds` | D5 requirement kinds (number/date/select) — [section](#requirement-kinds-widened-d5--0032) | — | ☐ pending |
+| `0032_job_daily_requirements_kinds` | D5 requirement kinds (number/date/select) — [section](#requirement-kinds-widened-d5--0032) | #435 | ☐ pending |
 
 Canonical apply-and-deploy sequence (applies **all** pending migrations, in order — never a
 subset):
