@@ -526,3 +526,42 @@ def test_get_progress_rollup_401_raises_auth_error_without_retry(mocker):
     with pytest.raises(PortalAuthError):
         portal_client.get_progress_rollup(BASE, TOKEN, job_id="J", week_from=1, week_to=2)
     assert req.call_count == 1  # 401 is NOT retried
+
+
+# ---- get_prune_status (GS2) -----------------------------------------------
+
+
+def test_get_prune_status_returns_meta_dict(mocker):
+    meta = {
+        "last_run_at": 1_780_000_000,
+        "db_size_bytes": 4096,
+        "size_warn": False,
+        "counters": {"jobs": 1},
+        "failed_stages": [],
+    }
+    req = _patch_requests(mocker, _mock_response(json_body={"prune": meta}))
+
+    out = portal_client.get_prune_status(BASE, TOKEN)
+
+    assert out == meta
+    args, kwargs = req.call_args
+    assert args[0] == "GET"
+    assert args[1] == f"{BASE}/api/internal/prune-status"
+    assert kwargs["headers"]["Authorization"] == f"Bearer {TOKEN}"
+
+
+def test_get_prune_status_null_prune_returns_none(mocker):
+    _patch_requests(mocker, _mock_response(json_body={"prune": None}))
+    assert portal_client.get_prune_status(BASE, TOKEN) is None
+
+
+def test_get_prune_status_non_dict_prune_raises(mocker):
+    _patch_requests(mocker, _mock_response(json_body={"prune": [1, 2]}))
+    with pytest.raises(PortalTransportError, match="prune"):
+        portal_client.get_prune_status(BASE, TOKEN)
+
+
+def test_get_prune_status_401_raises_auth(mocker):
+    _patch_requests(mocker, _mock_response(status=401))
+    with pytest.raises(PortalAuthError):
+        portal_client.get_prune_status(BASE, TOKEN)

@@ -143,6 +143,7 @@ def test_checks_list_has_all_session_1_2_3_checks():
         watchdog._check_main_branch_ci_green,  # Check S — origin/main required CI green (class #13)
         watchdog._check_stale_held_rows,  # Check T (P5) — WSR+WPR HELD-row staleness backstop
         watchdog._check_approver_drift,  # Check U (P5) — send-workspace approver-set drift/empty
+        watchdog._check_portal_prune_health,  # Check V (GS2) — D1 prune heartbeat
     ]
 
 
@@ -2328,3 +2329,149 @@ def test_check_u_read_failure_is_info(mock_share_emails, _approver_state):
     mock_share_emails.side_effect = SmartsheetError("workspace read down")
     result = watchdog._check_approver_drift()
     assert result.severity is Severity.INFO  # no data → never invents drift
+
+
+# ---- Check V: D1 prune heartbeat (GS2) ------------------------------------
+
+
+def _now_epoch() -> float:
+    return datetime.now(UTC).timestamp()
+
+
+def _prune_meta(**overrides):
+    """A healthy prune_meta dict; override fields per scenario."""
+    meta = {
+        "last_run_at": int(_now_epoch()) - 3600,  # 1h ago — fresh
+        "db_size_bytes": 4096,
+        "size_warn": False,
+        "counters": {"submissions": 0, "jobs": 0},
+        "failed_stages": [],
+    }
+    meta.update(overrides)
+    return meta
+
+
+@pytest.fixture
+def _prune_creds(monkeypatch):
+    """Resolve creds deterministically — the checks under test mock the transport."""
+    monkeypatch.setattr(
+        watchdog, "_resolve_prune_status_creds", lambda: ("https://worker.test", "tok")
+    )
+
+
+@pytest.fixture
+def mock_prune_status(mocker):
+    return mocker.patch("watchdog.portal_client.get_prune_status")
+
+
+def test_check_v_registered_in_checks():
+    assert watchdog._check_portal_prune_health in watchdog.CHECKS
+
+
+def test_check_v_healthy_is_info(_prune_creds, mock_prune_status):
+    mock_prune_status.return_value = _prune_meta()
+    result = watchdog._check_portal_prune_health()
+    assert result.severity is Severity.INFO
+    assert "healthy" in result.summary
+
+
+def test_check_v_stale_last_run_warns(_prune_creds, mock_prune_status):
+    # 49h ago — past the 48h staleness window (the daily cron missed ~2 runs).
+    mock_prune_status.return_value = _prune_meta(
+        last_run_at=int(_now_epoch()) - 49 * 3600
+    )
+    result = watchdog._check_portal_prune_health()
+    assert result.severity is Severity.WARN
+    assert "STALE" in result.summary
+
+
+def test_check_v_failed_stages_is_critical(_prune_creds, mock_prune_status):
+    mock_prune_status.return_value = _prune_meta(failed_stages=["audit", "jobs"])
+    result = watchdog._check_portal_prune_health()
+    assert result.severity is Severity.CRITICAL
+    assert "audit" in result.summary and "jobs" in result.summary
+
+
+def test_check_v_failed_stages_beats_staleness(_prune_creds, mock_prune_status):
+    # Both conditions present → CRITICAL (the failure flag) wins over the stale WARN.
+    mock_prune_status.return_value = _prune_meta(
+        failed_stages=["strip"], last_run_at=int(_now_epoch()) - 100 * 3600
+    )
+    result = watchdog._check_portal_prune_health()
+    assert result.severity is Severity.CRITICAL
+
+
+def test_check_v_db_size_over_6gb_is_critical(_prune_creds, mock_prune_status):
+    mock_prune_status.return_value = _prune_meta(db_size_bytes=6_000_000_001)
+    result = watchdog._check_portal_prune_health()
+    assert result.severity is Severity.CRITICAL
+    assert "D1 size" in result.summary
+
+
+def test_check_v_db_size_at_threshold_is_not_critical(_prune_creds, mock_prune_status):
+    # Strictly-greater-than: exactly 6GB does not page.
+    mock_prune_status.return_value = _prune_meta(db_size_bytes=6_000_000_000)
+    result = watchdog._check_portal_prune_health()
+    assert result.severity is Severity.INFO
+
+
+def test_check_v_meta_absent_warns(_prune_creds, mock_prune_status):
+    mock_prune_status.return_value = None  # Worker reported prune: null — never ran
+    result = watchdog._check_portal_prune_health()
+    assert result.severity is Severity.WARN
+    assert "ABSENT" in result.summary
+
+
+def test_check_v_malformed_last_run_warns(_prune_creds, mock_prune_status):
+    mock_prune_status.return_value = _prune_meta(last_run_at="not-a-number")
+    result = watchdog._check_portal_prune_health()
+    assert result.severity is Severity.WARN
+    assert "malformed" in result.summary
+
+
+def test_check_v_malformed_failed_stages_is_critical(_prune_creds, mock_prune_status):
+    # A corrupted failure flag must never read as a clean run.
+    mock_prune_status.return_value = _prune_meta(failed_stages="not-a-list")
+    result = watchdog._check_portal_prune_health()
+    assert result.severity is Severity.CRITICAL
+
+
+def test_check_v_transport_error_is_info(_prune_creds, mock_prune_status):
+    from shared import portal_client
+
+    mock_prune_status.side_effect = portal_client.PortalTransportError("worker down")
+    result = watchdog._check_portal_prune_health()
+    assert result.severity is Severity.INFO  # transient — never masks, never invents
+
+
+def test_check_v_auth_error_warns(_prune_creds, mock_prune_status):
+    from shared import portal_client
+
+    mock_prune_status.side_effect = portal_client.PortalAuthError("401")
+    result = watchdog._check_portal_prune_health()
+    assert result.severity is Severity.WARN  # deterministic misconfig — will not self-heal
+    assert "401" in result.summary
+
+
+def test_check_v_unresolved_creds_is_info(monkeypatch, mock_prune_status):
+    monkeypatch.setattr(watchdog, "_resolve_prune_status_creds", lambda: None)
+    result = watchdog._check_portal_prune_health()
+    assert result.severity is Severity.INFO
+    mock_prune_status.assert_not_called()  # no creds → no HTTP attempt
+
+
+def test_resolve_prune_creds_fail_soft(monkeypatch):
+    # Smartsheet down → None, never raises (portal_poll owns the missing-creds page).
+    def _boom(*a, **k):
+        raise SmartsheetError("config read down")
+
+    monkeypatch.setattr(watchdog.smartsheet_client, "get_setting", _boom)
+    assert watchdog._resolve_prune_status_creds() is None
+
+
+def test_resolve_prune_creds_happy_path(monkeypatch):
+    monkeypatch.setattr(
+        watchdog.smartsheet_client, "get_setting", lambda *a, **k: "https://worker.test"
+    )
+    monkeypatch.setattr(watchdog.keychain, "get_secret", lambda name: "tok")
+    assert watchdog._resolve_prune_status_creds() == ("https://worker.test", "tok")

@@ -105,6 +105,8 @@ from shared import (
     circuit_breaker,
     defaults,
     heartbeat_client,
+    keychain,
+    portal_client,
     resend_client,
     review_queue,
     safety_week,
@@ -1820,6 +1822,166 @@ def _check_approver_drift() -> CheckResult:
     )
 
 
+# ---- Check V: D1 prune heartbeat (GS2 — unbounded-growth audit Slice 2) ---
+#
+# The Worker's daily scheduled prune (safety_portal/worker/prune.ts) is ALL of D1
+# retention — 90d payload strip, 365d audit, PDF cache, terminal publish rows, empty
+# jobs. Before GS2 it was a single point of SILENT failure: no last-run record, no
+# failure flag, success only a console.log nobody tails (audit time-bomb #4). A dead
+# prune at 20×20 scale is a 10 GB D1 wall (every INSERT fails → /api/submit 500s →
+# total field-capture outage) in 7–17 weeks. GS2 gives the prune a durable heartbeat:
+# each stage runs fenced (a throw no longer skips later stages), and the scheduled
+# handler UPSERTs a one-row prune_meta record (migration 0033) after EVERY run. This
+# check reads it back over the bearer-gated GET /api/internal/prune-status (the
+# poller's internal-token tier — shared.portal_client.get_prune_status) and escalates:
+#
+#   CRITICAL — failed_stages non-empty (a retention stage is throwing; at persistence
+#              that IS the dead-prune failure mode) OR db_size_bytes over the 6 GB
+#              threshold (the previously console-only WARN in prune.ts, now paged).
+#   WARN     — last_run_at >48h stale (the daily cron missed ~2 runs — dead cron,
+#              broken deploy, or an unwritable meta row; all operator-actionable) or
+#              the meta row absent/malformed (prune has never recorded a run since
+#              0033 — briefly expected right after the migration lands, a real signal
+#              if it persists; mirrors Check P's absent-marker posture).
+#   INFO     — healthy, or fail-soft "no data" (creds unresolved — portal_poll owns
+#              that page — or a transient transport error; never mask, never invent).
+#
+# Letter bookkeeping: A–D live, E deferred (Anthropic spend), F retired, G/I–N live,
+# H deliberately never built (doctrine artifact — "there is no Check H"), O reserved
+# for the A5 row-cap rotation (being built by the parallel growth-Slice-1), P–U live.
+# V is the first genuinely free letter — this is Check V.
+
+PRUNE_META_STALE_AFTER = timedelta(hours=48)
+PRUNE_DB_SIZE_CRITICAL_BYTES = 6_000_000_000
+
+
+def _resolve_prune_status_creds() -> tuple[str, str] | None:
+    """Best-effort (base_url, bearer) for the internal-token tier — fail-soft None.
+
+    Reuses portal_poll's canonical names (CFG_WORKER_BASE_URL ITS_Config key +
+    KC_BEARER Keychain entry) so there is exactly ONE definition of where the Worker
+    lives and which token drains it. Unlike portal_poll._resolve_creds this NEVER
+    raises/pages — missing or unreadable creds resolve to None and Check V reports
+    INFO (portal_poll itself owns the missing-creds CRITICAL; duplicating that page
+    from the watchdog would be alert noise)."""
+    try:
+        raw = smartsheet_client.get_setting(
+            portal_poll.CFG_WORKER_BASE_URL, workstream=portal_poll.WORKSTREAM
+        )
+    except smartsheet_client.SmartsheetError:
+        return None
+    base_url = raw if isinstance(raw, str) and raw else ""
+    try:
+        bearer = keychain.get_secret(portal_poll.KC_BEARER)
+    except keychain.KeychainError:
+        return None
+    if not (base_url and bearer):
+        return None
+    return base_url, bearer
+
+
+def _check_portal_prune_health() -> CheckResult:
+    """Check V: the D1 prune heartbeat — stale WARN, failed-stage / size CRITICAL.
+
+    Read-only over GET /api/internal/prune-status. Fail-soft on transport (INFO —
+    never masks an outage by erroring, never invents one); WARN on a rejected bearer
+    (deterministic misconfig, will not self-heal) and on an absent/malformed meta row.
+    """
+    creds = _resolve_prune_status_creds()
+    if creds is None:
+        return CheckResult(
+            severity=Severity.INFO,
+            summary=(
+                "prune-status creds unresolved (worker_base_url / internal token) — "
+                "skipping; portal_poll owns the missing-creds page."
+            ),
+        )
+    base_url, bearer = creds
+    try:
+        meta = portal_client.get_prune_status(base_url, bearer)
+    except portal_client.PortalAuthError as exc:
+        return CheckResult(
+            severity=Severity.WARN,
+            summary=(
+                "prune-status bearer REJECTED (401) — deterministic misconfig "
+                "(rotated/missing ITS_PORTAL_INTERNAL_TOKEN?); prune health is unobserved."
+            ),
+            details=repr(exc),
+        )
+    except portal_client.PortalTransportError as exc:
+        return CheckResult(
+            severity=Severity.INFO,
+            summary="prune-status unreachable (transient) — no prune-health data this run.",
+            details=repr(exc),
+        )
+    if meta is None:
+        return CheckResult(
+            severity=Severity.WARN,
+            summary=(
+                "prune_meta row ABSENT — the daily D1 prune has never recorded a run "
+                "since migration 0033. Expected briefly right after the migration lands "
+                "(first cron within 24h); a persistent absence means the cron is not "
+                "firing or the meta write is failing."
+            ),
+        )
+
+    failed_raw = meta.get("failed_stages")
+    failed = failed_raw if isinstance(failed_raw, list) else ["<malformed failed_stages>"]
+    if failed:
+        return CheckResult(
+            severity=Severity.CRITICAL,
+            summary=(
+                f"D1 prune ran with FAILED stage(s): {', '.join(str(s) for s in failed)} — "
+                "retention for those tables is silently skipped; if persistent this is the "
+                "dead-prune → 10 GB-wall trajectory (field-capture outage)."
+            ),
+            details=f"prune_meta: {meta!r}",
+        )
+
+    db_size_raw = meta.get("db_size_bytes")
+    db_size: float | None = (
+        float(db_size_raw)
+        if isinstance(db_size_raw, (int, float)) and not isinstance(db_size_raw, bool)
+        else None
+    )
+    if db_size is not None and db_size > PRUNE_DB_SIZE_CRITICAL_BYTES:
+        return CheckResult(
+            severity=Severity.CRITICAL,
+            summary=(
+                f"D1 size {int(db_size):,} bytes exceeds the "
+                f"{PRUNE_DB_SIZE_CRITICAL_BYTES:,}-byte threshold (10 GB hard cap ahead — "
+                "every INSERT fails at the cap). Review retention windows / large tables."
+            ),
+        )
+
+    last_run = meta.get("last_run_at")
+    if not isinstance(last_run, (int, float)) or isinstance(last_run, bool):
+        return CheckResult(
+            severity=Severity.WARN,
+            summary="prune_meta.last_run_at malformed — prune health is unobservable.",
+            details=f"prune_meta: {meta!r}",
+        )
+    age = datetime.now(UTC) - datetime.fromtimestamp(float(last_run), tz=UTC)
+    if age >= PRUNE_META_STALE_AFTER:
+        hrs = age.total_seconds() / 3600
+        return CheckResult(
+            severity=Severity.WARN,
+            summary=(
+                f"D1 prune STALE: last recorded run ~{hrs:.0f}h ago "
+                f"(> {PRUNE_META_STALE_AFTER}) — the daily cron missed at least two runs "
+                "(dead cron / broken deploy / meta write failing). Retention is not running."
+            ),
+        )
+    size_note = f", size {int(db_size):,} bytes" if db_size is not None else ""
+    return CheckResult(
+        severity=Severity.INFO,
+        summary=(
+            f"D1 prune healthy: last run {age.total_seconds() / 3600:.1f}h ago"
+            f"{size_note}, no failed stages."
+        ),
+    )
+
+
 # ---- Entrypoint ---------------------------------------------------------
 
 
@@ -1882,6 +2044,13 @@ CHECKS: list[Callable[..., CheckResult]] = [
     # state file; returns a CheckResult (WARN-only). (O is still reserved for the A5 row-cap
     # watchdog.)
     _check_approver_drift,
+    # Check V (GS2): D1 prune heartbeat via GET /api/internal/prune-status. Read-only;
+    # returns a CheckResult (no inline alert), so its WARN/CRITICAL is paged +
+    # MAINTENANCE-deferred by _run_check. CRITICAL on failed prune stages or D1 size
+    # over 6 GB; WARN on >48h-stale last run / absent meta row; fail-soft INFO on
+    # unresolved creds or transient transport. (O is reserved for the A5 row-cap
+    # rotation; H was never built; V is the first free letter after U.)
+    _check_portal_prune_health,
     # Check E (Anthropic spend trend) deferred to a follow-on PR (the
     # Check E shipping PR) — requires an Admin API key (sk-ant-admin01-...
     # prefix) provisioned in Keychain under ITS_ANTHROPIC_ADMIN_API_KEY.

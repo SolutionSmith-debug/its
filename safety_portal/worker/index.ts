@@ -33,7 +33,7 @@ import {
   parseRole,
 } from "./auth";
 import { validateCategory, validateDefinition, validateParentGrouping } from "./publishValidation";
-import { pruneOldData } from "./prune";
+import { pruneOldData, writePruneMeta } from "./prune";
 import catalog from "../catalog.json";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1326,6 +1326,62 @@ app.post("/api/internal/sync", requireInternalToken, async (c) => {
 });
 
 /**
+ * GET /api/internal/prune-status — the prune-observability read (GS2, unbounded-growth
+ * audit Slice 2). Returns the one-row prune_meta record the scheduled daily prune UPSERTs
+ * after every run (see prune.writePruneMeta / migration 0033); `{ prune: null }` when the
+ * prune has never recorded a run. The Mac watchdog (Check V) consumes it: WARN when
+ * last_run_at goes >48h stale, CRITICAL on failed_stages non-empty or db_size_bytes over
+ * the 6 GB threshold.
+ *
+ * Bearer gate: requireInternalToken — the SAME token tier as GET /api/internal/pending
+ * (PORTAL_INTERNAL_API_TOKEN / Keychain ITS_PORTAL_INTERNAL_TOKEN), because the consumer is
+ * the same Mac-side trust domain as the poller, and prune telemetry grants no queue-drain
+ * or provisioning capability beyond what that token already holds. Read-only, bounded
+ * (single row by schema CHECK). Returns a NAMED field (never a bare array/scalar —
+ * portal_client._request rejects non-object JSON).
+ *
+ * Malformed-JSON posture: counters_json falls back to {} (informational only), but an
+ * unparseable failed_stages_json surfaces as ["<unparseable>"] — fail-LOUD, because a
+ * corrupted failure flag must never read as a clean run downstream.
+ */
+app.get("/api/internal/prune-status", requireInternalToken, async (c) => {
+  const row = await c.env.DB
+    .prepare(
+      "SELECT last_run_at, db_size_bytes, size_warn, counters_json, failed_stages_json FROM prune_meta WHERE id = 1",
+    )
+    .first<{
+      last_run_at: number;
+      db_size_bytes: number;
+      size_warn: number;
+      counters_json: string;
+      failed_stages_json: string;
+    }>();
+  if (!row) return c.json({ prune: null });
+  let counters: unknown = {};
+  try {
+    counters = JSON.parse(row.counters_json);
+  } catch {
+    counters = {};
+  }
+  let failedStages: unknown;
+  try {
+    failedStages = JSON.parse(row.failed_stages_json);
+    if (!Array.isArray(failedStages)) failedStages = ["<unparseable>"];
+  } catch {
+    failedStages = ["<unparseable>"];
+  }
+  return c.json({
+    prune: {
+      last_run_at: row.last_run_at,
+      db_size_bytes: row.db_size_bytes,
+      size_warn: row.size_warn === 1,
+      counters,
+      failed_stages: failedStages,
+    },
+  });
+});
+
+/**
  * Field-ops job-mirror queue — /api/internal/fieldops/* (requireFieldopsToken, the mirror
  * daemon's OWN secret; privilege-separated from the portal_poll + admin tokens). P2.5 up-sync.
  *
@@ -2166,14 +2222,22 @@ app.get("*", (c) => c.env.ASSETS.fetch(c.req.raw));
 // ── scheduled (A3): the daily cron (wrangler.jsonc triggers.crons) prunes the D1 store.
 // SEND-FREE like every other path (Invariant 1) — it only deletes aged local rows. A prune
 // failure is logged via observability and does not affect the fetch path.
+// GS2: pruneOldData never throws for a per-stage failure (each stage is fenced; failures
+// accumulate in failedStages), and the prune_meta heartbeat row is written after EVERY run —
+// success or fail — so the Mac watchdog (Check V, via GET /api/internal/prune-status) pages
+// on failed stages / staleness / the 6 GB size condition instead of a console.log nobody tails.
 const scheduled: ExportedHandlerScheduledHandler<Env> = async (_controller, env) => {
-  const pruned = await pruneOldData(env.DB, Math.floor(Date.now() / 1000));
+  const nowSec = Math.floor(Date.now() / 1000);
+  const pruned = await pruneOldData(env.DB, nowSec);
   console.log(
     `prune: stripped ${pruned.stripped} payload(s), removed ${pruned.submissions} inactive-job + ` +
       `${pruned.rejected} rejected submission(s) + ${pruned.audit} audit row(s) + ` +
-      `${pruned.pdfRequests} pdf request(s) + ${pruned.pdfChunks} pdf chunk(s) + ${pruned.jobs} empty job(s); ` +
-      `D1 size ${pruned.dbSizeBytes} bytes`,
+      `${pruned.pdfRequests} pdf request(s) + ${pruned.pdfChunks} pdf chunk(s) + ` +
+      `${pruned.publishRequests} terminal publish request(s) + ${pruned.jobs} empty job(s); ` +
+      `D1 size ${pruned.dbSizeBytes} bytes` +
+      (pruned.failedStages.length > 0 ? `; FAILED stages: ${pruned.failedStages.join(", ")}` : ""),
   );
+  await writePruneMeta(env.DB, nowSec, pruned); // fenced inside — never takes down the handler
 };
 
 export default { fetch: app.fetch, scheduled } satisfies ExportedHandler<Env>;
