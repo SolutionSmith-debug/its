@@ -138,8 +138,10 @@ Every Anthropic API call processing inbound mail:
 - **`weekly_generate.py`** — R3 session 2 scope. Not yet started.
 - **`weekly_send.py`** — R3 session 3 scope. Not yet started.
 
-`weekly_summary.py` remains as the pre-cascade scaffold and is unused; it will be deleted
-when `weekly_generate.py` + `weekly_send.py` land per the two-process model.
+`weekly_summary.py` (the pre-cascade scaffold) was DELETED 2026-07-03 — its deletion
+condition (the `weekly-generate` plist loaded on the production MacBook, no orphan
+`weekly-summary` plist) was verified via `launchctl list`. `intake_poll.py`'s RETIRED
+tombstone was deleted the same day (R4-F2; no `safety-intake` launchd job remains).
 
 ## intake configuration surface (ITS_Config workstream `safety_reports`)
 

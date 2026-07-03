@@ -35,8 +35,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # inbox-side write (isRead=True) but is NOT an external transmission — the External
 # Send Gate covers customer-facing email, not inbox-cursor management. So
 # `graph_client` (broad substring) is allowed; `send_mail` (narrow substring) remains
-# forbidden. (`intake_poll.py` is a RETIRED tombstone as of 2026-06-05 — stdlib-only —
-# but stays enrolled below so a future resurrection is still gated.) The
+# forbidden. (`intake_poll.py` — RETIRED 2026-06-05, tombstone DELETED 2026-07-03 after
+# launchctl verified no orphan job; a resurrected email poller must re-enroll here.) The
 # per-substring AST check below catches `shared.graph_client.send_mail` via
 # the "send_mail" needle even when `shared.graph_client` is imported. Future
 # generation scripts that do NOT need Graph reads can use a stricter list
@@ -44,10 +44,6 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 GATED_SCRIPTS: list[tuple[str, list[str]]] = [
     (
         "safety_reports/intake.py",
-        ["send_mail", "resend", "smtplib", "email.mime"],
-    ),
-    (
-        "safety_reports/intake_poll.py",
         ["send_mail", "resend", "smtplib", "email.mime"],
     ),
     (

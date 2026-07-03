@@ -1107,7 +1107,9 @@ Mobilization Date is project-scoped not week-scoped — better captured as a pro
 
 **Revisit when:** Phase 1.4 security hardening cluster ships and operator feedback drives WPR template v0.2.0 calibration.
 
-## `shared/heartbeat.py` + `shared/runner.py` extraction [OPEN 2026-05-23]
+## `shared/heartbeat.py` + `shared/runner.py` extraction [CLOSED 2026-07-03]
+
+**Resolved 2026-07-03 (CS Slice 3, R4-F1 — split-close):** the **heartbeat half is DONE.** The extraction LANDED as `shared/heartbeat.py` (`HeartbeatReporter`, PR #344 `334ea9e`) — the eight replicated helpers consolidated with the A1 self-provision metadata as constructor config; consumers migrated to thin `_write_heartbeat`/`_write_heartbeat_row` delegators (the canonical test mock seams). Six consumers at close: `portal_poll`, `weekly_send_poll`, `fieldops_sync`, `progress_send_poll`, and — added by CS Slice 3 — `compile_now_poll` + `publish_daemon` (the two designed-for daemons that lacked it). Split remainders, both deliberate non-debt: (a) `_write_watchdog_marker` stays replicated per-daemon (a 10-line marker touch with per-daemon write-condition policy — the exact API-churn risk this entry's own "risk of premature extraction" paragraph predicted; §14 says leave it); (b) **`shared/runner.py` was never built and is dropped** — no consumer ever demanded a shared runner loop (launchd one-shot-per-`StartInterval` IS the runner), so building it would violate §14 preservation-over-refactor.
 
 R3 Session 3 (`weekly_send_poll.py`) is the 2nd polling-daemon consumer that triggers the polling-daemon doctrine's 2nd-consumer extraction signal (Op Stds v11 §14). The heartbeat helpers (`_load_heartbeat_row_state`, `_persist_heartbeat_row_state`, `_invalidate_heartbeat_row_state`, `_resolve_heartbeat_row_id`, `_write_heartbeat`, `_write_heartbeat_row`, `_log_heartbeat_failure`) were copied VERBATIM from `safety_reports/intake_poll.py` into `weekly_send_poll.py` rather than extracted, to keep the R3 Session 3 ship focused on the send-capability code.
 
@@ -2090,7 +2092,9 @@ Nothing throttles the portal Worker: `/api/login` runs `bcrypt.compare` at cost 
 
 Surfaced: 2026-06-09 Part-A production-hardening session (A2).
 
-## [OPEN 2026-06-09] compile_now_poll — ITS_Daemon_Health self-provision row deferred (Part-B B3)
+## [CLOSED 2026-07-03] compile_now_poll — ITS_Daemon_Health self-provision row deferred (Part-B B3)
+
+**Resolved 2026-07-03 (CS Slice 3, R4-F1):** exactly the fix this entry prescribed — folded in **together with** the `shared/heartbeat.py` extraction (which landed as `HeartbeatReporter`, PR #344), so no third verbatim copy was ever made. `compile_now_poll` now constructs its own module-level reporter (daemon `safety_reports.compile_now_poll`, 90s interval, shared `heartbeat_row_ids.json` ARCH-2 state) and writes the per-cycle row at the end of `_poll_inside_lock` (OK / DEGRADED-on-per-job-errors / CIRCUIT_OPEN), broad-except fenced so a heartbeat failure never blocks a compile. `publish_daemon` gained the same reporter in the same slice. Self-provision (A1) rides the shared reporter's find-or-create. Operator live smoke (first real cycle self-provisions the two new rows) rides the PR per the mandatory-live-smoke rule.
 
 `safety_reports/compile_now_poll.py` (Part B) registers a watchdog Check-C liveness marker (`safety_compile_now_poll`, `scripts/watchdog.py`) — the LIVENESS safety net — but does NOT yet write an **ITS_Daemon_Health** operator-visibility row (the per-daemon update-in-place heartbeat the other pollers self-provision). Deferred to keep the Part-B PR focused: the daemon-health row is observability, not correctness, and the heartbeat-row machinery is ~150 lines replicated **verbatim** per daemon (`portal_poll` / `weekly_send_poll`) pending the already-tracked `shared/heartbeat.py` extraction — adding it here would replicate that machinery a third time.
 
@@ -2614,3 +2618,23 @@ Neither blocks anything; both are dead-weight-vs-preservation-over-refactor call
 **Surfaced by the D4 security review (PR #427), accepted as a WARN.** `fieldops_daily_requirements.ts`'s `REQUIREMENTS_LIMIT = 200` ceiling on a job's ACTIVE requirement-item list is enforced as a read-then-check-then-insert, not atomically in the mutating statement's `WHERE` clause — mirrors the existing "Task-authority guards read account role check-then-act" TOCTOU entry above, but on a resource ceiling rather than a role predicate. Two concurrent admin adds could both pass the count check before either commits, momentarily exceeding 200 active rows. **Admin-only actor, resource-exhaustion-shaped, not a privilege-escalation path** — accepted at review as low-severity.
 
 **Fix (fast-follow, same shape as the task-authority entry):** fold the count predicate into the INSERT's `WHERE` (a conditional insert keyed on a live `COUNT(*)` subquery) so check+write are atomic. **Tag:** `field_ops`, `security`, `toctou`, `daily-form`, `low-severity`. **Revisit when:** treating the requirements ceiling as a hard bound, or alongside the existing task-authority TOCTOU fix.
+
+---
+
+## D1-primary tables have no ITS-side backup — Cloudflare D1 Time Travel is the restore path (accepted) [OPEN 2026-07-03]
+
+**R3-F7 (resiliency audit), decision: don't build a backup job — document the restore path.** Two tables are **D1-primary** (no Smartsheet/Box mirror; ITS holds no other copy): `job_daily_requirements` (per-job daily-form requirement overlay, migration `0030`/`0032`) and `job_expected_materials` (per-job expected-receipts list, migration `0031`). Everything else in D1 is either a queue drained to the Mac (submissions → filed PDFs), a mirror of Smartsheet (`ITS_Active_Jobs` sync), or re-derivable. Receipt EVIDENCE already survives outside D1 — a confirmed receipt appends a `deliveries_received` row into the filed daily PDF, and an incident files its own material-incident submission — so a D1 loss cannot silently erase what was received.
+
+**Restore path (operator, Tier-3/Seth):** Cloudflare **D1 Time Travel** — every D1 database keeps 30 days of point-in-time restore (`npx wrangler d1 time-travel info its-safety-portal-db`, then `… time-travel restore its-safety-portal-db --timestamp=<unix|ISO>`). Restore rolls back the WHOLE database, not one table — expect to replay any submissions queued after the restore point (the Worker re-serves unfiled rows; already-filed PDFs are safe on Box/Smartsheet).
+
+**Blast radius if lost outright (>30 days / Time Travel unavailable):** re-enterable admin data — the office re-keys each job's requirement items and expected-materials rows from the client's punch list. Bounded, annoying, not evidence-destroying. That bound is WHY no ITS-side backup job is built (§14; the audit explicitly rejected one).
+
+**Tag:** `field_ops`, `d1`, `resilience`, `runbook`, `accepted`. **Revisit when:** a third D1-primary table lands (re-evaluate the no-backup call), or Cloudflare changes the Time Travel retention window.
+
+- **[OPEN 2026-07-03] `_write_heartbeat()` liveness-touch called bare across all 6 daemon consumers** — a
+  local-disk `OSError` from `HeartbeatReporter.write_liveness()` (`state_io.atomic_write_text` raises
+  natively) would propagate out of the poll/publish loop and skip that cycle's health-row +
+  watchdog-marker writes. Pre-existing live pattern (PR #344) replicated verbatim by the CS3 consumers
+  per review; the right fix is ONE shared-level catch inside `shared/heartbeat.py::write_liveness`
+  (never-blocks-primary-work applied to the liveness half too), not six call-site wraps. (CS3 ops-stds
+  review WARN, 2026-07-03.)

@@ -58,6 +58,11 @@ def stub(mocker):
         # state (wrangler shell-out). Default to "none pending" so existing tests proceed; the
         # deploy-gate tests below set a pending list / a failure.
         "migrations": mocker.patch.object(pd, "_pending_migrations", return_value=[]),
+        # R4-F1: the daemon now writes an ITS_Daemon_Health heartbeat per cycle. Mock the
+        # two thin-delegator seams so no test touches live state / Smartsheet.
+        "hb": mocker.patch.object(pd, "_write_heartbeat"),
+        "hb_row": mocker.patch.object(pd, "_write_heartbeat_row"),
+        "circuit": mocker.patch.object(pd.circuit_breaker, "is_open", return_value=False),
         "log": mocker.patch.object(pd.error_log, "log"),
     }
 
@@ -237,6 +242,82 @@ def test_idle_cycle_never_shells_out_to_wrangler(stub):
     out = pd.publish_once()
     assert out.halted is None
     stub["migrations"].assert_not_called()
+
+
+# ── ITS_Daemon_Health heartbeat (R4-F1) ──────────────────────────────────────────
+
+
+def test_cycle_writes_ok_heartbeat(stub):
+    stub["pending"].return_value = [{"id": 1}]
+    stub["claim"].return_value = _row("create", "incident", "incident", definition=_create_def())
+    pd.publish_once()
+    stub["hb"].assert_called_once()
+    assert stub["hb_row"].call_args.kwargs["status"] == "OK"
+    assert stub["hb_row"].call_args.kwargs["items_processed"] == 1
+    assert stub["hb_row"].call_args.kwargs["error_summary"] is None
+
+
+def test_failed_actuation_writes_degraded_heartbeat(stub):
+    stub["pending"].return_value = [{"id": 5}]
+    stub["claim"].return_value = _row("create", "incident", "incident", definition=_create_def(), rid=5)
+    stub["deploy"].side_effect = RuntimeError("wrangler boom")
+    pd.publish_once()
+    assert stub["hb_row"].call_args.kwargs["status"] == "DEGRADED"
+    assert "failed=1" in stub["hb_row"].call_args.kwargs["error_summary"]
+
+
+def test_disabled_cycle_skips_heartbeat(stub):
+    stub["enabled"].return_value = False
+    pd.publish_once()
+    stub["hb"].assert_not_called()
+    stub["hb_row"].assert_not_called()
+
+
+def test_unresolved_creds_write_error_heartbeat(stub):
+    stub["creds"].return_value = None
+    pd.publish_once()
+    stub["hb"].assert_called_once()
+    assert stub["hb_row"].call_args.kwargs["status"] == "ERROR"
+
+
+def test_pending_migrations_write_warn_heartbeat(stub):
+    # A deliberate, bounded refusal (rows stay queued; operator apply unblocks) → WARN,
+    # not ERROR — mirrors portal_poll's halted_transient precedent.
+    stub["pending"].return_value = [{"id": 7}]
+    stub["migrations"].return_value = ["0033_x.sql"]
+    pd.publish_once()
+    assert stub["hb_row"].call_args.kwargs["status"] == "WARN"
+    assert "deploy blocked" in stub["hb_row"].call_args.kwargs["error_summary"]
+
+
+def test_open_circuit_writes_circuit_open_heartbeat(stub):
+    stub["pending"].return_value = []
+    stub["circuit"].return_value = True
+    pd.publish_once()
+    assert stub["hb_row"].call_args.kwargs["status"] == "CIRCUIT_OPEN"
+
+
+def test_heartbeat_row_failure_never_blocks_the_cycle(stub):
+    # Heartbeat-never-blocks: the outer-catch fence holds even if the delegator raises.
+    stub["pending"].return_value = [{"id": 1}]
+    stub["claim"].return_value = _row("create", "incident", "incident", definition=_create_def())
+    stub["hb_row"].side_effect = RuntimeError("sheet down")
+    out = pd.publish_once()
+    assert out.actuated == 1  # primary work unharmed
+    assert any(
+        c.kwargs.get("error_code") == "daemon_health_write_failed"
+        for c in stub["log"].call_args_list
+    )
+
+
+def test_reporter_registration_metadata_is_self_provisioning_config(stub):
+    # A1 self-provision rides constructor config — pin the registration identity so the
+    # ITS_Daemon_Health row this daemon creates is stable (shared row-state file, ARCH-2).
+    r = pd._heartbeat_reporter
+    assert r.daemon_name == "safety_reports.publish_daemon"
+    assert r.workstream == "safety_reports"
+    assert r.interval_seconds == 120
+    assert r.row_state_path.name == "heartbeat_row_ids.json"
 
 
 def test_pending_migrations_diffs_disk_against_remote_list(mocker, tmp_path):

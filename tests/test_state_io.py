@@ -249,7 +249,7 @@ def test_concurrent_writers_both_writes_land(tmp_path: Path) -> None:
             state_io.atomic_write_json(state_path, current)
 
     threads = [
-        threading.Thread(target=writer, args=("safety_reports.intake_poll", 111)),
+        threading.Thread(target=writer, args=("safety_reports.portal_poll", 111)),
         threading.Thread(target=writer, args=("safety_reports.weekly_send_poll", 222)),
     ]
     for t in threads:
@@ -259,7 +259,7 @@ def test_concurrent_writers_both_writes_land(tmp_path: Path) -> None:
 
     result = json.loads(state_path.read_text())
     assert result == {
-        "safety_reports.intake_poll": 111,
+        "safety_reports.portal_poll": 111,
         "safety_reports.weekly_send_poll": 222,
     }
 

@@ -93,3 +93,10 @@ material-incident form is also normally pickable from Submit-a-Form (category: P
   not the catalog's optional `unit_cost` reference field.
 - Per-job expectations live on each job's detail in the **Job Tracker** ("Expected materials");
   this catalog stays the type vocabulary those rows pick from.
+- **Data loss / restore (Seth-only):** `job_expected_materials` is **D1-primary** (no
+  Smartsheet/Box mirror) — the restore path is Cloudflare **D1 Time Travel** (30-day
+  point-in-time restore of the whole database, `npx wrangler d1 time-travel …`). Receipt
+  EVIDENCE survives outside D1 regardless (the filed daily PDF's "Deliveries Received" rows +
+  filed material-incident submissions); beyond the window the blast radius is re-enterable
+  admin data (the office re-keys the expected rows). See `docs/tech_debt.md` "D1-primary
+  tables have no ITS-side backup" (R3-F7).

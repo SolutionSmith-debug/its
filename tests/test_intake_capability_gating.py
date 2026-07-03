@@ -2,27 +2,25 @@
 
 `tests/test_capability_gating.py` enforces the cross-workstream External
 Send Gate (Foundation Mission v8 Invariant 1) via the GATED_SCRIPTS list
-that intake.py and intake_poll.py are enrolled in. This file pins the
-intake-specific nuances surfaced in the R3 session 1 brief + PR #59
-polling-daemon brief that aren't part of the generic GATED_SCRIPTS
-contract:
+that intake.py is enrolled in. This file pins the intake-specific nuances
+surfaced in the R3 session 1 brief + PR #59 polling-daemon brief that
+aren't part of the generic GATED_SCRIPTS contract:
 
   1. No import from any `*_send*` module (e.g. the future `weekly_send`).
   2. No import path with `send` as a segment, even if the parent module
      might be otherwise legitimate.
-  3. The capability surface of intake-pair scripts specifically — no
+  3. The capability surface of intake scripts specifically — no
      plain `requests` import (Smartsheet/Box/Graph wrapping is via
      `shared/*`).
 
 These pins exist so a future maintainer adding e.g. a "send_followup"
 helper module to safety_reports doesn't accidentally enable a back-door
-send capability for either intake.py or the polling daemon.
+send capability for intake.py.
 
-PR #59 expanded coverage from intake.py only to BOTH intake.py and
-intake_poll.py. NOTE 2026-06-05: `intake_poll.py` is now a RETIRED tombstone (the
-safety email-intake poller is superseded by the Safety Portal PULL model). It is
-KEPT in INTAKE_PATHS so a future resurrection that re-adds a real send/AI import is
-still caught by the gate — the tombstone (stdlib-only) passes all checks trivially.
+PR #59 expanded coverage to the email poller `intake_poll.py`; that daemon
+was RETIRED 2026-06-05 (superseded by the Safety Portal PULL model) and its
+tombstone DELETED 2026-07-03 (R4-F2 — launchctl verified no orphan job). A
+resurrected email poller must re-enroll in INTAKE_PATHS here + GATED_SCRIPTS.
 """
 from __future__ import annotations
 
@@ -35,7 +33,6 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 INTAKE_PATHS = [
     REPO_ROOT / "safety_reports" / "intake.py",
-    REPO_ROOT / "safety_reports" / "intake_poll.py",
 ]
 
 
@@ -88,7 +85,7 @@ def test_intake_does_not_import_send_capable_libraries(intake_path: Path):
     "intake_path", INTAKE_PATHS, ids=lambda p: p.name
 )
 def test_intake_does_not_directly_import_requests(intake_path: Path):
-    """intake-pair routes all HTTP through `shared/*` wrappers; no direct
+    """intake routes all HTTP through `shared/*` wrappers; no direct
     `requests` import — keeps the SMTP/email-relay attack surface OFF the
     files even via an indirect HTTP path."""
     imports = _imports_in(intake_path)
@@ -102,7 +99,7 @@ def test_intake_does_not_directly_import_requests(intake_path: Path):
 
 
 def test_intake_pair_does_not_import_graph_send_mail():
-    """Belt-and-suspenders: neither intake.py nor intake_poll.py may import
+    """Belt-and-suspenders: intake.py may not import
     `graph_client.send_mail` specifically. The broad `send_mail` substring
     check in tests/test_capability_gating.py catches this too, but pinning
     the exact attribute here makes the contract obvious for future readers

@@ -550,8 +550,8 @@ def test_update_row_cells_by_id_raises_not_found_on_missing_row(_token_available
     """A 404 on a non-existent row id surfaces as SmartsheetNotFoundError.
 
     Regression guard for the heartbeat-cache 404 invalidation path —
-    intake_poll relies on this exception type to know when to invalidate
-    the heartbeat row-id cache.
+    shared/heartbeat.py's HeartbeatReporter relies on this exception type
+    to know when to invalidate the heartbeat row-id cache.
     """
     sheet_id = smartsheet_client.create_sheet_in_folder(
         sheet_ids.FOLDER_SYSTEM_CONFIG,
