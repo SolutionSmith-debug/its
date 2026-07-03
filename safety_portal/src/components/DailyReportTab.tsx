@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import * as api from "../lib/api";
 import * as jobs from "../lib/fieldops_jobtracker";
@@ -70,6 +70,10 @@ import {
 
 /** The daily-report PARENT family (catalog.json) — the tab renders its CURRENT version. */
 const DAILY_REPORT_PARENT = "daily-report";
+
+/** Draft-write debounce window (ms). One sessionStorage write at most per window, carrying the
+ *  LATEST values; a pending write flushes early on unmount or a (job, date) key change. */
+const DRAFT_DEBOUNCE_MS = 500;
 
 const NOT_MANAGER_COPY =
   "The daily report is for crew-lead managers who are placed on a job — it doesn't apply to this account.";
@@ -170,12 +174,27 @@ export function DailyReportTab({
     setValues(v);
   };
 
-  // ── Draft persistence (D2 regression BLOCK fix) ─────────────────────────────────────────────────
+  // ── Draft persistence (D2 regression BLOCK fix; write path debounced + photo-stripped) ──────────
   // A form_link deep-link navigates away and UNMOUNTS this tab (App swaps its single page node), so
   // pure component state = the manager's whole typed day silently lost on "Create Incident Report".
-  // Drafts persist per (job, date) in sessionStorage on every edit, restore on mount / date switch
-  // (winning over prefill), and clear on successful submit. Storage failures are non-fatal (quota /
-  // private mode) — worst case reverts to pre-fix behavior.
+  // Drafts persist per (job, date) in sessionStorage, restore on mount / date switch (winning over
+  // prefill), and clear on successful submit. Storage failures are non-fatal (quota / private
+  // mode) — worst case reverts to pre-fix behavior.
+  //
+  // WRITE PATH (perf, optimization #1): the first cut re-serialized the FULL values — including
+  // base64 photo data URLs — on EVERY keystroke: a megabytes-per-keypress JSON.stringify plus a
+  // near-guaranteed ~5 MB sessionStorage quota blowout that silently killed the very protection
+  // this exists for. Now:
+  //   • writes are DEBOUNCED (DRAFT_DEBOUNCE_MS): at most one write per window, always carrying
+  //     the LATEST values via pendingDraftRef;
+  //   • a pending write FLUSHES synchronously on unmount (the form_link deep-link unmount is
+  //     exactly the loss-moment the draft protects) and whenever the (job, date) key changes
+  //     mid-window (a date switch must not drop the old date's last keystrokes);
+  //   • photo-typed keys are STRIPPED from the persisted draft — photos are re-attachable, typed
+  //     text is not. HONEST REGRESSION, on purpose: a draft-restore drops attached-but-unsubmitted
+  //     photos (they re-seed to the initialValues [] and must be re-attached). That small visible
+  //     loss is the deliberate trade against a quota failure that silently loses the WHOLE day.
+  // readDraft / clearDraft / draft-wins-over-prefill semantics are unchanged.
   const readDraft = (job: string, d: string): FormValues | null => {
     try {
       const raw = sessionStorage.getItem(`its-daily-draft:${job}:${d}`);
@@ -191,14 +210,67 @@ export function DailyReportTab({
       /* non-fatal */
     }
   };
-  useEffect(() => {
-    if (!placement || !dirtyRef.current) return;
-    try {
-      sessionStorage.setItem(`its-daily-draft:${placement.job_id}:${date}`, JSON.stringify(values));
-    } catch {
-      /* non-fatal */
+  // The definition's photo header-field keys — stripped from every persisted draft (see above).
+  const photoDraftKeys = useMemo(() => {
+    const keys = new Set<string>();
+    for (const s of def?.sections ?? []) {
+      if (s.type === "header") {
+        for (const f of s.fields) if (f.input === "photo") keys.add(f.key);
+      }
     }
+    return keys;
+  }, [def]);
+  // The one not-yet-written draft (latest values for the (job, date) it names) + its window timer.
+  const pendingDraftRef = useRef<{ job: string; date: string; values: FormValues } | null>(null);
+  const draftTimerRef = useRef<number | null>(null);
+  const writeDraft = (job: string, d: string, vals: FormValues) => {
+    try {
+      const persistable = Object.fromEntries(
+        Object.entries(vals).filter(([k]) => !photoDraftKeys.has(k)),
+      );
+      sessionStorage.setItem(`its-daily-draft:${job}:${d}`, JSON.stringify(persistable));
+    } catch {
+      /* non-fatal (quota / private mode) */
+    }
+  };
+  // Write the pending draft NOW (unmount / key-change / window elapsed).
+  const flushDraft = () => {
+    const p = pendingDraftRef.current;
+    pendingDraftRef.current = null;
+    if (p) writeDraft(p.job, p.date, p.values);
+  };
+  useEffect(() => {
+    // A pending write whose (job, date) no longer matches must flush under ITS OWN key first —
+    // e.g. a date switch inside the debounce window: the old date's typed work stays under the
+    // old date's draft (onDateChange relies on this having happened).
+    const p = pendingDraftRef.current;
+    if (p && (!placement || p.job !== placement.job_id || p.date !== date)) flushDraft();
+    if (!placement || !dirtyRef.current) return;
+    pendingDraftRef.current = { job: placement.job_id, date, values };
+    if (draftTimerRef.current === null) {
+      // Bare setTimeout (not window.setTimeout): identical in the browser, and resolves through
+      // the patchable global so vi.useFakeTimers() can drive the window in tests.
+      draftTimerRef.current = setTimeout(() => {
+        draftTimerRef.current = null;
+        flushDraft();
+      }, DRAFT_DEBOUNCE_MS);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [values, placement, date]);
+  // Unmount = the App page-node swap (the form_link deep-link) — THE loss-moment this draft
+  // exists for. Flush the pending write synchronously; a lost debounce window here would
+  // reintroduce the D2 data-loss bug. (Refs + writeDraft's captures are all render-stable, so
+  // the first-render closure this []-effect keeps is current forever.)
+  useEffect(() => {
+    return () => {
+      if (draftTimerRef.current !== null) {
+        clearTimeout(draftTimerRef.current);
+        draftTimerRef.current = null;
+      }
+      flushDraft();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // ── Placement (the envelope job) — Job Tracker viewer data. ────────────────────────────────────
   async function loadPlacement() {
@@ -454,7 +526,8 @@ export function DailyReportTab({
     const clamped = /^\d{4}-\d{2}-\d{2}$/.test(next) && next <= pacificToday() ? next : pacificToday();
     setDate(clamped);
     // A date switch starts a NEW submission for that date. Typed work stays under ITS OWN date's
-    // draft (the save effect already persisted it); the new date shows its own draft or the seed.
+    // draft (already persisted, or flushed by the save effect's key-change check on this render);
+    // the new date shows its own draft or the seed.
     const draft = placement && def ? readDraft(placement.job_id, clamped) : null;
     if (draft && def) {
       dirtyRef.current = true;
@@ -498,6 +571,9 @@ export function DailyReportTab({
       });
       setJustFiled(true);
       dirtyRef.current = false;
+      // Discard any pending debounced write BEFORE clearing — a live window timer firing after
+      // clearDraft would silently resurrect the just-filed values as a stale draft.
+      pendingDraftRef.current = null;
       clearDraft(placement.job_id, date);
       setAmendsUuid(null);
       renewSubmissionId(); // fresh id for the NEXT submission (this one succeeded)

@@ -1,20 +1,58 @@
-import { useEffect, useRef, useState } from "react";
+import { Component, Suspense, lazy, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { useAuth } from "./lib/auth";
 import { LoginPage } from "./pages/LoginPage";
 import { HomePage, type HomeNav } from "./pages/HomePage";
 import { FormFillPage, type FormPrefill } from "./pages/FormFillPage";
 import { FormRequestPage } from "./pages/FormRequestPage";
-import { AccountsPage } from "./pages/AccountsPage";
-import { FormsPage } from "./pages/FormsPage";
 import { FieldOpsJobTracker } from "./pages/FieldOpsJobTracker";
 import { FieldOpsMyTasks } from "./pages/FieldOpsMyTasks";
 import { FieldOpsInspections } from "./pages/FieldOpsInspections";
 import { FieldOpsEquipment } from "./pages/FieldOpsEquipment";
 import { FieldOpsPersonnel } from "./pages/FieldOpsPersonnel";
-import { MaterialsCatalogPage } from "./pages/MaterialsCatalogPage";
 import { BackHomeNav } from "./components/BackHomeNav";
 import { useIdleLogout } from "./lib/useIdleLogout";
+
+// ── Admin-only route chunks (optimization #8) ────────────────────────────────────────────────────
+// Exactly the three ADMIN-ONLY views are code-split: Forms (which pulls the whole FormEditor /
+// editorValidation / PublishMonitor stack into its chunk), Accounts, and Materials Catalog —
+// ~office-desk surfaces a field phone never opens, previously ~90 kB of the single 595 kB chunk.
+// Every FIELD-CRITICAL view (FormFillPage, My Tasks / DailyReportTab, Job Tracker, Equipment,
+// Personnel, Inspections, Form Request) stays EAGER on purpose: a chunk-load failure mid-shift on
+// a flaky cell connection must never take down the daily path. The Suspense fallback below is the
+// design system's standard loading line (the same one the auth gate shows).
+const AccountsPage = lazy(() =>
+  import("./pages/AccountsPage").then((m) => ({ default: m.AccountsPage })),
+);
+const FormsPage = lazy(() => import("./pages/FormsPage").then((m) => ({ default: m.FormsPage })));
+const MaterialsCatalogPage = lazy(() =>
+  import("./pages/MaterialsCatalogPage").then((m) => ({ default: m.MaterialsCatalogPage })),
+);
+
+// Never-silent for the lazy admin chunks (ops review): a chunk-load failure (offline / deploy skew)
+// must show a visible error + Retry, not a white screen. Class component — the only React error-
+// boundary mechanism. Retry re-attempts the dynamic import by remounting the Suspense subtree.
+class ChunkBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+  render() {
+    if (this.state.failed) {
+      return (
+        <div className="centered">
+          <p className="banner banner--err">
+            Couldn't load this page — check your connection.{" "}
+            <button type="button" className="btn btn--secondary" onClick={() => this.setState({ failed: false })}>
+              Retry
+            </button>
+          </p>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 type View = "home" | HomeNav;
 
@@ -203,7 +241,10 @@ export function App() {
   return (
     <>
       {user.role === "admin" && <AdminSessionGuard editing={editing} />}
-      {page}
+      {/* Only the three lazy admin views ever suspend; eager field views render straight through. */}
+      <ChunkBoundary>
+        <Suspense fallback={<div className="centered muted">Loading…</div>}>{page}</Suspense>
+      </ChunkBoundary>
     </>
   );
 }
