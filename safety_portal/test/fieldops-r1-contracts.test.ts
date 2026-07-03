@@ -16,13 +16,14 @@ import { provision, login, get, post, seedJob, seedPersonnel } from "./helpers";
 //      form code not in the catalog parent list.
 //   5. BELOW-TARGET ACKNOWLEDGE: { value_num, acknowledge_below_target: true, note } completes a
 //      count item below target (note REQUIRED); distinct audit action.
-//   6. EMPTY-STATE REASONS: /checklist/mine returns reason (not_manager | no_personnel_link |
-//      not_placed); /tasks/mine + /checklist/assigned return linked.
+//   6. EMPTY-STATE: /tasks/mine + /checklist/assigned return linked.
 //   7. Q3 DUE-DATE SEMANTICS: inspection instances reconcile on work_date <= due date (early filing
-//      closes); daily stays exact-date (regression-guarded in fieldops-checklist-loop-closure too).
-//   8. filed_by ATTRIBUTION: auto-closed items + the rolled-up daily instance carry WHO filed the
-//      closing submission (personnel display name, fallback raw account).
-//   9. CONTEXT: /tasks/mine returns assigned_by; /checklist/mine instance carries project_name.
+//      closes).
+//   8. filed_by ATTRIBUTION: auto-closed items carry WHO filed the closing submission (personnel
+//      display name only).
+//   9. CONTEXT: /tasks/mine returns assigned_by.
+// (The /checklist/mine reason-code, daily exact-date, and rolled_up_by cases were deleted with the
+// daily-generation routes — operator approval 2026-07-03; see worker/fieldops_checklist.ts.)
 // Runs against the REAL worker with Miniflare D1 (migrations incl. 0029 auto-apply).
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -62,17 +63,6 @@ async function assigned(cookie: string): Promise<AssignedResp> {
   const res = await get(cookie, "/api/fieldops/checklist/assigned");
   expect(res.status, await res.clone().text()).toBe(200);
   return (await res.json()) as AssignedResp;
-}
-
-interface MineResp {
-  instance: { id: number; job_id: string; project_name: string | null; instance_date: string; status: string; rolled_up_submission_uuid: string | null; rolled_up_by: string | null } | null;
-  items: { id: number; item_type: string; form_code: string | null; status: string; completed_by: string | null; filed_by: string | null }[];
-  reason: string | null;
-}
-async function mine(cookie: string): Promise<MineResp> {
-  const res = await get(cookie, "/api/fieldops/checklist/mine");
-  expect(res.status, await res.clone().text()).toBe(200);
-  return (await res.json()) as MineResp;
 }
 
 let admin: string, manager: string, subSam: string;
@@ -363,35 +353,8 @@ describe("R1 — count acknowledge-below-target", () => {
   });
 });
 
-// ── 6 + 9. /checklist/mine reason codes + project_name ─────────────────────────────────────────────
-describe("R1 — /checklist/mine empty-state reasons", () => {
-  it("a submitter → reason 'not_manager'", async () => {
-    const body = await mine(subSam);
-    expect(body.instance).toBeNull();
-    expect(body.reason).toBe("not_manager");
-  });
-
-  it("a manager with NO linked personnel → 'no_personnel_link'", async () => {
-    const body = await mine(manager); // mgr.mo has no personnel row in this suite's seed
-    expect(body.instance).toBeNull();
-    expect(body.reason).toBe("no_personnel_link");
-  });
-
-  it("a linked but UNPLACED manager → 'not_placed'", async () => {
-    await seedPersonnel("Mo Manager", "mgr.mo", null);
-    const body = await mine(manager);
-    expect(body.instance).toBeNull();
-    expect(body.reason).toBe("not_placed");
-  });
-
-  it("a placed manager → reason null + instance carrying the job's project_name", async () => {
-    await seedPersonnel("Mo Manager", "mgr.mo", "JOB-A");
-    const body = await mine(manager);
-    expect(body.reason).toBeNull();
-    expect(body.instance).not.toBeNull();
-    expect(body.instance!.project_name).toBe("Project JOB-A");
-  });
-});
+// (Section "6 + 9. /checklist/mine reason codes + project_name" deleted with the daily-generation
+// routes — operator approval 2026-07-03.)
 
 // ── 7. Q3 due-date semantics ───────────────────────────────────────────────────────────────────────
 describe("R1 — Q3: inspection reconcile matches work_date <= due date", () => {
@@ -418,20 +381,10 @@ describe("R1 — Q3: inspection reconcile matches work_date <= due date", () => 
     const m = await assigned(subSam);
     expect(m.inspections[0].items[0].status).toBe("open");
   });
-
-  it("DAILY stays exact-date: an earlier-dated submission does NOT close today's daily form_linked item", async () => {
-    await seedPersonnel("Mo Manager", "mgr.mo", "JOB-A");
-    const before = await mine(manager);
-    const fl = before.items.find((i) => i.item_type === "form_linked" && i.form_code === "daily-report")!;
-    expect(fl.status).toBe("open");
-    await seedSubmission("JOB-A", "daily-report", "2020-01-01", "mgr.mo"); // long before today
-    const after = await mine(manager);
-    expect(after.items.find((i) => i.id === fl.id)!.status).toBe("open");
-  });
 });
 
 // ── 8. filed_by attribution ────────────────────────────────────────────────────────────────────────
-describe("R1 — filed_by attribution on auto-closed items + the rolled-up daily", () => {
+describe("R1 — filed_by attribution on auto-closed items", () => {
   it("an auto-closed inspection item carries the filer's personnel display name (submitted_as → personnel.name)", async () => {
     const t = await createTemplate(admin, "JHA attributed");
     await addItem(admin, t, { item_type: "form_linked", label: "File JHA", form_code: "jha" });
@@ -460,15 +413,5 @@ describe("R1 — filed_by attribution on auto-closed items + the rolled-up daily
     expect((await post(subSam, `/api/fieldops/checklist/item-state/${manualItem.id}/complete`, {})).status).toBe(200);
     const m2 = await assigned(subSam);
     expect(m2.inspections.flatMap((i) => i.items).find((i) => i.id === manualItem.id)!.filed_by).toBeNull();
-  });
-
-  it("the rolled-up daily instance carries rolled_up_by (who filed the Daily Report)", async () => {
-    await seedPersonnel("Mo Manager", "mgr.mo", "JOB-A");
-    const before = await mine(manager);
-    expect(before.instance!.rolled_up_by).toBeNull();
-    await seedSubmission("JOB-A", "daily-report-v1", before.instance!.instance_date, "mgr.mo");
-    const after = await mine(manager);
-    expect(after.instance!.rolled_up_submission_uuid).not.toBeNull();
-    expect(after.instance!.rolled_up_by).toBe("Mo Manager");
   });
 });

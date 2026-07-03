@@ -23,7 +23,7 @@ export function AddCrewSection({
   placementJob,
   placementProject,
 }: {
-  /** Placement hint from the actor's own /checklist/mine (job id), when available. */
+  /** Placement hint (job id) from the Daily tab's placement resolve (D2), when available. */
   placementJob?: string | null;
   /** Resolved project name for the placement hint, when available. */
   placementProject?: string | null;

@@ -8,11 +8,11 @@ When to add an entry: a session deliberately chooses preservation-over-refactor 
 
 **Operator-parked 2026-07-01 (was mid-build, deferred).** The job-creation routing form (`safety_portal/src/pages/FieldOpsJobTracker.tsx`, `RoutingFields`) has a "Same as safety" copy button on the **Progress** contact block (copies Safety → Progress, ~line 179). Add a parallel **"Same as stakeholder"** button on the **Safety** contact block (~:158-161) that copies the Stakeholder name/email into the Safety contact, and KEEP "Same as safety" on Progress — giving the chain Stakeholder → Safety → Progress for the common single-contact case. Small SPA change: mirror the existing copy handler + an SPA test. **Tag:** `field_ops`, `job-tracker`, `spa`, `ux`.
 
-## Remove the progress-% estimate system-wide [OPEN 2026-07-01]
+## Remove the progress-% estimate system-wide [OPEN 2026-07-01 — SPA slider + Worker route done]
 
 **Operator-locked 2026-07-01: the `jobs.progress` %-complete estimate is a misleading single-value guess and should be removed EVERYWHERE, not just omitted from the P6 rollup** (P6 already excludes it). A **multi-surface** removal — enumerate ALL consumers first (the multi-surface fan-out discipline):
-- SPA: the progress bar / slider control in the Job Tracker (`FieldOpsJobTracker.tsx` — `setJobProgress`, the progress input, `clampPct`) + any read display.
-- Worker: `POST /api/fieldops/job/:job_id/progress` route (`fieldops_job_write.ts`) + `progress` in the create body.
+- ~~SPA: the progress bar / slider control in the Job Tracker~~ — DONE (#403 removed the UI; the `setJobProgress` client fn deleted R4-F5).
+- ~~Worker: `POST /api/fieldops/job/:job_id/progress` route (`fieldops_job_write.ts`)~~ — DONE 2026-07-03 (deleted with the B3 dead-route approval; tombstone in `fieldops_job_write.ts`). Still remaining: `progress` in the create body (accepted, default 0).
 - D1: the `jobs.progress` column (`0014`) — leave the column vs. drop via migration (decide; a drop needs care).
 - Any read route/response surfacing `progress`.
 Grep `progress` across worker + SPA and distinguish `jobs.progress` (the %-estimate to remove) from the unrelated `sync_state` mirror progress. **Tag:** `field_ops`, `job-tracker`, `cleanup`, `multi-surface`.
@@ -2598,14 +2598,18 @@ The edge case: if an **admin authors a template through the UI** with a title th
 
 ---
 
-## Optimization-plan doctrine-adjacent decisions awaiting operator green-light [OPEN 2026-07-03]
+## Optimization-plan doctrine-adjacent decisions awaiting operator green-light [OPEN 2026-07-03 — item 2 (B3) RESOLVED 2026-07-03]
+
+**Item 2 (B3) RESOLVED 2026-07-03 — operator approved ("go ahead with your recommendations") and the dead-route deletion was executed.** Four Worker routes deleted with per-site tombstones naming the approval + date: `GET /api/fieldops/checklist/mine` (the deprecated daily generation read — it still WROTE daily instances + snapshots when called, the junk-data footgun), `GET /checklist/mine/rollup-draft` (S5 draft assembler, superseded by the SOP form's own prefill), `POST /api/fieldops/job/:job_id/close` (thin back-compat alias; `/lifecycle` is the live close path), and `POST /api/fieldops/job/:job_id/progress` (nothing displayed the value since #403; no Python reader). Daily-exclusive machinery removed with them (`generateDailyInstance`, `pacificToday` (worker copy), `reconcileFormLinked`, `AUTO_CHECK_SQL_DAILY`, `ITEM_STATES_SQL_DAILY`, `MergedItem`, `DailyEmptyReason`, `ROLLUP_LEG_CAP`); the inspection engine (assign/assigned/instances/cancel/item-state), the S2 default/job-override **editor routes**, and the 0028 `daily_default` seed rows were **NOT removed** (narrower scope than option (a) — the approval covered the four dead routes only). Tests: the 3 daily suites deleted (36 tests), 6 daily-path tests removed from `fieldops-r1-contracts`, 5 route tests removed from `fieldops-job-write`, 3 item-state contracts re-pinned via the assigned-inspections path (worker suite 668 → 624). Item 1 below remains OPEN.
+
+Original entry (item 1 still awaiting green-light):
 
 **`~/.claude/plans/optimization-plan.md` "Needs-operator" #2 and #3** — two propose-only options CC is explicitly barred from executing unilaterally:
 
 1. **Historical form-definition registry split** — `src/forms/registry.ts` currently guarantees "any historical `form_code` must always render," which costs ~76.6 kB minified today and grows ~24 kB per SOP edit (v2→v5 in ~30h of this arc alone). A chunk-fetch-on-admin-editor split would reverse an explicitly documented C1/C9 design decision and likely touches the Phase-2 publish actuator + catalog tests. Real growth evidence exists; the decision is doctrine-owned, not a unilateral refactor.
-2. **Deprecated daily-checklist Worker surfaces + dormant 0028 `daily_default` rows** — the route header says "Do not remove without a doctrine-level decision" (§14/§49). Options on the table: (a) one removal PR for the daily-generation branch of `/checklist/mine` + `/mine/rollup-draft` + default/job-override editor routes + their tests + the 0028 placeholder rows, or (b) a formal keep-deprecated register entry. The checklist **engine** underneath (`reconcileFormLinked`/`ITEM_STATES_SQL`/instance machinery) stays live-inspection load-bearing regardless of which option is chosen.
+2. ~~**Deprecated daily-checklist Worker surfaces + dormant 0028 `daily_default` rows**~~ — RESOLVED above (route deletion executed; 0028 rows + editor routes deliberately kept).
 
-Neither blocks anything; both are dead-weight-vs-preservation-over-refactor calls that only Seth should greenlight. **Tag:** `field_ops`, `optimization`, `doctrine-adjacent`, `preservation-over-refactor`. **Revisit when:** Seth reviews the optimization-plan's Needs-operator section.
+Item 1 blocks nothing; it is a dead-weight-vs-preservation-over-refactor call that only Seth should greenlight. **Tag:** `field_ops`, `optimization`, `doctrine-adjacent`, `preservation-over-refactor`. **Revisit when:** Seth reviews the optimization-plan's Needs-operator section.
 
 ---
 

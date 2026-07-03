@@ -3,7 +3,7 @@ import type { FieldopsApp, FieldopsGates } from "./fieldops_gates";
 import type { Env, Vars } from "./types";
 import { auditStmt, auditStmtIfChanged, isUniqueViolation } from "./audit";
 
-// P2.3 Slice 2 + P2.5 Slice 1 — JOB WRITE (create / lifecycle / contacts / progress).
+// P2.3 Slice 2 + P2.5 Slice 1 — JOB WRITE (create / lifecycle / contacts).
 // cap.jobtracker.manage (admin-only). Send-free (D1 only).
 //
 // jobs is a PLAIN (in-place mutable) table — NOT integrity-bar — so updates UPDATE in place, but
@@ -29,7 +29,8 @@ import { auditStmt, auditStmtIfChanged, isUniqueViolation } from "./audit";
 // sync_state='pending' (the dirty flag). The daemon advances each sheet's watermark independently
 // and flips sync_state→'synced' only when BOTH catch up (see /api/internal/fieldops/jobs-mark-mirrored
 // in index.ts). progress% is NOT a mirrored SoR field (the Active-Jobs sheets have no progress
-// column), so it deliberately does NOT bump the version — see the /progress route.
+// column) — it survives only as an optional create-body field (default 0); the standalone
+// POST /:job_id/progress route was deleted (see the tombstone below).
 
 const MAX_JOB_ID = 64;
 const MAX_NAME = 256;
@@ -250,8 +251,9 @@ export function registerJobWriteRoutes(app: FieldopsApp, gates: FieldopsGates): 
   );
 
   // POST /api/fieldops/job/:job_id/lifecycle — set the job lifecycle (active|inactive|archived).
-  // Derives the legacy `active` flag, bumps the mirror version, re-dirties the row. Replaces the
-  // bare /close in the UI; /close is kept below as a thin 'inactive' alias.
+  // Derives the legacy `active` flag, bumps the mirror version, re-dirties the row. THE close path:
+  // the UI closes a job via { lifecycle: 'inactive' } (the old bare /close alias was deleted —
+  // tombstone below).
   app.post(
     "/api/fieldops/job/:job_id/lifecycle",
     gates.requireSession,
@@ -277,17 +279,10 @@ export function registerJobWriteRoutes(app: FieldopsApp, gates: FieldopsGates): 
     },
   );
 
-  // POST /api/fieldops/job/:job_id/close — thin alias → lifecycle='inactive' (back-compat).
-  app.post(
-    "/api/fieldops/job/:job_id/close",
-    gates.requireSession,
-    gates.requireCapability("cap.jobtracker.manage"),
-    async (c) => {
-      const jobId = c.req.param("job_id");
-      if (jobId.length > MAX_JOB_ID) return c.json({ error: "invalid_job_id" }, 400);
-      return setLifecycle(c, jobId, "inactive");
-    },
-  );
+  // TOMBSTONE (operator-approved deletion, 2026-07-03): POST /api/fieldops/job/:job_id/close — the
+  // thin back-compat alias → lifecycle='inactive' — was DELETED (zero SPA/Python callers since
+  // setLifecycle superseded it in the UI, P2.5). The /lifecycle route above is the live close path.
+  // Git history has the handler (this file, pre-deletion).
 
   // POST /api/fieldops/job/:job_id/contacts — partial edit of the routing SoR block; bumps the
   // mirror version + re-dirties. Only routing fields are touched (job_id/lifecycle/status untouched).
@@ -337,37 +332,15 @@ export function registerJobWriteRoutes(app: FieldopsApp, gates: FieldopsGates): 
     },
   );
 
-  // POST /api/fieldops/job/:job_id/progress — update the progress bar (0–100). NOT a mirrored SoR
-  // field (the Active-Jobs sheets carry no progress column), so it does NOT bump mirror_version.
-  app.post(
-    "/api/fieldops/job/:job_id/progress",
-    gates.requireSession,
-    gates.requireCapability("cap.jobtracker.manage"),
-    async (c) => {
-      const jobId = c.req.param("job_id");
-      if (jobId.length > MAX_JOB_ID) return c.json({ error: "invalid_job_id" }, 400);
-      let body: Record<string, unknown>;
-      try {
-        body = (await c.req.json()) as Record<string, unknown>;
-      } catch {
-        return c.json({ error: "bad_request" }, 400);
-      }
-      if (typeof body !== "object" || body === null || Array.isArray(body) || typeof body.progress !== "number" || !Number.isFinite(body.progress)) {
-        return c.json({ error: "invalid_progress" }, 400);
-      }
-      const progress = clampPct(body.progress);
-      const actor = c.get("session").username;
-      const res = await c.env.DB.batch([
-        c.env.DB.prepare("UPDATE jobs SET progress=?2 WHERE job_id=?1").bind(jobId, progress),
-        auditStmtIfChanged(c, actor, "job_progress", jobId, { job_id: jobId, progress }),
-      ]);
-      if ((res[0].meta.changes ?? 0) === 0) return c.json({ error: "not_found" }, 404);
-      return c.json({ ok: true, job_id: jobId, progress }, 200);
-    },
-  );
+  // TOMBSTONE (operator-approved deletion, 2026-07-03): POST /api/fieldops/job/:job_id/progress —
+  // the manual progress-% write — was DELETED. Nothing displayed the value (the UI slider/bar was
+  // removed in #403, the P6 rollup deliberately excludes progress %), and no Python read it. The
+  // `jobs.progress` COLUMN and the optional create-body `progress` field remain (see the
+  // "Remove the progress-% estimate system-wide" tech-debt entry for the full multi-surface
+  // removal). Git history has the handler (this file, pre-deletion).
 }
 
-// ---- shared lifecycle setter (used by /lifecycle + /close) -----------------
+// ---- lifecycle setter (used by /lifecycle; formerly also the deleted /close alias) -------------
 
 /** Set lifecycle + the derived `active` flag (+ legacy `status` for back-compat: inactive/archived
  *  → 'closed', active → 'active'), bump mirror_version, re-dirty (sync_state='pending'), audit.
