@@ -2579,3 +2579,38 @@ The edge case: if an **admin authors a template through the UI** with a title th
 **Fix (if it becomes live):** add a stable template `code`/slug column distinct from the human-editable `title`, and key find-or-create on `code`. Only worth doing if the inspection/checklist template library grows past the current seeded set and admin-authored templates become common — preservation-over-refactor (§14) says don't build this speculatively.
 
 **Tag:** `field_ops`, `checklist`, `templates`, `data-model`, `r-series`. **Revisit when:** the checklist/inspection template library grows beyond the seeded set, or an admin reports items merging into the wrong template.
+
+---
+
+## DailyReportTab 2-stage waterfall — `fetchJobList` fetch NOT yet collapsed [OPEN 2026-07-03]
+
+**Optimization plan finding #12** (`~/.claude/plans/optimization-plan.md`, Slice 3 tail item). `DailyReportTab.tsx` still opens with `jobs.fetchJobList("active")` (a full jobs-list page) purely to read `viewer_current_job` before it can fetch anything daily-specific — confirmed still present at exec HEAD `d7ba70f` (`DailyReportTab.tsx:280-281`). The plan's fix (add `viewer_current_job` + `project_name` to `/api/fieldops/tasks/mine` and drop the `fetchJobList` stage) was explicitly scoped to **serialize after Slice 2** and carries the plan's only medium-risk rating plus its own mandatory `/security-review` gate (it widens a capability-gated read route — `cap.tasks.own` would start returning placement data that today rides `cap.jobtracker.read`). Slice 2 (#432) has now landed; this tail item was correctly NOT bundled into #431/#432 and remains unbuilt.
+
+**Fix:** implement optimization-plan.md Slice 3 item 7 in its own PR, with the `/security-review` pass as a merge gate, not advisory. **Tag:** `field_ops`, `performance`, `daily-form`, `optimization`, `security-review-gated`. **Revisit when:** picking up the next optimization slice, or if field-crew load on `/api/fieldops/jobs` becomes measurable.
+
+---
+
+## Optimization-plan doctrine-adjacent decisions awaiting operator green-light [OPEN 2026-07-03]
+
+**`~/.claude/plans/optimization-plan.md` "Needs-operator" #2 and #3** — two propose-only options CC is explicitly barred from executing unilaterally:
+
+1. **Historical form-definition registry split** — `src/forms/registry.ts` currently guarantees "any historical `form_code` must always render," which costs ~76.6 kB minified today and grows ~24 kB per SOP edit (v2→v5 in ~30h of this arc alone). A chunk-fetch-on-admin-editor split would reverse an explicitly documented C1/C9 design decision and likely touches the Phase-2 publish actuator + catalog tests. Real growth evidence exists; the decision is doctrine-owned, not a unilateral refactor.
+2. **Deprecated daily-checklist Worker surfaces + dormant 0028 `daily_default` rows** — the route header says "Do not remove without a doctrine-level decision" (§14/§49). Options on the table: (a) one removal PR for the daily-generation branch of `/checklist/mine` + `/mine/rollup-draft` + default/job-override editor routes + their tests + the 0028 placeholder rows, or (b) a formal keep-deprecated register entry. The checklist **engine** underneath (`reconcileFormLinked`/`ITEM_STATES_SQL`/instance machinery) stays live-inspection load-bearing regardless of which option is chosen.
+
+Neither blocks anything; both are dead-weight-vs-preservation-over-refactor calls that only Seth should greenlight. **Tag:** `field_ops`, `optimization`, `doctrine-adjacent`, `preservation-over-refactor`. **Revisit when:** Seth reviews the optimization-plan's Needs-operator section.
+
+---
+
+## `fieldops_checklist.ts` still hand-maintains `AssignedInspectionsResponse` instead of re-exporting `wire-types.ts` [OPEN 2026-07-03]
+
+**`worker/wire-types.ts` header note, Slice 3 (#431).** The header explicitly flags: "the assigned-inspections shapes are worker-typed here but NOT yet re-exported by `src/lib/fieldops_checklist.ts` — that file is Slice 2's dead-code removal surface; converting its kept types to re-exports is a follow-up after Slice 2 lands." Slice 2 (#432) has now landed, and `fieldops_checklist.ts:224` still defines its own `AssignedInspectionsResponse` interface rather than re-exporting the Worker-authoritative one from `wire-types.ts` — the one drift-guard `wire-types.ts` was built to close (finding #11) is not yet fully closed for this one shape.
+
+**Fix:** small follow-up — replace the local `AssignedInspectionsResponse` interface in `fieldops_checklist.ts` with a re-export from `wire-types.ts`, matching the pattern already used by `fieldops_jobtracker.ts`/`fieldops_daily_form.ts`/`fieldops_expected_materials.ts`. **Tag:** `field_ops`, `optimization`, `wire-types`, `low-risk`. **Revisit when:** next touching `fieldops_checklist.ts` or `wire-types.ts`.
+
+---
+
+## D4 job-requirements ceiling check is TOCTOU (admin-only, accepted) [OPEN 2026-07-03]
+
+**Surfaced by the D4 security review (PR #427), accepted as a WARN.** `fieldops_daily_requirements.ts`'s `REQUIREMENTS_LIMIT = 200` ceiling on a job's ACTIVE requirement-item list is enforced as a read-then-check-then-insert, not atomically in the mutating statement's `WHERE` clause — mirrors the existing "Task-authority guards read account role check-then-act" TOCTOU entry above, but on a resource ceiling rather than a role predicate. Two concurrent admin adds could both pass the count check before either commits, momentarily exceeding 200 active rows. **Admin-only actor, resource-exhaustion-shaped, not a privilege-escalation path** — accepted at review as low-severity.
+
+**Fix (fast-follow, same shape as the task-authority entry):** fold the count predicate into the INSERT's `WHERE` (a conditional insert keyed on a live `COUNT(*)` subquery) so check+write are atomic. **Tag:** `field_ops`, `security`, `toctou`, `daily-form`, `low-severity`. **Revisit when:** treating the requirements ceiling as a hard bound, or alongside the existing task-authority TOCTOU fix.
