@@ -1,6 +1,7 @@
 import type { Context } from "hono";
 import type { FieldopsApp, FieldopsGates } from "./fieldops_gates";
 import type { Env, Vars } from "./types";
+import { auditStmtIfChanged } from "./audit";
 
 // P2.6 — CREW → JOB ASSIGNMENT (cap.crew.assign; Manager + admin). Sets a person's STANDING
 // placement (personnel.current_job, migration 0023) — "who is where". Distinct from
@@ -60,9 +61,7 @@ export function registerCrewAssignRoutes(app: FieldopsApp, gates: FieldopsGates)
         // ── unassign (clear placement) — idempotent on an already-unplaced active row ──
         const res = await c.env.DB.batch([
           c.env.DB.prepare("UPDATE personnel SET current_job = NULL WHERE id = ?1 AND active = 1").bind(id),
-          c.env.DB
-            .prepare("INSERT INTO audit_log (actor_username, action, target_username, detail) SELECT ?1,?2,?3,?4 WHERE changes()=1")
-            .bind(actor, "personnel_assign", String(id), JSON.stringify({ personnel_id: id, job_id: null })),
+          auditStmtIfChanged(c, actor, "personnel_assign", String(id), { personnel_id: id, job_id: null }),
         ]);
         if ((res[0].meta.changes ?? 0) === 0) return c.json({ error: "not_found" }, 404);
         return c.json({ ok: true, id, job_id: null }, 200);
@@ -75,9 +74,7 @@ export function registerCrewAssignRoutes(app: FieldopsApp, gates: FieldopsGates)
             "UPDATE personnel SET current_job = ?2 WHERE id = ?1 AND active = 1 AND EXISTS (SELECT 1 FROM jobs WHERE job_id = ?2 AND active = 1)",
           )
           .bind(id, jobId),
-        c.env.DB
-          .prepare("INSERT INTO audit_log (actor_username, action, target_username, detail) SELECT ?1,?2,?3,?4 WHERE changes()=1")
-          .bind(actor, "personnel_assign", String(id), JSON.stringify({ personnel_id: id, job_id: jobId })),
+        auditStmtIfChanged(c, actor, "personnel_assign", String(id), { personnel_id: id, job_id: jobId }),
       ]);
       if ((res[0].meta.changes ?? 0) === 0) {
         // Disambiguate (mirror /link): active personnel row present → the JOB is missing/inactive

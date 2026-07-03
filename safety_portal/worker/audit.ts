@@ -26,3 +26,21 @@ export function auditStmt(
     .prepare("INSERT INTO audit_log (actor_username, action, target_username, detail) VALUES (?,?,?,?)")
     .bind(actor, action, target, detail === null ? null : JSON.stringify(detail));
 }
+
+/** The changes()=1 CONDITIONAL twin of auditStmt: the INSERT lands ONLY when the immediately
+ *  preceding statement in the same D1 batch changed exactly one row (SELECT … WHERE changes()=1).
+ *  This is the guarded-mutation shape used across the write modules — UPDATE/DELETE guarded
+ *  in-WHERE, audit conditional in the SAME batch (W4 atomicity), so a no-op (lost race, repeat
+ *  click, wrong-state row) never writes a lying audit row. MUST be placed directly after the
+ *  mutation it describes: changes() reads the last data-modifying statement on the connection. */
+export function auditStmtIfChanged(
+  c: Context<{ Bindings: Env; Variables: Vars }>,
+  actor: string,
+  action: string,
+  target: string | null,
+  detail: Record<string, unknown> | null,
+) {
+  return c.env.DB
+    .prepare("INSERT INTO audit_log (actor_username, action, target_username, detail) SELECT ?1,?2,?3,?4 WHERE changes()=1")
+    .bind(actor, action, target, detail === null ? null : JSON.stringify(detail));
+}

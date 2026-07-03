@@ -4,30 +4,19 @@
 // receive/flagIncident ship here for completeness — M2 wires them into the daily form's
 // deliveries region ("Confirm receipt" / "Report material incident →").
 
-export type ExpectedMaterialStatus = "expected" | "received" | "incident";
+import type { ExpectedMaterialsResponse } from "../../worker/wire-types";
 
-export interface ExpectedMaterialRow {
-  id: number;
-  material_id: number | null; // catalog-picked rows; null = free-text
-  material_name: string | null; // resolved catalog model_id (display; null for free-text rows)
-  description: string | null;
-  qty: number | null;
-  unit: string | null;
-  expected_date: string | null; // YYYY-MM-DD
-  status: ExpectedMaterialStatus;
-  received_at: number | null; // epoch seconds, stamped by receive/flag-incident
-  received_by_name: string | null; // DISPLAY NAME ONLY (W9) — null when the account has no roster link
-  qty_received: number | null;
-  note: string | null;
-  seq: number;
-}
+// Wire shapes — SINGLE-SOURCED in worker/wire-types.ts (the Worker types its c.json payload with
+// the same definitions, so a shape drift fails the typecheck on both sides); re-exported here so
+// existing importers keep their path.
+export type { ExpectedMaterialRow, ExpectedMaterialStatus } from "../../worker/wire-types";
 
-export async function fetchExpectedMaterials(jobId: string): Promise<{ expected_materials: ExpectedMaterialRow[] }> {
+export async function fetchExpectedMaterials(jobId: string): Promise<ExpectedMaterialsResponse> {
   const res = await fetch(`/api/fieldops/expected-materials?job_id=${encodeURIComponent(jobId)}`, {
     credentials: "same-origin",
   });
   if (!res.ok) throw new Error("Could not load this job's expected materials.");
-  return ((await res.json()) as { expected_materials: ExpectedMaterialRow[] }) ?? { expected_materials: [] };
+  return ((await res.json()) as ExpectedMaterialsResponse) ?? { expected_materials: [] };
 }
 
 async function postJson<T = { ok: boolean }>(url: string, body: unknown): Promise<T> {

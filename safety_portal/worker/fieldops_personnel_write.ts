@@ -1,7 +1,7 @@
 import type { Context } from "hono";
 import type { FieldopsApp, FieldopsGates } from "./fieldops_gates";
 import type { Env, Vars } from "./types";
-import { auditStmt, isUniqueViolation } from "./audit";
+import { auditStmt, auditStmtIfChanged, isUniqueViolation } from "./audit";
 import { hashPassword, normalizeUsername, parseRole } from "./auth";
 
 // Task #22 — PERSONNEL CRUD (create / update / link / unlink / retire). cap.personnel.manage
@@ -126,9 +126,7 @@ export function registerPersonnelWriteRoutes(app: FieldopsApp, gates: FieldopsGa
       const actor = c.get("session").username;
       const res = await c.env.DB.batch([
         c.env.DB.prepare("UPDATE personnel SET name = ?2, trade = ?3 WHERE id = ?1 AND active = 1").bind(id, name, trade),
-        c.env.DB
-          .prepare("INSERT INTO audit_log (actor_username, action, target_username, detail) SELECT ?1,?2,?3,?4 WHERE changes()=1")
-          .bind(actor, "personnel_update", String(id), JSON.stringify({ personnel_id: id, name })),
+        auditStmtIfChanged(c, actor, "personnel_update", String(id), { personnel_id: id, name }),
       ]);
       if ((res[0].meta.changes ?? 0) === 0) return c.json({ error: "not_found" }, 404);
       return c.json({ ok: true, id }, 200);
@@ -171,9 +169,7 @@ export function registerPersonnelWriteRoutes(app: FieldopsApp, gates: FieldopsGa
             "UPDATE personnel SET username = ?2 WHERE id = ?1 AND active = 1 AND EXISTS (SELECT 1 FROM users WHERE username = ?2) AND NOT EXISTS (SELECT 1 FROM personnel WHERE username = ?2 AND active = 1 AND id != ?1)",
           )
           .bind(id, username),
-        c.env.DB
-          .prepare("INSERT INTO audit_log (actor_username, action, target_username, detail) SELECT ?1,?2,?3,?4 WHERE changes()=1")
-          .bind(actor, "personnel_link", String(id), JSON.stringify({ personnel_id: id, username })),
+        auditStmtIfChanged(c, actor, "personnel_link", String(id), { personnel_id: id, username }),
       ]);
       if ((res[0].meta.changes ?? 0) === 0) {
         const row = await c.env.DB.prepare("SELECT id FROM personnel WHERE id = ?1 AND active = 1").bind(id).first();
@@ -203,9 +199,7 @@ export function registerPersonnelWriteRoutes(app: FieldopsApp, gates: FieldopsGa
       const actor = c.get("session").username;
       const res = await c.env.DB.batch([
         c.env.DB.prepare("UPDATE personnel SET username = NULL WHERE id = ?1 AND active = 1").bind(id),
-        c.env.DB
-          .prepare("INSERT INTO audit_log (actor_username, action, target_username, detail) SELECT ?1,?2,?3,?4 WHERE changes()=1")
-          .bind(actor, "personnel_unlink", String(id), JSON.stringify({ personnel_id: id })),
+        auditStmtIfChanged(c, actor, "personnel_unlink", String(id), { personnel_id: id }),
       ]);
       if ((res[0].meta.changes ?? 0) === 0) return c.json({ error: "not_found" }, 404);
       return c.json({ ok: true, id }, 200);
@@ -228,9 +222,7 @@ export function registerPersonnelWriteRoutes(app: FieldopsApp, gates: FieldopsGa
       const actor = c.get("session").username;
       const res = await c.env.DB.batch([
         c.env.DB.prepare("UPDATE personnel SET active = 0 WHERE id = ?1 AND active = 1").bind(id),
-        c.env.DB
-          .prepare("INSERT INTO audit_log (actor_username, action, target_username, detail) SELECT ?1,?2,?3,?4 WHERE changes()=1")
-          .bind(actor, "personnel_retire", String(id), JSON.stringify({ personnel_id: id })),
+        auditStmtIfChanged(c, actor, "personnel_retire", String(id), { personnel_id: id }),
       ]);
       if ((res[0].meta.changes ?? 0) === 0) {
         // 0 changes = unknown id (404) or already-retired (idempotent 200).

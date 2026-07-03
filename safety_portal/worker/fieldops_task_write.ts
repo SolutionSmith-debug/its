@@ -1,7 +1,7 @@
 import type { Context } from "hono";
 import type { Env, Vars } from "./types";
 import type { FieldopsApp, FieldopsGates } from "./fieldops_gates";
-import { auditStmt } from "./audit";
+import { auditStmt, auditStmtIfChanged } from "./audit";
 
 // P2.3 Slice 3 — TASK WRITE (add / status). task_assignments is a PLAIN table (in-place mutable,
 // not integrity-bar): add INSERTs, status UPDATEs in place, each with its audit_log row in ONE
@@ -190,9 +190,7 @@ export function registerTaskWriteRoutes(app: FieldopsApp, gates: FieldopsGates):
       const actor = c.get("session").username;
       const res = await c.env.DB.batch([
         c.env.DB.prepare("UPDATE task_assignments SET status = ?2 WHERE id = ?1").bind(id, status),
-        c.env.DB
-          .prepare("INSERT INTO audit_log (actor_username, action, target_username, detail) SELECT ?1,?2,?3,?4 WHERE changes()=1")
-          .bind(actor, "task_status", String(id), JSON.stringify({ task_id: id, status })),
+        auditStmtIfChanged(c, actor, "task_status", String(id), { task_id: id, status }),
       ]);
       if ((res[0].meta.changes ?? 0) === 0) return c.json({ error: "not_found" }, 404);
       return c.json({ ok: true, id, status }, 200);
@@ -249,9 +247,7 @@ export function registerTaskWriteRoutes(app: FieldopsApp, gates: FieldopsGates):
       // rows keep whatever the create route stamped (or NULL, pre-0014-stamping).
       const res = await c.env.DB.batch([
         c.env.DB.prepare("UPDATE task_assignments SET personnel_id = ?2, assigned_by = ?3 WHERE id = ?1").bind(id, personnelId, actor),
-        c.env.DB
-          .prepare("INSERT INTO audit_log (actor_username, action, target_username, detail) SELECT ?1,?2,?3,?4 WHERE changes()=1")
-          .bind(actor, "task_assign", String(id), JSON.stringify({ task_id: id, personnel_id: personnelId })),
+        auditStmtIfChanged(c, actor, "task_assign", String(id), { task_id: id, personnel_id: personnelId }),
       ]);
       if ((res[0].meta.changes ?? 0) === 0) return c.json({ error: "not_found" }, 404);
       return c.json({ ok: true, id, personnel_id: personnelId }, 200);

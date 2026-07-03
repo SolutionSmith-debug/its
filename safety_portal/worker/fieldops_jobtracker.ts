@@ -1,40 +1,23 @@
 import type { FieldopsApp, FieldopsGates } from "./fieldops_gates";
 import { encodeCursor, decodeCursor } from "./cursor";
+import type {
+  CrewMember,
+  DetailCrewMember,
+  EquipmentOnSite,
+  JobDetailResponse,
+  JobInspection,
+  JobListResponse,
+  JobRow,
+  JobTimeEntry,
+  OpenTask,
+  Task,
+  ViewerPersonnel,
+} from "./wire-types";
 
-// Response shapes per BRIEF C (job tracker). The Job Tracker spans the job lifecycle, so the
-// LIST filters by a validated `status` param (NOT a hard active=1 gate) — F5.
-
-interface CrewMember {
-  id: number;
-  name: string;
-  trade: string | null;
-}
-
-// (R7) Detail-leg crew row: adds the linked account's role so the SPA can pre-disable task-assign
-// options the Worker's subcontractor-target guard would 403 (fieldops_task_write.checkTaskTarget:
-// an assign-only manager may only target personnel whose linked account role is 'submitter'; a
-// no-login person has NO users row → account_role null → also 403). Presentation only — the
-// Worker re-gates every assign.
-interface DetailCrewMember extends CrewMember {
-  account_role: string | null;
-}
-
-interface OpenTask {
-  id: number;
-  description: string;
-  status: string;
-  personnel_name: string | null;
-}
-
-interface JobRow {
-  job_id: string;
-  project_name: string;
-  status: string;
-  progress: number;
-  client_name: string | null;
-  crew: CrewMember[];
-  open_tasks: OpenTask[];
-}
+// Response shapes per BRIEF C (job tracker) — single-sourced in wire-types.ts (the SPA re-exports
+// the same types, so a payload edit that drifts a shape fails the typecheck on both sides). The
+// Job Tracker spans the job lifecycle, so the LIST filters by a validated `status` param (NOT a
+// hard active=1 gate) — F5.
 
 const STATUS_VALUES = new Set(["active", "closed", "on_hold", "all"]);
 const NESTED_CAP = 20; // crew / open-tasks cap per job on the LIST card
@@ -93,7 +76,8 @@ export function registerJobTrackerRoutes(app: FieldopsApp, gates: FieldopsGates)
       const viewerCurrentJob = viewerRow?.current_job ?? null;
 
       if (!jobsRes.results || jobsRes.results.length === 0) {
-        return c.json({ jobs: [], next_cursor: null, viewer_current_job: viewerCurrentJob }, 200);
+        const empty: JobListResponse = { jobs: [], next_cursor: null, viewer_current_job: viewerCurrentJob };
+        return c.json(empty, 200);
       }
 
       const pageJobIds = jobsRes.results.map((r) => r.job_id);
@@ -156,7 +140,8 @@ export function registerJobTrackerRoutes(app: FieldopsApp, gates: FieldopsGates)
       const nextCursor =
         jobsRes.results.length === limit ? encodeCursor({ p: last.project_name, j: last.job_id }) : null;
 
-      return c.json({ jobs, next_cursor: nextCursor, viewer_current_job: viewerCurrentJob }, 200);
+      const payload: JobListResponse = { jobs, next_cursor: nextCursor, viewer_current_job: viewerCurrentJob };
+      return c.json(payload, 200);
     },
   );
 
@@ -302,9 +287,9 @@ export function registerJobTrackerRoutes(app: FieldopsApp, gates: FieldopsGates)
         c.env.DB.prepare(sqlViewer).bind(viewer),
       ]);
 
-      const tasks = (tasksRes.results ?? []) as { id: number; description: string; status: string; created_at: number; personnel_id: number | null; personnel_name: string | null }[];
-      const timeEntries = (timeRes.results ?? []) as { uuid: string; recorded_at: number }[];
-      const inspections = (inspRes.results ?? []) as { uuid: string; recorded_at: number }[];
+      const tasks = (tasksRes.results ?? []) as Task[];
+      const timeEntries = (timeRes.results ?? []) as JobTimeEntry[];
+      const inspections = (inspRes.results ?? []) as JobInspection[];
 
       const tasksCursor =
         tasks.length === limit
@@ -319,36 +304,34 @@ export function registerJobTrackerRoutes(app: FieldopsApp, gates: FieldopsGates)
           ? encodeCursor({ c: inspections[inspections.length - 1].recorded_at, u: inspections[inspections.length - 1].uuid })
           : null;
 
-      return c.json(
-        {
-          job: {
-            job_id: header.job_id,
-            project_name: header.project_name,
-            status: header.status,
-            progress: header.progress,
-            client: header.client_name
-              ? {
-                  name: header.client_name,
-                  contact: header.client_contact,
-                  phone: header.client_phone,
-                  email: header.client_email,
-                }
-              : null,
-            // (R7 review) account_role is org-hierarchy metadata — expose it ONLY to actors who can
-            // actually assign tasks (the pickers that consume it); other readers get null.
-            crew: ((crewRes.results ?? []) as unknown as DetailCrewMember[]).map((m) =>
-              canSeeRoles ? m : { ...m, account_role: null },
-            ),
-            tasks,
-            time_entries: timeRes.results ?? [],
-            equipment_on_site: equipRes.results ?? [],
-            inspections: inspRes.results ?? [],
-          },
-          cursors: { tasks: tasksCursor, time: timeNext, insp: inspNext },
-          viewer_personnel: (viewerRes.results?.[0] as { id: number; name: string } | undefined) ?? null,
+      const payload: JobDetailResponse = {
+        job: {
+          job_id: header.job_id,
+          project_name: header.project_name,
+          status: header.status,
+          progress: header.progress,
+          client: header.client_name
+            ? {
+                name: header.client_name,
+                contact: header.client_contact,
+                phone: header.client_phone,
+                email: header.client_email,
+              }
+            : null,
+          // (R7 review) account_role is org-hierarchy metadata — expose it ONLY to actors who can
+          // actually assign tasks (the pickers that consume it); other readers get null.
+          crew: ((crewRes.results ?? []) as DetailCrewMember[]).map((m) =>
+            canSeeRoles ? m : { ...m, account_role: null },
+          ),
+          tasks,
+          time_entries: timeEntries,
+          equipment_on_site: (equipRes.results ?? []) as EquipmentOnSite[],
+          inspections,
         },
-        200,
-      );
+        cursors: { tasks: tasksCursor, time: timeNext, insp: inspNext },
+        viewer_personnel: (viewerRes.results?.[0] as ViewerPersonnel | undefined) ?? null,
+      };
+      return c.json(payload, 200);
     },
   );
 }

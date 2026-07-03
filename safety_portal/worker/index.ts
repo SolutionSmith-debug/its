@@ -8,7 +8,7 @@ import { registerPersonnelRoutes } from "./fieldops_personnel";
 import { registerEquipmentRoutes } from "./fieldops_equipment";
 import { registerJobTrackerRoutes } from "./fieldops_jobtracker";
 import { registerMaterialsRoutes } from "./fieldops_materials";
-import { auditStmt, isUniqueViolation } from "./audit";
+import { auditStmt, isUniqueViolation, auditStmtIfChanged } from "./audit";
 import { registerTimeWriteRoutes } from "./fieldops_time_write";
 import { registerJobWriteRoutes } from "./fieldops_job_write";
 import { registerTaskWriteRoutes } from "./fieldops_task_write";
@@ -755,9 +755,7 @@ app.post("/api/submissions/:uuid/request-pdf", requireSession, async (c) => {
     c.env.DB.prepare(
       "UPDATE submissions SET pdf_requested=1 WHERE submission_uuid=? AND pdf_requested=0",
     ).bind(uuid),
-    c.env.DB.prepare(
-      "INSERT INTO audit_log (actor_username, action, target_username, detail) SELECT ?,?,?,? WHERE changes()=1",
-    ).bind(c.get("session").username, "request_pdf", null, JSON.stringify({ job_id: row!.job_id })),
+    auditStmtIfChanged(c, c.get("session").username, "request_pdf", null, { job_id: row!.job_id }),
     // PR-5: downloads are REQUESTER-BOUND — the submitter's request is the first
     // pdf_requests row (one row per submission+account). Re-request refreshes the 24h
     // window. submissions.pdf_requested stays as the legacy flag; pdf_requests is now the
@@ -1081,9 +1079,7 @@ app.post("/api/internal/mark-rejected", requireInternalToken, async (c) => {
     c.env.DB.prepare(
       "UPDATE submissions SET box_verified=-1, filed_at=unixepoch() WHERE submission_uuid=? AND box_verified=0",
     ).bind(submission_uuid),
-    c.env.DB.prepare(
-      "INSERT INTO audit_log (actor_username, action, target_username, detail) SELECT ?,?,?,? WHERE changes()=1",
-    ).bind("portal_poll", "submission_rejected", null, JSON.stringify({ submission_uuid, reason })),
+    auditStmtIfChanged(c, "portal_poll", "submission_rejected", null, { submission_uuid, reason }),
   ]);
   return c.json({ ok: true, found: (res[0]?.meta?.changes ?? 0) > 0 });
 });
@@ -1810,9 +1806,7 @@ app.post("/api/admin/users/role", ...adminGate, async (c) => {
   const res = await c.env.DB.batch([
     c.env.DB.prepare(`UPDATE users SET role=? WHERE username=?${lastAdminGuardClause(target)}`)
       .bind(role, target.username),
-    c.env.DB.prepare(
-      "INSERT INTO audit_log (actor_username, action, target_username, detail) SELECT ?,?,?,? WHERE changes()=1",
-    ).bind(c.get("session").username, "role_change", target.username, JSON.stringify({ from: target.role, to: role })),
+    auditStmtIfChanged(c, c.get("session").username, "role_change", target.username, { from: target.role, to: role }),
   ]);
   // changes==0 is overloaded: the atomic last-admin guard blocked it, OR a concurrent
   // delete removed the row after our load. Re-check existence so the code is honest
@@ -1859,9 +1853,7 @@ app.post("/api/admin/users/delete", ...adminGate, async (c) => {
   const res = await c.env.DB.batch([
     c.env.DB.prepare(`DELETE FROM users WHERE username=?${lastAdminGuardClause(target)}`)
       .bind(target.username),
-    c.env.DB.prepare(
-      "INSERT INTO audit_log (actor_username, action, target_username, detail) SELECT ?,?,?,? WHERE changes()=1",
-    ).bind(c.get("session").username, "user_delete", target.username, JSON.stringify({ role: target.role })),
+    auditStmtIfChanged(c, c.get("session").username, "user_delete", target.username, { role: target.role }),
   ]);
   // Same overloaded changes==0 as the role route (audit #6): guard-blocked (still the
   // last enabled admin) vs already-deleted by a concurrent request. 404 if gone.
