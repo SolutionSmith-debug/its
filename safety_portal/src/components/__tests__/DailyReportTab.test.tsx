@@ -484,6 +484,85 @@ describe("DailyReportTab — draft persistence (the deep-link data-loss BLOCK fi
   });
 });
 
+describe("DailyReportTab — photos must survive the draft cycle (live field bug 2026-07-03)", () => {
+  beforeEach(() => sessionStorage.clear());
+
+  /** jsdom has no canvas/createImageBitmap — stub the minimal encode surface so the REAL
+   *  encodePhoto downscale ladder runs end-to-end. `blobBytes` sizes every canvas.toBlob
+   *  result (≤ PHOTO_MAX_BYTES ⇒ first rung succeeds). Returns a restore fn. */
+  function stubPhotoEncode(blobBytes: number): () => void {
+    const g = globalThis as { createImageBitmap?: unknown };
+    const hadCIB = "createImageBitmap" in g;
+    const prevCIB = g.createImageBitmap;
+    g.createImageBitmap = vi.fn(async () => ({ width: 1600, height: 1200, close: vi.fn() }));
+    const getContext = vi
+      .spyOn(HTMLCanvasElement.prototype, "getContext")
+      .mockImplementation(() => ({ drawImage: vi.fn() }) as unknown as CanvasRenderingContext2D);
+    const toBlob = vi
+      .spyOn(HTMLCanvasElement.prototype, "toBlob")
+      .mockImplementation(function (cb: BlobCallback) {
+        cb(new Blob([new Uint8Array(blobBytes)], { type: "image/jpeg" }));
+      });
+    return () => {
+      getContext.mockRestore();
+      toBlob.mockRestore();
+      if (hadCIB) g.createImageBitmap = prevCIB;
+      else delete g.createImageBitmap;
+    };
+  }
+
+  it("REGRESSION: a wake-refresh (refreshToken bump) never wipes an attached photo via the photo-stripped draft", async () => {
+    // THE live sequence: the file picker itself blurs the window; picking the photo closes it →
+    // focus/visibilitychange → FieldOpsMyTasks.onWake → refreshAll() → refreshToken bump → the
+    // prefill effect re-fires, fetchJobDetail resolves, and the (photo-STRIPPED) sessionStorage
+    // draft is re-applied over live values — pre-fix, initialValues re-seeded site_photos to []
+    // and the photo "flashed for a second and then disappeared".
+    const restore = stubPhotoEncode(1_000); // well under PHOTO_MAX_BYTES → first ladder rung wins
+    try {
+      const view = render(
+        <DailyReportTab linked={true} placement={PLACED} onOpenForm={vi.fn()} refreshToken={0} />,
+      );
+      await waitFor(() => expect(view.container.textContent ?? "").toContain("SITE SUPERVISOR"));
+      // 1. Typed work arms the draft machinery.
+      fireEvent.change(view.getByLabelText("Weather"), { target: { value: "Sunny" } });
+      // 2. Attach a photo through the REAL input → the REAL encodePhoto ladder (stubbed canvas).
+      const input = view.container.querySelector(
+        '[data-testid="photo-input-site_photos"]',
+      ) as HTMLInputElement;
+      fireEvent.change(input, {
+        target: { files: [new File([new Uint8Array(5_000)], "site.jpg", { type: "image/jpeg" })] },
+      });
+      await waitFor(() => expect(view.container.querySelector(".photo-field__thumb img")).not.toBeNull());
+      // 3. The debounce window elapses — the photo-stripped draft is now persisted.
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 600));
+      });
+      const raw = sessionStorage.getItem(`its-daily-draft:JOB-A:${TODAY}`);
+      expect(raw).not.toBeNull();
+      expect("site_photos" in (JSON.parse(raw!) as Record<string, unknown>)).toBe(false);
+      // 4. The picker-close focus event: the parent bumps refreshToken (FieldOpsMyTasks.onWake).
+      view.rerender(
+        <DailyReportTab linked={true} placement={PLACED} onOpenForm={vi.fn()} refreshToken={1} />,
+      );
+      // 5. The re-fired prefill effect resolves and applies the draft.
+      await waitFor(() => expect(vi.mocked(jobs.fetchJobDetail)).toHaveBeenCalledTimes(2));
+      await act(async () => {});
+      // The photo SURVIVES (live values win over the photo-stripped draft for photo keys)…
+      expect(view.container.querySelector(".photo-field__thumb img")).not.toBeNull();
+      expect(view.container.textContent ?? "").toContain("(1/4)");
+      // …and the typed work survives too (the draft carried it).
+      expect((view.getByLabelText("Weather") as HTMLInputElement).value).toBe("Sunny");
+      // …and the photo still files with the submission.
+      fireEvent.click(view.getByLabelText("Submit daily report"));
+      await waitFor(() => expect(api.submitForm).toHaveBeenCalled());
+      const sent = vi.mocked(api.submitForm).mock.calls[0][0] as { values: Record<string, unknown> };
+      expect((sent.values.site_photos as unknown[]).length).toBe(1);
+    } finally {
+      restore();
+    }
+  });
+});
+
 describe("DailyReportTab — per-job requirements (slice D4)", () => {
   const REQS: DailyRequirementItem[] = [
     { id: 1, seq: 10, kind: "note", label: "Client requires FR clothing", form_code: null, options: null },

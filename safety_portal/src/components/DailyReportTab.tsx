@@ -368,7 +368,18 @@ export function DailyReportTab({
         const draft = readDraft(placedJob, dateRef.current);
         if (draft) {
           dirtyRef.current = true;
-          setValues({ ...initialValues(def), ...lastPrefill.current, ...draft });
+          // LIVE photo values ride on top (2026-07-03 field bug): photo keys are STRIPPED from
+          // every persisted draft (the quota trade above), so a draft application must never
+          // touch them — re-seeding them from initialValues wiped a just-attached photo whenever
+          // this effect re-fired (the file picker's own close→focus bumps refreshToken via the
+          // parent's onWake). On a fresh mount the live values are still the [] seed, so the
+          // documented honest regression (photos don't survive an unmount) is unchanged.
+          setValues((cur) => ({
+            ...initialValues(def),
+            ...lastPrefill.current,
+            ...draft,
+            ...Object.fromEntries([...photoDraftKeys].filter((k) => k in cur).map((k) => [k, cur[k]])),
+          }));
         } else if (!dirtyRef.current) setValues({ ...initialValues(def), ...lastPrefill.current });
       } catch {
         // Best-effort by design (spec): failure = empty tables + a soft warn, never a blocker.

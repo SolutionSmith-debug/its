@@ -2658,3 +2658,10 @@ Item 1 blocks nothing; it is a dead-weight-vs-preservation-over-refactor call th
   photos pages once per dedupe window (Sentry+Resend deduped post-#449; ITS_Errors records per
   occurrence, bounded by Check O rotation) — accepted posture, revisit if it fires in practice.
   (G1 regression review WARNs, 2026-07-03.)
+
+- **[OPEN 2026-07-03] Daily-form date-flip discards attached photos (second in-session loss path)** —
+  `onDateChange` applies drafts without the photo overlay: flip-away wipes live photos and flip-back
+  can't restore them (drafts are photo-stripped by quota design). Defensible (photos belong to their
+  date) but the in-code honest-regression comment frames unmount as the only loss path — this is a
+  second. Fix = the same functional-overlay pattern if it bites in practice. (Photo-disappear fix
+  review NIT, 2026-07-03.)
