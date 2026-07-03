@@ -264,7 +264,7 @@
         {
           "identity": "photo-test",
           "variant_label": null,
-          "status": "active",
+          "status": "retired",
           "current_version": 1,
           "current_form_code": "photo-test-v1",
           "versions": [
