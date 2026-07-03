@@ -6,6 +6,7 @@
 // err.code is the raw wire code pages branch on (e.g. 'below_target', 'already_assigned').
 import { raiseApiError } from "./errorCopy";
 import { fetchPersonnelList, type PersonnelRow } from "./fieldops_personnel";
+import type { ChecklistItemStatus, AssignedInspectionsResponse } from "../../worker/wire-types";
 
 export type ChecklistItemType = "form_linked" | "manual_attest" | "count" | "inspection";
 
@@ -58,27 +59,16 @@ const BASE = "/api/fieldops/checklist";
 // removal there is a doctrine-level decision; the checklist ENGINE serves assigned inspections).
 
 // ── Per-item completion (shared by the assigned-inspections surface below) ──────────────────────
-export type ChecklistItemStatus = "open" | "done";
-
-// One per-instance item state (the snapshot + completion row, migration 0026 checklist_item_states).
-export interface ChecklistItemState {
-  id: number;
-  source_item_id: number | null;
-  item_type: string;
-  label: string | null;
-  form_code: string | null;
-  target_count: number | null;
-  status: ChecklistItemStatus;
-  note: string | null;
-  photo_ref: string | null;
-  completed_by: string | null;
-  completed_at: number | null;
-  value_num: number | null;
-  // R1: WHO filed the submission that auto-closed this item (completed_by === '(auto)') — the
-  // personnel display name, falling back to the raw attributed account. NULL for manually-completed
-  // / still-open items, or when no matching submission is resolvable (best-effort attribution).
-  filed_by: string | null;
-}
+// Wire shapes — SINGLE-SOURCED in worker/wire-types.ts (the Worker types its c.json payloads with
+// the same definitions, so a shape drift fails the typecheck on both sides); re-exported here so
+// existing importers keep their path (the CS4 follow-up the wire-types header used to track).
+export type {
+  ChecklistItemStatus,
+  ChecklistItemState,
+  AssignedInstance,
+  AssignedInspection,
+  AssignedInspectionsResponse,
+} from "../../worker/wire-types";
 
 export interface CompleteResult {
   ok: boolean;
@@ -199,32 +189,9 @@ export function assignInspection(input: AssignInput): Promise<{ ok: boolean; ins
 // ── S6 — the assignee's Assigned-Tasks tab surface (cap.tasks.own; manager OR subcontractor) ────────
 // The inspection instances assigned to the logged-in person + their item states. Completion reuses the
 // existing completeChecklistItem / recordCountItem / uncompleteChecklistItem calls (the item-state
-// routes are ownership-scoped, kind-agnostic).
-export interface AssignedInstance {
-  id: number;
-  job_id: string | null;
-  project_name: string | null;
-  instance_date: string | null;
-  status: "open" | "complete";
-  // R1: the assigned template's title, SNAPSHOTTED at assign time (migration 0029) — render this,
-  // never "Inspection #<id>". NULL only on legacy instances the backfill couldn't resolve.
-  template_title: string | null;
-  created_at: number;
-}
-
-export interface AssignedInspection {
-  instance: AssignedInstance;
-  items: ChecklistItemState[];
-}
-
-// R1 response contract: `linked` = whether the session has an ACTIVE linked personnel row — an
-// unlinked account CANNOT have assignments, so the UI can explain the empty list ("your account
-// isn't linked to the roster") instead of a bare "no inspections". Instances arrive OPEN-FIRST
-// (server CASE ordering), newest first within a status band.
-export interface AssignedInspectionsResponse {
-  inspections: AssignedInspection[];
-  linked: boolean;
-}
+// routes are ownership-scoped, kind-agnostic). The AssignedInstance / AssignedInspection /
+// AssignedInspectionsResponse shapes (incl. the R1 `linked` + open-first ordering contract) are
+// re-exported from worker/wire-types.ts above — one definition, both tsconfig scopes.
 
 export function fetchAssignedInspections(): Promise<AssignedInspectionsResponse> {
   return getJson<AssignedInspectionsResponse>(`${BASE}/assigned`);

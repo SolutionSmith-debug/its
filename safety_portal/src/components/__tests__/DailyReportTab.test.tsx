@@ -37,6 +37,7 @@ vi.mock("../../lib/api", async (importOriginal) => {
 
 import * as api from "../../lib/api";
 import * as jobs from "../../lib/fieldops_jobtracker";
+import type { ViewerTaskPlacement } from "../../lib/fieldops_tasks";
 import { fetchDailyFormStatus, fetchDailyRequirements } from "../../lib/fieldops_daily_form";
 import type { DailyRequirementItem } from "../../lib/fieldops_daily_form";
 import {
@@ -61,12 +62,9 @@ function authAs(role: "submitter" | "manager" | "admin", capabilities: string[] 
 
 const TODAY = pacificToday();
 
-const JOB_LIST: jobs.JobListResponse = {
-  jobs: [{ job_id: "JOB-A", project_name: "Alpha", status: "active", progress: 0, client_name: null, crew: [], open_tasks: [] }],
-  next_cursor: null,
-  viewer_current_job: "JOB-A",
-};
-const UNPLACED_LIST: jobs.JobListResponse = { ...JOB_LIST, viewer_current_job: null };
+// CS4 #12: placement is a PROP now (the parent's /tasks/mine viewer_placement) — the tab no longer
+// fetches a Job Tracker list page. The fixture is the exact wire shape the parent forwards.
+const PLACED: ViewerTaskPlacement = { job_id: "JOB-A", project_name: "Alpha", personnel_id: 1, name: "Mo Manager" };
 
 const DETAIL: jobs.JobDetailResponse = {
   job: {
@@ -101,7 +99,6 @@ afterEach(cleanup);
 beforeEach(() => {
   vi.resetAllMocks();
   vi.mocked(useAuth).mockReturnValue(authAs("manager"));
-  vi.mocked(jobs.fetchJobList).mockResolvedValue(JOB_LIST);
   vi.mocked(jobs.fetchJobDetail).mockResolvedValue(DETAIL);
   vi.mocked(fetchDailyFormStatus).mockResolvedValue(EMPTY_STATUS);
   vi.mocked(fetchDailyRequirements).mockResolvedValue([]);
@@ -114,7 +111,7 @@ beforeEach(() => {
 
 describe("DailyReportTab — the placed manager's inline SOP form", () => {
   it("renders the date selector (Pacific today, max today), the job line, and the v2 form inline", async () => {
-    const { container, getByLabelText } = render(<DailyReportTab linked={true} onOpenForm={vi.fn()} />);
+    const { container, getByLabelText } = render(<DailyReportTab linked={true} placement={PLACED} onOpenForm={vi.fn()} />);
     await waitFor(() => expect(container.textContent ?? "").toContain("Alpha"));
     const dt = dateInput(container);
     expect(dt.value).toBe(TODAY);
@@ -135,14 +132,14 @@ describe("DailyReportTab — the placed manager's inline SOP form", () => {
 
   it("reports the placement up via onLoaded (drives the parent auto-switch + quick actions)", async () => {
     const onLoaded = vi.fn();
-    render(<DailyReportTab linked={true} onLoaded={onLoaded} />);
+    render(<DailyReportTab linked={true} placement={PLACED} onLoaded={onLoaded} />);
     await waitFor(() =>
       expect(onLoaded).toHaveBeenCalledWith({ placement: { job_id: "JOB-A", project_name: "Alpha" } }),
     );
   });
 
   it("prefills crew_progress + equipment_on_site rows and prepared_by from the job detail", async () => {
-    const { container } = render(<DailyReportTab linked={true} onOpenForm={vi.fn()} />);
+    const { container } = render(<DailyReportTab linked={true} placement={PLACED} onOpenForm={vi.fn()} />);
     await waitFor(() => expect(inputValues(container)).toContain("Sam (electrician)"));
     const values = inputValues(container);
     expect(values).toContain("Lee"); // no trade → bare name
@@ -152,7 +149,7 @@ describe("DailyReportTab — the placed manager's inline SOP form", () => {
 
   it("a prefill failure is a soft warn, never a blocker: the form still renders and submits", async () => {
     vi.mocked(jobs.fetchJobDetail).mockRejectedValue(new ApiError(null, 500));
-    const { container, getByLabelText } = render(<DailyReportTab linked={true} onOpenForm={vi.fn()} />);
+    const { container, getByLabelText } = render(<DailyReportTab linked={true} placement={PLACED} onOpenForm={vi.fn()} />);
     await waitFor(() => expect(container.textContent ?? "").toContain("Couldn't prefill crew and equipment"));
     expect(getByLabelText("Submit daily report")).not.toBeNull();
     expect((getByLabelText("Submit daily report") as HTMLButtonElement).disabled).toBe(false);
@@ -161,48 +158,76 @@ describe("DailyReportTab — the placed manager's inline SOP form", () => {
 });
 
 describe("DailyReportTab — R2-carried explanatory empty states (Mandatory A)", () => {
-  it("a non-manager gets the crew-lead copy and no placement fetch", async () => {
+  it("a non-manager gets the crew-lead copy even when a placement rides down (and never a jobs fetch)", async () => {
     vi.mocked(useAuth).mockReturnValue(authAs("submitter"));
     const onLoaded = vi.fn();
-    const { container } = render(<DailyReportTab linked={true} onLoaded={onLoaded} />);
+    // A placed SUBMITTER's viewer_placement is non-null on the wire — the tab must still gate on
+    // the manager role (the parent auto-switch depends on the null report).
+    const { container } = render(<DailyReportTab linked={true} placement={PLACED} onLoaded={onLoaded} />);
     await waitFor(() => expect(onLoaded).toHaveBeenCalledWith({ placement: null }));
     expect(container.textContent ?? "").toContain("crew-lead managers");
-    expect(jobs.fetchJobList).not.toHaveBeenCalled();
+    expect(jobs.fetchJobList).not.toHaveBeenCalled(); // CS4 #12: the jobs-list stage is deleted
     expect(container.querySelector('input[type="date"]')).toBeNull();
   });
 
   it("an UNLINKED manager (linked:false) gets the roster-link copy", async () => {
-    vi.mocked(jobs.fetchJobList).mockResolvedValue(UNPLACED_LIST);
-    const { container } = render(<DailyReportTab linked={false} />);
+    const { container } = render(<DailyReportTab linked={false} placement={null} />);
     await waitFor(() => expect(container.textContent ?? "").toContain("isn't linked to a roster person"));
     expect(container.textContent ?? "").not.toContain("not placed on a job yet");
   });
 
   it("a linked-but-unplaced manager gets the not-placed copy (+ onLoaded null)", async () => {
-    vi.mocked(jobs.fetchJobList).mockResolvedValue(UNPLACED_LIST);
     const onLoaded = vi.fn();
-    const { container } = render(<DailyReportTab linked={true} onLoaded={onLoaded} />);
+    const { container } = render(<DailyReportTab linked={true} placement={null} onLoaded={onLoaded} />);
     await waitFor(() => expect(container.textContent ?? "").toContain("not placed on a job yet"));
     expect(onLoaded).toHaveBeenCalledWith({ placement: null });
+    expect(jobs.fetchJobList).not.toHaveBeenCalled(); // CS4 #12: no fallback jobs fetch either
   });
 
-  it("a placement load failure shows the error + a WORKING Retry (never a lying empty)", async () => {
-    vi.mocked(jobs.fetchJobList)
-      .mockRejectedValueOnce(new ApiError(null, 500))
-      .mockResolvedValueOnce(JOB_LIST);
-    const { container, getByLabelText } = render(<DailyReportTab linked={true} />);
-    await waitFor(() => expect(container.textContent ?? "").toContain("Something went wrong on the server"));
-    expect(container.textContent ?? "").not.toContain("not placed on a job yet");
-    fireEvent.click(getByLabelText("Retry loading your daily report"));
-    await waitFor(() => expect(container.textContent ?? "").toContain("Alpha"));
-    expect(jobs.fetchJobList).toHaveBeenCalledTimes(2);
+  it("a parent placement-fetch failure shows the error + a WORKING Retry (never a lying empty)", async () => {
+    // CS4 #12: the parent's /tasks/mine read failed with nothing landed (linked null) — the tab
+    // shows the error with a Retry wired to the PARENT's load; a rerender with the landed
+    // placement (the retried fetch) swaps to the form.
+    const onRetryPlacement = vi.fn();
+    const view = render(
+      <DailyReportTab linked={null} placement={null} placementError="Something went wrong on the server." onRetryPlacement={onRetryPlacement} />,
+    );
+    await waitFor(() => expect(view.container.textContent ?? "").toContain("Something went wrong on the server"));
+    expect(view.container.textContent ?? "").not.toContain("not placed on a job yet");
+    fireEvent.click(view.getByLabelText("Retry loading your daily report"));
+    expect(onRetryPlacement).toHaveBeenCalledTimes(1);
+    view.rerender(<DailyReportTab linked={true} placement={PLACED} />);
+    await waitFor(() => expect(view.container.textContent ?? "").toContain("Alpha"));
+  });
+
+  it("while the parent fetch is in flight (linked null, no error) the tab shows the loading state", () => {
+    const { container } = render(<DailyReportTab linked={null} placement={null} />);
+    expect(container.textContent ?? "").toContain("Loading your daily report…");
+  });
+
+  it("once landed, a later refresh error never masks the explanatory copy (landed data wins)", async () => {
+    const { container } = render(
+      <DailyReportTab linked={true} placement={null} placementError="refresh failed" />,
+    );
+    await waitFor(() => expect(container.textContent ?? "").toContain("not placed on a job yet"));
+  });
+
+  it("a null-name placement (soft-ref edge) backfills the project name from the job detail", async () => {
+    const onLoaded = vi.fn();
+    const { container } = render(
+      <DailyReportTab linked={true} placement={{ ...PLACED, project_name: null }} onLoaded={onLoaded} />,
+    );
+    await waitFor(() => expect(container.textContent ?? "").toContain("Alpha")); // detail-read fill
+    await waitFor(() =>
+      expect(onLoaded).toHaveBeenCalledWith({ placement: { job_id: "JOB-A", project_name: "Alpha" } }),
+    );
   });
 });
 
 describe("DailyReportTab — form_link deep-links + filed indicators", () => {
   it("a form_link button deep-links via openForm with the tab's job + date (returnTo rides App)", async () => {
     const onOpenForm = vi.fn();
-    const { getByRole } = render(<DailyReportTab linked={true} onOpenForm={onOpenForm} />);
+    const { getByRole } = render(<DailyReportTab linked={true} placement={PLACED} onOpenForm={onOpenForm} />);
     const btn = await waitFor(() => getByRole("button", { name: /Create Job Hazard Analysis/ }));
     fireEvent.click(btn);
     expect(onOpenForm).toHaveBeenCalledWith(
@@ -215,7 +240,7 @@ describe("DailyReportTab — form_link deep-links + filed indicators", () => {
       filed: { jha: { filed_at: 1_700_000_000, filed_by_name: "Sam Submitter" } },
       daily_filed: null,
     });
-    const { container } = render(<DailyReportTab linked={true} onOpenForm={vi.fn()} />);
+    const { container } = render(<DailyReportTab linked={true} placement={PLACED} onOpenForm={vi.fn()} />);
     await waitFor(() => expect(container.textContent ?? "").toContain("Filed ✓"));
     expect(container.textContent ?? "").toContain("by Sam Submitter");
   });
@@ -225,7 +250,7 @@ describe("DailyReportTab — form_link deep-links + filed indicators", () => {
       filed: { jha: { filed_at: 1_700_000_000, filed_by_name: null } },
       daily_filed: null,
     });
-    const { container } = render(<DailyReportTab linked={true} onOpenForm={vi.fn()} />);
+    const { container } = render(<DailyReportTab linked={true} placement={PLACED} onOpenForm={vi.fn()} />);
     await waitFor(() => expect(container.textContent ?? "").toContain("Filed ✓"));
     expect(container.querySelector(".fr__form-link-filed")?.textContent ?? "").not.toContain(" by ");
   });
@@ -234,7 +259,7 @@ describe("DailyReportTab — form_link deep-links + filed indicators", () => {
     vi.mocked(fetchDailyFormStatus)
       .mockRejectedValueOnce(new ApiError(null, 500))
       .mockResolvedValue({ filed: { jha: { filed_at: 1_700_000_000, filed_by_name: null } }, daily_filed: null });
-    const { container, getByLabelText } = render(<DailyReportTab linked={true} onOpenForm={vi.fn()} />);
+    const { container, getByLabelText } = render(<DailyReportTab linked={true} placement={PLACED} onOpenForm={vi.fn()} />);
     // R1 convention: the ApiError's HUMAN copy surfaces (errMsg falls back only on non-Errors);
     // the `what`-scoped Retry disambiguates it from any sibling error.
     await waitFor(() => expect(getByLabelText("Retry checking filed forms")).not.toBeNull());
@@ -245,7 +270,7 @@ describe("DailyReportTab — form_link deep-links + filed indicators", () => {
   });
 
   it("a date change refetches the status for the NEW date", async () => {
-    const { container } = render(<DailyReportTab linked={true} onOpenForm={vi.fn()} />);
+    const { container } = render(<DailyReportTab linked={true} placement={PLACED} onOpenForm={vi.fn()} />);
     await waitFor(() => expect(fetchDailyFormStatus).toHaveBeenCalledWith("JOB-A", TODAY));
     fireEvent.change(dateInput(container), { target: { value: "2026-01-15" } });
     await waitFor(() => expect(fetchDailyFormStatus).toHaveBeenCalledWith("JOB-A", "2026-01-15"));
@@ -257,7 +282,7 @@ describe("DailyReportTab — filed banner + amend + submit", () => {
 
   it("shows the 'Daily report filed ✓' banner when daily_filed is set, with the form still open today", async () => {
     vi.mocked(fetchDailyFormStatus).mockResolvedValue({ filed: { "daily-report": FILED }, daily_filed: FILED });
-    const { container, getByLabelText } = render(<DailyReportTab linked={true} onOpenForm={vi.fn()} />);
+    const { container, getByLabelText } = render(<DailyReportTab linked={true} placement={PLACED} onOpenForm={vi.fn()} />);
     await waitFor(() => expect(container.textContent ?? "").toContain("Daily report filed ✓"));
     expect(container.textContent ?? "").toContain("by Mo Manager");
     // Today: the form renders OPEN below the banner (file-another / amend stays one tap away).
@@ -268,7 +293,7 @@ describe("DailyReportTab — filed banner + amend + submit", () => {
   it("Load & amend seeds the prior values and submits WITH amends_uuid (the existing amend machinery)", async () => {
     vi.mocked(fetchDailyFormStatus).mockResolvedValue({ filed: { "daily-report": FILED }, daily_filed: FILED });
     vi.mocked(api.fetchRecent).mockResolvedValue({ submission_uuid: "prior-1", values: { weather: "Sunny" } });
-    const { container, getByText, getByLabelText } = render(<DailyReportTab linked={true} onOpenForm={vi.fn()} />);
+    const { container, getByText, getByLabelText } = render(<DailyReportTab linked={true} placement={PLACED} onOpenForm={vi.fn()} />);
     const amendBtn = await waitFor(() => getByText("Load & amend it"));
     fireEvent.click(amendBtn);
     expect(inputValues(container)).toContain("Sunny");
@@ -281,7 +306,7 @@ describe("DailyReportTab — filed banner + amend + submit", () => {
   });
 
   it("submit goes through the standard send-free path with the fixed envelope + idempotent id", async () => {
-    const { container, getByLabelText } = render(<DailyReportTab linked={true} onOpenForm={vi.fn()} />);
+    const { container, getByLabelText } = render(<DailyReportTab linked={true} placement={PLACED} onOpenForm={vi.fn()} />);
     await waitFor(() => expect(getByLabelText("Submit daily report")).not.toBeNull());
     fireEvent.click(getByLabelText("Submit daily report"));
     await waitFor(() =>
@@ -306,7 +331,7 @@ describe("DailyReportTab — filed banner + amend + submit", () => {
 
   it("a submit failure shows the inline error and re-enables the button (never silent)", async () => {
     vi.mocked(api.submitForm).mockRejectedValue(new Error("Submission failed. Please try again."));
-    const { container, getByLabelText } = render(<DailyReportTab linked={true} onOpenForm={vi.fn()} />);
+    const { container, getByLabelText } = render(<DailyReportTab linked={true} placement={PLACED} onOpenForm={vi.fn()} />);
     await waitFor(() => expect(getByLabelText("Submit daily report")).not.toBeNull());
     fireEvent.click(getByLabelText("Submit daily report"));
     await waitFor(() => expect(container.textContent ?? "").toContain("Submission failed."));
@@ -316,7 +341,7 @@ describe("DailyReportTab — filed banner + amend + submit", () => {
 
   it("a PAST date with a filing defaults to the filed state first: the form collapses behind a disclosure", async () => {
     vi.mocked(fetchDailyFormStatus).mockResolvedValue({ filed: { "daily-report": FILED }, daily_filed: FILED });
-    const { container } = render(<DailyReportTab linked={true} onOpenForm={vi.fn()} />);
+    const { container } = render(<DailyReportTab linked={true} placement={PLACED} onOpenForm={vi.fn()} />);
     await waitFor(() => expect(container.textContent ?? "").toContain("Daily report filed ✓"));
     fireEvent.change(dateInput(container), { target: { value: "2026-01-15" } });
     await waitFor(() => expect(container.querySelector("details")).not.toBeNull());
@@ -331,24 +356,24 @@ describe("DailyReportTab — draft persistence (the deep-link data-loss BLOCK fi
   beforeEach(() => sessionStorage.clear());
 
   it("typed values survive an unmount/remount (a form_link navigation can no longer destroy the day's work)", async () => {
-    const first = render(<DailyReportTab linked={true} onOpenForm={vi.fn()} />);
+    const first = render(<DailyReportTab linked={true} placement={PLACED} onOpenForm={vi.fn()} />);
     await waitFor(() => expect(first.container.textContent ?? "").toContain("SITE SUPERVISOR"));
     fireEvent.change(first.getByLabelText("Weather"), { target: { value: "Sunny, light wind" } });
     first.unmount(); // = the App page-node swap when a form_link deep-link fires
-    const second = render(<DailyReportTab linked={true} onOpenForm={vi.fn()} />);
+    const second = render(<DailyReportTab linked={true} placement={PLACED} onOpenForm={vi.fn()} />);
     await waitFor(() => {
       expect((second.getByLabelText("Weather") as HTMLInputElement).value).toBe("Sunny, light wind"); // the draft WON over the prefill
     });
   });
 
   it("a successful submit clears the draft — the next mount starts fresh", async () => {
-    const first = render(<DailyReportTab linked={true} onOpenForm={vi.fn()} />);
+    const first = render(<DailyReportTab linked={true} placement={PLACED} onOpenForm={vi.fn()} />);
     await waitFor(() => expect(first.container.textContent ?? "").toContain("SITE SUPERVISOR"));
     fireEvent.change(first.getByLabelText("Weather"), { target: { value: "Overcast" } });
     fireEvent.click(first.getByLabelText("Submit daily report"));
     await waitFor(() => expect(api.submitForm).toHaveBeenCalled());
     first.unmount();
-    const second = render(<DailyReportTab linked={true} onOpenForm={vi.fn()} />);
+    const second = render(<DailyReportTab linked={true} placement={PLACED} onOpenForm={vi.fn()} />);
     await waitFor(() => expect(second.container.textContent ?? "").toContain("SITE SUPERVISOR"));
     expect((second.getByLabelText("Weather") as HTMLInputElement).value).toBe(""); // draft cleared on filing
   });
@@ -361,7 +386,7 @@ describe("DailyReportTab — draft persistence (the deep-link data-loss BLOCK fi
     // Observed through sessionStorage CONTENT + the fake-timer queue (a Storage.prototype spy is
     // not reliably reached from inside the fake-timer tick in this jsdom setup — counts would lie).
     const KEY = `its-daily-draft:JOB-A:${TODAY}`;
-    const view = render(<DailyReportTab linked={true} onOpenForm={vi.fn()} />);
+    const view = render(<DailyReportTab linked={true} placement={PLACED} onOpenForm={vi.fn()} />);
     await waitFor(() => expect(view.container.textContent ?? "").toContain("SITE SUPERVISOR"));
     vi.useFakeTimers();
     try {
@@ -383,7 +408,7 @@ describe("DailyReportTab — draft persistence (the deep-link data-loss BLOCK fi
   });
 
   it("photo-typed keys are STRIPPED from the persisted draft (the base64 quota fix): text survives, photos re-seed empty", async () => {
-    const first = render(<DailyReportTab linked={true} onOpenForm={vi.fn()} />);
+    const first = render(<DailyReportTab linked={true} placement={PLACED} onOpenForm={vi.fn()} />);
     await waitFor(() => expect(first.container.textContent ?? "").toContain("SITE SUPERVISOR"));
     fireEvent.change(first.getByLabelText("Weather"), { target: { value: "Hazy" } });
     first.unmount(); // the unmount flush writes the draft
@@ -395,14 +420,14 @@ describe("DailyReportTab — draft persistence (the deep-link data-loss BLOCK fi
     // The v5 site_photos header key is IN values (seeded []) but NEVER in the persisted draft —
     // the documented honest regression: attached-but-unsubmitted photos don't survive a restore.
     expect("site_photos" in draft).toBe(false);
-    const second = render(<DailyReportTab linked={true} onOpenForm={vi.fn()} />);
+    const second = render(<DailyReportTab linked={true} placement={PLACED} onOpenForm={vi.fn()} />);
     await waitFor(() => expect((second.getByLabelText("Weather") as HTMLInputElement).value).toBe("Hazy"));
     expect(second.container.querySelector(".photo-field")).not.toBeNull(); // photo section intact, just empty
   });
 
   it("pagehide flushes the pending draft (R3-F9: mobile-Safari tab-kill never runs the unmount cleanup), and a second fire is a guarded no-op", async () => {
     const KEY = `its-daily-draft:JOB-A:${TODAY}`;
-    const view = render(<DailyReportTab linked={true} onOpenForm={vi.fn()} />);
+    const view = render(<DailyReportTab linked={true} placement={PLACED} onOpenForm={vi.fn()} />);
     await waitFor(() => expect(view.container.textContent ?? "").toContain("SITE SUPERVISOR"));
     fireEvent.change(view.getByLabelText("Weather"), { target: { value: "Drizzle" } });
     expect(sessionStorage.getItem(KEY)).toBeNull(); // still inside the debounce window — nothing persisted yet
@@ -426,7 +451,7 @@ describe("DailyReportTab — draft persistence (the deep-link data-loss BLOCK fi
       throw new DOMException("quota exceeded", "QuotaExceededError");
     });
     try {
-      const view = render(<DailyReportTab linked={true} onOpenForm={vi.fn()} />);
+      const view = render(<DailyReportTab linked={true} placement={PLACED} onOpenForm={vi.fn()} />);
       await waitFor(() => expect(view.container.textContent ?? "").toContain("SITE SUPERVISOR"));
       fireEvent.change(view.getByLabelText("Weather"), { target: { value: "Stormy" } });
       expect(() => view.unmount()).not.toThrow(); // the unmount flush hits the throwing write
@@ -440,13 +465,13 @@ describe("DailyReportTab — draft persistence (the deep-link data-loss BLOCK fi
     // Belt-and-braces: no draft may survive into the second mount regardless of scheduling.
     sessionStorage.clear();
     // Worst case = pre-fix behavior (no draft), never a crash.
-    const second = render(<DailyReportTab linked={true} onOpenForm={vi.fn()} />);
+    const second = render(<DailyReportTab linked={true} placement={PLACED} onOpenForm={vi.fn()} />);
     await waitFor(() => expect(second.container.textContent ?? "").toContain("SITE SUPERVISOR"));
     expect((second.getByLabelText("Weather") as HTMLInputElement).value).toBe("");
   });
 
   it("drafts are per-date: switching the date swaps to that date's draft (or the seed), and back", async () => {
-    const view = render(<DailyReportTab linked={true} onOpenForm={vi.fn()} />);
+    const view = render(<DailyReportTab linked={true} placement={PLACED} onOpenForm={vi.fn()} />);
     const { container } = view;
     await waitFor(() => expect(container.textContent ?? "").toContain("SITE SUPERVISOR"));
     const weather = () => view.getByLabelText("Weather") as HTMLInputElement;
@@ -469,7 +494,7 @@ describe("DailyReportTab — per-job requirements (slice D4)", () => {
 
   it("fetches the job's items and renders them inside the form's Job-specific requirements section", async () => {
     vi.mocked(fetchDailyRequirements).mockResolvedValue(REQS);
-    const { container, getByLabelText } = render(<DailyReportTab linked={true} onOpenForm={vi.fn()} />);
+    const { container, getByLabelText } = render(<DailyReportTab linked={true} placement={PLACED} onOpenForm={vi.fn()} />);
     await waitFor(() => expect(container.textContent ?? "").toContain("Job-specific requirements"));
     expect(fetchDailyRequirements).toHaveBeenCalledWith("JOB-A");
     expect(container.textContent ?? "").toContain("Client requires FR clothing");
@@ -477,7 +502,7 @@ describe("DailyReportTab — per-job requirements (slice D4)", () => {
   });
 
   it("zero items → the section renders nothing (the base form is unaffected)", async () => {
-    const { container } = render(<DailyReportTab linked={true} onOpenForm={vi.fn()} />);
+    const { container } = render(<DailyReportTab linked={true} placement={PLACED} onOpenForm={vi.fn()} />);
     await waitFor(() => expect(container.textContent ?? "").toContain("SITE SUPERVISOR"));
     expect(container.textContent ?? "").not.toContain("Job-specific requirements");
   });
@@ -486,7 +511,7 @@ describe("DailyReportTab — per-job requirements (slice D4)", () => {
     vi.mocked(fetchDailyRequirements)
       .mockRejectedValueOnce(new ApiError(null, 500))
       .mockResolvedValue(REQS);
-    const { container, getByLabelText } = render(<DailyReportTab linked={true} onOpenForm={vi.fn()} />);
+    const { container, getByLabelText } = render(<DailyReportTab linked={true} placement={PLACED} onOpenForm={vi.fn()} />);
     // R1 convention: the ApiError's HUMAN copy surfaces (errMsg falls back only on non-Errors);
     // the `what`-scoped Retry disambiguates it from any sibling error.
     await waitFor(() => expect(getByLabelText("Retry loading job-specific requirements")).not.toBeNull());
@@ -498,7 +523,7 @@ describe("DailyReportTab — per-job requirements (slice D4)", () => {
 
   it("a zero-interaction submit STILL files the seeded self-describing array (what was displayed)", async () => {
     vi.mocked(fetchDailyRequirements).mockResolvedValue(REQS);
-    const { container, getByLabelText } = render(<DailyReportTab linked={true} onOpenForm={vi.fn()} />);
+    const { container, getByLabelText } = render(<DailyReportTab linked={true} placement={PLACED} onOpenForm={vi.fn()} />);
     await waitFor(() => expect(container.textContent ?? "").toContain("Job-specific requirements"));
     fireEvent.click(getByLabelText("Submit daily report"));
     await waitFor(() => expect(api.submitForm).toHaveBeenCalled());
@@ -510,12 +535,12 @@ describe("DailyReportTab — per-job requirements (slice D4)", () => {
 
   it("answers file with the submission and the draft machinery covers them across an unmount", async () => {
     vi.mocked(fetchDailyRequirements).mockResolvedValue(REQS);
-    const first = render(<DailyReportTab linked={true} onOpenForm={vi.fn()} />);
+    const first = render(<DailyReportTab linked={true} placement={PLACED} onOpenForm={vi.fn()} />);
     await waitFor(() => expect(first.container.textContent ?? "").toContain("Job-specific requirements"));
     fireEvent.click(first.getByLabelText("Badge in at the client gate"));
     fireEvent.change(first.getByLabelText("Client rep spoken to today"), { target: { value: "Ana R." } });
     first.unmount(); // = a form_link deep-link navigation
-    const second = render(<DailyReportTab linked={true} onOpenForm={vi.fn()} />);
+    const second = render(<DailyReportTab linked={true} placement={PLACED} onOpenForm={vi.fn()} />);
     await waitFor(() =>
       expect((second.getByLabelText("Client rep spoken to today") as HTMLInputElement).value).toBe("Ana R."),
     );
@@ -544,7 +569,7 @@ describe("DailyReportTab — expected-materials receipt flow (Material receipts 
 
   it("fetches the job's expected materials and renders the pending row inside the form", async () => {
     vi.mocked(fetchExpectedMaterials).mockResolvedValue({ expected_materials: [PENDING] });
-    const { container, getByLabelText } = render(<DailyReportTab linked={true} onOpenForm={vi.fn()} />);
+    const { container, getByLabelText } = render(<DailyReportTab linked={true} placement={PLACED} onOpenForm={vi.fn()} />);
     await waitFor(() => expect(container.textContent ?? "").toContain("Q.PEAK DUO"));
     expect(fetchExpectedMaterials).toHaveBeenCalledWith("JOB-A");
     expect(container.textContent ?? "").toContain("Expected materials");
@@ -554,7 +579,7 @@ describe("DailyReportTab — expected-materials receipt flow (Material receipts 
 
   it("Confirm receipt fires the M1 receive route, flips the pill, and APPENDS a Deliveries Received row", async () => {
     vi.mocked(fetchExpectedMaterials).mockResolvedValue({ expected_materials: [PENDING] });
-    const { container, getByLabelText } = render(<DailyReportTab linked={true} onOpenForm={vi.fn()} />);
+    const { container, getByLabelText } = render(<DailyReportTab linked={true} placement={PLACED} onOpenForm={vi.fn()} />);
     await waitFor(() => expect(container.textContent ?? "").toContain("Q.PEAK DUO"));
     fireEvent.click(getByLabelText("Confirm receipt of Q.PEAK DUO"));
     await waitFor(() => expect(receiveExpectedMaterial).toHaveBeenCalledWith(11));
@@ -582,12 +607,12 @@ describe("DailyReportTab — expected-materials receipt flow (Material receipts 
 
   it("the Confirm-receipt append is draft-persisted (survives an unmount like typed work)", async () => {
     vi.mocked(fetchExpectedMaterials).mockResolvedValue({ expected_materials: [PENDING] });
-    const first = render(<DailyReportTab linked={true} onOpenForm={vi.fn()} />);
+    const first = render(<DailyReportTab linked={true} placement={PLACED} onOpenForm={vi.fn()} />);
     await waitFor(() => expect(first.container.textContent ?? "").toContain("Q.PEAK DUO"));
     fireEvent.click(first.getByLabelText("Confirm receipt of Q.PEAK DUO"));
     await waitFor(() => expect(inputValues(first.container)).toContain("Received OK"));
     first.unmount(); // = the material-incident deep-link page-node swap
-    const second = render(<DailyReportTab linked={true} onOpenForm={vi.fn()} />);
+    const second = render(<DailyReportTab linked={true} placement={PLACED} onOpenForm={vi.fn()} />);
     await waitFor(() => expect(inputValues(second.container)).toContain("Received OK"));
     expect(inputValues(second.container)).toContain("Q.PEAK DUO");
   });
@@ -596,7 +621,7 @@ describe("DailyReportTab — expected-materials receipt flow (Material receipts 
     vi.mocked(fetchExpectedMaterials).mockResolvedValue({ expected_materials: [PENDING] });
     const promptSpy = vi.spyOn(window, "prompt").mockReturnValue("Crushed corner on 3 pallets");
     const onOpenForm = vi.fn();
-    const { container, getByLabelText } = render(<DailyReportTab linked={true} onOpenForm={onOpenForm} />);
+    const { container, getByLabelText } = render(<DailyReportTab linked={true} placement={PLACED} onOpenForm={onOpenForm} />);
     await waitFor(() => expect(container.textContent ?? "").toContain("Q.PEAK DUO"));
     fireEvent.click(getByLabelText("Report a problem with Q.PEAK DUO"));
     await waitFor(() =>
@@ -622,7 +647,7 @@ describe("DailyReportTab — expected-materials receipt flow (Material receipts 
     vi.mocked(fetchExpectedMaterials).mockResolvedValue({ expected_materials: [PENDING] });
     const promptSpy = vi.spyOn(window, "prompt").mockReturnValue(null);
     const onOpenForm = vi.fn();
-    const { container, getByLabelText } = render(<DailyReportTab linked={true} onOpenForm={onOpenForm} />);
+    const { container, getByLabelText } = render(<DailyReportTab linked={true} placement={PLACED} onOpenForm={onOpenForm} />);
     await waitFor(() => expect(container.textContent ?? "").toContain("Q.PEAK DUO"));
     fireEvent.click(getByLabelText("Report a problem with Q.PEAK DUO"));
     expect(flagExpectedMaterialIncident).not.toHaveBeenCalled();
@@ -639,7 +664,7 @@ describe("DailyReportTab — expected-materials receipt flow (Material receipts 
   it("a failed receive surfaces the action error inline and does NOT flip or append (never silent)", async () => {
     vi.mocked(fetchExpectedMaterials).mockResolvedValue({ expected_materials: [PENDING] });
     vi.mocked(receiveExpectedMaterial).mockRejectedValue(new Error("Already received by someone else."));
-    const { container, getByLabelText } = render(<DailyReportTab linked={true} onOpenForm={vi.fn()} />);
+    const { container, getByLabelText } = render(<DailyReportTab linked={true} placement={PLACED} onOpenForm={vi.fn()} />);
     await waitFor(() => expect(container.textContent ?? "").toContain("Q.PEAK DUO"));
     fireEvent.click(getByLabelText("Confirm receipt of Q.PEAK DUO"));
     await waitFor(() =>
@@ -653,7 +678,7 @@ describe("DailyReportTab — expected-materials receipt flow (Material receipts 
     vi.mocked(fetchExpectedMaterials)
       .mockRejectedValueOnce(new ApiError(null, 500))
       .mockResolvedValue({ expected_materials: [PENDING] });
-    const { container, getByLabelText } = render(<DailyReportTab linked={true} onOpenForm={vi.fn()} />);
+    const { container, getByLabelText } = render(<DailyReportTab linked={true} placement={PLACED} onOpenForm={vi.fn()} />);
     // R1 convention: the ApiError's HUMAN copy surfaces; the `what`-scoped Retry disambiguates
     // it from any sibling (status / requirements) warn.
     await waitFor(() => expect(getByLabelText("Retry loading expected materials")).not.toBeNull());
@@ -665,7 +690,7 @@ describe("DailyReportTab — expected-materials receipt flow (Material receipts 
   });
 
   it("zero expected materials → the explicit empty copy inside the section", async () => {
-    const { container } = render(<DailyReportTab linked={true} onOpenForm={vi.fn()} />);
+    const { container } = render(<DailyReportTab linked={true} placement={PLACED} onOpenForm={vi.fn()} />);
     await waitFor(() => expect(container.textContent ?? "").toContain("SITE SUPERVISOR"));
     await waitFor(() =>
       expect(container.textContent ?? "").toContain("No expected materials for this job."),

@@ -566,7 +566,35 @@ function validatePhotoValues(values: Record<string, unknown>): string | null {
   return null;
 }
 
-app.post("/api/submit", requireSession, async (c) => {
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+// CS4 Slice 4 Part B — vestigial-cap ENFORCEMENT (cap.form.submit / cap.form.request).
+//
+// Both capabilities were seeded in migration 0013 and granted to every role, but no route ever
+// called requireCapability on them (grep-verified zero enforcement hits) — the grants were
+// display-only while the routes gated on bare requireSession. Enforced here at the natural
+// surfaces: POST /api/submit → cap.form.submit; the six form-request/download routes
+// (/api/submissions/:uuid/{request-pdf,status,pdf}, /api/filed, /api/filed/months,
+// /api/request-pdfs — 0013's "Browse + request + download a job's filed forms") →
+// cap.form.request.
+//
+// LOCKOUT ANALYSIS (proved from the migrations before enforcing; the role vocabulary is CLOSED —
+// roles are migration-seeded only, no roles-CRUD route exists, parseRole/coerceRole accept only
+// the three keys, and users.role is FK-bound to the seeded rows):
+//   • cap.form.submit  — submitter (0013 explicit grant) + admin (0013 `SELECT key FROM
+//     capabilities` catch-all) + manager (0023 explicit grant). ALL THREE roles hold it.
+//   • cap.form.request — the same three grant sources. ALL THREE roles hold it.
+// So no existing role loses any current ability: every session that could reach these routes
+// yesterday passes the new gate today. What the gate buys: a future scoped role (or a live
+// role_capabilities edit) can actually withhold form access, and the FAIL-CLOSED
+// resolveCapabilities posture (unknown role / D1 blip → empty set → 403) now covers the portal's
+// core submit/request surfaces, not only the field-ops ones.
+// (cap.inspection.job — 0013 "File job-level inspections (trenching/QC/etc.)" — is deliberately
+// NOT enforced: no dedicated surface exists. Nothing writes the `inspections` table today, and
+// job-level inspection FORMS ride this same /api/submit path under cap.form.submit. Enforcement
+// waits for the surface to exist rather than inventing one.)
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+
+app.post("/api/submit", requireSession, requireCapability("cap.form.submit"), async (c) => {
   let body: Record<string, unknown>;
   try {
     body = await c.req.json();
@@ -736,7 +764,7 @@ function b64ToBytes(b64: string): Uint8Array {
  * real flip. Returns whether the cache is already ready. A rejected (box_verified=-1)
  * row is treated as not-found (404) — there is no PDF to serve.
  */
-app.post("/api/submissions/:uuid/request-pdf", requireSession, async (c) => {
+app.post("/api/submissions/:uuid/request-pdf", requireSession, requireCapability("cap.form.request"), async (c) => {
   const uuid = c.req.param("uuid");
   if (!uuid || uuid.length > 64) return c.json({ error: "not_found" }, 404);
   const row = await c.env.DB
@@ -777,7 +805,7 @@ app.post("/api/submissions/:uuid/request-pdf", requireSession, async (c) => {
  * GET /api/submissions/:uuid/status — the SPA's 5s poll. Reports whether the user has
  * requested caching, whether the cache is ready to download, and when it expires.
  */
-app.get("/api/submissions/:uuid/status", requireSession, async (c) => {
+app.get("/api/submissions/:uuid/status", requireSession, requireCapability("cap.form.request"), async (c) => {
   const uuid = c.req.param("uuid");
   if (!uuid || uuid.length > 64) return c.json({ error: "not_found" }, 404);
   const row = await c.env.DB
@@ -816,7 +844,7 @@ app.get("/api/submissions/:uuid/status", requireSession, async (c) => {
  * ASSETS.fetch() response (the immutable-headers gotcha); the outer middleware re-wraps
  * it, preserving Content-Type/Content-Disposition and adding Cache-Control:no-store.
  */
-app.get("/api/submissions/:uuid/pdf", requireSession, async (c) => {
+app.get("/api/submissions/:uuid/pdf", requireSession, requireCapability("cap.form.request"), async (c) => {
   const uuid = c.req.param("uuid");
   if (!uuid || uuid.length > 64) return c.json({ error: "not_found" }, 404);
   const row = await c.env.DB
@@ -875,7 +903,7 @@ app.get("/api/submissions/:uuid/pdf", requireSession, async (c) => {
  * per-row request/ready state. requireSession. 404 unless the job is active (browse is
  * scoped to active jobs). Metadata only — no payloads, no PDFs.
  */
-app.get("/api/filed", requireSession, async (c) => {
+app.get("/api/filed", requireSession, requireCapability("cap.form.request"), async (c) => {
   const job_id = c.req.query("job_id") ?? "";
   if (!job_id || job_id.length > 64) return c.json({ error: "not_found" }, 404);
   // PR-6 optional cascade filters. Empty-string ("?month=") is treated as ABSENT (no filter,
@@ -936,7 +964,7 @@ app.get("/api/filed", requireSession, async (c) => {
  * + {error:"not_found"} shape as /api/filed — no enumeration). Job-scoped aggregates only; no
  * per-account state leaks (unlike /api/filed's per-row request/ready flags).
  */
-app.get("/api/filed/months", requireSession, async (c) => {
+app.get("/api/filed/months", requireSession, requireCapability("cap.form.request"), async (c) => {
   const job_id = c.req.query("job_id") ?? "";
   if (!job_id || job_id.length > 64) return c.json({ error: "not_found" }, 404);
   const active = await c.env.DB
@@ -969,7 +997,7 @@ app.get("/api/filed/months", requireSession, async (c) => {
  * request any active-job filed form (mirrors the submit model); the download is then bound
  * to THIS requester. ONE audit row per batch. Returns { requested: <count upserted> }.
  */
-app.post("/api/request-pdfs", requireSession, async (c) => {
+app.post("/api/request-pdfs", requireSession, requireCapability("cap.form.request"), async (c) => {
   let body: Record<string, unknown>;
   try {
     body = await c.req.json();

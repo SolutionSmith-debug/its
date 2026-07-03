@@ -403,9 +403,15 @@ export function FieldOpsMyTasks({
 
       <div role="tabpanel" aria-label="Daily report" hidden={tab !== "daily"}>
         {/* D2 (SOP daily form) — the placed manager's daily SOP form rendered inline; the R2
-            reason-coded explanatory empty states carry over for everyone else. */}
+            reason-coded explanatory empty states carry over for everyone else. CS4 #12: the
+            placement rides THIS page's /tasks/mine response (viewer_placement) — the tab no
+            longer fetches a Job Tracker list page of its own; its error+Retry surface reuses
+            this page's load(). */}
         <DailyReportTab
           linked={resp?.linked ?? null}
+          placement={resp?.viewer_placement ?? null}
+          placementError={error}
+          onRetryPlacement={() => void load()}
           onOpenForm={onOpenForm}
           refreshToken={refreshToken}
           onLoaded={setDailyInfo}

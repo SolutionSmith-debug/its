@@ -21,8 +21,9 @@ vi.mock("../../lib/fieldops_checklist", async (importOriginal) => {
   return { ...actual, completeChecklistItem: vi.fn(), uncompleteChecklistItem: vi.fn(), recordCountItem: vi.fn(), fetchAssignedInspections: vi.fn() };
 });
 vi.mock("../../lib/fieldops_personnel", () => ({ createCrew: vi.fn(), fetchMyCrew: vi.fn() }));
-// D2: the Daily tab (DailyReportTab) resolves placement via the Job Tracker viewer data, reads the
-// daily-form status endpoint, and submits through the standard api path — mock all three libs.
+// D2/CS4: the Daily tab (DailyReportTab) takes its placement from THIS page's /tasks/mine response
+// (viewer_placement — no jobs-list fetch of its own), reads the daily-form status endpoint, fetches
+// the job detail for the best-effort prefill, and submits through the standard api path.
 vi.mock("../../lib/fieldops_jobtracker", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../lib/fieldops_jobtracker")>();
   return { ...actual, fetchJobList: vi.fn(), fetchJobDetail: vi.fn() };
@@ -67,8 +68,8 @@ beforeEach(() => {
   vi.mocked(checklist.fetchAssignedInspections).mockResolvedValue({ inspections: [], linked: true });
   // Default: empty crew list (AddCrewSection's auxiliary fetch).
   vi.mocked(personnel.fetchMyCrew).mockResolvedValue([]);
-  // D2 Daily-tab defaults: an unplaced viewer + an empty filed map (placed tests override).
-  vi.mocked(jobtracker.fetchJobList).mockResolvedValue({ jobs: [], next_cursor: null, viewer_current_job: null });
+  // D2 Daily-tab defaults: an empty filed map + a minimal detail (placed tests supply the
+  // placement through the /tasks/mine fixture — CS4 #12).
   vi.mocked(jobtracker.fetchJobDetail).mockResolvedValue(JOB_DETAIL);
   vi.mocked(fetchDailyFormStatus).mockResolvedValue({ filed: {}, daily_filed: null });
   vi.mocked(portalApi.fetchRecent).mockResolvedValue(null);
@@ -76,22 +77,18 @@ beforeEach(() => {
 
 const TODAY = pacificToday();
 
-// D2 Daily-tab fixtures: a manager PLACED on JOB-A (the Job Tracker viewer data source) + a
-// minimal detail for the best-effort prefill leg.
-const PLACED_LIST: jobtracker.JobListResponse = {
-  jobs: [{ job_id: "JOB-A", project_name: "Alpha", status: "active", progress: 0, client_name: null, crew: [], open_tasks: [] }],
-  next_cursor: null,
-  viewer_current_job: "JOB-A",
-};
+// D2/CS4 Daily-tab fixtures: the placement rides the /tasks/mine response (viewer_placement) +
+// a minimal job detail for the best-effort prefill leg.
+const PLACED_VIEWER: api.ViewerTaskPlacement = { job_id: "JOB-A", project_name: "Alpha", personnel_id: 1, name: "Mo Manager" };
 const JOB_DETAIL: jobtracker.JobDetailResponse = {
   job: { job_id: "JOB-A", project_name: "Alpha", status: "active", progress: 0, client: null, crew: [], tasks: [], time_entries: [], equipment_on_site: [], inspections: [] },
   cursors: { tasks: null, time: null, insp: null },
   viewer_personnel: { id: 1, name: "Mo Manager" },
 };
-// A PLACED MANAGER session (extra caps as the test needs them).
+// A PLACED MANAGER session (extra caps as the test needs them). The placement itself rides the
+// tasksOk fixture: pass PLACED_VIEWER as its second argument.
 function placedManager(caps: string[] = ["cap.tasks.own", "cap.jobtracker.read"]) {
   vi.mocked(useAuth).mockReturnValue(authWith(caps, "manager"));
-  vi.mocked(jobtracker.fetchJobList).mockResolvedValue(PLACED_LIST);
 }
 
 const TASKS: api.MyTask[] = [
@@ -100,8 +97,8 @@ const TASKS: api.MyTask[] = [
   { id: 3, job_id: "JOB-B", project_name: "Bravo", description: "Frame wall", status: "open", created_at: 80, assigned_by: null },
 ];
 
-function tasksOk(tasks: api.MyTask[] = TASKS) {
-  vi.mocked(api.fetchMyTasks).mockResolvedValue({ tasks, linked: true });
+function tasksOk(tasks: api.MyTask[] = TASKS, viewer: api.ViewerTaskPlacement | null = null) {
+  vi.mocked(api.fetchMyTasks).mockResolvedValue({ tasks, linked: true, viewer_placement: viewer });
 }
 
 describe("FieldOpsMyTasks — tabs", () => {
@@ -128,7 +125,7 @@ describe("FieldOpsMyTasks — tabs", () => {
 
   it("auto-switches to Daily report when the actor is a PLACED MANAGER with no open tasks (D2)", async () => {
     placedManager();
-    tasksOk([]); // no open one-off tasks
+    tasksOk([], PLACED_VIEWER); // no open one-off tasks, placed
     const { getByRole } = render(<FieldOpsMyTasks onBack={() => {}} />);
     await waitFor(() => expect(getByRole("tab", { name: "Daily report" }).getAttribute("aria-selected")).toBe("true"));
     expect(getByRole("tabpanel", { name: "Daily report" })).not.toBeNull();
@@ -136,7 +133,7 @@ describe("FieldOpsMyTasks — tabs", () => {
 
   it("does NOT auto-switch while open tasks exist", async () => {
     placedManager();
-    tasksOk(); // has open tasks
+    tasksOk(TASKS, PLACED_VIEWER); // has open tasks, placed
     const { getByRole, container } = render(<FieldOpsMyTasks onBack={() => {}} />);
     await waitFor(() => expect(container.textContent ?? "").toContain("Dig footings"));
     expect(getByRole("tab", { name: "Assigned tasks" }).getAttribute("aria-selected")).toBe("true");
@@ -244,7 +241,7 @@ describe("FieldOpsMyTasks — tasks list (Assigned tasks tab)", () => {
   });
 
   it("linked:false explains the roster-link gap instead of a bare 'no tasks'", async () => {
-    vi.mocked(api.fetchMyTasks).mockResolvedValue({ tasks: [], linked: false });
+    vi.mocked(api.fetchMyTasks).mockResolvedValue({ tasks: [], linked: false, viewer_placement: null });
     const { getByRole } = render(<FieldOpsMyTasks onBack={() => {}} />);
     const panel = await waitFor(() => getByRole("tabpanel", { name: "Assigned tasks" }));
     await waitFor(() => expect(panel.textContent ?? "").toContain("isn't linked to a roster person"));
@@ -262,7 +259,7 @@ describe("FieldOpsMyTasks — tasks list (Assigned tasks tab)", () => {
   it("a tasks fetch failure shows the human error + a working Retry (never a false empty)", async () => {
     vi.mocked(api.fetchMyTasks)
       .mockRejectedValueOnce(new ApiError(null, 500))
-      .mockResolvedValueOnce({ tasks: TASKS, linked: true });
+      .mockResolvedValueOnce({ tasks: TASKS, linked: true, viewer_placement: null });
     const { getByRole, getByLabelText } = render(<FieldOpsMyTasks onBack={() => {}} />);
     const panel = await waitFor(() => getByRole("tabpanel", { name: "Assigned tasks" }));
     await waitFor(() => expect(panel.textContent ?? "").toContain("Something went wrong on the server"));
@@ -277,16 +274,21 @@ describe("FieldOpsMyTasks — tasks list (Assigned tasks tab)", () => {
 describe("FieldOpsMyTasks — Refresh + wake refetch", () => {
   it("the header Refresh control refetches the tasks AND every section (incl. the Daily tab)", async () => {
     placedManager();
-    tasksOk();
+    tasksOk(TASKS, PLACED_VIEWER);
     const { getByLabelText, container } = render(<FieldOpsMyTasks onBack={() => {}} />);
     await waitFor(() => expect(container.textContent ?? "").toContain("Dig footings"));
+    // CS4 #12: fetchMyTasks IS the placement fetch now; the Daily tab's own reads (detail prefill
+    // + filed status) ride the refreshToken. fetchJobList never fires from this page.
     expect(api.fetchMyTasks).toHaveBeenCalledTimes(1);
-    await waitFor(() => expect(jobtracker.fetchJobList).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(jobtracker.fetchJobDetail).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(fetchDailyFormStatus).toHaveBeenCalledTimes(1));
     expect(checklist.fetchAssignedInspections).toHaveBeenCalledTimes(1);
     fireEvent.click(getByLabelText("Refresh"));
     await waitFor(() => expect(api.fetchMyTasks).toHaveBeenCalledTimes(2));
-    await waitFor(() => expect(jobtracker.fetchJobList).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(jobtracker.fetchJobDetail).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(fetchDailyFormStatus).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(checklist.fetchAssignedInspections).toHaveBeenCalledTimes(2));
+    expect(jobtracker.fetchJobList).not.toHaveBeenCalled();
   });
 
   it("refetches when the window regains focus (overnight-tab recovery)", async () => {
@@ -305,7 +307,7 @@ describe("FieldOpsMyTasks — D2 Daily report tab (page integration)", () => {
 
   it("renders the inline SOP form (date selector + v2 definition) for a placed manager", async () => {
     placedManager();
-    tasksOk([]);
+    tasksOk([], PLACED_VIEWER);
     const { getByRole, getByLabelText } = render(<FieldOpsMyTasks onBack={() => {}} onOpenForm={vi.fn()} />);
     const panel = await waitFor(() => getByRole("tabpanel", { name: "Daily report" })); // auto-switched
     await waitFor(() => expect(panel.textContent ?? "").toContain("SITE SUPERVISOR"));
@@ -336,7 +338,7 @@ describe("FieldOpsMyTasks — D2 Daily report tab (page integration)", () => {
     await waitFor(() => expect(a.container.textContent ?? "").toContain("not placed on a job yet"));
     a.unmount();
     // Unlinked (linked:false) → the one roster-link explanation, not the placement copy.
-    vi.mocked(api.fetchMyTasks).mockResolvedValue({ tasks: [], linked: false });
+    vi.mocked(api.fetchMyTasks).mockResolvedValue({ tasks: [], linked: false, viewer_placement: null });
     const b = render(<FieldOpsMyTasks onBack={() => {}} />);
     fireEvent.click(await waitFor(() => b.getByRole("tab", { name: "Daily report" })));
     await waitFor(() => expect(b.getByRole("tabpanel", { name: "Daily report" }).textContent ?? "").toContain("isn't linked to a roster person"));
@@ -344,7 +346,7 @@ describe("FieldOpsMyTasks — D2 Daily report tab (page integration)", () => {
 
   it("a form_link deep-links through the page's onOpenForm with the placement job + selected date", async () => {
     placedManager();
-    tasksOk([]);
+    tasksOk([], PLACED_VIEWER);
     const onOpenForm = vi.fn();
     const { getByRole } = render(<FieldOpsMyTasks onBack={() => {}} onOpenForm={onOpenForm} />);
     const btn = await waitFor(() => getByRole("button", { name: /Create Job Hazard Analysis/ }));
@@ -474,7 +476,7 @@ describe("HomePage — My Tasks card gate", () => {
 describe("FieldOpsMyTasks — R7 Log time quick action + job links", () => {
   it("with cap.time.log + onOpenJob, 'Log time' deep-links to the placed manager's job", async () => {
     placedManager(["cap.tasks.own", "cap.jobtracker.read", "cap.time.log"]);
-    tasksOk();
+    tasksOk(TASKS, PLACED_VIEWER);
     const onOpenJob = vi.fn();
     const { getByLabelText, container } = render(<FieldOpsMyTasks onBack={() => {}} onOpenJob={onOpenJob} />);
     await waitFor(() => expect(getByLabelText("Log time in the Job Tracker")).not.toBeNull());

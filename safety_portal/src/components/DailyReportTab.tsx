@@ -49,11 +49,14 @@ import {
 // the tab has a FIXED envelope (job from the actor's placement, date from the selector below) and
 // stays in place after filing, so it carries its own thin state machine instead.
 //
-// Placement: the actor's job comes from the Job Tracker viewer data (fetchJobList's
-// viewer_current_job — the manager holds cap.jobtracker.read), NOT /checklist/mine (retired for
-// daily; the checklist engine still serves assigned inspections). The R1/R2 empty-state reasons are
-// re-derived: role ≠ manager (session) → not-a-manager copy; parent-reported linked:false
-// (/tasks/mine) → the roster-link copy; placed nowhere → the not-placed copy.
+// Placement (CS4 #12 waterfall collapse): the actor's job arrives as a PROP — the parent's ONE
+// /tasks/mine read now carries viewer_placement (the caller's own placement, resolved server-side),
+// so the tab no longer downloads a full Job Tracker list page (the old fetchJobList("active") →
+// viewer_current_job stage 1). fetchJobList stays the Job Tracker page's own source. The R1/R2
+// empty-state reasons are re-derived: role ≠ manager (session) → not-a-manager copy;
+// parent-reported linked:false (/tasks/mine) → the roster-link copy; placed nowhere → the
+// not-placed copy. The parent fetch's loading/error ride down too (linked === null = in flight;
+// placementError + onRetryPlacement = the never-silent error + Retry surface).
 //
 // Prefill (best-effort, NEVER a blocker): the job detail (cap.jobtracker.read) seeds
 // crew_progress rows from the placed crew, equipment_on_site rows from equipment-on-site, and
@@ -94,6 +97,9 @@ function fmtEpochTime(epochSeconds: number): string {
 
 export function DailyReportTab({
   linked,
+  placement: placementProp,
+  placementError = null,
+  onRetryPlacement,
   onOpenForm,
   refreshToken = 0,
   onLoaded,
@@ -101,11 +107,21 @@ export function DailyReportTab({
   /** /tasks/mine `linked` from the parent (null while that fetch is in flight) — disambiguates
    *  "no placement" into unlinked-account vs not-placed copy without an extra fetch. */
   linked: boolean | null;
+  /** (CS4 #12) The viewer's own placement from the parent's /tasks/mine read (viewer_placement) —
+   *  null while in flight (linked === null) or when the viewer is unlinked/unplaced. Replaces the
+   *  tab's own fetchJobList stage. */
+  placement: DailyPlacement | null;
+  /** The parent /tasks/mine fetch's error (never-silent: with no placement landed, the tab shows
+   *  it with a working Retry instead of a lying empty state). */
+  placementError?: string | null;
+  /** Retry for the parent fetch (wired to the parent's load()). */
+  onRetryPlacement?: () => void;
   /** R3 deep-link opener (App.openForm) — absent renders the form_link buttons disabled. */
   onOpenForm?: (p: FormPrefill) => void;
-  /** Bump to refetch placement + filed status (page Refresh / focus — the parent owns the trigger). */
+  /** Bump to refetch the filed status + per-job sections (page Refresh / focus — the parent owns
+   *  the trigger; the placement itself refreshes with the parent's own /tasks/mine refetch). */
   refreshToken?: number;
-  /** Reports each placement load up ({ placement: null } for a non-manager / unplaced actor). */
+  /** Reports each placement resolution up ({ placement: null } for a non-manager / unplaced actor). */
   onLoaded?: (info: { placement: DailyPlacement | null }) => void;
 }) {
   const { user } = useAuth();
@@ -118,10 +134,23 @@ export function DailyReportTab({
     return parent?.form_code ? getDefinition(parent.form_code) : null;
   });
 
-  const [placement, setPlacement] = useState<DailyPlacement | null>(null);
-  const [placementLoading, setPlacementLoading] = useState(true);
-  const [placementError, setPlacementError] = useState<string | null>(null);
+  // Project-name enrichment from the job DETAIL read, applied only when the placement prop's
+  // project_name is null (the soft-ref edge: current_job names a job the jobs table lost) and
+  // only for the job it was fetched for (a stale enrichment must never dress a new placement).
+  const [detailName, setDetailName] = useState<{ job: string; name: string } | null>(null);
   const [prefillWarn, setPrefillWarn] = useState<string | null>(null);
+
+  // The RESOLVED placement the rest of the tab consumes: the parent-provided viewer placement,
+  // with a detail-read project-name fill for the rare null-name case (see detailName above).
+  const placement: DailyPlacement | null = useMemo(() => {
+    if (!isManager || !placementProp) return null;
+    return {
+      job_id: placementProp.job_id,
+      project_name:
+        placementProp.project_name ??
+        (detailName?.job === placementProp.job_id ? detailName.name : null),
+    };
+  }, [isManager, placementProp, detailName]);
 
   const [date, setDate] = useState(pacificToday());
   const dateRef = useRef(date);
@@ -282,42 +311,24 @@ export function DailyReportTab({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ── Placement (the envelope job) — Job Tracker viewer data. ────────────────────────────────────
-  async function loadPlacement() {
-    setPlacementLoading(true);
-    setPlacementError(null);
-    try {
-      const list = await jobs.fetchJobList("active");
-      const jobId = list.viewer_current_job ?? null;
-      if (!jobId) {
-        setPlacement(null);
-        onLoadedRef.current?.({ placement: null });
-        return;
-      }
-      const p: DailyPlacement = {
-        job_id: jobId,
-        // Best-effort from the list page; the detail fetch below fills a miss (job beyond page 1).
-        project_name: list.jobs.find((j) => j.job_id === jobId)?.project_name ?? null,
-      };
-      setPlacement(p);
-      onLoadedRef.current?.({ placement: p });
-    } catch (err) {
-      setPlacementError(errMsg(err, "Could not load your job placement."));
-    } finally {
-      setPlacementLoading(false);
-    }
-  }
-
+  // ── Placement (the envelope job) — parent-provided (CS4 #12), reported up as it resolves. ──────
+  // Mirrors the retired loadPlacement's reporting contract: a non-manager reports { placement:
+  // null } immediately (so the parent's auto-switch settles); a manager reports once the parent
+  // fetch LANDS (linked !== null) — resolved placement or null — and again whenever it changes
+  // (incl. the detail-read name enrichment). While the parent fetch is in flight or failed with
+  // nothing landed, nothing is reported — exactly the old load-in-flight / load-failed silence.
   useEffect(() => {
     if (!isManager) {
-      // Not a manager → no placement, by definition. Report up so the parent's auto-switch settles.
-      setPlacementLoading(false);
       onLoadedRef.current?.({ placement: null });
       return;
     }
-    void loadPlacement();
+    if (placement) {
+      onLoadedRef.current?.({ placement });
+      return;
+    }
+    if (linked !== null) onLoadedRef.current?.({ placement: null });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [refreshToken, isManager]);
+  }, [isManager, linked, placement?.job_id, placement?.project_name]);
 
   // ── Best-effort prefill from the job detail (crew / equipment / prepared_by). ──────────────────
   const placedJob = placement?.job_id ?? null;
@@ -329,13 +340,9 @@ export function DailyReportTab({
         const d = await jobs.fetchJobDetail(placedJob);
         if (!active) return;
         setPrefillWarn(null);
-        // Fill a project-name miss from the detail header (and report the enriched placement up).
-        setPlacement((p) => {
-          if (!p || p.job_id !== placedJob || p.project_name !== null) return p;
-          const enriched = { ...p, project_name: d.job.project_name };
-          onLoadedRef.current?.({ placement: enriched });
-          return enriched;
-        });
+        // Fill a project-name miss from the detail header (job-keyed, applied by the resolved-
+        // placement memo above; the report-up effect re-fires on the enrichment automatically).
+        setDetailName({ job: placedJob, name: d.job.project_name });
         const seeded: FormValues = {};
         if (d.viewer_personnel?.name) seeded.prepared_by = d.viewer_personnel.name;
         if (d.job.crew.length > 0) {
@@ -513,9 +520,20 @@ export function DailyReportTab({
       </section>
     );
   }
-  if (placementLoading && !placement) return <SectionLoading label="Loading your daily report…" />;
-  if (placementError && !placement) {
-    return <SectionError message={placementError} onRetry={() => void loadPlacement()} what="loading your daily report" />;
+  // Parent fetch not yet landed (linked === null): distinct error+Retry / loading states (the
+  // never-silent bar). Once landed, an unplaced viewer gets the explanatory copy even if a later
+  // REFRESH fails — the parent's own refresh-warn covers that path.
+  if (!placement && linked === null) {
+    if (placementError) {
+      return (
+        <SectionError
+          message={placementError}
+          onRetry={() => onRetryPlacement?.()}
+          what="loading your daily report"
+        />
+      );
+    }
+    return <SectionLoading label="Loading your daily report…" />;
   }
   if (!placement) {
     return (

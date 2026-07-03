@@ -2541,7 +2541,9 @@ Surfaced: 2026-06-29 permission-model forensic investigation; full spec at `~/.c
 
 ---
 
-## [OPEN 2026-07-01] Task-authority guards read account role check-then-act (TOCTOU, low-severity)
+## [RESOLVED 2026-07-03 — CS4 Slice 4 Part A] Task-authority guards read account role check-then-act (TOCTOU, low-severity)
+
+**Resolution (CS4 Slice 4 Part A):** the tracked fold is built, matching the `fieldops_crew_assign` atomic-guard pattern. The role predicates now live IN the mutating statements' WHERE clauses (`worker/fieldops_task_write.ts`): the assign UPDATE carries both the W1 current-owner predicate and the target predicate (conditional on an assign-only actor via a bound 0/1 flag); the create INSERT is `INSERT … SELECT … WHERE` with the same target predicate; the status UPDATE additionally folds the R1 ownership predicate. `checkTaskTarget` / `checkTaskCurrentOwner` / `checkTaskStatusOwnership` remain as **post-refusal diagnostics** — on `changes()=0` they re-read in the old pre-check order so the response codes (403 forbidden_task / 403 forbidden_target / 422 unknown_personnel / 404 not_found) are byte-identical; audits ride `changes()=1`, so a refused write audits nothing. Atomicity + boundary locked by `test/fieldops-toctou-folds.test.ts`; the pre-existing task-write/task-authority suites pass UNMODIFIED. Original entry below.
 
 **Surfaced by the S1 Assigned-Tasks security re-review.** `checkTaskTarget` + `checkTaskCurrentOwner` in `safety_portal/worker/fieldops_task_write.ts` read the target/current-owner account **role** (`personnel.username → users.role`) in a SELECT separate from the mutating UPDATE, to constrain a `cap.tasks.assign`-only actor (manager) to submitter-owned tasks/targets. Unlike the `active=1` roster checks (race-free — `active` only flips 1→0), `role` is **bidirectional**, so an admin promoting/demoting an account in the window between the SELECT and the UPDATE could shift the boundary. **NOT a self-service escalation** — the manager can't trigger the concurrent role change; it requires an independent admin action in a window the actor doesn't control. **Accepted + documented in-code.** **Fix (fast-follow):** fold the role predicate into the assign/create UPDATE's WHERE (conditional for an assign-only actor) so check+write are atomic, matching the `fieldops_crew_assign` pattern. **Tag:** `field_ops`, `auth`, `manager`, `task-authority`, `toctou`. **Revisit when:** treating manager task-scope as a hard security boundary / next task-authority change.
 
@@ -2586,7 +2588,9 @@ The edge case: if an **admin authors a template through the UI** with a title th
 
 ---
 
-## DailyReportTab 2-stage waterfall — `fetchJobList` fetch NOT yet collapsed [OPEN 2026-07-03]
+## [RESOLVED 2026-07-03 — CS4 Slice 4 Part A] DailyReportTab 2-stage waterfall — `fetchJobList` fetch NOT yet collapsed
+
+**Resolution (CS4 Slice 4 Part A, built in worktree `feat/cs4-hardening`):** `/api/fieldops/tasks/mine` now carries `viewer_placement` `{job_id, project_name, personnel_id, name}` — the caller's OWN placement, resolved server-side (the same personnel resolution `fieldops_scope.resolveActorPersonnel` uses + one indexed jobs lookup; SELF-information only, security note in the route header, `worker/fieldops_tasks.ts`). `DailyReportTab` takes the placement as a PROP from `FieldOpsMyTasks`'s existing `/tasks/mine` read; the `fetchJobList("active")` stage is deleted from the daily path (`fetchJobList` remains the Job Tracker page's own source). 6 fetches → tasks/mine + 5 parallel. New worker suite `test/fieldops-tasks-mine-placement.test.ts` (self-only exposure, unplaced/unlinked/retired/soft-ref/duplicate-link cases). The mandatory `/security-review` merge gate applies to the landing PR. Original entry below.
 
 **Optimization plan finding #12** (`~/.claude/plans/optimization-plan.md`, Slice 3 tail item). `DailyReportTab.tsx` still opens with `jobs.fetchJobList("active")` (a full jobs-list page) purely to read `viewer_current_job` before it can fetch anything daily-specific — confirmed still present at exec HEAD `d7ba70f` (`DailyReportTab.tsx:280-281`). The plan's fix (add `viewer_current_job` + `project_name` to `/api/fieldops/tasks/mine` and drop the `fetchJobList` stage) was explicitly scoped to **serialize after Slice 2** and carries the plan's only medium-risk rating plus its own mandatory `/security-review` gate (it widens a capability-gated read route — `cap.tasks.own` would start returning placement data that today rides `cap.jobtracker.read`). Slice 2 (#432) has now landed; this tail item was correctly NOT bundled into #431/#432 and remains unbuilt.
 
@@ -2605,7 +2609,9 @@ Neither blocks anything; both are dead-weight-vs-preservation-over-refactor call
 
 ---
 
-## `fieldops_checklist.ts` still hand-maintains `AssignedInspectionsResponse` instead of re-exporting `wire-types.ts` [OPEN 2026-07-03]
+## [RESOLVED 2026-07-03 — CS4 Slice 4 Part A] `fieldops_checklist.ts` still hand-maintains `AssignedInspectionsResponse` instead of re-exporting `wire-types.ts`
+
+**Resolution (CS4 Slice 4 Part A):** all five assigned-inspections shapes (`ChecklistItemStatus`, `ChecklistItemState`, `AssignedInstance`, `AssignedInspection`, `AssignedInspectionsResponse`) are now `export type { … } from "../../worker/wire-types"` re-exports in `src/lib/fieldops_checklist.ts`; the hand-maintained local copies are deleted and the `wire-types.ts` header's "NOT yet re-exported" caveat is removed (the tasks/mine shapes are single-sourced there too). Original entry below.
 
 **`worker/wire-types.ts` header note, Slice 3 (#431).** The header explicitly flags: "the assigned-inspections shapes are worker-typed here but NOT yet re-exported by `src/lib/fieldops_checklist.ts` — that file is Slice 2's dead-code removal surface; converting its kept types to re-exports is a follow-up after Slice 2 lands." Slice 2 (#432) has now landed, and `fieldops_checklist.ts:224` still defines its own `AssignedInspectionsResponse` interface rather than re-exporting the Worker-authoritative one from `wire-types.ts` — the one drift-guard `wire-types.ts` was built to close (finding #11) is not yet fully closed for this one shape.
 
@@ -2613,7 +2619,9 @@ Neither blocks anything; both are dead-weight-vs-preservation-over-refactor call
 
 ---
 
-## D4 job-requirements ceiling check is TOCTOU (admin-only, accepted) [OPEN 2026-07-03]
+## [RESOLVED 2026-07-03 — CS4 Slice 4 Part A] D4 job-requirements ceiling check is TOCTOU (admin-only, accepted)
+
+**Resolution (CS4 Slice 4 Part A):** the count predicate is folded into the INSERT's `WHERE` exactly as tracked — `INSERT INTO job_daily_requirements … SELECT … WHERE (SELECT COUNT(*) … active = 1) < REQUIREMENTS_LIMIT RETURNING id` — so check + write are one atomic statement; `changes()=0` → the same `409 too_many_items`, and the audit rides `auditStmtIfChanged` (a refused add audits nothing, as before). Boundary + atomicity locked by `test/fieldops-toctou-folds.test.ts` (199→201, 200→409, deactivated rows excluded). Original entry below.
 
 **Surfaced by the D4 security review (PR #427), accepted as a WARN.** `fieldops_daily_requirements.ts`'s `REQUIREMENTS_LIMIT = 200` ceiling on a job's ACTIVE requirement-item list is enforced as a read-then-check-then-insert, not atomically in the mutating statement's `WHERE` clause — mirrors the existing "Task-authority guards read account role check-then-act" TOCTOU entry above, but on a resource ceiling rather than a role predicate. Two concurrent admin adds could both pass the count check before either commits, momentarily exceeding 200 active rows. **Admin-only actor, resource-exhaustion-shaped, not a privilege-escalation path** — accepted at review as low-severity.
 
