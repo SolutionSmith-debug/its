@@ -21,6 +21,15 @@ vi.mock("../../lib/fieldops_daily_form", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../lib/fieldops_daily_form")>();
   return { ...actual, fetchDailyFormStatus: vi.fn(), fetchDailyRequirements: vi.fn() };
 });
+vi.mock("../../lib/fieldops_expected_materials", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../lib/fieldops_expected_materials")>();
+  return {
+    ...actual,
+    fetchExpectedMaterials: vi.fn(),
+    receiveExpectedMaterial: vi.fn(),
+    flagExpectedMaterialIncident: vi.fn(),
+  };
+});
 vi.mock("../../lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../lib/api")>();
   return { ...actual, fetchRecent: vi.fn(), submitForm: vi.fn() };
@@ -30,6 +39,12 @@ import * as api from "../../lib/api";
 import * as jobs from "../../lib/fieldops_jobtracker";
 import { fetchDailyFormStatus, fetchDailyRequirements } from "../../lib/fieldops_daily_form";
 import type { DailyRequirementItem } from "../../lib/fieldops_daily_form";
+import {
+  fetchExpectedMaterials,
+  flagExpectedMaterialIncident,
+  receiveExpectedMaterial,
+} from "../../lib/fieldops_expected_materials";
+import type { ExpectedMaterialRow } from "../../lib/fieldops_expected_materials";
 import { ApiError } from "../../lib/errorCopy";
 import { pacificToday } from "../myTasksShared";
 import { DailyReportTab } from "../DailyReportTab";
@@ -90,6 +105,9 @@ beforeEach(() => {
   vi.mocked(jobs.fetchJobDetail).mockResolvedValue(DETAIL);
   vi.mocked(fetchDailyFormStatus).mockResolvedValue(EMPTY_STATUS);
   vi.mocked(fetchDailyRequirements).mockResolvedValue([]);
+  vi.mocked(fetchExpectedMaterials).mockResolvedValue({ expected_materials: [] });
+  vi.mocked(receiveExpectedMaterial).mockResolvedValue(undefined);
+  vi.mocked(flagExpectedMaterialIncident).mockResolvedValue(undefined);
   vi.mocked(api.fetchRecent).mockResolvedValue(null);
   vi.mocked(api.submitForm).mockResolvedValue(undefined);
 });
@@ -270,7 +288,7 @@ describe("DailyReportTab — filed banner + amend + submit", () => {
       expect(api.submitForm).toHaveBeenCalledWith(
         expect.objectContaining({
           job_id: "JOB-A",
-          form_code: "daily-report-v4", // the catalog current (v4 since slice D4)
+          form_code: "daily-report-v5", // the catalog current (v5 since slice M2)
           work_date: TODAY,
           amends_uuid: null,
           submission_uuid: expect.any(String),
@@ -421,5 +439,144 @@ describe("DailyReportTab — per-job requirements (slice D4)", () => {
       { label: "Badge in at the client gate", kind: "confirm", response: "Confirmed" },
       { label: "Client rep spoken to today", kind: "text", response: "Ana R." },
     ]);
+  });
+});
+
+describe("DailyReportTab — expected-materials receipt flow (Material receipts M2)", () => {
+  const PENDING: ExpectedMaterialRow = {
+    id: 11, material_id: 7, material_name: "Q.PEAK DUO", description: null,
+    qty: 40, unit: "panels", expected_date: "2026-07-10", status: "expected",
+    received_at: null, received_by_name: null, qty_received: null, note: null, seq: 10,
+  };
+  beforeEach(() => sessionStorage.clear());
+
+  it("fetches the job's expected materials and renders the pending row inside the form", async () => {
+    vi.mocked(fetchExpectedMaterials).mockResolvedValue({ expected_materials: [PENDING] });
+    const { container, getByLabelText } = render(<DailyReportTab linked={true} onOpenForm={vi.fn()} />);
+    await waitFor(() => expect(container.textContent ?? "").toContain("Q.PEAK DUO"));
+    expect(fetchExpectedMaterials).toHaveBeenCalledWith("JOB-A");
+    expect(container.textContent ?? "").toContain("Expected materials");
+    expect(getByLabelText("Confirm receipt of Q.PEAK DUO")).not.toBeNull();
+    expect(getByLabelText("Report a problem with Q.PEAK DUO")).not.toBeNull();
+  });
+
+  it("Confirm receipt fires the M1 receive route, flips the pill, and APPENDS a Deliveries Received row", async () => {
+    vi.mocked(fetchExpectedMaterials).mockResolvedValue({ expected_materials: [PENDING] });
+    const { container, getByLabelText } = render(<DailyReportTab linked={true} onOpenForm={vi.fn()} />);
+    await waitFor(() => expect(container.textContent ?? "").toContain("Q.PEAK DUO"));
+    fireEvent.click(getByLabelText("Confirm receipt of Q.PEAK DUO"));
+    await waitFor(() => expect(receiveExpectedMaterial).toHaveBeenCalledWith(11));
+    // Optimistic flip: the pending actions are gone, the Received record line shows.
+    await waitFor(() =>
+      expect(container.querySelector('[aria-label="Confirm receipt of Q.PEAK DUO"]')).toBeNull(),
+    );
+    expect(container.textContent ?? "").toContain("Received");
+    // The receipt landed IN the form: a deliveries_received row (item / condition / notes).
+    const vals = inputValues(container);
+    expect(vals).toContain("Q.PEAK DUO");
+    expect(vals).toContain("Received OK");
+    expect(vals).toContain("qty 40 panels");
+    // …and it files with the submission (the section itself contributes NO values key).
+    fireEvent.click(getByLabelText("Submit daily report"));
+    await waitFor(() => expect(api.submitForm).toHaveBeenCalled());
+    const payload = vi.mocked(api.submitForm).mock.calls[0][0] as { values: Record<string, unknown> };
+    expect(payload.values.deliveries_received).toEqual([
+      { item_material: "Q.PEAK DUO", condition: "Received OK", notes: "qty 40 panels" },
+    ]);
+    expect("expected_materials_receipt" in payload.values).toBe(false);
+    // The append is draft-persisted like typed work (deep-link navigation loses nothing) —
+    // asserted against the pre-submit write (submit clears the draft).
+  });
+
+  it("the Confirm-receipt append is draft-persisted (survives an unmount like typed work)", async () => {
+    vi.mocked(fetchExpectedMaterials).mockResolvedValue({ expected_materials: [PENDING] });
+    const first = render(<DailyReportTab linked={true} onOpenForm={vi.fn()} />);
+    await waitFor(() => expect(first.container.textContent ?? "").toContain("Q.PEAK DUO"));
+    fireEvent.click(first.getByLabelText("Confirm receipt of Q.PEAK DUO"));
+    await waitFor(() => expect(inputValues(first.container)).toContain("Received OK"));
+    first.unmount(); // = the material-incident deep-link page-node swap
+    const second = render(<DailyReportTab linked={true} onOpenForm={vi.fn()} />);
+    await waitFor(() => expect(inputValues(second.container)).toContain("Received OK"));
+    expect(inputValues(second.container)).toContain("Q.PEAK DUO");
+  });
+
+  it("Report a problem prompts for the REQUIRED note, flags the row, and deep-links material-incident prefilled", async () => {
+    vi.mocked(fetchExpectedMaterials).mockResolvedValue({ expected_materials: [PENDING] });
+    const promptSpy = vi.spyOn(window, "prompt").mockReturnValue("Crushed corner on 3 pallets");
+    const onOpenForm = vi.fn();
+    const { container, getByLabelText } = render(<DailyReportTab linked={true} onOpenForm={onOpenForm} />);
+    await waitFor(() => expect(container.textContent ?? "").toContain("Q.PEAK DUO"));
+    fireEvent.click(getByLabelText("Report a problem with Q.PEAK DUO"));
+    await waitFor(() =>
+      expect(flagExpectedMaterialIncident).toHaveBeenCalledWith(11, "Crushed corner on 3 pallets"),
+    );
+    // The deep-link rides openForm with the R5 prefill values (description + expected qty).
+    await waitFor(() =>
+      expect(onOpenForm).toHaveBeenCalledWith(
+        expect.objectContaining({
+          jobId: "JOB-A",
+          parentCode: "material-incident",
+          workDate: TODAY,
+          values: { material_description: "Q.PEAK DUO", qty_expected: "40" },
+        }),
+      ),
+    );
+    // Optimistic flip to the incident record.
+    expect(container.textContent ?? "").toContain("Flagged");
+    promptSpy.mockRestore();
+  });
+
+  it("a cancelled prompt does nothing; an empty note errors WITHOUT flagging (the note is required)", async () => {
+    vi.mocked(fetchExpectedMaterials).mockResolvedValue({ expected_materials: [PENDING] });
+    const promptSpy = vi.spyOn(window, "prompt").mockReturnValue(null);
+    const onOpenForm = vi.fn();
+    const { container, getByLabelText } = render(<DailyReportTab linked={true} onOpenForm={onOpenForm} />);
+    await waitFor(() => expect(container.textContent ?? "").toContain("Q.PEAK DUO"));
+    fireEvent.click(getByLabelText("Report a problem with Q.PEAK DUO"));
+    expect(flagExpectedMaterialIncident).not.toHaveBeenCalled();
+    expect(onOpenForm).not.toHaveBeenCalled();
+    promptSpy.mockReturnValue("   "); // whitespace-only = no note
+    fireEvent.click(getByLabelText("Report a problem with Q.PEAK DUO"));
+    await waitFor(() =>
+      expect(container.textContent ?? "").toContain("A short note describing the problem is required."),
+    );
+    expect(flagExpectedMaterialIncident).not.toHaveBeenCalled();
+    promptSpy.mockRestore();
+  });
+
+  it("a failed receive surfaces the action error inline and does NOT flip or append (never silent)", async () => {
+    vi.mocked(fetchExpectedMaterials).mockResolvedValue({ expected_materials: [PENDING] });
+    vi.mocked(receiveExpectedMaterial).mockRejectedValue(new Error("Already received by someone else."));
+    const { container, getByLabelText } = render(<DailyReportTab linked={true} onOpenForm={vi.fn()} />);
+    await waitFor(() => expect(container.textContent ?? "").toContain("Q.PEAK DUO"));
+    fireEvent.click(getByLabelText("Confirm receipt of Q.PEAK DUO"));
+    await waitFor(() =>
+      expect(container.textContent ?? "").toContain("Already received by someone else."),
+    );
+    expect(getByLabelText("Confirm receipt of Q.PEAK DUO")).not.toBeNull(); // still pending
+    expect(inputValues(container)).not.toContain("Received OK"); // no append
+  });
+
+  it("a fetch failure soft-warns with a WORKING Retry — the form stays fillable (never silent)", async () => {
+    vi.mocked(fetchExpectedMaterials)
+      .mockRejectedValueOnce(new ApiError(null, 500))
+      .mockResolvedValue({ expected_materials: [PENDING] });
+    const { container, getByLabelText } = render(<DailyReportTab linked={true} onOpenForm={vi.fn()} />);
+    // R1 convention: the ApiError's HUMAN copy surfaces; the `what`-scoped Retry disambiguates
+    // it from any sibling (status / requirements) warn.
+    await waitFor(() => expect(getByLabelText("Retry loading expected materials")).not.toBeNull());
+    expect((getByLabelText("Submit daily report") as HTMLButtonElement).disabled).toBe(false); // still fillable
+    // No section rendered while the read is failed — never a lying empty state.
+    expect(container.querySelector(".fr__expected-materials")).toBeNull();
+    fireEvent.click(getByLabelText("Retry loading expected materials"));
+    await waitFor(() => expect(container.textContent ?? "").toContain("Q.PEAK DUO"));
+  });
+
+  it("zero expected materials → the explicit empty copy inside the section", async () => {
+    const { container } = render(<DailyReportTab linked={true} onOpenForm={vi.fn()} />);
+    await waitFor(() => expect(container.textContent ?? "").toContain("SITE SUPERVISOR"));
+    await waitFor(() =>
+      expect(container.textContent ?? "").toContain("No expected materials for this job."),
+    );
   });
 });

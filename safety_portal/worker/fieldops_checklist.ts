@@ -41,11 +41,15 @@ const DAILY_REPORT_FORM = "daily-report";
 // small; this is a defensive cap, not a paginated surface).
 const ROLLUP_LEG_CAP = 200;
 // D2 (SOP daily form) — the parent-form families the Daily tab's status endpoint reports. These are
-// the families the daily-report-v2 definition either deep-links to (form_link sections: jha /
-// visitor-sign-in / incident-report) or IS (daily-report — drives the "already filed today" banner).
-// A fixed module constant, never caller input: the endpoint reports exactly these four, so a forged
-// query can't turn it into an arbitrary-submission probe.
-const DAILY_STATUS_FAMILIES = ["jha", "visitor-sign-in", "incident-report", "daily-report"] as const;
+// the families the daily-report definition either deep-links to (form_link sections: jha /
+// visitor-sign-in / incident-report; the M2 expected-materials "Report a problem →" deep-link:
+// material-incident) or IS (daily-report — drives the "already filed today" banner).
+// A fixed module constant, never caller input: the endpoint reports exactly these five, so a forged
+// query can't turn it into an arbitrary-submission probe. SPA mirror:
+// src/lib/fieldops_daily_form.ts DAILY_STATUS_FAMILIES — keep the two lists identical.
+const DAILY_STATUS_FAMILIES = [
+  "jha", "visitor-sign-in", "incident-report", "daily-report", "material-incident",
+] as const;
 
 const ITEM_TYPES = new Set(["form_linked", "manual_attest", "count", "inspection"]);
 // form_code identifies the target form — required for the two form-bearing types.

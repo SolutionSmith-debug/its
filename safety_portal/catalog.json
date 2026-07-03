@@ -288,8 +288,8 @@
           "identity": "daily-report",
           "variant_label": null,
           "status": "active",
-          "current_version": 4,
-          "current_form_code": "daily-report-v4",
+          "current_version": 5,
+          "current_form_code": "daily-report-v5",
           "versions": [
             {
               "version": 1,
@@ -306,6 +306,32 @@
             {
               "version": 4,
               "form_code": "daily-report-v4"
+            },
+            {
+              "version": 5,
+              "form_code": "daily-report-v5"
+            }
+          ],
+          "display_order": 1
+        }
+      ]
+    },
+    {
+      "parent_form_code": "material-incident",
+      "category": "progress",
+      "name": "Material Incident Report",
+      "display_order": 10,
+      "forms": [
+        {
+          "identity": "material-incident",
+          "variant_label": null,
+          "status": "active",
+          "current_version": 1,
+          "current_form_code": "material-incident-v1",
+          "versions": [
+            {
+              "version": 1,
+              "form_code": "material-incident-v1"
             }
           ],
           "display_order": 1

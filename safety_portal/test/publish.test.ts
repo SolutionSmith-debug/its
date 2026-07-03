@@ -253,6 +253,65 @@ describe("validateDefinition — job_requirements (per-job requirements D4)", ()
   });
 });
 
+// ── expected_materials section (Material receipts M2) ─────────────────────────────
+describe("validateDefinition — expected_materials (Material receipts M2)", () => {
+  // Base: the shipped daily-report-v5 (carries the receipt mount in the D.13 region).
+  const dr5 = () => structuredClone(FORMS["daily-report-v5"]);
+  const dr5Ctx = () => ctxFor(FORMS["daily-report-v5"]);
+
+  it("daily-report-v5 (with the expected_materials mount) validates ok", () => {
+    expect(validateDefinition(dr5(), dr5Ctx())).toEqual({ ok: true });
+  });
+  it("material-incident-v1 validates ok AND its required-content floor bites (details dropped → reject)", () => {
+    const ctx = ctxFor(FORMS["material-incident-v1"]);
+    expect(validateDefinition(structuredClone(FORMS["material-incident-v1"]), ctx)).toEqual({ ok: true });
+    // The floor (required-content.json parents['material-incident']): material_description +
+    // issue + details. Dropping the details freeform is a required-content rejection.
+    const d = structuredClone(FORMS["material-incident-v1"]);
+    d.sections = (d.sections as Record<string, unknown>[]).filter((s) => s.key !== "details");
+    const r = validateDefinition(d, ctx);
+    expect(r.ok).toBe(false);
+    expect((r as { reason: string }).reason).toMatch(/required content missing: core field 'details'/);
+  });
+  it("rejects an expected_materials section with a missing / malformed key", () => {
+    const d = dr5();
+    const em = sectionOfType(d, "expected_materials");
+    delete em.key;
+    expect(validateDefinition(d, dr5Ctx()).ok).toBe(false);
+    const d2 = dr5();
+    sectionOfType(d2, "expected_materials").key = "Not Snake";
+    expect(validateDefinition(d2, dr5Ctx()).ok).toBe(false);
+  });
+  it("the key is RESERVED in the value namespace: colliding with another section's key is rejected", () => {
+    const d = dr5();
+    sectionOfType(d, "expected_materials").key = "deliveries_received"; // the table's key
+    const r = validateDefinition(d, dr5Ctx());
+    expect(r.ok).toBe(false);
+    expect((r as { reason: string }).reason).toMatch(/duplicate value key/);
+  });
+  it("a reserved envelope key (job) is rejected as the section key", () => {
+    const d = dr5();
+    sectionOfType(d, "expected_materials").key = "job";
+    expect(validateDefinition(d, dr5Ctx()).ok).toBe(false);
+  });
+  it("AT MOST ONE expected_materials section — a second mount (even under a different key) is rejected", () => {
+    const d = dr5();
+    (d.sections as Record<string, unknown>[]).push({
+      type: "expected_materials", key: "expected_materials_two", title: "Second mount",
+    });
+    const r = validateDefinition(d, dr5Ctx());
+    expect(r.ok).toBe(false);
+    expect((r as { reason: string }).reason).toMatch(/multiple expected_materials/);
+  });
+  it("rejects a non-string title", () => {
+    const d = dr5();
+    sectionOfType(d, "expected_materials").title = 7;
+    const r = validateDefinition(d, dr5Ctx());
+    expect(r.ok).toBe(false);
+    expect((r as { reason: string }).reason).toMatch(/expected_materials invalid title/);
+  });
+});
+
 // ── endpoint harness (mirrors test/session-epoch.test.ts) ───────────────────────
 const BASE = "https://portal.test";
 const ADMIN_BEARER = "test-admin-token";

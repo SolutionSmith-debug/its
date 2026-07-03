@@ -24,14 +24,18 @@ function fmtDateTime(epochSeconds: number | null): string {
   return new Date(epochSeconds * 1000).toLocaleString();
 }
 
-function statusPill(status: api.ExpectedMaterialStatus): { className: string; label: string } {
+/** Status → pill class/label. Exported for the daily form's Expected-materials section (M2 —
+ *  FormRenderer renders the SAME pills so the two surfaces never drift). */
+export function statusPill(status: api.ExpectedMaterialStatus): { className: string; label: string } {
   if (status === "received") return { className: "dash-pill dash-pill--ok", label: "Received" };
   if (status === "incident") return { className: "dash-pill dash-pill--danger", label: "Incident" };
   return { className: "dash-pill", label: "Expected" };
 }
 
-/** Row title: the resolved catalog name for catalog rows, the free text otherwise. */
-function rowTitle(r: api.ExpectedMaterialRow): string {
+/** Row title: the resolved catalog name for catalog rows, the free text otherwise.
+ *  Exported for the M2 daily-form receipt flow (the deliveries_received append + the
+ *  material-incident prefill both name the row with this). */
+export function rowTitle(r: api.ExpectedMaterialRow): string {
   return r.material_name ?? r.description ?? "—";
 }
 
@@ -295,8 +299,8 @@ export function ExpectedMaterialsSection({ jobId }: { jobId: string }) {
 
       {!canManage && (
         <p className="dash-card__sub muted">
-          Read-only — you'll confirm receipt (or flag a delivery problem) from the daily report once
-          the daily-form integration arrives.
+          Read-only here — confirm receipt (or report a delivery problem) from the daily report
+          (My Tasks → Daily → Expected materials).
         </p>
       )}
 

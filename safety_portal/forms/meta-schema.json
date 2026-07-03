@@ -67,7 +67,7 @@
     "section": {
       "type": "object",
       "required": ["type"],
-      "properties": { "type": { "type": "string", "enum": ["header", "static_text", "repeating_table", "signature_table", "checklist", "freeform", "content_blocks", "guidance", "form_link", "job_requirements"] } },
+      "properties": { "type": { "type": "string", "enum": ["header", "static_text", "repeating_table", "signature_table", "checklist", "freeform", "content_blocks", "guidance", "form_link", "job_requirements", "expected_materials"] } },
       "oneOf": [
         {
           "additionalProperties": false, "required": ["type", "fields"],
@@ -115,6 +115,11 @@
           "additionalProperties": false, "required": ["type", "key"],
           "properties": { "type": { "const": "job_requirements" }, "key": { "type": "string", "description": "The section's top-level value key — the manager's answers file under values.<key> = [{label, kind, response}] (self-describing; SOP daily form slice D4)." }, "title": { "type": "string" } },
           "description": "Per-job daily-form requirements placeholder (slice D4). Carries NO content of its own: at render time the portal fetches the job's admin-authored requirement items (D1 job_daily_requirements, migration 0030; edited on the Job Tracker job detail) and renders them here. AT MOST ONE per definition — enforced by publishValidation.ts (a second overlay mount would double-file the answers); JSON Schema cannot count across the sections array."
+        },
+        {
+          "additionalProperties": false, "required": ["type", "key"],
+          "properties": { "type": { "const": "expected_materials" }, "key": { "type": "string", "description": "Mount identity, RESERVED in the top-level value namespace (uniqueness-checked like every keyed section) but the section files NO values under it — receipt data lands in the deliveries_received table + the material-incident form's own submission (Material receipts M2)." }, "title": { "type": "string" } },
+          "description": "Expected-materials receipt placeholder (Material receipts M2). Carries NO content of its own: at render time the Daily tab fetches the job's expected materials (D1 job_expected_materials, migration 0031, M1) and renders them here with 'Confirm receipt' / 'Report a problem' actions. Captures NO form values (self-describing filed PDFs stay stable); the confirm action appends a deliveries_received row instead. AT MOST ONE per definition — enforced by publishValidation.ts; JSON Schema cannot count across the sections array."
         }
       ]
     }

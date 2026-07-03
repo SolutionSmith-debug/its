@@ -601,6 +601,20 @@ def _section_flowables(section: dict, values: dict, st: dict) -> list[Flowable]:
         t.setStyle(_grid_style(len(rows), 2))
         out4.append(t)
         return out4
+    if typ == "expected_materials":
+        # Expected-materials receipt list (Material receipts M2). DELIBERATELY a note line
+        # only: the section is an on-screen affordance (the Daily tab renders the job's live
+        # D1 expected-materials rows with Confirm-receipt / Report-a-problem actions) and
+        # files NO values under its own key — the receipt DATA the document of record needs
+        # already lands in the Deliveries Received table (the confirm action appends a row
+        # there) and in the material-incident form's OWN filed submission. Reprinting the
+        # live D1 list here would snapshot mutable state the submission never carried.
+        return [
+            _section_header(section.get("title", "Expected materials"), st, level="group"),
+            _p("Receipts recorded under Deliveries Received above; delivery problems are "
+               "filed as Material Incident Report submissions for this job and date.",
+               st["caption"]),
+        ]
     logger.warning("form_pdf: unknown section type %r — skipped", typ)
     return []
 
@@ -1278,6 +1292,13 @@ def _blank_section_flowables(section: dict, st: dict, namer: _FieldNamer) -> lis
         # silently omitting the section.
         return [_section_header(section.get("title", "Job-specific requirements"), st),
                 _p("(job-specific items appear here)", st["caption"])]
+    if typ == "expected_materials":
+        # Expected-materials receipt list (Material receipts M2): the rows are per-JOB
+        # runtime data (D1 job_expected_materials), unknowable to a blank template — title
+        # + an explicit placeholder, mirroring job_requirements (never a silent omission).
+        return [_section_header(section.get("title", "Expected materials"), st),
+                _p("(this job's expected materials appear here on screen — record receipts "
+                   "under Deliveries Received)", st["caption"])]
     logger.warning("form_pdf: unknown section type %r — skipped (blank)", typ)
     return []
 

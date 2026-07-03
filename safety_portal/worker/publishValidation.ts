@@ -380,6 +380,19 @@ function validateSection(s: unknown, idx: number, topLevel: string[]): string | 
       if (s.title !== undefined && !isStr(s.title)) return `${where}: job_requirements invalid title`;
       return null;
     }
+    // Expected-materials receipt placeholder (Material receipts M2): a keyed mount point with
+    // NO content of its own — the Daily tab renders the job's expected materials (D1
+    // job_expected_materials, M1) here. It files NO values under its key, but the key still
+    // goes through keyedSectionKey: reserving it in the value namespace keeps the mount from
+    // colliding with (or being shadowed by) a future value-bearing section of the same name.
+    // AT MOST ONE per definition — enforced in validateDefinition, same discipline as
+    // job_requirements; documented in forms/meta-schema.json.
+    case "expected_materials": {
+      const e = keyedSectionKey();
+      if (e) return e;
+      if (s.title !== undefined && !isStr(s.title)) return `${where}: expected_materials invalid title`;
+      return null;
+    }
     default:
       return `${where}: unknown section type '${type}'`;
   }
@@ -431,6 +444,10 @@ export function validateDefinition(def: unknown, ctx: DefinitionContext): Valida
   // check above can't catch this: two mounts could carry different keys.)
   const reqMounts = def.sections.filter((s) => isObject(s) && s.type === "job_requirements").length;
   if (reqMounts > 1) return fail("multiple job_requirements sections (at most one)");
+  // AT MOST ONE expected_materials section (Material receipts M2): one receipt mount — two would
+  // double-render the same fetched rows and double-append deliveries_received rows on confirm.
+  const emMounts = def.sections.filter((s) => isObject(s) && s.type === "expected_materials").length;
+  if (emMounts > 1) return fail("multiple expected_materials sections (at most one)");
   // Legal-floor re-check (Brief 1 PR-1) — structure is valid above; now require the
   // per-identity mandatory content (signature mechanism, legal/footer lines, core fields).
   const rc = validateRequiredContent(def, ctx);

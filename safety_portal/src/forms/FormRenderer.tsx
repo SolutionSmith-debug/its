@@ -1,7 +1,9 @@
 import type { Dispatch, SetStateAction } from "react";
 import { PhotoField } from "../components/PhotoField";
 import { SignaturePad } from "../components/SignaturePad";
+import { statusPill, rowTitle } from "../components/ExpectedMaterialsSection";
 import { DAILY_STATUS_FAMILIES, type DailyRequirementItem } from "../lib/fieldops_daily_form";
+import type { ExpectedMaterialRow } from "../lib/fieldops_expected_materials";
 import type { Field, FormDefinition, Group, PhotoValue, Section } from "./types";
 
 // The fill state, keyed per section:
@@ -69,6 +71,28 @@ export function seedRequirementResponses(items: DailyRequirementItem[]): JobRequ
   return items.map((it) => ({ label: it.label, kind: it.kind, response: "" }));
 }
 
+/** Adapter for `expected_materials` sections (Material receipts M2). Like FormLinkAdapter, the
+ *  renderer itself never fetches or mutates — the HOST (the Daily tab) supplies the job's
+ *  expected-material rows (M1's read) plus the two receipt actions, and owns the per-row busy
+ *  state and any action error. With NO adapter the section renders NOTHING — the generic fill
+ *  page (and every non-daily form) is unaffected. The section files NO form values of its own:
+ *  the host's onConfirmReceipt appends a deliveries_received row; problems file as the
+ *  material-incident form's OWN submission (deep-linked by the host). The live
+ *  "Filed ✓" indicator for that incident form rides the EXISTING FormLinkAdapter.filedLabel
+ *  ('material-incident' is a DAILY_STATUS_FAMILIES member since M2). */
+export interface ExpectedMaterialsAdapter {
+  /** The job's expected materials, seq order (fetch state — including errors — is the host's). */
+  rows: ExpectedMaterialRow[];
+  /** Rows with an in-flight receive/flag call — their action buttons render disabled. */
+  busyIds: ReadonlySet<number>;
+  /** A failed action's message, rendered inline in the section (never silent). */
+  actionError?: string | null;
+  /** "Confirm receipt" — the host calls the M1 receive route + appends the deliveries row. */
+  onConfirmReceipt: (row: ExpectedMaterialRow) => void;
+  /** "Report a problem →" — the host flags the row + deep-links material-incident prefilled. */
+  onReportProblem: (row: ExpectedMaterialRow) => void;
+}
+
 interface Props {
   def: FormDefinition;
   values: FormValues;
@@ -79,9 +103,12 @@ interface Props {
    *  `job_requirements` section. Absent (the generic fill page) or empty → the section
    *  renders NOTHING, so every other form is unaffected. */
   requirements?: DailyRequirementItem[];
+  /** Optional M2 hook — see ExpectedMaterialsAdapter. Absent on the generic fill page
+   *  (the `expected_materials` section renders NOTHING without it). */
+  expectedMaterials?: ExpectedMaterialsAdapter;
 }
 
-export function FormRenderer({ def, values, setValues, formLinks, requirements }: Props) {
+export function FormRenderer({ def, values, setValues, formLinks, requirements, expectedMaterials }: Props) {
   const setField = (key: string, val: string) =>
     setValues((v) => ({ ...v, [key]: val }));
 
@@ -142,6 +169,7 @@ export function FormRenderer({ def, values, setValues, formLinks, requirements }
           formLinks={formLinks}
           requirements={requirements}
           setRequirement={setRequirement}
+          expectedMaterials={expectedMaterials}
         />
       ))}
     </div>
@@ -160,6 +188,7 @@ interface SectionProps {
   formLinks?: FormLinkAdapter;
   requirements?: DailyRequirementItem[];
   setRequirement: (sec: string, items: DailyRequirementItem[], targetId: number, response: string) => void;
+  expectedMaterials?: ExpectedMaterialsAdapter;
 }
 
 function SectionView(p: SectionProps) {
@@ -316,6 +345,87 @@ function SectionView(p: SectionProps) {
               </div>
             );
           })}
+        </section>
+      );
+    }
+    // Expected-materials receipt list (Material receipts M2): the M1 rows the HOST fetched
+    // (the `expectedMaterials` adapter). No adapter → NOTHING renders — the generic fill page
+    // and every other form are unaffected. The section files NO form values of its own:
+    // "Confirm receipt" flips the D1 row + appends a deliveries_received table row (both the
+    // host's duty); "Report a problem →" flags the row + deep-links the material-incident
+    // form, which files as its OWN submission.
+    case "expected_materials": {
+      const em = p.expectedMaterials;
+      if (!em) return null;
+      // Live "Filed ✓" for the incident form this section deep-links to — material-incident
+      // is a DAILY_STATUS_FAMILIES member (M2), served by the same status read form_link uses.
+      const incidentFiled = p.formLinks?.filedLabel?.("material-incident") ?? null;
+      return (
+        <section className="fr__section fr__expected-materials">
+          <h2 className="fr__section-title">{s.title ?? "Expected materials"}</h2>
+          {incidentFiled ? (
+            <p className="fr__form-link-filed">Material incident report: {incidentFiled}</p>
+          ) : null}
+          {em.actionError ? (
+            <p className="banner banner--err" role="alert">
+              {em.actionError}
+            </p>
+          ) : null}
+          {em.rows.length === 0 ? (
+            <p className="muted">No expected materials for this job.</p>
+          ) : (
+            <ul className="dash-tasklist">
+              {em.rows.map((r) => {
+                const pill = statusPill(r.status);
+                const busy = em.busyIds.has(r.id);
+                return (
+                  <li key={r.id}>
+                    <span className={pill.className}>{pill.label}</span> <strong>{rowTitle(r)}</strong>
+                    {r.qty != null ? (
+                      <span className="dash-chip">
+                        {r.qty}
+                        {r.unit ? ` ${r.unit}` : ""}
+                      </span>
+                    ) : r.unit ? (
+                      <span className="dash-chip">{r.unit}</span>
+                    ) : null}
+                    {r.expected_date ? <span className="dash-chip">expected {r.expected_date}</span> : null}
+                    {r.status === "expected" ? (
+                      <div className="dash-row">
+                        <button
+                          type="button"
+                          className="btn btn--primary"
+                          disabled={busy}
+                          aria-label={`Confirm receipt of ${rowTitle(r)}`}
+                          onClick={() => em.onConfirmReceipt(r)}
+                        >
+                          {busy ? "Working…" : "Confirm receipt"}
+                        </button>{" "}
+                        <button
+                          type="button"
+                          className="btn btn--secondary"
+                          disabled={busy}
+                          aria-label={`Report a problem with ${rowTitle(r)}`}
+                          onClick={() => em.onReportProblem(r)}
+                        >
+                          Report a problem →
+                        </button>
+                      </div>
+                    ) : (
+                      // Received/incident rows are receipt RECORDS: pill + who/when (+ note).
+                      <div className="dash-card__sub muted">
+                        {r.status === "received" ? "Received" : "Flagged"}
+                        {r.received_at ? ` ${new Date(r.received_at * 1000).toLocaleString()}` : ""}
+                        {r.received_by_name ? ` by ${r.received_by_name}` : ""}
+                        {r.qty_received != null ? ` · qty received ${r.qty_received}` : ""}
+                        {r.note ? ` · ${r.note}` : ""}
+                      </div>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
         </section>
       );
     }

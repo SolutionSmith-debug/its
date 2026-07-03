@@ -113,6 +113,16 @@ describe("daily-form status — family match", () => {
     expect(s.daily_filed).not.toBeNull();
   });
 
+  it("material-incident joined the reported families (Material receipts M2) — versioned match + attribution", async () => {
+    await seedSubmission("JOB-A", "material-incident-v1", DATE, {
+      createdAt: 1_700_000_200,
+      submittedAs: "mgr.mo",
+    });
+    const s = await status(manager, "JOB-A", DATE);
+    expect(s.filed["material-incident"]).toEqual({ filed_at: 1_700_000_200, filed_by_name: "Mo Manager" });
+    expect(s.daily_filed).toBeNull(); // the incident form is NOT the daily-report family
+  });
+
   it("does NOT false-match a sibling prefix without the '-v' anchor, a wrong date, or a wrong job", async () => {
     await seedSubmission("JOB-A", "daily-report-extra", DATE); // sibling family, no -v anchor
     await seedSubmission("JOB-A", "jha-v3", "1999-01-01"); // wrong date

@@ -66,6 +66,7 @@ export const SECTION_TYPE_LABELS: Record<Section["type"], string> = {
   guidance: "SOP guidance (read-only)",
   form_link: "Form link (read-only)",
   job_requirements: "Per-job requirements (read-only)",
+  expected_materials: "Expected materials (read-only)",
 };
 
 // The validator's KEY_RE: every field/section/group/item key is snake_case lowercase.
