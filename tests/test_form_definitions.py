@@ -431,14 +431,15 @@ def test_material_incident_v1_structure_and_floor() -> None:
     not safety — operator-vetoable, noted in the definition comment). Fields per the M2
     spec; `issue` uses the meta-schema's SUPPORTED `select` input (verified: enum member +
     SPA FieldView dropdown + blank-mode AcroForm choice). Required-content floor (strict
-    entry, PENDING OPERATOR CONFIRMATION): material_description + issue + details."""
+    entry, OPERATOR-CONFIRMED 2026-07-03): material_description + issue + details."""
     d = _load(FORMS_DIR / "material-incident-v1.json")
     assert d["form_code"] == "material-incident-v1"
     assert d["parent_form_code"] == "material-incident"
     assert d["version"] == 1
     # Net-new form — no reference PDF exists (the photo-test-v1 precedent).
     assert d["source_pdf"] == ""
-    assert any("PENDING OPERATOR CONFIRMATION" in line for line in d.get("comment", []))
+    # Flipped 2026-07-03: the operator confirmed the floor + category (proceed-with-defaults).
+    assert any("OPERATOR-CONFIRMED" in line for line in d.get("comment", []))
     assert any("progress" in line for line in d.get("comment", []))
 
     # Header fields: description/ref/quantities/issue — issue is a bounded select.
