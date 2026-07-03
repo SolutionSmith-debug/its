@@ -324,6 +324,12 @@ active-set/current-version. `load_definition` resolves **every historical `form_
 `registry.ts` at build, Python `load_definition`). *Resolves: renderer skew window;
 retire-breaks-in-flight; version-swap "atomicity".*
 
+> **AMENDED 2026-07-03 (operator-approved registry split):** the on-disk append-only guarantee and
+> the Python `load_definition` behavior are UNCHANGED, but the SPA no longer EAGER-BUNDLES every
+> version — `registry.ts` bundles each active form's current + previous version and lazy-loads the
+> rest on demand (`getDefinitionFor`), capping the unbounded main-chunk growth (~25KB per SOP edit).
+> Approval + rationale quoted in the `registry.ts` header.
+
 ## C2. The Mac actuator daemon owns the WHOLE privileged sequence — NOT a GitHub Action
 After it commits (+ merges), the **Mac daemon** itself: deploys via the **operator's local
 wrangler auth** (the Cloudflare credential never goes on GitHub — consistent with the Mac-gated,

@@ -17,7 +17,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { dayPhaseFor } from "../dayPhase";
 import { FormRenderer, initialValues } from "../FormRenderer";
-import { getDefinition } from "../registry";
+import { getDefinition, getDefinitionFor } from "../registry";
 import type { FormDefinition } from "../types";
 
 afterEach(cleanup);
@@ -53,9 +53,11 @@ describe("dayPhaseFor — pure heading→phase mapping", () => {
     expect(dayPhaseFor("Anything else entirely")).toBeNull();
   });
 
-  it("is stable across the shipped daily definitions: every version's guidance headings yield exactly the five phases, in day order", () => {
+  it("is stable across the shipped daily definitions: every version's guidance headings yield exactly the five phases, in day order", async () => {
+    // v2 is HISTORICAL (outside the post-split sync eager window) — resolve both
+    // through the async pool path, which serves eager and lazy codes alike.
     for (const code of ["daily-report-v2", "daily-report-v5"]) {
-      const def = getDefinition(code) as FormDefinition;
+      const def = (await getDefinitionFor(code)) as FormDefinition;
       expect(def, code).not.toBeNull();
       const phases = def.sections
         .filter((s) => s.type === "guidance")

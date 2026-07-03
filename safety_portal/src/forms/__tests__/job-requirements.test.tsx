@@ -28,13 +28,15 @@ import {
   type FormValues,
   type JobRequirementResponse,
 } from "../FormRenderer";
-import { getDefinition } from "../registry";
+import { getDefinitionFor } from "../registry";
 import type { DailyRequirementItem } from "../../lib/fieldops_daily_form";
 import type { FormDefinition } from "../types";
 
 afterEach(cleanup);
 
-const DEF = getDefinition("daily-report-v4") as FormDefinition;
+// v4 sits in the eager window TODAY (immediately-previous of daily-report) but falls
+// out on the next publish — the async path keeps this suite version-proof.
+const DEF = (await getDefinitionFor("daily-report-v4")) as FormDefinition;
 
 const ITEMS: DailyRequirementItem[] = [
   { id: 1, seq: 10, kind: "note", label: "Client requires FR clothing on site", form_code: null, options: null },

@@ -1,25 +1,102 @@
 import type { FormDefinition } from "./types";
+import { EAGER, LAZY_LOADERS } from "virtual:eager-form-definitions";
 
-// Bundle every form definition at build time (Vite eager glob). The definitions
-// are CODE (the rendering contract, byte-unchanged across slices) and stay
-// ALL-bundled on purpose: getDefinition() must resolve ANY historical form_code —
-// including retired / superseded versions — so filed and in-flight submissions
-// always render (append-only files; design C1/C9). meta-schema.json is excluded.
-const modules = import.meta.glob<FormDefinition>("../../forms/*.json", {
-  eager: true,
-  import: "default",
-});
+// ─────────────────────────────────────────────────────────────────────────────
+// REGISTRY SPLIT (operator-APPROVED 2026-07-03). This REVERSES the documented C1/C9
+// "bundle every definition version" design, WITH operator sign-off: "absolutely need
+// to split the registry — that would very quickly become a problem and crash our
+// website." Definition versions are append-only and SOP-heavy (~25KB per daily-report
+// edit, forever); the old eager-everything glob put the whole pool (~160KB and growing)
+// in the main chunk.
+//
+// The split (built by vite-plugin-eager-forms.ts from catalog.json AT BUILD TIME —
+// data-driven, so the publish daemon's definition-only auto-commits keep working with
+// zero manual steps):
+//   • EAGER (synchronous, in the main bundle): every ACTIVE catalog form's CURRENT
+//     version + its immediately-previous version (operator-recommended buffer). The
+//     fill flow only ever renders current definitions, so it keeps the sync,
+//     no-network fast path via getDefinition().
+//   • LAZY (dynamic import(), one Vite auto-chunk per file): every OTHER shipped
+//     version — older history + retired identities — via getDefinitionFor(). All
+//     files stay shipped append-only; only their BUNDLING changed. Verified
+//     2026-07-03: NO production SPA surface renders a non-eager definition today
+//     (fill + amend render the CURRENT definition; filed-submission viewing is the
+//     server-side PDF path), so the async path currently serves future
+//     historical-render surfaces and the test net.
+// ─────────────────────────────────────────────────────────────────────────────
 
-export const DEFINITIONS: Record<string, FormDefinition> = {};
-for (const [path, def] of Object.entries(modules)) {
-  if (path.endsWith("meta-schema.json")) continue;
-  DEFINITIONS[def.form_code] = def;
+export const DEFINITIONS: Record<string, FormDefinition> = EAGER;
+// Packaging regressions must fail LOUD on load (same standard as the manifest checks
+// below): an empty eager window or a filename↔content drift would otherwise surface as
+// a blank form picker or a wrong form rendered under a right name.
+if (Object.keys(DEFINITIONS).length === 0) {
+  throw new Error("virtual:eager-form-definitions produced an empty eager window");
+}
+for (const [code, def] of Object.entries(DEFINITIONS)) {
+  if (def.form_code !== code) {
+    throw new Error(
+      `eager form definition drift: forms/${code}.json carries form_code ${def.form_code}`,
+    );
+  }
 }
 
-/** The form definition for a Form Code, or null if not bundled. Resolves ANY
- * historical code (active, retired, or superseded) — never gated by the active set. */
+/** The form definition for a Form Code IF it is in the eager window (every active
+ * form's current + immediately-previous version), else null. Historical / retired
+ * codes are no longer sync-resolvable (registry split, 2026-07-03) — use
+ * getDefinitionFor() for those. Every production fill/render surface passes
+ * catalog-derived CURRENT codes, so this stays their synchronous fast path. */
 export function getDefinition(formCode: string): FormDefinition | null {
   return DEFINITIONS[formCode] ?? null;
+}
+
+/** A lazy definition chunk failed to LOAD (network / packaging), or loaded content
+ * that contradicts the requested code — distinct from "unknown form_code", which
+ * resolves to null. UI consumers must treat this as retryable and NEVER silent:
+ * render an error state with a Retry that re-calls getDefinitionFor (a failed
+ * dynamic-import fetch is not cached, so a retry re-fetches). */
+export class DefinitionLoadError extends Error {
+  readonly formCode: string;
+  constructor(formCode: string, cause: unknown) {
+    super(`form definition ${formCode} failed to load`, { cause });
+    this.name = "DefinitionLoadError";
+    this.formCode = formCode;
+  }
+}
+
+/** Internal seam of getDefinitionFor (exported for unit tests): resolve `formCode`
+ * against a loader map. null = unknown code; DefinitionLoadError = load/content
+ * failure (typed so callers can render error+Retry per the house standard). */
+export async function loadLazyDefinition(
+  formCode: string,
+  loaders: Record<string, () => Promise<FormDefinition>>,
+): Promise<FormDefinition | null> {
+  const loader = loaders[formCode];
+  if (!loader) return null;
+  let def: FormDefinition;
+  try {
+    def = await loader();
+  } catch (e) {
+    throw new DefinitionLoadError(formCode, e);
+  }
+  if (def.form_code !== formCode) {
+    throw new DefinitionLoadError(
+      formCode,
+      new Error(`forms/${formCode}.json carries form_code ${def.form_code}`),
+    );
+  }
+  return def;
+}
+
+/** The form definition for ANY shipped Form Code — current, superseded, or retired
+ * (the append-only pool; old C1/C9 resolve-anything contract, now async). Eager codes
+ * resolve immediately from the bundle; anything else dynamically imports its own
+ * chunk. Returns null for an unknown code; throws DefinitionLoadError on a failed
+ * chunk load (see its doc: consumers show loading, then never-silent error+Retry).
+ * No production surface needs this today (see header comment) — any future
+ * historical-render surface (e.g. viewing a filed submission's original version
+ * in-SPA) goes through here instead of re-widening the eager bundle. */
+export async function getDefinitionFor(formCode: string): Promise<FormDefinition | null> {
+  return DEFINITIONS[formCode] ?? loadLazyDefinition(formCode, LAZY_LOADERS);
 }
 
 // ── catalog manifest: the ACTIVE-set / current-version / order / name overlay ──

@@ -18,12 +18,15 @@ import { cleanup, fireEvent, render } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { FormRenderer, initialValues } from "../FormRenderer";
-import { getDefinition } from "../registry";
+import { getDefinitionFor } from "../registry";
 import type { FormDefinition, Section } from "../types";
 
 afterEach(cleanup);
 
-const DEF = getDefinition("daily-report-v2") as FormDefinition;
+// daily-report-v2 is HISTORICAL (current v5, previous v4): since the registry split
+// (2026-07-03) it is not in the sync eager window — resolve it through the real lazy
+// path (top-level await; vitest loads the same per-file chunk loader the SPA would).
+const DEF = (await getDefinitionFor("daily-report-v2")) as FormDefinition;
 
 function renderV2(formLinks?: { open: (p: string) => void; filedLabel?: (p: string) => string | null }) {
   return render(
@@ -120,11 +123,12 @@ describe("form_link sections — button + optional adapter", () => {
 });
 
 describe("daily-report-v1 still renders (append-only regression)", () => {
-  // The render-smoke net only exercises ACTIVE forms (now v2); the superseded v1
-  // definition must stay bundled AND renderable — filed/in-flight v1 submissions
-  // resolve it forever (append-only, design C1/C9).
-  it("renders the full v1 structure with no D1 chrome", () => {
-    const v1 = getDefinition("daily-report-v1") as FormDefinition;
+  // The render-smoke net only exercises ACTIVE forms; the superseded v1 definition
+  // must stay SHIPPED and renderable forever (append-only). Since the registry split
+  // (2026-07-03) it is no longer eagerly bundled — it resolves via the lazy
+  // getDefinitionFor path, exercised for real here.
+  it("renders the full v1 structure with no D1 chrome", async () => {
+    const v1 = (await getDefinitionFor("daily-report-v1")) as FormDefinition;
     expect(v1).not.toBeNull();
     const { container } = render(
       <FormRenderer def={v1} values={initialValues(v1)} setValues={() => {}} />,

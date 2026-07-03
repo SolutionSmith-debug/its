@@ -1,5 +1,6 @@
 import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
+import { eagerFormDefinitionsPlugin } from "./vite-plugin-eager-forms";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SPA render-smoke project (Phase-2 slice 3c, design brief C5 — the THIRD renderer).
@@ -18,11 +19,13 @@ import react from "@vitejs/plugin-react";
 // run in CI.
 //
 // No cloudflare plugin here; @vitejs/plugin-react gives the JSX/TSX transform and
-// Vite's import.meta.glob (which src/forms/registry.ts uses to bundle the form
-// definitions + catalog manifest) resolves through the normal Vite pipeline.
+// Vite's import.meta.glob (which src/forms/registry.ts uses to bundle the catalog +
+// workflow manifests) resolves through the normal Vite pipeline.
+// eagerFormDefinitionsPlugin serves `virtual:eager-form-definitions` (registry split,
+// 2026-07-03) — registry.ts cannot load in this suite without it.
 // ─────────────────────────────────────────────────────────────────────────────
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), eagerFormDefinitionsPlugin()],
   test: {
     name: "spa",
     environment: "jsdom",
