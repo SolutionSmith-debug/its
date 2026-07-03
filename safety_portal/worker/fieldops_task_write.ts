@@ -19,6 +19,11 @@ import { auditStmtIfChanged } from "./audit";
 
 const MAX_DESC = 256;
 const STATUSES = new Set(["open", "in_progress", "done"]);
+// (G2.6) Optional task deadline — a Pacific calendar date, same shape + validation as the
+// checklist assign route's due_date (fieldops_checklist.ts DUE_DATE_RE). Stored in
+// task_assignments.due_date (migration 0035, nullable TEXT). Deliberately NOT range-checked:
+// past dates are legal (backfilling an already-late task) and future dates unbounded.
+const DUE_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 const CAP_MANAGE = "cap.jobtracker.manage";
 const CAP_ASSIGN = "cap.tasks.assign";
@@ -139,6 +144,15 @@ export function registerTaskWriteRoutes(app: FieldopsApp, gates: FieldopsGates):
       const personnelId =
         typeof body.personnel_id === "number" && Number.isInteger(body.personnel_id) ? body.personnel_id : null;
       if (body.personnel_id !== undefined && personnelId === null) return c.json({ error: "invalid_personnel_id" }, 400);
+      // (G2.6) Optional due_date — absent / null / '' all mean "no deadline" (NULL column), the
+      // checklist assign route's tri-state convention; anything else must be 'YYYY-MM-DD'.
+      let dueDate: string | null = null;
+      if (body.due_date !== undefined && body.due_date !== null && body.due_date !== "") {
+        if (typeof body.due_date !== "string" || !DUE_DATE_RE.test(body.due_date)) {
+          return c.json({ error: "invalid_due_date" }, 400);
+        }
+        dueDate = body.due_date;
+      }
 
       // Job must exist + be active (active=1; closed jobs reject). Disambiguate 404 vs 409.
       const job = await c.env.DB.prepare("SELECT active FROM jobs WHERE job_id = ?1").bind(jobId).first<{ active: number }>();
@@ -156,15 +170,15 @@ export function registerTaskWriteRoutes(app: FieldopsApp, gates: FieldopsGates):
       const res = await c.env.DB.batch([
         c.env.DB
           .prepare(
-            `INSERT INTO task_assignments (job_id, personnel_id, description, status, assigned_by)
-             SELECT ?1, ?2, ?3, 'open', ?4
+            `INSERT INTO task_assignments (job_id, personnel_id, description, status, assigned_by, due_date)
+             SELECT ?1, ?2, ?3, 'open', ?4, ?6
              WHERE ?2 IS NULL OR EXISTS (
                SELECT 1 FROM personnel p LEFT JOIN users u ON u.username = p.username
                WHERE p.id = ?2 AND p.active = 1 AND (?5 = 0 OR u.role = 'submitter'))
              RETURNING id`,
           )
-          .bind(jobId, personnelId, description, actor, isAssignOnly(c) ? 1 : 0),
-        auditStmtIfChanged(c, actor, "task_create", jobId, { job_id: jobId, description, personnel_id: personnelId }),
+          .bind(jobId, personnelId, description, actor, isAssignOnly(c) ? 1 : 0, dueDate),
+        auditStmtIfChanged(c, actor, "task_create", jobId, { job_id: jobId, description, personnel_id: personnelId, due_date: dueDate }),
       ]);
       const newId = (res[0].results?.[0] as { id: number } | undefined)?.id ?? null;
       if (newId === null) {
@@ -234,6 +248,8 @@ export function registerTaskWriteRoutes(app: FieldopsApp, gates: FieldopsGates):
   // task is task authority → cap.jobtracker.manage (admin) OR cap.tasks.assign (manager, 0025). Body
   // { personnel_id }: null unassigns; an integer places (roster-verified + subcontractor-target-guarded
   // for a manager). Mutation + audit in ONE D1 batch (W4). Send-free.
+  // (G2.6) due_date is deliberately NOT in this UPDATE's SET — a reassign/unassign PRESERVES the
+  // deadline: the due date belongs to the WORK, not to who currently holds it.
   app.post(
     "/api/fieldops/task/:id/assign",
     gates.requireSession,

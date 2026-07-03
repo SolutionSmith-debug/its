@@ -39,7 +39,8 @@ const MY_TASKS_CAP = 500;
 export function registerMyTasksRoutes(app: FieldopsApp, gates: FieldopsGates): void {
   // GET /api/fieldops/tasks/mine — the caller's own assigned tasks across all jobs, with the job's
   // project name (LEFT JOIN jobs — a task's job_id is a soft ref, so a missing job → null name, never
-  // a dropped row). Ordered open-first (CASE), created_at DESC. The personnel link is resolved by
+  // a dropped row). Ordered open-first (CASE), then due-date urgency, then created_at DESC (see the
+  // G2.6 note on the query). The personnel link is resolved by
   // matching personnel.username to the session username (authoritative from requireSession's D1 read);
   // no linked personnel → the JOIN yields nothing → empty list + linked:false.
   app.get(
@@ -70,13 +71,20 @@ export function registerMyTasksRoutes(app: FieldopsApp, gates: FieldopsGates): v
               name: viewerRow.name,
             }
           : null;
+      // (G2.6) ORDER BY extension — WITHIN each status band (the R1 open-first CASE, unchanged):
+      //   1. dated tasks before undated (due_date IS NULL sorts last — no deadline, no urgency);
+      //   2. due_date ASC — one ascending key gives overdue-first THEN soonest-due (an overdue
+      //      date is simply the smallest 'YYYY-MM-DD'; no Pacific-today comparison needed in SQL);
+      //   3. created_at DESC, id DESC — the pre-G2.6 tiebreak, now scoped to equal-due (and to
+      //      the undated remainder, whose relative order is therefore EXACTLY the old contract).
       const sql = `
-        SELECT t.id, t.job_id, j.project_name, t.description, t.status, t.created_at, t.assigned_by
+        SELECT t.id, t.job_id, j.project_name, t.description, t.status, t.created_at, t.assigned_by, t.due_date
         FROM task_assignments t
         JOIN personnel p ON p.id = t.personnel_id
         LEFT JOIN jobs j ON j.job_id = t.job_id
         WHERE p.username = ?1
         ORDER BY CASE t.status WHEN 'open' THEN 0 WHEN 'in_progress' THEN 1 ELSE 2 END ASC,
+                 (t.due_date IS NULL) ASC, t.due_date ASC,
                  t.created_at DESC, t.id DESC
         LIMIT ?2
       `;

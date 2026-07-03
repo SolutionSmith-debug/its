@@ -24,10 +24,10 @@ const seedPersonnel = (name: string, trade: string): Promise<number> =>
 async function placePersonnel(personnelId: number, jobId: string): Promise<void> {
   await env.DB.prepare("UPDATE personnel SET current_job = ? WHERE id = ?").bind(jobId, personnelId).run();
 }
-async function seedTask(jobId: string, personnelId: number | null, description: string, status: string, createdAt: number): Promise<number> {
+async function seedTask(jobId: string, personnelId: number | null, description: string, status: string, createdAt: number, dueDate: string | null = null): Promise<number> {
   await env.DB.prepare(
-    "INSERT INTO task_assignments (job_id, personnel_id, description, status, created_at) VALUES (?,?,?,?,?)",
-  ).bind(jobId, personnelId, description, status, createdAt).run();
+    "INSERT INTO task_assignments (job_id, personnel_id, description, status, created_at, due_date) VALUES (?,?,?,?,?,?)",
+  ).bind(jobId, personnelId, description, status, createdAt, dueDate).run();
   return (await env.DB.prepare("SELECT id FROM task_assignments WHERE job_id=? AND description=?")
     .bind(jobId, description).first<{ id: number }>())!.id;
 }
@@ -131,7 +131,7 @@ describe("GET /api/fieldops/jobs", () => {
     await seedJob("JOB-A", "Alpha", "active", 40, clientId);
     const pid = await seedPersonnel("Alice Chen", "operator");
     await placePersonnel(pid, "JOB-A"); // crew = placed personnel
-    await seedTask("JOB-A", pid, "Dig footings", "open", 100);
+    await seedTask("JOB-A", pid, "Dig footings", "open", 100, "2026-07-10"); // (G2.6) dated
     await seedTask("JOB-A", pid, "Finished item", "done", 90);
     const c = await login("admin.one", "password123");
     const body = (await (await call("/api/fieldops/jobs?status=active", { cookie: c })).json()) as { jobs: any[] };
@@ -140,6 +140,7 @@ describe("GET /api/fieldops/jobs", () => {
     expect(job.crew.map((p: any) => p.name)).toContain("Alice Chen");
     expect(job.open_tasks).toHaveLength(1); // 'done' excluded
     expect(job.open_tasks[0].description).toBe("Dig footings");
+    expect(job.open_tasks[0].due_date).toBe("2026-07-10"); // (G2.6) due_date rides the card preview
   });
 
   it("crew = PLACED personnel: a task-assigned-but-unplaced person is NOT crew (convergence)", async () => {
@@ -238,7 +239,7 @@ describe("GET /api/fieldops/jobs/:job_id", () => {
     await seedJob("JOB-A", "Alpha", "active", 60, clientId);
     const pid = await seedPersonnel("Alice Chen", "operator");
     await placePersonnel(pid, "JOB-A"); // crew = placed personnel
-    await seedTask("JOB-A", pid, "Dig", "open", 100);
+    await seedTask("JOB-A", pid, "Dig", "open", 100, "2026-07-10"); // (G2.6) dated
     await seedTimeEntry("JOB-A", pid, "te-1", 200);
     const eq = await seedEquipment("unit-a");
     await seedInspection("JOB-A", eq, "in-1", 150);
@@ -247,6 +248,7 @@ describe("GET /api/fieldops/jobs/:job_id", () => {
     expect(body.job.client.name).toBe("Acme Co");
     expect(body.job.crew.map((p: any) => p.name)).toContain("Alice Chen");
     expect(body.job.tasks).toHaveLength(1);
+    expect(body.job.tasks[0].due_date).toBe("2026-07-10"); // (G2.6) due_date rides the detail leg
     expect(body.job.time_entries).toHaveLength(1);
     expect(body.job.time_entries[0].recorded_at).toBe(200); // created_at AS recorded_at
     expect(body.job.inspections).toHaveLength(1);

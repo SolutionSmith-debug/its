@@ -132,9 +132,12 @@ export async function editContacts(jobId: string, routing: JobRouting): Promise<
     routing,
   );
 }
+// (G2.6) `due_date` — optional 'YYYY-MM-DD' deadline (any calendar date, past dates included);
+// omitted = no deadline. The Worker validates the shape (invalid_due_date 400) and a later
+// reassign never clears it.
 export async function addTask(
   jobId: string,
-  body: { description: string; personnel_id?: number },
+  body: { description: string; personnel_id?: number; due_date?: string },
 ): Promise<{ id: number | null }> {
   return postJson<{ ok: boolean; id: number | null }>(`/api/fieldops/job/${encodeURIComponent(jobId)}/task`, body);
 }

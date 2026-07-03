@@ -166,3 +166,55 @@ describe("POST /api/fieldops/task/:id/assign (reassign — cap.jobtracker.manage
     expect((await res.json() as any).error).toBe("unknown_personnel");
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// G2.6 — task DUE DATES (migration 0035: task_assignments.due_date, nullable 'YYYY-MM-DD').
+// Create accepts an optional due_date (DUE_DATE_RE shape, the checklist-assign precedent);
+// a reassign/unassign NEVER touches it (the deadline belongs to the work, not the holder).
+// ─────────────────────────────────────────────────────────────────────────────
+describe("G2.6 — due_date on task create + reassign-preserves", () => {
+  const dueOf = async (id: number) =>
+    (await env.DB.prepare("SELECT due_date FROM task_assignments WHERE id=?").bind(id).first<{ due_date: string | null }>())!.due_date;
+
+  it("create WITH due_date → 201, round-trips to the row + rides the audit payload", async () => {
+    const res = await j(admin, "/api/fieldops/job/JOB-A/task", { description: "Grade pad", due_date: "2026-07-10" });
+    expect(res.status, await res.clone().text()).toBe(201);
+    const id = (await res.json() as any).id as number;
+    expect(await dueOf(id)).toBe("2026-07-10");
+    const [audit] = await audits("task_create");
+    expect(JSON.parse(audit.detail ?? "{}").due_date).toBe("2026-07-10");
+  });
+
+  it("absent / null / '' due_date all mean NO deadline → 201 with a NULL column (tri-state precedent)", async () => {
+    for (const body of [{ description: "A" }, { description: "B", due_date: null }, { description: "C", due_date: "" }]) {
+      const res = await j(admin, "/api/fieldops/job/JOB-A/task", body);
+      expect(res.status, await res.clone().text()).toBe(201);
+      expect(await dueOf((await res.json() as any).id)).toBeNull();
+    }
+  });
+
+  it("malformed due_date → 400 invalid_due_date, nothing written", async () => {
+    for (const bad of ["2026-7-4", "July 4 2026", "2026-07-04T00:00", 20260704, "2026/07/04"]) {
+      const res = await j(admin, "/api/fieldops/job/JOB-A/task", { description: "x", due_date: bad });
+      expect(res.status, `due_date=${JSON.stringify(bad)}`).toBe(400);
+      expect((await res.json() as any).error).toBe("invalid_due_date");
+    }
+    expect((await env.DB.prepare("SELECT COUNT(*) n FROM task_assignments").first<{ n: number }>())!.n).toBe(0);
+  });
+
+  it("reassign → unassign → status change ALL preserve due_date (no route clears it)", async () => {
+    const create = await j(admin, "/api/fieldops/job/JOB-A/task", { description: "Keep my date", due_date: "2026-07-10" });
+    expect(create.status).toBe(201);
+    const id = (await create.json() as any).id as number;
+    const alice = await seedPersonnel("Alice Chen");
+
+    expect((await j(admin, `/api/fieldops/task/${id}/assign`, { personnel_id: alice })).status).toBe(200);
+    expect(await dueOf(id)).toBe("2026-07-10");
+
+    expect((await j(admin, `/api/fieldops/task/${id}/assign`, { personnel_id: null })).status).toBe(200);
+    expect(await dueOf(id)).toBe("2026-07-10");
+
+    expect((await j(admin, `/api/fieldops/task/${id}/status`, { status: "done" })).status).toBe(200);
+    expect(await dueOf(id)).toBe("2026-07-10");
+  });
+});

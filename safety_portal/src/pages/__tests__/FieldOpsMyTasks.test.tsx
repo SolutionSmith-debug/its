@@ -45,7 +45,7 @@ import * as jobtracker from "../../lib/fieldops_jobtracker";
 import * as portalApi from "../../lib/api";
 import { fetchDailyFormStatus } from "../../lib/fieldops_daily_form";
 import { ApiError } from "../../lib/errorCopy";
-import { pacificToday } from "../../components/myTasksShared";
+import { fmtDate, pacificToday } from "../../components/myTasksShared";
 import { FieldOpsMyTasks } from "../FieldOpsMyTasks";
 import { HomePage } from "../HomePage";
 import { useAuth } from "../../lib/auth";
@@ -92,9 +92,9 @@ function placedManager(caps: string[] = ["cap.tasks.own", "cap.jobtracker.read"]
 }
 
 const TASKS: api.MyTask[] = [
-  { id: 1, job_id: "JOB-A", project_name: "Alpha", description: "Dig footings", status: "open", created_at: 100, assigned_by: "boss.bob" },
-  { id: 2, job_id: "JOB-A", project_name: "Alpha", description: "Pour slab", status: "in_progress", created_at: 90, assigned_by: null },
-  { id: 3, job_id: "JOB-B", project_name: "Bravo", description: "Frame wall", status: "open", created_at: 80, assigned_by: null },
+  { id: 1, job_id: "JOB-A", project_name: "Alpha", description: "Dig footings", status: "open", created_at: 100, assigned_by: "boss.bob", due_date: null },
+  { id: 2, job_id: "JOB-A", project_name: "Alpha", description: "Pour slab", status: "in_progress", created_at: 90, assigned_by: null, due_date: null },
+  { id: 3, job_id: "JOB-B", project_name: "Bravo", description: "Frame wall", status: "open", created_at: 80, assigned_by: null, due_date: null },
 ];
 
 function tasksOk(tasks: api.MyTask[] = TASKS, viewer: api.ViewerTaskPlacement | null = null) {
@@ -527,5 +527,43 @@ describe("FieldOpsMyTasks — R7 Log time quick action + job links", () => {
     const { container, queryByLabelText } = render(<FieldOpsMyTasks onBack={() => {}} />);
     await waitFor(() => expect(container.textContent ?? "").toContain("Alpha"));
     expect(queryByLabelText("Open Alpha in the Job Tracker")).toBeNull();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// G2.6 — task due dates on My Tasks rows: the shared myTasksShared.TaskDue chrome — `· due <date>`
+// + the SAME Overdue warn pill the inspections section uses. Overdue = NOT done AND
+// due_date < pacificToday(); a done task never warns; no date → no due chrome at all.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("FieldOpsMyTasks — G2.6 due dates + overdue pills", () => {
+  const DATED: api.MyTask[] = [
+    { id: 1, job_id: "JOB-A", project_name: "Alpha", description: "Late one", status: "open", created_at: 100, assigned_by: null, due_date: "2001-01-01" },
+    { id: 2, job_id: "JOB-A", project_name: "Alpha", description: "Late started one", status: "in_progress", created_at: 95, assigned_by: null, due_date: "2001-02-02" },
+    { id: 3, job_id: "JOB-A", project_name: "Alpha", description: "Future one", status: "open", created_at: 90, assigned_by: null, due_date: "2099-12-31" },
+    { id: 4, job_id: "JOB-A", project_name: "Alpha", description: "Undated one", status: "open", created_at: 80, assigned_by: null, due_date: null },
+    { id: 5, job_id: "JOB-A", project_name: "Alpha", description: "Done late one", status: "done", created_at: 70, assigned_by: null, due_date: "2001-01-01" },
+  ];
+
+  function rowOf(container: HTMLElement, label: string): Element {
+    return Array.from(container.querySelectorAll(".dash-tasklist li")).find((r) => r.textContent?.includes(label))!;
+  }
+
+  it("overdue pill on past-due OPEN and IN-PROGRESS tasks; never on future / done / undated", async () => {
+    tasksOk(DATED);
+    const { container } = render(<FieldOpsMyTasks onBack={() => {}} />);
+    await waitFor(() => expect(container.textContent ?? "").toContain("Late one"));
+    expect(rowOf(container, "Late one").textContent).toContain("Overdue");
+    expect(rowOf(container, "Late started one").textContent).toContain("Overdue"); // in_progress still warns
+    expect(rowOf(container, "Future one").textContent).toContain("due");
+    expect(rowOf(container, "Future one").textContent).not.toContain("Overdue");
+    expect(rowOf(container, "Done late one").textContent).not.toContain("Overdue"); // finished work never warns
+    expect(rowOf(container, "Undated one").textContent).not.toContain("due"); // no date → no chrome
+  });
+
+  it("the due date renders through the shared fmtDate (local-parts, not UTC-shifted)", async () => {
+    tasksOk([DATED[2]]);
+    const { container } = render(<FieldOpsMyTasks onBack={() => {}} />);
+    await waitFor(() => expect(container.textContent ?? "").toContain("Future one"));
+    expect(rowOf(container, "Future one").textContent).toContain(`due ${fmtDate("2099-12-31")}`);
   });
 });

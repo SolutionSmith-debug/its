@@ -36,6 +36,7 @@ its migration fail-closes `resolveCapabilities` → the universal-lockout class 
 | `0031_job_expected_materials` | M1 expected materials — [section](#expected-materials--per-job-receipt-list-material-receipts-m1--0031) | #426 | ☐ pending |
 | `0032_job_daily_requirements_kinds` | D5 requirement kinds (number/date/select) — [section](#requirement-kinds-widened-d5--0032) | #435 | ☐ pending |
 | `0033_prune_meta` | GS2 prune observability — [section](#prune-observability-gs2--0033) | #447 | ☐ pending |
+| `0035_task_due_date` | G2.6 task due dates — [section](#task-due-dates--overdue-pills-g26--0035) | #450 | ☐ pending |
 
 Canonical apply-and-deploy sequence (applies **all** pending migrations, in order — never a
 subset):
@@ -767,6 +768,29 @@ is `IS NOT NULL`-filtered so a NULL row can't poison the `NOT IN`). The Mac watc
    last run's record); after the next 09:00 UTC cron (or a `wrangler` triggered scheduled
    test), the same call returns `last_run_at` + counters with `failed_stages: []`; the next
    morning's watchdog run logs Check V INFO "D1 prune healthy".
+
+### Task due dates + overdue pills (G2.6 — `0035`)
+
+**Migration 0035** adds `task_assignments.due_date` (nullable `TEXT 'YYYY-MM-DD'`) — the
+assigned-tasks flow gains the deadline semantics inspections already have. The task CREATE
+route accepts an optional `due_date` (regex-validated, the checklist `DUE_DATE_RE` shape); a
+**reassign never touches it** (the deadline belongs to the work, not the holder). `/tasks/mine`
+and both Job Tracker task legs expose it; within each status band `/tasks/mine` now orders
+dated tasks first by `due_date ASC` (overdue → soonest-due), undated last, `created_at DESC`
+tiebreak unchanged. The SPA renders `due <date>` + the same Overdue warn pill inspections use
+(not-done AND `due_date` < Pacific-today), and the Job Tracker add-task form gains an optional
+date input. Historical tasks are not backfilled — no date, no pill, sorted after dated work.
+
+#### Activation (operator — deploy boundary; escalates to the Developer-Operator)
+
+1. Apply migration **0035** to the live D1 **BEFORE** the redeploy
+   (`npx wrangler d1 migrations apply its-safety-portal-db --remote`) — else the task
+   create/read routes 500 on the missing column. (Always `git pull` `~/its` to latest `main`
+   first — the stale-migrations-list lockout class.)
+2. **Redeploy** (`npm run deploy`).
+3. **Smoke** (live): add a task with a past due date from the Job Tracker → the task row shows
+   `due <date>` + an Overdue pill; the assignee's My Tasks lists it FIRST in the open band;
+   reassign it → the due date survives.
 
 ### Lockout recovery (break-glass) — escalate to the Developer-Operator
 
