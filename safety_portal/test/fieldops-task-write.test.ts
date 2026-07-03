@@ -1,5 +1,6 @@
-import { env, SELF } from "cloudflare:test";
+import { env } from "cloudflare:test";
 import { describe, it, expect, beforeEach } from "vitest";
+import { call, provision, login, p as j, seedJob as seedJobRow } from "./helpers";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // P2.3 Slice 3 — TASK WRITE (add / status). MIXED CAP: add = cap.jobtracker.manage (admin),
@@ -7,36 +8,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 // change a task's status but cannot create one.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const BASE = "https://portal.test";
-const ADMIN_BEARER = "test-admin-token";
-type Init = RequestInit & { cookie?: string; bearer?: string };
-
-function call(path: string, init: Init = {}): Promise<Response> {
-  const headers = new Headers(init.headers);
-  if (init.cookie) headers.set("Cookie", init.cookie);
-  if (init.bearer) headers.set("Authorization", `Bearer ${init.bearer}`);
-  if (init.body && !headers.has("content-type")) headers.set("content-type", "application/json");
-  return SELF.fetch(BASE + path, { ...init, headers });
-}
-function cookieFrom(res: Response): string {
-  return (res.headers.get("set-cookie") ?? "").split(";")[0];
-}
-async function provision(username: string, password: string, role: "submitter" | "admin"): Promise<void> {
-  const res = await call("/api/internal/admin/users", { method: "POST", bearer: ADMIN_BEARER, body: JSON.stringify({ username, password, role }) });
-  expect(res.status, await res.clone().text()).toBe(201);
-}
-async function login(username: string, password: string): Promise<string> {
-  const res = await call("/api/login", { method: "POST", body: JSON.stringify({ username, password }) });
-  expect(res.status, await res.clone().text()).toBe(200);
-  return cookieFrom(res);
-}
-const j = (cookie: string, path: string, body?: unknown) =>
-  call(path, { method: "POST", cookie, body: body === undefined ? undefined : JSON.stringify(body) });
-
-async function seedJob(jobId: string, status: string) {
-  await env.DB.prepare("INSERT INTO jobs (job_id, project_name, active, status, created_at) VALUES (?,?,?,?,?)")
-    .bind(jobId, `P ${jobId}`, status === "closed" ? 0 : 1, status, 1_700_000_000).run();
-}
+const seedJob = (jobId: string, status: string): Promise<void> => seedJobRow(jobId, { status, projectName: `P ${jobId}` });
 async function seedPersonnel(name: string): Promise<number> {
   await env.DB.prepare("INSERT INTO personnel (name, active) VALUES (?,1)").bind(name).run();
   return (await env.DB.prepare("SELECT id FROM personnel WHERE name=?").bind(name).first<{ id: number }>())!.id;

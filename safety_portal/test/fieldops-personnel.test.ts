@@ -1,42 +1,12 @@
-import { env, SELF } from "cloudflare:test";
+import { env } from "cloudflare:test";
 import { describe, it, expect, beforeEach, afterAll } from "vitest";
+import { call, provision, login } from "./helpers";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // BRIEF A — Personnel tab (cap.personnel.read, admin-only)
 // Runs against the REAL worker with Miniflare D1; SELF.fetch cookie-forwarding.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const BASE = "https://portal.test";
-const ADMIN_BEARER = "test-admin-token";
-
-type Init = RequestInit & { cookie?: string; bearer?: string };
-
-function call(path: string, init: Init = {}): Promise<Response> {
-  const headers = new Headers(init.headers);
-  if (init.cookie) headers.set("Cookie", init.cookie);
-  if (init.bearer) headers.set("Authorization", `Bearer ${init.bearer}`);
-  if (init.body && !headers.has("content-type")) headers.set("content-type", "application/json");
-  return SELF.fetch(BASE + path, { ...init, headers });
-}
-
-function cookieFrom(res: Response): string {
-  return (res.headers.get("set-cookie") ?? "").split(";")[0];
-}
-
-async function provision(username: string, password: string, role: "submitter" | "admin"): Promise<void> {
-  const res = await call("/api/internal/admin/users", {
-    method: "POST",
-    bearer: ADMIN_BEARER,
-    body: JSON.stringify({ username, password, role }),
-  });
-  expect(res.status, await res.clone().text()).toBe(201);
-}
-
-async function login(username: string, password: string): Promise<string> {
-  const res = await call("/api/login", { method: "POST", body: JSON.stringify({ username, password }) });
-  expect(res.status, await res.clone().text()).toBe(200);
-  return cookieFrom(res);
-}
 
 // Seed personnel + time_entries
 async function seedPersonnel(): Promise<{ aliceId: number; bobId: number }> {

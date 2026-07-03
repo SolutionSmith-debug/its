@@ -1,5 +1,6 @@
-import { env, SELF } from "cloudflare:test";
+import { env } from "cloudflare:test";
 import { describe, it, expect, beforeEach } from "vitest";
+import { provision, login, get, post, seedJob, seedPersonnel } from "./helpers";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Assigned-Tasks tab (P4 field-ops feature) S4 — loop-closure + count / inspection completion.
@@ -14,42 +15,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 // isolated per-test (vitest-pool-workers) so the migration-0026 daily_default seed is fresh each test.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const BASE = "https://portal.test";
-const ADMIN_BEARER = "test-admin-token";
-type Init = RequestInit & { cookie?: string; bearer?: string };
 
-function call(path: string, init: Init = {}): Promise<Response> {
-  const headers = new Headers(init.headers);
-  if (init.cookie) headers.set("Cookie", init.cookie);
-  if (init.bearer) headers.set("Authorization", `Bearer ${init.bearer}`);
-  if (init.body && !headers.has("content-type")) headers.set("content-type", "application/json");
-  return SELF.fetch(BASE + path, { ...init, headers });
-}
-function cookieFrom(res: Response): string {
-  return (res.headers.get("set-cookie") ?? "").split(";")[0];
-}
-async function provision(username: string, password: string, role: "submitter" | "manager" | "admin"): Promise<void> {
-  const res = await call("/api/internal/admin/users", { method: "POST", bearer: ADMIN_BEARER, body: JSON.stringify({ username, password, role }) });
-  expect(res.status, await res.clone().text()).toBe(201);
-}
-async function login(username: string, password: string): Promise<string> {
-  const res = await call("/api/login", { method: "POST", body: JSON.stringify({ username, password }) });
-  expect(res.status, await res.clone().text()).toBe(200);
-  return cookieFrom(res);
-}
-const get = (cookie: string, path: string) => call(path, { cookie });
-const post = (cookie: string, path: string, body?: unknown) =>
-  call(path, { method: "POST", cookie, body: body === undefined ? undefined : JSON.stringify(body) });
-
-async function seedJob(jobId: string): Promise<void> {
-  await env.DB.prepare("INSERT INTO jobs (job_id, project_name, active, status, created_at) VALUES (?,?,1,'active',?)")
-    .bind(jobId, `Project ${jobId}`, 1_700_000_000).run();
-}
-async function seedPersonnel(name: string, username: string | null, currentJob: string | null): Promise<number> {
-  await env.DB.prepare("INSERT INTO personnel (name, username, current_job, active) VALUES (?,?,?,1)")
-    .bind(name, username, currentJob).run();
-  return (await env.DB.prepare("SELECT id FROM personnel WHERE name=? ORDER BY id DESC LIMIT 1").bind(name).first<{ id: number }>())!.id;
-}
 // Insert a submission for the day (the durable record is Smartsheet/Box; this is the portal cache).
 async function seedSubmission(jobId: string, formCode: string, workDate: string): Promise<void> {
   await env.DB.prepare(
