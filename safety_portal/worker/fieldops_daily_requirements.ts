@@ -9,7 +9,9 @@ import type { DailyFormStatus, DailyRequirementItem, DailyRequirementsResponse, 
 import catalog from "../catalog.json";
 
 // SOP daily form slice D4 — per-job daily-form REQUIREMENTS (migration 0030
-// job_daily_requirements). The BASE daily form is a git-owned definition (daily-report-v4 carries a
+// job_daily_requirements; slice D5 / migration 0032 widened the kind vocabulary to seven —
+// number/date/select, the latter carrying an admin-authored JSON `options` list — so an admin
+// can add ANY answer type, not just free text). The BASE daily form is a git-owned definition (daily-report-v4 carries a
 // placeholder `job_requirements` section); this module owns the D1-backed ADDITIVE overlay an admin
 // authors per job ("as specific requirements develop or are outlined by the client"): the Daily tab
 // fetches the job's items at render time, injects them into that section, and the manager's answers
@@ -30,11 +32,16 @@ const MAX_SEQ = 100_000;
 // grow a job's ACTIVE list past the same ceiling — an authenticated-admin resource-exhaustion
 // vector otherwise (the publishValidation MAX_* bound rationale).
 const REQUIREMENTS_LIMIT = 200;
+// select-kind option-list bounds (D5, migration 0032): a pick-one list bigger than 20 is a UI
+// smell, not a requirement; 120 chars covers any realistic option label. Both refused loudly.
+const MAX_OPTIONS = 20;
+const MAX_OPTION_LEN = 120;
 
 // The closed item vocabulary BOTH renderers (SPA FormRenderer + Python form_pdf via the filed
 // values array) understand. note = read-only guidance; confirm = checkbox; text = free answer;
-// form_link = deep link to another form type.
-const KINDS = new Set(["note", "confirm", "text", "form_link"]);
+// form_link = deep link to another form type; number/date = typed answers (filed as strings,
+// like text); select = pick-one from the item's admin-authored `options` (D5, migration 0032).
+const KINDS = new Set(["note", "confirm", "text", "form_link", "number", "date", "select"]);
 
 // form_link targets store the catalog PARENT family code (the S4 loop-closure convention — the
 // filed-indicator family match runs on parents). Two validation sets from the bundled manifest:
@@ -64,12 +71,15 @@ const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 // One requirement row as served to BOTH surfaces (the tab render and the admin editor) —
 // single-sourced as DailyRequirementItem in wire-types.ts (the SPA re-exports the same type).
 
-// The normalized, validated write payload.
+// The normalized, validated write payload. `options` is the JSON-serialized option array as
+// stored in D1 (select only; NULL otherwise) — serialization happens HERE so both write routes
+// bind the same validated string.
 interface ParsedRequirement {
   seq: number;
   kind: string;
   label: string;
   form_code: string | null;
+  options: string | null;
 }
 
 // Parse + validate a requirement write body — the bounds + kind rules in one place (shared by add
@@ -95,7 +105,7 @@ function parseRequirement(
   }
 
   // form_code: required for form_link (catalog-parent-validated, daily-tab parents refused);
-  // ignored (stored null) for note/confirm/text.
+  // ignored (stored null) for every other kind.
   let formCode: string | null = null;
   if (kind === "form_link") {
     formCode = typeof body.form_code === "string" ? body.form_code.trim() : "";
@@ -104,7 +114,27 @@ function parseRequirement(
     if (DAILY_TAB_PARENT_CODES.has(formCode)) return c.json({ error: "daily_tab_form_code" }, 422);
   }
 
-  return { seq, kind, label, form_code: formCode };
+  // options (D5): REQUIRED for select — 1..MAX_OPTIONS non-empty strings, each ≤ MAX_OPTION_LEN
+  // after trim, stored as a JSON array. A non-select kind carrying options is a 400 (a shape
+  // error the admin editor never produces — stricter than form_code's ignore-on-other-kinds
+  // because a silently-dropped option list would LOOK saved in the editor's optimistic draft).
+  let options: string | null = null;
+  if (kind === "select") {
+    const raw = body.options;
+    if (!Array.isArray(raw) || raw.length < 1) return c.json({ error: "options_required" }, 400);
+    if (raw.length > MAX_OPTIONS) return c.json({ error: "invalid_options" }, 400);
+    const cleaned: string[] = [];
+    for (const o of raw) {
+      const v = typeof o === "string" ? o.trim() : "";
+      if (v.length < 1 || v.length > MAX_OPTION_LEN) return c.json({ error: "invalid_options" }, 400);
+      cleaned.push(v);
+    }
+    options = JSON.stringify(cleaned);
+  } else if (body.options !== undefined && body.options !== null) {
+    return c.json({ error: "options_not_allowed" }, 400);
+  }
+
+  return { seq, kind, label, form_code: formCode, options };
 }
 
 // Parse the JSON body, rejecting a non-object before any property access (the fieldops_task_write
@@ -125,17 +155,32 @@ async function readBody(
 // requireJob / the ownership-scope gate — shared scope machinery, see fieldops_scope.ts (extracted
 // from the local copies this module used to carry; contracts unchanged).
 
+// D1 stores `options` as JSON TEXT (0032); the wire serves it PARSED. Defensive: a row whose
+// stored JSON doesn't parse to a string array (unreachable through parseRequirement, but the
+// read must never 500 on one bad row) serves options=null — the renderer then shows the label
+// with no choices rather than dropping the whole job's list.
+function parseStoredOptions(raw: unknown): string[] | null {
+  if (typeof raw !== "string" || raw.length === 0) return null;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (Array.isArray(parsed) && parsed.every((o) => typeof o === "string")) return parsed as string[];
+  } catch {
+    /* fall through */
+  }
+  return null;
+}
+
 // Active requirements for a job, display-ordered and bounded — the ONE read both surfaces share.
 async function activeRequirements(
   c: Context<{ Bindings: Env; Variables: Vars }>,
   jobId: string,
 ): Promise<DailyRequirementItem[]> {
   const rows = await c.env.DB.prepare(
-    "SELECT id, seq, kind, label, form_code FROM job_daily_requirements WHERE job_id = ?1 AND active = 1 ORDER BY seq ASC, id ASC LIMIT ?2",
+    "SELECT id, seq, kind, label, form_code, options FROM job_daily_requirements WHERE job_id = ?1 AND active = 1 ORDER BY seq ASC, id ASC LIMIT ?2",
   )
     .bind(jobId, REQUIREMENTS_LIMIT)
-    .all<DailyRequirementItem>();
-  return rows.results ?? [];
+    .all<Omit<DailyRequirementItem, "options"> & { options: string | null }>();
+  return (rows.results ?? []).map((r) => ({ ...r, options: parseStoredOptions(r.options) }));
 }
 
 export function registerDailyRequirementsRoutes(app: FieldopsApp, gates: FieldopsGates): void {
@@ -247,9 +292,9 @@ export function registerDailyRequirementsRoutes(app: FieldopsApp, gates: Fieldop
       const res = await c.env.DB.batch([
         c.env.DB
           .prepare(
-            "INSERT INTO job_daily_requirements (job_id, seq, kind, label, form_code) VALUES (?1,?2,?3,?4,?5) RETURNING id",
+            "INSERT INTO job_daily_requirements (job_id, seq, kind, label, form_code, options) VALUES (?1,?2,?3,?4,?5,?6) RETURNING id",
           )
-          .bind(jobId, item.seq, item.kind, item.label, item.form_code),
+          .bind(jobId, item.seq, item.kind, item.label, item.form_code, item.options),
         auditStmt(c, actor, "daily_requirement_add", jobId, { job_id: jobId, ...item }),
       ]);
       const newId = (res[0].results?.[0] as { id: number } | undefined)?.id ?? null;
@@ -279,9 +324,9 @@ export function registerDailyRequirementsRoutes(app: FieldopsApp, gates: Fieldop
       const res = await c.env.DB.batch([
         c.env.DB
           .prepare(
-            "UPDATE job_daily_requirements SET seq=?3, kind=?4, label=?5, form_code=?6 WHERE id=?1 AND job_id=?2 AND active=1",
+            "UPDATE job_daily_requirements SET seq=?3, kind=?4, label=?5, form_code=?6, options=?7 WHERE id=?1 AND job_id=?2 AND active=1",
           )
-          .bind(itemId, jobId, item.seq, item.kind, item.label, item.form_code),
+          .bind(itemId, jobId, item.seq, item.kind, item.label, item.form_code, item.options),
         auditStmtIfChanged(c, actor, "daily_requirement_edit", jobId, { job_id: jobId, item_id: itemId, ...item }),
       ]);
       if ((res[0].meta.changes ?? 0) === 0) return c.json({ error: "not_found" }, 404);

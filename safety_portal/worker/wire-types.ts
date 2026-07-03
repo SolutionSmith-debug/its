@@ -159,8 +159,16 @@ export interface DailyFormStatus {
 
 // ── GET /api/fieldops/daily-form/requirements ───────────────────────────────────────────────────
 
-/** The closed requirement-item vocabulary (D1 job_daily_requirements.kind, migration 0030). */
-export type DailyRequirementKind = "note" | "confirm" | "text" | "form_link";
+/** The closed requirement-item vocabulary (D1 job_daily_requirements.kind, migration 0030;
+ *  number/date/select added by 0032 — slice D5). */
+export type DailyRequirementKind =
+  | "note"
+  | "confirm"
+  | "text"
+  | "form_link"
+  | "number"
+  | "date"
+  | "select";
 
 /** One admin-authored per-job requirement item, as served by
  *  GET /api/fieldops/daily-form/requirements (active items only, seq order, bounded). */
@@ -170,6 +178,7 @@ export interface DailyRequirementItem {
   kind: DailyRequirementKind;
   label: string;
   form_code: string | null; // form_link only: a catalog PARENT family code
+  options: string[] | null; // select only: the pick-one choices (D1 stores JSON; served PARSED)
 }
 
 export interface DailyRequirementsResponse {

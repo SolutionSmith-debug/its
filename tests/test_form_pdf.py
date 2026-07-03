@@ -660,7 +660,9 @@ def test_job_requirements_renders_values_array_generically() -> None:
     """The filed values array (values.job_requirements = [{label, kind, response}]) renders
     as generic label→response rows under the section title — the filed PDF shows the client
     requirements + answers exactly as answered (self-describing; stable regardless of later
-    requirement edits)."""
+    requirement edits). The D5 kinds (number / date / select — migration 0032) ride the SAME
+    generic rows: every kind's response is a string, so the renderer needs no per-kind code
+    and new kinds render for free."""
     submission = {
         "job_name": "B1", "work_date": "2026-07-02",
         "values": {"job_requirements": [
@@ -668,6 +670,9 @@ def test_job_requirements_renders_values_array_generically() -> None:
             {"label": "Badge in at the client gate", "kind": "confirm",
              "response": "Confirmed"},
             {"label": "Client rep spoken to today", "kind": "text", "response": "Ana R."},
+            {"label": "Crew headcount at the gate", "kind": "number", "response": "12"},
+            {"label": "Client walkthrough date", "kind": "date", "response": "2026-07-10"},
+            {"label": "Shift worked", "kind": "select", "response": "Night shift"},
         ]},
     }
     out = render_submission_pdf(_REQS_FIXTURE, submission)
@@ -677,6 +682,10 @@ def test_job_requirements_renders_values_array_generically() -> None:
     assert "Client requires FR clothing" in text          # a note rides along (label only)
     assert "Badge in at the client gate" in text and "Confirmed" in text
     assert "Client rep spoken to today" in text and "Ana R." in text
+    # D5 kinds — label: response rows, no per-kind rendering needed.
+    assert "Crew headcount at the gate" in text and "12" in text
+    assert "Client walkthrough date" in text and "2026-07-10" in text
+    assert "Shift worked" in text and "Night shift" in text
 
 
 def test_job_requirements_absent_or_empty_is_skipped() -> None:

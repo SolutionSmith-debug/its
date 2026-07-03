@@ -14,10 +14,16 @@ import { call, provision, login, seedJob, seedPersonnel } from "./helpers";
 //   • The tab read (GET /api/fieldops/daily-form/requirements): cap.tasks.own + the SAME per-job
 //     ownership scope as /daily-form/status — a non-admin actor only their OWN placement (403
 //     forbidden_job), admins any job. Active items only, seq order, bounded shape.
+//   • D5 (migration 0032): the kind vocabulary widened to seven — number / date (no extra fields)
+//     and select (REQUIRES `options`: 1..20 non-empty strings ≤120 chars, JSON-stored, served
+//     parsed; a non-select kind carrying options is a 400, never a silent drop).
 // Runs against the REAL worker with Miniflare D1 (migrations auto-apply); per-test isolation.
 // ─────────────────────────────────────────────────────────────────────────────
 
-interface ReqItem { id: number; seq: number; kind: string; label: string; form_code: string | null }
+interface ReqItem {
+  id: number; seq: number; kind: string; label: string; form_code: string | null;
+  options: string[] | null;
+}
 async function list(cookie: string, jobId: string): Promise<ReqItem[]> {
   const res = await call(`/api/fieldops/daily-form/requirements?job_id=${encodeURIComponent(jobId)}`, { cookie });
   expect(res.status, await res.clone().text()).toBe(200);
@@ -155,6 +161,81 @@ describe("daily requirements — form_link catalog validation", () => {
     const res = await add(admin, "JOB-A", { kind: "confirm", label: "x", form_code: "jha" });
     expect(res.status).toBe(201);
     expect((await list(admin, "JOB-A"))[0].form_code).toBeNull();
+  });
+});
+
+describe("daily requirements — D5 kinds (0032): number / date / select + options validation", () => {
+  it("number and date are accepted like text (no extra fields; options stored NULL)", async () => {
+    expect((await add(admin, "JOB-A", { kind: "number", label: "Crew headcount", seq: 10 })).status).toBe(201);
+    expect((await add(admin, "JOB-A", { kind: "date", label: "Walkthrough date", seq: 20 })).status).toBe(201);
+    const items = await list(admin, "JOB-A");
+    expect(items.map((i) => i.kind)).toEqual(["number", "date"]);
+    expect(items.every((i) => i.options === null && i.form_code === null)).toBe(true);
+  });
+
+  it("select CRUD with options: stored as JSON, served PARSED (add → read → edit → read)", async () => {
+    const res = await add(admin, "JOB-A", {
+      kind: "select", label: "Shift worked", seq: 10, options: ["Day shift", "Night shift"],
+    });
+    expect(res.status, await res.clone().text()).toBe(201);
+    const [item] = await list(admin, "JOB-A");
+    expect(item.options).toEqual(["Day shift", "Night shift"]); // parsed array, not the JSON string
+    // D1 stores the JSON text.
+    const raw = await env.DB.prepare("SELECT options FROM job_daily_requirements WHERE id=?1")
+      .bind(item.id).first<{ options: string }>();
+    expect(raw!.options).toBe('["Day shift","Night shift"]');
+    // Edit replaces the option list (full-payload replace, same as every other field).
+    const ok = await edit(admin, "JOB-A", item.id, {
+      kind: "select", label: "Shift worked", seq: 10, options: ["Day", "Night", "Swing"],
+    });
+    expect(ok.status, await ok.clone().text()).toBe(200);
+    expect((await list(admin, "JOB-A"))[0].options).toEqual(["Day", "Night", "Swing"]);
+    expect(await auditCount("daily_requirement_edit")).toBe(1);
+  });
+
+  it("options are trimmed on the way in (whitespace-padded options stored clean)", async () => {
+    await add(admin, "JOB-A", { kind: "select", label: "s", options: ["  Day  ", "Night"] });
+    expect((await list(admin, "JOB-A"))[0].options).toEqual(["Day", "Night"]);
+  });
+
+  it("select bounds: 0 options → 400 options_required; missing options → 400; 21 → 400; oversize option → 400; blank option → 400", async () => {
+    const r0 = await add(admin, "JOB-A", { kind: "select", label: "s", options: [] });
+    expect(r0.status).toBe(400);
+    expect(((await r0.json()) as { error: string }).error).toBe("options_required");
+    expect((await add(admin, "JOB-A", { kind: "select", label: "s" })).status).toBe(400);
+    const r21 = await add(admin, "JOB-A", {
+      kind: "select", label: "s", options: Array.from({ length: 21 }, (_, i) => `opt ${i}`),
+    });
+    expect(r21.status).toBe(400);
+    expect(((await r21.json()) as { error: string }).error).toBe("invalid_options");
+    expect((await add(admin, "JOB-A", { kind: "select", label: "s", options: ["x".repeat(121)] })).status).toBe(400);
+    expect((await add(admin, "JOB-A", { kind: "select", label: "s", options: ["ok", "   "] })).status).toBe(400);
+    expect((await add(admin, "JOB-A", { kind: "select", label: "s", options: ["ok", 7] })).status).toBe(400);
+    // 20 options of 120 chars are the inclusive maxima — accepted.
+    const rMax = await add(admin, "JOB-A", {
+      kind: "select", label: "s", options: Array.from({ length: 20 }, (_, i) => `${i}`.padEnd(120, "x")),
+    });
+    expect(rMax.status, await rMax.clone().text()).toBe(201);
+    expect(await auditCount("daily_requirement_add")).toBe(1); // only the accepted one audited
+  });
+
+  it("a NON-select kind carrying options → 400 options_not_allowed (never silently dropped)", async () => {
+    for (const kind of ["note", "confirm", "text", "number", "date", "form_link"]) {
+      const res = await add(admin, "JOB-A", { kind, label: "x", form_code: "jha", options: ["A"] });
+      expect(res.status, `kind=${kind}`).toBe(400);
+      expect(((await res.json()) as { error: string }).error).toBe("options_not_allowed");
+    }
+    // The EDIT route shares parseRequirement — same refusal.
+    const created = (await (await add(admin, "JOB-A", { kind: "note", label: "seed" })).json()) as { id: number };
+    expect((await edit(admin, "JOB-A", created.id, { kind: "text", label: "x", options: ["A"] })).status).toBe(400);
+    expect(await auditCount("daily_requirement_edit")).toBe(0);
+  });
+
+  it("the old kinds still round-trip unchanged (options NULL on the wire)", async () => {
+    await add(admin, "JOB-A", { kind: "confirm", label: "Badge in", seq: 10 });
+    await add(admin, "JOB-A", { kind: "form_link", label: "File the JHA", form_code: "jha", seq: 20 });
+    const items = await list(admin, "JOB-A");
+    expect(items.map((i) => [i.kind, i.options])).toEqual([["confirm", null], ["form_link", null]]);
   });
 });
 

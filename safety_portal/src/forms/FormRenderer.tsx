@@ -59,7 +59,10 @@ export interface FormLinkAdapter {
  *  on purpose: the submission carries the label + kind it answered, so the filed payload (and the
  *  PDF rendered from it) is stable regardless of later requirement edits. note items ride along
  *  with an empty response (they were shown, not answered); confirm = "Confirmed" | "";
- *  text = the typed answer; form_link = "" (the linked form files as its OWN submission). */
+ *  text = the typed answer; form_link = "" (the linked form files as its OWN submission);
+ *  number/date (D5) = the typed value as a string; select (D5) = the chosen option string.
+ *  Every kind's response is a STRING — the PDF's generic label→response rows need no new
+ *  handling when kinds are added. */
 export interface JobRequirementResponse {
   label: string;
   kind: string;
@@ -282,16 +285,41 @@ function SectionView(p: SectionProps) {
                 </label>
               );
             }
-            if (it.kind === "text") {
+            // text / number / date all capture a plain string answer through the same
+            // self-describing {label, kind, response} shape (D5 added number + date) — only the
+            // input control differs, so the filed values array (and the PDF's generic
+            // label→response rows) need no new handling.
+            if (it.kind === "text" || it.kind === "number" || it.kind === "date") {
               return (
                 <label key={it.id} className="field">
                   <span className="field__label">{it.label}</span>
                   <input
                     className="field__input"
-                    type="text"
+                    type={it.kind === "text" ? "text" : it.kind}
+                    inputMode={it.kind === "number" ? "numeric" : undefined}
                     value={responseFor(it)}
                     onChange={(e) => p.setRequirement(s.key, items, it.id, e.target.value)}
                   />
+                </label>
+              );
+            }
+            // select (D5) — pick-one from the item's admin-authored options; the chosen option
+            // string IS the response (the empty default files as "", i.e. unanswered).
+            if (it.kind === "select") {
+              const opts = it.options ?? [];
+              return (
+                <label key={it.id} className="field">
+                  <span className="field__label">{it.label}</span>
+                  <select
+                    className="field__input"
+                    value={responseFor(it)}
+                    onChange={(e) => p.setRequirement(s.key, items, it.id, e.target.value)}
+                  >
+                    <option value="">— select —</option>
+                    {opts.map((o, oi) => (
+                      <option key={oi} value={o}>{o}</option>
+                    ))}
+                  </select>
                 </label>
               );
             }

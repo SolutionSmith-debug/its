@@ -3,8 +3,10 @@
  * admin editor mounted on the Job Tracker job detail (cap.checklist.manage; the mount itself is
  * gated by the page — this file tests the section's own behavior):
  *   • lists the job's items with HUMAN kind labels (+ the catalog form name for form_link);
- *   • add flow: kind select with human labels; the catalog form picker appears ONLY for the
+ *   • add flow: kind select with human labels (all SEVEN kinds since D5 — note/confirm/text/
+ *     number/date/select/form_link); the catalog form picker appears ONLY for the
  *     form_link kind and EXCLUDES launch:"daily-tab" parents (the daily form can't link itself);
+ *     the one-per-line options textarea appears ONLY for select and round-trips cleaned options;
  *   • inline edit (full-payload replace) + reorder via seq re-writes through the edit route;
  *   • remove = ConfirmDelete-gated DEACTIVATE (no lib call until the explicit Confirm);
  *   • never-silent: load failure → SectionError + working Retry; action failure → inline banner.
@@ -34,8 +36,8 @@ import { ApiError } from "../../lib/errorCopy";
 import { JobDailyRequirementsSection } from "../JobDailyRequirementsSection";
 
 const ITEMS: DailyRequirementItem[] = [
-  { id: 1, seq: 10, kind: "confirm", label: "Badge in at the client gate", form_code: null },
-  { id: 2, seq: 20, kind: "form_link", label: "File the client JHA", form_code: "jha" },
+  { id: 1, seq: 10, kind: "confirm", label: "Badge in at the client gate", form_code: null, options: null },
+  { id: 2, seq: 20, kind: "form_link", label: "File the client JHA", form_code: "jha", options: null },
 ];
 
 afterEach(cleanup);
@@ -107,6 +109,62 @@ describe("add flow", () => {
     );
   });
 
+  it("offers all SEVEN kinds with human labels (D5: number / date / select added)", async () => {
+    const { getByLabelText } = render(<JobDailyRequirementsSection jobId="JOB-A" />);
+    await waitFor(() => expect(getByLabelText("Add requirement kind")).not.toBeNull());
+    const kindSelect = getByLabelText("Add requirement kind") as HTMLSelectElement;
+    expect(Array.from(kindSelect.options).map((o) => o.value)).toEqual([
+      "note", "confirm", "text", "number", "date", "select", "form_link",
+    ]);
+    expect(Array.from(kindSelect.options).map((o) => o.textContent)).toEqual([
+      "Note", "Confirm", "Text answer", "Number answer", "Date answer", "Choice (pick one)", "Form link",
+    ]);
+  });
+
+  it("the options textarea appears ONLY for the select kind, and the add round-trips cleaned one-per-line options", async () => {
+    const { getByLabelText, queryByLabelText } = render(<JobDailyRequirementsSection jobId="JOB-A" />);
+    await waitFor(() => expect(getByLabelText("Add requirement kind")).not.toBeNull());
+    expect(queryByLabelText("Add requirement options")).toBeNull(); // note (default) → no options editor
+    fireEvent.change(getByLabelText("Add requirement kind"), { target: { value: "number" } });
+    expect(queryByLabelText("Add requirement options")).toBeNull(); // other new kinds don't either
+    fireEvent.change(getByLabelText("Add requirement kind"), { target: { value: "select" } });
+    fireEvent.change(getByLabelText("Add requirement label"), { target: { value: "Shift worked" } });
+    // Raw lines keep blanks/whitespace while typing; the SUBMIT payload is cleaned.
+    fireEvent.change(getByLabelText("Add requirement options"), {
+      target: { value: "Day shift\n  Night shift  \n\n" },
+    });
+    fireEvent.submit(getByLabelText("Add requirement"));
+    await waitFor(() =>
+      expect(addRequirement).toHaveBeenCalledWith("JOB-A", {
+        kind: "select", label: "Shift worked", options: ["Day shift", "Night shift"], seq: 30,
+      }),
+    );
+  });
+
+  it("a select with NO non-empty options is blocked client-side with the inline banner (no lib call)", async () => {
+    const { container, getByLabelText } = render(<JobDailyRequirementsSection jobId="JOB-A" />);
+    await waitFor(() => expect(getByLabelText("Add requirement kind")).not.toBeNull());
+    fireEvent.change(getByLabelText("Add requirement kind"), { target: { value: "select" } });
+    fireEvent.change(getByLabelText("Add requirement label"), { target: { value: "Shift worked" } });
+    fireEvent.change(getByLabelText("Add requirement options"), { target: { value: "  \n\n" } });
+    fireEvent.submit(getByLabelText("Add requirement"));
+    expect(addRequirement).not.toHaveBeenCalled();
+    expect(container.querySelector(".banner--err")?.textContent).toContain("at least one option");
+  });
+
+  it("switching the kind away from select DROPS the drafted options from the payload (the Worker 400s a stray list)", async () => {
+    const { getByLabelText } = render(<JobDailyRequirementsSection jobId="JOB-A" />);
+    await waitFor(() => expect(getByLabelText("Add requirement kind")).not.toBeNull());
+    fireEvent.change(getByLabelText("Add requirement kind"), { target: { value: "select" } });
+    fireEvent.change(getByLabelText("Add requirement options"), { target: { value: "A\nB" } });
+    fireEvent.change(getByLabelText("Add requirement kind"), { target: { value: "text" } });
+    fireEvent.change(getByLabelText("Add requirement label"), { target: { value: "Plain answer" } });
+    fireEvent.submit(getByLabelText("Add requirement"));
+    await waitFor(() =>
+      expect(addRequirement).toHaveBeenCalledWith("JOB-A", { kind: "text", label: "Plain answer", seq: 30 }),
+    );
+  });
+
   it("an add failure lands in the inline banner with the controls re-enabled (never silent)", async () => {
     vi.mocked(addRequirement).mockRejectedValue(new ApiError(null, 500));
     const { container, getByLabelText } = render(<JobDailyRequirementsSection jobId="JOB-A" />);
@@ -145,6 +203,24 @@ describe("edit + reorder", () => {
     expect(editRequirement).toHaveBeenCalledWith("JOB-A", 1, {
       kind: "confirm", label: "Badge in at the client gate", seq: 20,
     });
+  });
+
+  it("Edit prefills a select row's options one per line and saves the full replace payload (D5 round-trip)", async () => {
+    vi.mocked(fetchDailyRequirements).mockResolvedValue([
+      { id: 3, seq: 10, kind: "select", label: "Shift worked", form_code: null, options: ["Day shift", "Night shift"] },
+    ]);
+    const { getByLabelText } = render(<JobDailyRequirementsSection jobId="JOB-A" />);
+    await waitFor(() => expect(getByLabelText("Edit requirement Shift worked")).not.toBeNull());
+    fireEvent.click(getByLabelText("Edit requirement Shift worked"));
+    const ta = getByLabelText("Edit requirement options") as HTMLTextAreaElement;
+    expect(ta.value).toBe("Day shift\nNight shift"); // prefilled from the row, one per line
+    fireEvent.change(ta, { target: { value: "Day shift\nNight shift\nSwing" } });
+    fireEvent.submit(getByLabelText("Edit requirement"));
+    await waitFor(() =>
+      expect(editRequirement).toHaveBeenCalledWith("JOB-A", 3, {
+        kind: "select", label: "Shift worked", seq: 10, options: ["Day shift", "Night shift", "Swing"],
+      }),
+    );
   });
 
   it("the end rows' out-of-range moves are disabled (no dead writes)", async () => {

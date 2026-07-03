@@ -48,8 +48,10 @@ leaving", "file our JHA form daily"), you don't edit the form definition — you
 job**: Home → **Job Tracker** → open the job → **"Daily form — job requirements"**.
 
 - Add an item and pick its kind: **Note** (guidance text the manager reads), **Confirm** (a
-  checkbox), **Text answer** (a fill-in), or **Form link** (a "Create <form> →" button to another
-  form type).
+  checkbox), **Text answer** (a fill-in), **Number answer** (a numeric fill-in), **Date answer**
+  (a calendar-date picker), **Choice — pick one** (a dropdown; list the options one per line, up
+  to 20), or **Form link** (a "Create <form> →" button to another form type). *(There is no Photo
+  kind — image uploads need a separate security screening design first; see the runbook.)*
 - Every manager placed on that job sees the items inside their Daily report under
   **"Job-specific requirements"** on their next load, and their answers **file with the daily
   report** (they appear in the filed PDF as requirement → answer rows).

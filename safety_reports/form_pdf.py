@@ -580,8 +580,10 @@ def _section_flowables(section: dict, values: dict, st: dict) -> list[Flowable]:
         # values array (values[<key>] = [{label, kind, response}], captured by the portal
         # from the job's D1 overlay at fill time). Rendered GENERICALLY as label→response
         # rows, so the filed PDF shows the client requirements + answers exactly as
-        # answered, stable regardless of later requirement edits. Absent/empty → the
-        # whole section is skipped (a job with no requirements adds nothing to the PDF).
+        # answered, stable regardless of later requirement edits — and new kinds render
+        # for free (D5 / migration 0032 added number/date/select; every kind's response is
+        # a plain string, so no per-kind branch exists or is needed here). Absent/empty →
+        # the whole section is skipped (a job with no requirements adds nothing to the PDF).
         entries = values.get(section.get("key", "job_requirements"))
         if not isinstance(entries, list) or not entries:
             return []
