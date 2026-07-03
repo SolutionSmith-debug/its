@@ -205,6 +205,54 @@ describe("validateDefinition — guidance / form_link (SOP daily form D1)", () =
   });
 });
 
+// ── job_requirements section (SOP daily form, slice D4) ───────────────────────────
+describe("validateDefinition — job_requirements (per-job requirements D4)", () => {
+  // Base: the shipped daily-report-v4 (carries the placeholder section).
+  const dr4 = () => structuredClone(FORMS["daily-report-v4"]);
+  const dr4Ctx = () => ctxFor(FORMS["daily-report-v4"]);
+
+  it("daily-report-v4 (with the job_requirements placeholder) validates ok", () => {
+    expect(validateDefinition(dr4(), dr4Ctx())).toEqual({ ok: true });
+  });
+  it("rejects a job_requirements section with a missing / malformed key", () => {
+    const d = dr4();
+    const jr = sectionOfType(d, "job_requirements");
+    delete jr.key;
+    expect(validateDefinition(d, dr4Ctx()).ok).toBe(false);
+    const d2 = dr4();
+    sectionOfType(d2, "job_requirements").key = "Not Snake";
+    expect(validateDefinition(d2, dr4Ctx()).ok).toBe(false);
+  });
+  it("the key IS a top-level value key: colliding with another section's key is rejected", () => {
+    const d = dr4();
+    sectionOfType(d, "job_requirements").key = "comments"; // the freeform's key
+    const r = validateDefinition(d, dr4Ctx());
+    expect(r.ok).toBe(false);
+    expect((r as { reason: string }).reason).toMatch(/duplicate value key/);
+  });
+  it("a reserved envelope key (work_date) is rejected as the section key", () => {
+    const d = dr4();
+    sectionOfType(d, "job_requirements").key = "work_date";
+    expect(validateDefinition(d, dr4Ctx()).ok).toBe(false);
+  });
+  it("AT MOST ONE job_requirements section — a second mount (even under a different key) is rejected", () => {
+    const d = dr4();
+    (d.sections as Record<string, unknown>[]).push({
+      type: "job_requirements", key: "job_requirements_two", title: "Second mount",
+    });
+    const r = validateDefinition(d, dr4Ctx());
+    expect(r.ok).toBe(false);
+    expect((r as { reason: string }).reason).toMatch(/multiple job_requirements/);
+  });
+  it("rejects a non-string title", () => {
+    const d = dr4();
+    sectionOfType(d, "job_requirements").title = 7;
+    const r = validateDefinition(d, dr4Ctx());
+    expect(r.ok).toBe(false);
+    expect((r as { reason: string }).reason).toMatch(/job_requirements invalid title/);
+  });
+});
+
 // ── endpoint harness (mirrors test/session-epoch.test.ts) ───────────────────────
 const BASE = "https://portal.test";
 const ADMIN_BEARER = "test-admin-token";

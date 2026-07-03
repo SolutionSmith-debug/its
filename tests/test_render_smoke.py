@@ -157,6 +157,18 @@ def _synthesize_submission(definition: dict) -> dict:
             values[section["key"]] = cl
         elif typ == "freeform":
             values[section["key"]] = "Synthesized freeform answer."
+        elif typ == "job_requirements":
+            # Slice D4: the per-job overlay's SELF-DESCRIBING answers array — the portal
+            # captures it at fill time; the smoke synthesizes one of each answerable kind
+            # so the generic label→response table branch renders (empty → section skipped,
+            # which would silently drop the title needle below).
+            values[section["key"]] = [
+                {"label": "Synthesized client note", "kind": "note", "response": ""},
+                {"label": "Synthesized confirm requirement", "kind": "confirm",
+                 "response": "Confirmed"},
+                {"label": "Synthesized text requirement", "kind": "text",
+                 "response": "Synthesized requirement answer."},
+            ]
         # static_text / content_blocks: nothing to fill.
     return {"job_name": "Bradley 1", "work_date": "2026-06-03", "values": values}
 

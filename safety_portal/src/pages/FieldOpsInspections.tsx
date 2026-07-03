@@ -761,7 +761,9 @@ export function FieldOpsInspections({ onBack }: { onBack: () => void }) {
         The <strong>inspection checklists</strong> you author and assign to a manager or subcontractor
         (they appear in that person's My Tasks tab). The daily report's content is no longer a
         checklist edited here — it lives in the Daily Field Report <strong>form definition</strong>{" "}
-        (edit it in Forms, the form builder).
+        (edit it in Forms, the form builder). <strong>Per-job daily-form requirements</strong>{" "}
+        (client-specific items rendered inside each day's Daily Report) live on each job's detail
+        page in the Job Tracker.
       </p>
 
       <section className="card dash-section" aria-label="Inspection library">

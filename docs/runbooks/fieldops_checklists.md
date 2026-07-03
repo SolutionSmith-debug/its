@@ -4,7 +4,7 @@ date: 2026-07-01
 status: active
 related_prs: []
 workstream: field_ops
-tags: [runbook, successor-remediation, checklist, daily-report, sop-daily-form, inspection-library, assigned-tasks, tier-2, tier-3]
+tags: [runbook, successor-remediation, checklist, daily-report, sop-daily-form, job-requirements, inspection-library, assigned-tasks, tier-2, tier-3]
 ---
 
 # Runbook — Field-Ops daily report (SOP form) + assigned inspections (Successor-Remediation, Op Stds §43)
@@ -109,13 +109,59 @@ returns a 500 or nothing happens (a Worker regression, high-class).
 
 ## Symptom E — "The daily report's questions/text are wrong or need to change" (reference, not a fault)
 
-The daily content lives in the **current `daily-report` form definition** (`daily-report-v3` since
-D3, 2026-07-02 — the 50-photo minimum removed, a "Site photos" upload added), edited exactly like any other
+The daily content lives in the **current `daily-report` form definition** (`daily-report-v4` since
+D4, 2026-07-02 — v3's content plus the "Job-specific requirements" placeholder section; v3 itself was
+the D3 photo-upload cut), edited exactly like any other
 form: Home → **Forms** (the form builder, `cap.admin.formbuilder`) → Daily Field Report → edit →
 publish. The publish pipeline (Worker validation → Mac daemon actuator) applies it; already-filed
 submissions keep the version they were filed under (definitions are append-only). There is **no
 checklist template to edit** — the old "Default daily checklist" editor (Checklists page) and the
-per-job checklist editor (Job Tracker detail) were retired with D2.
+per-job checklist editor (Job Tracker detail) were retired with D2. **Per-JOB tailoring** is NOT a
+definition edit — see Symptom F below (the "Daily form — job requirements" editor on the job's
+detail page).
+
+---
+
+## Symptom F — "A client wants extra items on the daily form for ONE job" (reference + faults; slice D4)
+
+**This is the per-job daily-form requirements editor** (operator intent 2026-07-02: "admin accounts
+can edit the daily form per job as specific requirements develop or are outlined by the client").
+The BASE daily form stays the git-owned definition (Symptom E); per-job tailoring is an **additive
+overlay** stored in the portal's D1 (`job_daily_requirements`, migration `0030`) and edited at:
+Home → **Job Tracker** → the job → **"Daily form — job requirements"** (admin,
+`cap.checklist.manage`).
+
+- **Item kinds**: *Note* (read-only guidance text), *Confirm* (a checkbox — files as "Confirmed"),
+  *Text answer* (a fill-in), *Form link* (a "Create <form> →" deep link; the form picker offers
+  real catalog form types and refuses the daily form itself).
+- **Where it shows up**: every manager placed on that job sees the items inside their Daily report
+  tab under **"Job-specific requirements"** (near the end of the form), on their NEXT load — a
+  mid-day edit shows on the next open, never mid-fill (snapshot-at-render).
+- **What files**: the manager's answers ride the submission
+  (`values.job_requirements = [{label, kind, response}]`) and render in the filed PDF as a
+  label→response table. **Historical PDFs never change** when you edit/remove items later — the
+  filed values are self-describing.
+- **Remove** = deactivate (soft delete): the item disappears from new renders; already-filed
+  reports keep their answers; the audit log keeps the record.
+
+**Low-class repairs (Tier-2):**
+
+1. *"The section doesn't show on the manager's Daily report"* — first check the job: the editor
+   items live per-job, so confirm the manager is PLACED on the job you edited (Symptom A covers
+   placement). Zero active items → the section deliberately renders nothing. Then have the manager
+   refresh the page (items are fetched on load).
+2. *"Couldn't load this job's added requirements" warn on the Daily tab* — transient read failure;
+   the form still works without the section. Retry the warn's button / refresh. Persistent → the
+   same triage as Symptom B (session, then escalate).
+3. *"I can't add an item — 'too_many_items'"* — the per-job ceiling (200 active items) was hit;
+   deactivate stale items first. A legitimate need for more than 200 → escalate (code bound).
+4. *"The form picker won't offer the Daily Field Report"* — deliberate (a daily-form link inside
+   the daily form would be circular). Pick the real target form type.
+
+**Escalate to Seth (high-class):** the add/edit/deactivate routes 500ing on valid input; the tab
+read 403ing a manager who IS placed on the job (ownership-scope bug); anything requiring a
+migration or Worker deploy (`0030` must be applied to live D1 **before** the Worker that serves
+these routes deploys — the deploy-lockout class; see the migration header).
 
 ---
 

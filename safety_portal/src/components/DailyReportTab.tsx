@@ -2,9 +2,20 @@ import { useEffect, useRef, useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import * as api from "../lib/api";
 import * as jobs from "../lib/fieldops_jobtracker";
-import { fetchDailyFormStatus, type DailyFormStatus } from "../lib/fieldops_daily_form";
+import {
+  fetchDailyFormStatus,
+  fetchDailyRequirements,
+  type DailyFormStatus,
+  type DailyRequirementItem,
+} from "../lib/fieldops_daily_form";
 import { formCatalog, getDefinition, resolveFormTarget } from "../forms/registry";
-import { FormRenderer, initialValues, type FormLinkAdapter, type FormValues } from "../forms/FormRenderer";
+import {
+  FormRenderer,
+  initialValues,
+  seedRequirementResponses,
+  type FormLinkAdapter,
+  type FormValues,
+} from "../forms/FormRenderer";
 import { useSubmissionId } from "../pages/useSubmissionId";
 import type { FormPrefill } from "../pages/FormFillPage";
 import { useAuth } from "../lib/auth";
@@ -109,6 +120,15 @@ export function DailyReportTab({
 
   const [status, setStatus] = useState<DailyFormStatus | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
+
+  // ── Per-job requirements (slice D4) — the admin-authored D1 overlay rendered inside the
+  // form's job_requirements section. Per JOB (not per date); the answers live in values under
+  // the definition's section key, so the draft/submit machinery carries them for free.
+  const [requirements, setRequirements] = useState<DailyRequirementItem[] | null>(null);
+  const [reqError, setReqError] = useState<string | null>(null);
+  // The section's value key, read from the definition (daily-report-v4: "job_requirements").
+  const reqSection = def?.sections.find((s) => s.type === "job_requirements");
+  const reqKey = reqSection && "key" in reqSection ? reqSection.key : "job_requirements";
 
   const [busy, setBusy] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -231,14 +251,18 @@ export function DailyReportTab({
             owner_rental: "",
           }));
         }
-        lastPrefill.current = seeded;
+        // MERGE into the seed store (D4): the requirements loader contributes its own seed key —
+        // neither loader may clobber the other's contribution.
+        lastPrefill.current = { ...lastPrefill.current, ...seeded };
         // A persisted draft (typed work from before an unmount) WINS over the prefill; otherwise
-        // apply the seed only over a pristine form — never clobber typed work on a refresh.
+        // apply the seed only over a pristine form — never clobber typed work on a refresh. The
+        // seed store spreads UNDER the draft so keys the draft predates (e.g. the D4
+        // requirements array in a pre-D4 draft) are still seeded — the draft wins where present.
         const draft = readDraft(placedJob, dateRef.current);
         if (draft) {
           dirtyRef.current = true;
-          setValues({ ...initialValues(def), ...draft });
-        } else if (!dirtyRef.current) setValues({ ...initialValues(def), ...seeded });
+          setValues({ ...initialValues(def), ...lastPrefill.current, ...draft });
+        } else if (!dirtyRef.current) setValues({ ...initialValues(def), ...lastPrefill.current });
       } catch {
         // Best-effort by design (spec): failure = empty tables + a soft warn, never a blocker.
         if (active) {
@@ -252,6 +276,47 @@ export function DailyReportTab({
       active = false;
     };
   }, [placedJob, def, refreshToken]);
+
+  // ── Per-job requirements (D4) — fetch + seed. Never a blocker: a failure soft-warns with a
+  // Retry (the R2 never-silent bar) and the form still works (no prop → the section renders
+  // nothing). Success seeds values[reqKey] with the self-describing all-empty answers array so a
+  // zero-interaction submission still files what it displayed; a draft / amend-load already
+  // carrying answers wins (merge-if-absent).
+  async function loadRequirements(jobId: string) {
+    try {
+      const items = await fetchDailyRequirements(jobId);
+      setRequirements(items);
+      setReqError(null);
+      const seed = seedRequirementResponses(items);
+      lastPrefill.current = { ...lastPrefill.current, [reqKey]: seed };
+      setValues((v) => (v[reqKey] === undefined ? { ...v, [reqKey]: seed } : v));
+    } catch (err) {
+      setReqError(errMsg(err, "Couldn't load this job's added requirements."));
+    }
+  }
+
+  useEffect(() => {
+    if (!placedJob) return;
+    let active = true;
+    void (async () => {
+      // Wrapped like the status effect so a stale (job-switched) response can't land.
+      try {
+        const items = await fetchDailyRequirements(placedJob);
+        if (!active) return;
+        setRequirements(items);
+        setReqError(null);
+        const seed = seedRequirementResponses(items);
+        lastPrefill.current = { ...lastPrefill.current, [reqKey]: seed };
+        setValues((v) => (v[reqKey] === undefined ? { ...v, [reqKey]: seed } : v));
+      } catch (err) {
+        if (active) setReqError(errMsg(err, "Couldn't load this job's added requirements."));
+      }
+    })();
+    return () => {
+      active = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [placedJob, refreshToken]);
 
   // ── Filed status (the form_link indicators + the filed banner) + the amend candidate. ──────────
   async function loadStatus(jobId: string, forDate: string) {
@@ -343,7 +408,7 @@ export function DailyReportTab({
     const draft = placement && def ? readDraft(placement.job_id, clamped) : null;
     if (draft && def) {
       dirtyRef.current = true;
-      setValues({ ...initialValues(def), ...draft });
+      setValues({ ...initialValues(def), ...lastPrefill.current, ...draft });
     } else if (def) {
       dirtyRef.current = false;
       setValues({ ...initialValues(def), ...lastPrefill.current });
@@ -356,7 +421,9 @@ export function DailyReportTab({
   function loadAmend() {
     if (!prefillable || !def) return;
     dirtyRef.current = true; // amend-loaded values are the manager's work — persist as a draft
-    setValues({ ...initialValues(def), ...prefillable.values });
+    // The seed store spreads UNDER the filed values: keys the filing predates (the D4
+    // requirements array) get the current seed; everything the submission carried wins.
+    setValues({ ...initialValues(def), ...lastPrefill.current, ...prefillable.values });
     setAmendsUuid(prefillable.submission_uuid);
     dirtyRef.current = true; // loaded content counts as work-in-progress (prefill must not clobber it)
     setPrefillable(null);
@@ -429,7 +496,13 @@ export function DailyReportTab({
         </p>
       ) : null}
       <section className="card">
-        <FormRenderer def={def} values={values} setValues={editValues} formLinks={formLinks} />
+        <FormRenderer
+          def={def}
+          values={values}
+          setValues={editValues}
+          formLinks={formLinks}
+          requirements={requirements ?? undefined}
+        />
       </section>
       {submitError ? (
         <p className="login__error" role="alert">
@@ -477,6 +550,13 @@ export function DailyReportTab({
             message={statusError}
             onRetry={() => void loadStatus(placement.job_id, date)}
             what="checking filed forms"
+          />
+        )}
+        {reqError && (
+          <SectionRefreshWarn
+            message={reqError}
+            onRetry={() => void loadRequirements(placement.job_id)}
+            what="loading job-specific requirements"
           />
         )}
         {prefillWarn && <div className="dash-unavail" role="status">{prefillWarn}</div>}

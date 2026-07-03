@@ -19,7 +19,7 @@ vi.mock("../../lib/fieldops_jobtracker", async (importOriginal) => {
 });
 vi.mock("../../lib/fieldops_daily_form", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../lib/fieldops_daily_form")>();
-  return { ...actual, fetchDailyFormStatus: vi.fn() };
+  return { ...actual, fetchDailyFormStatus: vi.fn(), fetchDailyRequirements: vi.fn() };
 });
 vi.mock("../../lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../lib/api")>();
@@ -28,7 +28,8 @@ vi.mock("../../lib/api", async (importOriginal) => {
 
 import * as api from "../../lib/api";
 import * as jobs from "../../lib/fieldops_jobtracker";
-import { fetchDailyFormStatus } from "../../lib/fieldops_daily_form";
+import { fetchDailyFormStatus, fetchDailyRequirements } from "../../lib/fieldops_daily_form";
+import type { DailyRequirementItem } from "../../lib/fieldops_daily_form";
 import { ApiError } from "../../lib/errorCopy";
 import { pacificToday } from "../myTasksShared";
 import { DailyReportTab } from "../DailyReportTab";
@@ -88,6 +89,7 @@ beforeEach(() => {
   vi.mocked(jobs.fetchJobList).mockResolvedValue(JOB_LIST);
   vi.mocked(jobs.fetchJobDetail).mockResolvedValue(DETAIL);
   vi.mocked(fetchDailyFormStatus).mockResolvedValue(EMPTY_STATUS);
+  vi.mocked(fetchDailyRequirements).mockResolvedValue([]);
   vi.mocked(api.fetchRecent).mockResolvedValue(null);
   vi.mocked(api.submitForm).mockResolvedValue(undefined);
 });
@@ -268,7 +270,7 @@ describe("DailyReportTab — filed banner + amend + submit", () => {
       expect(api.submitForm).toHaveBeenCalledWith(
         expect.objectContaining({
           job_id: "JOB-A",
-          form_code: "daily-report-v3",
+          form_code: "daily-report-v4", // the catalog current (v4 since slice D4)
           work_date: TODAY,
           amends_uuid: null,
           submission_uuid: expect.any(String),
@@ -344,5 +346,80 @@ describe("DailyReportTab — draft persistence (the deep-link data-loss BLOCK fi
     fireEvent.change(weather(), { target: { value: "Yesterday's weather" } });
     fireEvent.change(dateInput(container), { target: { value: TODAY } });
     await waitFor(() => expect(weather().value).toBe("Today's weather")); // each day kept its own
+  });
+});
+
+describe("DailyReportTab — per-job requirements (slice D4)", () => {
+  const REQS: DailyRequirementItem[] = [
+    { id: 1, seq: 10, kind: "note", label: "Client requires FR clothing", form_code: null },
+    { id: 2, seq: 20, kind: "confirm", label: "Badge in at the client gate", form_code: null },
+    { id: 3, seq: 30, kind: "text", label: "Client rep spoken to today", form_code: null },
+  ];
+  beforeEach(() => sessionStorage.clear());
+
+  it("fetches the job's items and renders them inside the form's Job-specific requirements section", async () => {
+    vi.mocked(fetchDailyRequirements).mockResolvedValue(REQS);
+    const { container, getByLabelText } = render(<DailyReportTab linked={true} onOpenForm={vi.fn()} />);
+    await waitFor(() => expect(container.textContent ?? "").toContain("Job-specific requirements"));
+    expect(fetchDailyRequirements).toHaveBeenCalledWith("JOB-A");
+    expect(container.textContent ?? "").toContain("Client requires FR clothing");
+    expect((getByLabelText("Badge in at the client gate") as HTMLInputElement).type).toBe("checkbox");
+  });
+
+  it("zero items → the section renders nothing (the base form is unaffected)", async () => {
+    const { container } = render(<DailyReportTab linked={true} onOpenForm={vi.fn()} />);
+    await waitFor(() => expect(container.textContent ?? "").toContain("SITE SUPERVISOR"));
+    expect(container.textContent ?? "").not.toContain("Job-specific requirements");
+  });
+
+  it("a requirements fetch failure soft-warns with a WORKING Retry — the form stays fillable (never silent)", async () => {
+    vi.mocked(fetchDailyRequirements)
+      .mockRejectedValueOnce(new ApiError(null, 500))
+      .mockResolvedValue(REQS);
+    const { container, getByLabelText } = render(<DailyReportTab linked={true} onOpenForm={vi.fn()} />);
+    // R1 convention: the ApiError's HUMAN copy surfaces (errMsg falls back only on non-Errors);
+    // the `what`-scoped Retry disambiguates it from any sibling error.
+    await waitFor(() => expect(getByLabelText("Retry loading job-specific requirements")).not.toBeNull());
+    expect(container.textContent ?? "").toContain("Something went wrong on the server");
+    expect((getByLabelText("Submit daily report") as HTMLButtonElement).disabled).toBe(false); // still fillable
+    fireEvent.click(getByLabelText("Retry loading job-specific requirements"));
+    await waitFor(() => expect(container.textContent ?? "").toContain("Job-specific requirements"));
+  });
+
+  it("a zero-interaction submit STILL files the seeded self-describing array (what was displayed)", async () => {
+    vi.mocked(fetchDailyRequirements).mockResolvedValue(REQS);
+    const { container, getByLabelText } = render(<DailyReportTab linked={true} onOpenForm={vi.fn()} />);
+    await waitFor(() => expect(container.textContent ?? "").toContain("Job-specific requirements"));
+    fireEvent.click(getByLabelText("Submit daily report"));
+    await waitFor(() => expect(api.submitForm).toHaveBeenCalled());
+    const payload = vi.mocked(api.submitForm).mock.calls[0][0];
+    expect((payload.values as Record<string, unknown>).job_requirements).toEqual(
+      REQS.map((r) => ({ label: r.label, kind: r.kind, response: "" })),
+    );
+  });
+
+  it("answers file with the submission and the draft machinery covers them across an unmount", async () => {
+    vi.mocked(fetchDailyRequirements).mockResolvedValue(REQS);
+    const first = render(<DailyReportTab linked={true} onOpenForm={vi.fn()} />);
+    await waitFor(() => expect(first.container.textContent ?? "").toContain("Job-specific requirements"));
+    fireEvent.click(first.getByLabelText("Badge in at the client gate"));
+    fireEvent.change(first.getByLabelText("Client rep spoken to today"), { target: { value: "Ana R." } });
+    first.unmount(); // = a form_link deep-link navigation
+    const second = render(<DailyReportTab linked={true} onOpenForm={vi.fn()} />);
+    await waitFor(() =>
+      expect((second.getByLabelText("Client rep spoken to today") as HTMLInputElement).value).toBe("Ana R."),
+    );
+    expect((second.getByLabelText("Badge in at the client gate") as HTMLInputElement).checked).toBe(true);
+    // …and the restored answers file with the submission.
+    fireEvent.click(second.getByLabelText("Submit daily report"));
+    await waitFor(() => expect(api.submitForm).toHaveBeenCalled());
+    const payload = vi.mocked(api.submitForm).mock.calls[0][0];
+    const arr = (payload.values as Record<string, unknown>).job_requirements as
+      { label: string; kind: string; response: string }[];
+    expect(arr).toEqual([
+      { label: "Client requires FR clothing", kind: "note", response: "" },
+      { label: "Badge in at the client gate", kind: "confirm", response: "Confirmed" },
+      { label: "Client rep spoken to today", kind: "text", response: "Ana R." },
+    ]);
   });
 });

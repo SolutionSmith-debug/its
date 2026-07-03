@@ -67,7 +67,7 @@
     "section": {
       "type": "object",
       "required": ["type"],
-      "properties": { "type": { "type": "string", "enum": ["header", "static_text", "repeating_table", "signature_table", "checklist", "freeform", "content_blocks", "guidance", "form_link"] } },
+      "properties": { "type": { "type": "string", "enum": ["header", "static_text", "repeating_table", "signature_table", "checklist", "freeform", "content_blocks", "guidance", "form_link", "job_requirements"] } },
       "oneOf": [
         {
           "additionalProperties": false, "required": ["type", "fields"],
@@ -110,6 +110,11 @@
         {
           "additionalProperties": false, "required": ["type", "label", "parent_form_code"],
           "properties": { "type": { "const": "form_link" }, "label": { "type": "string", "minLength": 1 }, "parent_form_code": { "type": "string", "pattern": "^[a-z0-9-]+$", "description": "The linked form-type parent (must exist in catalog.json — enforced by publishValidation.ts + tests/test_form_definitions.py; JSON Schema cannot cross-file check)." }, "helper": { "type": "string", "minLength": 1 } }
+        },
+        {
+          "additionalProperties": false, "required": ["type", "key"],
+          "properties": { "type": { "const": "job_requirements" }, "key": { "type": "string", "description": "The section's top-level value key — the manager's answers file under values.<key> = [{label, kind, response}] (self-describing; SOP daily form slice D4)." }, "title": { "type": "string" } },
+          "description": "Per-job daily-form requirements placeholder (slice D4). Carries NO content of its own: at render time the portal fetches the job's admin-authored requirement items (D1 job_daily_requirements, migration 0030; edited on the Job Tracker job detail) and renders them here. AT MOST ONE per definition — enforced by publishValidation.ts (a second overlay mount would double-file the answers); JSON Schema cannot count across the sections array."
         }
       ]
     }

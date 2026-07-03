@@ -219,6 +219,12 @@ function validateSection(s: Section, idx: number, topLevel: string[], errors: st
         errors.push(`${where} (form link) needs a valid form-type code (lowercase letters, digits, hyphens).`);
       }
       return;
+    // job_requirements (slice D4): read-only in the builder like guidance/form_link — the
+    // placeholder is authored in the definition via the git publish pipeline. Its key IS a
+    // top-level value key (the answers array files there), so it joins the uniqueness check.
+    case "job_requirements":
+      checkSectionKey(s.key, where, topLevel, errors);
+      return;
   }
 }
 

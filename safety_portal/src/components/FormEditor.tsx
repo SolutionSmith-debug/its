@@ -299,6 +299,7 @@ function SectionEditor({ section, onChange }: { section: Section; onChange: (s: 
     // Edit of a form that carries them (daily-report-v2) never crashes the section list.
     case "guidance":
     case "form_link":
+    case "job_requirements":
       return (
         <p className="muted">
           This section is maintained in the form definition (publish pipeline) and is not

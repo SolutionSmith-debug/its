@@ -4,7 +4,7 @@ date: 2026-07-01
 status: active
 related_prs: []
 workstream: field_ops
-tags: [enablement, a8, daily-report, sop-daily-form, inspection-library, assigned-tasks, office-pm, manager]
+tags: [enablement, a8, daily-report, sop-daily-form, job-requirements, inspection-library, assigned-tasks, office-pm, manager]
 ---
 
 <!-- TODO(operator): register this doc in the §6a enablement-doc manifest once that artifact
@@ -41,6 +41,22 @@ edit → publish. There is no separate daily-checklist editor anymore; what the 
 manager sees. (The old checkbox daily checklist, the "Default daily checklist" editor, and the
 per-job checklist editor on the Job Tracker were retired when this shipped.)
 
+### Job-specific requirements (per-job additions — admins)
+
+When a **client outlines requirements for one job** ("badge in at our gate", "call our rep before
+leaving", "file our JHA form daily"), you don't edit the form definition — you add them to **that
+job**: Home → **Job Tracker** → open the job → **"Daily form — job requirements"**.
+
+- Add an item and pick its kind: **Note** (guidance text the manager reads), **Confirm** (a
+  checkbox), **Text answer** (a fill-in), or **Form link** (a "Create <form> →" button to another
+  form type).
+- Every manager placed on that job sees the items inside their Daily report under
+  **"Job-specific requirements"** on their next load, and their answers **file with the daily
+  report** (they appear in the filed PDF as requirement → answer rows).
+- **Reorder** with the ↑/↓ arrows; **Edit** in place; **Remove** takes a confirmation and only
+  affects new reports — already-filed dailies keep their answers.
+- A job with no items shows nothing extra — other jobs' daily forms are untouched.
+
 Note: the Daily Report no longer appears in the **Submit a form** picker — it's filed from the
 Daily report tab. The office still retrieves filed dailies from **Form Request** as always.
 
@@ -69,8 +85,9 @@ Tasks under **"Assigned inspections"**.
 
 - **Subcontractor (field PM):** their one-off tasks + any inspections assigned to them.
 - **Manager (crew lead):** the above **plus** the Daily report tab for the job they're placed on.
-- **Admin (office):** edits the Daily Field Report form definition (Forms), authors the inspection
-  library, and assigns inspections (Checklists).
+- **Admin (office):** edits the Daily Field Report form definition (Forms), adds per-job
+  daily-form requirements (Job Tracker → the job), authors the inspection library, and assigns
+  inspections (Checklists).
 
 ## Common questions
 
@@ -81,5 +98,8 @@ Tasks under **"Assigned inspections"**.
   tab shows; tap Refresh. See the runbook, Symptom B.
 - **"How do I change what the daily report asks?"** Edit the Daily Field Report form definition in the
   form builder (Forms) and publish — that's the single source of the daily content now.
+- **"One client wants extra daily items on just their job."** Don't edit the definition — add them on
+  the job's detail page (Job Tracker → the job → "Daily form — job requirements"). See the runbook,
+  Symptom F.
 - **"The person isn't in the assign dropdown."** They have no roster record — add/link them on the
   Personnel page first.

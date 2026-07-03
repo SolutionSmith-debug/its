@@ -70,7 +70,12 @@ export type Section =
   // Read-only SOP guidance + deep link to another form type (SOP daily form, slice D1).
   // Neither contributes a value key — the fill state is unaffected by their presence.
   | { type: "guidance"; heading: string; blocks: GuidanceBlock[] }
-  | { type: "form_link"; label: string; parent_form_code: string; helper?: string };
+  | { type: "form_link"; label: string; parent_form_code: string; helper?: string }
+  // Per-job daily-form requirements placeholder (slice D4): a keyed mount point with no content
+  // of its own — the D1 overlay (job_daily_requirements) is fetched at render time (FormRenderer
+  // `requirements` prop) and the answers file under values.<key> = [{label, kind, response}].
+  // At most one per definition (publishValidation.ts).
+  | { type: "job_requirements"; key: string; title?: string };
 
 export interface FormDefinition {
   form_code: string;

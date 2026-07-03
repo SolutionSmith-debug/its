@@ -368,6 +368,18 @@ function validateSection(s: unknown, idx: number, topLevel: string[]): string | 
       if (s.helper !== undefined && !isStr(s.helper)) return `${where}: form_link invalid helper`;
       return null;
     }
+    // Per-job daily-form requirements placeholder (slice D4): a keyed mount point with NO
+    // content of its own — the D1 overlay (job_daily_requirements) is fetched at render time
+    // and the answers file under values.<key>. The key IS a top-level value key (the answers
+    // array lands there), so it goes through keyedSectionKey like every value-bearing section.
+    // AT MOST ONE per definition — enforced in validateDefinition (a per-section check can't
+    // count); documented in forms/meta-schema.json.
+    case "job_requirements": {
+      const e = keyedSectionKey();
+      if (e) return e;
+      if (s.title !== undefined && !isStr(s.title)) return `${where}: job_requirements invalid title`;
+      return null;
+    }
     default:
       return `${where}: unknown section type '${type}'`;
   }
@@ -414,6 +426,11 @@ export function validateDefinition(def: unknown, ctx: DefinitionContext): Valida
     if (seen.has(k)) return fail(`duplicate value key '${k}' across sections`);
     seen.add(k);
   }
+  // AT MOST ONE job_requirements section (slice D4): the per-job overlay has one mount point —
+  // two would double-render the same fetched items and double-file the answers. (The unique-key
+  // check above can't catch this: two mounts could carry different keys.)
+  const reqMounts = def.sections.filter((s) => isObject(s) && s.type === "job_requirements").length;
+  if (reqMounts > 1) return fail("multiple job_requirements sections (at most one)");
   // Legal-floor re-check (Brief 1 PR-1) — structure is valid above; now require the
   // per-identity mandatory content (signature mechanism, legal/footer lines, core fields).
   const rc = validateRequiredContent(def, ctx);
