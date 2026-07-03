@@ -103,6 +103,24 @@ export const ERROR_COPY: Record<string, string> = {
   not_placed: "You must be placed on a job first. Ask your crew lead or the office to place you.",
   login_not_allowed: "Crew added here are field-only (no login).",
 
+  // ── form submit / photo payload (worker /api/submit — R3-F2 actionable-copy fix) ───────────────
+  // `too_large` is the Worker's 413 on JSON.stringify(values).length > PAYLOAD_MAX (1_800_000,
+  // worker/index.ts:521,:604); photos are what get a values payload anywhere near that, so the copy
+  // says what actually fixes it — a retry alone can NEVER succeed. `invalid_photo` is the 400 whose
+  // machine reason rides `detail` (validatePhotoValues, worker/index.ts:550-567); the three
+  // field-actionable detail reasons get their own copy (submitForm prefers detail over error).
+  too_large:
+    "This report is too large to send — photos take most of the space. Remove a photo or two (or retake them at lower quality) and submit again.",
+  invalid_photo: "One of the photos couldn't be accepted — remove it, then re-attach or retake it.",
+  photo_too_large: "One of the photos is too large — remove it and retake it at a lower quality.",
+  too_many_photos: "Too many photos on this form — the limit is 8 in total. Remove some and try again.",
+  too_many_photos_in_field: "Too many photos in one place — the limit is 4 per photo field.",
+  // The remaining photo-validation details (Worker validatePhotoValues) — actionable copy for each.
+  mixed_photo_array: "One of the photo fields contains something that isn't a photo — remove and re-attach.",
+  photo_meta_too_long: "A photo's caption/metadata is too long — retake or re-attach it.",
+  photo_not_base64: "A photo didn't upload correctly — remove it and attach it again.",
+  photo_bad_magic: "That file isn't a JPEG or PNG photo — attach a photo taken with your camera.",
+
   // ── equipment / materials / rollup (the remaining field-ops write vocabulary) ──────────────────
   invalid_kind: "That isn't a valid equipment kind.",
   invalid_identifier: "The identifier is too long.",

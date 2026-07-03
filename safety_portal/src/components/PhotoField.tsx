@@ -17,7 +17,17 @@ import { extractExif } from "../lib/exif";
 // NOTE: no `capture` attribute on the file input — omitting it gives field crews the
 // camera/gallery chooser (capture="environment" forces live-camera-only on Android).
 
-export const PHOTO_MAX_BYTES = 400_000; // decoded bytes/photo — mirror worker/index.ts
+// CLIENT per-photo budget (decoded bytes) — deliberately TIGHTER than the Worker's hard cap
+// (PHOTO_MAX_BYTES = 400_000, worker/index.ts:518). R3-F2 math: the whole `values` payload must
+// fit the Worker's PAYLOAD_MAX = 1_800_000 JSON chars (worker/index.ts:521,:604) and base64
+// inflates 3 decoded bytes → 4 chars:
+//   400_000 decoded → 533_336 b64 chars → 4 photos = 2_133_344  → deterministic 413
+//   280_000 decoded → 373_336 b64 chars → 4 photos = 1_493_344  → ~300KB headroom for the
+//                     non-photo values + per-photo JSON envelopes (name/taken_at/gps ≲ 1KB total)
+// A submission can still carry up to 8 photos across multiple fields (worker
+// PHOTO_MAX_PER_SUBMISSION) — 8 × 373_336 exceeds the cap, so api.submitForm's exact
+// pre-payload check (SUBMIT_PAYLOAD_MAX) catches that tail with actionable copy pre-network.
+export const PHOTO_MAX_BYTES = 280_000;
 const HARD_MAX = 4; // mirror worker PHOTO_MAX_PER_FIELD + publishValidation PHOTO_MAX_COUNT
 const LADDER: ReadonlyArray<readonly [number, number]> = [
   [1280, 0.8],

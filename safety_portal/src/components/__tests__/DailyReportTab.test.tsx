@@ -400,6 +400,27 @@ describe("DailyReportTab — draft persistence (the deep-link data-loss BLOCK fi
     expect(second.container.querySelector(".photo-field")).not.toBeNull(); // photo section intact, just empty
   });
 
+  it("pagehide flushes the pending draft (R3-F9: mobile-Safari tab-kill never runs the unmount cleanup), and a second fire is a guarded no-op", async () => {
+    const KEY = `its-daily-draft:JOB-A:${TODAY}`;
+    const view = render(<DailyReportTab linked={true} onOpenForm={vi.fn()} />);
+    await waitFor(() => expect(view.container.textContent ?? "").toContain("SITE SUPERVISOR"));
+    fireEvent.change(view.getByLabelText("Weather"), { target: { value: "Drizzle" } });
+    expect(sessionStorage.getItem(KEY)).toBeNull(); // still inside the debounce window — nothing persisted yet
+    window.dispatchEvent(new Event("pagehide"));
+    const raw = sessionStorage.getItem(KEY);
+    expect(raw).not.toBeNull(); // the pagehide flush landed the pending write
+    expect((JSON.parse(raw!) as Record<string, unknown>).weather).toBe("Drizzle");
+    // Duplicate-guard: flushDraft nulls the pending ref before writing, so a second pagehide
+    // (or the later unmount/debounce flush racing it) has nothing pending and writes nothing.
+    const setItem = vi.spyOn(Storage.prototype, "setItem");
+    try {
+      window.dispatchEvent(new Event("pagehide"));
+      expect(setItem).not.toHaveBeenCalled();
+    } finally {
+      setItem.mockRestore();
+    }
+  });
+
   it("a quota-blown write is non-fatal: the flush swallows the error and the form keeps working", async () => {
     const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
       throw new DOMException("quota exceeded", "QuotaExceededError");
