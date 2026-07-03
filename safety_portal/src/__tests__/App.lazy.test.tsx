@@ -22,6 +22,7 @@ import { useAuth } from "../lib/auth";
 
 afterEach(cleanup);
 beforeEach(() => {
+  window.history.replaceState(null, "", "/"); // G2.5: each test cold-starts at home
   vi.mocked(useAuth).mockReturnValue({
     user: { username: "boss", role: "admin" as const, capabilities: ["cap.materials.manage"] },
     loading: false,
@@ -35,6 +36,13 @@ describe("App — lazy admin chunks (Suspense-gated view switch)", () => {
     const { getByText, findByText } = render(<App />);
     fireEvent.click(getByText("Materials Catalog")); // the capability-gated home card
     // The chunk resolves through the real dynamic import; the page's own intro proves the mount.
+    expect(await findByText(/material type vocabulary/)).toBeTruthy();
+  });
+
+  it("a COLD-LOADED /materials deep link (G2.5) mounts the same lazy chunk — routes keep the split", async () => {
+    window.history.replaceState(null, "", "/materials");
+    const { findByText } = render(<App />);
+    // Same real dynamic import, now reached straight from the URL — no home-card click.
     expect(await findByText(/material type vocabulary/)).toBeTruthy();
   });
 });

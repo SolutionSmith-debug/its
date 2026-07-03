@@ -82,9 +82,18 @@ export function FieldOpsMyTasks({
   onBack,
   onOpenForm,
   onOpenJob,
+  initialTab,
+  onTabChange,
 }: {
   onBack: () => void;
   onOpenForm?: (p: FormPrefill) => void;
+  /** G2.5 — the URL-routed tab (/tasks/assigned | /tasks/daily). An EXPLICIT initial tab pins
+   *  the choice (the one-time auto-switch may not yank a deep-linked tab); absent (/tasks)
+   *  keeps the pre-router default + auto-switch behavior. */
+  initialTab?: Tab;
+  /** G2.5 — reports every tab change up (user pick AND the one-time auto-switch) so App can
+   *  keep the address bar shareable. Never triggers a re-render here (App syncs the URL only). */
+  onTabChange?: (t: Tab) => void;
   /** R7 — open the Job Tracker via App's navigation; a jobId preselects that job's detail
    *  (the "Log time" quick action + job-group links). Absent when the actor can't read the
    *  tracker (App gates on cap.jobtracker.read) — the affordances then don't render. */
@@ -96,7 +105,7 @@ export function FieldOpsMyTasks({
   const canCreateCrew = caps.includes("cap.crew.create");
   const canLogTime = caps.includes("cap.time.log");
 
-  const [tab, setTab] = useState<Tab>("assigned");
+  const [tab, setTab] = useState<Tab>(initialTab ?? "assigned");
   const [refreshToken, setRefreshToken] = useState(0);
   const [resp, setResp] = useState<api.MyTasksResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -108,7 +117,8 @@ export function FieldOpsMyTasks({
   // Reported up via DailyReportTab's onLoaded; null = not landed yet, { placement: null } = landed
   // with no placement (non-manager / unlinked / unplaced).
   const [dailyInfo, setDailyInfo] = useState<{ placement: DailyPlacement | null } | null>(null);
-  const autoSwitched = useRef(false);
+  // G2.5: an explicit deep-linked tab (/tasks/daily) counts as a user choice — pre-pinned.
+  const autoSwitched = useRef(initialTab !== undefined);
   const lastWakeRef = useRef(0);
 
   async function load() {
@@ -164,13 +174,19 @@ export function FieldOpsMyTasks({
     // (An explicit user tab click also sets autoSwitched — see pickTab — so a slow first load can
     // never yank the user off a tab they chose; review WARN.)
     const hasOpenTasks = resp.tasks.some((t) => t.status !== "done");
-    if (dailyInfo.placement && !hasOpenTasks) setTab("daily");
+    if (dailyInfo.placement && !hasOpenTasks) {
+      setTab("daily");
+      onTabChange?.("daily"); // G2.5: keep the address bar on the tab actually shown
+    }
+    // onTabChange is an every-render App closure; the autoSwitched guard makes re-runs no-ops.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resp, dailyInfo]);
 
   // Explicit tab choice pins the tab: the one-time auto-switch may never override it.
   function pickTab(t: "assigned" | "daily") {
     autoSwitched.current = true;
     setTab(t);
+    onTabChange?.(t); // G2.5: URL sync (App replaces — tab flips never spam history)
   }
 
   function markBusy(id: number, on: boolean) {
