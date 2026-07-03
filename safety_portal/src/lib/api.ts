@@ -1,6 +1,8 @@
 // Thin fetch wrappers over the same-origin Worker API. Cookies are same-origin;
 // the signed session cookie is HttpOnly (set by the Worker) so it's never read here.
 
+import { ERROR_COPY } from "./errorCopy";
+
 export type Role = "submitter" | "manager" | "admin";
 
 /** Human display label for a role KEY. DISPLAY-ONLY (Slice T): the 'submitter' tier is presented as
@@ -100,14 +102,31 @@ export interface SubmitBody {
   submitted_as?: string;
 }
 
+// The Worker's total-values cap: /api/submit 413s `too_large` when
+// JSON.stringify(values).length > PAYLOAD_MAX (worker/index.ts:521,:604). The client can compute
+// the IDENTICAL quantity on the identical object before any network call, so an over-cap
+// submission blocks here with actionable copy instead of a dead-end 413 (R3-F2). Keep in sync
+// with worker/index.ts PAYLOAD_MAX.
+export const SUBMIT_PAYLOAD_MAX = 1_800_000;
+
 export async function submitForm(body: SubmitBody): Promise<void> {
+  // R3-F2 pre-check — exact mirror of the Worker's measurement (same stringify on the same
+  // object, same .length in UTF-16 code units), so anything that passes here passes there.
+  // Photos are the only realistic way to approach the cap; the copy says what fixes it.
+  if (JSON.stringify(body.values).length > SUBMIT_PAYLOAD_MAX) {
+    throw new Error(ERROR_COPY.too_large);
+  }
   const res = await postJson("/api/submit", body);
   if (!res.ok) {
-    const data = (await res.json().catch(() => ({}))) as { error?: string };
+    const data = (await res.json().catch(() => ({}))) as { error?: string; detail?: string };
+    if (data.error === "unknown_job") {
+      throw new Error("That job is no longer active — pick another.");
+    }
+    // `invalid_photo` carries its machine reason in `detail` (never the bytes) — prefer the
+    // field-actionable detail copy (photo_too_large / too_many_photos / …) when we have it.
+    const code = data.detail && ERROR_COPY[data.detail] ? data.detail : data.error;
     throw new Error(
-      data.error === "unknown_job"
-        ? "That job is no longer active — pick another."
-        : "Submission failed. Please try again.",
+      code && ERROR_COPY[code] ? ERROR_COPY[code] : "Submission failed. Please try again.",
     );
   }
 }

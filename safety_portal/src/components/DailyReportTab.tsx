@@ -271,6 +271,16 @@ export function DailyReportTab({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+  // R3-F9: mobile Safari tab-kill / cross-page navigation never runs the unmount cleanup above —
+  // `pagehide` is the last reliable signal on those paths. flushDraft is naturally
+  // duplicate-guarded (it nulls pendingDraftRef before writing), so pagehide firing alongside the
+  // debounce timer or the unmount cleanup can never double-write. Same first-render-closure
+  // stability argument as the unmount effect (refs + writeDraft captures are render-stable).
+  useEffect(() => {
+    window.addEventListener("pagehide", flushDraft);
+    return () => window.removeEventListener("pagehide", flushDraft);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // ── Placement (the envelope job) — Job Tracker viewer data. ────────────────────────────────────
   async function loadPlacement() {
