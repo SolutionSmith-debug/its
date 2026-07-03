@@ -102,7 +102,7 @@ const JOBS: api.JobRow[] = [
     progress: 40,
     client_name: "Acme Co",
     crew: [{ id: 1, name: "Alice Chen", trade: "operator" }],
-    open_tasks: [{ id: 1, description: "Dig footings", status: "open", personnel_name: "Alice Chen" }],
+    open_tasks: [{ id: 1, description: "Dig footings", status: "open", personnel_name: "Alice Chen", due_date: null }],
   },
   {
     job_id: "JOB-B",
@@ -122,7 +122,7 @@ const DETAIL: api.JobDetail = {
   progress: 60,
   client: { name: "Acme Co", contact: "Pat", phone: "555-0100", email: "pat@example.com" },
   crew: [{ id: 1, name: "Alice Chen", trade: "operator", account_role: "submitter" }],
-  tasks: [{ id: 1, description: "Dig footings", status: "open", created_at: 100, personnel_id: 1, personnel_name: "Alice Chen" }],
+  tasks: [{ id: 1, description: "Dig footings", status: "open", created_at: 100, personnel_id: 1, personnel_name: "Alice Chen", due_date: null }],
   time_entries: [
     {
       uuid: "te-1", hours: 8, work_started_at: 1, work_ended_at: 2, recorded_at: 200, notes: "note",
@@ -539,7 +539,7 @@ describe("FieldOpsJobTracker — write UI", () => {
         { id: 1, name: "Alice Chen", trade: "operator", account_role: "submitter" },
         { id: 2, name: "Bob Vance", trade: "laborer", account_role: "submitter" },
       ],
-      tasks: [{ id: 1, description: "Dig footings", status: "open", created_at: 100, personnel_id: 1, personnel_name: "Alice Chen" }],
+      tasks: [{ id: 1, description: "Dig footings", status: "open", created_at: 100, personnel_id: 1, personnel_name: "Alice Chen", due_date: null }],
     };
     const { getByLabelText } = await openManagedDetail(["cap.jobtracker.manage"], twoCrew);
     const sel = getByLabelText("Assign task 1") as HTMLSelectElement;
@@ -739,7 +739,7 @@ describe("FieldOpsJobTracker — R7 time attribution", () => {
       ...DETAIL,
       tasks: [
         ...DETAIL.tasks,
-        { id: 2, description: "Old chore", status: "done", created_at: 90, personnel_id: null, personnel_name: null },
+        { id: 2, description: "Old chore", status: "done", created_at: 90, personnel_id: null, personnel_name: null, due_date: null },
       ],
     };
     const { getByLabelText } = await openDetail(["cap.time.log", "cap.personnel.manage"], withDone);
@@ -787,8 +787,8 @@ describe("FieldOpsJobTracker — R7 task-control gating + optimistic status", ()
       { id: 3, name: "No Login Ned", trade: "laborer", account_role: null },
     ],
     tasks: [
-      { id: 1, description: "Dig footings", status: "open", created_at: 100, personnel_id: 1, personnel_name: "Alice Chen" },
-      { id: 2, description: "Manager's chore", status: "open", created_at: 90, personnel_id: 2, personnel_name: "Mo Manager" },
+      { id: 1, description: "Dig footings", status: "open", created_at: 100, personnel_id: 1, personnel_name: "Alice Chen", due_date: null },
+      { id: 2, description: "Manager's chore", status: "open", created_at: 90, personnel_id: 2, personnel_name: "Mo Manager", due_date: null },
     ],
   };
 
@@ -874,7 +874,7 @@ describe("FieldOpsJobTracker — R7 task-control gating + optimistic status", ()
   it("task pills and status options render humanized labels (no raw snake_case)", async () => {
     const inProgress: api.JobDetail = {
       ...MIXED_CREW,
-      tasks: [{ id: 1, description: "Dig footings", status: "in_progress", created_at: 100, personnel_id: 1, personnel_name: "Alice Chen" }],
+      tasks: [{ id: 1, description: "Dig footings", status: "in_progress", created_at: 100, personnel_id: 1, personnel_name: "Alice Chen", due_date: null }],
     };
     const { container } = await openDetail(["cap.tasks.own"], inProgress);
     expect(container.textContent ?? "").toContain("In progress");
@@ -1036,5 +1036,80 @@ describe("FieldOpsJobTracker — R7 deep link (initialJobId)", () => {
     // Back returns to the normal list.
     fireEvent.click(container.querySelector(".dash-back-btn button")!);
     await waitFor(() => expect(container.querySelectorAll(".dash-card--click")).toHaveLength(2));
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// G2.6 — task due dates: the add-task form's optional date input + the shared due/Overdue
+// rendering (myTasksShared.TaskDue) on BOTH the detail task rows and the list card's open-task
+// preview. Overdue = NOT done AND due_date < Pacific-today; a done task never warns.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("FieldOpsJobTracker — G2.6 task due dates", () => {
+  async function openManagedDetail(caps: string[], detail: api.JobDetail = DETAIL) {
+    vi.mocked(useAuth).mockReturnValue(authWith(caps));
+    vi.mocked(api.fetchJobList).mockResolvedValue({ jobs: JOBS, next_cursor: null });
+    vi.mocked(api.fetchJobDetail).mockResolvedValue({ job: detail, cursors: NO_CURSORS, viewer_personnel: VIEWER });
+    const utils = render(<FieldOpsJobTracker onBack={() => {}} />);
+    await waitFor(() => expect(utils.container.querySelectorAll(".dash-card--click")).toHaveLength(2));
+    fireEvent.click(utils.container.querySelector(".dash-card--click")!);
+    await waitFor(() => expect(api.fetchJobDetail).toHaveBeenCalledWith("JOB-A"));
+    return utils;
+  }
+
+  it("add-task submits the picked date as due_date and clears the input after success", async () => {
+    vi.mocked(api.addTask).mockResolvedValue({ id: 99 });
+    const { getByLabelText } = await openManagedDetail(["cap.jobtracker.manage"]);
+    const form = getByLabelText("Add a task");
+    fireEvent.change(form.querySelector("input")!, { target: { value: "Pour slab" } });
+    fireEvent.change(getByLabelText("New task due date"), { target: { value: "2099-07-10" } });
+    fireEvent.submit(form);
+    await waitFor(() =>
+      expect(api.addTask).toHaveBeenCalledWith("JOB-A", { description: "Pour slab", due_date: "2099-07-10" }),
+    );
+    await waitFor(() => expect((getByLabelText("New task due date") as HTMLInputElement).value).toBe(""));
+  });
+
+  it("add-task with no date picked omits due_date entirely (no empty-string leak)", async () => {
+    vi.mocked(api.addTask).mockResolvedValue({ id: 99 });
+    const { getByLabelText } = await openManagedDetail(["cap.jobtracker.manage"]);
+    const form = getByLabelText("Add a task");
+    fireEvent.change(form.querySelector("input")!, { target: { value: "Pour slab" } });
+    fireEvent.submit(form);
+    await waitFor(() => expect(api.addTask).toHaveBeenCalledWith("JOB-A", { description: "Pour slab" }));
+  });
+
+  it("detail rows: overdue open task → 'due …' + Overdue pill; future / done-past / undated → no pill", async () => {
+    const detail: api.JobDetail = {
+      ...DETAIL,
+      tasks: [
+        { id: 1, description: "Late one", status: "open", created_at: 100, personnel_id: null, personnel_name: null, due_date: "2001-01-01" },
+        { id: 2, description: "Future one", status: "open", created_at: 90, personnel_id: null, personnel_name: null, due_date: "2099-12-31" },
+        { id: 3, description: "Done late one", status: "done", created_at: 80, personnel_id: null, personnel_name: null, due_date: "2001-01-01" },
+        { id: 4, description: "Undated one", status: "open", created_at: 70, personnel_id: null, personnel_name: null, due_date: null },
+      ],
+    };
+    const { container } = await openManagedDetail([], detail);
+    const rows = Array.from(container.querySelectorAll(".dash-tasklist li"));
+    const row = (label: string) => rows.find((r) => r.textContent?.includes(label))!;
+    expect(row("Late one").textContent).toContain("Overdue");
+    expect(row("Future one").textContent).toContain("due");
+    expect(row("Future one").textContent).not.toContain("Overdue");
+    expect(row("Done late one").textContent).not.toContain("Overdue"); // finished work never warns
+    expect(row("Undated one").textContent).not.toContain("due"); // no date → no chrome at all
+  });
+
+  it("the list card's open-task preview carries the same Overdue pill", async () => {
+    const jobs: api.JobRow[] = [
+      {
+        ...JOBS[0],
+        open_tasks: [{ id: 1, description: "Dig footings", status: "open", personnel_name: "Alice Chen", due_date: "2001-01-01" }],
+      },
+      JOBS[1],
+    ];
+    vi.mocked(api.fetchJobList).mockResolvedValue({ jobs, next_cursor: null });
+    const { container } = render(<FieldOpsJobTracker onBack={() => {}} />);
+    await waitFor(() => expect(container.querySelectorAll(".dash-card--click")).toHaveLength(2));
+    const alpha = Array.from(container.querySelectorAll(".dash-card--click")).find((c) => c.textContent?.includes("Alpha"))!;
+    expect(alpha.textContent).toContain("Overdue");
   });
 });

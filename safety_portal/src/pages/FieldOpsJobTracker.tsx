@@ -7,7 +7,7 @@ import { useAuth } from "../lib/auth";
 import { PageShell } from "../components/PageShell";
 import { ChipX } from "../components/ChipX";
 import { ExpectedMaterialsSection } from "../components/ExpectedMaterialsSection";
-import { InlineRowMsg, SectionError, errMsg, type RowFeedback } from "../components/myTasksShared";
+import { InlineRowMsg, SectionError, TaskDue, errMsg, type RowFeedback } from "../components/myTasksShared";
 import { JobDailyRequirementsSection } from "../components/JobDailyRequirementsSection";
 import { statusLabel } from "../lib/labels";
 
@@ -270,6 +270,7 @@ export function FieldOpsJobTracker({
   // Detail manage controls
   const [taskDesc, setTaskDesc] = useState("");
   const [taskPerson, setTaskPerson] = useState(""); // add-task assignee (personnel id, "" = unassigned)
+  const [taskDue, setTaskDue] = useState(""); // (G2.6) optional 'YYYY-MM-DD' deadline, "" = none
   // Detail lifecycle selector + routing/contacts editor (P2.5)
   const [lifecycleSel, setLifecycleSel] = useState<api.JobLifecycle>("active");
   const [editContactsOpen, setEditContactsOpen] = useState(false);
@@ -635,6 +636,9 @@ export function FieldOpsJobTracker({
       await api.addTask(selectedJob.job_id, {
         description,
         ...(personnelId !== undefined ? { personnel_id: personnelId } : {}),
+        // (G2.6) optional deadline — any calendar date (no max: future dates fine, past dates
+        // legal for an already-late task); the Worker shape-validates.
+        ...(taskDue !== "" ? { due_date: taskDue } : {}),
       });
     } catch (err) {
       setActionMsg({ ok: false, text: err instanceof Error ? err.message : "Add task failed." });
@@ -643,6 +647,7 @@ export function FieldOpsJobTracker({
     }
     setTaskDesc("");
     setTaskPerson("");
+    setTaskDue("");
     setActionMsg({ ok: true, text: "Task added." });
     await refreshDetailAfterMutation();
     setActionBusy(false);
@@ -888,6 +893,16 @@ export function FieldOpsJobTracker({
                   })}
                 </select>
               </label>{" "}
+              {/* (G2.6) optional deadline — deliberately no max (future dates fine). */}
+              <label className="dash-card__label">
+                Due:{" "}
+                <input
+                  type="date"
+                  aria-label="New task due date"
+                  value={taskDue}
+                  onChange={(e) => setTaskDue(e.target.value)}
+                />
+              </label>{" "}
               <button type="submit" disabled={actionBusy} className="btn btn--primary">Add task</button>
             </form>
             {/* Lifecycle + routing are job-lifecycle authority — admin-only (cap.jobtracker.manage).
@@ -996,6 +1011,8 @@ export function FieldOpsJobTracker({
                 return (
                   <li key={t.id}>
                     <span className={taskPillClass(t.status)}>{statusLabel(t.status)}</span> {t.description}
+                    {/* (G2.6) deadline + the shared Overdue pill (not-done AND due < Pacific-today). */}
+                    <TaskDue dueDate={t.due_date} status={t.status} />
                     {t.personnel_name && !canAssignTasks ? <span className="muted"> — {t.personnel_name}</span> : null}
                     {canTouchStatus(t) && (
                       <>
@@ -1341,6 +1358,8 @@ export function FieldOpsJobTracker({
                     {job.open_tasks.map((t) => (
                       <li key={t.id}>
                         <span className={taskPillClass(t.status)}>{statusLabel(t.status)}</span> {t.description}
+                        {/* (G2.6) the card preview carries the same due/Overdue signal. */}
+                        <TaskDue dueDate={t.due_date} status={t.status} />
                       </li>
                     ))}
                   </ul>

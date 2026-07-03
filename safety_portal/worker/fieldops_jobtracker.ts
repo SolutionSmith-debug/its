@@ -98,9 +98,12 @@ export function registerJobTrackerRoutes(app: FieldopsApp, gates: FieldopsGates)
           WHERE p.current_job IN (${placeholders}) AND p.active = 1
         ) WHERE rn <= ${NESTED_CAP}
       `;
+      // (G2.6) due_date rides the card's open-task preview for the Overdue pill. The rn window
+      // ORDER stays created_at DESC (newest-first preview, the pre-G2.6 contract) — which ≤NESTED_CAP
+      // tasks appear is unchanged; urgency ORDERING lives on /tasks/mine.
       const sqlOpenTasks = `
-        SELECT id, job_id, description, status, personnel_name FROM (
-          SELECT t.id, t.job_id, t.description, t.status, p.name AS personnel_name,
+        SELECT id, job_id, description, status, personnel_name, due_date FROM (
+          SELECT t.id, t.job_id, t.description, t.status, t.due_date, p.name AS personnel_name,
                  ROW_NUMBER() OVER (PARTITION BY t.job_id ORDER BY t.created_at DESC, t.id DESC) AS rn
           FROM task_assignments t LEFT JOIN personnel p ON p.id = t.personnel_id
           WHERE t.job_id IN (${placeholders}) AND t.status != 'done'
@@ -120,9 +123,9 @@ export function registerJobTrackerRoutes(app: FieldopsApp, gates: FieldopsGates)
         crewByJob.set(r.job_id, arr);
       }
       const tasksByJob = new Map<string, OpenTask[]>();
-      for (const r of (tasksRes.results ?? []) as { id: number; job_id: string; description: string; status: string; personnel_name: string | null }[]) {
+      for (const r of (tasksRes.results ?? []) as { id: number; job_id: string; description: string; status: string; personnel_name: string | null; due_date: string | null }[]) {
         const arr = tasksByJob.get(r.job_id) ?? [];
-        if (arr.length < NESTED_CAP) arr.push({ id: r.id, description: r.description, status: r.status, personnel_name: r.personnel_name });
+        if (arr.length < NESTED_CAP) arr.push({ id: r.id, description: r.description, status: r.status, personnel_name: r.personnel_name, due_date: r.due_date });
         tasksByJob.set(r.job_id, arr);
       }
 
@@ -183,9 +186,12 @@ export function registerJobTrackerRoutes(app: FieldopsApp, gates: FieldopsGates)
       const timeCursor = decodeCursor(q.time_cursor);
       const inspCursor = decodeCursor(q.insp_cursor);
 
-      // tasks (all statuses), keyset (created_at, id)
+      // tasks (all statuses), keyset (created_at, id). (G2.6) due_date rides the SELECT for the
+      // Overdue pill; the ORDER BY is deliberately UNCHANGED — this leg is keyset-paginated on
+      // (created_at, id) and a due-date sort would break the cursor contract. Urgency ordering
+      // lives on /tasks/mine (bounded, cursorless); here the pill carries the signal.
       const sqlTasks = `
-        SELECT id, description, status, created_at, personnel_id,
+        SELECT id, description, status, created_at, personnel_id, due_date,
                (SELECT name FROM personnel WHERE id = task_assignments.personnel_id) AS personnel_name
         FROM task_assignments
         WHERE job_id = ?1

@@ -36,6 +36,28 @@ export function fmtEpochDate(epochSeconds: number | null | undefined): string {
   return new Date(epochSeconds * 1000).toLocaleDateString();
 }
 
+/** (G2.6) A task row's `· due <date>` + Overdue warn pill — the SAME pattern
+ *  AssignedInspectionsSection uses for inspections (open + instance_date < pacificToday()).
+ *  For tasks "open" means NOT done: an in_progress task past its date is still overdue; a
+ *  done task never is (finished work carries no warning). Renders nothing when the task has
+ *  no due date (nullable 0035 column — historical rows aren't backfilled). Rendered by both
+ *  My Tasks and the Job Tracker task lists — the one overdue definition, never re-derived. */
+export function TaskDue({ dueDate, status }: { dueDate: string | null; status: string }) {
+  if (!dueDate) return null;
+  const overdue = status !== "done" && dueDate < pacificToday();
+  return (
+    <>
+      <span className="dash-card__sub"> · due {fmtDate(dueDate)}</span>
+      {overdue && (
+        <>
+          {" "}
+          <span className="dash-pill dash-pill--warn">Overdue</span>
+        </>
+      )}
+    </>
+  );
+}
+
 /** The one roster-link explanation (R1 `linked:false` on /tasks/mine + /checklist/assigned, and the
  *  daily `no_personnel_link` reason) — identical copy everywhere it surfaces. */
 export const ROSTER_LINK_COPY =

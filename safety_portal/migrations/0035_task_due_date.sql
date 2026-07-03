@@ -1,0 +1,21 @@
+-- G2.6 — task DUE DATES: task_assignments.due_date (nullable 'YYYY-MM-DD').
+--
+-- WHY: assigned one-off tasks (0014) carried no deadline, so "is this late?" was invisible on
+-- both the assignee's My Tasks tab and the manager's Job Tracker. Inspections already have the
+-- pattern (checklist_instances.instance_date + the Overdue warn pill); this closes the loop for
+-- plain tasks with the SAME semantics: a Pacific calendar date, overdue = not-done AND
+-- due_date < Pacific-today (the SPA compares against myTasksShared.pacificToday()).
+--
+-- SHAPE: TEXT 'YYYY-MM-DD' (the checklist instance_date / due_date convention — DUE_DATE_RE
+-- validated at the write route, fieldops_task_write.ts). Nullable BY DESIGN: a task with no
+-- deadline is legitimate and sorts AFTER dated tasks within its status band (see the
+-- /tasks/mine ORDER BY extension in fieldops_tasks.ts). NOT backfilled — historical tasks
+-- simply have no due date. A reassign (POST /task/:id/assign) does NOT touch this column: the
+-- deadline belongs to the WORK, not to who holds it.
+--
+-- APPLY BEFORE DEPLOY: run `npx wrangler d1 migrations apply its-safety-portal-db --remote`
+-- BEFORE a Worker build that reads/writes due_date deploys — else the task create/read routes
+-- 500 on the missing column (the 0010/0033 rule; universal-lockout class, forensic #2 — always
+-- `git pull` ~/its to latest main FIRST).
+
+ALTER TABLE task_assignments ADD COLUMN due_date TEXT;

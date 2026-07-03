@@ -27,9 +27,9 @@ import { provision, login, get, post, seedJob, seedPersonnel } from "./helpers";
 // Runs against the REAL worker with Miniflare D1 (migrations incl. 0029 auto-apply).
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function seedTask(jobId: string, personnelId: number | null, description: string, status: string, createdAt: number): Promise<number> {
-  await env.DB.prepare("INSERT INTO task_assignments (job_id, personnel_id, description, status, created_at) VALUES (?,?,?,?,?)")
-    .bind(jobId, personnelId, description, status, createdAt).run();
+async function seedTask(jobId: string, personnelId: number | null, description: string, status: string, createdAt: number, dueDate: string | null = null): Promise<number> {
+  await env.DB.prepare("INSERT INTO task_assignments (job_id, personnel_id, description, status, created_at, due_date) VALUES (?,?,?,?,?,?)")
+    .bind(jobId, personnelId, description, status, createdAt, dueDate).run();
   return (await env.DB.prepare("SELECT id FROM task_assignments WHERE description=? ORDER BY id DESC LIMIT 1").bind(description).first<{ id: number }>())!.id;
 }
 async function seedSubmission(jobId: string, formCode: string, workDate: string, submittedAs: string | null, actor = "actor.acct"): Promise<string> {
@@ -147,6 +147,26 @@ describe("R1 — GET /tasks/mine contract", () => {
     const body = (await res.json()) as { tasks: { description: string }[]; linked: boolean };
     expect(body.tasks.map((t) => t.description)).toEqual(["T-open-new", "T-open-old", "T-inprog", "T-done"]);
     expect(body.linked).toBe(true);
+  });
+
+  // (G2.6) WITHIN each status band: dated tasks first ordered due_date ASC (one ascending key =
+  // overdue first, then soonest-due — an overdue 'YYYY-MM-DD' is simply the smallest string),
+  // undated last with the old created_at DESC contract. The done band stays last regardless of dates.
+  it("G2.6: within the open band — OVERDUE first, then soonest-due, then undated (created_at DESC)", async () => {
+    await seedTask("JOB-A", pSam, "T-undated-old", "open", 50);
+    await seedTask("JOB-A", pSam, "T-undated-new", "open", 100);
+    await seedTask("JOB-A", pSam, "T-due-far", "open", 400, "2099-12-31");
+    await seedTask("JOB-A", pSam, "T-due-soon", "open", 10, "2099-01-01");
+    await seedTask("JOB-A", pSam, "T-overdue", "open", 5, "2001-01-01");
+    // A DONE task with the most-overdue date of all must still sort into the LAST band.
+    await seedTask("JOB-A", pSam, "T-done-overdue", "done", 999, "2000-01-01");
+    const body = (await (await get(subSam, "/api/fieldops/tasks/mine")).json()) as { tasks: { description: string; due_date: string | null }[] };
+    expect(body.tasks.map((t) => t.description)).toEqual([
+      "T-overdue", "T-due-soon", "T-due-far", "T-undated-new", "T-undated-old", "T-done-overdue",
+    ]);
+    // due_date rides the wire shape (null for undated rows).
+    expect(body.tasks[0].due_date).toBe("2001-01-01");
+    expect(body.tasks[3].due_date).toBeNull();
   });
 
   it("linked:false for a session with no ACTIVE linked personnel row", async () => {

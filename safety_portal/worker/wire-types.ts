@@ -38,6 +38,9 @@ export interface OpenTask {
   description: string;
   status: string;
   personnel_name: string | null;
+  /** (G2.6) Optional deadline, 'YYYY-MM-DD' Pacific calendar date (migration 0035); null = no
+   *  deadline. Overdue = status !== 'done' AND due_date < Pacific-today (myTasksShared.pacificToday). */
+  due_date: string | null;
 }
 
 export interface JobRow {
@@ -67,6 +70,8 @@ export interface Task {
   created_at: number;
   personnel_id: number | null;
   personnel_name: string | null;
+  /** (G2.6) Optional deadline, 'YYYY-MM-DD' (0035); null = no deadline. See OpenTask.due_date. */
+  due_date: string | null;
 }
 
 export interface JobTimeEntry {
@@ -272,6 +277,10 @@ export interface MyTask {
   status: string;
   created_at: number;
   assigned_by: string | null;
+  /** (G2.6) Optional deadline, 'YYYY-MM-DD' Pacific calendar date (migration 0035); null = no
+   *  deadline. Within a status band the server orders dated tasks first, due_date ASC
+   *  (overdue → soonest-due), undated last. Overdue = status !== 'done' AND < Pacific-today. */
+  due_date: string | null;
 }
 
 /** (CS4 #12) The viewer's OWN current placement, resolved server-side from their linked ACTIVE

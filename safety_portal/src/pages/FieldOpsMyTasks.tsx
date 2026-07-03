@@ -12,6 +12,7 @@ import {
   SectionError,
   SectionLoading,
   SectionRefreshWarn,
+  TaskDue,
   errMsg,
   fmtEpochDate,
   type RowFeedback,
@@ -225,6 +226,8 @@ export function FieldOpsMyTasks({
             · {t.assigned_by ? `Assigned by ${t.assigned_by} · ` : "Assigned "}
             {fmtEpochDate(t.created_at)}
           </span>
+          {/* (G2.6) deadline + the shared Overdue pill (not-done AND due < Pacific-today). */}
+          <TaskDue dueDate={t.due_date} status={t.status} />
         </span>
         {canOwn && (
           <>
