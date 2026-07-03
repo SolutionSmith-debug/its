@@ -809,13 +809,21 @@ def test_alert_critical_legacy_log_call_writes_blank_correlation_id(
 def test_resend_suppressed_when_dedupe_says_no(
     log_dir, send_alert_mock, sentry_capture_mock, add_rows_mock, mocker
 ):
-    mocker.patch("shared.alert_dedupe.should_fire", return_value=False)
+    # Key-aware mock: suppress ONLY the Resend key. The Sentry leg gates on
+    # its own namespaced `sentry::` key (independent windows — each leg opens
+    # its window only on its own success), so Resend suppression must not
+    # suppress the Sentry capture.
+    mocker.patch(
+        "shared.alert_dedupe.should_fire",
+        side_effect=lambda key: key.startswith("sentry::"),
+    )
 
     _trigger_critical()
 
     # Resend suppressed.
     send_alert_mock.assert_not_called()
-    # Sentry + Smartsheet always write per §27.
+    # Sentry (own key, allowed) + Smartsheet (sole per-occurrence record,
+    # §3.1 as amended 2026-07-03) still fire.
     sentry_capture_mock.assert_called_once()
     add_rows_mock.assert_called_once()
     # Marker line surfaces the suppression.
@@ -830,19 +838,25 @@ def test_resend_fires_when_dedupe_says_yes(
 
     _trigger_critical()
 
-    should_fire.assert_called_once_with("test.script::uncaught_exception")
+    # BOTH push legs consult the gate, each with its own key.
+    should_fire.assert_any_call("test.script::uncaught_exception")
+    should_fire.assert_any_call("sentry::test.script::uncaught_exception")
+    assert should_fire.call_count == 2
     send_alert_mock.assert_called_once()
     sentry_capture_mock.assert_called_once()
-    record_fire.assert_called_once_with("test.script::uncaught_exception")
+    # Each leg opens its OWN window after its own success.
+    record_fire.assert_any_call("test.script::uncaught_exception")
+    record_fire.assert_any_call("sentry::test.script::uncaught_exception")
+    assert record_fire.call_count == 2
 
 
 def test_dedupe_module_exception_falls_open(
     log_dir, send_alert_mock, sentry_capture_mock, mocker
 ):
     # If should_fire raises (e.g., flock failure, disk full, JSON error
-    # we somehow didn't catch internally), the Resend leg must still send.
+    # we somehow didn't catch internally), BOTH push legs must still fire.
     # Fail-open is the load-bearing invariant — a bug in dedupe must never
-    # silently drop a CRITICAL email.
+    # silently drop a CRITICAL email OR a Sentry capture.
     mocker.patch(
         "shared.alert_dedupe.should_fire",
         side_effect=RuntimeError("disk full"),
@@ -876,23 +890,26 @@ def test_record_fire_exception_after_successful_send_does_not_raise(
     assert "write failed" in contents
 
 
-def test_five_same_key_critical_calls_one_resend_five_smartsheet_five_sentry(
+def test_five_same_key_critical_calls_one_resend_one_sentry_five_smartsheet(
     log_dir, send_alert_mock, sentry_capture_mock, add_rows_mock
 ):
     # Full integration through the real `alert_dedupe` module against a
     # tmp_path state file (per the autouse `alert_dedupe_state` fixture).
-    # Five CRITICALs with the same `(script, error_code)` key. Expected:
+    # Five CRITICALs with the same `(script, error_code)` key. Expected
+    # (§3.1 as amended 2026-07-03 — Sentry reclassified record→deduped-push,
+    # operator-ratified option 1):
     # - 1 Resend send (first one through; subsequent four suppressed).
-    # - 5 Smartsheet rows (§27 — records every time).
-    # - 5 Sentry captures (§27 — records every time).
+    # - 1 Sentry capture (first one through; subsequent four suppressed on
+    #   the independent `sentry::`-namespaced key).
+    # - 5 Smartsheet rows (ITS_Errors is the SOLE per-occurrence record).
     # All 5 rows share ONE correlation ID per CRITICAL (i.e., 5 distinct
     # UUIDs total, not 1 UUID reused).
     for _ in range(5):
         _trigger_critical()
 
     assert send_alert_mock.call_count == 1
+    assert sentry_capture_mock.call_count == 1
     assert add_rows_mock.call_count == 5
-    assert sentry_capture_mock.call_count == 5
 
     # 5 distinct correlation IDs landed across the Smartsheet writes.
     corr_ids = [call.args[1][0]["Correlation_ID"] for call in add_rows_mock.call_args_list]
@@ -905,6 +922,102 @@ def test_five_same_key_critical_calls_one_resend_five_smartsheet_five_sentry(
     sent_subject, _ = send_alert_mock.call_args.args
     short = corr_ids[0][:8]
     assert f"[corr: {short}]" in sent_subject
+
+    # Suppression markers surfaced for BOTH legs (4 each), on their own keys.
+    contents = _today_log(log_dir).read_text()
+    assert contents.count("[resend-alert-suppressed]") == 4
+    assert contents.count("[sentry-capture-suppressed]") == 4
+    assert "key=sentry::test.script::uncaught_exception" in contents
+
+
+# ---- Sentry dedupe gating (operator-ratified 2026-07-03, option 1) --------
+
+
+def test_sentry_suppressed_when_dedupe_says_no_for_sentry_key(
+    log_dir, send_alert_mock, sentry_capture_mock, add_rows_mock, mocker
+):
+    # Key-aware mock: suppress ONLY the namespaced Sentry key. The Resend
+    # email and the ITS_Errors record must be unaffected — the two push
+    # legs gate on independent state entries.
+    mocker.patch(
+        "shared.alert_dedupe.should_fire",
+        side_effect=lambda key: not key.startswith("sentry::"),
+    )
+
+    _trigger_critical()
+
+    # Sentry suppressed; Resend + Smartsheet unaffected.
+    sentry_capture_mock.assert_not_called()
+    send_alert_mock.assert_called_once()
+    add_rows_mock.assert_called_once()
+    # Marker line surfaces the suppression with the namespaced key.
+    contents = _today_log(log_dir).read_text()
+    assert "[sentry-capture-suppressed]" in contents
+    assert "key=sentry::test.script::uncaught_exception" in contents
+
+
+def test_sentry_dedupe_state_failure_fails_open(
+    log_dir, send_alert_mock, sentry_capture_mock, mocker
+):
+    # should_fire raising for the SENTRY key only → the Sentry leg must
+    # still capture (fail-open: allowed=True on any dedupe-state
+    # exception). Resend leg proceeds normally on its own key.
+    def _key_aware(key):
+        if key.startswith("sentry::"):
+            raise RuntimeError("sentry dedupe state corrupt")
+        return True
+
+    mocker.patch("shared.alert_dedupe.should_fire", side_effect=_key_aware)
+
+    _trigger_critical()
+
+    sentry_capture_mock.assert_called_once()
+    send_alert_mock.assert_called_once()
+    contents = _today_log(log_dir).read_text()
+    assert "[alert-dedupe-state-error]" in contents
+    assert "sentry dedupe state corrupt" in contents
+
+
+def test_sentry_record_fire_only_after_successful_capture(
+    log_dir, send_alert_mock, sentry_capture_mock, mocker
+):
+    # A FAILED capture must NOT open the dedupe window — the next
+    # occurrence should retry the capture rather than be suppressed
+    # against a Sentry event that never landed.
+    mocker.patch("shared.alert_dedupe.should_fire", return_value=True)
+    record_fire = mocker.patch("shared.alert_dedupe.record_fire")
+    sentry_capture_mock.side_effect = RuntimeError("sentry down")
+
+    _trigger_critical()
+
+    sentry_keys = [
+        c.args[0]
+        for c in record_fire.call_args_list
+        if c.args and c.args[0].startswith("sentry::")
+    ]
+    assert sentry_keys == []  # window NOT opened for the failed capture
+    # The Resend leg succeeded, so ITS window opened normally.
+    record_fire.assert_any_call("test.script::uncaught_exception")
+    assert "[sentry-capture-failed]" in _today_log(log_dir).read_text()
+
+
+def test_sentry_record_fire_exception_after_successful_capture_does_not_raise(
+    log_dir, send_alert_mock, sentry_capture_mock, mocker
+):
+    # If record_fire raises after a successful capture, the capture itself
+    # already happened — no behavioral regression. Marker line written.
+    mocker.patch("shared.alert_dedupe.should_fire", return_value=True)
+    mocker.patch(
+        "shared.alert_dedupe.record_fire",
+        side_effect=RuntimeError("write failed"),
+    )
+
+    _trigger_critical()
+
+    sentry_capture_mock.assert_called_once()
+    contents = _today_log(log_dir).read_text()
+    assert "[alert-dedupe-state-error]" in contents
+    assert "write failed" in contents
 
 
 # ---- §3.1: ITS_Errors record write bypasses the circuit breaker ----------

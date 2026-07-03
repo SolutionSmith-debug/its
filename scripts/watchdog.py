@@ -507,12 +507,15 @@ def _log_anomaly_to_review_queue(workstream: str, gaps: list[date]) -> None:
 # ---- Check G: alert-dedupe summary sweep --------------------------------
 
 _SUMMARY_SUBJECT_PREFIX = "[ITS CRITICAL SUMMARY]"
+_SENTRY_KEY_PREFIX = "sentry::"
+_SENTRY_LEG_TAG = "[sentry-leg]"
 
 
 def _compose_summary(entry: alert_dedupe.ExpiredEntry, run_ts: str) -> tuple[str, str]:
     """Build (subject, body) for one expired-window summary email.
 
     Subject:  [ITS CRITICAL SUMMARY] {script}: N suppressed occurrences
+              (suffixed ` [sentry-leg]` for a Sentry-leg dedupe entry)
     Body:     Fields naming the window + filter criteria for ITS_Errors.
 
     The body references filter criteria rather than enumerating
@@ -520,18 +523,28 @@ def _compose_summary(entry: alert_dedupe.ExpiredEntry, run_ts: str) -> tuple[str
     (suppressed_count, timestamps) — individual correlation IDs live in
     ITS_Errors. Operator pulls detail from the sheet with the filter.
 
-    `entry.key` is `f"{script}::{error_code}"`; we split once on `::` to
-    recover the two parts for display. A key without `::` falls back to
-    using the whole string as `script` and an empty error_code (the
-    `record_fire` callers always build keys with `::`, so this fallback
-    is defensive against hand-edited state files).
+    `entry.key` is `f"{script}::{error_code}"` for the Resend leg, or the
+    namespaced `f"sentry::{script}::{error_code}"` for the Sentry leg
+    (Sentry reclassified record→deduped-push, operator-ratified
+    2026-07-03). A `sentry::` prefix is stripped before display and the
+    subject is tagged `[sentry-leg]` so the operator can tell which push
+    leg was suppressed. We then split once on `::` to recover the two
+    parts for display. A key without `::` falls back to using the whole
+    string as `script` and an empty error_code (the `record_fire` callers
+    always build keys with `::`, so this fallback is defensive against
+    hand-edited state files).
     """
-    script, sep, error_code = entry.key.partition("::")
+    key = entry.key
+    is_sentry_leg = key.startswith(_SENTRY_KEY_PREFIX)
+    if is_sentry_leg:
+        key = key[len(_SENTRY_KEY_PREFIX):]
+    script, sep, error_code = key.partition("::")
     if not sep:
         error_code = ""
+    leg_tag = f" {_SENTRY_LEG_TAG}" if is_sentry_leg else ""
     subject = (
         f"{_SUMMARY_SUBJECT_PREFIX} {script}: "
-        f"{entry.suppressed_count} suppressed occurrences"
+        f"{entry.suppressed_count} suppressed occurrences{leg_tag}"
     )
     body = "\n".join(
         [

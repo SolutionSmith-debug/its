@@ -6,11 +6,16 @@ Behavior:
   are gated by env var `ITS_ERROR_LOG_INFO=1` (default off) to keep cron-job
   startup latency clean — production scripts run with it unset and pay zero
   Smartsheet round-trips on `started` / `completed` lines.
-- CRITICAL severity additionally triggers an out-of-band Resend email to
-  the operator (`system.operator_email` from ITS_Config). Failure-isolated:
-  if Resend is down, the underlying CRITICAL event is still captured in the
-  local log and ITS_Errors. Sentry hook + alert-routing dedupe are separate
-  PRs per Op Stds v11 §3 triple-fire.
+- CRITICAL severity additionally triggers the out-of-band push legs: a
+  Resend email to the operator (`system.operator_email` from ITS_Config)
+  and a Sentry structured event. Failure-isolated: if either push service
+  is down, the underlying CRITICAL event is still captured in the local
+  log and ITS_Errors. BOTH push legs are dedupe-gated by
+  `shared.alert_dedupe` — Resend on `f"{script}::{error_code}"`, Sentry on
+  the namespaced `f"sentry::{script}::{error_code}"` key. Sentry
+  reclassified record→deduped-push, operator-ratified 2026-07-03
+  (option 1); §3.1 rider: blueprint PR its-blueprint#55; ITS_Errors remains
+  the sole per-occurrence record.
 
 Both side-channel write paths (Smartsheet + Resend) are recursion-guarded
 and failure-isolated: any module-specific exception is caught and reduced
@@ -65,9 +70,10 @@ _in_sentry_capture = False
 # Top-level alert-path guard. The two per-leg guards above are asymmetric on
 # their own — _in_sentry_capture is still clear while the Resend leg runs — so a
 # reentrant log(CRITICAL) raised from INSIDE the Resend send would skip the
-# Resend leg but re-fire the (undeduped) Sentry leg. This guard wraps the whole
-# of `_alert_critical`, making the alert path fully reentrancy-safe (A3: log()
-# now fires _alert_critical, so this reentry is reachable in principle).
+# Resend leg but re-fire the Sentry leg (its per-key dedupe would not stop the
+# first occurrence). This guard wraps the whole of `_alert_critical`, making
+# the alert path fully reentrancy-safe (A3: log() now fires _alert_critical,
+# so this reentry is reachable in principle).
 _in_alert_critical = False
 
 
@@ -249,7 +255,7 @@ def _maybe_fire_window_summary(correlation_id: str) -> None:
             "[ITS] alert-rate-cap window summary",
             f"During the last alert-rate-cap window, {suppressed} operator "
             f"alert(s) were suppressed at the email leg. Records are in "
-            f"ITS_Errors + Sentry (corr={correlation_id}).",
+            f"ITS_Errors (corr={correlation_id}).",
         )
 
 
@@ -299,8 +305,9 @@ def _fire_resend_leg(
             allowed = True
 
         if not allowed:
-            # Op Stds v11 §3.1: dedupe applies only to push. The Smartsheet
-            # row + Sentry event already fired upstream of this leg, so
+            # Op Stds §3.1 (as amended 2026-07-03): dedupe applies to the
+            # push legs; ITS_Errors is the sole always-write record. The
+            # Smartsheet row already fired upstream of this leg, so
             # suppressing here loses no record. Marker line lets the
             # operator confirm dedupe is acting.
             _local_log(
@@ -337,7 +344,7 @@ def _fire_resend_leg(
                 "[ITS] alert-rate cap reached — further alerts suppressed",
                 f"The operator alert-rate cap was reached; further alerts this "
                 f"hour are suppressed at the email leg (records still land in "
-                f"ITS_Errors + Sentry). Most recent: {subject}",
+                f"ITS_Errors). Most recent: {subject}",
             )
             return
 
@@ -387,6 +394,7 @@ def _fire_sentry_leg(
     message: str,
     exc_info: str,
     correlation_id: str,
+    error_code: str,
 ) -> None:
     """Sentry leg of the triple-fire. Recursion-guarded; failure-isolated.
 
@@ -394,6 +402,27 @@ def _fire_sentry_leg(
     (script / message / traceback) fields rather than the already-
     composed email subject + body, so this helper takes the raw args.
     `correlation_id` lands as a Sentry tag.
+
+    Deduped-push leg (Sentry reclassified record→deduped-push,
+    operator-ratified 2026-07-03 (option 1); §3.1 rider: blueprint PR
+    its-blueprint#55; ITS_Errors remains the sole per-occurrence record).
+    Gated by `shared.alert_dedupe.should_fire` on the DELIBERATELY
+    namespaced key `f"sentry::{script}::{error_code}"` — NOT shared with
+    the Resend leg's `f"{script}::{error_code}"` entry. Resend's window
+    opens only on a SUCCESSFUL email send; sharing one entry would either
+    leave Sentry ungated during a Resend outage (Resend never records a
+    fire, so the window never opens and every occurrence still burns a
+    Sentry event) or, in the reverse coupling, suppress emails nobody
+    received (a successful Sentry capture opening the shared window while
+    the email leg was down). Each leg opens its own window on its own
+    success.
+
+    Within the window, suppressed captures write a local
+    `[sentry-capture-suppressed]` marker (and `should_fire` increments the
+    state entry's `suppressed_count`). `record_fire` runs ONLY after a
+    successful capture — a failed capture must not open the window.
+    Fail-OPEN on any dedupe-state exception: a dedupe bug must never
+    silently drop a Sentry capture.
     """
     global _in_sentry_capture
     if _in_sentry_capture:
@@ -401,7 +430,34 @@ def _fire_sentry_leg(
 
     _in_sentry_capture = True
     try:
-        from . import sentry_client
+        from . import alert_dedupe, sentry_client
+
+        dedupe_key = f"sentry::{script}::{error_code}"
+        try:
+            allowed = alert_dedupe.should_fire(dedupe_key)
+        except Exception as e:
+            # Fail-open: if the dedupe module itself raises, capture anyway.
+            # The contract is "dedupe can never silently drop a CRITICAL"
+            # — same as the Resend leg.
+            _local_log(
+                Severity.ERROR,
+                "shared.error_log",
+                f"[alert-dedupe-state-error] should_fire raised: {e!r}",
+            )
+            allowed = True
+
+        if not allowed:
+            # Op Stds §3.1 (as amended 2026-07-03): Sentry is a deduped
+            # push leg. The ITS_Errors row — the sole per-occurrence
+            # record — already fired upstream, so suppressing here loses
+            # no record. Marker line lets the operator confirm dedupe is
+            # acting on this leg.
+            _local_log(
+                Severity.INFO,
+                "shared.error_log",
+                f"[sentry-capture-suppressed] key={dedupe_key} corr={correlation_id}",
+            )
+            return
 
         try:
             sentry_client.capture_exception(
@@ -412,10 +468,26 @@ def _fire_sentry_leg(
             # `KeychainError` on missing DSN, network errors during init,
             # SDK transport failures all need to be swallowed. Marker
             # line distinguishes Sentry failures from Resend failures.
+            # Return WITHOUT record_fire — a failed capture must not open
+            # the dedupe window (the next occurrence should retry).
             _local_log(
                 Severity.ERROR,
                 "shared.error_log",
                 f"[sentry-capture-failed] {e!r}",
+            )
+            return
+
+        try:
+            alert_dedupe.record_fire(dedupe_key)
+        except Exception as e:
+            # record_fire is best-effort; if it fails, the next CRITICAL
+            # within the intended window may produce an extra Sentry
+            # event. That is the right failure mode per the fail-open
+            # contract.
+            _local_log(
+                Severity.ERROR,
+                "shared.error_log",
+                f"[alert-dedupe-state-error] record_fire raised: {e!r}",
             )
     finally:
         _in_sentry_capture = False
@@ -430,12 +502,14 @@ def _alert_critical(
 ) -> None:
     """Fire out-of-band CRITICAL alerts on all triple-fire legs.
 
-    Triple-fire per Op Stds v11 §3:
+    Triple-fire per Op Stds §3 (§3.1 as amended 2026-07-03 — Sentry
+    reclassified record→deduped-push, operator-ratified (option 1);
+    rider: blueprint PR its-blueprint#55):
     - Smartsheet `ITS_Errors` row — written earlier by `log()` →
       `_smartsheet_log` (NOT here; that path is unconditional on
-      WARN / ERROR / CRITICAL).
-    - Resend operator email — `_fire_resend_leg`.
-    - Sentry structured event — `_fire_sentry_leg`.
+      WARN / ERROR / CRITICAL). The SOLE per-occurrence record.
+    - Resend operator email — `_fire_resend_leg` (deduped push).
+    - Sentry structured event — `_fire_sentry_leg` (deduped push).
 
     `correlation_id` is the shared UUID that ties the Smartsheet row,
     Resend email, and Sentry event together. The decorator generates it
@@ -444,9 +518,12 @@ def _alert_critical(
     invocation) can omit it; a UUID is generated internally and only
     threaded to the two side-channel legs.
 
-    `error_code` is the dedupe-key suffix passed to the Resend leg's
-    `(script, error_code)` dedupe gate. Defaults to `"uncaught_exception"`
-    because today's only call site is the decorator's exception path.
+    `error_code` is the dedupe-key suffix threaded to BOTH push legs'
+    dedupe gates — Resend on `f"{script}::{error_code}"`, Sentry on the
+    namespaced `f"sentry::{script}::{error_code}"` (independent windows;
+    see `_fire_sentry_leg` for why they must not share an entry).
+    Defaults to `"uncaught_exception"` because today's only call site is
+    the decorator's exception path.
 
     Both side-channel legs are INDEPENDENT: each has its own try/except
     and its own recursion guard. A failure of either does NOT prevent
@@ -492,7 +569,7 @@ def _alert_critical(
         ])
 
         _fire_resend_leg(script, subject, body, correlation_id, error_code)
-        _fire_sentry_leg(script, message, exc_info, correlation_id)
+        _fire_sentry_leg(script, message, exc_info, correlation_id, error_code)
     finally:
         _in_alert_critical = False
 
@@ -516,8 +593,9 @@ def its_error_log(script_name: str) -> Callable[[F], F]:
                 # A3: log(CRITICAL) now fires the triple-fire alert path itself
                 # — it mints + threads one correlation_id across the ITS_Errors
                 # row, the Resend email, and the Sentry event. No separate
-                # _alert_critical call (that would double-fire the Sentry leg,
-                # which has no dedupe).
+                # _alert_critical call (that would double-run the push legs —
+                # a first-occurrence Sentry capture would double-fire before
+                # its dedupe window opens).
                 log(
                     Severity.CRITICAL,
                     script_name,
