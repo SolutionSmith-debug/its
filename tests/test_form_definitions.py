@@ -324,3 +324,97 @@ def test_daily_report_v4_job_requirements_placeholder() -> None:
     spec = REQUIRED_CONTENT["parents"]["daily-report"]
     assert "job_requirements" not in spec.get("required_field_keys", [])
     assert "job_requirements" not in spec.get("required_section_types", [])
+
+
+def test_daily_report_v5_expected_materials_mount() -> None:
+    """daily-report-v5 (Material receipts M2): v4 + ONE `expected_materials` placeholder
+    section in the D.13 deliveries region — immediately after the '13. Material & Equipment
+    Deliveries' guidance and immediately before the Deliveries Received table — keyed
+    `expected_materials_receipt`. The section carries NO content of its own AND files NO
+    values under its key (the key is reserved for namespace uniqueness only): the Daily tab
+    renders the job's expected materials (D1 job_expected_materials, migration 0031, M1)
+    there; confirm-receipt appends a deliveries_received row instead, and problems file as
+    material-incident submissions. v4 stays in-tree unchanged (append-only) and keeps its
+    own tests above; all SOP text is unchanged from v4."""
+    d = _load(FORMS_DIR / "daily-report-v5.json")
+    assert d["version"] == 5 and d["form_code"] == "daily-report-v5"
+    # The dated M2 note rides the definition (meta-schema `comment`).
+    assert any("SLICE M2" in line for line in d.get("comment", []))
+
+    mounts = [s for s in d["sections"] if s["type"] == "expected_materials"]
+    assert len(mounts) == 1, "exactly one expected_materials mount"
+    assert mounts[0]["key"] == "expected_materials_receipt"
+    assert mounts[0]["title"] == "Expected materials"
+    # Placement: the D.13 region — right after the deliveries guidance, before the table.
+    idx = d["sections"].index(mounts[0])
+    before = d["sections"][idx - 1]
+    assert before["type"] == "guidance"
+    assert before["heading"] == "13. Material & Equipment Deliveries"
+    after = d["sections"][idx + 1]
+    assert after["type"] == "repeating_table" and after["key"] == "deliveries_received"
+
+    # Everything else is v4 verbatim: same sections in the same order, the one insertion aside.
+    v4 = _load(FORMS_DIR / "daily-report-v4.json")
+    v5_minus_mount = [s for s in d["sections"] if s["type"] != "expected_materials"]
+    assert v5_minus_mount == v4["sections"], "v5 must be v4 + ONLY the placeholder section"
+
+    # The DFR legal floor (required-content.json parents['daily-report']) is untouched, and
+    # the new mount is NOT part of it.
+    spec = REQUIRED_CONTENT["parents"]["daily-report"]
+    assert "expected_materials_receipt" not in spec.get("required_field_keys", [])
+    assert "expected_materials" not in spec.get("required_section_types", [])
+
+
+def test_material_incident_v1_structure_and_floor() -> None:
+    """material-incident-v1 (Material receipts M2): the manager-side delivery-problem form,
+    deep-linked from the daily form's Expected-materials section and normally pickable from
+    Submit-a-Form. NEW parent `material-incident`, catalog category 'progress' (commercial,
+    not safety — operator-vetoable, noted in the definition comment). Fields per the M2
+    spec; `issue` uses the meta-schema's SUPPORTED `select` input (verified: enum member +
+    SPA FieldView dropdown + blank-mode AcroForm choice). Required-content floor (strict
+    entry, PENDING OPERATOR CONFIRMATION): material_description + issue + details."""
+    d = _load(FORMS_DIR / "material-incident-v1.json")
+    assert d["form_code"] == "material-incident-v1"
+    assert d["parent_form_code"] == "material-incident"
+    assert d["version"] == 1
+    # Net-new form — no reference PDF exists (the photo-test-v1 precedent).
+    assert d["source_pdf"] == ""
+    assert any("PENDING OPERATOR CONFIRMATION" in line for line in d.get("comment", []))
+    assert any("progress" in line for line in d.get("comment", []))
+
+    # Header fields: description/ref/quantities/issue — issue is a bounded select.
+    header = next(s for s in d["sections"] if s["type"] == "header" and "title" not in s)
+    fields = {f["key"]: f for f in header["fields"]}
+    assert fields["material_description"]["input"] == "text"
+    assert fields["material_description"].get("required") is True
+    assert fields["delivery_ref"]["input"] == "text"
+    assert fields["qty_expected"]["input"] == "number"
+    assert fields["qty_received"]["input"] == "number"
+    assert fields["issue"]["input"] == "select"
+    assert fields["issue"]["options"] == ["Damaged", "Short", "Wrong item", "Other"]
+    assert fields["issue"].get("required") is True
+
+    # details / action_taken are full-width textareas; photos is a header-level photo field
+    # (the ONLY placement publishValidation allows photos — rides the §34 pipeline, D3).
+    details = next(s for s in d["sections"] if s.get("key") == "details")
+    assert details["type"] == "freeform" and details.get("input", "textarea") == "textarea"
+    action = next(s for s in d["sections"] if s.get("key") == "action_taken")
+    assert action["type"] == "freeform" and action.get("input", "textarea") == "textarea"
+    photos = next(
+        s for s in d["sections"]
+        if s["type"] == "header" and any(f["input"] == "photo" for f in s["fields"])
+    )
+    assert [f["key"] for f in photos["fields"]] == ["photos"]
+
+    # The catalog carries the new parent as category 'progress', normally pickable
+    # (NO launch:'daily-tab' — that key is the daily-report parent's alone).
+    parent = next(p for p in _CATALOG["parents"] if p["parent_form_code"] == "material-incident")
+    assert parent["category"] == "progress"
+    assert "launch" not in parent
+    assert parent["forms"][0]["current_form_code"] == "material-incident-v1"
+
+    # The required-content floor exists and names exactly the three floor fields; the
+    # glob-parametrized test above proves the shipped definition satisfies it.
+    spec = REQUIRED_CONTENT["parents"]["material-incident"]
+    assert spec["required_field_keys"] == ["material_description", "issue", "details"]
+    assert spec["required_signature_inputs_min"] == 0

@@ -35,14 +35,17 @@ export async function fetchDailyFormStatus(jobId: string, date: string): Promise
 // ── Per-job daily-form requirements (slice D4) ─────────────────────────────────────────────────
 
 /** The parent-form families the status endpoint reports (client mirror of the Worker's
- *  DAILY_STATUS_FAMILIES module constant — fieldops_checklist.ts). A form_link REQUIREMENT whose
- *  form_code is outside this set still deep-links fine, but has NO live filed indicator — the
- *  renderer notes that instead of showing a lying blank. */
+ *  DAILY_STATUS_FAMILIES module constant — fieldops_checklist.ts; keep the two lists identical).
+ *  A form_link REQUIREMENT whose form_code is outside this set still deep-links fine, but has NO
+ *  live filed indicator — the renderer notes that instead of showing a lying blank.
+ *  material-incident joined at M2 (Material receipts): the daily form's Expected-materials
+ *  section shows a live Filed ✓ indicator for the incident form it deep-links to. */
 export const DAILY_STATUS_FAMILIES: readonly string[] = [
   "jha",
   "visitor-sign-in",
   "incident-report",
   "daily-report",
+  "material-incident",
 ];
 
 /** The closed requirement-item vocabulary (D1 job_daily_requirements.kind, migration 0030). */

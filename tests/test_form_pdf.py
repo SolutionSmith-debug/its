@@ -728,3 +728,73 @@ def test_daily_report_v4_renders_with_requirements_and_v3_content() -> None:
     text2 = _norm(_pdf_text(render_submission_pdf(definition, without)))
     assert "SITE SUPERVISOR — STANDARD OPERATING PROCEDURE" in text2
     assert "Job-specific requirements" not in text2
+
+
+# ── expected_materials section (Material receipts M2) ────────────────────────────
+def test_expected_materials_renders_note_line_only_in_submission_mode() -> None:
+    """The daily PDF's expected_materials section is DELIBERATELY a title + note line
+    pointing at Deliveries Received / the material-incident filings — the section is an
+    on-screen receipt affordance that files NO values of its own (the receipt data the
+    document of record needs already lands in the deliveries_received table + the incident
+    form's own submission). Even a stray value under the section's key changes nothing."""
+    definition = _load("daily-report-v5.json")
+    submission = {
+        "job_name": "Bradley 1", "work_date": "2026-07-02",
+        "values": {
+            "deliveries_received": [
+                {"item_material": "Q.PEAK DUO", "condition": "Received OK",
+                 "notes": "qty 40 panels"},
+            ],
+            # Defensive: nothing should ever write here (the section files no values) —
+            # and if something does, the renderer must NOT dump it into the document.
+            "expected_materials_receipt": [{"label": "should never render"}],
+        },
+    }
+    text = _norm(_pdf_text(render_submission_pdf(definition, submission)))
+    assert "SITE SUPERVISOR — STANDARD OPERATING PROCEDURE" in text  # v4 content intact
+    assert "Expected materials" in text
+    assert "Receipts recorded under Deliveries Received above" in text
+    assert "Material Incident Report submissions" in text
+    assert "should never render" not in text
+    # The receipt row the confirm action appended renders in the deliveries table.
+    assert "Q.PEAK DUO" in text and "Received OK" in text and "qty 40 panels" in text
+
+
+def test_expected_materials_blank_mode_renders_title_and_placeholder() -> None:
+    """Blank/fillable mode can't know a job's live D1 expected-materials rows — it renders
+    the title + an explicit placeholder (mirroring job_requirements, never silent)."""
+    from safety_reports.form_pdf import render_blank_fillable
+    out = render_blank_fillable(_load("daily-report-v5.json"))
+    assert out[:5] == b"%PDF-"
+    text = _norm(_pdf_text(out))
+    assert "Expected materials" in text
+    assert "this job's expected materials appear here on screen" in text
+
+
+def test_material_incident_v1_renders_filled_values() -> None:
+    """The shipped material-incident-v1 renders through the standard machinery: header
+    fields (incl. the `select` issue as its chosen text value) + the details/action
+    textareas; the blank mode renders too (the render-parity glob covers it — this is the
+    filled-values leg)."""
+    definition = _load("material-incident-v1.json")
+    submission = {
+        "job_name": "Bradley 1", "work_date": "2026-07-02",
+        "values": {
+            "material_description": "Q.PEAK DUO panels",
+            "delivery_ref": "PO-4471",
+            "qty_expected": "40",
+            "qty_received": "37",
+            "issue": "Damaged",
+            "details": "Three pallets arrived with crushed corners; glass cracked on 3 modules.",
+            "action_taken": "Flagged on the delivery receipt and notified the CM before signing.",
+        },
+    }
+    out = render_submission_pdf(definition, submission)
+    assert out[:5] == b"%PDF-"
+    text = _norm(_pdf_text(out))
+    assert "MATERIAL INCIDENT REPORT" in text
+    assert "Q.PEAK DUO panels" in text
+    assert "PO-4471" in text
+    assert "Damaged" in text
+    assert "crushed corners" in text
+    assert "notified the CM before signing" in text

@@ -75,7 +75,14 @@ export type Section =
   // of its own — the D1 overlay (job_daily_requirements) is fetched at render time (FormRenderer
   // `requirements` prop) and the answers file under values.<key> = [{label, kind, response}].
   // At most one per definition (publishValidation.ts).
-  | { type: "job_requirements"; key: string; title?: string };
+  | { type: "job_requirements"; key: string; title?: string }
+  // Expected-materials receipt placeholder (Material receipts M2): a keyed mount point with no
+  // content of its own — the Daily tab fetches the job's expected materials (M1) and supplies
+  // them via the FormRenderer `expectedMaterials` adapter. Unlike job_requirements it files NO
+  // values under its key (the key is reserved for namespace uniqueness only): confirm-receipt
+  // appends a deliveries_received row; problems file as the material-incident form's OWN
+  // submission. At most one per definition (publishValidation.ts).
+  | { type: "expected_materials"; key: string; title?: string };
 
 export interface FormDefinition {
   form_code: string;

@@ -8,11 +8,19 @@ import {
   type DailyFormStatus,
   type DailyRequirementItem,
 } from "../lib/fieldops_daily_form";
+import {
+  fetchExpectedMaterials,
+  flagExpectedMaterialIncident,
+  receiveExpectedMaterial,
+  type ExpectedMaterialRow,
+} from "../lib/fieldops_expected_materials";
+import { rowTitle } from "./ExpectedMaterialsSection";
 import { formCatalog, getDefinition, resolveFormTarget } from "../forms/registry";
 import {
   FormRenderer,
   initialValues,
   seedRequirementResponses,
+  type ExpectedMaterialsAdapter,
   type FormLinkAdapter,
   type FormValues,
 } from "../forms/FormRenderer";
@@ -129,6 +137,16 @@ export function DailyReportTab({
   // The section's value key, read from the definition (daily-report-v4: "job_requirements").
   const reqSection = def?.sections.find((s) => s.type === "job_requirements");
   const reqKey = reqSection && "key" in reqSection ? reqSection.key : "job_requirements";
+
+  // ── Expected materials (Material receipts M2) — the job's M1 receipt list, rendered inside
+  // the form's expected_materials section. Per JOB (not per date). Unlike requirements, NOTHING
+  // is seeded into values: the section files no values of its own — "Confirm receipt" appends a
+  // deliveries_received row instead, and problems file as the material-incident form's OWN
+  // submission (deep-linked below).
+  const [expectedRows, setExpectedRows] = useState<ExpectedMaterialRow[] | null>(null);
+  const [expectedError, setExpectedError] = useState<string | null>(null);
+  const [expectedBusy, setExpectedBusy] = useState<ReadonlySet<number>>(new Set());
+  const [expectedActionError, setExpectedActionError] = useState<string | null>(null);
 
   const [busy, setBusy] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -318,6 +336,38 @@ export function DailyReportTab({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [placedJob, refreshToken]);
 
+  // ── Expected materials (M2) — fetch. Never a blocker: a failure soft-warns with a Retry (the
+  // R2 never-silent bar) and the form still works (no adapter → the section renders nothing,
+  // never a lying "no expected materials" empty state).
+  async function loadExpectedMaterials(jobId: string) {
+    try {
+      const d = await fetchExpectedMaterials(jobId);
+      setExpectedRows(d.expected_materials);
+      setExpectedError(null);
+    } catch (err) {
+      setExpectedError(errMsg(err, "Couldn't load this job's expected materials."));
+    }
+  }
+
+  useEffect(() => {
+    if (!placedJob) return;
+    let active = true;
+    void (async () => {
+      // Wrapped like the status/requirements effects so a stale (job-switched) response can't land.
+      try {
+        const d = await fetchExpectedMaterials(placedJob);
+        if (!active) return;
+        setExpectedRows(d.expected_materials);
+        setExpectedError(null);
+      } catch (err) {
+        if (active) setExpectedError(errMsg(err, "Couldn't load this job's expected materials."));
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [placedJob, refreshToken]);
+
   // ── Filed status (the form_link indicators + the filed banner) + the amend candidate. ──────────
   async function loadStatus(jobId: string, forDate: string) {
     try {
@@ -467,6 +517,119 @@ export function DailyReportTab({
     }
   }
 
+  // ── M2 receipt actions (the expected_materials section's two buttons) ─────────────────────────
+  function markExpectedBusy(id: number, on: boolean) {
+    setExpectedBusy((prev) => {
+      const next = new Set(prev);
+      if (on) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  }
+
+  // "Confirm receipt": the M1 receive route (expected→received, idempotent-safe 409 on repeat) +
+  // an optimistic pill flip + a Deliveries Received row APPENDED to the form values so the FILED
+  // daily report records the receipt (the section itself files nothing). The append goes through
+  // editValues — dirty-tracked and draft-persisted exactly like typed work.
+  async function confirmReceipt(row: ExpectedMaterialRow) {
+    if (expectedBusy.has(row.id)) return;
+    markExpectedBusy(row.id, true);
+    setExpectedActionError(null);
+    try {
+      await receiveExpectedMaterial(row.id);
+      // Optimistic flip — the Worker stamped the authoritative received_at/by; a later
+      // refetch (Refresh / next visit) shows the resolved display name.
+      setExpectedRows((rows) =>
+        (rows ?? []).map((r) =>
+          r.id === row.id
+            ? { ...r, status: "received" as const, received_at: Math.floor(Date.now() / 1000) }
+            : r,
+        ),
+      );
+      const delivered = {
+        item_material: rowTitle(row),
+        condition: "Received OK",
+        notes: row.qty != null ? `qty ${row.qty}${row.unit ? ` ${row.unit}` : ""}` : (row.unit ?? ""),
+      };
+      editValues((v) => {
+        const rows0 = Array.isArray(v.deliveries_received)
+          ? (v.deliveries_received as Record<string, string>[])
+          : [];
+        // Drop fully-empty rows (the min_rows=1 blank seed) so the table doesn't keep a stray
+        // blank line above the appended receipt; any partially-typed row is preserved.
+        const kept = rows0.filter((r) => Object.values(r).some((x) => String(x ?? "").trim() !== ""));
+        return { ...v, deliveries_received: [...kept, delivered] };
+      });
+    } catch (err) {
+      setExpectedActionError(errMsg(err, "Couldn't confirm receipt — try again."));
+    } finally {
+      markExpectedBusy(row.id, false);
+    }
+  }
+
+  // "Report a problem →": the M1 flag-incident route (note REQUIRED — prompted up front so the
+  // D1 record carries the reason even if the manager abandons the incident form), an optimistic
+  // flip to the incident pill, then the material-incident deep-link prefilled (job/date at the
+  // envelope + the row's description / expected qty through the R5 openForm values mechanism).
+  // The draft effect already persisted the typed day, so navigating away loses nothing (D2 fix).
+  async function reportProblem(row: ExpectedMaterialRow) {
+    if (expectedBusy.has(row.id)) return;
+    const note = window.prompt(`Report a problem with "${rowTitle(row)}" — what's wrong? (required)`);
+    if (note === null) return; // cancelled — no flag, no navigation
+    if (!note.trim()) {
+      setExpectedActionError("A short note describing the problem is required.");
+      return;
+    }
+    markExpectedBusy(row.id, true);
+    setExpectedActionError(null);
+    try {
+      await flagExpectedMaterialIncident(row.id, note.trim());
+      setExpectedRows((rows) =>
+        (rows ?? []).map((r) =>
+          r.id === row.id
+            ? {
+                ...r,
+                status: "incident" as const,
+                received_at: Math.floor(Date.now() / 1000),
+                note: note.trim(),
+              }
+            : r,
+        ),
+      );
+      if (onOpenForm && placement) {
+        const target = resolveFormTarget("material-incident");
+        onOpenForm({
+          jobId: placement.job_id,
+          parentCode: target.parentCode,
+          variantCode: target.variantCode || undefined,
+          workDate: date,
+          values: {
+            material_description: rowTitle(row),
+            ...(row.qty != null ? { qty_expected: String(row.qty) } : {}),
+          },
+        });
+      }
+    } catch (err) {
+      setExpectedActionError(errMsg(err, "Couldn't flag the delivery problem — try again."));
+    } finally {
+      markExpectedBusy(row.id, false);
+    }
+  }
+
+  // M2 — the expected_materials section adapter. Supplied only once the read SUCCEEDED: while
+  // loading (null) or failed (the soft-warn above carries the Retry) the section renders
+  // nothing rather than a lying "no expected materials" empty state.
+  const expectedAdapter: ExpectedMaterialsAdapter | undefined =
+    expectedRows !== null
+      ? {
+          rows: expectedRows,
+          busyIds: expectedBusy,
+          actionError: expectedActionError,
+          onConfirmReceipt: (r) => void confirmReceipt(r),
+          onReportProblem: (r) => void reportProblem(r),
+        }
+      : undefined;
+
   // R3 deep-link adapter for the definition's form_link sections. `open` rides App.openForm (which
   // captures My Tasks as the return target); the indicator label comes from the status read.
   const formLinks: FormLinkAdapter | undefined = onOpenForm
@@ -502,6 +665,7 @@ export function DailyReportTab({
           setValues={editValues}
           formLinks={formLinks}
           requirements={requirements ?? undefined}
+          expectedMaterials={expectedAdapter}
         />
       </section>
       {submitError ? (
@@ -557,6 +721,13 @@ export function DailyReportTab({
             message={reqError}
             onRetry={() => void loadRequirements(placement.job_id)}
             what="loading job-specific requirements"
+          />
+        )}
+        {expectedError && (
+          <SectionRefreshWarn
+            message={expectedError}
+            onRetry={() => void loadExpectedMaterials(placement.job_id)}
+            what="loading expected materials"
           />
         )}
         {prefillWarn && <div className="dash-unavail" role="status">{prefillWarn}</div>}

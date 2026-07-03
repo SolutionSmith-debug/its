@@ -42,9 +42,28 @@ that job is waiting on (`job_expected_materials`, migration 0031). The office
 (`cap.materials.manage`, admin) adds rows — picked from this catalog or typed free-text — with
 qty/unit/expected date, edits them while still *Expected*, reorders, and removes (a soft
 deactivate; history is kept). Managers and field PMs (`cap.materials.receive`) see the list
-**read-only** on their own job; their receive action (confirm receipt / flag a delivery problem)
-arrives through the **daily form in M2** — the Worker routes for it already exist
-(`…/receive`, `…/flag-incident`) and are per-job ownership-scoped.
+**read-only** on their own job; their receive action lives in the **daily form** (below).
+
+### Manager receipt flow — the daily form (Material receipts M2)
+
+The manager's action surface is the **Daily tab** (My Tasks → Daily): the daily report form
+(daily-report-v5) carries an **Expected materials** section in the D.13 deliveries region that
+renders the placed job's pending rows live. Two actions per pending row, both send-free D1
+status flips through the M1 routes (per-job ownership-scoped; a repeat is a clean 409 —
+first action wins):
+
+- **Confirm receipt** — flips the row *Expected → Received* (stamps who/when) **and appends a
+  row to the form's "Deliveries Received" table** (`item_material` = the material,
+  `condition` = "Received OK", `notes` = qty/unit), so the **filed daily PDF records the
+  receipt**. The append behaves like typed work (draft-persisted; editable before submit).
+- **Report a problem →** — prompts for a short **required** note, flips the row
+  *Expected → Incident*, then opens the **Material Incident Report** form pre-filled with the
+  material and expected qty (job/date carried automatically). The incident files as its own
+  submission; the daily form shows a live "Filed ✓" indicator for it once filed.
+
+Received/Incident rows show status pills + who/when. A job with no expected materials shows
+"No expected materials for this job." — the daily form is otherwise unaffected. The
+material-incident form is also normally pickable from Submit-a-Form (category: Progress).
 
 ### Symptoms → low-class repair (Tier-2)
 
@@ -55,12 +74,18 @@ arrives through the **daily form in M2** — the Worker routes for it already ex
 | "already_actioned" (409) when confirming a receipt | The row was already received / flagged by someone else | No repair — the first action won; the row shows who and when |
 | A row can't be edited ("not_editable", 409) | Received/incident rows are receipt **records** — content edits are locked | Expected behavior. If the record itself is wrong, escalate |
 | The catalog picker fails but free-text add works | The catalog read failed (transient) | Retry; if persistent check the Materials Catalog page loads |
+| The daily form shows "Couldn't load this job's expected materials" | A transient read failure — the form stays fillable (never silent) | Tap **Retry** next to the warning; if persistent, check the job's Expected materials section loads on the Job Tracker detail |
+| No "Expected materials" section in the manager's daily form | The job has no expected rows → the section shows the explicit empty copy; if even THAT is absent, the read failed (see the Retry warn) or the account isn't a placed manager | Confirm placement + that the office added expected rows on the job's detail |
+| "Confirm receipt" errors with "already received" | Someone else received/flagged the row first (the 409 above, surfaced in the form) | No repair — refresh to see who and when |
+| The manager cancelled the incident prompt / form but the row already shows *Incident* | The flag lands **before** the incident form files (deliberate — the D1 record carries the note either way) | File the Material Incident Report from Submit-a-Form (it prefills nothing then, but job/date/details can be re-entered); the row's note already says what's wrong |
 
 ### Escalate to Seth (Developer-Operator) — high-capability-class
 
 - Correcting a **received/incident row's recorded facts** (stamps, status un-flip) — a data/code change.
 - Anything touching migration `0031_job_expected_materials.sql` or the status model.
-- The M2 daily-form receipt flow + material-incident form (not built yet — do not improvise).
+- Any change to the daily-report / material-incident **form definitions** (the publish pipeline,
+  daily-report-v5's `expected_materials` mount, the material-incident required-content floor) —
+  definition + legal-floor changes are code/doctrine class.
 
 ## Notes
 

@@ -300,6 +300,7 @@ function SectionEditor({ section, onChange }: { section: Section; onChange: (s: 
     case "guidance":
     case "form_link":
     case "job_requirements":
+    case "expected_materials":
       return (
         <p className="muted">
           This section is maintained in the form definition (publish pipeline) and is not

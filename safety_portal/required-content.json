@@ -87,6 +87,24 @@
         "site_visitors",
         "comments"
       ]
+    },
+    "material-incident": {
+      "comment": [
+        "[PENDING OPERATOR CONFIRMATION — Material receipts M2, 2026-07-02] Progress-category",
+        "(commercial) form with NO signature requirement — strict entry per the M2 protocol,",
+        "flagged for operator veto alongside the category choice. The floor is the incident's",
+        "evidentiary minimum: WHAT material (material_description), WHAT KIND of problem",
+        "(issue), and the free-text account (details). qty fields / delivery_ref / photos /",
+        "action_taken are deliberately NOT floored — a future edit may reshape them without a",
+        "legal-floor change."
+      ],
+      "required_signature_inputs_min": 0,
+      "required_section_types": [],
+      "required_field_keys": [
+        "material_description",
+        "issue",
+        "details"
+      ]
     }
   },
   "identities": {}

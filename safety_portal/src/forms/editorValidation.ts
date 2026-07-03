@@ -225,6 +225,12 @@ function validateSection(s: Section, idx: number, topLevel: string[], errors: st
     case "job_requirements":
       checkSectionKey(s.key, where, topLevel, errors);
       return;
+    // expected_materials (Material receipts M2): read-only in the builder like
+    // job_requirements. It files NO values under its key, but the key is still RESERVED in
+    // the value namespace (mirrors worker/publishValidation.ts), so it joins the check.
+    case "expected_materials":
+      checkSectionKey(s.key, where, topLevel, errors);
+      return;
   }
 }
 
