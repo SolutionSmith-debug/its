@@ -89,6 +89,34 @@ PICKLIST_SIZE_THRESHOLD_MAX        = 1000  # sanity ceiling on configured values
 SHEET_COUNT_CEILING = 1500
 SHEET_COUNT_MARGIN  = 50
 
+# Smartsheet ROW-cap rotation (growth Slice 1 / eval A5 / watchdog Check O) —
+# thresholds for scripts/watchdog.py `_check_row_cap_rotation`, which keeps
+# ITS_Errors + ITS_Review_Queue from ever hitting the Smartsheet per-sheet row
+# cap (verified 20,000 rows at current plan/width — NOT the eval's 5,000
+# assumption; the A5 spec text lives on unmerged branch c0cbf3b and is
+# corrected here). Past the cap, add_rows fails → the forensic record is lost
+# and watchdog Check B goes blind. WARN when a sheet crosses
+# SHEET_ROW_WARN_THRESHOLD; at SHEET_ROW_ROTATE_THRESHOLD delete TERMINAL rows
+# older than SHEET_ROW_ROTATION_RETENTION_DAYS, oldest first, in delete_rows
+# batches of SHEET_ROW_ROTATION_DELETE_BATCH (the Smartsheet per-call ID cap),
+# bounded to SHEET_ROW_ROTATION_MAX_BATCHES_PER_RUN per daily run (the next
+# run re-counts and continues — no retry loop inside one check execution).
+SHEET_ROW_HARD_CAP                     = 20_000  # verified Smartsheet limit (row-bound at these widths)
+SHEET_ROW_WARN_THRESHOLD               = 15_000
+SHEET_ROW_ROTATE_THRESHOLD             = 16_000
+SHEET_ROW_ROTATION_RETENTION_DAYS      = 90
+SHEET_ROW_ROTATION_DELETE_BATCH        = 450
+SHEET_ROW_ROTATION_MAX_BATCHES_PER_RUN = 10
+
+# Weekly-packet size early warning (growth Slice 4b / eval row 7). Graph's
+# upload-session hard ceiling is 150 MB (graph_client.UPLOAD_SESSION_MAX_BYTES)
+# — past it weekly_send HELDs the row (`held_oversized_packet`), an operator-
+# actionable refusal discovered only at Friday send time. This threshold makes
+# the wall a FORECAST: a compiled packet above it (but still sendable) WARNs
+# via an ITS_Errors record pointing at the manual packet-split runbook
+# (docs/runbooks/safety_weekly_send.md), while the send proceeds unchanged.
+PACKET_SIZE_WARN_BYTES = 100 * 1024 * 1024  # 104,857,600
+
 
 DEFAULT_REVIEWER_CHAINS: dict[str, ReviewerChainConfig] = {
     "safety_reports": {

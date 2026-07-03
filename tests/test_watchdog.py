@@ -118,9 +118,10 @@ def test_checks_list_has_all_session_1_2_3_checks():
     prolonged-open page) and K (guaranteed F09 cap-window summary sweep) shipped
     in F08/F09 PR 2. Check L (token write-capability probe) shipped in B2.
     Check N (WSR rows stuck in SENDING) is the weekly_send write-ahead-marker
-    safety net. Check P (A3) is the Box OAuth refresh-token freshness probe;
-    Checks Q/R (A4) are the portal_poll fetch-outage + unfiled-backlog probes
-    (Check O is reserved for the future A5 per-job row-cap watchdog). Check S
+    safety net. Check O (A5, growth Slice 1) is the ITS_Errors +
+    ITS_Review_Queue row-cap rotation. Check P (A3) is the Box OAuth
+    refresh-token freshness probe; Checks Q/R (A4) are the portal_poll
+    fetch-outage + unfiled-backlog probes. Check S
     (origin/main required-CI-green detector) shipped from the 2026-06-28 forensic
     lessons-learned (class #13, partial-PR-landed)."""
     assert watchdog.CHECKS == [
@@ -137,6 +138,7 @@ def test_checks_list_has_all_session_1_2_3_checks():
         watchdog._check_token_write_capability,  # Check L (B2)
         watchdog._check_blueprint_guard_symlinks,  # Check M (C3)
         watchdog._check_stuck_wsr_send,  # Check N (WSR write-ahead-marker safety net)
+        watchdog._check_row_cap_rotation,  # Check O (A5, growth Slice 1) — row-cap rotation
         watchdog._check_box_token_freshness,  # Check P (A3) — Box OAuth freshness
         watchdog._check_portal_poll_fetch_outage,  # Check Q (A4 fetch-outage escalation)
         watchdog._check_portal_poll_pending_backlog,  # Check R (A4 unfiled-backlog)
@@ -2475,3 +2477,307 @@ def test_resolve_prune_creds_happy_path(monkeypatch):
     )
     monkeypatch.setattr(watchdog.keychain, "get_secret", lambda name: "tok")
     assert watchdog._resolve_prune_status_creds() == ("https://worker.test", "tok")
+
+# ---- Check O: ITS_Errors + ITS_Review_Queue row-cap rotation (A5) --------
+#
+# Seams match the existing suite: `watchdog.smartsheet_client.get_rows` /
+# `.delete_rows` mocked; the rotation-summary record asserts against
+# `watchdog.log` (the same seam _run_check routing tests use). Thresholds are
+# monkeypatched small so the tests never build 16,000-row fixtures — the
+# check reads them from `watchdog.defaults` at call time.
+
+
+def _shrink_row_caps(mocker, *, warn=5, rotate=8, batch=450, max_batches=10):
+    mocker.patch.object(watchdog.defaults, "SHEET_ROW_WARN_THRESHOLD", warn)
+    mocker.patch.object(watchdog.defaults, "SHEET_ROW_ROTATE_THRESHOLD", rotate)
+    mocker.patch.object(watchdog.defaults, "SHEET_ROW_ROTATION_DELETE_BATCH", batch)
+    mocker.patch.object(
+        watchdog.defaults, "SHEET_ROW_ROTATION_MAX_BATCHES_PER_RUN", max_batches
+    )
+
+
+def _iso_days_ago(days: int) -> str:
+    return (date.today() - timedelta(days=days)).isoformat()
+
+
+def _errors_row(row_id, *, severity="WARN", days_old=200, resolved_at=None, ts=...):
+    row = {
+        "_row_id": row_id,
+        "Severity": severity,
+        "Error": "some_code",
+        "Timestamp": _iso_days_ago(days_old) if ts is ... else ts,
+    }
+    if resolved_at is not None:
+        row["Resolved At"] = resolved_at
+    return row
+
+
+def _rq_row(row_id, *, status="APPROVED", days_old=200):
+    return {
+        "_row_id": row_id,
+        "Status": status,
+        "Created At": _iso_days_ago(days_old),
+    }
+
+
+@pytest.fixture
+def rotation_rows(mocker):
+    """Route get_rows by sheet id; both sheets default to empty (healthy)."""
+    per_sheet: dict[int, object] = {
+        watchdog.sheet_ids.SHEET_ERRORS: [],
+        watchdog.sheet_ids.SHEET_REVIEW_QUEUE: [],
+    }
+
+    def _get_rows(sheet_id, **kwargs):
+        value = per_sheet[sheet_id]
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+    mocker.patch.object(watchdog.smartsheet_client, "get_rows", side_effect=_get_rows)
+    return per_sheet
+
+
+@pytest.fixture
+def mock_delete_rows(mocker):
+    return mocker.patch.object(watchdog.smartsheet_client, "delete_rows")
+
+
+# -- terminality predicates (the load-bearing eligibility filter) ----------
+
+
+def test_errors_terminality_non_critical_is_terminal():
+    assert watchdog._errors_row_is_terminal(_errors_row(1, severity="WARN"))
+    assert watchdog._errors_row_is_terminal(_errors_row(1, severity="ERROR"))
+    assert watchdog._errors_row_is_terminal(_errors_row(1, severity="INFO"))
+
+
+def test_errors_terminality_critical_needs_resolved_at():
+    # Open CRITICAL (blank/missing Resolved At) is NEVER terminal — Check B's
+    # working set survives every rotation.
+    assert not watchdog._errors_row_is_terminal(_errors_row(1, severity="CRITICAL"))
+    assert not watchdog._errors_row_is_terminal(
+        _errors_row(1, severity="CRITICAL", resolved_at="")
+    )
+    assert watchdog._errors_row_is_terminal(
+        _errors_row(1, severity="CRITICAL", resolved_at="2026-01-01")
+    )
+
+
+def test_review_queue_terminality_only_drained_states():
+    assert watchdog._review_queue_row_is_terminal(_rq_row(1, status="APPROVED"))
+    assert watchdog._review_queue_row_is_terminal(_rq_row(1, status="REJECTED"))
+    # PENDING / IN_REVIEW / ESCALATED are open work — never terminal.
+    assert not watchdog._review_queue_row_is_terminal(_rq_row(1, status="PENDING"))
+    assert not watchdog._review_queue_row_is_terminal(_rq_row(1, status="IN_REVIEW"))
+    assert not watchdog._review_queue_row_is_terminal(_rq_row(1, status="ESCALATED"))
+
+
+# -- under-mark / warn-band behavior ---------------------------------------
+
+
+def test_row_caps_under_mark_is_info_noop(rotation_rows, mock_delete_rows, mocker):
+    _shrink_row_caps(mocker, warn=5, rotate=8)
+    rotation_rows[watchdog.sheet_ids.SHEET_ERRORS] = [
+        _errors_row(i) for i in range(3)
+    ]
+    result = watchdog._check_row_cap_rotation()
+    assert result.severity is Severity.INFO
+    mock_delete_rows.assert_not_called()
+
+
+def test_row_caps_warn_band_warns_without_rotating(
+    rotation_rows, mock_delete_rows, mocker
+):
+    _shrink_row_caps(mocker, warn=5, rotate=8)
+    rotation_rows[watchdog.sheet_ids.SHEET_ERRORS] = [
+        _errors_row(i) for i in range(6)  # 5 ≤ 6 < 8
+    ]
+    result = watchdog._check_row_cap_rotation()
+    assert result.severity is Severity.WARN
+    assert "warn mark" in result.details
+    mock_delete_rows.assert_not_called()
+
+
+# -- rotation: eligibility, ordering, survivors, summary record -------------
+
+
+def test_row_caps_rotation_deletes_only_eligible_and_writes_summary(
+    rotation_rows, mock_delete_rows, mock_log, mocker
+):
+    _shrink_row_caps(mocker, warn=3, rotate=5)
+    rotation_rows[watchdog.sheet_ids.SHEET_ERRORS] = [
+        _errors_row(1, severity="WARN", days_old=200),                      # eligible
+        _errors_row(2, severity="CRITICAL", days_old=300),                   # OPEN CRITICAL — survives
+        _errors_row(3, severity="CRITICAL", days_old=250, resolved_at="x"),  # resolved — eligible
+        _errors_row(4, severity="ERROR", days_old=10),                       # too young — survives
+        _errors_row(5, severity="WARN", ts=None),                            # unprovable age — survives
+        _errors_row(6, severity="WARN", ts="not-a-date"),                    # unparseable — survives
+    ]
+    result = watchdog._check_row_cap_rotation()
+
+    assert result.severity is Severity.WARN
+    mock_delete_rows.assert_called_once()
+    sheet_id, deleted_ids = mock_delete_rows.call_args.args
+    assert sheet_id == watchdog.sheet_ids.SHEET_ERRORS
+    # Oldest first: row 3 (250d-old RESOLVED critical), then row 1 (200d WARN).
+    # Row 2 — the 300d-old OPEN critical — survives despite being oldest.
+    assert deleted_ids == [3, 1]
+    # The never-silent rotation record landed with the stable error code.
+    rotation_records = [
+        c for c in mock_log.call_args_list
+        if c.kwargs.get("error_code") == "row_cap_rotation"
+    ]
+    assert len(rotation_records) == 1
+    assert "rotated 2 of 2" in rotation_records[0].args[2]
+
+
+def test_row_caps_rotation_never_deletes_open_work_in_review_queue(
+    rotation_rows, mock_delete_rows, mocker
+):
+    _shrink_row_caps(mocker, warn=3, rotate=5)
+    rotation_rows[watchdog.sheet_ids.SHEET_REVIEW_QUEUE] = [
+        _rq_row(11, status="PENDING", days_old=400),    # NEVER
+        _rq_row(12, status="IN_REVIEW", days_old=400),  # never
+        _rq_row(13, status="ESCALATED", days_old=400),  # never (open escalation)
+        _rq_row(14, status="APPROVED", days_old=120),   # eligible
+        _rq_row(15, status="REJECTED", days_old=100),   # eligible
+        _rq_row(16, status="APPROVED", days_old=5),     # too young
+    ]
+    watchdog._check_row_cap_rotation()
+    mock_delete_rows.assert_called_once()
+    sheet_id, deleted_ids = mock_delete_rows.call_args.args
+    assert sheet_id == watchdog.sheet_ids.SHEET_REVIEW_QUEUE
+    assert deleted_ids == [14, 15]  # oldest-first, drained rows only
+
+
+def test_row_caps_nothing_deletable_is_critical(
+    rotation_rows, mock_delete_rows, mocker
+):
+    _shrink_row_caps(mocker, warn=3, rotate=5)
+    rotation_rows[watchdog.sheet_ids.SHEET_ERRORS] = [
+        _errors_row(i, severity="CRITICAL", days_old=300) for i in range(1, 7)
+    ]  # six OPEN criticals — over the mark, zero eligible
+    result = watchdog._check_row_cap_rotation()
+    assert result.severity is Severity.CRITICAL
+    assert "NOTHING is deletable" in result.details
+    mock_delete_rows.assert_not_called()
+
+
+def test_row_caps_check_b_still_sees_open_criticals_after_rotation(
+    rotation_rows, mock_delete_rows, mocker
+):
+    # The acceptance line "Check B never goes blind": rotate a mixed sheet,
+    # then run Check B against the survivors — the open CRITICAL is intact.
+    _shrink_row_caps(mocker, warn=2, rotate=3)
+    open_critical = _errors_row(2, severity="CRITICAL", days_old=300)
+    rows = [
+        _errors_row(1, severity="WARN", days_old=200),
+        open_critical,
+        _errors_row(3, severity="ERROR", days_old=150),
+    ]
+    rotation_rows[watchdog.sheet_ids.SHEET_ERRORS] = rows
+    watchdog._check_row_cap_rotation()
+    deleted = set(mock_delete_rows.call_args.args[1])
+    assert open_critical["_row_id"] not in deleted
+
+    survivors = [r for r in rows if r["_row_id"] not in deleted]
+    rotation_rows[watchdog.sheet_ids.SHEET_ERRORS] = [
+        r for r in survivors if r["Severity"] == "CRITICAL"
+    ]
+    # Check B filters Severity=CRITICAL via get_rows(filters=...); our routing
+    # fixture ignores filters, so hand it the pre-filtered survivor set.
+    result = watchdog._check_open_criticals()
+    assert result.severity is Severity.WARN
+    assert "1 open CRITICAL" in result.summary
+
+
+# -- batching, per-run cap, partial failure ---------------------------------
+
+
+def test_row_caps_rotation_batches_and_per_run_cap(
+    rotation_rows, mock_delete_rows, mocker
+):
+    _shrink_row_caps(mocker, warn=1, rotate=2, batch=2, max_batches=2)
+    rotation_rows[watchdog.sheet_ids.SHEET_ERRORS] = [
+        _errors_row(i, days_old=100 + i) for i in range(1, 7)  # 6 eligible
+    ]
+    watchdog._check_row_cap_rotation()
+    # Per-run cap = 2 batches × 2 = 4 rows; two delete calls of ≤ batch size.
+    assert mock_delete_rows.call_count == 2
+    sizes = [len(c.args[1]) for c in mock_delete_rows.call_args_list]
+    assert sizes == [2, 2]
+    all_deleted = [rid for c in mock_delete_rows.call_args_list for rid in c.args[1]]
+    # Oldest first = highest days_old first → row 6 (106d) ... row 3 (103d).
+    assert all_deleted == [6, 5, 4, 3]
+
+
+def test_row_caps_delete_failure_is_warn_partial_never_raises(
+    rotation_rows, mock_delete_rows, mock_log, mocker
+):
+    _shrink_row_caps(mocker, warn=1, rotate=2, batch=2, max_batches=5)
+    rotation_rows[watchdog.sheet_ids.SHEET_ERRORS] = [
+        _errors_row(i, days_old=100 + i) for i in range(1, 6)
+    ]
+    mock_delete_rows.side_effect = [None, SmartsheetError("429")]
+    result = watchdog._check_row_cap_rotation()  # must not raise
+    assert result.severity is Severity.WARN
+    assert "delete failed after 2 rows" in result.details
+    # Partial rotation still writes the never-silent record.
+    rotation_records = [
+        c for c in mock_log.call_args_list
+        if c.kwargs.get("error_code") == "row_cap_rotation"
+    ]
+    assert len(rotation_records) == 1
+
+
+# -- dry run, read failures, breaker ----------------------------------------
+
+
+def test_row_caps_dry_run_deletes_nothing_and_writes_no_record(
+    rotation_rows, mock_delete_rows, mock_log, mocker
+):
+    _shrink_row_caps(mocker, warn=1, rotate=2)
+    rotation_rows[watchdog.sheet_ids.SHEET_ERRORS] = [
+        _errors_row(i, days_old=200) for i in range(1, 5)
+    ]
+    result = watchdog._check_row_cap_rotation(dry_run=True)
+    assert result.severity is Severity.WARN
+    assert "DRY RUN" in result.details
+    assert "would delete 4 of 4" in result.details
+    mock_delete_rows.assert_not_called()
+    assert not [
+        c for c in mock_log.call_args_list
+        if c.kwargs.get("error_code") == "row_cap_rotation"
+    ]
+
+
+def test_row_caps_read_failure_is_warn_never_raises(rotation_rows, mock_delete_rows):
+    rotation_rows[watchdog.sheet_ids.SHEET_ERRORS] = SmartsheetError("read down")
+    result = watchdog._check_row_cap_rotation()
+    assert result.severity is Severity.WARN
+    assert "row-count read failed" in result.details
+    mock_delete_rows.assert_not_called()
+
+
+def test_row_caps_breaker_open_is_info_skip(rotation_rows, mock_delete_rows):
+    rotation_rows[watchdog.sheet_ids.SHEET_ERRORS] = (
+        watchdog.smartsheet_client.SmartsheetCircuitOpenError("breaker OPEN")
+    )
+    result = watchdog._check_row_cap_rotation()
+    assert result.severity is Severity.INFO
+    assert "breaker OPEN" in result.details
+    mock_delete_rows.assert_not_called()
+
+
+def test_compose_summary_plain_resend_key_untagged():
+    entry = watchdog.alert_dedupe.ExpiredEntry(
+        key="safety_reports.intake::uncaught_exception",
+        first_fired_at="2026-07-01T00:00:00+00:00",
+        last_fired_at="2026-07-01T00:30:00+00:00",
+        suppressed_count=2,
+        window_ends_at="2026-07-01T01:00:00+00:00",
+        summarized=False,
+    )
+    subject, _ = watchdog._compose_summary(entry, "2026-07-02T07:00:00+00:00")
+    assert "safety_reports.intake" in subject

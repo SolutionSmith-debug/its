@@ -55,6 +55,19 @@ def stub_ss(mocker) -> dict[str, MagicMock]:
         "apply_styles": mocker.patch.object(
             week_sheet.smartsheet_client, "apply_column_styles"
         ),
+        # Growth Slice 3: the sheet-count tripwire consulted on the CREATE
+        # branch. Defaults to comfortable headroom so pre-existing create
+        # tests stay hermetic (the real check would read live ITS_Config).
+        "check_headroom": mocker.patch.object(
+            week_sheet.sheet_capacity,
+            "check_create_headroom",
+            return_value=week_sheet.sheet_capacity.Headroom(
+                ok=True, current=10, ceiling=1500, margin=50
+            ),
+        ),
+        "route_breach": mocker.patch.object(
+            week_sheet.sheet_capacity, "route_breach_to_review_queue"
+        ),
     }
 
 
@@ -544,3 +557,137 @@ def test_progress_config_targets_progress_workspace():
     assert cfg.key_builder is week_sheet_name  # same builder, by identity (no clone)
     d = date(2026, 6, 5)
     assert cfg.key_builder("Bradley 1", d) == SAFETY_WEEK_SHEET_CONFIG.key_builder("Bradley 1", d)
+
+
+# ---- Growth Slice 3: sheet-capacity tripwire on the CREATE branch ---------
+#
+# `ensure_week_sheet` consults `sheet_capacity.check_create_headroom` before
+# each CREATE (never on the find branch). ADVISORY posture: a margin breach
+# WARNs + routes to the Review Queue and the create STILL proceeds — the
+# tripwire must never block a compile/filing path.
+
+
+def _breach(current=1460, ceiling=1500, margin=50):
+    return week_sheet.sheet_capacity.Headroom(
+        ok=False, current=current, ceiling=ceiling, margin=margin
+    )
+
+
+def test_capacity_breach_routes_rq_warns_and_create_still_proceeds(
+    stub_ss, stub_error_log
+):
+    stub_ss["find_folder"].return_value = 777
+    stub_ss["find_sheet"].return_value = None
+    stub_ss["create_sheet"].return_value = 4242
+    stub_ss["check_headroom"].return_value = _breach()
+
+    sheet_id = ensure_week_sheet(SAFETY_WEEK_SHEET_CONFIG, "Bradley 1", date(2026, 6, 5))
+
+    assert sheet_id == 4242
+    stub_ss["create_sheet"].assert_called_once()  # ← the create was NOT blocked
+    stub_ss["check_headroom"].assert_called_once_with(sheet_ids.WORKSPACE_SAFETY_PORTAL)
+    stub_ss["route_breach"].assert_called_once()
+    kwargs = stub_ss["route_breach"].call_args.kwargs
+    assert kwargs["workstream"] == "safety_reports"
+    warn_calls = [
+        c for c in stub_error_log.call_args_list
+        if c.kwargs.get("error_code") == "sheet_capacity_margin_breach"
+    ]
+    assert len(warn_calls) == 1
+    assert warn_calls[0].args[0] is Severity.WARN
+
+
+def test_capacity_breach_progress_config_tags_progress_workstream(
+    stub_ss, stub_error_log
+):
+    stub_ss["find_folder"].return_value = 777
+    stub_ss["find_sheet"].return_value = None
+    stub_ss["create_sheet"].return_value = 4243
+    stub_ss["check_headroom"].return_value = _breach()
+
+    sheet_id = ensure_week_sheet(
+        week_sheet.PROGRESS_WEEK_SHEET_CONFIG, "Bradley 1", date(2026, 6, 5)
+    )
+
+    assert sheet_id == 4243
+    stub_ss["check_headroom"].assert_called_once_with(
+        sheet_ids.WORKSPACE_PROGRESS_REPORTING
+    )
+    assert stub_ss["route_breach"].call_args.kwargs["workstream"] == "progress_reports"
+
+
+def test_capacity_under_margin_is_clean_create_no_rq_no_warn(
+    stub_ss, stub_error_log
+):
+    stub_ss["find_folder"].return_value = 777
+    stub_ss["find_sheet"].return_value = None
+    stub_ss["create_sheet"].return_value = 4242
+
+    ensure_week_sheet(SAFETY_WEEK_SHEET_CONFIG, "Bradley 1", date(2026, 6, 5))
+
+    stub_ss["route_breach"].assert_not_called()
+    assert not [
+        c for c in stub_error_log.call_args_list
+        if str(c.kwargs.get("error_code", "")).startswith("sheet_capacity")
+    ]
+
+
+def test_capacity_not_consulted_on_find_branch(stub_ss):
+    stub_ss["find_folder"].return_value = 777
+    stub_ss["find_sheet"].return_value = 5150  # sheet already exists
+
+    ensure_week_sheet(SAFETY_WEEK_SHEET_CONFIG, "Bradley 1", date(2026, 6, 5))
+
+    stub_ss["check_headroom"].assert_not_called()
+    stub_ss["route_breach"].assert_not_called()
+
+
+def test_capacity_fail_open_note_warns_and_create_proceeds(stub_ss, stub_error_log):
+    stub_ss["find_folder"].return_value = 777
+    stub_ss["find_sheet"].return_value = None
+    stub_ss["create_sheet"].return_value = 4242
+    stub_ss["check_headroom"].return_value = week_sheet.sheet_capacity.Headroom(
+        ok=True, current=-1, ceiling=1500, margin=50,
+        note="sheet-count read failed (fail-open, create allowed): boom",
+    )
+
+    sheet_id = ensure_week_sheet(SAFETY_WEEK_SHEET_CONFIG, "Bradley 1", date(2026, 6, 5))
+
+    assert sheet_id == 4242
+    stub_ss["route_breach"].assert_not_called()
+    warn_calls = [
+        c for c in stub_error_log.call_args_list
+        if c.kwargs.get("error_code") == "sheet_capacity_check_failed"
+    ]
+    assert len(warn_calls) == 1  # the caller logs the module's fail-open WARN
+
+
+def test_capacity_check_exception_never_blocks_create(stub_ss, stub_error_log):
+    stub_ss["find_folder"].return_value = 777
+    stub_ss["find_sheet"].return_value = None
+    stub_ss["create_sheet"].return_value = 4242
+    stub_ss["check_headroom"].side_effect = RuntimeError("tripwire bug")
+
+    sheet_id = ensure_week_sheet(SAFETY_WEEK_SHEET_CONFIG, "Bradley 1", date(2026, 6, 5))
+
+    assert sheet_id == 4242
+    assert [
+        c for c in stub_error_log.call_args_list
+        if c.kwargs.get("error_code") == "sheet_capacity_check_failed"
+    ]
+
+
+def test_capacity_rq_enqueue_failure_never_blocks_create(stub_ss, stub_error_log):
+    stub_ss["find_folder"].return_value = 777
+    stub_ss["find_sheet"].return_value = None
+    stub_ss["create_sheet"].return_value = 4242
+    stub_ss["check_headroom"].return_value = _breach()
+    stub_ss["route_breach"].side_effect = RuntimeError("RQ write down")
+
+    sheet_id = ensure_week_sheet(SAFETY_WEEK_SHEET_CONFIG, "Bradley 1", date(2026, 6, 5))
+
+    assert sheet_id == 4242
+    assert [
+        c for c in stub_error_log.call_args_list
+        if c.kwargs.get("error_code") == "sheet_capacity_rq_failed"
+    ]

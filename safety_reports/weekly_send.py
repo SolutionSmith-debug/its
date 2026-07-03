@@ -70,6 +70,7 @@ from safety_reports import wsr_review
 from shared import (
     active_jobs,
     box_client,
+    defaults,
     error_log,
     graph_client,
     recipient_health,
@@ -421,6 +422,26 @@ def send_one_row(row_id: int, cfg: SendConfig) -> SendResult:
             f"{graph_client.UPLOAD_SESSION_MAX_BYTES}-byte upload-session ceiling — "
             "cannot email; reduce photo count / split the packet",
             "held_oversized_packet", cfg,
+        )
+    # Stage 4c: packet-size early warning (growth Slice 4b). A packet past
+    # ~100 MB (defaults.PACKET_SIZE_WARN_BYTES) still SENDS — via the
+    # upload-session path — but is forecast-close to the 150 MB HELD wall
+    # above: a photo-heavy job that crossed 100 MB this week HELDs a few
+    # weeks later, and HELD is otherwise only discovered at Friday send
+    # time. WARN record (ITS_Errors, never a page) pointing at the manual
+    # packet-split runbook so the operator can act BEFORE the wall. HELD
+    # semantics above are untouched; this branch is unreachable for a
+    # >150 MB packet (already returned).
+    if packet_size > defaults.PACKET_SIZE_WARN_BYTES:
+        error_log.log(
+            Severity.WARN, cfg.script_name,
+            f"row_id={row_id} project={project_name!r}: compiled packet is "
+            f"{packet_size} bytes — over the {defaults.PACKET_SIZE_WARN_BYTES}-byte "
+            f"early-warning threshold and approaching Graph's "
+            f"{graph_client.UPLOAD_SESSION_MAX_BYTES}-byte HELD wall. Sending anyway; "
+            f"see docs/runbooks/safety_weekly_send.md 'Packet approaching the 150 MB "
+            f"ceiling' for the manual packet-split procedure.",
+            error_code="weekly_send.packet_size_warn",
         )
 
     # Stage 5: build the email (body = the human-edited Email Body, source of truth).

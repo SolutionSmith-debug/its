@@ -90,3 +90,37 @@ the Stage-2b guard comment): every `SendConfig` field is required with no defaul
 would let a new workstream silently inherit safety's recipients/sheet/tag); the guard sits after
 the SENT/HELD skip gates and before the write-ahead SENDING marker (a contaminated row never
 enters the in-flight state); PRESENT-mismatch = CRITICAL+HELD, ABSENT = WARN+proceed.
+
+## Symptom D — a WARN `weekly_send.packet_size_warn` ("compiled packet … over the early-warning threshold"), or a row stuck `Send Status = held_oversized_packet`
+
+**What it means.** A compiled weekly packet is approaching — or has hit — Graph's hard
+email ceiling. The numbers (growth Slice 4b):
+
+- **> ~100 MB** (`shared/defaults.py PACKET_SIZE_WARN_BYTES`): the packet **still sends**
+  (upload-session transport), but a WARN record lands in ITS_Errors with error code
+  `weekly_send.packet_size_warn`. This is the **forecast**: a photo-heavy job that crossed
+  100 MB this week will keep growing and will HELD in a few weeks — and the same job HELDs
+  again **every subsequent week** at that volume.
+- **> 150 MB** (`shared/graph_client.py UPLOAD_SESSION_MAX_BYTES`): no Graph path can email
+  the packet at all. The row is HELD (`held_oversized_packet`) **before** the SENDING
+  marker — refused loudly, nothing sent, nothing silent. HELD semantics are unchanged by
+  the early warning.
+
+**This is a low-class, documented Tier-2 repair — the manual packet-split procedure:**
+
+1. Open the week sheet for the job/week named in the WARN or HELD row (the per-job folder
+   in the ITS — Safety Portal workspace, sheet `"<project> — week of <Saturday>"`).
+2. Split the week's submissions into two halves: check `Compile Now` on the **first half**
+   of the per-submission rows (the checkbox on a *Submission* row means "include this row
+   in the packet"), then check `Compile Now` on the **Rollup** row to trigger an on-demand
+   recompile (`compile_now_poll`). That compiles a packet containing only the selected half.
+3. Approve + send that half-packet from its `WSR_human_review` row as normal (the send gate
+   and approval flow are unchanged — each half is just a smaller packet).
+4. Repeat for the second half of the submission rows.
+5. Resolve the original oversized row: leave the HELD row with a Notes line pointing at the
+   two replacement sends (never delete it — it is the audit record of the refusal).
+
+If the split halves are STILL over 150 MB (a truly photo-saturated mega-week), or the same
+job re-HELDs week after week and the customer needs a durable fix (photo-count policy,
+compression, or a link-instead-of-attach delivery change) → **escalate to Seth** — those are
+code/policy changes (high-class).
