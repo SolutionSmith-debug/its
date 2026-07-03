@@ -226,3 +226,65 @@ def test_daily_report_v2_dfr_field_coverage() -> None:
     assert [c["key"] for c in crew["columns"]] == [
         "crew_subcontractor", "manpower", "todays_progress",
     ]
+
+
+def test_daily_report_v3_photo_upload_replaces_minimum() -> None:
+    """daily-report-v3 (slice D3, operator-directed 2026-07-02): the 50-photo daily
+    minimum is removed and the photos_taken / photos_uploaded confirms are replaced by
+    a direct 'Site photos' header photo field — the manager attaches the day's work
+    photos inside the daily document. The DFR legal floor is untouched; v2 stays
+    in-tree unchanged (append-only) and keeps its own tests above."""
+    d = _load(FORMS_DIR / "daily-report-v3.json")
+    assert d["version"] == 3 and d["form_code"] == "daily-report-v3"
+    # The dated operator-deviation note rides the definition (meta-schema `comment`).
+    assert any("OPERATOR-DIRECTED" in line for line in d.get("comment", []))
+
+    # D.12: heading drops the minimum clause; no guidance text asserts 50 photos.
+    headings = [s["heading"] for s in d["sections"] if s["type"] == "guidance"]
+    assert "D. Throughout the Day — 12. Photo Documentation" in headings
+    all_guidance_text = " ".join(
+        text
+        for s in d["sections"] if s["type"] == "guidance"
+        for b in s["blocks"]
+        for text in ([b["text"]] if "text" in b else b.get("items", []))
+    )
+    assert "Minimum 50" not in all_guidance_text and "50 photos" not in all_guidance_text
+    assert "50+ photos" not in all_guidance_text
+    # The WHAT-to-photograph guidance is kept.
+    assert "progress milestones" in all_guidance_text
+    assert "before and after correction" in all_guidance_text
+
+    keys: set[str] = set()
+    for s in d["sections"]:
+        if s["type"] == "header":
+            keys.update(f["key"] for f in s["fields"])
+        elif s["type"] == "checklist":
+            keys.add(s["key"])
+            for g in s["groups"]:
+                keys.update(it["key"] for it in g["items"])
+        elif s["type"] in ("repeating_table", "signature_table", "freeform"):
+            keys.add(s["key"])
+    # The minimum-framed confirms are gone; the photo upload takes their place.
+    assert "photos_taken" not in keys and "photos_uploaded" not in keys
+    photo_section = next(
+        s for s in d["sections"]
+        if s["type"] == "header" and any(f["input"] == "photo" for f in s["fields"])
+    )
+    assert photo_section["title"] == "Site photos"
+    assert [f["key"] for f in photo_section["fields"]] == ["site_photos"]
+    # …at the D.12 position: immediately after the Photo Documentation guidance.
+    idx = next(
+        i for i, s in enumerate(d["sections"])
+        if s.get("heading") == "D. Throughout the Day — 12. Photo Documentation"
+    )
+    assert d["sections"][idx + 1] is photo_section
+    # DFR legal floor (required-content.json parents['daily-report']) still satisfied.
+    assert {
+        "weather", "average_temp", "prepared_by", "crew_progress", "tomorrows_goals",
+        "equipment_on_site", "deliveries_received", "site_visitors", "comments",
+    } <= keys
+    # crew_progress keeps the v1 column keys (the S5 rollup prefill targets them).
+    crew = next(s for s in d["sections"] if s.get("key") == "crew_progress")
+    assert [c["key"] for c in crew["columns"]] == [
+        "crew_subcontractor", "manpower", "todays_progress",
+    ]

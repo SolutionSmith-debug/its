@@ -80,6 +80,9 @@ export interface FormDefinition {
   version: number;
   archetype: string;
   source_pdf: string;
+  /** Maintainer notes, never rendered (meta-schema `comment`) — e.g. a dated
+   *  operator-directed deviation from the source PDF (daily-report-v3, 2026-07-02). */
+  comment?: string[];
   branding?: { logo?: boolean; title?: string };
   sections: Section[];
 }

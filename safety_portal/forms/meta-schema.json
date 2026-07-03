@@ -14,6 +14,7 @@
     "version": { "type": "integer", "minimum": 1 },
     "archetype": { "type": "string", "enum": ["rows_signatures", "grouped_checklist", "content_signin", "visitor_rows", "sectioned_assessment"] },
     "source_pdf": { "type": "string", "description": "Reference PDF filename in safety_portal/reference_forms/ this definition was transcribed from." },
+    "comment": { "type": "array", "items": { "type": "string" }, "description": "Maintainer notes, never rendered by either renderer — e.g. a dated operator-directed deviation from the source PDF (daily-report-v3, 2026-07-02). The form editor does not carry this forward when composing a new version." },
     "branding": {
       "type": "object", "additionalProperties": false,
       "properties": { "logo": { "type": "boolean" }, "title": { "type": "string" } }

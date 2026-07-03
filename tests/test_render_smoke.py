@@ -171,7 +171,7 @@ def _expected_structural_strings(definition: dict, *, mode: str) -> list[str]:
     normalize and substring-match (some labels wrap / get escaped), and we cap very long
     labels to a stable prefix so PDF line-wrapping inside a cell can't split the needle.
 
-    Two renderer facts are modeled so the needles match ACTUAL renderer behavior (a
+    Three renderer facts are modeled so the needles match ACTUAL renderer behavior (a
     needle the renderer is designed never to draw would be a false positive):
       * A `header` section's `title` is NOT rendered by either header builder
         (`_header_section` / `_blank_header_section` draw only the field table) — so a
@@ -179,6 +179,11 @@ def _expected_structural_strings(definition: dict, *, mode: str) -> list[str]:
       * The envelope-key field labels (work_date / job) are SKIPPED by the submission
         header builder (intake resolves those), but the BLANK builder DOES render them.
         So they're needles in blank mode, not in submission mode.
+      * A `photo` header field is SKIPPED by the submission header builder (`_header_section`
+        never inlines the untrusted base64 value; photos render out-of-band as the §34
+        screened-photos grid), but the BLANK builder DOES render its label as a fillable
+        row. So a photo label (e.g. daily-report-v3 "Site photos") is a needle in blank
+        mode, not in submission mode.
     """
     out: list[str] = []
 
@@ -201,8 +206,12 @@ def _expected_structural_strings(definition: dict, *, mode: str) -> list[str]:
             add(section.get("title"))
         if typ == "header":
             for f in section.get("fields", []):
-                # In submission mode the envelope-key labels are intentionally skipped.
-                if mode == "submission" and f.get("key") in _ENVELOPE_KEYS:
+                # In submission mode the envelope-key labels are intentionally skipped,
+                # and photo fields render out-of-band (screened-photos grid), never as
+                # a labeled header row — see the renderer facts in the docstring.
+                if mode == "submission" and (
+                    f.get("key") in _ENVELOPE_KEYS or f.get("input") == "photo"
+                ):
                     continue
                 add(f.get("label"))
         elif typ in ("repeating_table", "signature_table"):

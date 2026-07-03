@@ -104,6 +104,11 @@ describe("DailyReportTab — the placed manager's inline SOP form", () => {
     // form_link buttons, and the submit control are all present INLINE (no picker anywhere).
     expect(container.textContent ?? "").toContain("SITE SUPERVISOR");
     expect(container.textContent ?? "").toContain("Create Job Hazard Analysis");
+    // D3 (daily-report-v3): the manager's photo-upload place renders inline (the
+    // site_photos header photo field → PhotoField), and the 50-photo minimum is gone.
+    expect(container.textContent ?? "").toContain("Site photos");
+    expect(container.querySelector(".photo-field")).not.toBeNull();
+    expect(container.textContent ?? "").not.toContain("Minimum 50");
     expect(getByLabelText("Submit daily report")).not.toBeNull();
     expect(container.querySelector("select")).toBeNull(); // no job/form pickers — envelope is fixed
   });
@@ -263,13 +268,17 @@ describe("DailyReportTab — filed banner + amend + submit", () => {
       expect(api.submitForm).toHaveBeenCalledWith(
         expect.objectContaining({
           job_id: "JOB-A",
-          form_code: "daily-report-v2",
+          form_code: "daily-report-v3",
           work_date: TODAY,
           amends_uuid: null,
           submission_uuid: expect.any(String),
         }),
       ),
     );
+    // The D3 site-photos key rides the standard values payload (initialValues seeds
+    // every header photo field to [] — the Worker skips empty photo arrays).
+    const sent = vi.mocked(api.submitForm).mock.calls[0][0] as { values: Record<string, unknown> };
+    expect(sent.values.site_photos).toEqual([]);
     // Success feedback + the status refetch that flips the indicators/banner.
     await waitFor(() => expect(container.textContent ?? "").toContain("Submitted ✓"));
     expect(vi.mocked(fetchDailyFormStatus).mock.calls.length).toBeGreaterThanOrEqual(2);
