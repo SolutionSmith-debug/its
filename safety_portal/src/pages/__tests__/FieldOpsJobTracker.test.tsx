@@ -31,10 +31,26 @@ vi.mock("../../lib/auth", () => ({ useAuth: vi.fn() }));
 // PersonnelRow import needs no runtime stub.
 vi.mock("../../lib/fieldops_personnel", () => ({ fetchPersonnelList: vi.fn(), assignPersonnel: vi.fn(), fetchMyCrew: vi.fn() }));
 vi.mock("../../lib/fieldops_equipment", () => ({ fetchEquipmentList: vi.fn(), moveEquipment: vi.fn() }));
+// M1 expected materials: the detail view mounts the self-contained ExpectedMaterialsSection, which
+// fetches its own list (and, for a manage-cap holder, the catalog picker). Mock both libs so a
+// detail open never issues a real fetch; the section's own behavior is covered in
+// components/__tests__/ExpectedMaterialsSection.test.tsx.
+vi.mock("../../lib/fieldops_expected_materials", () => ({
+  fetchExpectedMaterials: vi.fn(),
+  createExpectedMaterial: vi.fn(),
+  updateExpectedMaterial: vi.fn(),
+  setExpectedMaterialSeq: vi.fn(),
+  deactivateExpectedMaterial: vi.fn(),
+  receiveExpectedMaterial: vi.fn(),
+  flagExpectedMaterialIncident: vi.fn(),
+}));
+vi.mock("../../lib/fieldops_materials", () => ({ fetchMaterials: vi.fn() }));
 
 import * as api from "../../lib/fieldops_jobtracker";
 import { fetchPersonnelList, assignPersonnel, fetchMyCrew, type PersonnelRow } from "../../lib/fieldops_personnel";
 import { fetchEquipmentList, moveEquipment } from "../../lib/fieldops_equipment";
+import { fetchExpectedMaterials } from "../../lib/fieldops_expected_materials";
+import { fetchMaterials } from "../../lib/fieldops_materials";
 import { useAuth } from "../../lib/auth";
 import { FieldOpsJobTracker } from "../FieldOpsJobTracker";
 
@@ -58,6 +74,9 @@ beforeEach(() => {
   vi.mocked(fetchEquipmentList).mockResolvedValue({ equipment: [], next_cursor: null });
   // Slice T: a subcontractor's log-time picker fetches its own loggable crew; default empty.
   vi.mocked(fetchMyCrew).mockResolvedValue([]);
+  // M1 expected materials: safe empty defaults for the self-contained detail section.
+  vi.mocked(fetchExpectedMaterials).mockResolvedValue({ expected_materials: [] });
+  vi.mocked(fetchMaterials).mockResolvedValue({ materials: [], next_cursor: null });
 });
 
 // Picker fixtures for the assign controls. Pat is unplaced; "Al Already" is already on JOB-A (so the
@@ -642,12 +661,27 @@ describe("FieldOpsJobTracker — unified job-create flow (assign crew / equipmen
     await waitFor(() => expect(container.querySelector('[aria-label="Finish setting up job"]')).not.toBeNull());
     expect(container.textContent ?? "").toContain("Finish setting up JOB-C");
     expect(container.querySelector(".page__heading")?.textContent).toBe("Charlie");
+    // M1: the nudge copy now also names expected materials as part of job setup.
+    expect(container.querySelector('[aria-label="Finish setting up job"]')?.textContent).toContain(
+      "expected materials",
+    );
     // The nudge highlights the empty crew/equipment sections.
     expect(container.textContent ?? "").toContain("needs crew");
     expect(container.textContent ?? "").toContain("needs equipment");
     // Dismissible.
     fireEvent.click(getByText("Done"));
     await waitFor(() => expect(container.querySelector('[aria-label="Finish setting up job"]')).toBeNull());
+  });
+
+  it("M1: the detail view mounts the Expected materials section for a materials-cap holder (and not without)", async () => {
+    const { container } = await openDetailWith(["cap.materials.manage", "cap.materials.receive"]);
+    await waitFor(() => expect(container.querySelector('[aria-label="Expected materials"]')).not.toBeNull());
+    expect(vi.mocked(fetchExpectedMaterials)).toHaveBeenCalledWith("JOB-A");
+    cleanup();
+    vi.mocked(fetchExpectedMaterials).mockClear();
+    const { container: bare } = await openDetailWith(["cap.jobtracker.manage"]); // no materials caps
+    expect(bare.querySelector('[aria-label="Expected materials"]')).toBeNull();
+    expect(vi.mocked(fetchExpectedMaterials)).not.toHaveBeenCalled();
   });
 });
 

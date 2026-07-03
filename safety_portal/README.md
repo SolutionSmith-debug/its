@@ -620,6 +620,39 @@ untouched). **The checklist ENGINE + all its Worker routes stay** (assigned insp
    Checklists page shows no "Default daily checklist" area; a Job Tracker job detail shows no
    Daily-checklist editor; an assigned inspection still renders and auto-checks.
 
+### Expected materials — per-job receipt list (Material receipts M1 — `0031`)
+
+**Migration 0031** adds `job_expected_materials` — the per-job list of what materials a job is
+expecting (recorded by the office at job creation or as the job develops), which managers later
+confirm receipt against. One row per expected arrival: catalog-picked (`material_id` → the 0019
+`material_catalog`, validated ACTIVE at write) or free-text (`description` required);
+qty/unit/expected-date; `status ∈ expected|received|incident` with `received_at`/`received_by`
+stamped by the receive/flag routes (`received_by` stores the account username; reads resolve the
+personnel **display name only** — W9). Expectation CRUD is `cap.materials.manage` (the Job
+Tracker job-detail "Expected materials" section); the read + `POST …/:id/receive` /
+`…/:id/flag-incident` are `cap.materials.receive` with the **per-job ownership scope** (a
+non-admin only touches the job they're placed on). Both capabilities were already seeded
+(0013/0023) — 0031 seeds no capability vocabulary. The receive/flag routes are wired into the
+daily form (D.13 deliveries) + the material-incident form in **M2**; in M1 the admin section +
+read surface carry the state. *(Numbering: `0030` belongs to the D4 slice, built in parallel —
+both are additive, so apply order is safe.)*
+
+#### Activation (operator — deploy boundary; escalates to the Developer-Operator)
+
+1. Apply migration **0031** to the live D1 **BEFORE** the redeploy
+   (`npx wrangler d1 migrations apply its-safety-portal-db --remote`) — else
+   `GET /api/fieldops/expected-materials`, `POST /api/fieldops/expected-material` (+ `…/update`,
+   `…/seq`, `…/delete`, `…/receive`, `…/flag-incident`) 500 on the missing
+   `job_expected_materials` table. **ORDER-CRITICAL**, same rule as 0019. (Always `git pull`
+   `~/its` to latest `main` BEFORE `wrangler d1 migrations apply` — the stale-migrations-list
+   lockout class.)
+2. **Redeploy** (`npm run deploy`) — activates the expected-materials routes + the Job Tracker
+   "Expected materials" section (SPA + Worker deploy together).
+3. **Smoke** (live): an admin opens a job's detail → "Expected materials" → adds one from the
+   catalog and one free-text; a manager placed on that job sees the read-only list (and a manager
+   on another job does NOT — 403 `forbidden_job` in the network tab); the Materials Catalog page
+   shows the cross-note pointing at the Job Tracker.
+
 ### Lockout recovery (break-glass) — escalate to the Developer-Operator
 
 If both admins are ever locked out (e.g. passwords lost, or both disabled), recovery runs

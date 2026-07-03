@@ -157,6 +157,7 @@ export function MaterialsCatalogPage({ onBack }: { onBack: () => void }) {
       <h2 className="page__heading">Materials Catalog</h2>
       <p className="dash__intro">
         The datasheet-backed material type vocabulary. The per-job Material List draws from these types.
+        Per-job expectations live on each job's detail in the Job Tracker ("Expected materials").
       </p>
 
       {msg && <div className={`banner ${msg.ok ? "banner--ok" : "banner--err"}`}>{msg.text}</div>}

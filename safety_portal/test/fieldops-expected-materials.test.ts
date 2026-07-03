@@ -1,0 +1,356 @@
+import { env, SELF } from "cloudflare:test";
+import { describe, it, expect, beforeEach } from "vitest";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Material receipts (M1) — job_expected_materials (migration 0031) + the expected-materials routes.
+//   • Expectation CRUD is cap.materials.manage (admin-only): add (catalog-pick validated against an
+//     ACTIVE material_catalog row OR free-text with description REQUIRED) / edit (expected rows
+//     only) / seq reorder / soft deactivate — every mutation + its audit in ONE batch (W4).
+//   • The read + receive/flag-incident are cap.materials.receive with the PER-JOB ownership scope
+//     (the /daily-form/status pattern): a non-admin only touches their OWN placement
+//     (personnel.current_job === job_id, else 403 forbidden_job); cap.jobtracker.manage /
+//     cap.materials.manage holders query any job.
+//   • receive/flag-incident guard the transition IN-WHERE (status='expected'): repeat → 409
+//     already_actioned with exactly ONE stamp + ONE audit row ever written.
+//   • W9: received_by stores the account username but reads resolve DISPLAY NAME ONLY — an
+//     unmatched account yields NULL and the raw username never appears in the response.
+// Runs against the REAL worker with Miniflare D1 (migrations auto-apply); per-test isolation.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const BASE = "https://portal.test";
+const ADMIN_BEARER = "test-admin-token";
+type Init = RequestInit & { cookie?: string; bearer?: string };
+
+function call(path: string, init: Init = {}): Promise<Response> {
+  const headers = new Headers(init.headers);
+  if (init.cookie) headers.set("Cookie", init.cookie);
+  if (init.bearer) headers.set("Authorization", `Bearer ${init.bearer}`);
+  if (init.body && !headers.has("content-type")) headers.set("content-type", "application/json");
+  return SELF.fetch(BASE + path, { ...init, headers });
+}
+function cookieFrom(res: Response): string {
+  return (res.headers.get("set-cookie") ?? "").split(";")[0];
+}
+async function provision(username: string, password: string, role: "submitter" | "manager" | "admin"): Promise<void> {
+  const res = await call("/api/internal/admin/users", { method: "POST", bearer: ADMIN_BEARER, body: JSON.stringify({ username, password, role }) });
+  expect(res.status, await res.clone().text()).toBe(201);
+}
+async function login(username: string, password: string): Promise<string> {
+  const res = await call("/api/login", { method: "POST", body: JSON.stringify({ username, password }) });
+  expect(res.status, await res.clone().text()).toBe(200);
+  return cookieFrom(res);
+}
+const p = (cookie: string, path: string, body?: unknown) =>
+  call(path, { method: "POST", cookie, body: body === undefined ? undefined : JSON.stringify(body) });
+const g = (cookie: string, path: string) => call(path, { cookie });
+
+async function seedJob(jobId: string): Promise<void> {
+  await env.DB.prepare("INSERT INTO jobs (job_id, project_name, active, status, created_at) VALUES (?,?,1,'active',?)")
+    .bind(jobId, `Project ${jobId}`, 1_700_000_000).run();
+}
+async function seedPersonnel(name: string, username: string | null, currentJob: string | null): Promise<void> {
+  await env.DB.prepare("INSERT INTO personnel (name, username, current_job, active) VALUES (?,?,?,1)")
+    .bind(name, username, currentJob).run();
+}
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function expRow(id: number): Promise<any> {
+  return await env.DB.prepare("SELECT * FROM job_expected_materials WHERE id=?").bind(id).first();
+}
+async function audits(action: string): Promise<unknown[]> {
+  return (await env.DB.prepare("SELECT * FROM audit_log WHERE action=?").bind(action).all()).results;
+}
+/** A seeded (0019) ACTIVE catalog id, for catalog-pick rows. */
+async function seededCatalogId(): Promise<number> {
+  const row = await env.DB.prepare("SELECT id FROM material_catalog WHERE model_id=?")
+    .bind("Q.PEAK_DUO_XL-G11.3_BFG").first<{ id: number }>();
+  expect(row).not.toBeNull();
+  return row!.id;
+}
+
+interface WireRow {
+  id: number;
+  material_id: number | null;
+  material_name: string | null;
+  description: string | null;
+  qty: number | null;
+  unit: string | null;
+  expected_date: string | null;
+  status: string;
+  received_at: number | null;
+  received_by_name: string | null;
+  qty_received: number | null;
+  note: string | null;
+  seq: number;
+}
+async function readList(cookie: string, jobId: string): Promise<WireRow[]> {
+  const res = await g(cookie, `/api/fieldops/expected-materials?job_id=${encodeURIComponent(jobId)}`);
+  expect(res.status, await res.clone().text()).toBe(200);
+  return ((await res.json()) as { expected_materials: WireRow[] }).expected_materials;
+}
+/** Admin-created expectation on `jobId`; returns the new row id. */
+async function createExp(cookie: string, jobId: string, fields: Record<string, unknown>): Promise<number> {
+  const res = await p(cookie, "/api/fieldops/expected-material", { job_id: jobId, ...fields });
+  expect(res.status, await res.clone().text()).toBe(201);
+  return ((await res.json()) as { id: number }).id;
+}
+
+let admin: string, manager: string, submitter: string;
+
+beforeEach(async () => {
+  // Preserve the 0019 catalog seed; reset the mutable tables so every test starts clean.
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM job_expected_materials"),
+    env.DB.prepare("DELETE FROM personnel"),
+    env.DB.prepare("DELETE FROM users"),
+    env.DB.prepare("DELETE FROM jobs"),
+    env.DB.prepare("DELETE FROM audit_log"),
+  ]);
+  await provision("admin.one", "password123", "admin");
+  await provision("mgr.mo", "password123", "manager");
+  await provision("sub.sam", "password123", "submitter");
+  admin = await login("admin.one", "password123");
+  manager = await login("mgr.mo", "password123");
+  submitter = await login("sub.sam", "password123");
+  await seedJob("JOB-A");
+  await seedJob("JOB-B");
+  // The default querying manager is PLACED on JOB-A (the ownership-scope anchor).
+  await seedPersonnel("Mo Manager", "mgr.mo", "JOB-A");
+});
+
+describe("POST /api/fieldops/expected-material (create)", () => {
+  it("gate: anon 401; submitter/manager (no manage cap) 403; admin 201 + row + ONE audit in the batch", async () => {
+    const body = JSON.stringify({ job_id: "JOB-A", description: "Rebar bundles" });
+    expect((await call("/api/fieldops/expected-material", { method: "POST", body })).status).toBe(401);
+    expect((await p(submitter, "/api/fieldops/expected-material", { job_id: "JOB-A", description: "x" })).status).toBe(403);
+    expect((await p(manager, "/api/fieldops/expected-material", { job_id: "JOB-A", description: "x" })).status).toBe(403);
+
+    const id = await createExp(admin, "JOB-A", { description: "Rebar bundles", qty: 12, unit: "pallets", expected_date: "2026-07-10", seq: 10 });
+    const row = await expRow(id);
+    expect(row.job_id).toBe("JOB-A");
+    expect(row.material_id).toBeNull();
+    expect(row.description).toBe("Rebar bundles");
+    expect(row.qty).toBe(12);
+    expect(row.unit).toBe("pallets");
+    expect(row.expected_date).toBe("2026-07-10");
+    expect(row.status).toBe("expected");
+    expect(row.active).toBe(1);
+    expect(row.seq).toBe(10);
+    expect(await audits("expected_material_create")).toHaveLength(1); // W4: audit landed with the INSERT
+  });
+
+  it("validates material_id against an ACTIVE catalog row (unknown → 400; retired → 400; valid → 201)", async () => {
+    expect((await p(admin, "/api/fieldops/expected-material", { job_id: "JOB-A", material_id: 999999 })).status).toBe(400);
+    // Retire a fresh catalog type, then try to expect it — a retired type gains no NEW expectations.
+    const catRes = await p(admin, "/api/fieldops/material", { model_id: "RETIRE-ME", category: "other" });
+    const retiredId = ((await catRes.json()) as { id: number }).id;
+    await p(admin, `/api/fieldops/material/${retiredId}/delete`);
+    const res = await p(admin, "/api/fieldops/expected-material", { job_id: "JOB-A", material_id: retiredId });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toBe("invalid_material_id");
+
+    const okId = await createExp(admin, "JOB-A", { material_id: await seededCatalogId() });
+    expect((await expRow(okId)).material_id).toBe(await seededCatalogId());
+    expect(await audits("expected_material_create")).toHaveLength(1);
+  });
+
+  it("bounds: free-text without description → 400 description_required; oversize/invalid fields → 400; bad job → 404/400", async () => {
+    const res = await p(admin, "/api/fieldops/expected-material", { job_id: "JOB-A" });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toBe("description_required");
+    expect((await p(admin, "/api/fieldops/expected-material", { job_id: "JOB-A", description: "x".repeat(257) })).status).toBe(400);
+    expect((await p(admin, "/api/fieldops/expected-material", { job_id: "JOB-A", description: "x", qty: -3 })).status).toBe(400);
+    expect((await p(admin, "/api/fieldops/expected-material", { job_id: "JOB-A", description: "x", qty: "lots" })).status).toBe(400);
+    expect((await p(admin, "/api/fieldops/expected-material", { job_id: "JOB-A", description: "x", unit: "u".repeat(33) })).status).toBe(400);
+    expect((await p(admin, "/api/fieldops/expected-material", { job_id: "JOB-A", description: "x", expected_date: "July 10" })).status).toBe(400);
+    // (review NIT) the note bound on the action routes: an oversize note → 400 invalid_note.
+    const created = await p(admin, "/api/fieldops/expected-material", { job_id: "JOB-A", description: "bolts" });
+    expect(created.status).toBe(201);
+    const rowId = ((await created.json()) as { id: number }).id;
+    const big = await p(manager, `/api/fieldops/expected-material/${rowId}/receive`, { note: "n".repeat(501) });
+    expect(big.status).toBe(400);
+    expect(((await big.json()) as { error: string }).error).toBe("invalid_note");
+    expect((await p(admin, "/api/fieldops/expected-material", { job_id: "JOB-A", description: "x", seq: -1 })).status).toBe(400);
+    expect((await p(admin, "/api/fieldops/expected-material", { job_id: "JOB-NOPE", description: "x" })).status).toBe(404);
+    expect((await p(admin, "/api/fieldops/expected-material", { job_id: "x".repeat(65), description: "x" })).status).toBe(400);
+  });
+});
+
+describe("GET /api/fieldops/expected-materials — display fields + per-job ownership scope", () => {
+  it("returns active rows in seq order with the resolved catalog name (free-text rows: material_name null)", async () => {
+    const catId = await seededCatalogId();
+    const late = await createExp(admin, "JOB-A", { description: "Later item", seq: 20 });
+    const first = await createExp(admin, "JOB-A", { material_id: catId, qty: 40, unit: "panels", seq: 10 });
+    await createExp(admin, "JOB-B", { description: "Other job's row", seq: 5 }); // wrong job — excluded
+    const gone = await createExp(admin, "JOB-A", { description: "Deactivated", seq: 30 });
+    await p(admin, `/api/fieldops/expected-material/${gone}/delete`);
+
+    const rows = await readList(manager, "JOB-A"); // manager placed on JOB-A
+    expect(rows.map((r) => r.id)).toEqual([first, late]); // seq order; deactivated + wrong-job excluded
+    expect(rows[0].material_name).toBe("Q.PEAK_DUO_XL-G11.3_BFG");
+    expect(rows[0].qty).toBe(40);
+    expect(rows[0].unit).toBe("panels");
+    expect(rows[0].status).toBe("expected");
+    expect(rows[1].material_id).toBeNull();
+    expect(rows[1].material_name).toBeNull();
+    expect(rows[1].description).toBe("Later item");
+  });
+
+  it("scope: own-job manager 200; cross-job manager 403 forbidden_job; unplaced submitter 403; admin any job 200", async () => {
+    await createExp(admin, "JOB-B", { description: "B row" });
+    const cross = await g(manager, "/api/fieldops/expected-materials?job_id=JOB-B");
+    expect(cross.status).toBe(403);
+    expect(((await cross.json()) as { error: string }).error).toBe("forbidden_job");
+    expect((await g(submitter, "/api/fieldops/expected-materials?job_id=JOB-A")).status).toBe(403); // no roster link
+    expect((await g(manager, "/api/fieldops/expected-materials?job_id=JOB-A")).status).toBe(200);
+    expect((await g(admin, "/api/fieldops/expected-materials?job_id=JOB-B")).status).toBe(200); // bypass caps
+    expect((await call("/api/fieldops/expected-materials?job_id=JOB-A")).status).toBe(401);
+    expect((await g(manager, "/api/fieldops/expected-materials?job_id=JOB-NOPE")).status).toBe(404);
+    expect((await g(manager, `/api/fieldops/expected-materials?job_id=${"x".repeat(65)}`)).status).toBe(400);
+  });
+
+  it("W9: received_by_name is the personnel DISPLAY name; an unmatched account → NULL, raw username never leaks", async () => {
+    const withLink = await createExp(admin, "JOB-A", { description: "Linked receiver" });
+    const noLink = await createExp(admin, "JOB-A", { description: "Unlinked receiver", seq: 20 });
+    await p(manager, `/api/fieldops/expected-material/${withLink}/receive`); // mgr.mo → "Mo Manager"
+    await p(admin, `/api/fieldops/expected-material/${noLink}/receive`); // admin.one has NO personnel row
+
+    const res = await g(admin, "/api/fieldops/expected-materials?job_id=JOB-A");
+    const body = await res.text();
+    const rows = (JSON.parse(body) as { expected_materials: WireRow[] }).expected_materials;
+    expect(rows.find((r) => r.id === withLink)?.received_by_name).toBe("Mo Manager");
+    expect(rows.find((r) => r.id === noLink)?.received_by_name).toBeNull();
+    expect(body).not.toContain("admin.one"); // the stored account username never leaves the Worker
+    expect(body).not.toContain("mgr.mo");
+  });
+});
+
+describe("POST /api/fieldops/expected-material/:id/update (edit — expected rows only)", () => {
+  it("admin edits content fields (200 + audit); received row → 409 not_editable; unknown → 404; manager → 403", async () => {
+    const id = await createExp(admin, "JOB-A", { description: "Old", qty: 1 });
+    expect((await p(manager, `/api/fieldops/expected-material/${id}/update`, { description: "New" })).status).toBe(403);
+    expect((await p(admin, `/api/fieldops/expected-material/${id}/update`, { description: "New text", qty: 5, unit: "ft" })).status).toBe(200);
+    const row = await expRow(id);
+    expect(row.description).toBe("New text");
+    expect(row.qty).toBe(5);
+    expect(row.unit).toBe("ft");
+    expect(await audits("expected_material_update")).toHaveLength(1);
+
+    await p(manager, `/api/fieldops/expected-material/${id}/receive`);
+    const locked = await p(admin, `/api/fieldops/expected-material/${id}/update`, { description: "Rewrite history" });
+    expect(locked.status).toBe(409);
+    expect(((await locked.json()) as { error: string }).error).toBe("not_editable");
+    expect((await expRow(id)).description).toBe("New text"); // untouched
+    expect(await audits("expected_material_update")).toHaveLength(1); // no second audit
+
+    expect((await p(admin, "/api/fieldops/expected-material/999999/update", { description: "x" })).status).toBe(404);
+    expect((await p(admin, `/api/fieldops/expected-material/${id}/update`, { material_id: 999999 })).status).toBe(400);
+  });
+});
+
+describe("POST /api/fieldops/expected-material/:id/seq (reorder) + /:id/delete (deactivate)", () => {
+  it("seq writes on any ACTIVE row incl. received (200 + audit); invalid seq → 400; unknown → 404", async () => {
+    const id = await createExp(admin, "JOB-A", { description: "Movable" });
+    await p(manager, `/api/fieldops/expected-material/${id}/receive`); // received rows still reorder
+    expect((await p(admin, `/api/fieldops/expected-material/${id}/seq`, { seq: 30 })).status).toBe(200);
+    expect((await expRow(id)).seq).toBe(30);
+    expect(await audits("expected_material_reorder")).toHaveLength(1);
+    expect((await p(admin, `/api/fieldops/expected-material/${id}/seq`, { seq: -1 })).status).toBe(400);
+    expect((await p(admin, "/api/fieldops/expected-material/999999/seq", { seq: 10 })).status).toBe(404);
+    expect((await p(manager, `/api/fieldops/expected-material/${id}/seq`, { seq: 10 })).status).toBe(403);
+  });
+
+  it("deactivate is a soft-delete: active=0, idempotent 200 already_inactive with ONE audit; unknown → 404", async () => {
+    const id = await createExp(admin, "JOB-A", { description: "Doomed" });
+    expect((await p(submitter, `/api/fieldops/expected-material/${id}/delete`)).status).toBe(403);
+    expect((await p(admin, `/api/fieldops/expected-material/${id}/delete`)).status).toBe(200);
+    expect((await expRow(id)).active).toBe(0); // soft — the row (and any receipt history) is kept
+    expect(await audits("expected_material_deactivate")).toHaveLength(1);
+
+    const again = await p(admin, `/api/fieldops/expected-material/${id}/delete`);
+    expect(again.status).toBe(200);
+    expect(((await again.json()) as { already_inactive?: boolean }).already_inactive).toBe(true);
+    expect(await audits("expected_material_deactivate")).toHaveLength(1); // no second audit
+
+    expect((await p(admin, "/api/fieldops/expected-material/999999/delete")).status).toBe(404);
+    expect(await readList(admin, "JOB-A")).toHaveLength(0); // read excludes deactivated
+  });
+});
+
+describe("POST /api/fieldops/expected-material/:id/receive — guard-in-WHERE + scope", () => {
+  it("own-job manager receives: status/received_at/received_by + optional qty_received+note; ONE audit", async () => {
+    const id = await createExp(admin, "JOB-A", { description: "Panels", qty: 40 });
+    const res = await p(manager, `/api/fieldops/expected-material/${id}/receive`, { qty_received: 38, note: "two short, backordered" });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { status: string }).status).toBe("received");
+    const row = await expRow(id);
+    expect(row.status).toBe("received");
+    expect(row.received_at).toBeGreaterThan(0);
+    expect(row.received_by).toBe("mgr.mo"); // stored ACCOUNT username (reads resolve display-only)
+    expect(row.qty_received).toBe(38);
+    expect(row.note).toBe("two short, backordered");
+    expect(await audits("expected_material_receive")).toHaveLength(1);
+  });
+
+  it("double-receive → 409 already_actioned with EXACTLY one stamp + one audit (the in-WHERE guard)", async () => {
+    const id = await createExp(admin, "JOB-A", { description: "Once only" });
+    expect((await p(manager, `/api/fieldops/expected-material/${id}/receive`)).status).toBe(200);
+    const firstStamp = (await expRow(id)).received_at;
+
+    const repeat = await p(manager, `/api/fieldops/expected-material/${id}/receive`, { note: "again?" });
+    expect(repeat.status).toBe(409);
+    expect(((await repeat.json()) as { error: string }).error).toBe("already_actioned");
+    const row = await expRow(id);
+    expect(row.received_at).toBe(firstStamp); // no re-stamp
+    expect(row.note).toBeNull(); // the losing call wrote nothing
+    expect(await audits("expected_material_receive")).toHaveLength(1); // exactly one audit ever
+  });
+
+  it("scope: cross-job manager 403 forbidden_job; unplaced submitter 403; admin any job 200; empty body OK", async () => {
+    const idB = await createExp(admin, "JOB-B", { description: "B delivery" });
+    const cross = await p(manager, `/api/fieldops/expected-material/${idB}/receive`);
+    expect(cross.status).toBe(403);
+    expect(((await cross.json()) as { error: string }).error).toBe("forbidden_job");
+    expect((await p(submitter, `/api/fieldops/expected-material/${idB}/receive`)).status).toBe(403);
+    expect((await p(admin, `/api/fieldops/expected-material/${idB}/receive`)).status).toBe(200); // no body at all
+
+    const idA = await createExp(admin, "JOB-A", { description: "A delivery" });
+    expect((await p(manager, `/api/fieldops/expected-material/${idA}/receive`, { qty_received: -1 })).status).toBe(400);
+    expect((await call(`/api/fieldops/expected-material/${idA}/receive`, { method: "POST" })).status).toBe(401);
+  });
+
+  it("a deactivated row 404s (not 409) — it is gone from the flow, not already-actioned", async () => {
+    const id = await createExp(admin, "JOB-A", { description: "Removed first" });
+    await p(admin, `/api/fieldops/expected-material/${id}/delete`);
+    expect((await p(manager, `/api/fieldops/expected-material/${id}/receive`)).status).toBe(404);
+  });
+});
+
+describe("POST /api/fieldops/expected-material/:id/flag-incident", () => {
+  it("note is REQUIRED (400 note_required); with note → status incident + stamp + ONE audit; repeat → 409", async () => {
+    const id = await createExp(admin, "JOB-A", { description: "Damaged crate" });
+    const bare = await p(manager, `/api/fieldops/expected-material/${id}/flag-incident`);
+    expect(bare.status).toBe(400);
+    expect(((await bare.json()) as { error: string }).error).toBe("note_required");
+    expect((await p(manager, `/api/fieldops/expected-material/${id}/flag-incident`, { note: "   " })).status).toBe(400);
+
+    const res = await p(manager, `/api/fieldops/expected-material/${id}/flag-incident`, { note: "arrived crushed", qty_received: 3 });
+    expect(res.status).toBe(200);
+    const row = await expRow(id);
+    expect(row.status).toBe("incident");
+    expect(row.note).toBe("arrived crushed");
+    expect(row.qty_received).toBe(3);
+    expect(row.received_by).toBe("mgr.mo");
+    expect(await audits("expected_material_incident")).toHaveLength(1);
+
+    // Terminal for M1: neither a second flag nor a receive can re-flip it (guard-in-WHERE).
+    expect((await p(manager, `/api/fieldops/expected-material/${id}/flag-incident`, { note: "again" })).status).toBe(409);
+    expect((await p(manager, `/api/fieldops/expected-material/${id}/receive`)).status).toBe(409);
+    expect(await audits("expected_material_incident")).toHaveLength(1);
+    expect(await audits("expected_material_receive")).toHaveLength(0);
+  });
+
+  it("scope holds for flag-incident too: cross-job manager → 403 forbidden_job", async () => {
+    const idB = await createExp(admin, "JOB-B", { description: "Not yours" });
+    expect((await p(manager, `/api/fieldops/expected-material/${idB}/flag-incident`, { note: "nope" })).status).toBe(403);
+  });
+});
