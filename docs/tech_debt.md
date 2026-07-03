@@ -73,7 +73,7 @@ The actual per-daemon resolution logic (`poll_interval_config_key()` + `poll_int
 
 **P4 Slice 1 (PR #375).** Forward-note: a P5 progress send that omitted the config or passed `SAFETY_ACTIVE_JOBS_CONFIG` would silently route progress reports to the safety contact (no runtime error — a different column in a different sheet).
 
-**Resolution (PR #379, P5 core):** `progress_send.CONFIG` binds `active_jobs_config=PROGRESS_ACTIVE_JOBS_CONFIG`; the resolver reads the neutral `reports_contact_email` alias; the trap is named explicitly in `docs/runbooks/progress_send.md` Symptom B; and `tests/test_progress_send.py` asserts `get_job` is called with the progress config. The `weekly_send.SendConfig.active_jobs_config` field is required no-default (a missing binding is a construction-time error, not a silent safety inheritance).
+**Resolution (PR #379, P5 core):** `progress_send.CONFIG` binds `active_jobs_config=PROGRESS_ACTIVE_JOBS_CONFIG`; the resolver reads the neutral `reports_contact_email` alias; the trap is named explicitly in `docs/runbooks/progress_send.md` Symptom B; and `tests/test_progress_send.py` asserts `get_job` is called with the progress config. The `weekly_send.SendConfig.active_jobs_config` field is required no-default (a missing binding is a construction-time error, not a silent safety inheritance). *(A duplicate OPEN copy of this entry — the original P4 forward-note — sat further down this file; collapsed into this one 2026-07-03 after re-verifying the resolution against `progress_reports/progress_send.py` at HEAD: the resolver reads `job.reports_contact_email` and `CONFIG` binds `active_jobs.PROGRESS_ACTIVE_JOBS_CONFIG`.)*
 
 **Tag:** `progress_reports`.
 
@@ -82,14 +82,6 @@ The actual per-daemon resolution logic (`poll_interval_config_key()` + `poll_int
 **P5 (PR #380).** `shared/recipient_health.report_unhealthy_recipient` files an `ITS_Review_Queue` RECORD on a no-recipient HELD (visible in the operator review queue; watchdog Check A WARNs if it sits past 2× SLA; watchdog Check T WARNs on a HELD older than 24h). It deliberately does **not** fire an operator PAGE — per Op Stds §3.1 the only §3.1-compliant push leg `alert_dedupe` may gate is a `Severity.CRITICAL`, and a missing-contact config issue was judged not CRITICAL-class (consistent with `_mark_held`'s existing WARN treatment of HELDs).
 
 **Revisit when:** the operator decides a blocked customer-facing weekly send warrants an active page rather than a queue item — at which point add a dedicated CRITICAL push leg (a Send-Gate severity-posture decision, Seth-owned). **Tag:** `progress_reports`, `safety_reports`, `external-send-gate`.
-
-## P5 progress_send must use `job.reports_contact_email` alias and pass `PROGRESS_ACTIVE_JOBS_CONFIG` [OPEN 2026-06-30]
-
-**P4 Slice 1 (PR #375, 2026-06-30).** `shared/active_jobs.py` now exposes a workstream-neutral `reports_contact_email` alias alongside the legacy `safety_reports_contact_email`. A P5 progress-send script that omits the config argument or passes `SAFETY_ACTIVE_JOBS_CONFIG` will resolve `job.safety_reports_contact_email` instead of `job.reports_contact_email`, silently routing weekly progress reports to the safety contact rather than the progress one. There is no runtime error — the alias resolves to a different column in a different Smartsheet.
-
-**Rule (for P5 author):** (a) always import and pass `PROGRESS_ACTIVE_JOBS_CONFIG`; (b) read `job.reports_contact_email`, NOT `job.safety_reports_contact_email`; (c) name this trap explicitly in the progress-send §43 runbook (parallel to `docs/runbooks/safety_weekly_send.md`). Session summary note from this session flagged this forward.
-
-**Tag:** `progress_reports`. **Revisit when:** P5 `progress_reports/progress_send.py` is scoped — cite this entry in the engineering brief.
 
 ## Doctrine drift M6 — FM v8 cites in `safety_reports/intake.py` + `weekly_summary.py` docstrings [OPEN — pre-existing, flagged 2026-06-30]
 

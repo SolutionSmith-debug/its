@@ -1,5 +1,6 @@
-import { env, SELF } from "cloudflare:test";
+import { env } from "cloudflare:test";
 import { describe, it, expect, beforeEach } from "vitest";
+import { call, provision, login, p as j, seedJob as seedJobRow } from "./helpers";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // P2.3 Slice 2 + P2.5 Slice 1/6 — JOB WRITE (create/close/progress/lifecycle/contacts).
@@ -9,31 +10,6 @@ import { describe, it, expect, beforeEach } from "vitest";
 // longer supplies a job_id; the server returns the assigned one + sets canonical_job_id == job_id).
 // ─────────────────────────────────────────────────────────────────────────────
 
-const BASE = "https://portal.test";
-const ADMIN_BEARER = "test-admin-token";
-type Init = RequestInit & { cookie?: string; bearer?: string };
-
-function call(path: string, init: Init = {}): Promise<Response> {
-  const headers = new Headers(init.headers);
-  if (init.cookie) headers.set("Cookie", init.cookie);
-  if (init.bearer) headers.set("Authorization", `Bearer ${init.bearer}`);
-  if (init.body && !headers.has("content-type")) headers.set("content-type", "application/json");
-  return SELF.fetch(BASE + path, { ...init, headers });
-}
-function cookieFrom(res: Response): string {
-  return (res.headers.get("set-cookie") ?? "").split(";")[0];
-}
-async function provision(username: string, password: string, role: "submitter" | "admin"): Promise<void> {
-  const res = await call("/api/internal/admin/users", { method: "POST", bearer: ADMIN_BEARER, body: JSON.stringify({ username, password, role }) });
-  expect(res.status, await res.clone().text()).toBe(201);
-}
-async function login(username: string, password: string): Promise<string> {
-  const res = await call("/api/login", { method: "POST", body: JSON.stringify({ username, password }) });
-  expect(res.status, await res.clone().text()).toBe(200);
-  return cookieFrom(res);
-}
-const j = (cookie: string, path: string, body?: unknown) =>
-  call(path, { method: "POST", cookie, body: body === undefined ? undefined : JSON.stringify(body) });
 
 // Slice 6: the portal assigns the Job ID. Create a job and return the SERVER-assigned JOB-######.
 async function createOk(cookie: string, body: Record<string, unknown>): Promise<string> {
@@ -45,10 +21,7 @@ async function createOk(cookie: string, body: Record<string, unknown>): Promise<
 async function jobRow(jobId: string) {
   return await env.DB.prepare("SELECT * FROM jobs WHERE job_id=?").bind(jobId).first<any>();
 }
-async function seedJob(jobId: string, status: string) {
-  await env.DB.prepare("INSERT INTO jobs (job_id, project_name, active, status, created_at, origin) VALUES (?,?,?,?,?,?)")
-    .bind(jobId, `P ${jobId}`, status === "closed" ? 0 : 1, status, 1_700_000_000, "smartsheet").run();
-}
+const seedJob = (jobId: string, status: string): Promise<void> => seedJobRow(jobId, { status, projectName: `P ${jobId}` });
 async function audits(action: string) {
   return ((await env.DB.prepare("SELECT * FROM audit_log WHERE action=?").bind(action).all()).results as any[]);
 }

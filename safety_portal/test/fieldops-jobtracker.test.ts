@@ -1,5 +1,6 @@
-import { env, SELF } from "cloudflare:test";
+import { env } from "cloudflare:test";
 import { describe, it, expect, beforeEach } from "vitest";
+import { call, provision, login, seedJob as seedJobRow, seedPersonnel as seedPersonnelRow } from "./helpers";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // BRIEF C — Job Tracker tab (cap.jobtracker.read, SUBMITTER + ADMIN).
@@ -8,54 +9,16 @@ import { describe, it, expect, beforeEach } from "vitest";
 // DETAIL serves any status and 404s only a truly unknown job_id.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const BASE = "https://portal.test";
-const ADMIN_BEARER = "test-admin-token";
-
-type Init = RequestInit & { cookie?: string; bearer?: string };
-
-function call(path: string, init: Init = {}): Promise<Response> {
-  const headers = new Headers(init.headers);
-  if (init.cookie) headers.set("Cookie", init.cookie);
-  if (init.bearer) headers.set("Authorization", `Bearer ${init.bearer}`);
-  if (init.body && !headers.has("content-type")) headers.set("content-type", "application/json");
-  return SELF.fetch(BASE + path, { ...init, headers });
-}
-
-function cookieFrom(res: Response): string {
-  return (res.headers.get("set-cookie") ?? "").split(";")[0];
-}
-
-async function provision(username: string, password: string, role: "submitter" | "manager" | "admin"): Promise<void> {
-  const res = await call("/api/internal/admin/users", {
-    method: "POST",
-    bearer: ADMIN_BEARER,
-    body: JSON.stringify({ username, password, role }),
-  });
-  expect(res.status, await res.clone().text()).toBe(201);
-}
-
-async function login(username: string, password: string): Promise<string> {
-  const res = await call("/api/login", { method: "POST", body: JSON.stringify({ username, password }) });
-  expect(res.status, await res.clone().text()).toBe(200);
-  return cookieFrom(res);
-}
-
 // ── seed helpers ──────────────────────────────────────────────────────────────
 async function seedClient(name: string): Promise<number> {
   await env.DB.prepare("INSERT INTO clients (name, contact, phone, email) VALUES (?,?,?,?)")
     .bind(name, "Pat Contact", "555-0100", "pat@example.com").run();
   return (await env.DB.prepare("SELECT id FROM clients WHERE name=?").bind(name).first<{ id: number }>())!.id;
 }
-async function seedJob(jobId: string, projectName: string, status: string, progress = 0, clientId: number | null = null): Promise<void> {
-  await env.DB.prepare(
-    "INSERT INTO jobs (job_id, project_name, active, status, progress, client_id, created_at) VALUES (?,?,?,?,?,?,?)",
-  ).bind(jobId, projectName, status === "closed" ? 0 : 1, status, progress, clientId, 1_700_000_000).run();
-}
-async function seedPersonnel(name: string, trade: string): Promise<number> {
-  await env.DB.prepare("INSERT INTO personnel (name, username, trade, active) VALUES (?,?,?,1)")
-    .bind(name, name.toLowerCase().replace(/\s+/g, "."), trade).run();
-  return (await env.DB.prepare("SELECT id FROM personnel WHERE name=?").bind(name).first<{ id: number }>())!.id;
-}
+const seedJob = (jobId: string, projectName: string, status: string, progress = 0, clientId: number | null = null): Promise<void> =>
+  seedJobRow(jobId, { projectName, status, progress, client_id: clientId });
+const seedPersonnel = (name: string, trade: string): Promise<number> =>
+  seedPersonnelRow(name, name.toLowerCase().replace(/\s+/g, "."), null, { trade });
 // Crew is the people PLACED on a job (personnel.current_job, migration 0023) — set placement here.
 // This is what the crew legs now read (converged onto placement); NULL = unplaced (not on any crew).
 async function placePersonnel(personnelId: number, jobId: string): Promise<void> {
