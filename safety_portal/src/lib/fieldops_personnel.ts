@@ -133,6 +133,10 @@ export interface MyCrewMember {
   name: string;
   trade: string | null;
   current_job: string | null;
+  /** G2.3 — 1 when the ACTOR created this person via the scoped crew-create (created_by = actor);
+   *  gates the Edit/Retire controls (the actor's own linked row is 0). Worker-computed so raw
+   *  created_by usernames stay off the wire. Optional for cached/older responses. */
+  created_by_me?: number;
 }
 /** The crew a subcontractor may log time for: their own linked personnel + anyone they created. Backs
  *  the time-log person picker so only server-acceptable people are offered. cap.crew.create-gated. */
@@ -140,4 +144,19 @@ export async function fetchMyCrew(): Promise<MyCrewMember[]> {
   const res = await fetch("/api/fieldops/crew/mine", { credentials: "same-origin" });
   if (!res.ok) throw new Error("Could not load your crew.");
   return ((await res.json()) as { personnel: MyCrewMember[] }).personnel ?? [];
+}
+
+// ── G2.3 — scoped crew EDIT / RETIRE (cap.crew.create; created_by = actor; Worker re-gates) ───────
+/** Fix a typo on crew the actor CREATED (name/trade only; active rows only). 404 `not_found` covers
+ *  unknown / retired / not-created-by-me alike (no roster oracle). Throws ApiError — branch on
+ *  err.code; err.message is copy. */
+export async function updateCrew(id: number, body: { name: string; trade?: string }): Promise<void> {
+  await postJson(`/api/fieldops/crew/${id}/update`, body);
+}
+/** Soft-retire (active=0) crew the actor CREATED — the typo'd-duplicate escape hatch. The Worker
+ *  refuses with 409 `crew_has_foreign_time` (someone ELSE logged time on them) or 409
+ *  `crew_on_other_job` (the office moved them) — real workers escalate to the office. Idempotent on
+ *  an already-retired owned row. */
+export async function retireCrew(id: number): Promise<void> {
+  await postJson(`/api/fieldops/crew/${id}/retire`, {});
 }

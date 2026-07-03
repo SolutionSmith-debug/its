@@ -222,15 +222,22 @@ export function registerJobTrackerRoutes(app: FieldopsApp, gates: FieldopsGates)
       //     users.username, not a personnel id; resolve a display name through the personnel link
       //     (personnel.username is a soft non-unique link → scalar subquery, prefer the active row).
       //     NULL name (recorder has no roster row) renders as "—" in the SPA — never the raw username.
+      // (G2.3) HEADS ONLY — an entry a later row amends is superseded and never listed (NOT EXISTS,
+      //     never NOT IN: a NULL amends_uuid in a NOT IN subquery poisons the whole predicate;
+      //     idx_time_entries_amends, 0034, keys the probe). The raw t.amends_uuid/t.actor_username
+      //     are selected ONLY to derive amended/voided/can_amend below and are STRIPPED before
+      //     c.json (the W9 posture: no raw usernames on the wire).
       const sqlTime = `
         SELECT t.uuid, t.hours, t.work_started_at, t.work_ended_at,
-               t.created_at AS recorded_at, t.notes, p.name AS personnel_name,
+               t.created_at AS recorded_at, t.notes, t.personnel_id, p.name AS personnel_name,
                t.task_id,
                (SELECT description FROM task_assignments WHERE id = t.task_id) AS task_description,
                (SELECT name FROM personnel WHERE username = t.actor_username
-                ORDER BY active DESC, id ASC LIMIT 1) AS recorded_by_name
+                ORDER BY active DESC, id ASC LIMIT 1) AS recorded_by_name,
+               t.amends_uuid, t.actor_username
         FROM time_entries t LEFT JOIN personnel p ON p.id = t.personnel_id
         WHERE t.job_id = ?1
+          AND NOT EXISTS (SELECT 1 FROM time_entries x WHERE x.amends_uuid = t.uuid)
           AND (?2 IS NULL OR t.created_at < ?2 OR (t.created_at = ?2 AND t.uuid < ?3))
         ORDER BY t.created_at DESC, t.uuid DESC
         LIMIT ?4
@@ -294,7 +301,20 @@ export function registerJobTrackerRoutes(app: FieldopsApp, gates: FieldopsGates)
       ]);
 
       const tasks = (tasksRes.results ?? []) as Task[];
-      const timeEntries = (timeRes.results ?? []) as JobTimeEntry[];
+      // (G2.3) Derive the chain-state booleans, then STRIP the raw columns (W9: the wire carries
+      // display names + booleans, never actor usernames). can_amend mirrors the amend route's WHO
+      // rule exactly (recorder OR cap.personnel.manage) so the SPA's Edit/Void controls only show
+      // where the Worker would accept — the Worker stays the boundary either way.
+      const canAmendAll = caps.has("cap.personnel.manage");
+      const timeEntries = ((timeRes.results ?? []) as (JobTimeEntry & {
+        amends_uuid: string | null;
+        actor_username: string;
+      })[]).map(({ amends_uuid, actor_username, ...t }): JobTimeEntry => ({
+        ...t,
+        amended: amends_uuid !== null,
+        voided: amends_uuid !== null && t.hours === 0,
+        can_amend: canAmendAll || actor_username === viewer,
+      }));
       const inspections = (inspRes.results ?? []) as JobInspection[];
 
       const tasksCursor =

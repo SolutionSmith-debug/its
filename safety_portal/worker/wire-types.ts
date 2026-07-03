@@ -81,6 +81,8 @@ export interface JobTimeEntry {
   work_ended_at: number | null;
   recorded_at: number;
   notes: string | null;
+  /** (G2.3) The entry's subject (personnel.id); null = job-level. Backs the amend-form prefill. */
+  personnel_id: number | null;
   personnel_name: string | null;
   /** (R7) The task the entry was logged against (task_assignments.description); null = job-level. */
   task_id: number | null;
@@ -89,6 +91,14 @@ export interface JobTimeEntry {
    *  name. Display name ONLY (R1 W9 posture) — null when the recorder has no roster row; never a
    *  raw username. */
   recorded_by_name: string | null;
+  /** (G2.3) This head row IS a correction (its amends_uuid is non-null) → "corrected" pill. */
+  amended: boolean;
+  /** (G2.3) A correction with hours = 0 (the void) → struck-through + "voided" pill. */
+  voided: boolean;
+  /** (G2.3) The viewer may amend/void this entry (they recorded it, or hold cap.personnel.manage) —
+   *  worker-computed so the raw actor_username stays OFF the wire (W9 posture); drives the SPA's
+   *  Edit/Void controls. UI convenience only — the amend route re-gates. */
+  can_amend: boolean;
 }
 
 export interface EquipmentOnSite {

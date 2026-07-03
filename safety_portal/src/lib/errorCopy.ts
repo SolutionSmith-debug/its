@@ -71,6 +71,11 @@ export const ERROR_COPY: Record<string, string> = {
   forbidden_personnel: "You can only log time for yourself or crew you added.",
   unknown_task: "That task doesn't belong to this job.",
   uuid_conflict: "This entry was already saved.",
+  // G2.3 — non-destructive amend/void
+  use_amend_route: "To correct an existing entry, use its Edit control.",
+  forbidden_amend: "You can only correct entries you recorded.",
+  not_head: "This entry was already corrected — refresh to see the newest version.",
+  void_requires_reason: "Add a short reason to void this entry.",
 
   // ── jobs / personnel / crew (shared field-ops vocabulary) ──────────────────────────────────────
   invalid_job_id: "Pick a valid job.",
@@ -102,6 +107,9 @@ export const ERROR_COPY: Record<string, string> = {
   username_already_linked: "That account is already linked to another person.",
   not_placed: "You must be placed on a job first. Ask your crew lead or the office to place you.",
   login_not_allowed: "Crew added here are field-only (no login).",
+  // G2.3 — scoped crew retire guards (real workers escalate to the office)
+  crew_has_foreign_time: "Someone else has logged time for this person — ask the office to retire them.",
+  crew_on_other_job: "This person is placed on a different job — ask the office to retire them.",
 
   // ── form submit / photo payload (worker /api/submit — R3-F2 actionable-copy fix) ───────────────
   // `too_large` is the Worker's 413 on JSON.stringify(values).length > PAYLOAD_MAX (1_800_000,
