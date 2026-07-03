@@ -10,6 +10,7 @@ import {
   type RequirementInput,
 } from "../lib/fieldops_daily_requirements";
 import { ConfirmDelete, nextSeq, planRenumber } from "./ChecklistItemForm";
+import { errorText } from "../lib/errorCopy";
 import { SectionError, errMsg } from "./myTasksShared";
 import { formCatalog } from "../forms/registry";
 
@@ -20,10 +21,12 @@ import { formCatalog } from "../forms/registry";
 // line in FieldOpsJobTracker.
 //
 // What it edits: the job's ADDITIVE requirement overlay (D1 job_daily_requirements, migration
-// 0030) — the items the Daily Report form renders in its "Job-specific requirements" section for
-// every manager placed on this job. Kinds: note (read-only guidance) / confirm (checkbox) / text
-// (fill-in answer) / form_link (a Create-form deep link; catalog form picker, daily-tab parents
-// excluded — same rule as ChecklistItemForm). Reorder = seq re-writes through the edit route
+// 0030; kinds widened by 0032 — slice D5) — the items the Daily Report form renders in its
+// "Job-specific requirements" section for every manager placed on this job. Kinds: note
+// (read-only guidance) / confirm (checkbox) / text (fill-in answer) / number (numeric answer) /
+// date (calendar-date answer) / select (pick-one from an options list authored here, one per
+// line) / form_link (a Create-form deep link; catalog form picker, daily-tab parents excluded —
+// same rule as ChecklistItemForm). Reorder = seq re-writes through the edit route
 // (planRenumber, the shared 10/20/30 convention); remove = ConfirmDelete-gated DEACTIVATE (soft
 // delete — historical submissions keep their self-describing filed answers).
 //
@@ -31,12 +34,23 @@ import { formCatalog } from "../forms/registry";
 // banner with the controls re-enabled.
 // ─────────────────────────────────────────────────────────────────────────────
 
-export const REQUIREMENT_KINDS: DailyRequirementKind[] = ["note", "confirm", "text", "form_link"];
+export const REQUIREMENT_KINDS: DailyRequirementKind[] = [
+  "note",
+  "confirm",
+  "text",
+  "number",
+  "date",
+  "select",
+  "form_link",
+];
 
 const KIND_LABELS: Record<DailyRequirementKind, string> = {
   note: "Note",
   confirm: "Confirm",
   text: "Text answer",
+  number: "Number answer",
+  date: "Date answer",
+  select: "Choice (pick one)",
   form_link: "Form link",
 };
 
@@ -46,8 +60,18 @@ const KIND_HELP: Record<DailyRequirementKind, string> = {
   note: "Note — read-only guidance shown inside the daily form (no answer).",
   confirm: "Confirm — a checkbox the manager checks; files as “Confirmed”.",
   text: "Text answer — the manager types a short answer.",
+  number: "Number answer — the manager enters a number (e.g. a count or reading).",
+  date: "Date answer — the manager picks a calendar date.",
+  select: "Choice — the manager picks ONE of the options you list below (one per line, up to 20).",
   form_link: "Form link — a “Create <form> →” button that deep-links to the picked form type.",
 };
+
+// The select-kind options textarea keeps RAW lines in the draft (so typing a newline or a
+// to-be-deleted blank line doesn't fight the cursor); cleanOptions is what actually submits —
+// trimmed, blanks dropped. The Worker re-gates the 1..20 / ≤120-char bounds.
+export function cleanOptions(options: string[] | undefined): string[] {
+  return (options ?? []).map((o) => o.trim()).filter((o) => o.length > 0);
+}
 
 /** Human label for a kind (exported for the row meta line + tests). */
 export function requirementKindLabel(kind: string): string {
@@ -57,11 +81,29 @@ export function requirementKindLabel(kind: string): string {
 const EMPTY_DRAFT: RequirementInput = { kind: "note", label: "" };
 
 /** Rebuild the full write payload from a stored row (edit prefill / reorder re-writes) — the edit
- *  route REPLACES every field, so a partial payload would clobber. */
+ *  route REPLACES every field, so a partial payload would clobber (a select row re-written
+ *  WITHOUT its options would 400 options_required). */
 function requirementInputFromRow(row: DailyRequirementItem): RequirementInput {
   const input: RequirementInput = { kind: row.kind, label: row.label, seq: row.seq };
   if (row.form_code !== null) input.form_code = row.form_code;
+  if (row.options !== null) input.options = row.options;
   return input;
+}
+
+/** Normalize a draft into the wire payload: only form_link carries form_code, only select
+ *  carries options (the Worker 400s options on any other kind — a stale draft field from a
+ *  kind switch must never ride along). Returns null when a select has no non-empty options
+ *  (the client-side gate; the Worker re-gates as options_required). */
+function requirementPayload(draft: RequirementInput): RequirementInput | null {
+  const payload: RequirementInput = { kind: draft.kind, label: draft.label };
+  if (draft.seq !== undefined) payload.seq = draft.seq;
+  if (draft.kind === "form_link" && draft.form_code) payload.form_code = draft.form_code;
+  if (draft.kind === "select") {
+    const opts = cleanOptions(draft.options);
+    if (opts.length === 0) return null;
+    payload.options = opts;
+  }
+  return payload;
 }
 
 /** The shared add/edit requirement form (kind select with human labels + helper, label input,
@@ -120,6 +162,16 @@ function RequirementForm({
             <option key={p.parent_form_code} value={p.parent_form_code}>{p.name}</option>
           ))}
         </select>
+      )}{" "}
+      {draft.kind === "select" && (
+        <textarea
+          aria-label={`${label} options`}
+          value={(draft.options ?? []).join("\n")}
+          onChange={(e) => set({ options: e.target.value.split("\n") })}
+          placeholder={"One option per line (up to 20)"}
+          rows={4}
+          style={{ display: "block", width: "100%" }}
+        />
       )}{" "}
       <button type="submit" disabled={busy} className="btn btn--primary">{submitLabel}</button>
       {onCancel && (
@@ -183,14 +235,24 @@ export function JobDailyRequirementsSection({ jobId }: { jobId: string }) {
   async function submitAdd(e: FormEvent) {
     e.preventDefault();
     if (!addDraft.label.trim()) return;
-    const ok = await run(() => addRequirement(jobId, { ...addDraft, seq: nextSeq(items ?? []) }));
+    const payload = requirementPayload(addDraft);
+    if (payload === null) {
+      setActionError(errorText("options_required"));
+      return;
+    }
+    const ok = await run(() => addRequirement(jobId, { ...payload, seq: nextSeq(items ?? []) }));
     if (ok) setAddDraft(EMPTY_DRAFT);
   }
 
   async function submitEdit(e: FormEvent) {
     e.preventDefault();
     if (editingId === null || !editDraft.label.trim()) return;
-    const ok = await run(() => editRequirement(jobId, editingId, editDraft));
+    const payload = requirementPayload(editDraft);
+    if (payload === null) {
+      setActionError(errorText("options_required"));
+      return;
+    }
+    const ok = await run(() => editRequirement(jobId, editingId, payload));
     if (ok) setEditingId(null);
   }
 

@@ -7,7 +7,9 @@
  *   • no prop / zero items → the section renders NOTHING (title included) — every other form and
  *     the generic fill page are unaffected;
  *   • each kind renders its control: note = guidance-paragraph text; confirm = a checkbox;
- *     text = a text input; form_link = the existing deep-link affordance (adapter-wired open +
+ *     text = a text input; number = a numeric input; date = a date input; select = a pick-one
+ *     of the item's admin-authored options (number/date/select = slice D5, migration 0032);
+ *     form_link = the existing deep-link affordance (adapter-wired open +
  *     filed indicator for DAILY_STATUS_FAMILIES codes ONLY — other codes get an honest
  *     "no live indicator" note);
  *   • answers are captured under values[<section key>] as the SELF-DESCRIBING array
@@ -35,11 +37,16 @@ afterEach(cleanup);
 const DEF = getDefinition("daily-report-v4") as FormDefinition;
 
 const ITEMS: DailyRequirementItem[] = [
-  { id: 1, seq: 10, kind: "note", label: "Client requires FR clothing on site", form_code: null },
-  { id: 2, seq: 20, kind: "confirm", label: "Badge in at the client gate", form_code: null },
-  { id: 3, seq: 30, kind: "text", label: "Client rep spoken to today", form_code: null },
-  { id: 4, seq: 40, kind: "form_link", label: "File the client JHA", form_code: "jha" },
-  { id: 5, seq: 50, kind: "form_link", label: "File a toolbox talk", form_code: "toolbox-talk" },
+  { id: 1, seq: 10, kind: "note", label: "Client requires FR clothing on site", form_code: null, options: null },
+  { id: 2, seq: 20, kind: "confirm", label: "Badge in at the client gate", form_code: null, options: null },
+  { id: 3, seq: 30, kind: "text", label: "Client rep spoken to today", form_code: null, options: null },
+  { id: 4, seq: 40, kind: "form_link", label: "File the client JHA", form_code: "jha", options: null },
+  { id: 5, seq: 50, kind: "form_link", label: "File a toolbox talk", form_code: "toolbox-talk", options: null },
+  // D5 kinds (migration 0032): number / date / select — same self-describing string responses.
+  { id: 6, seq: 60, kind: "number", label: "Crew headcount at the gate", form_code: null, options: null },
+  { id: 7, seq: 70, kind: "date", label: "Client walkthrough date", form_code: null, options: null },
+  { id: 8, seq: 80, kind: "select", label: "Shift worked", form_code: null,
+    options: ["Day shift", "Night shift"] },
 ];
 
 /** Controlled-render harness: values state lives here so capture assertions see updates. */
@@ -128,6 +135,33 @@ describe("each kind renders its control", () => {
     const { getByText } = render(<Harness items={ITEMS} />);
     expect((getByText("File the client JHA →") as HTMLButtonElement).disabled).toBe(true);
   });
+
+  it("number renders <input type=number inputMode=numeric>; date renders <input type=date> (D5)", () => {
+    const { getByLabelText } = render(<Harness items={ITEMS} />);
+    const num = getByLabelText("Crew headcount at the gate") as HTMLInputElement;
+    expect(num.type).toBe("number");
+    expect(num.getAttribute("inputmode")).toBe("numeric");
+    const date = getByLabelText("Client walkthrough date") as HTMLInputElement;
+    expect(date.type).toBe("date");
+    expect(date.getAttribute("inputmode")).toBeNull(); // numeric hint is number-only
+  });
+
+  it("select renders a pick-one <select> of the item's options behind an empty default (D5)", () => {
+    const { getByLabelText } = render(<Harness items={ITEMS} />);
+    const sel = getByLabelText("Shift worked") as HTMLSelectElement;
+    expect(sel.tagName).toBe("SELECT");
+    expect(Array.from(sel.options).map((o) => o.value)).toEqual(["", "Day shift", "Night shift"]);
+    expect(sel.value).toBe(""); // unanswered by default
+  });
+
+  it("a select whose stored options failed to parse (options=null) still renders the empty default, never crashes", () => {
+    const broken: DailyRequirementItem[] = [
+      { id: 9, seq: 10, kind: "select", label: "Broken choices", form_code: null, options: null },
+    ];
+    const { getByLabelText } = render(<Harness items={broken} />);
+    const sel = getByLabelText("Broken choices") as HTMLSelectElement;
+    expect(Array.from(sel.options).map((o) => o.value)).toEqual([""]);
+  });
 });
 
 describe("capture — values[job_requirements] is the self-describing array", () => {
@@ -160,5 +194,21 @@ describe("capture — values[job_requirements] is the self-describing array", ()
     expect(seedRequirementResponses(ITEMS)).toEqual(
       ITEMS.map((it) => ({ label: it.label, kind: it.kind, response: "" })),
     );
+  });
+
+  it("number / date / select answers capture as plain strings in the same array (D5)", () => {
+    let latest: FormValues = {};
+    const { getByLabelText } = render(<Harness items={ITEMS} onValues={(v) => (latest = v)} />);
+    fireEvent.change(getByLabelText("Crew headcount at the gate"), { target: { value: "12" } });
+    fireEvent.change(getByLabelText("Client walkthrough date"), { target: { value: "2026-07-10" } });
+    fireEvent.change(getByLabelText("Shift worked"), { target: { value: "Night shift" } });
+    const arr = latest.job_requirements as JobRequirementResponse[];
+    expect(arr).toHaveLength(ITEMS.length);
+    expect(arr[5]).toEqual({ label: "Crew headcount at the gate", kind: "number", response: "12" });
+    expect(arr[6]).toEqual({ label: "Client walkthrough date", kind: "date", response: "2026-07-10" });
+    expect(arr[7]).toEqual({ label: "Shift worked", kind: "select", response: "Night shift" });
+    // Re-selecting the empty default clears the select back to unanswered.
+    fireEvent.change(getByLabelText("Shift worked"), { target: { value: "" } });
+    expect((latest.job_requirements as JobRequirementResponse[])[7].response).toBe("");
   });
 });

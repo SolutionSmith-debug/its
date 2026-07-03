@@ -440,9 +440,9 @@ describe("DailyReportTab — draft persistence (the deep-link data-loss BLOCK fi
 
 describe("DailyReportTab — per-job requirements (slice D4)", () => {
   const REQS: DailyRequirementItem[] = [
-    { id: 1, seq: 10, kind: "note", label: "Client requires FR clothing", form_code: null },
-    { id: 2, seq: 20, kind: "confirm", label: "Badge in at the client gate", form_code: null },
-    { id: 3, seq: 30, kind: "text", label: "Client rep spoken to today", form_code: null },
+    { id: 1, seq: 10, kind: "note", label: "Client requires FR clothing", form_code: null, options: null },
+    { id: 2, seq: 20, kind: "confirm", label: "Badge in at the client gate", form_code: null, options: null },
+    { id: 3, seq: 30, kind: "text", label: "Client rep spoken to today", form_code: null, options: null },
   ];
   beforeEach(() => sessionStorage.clear());
 

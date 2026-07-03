@@ -127,13 +127,21 @@ detail page).
 **This is the per-job daily-form requirements editor** (operator intent 2026-07-02: "admin accounts
 can edit the daily form per job as specific requirements develop or are outlined by the client").
 The BASE daily form stays the git-owned definition (Symptom E); per-job tailoring is an **additive
-overlay** stored in the portal's D1 (`job_daily_requirements`, migration `0030`) and edited at:
+overlay** stored in the portal's D1 (`job_daily_requirements`, migration `0030`; kind vocabulary
+widened by `0032` — slice D5) and edited at:
 Home → **Job Tracker** → the job → **"Daily form — job requirements"** (admin,
 `cap.checklist.manage`).
 
-- **Item kinds**: *Note* (read-only guidance text), *Confirm* (a checkbox — files as "Confirmed"),
-  *Text answer* (a fill-in), *Form link* (a "Create <form> →" deep link; the form picker offers
-  real catalog form types and refuses the daily form itself).
+- **Item kinds** (seven since D5 / `0032` — "an admin can add ANY field type, not just free
+  text"): *Note* (read-only guidance text), *Confirm* (a checkbox — files as "Confirmed"),
+  *Text answer* (a fill-in), *Number answer* (a numeric fill-in), *Date answer* (a calendar-date
+  picker), *Choice — pick one* (a dropdown of options the admin lists one per line, up to 20 of
+  up to 120 characters each), *Form link* (a "Create <form> →" deep link; the form picker offers
+  real catalog form types and refuses the daily form itself). There is deliberately **no Photo
+  kind**: a field-worker image upload is an untrusted-input surface that needs the §34
+  image-class screening design first — the same open design gap tracked in `docs/tech_debt.md`
+  ("Checklist item-state photo CAPTURE — render-half only, capture route not built"
+  [OPEN 2026-07-02]); a request for one is a design escalation, not a config change.
 - **Where it shows up**: every manager placed on that job sees the items inside their Daily report
   tab under **"Job-specific requirements"** (near the end of the form), on their NEXT load — a
   mid-day edit shows on the next open, never mid-fill (snapshot-at-render).
@@ -157,11 +165,15 @@ Home → **Job Tracker** → the job → **"Daily form — job requirements"** (
    deactivate stale items first. A legitimate need for more than 200 → escalate (code bound).
 4. *"The form picker won't offer the Daily Field Report"* — deliberate (a daily-form link inside
    the daily form would be circular). Pick the real target form type.
+5. *"A Choice item won't save — 'options' error"* — a Choice (pick-one) item needs 1–20
+   non-empty options, one per line, each up to 120 characters; fix the option list and re-save.
+   A legitimate need for more than 20 → escalate (code bound).
 
 **Escalate to Seth (high-class):** the add/edit/deactivate routes 500ing on valid input; the tab
 read 403ing a manager who IS placed on the job (ownership-scope bug); anything requiring a
-migration or Worker deploy (`0030` must be applied to live D1 **before** the Worker that serves
-these routes deploys — the deploy-lockout class; see the migration header).
+migration or Worker deploy (`0030` **and** `0032` must be applied to live D1 **before** the
+Worker that serves these routes deploys — the deploy-lockout class; see the migration headers);
+any request for a **photo** requirement kind (§34 screening design first — see Item kinds above).
 
 ---
 

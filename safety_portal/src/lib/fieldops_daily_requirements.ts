@@ -22,6 +22,7 @@ export interface RequirementInput {
   label: string;
   seq?: number;
   form_code?: string; // form_link only: a catalog PARENT family (daily-tab parents refused)
+  options?: string[]; // select only (D5): 1..20 non-empty choices, ≤120 chars each (Worker re-gates)
 }
 
 async function postJson<T = { ok: boolean }>(url: string, body?: unknown): Promise<T> {

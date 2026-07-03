@@ -34,6 +34,7 @@ its migration fail-closes `resolveCapabilities` → the universal-lockout class 
 | `0029_checklist_instance_template_title` | R1 worker contracts — [section](#assigned-tasks-r1--instance-template-title-0029--worker-contract-fixes) | #416 | ✅ (R-series deploy) |
 | `0030_job_daily_requirements` | D4 per-job daily-form requirements — [section](#per-job-daily-form-requirements-d4--0030) | #427 | ☐ pending |
 | `0031_job_expected_materials` | M1 expected materials — [section](#expected-materials--per-job-receipt-list-material-receipts-m1--0031) | #426 | ☐ pending |
+| `0032_job_daily_requirements_kinds` | D5 requirement kinds (number/date/select) — [section](#requirement-kinds-widened-d5--0032) | — | ☐ pending |
 
 Canonical apply-and-deploy sequence (applies **all** pending migrations, in order — never a
 subset):
@@ -662,6 +663,36 @@ header + `docs/runbooks/fieldops_checklists.md` (§ per-job daily-form requireme
 3. **Smoke** (live): an admin adds a requirement to a job (Job Tracker job detail); a manager
    placed on that job sees it rendered in the Daily tab's form and their answer files with the
    submission; a manager on another job does NOT see it.
+
+### Requirement kinds widened (D5 — `0032`)
+
+**Migration 0032** rebuilds `job_daily_requirements` (SQLite can't widen a CHECK in place — the
+`0020` rebuild precedent) to extend the requirement-kind vocabulary from four to seven:
+`note` / `confirm` / `text` / `form_link` plus **`number`** (numeric answer), **`date`**
+(calendar-date answer), and **`select`** (pick-one from an admin-authored option list — the new
+`options` column, a JSON array bounded route-side to 1–20 non-empty choices of ≤120 chars;
+NULL for every other kind). Existing rows are preserved (options copied NULL). Answers still
+file as the self-describing `values.job_requirements = [{label, kind, response}]` strings, so
+the filed-PDF rendering (generic label→response rows) needed **no change**. Photo is
+deliberately excluded — an untrusted image upload needs the §34 image-class screening design
+first (see `docs/tech_debt.md`, "Checklist item-state photo CAPTURE"). Full detail in the
+migration header + `docs/runbooks/fieldops_checklists.md` (Symptom F).
+
+#### Activation (operator — deploy boundary; escalates to the Developer-Operator)
+
+1. Apply migrations to the live D1 **BEFORE** the redeploy
+   (`npx wrangler d1 migrations apply its-safety-portal-db --remote`) — the one command applies
+   **`0030` then `0031` then `0032` in sequence** (none are live yet; 0030 creates the 4-kind
+   table and 0032 immediately rebuilds it to the 7-kind + `options` shape — zero rows to copy).
+   **ORDER-CRITICAL**, same rule as 0026: a Worker serving the new kinds against a pre-0032
+   table 500s on the missing `options` column. (Always `git pull` `~/its` to latest `main`
+   BEFORE `wrangler d1 migrations apply` — the stale-migrations-list lockout class.)
+2. **Redeploy** (`npm run deploy`) — activates the 7-kind validation + the options editor +
+   the number/date/select rendering (SPA + Worker deploy together).
+3. **Smoke** (live): an admin adds a **Choice** requirement with two options to a job (Job
+   Tracker job detail) plus a **Number** and a **Date** one; a manager placed on that job sees
+   a dropdown / numeric input / date picker in the Daily tab's "Job-specific requirements",
+   answers all three, files — the filed PDF shows the three label → answer rows.
 
 ### Expected materials — per-job receipt list (Material receipts M1 — `0031`)
 
