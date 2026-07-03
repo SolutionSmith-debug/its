@@ -4,6 +4,7 @@ import { SignaturePad } from "../components/SignaturePad";
 import { statusPill, rowTitle } from "../components/ExpectedMaterialsSection";
 import { DAILY_STATUS_FAMILIES, type DailyRequirementItem } from "../lib/fieldops_daily_form";
 import type { ExpectedMaterialRow } from "../lib/fieldops_expected_materials";
+import { dayPhaseFor } from "./dayPhase";
 import type { Field, FormDefinition, Group, PhotoValue, Section } from "./types";
 
 // The fill state, keyed per section:
@@ -106,9 +107,15 @@ interface Props {
   /** Optional M2 hook — see ExpectedMaterialsAdapter. Absent on the generic fill page
    *  (the `expected_materials` section renders NOTHING without it). */
   expectedMaterials?: ExpectedMaterialsAdapter;
+  /** Optional, PRESENTATIONAL ONLY — the daily SOP's chronological day-rail (design
+   *  refinement, 2026-07). When set (the Daily tab), guidance sections render with a
+   *  slim left rail, and the five phase-opening sections (dayPhase.ts, derived from
+   *  the definition's own headings) carry a time-of-day eyebrow. Absent (the generic
+   *  fill page and every other form) → markup is byte-identical to before. */
+  dayRail?: boolean;
 }
 
-export function FormRenderer({ def, values, setValues, formLinks, requirements, expectedMaterials }: Props) {
+export function FormRenderer({ def, values, setValues, formLinks, requirements, expectedMaterials, dayRail }: Props) {
   const setField = (key: string, val: string) =>
     setValues((v) => ({ ...v, [key]: val }));
 
@@ -170,6 +177,7 @@ export function FormRenderer({ def, values, setValues, formLinks, requirements, 
           requirements={requirements}
           setRequirement={setRequirement}
           expectedMaterials={expectedMaterials}
+          dayRail={dayRail}
         />
       ))}
     </div>
@@ -189,6 +197,7 @@ interface SectionProps {
   requirements?: DailyRequirementItem[];
   setRequirement: (sec: string, items: DailyRequirementItem[], targetId: number, response: string) => void;
   expectedMaterials?: ExpectedMaterialsAdapter;
+  dayRail?: boolean;
 }
 
 function SectionView(p: SectionProps) {
@@ -248,9 +257,18 @@ function SectionView(p: SectionProps) {
         onChange={(item, patch) => p.setChecklist(s.key, item, patch)} />;
     // Read-only SOP guidance (slice D1): heading + paragraphs / bullet lists / styled
     // callouts, VERBATIM from the definition. Contributes no fill state.
-    case "guidance":
+    // With the host's `dayRail` (the Daily tab): a presentational left rail on every
+    // guidance section + a time-of-day eyebrow on the five phase openers (dayPhase.ts).
+    // The eyebrow is aria-hidden — it restates the heading's own phase for the eye only.
+    case "guidance": {
+      const phase = p.dayRail ? dayPhaseFor(s.heading) : null;
       return (
-        <section className="fr__section fr__guidance">
+        <section className={`fr__section fr__guidance${p.dayRail ? " fr__guidance--rail" : ""}`}>
+          {phase ? (
+            <p className="fr__day-eyebrow" aria-hidden="true">
+              {phase}
+            </p>
+          ) : null}
           <h2 className="fr__section-title">{s.heading}</h2>
           {s.blocks.map((b, i) => {
             if (b.type === "p") return <p key={i} className="fr__guidance-p">{b.text}</p>;
@@ -272,6 +290,7 @@ function SectionView(p: SectionProps) {
           })}
         </section>
       );
+    }
     // Deep link to another form type (slice D1). With no adapter (the generic fill
     // page) the button is disabled and explains where the live link lives; the Daily
     // tab (D2) supplies FormLinkAdapter to wire the real deep-link + filed indicator.
