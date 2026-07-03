@@ -12,11 +12,10 @@
 //   • GET /api/fieldops/daily-form/requirements → DailyRequirementsResponse (fieldops_daily_requirements.ts)
 //   • GET /api/fieldops/expected-materials      → ExpectedMaterialsResponse (fieldops_expected_materials.ts)
 //   • GET /api/fieldops/checklist/assigned      → AssignedInspectionsResponse (fieldops_checklist.ts)
+//   • GET /api/fieldops/tasks/mine              → MyTasksResponse        (fieldops_tasks.ts)
 //
 // SPA re-export homes: src/lib/fieldops_jobtracker.ts, src/lib/fieldops_daily_form.ts,
-// src/lib/fieldops_expected_materials.ts. (The assigned-inspections shapes are worker-typed here
-// but NOT yet re-exported by src/lib/fieldops_checklist.ts — that file is Slice 2's dead-code
-// removal surface; converting its kept types to re-exports is a follow-up after Slice 2 lands.)
+// src/lib/fieldops_expected_materials.ts, src/lib/fieldops_checklist.ts, src/lib/fieldops_tasks.ts.
 
 // ── GET /api/fieldops/jobs (job-tracker LIST) ────────────────────────────────────────────────────
 
@@ -258,4 +257,44 @@ export interface AssignedInspection {
 export interface AssignedInspectionsResponse {
   inspections: AssignedInspection[];
   linked: boolean;
+}
+
+// ── GET /api/fieldops/tasks/mine ────────────────────────────────────────────────────────────────
+
+/** One of the caller's own assigned tasks (cap.tasks.own; resolved server-side through the
+ *  session's linked personnel row). `assigned_by` = who last placed the task (actor username,
+ *  stamped by the create/assign routes; NULL on pre-stamping historical rows). */
+export interface MyTask {
+  id: number;
+  job_id: string;
+  project_name: string | null;
+  description: string;
+  status: string;
+  created_at: number;
+  assigned_by: string | null;
+}
+
+/** (CS4 #12) The viewer's OWN current placement, resolved server-side from their linked ACTIVE
+ *  personnel row (personnel.current_job → jobs). SELF-INFORMATION ONLY: `personnel_id`/`name` are
+ *  the caller's own roster row (their own display name — the W9 posture), `job_id`/`project_name`
+ *  their own standing placement; nothing about any other account or person rides this shape.
+ *  null = unlinked OR linked-but-unplaced (disambiguate with `linked`). `project_name` is null
+ *  only when the placement names a job the jobs table no longer carries (soft ref). */
+export interface ViewerTaskPlacement {
+  job_id: string;
+  project_name: string | null;
+  personnel_id: number;
+  name: string;
+}
+
+/** GET /api/fieldops/tasks/mine. Tasks arrive OPEN-FIRST (open < in_progress < done, newest first
+ *  within a band — server CASE ordering). `linked` = whether the session has an ACTIVE linked
+ *  personnel row (an unlinked account CANNOT have tasks — the UI explains the empty list).
+ *  `viewer_placement` collapses the Daily tab's placement waterfall: the tab used to derive its
+ *  job from a full jobs-list page (fetchJobList → viewer_current_job); now the one endpoint it
+ *  already reads carries the placement. */
+export interface MyTasksResponse {
+  tasks: MyTask[];
+  linked: boolean;
+  viewer_placement: ViewerTaskPlacement | null;
 }

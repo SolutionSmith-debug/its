@@ -1,7 +1,7 @@
 import type { Context } from "hono";
 import type { Env, Vars } from "./types";
 import type { FieldopsApp, FieldopsGates } from "./fieldops_gates";
-import { auditStmt, auditStmtIfChanged } from "./audit";
+import { auditStmtIfChanged } from "./audit";
 import { requireJob, requireJobScope } from "./fieldops_scope";
 import { DAILY_REPORT_FORM } from "./fieldops_checklist";
 import { DAILY_STATUS_FAMILIES } from "../src/shared/daily_families";
@@ -279,25 +279,27 @@ export function registerDailyRequirementsRoutes(app: FieldopsApp, gates: Fieldop
       const item = parseRequirement(c, body);
       if (item instanceof Response) return item;
 
-      // Ceiling on the job's ACTIVE list (see REQUIREMENTS_LIMIT) — refused loudly, never trimmed.
-      const count = await c.env.DB.prepare(
-        "SELECT COUNT(*) AS n FROM job_daily_requirements WHERE job_id = ?1 AND active = 1",
-      )
-        .bind(jobId)
-        .first<{ n: number }>();
-      if ((count?.n ?? 0) >= REQUIREMENTS_LIMIT) return c.json({ error: "too_many_items" }, 409);
-
       const actor = c.get("session").username;
-      // Mutation + audit in ONE batch (W4) — the record is atomic with the change it describes.
+      // Ceiling on the job's ACTIVE list (see REQUIREMENTS_LIMIT) — refused loudly, never trimmed.
+      // CS4 TOCTOU fold (the tracked D4 fast-follow): the count predicate lives IN the INSERT's
+      // WHERE (INSERT … SELECT … WHERE (SELECT COUNT(*) …) < limit), so check + write are one
+      // atomic statement — two concurrent adds can no longer both pass a pre-count and exceed the
+      // ceiling. Mutation + audit in ONE batch (W4); the audit rides changes()=1, so a refused add
+      // audits nothing (exactly as the old pre-count-then-return did). changes()=0 → the same 409
+      // too_many_items the pre-check produced.
       const res = await c.env.DB.batch([
         c.env.DB
           .prepare(
-            "INSERT INTO job_daily_requirements (job_id, seq, kind, label, form_code, options) VALUES (?1,?2,?3,?4,?5,?6) RETURNING id",
+            `INSERT INTO job_daily_requirements (job_id, seq, kind, label, form_code, options)
+             SELECT ?1,?2,?3,?4,?5,?6
+             WHERE (SELECT COUNT(*) FROM job_daily_requirements WHERE job_id = ?1 AND active = 1) < ?7
+             RETURNING id`,
           )
-          .bind(jobId, item.seq, item.kind, item.label, item.form_code, item.options),
-        auditStmt(c, actor, "daily_requirement_add", jobId, { job_id: jobId, ...item }),
+          .bind(jobId, item.seq, item.kind, item.label, item.form_code, item.options, REQUIREMENTS_LIMIT),
+        auditStmtIfChanged(c, actor, "daily_requirement_add", jobId, { job_id: jobId, ...item }),
       ]);
       const newId = (res[0].results?.[0] as { id: number } | undefined)?.id ?? null;
+      if (newId === null) return c.json({ error: "too_many_items" }, 409);
       return c.json({ ok: true, id: newId }, 201);
     },
   );

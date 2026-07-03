@@ -1,4 +1,5 @@
 import type { FieldopsApp, FieldopsGates } from "./fieldops_gates";
+import type { MyTask, MyTasksResponse, ViewerTaskPlacement } from "./wire-types";
 
 // Assigned-Tasks tab (P4 field-ops feature) S1 — "My Tasks" READ. The subcontractor / manager sees
 // the one-off tasks assigned to THEM. "Assigned to me" resolves the session's account → its linked
@@ -14,20 +15,26 @@ import type { FieldopsApp, FieldopsGates } from "./fieldops_gates";
 //   • `linked: boolean` — whether the session has an ACTIVE linked personnel row — lets the UI
 //     distinguish "no tasks" from "your account isn't linked to the roster" (see the R1 spec's
 //     empty-state reason codes; the sibling daily surface returns `reason`, fieldops_checklist.ts).
+//
+// CS4 (#12 waterfall collapse): the response ALSO carries `viewer_placement` — the caller's OWN
+// standing placement (their linked ACTIVE personnel row's current_job + one indexed jobs lookup
+// for the project name), the same personnel resolution fieldops_scope.resolveActorPersonnel uses.
+// The Daily tab used to resolve this by downloading a FULL Job Tracker list page
+// (fetchJobList("active") → viewer_current_job) as stage 1 of a 2-stage waterfall; now the one
+// endpoint the My Tasks page already reads carries it, and the jobs-list query leaves the daily
+// path entirely.
+//
+// SECURITY NOTE (deliberate, reviewed): cap.tasks.own now returns the caller's OWN placement.
+// This is SELF-INFORMATION — the viewer's own roster row id, own display name (W9: display name
+// only, and only to its owner), and own current_job — resolved strictly from the session username;
+// no parameter selects whose placement is returned, so there is NO cross-user exposure. Previously
+// the same fact rode cap.jobtracker.read (viewer_current_job on the jobs list); a cap.tasks.own-only
+// account learns nothing here about any other account, person, or job beyond its own placement's
+// project name — which its holder could already see on every form they file against that job.
 
 // Per-account bound. A person's own assigned tasks are few; this cap is a defensive ceiling, not a
 // paginated surface (unlike the Job Tracker's keyset legs).
 const MY_TASKS_CAP = 500;
-
-interface MyTaskRow {
-  id: number;
-  job_id: string;
-  project_name: string | null;
-  description: string;
-  status: string;
-  created_at: number;
-  assigned_by: string | null;
-}
 
 export function registerMyTasksRoutes(app: FieldopsApp, gates: FieldopsGates): void {
   // GET /api/fieldops/tasks/mine — the caller's own assigned tasks across all jobs, with the job's
@@ -41,13 +48,28 @@ export function registerMyTasksRoutes(app: FieldopsApp, gates: FieldopsGates): v
     gates.requireCapability("cap.tasks.own"),
     async (c) => {
       const username = c.get("session").username;
-      // linked = an ACTIVE personnel row carries this username (the same active=1 link the daily
-      // checklist's resolveActorPersonnel uses) — report-only metadata for the UI's empty state.
-      const linkedRow = await c.env.DB.prepare(
-        "SELECT id FROM personnel WHERE username = ?1 AND active = 1 LIMIT 1",
+      // The viewer's own ACTIVE personnel row (the same active=1 link + deterministic lowest-id
+      // pick as fieldops_scope.resolveActorPersonnel) + their placement's project name via one
+      // indexed jobs lookup (LEFT JOIN — current_job is a soft ref; a vanished job → null name).
+      // Row present → linked:true; current_job present → viewer_placement (see the module-header
+      // security note: self-information only).
+      const viewerRow = await c.env.DB.prepare(
+        `SELECT p.id AS personnel_id, p.name, p.current_job AS job_id, j.project_name
+         FROM personnel p LEFT JOIN jobs j ON j.job_id = p.current_job
+         WHERE p.username = ?1 AND p.active = 1
+         ORDER BY p.id ASC LIMIT 1`,
       )
         .bind(username)
-        .first<{ id: number }>();
+        .first<{ personnel_id: number; name: string; job_id: string | null; project_name: string | null }>();
+      const viewerPlacement: ViewerTaskPlacement | null =
+        viewerRow && viewerRow.job_id !== null
+          ? {
+              job_id: viewerRow.job_id,
+              project_name: viewerRow.project_name,
+              personnel_id: viewerRow.personnel_id,
+              name: viewerRow.name,
+            }
+          : null;
       const sql = `
         SELECT t.id, t.job_id, j.project_name, t.description, t.status, t.created_at, t.assigned_by
         FROM task_assignments t
@@ -58,8 +80,13 @@ export function registerMyTasksRoutes(app: FieldopsApp, gates: FieldopsGates): v
                  t.created_at DESC, t.id DESC
         LIMIT ?2
       `;
-      const res = await c.env.DB.prepare(sql).bind(username, MY_TASKS_CAP).all<MyTaskRow>();
-      return c.json({ tasks: res.results ?? [], linked: linkedRow !== null }, 200);
+      const res = await c.env.DB.prepare(sql).bind(username, MY_TASKS_CAP).all<MyTask>();
+      const payload: MyTasksResponse = {
+        tasks: res.results ?? [],
+        linked: viewerRow !== undefined && viewerRow !== null,
+        viewer_placement: viewerPlacement,
+      };
+      return c.json(payload, 200);
     },
   );
 }
