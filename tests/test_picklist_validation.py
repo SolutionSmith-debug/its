@@ -272,3 +272,25 @@ def test_quarantine_reason_pr72_values_introspectable():
 
 def test_review_reason_pr72_values_introspectable():
     assert picklist_validation.ReviewReason is ReviewReason
+
+
+# ---- Cross-module parity: review_queue write-gate ------------------------
+
+
+def test_review_queue_workstreams_are_all_registry_allowed():
+    """Every workstream `review_queue.add()` accepts MUST also be accepted by the picklist
+    write-gate for `SHEET_REVIEW_QUEUE`'s Workstream column. `review_queue.add(workstream=X)`
+    passes its own `VALID_WORKSTREAMS` check, then calls `add_rows(SHEET_REVIEW_QUEUE, {…
+    "Workstream": X})` which validates against this REGISTRY set — a value in the former but not
+    the latter raises `PicklistViolationError` at the actual write (the fence loses its
+    Review-Queue surface). `progress_reports` drifted exactly this way (in VALID_WORKSTREAMS
+    since P5, absent from `_WORKSTREAM_VALUES_GLOBAL` until 2026-07-03); this pins them together.
+    """
+    from shared.review_queue import VALID_WORKSTREAMS
+
+    allowed = picklist_validation.REGISTRY[sheet_ids.SHEET_REVIEW_QUEUE]["Workstream"]
+    missing = set(VALID_WORKSTREAMS) - set(allowed)
+    assert not missing, (
+        f"review_queue workstreams not in the SHEET_REVIEW_QUEUE picklist write-gate: "
+        f"{sorted(missing)} — add them to picklist_validation._WORKSTREAM_VALUES_GLOBAL"
+    )
