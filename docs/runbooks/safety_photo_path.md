@@ -37,6 +37,14 @@ portal; it queues as "screening…" until the Mac clears it (Symptoms 5–6 belo
 The photo is never shown in the app — a cleared photo lives in Box
 (`ITS Photos/checklist/<item id>/`) and the item shows "photo on file ✓".
 
+**Daily-report ADDITIONAL photos (DR-photo-pool, 2026-07-03)** ride it too: a
+manager adds extra photos to the daily field report beyond the four inline
+slots; each uploads individually into a screening pool, shows "Screening…" until
+the Mac clears it, and the filed report's PDF embeds the cleared copies (Box:
+`ITS Photos/daily/<job id>/<date>/`). Symptoms 7–9 below cover the pool's
+Tier-2-reachable states (stuck pending / refused / a report filed with a
+"photos pending at render time" note).
+
 Each block below follows the §43 four-part shape (Symptom → checks → Claude/UI
 action → escalate-to-Seth).
 
@@ -332,6 +340,131 @@ Review-Queue row for Seth.
 As Symptom 1, plus: **any** `portal_item_photo_hmac_failure` row — a signature
 that fails verification means row tampering or a secret mismatch, which is
 **secrets/security** = fixed high-class → Tier 3 always.
+
+---
+
+## Symptom 7 — a daily-report additional photo is stuck at "Screening…" (DR-photo-pool)
+
+### Symptom
+
+- A manager added extra photos on the **Daily Field Report** tab and a photo chip
+  still shows **"Screening…"** long after upload (normal is **1–3 minutes**).
+- If the manager already submitted the report, the submission itself may sit
+  unfiled for up to **30 minutes** — that is the designed wait (the report defers
+  until its photos finish screening, then files; past 30 minutes it files
+  WITHOUT them and the PDF says so — see Symptom 9).
+
+### What the Successor-Operator checks
+
+1. **Is the Mac poller alive?** The same daemon that files submissions screens
+   pool photos (`safety_reports.portal_poll`, every ~60 s). Check the
+   **ITS_Daemon_Health** row — a stale `Last Run` / ERROR status means the daemon
+   (or the Mac) is down; fix the daemon (the standard "re-run a daemon" Tier-2
+   repair) and the backlog drains itself on the next cycles.
+2. **Are submissions filing but pool photos NOT?** Look in **ITS_Errors** for
+   `portal_daily_photo_service_failed` / `portal_daily_photo_item_failed` WARN
+   rows — the screening pass is failing on its own. The two documented causes are
+   the same as checklist item photos (Symptom 5): **portal Box root unset**
+   (set ITS_Config `safety_reports.box.portal_root_folder_id` — canonical Tier-2
+   action) and **Box/transport blips** (self-heal; only persistent repeats matter).
+3. **Did the photo eventually vanish?** An **unclaimed** pool photo (uploaded but
+   its report never submitted) is deleted after **7 days** — that is normal
+   housekeeping for abandoned uploads, not a fault. A photo whose report WAS
+   submitted is never age-deleted; it stays queued until screened.
+
+### The Claude prompt or UI action
+
+> "Claude, daily-report additional photos are stuck at 'Screening…'. Check the
+> ITS_Daemon_Health row for safety_reports.portal_poll and ITS_Errors for
+> portal_daily_photo_* codes, tell me whether this is a dead daemon or a
+> misconfig, and walk me through the documented low-class repair."
+
+No manual replay — screening is idempotent; once the cause is fixed, every
+still-pending pool photo screens on the next cycle, and any report that filed
+without them still points at the job's Box photo records.
+
+### Escalate-to-Seth condition
+
+- The daemon is healthy and the Box root is set, yet pool photos still stick
+  (**novel** — code territory).
+- The stuck queue coincides with `portal_daily_photo_hmac_failure` rows
+  (**security**, high-class — see Symptom 8).
+
+Both-rule: "restart the daemon / set a documented ITS_Config value" is low-class
+(Tier 2). Anything touching the screening code, HMAC secrets, or a security
+verdict is high-class → Tier 3.
+
+---
+
+## Symptom 8 — a daily-report additional photo shows "refused" (DR-photo-pool)
+
+### Symptom
+
+- The photo chip shows the **refused** state (the manager can delete the
+  reference client-side and retry with a re-take).
+- **ITS_Errors** has `portal_daily_photo_malicious` (CRITICAL — paged, names the
+  uploading account with the disable instruction) or
+  `portal_daily_photo_suspicious` (WARN), and **ITS_Review_Queue** has a matching
+  security-flagged row naming the pool photo, the job/date, and the account.
+- `portal_daily_photo_hmac_failure` (CRITICAL) is the tampered-row variant: the
+  photo's signature did not verify — refused **without being screened**.
+
+### What this means (and what it does NOT mean)
+
+- **The daily report itself STANDS.** A refused photo means *that photo's
+  evidence was refused*, not *the report is invalid* — a filed report that
+  referenced it simply prints a "refused by security screening" note (the count,
+  never the bytes).
+- The refused bytes were **deleted from the portal** (delete-on-screen) and were
+  never filed to Box or shown to anyone. The Review-Queue row is the record.
+
+### The Claude prompt or UI action
+
+Same decision tree as **Symptom 1** (same pipeline, same verdicts): `suspicious`
++ a genuine crew photo → ask the manager to **re-take and re-upload**;
+`malicious` → **disable the named portal account** in the admin dashboard
+pending review, leave the Review-Queue row for Seth.
+
+### Escalate-to-Seth condition
+
+As Symptom 1, plus: **any** `portal_daily_photo_hmac_failure` row — a signature
+that fails verification means row tampering or a secret mismatch, which is
+**secrets/security** = fixed high-class → Tier 3 always.
+
+---
+
+## Symptom 9 — a filed daily report says "photos pending screening at render time"
+
+### Symptom
+
+- A filed daily-report PDF carries the note *"N additional photo(s) were still
+  pending security screening at render time — filed without them…"*, and
+  **ITS_Errors** has a `portal_daily_photo_defer_expired` WARN for the
+  submission.
+
+### What this means
+
+The report referenced pool photos that had not finished screening within the
+**30-minute defer window**, so the system filed the report rather than hold it
+forever (filing is never blocked indefinitely). This is the *symptom of a slow
+or dead screening pass at filing time* — the report itself is filed and correct;
+only the photo embeds are missing from the PDF.
+
+### What the Successor-Operator checks / does
+
+1. Run the **Symptom 7** checks — a defer-expired note almost always means the
+   screening pass was down or erroring during that half hour. Fix that cause.
+2. Once the pass recovers, the photos still screen and file to Box
+   (`ITS Photos/daily/<job id>/<date>/`) — the evidence is preserved there even
+   though the PDF predates it. Nothing to replay.
+3. If the packet-of-record must visually include those photos, the manager can
+   **amend** the daily report from the portal (the amendment re-renders with the
+   now-clean photos and supersedes the original row; Box keeps both PDFs).
+
+### Escalate-to-Seth condition
+
+- Defer-expired notes appearing while the daemon and screening pass look healthy
+  (**novel** — an ordering/code question, Tier 3).
 
 ## Owner
 

@@ -34,6 +34,12 @@ vi.mock("../../lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../lib/api")>();
   return { ...actual, fetchRecent: vi.fn(), submitForm: vi.fn() };
 });
+vi.mock("../../lib/fieldops_daily_photos", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../lib/fieldops_daily_photos")>();
+  // The v6 additional_photos mount fires listDailyPhotos whenever refs exist (the amend flow
+  // below); jsdom has no same-origin fetch, so the pool client is a fixture source here.
+  return { ...actual, uploadDailyPhoto: vi.fn(), deleteDailyPhoto: vi.fn(), listDailyPhotos: vi.fn() };
+});
 
 import * as api from "../../lib/api";
 import * as jobs from "../../lib/fieldops_jobtracker";
@@ -327,7 +333,7 @@ describe("DailyReportTab — filed banner + amend + submit", () => {
       expect(api.submitForm).toHaveBeenCalledWith(
         expect.objectContaining({
           job_id: "JOB-A",
-          form_code: "daily-report-v5", // the catalog current (v5 since slice M2)
+          form_code: "daily-report-v6", // the catalog current (v6 since DR-photo-pool Slice 1)
           work_date: TODAY,
           amends_uuid: null,
           submission_uuid: expect.any(String),

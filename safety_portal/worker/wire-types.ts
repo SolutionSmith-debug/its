@@ -333,3 +333,45 @@ export interface MyTasksResponse {
   linked: boolean;
   viewer_placement: ViewerTaskPlacement | null;
 }
+
+// ── Daily-report photo POOL (DR-photo-pool Slice 1, migration 0037) ─────────────────────────────
+
+/** One additional-photo REFERENCE riding the submission payload (values.additional_photos).
+ *  Tiny on purpose: the photo BYTES went to the pool via their own bounded request (POST
+ *  /api/fieldops/daily-photo) because the inline site_photos field is payload-budgeted (CS2:
+ *  280KB × 4 ≈ 1.49MB base64 < PAYLOAD_MAX 1.8MB — more inline photos cannot fit). At submit
+ *  the Worker validates + CLAIMS every referenced pool row (fieldops_daily_photos.
+ *  claimAdditionalPhotos); `caption` is display text only (untrusted downstream, ≤300 chars). */
+export interface AdditionalPhotoRef {
+  pool_id: number;
+  caption?: string;
+}
+
+/** POST /api/fieldops/daily-photo success body. The pool row starts 'pending' (queued for the
+ *  Slice-2 Mac §34 screen — the same lifecycle vocabulary as ItemPhotoStatus; Option D: status
+ *  only, no bytes are ever served back). */
+export interface DailyPhotoUploadResult {
+  ok: boolean;
+  pool_id: number;
+  status: "pending";
+}
+
+/** One row of GET /api/fieldops/daily-photos (the actor's OWN pool rows for a (job, work_date):
+ *  unclaimed, plus — in amend mode — rows claimed by the verified `amends=` submission) — STATUS
+ *  ONLY, never photo bytes (Option D). `status` reuses the G1 ItemPhotoStatus vocabulary:
+ *  pending "Screening…" / clean "Photo on file ✓" / refused retry. */
+export interface DailyPoolPhotoRow {
+  id: number;
+  status: ItemPhotoStatus;
+  created_at: number;
+  screened_at: number | null;
+  /** SQLite boolean (0/1). 1 = claimed by the verified `amends=` submission — the ONLY way a
+   *  claimed row reaches the SPA (the amend read); it chips "Photo on file ✓" and is ref-drop
+   *  only, never pool-deletable. 0 on every pre-submit pool row. */
+  claimed: number;
+}
+
+/** GET /api/fieldops/daily-photos response envelope. */
+export interface DailyPhotosListResponse {
+  photos: DailyPoolPhotoRow[];
+}

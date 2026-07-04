@@ -23,6 +23,12 @@ import { registerCrewAssignRoutes } from "./fieldops_crew_assign";
 import { registerCrewWriteRoutes } from "./fieldops_crew_write";
 import { registerMaterialWriteRoutes } from "./fieldops_material_write";
 import { registerExpectedMaterialsRoutes } from "./fieldops_expected_materials";
+import {
+  claimAdditionalPhotos,
+  parseAdditionalPhotoRefs,
+  registerDailyPhotoRoutes,
+  releaseAllPhotoClaimsStmt,
+} from "./fieldops_daily_photos";
 import { registerProgressRollupRoutes } from "./fieldops_rollup";
 import {
   validateUser,
@@ -420,6 +426,9 @@ registerCrewWriteRoutes(app, fieldopsGates);
 registerMaterialWriteRoutes(app, fieldopsGates);
 // — Material receipts M1: per-job expected-materials CRUD + receive/flag (send-free D1) —
 registerExpectedMaterialsRoutes(app, fieldopsGates);
+// — DR-photo-pool Slice 1: the daily-report additional-photo pool (upload / list / delete;
+//   send-free D1 queue for the Slice-2 Mac §34 screen; /api/submit claims the references) —
+registerDailyPhotoRoutes(app, fieldopsGates);
 // — P6 progress rollup read (bearer-gated /api/internal/*, NOT a session gate) —
 registerProgressRollupRoutes(app, requireInternalToken);
 
@@ -612,6 +621,14 @@ app.post("/api/submit", requireSession, requireCapability("cap.form.submit"), as
   // reason in `detail` (never the bytes) so the SPA can show a useful message.
   const photoErr = validatePhotoValues(values as Record<string, unknown>);
   if (photoErr) return c.json({ error: "invalid_photo", detail: photoErr }, 400);
+  // DR-photo-pool: values.additional_photos, when present, must be a bounded list of
+  // {pool_id, caption?} POOL REFERENCES (the bytes never ride the payload — they were uploaded
+  // individually to daily_photo_pool). Shape-checked here (400); validated + CLAIMED against the
+  // pool below (after the uuid-conflict read, before the INSERT).
+  const additionalRefs = parseAdditionalPhotoRefs(values as Record<string, unknown>);
+  if (typeof additionalRefs === "string") {
+    return c.json({ error: "invalid_additional_photos", detail: additionalRefs }, 400);
+  }
   const payload = JSON.stringify(values);
   if (payload.length > PAYLOAD_MAX) return c.json({ error: "too_large" }, 413);
 
@@ -675,6 +692,42 @@ app.post("/api/submit", requireSession, requireCapability("cap.form.submit"), as
   const isReplace =
     existing !== null && (existing.box_verified === 1 || existing.payload_json !== payload);
 
+  // ── DR-photo-pool: CLAIM the referenced pool photos (claim-first, before the INSERT). ─────
+  // Every ref must exist, belong to (job_id, work_date), be the TRUE actor's own upload, not be
+  // refused, and be unclaimed — or claimed by THIS uuid (the lost-ACK same-uuid retry) or by the
+  // VERIFIED amends target (an amendment transfers the filed report's claims). The claim is atomic
+  // (guard-in-WHERE in one D1 batch; a lost double-claim race is compensated inside and returns
+  // 409 with zero footprint). Claim-first means a submission row NEVER exists with unclaimed
+  // refs; if the INSERT below fails, the rows stay claimed by this uuid and the SPA's same-uuid
+  // retry passes the claim guard — self-healing (orphaned claims are Slice-2 prune territory).
+  if (additionalRefs !== null && additionalRefs.length > 0) {
+    // amends_uuid is RAW BODY DATA (Invariant 2) — verify it before it can appear in the
+    // claim-transfer predicate: the target must EXIST in submissions and belong to THIS
+    // (job_id, work_date) family. Anything unverifiable (unknown uuid, foreign job/date)
+    // degrades to NO-TRANSFER (null) — the claim then sees a foreign claim marker and 409s —
+    // so a hostile body naming a random / foreign submission's uuid can never move claims
+    // through the transfer arm. (The submissions.amends_uuid COLUMN below still stores the raw
+    // declared link — amendment lineage for intake/display, never a claim predicate.)
+    let verifiedAmendsUuid: string | null = null;
+    if (amends_uuid !== null) {
+      const amendsTarget = await c.env.DB
+        .prepare("SELECT job_id, work_date FROM submissions WHERE submission_uuid=?")
+        .bind(amends_uuid)
+        .first<{ job_id: string; work_date: string }>();
+      if (amendsTarget && amendsTarget.job_id === job_id && amendsTarget.work_date === work_date) {
+        verifiedAmendsUuid = amends_uuid;
+      }
+    }
+    const claim = await claimAdditionalPhotos(c, additionalRefs, {
+      submissionUuid: submission_uuid,
+      jobId: job_id,
+      workDate: work_date,
+      actor,
+      amendsUuid: verifiedAmendsUuid,
+    });
+    if (!claim.ok) return c.json({ error: claim.error }, claim.status);
+  }
+
   const insertStmt = c.env.DB
     .prepare(
       "INSERT OR REPLACE INTO submissions " +
@@ -684,6 +737,16 @@ app.post("/api/submit", requireSession, requireCapability("cap.form.submit"), as
     )
     .bind(submission_uuid, job_id, form_code, work_date, payload, amends_uuid, hmac, actor, attributed);
   const stmts = [insertStmt];
+  // DR-photo-pool: a same-uuid REPLACE/retry whose payload carries NO refs (key absent OR an
+  // empty list — parseAdditionalPhotoRefs distinguishes both from a malformed list) never runs
+  // the claim path above, so its in-batch stale-claim release never fires — without this
+  // release-all, a re-submit that dropped every ref would STRAND its prior claims (rows invisible
+  // to the pre-submit pool list, undeletable, counted against the day's cap forever). Batched
+  // WITH the INSERT so the ref-free payload and its claim release land atomically. Gated on the
+  // M1 read: a fresh uuid holds no claims, and the common no-photo submit stays a single run().
+  if ((additionalRefs === null || additionalRefs.length === 0) && existing !== null) {
+    stmts.push(releaseAllPhotoClaimsStmt(c, submission_uuid));
+  }
   if (isSubmitAs) stmts.push(auditStmt(c, actor, "submit_as", attributed, { submission_uuid, job_id }));
   if (isReplace) {
     stmts.push(auditStmt(c, actor, "submission_replace", attributed, {
@@ -1023,6 +1086,16 @@ app.post("/api/request-pdfs", requireSession, requireCapability("cap.form.reques
  * GET /api/internal/pending — the queue drain for the Mac-side portal_poll daemon.
  * Returns unfiled submissions (box_verified=0) oldest-first, each with the Worker's
  * HMAC so the daemon verifies integrity before intake files it. Bearer-token gated.
+ *
+ * DR-photo-pool Slice 2: each row also carries `daily_photos` — the CLAIM MANIFEST
+ * of daily_photo_pool rows this submission claimed at submit ({id, status,
+ * box_file_id}, resolved in ONE batched query over the partial claim index). intake
+ * resolves the HMAC-covered values.additional_photos references against it (clean →
+ * Box download by box_file_id; pending → bounded defer; refused → PDF note). The
+ * manifest is deliberately NOT HMAC-covered — status/box_file_id are server state
+ * that changes AFTER signing (the refs themselves ARE covered inside payload_json;
+ * intake consumes manifest entries only for referenced pool_ids, and re-validates
+ * the downloaded bytes before render).
  */
 app.get("/api/internal/pending", requireInternalToken, async (c) => {
   const limit = Math.min(Number(c.req.query("limit")) || 50, 200);
@@ -1033,7 +1106,28 @@ app.get("/api/internal/pending", requireInternalToken, async (c) => {
     )
     .bind(limit)
     .all();
-  return c.json({ pending: results });
+  // Attach each submission's daily-photo claim manifest (empty array when it claimed
+  // none — the overwhelmingly common case; one indexed query for the whole page).
+  const rows = (results ?? []) as Record<string, unknown>[];
+  if (rows.length > 0) {
+    const uuids = rows.map((r) => String(r.submission_uuid));
+    const placeholders = uuids.map((_, i) => `?${i + 1}`).join(",");
+    const claims = await c.env.DB
+      .prepare(
+        `SELECT id, status, box_file_id, claimed_by_submission FROM daily_photo_pool ` +
+          `WHERE claimed_by_submission IN (${placeholders})`,
+      )
+      .bind(...uuids)
+      .all<{ id: number; status: string; box_file_id: string | null; claimed_by_submission: string }>();
+    const byUuid = new Map<string, { id: number; status: string; box_file_id: string | null }[]>();
+    for (const cl of claims.results ?? []) {
+      const list = byUuid.get(cl.claimed_by_submission) ?? [];
+      list.push({ id: cl.id, status: cl.status, box_file_id: cl.box_file_id });
+      byUuid.set(cl.claimed_by_submission, list);
+    }
+    for (const r of rows) r.daily_photos = byUuid.get(String(r.submission_uuid)) ?? [];
+  }
+  return c.json({ pending: rows });
 });
 
 /**
@@ -1334,6 +1428,115 @@ app.post("/api/internal/item-photos/:id/result", requireInternalToken, async (c)
     }),
   ]);
   return c.json({ ok: true, found: (res[1]?.meta?.changes ?? 0) > 0 });
+});
+
+// ── DR-photo-pool Slice 2: the daily-pool photo screening queue (Mac portal_poll pass) ──
+// The daily_photo_pool (migration 0037) twin of the item-photo queue above — the SAME
+// requireInternalToken middleware instance, the same Option-D posture (record-only, no
+// serving route, DELETE-ON-SCREEN), the same found:false idempotency. The Mac's
+// _service_daily_photos pass GETs the pending queue, verifies each row's HMAC
+// (shared/portal_hmac.verify_daily_photo — "daily_photo:v1"), runs the byte-identical
+// §34 photo_screen pipeline, files a CLEAN sanitized re-encode to Box
+// (ITS Photos/daily/<job_id>/<work_date>/), and POSTs the disposition back here.
+const DAILY_PHOTO_RESULT_STATUSES = new Set(["clean", "refused"]);
+
+/**
+ * GET /api/internal/daily-photos/pending — the unscreened pool queue, oldest-first.
+ * Serves claimed AND unclaimed pending rows alike (a claim changes ownership, not
+ * screening need — and screening claimed rows FIRST is what makes the pass-before-drain
+ * ordering pay off). Each row carries the VERBATIM stored photo_json + the Worker's
+ * HMAC plus the HMAC-covered (job_id, work_date) tuple the Mac needs both to verify
+ * and to derive the Box filing path. `photo_json IS NOT NULL` is belt-and-suspenders
+ * (a pending row without bytes is unscreenable — the prune stage is its terminal path).
+ */
+app.get("/api/internal/daily-photos/pending", requireInternalToken, async (c) => {
+  const limit = Math.min(Math.max(parseInt(c.req.query("limit") || "25", 10) || 25, 1), 100);
+  const { results } = await c.env.DB
+    .prepare(
+      "SELECT id, job_id, work_date, photo_json, hmac, created_at FROM daily_photo_pool " +
+        "WHERE status = 'pending' AND photo_json IS NOT NULL ORDER BY created_at ASC, id ASC LIMIT ?",
+    )
+    .bind(limit)
+    .all();
+  return c.json({ daily_photos: results });
+});
+
+/**
+ * POST /api/internal/daily-photos/:id/result — apply one screening disposition.
+ * Body: { status: 'clean'|'refused', box_file_id? (clean ONLY — required; the Box
+ * record must already exist), detail? (refused machine reason — audit only, never bytes) }.
+ *
+ * ONE atomic batch (W4): the disposition UPDATE (status + **photo_json=NULL —
+ * delete-on-screen, the bytes leave D1** + box_file_id + screened_at, guarded
+ * status='pending') + the changes()-gated audit row. Unlike the item-photo twin
+ * there is NO sibling ref flip — pool rows self-describe their status (the SPA's
+ * own-photos chips and the /pending claim manifest read it directly). A CLAIM is
+ * never touched: a claimed row that screens becomes the submission's byte-free
+ * photo manifest (clean) or its refused marker.
+ *
+ * Idempotent: a re-post for an already-screened / unknown row returns
+ * { ok:true, found:false } with NO writes (the status='pending' guard makes the
+ * batch a structural no-op even under a lost race between the SELECT and the
+ * batch). Bearer-token gated (requireInternalToken — the same middleware instance).
+ */
+app.post("/api/internal/daily-photos/:id/result", requireInternalToken, async (c) => {
+  const photoId = parseInt(c.req.param("id"), 10);
+  if (isNaN(photoId) || photoId < 1) return c.json({ error: "invalid_id" }, 400);
+  let body: Record<string, unknown>;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "bad_request" }, 400);
+  }
+  if (typeof body !== "object" || (body as unknown) === null || Array.isArray(body)) {
+    return c.json({ error: "bad_request" }, 400);
+  }
+  const status = typeof body.status === "string" && DAILY_PHOTO_RESULT_STATUSES.has(body.status)
+    ? (body.status as "clean" | "refused")
+    : "";
+  if (!status) return c.json({ error: "invalid_result", detail: "status" }, 400);
+  const boxFileId =
+    typeof body.box_file_id === "string" && body.box_file_id ? body.box_file_id.slice(0, 200) : null;
+  // detail: the refused machine reason (e.g. "L2:unreadable:OSError") — bounded, audit-only.
+  const detail = typeof body.detail === "string" && body.detail ? body.detail.slice(0, 200) : null;
+  // Tight contract (Invariant 2 — daemon input is untrusted too): clean MUST name the Box
+  // record it just filed; refused must NOT carry one (a refused photo is never filed).
+  if (status === "clean" && !boxFileId) {
+    return c.json({ error: "invalid_result", detail: "box_file_id_required" }, 400);
+  }
+  if (status === "refused" && boxFileId) {
+    return c.json({ error: "invalid_result", detail: "box_file_id_forbidden" }, 400);
+  }
+
+  const row = await c.env.DB
+    .prepare("SELECT id, job_id, work_date, status FROM daily_photo_pool WHERE id = ?1")
+    .bind(photoId)
+    .first<{ id: number; job_id: string; work_date: string; status: string }>();
+  // Unknown OR already-screened → idempotent no-op (mark_filed's found=false semantics: a
+  // re-post after a lost ack — or a row the prune already deleted — is benign, never an error).
+  if (!row || row.status !== "pending") {
+    return c.json({ ok: true, found: false, status: row?.status ?? null });
+  }
+
+  // (W4) ONE atomic batch: the disposition UPDATE (guarded status='pending' — a lost race
+  // past the SELECT above is a structural no-op) + the changes()=1-gated audit row.
+  const res = await c.env.DB.batch([
+    c.env.DB
+      .prepare(
+        "UPDATE daily_photo_pool SET status = ?1, photo_json = NULL, box_file_id = ?2, " +
+          "screened_at = unixepoch() WHERE id = ?3 AND status = 'pending'",
+      )
+      .bind(status, boxFileId, photoId),
+    auditStmtIfChanged(c, "portal_poll", "daily_photo_result", row.job_id, {
+      daily_photo_id: photoId,
+      job_id: row.job_id,
+      work_date: row.work_date,
+      status,
+      box_file_id: boxFileId,
+      detail,
+    }),
+  ]);
+  return c.json({ ok: true, found: (res[0]?.meta?.changes ?? 0) > 0 });
 });
 
 /**
@@ -2338,7 +2541,8 @@ const scheduled: ExportedHandlerScheduledHandler<Env> = async (_controller, env)
       `${pruned.rejected} rejected submission(s) + ${pruned.audit} audit row(s) + ` +
       `${pruned.pdfRequests} pdf request(s) + ${pruned.pdfChunks} pdf chunk(s) + ` +
       `${pruned.publishRequests} terminal publish request(s) + ` +
-      `${pruned.itemPhotos} stuck/orphaned item photo(s) + ${pruned.jobs} empty job(s); ` +
+      `${pruned.itemPhotos} stuck/orphaned item photo(s) + ` +
+      `${pruned.dailyPhotos} abandoned/orphaned daily pool photo(s) + ${pruned.jobs} empty job(s); ` +
       `D1 size ${pruned.dbSizeBytes} bytes` +
       (pruned.failedStages.length > 0 ? `; FAILED stages: ${pruned.failedStages.join(", ")}` : ""),
   );

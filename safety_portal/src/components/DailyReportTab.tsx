@@ -787,6 +787,13 @@ export function DailyReportTab({
           formLinks={formLinks}
           requirements={requirements ?? undefined}
           expectedMaterials={expectedAdapter}
+          /* DR-photo-pool: the additional_photos mount's SCOPE (job + date + the amend target).
+             Everything else — pool uploads, screening-status chips, removal — is self-contained
+             in AdditionalPhotosSection; the refs ride `values` through editValues, so the existing
+             draft machinery persists them (tiny [{pool_id, caption?}] — never photo bytes).
+             amendsUuid lets the amend read resolve the filed report's own claimed rows as
+             "Photo on file ✓" instead of "missing" (the Worker verifies it server-side). */
+          additionalPhotos={{ jobId: placement.job_id, workDate: date, amendsUuid }}
           /* The daily SOP's chronological day-rail — presentational, Daily tab only
              (the generic fill page renders the same definition without it). */
           dayRail

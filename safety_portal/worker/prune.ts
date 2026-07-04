@@ -40,6 +40,16 @@ export const DB_SIZE_WARN_BYTES = 6_000_000_000;
 // so no retention rider is needed for them; refused markers die with their item state (cancel
 // cascade) or as orphans below.
 export const ITEM_PHOTO_STUCK_PENDING_DAYS = 7;
+// DR-photo-pool Slice 2 (daily_photo_pool, migration 0037): an UNCLAIMED pool row still
+// sitting after 7d means the uploader never submitted the daily report that would have
+// referenced it (an abandoned pre-submit upload) — or, if still 'pending', that the Mac
+// screening loop has ALSO been dead for a week. Either way it is delete + WARN-on-pending
+// (same posture as the item_photos rider: growth cap, not the alerting path). CLAIMED rows
+// are NEVER age-pruned — delete-on-screen already made them byte-free and the row itself is
+// the filed submission's photo manifest (tiny). The exception is an ORPHANED claim: a claim
+// whose submission uuid does not exist in `submissions` (the crashed-insert / compensated-
+// claim tail, or a manifest whose submission was itself pruned) — dead linkage, deleted.
+export const DAILY_PHOTO_UNCLAIMED_DAYS = 7;
 
 /**
  * Prune aged rows from the D1 store (A3 housekeeping). Pure on (db, nowSec) so it is
@@ -86,6 +96,7 @@ export interface PruneResult {
   pdfChunks: number;
   publishRequests: number;
   itemPhotos: number;
+  dailyPhotos: number;
   jobs: number;
   dbSizeBytes: number;
   sizeWarn: boolean;
@@ -234,6 +245,45 @@ export async function pruneOldData(db: Env["DB"], nowSec: number): Promise<Prune
     return stuckN + (orphans.meta.changes ?? 0);
   });
 
+  // daily_photo_pool (DR-photo-pool Slice 2 — see DAILY_PHOTO_UNCLAIMED_DAYS):
+  //   1. UNCLAIMED rows >7d: never referenced by a submission — abandoned pre-submit uploads
+  //      (any status). Deleted; the PENDING subset gets the loud WARN (those still held bytes
+  //      the uploader believed were queued — is the Mac screening loop down?). Claimed rows
+  //      are retained as the filed submission's byte-free photo manifest.
+  //   2. ORPHANED CLAIMS >7d: claimed by a submission uuid absent from `submissions` (the
+  //      crashed-insert / compensated-claim tail, or a manifest whose submission was itself
+  //      pruned) — dead linkage, deleted. Age-guarded by the same cutoff so a claim landing
+  //      milliseconds before its submission INSERT can never be swept mid-flight.
+  const dailyPhotoCutoff = nowSec - DAILY_PHOTO_UNCLAIMED_DAYS * DAY_S;
+  const dailyPhotos = await runStage("daily_photo_pool", failedStages, async () => {
+    const pendingStuck = await db
+      .prepare(
+        "SELECT COUNT(*) AS n FROM daily_photo_pool WHERE claimed_by_submission IS NULL " +
+          "AND status = 'pending' AND created_at < ?",
+      )
+      .bind(dailyPhotoCutoff)
+      .first<{ n: number }>();
+    const unclaimed = await db
+      .prepare("DELETE FROM daily_photo_pool WHERE claimed_by_submission IS NULL AND created_at < ?")
+      .bind(dailyPhotoCutoff)
+      .run();
+    const pendingN = pendingStuck?.n ?? 0;
+    if (pendingN > 0) {
+      console.warn(
+        `prune: deleted ${pendingN} stuck-pending daily pool photo(s) (>${DAILY_PHOTO_UNCLAIMED_DAYS}d unclaimed + unscreened — is the Mac screening loop down?)`,
+      );
+    }
+    const orphans = await db
+      .prepare(
+        "DELETE FROM daily_photo_pool WHERE claimed_by_submission IS NOT NULL " +
+          "AND claimed_by_submission NOT IN (SELECT submission_uuid FROM submissions) " +
+          "AND created_at < ?",
+      )
+      .bind(dailyPhotoCutoff)
+      .run();
+    return (unclaimed.meta.changes ?? 0) + (orphans.meta.changes ?? 0);
+  });
+
   // jobs: an INACTIVE job with no remaining job-level records is dead weight (not in the
   // dropdown, nothing behind it). PR-5 guarded on `submissions`; P2.1 added the field-ops
   // integrity-bar tables (time_entries / task_assignments / inspections) keyed on job_id —
@@ -289,6 +339,7 @@ export async function pruneOldData(db: Env["DB"], nowSec: number): Promise<Prune
     pdfChunks,
     publishRequests,
     itemPhotos,
+    dailyPhotos,
     jobs,
     dbSizeBytes,
     sizeWarn,
@@ -321,6 +372,7 @@ export async function writePruneMeta(
     pdfChunks: result.pdfChunks,
     publishRequests: result.publishRequests,
     itemPhotos: result.itemPhotos,
+    dailyPhotos: result.dailyPhotos,
     jobs: result.jobs,
   };
   try {
@@ -374,7 +426,12 @@ async function sampleDbSizeBytes(db: Env["DB"]): Promise<number> {
     const itemPhotos = await db
       .prepare("SELECT COALESCE(SUM(LENGTH(photo_json)), 0) AS n FROM item_photos")
       .first<{ n: number }>();
-    return (chunks?.n ?? 0) + (subs?.n ?? 0) + (itemPhotos?.n ?? 0);
+    // DR-photo-pool: the daily pool is the fourth payload-bearing table (same delete-on-screen
+    // property — photo_json sums only the pending queue).
+    const dailyPhotos = await db
+      .prepare("SELECT COALESCE(SUM(LENGTH(photo_json)), 0) AS n FROM daily_photo_pool")
+      .first<{ n: number }>();
+    return (chunks?.n ?? 0) + (subs?.n ?? 0) + (itemPhotos?.n ?? 0) + (dailyPhotos?.n ?? 0);
   } catch {
     return 0;
   }

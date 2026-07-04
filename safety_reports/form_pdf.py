@@ -617,6 +617,39 @@ def _section_flowables(section: dict, values: dict, st: dict) -> list[Flowable]:
                "filed as Material Incident Report submissions for this job and date.",
                st["caption"]),
         ]
+    if typ == "additional_photos":
+        # Additional-photos pool mount (DR-photo-pool Slice 1). The submission carries only
+        # POOL REFERENCES (values[<key>] = [{pool_id, caption?}]) — the photo BYTES were
+        # uploaded individually to daily_photo_pool (the inline site_photos field is
+        # payload-budgeted) and are §34-screened Mac-side, then filed to Box (Slice 2). This
+        # renderer therefore lists the referenced photos by caption — display text only,
+        # UNTRUSTED downstream like the EXIF sidecar — plus a pointer to where the screened
+        # bytes live. Malformed entries are dropped, never fatal (the job_requirements
+        # discipline). An empty/absent list still renders the header + pointer (the section
+        # was part of the form the manager saw — never a silent omission).
+        out5: list[Flowable] = [
+            _section_header(section.get("title", "Additional site photos"), st, level="group"),
+        ]
+        entries = values.get(section.get("key", "additional_photos"))
+        rows5: list[list[Any]] = [[_p("#", st["colhead"]), _p("Caption", st["colhead"])]]
+        n_refs = 0
+        if isinstance(entries, list):
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue  # defensive: a malformed entry is dropped, never fatal
+                n_refs += 1
+                caption = str(entry.get("caption", "") or "")
+                rows5.append([_p(str(n_refs), st["cell"]), _p(caption, st["cell"])])
+        if n_refs > 0:
+            out5.append(_p(f"{n_refs} additional photo(s) attached — screened and filed with "
+                           "this report's records.", st["caption"]))
+            t5 = Table(rows5, colWidths=[0.6 * inch, _CONTENT_W - 0.6 * inch], repeatRows=1)
+            t5.setStyle(_grid_style(len(rows5), 2))
+            out5.append(t5)
+        else:
+            out5.append(_p("No additional photos attached (the inline Site photos field above "
+                           "carries up to four).", st["caption"]))
+        return out5
     logger.warning("form_pdf: unknown section type %r — skipped", typ)
     return []
 
@@ -716,6 +749,35 @@ def render_submission_pdf(definition: dict, submission: dict) -> bytes:
             flow.extend(_photo_grid(screened_photos, st))
         except Exception:  # the photo grid must never abort the document of record
             logger.exception("form_pdf: site-photo grid render failed — skipped")
+
+    # DR-photo-pool Slice 2 — grid-adjacent status notes for additional-photo pool
+    # references that could NOT be embedded (intake passes the counts via
+    # `additional_photo_notes`: {'pending','refused','unavailable'}). Rendered even
+    # when the grid itself is empty (a report whose ONLY photos were refused still
+    # says so — never a silent omission). Counts only, never bytes or captions.
+    ap_notes = submission.get("additional_photo_notes") or {}
+    try:
+        note_lines: list[str] = []
+        if ap_notes.get("pending"):
+            note_lines.append(
+                f"{ap_notes['pending']} additional photo(s) were still pending security "
+                "screening at render time — filed without them; once screened, the "
+                "photos remain in this job's Box photo records."
+            )
+        if ap_notes.get("refused"):
+            note_lines.append(
+                f"{ap_notes['refused']} additional photo(s) refused by security "
+                "screening and not included (see the review queue)."
+            )
+        if ap_notes.get("unavailable"):
+            note_lines.append(
+                f"{ap_notes['unavailable']} additional photo(s) unavailable at render "
+                "time and not included."
+            )
+        for line in note_lines:
+            flow.append(_p(line, st["caption"]))
+    except Exception:  # notes are supplementary — never abort the document of record
+        logger.exception("form_pdf: additional-photo notes render failed — skipped")
 
     buf = io.BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=letter, title=definition.get("form_name", "Safety form"),
@@ -1301,6 +1363,14 @@ def _blank_section_flowables(section: dict, st: dict, namer: _FieldNamer) -> lis
         return [_section_header(section.get("title", "Expected materials"), st),
                 _p("(this job's expected materials appear here on screen — record receipts "
                    "under Deliveries Received)", st["caption"])]
+    if typ == "additional_photos":
+        # Additional-photos pool mount (DR-photo-pool Slice 1): a live-upload affordance
+        # (each extra photo uploads individually to the portal's screening pool),
+        # meaningless on a hand-filled blank — title + an explicit placeholder, mirroring
+        # job_requirements/expected_materials (never a silent omission).
+        return [_section_header(section.get("title", "Additional site photos"), st),
+                _p("(additional photos are attached on screen — the portal screens and "
+                   "files them with the report)", st["caption"])]
     logger.warning("form_pdf: unknown section type %r — skipped (blank)", typ)
     return []
 

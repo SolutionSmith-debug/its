@@ -134,6 +134,20 @@ def _patch_all(mocker):
         "photo_flags_persist": mocker.patch.object(
             portal_poll, "_persist_item_photo_flags"
         ),
+        # DR-photo-pool daily-pool screening pass: default to an EMPTY pending queue
+        # so the existing cycle tests neither screen nor file anything.
+        "get_daily_photos": mocker.patch.object(
+            portal_poll.portal_client, "get_daily_photos_pending", return_value=[]
+        ),
+        "post_daily_result": mocker.patch.object(
+            portal_poll.portal_client, "post_daily_photo_result", return_value=True
+        ),
+        "daily_flags_load": mocker.patch.object(
+            portal_poll, "_load_daily_photo_flags", return_value={}
+        ),
+        "daily_flags_persist": mocker.patch.object(
+            portal_poll, "_persist_daily_photo_flags"
+        ),
         # ITS_Config reads (ClamAV gate + portal Box root): default to the declared
         # fallback ("" → clamav default-OFF, Box root unset). Tests override per-key.
         "read_setting": mocker.patch.object(
@@ -956,6 +970,286 @@ def test_item_photo_empty_queue_is_noop_and_logs_no_config(_patch_all):
     assert result.item_photos_screened == 0
     assert "portal_item_photo_config_resolved" not in _log_codes(_patch_all)
     _patch_all["post_photo_result"].assert_not_called()
+
+
+# ---- DR-photo-pool Slice 2: daily-pool photo screening pass ----------------
+#
+# Same REAL-crypto + REAL-screening posture as the item-photo section above: rows
+# are signed with the actual shared.portal_hmac daily-photo protocol and the
+# happy/refused paths run the actual photo_screen pipeline on real bytes. Only
+# transport (portal_client), Box, and state files are mocked.
+
+def _daily_row(
+    photo_id=11, job_id="JOB-1", work_date="2026-07-03", data_b64=None,
+    uploaded_by="mgr.mo", secret="secret", hmac_override=None,
+):
+    """One pulled daily_photo_pool row, signed with the REAL daily-photo protocol
+    (secret defaults to the fixture creds' 'secret')."""
+    photo_json = json.dumps({
+        "data": data_b64 if data_b64 is not None else _real_jpeg_b64(),
+        "name": "extra.jpg", "taken_at": "", "gps": "", "uploaded_by": uploaded_by,
+    })
+    return {
+        "id": photo_id,
+        "job_id": job_id,
+        "work_date": work_date,
+        "photo_json": photo_json,
+        "hmac": hmac_override if hmac_override is not None else _portal_hmac.sign_daily_photo(
+            secret, job_id=job_id, work_date=work_date, photo_json=photo_json,
+        ),
+        "created_at": 1_717_600_000,
+    }
+
+
+def test_daily_photo_pass_runs_before_submission_fetch(_patch_all):
+    # THE ORDERING CRUX: the pool screens BEFORE the /pending fetch, so the claim
+    # manifest the Worker attaches reflects post-screen state (photos uploaded
+    # before submit are clean by the time their referencing submission processes).
+    order: list[str] = []
+    _patch_all["get_daily_photos"].side_effect = lambda *a, **k: order.append("daily_pass") or []
+    _patch_all["get_pending"].side_effect = lambda *a, **k: order.append("submission_fetch") or []
+    _poll_inside_lock()
+    assert order == ["daily_pass", "submission_fetch"]
+
+
+def test_daily_photo_clean_screens_files_to_box_then_posts_back(_patch_all):
+    _with_box_root(_patch_all)
+    _patch_all["box_folder"].side_effect = ["F1", "F2", "F3", "F4"] * 20
+    _patch_all["get_daily_photos"].return_value = [
+        _daily_row(photo_id=11, job_id="JOB-1", work_date="2026-07-03"),
+    ]
+
+    result = _poll_inside_lock()
+
+    assert result.daily_photos_screened == 1
+    # Box chain: <root>/ITS Photos/daily/<job_id>/<work_date>/ — find-or-create at
+    # every level; every component HMAC-covered or served with the signed row.
+    calls = _patch_all["box_folder"].call_args_list
+    assert calls[0].args == ("ROOT-77", "ITS Photos")
+    assert calls[1].args == ("F1", "daily")
+    assert calls[2].args == ("F2", "JOB-1")
+    assert calls[3].args == ("F3", "2026-07-03")
+    # Version-on-conflict upload of the SANITIZED RE-ENCODE, never the raw upload.
+    up_args = _patch_all["box_upload"].call_args.args
+    assert up_args[0] == "F4" and up_args[1] == "photo_11.jpg"
+    assert up_args[2][:3] == b"\xff\xd8\xff"
+    # Box FIRST, then the delete-on-screen post-back naming the Box record.
+    _patch_all["post_daily_result"].assert_called_once_with(
+        "https://portal.example.com", "bearer",
+        photo_id=11, status="clean", box_file_id="box-9",
+    )
+    _patch_all["review"].assert_not_called()
+    # The pass rides the heartbeat notes.
+    assert "daily_photos_screened=1" in (_patch_all["hb_row"].call_args.kwargs["notes"] or "")
+
+
+def test_daily_photo_replay_onto_another_date_fails_hmac(_patch_all):
+    # job_id + work_date are INSIDE the canonical: a validly-signed photo served
+    # under a different date fails verification (the replay defense).
+    _with_box_root(_patch_all)
+    row = _daily_row(photo_id=12, work_date="2026-07-03")
+    row["work_date"] = "2026-07-04"  # replayed onto another day
+    _patch_all["get_daily_photos"].return_value = [row]
+
+    result = _poll_inside_lock()
+
+    assert result.daily_photos_screened == 0
+    _patch_all["box_upload"].assert_not_called()
+    assert "portal_daily_photo_hmac_failure" in _log_codes(_patch_all)
+    _patch_all["post_daily_result"].assert_called_once_with(
+        "https://portal.example.com", "bearer",
+        photo_id=12, status="refused", detail="hmac_verification_failed",
+    )
+
+
+def test_daily_photo_suspicious_bad_magic_refused_and_reviewed(_patch_all):
+    _with_box_root(_patch_all)
+    junk = _b64lib.b64encode(b"\x00\x01\x02\x03 not an image").decode()
+    _patch_all["get_daily_photos"].return_value = [
+        _daily_row(photo_id=13, data_b64=junk),
+    ]
+
+    result = _poll_inside_lock()
+
+    assert result.daily_photos_screened == 1  # refused IS a terminal disposition
+    _patch_all["review"].assert_called_once()
+    kw = _patch_all["review"].call_args.kwargs
+    assert kw["security_flag"] is True
+    assert kw["severity"] == _Sev.WARN
+    assert kw["payload"]["disposition"] == "suspicious"
+    assert kw["payload"]["actor"] == "mgr.mo"
+    assert "portal_daily_photo_suspicious" in _log_codes(_patch_all)
+    _patch_all["box_upload"].assert_not_called()
+    _patch_all["post_daily_result"].assert_called_once_with(
+        "https://portal.example.com", "bearer",
+        photo_id=13, status="refused", detail="L1:magic_mismatch",
+    )
+
+
+def test_daily_photo_malicious_pages_critical_naming_the_account(_patch_all, mocker):
+    _with_box_root(_patch_all)
+    _patch_all["get_daily_photos"].return_value = [
+        _daily_row(photo_id=14, uploaded_by="evil.eve"),
+    ]
+    mocker.patch.object(
+        portal_poll.photo_screen, "screen_photo",
+        return_value=PhotoScreenResult("malicious", None, "L3", "clamav:Eicar-Test"),
+    )
+
+    result = _poll_inside_lock()
+
+    assert result.daily_photos_screened == 1
+    crit = [
+        c for c in _patch_all["log"].call_args_list
+        if c.kwargs.get("error_code") == "portal_daily_photo_malicious"
+    ]
+    assert len(crit) == 1
+    assert crit[0].args[0] == _Sev.CRITICAL
+    # Names the account (from the HMAC-covered photo_json) + the disable instruction.
+    assert "'evil.eve'" in crit[0].args[2]
+    assert "disable this portal account" in crit[0].args[2]
+    kw = _patch_all["review"].call_args.kwargs
+    assert kw["severity"] == _Sev.CRITICAL and kw["security_flag"] is True
+    _patch_all["post_daily_result"].assert_called_once_with(
+        "https://portal.example.com", "bearer",
+        photo_id=14, status="refused", detail="L3:clamav:Eicar-Test",
+    )
+    _patch_all["box_upload"].assert_not_called()
+
+
+def test_daily_photo_bad_hmac_one_shot_flag_never_screens(_patch_all, mocker):
+    _with_box_root(_patch_all)
+    screen = mocker.patch.object(portal_poll.photo_screen, "screen_photo")
+    _patch_all["get_daily_photos"].return_value = [
+        _daily_row(photo_id=15, hmac_override="0" * 64),
+    ]
+
+    result = _poll_inside_lock()
+
+    # NEVER screened or filed (downgrade defense) — and not counted as dispositioned.
+    assert result.daily_photos_screened == 0
+    screen.assert_not_called()
+    _patch_all["box_upload"].assert_not_called()
+    _patch_all["anomaly"].assert_called_once()
+    _patch_all["review"].assert_called_once()
+    assert _patch_all["review"].call_args.kwargs["security_flag"] is True
+    assert "portal_daily_photo_hmac_failure" in _log_codes(_patch_all)
+    _patch_all["post_daily_result"].assert_called_once_with(
+        "https://portal.example.com", "bearer",
+        photo_id=15, status="refused", detail="hmac_verification_failed",
+    )
+    persisted = _patch_all["daily_flags_persist"].call_args.args[0]
+    assert persisted == {"15": "flagged"}
+
+
+def test_daily_photo_bad_hmac_second_cycle_does_not_reflag_but_retries_drain(_patch_all):
+    _with_box_root(_patch_all)
+    _patch_all["get_daily_photos"].return_value = [
+        _daily_row(photo_id=15, hmac_override="0" * 64),
+    ]
+    _patch_all["daily_flags_load"].return_value = {"15": "flagged"}
+
+    _poll_inside_lock()
+
+    _patch_all["review"].assert_not_called()
+    _patch_all["anomaly"].assert_not_called()
+    assert "portal_daily_photo_hmac_failure" not in _log_codes(_patch_all)
+    _patch_all["post_daily_result"].assert_called_once()
+
+
+def test_daily_photo_pass_failure_is_fenced_and_never_blocks_drain(_patch_all):
+    _patch_all["get_pending"].return_value = [_row("u1")]
+    _patch_all["get_daily_photos"].side_effect = (
+        portal_poll.portal_client.PortalTransportError("500")
+    )
+    result = _poll_inside_lock()
+    assert result.filed == 1            # submission drain unaffected
+    assert result.errors == 0           # the pass failure is NOT an intake error
+    assert result.daily_photos_screened == 0
+    assert "portal_daily_photo_service_failed" in _log_codes(_patch_all)
+
+
+def test_daily_photo_result_found_false_is_benign_idempotent_rescreen(_patch_all):
+    _with_box_root(_patch_all)
+    _patch_all["get_daily_photos"].return_value = [_daily_row()]
+    _patch_all["post_daily_result"].return_value = False
+    result = _poll_inside_lock()
+    assert result.daily_photos_screened == 1
+    assert "portal_daily_photo_result_not_found" in _log_codes(_patch_all)
+
+
+def test_daily_photo_box_root_unset_row_stays_pending(_patch_all):
+    # Box root unconfigured → the clean photo CANNOT be filed → the per-item fence
+    # WARNs and NO result is posted (delete-on-screen must never destroy the only copy).
+    _patch_all["get_daily_photos"].return_value = [_daily_row()]
+    result = _poll_inside_lock()
+    assert result.daily_photos_screened == 0
+    _patch_all["post_daily_result"].assert_not_called()
+    assert "portal_daily_photo_item_failed" in _log_codes(_patch_all)
+
+
+def test_daily_photo_per_item_fence_one_bad_item_does_not_abort(_patch_all):
+    _with_box_root(_patch_all)
+    _patch_all["box_folder"].side_effect = ["F1", "F2", "F3", "F4"] * 20
+    _patch_all["get_daily_photos"].return_value = [
+        _daily_row(photo_id=21), _daily_row(photo_id=22), _daily_row(photo_id=23),
+    ]
+    _patch_all["box_upload"].side_effect = [
+        {"id": "b1"}, RuntimeError("box boom"), {"id": "b3"},
+    ]
+    result = _poll_inside_lock()
+    assert result.daily_photos_screened == 2  # 21 + 23; the middle row stays pending
+    assert "portal_daily_photo_item_failed" in _log_codes(_patch_all)
+    assert _patch_all["post_daily_result"].call_count == 2
+
+
+def test_daily_photo_malformed_row_is_skipped(_patch_all):
+    _with_box_root(_patch_all)
+    _patch_all["get_daily_photos"].return_value = [
+        {"id": 9, "work_date": "2026-07-03", "photo_json": "{}"},  # no job_id
+    ]
+    result = _poll_inside_lock()
+    assert result.daily_photos_screened == 0
+    _patch_all["post_daily_result"].assert_not_called()
+    assert "portal_daily_photo_malformed" in _log_codes(_patch_all)
+
+
+def test_daily_photo_config_resolution_is_observable(_patch_all):
+    # Same observable-config rule as the item pass — the SAME shared ClamAV flag.
+    _with_box_root(_patch_all)
+    _patch_all["box_folder"].side_effect = ["F1", "F2", "F3", "F4"] * 20
+    _patch_all["get_daily_photos"].return_value = [_daily_row()]
+    _poll_inside_lock()
+    resolved = [
+        c for c in _patch_all["log"].call_args_list
+        if c.kwargs.get("error_code") == "portal_daily_photo_config_resolved"
+    ]
+    assert len(resolved) == 1
+    assert "clamav_enabled=False (source=default" in resolved[0].args[2]
+
+
+# ---- DR-photo-pool Slice 2: the 'deferred' submission soft-fail ------------
+
+
+def test_deferred_submission_not_drained_not_error(_patch_all):
+    # intake defers a submission whose pool refs are still pending: the SAME no-drain
+    # mechanics as 'error' (re-pull next cycle) but counted separately — the cycle
+    # stays OK (an expected ordering race, not an infra failure).
+    _patch_all["get_pending"].return_value = [_row("u1")]
+    _patch_all["process"].return_value = ProcessResult(
+        status="deferred", message_id="u1", correlation_id="c",
+        notes="deferred: 2 pool photo(s) pending screening",
+    )
+    result = _poll_inside_lock()
+    assert result.deferred == 1
+    assert result.errors == 0 and result.filed == 0
+    _patch_all["mark_filed"].assert_not_called()
+    # NOT seen-recorded: the re-pull must re-dispatch, not fast-path.
+    persisted = _patch_all["persist_seen"].call_args.args[0]
+    assert "u1" not in persisted
+    # The cycle is healthy — deferral is not an error condition.
+    assert _patch_all["hb_row"].call_args.kwargs["status"] == "OK"
+    assert "deferred=1" in (_patch_all["hb_row"].call_args.kwargs["notes"] or "")
 
 
 # ---- poll_once outer gating ----------------------------------------------

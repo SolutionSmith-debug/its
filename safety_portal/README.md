@@ -39,6 +39,7 @@ its migration fail-closes `resolveCapabilities` → the universal-lockout class 
 | `0034_time_amend_index` | G2.3 crew edit/retire + time amend/void — [section](#crew-editretire--time-amendvoid-g23--0034) | #451 | ☐ pending |
 | `0035_task_due_date` | G2.6 task due dates — [section](#task-due-dates--overdue-pills-g26--0035) | #450 | ☐ pending |
 | `0036_item_photos` | G1 Slice 1 item-photo capture queue — [section](#checklist-item-photos--capture--pending-queue-g1-slice-1--0036) | #452 | ☐ pending |
+| `0037_daily_photo_pool` | daily-report v6: additional site photos (pool) + D.13 incident link — [section](#daily-report-photo-pool--additional-site-photos-v6--0037) | #456 | ☐ pending |
 
 Canonical apply-and-deploy sequence (applies **all** pending migrations, in order — never a
 subset):
@@ -865,6 +866,44 @@ shown).
    manual/count item → the row flips to *"photo attached — screening…"*; a second attach on
    the same item is refused ("one photo per item"); the audit log gains a
    `checklist_item_photo_add` row. (The pending state clears within ~1-3 minutes once the portal_poll daemon — Slice 2, this PR — screens the photo; a persistently-pending photo means the daemon is not running.)
+
+### Daily-report photo pool — additional site photos (v6 — `0037`)
+
+**Migration 0037** adds `daily_photo_pool` — the pre-submit, §34-screened photo pool behind
+the daily report's **"Add more photos"** button (operator directive 2026-07-03: *"upload more
+than just four photos … add as many of those as you need"*). The inline 4-photo `site_photos`
+field is **untouched**; it is payload-budgeted (CS2: 280KB×4 ≈ 1.49MB < the 1.8MB submit cap),
+so additional photos structurally cannot ride the submission — each uploads **individually**
+(`POST /api/fieldops/daily-photo` — session + the manager/admin daily-report role gate +
+`requireJobScope`; the G1 item-photo bounds verbatim; a per-(job,date,uploader) 40-photo cap
+and a 200-pending global backstop, both **folded into the INSERT** so a concurrent burst can't
+blow the D1 ceiling; HMAC domain-separated `daily_photo:v1`) into the pool. The **Option D**
+posture is inherited from `item_photos`: screened on the Mac, filed to Box, **no serving route,
+delete-on-screen**. The submission carries only tiny **references**
+(`values.additional_photos = [{pool_id, caption?}]`); at submit the Worker validates each ref
+(exists / same job+date / uploaded-by-actor / not refused / unclaimed-or-mine) and **claims**
+it atomically (claim-first, compensated on a lost race; an amendment **transfers** the filed
+report's claims — the amends target is server-verified before honoring the transfer). The v6
+cut also adds, under **D.13 Material & Equipment Deliveries**, a **"Report a material
+incident →"** form link (the M2 per-row buttons stay). The Mac pass (`portal_poll`
+`_service_daily_photos`) screens the pool **before** the submission fetch so the common case
+files same-cycle; a still-pending reference defers the submission a bounded number of cycles,
+then files with a *"N photos pending screening"* note (never blocks filing forever). A prune
+stage deletes unclaimed pool rows (>7 d) + orphans; claimed rows follow delete-on-screen.
+
+#### Activation (operator — deploy boundary; escalates to the Developer-Operator)
+
+1. Apply migration **0037** to the live D1 **BEFORE** the redeploy
+   (`npx wrangler d1 migrations apply its-safety-portal-db --remote`) — else the pool routes
+   and the v6 daily-report render 500. (Always `git pull` `~/its` to latest `main` FIRST — the
+   stale-migrations-list lockout class.)
+2. **Redeploy** (`npm run deploy`).
+3. **Smoke** (live): as a placed manager, open the daily report → below the 4-photo field, use
+   **"Add more photos"** and attach one → it chips *"screening…"* then *"photo on file ✓"*
+   within ~1-3 min; submit → the filed PDF shows the additional photo(s) after the inline grid;
+   a **malicious** upload must red-light (CRITICAL + a security-flagged Review-Queue row,
+   refused, never filed — the prove-the-control-bites check). Under D.13, **"Report a material
+   incident →"** deep-links the material-incident form.
 
 ### Lockout recovery (break-glass) — escalate to the Developer-Operator
 

@@ -67,7 +67,7 @@
     "section": {
       "type": "object",
       "required": ["type"],
-      "properties": { "type": { "type": "string", "enum": ["header", "static_text", "repeating_table", "signature_table", "checklist", "freeform", "content_blocks", "guidance", "form_link", "job_requirements", "expected_materials"] } },
+      "properties": { "type": { "type": "string", "enum": ["header", "static_text", "repeating_table", "signature_table", "checklist", "freeform", "content_blocks", "guidance", "form_link", "job_requirements", "expected_materials", "additional_photos"] } },
       "oneOf": [
         {
           "additionalProperties": false, "required": ["type", "fields"],
@@ -120,6 +120,11 @@
           "additionalProperties": false, "required": ["type", "key"],
           "properties": { "type": { "const": "expected_materials" }, "key": { "type": "string", "description": "Mount identity, RESERVED in the top-level value namespace (uniqueness-checked like every keyed section) but the section files NO values under it — receipt data lands in the deliveries_received table + the material-incident form's own submission (Material receipts M2)." }, "title": { "type": "string" } },
           "description": "Expected-materials receipt placeholder (Material receipts M2). Carries NO content of its own: at render time the Daily tab fetches the job's expected materials (D1 job_expected_materials, migration 0031, M1) and renders them here with 'Confirm receipt' / 'Report a problem' actions. Captures NO form values (self-describing filed PDFs stay stable); the confirm action appends a deliveries_received row instead. AT MOST ONE per definition — enforced by publishValidation.ts; JSON Schema cannot count across the sections array."
+        },
+        {
+          "additionalProperties": false, "required": ["type", "key"],
+          "properties": { "type": { "const": "additional_photos" }, "key": { "type": "string", "const": "additional_photos", "description": "MUST be the fixed wire key 'additional_photos' — /api/submit validates + CLAIMS values.additional_photos = [{pool_id, caption?}] (the daily-photo POOL references; worker/fieldops_daily_photos.ts). Enforced by publishValidation.ts." }, "title": { "type": "string" } },
+          "description": "Additional-photos pool mount (DR-photo-pool Slice 1, 2026-07-03). Carries NO content of its own: the Daily tab renders the pool upload/status UI here — each additional photo uploads INDIVIDUALLY to daily_photo_pool (migration 0037; the inline site_photos field is payload-budgeted: CS2 280KB × 4 base64 < the 1.8MB payload cap, so more inline photos cannot ride the submission) and the submission files only tiny POOL REFERENCES under values.additional_photos. AT MOST ONE per definition — enforced by publishValidation.ts; JSON Schema cannot count across the sections array."
         }
       ]
     }

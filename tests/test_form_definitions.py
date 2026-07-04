@@ -478,3 +478,70 @@ def test_material_incident_v1_structure_and_floor() -> None:
     spec = REQUIRED_CONTENT["parents"]["material-incident"]
     assert spec["required_field_keys"] == ["material_description", "issue", "details"]
     assert spec["required_signature_inputs_min"] == 0
+
+
+def test_daily_report_v6_photo_pool_and_incident_link() -> None:
+    """daily-report-v6 (DR-photo-pool Slice 1) — ONE cut carrying BOTH 2026-07-03 operator
+    directives. (a) More photos: ONE `additional_photos` placeholder section immediately after
+    the D.12 'Site photos' header — the 4-photo inline field STAYS untouched (payload-budgeted:
+    CS2 280KB × 4 base64 < the Worker's 1.8MB payload cap, so more inline photos structurally
+    cannot ride the submission); each extra photo uploads individually to the D1
+    daily_photo_pool (migration 0037) and the submission carries only [{pool_id, caption?}]
+    references under values.additional_photos, which /api/submit validates + claims. The key is
+    the FIXED wire key 'additional_photos' (publishValidation enforces it — the Worker claims
+    exactly that top-level key). (b) Incident link: ONE form_link → material-incident in the
+    D.13 deliveries region, immediately after the Deliveries Received table (the operator's
+    "link the material incident report underneath the material and equipment deliveries"). v5
+    stays in-tree unchanged (append-only) and keeps its own tests above; all SOP text is
+    unchanged from v5."""
+    d = _load(FORMS_DIR / "daily-report-v6.json")
+    assert d["version"] == 6 and d["form_code"] == "daily-report-v6"
+    # The dated slice note rides the definition (meta-schema `comment`).
+    assert any("SLICE DR-PHOTO-POOL" in line for line in d.get("comment", []))
+
+    # (a) The pool mount — exactly one, the fixed wire key, right below the inline field.
+    mounts = [s for s in d["sections"] if s["type"] == "additional_photos"]
+    assert len(mounts) == 1, "exactly one additional_photos mount"
+    assert mounts[0]["key"] == "additional_photos"
+    assert mounts[0]["title"] == "Additional site photos"
+    idx = d["sections"].index(mounts[0])
+    before = d["sections"][idx - 1]
+    assert before["type"] == "header" and before.get("title") == "Site photos"
+    # The inline 4-photo field itself is UNTOUCHED (directive: "leave that four photo field").
+    assert before["fields"] == [{"key": "site_photos", "label": "Site photos", "input": "photo"}]
+
+    # (b) The incident link — under the D.13 Deliveries Received table.
+    links = [
+        s for s in d["sections"]
+        if s["type"] == "form_link" and s["parent_form_code"] == "material-incident"
+    ]
+    assert len(links) == 1, "exactly one material-incident link"
+    assert links[0]["label"] == "Report a material incident"
+    li = d["sections"].index(links[0])
+    assert d["sections"][li - 1]["type"] == "repeating_table"
+    assert d["sections"][li - 1]["key"] == "deliveries_received"
+    assert d["sections"][li + 1]["type"] == "repeating_table"
+    assert d["sections"][li + 1]["key"] == "equipment_on_site"
+
+    # Everything else is v5 verbatim: same sections in the same order, the two insertions aside.
+    v5 = _load(FORMS_DIR / "daily-report-v5.json")
+    v6_minus_cut = [
+        s for s in d["sections"]
+        if not (
+            s["type"] == "additional_photos"
+            or (s["type"] == "form_link" and s.get("parent_form_code") == "material-incident")
+        )
+    ]
+    assert v6_minus_cut == v5["sections"], "v6 must be v5 + ONLY the two directive sections"
+
+    # v6 is the catalog CURRENT (identity-keyed floor applies in full — the glob test above
+    # proves it passes), and v5 dropped to historical (exempt from section-type floors only).
+    assert "daily-report-v6" in CURRENT_FORM_CODES
+    assert "daily-report-v5" not in CURRENT_FORM_CODES
+    # The D4/M2 floor mounts survive the cut (required_section_types names them).
+    types = {s["type"] for s in d["sections"]}
+    assert "job_requirements" in types and "expected_materials" in types
+    # The floor's field keys are untouched: additional_photos files refs only when photos are
+    # added — it is deliberately NOT a required field key.
+    spec = REQUIRED_CONTENT["parents"]["daily-report"]
+    assert "additional_photos" not in spec.get("required_field_keys", [])

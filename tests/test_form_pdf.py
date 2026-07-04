@@ -265,6 +265,35 @@ _PHOTO_DEF = {
 }
 
 
+def test_additional_photo_notes_render_without_grid() -> None:
+    # DR-photo-pool Slice 2: pending/refused pool-reference notes render even when
+    # the photo grid itself is empty (a report whose only photos were refused still
+    # SAYS so — never a silent omission); a zero count renders no line.
+    out = render_submission_pdf(
+        {"form_code": "daily-report-v6", "form_name": "Daily Field Report", "sections": []},
+        {
+            "job_name": "Bradley 1",
+            "work_date": "2026-07-03",
+            "values": {},
+            "additional_photo_notes": {"pending": 2, "refused": 1, "unavailable": 0},
+        },
+    )
+    assert out[:5] == b"%PDF-"
+    text = _norm(_pdf_text(out))
+    assert "2 additional photo(s) were still pending security screening at render time" in text
+    assert "1 additional photo(s) refused by security screening" in text
+    assert "unavailable" not in text  # zero count → no line
+
+
+def test_additional_photo_notes_absent_render_nothing() -> None:
+    out = render_submission_pdf(
+        {"form_code": "daily-report-v6", "form_name": "Daily Field Report", "sections": []},
+        {"job_name": "Bradley 1", "work_date": "2026-07-03", "values": {}},
+    )
+    text = _norm(_pdf_text(out))
+    assert "additional photo(s)" not in text
+
+
 def test_screened_photos_render_grid_with_caption() -> None:
     out = render_submission_pdf(
         _PHOTO_DEF,

@@ -64,6 +64,7 @@ export const READ_ONLY_SECTION_TYPES: ReadonlySet<Section["type"]> = new Set([
   "form_link",
   "job_requirements",
   "expected_materials",
+  "additional_photos",
 ]);
 
 /** Human labels for EVERY section type (the builder picker uses the SECTION_TYPES
@@ -80,6 +81,7 @@ export const SECTION_TYPE_LABELS: Record<Section["type"], string> = {
   form_link: "Form link (read-only)",
   job_requirements: "Per-job requirements (read-only)",
   expected_materials: "Expected materials (read-only)",
+  additional_photos: "Additional photos pool (read-only)",
 };
 
 // The validator's KEY_RE: every field/section/group/item key is snake_case lowercase.

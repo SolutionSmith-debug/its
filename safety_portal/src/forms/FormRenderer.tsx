@@ -1,11 +1,13 @@
 import { memo } from "react";
 import type { Dispatch, SetStateAction } from "react";
+import { AdditionalPhotosSection } from "../components/AdditionalPhotosSection";
 import { PhotoField } from "../components/PhotoField";
 import { SignaturePad } from "../components/SignaturePad";
 import { statusPill, rowTitle } from "../components/ExpectedMaterialsSection";
 import { DAILY_STATUS_FAMILIES, type DailyRequirementItem } from "../lib/fieldops_daily_form";
 import type { ExpectedMaterialRow } from "../lib/fieldops_expected_materials";
 import { dayPhaseFor } from "./dayPhase";
+import type { AdditionalPhotoRef } from "../lib/fieldops_daily_photos";
 import type { Field, FormDefinition, Group, PhotoValue, Section } from "./types";
 
 // The fill state, keyed per section:
@@ -98,6 +100,23 @@ export interface ExpectedMaterialsAdapter {
   onReportProblem: (row: ExpectedMaterialRow) => void;
 }
 
+/** Adapter for `additional_photos` sections (DR-photo-pool Slice 1). The HOST (the Daily tab)
+ *  supplies only the SCOPE — the placed job + report date the pool uploads bind to; everything
+ *  else (upload / status chips / removal) is self-contained in AdditionalPhotosSection, which
+ *  reads its refs from values[<section key>] and writes them back through setValues (so the
+ *  host's draft machinery persists the tiny [{pool_id, caption?}] references for free — never
+ *  photo bytes). With NO adapter the section renders NOTHING — the generic fill page (and every
+ *  non-daily form) is unaffected. */
+export interface AdditionalPhotosAdapter {
+  jobId: string;
+  workDate: string;
+  /** The filed submission being AMENDED (the Daily tab's loadAmend), else null/absent. Threaded
+   *  to the pool list read (`amends=`) so the amended report's own claimed rows chip
+   *  "Photo on file ✓" instead of lying "missing" — the Worker verifies the uuid (same
+   *  actor/job/date) before honoring it, so a stale/foreign value just degrades gracefully. */
+  amendsUuid?: string | null;
+}
+
 interface Props {
   def: FormDefinition;
   values: FormValues;
@@ -111,6 +130,9 @@ interface Props {
   /** Optional M2 hook — see ExpectedMaterialsAdapter. Absent on the generic fill page
    *  (the `expected_materials` section renders NOTHING without it). */
   expectedMaterials?: ExpectedMaterialsAdapter;
+  /** Optional DR-photo-pool hook — see AdditionalPhotosAdapter. Absent on the generic fill
+   *  page (the `additional_photos` section renders NOTHING without it). */
+  additionalPhotos?: AdditionalPhotosAdapter;
   /** Optional, PRESENTATIONAL ONLY — the daily SOP's chronological day-rail (design
    *  refinement, 2026-07). When set (the Daily tab), guidance sections render with a
    *  slim left rail, and the five phase-opening sections (dayPhase.ts, derived from
@@ -119,12 +141,16 @@ interface Props {
   dayRail?: boolean;
 }
 
-export function FormRenderer({ def, values, setValues, formLinks, requirements, expectedMaterials, dayRail }: Props) {
+export function FormRenderer({ def, values, setValues, formLinks, requirements, expectedMaterials, additionalPhotos, dayRail }: Props) {
   const setField = (key: string, val: string) =>
     setValues((v) => ({ ...v, [key]: val }));
 
   // Photo header fields hold PhotoValue[] (not string) — see types.PhotoValue.
   const setPhotos = (key: string, next: PhotoValue[]) =>
+    setValues((v) => ({ ...v, [key]: next }));
+
+  // additional_photos sections hold AdditionalPhotoRef[] (pool references, never bytes).
+  const setPhotoRefs = (key: string, next: AdditionalPhotoRef[]) =>
     setValues((v) => ({ ...v, [key]: next }));
 
   const setCell = (secKey: string, idx: number, colKey: string, val: string) =>
@@ -181,6 +207,8 @@ export function FormRenderer({ def, values, setValues, formLinks, requirements, 
           requirements={requirements}
           setRequirement={setRequirement}
           expectedMaterials={expectedMaterials}
+          additionalPhotos={additionalPhotos}
+          setPhotoRefs={setPhotoRefs}
           dayRail={dayRail}
         />
       ))}
@@ -201,6 +229,8 @@ interface SectionProps {
   requirements?: DailyRequirementItem[];
   setRequirement: (sec: string, items: DailyRequirementItem[], targetId: number, response: string) => void;
   expectedMaterials?: ExpectedMaterialsAdapter;
+  additionalPhotos?: AdditionalPhotosAdapter;
+  setPhotoRefs: (sec: string, next: AdditionalPhotoRef[]) => void;
   dayRail?: boolean;
 }
 
@@ -432,6 +462,26 @@ function SectionView(p: SectionProps) {
             </ul>
           )}
         </section>
+      );
+    }
+    // Additional-photos pool mount (DR-photo-pool Slice 1): renders ONLY when the HOST supplies
+    // the AdditionalPhotosAdapter (the Daily tab's job + date scope) — the generic fill page and
+    // every non-daily form are unaffected. The section's value is the tiny pool-reference list
+    // (values[<key>] = [{pool_id, caption?}]); the bytes went to the pool via their own bounded
+    // uploads (the inline site_photos field above it is payload-budgeted and stays untouched).
+    case "additional_photos": {
+      const ap = p.additionalPhotos;
+      if (!ap) return null;
+      const refs = Array.isArray(p.values[s.key]) ? (p.values[s.key] as AdditionalPhotoRef[]) : [];
+      return (
+        <AdditionalPhotosSection
+          title={s.title}
+          jobId={ap.jobId}
+          workDate={ap.workDate}
+          amendsUuid={ap.amendsUuid ?? null}
+          refs={refs}
+          onChange={(next) => p.setPhotoRefs(s.key, next)}
+        />
       );
     }
     case "form_link": {

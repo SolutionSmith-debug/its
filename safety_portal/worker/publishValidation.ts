@@ -393,6 +393,23 @@ function validateSection(s: unknown, idx: number, topLevel: string[]): string | 
       if (s.title !== undefined && !isStr(s.title)) return `${where}: expected_materials invalid title`;
       return null;
     }
+    // Additional-photos pool mount (DR-photo-pool Slice 1): a keyed mount point with NO content
+    // of its own — the Daily tab renders the pool upload/status UI here and the submission files
+    // values.<key> = [{pool_id, caption?}] POOL REFERENCES (never bytes — the inline photo field
+    // is payload-budgeted; see fieldops_daily_photos.ts). The key MUST be the fixed wire key
+    // 'additional_photos': /api/submit validates + claims that exact top-level key (a definition
+    // mounting the section under another key would file refs the Worker never claims — silently
+    // unclaimed pool rows). AT MOST ONE per definition — enforced in validateDefinition;
+    // documented in forms/meta-schema.json.
+    case "additional_photos": {
+      const e = keyedSectionKey();
+      if (e) return e;
+      if (s.key !== "additional_photos") {
+        return `${where}: additional_photos key must be 'additional_photos' (the /api/submit claim key)`;
+      }
+      if (s.title !== undefined && !isStr(s.title)) return `${where}: additional_photos invalid title`;
+      return null;
+    }
     default:
       return `${where}: unknown section type '${type}'`;
   }
@@ -448,6 +465,18 @@ export function validateDefinition(def: unknown, ctx: DefinitionContext): Valida
   // double-render the same fetched rows and double-append deliveries_received rows on confirm.
   const emMounts = def.sections.filter((s) => isObject(s) && s.type === "expected_materials").length;
   if (emMounts > 1) return fail("multiple expected_materials sections (at most one)");
+  // AT MOST ONE additional_photos section (DR-photo-pool): one pool mount — two would double-
+  // render the same refs list. (The fixed-key rule above means the cross-section-unique key check
+  // ALSO catches a double mount, but only via a key-collision message; this names the real rule.)
+  const apMounts = def.sections.filter((s) => isObject(s) && s.type === "additional_photos").length;
+  if (apMounts > 1) return fail("multiple additional_photos sections (at most one)");
+  // values.additional_photos is WIRE-RESERVED (the /api/submit pool-claim parses that exact
+  // top-level key on EVERY form): only the additional_photos mount may own it. Any other
+  // section/field claiming the key would make every submission of the form 400
+  // (invalid_additional_photos/refs_not_array) — reject at publish instead.
+  if (apMounts === 0 && topLevel.includes("additional_photos")) {
+    return fail("'additional_photos' is reserved for the additional_photos section");
+  }
   // Legal-floor re-check (Brief 1 PR-1) — structure is valid above; now require the
   // per-identity mandatory content (signature mechanism, legal/footer lines, core fields).
   const rc = validateRequiredContent(def, ctx);

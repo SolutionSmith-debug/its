@@ -167,6 +167,28 @@ CFG_MAILBOX = "safety_reports.intake.mailbox"
 # on the production Mac. See safety_reports/photo_screen._clamav_scan.
 CFG_PHOTO_CLAMAV = "safety_reports.photo_screen.clamav_enabled"
 
+# ---- DR-photo-pool Slice 2 (daily-report additional photos) ----------------------
+# Max additional-photo REFERENCES a submission may carry — mirrors the Worker's
+# MAX_ADDITIONAL_PHOTO_REFS / POOL_CAP_PER_DAY (fieldops_daily_photos.ts); a payload
+# exceeding it can only arrive by bypassing the Worker, so the excess is ignored
+# defensively (the refs are HMAC-covered, so this is belt-and-suspenders).
+MAX_ADDITIONAL_PHOTO_REFS = 40
+# How long a submission referencing STILL-PENDING pool photos keeps deferring (status
+# 'deferred' → portal_poll re-pulls next cycle) before it files WITHOUT them + a PDF
+# note + a WARN. Measured from the submission's created_at (epoch) — stateless: no
+# defer counter file, and a submission re-pulled late for unrelated reasons crosses
+# the bound immediately (bounded is the invariant — filing is never blocked forever).
+# 30 min ≈ 30 poll cycles: generous for the upload→screen race (normal is one cycle),
+# far under the operator's compile horizons.
+DAILY_PHOTO_DEFER_MAX_SECONDS = 30 * 60
+# Sanity ceiling for a pool photo downloaded back from Box for the PDF grid. The Box
+# bytes are OUR OWN §34 re-encode (screened before filing), so they are NOT re-run
+# through the full screen_photo pipeline here — its MAX_DECODED_BYTES cap applies to
+# UPLOADS, and a re-encode of a legal 400 KB upload can legitimately exceed it, which
+# would false-refuse an already-screened photo. Instead: JPEG magic + a generous
+# byte ceiling (anything else renders a "unavailable" note, never the bytes).
+DAILY_POOL_JPEG_MAX_BYTES = 1_500_000
+
 # Defaults used when the ITS_Config row is missing or unparseable. Each fallback
 # is operationally safe: the default model is the documented Sonnet, Box filing
 # is enabled, low-confidence review is on, threshold is conservative.
@@ -372,6 +394,13 @@ ProcessStatus = Literal[
     # Portal pull path (Phase 5): a re-pulled submission already filed on the week
     # sheet — skip re-filing, but the receipt still posts (advances the queue).
     "already_filed",
+    # DR-photo-pool Slice 2: the submission references daily-pool photos still
+    # PENDING §34 screening — soft-fail like 'error' (NOT drained; portal_poll
+    # re-pulls next cycle, by which time the screening pass has usually cleaned
+    # them) but counted separately (an expected ordering race, not an infra
+    # failure). Bounded: after DAILY_PHOTO_DEFER_MAX_SECONDS the submission files
+    # WITHOUT the missing photos + a PDF note + a WARN.
+    "deferred",
 ]
 
 
@@ -1966,6 +1995,210 @@ def _file_portal_photos(
         )
 
 
+# ---- DR-photo-pool Slice 2: additional-photo reference resolution ----------------
+# A daily report's ADDITIONAL photos never ride the submission payload (it is
+# payload-budgeted) — they uploaded individually into the Worker's daily_photo_pool,
+# were §34-screened Mac-side by portal_poll._service_daily_photos (which files the
+# sanitized re-encode to Box: ITS Photos/daily/<job_id>/<work_date>/), and the
+# submission carries only CLAIMED references (values.additional_photos =
+# [{pool_id, caption?}], HMAC-covered inside payload_json). The pulled /pending row
+# carries the CLAIM MANIFEST (`daily_photos`: [{id, status, box_file_id}], resolved
+# by the Worker at fetch time — server state, deliberately NOT HMAC-covered; only
+# manifest entries for HMAC-covered pool_ids are consumed, and downloaded bytes are
+# validated before render). ORDERING makes the common case immediate: the screening
+# pass runs BEFORE the /pending fetch each cycle, so a photo uploaded before submit
+# is usually already 'clean' (box_file_id set) in the manifest — see the
+# _poll_inside_lock block comment (the design's crux).
+
+
+def _referenced_pool_ids(
+    definition: dict[str, Any], values: dict[str, Any]
+) -> list[tuple[int, str]]:
+    """Extract the (pool_id, caption) references from every `additional_photos`
+    section key. Malformed entries are dropped defensively (the Worker validated
+    shape at submit and the payload is HMAC-covered — anything malformed here can
+    only be a forged payload, and dropping matches the renderer's discipline);
+    duplicates dedupe; bounded at MAX_ADDITIONAL_PHOTO_REFS."""
+    refs: list[tuple[int, str]] = []
+    seen: set[int] = set()
+    for section in definition.get("sections", []):
+        if section.get("type") != "additional_photos":
+            continue
+        entries = values.get(section.get("key", "additional_photos"))
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            pool_id = entry.get("pool_id")
+            if not isinstance(pool_id, int) or isinstance(pool_id, bool) or pool_id < 1:
+                continue
+            if pool_id in seen or len(refs) >= MAX_ADDITIONAL_PHOTO_REFS:
+                continue
+            seen.add(pool_id)
+            refs.append((pool_id, str(entry.get("caption", "") or "")[:300]))
+    return refs
+
+
+def _resolve_additional_photos(
+    definition: dict[str, Any],
+    values: dict[str, Any],
+    submission: dict[str, Any],
+    *,
+    correlation_id: str,
+) -> tuple[ProcessResult | None, list[tuple[str, bytes]], dict[str, int]]:
+    """Resolve values.additional_photos pool references for the PDF render.
+
+    Returns (defer, pool_photos, counts):
+      * defer — a ProcessResult(status='deferred') IFF any referenced pool row is
+        still PENDING screening and the submission is younger than
+        DAILY_PHOTO_DEFER_MAX_SECONDS (measured from its created_at). portal_poll
+        does NOT drain it; the re-pull next cycle re-resolves — by then the
+        screening pass (which runs BEFORE the fetch) has usually cleaned the row.
+        Past the bound the submission files WITHOUT the missing photos (counts
+        ['pending'] > 0 → the PDF renders a "pending at render time" note) + a WARN
+        — filing is never blocked forever.
+      * pool_photos — [(caption, jpeg), …] for each CLEAN reference: the §34
+        re-encode downloaded from Box by the manifest's box_file_id (the PR-4
+        filed-PDF precedent — the bytes left D1 at screen time; Box is the
+        permanent record, and a submission can arrive cycles after its photos were
+        screened). Bytes are validated (JPEG magic + size ceiling) before render;
+        a failed validation or a permanent Box error degrades that ONE photo to
+        'unavailable' (per-photo fence) — a TRANSIENT Box error raises so the whole
+        submission soft-fails to 'error' and retries.
+      * counts — {'pending': n, 'refused': n, 'unavailable': n} for the PDF notes
+        (REFUSED references render a "refused by screening" line — the CRITICAL/WARN
+        already fired at screen time; nothing re-pages here).
+
+    No additional_photos section / no refs → (None, [], zeros) — every non-daily
+    form takes this path untouched.
+    """
+    counts = {"pending": 0, "refused": 0, "unavailable": 0}
+    refs = _referenced_pool_ids(definition, values)
+    if not refs:
+        return None, [], counts
+    submission_uuid = str(submission.get("submission_uuid") or "")
+
+    manifest_raw = submission.get("daily_photos")
+    manifest: dict[int, dict[str, Any]] = {}
+    if isinstance(manifest_raw, list):
+        for m in manifest_raw:
+            if isinstance(m, dict) and isinstance(m.get("id"), int):
+                manifest[m["id"]] = m
+    elif manifest_raw is None:
+        # No manifest key at all (a Worker predating this slice, or a manual replay
+        # of a bare row): file WITHOUT the pool photos rather than defer-loop on
+        # state that will never arrive. Loud, never silent.
+        error_log.log(
+            Severity.WARN, SCRIPT_NAME,
+            f"portal: submission {submission_uuid} references {len(refs)} pool "
+            f"photo(s) but the pulled row carries no daily_photos claim manifest — "
+            f"filing without them (is the Worker up to date?)",
+            error_code="portal_daily_photo_state_missing",
+            correlation_id=correlation_id,
+        )
+        counts["unavailable"] = len(refs)
+        return None, [], counts
+
+    pool_photos: list[tuple[str, bytes]] = []
+    pending_ids: list[int] = []
+    for pool_id, caption in refs:
+        row = manifest.get(pool_id)
+        if row is None:
+            # Claimed at submit but gone now (pruned orphan / manual cleanup).
+            counts["unavailable"] += 1
+            error_log.log(
+                Severity.WARN, SCRIPT_NAME,
+                f"portal: pool photo {pool_id} referenced by submission "
+                f"{submission_uuid} has no manifest row — rendering without it",
+                error_code="portal_daily_photo_ref_unresolved",
+                correlation_id=correlation_id,
+            )
+            continue
+        status = str(row.get("status") or "")
+        if status == "pending":
+            pending_ids.append(pool_id)
+            continue
+        if status == "refused":
+            counts["refused"] += 1
+            continue
+        box_file_id = str(row.get("box_file_id") or "")
+        if status != "clean" or not box_file_id:
+            counts["unavailable"] += 1
+            error_log.log(
+                Severity.WARN, SCRIPT_NAME,
+                f"portal: pool photo {pool_id} (submission {submission_uuid}) has "
+                f"unusable manifest state status={status!r} — rendering without it",
+                error_code="portal_daily_photo_ref_unresolved",
+                correlation_id=correlation_id,
+            )
+            continue
+        try:
+            jpeg = box_client.download_file(box_file_id)
+        except (box_client.BoxRateLimitError, box_client.BoxAuthError):
+            raise  # TRANSIENT — propagate; the caller soft-fails to 'error' → re-pull
+        except box_client.BoxError as exc:
+            # PERMANENT for this file (404/409 …): one photo, not the submission.
+            counts["unavailable"] += 1
+            error_log.log(
+                Severity.WARN, SCRIPT_NAME,
+                f"portal: Box download failed for pool photo {pool_id} "
+                f"(box_file_id={box_file_id}, submission {submission_uuid}): "
+                f"{type(exc).__name__} — rendering without it",
+                error_code="portal_daily_photo_box_download_failed",
+                correlation_id=correlation_id,
+            )
+            continue
+        # Validate before render (the manifest is not HMAC-covered — a tampered
+        # box_file_id must never push arbitrary Box bytes into the PDF-of-record).
+        # See DAILY_POOL_JPEG_MAX_BYTES for why this is magic+size, not a re-screen.
+        if not jpeg or not jpeg.startswith(b"\xff\xd8\xff") or len(jpeg) > DAILY_POOL_JPEG_MAX_BYTES:
+            counts["unavailable"] += 1
+            error_log.log(
+                Severity.WARN, SCRIPT_NAME,
+                f"portal: pool photo {pool_id} (submission {submission_uuid}) Box "
+                f"bytes failed validation (len={len(jpeg or b'')}) — rendering "
+                f"without it",
+                error_code="portal_daily_photo_invalid_bytes",
+                correlation_id=correlation_id,
+            )
+            continue
+        pool_photos.append((caption, jpeg))
+
+    if pending_ids:
+        created_at = submission.get("created_at")
+        try:
+            age = datetime.now(UTC).timestamp() - float(created_at)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            # Unparseable created_at: treat the bound as EXPIRED (never risk an
+            # unbounded defer loop on malformed data — bounded is the invariant).
+            age = float(DAILY_PHOTO_DEFER_MAX_SECONDS + 1)
+        if age <= DAILY_PHOTO_DEFER_MAX_SECONDS:
+            error_log.log(
+                Severity.INFO, SCRIPT_NAME,
+                f"portal: deferring submission {submission_uuid} one cycle — "
+                f"{len(pending_ids)} pool photo(s) still pending screening "
+                f"(age {age:.0f}s of {DAILY_PHOTO_DEFER_MAX_SECONDS}s bound)",
+                error_code="portal_daily_photo_deferred",
+                correlation_id=correlation_id,
+            )
+            return ProcessResult(
+                status="deferred", message_id=submission_uuid,
+                correlation_id=correlation_id,
+                notes=f"deferred: {len(pending_ids)} pool photo(s) pending screening",
+            ), [], counts
+        counts["pending"] = len(pending_ids)
+        error_log.log(
+            Severity.WARN, SCRIPT_NAME,
+            f"portal: defer bound expired for submission {submission_uuid} — filing "
+            f"WITHOUT {len(pending_ids)} still-pending pool photo(s) (PDF carries "
+            f"the pending-at-render-time note; is the screening pass healthy?)",
+            error_code="portal_daily_photo_defer_expired",
+            correlation_id=correlation_id,
+        )
+    return None, pool_photos, counts
+
+
 def process_portal_submission(submission: dict[str, Any]) -> ProcessResult:
     """Process one HMAC-verified portal submission (Phase-5 pull path).
 
@@ -2189,13 +2422,26 @@ def _run_portal_pipeline(
     if photo_refusal is not None:
         return photo_refusal
 
+    # DR-photo-pool Slice 2 — resolve additional-photo pool references: CLEAN refs
+    # download their §34 re-encode from Box for the grid; STILL-PENDING refs defer
+    # the submission one cycle (bounded); REFUSED/unavailable refs become PDF notes.
+    # A transient Box error inside raises → the caller maps to 'error' (re-pull).
+    pool_defer, pool_photos, pool_counts = _resolve_additional_photos(
+        definition, values, submission, correlation_id=correlation_id
+    )
+    if pool_defer is not None:
+        return pool_defer
+
     # Render (deterministic; no LLM, no network). Screened photos ride out-of-band so
-    # the renderer never parses the raw base64 in `values`.
+    # the renderer never parses the raw base64 in `values`. Pool photos join the SAME
+    # photo grid AFTER the inline ones (upload order preserved within each group);
+    # the status counts drive the grid-adjacent notes (never a silent omission).
     render_submission = {
         "job_name": project_name,
         "work_date": work_date_raw,
         "values": values,
-        "screened_photos": screened_photos,
+        "screened_photos": screened_photos + pool_photos,
+        "additional_photo_notes": pool_counts,
     }
     try:
         pdf = form_pdf.render_submission_pdf(definition, render_submission)
@@ -2229,9 +2475,24 @@ def _run_portal_pipeline(
 
     # Supplementary: file the §34-screened photo ORIGINALS to a Box subfolder (the PDF
     # of record already embeds them). Best-effort — never sinks the filed submission.
+    # POOL photos are deliberately NOT re-filed here — their permanent Box record
+    # already exists (ITS Photos/daily/…, written by the screening pass at screen
+    # time); re-uploading would duplicate the artifact.
     if screened_photos:
         _file_portal_photos(folder_id, submission_uuid, screened_photos, correlation_id)
         notes = (notes + f" [photos:{len(screened_photos)}]").strip()
+    if pool_photos or any(pool_counts.values()):
+        notes = (
+            notes
+            + f" [pool_photos:{len(pool_photos)}"
+            + (f" pending:{pool_counts['pending']}" if pool_counts["pending"] else "")
+            + (f" refused:{pool_counts['refused']}" if pool_counts["refused"] else "")
+            + (
+                f" unavailable:{pool_counts['unavailable']}"
+                if pool_counts["unavailable"] else ""
+            )
+            + "]"
+        ).strip()
 
     # Write the durable per-submission row (a SmartsheetError here is transient →
     # raises → re-pull; the conflict-recovery in _file_portal_pdf de-dups the Box

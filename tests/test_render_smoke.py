@@ -157,6 +157,14 @@ def _synthesize_submission(definition: dict) -> dict:
             values[section["key"]] = cl
         elif typ == "freeform":
             values[section["key"]] = "Synthesized freeform answer."
+        elif typ == "additional_photos":
+            # DR-photo-pool Slice 1: the submission carries POOL REFERENCES only (the bytes
+            # went to daily_photo_pool via their own bounded uploads) — synthesize two refs so
+            # the renderer's caption-table branch renders (empty would take the no-photos line).
+            values[section["key"]] = [
+                {"pool_id": 101, "caption": "Synthesized pool photo caption"},
+                {"pool_id": 102},
+            ]
         elif typ == "job_requirements":
             # Slice D4: the per-job overlay's SELF-DESCRIBING answers array — the portal
             # captures it at fill time; the smoke synthesizes one of each answerable kind

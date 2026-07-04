@@ -61,6 +61,8 @@ PDF_REQUESTS_PATH = "/api/internal/pdf-requests"
 FILED_PDF_PATH = "/api/internal/filed-pdf"
 ITEM_PHOTOS_PENDING_PATH = "/api/internal/item-photos/pending"
 ITEM_PHOTO_RESULT_PATH_TEMPLATE = "/api/internal/item-photos/{photo_id}/result"
+DAILY_PHOTOS_PENDING_PATH = "/api/internal/daily-photos/pending"
+DAILY_PHOTO_RESULT_PATH_TEMPLATE = "/api/internal/daily-photos/{photo_id}/result"
 PUBLISH_PENDING_PATH = "/api/internal/publish/pending"
 PUBLISH_CLAIM_PATH = "/api/internal/publish/claim"
 PUBLISH_STAMP_PATH = "/api/internal/publish/stamp"
@@ -438,6 +440,75 @@ def post_item_photo_result(
     data = _request(
         "POST", base_url,
         ITEM_PHOTO_RESULT_PATH_TEMPLATE.format(photo_id=int(photo_id)), token,
+        json_body=body,
+    )
+    return bool(data.get("found"))
+
+
+# ---- Daily-pool photo screening queue (DR-photo-pool Slice 2 — the Mac pass I/O) ----
+
+
+def get_daily_photos_pending(
+    base_url: str, token: str, *, limit: int = 25
+) -> list[dict[str, Any]]:
+    """Pull the unscreened daily-pool photo queue: GET /api/internal/daily-photos/pending.
+
+    Each row is a dict `{id, job_id, work_date, photo_json, hmac, created_at}` — one
+    `daily_photo_pool` row (migration 0037) at `status='pending'`, oldest-first
+    (claimed AND unclaimed alike — a claim changes ownership, not screening need).
+    Rows are UNTRUSTED until the caller verifies each row's `hmac` against the
+    daily-photo canonical string (`shared.portal_hmac.verify_daily_photo` — the same
+    verify-before-anything contract as `get_pending`); `photo_json` is the VERBATIM
+    HMAC-covered string and must never be re-serialized before verification.
+
+    A control-plane read of OUR OWN Worker (bearer = the poller's
+    `PORTAL_INTERNAL_API_TOKEN` tier — same privilege class as `get_pending`), NOT a
+    customer-facing send. Same typed-error contract as `get_pending` —
+    `PortalAuthError` (401) / `PortalRateLimitError` (429/503 exhausted) /
+    `PortalTransportError` (any other failure, incl. a non-object / missing-array body).
+    """
+    data = _request(
+        "GET", base_url, DAILY_PHOTOS_PENDING_PATH, token, params={"limit": limit}
+    )
+    daily_photos = data.get("daily_photos")
+    if not isinstance(daily_photos, list):
+        raise PortalTransportError(
+            f"GET {DAILY_PHOTOS_PENDING_PATH} missing/invalid 'daily_photos' array "
+            f"(got {type(daily_photos).__name__})"
+        )
+    # Defensive: keep only dict rows; a non-dict element is malformed transport.
+    return [row for row in daily_photos if isinstance(row, dict)]
+
+
+def post_daily_photo_result(
+    base_url: str, token: str, *, photo_id: int, status: str,
+    box_file_id: str | None = None, detail: str | None = None,
+) -> bool:
+    """Post one screening disposition: POST /api/internal/daily-photos/:id/result → `found`.
+
+    `status` is `'clean'` (MUST carry `box_file_id` — the Box record already exists;
+    the Worker 400s a clean result without it) or `'refused'` (MUST NOT carry
+    `box_file_id`; optional `detail` rides the audit row — the machine reason, NEVER
+    photo bytes). The Worker applies the disposition in ONE atomic batch (W4):
+    `daily_photo_pool.status` flip + **photo_json NULLed (delete-on-screen — the
+    bytes leave D1)** + `box_file_id` + `screened_at` + the changes()-gated audit
+    row. Unlike the item-photo twin there is NO sibling ref flip — pool rows
+    self-describe their status (the SPA chips + the /pending claim manifest read it).
+
+    Idempotent: `found=False` means the row was already screened (a re-post after a
+    lost ack) or no longer exists — the caller treats it as benign, exactly like
+    `mark_filed`. A control-plane write to OUR OWN Worker (outside the External Send
+    Gate, Invariant 1). Raises the typed `PortalTransportError` hierarchy on failure
+    (an invalid-result 400 surfaces as `PortalTransportError`, never a silent return).
+    """
+    body: dict[str, Any] = {"status": status}
+    if box_file_id is not None:
+        body["box_file_id"] = box_file_id
+    if detail is not None:
+        body["detail"] = detail
+    data = _request(
+        "POST", base_url,
+        DAILY_PHOTO_RESULT_PATH_TEMPLATE.format(photo_id=int(photo_id)), token,
         json_body=body,
     )
     return bool(data.get("found"))
