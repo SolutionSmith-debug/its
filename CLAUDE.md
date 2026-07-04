@@ -4,6 +4,25 @@ You are working inside the execution layer of **ITS — Integrated Technical Sys
 Claude-powered computer employee. The planning layer lives in a separate Claude.ai project;
 this repo implements what is decided there.
 
+## START HERE — read order & canonical sources
+
+New session? Load context in this order, and treat each as the **single source of truth** for its category —
+point to it, don't restate it elsewhere (this is the anti-sprawl contract):
+
+1. **This file** (`~/its/CLAUDE.md`) — governing execution conventions + the "What's stubbed vs. real"
+   current-state table.
+2. **House reflexes / working standards** — `docs/HOUSE_REFLEXES.md` (auto-imported below): the recurring
+   lessons that keep standards from falling. **Add a new lesson THERE**, not in a new doc or a fifth memory file.
+3. **Doctrine (canonical — planning-layer wins)** — `~/its-blueprint/doctrine/` (Operational Standards v19,
+   Foundation Mission v11); cited by `§N` throughout this file.
+4. **Roadmap / what's next** — `docs/ROADMAP.md` (the single top-level marching order), which indexes the
+   field-ops program file (`project_fieldops-portal-program.md`, auto-memory — read FIRST for field-ops detail)
+   and the blueprint workstream missions (design source).
+5. **Session-durable facts** — `MEMORY.md` (auto-memory index; one-line entries, kept under the load cap).
+6. **Per-topic detail, on demand** — `docs/` (tech_debt, adr/, runbooks/, operations/, session_logs/).
+
+@docs/HOUSE_REFLEXES.md
+
 ## Product context
 
 ITS is a **white-glove custom-development practice**. Each customer gets a fully-customized
