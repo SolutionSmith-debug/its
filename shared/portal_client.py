@@ -69,6 +69,8 @@ PUBLISH_STAMP_PATH = "/api/internal/publish/stamp"
 PUBLISH_STUCK_PATH = "/api/internal/publish/stuck"
 FIELDOPS_PENDING_JOBS_PATH = "/api/internal/fieldops/pending-jobs"
 FIELDOPS_JOBS_MARK_MIRRORED_PATH = "/api/internal/fieldops/jobs-mark-mirrored"
+FIELDOPS_HOURS_PENDING_PATH = "/api/internal/fieldops/hours-pending"
+FIELDOPS_HOURS_MARK_MIRRORED_PATH = "/api/internal/fieldops/hours-mark-mirrored"
 PROGRESS_ROLLUP_PATH = "/api/internal/progress-rollup"
 PRUNE_STATUS_PATH = "/api/internal/prune-status"
 
@@ -313,6 +315,50 @@ def mark_fieldops_jobs_mirrored(
     return _request(
         "POST", base_url, FIELDOPS_JOBS_MARK_MIRRORED_PATH, token,
         json_body={"updates": updates},
+    )
+
+
+def get_fieldops_pending_hours(base_url: str, token: str) -> list[dict[str, Any]]:
+    """Pull unmirrored crew time entries to mirror UP: GET /api/internal/fieldops/hours-pending.
+
+    Returns the `entries` list verbatim — each a dict with `uuid, job_id, project_name,
+    work_started_at, work_ended_at, hours, notes, amends_uuid, created_at, personnel_name`
+    (`personnel_name` is the DISPLAY name, never a username). The Worker caps the page at 200
+    server-side (no client limit param); the daemon's hours pass drains across cycles.
+
+    A control-plane read of OUR OWN Worker (bearer = the SEPARATE field-ops token
+    `PORTAL_FIELDOPS_API_TOKEN`, same as `get_fieldops_pending_jobs`), NOT a customer send. Same
+    typed-error contract: `PortalAuthError` (401) / `PortalRateLimitError` (429/503 exhausted) /
+    `PortalTransportError` (any other, incl. a non-object / missing-array body).
+    """
+    data = _request("GET", base_url, FIELDOPS_HOURS_PENDING_PATH, token)
+    entries = data.get("entries")
+    if not isinstance(entries, list):
+        raise PortalTransportError(
+            f"GET {FIELDOPS_HOURS_PENDING_PATH} missing/invalid 'entries' array "
+            f"(got {type(entries).__name__})"
+        )
+    # Defensive: keep only dict rows; a non-dict element is malformed transport.
+    return [row for row in entries if isinstance(row, dict)]
+
+
+def mark_fieldops_hours_mirrored(
+    base_url: str, token: str, uuids: list[str]
+) -> dict[str, Any]:
+    """Hours-pass commit point: POST /api/internal/fieldops/hours-mark-mirrored.
+
+    `uuids` is a non-empty list of the `time_entries.uuid`s whose per-job Hours Log row the daemon
+    confirmed this cycle. The Worker stamps `mirrored_at = unixepoch()` for each IFF still NULL
+    (idempotent — a replay/re-mirror is a no-op, never a regress) in one atomic batch + a summary
+    audit row. The Worker rejects an EMPTY list (400) — the caller must never send one.
+
+    Like `mark_fieldops_jobs_mirrored`, a control-plane write to OUR OWN Worker (outside the
+    External Send Gate, Invariant 1). Returns the Worker's `{ok, updated}` dict; raises the typed
+    `PortalTransportError` hierarchy on failure.
+    """
+    return _request(
+        "POST", base_url, FIELDOPS_HOURS_MARK_MIRRORED_PATH, token,
+        json_body={"uuids": uuids},
     )
 
 
