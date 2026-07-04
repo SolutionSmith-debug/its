@@ -62,11 +62,23 @@ class PicklistViolationError(ValueError):
 
 
 # Workstream picklist values used by ITS_Errors / ITS_Config / ITS_Review_Queue.
-# Matches the live ITS_Review_Queue picklist (verified 2026-05-18) — superset
-# of ITS_Quarantine which uses `other` instead of `global`. Per-sheet entries
-# in the registry below pick the right set.
+# Matches the live ITS_Review_Queue picklist (verified 2026-05-18; `progress_reports`
+# appended 2026-07-03 for the Progress Reporting go-live) — superset of ITS_Quarantine
+# which uses `other` instead of `global`. Per-sheet entries in the registry below pick
+# the right set.
+#
+# `progress_reports` (added 2026-07-03) MUST stay in lockstep with
+# `review_queue.VALID_WORKSTREAMS`: `review_queue.add(workstream="progress_reports", …)`
+# passes its own VALID_WORKSTREAMS check (progress joined at P5) and then calls
+# `smartsheet_client.add_rows(SHEET_REVIEW_QUEUE, {… "Workstream": "progress_reports"})`,
+# which validates against THIS set. Omitting it here raised `PicklistViolationError` at
+# the first progress per-job compile fence / capacity-breach enqueue (latent since P4 —
+# the two sets drifted; the review_queue side was fixed, this write-gate side was not).
+# error_log writes NO Workstream cell to ITS_Errors, so widening SHEET_ERRORS.Workstream
+# here is harmless (nothing wrote a now-newly-allowed value; the set only grows).
 _WORKSTREAM_VALUES_GLOBAL: frozenset[str] = frozenset({
     "safety_reports",
+    "progress_reports",
     "po_materials",
     "subcontracts",
     "email_triage",

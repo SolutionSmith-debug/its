@@ -1,6 +1,13 @@
-"""Orchestration tests for the on-demand Compile-Now poller (Part B). The compile itself
-(weekly_generate._compile_job_week) + all Smartsheet I/O are mocked; this verifies the poll
-loop: gate, single-flight lock, trigger-honored, selection narrowing, and fail-loud."""
+"""Orchestration tests for the on-demand Compile-Now poller (Part B), now cross-workstream.
+
+The compile itself (generate_core._compile_job_week) + all Smartsheet I/O are mocked; this verifies
+the poll loop: per-workstream gate, single-flight lock, trigger-honored, selection narrowing,
+fail-loud, and the safety+progress iteration (§14 parameterize-not-clone — ONE daemon, one lock, one
+heartbeat).
+
+Default fixture posture: only the SAFETY workstream is enabled, so the single-workstream assertions
+below read exactly as they did pre-generalization; the cross-workstream tests flip progress on.
+"""
 from __future__ import annotations
 
 from contextlib import contextmanager
@@ -10,6 +17,9 @@ import pytest
 
 import shared.kill_switch as ks
 from safety_reports import compile_now_poll as cnp
+
+SAFETY_CFG = cnp.weekly_generate.SAFETY_GENERATE_CONFIG
+PROGRESS_CFG = cnp.progress_weekly_generate.PROGRESS_GENERATE_CONFIG
 
 
 def _job(name: str = "ZZ Job", jid: str = "JOB-1") -> SimpleNamespace:
@@ -26,8 +36,16 @@ def _cm(value: bool):
 @pytest.fixture
 def stub(mocker):
     mocker.patch.object(ks, "check_system_state", return_value=ks.SystemState.ACTIVE)
+    # Default: SAFETY enabled, PROGRESS disabled → the legacy single-workstream behaviour. Tests
+    # exercising progress mutate `enabled_ws` (the closure reads this exact dict object).
+    enabled_ws = {"safety_reports": True, "progress_reports": False}
+
+    def _enabled(config):
+        return enabled_ws.get(config.workstream, False)
+
     return {
-        "enabled": mocker.patch.object(cnp, "_polling_enabled", return_value=True),
+        "enabled_ws": enabled_ws,
+        "enabled": mocker.patch.object(cnp, "_polling_enabled", side_effect=_enabled),
         "lock": mocker.patch.object(cnp, "_file_lock", side_effect=lambda *a, **k: _cm(True)),
         "jobs": mocker.patch.object(cnp.active_jobs, "list_active_jobs", return_value=[]),
         "ensure": mocker.patch.object(cnp.week_sheet, "ensure_week_sheet", return_value=111),
@@ -36,11 +54,12 @@ def stub(mocker):
         "requested": mocker.patch.object(cnp.week_sheet, "any_compile_now_requested", return_value=False),
         "selected": mocker.patch.object(cnp.week_sheet, "selected_submission_row_ids", return_value=set()),
         "clear": mocker.patch.object(cnp.week_sheet, "clear_compile_now"),
-        "compile": mocker.patch.object(cnp.weekly_generate, "_compile_job_week"),
-        "rq": mocker.patch.object(cnp.weekly_generate, "_safe_review_queue"),
+        # The compile + review-queue fence are the SHARED generate_core primitives (config-bound).
+        "compile": mocker.patch.object(cnp.generate_core, "_compile_job_week"),
+        "rq": mocker.patch.object(cnp.generate_core, "_safe_review_queue"),
         "marker": mocker.patch.object(cnp, "_write_watchdog_marker"),
-        # R4-F1: the daemon now writes an ITS_Daemon_Health heartbeat per cycle. Mock the
-        # two thin-delegator seams so no test touches live state / Smartsheet.
+        # R4-F1: the daemon writes an ITS_Daemon_Health heartbeat per cycle. Mock the two
+        # thin-delegator seams so no test touches live state / Smartsheet.
         "hb": mocker.patch.object(cnp, "_write_heartbeat"),
         "hb_row": mocker.patch.object(cnp, "_write_heartbeat_row"),
         "circuit": mocker.patch.object(cnp.circuit_breaker, "is_open", return_value=False),
@@ -62,6 +81,8 @@ def test_trigger_compiles_and_clears(stub):
     out = cnp.poll_once()
     assert out.triggered == 1 and out.compiled == 1 and out.errors == 0
     stub["compile"].assert_called_once()
+    # the compile is bound to the SAFETY config (first positional arg)
+    assert stub["compile"].call_args.args[0] is SAFETY_CFG
     stub["clear"].assert_called_once()  # the per-submission selection is cleared on success
 
 
@@ -92,7 +113,7 @@ def test_single_flight_when_locked(stub):
 
 
 def test_polling_disabled_halts(stub):
-    stub["enabled"].return_value = False
+    stub["enabled"].side_effect = lambda config: False  # ALL workstreams off
     out = cnp.poll_once()
     assert out.halted == "polling_disabled"
     stub["jobs"].assert_not_called()
@@ -106,6 +127,8 @@ def test_compile_failure_is_fail_loud(stub):
     assert out.errors == 1 and out.compiled == 0
     stub["clear"].assert_not_called()   # the trigger STAYS SET (never reached the clear)
     stub["rq"].assert_called_once()     # surfaced to the Review Queue
+    # the fence routes to the SAFETY config's review queue (first positional arg)
+    assert stub["rq"].call_args.args[0] is SAFETY_CFG
     assert any(c.args and c.args[0] == cnp.Severity.ERROR for c in stub["log"].call_args_list)
 
 
@@ -115,6 +138,63 @@ def test_per_job_fence_one_bad_job_does_not_block_others(stub):
     stub["compile"].side_effect = [RuntimeError("boom"), None]  # job A fails, B compiles
     out = cnp.poll_once()
     assert out.errors == 1 and out.compiled == 1  # B still compiled
+
+
+# ---- Cross-workstream iteration (§14 parameterize-not-clone) ---------------
+
+
+def test_both_workstreams_iterate_when_enabled(stub):
+    stub["enabled_ws"]["progress_reports"] = True  # enable progress too
+    safety_job = _job("Safety Job", "JOB-S")
+    progress_job = _job("Progress Job", "JOB-P")
+
+    def _jobs(config=cnp.active_jobs.SAFETY_ACTIVE_JOBS_CONFIG):
+        # config here is an ActiveJobsConfig — distinguish by identity.
+        if config is cnp.active_jobs.PROGRESS_ACTIVE_JOBS_CONFIG:
+            return [progress_job]
+        return [safety_job]
+
+    stub["jobs"].side_effect = _jobs
+    stub["requested"].return_value = True
+    out = cnp.poll_once()
+    assert out.jobs_scanned == 2 and out.compiled == 2 and out.errors == 0
+    assert stub["compile"].call_count == 2
+    compiled_ws = {c.args[0].workstream for c in stub["compile"].call_args_list}
+    assert compiled_ws == {"safety_reports", "progress_reports"}
+    # ONE aggregate heartbeat for the whole cycle (not one per workstream).
+    stub["hb"].assert_called_once()
+    assert stub["hb_row"].call_args.kwargs["items_processed"] == 2
+    stub["marker"].assert_called_once()
+
+
+def test_disabled_workstream_is_not_iterated(stub):
+    # progress stays disabled (default); even with a triggered progress job it must be skipped.
+    def _jobs(config=cnp.active_jobs.SAFETY_ACTIVE_JOBS_CONFIG):
+        if config is cnp.active_jobs.PROGRESS_ACTIVE_JOBS_CONFIG:
+            return [_job("Progress Job", "JOB-P")]
+        return [_job("Safety Job", "JOB-S")]
+
+    stub["jobs"].side_effect = _jobs
+    stub["requested"].return_value = True
+    out = cnp.poll_once()
+    assert out.jobs_scanned == 1  # only safety iterated
+    assert stub["compile"].call_count == 1
+    assert stub["compile"].call_args.args[0] is SAFETY_CFG
+
+
+def test_only_progress_enabled_compiles_progress(stub):
+    stub["enabled_ws"]["safety_reports"] = False
+    stub["enabled_ws"]["progress_reports"] = True
+    stub["jobs"].return_value = [_job("Progress Job", "JOB-P")]
+    stub["requested"].return_value = True
+    out = cnp.poll_once()
+    assert out.compiled == 1
+    assert stub["compile"].call_args.args[0] is PROGRESS_CFG
+
+
+def test_compile_configs_bind_both_workstreams():
+    # Pin the served set (self-provision / no-mix-up): exactly safety + progress, in order.
+    assert [c.workstream for c in cnp.COMPILE_CONFIGS] == ["safety_reports", "progress_reports"]
 
 
 # ---- ITS_Daemon_Health heartbeat (R4-F1) ----------------------------------
@@ -147,7 +227,7 @@ def test_open_circuit_writes_circuit_open_heartbeat(stub):
 
 
 def test_disabled_cycle_skips_heartbeat(stub):
-    stub["enabled"].return_value = False
+    stub["enabled"].side_effect = lambda config: False
     cnp.poll_once()
     stub["hb"].assert_not_called()
     stub["hb_row"].assert_not_called()
