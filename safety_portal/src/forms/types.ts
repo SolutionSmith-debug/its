@@ -82,7 +82,15 @@ export type Section =
   // values under its key (the key is reserved for namespace uniqueness only): confirm-receipt
   // appends a deliveries_received row; problems file as the material-incident form's OWN
   // submission. At most one per definition (publishValidation.ts).
-  | { type: "expected_materials"; key: string; title?: string };
+  | { type: "expected_materials"; key: string; title?: string }
+  // Additional-photos pool mount (DR-photo-pool Slice 1): a keyed mount point with no content of
+  // its own — the Daily tab renders the pool upload/status UI here (AdditionalPhotosSection via
+  // the FormRenderer `additionalPhotos` adapter). Each additional photo uploads INDIVIDUALLY to
+  // daily_photo_pool (the inline site_photos field is payload-budgeted — CS2: 280KB × 4 base64 <
+  // the 1.8MB payload cap); the submission files only tiny POOL REFERENCES under values.<key> =
+  // [{pool_id, caption?}]. The key MUST be the fixed wire key "additional_photos" (/api/submit
+  // claims exactly that top-level key). At most one per definition (publishValidation.ts).
+  | { type: "additional_photos"; key: string; title?: string };
 
 export interface FormDefinition {
   form_code: string;

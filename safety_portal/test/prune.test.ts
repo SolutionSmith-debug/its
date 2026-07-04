@@ -22,6 +22,7 @@ beforeEach(async () => {
     env.DB.prepare("DELETE FROM job_daily_requirements"),
     env.DB.prepare("DELETE FROM job_expected_materials"),
     env.DB.prepare("DELETE FROM item_photos"),
+    env.DB.prepare("DELETE FROM daily_photo_pool"),
     env.DB.prepare("DELETE FROM checklist_item_states"),
     env.DB.prepare("DELETE FROM checklist_instances"),
     env.DB.prepare("DELETE FROM equipment_location"),
@@ -419,6 +420,79 @@ describe("pruneOldData — G1 item_photos stuck-pending rider", () => {
   });
 });
 
+// ── DR-photo-pool Slice 2 — the daily_photo_pool unclaimed/orphan rider. ─────────
+async function seedDailyPhoto(over: {
+  status?: string;
+  photoJson?: string | null;
+  createdAt?: number;
+  claimedBy?: string | null;
+} = {}): Promise<number> {
+  const r = await env.DB
+    .prepare(
+      "INSERT INTO daily_photo_pool (job_id, work_date, uploaded_by, status, photo_json, hmac, created_at, claimed_by_submission) " +
+        "VALUES ('JOB-1','2026-01-01','mgr.mo',?1,?2,'h',?3,?4) RETURNING id",
+    )
+    .bind(
+      over.status ?? "pending",
+      over.photoJson === undefined ? "{}" : over.photoJson,
+      over.createdAt ?? NOW,
+      over.claimedBy ?? null,
+    )
+    .first<{ id: number }>();
+  return r!.id;
+}
+async function dailyIds(): Promise<number[]> {
+  const r = await env.DB.prepare("SELECT id FROM daily_photo_pool ORDER BY id").all<{ id: number }>();
+  return r.results.map((x) => x.id);
+}
+
+describe("pruneOldData — DR daily_photo_pool unclaimed/orphan rider", () => {
+  it("deletes UNCLAIMED rows >7d (any status — abandoned pre-submit uploads); fresh unclaimed survives", async () => {
+    await seedDailyPhoto({ status: "pending", createdAt: NOW - 8 * DAY }); // stuck bytes → WARN path
+    await seedDailyPhoto({ status: "clean", photoJson: null, createdAt: NOW - 8 * DAY }); // screened, never referenced
+    const fresh = await seedDailyPhoto({ status: "pending", createdAt: NOW - 1 * DAY });
+
+    const res = await pruneOldData(env.DB, NOW);
+
+    expect(res.dailyPhotos).toBe(2);
+    expect(res.failedStages).toEqual([]);
+    expect(await dailyIds()).toEqual([fresh]);
+  });
+
+  it("NEVER deletes a CLAIMED row whose submission exists — it is the filed report's photo manifest", async () => {
+    await seedSub("uuid-manifest", 1, NOW - 100 * DAY); // filed long ago, job still active
+    const cleanManifest = await seedDailyPhoto({
+      status: "clean", photoJson: null, createdAt: NOW - 400 * DAY, claimedBy: "uuid-manifest",
+    });
+    const refusedMarker = await seedDailyPhoto({
+      status: "refused", photoJson: null, createdAt: NOW - 400 * DAY, claimedBy: "uuid-manifest",
+    });
+
+    const res = await pruneOldData(env.DB, NOW);
+
+    expect(res.dailyPhotos).toBe(0);
+    expect(await dailyIds()).toEqual([cleanManifest, refusedMarker]);
+  });
+
+  it("deletes ORPHANED claims (uuid absent from submissions) past the cutoff; a recent orphan survives the age guard", async () => {
+    // The crashed-insert tail: claimed, but the submission INSERT never landed.
+    await seedDailyPhoto({ status: "pending", createdAt: NOW - 8 * DAY, claimedBy: "uuid-never-landed" });
+    // A claim written milliseconds before its submission INSERT (the prune must not sweep mid-flight).
+    const inFlight = await seedDailyPhoto({ status: "pending", createdAt: NOW, claimedBy: "uuid-in-flight" });
+
+    const res = await pruneOldData(env.DB, NOW);
+
+    expect(res.dailyPhotos).toBe(1);
+    expect(await dailyIds()).toEqual([inFlight]);
+  });
+
+  it("a throw in the daily_photo_pool stage is isolated + NAMED (GS2 fence)", async () => {
+    const res = await pruneOldData(poisonedDb(/DELETE FROM daily_photo_pool/), NOW);
+    expect(res.failedStages).toEqual(["daily_photo_pool"]);
+    expect(res.dailyPhotos).toBe(0);
+  });
+});
+
 // ── GS2 — the prune_meta heartbeat row (migration 0033 + writePruneMeta). ────────
 function syntheticResult(overrides: Partial<PruneResult> = {}): PruneResult {
   return {
@@ -430,6 +504,7 @@ function syntheticResult(overrides: Partial<PruneResult> = {}): PruneResult {
     pdfChunks: 6,
     publishRequests: 7,
     itemPhotos: 9,
+    dailyPhotos: 10,
     jobs: 8,
     dbSizeBytes: 4096,
     sizeWarn: false,
@@ -458,7 +533,8 @@ describe("writePruneMeta — GS2 heartbeat record", () => {
     expect(rows[0].size_warn).toBe(1);
     expect(JSON.parse(rows[0].counters_json)).toEqual({
       submissions: 1, stripped: 2, rejected: 3, audit: 4,
-      pdfRequests: 5, pdfChunks: 6, publishRequests: 7, itemPhotos: 9, jobs: 8,
+      pdfRequests: 5, pdfChunks: 6, publishRequests: 7, itemPhotos: 9,
+      dailyPhotos: 10, jobs: 8,
     });
     expect(JSON.parse(rows[0].failed_stages_json)).toEqual(["audit"]);
   });

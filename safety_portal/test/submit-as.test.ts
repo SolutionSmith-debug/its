@@ -292,9 +292,11 @@ describe("submit-as — downstream is byte-unchanged (regression)", () => {
     expect(res.status).toBe(200);
     const { pending } = (await res.json()) as { pending: Record<string, unknown>[] };
     expect(pending.length).toBe(1);
-    // The exact column set the Mac-side portal_poll daemon consumes — unchanged.
+    // The exact column set the Mac-side portal_poll daemon consumes. `daily_photos`
+    // is the DR-photo-pool Slice-2 claim manifest (server-resolved, NOT HMAC-covered
+    // — intake consumes it only for HMAC-covered refs); everything else unchanged.
     expect(Object.keys(pending[0]).sort()).toEqual(
-      ["amends_uuid", "created_at", "form_code", "hmac", "job_id", "payload_json", "submission_uuid", "work_date"].sort(),
+      ["amends_uuid", "created_at", "daily_photos", "form_code", "hmac", "job_id", "payload_json", "submission_uuid", "work_date"].sort(),
     );
     // The attribution columns must NOT leak into the downstream payload.
     expect(pending[0]).not.toHaveProperty("actor_username");

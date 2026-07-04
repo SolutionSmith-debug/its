@@ -145,6 +145,20 @@ FETCH_FAIL_CRITICAL_THRESHOLD = 5
 ITEM_PHOTO_FLAGGED_PATH = STATE_DIR / "portal_poll_item_photo_flagged.json"
 MAX_ITEM_PHOTO_FLAGS = 500  # cap the flag file (drained rows leave dead weight only)
 
+# DR-photo-pool Slice 2 — the daily-pool photo screening pass (_service_daily_photos),
+# the daily_photo_pool (migration 0037) twin of the item-photo pass above. Same page
+# size rationale; the Worker caps at 100.
+DAILY_PHOTO_LIMIT = 25
+# Box filing target: <portal root>/ITS Photos/daily/<job_id>/<work_date>/photo_<id>.jpg.
+# job_id + work_date are HMAC-COVERED (the daily-photo canonical binds them — a signed
+# photo cannot be replayed onto another job/date), and the photo id is served with the
+# signed row (the item-photo precedent) — the path never derives from an unsigned field.
+DAILY_PHOTO_BOX_SUBFOLDER = "daily"
+# One-shot bad-HMAC flag state for daily-pool rows (the exact ITEM_PHOTO_FLAGGED_PATH
+# semantics, its own file — flag ids are per-table AUTOINCREMENTs and must not collide).
+DAILY_PHOTO_FLAGGED_PATH = STATE_DIR / "portal_poll_daily_photo_flagged.json"
+MAX_DAILY_PHOTO_FLAGS = 500
+
 # A4: "stuck backlog" marker for the daily watchdog (Check Q). A backlog is *stuck* when a
 # SATURATED pending page (len(rows) >= PENDING_LIMIT) drains NOTHING in a cycle — the daemon is
 # fetching fine but intake is erroring on every row, so nothing is marked-filed and submissions
@@ -199,8 +213,10 @@ class PollStats:
     rejected: int = 0   # HMAC verify failures (never filed)
     remarked: int = 0   # seen-as-filed rows whose mark-filed was re-posted
     errors: int = 0     # transient intake errors + per-row exceptions (NOT drained)
+    deferred: int = 0   # DR-photo-pool: submissions deferred a cycle awaiting pool screening
     pdf_serviced: int = 0  # PR-4: request-driven PDF caches uploaded this cycle
     item_photos_screened: int = 0  # G1: item photos dispositioned (clean+refused) this cycle
+    daily_photos_screened: int = 0  # DR-photo-pool: pool photos dispositioned this cycle
 
 
 # ---- Box helper (PR-4 Part A) -------------------------------------------
@@ -711,6 +727,33 @@ def _poll_inside_lock() -> PollStats:
                              error_summary="fail-closed: portal credentials missing")
         return PollStats(halted_no_creds=True)
 
+    # ── DR-photo-pool Slice 2: the daily-pool screening pass runs BEFORE the submission
+    # drain — before the /pending FETCH itself. THE ORDERING CRUX: additional photos
+    # upload individually BEFORE their referencing daily report submits, so by screening
+    # the pool first (claimed rows included), a photo uploaded before submit is usually
+    # CLEAN by the time its referencing submission processes — and because the fetch
+    # below happens AFTER this pass, the claim manifest the Worker attaches to each
+    # /pending row ({id, status, box_file_id}) reflects POST-screen state, so the
+    # common same-cycle case files immediately instead of taking a spurious one-cycle
+    # defer. A still-pending reference at intake time defers the submission one cycle
+    # (bounded — see intake._resolve_additional_photos); this pass + the re-pull is
+    # what resolves it. FENCED like every best-effort pass (own error code, WARN,
+    # never blocks the drain): a dead pass degrades referencing submissions to the
+    # bounded defer-then-file-without path and leaves non-referencing submissions
+    # untouched — while an unscreened backlog is NEVER silent (watchdog Check C /
+    # ITS_Daemon_Health page a dead daemon; the Worker's >7d unclaimed prune stage is
+    # the loud growth cap for abandoned uploads).
+    daily_screened = 0
+    try:
+        daily_screened = _service_daily_photos(creds.base_url, creds.bearer, creds.secret)
+    except Exception as exc:  # noqa: BLE001 — best-effort; must not block intake filing
+        error_log.log(
+            Severity.WARN, SCRIPT_NAME,
+            f"daily-photo screening pass failed (intake unaffected): "
+            f"{type(exc).__name__}: {exc!r}",
+            error_code="portal_daily_photo_service_failed",
+        )
+
     try:
         rows = portal_client.get_pending(creds.base_url, creds.bearer, limit=PENDING_LIMIT)
     except portal_client.PortalAuthError as exc:
@@ -726,7 +769,7 @@ def _poll_inside_lock() -> PollStats:
         _write_heartbeat()
         _write_heartbeat_row(status="ERROR", items_processed=0,
                              error_summary="pending fetch UNAUTHORIZED (401) — bearer rejected")
-        return PollStats(errors=1)
+        return PollStats(errors=1, daily_photos_screened=daily_screened)
     except portal_client.PortalTransportError as exc:
         # Transport failure (Worker down / wrong base URL / network). A one-off blip is ERROR
         # and self-heals; a SUSTAINED outage (>= threshold consecutive cycles) escalates to
@@ -744,7 +787,7 @@ def _poll_inside_lock() -> PollStats:
         _write_heartbeat()
         _write_heartbeat_row(status="ERROR", items_processed=0,
                              error_summary=f"pending fetch failed (#{n}): {type(exc).__name__}")
-        return PollStats(errors=1)
+        return PollStats(errors=1, daily_photos_screened=daily_screened)
 
     # Fetch succeeded → clear the consecutive-failure counter (a recovered blip never
     # accumulates toward the CRITICAL threshold).
@@ -753,7 +796,8 @@ def _poll_inside_lock() -> PollStats:
     seen = _load_seen()
     counters = {
         "filed": 0, "reviewed": 0, "rejected": 0, "remarked": 0, "errors": 0,
-        "pdf_serviced": 0, "item_photos": 0,
+        "deferred": 0, "pdf_serviced": 0, "item_photos": 0,
+        "daily_photos": daily_screened,
     }
 
     for row in rows:
@@ -874,8 +918,10 @@ def _poll_inside_lock() -> PollStats:
             f"poll cycle: scanned={len(rows)} filed={counters['filed']} "
             f"reviewed={counters['reviewed']} rejected={counters['rejected']} "
             f"remarked={counters['remarked']} errors={counters['errors']} "
+            f"deferred={counters['deferred']} "
             f"pdf_serviced={counters['pdf_serviced']} "
-            f"item_photos_screened={counters['item_photos']}"
+            f"item_photos_screened={counters['item_photos']} "
+            f"daily_photos_screened={counters['daily_photos']}"
         ),
         error_code="poll_cycle_summary",
     )
@@ -886,8 +932,10 @@ def _poll_inside_lock() -> PollStats:
         rejected=counters["rejected"],
         remarked=counters["remarked"],
         errors=counters["errors"],
+        deferred=counters["deferred"],
         pdf_serviced=counters["pdf_serviced"],
         item_photos_screened=counters["item_photos"],
+        daily_photos_screened=counters["daily_photos"],
     )
 
 
@@ -949,6 +997,18 @@ def _process_row(
     if result.status == "error":
         # TRANSIENT — do NOT mark-filed, do NOT record seen; re-pull retries.
         counters["errors"] += 1
+        return
+
+    if result.status == "deferred":
+        # DR-photo-pool Slice 2 — the submission references pool photos still PENDING
+        # §34 screening. The SAME soft-fail mechanics as 'error' (NOT mark-filed, NOT
+        # seen-recorded → the row re-pulls next cycle, by which time the pass above
+        # has usually screened them), but counted SEPARATELY: a defer is an expected
+        # ordering race, not an infra failure — the cycle status stays OK and no
+        # error row spams ITS_Errors. Bounded intake-side: after
+        # intake.DAILY_PHOTO_DEFER_MAX_SECONDS the submission files WITHOUT the
+        # missing photos + a PDF note + a WARN (never blocks filing forever).
+        counters["deferred"] += 1
         return
 
     if result.status in DRAIN_STATUSES:
@@ -1054,13 +1114,18 @@ def _service_pdf_requests(base_url: str, bearer: str) -> int:
 
 def _cycle_notes(counters: dict[str, int]) -> str | None:
     """Compose the optional ITS_Daemon_Health Notes fragment from the best-effort
-    pass counters (PDF servicing + item-photo screening). None when both are zero
-    (a quiet cycle writes no note — the pre-G1 behavior)."""
+    pass counters (PDF servicing + item/daily photo screening) and the pool-defer
+    count. None when all are zero (a quiet cycle writes no note — the pre-G1
+    behavior)."""
     parts = []
     if counters["pdf_serviced"]:
         parts.append(f"pdf_serviced={counters['pdf_serviced']}")
     if counters["item_photos"]:
         parts.append(f"item_photos_screened={counters['item_photos']}")
+    if counters.get("daily_photos"):
+        parts.append(f"daily_photos_screened={counters['daily_photos']}")
+    if counters.get("deferred"):
+        parts.append(f"deferred={counters['deferred']}")
     return "; ".join(parts) if parts else None
 
 
@@ -1468,6 +1533,418 @@ def _service_item_photos(base_url: str, bearer: str, secret: str) -> int:
                 error_code="portal_item_photo_item_failed",
             )
     _persist_item_photo_flags(flags)
+    return serviced
+
+
+# ---- DR-photo-pool Slice 2: daily-pool photo screening pass ----------------
+#
+# The Mac half of the daily-report additional-photo POOL (migration 0037; Option D
+# inherited from G1: record-only — the photo's permanent home is Box; NO route ever
+# serves the bytes to a browser; DELETE-ON-SCREEN — D1 holds bytes only while
+# pending). Worker-side capture is fieldops_daily_photos.ts
+# POST /api/fieldops/daily-photo; the submission carries only CLAIMED references
+# (values.additional_photos). This pass is the item-photo pass CLONED onto the pool:
+#
+#   GET /api/internal/daily-photos/pending  (claimed + unclaimed pending alike)
+#     → per row: verify the daily-photo HMAC (shared.portal_hmac.verify_daily_photo,
+#       constant-time; job_id + work_date are inside the canonical, so a signed photo
+#       cannot be replayed onto another job or date) — a bad row is one-shot-flagged
+#       and NEVER screened or filed
+#     → the BYTE-IDENTICAL §34 pipeline (photo_screen.decode_b64 → screen_photo, same
+#       module / layers / ITS_Config ClamAV gate / disposition ladder)
+#     → CLEAN: file the SANITIZED re-encode to Box
+#       <portal root>/ITS Photos/daily/<job_id>/<work_date>/photo_<id>.jpg
+#       (version-on-conflict — idempotent re-screen), THEN post
+#       {status:'clean', box_file_id} — Box-before-post-back is load-bearing: the
+#       post-back deletes the D1 bytes (delete-on-screen), so the permanent record
+#       must exist first or a crash window destroys the only copy. box_file_id is
+#       what intake later downloads for the referencing report's PDF grid.
+#     → SUSPICIOUS/MALICIOUS: the intake refusal pattern — page/record FIRST
+#       (malicious → CRITICAL naming the account from the HMAC-covered photo_json;
+#       suspicious → WARN), security-flagged Review-Queue row, then post
+#       {status:'refused'}. The refused bytes are NEVER filed anywhere; a submission
+#       already referencing the photo files WITH a "refused by screening" PDF note
+#       (the claim stands as the forensic marker — evidence refused ≠ report invalid).
+#
+# ORDERING: called by _poll_inside_lock BEFORE the /pending submission fetch — see
+# the block comment there (the design's crux: photos screen before their referencing
+# submission is fetched, so the claim manifest reflects post-screen state).
+
+
+def _load_daily_photo_flags() -> dict[str, str]:
+    """Load the daily-pool bad-HMAC one-shot flag set `{photo_id: 'flagged'}`. {} on
+    any read error (fail-open: the only cost is one redundant re-flag, never a missed
+    alert)."""
+    if not DAILY_PHOTO_FLAGGED_PATH.exists():
+        return {}
+    try:
+        parsed = json.loads(DAILY_PHOTO_FLAGGED_PATH.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _persist_daily_photo_flags(flags: dict[str, str]) -> None:
+    """Atomically persist the daily-pool flag set, capped to MAX_DAILY_PHOTO_FLAGS.
+    Lock-timeout fails OPEN with a WARN — a lost flag set costs a duplicate
+    Review-Queue flag next cycle, never a missed one."""
+    if len(flags) > MAX_DAILY_PHOTO_FLAGS:
+        flags = dict(list(flags.items())[-MAX_DAILY_PHOTO_FLAGS:])
+    DAILY_PHOTO_FLAGGED_PATH.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with state_io.with_path_lock(DAILY_PHOTO_FLAGGED_PATH):
+            state_io.atomic_write_json(DAILY_PHOTO_FLAGGED_PATH, flags)
+    except state_io.StateLockTimeoutError:
+        error_log.log(
+            Severity.WARN, SCRIPT_NAME,
+            f"could not acquire lock on {DAILY_PHOTO_FLAGGED_PATH} after retries; "
+            f"daily-photo flag set not persisted",
+            error_code="portal_daily_photo_flags_persist_failed",
+        )
+
+
+def _handle_daily_photo_hmac_failure(
+    photo_id: int,
+    job_id: str,
+    work_date: str,
+    correlation_id: str,
+    *,
+    base_url: str,
+    bearer: str,
+    flags: dict[str, str],
+) -> None:
+    """Reject a bad-HMAC daily-pool row — the pool twin of
+    _handle_item_photo_hmac_failure.
+
+    NEVER screened, NEVER filed (downgrade defense). One-shot: the anomaly-log +
+    Review-Queue + CRITICAL fire only on the FIRST sighting (the `flags` set
+    suppresses per-cycle re-flag spam if the drain below is lost); the refused
+    post-back retries EVERY cycle until the Worker drains the row (photo_json NULLed
+    — the tampered bytes leave D1; a referencing submission renders the refused
+    note)."""
+    key = str(photo_id)
+    if key not in flags:
+        # Tripwire (Invariant 2, Layer 5) — record the suspicious pattern.
+        anomaly_logger.check({
+            "portal_daily_photo_hmac_failure": photo_id,
+            "job_id": job_id, "work_date": work_date,
+        })
+        review_queue.add(
+            workstream=WORKSTREAM,
+            summary=(
+                f"portal: HMAC verification FAILED for daily pool photo {photo_id} "
+                f"(job_id={job_id!r} work_date={work_date}) — rejected, NOT screened "
+                f"or filed"
+            ),
+            payload={
+                "daily_photo_id": photo_id,
+                "job_id": job_id,
+                "work_date": work_date,
+                # The HMAC value is deliberately NOT recorded (signature material —
+                # same posture as the submission/item twins); photo bytes NEVER ride
+                # a Review-Queue payload.
+            },
+            sla_tier=review_queue.SlaTier.SAFETY_INTAKE,
+            reason=review_queue.ReviewReason.SECURITY_TRIGGER,
+            severity=Severity.CRITICAL,
+            source_file=f"daily_photo:{photo_id}",
+            security_flag=True,
+        )
+        error_log.log(
+            Severity.CRITICAL, SCRIPT_NAME,
+            (
+                f"portal daily-photo HMAC FAIL photo_id={photo_id} job_id={job_id!r} "
+                f"work_date={work_date} — rejected, not screened or filed "
+                f"(downgrade defense)"
+            ),
+            error_code="portal_daily_photo_hmac_failure",
+            correlation_id=correlation_id,
+        )
+        flags[key] = "flagged"
+    # Drain the row (terminal refused; delete-on-screen NULLs the tampered bytes; the
+    # Review-Queue row above is the forensic record). Best-effort: a transport failure
+    # re-pulls next cycle — the flag set keeps the re-flag suppressed while this retries.
+    try:
+        portal_client.post_daily_photo_result(
+            base_url, bearer, photo_id=photo_id, status="refused",
+            detail="hmac_verification_failed",
+        )
+    except portal_client.PortalTransportError as exc:
+        error_log.log(
+            Severity.WARN, SCRIPT_NAME,
+            f"portal could not post refused result for bad-HMAC daily photo {photo_id}: {exc!r}",
+            error_code="portal_daily_photo_mark_refused_failed",
+            correlation_id=correlation_id,
+        )
+
+
+def _daily_photo_refusal(
+    photo_id: int,
+    job_id: str,
+    work_date: str,
+    uploaded_by: str,
+    *,
+    disposition: str,   # "malicious" | "suspicious"
+    detail: str,
+    correlation_id: str,
+) -> None:
+    """Refuse ONE daily-pool photo on a screening verdict — the pool application of
+    intake._portal_photo_refusal (same severities, same page-first ordering, same
+    account-naming CRITICAL).
+
+    The refused bytes are NEVER re-encoded, filed to Box, or served — the caller
+    posts {status:'refused'} and the Worker NULLs photo_json (delete-on-screen).
+    MALICIOUS pages the operator (CRITICAL) naming the uploading account (from the
+    HMAC-covered photo_json, not a spoofable sidecar) with the disable instruction;
+    SUSPICIOUS files a WARN-severity, security-flagged row without paging. The page
+    fires BEFORE the Smartsheet write so an outage cannot suppress it. A submission
+    that already claimed the photo still FILES — its PDF renders a "refused by
+    screening" note (evidence refused ≠ report invalid); a re-pulled row re-screens
+    to the same verdict (deterministic pipeline) and the post-back is idempotent."""
+    malicious = disposition == "malicious"
+    severity = Severity.CRITICAL if malicious else Severity.WARN
+    if malicious:
+        summary = (
+            f"MALICIOUS daily pool photo rejected ({detail}); DISABLE portal "
+            f"account {uploaded_by!r} pending review (§34) — daily photo {photo_id} "
+            f"(job_id={job_id!r} work_date={work_date})"
+        )
+        page = (
+            f"portal: MALICIOUS daily pool photo ({detail}) photo_id={photo_id} "
+            f"job_id={job_id!r} work_date={work_date} actor={uploaded_by!r} — "
+            f"disable this portal account pending review (§34)"
+        )
+    else:
+        summary = (
+            f"suspicious daily pool photo routed to review ({detail}) — daily "
+            f"photo {photo_id} (job_id={job_id!r} work_date={work_date}) actor "
+            f"{uploaded_by!r}"
+        )
+        page = (
+            f"portal: suspicious daily pool photo ({detail}) photo_id={photo_id} "
+            f"job_id={job_id!r} work_date={work_date} actor={uploaded_by!r}"
+        )
+    # Page/record FIRST (never blocked by a Smartsheet write failure).
+    error_log.log(
+        severity, SCRIPT_NAME, page,
+        error_code=f"portal_daily_photo_{disposition}", correlation_id=correlation_id,
+    )
+    review_queue.add(
+        workstream=WORKSTREAM,
+        summary=summary,
+        payload={
+            "daily_photo_id": photo_id,
+            "job_id": job_id,
+            "work_date": work_date,
+            "actor": uploaded_by,
+            "disposition": disposition,
+            "detail": detail,
+            # Photo BYTES deliberately absent: delete-on-screen means D1 drops them on
+            # the refused post-back and nothing durable retains attacker-controlled
+            # binary. The verdict detail + actor are the forensic handle.
+        },
+        sla_tier=review_queue.SlaTier.SAFETY_INTAKE,
+        reason=review_queue.ReviewReason.SECURITY_TRIGGER,
+        severity=severity,
+        source_file=f"daily_photo:{photo_id}",
+        security_flag=True,
+    )
+
+
+def _file_daily_photo(
+    job_id: str, work_date: str, photo_id: int, clean_jpeg: bytes
+) -> str:
+    """File the §34-SANITIZED re-encode (never the raw upload) to Box under
+    `<portal root>/ITS Photos/daily/<job_id>/<work_date>/photo_<photo_id>.jpg`;
+    return the Box file id.
+
+    _file_item_photo's shape: find-or-create at every level + version-on-conflict
+    upload (a re-screen after a lost ack re-uploads a new VERSION of the same file —
+    idempotent, stable file id). Every path component is HMAC-covered (job_id +
+    work_date ride the daily-photo canonical) or served with the signed row (the
+    photo id — the item-photo precedent). Raises on any failure — including an unset
+    portal Box root — so the caller's per-item fence WARNs and the row STAYS PENDING
+    (Box is the permanent record; a clean result may never be posted without it)."""
+    root = _read_str_setting(safety_naming.CFG_BOX_PORTAL_ROOT, "").strip()
+    if not root:
+        raise RuntimeError(
+            "portal Box root unset (ITS_Config safety_reports.box.portal_root_folder_id) "
+            "— cannot file daily pool photo; row stays pending until configured"
+        )
+    photos_root = box_client.get_or_create_folder(root, ITEM_PHOTO_BOX_FOLDER)
+    daily_root = box_client.get_or_create_folder(photos_root, DAILY_PHOTO_BOX_SUBFOLDER)
+    job_folder = box_client.get_or_create_folder(daily_root, job_id)
+    leaf = box_client.get_or_create_folder(job_folder, work_date)
+    uploaded = box_client.upload_bytes_or_new_version(
+        leaf, f"photo_{photo_id}.jpg", clean_jpeg
+    )
+    return str(uploaded["id"])
+
+
+def _screen_one_daily_photo(
+    row: dict[str, Any],
+    *,
+    base_url: str,
+    bearer: str,
+    secret: str,
+    clamav_enabled: bool,
+    flags: dict[str, str],
+) -> bool:
+    """Verify + screen + disposition ONE pulled daily-pool row. Returns True when
+    the photo reached a terminal disposition post-back (clean or refused) this
+    cycle. Raises only on transport/Box failures the per-item fence should WARN
+    about (the row stays pending and re-pulls next cycle)."""
+    photo_id = row.get("id")
+    job_id = row.get("job_id")
+    work_date = row.get("work_date")
+    photo_json = row.get("photo_json")
+    if (
+        not isinstance(photo_id, int)
+        or not isinstance(job_id, str) or not job_id
+        or not isinstance(work_date, str) or not work_date
+        or not isinstance(photo_json, str) or not photo_json
+    ):
+        error_log.log(
+            Severity.WARN, SCRIPT_NAME,
+            f"daily-photo row malformed (id={row.get('id')!r}); skipping",
+            error_code="portal_daily_photo_malformed",
+        )
+        return False
+
+    correlation_id = uuid.uuid4().hex[:12]
+
+    # Downgrade defense: verify the HMAC BEFORE any byte is decoded. photo_json is
+    # the VERBATIM stored string (re-serializing would change the bytes); the compare
+    # is constant-time (shared.portal_hmac). job_id + work_date are INSIDE the
+    # canonical — a signed photo replayed onto another job/date fails here.
+    provided_hmac = str(row.get("hmac") or "")
+    if not portal_hmac.verify_daily_photo(
+        secret, provided_hmac, job_id=job_id, work_date=work_date, photo_json=photo_json
+    ):
+        _handle_daily_photo_hmac_failure(
+            photo_id, job_id, work_date, correlation_id,
+            base_url=base_url, bearer=bearer, flags=flags,
+        )
+        return False
+
+    # HMAC verified — parse the covered JSON. uploaded_by rides INSIDE photo_json so
+    # the malicious CRITICAL names the account from HMAC-covered data.
+    try:
+        parsed: Any = json.loads(photo_json)
+    except ValueError:
+        parsed = None
+    if not isinstance(parsed, dict):
+        # Authenticated but structurally impossible (the Worker only signs the exact
+        # 5-key JSON it built) — refuse as suspicious rather than crash the pass.
+        _daily_photo_refusal(
+            photo_id, job_id, work_date, "unknown",
+            disposition="suspicious", detail="unparseable_photo_json",
+            correlation_id=correlation_id,
+        )
+        portal_client.post_daily_photo_result(
+            base_url, bearer, photo_id=photo_id, status="refused",
+            detail="unparseable_photo_json",
+        )
+        return True
+    uploaded_by = str(parsed.get("uploaded_by") or "unknown")
+
+    decoded = photo_screen.decode_b64(str(parsed.get("data") or ""))
+    if decoded is None:
+        _daily_photo_refusal(
+            photo_id, job_id, work_date, uploaded_by,
+            disposition="suspicious", detail="undecodable_base64",
+            correlation_id=correlation_id,
+        )
+        portal_client.post_daily_photo_result(
+            base_url, bearer, photo_id=photo_id, status="refused",
+            detail="undecodable_base64",
+        )
+        return True
+
+    # The §34 trust boundary — the BYTE-IDENTICAL pipeline submission photos get
+    # (same module, same layers, same config gate, same disposition ladder).
+    result = photo_screen.screen_photo(decoded, clamav_enabled=clamav_enabled)
+    if result.disposition in ("malicious", "suspicious"):
+        detail = f"{result.layer}:{result.detail}"
+        _daily_photo_refusal(
+            photo_id, job_id, work_date, uploaded_by,
+            disposition=result.disposition, detail=detail,
+            correlation_id=correlation_id,
+        )
+        portal_client.post_daily_photo_result(
+            base_url, bearer, photo_id=photo_id, status="refused", detail=detail,
+        )
+        return True
+
+    # CLEAN — Box FIRST, post-back SECOND (delete-on-screen: the post-back deletes the
+    # D1 bytes, so the permanent Box record must exist before it). A Box failure
+    # raises to the per-item fence: WARN, row stays pending, next cycle retries.
+    box_file_id = _file_daily_photo(job_id, work_date, photo_id, result.clean_jpeg or b"")
+    found = portal_client.post_daily_photo_result(
+        base_url, bearer, photo_id=photo_id, status="clean", box_file_id=box_file_id,
+    )
+    if not found:
+        # Benign: the disposition was already applied by a prior cycle whose ack was
+        # lost (idempotent re-screen), or the row was pruned. The Box upload above was
+        # version-on-conflict, so no duplicate artifact either way.
+        error_log.log(
+            Severity.WARN, SCRIPT_NAME,
+            (
+                f"daily-photo result post found=False for photo_id={photo_id} "
+                f"(already screened or pruned) — benign no-op"
+            ),
+            error_code="portal_daily_photo_result_not_found",
+            correlation_id=correlation_id,
+        )
+    return True
+
+
+def _service_daily_photos(base_url: str, bearer: str, secret: str) -> int:
+    """Screen queued daily-pool photos → returns the count dispositioned.
+
+    The fenced pass CLONED from _service_item_photos (see the block comment above
+    for the full contract; the ORDERING note lives at the _poll_inside_lock call
+    site). BEST-EFFORT + PER-ITEM FENCED: the whole pass is wrapped by the caller's
+    try/except (a total failure WARNs with
+    error_code=portal_daily_photo_service_failed and NEVER blocks the submission
+    drain); inside, one bad item is logged + skipped so it never aborts the rest.
+
+    Config resolution is OBSERVABLE (forensic class #7): the ClamAV gate's resolved
+    value + source are logged whenever the pass has work — the SAME
+    `safety_reports.photo_screen.clamav_enabled` flag that governs submission and
+    item photos (one operator flag, three surfaces, referenced through
+    intake.CFG_PHOTO_CLAMAV so they can never drift apart).
+    """
+    rows = portal_client.get_daily_photos_pending(base_url, bearer, limit=DAILY_PHOTO_LIMIT)
+    if not rows:
+        return 0
+    clamav_enabled, clamav_source = _resolve_item_photo_clamav()
+    error_log.log(
+        Severity.INFO, SCRIPT_NAME,
+        (
+            f"daily-photo screen: {len(rows)} pending; clamav_enabled={clamav_enabled} "
+            f"(source={clamav_source}, key={intake.CFG_PHOTO_CLAMAV})"
+        ),
+        error_code="portal_daily_photo_config_resolved",
+    )
+    flags = _load_daily_photo_flags()
+    serviced = 0
+    for row in rows:
+        try:
+            if _screen_one_daily_photo(
+                row, base_url=base_url, bearer=bearer, secret=secret,
+                clamav_enabled=clamav_enabled, flags=flags,
+            ):
+                serviced += 1
+        except Exception as exc:  # noqa: BLE001 — per-item fence; one bad item never aborts the pass
+            # NEVER interpolate photo bytes / photo_json into the log line.
+            error_log.log(
+                Severity.WARN, SCRIPT_NAME,
+                f"daily-photo screening failed for photo_id={row.get('id')!r}: "
+                f"{type(exc).__name__}: {exc!r}",
+                error_code="portal_daily_photo_item_failed",
+            )
+    _persist_daily_photo_flags(flags)
     return serviced
 
 

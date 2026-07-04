@@ -5,8 +5,10 @@ Live coverage is the deploy-gated end-to-end smoke (next session).
 """
 from __future__ import annotations
 
-from datetime import date
+import json
+from datetime import UTC, date, datetime
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -763,3 +765,241 @@ def test_progress_intake_enabled_flag_read_contract(mocker):
     g.side_effect = smartsheet_client.SmartsheetCircuitOpenError("breaker open")
     with pytest.raises(smartsheet_client.SmartsheetError):
         intake._progress_intake_enabled()  # propagates → process_portal_submission → 'error'
+
+
+# ---- DR-photo-pool Slice 2: additional-photo pool reference resolution -----
+#
+# The daily report's ADDITIONAL photos never ride the payload — the submission
+# carries HMAC-covered REFERENCES (values.additional_photos) and the pulled row
+# carries the Worker-resolved CLAIM MANIFEST (`daily_photos`). intake resolves:
+# clean → download the §34 re-encode from Box (box_client seam) into the render
+# grid AFTER the inline photos; pending → bounded defer (status 'deferred');
+# refused/unavailable → PDF notes. See intake._resolve_additional_photos.
+
+DAILY_DEFINITION = {
+    "form_code": "daily-report-v6",
+    "parent_form_code": "daily-report",
+    "form_name": "Daily Field Report",
+    "sections": [
+        {"type": "additional_photos", "key": "additional_photos",
+         "title": "Additional site photos"},
+    ],
+}
+
+POOL_JPEG = b"\xff\xd8\xff\xe0" + b"j" * 64  # JPEG magic + body
+
+
+def _daily_sub(
+    refs: list[dict] | None = None,
+    manifest: list[dict] | None = None,
+    created_at: int | float | None = None,
+) -> dict[str, Any]:
+    """A pulled daily-report row. `manifest` None means NO daily_photos key at all
+    (the old-Worker case); pass a list for the normal enriched row. `created_at`
+    None keeps BASE_SUB's 2024 epoch — ancient, i.e. the defer bound is EXPIRED."""
+    sub: dict[str, Any] = dict(BASE_SUB)
+    sub["form_code"] = "daily-report-v6"
+    values: dict = {"prepared_by": "Mo"}
+    if refs is not None:
+        values["additional_photos"] = refs
+    sub["payload_json"] = json.dumps(values)
+    if manifest is not None:
+        sub["daily_photos"] = manifest
+    if created_at is not None:
+        sub["created_at"] = created_at
+    return sub
+
+
+@pytest.fixture
+def daily_stub(stub, mocker) -> dict[str, MagicMock]:
+    """The portal stub pointed at the daily definition + a Box download seam.
+
+    daily-report-v6 is a PROGRESS-category form — the P3 routing gate reads
+    ITS_Config, so it is pinned OFF here (safety week-sheet, the built-dark
+    default); pool resolution is orthogonal to workstream routing."""
+    stub["load_def"].return_value = DAILY_DEFINITION
+    stub["progress_enabled"] = mocker.patch.object(
+        intake, "_progress_intake_enabled", return_value=False
+    )
+    stub["download"] = mocker.patch.object(
+        intake.box_client, "download_file", return_value=POOL_JPEG
+    )
+    return stub
+
+
+def test_pool_clean_refs_download_box_and_join_render_grid(daily_stub):
+    sub = _daily_sub(
+        refs=[{"pool_id": 11, "caption": "Trench shoring"}],
+        manifest=[{"id": 11, "status": "clean", "box_file_id": "bx11"}],
+    )
+    result = intake.process_portal_submission(sub)
+    assert result.status == "processed"
+    # Downloaded from Box by the manifest's box_file_id (the PR-4 precedent — the
+    # bytes left D1 at screen time; Box is the permanent record).
+    daily_stub["download"].assert_called_once_with("bx11")
+    render_sub = daily_stub["render"].call_args.args[1]
+    # The pool photo joins the SAME grid, captioned, AFTER the inline photos
+    # (this form has no inline photo fields, so it is the only entry).
+    assert render_sub["screened_photos"] == [("Trench shoring", POOL_JPEG)]
+    assert render_sub["additional_photo_notes"] == {
+        "pending": 0, "refused": 0, "unavailable": 0,
+    }
+    assert "[pool_photos:1]" in daily_stub["write"].call_args.kwargs["notes"]
+
+
+def test_pool_pending_ref_defers_young_submission(daily_stub):
+    sub = _daily_sub(
+        refs=[{"pool_id": 11}],
+        manifest=[{"id": 11, "status": "pending", "box_file_id": None}],
+        created_at=datetime.now(UTC).timestamp(),  # young → inside the defer bound
+    )
+    result = intake.process_portal_submission(sub)
+    assert result.status == "deferred"
+    assert "1 pool photo(s) pending screening" in (result.notes or "")
+    # Nothing filed, nothing rendered — the re-pull next cycle re-resolves.
+    daily_stub["render"].assert_not_called()
+    daily_stub["write"].assert_not_called()
+    daily_stub["upload"].assert_not_called()
+    codes = [c.kwargs.get("error_code") for c in daily_stub["log"].call_args_list]
+    assert "portal_daily_photo_deferred" in codes
+
+
+def test_pool_pending_ref_defer_bound_expired_files_without(daily_stub):
+    # BASE_SUB's created_at is a 2024 epoch — far past DAILY_PHOTO_DEFER_MAX_SECONDS.
+    sub = _daily_sub(
+        refs=[{"pool_id": 11}, {"pool_id": 12, "caption": "Panel run"}],
+        manifest=[
+            {"id": 11, "status": "pending", "box_file_id": None},
+            {"id": 12, "status": "clean", "box_file_id": "bx12"},
+        ],
+    )
+    result = intake.process_portal_submission(sub)
+    assert result.status == "processed"  # bounded: filing is never blocked forever
+    render_sub = daily_stub["render"].call_args.args[1]
+    assert render_sub["additional_photo_notes"]["pending"] == 1
+    assert render_sub["screened_photos"] == [("Panel run", POOL_JPEG)]
+    codes = [c.kwargs.get("error_code") for c in daily_stub["log"].call_args_list]
+    assert "portal_daily_photo_defer_expired" in codes
+    notes = daily_stub["write"].call_args.kwargs["notes"]
+    assert "pending:1" in notes
+
+
+def test_pool_refused_ref_files_with_refused_note(daily_stub):
+    sub = _daily_sub(
+        refs=[{"pool_id": 11}],
+        manifest=[{"id": 11, "status": "refused", "box_file_id": None}],
+    )
+    result = intake.process_portal_submission(sub)
+    assert result.status == "processed"
+    # Refused = a PDF note; the CRITICAL/WARN fired at screen time — nothing re-pages,
+    # and no Box download is attempted for a refused ref.
+    daily_stub["download"].assert_not_called()
+    render_sub = daily_stub["render"].call_args.args[1]
+    assert render_sub["additional_photo_notes"]["refused"] == 1
+    assert render_sub["screened_photos"] == []
+    daily_stub["review"].assert_not_called()
+
+
+def test_pool_absent_refs_are_a_noop(daily_stub):
+    # A daily report with NO additional photos (the overwhelmingly common case)
+    # takes the pre-slice path untouched: no download, no defer, zero notes.
+    sub = _daily_sub(refs=None, manifest=[])
+    result = intake.process_portal_submission(sub)
+    assert result.status == "processed"
+    daily_stub["download"].assert_not_called()
+    render_sub = daily_stub["render"].call_args.args[1]
+    assert render_sub["additional_photo_notes"] == {
+        "pending": 0, "refused": 0, "unavailable": 0,
+    }
+    assert "[pool_photos" not in daily_stub["write"].call_args.kwargs["notes"]
+
+
+def test_pool_manifest_missing_files_with_warn_not_defer_loop(daily_stub):
+    # Refs but NO daily_photos key on the pulled row (a Worker predating the slice):
+    # file WITHOUT the photos + WARN — never a defer loop on state that can't arrive.
+    sub = _daily_sub(refs=[{"pool_id": 11}], manifest=None)
+    result = intake.process_portal_submission(sub)
+    assert result.status == "processed"
+    render_sub = daily_stub["render"].call_args.args[1]
+    assert render_sub["additional_photo_notes"]["unavailable"] == 1
+    codes = [c.kwargs.get("error_code") for c in daily_stub["log"].call_args_list]
+    assert "portal_daily_photo_state_missing" in codes
+
+
+def test_pool_box_download_transient_error_soft_fails_to_error(daily_stub):
+    # A transient Box failure must re-pull the WHOLE submission (status 'error'),
+    # exactly like every other transient in the pipeline — never file half a grid.
+    daily_stub["download"].side_effect = box_client.BoxRateLimitError("429")
+    sub = _daily_sub(
+        refs=[{"pool_id": 11}],
+        manifest=[{"id": 11, "status": "clean", "box_file_id": "bx11"}],
+    )
+    result = intake.process_portal_submission(sub)
+    assert result.status == "error"
+    daily_stub["write"].assert_not_called()
+
+
+def test_pool_box_download_permanent_error_renders_without(daily_stub):
+    # A permanent Box error (404 …) degrades ONE photo to 'unavailable' — the
+    # submission still files (per-photo fence, never a whole-report loss).
+    daily_stub["download"].side_effect = box_client.BoxError("404 not found")
+    sub = _daily_sub(
+        refs=[{"pool_id": 11}],
+        manifest=[{"id": 11, "status": "clean", "box_file_id": "bx11"}],
+    )
+    result = intake.process_portal_submission(sub)
+    assert result.status == "processed"
+    render_sub = daily_stub["render"].call_args.args[1]
+    assert render_sub["additional_photo_notes"]["unavailable"] == 1
+    assert render_sub["screened_photos"] == []
+    codes = [c.kwargs.get("error_code") for c in daily_stub["log"].call_args_list]
+    assert "portal_daily_photo_box_download_failed" in codes
+
+
+def test_pool_downloaded_bytes_are_validated_before_render(daily_stub):
+    # The manifest is NOT HMAC-covered: a tampered box_file_id must never push
+    # arbitrary Box bytes into the PDF-of-record — magic+size validated, else
+    # degraded to 'unavailable' (the bytes never reach the renderer).
+    daily_stub["download"].return_value = b"%PDF-1.4 definitely not a jpeg"
+    sub = _daily_sub(
+        refs=[{"pool_id": 11}],
+        manifest=[{"id": 11, "status": "clean", "box_file_id": "bx11"}],
+    )
+    result = intake.process_portal_submission(sub)
+    assert result.status == "processed"
+    render_sub = daily_stub["render"].call_args.args[1]
+    assert render_sub["screened_photos"] == []
+    assert render_sub["additional_photo_notes"]["unavailable"] == 1
+    codes = [c.kwargs.get("error_code") for c in daily_stub["log"].call_args_list]
+    assert "portal_daily_photo_invalid_bytes" in codes
+
+
+def test_pool_manifest_row_missing_for_ref_renders_without(daily_stub):
+    # Claimed at submit but gone from the manifest (pruned orphan / manual cleanup).
+    sub = _daily_sub(refs=[{"pool_id": 99}], manifest=[])
+    result = intake.process_portal_submission(sub)
+    assert result.status == "processed"
+    render_sub = daily_stub["render"].call_args.args[1]
+    assert render_sub["additional_photo_notes"]["unavailable"] == 1
+    codes = [c.kwargs.get("error_code") for c in daily_stub["log"].call_args_list]
+    assert "portal_daily_photo_ref_unresolved" in codes
+
+
+def test_pool_photos_render_after_inline_photos(daily_stub, mocker):
+    # "AFTER the inline photos": the pool photos append to the SAME grid behind the
+    # inline §34-screened ones.
+    mocker.patch.object(
+        intake, "_screen_portal_photos",
+        return_value=(None, [("inline cap", b"\xff\xd8\xffINLINE")]),
+    )
+    sub = _daily_sub(
+        refs=[{"pool_id": 11, "caption": "pool cap"}],
+        manifest=[{"id": 11, "status": "clean", "box_file_id": "bx11"}],
+    )
+    result = intake.process_portal_submission(sub)
+    assert result.status == "processed"
+    render_sub = daily_stub["render"].call_args.args[1]
+    assert render_sub["screened_photos"] == [
+        ("inline cap", b"\xff\xd8\xffINLINE"),
+        ("pool cap", POOL_JPEG),
+    ]

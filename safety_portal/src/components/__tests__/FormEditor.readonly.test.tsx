@@ -51,8 +51,9 @@ function renderEditor(def: FormDefinition) {
 }
 
 describe("FormEditor — read-only sections have no Remove/Move controls (Slice 1, R3-F3)", () => {
-  it("covers all four definition-managed types (guard against list drift)", () => {
+  it("covers all five definition-managed types (guard against list drift)", () => {
     expect([...READ_ONLY_SECTION_TYPES].sort()).toEqual([
+      "additional_photos",
       "expected_materials",
       "form_link",
       "guidance",
