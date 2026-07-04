@@ -19,4 +19,5 @@ convention has no separate `enablement` type; see
 | 2026-07-01 | operations | active | field_ops | [Enablement — The Subcontractor tier · Op Stds §6/A8](subcontractor_tier.md) | _–_ |
 | 2026-06-30 | operations | active | field_ops | [Office-PM Guide — Creating jobs in the ITS Portal (P2.5)](portal_job_creation.md) | #383, #384, #385 |
 | 2026-06-30 | operations | active | progress_reports | [Guide — The weekly progress rollup numbers (P6)](progress_rollup_numbers.md) | _–_ |
+| _–_ | _–_ | active | safety_portal | [What changed for the office (G2.3)](crew_time_corrections.md) | _–_ |
 <!-- END AUTO-INDEX -->
