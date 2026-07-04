@@ -26,6 +26,7 @@ filename, frontmatter, and section conventions across every doc type.
 <!-- BEGIN AUTO-INDEX -->
 | Date | Type | Status | Workstream | Title | PRs |
 |------|------|--------|------------|-------|-----|
+| _–_ | _–_ | active | safety_portal | [G2.3 — Scoped crew EDIT/RETIRE + non-destructive time AMEND/VOID (mini-spec)](g23_crew_time_spec.md) | _–_ |
 | 2026-06-12 | design | draft | safety_portal | [Safety Portal — Form Request month-year + form-type filter (PR-6) · CC brief](cc-brief_form-request-month-filter.md) | _–_ |
 | 2026-06-08 | design | draft | safety_portal | [Safety Portal — Phase 2 Form Editor + Session Hardening · design brief (feeder)](phase2_form_editor_and_session_hardening_brief.md) | _–_ |
 | _(no frontmatter)_ | _–_ | _–_ | _–_ | [Field-Ops Portal — Next-Session Handoff Brief](cc-brief_fieldops-next-session.md) | _–_ |

@@ -43,5 +43,7 @@ convention has no separate `runbook` type).
 | 2026-06-02 | operations | active | infrastructure | [Runbook — Smartsheet token cannot write (Successor-Remediation, Op Stds §43)](token_write_capability.md) | _–_ |
 | 2026-06-01 | operations | active | infrastructure | [Runbook — Smartsheet circuit breaker + alerts-per-hour cap (Successor-Remediation, Op Stds §43)](circuit_breaker.md) | _–_ |
 | 2026-06-01 | operations | active | safety_reports | [Runbook — weekly_generate catch-up (Successor-Remediation, Op Stds §43)](safety_weekly_generate.md) | _–_ |
+| _–_ | _–_ | active | safety_portal | [Crew edit/retire + time amend/void — §43 successor-remediation](fieldops_time_amend.md) | _–_ |
+| _–_ | _–_ | active | safety_portal | [Portal D1 prune health — watchdog Check V (§43 successor-remediation)](portal_prune_health.md) | _–_ |
 | _–_ | runbook | skeleton | field_ops | [Runbook — Materials Catalog admin (`material_catalog`)](material_catalog_admin.md) | _–_ |
 <!-- END AUTO-INDEX -->
