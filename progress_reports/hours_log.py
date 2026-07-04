@@ -6,10 +6,15 @@ by `safety_naming.job_folder_name`, so they sit side by side). SEND-FREE + AI-FR
 §51 — ITS-owned structured-SoR write-back); the daemon that drives it (`field_ops.fieldops_sync`
 hours pass) is the capability-gated actuator.
 
-Design (operator-confirmed defaults, 2026-07-04):
-- **Single standing sheet per job** (`<Job> — Hours Log`), append-only forever — NOT per-week.
-  Archive-on-closure (move to the Archive workspace when the job closes) + a SoR-safe row-cap
-  monitor are tracked fast-follows; this module NEVER deletes a row (the accumulating SoR rule).
+Design (ratified — §51 v19.x rider, 2026-07-04):
+- **Single standing sheet per job** (`<Job> — Hours Log`), append-only — NOT per-week. §51's
+  "period-split" guard is satisfied for this LOW-VOLUME log by `check_row_cap` (the SoR-safe A5
+  row-cap WARN watchdog: as the sheet nears the ~20k row cap it WARNs + Review-Queues an operator
+  period-split), per the 2026-07-04 v19.x rider — minimizing Smartsheet sheet proliferation (the
+  #1 scaling risk) vs. calendar-splitting a low-volume log. NEVER deletes a row (§51 SoR rule).
+  **archive-on-closure** (move the sheet to the Archive workspace when the job archives) is the
+  one §51 guard still a COMMITTED follow-up — it needs a new `smartsheet_client` move-sheet method
+  (§30) and is only exercised at a distant job-close; tracked, must land before the first archival.
 - **Progress workspace only**, single-destination (unlike the dual-sheet job-identity up-sync).
 - find-or-create the sheet (+ the A1 capacity margin-check on the create branch, advisory);
   idempotent upsert by `Entry UUID` (== `time_entries.uuid`); an amend APPENDS its own row and
@@ -23,7 +28,7 @@ from __future__ import annotations
 from typing import Any
 
 from safety_reports import safety_naming
-from shared import error_log, sheet_capacity, sheet_ids, smartsheet_client
+from shared import error_log, review_queue, sheet_capacity, sheet_ids, smartsheet_client
 from shared.error_log import Severity
 
 SCRIPT_NAME = "progress_reports.hours_log"
@@ -33,6 +38,13 @@ WORKSPACE_ID = sheet_ids.WORKSPACE_PROGRESS_REPORTING
 # Smartsheet sheet-name cap (HTTP 400 errorCode 1041) — same constant as week_sheet.SHEET_NAME_MAX.
 SHEET_NAME_MAX = 50
 SHEET_SUFFIX = " — Hours Log"
+
+# §51 A5 row-cap watchdog (refined for low-volume logs by the 2026-07-04 v19.x rider): a standing
+# Hours Log is single + append-only, so its "period-split" is TRIGGERED by this row-cap WARN
+# monitor rather than a calendar boundary — as the sheet nears the Smartsheet ~20k/sheet row cap,
+# WARN + Review-Queue an operator period-split (archive the sheet, start fresh). NEVER delete (SoR).
+CFG_ROW_CAP_WARN = "progress_reports.hours_log.row_cap_warn_threshold"
+DEFAULT_ROW_CAP_WARN = 15000  # conservative WARN mark well under the ~20k Smartsheet per-sheet cap
 
 # ---- Column titles (single source of truth for reads + writes) ----
 COL_ENTRY = "Entry"              # primary (TEXT_NUMBER): "<work date> — <personnel>" human label
@@ -302,3 +314,72 @@ def supersede_entry_row(sheet_id: int, prior_uuid: str, new_uuid: str) -> bool:
         ],
     )
     return True
+
+
+# ---- §51 A5 row-cap watchdog (SoR-safe, WARN-only, never delete) ---------
+
+
+def _read_int_setting(key: str, fallback: int) -> int:
+    """Defensive int ITS_Config read under the progress_reports workstream (missing row /
+    circuit-open / non-int all resolve to `fallback`, never raising into the mirror)."""
+    try:
+        raw = smartsheet_client.get_setting(key, workstream="progress_reports")
+    except (smartsheet_client.SmartsheetNotFoundError, smartsheet_client.SmartsheetCircuitOpenError):
+        return fallback
+    try:
+        return int(str(raw).strip())
+    except (TypeError, ValueError):
+        return fallback
+
+
+def check_row_cap(sheet_id: int, sheet_name: str, *, row_count: int | None = None) -> None:
+    """SoR-safe row-cap monitor — the §51 "A5 row-cap watchdog" for the standing Hours Log,
+    refined for low-volume logs by the 2026-07-04 v19.x rider.
+
+    A single standing sheet has no calendar period-split; its split is TRIGGERED here — as the
+    sheet nears the Smartsheet per-sheet row cap (~20k), WARN (`ITS_Errors`) + enqueue an operator
+    period-split to `ITS_Review_Queue` (archive this sheet, start a fresh one). **NEVER deletes**
+    (the accumulating-SoR rule, §51). ADVISORY: any read/enqueue failure is reduced to a WARN and
+    never blocks the mirror (mirrors `_warn_on_thin_headroom`'s belt-and-suspenders posture).
+
+    `row_count` may be passed by a caller that already read the sheet's rows this cycle (avoids a
+    second full read); when None, a `get_rows` count is taken.
+    """
+    try:
+        threshold = _read_int_setting(CFG_ROW_CAP_WARN, DEFAULT_ROW_CAP_WARN)
+        count = row_count if row_count is not None else len(smartsheet_client.get_rows(sheet_id))
+        if count < threshold:
+            return
+        error_log.log(
+            Severity.WARN, SCRIPT_NAME,
+            (
+                f"Hours Log {sheet_name!r} (sheet {sheet_id}) has {count} rows, at/over the "
+                f"row-cap WARN threshold {threshold} (Smartsheet ~20k/sheet) — operator should "
+                f"period-split it (archive this sheet, start a fresh one); NEVER delete rows."
+            ),
+            error_code="hours_log_row_cap_warn",
+        )
+        review_queue.add(
+            workstream="progress_reports",
+            summary=(
+                f"Hours Log {sheet_name!r} nearing the Smartsheet row cap "
+                f"({count}/{threshold}) — period-split needed (archive + start fresh, never delete)"
+            ),
+            payload={
+                "sheet_id": sheet_id,
+                "sheet_name": sheet_name,
+                "row_count": count,
+                "threshold": threshold,
+                "action": "period-split (archive this sheet, start a new one); never delete rows",
+            },
+            sla_tier=review_queue.SlaTier.SAFETY_INTAKE,
+            reason=review_queue.ReviewReason.POLICY_EDGE,
+            severity=Severity.WARN,
+            source_file=str(sheet_id),
+        )
+    except Exception as exc:  # noqa: BLE001 — advisory tripwire; never block the mirror
+        error_log.log(
+            Severity.WARN, SCRIPT_NAME,
+            f"row-cap check failed for {sheet_name!r} (sheet {sheet_id}): {exc!r}",
+            error_code="hours_log_row_cap_check_failed",
+        )

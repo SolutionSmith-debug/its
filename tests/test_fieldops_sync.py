@@ -90,6 +90,9 @@ def _patch(mocker):
         "supersede_entry": mocker.patch(
             "field_ops.fieldops_sync.hours_log.supersede_entry_row", return_value=True
         ),
+        "row_cap": mocker.patch(
+            "field_ops.fieldops_sync.hours_log.check_row_cap", return_value=None
+        ),
     }
 
 
@@ -367,6 +370,7 @@ def test_hours_pass_mirrors_and_marks(_patch):
     assert _patch["hours_mark"].call_args.args[2] == ["T1", "T2"]
     assert _patch["hb_row"].call_args.kwargs["status"] == "OK"
     assert _patch["hb_row"].call_args.kwargs["items_processed"] == 2
+    _patch["row_cap"].assert_called_once()  # §51 row-cap watchdog runs once per job-sheet
 
 
 def test_hours_amend_supersedes_prior(_patch):

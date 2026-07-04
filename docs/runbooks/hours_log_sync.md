@@ -78,6 +78,22 @@ time entry mirrored before the entry it amends (out-of-order). The amend's OWN r
 correctly; only the prior row's `Superseded` flip was skipped. **Self-heals** — no action; the
 compile-time rollup already collapses amend chains, and the prior arrives on a later cycle.
 
+## Fault E — Hours Log nearing the Smartsheet row cap (period-split needed)
+
+**Symptom.** `ITS_Errors` WARN `Error=hours_log_row_cap_warn` + an **ITS_Review_Queue** row
+(Workstream `progress_reports`) `Hours Log '<Job> — Hours Log' nearing the Smartsheet row cap …`.
+**Meaning:** a standing Hours Log has grown near the ~20k Smartsheet per-sheet cap. This is the §51
+A5 row-cap watchdog working as designed — the single-standing-sheet model period-splits **at the
+cap**, not on a calendar (2026-07-04 v19.x rider).
+
+**Repair (Tier-2, low-class).** **Period-split the sheet — NEVER delete rows:** rename/archive the
+full `<Job> — Hours Log` (e.g. to `<Job> — Hours Log (through <date>)`) and let the daemon
+find-or-create a fresh `<Job> — Hours Log` on its next entry. (A future archive-on-closure automation,
+`its#462`, will move closed-job tracker sheets to the Archive workspace; until then this is a manual
+period-split.) The WARN threshold is `progress_reports.hours_log.row_cap_warn_threshold` (ITS_Config,
+default 15000) — nudging it is a low-class tweak; a recurring need to split at high volume is expected,
+not a fault.
+
 ## Escalate-to-Seth boundary (observable terms)
 
 Escalate — do **not** attempt — when: the failure names **secrets/auth/Keychain** (Fault C), the

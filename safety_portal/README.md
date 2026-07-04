@@ -991,7 +991,11 @@ per-row `time_entries.mirrored_at` watermark + a partial pending index; the Work
 4. Kill the daemon mid-write → next cycle re-mirrors idempotently (find-or-create by `Entry UUID`),
    no duplicate row.
 
-**Deferred fast-follows (tracked):** archive-on-closure (move the sheet to the Archive workspace
-when the job closes) + a SoR-safe row-cap monitor (WARN + operator period-split near the ~20k cap,
-NEVER delete); the Equipment + Materials standing trackers (P7 Slices 2–3); a watchdog Check for the
-hours pass. The A1 capacity margin-check already fires on each sheet create.
+**§51 guards (2026-07-04 v19.x rider — Path B):** never-`delete_rows` + the SoR-safe **row-cap WARN
+watchdog** (`hours_log.check_row_cap` — WARNs + Review-Queues an operator period-split as the sheet
+nears the ~20k cap; the rider ratifies this as satisfying §51's period-split for LOW-VOLUME logs,
+threshold `progress_reports.hours_log.row_cap_warn_threshold`, default 15000) ship in this PR; the
+A1 sheet-count margin-check fires on each create. **archive-on-closure** is the one §51 guard still a
+committed follow-up (**its#462** — needs a `smartsheet_client` move-sheet method; only exercised at a
+distant job-close; must land before the first archival). **Deferred to later slices:** the Equipment
++ Materials standing trackers (P7 Slices 2–3).

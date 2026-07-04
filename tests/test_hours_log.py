@@ -53,6 +53,12 @@ def sc(mocker):
             "progress_reports.hours_log.safety_naming.job_folder_name", side_effect=lambda p: p
         ),
         "log": mocker.patch("progress_reports.hours_log.error_log.log", return_value=None),
+        "review": mocker.patch(
+            "progress_reports.hours_log.review_queue.add", return_value=1
+        ),
+        "get_setting": mocker.patch(
+            "progress_reports.hours_log.smartsheet_client.get_setting", return_value="15000"
+        ),
     }
 
 
@@ -146,3 +152,41 @@ def test_supersede_false_when_prior_missing(sc):
     sc["get_rows"].return_value = []
     assert hours_log.supersede_entry_row(9001, "T1", "T2") is False
     sc["update_rows"].assert_not_called()
+
+
+# ---- check_row_cap (§51 A5 row-cap watchdog, SoR-safe WARN-only) ----------
+
+
+def test_row_cap_noop_under_threshold(sc):
+    hours_log.check_row_cap(9001, "Job One — Hours Log", row_count=100)  # < 15000
+    sc["review"].assert_not_called()
+    assert not any(
+        c.kwargs.get("error_code") == "hours_log_row_cap_warn" for c in sc["log"].call_args_list
+    )
+
+
+def test_row_cap_warns_and_enqueues_over_threshold(sc):
+    hours_log.check_row_cap(9001, "Job One — Hours Log", row_count=15000)  # >= threshold
+    sc["review"].assert_called_once()
+    assert sc["review"].call_args.kwargs["workstream"] == "progress_reports"
+    assert any(
+        c.kwargs.get("error_code") == "hours_log_row_cap_warn" for c in sc["log"].call_args_list
+    )
+    # NEVER deletes — no update/delete of rows on the cap path
+    sc["update_rows"].assert_not_called()
+
+
+def test_row_cap_counts_via_get_rows_when_count_none(sc):
+    sc["get_rows"].return_value = [{"_row_id": i} for i in range(15001)]  # over threshold
+    hours_log.check_row_cap(9001, "Job One — Hours Log")  # no row_count → counts get_rows
+    sc["review"].assert_called_once()
+
+
+def test_row_cap_check_never_raises_on_read_failure(sc):
+    sc["get_setting"].side_effect = RuntimeError("smartsheet down")
+    # advisory: a check failure is swallowed to a WARN, never propagates to block the mirror
+    hours_log.check_row_cap(9001, "Job One — Hours Log", row_count=99999)
+    assert any(
+        c.kwargs.get("error_code") == "hours_log_row_cap_check_failed"
+        for c in sc["log"].call_args_list
+    )

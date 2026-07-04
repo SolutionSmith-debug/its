@@ -741,6 +741,11 @@ def _mirror_hours_pass(base_url: str, bearer: str) -> dict[str, int]:
                     correlation_id=correlation_id,
                 )
 
+        # §51 A5 row-cap watchdog (SoR-safe, refined per the 2026-07-04 v19.x rider): once per job
+        # after its upserts, WARN + Review-Queue an operator period-split as the standing sheet
+        # nears the row cap. Advisory — check_row_cap owns its try/except, so it never raises here.
+        hours_log.check_row_cap(sheet_id, hours_log.hours_log_sheet_name(project_name))
+
     if succeeded:
         try:
             portal_client.mark_fieldops_hours_mirrored(base_url, bearer, succeeded)
