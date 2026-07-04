@@ -9,7 +9,7 @@
  * past-date filed-state-first collapse. Page-level integration (tabs, auto-switch, refresh) lives
  * in pages/__tests__/FieldOpsMyTasks.test.tsx.
  */
-import { act, cleanup, fireEvent, render, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../lib/auth", () => ({ useAuth: vi.fn() }));
@@ -133,6 +133,20 @@ describe("DailyReportTab — the placed manager's inline SOP form", () => {
   it("reports the placement up via onLoaded (drives the parent auto-switch + quick actions)", async () => {
     const onLoaded = vi.fn();
     render(<DailyReportTab linked={true} placement={PLACED} onLoaded={onLoaded} />);
+    await waitFor(() =>
+      expect(onLoaded).toHaveBeenCalledWith({ placement: { job_id: "JOB-A", project_name: "Alpha" } }),
+    );
+  });
+
+  it("a placed ADMIN renders the form and reports the placement exactly like a manager (directive 2026-07-03)", async () => {
+    vi.mocked(useAuth).mockReturnValue(authAs("admin"));
+    const onLoaded = vi.fn();
+    const { container, getByLabelText } = render(
+      <DailyReportTab linked={true} placement={PLACED} onOpenForm={vi.fn()} onLoaded={onLoaded} />,
+    );
+    await waitFor(() => expect(container.textContent ?? "").toContain("SITE SUPERVISOR"));
+    expect(getByLabelText("Submit daily report")).not.toBeNull();
+    expect(container.textContent ?? "").not.toContain("crew-lead managers");
     await waitFor(() =>
       expect(onLoaded).toHaveBeenCalledWith({ placement: { job_id: "JOB-A", project_name: "Alpha" } }),
     );
@@ -774,5 +788,58 @@ describe("DailyReportTab — expected-materials receipt flow (Material receipts 
     await waitFor(() =>
       expect(container.textContent ?? "").toContain("No expected materials for this job."),
     );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Directive 2026-07-03 (#2) — the SOP form's "Confirmed" buttons are a TRUE TOGGLE: clicking a
+// selected scale option clears it back to unanswered. Exercised through the REAL daily-report-v5
+// definition inside the tab (the operator's surface); the renderer-level matrix (multi-option
+// scales, D4 confirm checkbox) lives in src/forms/__tests__/scale-toggle.test.tsx.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("DailyReportTab — confirm-toggle (unconfirm on second click)", () => {
+  const ITEM_LABEL = "Arrived before the crew and completed the pre-work site walkthrough";
+  beforeEach(() => sessionStorage.clear());
+
+  function confirmedBtn(container: HTMLElement): HTMLButtonElement {
+    const rg = within(container).getByRole("radiogroup", { name: ITEM_LABEL });
+    return within(rg).getByRole("button", { name: "Confirmed" }) as HTMLButtonElement;
+  }
+
+  it("confirmed → click → unconfirmed, with the visual states reverting (aria-pressed + --on class)", async () => {
+    const { container } = render(<DailyReportTab linked={true} placement={PLACED} onOpenForm={vi.fn()} />);
+    await waitFor(() => expect(container.textContent ?? "").toContain("SITE SUPERVISOR"));
+    const btn = confirmedBtn(container);
+    expect(btn.getAttribute("aria-pressed")).toBe("false");
+    fireEvent.click(btn);
+    expect(btn.getAttribute("aria-pressed")).toBe("true");
+    expect(btn.className).toContain("fr__scale-opt--on");
+    fireEvent.click(btn); // the un-confirm the operator asked for
+    expect(btn.getAttribute("aria-pressed")).toBe("false");
+    expect(btn.className).not.toContain("fr__scale-opt--on");
+  });
+
+  it("the toggled-off state FILES as the unanswered value shape (response '' — a string, key kept)", async () => {
+    const { container, getByLabelText } = render(<DailyReportTab linked={true} placement={PLACED} onOpenForm={vi.fn()} />);
+    await waitFor(() => expect(container.textContent ?? "").toContain("SITE SUPERVISOR"));
+    fireEvent.click(confirmedBtn(container));
+    fireEvent.click(confirmedBtn(container));
+    fireEvent.click(getByLabelText("Submit daily report"));
+    await waitFor(() => expect(api.submitForm).toHaveBeenCalled());
+    const payload = vi.mocked(api.submitForm).mock.calls[0][0] as { values: Record<string, unknown> };
+    // The payload shape is the pre-toggle contract: ChecklistState with a STRING response — ""
+    // is the established unanswered value (the PDF renderer's blank cell, distinct from N/A).
+    expect(payload.values.arrival).toEqual({ arrived_walkthrough: { response: "" } });
+  });
+
+  it("the draft survives the toggle round-trip across an unmount (confirm → unconfirm persists as unanswered)", async () => {
+    const first = render(<DailyReportTab linked={true} placement={PLACED} onOpenForm={vi.fn()} />);
+    await waitFor(() => expect(first.container.textContent ?? "").toContain("SITE SUPERVISOR"));
+    fireEvent.click(confirmedBtn(first.container)); // confirm (dirty → draft machinery engages)
+    fireEvent.click(confirmedBtn(first.container)); // unconfirm
+    first.unmount(); // flushes the pending draft (the deep-link loss-moment)
+    const second = render(<DailyReportTab linked={true} placement={PLACED} onOpenForm={vi.fn()} />);
+    await waitFor(() => expect(second.container.textContent ?? "").toContain("SITE SUPERVISOR"));
+    expect(confirmedBtn(second.container).getAttribute("aria-pressed")).toBe("false"); // restored unconfirmed
   });
 });

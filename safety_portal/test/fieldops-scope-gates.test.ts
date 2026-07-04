@@ -15,6 +15,12 @@ import { provision, login } from "./helpers";
 // cap.checklist.manage ONLY the two daily-form reads, cap.jobtracker.manage all three. Custom D1
 // roles isolate single capabilities (the built-in submitter/manager/admin tiers hold the caps only
 // in bundles). Error shapes must be byte-identical to the pre-extraction inline gates.
+//
+// Directive 2026-07-03 (daily-report role gating): the two daily-form reads now ALSO require
+// role ∈ {manager, admin} BEFORE the scope check (fieldops_scope.requireDailyReportRole), so the
+// shared-scope actors here are MANAGERS (they exercise the scope machinery on all three paths;
+// a submitter would 403 forbidden_role on the daily-form reads before ever reaching the scope).
+// The role gate itself — incl. the submitter matrix — is covered in daily-report-role-gate.test.ts.
 // Runs against the REAL worker with Miniflare D1 (migrations auto-apply); per-test isolation.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -80,9 +86,9 @@ beforeEach(async () => {
 
 describe("shared ownership scope — placed vs foreign vs unlinked (all three surfaces)", () => {
   it("a PLACED non-admin reads their own job (200) and is refused a foreign job with the byte-identical forbidden_job shape", async () => {
-    await provision("sub.sam", "password123", "submitter");
-    await seedPersonnel("Sam Sub", "sub.sam", "JOB-A");
-    const sam = await login("sub.sam", "password123");
+    await provision("mgr.sam", "password123", "manager"); // manager: passes the daily-report role gate; holds NO bypass caps
+    await seedPersonnel("Sam Manager", "mgr.sam", "JOB-A");
+    const sam = await login("mgr.sam", "password123");
     for (const path of ALL_THREE) {
       expect((await g(sam, path("JOB-A"))).status, path("JOB-A")).toBe(200);
       const res = await g(sam, path("JOB-B"));
@@ -93,8 +99,8 @@ describe("shared ownership scope — placed vs foreign vs unlinked (all three su
   });
 
   it("an account with NO linked active personnel row is forbidden_job on all three (even its own former job)", async () => {
-    await provision("sub.solo", "password123", "submitter");
-    const solo = await login("sub.solo", "password123"); // no personnel row at all
+    await provision("mgr.solo", "password123", "manager");
+    const solo = await login("mgr.solo", "password123"); // no personnel row at all
     for (const path of ALL_THREE) {
       const res = await g(solo, path("JOB-A"));
       expect(res.status, path("JOB-A")).toBe(403);
@@ -103,9 +109,9 @@ describe("shared ownership scope — placed vs foreign vs unlinked (all three su
   });
 
   it("shared requireJob: oversize job_id → 400 invalid_job_id; unknown job → 404 not_found (all three)", async () => {
-    await provision("sub.sam", "password123", "submitter");
-    await seedPersonnel("Sam Sub", "sub.sam", "JOB-A");
-    const sam = await login("sub.sam", "password123");
+    await provision("mgr.sam", "password123", "manager");
+    await seedPersonnel("Sam Manager", "mgr.sam", "JOB-A");
+    const sam = await login("mgr.sam", "password123");
     const oversize = "J".repeat(65);
     for (const path of ALL_THREE) {
       const bad = await g(sam, path(oversize));

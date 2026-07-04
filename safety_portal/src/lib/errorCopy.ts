@@ -16,6 +16,7 @@ export const ERROR_COPY: Record<string, string> = {
   bad_session: "Your session has expired — log in again.",
   invalid_credentials: "Incorrect username or password.",
   forbidden: "You don't have permission to do that.",
+  forbidden_role: "The daily field report is for crew-lead managers and the office \u2014 this account can't file it.",
 
   // ── generic request shape ──────────────────────────────────────────────────────────────────────
   bad_request: "The request couldn't be read — please try again.",

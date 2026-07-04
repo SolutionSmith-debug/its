@@ -53,10 +53,14 @@ import {
 // /tasks/mine read now carries viewer_placement (the caller's own placement, resolved server-side),
 // so the tab no longer downloads a full Job Tracker list page (the old fetchJobList("active") →
 // viewer_current_job stage 1). fetchJobList stays the Job Tracker page's own source. The R1/R2
-// empty-state reasons are re-derived: role ≠ manager (session) → not-a-manager copy;
-// parent-reported linked:false (/tasks/mine) → the roster-link copy; placed nowhere → the
-// not-placed copy. The parent fetch's loading/error ride down too (linked === null = in flight;
-// placementError + onRetryPlacement = the never-silent error + Retry surface).
+// empty-state reasons are re-derived: role ∉ {manager, admin} (session) → the not-a-crew-lead
+// copy (directive 2026-07-03: a placed ADMIN files the daily report exactly like a placed
+// manager; a subcontractor never does — the parent also hides the Daily tab for submitters, so
+// this in-component gate is the mounted-panel defense, and the Worker re-gates every daily
+// surface on the same role set); parent-reported linked:false (/tasks/mine) → the roster-link
+// copy; placed nowhere → the not-placed copy. The parent fetch's loading/error ride down too
+// (linked === null = in flight; placementError + onRetryPlacement = the never-silent error +
+// Retry surface).
 //
 // Prefill (best-effort, NEVER a blocker): the job detail (cap.jobtracker.read) seeds
 // crew_progress rows from the placed crew, equipment_on_site rows from equipment-on-site, and
@@ -125,7 +129,8 @@ export function DailyReportTab({
   onLoaded?: (info: { placement: DailyPlacement | null }) => void;
 }) {
   const { user } = useAuth();
-  const isManager = user?.role === "manager";
+  // Directive 2026-07-03: manager OR admin (the placed-admin case) — never submitter.
+  const canFileDaily = user?.role === "manager" || user?.role === "admin";
 
   // ── The form definition: the daily-report parent's CURRENT version (v2 today; robust to a v3). ──
   // Resolved once — the catalog + definitions are build-time bundles.
@@ -143,14 +148,14 @@ export function DailyReportTab({
   // The RESOLVED placement the rest of the tab consumes: the parent-provided viewer placement,
   // with a detail-read project-name fill for the rare null-name case (see detailName above).
   const placement: DailyPlacement | null = useMemo(() => {
-    if (!isManager || !placementProp) return null;
+    if (!canFileDaily || !placementProp) return null;
     return {
       job_id: placementProp.job_id,
       project_name:
         placementProp.project_name ??
         (detailName?.job === placementProp.job_id ? detailName.name : null),
     };
-  }, [isManager, placementProp, detailName]);
+  }, [canFileDaily, placementProp, detailName]);
 
   const [date, setDate] = useState(pacificToday());
   const dateRef = useRef(date);
@@ -312,13 +317,14 @@ export function DailyReportTab({
   }, []);
 
   // ── Placement (the envelope job) — parent-provided (CS4 #12), reported up as it resolves. ──────
-  // Mirrors the retired loadPlacement's reporting contract: a non-manager reports { placement:
-  // null } immediately (so the parent's auto-switch settles); a manager reports once the parent
-  // fetch LANDS (linked !== null) — resolved placement or null — and again whenever it changes
-  // (incl. the detail-read name enrichment). While the parent fetch is in flight or failed with
-  // nothing landed, nothing is reported — exactly the old load-in-flight / load-failed silence.
+  // Mirrors the retired loadPlacement's reporting contract: a daily-ineligible role reports
+  // { placement: null } immediately (so the parent's auto-switch settles); a manager/admin
+  // reports once the parent fetch LANDS (linked !== null) — resolved placement or null — and
+  // again whenever it changes (incl. the detail-read name enrichment). While the parent fetch is
+  // in flight or failed with nothing landed, nothing is reported — exactly the old
+  // load-in-flight / load-failed silence.
   useEffect(() => {
-    if (!isManager) {
+    if (!canFileDaily) {
       onLoadedRef.current?.({ placement: null });
       return;
     }
@@ -328,7 +334,7 @@ export function DailyReportTab({
     }
     if (linked !== null) onLoadedRef.current?.({ placement: null });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isManager, linked, placement?.job_id, placement?.project_name]);
+  }, [canFileDaily, linked, placement?.job_id, placement?.project_name]);
 
   // ── Best-effort prefill from the job detail (crew / equipment / prepared_by). ──────────────────
   const placedJob = placement?.job_id ?? null;
@@ -511,7 +517,7 @@ export function DailyReportTab({
   }, [placedJob, date, def, refreshToken]);
 
   // ── The R2-built empty / loading / error states (mutually exclusive). ───────────────────────────
-  if (!isManager) {
+  if (!canFileDaily) {
     return (
       <section className="card dash-section" aria-label="Daily report status">
         <h3 className="dash-detail__h2">Daily report</h3>

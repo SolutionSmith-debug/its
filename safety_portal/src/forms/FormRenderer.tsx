@@ -638,11 +638,19 @@ function GroupView({ group, state, onChange }: {
                   onChange={(e) => onChange(it.key, { response: e.target.value })} />
               ) : (
                 <div className="fr__scale" role="radiogroup" aria-label={it.label}>
+                  {/* Scale buttons are a TRUE TOGGLE (operator directive 2026-07-03 — the daily
+                      field report's "Confirmed" buttons could be set but never un-set): clicking
+                      the selected option clears the response back to "" (unanswered), the only
+                      un-confirm path a one-option scale has. The filed value shape is unchanged:
+                      response stays a string, and "" is the established unanswered value
+                      downstream (the initial state, the D4 confirm kind, and the PDF renderer's
+                      blank-vs-N/A cell). Styling + aria-pressed derive from cur.response, so the
+                      confirmed ↔ neutral visual states revert for free. */}
                   {(it.scale ?? (it.kind === "circle_one" ? it.options : group.scale) ?? []).map((opt) => (
                     <button type="button" key={opt}
                       className={`fr__scale-opt${cur.response === opt ? " fr__scale-opt--on" : ""}`}
                       aria-pressed={cur.response === opt}
-                      onClick={() => onChange(it.key, { response: opt })}>{opt}</button>
+                      onClick={() => onChange(it.key, { response: cur.response === opt ? "" : opt })}>{opt}</button>
                   ))}
                 </div>
               )}

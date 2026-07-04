@@ -57,10 +57,12 @@ type Tab = "assigned" | "daily";
  *   • "Assigned tasks" — the one-off tasks assigned to the actor (grouped by job, open-first per
  *     the R1 server ordering), the Assigned-inspections section, and the Add-crew disclosure
  *     (cap.crew.create).
- *   • "Daily report" (D2, SOP daily form) — the placed manager's daily SOP FORM rendered inline
- *     (DailyReportTab: date selector + the daily-report-v2 definition + form_link deep-links),
- *     replacing the retired R2 checkbox checklist. The R2 explanatory empty states carry over
- *     for everyone else (Mandatory A).
+ *   • "Daily report" (D2, SOP daily form) — the placed manager's/admin's daily SOP FORM rendered
+ *     inline (DailyReportTab: date selector + the daily-report definition + form_link deep-links),
+ *     replacing the retired R2 checkbox checklist. Directive 2026-07-03: the tab EXISTS only for
+ *     manager/admin accounts with a placement — a subcontractor (submitter) never sees it (their
+ *     My Tasks is tasks/inspections-only, no tab strip), and an unplaced manager/admin gets no
+ *     tab either. The Worker re-gates every daily surface on the same role set.
  *
  * Both tab panels stay MOUNTED (the inactive one is `hidden`) so each section's single fetch runs
  * once and the daily tab can report its placement up for the auto-switch: on first load, a placed
@@ -104,6 +106,12 @@ export function FieldOpsMyTasks({
   const canOwn = caps.includes("cap.tasks.own");
   const canCreateCrew = caps.includes("cap.crew.create");
   const canLogTime = caps.includes("cap.time.log");
+  // Directive 2026-07-03 (daily-report role gating): the Daily tab is a MANAGER/ADMIN surface —
+  // a placed admin files the daily report exactly like a placed manager; a subcontractor
+  // (submitter) never sees the tab, even when placed (their My Tasks stays tasks/inspections-
+  // only). Role from the session (closed vocabulary) — a convenience gate; the Worker re-gates
+  // every daily surface on the same role set (Invariant 2).
+  const canDaily = user?.role === "manager" || user?.role === "admin";
 
   const [tab, setTab] = useState<Tab>(initialTab ?? "assigned");
   const [refreshToken, setRefreshToken] = useState(0);
@@ -166,15 +174,17 @@ export function FieldOpsMyTasks({
   }, []);
 
   // One-time auto-switch (judgment call, kept simple): once BOTH first loads land, a PLACED
-  // manager with no open one-off tasks starts on the Daily tab (D2: placement replaces the old
-  // checklist-instance signal). Never fires again (no tab yanking after the user interacts).
+  // manager/admin with no open one-off tasks starts on the Daily tab (D2: placement replaces the
+  // old checklist-instance signal). Never fires again (no tab yanking after the user interacts).
+  // A daily-ineligible role (submitter) never mounts the Daily panel, so dailyInfo never lands
+  // for it — don't wait on it (there is nothing to switch to).
   useEffect(() => {
-    if (autoSwitched.current || !resp || !dailyInfo) return;
+    if (autoSwitched.current || !resp || (canDaily && !dailyInfo)) return;
     autoSwitched.current = true;
     // (An explicit user tab click also sets autoSwitched — see pickTab — so a slow first load can
     // never yank the user off a tab they chose; review WARN.)
     const hasOpenTasks = resp.tasks.some((t) => t.status !== "done");
-    if (dailyInfo.placement && !hasOpenTasks) {
+    if (canDaily && dailyInfo?.placement && !hasOpenTasks) {
       setTab("daily");
       onTabChange?.("daily"); // G2.5: keep the address bar on the tab actually shown
     }
@@ -229,6 +239,18 @@ export function FieldOpsMyTasks({
   }
 
   const groups = groupByJob(resp?.tasks ?? []);
+
+  // Directive 2026-07-03: the Daily tab renders only for manager/admin accounts WITH a placement.
+  // While /tasks/mine is in flight (resp null) the tab renders optimistically for eligible roles
+  // (no pop-in for the common placed case); a LANDED response without a placement removes it —
+  // an unplaced admin/manager gets no Daily tab (matrix: admin unplaced ✗). Submitters never get
+  // it regardless of placement. The Worker independently 403s every daily surface for
+  // ineligible roles — this is display gating only.
+  const showDailyTab = canDaily && (resp === null || resp.viewer_placement !== null);
+  // A deep-linked /tasks/daily (or a landed placement removal) for an account without the tab
+  // coerces the DISPLAYED tab to Assigned — `tab` keeps the user's pick, the coercion is
+  // presentation-only and self-heals if the placement lands.
+  const effectiveTab: Tab = showDailyTab ? tab : "assigned";
 
   const renderTaskRow = (t: api.MyTask) => {
     const rowBusy = busyIds.has(t.id);
@@ -360,31 +382,37 @@ export function FieldOpsMyTasks({
         their Daily report here.
       </p>
 
-      {/* Tab strip — the admin-nav banner-extension pattern (.admin-tabs), same look site-wide. */}
-      <nav className="admin-tabs" role="tablist" aria-label="My Tasks sections">
-        <button
-          type="button"
-          role="tab"
-          aria-selected={tab === "assigned"}
-          className={`admin-tabs__tab${tab === "assigned" ? " admin-tabs__tab--active" : ""}`}
-          onClick={() => pickTab("assigned")}
-        >
-          Assigned tasks
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={tab === "daily"}
-          className={`admin-tabs__tab${tab === "daily" ? " admin-tabs__tab--active" : ""}`}
-          onClick={() => pickTab("daily")}
-        >
-          Daily report
-        </button>
-      </nav>
+      {/* Tab strip — the admin-nav banner-extension pattern (.admin-tabs), same look site-wide.
+          Rendered only when the Daily tab exists (directive 2026-07-03): a submitter — or an
+          unplaced manager/admin — gets the Assigned content with no tab chrome at all. */}
+      {showDailyTab && (
+        <nav className="admin-tabs" role="tablist" aria-label="My Tasks sections">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={effectiveTab === "assigned"}
+            className={`admin-tabs__tab${effectiveTab === "assigned" ? " admin-tabs__tab--active" : ""}`}
+            onClick={() => pickTab("assigned")}
+          >
+            Assigned tasks
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={effectiveTab === "daily"}
+            className={`admin-tabs__tab${effectiveTab === "daily" ? " admin-tabs__tab--active" : ""}`}
+            onClick={() => pickTab("daily")}
+          >
+            Daily report
+          </button>
+        </nav>
+      )}
 
       {/* Both panels stay mounted (inactive hidden) — single fetch per section + the daily section
-          reports its instance up for the auto-switch even while its tab is inactive. */}
-      <div role="tabpanel" aria-label="Assigned tasks" hidden={tab !== "assigned"}>
+          reports its instance up for the auto-switch even while its tab is inactive. The daily
+          panel mounts ONLY for manager/admin (directive 2026-07-03): a submitter's My Tasks is
+          tasks/inspections-only. */}
+      <div role="tabpanel" aria-label="Assigned tasks" hidden={effectiveTab !== "assigned"}>
         {/* R7 — "Log time" quick action (the subcontractor's direct path to logging hours, A3):
             deep-links to the Job Tracker detail of the actor's current placement when known (the
             Daily tab's placement resolve names it, D2); otherwise opens the tracker plainly. The
@@ -420,22 +448,24 @@ export function FieldOpsMyTasks({
         )}
       </div>
 
-      <div role="tabpanel" aria-label="Daily report" hidden={tab !== "daily"}>
-        {/* D2 (SOP daily form) — the placed manager's daily SOP form rendered inline; the R2
-            reason-coded explanatory empty states carry over for everyone else. CS4 #12: the
-            placement rides THIS page's /tasks/mine response (viewer_placement) — the tab no
-            longer fetches a Job Tracker list page of its own; its error+Retry surface reuses
-            this page's load(). */}
-        <DailyReportTab
-          linked={resp?.linked ?? null}
-          placement={resp?.viewer_placement ?? null}
-          placementError={error}
-          onRetryPlacement={() => void load()}
-          onOpenForm={onOpenForm}
-          refreshToken={refreshToken}
-          onLoaded={setDailyInfo}
-        />
-      </div>
+      {canDaily && (
+        <div role="tabpanel" aria-label="Daily report" hidden={effectiveTab !== "daily"}>
+          {/* D2 (SOP daily form) — the placed manager's/admin's daily SOP form rendered inline;
+              the R2 reason-coded explanatory empty states carry over for everyone else. CS4 #12:
+              the placement rides THIS page's /tasks/mine response (viewer_placement) — the tab no
+              longer fetches a Job Tracker list page of its own; its error+Retry surface reuses
+              this page's load(). */}
+          <DailyReportTab
+            linked={resp?.linked ?? null}
+            placement={resp?.viewer_placement ?? null}
+            placementError={error}
+            onRetryPlacement={() => void load()}
+            onOpenForm={onOpenForm}
+            refreshToken={refreshToken}
+            onLoaded={setDailyInfo}
+          />
+        </div>
+      )}
     </PageShell>
   );
 }
