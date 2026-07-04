@@ -3,7 +3,7 @@ type: session_log
 date: 2026-07-03
 status: closed
 workstream: field_ops
-related_prs: [434, 435, 436, 437, 438, 439, 440, 442, 443, 415, 444, 445, 446, 447, 448, 449, 450, 451, 452, 453, 454, 455, 456]
+related_prs: [405, 434, 435, 436, 437, 438, 439, 440, 442, 443, 415, 444, 445, 446, 447, 448, 449, 450, 451, 452, 453, 454, 455, 456]
 tags: [session_log, field-ops, safety_portal, complete-state-audit, unbounded-growth-audit, migration-guard, publish-daemon, sentry-reclassification, doctrine-rider, registry-split, delete-on-screen, photo-pool, section34-parity, toctou-fold, w4-audit-atomicity, requirejobscope, four-part-verify, held-pr, disclosed-staging-error, rebase-discipline, portal-worker-security-reviewer, ops-stds-enforcer, form-definition-reviewer, blueprint-doctrine-bump]
 ---
 
@@ -31,6 +31,25 @@ in isolated worktrees) → CC fixes findings → exit-checked gates → squash-m
 
 All 23 exec PRs + 1 blueprint doctrine PR landed and four-part verified. Both Python and TypeScript
 surfaces touched; one blueprint doctrine version rider (v19.x) ratified by the operator mid-session.
+
+## Full-session provenance (completeness anchor)
+
+This was a single **multi-day, extremely long** session (the bulk executed by Claude Fable 5 before an
+Opus 4.8 handoff for the final v6 finish + this close). Since the prior repo state (`780cacd`, #404), the
+session landed PRs **#405–#456**, captured across **three** session logs written at natural arc boundaries —
+this log is the authoritative completeness map so no PR is orphaned:
+
+- **#405** — `c4386bd` URS-refine Personnel + Materials + JobTracker/badge polish (PR-3): the session's
+  lead-in UI-consistency PR, landed before the first mid-session log's range began. Logged here for
+  completeness; no non-obvious decision of its own.
+- **#406–#421** → `2026-07-02_assigned-tasks-and-r-series-refinement.md` (Assigned-Tasks S1–S6+T, R-series;
+  #415/FF4 opened held there and **merged this session** — see #415 below).
+- **#423–#432** → `2026-07-03_sop-daily-form-material-receipts-and-optimization-sweep.md` (SOP-daily-form
+  D1–D4, Material Receipts M1–M2, design-refinement, optimization sweep).
+- **#434–#456** → **this log** (the four arcs below).
+- **#422 / #433** are the two mid-session close-log PRs themselves (not re-listed as related work).
+- **#441** was closed unmerged (the intended-held CS4b — see #440 below); **#415** (FF4) was opened during
+  the assigned-tasks arc and merged here after the operator's severity sign-off.
 
 ## The four arcs
 
