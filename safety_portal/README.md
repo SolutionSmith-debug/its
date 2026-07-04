@@ -996,6 +996,9 @@ watchdog** (`hours_log.check_row_cap` — WARNs + Review-Queues an operator peri
 nears the ~20k cap; the rider ratifies this as satisfying §51's period-split for LOW-VOLUME logs,
 threshold `progress_reports.hours_log.row_cap_warn_threshold`, default 15000) ship in this PR; the
 A1 sheet-count margin-check fires on each create. **archive-on-closure** is the one §51 guard still a
-committed follow-up (**its#462** — needs a `smartsheet_client` move-sheet method; only exercised at a
-distant job-close; must land before the first archival). **Deferred to later slices:** the Equipment
-+ Materials standing trackers (P7 Slices 2–3).
+committed follow-up (**its#462** — needs a `smartsheet_client` move-sheet method). The `archived`
+lifecycle write is **live today** (portal admin), so once `hours_enabled` is on, an archived job's
+Hours Log **strands** in the progress workspace until #462 lands — never-deleted → recoverable, no
+data loss, but the archive guarantee is skipped. **Land #462 before enabling `hours_enabled` in a
+tenant where jobs may archive** (or accept the bounded stranded-sheet exposure — a manual move
+recovers it). **Deferred to later slices:** the Equipment + Materials standing trackers (P7 Slices 2–3).
