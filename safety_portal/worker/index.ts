@@ -14,7 +14,8 @@ import { registerJobWriteRoutes } from "./fieldops_job_write";
 import { registerTaskWriteRoutes } from "./fieldops_task_write";
 import { registerMyTasksRoutes } from "./fieldops_tasks";
 import { registerChecklistRoutes } from "./fieldops_checklist";
-import { registerDailyRequirementsRoutes } from "./fieldops_daily_requirements";
+import { isDailyTabFamilyForm, registerDailyRequirementsRoutes } from "./fieldops_daily_requirements";
+import { requireDailyReportRole } from "./fieldops_scope";
 import { registerEquipmentFieldWriteRoutes } from "./fieldops_equipment_write";
 import { registerEquipmentRosterWriteRoutes } from "./fieldops_equipment_roster_write";
 import { registerPersonnelWriteRoutes } from "./fieldops_personnel_write";
@@ -591,6 +592,19 @@ app.post("/api/submit", requireSession, requireCapability("cap.form.submit"), as
     typeof values !== "object" || values === null || Array.isArray(values)
   ) {
     return c.json({ error: "invalid_submission" }, 400);
+  }
+  // ── Daily-report role gate (operator directive 2026-07-03) ────────────────
+  // The SOP daily field report (every launch:"daily-tab" catalog family, matched on the S4
+  // parent/-v% convention) is a MANAGER/ADMIN surface: cap.form.submit is held by all three
+  // roles, so the cap gate above cannot express "not the subcontractor tier". The SPA hides the
+  // Daily tab for submitters, but THIS is the boundary (Invariant 2 — never trust the client):
+  // a submitter posting a daily-report form_code directly is 403 forbidden_role, checked before
+  // the job lookup so an ineligible role learns nothing about job existence. Gated on the
+  // per-request D1 session role (closed vocabulary), not a new capability — see
+  // fieldops_scope.requireDailyReportRole.
+  if (isDailyTabFamilyForm(form_code)) {
+    const roleErr = requireDailyReportRole(c);
+    if (roleErr) return roleErr;
   }
   const job = await c.env.DB.prepare("SELECT 1 FROM jobs WHERE job_id=? AND active=1").bind(job_id).first();
   if (!job) return c.json({ error: "unknown_job" }, 422);

@@ -2,7 +2,7 @@ import type { Context } from "hono";
 import type { Env, Vars } from "./types";
 import type { FieldopsApp, FieldopsGates } from "./fieldops_gates";
 import { auditStmtIfChanged } from "./audit";
-import { requireJob, requireJobScope } from "./fieldops_scope";
+import { requireDailyReportRole, requireJob, requireJobScope } from "./fieldops_scope";
 import { DAILY_REPORT_FORM } from "./fieldops_checklist";
 import { DAILY_STATUS_FAMILIES } from "../src/shared/daily_families";
 import type { DailyFormStatus, DailyRequirementItem, DailyRequirementsResponse, FiledEntry } from "./wire-types";
@@ -23,7 +23,11 @@ import catalog from "../catalog.json";
 //   • admin CRUD  — cap.checklist.manage (the Job Tracker job-detail editor);
 //   • the tab read — cap.tasks.own + the SAME per-job ownership scope as /daily-form/status
 //     (security review posture: a non-admin actor reads ONLY their own placement — 403
-//     forbidden_job otherwise; cap.jobtracker.manage / cap.checklist.manage holders any job).
+//     forbidden_job otherwise; cap.jobtracker.manage / cap.checklist.manage holders any job)
+//     + the daily-report ROLE gate (directive 2026-07-03, fieldops_scope.requireDailyReportRole):
+//     cap.tasks.own is held by all three roles, so both daily-form reads additionally require
+//     role ∈ {manager, admin} — a placed subcontractor 403s (forbidden_role) instead of reading
+//     the daily surface it can no longer render.
 
 const MAX_LABEL = 256; // same bound as checklist item labels (0026 discipline)
 const MAX_FORM_CODE = 64;
@@ -57,6 +61,19 @@ const CATALOG_PARENT_CODES: ReadonlySet<string> = new Set(CATALOG_PARENTS.map((p
 const DAILY_TAB_PARENT_CODES: ReadonlySet<string> = new Set(
   CATALOG_PARENTS.filter((p) => p.launch === "daily-tab").map((p) => p.parent_form_code),
 );
+
+/** Does a submitted form_code belong to a launch:"daily-tab" parent family? Matched on the S4
+ *  family convention (form_code = parent OR a versioned variant `parent + '-v…'`) — the SAME
+ *  match /daily-form/status runs in SQL, so "daily-report-v5" and a bare "daily-report" both
+ *  count. Consumed by /api/submit (worker/index.ts) for the daily-report role gate (operator
+ *  directive 2026-07-03): the daily field report is a manager/admin surface, and the SPA hiding
+ *  the Daily tab is never the boundary — the submit choke point is. */
+export function isDailyTabFamilyForm(formCode: string): boolean {
+  for (const parent of DAILY_TAB_PARENT_CODES) {
+    if (formCode === parent || formCode.startsWith(`${parent}-v`)) return true;
+  }
+  return false;
+}
 
 const CAP_MANAGE = "cap.checklist.manage"; // admin authoring (same cap as the checklist editors)
 const CAP_TASKS_OWN = "cap.tasks.own"; // the tab read (the placed manager's surface)
@@ -203,6 +220,12 @@ export function registerDailyRequirementsRoutes(app: FieldopsApp, gates: Fieldop
     gates.requireSession,
     gates.requireCapability(CAP_TASKS_OWN),
     async (c) => {
+      // Daily-report role gate (directive 2026-07-03) FIRST — cap.tasks.own is held by ALL three
+      // roles (0013/0023 grants), so the cap alone let a placed subcontractor read this daily
+      // surface. Role-checked before any job resolution so an ineligible role learns nothing
+      // about job existence either.
+      const roleErr = requireDailyReportRole(c);
+      if (roleErr) return roleErr;
       const q = c.req.query();
       const date = q.date ?? "";
       if (!DATE_RE.test(date)) return c.json({ error: "invalid_date" }, 400);
@@ -252,6 +275,10 @@ export function registerDailyRequirementsRoutes(app: FieldopsApp, gates: Fieldop
     gates.requireSession,
     gates.requireCapability(CAP_TASKS_OWN),
     async (c) => {
+      // Daily-report role gate (directive 2026-07-03) — same rationale as /daily-form/status
+      // above; the admin job-detail editor rides through on role 'admin'.
+      const roleErr = requireDailyReportRole(c);
+      if (roleErr) return roleErr;
       const jobId = c.req.query("job_id") ?? "";
       const jobErr = await requireJob(c, jobId); // 400 bad shape / 404 unknown job
       if (jobErr) return jobErr;

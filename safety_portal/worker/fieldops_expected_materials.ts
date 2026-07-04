@@ -2,7 +2,7 @@ import type { Context } from "hono";
 import type { FieldopsApp, FieldopsGates } from "./fieldops_gates";
 import type { Env, Vars } from "./types";
 import { auditStmt, auditStmtIfChanged } from "./audit";
-import { requireJob, requireJobScope } from "./fieldops_scope";
+import { requireDailyReportRole, requireJob, requireJobScope } from "./fieldops_scope";
 import type { ExpectedMaterialRow, ExpectedMaterialsResponse } from "./wire-types";
 
 // Material receipts (M1) — per-job EXPECTED-materials list (`job_expected_materials`, migration
@@ -350,6 +350,14 @@ export function registerExpectedMaterialsRoutes(app: FieldopsApp, gates: Fieldop
     auditAction: string,
     noteRequired: boolean,
   ): Promise<Response> {
+    // Daily-report role gate (directive 2026-07-03): the receipt actions are DAILY-FORM surfaces
+    // (M2 wires them into the Daily tab exclusively — the Job Tracker section is read-only for
+    // receive-cap holders), and cap.materials.receive is held by all three roles. The READ above
+    // deliberately keeps its cap-only gate: the Job Tracker's Expected-materials section is a
+    // live submitter consumer of the list. Role-checked first — an ineligible role learns
+    // nothing about row existence.
+    const roleErr = requireDailyReportRole(c);
+    if (roleErr) return roleErr;
     const id = badId(c);
     if (id === null) return c.json({ error: "invalid_id" }, 400);
     const body = await readOptionalJsonBody(c);

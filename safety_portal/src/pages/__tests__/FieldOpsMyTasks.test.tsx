@@ -102,8 +102,11 @@ function tasksOk(tasks: api.MyTask[] = TASKS, viewer: api.ViewerTaskPlacement | 
 }
 
 describe("FieldOpsMyTasks — tabs", () => {
-  it("renders both tabs, Assigned tasks selected by default", async () => {
-    tasksOk();
+  // Directive 2026-07-03: the Daily tab exists only for manager/admin accounts WITH a placement —
+  // the tab-strip tests therefore run as a PLACED MANAGER (open tasks pin the assigned tab).
+  it("renders both tabs for a placed manager, Assigned tasks selected by default", async () => {
+    placedManager();
+    tasksOk(TASKS, PLACED_VIEWER);
     const { getByRole, queryByRole } = render(<FieldOpsMyTasks onBack={() => {}} />);
     await waitFor(() => expect(getByRole("tab", { name: "Assigned tasks" })).not.toBeNull());
     expect(getByRole("tab", { name: "Assigned tasks" }).getAttribute("aria-selected")).toBe("true");
@@ -114,13 +117,47 @@ describe("FieldOpsMyTasks — tabs", () => {
   });
 
   it("switches to the Daily report tab on click", async () => {
-    tasksOk();
+    placedManager();
+    tasksOk(TASKS, PLACED_VIEWER);
     const { getByRole, queryByRole } = render(<FieldOpsMyTasks onBack={() => {}} />);
     await waitFor(() => expect(getByRole("tab", { name: "Daily report" })).not.toBeNull());
     fireEvent.click(getByRole("tab", { name: "Daily report" }));
     expect(getByRole("tab", { name: "Daily report" }).getAttribute("aria-selected")).toBe("true");
     expect(getByRole("tabpanel", { name: "Daily report" })).not.toBeNull();
     expect(queryByRole("tabpanel", { name: "Assigned tasks" })).toBeNull();
+  });
+
+  it("a PLACED submitter gets NO Daily tab (directive 2026-07-03): no tab strip, no daily panel", async () => {
+    tasksOk(TASKS, PLACED_VIEWER); // default submitter session — PLACED, yet no daily surface
+    const { container, getByRole, queryByRole } = render(<FieldOpsMyTasks onBack={() => {}} />);
+    await waitFor(() => expect(container.textContent ?? "").toContain("Dig footings"));
+    expect(queryByRole("tab", { name: "Daily report" })).toBeNull();
+    expect(queryByRole("tablist")).toBeNull(); // tasks/inspections-only — no tab chrome at all
+    expect(queryByRole("tabpanel", { name: "Daily report" })).toBeNull(); // panel not even mounted
+    expect(getByRole("tabpanel", { name: "Assigned tasks" })).not.toBeNull(); // content intact
+  });
+
+  it("an unplaced manager and an unplaced admin get NO Daily tab once the placement lands (✗-tab)", async () => {
+    vi.mocked(useAuth).mockReturnValue(authWith(["cap.tasks.own", "cap.jobtracker.read"], "manager"));
+    tasksOk([]); // linked, viewer_placement null
+    const a = render(<FieldOpsMyTasks onBack={() => {}} />);
+    await waitFor(() => expect(a.container.textContent ?? "").toContain("No tasks are assigned to you"));
+    expect(a.queryByRole("tab", { name: "Daily report" })).toBeNull();
+    a.unmount();
+    vi.mocked(useAuth).mockReturnValue(authWith(["cap.tasks.own", "cap.jobtracker.read"], "admin"));
+    tasksOk([]);
+    const b = render(<FieldOpsMyTasks onBack={() => {}} />);
+    await waitFor(() => expect(b.container.textContent ?? "").toContain("No tasks are assigned to you"));
+    expect(b.queryByRole("tab", { name: "Daily report" })).toBeNull();
+  });
+
+  it("a PLACED admin gets the Daily tab + the inline form, exactly like a placed manager", async () => {
+    vi.mocked(useAuth).mockReturnValue(authWith(["cap.tasks.own", "cap.jobtracker.read"], "admin"));
+    tasksOk([], PLACED_VIEWER); // no open tasks → the auto-switch lands the admin on the Daily tab
+    const { getByRole } = render(<FieldOpsMyTasks onBack={() => {}} onOpenForm={vi.fn()} />);
+    const panel = await waitFor(() => getByRole("tabpanel", { name: "Daily report" }));
+    await waitFor(() => expect(panel.textContent ?? "").toContain("SITE SUPERVISOR"));
+    expect(panel.querySelector('input[type="date"]')).not.toBeNull();
   });
 
   it("auto-switches to Daily report when the actor is a PLACED MANAGER with no open tasks (D2)", async () => {
@@ -319,29 +356,30 @@ describe("FieldOpsMyTasks — D2 Daily report tab (page integration)", () => {
     expect(panel.textContent ?? "").not.toContain("Today's checklist");
   });
 
-  it("explains the Daily tab instead of a blank for a non-manager (Mandatory A carried from R2)", async () => {
-    tasksOk([]); // default submitter session
-    const { getByRole } = render(<FieldOpsMyTasks onBack={() => {}} />);
-    await waitFor(() => expect(getByRole("tab", { name: "Daily report" })).not.toBeNull());
-    fireEvent.click(getByRole("tab", { name: "Daily report" }));
-    const panel = getByRole("tabpanel", { name: "Daily report" });
-    await waitFor(() => expect(panel.textContent ?? "").toContain("crew-lead managers"));
-    expect(panel.querySelector('input[type="date"]')).toBeNull();
+  it("a placed submitter never reaches any Daily copy — the tab and panel are simply absent", async () => {
+    // Directive 2026-07-03 REPLACES the old explanatory-copy path for submitters: instead of a
+    // tab that opens a "crew-lead managers" explanation, the tab does not exist at all.
+    tasksOk([], PLACED_VIEWER); // default submitter session, PLACED
+    const { container, queryByRole } = render(<FieldOpsMyTasks onBack={() => {}} />);
+    await waitFor(() => expect(container.textContent ?? "").toContain("No tasks are assigned to you"));
+    expect(queryByRole("tab", { name: "Daily report" })).toBeNull();
+    expect(container.textContent ?? "").not.toContain("crew-lead managers");
+    expect(container.querySelector('input[type="date"]')).toBeNull();
   });
 
-  it("an unplaced manager gets the not-placed copy; an unlinked account the roster copy", async () => {
-    // Unplaced (linked:true from /tasks/mine, no viewer_current_job).
+  it("an unplaced/unlinked manager gets no Daily tab once landed (the tab needs a placement)", async () => {
+    // Unplaced (linked:true from /tasks/mine, no viewer placement) → tab absent after land.
     vi.mocked(useAuth).mockReturnValue(authWith(["cap.tasks.own", "cap.jobtracker.read"], "manager"));
     tasksOk([]);
     const a = render(<FieldOpsMyTasks onBack={() => {}} />);
-    fireEvent.click(await waitFor(() => a.getByRole("tab", { name: "Daily report" })));
-    await waitFor(() => expect(a.container.textContent ?? "").toContain("not placed on a job yet"));
+    await waitFor(() => expect(a.container.textContent ?? "").toContain("No tasks are assigned to you"));
+    expect(a.queryByRole("tab", { name: "Daily report" })).toBeNull();
     a.unmount();
-    // Unlinked (linked:false) → the one roster-link explanation, not the placement copy.
+    // Unlinked (linked:false) → same: no placement, no tab.
     vi.mocked(api.fetchMyTasks).mockResolvedValue({ tasks: [], linked: false, viewer_placement: null });
     const b = render(<FieldOpsMyTasks onBack={() => {}} />);
-    fireEvent.click(await waitFor(() => b.getByRole("tab", { name: "Daily report" })));
-    await waitFor(() => expect(b.getByRole("tabpanel", { name: "Daily report" }).textContent ?? "").toContain("isn't linked to a roster person"));
+    await waitFor(() => expect(b.container.textContent ?? "").toContain("isn't linked to a roster person"));
+    expect(b.queryByRole("tab", { name: "Daily report" })).toBeNull();
   });
 
   it("a form_link deep-links through the page's onOpenForm with the placement job + selected date", async () => {

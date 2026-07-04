@@ -41,6 +41,22 @@ export async function resolveActorPersonnel(
   return row ?? null;
 }
 
+/** Daily-report family role gate (operator directive 2026-07-03): the SOP daily field report is
+ *  a MANAGER/ADMIN surface — a subcontractor (role key 'submitter', relabeled in migration 0027)
+ *  must not reach it even when placed on a job. Gated on the SESSION ROLE (the per-request D1
+ *  read requireSession sets — a closed three-value vocabulary, coerceRole fail-safe), NOT a new
+ *  capability: the daily report is a role-tier boundary exactly like the submit-as admin gate,
+ *  and minting a cap for a fixed two-role set would only re-create the vestigial-cap class the
+ *  CS4 Slice-4 audit cleaned up. One definition, N call sites (the requireJobScope extraction
+ *  rationale — a security gate must never be copy-pasted): the two daily-form reads, the two
+ *  expected-material receipt writes, and the /api/submit daily-tab family check all call THIS.
+ *  Returns the 403 Response (error 'forbidden_role'), or null when the role may file. */
+export function requireDailyReportRole(c: Ctx): Response | null {
+  const role = c.get("role");
+  if (role !== "manager" && role !== "admin") return c.json({ error: "forbidden_role" }, 403);
+  return null;
+}
+
 /** Per-job ownership scope (the /daily-form/status pattern, security-review posture): a non-bypass
  *  actor may only touch a job that is their OWN placement (linked ACTIVE personnel.current_job ===
  *  jobId) — 403 forbidden_job otherwise. `bypassCaps` is the calling surface's OWN admin set (see
