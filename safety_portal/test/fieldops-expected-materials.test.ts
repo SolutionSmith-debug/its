@@ -102,6 +102,10 @@ describe("POST /api/fieldops/expected-material (create)", () => {
     expect(row.status).toBe("expected");
     expect(row.active).toBe(1);
     expect(row.seq).toBe(10);
+    // M2 (0039): the ADD-line INSERT mints a line_uuid (the mirror key) + defaults unplanned=0.
+    expect(typeof row.line_uuid).toBe("string");
+    expect(row.line_uuid.length).toBeGreaterThan(0);
+    expect(row.unplanned).toBe(0);
     expect(await audits("expected_material_create")).toHaveLength(1); // W4: audit landed with the INSERT
   });
 

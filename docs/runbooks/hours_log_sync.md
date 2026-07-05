@@ -4,7 +4,7 @@ date: 2026-07-04
 status: active
 related_prs: []
 workstream: field_ops
-tags: [runbook, successor-remediation, fieldops_sync, hours-log, equipment-status, tier-2, track-2, archive-on-closure]
+tags: [runbook, successor-remediation, fieldops_sync, hours-log, equipment-status, material-list, tier-2, track-2, archive-on-closure]
 ---
 
 # Runbook — Hours Log up-sync (P7, the `fieldops_sync` hours pass) (Successor-Remediation, Op Stds §43)
@@ -196,13 +196,84 @@ Same as **Fault F** above (archive-on-closure now moves BOTH the Hours Log AND t
 The guaranteed Tier-2 fix is a one-off manual drag of `<Job> — Equipment` into `ITS — Archive / Closed
 Projects`; the `move_sheet_to_folder` method / workspace IDs / permissions are high-class → escalate.
 
+## Material List tracker (P7 M2)
+
+A THIRD pass inside the SAME `fieldops_sync` daemon mirrors the operator-authored per-job
+expected-materials list (D1 `job_expected_materials`, authored in the portal via the #426
+`cap.materials.manage` CRUD) into a per-job **`<Job> — Material List`** Smartsheet (progress
+workspace, beside the Hours Log + Equipment). One-way-up, send-free + AI-free — **NO down-sync, NOT
+bidirectional** (a deferred future model). Like the Equipment pass this is a **SNAPSHOT**: one row
+per active list line, showing its expected content + delivery state (`Status` = expected / received /
+incident) + an off-manifest `Unplanned` flag, updated **in place** each cycle; a line removed
+(deactivated) from the list is flipped `On List → Removed` (marked in place), **never deleted**. There
+is NO watermark and NO mark-mirrored. Gated by `field_ops.fieldops_sync.materials_enabled` (ITS_Config,
+Workstream `field_ops`) — SHIPPED OFF; the operator flips it on at cutover (after migration `0039` is
+applied AND the Worker material-list-snapshot route is deployed).
+
+The pass reconciles against a **roster** (`jobs_with_materials` — every active job that has ANY
+`job_expected_materials` row, active OR deactivated), NOT just the jobs with active lines this cycle.
+That is what lets a job whose ACTIVE lines dropped to **zero** (whole list deactivated) still get its
+stale `On List=Active` rows flipped to `Removed` — the daemon FINDS that job's sheet (never creating
+one) and marks every remaining row Removed. A job that never had a Material List sheet is simply
+skipped (no empty sheet is ever created).
+
+### Fault J — enabled the material pass but no Material List rows appear
+
+**Symptom.** `materials_enabled=true` but a job's `<Job> — Material List` sheet stays empty (or an
+edited line never updates) after a few minutes.
+
+**Check (read-only).** (1) `ITS_Config` — `field_ops.fieldops_sync.materials_enabled=true` AND
+`field_ops.fieldops_sync.sync_enabled=true` (the material pass runs INSIDE the same daemon; if the
+master `sync_enabled` is off, nothing runs). (2) Was migration `0039` applied live AND the Worker
+material-list-snapshot route deployed? (a Worker deployed ahead of `0039`, or `0039` not applied, 500s
+the snapshot fetch → see Fault K's transient errors). (3) `ITS_Config system.state` —
+`PAUSED`/`MAINTENANCE` halt the whole daemon. (4) `ITS_Daemon_Health` row `field_ops.fieldops_sync` —
+is `Last Cycle At` recent? Stale = the daemon isn't cycling (host issue → escalate). (5) `ITS_Errors`
+`Script=field_ops.fieldops_sync` — any `fieldops_material_*` rows (see Fault K). (6) Is the job
+**active** and does it have **active** expected-materials lines in the portal? A closed/on-hold job, or
+a job whose lines are all deactivated, is correctly NOT in `lines` (a fully-deactivated job still gets
+its old rows marked Removed via the roster).
+
+**Repair (Tier-2, low-class).** Flip `materials_enabled` (and/or `sync_enabled`) to `true` and wait
+one cycle (~5 min); un-PAUSE `system.state` if needed. If `0039` was never applied / the Worker is
+behind, that is a deploy/migration step (Developer-Operator). If the daemon is cycling, both gates are
+on, and the job has active lines but still doesn't mirror, hand Claude: *"the fieldops_sync material
+pass is enabled and the daemon is alive but `<job>`'s Material List isn't populating — diagnose."*
+
+### Fault K — a material mirror PERMANENTLY failed (Review Queue)
+
+**Symptom.** `ITS_Errors` `Error=fieldops_material_permanent`, AND an **ITS_Review_Queue** row
+(Workstream `progress_reports`) `field-ops Material List up-sync: PERMANENT failure …`. The payload
+names the `phase` (`ensure-sheet` / `upsert` / `find-sheet` / `retire`), the `job_id`/`project_name`,
+the `line_uuid`, and the error class.
+
+**Repair (Tier-2, low-class).** The pass is a snapshot — it **re-projects the whole live list every
+cycle**, so once the cause is resolved the next cycle self-heals (no watermark to unstick). If it needs
+a nudge, hand Claude the correlation id: *"Material List mirror keeps permanently failing for `<job>`
+line `<line_uuid>` (`<phase>`) — diagnose."* No code/secret/send for a Tier-2 fix.
+
+### Fault L — material-list-snapshot UNAUTHORIZED (401)
+
+**Symptom.** `ITS_Errors` CRITICAL `Error=fieldops_material_snapshot_auth_failed` — the field-ops
+bearer was rejected on the material-list-snapshot fetch. **This is a secrets/auth fault → ESCALATE to
+Seth** (same token as the job/hours/equipment passes, so a 401 here usually means the whole daemon is
+401ing — see `fieldops_sync.md` Symptom B/E). Do not attempt a Tier-2 fix.
+
+### Fault (archive) — a closed job's Material List sheet didn't move
+
+Same as **Fault F** above (archive-on-closure moves the Hours Log, Equipment, AND Material List sheets).
+The guaranteed Tier-2 fix is a one-off manual drag of `<Job> — Material List` into `ITS — Archive /
+Closed Projects`; the `move_sheet_to_folder` method / workspace IDs / permissions are high-class →
+escalate.
+
 ## Escalate-to-Seth boundary (observable terms)
 
-Escalate — do **not** attempt — when: the failure names **secrets/auth/Keychain** (Fault C / Fault I),
-the **External Send Gate**, **doctrine**, or needs a **code change**; the `field_ops.fieldops_sync`
-daemon row is **frozen** (hung/host issue); a permanent failure **persists** after the cause looks
-fixed; or the symptom is **novel**. Tier-2 here is exactly: flip `hours_enabled` / `equipment_enabled`
-/ `sync_enabled`, un-PAUSE `system.state`, or ask Claude to re-run an idempotent re-mirror.
+Escalate — do **not** attempt — when: the failure names **secrets/auth/Keychain** (Fault C / Fault I /
+Fault L), the **External Send Gate**, **doctrine**, or needs a **code change** (or a migration/deploy —
+Developer-Operator only); the `field_ops.fieldops_sync` daemon row is **frozen** (hung/host issue); a
+permanent failure **persists** after the cause looks fixed; or the symptom is **novel**. Tier-2 here is
+exactly: flip `hours_enabled` / `equipment_enabled` / `materials_enabled` / `sync_enabled`, un-PAUSE
+`system.state`, or ask Claude to re-run an idempotent re-mirror.
 
 ## Owner
 

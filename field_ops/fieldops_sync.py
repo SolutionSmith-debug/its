@@ -72,7 +72,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from progress_reports import equipment_status, hours_log
+from progress_reports import equipment_status, hours_log, material_list
 from shared import (
     active_jobs_writer,
     circuit_breaker,
@@ -118,6 +118,13 @@ DEFAULT_HOURS_ENABLED = False
 # SNAPSHOT (re-projected each cycle) — no watermark, no mark-mirrored.
 CFG_EQUIPMENT_ENABLED = "field_ops.fieldops_sync.equipment_enabled"
 DEFAULT_EQUIPMENT_ENABLED = False
+
+# P7 Material List (M2) — the per-job Material List snapshot pass runs INSIDE this same daemon (one
+# host, one lock, one heartbeat). Its OWN gate ships OFF so the pass is dark until the operator
+# applies migration 0039 + deploys the Worker material-list-snapshot route, then flips this on. Like
+# the equipment pass this is a SNAPSHOT (re-projected each cycle) — no watermark, no mark-mirrored.
+CFG_MATERIALS_ENABLED = "field_ops.fieldops_sync.materials_enabled"
+DEFAULT_MATERIALS_ENABLED = False
 _PACIFIC = ZoneInfo("America/Los_Angeles")  # tracker cells are the operator's wall-clock
 
 # State paths. HEARTBEAT_ROW_STATE_PATH is SHARED with the other daemons — same JSON file,
@@ -178,6 +185,11 @@ class SyncStats:
     equipment_retired: int = 0    # equipment rows flipped On Job → Off Job this cycle
     equipment_reviewed: int = 0   # equipment/jobs routed to the Review Queue (permanent failure)
     equipment_errors: int = 0     # transient equipment failures (left for next cycle) + skipped
+    # P7 material-list pass (0 when materials_enabled is off — the shipped default).
+    materials_upserted: int = 0   # material-list rows inserted/updated in place this cycle
+    materials_retired: int = 0    # material-list rows marked On List → Removed this cycle
+    materials_reviewed: int = 0   # material/jobs routed to the Review Queue (permanent failure)
+    materials_errors: int = 0     # transient material failures (left for next cycle) + skipped
 
 
 # ---- Config readers (replicated per preservation, mirror portal_poll) ----------
@@ -212,6 +224,10 @@ def _hours_enabled() -> bool:
 
 def _equipment_enabled() -> bool:
     return _read_bool_setting(CFG_EQUIPMENT_ENABLED, DEFAULT_EQUIPMENT_ENABLED)
+
+
+def _materials_enabled() -> bool:
+    return _read_bool_setting(CFG_MATERIALS_ENABLED, DEFAULT_MATERIALS_ENABLED)
 
 
 # ---- Lock + heartbeat seams (mirror portal_poll) -------------------------------
@@ -457,9 +473,19 @@ def _sync_inside_lock() -> SyncStats:
     if _equipment_enabled():
         equip = _mirror_equipment_pass(base_url, bearer)
 
+    # P7 material-list pass — same, INDEPENDENT endpoint (/material-list-snapshot). Gated OFF by
+    # default; SNAPSHOT: no mark-mirrored. Runs LAST (downstream); its own per-job/per-line fences
+    # mean a material failure NEVER aborts the job/hours/equipment passes above nor the heartbeat
+    # below — consistent with the decouple fix (no re-introduced job-fetch dependency).
+    materials = {"upserted": 0, "retired": 0, "reviewed": 0, "errors": 0}
+    if _materials_enabled():
+        materials = _mirror_material_list_pass(base_url, bearer)
+
     _write_heartbeat()
-    total_errors = counters["errors"] + hours["errors"] + equip["errors"]
-    total_reviewed = counters["reviewed"] + hours["reviewed"] + equip["reviewed"]
+    total_errors = counters["errors"] + hours["errors"] + equip["errors"] + materials["errors"]
+    total_reviewed = (
+        counters["reviewed"] + hours["reviewed"] + equip["reviewed"] + materials["reviewed"]
+    )
     if total_errors > 0:
         cycle_status: HeartbeatStatus = "DEGRADED"
     elif total_reviewed > 0:
@@ -472,7 +498,10 @@ def _sync_inside_lock() -> SyncStats:
     try:
         _write_heartbeat_row(
             status=cycle_status,
-            items_processed=counters["mirrored"] + hours["mirrored"] + equip["upserted"],
+            items_processed=(
+                counters["mirrored"] + hours["mirrored"] + equip["upserted"]
+                + materials["upserted"]
+            ),
             error_summary=(
                 None
                 if total_errors == 0 and total_reviewed == 0
@@ -494,7 +523,9 @@ def _sync_inside_lock() -> SyncStats:
             f"reviewed={counters['reviewed']} errors={counters['errors']}; "
             f"hours mirrored={hours['mirrored']} reviewed={hours['reviewed']} "
             f"errors={hours['errors']}; equipment upserted={equip['upserted']} "
-            f"retired={equip['retired']} reviewed={equip['reviewed']} errors={equip['errors']}"
+            f"retired={equip['retired']} reviewed={equip['reviewed']} errors={equip['errors']}; "
+            f"materials upserted={materials['upserted']} retired={materials['retired']} "
+            f"reviewed={materials['reviewed']} errors={materials['errors']}"
         ),
         error_code="sync_cycle_summary",
     )
@@ -510,6 +541,10 @@ def _sync_inside_lock() -> SyncStats:
         equipment_retired=equip["retired"],
         equipment_reviewed=equip["reviewed"],
         equipment_errors=equip["errors"],
+        materials_upserted=materials["upserted"],
+        materials_retired=materials["retired"],
+        materials_reviewed=materials["reviewed"],
+        materials_errors=materials["errors"],
     )
 
 
@@ -656,10 +691,10 @@ def _archive_closed_job_trackers(
     no longer found there → this returns without a second move (the natural idempotency —
     the same daemon may re-see an already-archived job on a later dirty cycle).
 
-    Standing trackers moved: the per-job `<Job> — Hours Log` (P7 Slice 1) AND the per-job
-    `<Job> — Equipment` (P7 Slice 2). Each is resolved + moved INDEPENDENTLY under its own
-    fence, so a failure moving one never blocks the other. The P7 Slice 3 Materials tracker
-    is NOT built yet; extend the tracker list when it lands.
+    Standing trackers moved: the per-job `<Job> — Hours Log` (P7 Slice 1), the per-job
+    `<Job> — Equipment` (P7 Slice 2), AND the per-job `<Job> — Material List` (P7 M2). Each is
+    resolved + moved INDEPENDENTLY under its own fence, so a failure moving one never blocks the
+    others.
 
     Edge case (by design, not handled here): if an archived job later receives NEW hours /
     equipment reads, the hours / equipment pass would find-or-CREATE a fresh tracker back in
@@ -688,6 +723,7 @@ def _archive_closed_job_trackers(
     trackers = (
         hours_log.hours_log_sheet_name(project_name),
         equipment_status.equipment_sheet_name(project_name),
+        material_list.material_list_sheet_name(project_name),
     )
     for sheet_name in trackers:
         try:
@@ -1261,6 +1297,285 @@ def _route_equipment_to_review(
         f"equipment mirror routed to Review Queue (permanent, {phase}) job={job_id!r} "
         f"equipment={equipment_id!r}: {type(exc).__name__}: {exc!r}",
         error_code="fieldops_equipment_permanent",
+        correlation_id=correlation_id,
+    )
+
+
+# ---- P7 Material List snapshot pass (Track 2, M2) --------------------------------
+
+
+def _fmt_qty(value: Any) -> str:
+    """A material quantity REAL → a trimmed string ('' when NULL/unset)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return ""
+    return f"{value:g}"
+
+
+def _group_materials_by_job(
+    rows: list[dict[str, Any]],
+) -> dict[str, list[dict[str, Any]]]:
+    """Group CURRENT snapshot material lines by job_id → [rows]. Skips a row missing its
+    line_uuid / job_id (a data anomaly that can't be keyed) — never silent. The project_name is NOT
+    required here (it comes from the reconcile roster, the authoritative jobs-table source)."""
+    by_job: dict[str, list[dict[str, Any]]] = {}
+    for e in rows:
+        line_uuid = str(e.get("line_uuid") or "").strip()
+        job_id = str(e.get("job_id") or "").strip()
+        if not line_uuid or not job_id:
+            error_log.log(
+                Severity.WARN, SCRIPT_NAME,
+                f"material line skipped — missing line_uuid/job_id "
+                f"(line_uuid={e.get('line_uuid')!r} job_id={e.get('job_id')!r})",
+                error_code="fieldops_material_row_malformed",
+            )
+            continue
+        by_job.setdefault(job_id, []).append(e)
+    return by_job
+
+
+def _mirror_material_list_pass(base_url: str, bearer: str) -> dict[str, int]:
+    """Re-project the CURRENT per-job Material List UP into per-job Material List sheets.
+
+    Returns {upserted, retired, reviewed, errors}. Never raises — the caller runs it after the job +
+    hours + equipment mirrors, so a material failure must never abort the cycle. Per-job (sheet) +
+    per-line fences; a permanent failure routes to the Review Queue; a transient one is simply left
+    for the next cycle (the snapshot re-projects the whole live list every cycle, so nothing is
+    "lost" — there is NO watermark, NO mark-mirrored).
+
+    RECONCILE ROSTER (the count-drops-to-zero fix): the pass iterates `jobs_with_materials` — every
+    active job with ANY `job_expected_materials` row (active OR deactivated) — NOT just the jobs that
+    have active lines this cycle. For each job:
+      • HAS active lines → ensure the sheet (find-or-create) → upsert each (change-only) → mark
+        Removed any sheet row NOT in THIS cycle's snapshot (On List=Removed, never delete) →
+        row-cap watchdog.
+      • ZERO active lines → find (NEVER create) the sheet; if it exists, mark ALL its Active rows
+        Removed; if no sheet ever existed, skip (never create an empty sheet). Without this branch a
+        job whose whole list was deactivated would keep stale `On List=Active` rows forever.
+
+    No throttle: per-cycle change-only re-projection is simple-correct at current scale (an upsert
+    with no change is a no-op read, and retire skips already-Removed rows). A throttle is a FUTURE
+    optimization if read-load bites — do NOT build it now.
+    """
+    out = {"upserted": 0, "retired": 0, "reviewed": 0, "errors": 0}
+    try:
+        snapshot = portal_client.get_fieldops_material_list_snapshot(base_url, bearer)
+    except portal_client.PortalAuthError as exc:
+        # 401 on the SAME bearer that just drained pending-jobs/hours/equipment — surface (bad/rotated
+        # token) but do not crash: the earlier passes may have succeeded before a mid-cycle rotation.
+        out["errors"] += 1
+        error_log.log(
+            Severity.CRITICAL, SCRIPT_NAME,
+            f"material-list-snapshot fetch UNAUTHORIZED (401) — field-ops bearer rejected; material "
+            f"snapshot skipped this cycle: {exc!r}",
+            error_code="fieldops_material_snapshot_auth_failed",
+        )
+        return out
+    except portal_client.PortalTransportError as exc:
+        out["errors"] += 1
+        error_log.log(
+            Severity.ERROR, SCRIPT_NAME,
+            f"material-list-snapshot fetch failed (snapshot re-projects next cycle): {exc!r}",
+            error_code="fieldops_material_snapshot_fetch_failed",
+        )
+        return out
+
+    by_job = _group_materials_by_job(snapshot.lines)
+    # Iterate the RECONCILE ROSTER (active jobs with any material line history), so a job whose
+    # active lines dropped to ZERO is still visited and its stale Active rows marked Removed.
+    for roster in snapshot.jobs_with_materials:
+        job_id = str(roster.get("job_id") or "").strip()
+        project_name = str(roster.get("project_name") or "").strip()
+        if not job_id or not project_name:
+            error_log.log(
+                Severity.WARN, SCRIPT_NAME,
+                f"material roster row skipped — missing job_id/project_name "
+                f"(job_id={roster.get('job_id')!r} project_name={roster.get('project_name')!r})",
+                error_code="fieldops_material_roster_malformed",
+            )
+            continue
+        correlation_id = uuid.uuid4().hex[:12]
+        current = by_job.get(job_id)
+        if current:
+            _reconcile_job_with_materials(
+                job_id, project_name, current, correlation_id, out
+            )
+        else:
+            _reconcile_job_zeroed_materials(job_id, project_name, correlation_id, out)
+    return out
+
+
+def _reconcile_job_with_materials(
+    job_id: str, project_name: str, rows: list[dict[str, Any]],
+    correlation_id: str, out: dict[str, int],
+) -> None:
+    """Reconcile a job that HAS active material lines: find-or-create its sheet, change-only upsert
+    each line, mark Removed any sheet row NOT in this cycle's snapshot, run the row-cap watchdog."""
+    try:
+        sheet_id = material_list.ensure_material_list_sheet(project_name)
+    except (
+        picklist_validation.PicklistViolationError,
+        smartsheet_client.SmartsheetValidationError,
+    ) as exc:
+        out["reviewed"] += 1
+        _route_material_to_review(job_id, project_name, exc, correlation_id, phase="ensure-sheet")
+        return
+    except Exception as exc:  # noqa: BLE001 — per-job fence; one bad job never kills the pass
+        out["errors"] += 1
+        error_log.log(
+            Severity.ERROR, SCRIPT_NAME,
+            f"transient failure ensuring Material List sheet for {project_name!r} "
+            f"(job {job_id}); snapshot re-projects next cycle: {type(exc).__name__}: {exc!r}",
+            error_code="fieldops_material_sheet_transient",
+            correlation_id=correlation_id,
+        )
+        return
+
+    # The authoritative on-list set for retire = EVERY line in this cycle's snapshot for the job,
+    # regardless of per-line upsert success (a transient upsert failure does NOT mean the line was
+    # removed — marking it Removed would be wrong; it re-upserts next cycle).
+    snapshot_uuids = {str(e.get("line_uuid") or "").strip() for e in rows}
+    for e in rows:
+        line_uuid = str(e.get("line_uuid") or "").strip()
+        catalog_name = str(e.get("catalog_name") or "").strip()
+        description = str(e.get("description") or "").strip()
+        try:
+            material_list.upsert_line_row(
+                sheet_id,
+                line_uuid=line_uuid,
+                line=(catalog_name or description),
+                material=(catalog_name or material_list.MATERIAL_NONE),
+                description=description,
+                qty=_fmt_qty(e.get("qty")),
+                unit=str(e.get("unit") or "").strip(),
+                expected_date=str(e.get("expected_date") or "").strip(),
+                status=str(e.get("status") or "").strip(),
+                delivered_qty=_fmt_qty(e.get("qty_received")),
+                received_at=_fmt_epoch_date(e.get("received_at")),
+                received_by=str(e.get("received_by_display") or "").strip(),
+                note=str(e.get("note") or "").strip(),
+                unplanned=material_list.UNPLANNED_YES if e.get("unplanned") else "",
+            )
+            out["upserted"] += 1
+        except (
+            picklist_validation.PicklistViolationError,
+            smartsheet_client.SmartsheetValidationError,
+        ) as exc:
+            out["reviewed"] += 1
+            _route_material_to_review(
+                job_id, project_name, exc, correlation_id,
+                phase="upsert", line_uuid=line_uuid,
+            )
+        except Exception as exc:  # noqa: BLE001 — per-line fence
+            out["errors"] += 1
+            error_log.log(
+                Severity.ERROR, SCRIPT_NAME,
+                f"transient failure upserting material line {line_uuid!r} for {project_name!r} "
+                f"(snapshot re-projects next cycle): {type(exc).__name__}: {exc!r}",
+                error_code="fieldops_material_upsert_transient",
+                correlation_id=correlation_id,
+            )
+
+    _retire_materials(sheet_id, snapshot_uuids, job_id, project_name, correlation_id, out)
+
+    # §51 A5 row-cap watchdog — advisory, owns its own try/except (never raises here).
+    material_list.check_row_cap(
+        sheet_id, material_list.material_list_sheet_name(project_name)
+    )
+
+
+def _reconcile_job_zeroed_materials(
+    job_id: str, project_name: str, correlation_id: str, out: dict[str, int],
+) -> None:
+    """Reconcile a job with ZERO active material lines (its whole list was deactivated): FIND (never
+    create) its Material List sheet and mark ALL remaining Active rows Removed. If no sheet ever
+    existed, skip — never create an empty sheet. This is the count-drops-to-zero fix; the normal
+    zero case (no sheet) is a silent no-op, NOT an error."""
+    try:
+        sheet_id = material_list.find_material_list_sheet(project_name)
+    except (
+        picklist_validation.PicklistViolationError,
+        smartsheet_client.SmartsheetValidationError,
+    ) as exc:
+        out["reviewed"] += 1
+        _route_material_to_review(job_id, project_name, exc, correlation_id, phase="find-sheet")
+        return
+    except Exception as exc:  # noqa: BLE001 — per-job fence
+        out["errors"] += 1
+        error_log.log(
+            Severity.ERROR, SCRIPT_NAME,
+            f"transient failure finding Material List sheet for {project_name!r} "
+            f"(job {job_id}); re-projects next cycle: {type(exc).__name__}: {exc!r}",
+            error_code="fieldops_material_find_sheet_transient",
+            correlation_id=correlation_id,
+        )
+        return
+    if sheet_id is None:
+        # No sheet was ever created for this job → nothing to retire, and we NEVER create an empty
+        # sheet. The common zero case — a silent no-op, not a fault.
+        return
+    # Mark EVERY row Removed (empty current set → all rows Removed). retire_removed is idempotent, so
+    # a steady all-Removed sheet issues no write.
+    _retire_materials(sheet_id, set(), job_id, project_name, correlation_id, out)
+
+
+def _retire_materials(
+    sheet_id: int, current_uuids: set[str], job_id: str, project_name: str,
+    correlation_id: str, out: dict[str, int],
+) -> None:
+    """Mark Removed any sheet row whose Line UUID is NOT in `current_uuids` (On List=Removed, never
+    delete), under a fence — a retire failure never blocks the caller's row-cap watchdog and
+    re-projects next cycle. An empty `current_uuids` marks the whole sheet Removed (the
+    reconcile-zeroed case)."""
+    try:
+        out["retired"] += material_list.retire_removed(sheet_id, current_uuids)
+    except (
+        picklist_validation.PicklistViolationError,
+        smartsheet_client.SmartsheetValidationError,
+    ) as exc:
+        out["reviewed"] += 1
+        _route_material_to_review(job_id, project_name, exc, correlation_id, phase="retire")
+    except Exception as exc:  # noqa: BLE001 — per-job fence
+        out["errors"] += 1
+        error_log.log(
+            Severity.ERROR, SCRIPT_NAME,
+            f"transient failure marking removed material lines for {project_name!r} "
+            f"(job {job_id}); re-projects next cycle: {type(exc).__name__}: {exc!r}",
+            error_code="fieldops_material_retire_transient",
+            correlation_id=correlation_id,
+        )
+
+
+def _route_material_to_review(
+    job_id: str, project_name: str, exc: Exception, correlation_id: str,
+    *, phase: str, line_uuid: str | None = None,
+) -> None:
+    """Route a PERMANENTLY-failed material mirror to ITS_Review_Queue (workstream
+    progress_reports)."""
+    review_queue.add(
+        workstream="progress_reports",
+        summary=(
+            f"field-ops Material List up-sync: PERMANENT failure ({phase}) for job {job_id!r} "
+            f"({project_name!r}, {type(exc).__name__})"
+            + (f" line {line_uuid!r}" if line_uuid else "")
+            + " — re-projects next cycle, needs operator fix"
+        ),
+        payload={
+            "job_id": job_id,
+            "project_name": project_name,
+            "phase": phase,
+            "line_uuid": line_uuid,
+            "error": f"{type(exc).__name__}: {exc!r}",
+        },
+        sla_tier=review_queue.SlaTier.SAFETY_INTAKE,
+        reason=review_queue.ReviewReason.POLICY_EDGE,
+        severity=Severity.WARN,
+        source_file=line_uuid or job_id,
+    )
+    error_log.log(
+        Severity.WARN, SCRIPT_NAME,
+        f"material mirror routed to Review Queue (permanent, {phase}) job={job_id!r} "
+        f"line={line_uuid!r}: {type(exc).__name__}: {exc!r}",
+        error_code="fieldops_material_permanent",
         correlation_id=correlation_id,
     )
 

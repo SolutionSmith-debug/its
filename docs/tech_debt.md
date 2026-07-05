@@ -14,6 +14,35 @@ From `docs/audits/2026-07-04_smartsheet-wiring-audit.md` (Task B — the SoR is 
 
 **Tag:** `smartsheet`, `daemon-health`, `config`, `capacity`, `audit`, `field_ops`.
 
+## Hours Log — replace Started/Ended columns with a Task column [OPEN 2026-07-05]
+
+**Operator-requested 2026-07-05 (log-only; NOT built in the M2 PR).** The per-job `<Job> — Hours Log`
+Smartsheet carries `Started` / `Ended` columns that are, in practice, **always empty**: the portal
+time-log form captures neither a start nor an end wall-clock time (`time_entries.work_started_at` /
+`work_ended_at` are effectively unpopulated) — it captures `hours` + a `task_id`. Meanwhile the portal
+time log ALREADY records `time_entries.task_id` (→ `task_assignments.description`), which is the field
+crews actually want to see on the Hours Log. **Change:** drop the two always-empty `Started`/`Ended`
+columns and add a single **`Task`** column resolved from `task_assignments.description`.
+
+Multi-surface fan-out (enumerate ALL before claiming done — the recurring incomplete-fan-out bug):
+- **Worker `/hours-pending` route** (`safety_portal/worker/index.ts`): add `LEFT JOIN task_assignments
+  ta ON ta.id = t.task_id` and project `ta.description AS task`; DROP `t.work_started_at` /
+  `t.work_ended_at` from the SELECT. This is a trust-boundary read route → adversarial review required.
+- **`progress_reports/hours_log.py`**: drop `COL_STARTED` / `COL_ENDED` (columns + styles + the
+  `_TRACKED_COLS` change-set), add `COL_TASK`; update `upsert_entry_row` signature + cells.
+- **`field_ops/fieldops_sync.py` `_mirror_hours_pass`**: drop the `started=` / `ended=` mapping (and
+  the `_fmt_epoch_time` calls), add `task=str(e.get("task") or "").strip()`.
+- **`shared/portal_client.py`**: update the `get_fieldops_pending_hours` docstring shape (add `task`,
+  drop the two work-time fields).
+- **Tests**: `test_hours_log.py`, `test_fieldops_sync.py` hours-pass, the worker `fieldops-hours-mirror`
+  vitest.
+- **One-time live sheet-schema migration** for the EXISTING live `Portal create test 2 — Hours Log`
+  sheet (and any other already-created Hours Log sheets): the code change only affects NEW sheets, so
+  existing sheets need `Started`/`Ended` deleted + `Task` added via a name-guarded `update_column` /
+  `add_columns` / `delete_column` one-shot (Developer-Operator).
+
+**Tag:** `field_ops`, `hours-log`, `smartsheet`, `ux`.
+
 ## Job routing form — "Same as stakeholder" copy button on the Safety block [OPEN 2026-07-01]
 
 **Operator-parked 2026-07-01 (was mid-build, deferred).** The job-creation routing form (`safety_portal/src/pages/FieldOpsJobTracker.tsx`, `RoutingFields`) has a "Same as safety" copy button on the **Progress** contact block (copies Safety → Progress, ~line 179). Add a parallel **"Same as stakeholder"** button on the **Safety** contact block (~:158-161) that copies the Stakeholder name/email into the Safety contact, and KEEP "Same as safety" on Progress — giving the chain Stakeholder → Safety → Progress for the common single-contact case. Small SPA change: mirror the existing copy handler + an SPA test. **Tag:** `field_ops`, `job-tracker`, `spa`, `ux`.

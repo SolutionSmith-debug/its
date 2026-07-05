@@ -232,13 +232,19 @@ export function registerExpectedMaterialsRoutes(app: FieldopsApp, gates: Fieldop
       }
 
       const actor = c.get("session").username;
+      // line_uuid — the stable per-line mirror key (0039) the M2 Material List up-sync finds/upserts
+      // by. Minted here at the ONLY insert path so every authored line carries a distinct uuid.
+      // `unplanned` is NOT set here: this is the office ON-MANIFEST add (cap.materials.manage), so it
+      // keeps the schema default 0. When an OFF-MANIFEST field-add path lands it sets unplanned=1 and
+      // the mirror already surfaces it ("Unplanned = Yes"); no such path exists in M2 (out of scope).
+      const lineUuid = crypto.randomUUID();
       const res = await c.env.DB.batch([
         c.env.DB
           .prepare(
-            `INSERT INTO job_expected_materials (job_id, material_id, description, qty, unit, expected_date, seq)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) RETURNING id`,
+            `INSERT INTO job_expected_materials (job_id, material_id, description, qty, unit, expected_date, seq, line_uuid)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) RETURNING id`,
           )
-          .bind(jobId, f.material_id, f.description, f.qty, f.unit, f.expected_date, seq),
+          .bind(jobId, f.material_id, f.description, f.qty, f.unit, f.expected_date, seq, lineUuid),
         auditStmt(c, actor, "expected_material_create", jobId, {
           job_id: jobId,
           material_id: f.material_id,
