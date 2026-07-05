@@ -104,7 +104,8 @@ CFG_WORKER_BASE_URL_WORKSTREAM = "safety_reports"
 KC_FIELDOPS_TOKEN = "ITS_PORTAL_FIELDOPS_TOKEN"  # noqa: S105 — Keychain entry NAME, not a secret
 
 DEFAULT_SYNC_ENABLED = False  # ships OFF; operator flips it on at cutover (after Slice 4).
-SYNC_INTERVAL_SECONDS = 300  # registration metadata; mirrors the plist StartInterval.
+SYNC_INTERVAL_SECONDS = 90  # registration metadata; mirrors the launchd StartInterval (install.sh
+#                             default 90 — the installed plist runs at 90s, not 300; wiring-audit M-3).
 
 # P7 Slice 1 — the per-job Hours Log up-sync pass runs INSIDE this same daemon (one host, one
 # lock, one heartbeat — no 4th daemon). Its OWN gate ships OFF so the pass is dark until the
