@@ -24,16 +24,26 @@ async function seedPersonnel(name: string): Promise<number> {
   return Number(r.meta.last_row_id);
 }
 
+async function seedTask(jobId: string, description: string): Promise<number> {
+  const r = await env.DB.prepare(
+    "INSERT INTO task_assignments (job_id, description) VALUES (?1,?2)",
+  )
+    .bind(jobId, description)
+    .run();
+  return Number(r.meta.last_row_id);
+}
+
 async function seedEntry(uuid: string, jobId: string, over: Partial<Record<string, unknown>> = {}) {
   await env.DB.prepare(
-    `INSERT INTO time_entries (uuid, job_id, personnel_id, work_started_at, work_ended_at, hours,
-        notes, actor_username, amends_uuid, mirrored_at)
-     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)`,
+    `INSERT INTO time_entries (uuid, job_id, personnel_id, task_id, work_started_at, work_ended_at,
+        hours, notes, actor_username, amends_uuid, mirrored_at)
+     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)`,
   )
     .bind(
       uuid,
       jobId,
       (over.personnel_id as number) ?? null,
+      (over.task_id as number) ?? null,
       (over.work_started_at as number) ?? 1751000000,
       (over.work_ended_at as number) ?? 1751028800,
       (over.hours as number) ?? 8,
@@ -47,6 +57,7 @@ async function seedEntry(uuid: string, jobId: string, over: Partial<Record<strin
 
 beforeEach(async () => {
   await env.DB.prepare("DELETE FROM time_entries").run();
+  await env.DB.prepare("DELETE FROM task_assignments").run();
   await env.DB.prepare("DELETE FROM jobs").run();
   await env.DB.prepare("DELETE FROM personnel").run();
 });
@@ -59,10 +70,11 @@ describe("GET /api/internal/fieldops/hours-pending", () => {
     expect((await call("/api/internal/fieldops/hours-pending", { bearer: FIELDOPS_BEARER })).status).toBe(200);
   });
 
-  it("returns unmirrored entries with project_name, display-name personnel, hours + amend link", async () => {
+  it("returns unmirrored entries with project_name, display-name personnel, hours, task + amend link", async () => {
     await seedJob("J1", "Job One");
     const pid = await seedPersonnel("Alice Crew");
-    await seedEntry("T1", "J1", { personnel_id: pid, amends_uuid: "T0" });
+    const taskId = await seedTask("J1", "Pour footings");
+    await seedEntry("T1", "J1", { personnel_id: pid, task_id: taskId, amends_uuid: "T0" });
     const res = await call("/api/internal/fieldops/hours-pending", { bearer: FIELDOPS_BEARER });
     expect(res.status).toBe(200);
     const { entries } = (await res.json()) as { entries: Array<Record<string, unknown>> };
@@ -72,7 +84,36 @@ describe("GET /api/internal/fieldops/hours-pending", () => {
     expect(e.project_name).toBe("Job One");
     expect(e.personnel_name).toBe("Alice Crew"); // DISPLAY name, never actor_username
     expect(e.hours).toBe(8);
+    expect(e.task).toBe("Pour footings"); // task_assignments.description via LEFT JOIN on t.task_id
     expect(e.amends_uuid).toBe("T0");
+    // the retired wall-clock fields are no longer projected (they stay on time_entries for the
+    // rollup/personnel views but the Hours Log never used them)
+    expect(e.work_started_at).toBeUndefined();
+    expect(e.work_ended_at).toBeUndefined();
+  });
+
+  it("returns task=null when the entry references no task (LEFT JOIN, no task_id)", async () => {
+    await seedJob("J1", "Job One");
+    await seedEntry("T-NOTASK", "J1"); // task_id defaults null
+    const res = await call("/api/internal/fieldops/hours-pending", { bearer: FIELDOPS_BEARER });
+    const { entries } = (await res.json()) as { entries: Array<Record<string, unknown>> };
+    expect(entries).toHaveLength(1);
+    expect(entries[0].task).toBeNull();
+  });
+
+  it("job-scopes the task join: a task_id belonging to ANOTHER job surfaces task=null, never that job's text", async () => {
+    // Defense-in-depth: the writers already validate task↔job at write time, but the read route
+    // also scopes the join (AND ta.job_id = t.job_id). A mis-scoped task_id (data anomaly / future
+    // writer bug) must never leak another job's task description into this job's Hours Log feed.
+    await seedJob("J1", "Job One");
+    await seedJob("J2", "Job Two");
+    const otherJobTask = await seedTask("J2", "Secret other-job task"); // belongs to J2
+    await seedEntry("T-XJOB", "J1", { task_id: otherJobTask }); // but referenced from a J1 entry
+    const res = await call("/api/internal/fieldops/hours-pending", { bearer: FIELDOPS_BEARER });
+    const { entries } = (await res.json()) as { entries: Array<Record<string, unknown>> };
+    expect(entries).toHaveLength(1);
+    expect(entries[0].uuid).toBe("T-XJOB");
+    expect(entries[0].task).toBeNull(); // NOT "Secret other-job task" — the job-scope guard bites
   });
 
   it("excludes already-mirrored entries (mirrored_at set)", async () => {

@@ -324,9 +324,11 @@ def get_fieldops_pending_hours(base_url: str, token: str) -> list[dict[str, Any]
     """Pull unmirrored crew time entries to mirror UP: GET /api/internal/fieldops/hours-pending.
 
     Returns the `entries` list verbatim — each a dict with `uuid, job_id, project_name,
-    work_started_at, work_ended_at, hours, notes, amends_uuid, created_at, personnel_name`
-    (`personnel_name` is the DISPLAY name, never a username). The Worker caps the page at 200
-    server-side (no client limit param); the daemon's hours pass drains across cycles.
+    hours, notes, task, amends_uuid, created_at, personnel_name` (`personnel_name` is the DISPLAY
+    name, never a username; `task` is task_assignments.description via time_entries.task_id, empty
+    when the entry references no task — it replaced the always-empty work_started_at/_ended_at
+    wall-clock fields, 2026-07-05). The Worker caps the page at 200 server-side (no client limit
+    param); the daemon's hours pass drains across cycles.
 
     A control-plane read of OUR OWN Worker (bearer = the SEPARATE field-ops token
     `PORTAL_FIELDOPS_API_TOKEN`, same as `get_fieldops_pending_jobs`), NOT a customer send. Same

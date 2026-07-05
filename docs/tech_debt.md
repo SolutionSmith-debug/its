@@ -14,7 +14,19 @@ From `docs/audits/2026-07-04_smartsheet-wiring-audit.md` (Task B — the SoR is 
 
 **Tag:** `smartsheet`, `daemon-health`, `config`, `capacity`, `audit`, `field_ops`.
 
-## Hours Log — replace Started/Ended columns with a Task column [OPEN 2026-07-05]
+## Hours Log — replace Started/Ended columns with a Task column [BUILT 2026-07-05 — live-sheet migration is the remaining operator step]
+
+**BUILT 2026-07-05 (branch `feat/hours-log-task-column`) — all code + tests landed:** worker `/hours-pending`
+`LEFT JOIN task_assignments ta ON ta.id = t.task_id AND ta.job_id = t.job_id` projecting `ta.description AS
+task` (job-scoped per the security review) with `work_started_at/_ended_at` dropped from THAT projection
+only (the D1 columns stay — rollup/personnel/jobtracker still read them); `progress_reports/hours_log.py`
+`COL_TASK`; `field_ops/fieldops_sync.py` hours-pass mapping (`work_date` from `created_at`);
+`shared/portal_client.py` docstring; `scripts/migrations/hours_log_task_column.py` (two-phase, name-guarded,
+idempotent) + its unit test; runbook **Fault M** (`docs/runbooks/hours_log_sync.md`). **Remaining operator
+step:** run the two-phase live-sheet migration on the existing `Portal create test 2 — Hours Log` sheet —
+`--phase add --commit` BEFORE the `git -C ~/its pull` + `npm run deploy`, `--phase drop --commit` AFTER (the
+order is KeyError-critical; see the script docstring + Fault M). Original request below (kept as the
+multi-surface fan-out record).
 
 **Operator-requested 2026-07-05 (log-only; NOT built in the M2 PR).** The per-job `<Job> — Hours Log`
 Smartsheet carries `Started` / `Ended` columns that are, in practice, **always empty**: the portal
