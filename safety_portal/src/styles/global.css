@@ -1768,3 +1768,62 @@ h3,
 .checklist-open__progress .dash-progress { flex: 1 1 auto; height: 8px; }
 .checklist-open__items > li { padding: 12px 2px; border-top: 1px solid var(--c-line); }
 .checklist-open__items > li:first-child { border-top: 0; }
+
+/* Materials Catalog — category grouping */
+
+/* Chip filter bar — toggle buttons that narrow the grouped view to one category ("All" restores).
+   Reuses .dash-pill (unchanged) for the per-chip count; only the active chip's pill is recolored so
+   the count stays legible against the BRG fill. */
+.mats-cat-filter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: var(--gap) 0;
+}
+.mats-cat-filter__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font: inherit;
+  font-family: var(--font-display);
+  font-weight: 600;
+  padding: 4px 14px;
+  min-height: var(--tap);
+  border-radius: 999px;
+  border: 1.5px solid var(--c-line);
+  background: var(--c-white);
+  color: var(--c-brg);
+  cursor: pointer;
+}
+.mats-cat-filter__chip:hover {
+  border-color: var(--c-gold);
+}
+.mats-cat-filter__chip:focus-visible {
+  outline: 3px solid var(--c-focus);
+  outline-offset: 2px;
+}
+/* Active chip follows the site's primary-action recipe (BRG fill + white text + gold border,
+   per the button design-language standard) rather than inventing a new selected-state color. */
+.mats-cat-filter__chip--active {
+  background: var(--c-brg);
+  color: var(--c-white);
+  border-color: var(--c-gold);
+}
+.mats-cat-filter__chip--active .dash-pill {
+  background: var(--c-white);
+  color: var(--c-brg);
+  border-color: var(--c-white);
+}
+
+/* Category section head — .jha__section-title already gives the gold-underlined signage look;
+   this just lays out the trailing count pill without touching that shared rule. */
+.mats-cat-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  text-transform: capitalize;
+}
+.mats-cat-heading__count {
+  text-transform: none;
+}

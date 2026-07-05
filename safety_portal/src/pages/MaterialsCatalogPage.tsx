@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import type { FormEvent } from "react";
 import * as api from "../lib/fieldops_materials";
 import { useAuth } from "../lib/auth";
@@ -10,9 +10,25 @@ import { PageShell } from "../components/PageShell";
 // FieldOps Equipment port) — a `.dash-grid` of `.card` type-cards (title + category/unit `.dash-chip`s,
 // retired `.dash-pill--warn`), design-language buttons (add=`.btn--primary`, edit=`.btn--edit`,
 // retire=`.btn--retire`, cancel/load-more=`.btn--secondary`). Behavior/caps/API unchanged.
+//
+// Category grouping (frontend-only — `category` is a NOT NULL column already returned by
+// GET /api/fieldops/materials): rows are bucketed by `category` client-side into one `.dash-section`
+// per category (gold-underlined `.jha__section-title` head + a `.dash-pill` count), sorted
+// alphabetically with an "Uncategorized" bucket (blank/whitespace category — shouldn't happen given
+// the NOT NULL + required-field form validation, but handled defensively) pinned last. A chip filter
+// bar (only rendered once there's more than one category) narrows the view to a single category;
+// clicking the active chip again (or "Clear filter") restores "All". Pagination (`Load more`) is
+// unaffected — newly-loaded rows just fold into their category's bucket.
 
 type FormState = { model_id: string; manufacturer: string; category: string; key_specs: string; unit_cost: string };
 const EMPTY_FORM: FormState = { model_id: "", manufacturer: "", category: "", key_specs: "", unit_cost: "" };
+
+const UNCATEGORIZED = "Uncategorized";
+
+function categoryOf(r: api.CatalogRow): string {
+  const c = r.category?.trim();
+  return c ? c : UNCATEGORIZED;
+}
 
 function toFields(f: FormState): api.MaterialFields {
   const out: api.MaterialFields = { model_id: f.model_id.trim(), category: f.category.trim() };
@@ -44,6 +60,7 @@ export function MaterialsCatalogPage({ onBack }: { onBack: () => void }) {
   const [showRetired, setShowRetired] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [activeCategory, setActiveCategory] = useState<string | null>(null);
 
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
@@ -152,6 +169,29 @@ export function MaterialsCatalogPage({ onBack }: { onBack: () => void }) {
     }
   }
 
+  const rowsByCategory = useMemo(() => {
+    const m = new Map<string, api.CatalogRow[]>();
+    for (const r of rows) {
+      const cat = categoryOf(r);
+      const list = m.get(cat);
+      if (list) list.push(r);
+      else m.set(cat, [r]);
+    }
+    return m;
+  }, [rows]);
+
+  const categoryCounts = useMemo(() => {
+    return Array.from(rowsByCategory.entries())
+      .map(([cat, list]): [string, number] => [cat, list.length])
+      .sort(([a], [b]) => {
+        if (a === UNCATEGORIZED) return b === UNCATEGORIZED ? 0 : 1;
+        if (b === UNCATEGORIZED) return -1;
+        return a.localeCompare(b);
+      });
+  }, [rowsByCategory]);
+
+  const visibleCategories = activeCategory ? categoryCounts.filter(([cat]) => cat === activeCategory) : categoryCounts;
+
   return (
     <PageShell onHome={onBack}>
       <h2 className="page__heading">Materials Catalog</h2>
@@ -208,60 +248,102 @@ export function MaterialsCatalogPage({ onBack }: { onBack: () => void }) {
         <div className="dash-empty">No material types.</div>
       ) : (
         <>
-          <div className="dash-grid">
-            {rows.map((r) => (
-              <section key={r.id} className="card">
-                <div className="dash-card__head">
-                  <h3 className="dash-card__title">{r.model_id}</h3>
-                  {r.active ? null : <span className="dash-pill dash-pill--warn">Retired</span>}
+          {categoryCounts.length > 1 ? (
+            <div className="mats-cat-filter" role="group" aria-label="Filter by category">
+              <button
+                type="button"
+                className={`mats-cat-filter__chip${activeCategory === null ? " mats-cat-filter__chip--active" : ""}`}
+                aria-pressed={activeCategory === null}
+                onClick={() => setActiveCategory(null)}
+              >
+                All <span className="dash-pill">{rows.length}</span>
+              </button>
+              {categoryCounts.map(([cat, count]) => (
+                <button
+                  key={cat}
+                  type="button"
+                  className={`mats-cat-filter__chip${activeCategory === cat ? " mats-cat-filter__chip--active" : ""}`}
+                  aria-pressed={activeCategory === cat}
+                  onClick={() => setActiveCategory(activeCategory === cat ? null : cat)}
+                >
+                  {cat} <span className="dash-pill">{count}</span>
+                </button>
+              ))}
+            </div>
+          ) : null}
+
+          {visibleCategories.length === 0 ? (
+            <div className="dash-empty">
+              No material types in this category.{" "}
+              <button className="btn btn--secondary" onClick={() => setActiveCategory(null)}>
+                Clear filter
+              </button>
+            </div>
+          ) : (
+            visibleCategories.map(([cat, count]) => (
+              <section key={cat} className="card dash-section" aria-label={`${cat} material types`}>
+                <h3 className="jha__section-title mats-cat-heading">
+                  {cat}
+                  <span className="dash-pill mats-cat-heading__count">{count}</span>
+                </h3>
+                <div className="dash-grid">
+                  {(rowsByCategory.get(cat) ?? []).map((r) => (
+                    <section key={r.id} className="card">
+                      <div className="dash-card__head">
+                        <h3 className="dash-card__title">{r.model_id}</h3>
+                        {r.active ? null : <span className="dash-pill dash-pill--warn">Retired</span>}
+                      </div>
+                      {r.manufacturer ? <div className="dash-card__sub">{r.manufacturer}</div> : null}
+
+                      <div className="dash-card__row">
+                        <div className="dash-chips">
+                          <span className="dash-chip">{r.category}</span>
+                          {r.unit_cost != null ? <span className="dash-chip">Ref. cost: {r.unit_cost}</span> : null}
+                        </div>
+                      </div>
+
+                      {r.key_specs ? (
+                        <div className="dash-card__row">
+                          <span className="dash-card__label">Key specs</span>
+                          <span>{r.key_specs}</span>
+                        </div>
+                      ) : null}
+
+                      {canManage && r.active === 1 && editId !== r.id ? (
+                        <div className="dash-row">
+                          <button className="btn btn--edit" onClick={() => openEdit(r)}>
+                            Edit
+                          </button>
+                          <button className="btn btn--retire" onClick={() => void retire(r.id)}>
+                            Retire
+                          </button>
+                        </div>
+                      ) : null}
+
+                      {canManage && editId === r.id ? (
+                        <div className="accounts__editor">
+                          <FieldInput label="Model / type" value={ef.model_id} onChange={(v) => setEf({ ...ef, model_id: v })} />
+                          <FieldInput label="Manufacturer" value={ef.manufacturer} onChange={(v) => setEf({ ...ef, manufacturer: v })} />
+                          <FieldInput label="Category" value={ef.category} onChange={(v) => setEf({ ...ef, category: v })} />
+                          <FieldInput label="Key specs" value={ef.key_specs} onChange={(v) => setEf({ ...ef, key_specs: v })} />
+                          <FieldInput label="Reference unit cost" value={ef.unit_cost} onChange={(v) => setEf({ ...ef, unit_cost: v })} />
+                          <div className="jha__actions">
+                            <button className="btn btn--primary" onClick={() => void saveEdit(r.id)}>
+                              {busy ? "Saving…" : "Save"}
+                            </button>
+                            <button className="btn btn--secondary" onClick={() => setEditId(null)}>
+                              Cancel
+                            </button>
+                          </div>
+                        </div>
+                      ) : null}
+                    </section>
+                  ))}
                 </div>
-                {r.manufacturer ? <div className="dash-card__sub">{r.manufacturer}</div> : null}
-
-                <div className="dash-card__row">
-                  <div className="dash-chips">
-                    <span className="dash-chip">{r.category}</span>
-                    {r.unit_cost != null ? <span className="dash-chip">Ref. cost: {r.unit_cost}</span> : null}
-                  </div>
-                </div>
-
-                {r.key_specs ? (
-                  <div className="dash-card__row">
-                    <span className="dash-card__label">Key specs</span>
-                    <span>{r.key_specs}</span>
-                  </div>
-                ) : null}
-
-                {canManage && r.active === 1 && editId !== r.id ? (
-                  <div className="dash-row">
-                    <button className="btn btn--edit" onClick={() => openEdit(r)}>
-                      Edit
-                    </button>
-                    <button className="btn btn--retire" onClick={() => void retire(r.id)}>
-                      Retire
-                    </button>
-                  </div>
-                ) : null}
-
-                {canManage && editId === r.id ? (
-                  <div className="accounts__editor">
-                    <FieldInput label="Model / type" value={ef.model_id} onChange={(v) => setEf({ ...ef, model_id: v })} />
-                    <FieldInput label="Manufacturer" value={ef.manufacturer} onChange={(v) => setEf({ ...ef, manufacturer: v })} />
-                    <FieldInput label="Category" value={ef.category} onChange={(v) => setEf({ ...ef, category: v })} />
-                    <FieldInput label="Key specs" value={ef.key_specs} onChange={(v) => setEf({ ...ef, key_specs: v })} />
-                    <FieldInput label="Reference unit cost" value={ef.unit_cost} onChange={(v) => setEf({ ...ef, unit_cost: v })} />
-                    <div className="jha__actions">
-                      <button className="btn btn--primary" onClick={() => void saveEdit(r.id)}>
-                        {busy ? "Saving…" : "Save"}
-                      </button>
-                      <button className="btn btn--secondary" onClick={() => setEditId(null)}>
-                        Cancel
-                      </button>
-                    </div>
-                  </div>
-                ) : null}
               </section>
-            ))}
-          </div>
+            ))
+          )}
+
           {cursor ? (
             <div className="dash-row dash-load-more">
               <button className="btn btn--secondary" onClick={() => void loadMore()} disabled={loading}>
