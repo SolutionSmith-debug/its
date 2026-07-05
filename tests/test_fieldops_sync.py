@@ -16,6 +16,7 @@ import pytest
 
 from field_ops import fieldops_sync
 from shared import active_jobs_writer, sheet_ids, smartsheet_client
+from shared.portal_client import FieldopsEquipmentSnapshot
 
 
 def _job(**over: Any) -> dict[str, Any]:
@@ -92,6 +93,32 @@ def _patch(mocker):
         ),
         "row_cap": mocker.patch(
             "field_ops.fieldops_sync.hours_log.check_row_cap", return_value=None
+        ),
+        # P7 equipment pass seams — equipment_enabled defaults OFF so EVERY existing job/hours
+        # test is byte-identical (the pass is skipped); the equipment tests below flip it on. All
+        # equipment I/O is mocked so no test touches live Smartsheet / the Worker. SNAPSHOT — there
+        # is no mark-mirrored seam (unlike hours).
+        "equipment_enabled": mocker.patch(
+            "field_ops.fieldops_sync._equipment_enabled", return_value=False
+        ),
+        "equipment_snapshot": mocker.patch(
+            "field_ops.fieldops_sync.portal_client.get_fieldops_equipment_snapshot",
+            return_value=FieldopsEquipmentSnapshot(equipment=[], jobs_with_equipment=[]),
+        ),
+        "ensure_equip_sheet": mocker.patch(
+            "field_ops.fieldops_sync.equipment_status.ensure_equipment_sheet", return_value=777
+        ),
+        "find_equip_sheet": mocker.patch(
+            "field_ops.fieldops_sync.equipment_status.find_equipment_sheet", return_value=777
+        ),
+        "upsert_equip": mocker.patch(
+            "field_ops.fieldops_sync.equipment_status.upsert_equipment_row", return_value=1
+        ),
+        "retire_equip": mocker.patch(
+            "field_ops.fieldops_sync.equipment_status.retire_off_job", return_value=0
+        ),
+        "equip_row_cap": mocker.patch(
+            "field_ops.fieldops_sync.equipment_status.check_row_cap", return_value=None
         ),
         # §51 archive-on-closure seams — default to "an Hours Log exists" so the archived-job
         # tests exercise the move; the guard/idempotency tests below flip these to None.
@@ -453,21 +480,22 @@ def test_hours_malformed_entry_is_skipped_never_silent(_patch):
 # ---- §51 archive-on-closure ----------------------------------------------
 
 
-def test_archived_job_moves_hours_log_to_closed_projects(_patch):
-    # An ARCHIVED (closed) job whose Hours Log exists → the standing tracker is MOVED into
-    # the Archive workspace's Closed-Projects folder, and the job still counts as mirrored.
+def test_archived_job_moves_both_trackers_to_closed_projects(_patch):
+    # An ARCHIVED (closed) job whose standing trackers exist → BOTH the Hours Log AND the
+    # Equipment sheet are MOVED into the Archive workspace's Closed-Projects folder, and the
+    # job still counts as mirrored. (Folder resolved ONCE; each tracker resolved + moved.)
     _patch["pending"].return_value = [_job(lifecycle="archived")]
     _patch["upsert"].side_effect = _upsert_ok
 
     stats = fieldops_sync._sync_inside_lock()
 
     assert stats.mirrored == 1 and stats.errors == 0 and stats.reviewed == 0
-    _patch["arc_folder"].assert_called_once()  # source per-job folder resolved (no create)
-    _patch["arc_sheet"].assert_called_once()   # Hours Log resolved in that folder (no create)
-    _patch["arc_move"].assert_called_once()
-    move_args = _patch["arc_move"].call_args.args
-    assert move_args[0] == 888  # the resolved Hours Log sheet id
-    assert move_args[1] == sheet_ids.FOLDER_ARCHIVE_CLOSED_PROJECTS
+    _patch["arc_folder"].assert_called_once()  # source per-job folder resolved ONCE (no create)
+    assert _patch["arc_sheet"].call_count == 2  # Hours Log + Equipment resolved (no create)
+    assert _patch["arc_move"].call_count == 2   # each tracker moved
+    for call in _patch["arc_move"].call_args_list:
+        assert call.args[0] == 888  # the resolved tracker sheet id
+        assert call.args[1] == sheet_ids.FOLDER_ARCHIVE_CLOSED_PROJECTS
 
 
 def test_active_job_does_not_archive(_patch):
@@ -501,9 +529,9 @@ def test_archived_job_no_folder_is_noop_no_error(_patch):
     )
 
 
-def test_archived_job_no_hours_log_is_noop_no_error(_patch):
-    # Folder exists but no Hours Log sheet in it → already moved (or never existed) → no move.
-    # This is the natural idempotency: once moved out of the source folder it isn't found again.
+def test_archived_job_no_trackers_is_noop_no_error(_patch):
+    # Folder exists but no tracker sheets in it → already moved (or never existed) → no move.
+    # This is the natural idempotency: once moved out of the source folder they aren't found again.
     _patch["pending"].return_value = [_job(lifecycle="archived")]
     _patch["upsert"].side_effect = _upsert_ok
     _patch["arc_sheet"].return_value = None
@@ -537,3 +565,208 @@ def test_archive_move_failure_warns_but_never_fails_the_mirror(_patch):
     assert warn[0].args[0] == fieldops_sync.Severity.WARN
     # heartbeat is still OK — the archive move is best-effort, not part of the mirror result
     assert _patch["hb_row"].call_args.kwargs["status"] == "OK"
+
+
+# ---- P7 equipment pass (Track 2, Slice 2) --------------------------------
+
+
+def _equip_row(
+    equipment_id: int = 10, job_id: str = "JOB-1", **over: Any
+) -> dict[str, Any]:
+    e: dict[str, Any] = {
+        "equipment_id": equipment_id,
+        "job_id": job_id,
+        "project_name": "Job One",
+        "name": "Unit Alpha",
+        "kind": "skid-steer",
+        "identifier": "SK-001",
+        "status": "fmc",
+        "status_note": "",
+        "status_changed_at": 1751000000,
+        "location_label": "North lot",
+        "lat": 37.7749,
+        "lon": -122.4194,
+        "read_at": 1751020000,
+        "recorded_at": 1751030000,
+    }
+    e.update(over)
+    return e
+
+
+def _snap(
+    equipment: list[dict[str, Any]], roster: list[dict[str, Any]] | None = None
+) -> FieldopsEquipmentSnapshot:
+    """Build a FieldopsEquipmentSnapshot. If `roster` is None, derive one `{job_id, project_name}`
+    entry per distinct job in the equipment rows (the Worker's real invariant: every job with
+    current equipment appears in `jobs_with_equipment`)."""
+    if roster is None:
+        seen: dict[str, dict[str, Any]] = {}
+        for e in equipment:
+            jid = str(e.get("job_id") or "")
+            if jid and jid not in seen:
+                seen[jid] = {"job_id": jid, "project_name": str(e.get("project_name") or "")}
+        roster = list(seen.values())
+    return FieldopsEquipmentSnapshot(equipment=equipment, jobs_with_equipment=roster)
+
+
+def test_equipment_pass_off_by_default(_patch):
+    # equipment_enabled defaults False (fixture) → the pass never touches the Worker or the sheets.
+    # This is ALSO the guard test: neutralizing `_equipment_enabled` (forcing it True) red-lights
+    # here (get_fieldops_equipment_snapshot would be called). Prove-the-control-bites.
+    _patch["equipment_snapshot"].return_value = _snap([_equip_row()])
+    stats = fieldops_sync._sync_inside_lock()
+    _patch["equipment_snapshot"].assert_not_called()
+    _patch["ensure_equip_sheet"].assert_not_called()
+    assert stats.equipment_upserted == 0 and stats.equipment_retired == 0
+    assert stats.equipment_reviewed == 0 and stats.equipment_errors == 0
+
+
+def test_equipment_pass_upserts_and_retires_no_mark_mirrored(_patch):
+    _patch["equipment_enabled"].return_value = True
+    _patch["equipment_snapshot"].return_value = _snap([_equip_row(10), _equip_row(11, name="Unit Beta")])
+    _patch["retire_equip"].return_value = 1
+    stats = fieldops_sync._sync_inside_lock()
+    assert stats.equipment_upserted == 2 and stats.equipment_retired == 1
+    assert stats.equipment_errors == 0 and stats.equipment_reviewed == 0
+    _patch["ensure_equip_sheet"].assert_called_once_with("Job One")  # one sheet for the one job
+    assert _patch["upsert_equip"].call_count == 2                    # one upsert per equipment
+    # retire receives the FULL snapshot id-set (str-keyed), and the row-cap watchdog runs once
+    _patch["retire_equip"].assert_called_once()
+    assert _patch["retire_equip"].call_args.args[0] == 777
+    assert _patch["retire_equip"].call_args.args[1] == {"10", "11"}
+    _patch["equip_row_cap"].assert_called_once()
+    _patch["find_equip_sheet"].assert_not_called()  # has-current path uses ensure, never find
+    # SNAPSHOT — there is NO hours/jobs-style mark-mirrored for equipment.
+    assert _patch["hb_row"].call_args.kwargs["status"] == "OK"
+    assert _patch["hb_row"].call_args.kwargs["items_processed"] == 2
+
+
+def test_equipment_retire_uses_full_snapshot_not_just_succeeded(_patch):
+    # A transient upsert failure must NOT shrink the retire set (the item is still on the job).
+    _patch["equipment_enabled"].return_value = True
+    _patch["equipment_snapshot"].return_value = _snap([_equip_row(10), _equip_row(11, name="Unit Beta")])
+    _patch["upsert_equip"].side_effect = [smartsheet_client.SmartsheetError("boom"), 5]
+    fieldops_sync._sync_inside_lock()
+    assert _patch["retire_equip"].call_args.args[1] == {"10", "11"}  # BOTH ids, not just the ok one
+
+
+def test_equipment_permanent_failure_routes_review(_patch):
+    _patch["equipment_enabled"].return_value = True
+    _patch["equipment_snapshot"].return_value = _snap([_equip_row(10)])
+    _patch["upsert_equip"].side_effect = smartsheet_client.SmartsheetValidationError("HTTP 400")
+    stats = fieldops_sync._sync_inside_lock()
+    assert stats.equipment_reviewed == 1 and stats.equipment_upserted == 0
+    _patch["review"].assert_called_once()
+    assert _patch["review"].call_args.kwargs["workstream"] == "progress_reports"
+    assert _patch["hb_row"].call_args.kwargs["status"] == "WARN"
+
+
+def test_equipment_per_item_fence_one_bad_does_not_block_others(_patch):
+    _patch["equipment_enabled"].return_value = True
+    _patch["equipment_snapshot"].return_value = _snap([_equip_row(10), _equip_row(11, name="Unit Beta")])
+    _patch["upsert_equip"].side_effect = [smartsheet_client.SmartsheetError("boom"), 5]
+    stats = fieldops_sync._sync_inside_lock()
+    assert stats.equipment_errors == 1 and stats.equipment_upserted == 1  # Beta still mirrored
+    _patch["retire_equip"].assert_called_once()  # retire still runs
+
+
+def test_equipment_snapshot_fetch_failure_cycle_completes(_patch):
+    _patch["equipment_enabled"].return_value = True
+    _patch["equipment_snapshot"].side_effect = fieldops_sync.portal_client.PortalTransportError("x")
+    stats = fieldops_sync._sync_inside_lock()
+    assert stats.equipment_errors == 1 and stats.equipment_upserted == 0
+    _patch["ensure_equip_sheet"].assert_not_called()
+    # the equipment failure NEVER aborts the cycle — heartbeat + marker still run.
+    _patch["hb"].assert_called_once()
+    _patch["marker"].assert_called_once()
+
+
+def test_equipment_malformed_row_is_skipped_never_silent(_patch):
+    _patch["equipment_enabled"].return_value = True
+    # A snapshot equipment row missing job_id can't be keyed → skipped + WARNed by the grouper. Its
+    # roster (derived) is empty, so no job is visited.
+    _patch["equipment_snapshot"].return_value = _snap([_equip_row(10, job_id="")], roster=[])
+    stats = fieldops_sync._sync_inside_lock()
+    assert stats.equipment_upserted == 0
+    _patch["ensure_equip_sheet"].assert_not_called()
+    assert any(
+        c.kwargs.get("error_code") == "fieldops_equipment_row_malformed"
+        for c in _patch["log"].call_args_list
+    )
+
+
+def test_equipment_retire_permanent_failure_routes_review(_patch):
+    _patch["equipment_enabled"].return_value = True
+    _patch["equipment_snapshot"].return_value = _snap([_equip_row(10)])
+    _patch["retire_equip"].side_effect = smartsheet_client.SmartsheetValidationError("HTTP 400")
+    stats = fieldops_sync._sync_inside_lock()
+    assert stats.equipment_reviewed == 1
+    assert _patch["review"].call_args.kwargs["workstream"] == "progress_reports"
+
+
+# ---- reconcile roster: a job whose CURRENT equipment dropped to ZERO (the ops-stds BLOCK) ----
+
+
+def test_equipment_zeroed_job_retires_all_without_recreate(_patch):
+    # A job in the reconcile roster (has equipment_location history) but with ZERO current on-job
+    # equipment this cycle: its sheet is FOUND (never re-created) and ALL its rows retired (retire
+    # with the EMPTY id-set). This is the count-drops-to-zero fix — no ensure/create, no WARN/error.
+    _patch["equipment_enabled"].return_value = True
+    _patch["equipment_snapshot"].return_value = _snap(
+        [], roster=[{"job_id": "JOB-1", "project_name": "Job One"}]
+    )
+    _patch["find_equip_sheet"].return_value = 777  # sheet exists from a prior cycle
+    _patch["retire_equip"].return_value = 3        # 3 stale Active rows flipped Off Job
+    stats = fieldops_sync._sync_inside_lock()
+    assert stats.equipment_retired == 3 and stats.equipment_upserted == 0
+    assert stats.equipment_reviewed == 0 and stats.equipment_errors == 0
+    _patch["ensure_equip_sheet"].assert_not_called()             # NEVER create for a zeroed job
+    _patch["find_equip_sheet"].assert_called_once_with("Job One")
+    _patch["retire_equip"].assert_called_once()
+    assert _patch["retire_equip"].call_args.args[0] == 777
+    assert _patch["retire_equip"].call_args.args[1] == set()     # empty → retire ALL
+    _patch["equip_row_cap"].assert_not_called()                  # no growth path for a zeroed job
+    assert not any(
+        str(c.kwargs.get("error_code", "")).startswith("fieldops_equipment_")
+        for c in _patch["log"].call_args_list
+    )
+
+
+def test_equipment_zeroed_job_no_sheet_is_silent_noop(_patch):
+    # A roster job that never had an Equipment sheet (find returns None) → skip; NEVER create an
+    # empty sheet, no retire, no error. The common zero case.
+    _patch["equipment_enabled"].return_value = True
+    _patch["equipment_snapshot"].return_value = _snap(
+        [], roster=[{"job_id": "JOB-1", "project_name": "Job One"}]
+    )
+    _patch["find_equip_sheet"].return_value = None
+    stats = fieldops_sync._sync_inside_lock()
+    assert stats.equipment_retired == 0 and stats.equipment_errors == 0 and stats.equipment_reviewed == 0
+    _patch["ensure_equip_sheet"].assert_not_called()
+    _patch["retire_equip"].assert_not_called()
+
+
+def test_equipment_zeroed_find_sheet_transient_error_fenced(_patch):
+    # A transient failure FINDING the sheet is fenced (errors++), never aborts the cycle.
+    _patch["equipment_enabled"].return_value = True
+    _patch["equipment_snapshot"].return_value = _snap(
+        [], roster=[{"job_id": "JOB-1", "project_name": "Job One"}]
+    )
+    _patch["find_equip_sheet"].side_effect = smartsheet_client.SmartsheetError("boom")
+    stats = fieldops_sync._sync_inside_lock()
+    assert stats.equipment_errors == 1
+    _patch["retire_equip"].assert_not_called()
+    _patch["hb"].assert_called_once()  # cycle still completes
+
+
+def test_equipment_roster_malformed_row_skipped_never_silent(_patch):
+    # A roster row missing job_id/project_name is skipped + WARNed (never silent).
+    _patch["equipment_enabled"].return_value = True
+    _patch["equipment_snapshot"].return_value = _snap([], roster=[{"job_id": "", "project_name": ""}])
+    stats = fieldops_sync._sync_inside_lock()
+    assert stats.equipment_errors == 0
+    _patch["find_equip_sheet"].assert_not_called()
+    assert any(
+        c.kwargs.get("error_code") == "fieldops_equipment_roster_malformed"
+        for c in _patch["log"].call_args_list
+    )

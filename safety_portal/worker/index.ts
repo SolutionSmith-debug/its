@@ -1887,6 +1887,72 @@ app.post("/api/internal/fieldops/hours-mark-mirrored", requireFieldopsToken, asy
 });
 
 /**
+ * GET /equipment-snapshot — the CURRENT on-active-job equipment across all active jobs (P7
+ * Slice 2, Equipment Status & Location tracker). A SNAPSHOT, not an event drain: it re-projects
+ * the live state every cycle, so there is NO watermark and NO mark-mirrored companion (unlike the
+ * job / hours queues). One object per equipment whose LATEST `equipment_location` sits on an
+ * ACTIVE job:
+ *   - latest location per equipment = ROW_NUMBER() OVER (PARTITION BY equipment_id
+ *     ORDER BY recorded_at DESC, id DESC) → rn = 1 (the same window the equipment tab uses);
+ *   - INNER JOIN equipment (active = 1) for the denormalized readiness snapshot (status /
+ *     status_note / status_changed_at) + name/kind/identifier;
+ *   - INNER JOIN jobs (status = 'active') for project_name — dropping any equipment whose latest
+ *     location has a NULL / closed / on_hold job (that equipment is no longer "on a job").
+ * `jobs.status` is the canonical active-job filter: the lifecycle write route keeps `status` in
+ * lock-step with `lifecycle` (status = lifecycle==='active' ? 'active' : 'closed'), and the Job
+ * Tracker filters on `j.status`.
+ *
+ * Read-only; FULLY bound (the single `'active'` literal is bound as ?1 for trust-boundary hygiene
+ * even though the route takes NO client input); leaks nothing beyond the projected fields. NOT
+ * capped/paginated ON PURPOSE — the daemon needs the COMPLETE snapshot to compute retire-off-job
+ * correctly (a truncated page would wrongly retire equipment beyond the cap); the equipment fleet
+ * is naturally bounded (a 10–50-person firm's finite inventory), so an uncapped internal read of
+ * our own reference table is fine.
+ *
+ * ALSO returns `jobs_with_equipment` — the RECONCILE ROSTER: every ACTIVE job that has ANY
+ * `equipment_location` row ever (regardless of current on-job count). This is load-bearing: a job
+ * whose CURRENT equipment complement has dropped to ZERO produces NO `equipment` rows, so without
+ * the roster the daemon would never revisit that job's Equipment sheet and its stale
+ * `On Job=Active` rows would persist forever. The daemon iterates the roster as its reconcile set;
+ * a job in the roster but absent from `equipment` gets ALL its sheet rows retired (Off Job).
+ */
+app.get("/api/internal/fieldops/equipment-snapshot", requireFieldopsToken, async (c) => {
+  const [snapRes, rosterRes] = await c.env.DB.batch<Record<string, unknown>>([
+    c.env.DB
+      .prepare(
+        `SELECT el.equipment_id, el.job_id, j.project_name,
+                e.name, e.kind, e.identifier,
+                e.status, e.status_note, e.status_changed_at,
+                el.label AS location_label, el.lat, el.lon, el.read_at, el.recorded_at
+           FROM (
+             SELECT id, equipment_id, job_id, label, lat, lon, read_at, recorded_at,
+                    ROW_NUMBER() OVER (PARTITION BY equipment_id
+                                       ORDER BY recorded_at DESC, id DESC) AS rn
+               FROM equipment_location
+           ) el
+           JOIN equipment e ON e.id = el.equipment_id AND e.active = 1
+           JOIN jobs j ON j.job_id = el.job_id AND j.status = ?1
+          WHERE el.rn = 1
+          ORDER BY j.project_name ASC, e.name ASC, el.equipment_id ASC`,
+      )
+      .bind("active"),
+    c.env.DB
+      .prepare(
+        `SELECT DISTINCT el.job_id, j.project_name
+           FROM equipment_location el
+           JOIN jobs j ON j.job_id = el.job_id AND j.status = ?1
+          WHERE el.job_id IS NOT NULL
+          ORDER BY j.project_name ASC, el.job_id ASC`,
+      )
+      .bind("active"),
+  ]);
+  return c.json({
+    equipment: snapRes.results ?? [],
+    jobs_with_equipment: rosterRes.results ?? [],
+  });
+});
+
+/**
  * Operator user provisioning — /api/internal/admin/* (requireAdminToken, the
  * operator-only secret). The operator passes PLAINTEXT over this bearer-gated
  * channel; the BACKEND bcrypt-hashes (cost 10) before write — plaintext is never
