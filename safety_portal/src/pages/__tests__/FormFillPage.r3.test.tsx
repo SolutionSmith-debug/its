@@ -137,7 +137,9 @@ describe("FormFillPage — R3 dirty guard", () => {
       <FormFillPage onBack={() => {}} prefill={DEEP_LINK} onDirtyChange={onDirtyChange} />,
     );
     await waitFor(() => expect(getByText("Submit")).toBeTruthy());
-    expect(onDirtyChange).toHaveBeenLastCalledWith(false); // mount reports clean
+    // await the last-call value — the mount's onDirtyChange(false) can settle a tick after the
+    // Submit button renders, so a bare assertion here is timing-sensitive (flaky).
+    await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(false)); // mount reports clean
 
     fireEvent.change(firstFormInput(container as HTMLElement), { target: { value: "typed something" } });
     await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(true));
@@ -148,7 +150,8 @@ describe("FormFillPage — R3 dirty guard", () => {
 
     fireEvent.click(getByText("Submit"));
     await waitFor(() => expect(getByText("Submitted ✓")).toBeTruthy());
-    expect(onDirtyChange).toHaveBeenLastCalledWith(false);
+    // submit clears dirty — again a tick behind the "Submitted ✓" render, so await the last call.
+    await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(false));
 
     const ev2 = new Event("beforeunload", { cancelable: true });
     window.dispatchEvent(ev2);
