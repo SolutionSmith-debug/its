@@ -113,7 +113,7 @@ def test_ensure_capacity_breach_warns_but_still_creates(sc):
 def _entry_kwargs(**over: Any) -> dict[str, Any]:
     kw: dict[str, Any] = dict(
         entry_uuid="T1", work_date="2026-06-27", personnel="Alice Crew",
-        hours="8", started="07:00", ended="15:00", notes="footings",
+        hours="8", task="Pour footings", notes="footings",
         recorded_at="2026-06-27T15:00:00-07:00",
     )
     kw.update(over)
@@ -127,7 +127,11 @@ def test_upsert_adds_new_row_when_absent(sc):
     cells = sc["add_rows"].call_args.args[1][0]
     assert cells[hours_log.COL_ENTRY_UUID] == "T1"
     assert cells[hours_log.COL_PERSONNEL] == "Alice Crew"
+    assert cells[hours_log.COL_TASK] == "Pour footings"  # task_assignments.description mirrored
     assert cells[hours_log.COL_STATUS] == hours_log.STATUS_ACTIVE
+    # the retired wall-clock columns are gone — a re-added Started/Ended would fail add_rows (the
+    # sheet has no such column) once the live-sheet migration drops them.
+    assert "Started" not in cells and "Ended" not in cells
 
 
 def test_upsert_idempotent_noop_when_present(sc):

@@ -55,8 +55,9 @@ COL_ENTRY_UUID = "Entry UUID"    # find-or-create + amend key (== time_entries.u
 COL_WORK_DATE = "Work Date"      # DATE (field-reported work day)
 COL_PERSONNEL = "Personnel"      # DISPLAY NAME (personnel.name) — NEVER a username (House Reflex §5)
 COL_HOURS = "Hours"
-COL_STARTED = "Started"
-COL_ENDED = "Ended"
+COL_TASK = "Task"                # task_assignments.description via time_entries.task_id (LEFT JOIN;
+#                                  empty when the entry references no task) — replaced the two
+#                                  always-empty Started/Ended wall-clock columns (2026-07-05).
 COL_NOTES = "Notes"
 COL_STATUS = "Status"            # Active | Superseded — TEXT controlled-vocab, NOT a PICKLIST
 COL_SUPERSEDED_BY = "Superseded By"
@@ -75,8 +76,7 @@ HOURS_LOG_COLUMNS: list[dict[str, Any]] = [
     {"title": COL_WORK_DATE, "type": "DATE"},
     {"title": COL_PERSONNEL, "type": "TEXT_NUMBER"},
     {"title": COL_HOURS, "type": "TEXT_NUMBER"},
-    {"title": COL_STARTED, "type": "TEXT_NUMBER"},
-    {"title": COL_ENDED, "type": "TEXT_NUMBER"},
+    {"title": COL_TASK, "type": "TEXT_NUMBER"},
     {"title": COL_NOTES, "type": "TEXT_NUMBER"},
     {"title": COL_STATUS, "type": "TEXT_NUMBER"},
     {"title": COL_SUPERSEDED_BY, "type": "TEXT_NUMBER"},
@@ -96,8 +96,7 @@ HOURS_LOG_STYLES: list[dict[str, Any]] = [
     {"title": COL_WORK_DATE, "width": 110, "format": FMT_DATE},
     {"title": COL_PERSONNEL, "width": 170},
     {"title": COL_HOURS, "width": 80},
-    {"title": COL_STARTED, "width": 130},
-    {"title": COL_ENDED, "width": 130},
+    {"title": COL_TASK, "width": 220},
     {"title": COL_NOTES, "width": 300},
     {"title": COL_STATUS, "width": 110},
     {"title": COL_SUPERSEDED_BY, "width": 120},
@@ -257,8 +256,7 @@ def upsert_entry_row(
     work_date: str,
     personnel: str,
     hours: str,
-    started: str,
-    ended: str,
+    task: str,
     notes: str,
     recorded_at: str,
 ) -> int:
@@ -283,8 +281,7 @@ def upsert_entry_row(
                 COL_WORK_DATE: work_date,
                 COL_PERSONNEL: personnel,
                 COL_HOURS: hours,
-                COL_STARTED: started,
-                COL_ENDED: ended,
+                COL_TASK: task,
                 COL_NOTES: notes,
                 COL_STATUS: STATUS_ACTIVE,
                 COL_RECORDED_AT: recorded_at,
