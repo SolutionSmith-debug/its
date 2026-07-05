@@ -2,107 +2,144 @@
 
 [![ci](https://github.com/SolutionSmith-debug/its/actions/workflows/ci.yml/badge.svg)](https://github.com/SolutionSmith-debug/its/actions/workflows/ci.yml)
 
-This is the execution layer of ITS — a Claude-powered computer employee being built for
-construction and renewables firms. ITS is a **white-glove custom-development practice**:
-each customer gets a fully-customized build forked from the ITS blueprint and maintained in
-their own private repository. Evergreen Renewables is **Customer 0** — the first deployment
-and design partner. This repo is Evergreen-specific; future customer forks live in their
-own repos.
+ITS is a Claude-powered "computer employee" for construction and renewables firms — it turns
+field submissions, project data, and documents into filed records and human-approved reports
+across Smartsheet, Box, and Outlook. It is a **white-glove custom-development practice**, not a
+SaaS product: each customer gets a fully-customized build forked from the ITS blueprint and
+maintained in its own private repo. **Evergreen Renewables is Customer 0** — first deployment
+and design partner; this repo is Evergreen-specific.
 
-ITS runs as Claude Code scripts on a MacBook, triggered by launchd-driven polling daemons
-(canonical pattern per Op Stds v19 §31). Shortcuts for manual operator-triggered jobs.
-Mail.app rules deprecated.
+This is the **execution layer**. The **planning layer** lives in a separate Claude.ai project
+("ITS Foundation & Planning") and in the [`its-blueprint`](https://github.com/SolutionSmith-debug/its-blueprint)
+repo (doctrine + mission files); this repo implements what is decided there. If a claim here
+contradicts the blueprint doctrine (Operational Standards v19, Foundation Mission v11), **the
+blueprint wins**.
 
-The **planning layer** lives in a Claude.ai project ("ITS Foundation & Planning"). This repo
-implements what is decided there.
+> **New to the codebase?** [`CLAUDE.md`](CLAUDE.md) is the authoritative context (conventions +
+> a live "what's stubbed vs. real" table) and [`docs/ROADMAP.md`](docs/ROADMAP.md) is the single
+> marching order for what's next. This README is the human-facing surface intro.
 
-## Quick orientation
+## Architecture — two layers, deliberately separated
 
-- `shared/` — cross-cutting helpers every workstream uses — kill switch, error log +
-  triple-fire CRITICAL alert path (Smartsheet + Resend + Sentry), API clients (anthropic, Box,
-  Graph, Smartsheet, Sentry, Resend), Keychain wrapper, untrusted-content tagging, anomaly
-  logging, sender quarantine, review queue, alert-routing dedupe, cross-sheet picklist sync,
-  scheduling (holidays + reviewer chain + PTO), bootstrap sheet IDs, default constants.
-- `schemas/` — JSON schemas for Anthropic tool-use / structured output calls.
-- `prompts/` — prompt files, version-controlled in markdown.
-- `scripts/` — top-level scheduled scripts (watchdog daily; picklist sync hourly) and
-  launchd plists. See `docs/references/picklist_sync.md` for the picklist sync runbook.
-- `safety_reports/` — Phase 1 active workstream.
-- `logs/` — local backup of error log (also written to Smartsheet ITS_Errors).
-- `tests/` — pytest suite (run with `pytest`; integration tests gated behind
-  `pytest -m integration`, require live Smartsheet sandbox credentials).
+- **Planning & Foundation** (Claude.ai + `its-blueprint`) — mission files, architectural
+  decisions, doctrine, prompt/schema designs. Not in this repo.
+- **Execution** (this repo) — Claude Code and Python on a MacBook, triggered by **launchd
+  polling daemons** (the canonical intake pattern, Op Stds v19 §31). It reads/writes the systems
+  of record over their APIs and calls the Anthropic API for reasoning steps.
 
-## First-time setup
+Systems of record, unchanged by ITS: **Smartsheet** (structured data), **Box** (documents),
+**Outlook/Graph** (communication). The customer-facing **Safety Portal** is a **Cloudflare
+Worker + D1 + React SPA** (`safety_portal/`) — a send-free capture surface; nothing is
+transmitted from it. It is **local-first**: no cloud-server execution, Tailscale-only, no public
+service exposed.
+
+## Non-negotiable invariants (Foundation Mission v11)
+
+- **External Send Gate (permanent).** No external transmission without explicit human approval.
+  Two-process model: generation scripts have **zero** send capability; send scripts have **zero**
+  AI step. Enforced at import by `tests/test_capability_gating.py`.
+- **Adversarial Input Handling.** All content originating outside the operating tenant is
+  untrusted data — sender allowlist + header-forgery detection, untrusted-content tagging on every
+  AI call, capability gating, structured-output enforcement, a post-hoc anomaly tripwire, and
+  attachment/photo screening (§34).
+- **Never silent.** Failures are observable, recoverable, and surfaced — a triple-fire CRITICAL
+  path (Smartsheet `ITS_Errors` + Resend email + Sentry), confidence scoring that routes
+  ambiguity to a human review queue, and a fail-open kill switch (operator convenience, *not* the
+  security boundary — the Send Gate is).
+- **Credentials from the macOS Keychain**, never env files, never committed (`shared/keychain.py`).
+
+Production-quality and defensively built for a 10–50-person firm; high availability is not
+required, but nothing fails silently and a human is permanently in the loop on every external
+send.
+
+## Repository layout
+
+| Path | What it is |
+|------|------------|
+| `shared/` | Cross-cutting helpers every workstream reuses — kill switch, error-log + triple-fire alerting, API clients (Anthropic, Box, Graph, Smartsheet, Sentry, Resend, portal), Keychain, untrusted-content tagging, anomaly logger, quarantine, review queue, alert dedupe, atomic state I/O, picklist sync/validation, scheduling, sheet IDs, heartbeat, capacity guards. Start here. |
+| `safety_reports/` | The Safety Portal pull pipeline (Python): `portal_poll` (intake daemon) → `intake` (12-stage filing) → `weekly_generate`/`compile_now_poll` (deterministic weekly compile, generation half of the Send Gate) → `weekly_send`/`weekly_send_poll` (send half). Also `photo_screen` (§34) and the shared `generate_core` engine. |
+| `progress_reports/` | The Progress Reporting workstream — the progress twin of the safety pipeline (`progress_weekly_generate`, `progress_send`/`_poll`, `wpr_review`) + the P7 per-job `hours_log` standing tracker, instantiating the parameterized shared machinery (not cloned). |
+| `field_ops/` | The Field-Ops expansion — `fieldops_sync`, the D1→Smartsheet mirror daemon (job identity + the per-job standing trackers) that makes ITS-owned Smartsheet the downstream SoR (Op Stds v19 §51). |
+| `safety_portal/` | The Cloudflare **Worker** (`worker/`, send-free D1 API + capability layer), the React **SPA** (`src/`), D1 **migrations/**, and form definitions. `README.md` there carries the migration punch-list + per-slice activation notes. |
+| `scripts/` | Scheduled entry points + launchd plists — `watchdog.py` (daily; the dead-man's-switch checks), `run_picklist_sync.py` (hourly), `install.sh`, and `migrations/` (operator-run Smartsheet/D1 build scripts). |
+| `schemas/` · `prompts/` | Version-controlled JSON schemas (Anthropic tool-use) and prompt files. |
+| `tests/` | pytest suite (unit + capability-gating + doctrine-drift gates). Integration tests are operator-run only (`-m integration`, live sandbox creds). |
+| `docs/` | Everything that isn't code — see [Documentation](#documentation). |
+
+## The daemons (launchd, local-first)
+
+Interval pollers (`org.solutionsmith.its.*`), each one-shot-per-`StartInterval`, kill-switch-gated,
+error-log-wrapped, and heartbeating to the `ITS_Daemon_Health` sheet:
+
+`portal-poll` (Safety Portal intake) · `weekly-generate` / `weekly-send` · `compile-now-poll`
+(on-demand compile, both safety + progress) · `progress-generate` / `progress-send` ·
+`fieldops-sync` (D1→Smartsheet mirror) · `publish-daemon` (form-editor code actuator, §50) ·
+`picklist-sync` / `picklist-audit` · `watchdog` (staleness floor + catch-up + the external
+UptimeRobot dead-man's switch).
+
+## Current state
+
+The Safety Portal safety-report pipeline is built and live-validated end-to-end on the mirror
+tenant; the Progress Reporting workstream is going live; and the Field-Ops portal expansion
+(in-portal jobs, personnel, equipment, materials, time, tasks, and a rolling SOP daily form) is
+largely built. The authoritative, always-current picture is **[`CLAUDE.md`](CLAUDE.md)'s
+"What's stubbed vs. real" table**; what's next is **[`docs/ROADMAP.md`](docs/ROADMAP.md)**.
+
+Built in a **sandbox tenant** (`evergreenmirror.com` + matching Smartsheet/Box) before cutover to
+the live Evergreen tenant at the Phase 1.4 → 1.5 gate.
+
+## Setup
+
+**Python** (3.12+):
 
 ```bash
-# Python venv (project uses Python 3.12+)
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
-
-# Sanity check
-pytest -q
+pytest -q          # sanity check
 ```
 
-## Re-installing after dependency changes
+Re-run `pip install -e ".[dev]"` after pulling a PR that changes `pyproject.toml` (a
+`ModuleNotFoundError` after `git pull` usually means a new dependency).
 
-When pulling a PR that adds or updates dependencies in `pyproject.toml`,
-re-run the install step before running scripts. A `ModuleNotFoundError:
-No module named '<package>'` after a `git pull` typically means a new
-dependency was added and the install needs re-running.
+> **Editing Python source?** The launchd daemons run this working tree from disk every ~60s, so
+> uncommitted edits go live immediately. Do Python-source work in a per-task `git worktree` off
+> `origin/main` **with its own fresh venv** — see [`docs/operations/worktree_discipline.md`](docs/operations/worktree_discipline.md).
+> Docs-only edits on the live tree are fine.
+
+**Safety Portal** (Cloudflare Worker + SPA):
 
 ```bash
-# venv path (matches the First-time setup default above)
-source .venv/bin/activate && pip install -e ".[dev]"
-
-# system Python path
-pip3 install -e ".[dev]" --break-system-packages
+cd safety_portal
+npm ci
+npm test           # worker vitest
+git -C ~/its pull origin main   # ALWAYS first before a live deploy (stale-migrations lockout class)
+npx wrangler d1 migrations apply its-safety-portal-db --remote
+npm run deploy
 ```
 
-PR #39 (boxsdk addition, 2026-05-20) was the canonical case that surfaced this.
+## Operating conventions
 
-## Operational conventions
+Normative summary; the canonical sources are `CLAUDE.md` (execution conventions +
+`docs/HOUSE_REFLEXES.md`, the working standards) and the blueprint doctrine.
 
-Everything below is normative. See `CLAUDE.md` for the conversational version Claude Code
-reads on every launch. See the Claude.ai planning project for the full canonical
-specifications (Foundation Mission v11, Operational Standards v19).
-
-- **Kill switch first.** Every script's entry point starts with `check_system_state()`.
-- **Error log decorator.** Every script's main function is wrapped in `@its_error_log`.
-- **Credentials from Keychain.** Never in env files, never in git. See `shared/keychain.py`.
-- **External Send Gate (permanent).** No external transmission without explicit human
-  approval. Two-process model: generation scripts have no send capability; send scripts have
-  no AI step.
-- **Adversarial Input Handling.** External content is untrusted data. Wrap inbound content
-  with `shared.untrusted_content.wrap()`; validate every extraction with
-  `shared.anomaly_logger.check()`.
-- **Production-quality, defensively-built.** Appropriate for 10–50 person construction firm
-  scale. Failures must be observable, recoverable, and never silent.
+- **Kill switch first** — every script entry calls `shared.kill_switch.check_system_state()` (or
+  `@require_active`). PAUSED/MAINTENANCE → exit cleanly.
+- **Error-log decorator** — every `main` is wrapped in `@its_error_log`.
+- **Two separate files** per workstream — a generation script and a send script (Send Gate).
+- **Schemas in `schemas/`, prompts in `prompts/`**, both version-controlled with a `version` field.
+- **Adversarial review is definition-of-done** on any trust-boundary surface (untrusted parse, a
+  D1/Smartsheet write-route, an external-send path) — via `/security-review` or the repo's
+  `ops-stds-enforcer` / `portal-worker-security-reviewer` agents.
+- **Four-part PR-landing verify** — `state=MERGED` · `mergedAt` · `mergeCommit` · main-branch CI
+  on the merge commit = SUCCESS (`docs/operations/pr_merge_discipline.md`).
 
 ## Documentation
 
-The `docs/` subtree organizes everything that isn't code:
-
-- [`docs/session_logs/`](docs/session_logs/) — durable narrative records of cc sessions.
-- [`docs/operations/`](docs/operations/) — runbook procedures (PR merge discipline, doc conventions).
-- [`docs/audits/`](docs/audits/) — structured findings against a closed scope.
-- [`docs/reports/`](docs/reports/) — one-shot quantitative or qualitative snapshots.
-- [`docs/references/`](docs/references/) — evergreen explanatory docs.
-- [`docs/tech_debt.md`](docs/tech_debt.md) — accumulator of deferred items.
-
-Filename, frontmatter, and section conventions across every doc type are defined in
-[`docs/operations/doc_conventions.md`](docs/operations/doc_conventions.md). Existing docs are
-grandfathered (lazy retrofit policy); new docs MUST conform. CI runs `scripts/lint_doc_conventions.py`
-and `scripts/regen_doc_indexes.py --check` warn-only during the retrofit window.
-
-## Status
-
-| Phase | State |
-|-------|-------|
-| 0 — Scaffold | ✓ shipped; 23-PR push 2026-05-18/19 wired the remaining shared/* modules (review_queue, quarantine, resend, sentry, error_log Smartsheet write, kill_switch refactor). Tests 137→781 (current; +644 from baseline). Triple-fire CRITICAL operational; mypy=0 enforced in CI; ruff clean. Resend-leg dedupe shipped 2026-05-21 (`shared/alert_dedupe.py` + watchdog Check G summary sweep + MAINTENANCE defer per PR #52). Polling-daemon doctrine codified Op Stds v19 §31 (watchdog + picklist_sync + safety-intake all launchd-driven Python pollers). |
-| 1 — Safety Reports + parallel workstreams | sandbox build active; 5 of 9 owner decisions resolved; Box sandbox uploaded 2026-05-14; Smartsheet system + human-review workspaces fully provisioned 2026-05-17; M365 Graph mail wired 2026-05-17. Cross-sheet picklist sync foundation shipped 2026-05-21 (`shared/picklist_sync.py` + `Picklist_Sync_Config` sheet + hourly cron; activates at form-and-clone cascade time). R3 cycle complete end-to-end (PRs #57/#59/#60 intake + #63 weekly_generate + #65 retry fix + #68 weekly_send). Box 1111B canonical blueprint materialized PR #70, projects re-cloned post-cutover (zero-padded numeric naming convention; legacy 1111A clones archived under `ITS DATA / 99. Legacy 1111A Clones`). Phase 1.4 security cluster: ITS_Trusted_Contacts shipped PR #72; picklist-hardening + attachment screening remaining per V&R v9. |
-| 1.5 — Combined Cutover + Hardware Handover (Florida → California) | scheduled after Phase 1 stable. 30-day clean-sandbox-operation gate per V&R v9. |
-| 1.6 — Blueprint Generalization | pre-Customer-2 pass. Extracts Customer-0-specific assumptions from shared/* so a Customer 2 fork-and-customize cycle is mechanical. (Renamed from "Multi-Tenancy Framework" per the white-glove business-model commitment.) |
-| 2 — POs / Subcontracts | not started |
-| 3 — Email Triage / AI Employee | not started |
-| 4 — Renewables-specific surfaces | not started |
+- [`CLAUDE.md`](CLAUDE.md) — the authoritative execution context (loaded by Claude Code each session).
+- [`docs/ROADMAP.md`](docs/ROADMAP.md) — the single marching order · [`docs/HOUSE_REFLEXES.md`](docs/HOUSE_REFLEXES.md) — working standards.
+- [`docs/adr/`](docs/adr/) + [`CONTEXT.md`](CONTEXT.md) — domain model & architecture decisions.
+- [`docs/runbooks/`](docs/runbooks/) — §43 successor-remediation runbooks · [`docs/operations/`](docs/operations/) — PR/merge/worktree/doc procedures.
+- [`docs/session_logs/`](docs/session_logs/) · [`docs/audits/`](docs/audits/) · [`docs/reports/`](docs/reports/) · [`docs/tech_debt.md`](docs/tech_debt.md).
+- Doc conventions (frontmatter/sections/filenames): [`docs/operations/doc_conventions.md`](docs/operations/doc_conventions.md). CI lints new docs + checks the auto-generated indexes.
+- **Doctrine** (canonical, planning-layer): `../its-blueprint/doctrine/` — Operational Standards v19, Foundation Mission v11.
