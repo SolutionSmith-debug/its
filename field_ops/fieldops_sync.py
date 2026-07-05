@@ -80,6 +80,7 @@ from shared import (
     picklist_validation,
     portal_client,
     review_queue,
+    sheet_ids,
     smartsheet_client,
 )
 from shared.error_log import Severity, its_error_log
@@ -486,6 +487,14 @@ def _mirror_job(
             }],
         )
         counters["mirrored"] += 1
+        # §51 archive-on-closure — the job was just mirrored; if it is CLOSED
+        # (lifecycle=archived) move its standing tracker sheets into the Archive
+        # workspace. Fully fenced inside the helper (any failure WARNs + returns),
+        # so a move failure NEVER un-does or fails the mirror above.
+        if str(job.get("lifecycle") or "").strip().lower() == "archived":
+            _archive_closed_job_trackers(
+                job_id, str(job.get("project_name") or "").strip(), correlation_id
+            )
     except (
         picklist_validation.PicklistViolationError,
         smartsheet_client.SmartsheetValidationError,
@@ -530,6 +539,68 @@ def _mirror_job(
             error_code="fieldops_job_unexpected",
             correlation_id=correlation_id,
         )
+
+
+def _archive_closed_job_trackers(
+    job_id: str, project_name: str, correlation_id: str
+) -> None:
+    """§51 archive-on-closure — MOVE a closed job's standing tracker sheets into the
+    Archive workspace's "Closed Projects" folder.
+
+    Called ONLY for a job whose lifecycle is `archived`, right after it mirrors. Best-
+    effort + fully fenced: ANY failure WARNs (`fieldops_archive_on_closure_failed`) and
+    returns — a move failure must NEVER fail the mirror (the job is already mirrored +
+    mark-synced back to the Worker). NEVER deletes rows or sheets; a pure relocation.
+
+    Idempotent by construction: it resolves the tracker sheet find-or-create-FREE in the
+    SOURCE (per-job PROGRESS) folder. Once a sheet has been moved out of that folder it is
+    no longer found there → this returns without a second move (the natural idempotency —
+    the same daemon may re-see an already-archived job on a later dirty cycle).
+
+    Today the ONLY standing tracker is the per-job `<Job> — Hours Log` (P7 Slice 1).
+    Equipment / Materials trackers are P7 Slices 2 / 3 — NOT built yet; extend this helper
+    (resolve + move each) when they land.
+
+    Edge case (by design, not handled here): if an archived job later receives NEW hours,
+    the hours pass would find-or-CREATE a fresh `<Job> — Hours Log` back in the active
+    PROGRESS folder (this helper only moves what exists at closure time). Archived/closed
+    jobs are not expected to receive new hours; note that new hours flow through the SEPARATE
+    pending-hours queue (`_mirror_hours_pass`), NOT the job-dirty list that drives this helper,
+    so a fresh sheet would re-archive only when the JOB itself is next re-dirtied (edited) —
+    not automatically.
+    """
+    try:
+        # Resolve the per-job folder in the PROGRESS workspace WITHOUT creating it — the
+        # SAME folder the Hours Log / week sheets live in (identical name via safety_naming).
+        folder = smartsheet_client.find_folder_by_name_in_workspace(
+            sheet_ids.WORKSPACE_PROGRESS_REPORTING, hours_log._folder_name(project_name)
+        )
+        if folder is None:
+            # No per-job folder → nothing was ever created for this job → nothing to archive.
+            return
+        # Resolve the Hours Log sheet WITHOUT creating it. None ⇒ already moved (prior cycle)
+        # OR never existed — either way there is nothing to move.
+        sid = smartsheet_client.find_sheet_by_name_in_folder(
+            folder, hours_log.hours_log_sheet_name(project_name)
+        )
+        if sid is None:
+            return
+        smartsheet_client.move_sheet_to_folder(
+            sid, sheet_ids.FOLDER_ARCHIVE_CLOSED_PROJECTS
+        )
+    except Exception as exc:  # noqa: BLE001 — best-effort; a move failure never fails the mirror
+        error_log.log(
+            Severity.WARN, SCRIPT_NAME,
+            f"archive-on-closure move failed for job_id={job_id!r} "
+            f"(project_name={project_name!r}); the job is already mirrored + mark-synced so this "
+            f"never fails the mirror — but the job is now CLEAN, so the move does NOT auto-retry: "
+            f"the Hours Log stays (never lost/deleted) in the active PROGRESS folder until the job "
+            f"is next re-dirtied (edited) or an operator moves it manually "
+            f"(docs/runbooks/hours_log_sync.md Fault F). {type(exc).__name__}: {exc!r}",
+            error_code="fieldops_archive_on_closure_failed",
+            correlation_id=correlation_id,
+        )
+        return
 
 
 def _route_to_review(

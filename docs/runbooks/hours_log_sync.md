@@ -4,7 +4,7 @@ date: 2026-07-04
 status: active
 related_prs: []
 workstream: field_ops
-tags: [runbook, successor-remediation, fieldops_sync, hours-log, tier-2, track-2]
+tags: [runbook, successor-remediation, fieldops_sync, hours-log, tier-2, track-2, archive-on-closure]
 ---
 
 # Runbook — Hours Log up-sync (P7, the `fieldops_sync` hours pass) (Successor-Remediation, Op Stds §43)
@@ -88,11 +88,47 @@ cap**, not on a calendar (2026-07-04 v19.x rider).
 
 **Repair (Tier-2, low-class).** **Period-split the sheet — NEVER delete rows:** rename/archive the
 full `<Job> — Hours Log` (e.g. to `<Job> — Hours Log (through <date>)`) and let the daemon
-find-or-create a fresh `<Job> — Hours Log` on its next entry. (A future archive-on-closure automation,
-`its#462`, will move closed-job tracker sheets to the Archive workspace; until then this is a manual
-period-split.) The WARN threshold is `progress_reports.hours_log.row_cap_warn_threshold` (ITS_Config,
-default 15000) — nudging it is a low-class tweak; a recurring need to split at high volume is expected,
-not a fault.
+find-or-create a fresh `<Job> — Hours Log` on its next entry. (This row-cap period-split is for a
+STILL-ACTIVE job; the separate archive-on-closure automation `its#462` — Fault F below — moves a
+CLOSED job's tracker to the Archive workspace.) The WARN threshold is
+`progress_reports.hours_log.row_cap_warn_threshold` (ITS_Config, default 15000) — nudging it is a
+low-class tweak; a recurring need to split at high volume is expected, not a fault.
+
+## Fault F — a closed job's Hours Log didn't move to Closed Projects (archive-on-closure)
+
+**Symptom.** A job was closed (its `lifecycle` went to `archived`) but its `<Job> — Hours Log` sheet
+is still sitting in the per-job folder under `ITS — Progress Reporting`, not in the **Closed
+Projects** folder of the `ITS — Archive` workspace. There may be an `ITS_Errors` WARN
+`Script=field_ops.fieldops_sync`, `Error=fieldops_archive_on_closure_failed`.
+
+**What it is (design).** When `fieldops_sync` mirrors a job whose `lifecycle=archived` (§51
+archive-on-closure), it MOVES the job's standing tracker sheets — today only the `<Job> — Hours Log`
+— into the Archive workspace's Closed Projects folder. It is a pure **relocation** (never a delete:
+the sheet, rows, and history are preserved) and it is **best-effort** — a move failure WARNs and
+never fails or un-does the mirror itself. Note the move runs AFTER the job's watermarks advance, so a
+failed move does **not** auto-retry (the job is already `mark-synced` → no longer dirty). It is
+idempotent: once the sheet is moved out of the source folder it is no longer found there, so a
+re-seen archived job (re-dirtied by a later edit) is a no-op.
+
+**Check (read-only).** (1) Is the job actually `archived` in `ITS_Active_Jobs`? A still-active job is
+correctly NOT archived. (2) `ITS_Errors` `Error=fieldops_archive_on_closure_failed` — the WARN names
+the `job_id` / `project_name` and the underlying error (e.g. a transient Smartsheet 5xx, or a
+permission error on the Archive workspace / Closed Projects folder). (3) Is the sheet ALREADY in
+Closed Projects? If so this is a stale observation — the move succeeded.
+
+**Repair (Tier-2, low-class).** The archive move does **not** auto-retry once the job is
+`mark-synced` (a successful mirror clears the job from the dirty set, so "wait a cycle" will NOT
+re-attempt an archive-only failure). The **guaranteed fix is a one-off manual move**: drag `<Job> —
+Hours Log` into `ITS — Archive / Closed Projects` in the Smartsheet UI (low-class, harmless — the
+daemon then finds nothing to move). Re-running `fieldops_sync` only re-attempts the move if the job
+is independently re-dirtied (e.g. edited in the portal). If the WARN keeps recurring after a
+re-dirty, hand Claude the `job_id`: *"the fieldops_sync archive-on-closure move keeps failing for
+`<job>` — its Hours Log isn't reaching Closed Projects; diagnose."*
+
+**Escalate-to-Seth boundary.** Anything touching the **move method itself** (`move_sheet_to_folder`),
+the archive hook, the workspace/folder IDs, or the Archive-workspace **permissions/sharing** is a
+**code / secrets change → high-class → escalate**. Repeated failures after the cause looks fixed, or a
+novel symptom, escalate.
 
 ## Escalate-to-Seth boundary (observable terms)
 

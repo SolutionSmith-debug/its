@@ -13,6 +13,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+import smartsheet
 import smartsheet.exceptions as sdk_exc
 
 from shared import sheet_ids, smartsheet_client
@@ -1544,6 +1545,32 @@ def test_delete_sheet_translates_error(mocker):
     client.Sheets.delete_sheet.side_effect = _api_error(403, message="nope")
     with pytest.raises(SmartsheetPermissionError):
         smartsheet_client.delete_sheet(1)
+
+
+# ---- move_sheet_to_folder (§51 archive-on-closure relocation) -------------
+
+
+def test_move_sheet_to_folder_calls_sdk_with_container_destination(mocker):
+    # MOVE (never delete): the SDK is called with a ContainerDestination naming the
+    # target FOLDER by id — the archive-on-closure relocation contract.
+    client = _install_client(mocker)
+    smartsheet_client.move_sheet_to_folder(7788, 9999)
+    client.Sheets.move_sheet.assert_called_once()
+    args, _ = client.Sheets.move_sheet.call_args
+    assert args[0] == 7788
+    dest = args[1]
+    assert isinstance(dest, smartsheet.models.ContainerDestination)
+    assert dest.destination_type == "folder"
+    assert dest.destination_id == 9999
+    # a MOVE must never route through delete
+    client.Sheets.delete_sheet.assert_not_called()
+
+
+def test_move_sheet_to_folder_translates_error(mocker):
+    client = _install_client(mocker)
+    client.Sheets.move_sheet.side_effect = _api_error(404, message="gone")
+    with pytest.raises(SmartsheetNotFoundError):
+        smartsheet_client.move_sheet_to_folder(1, 2)
 
 
 # ---- delete_sheet_settling (probe create→delete eventual-consistency retry) ---
