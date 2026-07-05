@@ -316,6 +316,38 @@ def test_pending_auth_error_pages_and_writes_error_heartbeat(_patch):
     _patch["marker"].assert_not_called()
 
 
+def test_pending_transport_error_does_not_starve_the_hours_pass(_patch):
+    # The live "logged time never reaches the Hours Log" bug: a TRANSIENT pending-JOBS transport
+    # failure must NOT skip the hours pass — it hits an INDEPENDENT endpoint (/hours-pending) that
+    # may well be reachable this cycle. The job error is recorded (never silent); the hours pass
+    # still runs. (Reverting the fix — restoring the early-return on the transport branch — makes
+    # this red: hours_pending would never be called.)
+    _patch["pending"].side_effect = fieldops_sync.portal_client.PortalTransportError(
+        "jobs endpoint blipped"
+    )
+    _patch["hours_enabled"].return_value = True
+    _patch["hours_pending"].return_value = [
+        {
+            "uuid": "u1", "job_id": "JOB-1", "project_name": "Proj", "personnel_name": "Sam",
+            "hours": 8, "work_started_at": None, "work_ended_at": None, "notes": "",
+            "amends_uuid": None, "created_at": 1_700_000_000,
+        },
+    ]
+
+    stats = fieldops_sync._sync_inside_lock()
+
+    # The hours pass RAN despite the job-fetch failure (the fix):
+    _patch["hours_pending"].assert_called_once()
+    _patch["ensure_sheet"].assert_called_once()
+    _patch["hours_mark"].assert_called_once()
+    # ...and the job-fetch failure is still observable (never silent): DEGRADED, no job mirror,
+    # but the daemon IS alive (it did useful hours work) so the marker is written.
+    assert stats.errors >= 1
+    _patch["upsert"].assert_not_called()
+    assert _patch["hb_row"].call_args.kwargs["status"] == "DEGRADED"
+    _patch["marker"].assert_called_once()
+
+
 # ---- malformed row --------------------------------------------------------
 
 

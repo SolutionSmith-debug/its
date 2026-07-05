@@ -339,11 +339,21 @@ def _sync_inside_lock() -> SyncStats:
         return SyncStats(halted_no_creds=True)
 
     base_url, bearer = creds
+    counters = {"mirrored": 0, "reviewed": 0, "errors": 0}
+    # The job pass and the hours / equipment passes hit INDEPENDENT Worker endpoints
+    # (/pending-jobs vs /hours-pending, /equipment-snapshot). A TRANSIENT job-fetch failure must
+    # NOT starve the downstream passes — that was the live "logged time never reaches the Hours
+    # Log" bug: a recurring pending-jobs PortalTransportError returned the whole cycle early, so
+    # hours mirroring only ran on the cycles the job-fetch happened to succeed. (A 401 still stops
+    # the whole cycle — the SAME bearer fails every endpoint.)
+    jobs: list[dict[str, Any]] | None = None
     try:
         jobs = portal_client.get_fieldops_pending_jobs(base_url, bearer)
     except portal_client.PortalAuthError as exc:
-        # 401 — bad/rotated/missing bearer. A MISCONFIG that will NOT self-heal → page
-        # immediately. Caught BEFORE PortalTransportError (its subclass).
+        # 401 — bad/rotated/missing SHARED bearer. NOTHING can work this cycle (the hours /
+        # equipment endpoints use the SAME bearer and would 401 too), so STOP: page CRITICAL + no
+        # watchdog marker (let Check C go stale on a persistent 401). Caught BEFORE
+        # PortalTransportError (its subclass).
         error_log.log(
             Severity.CRITICAL, SCRIPT_NAME,
             f"pending-jobs fetch UNAUTHORIZED (401) — field-ops bearer rejected; up-sync "
@@ -355,33 +365,32 @@ def _sync_inside_lock() -> SyncStats:
                              error_summary="pending-jobs UNAUTHORIZED (401) — bearer rejected")
         return SyncStats(errors=1)
     except portal_client.PortalTransportError as exc:
-        # Transport failure (Worker down / wrong base URL / network). Transient — every job
-        # stays dirty and re-pulls next cycle (no silent loss). No watchdog marker (the
-        # un-faked Check-C marker is the backstop).
+        # TRANSIENT job-fetch failure (Worker blip / network / an intermittent bot-challenge).
+        # Jobs stay dirty + re-pull next cycle (no silent loss). CRUCIAL: do NOT return — the
+        # hours / equipment passes hit DIFFERENT, independent endpoints (/hours-pending,
+        # /equipment-snapshot) that may well be reachable this cycle, so they MUST still run.
+        counters["errors"] += 1
         error_log.log(
             Severity.ERROR, SCRIPT_NAME,
-            f"failed to GET pending-jobs (jobs left dirty for next cycle): {exc!r}",
+            f"failed to GET pending-jobs (jobs left dirty for next cycle; hours/equipment passes "
+            f"still run — independent endpoints): {exc!r}",
             error_code="fieldops_pending_fetch_failed",
         )
-        _write_heartbeat()
-        _write_heartbeat_row(status="ERROR", items_processed=0,
-                             error_summary=f"pending-jobs fetch failed: {type(exc).__name__}")
-        return SyncStats(errors=1)
 
-    counters = {"mirrored": 0, "reviewed": 0, "errors": 0}
-    for job in jobs:
-        _mirror_job(job, base_url, bearer, counters)
+    if jobs is not None:
+        for job in jobs:
+            _mirror_job(job, base_url, bearer, counters)
+    scanned = len(jobs) if jobs is not None else 0
 
-    # P7 hours pass — runs in THIS same daemon (one host, one lock, one heartbeat), reusing the
-    # already-resolved creds. Gated OFF by default; its own per-entry/per-job fences + a top
-    # outer-catch mean a hours failure NEVER aborts the job mirror above nor the heartbeat below.
+    # P7 hours pass — INDEPENDENT endpoint; runs even after a TRANSIENT job-fetch failure (a 401
+    # returned above). Its own per-entry/per-job fences mean a hours failure NEVER aborts the job
+    # mirror above nor the heartbeat below.
     hours = {"mirrored": 0, "reviewed": 0, "errors": 0}
     if _hours_enabled():
         hours = _mirror_hours_pass(base_url, bearer)
 
-    # P7 equipment pass — same daemon, same creds. Gated OFF by default; its own per-item/per-job
-    # fences + a top outer-catch mean an equipment failure NEVER aborts the job/hours mirror above
-    # nor the heartbeat below. SNAPSHOT: no mark-mirrored.
+    # P7 equipment pass — same, INDEPENDENT endpoint. Gated OFF by default; SNAPSHOT: no
+    # mark-mirrored.
     equip = {"upserted": 0, "retired": 0, "reviewed": 0, "errors": 0}
     if _equipment_enabled():
         equip = _mirror_equipment_pass(base_url, bearer)
@@ -419,7 +428,7 @@ def _sync_inside_lock() -> SyncStats:
     error_log.log(
         Severity.INFO, SCRIPT_NAME,
         (
-            f"sync cycle: scanned={len(jobs)} mirrored={counters['mirrored']} "
+            f"sync cycle: scanned={scanned} mirrored={counters['mirrored']} "
             f"reviewed={counters['reviewed']} errors={counters['errors']}; "
             f"hours mirrored={hours['mirrored']} reviewed={hours['reviewed']} "
             f"errors={hours['errors']}; equipment upserted={equip['upserted']} "
@@ -428,7 +437,7 @@ def _sync_inside_lock() -> SyncStats:
         error_code="sync_cycle_summary",
     )
     return SyncStats(
-        scanned=len(jobs),
+        scanned=scanned,
         mirrored=counters["mirrored"],
         reviewed=counters["reviewed"],
         errors=counters["errors"],
