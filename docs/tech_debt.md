@@ -55,6 +55,94 @@ Multi-surface fan-out (enumerate ALL before claiming done — the recurring inco
 
 **Tag:** `field_ops`, `hours-log`, `smartsheet`, `ux`.
 
+## M2 Material List — one-way-up MVP diverges from §51's bidirectional model [OPEN 2026-07-05 — Seth reconciliation needed]
+
+**Surfaced by ops-stds-enforcer on PR #470 (WARN, not a BLOCK — merged with the divergence flagged).**
+Operational Standards §51 (`~/its-blueprint/doctrine/operational-standards.md`, canonical line ~847)
+names the Material List explicitly as **"bidirectional with split column ownership — the operator
+owns content columns, the field owns delivery columns, neither side's write overwrites the other's."**
+The Progress-Reporting mission (`~/its-blueprint/workstreams/progress-reporting/mission.md`) carries
+the same bidirectional framing. PR #470 shipped a **one-way-up-only** MVP instead — portal is the sole
+author of every line (`job_expected_materials`, migration 0031 extended with `line_uuid` + `unplanned`
+0039), `progress_reports/material_list.py` mirrors it up as a structural clone of the Equipment
+tracker (#468); there is **no `smartsheet_row_id` column and no down-sync path** — an operator editing
+the Smartsheet Material List directly has no mechanism to write back to D1. This was an **operator
+ratification of Option A** made in-session (see `project_fieldops-portal-program.md` memory,
+"SESSION CONTINUED 2026-07-05"), not a doctrine change.
+
+**This is NOT yet reconciled with doctrine.** Two paths, either resolves the drift:
+- **A — v19.x rider** (the Sentry-leg / Hours-Log-period-split precedent) noting the Material List
+  ships in a **phased delivery**: one-way-up MVP now, bidirectional split-column-ownership as a later
+  slice — provided the rider can show the one-way phase doesn't change §51's protective claim to a
+  degree that's bump-worthy (unlike those two precedents, this changes WHAT the mechanism promises —
+  the operator can no longer edit the sheet as an input — so this may in fact cross the v20-trigger
+  "recharacterization of a mechanism's protective claim" bar; Seth's call, not a rubber-stamp).
+- **B — reconfirm one-way-up as the permanent model** and revise §51 + the Progress-Reporting mission
+  to drop "bidirectional" for the Material List, replacing it with the same one-way-up-plus-retire-in-
+  place model used for Hours Log / Equipment.
+
+**Gate: this reconciliation MUST land before `field_ops.fieldops_sync.materials_enabled` is flipped
+live** — the tracker ships DARK today specifically so this doesn't need to block the merge, but going
+live on an undecided doctrine question would mean training an operator workflow around a data model
+that might later need a breaking migration (adding `smartsheet_row_id` + down-sync after operators
+have already been editing the sheet as if it were read-only-mirror). See blueprint
+`references/memory-archive.md` §G54 for the full write-up (session-close 2026-07-05).
+
+**Tag:** `field_ops`, `progress-reports`, `material-list`, `doctrine`, `§51`, `seth-decision`.
+
+## `/pending-jobs` transport flakiness — deeper cause untraced, only blast-radius mitigated [OPEN 2026-07-05]
+
+**PR #469 (`466e1e8`) fixed the SYMPTOM, not the root cause.** The live bug ("logged time not
+showing" in the Hours Log) traced to `fieldops_sync._sync_inside_lock` returning early whenever
+`GET /api/internal/fieldops/pending-jobs` raised a `PortalTransportError` — starving the independent
+hours/equipment/material-list mirror passes on any cycle where the job-queue fetch happened to fail.
+#469 **decouples** the passes (a transient job-fetch failure no longer blocks the others) and adds a
+Check-Q-style sustained-outage escalation, but it never diagnosed **why `/pending-jobs` fails
+intermittently in the first place**. No live failure has been captured with its actual HTTP status
+code or response body — the daemon logs only that a `PortalTransportError` was raised, not what the
+Worker actually returned.
+
+**Suspected causes (unconfirmed):** Cloudflare bot-fight-mode / WAF challenging the daemon's
+server-to-server bearer-token request (no browser fingerprint, no cookie jar — a classic false-positive
+shape for bot mitigation), or a transient Worker-side D1 query error/timeout unrelated to Cloudflare's
+edge. Both are plausible; neither has evidence yet.
+
+**Fix:** on the next observed transient failure, log the actual status code + a truncated response
+body at WARN (currently swallowed into a generic `PortalTransportError`); cross-check the Cloudflare
+dashboard's bot-fight/WAF event log for the `/api/internal/fieldops/pending-jobs` route during the
+failure window. If confirmed Cloudflare-side, the fix is a WAF allowlist rule scoped to the daemon's
+bearer-token header pattern (never widen the allowlist to all traffic). If Worker-side, escalate as a
+D1 query-shape issue.
+
+**Tag:** `field_ops`, `fieldops_sync`, `transport`, `cloudflare`, `diagnose`.
+
+## `FormFillPage.r3.test.tsx` "R3 dirty guard" flaky last-call assertion [OPEN 2026-07-05]
+
+**Flaked once during PR #470's (M2) 4th-gate portal CI check; cleared on unmodified re-run.** The
+test `"touching a field reports dirty + arms beforeunload; submit clears both"` asserts, immediately
+after a `waitFor` on the "Submitted ✓" text:
+
+```ts
+await waitFor(() => expect(getByText("Submitted ✓")).toBeTruthy());
+expect(onDirtyChange).toHaveBeenLastCalledWith(false);
+```
+
+`toHaveBeenLastCalledWith` reads the `vi.fn()` call history synchronously the instant the "Submitted ✓"
+text appears — but nothing guarantees `onDirtyChange(false)` (fired from the form's post-submit
+dirty-clear effect) has landed by that exact tick relative to the submitted-screen render. If the two
+state updates land in separate React commits, the assertion can race and see a stale last call.
+Every other multi-step assertion in this file wraps the final check in its own `waitFor` (see
+`onDirtyChange).toHaveBeenLastCalledWith(true)` a few lines above, which IS `waitFor`-wrapped) — this
+one line is the odd one out.
+
+**Not yet root-caused as a real ordering bug vs. a test-only assertion-timing gap** — the feature
+itself (dirty-guard clears on submit) has never been observed wrong in the app; only the test flaked,
+once, in CI. **Fix:** wrap the assertion in its own `waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(false))`
+to match the file's own pattern above it, removing the race regardless of which commit order React
+chooses.
+
+**Tag:** `field_ops`, `spa`, `test-flake`, `ci`, `low`.
+
 ## Job routing form — "Same as stakeholder" copy button on the Safety block [OPEN 2026-07-01]
 
 **Operator-parked 2026-07-01 (was mid-build, deferred).** The job-creation routing form (`safety_portal/src/pages/FieldOpsJobTracker.tsx`, `RoutingFields`) has a "Same as safety" copy button on the **Progress** contact block (copies Safety → Progress, ~line 179). Add a parallel **"Same as stakeholder"** button on the **Safety** contact block (~:158-161) that copies the Stakeholder name/email into the Safety contact, and KEEP "Same as safety" on Progress — giving the chain Stakeholder → Safety → Progress for the common single-contact case. Small SPA change: mirror the existing copy handler + an SPA test. **Tag:** `field_ops`, `job-tracker`, `spa`, `ux`.
