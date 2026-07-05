@@ -1251,6 +1251,31 @@ def delete_sheet(sheet_id: int) -> None:
         raise _translate(e) from e
 
 
+@_breaker_guard
+def move_sheet_to_folder(sheet_id: int, folder_id: int) -> None:
+    """MOVE (never delete) a sheet into `folder_id` via the SDK (`Sheets.move_sheet`).
+
+    The §51 archive-on-closure path uses this to RELOCATE a closed job's standing
+    tracker sheets — today only the `<Job> — Hours Log` — from the per-job PROGRESS
+    folder into the Archive workspace's "Closed Projects" folder. This is a pure
+    relocation: the sheet, its rows, and its cell history are all preserved (contrast
+    `delete_sheet`, which destroys the sheet — this NEVER deletes anything).
+
+    Idempotency is the CALLER's concern — there is no find-or-create here. A caller
+    that no longer finds the sheet in the SOURCE folder (because a prior cycle already
+    moved it) simply skips the move; this helper always issues the move. Raises the
+    typed hierarchy on failure (404 if the sheet is gone; 401/403 on a read-only token).
+    """
+    dest = smartsheet.models.ContainerDestination({
+        "destination_type": "folder",
+        "destination_id": folder_id,
+    })
+    try:
+        get_client().Sheets.move_sheet(sheet_id, dest)
+    except sdk_exc.SmartsheetException as e:
+        raise _translate(e) from e
+
+
 def delete_sheet_settling(
     sheet_id: int, *, attempts: int = 3, backoff_seconds: float = 1.0
 ) -> None:

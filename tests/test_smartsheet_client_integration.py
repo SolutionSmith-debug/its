@@ -447,6 +447,50 @@ def test_find_folder_by_name_in_folder_round_trip(_token_available):
         _delete_folder_rest(folder_id, _token_available)
 
 
+# ---- move_sheet_to_folder (§51 archive-on-closure relocation) ----------
+
+
+def test_move_sheet_to_folder_relocates_live(_token_available):
+    """Live §30: create a sheet in a SOURCE folder → move it to a DEST folder →
+    confirm it landed in DEST and is gone from SOURCE. Pure relocation, no delete.
+
+    SDK-vs-Live guard: a SimpleNamespace mock cannot prove the live API accepts the
+    `ContainerDestination({destination_type:'folder', destination_id:...})` body that
+    `move_sheet_to_folder` builds — this exercises the real POST /sheets/{id}/move.
+
+    Both sandbox folders live under FOLDER_SYSTEM_CONFIG (the existing integration-test
+    precedent — no dedicated test-only folder constant today) and are name-namespaced
+    via `_sandbox_name`, so they're visually distinct from real artifacts. Everything
+    (the sheet + BOTH folders) is deleted in `finally` regardless of outcome.
+    """
+    src_id = smartsheet_client.create_folder_in_folder(
+        sheet_ids.FOLDER_SYSTEM_CONFIG, _sandbox_name("mv_src")
+    )
+    dst_id = smartsheet_client.create_folder_in_folder(
+        sheet_ids.FOLDER_SYSTEM_CONFIG, _sandbox_name("mv_dst")
+    )
+    sheet_name = _sandbox_name("mv_sheet")
+    sheet_id = smartsheet_client.create_sheet_in_folder(
+        src_id,
+        sheet_name,
+        [{"title": "id_col", "type": "TEXT_NUMBER", "primary": True}],
+    )
+    try:
+        # Precondition: the sheet is in SOURCE, not yet in DEST.
+        assert smartsheet_client.find_sheet_by_name_in_folder(src_id, sheet_name) == sheet_id
+        assert smartsheet_client.find_sheet_by_name_in_folder(dst_id, sheet_name) is None
+
+        smartsheet_client.move_sheet_to_folder(sheet_id, dst_id)
+
+        # Postcondition: relocated — present in DEST, absent from SOURCE (never deleted).
+        assert smartsheet_client.find_sheet_by_name_in_folder(dst_id, sheet_name) == sheet_id
+        assert smartsheet_client.find_sheet_by_name_in_folder(src_id, sheet_name) is None
+    finally:
+        _delete_sheet_rest(sheet_id, _token_available)
+        _delete_folder_rest(src_id, _token_available)
+        _delete_folder_rest(dst_id, _token_available)
+
+
 # ---- find_row_by_primary + update_row_cells_by_id (PR #59.5) ------------
 
 

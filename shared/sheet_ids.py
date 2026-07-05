@@ -55,6 +55,9 @@ FOLDER_OPERATIONS_MASTER_DBS = 471604011526020
 # workspace (WORKSPACE_SAFETY_PORTAL); folder ID preserved (amendment b).
 FOLDER_SAFETY_PORTAL = 6663869084002180  # ITS –– Safety Portal / Safety Portal (ITS_Active_Jobs, ITS_Forms_Catalog, WSR_human_review)
 FOLDER_OPERATIONS_SAFETY_PORTAL = FOLDER_SAFETY_PORTAL  # back-compat alias (name retains the pre-move location)
+# "Closed Projects" folder lives in the ITS — Archive workspace (WORKSPACE_ARCHIVE),
+# verified live 2026-07-04; the §51 archive-on-closure path moves closed-job tracker
+# sheets here. (Earlier comment placed it in WORKSPACE_SAFETY_PORTAL — that was wrong.)
 FOLDER_ARCHIVE_CLOSED_PROJECTS = 1034553964947332
 
 # ---- Active project folders (Forefront Portfolio / 01 — Active Projects) -
