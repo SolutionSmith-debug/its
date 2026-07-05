@@ -9,14 +9,49 @@ When to add an entry: a session deliberately chooses preservation-over-refactor 
 From `docs/audits/2026-07-04_smartsheet-wiring-audit.md` (Task B — the SoR is wired correctly; these are hygiene/observability items, **no correctness breaks**):
 - **M-1 (MEDIUM):** `smartsheet.sheet_count_ceiling` + `_margin` ABSENT from `ITS_Config` → the capacity guard (`sheet_capacity.check_create_headroom`, live-called by `week_sheet`/`hours_log`) runs on the hardcoded default 1500/50 **silently** (forensic class #7). **Fix:** operator sets the real plan-tier cap under `Workstream=global` (ROADMAP Track 3).
 - **M-2 (MEDIUM):** `ITS_Daemon_Health` carries **5 stale/legacy placeholder rows** — `safety_reports.intake_poll` (a DELETED daemon, month-stale, `Enabled=True`), `weekly_generate`/`weekly_send` (NEVER_RAN, Notes cite decommissioned sheets), `watchdog`/`shared.picklist_sync` (NEVER_RAN "retrofit" placeholders). Only **6** daemons self-provision (portal_poll, weekly_send_poll, compile_now_poll, progress_send_poll, publish_daemon, fieldops_sync). **Fix:** delete the intake_poll/weekly_generate/weekly_send rows (name-guarded `delete_rows`); decide whether watchdog/picklist_sync should self-report (retrofit) or are intentionally externally-monitored (S-2).
-- **M-3 (LOW):** `fieldops_sync` heartbeat interval mismatch — `SYNC_INTERVAL_SECONDS=300` (registered in the health row) vs launchd `StartInterval=90` (`install.sh:79`). **Fix:** set `SYNC_INTERVAL_SECONDS=90` to match.
+- **M-3 (LOW) — CLOSED 2026-07-05 (PR #473, `86bfab0a`, four-part verify CLEAN: state=MERGED, mergedAt non-null, mergeCommit present, main-branch CI on the merge commit = SUCCESS):** `fieldops_sync` heartbeat interval mismatch — `SYNC_INTERVAL_SECONDS` set 300→90 to match launchd `StartInterval=90` (`install.sh:79`); feeds the daemon-health cadence.
 - **S-1 (systemic):** ~40 `ITS_Config` reads silently fall back to a hardcoded default (no WARN+source) — the tracked `REQUIRED_CONFIG` startup-logging pass (#336). The cross-workstream footguns (`progress_reports.intake_enabled` read under `safety_reports`; `worker_base_url` under BOTH workstreams) are currently seeded correctly but silent on the missing-row path.
 
 **Tag:** `smartsheet`, `daemon-health`, `config`, `capacity`, `audit`, `field_ops`.
 
+## Config gates ship dark by ROW-ABSENCE, not just row-value [RESOLVED 2026-07-05 for equipment_enabled; materials_enabled stays visibly gated on §51]
+
+**Operator-reported blocker, root-caused 2026-07-05 (session part 2).** The operator went looking for
+`field_ops.fieldops_sync.equipment_enabled` / `.materials_enabled` rows in `ITS_Config` (sheet
+`3072320166907780`) to flip them and found **no row at all** — not a row set to `false`. Root cause:
+`fieldops_sync._read_bool_setting(key, default)` (see `_equipment_enabled`/`_materials_enabled`,
+`field_ops/fieldops_sync.py:226-231`) defaults to `DEFAULT_EQUIPMENT_ENABLED = False` /
+`DEFAULT_MATERIALS_ENABLED = False` when the row is **absent**, same as when it exists and is set
+`false` — the two states are behaviorally identical but only one of them is operator-visible in the
+Smartsheet UI. Only `field_ops.fieldops_sync.sync_enabled` and `.hours_enabled` had ever been seeded;
+Equipment (#468) and Material List (#470) both shipped dark-by-design but nobody created the config
+rows those PRs' own text promised to gate on. **There is no row to "flip" — the operator (or CC) must
+CREATE the row first**, then set it.
+
+**Fix applied this session:** created both rows via MCP — `equipment_enabled=true` (ACTIVATED) and
+`materials_enabled=false` (still §51-blocked per the M2 entry below, but now a **visible, intentional**
+`false` rather than a silent absence). Each row carries a descriptive `Description` cell. Worker deploy
+independently confirmed via unauthenticated 401 probes on `/api/internal/fieldops/{equipment,material-list}-snapshot`
+(a genuinely-deployed gated route 401s `application/json`; a missing route SPA-falls-back to `200
+text/html` per [[reference_worker-spa-fallback-200-on-deleted-asset]] — same diagnostic shape, new
+context). Equipment activation **live-smoked GREEN**: the 90s `fieldops_sync` cycle picked up the flip
+and reported `equipment upserted=1 errors=0` steadily over ~45 minutes; the `Portal create test 2 —
+Equipment` sheet exists in the progress workspace as the SoR artifact. Materials stayed at
+`upserted=0` (dark, as intended).
+
+**General lesson (not field-ops-specific):** any `ITS_Config`-gated boolean whose code defaults to a
+safe value (`False`/off) on a missing row will silently ship dark, and — unlike a hardcoded-fallback
+WARN (the `REQUIRED_CONFIG` #336 class) — there's no wrong VALUE to notice, just an absent row a
+human has to know to go create. Worth a `REQUIRED_CONFIG`-style startup enumeration that logs "this
+declared gate key has NO row" distinctly from "this key's row is set to the default," so a future
+gate doesn't strand an operator hunting for a row that was never seeded. Not built; folds into the
+existing #336 tracked pass rather than a new one.
+
+**Tag:** `field_ops`, `fieldops_sync`, `config`, `its_config`, `row-absence`, `equipment`, `materials`.
+
 ## Hours Log — replace Started/Ended columns with a Task column [BUILT 2026-07-05 — live-sheet migration is the remaining operator step]
 
-**BUILT 2026-07-05 (branch `feat/hours-log-task-column`) — all code + tests landed:** worker `/hours-pending`
+**BUILT 2026-07-05 (PR #472, merged `9aada583`, four-part verify CLEAN — state=MERGED, mergedAt non-null, mergeCommit present, main-branch CI on the merge commit = SUCCESS; branch `feat/hours-log-task-column`) — all code + tests landed:** worker `/hours-pending`
 `LEFT JOIN task_assignments ta ON ta.id = t.task_id AND ta.job_id = t.job_id` projecting `ta.description AS
 task` (job-scoped per the security review) with `work_started_at/_ended_at` dropped from THAT projection
 only (the D1 columns stay — rollup/personnel/jobtracker still read them); `progress_reports/hours_log.py`
@@ -88,7 +123,22 @@ that might later need a breaking migration (adding `smartsheet_row_id` + down-sy
 have already been editing the sheet as if it were read-only-mirror). See blueprint
 `references/memory-archive.md` §G54 for the full write-up (session-close 2026-07-05).
 
+**2026-07-05 (session part 2) update:** the `materials_enabled` ITS_Config row now EXISTS (created
+this session, set explicitly `false` — see "Config gates ship dark by ROW-ABSENCE" above), so the
+gate is visible and intentional rather than silently absent; this does not change the reconciliation
+requirement above, it only removes a separate, unrelated confusion (an operator hunting for a row
+that was never seeded). A **ratification-ready rider draft** for Path A (phased-delivery v19.x rider)
+and a revision draft for Path B (reconfirm one-way-up, drop "bidirectional" from §51 + the mission)
+were prepared this session — see blueprint `references/memory-archive.md` §G55 and the info-gap doc's
+"Awaiting approval" note for both drafts' full text. Still Seth's call; neither is applied.
+
 **Tag:** `field_ops`, `progress-reports`, `material-list`, `doctrine`, `§51`, `seth-decision`.
+
+## its#460 — create `progress@evergreenmirror.com` mailbox + Entra Application Access Policy (Mail.Send) [OPEN 2026-07-04, operator action]
+
+**Tracked as a GitHub issue (`its#460`), cross-referenced here per convention.** `progress_reports.progress_send.from_mailbox` is already set to `progress@evergreenmirror.com` in `ITS_Config` (live) and matches the code default (`progress_send.DEFAULT_FROM_MAILBOX`) — but the mailbox itself does not exist yet in the `evergreenmirror.com` M365 sandbox tenant. **Operator action:** (1) create the mailbox; (2) add it to the Entra app registration's Application Access Policy with `Mail.Send` on the resource (mirrors the existing `safety@evergreenmirror.com` setup). Until then, progress weekly-report sends are **HELD at approval** (Invariant 1 human-in-loop) — nothing sends silently; this blocks only the final external send of progress packets, not compile/review. Flip to the production mailbox at the Phase 1.5 tenant cutover. Everything else in the progress go-live (routing, config, picklist, compile, WSR/WPR review) has been live since PR #459.
+
+**Tag:** `progress-reports`, `mailbox`, `operator-action`, `m365`, `its#460`.
 
 ## `/pending-jobs` transport flakiness — deeper cause untraced, only blast-radius mitigated [OPEN 2026-07-05]
 
