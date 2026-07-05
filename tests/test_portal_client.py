@@ -667,3 +667,45 @@ def test_post_item_photo_result_401_raises_auth_error(mocker):
         portal_client.post_item_photo_result(
             BASE, TOKEN, photo_id=5, status="clean", box_file_id="box-9",
         )
+
+
+# ---- get_fieldops_equipment_snapshot (P7 Slice 2) ------------------------
+
+
+def test_get_fieldops_equipment_snapshot_returns_rows_and_sends_bearer(mocker):
+    rows = [{"equipment_id": 10, "job_id": "J1", "name": "Unit Alpha"}]
+    req = _patch_requests(mocker, _mock_response(json_body={"equipment": rows}))
+    out = portal_client.get_fieldops_equipment_snapshot(BASE, TOKEN)
+    assert out == rows
+    args, kwargs = req.call_args
+    assert args == ("GET", "https://portal.example.com/api/internal/fieldops/equipment-snapshot")
+    assert kwargs["headers"]["Authorization"] == f"Bearer {TOKEN}"
+
+
+def test_get_fieldops_equipment_snapshot_empty_returns_empty_list(mocker):
+    _patch_requests(mocker, _mock_response(json_body={"equipment": []}))
+    assert portal_client.get_fieldops_equipment_snapshot(BASE, TOKEN) == []
+
+
+def test_get_fieldops_equipment_snapshot_drops_non_dict_rows(mocker):
+    _patch_requests(
+        mocker,
+        _mock_response(json_body={"equipment": [{"equipment_id": 10}, "x", 7]}),
+    )
+    assert portal_client.get_fieldops_equipment_snapshot(BASE, TOKEN) == [{"equipment_id": 10}]
+
+
+@pytest.mark.parametrize(
+    "body", [{"equipment": {"x": 1}}, {"equipment": "nope"}, {"equipment": 5}, {}]
+)
+def test_get_fieldops_equipment_snapshot_non_list_raises(mocker, body):
+    _patch_requests(mocker, _mock_response(json_body=body))
+    with pytest.raises(PortalTransportError, match="equipment"):
+        portal_client.get_fieldops_equipment_snapshot(BASE, TOKEN)
+
+
+def test_get_fieldops_equipment_snapshot_401_raises_auth_without_retry(mocker):
+    req = _patch_requests(mocker, _mock_response(status=401))
+    with pytest.raises(PortalAuthError):
+        portal_client.get_fieldops_equipment_snapshot(BASE, TOKEN)
+    assert req.call_count == 1  # a 401 is NOT retried

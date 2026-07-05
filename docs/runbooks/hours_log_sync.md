@@ -4,7 +4,7 @@ date: 2026-07-04
 status: active
 related_prs: []
 workstream: field_ops
-tags: [runbook, successor-remediation, fieldops_sync, hours-log, tier-2, track-2, archive-on-closure]
+tags: [runbook, successor-remediation, fieldops_sync, hours-log, equipment-status, tier-2, track-2, archive-on-closure]
 ---
 
 # Runbook — Hours Log up-sync (P7, the `fieldops_sync` hours pass) (Successor-Remediation, Op Stds §43)
@@ -102,13 +102,14 @@ Projects** folder of the `ITS — Archive` workspace. There may be an `ITS_Error
 `Script=field_ops.fieldops_sync`, `Error=fieldops_archive_on_closure_failed`.
 
 **What it is (design).** When `fieldops_sync` mirrors a job whose `lifecycle=archived` (§51
-archive-on-closure), it MOVES the job's standing tracker sheets — today only the `<Job> — Hours Log`
-— into the Archive workspace's Closed Projects folder. It is a pure **relocation** (never a delete:
-the sheet, rows, and history are preserved) and it is **best-effort** — a move failure WARNs and
-never fails or un-does the mirror itself. Note the move runs AFTER the job's watermarks advance, so a
-failed move does **not** auto-retry (the job is already `mark-synced` → no longer dirty). It is
-idempotent: once the sheet is moved out of the source folder it is no longer found there, so a
-re-seen archived job (re-dirtied by a later edit) is a no-op.
+archive-on-closure), it MOVES the job's standing tracker sheets — the `<Job> — Hours Log` **and** the
+`<Job> — Equipment` (P7 Slice 2) — into the Archive workspace's Closed Projects folder. Each tracker
+is resolved + moved INDEPENDENTLY (one failing never blocks the other). It is a pure **relocation**
+(never a delete: the sheet, rows, and history are preserved) and it is **best-effort** — a move
+failure WARNs and never fails or un-does the mirror itself. Note the move runs AFTER the job's
+watermarks advance, so a failed move does **not** auto-retry (the job is already `mark-synced` → no
+longer dirty). It is idempotent: once a sheet is moved out of the source folder it is no longer found
+there, so a re-seen archived job (re-dirtied by a later edit) is a no-op.
 
 **Check (read-only).** (1) Is the job actually `archived` in `ITS_Active_Jobs`? A still-active job is
 correctly NOT archived. (2) `ITS_Errors` `Error=fieldops_archive_on_closure_failed` — the WARN names
@@ -130,13 +131,71 @@ the archive hook, the workspace/folder IDs, or the Archive-workspace **permissio
 **code / secrets change → high-class → escalate**. Repeated failures after the cause looks fixed, or a
 novel symptom, escalate.
 
+## Equipment Status & Location tracker (P7 Slice 2)
+
+A SECOND pass inside the SAME `fieldops_sync` daemon mirrors the CURRENT on-active-job equipment
+into a per-job **`<Job> — Equipment`** Smartsheet (progress workspace, beside the Hours Log). One-
+way-up, send-free + AI-free. Unlike the Hours Log (an append-only event log), this is a **SNAPSHOT**:
+one row per equipment currently on the job, showing its latest location + readiness (status), updated
+**in place** each cycle; an item that leaves the job is flipped `On Job → Off Job` (retired in place),
+**never deleted**. There is NO watermark and NO mark-mirrored — the whole live state is re-projected
+every cycle. Gated by `field_ops.fieldops_sync.equipment_enabled` (ITS_Config, Workstream
+`field_ops`) — SHIPPED OFF; the operator flips it on at cutover (after the Worker equipment-snapshot
+route is deployed). "Equipment on a job" = the equipment's LATEST `equipment_location` job, where that
+job is **active**.
+
+### Fault G — enabled the equipment pass but no Equipment rows appear
+
+**Symptom.** `equipment_enabled=true` but a job's `<Job> — Equipment` sheet stays empty (or an item's
+new location/status never shows up) after a few minutes.
+
+**Check (read-only).** (1) `ITS_Config` — `field_ops.fieldops_sync.equipment_enabled=true` AND
+`field_ops.fieldops_sync.sync_enabled=true` (the equipment pass runs INSIDE the same daemon; if the
+master `sync_enabled` is off, nothing runs). (2) `ITS_Config system.state` — `PAUSED`/`MAINTENANCE`
+halt the whole daemon. (3) `ITS_Daemon_Health` row `field_ops.fieldops_sync` — is `Last Cycle At`
+recent? Stale = the daemon isn't cycling (host issue → escalate). (4) `ITS_Errors`
+`Script=field_ops.fieldops_sync` — any `fieldops_equipment_*` rows (see Fault H). (5) Is the
+equipment actually ON an ACTIVE job in the portal? Equipment whose latest location is unassigned or on
+a closed/on-hold job is correctly NOT in the snapshot.
+
+**Repair (Tier-2, low-class).** Flip `equipment_enabled` (and/or `sync_enabled`) to `true` and wait
+one cycle (~5 min); un-PAUSE `system.state` if needed. If the daemon is cycling, both gates are on,
+and equipment is on an active job but still doesn't mirror, hand Claude: *"the fieldops_sync equipment
+pass is enabled and the daemon is alive but `<unit>` on `<job>` isn't reaching its Equipment sheet —
+diagnose."*
+
+### Fault H — an equipment mirror PERMANENTLY failed (Review Queue)
+
+**Symptom.** `ITS_Errors` `Error=fieldops_equipment_permanent`, AND an **ITS_Review_Queue** row
+(Workstream `progress_reports`) `field-ops Equipment snapshot up-sync: PERMANENT failure …`. The
+payload names the `phase` (`ensure-sheet` / `upsert` / `retire`), the `job_id`/`project_name`, the
+`equipment_id`, and the error class.
+
+**Repair (Tier-2, low-class).** The pass is a snapshot — it **re-projects the whole live state every
+cycle**, so once the cause is resolved the next cycle self-heals (no watermark to unstick). If it
+needs a nudge, hand Claude the correlation id: *"Equipment snapshot mirror keeps permanently failing
+for `<job>` equipment `<id>` (`<phase>`) — diagnose."* No code/secret/send for a Tier-2 fix.
+
+### Fault I — equipment-snapshot UNAUTHORIZED (401)
+
+**Symptom.** `ITS_Errors` CRITICAL `Error=fieldops_equipment_snapshot_auth_failed` — the field-ops
+bearer was rejected on the equipment-snapshot fetch. **This is a secrets/auth fault → ESCALATE to
+Seth** (same token as the job/hours passes, so a 401 here usually means the whole daemon is 401ing —
+see `fieldops_sync.md` Symptom B/E). Do not attempt a Tier-2 fix.
+
+### Fault (archive) — a closed job's Equipment sheet didn't move
+
+Same as **Fault F** above (archive-on-closure now moves BOTH the Hours Log AND the Equipment sheet).
+The guaranteed Tier-2 fix is a one-off manual drag of `<Job> — Equipment` into `ITS — Archive / Closed
+Projects`; the `move_sheet_to_folder` method / workspace IDs / permissions are high-class → escalate.
+
 ## Escalate-to-Seth boundary (observable terms)
 
-Escalate — do **not** attempt — when: the failure names **secrets/auth/Keychain** (Fault C), the
-**External Send Gate**, **doctrine**, or needs a **code change**; the `field_ops.fieldops_sync`
+Escalate — do **not** attempt — when: the failure names **secrets/auth/Keychain** (Fault C / Fault I),
+the **External Send Gate**, **doctrine**, or needs a **code change**; the `field_ops.fieldops_sync`
 daemon row is **frozen** (hung/host issue); a permanent failure **persists** after the cause looks
-fixed; or the symptom is **novel**. Tier-2 here is exactly: flip `hours_enabled` / `sync_enabled`,
-un-PAUSE `system.state`, or ask Claude to re-run an idempotent re-mirror.
+fixed; or the symptom is **novel**. Tier-2 here is exactly: flip `hours_enabled` / `equipment_enabled`
+/ `sync_enabled`, un-PAUSE `system.state`, or ask Claude to re-run an idempotent re-mirror.
 
 ## Owner
 

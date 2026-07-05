@@ -71,6 +71,7 @@ FIELDOPS_PENDING_JOBS_PATH = "/api/internal/fieldops/pending-jobs"
 FIELDOPS_JOBS_MARK_MIRRORED_PATH = "/api/internal/fieldops/jobs-mark-mirrored"
 FIELDOPS_HOURS_PENDING_PATH = "/api/internal/fieldops/hours-pending"
 FIELDOPS_HOURS_MARK_MIRRORED_PATH = "/api/internal/fieldops/hours-mark-mirrored"
+FIELDOPS_EQUIPMENT_SNAPSHOT_PATH = "/api/internal/fieldops/equipment-snapshot"
 PROGRESS_ROLLUP_PATH = "/api/internal/progress-rollup"
 PRUNE_STATUS_PATH = "/api/internal/prune-status"
 
@@ -360,6 +361,33 @@ def mark_fieldops_hours_mirrored(
         "POST", base_url, FIELDOPS_HOURS_MARK_MIRRORED_PATH, token,
         json_body={"uuids": uuids},
     )
+
+
+def get_fieldops_equipment_snapshot(base_url: str, token: str) -> list[dict[str, Any]]:
+    """Pull the CURRENT on-active-job equipment snapshot: GET
+    /api/internal/fieldops/equipment-snapshot (P7 Slice 2, Equipment Status & Location).
+
+    Returns the `equipment` list verbatim — each a dict with `equipment_id, job_id,
+    project_name, name, kind, identifier, status, status_note, status_changed_at,
+    location_label, lat, lon, read_at, recorded_at`. This is a SNAPSHOT (the live
+    on-active-job state re-projected every cycle), NOT an event drain: there is no
+    watermark and no mark-mirrored companion. The Worker returns the complete set
+    (uncapped — the daemon needs the full snapshot to compute retire-off-job).
+
+    A control-plane read of OUR OWN Worker (bearer = the SEPARATE field-ops token
+    `PORTAL_FIELDOPS_API_TOKEN`, same as `get_fieldops_pending_hours`), NOT a customer send.
+    Same typed-error contract: `PortalAuthError` (401) / `PortalRateLimitError` (429/503
+    exhausted) / `PortalTransportError` (any other, incl. a non-object / missing-array body).
+    """
+    data = _request("GET", base_url, FIELDOPS_EQUIPMENT_SNAPSHOT_PATH, token)
+    equipment = data.get("equipment")
+    if not isinstance(equipment, list):
+        raise PortalTransportError(
+            f"GET {FIELDOPS_EQUIPMENT_SNAPSHOT_PATH} missing/invalid 'equipment' array "
+            f"(got {type(equipment).__name__})"
+        )
+    # Defensive: keep only dict rows; a non-dict element is malformed transport.
+    return [row for row in equipment if isinstance(row, dict)]
 
 
 # ---- Request-driven PDF cache (PR-4 Part A — the Mac PDF-servicing pass I/O) ----

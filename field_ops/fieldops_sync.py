@@ -71,7 +71,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from progress_reports import hours_log
+from progress_reports import equipment_status, hours_log
 from shared import (
     active_jobs_writer,
     circuit_breaker,
@@ -109,6 +109,13 @@ SYNC_INTERVAL_SECONDS = 300  # registration metadata; mirrors the plist StartInt
 # operator applies migration 0038 + deploys the Worker hours routes, then flips this on.
 CFG_HOURS_ENABLED = "field_ops.fieldops_sync.hours_enabled"
 DEFAULT_HOURS_ENABLED = False
+
+# P7 Slice 2 — the per-job Equipment Status & Location snapshot pass runs INSIDE this same daemon
+# (one host, one lock, one heartbeat). Its OWN gate ships OFF so the pass is dark until the operator
+# deploys the Worker equipment-snapshot route, then flips this on. Unlike the hours pass this is a
+# SNAPSHOT (re-projected each cycle) — no watermark, no mark-mirrored.
+CFG_EQUIPMENT_ENABLED = "field_ops.fieldops_sync.equipment_enabled"
+DEFAULT_EQUIPMENT_ENABLED = False
 _PACIFIC = ZoneInfo("America/Los_Angeles")  # tracker cells are the operator's wall-clock
 
 # State paths. HEARTBEAT_ROW_STATE_PATH is SHARED with the other daemons — same JSON file,
@@ -156,6 +163,11 @@ class SyncStats:
     hours_mirrored: int = 0   # time entries whose Hours Log row committed this cycle
     hours_reviewed: int = 0   # entries/jobs routed to the Review Queue (permanent failure)
     hours_errors: int = 0     # transient hours failures (left unmirrored) + skipped malformed
+    # P7 equipment pass (0 when equipment_enabled is off — the shipped default).
+    equipment_upserted: int = 0   # equipment rows inserted/updated in place this cycle
+    equipment_retired: int = 0    # equipment rows flipped On Job → Off Job this cycle
+    equipment_reviewed: int = 0   # equipment/jobs routed to the Review Queue (permanent failure)
+    equipment_errors: int = 0     # transient equipment failures (left for next cycle) + skipped
 
 
 # ---- Config readers (replicated per preservation, mirror portal_poll) ----------
@@ -186,6 +198,10 @@ def _sync_enabled() -> bool:
 
 def _hours_enabled() -> bool:
     return _read_bool_setting(CFG_HOURS_ENABLED, DEFAULT_HOURS_ENABLED)
+
+
+def _equipment_enabled() -> bool:
+    return _read_bool_setting(CFG_EQUIPMENT_ENABLED, DEFAULT_EQUIPMENT_ENABLED)
 
 
 # ---- Lock + heartbeat seams (mirror portal_poll) -------------------------------
@@ -363,9 +379,16 @@ def _sync_inside_lock() -> SyncStats:
     if _hours_enabled():
         hours = _mirror_hours_pass(base_url, bearer)
 
+    # P7 equipment pass — same daemon, same creds. Gated OFF by default; its own per-item/per-job
+    # fences + a top outer-catch mean an equipment failure NEVER aborts the job/hours mirror above
+    # nor the heartbeat below. SNAPSHOT: no mark-mirrored.
+    equip = {"upserted": 0, "retired": 0, "reviewed": 0, "errors": 0}
+    if _equipment_enabled():
+        equip = _mirror_equipment_pass(base_url, bearer)
+
     _write_heartbeat()
-    total_errors = counters["errors"] + hours["errors"]
-    total_reviewed = counters["reviewed"] + hours["reviewed"]
+    total_errors = counters["errors"] + hours["errors"] + equip["errors"]
+    total_reviewed = counters["reviewed"] + hours["reviewed"] + equip["reviewed"]
     if total_errors > 0:
         cycle_status: HeartbeatStatus = "DEGRADED"
     elif total_reviewed > 0:
@@ -378,7 +401,7 @@ def _sync_inside_lock() -> SyncStats:
     try:
         _write_heartbeat_row(
             status=cycle_status,
-            items_processed=counters["mirrored"] + hours["mirrored"],
+            items_processed=counters["mirrored"] + hours["mirrored"] + equip["upserted"],
             error_summary=(
                 None
                 if total_errors == 0 and total_reviewed == 0
@@ -399,7 +422,8 @@ def _sync_inside_lock() -> SyncStats:
             f"sync cycle: scanned={len(jobs)} mirrored={counters['mirrored']} "
             f"reviewed={counters['reviewed']} errors={counters['errors']}; "
             f"hours mirrored={hours['mirrored']} reviewed={hours['reviewed']} "
-            f"errors={hours['errors']}"
+            f"errors={hours['errors']}; equipment upserted={equip['upserted']} "
+            f"retired={equip['retired']} reviewed={equip['reviewed']} errors={equip['errors']}"
         ),
         error_code="sync_cycle_summary",
     )
@@ -411,6 +435,10 @@ def _sync_inside_lock() -> SyncStats:
         hours_mirrored=hours["mirrored"],
         hours_reviewed=hours["reviewed"],
         hours_errors=hours["errors"],
+        equipment_upserted=equip["upserted"],
+        equipment_retired=equip["retired"],
+        equipment_reviewed=equip["reviewed"],
+        equipment_errors=equip["errors"],
     )
 
 
@@ -557,50 +585,66 @@ def _archive_closed_job_trackers(
     no longer found there → this returns without a second move (the natural idempotency —
     the same daemon may re-see an already-archived job on a later dirty cycle).
 
-    Today the ONLY standing tracker is the per-job `<Job> — Hours Log` (P7 Slice 1).
-    Equipment / Materials trackers are P7 Slices 2 / 3 — NOT built yet; extend this helper
-    (resolve + move each) when they land.
+    Standing trackers moved: the per-job `<Job> — Hours Log` (P7 Slice 1) AND the per-job
+    `<Job> — Equipment` (P7 Slice 2). Each is resolved + moved INDEPENDENTLY under its own
+    fence, so a failure moving one never blocks the other. The P7 Slice 3 Materials tracker
+    is NOT built yet; extend the tracker list when it lands.
 
-    Edge case (by design, not handled here): if an archived job later receives NEW hours,
-    the hours pass would find-or-CREATE a fresh `<Job> — Hours Log` back in the active
-    PROGRESS folder (this helper only moves what exists at closure time). Archived/closed
-    jobs are not expected to receive new hours; note that new hours flow through the SEPARATE
-    pending-hours queue (`_mirror_hours_pass`), NOT the job-dirty list that drives this helper,
-    so a fresh sheet would re-archive only when the JOB itself is next re-dirtied (edited) —
-    not automatically.
+    Edge case (by design, not handled here): if an archived job later receives NEW hours /
+    equipment reads, the hours / equipment pass would find-or-CREATE a fresh tracker back in
+    the active PROGRESS folder (this helper only moves what exists at closure time).
+    Archived/closed jobs are not expected to receive new field data; note that new field data
+    flows through the SEPARATE pending queues (`_mirror_hours_pass` / `_mirror_equipment_pass`),
+    NOT the job-dirty list that drives this helper, so a fresh sheet would re-archive only when
+    the JOB itself is next re-dirtied (edited) — not automatically.
     """
+    # Resolve the per-job folder in the PROGRESS workspace WITHOUT creating it — the SAME
+    # folder the Hours Log / Equipment / week sheets live in (identical name via safety_naming).
+    # If this raises, no tracker can be resolved → fenced, WARN once, return.
     try:
-        # Resolve the per-job folder in the PROGRESS workspace WITHOUT creating it — the
-        # SAME folder the Hours Log / week sheets live in (identical name via safety_naming).
         folder = smartsheet_client.find_folder_by_name_in_workspace(
             sheet_ids.WORKSPACE_PROGRESS_REPORTING, hours_log._folder_name(project_name)
         )
-        if folder is None:
-            # No per-job folder → nothing was ever created for this job → nothing to archive.
-            return
-        # Resolve the Hours Log sheet WITHOUT creating it. None ⇒ already moved (prior cycle)
-        # OR never existed — either way there is nothing to move.
-        sid = smartsheet_client.find_sheet_by_name_in_folder(
-            folder, hours_log.hours_log_sheet_name(project_name)
-        )
-        if sid is None:
-            return
-        smartsheet_client.move_sheet_to_folder(
-            sid, sheet_ids.FOLDER_ARCHIVE_CLOSED_PROJECTS
-        )
-    except Exception as exc:  # noqa: BLE001 — best-effort; a move failure never fails the mirror
-        error_log.log(
-            Severity.WARN, SCRIPT_NAME,
-            f"archive-on-closure move failed for job_id={job_id!r} "
-            f"(project_name={project_name!r}); the job is already mirrored + mark-synced so this "
-            f"never fails the mirror — but the job is now CLEAN, so the move does NOT auto-retry: "
-            f"the Hours Log stays (never lost/deleted) in the active PROGRESS folder until the job "
-            f"is next re-dirtied (edited) or an operator moves it manually "
-            f"(docs/runbooks/hours_log_sync.md Fault F). {type(exc).__name__}: {exc!r}",
-            error_code="fieldops_archive_on_closure_failed",
-            correlation_id=correlation_id,
-        )
+    except Exception as exc:  # noqa: BLE001 — best-effort; never fails the mirror
+        _warn_archive_move_failed(job_id, project_name, correlation_id, exc)
         return
+    if folder is None:
+        # No per-job folder → nothing was ever created for this job → nothing to archive.
+        return
+
+    # Each tracker: resolve find-no-create + move, independently fenced. `None` ⇒ already moved
+    # (prior cycle) OR never existed — either way skip. Add new trackers to this list.
+    trackers = (
+        hours_log.hours_log_sheet_name(project_name),
+        equipment_status.equipment_sheet_name(project_name),
+    )
+    for sheet_name in trackers:
+        try:
+            sid = smartsheet_client.find_sheet_by_name_in_folder(folder, sheet_name)
+            if sid is None:
+                continue
+            smartsheet_client.move_sheet_to_folder(sid, sheet_ids.FOLDER_ARCHIVE_CLOSED_PROJECTS)
+        except Exception as exc:  # noqa: BLE001 — best-effort; a move failure never fails the mirror
+            _warn_archive_move_failed(job_id, project_name, correlation_id, exc, sheet_name)
+
+
+def _warn_archive_move_failed(
+    job_id: str, project_name: str, correlation_id: str, exc: Exception,
+    sheet_name: str | None = None,
+) -> None:
+    """WARN for a best-effort archive-on-closure move failure (never fails the mirror)."""
+    which = f" ({sheet_name!r})" if sheet_name else ""
+    error_log.log(
+        Severity.WARN, SCRIPT_NAME,
+        f"archive-on-closure move failed for job_id={job_id!r}{which} "
+        f"(project_name={project_name!r}); the job is already mirrored + mark-synced so this "
+        f"never fails the mirror — but the job is now CLEAN, so the move does NOT auto-retry: "
+        f"the tracker stays (never lost/deleted) in the active PROGRESS folder until the job "
+        f"is next re-dirtied (edited) or an operator moves it manually "
+        f"(docs/runbooks/hours_log_sync.md Fault F). {type(exc).__name__}: {exc!r}",
+        error_code="fieldops_archive_on_closure_failed",
+        correlation_id=correlation_id,
+    )
 
 
 def _route_to_review(
@@ -871,6 +915,203 @@ def _route_hours_to_review(
         f"hours mirror routed to Review Queue (permanent, {phase}) job={job_id!r} "
         f"entry={entry_uuid!r}: {type(exc).__name__}: {exc!r}",
         error_code="fieldops_hours_permanent",
+        correlation_id=correlation_id,
+    )
+
+
+# ---- P7 Equipment Status & Location snapshot pass (Track 2, Slice 2) -------------
+
+
+def _fmt_coord(value: Any) -> str:
+    """A latitude/longitude REAL → a trimmed string ('' when NULL/unavailable)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return ""
+    return f"{value:g}"
+
+
+def _group_equipment_by_job(
+    rows: list[dict[str, Any]],
+) -> dict[str, tuple[str, list[dict[str, Any]]]]:
+    """Group snapshot equipment rows by job_id → (project_name, [rows]). Skips a row missing its
+    equipment_id / job_id / project_name (a data anomaly that can't be foldered) — never silent."""
+    by_job: dict[str, tuple[str, list[dict[str, Any]]]] = {}
+    for e in rows:
+        equipment_id = str(e.get("equipment_id") or "").strip()
+        job_id = str(e.get("job_id") or "").strip()
+        project = str(e.get("project_name") or "").strip()
+        if not equipment_id or not job_id or not project:
+            error_log.log(
+                Severity.WARN, SCRIPT_NAME,
+                f"equipment snapshot row skipped — missing equipment_id/job_id/project_name "
+                f"(equipment_id={e.get('equipment_id')!r} job_id={e.get('job_id')!r})",
+                error_code="fieldops_equipment_row_malformed",
+            )
+            continue
+        by_job.setdefault(job_id, (project, []))[1].append(e)
+    return by_job
+
+
+def _mirror_equipment_pass(base_url: str, bearer: str) -> dict[str, int]:
+    """Re-project the CURRENT on-active-job equipment snapshot UP into per-job Equipment sheets.
+
+    Returns {upserted, retired, reviewed, errors}. Never raises — the caller runs it after the job
+    + hours mirrors, so an equipment failure must never abort the cycle. Per-job (sheet) + per-item
+    fences; a permanent failure routes to the Review Queue; a transient one is simply left for the
+    next cycle (the snapshot re-projects the whole live state every cycle, so nothing is "lost" —
+    there is NO watermark, NO mark-mirrored). Per job: ensure the sheet → upsert each current
+    equipment (change-only) → retire any sheet row NOT in this cycle's snapshot (Off Job, never
+    delete) → row-cap watchdog.
+
+    No throttle: per-cycle change-only re-projection is simple-correct at current scale (an upsert
+    with no change is a no-op read, and retire skips already-Off-Job rows). A throttle is a FUTURE
+    optimization if the 20×20 read-load bites — do NOT build it now.
+    """
+    out = {"upserted": 0, "retired": 0, "reviewed": 0, "errors": 0}
+    try:
+        snapshot = portal_client.get_fieldops_equipment_snapshot(base_url, bearer)
+    except portal_client.PortalAuthError as exc:
+        # 401 on the SAME bearer that just drained pending-jobs/hours — surface (bad/rotated token)
+        # but do not crash: the earlier passes may have succeeded before a mid-cycle rotation.
+        out["errors"] += 1
+        error_log.log(
+            Severity.CRITICAL, SCRIPT_NAME,
+            f"equipment-snapshot fetch UNAUTHORIZED (401) — field-ops bearer rejected; equipment "
+            f"snapshot skipped this cycle: {exc!r}",
+            error_code="fieldops_equipment_snapshot_auth_failed",
+        )
+        return out
+    except portal_client.PortalTransportError as exc:
+        out["errors"] += 1
+        error_log.log(
+            Severity.ERROR, SCRIPT_NAME,
+            f"equipment-snapshot fetch failed (snapshot re-projects next cycle): {exc!r}",
+            error_code="fieldops_equipment_snapshot_fetch_failed",
+        )
+        return out
+
+    now_iso = datetime.now(_PACIFIC).isoformat()
+    for job_id, (project_name, rows) in _group_equipment_by_job(snapshot).items():
+        correlation_id = uuid.uuid4().hex[:12]
+        try:
+            sheet_id = equipment_status.ensure_equipment_sheet(project_name)
+        except (
+            picklist_validation.PicklistViolationError,
+            smartsheet_client.SmartsheetValidationError,
+        ) as exc:
+            out["reviewed"] += 1
+            _route_equipment_to_review(job_id, project_name, exc, correlation_id, phase="ensure-sheet")
+            continue
+        except Exception as exc:  # noqa: BLE001 — per-job fence; one bad job never kills the pass
+            out["errors"] += 1
+            error_log.log(
+                Severity.ERROR, SCRIPT_NAME,
+                f"transient failure ensuring Equipment sheet for {project_name!r} "
+                f"(job {job_id}); snapshot re-projects next cycle: {type(exc).__name__}: {exc!r}",
+                error_code="fieldops_equipment_sheet_transient",
+                correlation_id=correlation_id,
+            )
+            continue
+
+        # The authoritative on-job set for retire = EVERY equipment in this cycle's snapshot for
+        # the job, regardless of per-item upsert success (a transient upsert failure does NOT mean
+        # the item left the job — retiring it would be wrong; it re-upserts next cycle).
+        snapshot_ids = {str(e.get("equipment_id") or "").strip() for e in rows}
+        for e in rows:
+            equipment_id = str(e.get("equipment_id") or "").strip()
+            try:
+                equipment_status.upsert_equipment_row(
+                    sheet_id,
+                    equipment_id=equipment_id,
+                    name=str(e.get("name") or "").strip(),
+                    kind=str(e.get("kind") or "").strip(),
+                    unit_no=str(e.get("identifier") or "").strip(),
+                    status=str(e.get("status") or "").strip(),
+                    status_note=str(e.get("status_note") or "").strip(),
+                    status_changed=_fmt_epoch_date(e.get("status_changed_at")),
+                    location=str(e.get("location_label") or "").strip(),
+                    lat=_fmt_coord(e.get("lat")),
+                    lon=_fmt_coord(e.get("lon")),
+                    location_read_at=_fmt_epoch_dt(e.get("read_at")),
+                    updated_at=now_iso,
+                )
+                out["upserted"] += 1
+            except (
+                picklist_validation.PicklistViolationError,
+                smartsheet_client.SmartsheetValidationError,
+            ) as exc:
+                out["reviewed"] += 1
+                _route_equipment_to_review(
+                    job_id, project_name, exc, correlation_id,
+                    phase="upsert", equipment_id=equipment_id,
+                )
+            except Exception as exc:  # noqa: BLE001 — per-item fence
+                out["errors"] += 1
+                error_log.log(
+                    Severity.ERROR, SCRIPT_NAME,
+                    f"transient failure upserting equipment {equipment_id!r} for {project_name!r} "
+                    f"(snapshot re-projects next cycle): {type(exc).__name__}: {exc!r}",
+                    error_code="fieldops_equipment_upsert_transient",
+                    correlation_id=correlation_id,
+                )
+
+        # Retire any row NOT in this cycle's snapshot (Off Job, never delete). Fenced separately —
+        # a retire failure never blocks the row-cap watchdog and re-projects next cycle.
+        try:
+            out["retired"] += equipment_status.retire_off_job(sheet_id, snapshot_ids)
+        except (
+            picklist_validation.PicklistViolationError,
+            smartsheet_client.SmartsheetValidationError,
+        ) as exc:
+            out["reviewed"] += 1
+            _route_equipment_to_review(job_id, project_name, exc, correlation_id, phase="retire")
+        except Exception as exc:  # noqa: BLE001 — per-job fence
+            out["errors"] += 1
+            error_log.log(
+                Severity.ERROR, SCRIPT_NAME,
+                f"transient failure retiring off-job equipment for {project_name!r} "
+                f"(job {job_id}); re-projects next cycle: {type(exc).__name__}: {exc!r}",
+                error_code="fieldops_equipment_retire_transient",
+                correlation_id=correlation_id,
+            )
+
+        # §51 A5 row-cap watchdog — advisory, owns its own try/except (never raises here).
+        equipment_status.check_row_cap(
+            sheet_id, equipment_status.equipment_sheet_name(project_name)
+        )
+    return out
+
+
+def _route_equipment_to_review(
+    job_id: str, project_name: str, exc: Exception, correlation_id: str,
+    *, phase: str, equipment_id: str | None = None,
+) -> None:
+    """Route a PERMANENTLY-failed equipment mirror to ITS_Review_Queue (workstream
+    progress_reports)."""
+    review_queue.add(
+        workstream="progress_reports",
+        summary=(
+            f"field-ops Equipment snapshot up-sync: PERMANENT failure ({phase}) for job {job_id!r} "
+            f"({project_name!r}, {type(exc).__name__})"
+            + (f" equipment {equipment_id!r}" if equipment_id else "")
+            + " — re-projects next cycle, needs operator fix"
+        ),
+        payload={
+            "job_id": job_id,
+            "project_name": project_name,
+            "phase": phase,
+            "equipment_id": equipment_id,
+            "error": f"{type(exc).__name__}: {exc!r}",
+        },
+        sla_tier=review_queue.SlaTier.SAFETY_INTAKE,
+        reason=review_queue.ReviewReason.POLICY_EDGE,
+        severity=Severity.WARN,
+        source_file=equipment_id or job_id,
+    )
+    error_log.log(
+        Severity.WARN, SCRIPT_NAME,
+        f"equipment mirror routed to Review Queue (permanent, {phase}) job={job_id!r} "
+        f"equipment={equipment_id!r}: {type(exc).__name__}: {exc!r}",
+        error_code="fieldops_equipment_permanent",
         correlation_id=correlation_id,
     )
 
