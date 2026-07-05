@@ -14,6 +14,7 @@ indicate which mode it operates in.
 <!-- BEGIN AUTO-INDEX -->
 | Date | Type | Status | Workstream | Title | PRs |
 |------|------|--------|------------|-------|-----|
+| 2026-07-04 | audit | active | field_ops | [Smartsheet System-of-Record Wiring Audit (2026-07-04)](2026-07-04_smartsheet-wiring-audit.md) | _–_ |
 | 2026-06-28 | audit | active | infrastructure | [Forensic Lessons-Learned → Standards Hardening (2026-06-28)](2026-06-28_forensic-lessons-learned.md) | _–_ |
 | 2026-06-08 | audit | active | safety-portal | [Doc-reconciliation audit (2026-06-08) — PROPOSE-ONLY](2026-06-08_doc-reconciliation.md) | #185, #191 |
 | 2026-06-02 | audit | active | _–_ | [Picklist Drift Reconcile — Phase 1 Classification (2026-06-02)](picklist_drift_2026-06-02_classification.md) | _–_ |

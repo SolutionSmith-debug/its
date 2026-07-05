@@ -4,6 +4,16 @@ Items deliberately deferred. Each carries the rationale for deferral and the tri
 
 When to add an entry: a session deliberately chooses preservation-over-refactor (per Op Stds v11 §14), discovers an external-API constraint that forced a workaround, or defers a non-trivial cleanup that's larger than the current session can absorb. When to mark CLOSED: the underlying item is resolved in a commit; preserve the entry with resolution detail rather than deleting (history is cheap, context is expensive).
 
+## Smartsheet-wiring audit findings — daemon-health + capacity hygiene [OPEN 2026-07-04]
+
+From `docs/audits/2026-07-04_smartsheet-wiring-audit.md` (Task B — the SoR is wired correctly; these are hygiene/observability items, **no correctness breaks**):
+- **M-1 (MEDIUM):** `smartsheet.sheet_count_ceiling` + `_margin` ABSENT from `ITS_Config` → the capacity guard (`sheet_capacity.check_create_headroom`, live-called by `week_sheet`/`hours_log`) runs on the hardcoded default 1500/50 **silently** (forensic class #7). **Fix:** operator sets the real plan-tier cap under `Workstream=global` (ROADMAP Track 3).
+- **M-2 (MEDIUM):** `ITS_Daemon_Health` carries **5 stale/legacy placeholder rows** — `safety_reports.intake_poll` (a DELETED daemon, month-stale, `Enabled=True`), `weekly_generate`/`weekly_send` (NEVER_RAN, Notes cite decommissioned sheets), `watchdog`/`shared.picklist_sync` (NEVER_RAN "retrofit" placeholders). Only **6** daemons self-provision (portal_poll, weekly_send_poll, compile_now_poll, progress_send_poll, publish_daemon, fieldops_sync). **Fix:** delete the intake_poll/weekly_generate/weekly_send rows (name-guarded `delete_rows`); decide whether watchdog/picklist_sync should self-report (retrofit) or are intentionally externally-monitored (S-2).
+- **M-3 (LOW):** `fieldops_sync` heartbeat interval mismatch — `SYNC_INTERVAL_SECONDS=300` (registered in the health row) vs launchd `StartInterval=90` (`install.sh:79`). **Fix:** set `SYNC_INTERVAL_SECONDS=90` to match.
+- **S-1 (systemic):** ~40 `ITS_Config` reads silently fall back to a hardcoded default (no WARN+source) — the tracked `REQUIRED_CONFIG` startup-logging pass (#336). The cross-workstream footguns (`progress_reports.intake_enabled` read under `safety_reports`; `worker_base_url` under BOTH workstreams) are currently seeded correctly but silent on the missing-row path.
+
+**Tag:** `smartsheet`, `daemon-health`, `config`, `capacity`, `audit`, `field_ops`.
+
 ## Job routing form — "Same as stakeholder" copy button on the Safety block [OPEN 2026-07-01]
 
 **Operator-parked 2026-07-01 (was mid-build, deferred).** The job-creation routing form (`safety_portal/src/pages/FieldOpsJobTracker.tsx`, `RoutingFields`) has a "Same as safety" copy button on the **Progress** contact block (copies Safety → Progress, ~line 179). Add a parallel **"Same as stakeholder"** button on the **Safety** contact block (~:158-161) that copies the Stakeholder name/email into the Safety contact, and KEEP "Same as safety" on Progress — giving the chain Stakeholder → Safety → Progress for the common single-contact case. Small SPA change: mirror the existing copy handler + an SPA test. **Tag:** `field_ops`, `job-tracker`, `spa`, `ux`.
