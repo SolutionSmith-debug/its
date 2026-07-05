@@ -89,6 +89,12 @@ that. Loaded via `@import` from `CLAUDE.md`'s START-HERE block.
 - **`ITS_Config` reads are workstream-scoped** — `get_setting(key, workstream=…)` matches on the Setting name
   AND the Workstream cell. Footgun: the progress intake gate `progress_reports.intake_enabled` is read under
   `Workstream=safety_reports` (intake's own workstream), not `progress_reports`.
+- **A dark-shipped gate has NO row to flip — SEED the row (even `=false`) when the code merges.** A boolean
+  `ITS_Config` gate read via `_read_bool_setting(default=False)` treats a MISSING row identically to `false`,
+  so a capability that "ships dark" has *no row at all* — the operator hunts for a switch that doesn't exist.
+  Seed the gate row (value `false`) in the same change that adds the gated code, so activation is a visible
+  cell-flip, not a phantom. (Bit the 2026-07-05 equipment/materials activation: `equipment_enabled`/
+  `materials_enabled` had no row → the operator couldn't find one to flip → the rows had to be CREATED.)
 - **Never `Path.write_text/write_bytes` under `~/its/state/`** — route every state write through
   `shared/state_io.py` (`atomic_write_json/text`, `with_path_lock` on a sidecar `.lock`). Enforced at CI
   (`test_state_write_discipline.py`).
