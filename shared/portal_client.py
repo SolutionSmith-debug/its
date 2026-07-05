@@ -44,7 +44,7 @@ Failure modes
 from __future__ import annotations
 
 import time
-from typing import Any
+from typing import Any, NamedTuple
 
 import requests  # type: ignore[import-untyped]
 
@@ -363,16 +363,33 @@ def mark_fieldops_hours_mirrored(
     )
 
 
-def get_fieldops_equipment_snapshot(base_url: str, token: str) -> list[dict[str, Any]]:
-    """Pull the CURRENT on-active-job equipment snapshot: GET
+class FieldopsEquipmentSnapshot(NamedTuple):
+    """The two arrays the equipment-snapshot route returns.
+
+    `equipment` — the CURRENT on-active-job equipment (one row per equipment whose latest
+    location sits on an active job). `jobs_with_equipment` — the RECONCILE ROSTER: every active
+    job that has ANY equipment_location history (regardless of current count). The daemon iterates
+    the roster so a job whose current equipment dropped to ZERO is still revisited and its stale
+    `On Job=Active` rows retired (the count-drops-to-zero silent gap).
+    """
+
+    equipment: list[dict[str, Any]]
+    jobs_with_equipment: list[dict[str, Any]]
+
+
+def get_fieldops_equipment_snapshot(base_url: str, token: str) -> FieldopsEquipmentSnapshot:
+    """Pull the CURRENT on-active-job equipment snapshot + reconcile roster: GET
     /api/internal/fieldops/equipment-snapshot (P7 Slice 2, Equipment Status & Location).
 
-    Returns the `equipment` list verbatim — each a dict with `equipment_id, job_id,
-    project_name, name, kind, identifier, status, status_note, status_changed_at,
-    location_label, lat, lon, read_at, recorded_at`. This is a SNAPSHOT (the live
-    on-active-job state re-projected every cycle), NOT an event drain: there is no
-    watermark and no mark-mirrored companion. The Worker returns the complete set
-    (uncapped — the daemon needs the full snapshot to compute retire-off-job).
+    Returns a `FieldopsEquipmentSnapshot(equipment, jobs_with_equipment)`:
+      - `equipment` — dicts with `equipment_id, job_id, project_name, name, kind, identifier,
+        status, status_note, status_changed_at, location_label, lat, lon, read_at, recorded_at`.
+        A SNAPSHOT (the live on-active-job state re-projected every cycle), NOT an event drain:
+        no watermark, no mark-mirrored companion. The Worker returns the complete set (uncapped —
+        the daemon needs the full snapshot to compute retire-off-job).
+      - `jobs_with_equipment` — dicts `{job_id, project_name}` for every active job with ANY
+        equipment_location history. The reconcile set the daemon iterates so a job whose current
+        equipment dropped to zero still retires its stale sheet rows.
 
     A control-plane read of OUR OWN Worker (bearer = the SEPARATE field-ops token
     `PORTAL_FIELDOPS_API_TOKEN`, same as `get_fieldops_pending_hours`), NOT a customer send.
@@ -386,8 +403,17 @@ def get_fieldops_equipment_snapshot(base_url: str, token: str) -> list[dict[str,
             f"GET {FIELDOPS_EQUIPMENT_SNAPSHOT_PATH} missing/invalid 'equipment' array "
             f"(got {type(equipment).__name__})"
         )
+    roster = data.get("jobs_with_equipment")
+    if not isinstance(roster, list):
+        raise PortalTransportError(
+            f"GET {FIELDOPS_EQUIPMENT_SNAPSHOT_PATH} missing/invalid 'jobs_with_equipment' array "
+            f"(got {type(roster).__name__})"
+        )
     # Defensive: keep only dict rows; a non-dict element is malformed transport.
-    return [row for row in equipment if isinstance(row, dict)]
+    return FieldopsEquipmentSnapshot(
+        equipment=[row for row in equipment if isinstance(row, dict)],
+        jobs_with_equipment=[row for row in roster if isinstance(row, dict)],
+    )
 
 
 # ---- Request-driven PDF cache (PR-4 Part A — the Mac PDF-servicing pass I/O) ----

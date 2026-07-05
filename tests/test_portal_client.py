@@ -672,35 +672,66 @@ def test_post_item_photo_result_401_raises_auth_error(mocker):
 # ---- get_fieldops_equipment_snapshot (P7 Slice 2) ------------------------
 
 
-def test_get_fieldops_equipment_snapshot_returns_rows_and_sends_bearer(mocker):
+def test_get_fieldops_equipment_snapshot_returns_both_arrays_and_sends_bearer(mocker):
     rows = [{"equipment_id": 10, "job_id": "J1", "name": "Unit Alpha"}]
-    req = _patch_requests(mocker, _mock_response(json_body={"equipment": rows}))
+    roster = [{"job_id": "J1", "project_name": "Job One"}]
+    req = _patch_requests(
+        mocker, _mock_response(json_body={"equipment": rows, "jobs_with_equipment": roster})
+    )
     out = portal_client.get_fieldops_equipment_snapshot(BASE, TOKEN)
-    assert out == rows
+    assert out.equipment == rows
+    assert out.jobs_with_equipment == roster
     args, kwargs = req.call_args
     assert args == ("GET", "https://portal.example.com/api/internal/fieldops/equipment-snapshot")
     assert kwargs["headers"]["Authorization"] == f"Bearer {TOKEN}"
 
 
-def test_get_fieldops_equipment_snapshot_empty_returns_empty_list(mocker):
-    _patch_requests(mocker, _mock_response(json_body={"equipment": []}))
-    assert portal_client.get_fieldops_equipment_snapshot(BASE, TOKEN) == []
+def test_get_fieldops_equipment_snapshot_empty_returns_empty_lists(mocker):
+    _patch_requests(mocker, _mock_response(json_body={"equipment": [], "jobs_with_equipment": []}))
+    out = portal_client.get_fieldops_equipment_snapshot(BASE, TOKEN)
+    assert out.equipment == [] and out.jobs_with_equipment == []
 
 
-def test_get_fieldops_equipment_snapshot_drops_non_dict_rows(mocker):
+def test_get_fieldops_equipment_snapshot_drops_non_dict_rows_in_both(mocker):
     _patch_requests(
         mocker,
-        _mock_response(json_body={"equipment": [{"equipment_id": 10}, "x", 7]}),
+        _mock_response(
+            json_body={
+                "equipment": [{"equipment_id": 10}, "x", 7],
+                "jobs_with_equipment": [{"job_id": "J1"}, 9, None],
+            }
+        ),
     )
-    assert portal_client.get_fieldops_equipment_snapshot(BASE, TOKEN) == [{"equipment_id": 10}]
+    out = portal_client.get_fieldops_equipment_snapshot(BASE, TOKEN)
+    assert out.equipment == [{"equipment_id": 10}]
+    assert out.jobs_with_equipment == [{"job_id": "J1"}]
 
 
 @pytest.mark.parametrize(
-    "body", [{"equipment": {"x": 1}}, {"equipment": "nope"}, {"equipment": 5}, {}]
+    "body",
+    [
+        {"equipment": {"x": 1}, "jobs_with_equipment": []},
+        {"equipment": "nope", "jobs_with_equipment": []},
+        {"jobs_with_equipment": []},  # equipment key missing entirely
+    ],
 )
-def test_get_fieldops_equipment_snapshot_non_list_raises(mocker, body):
+def test_get_fieldops_equipment_snapshot_bad_equipment_raises(mocker, body):
     _patch_requests(mocker, _mock_response(json_body=body))
     with pytest.raises(PortalTransportError, match="equipment"):
+        portal_client.get_fieldops_equipment_snapshot(BASE, TOKEN)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"equipment": [], "jobs_with_equipment": {"x": 1}},
+        {"equipment": [], "jobs_with_equipment": "nope"},
+        {"equipment": []},  # roster key missing entirely
+    ],
+)
+def test_get_fieldops_equipment_snapshot_bad_roster_raises(mocker, body):
+    _patch_requests(mocker, _mock_response(json_body=body))
+    with pytest.raises(PortalTransportError, match="jobs_with_equipment"):
         portal_client.get_fieldops_equipment_snapshot(BASE, TOKEN)
 
 

@@ -144,6 +144,13 @@ every cycle. Gated by `field_ops.fieldops_sync.equipment_enabled` (ITS_Config, W
 route is deployed). "Equipment on a job" = the equipment's LATEST `equipment_location` job, where that
 job is **active**.
 
+The pass reconciles against a **roster** (`jobs_with_equipment` — every active job that has ANY
+equipment-location history), NOT just the jobs that have current equipment this cycle. That is what
+lets a job whose CURRENT complement dropped to **zero** (all its equipment moved elsewhere or was
+retired) still get its stale `On Job=Active` rows flipped to `Off Job` — the daemon FINDS that job's
+sheet (never creating one) and retires every remaining row. A job that never had an Equipment sheet is
+simply skipped (no empty sheet is ever created).
+
 ### Fault G — enabled the equipment pass but no Equipment rows appear
 
 **Symptom.** `equipment_enabled=true` but a job's `<Job> — Equipment` sheet stays empty (or an item's

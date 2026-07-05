@@ -1908,28 +1908,48 @@ app.post("/api/internal/fieldops/hours-mark-mirrored", requireFieldopsToken, asy
  * correctly (a truncated page would wrongly retire equipment beyond the cap); the equipment fleet
  * is naturally bounded (a 10–50-person firm's finite inventory), so an uncapped internal read of
  * our own reference table is fine.
+ *
+ * ALSO returns `jobs_with_equipment` — the RECONCILE ROSTER: every ACTIVE job that has ANY
+ * `equipment_location` row ever (regardless of current on-job count). This is load-bearing: a job
+ * whose CURRENT equipment complement has dropped to ZERO produces NO `equipment` rows, so without
+ * the roster the daemon would never revisit that job's Equipment sheet and its stale
+ * `On Job=Active` rows would persist forever. The daemon iterates the roster as its reconcile set;
+ * a job in the roster but absent from `equipment` gets ALL its sheet rows retired (Off Job).
  */
 app.get("/api/internal/fieldops/equipment-snapshot", requireFieldopsToken, async (c) => {
-  const rows = await c.env.DB
-    .prepare(
-      `SELECT el.equipment_id, el.job_id, j.project_name,
-              e.name, e.kind, e.identifier,
-              e.status, e.status_note, e.status_changed_at,
-              el.label AS location_label, el.lat, el.lon, el.read_at, el.recorded_at
-         FROM (
-           SELECT id, equipment_id, job_id, label, lat, lon, read_at, recorded_at,
-                  ROW_NUMBER() OVER (PARTITION BY equipment_id
-                                     ORDER BY recorded_at DESC, id DESC) AS rn
-             FROM equipment_location
-         ) el
-         JOIN equipment e ON e.id = el.equipment_id AND e.active = 1
-         JOIN jobs j ON j.job_id = el.job_id AND j.status = ?1
-        WHERE el.rn = 1
-        ORDER BY j.project_name ASC, e.name ASC, el.equipment_id ASC`,
-    )
-    .bind("active")
-    .all<Record<string, unknown>>();
-  return c.json({ equipment: rows.results ?? [] });
+  const [snapRes, rosterRes] = await c.env.DB.batch<Record<string, unknown>>([
+    c.env.DB
+      .prepare(
+        `SELECT el.equipment_id, el.job_id, j.project_name,
+                e.name, e.kind, e.identifier,
+                e.status, e.status_note, e.status_changed_at,
+                el.label AS location_label, el.lat, el.lon, el.read_at, el.recorded_at
+           FROM (
+             SELECT id, equipment_id, job_id, label, lat, lon, read_at, recorded_at,
+                    ROW_NUMBER() OVER (PARTITION BY equipment_id
+                                       ORDER BY recorded_at DESC, id DESC) AS rn
+               FROM equipment_location
+           ) el
+           JOIN equipment e ON e.id = el.equipment_id AND e.active = 1
+           JOIN jobs j ON j.job_id = el.job_id AND j.status = ?1
+          WHERE el.rn = 1
+          ORDER BY j.project_name ASC, e.name ASC, el.equipment_id ASC`,
+      )
+      .bind("active"),
+    c.env.DB
+      .prepare(
+        `SELECT DISTINCT el.job_id, j.project_name
+           FROM equipment_location el
+           JOIN jobs j ON j.job_id = el.job_id AND j.status = ?1
+          WHERE el.job_id IS NOT NULL
+          ORDER BY j.project_name ASC, el.job_id ASC`,
+      )
+      .bind("active"),
+  ]);
+  return c.json({
+    equipment: snapRes.results ?? [],
+    jobs_with_equipment: rosterRes.results ?? [],
+  });
 });
 
 /**

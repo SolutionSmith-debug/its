@@ -931,23 +931,23 @@ def _fmt_coord(value: Any) -> str:
 
 def _group_equipment_by_job(
     rows: list[dict[str, Any]],
-) -> dict[str, tuple[str, list[dict[str, Any]]]]:
-    """Group snapshot equipment rows by job_id → (project_name, [rows]). Skips a row missing its
-    equipment_id / job_id / project_name (a data anomaly that can't be foldered) — never silent."""
-    by_job: dict[str, tuple[str, list[dict[str, Any]]]] = {}
+) -> dict[str, list[dict[str, Any]]]:
+    """Group CURRENT snapshot equipment rows by job_id → [rows]. Skips a row missing its
+    equipment_id / job_id (a data anomaly that can't be keyed) — never silent. The project_name is
+    NOT required here (it comes from the reconcile roster, the authoritative jobs-table source)."""
+    by_job: dict[str, list[dict[str, Any]]] = {}
     for e in rows:
         equipment_id = str(e.get("equipment_id") or "").strip()
         job_id = str(e.get("job_id") or "").strip()
-        project = str(e.get("project_name") or "").strip()
-        if not equipment_id or not job_id or not project:
+        if not equipment_id or not job_id:
             error_log.log(
                 Severity.WARN, SCRIPT_NAME,
-                f"equipment snapshot row skipped — missing equipment_id/job_id/project_name "
+                f"equipment snapshot row skipped — missing equipment_id/job_id "
                 f"(equipment_id={e.get('equipment_id')!r} job_id={e.get('job_id')!r})",
                 error_code="fieldops_equipment_row_malformed",
             )
             continue
-        by_job.setdefault(job_id, (project, []))[1].append(e)
+        by_job.setdefault(job_id, []).append(e)
     return by_job
 
 
@@ -958,9 +958,16 @@ def _mirror_equipment_pass(base_url: str, bearer: str) -> dict[str, int]:
     + hours mirrors, so an equipment failure must never abort the cycle. Per-job (sheet) + per-item
     fences; a permanent failure routes to the Review Queue; a transient one is simply left for the
     next cycle (the snapshot re-projects the whole live state every cycle, so nothing is "lost" —
-    there is NO watermark, NO mark-mirrored). Per job: ensure the sheet → upsert each current
-    equipment (change-only) → retire any sheet row NOT in this cycle's snapshot (Off Job, never
-    delete) → row-cap watchdog.
+    there is NO watermark, NO mark-mirrored).
+
+    RECONCILE ROSTER (the count-drops-to-zero fix): the pass iterates `jobs_with_equipment` — every
+    active job with ANY equipment_location history — NOT just the jobs that have current equipment
+    this cycle. For each job:
+      • HAS current equipment → ensure the sheet (find-or-create) → upsert each (change-only) →
+        retire any sheet row NOT in THIS cycle's snapshot (Off Job, never delete) → row-cap watchdog.
+      • ZERO current equipment → find (NEVER create) the sheet; if it exists, retire ALL its Active
+        rows (Off Job); if no sheet ever existed, skip (never create an empty sheet). Without this
+        branch a job whose whole complement moved away would keep stale `On Job=Active` rows forever.
 
     No throttle: per-cycle change-only re-projection is simple-correct at current scale (an upsert
     with no change is a no-op read, and retire skips already-Off-Job rows). A throttle is a FUTURE
@@ -989,96 +996,167 @@ def _mirror_equipment_pass(base_url: str, bearer: str) -> dict[str, int]:
         )
         return out
 
+    by_job = _group_equipment_by_job(snapshot.equipment)
     now_iso = datetime.now(_PACIFIC).isoformat()
-    for job_id, (project_name, rows) in _group_equipment_by_job(snapshot).items():
+    # Iterate the RECONCILE ROSTER (active jobs with equipment_location history), so a job whose
+    # current complement dropped to ZERO is still visited and its stale Active rows retired.
+    for roster in snapshot.jobs_with_equipment:
+        job_id = str(roster.get("job_id") or "").strip()
+        project_name = str(roster.get("project_name") or "").strip()
+        if not job_id or not project_name:
+            error_log.log(
+                Severity.WARN, SCRIPT_NAME,
+                f"equipment roster row skipped — missing job_id/project_name "
+                f"(job_id={roster.get('job_id')!r} project_name={roster.get('project_name')!r})",
+                error_code="fieldops_equipment_roster_malformed",
+            )
+            continue
         correlation_id = uuid.uuid4().hex[:12]
-        try:
-            sheet_id = equipment_status.ensure_equipment_sheet(project_name)
-        except (
-            picklist_validation.PicklistViolationError,
-            smartsheet_client.SmartsheetValidationError,
-        ) as exc:
-            out["reviewed"] += 1
-            _route_equipment_to_review(job_id, project_name, exc, correlation_id, phase="ensure-sheet")
-            continue
-        except Exception as exc:  # noqa: BLE001 — per-job fence; one bad job never kills the pass
-            out["errors"] += 1
-            error_log.log(
-                Severity.ERROR, SCRIPT_NAME,
-                f"transient failure ensuring Equipment sheet for {project_name!r} "
-                f"(job {job_id}); snapshot re-projects next cycle: {type(exc).__name__}: {exc!r}",
-                error_code="fieldops_equipment_sheet_transient",
-                correlation_id=correlation_id,
+        current = by_job.get(job_id)
+        if current:
+            _reconcile_job_with_equipment(
+                job_id, project_name, current, now_iso, correlation_id, out
             )
-            continue
-
-        # The authoritative on-job set for retire = EVERY equipment in this cycle's snapshot for
-        # the job, regardless of per-item upsert success (a transient upsert failure does NOT mean
-        # the item left the job — retiring it would be wrong; it re-upserts next cycle).
-        snapshot_ids = {str(e.get("equipment_id") or "").strip() for e in rows}
-        for e in rows:
-            equipment_id = str(e.get("equipment_id") or "").strip()
-            try:
-                equipment_status.upsert_equipment_row(
-                    sheet_id,
-                    equipment_id=equipment_id,
-                    name=str(e.get("name") or "").strip(),
-                    kind=str(e.get("kind") or "").strip(),
-                    unit_no=str(e.get("identifier") or "").strip(),
-                    status=str(e.get("status") or "").strip(),
-                    status_note=str(e.get("status_note") or "").strip(),
-                    status_changed=_fmt_epoch_date(e.get("status_changed_at")),
-                    location=str(e.get("location_label") or "").strip(),
-                    lat=_fmt_coord(e.get("lat")),
-                    lon=_fmt_coord(e.get("lon")),
-                    location_read_at=_fmt_epoch_dt(e.get("read_at")),
-                    updated_at=now_iso,
-                )
-                out["upserted"] += 1
-            except (
-                picklist_validation.PicklistViolationError,
-                smartsheet_client.SmartsheetValidationError,
-            ) as exc:
-                out["reviewed"] += 1
-                _route_equipment_to_review(
-                    job_id, project_name, exc, correlation_id,
-                    phase="upsert", equipment_id=equipment_id,
-                )
-            except Exception as exc:  # noqa: BLE001 — per-item fence
-                out["errors"] += 1
-                error_log.log(
-                    Severity.ERROR, SCRIPT_NAME,
-                    f"transient failure upserting equipment {equipment_id!r} for {project_name!r} "
-                    f"(snapshot re-projects next cycle): {type(exc).__name__}: {exc!r}",
-                    error_code="fieldops_equipment_upsert_transient",
-                    correlation_id=correlation_id,
-                )
-
-        # Retire any row NOT in this cycle's snapshot (Off Job, never delete). Fenced separately —
-        # a retire failure never blocks the row-cap watchdog and re-projects next cycle.
-        try:
-            out["retired"] += equipment_status.retire_off_job(sheet_id, snapshot_ids)
-        except (
-            picklist_validation.PicklistViolationError,
-            smartsheet_client.SmartsheetValidationError,
-        ) as exc:
-            out["reviewed"] += 1
-            _route_equipment_to_review(job_id, project_name, exc, correlation_id, phase="retire")
-        except Exception as exc:  # noqa: BLE001 — per-job fence
-            out["errors"] += 1
-            error_log.log(
-                Severity.ERROR, SCRIPT_NAME,
-                f"transient failure retiring off-job equipment for {project_name!r} "
-                f"(job {job_id}); re-projects next cycle: {type(exc).__name__}: {exc!r}",
-                error_code="fieldops_equipment_retire_transient",
-                correlation_id=correlation_id,
-            )
-
-        # §51 A5 row-cap watchdog — advisory, owns its own try/except (never raises here).
-        equipment_status.check_row_cap(
-            sheet_id, equipment_status.equipment_sheet_name(project_name)
-        )
+        else:
+            _reconcile_job_zeroed(job_id, project_name, correlation_id, out)
     return out
+
+
+def _reconcile_job_with_equipment(
+    job_id: str, project_name: str, rows: list[dict[str, Any]], now_iso: str,
+    correlation_id: str, out: dict[str, int],
+) -> None:
+    """Reconcile a job that HAS current on-job equipment: find-or-create its sheet, change-only
+    upsert each item, retire any sheet row NOT in this cycle's snapshot, run the row-cap watchdog."""
+    try:
+        sheet_id = equipment_status.ensure_equipment_sheet(project_name)
+    except (
+        picklist_validation.PicklistViolationError,
+        smartsheet_client.SmartsheetValidationError,
+    ) as exc:
+        out["reviewed"] += 1
+        _route_equipment_to_review(job_id, project_name, exc, correlation_id, phase="ensure-sheet")
+        return
+    except Exception as exc:  # noqa: BLE001 — per-job fence; one bad job never kills the pass
+        out["errors"] += 1
+        error_log.log(
+            Severity.ERROR, SCRIPT_NAME,
+            f"transient failure ensuring Equipment sheet for {project_name!r} "
+            f"(job {job_id}); snapshot re-projects next cycle: {type(exc).__name__}: {exc!r}",
+            error_code="fieldops_equipment_sheet_transient",
+            correlation_id=correlation_id,
+        )
+        return
+
+    # The authoritative on-job set for retire = EVERY equipment in this cycle's snapshot for the
+    # job, regardless of per-item upsert success (a transient upsert failure does NOT mean the item
+    # left the job — retiring it would be wrong; it re-upserts next cycle).
+    snapshot_ids = {str(e.get("equipment_id") or "").strip() for e in rows}
+    for e in rows:
+        equipment_id = str(e.get("equipment_id") or "").strip()
+        try:
+            equipment_status.upsert_equipment_row(
+                sheet_id,
+                equipment_id=equipment_id,
+                name=str(e.get("name") or "").strip(),
+                kind=str(e.get("kind") or "").strip(),
+                unit_no=str(e.get("identifier") or "").strip(),
+                status=str(e.get("status") or "").strip(),
+                status_note=str(e.get("status_note") or "").strip(),
+                status_changed=_fmt_epoch_date(e.get("status_changed_at")),
+                location=str(e.get("location_label") or "").strip(),
+                lat=_fmt_coord(e.get("lat")),
+                lon=_fmt_coord(e.get("lon")),
+                location_read_at=_fmt_epoch_dt(e.get("read_at")),
+                updated_at=now_iso,
+            )
+            out["upserted"] += 1
+        except (
+            picklist_validation.PicklistViolationError,
+            smartsheet_client.SmartsheetValidationError,
+        ) as exc:
+            out["reviewed"] += 1
+            _route_equipment_to_review(
+                job_id, project_name, exc, correlation_id,
+                phase="upsert", equipment_id=equipment_id,
+            )
+        except Exception as exc:  # noqa: BLE001 — per-item fence
+            out["errors"] += 1
+            error_log.log(
+                Severity.ERROR, SCRIPT_NAME,
+                f"transient failure upserting equipment {equipment_id!r} for {project_name!r} "
+                f"(snapshot re-projects next cycle): {type(exc).__name__}: {exc!r}",
+                error_code="fieldops_equipment_upsert_transient",
+                correlation_id=correlation_id,
+            )
+
+    _retire_equipment(sheet_id, snapshot_ids, job_id, project_name, correlation_id, out)
+
+    # §51 A5 row-cap watchdog — advisory, owns its own try/except (never raises here).
+    equipment_status.check_row_cap(
+        sheet_id, equipment_status.equipment_sheet_name(project_name)
+    )
+
+
+def _reconcile_job_zeroed(
+    job_id: str, project_name: str, correlation_id: str, out: dict[str, int],
+) -> None:
+    """Reconcile a job with ZERO current on-job equipment (its whole complement moved away / went
+    inactive): FIND (never create) its Equipment sheet and retire ALL remaining Active rows. If no
+    sheet ever existed, skip — never create an empty sheet. This is the count-drops-to-zero fix; the
+    normal zero case (no sheet) is a silent no-op, NOT an error."""
+    try:
+        sheet_id = equipment_status.find_equipment_sheet(project_name)
+    except (
+        picklist_validation.PicklistViolationError,
+        smartsheet_client.SmartsheetValidationError,
+    ) as exc:
+        out["reviewed"] += 1
+        _route_equipment_to_review(job_id, project_name, exc, correlation_id, phase="find-sheet")
+        return
+    except Exception as exc:  # noqa: BLE001 — per-job fence
+        out["errors"] += 1
+        error_log.log(
+            Severity.ERROR, SCRIPT_NAME,
+            f"transient failure finding Equipment sheet for {project_name!r} "
+            f"(job {job_id}); re-projects next cycle: {type(exc).__name__}: {exc!r}",
+            error_code="fieldops_equipment_find_sheet_transient",
+            correlation_id=correlation_id,
+        )
+        return
+    if sheet_id is None:
+        # No sheet was ever created for this job → nothing to retire, and we NEVER create an empty
+        # sheet. The common zero case — a silent no-op, not a fault.
+        return
+    # Retire EVERY row (empty current set → all rows Off Job). retire_off_job is idempotent, so a
+    # steady all-Off-Job sheet issues no write.
+    _retire_equipment(sheet_id, set(), job_id, project_name, correlation_id, out)
+
+
+def _retire_equipment(
+    sheet_id: int, current_ids: set[str], job_id: str, project_name: str,
+    correlation_id: str, out: dict[str, int],
+) -> None:
+    """Retire any sheet row whose Equipment ID is NOT in `current_ids` (Off Job, never delete),
+    under a fence — a retire failure never blocks the caller's row-cap watchdog and re-projects next
+    cycle. An empty `current_ids` retires the whole sheet (the reconcile-zeroed case)."""
+    try:
+        out["retired"] += equipment_status.retire_off_job(sheet_id, current_ids)
+    except (
+        picklist_validation.PicklistViolationError,
+        smartsheet_client.SmartsheetValidationError,
+    ) as exc:
+        out["reviewed"] += 1
+        _route_equipment_to_review(job_id, project_name, exc, correlation_id, phase="retire")
+    except Exception as exc:  # noqa: BLE001 — per-job fence
+        out["errors"] += 1
+        error_log.log(
+            Severity.ERROR, SCRIPT_NAME,
+            f"transient failure retiring off-job equipment for {project_name!r} "
+            f"(job {job_id}); re-projects next cycle: {type(exc).__name__}: {exc!r}",
+            error_code="fieldops_equipment_retire_transient",
+            correlation_id=correlation_id,
+        )
 
 
 def _route_equipment_to_review(

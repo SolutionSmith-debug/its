@@ -31,6 +31,11 @@ interface SnapshotRow {
   recorded_at: number;
 }
 
+interface RosterRow {
+  job_id: string;
+  project_name: string;
+}
+
 async function seedEquipment(
   name: string,
   opts: { kind?: string; identifier?: string; active?: 0 | 1; status?: string; statusNote?: string } = {},
@@ -199,5 +204,44 @@ describe("GET /api/internal/fieldops/equipment-snapshot", () => {
       "Alpha/Nova",
       "Bravo/Zeta",
     ]);
+  });
+
+  it("returns jobs_with_equipment: a job with equipment_location history but ZERO current on-active-job equipment appears in the roster but not in equipment (count-drops-to-zero reconcile)", async () => {
+    await seedJob("JOB-ACTIVE", { projectName: "Active Job", status: "active" });
+    await seedJob("JOB-CLOSED", { projectName: "Closed Job", status: "closed" });
+    // The unit had a location on the ACTIVE job (so JOB-ACTIVE has equipment_location history), then
+    // moved to a CLOSED job (its LATEST location) → excluded from `equipment`. JOB-ACTIVE has zero
+    // CURRENT on-active-job equipment, but MUST appear in `jobs_with_equipment` so the daemon
+    // revisits its Equipment sheet and retires the now-stale rows.
+    const eq = await seedEquipment("Unit Moved Away");
+    await seedLocation(eq, "JOB-ACTIVE", 1751000000); // older → JOB-ACTIVE gains el history
+    await seedLocation(eq, "JOB-CLOSED", 1751005000); // newer (latest) → dropped from `equipment`
+
+    const res = await call(PATH, { bearer: FIELDOPS_BEARER });
+    expect(res.status, await res.clone().text()).toBe(200);
+    const { equipment, jobs_with_equipment } = (await res.json()) as {
+      equipment: SnapshotRow[];
+      jobs_with_equipment: RosterRow[];
+    };
+    // ZERO current on-active-job equipment (latest location is on a closed job).
+    expect(equipment).toHaveLength(0);
+    // …but JOB-ACTIVE is in the reconcile roster (has el history + is active); JOB-CLOSED is NOT.
+    const rosterIds = jobs_with_equipment.map((r) => r.job_id);
+    expect(rosterIds).toContain("JOB-ACTIVE");
+    expect(rosterIds).not.toContain("JOB-CLOSED");
+    expect(jobs_with_equipment.find((r) => r.job_id === "JOB-ACTIVE")?.project_name).toBe("Active Job");
+  });
+
+  it("jobs_with_equipment is DISTINCT and excludes jobs with no equipment_location history", async () => {
+    await seedJob("JOB-WITH", { projectName: "Has Equipment", status: "active" });
+    await seedJob("JOB-NONE", { projectName: "No Equipment", status: "active" });
+    const eq = await seedEquipment("Unit One");
+    // Two location rows on the SAME active job → the roster must list it ONCE (DISTINCT).
+    await seedLocation(eq, "JOB-WITH", 1751000000);
+    await seedLocation(eq, "JOB-WITH", 1751002000);
+
+    const res = await call(PATH, { bearer: FIELDOPS_BEARER });
+    const { jobs_with_equipment } = (await res.json()) as { jobs_with_equipment: RosterRow[] };
+    expect(jobs_with_equipment.map((r) => r.job_id)).toEqual(["JOB-WITH"]); // distinct, no JOB-NONE
   });
 });

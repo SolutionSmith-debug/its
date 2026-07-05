@@ -240,6 +240,21 @@ def ensure_equipment_sheet(project_name: str) -> int:
     return sheet_id
 
 
+def find_equipment_sheet(project_name: str) -> int | None:
+    """Find (NEVER create) the job's standing Equipment sheet; return its sheet ID or None.
+
+    Resolves the per-job PROGRESS folder find-ONLY then the sheet find-ONLY; None if EITHER is
+    absent. Used by the reconcile-zeroed path in `fieldops_sync`: when a job's current equipment
+    complement drops to ZERO it produces no snapshot rows, so the daemon reconciles it by finding
+    (not creating) its sheet and retiring every remaining Active row. This NEVER creates an empty
+    sheet — a job that never had an Equipment sheet is simply skipped.
+    """
+    folder = smartsheet_client.find_folder_by_name_in_workspace(WORKSPACE_ID, _folder_name(project_name))
+    if folder is None:
+        return None
+    return smartsheet_client.find_sheet_by_name_in_folder(folder, equipment_sheet_name(project_name))
+
+
 def find_equipment_row(sheet_id: int, equipment_id: str) -> dict[str, Any] | None:
     """Return the Equipment row whose Equipment ID == `equipment_id`, or None. The upsert/retire
     authority — every snapshot re-projection resolves its target through this."""
