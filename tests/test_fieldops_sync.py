@@ -363,7 +363,7 @@ def test_pending_transport_error_does_not_starve_the_hours_pass(_patch):
     _patch["hours_pending"].return_value = [
         {
             "uuid": "u1", "job_id": "JOB-1", "project_name": "Proj", "personnel_name": "Sam",
-            "hours": 8, "work_started_at": None, "work_ended_at": None, "notes": "",
+            "hours": 8, "task": "Framing", "notes": "",
             "amends_uuid": None, "created_at": 1_700_000_000,
         },
     ]
@@ -463,13 +463,14 @@ def test_worker_base_url_read_under_safety_reports_workstream(mocker):
 
 
 def _hours_entry(uuid: str = "T1", job_id: str = "JOB-1", **over: Any) -> dict[str, Any]:
+    # Mirrors the /hours-pending row shape after the 2026-07-05 Task-column change: `task`
+    # (task_assignments.description) replaced the always-empty work_started_at/_ended_at fields.
     e: dict[str, Any] = {
         "uuid": uuid,
         "job_id": job_id,
         "project_name": "Job One",
-        "work_started_at": 1751000000,
-        "work_ended_at": 1751028800,
         "hours": 8,
+        "task": "Pour footings",
         "notes": "poured footings",
         "amends_uuid": None,
         "created_at": 1751030000,
@@ -495,6 +496,13 @@ def test_hours_pass_mirrors_and_marks(_patch):
     assert stats.hours_mirrored == 2 and stats.hours_errors == 0 and stats.hours_reviewed == 0
     _patch["ensure_sheet"].assert_called_once_with("Job One")  # one sheet for the one job
     assert _patch["upsert_entry"].call_count == 2               # one upsert per entry
+    # /hours-pending `task` maps to the Task column; the retired started/ended kwargs are gone and
+    # work_date now derives from created_at (2026-07-05 Task-column change). Reverting the mapping
+    # (restoring started=/ended=) makes this red.
+    upsert_kwargs = _patch["upsert_entry"].call_args.kwargs
+    assert upsert_kwargs["task"] == "Pour footings"
+    assert "started" not in upsert_kwargs and "ended" not in upsert_kwargs
+    assert upsert_kwargs["work_date"]  # non-empty, derived from created_at
     # commit point LAST — one mark-mirrored batch of the succeeded uuids
     _patch["hours_mark"].assert_called_once()
     assert _patch["hours_mark"].call_args.args[2] == ["T1", "T2"]

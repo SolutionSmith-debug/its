@@ -812,16 +812,6 @@ def _fmt_epoch_date(epoch: Any) -> str:
         return ""
 
 
-def _fmt_epoch_time(epoch: Any) -> str:
-    """Epoch seconds → Pacific 'HH:MM' (the Work Date column carries the day). '' when unset."""
-    if isinstance(epoch, bool) or not isinstance(epoch, int):
-        return ""
-    try:
-        return datetime.fromtimestamp(epoch, _PACIFIC).strftime("%H:%M")
-    except (OSError, OverflowError, ValueError):
-        return ""
-
-
 def _fmt_epoch_dt(epoch: Any) -> str:
     """Epoch seconds → Pacific ISO datetime (the Recorded At server-time column). '' when unset."""
     if isinstance(epoch, bool) or not isinstance(epoch, int):
@@ -922,14 +912,14 @@ def _mirror_hours_pass(base_url: str, bearer: str) -> dict[str, int]:
                 hours_log.upsert_entry_row(
                     sheet_id,
                     entry_uuid=entry_uuid,
-                    work_date=(
-                        _fmt_epoch_date(e.get("work_started_at"))
-                        or _fmt_epoch_date(e.get("created_at"))
-                    ),
+                    # The portal daily-report time form never populates the wall-clock times, so
+                    # /hours-pending no longer projects work_started_at/_ended_at (2026-07-05); the
+                    # Hours Log work day is the server record date. See docs/tech_debt.md
+                    # "Hours Log — replace Started/Ended columns with a Task column".
+                    work_date=_fmt_epoch_date(e.get("created_at")),
                     personnel=str(e.get("personnel_name") or "").strip(),
                     hours=_fmt_hours(e.get("hours")),
-                    started=_fmt_epoch_time(e.get("work_started_at")),
-                    ended=_fmt_epoch_time(e.get("work_ended_at")),
+                    task=str(e.get("task") or "").strip(),
                     notes=str(e.get("notes") or "").strip(),
                     recorded_at=_fmt_epoch_dt(e.get("created_at")),
                 )
