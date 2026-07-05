@@ -62,6 +62,7 @@ Consumers
 from __future__ import annotations
 
 import fcntl
+import json
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -82,6 +83,7 @@ from shared import (
     review_queue,
     sheet_ids,
     smartsheet_client,
+    state_io,
 )
 from shared.error_log import Severity, its_error_log
 from shared.heartbeat import HeartbeatReporter, HeartbeatStatus
@@ -124,6 +126,14 @@ STATE_DIR = Path.home() / "its" / "state"
 HEARTBEAT_PATH = STATE_DIR / "fieldops_sync_heartbeat.txt"
 LOCK_PATH = STATE_DIR / "fieldops_sync.lock"
 HEARTBEAT_ROW_STATE_PATH = STATE_DIR / "heartbeat_row_ids.json"
+
+# Sustained pending-jobs fetch-outage escalation (mirrors portal_poll's Check-Q counter). Because
+# the decoupled hours/equipment passes now let a cycle COMPLETE (marker written) even when the
+# job-QUEUE fetch fails, the old "no-marker → Check-C-stale" backstop for a SUSTAINED job-fetch
+# outage is gone. A persisted consecutive-failure counter escalates the per-cycle ERROR to CRITICAL
+# (the triple-fire push path) once the outage crosses the threshold; a successful fetch resets it.
+PENDING_FETCH_FAIL_STATE_PATH = STATE_DIR / "fieldops_pending_fetch_failures.json"
+PENDING_FETCH_FAIL_CRITICAL_THRESHOLD = 5  # consecutive cycles before escalating ERROR → CRITICAL
 
 DAEMON_NAME = "field_ops.fieldops_sync"
 
@@ -315,6 +325,45 @@ def sync_once() -> int:
         return _sync_inside_lock().mirrored
 
 
+def _record_pending_fetch_failure() -> int:
+    """Increment + persist the consecutive pending-jobs fetch-failure counter; return the new count.
+
+    Used ONLY for a transient `PortalTransportError` (a 401 pages immediately). On any state error,
+    returns 1 (treat as a single failure — never page off a state glitch). Mirrors
+    `safety_reports.portal_poll._record_fetch_failure`."""
+    try:
+        with state_io.with_path_lock(PENDING_FETCH_FAIL_STATE_PATH):
+            count = 0
+            if PENDING_FETCH_FAIL_STATE_PATH.exists():
+                try:
+                    count = int(
+                        json.loads(PENDING_FETCH_FAIL_STATE_PATH.read_text()).get("count", 0)
+                    )
+                except (OSError, json.JSONDecodeError, ValueError, TypeError, AttributeError):
+                    count = 0
+            count += 1
+            state_io.atomic_write_json(PENDING_FETCH_FAIL_STATE_PATH, {"count": count})
+            return count
+    except Exception as exc:  # noqa: BLE001 — counter is best-effort; never page off a state glitch
+        error_log.log(
+            Severity.WARN, SCRIPT_NAME,
+            f"pending-fetch-failure counter write failed (treating as #1): {exc!r}",
+            error_code="fieldops_pending_fetch_counter_failed",
+        )
+        return 1
+
+
+def _reset_pending_fetch_failures() -> None:
+    """Zero the consecutive pending-jobs fetch-failure counter after a successful fetch. Best-effort:
+    a reset failure only risks one spurious CRITICAL next cycle, never a missed outage."""
+    try:
+        with state_io.with_path_lock(PENDING_FETCH_FAIL_STATE_PATH):
+            if PENDING_FETCH_FAIL_STATE_PATH.exists():
+                state_io.atomic_write_json(PENDING_FETCH_FAIL_STATE_PATH, {"count": 0})
+    except Exception:  # noqa: BLE001 — best-effort reset
+        pass
+
+
 def _sync_inside_lock() -> SyncStats:
     """Body of sync_once running under the file lock."""
     creds = _resolve_credentials()
@@ -370,14 +419,27 @@ def _sync_inside_lock() -> SyncStats:
         # hours / equipment passes hit DIFFERENT, independent endpoints (/hours-pending,
         # /equipment-snapshot) that may well be reachable this cycle, so they MUST still run.
         counters["errors"] += 1
-        error_log.log(
-            Severity.ERROR, SCRIPT_NAME,
-            f"failed to GET pending-jobs (jobs left dirty for next cycle; hours/equipment passes "
-            f"still run — independent endpoints): {exc!r}",
-            error_code="fieldops_pending_fetch_failed",
-        )
+        n = _record_pending_fetch_failure()
+        if n >= PENDING_FETCH_FAIL_CRITICAL_THRESHOLD:
+            # SUSTAINED outage — the decoupled cycle no longer goes Check-C-stale, so escalate to
+            # CRITICAL (the triple-fire push path). Mirrors portal_poll's Check-Q.
+            error_log.log(
+                Severity.CRITICAL, SCRIPT_NAME,
+                f"pending-jobs fetch failing for {n} consecutive cycles — SUSTAINED job-queue "
+                f"outage (portal jobs not mirroring; hours/equipment UNAFFECTED — independent "
+                f"endpoints). See docs/runbooks/fieldops_sync.md Symptom D: {exc!r}",
+                error_code="fieldops_pending_fetch_sustained",
+            )
+        else:
+            error_log.log(
+                Severity.ERROR, SCRIPT_NAME,
+                f"failed to GET pending-jobs (jobs left dirty for next cycle; hours/equipment "
+                f"passes still run — independent endpoints; {n} consecutive): {exc!r}",
+                error_code="fieldops_pending_fetch_failed",
+            )
 
     if jobs is not None:
+        _reset_pending_fetch_failures()  # a successful fetch clears the sustained-outage counter
         for job in jobs:
             _mirror_job(job, base_url, bearer, counters)
     scanned = len(jobs) if jobs is not None else 0
