@@ -48,19 +48,29 @@ Deploy confirmed (migrations 0028→0037 applied). Remaining operator work:
 The design: **job = folder; weekly sheets = the per-week flow; standing per-job sheets = the running state.**
 Build the cumulative, one-per-job (NOT per-week) Smartsheets, one-way-up mirrored from D1 (send/AI-free per §51;
 period-split + archive-on-closure; find-or-create + capacity margin-check; never `delete_rows`):
-- **P7** — per-job **Hours Log** (mirror `time_entries`), **Equipment Status & Location**, **Materials Status
-  & Location**. Extend the `field_ops/fieldops_sync.py` + `shared/active_jobs_writer.py` up-sync (which today
-  mirrors job identity only) to write these per-job standing sheets into the job's Progress-workspace folder.
-  §50/§51 ratified (unblocked); gated on Track 0 (workspace live) + the A5 row-cap + capacity guards (built).
-- **M2** — per-job **Material List** (manifest) + bidirectional receive (operator content cols / field delivery cols).
+- **P7 Slice 1 — Hours Log: LANDED + live-smoked (2026-07-04).** `progress_reports/hours_log.py` mirrors
+  `time_entries` into a per-job standing `<Job> — Hours Log` sheet (PR #461); **archive-on-closure LANDED**
+  (`smartsheet_client.move_sheet_to_folder` + the `fieldops_sync` archive hook — PR #465 / its#462) — the last §51
+  guard. Live smoke GREEN (4 rows mirrored, idempotent, row-cap WARN — see
+  `docs/audits/2026-07-04_smartsheet-wiring-audit.md` Appendix). Ships DARK: operator flips
+  `field_ops.fieldops_sync.hours_enabled=true` (Workstream=field_ops) to go live.
+- **P7 Slice 2 — Equipment Status & Location** (NEXT). **OPEN DECISION (confirm w/ Seth):** snapshot-vs-full-event
+  depth — recommend a latest-location + readiness **snapshot** projection (one row/item, updated in place), NOT the
+  accumulating-log shape (which changes the §51 guards: never-delete = retire-in-place + archive-on-closure;
+  row-cap/period-split largely moot for a bounded snapshot).
+- **P7 Slice 3 — Materials Status & Location.**
+- **M2** — per-job **Material List** + bidirectional receive. **OPEN DECISION:** the landed table is
+  `job_expected_materials` (0031); the mission specs a `material_list` (line_uuid/smartsheet_row_id/unplanned) that
+  does NOT exist — recommend **EXTEND** the landed table (§14) with those 3 columns rather than adding a new table.
 - **M3** — Material Incidents referencing a Material-List line + a fenced `portal_poll` photo deep-screen pass.
-Design source: `progress-reporting/mission.md` §11–§13/§16; audit confirms hours are captured in `time_entries`
-but surface only as a transient PDF number — no persisted per-job Hours Log sheet exists yet.
+Design source: `progress-reporting/mission.md` §11–§13/§16.
 
 ### Track 3 — Scale-hardening for the 20×20 cutover
 Most of the 14-row growth time-bomb table (`~/.claude/plans/unbounded-growth-audit.md`) is fixed (GS1 Check O /
 sheet_capacity wiring, GS2 prune heartbeat + Check V, Sentry reclassification, D5 registry split). Remaining:
 - Verify the **2 unverified Smartsheet quotas** (per-plan sheet cap; pooled attachment-storage quota) — one support ticket.
+  **The 2026-07-04 audit found `smartsheet.sheet_count_ceiling` + `_margin` are ABSENT from `ITS_Config`** → the
+  capacity guard runs on the hardcoded default (1500/50) SILENTLY (forensic class #7); set the real plan cap under `Workstream=global`.
 - **meta-002 Tier-3 backup / escalation SLA** before the 20-job cutover (operator).
 - `REQUIRED_CONFIG` startup logging (#336) · host-log prune (time-bomb #14) · watchdog hang-killer · confirm
   the installed plists' `RunAtLoad` is actually active · `brief-validator` scaffold-wiring (#341).
