@@ -1815,7 +1815,10 @@ app.post("/api/internal/fieldops/jobs-mark-mirrored", requireFieldopsToken, asyn
  * carries everything the daemon needs to find-or-create the job's per-job "Hours Log" sheet
  * (progress workspace) and upsert/supersede the entry row: the entry uuid (find-or-create key +
  * amend target), its job's project_name (folder key), the hours, the task description (LEFT JOIN
- * task_assignments via t.task_id — NULL when the entry references no task), the amend link, the
+ * task_assignments via t.task_id, JOB-SCOPED with `AND ta.job_id = t.job_id` so a mis-scoped
+ * task_id can never surface another job's task text — read-site defense-in-depth over the two
+ * writers that already validate task↔job at write time — NULL when the entry references no task),
+ * the amend link, the
  * server record time, and the DISPLAY-NAME-ONLY personnel name (never a username — House Reflex
  * §5). The wall-clock work_started_at/_ended_at are NO LONGER projected (the portal daily-report
  * form never populates them; they stay on time_entries for the rollup/personnel views). Read-only;
@@ -1833,7 +1836,7 @@ app.get("/api/internal/fieldops/hours-pending", requireFieldopsToken, async (c) 
          FROM time_entries t
          JOIN jobs j ON j.job_id = t.job_id
          LEFT JOIN personnel p ON p.id = t.personnel_id
-         LEFT JOIN task_assignments ta ON ta.id = t.task_id
+         LEFT JOIN task_assignments ta ON ta.id = t.task_id AND ta.job_id = t.job_id
         WHERE t.mirrored_at IS NULL
         ORDER BY t.job_id ASC, t.created_at ASC
         LIMIT ?1`,

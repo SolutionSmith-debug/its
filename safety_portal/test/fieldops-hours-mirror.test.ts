@@ -101,6 +101,21 @@ describe("GET /api/internal/fieldops/hours-pending", () => {
     expect(entries[0].task).toBeNull();
   });
 
+  it("job-scopes the task join: a task_id belonging to ANOTHER job surfaces task=null, never that job's text", async () => {
+    // Defense-in-depth: the writers already validate task↔job at write time, but the read route
+    // also scopes the join (AND ta.job_id = t.job_id). A mis-scoped task_id (data anomaly / future
+    // writer bug) must never leak another job's task description into this job's Hours Log feed.
+    await seedJob("J1", "Job One");
+    await seedJob("J2", "Job Two");
+    const otherJobTask = await seedTask("J2", "Secret other-job task"); // belongs to J2
+    await seedEntry("T-XJOB", "J1", { task_id: otherJobTask }); // but referenced from a J1 entry
+    const res = await call("/api/internal/fieldops/hours-pending", { bearer: FIELDOPS_BEARER });
+    const { entries } = (await res.json()) as { entries: Array<Record<string, unknown>> };
+    expect(entries).toHaveLength(1);
+    expect(entries[0].uuid).toBe("T-XJOB");
+    expect(entries[0].task).toBeNull(); // NOT "Secret other-job task" — the job-scope guard bites
+  });
+
   it("excludes already-mirrored entries (mirrored_at set)", async () => {
     await seedJob("J1");
     await seedEntry("T-DONE", "J1", { mirrored_at: 1751099999 });
