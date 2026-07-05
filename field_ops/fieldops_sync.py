@@ -564,8 +564,10 @@ def _archive_closed_job_trackers(
     Edge case (by design, not handled here): if an archived job later receives NEW hours,
     the hours pass would find-or-CREATE a fresh `<Job> — Hours Log` back in the active
     PROGRESS folder (this helper only moves what exists at closure time). Archived/closed
-    jobs are not expected to receive new hours; a recurrence would re-archive on the next
-    dirty cycle.
+    jobs are not expected to receive new hours; note that new hours flow through the SEPARATE
+    pending-hours queue (`_mirror_hours_pass`), NOT the job-dirty list that drives this helper,
+    so a fresh sheet would re-archive only when the JOB itself is next re-dirtied (edited) —
+    not automatically.
     """
     try:
         # Resolve the per-job folder in the PROGRESS workspace WITHOUT creating it — the
@@ -590,8 +592,11 @@ def _archive_closed_job_trackers(
         error_log.log(
             Severity.WARN, SCRIPT_NAME,
             f"archive-on-closure move failed for job_id={job_id!r} "
-            f"(project_name={project_name!r}); the job is already mirrored + mark-synced, so "
-            f"this is non-fatal — re-runs next dirty cycle. {type(exc).__name__}: {exc!r}",
+            f"(project_name={project_name!r}); the job is already mirrored + mark-synced so this "
+            f"never fails the mirror — but the job is now CLEAN, so the move does NOT auto-retry: "
+            f"the Hours Log stays (never lost/deleted) in the active PROGRESS folder until the job "
+            f"is next re-dirtied (edited) or an operator moves it manually "
+            f"(docs/runbooks/hours_log_sync.md Fault F). {type(exc).__name__}: {exc!r}",
             error_code="fieldops_archive_on_closure_failed",
             correlation_id=correlation_id,
         )
