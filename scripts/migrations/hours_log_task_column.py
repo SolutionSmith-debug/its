@@ -54,11 +54,12 @@ from shared import keychain  # noqa: E402
 BASE = "https://api.smartsheet.com/2.0"
 
 SUFFIX = hours_log.SHEET_SUFFIX          # " — Hours Log" — the name-guard
+WORKSPACE_ID = hours_log.WORKSPACE_ID    # ITS — Progress Reporting (every Hours Log sheet lives here)
 COL_TASK = hours_log.COL_TASK            # "Task"
 COL_HOURS = hours_log.COL_HOURS          # "Hours" (Task is inserted right after it)
-COL_STARTED = hours_log.COL_STARTED if hasattr(hours_log, "COL_STARTED") else "Started"
-COL_ENDED = hours_log.COL_ENDED if hasattr(hours_log, "COL_ENDED") else "Ended"
-DROP_TITLES = (COL_STARTED, COL_ENDED)
+# The RETIRED titles — no longer constants in hours_log (removed in the same change). The migration
+# still needs the old titles to FIND + DELETE them, so they are plain literals here.
+DROP_TITLES = ("Started", "Ended")
 TASK_TYPE = "TEXT_NUMBER"
 
 
@@ -86,20 +87,30 @@ def _delete_json(path: str) -> dict[str, Any]:
 
 
 def _discover_hours_log_sheets() -> list[tuple[int, str]]:
-    """Find every sheet whose title ends in the `" — Hours Log"` name-guard via /search.
+    """Exhaustively enumerate every `<Job> — Hours Log` sheet in the progress workspace.
 
-    Returns [(sheet_id, name), …]. The name-guard makes this safe to run without an explicit
-    --sheet-id: only Hours Log sheets are ever returned (and re-verified per sheet below).
+    Uses a SCOPED recursive workspace traversal (`GET /workspaces/{id}?loadAll=true`), NOT a global
+    `/search`: `/search` ranks + pages, so it can silently UNDER-cover live sheets (the incomplete-
+    migration fan-out risk). Every Hours Log sheet lives in this one workspace (per-job folders);
+    archive-on-closure (its#462) moves a CLOSED job's sheet to the Archive workspace, and a closed
+    job needs no migration, so a scoped walk of the progress workspace is complete for this purpose.
+    Returns [(sheet_id, name), …]; the name-guard is re-applied per sheet below regardless.
     """
-    data = _get_json("/search?query=Hours%20Log")
+    ws = _get_json(f"/workspaces/{WORKSPACE_ID}?loadAll=true")
     out: list[tuple[int, str]] = []
-    for r in data.get("results", []):
-        if r.get("objectType") != "sheet":
-            continue
-        name = str(r.get("text") or "")
-        sid = r.get("objectId") or r.get("id")
-        if name.endswith(SUFFIX) and isinstance(sid, int):
-            out.append((sid, name))
+    seen: set[int] = set()
+
+    def _walk(container: dict[str, Any]) -> None:
+        for sheet in container.get("sheets") or []:
+            name = str(sheet.get("name") or "")
+            sid = sheet.get("id")
+            if name.endswith(SUFFIX) and isinstance(sid, int) and sid not in seen:
+                seen.add(sid)
+                out.append((sid, name))
+        for folder in container.get("folders") or []:
+            _walk(folder)
+
+    _walk(ws)
     return out
 
 

@@ -131,6 +131,37 @@ the archive hook, the workspace/folder IDs, or the Archive-workspace **permissio
 **code / secrets change → high-class → escalate**. Repeated failures after the cause looks fixed, or a
 novel symptom, escalate.
 
+## Fault M — repeating `Task`/KeyError after a code deploy (Task-column migration not run)
+
+**Symptom.** `ITS_Errors` **ERROR** `Script=field_ops.fieldops_sync`,
+`Error=fieldops_hours_entry_transient` whose message names the `Task` column / a `KeyError` / "column
+… not found" — repeating for EVERY hours entry on EVERY job, every cycle, and NOT self-healing (the
+`sync cycle:` log line shows `hours … errors>0` and `mirrored=0` every ~90s cycle indefinitely).
+
+**Meaning.** The 2026-07-05 Task-column change replaced the Hours Log's `Started`/`Ended` columns with
+a single `Task` column. The code change and the live-sheet schema are migrated by SEPARATE, **order-
+critical** steps (`scripts/migrations/hours_log_task_column.py`, two phases). The new daemon writes the
+`Task` cell, and `shared/smartsheet_client.py` `add_rows` RAISES `KeyError` if that column does not yet
+exist on the sheet. This symptom means the **new Mac code is live but `--phase add` was NOT run first**
+on an existing `<Job> — Hours Log` sheet (or, symmetrically, `--phase drop` ran while the OLD code was
+still writing `Started`/`Ended`). The missing column is deterministic → it will NOT clear on its own.
+The entries are left unmirrored (never lost) and re-mirror once the schema is fixed.
+
+**Check (read-only).** (1) Open the affected `<Job> — Hours Log` sheet in Smartsheet — does it have a
+`Task` column? (2) Run `python3 scripts/migrations/hours_log_task_column.py --phase add` (PREVIEW —
+no `--commit`, writes nothing): does it report the sheet as still needing `Task`?
+
+**Repair — Developer-Operator ONLY (a live Smartsheet SCHEMA write → high-class → escalate to Seth).**
+This is NOT a Tier-2 repair. The correct order is `--phase add --commit` (add `Task`) BEFORE the code
+deploy, then `--phase drop --commit` (remove `Started`/`Ended`) AFTER the new code is live. If the code
+is ALREADY live and erroring, running `--phase add --commit` now clears it (the phase is additive +
+idempotent; the backlog re-mirrors on the next cycle). A Successor-Operator who sees this symptom
+**escalates to Seth** and does not run the migration himself.
+
+**Escalate-to-Seth boundary.** Any run of `hours_log_task_column.py --commit` is a **live Smartsheet
+schema write** — Developer-Operator only (Op Stds §44 high-capability-class category 4 = code/schema).
+The Successor-Operator's role is to RECOGNIZE this symptom and escalate, never to run the migration.
+
 ## Equipment Status & Location tracker (P7 Slice 2)
 
 A SECOND pass inside the SAME `fieldops_sync` daemon mirrors the CURRENT on-active-job equipment

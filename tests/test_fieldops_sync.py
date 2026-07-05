@@ -511,6 +511,28 @@ def test_hours_pass_mirrors_and_marks(_patch):
     _patch["row_cap"].assert_called_once()  # §51 row-cap watchdog runs once per job-sheet
 
 
+def test_hours_work_date_from_created_at_not_work_started(_patch):
+    # work_date must derive from created_at (server record time), NOT any stale/rogue work_started_at
+    # left on the payload. Reverting fieldops_sync to `_fmt_epoch_date(work_started_at) or created_at`
+    # makes this RED (it would pick the work_started_at date).
+    _patch["hours_enabled"].return_value = True
+    _patch["hours_pending"].return_value = [
+        _hours_entry("T1", work_started_at=1_600_000_000, created_at=1_751_030_000),
+    ]
+    fieldops_sync._sync_inside_lock()
+    kw = _patch["upsert_entry"].call_args.kwargs
+    assert kw["work_date"] == fieldops_sync._fmt_epoch_date(1_751_030_000)
+    assert kw["work_date"] != fieldops_sync._fmt_epoch_date(1_600_000_000)
+
+
+def test_hours_null_task_maps_to_empty_string(_patch):
+    # a time entry that references no task → /hours-pending returns task=null → upsert gets "".
+    _patch["hours_enabled"].return_value = True
+    _patch["hours_pending"].return_value = [_hours_entry("T1", task=None)]
+    fieldops_sync._sync_inside_lock()
+    assert _patch["upsert_entry"].call_args.kwargs["task"] == ""
+
+
 def test_hours_amend_supersedes_prior(_patch):
     _patch["hours_enabled"].return_value = True
     _patch["hours_pending"].return_value = [_hours_entry("T2", amends_uuid="T1")]
