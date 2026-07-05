@@ -1743,3 +1743,14 @@ h3,
 .checklist-track__filter { display: flex; gap: 6px; }
 .checklist-track__row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .checklist-track__row-main { min-width: 0; }
+
+/* My Tasks — assigned-inspection drill-in (R8): a grid of clickable inspection cards, then a
+   focused single-inspection view with its items + a Done button. */
+.checklist-tasklist { list-style: none; margin: 10px 0 0; padding: 0; }
+.checklist-task-card { text-align: left; font: inherit; width: 100%; cursor: pointer; display: flex; flex-direction: column; gap: 8px; }
+.checklist-task-card__head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.checklist-task-card__head .dash-card__title { margin: 0 auto 0 0; }
+.checklist-task-card__progress { display: flex; align-items: center; gap: 10px; }
+.checklist-task-card__progress .dash-progress { flex: 1 1 auto; height: 8px; }
+.checklist-task-open__back { margin-bottom: 14px; }
+.checklist-task-open__foot { margin-top: 16px; padding-top: 12px; border-top: 1px dashed var(--c-line); display: flex; justify-content: flex-end; }

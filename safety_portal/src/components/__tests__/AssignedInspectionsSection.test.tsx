@@ -61,21 +61,22 @@ describe("AssignedInspectionsSection — load states (Mandatory B)", () => {
 });
 
 describe("AssignedInspectionsSection — headings + dates", () => {
-  it("titles by template_title with #id demoted, humanized status label", async () => {
+  it("each inspection card is titled by template_title with #id demoted + humanized status", async () => {
     respOk([inspection()]);
     const { container } = render(<AssignedInspectionsSection />);
     await waitFor(() => expect(container.textContent ?? "").toContain("Fall protection"));
-    const heading = container.querySelector("h4")!;
-    expect(heading.querySelector(".dash-card__sub")?.textContent).toContain("#30");
-    expect(heading.textContent ?? "").toContain("Open"); // labels.ts, not raw 'open'
-    expect(heading.textContent ?? "").toContain("due");
+    const card = container.querySelector(".checklist-task-card")!;
+    expect(card.querySelector(".dash-card__title")?.textContent).toBe("Fall protection");
+    expect(card.textContent ?? "").toContain("#30"); // id demoted to the card sub-line
+    expect(card.textContent ?? "").toContain("Open"); // labels.ts, not raw 'open'
+    expect(card.textContent ?? "").toContain("due");
   });
 
   it("falls back to 'Inspection' when template_title is null (legacy instances)", async () => {
     respOk([inspection({ template_title: null })]);
     const { container } = render(<AssignedInspectionsSection />);
-    await waitFor(() => expect(container.querySelector("h4")).not.toBeNull());
-    expect(container.querySelector("h4")!.textContent ?? "").toContain("Inspection");
+    await waitFor(() => expect(container.querySelector(".checklist-task-card")).not.toBeNull());
+    expect(container.querySelector(".dash-card__title")!.textContent ?? "").toContain("Inspection");
   });
 
   it("an OPEN inspection past its due date gets an Overdue warn pill", async () => {
@@ -97,11 +98,12 @@ describe("AssignedInspectionsSection — headings + dates", () => {
 });
 
 describe("AssignedInspectionsSection — rows + try-split", () => {
-  it("completed items collapse under 'Completed (N)' per inspection", async () => {
+  it("completed items collapse under 'Completed (N)' inside an opened inspection", async () => {
     respOk([
       inspection({}, [ITEM, { ...ITEM, id: 41, label: "Lanyard tagged", status: "done", completed_by: "sam", completed_at: 1 }]),
     ]);
-    const { container } = render(<AssignedInspectionsSection />);
+    const { container, getByLabelText } = render(<AssignedInspectionsSection />);
+    fireEvent.click(await waitFor(() => getByLabelText("Open Fall protection inspection")));
     await waitFor(() => expect(container.textContent ?? "").toContain("Completed (1)"));
     const details = container.querySelector("details.dash-completed")!;
     expect(details.hasAttribute("open")).toBe(false);
@@ -114,6 +116,7 @@ describe("AssignedInspectionsSection — rows + try-split", () => {
       .mockRejectedValue(new ApiError(null, 500)); // every refetch fails
     vi.mocked(checklist.completeChecklistItem).mockResolvedValue({ ok: true, id: 40, status: "done", instance_status: "complete" });
     const { getByLabelText, container } = render(<AssignedInspectionsSection />);
+    fireEvent.click(await waitFor(() => getByLabelText("Open Fall protection inspection")));
     fireEvent.click(await waitFor(() => getByLabelText("Complete item 40")));
     await waitFor(() => expect(container.textContent ?? "").toContain("Inspection complete."));
     await waitFor(() => expect(container.textContent ?? "").toContain("Saved — but the list couldn't refresh"));
@@ -127,6 +130,7 @@ describe("AssignedInspectionsSection — rows + try-split", () => {
     respOk([inspection({}, [ITEM, { ...ITEM, id: 42, label: "Anchor point rated" }])]);
     vi.mocked(checklist.completeChecklistItem).mockReturnValue(new Promise(() => {})); // never settles
     const { getByLabelText } = render(<AssignedInspectionsSection />);
+    fireEvent.click(await waitFor(() => getByLabelText("Open Fall protection inspection")));
     fireEvent.click(await waitFor(() => getByLabelText("Complete item 40")));
     await waitFor(() => expect((getByLabelText("Complete item 40") as HTMLButtonElement).disabled).toBe(true));
     expect((getByLabelText("Complete item 42") as HTMLButtonElement).disabled).toBe(false);

@@ -19,19 +19,15 @@ import {
 /**
  * S6 — "Assigned inspections" for ANYONE with an assigned inspection (manager OR subcontractor;
  * extracted from FieldOpsMyTasks in R2 — lives on the Assigned-tasks tab). Fetches
- * GET /checklist/assigned and renders each assigned inspection instance + its items with the SAME
- * completion controls as the daily section (ChecklistItemRow). Completion reuses the SAME
- * ownership-scoped item-state routes (kind-agnostic server-side).
+ * GET /checklist/assigned.
  *
- * R2 hardening (Mandatory B + render findings):
- *   • Load failure no longer collapses to an invisible section — error + working Retry.
- *   • Distinct loading state; a CONFIRMED-empty response (no error) still renders nothing, so the
- *     section stays invisible for users the feature doesn't touch. (`linked:false` is explained
- *     by the tasks list on the same tab — not duplicated here.)
- *   • R1 template_title is the heading; "#id" demoted to small text. Due dates via fmtDate; an
- *     open inspection past due gets an "Overdue" warn pill.
- *   • Per-row busy + inline per-row feedback; mutation/refetch try-split as in the daily section.
- *   • Completed items collapse under "Completed (N)" per inspection.
+ * R8 — DRILL-IN: the assignee no longer sees every inspection's items dumped flat. Each assigned
+ * inspection is a clickable CARD (title + who/where/due + status + a progress bar); clicking one
+ * opens a FOCUSED view of just that inspection's items (the SAME per-item completion controls,
+ * ChecklistItemRow — Mark done / Record / open a linked form), with a "← Back" and a "Done" that
+ * returns to the list. Completion stays per-item + immediate (the item-state routes are unchanged);
+ * an inspection auto-reaches "complete" server-side when its last item is done. The R2 never-silent
+ * load/error/empty states and the mutation/refetch try-split are preserved verbatim.
  */
 export function AssignedInspectionsSection({
   onOpenForm,
@@ -47,6 +43,8 @@ export function AssignedInspectionsSection({
   const [busyIds, setBusyIds] = useState<ReadonlySet<number>>(new Set());
   const [rowMsgs, setRowMsgs] = useState<Record<number, RowFeedback>>({});
   const [softWarn, setSoftWarn] = useState<string | null>(null);
+  // R8 — which inspection is opened for completion (null = the card list).
+  const [openId, setOpenId] = useState<number | null>(null);
 
   async function load() {
     setLoading(true);
@@ -176,6 +174,24 @@ export function AssignedInspectionsSection({
     onOpenForm({ jobId: inst.job_id, parentCode, variantCode: variantCode || undefined, workDate: inst.instance_date });
   }
 
+  const renderItem = (insp: checklist.AssignedInspection) => (it: checklist.ChecklistItemState) => (
+    <li key={it.id}>
+      <ChecklistItemRow
+        item={it}
+        busy={busyIds.has(it.id)}
+        canOpenForm={!!onOpenForm && !!insp.instance.job_id && !!insp.instance.instance_date}
+        onComplete={complete}
+        onUncomplete={uncomplete}
+        onRecordCount={recordCount}
+        onCountRecorded={() => void load()}
+        onPhotoUploaded={() => void load()}
+        onOpenForm={(item) => openLinkedForm(insp.instance, item)}
+      />
+      {it.filed_by ? <span className="dash-card__sub"> · filed by {it.filed_by}</span> : null}
+      {rowMsgs[it.id] ? <InlineRowMsg msg={rowMsgs[it.id]} /> : null}
+    </li>
+  );
+
   // ── Render states ───────────────────────────────────────────────────────────────────────────────
   if (loading && !resp) return <SectionLoading label="Loading assigned inspections…" />;
   if (error && !resp) {
@@ -187,64 +203,125 @@ export function AssignedInspectionsSection({
   if (resp.inspections.length === 0 && !error) return null;
 
   const today = pacificToday();
+  const openInsp = openId !== null ? resp.inspections.find((i) => i.instance.id === openId) ?? null : null;
+
+  function statusPill(status: string) {
+    return (
+      <span className={status === "complete" ? "dash-pill dash-pill--ok" : "dash-pill dash-pill--warn"}>
+        {statusLabel(status)}
+      </span>
+    );
+  }
 
   return (
     <section className="card dash-section" aria-label="Assigned inspections">
       <h3 className="dash-detail__h2">Assigned inspections</h3>
       {error && <SectionRefreshWarn message={error} onRetry={() => void load()} what="loading assigned inspections" />}
       {softWarn && <SectionRefreshWarn message={softWarn} onRetry={() => void load()} what="refreshing assigned inspections" />}
-      {resp.inspections.map((insp) => {
-        const overdue =
-          insp.instance.status === "open" && !!insp.instance.instance_date && insp.instance.instance_date < today;
-        const openItems = insp.items.filter((it) => it.status !== "done");
-        const doneItems = insp.items.filter((it) => it.status === "done");
-        const renderItem = (it: checklist.ChecklistItemState) => (
-          <li key={it.id}>
-            <ChecklistItemRow
-              item={it}
-              busy={busyIds.has(it.id)}
-              canOpenForm={!!onOpenForm && !!insp.instance.job_id && !!insp.instance.instance_date}
-              onComplete={complete}
-              onUncomplete={uncomplete}
-              onRecordCount={recordCount}
-              onCountRecorded={() => void load()}
-              onPhotoUploaded={() => void load()}
-              onOpenForm={(item) => openLinkedForm(insp.instance, item)}
-            />
-            {it.filed_by ? <span className="dash-card__sub"> · filed by {it.filed_by}</span> : null}
-            {rowMsgs[it.id] ? <InlineRowMsg msg={rowMsgs[it.id]} /> : null}
-          </li>
-        );
-        return (
-          <div key={insp.instance.id} className="dash-subsection">
-            <h4 className="dash-detail__h2">
-              {/* R1 template_title is the heading; the raw instance id is demoted to small text. */}
-              {insp.instance.template_title ?? "Inspection"}
-              <span className="dash-card__sub"> · #{insp.instance.id}</span>
-              {insp.instance.project_name || insp.instance.job_id ? (
-                <span className="dash-card__sub"> · {insp.instance.project_name ?? insp.instance.job_id}</span>
-              ) : null}
-              {insp.instance.instance_date ? (
-                <span className="dash-card__sub"> · due {fmtDate(insp.instance.instance_date)}</span>
-              ) : null}{" "}
-              {overdue && <span className="dash-pill dash-pill--warn">Overdue</span>}{" "}
-              <span className={insp.instance.status === "complete" ? "dash-pill dash-pill--ok" : "dash-pill dash-pill--warn"}>
-                {statusLabel(insp.instance.status)}
-              </span>
-            </h4>
-            {insp.items.length === 0 ? (
-              <div className="muted">No items on this inspection.</div>
-            ) : (
+
+      {openInsp === null ? (
+        // ── The CARD LIST — click a card to open its items ──────────────────────────────────────
+        <>
+          <p className="dash-card__sub muted">
+            Tap an inspection to open its items, complete them, then tap Done.
+          </p>
+          <ul className="dash-grid checklist-tasklist" aria-label="Assigned inspection list">
+            {resp.inspections.map((insp) => {
+              const total = insp.items.length;
+              const done = insp.items.filter((it) => it.status === "done").length;
+              const overdue =
+                insp.instance.status === "open" && !!insp.instance.instance_date && insp.instance.instance_date < today;
+              const title = insp.instance.template_title ?? "Inspection";
+              const where = insp.instance.project_name ?? insp.instance.job_id;
+              return (
+                <li key={insp.instance.id}>
+                  <button
+                    type="button"
+                    className="card dash-card--click checklist-task-card"
+                    aria-label={`Open ${title} inspection`}
+                    onClick={() => {
+                      setOpenId(insp.instance.id);
+                      setRowMsgs({});
+                    }}
+                  >
+                    <div className="checklist-task-card__head">
+                      <h4 className="dash-card__title">{title}</h4>
+                      {overdue && <span className="dash-pill dash-pill--warn">Overdue</span>}
+                      {statusPill(insp.instance.status)}
+                    </div>
+                    <div className="dash-card__sub">
+                      #{insp.instance.id}
+                      {where ? <> · {where}</> : null}
+                      {insp.instance.instance_date ? <> · due {fmtDate(insp.instance.instance_date)}</> : null}
+                    </div>
+                    <div className="checklist-task-card__progress">
+                      <span className="dash-progress" aria-hidden="true">
+                        <span className="dash-progress__fill" style={{ width: total ? `${(done / total) * 100}%` : "0%" }} />
+                      </span>
+                      <span className="dash-card__sub">
+                        {done}/{total} item{total === 1 ? "" : "s"} done
+                      </span>
+                    </div>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        </>
+      ) : (
+        // ── ONE opened inspection — its items + completion + Done ────────────────────────────────
+        <div className="checklist-task-open">
+          <button
+            type="button"
+            className="btn btn--secondary checklist-task-open__back"
+            aria-label="Back to my inspections"
+            onClick={() => setOpenId(null)}
+          >
+            ← Back to my inspections
+          </button>
+          {(() => {
+            const insp = openInsp;
+            const overdue =
+              insp.instance.status === "open" && !!insp.instance.instance_date && insp.instance.instance_date < today;
+            const openItems = insp.items.filter((it) => it.status !== "done");
+            const doneItems = insp.items.filter((it) => it.status === "done");
+            const where = insp.instance.project_name ?? insp.instance.job_id;
+            const ri = renderItem(insp);
+            return (
               <>
-                {openItems.length > 0 && <ul className="dash-tasklist">{openItems.map(renderItem)}</ul>}
-                <CompletedDisclosure count={doneItems.length}>
-                  <ul className="dash-tasklist">{doneItems.map(renderItem)}</ul>
-                </CompletedDisclosure>
+                <h4 className="dash-detail__h2">
+                  {insp.instance.template_title ?? "Inspection"}
+                  <span className="dash-card__sub"> · #{insp.instance.id}</span>
+                  {where ? <span className="dash-card__sub"> · {where}</span> : null}
+                  {insp.instance.instance_date ? (
+                    <span className="dash-card__sub"> · due {fmtDate(insp.instance.instance_date)}</span>
+                  ) : null}{" "}
+                  {overdue && <span className="dash-pill dash-pill--warn">Overdue</span>} {statusPill(insp.instance.status)}
+                </h4>
+                {insp.items.length === 0 ? (
+                  <div className="muted">No items on this inspection.</div>
+                ) : (
+                  <>
+                    {openItems.length > 0 ? (
+                      <ul className="dash-tasklist">{openItems.map(ri)}</ul>
+                    ) : (
+                      <p className="banner banner--ok">All items are done — this inspection is complete.</p>
+                    )}
+                    <CompletedDisclosure count={doneItems.length}>
+                      <ul className="dash-tasklist">{doneItems.map(ri)}</ul>
+                    </CompletedDisclosure>
+                  </>
+                )}
+                <div className="checklist-task-open__foot">
+                  <button type="button" className="btn btn--primary" onClick={() => setOpenId(null)}>
+                    Done
+                  </button>
+                </div>
               </>
-            )}
-          </div>
-        );
-      })}
+            );
+          })()}
+        </div>
+      )}
     </section>
   );
 }
