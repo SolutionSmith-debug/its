@@ -1754,3 +1754,17 @@ h3,
 .checklist-task-card__progress .dash-progress { flex: 1 1 auto; height: 8px; }
 .checklist-task-open__back { margin-bottom: 14px; }
 .checklist-task-open__foot { margin-top: 16px; padding-top: 12px; border-top: 1px dashed var(--c-line); display: flex; justify-content: flex-end; }
+
+/* Authoring: the "Requires photo" toggle on a checklist item. */
+.checklist-req-photo { display: inline-flex; align-items: center; gap: 5px; font-size: 0.9rem; color: var(--c-muted); white-space: nowrap; }
+.checklist-req-photo input { accent-color: var(--c-brg); }
+
+/* Assignee: the photo-required hint beside a gated "Mark done". */
+.checklist-req-photo-hint { color: var(--c-danger); font-size: 0.85rem; font-weight: 600; }
+
+/* Submitter drill-in open view: a progress line + roomy, separated per-item rows so completing an
+   inspection reads like a clean checklist (a done item keeps its Undo visible to toggle off). */
+.checklist-open__progress { display: flex; align-items: center; gap: 10px; margin: 2px 0 14px; }
+.checklist-open__progress .dash-progress { flex: 1 1 auto; height: 8px; }
+.checklist-open__items > li { padding: 12px 2px; border-top: 1px solid var(--c-line); }
+.checklist-open__items > li:first-child { border-top: 0; }

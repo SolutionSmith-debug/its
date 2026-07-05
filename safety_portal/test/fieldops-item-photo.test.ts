@@ -73,6 +73,7 @@ interface AssignedItem {
   status: string;
   photo_ref: string | null;
   photo_status: string | null;
+  requires_photo?: boolean;
 }
 interface AssignedResp {
   inspections: { instance: { id: number }; items: AssignedItem[] }[];
@@ -564,6 +565,63 @@ describe("G1 S2 — result application (W4 batch, delete-on-screen, completion s
     // And the retry lifecycle completes normally.
     expect((await postResult(retryId, { status: "clean", box_file_id: "box-7" })).status).toBe(200);
     expect((await itemStateRow(manualStateId)).photo_ref).toBe(`clean:${retryId}`);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// requires_photo — an item authored "requires photo" (config_json.requires_photo, surfaced live
+// from the source item via the source_item_id → checklist_items join) cannot be marked done until a
+// LIVE (pending|clean) photo is on file. The SPA disables Mark done; the Worker re-enforces here.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("requires_photo — completion gate at /item-state/:id/complete", () => {
+  async function seedRequiresPhotoItem(): Promise<number> {
+    await seedJob("JOB-B"); // a distinct job — sub already has an open assignment on JOB-A (beforeEach)
+    const tplId = (await json<{ id: number }>(await post(admin, "/api/fieldops/checklist/inspection", { title: "Photo-required checks" }))).id;
+    const add = await post(admin, `/api/fieldops/checklist/inspection/${tplId}/item`, {
+      item_type: "manual_attest",
+      label: "Snap the harness",
+      requires_photo: true,
+    });
+    expect(add.status, await add.clone().text()).toBe(201);
+    const asg = await post(admin, "/api/fieldops/checklist/assign", {
+      template_id: tplId, assignee_personnel_id: subPersonId, job_id: "JOB-B", due_date: "2099-07-10",
+    });
+    expect(asg.status, await asg.clone().text()).toBe(201);
+    return (await assignedItems(sub)).find((i) => i.label === "Snap the harness")!.id;
+  }
+
+  it("stores requires_photo in config_json + surfaces it truthy on the assigned read", async () => {
+    await seedRequiresPhotoItem();
+    const it = (await assignedItems(sub)).find((i) => i.label === "Snap the harness")!;
+    expect(it.requires_photo).toBeTruthy();
+    // A non-required item on the same account reads falsy.
+    expect((await assignedItems(sub)).find((i) => i.label === "Harness photo")!.requires_photo).toBeFalsy();
+  });
+
+  it("400 photo_required when completing WITHOUT a live photo — the item stays open", async () => {
+    const stateId = await seedRequiresPhotoItem();
+    const res = await post(sub, `/api/fieldops/checklist/item-state/${stateId}/complete`, { note: "done" });
+    expect(res.status, await res.clone().text()).toBe(400);
+    expect((await json<{ error: string }>(res)).error).toBe("photo_required");
+    const st = await env.DB.prepare("SELECT status FROM checklist_item_states WHERE id=?1").bind(stateId).first<{ status: string }>();
+    expect(st!.status).toBe("open");
+  });
+
+  it("completes (200 → done) once a pending photo is attached", async () => {
+    const stateId = await seedRequiresPhotoItem();
+    expect((await upload(sub, stateId, { photo: photo() })).status).toBe(201);
+    const ok = await post(sub, `/api/fieldops/checklist/item-state/${stateId}/complete`, {});
+    expect(ok.status, await ok.clone().text()).toBe(200);
+    expect((await json<{ status: string }>(ok)).status).toBe("done");
+  });
+
+  it("a REFUSED photo does NOT satisfy the gate (the person must retry)", async () => {
+    const stateId = await seedRequiresPhotoItem();
+    const photoId = (await json<{ photo_id: number }>(await upload(sub, stateId, { photo: photo() }))).photo_id;
+    await env.DB.prepare("UPDATE item_photos SET status='refused', photo_json=NULL WHERE id=?1").bind(photoId).run();
+    const res = await post(sub, `/api/fieldops/checklist/item-state/${stateId}/complete`, {});
+    expect(res.status).toBe(400);
+    expect((await json<{ error: string }>(res)).error).toBe("photo_required");
   });
 });
 

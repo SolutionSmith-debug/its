@@ -12,6 +12,7 @@ import { ChecklistItemForm,
   itemInputFromRow,
   itemMetaLabel,
   nextSeq,
+  parseRequiresPhoto,
   planRenumber, ConfirmDelete } from "../components/ChecklistItemForm";
 
 // R8 — the admin "Checklists" page (view key 'fieldops-inspections' unchanged), REDESIGNED to the
@@ -60,6 +61,7 @@ function previewState(it: checklist.DefaultItem): checklist.ChecklistItemState {
     value_num: null,
     filed_by: null,
     photo_status: null,
+    requires_photo: parseRequiresPhoto(it.config_json),
   };
 }
 

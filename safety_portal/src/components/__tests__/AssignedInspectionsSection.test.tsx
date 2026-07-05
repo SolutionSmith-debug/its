@@ -20,7 +20,7 @@ beforeEach(() => {
   vi.resetAllMocks();
 });
 
-const ITEM: checklist.ChecklistItemState = { id: 40, source_item_id: 1, item_type: "manual_attest", label: "Harness checked", form_code: null, target_count: null, status: "open", note: null, photo_ref: null, completed_by: null, completed_at: null, value_num: null, filed_by: null, photo_status: null };
+const ITEM: checklist.ChecklistItemState = { id: 40, source_item_id: 1, item_type: "manual_attest", label: "Harness checked", form_code: null, target_count: null, status: "open", note: null, photo_ref: null, completed_by: null, completed_at: null, value_num: null, filed_by: null, photo_status: null, requires_photo: false };
 
 function inspection(overrides: Partial<checklist.AssignedInstance> = {}, items: checklist.ChecklistItemState[] = [ITEM]): checklist.AssignedInspection {
   return {
@@ -98,16 +98,19 @@ describe("AssignedInspectionsSection — headings + dates", () => {
 });
 
 describe("AssignedInspectionsSection — rows + try-split", () => {
-  it("completed items collapse under 'Completed (N)' inside an opened inspection", async () => {
+  it("shows every item inline in an opened inspection — a done item keeps a visible Undo (toggle off)", async () => {
     respOk([
       inspection({}, [ITEM, { ...ITEM, id: 41, label: "Lanyard tagged", status: "done", completed_by: "sam", completed_at: 1 }]),
     ]);
     const { container, getByLabelText } = render(<AssignedInspectionsSection />);
     fireEvent.click(await waitFor(() => getByLabelText("Open Fall protection inspection")));
-    await waitFor(() => expect(container.textContent ?? "").toContain("Completed (1)"));
-    const details = container.querySelector("details.dash-completed")!;
-    expect(details.hasAttribute("open")).toBe(false);
-    expect(details.textContent ?? "").toContain("Lanyard tagged");
+    // No collapse: both the open and the done item render in one list...
+    await waitFor(() => expect(container.textContent ?? "").toContain("Lanyard tagged"));
+    expect(container.querySelector("details.dash-completed")).toBeNull();
+    expect(container.textContent ?? "").toContain("Harness checked");
+    // ...and the done item exposes an Undo so the person can toggle it back open.
+    expect(getByLabelText("Undo item 41")).not.toBeNull();
+    expect(getByLabelText("Complete item 40")).not.toBeNull();
   });
 
   it("mutation success + refetch failure: success feedback, data kept, soft warn (never 'failed')", async () => {
@@ -121,8 +124,9 @@ describe("AssignedInspectionsSection — rows + try-split", () => {
     await waitFor(() => expect(container.textContent ?? "").toContain("Inspection complete."));
     await waitFor(() => expect(container.textContent ?? "").toContain("Saved — but the list couldn't refresh"));
     expect(container.textContent ?? "").not.toContain("Update failed.");
-    // The CompleteResult was applied locally: item done + instance complete.
-    expect(container.textContent ?? "").toContain("Completed (1)");
+    // The CompleteResult was applied locally: the item flipped to done (its Undo shows inline now) +
+    // the instance reads complete.
+    expect(getByLabelText("Undo item 40")).not.toBeNull();
     expect(container.textContent ?? "").toContain("Complete"); // humanized instance status
   });
 

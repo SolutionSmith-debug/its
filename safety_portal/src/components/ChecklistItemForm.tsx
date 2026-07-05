@@ -57,6 +57,17 @@ export function nextSeq(rows: { seq: number }[]): number {
   return rows.reduce((m, r) => Math.max(m, r.seq), 0) + 10;
 }
 
+/** Parse the `requires_photo` flag out of an item's stored config_json (tolerant of null/garbage —
+ * a clobbered or legacy config_json reads as "not required" and never throws). */
+export function parseRequiresPhoto(configJson: string | null | undefined): boolean {
+  if (!configJson) return false;
+  try {
+    return (JSON.parse(configJson) as { requires_photo?: unknown }).requires_photo === true;
+  } catch {
+    return false;
+  }
+}
+
 /** Rebuild the full ItemInput write payload from a stored row (edit prefill / reorder re-writes).
  * The edit routes REPLACE every field, so a partial payload would clobber — always send it all. */
 export function itemInputFromRow(row: {
@@ -65,6 +76,7 @@ export function itemInputFromRow(row: {
   label: string | null;
   form_code: string | null;
   target_count: number | null;
+  config_json?: string | null;
 }): checklist.ItemInput {
   const input: checklist.ItemInput = {
     item_type: row.item_type as checklist.ChecklistItemType,
@@ -73,6 +85,7 @@ export function itemInputFromRow(row: {
   };
   if (row.form_code !== null) input.form_code = row.form_code;
   if (row.target_count !== null) input.target_count = row.target_count;
+  if (parseRequiresPhoto(row.config_json)) input.requires_photo = true;
   return input;
 }
 
@@ -171,6 +184,17 @@ export function ChecklistItemForm({
           inputMode="numeric"
           size={5}
         />
+      )}{" "}
+      {!isFormBearing(draft.item_type) && (
+        <label className="checklist-req-photo">
+          <input
+            type="checkbox"
+            aria-label={`${label} requires photo`}
+            checked={draft.requires_photo ?? false}
+            onChange={(e) => set({ requires_photo: e.target.checked || undefined })}
+          />{" "}
+          Requires photo
+        </label>
       )}{" "}
       <button type="submit" disabled={busy} className="btn btn--primary">{submitLabel}</button>
       {onCancel && (

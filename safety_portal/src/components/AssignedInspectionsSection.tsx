@@ -5,7 +5,6 @@ import { statusLabel } from "../lib/labels";
 import { resolveFormTarget } from "../forms/registry";
 import type { FormPrefill } from "../pages/FormFillPage";
 import {
-  CompletedDisclosure,
   InlineRowMsg,
   SectionError,
   SectionLoading,
@@ -283,7 +282,6 @@ export function AssignedInspectionsSection({
             const insp = openInsp;
             const overdue =
               insp.instance.status === "open" && !!insp.instance.instance_date && insp.instance.instance_date < today;
-            const openItems = insp.items.filter((it) => it.status !== "done");
             const doneItems = insp.items.filter((it) => it.status === "done");
             const where = insp.instance.project_name ?? insp.instance.job_id;
             const ri = renderItem(insp);
@@ -302,14 +300,23 @@ export function AssignedInspectionsSection({
                   <div className="muted">No items on this inspection.</div>
                 ) : (
                   <>
-                    {openItems.length > 0 ? (
-                      <ul className="dash-tasklist">{openItems.map(ri)}</ul>
-                    ) : (
-                      <p className="banner banner--ok">All items are done — this inspection is complete.</p>
-                    )}
-                    <CompletedDisclosure count={doneItems.length}>
-                      <ul className="dash-tasklist">{doneItems.map(ri)}</ul>
-                    </CompletedDisclosure>
+                    <div className="checklist-open__progress">
+                      <span className="dash-progress" aria-hidden="true">
+                        <span
+                          className="dash-progress__fill"
+                          style={{ width: `${(doneItems.length / insp.items.length) * 100}%` }}
+                        />
+                      </span>
+                      <span className="dash-card__sub">
+                        {doneItems.length}/{insp.items.length} done
+                      </span>
+                    </div>
+                    {/* Every item inline in seq order — a done item keeps its Undo visible (toggle to
+                        uncheck), so nothing hides behind a disclosure while the person works the list. */}
+                    <ul className="dash-tasklist checklist-open__items">{insp.items.map(ri)}</ul>
+                    {doneItems.length === insp.items.length ? (
+                      <p className="banner banner--ok">All items are done — tap Done to finish.</p>
+                    ) : null}
                   </>
                 )}
                 <div className="checklist-task-open__foot">

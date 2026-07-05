@@ -108,6 +108,13 @@ export function ChecklistItemRow({
   const isCount = item.item_type === "count";
   const isLinked = item.item_type === "form_linked" || item.item_type === "inspection";
 
+  // requires_photo gate — an item authored "requires photo" can't be marked done until a live
+  // (pending|clean) photo is on file. The Worker re-enforces at /complete (defense-in-depth); this
+  // disables the button + says why, so a tap is never silently rejected. A refused/absent photo
+  // blocks; an already-done item is never re-gated (only completing demands the photo).
+  const photoAttached = item.photo_status === "pending" || item.photo_status === "clean";
+  const needsPhoto = !!item.requires_photo && !photoAttached;
+
   // Row-owned count record (R3): server-driven below-target detection → inline acknowledge prompt.
   async function recordOwned(value: number) {
     if (!Number.isFinite(value) || value < 0) {
@@ -202,12 +209,20 @@ export function ChecklistItemRow({
           />
           <button
             type="button"
-            className="btn btn--ghost"
+            // A required-but-missing photo makes "Add photo" the obvious next action (primary), so the
+            // person isn't left staring at a disabled "Mark done"; an optional photo stays a quiet ghost.
+            className={needsPhoto ? "btn btn--primary" : "btn btn--ghost"}
             aria-label={`Add photo for item ${item.id}`}
             disabled={busy || photoBusy}
             onClick={() => photoInputRef.current?.click()}
           >
-            {photoBusy ? "Uploading…" : item.photo_status === "refused" ? "Add a different photo" : "Add photo"}
+            {photoBusy
+              ? "Uploading…"
+              : item.photo_status === "refused"
+                ? "Add a different photo"
+                : needsPhoto
+                  ? "📷 Add photo"
+                  : "Add photo"}
           </button>
           {photoErr ? (
             <span className="login__error" role="alert">
@@ -314,7 +329,7 @@ export function ChecklistItemRow({
             type="button"
             className={done ? "btn btn--secondary" : "btn btn--primary"}
             aria-label={done ? `Undo item ${item.id}` : `Complete item ${item.id}`}
-            disabled={busy}
+            disabled={busy || (!done && needsPhoto)}
             onClick={() =>
               // G1: thread the EXISTING photo_ref through a plain "Mark done" (the complete route
               // overwrites photo_ref from the body — omitting it would NULL the 'pending:<id>'
@@ -324,6 +339,9 @@ export function ChecklistItemRow({
           >
             {done ? "Undo" : "Mark done"}
           </button>
+          {!done && needsPhoto ? (
+            <span className="checklist-req-photo-hint" role="note"> · 📷 Photo required — attach one first</span>
+          ) : null}
           {done && item.note && !editingNote ? <span className="dash-card__sub"> · {item.note}</span> : null}
           {done ? photoEvidence : null}
           {done && !editingNote ? (

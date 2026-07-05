@@ -16,6 +16,7 @@ import {
   itemInputFromRow,
   itemMetaLabel,
   nextSeq,
+  parseRequiresPhoto,
   planRenumber,
 } from "../ChecklistItemForm";
 
@@ -43,6 +44,47 @@ function Harness({ initial, onSubmit, onCancel }: {
     />
   );
 }
+
+describe("ChecklistItemForm — requires_photo toggle", () => {
+  it("shows the Requires-photo checkbox for manual_attest, hides it for a form-bearing type", () => {
+    const { getByLabelText, queryByLabelText } = render(<Harness initial={{ item_type: "manual_attest", label: "x" }} />);
+    expect(getByLabelText("Test item requires photo")).not.toBeNull();
+    fireEvent.change(getByLabelText("Test item type"), { target: { value: "form_linked" } });
+    expect(queryByLabelText("Test item requires photo")).toBeNull();
+  });
+
+  it("toggling it flows requires_photo:true into the submitted draft", () => {
+    const onSubmit = vi.fn();
+    const { getByLabelText, getByRole } = render(
+      <Harness initial={{ item_type: "manual_attest", label: "Snap it" }} onSubmit={onSubmit} />,
+    );
+    fireEvent.click(getByLabelText("Test item requires photo"));
+    fireEvent.click(getByRole("button", { name: "Save" }));
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ requires_photo: true }));
+  });
+});
+
+describe("parseRequiresPhoto + itemInputFromRow round-trip", () => {
+  it("parseRequiresPhoto reads the flag, tolerating null/garbage", () => {
+    expect(parseRequiresPhoto('{"requires_photo":true}')).toBe(true);
+    expect(parseRequiresPhoto('{"requires_photo":false}')).toBe(false);
+    expect(parseRequiresPhoto("{}")).toBe(false);
+    expect(parseRequiresPhoto(null)).toBe(false);
+    expect(parseRequiresPhoto("not-json")).toBe(false);
+  });
+
+  it("itemInputFromRow carries requires_photo out of config_json (only when true)", () => {
+    const required = itemInputFromRow({
+      seq: 10, item_type: "manual_attest", label: "x", form_code: null, target_count: null,
+      config_json: '{"requires_photo":true}',
+    });
+    expect(required.requires_photo).toBe(true);
+    const plain = itemInputFromRow({
+      seq: 10, item_type: "manual_attest", label: "x", form_code: null, target_count: null, config_json: null,
+    });
+    expect(plain.requires_photo).toBeUndefined();
+  });
+});
 
 describe("ChecklistItemForm — type select + per-type helper", () => {
   it("shows human type labels while submitting the raw wire keys", () => {
