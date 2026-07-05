@@ -70,8 +70,17 @@ Successor-Operator does not handle token rotation.
 ## Symptom D — a single job repeatedly `fieldops_job_transient` (stays dirty), or `fieldops_pending_fetch_failed`
 
 **What it means.** A transient Smartsheet error on that job (or fetching the queue). The per-job
-fence leaves the job `pending` and continues; the next cycle retries. **Low-class Tier-2:** confirm
-Smartsheet is reachable (the circuit breaker / `ITS_Errors`); if a single job is stuck transient for
+fence leaves the job `pending` and continues; the next cycle retries. **Decoupled:** a
+`fieldops_pending_fetch_failed` (the job-QUEUE fetch itself blipping) no longer skips the rest of the
+cycle — the hours + equipment passes hit independent endpoints (`/hours-pending`,
+`/equipment-snapshot`) and still run, so a recurring job-queue blip does NOT starve the Hours Log
+mirror. (A 401 — `fieldops_pending_auth_failed`, Symptom C — DOES stop the whole cycle: the shared
+bearer fails every endpoint.) A **sustained** job-queue outage (≥5 consecutive cycles) escalates from
+ERROR to **CRITICAL** (`fieldops_pending_fetch_sustained` — email/Sentry), so a persistent
+`/pending-jobs` outage is observable even though hours keep mirroring. **Low-class Tier-2:** for
+`fieldops_job_transient` confirm Smartsheet is reachable (the circuit breaker / `ITS_Errors`); for
+`fieldops_pending_fetch_failed`/`_sustained` confirm the **Worker** base URL + `/pending-jobs` are
+reachable (the circuit breaker covers Smartsheet only, not this Worker fetch); if a single job is stuck transient for
 many cycles after Smartsheet is healthy, capture its `job_id` and escalate (likely a row-shape edge
 the §30 integration scaffold + a live smoke should reproduce).
 

@@ -69,6 +69,14 @@ def _patch(mocker):
         "marker": mocker.patch("field_ops.fieldops_sync._write_watchdog_marker", return_value=None),
         "log": mocker.patch("field_ops.fieldops_sync.error_log.log", return_value=None),
         "circuit": mocker.patch("field_ops.fieldops_sync.circuit_breaker.is_open", return_value=False),
+        # Pending-fetch-outage counter seams — mocked so no test touches the live ~/its/state dir
+        # and the sustained-outage escalation can be driven. Default 1 (single blip → ERROR).
+        "record_fetch_fail": mocker.patch(
+            "field_ops.fieldops_sync._record_pending_fetch_failure", return_value=1
+        ),
+        "reset_fetch_fail": mocker.patch(
+            "field_ops.fieldops_sync._reset_pending_fetch_failures", return_value=None
+        ),
         # P7 hours pass seams — hours_enabled defaults OFF so EVERY existing job-mirror test is
         # byte-identical (the pass is skipped); the hours tests below flip it on. All hours I/O is
         # mocked so no test touches live Smartsheet / the Worker.
@@ -314,6 +322,61 @@ def test_pending_auth_error_pages_and_writes_error_heartbeat(_patch):
     _patch["upsert"].assert_not_called()
     assert _patch["hb_row"].call_args.kwargs["status"] == "ERROR"
     _patch["marker"].assert_not_called()
+
+
+def test_pending_transport_error_does_not_starve_the_hours_pass(_patch):
+    # The live "logged time never reaches the Hours Log" bug: a TRANSIENT pending-JOBS transport
+    # failure must NOT skip the hours pass — it hits an INDEPENDENT endpoint (/hours-pending) that
+    # may well be reachable this cycle. The job error is recorded (never silent); the hours pass
+    # still runs. (Reverting the fix — restoring the early-return on the transport branch — makes
+    # this red: hours_pending would never be called.)
+    _patch["pending"].side_effect = fieldops_sync.portal_client.PortalTransportError(
+        "jobs endpoint blipped"
+    )
+    _patch["hours_enabled"].return_value = True
+    _patch["hours_pending"].return_value = [
+        {
+            "uuid": "u1", "job_id": "JOB-1", "project_name": "Proj", "personnel_name": "Sam",
+            "hours": 8, "work_started_at": None, "work_ended_at": None, "notes": "",
+            "amends_uuid": None, "created_at": 1_700_000_000,
+        },
+    ]
+
+    stats = fieldops_sync._sync_inside_lock()
+
+    # The hours pass RAN despite the job-fetch failure (the fix):
+    _patch["hours_pending"].assert_called_once()
+    _patch["ensure_sheet"].assert_called_once()
+    _patch["hours_mark"].assert_called_once()
+    # ...and the job-fetch failure is still observable (never silent): DEGRADED, no job mirror,
+    # but the daemon IS alive (it did useful hours work) so the marker is written.
+    assert stats.errors >= 1
+    _patch["upsert"].assert_not_called()
+    assert _patch["hb_row"].call_args.kwargs["status"] == "DEGRADED"
+    _patch["marker"].assert_called_once()
+
+
+def test_pending_transport_sustained_escalates_to_critical(_patch):
+    # Because the decoupled cycle no longer goes Check-C-stale on a job-fetch outage, a SUSTAINED
+    # outage (counter >= threshold) escalates the per-cycle ERROR to CRITICAL (the triple-fire push).
+    _patch["pending"].side_effect = fieldops_sync.portal_client.PortalTransportError("down")
+    _patch["record_fetch_fail"].return_value = fieldops_sync.PENDING_FETCH_FAIL_CRITICAL_THRESHOLD
+    fieldops_sync._sync_inside_lock()
+    crit = [
+        c for c in _patch["log"].call_args_list
+        if c.args[0] == fieldops_sync.Severity.CRITICAL
+        and c.kwargs.get("error_code") == "fieldops_pending_fetch_sustained"
+    ]
+    assert crit, "a sustained pending-jobs outage must escalate to CRITICAL"
+
+
+def test_pending_transport_transient_stays_error_not_critical(_patch):
+    # A single transient blip (counter below threshold) self-heals → ERROR, never CRITICAL.
+    _patch["pending"].side_effect = fieldops_sync.portal_client.PortalTransportError("blip")
+    _patch["record_fetch_fail"].return_value = 1
+    fieldops_sync._sync_inside_lock()
+    crit = [c for c in _patch["log"].call_args_list if c.args[0] == fieldops_sync.Severity.CRITICAL]
+    assert not crit, "a single transient blip must NOT page CRITICAL"
 
 
 # ---- malformed row --------------------------------------------------------
