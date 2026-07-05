@@ -72,6 +72,7 @@ FIELDOPS_JOBS_MARK_MIRRORED_PATH = "/api/internal/fieldops/jobs-mark-mirrored"
 FIELDOPS_HOURS_PENDING_PATH = "/api/internal/fieldops/hours-pending"
 FIELDOPS_HOURS_MARK_MIRRORED_PATH = "/api/internal/fieldops/hours-mark-mirrored"
 FIELDOPS_EQUIPMENT_SNAPSHOT_PATH = "/api/internal/fieldops/equipment-snapshot"
+FIELDOPS_MATERIAL_LIST_SNAPSHOT_PATH = "/api/internal/fieldops/material-list-snapshot"
 PROGRESS_ROLLUP_PATH = "/api/internal/progress-rollup"
 PRUNE_STATUS_PATH = "/api/internal/prune-status"
 
@@ -413,6 +414,61 @@ def get_fieldops_equipment_snapshot(base_url: str, token: str) -> FieldopsEquipm
     return FieldopsEquipmentSnapshot(
         equipment=[row for row in equipment if isinstance(row, dict)],
         jobs_with_equipment=[row for row in roster if isinstance(row, dict)],
+    )
+
+
+class FieldopsMaterialListSnapshot(NamedTuple):
+    """The two arrays the material-list-snapshot route returns.
+
+    `lines` — the CURRENT per-job Material List (one row per ACTIVE `job_expected_materials` line on
+    an active job). `jobs_with_materials` — the RECONCILE ROSTER: every active job that has ANY
+    `job_expected_materials` row (active OR deactivated). The daemon iterates the roster so a job
+    whose lines were ALL deactivated is still revisited and its stale `On List=Active` rows marked
+    Removed (the count-drops-to-zero silent gap).
+    """
+
+    lines: list[dict[str, Any]]
+    jobs_with_materials: list[dict[str, Any]]
+
+
+def get_fieldops_material_list_snapshot(base_url: str, token: str) -> FieldopsMaterialListSnapshot:
+    """Pull the CURRENT per-job Material List snapshot + reconcile roster: GET
+    /api/internal/fieldops/material-list-snapshot (P7 Material List up-sync, M2).
+
+    Returns a `FieldopsMaterialListSnapshot(lines, jobs_with_materials)`:
+      - `lines` — dicts with `line_uuid, job_id, project_name, material_id, catalog_name,
+        description, qty, unit, expected_date, status, received_at, qty_received,
+        received_by_display, note, unplanned, seq`. `catalog_name` is the resolved catalog model_id
+        (NULL for a free-text line); `received_by_display` is the DISPLAY name only (never a
+        username — House Reflex §5). A SNAPSHOT (the live per-job list re-projected every cycle),
+        NOT an event drain: no watermark, no mark-mirrored companion. The Worker returns the
+        complete set (uncapped — the daemon needs the full list to compute retire-removed).
+      - `jobs_with_materials` — dicts `{job_id, project_name}` for every active job with ANY
+        `job_expected_materials` row (active or deactivated). The reconcile set the daemon iterates
+        so a job whose lines were all deactivated still retires its stale sheet rows.
+
+    A control-plane read of OUR OWN Worker (bearer = the SEPARATE field-ops token
+    `PORTAL_FIELDOPS_API_TOKEN`, same as `get_fieldops_equipment_snapshot`), NOT a customer send.
+    Same typed-error contract: `PortalAuthError` (401) / `PortalRateLimitError` (429/503 exhausted)
+    / `PortalTransportError` (any other, incl. a non-object / missing-array body).
+    """
+    data = _request("GET", base_url, FIELDOPS_MATERIAL_LIST_SNAPSHOT_PATH, token)
+    lines = data.get("lines")
+    if not isinstance(lines, list):
+        raise PortalTransportError(
+            f"GET {FIELDOPS_MATERIAL_LIST_SNAPSHOT_PATH} missing/invalid 'lines' array "
+            f"(got {type(lines).__name__})"
+        )
+    roster = data.get("jobs_with_materials")
+    if not isinstance(roster, list):
+        raise PortalTransportError(
+            f"GET {FIELDOPS_MATERIAL_LIST_SNAPSHOT_PATH} missing/invalid 'jobs_with_materials' "
+            f"array (got {type(roster).__name__})"
+        )
+    # Defensive: keep only dict rows; a non-dict element is malformed transport.
+    return FieldopsMaterialListSnapshot(
+        lines=[row for row in lines if isinstance(row, dict)],
+        jobs_with_materials=[row for row in roster if isinstance(row, dict)],
     )
 
 

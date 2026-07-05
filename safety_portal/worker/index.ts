@@ -1953,6 +1953,67 @@ app.get("/api/internal/fieldops/equipment-snapshot", requireFieldopsToken, async
 });
 
 /**
+ * GET /material-list-snapshot — the per-job Material List across all active jobs (P7 Material List
+ * up-sync, M2). A SNAPSHOT, not an event drain: it re-projects the operator-authored per-job
+ * expected-materials list every cycle, so — like the equipment snapshot and unlike the job / hours
+ * queues — there is NO watermark and NO mark-mirrored companion. One object per ACTIVE
+ * (`jem.active = 1`) `job_expected_materials` row on an ACTIVE job:
+ *   - INNER JOIN jobs (status = 'active') for project_name — dropping any line whose job is
+ *     closed/on_hold/unknown (the same active-job filter the equipment snapshot uses;
+ *     `jobs.status` is kept in lock-step with `lifecycle` by the lifecycle write route);
+ *   - LEFT JOIN material_catalog (as a correlated subquery, matching the expected-materials READ
+ *     route) → `catalog_name` = the catalog model_id for a catalog-picked line, NULL for free-text;
+ *   - `received_by_display` resolves the stored ACCOUNT username → the personnel DISPLAY NAME only
+ *     (House Reflex §5 / W9 — an unmatched account yields NULL, the raw username never leaves the
+ *     Worker), resolved EXACTLY as the expected-materials read route resolves received_by.
+ *
+ * Read-only; FULLY bound (the single `'active'` literal is bound as ?1 for trust-boundary hygiene
+ * even though the route takes NO client input); leaks nothing beyond the projected fields. NOT
+ * capped/paginated ON PURPOSE — the daemon needs the COMPLETE list per job to compute
+ * retire-removed correctly (a truncated page would wrongly mark still-active lines Removed); a
+ * per-job expected-materials list is naturally bounded, so an uncapped internal read of our own
+ * reference table is fine (mirrors the equipment-snapshot rationale).
+ *
+ * ALSO returns `jobs_with_materials` — the RECONCILE ROSTER: every ACTIVE job that has ANY
+ * `job_expected_materials` row (active OR deactivated). This is load-bearing: a job whose lines were
+ * ALL deactivated produces NO `lines` rows, so without the roster the daemon would never revisit
+ * that job's Material List sheet and its stale `On List=Active` rows would persist forever. The
+ * daemon iterates the roster as its reconcile set; a job in the roster but absent from `lines` gets
+ * ALL its sheet rows marked Removed. (No `jem.active` filter here — that is deliberate.)
+ */
+app.get("/api/internal/fieldops/material-list-snapshot", requireFieldopsToken, async (c) => {
+  const [linesRes, rosterRes] = await c.env.DB.batch<Record<string, unknown>>([
+    c.env.DB
+      .prepare(
+        `SELECT jem.line_uuid, jem.job_id, j.project_name, jem.material_id,
+                (SELECT mc.model_id FROM material_catalog mc WHERE mc.id = jem.material_id) AS catalog_name,
+                jem.description, jem.qty, jem.unit, jem.expected_date, jem.status,
+                jem.received_at, jem.qty_received,
+                (SELECT p.name FROM personnel p WHERE p.username = jem.received_by ORDER BY p.id ASC LIMIT 1)
+                  AS received_by_display,
+                jem.note, jem.unplanned, jem.seq
+           FROM job_expected_materials jem
+           JOIN jobs j ON j.job_id = jem.job_id AND j.status = ?1
+          WHERE jem.active = 1
+          ORDER BY j.project_name ASC, jem.seq ASC, jem.id ASC`,
+      )
+      .bind("active"),
+    c.env.DB
+      .prepare(
+        `SELECT DISTINCT jem.job_id, j.project_name
+           FROM job_expected_materials jem
+           JOIN jobs j ON j.job_id = jem.job_id AND j.status = ?1
+          ORDER BY j.project_name ASC, jem.job_id ASC`,
+      )
+      .bind("active"),
+  ]);
+  return c.json({
+    lines: linesRes.results ?? [],
+    jobs_with_materials: rosterRes.results ?? [],
+  });
+});
+
+/**
  * Operator user provisioning — /api/internal/admin/* (requireAdminToken, the
  * operator-only secret). The operator passes PLAINTEXT over this bearer-gated
  * channel; the BACKEND bcrypt-hashes (cost 10) before write — plaintext is never

@@ -41,6 +41,7 @@ its migration fail-closes `resolveCapabilities` → the universal-lockout class 
 | `0036_item_photos` | G1 Slice 1 item-photo capture queue — [section](#checklist-item-photos--capture--pending-queue-g1-slice-1--0036) | #452 | ☐ pending |
 | `0037_daily_photo_pool` | daily-report v6: additional site photos (pool) + D.13 incident link — [section](#daily-report-photo-pool--additional-site-photos-v6--0037) | #456 | ☐ pending |
 | `0038_time_entries_mirror` | P7 Slice 1 Hours Log up-sync watermark — [section](#hours-log-up-sync-watermark-p7-slice-1--0038) | #461 | ☐ pending |
+| `0039_material_list_mirror` | P7 M2 Material List up-sync keys (line_uuid + unplanned) — [section](#material-list-up-sync-keys-p7-m2--0039) | (M2) | ☐ pending |
 
 Canonical apply-and-deploy sequence (applies **all** pending migrations, in order — never a
 subset):
@@ -1002,3 +1003,42 @@ Hours Log **strands** in the progress workspace until #462 lands — never-delet
 data loss, but the archive guarantee is skipped. **Land #462 before enabling `hours_enabled` in a
 tenant where jobs may archive** (or accept the bounded stranded-sheet exposure — a manual move
 recovers it). **Deferred to later slices:** the Equipment + Materials standing trackers (P7 Slices 2–3).
+
+### Material List up-sync keys (P7 M2) — 0039
+
+**What ships:** the per-job **Material List** standing tracker — a per-job `<Job> — Material List`
+Smartsheet in the `ITS — Progress Reporting` workspace (in the job's folder, beside its Hours Log +
+Equipment + week sheets), one-way-up mirrored from the operator-authored D1 `job_expected_materials`
+list (send-free + AI-free, Op Stds v19 §51). Migration `0039` adds the two mirror keys the up-sync
+needs — `line_uuid` (the stable per-line find-or-create key, backfilled + minted at the ADD-line
+INSERT) and `unplanned` (0/1 off-manifest flag, default 0); it adds NO `smartsheet_row_id` (that is
+bidirectional-only — a deferred FUTURE model, explicitly out of scope). The Worker gains
+`GET /api/internal/fieldops/material-list-snapshot` (field-ops-token-gated, send-free, uncapped,
+fully-bound SQL — same privilege separation + shape as the equipment-snapshot route); the existing
+`field_ops.fieldops_sync` daemon gains a **material pass** that runs in the SAME cycle/lock/heartbeat.
+
+**Model — PORTAL-AUTHORED, ONE-WAY-UP:** the operator authors + edits the list in the portal (the
+#426 `cap.materials.manage` CRUD); M2 mirrors the WHOLE list UP (expected content + delivery state +
+`Unplanned`). **NO down-sync, NOT bidirectional.** A removed (deactivated) line is marked
+`On List = Removed` on the sheet, **never deleted** (§51).
+
+**Shipped DARK** — the material pass is gated OFF by `field_ops.fieldops_sync.materials_enabled`
+(default false). Applying `0039` + deploying the Worker changes nothing until the operator flips it.
+
+**Activation (post apply-all + deploy):**
+1. Confirm `ITS_PORTAL_FIELDOPS_TOKEN` (Keychain) matches the Worker `PORTAL_FIELDOPS_API_TOKEN`
+   (already true — the job/hours/equipment passes use it).
+2. Set `field_ops.fieldops_sync.materials_enabled = true` in `ITS_Config` (Workstream `field_ops`).
+3. **Live smoke:** add an expected-materials line in the portal Job Tracker → within one
+   `fieldops_sync` cycle a row appears in the job's `<Job> — Material List` sheet (correct Material /
+   Description / Qty / Status); confirm receipt → the row flips to `received` with `Received By`
+   showing the DISPLAY name; deactivate a line → next cycle its row flips to `On List = Removed` (not
+   deleted); the daemon's `ITS_Daemon_Health` row stays OK.
+4. Deactivate a job's LAST active line → the roster still visits it and marks the stale rows Removed
+   (the count-drops-to-zero reconcile); a job with no sheet is silently skipped (no empty sheet).
+
+**§51 guards:** never-`delete_rows` + the SoR-safe row-cap WARN watchdog (`material_list.check_row_cap`,
+threshold `progress_reports.material_list.row_cap_warn_threshold`, default 15000); the A1 sheet-count
+margin-check fires on each create; **archive-on-closure** now moves the Material List sheet too (same
+its#462 move machinery — landed for the standing trackers). **Deferred:** a bidirectional
+Smartsheet→D1 down-sync (would need `smartsheet_row_id`) — a FUTURE model, not M2.
