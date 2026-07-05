@@ -1811,6 +1811,82 @@ app.post("/api/internal/fieldops/jobs-mark-mirrored", requireFieldopsToken, asyn
 });
 
 /**
+ * GET /hours-pending — unmirrored crew time entries (P7 Hours Log up-sync, Track 2). Each row
+ * carries everything the daemon needs to find-or-create the job's per-job "Hours Log" sheet
+ * (progress workspace) and upsert/supersede the entry row: the entry uuid (find-or-create key +
+ * amend target), its job's project_name (folder key), the field-reported work times + hours, the
+ * amend link, the server record time, and the DISPLAY-NAME-ONLY personnel name (never a username
+ * — House Reflex §5). Read-only; bound SQL; capped; job-ordered so the daemon batches per job. An
+ * entry whose job row is missing (data anomaly) is simply not returned (INNER JOIN) — it cannot be
+ * foldered, and it re-appears the moment the job row exists.
+ */
+const FIELDOPS_HOURS_CAP = 200;
+app.get("/api/internal/fieldops/hours-pending", requireFieldopsToken, async (c) => {
+  const rows = await c.env.DB
+    .prepare(
+      `SELECT t.uuid, t.job_id, j.project_name,
+              t.work_started_at, t.work_ended_at, t.hours, t.notes,
+              t.amends_uuid, t.created_at, p.name AS personnel_name
+         FROM time_entries t
+         JOIN jobs j ON j.job_id = t.job_id
+         LEFT JOIN personnel p ON p.id = t.personnel_id
+        WHERE t.mirrored_at IS NULL
+        ORDER BY t.job_id ASC, t.created_at ASC
+        LIMIT ?1`,
+    )
+    .bind(FIELDOPS_HOURS_CAP)
+    .all<Record<string, unknown>>();
+  return c.json({ entries: rows.results ?? [] });
+});
+
+/**
+ * POST /hours-mark-mirrored — the hours pass's commit point. Body: { uuids: [uuid, …] } — the
+ * entries whose per-job Hours Log row the daemon confirmed this cycle. Each stamps
+ * mirrored_at = unixepoch() IFF still NULL (idempotent: a replay/re-mirror is a no-op, never a
+ * regress). One atomic batch + a single summary audit row (system actor — token-gated daemon, no
+ * session). Crash-safe: a crash before this leaves the entry unmirrored → re-upserted next cycle
+ * (the sheet find-or-create by Entry UUID no-ops) → stamped.
+ */
+app.post("/api/internal/fieldops/hours-mark-mirrored", requireFieldopsToken, async (c) => {
+  let body: { uuids?: unknown };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "bad_request" }, 400);
+  }
+  if (typeof body !== "object" || (body as unknown) === null || Array.isArray(body)) {
+    return c.json({ error: "bad_request" }, 400);
+  }
+  const raw = body.uuids;
+  if (!Array.isArray(raw)) return c.json({ error: "invalid_uuids" }, 400);
+  if (raw.length === 0) return c.json({ error: "empty_uuids" }, 400);
+  if (raw.length > FIELDOPS_HOURS_CAP) return c.json({ error: "too_many_uuids" }, 413);
+
+  const uuids: string[] = [];
+  for (const u of raw) {
+    if (typeof u !== "string" || !u || u.length > 64) return c.json({ error: "invalid_uuid" }, 400);
+    uuids.push(u);
+  }
+  const statements = uuids.map((uuid) =>
+    c.env.DB
+      .prepare("UPDATE time_entries SET mirrored_at = unixepoch() WHERE uuid = ?1 AND mirrored_at IS NULL")
+      .bind(uuid),
+  );
+  statements.push(
+    c.env.DB
+      .prepare("INSERT INTO audit_log (actor_username, action, target_username, detail) VALUES (?1,?2,?3,?4)")
+      .bind(
+        "system:fieldops_sync",
+        "hours_mark_mirrored",
+        "",
+        JSON.stringify({ count: uuids.length, uuids: uuids.slice(0, 50) }),
+      ),
+  );
+  await c.env.DB.batch(statements);
+  return c.json({ ok: true, updated: uuids.length });
+});
+
+/**
  * Operator user provisioning — /api/internal/admin/* (requireAdminToken, the
  * operator-only secret). The operator passes PLAINTEXT over this bearer-gated
  * channel; the BACKEND bcrypt-hashes (cost 10) before write — plaintext is never

@@ -68,6 +68,31 @@ def _patch(mocker):
         "marker": mocker.patch("field_ops.fieldops_sync._write_watchdog_marker", return_value=None),
         "log": mocker.patch("field_ops.fieldops_sync.error_log.log", return_value=None),
         "circuit": mocker.patch("field_ops.fieldops_sync.circuit_breaker.is_open", return_value=False),
+        # P7 hours pass seams — hours_enabled defaults OFF so EVERY existing job-mirror test is
+        # byte-identical (the pass is skipped); the hours tests below flip it on. All hours I/O is
+        # mocked so no test touches live Smartsheet / the Worker.
+        "hours_enabled": mocker.patch(
+            "field_ops.fieldops_sync._hours_enabled", return_value=False
+        ),
+        "hours_pending": mocker.patch(
+            "field_ops.fieldops_sync.portal_client.get_fieldops_pending_hours", return_value=[]
+        ),
+        "hours_mark": mocker.patch(
+            "field_ops.fieldops_sync.portal_client.mark_fieldops_hours_mirrored",
+            return_value={"ok": True, "updated": 1},
+        ),
+        "ensure_sheet": mocker.patch(
+            "field_ops.fieldops_sync.hours_log.ensure_hours_log_sheet", return_value=999
+        ),
+        "upsert_entry": mocker.patch(
+            "field_ops.fieldops_sync.hours_log.upsert_entry_row", return_value=1
+        ),
+        "supersede_entry": mocker.patch(
+            "field_ops.fieldops_sync.hours_log.supersede_entry_row", return_value=True
+        ),
+        "row_cap": mocker.patch(
+            "field_ops.fieldops_sync.hours_log.check_row_cap", return_value=None
+        ),
     }
 
 
@@ -302,3 +327,110 @@ def test_worker_base_url_read_under_safety_reports_workstream(mocker):
     ]
     assert sync_calls, "expected the sync_enabled gate to be read"
     assert all(c.kwargs["workstream"] == "field_ops" for c in sync_calls)
+
+
+# ---- P7 hours pass (Track 2, Slice 1) ------------------------------------
+
+
+def _hours_entry(uuid: str = "T1", job_id: str = "JOB-1", **over: Any) -> dict[str, Any]:
+    e: dict[str, Any] = {
+        "uuid": uuid,
+        "job_id": job_id,
+        "project_name": "Job One",
+        "work_started_at": 1751000000,
+        "work_ended_at": 1751028800,
+        "hours": 8,
+        "notes": "poured footings",
+        "amends_uuid": None,
+        "created_at": 1751030000,
+        "personnel_name": "Alice Crew",
+    }
+    e.update(over)
+    return e
+
+
+def test_hours_pass_off_by_default(_patch):
+    # hours_enabled defaults False (fixture) → the pass never touches the Worker or the sheets.
+    _patch["hours_pending"].return_value = [_hours_entry()]
+    stats = fieldops_sync._sync_inside_lock()
+    _patch["hours_pending"].assert_not_called()
+    _patch["ensure_sheet"].assert_not_called()
+    assert stats.hours_mirrored == 0 and stats.hours_errors == 0 and stats.hours_reviewed == 0
+
+
+def test_hours_pass_mirrors_and_marks(_patch):
+    _patch["hours_enabled"].return_value = True
+    _patch["hours_pending"].return_value = [_hours_entry("T1"), _hours_entry("T2")]
+    stats = fieldops_sync._sync_inside_lock()
+    assert stats.hours_mirrored == 2 and stats.hours_errors == 0 and stats.hours_reviewed == 0
+    _patch["ensure_sheet"].assert_called_once_with("Job One")  # one sheet for the one job
+    assert _patch["upsert_entry"].call_count == 2               # one upsert per entry
+    # commit point LAST — one mark-mirrored batch of the succeeded uuids
+    _patch["hours_mark"].assert_called_once()
+    assert _patch["hours_mark"].call_args.args[2] == ["T1", "T2"]
+    assert _patch["hb_row"].call_args.kwargs["status"] == "OK"
+    assert _patch["hb_row"].call_args.kwargs["items_processed"] == 2
+    _patch["row_cap"].assert_called_once()  # §51 row-cap watchdog runs once per job-sheet
+
+
+def test_hours_amend_supersedes_prior(_patch):
+    _patch["hours_enabled"].return_value = True
+    _patch["hours_pending"].return_value = [_hours_entry("T2", amends_uuid="T1")]
+    fieldops_sync._sync_inside_lock()
+    _patch["supersede_entry"].assert_called_once_with(999, "T1", "T2")
+
+
+def test_hours_amend_prior_missing_warns_but_still_marks(_patch):
+    _patch["hours_enabled"].return_value = True
+    _patch["hours_pending"].return_value = [_hours_entry("T2", amends_uuid="T1")]
+    _patch["supersede_entry"].return_value = False  # prior not on the sheet yet (out-of-order)
+    stats = fieldops_sync._sync_inside_lock()
+    assert stats.hours_mirrored == 1  # the amend's own row still filed + marked
+    assert any(
+        c.kwargs.get("error_code") == "fieldops_hours_amend_prior_missing"
+        for c in _patch["log"].call_args_list
+    )
+
+
+def test_hours_permanent_failure_routes_review_and_not_marked(_patch):
+    _patch["hours_enabled"].return_value = True
+    _patch["hours_pending"].return_value = [_hours_entry("T1")]
+    _patch["upsert_entry"].side_effect = smartsheet_client.SmartsheetValidationError("HTTP 400")
+    stats = fieldops_sync._sync_inside_lock()
+    assert stats.hours_reviewed == 1 and stats.hours_mirrored == 0
+    _patch["review"].assert_called_once()
+    assert _patch["review"].call_args.kwargs["workstream"] == "progress_reports"
+    _patch["hours_mark"].assert_not_called()  # nothing succeeded → no mark-mirrored
+    assert _patch["hb_row"].call_args.kwargs["status"] == "WARN"
+
+
+def test_hours_per_entry_fence_one_bad_entry_does_not_block_others(_patch):
+    _patch["hours_enabled"].return_value = True
+    _patch["hours_pending"].return_value = [_hours_entry("T1"), _hours_entry("T2")]
+    _patch["upsert_entry"].side_effect = [smartsheet_client.SmartsheetError("boom"), 5]
+    stats = fieldops_sync._sync_inside_lock()
+    assert stats.hours_errors == 1 and stats.hours_mirrored == 1  # T2 still mirrored
+    assert _patch["hours_mark"].call_args.args[2] == ["T2"]        # only the succeeded uuid marked
+
+
+def test_hours_pending_fetch_failure_leaves_unmarked_but_cycle_completes(_patch):
+    _patch["hours_enabled"].return_value = True
+    _patch["hours_pending"].side_effect = fieldops_sync.portal_client.PortalTransportError("down")
+    stats = fieldops_sync._sync_inside_lock()
+    assert stats.hours_errors == 1 and stats.hours_mirrored == 0
+    _patch["hours_mark"].assert_not_called()
+    # the hours failure NEVER aborts the cycle — heartbeat + marker still run.
+    _patch["hb"].assert_called_once()
+    _patch["marker"].assert_called_once()
+
+
+def test_hours_malformed_entry_is_skipped_never_silent(_patch):
+    _patch["hours_enabled"].return_value = True
+    _patch["hours_pending"].return_value = [_hours_entry("T1", project_name="")]  # unfoldabe
+    stats = fieldops_sync._sync_inside_lock()
+    assert stats.hours_mirrored == 0
+    _patch["ensure_sheet"].assert_not_called()
+    assert any(
+        c.kwargs.get("error_code") == "fieldops_hours_row_malformed"
+        for c in _patch["log"].call_args_list
+    )

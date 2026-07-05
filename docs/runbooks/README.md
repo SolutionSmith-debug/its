@@ -18,6 +18,7 @@ convention has no separate `runbook` type).
 <!-- BEGIN AUTO-INDEX -->
 | Date | Type | Status | Workstream | Title | PRs |
 |------|------|--------|------------|-------|-----|
+| 2026-07-04 | operations | active | field_ops | [Runbook — Hours Log up-sync (P7, the `fieldops_sync` hours pass) (Successor-Remediation, Op Stds §43)](hours_log_sync.md) | _–_ |
 | 2026-07-03 | operations | active | safety_reports | [Runbook — compile_now_poll (the on-demand "Compile Now" poller) (Successor-Remediation, Op Stds §43)](compile_now_poll.md) | _–_ |
 | 2026-07-01 | operations | active | field_ops | [Runbook — Field-Ops daily report (SOP form) + assigned inspections (Successor-Remediation, Op Stds §43)](fieldops_checklists.md) | _–_ |
 | 2026-07-01 | operations | active | field_ops | [Runbook — Manager tier + crew→job assignment (Successor-Remediation, Op Stds §43)](manager_tier.md) | _–_ |

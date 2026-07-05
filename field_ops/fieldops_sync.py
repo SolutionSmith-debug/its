@@ -69,7 +69,9 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
+from progress_reports import hours_log
 from shared import (
     active_jobs_writer,
     circuit_breaker,
@@ -100,6 +102,13 @@ KC_FIELDOPS_TOKEN = "ITS_PORTAL_FIELDOPS_TOKEN"  # noqa: S105 — Keychain entry
 
 DEFAULT_SYNC_ENABLED = False  # ships OFF; operator flips it on at cutover (after Slice 4).
 SYNC_INTERVAL_SECONDS = 300  # registration metadata; mirrors the plist StartInterval.
+
+# P7 Slice 1 — the per-job Hours Log up-sync pass runs INSIDE this same daemon (one host, one
+# lock, one heartbeat — no 4th daemon). Its OWN gate ships OFF so the pass is dark until the
+# operator applies migration 0038 + deploys the Worker hours routes, then flips this on.
+CFG_HOURS_ENABLED = "field_ops.fieldops_sync.hours_enabled"
+DEFAULT_HOURS_ENABLED = False
+_PACIFIC = ZoneInfo("America/Los_Angeles")  # tracker cells are the operator's wall-clock
 
 # State paths. HEARTBEAT_ROW_STATE_PATH is SHARED with the other daemons — same JSON file,
 # different daemon_name key (ARCH-2).
@@ -142,6 +151,10 @@ class SyncStats:
     mirrored: int = 0   # jobs whose BOTH sheets committed this cycle
     reviewed: int = 0   # jobs routed to the Review Queue (permanent failure)
     errors: int = 0     # transient per-job failures (left dirty) + skipped malformed rows
+    # P7 hours pass (0 when hours_enabled is off — the shipped default).
+    hours_mirrored: int = 0   # time entries whose Hours Log row committed this cycle
+    hours_reviewed: int = 0   # entries/jobs routed to the Review Queue (permanent failure)
+    hours_errors: int = 0     # transient hours failures (left unmirrored) + skipped malformed
 
 
 # ---- Config readers (replicated per preservation, mirror portal_poll) ----------
@@ -168,6 +181,10 @@ def _read_bool_setting(key: str, fallback: bool) -> bool:
 
 def _sync_enabled() -> bool:
     return _read_bool_setting(CFG_SYNC_ENABLED, DEFAULT_SYNC_ENABLED)
+
+
+def _hours_enabled() -> bool:
+    return _read_bool_setting(CFG_HOURS_ENABLED, DEFAULT_HOURS_ENABLED)
 
 
 # ---- Lock + heartbeat seams (mirror portal_poll) -------------------------------
@@ -338,10 +355,19 @@ def _sync_inside_lock() -> SyncStats:
     for job in jobs:
         _mirror_job(job, base_url, bearer, counters)
 
+    # P7 hours pass — runs in THIS same daemon (one host, one lock, one heartbeat), reusing the
+    # already-resolved creds. Gated OFF by default; its own per-entry/per-job fences + a top
+    # outer-catch mean a hours failure NEVER aborts the job mirror above nor the heartbeat below.
+    hours = {"mirrored": 0, "reviewed": 0, "errors": 0}
+    if _hours_enabled():
+        hours = _mirror_hours_pass(base_url, bearer)
+
     _write_heartbeat()
-    if counters["errors"] > 0:
+    total_errors = counters["errors"] + hours["errors"]
+    total_reviewed = counters["reviewed"] + hours["reviewed"]
+    if total_errors > 0:
         cycle_status: HeartbeatStatus = "DEGRADED"
-    elif counters["reviewed"] > 0:
+    elif total_reviewed > 0:
         cycle_status = "WARN"
     else:
         cycle_status = "OK"
@@ -351,11 +377,11 @@ def _sync_inside_lock() -> SyncStats:
     try:
         _write_heartbeat_row(
             status=cycle_status,
-            items_processed=counters["mirrored"],
+            items_processed=counters["mirrored"] + hours["mirrored"],
             error_summary=(
                 None
-                if counters["errors"] == 0 and counters["reviewed"] == 0
-                else f"errors={counters['errors']} reviewed={counters['reviewed']}"
+                if total_errors == 0 and total_reviewed == 0
+                else f"errors={total_errors} reviewed={total_reviewed}"
             ),
         )
     except Exception as exc:  # noqa: BLE001 — heartbeat must never block
@@ -370,7 +396,9 @@ def _sync_inside_lock() -> SyncStats:
         Severity.INFO, SCRIPT_NAME,
         (
             f"sync cycle: scanned={len(jobs)} mirrored={counters['mirrored']} "
-            f"reviewed={counters['reviewed']} errors={counters['errors']}"
+            f"reviewed={counters['reviewed']} errors={counters['errors']}; "
+            f"hours mirrored={hours['mirrored']} reviewed={hours['reviewed']} "
+            f"errors={hours['errors']}"
         ),
         error_code="sync_cycle_summary",
     )
@@ -379,6 +407,9 @@ def _sync_inside_lock() -> SyncStats:
         mirrored=counters["mirrored"],
         reviewed=counters["reviewed"],
         errors=counters["errors"],
+        hours_mirrored=hours["mirrored"],
+        hours_reviewed=hours["reviewed"],
+        hours_errors=hours["errors"],
     )
 
 
@@ -542,6 +573,233 @@ def _route_to_review(
         f"job_id={job_id!r} routed to Review Queue (permanent, failed on the {failed_sheet} "
         f"sheet): {type(exc).__name__}: {exc!r}",
         error_code="fieldops_job_permanent",
+        correlation_id=correlation_id,
+    )
+
+
+# ---- P7 Hours Log up-sync pass (Track 2, Slice 1) --------------------------------
+
+
+def _fmt_epoch_date(epoch: Any) -> str:
+    """Epoch seconds → Pacific 'YYYY-MM-DD' (the operator's work day). '' on missing/malformed."""
+    if isinstance(epoch, bool) or not isinstance(epoch, int):
+        return ""
+    try:
+        return datetime.fromtimestamp(epoch, _PACIFIC).date().isoformat()
+    except (OSError, OverflowError, ValueError):
+        return ""
+
+
+def _fmt_epoch_time(epoch: Any) -> str:
+    """Epoch seconds → Pacific 'HH:MM' (the Work Date column carries the day). '' when unset."""
+    if isinstance(epoch, bool) or not isinstance(epoch, int):
+        return ""
+    try:
+        return datetime.fromtimestamp(epoch, _PACIFIC).strftime("%H:%M")
+    except (OSError, OverflowError, ValueError):
+        return ""
+
+
+def _fmt_epoch_dt(epoch: Any) -> str:
+    """Epoch seconds → Pacific ISO datetime (the Recorded At server-time column). '' when unset."""
+    if isinstance(epoch, bool) or not isinstance(epoch, int):
+        return ""
+    try:
+        return datetime.fromtimestamp(epoch, _PACIFIC).isoformat()
+    except (OSError, OverflowError, ValueError):
+        return ""
+
+
+def _fmt_hours(hours: Any) -> str:
+    """Field-reported hours → a trimmed string ('' when unset)."""
+    if isinstance(hours, bool) or not isinstance(hours, (int, float)):
+        return ""
+    return f"{hours:g}"
+
+
+def _group_hours_by_job(
+    entries: list[dict[str, Any]],
+) -> dict[str, tuple[str, list[dict[str, Any]]]]:
+    """Group pending hours rows by job_id → (project_name, [rows]). Skips a row missing its
+    uuid / job_id / project_name (a data anomaly that can't be foldered) — never silent."""
+    by_job: dict[str, tuple[str, list[dict[str, Any]]]] = {}
+    for e in entries:
+        entry_uuid = str(e.get("uuid") or "").strip()
+        job_id = str(e.get("job_id") or "").strip()
+        project = str(e.get("project_name") or "").strip()
+        if not entry_uuid or not job_id or not project:
+            error_log.log(
+                Severity.WARN, SCRIPT_NAME,
+                f"hours entry skipped — missing uuid/job_id/project_name "
+                f"(uuid={e.get('uuid')!r} job_id={e.get('job_id')!r})",
+                error_code="fieldops_hours_row_malformed",
+            )
+            continue
+        by_job.setdefault(job_id, (project, []))[1].append(e)
+    return by_job
+
+
+def _mirror_hours_pass(base_url: str, bearer: str) -> dict[str, int]:
+    """Mirror unmirrored crew time entries UP into per-job Hours Log sheets.
+
+    Returns {mirrored, reviewed, errors}. Never raises — the caller runs it after the job mirror,
+    so a hours failure must never abort the cycle. Per-job (sheet) + per-entry fences; a permanent
+    failure routes to the Review Queue; a transient one leaves the entry unmirrored (mirrored_at
+    stays NULL) for the next cycle. mark-mirrored is the LAST step (crash-safe: a crash before it
+    re-mirrors idempotently — the sheet find-or-create by Entry UUID no-ops).
+    """
+    out = {"mirrored": 0, "reviewed": 0, "errors": 0}
+    try:
+        entries = portal_client.get_fieldops_pending_hours(base_url, bearer)
+    except portal_client.PortalAuthError as exc:
+        # 401 on the SAME bearer that just drained pending-jobs — surface (bad/rotated token) but
+        # do not crash: the job pass may have succeeded before a mid-cycle rotation.
+        out["errors"] += 1
+        error_log.log(
+            Severity.CRITICAL, SCRIPT_NAME,
+            f"hours-pending fetch UNAUTHORIZED (401) — field-ops bearer rejected; hours up-sync "
+            f"skipped this cycle: {exc!r}",
+            error_code="fieldops_hours_pending_auth_failed",
+        )
+        return out
+    except portal_client.PortalTransportError as exc:
+        out["errors"] += 1
+        error_log.log(
+            Severity.ERROR, SCRIPT_NAME,
+            f"hours-pending fetch failed (entries left unmirrored for next cycle): {exc!r}",
+            error_code="fieldops_hours_pending_fetch_failed",
+        )
+        return out
+
+    succeeded: list[str] = []
+    for job_id, (project_name, rows) in _group_hours_by_job(entries).items():
+        correlation_id = uuid.uuid4().hex[:12]
+        try:
+            sheet_id = hours_log.ensure_hours_log_sheet(project_name)
+        except (
+            picklist_validation.PicklistViolationError,
+            smartsheet_client.SmartsheetValidationError,
+        ) as exc:
+            out["reviewed"] += 1
+            _route_hours_to_review(job_id, project_name, exc, correlation_id, phase="ensure-sheet")
+            continue
+        except Exception as exc:  # noqa: BLE001 — per-job fence; one bad job never kills the pass
+            out["errors"] += 1
+            error_log.log(
+                Severity.ERROR, SCRIPT_NAME,
+                f"transient failure ensuring Hours Log sheet for {project_name!r} "
+                f"(job {job_id}); entries left unmirrored: {type(exc).__name__}: {exc!r}",
+                error_code="fieldops_hours_sheet_transient",
+                correlation_id=correlation_id,
+            )
+            continue
+
+        for e in rows:
+            entry_uuid = str(e["uuid"]).strip()
+            try:
+                hours_log.upsert_entry_row(
+                    sheet_id,
+                    entry_uuid=entry_uuid,
+                    work_date=(
+                        _fmt_epoch_date(e.get("work_started_at"))
+                        or _fmt_epoch_date(e.get("created_at"))
+                    ),
+                    personnel=str(e.get("personnel_name") or "").strip(),
+                    hours=_fmt_hours(e.get("hours")),
+                    started=_fmt_epoch_time(e.get("work_started_at")),
+                    ended=_fmt_epoch_time(e.get("work_ended_at")),
+                    notes=str(e.get("notes") or "").strip(),
+                    recorded_at=_fmt_epoch_dt(e.get("created_at")),
+                )
+                amends = str(e.get("amends_uuid") or "").strip()
+                if amends and not hours_log.supersede_entry_row(sheet_id, amends, entry_uuid):
+                    # The amend names an entry we never mirrored — surface, do NOT block the amend
+                    # (its own Active row is written; the prior may arrive later, out of order).
+                    error_log.log(
+                        Severity.WARN, SCRIPT_NAME,
+                        f"hours amend {entry_uuid!r} names prior {amends!r} not yet on the Hours "
+                        f"Log for {project_name!r} — amend row written, prior left unmarked",
+                        error_code="fieldops_hours_amend_prior_missing",
+                        correlation_id=correlation_id,
+                    )
+                succeeded.append(entry_uuid)
+            except (
+                picklist_validation.PicklistViolationError,
+                smartsheet_client.SmartsheetValidationError,
+            ) as exc:
+                out["reviewed"] += 1
+                _route_hours_to_review(
+                    job_id, project_name, exc, correlation_id, phase="upsert", entry_uuid=entry_uuid
+                )
+            except Exception as exc:  # noqa: BLE001 — per-entry fence
+                out["errors"] += 1
+                error_log.log(
+                    Severity.ERROR, SCRIPT_NAME,
+                    f"transient failure mirroring hours entry {entry_uuid!r} for {project_name!r} "
+                    f"(left unmirrored): {type(exc).__name__}: {exc!r}",
+                    error_code="fieldops_hours_entry_transient",
+                    correlation_id=correlation_id,
+                )
+
+        # §51 A5 row-cap watchdog (SoR-safe, refined per the 2026-07-04 v19.x rider): once per job
+        # after its upserts, WARN + Review-Queue an operator period-split as the standing sheet
+        # nears the row cap. Advisory — check_row_cap owns its try/except, so it never raises here.
+        hours_log.check_row_cap(sheet_id, hours_log.hours_log_sheet_name(project_name))
+
+    if succeeded:
+        try:
+            portal_client.mark_fieldops_hours_mirrored(base_url, bearer, succeeded)
+            out["mirrored"] += len(succeeded)
+        except portal_client.PortalAuthError as exc:
+            out["errors"] += 1
+            error_log.log(
+                Severity.CRITICAL, SCRIPT_NAME,
+                f"hours mark-mirrored UNAUTHORIZED (401) — {len(succeeded)} entries filed to the "
+                f"Hours Log but the D1 watermark did not advance; safe re-mirror (idempotent "
+                f"find-or-create) once the bearer is fixed: {exc!r}",
+                error_code="fieldops_hours_mark_mirrored_unauthorized",
+            )
+        except portal_client.PortalTransportError as exc:
+            out["errors"] += 1
+            error_log.log(
+                Severity.ERROR, SCRIPT_NAME,
+                f"hours mark-mirrored failed for {len(succeeded)} entries (filed to the Hours Log; "
+                f"re-mirrored idempotently next cycle): {exc!r}",
+                error_code="fieldops_hours_mark_mirrored_failed",
+            )
+    return out
+
+
+def _route_hours_to_review(
+    job_id: str, project_name: str, exc: Exception, correlation_id: str,
+    *, phase: str, entry_uuid: str | None = None,
+) -> None:
+    """Route a PERMANENTLY-failed hours mirror to ITS_Review_Queue (workstream progress_reports)."""
+    review_queue.add(
+        workstream="progress_reports",
+        summary=(
+            f"field-ops Hours Log up-sync: PERMANENT failure ({phase}) for job {job_id!r} "
+            f"({project_name!r}, {type(exc).__name__})"
+            + (f" entry {entry_uuid!r}" if entry_uuid else "")
+            + " — left unmirrored, needs operator fix"
+        ),
+        payload={
+            "job_id": job_id,
+            "project_name": project_name,
+            "phase": phase,
+            "entry_uuid": entry_uuid,
+            "error": f"{type(exc).__name__}: {exc!r}",
+        },
+        sla_tier=review_queue.SlaTier.SAFETY_INTAKE,
+        reason=review_queue.ReviewReason.POLICY_EDGE,
+        severity=Severity.WARN,
+        source_file=entry_uuid or job_id,
+    )
+    error_log.log(
+        Severity.WARN, SCRIPT_NAME,
+        f"hours mirror routed to Review Queue (permanent, {phase}) job={job_id!r} "
+        f"entry={entry_uuid!r}: {type(exc).__name__}: {exc!r}",
+        error_code="fieldops_hours_permanent",
         correlation_id=correlation_id,
     )
 

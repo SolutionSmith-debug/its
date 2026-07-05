@@ -40,6 +40,7 @@ its migration fail-closes `resolveCapabilities` → the universal-lockout class 
 | `0035_task_due_date` | G2.6 task due dates — [section](#task-due-dates--overdue-pills-g26--0035) | #450 | ☐ pending |
 | `0036_item_photos` | G1 Slice 1 item-photo capture queue — [section](#checklist-item-photos--capture--pending-queue-g1-slice-1--0036) | #452 | ☐ pending |
 | `0037_daily_photo_pool` | daily-report v6: additional site photos (pool) + D.13 incident link — [section](#daily-report-photo-pool--additional-site-photos-v6--0037) | #456 | ☐ pending |
+| `0038_time_entries_mirror` | P7 Slice 1 Hours Log up-sync watermark — [section](#hours-log-up-sync-watermark-p7-slice-1--0038) | #461 | ☐ pending |
 
 Canonical apply-and-deploy sequence (applies **all** pending migrations, in order — never a
 subset):
@@ -964,3 +965,40 @@ Phase 2 is the skeleton + one form stub. **Not built here** (later phases per `b
 
 The JHA view is a **hard-coded stub** that mirrors the real layout to validate the stack;
 it does not submit.
+
+---
+
+### Hours Log up-sync watermark (P7 Slice 1) — 0038
+
+**What ships:** the first Track-2 standing per-job tracker — a per-job **Hours Log** Smartsheet in
+the `ITS — Progress Reporting` workspace (in the job's folder, beside its week sheets), one-way-up
+mirrored from D1 `time_entries` (send-free + AI-free, Op Stds v19 §51). Migration `0038` adds the
+per-row `time_entries.mirrored_at` watermark + a partial pending index; the Worker gains
+`GET /api/internal/fieldops/hours-pending` + `POST /api/internal/fieldops/hours-mark-mirrored`
+(field-ops-token-gated, same privilege separation as the job-mirror queue); the existing
+`field_ops.fieldops_sync` daemon gains a **hours pass** that runs in the SAME cycle/lock/heartbeat.
+
+**Shipped DARK** — the hours pass is gated OFF by `field_ops.fieldops_sync.hours_enabled`
+(default false). Applying `0038` + deploying the Worker changes nothing until the operator flips it.
+
+**Activation (post apply-all + deploy):**
+1. Confirm `ITS_PORTAL_FIELDOPS_TOKEN` (Keychain) matches the Worker `PORTAL_FIELDOPS_API_TOKEN`
+   (already true — the job-mirror pass uses it).
+2. Set `field_ops.fieldops_sync.hours_enabled = true` in `ITS_Config` (Workstream `field_ops`).
+3. **Live smoke:** log a crew time entry in the portal → within one `fieldops_sync` cycle a row
+   appears in the job's `<Job> — Hours Log` sheet (correct display name, hours, work date);
+   amend it → the prior row flips to `Superseded`; the daemon's `ITS_Daemon_Health` row stays OK.
+4. Kill the daemon mid-write → next cycle re-mirrors idempotently (find-or-create by `Entry UUID`),
+   no duplicate row.
+
+**§51 guards (2026-07-04 v19.x rider — Path B):** never-`delete_rows` + the SoR-safe **row-cap WARN
+watchdog** (`hours_log.check_row_cap` — WARNs + Review-Queues an operator period-split as the sheet
+nears the ~20k cap; the rider ratifies this as satisfying §51's period-split for LOW-VOLUME logs,
+threshold `progress_reports.hours_log.row_cap_warn_threshold`, default 15000) ship in this PR; the
+A1 sheet-count margin-check fires on each create. **archive-on-closure** is the one §51 guard still a
+committed follow-up (**its#462** — needs a `smartsheet_client` move-sheet method). The `archived`
+lifecycle write is **live today** (portal admin), so once `hours_enabled` is on, an archived job's
+Hours Log **strands** in the progress workspace until #462 lands — never-deleted → recoverable, no
+data loss, but the archive guarantee is skipped. **Land #462 before enabling `hours_enabled` in a
+tenant where jobs may archive** (or accept the bounded stranded-sheet exposure — a manual move
+recovers it). **Deferred to later slices:** the Equipment + Materials standing trackers (P7 Slices 2–3).
