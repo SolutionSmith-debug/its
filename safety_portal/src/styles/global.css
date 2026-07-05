@@ -1672,3 +1672,74 @@ h3,
     animation: none;
   }
 }
+
+/* ── Checklists page (FieldOpsInspections) ────────────────────────────────────────────────────────
+   The R8 redesign to the Forms form-builder shape. The master-detail + split + section chrome are
+   the SHARED .forms-mgr / .form-editor__* / .card / .field / .btn classes (so it matches the form
+   builder pixel-for-pixel); these page-local classes cover only what the checklist adds — the
+   toolbar create form, the item rows, the detail lifecycle actions, and the assign & track band. */
+
+/* The authoring canvas widens beyond the 920px page column (an authoring surface earns the room,
+   like the form builder's editor) — a full-bleed block centered on the viewport. */
+.checklist-page {
+  width: min(1320px, calc(100vw - 48px));
+  margin-left: 50%;
+  transform: translateX(-50%);
+}
+.checklist-intro { max-width: 80ch; }
+
+/* The detail split: item editor + live assignee preview. Side-by-side only when the widened canvas
+   has real room (≥1100px viewport); stacked (editor above preview) otherwise, so neither pane is
+   ever cramped. */
+.checklist-split { display: grid; grid-template-columns: 1fr; gap: var(--gap); align-items: start; }
+.checklist-split__pane { min-width: 0; }
+@media (min-width: 1100px) {
+  .checklist-split { grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); }
+}
+
+/* Library create form (top of the aside): a full-width title input + a one-line "New +" button. */
+.checklist-lib-new { display: flex; gap: 6px; margin: 0 0 10px; align-items: stretch; }
+.checklist-lib-new .field__input { flex: 1 1 auto; min-width: 0; margin: 0; }
+.checklist-lib-new__btn { flex: 0 0 auto; white-space: nowrap; padding: 0 18px; }
+
+/* Library aside: the filter input + the not-assignable pill on a list row. */
+.checklist-filter { margin: 0 0 10px; }
+.checklist-inactive-pill { margin-left: 8px; vertical-align: middle; }
+
+/* Build pane: the item list rows — label + meta on the left, controls on the right, on the surface
+   ground (the same treatment as .form-editor__item-row). The edit/add forms fill the row. */
+.checklist-items { list-style: none; margin: 0 0 12px; padding: 0; }
+.checklist-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+  padding: 12px; border: 1px solid var(--c-line); border-radius: var(--radius-sm);
+  background: var(--c-surface);
+}
+.checklist-item--editing, .checklist-item--add { display: block; }
+.checklist-item--add { margin-top: 4px; background: var(--c-white); border-style: dashed; }
+.checklist-item__main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.checklist-item__label { font-weight: 600; color: var(--c-black); }
+.checklist-item__meta { font-size: var(--fs-sm); color: var(--c-muted); }
+.checklist-item__controls { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+
+/* Preview pane note. */
+.checklist-preview__note { margin: 0 0 10px; font-size: var(--fs-sm); }
+
+/* Detail header: the rename form + the lifecycle action row. */
+.checklist-rename { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 0 0 8px; }
+.checklist-rename .field__input { flex: 1 1 200px; width: auto; margin: 0; }
+.checklist-detail__actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+
+/* Assign form: a responsive field grid with a bottom-aligned submit + full-width notice rows. */
+.checklist-assign__grid { display: grid; grid-template-columns: 1fr; gap: 0 var(--gap); align-items: end; }
+@media (min-width: 640px) { .checklist-assign__grid { grid-template-columns: 1fr 1fr; } }
+@media (min-width: 960px) { .checklist-assign__grid { grid-template-columns: repeat(4, 1fr); } }
+.checklist-assign__submit { align-self: end; margin-bottom: 16px; }
+.checklist-assign__full { grid-column: 1 / -1; margin-top: 0; }
+.checklist-assign__confirm { display: flex; flex-direction: column; gap: 2px; align-items: flex-start; }
+.checklist-assign__confirm-sub { font-weight: 600; }
+
+/* Assign & track: the outstanding-assignments head (title + Open/All filter) and per-row layout. */
+.checklist-track__head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.checklist-track__filter { display: flex; gap: 6px; }
+.checklist-track__row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.checklist-track__row-main { min-width: 0; }

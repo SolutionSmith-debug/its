@@ -126,6 +126,8 @@ describe("FieldOpsInspections — inspection library lifecycle", () => {
   it("rename is inline: prefilled input, Save fires editInspectionTemplate(id, { title })", async () => {
     vi.mocked(checklist.editInspectionTemplate).mockResolvedValue({ ok: true, id: 1 });
     const { getByLabelText } = render(<FieldOpsInspections onBack={() => {}} />);
+    // Lifecycle actions live in the DETAIL now (form-builder pattern) — select the checklist first.
+    fireEvent.click(await waitFor(() => getByLabelText("Edit Fall protection")));
     fireEvent.click(await waitFor(() => getByLabelText("Rename Fall protection")));
     const input = getByLabelText("Rename Fall protection title") as HTMLInputElement;
     expect(input.value).toBe("Fall protection");
@@ -137,13 +139,21 @@ describe("FieldOpsInspections — inspection library lifecycle", () => {
   it("Deactivate/Reactivate use the edit route's active flag; inactive shows the not-assignable badge", async () => {
     vi.mocked(checklist.editInspectionTemplate).mockResolvedValue({ ok: true, id: 1 });
     const { container, getByLabelText } = render(<FieldOpsInspections onBack={() => {}} />);
-    // The inactive template carries the badge.
+    // The inactive template carries the not-assignable badge in the library list.
     await waitFor(() => expect(container.textContent ?? "").toContain("inactive — not assignable"));
-    fireEvent.click(getByLabelText("Deactivate Fall protection"));
+    // Lifecycle actions live in the detail — select each checklist first (form-builder pattern).
+    fireEvent.click(getByLabelText("Edit Fall protection"));
+    fireEvent.click(await waitFor(() => getByLabelText("Deactivate Fall protection")));
     await waitFor(() =>
       expect(checklist.editInspectionTemplate).toHaveBeenCalledWith(1, { title: "Fall protection", active: false }),
     );
-    fireEvent.click(getByLabelText("Reactivate Crane pre-lift"));
+    fireEvent.click(getByLabelText("Edit Crane pre-lift"));
+    const reactivate = await waitFor(() => {
+      const btn = getByLabelText("Reactivate Crane pre-lift") as HTMLButtonElement;
+      expect(btn.disabled).toBe(false); // wait out the first update's busy-gate
+      return btn;
+    });
+    fireEvent.click(reactivate);
     await waitFor(() =>
       expect(checklist.editInspectionTemplate).toHaveBeenCalledWith(2, { title: "Crane pre-lift", active: true }),
     );
@@ -160,6 +170,8 @@ describe("FieldOpsInspections — inspection library lifecycle", () => {
   it("template delete is confirm-gated with item-count + snapshot copy, offering Deactivate first; cancel is a no-op", async () => {
     vi.mocked(checklist.deleteInspectionTemplate).mockResolvedValue({ ok: true, id: 1 });
     const { container, getByLabelText } = render(<FieldOpsInspections onBack={() => {}} />);
+    // Delete lives in the detail — select the checklist first (form-builder pattern).
+    fireEvent.click(await waitFor(() => getByLabelText("Edit Fall protection")));
     fireEvent.click(await waitFor(() => getByLabelText("Delete Fall protection")));
     const text = container.textContent ?? "";
     expect(text).toContain("2 items");
@@ -240,9 +252,9 @@ describe("FieldOpsInspections — template item editor", () => {
     await waitFor(() => expect(container.textContent ?? "").toContain("now add its items below"));
   });
 
-  it("Preview as assignee renders the items read-only through the assignee row component", async () => {
+  it("the assignee preview renders beside the editor, always-on, read-only", async () => {
     const { container, getByLabelText } = await openEditor();
-    fireEvent.click(getByLabelText("Preview as assignee"));
+    // The preview pane renders ALONGSIDE the editor now (no toggle) — both are visible at once.
     await waitFor(() => expect(container.textContent ?? "").toContain("Read-only preview"));
     // Faithful: both items render through the assignee row component, every control disabled.
     // (Deliberately loose about ChecklistItemRow internals — R3 owns that component.)
@@ -252,9 +264,8 @@ describe("FieldOpsInspections — template item editor", () => {
     const buttons = Array.from(preview.querySelectorAll("button")) as HTMLButtonElement[];
     expect(buttons.length).toBeGreaterThan(0);
     expect(buttons.every((b) => b.disabled)).toBe(true);
-    // Toggle back to editing.
-    fireEvent.click(getByLabelText("Preview as assignee"));
-    await waitFor(() => expect(getByLabelText("Add item label")).not.toBeNull());
+    // The editor's Add-item form is available AT THE SAME TIME — the preview no longer hides it.
+    expect(getByLabelText("Add item label")).not.toBeNull();
   });
 });
 
