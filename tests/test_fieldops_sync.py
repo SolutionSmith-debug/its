@@ -154,6 +154,26 @@ def _patch(mocker):
         "mat_row_cap": mocker.patch(
             "field_ops.fieldops_sync.material_list.check_row_cap", return_value=None
         ),
+        # P7 material-incidents pass seams — incidents_enabled defaults OFF so EVERY existing
+        # job/hours/equipment/material test is byte-identical (the pass is skipped); the incident
+        # tests below flip it on. All incident I/O is mocked so no test touches live Smartsheet / the
+        # Worker. APPEND-ONLY LEDGER — no snapshot roster, no retire, no mark-mirrored seam.
+        "incidents_enabled": mocker.patch(
+            "field_ops.fieldops_sync._incidents_enabled", return_value=False
+        ),
+        "incidents_list": mocker.patch(
+            "field_ops.fieldops_sync.portal_client.get_fieldops_material_incidents", return_value=[]
+        ),
+        "ensure_inc_sheet": mocker.patch(
+            "field_ops.fieldops_sync.material_incidents.ensure_material_incidents_sheet",
+            return_value=666,
+        ),
+        "upsert_inc": mocker.patch(
+            "field_ops.fieldops_sync.material_incidents.upsert_incident_row", return_value=1
+        ),
+        "inc_row_cap": mocker.patch(
+            "field_ops.fieldops_sync.material_incidents.check_row_cap", return_value=None
+        ),
         # §51 archive-on-closure seams — default to "an Hours Log exists" so the archived-job
         # tests exercise the move; the guard/idempotency tests below flip these to None.
         "arc_folder": mocker.patch(
@@ -600,9 +620,9 @@ def test_hours_malformed_entry_is_skipped_never_silent(_patch):
 
 
 def test_archived_job_moves_all_trackers_to_closed_projects(_patch):
-    # An ARCHIVED (closed) job whose standing trackers exist → the Hours Log, Equipment, AND
-    # Material List sheets are MOVED into the Archive workspace's Closed-Projects folder, and the
-    # job still counts as mirrored. (Folder resolved ONCE; each tracker resolved + moved.)
+    # An ARCHIVED (closed) job whose standing trackers exist → the Hours Log, Equipment, Material
+    # List, AND Material Incidents sheets are MOVED into the Archive workspace's Closed-Projects
+    # folder, and the job still counts as mirrored. (Folder resolved ONCE; each tracker resolved + moved.)
     _patch["pending"].return_value = [_job(lifecycle="archived")]
     _patch["upsert"].side_effect = _upsert_ok
 
@@ -610,8 +630,8 @@ def test_archived_job_moves_all_trackers_to_closed_projects(_patch):
 
     assert stats.mirrored == 1 and stats.errors == 0 and stats.reviewed == 0
     _patch["arc_folder"].assert_called_once()  # source per-job folder resolved ONCE (no create)
-    assert _patch["arc_sheet"].call_count == 3  # Hours Log + Equipment + Material List (no create)
-    assert _patch["arc_move"].call_count == 3   # each tracker moved
+    assert _patch["arc_sheet"].call_count == 4  # Hours Log + Equipment + Material List + Incidents
+    assert _patch["arc_move"].call_count == 4   # each tracker moved
     for call in _patch["arc_move"].call_args_list:
         assert call.args[0] == 888  # the resolved tracker sheet id
         assert call.args[1] == sheet_ids.FOLDER_ARCHIVE_CLOSED_PROJECTS
@@ -1109,3 +1129,173 @@ def test_material_roster_malformed_row_skipped_never_silent(_patch):
         c.kwargs.get("error_code") == "fieldops_material_roster_malformed"
         for c in _patch["log"].call_args_list
     )
+
+
+# ---- P7 material-incidents pass (Track 2, M3 Slice 2) — APPEND-ONLY ledger ----
+
+
+def _inc_row(
+    submission_uuid: str = "sub-10", job_id: str = "JOB-1", **over: Any
+) -> dict[str, Any]:
+    e: dict[str, Any] = {
+        "submission_uuid": submission_uuid,
+        "job_id": job_id,
+        "project_name": "Job One",
+        "work_date": "2026-07-06",
+        "created_at": 1_751_000_000,
+        "box_link": "https://box/999",
+        "material_description": "Q.PEAK panels",
+        "delivery_ref": "PO-4471",
+        "qty_expected": 120.0,
+        "qty_received": 118.0,
+        "issue": "Short",
+        "details": "2 pallets short",
+        "action_taken": "CM notified",
+        "line_uuid": "u-10",
+        "reported_by_display": "Mo Manager",
+        "line_status": "incident",
+    }
+    e.update(over)
+    return e
+
+
+def test_incident_pass_off_by_default(_patch):
+    # incidents_enabled defaults False (fixture) → the pass never touches the Worker or the sheets.
+    # This is ALSO the guard test: forcing `_incidents_enabled` True red-lights here
+    # (get_fieldops_material_incidents would be called). Prove-the-control-bites.
+    _patch["incidents_list"].return_value = [_inc_row()]
+    stats = fieldops_sync._sync_inside_lock()
+    _patch["incidents_list"].assert_not_called()
+    _patch["ensure_inc_sheet"].assert_not_called()
+    assert stats.incidents_upserted == 0
+    assert stats.incidents_reviewed == 0 and stats.incidents_errors == 0
+
+
+def test_incident_pass_upserts_no_retire_no_mark_mirrored(_patch):
+    _patch["incidents_enabled"].return_value = True
+    _patch["incidents_list"].return_value = [_inc_row("sub-10"), _inc_row("sub-11", issue="Damaged")]
+    stats = fieldops_sync._sync_inside_lock()
+    assert stats.incidents_upserted == 2
+    assert stats.incidents_errors == 0 and stats.incidents_reviewed == 0
+    _patch["ensure_inc_sheet"].assert_called_once_with("Job One")  # one sheet for the one job
+    assert _patch["upsert_inc"].call_count == 2                    # one upsert per incident
+    _patch["inc_row_cap"].assert_called_once()                    # row-cap watchdog runs once
+    # APPEND-ONLY — no retire / no mark-mirrored symbol exists to call.
+    assert not hasattr(fieldops_sync.material_incidents, "retire_removed")
+    assert _patch["hb_row"].call_args.kwargs["status"] == "OK"
+    assert _patch["hb_row"].call_args.kwargs["items_processed"] == 2
+
+
+def test_incident_fields_and_line_status_mapped(_patch):
+    _patch["incidents_enabled"].return_value = True
+    _patch["incidents_list"].return_value = [_inc_row("sub-10", line_status="received")]
+    fieldops_sync._sync_inside_lock()
+    kw = _patch["upsert_inc"].call_args.kwargs
+    assert kw["incident_uuid"] == "sub-10"
+    assert kw["material"] == "Q.PEAK panels"
+    assert kw["issue"] == "Short"
+    assert kw["line_uuid"] == "u-10"
+    assert kw["line_status"] == "received"       # the live resolution signal
+    assert kw["qty_expected"] == "120"           # _fmt_qty trims the trailing .0
+    assert kw["qty_received"] == "118"
+    assert kw["reported_by"] == "Mo Manager"     # DISPLAY name, never a username
+    assert kw["reported_at"] == "2026-07-06"     # work_date preferred
+    assert kw["report"] == "https://box/999"
+
+
+def test_incident_unlinked_maps_blank_line_fields(_patch):
+    # An incident with no referenced line (line_uuid/line_status None from the endpoint) → blanks.
+    _patch["incidents_enabled"].return_value = True
+    _patch["incidents_list"].return_value = [_inc_row("sub-10", line_uuid=None, line_status=None)]
+    fieldops_sync._sync_inside_lock()
+    kw = _patch["upsert_inc"].call_args.kwargs
+    assert kw["line_uuid"] == "" and kw["line_status"] == ""
+
+
+def test_incident_reported_at_falls_back_to_created_at(_patch):
+    # A missing work_date → the Reported At falls back to the Pacific date of created_at (never blank).
+    _patch["incidents_enabled"].return_value = True
+    _patch["incidents_list"].return_value = [_inc_row("sub-10", work_date="")]
+    fieldops_sync._sync_inside_lock()
+    kw = _patch["upsert_inc"].call_args.kwargs
+    assert kw["reported_at"]  # non-empty — derived from created_at
+
+
+def test_incident_permanent_failure_routes_review(_patch):
+    _patch["incidents_enabled"].return_value = True
+    _patch["incidents_list"].return_value = [_inc_row("sub-10")]
+    _patch["upsert_inc"].side_effect = smartsheet_client.SmartsheetValidationError("HTTP 400")
+    stats = fieldops_sync._sync_inside_lock()
+    assert stats.incidents_reviewed == 1 and stats.incidents_upserted == 0
+    _patch["review"].assert_called_once()
+    assert _patch["review"].call_args.kwargs["workstream"] == "progress_reports"
+    assert _patch["hb_row"].call_args.kwargs["status"] == "WARN"
+
+
+def test_incident_per_incident_fence_one_bad_does_not_block_others(_patch):
+    _patch["incidents_enabled"].return_value = True
+    _patch["incidents_list"].return_value = [_inc_row("sub-10"), _inc_row("sub-11")]
+    _patch["upsert_inc"].side_effect = [smartsheet_client.SmartsheetError("boom"), 5]
+    stats = fieldops_sync._sync_inside_lock()
+    assert stats.incidents_errors == 1 and stats.incidents_upserted == 1  # the other still mirrored
+    _patch["inc_row_cap"].assert_called_once()  # row-cap still runs
+
+
+def test_incident_ensure_sheet_permanent_failure_routes_review(_patch):
+    _patch["incidents_enabled"].return_value = True
+    _patch["incidents_list"].return_value = [_inc_row("sub-10")]
+    _patch["ensure_inc_sheet"].side_effect = smartsheet_client.SmartsheetValidationError("HTTP 400")
+    stats = fieldops_sync._sync_inside_lock()
+    assert stats.incidents_reviewed == 1 and stats.incidents_upserted == 0
+    _patch["upsert_inc"].assert_not_called()
+    assert _patch["review"].call_args.kwargs["workstream"] == "progress_reports"
+
+
+def test_incident_fetch_failure_cycle_completes(_patch):
+    _patch["incidents_enabled"].return_value = True
+    _patch["incidents_list"].side_effect = fieldops_sync.portal_client.PortalTransportError("x")
+    stats = fieldops_sync._sync_inside_lock()
+    assert stats.incidents_errors == 1 and stats.incidents_upserted == 0
+    _patch["ensure_inc_sheet"].assert_not_called()
+    # the incident failure NEVER aborts the cycle — heartbeat + marker still run.
+    _patch["hb"].assert_called_once()
+    _patch["marker"].assert_called_once()
+
+
+def test_incident_fetch_401_is_critical_and_cycle_completes(_patch):
+    _patch["incidents_enabled"].return_value = True
+    _patch["incidents_list"].side_effect = fieldops_sync.portal_client.PortalAuthError("401")
+    stats = fieldops_sync._sync_inside_lock()
+    assert stats.incidents_errors == 1
+    assert any(
+        c.kwargs.get("error_code") == "fieldops_incidents_fetch_auth_failed"
+        and c.args[0] == fieldops_sync.Severity.CRITICAL
+        for c in _patch["log"].call_args_list
+    )
+    _patch["hb"].assert_called_once()  # cycle still completes
+
+
+def test_incident_malformed_row_is_skipped_never_silent(_patch):
+    _patch["incidents_enabled"].return_value = True
+    # An incident missing submission_uuid can't be keyed → skipped + WARNed by the grouper.
+    _patch["incidents_list"].return_value = [_inc_row("", job_id="JOB-1")]
+    stats = fieldops_sync._sync_inside_lock()
+    assert stats.incidents_upserted == 0
+    _patch["ensure_inc_sheet"].assert_not_called()
+    assert any(
+        c.kwargs.get("error_code") == "fieldops_incident_row_malformed"
+        for c in _patch["log"].call_args_list
+    )
+
+
+def test_incident_multiple_jobs_each_get_own_sheet(_patch):
+    _patch["incidents_enabled"].return_value = True
+    _patch["incidents_list"].return_value = [
+        _inc_row("sub-10", job_id="JOB-1", project_name="Job One"),
+        _inc_row("sub-20", job_id="JOB-2", project_name="Job Two"),
+    ]
+    stats = fieldops_sync._sync_inside_lock()
+    assert stats.incidents_upserted == 2
+    assert _patch["ensure_inc_sheet"].call_count == 2
+    ensured = {c.args[0] for c in _patch["ensure_inc_sheet"].call_args_list}
+    assert ensured == {"Job One", "Job Two"}

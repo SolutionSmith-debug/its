@@ -94,6 +94,47 @@ Worker's watermark is missing, so the job stays `pending` and is safely re-attem
 (find-or-create no-ops) once the token is fixed. **Secrets/auth → escalate to Seth** (re-set the
 Keychain entry to match the Worker secret); the Successor-Operator does not handle token rotation.
 
+## Symptom F — Material Incidents ledger (M3 Slice 2): sheet not appearing, or an incident missing
+
+**What it is.** A per-job `<Job> — Material Incidents` Smartsheet (beside the Hours Log / Equipment /
+Material List) that mirrors the FILED, §34-screened material-incident submissions — an **APPEND-ONLY
+LEDGER** of delivery problems (damaged / short / wrong item / other), each optionally referencing its
+expected-materials line (M3 Slice 1 `line_uuid`) and showing that line's live `Line Status`. Runs
+inside `fieldops_sync`; gated by `field_ops.fieldops_sync.incidents_enabled` (ships **OFF**).
+
+**Activation sequence (order matters; Developer-Operator / Seth).** (1) Deploy the Worker (the new
+read route `GET /api/internal/fieldops/material-incidents` must exist first — **no D1 migration
+needed**, it reads the existing `submissions` table). (2) Seed the ITS_Config row
+`incidents_enabled = false` (Workstream `field_ops`) if it does not exist — a MISSING row reads as
+`false`, so **there is no switch to flip until the row exists** (the #468/#470 dark-gate lesson,
+HOUSE_REFLEXES §5). (3) Flip that row to `true`. A cell-flip is the only activation; a wrong Worker
+base URL / bearer fails **closed** (Symptom B/C), never silently.
+
+**Nothing is ever removed.** An incident is an immutable historical event — the pass NEVER marks a row
+Removed and has no retire path, so the count-drops-to-zero / zero-drop class simply does not exist
+here (unlike the Material List). A resolved incident stays on the ledger; only its `Line Status` cell
+flips (e.g. to `received`). An archived job's ledger is MOVED to the Archive workspace on closure
+(never deleted).
+
+**Symptoms → repair (all LOW-class unless noted).**
+- `fieldops_incident_permanent` → a Review-Queue row (workstream `progress_reports`): a permanent
+  Smartsheet reject (validation / picklist) on one job or incident. Read the row's payload
+  (`phase`, `incident_uuid`), fix the offending data or sheet, and it re-projects next cycle
+  (idempotent). **Low-class.**
+- `fieldops_incidents_fetch_failed`, `fieldops_incidents_sheet_transient`,
+  `fieldops_incident_upsert_transient` → transient (Worker blip / Smartsheet 5xx); the ledger
+  re-projects every cycle, so these **self-heal** — no action unless sustained. **Low-class**
+  (re-run `sync_once` from a worktree venv to confirm recovery).
+- `fieldops_incident_row_malformed` → a WARN (never silent): an incident row missing
+  submission_uuid/job_id/project_name is skipped. Usually a Worker payload defect — escalate if it
+  persists.
+- `fieldops_incidents_fetch_auth_failed` (CRITICAL, 401) → the field-ops bearer was rejected. Same as
+  Symptom C/E: **secrets/auth → escalate to Seth** (the Successor-Operator does not rotate tokens).
+- `material_incidents_row_cap_warn` → a Review-Queue row: the append-only ledger is nearing the
+  Smartsheet ~20k row cap (it grows monotonically, unlike the bounded Material List). Operator
+  **period-splits** it (archive this sheet, start a fresh one) — **NEVER delete rows** (§51 SoR).
+  **Low-class** but coordinate with Seth on the archive location.
+
 ## Why the daemon is shaped this way (pointer to §42)
 
 The code-reader rationale lives in `field_ops/fieldops_sync.py` (the gate → fail-closed creds →

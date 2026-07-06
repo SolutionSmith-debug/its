@@ -2061,6 +2061,59 @@ app.get("/api/internal/fieldops/material-list-snapshot", requireFieldopsToken, a
 });
 
 /**
+ * P7 Material Incidents up-sync (M3 Slice 2) — the field-ops Material Incidents ledger route
+ * (GET /api/internal/fieldops/material-incidents). Same field-ops token privilege separation as the
+ * job/hours/equipment/material-list mirror queues (requireFieldopsToken — NOT portal_poll's internal
+ * token nor the admin token).
+ *
+ * An APPEND-ONLY EVENT LEDGER, NOT a re-projected snapshot: each row is a FILED (box_verified=1),
+ * §34-screened `material-incident%` submission — an immutable field event. Unlike the material-list
+ * snapshot there is deliberately NO reconcile roster and the daemon NEVER retires a row (a reported
+ * incident happened; it is never "removed"), so the count-drops-to-zero / #468 zero-drop class is
+ * structurally impossible here — there is no retire path to wrongly zero. The active-job JOIN bounds
+ * the working set (incidents on non-active jobs drop out and their sheet is archive-moved on closure);
+ * within that bound the set grows monotonically, covered downstream by the Smartsheet §51 row-cap
+ * watchdog. Uncapped like the sibling (a per-job incident count is small); if TOTAL active-job
+ * incident volume ever grows materially, add a `LIMIT` + a `since`/created_at cursor here — a FUTURE
+ * optimization, do NOT build it now (the change-only daemon upsert already no-ops on re-projection).
+ *
+ * Only box_verified=1 is returned: a still-unfiled (0) submission is mid-pipeline and a rejected
+ * (-1, e.g. a malicious photo) one must NEVER surface. The incident's structured fields live inside
+ * `payload_json` (json_extract) — line_uuid is a submission VALUE (M3 Slice 1), not a column.
+ * `line_status` LEFT-JOINs the referenced expected-materials line (unique line_uuid ⇒ ≤1 match) so a
+ * later receipt flipping the line to 'received' shows as the live resolution signal; an unlinked or
+ * since-deleted line → NULL. DISPLAY-NAME-ONLY reported_by (personnel.name; the raw actor_username is
+ * never returned — House Reflex §5). All values flow only to a Smartsheet cell (no AI, no send).
+ */
+app.get("/api/internal/fieldops/material-incidents", requireFieldopsToken, async (c) => {
+  const { results } = await c.env.DB
+    .prepare(
+      `SELECT s.submission_uuid, s.job_id, j.project_name, s.work_date, s.created_at, s.box_link,
+              json_extract(s.payload_json, '$.material_description') AS material_description,
+              json_extract(s.payload_json, '$.delivery_ref')         AS delivery_ref,
+              json_extract(s.payload_json, '$.qty_expected')         AS qty_expected,
+              json_extract(s.payload_json, '$.qty_received')         AS qty_received,
+              json_extract(s.payload_json, '$.issue')                AS issue,
+              json_extract(s.payload_json, '$.details')              AS details,
+              json_extract(s.payload_json, '$.action_taken')         AS action_taken,
+              json_extract(s.payload_json, '$.line_uuid')            AS line_uuid,
+              (SELECT p.name FROM personnel p WHERE p.username = s.actor_username ORDER BY p.id ASC LIMIT 1)
+                AS reported_by_display,
+              jem.status AS line_status
+         FROM submissions s
+         JOIN jobs j ON j.job_id = s.job_id AND j.status = ?1
+         LEFT JOIN job_expected_materials jem
+              ON jem.job_id = s.job_id
+             AND jem.line_uuid = json_extract(s.payload_json, '$.line_uuid')
+        WHERE s.form_code LIKE 'material-incident%' AND s.box_verified = 1
+        ORDER BY j.project_name ASC, s.created_at ASC, s.submission_uuid ASC`,
+    )
+    .bind("active")
+    .all();
+  return c.json({ incidents: results ?? [] });
+});
+
+/**
  * Operator user provisioning — /api/internal/admin/* (requireAdminToken, the
  * operator-only secret). The operator passes PLAINTEXT over this bearer-gated
  * channel; the BACKEND bcrypt-hashes (cost 10) before write — plaintext is never
