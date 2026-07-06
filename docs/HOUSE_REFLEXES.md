@@ -10,7 +10,7 @@ tags: [standards, lessons, house-reflexes, canonical]
 **Purpose.** The single, canonical, deduped home for the recurring lessons and working standards of ITS —
 so a fresh Claude Code session loads them once and *doesn't let the standards fall.* Each entry is a rule +
 the pattern that earned it. This is **execution-facing** (how to work in `~/its`); the **invariants and
-doctrine** it points to are canonical in `~/its-blueprint/doctrine/` (Op Stds v19, Foundation Mission v11) —
+doctrine** it points to are canonical in `~/its-blueprint/doctrine/` (Op Stds v20, Foundation Mission v11) —
 planning-layer wins. The **roadmap** is canonical in the blueprint + the field-ops program file; this is not
 that. Loaded via `@import` from `CLAUDE.md`'s START-HERE block.
 

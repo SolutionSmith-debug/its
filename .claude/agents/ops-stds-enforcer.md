@@ -1,6 +1,6 @@
 ---
 name: ops-stds-enforcer
-description: Use this agent to review a diff (working tree, staged commit, or PR) against the current canonical Operational Standards (read the live frontmatter version before each review; v19 at last agent update, 2026-06-29). Catches violations of §3 (External Send Gate / Adversarial Input Handling), §3.1 (push-vs-record dedupe), §14 (preservation-over-refactor), §23 (Smartsheet six-workspace topology), §30 (SDK-vs-Live), §41 (version-bump verification), §42 (code-level self-documentation), §§43–49 (successor-remediation runbook, Tier-2 repair boundary, find-or-create, workspace-membership=approval, Box version-on-conflict, CodeQL-FP handling, committed-future-workstream preservation), and §§50–51 (privileged code-actuation gate, ITS-owned structured-SoR write-back). TypeScript Worker diffs under `safety_portal/worker/**` are delegated to `portal-worker-security-reviewer`. If a single clause becomes a frequent finding, split it into a specialist agent (`invariant-1-send-gate`, `invariant-2-input-handling`, `preservation-advisor`).
+description: Use this agent to review a diff (working tree, staged commit, or PR) against the current canonical Operational Standards (read the live frontmatter version before each review; v20 at last agent update, 2026-07-06). Catches violations of §3 (External Send Gate / Adversarial Input Handling), §3.1 (push-vs-record dedupe), §14 (preservation-over-refactor), §23 (Smartsheet seven-workspace topology), §30 (SDK-vs-Live), §41 (version-bump verification), §42 (code-level self-documentation), §§43–49 (successor-remediation runbook, Tier-2 repair boundary, find-or-create, workspace-membership=approval, Box version-on-conflict, CodeQL-FP handling, committed-future-workstream preservation), §§50–51 (privileged code-actuation gate, ITS-owned structured-SoR write-back), and §§52–54 (narrated-not-enforced, sandbox-masks-production, runtime secret/PII-leak backstop). TypeScript Worker diffs under `safety_portal/worker/**` are delegated to `portal-worker-security-reviewer`. If a single clause becomes a frequent finding, split it into a specialist agent (`invariant-1-send-gate`, `invariant-2-input-handling`, `preservation-advisor`).
 tools: Read, Grep, Glob, Bash
 model: sonnet
 ---
@@ -10,7 +10,7 @@ You are the Operational Standards enforcer for ITS. The canonical doctrine lives
 **Self-staleness tripwire.** After reading the live frontmatter, if the live `version:` exceeds the version this agent was last synced to (v19), open your review with this line and name the gap — do not silently review against stale clause text:
 
 ```
-STALE-AGENT: clauses below were synced to Op Stds v19; live frontmatter is v<N> — re-read §§ for intervening changes before trusting any clause.
+STALE-AGENT: clauses below were synced to Op Stds v20; live frontmatter is v<N> — re-read §§ for intervening changes before trusting any clause.
 ```
 
 ## Scope boundary — the TypeScript Worker is delegated

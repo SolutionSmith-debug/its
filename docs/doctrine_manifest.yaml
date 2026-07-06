@@ -45,16 +45,16 @@ meta:
 # --- Doctrine versions (the headline drift class) ------------------------------
 doctrine_versions:
   operational_standards:
-    current: 19
-    # Highest existing §-section. Numbering is append-only since v11; v18 added
-    # §§45-49, so §1..§49 all resolve. The M7 citation-resolver flags any
+    current: 20
+    # Highest existing §-section. Numbering is append-only since v11; v20 added
+    # §§52-54, so §1..§54 all resolve. The M7 citation-resolver flags any
     # `Op Stds §N` in current-doctrine prose with N > max_section (a citation that
     # resolves to no section — a typo or a forward-ref to unbuilt doctrine). Bump
     # this the same PR a new §-section lands in canonical doctrine.
-    max_section: 51
+    max_section: 54
     source: "../its-blueprint/doctrine/operational-standards.md"
     source_field: "frontmatter.version"
-    blueprint_verified_against: 7b24cda   # 2026-06-29 Op Stds v19 ratification (§§50–51); prior: 0e85a1a (v18)
+    blueprint_verified_against: 33fce61   # 2026-07-06 Op Stds v20 consolidation (§§52–54 + §31/§43 + §23 7th-ws + fold 3 riders); prior: 7b24cda (v19)
     notes: >
       v12 added §§37-41; v13 added §42 (code-level self-documentation discipline);
       v14 reframed the kill switch as an operator-convenience pause that is fail-open
@@ -76,10 +76,15 @@ doctrine_versions:
       the privileged code-actuation gate (§50, ratifying the candidate raised first 2026-06-10,
       realized in publish_daemon.py) and ITS-owned structured-SoR write-back (§51, blessing
       D1-as-writer to an ITS-owned Smartsheet — incl. the job-tracker→Active-Jobs write).
+      v20 (2026-07-06) the operator-directed CONSOLIDATION added §§52-54 (narrated-not-enforced;
+      sandbox-masks-production; runtime secret/PII-leak backstop — the its#341 forensic candidates),
+      hardened §31/§43, ratified the §23/§24 seventh standalone workspace (ITS — Progress Reporting),
+      and folded the three v19.x riders (§3.1/§3.2 Sentry-leg; §51 low-volume period-split; §51
+      Material-List one-way-up phased) into main §-text — no protective claim weakened.
       Section numbering is append-only since v11
-      — no cited section renumbered (§§1-49 carry forward). Citations in ~/its should read
-      "Op Stds v19" / "Operational Standards v19".
-    drift_signal: 'Op Stds v(1[0-8]|[0-9])\b or Operational Standards v(1[0-8]|[0-9])\b in current-doctrine prose'
+      — no cited section renumbered (§§1-51 carry forward). Citations in ~/its should read
+      "Op Stds v20" / "Operational Standards v20".
+    drift_signal: 'Op Stds v(1[0-9]|[0-9])\b or Operational Standards v(1[0-9]|[0-9])\b in current-doctrine prose'
   foundation_mission:
     current: 11
     source: "../its-blueprint/doctrine/foundation-mission.md"
@@ -116,6 +121,52 @@ doctrine_versions:
       secrets/auth. The three-tier model, roles, and escalation boundary carry forward from v8.
       Citations in ~/its should read "Handover Plan v9".
     drift_signal: 'Handover Plan v[1-8]\b in current-doctrine prose'
+
+# --- §52 narrated_controls ledger (Op Stds v20) --------------------------------
+# CURATED (~8), NOT exhaustive. Each control claimed in doctrine as BUILT resolves to
+# either code-evidence (a test/module that binds it) XOR a dated "doctrine-only, NOT
+# built" exception. The BINDING TEST that mechanically asserts this (its#341 item #1)
+# is itself a committed exec follow-up — a dated exception below, honest per §52.
+# New controls are added as identified; this is a bounded honest inventory of the gap
+# between claim and enforcement, not total coverage.
+narrated_controls:
+  binding_test:
+    claim: "a binding test asserts each ledger entry resolves to code-evidence XOR a dated exception (§52)"
+    status: dated_exception
+    exception_dated: 2026-07-06
+    note: "its#341 item #1 exec follow-up; the ledger is seeded now, the test lands next"
+  invariant2_layer6_email_attachment_screening:
+    claim: "every inbound email attachment is §34-screened (Invariant 2 Layer 6)"
+    status: dated_exception
+    exception_dated: 2026-07-06
+    note: "realized for portal PHOTOS (safety_reports/photo_screen.py); arbitrary email-attachment screening is Phase-1.4 (Email Triage), not built"
+  required_config_observable_resolution:
+    claim: "each daemon logs every resolved ITS_Config setting with its source + WARNs on a missing declared key"
+    status: dated_exception
+    exception_dated: 2026-07-06
+    note: "its#336 parked to phase 1.6; observable-config-resolution is the standard (HOUSE_REFLEXES), the per-daemon REQUIRED_CONFIG pass is not built"
+  section53_gated_cutover_checklist:
+    claim: "the sandbox->production cutover runs mechanical pre-cutover verification, not narration (§53)"
+    status: dated_exception
+    exception_dated: 2026-07-06
+    note: "its#341 item #4 exec follow-up; cutover_checklist.md is currently narration"
+  section54_secret_pii_log_backstop:
+    claim: "a redact/no-secret-in-logs test guards the error_log triple-fire + migration scripts (§54, distinct from gitleaks)"
+    status: dated_exception
+    exception_dated: 2026-07-06
+    note: "its#341 item #6 exec follow-up"
+  kill_switch_fail_open:
+    claim: "kill_switch fails open on sheet-unreachable / row-missing / invalid-value (§1)"
+    status: enforced
+    evidence: "tests/test_kill_switch.py"
+  external_send_gate_two_process:
+    claim: "generation scripts have zero send capability; send scripts have zero AI (Invariant 1)"
+    status: enforced
+    evidence: "tests/test_capability_gating.py"
+  state_write_discipline:
+    claim: "no direct Path.write_text/write_bytes under ~/its/state/ — all via shared/state_io.py"
+    status: enforced
+    evidence: "tests/test_state_write_discipline.py"
 
 # --- §42 module-docstring discipline (Op Stds v13) -----------------------------
 section_42:
