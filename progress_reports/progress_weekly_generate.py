@@ -57,6 +57,7 @@ from shared.active_jobs import ActiveJob
 from shared.error_log import Severity, its_error_log
 from shared.error_log import log as error_log_log
 from shared.kill_switch import require_active
+from shared.required_config import ConfigKey, resolve_and_log
 from shared.safety_week import SafetyWeek
 
 SCRIPT_NAME = "progress_reports.progress_weekly_generate"
@@ -168,6 +169,30 @@ PROGRESS_GENERATE_CONFIG = generate_core.GenerateConfig(
     rollup_page_provider=_rollup_page_provider,
 )
 
+# #336 — every ITS_Config key the progress compile resolves at RUNTIME: the four carried on the
+# GenerateConfig (read by generate_core under config.workstream='progress_reports') PLUS the
+# SHARED Worker base-URL read HERE under progress_reports for the P6 rollup page. Declared for
+# the startup observability pass (resolve_and_log).
+REQUIRED_CONFIG: list[ConfigKey] = [
+    ConfigKey(PROGRESS_GENERATE_CONFIG.box_root_setting_key, PROGRESS_GENERATE_CONFIG.workstream, "", "str"),
+    ConfigKey(
+        PROGRESS_GENERATE_CONFIG.cfg_job_timeout, PROGRESS_GENERATE_CONFIG.workstream,
+        PROGRESS_GENERATE_CONFIG.default_job_timeout, "int",
+    ),
+    ConfigKey(
+        PROGRESS_GENERATE_CONFIG.cfg_memory_ceiling, PROGRESS_GENERATE_CONFIG.workstream,
+        PROGRESS_GENERATE_CONFIG.default_memory_ceiling, "int",
+    ),
+    ConfigKey(
+        PROGRESS_GENERATE_CONFIG.cfg_evergreen_contact, PROGRESS_GENERATE_CONFIG.workstream,
+        PROGRESS_GENERATE_CONFIG.default_evergreen_contact, "str",
+    ),
+    ConfigKey(
+        CFG_WORKER_BASE_URL, "progress_reports", "", "str",
+        description="Shared Worker base URL, read under progress_reports for the P6 rollup page.",
+    ),
+]
+
 
 @its_error_log(SCRIPT_NAME)
 @require_active
@@ -178,6 +203,9 @@ def main(week_start_override: date | None = None) -> dict[str, Any]:
         week_start_override: any date inside the target Sat→Fri week (backfill). Defaults to
             the week containing today (Friday run → the just-closed week).
     """
+    # #336 startup observability (after @require_active, fail-open). Additive (§14).
+    resolve_and_log(SCRIPT_NAME, REQUIRED_CONFIG)
+
     return generate_core.run_generate(
         PROGRESS_GENERATE_CONFIG, week_start_override=week_start_override
     )

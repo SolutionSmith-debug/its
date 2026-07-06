@@ -88,6 +88,7 @@ from shared import (
 from shared.error_log import Severity, its_error_log
 from shared.heartbeat import HeartbeatReporter, HeartbeatStatus
 from shared.kill_switch import require_active
+from shared.required_config import ConfigKey, resolve_and_log
 
 SCRIPT_NAME = "field_ops.fieldops_sync"
 WORKSTREAM = "field_ops"
@@ -127,6 +128,35 @@ DEFAULT_EQUIPMENT_ENABLED = False
 CFG_MATERIALS_ENABLED = "field_ops.fieldops_sync.materials_enabled"
 DEFAULT_MATERIALS_ENABLED = False
 _PACIFIC = ZoneInfo("America/Los_Angeles")  # tracker cells are the operator's wall-clock
+
+# #336 — every ITS_Config key this daemon resolves at RUNTIME, declared once for the
+# startup observability pass (resolve_and_log). THREE workstreams: the four field_ops
+# gates, the SHARED safety_reports Worker base-URL (read under safety_reports), and the
+# three progress_reports row-cap thresholds the hours/equipment/material passes read
+# mid-cycle via progress_reports.{hours_log,equipment_status,material_list}.check_row_cap.
+# The declared-but-not-runtime-read *.poll_interval_seconds key is deliberately EXCLUDED.
+REQUIRED_CONFIG: list[ConfigKey] = [
+    ConfigKey(CFG_SYNC_ENABLED, WORKSTREAM, DEFAULT_SYNC_ENABLED, "bool"),
+    ConfigKey(CFG_HOURS_ENABLED, WORKSTREAM, DEFAULT_HOURS_ENABLED, "bool"),
+    ConfigKey(CFG_EQUIPMENT_ENABLED, WORKSTREAM, DEFAULT_EQUIPMENT_ENABLED, "bool"),
+    ConfigKey(CFG_MATERIALS_ENABLED, WORKSTREAM, DEFAULT_MATERIALS_ENABLED, "bool"),
+    ConfigKey(
+        CFG_WORKER_BASE_URL, CFG_WORKER_BASE_URL_WORKSTREAM, "", "str",
+        description="Shared Worker base URL; owned by safety_reports, read here too.",
+    ),
+    ConfigKey(
+        hours_log.CFG_ROW_CAP_WARN, "progress_reports",
+        hours_log.DEFAULT_ROW_CAP_WARN, "int",
+    ),
+    ConfigKey(
+        equipment_status.CFG_ROW_CAP_WARN, "progress_reports",
+        equipment_status.DEFAULT_ROW_CAP_WARN, "int",
+    ),
+    ConfigKey(
+        material_list.CFG_ROW_CAP_WARN, "progress_reports",
+        material_list.DEFAULT_ROW_CAP_WARN, "int",
+    ),
+]
 
 # State paths. HEARTBEAT_ROW_STATE_PATH is SHARED with the other daemons — same JSON file,
 # different daemon_name key (ARCH-2).
@@ -325,6 +355,12 @@ def sync_once() -> int:
     per-job dual-sheet find-or-create + per-sheet mark-mirrored → heartbeat + marker.
     launchd invokes this once per StartInterval; idempotent across crashes.
     """
+    # #336 startup observability: resolve+log every runtime ITS_Config key with its
+    # source; a MISSING declared row WARNs distinctly (config_row_missing). Runs after
+    # @require_active (a PAUSED daemon never logs) and is fail-open — it never blocks the
+    # cycle. The runtime _read_*_setting reads below are UNCHANGED (§14, additive).
+    resolve_and_log(SCRIPT_NAME, REQUIRED_CONFIG)
+
     if not _sync_enabled():
         # Shipped default (OFF until cutover) — an intentional state, not an anomaly, so no
         # heartbeat/marker/log every cycle (would be 5-minute spam). The ITS_Config gate is

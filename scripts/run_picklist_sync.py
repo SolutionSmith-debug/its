@@ -32,14 +32,25 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from shared import (  # noqa: E402
+    defaults,
     picklist_sync,
     sheet_ids,
     smartsheet_client,
 )
 from shared.error_log import Severity, its_error_log, log  # noqa: E402
 from shared.kill_switch import require_active  # noqa: E402
+from shared.required_config import ConfigKey, resolve_and_log  # noqa: E402
 
 _SCRIPT = "scripts.run_picklist_sync"
+
+# #336 — the two ITS_Config keys picklist_sync resolves at RUNTIME (via
+# picklist_sync._resolve_size_thresholds, workstream="global"). Declared for the startup observability
+# pass: _resolve_size_thresholds documents "both keys missing → silent fallback" — the exact anti-pattern
+# #336 surfaces. A missing row now WARNs (config_row_missing) instead of resolving to a silent default.
+REQUIRED_CONFIG: list[ConfigKey] = [
+    ConfigKey("picklist_sync.size_warn_threshold", "global", defaults.PICKLIST_SIZE_WARN_THRESHOLD, "int"),
+    ConfigKey("picklist_sync.size_hard_halt_threshold", "global", defaults.PICKLIST_SIZE_HARD_HALT_THRESHOLD, "int"),
+]
 
 # Watchdog Check C marker (C4). run_picklist_sync was previously untracked, so
 # its silent death was invisible; it now writes
@@ -319,6 +330,7 @@ def main() -> None:
         rc = _smoke_test()
         sys.exit(rc)
 
+    resolve_and_log(_SCRIPT, REQUIRED_CONFIG)  # #336 startup observability of the size-threshold keys.
     stats = picklist_sync.sync_all(only=args.mapping, dry_run=args.dry)
     _print_stats(stats)
     _log_run_summary(stats)

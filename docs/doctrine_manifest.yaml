@@ -142,9 +142,9 @@ narrated_controls:
     note: "realized for portal PHOTOS (safety_reports/photo_screen.py); arbitrary email-attachment screening is Phase-1.4 (Email Triage), not built"
   required_config_observable_resolution:
     claim: "each daemon logs every resolved ITS_Config setting with its source + WARNs on a missing declared key"
-    status: dated_exception
-    exception_dated: 2026-07-06
-    note: "its#336 parked to phase 1.6; observable-config-resolution is the standard (HOUSE_REFLEXES), the per-daemon REQUIRED_CONFIG pass is not built"
+    status: enforced
+    evidence: "shared/required_config.py + tests/test_required_config.py"
+    note: "built #336: each daemon declares a module-level REQUIRED_CONFIG; resolve_and_log logs every resolved setting with its source (ITS_Config vs default) at startup + WARNs config_row_missing distinctly on a missing declared row. Fail-open. Scoping: shared sub-helpers (kill_switch/sheet_capacity/alert_dedupe) own their own keys — see the module docstring."
   section53_gated_cutover_checklist:
     claim: "the sandbox->production cutover runs mechanical pre-cutover verification, not narration (§53)"
     status: dated_exception

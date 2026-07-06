@@ -82,6 +82,7 @@ from shared import (
 from shared.error_log import Severity, its_error_log
 from shared.heartbeat import HeartbeatReporter, HeartbeatStatus
 from shared.kill_switch import require_active
+from shared.required_config import ConfigKey, resolve_and_log
 
 SCRIPT_NAME = "safety_reports.portal_poll"
 WORKSTREAM = "safety_reports"
@@ -98,6 +99,17 @@ KC_HMAC_SECRET = "ITS_PORTAL_HMAC_SECRET"  # noqa: S105 — Keychain entry NAME,
 
 DEFAULT_POLLING_ENABLED = True
 DEFAULT_POLL_INTERVAL = 60  # 60 s
+
+# #336 — every ITS_Config key this daemon resolves at RUNTIME, declared for the startup
+# observability pass (resolve_and_log). The photo-clamav + Box-root keys are read mid-cycle
+# via intake / safety_naming (shared constants). The *.poll_interval_seconds key is EXCLUDED
+# (declared but never runtime-read here).
+REQUIRED_CONFIG: list[ConfigKey] = [
+    ConfigKey(CFG_POLLING_ENABLED, WORKSTREAM, DEFAULT_POLLING_ENABLED, "bool"),
+    ConfigKey(CFG_WORKER_BASE_URL, WORKSTREAM, "", "str"),
+    ConfigKey(intake.CFG_PHOTO_CLAMAV, WORKSTREAM, False, "bool"),
+    ConfigKey(safety_naming.CFG_BOX_PORTAL_ROOT, WORKSTREAM, "", "str"),
+]
 PENDING_LIMIT = 50  # Worker caps at 200; 50 drains a normal backlog per cycle.
 MAX_SEEN = 2000  # cap the seen-set file (oldest entries are harmless dead weight).
 
@@ -510,6 +522,10 @@ def _handle_hmac_failure(
 @require_active
 def poll_once() -> PollStats:
     """Run one poll cycle. Public API; idempotent across crashes."""
+    # #336 startup observability (after @require_active, fail-open — never blocks the
+    # cycle). Additive to the runtime _read_*_setting reads below (§14).
+    resolve_and_log(SCRIPT_NAME, REQUIRED_CONFIG)
+
     if not _polling_enabled():
         error_log.log(
             Severity.INFO, SCRIPT_NAME,

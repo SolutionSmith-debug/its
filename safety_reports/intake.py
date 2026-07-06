@@ -147,6 +147,7 @@ from shared.graph_client import GraphError
 from shared.header_forgery import HeaderAnalysis, HeaderVerdict
 from shared.kill_switch import require_active
 from shared.quarantine import QuarantineReason
+from shared.required_config import ConfigKey, resolve_and_log
 from shared.smartsheet_client import SmartsheetError, SmartsheetValidationError
 from shared.trusted_contacts import ScopeVerdict
 
@@ -1008,6 +1009,50 @@ def _progress_intake_enabled() -> bool:
     return _read_bool_setting(CFG_PROGRESS_INTAKE_ENABLED, DEFAULT_PROGRESS_INTAKE_ENABLED)
 
 
+# #336 — every ITS_Config key intake resolves at RUNTIME, declared for the startup
+# observability pass (resolve_and_log), called once per process_message invocation. All are
+# read under WORKSTREAM ('safety_reports'), INCLUDING the progress-intake gate — that is the
+# documented footgun: progress_reports.intake_enabled is intentionally seeded + read under
+# safety_reports (intake's own workstream), NOT progress_reports (see the block comment above
+# CFG_PROGRESS_INTAKE_ENABLED).
+REQUIRED_CONFIG: list[ConfigKey] = [
+    ConfigKey(CFG_MAILBOX, WORKSTREAM, DEFAULT_MAILBOX, "str"),
+    ConfigKey(CFG_MODEL, WORKSTREAM, DEFAULT_MODEL, "str"),
+    ConfigKey(CFG_BOX_FILING_ENABLED, WORKSTREAM, DEFAULT_BOX_FILING_ENABLED, "bool"),
+    ConfigKey(
+        CFG_REVIEW_ON_LOW_CONFIDENCE, WORKSTREAM,
+        DEFAULT_REVIEW_ON_LOW_CONFIDENCE, "bool",
+    ),
+    ConfigKey(CFG_CONFIDENCE_THRESHOLD, WORKSTREAM, DEFAULT_CONFIDENCE_THRESHOLD, "float"),
+    ConfigKey(CFG_ALLOWED_SENDERS, WORKSTREAM, "", "str"),
+    ConfigKey(CFG_PHOTO_CLAMAV, WORKSTREAM, False, "bool"),
+    ConfigKey(safety_naming.CFG_BOX_PORTAL_ROOT, WORKSTREAM, "", "str"),
+    ConfigKey(
+        CFG_PROGRESS_INTAKE_ENABLED, WORKSTREAM, DEFAULT_PROGRESS_INTAKE_ENABLED, "bool",
+        description=(
+            "FOOTGUN: the progress-intake gate is read under Workstream='safety_reports' "
+            "(intake's own workstream), NOT 'progress_reports' — seed it there."
+        ),
+    ),
+]
+
+# #336 — intake has no @require_active daemon loop of its own; the driver (portal_poll / mail poller)
+# calls process_message once PER pending submission. Log the config ledger ONCE per PROCESS invocation
+# (a launchd one-shot = one cycle) via this module-level guard, so a batch of N pending submissions
+# writes ONE ledger — not N config_row_missing WARN rows per cycle for a permanently-unseeded key
+# (the review's volume-amplification note). Flag set BEFORE the call (resolve_and_log is fail-open, so
+# it never raises; setting first also guards against any re-entrancy).
+_config_logged = False
+
+
+def _ensure_config_logged() -> None:
+    global _config_logged
+    if _config_logged:
+        return
+    _config_logged = True
+    resolve_and_log(SCRIPT_NAME, REQUIRED_CONFIG)
+
+
 # ---- process_message + main ---------------------------------------------
 
 
@@ -1030,6 +1075,11 @@ def process_message(
         (programming errors, third-party SDK regressions) propagate; the
         poll loop's `@its_error_log` decorator catches them.
     """
+    # #336 startup observability: resolve+log every runtime ITS_Config key with its source (a MISSING
+    # declared row WARNs distinctly, config_row_missing). Fail-open — never blocks the pipeline;
+    # additive to the runtime _read_*_setting reads below (§14). Guarded to ONCE per process cycle.
+    _ensure_config_logged()
+
     correlation_id = uuid.uuid4().hex[:12]
     resolved_mailbox = mailbox if mailbox is not None else _read_str_setting(
         CFG_MAILBOX, DEFAULT_MAILBOX
