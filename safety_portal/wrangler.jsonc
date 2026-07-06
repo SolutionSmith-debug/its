@@ -34,6 +34,14 @@
 
   "observability": { "enabled": true },
 
+  // ── Feature flags (plain vars, NOT secrets — safe to version-control). ──
+  // RECURRING_CHECKLISTS_ENABLED (#16): "true" arms the daily cron's recurring-checklist generation
+  // pass (worker/fieldops_recurrence.ts) AND lets POST /checklist/assign accept a recurrence block.
+  // Ships DARK — flip to "true" here + `npm run deploy` to activate (the operator-visible gate; no
+  // ITS_Config/Smartsheet row to hunt for). When "false"/absent the cron no-ops and the assign route
+  // 400s a recurrence block (never-silent), so the feature is fully inert with zero behavior change.
+  "vars": { "RECURRING_CHECKLISTS_ENABLED": "false" },
+
   // ── Custom domain (PR-J). The portal serves on safety.evergreenmirror.com.
   // custom_domain:true → Cloudflare provisions the hostname + TLS cert for the
   // zone on deploy. Declared here for version-control + reproducibility at cutover;

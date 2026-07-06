@@ -3,6 +3,13 @@ import type { Env, Vars } from "./types";
 import type { FieldopsApp, FieldopsGates } from "./fieldops_gates";
 import { auditStmt, auditStmtIfChanged, isUniqueViolation } from "./audit";
 import { requireJob, resolveActorPersonnel } from "./fieldops_scope";
+import {
+  ANCHOR_DATE_RE,
+  isValidCadence,
+  materializeDueInstances,
+  pacificDateString,
+  type RecurrenceRow,
+} from "./fieldops_recurrence";
 import type { AssignedInspectionsResponse, ChecklistItemState, ItemPhotoUploadResult } from "./wire-types";
 import { hmacHex } from "./hmac";
 import { b64DecodedLen, isPhotoItem, validateSinglePhoto } from "./photo_bounds";
@@ -1238,6 +1245,82 @@ export function registerChecklistRoutes(app: FieldopsApp, gates: FieldopsGates):
           : NaN;
       if (isNaN(assigneeId)) return c.json({ error: "invalid_assignee" }, 400);
 
+      // ── Recurring branch (#16) ─────────────────────────────────────────────────────────────────
+      // When a `recurrence` block is present, this assignment DEFINES a per-job recurring generator
+      // (checklist_recurrences, migration 0040) instead of a one-shot instance. The scheduled() cron
+      // (fieldops_recurrence.generateRecurringChecklists) then spawns a kind='inspection' instance on
+      // each cadence date — the SAME instance shape the one-shot path below creates, so the assignee's
+      // Assigned-Tasks tab + the admin instances list surface them unchanged.
+      // DARK-GATE: refuse (400 recurring_disabled, never-silent) unless RECURRING_CHECKLISTS_ENABLED
+      // is "true". Recurring is PER-JOB → job_id + a cadence + an anchor date are all REQUIRED.
+      if (body.recurrence !== undefined && body.recurrence !== null) {
+        if (c.env.RECURRING_CHECKLISTS_ENABLED !== "true") return c.json({ error: "recurring_disabled" }, 400);
+        const rc = body.recurrence;
+        if (typeof rc !== "object" || rc === null || Array.isArray(rc)) return c.json({ error: "invalid_recurrence" }, 400);
+        const rec = rc as Record<string, unknown>;
+        if (!isValidCadence(rec.cadence)) return c.json({ error: "invalid_cadence" }, 400);
+        const cadence = rec.cadence;
+        if (typeof rec.anchor_date !== "string" || !ANCHOR_DATE_RE.test(rec.anchor_date)) {
+          return c.json({ error: "invalid_anchor_date" }, 400);
+        }
+        const anchorDate = rec.anchor_date;
+        // job_id REQUIRED for a recurrence (a per-job generator must know which job to stop with).
+        if (typeof body.job_id !== "string" || body.job_id.length === 0) return c.json({ error: "job_required" }, 422);
+        const rJobErr = await requireJob(c, body.job_id);
+        if (rJobErr) return rJobErr;
+        const recJobId = body.job_id;
+        // Same template rules as a one-shot: a real generic_inspection, non-empty.
+        const rtpl = await c.env.DB.prepare(
+          "SELECT id, title FROM checklist_templates WHERE id = ?1 AND kind = 'generic_inspection'",
+        )
+          .bind(templateId)
+          .first<{ id: number; title: string | null }>();
+        if (!rtpl) return c.json({ error: "template_not_found" }, 404);
+        const rcomp = await c.env.DB.prepare(
+          "SELECT COUNT(*) AS n FROM checklist_items WHERE template_id = ?1 AND suppresses_default_item_id IS NULL",
+        )
+          .bind(templateId)
+          .first<{ n: number }>();
+        if ((rcomp?.n ?? 0) === 0) return c.json({ error: "empty_template" }, 422);
+        // Assignee must be an ACTIVE roster person (same rule as the one-shot path).
+        const rperson = await c.env.DB.prepare("SELECT id FROM personnel WHERE id = ?1 AND active = 1")
+          .bind(assigneeId)
+          .first<{ id: number }>();
+        if (!rperson) return c.json({ error: "assignee_not_found" }, 404);
+
+        const rActor = c.get("session").username;
+        // (W4) UPSERT the definition + its audit ATOMICALLY. Re-defining the same (template, person,
+        // job) triple REACTIVATES it + refreshes cadence/anchor + RESETS the watermark (a new anchor
+        // takes effect cleanly; the bounded catch-up + INSERT OR IGNORE make any overlap a no-op).
+        await c.env.DB.batch([
+          c.env.DB
+            .prepare(
+              "INSERT INTO checklist_recurrences (template_id, assignee_personnel_id, job_id, cadence, anchor_date, active, last_generated_date, template_title, created_by) " +
+                "VALUES (?1,?2,?3,?4,?5,1,NULL,?6,?7) " +
+                "ON CONFLICT(template_id, assignee_personnel_id, job_id) DO UPDATE SET cadence=excluded.cadence, anchor_date=excluded.anchor_date, active=1, last_generated_date=NULL, template_title=excluded.template_title",
+            )
+            .bind(templateId, assigneeId, recJobId, cadence, anchorDate, rtpl.title, rActor),
+          auditStmtIfChanged(c, rActor, "checklist_recurrence_define", String(assigneeId), {
+            template_id: templateId,
+            assignee_personnel_id: assigneeId,
+            job_id: recJobId,
+            cadence,
+            anchor_date: anchorDate,
+          }),
+        ]);
+        const recRow = await c.env.DB
+          .prepare(
+            "SELECT id, template_id, assignee_personnel_id, job_id, cadence, anchor_date, active, last_generated_date, template_title FROM checklist_recurrences WHERE template_id = ?1 AND assignee_personnel_id = ?2 AND job_id = ?3",
+          )
+          .bind(templateId, assigneeId, recJobId)
+          .first<RecurrenceRow>();
+        if (!recRow) return c.json({ error: "internal_error" }, 500);
+        // Immediate first materialization so the assignee sees today's instance without waiting for
+        // the 09:00-UTC cron (and the admin can live-smoke on the spot). A future anchor yields 0.
+        const mat = await materializeDueInstances(c.env.DB, recRow, pacificDateString(Date.now()));
+        return c.json({ ok: true, recurrence_id: recRow.id, instances_created: mat.created }, 201);
+      }
+
       // Optional job_id: when present must be a real job (any lifecycle — a checklist can target any job).
       let jobId: string | null = null;
       if (body.job_id !== undefined && body.job_id !== null) {
@@ -1341,6 +1424,65 @@ export function registerChecklistRoutes(app: FieldopsApp, gates: FieldopsGates):
         itemCount = rows.length;
       }
       return c.json({ ok: true, instance_id: instanceId, item_count: itemCount }, created ? 201 : 200);
+    },
+  );
+
+  // ── GET /api/fieldops/checklist/recurrences (#16) — the admin's ACTIVE recurring definitions. ────
+  // The visibility half of "stop generating when the assignment is deactivated": every active
+  // recurring generator is listable (with assignee + job names) so a mistaken one can be found +
+  // stopped. cap.checklist.manage (admin authoring cap), send-free, newest-first, bounded.
+  app.get(
+    "/api/fieldops/checklist/recurrences",
+    gates.requireSession,
+    gates.requireCapability(CAP_CHECKLIST),
+    async (c) => {
+      const rows = await c.env.DB.prepare(
+        `SELECT r.id, r.template_id, r.template_title, r.assignee_personnel_id, p.name AS assignee_name,
+                r.job_id, j.project_name, r.cadence, r.anchor_date, r.last_generated_date, r.created_at
+         FROM checklist_recurrences r
+         LEFT JOIN personnel p ON p.id = r.assignee_personnel_id
+         LEFT JOIN jobs j ON j.job_id = r.job_id
+         WHERE r.active = 1
+         ORDER BY r.created_at DESC, r.id DESC
+         LIMIT ?1`,
+      )
+        .bind(INSTANCES_LIMIT)
+        .all<{
+          id: number;
+          template_id: number;
+          template_title: string | null;
+          assignee_personnel_id: number | null;
+          assignee_name: string | null;
+          job_id: string | null;
+          project_name: string | null;
+          cadence: string;
+          anchor_date: string;
+          last_generated_date: string | null;
+          created_at: number;
+        }>();
+      return c.json({ recurrences: rows.results ?? [] });
+    },
+  );
+
+  // ── POST /api/fieldops/checklist/recurrence/:id/deactivate (#16) — STOP a recurring generator. ───
+  // The explicit "assignment deactivated" stop condition (the cron also auto-stops on job closure).
+  // Idempotent: already-inactive / unknown → 404 not_found. Deactivation is NON-destructive — the row
+  // stays for the forensic record + is reactivatable by re-assigning the same (template, person, job).
+  // Already-spawned instances are untouched (cancel those individually via /instance/:id/cancel).
+  app.post(
+    "/api/fieldops/checklist/recurrence/:id/deactivate",
+    gates.requireSession,
+    gates.requireCapability(CAP_CHECKLIST),
+    async (c) => {
+      const recId = parseInt(c.req.param("id"), 10);
+      if (isNaN(recId)) return c.json({ error: "invalid_id" }, 400);
+      const actor = c.get("session").username;
+      const res = await c.env.DB.batch([
+        c.env.DB.prepare("UPDATE checklist_recurrences SET active = 0 WHERE id = ?1 AND active = 1").bind(recId),
+        auditStmtIfChanged(c, actor, "checklist_recurrence_deactivate", String(recId), { recurrence_id: recId }),
+      ]);
+      if ((res[0].meta.changes ?? 0) === 0) return c.json({ error: "not_found" }, 404);
+      return c.json({ ok: true, id: recId }, 200);
     },
   );
 

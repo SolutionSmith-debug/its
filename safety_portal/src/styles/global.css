@@ -1737,6 +1737,10 @@ h3,
 .checklist-assign__full { grid-column: 1 / -1; margin-top: 0; }
 .checklist-assign__confirm { display: flex; flex-direction: column; gap: 2px; align-items: flex-start; }
 .checklist-assign__confirm-sub { font-weight: 600; }
+/* (#16) The recurring toggle: checkbox + label inline, spanning the assign grid. */
+.checklist-assign__recurring { flex-direction: row; align-items: center; gap: 8px; }
+.checklist-assign__recurring input { width: auto; flex: 0 0 auto; }
+.checklist-assign__recurring .field__label { margin: 0; }
 
 /* Assign & track: the outstanding-assignments head (title + Open/All filter) and per-row layout. */
 .checklist-track__head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }

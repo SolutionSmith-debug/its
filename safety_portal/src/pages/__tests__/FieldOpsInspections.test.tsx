@@ -24,6 +24,9 @@ vi.mock("../../lib/fieldops_checklist", () => ({
   fetchChecklistInstances: vi.fn(),
   cancelChecklistInstance: vi.fn(),
   fetchFullRoster: vi.fn(),
+  // #16 — recurring assignments
+  fetchChecklistRecurrences: vi.fn(),
+  deactivateChecklistRecurrence: vi.fn(),
 }));
 vi.mock("../../lib/fieldops_jobtracker", () => ({ fetchJobList: vi.fn() }));
 vi.mock("../../lib/auth", () => ({ useAuth: vi.fn() }));
@@ -34,9 +37,9 @@ import { FieldOpsInspections } from "../FieldOpsInspections";
 import { HomePage } from "../HomePage";
 import { useAuth } from "../../lib/auth";
 
-function authWith(capabilities: string[]) {
+function authWith(capabilities: string[], recurringEnabled = false) {
   return {
-    user: { username: "admin", role: "admin" as const, capabilities },
+    user: { username: "admin", role: "admin" as const, capabilities, recurring_checklists_enabled: recurringEnabled },
     loading: false,
     login: vi.fn(),
     logout: vi.fn(),
@@ -81,6 +84,8 @@ beforeEach(() => {
   ]);
   vi.mocked(checklist.fetchChecklistInstances).mockResolvedValue({ instances: INSTANCES, status_filter: "open" });
   vi.mocked(checklist.cancelChecklistInstance).mockResolvedValue({ ok: true, id: 41 });
+  vi.mocked(checklist.fetchChecklistRecurrences).mockResolvedValue({ recurrences: [] });
+  vi.mocked(checklist.deactivateChecklistRecurrence).mockResolvedValue({ ok: true, id: 51 });
   vi.mocked(fetchJobList).mockResolvedValue({ jobs: [{ job_id: "JOB-A", project_name: "Alpha", status: "active", progress: 0, client_name: null, crew: [], open_tasks: [] }], next_cursor: null });
 });
 
@@ -493,6 +498,88 @@ describe("FieldOpsInspections — outstanding assignments (R5)", () => {
     await waitFor(() =>
       expect(vi.mocked(checklist.fetchChecklistInstances).mock.calls.length).toBeGreaterThan(callsBefore),
     );
+  });
+});
+
+describe("FieldOpsInspections — recurring checklists (#16)", () => {
+  it("flag OFF (default): no recurring toggle, no Recurring-assignments band, and no recurrences fetch", async () => {
+    const { container, queryByLabelText } = render(<FieldOpsInspections onBack={() => {}} />);
+    await waitFor(() => expect(container.querySelector('[aria-label="Assign an inspection"]')).not.toBeNull());
+    expect(queryByLabelText("Recurring checklist")).toBeNull();
+    expect(container.querySelector('[aria-label="Recurring assignments"]')).toBeNull();
+    expect(checklist.fetchChecklistRecurrences).not.toHaveBeenCalled();
+  });
+
+  it("flag ON: checking Recurring reveals cadence + start date and posts a recurrence payload (no due_date)", async () => {
+    vi.mocked(useAuth).mockReturnValue(authWith(["cap.checklist.manage"], true));
+    vi.mocked(checklist.assignInspection).mockResolvedValue({ ok: true, recurrence_id: 51, instances_created: 1 });
+    const { getByLabelText, container } = render(<FieldOpsInspections onBack={() => {}} />);
+    await waitFor(() => getByLabelText("Assign form"));
+    // The toggle is offered; checking it reveals Cadence + Start date (and hides Due date).
+    fireEvent.click(getByLabelText("Recurring checklist"));
+    const cadence = getByLabelText("Cadence") as HTMLSelectElement;
+    fireEvent.change(getByLabelText("Checklist"), { target: { value: "1" } });
+    fireEvent.change(getByLabelText("Assignee"), { target: { value: "5" } });
+    fireEvent.change(getByLabelText("Job"), { target: { value: "JOB-A" } });
+    fireEvent.change(cadence, { target: { value: "weekly" } });
+    fireEvent.change(getByLabelText("Start date"), { target: { value: "2026-07-11" } });
+    fireEvent.submit(getByLabelText("Assign form"));
+    await waitFor(() =>
+      expect(checklist.assignInspection).toHaveBeenCalledWith({
+        template_id: 1,
+        assignee_personnel_id: 5,
+        job_id: "JOB-A",
+        recurrence: { cadence: "weekly", anchor_date: "2026-07-11" },
+      }),
+    );
+    await waitFor(() => expect(container.textContent ?? "").toContain("Recurring checklist set"));
+  });
+
+  it("flag ON: recurring requires a job + start date before the request (client-half of the server guard)", async () => {
+    vi.mocked(useAuth).mockReturnValue(authWith(["cap.checklist.manage"], true));
+    const { getByLabelText, container } = render(<FieldOpsInspections onBack={() => {}} />);
+    await waitFor(() => getByLabelText("Assign form"));
+    fireEvent.click(getByLabelText("Recurring checklist"));
+    fireEvent.change(getByLabelText("Checklist"), { target: { value: "1" } });
+    fireEvent.change(getByLabelText("Assignee"), { target: { value: "5" } });
+    // No job / no start date → blocked client-side, no request fires.
+    fireEvent.submit(getByLabelText("Assign form"));
+    await waitFor(() => expect(container.textContent ?? "").toContain("needs a job and a start"));
+    expect(checklist.assignInspection).not.toHaveBeenCalled();
+  });
+
+  it("flag ON: the Recurring-assignments band lists an active recurrence and Stop deactivates it", async () => {
+    vi.mocked(useAuth).mockReturnValue(authWith(["cap.checklist.manage"], true));
+    vi.mocked(checklist.fetchChecklistRecurrences).mockResolvedValue({
+      recurrences: [
+        {
+          id: 51,
+          template_id: 1,
+          template_title: "Fall protection",
+          assignee_personnel_id: 5,
+          assignee_name: "Sam Sub",
+          job_id: "JOB-A",
+          project_name: "Alpha",
+          cadence: "daily",
+          anchor_date: "2026-07-01",
+          last_generated_date: "2026-07-05",
+          created_at: 200,
+        },
+      ],
+    });
+    const { container, getByLabelText } = render(<FieldOpsInspections onBack={() => {}} />);
+    const band = await waitFor(() => {
+      const el = container.querySelector('[aria-label="Recurring assignments"]');
+      expect(el).not.toBeNull();
+      return el as HTMLElement;
+    });
+    await waitFor(() => expect(band.textContent ?? "").toContain("Fall protection"));
+    expect(band.textContent ?? "").toContain("Sam Sub");
+    expect(band.textContent ?? "").toContain("Daily");
+    // Two-step confirm (ConfirmDelete): Stop → Confirm → deactivate fires.
+    fireEvent.click(getByLabelText("Stop recurring Fall protection for Sam Sub"));
+    fireEvent.click(getByLabelText("Confirm Stop recurring Fall protection for Sam Sub"));
+    await waitFor(() => expect(checklist.deactivateChecklistRecurrence).toHaveBeenCalledWith(51));
   });
 });
 

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
+import { useAuth } from "../lib/auth";
 import * as checklist from "../lib/fieldops_checklist";
 import type { PersonnelRow } from "../lib/fieldops_personnel";
 import { fetchJobList, type JobRow } from "../lib/fieldops_jobtracker";
@@ -313,7 +314,20 @@ interface AssignConfirmation {
   job: string | null;
   due: string | null;
   itemCount: number;
+  // (#16) When set, this was a RECURRING define — `due` holds the anchor date, `cadence` the cadence,
+  // and `recurringCreated` how many instances materialized immediately (0 for a future anchor).
+  cadence: checklist.RecurrenceCadence | null;
+  recurringCreated: number;
 }
+
+// (#16) Human labels for the cadence select + confirmation copy.
+const CADENCE_OPTIONS: { value: checklist.RecurrenceCadence; label: string }[] = [
+  { value: "daily", label: "Daily" },
+  { value: "weekly", label: "Weekly" },
+  { value: "biweekly", label: "Every 2 weeks" },
+  { value: "monthly", label: "Monthly" },
+];
+const CADENCE_LABEL: Record<string, string> = Object.fromEntries(CADENCE_OPTIONS.map((o) => [o.value, o.label]));
 
 // ── Assign control (R5 — the client halves of the R1 assign-time 422s) ────────────────────────────
 // The Worker independently rejects all four stuck-assignment classes (R1); this form makes them
@@ -339,6 +353,12 @@ function AssignForm({
   const [detail, setDetail] = useState<checklist.InspectionDetail | null>(null);
   const [detailWarn, setDetailWarn] = useState(false);
   const [confirmation, setConfirmation] = useState<AssignConfirmation | null>(null);
+  // (#16) Recurring — only offered when the feature is live server-side (SessionUser flag). When on,
+  // the single date field is the ANCHOR ("generates off of"), and job + anchor become required.
+  const { user } = useAuth();
+  const recurringEnabled = user?.recurring_checklists_enabled ?? false;
+  const [recurring, setRecurring] = useState(false);
+  const [cadence, setCadence] = useState<checklist.RecurrenceCadence>("daily");
 
   // VERIFIED (R5): POST /checklist/assign requires an ACTIVE personnel row only — a portal login is
   // NOT required. So the FULL active roster is offered (fetchFullRoster pages the cursor to
@@ -380,6 +400,10 @@ function AssignForm({
   }, [templateId]);
 
   const needsJobDate = (detail?.items ?? []).some((i) => isFormBearing(i.item_type));
+  // (#16) A recurrence is per-job and needs an anchor, so job + date are ALWAYS required when
+  // recurring — on top of the R1 form-bearing rule.
+  const jobRequired = recurring || needsJobDate;
+  const dateRequired = recurring || needsJobDate;
 
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -394,8 +418,13 @@ function AssignForm({
       setMsg({ ok: false, text: "Pick a person." });
       return;
     }
+    // (#16) Recurring client-half of the server 422/400s — a recurrence needs a job + an anchor date.
+    if (recurring && (jobId === "" || dueDate === "")) {
+      setMsg({ ok: false, text: "A recurring checklist needs a job and a start (anchor) date." });
+      return;
+    }
     // Client half of the R1 server 422 — same rule, caught BEFORE the request with inline copy.
-    if (needsJobDate && (jobId === "" || dueDate === "")) {
+    if (!recurring && needsJobDate && (jobId === "" || dueDate === "")) {
       setMsg({
         ok: false,
         text: "Pick a job and a due date — this checklist auto-checks from filed forms, so it needs both.",
@@ -407,7 +436,12 @@ function AssignForm({
     try {
       const input: checklist.AssignInput = { template_id: tid, assignee_personnel_id: aid };
       if (jobId) input.job_id = jobId;
-      if (dueDate) input.due_date = dueDate;
+      if (recurring) {
+        // The date field is the ANCHOR when recurring; never also send due_date (mutually exclusive).
+        input.recurrence = { cadence, anchor_date: dueDate };
+      } else if (dueDate) {
+        input.due_date = dueDate;
+      }
       const res = await checklist.assignInspection(input);
       const person = people.find((p) => p.id === aid);
       const tpl = templates.find((t) => t.id === tid);
@@ -417,14 +451,18 @@ function AssignForm({
         title: tpl?.title ?? `checklist ${tid}`,
         job: jobId ? (job?.project_name ?? jobId) : null,
         due: dueDate || null,
-        itemCount: res.item_count,
+        itemCount: !recurring && "item_count" in res ? res.item_count : 0,
+        cadence: recurring ? cadence : null,
+        recurringCreated: recurring && "instances_created" in res ? res.instances_created : 0,
       });
       // FULL reset (not just the date) — a repeat assign must be a deliberate fresh selection, so a
-      // double-tap after success can't silently create a duplicate no-job/no-date instance.
+      // double-tap after success can't silently create a duplicate instance/recurrence.
       setTemplateId("");
       setAssignee("");
       setJobId("");
       setDueDate("");
+      setRecurring(false);
+      setCadence("daily");
       setDetail(null);
       onAssigned?.();
     } catch (err) {
@@ -453,12 +491,27 @@ function AssignForm({
       )}
       {confirmation && (
         <div className="banner banner--ok checklist-assign__confirm" role="status" aria-label="Assignment confirmation">
-          <strong>Assigned to {confirmation.assignee} ✓</strong>
-          <span className="checklist-assign__confirm-sub">
-            “{confirmation.title}” ({confirmation.itemCount} item{confirmation.itemCount === 1 ? "" : "s"})
-            {confirmation.job !== null ? <> · {confirmation.job}</> : null}
-            {confirmation.due !== null ? <> · due {confirmation.due}</> : null}
-          </span>
+          {confirmation.cadence !== null ? (
+            <>
+              <strong>Recurring checklist set for {confirmation.assignee} ✓</strong>
+              <span className="checklist-assign__confirm-sub">
+                “{confirmation.title}” · {CADENCE_LABEL[confirmation.cadence]} from {confirmation.due}
+                {confirmation.job !== null ? <> · {confirmation.job}</> : null} ·{" "}
+                {confirmation.recurringCreated === 0
+                  ? "first one starts on the anchor date"
+                  : `${confirmation.recurringCreated} started so far`}
+              </span>
+            </>
+          ) : (
+            <>
+              <strong>Assigned to {confirmation.assignee} ✓</strong>
+              <span className="checklist-assign__confirm-sub">
+                “{confirmation.title}” ({confirmation.itemCount} item{confirmation.itemCount === 1 ? "" : "s"})
+                {confirmation.job !== null ? <> · {confirmation.job}</> : null}
+                {confirmation.due !== null ? <> · due {confirmation.due}</> : null}
+              </span>
+            </>
+          )}
         </div>
       )}
       <form onSubmit={submit} className="checklist-assign__grid" aria-label="Assign form">
@@ -487,28 +540,78 @@ function AssignForm({
             ))}
           </select>
         </label>
+        {recurringEnabled && (
+          <label className="field checklist-assign__full checklist-assign__recurring">
+            <input
+              type="checkbox"
+              aria-label="Recurring checklist"
+              checked={recurring}
+              onChange={(e) => setRecurring(e.target.checked)}
+            />
+            <span className="field__label">
+              Recurring checklist — re-assign it to this person on this job on a schedule
+            </span>
+          </label>
+        )}
         <label className="field">
-          <span className="field__label">{needsJobDate ? "Job (required)" : "Job (optional)"}</span>
+          <span className="field__label">{jobRequired ? "Job (required)" : "Job (optional)"}</span>
           <select className="field__input" aria-label="Job" value={jobId} onChange={(e) => setJobId(e.target.value)}>
-            <option value="">{needsJobDate ? "— pick a job —" : "— job (optional) —"}</option>
+            <option value="">{jobRequired ? "— pick a job —" : "— job (optional) —"}</option>
             {jobs.map((j) => (
               <option key={j.job_id} value={j.job_id}>{j.project_name ?? j.job_id}</option>
             ))}
           </select>
         </label>
-        <label className="field">
-          <span className="field__label">{needsJobDate ? "Due date (required)" : "Due date (optional)"}</span>
-          <input
-            className="field__input"
-            type="date"
-            aria-label="Due date"
-            value={dueDate}
-            onChange={(e) => setDueDate(e.target.value)}
-          />
-        </label>
+        {recurring ? (
+          <>
+            <label className="field">
+              <span className="field__label">Cadence</span>
+              <select
+                className="field__input"
+                aria-label="Cadence"
+                value={cadence}
+                onChange={(e) => setCadence(e.target.value as checklist.RecurrenceCadence)}
+              >
+                {CADENCE_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
+            </label>
+            <label className="field">
+              <span className="field__label">Start date (required)</span>
+              <input
+                className="field__input"
+                type="date"
+                aria-label="Start date"
+                value={dueDate}
+                onChange={(e) => setDueDate(e.target.value)}
+              />
+            </label>
+          </>
+        ) : (
+          <label className="field">
+            <span className="field__label">{dateRequired ? "Due date (required)" : "Due date (optional)"}</span>
+            <input
+              className="field__input"
+              type="date"
+              aria-label="Due date"
+              value={dueDate}
+              onChange={(e) => setDueDate(e.target.value)}
+            />
+          </label>
+        )}
         <div className="checklist-assign__submit">
-          <button type="submit" className="btn btn--primary" disabled={busy}>Assign</button>
+          <button type="submit" className="btn btn--primary" disabled={busy}>
+            {recurring ? "Set recurring" : "Assign"}
+          </button>
         </div>
+        {recurring && (
+          <p className="jha__notice checklist-assign__full">
+            This spawns the checklist for the assignee every {CADENCE_LABEL[cadence].toLowerCase()} starting on the
+            start date. Generation stops automatically when the job closes; you can also stop it anytime
+            under “Recurring assignments” below.
+          </p>
+        )}
         {needsJobDate && (
           <p className="jha__notice checklist-assign__full">
             This checklist auto-checks from filed forms — it needs a job and a date so filings can be
@@ -670,6 +773,107 @@ function AssignmentsSection({ refreshKey }: { refreshKey: number }) {
   );
 }
 
+// ── Recurring assignments (#16 — the admin list + stop; GET /checklist/recurrences) ────────────────
+// The visibility + revoke half of "stop generating when the assignment is deactivated": every ACTIVE
+// per-job recurring generator is listable (who / which job / cadence / anchor) and stoppable. Stopping
+// is non-destructive (already-spawned instances stay under Outstanding assignments — cancel those
+// individually); the cron also auto-stops a recurrence when its job closes. Loading ≠ empty; a fetch
+// failure renders an error with Retry (never a lying blank). Rendered only when the feature is live.
+function RecurrencesSection({ refreshKey }: { refreshKey: number }) {
+  const [rows, setRows] = useState<checklist.ChecklistRecurrence[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<Msg | null>(null);
+
+  async function load() {
+    setLoading(true);
+    setLoadError(false);
+    try {
+      const res = await checklist.fetchChecklistRecurrences();
+      setRows(res.recurrences);
+    } catch {
+      setLoadError(true);
+    } finally {
+      setLoading(false);
+    }
+  }
+  useEffect(() => {
+    void load();
+    // refreshKey: bumped after a successful (recurring) assign so a new definition appears at once.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refreshKey]);
+
+  function stop(row: checklist.ChecklistRecurrence) {
+    if (busy) return;
+    setBusy(true);
+    setMsg(null);
+    void (async () => {
+      try {
+        await checklist.deactivateChecklistRecurrence(row.id);
+        await load();
+        setMsg({
+          ok: true,
+          text: `Stopped the recurring “${row.template_title ?? `checklist #${row.id}`}” for ${row.assignee_name ?? "the assignee"}. Already-created instances remain under Outstanding assignments.`,
+        });
+      } catch (err) {
+        setMsg({ ok: false, text: err instanceof Error ? err.message : "Stop failed." });
+      } finally {
+        setBusy(false);
+      }
+    })();
+  }
+
+  return (
+    <section className="card dash-section" aria-label="Recurring assignments">
+      <h3 className="dash-detail__h2">Recurring assignments</h3>
+      <p className="dash-card__sub muted">
+        Checklists that re-assign themselves on a schedule. Stopping a recurrence ends future
+        generation only — it never touches instances already created (cancel those above). A
+        recurrence also stops on its own when the job closes.
+      </p>
+      <MsgLine msg={msg} />
+      {loading ? (
+        <div className="muted">Loading recurring assignments…</div>
+      ) : loadError ? (
+        <p className="banner banner--err">
+          Couldn't load the recurring assignments.{" "}
+          <button type="button" className="btn btn--secondary" aria-label="Retry loading recurring assignments" onClick={() => void load()}>
+            Retry
+          </button>
+        </p>
+      ) : rows.length === 0 ? (
+        <div className="dash-unavail">No recurring assignments — nothing is set to repeat.</div>
+      ) : (
+        <ul className="dash-tasklist" aria-label="Recurring assignment rows">
+          {rows.map((r) => {
+            const title = r.template_title ?? `Checklist #${r.id}`;
+            const who = r.assignee_name ?? "(unknown assignee)";
+            return (
+              <li key={r.id} className="checklist-track__row">
+                <div className="checklist-track__row-main">
+                  <strong>{title}</strong>
+                  <span className="dash-card__sub"> · {who}</span>
+                  {r.job_id !== null && <span className="dash-card__sub"> · {r.project_name ?? r.job_id}</span>}
+                  <span className="dash-pill"> {CADENCE_LABEL[r.cadence] ?? r.cadence}</span>
+                  <span className="dash-card__sub"> · from {r.anchor_date}</span>
+                </div>
+                <ConfirmDelete
+                  actionLabel="Stop"
+                  ariaLabel={`Stop recurring ${title} for ${who}`}
+                  copy={`Stop the recurring “${title}” for ${who}? Future generation ends; already-created instances stay under Outstanding assignments.`}
+                  busy={busy}
+                  onConfirm={() => stop(r)}
+                />
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </section>
+  );
+}
+
 /**
  * R8 — the admin "Checklists" page (view key 'fieldops-inspections' unchanged), redesigned to the
  * Forms form-builder shape: a master-detail Inspection library (list → detail) whose detail carries
@@ -690,6 +894,9 @@ export function FieldOpsInspections({ onBack }: { onBack: () => void }) {
   const [msg, setMsg] = useState<Msg | null>(null);
   // R5: bumped after each successful assign so the Outstanding-assignments section refetches.
   const [assignmentsRefresh, setAssignmentsRefresh] = useState(0);
+  // (#16) Only render the Recurring-assignments band when the feature is live server-side.
+  const { user } = useAuth();
+  const recurringEnabled = user?.recurring_checklists_enabled ?? false;
 
   async function reload() {
     try {
@@ -938,6 +1145,7 @@ export function FieldOpsInspections({ onBack }: { onBack: () => void }) {
       {/* ── ASSIGN & TRACK band ──────────────────────────────────────────────── */}
       <AssignForm templates={templates} onAssigned={() => setAssignmentsRefresh((k) => k + 1)} />
       <AssignmentsSection refreshKey={assignmentsRefresh} />
+      {recurringEnabled && <RecurrencesSection refreshKey={assignmentsRefresh} />}
       </div>
     </PageShell>
   );

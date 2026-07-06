@@ -4,7 +4,7 @@ date: 2026-07-01
 status: active
 related_prs: []
 workstream: field_ops
-tags: [runbook, successor-remediation, checklist, daily-report, sop-daily-form, job-requirements, inspection-library, assigned-tasks, tier-2, tier-3]
+tags: [runbook, successor-remediation, checklist, daily-report, sop-daily-form, job-requirements, inspection-library, assigned-tasks, recurring-checklists, tier-2, tier-3]
 ---
 
 # Runbook — Field-Ops daily report (SOP form) + assigned inspections (Successor-Remediation, Op Stds §43)
@@ -180,6 +180,49 @@ mirror). The restore path is Cloudflare **D1 Time Travel** (30-day point-in-time
 whole database, `npx wrangler d1 time-travel …`); beyond that window the blast radius is
 re-enterable admin data — the office re-keys each job's items. See `docs/tech_debt.md`
 "D1-primary tables have no ITS-side backup" (R3-F7).
+
+---
+
+## Recurring checklists (#16, migration 0040) — the auto-assign generator
+
+**What it is.** An admin can make an inspection assignment **recurring**: the Assign form gains a
+"Recurring checklist" checkbox → cadence (daily/weekly/biweekly/monthly) + an anchor ("generates off
+of") date. A per-job generator (`checklist_recurrences`) spawns the assignee's inspection instance on
+each cadence date via the **daily Worker cron** (09:00 UTC) — no Mac daemon. The admin Checklists page
+gains a **"Recurring assignments"** band (list + Stop). **Shipped DARK** behind the Worker var
+`RECURRING_CHECKLISTS_ENABLED` (default `"false"`); while dark nothing recurs.
+
+**Low-class repairs (Tier-2):**
+
+1. *"I set a checklist recurring but the person never gets it"* — first confirm the feature is LIVE:
+   the "Recurring checklist" checkbox only appears when `RECURRING_CHECKLISTS_ENABLED` is `"true"` in
+   the deployed Worker. If the checkbox is absent, the feature is still dark → that's a Worker
+   `var`-flip + deploy → **escalate to Seth** (deploy is high-class). If the checkbox IS present and
+   you set it: the FIRST instance appears immediately (on the anchor date if it's today/past);
+   subsequent ones appear after the **09:00-UTC cron** — so "nothing today" for a future anchor is
+   correct, and a same-day set shows within a minute (the assign materializes the first one on the
+   spot). Have the assignee refresh their My Tasks tab.
+2. *"It stopped generating on its own"* — expected when the **job closed**: the cron auto-stops a
+   recurrence whose job is no longer active (audit `checklist_recurrence_autostop`). Re-open the job
+   (or re-assign the recurrence on an active job) to resume. Not a fault.
+3. *"I want to stop a recurring checklist"* — admin Checklists page → "Recurring assignments" band →
+   **Stop** (confirm). Future generation ends; already-created instances stay under Outstanding
+   assignments (cancel those individually if needed). Non-destructive + reversible (re-assign to
+   restart).
+4. *"There are duplicate instances for the same day"* — should be impossible (the spawn is
+   INSERT-OR-IGNORE on the existing per-day UNIQUE key). If you genuinely see two, that's a data
+   anomaly → **escalate to Seth**.
+5. *"Set-recurring fails with 'recurring_disabled'"* — the feature is dark server-side (see #1) →
+   escalate for the var-flip + deploy.
+
+**Escalate to Seth (high-class):** flipping `RECURRING_CHECKLISTS_ENABLED` to `"true"` (a Worker
+`var` edit + `npm run deploy` — apply `0040` to live D1 FIRST, the deploy-lockout class); the assign
+recurring branch / cron 500ing on valid input; genuine duplicate per-day instances; any request to
+add a cadence (a code change to `RECURRENCE_CADENCES` + `enumerateCadenceDates`).
+
+**Data note:** `checklist_recurrences` is **D1-primary** (no Smartsheet/Box mirror) — same D1
+Time-Travel restore posture as the other checklist tables above; the blast radius is re-enterable
+admin config (re-set the recurrence).
 
 ---
 

@@ -41,6 +41,15 @@ export interface Env {
    * declared in P0 so wrangler.jsonc / .dev.vars can carry it. Workers Secret — never committed.
    */
   PORTAL_FIELDOPS_API_TOKEN: string;
+  /**
+   * Feature flag (a plain Worker `var`, NOT a secret) gating "recurring checklists per job" (#16).
+   * "true" arms the scheduled() cron's cadence-generation pass AND lets POST /checklist/assign accept
+   * a recurrence block; anything else (incl. absent) keeps the feature DARK — the cron no-ops and the
+   * assign route refuses a recurrence block with 400 recurring_disabled (never-silent). Declared in
+   * wrangler.jsonc `vars` (default "false"); flip to "true" + `npm run deploy` to activate. Exposed to
+   * the SPA via /api/login + /api/session so the assign form only shows the recurring controls live.
+   */
+  RECURRING_CHECKLISTS_ENABLED: string;
 }
 
 /** A portal user's authorization role. 'submitter' is the default for every field
