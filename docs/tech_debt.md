@@ -7,8 +7,8 @@ When to add an entry: a session deliberately chooses preservation-over-refactor 
 ## Smartsheet-wiring audit findings — daemon-health + capacity hygiene [OPEN 2026-07-04]
 
 From `docs/audits/2026-07-04_smartsheet-wiring-audit.md` (Task B — the SoR is wired correctly; these are hygiene/observability items, **no correctness breaks**):
-- **M-1 (MEDIUM):** `smartsheet.sheet_count_ceiling` + `_margin` ABSENT from `ITS_Config` → the capacity guard (`sheet_capacity.check_create_headroom`, live-called by `week_sheet`/`hours_log`) runs on the hardcoded default 1500/50 **silently** (forensic class #7). **Fix:** operator sets the real plan-tier cap under `Workstream=global` (ROADMAP Track 3).
-- **M-2 (MEDIUM):** `ITS_Daemon_Health` carries **5 stale/legacy placeholder rows** — `safety_reports.intake_poll` (a DELETED daemon, month-stale, `Enabled=True`), `weekly_generate`/`weekly_send` (NEVER_RAN, Notes cite decommissioned sheets), `watchdog`/`shared.picklist_sync` (NEVER_RAN "retrofit" placeholders). Only **6** daemons self-provision (portal_poll, weekly_send_poll, compile_now_poll, progress_send_poll, publish_daemon, fieldops_sync). **Fix:** delete the intake_poll/weekly_generate/weekly_send rows (name-guarded `delete_rows`); decide whether watchdog/picklist_sync should self-report (retrofit) or are intentionally externally-monitored (S-2).
+- **M-1 (MEDIUM) — RESOLVED 2026-07-06:** `smartsheet.sheet_count_ceiling`=1500 / `_margin`=50 seeded as **explicit** `ITS_Config` rows (Workstream `global`), closing the silent-hardcoded-default gap (forensic class #7). Operator confirmed **Business plan — not limit-constrained** (upgrade if approached), so the values stay at the conservative advisory default (the guard WARNs but never blocks a create; won't fire until ~240 jobs); the true per-workspace cap isn't Smartsheet-API-exposed. Each row carries a tuning note in its Description. Raise if it ever false-WARNs.
+- **M-2 (MEDIUM) — RESOLVED 2026-07-06 (stale claim):** inspected the LIVE `ITS_Daemon_Health` sheet before any delete — it holds **exactly the 6 healthy self-provisioning daemon rows** (fieldops_sync, portal_poll, publish_daemon, compile_now_poll, weekly_send_poll, progress_send_poll), all reporting `OK`. The 5 stale placeholder rows this entry described are **already gone** — nothing to delete. (Good instance of "trust the live state, never the claim": name-guarded inspection found the cleanup was already done, avoiding a delete against a live daemon's row.) The `watchdog`/`shared.picklist_sync` self-report-vs-external-monitor question (S-2) is moot — neither has a stale row.
 - **M-3 (LOW) — CLOSED 2026-07-05 (PR #473, `86bfab0a`, four-part verify CLEAN: state=MERGED, mergedAt non-null, mergeCommit present, main-branch CI on the merge commit = SUCCESS):** `fieldops_sync` heartbeat interval mismatch — `SYNC_INTERVAL_SECONDS` set 300→90 to match launchd `StartInterval=90` (`install.sh:79`); feeds the daemon-health cadence.
 - **S-1 (systemic) — MECHANISM DONE 2026-07-06 (#481 `c04f4cd`, four-part verify CLEAN):** the tracked `REQUIRED_CONFIG` startup-logging pass (#336) is BUILT — `shared/required_config.py` + `resolve_and_log` wired into ALL daemons; each declares a module-level `REQUIRED_CONFIG`; a missing declared row now WARNs `config_row_missing` **distinctly** (no longer silent) and each resolved setting logs its source; the §52 `narrated_controls` ledger entry `required_config_observable_resolution` flipped `dated_exception`→`enforced`. Residual (OPEN): the two named cross-workstream footgun rows still must be SEEDED correctly (unchanged); the shared `sheet_capacity` global keys are a documented carve-out (a bounded follow-up — see the `required_config.py` docstring).
 
@@ -49,7 +49,14 @@ existing #336 tracked pass rather than a new one.
 
 **Tag:** `field_ops`, `fieldops_sync`, `config`, `its_config`, `row-absence`, `equipment`, `materials`.
 
-### M3 Slice 2 — Material Incidents pass: activation queue [OPEN — ships dark, awaits operator cutover]
+### M3 Slice 2 — Material Incidents pass: activation queue [ACTIVATED 2026-07-06 — LIVE]
+
+**ACTIVATED 2026-07-06 (afternoon).** Worker deployed (route probes `401 application/json`);
+`incidents_enabled` seeded then flipped `→ true`; the daemon incidents pass ran clean post-flip
+(`incidents upserted=0 reviewed=0 errors=0` — 0 = no filed incidents on active sandbox jobs yet,
+`errors=0` proves the daemon→endpoint→mirror path is healthy end-to-end). Also seeded the four
+`progress_reports.*.row_cap_warn_threshold`=15000 rows that the #336 startup pass was WARNing as
+NO-ROW every cycle. The original activation checklist (kept for provenance / production cutover):
 
 The per-job Material Incidents ledger pass (`field_ops.fieldops_sync` material-incidents pass +
 `progress_reports/material_incidents.py` + Worker `GET /api/internal/fieldops/material-incidents`)
@@ -196,7 +203,10 @@ D1 query-shape issue.
 
 **Tag:** `field_ops`, `fieldops_sync`, `transport`, `cloudflare`, `diagnose`.
 
-## `FormFillPage.r3.test.tsx` "R3 dirty guard" flaky last-call assertion [OPEN 2026-07-05]
+## `FormFillPage.r3.test.tsx` "R3 dirty guard" flaky last-call assertion [RESOLVED 2026-07-06 — stale entry, fixed by #473]
+
+**Verified 2026-07-06:** #473 (`86bfab0`) already landed the recommended `await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(false))` fix (`FormFillPage.r3.test.tsx:154`). The entry below was stale.
+
 
 **Flaked once during PR #470's (M2) 4th-gate portal CI check; cleared on unmodified re-run.** The
 test `"touching a field reports dirty + arms beforeunload; submit clears both"` asserts, immediately
@@ -236,7 +246,10 @@ chooses.
 - Any read route/response surfacing `progress`.
 Grep `progress` across worker + SPA and distinguish `jobs.progress` (the %-estimate to remove) from the unrelated `sync_state` mirror progress. **Tag:** `field_ops`, `job-tracker`, `cleanup`, `multi-surface`.
 
-## Unified job-creation flow — bundle task creation + crew assign + equipment assign [OPEN 2026-07-01, Stage 2 — BUILD-READY SPEC as of 2026-07-01]
+## Unified job-creation flow — bundle task creation + crew assign + equipment assign [RESOLVED 2026-07-06 — stale entry, built by #402]
+
+**Verified 2026-07-06:** #402 (`d6c5323`) shipped it — `FieldOpsJobTracker.tsx` imports `assignPersonnel` + `moveEquipment`, gates on `cap.crew.assign`/`cap.equipment.field`, and crew converges on `personnel.current_job` (worker `fieldops_jobtracker.ts:86-95`, migration `0024`). The entry below was stale.
+
 
 **Operator-locked 2026-07-01** (concretizes the plan's "unified create-flow extension"). The portal "New job" workflow should let the office PM, AT creation time, also **create tasks/deliverables**, **assign crew**, and **assign equipment** to the job — not just set routing/contacts. All three ride EXISTING §50-ungated field-ops write routes (tasks `fieldops_task_write.ts` #314; equipment `fieldops_equipment_write.ts` #315–#316; crew-assign = the P2.6 `POST /api/fieldops/personnel/:id/assign` route, LANDED PR #398). So it is primarily **multi-step create-UX wiring** (a wizard/stepper in `FieldOpsJobTracker.tsx`) — no new daemon/doctrine surface beyond P2.6's crew-assign route. **P2.6 Manager tier landed 2026-07-01 (PR #398)** — this item's dependency is satisfied.
 
@@ -244,7 +257,10 @@ Grep `progress` across worker + SPA and distinguish `jobs.progress` (the %-estim
 
 Earlier exploratory plans (context only, spec above is now canonical): `~/.claude/plans/ok-we-are-going-scalable-flamingo.md`, `~/.claude/plans/what-happened-to-my-floating-porcupine.md`. **Tag:** `field_ops`, `job-tracker`, `unified-create`, `stage-2`, `p2.6`.
 
-## Time entries can't attribute hours to a specific crew member (UI gap) [OPEN 2026-07-01]
+## Time entries can't attribute hours to a specific crew member (UI gap) [RESOLVED 2026-07-06 — stale entry, built by #403/#421]
+
+**Verified 2026-07-06:** #403 (`bad30f0`) added the time-log "For" person picker (`personnel_id` in the `logTime` body); #421 (`c350f09`) added the worker-resolved `"Me (<name>)"` default. The entry below was stale.
+
 
 **Operator-reported 2026-07-01.** A logged time entry records the submitting ACCOUNT (`actor_username` + optional `submitted_as`) but in practice can't record WHICH personnel/crew member the hours are FOR. The **data model already supports it** — `time_entries.personnel_id INTEGER REFERENCES personnel(id)` (`0015:36`) AND the write route accepts + inserts it (`fieldops_time_write.ts:50,102-107`). The gap is that the **time-logging UI has no personnel selector**, so `personnel_id` is never set and hours can't attribute to a roster crew member. Fix = add a personnel picker to the time-log form (+ confirm the SPA time lib passes `personnel_id` through). Relates to **P2.6 Manager tier** (crew time logging via `personnel_id`; time entries stay ORTHOGONAL to job assignment). **Tag:** `field_ops`, `time-entries`, `personnel`, `spa`, `p2.6`.
 
@@ -328,7 +344,10 @@ The actual per-daemon resolution logic (`poll_interval_config_key()` + `poll_int
 
 **Re-flagged, still open (2026-07-04).** P5 (`progress_send`/`progress_send_poll`) landed 2026-06-30 (PR #379) — P7 Slice 1 (Hours Log up-sync, PR #461) then touched §51 doctrine again this session (a v19.x amendment rider, blueprint PR #58, clarifying period-split for low-volume accumulating logs) without addressing this §23/§24 enumeration gap — the rider was scoped narrowly to §51 only, correctly, since a topology-enumeration fix is a separate v20-class change per this entry's own fix note. Still Seth-gated; the "next doctrine pass" trigger has now fired twice (P5, P7 Slice 1) without picking this up — worth bundling into whichever doctrine pass handles the mission's eventual draft→canonical promotion, rather than opening a third one-off rider.
 
-## P7 archive-on-closure — `smartsheet_client` needs a move-sheet method (its#462, §51 committed follow-up) [OPEN 2026-07-04]
+## P7 archive-on-closure — `smartsheet_client` needs a move-sheet method (its#462, §51 committed follow-up) [RESOLVED 2026-07-06 — built by #465; close its#462]
+
+**Verified 2026-07-06:** #465 (`185ca86`) built it — `smartsheet_client.move_sheet_to_folder` (`:1255`) + `_archive_closed_job_trackers` (`fieldops_sync.py:756`) wired into the mirror path (fires on `lifecycle=="archived"`, `:706`), moving trackers to `FOLDER_ARCHIVE_CLOSED_PROJECTS`; 5 tests at `test_fieldops_sync.py:622-697` (incl. the M3-updated 4-tracker move). **GitHub issue #462 is still OPEN and should be closed** (operator). The entry below was stale.
+
 
 **P7 Slice 1 (exec PR #461, blueprint #58 v19.x rider).** Op Stds v20 §51 requires ITS-owned accumulating-log SoR sheets to be archived-on-closure (never `delete_rows`). The Hours Log up-sync ships never-delete + the SoR-safe row-cap WARN watchdog (`progress_reports/hours_log.check_row_cap`), but **archive-on-closure is deferred** — filed as GitHub issue `its#462`, not a vague someday-item — because `shared/smartsheet_client.py` has no move-sheet primitive, and it's only exercised at a job's lifecycle → `archived` (no job archives imminently). The `archived` lifecycle write itself is already live (portal admin), so until this lands the exposure is a **bounded, recoverable** stranded (never-deleted) sheet, not data loss — but it must land before the first job actually archives.
 
@@ -2788,7 +2807,10 @@ Surfaced: 2026-06-29 permission-model forensic investigation; full spec at `~/.c
 
 ---
 
-## Checklist item-state photo CAPTURE — render-half only, capture route not built [OPEN 2026-07-02]
+## Checklist item-state photo CAPTURE — render-half only, capture route not built [RESOLVED 2026-07-06 — built by #452/#475; model superseded]
+
+**Verified 2026-07-06:** #452 (`eedf7a6`, "G1 — checklist item photos, Option D") built the capture route (migration 0036, `item_photos` pool, `INSERT INTO item_photos … 'pending'` at `fieldops_checklist.ts:1007`, `item_photo:v1` HMAC domain-separation, `requires_photo` gating, §34-screened on the Mac); refined by #475. The model changed from the `photo_ref` render-only design below to the **Option-D `item_photos` pool** (`reference_section34-option-d-photo-pool`), so the entry below is superseded, not just resolved.
+
 
 **Surfaced by R3 (PR #419, 2026-07-02).** Open-question Q2 (photo evidence) was answered **(a)** during the R-series program — optional photo on every check-type item, no migration — and R3 shipped the **render half only**: the checklist UI displays a photo when a `photo_ref` is present on an item state. The **capture half was NOT built**: there is no Worker route to store an uploaded item-state photo, and nothing writes `photo_ref`.
 

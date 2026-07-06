@@ -95,6 +95,15 @@ that. Loaded via `@import` from `CLAUDE.md`'s START-HERE block.
   Seed the gate row (value `false`) in the same change that adds the gated code, so activation is a visible
   cell-flip, not a phantom. (Bit the 2026-07-05 equipment/materials activation: `equipment_enabled`/
   `materials_enabled` had no row → the operator couldn't find one to flip → the rows had to be CREATED.)
+- **Read a gate row's full Description BEFORE flipping it — a doctrine-divergent gate flip is a doctrine
+  action (§44 high-class), not an autonomous one.** A gate's `ITS_Config` Description cell can carry an
+  explicit precondition ("Do NOT set true until the §51 rider is merged"). A verbal go-ahead resolves the
+  *decision* but not the *documented precondition* — flipping a capability whose activation contradicts
+  canonical doctrine introduces a code-vs-doctrine drift the auditor flags, and doctrine is a FIXED
+  high-capability class that escalates, never gets actioned unsupervised. Fetch + read the row's cells,
+  not just its rowId, before an `update_rows` flip. (Bit the 2026-07-06 M3 activation: `materials_enabled`
+  was flipped on a verbal one-way-up call, then reverted when the response revealed the in-cell "rider must
+  be merged first" guardrail — `incidents_enabled`, which has no such block, stayed on.)
 - **Never `Path.write_text/write_bytes` under `~/its/state/`** — route every state write through
   `shared/state_io.py` (`atomic_write_json/text`, `with_path_lock` on a sidecar `.lock`). Enforced at CI
   (`test_state_write_discipline.py`).
