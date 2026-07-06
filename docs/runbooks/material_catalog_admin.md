@@ -65,6 +65,17 @@ Received/Incident rows show status pills + who/when. A job with no expected mate
 "No expected materials for this job." — the daily form is otherwise unaffected. The
 material-incident form is also normally pickable from Submit-a-Form (category: Progress).
 
+### Incident → material line reference (M3 Slice 1)
+
+When a manager taps **Report a problem →** the deep-linked Material Incident Report carries a
+hidden reference to the exact expected-materials line that was flagged (the line's stable
+`line_uuid`, a submission VALUE — NOT a visible form field). The Worker `/api/submit` validates it:
+a present `line_uuid` MUST be an **active** expected-materials line of **that job**, else the
+submission is refused `422 unknown_material_line` before anything is filed. An incident with **no**
+line reference is a valid **unlinked** incident (e.g. filed straight from Submit-a-Form, or after a
+page refresh dropped the in-memory reference). This ships **dark** on the existing
+`progress_reports.intake_enabled` gate (no new switch).
+
 ### Symptoms → low-class repair (Tier-2)
 
 | Symptom | Check | Repair |
@@ -78,6 +89,7 @@ material-incident form is also normally pickable from Submit-a-Form (category: P
 | No "Expected materials" section in the manager's daily form | The job has no expected rows → the section shows the explicit empty copy; if even THAT is absent, the read failed (see the Retry warn) or the account isn't a placed manager | Confirm placement + that the office added expected rows on the job's detail |
 | "Confirm receipt" errors with "already received" | Someone else received/flagged the row first (the 409 above, surfaced in the form) | No repair — refresh to see who and when |
 | The manager cancelled the incident prompt / form but the row already shows *Incident* | The flag lands **before** the incident form files (deliberate — the D1 record carries the note either way) | File the Material Incident Report from Submit-a-Form (it prefills nothing then, but job/date/details can be re-entered); the row's note already says what's wrong |
+| A valid Material Incident Report is refused **`422 unknown_material_line`** | The incident is trying to reference a specific expected-materials line, but that line is not an **active** line of the same job (it was removed/soft-deactivated, or the wrong job is selected) | Confirm the line still shows on the job's **Expected materials** list (active) and the incident's job matches. If the operator wants an **unlinked** incident, file the Material Incident Report from **Submit-a-Form** (no line reference is carried) — it files cleanly. If a genuinely active line is still refused, **escalate** |
 
 ### Escalate to Seth (Developer-Operator) — high-capability-class
 
@@ -86,6 +98,8 @@ material-incident form is also normally pickable from Submit-a-Form (category: P
 - Any change to the daily-report / material-incident **form definitions** (the publish pipeline,
   daily-report-v5's `expected_materials` mount, the material-incident required-content floor) —
   definition + legal-floor changes are code/doctrine class.
+- The **incident → material line** validation itself (M3 Slice 1: the `/api/submit`
+  `unknown_material_line` gate, the `line_uuid` deep-link threading) — a code change.
 
 ## Notes
 

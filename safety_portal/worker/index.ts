@@ -631,6 +631,28 @@ app.post("/api/submit", requireSession, requireCapability("cap.form.submit"), as
   }
   const job = await c.env.DB.prepare("SELECT 1 FROM jobs WHERE job_id=? AND active=1").bind(job_id).first();
   if (!job) return c.json({ error: "unknown_job" }, 422);
+  // ── Material-incident line reference gate (M3 Slice 1) ─────────────────────
+  // A "Material Incident Report" (material-incident*) MAY reference a specific M2 expected-materials
+  // line via an OPTIONAL values.line_uuid — threaded by the daily form's "Report a problem →"
+  // deep-link (a submission VALUE, NOT a form field). When present it is the TRUST BOUNDARY
+  // (Invariant 2 — never trust the client): the referenced line MUST be an ACTIVE expected-materials
+  // line of THIS job, else fail-closed 422 BEFORE any submission INSERT. Absent / empty → a valid
+  // MANUAL (unlinked) incident. line_uuid is shape-checked (string, bounded) BEFORE the query; the
+  // SQL is PARAMETERIZED (?N + .bind), never interpolated. A malformed reference (non-string /
+  // oversized) is fail-closed as an unknown line — it can never name a real one.
+  if (form_code.startsWith("material-incident")) {
+    const rawLine = (values as Record<string, unknown>).line_uuid;
+    if (rawLine !== undefined && rawLine !== null && rawLine !== "") {
+      if (typeof rawLine !== "string" || rawLine.length > 64) {
+        return c.json({ error: "unknown_material_line" }, 422);
+      }
+      const line = await c.env.DB
+        .prepare("SELECT line_uuid FROM job_expected_materials WHERE job_id = ?1 AND line_uuid = ?2 AND active = 1")
+        .bind(job_id, rawLine)
+        .first();
+      if (!line) return c.json({ error: "unknown_material_line" }, 422);
+    }
+  }
   // Photo bounds/shape gate (PR-1) — see validatePhotoValues above. Returns the machine
   // reason in `detail` (never the bytes) so the SPA can show a useful message.
   const photoErr = validatePhotoValues(values as Record<string, unknown>);

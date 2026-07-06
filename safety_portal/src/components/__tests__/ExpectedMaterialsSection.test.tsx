@@ -49,17 +49,17 @@ const ROWS: api.ExpectedMaterialRow[] = [
   {
     id: 1, material_id: 7, material_name: "Q.PEAK_DUO", description: null, qty: 40, unit: "panels",
     expected_date: "2026-07-10", status: "expected", received_at: null, received_by_name: null,
-    qty_received: null, note: null, seq: 10,
+    qty_received: null, note: null, seq: 10, line_uuid: "lu-1",
   },
   {
     id: 2, material_id: null, material_name: null, description: "Rebar bundles", qty: 12, unit: "pallets",
     expected_date: null, status: "received", received_at: 1_700_000_000, received_by_name: "Mo Manager",
-    qty_received: 12, note: null, seq: 20,
+    qty_received: 12, note: null, seq: 20, line_uuid: "lu-2",
   },
   {
     id: 3, material_id: null, material_name: null, description: "Crushed crate", qty: null, unit: null,
     expected_date: null, status: "incident", received_at: 1_700_000_100, received_by_name: null,
-    qty_received: null, note: "damaged", seq: 30,
+    qty_received: null, note: "damaged", seq: 30, line_uuid: "lu-3",
   },
 ];
 
