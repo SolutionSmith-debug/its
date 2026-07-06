@@ -43,6 +43,7 @@ its migration fail-closes `resolveCapabilities` → the universal-lockout class 
 | `0038_time_entries_mirror` | P7 Slice 1 Hours Log up-sync watermark — [section](#hours-log-up-sync-watermark-p7-slice-1--0038) | #461 | ☐ pending |
 | `0039_material_list_mirror` | P7 M2 Material List up-sync keys (line_uuid + unplanned) — [section](#material-list-up-sync-keys-p7-m2--0039) | (M2) | ☐ pending |
 | `0040_checklist_recurrences` | Recurring checklists per job (#16) — [section](#recurring-checklists-per-job-16--0040) | (#16) | ☐ pending |
+| `0041_checklist_completion_emit` | Checklist completion → weekly progress report (#17, Seam A) — [section](#checklist-completion--weekly-progress-report-17-seam-a--0041) | (#17) | ☐ pending |
 
 Canonical apply-and-deploy sequence (applies **all** pending migrations, in order — never a
 subset):
@@ -1083,3 +1084,53 @@ The one-shot assign path is **byte-identical** when dark.
 **Adding a cadence later** is a Worker-code change only (extend `RECURRENCE_CADENCES` +
 `enumerateCadenceDates` in `worker/fieldops_recurrence.ts` + the SPA `CADENCE_OPTIONS`) — the D1 table
 deliberately carries no cadence CHECK, so no table rebuild.
+
+### Checklist completion → weekly progress report (#17, Seam A) — 0041
+
+**What ships:** when an admin-assigned **inspection** instance is COMPLETE (every item done), the
+assignee **signs off** and the Worker synthesizes a `category:'progress'` **`checklist-completion-v1`**
+submission — the item roster + the signature — that rides the **EXISTING** intake →
+progress-week-sheet → weekly-compile pipeline. This is a **standard submission the built pipeline
+files**, NOT a new §51 SoR write-route: the Worker mints it through the SAME
+`buildSubmissionInsert` (`worker/submission.ts`, §14-extracted from `/api/submit`) so the row is
+byte-identical — the same 5-field canonical HMAC, `box_verified=0`, and attribution columns — and
+`portal_poll` verifies + files it like any other submission. The assignee's Assigned-inspections view
+gains a **"Sign & log to progress report"** action on a complete inspection (a signature capture →
+POST `/api/fieldops/checklist/instance/:id/submit`); once logged it shows a **"Logged to progress
+report ✓"** pill. Emit is **exactly once per instance** — the `emitted_submission_uuid` one-shot
+marker (migration `0041`, guarded `WHERE emitted_submission_uuid IS NULL`); a second submit → `409
+already_submitted` with no duplicate. The required signature satisfies the definition's
+`required_signature_inputs_min:1` legal floor (the new `checklist-completion` parent falls to
+required-content.json's `defaults_for_new_identities`), so **no required-content.json edit**.
+
+**Shipped DARK** — gated by the Worker var `CHECKLIST_PROGRESS_LOGGING_ENABLED` (default `"false"` in
+`wrangler.jsonc`, NOT a secret). While dark: the emit route refuses with `400
+progress_logging_disabled` (never-silent) and the SPA hides the "Sign & log" action (the flag rides
+`/api/login` + `/api/session` as `checklist_progress_logging_enabled`). `/api/submit` is
+**byte-identical** across the extraction (regression-locked by `test/submit-as.test.ts`), so applying
+`0041` + deploying changes nothing until the flip.
+
+**Activation (operator — deploy boundary; escalates to the Developer-Operator):**
+1. Apply migration **0041** to the live D1 **BEFORE** the redeploy
+   (`npx wrangler d1 migrations apply its-safety-portal-db --remote`) — else the emit route 500s on
+   the missing `emitted_submission_uuid` / `completion_signature` / `completion_signed_at` columns.
+   **ORDER-CRITICAL** (the migration header states it). (Always `git pull` `~/its` to latest `main`
+   BEFORE `wrangler d1 migrations apply` — the stale-migrations-list lockout class.)
+2. **Flip the Worker var:** `wrangler.jsonc` → `"vars": { …, "CHECKLIST_PROGRESS_LOGGING_ENABLED":
+   "true" }` → `npm run deploy` (SPA + Worker deploy together; the operator-visible gate, no
+   ITS_Config/Smartsheet row to hunt for). This arms the emit + reveals the "Sign & log" action.
+3. **Route the synthesized submission on to the progress destination:** flip the SEPARATE ITS_Config
+   `progress_reports.intake_enabled` flag so the Mac-side intake files the `checklist-completion-v1`
+   submission into the **progress week-sheet** and the eventual weekly compile sends via the
+   **progress@** mailbox (vs. the safety path). *(Until that flag is on, the submission is minted +
+   verified but the progress-side filing/send is inert — the Worker leg here is independent of it.)*
+4. **Live smoke:** as an admin, assign an inspection to a placed person with a job + due date; as that
+   person, complete every item, open the inspection, "Sign & log to progress report", sign, submit.
+   Confirm: (a) a `checklist-completion-v1` submission appears in `/api/internal/pending` with a
+   verifying HMAC; (b) the inspection shows "Logged to progress report ✓" and a re-tap is refused
+   (409); (c) with `progress_reports.intake_enabled` on, the submission lands in the job's progress
+   week-sheet and rides the weekly compile.
+
+**Adding fields to the emitted document later** is a Worker-code change (extend the `values` shape in
+`worker/fieldops_checklist.ts`) + a matching `forms/checklist-completion-v1.json` add-version — the
+definition + the emit payload must stay in lockstep (the header signature field is the legal floor).

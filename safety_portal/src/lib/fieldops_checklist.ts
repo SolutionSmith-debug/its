@@ -268,6 +268,21 @@ export function fetchAssignedInspections(): Promise<AssignedInspectionsResponse>
   return getJson<AssignedInspectionsResponse>(`${BASE}/assigned`);
 }
 
+// ── #17 (Seam A) — sign off a COMPLETE assigned inspection → the weekly progress report ─────────────
+// POST /instance/:id/submit with the captured SVG-signature string. The Worker re-gates on
+// ownership + status==='complete' + job/date present + one-shot (the SPA gating is convenience). On
+// success the inspection is marked progress_logged. Throws ApiError; err.code branches:
+// 'progress_logging_disabled' (feature dark server-side), 'already_submitted' (already logged),
+// 'signature_required' (empty signature), 'not_complete', 'forbidden'.
+export function submitChecklistCompletion(
+  instanceId: number,
+  signature: string,
+): Promise<{ ok: boolean; submission_uuid: string }> {
+  return postJson<{ ok: boolean; submission_uuid: string }>(`${BASE}/instance/${instanceId}/submit`, {
+    signature,
+  });
+}
+
 // ── R5 — assignment lifecycle (admin visibility + revocation; cap.checklist.manage) ─────────────────
 // GET /checklist/instances lists OUTSTANDING inspection-kind instances (daily instances are
 // auto-generated noise and excluded server-side); POST /instance/:id/cancel revokes one (hard delete

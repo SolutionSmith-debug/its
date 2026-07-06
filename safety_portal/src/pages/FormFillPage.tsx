@@ -367,7 +367,7 @@ export function FormFillPage({
                 // HIDDEN from this CREATE picker only. `catalog` itself stays complete, so
                 // deep-link prefills and the Form Request / download / history surfaces (which
                 // the office still uses to retrieve filed dailies) are untouched.
-                const inCat = catalog.filter((p) => p.category === w.id && p.launch !== "daily-tab");
+                const inCat = catalog.filter((p) => p.category === w.id && !p.launch);
                 if (inCat.length === 0) return null;
                 return (
                   <optgroup key={w.id} label={w.label}>

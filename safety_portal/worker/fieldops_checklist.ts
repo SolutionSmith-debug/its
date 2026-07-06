@@ -13,6 +13,7 @@ import {
 } from "./fieldops_recurrence";
 import type { AssignedInspectionsResponse, ChecklistItemState, ItemPhotoUploadResult } from "./wire-types";
 import { hmacHex } from "./hmac";
+import { buildSubmissionInsert } from "./submission";
 import { b64DecodedLen, isPhotoItem, validateSinglePhoto } from "./photo_bounds";
 import catalog from "../catalog.json";
 
@@ -99,6 +100,13 @@ const CAP_CHECKLIST = "cap.checklist.manage";
 // S3 surfacing + completion are the OWNER's tab (a placed manager), gated by cap.tasks.own — the same
 // cap the "My Tasks" read (fieldops_tasks.ts) uses. Distinct from the admin authoring cap above.
 const CAP_TASKS_OWN = "cap.tasks.own";
+// #17 (Seam A) — the synthesized progress submission's form_code + the sign-off bound. On completion
+// an assignee signs off and the emit route mints a category:'progress' submission under this code
+// that rides the EXISTING intake → progress-week-sheet → weekly-compile pipeline (a standard
+// submission the built pipeline files — NOT a new §51 SoR write-route). MAX_SIGNATURE bounds the
+// base64/SVG signature string (Invariant 2 — untrusted body).
+const CHECKLIST_COMPLETION_FORM_CODE = "checklist-completion-v1";
+const MAX_SIGNATURE = 200_000;
 // S6 inspection-library: a template title bound + a due-date format (a Pacific calendar date, the same
 // 'YYYY-MM-DD' shape the daily instance_date uses — no time component, no offset).
 const MAX_TITLE = 256;
@@ -1513,7 +1521,8 @@ export function registerChecklistRoutes(app: FieldopsApp, gates: FieldopsGates):
       // 'complete' above 'open' lexicographically), tiebreak created_at DESC. template_title (0029,
       // snapshotted at assign time) gives the card its authored name.
       const instRes = await c.env.DB.prepare(
-        `SELECT i.id, i.job_id, i.instance_date, i.status, i.created_at, i.template_title, j.project_name
+        `SELECT i.id, i.job_id, i.instance_date, i.status, i.created_at, i.template_title,
+                i.emitted_submission_uuid, j.project_name
          FROM checklist_instances i
          LEFT JOIN jobs j ON j.job_id = i.job_id
          WHERE i.kind = 'inspection' AND i.assignee_personnel_id = ?1
@@ -1522,7 +1531,7 @@ export function registerChecklistRoutes(app: FieldopsApp, gates: FieldopsGates):
          LIMIT 500`,
       )
         .bind(person.id)
-        .all<{ id: number; job_id: string | null; instance_date: string | null; status: string; created_at: number; template_title: string | null; project_name: string | null }>();
+        .all<{ id: number; job_id: string | null; instance_date: string | null; status: string; created_at: number; template_title: string | null; emitted_submission_uuid: string | null; project_name: string | null }>();
       const instances = instRes.results ?? [];
       if (instances.length === 0) {
         return c.json({ inspections: [], linked: true } satisfies AssignedInspectionsResponse, 200);
@@ -1572,6 +1581,9 @@ export function registerChecklistRoutes(app: FieldopsApp, gates: FieldopsGates):
               status: (fresh?.status ?? inst.status) as "open" | "complete",
               template_title: inst.template_title,
               created_at: inst.created_at,
+              // #17 — already logged to the weekly progress report? Derived from the one-shot marker
+              // (0041); the SPA hides the "Sign & log" action once true.
+              progress_logged: inst.emitted_submission_uuid !== null,
             },
             items: (readLegs[2 * i].results ?? []) as ChecklistItemState[],
           };
@@ -1579,6 +1591,178 @@ export function registerChecklistRoutes(app: FieldopsApp, gates: FieldopsGates):
         linked: true,
       };
       return c.json(payload, 200);
+    },
+  );
+
+  // ── POST /api/fieldops/checklist/instance/:id/submit — #17 Seam A: sign off a COMPLETE assigned
+  // inspection and log it to the weekly progress report. The assignee signs; the Worker synthesizes a
+  // category:'progress' `checklist-completion-v1` submission (the item roster + the signature) that
+  // rides the EXISTING intake → progress-week-sheet → weekly-compile pipeline — a STANDARD submission
+  // the built pipeline files, NOT a new §51 SoR write-route. Send-free (D1 only); cap.tasks.own +
+  // instance-ownership (the same contract as the item-state completion routes). Emits EXACTLY ONCE per
+  // instance (the emitted_submission_uuid one-shot marker, migration 0041). Shipped DARK behind the
+  // Worker var CHECKLIST_PROGRESS_LOGGING_ENABLED. ────────────────────────────────────────────────────
+  app.post(
+    "/api/fieldops/checklist/instance/:id/submit",
+    gates.requireSession,
+    gates.requireCapability(CAP_TASKS_OWN),
+    async (c) => {
+      const instanceId = parseInt(c.req.param("id"), 10);
+      if (isNaN(instanceId)) return c.json({ error: "invalid_id" }, 400);
+
+      // Ownership scope: resolve the actor's linked ACTIVE personnel (no link → owns no instance).
+      const person = await resolveActorPersonnel(c);
+      if (!person) return c.json({ error: "forbidden" }, 403);
+
+      // Read the instance + its assignee display name (personnel.name — display-name-only
+      // attribution, W9). emitted_submission_uuid is the one-shot emit marker (migration 0041).
+      const inst = await c.env.DB.prepare(
+        `SELECT i.id, i.kind, i.status, i.job_id, i.instance_date, i.assignee_personnel_id,
+                i.template_title, i.emitted_submission_uuid, p.name AS assignee_name
+         FROM checklist_instances i
+         LEFT JOIN personnel p ON p.id = i.assignee_personnel_id
+         WHERE i.id = ?1`,
+      )
+        .bind(instanceId)
+        .first<{
+          id: number;
+          kind: string;
+          status: string;
+          job_id: string | null;
+          instance_date: string | null;
+          assignee_personnel_id: number | null;
+          template_title: string | null;
+          emitted_submission_uuid: string | null;
+          assignee_name: string | null;
+        }>();
+      // 404 for a missing OR non-inspection instance (a legacy kind='daily' row is not a signable
+      // assignment; 404 indistinguishably from unknown so an ineligible caller learns nothing).
+      if (!inst || inst.kind !== "inspection") return c.json({ error: "not_found" }, 404);
+      // Ownership: only the assignee may sign THEIR OWN inspection.
+      if (inst.assignee_personnel_id !== person.id) return c.json({ error: "forbidden" }, 403);
+      // State: only a COMPLETE inspection (every item done) is loggable.
+      if (inst.status !== "complete") return c.json({ error: "not_complete" }, 400);
+      // The progress pipeline keys on BOTH job + work_date (the week-sheet + the Sat→Fri week) — an
+      // assignment missing either can't be filed.
+      if (inst.job_id === null || inst.instance_date === null) {
+        return c.json({ error: "job_and_date_required" }, 400);
+      }
+      // DARK GATE (never-silent): the feature is off unless the operator flipped the Worker var.
+      // AFTER the ownership/state guards (a non-owner probe learns nothing about the flag) but BEFORE
+      // the one-shot already-logged check, so "dark" means FULLY inert regardless of prior state.
+      if (c.env.CHECKLIST_PROGRESS_LOGGING_ENABLED !== "true") {
+        return c.json({ error: "progress_logging_disabled" }, 400);
+      }
+
+      // One-shot fast-path: already logged → 409 (idempotent; never a second progress submission).
+      // The SEQUENTIAL retry lands here before the batch. The CONCURRENT race (both requests pass this
+      // read before either commits) is caught atomically in the batch below (both the INSERT and the
+      // marker UPDATE are guarded on emitted_submission_uuid IS NULL — the loser writes ZERO rows).
+      if (inst.emitted_submission_uuid !== null) {
+        return c.json({ error: "already_submitted", submission_uuid: inst.emitted_submission_uuid }, 409);
+      }
+
+      // ── Body: { signature } — a base64/SVG signature string. Bounded on the RAW text BEFORE
+      // JSON.parse (Invariant 2 — a hostile oversized body never reaches the parser), then required
+      // non-empty. The signature is the legal-floor content (the definition's
+      // required_signature_inputs_min:1) AND a real attestation. ─────────────────────────────────────
+      let raw: string;
+      try {
+        raw = await c.req.text();
+      } catch {
+        return c.json({ error: "bad_request" }, 400);
+      }
+      if (raw.length > MAX_SIGNATURE + 4096) return c.json({ error: "signature_too_large" }, 413);
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        return c.json({ error: "bad_request" }, 400);
+      }
+      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+        return c.json({ error: "bad_request" }, 400);
+      }
+      const signature = (parsed as Record<string, unknown>).signature;
+      if (typeof signature !== "string" || signature.length === 0) {
+        return c.json({ error: "signature_required" }, 400);
+      }
+      if (signature.length > MAX_SIGNATURE) return c.json({ error: "signature_too_large" }, 413);
+
+      // Fail closed on a misconfigured Worker (never sign with an undefined secret → silent loss).
+      if (!c.env.HMAC_PAYLOAD_SECRET) return c.json({ error: "server_misconfigured" }, 503);
+
+      // Gather the item roster (label / status / note) via the SAME read the /assigned surface uses.
+      const itemsRes = await c.env.DB.prepare(ITEM_STATES_SQL_INSPECTION)
+        .bind(instanceId, inst.job_id, inst.instance_date)
+        .all<ChecklistItemState>();
+      const items = (itemsRes.results ?? []).map((it) => ({
+        label: it.label,
+        status: it.status,
+        note: it.note,
+      }));
+
+      const actor = c.get("session").username;
+      // The submission `values` — the shape checklist-completion-v1.json renders: a header
+      // (checklist_title / assignee_name / work_date) + the item roster + the header signature field.
+      // work_date is mirrored into values as the envelope key (job resolved separately at intake).
+      const values = {
+        checklist_title: inst.template_title,
+        assignee_name: inst.assignee_name,
+        job_id: inst.job_id,
+        work_date: inst.instance_date,
+        items,
+        signature,
+        signed_at: Math.floor(Date.now() / 1000),
+      };
+
+      const submissionUuid = crypto.randomUUID();
+      // W4-ATOMIC + one-shot: the submission INSERT + the emit marker + the audit, in ONE D1 batch.
+      // BOTH the INSERT (guardInstanceNotEmitted — a conditional `... WHERE emitted_submission_uuid IS
+      // NULL`) AND the marker UPDATE guard on emitted_submission_uuid IS NULL, so a CONCURRENT
+      // double-emit's loser writes ZERO rows anywhere — no stranded duplicate submission (the marker
+      // UPDATE alone would leave one; portal-worker-security BLOCK). The INSERT stores a row
+      // byte-identical to /api/submit (same 5-field HMAC). auditStmtIfChanged lands ONLY when the
+      // preceding UPDATE changed a row. completion_signature/_at (0041) record the sign-off + capture.
+      const insertStmt = await buildSubmissionInsert(
+        c.env.DB,
+        c.env.HMAC_PAYLOAD_SECRET,
+        {
+          submission_uuid: submissionUuid,
+          job_id: inst.job_id,
+          form_code: CHECKLIST_COMPLETION_FORM_CODE,
+          work_date: inst.instance_date,
+          values,
+          actor,
+        },
+        { guardInstanceNotEmitted: instanceId },
+      );
+      const res = await c.env.DB.batch([
+        insertStmt,
+        c.env.DB
+          .prepare(
+            "UPDATE checklist_instances SET emitted_submission_uuid=?1, completion_signature=?2, completion_signed_at=unixepoch() WHERE id=?3 AND emitted_submission_uuid IS NULL",
+          )
+          .bind(submissionUuid, signature, instanceId),
+        auditStmtIfChanged(c, actor, "checklist_completion_submit", String(instanceId), {
+          instance_id: instanceId,
+          submission_uuid: submissionUuid,
+          job_id: inst.job_id,
+        }),
+      ]);
+      // A concurrent submit won the one-shot marker between our fast-path read and this batch. Our
+      // guarded INSERT wrote ZERO rows (its WHERE saw the marker already set) and our UPDATE no-oped —
+      // so nothing is stranded; re-read the winner and report already_submitted.
+      if ((res[1].meta.changes ?? 0) !== 1) {
+        const winner = await c.env.DB
+          .prepare("SELECT emitted_submission_uuid FROM checklist_instances WHERE id=?1")
+          .bind(instanceId)
+          .first<{ emitted_submission_uuid: string | null }>();
+        return c.json(
+          { error: "already_submitted", submission_uuid: winner?.emitted_submission_uuid ?? null },
+          409,
+        );
+      }
+      return c.json({ ok: true, submission_uuid: submissionUuid }, 201);
     },
   );
 

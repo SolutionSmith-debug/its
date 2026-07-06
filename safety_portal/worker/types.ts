@@ -50,6 +50,20 @@ export interface Env {
    * the SPA via /api/login + /api/session so the assign form only shows the recurring controls live.
    */
   RECURRING_CHECKLISTS_ENABLED: string;
+  /**
+   * Feature flag (a plain Worker `var`, NOT a secret) gating "checklist/inspection completion →
+   * weekly progress report" (#17, Seam A). "true" arms POST
+   * /api/fieldops/checklist/instance/:id/submit: a completed inspection's assignee signs off and the
+   * Worker synthesizes a category:'progress' `checklist-completion-v1` submission that rides the
+   * EXISTING intake → progress-week-sheet → weekly-compile pipeline (a standard submission, NOT a new
+   * §51 SoR write-route). Anything else (incl. absent) keeps the feature DARK — the emit route
+   * refuses with 400 progress_logging_disabled (never-silent) and the SPA hides the "Sign & log"
+   * action. Declared in wrangler.jsonc `vars` (default "false"); flip to "true" + `npm run deploy` to
+   * activate (routing to the progress week-sheet + progress@ mailbox ALSO needs the separate
+   * ITS_Config progress_reports.intake_enabled flip). Exposed to the SPA via /api/login +
+   * /api/session as checklist_progress_logging_enabled.
+   */
+  CHECKLIST_PROGRESS_LOGGING_ENABLED: string;
 }
 
 /** A portal user's authorization role. 'submitter' is the default for every field

@@ -42,7 +42,7 @@ import {
 } from "./auth";
 import { validateCategory, validateDefinition, validateParentGrouping } from "./publishValidation";
 import { pruneOldData, writePruneMeta } from "./prune";
-import { hmacHex } from "./hmac";
+import { buildSubmissionInsert } from "./submission";
 import { PHOTO_MAX_BYTES, b64DecodedLen, photoMagicOk, isPhotoItem, B64_RE } from "./photo_bounds";
 import catalog from "../catalog.json";
 
@@ -144,22 +144,12 @@ app.onError((err, c) => {
 
 // ── Phase 5 transport (pull model) — HMAC signing + internal-endpoint auth ──────
 
-/**
- * Canonical payload for the submission HMAC. The Mac-side portal_poll daemon
- * recomputes this byte-for-byte (shared/portal_hmac.py) to verify integrity +
- * authenticity before intake trusts a pulled submission. ORDER + SEPARATOR are
- * load-bearing and mirrored on the Python side:
- *   submission_uuid \n job_id \n form_code \n work_date \n payload_json
- * payload_json is the EXACT stored JSON string, used verbatim on both sides.
- */
-function canonicalPayload(p: {
-  submission_uuid: string; job_id: string; form_code: string; work_date: string; payload_json: string;
-}): string {
-  return [p.submission_uuid, p.job_id, p.form_code, p.work_date, p.payload_json].join("\n");
-}
-
-// hmacHex — extracted to worker/hmac.ts (G1: the item-photo route signs with the same primitive
-// without importing index.ts). Imported above; contract unchanged.
+// canonicalPayload + buildSubmissionInsert — extracted to worker/submission.ts (#17, §14) so the
+// checklist-completion emit (worker/fieldops_checklist.ts) mints a BYTE-IDENTICAL submissions row
+// with the same 5-field HMAC without importing index.ts (a runtime import cycle). /api/submit builds
+// its INSERT via buildSubmissionInsert (imported above); hmacHex now lives entirely behind that
+// helper (worker/hmac.ts is still the shared MAC primitive both the submission + item-photo
+// protocols call).
 
 /**
  * Length-independent constant-time compare: compares the SHA-256 digests, so the
@@ -270,6 +260,10 @@ app.post("/api/login", async (c) => {
     // assign form show the recurring controls when live. NOT a capability (it is site-wide, not
     // per-role), so it rides alongside `user`, not inside its capability set.
     recurring_checklists_enabled: c.env.RECURRING_CHECKLISTS_ENABLED === "true",
+    // #17 feature flag (display-hint only — the emit route is the real gate): lets the assigned-
+    // inspection view show the "Sign & log to progress report" action only when the feature is live.
+    // Same site-wide, NOT-a-capability posture as the #16 flag above.
+    checklist_progress_logging_enabled: c.env.CHECKLIST_PROGRESS_LOGGING_ENABLED === "true",
   });
 });
 
@@ -447,6 +441,8 @@ app.get("/api/session", requireSession, (c) => {
     // #16 — same display-hint flag as /api/login so an SPA that restores its session (not a fresh
     // login) also learns whether the recurring controls should render.
     recurring_checklists_enabled: c.env.RECURRING_CHECKLISTS_ENABLED === "true",
+    // #17 — same display-hint flag as /api/login for a restored session (the "Sign & log" action).
+    checklist_progress_logging_enabled: c.env.CHECKLIST_PROGRESS_LOGGING_ENABLED === "true",
   });
 });
 
@@ -623,6 +619,16 @@ app.post("/api/submit", requireSession, requireCapability("cap.form.submit"), as
     const roleErr = requireDailyReportRole(c);
     if (roleErr) return roleErr;
   }
+  // ── Synthesized-only form gate (#17) ──────────────────────────────────────
+  // `checklist-completion*` is MINTED by the checklist-completion emit route (fieldops_checklist.ts
+  // POST /api/fieldops/checklist/instance/:id/submit) on a signed, COMPLETE, OWNED inspection — it is
+  // NEVER hand-filled through the general Submit-a-Form flow (cap.form.submit is held by all three
+  // roles; this route does no ownership / complete / one-shot / dark-gate checks). Reject it here
+  // server-side (Invariant 2 — never trust the client; the catalog `launch:"synthesized"` picker-hide
+  // is cosmetic, THIS is the boundary) so a client cannot forge a signed "completion" attestation.
+  if (form_code.startsWith("checklist-completion")) {
+    return c.json({ error: "forbidden_synthesized" }, 403);
+  }
   const job = await c.env.DB.prepare("SELECT 1 FROM jobs WHERE job_id=? AND active=1").bind(job_id).first();
   if (!job) return c.json({ error: "unknown_job" }, 422);
   // Photo bounds/shape gate (PR-1) — see validatePhotoValues above. Returns the machine
@@ -669,19 +675,18 @@ app.post("/api/submit", requireSession, requireCapability("cap.form.submit"), as
 
   // Fail closed on a misconfigured Worker: never sign with an undefined secret
   // (that would produce signatures the Mac side could never verify → silent loss).
+  // buildSubmissionInsert (below) does the signing; the guard stays HERE so the 503
+  // is returned before any DB write, exactly as before.
   if (!c.env.HMAC_PAYLOAD_SECRET) return c.json({ error: "server_misconfigured" }, 503);
-  // Sign the submission so the Mac-side portal_poll daemon can verify it before
-  // intake files it. The SPA mints a FRESH uuid per amendment (useSubmissionId), so a same-uuid
-  // re-submit is the designed lost-ACK RETRY, not an amendment; the M1 guard below rejects a
-  // cross-actor uuid reuse and audits a filed/changed same-actor replace. INSERT OR REPLACE resets
-  // box_verified=0 so a retry re-queues for filing. CRITICAL: the canonicalPayload (HMAC input) is
-  // UNCHANGED by submit-as — actor_username/submitted_as are NOT part of it — so the
-  // stored hmac is byte-identical to a normal submit and portal_poll's recompute still
-  // verifies. (Regression-locked in test/submit-as.test.ts.)
-  const hmac = await hmacHex(
-    c.env.HMAC_PAYLOAD_SECRET,
-    canonicalPayload({ submission_uuid, job_id, form_code, work_date, payload_json: payload }),
-  );
+  // The submission is signed + inserted by buildSubmissionInsert (worker/submission.ts) so the
+  // checklist-completion emit mints a byte-identical row. The SPA mints a FRESH uuid per amendment
+  // (useSubmissionId), so a same-uuid re-submit is the designed lost-ACK RETRY, not an amendment;
+  // the M1 guard below rejects a cross-actor uuid reuse and audits a filed/changed same-actor
+  // replace. INSERT OR REPLACE resets box_verified=0 so a retry re-queues for filing. CRITICAL: the
+  // canonicalPayload (HMAC input) is UNCHANGED by submit-as — actor_username/submitted_as are NOT
+  // part of it — so the stored hmac is byte-identical to a normal submit and portal_poll's recompute
+  // still verifies. (Regression-locked in test/submit-as.test.ts.)
+  //
   // The submission INSERT carries the two attribution columns (always written; on a
   // self-submit both equal `actor`). On a REAL submit-as we also write an audit_log
   // row in the SAME D1 batch, so the impersonation record can never land without its
@@ -736,14 +741,19 @@ app.post("/api/submit", requireSession, requireCapability("cap.form.submit"), as
     if (!claim.ok) return c.json({ error: claim.error }, claim.status);
   }
 
-  const insertStmt = c.env.DB
-    .prepare(
-      "INSERT OR REPLACE INTO submissions " +
-        "(submission_uuid, job_id, form_code, work_date, payload_json, amends_uuid, hmac, box_verified, " +
-        "actor_username, submitted_as) " +
-        "VALUES (?,?,?,?,?,?,?,0,?,?)",
-    )
-    .bind(submission_uuid, job_id, form_code, work_date, payload, amends_uuid, hmac, actor, attributed);
+  // buildSubmissionInsert re-derives payload_json = JSON.stringify(values) (byte-identical to the
+  // `payload` computed above and used for the PAYLOAD_MAX / M1-replace checks) and signs the
+  // canonical 5-field HMAC — one definition shared with the checklist-completion emit.
+  const insertStmt = await buildSubmissionInsert(c.env.DB, c.env.HMAC_PAYLOAD_SECRET, {
+    submission_uuid,
+    job_id,
+    form_code,
+    work_date,
+    values,
+    actor,
+    submitted_as: attributed,
+    amends_uuid,
+  });
   const stmts = [insertStmt];
   // DR-photo-pool: a same-uuid REPLACE/retry whose payload carries NO refs (key absent OR an
   // empty list — parseAdditionalPhotoRefs distinguishes both from a malformed list) never runs

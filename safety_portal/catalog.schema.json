@@ -47,8 +47,8 @@
         },
         "launch": {
           "type": "string",
-          "enum": ["daily-tab"],
-          "description": "OPTIONAL launch surface for this form type (SOP daily form, slice D1). 'daily-tab' = the parent launches from the Daily tab experience (slice D2 consumes it: hidden from the Submit-a-Form CREATE picker, still visible in Form Request / download surfaces). Absent = the normal picker."
+          "enum": ["daily-tab", "synthesized"],
+          "description": "OPTIONAL launch surface for this form type. 'daily-tab' = the parent launches from the Daily tab (slice D2). 'synthesized' (#17) = the parent is minted only by a Worker emit route, never hand-filled (checklist-completion). Any launch value HIDES the parent from the Submit-a-Form CREATE picker (still visible in Form Request / download surfaces); absent = the normal picker."
         },
         "forms": {
           "type": "array",
