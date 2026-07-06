@@ -399,8 +399,8 @@ describe("FieldOpsMyTasks — S6 assigned inspections", () => {
   const INSPECTION: checklist.AssignedInspection = {
     instance: { id: 30, job_id: "JOB-A", project_name: "Alpha", instance_date: "2099-07-10", status: "open", template_title: "Fall protection", created_at: 100 },
     items: [
-      { id: 40, source_item_id: 1, item_type: "manual_attest", label: "Harness checked", form_code: null, target_count: null, status: "open", note: null, photo_ref: null, completed_by: null, completed_at: null, value_num: null, filed_by: null, photo_status: null },
-      { id: 41, source_item_id: 2, item_type: "form_linked", label: "File JHA", form_code: "jha", target_count: null, status: "open", note: null, photo_ref: null, completed_by: null, completed_at: null, value_num: null, filed_by: null, photo_status: null },
+      { id: 40, source_item_id: 1, item_type: "manual_attest", label: "Harness checked", form_code: null, target_count: null, status: "open", note: null, photo_ref: null, completed_by: null, completed_at: null, value_num: null, filed_by: null, photo_status: null, requires_photo: false },
+      { id: 41, source_item_id: 2, item_type: "form_linked", label: "File JHA", form_code: "jha", target_count: null, status: "open", note: null, photo_ref: null, completed_by: null, completed_at: null, value_num: null, filed_by: null, photo_status: null, requires_photo: false },
     ],
   };
 
@@ -409,13 +409,14 @@ describe("FieldOpsMyTasks — S6 assigned inspections", () => {
     vi.mocked(checklist.fetchAssignedInspections).mockResolvedValue({ inspections: [INSPECTION], linked: true });
     const { container, getByLabelText } = render(<FieldOpsMyTasks onBack={() => {}} onOpenForm={vi.fn()} />);
     await waitFor(() => expect(container.querySelector('[aria-label="Assigned inspections"]')).not.toBeNull());
-    const heading = container.querySelector('[aria-label="Assigned inspections"] h4')!;
-    expect(heading.textContent ?? "").toContain("Fall protection");
-    // The raw id survives only as demoted small text.
-    expect(heading.querySelector(".dash-card__sub")?.textContent).toContain("#30");
-    const txt = container.textContent ?? "";
-    expect(txt).toContain("Harness checked");
-    expect(txt).toContain("File JHA");
+    // The card list titles by template_title; the raw id survives only as demoted small text.
+    const card = container.querySelector(".checklist-task-card")!;
+    expect(card.querySelector(".dash-card__title")?.textContent).toBe("Fall protection");
+    expect(card.textContent ?? "").toContain("#30");
+    // Open the inspection (R8 drill-in) → its items appear with the completion controls.
+    fireEvent.click(getByLabelText("Open Fall protection inspection"));
+    await waitFor(() => expect(container.textContent ?? "").toContain("Harness checked"));
+    expect(container.textContent ?? "").toContain("File JHA");
     // manual_attest gets a complete control; form_linked gets a deep-link (no manual-check).
     expect(getByLabelText("Complete item 40")).not.toBeNull();
     expect(() => getByLabelText("Complete item 41")).toThrow();
@@ -434,6 +435,7 @@ describe("FieldOpsMyTasks — S6 assigned inspections", () => {
     vi.mocked(checklist.fetchAssignedInspections).mockResolvedValue({ inspections: [INSPECTION], linked: true });
     vi.mocked(checklist.completeChecklistItem).mockResolvedValue({ ok: true, id: 40, status: "done", instance_status: "open" });
     const { getByLabelText } = render(<FieldOpsMyTasks onBack={() => {}} onOpenForm={vi.fn()} />);
+    fireEvent.click(await waitFor(() => getByLabelText("Open Fall protection inspection")));
     const btn = await waitFor(() => getByLabelText("Complete item 40"));
     fireEvent.click(btn);
     await waitFor(() => expect(checklist.completeChecklistItem).toHaveBeenCalledWith(40, undefined));
@@ -444,6 +446,7 @@ describe("FieldOpsMyTasks — S6 assigned inspections", () => {
     vi.mocked(checklist.fetchAssignedInspections).mockResolvedValue({ inspections: [INSPECTION], linked: true });
     const onOpenForm = vi.fn();
     const { getByLabelText } = render(<FieldOpsMyTasks onBack={() => {}} onOpenForm={onOpenForm} />);
+    fireEvent.click(await waitFor(() => getByLabelText("Open Fall protection inspection")));
     const link = await waitFor(() => getByLabelText("Complete File JHA"));
     fireEvent.click(link);
     // 'jha' resolves to its versioned variant; job + date come from the inspection instance.

@@ -255,6 +255,10 @@ export interface ChecklistItemState {
   value_num: number | null;
   filed_by: string | null;
   photo_status: ItemPhotoStatus | null;
+  /** The item was authored "requires photo" (config_json.requires_photo on the source item, surfaced
+   *  live) — it can't be marked done until a live photo is attached. SQLite has no bool → 0/1 over the
+   *  wire; treat as truthy. */
+  requires_photo: boolean;
 }
 
 /** POST /api/fieldops/checklist/item-state/:id/photo success body (G1 Slice 1). */

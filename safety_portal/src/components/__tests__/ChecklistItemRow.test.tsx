@@ -48,6 +48,7 @@ function makeItem(over: Partial<checklist.ChecklistItemState> = {}): checklist.C
     value_num: null,
     filed_by: null,
     photo_status: null,
+    requires_photo: false,
     ...over,
   };
 }
@@ -73,6 +74,45 @@ function renderRow(item: checklist.ChecklistItemState, over: Record<string, unkn
   );
   return { ...utils, props };
 }
+
+describe("ChecklistItemRow — requires_photo gate", () => {
+  it("disables Mark done + shows the hint when a photo is required but none is attached", () => {
+    const { getByLabelText, container } = renderRow(
+      makeItem({ item_type: "manual_attest", label: "Snap it", requires_photo: true, photo_status: null }),
+      { onPhotoUploaded: vi.fn() },
+    );
+    expect((getByLabelText("Complete item 20") as HTMLButtonElement).disabled).toBe(true);
+    expect(container.textContent ?? "").toContain("Photo required");
+  });
+
+  it("enables Mark done once a pending OR clean photo is attached (hint gone)", () => {
+    for (const photo_status of ["pending", "clean"] as const) {
+      const { getByLabelText, container, unmount } = renderRow(
+        makeItem({ item_type: "manual_attest", label: "Snap it", requires_photo: true, photo_status }),
+        { onPhotoUploaded: vi.fn() },
+      );
+      expect((getByLabelText("Complete item 20") as HTMLButtonElement).disabled).toBe(false);
+      expect(container.textContent ?? "").not.toContain("Photo required");
+      unmount();
+    }
+  });
+
+  it("a refused photo does NOT satisfy the gate", () => {
+    const { getByLabelText } = renderRow(
+      makeItem({ item_type: "manual_attest", requires_photo: true, photo_status: "refused" }),
+      { onPhotoUploaded: vi.fn() },
+    );
+    expect((getByLabelText("Complete item 20") as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("never gates an item without requires_photo", () => {
+    const { getByLabelText } = renderRow(
+      makeItem({ item_type: "manual_attest", requires_photo: false, photo_status: null }),
+      { onPhotoUploaded: vi.fn() },
+    );
+    expect((getByLabelText("Complete item 20") as HTMLButtonElement).disabled).toBe(false);
+  });
+});
 
 describe("ChecklistItemRow — count", () => {
   it("open: numeric keypad hint + the recorded value stays visible while open", () => {

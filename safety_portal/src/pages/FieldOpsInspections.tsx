@@ -12,18 +12,26 @@ import { ChecklistItemForm,
   itemInputFromRow,
   itemMetaLabel,
   nextSeq,
+  parseRequiresPhoto,
   planRenumber, ConfirmDelete } from "../components/ChecklistItemForm";
 
-// R4 — the admin "Checklists" area (same 'fieldops-inspections' view key / Home card), now
-// INSPECTIONS-ONLY after the D2 retirement: the generic_inspection LIBRARY (create / rename /
-// deactivate / delete / per-template item editing) + the assign control + the outstanding
-// assignments list. The company-wide "Default daily checklist" editor that used to live here is
-// RETIRED (D2, SOP daily form): the daily content moved into the daily-report-v2 FORM DEFINITION
-// (edited via the form builder / publish pipeline), so there is no daily checklist template to
-// tailor anymore. The checklist ENGINE (and these library surfaces) stays — inspections use it.
-// Gated cap.checklist.manage (admin). Every call is re-gated server-side (Invariant 2); caps here
-// drive UI affordances only. Send-free (D1 reads/writes). Feedback is per-section inline (no single
-// top-of-page banner); loading is rendered distinct from empty everywhere.
+// R8 — the admin "Checklists" page (view key 'fieldops-inspections' unchanged), REDESIGNED to the
+// Forms form-builder pattern: a master-detail library (a selectable checklist list beside a rich
+// detail pane) whose detail is a form-editor SPLIT — the item editor on the left, an ALWAYS-ON
+// "Preview as assignee" on the right (the assignee renders through the REAL ChecklistItemRow, so
+// what you build is what they see, live, as you edit). The lifecycle actions (rename / deactivate /
+// delete) moved off the list rows into the selected checklist's detail header, so the list stays a
+// clean navigator — exactly the Forms catalog → detail shape. Below the authoring surface sits the
+// "Assign & track" band (assign a checklist + the outstanding-assignments monitor), the checklist
+// analog of the form builder's publish + publish-monitor.
+//
+// INSPECTIONS-ONLY since D2: the generic_inspection library only. The company-wide "Default daily
+// checklist" editor is RETIRED — the daily content lives in the daily-report-v2 FORM DEFINITION
+// (edited via the form builder / publish pipeline). Gated cap.checklist.manage (admin); every call
+// is re-gated server-side (Invariant 2) — caps here drive UI affordances only. Send-free (D1
+// reads/writes). Feedback is per-section inline; loading is rendered distinct from empty everywhere.
+// The shared item components (ChecklistItemForm / ChecklistItemRow / ConfirmDelete) are reused
+// verbatim — this slice is a page-layout redesign, not a data or component-contract change.
 
 type Msg = { ok: boolean; text: string };
 
@@ -31,6 +39,8 @@ function MsgLine({ msg }: { msg: Msg | null }) {
   if (!msg) return null;
   return <p className={`banner ${msg.ok ? "banner--ok" : "banner--err"}`}>{msg.text}</p>;
 }
+
+const NOOP = () => {};
 
 // Synthesize the assignee-side item-state shape from an authoring row so the read-only preview can
 // render through the REAL assignee component (ChecklistItemRow) without touching it: open status,
@@ -51,12 +61,15 @@ function previewState(it: checklist.DefaultItem): checklist.ChecklistItemState {
     value_num: null,
     filed_by: null,
     photo_status: null,
+    requires_photo: parseRequiresPhoto(it.config_json),
   };
 }
 
-const NOOP = () => {};
-
-// ── Section 2 (per-template) — one library template's item editor + read-only assignee preview ────
+// ── Detail split — one template's item editor (build pane) + the always-on assignee preview ───────
+// The form-builder split: the item list + add/edit form on the left, and the live assignee preview
+// on the right (sticky on wide screens). No preview TOGGLE — both are visible at once, so an edit is
+// reflected in the preview the moment its reload lands. Item add/edit/reorder/remove behavior and
+// every aria-label are unchanged from the pre-redesign editor.
 function TemplateItemsEditor({
   template,
   onTemplatesChanged,
@@ -71,8 +84,6 @@ function TemplateItemsEditor({
   const [addDraft, setAddDraft] = useState<checklist.ItemInput>(EMPTY_ITEM);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editDraft, setEditDraft] = useState<checklist.ItemInput>(EMPTY_ITEM);
-  const [preview, setPreview] = useState(false);
-  const sectionRef = useRef<HTMLDivElement | null>(null);
 
   const templateId = template.id;
 
@@ -89,12 +100,7 @@ function TemplateItemsEditor({
     setLoading(true);
     setDetail(null);
     setEditingId(null);
-    setPreview(false);
     void reload();
-    // Bring the editor into view on select/create — the library list sits above the fold and a
-    // just-created empty template would otherwise "do nothing" visually.
-    const el = sectionRef.current;
-    if (el && typeof el.scrollIntoView === "function") el.scrollIntoView({ behavior: "smooth", block: "start" });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [templateId]);
 
@@ -158,124 +164,134 @@ function TemplateItemsEditor({
   }
 
   return (
-    <div className="dash-subsection" ref={sectionRef}>
-      <h4 className="dash-detail__h2">Items · {template.title ?? `checklist ${templateId}`}</h4>
-      <MsgLine msg={msg} />
-      {loading ? (
-        <div className="muted">Loading items…</div>
-      ) : (
-        <>
-          <div className="dash-row">
-            <button
-              type="button"
-              className="btn btn--secondary"
-              aria-label="Preview as assignee"
-              onClick={() => setPreview((v) => !v)}
-            >
-              {preview ? "Back to editing" : "Preview as assignee"}
-            </button>
+    <div className="checklist-split">
+      {/* ── BUILD PANE — the item editor ─────────────────────────────────────── */}
+      <div className="checklist-split__pane">
+        <section className="card form-editor__section" aria-label="Checklist items">
+          <div className="form-editor__section-head">
+            <span className="form-editor__section-type">Items</span>
+            {!loading && items.length > 0 && (
+              <span className="forms-mgr__count">{items.length}</span>
+            )}
           </div>
-
-          {preview ? (
-            <>
-              <p className="dash-card__sub muted">
-                Read-only preview — this is how the checklist renders for the assignee. Controls are disabled.
-              </p>
-              {items.length === 0 ? (
-                <div className="dash-unavail">Nothing to preview — this checklist has no items yet.</div>
-              ) : (
-                <ul className="dash-tasklist" aria-label="Assignee preview">
-                  {items.map((it) => (
-                    <li key={it.id}>
-                      <ChecklistItemRow
-                        item={previewState(it)}
-                        busy={true}
-                        canOpenForm={false}
-                        onComplete={NOOP}
-                        onUncomplete={NOOP}
-                        onRecordCount={NOOP}
-                        onOpenForm={NOOP}
-                      />
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </>
+          <MsgLine msg={msg} />
+          {loading ? (
+            <div className="muted">Loading items…</div>
           ) : (
             <>
               {items.length === 0 ? (
                 <div className="dash-unavail">This checklist has no items yet — now add its items below.</div>
               ) : (
-                <ul className="dash-tasklist" aria-label="Checklist items">
+                <ul className="form-editor__items checklist-items" aria-label="Checklist items list">
                   {items.map((it, idx) => (
                     <li key={it.id}>
                       {editingId === it.id ? (
-                        <ChecklistItemForm
-                          label="Edit item"
-                          draft={editDraft}
-                          onChange={setEditDraft}
-                          onSubmit={submitEdit}
-                          busy={busy}
-                          submitLabel="Save"
-                          onCancel={() => setEditingId(null)}
-                        />
-                      ) : (
-                        <>
-                          {it.label} <span className="dash-card__sub"> · {itemMetaLabel(it)}</span>{" "}
-                          <button
-                            type="button"
-                            className="btn btn--secondary"
-                            aria-label={`Move ${it.label ?? `item ${it.id}`} up`}
-                            disabled={busy || idx === 0}
-                            onClick={() => move(idx, -1)}
-                          >
-                            ↑
-                          </button>{" "}
-                          <button
-                            type="button"
-                            className="btn btn--secondary"
-                            aria-label={`Move ${it.label ?? `item ${it.id}`} down`}
-                            disabled={busy || idx === items.length - 1}
-                            onClick={() => move(idx, 1)}
-                          >
-                            ↓
-                          </button>{" "}
-                          <button
-                            type="button"
-                            className="btn btn--edit"
-                            aria-label={`Edit ${it.label ?? `item ${it.id}`}`}
-                            disabled={busy}
-                            onClick={() => startEdit(it)}
-                          >
-                            Edit
-                          </button>{" "}
-                          <ConfirmDelete
-                            actionLabel="Remove"
-                            ariaLabel={`Remove ${it.label ?? `item ${it.id}`}`}
-                            copy={`Remove “${it.label ?? `item ${it.id}`}” from this checklist? Already-assigned copies keep their snapshot.`}
+                        <div className="checklist-item checklist-item--editing">
+                          <ChecklistItemForm
+                            label="Edit item"
+                            draft={editDraft}
+                            onChange={setEditDraft}
+                            onSubmit={submitEdit}
                             busy={busy}
-                            onConfirm={() =>
-                              run(() => checklist.deleteInspectionItem(templateId, it.id), "Item removed.", true)
-                            }
+                            submitLabel="Save"
+                            onCancel={() => setEditingId(null)}
                           />
-                        </>
+                        </div>
+                      ) : (
+                        <div className="checklist-item">
+                          <div className="checklist-item__main">
+                            <span className="checklist-item__label">{it.label}</span>
+                            <span className="checklist-item__meta">{itemMetaLabel(it)}</span>
+                          </div>
+                          <div className="checklist-item__controls">
+                            <button
+                              type="button"
+                              className="btn btn--secondary form-editor__icon-btn"
+                              aria-label={`Move ${it.label ?? `item ${it.id}`} up`}
+                              disabled={busy || idx === 0}
+                              onClick={() => move(idx, -1)}
+                            >
+                              ↑
+                            </button>
+                            <button
+                              type="button"
+                              className="btn btn--secondary form-editor__icon-btn"
+                              aria-label={`Move ${it.label ?? `item ${it.id}`} down`}
+                              disabled={busy || idx === items.length - 1}
+                              onClick={() => move(idx, 1)}
+                            >
+                              ↓
+                            </button>
+                            <button
+                              type="button"
+                              className="btn btn--edit"
+                              aria-label={`Edit ${it.label ?? `item ${it.id}`}`}
+                              disabled={busy}
+                              onClick={() => startEdit(it)}
+                            >
+                              Edit
+                            </button>
+                            <ConfirmDelete
+                              actionLabel="Remove"
+                              ariaLabel={`Remove ${it.label ?? `item ${it.id}`}`}
+                              copy={`Remove “${it.label ?? `item ${it.id}`}” from this checklist? Already-assigned copies keep their snapshot.`}
+                              busy={busy}
+                              onConfirm={() =>
+                                run(() => checklist.deleteInspectionItem(templateId, it.id), "Item removed.", true)
+                              }
+                            />
+                          </div>
+                        </div>
                       )}
                     </li>
                   ))}
                 </ul>
               )}
-              <ChecklistItemForm
-                label="Add item"
-                draft={addDraft}
-                onChange={setAddDraft}
-                onSubmit={submitAdd}
-                busy={busy}
-                submitLabel="Add item"
-              />
+              <div className="checklist-item checklist-item--add">
+                <ChecklistItemForm
+                  label="Add item"
+                  draft={addDraft}
+                  onChange={setAddDraft}
+                  onSubmit={submitAdd}
+                  busy={busy}
+                  submitLabel="Add item"
+                />
+              </div>
             </>
           )}
-        </>
-      )}
+        </section>
+      </div>
+
+      {/* ── PREVIEW PANE — always-on assignee preview ────────────────────────── */}
+      <div className="checklist-split__pane">
+        <h3 className="form-editor__sub-heading">Preview as assignee</h3>
+        <div className="card forms-mgr__preview" aria-label="Assignee preview panel">
+          <p className="muted checklist-preview__note">
+            Read-only preview — this is how the checklist renders for the assignee. Controls are disabled.
+          </p>
+          {loading ? (
+            <div className="muted">Loading items…</div>
+          ) : items.length === 0 ? (
+            <div className="dash-unavail">Nothing to preview yet — add an item to see it here.</div>
+          ) : (
+            <ul className="dash-tasklist" aria-label="Assignee preview">
+              {items.map((it) => (
+                <li key={it.id}>
+                  <ChecklistItemRow
+                    item={previewState(it)}
+                    busy={true}
+                    canOpenForm={false}
+                    onComplete={NOOP}
+                    onUncomplete={NOOP}
+                    onRecordCount={NOOP}
+                    onOpenForm={NOOP}
+                  />
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -299,15 +315,11 @@ interface AssignConfirmation {
   itemCount: number;
 }
 
-// ── Section 3 — the GUARDED assign control (R5 — the client halves of the R1 assign-time 422s) ────
+// ── Assign control (R5 — the client halves of the R1 assign-time 422s) ────────────────────────────
 // The Worker independently rejects all four stuck-assignment classes (R1); this form makes them
-// unreachable from the UI in the first place:
-//   • empty template        → its picker option is disabled "(no items yet)";
-//   • form-linked w/o job+date → job + due date flip to REQUIRED (with inline copy) the moment a
-//     selected template's detail shows form-bearing items; submit blocks client-side;
-//   • unknown form code     → not producible here (the item editors use a catalog select, R4);
-//   • duplicate double-tap  → busy-guard during submit + a FULL form reset after success (a repeat
-//     assign requires deliberate re-selection), plus the persistent confirmation card.
+// unreachable from the UI: empty template → disabled "(no items yet)"; form-linked w/o job+date →
+// job + due date flip to REQUIRED; unknown form code → not producible here (catalog select, R4);
+// duplicate double-tap → busy-guard + FULL reset after success + the persistent confirmation card.
 function AssignForm({
   templates,
   onAssigned,
@@ -329,11 +341,8 @@ function AssignForm({
   const [confirmation, setConfirmation] = useState<AssignConfirmation | null>(null);
 
   // VERIFIED (R5): POST /checklist/assign requires an ACTIVE personnel row only — a portal login is
-  // NOT required (worker/fieldops_checklist.ts: `SELECT id FROM personnel WHERE id=? AND active=1`).
-  // So the FULL active roster is offered (fetchFullRoster pages the cursor to exhaustion — the old
-  // single-page fetch silently dropped everyone past #50) with no login filter and no "can't be
-  // assigned" hint. Each option carries the person's current placement for context. Never silent:
-  // a load failure renders an error with Retry (A4 silent-swallow site #3), not an empty picker.
+  // NOT required. So the FULL active roster is offered (fetchFullRoster pages the cursor to
+  // exhaustion). Never silent: a load failure renders an error with Retry, not an empty picker.
   async function loadPickers() {
     setPickersError(false);
     try {
@@ -443,19 +452,19 @@ function AssignForm({
         </p>
       )}
       {confirmation && (
-        <div className="dash-subsection" role="status" aria-label="Assignment confirmation">
+        <div className="banner banner--ok checklist-assign__confirm" role="status" aria-label="Assignment confirmation">
           <strong>Assigned to {confirmation.assignee} ✓</strong>
-          <span className="dash-card__sub" style={{ display: "block" }}>
+          <span className="checklist-assign__confirm-sub">
             “{confirmation.title}” ({confirmation.itemCount} item{confirmation.itemCount === 1 ? "" : "s"})
             {confirmation.job !== null ? <> · {confirmation.job}</> : null}
             {confirmation.due !== null ? <> · due {confirmation.due}</> : null}
           </span>
         </div>
       )}
-      <form onSubmit={submit} className="dash-row" aria-label="Assign form">
+      <form onSubmit={submit} className="checklist-assign__grid" aria-label="Assign form">
         <label className="field">
           <span className="field__label">Checklist</span>
-          <select aria-label="Checklist" value={templateId} onChange={(e) => setTemplateId(e.target.value)}>
+          <select className="field__input" aria-label="Checklist" value={templateId} onChange={(e) => setTemplateId(e.target.value)}>
             <option value="">— checklist —</option>
             {assignable.map((t) => (
               <option key={t.id} value={t.id} disabled={t.item_count === 0}>
@@ -464,10 +473,10 @@ function AssignForm({
               </option>
             ))}
           </select>
-        </label>{" "}
+        </label>
         <label className="field">
           <span className="field__label">Assign to</span>
-          <select aria-label="Assignee" value={assignee} onChange={(e) => setAssignee(e.target.value)}>
+          <select className="field__input" aria-label="Assignee" value={assignee} onChange={(e) => setAssignee(e.target.value)}>
             <option value="">— person —</option>
             {people.map((p) => (
               <option key={p.id} value={p.id}>
@@ -477,34 +486,37 @@ function AssignForm({
               </option>
             ))}
           </select>
-        </label>{" "}
+        </label>
         <label className="field">
           <span className="field__label">{needsJobDate ? "Job (required)" : "Job (optional)"}</span>
-          <select aria-label="Job" value={jobId} onChange={(e) => setJobId(e.target.value)}>
+          <select className="field__input" aria-label="Job" value={jobId} onChange={(e) => setJobId(e.target.value)}>
             <option value="">{needsJobDate ? "— pick a job —" : "— job (optional) —"}</option>
             {jobs.map((j) => (
               <option key={j.job_id} value={j.job_id}>{j.project_name ?? j.job_id}</option>
             ))}
           </select>
-        </label>{" "}
+        </label>
         <label className="field">
           <span className="field__label">{needsJobDate ? "Due date (required)" : "Due date (optional)"}</span>
           <input
+            className="field__input"
             type="date"
             aria-label="Due date"
             value={dueDate}
             onChange={(e) => setDueDate(e.target.value)}
           />
-        </label>{" "}
-        <button type="submit" className="btn btn--primary" disabled={busy}>Assign</button>
+        </label>
+        <div className="checklist-assign__submit">
+          <button type="submit" className="btn btn--primary" disabled={busy}>Assign</button>
+        </div>
         {needsJobDate && (
-          <span className="dash-card__sub" style={{ display: "block", width: "100%" }}>
+          <p className="jha__notice checklist-assign__full">
             This checklist auto-checks from filed forms — it needs a job and a date so filings can be
             matched to it. The due date is the date the work must be filed by.
-          </span>
+          </p>
         )}
         {detailWarn && (
-          <span className="dash-card__sub" style={{ display: "block", width: "100%" }}>
+          <p className="muted checklist-assign__full">
             Couldn't check this checklist's items — you can still assign; the server verifies.{" "}
             <button
               type="button"
@@ -517,14 +529,14 @@ function AssignForm({
             >
               Retry
             </button>
-          </span>
+          </p>
         )}
       </form>
     </section>
   );
 }
 
-// ── Section 4 — outstanding assignments (R5 — the admin list + cancel; GET /checklist/instances) ──
+// ── Outstanding assignments (R5 — the admin list + cancel; GET /checklist/instances) ──────────────
 // Every outstanding inspection assignment is listable, its progress visible, and cancellable — the
 // close of the old fire-and-forget loop where a mistaken assignment was invisible and irrevocable.
 // Loading ≠ empty; a fetch failure renders an error with Retry (never a lying blank).
@@ -578,29 +590,31 @@ function AssignmentsSection({ refreshKey }: { refreshKey: number }) {
 
   return (
     <section className="card dash-section" aria-label="Outstanding assignments">
-      <h3 className="dash-detail__h2">Outstanding assignments</h3>
+      <div className="checklist-track__head">
+        <h3 className="dash-detail__h2">Outstanding assignments</h3>
+        <div className="checklist-track__filter">
+          <button
+            type="button"
+            className={filter === "open" ? "btn btn--primary" : "btn btn--secondary"}
+            aria-label="Show open assignments"
+            onClick={() => setFilter("open")}
+          >
+            Open
+          </button>
+          <button
+            type="button"
+            className={filter === "all" ? "btn btn--primary" : "btn btn--secondary"}
+            aria-label="Show all assignments"
+            onClick={() => setFilter("all")}
+          >
+            All
+          </button>
+        </div>
+      </div>
       <p className="dash-card__sub muted">
         Every assigned inspection checklist — who has it, which job, when it's due, and how far along
         it is. Cancel removes it from the person's Assigned inspections.
       </p>
-      <div className="dash-row">
-        <button
-          type="button"
-          className={filter === "open" ? "btn btn--primary" : "btn btn--secondary"}
-          aria-label="Show open assignments"
-          onClick={() => setFilter("open")}
-        >
-          Open
-        </button>{" "}
-        <button
-          type="button"
-          className={filter === "all" ? "btn btn--primary" : "btn btn--secondary"}
-          aria-label="Show all assignments"
-          onClick={() => setFilter("all")}
-        >
-          All
-        </button>
-      </div>
       <MsgLine msg={msg} />
       {loading ? (
         <div className="muted">Loading assignments…</div>
@@ -624,20 +638,22 @@ function AssignmentsSection({ refreshKey }: { refreshKey: number }) {
             const who = r.assignee_name ?? "(unknown assignee)";
             const overdue = r.status === "open" && r.instance_date !== null && r.instance_date < today;
             return (
-              <li key={r.id}>
-                <strong>{title}</strong>
-                <span className="dash-card__sub"> · {who}</span>
-                {r.job_id !== null && (
-                  <span className="dash-card__sub"> · {r.project_name ?? r.job_id}</span>
-                )}
-                {r.instance_date !== null && <span className="dash-card__sub"> · due {r.instance_date}</span>}{" "}
-                {overdue && <span className="dash-pill dash-pill--warn">overdue</span>}{" "}
-                <span className={r.status === "complete" ? "dash-pill dash-pill--ok" : "dash-pill"}>
-                  {statusLabel(r.status)}
-                </span>
-                <span className="dash-card__sub">
-                  {" "}· {r.items_done}/{r.items_total} item{r.items_total === 1 ? "" : "s"} done
-                </span>{" "}
+              <li key={r.id} className="checklist-track__row">
+                <div className="checklist-track__row-main">
+                  <strong>{title}</strong>
+                  <span className="dash-card__sub"> · {who}</span>
+                  {r.job_id !== null && (
+                    <span className="dash-card__sub"> · {r.project_name ?? r.job_id}</span>
+                  )}
+                  {r.instance_date !== null && <span className="dash-card__sub"> · due {r.instance_date}</span>}{" "}
+                  {overdue && <span className="dash-pill dash-pill--warn">overdue</span>}{" "}
+                  <span className={r.status === "complete" ? "dash-pill dash-pill--ok" : "dash-pill"}>
+                    {statusLabel(r.status)}
+                  </span>
+                  <span className="dash-card__sub">
+                    {" "}· {r.items_done}/{r.items_total} item{r.items_total === 1 ? "" : "s"} done
+                  </span>
+                </div>
                 <ConfirmDelete
                   actionLabel="Cancel"
                   ariaLabel={`Cancel assignment ${title} for ${who}`}
@@ -655,12 +671,12 @@ function AssignmentsSection({ refreshKey }: { refreshKey: number }) {
 }
 
 /**
- * R4 — the admin "Checklists" page (view key 'fieldops-inspections' unchanged), inspections-only
- * since D2: the Inspection-checklists library (author / rename / deactivate / delete / per-template
- * items) + the assign control + outstanding assignments. The Default-daily-checklist editor is
- * RETIRED (the daily content lives in the daily-report-v2 form definition — edit it via the form
- * builder). cap.checklist.manage gates the Home card + every call (the Worker re-gates —
- * Invariant 2).
+ * R8 — the admin "Checklists" page (view key 'fieldops-inspections' unchanged), redesigned to the
+ * Forms form-builder shape: a master-detail Inspection library (list → detail) whose detail carries
+ * the lifecycle actions + a form-editor SPLIT (item editor beside a live assignee preview); then the
+ * "Assign & track" band. Inspections-only since D2 (the daily content lives in the daily-report-v2
+ * form definition — edit it via the form builder). cap.checklist.manage gates the Home card + every
+ * call (the Worker re-gates — Invariant 2).
  */
 export function FieldOpsInspections({ onBack }: { onBack: () => void }) {
   const [templates, setTemplates] = useState<checklist.InspectionTemplate[]>([]);
@@ -668,7 +684,7 @@ export function FieldOpsInspections({ onBack }: { onBack: () => void }) {
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [newTitle, setNewTitle] = useState("");
   const [filter, setFilter] = useState("");
-  const [renamingId, setRenamingId] = useState<number | null>(null);
+  const [renaming, setRenaming] = useState(false);
   const [renameTitle, setRenameTitle] = useState("");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<Msg | null>(null);
@@ -713,26 +729,24 @@ export function FieldOpsInspections({ onBack }: { onBack: () => void }) {
     void run(async () => {
       const res = await checklist.createInspectionTemplate(newTitle.trim());
       setNewTitle("");
-      if (res.id) setSelectedId(res.id); // opens the item editor below (it scrolls itself into view)
-    }, "Checklist created — now add its items below.");
+      if (res.id) setSelectedId(res.id); // opens the new checklist in the detail pane
+    }, "Checklist created — now add its items on the right.");
   }
 
   function startRename(t: checklist.InspectionTemplate) {
-    setRenamingId(t.id);
+    setRenaming(true);
     setRenameTitle(t.title ?? "");
   }
 
-  function submitRename(e: FormEvent) {
+  function submitRename(e: FormEvent, id: number) {
     e.preventDefault();
-    if (renamingId === null) return;
     if (renameTitle.trim() === "") {
       setMsg({ ok: false, text: "A title is required." });
       return;
     }
-    const id = renamingId;
     void run(async () => {
       await checklist.editInspectionTemplate(id, { title: renameTitle.trim() });
-      setRenamingId(null);
+      setRenaming(false);
     }, "Checklist renamed.");
   }
 
@@ -755,10 +769,17 @@ export function FieldOpsInspections({ onBack }: { onBack: () => void }) {
     : templates.filter((t) => (t.title ?? "").toLowerCase().includes(filter.trim().toLowerCase()));
   const selected = selectedId !== null ? templates.find((t) => t.id === selectedId) ?? null : null;
 
+  function select(t: checklist.InspectionTemplate) {
+    setSelectedId((cur) => (cur === t.id ? null : t.id));
+    setRenaming(false);
+  }
+
   return (
     <PageShell onHome={onBack}>
+      <div className="checklist-page">
       <h2 className="page__heading">Checklists</h2>
-      <p className="dash__intro">
+
+      <p className="dash__intro checklist-intro">
         The <strong>inspection checklists</strong> you author and assign to a manager or subcontractor
         (they appear in that person's My Tasks tab). The daily report's content is no longer a
         checklist edited here — it lives in the Daily Field Report <strong>form definition</strong>{" "}
@@ -767,127 +788,157 @@ export function FieldOpsInspections({ onBack }: { onBack: () => void }) {
         page in the Job Tracker.
       </p>
 
-      <section className="card dash-section" aria-label="Inspection library">
-        <h3 className="dash-detail__h2">Inspection checklists</h3>
-        <MsgLine msg={msg} />
-        {loading ? (
-          <div className="muted">Loading inspection checklists…</div>
-        ) : templates.length === 0 ? (
-          <div className="dash-unavail">No inspection checklists yet — create one below.</div>
-        ) : (
-          <>
-            {templates.length > 3 && (
-              <div className="dash-row">
-                <input
-                  aria-label="Filter checklists"
-                  value={filter}
-                  onChange={(e) => setFilter(e.target.value)}
-                  placeholder="Filter by title"
-                />
-              </div>
-            )}
-            {visible.length === 0 ? (
-              <div className="muted">No checklist titles match “{filter.trim()}”.</div>
-            ) : (
-              <ul className="dash-tasklist">
-                {visible.map((t) => (
-                  <li key={t.id}>
-                    {renamingId === t.id ? (
-                      <form onSubmit={submitRename} className="dash-row" aria-label={`Rename ${t.title}`} style={{ display: "inline" }}>
-                        <input
-                          aria-label={`Rename ${t.title} title`}
-                          value={renameTitle}
-                          onChange={(e) => setRenameTitle(e.target.value)}
-                          maxLength={256}
-                        />{" "}
-                        <button type="submit" className="btn btn--primary" disabled={busy}>Save</button>{" "}
-                        <button type="button" className="btn btn--secondary" onClick={() => setRenamingId(null)}>
-                          Cancel
-                        </button>
-                      </form>
-                    ) : (
-                      <>
-                        <button
-                          type="button"
-                          className={selectedId === t.id ? "btn btn--primary" : "btn btn--secondary"}
-                          aria-label={`Edit ${t.title}`}
-                          onClick={() => setSelectedId(selectedId === t.id ? null : t.id)}
-                        >
-                          {t.title}
-                        </button>
-                        {!t.active && <span className="dash-pill dash-pill--warn"> inactive — not assignable</span>}
-                        <span className="dash-card__sub">
-                          {" "}· {t.item_count} item{t.item_count === 1 ? "" : "s"} · created{" "}
-                          {new Date(t.created_at * 1000).toLocaleDateString()}
-                        </span>{" "}
-                        <button
-                          type="button"
-                          className="btn btn--edit"
-                          aria-label={`Rename ${t.title}`}
-                          disabled={busy}
-                          onClick={() => startRename(t)}
-                        >
-                          Rename
-                        </button>{" "}
-                        {t.active ? (
-                          <button
-                            type="button"
-                            className="btn btn--secondary"
-                            aria-label={`Deactivate ${t.title}`}
-                            disabled={busy}
-                            onClick={() => setActive(t, false)}
-                          >
-                            Deactivate
-                          </button>
-                        ) : (
-                          <button
-                            type="button"
-                            className="btn btn--secondary"
-                            aria-label={`Reactivate ${t.title}`}
-                            disabled={busy}
-                            onClick={() => setActive(t, true)}
-                          >
-                            Reactivate
-                          </button>
-                        )}{" "}
-                        <ConfirmDelete
-                          actionLabel="Delete"
-                          ariaLabel={`Delete ${t.title}`}
-                          copy={`Delete “${t.title}” and its ${t.item_count} item${t.item_count === 1 ? "" : "s"}? Any outstanding assigned copies keep their snapshot. Prefer Deactivate to retire it without deleting.`}
-                          busy={busy}
-                          onConfirm={() => remove(t)}
-                        />
-                      </>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </>
-        )}
-        {!loading && (
-          <form onSubmit={create} className="dash-row" aria-label="Create checklist">
+      <MsgLine msg={msg} />
+
+      <div className="forms-mgr">
+        {/* ── LIBRARY (master) ───────────────────────────────────────────────── */}
+        <aside className="forms-mgr__list" aria-label="Inspection library">
+          <form className="checklist-lib-new" onSubmit={create} aria-label="Create checklist">
             <input
+              className="field__input"
               aria-label="New checklist title"
               value={newTitle}
               onChange={(e) => setNewTitle(e.target.value)}
               placeholder="New checklist title"
               maxLength={256}
-            />{" "}
-            <button type="submit" className="btn btn--primary" disabled={busy}>Create</button>
+            />
+            <button type="submit" className="btn btn--primary checklist-lib-new__btn" disabled={busy || loading}>New +</button>
           </form>
-        )}
-      </section>
+          <h3 className="forms-mgr__heading">
+            Library <span className="forms-mgr__count">{templates.length}</span>
+          </h3>
+          {loading ? (
+            <div className="muted">Loading inspection checklists…</div>
+          ) : templates.length === 0 ? (
+            <div className="dash-unavail">No inspection checklists yet — create one above.</div>
+          ) : (
+            <>
+              {templates.length > 3 && (
+                <input
+                  className="field__input checklist-filter"
+                  aria-label="Filter checklists"
+                  value={filter}
+                  onChange={(e) => setFilter(e.target.value)}
+                  placeholder="Filter by title"
+                />
+              )}
+              {visible.length === 0 ? (
+                <div className="muted">No checklist titles match “{filter.trim()}”.</div>
+              ) : (
+                <ul className="forms-mgr__items">
+                  {visible.map((t) => (
+                    <li key={t.id}>
+                      <button
+                        type="button"
+                        className={`forms-mgr__item${selectedId === t.id ? " forms-mgr__item--active" : ""}`}
+                        aria-current={selectedId === t.id}
+                        aria-label={`Edit ${t.title}`}
+                        onClick={() => select(t)}
+                      >
+                        <span className="forms-mgr__item-label">
+                          {t.title}
+                          {!t.active && <span className="dash-pill dash-pill--warn checklist-inactive-pill">inactive — not assignable</span>}
+                        </span>
+                        <span className="forms-mgr__item-parent">
+                          {t.item_count} item{t.item_count === 1 ? "" : "s"} · created{" "}
+                          {new Date(t.created_at * 1000).toLocaleDateString()}
+                        </span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </>
+          )}
+        </aside>
 
-      {selected !== null && (
-        <section className="card dash-section" aria-label="Edit checklist items">
-          <TemplateItemsEditor template={selected} onTemplatesChanged={() => void reload()} />
+        {/* ── DETAIL (selected checklist) ────────────────────────────────────── */}
+        <section className="forms-mgr__detail" aria-label="Checklist detail">
+          {selected === null ? (
+            <div className="dash-empty">
+              {templates.length === 0
+                ? "Create a checklist to start authoring its items."
+                : "Select a checklist on the left to edit its items, or create a new one."}
+            </div>
+          ) : (
+            <>
+              <header className="forms-mgr__meta">
+                {renaming ? (
+                  <form className="checklist-rename" onSubmit={(e) => submitRename(e, selected.id)} aria-label={`Rename ${selected.title}`}>
+                    <input
+                      className="field__input"
+                      aria-label={`Rename ${selected.title} title`}
+                      value={renameTitle}
+                      onChange={(e) => setRenameTitle(e.target.value)}
+                      maxLength={256}
+                    />
+                    <button type="submit" className="btn btn--primary" disabled={busy}>Save</button>
+                    <button type="button" className="btn btn--secondary" onClick={() => setRenaming(false)}>Cancel</button>
+                  </form>
+                ) : (
+                  <h2 className="page__heading">{selected.title}</h2>
+                )}
+                <dl className="forms-mgr__meta-grid">
+                  <div><dt>Items</dt><dd>{selected.item_count}</dd></div>
+                  <div><dt>Created</dt><dd>{new Date(selected.created_at * 1000).toLocaleDateString()}</dd></div>
+                  <div>
+                    <dt>Status</dt>
+                    <dd>{selected.active ? "Active" : "Inactive — not assignable"}</dd>
+                  </div>
+                </dl>
+                {!renaming && (
+                  <div className="checklist-detail__actions">
+                    <button
+                      type="button"
+                      className="btn btn--edit"
+                      aria-label={`Rename ${selected.title}`}
+                      disabled={busy}
+                      onClick={() => startRename(selected)}
+                    >
+                      Rename
+                    </button>
+                    {selected.active ? (
+                      <button
+                        type="button"
+                        className="btn btn--secondary"
+                        aria-label={`Deactivate ${selected.title}`}
+                        disabled={busy}
+                        onClick={() => setActive(selected, false)}
+                      >
+                        Deactivate
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        className="btn btn--secondary"
+                        aria-label={`Reactivate ${selected.title}`}
+                        disabled={busy}
+                        onClick={() => setActive(selected, true)}
+                      >
+                        Reactivate
+                      </button>
+                    )}
+                    <ConfirmDelete
+                      actionLabel="Delete"
+                      ariaLabel={`Delete ${selected.title}`}
+                      copy={`Delete “${selected.title}” and its ${selected.item_count} item${selected.item_count === 1 ? "" : "s"}? Any outstanding assigned copies keep their snapshot. Prefer Deactivate to retire it without deleting.`}
+                      busy={busy}
+                      onConfirm={() => remove(selected)}
+                    />
+                  </div>
+                )}
+              </header>
+
+              <TemplateItemsEditor template={selected} onTemplatesChanged={() => void reload()} />
+            </>
+          )}
         </section>
-      )}
+      </div>
 
+      {/* ── ASSIGN & TRACK band ──────────────────────────────────────────────── */}
       <AssignForm templates={templates} onAssigned={() => setAssignmentsRefresh((k) => k + 1)} />
-
       <AssignmentsSection refreshKey={assignmentsRefresh} />
+      </div>
     </PageShell>
   );
 }

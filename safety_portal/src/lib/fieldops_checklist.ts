@@ -35,6 +35,10 @@ export interface ItemInput {
   seq?: number;
   form_code?: string;
   target_count?: number;
+  // When true, the person must attach a photo before the item can be marked done (stored in the
+  // item's config_json; the Worker re-enforces at completion). Only meaningful for manually-completed
+  // types (manual_attest / count) — form-bearing items close via a submission, never a manual check.
+  requires_photo?: boolean;
 }
 
 async function getJson<T>(url: string): Promise<T> {

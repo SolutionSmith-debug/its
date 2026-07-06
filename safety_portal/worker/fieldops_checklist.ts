@@ -192,7 +192,12 @@ function parseItem(
     targetCount = tc;
   }
 
-  return { seq, item_type: itemType, label, form_code: formCode, target_count: targetCount, config_json: null };
+  // requires_photo (any manually-completed item must attach a photo before it can be marked done) is
+  // the only config_json key today. Absent/false → null config_json, keeping the column empty for the
+  // common case (and a clean equality in the round-trip tests).
+  const requiresPhoto = body.requires_photo === true;
+  const configJson = requiresPhoto ? JSON.stringify({ requires_photo: true }) : null;
+  return { seq, item_type: itemType, label, form_code: formCode, target_count: targetCount, config_json: configJson };
 }
 
 // Parse the JSON body, rejecting a non-object (null/array/primitive) before any property access —
@@ -367,6 +372,10 @@ function buildItemStatesSql(dateOp: "=" | "<="): string {
                (SELECT ip.status FROM item_photos ip
                 WHERE ip.item_state_id = checklist_item_states.id
                 ORDER BY ip.id DESC LIMIT 1) AS photo_status,
+               -- requires_photo is read LIVE from the source item's config_json (lineage join, no FK):
+               -- a deleted source → 0 (relaxed), never a row drop. 1/0 → boolean over the wire.
+               COALESCE((SELECT json_extract(ci.config_json, '$.requires_photo')
+                         FROM checklist_items ci WHERE ci.id = checklist_item_states.source_item_id), 0) AS requires_photo,
                CASE WHEN status = 'done' AND completed_by = '${AUTO_COMPLETED_BY}' AND form_code IS NOT NULL THEN (
                  SELECT (SELECT p.name FROM personnel p WHERE p.username = sub.submitted_as ORDER BY p.id ASC LIMIT 1)
                  FROM submissions sub
@@ -405,18 +414,40 @@ function recomputeInstanceStatusStmt(c: Context<{ Bindings: Env; Variables: Vars
 async function loadOwnedItemState(
   c: Context<{ Bindings: Env; Variables: Vars }>,
   stateId: number,
-): Promise<{ id: number; instance_id: number; item_type: string; target_count: number | null } | Response> {
+): Promise<
+  | { id: number; instance_id: number; item_type: string; target_count: number | null; requires_photo: boolean; has_live_photo: boolean }
+  | Response
+> {
   const person = await resolveActorPersonnel(c);
   // No linked personnel → the actor owns no instance → forbidden (not 404: the row may well exist).
   if (!person) return c.json({ error: "forbidden" }, 403);
   const st = await c.env.DB.prepare(
-    "SELECT s.id, s.item_type, s.target_count, s.instance_id, i.assignee_personnel_id FROM checklist_item_states s JOIN checklist_instances i ON i.id = s.instance_id WHERE s.id = ?1",
+    `SELECT s.id, s.item_type, s.target_count, s.instance_id, i.assignee_personnel_id,
+            COALESCE((SELECT json_extract(ci.config_json, '$.requires_photo')
+                      FROM checklist_items ci WHERE ci.id = s.source_item_id), 0) AS requires_photo,
+            EXISTS(SELECT 1 FROM item_photos ip WHERE ip.item_state_id = s.id AND ip.status IN ('pending','clean')) AS has_live_photo
+     FROM checklist_item_states s JOIN checklist_instances i ON i.id = s.instance_id WHERE s.id = ?1`,
   )
     .bind(stateId)
-    .first<{ id: number; item_type: string; target_count: number | null; instance_id: number; assignee_personnel_id: number | null }>();
+    .first<{
+      id: number;
+      item_type: string;
+      target_count: number | null;
+      instance_id: number;
+      assignee_personnel_id: number | null;
+      requires_photo: number;
+      has_live_photo: number;
+    }>();
   if (!st) return c.json({ error: "not_found" }, 404);
   if (st.assignee_personnel_id !== person.id) return c.json({ error: "forbidden" }, 403);
-  return { id: st.id, instance_id: st.instance_id, item_type: st.item_type, target_count: st.target_count };
+  return {
+    id: st.id,
+    instance_id: st.instance_id,
+    item_type: st.item_type,
+    target_count: st.target_count,
+    requires_photo: !!st.requires_photo,
+    has_live_photo: !!st.has_live_photo,
+  };
 }
 
 export function registerChecklistRoutes(app: FieldopsApp, gates: FieldopsGates): void {
@@ -794,6 +825,14 @@ export function registerChecklistRoutes(app: FieldopsApp, gates: FieldopsGates):
             return c.json({ error: "below_target", id: stateId, value_num: valueNum, target_count: owned.target_count }, 400);
           }
         }
+      }
+
+      // requires_photo gate (defense-in-depth; the SPA also disables Mark done). An item authored
+      // "requires photo" cannot be completed until a live (pending|clean) photo is on file — a refused
+      // or absent photo blocks. Evaluated at the COMPLETION point only: a below-target count record
+      // returned above without reaching here, so recording a value never demands a photo.
+      if (owned.requires_photo && !owned.has_live_photo) {
+        return c.json({ error: "photo_required" }, 400);
       }
 
       // Pre-checked existence + ownership + type, so the UPDATE applies → unconditional audit (mirrors
