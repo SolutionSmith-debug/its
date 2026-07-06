@@ -33,6 +33,12 @@ export interface SessionUser {
    *  real gates; this only hides UI when dark. OPTIONAL (consumers read it as `?? false`): login /
    *  fetchSession always populate it, but test fixtures + a pre-flag Worker session may omit it. */
   recurring_checklists_enabled?: boolean;
+  /** (#17, Seam A) Site-wide feature flag from the server (a Worker var, NOT a capability): whether
+   *  the assigned-inspection view should show the "Sign & log to progress report" action on a
+   *  COMPLETE inspection. The emit route is the real gate; this only hides UI when dark. OPTIONAL
+   *  (consumers read it as `?? false`): login / fetchSession always populate it, but test fixtures +
+   *  a pre-flag Worker session may omit it. */
+  checklist_progress_logging_enabled?: boolean;
 }
 
 async function postJson(path: string, body?: unknown): Promise<Response> {
@@ -54,11 +60,13 @@ export async function login(username: string, password: string): Promise<Session
   const data = (await res.json()) as {
     user: { username: string; role: Role; capabilities?: string[] };
     recurring_checklists_enabled?: boolean;
+    checklist_progress_logging_enabled?: boolean;
   };
   return {
     ...data.user,
     capabilities: data.user.capabilities ?? [],
     recurring_checklists_enabled: data.recurring_checklists_enabled ?? false,
+    checklist_progress_logging_enabled: data.checklist_progress_logging_enabled ?? false,
   };
 }
 
@@ -68,11 +76,13 @@ export async function fetchSession(): Promise<SessionUser | null> {
   const data = (await res.json()) as {
     user: { username: string; role: Role; capabilities?: string[] };
     recurring_checklists_enabled?: boolean;
+    checklist_progress_logging_enabled?: boolean;
   };
   return {
     ...data.user,
     capabilities: data.user.capabilities ?? [],
     recurring_checklists_enabled: data.recurring_checklists_enabled ?? false,
+    checklist_progress_logging_enabled: data.checklist_progress_logging_enabled ?? false,
   };
 }
 

@@ -4,7 +4,7 @@ date: 2026-07-01
 status: active
 related_prs: []
 workstream: field_ops
-tags: [runbook, successor-remediation, checklist, daily-report, sop-daily-form, job-requirements, inspection-library, assigned-tasks, recurring-checklists, tier-2, tier-3]
+tags: [runbook, successor-remediation, checklist, daily-report, sop-daily-form, job-requirements, inspection-library, assigned-tasks, recurring-checklists, progress-report-logging, tier-2, tier-3]
 ---
 
 # Runbook — Field-Ops daily report (SOP form) + assigned inspections (Successor-Remediation, Op Stds §43)
@@ -227,6 +227,58 @@ add a cadence (a code change to `RECURRENCE_CADENCES` + `enumerateCadenceDates`)
 **Data note:** `checklist_recurrences` is **D1-primary** (no Smartsheet/Box mirror) — same D1
 Time-Travel restore posture as the other checklist tables above; the blast radius is re-enterable
 admin config (re-set the recurrence).
+
+---
+
+## Checklist → progress-report logging (#17 Seam A, migration 0041) — the "Sign & log" action
+
+**What it is.** When an admin-assigned **inspection** is COMPLETE (every item done), the assignee can
+**sign off** and log it to the **weekly progress report**: the Assigned-inspections view shows a
+**"Sign & log to progress report"** button → a signature pad → the Worker synthesizes a
+`category:'progress'` **`checklist-completion-v1`** submission that rides the **normal** intake →
+progress-week-sheet → weekly-compile pipeline (a standard submission, NOT a special SoR write). It
+emits **exactly once** per inspection; once logged the view shows a **"Logged to progress report ✓"**
+pill. **Shipped DARK** behind the Worker var `CHECKLIST_PROGRESS_LOGGING_ENABLED` (default `"false"`);
+while dark the button never shows and the route refuses (`400 progress_logging_disabled`).
+
+**Low-class repairs (Tier-2):**
+
+1. *"I finished my inspection but there's no 'Sign & log to progress report' button"* — check, in
+   order: (a) the feature is LIVE — the button only appears when `CHECKLIST_PROGRESS_LOGGING_ENABLED`
+   is `"true"` in the deployed Worker; if absent everywhere, it's still dark → **escalate to Seth**
+   (var-flip + deploy is high-class). (b) the inspection is actually **COMPLETE** — every item marked
+   done (the button only shows on a complete inspection; finish the last item). (c) it was **already
+   logged** — a "Logged to progress report ✓" pill shows instead (that's success, not a fault).
+2. *"It says 'Already logged' / a second tap fails"* — expected: logging is **one-shot per
+   inspection** (the `emitted_submission_uuid` marker). The first sign-off already filed it; there is
+   nothing to redo. Not a fault.
+3. *"I signed but it won't submit"* — the signature is **required** (a non-empty sign-off); make sure
+   a mark was drawn on the pad before "Log to progress report" (the button stays disabled until a
+   signature is captured). A transient network error shows an inline message and is safe to retry (the
+   emit is idempotent — a retry after a lost response returns 409, never a duplicate).
+4. *"I logged it but it never reached the weekly progress report / progress@ send"* — the Worker leg
+   (minting + queuing the submission) and the **destination routing** are separate flips: the
+   submission only files into the **progress week-sheet** + sends via **progress@** once the SEPARATE
+   ITS_Config **`progress_reports.intake_enabled`** flag is on. If the `checklist-completion-v1`
+   submission provably exists (it verifies in `/api/internal/pending`) but nothing landed in the
+   progress sheet, that flag is off — this is a **bounded ITS_Config flip (Tier-2, low-class per §44 —
+   a `*.enabled` config value, not code / not the Send Gate / not secrets)**: set
+   `progress_reports.intake_enabled = true` (Setting name `progress_reports.intake_enabled`, Workstream
+   `safety_reports`). The external send stays human-gated downstream (the WPR approval step). Do NOT
+   re-submit (it's one-shot).
+
+**Escalate to Seth (high-class):** flipping `CHECKLIST_PROGRESS_LOGGING_ENABLED` to `"true"` (a Worker
+`var` edit + `npm run deploy` — apply `0041` to the live D1 FIRST, the deploy-lockout class); the emit
+route 500ing on a valid signed complete inspection; a genuine duplicate `checklist-completion-v1`
+submission for one instance; any request to change the emitted document's fields (a code change to the
+emit `values` shape + a `checklist-completion-v1.json` add-version, kept in lockstep). *(The
+`progress_reports.intake_enabled` destination flip is Tier-2, above — NOT a Seth escalation.)*
+
+**Data note:** the emitted submission is a **standard `submissions` row** (D1 → Box/Smartsheet via the
+normal intake), byte-identical to a portal-filed submission; the `emitted_submission_uuid` /
+`completion_signature` / `completion_signed_at` marker columns are **D1-primary** on
+`checklist_instances` (Time-Travel restore posture). The External Send Gate is **unchanged** — the
+eventual progress-report send stays human-approved through the normal weekly path.
 
 ---
 

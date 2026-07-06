@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import * as checklist from "../lib/fieldops_checklist";
 import { ChecklistItemRow } from "./ChecklistItemRow";
+import { SignaturePad } from "./SignaturePad";
+import { useAuth } from "../lib/auth";
 import { statusLabel } from "../lib/labels";
 import { resolveFormTarget } from "../forms/registry";
 import type { FormPrefill } from "../pages/FormFillPage";
@@ -44,6 +46,22 @@ export function AssignedInspectionsSection({
   const [softWarn, setSoftWarn] = useState<string | null>(null);
   // R8 — which inspection is opened for completion (null = the card list).
   const [openId, setOpenId] = useState<number | null>(null);
+  // #17 (Seam A) — the feature is DARK unless the server var is on (display hint only; the emit
+  // route is the real gate). When dark, the "Sign & log to progress report" action never renders.
+  const { user } = useAuth();
+  const progressLoggingLive = !!user?.checklist_progress_logging_enabled;
+  // The sign-off panel state for the OPENED inspection (one open at a time in the drill-in).
+  const [signing, setSigning] = useState(false);
+  const [sig, setSig] = useState("");
+  const [progressBusy, setProgressBusy] = useState(false);
+  const [progressErr, setProgressErr] = useState<string | null>(null);
+
+  // Reset the sign-off panel whenever the opened inspection changes (open a card / Back / Done).
+  useEffect(() => {
+    setSigning(false);
+    setSig("");
+    setProgressErr(null);
+  }, [openId]);
 
   async function load() {
     setLoading(true);
@@ -133,6 +151,42 @@ export function AssignedInspectionsSection({
     } finally {
       markBusy(item.id, false);
     }
+  }
+
+  /** Mark ONE inspection progress_logged locally (mirror of applyResult): the "Sign & log" action
+   *  hides + the "Logged" pill shows without waiting for a refetch. */
+  function markLogged(
+    r: checklist.AssignedInspectionsResponse | null,
+    instanceId: number,
+  ): checklist.AssignedInspectionsResponse | null {
+    if (!r) return r;
+    return {
+      ...r,
+      inspections: r.inspections.map((insp) =>
+        insp.instance.id === instanceId
+          ? { ...insp, instance: { ...insp.instance, progress_logged: true } }
+          : insp,
+      ),
+    };
+  }
+
+  // #17 (Seam A) — sign off the opened COMPLETE inspection and log it to the weekly progress report.
+  async function logProgress(instanceId: number) {
+    if (progressBusy || !sig) return;
+    setProgressBusy(true);
+    setProgressErr(null);
+    try {
+      await checklist.submitChecklistCompletion(instanceId, sig);
+    } catch (err) {
+      // Never silent — err.message is the human copy from errorCopy.ts (e.g. already-logged, dark).
+      setProgressErr(errMsg(err, "Could not log to the progress report."));
+      setProgressBusy(false);
+      return;
+    }
+    setResp((r) => markLogged(r, instanceId));
+    setSigning(false);
+    setSig("");
+    setProgressBusy(false);
   }
 
   // photoRef threaded through (R3 3-arg contract) — a note-edit never NULLs photo evidence.
@@ -247,6 +301,9 @@ export function AssignedInspectionsSection({
                       <h4 className="dash-card__title">{title}</h4>
                       {overdue && <span className="dash-pill dash-pill--warn">Overdue</span>}
                       {statusPill(insp.instance.status)}
+                      {progressLoggingLive && insp.instance.progress_logged && (
+                        <span className="dash-pill dash-pill--ok">Logged ✓</span>
+                      )}
                     </div>
                     <div className="dash-card__sub">
                       #{insp.instance.id}
@@ -319,6 +376,60 @@ export function AssignedInspectionsSection({
                     ) : null}
                   </>
                 )}
+                {/* #17 (Seam A) — sign off a COMPLETE inspection to the weekly progress report.
+                    DARK unless the server flag is live; once logged, the action is replaced by a pill. */}
+                {progressLoggingLive &&
+                  (insp.instance.progress_logged ? (
+                    <p className="banner banner--ok">Logged to progress report ✓</p>
+                  ) : insp.instance.status === "complete" ? (
+                    <div className="checklist-progress-log">
+                      {!signing ? (
+                        <button
+                          type="button"
+                          className="btn btn--primary"
+                          aria-label="Sign and log this inspection to the progress report"
+                          onClick={() => {
+                            setSigning(true);
+                            setSig("");
+                            setProgressErr(null);
+                          }}
+                        >
+                          Sign &amp; log to progress report
+                        </button>
+                      ) : (
+                        <div className="checklist-progress-log__panel">
+                          <p className="dash-card__sub">
+                            Sign to log this completed inspection to the weekly progress report.
+                          </p>
+                          <SignaturePad onChange={(svg, empty) => setSig(empty ? "" : svg)} />
+                          {progressErr ? <InlineRowMsg msg={{ ok: false, text: progressErr }} /> : null}
+                          <div className="checklist-progress-log__actions">
+                            <button
+                              type="button"
+                              className="btn btn--secondary"
+                              onClick={() => {
+                                setSigning(false);
+                                setSig("");
+                                setProgressErr(null);
+                              }}
+                              disabled={progressBusy}
+                            >
+                              Cancel
+                            </button>
+                            <button
+                              type="button"
+                              className="btn btn--primary"
+                              aria-label="Log to progress report"
+                              onClick={() => void logProgress(insp.instance.id)}
+                              disabled={progressBusy || !sig}
+                            >
+                              {progressBusy ? "Logging…" : "Log to progress report"}
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ) : null)}
                 <div className="checklist-task-open__foot">
                   <button type="button" className="btn btn--primary" onClick={() => setOpenId(null)}>
                     Done

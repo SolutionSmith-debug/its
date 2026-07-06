@@ -40,7 +40,19 @@
   // Ships DARK — flip to "true" here + `npm run deploy` to activate (the operator-visible gate; no
   // ITS_Config/Smartsheet row to hunt for). When "false"/absent the cron no-ops and the assign route
   // 400s a recurrence block (never-silent), so the feature is fully inert with zero behavior change.
-  "vars": { "RECURRING_CHECKLISTS_ENABLED": "false" },
+  //
+  // CHECKLIST_PROGRESS_LOGGING_ENABLED (#17, Seam A): "true" arms POST
+  // /api/fieldops/checklist/instance/:id/submit — a completed inspection's assignee signs off and the
+  // Worker synthesizes a category:'progress' checklist-completion-v1 submission that rides the
+  // EXISTING intake → progress-week-sheet → weekly-compile pipeline (NO new §51 SoR write-route).
+  // Ships DARK — flip to "true" here + `npm run deploy`; when "false"/absent the emit route 400s
+  // `progress_logging_disabled` (never-silent) and the SPA hides the "Sign & log" action, so the
+  // feature is fully inert. (Routing the synthesized submission on to the progress week-sheet +
+  // progress@ mailbox ALSO needs the separate ITS_Config progress_reports.intake_enabled flip.)
+  "vars": {
+    "RECURRING_CHECKLISTS_ENABLED": "false",
+    "CHECKLIST_PROGRESS_LOGGING_ENABLED": "false"
+  },
 
   // ── Custom domain (PR-J). The portal serves on safety.evergreenmirror.com.
   // custom_domain:true → Cloudflare provisions the hostname + TLS cert for the

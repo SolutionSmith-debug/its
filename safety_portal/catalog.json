@@ -341,6 +341,29 @@
           "display_order": 1
         }
       ]
+    },
+    {
+      "parent_form_code": "checklist-completion",
+      "category": "progress",
+      "name": "Checklist Completion",
+      "display_order": 11,
+      "launch": "synthesized",
+      "forms": [
+        {
+          "identity": "checklist-completion",
+          "variant_label": null,
+          "status": "active",
+          "current_version": 1,
+          "current_form_code": "checklist-completion-v1",
+          "versions": [
+            {
+              "version": 1,
+              "form_code": "checklist-completion-v1"
+            }
+          ],
+          "display_order": 1
+        }
+      ]
     }
   ]
 }

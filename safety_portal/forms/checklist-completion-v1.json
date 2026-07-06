@@ -1,0 +1,84 @@
+{
+  "form_code": "checklist-completion-v1",
+  "parent_form_code": "checklist-completion",
+  "form_name": "Checklist Completion",
+  "variant_label": null,
+  "version": 1,
+  "archetype": "sectioned_assessment",
+  "source_pdf": "",
+  "comment": [
+    "[#17 Seam A — 2026-07] Checklist/inspection completion → weekly progress report. This form is",
+    "NOT manually filled: on completion of an admin-assigned inspection the assignee signs off and the",
+    "Worker (POST /api/fieldops/checklist/instance/:id/submit) SYNTHESIZES a submission under this",
+    "form_code that rides the EXISTING intake → progress-week-sheet → weekly-compile pipeline (a",
+    "standard submission the built pipeline files — NOT a new §51 SoR write-route). Catalog category is",
+    "'progress' (commercial, not safety). Net-new form (editor-authored posture): source_pdf is empty",
+    "— no reference PDF exists (the material-incident-v1 / photo-test-v1 precedent). The header",
+    "signature field is REQUIRED content: it satisfies the required-content default floor",
+    "(defaults_for_new_identities.required_signature_inputs_min = 1) for this brand-new parent, so no",
+    "Seth-owned required-content.json entry is needed. The EMIT payload files values.signature =",
+    "<base64/SVG> to match this header signature field, values.items = [{label, status, note}] to match",
+    "the repeating table, and checklist_title / assignee_name to the header (work_date rides the",
+    "submission envelope). Ships DARK behind the Worker var CHECKLIST_PROGRESS_LOGGING_ENABLED."
+  ],
+  "branding": {
+    "logo": true,
+    "title": "CHECKLIST COMPLETION"
+  },
+  "sections": [
+    {
+      "type": "header",
+      "fields": [
+        {
+          "key": "checklist_title",
+          "label": "Checklist",
+          "input": "text"
+        },
+        {
+          "key": "assignee_name",
+          "label": "Completed by",
+          "input": "text"
+        },
+        {
+          "key": "work_date",
+          "label": "Date",
+          "input": "date"
+        }
+      ]
+    },
+    {
+      "type": "repeating_table",
+      "key": "items",
+      "title": "Checklist items",
+      "columns": [
+        {
+          "key": "label",
+          "label": "Item",
+          "input": "text"
+        },
+        {
+          "key": "status",
+          "label": "Status",
+          "input": "text"
+        },
+        {
+          "key": "note",
+          "label": "Note",
+          "input": "text"
+        }
+      ]
+    },
+    {
+      "type": "header",
+      "title": "Sign-off",
+      "fields": [
+        {
+          "key": "signature",
+          "label": "Signature",
+          "input": "signature",
+          "required": true
+        }
+      ]
+    }
+  ]
+}

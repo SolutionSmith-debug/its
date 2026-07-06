@@ -1,0 +1,31 @@
+-- Checklist/inspection completion → progress-report logging (#17, Seam A).
+--
+-- ORDER DEPENDENCY: apply this to the live D1 BEFORE deploying the Worker. The same PR's
+-- POST /api/fieldops/checklist/instance/:id/submit reads + writes these three columns; a Worker
+-- deployed ahead of this migration would 500 that surface. The whole feature ships DARK behind the
+-- Worker var CHECKLIST_PROGRESS_LOGGING_ENABLED (default "false"), so the emit path is inert until
+-- the operator flips it + redeploys — but apply-before-deploy is the canonical order (README
+-- punch-list = the single apply-all-then-deploy source; the stale-migrations-list lockout class).
+--
+-- WHAT + WHY: on completion, an inspection instance is "submitted to the weekly progress report" —
+-- the assignee signs off and the Worker synthesizes a `checklist-completion-v1` progress submission
+-- (category:'progress') that rides the EXISTING intake -> progress-week-sheet -> weekly-compile
+-- pipeline (no new §51 SoR write-route — it produces a standard submission the built pipeline files).
+--   • emitted_submission_uuid — the one-shot emit marker (the submission_uuid the Worker minted +
+--     filed). NULL until submitted; a UNIQUE-guarded "WHERE emitted_submission_uuid IS NULL" write
+--     makes the emit fire EXACTLY once per instance (idempotent under a double-tap / retry). Exactly
+--     parallels the existing `rolled_up_submission_uuid` column (0026:76) + the recurrence watermark
+--     pattern.
+--   • completion_signature — the assignee's sign-off (a base64 SVG-signature string, the same shape
+--     the safety forms' `signature` inputs store). REQUIRED to submit — the signature is the legal-
+--     floor content (required_content defaults_for_new_identities.required_signature_inputs_min=1),
+--     so no Seth-owned required-content.json floor entry is needed; it is also a real attestation.
+--   • completion_signed_at — unix seconds the signature was captured, stored for the forensic
+--     record (also carried in the submission payload). It is AUDIT-ONLY: it is NOT a declared field
+--     on checklist-completion-v1, so it is not rendered on the filed PDF — the assignee's signature
+--     + the work_date header ARE the visible attestation. The signer is the instance's assignee.
+--
+-- Additive + re-apply-safe: three ALTER ... ADD COLUMN (instant, backward-compatible).
+ALTER TABLE checklist_instances ADD COLUMN emitted_submission_uuid TEXT;
+ALTER TABLE checklist_instances ADD COLUMN completion_signature TEXT;
+ALTER TABLE checklist_instances ADD COLUMN completion_signed_at INTEGER;

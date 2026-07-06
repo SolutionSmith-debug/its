@@ -279,6 +279,12 @@ export interface AssignedInstance {
    *  this, never "Inspection #<id>". NULL only on legacy instances the backfill couldn't resolve. */
   template_title: string | null;
   created_at: number;
+  /** (#17, Seam A) Whether this COMPLETE inspection has already been signed-off + logged to the
+   *  weekly progress report (derived server-side from the emitted_submission_uuid one-shot marker,
+   *  migration 0041). The assigned-inspection view shows the "Sign & log to progress report" action
+   *  only when the feature is live AND status==='complete' AND !progress_logged; once logged it
+   *  shows a "Logged to progress report ✓" pill instead. */
+  progress_logged: boolean;
 }
 
 export interface AssignedInspection {
