@@ -72,7 +72,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from progress_reports import equipment_status, hours_log, material_list
+from progress_reports import equipment_status, hours_log, material_incidents, material_list
 from shared import (
     active_jobs_writer,
     circuit_breaker,
@@ -127,19 +127,29 @@ DEFAULT_EQUIPMENT_ENABLED = False
 # the equipment pass this is a SNAPSHOT (re-projected each cycle) — no watermark, no mark-mirrored.
 CFG_MATERIALS_ENABLED = "field_ops.fieldops_sync.materials_enabled"
 DEFAULT_MATERIALS_ENABLED = False
+
+# P7 Material Incidents (M3 Slice 2) — the per-job Material Incidents APPEND-ONLY ledger pass runs
+# INSIDE this same daemon (one host, one lock, one heartbeat). Its OWN gate ships OFF so the pass is
+# dark until the operator deploys the Worker material-incidents route, then flips this on. Unlike the
+# other passes there is no migration prerequisite (a read-only endpoint over the existing submissions
+# table). APPEND-ONLY: no watermark, no mark-mirrored, and NO retire (a filed incident is immutable).
+CFG_INCIDENTS_ENABLED = "field_ops.fieldops_sync.incidents_enabled"
+DEFAULT_INCIDENTS_ENABLED = False
 _PACIFIC = ZoneInfo("America/Los_Angeles")  # tracker cells are the operator's wall-clock
 
 # #336 — every ITS_Config key this daemon resolves at RUNTIME, declared once for the
-# startup observability pass (resolve_and_log). THREE workstreams: the four field_ops
+# startup observability pass (resolve_and_log). THREE workstreams: the five field_ops
 # gates, the SHARED safety_reports Worker base-URL (read under safety_reports), and the
-# three progress_reports row-cap thresholds the hours/equipment/material passes read
-# mid-cycle via progress_reports.{hours_log,equipment_status,material_list}.check_row_cap.
+# four progress_reports row-cap thresholds the hours/equipment/material/incidents passes
+# read mid-cycle via
+# progress_reports.{hours_log,equipment_status,material_list,material_incidents}.check_row_cap.
 # The declared-but-not-runtime-read *.poll_interval_seconds key is deliberately EXCLUDED.
 REQUIRED_CONFIG: list[ConfigKey] = [
     ConfigKey(CFG_SYNC_ENABLED, WORKSTREAM, DEFAULT_SYNC_ENABLED, "bool"),
     ConfigKey(CFG_HOURS_ENABLED, WORKSTREAM, DEFAULT_HOURS_ENABLED, "bool"),
     ConfigKey(CFG_EQUIPMENT_ENABLED, WORKSTREAM, DEFAULT_EQUIPMENT_ENABLED, "bool"),
     ConfigKey(CFG_MATERIALS_ENABLED, WORKSTREAM, DEFAULT_MATERIALS_ENABLED, "bool"),
+    ConfigKey(CFG_INCIDENTS_ENABLED, WORKSTREAM, DEFAULT_INCIDENTS_ENABLED, "bool"),
     ConfigKey(
         CFG_WORKER_BASE_URL, CFG_WORKER_BASE_URL_WORKSTREAM, "", "str",
         description="Shared Worker base URL; owned by safety_reports, read here too.",
@@ -155,6 +165,10 @@ REQUIRED_CONFIG: list[ConfigKey] = [
     ConfigKey(
         material_list.CFG_ROW_CAP_WARN, "progress_reports",
         material_list.DEFAULT_ROW_CAP_WARN, "int",
+    ),
+    ConfigKey(
+        material_incidents.CFG_ROW_CAP_WARN, "progress_reports",
+        material_incidents.DEFAULT_ROW_CAP_WARN, "int",
     ),
 ]
 
@@ -221,6 +235,11 @@ class SyncStats:
     materials_retired: int = 0    # material-list rows marked On List → Removed this cycle
     materials_reviewed: int = 0   # material/jobs routed to the Review Queue (permanent failure)
     materials_errors: int = 0     # transient material failures (left for next cycle) + skipped
+    # P7 material-incidents pass (0 when incidents_enabled is off — the shipped default). APPEND-ONLY
+    # ledger: no `retired` counter (a filed incident is immutable and never removed).
+    incidents_upserted: int = 0   # incident rows inserted/updated in place this cycle
+    incidents_reviewed: int = 0   # incidents/jobs routed to the Review Queue (permanent failure)
+    incidents_errors: int = 0     # transient incident failures (left for next cycle) + skipped
 
 
 # ---- Config readers (replicated per preservation, mirror portal_poll) ----------
@@ -259,6 +278,10 @@ def _equipment_enabled() -> bool:
 
 def _materials_enabled() -> bool:
     return _read_bool_setting(CFG_MATERIALS_ENABLED, DEFAULT_MATERIALS_ENABLED)
+
+
+def _incidents_enabled() -> bool:
+    return _read_bool_setting(CFG_INCIDENTS_ENABLED, DEFAULT_INCIDENTS_ENABLED)
 
 
 # ---- Lock + heartbeat seams (mirror portal_poll) -------------------------------
@@ -518,10 +541,23 @@ def _sync_inside_lock() -> SyncStats:
     if _materials_enabled():
         materials = _mirror_material_list_pass(base_url, bearer)
 
+    # P7 material-incidents pass — same, INDEPENDENT endpoint (/material-incidents). Gated OFF by
+    # default; APPEND-ONLY ledger (immutable filed events): no reconcile roster, no retire, no
+    # mark-mirrored. Runs LAST (downstream); its own per-job/per-incident fences mean an incident
+    # failure NEVER aborts the passes above nor the heartbeat below — consistent with the decouple
+    # fix (no re-introduced job-fetch dependency).
+    incidents = {"upserted": 0, "reviewed": 0, "errors": 0}
+    if _incidents_enabled():
+        incidents = _mirror_material_incidents_pass(base_url, bearer)
+
     _write_heartbeat()
-    total_errors = counters["errors"] + hours["errors"] + equip["errors"] + materials["errors"]
+    total_errors = (
+        counters["errors"] + hours["errors"] + equip["errors"] + materials["errors"]
+        + incidents["errors"]
+    )
     total_reviewed = (
         counters["reviewed"] + hours["reviewed"] + equip["reviewed"] + materials["reviewed"]
+        + incidents["reviewed"]
     )
     if total_errors > 0:
         cycle_status: HeartbeatStatus = "DEGRADED"
@@ -537,7 +573,7 @@ def _sync_inside_lock() -> SyncStats:
             status=cycle_status,
             items_processed=(
                 counters["mirrored"] + hours["mirrored"] + equip["upserted"]
-                + materials["upserted"]
+                + materials["upserted"] + incidents["upserted"]
             ),
             error_summary=(
                 None
@@ -562,7 +598,9 @@ def _sync_inside_lock() -> SyncStats:
             f"errors={hours['errors']}; equipment upserted={equip['upserted']} "
             f"retired={equip['retired']} reviewed={equip['reviewed']} errors={equip['errors']}; "
             f"materials upserted={materials['upserted']} retired={materials['retired']} "
-            f"reviewed={materials['reviewed']} errors={materials['errors']}"
+            f"reviewed={materials['reviewed']} errors={materials['errors']}; "
+            f"incidents upserted={incidents['upserted']} reviewed={incidents['reviewed']} "
+            f"errors={incidents['errors']}"
         ),
         error_code="sync_cycle_summary",
     )
@@ -582,6 +620,9 @@ def _sync_inside_lock() -> SyncStats:
         materials_retired=materials["retired"],
         materials_reviewed=materials["reviewed"],
         materials_errors=materials["errors"],
+        incidents_upserted=incidents["upserted"],
+        incidents_reviewed=incidents["reviewed"],
+        incidents_errors=incidents["errors"],
     )
 
 
@@ -729,9 +770,9 @@ def _archive_closed_job_trackers(
     the same daemon may re-see an already-archived job on a later dirty cycle).
 
     Standing trackers moved: the per-job `<Job> — Hours Log` (P7 Slice 1), the per-job
-    `<Job> — Equipment` (P7 Slice 2), AND the per-job `<Job> — Material List` (P7 M2). Each is
-    resolved + moved INDEPENDENTLY under its own fence, so a failure moving one never blocks the
-    others.
+    `<Job> — Equipment` (P7 Slice 2), the per-job `<Job> — Material List` (P7 M2), AND the per-job
+    `<Job> — Material Incidents` (P7 M3 Slice 2). Each is resolved + moved INDEPENDENTLY under its own
+    fence, so a failure moving one never blocks the others.
 
     Edge case (by design, not handled here): if an archived job later receives NEW hours /
     equipment reads, the hours / equipment pass would find-or-CREATE a fresh tracker back in
@@ -761,6 +802,7 @@ def _archive_closed_job_trackers(
         hours_log.hours_log_sheet_name(project_name),
         equipment_status.equipment_sheet_name(project_name),
         material_list.material_list_sheet_name(project_name),
+        material_incidents.material_incidents_sheet_name(project_name),
     )
     for sheet_name in trackers:
         try:
@@ -1603,6 +1645,190 @@ def _route_material_to_review(
         f"material mirror routed to Review Queue (permanent, {phase}) job={job_id!r} "
         f"line={line_uuid!r}: {type(exc).__name__}: {exc!r}",
         error_code="fieldops_material_permanent",
+        correlation_id=correlation_id,
+    )
+
+
+# ---- P7 Material Incidents ledger pass (Track 2, M3 Slice 2) ----------------------
+
+
+def _group_incidents_by_job(
+    rows: list[dict[str, Any]],
+) -> dict[str, tuple[str, list[dict[str, Any]]]]:
+    """Group filed incident rows by job_id → (project_name, [rows]). Skips a row missing its
+    submission_uuid / job_id / project_name (a data anomaly that can't be keyed / foldered) — never
+    silent. Unlike the material-list grouper there is no reconcile roster, so project_name MUST ride
+    each incident row (the Worker's active-job JOIN supplies it)."""
+    by_job: dict[str, tuple[str, list[dict[str, Any]]]] = {}
+    for e in rows:
+        incident_uuid = str(e.get("submission_uuid") or "").strip()
+        job_id = str(e.get("job_id") or "").strip()
+        project = str(e.get("project_name") or "").strip()
+        if not incident_uuid or not job_id or not project:
+            error_log.log(
+                Severity.WARN, SCRIPT_NAME,
+                f"material incident skipped — missing submission_uuid/job_id/project_name "
+                f"(submission_uuid={e.get('submission_uuid')!r} job_id={e.get('job_id')!r})",
+                error_code="fieldops_incident_row_malformed",
+            )
+            continue
+        by_job.setdefault(job_id, (project, []))[1].append(e)
+    return by_job
+
+
+def _mirror_material_incidents_pass(base_url: str, bearer: str) -> dict[str, int]:
+    """Re-project the CURRENT filed material-incident ledger UP into per-job Material Incidents sheets.
+
+    Returns {upserted, reviewed, errors}. Never raises — the caller runs it after the job + hours +
+    equipment + material mirrors, so an incident failure must never abort the cycle. Per-job (sheet) +
+    per-incident fences; a permanent failure routes to the Review Queue; a transient one is simply left
+    for the next cycle (the filed set re-projects every cycle, so nothing is "lost" — there is NO
+    watermark, NO mark-mirrored).
+
+    APPEND-ONLY LEDGER (the deliberate contrast with the material-list snapshot): each incident is an
+    immutable filed event, so there is NO reconcile roster and NO retire — a job with zero incidents
+    simply produces no rows and is never visited (no sheet is created for it). The count-drops-to-zero
+    / #468 zero-drop class is structurally impossible: there is no retire path to wrongly zero.
+
+    No throttle: per-cycle change-only re-projection is simple-correct at current scale (an upsert with
+    no change is a no-op read). A throttle is a FUTURE optimization if read-load bites — do NOT build
+    it now.
+    """
+    out = {"upserted": 0, "reviewed": 0, "errors": 0}
+    try:
+        incidents = portal_client.get_fieldops_material_incidents(base_url, bearer)
+    except portal_client.PortalAuthError as exc:
+        # 401 on the SAME bearer that just drained the earlier passes — surface (bad/rotated token)
+        # but do not crash: the earlier passes may have succeeded before a mid-cycle rotation.
+        out["errors"] += 1
+        error_log.log(
+            Severity.CRITICAL, SCRIPT_NAME,
+            f"material-incidents fetch UNAUTHORIZED (401) — field-ops bearer rejected; incident "
+            f"ledger skipped this cycle: {exc!r}",
+            error_code="fieldops_incidents_fetch_auth_failed",
+        )
+        return out
+    except portal_client.PortalTransportError as exc:
+        out["errors"] += 1
+        error_log.log(
+            Severity.ERROR, SCRIPT_NAME,
+            f"material-incidents fetch failed (ledger re-projects next cycle): {exc!r}",
+            error_code="fieldops_incidents_fetch_failed",
+        )
+        return out
+
+    for job_id, (project_name, rows) in _group_incidents_by_job(incidents).items():
+        correlation_id = uuid.uuid4().hex[:12]
+        _reconcile_job_incidents(job_id, project_name, rows, correlation_id, out)
+    return out
+
+
+def _reconcile_job_incidents(
+    job_id: str, project_name: str, rows: list[dict[str, Any]],
+    correlation_id: str, out: dict[str, int],
+) -> None:
+    """Reconcile a job that HAS filed incidents: find-or-create its Material Incidents sheet,
+    change-only upsert each incident (append-only — never retire), run the row-cap watchdog."""
+    try:
+        sheet_id = material_incidents.ensure_material_incidents_sheet(project_name)
+    except (
+        picklist_validation.PicklistViolationError,
+        smartsheet_client.SmartsheetValidationError,
+    ) as exc:
+        out["reviewed"] += 1
+        _route_incident_to_review(job_id, project_name, exc, correlation_id, phase="ensure-sheet")
+        return
+    except Exception as exc:  # noqa: BLE001 — per-job fence; one bad job never kills the pass
+        out["errors"] += 1
+        error_log.log(
+            Severity.ERROR, SCRIPT_NAME,
+            f"transient failure ensuring Material Incidents sheet for {project_name!r} "
+            f"(job {job_id}); ledger re-projects next cycle: {type(exc).__name__}: {exc!r}",
+            error_code="fieldops_incidents_sheet_transient",
+            correlation_id=correlation_id,
+        )
+        return
+
+    for e in rows:
+        incident_uuid = str(e.get("submission_uuid") or "").strip()
+        try:
+            material_incidents.upsert_incident_row(
+                sheet_id,
+                incident_uuid=incident_uuid,
+                material=str(e.get("material_description") or "").strip(),
+                issue=str(e.get("issue") or "").strip(),
+                line_uuid=str(e.get("line_uuid") or "").strip(),
+                line_status=str(e.get("line_status") or "").strip(),
+                qty_expected=_fmt_qty(e.get("qty_expected")),
+                qty_received=_fmt_qty(e.get("qty_received")),
+                delivery_ref=str(e.get("delivery_ref") or "").strip(),
+                details=str(e.get("details") or "").strip(),
+                action_taken=str(e.get("action_taken") or "").strip(),
+                reported_by=str(e.get("reported_by_display") or "").strip(),
+                reported_at=(
+                    str(e.get("work_date") or "").strip()
+                    or _fmt_epoch_date(e.get("created_at"))
+                ),
+                report=str(e.get("box_link") or "").strip(),
+            )
+            out["upserted"] += 1
+        except (
+            picklist_validation.PicklistViolationError,
+            smartsheet_client.SmartsheetValidationError,
+        ) as exc:
+            out["reviewed"] += 1
+            _route_incident_to_review(
+                job_id, project_name, exc, correlation_id,
+                phase="upsert", incident_uuid=incident_uuid,
+            )
+        except Exception as exc:  # noqa: BLE001 — per-incident fence
+            out["errors"] += 1
+            error_log.log(
+                Severity.ERROR, SCRIPT_NAME,
+                f"transient failure upserting incident {incident_uuid!r} for {project_name!r} "
+                f"(ledger re-projects next cycle): {type(exc).__name__}: {exc!r}",
+                error_code="fieldops_incident_upsert_transient",
+                correlation_id=correlation_id,
+            )
+
+    # §51 A5 row-cap watchdog — advisory, owns its own try/except (never raises here). MORE relevant
+    # here than for the bounded Material List: the incident ledger grows monotonically (append-only).
+    material_incidents.check_row_cap(
+        sheet_id, material_incidents.material_incidents_sheet_name(project_name)
+    )
+
+
+def _route_incident_to_review(
+    job_id: str, project_name: str, exc: Exception, correlation_id: str,
+    *, phase: str, incident_uuid: str | None = None,
+) -> None:
+    """Route a PERMANENTLY-failed incident mirror to ITS_Review_Queue (workstream
+    progress_reports)."""
+    review_queue.add(
+        workstream="progress_reports",
+        summary=(
+            f"field-ops Material Incidents up-sync: PERMANENT failure ({phase}) for job {job_id!r} "
+            f"({project_name!r}, {type(exc).__name__})"
+            + (f" incident {incident_uuid!r}" if incident_uuid else "")
+            + " — re-projects next cycle, needs operator fix"
+        ),
+        payload={
+            "job_id": job_id,
+            "project_name": project_name,
+            "phase": phase,
+            "incident_uuid": incident_uuid,
+            "error": f"{type(exc).__name__}: {exc!r}",
+        },
+        sla_tier=review_queue.SlaTier.SAFETY_INTAKE,
+        reason=review_queue.ReviewReason.POLICY_EDGE,
+        severity=Severity.WARN,
+        source_file=incident_uuid or job_id,
+    )
+    error_log.log(
+        Severity.WARN, SCRIPT_NAME,
+        f"incident mirror routed to Review Queue (permanent, {phase}) job={job_id!r} "
+        f"incident={incident_uuid!r}: {type(exc).__name__}: {exc!r}",
+        error_code="fieldops_incident_permanent",
         correlation_id=correlation_id,
     )
 

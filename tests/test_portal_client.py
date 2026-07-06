@@ -261,6 +261,61 @@ def test_get_pdf_requests_503_then_success(mocker):
     assert portal_client.get_pdf_requests(BASE, TOKEN) == []
 
 
+# ---- get_fieldops_material_incidents (M3 Slice 2) ------------------------
+
+
+def test_get_fieldops_material_incidents_returns_rows_and_sends_bearer(mocker):
+    rows = [
+        {"submission_uuid": "sub-10", "job_id": "JOB-1", "project_name": "Job One",
+         "issue": "Short", "line_uuid": "u-10", "line_status": "incident"},
+    ]
+    req = _patch_requests(mocker, _mock_response(json_body={"incidents": rows}))
+
+    out = portal_client.get_fieldops_material_incidents(BASE, TOKEN)
+
+    assert out == rows
+    args, kwargs = req.call_args
+    assert args == ("GET", "https://portal.example.com/api/internal/fieldops/material-incidents")
+    assert kwargs["headers"]["Authorization"] == "Bearer fake-bearer"
+
+
+def test_get_fieldops_material_incidents_empty_returns_empty_list(mocker):
+    _patch_requests(mocker, _mock_response(json_body={"incidents": []}))
+    assert portal_client.get_fieldops_material_incidents(BASE, TOKEN) == []
+
+
+def test_get_fieldops_material_incidents_drops_non_dict_rows(mocker):
+    _patch_requests(
+        mocker,
+        _mock_response(json_body={"incidents": [{"submission_uuid": "sub-10"}, "x", 7]}),
+    )
+    assert portal_client.get_fieldops_material_incidents(BASE, TOKEN) == [
+        {"submission_uuid": "sub-10"}
+    ]
+
+
+@pytest.mark.parametrize(
+    "body", [{"incidents": {"x": 1}}, {"incidents": "nope"}, {"incidents": 5}, {}]
+)
+def test_get_fieldops_material_incidents_non_list_raises(mocker, body):
+    _patch_requests(mocker, _mock_response(json_body=body))
+    with pytest.raises(PortalTransportError, match="incidents"):
+        portal_client.get_fieldops_material_incidents(BASE, TOKEN)
+
+
+def test_get_fieldops_material_incidents_401_raises_auth_without_retry(mocker):
+    req = _patch_requests(mocker, _mock_response(status=401))
+    with pytest.raises(PortalAuthError):
+        portal_client.get_fieldops_material_incidents(BASE, TOKEN)
+    assert req.call_count == 1
+
+
+def test_get_fieldops_material_incidents_non_200_raises_transport_error(mocker):
+    _patch_requests(mocker, _mock_response(status=500, text="boom"))
+    with pytest.raises(PortalTransportError, match="500"):
+        portal_client.get_fieldops_material_incidents(BASE, TOKEN)
+
+
 # ---- upload_filed_pdf (PR-4 Part A) --------------------------------------
 
 

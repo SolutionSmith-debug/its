@@ -73,6 +73,7 @@ FIELDOPS_HOURS_PENDING_PATH = "/api/internal/fieldops/hours-pending"
 FIELDOPS_HOURS_MARK_MIRRORED_PATH = "/api/internal/fieldops/hours-mark-mirrored"
 FIELDOPS_EQUIPMENT_SNAPSHOT_PATH = "/api/internal/fieldops/equipment-snapshot"
 FIELDOPS_MATERIAL_LIST_SNAPSHOT_PATH = "/api/internal/fieldops/material-list-snapshot"
+FIELDOPS_MATERIAL_INCIDENTS_PATH = "/api/internal/fieldops/material-incidents"
 PROGRESS_ROLLUP_PATH = "/api/internal/progress-rollup"
 PRUNE_STATUS_PATH = "/api/internal/prune-status"
 
@@ -472,6 +473,38 @@ def get_fieldops_material_list_snapshot(base_url: str, token: str) -> FieldopsMa
         lines=[row for row in lines if isinstance(row, dict)],
         jobs_with_materials=[row for row in roster if isinstance(row, dict)],
     )
+
+
+def get_fieldops_material_incidents(base_url: str, token: str) -> list[dict[str, Any]]:
+    """Pull the filed material-incident ledger for active jobs: GET
+    /api/internal/fieldops/material-incidents (P7 Material Incidents up-sync, M3 Slice 2).
+
+    Each dict carries `submission_uuid, job_id, project_name, work_date, created_at, box_link,
+    material_description, delivery_ref, qty_expected, qty_received, issue, details, action_taken,
+    line_uuid, reported_by_display, line_status`. `reported_by_display` is the DISPLAY name only
+    (never a username — House Reflex §5); `line_status` is the referenced expected-materials line's
+    CURRENT status (M3 Slice 1 line_uuid join) or None when unlinked/since-deleted.
+
+    Unlike `get_fieldops_material_list_snapshot` this is an APPEND-ONLY EVENT LEDGER, not a
+    re-projected snapshot: each element is an immutable FILED (box_verified=1), §34-screened
+    incident. There is deliberately NO reconcile roster and the daemon NEVER retires a row — so no
+    NamedTuple, just the incident list. The Worker returns the complete set for active jobs (uncapped;
+    a per-job incident count is small and the active-job filter bounds the working set).
+
+    A control-plane read of OUR OWN Worker (bearer = the SEPARATE field-ops token
+    `PORTAL_FIELDOPS_API_TOKEN`, same as `get_fieldops_material_list_snapshot`), NOT a customer send.
+    Same typed-error contract: `PortalAuthError` (401) / `PortalRateLimitError` (429/503 exhausted) /
+    `PortalTransportError` (any other, incl. a non-object / missing-array body).
+    """
+    data = _request("GET", base_url, FIELDOPS_MATERIAL_INCIDENTS_PATH, token)
+    incidents = data.get("incidents")
+    if not isinstance(incidents, list):
+        raise PortalTransportError(
+            f"GET {FIELDOPS_MATERIAL_INCIDENTS_PATH} missing/invalid 'incidents' array "
+            f"(got {type(incidents).__name__})"
+        )
+    # Defensive: keep only dict rows; a non-dict element is malformed transport.
+    return [row for row in incidents if isinstance(row, dict)]
 
 
 # ---- Request-driven PDF cache (PR-4 Part A — the Mac PDF-servicing pass I/O) ----

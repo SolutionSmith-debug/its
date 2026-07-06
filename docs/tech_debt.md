@@ -49,6 +49,36 @@ existing #336 tracked pass rather than a new one.
 
 **Tag:** `field_ops`, `fieldops_sync`, `config`, `its_config`, `row-absence`, `equipment`, `materials`.
 
+### M3 Slice 2 — Material Incidents pass: activation queue [OPEN — ships dark, awaits operator cutover]
+
+The per-job Material Incidents ledger pass (`field_ops.fieldops_sync` material-incidents pass +
+`progress_reports/material_incidents.py` + Worker `GET /api/internal/fieldops/material-incidents`)
+shipped **dark** (gate `field_ops.fieldops_sync.incidents_enabled`, `DEFAULT_INCIDENTS_ENABLED=False`).
+Activation checklist (Developer-Operator / Seth), same shape as Equipment/Material List above:
+
+1. **Deploy the Worker** — the new read route must exist before the gate flips. **No D1 migration**
+   (the endpoint is a read-only `SELECT` over the existing `submissions` table + `json_extract` of
+   `payload_json` + a LEFT JOIN to `job_expected_materials` for the live `Line Status`). Confirm the
+   deploy with an unauthenticated 401 probe on `/api/internal/fieldops/material-incidents` (a deployed
+   gated route 401s `application/json`; a missing route SPA-falls-back to `200 text/html`).
+2. **Seed the ITS_Config row** `incidents_enabled = false` (Workstream `field_ops`, sheet
+   `3072320166907780`) — a MISSING row reads identically to `false` (the row-absence lesson above), so
+   the operator has nothing to flip until it EXISTS. `incidents_enabled` IS now enumerated in
+   `fieldops_sync.REQUIRED_CONFIG` (#481), so startup logs it with its source — but `resolve_and_log`
+   still can't distinguish "row absent" from "row=false" (both log as `default`), so seed the visible
+   row anyway.
+3. **Flip it to `true`** — a cell-flip is the only activation. The 90 s cycle then reports
+   `incidents upserted=N …` in the `sync_cycle_summary` INFO line; the per-job `<Job> — Material
+   Incidents` sheet find-or-creates beside the other trackers.
+
+Unlike Equipment/Material List there is **no zero-drop concern** (append-only ledger — no retire path)
+and the Material Incidents sheet is added to the §51 archive-on-closure move. The end-to-end live smoke
+(deployed Worker → daemon → Smartsheet) is the operator's cutover step; the merge-time gate was the
+mocked-plus-vitest-against-real-D1 suite + a live Smartsheet write smoke of the sheet schema (GREEN,
+sandbox, cleaned up). See `docs/runbooks/fieldops_sync.md` Symptom F.
+
+**Tag:** `field_ops`, `fieldops_sync`, `material-incidents`, `M3`, `config`, `activation`, `dark-ship`.
+
 ## Hours Log — replace Started/Ended columns with a Task column [BUILT 2026-07-05 — live-sheet migration is the remaining operator step]
 
 **BUILT 2026-07-05 (PR #472, merged `9aada583`, four-part verify CLEAN — state=MERGED, mergedAt non-null, mergeCommit present, main-branch CI on the merge commit = SUCCESS; branch `feat/hours-log-task-column`) — all code + tests landed:** worker `/hours-pending`
