@@ -48,6 +48,7 @@ interface WireRow {
   qty_received: number | null;
   note: string | null;
   seq: number;
+  line_uuid: string | null;
 }
 async function readList(cookie: string, jobId: string): Promise<WireRow[]> {
   const res = await g(cookie, `/api/fieldops/expected-materials?job_id=${encodeURIComponent(jobId)}`);
@@ -164,6 +165,9 @@ describe("GET /api/fieldops/expected-materials — display fields + per-job owne
     expect(rows[1].material_id).toBeNull();
     expect(rows[1].material_name).toBeNull();
     expect(rows[1].description).toBe("Later item");
+    // M3 Slice 1: the GET response carries the stable per-line key (the ADD-line INSERT mints it).
+    expect(typeof rows[0].line_uuid).toBe("string");
+    expect((rows[0].line_uuid ?? "").length).toBeGreaterThan(0);
   });
 
   it("scope: own-job manager 200; cross-job manager 403 forbidden_job; unplaced submitter 403; admin any job 200", async () => {

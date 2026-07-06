@@ -194,7 +194,7 @@ export function registerExpectedMaterialsRoutes(app: FieldopsApp, gates: Fieldop
                 jem.received_at,
                 (SELECT p.name FROM personnel p WHERE p.username = jem.received_by ORDER BY p.id ASC LIMIT 1)
                   AS received_by_name,
-                jem.qty_received, jem.note, jem.seq
+                jem.qty_received, jem.note, jem.seq, jem.line_uuid
          FROM job_expected_materials jem
          WHERE jem.job_id = ?1 AND jem.active = 1
          ORDER BY jem.seq ASC, jem.id ASC

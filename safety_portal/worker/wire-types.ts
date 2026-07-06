@@ -218,6 +218,10 @@ export interface ExpectedMaterialRow {
   qty_received: number | null;
   note: string | null;
   seq: number;
+  // M3 Slice 1 — the stable per-line mirror key (migration 0039). Carried into the daily form's
+  // "Report a problem →" deep-link so a material-incident submission can reference THIS M2 line
+  // (validated server-side in /api/submit). Nullable (schema-level); live rows are non-null.
+  line_uuid: string | null;
 }
 
 export interface ExpectedMaterialsResponse {

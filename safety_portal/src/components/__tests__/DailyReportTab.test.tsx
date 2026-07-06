@@ -663,6 +663,7 @@ describe("DailyReportTab — expected-materials receipt flow (Material receipts 
     id: 11, material_id: 7, material_name: "Q.PEAK DUO", description: null,
     qty: 40, unit: "panels", expected_date: "2026-07-10", status: "expected",
     received_at: null, received_by_name: null, qty_received: null, note: null, seq: 10,
+    line_uuid: "line-uuid-qpeak-11",
   };
   beforeEach(() => sessionStorage.clear());
 
@@ -726,19 +727,36 @@ describe("DailyReportTab — expected-materials receipt flow (Material receipts 
     await waitFor(() =>
       expect(flagExpectedMaterialIncident).toHaveBeenCalledWith(11, "Crushed corner on 3 pallets"),
     );
-    // The deep-link rides openForm with the R5 prefill values (description + expected qty).
+    // The deep-link rides openForm with the R5 prefill values (description + expected qty), and
+    // M3 Slice 1 carries the flagged line's stable key so the incident REFERENCES this M2 line.
     await waitFor(() =>
       expect(onOpenForm).toHaveBeenCalledWith(
         expect.objectContaining({
           jobId: "JOB-A",
           parentCode: "material-incident",
           workDate: TODAY,
-          values: { material_description: "Q.PEAK DUO", qty_expected: "40" },
+          values: { material_description: "Q.PEAK DUO", qty_expected: "40", line_uuid: "line-uuid-qpeak-11" },
         }),
       ),
     );
     // Optimistic flip to the incident record.
     expect(container.textContent ?? "").toContain("Flagged");
+    promptSpy.mockRestore();
+  });
+
+  it("M3 Slice 1 — a row with a NULL line_uuid deep-links WITHOUT a line_uuid value (a valid unlinked incident)", async () => {
+    vi.mocked(fetchExpectedMaterials).mockResolvedValue({
+      expected_materials: [{ ...PENDING, line_uuid: null }],
+    });
+    const promptSpy = vi.spyOn(window, "prompt").mockReturnValue("Short shipment");
+    const onOpenForm = vi.fn();
+    const { container, getByLabelText } = render(<DailyReportTab linked={true} placement={PLACED} onOpenForm={onOpenForm} />);
+    await waitFor(() => expect(container.textContent ?? "").toContain("Q.PEAK DUO"));
+    fireEvent.click(getByLabelText("Report a problem with Q.PEAK DUO"));
+    await waitFor(() => expect(onOpenForm).toHaveBeenCalled());
+    const prefill = onOpenForm.mock.calls[0][0] as { values: Record<string, unknown> };
+    expect(prefill.values).toEqual({ material_description: "Q.PEAK DUO", qty_expected: "40" });
+    expect("line_uuid" in prefill.values).toBe(false);
     promptSpy.mockRestore();
   });
 

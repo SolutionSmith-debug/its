@@ -727,6 +727,12 @@ export function DailyReportTab({
           values: {
             material_description: rowTitle(row),
             ...(row.qty != null ? { qty_expected: String(row.qty) } : {}),
+            // M3 Slice 1 — carry the flagged line's stable key so the incident submission REFERENCES
+            // this M2 expected-materials line (validated server-side in /api/submit). Rides as a
+            // submission VALUE (NOT a form field). In-memory only: a page refresh drops the S5 prefill
+            // values, so line_uuid is lost and the Worker treats the incident as a valid UNLINKED one
+            // (absent line_uuid → allowed) — graceful degradation, never an error.
+            ...(row.line_uuid ? { line_uuid: row.line_uuid } : {}),
           },
         });
       }
