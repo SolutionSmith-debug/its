@@ -161,6 +161,8 @@ outside the sentinel block.
 | 2026-05-24 | session_log | closed | docs | [2026-05-24 — CC file-based memory consolidation](2026-05-24_cc-memory-consolidation.md) | _–_ |
 | 2026-05-24 | session_log | closed | docs | [2026-05-24 — Markdown doc conventions + index generation + lint](2026-05-24_doc_conventions.md) | _–_ |
 | 2026-05-24 | session_log | closed | docs | [2026-05-24 — Execution-repo doctrine version drift cleanup](2026-05-24_doctrine-version-drift-cleanup.md) | _–_ |
+| 2026-07-06 | session_log | complete | field_ops | [Session 2026-07-06 (autonomous) — Recurring checklists per job (#16, PR #476)](2026-07-06_recurring-checklists.md) | #476 |
+| 2026-07-05 | session_log | complete | field_ops | [Session 2026-07-05 (part 2) — Activate shipped-dark trackers + Hours Log Task column + hygiene (PRs #472–#473)](2026-07-05_activate-trackers-hours-task-column-hygiene.md) | #472, #473 |
 | 2026-07-05 | session_log | complete | field_ops | [Session 2026-07-05 (morning) — Hours Log go-live + P7 Slice 2 Equipment + live decouple fix + M2 Material List](2026-07-05_hours-log-fix-slice2-equipment-m2-materials.md) | #468, #469, #470 |
 | 2026-07-04 | session_log | complete | field_ops | [Session 2026-07-04 (overnight) — Smartsheet wiring verification + Hours Log go-live smoke + archive-on-closure](2026-07-04_smartsheet-verify-hours-smoke-archive-on-closure.md) | #465 |
 | _(no frontmatter)_ | _–_ | _–_ | _–_ | [2026-05-17 — Ruff exemption for box_migration + v5/v6/v7/v4 doc pointer refresh](2026-05-17_ruff_and_doc_refresh.md) | _–_ |

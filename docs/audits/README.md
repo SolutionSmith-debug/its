@@ -22,6 +22,7 @@ indicate which mode it operates in.
 | 2026-05-28 | audit | active | _–_ | [Doc-reconciliation audit (2026-05-28) — agent self-test](2026-05-28_doc-reconciliation.md) | #101, #103, #105 |
 | 2026-05-28 | audit | active | security | [Forensic Evaluation Audit (2026-05-28)](2026-05-28_forensic-evaluation.md) | #95, #96 |
 | 2026-06-03 | audit | draft | _–_ | [ITS Unifying Forensic Alignment & Drift Audit — 2026-06-03](2026-06-03_unifying-alignment-audit.md) | _–_ |
+| _–_ | reference | proposed | docs | [PROPOSED — §51 Material List reconciliation: ratification-ready rider draft + honest decision framing](2026-07-05_section51-materials-rider-proposal.md) | _–_ |
 | _(no frontmatter)_ | _–_ | _–_ | _–_ | [person_tag_in_subject audit — 2026-05-19](person_tag_audit_2026-05-19.md) | _–_ |
 | _(no frontmatter)_ | _–_ | _–_ | _–_ | [Picklist-Hardening Audit (Op Stds v11 §35)](picklist_hardening_audit.md) | _–_ |
 <!-- END AUTO-INDEX -->
