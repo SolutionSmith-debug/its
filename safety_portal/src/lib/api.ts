@@ -28,6 +28,11 @@ export interface SessionUser {
    *  every action is independently re-gated server-side (the SPA gating is convenience,
    *  never the boundary). Defaults to [] for a pre-capability (old-Worker) session. */
   capabilities: string[];
+  /** (#16) Site-wide feature flag from the server (a Worker var, NOT a capability): whether the
+   *  recurring-checklist controls should render on the assign form. The assign route + cron are the
+   *  real gates; this only hides UI when dark. OPTIONAL (consumers read it as `?? false`): login /
+   *  fetchSession always populate it, but test fixtures + a pre-flag Worker session may omit it. */
+  recurring_checklists_enabled?: boolean;
 }
 
 async function postJson(path: string, body?: unknown): Promise<Response> {
@@ -46,15 +51,29 @@ export async function login(username: string, password: string): Promise<Session
       res.status === 401 ? "Invalid username or password." : "Login failed. Please try again.",
     );
   }
-  const data = (await res.json()) as { user: { username: string; role: Role; capabilities?: string[] } };
-  return { ...data.user, capabilities: data.user.capabilities ?? [] };
+  const data = (await res.json()) as {
+    user: { username: string; role: Role; capabilities?: string[] };
+    recurring_checklists_enabled?: boolean;
+  };
+  return {
+    ...data.user,
+    capabilities: data.user.capabilities ?? [],
+    recurring_checklists_enabled: data.recurring_checklists_enabled ?? false,
+  };
 }
 
 export async function fetchSession(): Promise<SessionUser | null> {
   const res = await fetch("/api/session", { credentials: "same-origin" });
   if (!res.ok) return null;
-  const data = (await res.json()) as { user: { username: string; role: Role; capabilities?: string[] } };
-  return { ...data.user, capabilities: data.user.capabilities ?? [] };
+  const data = (await res.json()) as {
+    user: { username: string; role: Role; capabilities?: string[] };
+    recurring_checklists_enabled?: boolean;
+  };
+  return {
+    ...data.user,
+    capabilities: data.user.capabilities ?? [],
+    recurring_checklists_enabled: data.recurring_checklists_enabled ?? false,
+  };
 }
 
 export async function logout(): Promise<void> {

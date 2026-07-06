@@ -14,6 +14,7 @@ import { registerJobWriteRoutes } from "./fieldops_job_write";
 import { registerTaskWriteRoutes } from "./fieldops_task_write";
 import { registerMyTasksRoutes } from "./fieldops_tasks";
 import { registerChecklistRoutes } from "./fieldops_checklist";
+import { generateRecurringChecklists } from "./fieldops_recurrence";
 import { isDailyTabFamilyForm, registerDailyRequirementsRoutes } from "./fieldops_daily_requirements";
 import { requireDailyReportRole } from "./fieldops_scope";
 import { registerEquipmentFieldWriteRoutes } from "./fieldops_equipment_write";
@@ -265,6 +266,10 @@ app.post("/api/login", async (c) => {
   const capabilities = await resolveCapabilities(user.role, c.env.DB);
   return c.json({
     user: { username: user.username, role: user.role, capabilities: [...capabilities] },
+    // #16 feature flag (display-hint only — the assign route + cron are the real gates): lets the
+    // assign form show the recurring controls when live. NOT a capability (it is site-wide, not
+    // per-role), so it rides alongside `user`, not inside its capability set.
+    recurring_checklists_enabled: c.env.RECURRING_CHECKLISTS_ENABLED === "true",
   });
 });
 
@@ -439,6 +444,9 @@ app.get("/api/session", requireSession, (c) => {
   const s = c.get("session");
   return c.json({
     user: { username: s.username, role: c.get("role"), capabilities: [...c.get("capabilities")] },
+    // #16 — same display-hint flag as /api/login so an SPA that restores its session (not a fresh
+    // login) also learns whether the recurring controls should render.
+    recurring_checklists_enabled: c.env.RECURRING_CHECKLISTS_ENABLED === "true",
   });
 });
 
@@ -2757,6 +2765,23 @@ const scheduled: ExportedHandlerScheduledHandler<Env> = async (_controller, env)
       (pruned.failedStages.length > 0 ? `; FAILED stages: ${pruned.failedStages.join(", ")}` : ""),
   );
   await writePruneMeta(env.DB, nowSec, pruned); // fenced inside — never takes down the handler
+
+  // Recurring checklists (#16) — spawn today's due per-job instances. Ships DARK: no-op unless the
+  // RECURRING_CHECKLISTS_ENABLED var is "true". Fenced separately from prune (a generation error must
+  // never take down the prune leg, and vice-versa). Send-free (D1 only, Invariant 1).
+  if (env.RECURRING_CHECKLISTS_ENABLED === "true") {
+    try {
+      const gen = await generateRecurringChecklists(env.DB, Date.now());
+      console.log(
+        `recurring-checklists: ${gen.recurrences} active def(s), ${gen.instances_created} instance(s) created, ` +
+          `${gen.autostopped} auto-stopped (job closed), ${gen.capped} catch-up-capped, ${gen.errors} error(s)`,
+      );
+    } catch (e) {
+      // Whole-pass fence (per-recurrence errors are already fenced inside) — never-silent, never takes
+      // down the cron.
+      console.error(`recurring-checklists generation pass failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
 };
 
 export default { fetch: app.fetch, scheduled } satisfies ExportedHandler<Env>;

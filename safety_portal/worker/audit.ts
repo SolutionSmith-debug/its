@@ -44,3 +44,19 @@ export function auditStmtIfChanged(
     .prepare("INSERT INTO audit_log (actor_username, action, target_username, detail) SELECT ?1,?2,?3,?4 WHERE changes()=1")
     .bind(actor, action, target, detail === null ? null : JSON.stringify(detail));
 }
+
+/** DB-handle twin of auditStmtIfChanged for the scheduled()/cron context, where there is no Hono
+ *  Context (auditStmt* only ever used `c.env.DB`). Same guarded-mutation shape — the audit INSERT
+ *  lands ONLY when the immediately preceding statement in the same batch changed a row (W4). Used by
+ *  the recurring-checklist generation engine (fieldops_recurrence.ts). */
+export function auditStmtIfChangedDb(
+  db: D1Database,
+  actor: string,
+  action: string,
+  target: string | null,
+  detail: Record<string, unknown> | null,
+) {
+  return db
+    .prepare("INSERT INTO audit_log (actor_username, action, target_username, detail) SELECT ?1,?2,?3,?4 WHERE changes()=1")
+    .bind(actor, action, target, detail === null ? null : JSON.stringify(detail));
+}

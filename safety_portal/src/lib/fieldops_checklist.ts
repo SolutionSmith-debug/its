@@ -10,6 +10,8 @@ import type {
   ChecklistItemStatus,
   AssignedInspectionsResponse,
   ItemPhotoUploadResult,
+  RecurrenceCadence,
+  ChecklistRecurrence,
 } from "../../worker/wire-types";
 import type { PhotoValue } from "../forms/types";
 
@@ -81,6 +83,8 @@ export type {
   AssignedInspectionsResponse,
   ItemPhotoStatus,
   ItemPhotoUploadResult,
+  RecurrenceCadence,
+  ChecklistRecurrence,
 } from "../../worker/wire-types";
 
 export interface CompleteResult {
@@ -224,10 +228,33 @@ export interface AssignInput {
   assignee_personnel_id: number;
   job_id?: string;
   due_date?: string;
+  // (#16) When present, DEFINE a per-job recurring generator instead of a one-shot instance: the cron
+  // spawns an instance on each cadence date off `anchor_date`. job_id is REQUIRED alongside it. Only
+  // sent when the feature is live (SessionUser.recurring_checklists_enabled); the Worker re-gates.
+  recurrence?: { cadence: RecurrenceCadence; anchor_date: string };
 }
 
-export function assignInspection(input: AssignInput): Promise<{ ok: boolean; instance_id: number; item_count: number }> {
-  return postJson(`${BASE}/assign`, input);
+/** One-shot assign → { instance_id, item_count }; recurring assign → { recurrence_id, instances_created }
+ *  (the count materialized immediately — 0 for a future anchor). A `recurrence_id` field distinguishes. */
+export type AssignResult =
+  | { ok: boolean; instance_id: number; item_count: number }
+  | { ok: boolean; recurrence_id: number; instances_created: number };
+
+export function assignInspection(input: AssignInput): Promise<AssignResult> {
+  return postJson<AssignResult>(`${BASE}/assign`, input);
+}
+
+// ── Recurring checklists (#16) — admin visibility + stop (cap.checklist.manage) ─────────────────────
+// GET /checklist/recurrences lists ACTIVE per-job recurring generators; POST
+// /recurrence/:id/deactivate STOPS one (non-destructive; already-spawned instances are untouched —
+// cancel those individually). The cron also auto-stops a recurrence when its job closes.
+
+export function fetchChecklistRecurrences(): Promise<{ recurrences: ChecklistRecurrence[] }> {
+  return getJson<{ recurrences: ChecklistRecurrence[] }>(`${BASE}/recurrences`);
+}
+
+export function deactivateChecklistRecurrence(recurrenceId: number): Promise<{ ok: boolean; id: number }> {
+  return postJson(`${BASE}/recurrence/${recurrenceId}/deactivate`);
 }
 
 // ── S6 — the assignee's Assigned-Tasks tab surface (cap.tasks.own; manager OR subcontractor) ────────

@@ -294,6 +294,28 @@ export interface AssignedInspectionsResponse {
   linked: boolean;
 }
 
+// ── Recurring checklists (#16) ────────────────────────────────────────────────────────────────
+/** The cadence an inspection recurrence spawns on. Extensible — the Worker's RECURRENCE_CADENCES set
+ *  (worker/fieldops_recurrence.ts) is the validation authority; keep this union in sync with it. */
+export type RecurrenceCadence = "daily" | "weekly" | "biweekly" | "monthly";
+
+/** One ACTIVE recurring definition (GET /api/fieldops/checklist/recurrences) — the admin visibility
+ *  row for a per-job recurring generator (join-resolved assignee + job names). `last_generated_date`
+ *  is the watermark the cron advances (NULL until the first spawn). */
+export interface ChecklistRecurrence {
+  id: number;
+  template_id: number;
+  template_title: string | null;
+  assignee_personnel_id: number | null;
+  assignee_name: string | null;
+  job_id: string | null;
+  project_name: string | null;
+  cadence: string;
+  anchor_date: string;
+  last_generated_date: string | null;
+  created_at: number;
+}
+
 // ── GET /api/fieldops/tasks/mine ────────────────────────────────────────────────────────────────
 
 /** One of the caller's own assigned tasks (cap.tasks.own; resolved server-side through the

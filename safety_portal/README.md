@@ -42,6 +42,7 @@ its migration fail-closes `resolveCapabilities` → the universal-lockout class 
 | `0037_daily_photo_pool` | daily-report v6: additional site photos (pool) + D.13 incident link — [section](#daily-report-photo-pool--additional-site-photos-v6--0037) | #456 | ☐ pending |
 | `0038_time_entries_mirror` | P7 Slice 1 Hours Log up-sync watermark — [section](#hours-log-up-sync-watermark-p7-slice-1--0038) | #461 | ☐ pending |
 | `0039_material_list_mirror` | P7 M2 Material List up-sync keys (line_uuid + unplanned) — [section](#material-list-up-sync-keys-p7-m2--0039) | (M2) | ☐ pending |
+| `0040_checklist_recurrences` | Recurring checklists per job (#16) — [section](#recurring-checklists-per-job-16--0040) | (#16) | ☐ pending |
 
 Canonical apply-and-deploy sequence (applies **all** pending migrations, in order — never a
 subset):
@@ -1042,3 +1043,43 @@ threshold `progress_reports.material_list.row_cap_warn_threshold`, default 15000
 margin-check fires on each create; **archive-on-closure** now moves the Material List sheet too (same
 its#462 move machinery — landed for the standing trackers). **Deferred:** a bidirectional
 Smartsheet→D1 down-sync (would need `smartsheet_row_id`) — a FUTURE model, not M2.
+
+### Recurring checklists per job (#16) — 0040
+
+**What ships:** an admin can make a checklist **assignment recurring** — the same Assign-an-inspection
+form gains a "Recurring checklist" checkbox → a cadence (**daily / weekly / biweekly / monthly**) + a
+"generates off of" **anchor date**. A per-job generator (D1 `checklist_recurrences`, migration `0040`)
+then spawns the assignee's `kind='inspection'` checklist instance on each cadence date — the SAME
+instance shape a one-shot assign creates, so it surfaces in the assignee's Assigned-Tasks tab + the
+admin Outstanding-assignments list with zero new read code. Generation runs in the **existing daily
+Worker cron** (`scheduled()`, `wrangler.jsonc triggers.crons` 09:00 UTC) — no new daemon, fully
+contained to the portal. New admin surfaces: `GET /checklist/recurrences` + `POST
+/checklist/recurrence/:id/deactivate` (a "Recurring assignments" band that lists active generators +
+a Stop button). Generation also **auto-stops** when the job closes.
+
+**Idempotent by construction:** each spawn is `INSERT OR IGNORE` keyed on the EXISTING
+`UNIQUE(kind, job_id, assignee_personnel_id, instance_date)` (0026), so a double-run never
+double-spawns; a per-recurrence `last_generated_date` watermark bounds each pass. Catch-up after a
+cron gap is capped at 45 days (older dates dropped + logged, never a flood).
+
+**Shipped DARK** — gated by the Worker var `RECURRING_CHECKLISTS_ENABLED` (default `"false"` in
+`wrangler.jsonc`, NOT a secret). While dark: the cron no-ops, the assign route refuses a recurrence
+block with `400 recurring_disabled` (never-silent), and the SPA hides the recurring controls (the flag
+rides `/api/login` + `/api/session`). So applying `0040` + deploying changes nothing until the flip.
+The one-shot assign path is **byte-identical** when dark.
+
+**Activation (post apply-all + deploy):**
+1. Edit `wrangler.jsonc` → `"vars": { "RECURRING_CHECKLISTS_ENABLED": "true" }` → `npm run deploy`.
+   (This is the operator-visible gate — an in-repo var, no ITS_Config/Smartsheet row to hunt for.)
+2. **Live smoke:** in the admin Checklists page, Assign an inspection → check "Recurring checklist" →
+   pick a job + cadence + a start date of **today** → "Set recurring". Confirm: (a) a "Recurring
+   assignments" row appears; (b) the assignee's Assigned-Tasks tab shows today's instance immediately
+   (the assign route materializes the first one on the spot); (c) tomorrow's cron adds the next
+   instance (or force it by re-deploying / waiting for 09:00 UTC); (d) Stop the recurrence → it leaves
+   the Recurring-assignments list; already-created instances remain under Outstanding assignments.
+3. Close the job (lifecycle → closed) → the next cron auto-stops the recurrence (audit
+   `checklist_recurrence_autostop`) and spawns nothing further.
+
+**Adding a cadence later** is a Worker-code change only (extend `RECURRENCE_CADENCES` +
+`enumerateCadenceDates` in `worker/fieldops_recurrence.ts` + the SPA `CADENCE_OPTIONS`) — the D1 table
+deliberately carries no cadence CHECK, so no table rebuild.
