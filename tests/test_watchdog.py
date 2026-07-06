@@ -725,9 +725,10 @@ def test_main_pings_heartbeat_with_configured_url(
 
     watchdog.main()
 
-    mock_get_setting.assert_called_once_with(
-        "system.heartbeat_url", workstream="global"
-    )
+    # #336: resolve_and_log adds a startup config-observability pass (it resolves the 3 declared
+    # watchdog keys, incl. heartbeat_url), so get_setting is no longer called exactly once — assert
+    # the heartbeat read HAPPENED among the calls. The ping URL below is the load-bearing assertion.
+    mock_get_setting.assert_any_call("system.heartbeat_url", workstream="global")
     mock_ping.assert_called_once_with("https://hc-ping.com/real-uuid")
 
 

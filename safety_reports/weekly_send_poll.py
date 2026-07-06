@@ -51,6 +51,7 @@ from shared import approval_verification, sheet_ids
 from shared.error_log import its_error_log
 from shared.heartbeat import HeartbeatReporter, HeartbeatStatus
 from shared.kill_switch import require_active
+from shared.required_config import ConfigKey, resolve_and_log
 
 # Re-export PollStats (the public return shape) at the entry for callers/tests.
 PollStats = send_poll_core.PollStats
@@ -141,6 +142,19 @@ CONFIG = send_poll_core.DaemonConfig(
     send_fn=lambda row_id: weekly_send.send_one_row(row_id, weekly_send.CONFIG),
 )
 
+# #336 — the ITS_Config keys this daemon resolves at RUNTIME (both carried on the DaemonConfig,
+# read by send_poll_core under CONFIG.config_workstream='safety_reports'). The
+# *.poll_interval_seconds key is EXCLUDED (declared but never runtime-read). Declared for the
+# startup observability pass. #336-fix (review): the send-time from_mailbox key IS re-declared here —
+# THIS poll daemon is the PRODUCTION driver (send_fn → weekly_send.send_one_row reads from_mailbox on
+# every dispatch); weekly_send.main is the manual-rerun path, OFF the daemon, so declaring from_mailbox
+# only there left it invisible on real automated sends.
+REQUIRED_CONFIG: list[ConfigKey] = [
+    ConfigKey(CONFIG.cfg_polling_enabled, CONFIG.config_workstream, CONFIG.default_polling_enabled, "bool"),
+    ConfigKey(CONFIG.cfg_scheduled_send_local, CONFIG.config_workstream, CONFIG.default_scheduled_send_local, "str"),
+    ConfigKey(weekly_send.CONFIG.from_mailbox_cfg_key, weekly_send.CONFIG.config_workstream, weekly_send.CONFIG.from_mailbox_default, "str"),
+]
+
 
 # ---- Test-mock seams (the suite patches these exact symbols) --------------
 # The core calls these via INJECTION (resolved from this module at poll-call
@@ -229,6 +243,9 @@ def _poll_inside_lock() -> PollStats:
 @require_active
 def poll_once() -> PollStats:
     """Run one poll cycle. Public API; idempotent across crashes."""
+    # #336 startup observability (after @require_active, fail-open). Additive (§14).
+    resolve_and_log(SCRIPT_NAME, REQUIRED_CONFIG)
+
     return send_poll_core.poll_once(
         CONFIG,
         write_liveness=_write_heartbeat,

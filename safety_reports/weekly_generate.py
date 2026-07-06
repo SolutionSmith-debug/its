@@ -44,6 +44,7 @@ from shared import active_jobs, review_queue, safety_week
 from shared.active_jobs import ActiveJob
 from shared.error_log import its_error_log
 from shared.kill_switch import require_active
+from shared.required_config import ConfigKey, resolve_and_log
 
 SCRIPT_NAME = "safety_reports.weekly_generate"
 
@@ -73,6 +74,25 @@ SAFETY_GENERATE_CONFIG = generate_core.GenerateConfig(
     cfg_evergreen_contact="safety_reports.evergreen_contact_name",
     default_evergreen_contact="the Evergreen Renewables office",
 )
+
+# #336 — every ITS_Config key the safety compile resolves at RUNTIME (all carried on the
+# GenerateConfig, all read by generate_core under config.workstream='safety_reports'), declared
+# for the startup observability pass (resolve_and_log). box_root reads to "" when unset.
+REQUIRED_CONFIG: list[ConfigKey] = [
+    ConfigKey(SAFETY_GENERATE_CONFIG.box_root_setting_key, SAFETY_GENERATE_CONFIG.workstream, "", "str"),
+    ConfigKey(
+        SAFETY_GENERATE_CONFIG.cfg_job_timeout, SAFETY_GENERATE_CONFIG.workstream,
+        SAFETY_GENERATE_CONFIG.default_job_timeout, "int",
+    ),
+    ConfigKey(
+        SAFETY_GENERATE_CONFIG.cfg_memory_ceiling, SAFETY_GENERATE_CONFIG.workstream,
+        SAFETY_GENERATE_CONFIG.default_memory_ceiling, "int",
+    ),
+    ConfigKey(
+        SAFETY_GENERATE_CONFIG.cfg_evergreen_contact, SAFETY_GENERATE_CONFIG.workstream,
+        SAFETY_GENERATE_CONFIG.default_evergreen_contact, "str",
+    ),
+]
 
 # ── Safety-bound aliases (preservation): compile_now_poll + watchdog call these unchanged ──
 
@@ -118,6 +138,10 @@ def main(week_start_override: date | None = None) -> dict[str, Any]:
         week_start_override: any date inside the target Sat→Fri week (backfill). Defaults to
             the week containing today (Friday run → the just-closed week).
     """
+    # #336 startup observability (after @require_active, fail-open). Additive to the runtime
+    # reads generate_core performs (§14).
+    resolve_and_log(SCRIPT_NAME, REQUIRED_CONFIG)
+
     return generate_core.run_generate(
         SAFETY_GENERATE_CONFIG, week_start_override=week_start_override
     )

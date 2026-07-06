@@ -72,6 +72,7 @@ from shared.active_jobs import ActiveJob
 from shared.error_log import Severity, its_error_log
 from shared.heartbeat import HeartbeatReporter, HeartbeatStatus
 from shared.kill_switch import require_active
+from shared.required_config import ConfigKey, resolve_and_log
 
 SCRIPT_NAME = "safety_reports.compile_now_poll"
 # The daemon's HOME workstream — the tag for its ONE ITS_Daemon_Health row, its Check-C watchdog
@@ -91,6 +92,20 @@ COMPILE_CONFIGS: tuple[generate_core.GenerateConfig, ...] = (
 )
 
 DEFAULT_POLLING_ENABLED = True
+
+# #336 — the ONLY ITS_Config key this daemon resolves at runtime is the per-workstream
+# derived gate `<workstream>.compile_now_poll.polling_enabled` (read under that workstream,
+# default True). Built by iterating COMPILE_CONFIGS so a future served workstream is covered
+# automatically. Declared here for the startup observability pass (resolve_and_log).
+REQUIRED_CONFIG: list[ConfigKey] = [
+    ConfigKey(
+        f"{cfg.workstream}.compile_now_poll.polling_enabled",
+        cfg.workstream,
+        DEFAULT_POLLING_ENABLED,
+        "bool",
+    )
+    for cfg in COMPILE_CONFIGS
+]
 
 STATE_DIR = Path.home() / "its" / "state"
 LOCK_PATH = STATE_DIR / "compile_now_poll.lock"
@@ -332,6 +347,10 @@ def poll_once() -> CompileStats:
     ~90 s cadence). The file lock makes it single-flight — an overlapping cycle (a slow compile)
     returns immediately rather than double-compiling the same job-week. When NO workstream is
     enabled, halts before taking the lock or writing a heartbeat."""
+    # #336 startup observability (after @require_active, fail-open). Additive to the runtime
+    # _polling_enabled reads below (§14).
+    resolve_and_log(SCRIPT_NAME, REQUIRED_CONFIG)
+
     active_configs = tuple(c for c in COMPILE_CONFIGS if _polling_enabled(c))
     if not active_configs:
         return CompileStats(halted="polling_disabled")

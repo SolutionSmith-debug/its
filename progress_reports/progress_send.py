@@ -61,6 +61,7 @@ from safety_reports.weekly_send import SendConfig, SendResult, _ReviewModule
 from shared import active_jobs, error_log
 from shared.error_log import Severity, its_error_log
 from shared.kill_switch import require_active
+from shared.required_config import ConfigKey, resolve_and_log
 
 SCRIPT_NAME = "progress_reports.progress_send"
 WORKSTREAM = "progress_reports"
@@ -121,6 +122,12 @@ CONFIG = SendConfig(
     upload_session_threshold_bytes=weekly_send.UPLOAD_SESSION_THRESHOLD_BYTES,
 )
 
+# #336 — the ONE ITS_Config key send_one_row resolves at RUNTIME: the from_mailbox, read under
+# CONFIG.config_workstream ('progress_reports'). Declared for the startup observability pass.
+REQUIRED_CONFIG: list[ConfigKey] = [
+    ConfigKey(CONFIG.from_mailbox_cfg_key, CONFIG.config_workstream, CONFIG.from_mailbox_default, "str"),
+]
+
 
 def send_one_row(row_id: int) -> SendResult:
     """Send (or HELD / FAIL) one approved WPR row via the progress ``CONFIG``.
@@ -137,6 +144,9 @@ def send_one_row(row_id: int) -> SendResult:
 @require_active
 def main(row_id_override: int | None = None) -> dict[str, Any]:
     """Manual rerun of one approved WPR row via CLI (operator debugging)."""
+    # #336 startup observability (after @require_active, fail-open). Additive (§14).
+    resolve_and_log(SCRIPT_NAME, REQUIRED_CONFIG)
+
     if row_id_override is None:
         raise SystemExit("usage: python -m progress_reports.progress_send <row_id>")
     result = send_one_row(row_id_override)

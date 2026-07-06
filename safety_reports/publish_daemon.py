@@ -69,6 +69,7 @@ from shared import (
 from shared.error_log import Severity, its_error_log
 from shared.heartbeat import HeartbeatReporter, HeartbeatStatus
 from shared.kill_switch import require_active
+from shared.required_config import ConfigKey, resolve_and_log
 
 SCRIPT_NAME = "publish_daemon"
 WORKSTREAM = "safety_reports"
@@ -77,6 +78,14 @@ WORKSTREAM = "safety_reports"
 KC_BEARER = "ITS_PORTAL_INTERNAL_TOKEN"  # noqa: S105 — Keychain entry NAME, not a secret
 CFG_WORKER_BASE_URL = "safety_reports.portal.worker_base_url"
 CFG_POLLING_ENABLED = "safety_reports.publish_daemon.polling_enabled"
+
+# #336 — every ITS_Config key this daemon resolves at RUNTIME, declared for the startup
+# observability pass (resolve_and_log). polling_enabled ships OFF (default False); the shared
+# Worker base-URL reads to "" when unset.
+REQUIRED_CONFIG: list[ConfigKey] = [
+    ConfigKey(CFG_POLLING_ENABLED, WORKSTREAM, False, "bool"),
+    ConfigKey(CFG_WORKER_BASE_URL, WORKSTREAM, "", "str"),
+]
 
 # ITS_Daemon_Health heartbeat (R4-F1 — the operator-visibility row the other pollers
 # self-provision). HEARTBEAT_ROW_STATE_PATH is SHARED with the other daemons — same JSON
@@ -621,6 +630,9 @@ def publish_once() -> PublishStats:
     (launchd handles cadence). Serial: one request fully actuated before the next (the
     deploy mutates shared state). The Worker's per-parent serialization (C8) already
     prevents two in-flight publishes for one form."""
+    # #336 startup observability (after @require_active, fail-open). Additive (§14).
+    resolve_and_log(SCRIPT_NAME, REQUIRED_CONFIG)
+
     stats = PublishStats()
     if not _polling_enabled():
         stats.halted = "polling_disabled"

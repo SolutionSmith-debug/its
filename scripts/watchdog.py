@@ -131,10 +131,26 @@ from shared.error_log import (
     log,
 )
 from shared.kill_switch import SystemState, check_system_state
+from shared.required_config import ConfigKey, resolve_and_log
 from shared.review_queue import ReviewReason, SlaTier
 from shared.scheduling import TimeOffClient, is_federal_holiday, resolve_chain
 
 _SCRIPT = "scripts.watchdog"
+
+# #336 — every ITS_Config key the watchdog resolves at RUNTIME across its checks + heartbeat
+# beacon, declared for the startup observability pass (resolve_and_log). Two are 'global'-scoped;
+# the Worker base URL is read under safety_reports (reusing portal_poll's canonical names).
+REQUIRED_CONFIG: list[ConfigKey] = [
+    ConfigKey(
+        "circuit_breaker.prolonged_open_alert_seconds", "global",
+        defaults.CIRCUIT_BREAKER_PROLONGED_OPEN_ALERT_SECONDS, "int",
+    ),
+    ConfigKey("system.heartbeat_url", "global", "", "str"),
+    ConfigKey(
+        portal_poll.CFG_WORKER_BASE_URL, portal_poll.WORKSTREAM, "", "str",
+        description="Shared Worker base URL, read for Check V's prune-status creds.",
+    ),
+]
 
 # Caps prevent the WARN detail string from ballooning when something goes
 # truly sideways (e.g., dozens of rows past SLA after a long PAUSED window).
@@ -2322,6 +2338,13 @@ def main() -> None:
             _SCRIPT,
             "MAINTENANCE — checks will run but alerts suppressed",
         )
+    # #336 startup observability: resolve+log every runtime ITS_Config key the checks + the
+    # heartbeat beacon read, with its source (a MISSING declared row WARNs distinctly). Placed
+    # after the PAUSED early-return above (a paused watchdog never logs) and fail-open — never
+    # blocks the checks. The watchdog has no @require_active; the manual PAUSED guard above is
+    # the equivalent gate.
+    resolve_and_log(_SCRIPT, REQUIRED_CONFIG)
+
     for check in CHECKS:
         _run_check(check, alerts_suppressed=alerts_suppressed)
 
