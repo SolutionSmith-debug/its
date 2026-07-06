@@ -5,6 +5,7 @@ import { auditStmt, auditStmtIfChanged, isUniqueViolation } from "./audit";
 import { requireJob, resolveActorPersonnel } from "./fieldops_scope";
 import {
   ANCHOR_DATE_RE,
+  isRealCalendarDate,
   isValidCadence,
   materializeDueInstances,
   pacificDateString,
@@ -1260,7 +1261,9 @@ export function registerChecklistRoutes(app: FieldopsApp, gates: FieldopsGates):
         const rec = rc as Record<string, unknown>;
         if (!isValidCadence(rec.cadence)) return c.json({ error: "invalid_cadence" }, 400);
         const cadence = rec.cadence;
-        if (typeof rec.anchor_date !== "string" || !ANCHOR_DATE_RE.test(rec.anchor_date)) {
+        if (typeof rec.anchor_date !== "string" || !ANCHOR_DATE_RE.test(rec.anchor_date) || !isRealCalendarDate(rec.anchor_date)) {
+          // Shape AND calendar validity — a regex-passing impossible date ("2026-13-32") would
+          // otherwise persist and silently never generate (security review WARN).
           return c.json({ error: "invalid_anchor_date" }, 400);
         }
         const anchorDate = rec.anchor_date;

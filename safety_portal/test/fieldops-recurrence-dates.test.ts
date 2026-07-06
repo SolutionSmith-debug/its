@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { enumerateCadenceDates, pacificDateString } from "../worker/fieldops_recurrence";
+import { enumerateCadenceDates, isRealCalendarDate, pacificDateString } from "../worker/fieldops_recurrence";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Recurring checklists (#16) — the PURE cadence date-math (no D1). These are the
@@ -67,6 +67,17 @@ describe("enumerateCadenceDates", () => {
     const r = enumerateCadenceDates("daily", "2026-07-01", "2026-07-05", null, 45);
     expect(r.capped).toBe(false);
     expect(r.dates).toHaveLength(5);
+  });
+});
+
+describe("isRealCalendarDate", () => {
+  it("accepts real dates (incl. a leap day) and rejects regex-passing impossible ones", () => {
+    expect(isRealCalendarDate("2026-07-05")).toBe(true);
+    expect(isRealCalendarDate("2024-02-29")).toBe(true); // 2024 is a leap year
+    expect(isRealCalendarDate("2026-02-29")).toBe(false); // 2026 is not
+    expect(isRealCalendarDate("2026-13-01")).toBe(false); // month > 12
+    expect(isRealCalendarDate("2026-00-10")).toBe(false); // month 0
+    expect(isRealCalendarDate("2026-04-31")).toBe(false); // April has 30 days
   });
 });
 

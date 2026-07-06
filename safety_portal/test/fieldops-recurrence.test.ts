@@ -133,6 +133,20 @@ describe("engine — generateRecurringChecklists (the cron pass)", () => {
     expect((await env.DB.prepare("SELECT active FROM checklist_recurrences WHERE id=?").bind(recId).first<{ active: number }>())!.active).toBe(0);
     expect((await env.DB.prepare("SELECT COUNT(*) n FROM audit_log WHERE action='checklist_recurrence_autostop'").first<{ n: number }>())!.n).toBe(1);
   });
+
+  it("auto-STOPS a recurrence whose TEMPLATE was emptied after define — never silently spawns empty instances (security review WARN #1)", async () => {
+    const recId = await seedRecurrence(templateId, personId, "JOB-A", "daily", "2026-07-01", null);
+    // Empty the template out from under the recurrence (the define-time empty_template guard is
+    // point-in-time; a cap.checklist.manage admin can delete items afterwards).
+    await env.DB.prepare("DELETE FROM checklist_items WHERE template_id=?").bind(templateId).run();
+    const summary = await generateRecurringChecklists(env.DB, Date.UTC(2026, 6, 5, 16, 0, 0));
+    expect(summary.autostopped).toBe(1);
+    expect(summary.instances_created).toBe(0); // NOT a flood of empty instances
+    expect(await countInstances(personId)).toBe(0);
+    expect((await env.DB.prepare("SELECT active FROM checklist_recurrences WHERE id=?").bind(recId).first<{ active: number }>())!.active).toBe(0);
+    const audit = await env.DB.prepare("SELECT detail FROM audit_log WHERE action='checklist_recurrence_autostop'").first<{ detail: string }>();
+    expect(JSON.parse(audit!.detail).reason).toBe("template_empty");
+  });
 });
 
 describe("route — POST /checklist/assign (recurring branch)", () => {
@@ -189,6 +203,10 @@ describe("route — POST /checklist/assign (recurring branch)", () => {
     expect((await post(admin, "/api/fieldops/checklist/assign", { template_id: templateId, assignee_personnel_id: personId, job_id: "JOB-A", recurrence: { cadence: "daily", anchor_date: "07/01/2026" } })).status).toBe(400);
     // job_id is REQUIRED for a recurrence.
     expect((await post(admin, "/api/fieldops/checklist/assign", { template_id: templateId, assignee_personnel_id: personId, recurrence: { cadence: "daily", anchor_date: "2026-07-01" } })).status).toBe(422);
+    // an IMPOSSIBLE calendar anchor (regex-passing, not a real date) is rejected at define time.
+    const badCal = await post(admin, "/api/fieldops/checklist/assign", { template_id: templateId, assignee_personnel_id: personId, job_id: "JOB-A", recurrence: { cadence: "daily", anchor_date: "2026-13-32" } });
+    expect(badCal.status).toBe(400);
+    expect(((await badCal.json()) as { error: string }).error).toBe("invalid_anchor_date");
     // a non-recurring assign still works unchanged (no recurrence block).
     expect((await post(admin, "/api/fieldops/checklist/assign", { template_id: templateId, assignee_personnel_id: personId })).status).toBe(201);
   });

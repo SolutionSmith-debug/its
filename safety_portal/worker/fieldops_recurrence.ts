@@ -34,6 +34,16 @@ export function isValidCadence(v: unknown): v is string {
 /** YYYY-MM-DD (a Pacific calendar date, no time/offset — same shape as instance_date / due_date). */
 export const ANCHOR_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
+/** True iff `ymd` (already ANCHOR_DATE_RE-shaped) is a REAL calendar date — rejects regex-passing
+ *  nonsense like "2026-13-32" or "2026-02-30" that Date.UTC would SILENTLY normalize (yielding a
+ *  recurrence anchored on a shifted date, or one that never fires). Round-trips through Date.UTC and
+ *  compares the y/m/d components back. Cheap; the assign route calls it before persisting the anchor. */
+export function isRealCalendarDate(ymd: string): boolean {
+  const [y, m, d] = ymd.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  return dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d;
+}
+
 /** Bound the catch-up backfill: if the cron missed days (or an anchor sits far in the past), spawn at
  *  most this many days of on-cadence history so a stale definition can't flood the tab with old,
  *  un-actionable instances. Older dropped dates are reported as `capped` (never silent). Generous
@@ -192,6 +202,29 @@ export async function materializeDueInstances(
         recurrence_id: rec.id,
         job_id: rec.job_id,
         reason: "job_inactive",
+      }),
+    ]);
+    return { ...base, autostopped: true };
+  }
+
+  // STOP CONDITION — the source template was emptied or DELETED after this recurrence was defined
+  // (a same-privilege admin footgun: a cap.checklist.manage holder can delete the template or its last
+  // item — neither of those routes checks for a live recurrence, and D1 does not enforce the FK). The
+  // define-time empty_template guard is a point-in-time check, not a standing invariant. Continuing to
+  // spawn from a 0-item template would create empty, permanently-open, un-completable instances every
+  // cadence date forever — silent junk. Auto-deactivate + audit and stop, exactly like the job-closure
+  // branch above (never-silent: the stop is audited + surfaced in the summary, not swallowed).
+  const tItems = await db
+    .prepare("SELECT COUNT(*) AS n FROM checklist_items WHERE template_id = ?1 AND suppresses_default_item_id IS NULL")
+    .bind(rec.template_id)
+    .first<{ n: number }>();
+  if ((tItems?.n ?? 0) === 0) {
+    await db.batch([
+      db.prepare("UPDATE checklist_recurrences SET active = 0 WHERE id = ?1 AND active = 1").bind(rec.id),
+      auditStmtIfChangedDb(db, SYSTEM_ACTOR, "checklist_recurrence_autostop", String(rec.assignee_personnel_id), {
+        recurrence_id: rec.id,
+        job_id: rec.job_id,
+        reason: "template_empty",
       }),
     ]);
     return { ...base, autostopped: true };

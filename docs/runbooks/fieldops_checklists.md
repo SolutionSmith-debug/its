@@ -202,9 +202,13 @@ gains a **"Recurring assignments"** band (list + Stop). **Shipped DARK** behind 
    subsequent ones appear after the **09:00-UTC cron** — so "nothing today" for a future anchor is
    correct, and a same-day set shows within a minute (the assign materializes the first one on the
    spot). Have the assignee refresh their My Tasks tab.
-2. *"It stopped generating on its own"* — expected when the **job closed**: the cron auto-stops a
-   recurrence whose job is no longer active (audit `checklist_recurrence_autostop`). Re-open the job
-   (or re-assign the recurrence on an active job) to resume. Not a fault.
+2. *"It stopped generating on its own"* — expected in two cases, both audited
+   `checklist_recurrence_autostop` (check the `reason`): (a) `job_inactive` — the **job closed**;
+   re-open the job or re-assign on an active job to resume. (b) `template_empty` — the inspection
+   template it generates from was **emptied or deleted** (an admin removed its last item); the
+   generator stops rather than spawn empty, un-completable instances. Re-add items to the template
+   (or a different one) and re-assign the recurrence. Neither is a fault — both are the never-silent
+   self-heal.
 3. *"I want to stop a recurring checklist"* — admin Checklists page → "Recurring assignments" band →
    **Stop** (confirm). Future generation ends; already-created instances stay under Outstanding
    assignments (cancel those individually if needed). Non-destructive + reversible (re-assign to
