@@ -304,6 +304,13 @@ def _resolve_cells(sheet_id: int, values: dict[str, Any]) -> list[Any]:
     where `format_str` is a Smartsheet format-descriptor string) attaches that
     format to the matching cell. `_`-prefixed keys are meta — never treated as
     column titles (so callers can pass `_formats` alongside the cell values).
+
+    A list/tuple/set value targets a MULTI_PICKLIST column (PO S1 — ITS_Vendors
+    Supply Categories is the first): the API rejects a plain `value` there, so the
+    cell is built with a MULTI_PICKLIST `objectValue` instead. Elements are
+    stringified; unordered collections are sorted for a deterministic payload.
+    Picklist validation of the elements happens upstream in
+    `picklist_validation.validate_cell` (list-aware since the same change).
     """
     formats: dict[str, str] = values.get("_formats") or {}
     values = {k: v for k, v in values.items() if not k.startswith("_")}
@@ -319,6 +326,17 @@ def _resolve_cells(sheet_id: int, values: dict[str, Any]) -> list[Any]:
                 f"Column {title!r} not found in sheet {sheet_id}. "
                 f"Available: {sorted(columns)}"
             )
+        if isinstance(value, (list, tuple, set, frozenset)):
+            ordered = list(value) if isinstance(value, (list, tuple)) else sorted(value, key=str)
+            multi_cell = smartsheet.models.Cell()
+            multi_cell.column_id = columns[title]
+            multi_cell.object_value = smartsheet.models.MultiPicklistObjectValue(
+                {"values": [str(v) for v in ordered]}
+            )
+            if title in formats:
+                multi_cell.format = formats[title]
+            cells.append(multi_cell)
+            continue
         cell_dict: dict[str, Any] = {"column_id": columns[title], "value": value}
         if title in formats:
             cell_dict["format"] = formats[title]

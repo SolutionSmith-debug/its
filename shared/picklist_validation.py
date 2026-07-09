@@ -244,6 +244,47 @@ if sheet_ids.SHEET_WPR_HUMAN_REVIEW:
 if sheet_ids.SHEET_ACTIVE_JOBS_PROGRESS:
     REGISTRY[sheet_ids.SHEET_ACTIVE_JOBS_PROGRESS] = {"Active": _ACTIVE_LIFECYCLE_VALUES}
 
+# Purchase Orders sheets (ITS — Purchase Orders / Control; WS1 S1). Same placeholder-0
+# guard as above. Value sets are the write-gate side of the S1 builders — the builder
+# option lists MUST stay set-equal to these (tests/test_po_s1_sheets.py pins the parity;
+# the #247→#253 lesson: an option the builder has but the REGISTRY lacks blocks the
+# live write path with PicklistViolationError, invisible to mocks).
+#
+# PO_Log Status is LOWERCASE — it mirrors the D1 `purchase_orders.status` vocabulary
+# verbatim (D7 status machine: draft → pending_review → approved → sent; superseded /
+# canceled off-path). PO_Pending_Review reuses the WSR SENDING-inclusive Send Status
+# set (same shared send engine, same write-ahead-marker contract) and gates the P1b
+# Workstream tag to {po_materials} — a `safety`/`progress` tag on the PO review sheet
+# is contamination the send guard HARD-HELDs.
+_PO_LOG_STATUS_VALUES: frozenset[str] = frozenset({
+    "draft", "pending_review", "approved", "sent", "superseded", "canceled",
+})
+_PO_SEND_STATUS_VALUES: frozenset[str] = _WSR_SEND_STATUS_VALUES
+_PO_WORKSTREAM_VALUES: frozenset[str] = frozenset({"po_materials"})
+_VENDOR_REGION_VALUES: frozenset[str] = frozenset({"West", "Midwest", "East", "National"})
+_VENDOR_SUPPLY_CATEGORY_VALUES: frozenset[str] = frozenset({
+    "modules", "racking", "inverters", "electrical_bos", "wire", "switchgear",
+    "combiners", "transformers", "fencing", "aggregate", "concrete",
+    "tools_rentals", "other",
+})
+_VENDOR_TERMS_PROFILE_VALUES: frozenset[str] = frozenset({
+    "standard_17", "chint_vendor", "negotiated_gtc",
+})
+if sheet_ids.SHEET_ITS_VENDORS:
+    REGISTRY[sheet_ids.SHEET_ITS_VENDORS] = {
+        "Active": _ACTIVE_LIFECYCLE_VALUES,
+        "Region": _VENDOR_REGION_VALUES,
+        "Supply Categories": _VENDOR_SUPPLY_CATEGORY_VALUES,
+        "Default Terms Profile": _VENDOR_TERMS_PROFILE_VALUES,
+    }
+if sheet_ids.SHEET_PO_LOG:
+    REGISTRY[sheet_ids.SHEET_PO_LOG] = {"Status": _PO_LOG_STATUS_VALUES}
+if sheet_ids.SHEET_PO_PENDING_REVIEW:
+    REGISTRY[sheet_ids.SHEET_PO_PENDING_REVIEW] = {
+        "Send Status": _PO_SEND_STATUS_VALUES,
+        "Workstream": _PO_WORKSTREAM_VALUES,
+    }
+
 REGISTRY.update(_build_per_project_entries())
 
 # Re-export StrEnum members so callers can introspect the registry's source
@@ -287,12 +328,29 @@ def validate_cell(sheet_id: int, column: str, value: Any) -> None:
       - Registered sheet_id with unregistered column.
       - None values (blank cells).
       - Boolean values (CHECKBOX columns).
+
+    A list/tuple/set value is a MULTI_PICKLIST cell (S1 — ITS_Vendors Supply
+    Categories is the first): each element is validated individually against the
+    registered set, so one bad element fails the whole write pre-API (a stringified
+    `"['a', 'b']"` compare would spuriously reject every multi-value otherwise).
+    ELEMENTS get no bool/None pass-through — those rules exist for scalar CHECKBOX /
+    blank-cell semantics that have no meaning inside a multi-picklist, so a `True`,
+    `None`, or nested-collection element raises instead of slipping the gate (ops-stds
+    review finding on PR #492). An EMPTY collection passes — it clears the field,
+    the multi-value analogue of the scalar None.
     """
     sheet_columns = REGISTRY.get(sheet_id)
     if sheet_columns is None:
         return
     allowed = sheet_columns.get(column)
     if allowed is None:
+        return
+    if isinstance(value, (list, tuple, set, frozenset)):
+        for item in value:
+            if item is None or isinstance(item, (bool, list, tuple, set, frozenset)):
+                raise PicklistViolationError(sheet_id, column, item, allowed)
+            if str(item) not in allowed:
+                raise PicklistViolationError(sheet_id, column, item, allowed)
         return
     if not _is_validatable(value):
         return

@@ -154,7 +154,13 @@ SHEET_TIME_OFF           = 1506418040459140  # ITS — Human Review / 06 — Per
 # Canonical sources for shared/picklist_sync.py. Vendor + Subcontractor
 # stubs seeded from Bradley 1 FL parse 2026-05-17.
 
-SHEET_VENDOR_DB        = 7278304330469252  # ITS — Operations / Master Databases / Vendor DB
+# DECOMMISSIONED 2026-07-09 (PO S1): ITS_Vendors (SHEET_ITS_VENDORS, ITS — Purchase
+# Orders / Control) is the SOLE vendor source of record. This old Operations stub
+# sheet is retired-in-place — rows one-time-copied by scripts/migrations/
+# seed_its_vendors.py; ZERO Picklist_Sync_Config mappings referenced it (verified
+# live 2026-07-09), so nothing re-points. Constant retained ONLY for the seed's
+# one-time copy — do not add new readers or writers.
+SHEET_VENDOR_DB        = 7278304330469252  # ITS — Operations / Master Databases / Vendor DB (DECOMMISSIONED — see above)
 SHEET_SUBCONTRACTOR_DB = 1230913068289924  # ITS — Operations / Master Databases / Subcontractor DB
 SHEET_EQUIPMENT_MASTER = 4132885031243652  # ITS — Operations / Master Databases / Equipment Master
 
@@ -178,6 +184,22 @@ SHEET_ORPHANED_REPORTS = 2577084374273924  # Orphaned Reports (Part C; built 202
 FOLDER_PROGRESS_CONTROL = 2747740519196548  # ITS — Progress Reporting / Control (holds WPR_human_review + ITS_Active_Jobs_Progress)
 SHEET_WPR_HUMAN_REVIEW = 2798573438586756       # WPR_human_review — weekly progress review/approve/send surface (mirrors WSR_human_review; created 2026-06-29). NOTE: distinct from the decommissioned SHEET_WPR_PENDING_REVIEW above.
 SHEET_ACTIVE_JOBS_PROGRESS = 3079764947455876   # ITS_Active_Jobs_Progress — the progress workspace's own physical Active-Jobs sheet (job-tracker pivot, P2.5 Slice 4; created 2026-06-29). Carries Progress Reports Contact/CC + a Portal Job Key bridge column.
+
+# ---- Purchase Orders sheets (ITS — Purchase Orders / Control) ------------
+# WS1 S1 (Aug-7 delivery program). The EIGHTH standalone workspace — outside the
+# §23 audience-separation model, governed by §46: workspace membership = approval
+# authority (the share list IS the approver set the F22 gate verifies before
+# po_send dispatches; decision D11). The "Control" folder holds the three
+# cross-job PO sheets; PO PDFs live in Box. ITS_Vendors is the SOLE vendor SoR
+# (supersedes SHEET_VENDOR_DB above); PO_Log MIRRORS the authoritative D1 PO
+# store; PO_Pending_Review is a WSR schema twin (S5 engine binds by title).
+# OPERATOR: flip each 0 after the matching builder prints the real ID (FLIP
+# precedes SEED — seed_its_vendors.py refuses to run while SHEET_ITS_VENDORS=0).
+WORKSPACE_PURCHASE_ORDERS = 6191118619568004  # ITS — Purchase Orders (created 2026-07-09 by build_purchase_orders_workspace.py)
+FOLDER_PO_CONTROL = 6619259473291140          # ITS — Purchase Orders / Control
+SHEET_ITS_VENDORS = 5404286845407108        # ITS_Vendors — vendor SoR (created 2026-07-09 by build_its_vendors_sheet.py)
+SHEET_PO_LOG = 3152487031721860             # PO_Log — operator-visible ledger mirror of D1 (created 2026-07-09 by build_po_log_sheet.py)
+SHEET_PO_PENDING_REVIEW = 1816168087113604  # PO_Pending_Review — PO review/approve/send surface (created 2026-07-09 by build_po_pending_review_sheet.py)
 
 
 # ---- Reverse-lookup maps ------------------------------------------------
