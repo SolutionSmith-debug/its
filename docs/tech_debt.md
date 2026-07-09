@@ -127,7 +127,10 @@ Multi-surface fan-out (enumerate ALL before claiming done — the recurring inco
 
 **Tag:** `field_ops`, `hours-log`, `smartsheet`, `ux`.
 
-## M2 Material List — one-way-up MVP diverges from §51's bidirectional model [OPEN 2026-07-05 — Seth reconciliation needed]
+## M2 Material List — one-way-up MVP diverges from §51's bidirectional model [RESOLVED 2026-07-06 — ratified into Op Stds v20]
+
+**Verified 2026-07-06:** the §51 divergence is reconciled — Op Stds **v20** folds the Material List as **one-way-up (phased delivery; M2b bidirectional receive deferred)**, blessing the shipped MVP as strictly-more-conservative (never writes operator-owned columns, never reads operator edits back). See `operational-standards.md` §51 body (~line 859) + the v20 changelog. `field_ops.fieldops_sync.materials_enabled` is now doctrine-UNBLOCKED (flipped live 2026-07-06). The original divergence note (below) is superseded — Path B (reconfirm one-way-up) was the outcome.
+
 
 **Surfaced by ops-stds-enforcer on PR #470 (WARN, not a BLOCK — merged with the divergence flagged).**
 Operational Standards §51 (`~/its-blueprint/doctrine/operational-standards.md`, canonical line ~847)
@@ -322,7 +325,10 @@ The actual per-daemon resolution logic (`poll_interval_config_key()` + `poll_int
 
 **Revisit when:** the operator decides a blocked customer-facing weekly send warrants an active page rather than a queue item — at which point add a dedicated CRITICAL push leg (a Send-Gate severity-posture decision, Seth-owned). **Tag:** `progress_reports`, `safety_reports`, `external-send-gate`.
 
-## Doctrine drift M6 — FM v8 cites in `safety_reports/intake.py` + `weekly_summary.py` docstrings [OPEN — pre-existing, flagged 2026-06-30]
+## Doctrine drift M6 — FM v8 cites in `safety_reports/intake.py` + `weekly_summary.py` docstrings [RESOLVED 2026-07-06]
+
+**Fixed 2026-07-06:** `safety_reports/intake.py`'s two `Foundation Mission v8` docstring cites bumped to `v11` (this PR). `safety_reports/weekly_summary.py` no longer needs a fix — it was **DELETED 2026-07-03** (superseded by the `weekly_generate` + `weekly_send` two-process split). The original entry (below) is superseded.
+
 
 **Pre-existing (not introduced this session).** `safety_reports/intake.py` and `safety_reports/weekly_summary.py` contain module-level docstrings citing "Foundation Mission v8"; the canonical version is FM v11. This is the doctrine-drift class M6 pattern (stale in-code version pin) surfaced in `docs/audits/2026-06-29_forensic-retrospective.md`. The CI doctrine-drift check (`scripts/check_doctrine_drift.py --strict`) does not catch in-code comment/docstring version pins — it checks YAML frontmatter and cited-section numbers.
 
@@ -330,7 +336,10 @@ The actual per-daemon resolution logic (`poll_interval_config_key()` + `poll_int
 
 **Tag:** `safety_reports`, `docs`, `doctrine`. **Revisit when:** next safety_reports maintenance pass.
 
-## `docs/session_logs/README.md` index missing the #370 session-log row [OPEN — pre-existing, flagged 2026-06-30]
+## `docs/session_logs/README.md` index missing the #370 session-log row [RESOLVED 2026-07-06 — moot, log present + correctly indexed]
+
+**Verified 2026-07-06 (stale premise):** the session log for that pass EXISTS and IS indexed — `docs/session_logs/2026-06-30_tech-debt-cleanup-alongside-phase2.md` (`related_prs: [363, 364, 365, 366, 367, 368]`); `scripts/regen_doc_indexes.py` confirms the auto-index is current (no changes). There is no separate "#370 row" by design — a session log's `related_prs` lists the PRs the session *covered* (#363–368), not the PR that *committed* the log (#370). Nothing to regen. The original entry (below) misread the committing-PR as a missing index row.
+
 
 **Pre-existing (not introduced this session).** The session-log index at `docs/session_logs/README.md` is missing the row for PR #370 (`eb110c1`), which committed the session log for the tech-debt cleanup pass alongside Phase-2 (#363–#368, 2026-06-30). The `scripts/regen_doc_indexes.py` script regenerates the index correctly; `--check` is warn-only in CI, so this does not block merges.
 
@@ -338,7 +347,10 @@ The actual per-daemon resolution logic (`poll_interval_config_key()` + `poll_int
 
 **Tag:** `docs`. **Revisit when:** next session log is written — verify index currency before committing.
 
-## §23/§24 topology text + version bump owed for the 7th workspace (ITS — Progress Reporting) [OPEN 2026-06-29]
+## §23/§24 topology text + version bump owed for the 7th workspace (ITS — Progress Reporting) [RESOLVED 2026-07-06 — ratified into Op Stds v20]
+
+**Verified 2026-07-06:** Op Stds **v20** syncs §23's enumeration and records the seventh standalone workspace (`ITS — Progress Reporting`) as the workspace-topology change the bump carries (the v17 sixth-workspace precedent). See `operational-standards.md` §23 (~line 168 + the workspace enumeration ~line 174: `Progress Reporting 5988851429730180`). The original owed-fix note (below) is superseded.
+
 
 **P2 (PR #362).** Standing up the `ITS — Progress Reporting` workspace makes it the **7th** standalone Smartsheet workspace. Op Stds **v19 §51** already names "the ITS — Progress Reporting workspace" explicitly (so its existence is doctrine-contemplated), but §23's topology *enumeration* still lists six and was not synced — the same gap the v17 bump closed when the Safety Portal (the 6th) was added. The `ops-stds-enforcer` review flagged this as a pre-merge gate; the operator approved (2026-06-29) landing P2 on §51's basis and deferring the §23 text-sync as a fast-follow.
 
