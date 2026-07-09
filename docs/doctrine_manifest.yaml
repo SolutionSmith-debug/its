@@ -152,9 +152,8 @@ narrated_controls:
     note: "its#341 item #4 exec follow-up; cutover_checklist.md is currently narration"
   section54_secret_pii_log_backstop:
     claim: "a redact/no-secret-in-logs test guards the error_log triple-fire + migration scripts (§54, distinct from gitleaks)"
-    status: dated_exception
-    exception_dated: 2026-07-06
-    note: "its#341 item #6 exec follow-up"
+    status: enforced
+    evidence: "tests/test_error_log_redaction_backstop.py"
   kill_switch_fail_open:
     claim: "kill_switch fails open on sheet-unreachable / row-missing / invalid-value (§1)"
     status: enforced
