@@ -40,6 +40,7 @@ from pathlib import Path
 from typing import TypeVar
 
 from . import sheet_ids, smartsheet_client
+from .redact import redact
 from .smartsheet_client import SmartsheetError
 
 _CORRELATION_ID_SUBJECT_PREFIX_LEN = 8
@@ -138,8 +139,11 @@ def _smartsheet_log(
                             "Timestamp": date.today().isoformat(),
                             "Severity": severity.value,
                             "Script": script,
-                            "Message": message,
-                            "Traceback": exc_info or "",
+                            # §54 secret/PII backstop — ITS_Errors is a Smartsheet (off-Mac) egress
+                            # surface of the triple-fire, so redact the two free-text cells. The
+                            # on-Mac local log file (written by _local_log) is left raw for forensics.
+                            "Message": redact(message),
+                            "Traceback": redact(exc_info),
                             "Correlation_ID": correlation_id or "",
                         }
                     ],
@@ -546,6 +550,13 @@ def _alert_critical(
     try:
         if correlation_id is None:
             correlation_id = str(uuid.uuid4())
+
+        # §54 secret/PII backstop — redact ONCE at this single choke point so BOTH egress legs are
+        # covered: the Resend subject/body composed just below, AND the message/exc_info handed to
+        # `_fire_sentry_leg`. (The ITS_Errors row is redacted in `_smartsheet_log`; the on-Mac local
+        # log file is intentionally left raw.) A backstop, not a guarantee — see `shared/redact.py`.
+        message = redact(message)
+        exc_info = redact(exc_info)
 
         # Subject + body composed once and shared with Resend. Sentry uses
         # the raw structured fields (`_fire_sentry_leg` constructs its own
