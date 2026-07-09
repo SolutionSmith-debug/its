@@ -195,11 +195,11 @@ SHEET_ACTIVE_JOBS_PROGRESS = 3079764947455876   # ITS_Active_Jobs_Progress — t
 # store; PO_Pending_Review is a WSR schema twin (S5 engine binds by title).
 # OPERATOR: flip each 0 after the matching builder prints the real ID (FLIP
 # precedes SEED — seed_its_vendors.py refuses to run while SHEET_ITS_VENDORS=0).
-WORKSPACE_PURCHASE_ORDERS = 0  # flip after build_purchase_orders_workspace.py
-FOLDER_PO_CONTROL = 0          # ITS — Purchase Orders / Control
-SHEET_ITS_VENDORS = 0          # ITS_Vendors — vendor SoR (build_its_vendors_sheet.py)
-SHEET_PO_LOG = 0               # PO_Log — operator-visible ledger mirror of D1 (build_po_log_sheet.py)
-SHEET_PO_PENDING_REVIEW = 0    # PO_Pending_Review — PO review/approve/send surface (build_po_pending_review_sheet.py)
+WORKSPACE_PURCHASE_ORDERS = 6191118619568004  # ITS — Purchase Orders (created 2026-07-09 by build_purchase_orders_workspace.py)
+FOLDER_PO_CONTROL = 6619259473291140          # ITS — Purchase Orders / Control
+SHEET_ITS_VENDORS = 5404286845407108        # ITS_Vendors — vendor SoR (created 2026-07-09 by build_its_vendors_sheet.py)
+SHEET_PO_LOG = 3152487031721860             # PO_Log — operator-visible ledger mirror of D1 (created 2026-07-09 by build_po_log_sheet.py)
+SHEET_PO_PENDING_REVIEW = 1816168087113604  # PO_Pending_Review — PO review/approve/send surface (created 2026-07-09 by build_po_pending_review_sheet.py)
 
 
 # ---- Reverse-lookup maps ------------------------------------------------
