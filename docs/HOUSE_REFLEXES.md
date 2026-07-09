@@ -46,6 +46,13 @@ that. Loaded via `@import` from `CLAUDE.md`'s START-HERE block.
   `portal-worker-security-reviewer`, `ops-stds-enforcer`) repeatedly has. (Forensic classes #9/#14.)
 - **A textually-clean auto-merge is not semantically proven** — re-run the FULL CI gate on the *rebased* tree,
   never trust a conflict-free rebase of overlapping PRs.
+- **After `git add`, verify intended NEW files are actually TRACKED — a green CI on a missing test proves
+  nothing.** `.gitignore` can silently swallow a file: a `*secret*`/`*key*`/`*.pem`-named **test** matches a
+  credential-blocking ignore rule, so `git add -A` drops it, `git status` says "clean", and CI runs green
+  because the test *was never collected* — the control ships absent while the manifest claims `enforced`.
+  `git ls-files <path>` (or `git ls-tree HEAD`) is the proof, not `git status`. (Bit the 2026-07-09 §54
+  backstop: `tests/test_secret_leak_backstop.py` matched `.gitignore *_secret*`; caught by adversarial
+  review, not the "green" gate. Fix: rename to dodge the pattern, e.g. `…_redaction_backstop.py`.)
 
 ## 3 — Git / worktree / deploy discipline (the live-tree is a loaded gun)
 
