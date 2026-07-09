@@ -364,6 +364,29 @@ describe("FieldOpsJobTracker — write UI", () => {
     expect((getByPlaceholderText("Safety contact name") as HTMLInputElement).value).toBe("Sam Safety");
   });
 
+  it("'Same as stakeholder' copies the stakeholder name/email into the safety contact, which then stays independently editable", async () => {
+    vi.mocked(useAuth).mockReturnValue(authWith(["cap.jobtracker.manage"]));
+    vi.mocked(api.fetchJobList).mockResolvedValue({ jobs: JOBS, next_cursor: null });
+    const { container, getByText, getByPlaceholderText } = render(
+      <FieldOpsJobTracker onBack={() => {}} />,
+    );
+    await waitFor(() => expect(container.querySelectorAll(".dash-card--click")).toHaveLength(2));
+
+    fireEvent.click(getByText("+ New job"));
+    fireEvent.change(getByPlaceholderText("Stakeholder name"), { target: { value: "Dana Owner" } });
+    fireEvent.change(getByPlaceholderText("Stakeholder email"), { target: { value: "dana@ex.com" } });
+
+    fireEvent.click(getByText("Same as stakeholder"));
+
+    expect((getByPlaceholderText("Safety contact name") as HTMLInputElement).value).toBe("Dana Owner");
+    expect((getByPlaceholderText("Safety contact email") as HTMLInputElement).value).toBe("dana@ex.com");
+
+    // After the copy the safety block is independently editable; stakeholder is unchanged.
+    fireEvent.change(getByPlaceholderText("Safety contact name"), { target: { value: "Sam Safety" } });
+    expect((getByPlaceholderText("Safety contact name") as HTMLInputElement).value).toBe("Sam Safety");
+    expect((getByPlaceholderText("Stakeholder name") as HTMLInputElement).value).toBe("Dana Owner");
+  });
+
   it("manager sees add-task / lifecycle + routing controls; the progress % is fully removed", async () => {
     const { container } = await openManagedDetail(["cap.jobtracker.manage"]);
     expect(container.querySelector('[aria-label="Add a task"]')).not.toBeNull();

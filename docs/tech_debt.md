@@ -236,11 +236,15 @@ chooses.
 
 **Tag:** `field_ops`, `spa`, `test-flake`, `ci`, `low`.
 
-## Job routing form — "Same as stakeholder" copy button on the Safety block [OPEN 2026-07-01]
+## Job routing form — "Same as stakeholder" copy button on the Safety block [RESOLVED 2026-07-06]
+
+**Built 2026-07-06 (this PR):** the "Same as stakeholder" button (copies Stakeholder name/email → the Safety contact) is on the Safety block in `RoutingFields`, mirroring the existing "Same as safety" handler; SPA test added in `FieldOpsJobTracker.test.tsx`. Gives the chain Stakeholder → Safety → Progress. The entry below is superseded.
 
 **Operator-parked 2026-07-01 (was mid-build, deferred).** The job-creation routing form (`safety_portal/src/pages/FieldOpsJobTracker.tsx`, `RoutingFields`) has a "Same as safety" copy button on the **Progress** contact block (copies Safety → Progress, ~line 179). Add a parallel **"Same as stakeholder"** button on the **Safety** contact block (~:158-161) that copies the Stakeholder name/email into the Safety contact, and KEEP "Same as safety" on Progress — giving the chain Stakeholder → Safety → Progress for the common single-contact case. Small SPA change: mirror the existing copy handler + an SPA test. **Tag:** `field_ops`, `job-tracker`, `spa`, `ux`.
 
-## Remove the progress-% estimate system-wide [OPEN 2026-07-01 — SPA slider + Worker route done]
+## Remove the progress-% estimate system-wide [OPEN 2026-07-06 — SPA+route done; code-cleanup + column-drop DEFERRED as operator-reviewed]
+
+**Ready spec (verified against live main 2026-07-06; all refs = the `jobs.progress` %-estimate, NOT the sync-mirror `progress`/`progress_report`/`progress_contact`):** the SPA slider/bar + the `POST /:job_id/progress` route/handler are already gone (#403, 2026-07-03); the client create call no longer sends `progress`. **Remaining:** (1) `worker/fieldops_job_write.ts` — stop honoring `body.progress`: delete `const progress` (~L171) + the `clampPct` helper (~L46), bind `0` in the INSERT (~L238, keeps the column/shape → no positional renumber); (2) dead read surfaces (zero consumers): `worker/wire-types.ts` `JobRow.progress` (~L50) + `JobDetail.progress` (~L133), `worker/fieldops_jobtracker.ts` the two `SELECT j.progress` (~L48/L162) + row types (~L64/L173) + response maps (~L136/L338); (3) `src/lib/fieldops_jobtracker.ts` `progress?: number` in the createJob body type (~L107); (4) `src/lib/errorCopy.ts` dead `invalid_progress` (~L95); (5) `test/fieldops-job-write.test.ts` drop the `progress: 40` create + change the assert to `toBe(0)`. **DEFERRED (2026-07-06):** touches the worker CREATE-route INSERT (a trust boundary — `portal-worker-security-reviewer` DoD) + the destructive `ALTER TABLE jobs DROP COLUMN progress` (`0014`) migration is deploy-coupled; dead-code removal on a `NOT NULL DEFAULT 0` dormant column is low-value / moderate-risk, so it's parked for a supervised worker-reviewed PR rather than an autonomous one (the column is harmless left in place). Original note below.
 
 **Operator-locked 2026-07-01: the `jobs.progress` %-complete estimate is a misleading single-value guess and should be removed EVERYWHERE, not just omitted from the P6 rollup** (P6 already excludes it). A **multi-surface** removal — enumerate ALL consumers first (the multi-surface fan-out discipline):
 - ~~SPA: the progress bar / slider control in the Job Tracker~~ — DONE (#403 removed the UI; the `setJobProgress` client fn deleted R4-F5).
