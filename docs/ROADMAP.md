@@ -75,15 +75,24 @@ sheet_capacity wiring, GS2 prune heartbeat + Check V, Sentry reclassification, D
 - `REQUIRED_CONFIG` startup logging (#336) · host-log prune (time-bomb #14) · watchdog hang-killer · confirm
   the installed plists' `RunAtLoad` is actually active · `brief-validator` scaffold-wiring (#341).
 
-### Track 4 — Operator PDF documentation program (P1 / A8)
-A guide / manual / troubleshooting tree per ITS function (portal flows, ~17 Smartsheet operator surfaces, the
-daemons + CLIs); the `ITS_Config` data-dictionary PDF; the §6a enablement-doc DoD per progress-reporting slice;
-a doc-currency mechanism (PDFs drift as the form editor publishes). Enabling precondition for the
-distributed-Evergreen-operator model. *(Distinct from the internal CC-session context system — this is operator-facing.)*
+### Track 4 — Operator PDF documentation program (P1 / A8) — *delivery-critical subset by Aug 7*
+Near-term scope = the **delivery-critical PDF set** of the Aug-7 program
+(`docs/2026-07-09_aug7_delivery_program.md` WS3): the md→branded-PDF pipeline (`docs_pdf/` +
+`scripts/build_docs_pdfs.py` + the §6a `docs/enablement/manifest.yaml`), 12 PDFs (6 existing guides + safety-forms
++ admin-dashboard + PO builder + ITS Owner's Manual + auto-generated `ITS_Config` data dictionary + operator-dashboard
+guide), SHA-256 doc-currency check wired into CI (warn) + the cutover checklist. Full every-function A8 coverage
+continues post-delivery on the same pipeline. *(Distinct from the internal CC-session context system — this is
+operator-facing.)*
 
-### Track 5 — Evergreen PRODUCTION cutover (Phase 1.4/1.5 hardening → live tenant)
-`/api/login` rate-limiting + PBKDF2 (paid-plan/Cloudflare config); attachment screening Layers 1-3
-(Email-Triage-owned Invariant-2 Layer 6; ClamAV prerequisite); then the sandbox → production tenant cutover.
+### Track 5 — Aug-7 Evergreen DELIVERY (production cutover + PO workstream + dashboard + docs)
+**The umbrella for everything through 2026-08-07 — canonical program: `docs/2026-07-09_aug7_delivery_program.md`**
+(decision register D1–D18, WS1 Purchase-Order generator slices S0–S8, WS2 operator dashboard, WS3 docs subset per
+Track 4, WS4 host migration + tenant cutover + Aug-7 runbook, master calendar, risk register, Day-1 operator list).
+Highlights: old-MBP production host provisioned Jul 10 / one-way flip Jul 13 / burn-in through the Jul 25–30 gap;
+Phase-1.4 residue = Paid-plan-or-PBKDF2 verdict + WAF `/api/login` rate-limit + ClamAV/EICAR; tenant cutover Aug 3
+(§53-gated via `scripts/verify_cutover.py`); dress rehearsals Aug 4–5; delivery + Step-8 acceptance Aug 7 (handover
+v10 amendment: Tier-2 clearance moves post-delivery, D17). Attachment screening Layers 1-3 for *email* stays
+Email-Triage-owned (unchanged).
 
 ---
 
@@ -91,7 +100,8 @@ distributed-Evergreen-operator model. *(Distinct from the internal CC-session co
 - **Canonical-Evergreen Smartsheet integration + PJOB→JOB reconciliation** — DEFERRED indefinitely; unblock =
   Seth gains read access to the canonical Evergreen schema. (ITS-owned SoR write-back is *not* blocked — §50/§51.)
 - **Doctrine** §23/§24 seven-workspace topology text + any §-adds — Seth-owned, version-bump.
-- **Future workstreams:** URS-Marine (Customer 2, active — briefs B1–B5); Purchase Orders; Subcontracts; Email
+- **Future workstreams:** URS-Marine (Customer 2, active — briefs B1–B5); ~~Purchase Orders~~ → **promoted to
+  Track 5** (Aug-7 program WS1; the RFQ stage + Subcontracts remain future — first post-delivery builds); Email
   Triage (owns Invariant-2 Layer 6 — preserve the email code seed); AI Employee (Phase 3+; vector store → Phase 4).
 - **Small feature / tech-debt:** publish rollback-UI picker; form-editor S1 per-item authoring; HTML email for
   weekly_send; time-entry personnel picker; finish `jobs.progress` %-removal (D1 column drop); `recipient_health`
