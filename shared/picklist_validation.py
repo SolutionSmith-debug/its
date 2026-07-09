@@ -333,6 +333,11 @@ def validate_cell(sheet_id: int, column: str, value: Any) -> None:
     Categories is the first): each element is validated individually against the
     registered set, so one bad element fails the whole write pre-API (a stringified
     `"['a', 'b']"` compare would spuriously reject every multi-value otherwise).
+    ELEMENTS get no bool/None pass-through — those rules exist for scalar CHECKBOX /
+    blank-cell semantics that have no meaning inside a multi-picklist, so a `True`,
+    `None`, or nested-collection element raises instead of slipping the gate (ops-stds
+    review finding on PR #492). An EMPTY collection passes — it clears the field,
+    the multi-value analogue of the scalar None.
     """
     sheet_columns = REGISTRY.get(sheet_id)
     if sheet_columns is None:
@@ -342,7 +347,10 @@ def validate_cell(sheet_id: int, column: str, value: Any) -> None:
         return
     if isinstance(value, (list, tuple, set, frozenset)):
         for item in value:
-            validate_cell(sheet_id, column, item)
+            if item is None or isinstance(item, (bool, list, tuple, set, frozenset)):
+                raise PicklistViolationError(sheet_id, column, item, allowed)
+            if str(item) not in allowed:
+                raise PicklistViolationError(sheet_id, column, item, allowed)
         return
     if not _is_validatable(value):
         return

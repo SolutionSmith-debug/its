@@ -138,6 +138,21 @@ def test_validate_cell_list_value_rejects_bad_element():
     assert exc.value.value == "BOGUS"
 
 
+def test_validate_cell_list_elements_get_no_scalar_pass_through():
+    """Elements are NOT eligible for the scalar bool/None pass-through (those rules
+    are CHECKBOX/blank-cell semantics with no multi-picklist meaning), and nested
+    collections raise instead of reaching _resolve_cells as garbage strings —
+    the PR #492 ops-stds review finding."""
+    for bad in (True, None, ["nested"]):
+        with pytest.raises(PicklistViolationError):
+            validate_cell(sheet_ids.SHEET_ERRORS, "Severity", ["INFO", bad])
+
+
+def test_validate_cell_empty_list_passes():
+    """An empty collection clears the field — the multi-value analogue of scalar None."""
+    validate_cell(sheet_ids.SHEET_ERRORS, "Severity", [])
+
+
 def test_corpus_seed_values_within_registry_sets():
     """The seed can never drift outside its own write-gate: every corpus vendor's
     Region / Supply Categories / Default Terms Profile value is registry-allowed."""
