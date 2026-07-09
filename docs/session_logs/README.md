@@ -97,6 +97,7 @@ outside the sentinel block.
 | Date | Type | Status | Workstream | Title | PRs |
 |------|------|--------|------------|-------|-----|
 | 2026-06-10 | session_log | active | safety_portal | [Session — Agent Optimization (Brief 2) + Safety Portal Hardening (Brief 1)](2026-06-10_agent-optimization-and-portal-hardening.md) | #260, #261, #263, #264, #265, #266 |
+| 2026-07-09 | session_log | closed | field_ops | [Session — field-ops mirror-suite full activation + items 1–4 close-out batch + §54 secret-leak backstop](2026-07-09_fieldops-activation-plus-items-1-4-closeout-and-section54.md) | #487, #488, #489 |
 | 2026-07-06 | session_log | closed | field_ops | [Session — M3 Slice 2 Material Incidents ledger: build → deploy → activate (PR #483), plus close-out prep](2026-07-06_m3-slice2-material-incidents-build-deploy-activate.md) | #483 |
 | 2026-07-04 | session_log | closed | progress_reporting | [Session — Progress-Reporting go-live (Track 0) + P7 Slice 1 Hours Log up-sync held on §51, cleared via v19.x rider (exec #459/#461/#463, blueprint #58)](2026-07-04_progress-golive-p7-hours-log-and-s51-rider.md) | #459, #461, #463 |
 | 2026-07-03 | session_log | closed | field_ops | [Session — Complete-state hardening + unbounded-growth audit + design-table execution + live-report fixes (PRs #434–#456, blueprint #55)](2026-07-03_complete-state-growth-audit-design-table.md) | #405, #434, #435, #436, #437, #438, #439, #440, #442, #443, #415, #444, #445, #446, #447, #448, #449, #450, #451, #452, #453, #454, #455, #456 |
