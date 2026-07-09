@@ -26,6 +26,7 @@ filename, frontmatter, and section conventions across every doc type.
 <!-- BEGIN AUTO-INDEX -->
 | Date | Type | Status | Workstream | Title | PRs |
 |------|------|--------|------------|-------|-----|
+| 2026-07-09 | brief | active | _–_ | [Aug-7 Evergreen Delivery Program — PO Workstream, Operator Dashboard, Docs Program, Production Cutover](2026-07-09_aug7_delivery_program.md) | _–_ |
 | _–_ | reference | active | docs | [ITS House Reflexes — the standards that keep us honest](HOUSE_REFLEXES.md) | _–_ |
 | _–_ | reference | active | docs | [ITS Roadmap — the single marching order](ROADMAP.md) | _–_ |
 | _–_ | _–_ | active | safety_portal | [G2.3 — Scoped crew EDIT/RETIRE + non-destructive time AMEND/VOID (mini-spec)](g23_crew_time_spec.md) | _–_ |
