@@ -162,6 +162,20 @@ function RoutingFields({ routing, onChange }: { routing: RoutingForm; onChange: 
       <fieldset className="dash-section" aria-label="Safety Reports">
         <legend className="dash-card__label">Safety Reports</legend>
         <div className="dash-row">
+          <button
+            type="button"
+            className="btn--secondary"
+            onClick={() =>
+              set({
+                safety_contact_name: routing.stakeholder_name,
+                safety_contact_email: routing.stakeholder_email,
+              })
+            }
+          >
+            Same as stakeholder
+          </button>
+        </div>
+        <div className="dash-row">
           <input value={routing.safety_contact_name} onChange={(e) => set({ safety_contact_name: e.target.value })} placeholder="Safety contact name" maxLength={256} />{" "}
           <input value={routing.safety_contact_email} onChange={(e) => set({ safety_contact_email: e.target.value })} placeholder="Safety contact email" maxLength={320} />
         </div>
