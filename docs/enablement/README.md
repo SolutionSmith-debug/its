@@ -14,6 +14,7 @@ convention has no separate `enablement` type; see
 <!-- BEGIN AUTO-INDEX -->
 | Date | Type | Status | Workstream | Title | PRs |
 |------|------|--------|------------|-------|-----|
+| 2026-07-09 | operations | active | _–_ | [Enablement — Purchase Orders in the ITS Portal · Op Stds §6/A8](purchase_orders.md) | _–_ |
 | 2026-07-01 | operations | active | field_ops | [Enablement — Field-Ops daily report (SOP form) + assigned inspections · Op Stds §6/A8](fieldops_checklists.md) | _–_ |
 | 2026-07-01 | operations | active | field_ops | [Enablement — The Manager role (crew leads) · Op Stds §6/A8](manager_tier.md) | _–_ |
 | 2026-07-01 | operations | active | field_ops | [Enablement — The Subcontractor tier · Op Stds §6/A8](subcontractor_tier.md) | _–_ |

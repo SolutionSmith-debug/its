@@ -1,0 +1,267 @@
+---
+type: operations
+date: 2026-07-09
+status: active
+related_prs: []
+workstream: null
+tags: [runbook, successor-remediation, purchase_orders, po_send, external-send-gate, f22, tier-2, tier-3]
+---
+
+# Runbook — PO send daemon (`po_send`) (a PO row stuck HELD / blocked / "contamination") (Successor-Remediation, Op Stds §43)
+
+A §43 successor-remediation entry for the **Successor-Operator** (a trained operator who runs
+Claude Code and reads Smartsheet rows + alert emails, not code). The §42 code-reader
+rationale lives in the docstrings of `po_materials/po_send.py` (the `_VendorRecipientLookup`
++ `_PoEnvelope` bindings) and `po_materials/po_send_poll.py` (the thin poller over
+`send_poll_core`).
+
+`po_materials/po_send.py` is the **send half of the External Send Gate** (FM v11 Invariant 1)
+for a NEW external audience: the **vendor**. It is the PO instantiation of the shared send
+engine (`safety_reports.weekly_send.send_one_row`) — the SAME dispatch logic as safety
+weekly-send and progress-send, a different `SendConfig`. The poller
+`po_materials/po_send_poll.py` (launchd `org.solutionsmith.its.po-send`, every 15 min)
+discovers approved `PO_Pending_Review` rows, runs the **F22** approval-attestation gate
+against the **ITS — Purchase Orders** workspace (§46 — membership = PO approval authority,
+decision D11), stamps the verified approver, then dispatches each to the sender. The sender
+refuses to transmit a half-formed, wrong-workstream, or numberless PO — it marks the row
+`Send Status = HELD` instead. From `procurement@`. Recipients resolve at send time from
+`ITS_Vendors`, never the display columns.
+
+> **The both-rule (FM v11 / Op Stds §44).** A fault is Tier-2-eligible (the Successor-Operator
+> may self-repair) only if it is **documented here AND low-capability-class**. Anything
+> touching the **External Send Gate, secrets/auth, doctrine, or code** is FIXED high-class →
+> escalate to Seth regardless of documentation.
+
+> **The External Send Gate boundary — non-negotiable.** The Successor-Operator **NEVER**
+> bypasses the F22 gate, **NEVER** edits the approval columns (`Send Now` / `Approve for
+> Scheduled Send` / `Approved By` / `Approved At`), and **NEVER** enables a send path without
+> the two fail-closed smokes (`smoke_test_po_send.py` + the live e2e). To re-send a HELD row
+> the operator fixes the *underlying data* (a vendor email, a Notes tag) and re-approves the
+> row through the normal checkbox flow — the operator never marks a row SENT or forces a send.
+
+## Symptom A — a PO row stuck HELD `held_no_recipient` (blank / unknown vendor email)
+
+### Symptom
+
+- A `PO_Pending_Review` row at **Send Status = HELD**, outcome `held_no_recipient`. No email
+  went out (the engine never sends a PO to nobody).
+
+### What it means
+
+The sender could not resolve a TO address for the row's **Vendor Key** (which rides the
+"Job ID" protocol column on this WSR-schema-twin sheet). Either the Vendor Key is **unknown**
+in `ITS_Vendors`, or the vendor's **Contact Email** cell is **blank**. Recipients are read
+LIVE from `ITS_Vendors` at each dispatch — the display columns are never used.
+
+### The low-class Tier-2 repair (a data fix)
+
+1. Read the HELD row's **"Job ID"** cell — that is the **Vendor Key** (`VEN-######`).
+2. Open `ITS_Vendors`, find the row with that Vendor Key.
+   - **No such row** → the key is unknown → that is a vendor-record / routing question →
+     **escalate to Seth** (do not invent a vendor row to force a send).
+   - **Row exists but Contact Email blank** → fill the **Contact Email** cell with the correct
+     vendor address.
+3. Re-send by clearing the hold: set the row's **Send Status** back to `PENDING` and re-check
+   the driving approval checkbox (`Send Now` or `Approve for Scheduled Send`). The next poll
+   cycle re-dispatches (the poller skips HELD rows, so the hold must be cleared).
+4. Confirm the send: the row flips to `SENT` with a `Sent At` stamp.
+
+## Symptom B — a PO row stuck HELD `held_missing_envelope` (numberless PO)
+
+### Symptom
+
+- A `PO_Pending_Review` row at **Send Status = HELD**, outcome `held_missing_envelope`. No
+  email went out.
+
+### What it means
+
+A PO email must carry its contractual number in the subject + attachment name. The number
+lives in the row's **Notes** cell as a machine tag (`po_id=<n>; po_number=<number>; …`),
+seeded by `po_poll`. If the Notes lost the `po_number=` tag, the envelope can't be built and
+the sender HELDs rather than mail a numberless PO to a vendor.
+
+### The low-class Tier-2 repair
+
+1. Look up the PO number from **`PO_Log`** (or the filed Box PDF) using the row's `po_id` (in
+   the same Notes cell) or the vendor/project.
+2. **Restore the `po_number=<number>` tag** in the Notes cell (keep the existing
+   `po_id=<n>` prefix; the format is `po_id=<n>; po_number=<number>`). The reviewer normally
+   never edits Notes — this is a targeted repair of a machine tag, not the approval columns.
+   *Alternative:* if the number can't be recovered cleanly, **cancel the PO in the portal and
+   re-draft it** (a fresh generate re-seeds Notes).
+3. Re-send: Send Status → `PENDING`, re-check the approval checkbox.
+
+### Escalate-to-Seth condition
+
+If Notes keep losing the `po_number` tag with no operator edit in between → a code defect →
+**escalate to Seth**.
+
+## Symptom C — a PO row stuck HELD `held_workstream_mismatch` (contamination), and/or CRITICAL `weekly_send.workstream_mismatch`
+
+### Symptom
+
+- A `PO_Pending_Review` row at **Send Status = HELD**, Notes carrying `[HELD: workstream
+  contamination …]`, and a CRITICAL alert `weekly_send.workstream_mismatch`. No email went
+  out.
+
+### What it means
+
+A row on the PO review sheet was tagged for a **different** workstream than `po_materials`
+(its `Workstream` cell is `safety` / `progress` / blank-but-wrong). The sender **blocked the
+send** (fail-closed) and HARD-HELD the row *before* the write-ahead SENDING marker — a
+wrong-workstream packet nearly transmitted from the PO sender. The guard worked.
+
+### Boundary — FIXED high-capability-class → escalate to Seth
+
+A contamination HELD touches the **External Send Gate**. The Successor-Operator does **NOT**
+self-repair it (do not clear the HELD, do not re-tag the row, do not re-approve).
+
+**Read-only checks before escalating:**
+
+1. Open the HELD row. Read the `Workstream` cell + the Notes contamination tag.
+2. Confirm this is the **PO** review sheet (`PO_Pending_Review`).
+3. Change nothing. Capture the row ID, the `Workstream` value, and the Vendor Key / project.
+
+**Escalate to Seth** — the likely cause is a code/config defect (a safety/progress row
+mis-filed onto the PO sheet, or a mis-bound `SendConfig`).
+
+## Symptom D — every PO send blocked; F22 `EMPTY_ALLOWLIST` / a wake CRITICAL
+
+### Symptom
+
+- No PO send dispatches; a wake alert names `EMPTY_ALLOWLIST` (or the send smoke's Stage 6
+  reports an empty approver set).
+
+### What it means
+
+F22 approver authority for PO sends is **membership of the `ITS — Purchase Orders`
+workspace** (§46, decision D11). If no individual approvers are shared into that workspace,
+the allowlist is empty and the gate **fails CLOSED** — every send is blocked. This is
+correct, not a bug; it is the expected state until the §46 share is done.
+
+### The low-class Tier-2 repair (a workspace-share action)
+
+1. Run `python scripts/smoke_test_po_send.py` — Stage 6 reports the approver count. An empty
+   set confirms this symptom.
+2. In the Smartsheet UI, share each intended PO approver **individually** into the
+   **`ITS — Purchase Orders`** workspace.
+3. Re-run the smoke — Stage 6 should now report a non-empty approver set. Sends dispatch on
+   the next cycle.
+
+If you lack workspace-share rights, or are unsure who the PO approvers should be → **escalate
+to Seth** (who-may-approve is a Send-Gate posture question).
+
+## Symptom E — a PO row stuck HELD `held_missing_pdf`
+
+### Symptom
+
+- A `PO_Pending_Review` row at **Send Status = HELD**, outcome `held_missing_pdf`. The row's
+  **"Compiled PDF"** cell (the Box link) is blank, so there is nothing to attach.
+
+### What it means
+
+`po_poll` files the PO PDF to Box and seeds the "Compiled PDF" link when it creates the
+review row, so a blank link is unusual. It usually means the PO was not fully filed, or the
+link was cleared.
+
+### What the Successor-Operator checks / does
+
+1. Confirm the PO actually filed: look in Box (the job's `Purchase Orders` folder) and in
+   `PO_Log` for that PO number. If the PDF exists, the review row lost its link — restore the
+   Box link into the **"Compiled PDF"** cell, then re-send (Send Status → PENDING, re-check
+   the checkbox).
+2. If the PO never filed (no Box PDF, no `PO_Log` row), the generation side didn't complete →
+   check the `po_poll` runbook ([`po_poll.md`](po_poll.md)); the PO may be queued or fenced
+   there. Do not fabricate a PDF.
+
+### Escalate-to-Seth condition
+
+A review row that exists with no filed PDF and no `po_poll` fence is anomalous → **escalate to
+Seth** if it recurs.
+
+## Symptom F — a PO row stuck HELD `held_oversized_packet`
+
+A single PO PDF is a few pages — it should never approach Graph's ~150 MB upload-session
+ceiling. This HELD is **inherited from the shared engine** but effectively cannot occur for a
+PO. If a PO row is genuinely HELD-oversized, that is anomalous (a corrupt/duplicated render)
+→ **escalate to Seth**; do not force the send. (For the photo-heavy weekly-report packets
+where this HELD is real, see `safety_weekly_send.md` / `progress_send.md`.)
+
+## Symptom G — a PO send FAILED + retry / retry exhaustion (Graph transport)
+
+### Symptom
+
+- A `PO_Pending_Review` row at **Send Status = FAILED** (not HELD), Notes carrying a
+  `[LAST_SEND_ERROR: …Graph…]` tag and an advancing retry counter; ITS_Errors
+  `weekly_send.graph_error` rows. Retry exhaustion (after `MAX_SEND_RETRIES`) fires a
+  CRITICAL.
+
+### Action — **None at Tier 2; escalate to Seth (Tier 3)**
+
+A failing send transport is the **External Send Gate** (fixed high-capability-class): do NOT
+force a send, edit Send Status, or touch the transport. Hand Seth the row + the
+`weekly_send.graph_error` detail. A single transient Graph blip self-heals on the next
+retry — only a **persistent** FAILED+retry across cycles (or retry exhaustion) is the
+escalation.
+
+## Symptom H — Graph auth failure / `procurement@` 403 (mailbox / Access Policy)
+
+### Symptom
+
+- A CRITICAL on Graph-auth failure, or send attempts 403 with a mailbox/permission error.
+
+### What it means
+
+Two causes: (a) the Graph app credentials failed (secrets/auth), or (b) the **from mailbox**
+(`po_materials.po_send.from_mailbox`, default `procurement@…`) does not exist on the tenant
+or is **not in the app's Application Access Policy scope**, so Graph 403s the send.
+
+### Boundary
+
+- **Graph credentials failing** = **secrets/auth = FIXED high-class → Seth**. The operator
+  does not touch app credentials.
+- **`procurement@` missing / not in the Access Policy** = an M365 admin task. Confirming the
+  mailbox exists and is in the Application Access Policy scope is a documented **cutover
+  checklist** item (see `cutover_checklist.md`). If the operator holds M365 admin, adding the
+  mailbox to the policy is a low-class admin action; if it involves the app registration /
+  policy scope and the operator is not the M365 admin → **escalate to Seth**.
+
+## Daemon won't run / appears stale
+
+- The poller is the launchd job **`org.solutionsmith.its.po-send`** (interval 15 min,
+  RunAtLoad). Confirm it is loaded:
+  `scripts/launchd/install.sh status org.solutionsmith.its.po-send`.
+- **The send gate is the seeded `po_materials.po_send.polling_enabled = false` row** — POs
+  ship **dark**: NO vendor email fires until the operator flips it at go-live. (The code
+  default if the row were missing is `true`, but the seed sets it `false`; belt-and-suspenders,
+  since nothing sends without an approved row AND approvers in the workspace regardless.) Flip
+  to `true` ONLY after (a) `smoke_test_po_send.py` passed on the mirror, (b) `procurement@`
+  exists on the tenant, (c) PO approvers are shared into the `ITS — Purchase Orders` workspace.
+  **Read the gate row's Description before flipping** (HOUSE_REFLEXES §5).
+- Other gates: `po_materials.po_send.scheduled_send_local` (the Mon-≥07:00-Pacific batch
+  window for `Approve for Scheduled Send`; `Send Now` dispatches out-of-band),
+  `po_materials.po_send.from_mailbox`, and `po_materials.po_send.poll_interval_seconds` (read
+  at install time, baked into the plist — not hot; re-load after changing).
+- **Staleness monitoring:** the marker slug `po_send_poll` **is** in `watchdog.TRACKED_JOBS`
+  (Check C, ~30-minute window). It WARNs until the daemon is loaded **and** the gate is
+  flipped — expected pre-cutover, not a fault.
+- Env prereqs: `python scripts/smoke_test_po_send.py` (kill switch, PO config binding, Graph
+  creds, PO_Pending_Review schema, F22 approver set, ITS_Daemon_Health).
+- **Reload discipline:** reload only against `~/its` on `main` (the live tree), never a
+  feature-branch worktree (`docs/operations/worktree_discipline.md`).
+
+## Why the guard is shaped this way (pointer to §42)
+
+The code-reader rationale lives in `po_materials/po_send.py` (every `SendConfig` field is
+required with no default, so PO cannot silently inherit safety's/progress's sheet, recipients,
+or tag; `recipient_lookup=_VendorRecipientLookup()` resolves TO only from `ITS_Vendors`;
+`envelope_builder=_PoEnvelope()` returns None → `held_missing_envelope` rather than a
+numberless PO) and in `safety_reports/weekly_send.py` (the shared contamination guard + the
+write-ahead SENDING marker that makes a post-send stamp failure non-re-dispatchable — no
+double-send). Companion generation-side runbook: [`po_poll.md`](po_poll.md). Operator/admin
+enablement guide: [`../enablement/purchase_orders.md`](../enablement/purchase_orders.md).
+
+## Owner
+
+`@solutionsmith`. New `po_send` failure modes that become Tier-2-reachable should be added
+here as additional Symptom → checks → action → escalate blocks, per Op Stds §43.

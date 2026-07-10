@@ -1,0 +1,441 @@
+---
+type: operations
+date: 2026-07-09
+status: active
+related_prs: []
+workstream: null
+tags: [runbook, successor-remediation, purchase_orders, po_poll, generation, hmac, tier-2, tier-3]
+---
+
+# Runbook — PO generation daemon (`po_poll`) (a queued PO stuck / fenced / dark) (Successor-Remediation, Op Stds §43)
+
+A §43 successor-remediation entry, written for the **Successor-Operator**: a trained
+operator who runs Claude Code and reads Smartsheet rows + alert emails, but does **not**
+read code. Claude loads the relevant block to drive a Tier-2 repair; the operator sees the
+ITS_Errors / ITS_Review_Queue / ITS_Daemon_Health evidence and approves. The §42
+code-reader rationale lives in the module docstring of `po_materials/po_poll.py` (the
+four-pass design + the receipt-is-last idempotency).
+
+`po_materials/po_poll.py` is the **generation half of the External Send Gate** (FM v11
+Invariant 1) for Purchase Orders — it is AI-free **and** customer-send-free. The Cloudflare
+Worker (`safety_portal/worker/po.ts`) validates + computes + HMAC-signs + queues each
+generated PO **send-free** in D1; this launchd daemon
+(`org.solutionsmith.its.po-poll`, every 90 s) is the Mac-side consumer. It runs **four
+passes**, each behind its own ITS_Config gate:
+
+1. **Drafts pass** (`po_materials.po_poll.polling_enabled`) — pull queued POs, HMAC-verify,
+   recompute + assert totals, double-check the PO number against `PO_Log`, snapshot the
+   vendor from `ITS_Vendors`, render the PO PDF, file to Box, append `PO_Log` +
+   `PO_Pending_Review`, then receipt back to the Worker (`mark-filed`) **last**.
+2. **Vendor down-sync pass** (`po_materials.po_poll.vendors_sync_enabled`) — project the full
+   `ITS_Vendors` SoR into the Worker's D1 cache (full-replace; the Worker's dirty-row fence
+   protects un-mirrored portal edits).
+3. **Vendor up-sync pass** (same gate) — mirror portal-edited vendors back up into
+   `ITS_Vendors` by Vendor Key.
+4. **Status pass** (`po_materials.po_poll.status_sync_enabled`) — mirror approve/SENT stamps
+   from `PO_Pending_Review` into the Worker's status cache + `PO_Log`.
+
+> **The both-rule (FM v11 / Op Stds §44).** A fault is Tier-2-eligible (the Successor-Operator
+> may self-repair) only if it is **documented here AND low-capability-class**. Anything
+> touching the **External Send Gate, secrets/auth, doctrine, or code** is FIXED high-class →
+> escalate to Seth (the Developer-Operator) regardless of documentation. For `po_poll` the
+> most common escalations are an **HMAC mismatch** (secrets/security), a **totals mismatch**
+> (code/security), and **missing/rejected credentials** (secrets/auth).
+
+## The one-shot flag file — how PERMANENT fences are retried
+
+Several failure modes below **permanently fence** a queued PO: the daemon routes it to
+`ITS_Review_Queue`, records the reason in `state/po_poll_flagged.json` as
+`{po_id: reason}`, and then **skips that PO every subsequent cycle** (so a single bad row
+does not re-spam the Review Queue every 90 s). The PO is **never filed, never sent, never
+marked-filed** — it stays queued in D1 for forensics.
+
+**Retry after fixing the cause = delete the PO's entry from `state/po_poll_flagged.json`**
+(or delete the whole file to retry all of them). The next cycle re-pulls the row and
+re-runs the pass. This is the canonical low-class remediation for the fence cases whose
+cause is operator-fixable (unknown vendor, terms, some collisions). It is **not**
+appropriate for HMAC / totals fences — those escalate to Seth (see below).
+
+---
+
+## Symptom 1 — fail-closed: missing PO credentials (`po_creds_missing`, CRITICAL)
+
+### Symptom
+
+- A CRITICAL alert + ITS_Errors row `Error = po_creds_missing`: *"fail-closed: missing PO
+  portal credentials … NOT polling until fixed."*
+- The `po_materials.po_poll` **ITS_Daemon_Health** row shows **ERROR**, summary "fail-closed:
+  PO portal credentials missing." No pass runs.
+
+### What it means
+
+The daemon resolves three things fail-CLOSED and refuses to run if **any** is absent: the
+Worker base URL (ITS_Config `safety_reports.portal.worker_base_url`), the PO bearer
+(Keychain `ITS_PORTAL_PO_TOKEN`), and the HMAC secret (Keychain `ITS_PORTAL_HMAC_SECRET`).
+This is correct fail-closed behaviour, not a crash.
+
+### Escalate-to-Seth condition — this is **secrets/auth = FIXED high-class → Seth**
+
+The Successor-Operator **touches no Keychain secrets**. The one operator-checkable low-class
+part: confirm the **ITS_Config `safety_reports.portal.worker_base_url`** row is present and
+non-blank (a documented config value — the same key `portal_poll` uses). If the base URL is
+set and the alert persists, the missing item is a **Keychain token** → **escalate to Seth**
+(re-seeding `ITS_PORTAL_PO_TOKEN` / `ITS_PORTAL_HMAC_SECRET` is secrets/auth work).
+
+---
+
+## Symptom 2 — PO bearer UNAUTHORIZED (`po_bearer_rejected`, CRITICAL)
+
+### Symptom
+
+- CRITICAL + ITS_Errors `Error = po_bearer_rejected`: *"PO bearer UNAUTHORIZED (401) …
+  cycle STOPPED until the token is fixed."* Daemon-health row → **ERROR**. Everything stays
+  queued/dirty (a safe re-attempt).
+
+### What it means
+
+The Worker rejected the PO bearer with a 401. The **same** bearer authorises every PO route,
+so the whole cycle stops rather than half-running. A bad/rotated bearer will **not** self-heal.
+
+### Escalate-to-Seth condition — **secrets/auth = FIXED high-class → Seth**
+
+The Keychain `ITS_PORTAL_PO_TOKEN` and the Worker's `PORTAL_PO_API_TOKEN` secret have
+diverged (a rotation on one side, a bad seed). **Escalate to Seth.** The operator does not
+re-seed tokens. (A single transient blip self-heals; a **persistent** `po_bearer_rejected`
+is the escalation.)
+
+---
+
+## Symptom 3 — a PO's HMAC verification FAILED (`po_hmac_failure`, CRITICAL, one-shot-flagged)
+
+### Symptom
+
+- CRITICAL + ITS_Errors `Error = po_hmac_failure` naming a `po_id` / `po_number`, and a
+  **security-flagged** `ITS_Review_Queue` row (Reason `security_trigger`): *"HMAC
+  verification FAILED … rejected, NOT rendered or filed."*
+- The PO is flagged in `state/po_poll_flagged.json` with reason `"hmac"` — never rendered,
+  never filed.
+
+### What it means
+
+The signed payload the Worker queued did not verify against the shared HMAC secret. Two
+causes: the D1 row was **tampered with**, or the **HMAC secret mismatched** between the
+Worker and the Mac. Both are trust-boundary events.
+
+### Escalate-to-Seth condition — **secrets/security = FIXED high-class → Seth (always)**
+
+Do **NOT** delete the flag entry to "retry" — a genuine HMAC failure re-rejects, and a
+secret mismatch or tampering is not operator-fixable. **Escalate to Seth** with the `po_id`
+/ `po_number`. (Repeated HMAC failures across many POs signal probing or a wholesale secret
+mismatch — same escalation, more urgent.)
+
+---
+
+## Symptom 4 — a PO's totals disagree with the signed values (`po_totals_mismatch` / `po_canonical_invalid`, fenced)
+
+### Symptom
+
+- ITS_Errors `Error = po_totals_mismatch` (or `po_canonical_invalid`) + a Review-Queue row
+  (Reason `mismatched-reference` for a totals mismatch): *"totals recompute disagrees with
+  the signed values …"*. Flagged `"totals"` / `"canonical"` — never filed.
+
+### What it means
+
+Before rendering, the daemon re-derives every line-extension, subtotal, tax, and total and
+asserts them against the signed values (the money on a legal document is never taken on
+faith). A mismatch means a **Worker/render math defect, schema drift, or D1 tampering**.
+`po_canonical_invalid` is the extreme case — a `NaN`/`Infinity` in a money field the Worker
+could never legitimately have signed.
+
+### Escalate-to-Seth condition — **code/security = FIXED high-class → Seth**
+
+A signed-but-wrong total is not a data typo the operator corrects — it is a code or security
+defect. Do **NOT** delete the flag entry. **Escalate to Seth** with the Review-Queue row (it
+names the field and both values, integers only). The PO stays fenced until the underlying
+defect is fixed.
+
+---
+
+## Symptom 5 — PO number collision (`po_number_collision`, fenced)
+
+### Symptom
+
+- ITS_Errors `Error = po_number_collision` + a Review-Queue row (Reason
+  `mismatched-reference`): *"PO number already in PO_Log and not ours … a hand-issued PO or
+  ledger defect; NOT filing a duplicate number."* Flagged `"collision"`.
+
+### What it means
+
+The number the Worker allocated already exists on a **`PO_Log`** row that is **not** this
+PO's own (a hand-issued PO keyed in during the transition, or a stale/wrong ledger row). The
+daemon refuses to file a **duplicate legal PO number**.
+
+### What the Successor-Operator checks / does (low-class reconciliation)
+
+1. Open `PO_Log` and find the existing row with that PO number. Is it a **genuine
+   hand-issued PO** (a real, separately-issued document) or a **stale/duplicate ledger row**?
+2. **Stale/wrong ledger row** → correct or remove that `PO_Log` row (a data fix), then delete
+   the PO's entry from `state/po_poll_flagged.json` so the next cycle files it.
+3. **Genuine hand-issued PO already carries that number** → the queued draft must not reuse
+   it. **Cancel the draft in the portal** (the PO builder's Cancel action) or coordinate a
+   re-draft under a new number, then delete the flag entry (a canceled draft drops off the
+   Worker's `/pending` queue on its own).
+
+### Escalate-to-Seth condition
+
+If the collision is neither a hand-issued PO nor a correctable ledger row (the numbering
+itself looks wrong), that is a **numbering/code** question → **escalate to Seth**.
+
+---
+
+## Symptom 6 — vendor not found (`po_vendor_unknown`, fenced)
+
+### Symptom
+
+- ITS_Errors `Error = po_vendor_unknown` + a Review-Queue row: *"vendor 'VEN-######' not
+  found in ITS_Vendors (the SoR) — cannot embed a Seller identity; fix the vendor row, then
+  clear this PO's entry from po_poll_flagged.json to retry."* Flagged `"vendor"`.
+
+### What it means
+
+The draft references a Vendor Key that has no row in `ITS_Vendors` (the vendor SoR). The PO
+embeds the vendor identity from the sheet at render time, so it cannot render without it.
+
+### What the Successor-Operator checks / does (low-class data fix)
+
+1. Open `ITS_Vendors`. Confirm no row carries that Vendor Key (`VEN-######`).
+2. Add or fix the vendor row (Vendor Name + Vendor Key + Contact Email at minimum). If the
+   vendor was edited in the portal, confirm the vendor up-sync pass ran (Symptom 10).
+3. **Delete the PO's entry from `state/po_poll_flagged.json`** → the next cycle re-renders
+   and files it.
+
+### Escalate-to-Seth condition
+
+Only if the vendor exists but still won't resolve (a schema/code problem) → Seth.
+
+---
+
+## Symptom 7 — terms resolution failed (`po_terms_error`, fenced)
+
+### Symptom
+
+- ITS_Errors `Error = po_terms_error` + a Review-Queue row: *"terms resolution failed …"*.
+  Flagged `"terms"`.
+
+### What it means
+
+The draft pinned a terms profile/version that the terms library can't produce — an **unknown
+profile id**, a **missing/edited terms file** (the immutable version files are sha256-verified
+on every load), or an **unfilled substitution token**. A PO must never go out with an
+unfilled blank, so it fences.
+
+### What the Successor-Operator checks / does
+
+1. Read the error detail on the Review-Queue row. An **unknown profile** the draft picked →
+   re-draft the PO in the portal with a valid terms profile, then delete the flag entry.
+2. A **hash mismatch / missing terms file**, or an "unfilled token" the operator did not
+   cause → this is a **deploy/code defect** (someone edited an immutable version file, or a
+   terms file didn't ship) → **escalate to Seth**. Do not edit terms files.
+
+---
+
+## Symptom 8 — permanent write reject (`po_permanent_reject`, fenced)
+
+### Symptom
+
+- ITS_Errors `Error = po_permanent_reject` + a Review-Queue row: *"permanent write reject
+  (PicklistViolationError / SmartsheetValidationError) …"*. Flagged `"permanent"`.
+
+### What it means
+
+A `PO_Log` or `PO_Pending_Review` write was rejected by a picklist / validation rule (a
+value not in the allowed set, or a field the sheet won't accept). This is usually a **schema
+or picklist-registry drift** between the code and the live sheet.
+
+### Escalate-to-Seth condition — **code/schema = FIXED high-class → Seth**
+
+The operator does not hand-edit picklists to satisfy the writer. **Escalate to Seth** with
+the Review-Queue detail. (If it is obviously a single bad **data** value the operator entered
+— e.g. an invalid Region on a vendor row — fixing that value and clearing the flag is
+low-class; anything about the picklist *definition* is code.)
+
+---
+
+## Symptom 9 — Box portal root unresolved (`po_box_root_unresolved`, left queued, NOT flagged)
+
+### Symptom
+
+- ITS_Errors `Error = po_box_root_unresolved`: *"Box portal root unresolved (ITS_Config …
+  unset) — PO <number> left queued until the root is configured."* The PO is **left queued**
+  (retried automatically) — it is **not** fenced/flagged.
+
+### What it means
+
+The shared Box mirror-tree root (ITS_Config, `safety_reports.box.portal_root_folder_id`) is
+unset, so the daemon can't find the folder to file the PO PDF into. This is the same key the
+submission mirror tree and item-photo screening use.
+
+### The low-class Tier-2 action
+
+**Set the documented ITS_Config value** `safety_reports.box.portal_root_folder_id` (workstream
+`safety_reports`) to the Box mirror-tree root folder ID. Setting a documented ITS_Config
+value is the canonical Tier-2 action. No flag to clear — the next cycle files the queued PO
+automatically.
+
+> "Claude, POs are logging `po_box_root_unresolved`. Confirm the ITS_Config
+> `safety_reports.box.portal_root_folder_id` row and walk me through setting it to the
+> mirror-tree root."
+
+### Escalate-to-Seth condition
+
+If the root is set correctly and the error persists → novel/code → Seth.
+
+---
+
+## Symptom 10 — vendor sync issues (down-sync / up-sync passes)
+
+These come from passes ② and ③ (gate `po_materials.po_poll.vendors_sync_enabled`). None
+blocks the drafts pass.
+
+- **`po_vendors_empty_projection` (WARN)** — `ITS_Vendors` projected **empty**, so the daemon
+  **refused** to down-sync (an empty set would wipe the portal cache). If the sheet genuinely
+  has vendors, this is a transient read miss (self-heals). If `ITS_Vendors` is genuinely
+  empty, it needs seeding (`scripts/migrations/seed_its_vendors.py`) — an **activation
+  step**, coordinate per the checklist below.
+- **`po_vendor_row_skipped` (WARN)** — a specific `ITS_Vendors` row was excluded from
+  down-sync (malformed Vendor Key `VEN-######` or blank Vendor Name). **Low-class data fix:**
+  correct that row's Vendor Key / Vendor Name.
+- **`po_vendor_upsert_permanent` (WARN)** — a portal-edited vendor could not be written up
+  into `ITS_Vendors` (bad Region / Supply Category / Default Terms Profile value); a
+  Review-Queue row names the Vendor Key + the error. **Low-class:** correct the offending
+  value. If the value looks valid but still rejects → picklist/schema code → Seth.
+- **`po_vendors_read_failed` / `po_vendors_sync_failed` / `po_vendors_pending_fetch_failed` /
+  `po_vendor_upsert_transient` (ERROR)** — transient Smartsheet/Box/transport failures; the
+  work is left dirty and retried next cycle. Only a **persistent** repeat matters → check
+  daemon health, the Box token (`box_token_freshness.md`), and the Smartsheet circuit breaker
+  (`circuit_breaker.md`).
+
+---
+
+## Symptom 11 — status pass issues (`po_status_*` / `po_log_stamp_failed`)
+
+From pass ④ (gate `po_materials.po_poll.status_sync_enabled`). This pass only **reports**
+state — it never authorises a send.
+
+- **`po_status_foreign_tag` (WARN)** — a row on `PO_Pending_Review` carries a non-`po_materials`
+  Workstream tag; the status pass ignores it (the **send** guard owns the HARD-HELD — see
+  `po_send.md` Symptom C). A foreign tag on the PO sheet is a routing/code signal → note it
+  and **escalate to Seth** if it recurs.
+- **`po_status_read_failed` / `po_status_sync_failed` / `po_log_stamp_failed` (ERROR)** —
+  transient read/POST/stamp failures; the ledger self-heals next cycle. Persistent repeats →
+  check daemon health + the circuit breaker.
+
+---
+
+## Symptom 12 — the daemon runs but does NOTHING (all gates false — expected pre-activation)
+
+### Symptom
+
+- Watchdog **Check C** WARNs that the `po_poll` marker is stale (past the ~8-minute window),
+  **and/or** there is no `po_materials.po_poll` activity at all. No errors.
+
+### What it means
+
+`po_poll` **ships dark**: all three pass gates
+(`po_materials.po_poll.polling_enabled` / `.vendors_sync_enabled` / `.status_sync_enabled`)
+seed to **`false`**. With every gate false the daemon is a deliberate **no-op** — it writes
+no heartbeat/marker each cycle, so Check C correctly WARNs *until at least one gate is
+flipped at go-live*. This is expected, not a fault (the register-and-activate-together
+pattern — the plist is loaded before the gate flip).
+
+### The low-class Tier-2 action — the go-live activation (read the gate Description FIRST)
+
+Follow the **deploy-activation checklist** below. Before flipping any gate, **read its
+ITS_Config Description cell** — each gate row spells out its preconditions (Worker deployed
+with the PO routes + `PORTAL_PO_API_TOKEN`, Keychain tokens seeded, the partial live smoke
+passed). Flipping a capability whose Description names an unmet precondition is a
+doctrine-divergent flip (**HOUSE_REFLEXES §5**) — satisfy the preconditions first, or if a
+Description says "do NOT flip until X," treat it as a doctrine precondition and **do not flip
+unilaterally → coordinate with Seth**.
+
+### Escalate-to-Seth condition
+
+If a gate is flipped `true` and the daemon still no-ops (or Check C still WARNs after the
+plist is loaded and a gate is on) → novel/code → Seth.
+
+---
+
+## Other quiet failure modes (low-severity, self-healing)
+
+- **`po_pending_fetch_failed` / `po_filing_transient` / `po_filing_unexpected` (ERROR)** —
+  transient failures fetching or filing; the PO is **left queued** and retried next cycle.
+  One bad PO never kills the cycle. Persistent repeats → daemon health + Box/Smartsheet
+  health.
+- **`po_config_unreadable` (CRITICAL, drafts pass aborted)** — `purchaser.json` or `tax.json`
+  is unreadable/broken. This is a **deploy/code defect** (a bad config file shipped) →
+  **escalate to Seth**; the operator does not edit these files.
+- **`po_flags_persist_failed` (WARN)** — the flag file couldn't be written (a lock timeout).
+  Fail-open: at worst a duplicate Review-Queue flag next cycle. No action unless persistent.
+- **`po_poll_lock_held` (INFO)** — a prior cycle still holds `state/po_poll.lock`; this cycle
+  skipped. Harmless once. **If it persists** (a crashed cycle left a stale lock), the
+  low-class fix is to clear the stale lock: stop the daemon, delete `state/po_poll.lock`, and
+  reload the daemon (see "Daemon won't run" below). If unsure, escalate.
+
+---
+
+## Daemon won't run / appears stale
+
+- The daemon is the launchd job **`org.solutionsmith.its.po-poll`** (interval 90 s,
+  RunAtLoad). Confirm it is loaded:
+  `scripts/launchd/install.sh status org.solutionsmith.its.po-poll`.
+- **Staleness monitoring:** the marker slug `po_poll` **is** in `watchdog.TRACKED_JOBS`
+  (Check C, ~8-minute window). It WARNs until the daemon is both loaded **and** at least one
+  gate is flipped (register + activate together) — that WARN is expected pre-cutover, not a
+  fault.
+- Runtime gates (all default `false`): `po_materials.po_poll.polling_enabled` /
+  `.vendors_sync_enabled` / `.status_sync_enabled`. The interval lives in
+  `po_materials.po_poll.poll_interval_seconds` (read at **install** time, baked into the
+  plist — not hot; re-load after changing it).
+- Env prereqs / partial smoke: `python scripts/smoke_test_po_generate.py` (kill switch, PO
+  config binding, ITS_Config, Worker reachability, sheet schemas) before relying on a cycle.
+- **Reload discipline:** never reload the daemon from a feature-branch worktree — reload only
+  against `~/its` on `main` (the live tree), per `docs/operations/worktree_discipline.md`.
+  A find-or-create-key change follows the unload → `poll_once()` from a worktree venv →
+  verify → reload pattern (`reference_find-or-create-key-live-smoke`).
+
+## Deploy-activation checklist (register + activate together)
+
+Run in order; each gate row's ITS_Config Description restates its own preconditions.
+
+1. **`git -C ~/its pull origin main`** to latest (never migrate/deploy from a stale checkout).
+2. **D1 migrations + Worker deploy:** apply `0042_po_vendors` / `0043_purchase_orders` /
+   `0044_po_capability`, deploy `safety_portal/worker` with the PO routes, and set the Worker
+   secret **`PORTAL_PO_API_TOKEN`**.
+3. **Keychain (Seth — secrets/auth):** seed **`ITS_PORTAL_PO_TOKEN`** (byte-equal to the
+   Worker's `PORTAL_PO_API_TOKEN`) and confirm **`ITS_PORTAL_HMAC_SECRET`** matches the
+   Worker's payload secret.
+4. **Config + data:** confirm the 8 `po_materials.*` rows are seeded
+   (`scripts/migrations/seed_po_materials_config.py` — all `false`); seed `ITS_Vendors`
+   (`scripts/migrations/seed_its_vendors.py`); set ITS_Config
+   `safety_reports.box.portal_root_folder_id` (the Box mirror-tree root).
+5. **Install + load** the plist (`scripts/launchd/install.sh load org.solutionsmith.its.po-poll`).
+6. **Partial live smoke:** `python scripts/smoke_test_po_generate.py` green on the mirror.
+7. **Flip the gates** (read each Description first): `vendors_sync_enabled` may go first (the
+   vendor passes are independent); flip `polling_enabled` **and** `status_sync_enabled`
+   together once the drafts path is verified. Flipping `polling_enabled` enables **filing
+   only** — the vendor **send** stays dark until `po_send`'s own gate flips (see
+   `po_send.md`).
+
+## Why the daemon is shaped this way (pointer to §42)
+
+The code-reader rationale lives in the `po_materials/po_poll.py` module docstring: the
+four-pass structure, the receipt-is-last idempotency (a crash anywhere before `mark-filed`
+re-pulls the row; every prior step is idempotent), the per-item fence vs the whole-cycle stop
+on a 401, and the one-shot flag set. Companion send-side runbook:
+[`po_send.md`](po_send.md). Operator/admin enablement guide:
+[`../enablement/purchase_orders.md`](../enablement/purchase_orders.md).
+
+## Owner
+
+`@solutionsmith`. New `po_poll` failure modes that become Tier-2-reachable should be added
+here as additional Symptom → checks → action → escalate blocks, per Op Stds §43.
