@@ -78,7 +78,13 @@ CREATE TABLE IF NOT EXISTS purchase_orders (
   vendor_key             TEXT    NOT NULL,                  -- soft ref → po_vendors.vendor_key
   created_by             TEXT    NOT NULL,                  -- authenticated session username
   created_at             INTEGER NOT NULL DEFAULT (unixepoch()),
-  updated_at             INTEGER NOT NULL DEFAULT (unixepoch())
+  updated_at             INTEGER NOT NULL DEFAULT (unixepoch()),
+  -- Monotonic draft-state version: bumped by every draft update (parent+lines rewrite).
+  -- generate() pins its final status-flip UPDATE on the version it read, so a concurrent
+  -- edit landing inside generate's read→sign→commit window makes the flip a clean 0-row
+  -- 'draft_changed' 409 instead of queueing a row whose HMAC signed a stale snapshot
+  -- (PR #494 security-review finding W5/W8).
+  draft_version          INTEGER NOT NULL DEFAULT 0
 );
 
 -- THE numbering-collision backstop (D7). Drafts carry revision NULL and are exempt (SQLite

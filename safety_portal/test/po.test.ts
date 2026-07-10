@@ -273,6 +273,26 @@ describe("draft → generate", () => {
     expect(lines!.n).toBe(2); // the original two, not the swapped one
   });
 
+  it("every draft update bumps draft_version; generate pins on the CURRENT version (stale-snapshot guard)", async () => {
+    // The W5/W8 review finding: generate's read→sign→commit window must refuse to queue a
+    // row whose HMAC signed a snapshot a concurrent edit replaced. The interleave itself
+    // isn't deterministically drivable through the route surface (D1 serializes statements,
+    // not requests), so this pins the two testable halves of the mechanism: the version
+    // bump on every update, and generate binding the CURRENT (not initial) version.
+    const created = await p(admin, "/api/po/drafts", draftBody());
+    const { id } = await json<{ id: number }>(created);
+    const v = async () =>
+      (await env.DB.prepare("SELECT draft_version v FROM purchase_orders WHERE id=?1").bind(id).first<{ v: number }>())!.v;
+    expect(await v()).toBe(0);
+    expect((await p(admin, `/api/po/drafts/${id}/update`, draftBody())).status).toBe(200);
+    expect(await v()).toBe(1);
+    expect((await p(admin, `/api/po/drafts/${id}/update`, draftBody())).status).toBe(200);
+    expect(await v()).toBe(2);
+    // generate succeeds against the twice-updated draft — it pinned draft_version=2, not 0.
+    const gen = await p(admin, `/api/po/drafts/${id}/generate`, EXPECTED);
+    expect(gen.status, await gen.clone().text()).toBe(200);
+  });
+
   it("'auto' tax FAILS CLOSED on a state missing from the table", async () => {
     const res = await p(admin, "/api/po/drafts", draftBody({ ship_to_state: "TX" }));
     expect(res.status).toBe(400);
@@ -409,8 +429,19 @@ describe("status-sync + supersession", () => {
     expect(b.supersedes_po_id).toBe(idA);
     const bLines = await env.DB.prepare("SELECT * FROM po_line_items WHERE po_id=?1 ORDER BY position").bind(idB).all();
     expect(bLines.results!.length).toBe(2); // cloned
+    // W4 regression (security-review BLOCKER): the clone's audit row must exist for a
+    // MULTI-line PO — auditStmtIfChanged placed after the line-items INSERT read changes()=2
+    // and silently skipped it. The audit stmt now sits directly after the parent INSERT.
+    const cloneAudit = await env.DB.prepare("SELECT * FROM audit_log WHERE action='po_supersede_clone'").all();
+    expect(cloneAudit.results!.length).toBe(1);
     // Old PO untouched until the successor ships (D7).
     expect((await poRow(idA)).status).toBe("sent");
+
+    // Double-submit guard: a second supersede while the successor draft is live is a 409
+    // naming the existing draft, not a sibling clone at the same supersede_seq.
+    const dup = await p(admin, `/api/po/${idA}/supersede`);
+    expect(dup.status).toBe(409);
+    expect((await json<{ error: string; existing_id: number }>(dup)).existing_id).toBe(idB);
 
     // generate the clone (its own family branch: supersede_seq=1 → revision 0)
     const gen = await p(admin, `/api/po/drafts/${idB}/generate`, EXPECTED);

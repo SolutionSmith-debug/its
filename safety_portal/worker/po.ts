@@ -758,7 +758,10 @@ export function registerPoRoutes(app: FieldopsApp, gates: PoGates): void {
             "delivery_contact_name=?11, delivery_contact_phone=?12, delivery_contact_email=?13, " +
             "sow_text=?14, delivery_instructions=?15, payment_terms_text=?16, terms_profile_id=?17, terms_version=?18, " +
             "subtotal_cents=?19, tax_mode=?20, tax_rate_bp=?21, tax_cents=?22, shipping_cents=?23, total_cents=?24, " +
-            "line_column_variant=?25, approver_name=?26, approver_title=?27, vendor_key=?28, updated_at=unixepoch() " +
+            "line_column_variant=?25, approver_name=?26, approver_title=?27, vendor_key=?28, updated_at=unixepoch(), " +
+            // draft_version covers the WHOLE draft snapshot (this route rewrites parent AND
+            // lines together) — generate() pins its status flip on the version it read.
+            "draft_version=draft_version+1 " +
             "WHERE id=?1 AND status='draft'",
         )
         .bind(
@@ -818,7 +821,7 @@ export function registerPoRoutes(app: FieldopsApp, gates: PoGates): void {
     const po = await c.env.DB
       .prepare("SELECT * FROM purchase_orders WHERE id = ?1 AND status = 'draft'")
       .bind(id)
-      .first<PoRow & { tax_mode: string; shipping_cents: number; status: string }>();
+      .first<PoRow & { tax_mode: string; shipping_cents: number; status: string; draft_version: number }>();
     if (!po) return c.json({ error: "not_found" }, 404);
     const lines = await loadLines(c.env.DB, id);
     if (lines.length === 0) return c.json({ error: "no_line_items" }, 422);
@@ -861,11 +864,16 @@ export function registerPoRoutes(app: FieldopsApp, gates: PoGates): void {
       res = await c.env.DB.batch([
         c.env.DB
           .prepare(
+            // Pinned on the draft_version read with the snapshot above: a concurrent draft
+            // update landing inside this handler's read→sign→commit window bumps the version,
+            // this UPDATE matches 0 rows, and the client gets a clean 'draft_changed' 409 —
+            // never a 'queued' row whose HMAC signed a stale snapshot (review finding W5/W8).
+            // D1 serializes statements, not whole requests; this is the request-level guard.
             "UPDATE purchase_orders SET revision=?2, po_number=?3, subtotal_cents=?4, tax_rate_bp=?5, " +
               "tax_cents=?6, total_cents=?7, hmac=?8, status='queued', updated_at=unixepoch() " +
-              "WHERE id=?1 AND status='draft'",
+              "WHERE id=?1 AND status='draft' AND draft_version=?9",
           )
-          .bind(id, revision, poNumber, totals.subtotal_cents, totals.tax_rate_bp, totals.tax_cents, totals.total_cents, hmac),
+          .bind(id, revision, poNumber, totals.subtotal_cents, totals.tax_rate_bp, totals.tax_cents, totals.total_cents, hmac, po.draft_version),
         auditStmtIfChanged(c, actor, "po_generate", String(id), {
           po_id: id, po_number: poNumber, total_cents: totals.total_cents,
         }),
@@ -876,7 +884,18 @@ export function registerPoRoutes(app: FieldopsApp, gates: PoGates): void {
       if (isUniqueViolation(e)) return c.json({ error: "po_number_conflict" }, 409);
       throw e;
     }
-    if ((res[0].meta.changes ?? 0) === 0) return c.json({ error: "not_draft" }, 409);
+    if ((res[0].meta.changes ?? 0) === 0) {
+      // Distinguish the two 0-row causes: the draft was edited under us (retry-able —
+      // refetch, re-verify totals, regenerate) vs the row left 'draft' entirely.
+      const now = await c.env.DB
+        .prepare("SELECT status, draft_version FROM purchase_orders WHERE id = ?1")
+        .bind(id)
+        .first<{ status: string; draft_version: number }>();
+      if (now && now.status === "draft" && now.draft_version !== po.draft_version) {
+        return c.json({ error: "draft_changed" }, 409);
+      }
+      return c.json({ error: "not_draft" }, 409);
+    }
     return c.json({ ok: true, id, po_number: poNumber, revision, totals });
   });
 
@@ -891,12 +910,25 @@ export function registerPoRoutes(app: FieldopsApp, gates: PoGates): void {
     const src = await c.env.DB.prepare("SELECT * FROM purchase_orders WHERE id = ?1").bind(id).first<Record<string, unknown>>();
     if (!src) return c.json({ error: "not_found" }, 404);
     if (src.status !== "sent") return c.json({ error: "not_supersedable" }, 409);
+    // Double-submit guard (review finding, idempotency): if a live successor draft already
+    // exists for this source, don't mint a sibling at the same supersede_seq — surface the
+    // existing one. Canceled successors don't block a fresh supersede.
+    const dup = await c.env.DB
+      .prepare("SELECT id FROM purchase_orders WHERE supersedes_po_id = ?1 AND status != 'canceled'")
+      .bind(id)
+      .first<{ id: number }>();
+    if (dup) return c.json({ error: "supersede_in_progress", existing_id: dup.id }, 409);
 
     const actor = c.get("session").username;
     const poUuid = crypto.randomUUID();
     // Clone parent + lines + audit in ONE batch (W4); the line clone is a single
     // INSERT..SELECT from the source's lines, po_id resolved via the po_uuid subquery
     // (constant per statement — see the create route's rationale).
+    //
+    // AUDIT ORDERING (review BLOCKER fix): auditStmtIfChanged's changes() guard reads the
+    // IMMEDIATELY PRECEDING statement, so the audit stmt sits directly after the PARENT
+    // clone INSERT (1 row iff the clone happened). Placed after the line-items INSERT it
+    // read the line COUNT and silently skipped the audit row for every multi-line PO.
     const res = await c.env.DB.batch([
       c.env.DB
         .prepare(
@@ -915,6 +947,7 @@ export function registerPoRoutes(app: FieldopsApp, gates: PoGates): void {
             "FROM purchase_orders WHERE id = ?1 AND status = 'sent'",
         )
         .bind(id, poUuid, actor),
+      auditStmtIfChanged(c, actor, "po_supersede_clone", String(id), { source_po_id: id, po_uuid: poUuid }),
       c.env.DB
         .prepare(
           `INSERT INTO po_line_items (po_id, ${LINE_COLS}) ` +
@@ -923,7 +956,6 @@ export function registerPoRoutes(app: FieldopsApp, gates: PoGates): void {
             "AND EXISTS (SELECT 1 FROM purchase_orders WHERE po_uuid = ?2)",
         )
         .bind(id, poUuid),
-      auditStmtIfChanged(c, actor, "po_supersede_clone", String(id), { source_po_id: id, po_uuid: poUuid }),
     ]);
     if ((res[0].meta.changes ?? 0) === 0) return c.json({ error: "not_supersedable" }, 409); // lost race
     const clone = await c.env.DB.prepare("SELECT id FROM purchase_orders WHERE po_uuid = ?1").bind(poUuid).first<{ id: number }>();
