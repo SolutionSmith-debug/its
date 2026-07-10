@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Config-editor actuator (§50 config editor, slice 2) — the SOLE privileged PO-config
+  actuator; the twin of the form-publish daemon against config_requests. Drains the
+  Cloudflare Worker's config_requests queue: GET /api/internal/config/pending -> claim ->
+  re-validate + write vs git HEAD (config_apply) -> commit + CI + merge -> deploy via the
+  operator's LOCAL wrangler (re-bundling the purchaser/tax/terms config the Worker imports
+  at BUILD time) + fast-forward ~/its + health check -> no-op archived terminal, stamping
+  the state machine at each milestone (CRITICAL triple-fire on any stall). Zero external-
+  customer-send capability (enrolled in tests/test_capability_gating.py GATED_SCRIPTS); the
+  privileged git/wrangler ops are subprocess to the operator's own toolchain — so the plist
+  PATH includes /opt/homebrew/bin + /usr/local/bin (git, gh, npm, wrangler).
+
+  HIGH-CAPABILITY: this daemon COMMITS + DEPLOYS config. Activation is operator-gated +
+  Developer-Operator co-resolution (it needs git push + Cloudflare/wrangler auth AND the
+  SEPARATE PORTAL_CONFIG_API_TOKEN tier in Keychain as ITS_PORTAL_CONFIG_TOKEN). RunAtLoad
+  is true (single-host reboot resilience) but the runtime gate
+  po_materials.config_actuator.polling_enabled ships FALSE — the operator flips it
+  consciously after the cred + smoke gate; a loaded-but-disabled daemon is a no-op.
+
+  Install (operator):
+    scripts/launchd/install.sh load org.solutionsmith.its.config-actuator
+  The installer substitutes __ITS_HOME__ before copying to ~/Library/LaunchAgents/. The
+  120s StartInterval is fixed (config edits are infrequent + the cycle is heavy); tune in-file.
+
+  See docs/runbooks/config_actuator.md (§43) for the operator runbook (stuck/failed recovery).
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>org.solutionsmith.its.config-actuator</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__ITS_HOME__/.venv/bin/python</string>
+        <string>-m</string>
+        <string>po_materials.config_actuator</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__ITS_HOME__</string>
+
+    <key>StandardOutPath</key>
+    <string>__ITS_HOME__/logs/launchd/config_actuator.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>__ITS_HOME__/logs/launchd/config_actuator.err.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>LANG</key>
+        <string>en_US.UTF-8</string>
+    </dict>
+
+    <key>StartInterval</key>
+    <integer>120</integer>
+
+    <!-- A2 (single-host resilience): RunAtLoad=true so this interval poll daemon
+         RESUMES immediately when launchd loads the agent after a reboot/OS-update,
+         then StartInterval re-fires on cadence. KeepAlive is intentionally absent:
+         ITS daemons are one-shot-per-fire, so KeepAlive=true would restart on exit
+         and destroy the interval cadence. -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>

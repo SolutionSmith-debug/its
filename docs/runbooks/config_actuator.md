@@ -1,0 +1,103 @@
+---
+type: operations
+date: 2026-07-10
+status: active
+related_prs: []
+workstream: po_materials
+tags: [runbook, successor-remediation, purchase_orders, config_actuator, config-editor, actuation, migrations, tier-2, tier-3]
+---
+
+# Runbook — Config-editor actuator (`config_actuator`) (a queued config edit stuck / failed / dark) (Successor-Remediation, Op Stds §43)
+
+A §43 successor-remediation entry, written for the **Successor-Operator**: a trained
+operator who runs Claude Code and reads Smartsheet rows + alert emails, but does **not**
+read code. Claude loads the relevant block to drive a Tier-2 repair; the operator sees the
+ITS_Errors / ITS_Daemon_Health evidence and approves. The §42 code-reader rationale lives in
+the module docstrings of `po_materials/config_actuator.py` (the state machine + the deploy
+gate) and `po_materials/config_apply.py` (the validation rules + the terms immutability
+contract).
+
+`po_materials/config_actuator.py` is the **§50 privileged config actuator** — the Mac-side
+twin of the form-publish daemon (`safety_reports/publish_daemon.py`), against the
+`config_requests` queue. An office admin edits versioned PO config in the portal (the
+Purchaser identity, the tax table, or a new terms version); the Cloudflare Worker
+(`safety_portal/worker/config.ts`) **validates + enqueues** the edit **send-free** in D1;
+this launchd daemon (`org.solutionsmith.its.config-actuator`, every 120 s) is the sole
+privileged actuator that makes it real. Per claimed request it:
+
+1. re-validates + **writes** the edit vs live git HEAD (`config_apply`) → stamps `validated`;
+2. commits on a `config/req-<id>-…` branch, opens a PR, waits for CI, **merges** → `tested`;
+3. **deploys** the Worker via the operator's LOCAL wrangler (re-bundling the config the
+   Worker imports at BUILD time) + fast-forwards `~/its` + a health ping → `live`;
+4. stamps a no-op terminal `archived` (there is no Box-archive analogue — the deploy already
+   re-bundled the config).
+
+Any stage failure stamps `failed(stage, reason)` and fires an operator **CRITICAL**.
+
+**This is HIGH-CAPABILITY** — it **commits + deploys code** and holds the SEPARATE
+`ITS_PORTAL_CONFIG_TOKEN` privilege tier. Its activation and every git/deploy/secret/legal-
+terms fault below are **FIXED high-capability-class → escalate to Seth** (the four fixed
+categories in the FM v11 / Op Stds §44 "both-rule": External Send Gate, secrets/auth,
+doctrine, **code changes** — deploy is a code change). The Successor-Operator's only Tier-2
+moves are the three low-class ones in Symptom A/B/C below.
+
+---
+
+## Symptom A — a config edit sits in the portal "queued" forever; ITS_Daemon_Health row `po_materials.config_actuator` shows `Status = OK` but nothing actuates
+
+**What it means.** The daemon is alive but its runtime gate is OFF. `po_materials.config_actuator.polling_enabled` ships **FALSE** (dark) by design — a loaded-but-disabled daemon polls nothing.
+
+**Tier-2 repair (LOW-capability — toggle a gate).** This is a documented, low-class gate flip **only if the operator confirms activation was already Developer-Operator-approved** (the four preconditions in the ITS_Config row's Description are met: Worker deployed with `/api/internal/config/*` + `PORTAL_CONFIG_API_TOKEN`; Keychain holds `ITS_PORTAL_CONFIG_TOKEN`; the operator's git + wrangler auth present; the mirror smoke passed). If activation itself is the question, that is the FIXED high-class "code changes / secrets" category → **escalate to Seth**. To flip it once approved:
+- Open **ITS_Config**, find `Setting = po_materials.config_actuator.polling_enabled`, `Workstream = po_materials`. **Read the whole Description cell first** (House Reflex: a gate's Description can carry a precondition — a verbal go-ahead does not clear a documented one). Set `Value = true`.
+- The next 120 s cycle drains the queue.
+
+---
+
+## Symptom B — a config edit is stuck / a CRITICAL fires `config_actuator.deploy_blocked_pending_migrations` (deploy REFUSED: unapplied remote D1 migration(s))
+
+**What it means.** The daemon refuses to deploy the Worker ahead of unapplied remote D1 migrations (forensic class #2 — deploying the Worker before its migrations 500s the live portal). The queued edits stay `queued` and retry automatically; nothing is lost. The CRITICAL names the pending `*.sql` files.
+
+**Boundary — this is a FIXED high-capability-class fault → escalate to Seth (the Developer-Operator).** Applying a live D1 migration touches the deploy/secrets surface (Cloudflare auth) and is a code/infra change — never a Tier-2 move. The Successor-Operator does **NOT** run `wrangler d1 migrations apply`.
+- **Tier-2 action = surface, don't fix:** confirm the CRITICAL + the named migration files to Seth. Once Seth applies the migrations (pull → `wrangler d1 migrations apply <db> --remote` → deploy), the **next** launchd cycle actuates the same queued edits automatically — no re-submit, no daemon poke.
+
+## Symptom B2 — a CRITICAL fires `config_actuator.migration_check_failed` (could not verify remote D1 migration state)
+
+**What it means.** The daemon could **not** verify remote migration state (expired Cloudflare auth, network fault), so it **fail-closed**: cannot verify ⇒ must not deploy. Every edit is blocked until it can verify. **Escalate to Seth** — this is the same deploy/secrets (Cloudflare auth) high-class surface. Tier-2 action = surface the CRITICAL to Seth; do not touch wrangler/CF auth.
+
+---
+
+## Symptom C — a CRITICAL fires `config_actuator.stale_reclaimed` or `config_actuator.failed.<stage>` (a config edit failed mid-actuation)
+
+**What it means.**
+- `stale_reclaimed`: a prior cycle claimed an edit then died mid-actuation; the sweep reclaimed the row (stamped it `failed`) so the artifact is **unwedged** and the next edit can proceed. The reclaimed edit itself did **not** apply.
+- `failed.validated`: the edit failed the live-HEAD re-validation (a bad tax rate, a non-email invoice address, a duplicate terms version). The `failure_reason` (in the portal Status monitor + the CRITICAL) says exactly why. **No git/deploy happened** — this is a data-quality bounce, not a system fault.
+- `failed.tested` / `failed.live`: the commit/CI/merge or the deploy stage failed.
+
+**Tier-2 repair (LOW-capability — re-run / re-submit):**
+- For **`failed.validated`**: the operator **re-does the edit in the portal** with a corrected value (read the `failure_reason` verbatim to the admin — e.g. "rates_bp[IL] must be an INTEGER basis point"). That enqueues a fresh `config_requests` row the daemon actuates. No code, no git.
+- For a **transient `stale_reclaimed`** on an otherwise-healthy daemon: no action — the next cycle is clean; the operator only **re-submits the edit** in the portal if it was one the admin still wants.
+- Confirm recovery via ITS_Daemon_Health (`Status` back to `OK`) and the portal Status monitor (the edit reaches `live` / `archived`).
+
+**Boundary — escalate to Seth (FIXED high-capability class) when:**
+- the failure is at **`failed.tested`** (CI red / merge blocked) or **`failed.live`** (deploy/wrangler error) — a git/CI/deploy fault is a code change, always high-class;
+- the failure touches **terms legal review** — a new terms version ships `legal_review: "pending"` and `current_version` is left unchanged **on purpose** (the version is inert until legal clears it and points `current_version` at it). Clearing legal review + advancing `current_version` is **doctrine/legal**, a FIXED high-class category — **never** a Tier-2 flip;
+- anything **novel** (a symptom not listed here) — novel OR high-class always escalates.
+
+---
+
+## Fast reference
+
+| Signal (ITS_Errors `error_code` / Daemon_Health) | Meaning | Who |
+|---|---|---|
+| daemon dark, `polling_enabled=false` | ships dark by design | Tier-2 flip **iff** activation already approved, else Seth |
+| `config_actuator.creds_unresolved` | missing base URL / `ITS_PORTAL_CONFIG_TOKEN` | Seth (secrets — high-class) |
+| `config_actuator.deploy_blocked_pending_migrations` | unapplied D1 migrations; edits stay queued | Seth (apply migrations) |
+| `config_actuator.migration_check_failed` | can't verify D1 (fail-closed) | Seth (Cloudflare auth) |
+| `config_actuator.failed.validated` | bad edit data (reason names it) | Tier-2 re-do edit in portal |
+| `config_actuator.failed.tested` / `.failed.live` | CI/merge or deploy fault | Seth (code/deploy — high-class) |
+| `config_actuator.stale_reclaimed` | a prior cycle died mid-actuation; artifact unwedged | Tier-2 re-submit if still wanted |
+| new terms version won't render (legal) | `legal_review` pending by design | Seth (legal/doctrine — high-class) |
+
+**Never (Successor-Operator):** run `git`, `gh`, `wrangler`, or `npm run deploy`; apply a D1
+migration; touch Keychain / `ITS_PORTAL_CONFIG_TOKEN`; clear a terms `legal_review` flag or
+bump `current_version`; edit `config_apply.py`. All are FIXED high-capability class → Seth.
