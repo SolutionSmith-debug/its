@@ -1,6 +1,6 @@
 import type { MiddlewareHandler } from "hono";
 import type { FieldopsApp } from "./fieldops_gates";
-import { auditStmt } from "./audit";
+import { auditStmt, auditStmtIfChanged } from "./audit";
 import type { Env, Vars } from "./types";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -97,6 +97,17 @@ const LEGAL_PREDECESSORS: Record<string, string[]> = {
 };
 
 const STATUS_LIST_CAP = 50;
+
+// The resting states a config request may be SOFT-DISMISSED (cleared) from the status monitor. NOT
+// the C8 non-terminal set: 'live' is clearable (the deploy succeeded — the operator's "done" view)
+// even though C8 still treats it as in-flight until 'archived'. Clearing is a DISPLAY-ONLY dismissal
+// (migration 0047 cleared_at) — it NEVER frees the C8 in-flight lock, advances the state machine, or
+// touches the internal pending/claim/stamp/stuck routes (they filter on `status`, not cleared_at). An
+// in-flight request (queued|validated|tested|merged) is REFUSED (409) — you cannot clear a request out
+// from under the actuator. Kept in lockstep as a JS Set (the in-handler guard) + an SQL IN-list (the
+// atomic in-WHERE re-guard).
+const CONFIG_CLEARABLE_STATUSES = new Set(["live", "archived", "failed"]);
+const CONFIG_CLEARABLE_STATUSES_SQL = "('live','archived','failed')";
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
@@ -212,14 +223,62 @@ export function registerConfigRoutes(app: FieldopsApp, gates: ConfigGates): void
       .map(([ws]) => ws);
     if (held.length === 0) return c.json({ error: "forbidden" }, 403);
     const placeholders = held.map(() => "?").join(",");
+    // Cleared (soft-dismissed, migration 0047) rows are hidden by default; ?include_cleared=1 shows
+    // them (they stay fully SELECT-able — the row is the forensic record, never deleted).
+    const clearedFilter = c.req.query("include_cleared") === "1" ? "" : " AND cleared_at IS NULL";
     const { results } = await c.env.DB
       .prepare(
-        "SELECT id, workstream, artifact_key, op, status, failed_stage, failure_reason, created_at, updated_at " +
-          `FROM config_requests WHERE workstream IN (${placeholders}) ORDER BY id DESC LIMIT ?`,
+        "SELECT id, workstream, artifact_key, op, status, failed_stage, failure_reason, created_at, updated_at, cleared_at " +
+          `FROM config_requests WHERE workstream IN (${placeholders})${clearedFilter} ORDER BY id DESC LIMIT ?`,
       )
       .bind(...held, STATUS_LIST_CAP)
       .all();
     return c.json({ requests: results });
+  });
+
+  // POST /api/config/requests/:id/clear — forensic-SAFE soft-dismiss of a TERMINAL config request from
+  // the status monitor. A PORTAL-SIDE dismissal (session + the ROW's own workstream capability), NOT an
+  // actuation: it takes NO config token and NEVER hard-deletes the row (the config_requests row is the
+  // §50 forensic record). It only stamps cleared_at so the default monitor hides it; the row stays
+  // SELECT-able and reappears with ?include_cleared=1. Terminal-only — an in-flight request
+  // (queued|validated|tested|merged) is refused (409 config_not_terminal); you cannot clear a request
+  // out from under the actuator. Idempotent: a re-clear of an already-cleared row is a no-op ok.
+  app.post("/api/config/requests/:id/clear", gates.requireSession, async (c) => {
+    const id = Number(c.req.param("id"));
+    if (!Number.isInteger(id) || id <= 0) return c.json({ error: "bad_request" }, 400);
+    // Look the row up FIRST — the clear is authorized against the ROW's workstream cap (least-privilege,
+    // mirroring the monitor's per-workstream row scoping: you may only clear a workstream you manage).
+    const row = await c.env.DB
+      .prepare("SELECT workstream, artifact_key, op, status, cleared_at FROM config_requests WHERE id=?")
+      .bind(id)
+      .first<{ workstream: string; artifact_key: string; op: string; status: string; cleared_at: number | null }>();
+    if (!row) return c.json({ error: "not_found" }, 404);
+    const spec = CONFIG_REGISTRY[row.workstream];
+    // A placeholder workstream (subcontracts) holds no rows today; exclude it explicitly for parity
+    // with the monitor's read-side scoping (`!s.placeholder` above) — belt for a future backfill/bug.
+    if (!spec || spec.placeholder || !c.get("capabilities").has(spec.cap)) return c.json({ error: "forbidden" }, 403);
+    // Already cleared → idempotent no-op (never re-audit, never re-stamp the timestamp).
+    if (row.cleared_at !== null) return c.json({ ok: true, cleared: false });
+    // Terminal-only: refuse to dismiss an in-flight request.
+    if (!CONFIG_CLEARABLE_STATUSES.has(row.status)) return c.json({ error: "config_not_terminal" }, 409);
+    const actor = c.get("session").username;
+    // W4: the soft-dismiss + its audit row batch atomically. The UPDATE re-guards cleared_at IS NULL AND
+    // status IN (terminal) in the WHERE, so a concurrent clear / an actuator advance cannot double-apply;
+    // the audit uses auditStmtIfChanged (INSERT … WHERE changes()=1, placed directly after the UPDATE) so
+    // a lost race writes NO lying "config_clear" row — the forensic-safe property this feature exists for.
+    const res = await c.env.DB.batch([
+      c.env.DB
+        .prepare(
+          `UPDATE config_requests SET cleared_at=unixepoch() WHERE id=? AND cleared_at IS NULL AND status IN ${CONFIG_CLEARABLE_STATUSES_SQL}`,
+        )
+        .bind(id),
+      auditStmtIfChanged(c, actor, "config_clear", `${row.workstream}/${row.artifact_key}`, {
+        id,
+        op: row.op,
+        prev_status: row.status,
+      }),
+    ]);
+    return c.json({ ok: true, cleared: (res[0]?.meta?.changes ?? 0) === 1 });
   });
 
   // ══ Internal surface (requireConfigToken — the Mac-side config daemon) ═════════════

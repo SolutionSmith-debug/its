@@ -427,6 +427,9 @@ export interface ConfigRequest {
   failure_reason: string | null;
   created_at: number;
   updated_at: number;
+  /** Soft-dismiss timestamp (migration 0047): non-null once cleared. Absent from the DEFAULT monitor
+   *  view (those rows are filtered server-side); present only under ?include_cleared=1. */
+  cleared_at?: number | null;
 }
 
 /** Enqueue a config edit (send-free). Throws ApiError on a non-2xx — the page surfaces `.message`
@@ -439,6 +442,14 @@ export async function submitConfigEdit(body: ConfigEditBody): Promise<ConfigEnqu
 export async function fetchConfigStatus(): Promise<ConfigRequest[]> {
   const data = await getJson<{ requests: ConfigRequest[] }>("/api/config/requests/status");
   return data.requests ?? [];
+}
+
+/** Soft-dismiss (clear) a TERMINAL config request (live/archived/failed) from the status monitor.
+ *  Forensic-safe: the config_requests row persists in D1 — this only hides it from the default view.
+ *  Throws ApiError on a non-2xx (e.g. 409 config_not_terminal for an in-flight row, 403 for a
+ *  workstream the caller doesn't manage). Send-free; the SPA never advances the queue. */
+export async function clearConfigRequest(id: number): Promise<{ ok: boolean; cleared: boolean }> {
+  return postJson<{ ok: boolean; cleared: boolean }>(`/api/config/requests/${id}/clear`, {});
 }
 
 /** "9.25" (percent, ≤2 dp) → 925 integer basis points; null on anything unparseable or >100%.

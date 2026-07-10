@@ -282,6 +282,146 @@ describe("GET /api/config/requests/status", () => {
     const cookie = await login("pm.bob");
     expect((await call("/api/config/requests/status", { cookie })).status).toBe(403);
   });
+
+  it("hides a cleared row by default; ?include_cleared=1 shows it", async () => {
+    await provision("admin.one", "admin");
+    const cookie = await login("admin.one");
+    const id = await seedCfg("purchaser", "archived");
+    // Clear it, then confirm the default view omits it but include_cleared surfaces it.
+    expect((await post(cookie, `/api/config/requests/${id}/clear`, {})).status).toBe(200);
+    const def = (await (await call("/api/config/requests/status", { cookie })).json()) as { requests: unknown[] };
+    expect(def.requests.length).toBe(0);
+    const inc = (await (await call("/api/config/requests/status?include_cleared=1", { cookie })).json()) as {
+      requests: { id: number; cleared_at: number | null }[];
+    };
+    expect(inc.requests.map((r) => r.id)).toEqual([id]);
+    expect(inc.requests[0].cleared_at).not.toBeNull();
+  });
+});
+
+describe("POST /api/config/requests/:id/clear — forensic-safe soft-dismiss", () => {
+  it("clears a terminal row: gone from default view, still SELECT-able (forensic), reappears with include_cleared", async () => {
+    await provision("admin.one", "admin");
+    const cookie = await login("admin.one");
+    const id = await seedCfg("purchaser", "failed");
+    const res = await post(cookie, `/api/config/requests/${id}/clear`, {});
+    expect(res.status, await res.clone().text()).toBe(200);
+    expect(await res.json()).toMatchObject({ ok: true, cleared: true });
+    // The row is NOT deleted — cleared_at set, everything else intact (the §50 forensic record).
+    const row = await env.DB
+      .prepare("SELECT status, cleared_at FROM config_requests WHERE id=?")
+      .bind(id)
+      .first<{ status: string; cleared_at: number | null }>();
+    expect(row).not.toBeNull();
+    expect(row!.status).toBe("failed");
+    expect(row!.cleared_at).not.toBeNull();
+    // Gone from the default monitor, present under include_cleared.
+    const def = (await (await call("/api/config/requests/status", { cookie })).json()) as { requests: unknown[] };
+    expect(def.requests.length).toBe(0);
+    const inc = (await (await call("/api/config/requests/status?include_cleared=1", { cookie })).json()) as {
+      requests: { id: number }[];
+    };
+    expect(inc.requests.map((r) => r.id)).toEqual([id]);
+  });
+
+  it("clears a `live` row (deploy succeeded, archive pending — the operator's done view)", async () => {
+    await provision("admin.one", "admin");
+    const cookie = await login("admin.one");
+    const id = await seedCfg("tax", "live");
+    expect((await post(cookie, `/api/config/requests/${id}/clear`, {})).status).toBe(200);
+    const row = await env.DB.prepare("SELECT cleared_at FROM config_requests WHERE id=?").bind(id).first<{ cleared_at: number | null }>();
+    expect(row!.cleared_at).not.toBeNull();
+  });
+
+  it("REFUSES to clear an in-flight (non-terminal) row — 409 config_not_terminal, row untouched", async () => {
+    await provision("admin.one", "admin");
+    const cookie = await login("admin.one");
+    for (const status of ["queued", "validated", "tested", "merged"]) {
+      const id = await seedCfg("purchaser", status);
+      const res = await post(cookie, `/api/config/requests/${id}/clear`, {});
+      expect(res.status, status).toBe(409);
+      expect(await res.json()).toMatchObject({ error: "config_not_terminal" });
+      const row = await env.DB.prepare("SELECT cleared_at FROM config_requests WHERE id=?").bind(id).first<{ cleared_at: number | null }>();
+      expect(row!.cleared_at, status).toBeNull();
+    }
+  });
+
+  it("is idempotent — a second clear is a no-op ok (cleared:false), timestamp unchanged", async () => {
+    await provision("admin.one", "admin");
+    const cookie = await login("admin.one");
+    const id = await seedCfg("purchaser", "archived");
+    const first = (await (await post(cookie, `/api/config/requests/${id}/clear`, {})).json()) as { cleared: boolean };
+    expect(first.cleared).toBe(true);
+    const ts1 = (await env.DB.prepare("SELECT cleared_at FROM config_requests WHERE id=?").bind(id).first<{ cleared_at: number }>())!.cleared_at;
+    const second = await post(cookie, `/api/config/requests/${id}/clear`, {});
+    expect(second.status).toBe(200);
+    expect(await second.json()).toMatchObject({ ok: true, cleared: false });
+    const ts2 = (await env.DB.prepare("SELECT cleared_at FROM config_requests WHERE id=?").bind(id).first<{ cleared_at: number }>())!.cleared_at;
+    expect(ts2).toBe(ts1); // no re-stamp on the no-op
+    // And NO second "config_clear" audit row — the no-op re-clear is forensically silent
+    // (auditStmtIfChanged: the audit lands only for the clear that actually flips cleared_at).
+    const n = (await env.DB.prepare("SELECT COUNT(*) n FROM audit_log WHERE action='config_clear'").first<{ n: number }>())!.n;
+    expect(n).toBe(1);
+  });
+
+  it("writes exactly one audit_log row for the clear (W4 atomic)", async () => {
+    await provision("admin.one", "admin");
+    const cookie = await login("admin.one");
+    const id = await seedCfg("purchaser", "archived");
+    await post(cookie, `/api/config/requests/${id}/clear`, {});
+    const n = (await env.DB.prepare("SELECT COUNT(*) n FROM audit_log WHERE action='config_clear'").first<{ n: number }>())!.n;
+    expect(n).toBe(1);
+  });
+
+  it("404s clearing a row that does not exist", async () => {
+    await provision("admin.one", "admin");
+    const cookie = await login("admin.one");
+    expect((await post(cookie, "/api/config/requests/999999/clear", {})).status).toBe(404);
+  });
+
+  it("400s on a non-numeric :id", async () => {
+    await provision("admin.one", "admin");
+    const cookie = await login("admin.one");
+    expect((await post(cookie, "/api/config/requests/abc/clear", {})).status).toBe(400);
+  });
+
+  it("a submitter (no config cap for the row's workstream) is refused (403), row untouched", async () => {
+    await provision("admin.one", "admin");
+    await provision("pm.bob", "submitter");
+    const id = await seedCfg("purchaser", "archived");
+    const cookie = await login("pm.bob");
+    const res = await post(cookie, `/api/config/requests/${id}/clear`, {});
+    expect(res.status).toBe(403);
+    const row = await env.DB.prepare("SELECT cleared_at FROM config_requests WHERE id=?").bind(id).first<{ cleared_at: number | null }>();
+    expect(row!.cleared_at).toBeNull();
+  });
+
+  it("an unauthenticated clear is 401 (requireSession)", async () => {
+    const id = await seedCfg("purchaser", "archived");
+    expect((await call(`/api/config/requests/${id}/clear`, { method: "POST", body: "{}" })).status).toBe(401);
+  });
+
+  it("clearing does NOT free the C8 in-flight lock or affect the internal stuck sweep", async () => {
+    // A `live` row is non-terminal for C8 / the /stuck sweep. Clearing it must not change that: the
+    // internal routes filter on status, not cleared_at.
+    await provision("admin.one", "admin");
+    const cookie = await login("admin.one");
+    // Seed a live row updated 2h ago so /stuck would surface it.
+    await env.DB
+      .prepare(
+        "INSERT INTO config_requests (requested_by, workstream, artifact_key, op, payload, status, updated_at) " +
+          "VALUES (?,?,?,?,?,?, unixepoch() - 7200)",
+      )
+      .bind("admin.one", "po_materials", "purchaser", "edit", "{}", "live")
+      .run();
+    const id = (await env.DB.prepare("SELECT id FROM config_requests ORDER BY id DESC LIMIT 1").first<{ id: number }>())!.id;
+    await post(cookie, `/api/config/requests/${id}/clear`, {});
+    // Still visible to the daemon's stuck sweep (status-based), unaffected by the clear.
+    const { stuck } = (await (await call("/api/internal/config/stuck?older_than=3600", { bearer: CONFIG_BEARER })).json()) as {
+      stuck: { id: number }[];
+    };
+    expect(stuck.map((s) => s.id)).toContain(id);
+  });
 });
 
 describe("config daemon interface — bearer auth (requireConfigToken)", () => {

@@ -849,7 +849,7 @@ export function ConfigStatusMonitor({ refreshSignal }: { refreshSignal?: number 
       ) : (
         <ul className="form-editor__monitor-list">
           {requests.map((r) => (
-            <ConfigRequestRow key={r.id} req={r} />
+            <ConfigRequestRow key={r.id} req={r} onCleared={() => void load()} />
           ))}
         </ul>
       )}
@@ -857,9 +857,31 @@ export function ConfigStatusMonitor({ refreshSignal }: { refreshSignal?: number 
   );
 }
 
-function ConfigRequestRow({ req }: { req: api.ConfigRequest }) {
+// The resting states a request may be cleared (soft-dismissed) from — LOCKSTEP with the Worker's
+// CONFIG_CLEARABLE_STATUSES (worker/config.ts). 'live' counts (the deploy succeeded); the in-flight
+// states never do (the Worker refuses them 409).
+const CONFIG_CLEARABLE = new Set<api.ConfigStatus>(["live", "archived", "failed"]);
+
+function ConfigRequestRow({ req, onCleared }: { req: api.ConfigRequest; onCleared: () => void }) {
   const failed = req.status === "failed";
   const reached = STATUS_INDEX[req.status];
+  const clearable = CONFIG_CLEARABLE.has(req.status);
+  const [clearing, setClearing] = useState(false);
+  const [clearErr, setClearErr] = useState<string | null>(null);
+
+  async function clear() {
+    if (clearing) return;
+    setClearing(true);
+    setClearErr(null);
+    try {
+      await api.clearConfigRequest(req.id);
+      onCleared(); // re-poll: the cleared row drops out of the default monitor view
+    } catch (e) {
+      setClearErr(e instanceof Error ? e.message : "Could not clear this change.");
+      setClearing(false);
+    }
+  }
+
   return (
     <li className={`form-editor__req${failed ? " form-editor__req--failed" : ""}`}>
       <div className="form-editor__req-head">
@@ -869,6 +891,17 @@ function ConfigRequestRow({ req }: { req: api.ConfigRequest }) {
         </span>
         <span className={`form-editor__req-status form-editor__req-status--${req.status}`}>{req.status}</span>
         <span className="form-editor__req-time muted">{fmtTime(req.updated_at)}</span>
+        {clearable && (
+          <button
+            type="button"
+            className="btn btn--secondary form-editor__req-clear"
+            onClick={() => void clear()}
+            disabled={clearing}
+            aria-label={`Clear ${CONFIG_OP_LABEL[req.op] ?? req.op} ${req.workstream}/${req.artifact_key}`}
+          >
+            {clearing ? "Clearing…" : "Clear"}
+          </button>
+        )}
       </div>
       <ol className="form-editor__stepper" aria-label="Config change progress">
         {CONFIG_STEPS.map((step, i) => {
@@ -895,6 +928,11 @@ function ConfigRequestRow({ req }: { req: api.ConfigRequest }) {
         <p className="form-editor__req-failure" role="alert">
           Failed{req.failed_stage ? ` at ${req.failed_stage}` : ""}
           {req.failure_reason ? `: ${req.failure_reason}` : "."}
+        </p>
+      ) : null}
+      {clearErr ? (
+        <p className="form-editor__req-failure" role="alert">
+          {clearErr}
         </p>
       ) : null}
     </li>

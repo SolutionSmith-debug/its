@@ -34,6 +34,19 @@ privileged actuator that makes it real. Per claimed request it:
 
 Any stage failure stamps `failed(stage, reason)` and fires an operator **CRITICAL**.
 
+**Status-monitor "Clear" (portal-side dismissal — NOT an actuation).** The PO Config status monitor
+has a **Clear** button on each *terminal* row (`live` / `archived` / `failed`). It is a browser-only
+soft-dismiss (`POST /api/config/requests/:id/clear`, session + `cap.po.manage`, **no** config token):
+it stamps `config_requests.cleared_at` so the row drops out of the default monitor view but is **never
+deleted** (the row is the §50 forensic record — `?include_cleared=1` shows it again). It does **not**
+advance the state machine, free the per-artifact in-flight lock, or touch the daemon's
+pending/claim/stamp/stuck routes (those filter on `status`, not `cleared_at`). So Clear has **no
+Tier-2 daemon failure mode** — a stuck/failed row is diagnosed via its `failure_reason`, not by
+clearing it. The only operational coupling is **migration 0047** (`cleared_at`): apply it to the live
+D1 **before** the Worker carrying the clear route deploys (the standard deploy-order-critical apply —
+**Seth**, high-class), else the monitor 500s. Nothing about Clear is Successor-Operator-actionable
+beyond clicking it in the portal.
+
 **This is HIGH-CAPABILITY** — it **commits + deploys code** and holds the SEPARATE
 `ITS_PORTAL_CONFIG_TOKEN` privilege tier. Its activation and every git/deploy/secret/legal-
 terms fault below are **FIXED high-capability-class → escalate to Seth** (the four fixed
