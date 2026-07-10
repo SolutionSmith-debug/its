@@ -171,8 +171,10 @@ runs until the operator turns it on. The go-live sequence (full detail in the
 1. Deploy the Worker with the PO routes + its bearer token; seed the Keychain tokens (Seth).
 2. Seed `ITS_Vendors` and confirm the purchaser/tax/terms config; set the Box mirror-tree
    root.
-3. Load the two daemons (`po-poll`, `po-send`); run the two live smokes
-   (`smoke_test_po_generate.py`, `smoke_test_po_send.py`) on the mirror.
+3. Load the two daemons (`po-poll`, `po-send`); run the live smokes on the mirror —
+   `smoke_test_po_send.py` today, plus `smoke_test_po_generate.py` once the S8 slice adds it
+   (until then, verify generation with one `po_poll.poll_once()` cycle — see the `po_poll`
+   runbook).
 4. Provision the `procurement@` mailbox and its Application Access Policy scope; **share the
    PO approvers** into the `ITS — Purchase Orders` workspace.
 5. Flip the gates (reading each row's Description first): generation first (filing only), then

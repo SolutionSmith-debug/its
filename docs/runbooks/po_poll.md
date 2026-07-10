@@ -396,8 +396,12 @@ plist is loaded and a gate is on) → novel/code → Seth.
   `.vendors_sync_enabled` / `.status_sync_enabled`. The interval lives in
   `po_materials.po_poll.poll_interval_seconds` (read at **install** time, baked into the
   plist — not hot; re-load after changing it).
-- Env prereqs / partial smoke: `python scripts/smoke_test_po_generate.py` (kill switch, PO
-  config binding, ITS_Config, Worker reachability, sheet schemas) before relying on a cycle.
+- Env prereqs / partial smoke: `scripts/smoke_test_po_generate.py` is the generation-side
+  smoke (kill switch, PO config binding, ITS_Config, Worker reachability, sheet schemas) —
+  it is the **S8 deliverable and does not exist yet**. Until it lands, verify a cycle
+  directly: from a worktree venv off `origin/main`, unload the daemon, run
+  `python -c "from po_materials import po_poll; print(po_poll.poll_once())"` against the
+  mirror, inspect the result, then reload (the find-or-create-key live-smoke pattern below).
 - **Reload discipline:** never reload the daemon from a feature-branch worktree — reload only
   against `~/its` on `main` (the live tree), per `docs/operations/worktree_discipline.md`.
   A find-or-create-key change follows the unload → `poll_once()` from a worktree venv →
@@ -419,7 +423,9 @@ Run in order; each gate row's ITS_Config Description restates its own preconditi
    (`scripts/migrations/seed_its_vendors.py`); set ITS_Config
    `safety_reports.box.portal_root_folder_id` (the Box mirror-tree root).
 5. **Install + load** the plist (`scripts/launchd/install.sh load org.solutionsmith.its.po-poll`).
-6. **Partial live smoke:** `python scripts/smoke_test_po_generate.py` green on the mirror.
+6. **Partial live smoke:** once the S8 `scripts/smoke_test_po_generate.py` lands, run it green
+   on the mirror; until then, run one `po_poll.poll_once()` cycle from a worktree venv (above)
+   and confirm a mirror draft renders → files to Box + PO_Log + PO_Pending_Review → receipts.
 7. **Flip the gates** (read each Description first): `vendors_sync_enabled` may go first (the
    vendor passes are independent); flip `polling_enabled` **and** `status_sync_enabled`
    together once the drafts path is verified. Flipping `polling_enabled` enables **filing
