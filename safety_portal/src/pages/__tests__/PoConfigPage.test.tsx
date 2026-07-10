@@ -16,6 +16,7 @@ vi.mock("../../lib/po", async () => {
     ...actual, // keep the real pctToBp (the tax %→bp conversion under test) + types
     fetchPoConfig: vi.fn(),
     fetchTerms: vi.fn(),
+    fetchTermsText: vi.fn(),
     submitConfigEdit: vi.fn(),
     fetchConfigStatus: vi.fn(),
   };
@@ -75,6 +76,11 @@ beforeEach(() => {
   vi.mocked(useAuth).mockReturnValue(authWith());
   vi.mocked(api.fetchPoConfig).mockResolvedValue(CONFIG);
   vi.mocked(api.fetchTerms).mockResolvedValue(TERMS);
+  vi.mocked(api.fetchTermsText).mockResolvedValue({
+    profile_id: "standard_17",
+    version: "v1",
+    text: "1. The current clause text.",
+  });
   vi.mocked(api.fetchConfigStatus).mockResolvedValue([]);
   vi.mocked(api.submitConfigEdit).mockResolvedValue({ ok: true, id: 1, status: "queued" });
 });
@@ -189,6 +195,23 @@ describe("PoConfigPage — editors (send-free enqueue)", () => {
     );
     // The legal-review gate is surfaced in the editor.
     expect(getByText(/legal_review: pending/i)).toBeTruthy();
+  });
+
+  it("pre-fills the terms textarea with the current version's text (edit-from-live)", async () => {
+    vi.mocked(api.fetchTermsText).mockResolvedValue({
+      profile_id: "standard_17",
+      version: "v1",
+      text: "1. The pre-filled current clause.",
+    });
+    const { getByText, getByLabelText } = render(<PoConfigPage onBack={vi.fn()} />);
+    await waitFor(() => expect(getByText("Standard 17-clause")).toBeTruthy());
+    fireEvent.click(getByText("Add a terms version"));
+    await waitFor(() =>
+      expect((getByLabelText("Terms clause text") as HTMLTextAreaElement).value).toBe(
+        "1. The pre-filled current clause.",
+      ),
+    );
+    expect(api.fetchTermsText).toHaveBeenCalledWith("standard_17");
   });
 
   it("surfaces a Worker rejection verbatim (never silent) — config_edit_in_progress", async () => {
