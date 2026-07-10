@@ -31,6 +31,7 @@ import {
   releaseAllPhotoClaimsStmt,
 } from "./fieldops_daily_photos";
 import { registerProgressRollupRoutes } from "./fieldops_rollup";
+import { registerPoRoutes } from "./po";
 import {
   validateUser,
   newSessionClaims,
@@ -207,6 +208,23 @@ const requireFieldopsToken = createMiddleware<{ Bindings: Env; Variables: Vars }
   const auth = c.req.header("Authorization") ?? "";
   const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
   if (!token || !c.env.PORTAL_FIELDOPS_API_TOKEN || !(await safeTokenEqual(token, c.env.PORTAL_FIELDOPS_API_TOKEN))) {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+  await next();
+});
+
+/**
+ * Bearer-token gate for /api/po/internal/* — the Mac-side PO daemon (po_materials/po_poll.py,
+ * WS1 S4). SEPARATE secret from the portal_poll / admin / fieldops tokens (privilege
+ * separation): the PO daemon's token must NOT be able to drain the submission queue,
+ * provision users, or touch the job/hours mirror — and none of those tokens may read the PO
+ * queue or write PO status/vendor state. Same fail-closed-on-missing-secret + constant-time
+ * posture as requireInternalToken. Passed into registerPoRoutes (worker/po.ts).
+ */
+const requirePoToken = createMiddleware<{ Bindings: Env; Variables: Vars }>(async (c, next) => {
+  const auth = c.req.header("Authorization") ?? "";
+  const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+  if (!token || !c.env.PORTAL_PO_API_TOKEN || !(await safeTokenEqual(token, c.env.PORTAL_PO_API_TOKEN))) {
     return c.json({ error: "unauthorized" }, 401);
   }
   await next();
@@ -430,6 +448,9 @@ registerExpectedMaterialsRoutes(app, fieldopsGates);
 registerDailyPhotoRoutes(app, fieldopsGates);
 // — P6 progress rollup read (bearer-gated /api/internal/*, NOT a session gate) —
 registerProgressRollupRoutes(app, requireInternalToken);
+// — PO workstream S2: vendors cache + drafts/generate/supersede/cancel (session +
+//   cap.po.manage) + the /api/po/internal/* queue under the NEW requirePoToken tier —
+registerPoRoutes(app, { requireSession, requireCapability, requirePoToken });
 
 /** GET /api/session — who am I (used by the SPA on load to restore session). Returns
  *  the live role (from requireSession's per-request D1 read), so a demotion drops the
