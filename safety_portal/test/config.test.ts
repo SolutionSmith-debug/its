@@ -265,6 +265,120 @@ describe("POST /api/config/requests — enqueue", () => {
   });
 });
 
+describe("POST /api/config/requests — create_profile (mint a new terms profile)", () => {
+  function createLibBody(over: { payload?: Record<string, unknown>; [k: string]: unknown } = {}): Record<string, unknown> {
+    const { payload: payloadOver, ...rest } = over;
+    return {
+      workstream: "po_materials",
+      artifact_key: "terms",
+      op: "create_profile",
+      ...rest,
+      payload: {
+        profile_id: "vendor_acme",
+        kind: "library",
+        label: "ACME vendor terms",
+        version_id: "v1",
+        text: "1. ACME clause.",
+        ...payloadOver,
+      },
+    };
+  }
+
+  it("enqueues a valid library create_profile (201 queued) + persists op create_profile, target_version NULL", async () => {
+    await provision("admin.one", "admin");
+    const cookie = await login("admin.one");
+    const res = await post(cookie, "/api/config/requests", createLibBody());
+    expect(res.status, await res.clone().text()).toBe(201);
+    const row = await env.DB.prepare("SELECT op, target_version, payload FROM config_requests").first<{ op: string; target_version: string | null; payload: string }>();
+    expect(row!.op).toBe("create_profile");
+    expect(row!.target_version).toBeNull(); // create_profile carries the version IN payload
+    expect(JSON.parse(row!.payload)).toMatchObject({ profile_id: "vendor_acme", kind: "library" });
+  });
+
+  it("enqueues a valid attach create_profile (201) with a render_line", async () => {
+    await provision("admin.one", "admin");
+    const cookie = await login("admin.one");
+    const res = await post(cookie, "/api/config/requests", {
+      workstream: "po_materials",
+      artifact_key: "terms",
+      op: "create_profile",
+      payload: { profile_id: "vendor_gtc", kind: "attach", label: "Vendor GTC", render_line: "SUBJECT TO THE GTC." },
+    });
+    expect(res.status, await res.clone().text()).toBe(201);
+  });
+
+  it("rejects a duplicate profile id (409 profile_exists — that is an add_version, not a create)", async () => {
+    await provision("admin.one", "admin");
+    const cookie = await login("admin.one");
+    // standard_17 is a real profile in the bundled manifest.
+    const res = await post(cookie, "/api/config/requests", createLibBody({ payload: { profile_id: "standard_17" } }));
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ error: "profile_exists" });
+  });
+
+  it("rejects a malformed profile id (400 invalid_profile_id)", async () => {
+    await provision("admin.one", "admin");
+    const cookie = await login("admin.one");
+    const res = await post(cookie, "/api/config/requests", createLibBody({ payload: { profile_id: "Bad-Id!" } }));
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: "invalid_profile_id" });
+  });
+
+  it("rejects a bad kind (400 invalid_profile_kind)", async () => {
+    await provision("admin.one", "admin");
+    const cookie = await login("admin.one");
+    const res = await post(cookie, "/api/config/requests", createLibBody({ payload: { profile_id: "ok_id", kind: "weird" } }));
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: "invalid_profile_kind" });
+  });
+
+  it("rejects a missing label (400 invalid_label)", async () => {
+    await provision("admin.one", "admin");
+    const cookie = await login("admin.one");
+    const res = await post(cookie, "/api/config/requests", createLibBody({ payload: { profile_id: "ok_id", label: "   " } }));
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: "invalid_label" });
+  });
+
+  it("rejects a library create missing version_id (400 invalid_target_version)", async () => {
+    await provision("admin.one", "admin");
+    const cookie = await login("admin.one");
+    const res = await post(cookie, "/api/config/requests", {
+      workstream: "po_materials", artifact_key: "terms", op: "create_profile",
+      payload: { profile_id: "ok_id", kind: "library", label: "L", text: "x" }, // no version_id
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: "invalid_target_version" });
+  });
+
+  it("rejects a library create with empty text (400 invalid_payload)", async () => {
+    await provision("admin.one", "admin");
+    const cookie = await login("admin.one");
+    const res = await post(cookie, "/api/config/requests", createLibBody({ payload: { profile_id: "ok_id", text: "   " } }));
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: "invalid_payload" });
+  });
+
+  it("rejects an attach create with no render_line (400 invalid_payload)", async () => {
+    await provision("admin.one", "admin");
+    const cookie = await login("admin.one");
+    const res = await post(cookie, "/api/config/requests", {
+      workstream: "po_materials", artifact_key: "terms", op: "create_profile",
+      payload: { profile_id: "ok_id", kind: "attach", label: "L" }, // no render_line
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: "invalid_payload" });
+  });
+
+  it("a submitter (no cap.po.manage) is rejected before any create_profile work (403)", async () => {
+    await provision("pm.bob", "submitter");
+    const cookie = await login("pm.bob");
+    const res = await post(cookie, "/api/config/requests", createLibBody());
+    expect(res.status).toBe(403);
+    expect((await env.DB.prepare("SELECT COUNT(*) n FROM config_requests").first<{ n: number }>())!.n).toBe(0);
+  });
+});
+
 describe("GET /api/config/requests/status", () => {
   it("returns the enqueued requests newest-first for a capable session", async () => {
     await provision("admin.one", "admin");

@@ -2,6 +2,9 @@ import type { MiddlewareHandler } from "hono";
 import type { FieldopsApp } from "./fieldops_gates";
 import { auditStmt, auditStmtIfChanged } from "./audit";
 import type { Env, Vars } from "./types";
+// Build-time bundle of the terms manifest (SAME import worker/po.ts uses) — for the create_profile
+// duplicate-id shape check. Bundled at build time, so it re-bundles on every actuator deploy.
+import termsManifest from "../../po_materials/terms/manifest.json";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Config-editor queue (§50 privileged code-actuation) — worker/config.ts
@@ -66,10 +69,23 @@ const CONFIG_REGISTRY: Record<string, WorkstreamSpec> = {
   },
 };
 
-const CONFIG_OPS = new Set(["edit", "add_version", "set_current"]);
+const CONFIG_OPS = new Set(["edit", "add_version", "set_current", "create_profile"]);
 const TARGET_VERSION_RE = /^[a-z0-9_]+$/;
 const MAX_TARGET_VERSION = 64;
 const MAX_PAYLOAD_BYTES = 100_000; // 100 KB — generous ceiling on a config value / terms version
+
+// create_profile shape bounds (the Worker is the SHAPE gate; config_apply is the authoritative
+// live-HEAD gate — the duplicate-id / manifest-write checks re-run there, C3).
+const PROFILE_ID_RE = /^[a-z0-9_]+$/;
+const MAX_PROFILE_ID = 64;
+const MAX_LABEL = 200;
+const MAX_DESCRIPTION = 1000;
+const MAX_RENDER_LINE = 2000;
+const PROFILE_KINDS = new Set(["library", "attach"]);
+// The profile ids already present in the BUILD-time-bundled manifest (worker/po.ts imports the same
+// JSON). A create_profile for an existing id is really an add_version — reject it early here (belt);
+// config_apply.py re-checks against LIVE HEAD (which may have moved since this bundle) as the boundary.
+const BUNDLED_PROFILE_IDS = new Set(Object.keys(termsManifest.profiles as Record<string, unknown>));
 
 
 // ── Internal (daemon) surface constants — LOCKSTEP with migration 0045's CHECK sets ──────────
@@ -111,6 +127,44 @@ const CONFIG_CLEARABLE_STATUSES_SQL = "('live','archived','failed')";
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+/** Shape-validate a create_profile payload. Returns an error CODE (400, except `profile_exists`→409)
+ *  or null when the shape is acceptable. The AUTHORITATIVE checks (duplicate id vs LIVE HEAD, the
+ *  manifest write) re-run in config_apply.py — this is only the send-free enqueue's shape gate.
+ *
+ *  library: { profile_id, kind:'library', label, description?, version_id, text }
+ *  attach:  { profile_id, kind:'attach',  label, description?, render_line }
+ *  The new profile's initial version rides IN the payload (not the target_version column); it lands
+ *  legal_review:'pending' at actuation, so a library profile cannot render on a PO until a subsequent
+ *  set_current clears it (the existing Layer-A fence enforces this — create_profile never bypasses it). */
+function validateCreateProfile(payload: unknown): string | null {
+  if (!isPlainObject(payload)) return "invalid_payload";
+  const profileId = typeof payload.profile_id === "string" ? payload.profile_id : "";
+  if (!PROFILE_ID_RE.test(profileId) || profileId.length > MAX_PROFILE_ID) return "invalid_profile_id";
+  if (BUNDLED_PROFILE_IDS.has(profileId)) return "profile_exists"; // a duplicate id is add_version
+  const kind = typeof payload.kind === "string" ? payload.kind : "";
+  if (!PROFILE_KINDS.has(kind)) return "invalid_profile_kind";
+  const label = typeof payload.label === "string" ? payload.label.trim() : "";
+  if (!label || label.length > MAX_LABEL) return "invalid_label";
+  if (payload.description !== undefined) {
+    if (typeof payload.description !== "string" || payload.description.length > MAX_DESCRIPTION) {
+      return "invalid_payload";
+    }
+  }
+  if (kind === "library") {
+    const versionId = typeof payload.version_id === "string" ? payload.version_id : "";
+    if (!TARGET_VERSION_RE.test(versionId) || versionId.length > MAX_TARGET_VERSION) {
+      return "invalid_target_version";
+    }
+    const text = typeof payload.text === "string" ? payload.text.trim() : "";
+    if (!text) return "invalid_payload"; // overall UTF-8 byte cap is enforced by MAX_PAYLOAD_BYTES
+  } else {
+    // attach: a render_line pointer to an externally-negotiated GTC (no versioned text / legal gate).
+    const renderLine = typeof payload.render_line === "string" ? payload.render_line.trim() : "";
+    if (!renderLine || renderLine.length > MAX_RENDER_LINE) return "invalid_payload";
+  }
+  return null;
 }
 
 /** True if `v` is a non-empty JSON value: a non-null/undefined value that, when it is an
@@ -160,10 +214,11 @@ export function registerConfigRoutes(app: FieldopsApp, gates: ConfigGates): void
     const op = typeof body.op === "string" ? body.op : "";
     if (!CONFIG_OPS.has(op)) return c.json({ error: "invalid_op" }, 400);
     // The op must match the artifact KIND: a versioned terms artifact takes `add_version` (mint a new
-    // sha-pinned version) or `set_current` (make a version live + clear its legal review); a json
-    // artifact only takes `edit` (replace the value). A mismatch is a structurally-nonsensical request
-    // the queue rejects here, not the actuator later.
-    if (artifact.kind === "terms" ? op !== "add_version" && op !== "set_current" : op !== "edit") {
+    // sha-pinned version), `set_current` (make a version live + clear its legal review), or
+    // `create_profile` (mint a brand-new profile); a json artifact only takes `edit` (replace the
+    // value). A mismatch is a structurally-nonsensical request the queue rejects here, not later.
+    const TERMS_OPS = new Set(["add_version", "set_current", "create_profile"]);
+    if (artifact.kind === "terms" ? !TERMS_OPS.has(op) : op !== "edit") {
       return c.json({ error: "invalid_op" }, 400);
     }
 
@@ -174,6 +229,14 @@ export function registerConfigRoutes(app: FieldopsApp, gates: ConfigGates): void
         return c.json({ error: "invalid_target_version" }, 400);
       }
       targetVersion = tv;
+    }
+
+    // create_profile carries its new-profile fields (id, kind, label, and per-kind version+text /
+    // render_line) INSIDE `payload` — target_version stays NULL. Validate the shape here (the SHAPE
+    // gate); config_apply.py re-checks against live HEAD (duplicate id, manifest write) as the boundary.
+    if (op === "create_profile") {
+      const err = validateCreateProfile(body.payload);
+      if (err) return c.json({ error: err }, err === "profile_exists" ? 409 : 400);
     }
 
     if (!isNonEmptyJson(body.payload)) return c.json({ error: "invalid_payload" }, 400);

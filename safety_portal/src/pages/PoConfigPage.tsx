@@ -102,6 +102,15 @@ type PurchaserForm = { entity: string; address_lines: string; phone: string; to:
 type TaxRow = { state: string; name: string; rate: string }; // rate entered as a PERCENT string
 type TermsForm = { profile_id: string; target_version: string; text: string };
 type MakeCurrentForm = { profile_id: string; target_version: string; confirmed: boolean };
+type NewProfileForm = {
+  profile_id: string;
+  kind: "library" | "attach";
+  label: string;
+  description: string;
+  version_id: string; // library only
+  text: string; // library only
+  render_line: string; // attach only
+};
 
 export function PoConfigPage({ onBack }: { onBack: () => void }) {
   const { user } = useAuth();
@@ -129,6 +138,9 @@ export function PoConfigPage({ onBack }: { onBack: () => void }) {
   const [mcf, setMcf] = useState<MakeCurrentForm>({ profile_id: "", target_version: "", confirmed: false });
   const [mcVersions, setMcVersions] = useState<api.TermsVersionRow[]>([]);
   const [mcCurrent, setMcCurrent] = useState<string | null>(null);
+  const [newProfileOpen, setNewProfileOpen] = useState(false);
+  const emptyNpf: NewProfileForm = { profile_id: "", kind: "library", label: "", description: "", version_id: "v1", text: "", render_line: "" };
+  const [npf, setNpf] = useState<NewProfileForm>(emptyNpf);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -386,6 +398,68 @@ export function PoConfigPage({ onBack }: { onBack: () => void }) {
       setMsg({
         ok: true,
         text: "Queued — the version will be cleared and made current after review + deploy. Track it below.",
+      });
+      setRefreshSignal((n) => n + 1);
+    } catch (err) {
+      setMsg({ ok: false, text: err instanceof Error ? err.message : "Submit failed." });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // ── New terms profile (create_profile — mint a brand-new profile) ─────────────────────────────
+  function openNewProfile() {
+    setNpf(emptyNpf);
+    setMsg(null);
+    setNewProfileOpen(true);
+  }
+
+  async function submitNewProfile(e: FormEvent) {
+    e.preventDefault();
+    if (busy) return;
+    const profile_id = npf.profile_id.trim();
+    const label = npf.label.trim();
+    if (!/^[a-z0-9_]+$/.test(profile_id) || profile_id.length > 64) {
+      setMsg({ ok: false, text: "The profile id must be lowercase letters, numbers, and underscores (e.g. vendor_acme)." });
+      return;
+    }
+    if (!label) {
+      setMsg({ ok: false, text: "Enter a short label for the profile." });
+      return;
+    }
+    const description = npf.description.trim();
+    let payload: Record<string, unknown>;
+    if (npf.kind === "library") {
+      const version_id = npf.version_id.trim();
+      const text = npf.text.trim();
+      if (!/^[a-z0-9_]+$/.test(version_id) || version_id.length > 64) {
+        setMsg({ ok: false, text: "The initial version id must be lowercase letters, numbers, and underscores (e.g. v1)." });
+        return;
+      }
+      if (!text) {
+        setMsg({ ok: false, text: "Enter the clause text for the initial version." });
+        return;
+      }
+      payload = { profile_id, kind: "library", label, version_id, text, ...(description ? { description } : {}) };
+    } else {
+      const render_line = npf.render_line.trim();
+      if (!render_line) {
+        setMsg({ ok: false, text: "Enter the reference line for the attached (negotiated) GTC." });
+        return;
+      }
+      payload = { profile_id, kind: "attach", label, render_line, ...(description ? { description } : {}) };
+    }
+    setBusy(true);
+    setMsg(null);
+    try {
+      await api.submitConfigEdit({ workstream: WORKSTREAM, artifact_key: "terms", op: "create_profile", payload });
+      setNewProfileOpen(false);
+      setMsg({
+        ok: true,
+        text:
+          npf.kind === "library"
+            ? "Queued — the new profile will be minted with its first version legal_review: pending, and cannot render on a PO until you make it current. Track it below."
+            : "Queued — the new attach profile will be minted. Track it below.",
       });
       setRefreshSignal((n) => n + 1);
     } catch (err) {
@@ -707,6 +781,69 @@ export function PoConfigPage({ onBack }: { onBack: () => void }) {
                     </button>
                   </div>
                 </form>
+              ) : newProfileOpen ? (
+                <form className="accounts__editor" onSubmit={submitNewProfile}>
+                  <p className="po-config__legal-note" role="note">
+                    <strong>New terms profile.</strong> This mints a brand-new profile. A{" "}
+                    <strong>Library</strong> profile ships its first version with{" "}
+                    <code>legal_review: pending</code> — it is selectable but does NOT render on a PO
+                    until the operator makes a version current. An <strong>Attach</strong> profile is a
+                    fixed reference line to an externally-negotiated GTC.
+                  </p>
+                  <FieldInput
+                    label="Profile id (lowercase, e.g. vendor_acme)"
+                    value={npf.profile_id}
+                    placeholder="vendor_acme"
+                    onChange={(v) => setNpf({ ...npf, profile_id: v })}
+                  />
+                  <label className="field">
+                    <span className="field__label">Kind</span>
+                    <select
+                      className="field__input"
+                      aria-label="Profile kind"
+                      value={npf.kind}
+                      onChange={(e) => setNpf({ ...npf, kind: e.target.value === "attach" ? "attach" : "library" })}
+                    >
+                      <option value="library">Library — versioned clause text</option>
+                      <option value="attach">Attach — reference line to a negotiated GTC</option>
+                    </select>
+                  </label>
+                  <FieldInput label="Label" value={npf.label} placeholder="ACME vendor terms" onChange={(v) => setNpf({ ...npf, label: v })} />
+                  <FieldInput label="Description (optional)" value={npf.description} onChange={(v) => setNpf({ ...npf, description: v })} />
+                  {npf.kind === "library" ? (
+                    <>
+                      <FieldInput
+                        label="Initial version id (lowercase, e.g. v1)"
+                        value={npf.version_id}
+                        placeholder="v1"
+                        onChange={(v) => setNpf({ ...npf, version_id: v })}
+                      />
+                      <FieldTextarea
+                        label="Initial version clause text"
+                        value={npf.text}
+                        rows={8}
+                        maxLength={8000}
+                        onChange={(v) => setNpf({ ...npf, text: v })}
+                      />
+                    </>
+                  ) : (
+                    <FieldTextarea
+                      label="Reference line (rendered verbatim on the PO)"
+                      value={npf.render_line}
+                      rows={3}
+                      maxLength={2000}
+                      onChange={(v) => setNpf({ ...npf, render_line: v })}
+                    />
+                  )}
+                  <div className="jha__actions">
+                    <button className="btn btn--primary" type="submit">
+                      {busy ? "Working…" : "Queue new profile"}
+                    </button>
+                    <button className="btn btn--secondary" type="button" onClick={() => setNewProfileOpen(false)}>
+                      Cancel
+                    </button>
+                  </div>
+                </form>
               ) : (
                 <div className="jha__actions">
                   <button className="btn btn--edit" type="button" onClick={openTerms}>
@@ -714,6 +851,9 @@ export function PoConfigPage({ onBack }: { onBack: () => void }) {
                   </button>
                   <button className="btn btn--edit" type="button" onClick={openMakeCurrent}>
                     Make a version current
+                  </button>
+                  <button className="btn btn--edit" type="button" onClick={openNewProfile}>
+                    New terms profile
                   </button>
                 </div>
               ))}
@@ -770,6 +910,7 @@ const CONFIG_OP_LABEL: Record<api.ConfigOp, string> = {
   edit: "Edit",
   add_version: "Add version",
   set_current: "Make current",
+  create_profile: "New profile",
 };
 
 function fmtTime(t: number): string {

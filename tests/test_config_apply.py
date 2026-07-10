@@ -377,3 +377,91 @@ def test_bad_payload_json_rejected(root: Path):
            "target_version": None, "payload": "{not json", "status": "queued"}
     with pytest.raises(ConfigApplyError, match="not valid JSON"):
         config_apply.apply_config(req, root)
+
+
+# ── terms / create_profile ──────────────────────────────────────────────────────────
+
+
+def test_terms_create_library_profile_writes_manifest_file_and_fences_until_set_current(root: Path, monkeypatch):
+    note = config_apply.apply_config(
+        _req("terms", "create_profile", {
+            "profile_id": "vendor_acme", "kind": "library", "label": "ACME vendor terms",
+            "description": "ACME's inline regime.", "version_id": "v1",
+            "text": "1. ACME clause with {{purchaser_entity}} and {{seller_name}}.",
+        }),
+        root,
+    )
+    manifest = _read(root, "terms", "manifest.json")
+    prof = manifest["profiles"]["vendor_acme"]
+    assert prof["kind"] == "library"
+    assert prof["label"] == "ACME vendor terms"
+    assert prof["description"] == "ACME's inline regime."
+    # current_version points at the new version, but it is PENDING → Layer-A fences it.
+    assert prof["current_version"] == "v1"
+    v = prof["versions"]["v1"]
+    assert v["legal_review"] == "pending"
+    assert v["file"] == "vendor_acme_v1.md"                 # namespaced by profile id
+    assert sorted(v["tokens"]) == ["purchaser_entity", "seller_name"]  # auto-extracted, STRICT
+    # The immutable version file exists on disk with a matching sha256.
+    file_bytes = (root / "po_materials" / "terms" / "vendor_acme_v1.md").read_bytes()
+    assert hashlib.sha256(file_bytes).hexdigest() == v["sha256"]
+    assert "NEW library profile" in note
+    # The render-side Layer-A gate must FENCE the pending version (cannot render until set_current).
+    from po_materials import terms
+    monkeypatch.setattr(terms, "TERMS_DIR", root / "po_materials" / "terms")  # loader → tmp manifest
+    with pytest.raises(terms.TermsError, match="NOT cleared"):
+        terms.load_terms_text("vendor_acme")
+
+
+def test_terms_create_attach_profile_writes_render_line_no_version(root: Path):
+    note = config_apply.apply_config(
+        _req("terms", "create_profile", {
+            "profile_id": "vendor_gtc", "kind": "attach", "label": "Vendor GTC",
+            "render_line": "SUBJECT TO THE VENDOR GTC.",
+        }),
+        root,
+    )
+    prof = _read(root, "terms", "manifest.json")["profiles"]["vendor_gtc"]
+    assert prof == {"kind": "attach", "label": "Vendor GTC", "render_line": "SUBJECT TO THE VENDOR GTC."}
+    assert "NEW attach profile" in note
+
+
+def test_terms_create_profile_rejects_duplicate_id(root: Path):
+    with pytest.raises(ConfigApplyError, match="already exists"):
+        config_apply.apply_config(
+            _req("terms", "create_profile", {
+                "profile_id": "standard_17", "kind": "library", "label": "dup",
+                "version_id": "v9", "text": "x",
+            }),
+            root,
+        )
+
+
+def test_terms_create_profile_rejects_bad_id_kind_and_empty_fields(root: Path):
+    with pytest.raises(ConfigApplyError, match="profile_id"):
+        config_apply.apply_config(
+            _req("terms", "create_profile", {"profile_id": "Bad-Id!", "kind": "library",
+                                             "label": "x", "version_id": "v1", "text": "y"}), root)
+    with pytest.raises(ConfigApplyError, match="kind must be"):
+        config_apply.apply_config(
+            _req("terms", "create_profile", {"profile_id": "ok_id", "kind": "weird",
+                                             "label": "x", "version_id": "v1", "text": "y"}), root)
+    with pytest.raises(ConfigApplyError, match="label is required"):
+        config_apply.apply_config(
+            _req("terms", "create_profile", {"profile_id": "ok_id", "kind": "library",
+                                             "label": "  ", "version_id": "v1", "text": "y"}), root)
+    with pytest.raises(ConfigApplyError, match="text must be non-empty"):
+        config_apply.apply_config(
+            _req("terms", "create_profile", {"profile_id": "ok_id", "kind": "library",
+                                             "label": "L", "version_id": "v1", "text": "   "}), root)
+
+
+def test_terms_create_profile_rejects_reserved_id(root: Path):
+    """A reserved profile id (deferred transcription) is not creatable via the generic form."""
+    manifest = _read(root, "terms", "manifest.json")
+    manifest["reserved_profile_ids"] = {"field_21": "reserved"}
+    _write_json(root / "po_materials" / "terms" / "manifest.json", manifest)
+    with pytest.raises(ConfigApplyError, match="RESERVED"):
+        config_apply.apply_config(
+            _req("terms", "create_profile", {"profile_id": "field_21", "kind": "library",
+                                             "label": "x", "version_id": "v1", "text": "y"}), root)

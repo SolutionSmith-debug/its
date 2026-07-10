@@ -50,6 +50,8 @@ _STATE_RE = re.compile(r"^[A-Z]{2}$")
 _MAX_BP = 10_000  # 100.00% — the Worker's override ceiling (po.ts:397)
 _MAX_TERMS_TEXT = 100_000  # mirrors the Worker's MAX_PAYLOAD_BYTES (config.ts)
 _MAX_TEXT_FIELD = 2_000  # bound on a single scalar config string (entity / phone / address line)
+_MAX_LABEL = 200  # mirrors the Worker's MAX_LABEL (config.ts create_profile)
+_MAX_RENDER_LINE = 2_000  # mirrors the Worker's MAX_RENDER_LINE (config.ts create_profile)
 
 # The terms substitution-token pattern — IDENTICAL to terms._TOKEN_RE so the tokens this module
 # declares in the manifest are exactly the ones terms.substitute_tokens will demand at render.
@@ -331,6 +333,112 @@ def _apply_terms_set_current(
     return f"terms: {profile_id} current_version -> {target_version} (legal_review cleared)"
 
 
+def _apply_terms_create_profile(payload: dict[str, Any], root: Path) -> str:
+    """Mint a BRAND-NEW terms profile in the manifest — a ``library`` profile (a manifest entry + an
+    immutable sha256-pinned initial version file, ``legal_review: "pending"``) or an ``attach`` profile
+    (a manifest entry with only a ``render_line``). The NEW profile id is validated against live HEAD
+    (C3 — the manifest may have moved since the Worker's bundled-manifest check); a duplicate id raises
+    (that is an ``add_version``, not a create). The initial library version lands ``pending`` and
+    ``current_version`` points at it, so the render-side Layer-A gate (``terms._version_entry``) FENCES
+    it — the profile is selectable but cannot render on a PO until a later ``set_current`` clears its
+    legal review. Never bypasses the legal gate; never mutates an existing profile.
+
+    The new manifest entry auto-joins the ITS_Vendors "Default Terms Profile" picklist because
+    ``shared/picklist_validation._VENDOR_TERMS_PROFILE_VALUES`` is DERIVED from this manifest — so no
+    separate picklist edit / shared-module commit is needed (the actuator commits only po_materials/)."""
+    profile_id = payload.get("profile_id")
+    if not isinstance(profile_id, str) or not _TARGET_VERSION_RE.match(profile_id):
+        raise ConfigApplyError(
+            "terms create_profile: profile_id is required and must match /^[a-z0-9_]+$/"
+        )
+    if len(profile_id) > _MAX_TARGET_VERSION:
+        raise ConfigApplyError(
+            f"terms create_profile: profile_id {profile_id!r} is > {_MAX_TARGET_VERSION} chars"
+        )
+    kind = payload.get("kind")
+    if kind not in ("library", "attach"):
+        raise ConfigApplyError(
+            f"terms create_profile: kind must be 'library' or 'attach' (got {kind!r})"
+        )
+    label = payload.get("label")
+    if not isinstance(label, str) or not label.strip() or len(label) > _MAX_LABEL:
+        raise ConfigApplyError("terms create_profile: label is required (non-empty, bounded)")
+    description = payload.get("description")
+    if description is not None and (not isinstance(description, str) or len(description) > 1000):
+        raise ConfigApplyError("terms create_profile: description must be a string <= 1000 chars")
+
+    manifest_path = _terms_dir(root) / "manifest.json"
+    manifest = _load_json_file(manifest_path, "terms/manifest.json")
+    profiles = manifest.get("profiles")
+    if not isinstance(profiles, dict):
+        raise ConfigApplyError("terms create_profile: manifest has no profiles map")
+    if profile_id in profiles:
+        raise ConfigApplyError(
+            f"terms create_profile: profile {profile_id!r} already exists — use add_version to add a "
+            "version, not create_profile"
+        )
+    reserved = manifest.get("reserved_profile_ids") or {}
+    if isinstance(reserved, dict) and profile_id in reserved:
+        raise ConfigApplyError(
+            f"terms create_profile: {profile_id!r} is a RESERVED profile id (deferred transcription) — "
+            "reserved ids are not created via the generic form; escalate to the operator"
+        )
+
+    entry: dict[str, Any] = {"kind": kind, "label": label.strip()}
+    if isinstance(description, str) and description.strip():
+        entry["description"] = description.strip()
+
+    if kind == "library":
+        version_id = payload.get("version_id")
+        text = payload.get("text")
+        if not isinstance(version_id, str) or not _TARGET_VERSION_RE.match(version_id) or len(version_id) > _MAX_TARGET_VERSION:
+            raise ConfigApplyError(
+                "terms create_profile(library): version_id is required and must match /^[a-z0-9_]+$/"
+            )
+        if not isinstance(text, str) or not text.strip():
+            raise ConfigApplyError("terms create_profile(library): text must be non-empty")
+        if len(text) > _MAX_TERMS_TEXT:
+            raise ConfigApplyError(
+                f"terms create_profile(library): text is {len(text)} chars (> {_MAX_TERMS_TEXT})"
+            )
+        # Namespace the file by profile id so two profiles' version ids can't collide on disk.
+        file_name = f"{profile_id}_{version_id}.md"
+        file_path = _terms_dir(root) / file_name
+        if file_path.exists():
+            raise ConfigApplyError(
+                f"terms create_profile: {file_name} already exists on disk — refusing to overwrite"
+            )
+        tokens = sorted({m.group(1) for m in _TOKEN_RE.finditer(text)})
+        file_bytes = text.encode("utf-8")
+        digest = hashlib.sha256(file_bytes).hexdigest()
+        file_path.write_bytes(file_bytes)
+        entry["current_version"] = version_id
+        entry["versions"] = {
+            version_id: {
+                "file": file_name,
+                "sha256": digest,
+                "tokens": tokens,
+                "legal_review": "pending",
+            }
+        }
+        note = (
+            f"terms: NEW library profile {profile_id!r} + version {version_id} "
+            f"(legal_review pending — fenced until set_current)"
+        )
+    else:  # attach
+        render_line = payload.get("render_line")
+        if not isinstance(render_line, str) or not render_line.strip() or len(render_line) > _MAX_RENDER_LINE:
+            raise ConfigApplyError(
+                "terms create_profile(attach): render_line is required (non-empty, bounded)"
+            )
+        entry["render_line"] = render_line.strip()
+        note = f"terms: NEW attach profile {profile_id!r} (render_line only)"
+
+    profiles[profile_id] = entry
+    manifest_path.write_text(_dump(manifest), encoding="utf-8")
+    return note
+
+
 def apply_config(request: dict[str, Any], root: Path) -> str:
     """Validate + WRITE the config request's artifact against live HEAD under ``root``.
 
@@ -355,5 +463,9 @@ def apply_config(request: dict[str, Any], root: Path) -> str:
             return _apply_terms_add_version(payload, request.get("target_version"), root)
         if op == "set_current":
             return _apply_terms_set_current(payload, request.get("target_version"), root)
-        raise ConfigApplyError(f"terms takes op 'add_version' or 'set_current', got {op!r}")
+        if op == "create_profile":
+            return _apply_terms_create_profile(payload, root)
+        raise ConfigApplyError(
+            f"terms takes op 'add_version', 'set_current' or 'create_profile', got {op!r}"
+        )
     raise ConfigApplyError(f"unknown config artifact {artifact!r}")
