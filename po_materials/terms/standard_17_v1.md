@@ -1,0 +1,71 @@
+<!--
+standard_17 v1 — VERBATIM transcription of the terms block of
+docs/references/po_samples/Purchase Order 2019.docx (extracted via textutil, 2026-07-09).
+
+IMMUTABLE: never edit this file. A wording change is a NEW version file
+(standard_17_v2.md) registered in ../manifest.json — drafts pin id+version at generate
+time and must render identically forever (S3 versioned-terms contract, decision D6).
+
+Deviations from strict verbatim (exactly two, both substitution tokens the renderer
+fills; flagged for the operator legal review that gates the first live send, S8):
+  1. "E.S.S. LLC" in DEFINITION OF PURCHASER -> {{purchaser_entity}}. Filled corpus POs
+     print "Evergreen Renewables LLC" (D5); the entity is versioned config
+     (po_materials/config/purchaser.json), never hard-coded in terms text.
+  2. The blank "__________" in 1.a DEFINITION OF SELLER -> {{seller_name}}.
+
+Whitespace normalized (leading indents / tab-bullet artifacts collapsed); ALL wording,
+casing, punctuation, and typos preserved verbatim — including "PERFOMANCE" (clause 11),
+"it's contract" (clause 4), "purchase Order" (clause 5), and the dropped word in clause
+17's final sentence ("the ability to any such default"). Do NOT fix these here; legal
+review decides, and a fix becomes v2.
+
+The page-1 statement line "THIS PURCHASE ORDER IS SUBJECT TO THE TERMS AND CONDITIONS AS
+FOLLOWS:" is renderer-owned (corpus field inventory) and deliberately not part of this file.
+
+Legal review: PENDING (operator) — blocks the first live send (S8 gate), not merge.
+-->
+
+ADDITIONAL INSTRUCTIONS:
+
+1. Reference this purchase order on all applicable invoices.
+2. Only charges shown on this purchase order will be paid.
+3. Containers may be returned for full credit in condition received.
+4. Ship for delivery on required date(s) F.O.B. job site shown above.
+
+TERMS AND CONDITIONS:
+
+DEFINITION OF PURCHASER. The term "purchaser" wherever it is used herein shall mean {{purchaser_entity}}.
+
+1.a DEFINITION OF SELLER. The term “seller” wherever it is used herein shall mean {{seller_name}}
+
+2. RISK OF LOSS. Risk of loss shall remain on seller until delivered to Ship To address in accordance with Purchaser's instructions.
+
+3. PROMPTNESS AND DELIVERY. Delivery of materials at any time or times specified are of the essence of this Purchase Order. Deliveries are to be made at the place, in the quantities and at the times specified in instruction set forth herein or in other written instructions which may from time to time be furnished by the Purchaser. Purchaser may from time to time change, in writing, delivery instructions or direct that shipments may be temporarily suspended. Seller shall make no commitments for material or production arrangements in excess of the amount or in advance of the time necessary to comply with Purchaser's delivery or performance instructions
+
+4. PAYMENTS. It is specifically understood and agreed that the Seller and Purchaser acknowledge that there is a risk that the Owner, in breach of it's contract with Purchaser, may make late payments or may, under other circumstances, not make payments to the Purchaser. The Parties furthermore acknowledge their agreement that they shall share the risk in the same proportion to their entitlement to such portion of the payments due from Owner to Purchaser for their respective work and fees together with that of all other sellers and/or subscribers on the project. As a consequence of the foregoing understanding and consistent with that allocation of risk, the Seller agrees that the Purchaser's receipt of payment from Contractor on behalf of Seller's invoices shall be, to the fullest extent provided by law, a condition precedent to the right of the Seller to receive timely payment from Purchaser. Therefore, Seller agrees that it shall wait a reasonable period of time to receive payment from Purchaser which Purchaser has not received from Contractor on behalf of the work performed by Seller until the expiration of such reasonable period of time. Seller and Purchaser agree that ten ($10) dollars of the amount Purchaser pays to Seller pursuant to this Purchase Order is consideration for the acceptance and agreement by Seller to the Payment terms set forth herein.
+
+5. MODIFICATIONS. The terms, instructions and conditions on the face and in the body of this purchase Order (and any attachments hereto signed by both the parties) constitute the entire agreement between the parties hereto and any modification of this Purchase Order to be valid must be in a written change order and signed by the Purchaser's authorized representative. Seller's commencement of performance of such change order shall be deemed Seller's agreement to the terms of such change order, even if seller fails to sign such change order. The receipt by purchaser of any quotation, form, sales confirmation or other document or instrument from Seller shall not, in the absence of a written acknowledgment by purchaser expressly agreeing to same, have the effect of changing in any manner or adding to the terms and conditions hereof.
+
+6. TAXES AND DUTIES. All taxes, tariffs, duties, and payments of any nature required to and/or by a government authority are included in the purchase price.
+
+7. INDEMNITY. Without limitation of any other right or remedy available to Purchaser, Seller shall protect, defend, indemnify and hold Purchaser harmless from and against any and all claims, losses, damages, liabilities, fines, penalties, costs and expenses (including attorney's fees) directly or indirectly arising out of or resulting from (i) Seller's refusal or failure to perform or observe any of seller's agreements, undertakings, warranties or obligations referred to hereunder, or (ii) any actual or alleged injury or death to any person or damage to any property in any manner arising out of or incident to or claimed to arise out of or incident to the performance of this Purchase Order. Seller and Purchaser acknowledge that ten ($10) dollars of the amount Purchaser pays to Seller pursuant to this Purchase Order has been paid in consideration of Seller agreeing to the defense, indemnity, and hold harmless obligations herein.
+
+8. ASSIGNMENT. Any assignment by Seller of any of its rights or obligations under this Purchase Order without prior written consent of Purchaser shall be null and void and without force or effect. Purchaser shall in its sole discretion have the option to assign this order to an Assignee without the necessity of obtaining the approval of the Seller.
+
+9. COMPLIANCE WITH LAWS. Seller (and the materials to be furnished hereunder) shall comply with all applicable federal, state and local laws and with all applicable rules, regulations and orders issued thereunder. Seller shall provide Purchaser with such certificates of compliance with all applicable federal, state and local laws, ordinances, rules, regulations and orders as Purchaser may from time to time request.
+
+10. In the event of default by Purchaser or its Assignee, Seller shall provide a minimum of thirty (30) days prior written notice to Purchaser and Assignee, of the default and shall provide Purchaser and Assignee with the ability to cure any such default before taking any further action with respect to such default.
+
+11. FAILURE OF PERFOMANCE AND REMEDIES. A failure or refusal to perform or observe any of Seller's agreements, undertakings, warranties or other obligations under this Purchase Order by Seller shall be cause for cancellation and Purchaser shall have no further obligation hereunder. Without limitations of the foregoing, any material at any time, whether before or after delivery, payment and/or utilization in the Project fail to conform to any descriptions, specifications, or provisions contained in this Purchase Order, or fail to satisfy any of Seller's express or implied warranties, or are shipped other than in quantities or not at the time and place specified in the Purchaser's delivery instruments, or other than in containers or packages conforming to Purchaser's specifications (or in the absence of such specifications in recognized standard containers), or which are otherwise not in conformance with the Purchase Order shall be deemed "non-conforming materials". If Seller provides any non-conforming materials Purchaser, without limitation of any other right or remedy Purchaser may have, may: (1) require Seller to repair or replace, at Purchaser's option, such materials at Seller's expense; or (2) reject, in whole or in part, the materials that are the subject of this Purchase Order and receive credit or refund for such whole or part of the purchase price associated therewith. Non-conforming materials may be held (or returned to Seller) at Seller's expense and risk, and shall be replaced by Seller only upon the issuance of a new Purchase Order by Purchaser. Purchaser may charge to Seller all expenses of unpacking, examining, repacking, storing, and reshipping any materials rejected by aforesaid and may also charge to Seller any other Incidental or consequential damages suffered by Purchaser as a result thereof. Failure of Seller to deliver material to Purchaser within the lead time frame specified in Purchase Order shall be cause for Purchase Order cancellation, and Purchaser shall have no further obligation herein.
+
+12. SHOP DRAWINGS AND SUBMITTALS. Seller shall deliver to Purchaser copies of shop drawings, cuts, samples, and material lists required by Purchaser or the Contract Documents and in accordance with the Contract Documents within sufficient time so as not to delay performance of the Project or within sufficient time for Purchaser to submit the same within the time stated in the Contract Documents, whichever is earlier. Any deviation from the Contract Documents shall be clearly identified on shop drawings. Notwithstanding any general approval granted by purchaser or Owner, all work shall be in accordance with the Contract Documents. Purchaser's review of Seller's shop drawings, cuts, samples, and material lists is only for the convenience of the Owner in following the work and shall not relieve the Seller from responsibility for any deviations from the requirements of the Contract Documents.
+
+13. Without limitation of any other right or remedy available to Purchaser, if at any time there shall be evidence of a lien or claim for which the Purchaser or Owner might become liable which is chargeable to the Seller, the Purchaser shall have the right to retain out of any payment an amount sufficient to defend and indemnify the Purchaser and Owner against such claim or lien, including attorney's fees and court costs.
+
+14. ACKNOWLEDGEMENT. This Purchase Order constitutes an offer made by Purchaser. Return of an Acknowledgement copy of this Purchase Order signed by the Seller, delivery of part or all of the materials specified, will signify Seller's unconditional acceptance of Purchaser's offer.
+
+15. OPTIONAL CANCELLATION. Purchaser shall have the right to at any time (whether or not Seller may then be in default hereunder) to cancel, in whole or in part, the undelivered portion of the materials to be furnished hereunder by written or facsimile notice to the Seller who shall immediately upon receipt of such notice discontinue all work in respect to the cancelled portion of this Purchase Order except as may be necessary to preserve and protect the work and materials then in progress and shall use good faith efforts to cancel and terminate all then existing orders placed or entered into by the Seller which are chargeable to the canceled portion of this Purchase Order. In the event of such cancellation and if Seller is not in default hereunder, Purchaser agrees to pay the Seller, in addition to the stipulated price for all conforming materials delivered or furnished to and utilized in the Project in accordance with the terms of this Purchase Order and not previously paid for, all costs necessarily incurred by Seller in connection with cancelled portion of this Purchase Order pursuant to any other provision hereof.
+
+16. INSURANCE AND PERMITS. Unless otherwise agreed to by Purchaser, in writing, Seller shall before proceeding under this Purchase Order furnish Purchaser at Seller's expense, with (a) certificates of insurance covering workmen's compensation insurance with limits as provided by statute (but in no event less than $500,000) and comprehensive general liability insurance, including products liability and contractual liability coverage, with, limits of not less than $1,000,000 each occurrence and in the aggregate for bodily injury or death and limits of not less than $500,000 each occurrence and in the aggregate for property damage, and (b) all certificates, permits and/or licenses required for the performance of Seller's obligations hereunder. The certificates of insurance required above will also include evidence of automobile insurance for owned and non-owned vehicles with a combined single limit of $500,000 public liability and property damage and, unless Purchaser otherwise agrees in writing, will name Purchaser and Owner as additional named insureds to the liability coverage(s) described herein.
+
+17. MISCELLANEOUS. Seller shall have no dealings with Contractor/Owner or its authorized representatives in regard to the General Contract, changes, extras or delays relating to the work but shall deal only with Purchaser. All clauses "flow down" to Seller from Owner/Contractor/Purchaser's agreement. This Purchase Order shall be governed by the laws of the state in which the Project is located. If any term or condition of the Purchase Order shall be held invalid or unenforceable, the remainder of this Purchase Order shall continue valid and enforceable to the fullest extent permitted by law. All provisions of this Purchase Order, which by their terms may require performance after cancellation, shall survive any such cancellation. In the event of a default by Purchaser or its Assignees, Seller shall provide a minimum of thirty (30) days prior written notice to Purchaser or Assignee, of the default and shall provide Purchaser and Assignee with the ability to any such default before taking any further action with respect to such default.
