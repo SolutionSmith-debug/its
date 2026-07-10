@@ -35,10 +35,11 @@ Invariants (§42 — why a binding, not a clone)
 - **Envelope carries the contractual number:** subject
   ``"Purchase Order {po_number} — {project} — {entity}"`` + attachment ``{po_number}.pdf``.
   ``po_number`` is read from the review row's Notes (``po_poll`` seeds it via
-  ``po_review.notes_for_review_row``). A row that lost the tag REFUSES to send (raise →
-  ``send_poll_core`` per-row fence; a legal PO must carry its number, better a stuck+loud
-  row than a numberless PO to a vendor). This raise happens BEFORE the write-ahead SENDING
-  marker, so the row is never double-sent.
+  ``po_review.notes_for_review_row``). A row that lost the tag → the envelope returns
+  ``None`` → the engine HELDs (``held_missing_envelope``), mirroring the recipient_lookup
+  None→HELD convention: an operator-visible HELD row (never re-dispatched) rather than a
+  numberless PO to a vendor. The HELD is set BEFORE the write-ahead SENDING marker, so the
+  row is never double-sent.
 - **Inherited unchanged from the shared engine (§42 there):** the SENT/HELD idempotency
   gates, the write-ahead ``SENDING`` marker (no double-send), the oversized-packet HELD,
   the inline-vs-upload-session transport switch, the Notes-encoded retry state, the
@@ -113,18 +114,15 @@ class _PoEnvelope:
     """Subject + attachment name for a PO send. ``po_number`` is read from the review
     row's Notes (``po_poll`` seeds it via ``po_review.notes_for_review_row``); the
     purchaser entity is the versioned ``purchaser.json`` value, read at send time. A row
-    with no parseable ``po_number`` RAISES — a PO email must carry its number, so the
-    ``send_poll_core`` per-row fence stops it (before the SENDING marker, so never a
-    double-send) rather than mailing a numberless PO to a vendor."""
+    with no parseable ``po_number`` returns ``None`` — a PO email must carry its number,
+    so the engine HELDs (``held_missing_envelope``, mirroring the recipient_lookup
+    None→HELD convention): an operator-visible HELD row (skipped by the SENT/HELD gate,
+    never re-dispatched), NOT a numberless PO to a vendor."""
 
-    def __call__(self, ctx: EnvelopeContext) -> tuple[str, str]:
+    def __call__(self, ctx: EnvelopeContext) -> tuple[str, str] | None:
         po_number = po_review.row_po_number(ctx.row)
         if not po_number:
-            raise ValueError(
-                f"po_send: review row for project {ctx.project_name!r} has no parseable "
-                "po_number in Notes — refusing to send a PO email without its contractual "
-                "number (fix the row's Notes or cancel the PO, then re-approve)"
-            )
+            return None
         entity = str(terms_lib.load_purchaser_config().get("entity") or "Evergreen Renewables")
         subject = f"Purchase Order {po_number} — {ctx.project_name} — {entity}"
         return subject, f"{po_number}.pdf"

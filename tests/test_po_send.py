@@ -123,11 +123,12 @@ def test_envelope_carries_po_number_and_entity(mocker):
     assert attachment == "2026.001.2.0.0.pdf"
 
 
-def test_envelope_refuses_a_numberless_po(mocker):
+def test_envelope_returns_none_for_a_numberless_po(mocker):
+    # None → the engine HELDs (held_missing_envelope), mirroring recipient_lookup's
+    # None→HELD convention — never a numberless PO to a vendor, never a raise.
     mocker.patch.object(po_send.terms_lib, "load_purchaser_config", return_value=_PURCHASER)
     ctx = EnvelopeContext(project_name="Sunrise", week="2026-07-09", row=_row(**{po_review.COL_NOTES: "po_id=7"}))
-    with pytest.raises(ValueError, match="no parseable po_number"):
-        po_send._PoEnvelope()(ctx)
+    assert po_send._PoEnvelope()(ctx) is None
 
 
 # ---- end-to-end dispatch through the shared engine --------------------------
@@ -161,4 +162,14 @@ def test_send_hard_helds_a_contaminated_row(stub):
     stub["get_row"].return_value = _row(**{po_review.COL_WORKSTREAM: "safety"})
     result = po_send.send_one_row(90)
     assert result.status == "held_workstream_mismatch"
+    stub["send_mail"].assert_not_called()
+
+
+def test_send_helds_a_numberless_po_row_never_sends(stub):
+    # End-to-end: a review row whose Notes lost the po_number tag HELDs
+    # (held_missing_envelope) — operator-visible, never a numberless PO to the vendor,
+    # and (unlike a raise) the row is flipped to HELD so it is not re-dispatched.
+    stub["get_row"].return_value = _row(**{po_review.COL_NOTES: "po_id=7"})
+    result = po_send.send_one_row(90)
+    assert result.status == "held_missing_envelope"
     stub["send_mail"].assert_not_called()
