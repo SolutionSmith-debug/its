@@ -51,6 +51,8 @@ moves are the three low-class ones in Symptom A/B/C below.
 - Open **ITS_Config**, find `Setting = po_materials.config_actuator.polling_enabled`, `Workstream = po_materials`. **Read the whole Description cell first** (House Reflex: a gate's Description can carry a precondition — a verbal go-ahead does not clear a documented one). Set `Value = true`.
 - The next 120 s cycle drains the queue.
 
+**First-time activation sequence (Developer-Operator).** In order: (1) `python3 scripts/migrations/seed_config_actuator_config.py` — seeds `polling_enabled=false` **and** the Worker-base-URL `po_materials` copy (`get_setting` is workstream-scoped; without the `po_materials` copy the daemon halts fail-closed on an empty URL). (2) `wrangler secret put PORTAL_CONFIG_API_TOKEN` + mirror to Keychain `ITS_PORTAL_CONFIG_TOKEN`. (3) **`scripts/launchd/install.sh load org.solutionsmith.its.config-actuator`** — do NOT raw-`cp` the plist: it is an `__ITS_HOME__` template `install.sh` substitutes; a raw copy loads a broken **exit-78** daemon. (4) Flip the gate to `true`. (5) Make one test edit in the portal and watch it actuate (that watched first actuation is the mirror smoke).
+
 ---
 
 ## Symptom B — a config edit is stuck / a CRITICAL fires `config_actuator.deploy_blocked_pending_migrations` (deploy REFUSED: unapplied remote D1 migration(s))

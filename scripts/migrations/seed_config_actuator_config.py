@@ -12,14 +12,18 @@ has NO visible switch at all — the operator hunts for a cell that doesn't exis
 row `false` in the same change that adds the gated code makes activation a visible cell-flip,
 and the #336 `resolve_and_log` startup pass stops WARNing `config_row_missing`.
 
-The Worker base-URL key (`safety_reports.portal.worker_base_url`) is NOT seeded here — the
-config actuator SHARES the one Safety Portal Worker with portal_poll / po_poll, so that row
-already exists (seeded by the portal config seeder). This migration seeds ONLY the actuator's
-own polling gate.
+The Worker base-URL key (`safety_reports.portal.worker_base_url`) IS seeded here, under
+Workstream `po_materials`. The actuator shares the one Safety Portal Worker, BUT `get_setting`
+is workstream-scoped — the daemon reads that key under Workstream=`po_materials`, while the
+canonical row lives under `safety_reports` (a copy also exists under `progress_reports`, the same
+per-workstream pattern). Without a `po_materials` copy the daemon halts fail-closed on an empty
+URL. This migration mirrors the canonical `safety_reports` value into a `po_materials` copy at
+seed time.
 
-What it seeds (1 row, workstream `po_materials`):
+What it seeds (workstream `po_materials`):
 
-    po_materials.config_actuator.polling_enabled = false
+    po_materials.config_actuator.polling_enabled          = false
+    safety_reports.portal.worker_base_url                 = <mirrored from the safety_reports copy>
 
 Auth: ITS_SMARTSHEET_TOKEN from macOS Keychain (same path the runtime SDK uses).
 
@@ -43,6 +47,12 @@ from shared import keychain, sheet_ids  # noqa: E402
 BASE = "https://api.smartsheet.com/2.0"
 
 WORKSTREAM = "po_materials"
+
+# The daemon reads the Worker base-URL under Workstream=po_materials (get_setting is
+# workstream-scoped); the canonical row lives under safety_reports. We mirror its VALUE into a
+# po_materials copy at seed time so the value stays environment-agnostic (no hardcoded URL).
+WORKER_BASE_URL_SETTING = "safety_reports.portal.worker_base_url"
+CANONICAL_URL_WORKSTREAM = "safety_reports"
 
 CONFIG_ROWS: list[dict[str, Any]] = [
     {
@@ -109,6 +119,66 @@ def _find_config_row(
     return None
 
 
+def _cell_value(
+    row: dict[str, Any], columns: list[dict[str, Any]], title: str
+) -> Any:
+    col_id = {c["title"]: c["id"] for c in columns}[title]
+    for cell in row.get("cells", []):
+        if cell.get("columnId") == col_id:
+            return cell.get("value")
+    return None
+
+
+def _seed_worker_base_url(
+    rows: list[dict[str, Any]],
+    columns: list[dict[str, Any]],
+    col_id_by_title: dict[str, int],
+    results: list[tuple[str, str]],
+) -> None:
+    """Mirror the canonical safety_reports Worker base-URL into a po_materials copy (idempotent).
+
+    The value is READ from the canonical safety_reports row at seed time — never hardcoded — so a
+    fresh install stays environment-agnostic. If the canonical row is missing/empty, seeds an EMPTY
+    po_materials copy + WARNs (the operator sets it before activating the actuator)."""
+    if _find_config_row(rows, columns, WORKER_BASE_URL_SETTING, WORKSTREAM) is not None:
+        print(
+            f"[skip] ITS_Config row Setting={WORKER_BASE_URL_SETTING!r} "
+            f"Workstream={WORKSTREAM!r} already present."
+        )
+        results.append((WORKER_BASE_URL_SETTING, "exists"))
+        return
+    canonical = _find_config_row(rows, columns, WORKER_BASE_URL_SETTING, CANONICAL_URL_WORKSTREAM)
+    url = str(_cell_value(canonical, columns, "Value") or "") if canonical else ""
+    if not url:
+        print(
+            f"[warn] canonical {WORKER_BASE_URL_SETTING!r} (Workstream={CANONICAL_URL_WORKSTREAM!r}) "
+            "not found or empty — seeding the po_materials copy EMPTY. Set it before activating the "
+            "actuator, or the daemon halts fail-closed on a missing Worker URL."
+        )
+    cells = [
+        {"columnId": col_id_by_title["Setting"], "value": WORKER_BASE_URL_SETTING},
+        {"columnId": col_id_by_title["Value"], "value": url},
+        {"columnId": col_id_by_title["Workstream"], "value": WORKSTREAM},
+        {
+            "columnId": col_id_by_title["Description"],
+            "value": (
+                "Worker base URL for config_actuator — get_setting is workstream-scoped and the "
+                "daemon reads this key under Workstream=po_materials; mirrored from the canonical "
+                f"{CANONICAL_URL_WORKSTREAM} copy at seed time. Keep in sync if the Worker domain changes."
+            ),
+        },
+    ]
+    result = _post_json(
+        f"/sheets/{sheet_ids.SHEET_CONFIG}/rows", [{"toBottom": True, "cells": cells}]
+    )
+    new_id = result["result"][0]["id"]
+    print(
+        f"[ok] Seeded ITS_Config row id={new_id}: Setting={WORKER_BASE_URL_SETTING!r} "
+        f"Value={url!r} (mirrored from Workstream={CANONICAL_URL_WORKSTREAM!r})"
+    )
+    results.append((WORKER_BASE_URL_SETTING, "created"))
+
+
 def seed_config_rows() -> list[tuple[str, str]]:
     """Seed the po_materials.config_actuator.* row(s). Idempotent per row.
 
@@ -144,13 +214,19 @@ def seed_config_rows() -> list[tuple[str, str]]:
             f"Setting={row_spec['Setting']!r} Value={row_spec['Value']!r}"
         )
         results.append((row_spec["Setting"], "created"))
+
+    # The Worker base-URL po_materials copy — value mirrored from the canonical safety_reports row.
+    _seed_worker_base_url(rows, columns, col_id_by_title, results)
     return results
 
 
 def main() -> int:
     print(f"[info] ITS_Config sheet = {sheet_ids.SHEET_CONFIG}")
     print(f"[info] Workstream = {WORKSTREAM!r}")
-    print(f"[info] Seeding {len(CONFIG_ROWS)} row (config_actuator polling gate, ships false)")
+    print(
+        f"[info] Seeding {len(CONFIG_ROWS)} gate row (ships false) + the Worker base-URL "
+        "po_materials copy (mirrored from safety_reports)"
+    )
     print()
 
     row_results = seed_config_rows()
