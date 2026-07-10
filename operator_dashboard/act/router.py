@@ -1,11 +1,14 @@
-"""ACT router (WS2 D1-2): the config-editor read page + the single write route.
+"""ACT router (WS2 D1-2 + D1-3): the config editor + the mutating routes.
 
-Mounted on the D1-1 app at its marked D1-2 mount point. This is the ONLY
-mutating route in the dashboard. Every request passes the Origin allowlist then
-the PIN (fail-closed) before `apply_edit` validates, first-activation-gates,
-writes, and audits. Outcomes render as an htmx partial (uniform HTTP 200 — no
-status-code oracle; the real control is that no write happens unless every
-check passes).
+Mutating routes (each renders a uniform HTTP-200 htmx outcome partial — no
+status-code oracle; the real control is that no write happens unless every check
+passes):
+  POST /act/config          — Class-A edits (plain PIN gate)
+  POST /act/config/elevated — Class-B weighted edits + send-poller activation
+                              (elevated-confirm: re-PIN + typed confirmation)
+  POST /act/secret/rotate   — Class-C secret rotation (elevated-confirm; write-only)
+Class D (build-time) and Class E (Invariant-1 mode, legacy approvers) are
+read-only — no edit control is rendered for them.
 """
 from __future__ import annotations
 
@@ -15,9 +18,16 @@ from typing import Any
 from fastapi import FastAPI, Form, Request, Response
 from fastapi.templating import Jinja2Templates
 
-from operator_dashboard.act import config_write
-from operator_dashboard.act.config_write import apply_edit, audit_denied, read_registry_state
-from operator_dashboard.auth import OriginError, PinError, check_origin, verify_pin
+from operator_dashboard.act import config_write, secret_rotate
+from operator_dashboard.act.config_write import (
+    apply_edit,
+    apply_elevated_edit,
+    audit_denied,
+    read_display_state,
+    read_registry_state,
+)
+from operator_dashboard.act.registry import SECRETS
+from operator_dashboard.auth import OriginError, PinError, check_origin, verify_elevated, verify_pin
 
 
 def register_act_routes(app: FastAPI, templates: Jinja2Templates) -> None:
@@ -30,7 +40,20 @@ def register_act_routes(app: FastAPI, templates: Jinja2Templates) -> None:
                 groups.setdefault(row["group"], []).append(row)
         except Exception as exc:  # fail-soft: show the read error, never crash
             error = f"could not read ITS_Config: {type(exc).__name__}: {exc}"
-        return templates.TemplateResponse(request, "config.html", {"groups": groups, "error": error})
+        display: list[dict[str, Any]] = []
+        try:
+            display = read_display_state()
+        except Exception:
+            display = []
+        secrets = [
+            {"key": s.key, "label": s.label, "kind": s.kind, "note": s.note, "mirror": s.worker_mirror}
+            for s in SECRETS.values()
+        ]
+        return templates.TemplateResponse(
+            request,
+            "config.html",
+            {"groups": groups, "error": error, "secrets": secrets, "display": display},
+        )
 
     @app.post("/act/config")
     def act_config(
@@ -41,23 +64,70 @@ def register_act_routes(app: FastAPI, templates: Jinja2Templates) -> None:
         pin: str = Form(...),
     ) -> Response:
         operator = getpass.getuser()
-        # (a) Origin allowlist — defense-in-depth CSRF check (PIN is the real one).
         try:
             check_origin(request.headers.get("origin"), request.headers.get("referer"))
         except OriginError as exc:
             audit_denied(operator, setting, workstream, "origin")
             return _outcome(templates, request, config_write.NOT_EDITABLE, f"refused: {exc}", setting, workstream)
-        # (b) PIN — primary control, fail-closed.
         try:
             verify_pin(pin)
         except PinError as exc:
             audit_denied(operator, setting, workstream, "pin")
             return _outcome(templates, request, config_write.REJECTED, f"denied: {exc}", setting, workstream)
-        # (c) apply: validate → first-activation-gate → write LAST → audit.
         outcome = apply_edit(setting, workstream, value, operator)
         if outcome.kind == config_write.NOT_EDITABLE:
             audit_denied(operator, setting, workstream, "not_editable")
         return _outcome(templates, request, outcome.kind, outcome.message, setting, workstream)
+
+    @app.post("/act/config/elevated")
+    def act_config_elevated(
+        request: Request,
+        setting: str = Form(...),
+        workstream: str = Form(...),
+        value: str = Form(...),
+        pin: str = Form(...),
+        confirm: str = Form(""),
+        attest: str = Form(""),
+    ) -> Response:
+        operator = getpass.getuser()
+        try:
+            check_origin(request.headers.get("origin"), request.headers.get("referer"))
+        except OriginError as exc:
+            audit_denied(operator, setting, workstream, "origin")
+            return _outcome(templates, request, config_write.NOT_EDITABLE, f"refused: {exc}", setting, workstream)
+        # elevated-confirm: re-PIN + type the exact setting name to confirm
+        try:
+            verify_elevated(pin, confirm, expected=setting)
+        except PinError as exc:
+            audit_denied(operator, setting, workstream, "elevated")
+            return _outcome(templates, request, config_write.REJECTED, f"denied: {exc}", setting, workstream)
+        outcome = apply_elevated_edit(setting, workstream, value, operator, attested=(attest.strip().lower() == "yes"))
+        if outcome.kind == config_write.NOT_EDITABLE:
+            audit_denied(operator, setting, workstream, "not_editable")
+        return _outcome(templates, request, outcome.kind, outcome.message, setting, workstream)
+
+    @app.post("/act/secret/rotate")
+    def act_secret_rotate(
+        request: Request,
+        key: str = Form(...),
+        value: str = Form(""),
+        pin: str = Form(...),
+        confirm: str = Form(""),
+    ) -> Response:
+        operator = getpass.getuser()
+        try:
+            check_origin(request.headers.get("origin"), request.headers.get("referer"))
+        except OriginError as exc:
+            audit_denied(operator, key, "", "origin")
+            return _outcome(templates, request, "refused", f"refused: {exc}", key, "")
+        # elevated-confirm: re-PIN + type the exact credential name to confirm
+        try:
+            verify_elevated(pin, confirm, expected=key)
+        except PinError as exc:
+            audit_denied(operator, key, "", "elevated")
+            return _outcome(templates, request, "refused", f"denied: {exc}", key, "")
+        result = secret_rotate.rotate_secret(key, value, operator)
+        return _outcome(templates, request, result.kind, result.message, result.key, "")
 
 
 def _outcome(

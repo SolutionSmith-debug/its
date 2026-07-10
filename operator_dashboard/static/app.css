@@ -145,7 +145,21 @@ tr.sev-info td:first-child { color: var(--info); }
 }
 .cfg-btn:hover { filter: brightness(1.1); }
 .outcome { font-size: 12px; }
-.outcome-applied { color: var(--ok); }
+.outcome-applied, .outcome-rotated { color: var(--ok); }
 .outcome-noop { color: var(--muted); }
-.outcome-escalated { color: var(--warn); }
-.outcome-rejected, .outcome-not_editable, .outcome-error { color: var(--error); }
+.outcome-escalated, .outcome-guided { color: var(--warn); }
+.outcome-rejected, .outcome-not_editable, .outcome-error, .outcome-refused { color: var(--error); }
+
+/* --- D1-3 elevated / secret rotation --- */
+.tier-b {
+  font-size: 10px; font-weight: 700; color: var(--warn);
+  border: 1px solid var(--warn); border-radius: 3px; padding: 0 4px; vertical-align: middle;
+}
+.cfg-confirm {
+  background: var(--bg); color: var(--text); border: 1px dashed var(--warn);
+  border-radius: 4px; padding: 4px 6px; font-size: 12px; min-width: 150px;
+  font-family: ui-monospace, monospace;
+}
+.cfg-btn.elevated { background: var(--warn); border-color: var(--warn); }
+.attest { font-size: 11px; color: var(--warn); display: inline-flex; align-items: center; gap: 4px; }
+.guided-note { color: var(--warn); font-size: 12px; }

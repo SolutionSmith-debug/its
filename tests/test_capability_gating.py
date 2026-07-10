@@ -401,6 +401,11 @@ NETWORK_LIB_ALLOWLIST: frozenset[str] = frozenset({
     # dynamic import of a network lib. It writes ONLY to ITS_Config (internal
     # SoR), never an external send — no anthropic/graph/resend import here.
     "operator_dashboard/act/config_write.py",
+    # WS2 D1-3 Class-C secret rotation: `subprocess` runs `npx wrangler secret put`
+    # (value on STDIN, never argv) to rotate a Worker bearer, cwd safety_portal/;
+    # `importlib` lazily resolves shared.keychain / shared.error_log. Write-only —
+    # it never reads a secret back and never logs a value. Not a customer send.
+    "operator_dashboard/act/secret_rotate.py",
 })
 
 # Import needles that constitute network-egress or process-spawn capability.

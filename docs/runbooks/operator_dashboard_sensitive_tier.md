@@ -1,0 +1,96 @@
+---
+type: operations
+date: 2026-07-10
+status: active
+related_prs: []
+workstream: global
+tags: [runbook, successor-remediation, operator-dashboard, config-editor, class-b, class-c, secret-rotation, box-oauth, elevated-confirm, tier-2, tier-3]
+---
+
+# Runbook — Operator Dashboard sensitive tier (Class B/C/D/E) (Successor-Remediation, Op Stds §43)
+
+The WS2 **D1-3** tier of the config editor (`operator_dashboard`) adds the sensitive actions on
+top of the D1-2 Class-A editor (see `operator_dashboard_config_editor.md`). Every Class-B and
+Class-C action requires the **elevated-confirm ceremony**: re-enter the operator PIN **and** type
+the exact target name (the setting, or the credential key). Both must match; fail-closed. It uses a
+**separate lockout bucket** from the Class-A PIN.
+
+- **Class B — weighted config edits** (→ `ITS_Config`): identity (`*.from_mailbox`, `intake.mailbox`),
+  trust (`intake.allowed_senders`, `reviewer_chain`), endpoint (the 3 `portal.worker_base_url` copies),
+  the **global brake** `system.state` (ACTIVE|PAUSED|MAINTENANCE), and `config_actuator.polling_enabled`
+  (gates a code-committing daemon). A **send-poller `false→true` activation** (`weekly_send`/`po_send`/
+  `po_poll.*`) self-applies only after the elevated ceremony **and** checking the "go-live preconditions
+  met" box (the row's Description preconditions are surfaced). Every edit audits `config_audit_elevated`.
+- **Class C — secret rotation** (write-only; §below).
+- **Class D — build-time settings**: read-only pointer to the §50 SPA config editor (this dashboard
+  never deploys).
+- **Class E — read-only**: `external_send_gate` (Invariant-1 mode) + the legacy `authorized_approvers`
+  row — shown, never an edit control.
+
+## Class C — secret rotation (write-only, registry-bound)
+
+Values are **write-only**: never displayed, never read back, never logged (the audit records
+`<KEY> rotated by <op>`, never the value). Only the fixed credential list is rotatable; an unlisted
+key is refused.
+
+- **Keychain secrets** (`ITS_SMARTSHEET_TOKEN`, `ITS_RESEND_API_KEY`, `ITS_SENTRY_DSN`,
+  `ITS_BOX_CLIENT_ID`, `ITS_BOX_CLIENT_SECRET`): paste the new value + re-PIN + type the key →
+  `shared.keychain.set_secret` write-through (`-U` overwrite). Immediate.
+- **Worker bearers** (`PORTAL_PO_API_TOKEN`, `PORTAL_CONFIG_API_TOKEN`, `PORTAL_ADMIN_API_TOKEN`):
+  paste + ceremony → `npx wrangler secret put <NAME>` (value on **stdin**, never argv, cwd `safety_portal/`)
+  **and** the byte-equal Keychain mirror (`ITS_PORTAL_*_TOKEN`) is written from the SAME value. Immediate
+  (request-time env read). **If the mirror write fails after the Worker set, rotate the mirror manually** —
+  a Worker secret without its byte-equal mirror fail-closes the Mac daemon.
+- **Box refresh token** (`ITS_BOX_REFRESH_TOKEN`): **guided only — no value is ever pasted here.** It is
+  single-consumer and rotates on every use; overwriting mid-refresh strands ITS on an invalid token
+  (60-day death). Rotate it with the quiesce flow below.
+
+### Box refresh-token rotation (Developer-Operator, guided — HIGH-CLASS §44)
+
+1. **Quiesce** every Box-consuming daemon (Class-A pause in the editor, or `launchctl unload`):
+   `safety_reports.portal_poll`, `safety_reports.intake`, `safety_reports.weekly_send`,
+   `safety_reports.publish_daemon`, `po_materials.po_poll`, plus the compile writers. `weekly_generate`
+   is a Friday-14:00 timed job — rotate outside its window or `launchctl unload` its plist.
+2. **Wait to drain** past the longest interval (portal_poll ~60s; send/compile pollers 15-min). Confirm
+   no daemon is mid-cycle via the dashboard's daemon-liveness panel (`*_heartbeat.txt` mtime stops
+   advancing) / `ITS_Daemon_Health`.
+3. **Rotate**: `python scripts/setup_box_oauth.py` (interactive browser grant — writes the new
+   `ITS_BOX_REFRESH_TOKEN`; NEVER unattended).
+4. **Smoke**: `python scripts/smoke_test_box.py` (read-only; `--write-test` for a round-trip).
+5. **Re-enable** the gates (un-pause / `launchctl load`) and verify a daemon cycle succeeds + the
+   freshness marker `~/its/state/box_oauth_last_refresh.json` advances.
+
+## Acceptance smoke (Developer-Operator)
+
+- **Class-B**: with the PIN provisioned, edit `safety_reports.intake.mailbox` via the elevated form
+  (re-PIN + type the setting name) → confirm the `ITS_Config` cell changed + a `config_audit_elevated`
+  WARN row landed.
+- **Class-C low-stakes**: rotate a low-stakes Keychain entry end-to-end (paste + ceremony) → confirm the
+  Keychain entry updated and the audit row carries **no value** (`config_secret_rotated`).
+- **Class-D**: confirm build-time edits show only the §50 pointer (no deploy control on this dashboard).
+
+## Symptoms & Tier-2 repairs
+
+**"type the exact confirmation phrase to proceed"** — the typed confirmation didn't match the target.
+Re-type the exact setting name / credential key. (Class B/C only.)
+
+**"send-poller activation requires attesting the go-live preconditions are met"** — you turned a
+send-poller gate ON without checking the attestation box. Review the surfaced go-live preconditions;
+activating `po_send` (the vendor External Send Gate) is high blast radius — if unsure, **escalate to Seth**.
+
+**"Worker secret set but Keychain mirror … write failed"** — the `wrangler secret put` succeeded but the
+Keychain mirror didn't. **Tier-2/Seth:** rotate the mirror (`ITS_PORTAL_*_TOKEN`) manually to the SAME
+value immediately — the daemon fail-closes until Worker + mirror match.
+
+**"… is not a rotatable credential"** — attempted to rotate an unlisted secret. Only the fixed list is
+rotatable by design; a new credential is added in code (Seth), not free-form.
+
+**"too many failed attempts — temporarily locked out"** — elevated lockout (separate from the Class-A
+PIN). Wait 60s. A CRITICAL `config_pin_lockout` paged → if you didn't cause it, treat as brute-force → escalate.
+
+## Boundary (escalate to the Developer-Operator, Seth)
+
+Provisioning/rotating the PIN itself · the **Box refresh-token quiesce flow** (interactive OAuth, §44
+high-class) · activating a **send-poller** (External Send Gate) when preconditions are uncertain ·
+editing `system.state` to PAUSED/MAINTENANCE with wide blast radius · any code change. These are FIXED
+high-capability classes (Op Stds §44).

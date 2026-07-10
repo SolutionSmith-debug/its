@@ -78,10 +78,9 @@ def _seed(state: dict[str, Any], setting: str, ws: str, value: str, row_id: int 
 
 
 # ---------------------------------------------------------------- registry ----
-def test_denylisted_keys_are_not_editable() -> None:
+def test_class_e_and_interval_keys_are_not_editable() -> None:
+    # external_send_gate (Class E) is NEVER editable on any surface
     assert not registry.is_editable("safety_reports.external_send_gate", "safety_reports")
-    assert not registry.is_editable("system.state", "global")
-    assert not registry.is_editable("po_materials.config_actuator.polling_enabled", "po_materials")
     # interval keys are install-time (never hot-reload) → deliberately not editable here
     assert not registry.is_editable("safety_reports.intake.poll_interval_seconds", "safety_reports")
     assert not registry.is_editable("po_materials.po_send.poll_interval_seconds", "po_materials")
@@ -90,12 +89,25 @@ def test_denylisted_keys_are_not_editable() -> None:
         assert all(k[0] != name for k in registry.REGISTRY), f"{name} leaked into REGISTRY"
 
 
+def test_system_state_and_config_actuator_are_class_b_elevated() -> None:
+    # D1-3 moved these from non-editable to Class-B (elevated-confirm required)
+    for setting, ws in (
+        ("system.state", "global"),
+        ("po_materials.config_actuator.polling_enabled", "po_materials"),
+    ):
+        entry = registry.get_entry(setting, ws)
+        assert entry is not None and entry.tier == "B" and entry.elevated_confirm
+
+
 def test_registry_is_keyed_on_pair_not_setting_name() -> None:
     # the footgun row is editable under safety_reports (intake's workstream) only
     assert registry.is_editable("progress_reports.intake_enabled", "safety_reports")
     assert not registry.is_editable("progress_reports.intake_enabled", "progress_reports")
-    # worker_base_url (exists 3x under different workstreams) is not editable at all
-    assert not registry.is_editable("safety_reports.portal.worker_base_url", "safety_reports")
+    # worker_base_url exists 3x under different workstreams — each a distinct
+    # Class-B (D1-3) editable pair; pair-keying is load-bearing
+    for ws in ("safety_reports", "progress_reports", "po_materials"):
+        entry = registry.get_entry("safety_reports.portal.worker_base_url", ws)
+        assert entry is not None and entry.tier == "B"
 
 
 # -------------------------------------------------------------- validators ----
@@ -269,7 +281,7 @@ def test_http_config_page_renders(fake_smartsheet: dict[str, Any]) -> None:
     client = TestClient(create_app())
     resp = client.get("/config")
     assert resp.status_code == 200
-    assert "Class-A config editor" in resp.text
+    assert "Config editor" in resp.text
     assert "circuit_breaker.enabled" in resp.text
 
 

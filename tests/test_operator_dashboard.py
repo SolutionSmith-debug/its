@@ -104,9 +104,10 @@ def test_untrusted_smartsheet_values_render_inert(
     assert "&lt;redacted&gt;" in body
 
 
-def test_only_mutation_route_is_the_audited_config_act() -> None:
-    # After D1-2 the app has EXACTLY ONE mutating route: the PIN-gated, audited
-    # Class-A config editor. Any other non-GET route is a regression.
+def test_mutation_routes_are_the_expected_act_set() -> None:
+    # After D1-3 the app has EXACTLY three mutating routes: Class-A edit, the
+    # elevated Class-B edit, and the Class-C secret rotation. Any other non-GET
+    # route is a regression.
     app = create_app()
     mutating: list[tuple[str, list[str]]] = []
     for route in app.routes:
@@ -116,7 +117,11 @@ def test_only_mutation_route_is_the_audited_config_act() -> None:
         non_read = set(methods) - {"GET", "HEAD", "OPTIONS"}
         if non_read:
             mutating.append((getattr(route, "path", "?"), sorted(non_read)))
-    assert mutating == [("/act/config", ["POST"])], f"unexpected mutating routes: {mutating}"
+    assert sorted(mutating) == [
+        ("/act/config", ["POST"]),
+        ("/act/config/elevated", ["POST"]),
+        ("/act/secret/rotate", ["POST"]),
+    ], f"unexpected mutating routes: {mutating}"
 
 
 def test_config_paths_mirror_live_shared_constants() -> None:

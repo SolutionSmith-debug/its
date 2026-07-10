@@ -161,3 +161,70 @@ def v_url(value: str) -> str:
     if len(v) > _MAX_URL or not _URL_RE.match(v):
         raise ConfigValidationError(f"must be an https:// URL (got {value!r})")
     return v
+
+
+# --- Class-B (D1-3) validators -------------------------------------------------
+SYSTEM_STATES = frozenset({"ACTIVE", "PAUSED", "MAINTENANCE"})
+_DOMAIN_PATTERN_RE = re.compile(r"^@[^@\s]+\.[^@\s]+\Z")  # e.g. '@evergreen.com'
+
+
+def v_state(value: str) -> str:
+    """system.state — the global brake. Exactly one of ACTIVE|PAUSED|MAINTENANCE."""
+    v = value.strip().upper()
+    if v not in SYSTEM_STATES:
+        raise ConfigValidationError(f"must be one of {sorted(SYSTEM_STATES)} (got {value!r})")
+    return v
+
+
+def v_sender_list(value: str) -> str:
+    """A JSON list where each item is a full email OR an '@domain.tld' pattern
+    (the intake allowed-senders format). Each item is stripped."""
+    s = value.strip()
+    if len(s) > _MAX_LIST_JSON:
+        raise ConfigValidationError(f"sender list too large (max {_MAX_LIST_JSON} chars)")
+    try:
+        parsed = json.loads(s)
+    except json.JSONDecodeError as e:
+        raise ConfigValidationError(f"must be a JSON list (got {value!r}): {e}") from e
+    if not isinstance(parsed, list):
+        raise ConfigValidationError('must be a JSON list, e.g. ["a@b.com", "@b.com"]')
+    if len(parsed) > _MAX_EMAIL_LIST:
+        raise ConfigValidationError(f"too many entries (max {_MAX_EMAIL_LIST})")
+    cleaned: list[str] = []
+    for item in parsed:
+        if not isinstance(item, str):
+            raise ConfigValidationError(f"every entry must be a string (bad: {item!r})")
+        entry = item.strip()
+        ok = (_EMAIL_RE.match(entry) or _DOMAIN_PATTERN_RE.match(entry)) and len(entry) <= _MAX_EMAIL
+        if not ok:
+            raise ConfigValidationError(f"every entry must be an email or '@domain.tld' (bad: {item!r})")
+        cleaned.append(entry)
+    return json.dumps(cleaned)
+
+
+def v_reviewer_chain(value: str) -> str:
+    """A JSON object the scheduler reads: primary/secondary/tertiary emails +
+    delay_to_secondary_hours / delay_to_tertiary_hours (non-negative ints)."""
+    s = value.strip()
+    if len(s) > _MAX_LIST_JSON:
+        raise ConfigValidationError("reviewer_chain too large")
+    try:
+        parsed = json.loads(s)
+    except json.JSONDecodeError as e:
+        raise ConfigValidationError(f"must be a JSON object (got {value!r}): {e}") from e
+    if not isinstance(parsed, dict):
+        raise ConfigValidationError("must be a JSON object")
+    for role in ("primary", "secondary", "tertiary"):
+        addr = parsed.get(role)
+        if not isinstance(addr, str) or not _EMAIL_RE.match(addr.strip()) or len(addr) > _MAX_EMAIL:
+            raise ConfigValidationError(f"{role!r} must be a valid email (got {addr!r})")
+    for key in ("delay_to_secondary_hours", "delay_to_tertiary_hours"):
+        n = parsed.get(key)
+        if not isinstance(n, int) or isinstance(n, bool) or n < 0 or n > 8_760:
+            raise ConfigValidationError(f"{key!r} must be a non-negative integer of hours (got {n!r})")
+    # canonical rebuild — strip the emails and keep ONLY the 5 known keys (drop any
+    # extras), matching the sibling list validators' strip-and-redump contract.
+    cleaned: dict[str, object] = {role: parsed[role].strip() for role in ("primary", "secondary", "tertiary")}
+    cleaned["delay_to_secondary_hours"] = parsed["delay_to_secondary_hours"]
+    cleaned["delay_to_tertiary_hours"] = parsed["delay_to_tertiary_hours"]
+    return json.dumps(cleaned)
