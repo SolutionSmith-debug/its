@@ -171,22 +171,78 @@ class _ReviewModule(Protocol):
 
 
 @dataclass(frozen=True)
+class EnvelopeContext:
+    """What `SendConfig.envelope_builder` may see when composing subject + attachment
+    name. `row` is the full review row so a workstream can pull values the shared
+    engine doesn't model (e.g. the PO number a po_review row Notes-encodes) without
+    the engine growing workstream-specific fields."""
+
+    project_name: str
+    week: str                    # COL_WEEK_OF as an ISO date string ('' if unparseable)
+    row: Any                     # the raw review-row mapping (read-only by convention)
+
+
+@dataclass(frozen=True)
+class ActiveJobsRecipientLookup:
+    """The Active-Jobs-backed recipient lookup (S5a seam) — the binding safety and
+    progress use. A frozen, INTROSPECTABLE callable rather than a bare closure so the
+    cross-contamination structure tests can keep asserting WHICH Active-Jobs sheet a
+    workstream resolves from (`cfg.recipient_lookup.active_jobs_config is ...`) — the
+    invariant the old flat `SendConfig.active_jobs_config` field carried.
+
+    Calls `active_jobs.get_job` through the module attribute at call time, so test
+    patches on `weekly_send.active_jobs.get_job` keep biting."""
+
+    # WHICH Active-Jobs sheet this workstream resolves recipients FROM. No default: a
+    # default would let a new workstream silently resolve from safety's ITS_Active_Jobs
+    # (and thus its contacts) — the precise cross-wiring the no-default binding guards.
+    # The per-sheet TTL cache (active_jobs._cache) keeps the two resolutions apart.
+    active_jobs_config: active_jobs.ActiveJobsConfig
+    resolver: Callable[[Any], tuple[str, Sequence[str]]]
+
+    def __call__(self, key: str) -> tuple[str, Sequence[str]] | None:
+        job = active_jobs.get_job(key, self.active_jobs_config)
+        if job is None:
+            return None
+        return self.resolver(job)
+
+
+@dataclass(frozen=True)
+class WeeklyReportEnvelope:
+    """The week-based envelope safety and progress share: the exact pre-S5a subject +
+    attachment-name strings, hoisted verbatim out of `send_one_row`. Introspectable
+    (`cfg.envelope_builder.report_label`) for the structure tests."""
+
+    report_label: str            # subject + attachment label ("Weekly Safety Report")
+
+    def __call__(self, ctx: EnvelopeContext) -> tuple[str, str]:
+        return (
+            f"{self.report_label} — {ctx.project_name} — week of {ctx.week}",
+            f"{self.report_label} — {ctx.week}.pdf",
+        )
+
+
+@dataclass(frozen=True)
 class SendConfig:
-    """Required, no-default per-workstream binding for `send_one_row` (see above)."""
+    """Required, no-default per-workstream binding for `send_one_row` (see above).
+
+    S5a seam (PO program): recipient resolution and envelope composition are bound
+    callables — `recipient_lookup` maps the COL_JOB_ID cell value (a Job ID for
+    safety/progress, a Vendor Key for po_materials) to `(to, cc)` or None-for-unknown;
+    `envelope_builder` composes (subject, attachment_name). Safety/progress bind
+    `ActiveJobsRecipientLookup` + `WeeklyReportEnvelope`, byte-identical to the
+    pre-seam behavior; po_send (S5b) binds an ITS_Vendors lookup + a PO envelope.
+    The engine itself stays workstream-blind."""
 
     script_name: str
     workstream_tag: str          # the contamination-guard expected value ("safety")
     config_workstream: str       # ITS_Config get_setting scope ("safety_reports")
     review: _ReviewModule        # the review-sheet module (columns, statuses, sheet id)
-    recipient_resolver: Callable[[Any], tuple[str, Sequence[str]]]
-    # WHICH Active-Jobs sheet this workstream resolves recipients FROM. Required, no
-    # default: a default would let a new workstream silently resolve from safety's
-    # ITS_Active_Jobs (and thus its contacts) — the precise cross-wiring the no-default
-    # SendConfig guards. Safety binds SAFETY_ACTIVE_JOBS_CONFIG (byte-identical to the
-    # pre-P5 hardcoded default); progress binds PROGRESS_ACTIVE_JOBS_CONFIG. The
-    # per-sheet TTL cache (active_jobs._cache) keeps the two resolutions from colliding.
-    active_jobs_config: active_jobs.ActiveJobsConfig
-    report_label: str            # subject + attachment label ("Weekly Safety Report")
+    # COL_JOB_ID cell value → (TO, CC) or None for an unknown key (→ HELD, fail toward
+    # not-sending). Required, no default — the recipient source IS the workstream binding.
+    recipient_lookup: Callable[[str], tuple[str, Sequence[str]] | None]
+    # (subject, attachment_name) for the outgoing mail. Required, no default.
+    envelope_builder: Callable[[EnvelopeContext], tuple[str, str]]
     from_mailbox_cfg_key: str
     from_mailbox_default: str
     max_send_retries: int
@@ -207,9 +263,11 @@ CONFIG = SendConfig(
     # cast: a module doesn't structurally match a Protocol in mypy, but wsr_review DOES
     # satisfy _ReviewModule's surface (verified by the live tests + the structural contract).
     review=cast(_ReviewModule, wsr_review),
-    recipient_resolver=_resolve_safety_recipients,
-    active_jobs_config=active_jobs.SAFETY_ACTIVE_JOBS_CONFIG,
-    report_label="Weekly Safety Report",
+    recipient_lookup=ActiveJobsRecipientLookup(
+        active_jobs_config=active_jobs.SAFETY_ACTIVE_JOBS_CONFIG,
+        resolver=_resolve_safety_recipients,
+    ),
+    envelope_builder=WeeklyReportEnvelope(report_label="Weekly Safety Report"),
     from_mailbox_cfg_key=CFG_FROM_MAILBOX,
     from_mailbox_default=DEFAULT_FROM_MAILBOX,
     max_send_retries=MAX_SEND_RETRIES,
@@ -373,19 +431,20 @@ def send_one_row(row_id: int, cfg: SendConfig) -> SendResult:
         )
     # else: present and exact-match → proceed
 
-    # Stage 3: recipients RESOLVED AT SEND TIME via the workstream resolver (NOT the display
-    # cols). For safety: TO = the job's safety-reports contact; CC = its CC 1–5.
+    # Stage 3: recipients RESOLVED AT SEND TIME via the workstream's bound lookup (NOT
+    # the display cols). Safety/progress bind ActiveJobsRecipientLookup over THEIR OWN
+    # Active-Jobs sheet — a progress send can only ever read ITS_Active_Jobs_Progress, a
+    # safety send only ITS_Active_Jobs (the cross-workstream recipient-contamination
+    # gate); po_send (S5b) binds an ITS_Vendors lookup keyed by the Vendor Key riding
+    # this column. None = unknown key → HELD, fail toward not-sending.
     job_id = str(row.get(cfg.review.COL_JOB_ID) or "").strip()
-    # Resolve from THIS workstream's Active-Jobs sheet (cfg.active_jobs_config), never a
-    # hardcoded default — a progress send can only ever read ITS_Active_Jobs_Progress, a
-    # safety send only ITS_Active_Jobs (the cross-workstream recipient-contamination gate).
-    job = active_jobs.get_job(job_id, cfg.active_jobs_config)
-    if job is None:
+    resolution = cfg.recipient_lookup(job_id)
+    if resolution is None:
         return _held_no_recipient(
             row_id, project_name, notes, cfg,
             job_id=job_id, reason=f"unknown job_id={job_id!r} — cannot resolve recipients",
         )
-    to_addr, cc_raw = cfg.recipient_resolver(job)
+    to_addr, cc_raw = resolution
     to_addr = (to_addr or "").strip()
     if not to_addr or not _valid_addr(to_addr):
         return _held_no_recipient(
@@ -452,11 +511,14 @@ def send_one_row(row_id: int, cfg: SendConfig) -> SendResult:
         )
 
     # Stage 5: build the email (body = the human-edited Email Body, source of truth).
+    # Subject + attachment name come from the workstream's bound envelope (S5a seam) —
+    # WeeklyReportEnvelope reproduces the pre-seam week-based strings byte-for-byte.
     body = str(row.get(cfg.review.COL_EMAIL_BODY) or "")
     week = _coerce_week(row.get(cfg.review.COL_WEEK_OF))
-    subject = f"{cfg.report_label} — {project_name} — week of {week}"
+    subject, attachment_name = cfg.envelope_builder(
+        EnvelopeContext(project_name=project_name, week=week, row=row)
+    )
     from_mailbox = _read_str_setting(cfg.from_mailbox_cfg_key, cfg.from_mailbox_default, workstream=cfg.config_workstream)
-    attachment_name = f"{cfg.report_label} — {week}.pdf"
     attachment = {
         "name": attachment_name,
         "contentType": "application/pdf",

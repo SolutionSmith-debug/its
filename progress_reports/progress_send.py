@@ -20,10 +20,11 @@ Invariants (§42 — why a binding, not a clone)
 - **No cross-workstream mix-up:** every workstream-specific value lives in the required,
   no-default ``SendConfig``. ``workstream_tag="progress"`` is the contamination-guard
   expected value (a ``WPR_human_review`` row whose ``Workstream`` cell is not ``progress``
-  is HARD-HELD before any send). ``active_jobs_config=PROGRESS_ACTIVE_JOBS_CONFIG`` is the
-  **critical cross-wiring guard** — recipients resolve ONLY from the progress workspace's
-  own ``ITS_Active_Jobs_Progress`` sheet, never ``ITS_Active_Jobs``. Omitting it (or passing
-  the safety config) would silently route progress reports to the SAFETY contact column —
+  is HARD-HELD before any send). The ``recipient_lookup`` binding — an
+  ``ActiveJobsRecipientLookup`` over ``PROGRESS_ACTIVE_JOBS_CONFIG`` (S5a seam) — is the
+  **critical cross-wiring guard**: recipients resolve ONLY from the progress workspace's
+  own ``ITS_Active_Jobs_Progress`` sheet, never ``ITS_Active_Jobs``. Binding the safety
+  config instead would silently route progress reports to the SAFETY contact column —
   no runtime error, just a different column in a different sheet (see
   ``docs/runbooks/progress_send.md`` Symptom B + the P4-Slice-1 forward-note in tech_debt).
 - **Inherited unchanged from the shared engine (§42 there):** the SENT/HELD idempotency
@@ -113,9 +114,11 @@ CONFIG = SendConfig(
     # satisfy _ReviewModule's surface (it re-exports the WSR/WPR shared schema; locked by
     # the live tests + the structural contract — same pattern as safety's wsr_review cast).
     review=cast(_ReviewModule, wpr_review),
-    recipient_resolver=_resolve_progress_recipients,
-    active_jobs_config=active_jobs.PROGRESS_ACTIVE_JOBS_CONFIG,
-    report_label="Weekly Progress Report",
+    recipient_lookup=weekly_send.ActiveJobsRecipientLookup(
+        active_jobs_config=active_jobs.PROGRESS_ACTIVE_JOBS_CONFIG,
+        resolver=_resolve_progress_recipients,
+    ),
+    envelope_builder=weekly_send.WeeklyReportEnvelope(report_label="Weekly Progress Report"),
     from_mailbox_cfg_key=CFG_FROM_MAILBOX,
     from_mailbox_default=DEFAULT_FROM_MAILBOX,
     max_send_retries=weekly_send.MAX_SEND_RETRIES,

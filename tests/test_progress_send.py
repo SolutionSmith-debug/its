@@ -79,11 +79,14 @@ def test_config_binds_progress_not_safety():
     cfg = progress_send.CONFIG
     assert cfg.workstream_tag == "progress"
     assert cfg.config_workstream == "progress_reports"
-    assert cfg.report_label == "Weekly Progress Report"
+    # S5a seam: label + Active-Jobs sheet now live on the introspectable bound
+    # callables (WeeklyReportEnvelope / ActiveJobsRecipientLookup) — the SAME
+    # invariants as the pre-seam flat fields, asserted through the new surface.
+    assert cfg.envelope_builder.report_label == "Weekly Progress Report"  # type: ignore[attr-defined]
     # The load-bearing recipient-routing guard: recipients resolve from the PROGRESS
     # Active-Jobs sheet, never safety's.
-    assert cfg.active_jobs_config is active_jobs.PROGRESS_ACTIVE_JOBS_CONFIG
-    assert cfg.active_jobs_config is not active_jobs.SAFETY_ACTIVE_JOBS_CONFIG
+    assert cfg.recipient_lookup.active_jobs_config is active_jobs.PROGRESS_ACTIVE_JOBS_CONFIG  # type: ignore[attr-defined]
+    assert cfg.recipient_lookup.active_jobs_config is not active_jobs.SAFETY_ACTIVE_JOBS_CONFIG  # type: ignore[attr-defined]
     assert cfg.review is wpr_review or cfg.review.__name__.endswith("wpr_review")
 
 
