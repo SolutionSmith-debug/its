@@ -70,7 +70,9 @@ def main() -> int:
     if bound_ajc is not active_jobs.PROGRESS_ACTIVE_JOBS_CONFIG:
         problems.append(
             "recipient_lookup.active_jobs_config is NOT PROGRESS_ACTIVE_JOBS_CONFIG "
-            "(would resolve recipients from the SAFETY sheet — the P4-Slice-1 trap)"
+            + ("(attribute missing — a non-Active-Jobs lookup is bound; wrong binding "
+               "for the PROGRESS sender)" if bound_ajc is None else
+               "(would resolve recipients from the SAFETY sheet — the P4-Slice-1 trap)")
         )
     if bound_ajc is None or bound_ajc.sheet_id != sheet_ids.SHEET_ACTIVE_JOBS_PROGRESS:
         problems.append(
