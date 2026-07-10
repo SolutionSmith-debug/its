@@ -1,8 +1,10 @@
-"""One-shot migration: seed the `po_materials.po_poll.*` ITS_Config rows (PO S4).
+"""One-shot migration: seed the `po_materials.po_poll.*` + `po_materials.po_send.*`
+ITS_Config rows (PO S4 + S5b).
 
-Companion to the S4 generation pipeline (po_materials/po_poll.py). Run once at PR
-landing; safe to re-run (per-row idempotency-guarded on Setting+Workstream — the
-seed_safety_intake_polling_config.py pattern).
+Companion to the S4 generation pipeline (po_materials/po_poll.py) and the S5b send
+poller (po_materials/po_send_poll.py). Run once at PR landing; safe to re-run (per-row
+idempotency-guarded on Setting+Workstream — the seed_safety_intake_polling_config.py
+pattern), so a re-run after S5b lands seeds only the new po_send rows.
 
 Why the gate rows exist even though every value ships FALSE — the dark-ship gate
 reflex (HOUSE_REFLEXES §5): a boolean gate read via `_read_bool_setting(default=
@@ -13,12 +15,16 @@ the rows `false` in the same change that adds the gated code makes activation a
 visible cell-flip, and the #336 `resolve_and_log` startup pass stops WARNing
 `config_row_missing`.
 
-What it seeds (4 rows, workstream `po_materials`):
+What it seeds (8 rows, workstream `po_materials`):
 
     po_materials.po_poll.polling_enabled        = false   (drafts pass ①)
     po_materials.po_poll.vendors_sync_enabled   = false   (vendor passes ② ③)
     po_materials.po_poll.status_sync_enabled    = false   (status pass ④)
     po_materials.po_poll.poll_interval_seconds  = 90      (install-time cadence)
+    po_materials.po_send.polling_enabled        = false   (S5b vendor SEND — dark)
+    po_materials.po_send.scheduled_send_local   = MON 07:00  (batch window; Send Now is out-of-band)
+    po_materials.po_send.poll_interval_seconds  = 900     (install-time cadence)
+    po_materials.po_send.from_mailbox           = procurement@evergreenmirror.com
 
 Auth: ITS_SMARTSHEET_TOKEN from macOS Keychain (same path the runtime SDK uses).
 
@@ -99,6 +105,57 @@ CONFIG_ROWS: list[dict[str, Any]] = [
             "take effect at the next `install.sh load org.solutionsmith.its.po-poll`, "
             "not hot). Default 90s keeps a small stagger off portal-poll (60s), "
             "matching fieldops-sync."
+        ),
+    },
+    {
+        "Setting": "po_materials.po_send.polling_enabled",
+        "Workstream": WORKSTREAM,
+        "Value": "false",
+        "Description": (
+            "Gate for the PO SEND poller (po_send_poll, S5b): dispatch approved "
+            "PO_Pending_Review rows (Send Now / Approve for Scheduled Send) to the "
+            "VENDOR from procurement@, after the F22 approval gate against the ITS — "
+            "Purchase Orders workspace (§46/D11). Ships FALSE (dark) — the External "
+            "Send Gate: NO vendor email fires until this is flipped. Flip to 'true' "
+            "ONLY after (a) the po_send partial live smoke passed on the mirror, (b) "
+            "procurement@ exists on the tenant, and (c) the PO approvers are shared "
+            "into the ITS — Purchase Orders workspace (an empty share list fails "
+            "closed — all sends HELD). Independent of the po_poll gates."
+        ),
+    },
+    {
+        "Setting": "po_materials.po_send.scheduled_send_local",
+        "Workstream": WORKSTREAM,
+        "Value": "MON 07:00",
+        "Description": (
+            "The weekly scheduled-send window (local Pacific) for PO rows approved via "
+            "'Approve for Scheduled Send'. 'Send Now' dispatches immediately, out-of-band "
+            "of this window. Format 'DDD HH:MM' (e.g. 'MON 07:00'). Read at runtime by "
+            "po_send_poll."
+        ),
+    },
+    {
+        "Setting": "po_materials.po_send.poll_interval_seconds",
+        "Workstream": WORKSTREAM,
+        "Value": "900",
+        "Description": (
+            "Integer seconds between po_send_poll cycles. Read at INSTALL time by "
+            "scripts/launchd/install.sh to substitute into the plist's StartInterval "
+            "(BAKED in — changes take effect at the next `install.sh load "
+            "org.solutionsmith.its.po-send`, not hot). Default 900s (15 min) matches "
+            "weekly-send / progress-send — an approval poller, not a fast puller."
+        ),
+    },
+    {
+        "Setting": "po_materials.po_send.from_mailbox",
+        "Workstream": WORKSTREAM,
+        "Value": "procurement@evergreenmirror.com",
+        "Description": (
+            "The From mailbox for PO sends (decision D10). Read at RUNTIME by "
+            "po_send.send_one_row every dispatch (#336 REQUIRED_CONFIG). Mirror value "
+            "here; the production cutover repoints it to procurement@evergreenrenewables.com "
+            "(cutover_checklist). The mailbox must exist + be in the app's Application "
+            "Access Policy scope or Graph 403s the send."
         ),
     },
 ]
@@ -188,7 +245,8 @@ def seed_config_rows() -> list[tuple[str, str]]:
 def main() -> int:
     print(f"[info] ITS_Config sheet = {sheet_ids.SHEET_CONFIG}")
     print(f"[info] Workstream = {WORKSTREAM!r}")
-    print(f"[info] Seeding {len(CONFIG_ROWS)} rows (3 po_poll gates, ALL false + the poll interval)")
+    print(f"[info] Seeding {len(CONFIG_ROWS)} rows (po_poll: 3 gates false + interval; "
+          f"po_send: polling gate false + scheduled window + interval + from_mailbox)")
     print()
 
     row_results = seed_config_rows()

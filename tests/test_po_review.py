@@ -92,6 +92,17 @@ def test_notes_round_trip_po_id_and_supersedes() -> None:
     assert po_review.row_po_id({po_review.COL_NOTES: "reviewer prose only"}) is None
 
 
+def test_row_po_number_extracts_the_contractual_number() -> None:
+    # S5b: the PO send envelope reads po_number from Notes (no dedicated column — WSR twin).
+    notes = po_review.notes_for_review_row(7, "2026.001.2.0.0", supersedes_po_id=5)
+    assert po_review.row_po_number({po_review.COL_NOTES: notes}) == "2026.001.2.0.0"
+    # A supersede tag after po_number must not bleed into the extracted value.
+    assert po_review.row_po_number({po_review.COL_NOTES: "po_id=7; po_number=2026.001.2.1.11; supersedes_po_id=5"}) == "2026.001.2.1.11"
+    # A row that lost the tag → None (po_send REFUSES to send a numberless PO).
+    assert po_review.row_po_number({po_review.COL_NOTES: "po_id=7"}) is None
+    assert po_review.row_po_number({po_review.COL_NOTES: "reviewer prose only"}) is None
+
+
 def test_find_row_by_po_id_scans_notes(mocker) -> None:
     rows = [
         {"_row_id": 1, po_review.COL_NOTES: "po_id=7; po_number=2026.001.2.0.0"},

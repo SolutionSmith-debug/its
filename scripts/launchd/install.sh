@@ -8,9 +8,9 @@
 # installed copies have concrete values.
 #
 # __POLL_INTERVAL_SECONDS__ (weekly-send, portal-poll, compile-now-poll, progress-send,
-# fieldops-sync, po-poll): these plists carry the placeholder in <integer>StartInterval</integer>.
+# fieldops-sync, po-poll, po-send): these plists carry the placeholder in <integer>StartInterval</integer>.
 # `load`/`dry-run` resolve it from the optional [interval] arg, else a per-daemon default
-# (900 / 60 / 90 / 900 / 90 / 90 respectively, matching the daemon's ITS_Config poll-interval row
+# (900 / 60 / 90 / 900 / 90 / 90 / 900 respectively, matching the daemon's ITS_Config poll-interval row
 # default — safety_reports.weekly_send / safety_reports.portal_poll /
 # safety_reports.compile_now_poll / progress_reports.progress_send /
 # field_ops.fieldops_sync / po_materials.po_poll .poll_interval_seconds). The interval is BAKED into
@@ -46,7 +46,7 @@ usage: $0 {load|unload|status|dry-run} [plist] [interval]
   [interval] (positive integer seconds) overrides the StartInterval for the
   poll-interval daemons (weekly-send → default 900, portal-poll → default 60,
   compile-now-poll → default 90, progress-send → default 900,
-  fieldops-sync → default 90, po-poll → default 90).
+  fieldops-sync → default 90, po-poll → default 90, po-send → default 900).
 EOF
     exit 1
 }
@@ -68,6 +68,7 @@ poll_interval_config_key() {
         org.solutionsmith.its.progress-send) echo "progress_reports.progress_send.poll_interval_seconds" ;;
         org.solutionsmith.its.fieldops-sync) echo "field_ops.fieldops_sync.poll_interval_seconds" ;;
         org.solutionsmith.its.po-poll)       echo "po_materials.po_poll.poll_interval_seconds" ;;
+        org.solutionsmith.its.po-send)       echo "po_materials.po_send.poll_interval_seconds" ;;
         *) echo "" ;;
     esac
 }
@@ -79,6 +80,7 @@ poll_interval_default() {
         org.solutionsmith.its.progress-send) echo "900" ;;
         org.solutionsmith.its.fieldops-sync) echo "90" ;;
         org.solutionsmith.its.po-poll)       echo "90" ;;
+        org.solutionsmith.its.po-send)       echo "900" ;;
         *) echo "" ;;
     esac
 }

@@ -203,8 +203,20 @@ SEND_SCRIPTS: list[tuple[str, list[str]]] = [
         "progress_reports/progress_send_poll.py",
         ["anthropic_client", "anthropic"],
     ),
-    # ("po_materials/po_send.py", ["anthropic_client", "anthropic"]),        # S5 — enroll at landing
-    # ("po_materials/po_send_poll.py", ["anthropic_client", "anthropic"]),   # S5 — enroll at landing
+    (
+        # S5b: po_send is the PO instantiation of the shared send engine — it imports
+        # safety_reports.weekly_send (the dispatch logic, which transitively brings in
+        # graph_client.send_mail, the intended send capability for the vendor audience).
+        # anthropic / anthropic_client must not appear at all (no LLM in the send half).
+        "po_materials/po_send.py",
+        ["anthropic_client", "anthropic"],
+    ),
+    (
+        # S5b: the PO send poller. Imports po_send (→ weekly_send → graph send) +
+        # send_poll_core. anthropic / anthropic_client must not appear at all.
+        "po_materials/po_send_poll.py",
+        ["anthropic_client", "anthropic"],
+    ),
     # ("subcontracts/subcontract_send.py", ["anthropic_client", "anthropic"]),
 ]
 

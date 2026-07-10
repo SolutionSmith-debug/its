@@ -211,6 +211,13 @@ TRACKED_JOBS: list[str] = [
     # gate — a loaded daemon whose gates are all false is a pre-lock no-op and writes
     # NO marker (an intentional dark state, not a fault). Register + activate together.
     "po_poll",
+    # Purchase-Order SEND poll daemon (po_materials.po_send_poll, PO S5b). Writes a
+    # po_send_poll.last_run marker each cycle once ACTIVE. Like po_poll it WARNs until the
+    # operator both LOADS the plist (`install.sh load org.solutionsmith.its.po-send`) AND
+    # flips po_materials.po_send.polling_enabled true — a loaded daemon with polling off is
+    # a pre-lock no-op and writes NO marker (intentional dark state). Register + activate
+    # together.
+    "po_send_poll",
 ]
 
 # Per-job freshness windows. Jobs not in this map use the default 24h
@@ -258,6 +265,10 @@ TRACKED_JOB_WINDOWS: dict[str, timedelta] = {
     # Same tunable-interval caveat as fieldops_sync (po_materials.po_poll.
     # poll_interval_seconds / the install.sh arg — widen this window if raised).
     "po_poll": timedelta(minutes=8),
+    # po_send_poll runs every 15 min (default); 30 min == 2 cycles — mirror
+    # safety_weekly_send_poll / progress_send_poll (a single missed cycle tolerated; two
+    # consecutive fire). It is an approval poller, not a fast puller.
+    "po_send_poll": timedelta(minutes=30),
 }
 DEFAULT_TRACKED_JOB_WINDOW = timedelta(hours=24)
 
