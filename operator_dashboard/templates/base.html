@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}ITS Operator Dashboard{% endblock %}</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/htmx.min.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <h1>ITS Operator Dashboard</h1>
+    <span class="badge readonly">read-only · D1-1</span>
+    <span class="host">127.0.0.1:8484</span>
+  </header>
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

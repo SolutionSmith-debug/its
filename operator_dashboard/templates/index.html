@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="grid">
+  {% for panel in panels %}
+  <div class="panel-slot"
+       hx-get="/panels/{{ panel.panel_id }}"
+       hx-trigger="load, every {{ refresh }}s"
+       hx-swap="innerHTML">
+    <article class="panel sev-loading">
+      <header class="panel-head"><h2>{{ panel.title }}</h2></header>
+      <div class="panel-body muted">loading…</div>
+    </article>
+  </div>
+  {% endfor %}
+</div>
+<footer class="foot">
+  read-only observability · auto-refresh {{ refresh }}s · the ACT surface
+  (toggle / clear / re-send) lands in D1-2
+</footer>
+{% endblock %}

@@ -1,0 +1,24 @@
+<article class="panel sev-{{ p.severity }} panel-{{ p.panel_id }}">
+  <header class="panel-head">
+    <h2>{{ p.title }}</h2>
+    {% if p.summary %}<span class="summary">{{ p.summary }}</span>{% endif %}
+  </header>
+  {% if not p.available %}
+  <div class="panel-body unavailable">unavailable — {{ p.unavailable_reason }}</div>
+  {% elif not p.rows %}
+  <div class="panel-body muted">no data</div>
+  {% else %}
+  <div class="panel-body">
+    <table>
+      <thead><tr>{% for c in p.columns %}<th>{{ c }}</th>{% endfor %}</tr></thead>
+      <tbody>
+        {% for row in p.rows %}
+        <tr class="sev-{{ row.get('_sev', 'info') }}">
+          {% for c in p.columns %}<td>{{ row.get(c, '') }}</td>{% endfor %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</article>
