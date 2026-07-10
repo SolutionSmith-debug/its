@@ -5,7 +5,9 @@ method, and untrusted panel values render inert (HTML-escaped + redacted).
 """
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -123,3 +125,44 @@ def test_config_paths_mirror_live_shared_constants() -> None:
 
     assert dash_config.STATE_DIR == hb.STATE_DIR
     assert dash_config.LOGS_DIR == el.LOG_DIR
+
+
+def test_heartbeats_cycles_join_survives_poll_suffix_mismatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Regression: the row-id cache keys daemons as "<workstream>.<daemon>"
+    # (e.g. 'safety_reports.weekly_send_poll') but the liveness file is
+    # 'weekly_send_heartbeat.txt' — the cycles must still join despite the
+    # '_poll' suffix mismatch (was silently blanking the busiest daemons).
+    import shared.heartbeat as hb
+    from operator_dashboard.sources.runtime_state import HeartbeatsSource
+
+    (tmp_path / "weekly_send_heartbeat.txt").write_text("2026-07-10T00:00:00+00:00")
+    (tmp_path / "portal_poll_heartbeat.txt").write_text("2026-07-10T00:00:00+00:00")
+    (tmp_path / "heartbeat_row_ids.json").write_text(
+        json.dumps(
+            {
+                "safety_reports.weekly_send_poll": {"row_id": 1, "total_cycles": 3533},
+                "safety_reports.portal_poll": {"row_id": 2, "total_cycles": 40961},
+            }
+        )
+    )
+    monkeypatch.setattr(hb, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(hb, "HEARTBEAT_ROW_STATE_PATH", tmp_path / "heartbeat_row_ids.json")
+
+    result = HeartbeatsSource().fetch()
+    cycles_by_daemon = {r["daemon"]: r["cycles"] for r in result.rows}
+    # '_poll'-suffix daemon joins despite the filename/cache-key name mismatch:
+    assert cycles_by_daemon["weekly_send"] == "3533"
+    # exact-match daemon still works:
+    assert cycles_by_daemon["portal_poll"] == "40961"
+
+
+def test_watchdog_panel_import_available_under_pytest() -> None:
+    # Lock the watchdog panel's success path: `import scripts.watchdog` must
+    # resolve (pinned to ITS_HOME on sys.path), so the panel renders rather
+    # than degrading to 'unavailable' with a ModuleNotFoundError.
+    from operator_dashboard.sources.watchdog_checks import WatchdogChecksSource
+
+    result = WatchdogChecksSource().fetch()
+    assert result.available, result.unavailable_reason

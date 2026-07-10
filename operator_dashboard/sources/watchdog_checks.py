@@ -8,10 +8,12 @@ checks. A failed import degrades only this panel (fail-soft base wrapper).
 from __future__ import annotations
 
 import importlib
+import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from operator_dashboard.config import ITS_HOME
 from operator_dashboard.sources.base import (
     SEV_INFO,
     SEV_OK,
@@ -29,6 +31,15 @@ class WatchdogChecksSource(DataSource):
     title = "Watchdog markers (Check C)"
 
     def _fetch(self) -> PanelResult:
+        # `scripts/` is not a Python package (no __init__; absent from the
+        # editable-install package list), so `import scripts.watchdog` resolves
+        # only when a tree root is on sys.path. Pin it to the OBSERVATION root
+        # (~/its) at sys.path[0] — CWD-independent, and always the LIVE tree's
+        # tracked-jobs/windows/marker-dir, not whatever tree happens to be on
+        # the path. A failed import still degrades only this panel (base wrapper).
+        its_home = str(ITS_HOME)
+        if its_home not in sys.path:
+            sys.path.insert(0, its_home)
         wd: Any = importlib.import_module("scripts.watchdog")
         marker_dir: Path = wd.WATCHDOG_MARKER_DIR
         tracked: list[str] = list(wd.TRACKED_JOBS)

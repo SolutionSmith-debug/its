@@ -73,7 +73,10 @@ class ErrorsRecentSource(DataSource):
                 columns=[],
                 rows=[],
             )
-        keys = list(rows_raw[-1].keys())
+        # Union keys across all rows (order-preserving): Smartsheet omits empty
+        # cells on read, so the newest row alone can miss occasionally-populated
+        # columns (e.g. Resolved At / Correlation_ID).
+        keys = list(dict.fromkeys(k for r in rows_raw for k in r))
         columns = _pick_error_columns(keys)
         sev_col = next((k for k in keys if re.search(r"sever", k, re.IGNORECASE)), None)
         rows: list[dict[str, str]] = []

@@ -93,10 +93,21 @@ class HeartbeatsSource(DataSource):
             cache = {}
         if isinstance(cache, dict):
             for key, info in cache.items():
-                # Cache key is "<workstream>.<daemon>"; liveness files use the
-                # bare daemon stem — join on the last dotted segment.
-                if isinstance(info, dict) and "total_cycles" in info:
-                    cycles[str(key).split(".")[-1]] = info.get("total_cycles")
+                if not (isinstance(info, dict) and "total_cycles" in info):
+                    continue
+                # Cache key is "<workstream>.<daemon>"; liveness files are
+                # "<stem>_heartbeat.txt". The daemon segment and the file stem
+                # are chosen independently per daemon and don't always agree by
+                # a string rule (e.g. daemon 'weekly_send_poll' writes
+                # 'weekly_send_heartbeat.txt'). Index cycles by the daemon
+                # segment AND its '_poll'-stripped form so a liveness stem like
+                # 'weekly_send' still resolves. A genuinely-divergent name
+                # (e.g. retired 'safety_intake') falls back to '—'.
+                cyc = info.get("total_cycles")
+                daemon_part = str(key).split(".")[-1]
+                cycles[daemon_part] = cyc
+                if daemon_part.endswith("_poll"):
+                    cycles.setdefault(daemon_part[: -len("_poll")], cyc)
 
         now = datetime.now(UTC)
         rows: list[dict[str, str]] = []
