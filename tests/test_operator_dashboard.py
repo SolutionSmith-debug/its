@@ -104,15 +104,19 @@ def test_untrusted_smartsheet_values_render_inert(
     assert "&lt;redacted&gt;" in body
 
 
-def test_no_mutation_routes_exist() -> None:
-    # D1-1 is read-only: every route must be GET/HEAD only. This is the
-    # in-code proof of 'zero mutation routes'.
+def test_only_mutation_route_is_the_audited_config_act() -> None:
+    # After D1-2 the app has EXACTLY ONE mutating route: the PIN-gated, audited
+    # Class-A config editor. Any other non-GET route is a regression.
     app = create_app()
+    mutating: list[tuple[str, list[str]]] = []
     for route in app.routes:
         methods = getattr(route, "methods", None)
         if methods is None:
             continue  # e.g. the StaticFiles Mount has no fixed method set
-        assert methods <= {"GET", "HEAD"}, f"non-read route: {route!r} {methods}"
+        non_read = set(methods) - {"GET", "HEAD", "OPTIONS"}
+        if non_read:
+            mutating.append((getattr(route, "path", "?"), sorted(non_read)))
+    assert mutating == [("/act/config", ["POST"])], f"unexpected mutating routes: {mutating}"
 
 
 def test_config_paths_mirror_live_shared_constants() -> None:

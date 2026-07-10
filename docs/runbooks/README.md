@@ -19,6 +19,7 @@ convention has no separate `runbook` type).
 | Date | Type | Status | Workstream | Title | PRs |
 |------|------|--------|------------|-------|-----|
 | 2026-07-10 | operations | active | po_materials | [Runbook — Config-editor actuator (`config_actuator`) (a queued config edit stuck / failed / dark) (Successor-Remediation, Op Stds §43)](config_actuator.md) | _–_ |
+| 2026-07-10 | operations | active | global | [Runbook — Operator Dashboard Class-A config editor (Successor-Remediation, Op Stds §43)](operator_dashboard_config_editor.md) | _–_ |
 | 2026-07-09 | operations | active | _–_ | [Runbook — PO generation daemon (`po_poll`) (a queued PO stuck / fenced / dark) (Successor-Remediation, Op Stds §43)](po_poll.md) | _–_ |
 | 2026-07-09 | operations | active | _–_ | [Runbook — PO send daemon (`po_send`) (a PO row stuck HELD / blocked / "contamination") (Successor-Remediation, Op Stds §43)](po_send.md) | _–_ |
 | 2026-07-04 | operations | active | field_ops | [Runbook — Hours Log up-sync (P7, the `fieldops_sync` hours pass) (Successor-Remediation, Op Stds §43)](hours_log_sync.md) | _–_ |
