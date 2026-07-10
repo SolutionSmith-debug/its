@@ -93,6 +93,7 @@ Phase-1.4 residue = Paid-plan-or-PBKDF2 verdict + WAF `/api/login` rate-limit + 
 (§53-gated via `scripts/verify_cutover.py`); dress rehearsals Aug 4–5; delivery + Step-8 acceptance Aug 7 (handover
 v10 amendment: Tier-2 clearance moves post-delivery, D17). Attachment screening Layers 1-3 for *email* stays
 Email-Triage-owned (unchanged).
+WS4 operator artifacts (landed): `docs/operations/host_migration_runbook.md` · `cutover_checklist.md` v2 + `scripts/verify_cutover.py` (§53 gate) · `production_rollback.md` · `aug7_delivery_runbook.md`.
 
 ---
 
