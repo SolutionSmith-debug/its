@@ -205,6 +205,15 @@ export const ERROR_COPY: Record<string, string> = {
   not_cancelable: "That PO can't be canceled from its current status.",
   invalid_approver: "The approver name/title is too long.",
   hmac_secret_missing: "The server isn't fully configured to sign POs — contact the operator.",
+
+  // ── config editor (worker/config.ts — §50 send-free enqueue) ─────────────────────────────────────
+  config_edit_in_progress: "A change to this setting is already being processed — wait for it to finish, then submit again.",
+  invalid_workstream: "That configuration area isn't recognized — refresh and try again.",
+  invalid_artifact: "That configuration item isn't recognized — refresh and try again.",
+  invalid_op: "That change isn't valid for this configuration item.",
+  invalid_target_version: "The version name must be lowercase letters, numbers, and underscores (e.g. standard_17_v2).",
+  invalid_payload: "The change was empty or couldn't be read — check the fields and try again.",
+  payload_too_large: "That change is too large to submit — shorten it and try again.",
 };
 
 /** Humanize an unknown wire code: 'some_new_code' → 'some new code'. */
