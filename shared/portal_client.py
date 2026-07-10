@@ -67,6 +67,10 @@ PUBLISH_PENDING_PATH = "/api/internal/publish/pending"
 PUBLISH_CLAIM_PATH = "/api/internal/publish/claim"
 PUBLISH_STAMP_PATH = "/api/internal/publish/stamp"
 PUBLISH_STUCK_PATH = "/api/internal/publish/stuck"
+CONFIG_PENDING_PATH = "/api/internal/config/pending"
+CONFIG_CLAIM_PATH = "/api/internal/config/claim"
+CONFIG_STAMP_PATH = "/api/internal/config/stamp"
+CONFIG_STUCK_PATH = "/api/internal/config/stuck"
 FIELDOPS_PENDING_JOBS_PATH = "/api/internal/fieldops/pending-jobs"
 FIELDOPS_JOBS_MARK_MIRRORED_PATH = "/api/internal/fieldops/jobs-mark-mirrored"
 FIELDOPS_HOURS_PENDING_PATH = "/api/internal/fieldops/hours-pending"
@@ -1004,6 +1008,70 @@ def get_publish_stuck(base_url: str, token: str, *, older_than: int) -> list[dic
     if not isinstance(stuck, list):
         raise PortalTransportError(
             f"GET {PUBLISH_STUCK_PATH} missing/invalid 'stuck' (got {type(stuck).__name__})"
+        )
+    return [row for row in stuck if isinstance(row, dict)]
+
+
+# ---- Config-editor queue (§50 — the Mac config daemon's queue I/O, built LATER) ----
+# Clones the publish-pipeline transport one-for-one against /api/internal/config/*. Stateless:
+# base_url + token are passed IN by the caller (this module reads no Keychain / ITS_Config).
+
+
+def get_config_pending(base_url: str, token: str, *, limit: int = 20) -> list[dict[str, Any]]:
+    """Claimable config requests: GET /api/internal/config/pending (queued + unleased,
+    oldest-first), each row a dict incl. `payload`. Same typed-error contract as get_pending."""
+    data = _request("GET", base_url, CONFIG_PENDING_PATH, token, params={"limit": limit})
+    pending = data.get("pending")
+    if not isinstance(pending, list):
+        raise PortalTransportError(
+            f"GET {CONFIG_PENDING_PATH} missing/invalid 'pending' (got {type(pending).__name__})"
+        )
+    return [row for row in pending if isinstance(row, dict)]
+
+
+def claim_config(
+    base_url: str, token: str, *, request_id: int, lease_owner: str
+) -> dict[str, Any] | None:
+    """Atomically lease a config request: POST /api/internal/config/claim.
+
+    Returns the claimed row (incl. `payload`) on success, or None if it was already leased /
+    no longer queued (`claimed=false`) — a benign concurrent-claim outcome the daemon skips."""
+    data = _request(
+        "POST", base_url, CONFIG_CLAIM_PATH, token,
+        json_body={"id": request_id, "lease_owner": lease_owner},
+    )
+    if not data.get("claimed"):
+        return None
+    request = data.get("request")
+    return request if isinstance(request, dict) else None
+
+
+def stamp_config(
+    base_url: str, token: str, *, request_id: int, status: str,
+    failed_stage: str | None = None, failure_reason: str | None = None,
+) -> bool:
+    """Advance a config request's state machine: POST /api/internal/config/stamp.
+
+    Returns `found`. failed_stage/failure_reason are sent only for status='failed'
+    (the Worker ignores them otherwise)."""
+    body: dict[str, Any] = {"id": request_id, "status": status}
+    if failed_stage is not None:
+        body["failed_stage"] = failed_stage
+    if failure_reason is not None:
+        body["failure_reason"] = failure_reason
+    data = _request("POST", base_url, CONFIG_STAMP_PATH, token, json_body=body)
+    return bool(data.get("found"))
+
+
+def get_config_stuck(base_url: str, token: str, *, older_than: int) -> list[dict[str, Any]]:
+    """Non-terminal config requests whose updated_at is older than `older_than` seconds — the
+    stale-row sweep input (a daemon that claimed-then-died, or a stalled stage). Same typed-error
+    contract as get_config_pending; rows are control-plane reads of OUR OWN Worker."""
+    data = _request("GET", base_url, CONFIG_STUCK_PATH, token, params={"older_than": older_than})
+    stuck = data.get("stuck")
+    if not isinstance(stuck, list):
+        raise PortalTransportError(
+            f"GET {CONFIG_STUCK_PATH} missing/invalid 'stuck' (got {type(stuck).__name__})"
         )
     return [row for row in stuck if isinstance(row, dict)]
 

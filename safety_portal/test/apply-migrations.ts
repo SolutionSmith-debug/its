@@ -22,6 +22,7 @@ declare global {
       PORTAL_ADMIN_API_TOKEN: string;
       PORTAL_FIELDOPS_API_TOKEN: string;
       PORTAL_PO_API_TOKEN: string;
+      PORTAL_CONFIG_API_TOKEN: string;
     }
   }
 }

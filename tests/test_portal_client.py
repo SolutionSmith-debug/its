@@ -886,3 +886,116 @@ def test_po_tier_401_raises_auth_without_retry(mocker):
     with pytest.raises(PortalAuthError):
         portal_client.get_pending_pos(BASE, TOKEN)
     assert req.call_count == 1
+
+
+# ---- Config-editor queue (§50 — get/claim/stamp/stuck) -------------------
+
+
+def test_get_config_pending_returns_rows_and_sends_bearer_and_limit(mocker):
+    rows = [
+        {"id": 1, "workstream": "po_materials", "artifact_key": "purchaser",
+         "op": "edit", "target_version": None, "payload": "{}", "created_at": 1},
+    ]
+    req = _patch_requests(mocker, _mock_response(json_body={"pending": rows}))
+
+    out = portal_client.get_config_pending(BASE, TOKEN, limit=25)
+
+    assert out == rows
+    args, kwargs = req.call_args
+    assert args == ("GET", "https://portal.example.com/api/internal/config/pending")
+    assert kwargs["headers"]["Authorization"] == "Bearer fake-bearer"
+    assert kwargs["params"] == {"limit": 25}
+
+
+def test_get_config_pending_drops_non_dict_rows(mocker):
+    _patch_requests(
+        mocker,
+        _mock_response(json_body={"pending": [{"id": 1}, "garbage", 5]}),
+    )
+    assert portal_client.get_config_pending(BASE, TOKEN) == [{"id": 1}]
+
+
+def test_get_config_pending_missing_key_raises(mocker):
+    _patch_requests(mocker, _mock_response(json_body={"unexpected": 1}))
+    with pytest.raises(PortalTransportError, match="pending"):
+        portal_client.get_config_pending(BASE, TOKEN)
+
+
+def test_get_config_pending_401_raises_auth_error_without_retry(mocker):
+    req = _patch_requests(mocker, _mock_response(status=401))
+    with pytest.raises(PortalAuthError):
+        portal_client.get_config_pending(BASE, TOKEN)
+    assert req.call_count == 1  # 401 is NOT retried
+
+
+def test_claim_config_returns_row_when_claimed(mocker):
+    row = {"id": 7, "workstream": "po_materials", "artifact_key": "tax",
+           "op": "edit", "payload": "{}", "status": "queued"}
+    req = _patch_requests(
+        mocker, _mock_response(json_body={"ok": True, "claimed": True, "request": row})
+    )
+
+    out = portal_client.claim_config(BASE, TOKEN, request_id=7, lease_owner="mac1")
+
+    assert out == row
+    args, kwargs = req.call_args
+    assert args == ("POST", "https://portal.example.com/api/internal/config/claim")
+    assert kwargs["json"] == {"id": 7, "lease_owner": "mac1"}
+
+
+def test_claim_config_returns_none_when_not_claimed(mocker):
+    _patch_requests(mocker, _mock_response(json_body={"ok": True, "claimed": False}))
+    assert portal_client.claim_config(BASE, TOKEN, request_id=7, lease_owner="mac1") is None
+
+
+def test_claim_config_returns_none_when_request_is_non_dict(mocker):
+    _patch_requests(mocker, _mock_response(json_body={"ok": True, "claimed": True, "request": "oops"}))
+    assert portal_client.claim_config(BASE, TOKEN, request_id=7, lease_owner="mac1") is None
+
+
+def test_stamp_config_posts_body_and_returns_found(mocker):
+    req = _patch_requests(mocker, _mock_response(json_body={"ok": True, "found": True}))
+
+    found = portal_client.stamp_config(BASE, TOKEN, request_id=7, status="validated")
+
+    assert found is True
+    args, kwargs = req.call_args
+    assert args == ("POST", "https://portal.example.com/api/internal/config/stamp")
+    assert kwargs["json"] == {"id": 7, "status": "validated"}
+
+
+def test_stamp_config_carries_failed_fields_only_when_given(mocker):
+    req = _patch_requests(mocker, _mock_response(json_body={"ok": True, "found": True}))
+    portal_client.stamp_config(
+        BASE, TOKEN, request_id=7, status="failed",
+        failed_stage="deploy", failure_reason="wrangler boom",
+    )
+    assert req.call_args.kwargs["json"] == {
+        "id": 7,
+        "status": "failed",
+        "failed_stage": "deploy",
+        "failure_reason": "wrangler boom",
+    }
+
+
+def test_stamp_config_found_false_when_worker_rejects(mocker):
+    _patch_requests(mocker, _mock_response(json_body={"ok": True, "found": False}))
+    assert portal_client.stamp_config(BASE, TOKEN, request_id=7, status="live") is False
+
+
+def test_get_config_stuck_returns_rows_and_sends_older_than(mocker):
+    rows = [{"id": 3, "status": "validated", "workstream": "po_materials", "artifact_key": "terms"}]
+    req = _patch_requests(mocker, _mock_response(json_body={"stuck": rows}))
+
+    out = portal_client.get_config_stuck(BASE, TOKEN, older_than=2700)
+
+    assert out == rows
+    args, kwargs = req.call_args
+    assert args == ("GET", "https://portal.example.com/api/internal/config/stuck")
+    assert kwargs["params"] == {"older_than": 2700}
+
+
+def test_get_config_stuck_missing_key_raises(mocker):
+    _patch_requests(mocker, _mock_response(json_body={"unexpected": 1}))
+    with pytest.raises(PortalTransportError, match="stuck"):
+        portal_client.get_config_stuck(BASE, TOKEN, older_than=2700)

@@ -47,6 +47,7 @@ its migration fail-closes `resolveCapabilities` → the universal-lockout class 
 | `0042_po_vendors` | PO S2 vendor cache + counter — [section](#purchase-orders--d1--worker-po-slice-s2--00420044) | (PO S2) | ☐ pending |
 | `0043_purchase_orders` | PO S2 drafts + line items + numbering backstop — [section](#purchase-orders--d1--worker-po-slice-s2--00420044) | (PO S2) | ☐ pending |
 | `0044_po_capability` | PO S2 `cap.po.manage` → admin — [section](#purchase-orders--d1--worker-po-slice-s2--00420044) | (PO S2) | ☐ pending |
+| `0045_create_config_requests` | Config-editor send-free queue — [section](#config-editor-queue--d1--worker-configts-slice-1--0045) | (config S1) | ☐ pending |
 
 Canonical apply-and-deploy sequence (applies **all** pending migrations, in order — never a
 subset):
@@ -1161,3 +1162,31 @@ nothing user-visible (admins gain the capability; the SPA has no PO surface yet)
 2. The S3 terms/config slice replaces the temporary in-Worker `TAX_RATE_BP` const
    (`worker/po.ts`) with `po_materials/config/tax.json`; `GET /api/po/terms` + `/api/po/config`
    land there too (deliberately NOT in S2).
+
+### Config editor queue — D1 + Worker config.ts (slice 1) — 0045
+
+**What ships:** the send-free cloud queue for the generic §50 config editor (config slice 1 of 3).
+Migration `0045` creates `config_requests` (the audit queue — `(workstream, artifact_key)` is the
+per-artifact serialization key; the same `queued→validated→tested→merged→live→archived|failed`
+state machine + lease/claim/stamp model as `publish_requests`). `worker/config.ts` registers
+`POST /api/config/requests` + `GET /api/config/requests/status` (browser, session + per-workstream
+capability) and the four `/api/internal/config/{pending,claim,stamp,stuck}` daemon routes under the
+NEW `requireConfigToken` bearer tier (`PORTAL_CONFIG_API_TOKEN`, privilege-separated from the
+portal_poll / admin / fieldops / PO tokens). A generic `CONFIG_REGISTRY` declares each workstream's
+editable artifacts + cap; `po_materials` is real (purchaser / tax / terms), `subcontracts` is a
+documented **placeholder** (a future subcontract workflow adds its artifacts + `cap.subcontracts.manage`
+here with zero route changes).
+
+**Shipped DARK** — nothing consumes these routes until the config slice-2 Mac daemon
+(`po_materials/config_actuator.py`) and slice-3 SPA editor land; applying 0045 + deploying changes
+nothing user-visible.
+
+#### Activation (operator — secrets/auth + deploy boundary; escalates to the Developer-Operator)
+Apply-before-deploy (0045 is a "reads-a-new-table" migration — the Worker 500s if it deploys ahead
+of the table):
+1. From a fresh `~/its`: `cd safety_portal && npx wrangler d1 migrations apply its-safety-portal-db --remote`
+   (applies **all** pending, in order), then `npm run deploy`.
+2. `wrangler secret put PORTAL_CONFIG_API_TOKEN` (generate: `openssl rand -base64 48`), then mirror
+   the SAME value into the macOS Keychain as `ITS_PORTAL_CONFIG_TOKEN` (the slice-2 daemon side —
+   `config_actuator` reads it fail-closed). The internal `/api/internal/config/*` routes are
+   fail-closed on the missing secret, so they 401 until this is provisioned.

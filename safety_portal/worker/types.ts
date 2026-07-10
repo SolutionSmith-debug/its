@@ -51,6 +51,15 @@ export interface Env {
    */
   PORTAL_PO_API_TOKEN: string;
   /**
+   * Bearer token the Mac-side config daemon (config_editor/config_poll.py, §50 — built LATER)
+   * presents to /api/internal/config/* — SEPARATE from the portal_poll / admin / fieldops / PO
+   * tokens (privilege separation): the config daemon's token must NOT be able to drain the
+   * submission queue, provision users, touch the job/hours mirror, or read the PO queue — and
+   * none of those tokens may read/advance the config-edit queue. Mirrored into the Keychain as
+   * ITS_PORTAL_CONFIG_TOKEN. Workers Secret / .dev.vars — never committed.
+   */
+  PORTAL_CONFIG_API_TOKEN: string;
+  /**
    * Feature flag (a plain Worker `var`, NOT a secret) gating "recurring checklists per job" (#16).
    * "true" arms the scheduled() cron's cadence-generation pass AND lets POST /checklist/assign accept
    * a recurrence block; anything else (incl. absent) keeps the feature DARK — the cron no-ops and the
