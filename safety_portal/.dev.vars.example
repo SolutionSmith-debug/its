@@ -18,3 +18,7 @@ PORTAL_INTERNAL_API_TOKEN="replace-with-output-of-openssl-rand-base64-48"
 # PO workstream (WS1 S2). The Mac-side po_poll daemon mirrors this into the macOS
 # Keychain as ITS_PORTAL_PO_TOKEN. In a DEPLOYED Worker: `wrangler secret put …`.
 PORTAL_PO_API_TOKEN="replace-with-output-of-openssl-rand-base64-48"
+
+# Config-editor queue (§50). The Mac-side config daemon (built LATER) mirrors this into
+# the macOS Keychain as ITS_PORTAL_CONFIG_TOKEN. In a DEPLOYED Worker: `wrangler secret put …`.
+PORTAL_CONFIG_API_TOKEN="replace-with-output-of-openssl-rand-base64-48"

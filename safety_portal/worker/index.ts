@@ -32,6 +32,7 @@ import {
 } from "./fieldops_daily_photos";
 import { registerProgressRollupRoutes } from "./fieldops_rollup";
 import { registerPoRoutes } from "./po";
+import { registerConfigRoutes } from "./config";
 import {
   validateUser,
   newSessionClaims,
@@ -225,6 +226,23 @@ const requirePoToken = createMiddleware<{ Bindings: Env; Variables: Vars }>(asyn
   const auth = c.req.header("Authorization") ?? "";
   const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
   if (!token || !c.env.PORTAL_PO_API_TOKEN || !(await safeTokenEqual(token, c.env.PORTAL_PO_API_TOKEN))) {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+  await next();
+});
+
+/**
+ * Bearer-token gate for /api/internal/config/* — the Mac-side config daemon (config_editor/
+ * config_poll.py, §50 — built LATER). SEPARATE secret from the portal_poll / admin / fieldops /
+ * PO tokens (privilege separation): the config daemon's token must NOT be able to drain the
+ * submission queue, provision users, touch the job/hours mirror, or read the PO queue — and none
+ * of those tokens may read/advance the config-edit queue. Same fail-closed-on-missing-secret +
+ * constant-time posture as requireInternalToken. Passed into registerConfigRoutes (worker/config.ts).
+ */
+const requireConfigToken = createMiddleware<{ Bindings: Env; Variables: Vars }>(async (c, next) => {
+  const auth = c.req.header("Authorization") ?? "";
+  const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+  if (!token || !c.env.PORTAL_CONFIG_API_TOKEN || !(await safeTokenEqual(token, c.env.PORTAL_CONFIG_API_TOKEN))) {
     return c.json({ error: "unauthorized" }, 401);
   }
   await next();
@@ -451,6 +469,10 @@ registerProgressRollupRoutes(app, requireInternalToken);
 // — PO workstream S2: vendors cache + drafts/generate/supersede/cancel (session +
 //   cap.po.manage) + the /api/po/internal/* queue under the NEW requirePoToken tier —
 registerPoRoutes(app, { requireSession, requireCapability, requirePoToken });
+// — Config-editor queue (§50): generic versioned-config editor (session + per-workstream cap) +
+//   the /api/internal/config/* queue under the NEW requireConfigToken tier. SEND-FREE — the Mac
+//   config daemon (built LATER) is the sole privileged git-commit/deploy actuator. —
+registerConfigRoutes(app, { requireSession, requireCapability, requireConfigToken });
 
 /** GET /api/session — who am I (used by the SPA on load to restore session). Returns
  *  the live role (from requireSession's per-request D1 read), so a demotion drops the
