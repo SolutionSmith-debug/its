@@ -24,6 +24,7 @@ export default defineConfig(async () => {
             PORTAL_INTERNAL_API_TOKEN: "test-internal-token",
             PORTAL_ADMIN_API_TOKEN: "test-admin-token",
             PORTAL_FIELDOPS_API_TOKEN: "test-fieldops-token",
+            PORTAL_PO_API_TOKEN: "test-po-token",
           },
         },
       }),

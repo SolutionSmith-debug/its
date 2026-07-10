@@ -44,6 +44,9 @@ its migration fail-closes `resolveCapabilities` → the universal-lockout class 
 | `0039_material_list_mirror` | P7 M2 Material List up-sync keys (line_uuid + unplanned) — [section](#material-list-up-sync-keys-p7-m2--0039) | (M2) | ☐ pending |
 | `0040_checklist_recurrences` | Recurring checklists per job (#16) — [section](#recurring-checklists-per-job-16--0040) | (#16) | ☐ pending |
 | `0041_checklist_completion_emit` | Checklist completion → weekly progress report (#17, Seam A) — [section](#checklist-completion--weekly-progress-report-17-seam-a--0041) | (#17) | ☐ pending |
+| `0042_po_vendors` | PO S2 vendor cache + counter — [section](#purchase-orders--d1--worker-po-slice-s2--00420044) | (PO S2) | ☐ pending |
+| `0043_purchase_orders` | PO S2 drafts + line items + numbering backstop — [section](#purchase-orders--d1--worker-po-slice-s2--00420044) | (PO S2) | ☐ pending |
+| `0044_po_capability` | PO S2 `cap.po.manage` → admin — [section](#purchase-orders--d1--worker-po-slice-s2--00420044) | (PO S2) | ☐ pending |
 
 Canonical apply-and-deploy sequence (applies **all** pending migrations, in order — never a
 subset):
@@ -1134,3 +1137,27 @@ progress_logging_disabled` (never-silent) and the SPA hides the "Sign & log" act
 **Adding fields to the emitted document later** is a Worker-code change (extend the `values` shape in
 `worker/fieldops_checklist.ts`) + a matching `forms/checklist-completion-v1.json` add-version — the
 definition + the emit payload must stay in lockstep (the header signature field is the legal floor).
+
+### Purchase Orders — D1 + Worker po.ts (slice S2) — 0042/0044
+
+**What ships:** the Worker half of the PO pipeline (Aug-7 program WS1 S2,
+`docs/2026-07-09_aug7_delivery_program.md`). Migration `0042` creates `po_vendors` (the D1 cache
+of the ITS_Vendors SoR, D4 bidirectional §51 rider: dirty-row fence + watermarks) + the
+`po_vendor_counter` allocator; `0043` creates `purchase_orders` + `po_line_items` (money as
+integer cents, D7 status machine, the UNIQUE `(job_no, site_phase, supersede_seq, revision)`
+numbering backstop); `0044` grants `cap.po.manage` to `admin` (0023 pattern). `worker/po.ts`
+registers the browser surface (vendors CRUD / drafts CRUD / generate with server-side cents
+recompute + totals assert + atomic D7 allocation + `po:v1` HMAC / supersede / cancel) and the
+`/api/po/internal/*` queue under the NEW `requirePoToken` bearer tier (`PORTAL_PO_API_TOKEN`,
+privilege-separated from the portal_poll / admin / fieldops tokens).
+
+**Shipped DARK** — nothing consumes these routes until the S4 Mac daemon
+(`po_materials/po_poll.py`) and the S6 SPA pages land; applying 0042–0044 + deploying changes
+nothing user-visible (admins gain the capability; the SPA has no PO surface yet).
+
+**Activation (post apply-all + deploy):**
+1. `wrangler secret put PORTAL_PO_API_TOKEN` (generate: `openssl rand -base64 48`), then mirror
+   the SAME value into the macOS Keychain as `ITS_PORTAL_PO_TOKEN` (S4 daemon side).
+2. The S3 terms/config slice replaces the temporary in-Worker `TAX_RATE_BP` const
+   (`worker/po.ts`) with `po_materials/config/tax.json`; `GET /api/po/terms` + `/api/po/config`
+   land there too (deliberately NOT in S2).

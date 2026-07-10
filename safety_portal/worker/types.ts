@@ -42,6 +42,15 @@ export interface Env {
    */
   PORTAL_FIELDOPS_API_TOKEN: string;
   /**
+   * Bearer token the Mac-side PO daemon (po_materials/po_poll.py, WS1 S4) presents to
+   * /api/po/internal/* — SEPARATE from PORTAL_INTERNAL_API_TOKEN, PORTAL_ADMIN_API_TOKEN and
+   * PORTAL_FIELDOPS_API_TOKEN so the PO daemon's token cannot drain the submission queue,
+   * provision users, or touch the job/hours mirror (privilege separation), and none of those
+   * tokens can read the PO queue. Mirrored into the Keychain as ITS_PORTAL_PO_TOKEN.
+   * Workers Secret / .dev.vars — never committed.
+   */
+  PORTAL_PO_API_TOKEN: string;
+  /**
    * Feature flag (a plain Worker `var`, NOT a secret) gating "recurring checklists per job" (#16).
    * "true" arms the scheduled() cron's cadence-generation pass AND lets POST /checklist/assign accept
    * a recurrence block; anything else (incl. absent) keeps the feature DARK — the cron no-ops and the
