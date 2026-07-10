@@ -71,13 +71,6 @@ const TARGET_VERSION_RE = /^[a-z0-9_]+$/;
 const MAX_TARGET_VERSION = 64;
 const MAX_PAYLOAD_BYTES = 100_000; // 100 KB — generous ceiling on a config value / terms version
 
-// The workstream capabilities a session must hold to READ the cross-workstream status monitor.
-// Placeholder workstreams contribute no cap (they gate nothing until they have artifacts).
-const CONFIG_CAPS = new Set(
-  Object.values(CONFIG_REGISTRY)
-    .filter((w) => !w.placeholder)
-    .map((w) => w.cap),
-);
 
 // ── Internal (daemon) surface constants — LOCKSTEP with migration 0045's CHECK sets ──────────
 const CONFIG_STATUSES = new Set(["queued", "validated", "tested", "merged", "live", "archived", "failed"]);
@@ -141,12 +134,26 @@ export function registerConfigRoutes(app: FieldopsApp, gates: ConfigGates): void
     const spec = CONFIG_REGISTRY[workstream];
     if (!spec) return c.json({ error: "invalid_workstream" }, 400);
 
+    // Capability check FIRST — immediately after the workstream resolves, BEFORE artifact/op/
+    // payload validation (Invariant 2, authorization-before-work). requireSession already put the
+    // fresh D1 capability SET on the request; the SPA hiding a tab is a hint, THIS is the boundary.
+    // Ordering it first denies an unauthorized session the ability to probe the registry shape via
+    // differing 400 codes, and avoids parsing/stringifying an attacker payload before the 403.
+    if (!c.get("capabilities").has(spec.cap)) return c.json({ error: "forbidden" }, 403);
+
     const artifactKey = typeof body.artifact_key === "string" ? body.artifact_key : "";
     // A placeholder workstream has no artifacts, so the artifact lookup fails closed for it too.
-    if (spec.placeholder || !spec.artifacts[artifactKey]) return c.json({ error: "invalid_artifact" }, 400);
+    const artifact = spec.placeholder ? undefined : spec.artifacts[artifactKey];
+    if (!artifact) return c.json({ error: "invalid_artifact" }, 400);
 
     const op = typeof body.op === "string" ? body.op : "";
     if (!CONFIG_OPS.has(op)) return c.json({ error: "invalid_op" }, 400);
+    // The op must match the artifact KIND: a versioned terms artifact only takes `add_version`
+    // (mint a new sha-pinned version); a json artifact only takes `edit` (replace the value). A
+    // mismatch is a structurally-nonsensical request the queue rejects here, not the actuator later.
+    if (artifact.kind === "terms" ? op !== "add_version" : op !== "edit") {
+      return c.json({ error: "invalid_op" }, 400);
+    }
 
     let targetVersion: string | null = null;
     if (op === "add_version") {
@@ -159,12 +166,10 @@ export function registerConfigRoutes(app: FieldopsApp, gates: ConfigGates): void
 
     if (!isNonEmptyJson(body.payload)) return c.json({ error: "invalid_payload" }, 400);
     const payloadJson = JSON.stringify(body.payload);
-    if (payloadJson.length > MAX_PAYLOAD_BYTES) return c.json({ error: "payload_too_large" }, 400);
-
-    // Capability re-check (Invariant 2): resolve the workstream's registry cap and verify the
-    // session holds it. requireSession already resolved the fresh D1 capability SET onto the
-    // request — the SPA hiding a tab is hinting, THIS is the boundary.
-    if (!c.get("capabilities").has(spec.cap)) return c.json({ error: "forbidden" }, 403);
+    // Bound by UTF-8 byte length (what D1 stores), not JS string .length (UTF-16 code units).
+    if (new TextEncoder().encode(payloadJson).length > MAX_PAYLOAD_BYTES) {
+      return c.json({ error: "payload_too_large" }, 400);
+    }
 
     // Per-(workstream, artifact) serialization (C8): reject a 2nd edit while one is in flight.
     const inflight = await c.env.DB
@@ -197,20 +202,21 @@ export function registerConfigRoutes(app: FieldopsApp, gates: ConfigGates): void
   // hold at least ONE non-placeholder workstream cap). Send-free read.
   app.get("/api/config/requests/status", gates.requireSession, async (c) => {
     const caps = c.get("capabilities");
-    let holdsAny = false;
-    for (const cap of CONFIG_CAPS) {
-      if (caps.has(cap)) {
-        holdsAny = true;
-        break;
-      }
-    }
-    if (!holdsAny) return c.json({ error: "forbidden" }, 403);
+    // Least-privilege row scoping: return ONLY the rows of workstreams whose cap the caller holds.
+    // The registry is designed to grow with "zero route changes", so a user with only cap.po.manage
+    // must never see a future workstream's rows (workstream/artifact_key/op/failure_reason — the last
+    // can carry daemon-internal detail) through this same code. Scope now; nobody edits this later.
+    const held = Object.entries(CONFIG_REGISTRY)
+      .filter(([, s]) => !s.placeholder && caps.has(s.cap))
+      .map(([ws]) => ws);
+    if (held.length === 0) return c.json({ error: "forbidden" }, 403);
+    const placeholders = held.map(() => "?").join(",");
     const { results } = await c.env.DB
       .prepare(
         "SELECT id, workstream, artifact_key, op, status, failed_stage, failure_reason, created_at, updated_at " +
-          "FROM config_requests ORDER BY id DESC LIMIT ?",
+          `FROM config_requests WHERE workstream IN (${placeholders}) ORDER BY id DESC LIMIT ?`,
       )
-      .bind(STATUS_LIST_CAP)
+      .bind(...held, STATUS_LIST_CAP)
       .all();
     return c.json({ requests: results });
   });

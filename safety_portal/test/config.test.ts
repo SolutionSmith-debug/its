@@ -136,12 +136,36 @@ describe("POST /api/config/requests — enqueue", () => {
     expect(await res.json()).toMatchObject({ error: "invalid_artifact" });
   });
 
-  it("rejects ANY artifact on the placeholder workstream (subcontracts → 400 invalid_artifact)", async () => {
+  it("rejects the placeholder workstream (subcontracts → 403: nobody holds cap.subcontracts.manage)", async () => {
+    // The cap check runs FIRST (authorization-before-work); subcontracts' cap is unheld until a
+    // real subcontract workflow registers it, so an admin with only cap.po.manage gets 403 here.
     await provision("admin.one", "admin");
     const cookie = await login("admin.one");
     const res = await post(cookie, "/api/config/requests", editBody({ workstream: "subcontracts", artifact_key: "anything" }));
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({ error: "forbidden" });
+  });
+
+  it("rejects an op that mismatches the artifact kind (add_version on a json artifact → 400)", async () => {
+    // purchaser is kind:"json" (edit only); add_version is only for kind:"terms". The queue rejects
+    // this structurally-nonsensical combo here rather than deferring it to the actuator.
+    await provision("admin.one", "admin");
+    const cookie = await login("admin.one");
+    const res = await post(
+      cookie,
+      "/api/config/requests",
+      editBody({ artifact_key: "purchaser", op: "add_version", target_version: "purchaser_v2" }),
+    );
     expect(res.status).toBe(400);
-    expect(await res.json()).toMatchObject({ error: "invalid_artifact" });
+    expect(await res.json()).toMatchObject({ error: "invalid_op" });
+  });
+
+  it("rejects `edit` on a terms (versioned) artifact → 400 invalid_op", async () => {
+    await provision("admin.one", "admin");
+    const cookie = await login("admin.one");
+    const res = await post(cookie, "/api/config/requests", editBody({ artifact_key: "terms", op: "edit" }));
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: "invalid_op" });
   });
 
   it("rejects an unknown op (400 invalid_op)", async () => {
