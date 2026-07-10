@@ -1,4 +1,9 @@
-"""FastAPI app factory for the operator dashboard (D1-1, read-only)."""
+"""FastAPI app factory for the operator dashboard.
+
+D1-1 shipped the read-only observability core; D1-2 adds the ACT surface — the
+Class-A runtime config editor (the one and only mutating route), registered at
+the marked mount point below.
+"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -9,6 +14,7 @@ from fastapi.responses import PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from operator_dashboard.act.router import register_act_routes
 from operator_dashboard.config import PANEL_REFRESH_SECONDS
 from operator_dashboard.sources import PANELS, PANELS_BY_ID
 from operator_dashboard.sources.base import SEV_UNAVAILABLE, PanelResult
@@ -63,11 +69,12 @@ def create_app() -> FastAPI:
     def healthz() -> str:
         return "ok"
 
-    # --- D1-2 ACT surface mount point (INTENTIONALLY ABSENT in D1-1) ------
-    # The Tier-2 action set (toggle ITS_Config gates, clear a stuck lock,
-    # re-seed a row, re-send an approval, daemon controls) plus its auth
-    # (Keychain PIN, CSRF/Origin checks) is D1-2. D1-1 is READ-ONLY: zero
-    # mutation routes, zero send capability, no Keychain access, no
-    # @require_active. D1-2 mounts an authenticated `act` router HERE without
-    # refactoring this read surface. Do not add any write/act route to D1-1.
+    # --- D1-2 ACT surface -------------------------------------------------
+    # The Class-A runtime config editor: GET /config (read) + POST /act/config
+    # (the ONLY mutating route). PIN-gated (fail-closed) + Origin-allowlisted,
+    # per-key validated, first-activation-escalated, audited on every write. It
+    # writes ONLY to ITS_Config — an internal system-of-record write, NOT an
+    # external send; the External Send Gate (Invariant 1) stays with the
+    # daemons. Higher-ceremony actions (Class B/C, launchctl, secrets) are D1-3.
+    register_act_routes(app, _TEMPLATES)
     return app

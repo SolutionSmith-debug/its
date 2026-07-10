@@ -1,0 +1,339 @@
+"""Class-A config editor (WS2 D1-2) — the security-critical ACT surface.
+
+Prove-it-bites: denylisted keys refused, out-of-bounds values rejected with NO
+write, send-poller first-activation escalated (not applied), pause applied,
+audit row written on every write, PIN fail-closed, Origin allowlist enforced,
+and the outcome render is escaped.
+"""
+from __future__ import annotations
+
+from collections.abc import Iterator
+from typing import Any
+
+import pytest
+from fastapi.testclient import TestClient
+
+from operator_dashboard.act import config_write, registry
+from operator_dashboard.act.config_write import apply_edit
+from operator_dashboard.act.validators import (
+    ConfigValidationError,
+    v_bool,
+    v_email_list,
+    v_float01,
+    v_int,
+    v_schedule,
+)
+from operator_dashboard.app import create_app
+from operator_dashboard.auth import OriginError, PinError, check_origin, verify_pin
+
+
+@pytest.fixture(autouse=True)
+def _reset_pin_throttle(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    # The PIN brute-force throttle is process-global; reset it around each test
+    # and zero the per-failure sleep so tests stay fast + order-independent.
+    from operator_dashboard import auth
+
+    monkeypatch.setattr(auth, "_FAIL_SLEEP_SECONDS", 0.0)
+    auth.reset_pin_throttle()
+    yield
+    auth.reset_pin_throttle()
+
+
+@pytest.fixture
+def fake_smartsheet(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """Patch the shared read/write/audit surfaces the config editor lazily
+    imports. `rows` maps (Setting, Workstream) -> row dict; `updates` records
+    every update_rows payload; `audits` records every error_log.log call."""
+    import shared.error_log as el
+    import shared.smartsheet_client as ss
+
+    state: dict[str, Any] = {"rows": {}, "updates": [], "audits": []}
+
+    def get_rows(sheet_id: int, *, filters: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        if filters:
+            key = (filters.get("Setting"), filters.get("Workstream"))
+            row = state["rows"].get(key)
+            return [row] if row else []
+        return list(state["rows"].values())
+
+    def update_rows(sheet_id: int, updates: list[dict[str, Any]]) -> None:
+        state["updates"].extend(updates)
+
+    def log(severity: Any, script: str, message: str, **kw: Any) -> None:
+        state["audits"].append((str(severity), kw.get("error_code"), message))
+
+    monkeypatch.setattr(ss, "get_rows", get_rows)
+    monkeypatch.setattr(ss, "update_rows", update_rows)
+    monkeypatch.setattr(el, "log", log)
+    return state
+
+
+def _seed(state: dict[str, Any], setting: str, ws: str, value: str, row_id: int = 1) -> None:
+    state["rows"][(setting, ws)] = {
+        "_row_id": row_id,
+        "Setting": setting,
+        "Workstream": ws,
+        "Value": value,
+    }
+
+
+# ---------------------------------------------------------------- registry ----
+def test_denylisted_keys_are_not_editable() -> None:
+    assert not registry.is_editable("safety_reports.external_send_gate", "safety_reports")
+    assert not registry.is_editable("system.state", "global")
+    assert not registry.is_editable("po_materials.config_actuator.polling_enabled", "po_materials")
+    # interval keys are install-time (never hot-reload) → deliberately not editable here
+    assert not registry.is_editable("safety_reports.intake.poll_interval_seconds", "safety_reports")
+    assert not registry.is_editable("po_materials.po_send.poll_interval_seconds", "po_materials")
+    # and the fixed denylist never leaks into REGISTRY under any workstream
+    for name in registry.NON_EDITABLE_SETTINGS:
+        assert all(k[0] != name for k in registry.REGISTRY), f"{name} leaked into REGISTRY"
+
+
+def test_registry_is_keyed_on_pair_not_setting_name() -> None:
+    # the footgun row is editable under safety_reports (intake's workstream) only
+    assert registry.is_editable("progress_reports.intake_enabled", "safety_reports")
+    assert not registry.is_editable("progress_reports.intake_enabled", "progress_reports")
+    # worker_base_url (exists 3x under different workstreams) is not editable at all
+    assert not registry.is_editable("safety_reports.portal.worker_base_url", "safety_reports")
+
+
+# -------------------------------------------------------------- validators ----
+def test_validators_reject_bad_values() -> None:
+    assert v_bool("TRUE") == "true"
+    with pytest.raises(ConfigValidationError):
+        v_bool("maybe")
+    assert v_int(1, 100)("7") == "7"
+    with pytest.raises(ConfigValidationError):
+        v_int(1, 100)("0")  # below range
+    with pytest.raises(ConfigValidationError):
+        v_int(1, 100)("1.0")  # float rejected in the money/int path
+    with pytest.raises(ConfigValidationError):
+        v_float01("2.0")  # above 1.0
+    assert v_float01("0.75") == "0.75"
+    assert v_schedule("mon 07:00") == "MON 07:00"
+    with pytest.raises(ConfigValidationError):
+        v_schedule("MON 25:00")  # hour out of range
+    assert v_email_list('["a@b.com"]') == '["a@b.com"]'
+    assert v_email_list("[]") == "[]"  # empty list is valid (the _default fallback)
+    with pytest.raises(ConfigValidationError):
+        v_email_list('["not-an-email"]')
+
+
+# --------------------------------------------------------------- apply_edit ----
+def test_denylisted_key_refused_no_write(fake_smartsheet: dict[str, Any]) -> None:
+    out = apply_edit("safety_reports.external_send_gate", "safety_reports", "OFF", "op")
+    assert out.kind == config_write.NOT_EDITABLE
+    assert fake_smartsheet["updates"] == []
+
+
+def test_out_of_bounds_rejected_no_write(fake_smartsheet: dict[str, Any]) -> None:
+    _seed(fake_smartsheet, "safety_reports.intake.confidence_threshold", "safety_reports", "0.75")
+    out = apply_edit("safety_reports.intake.confidence_threshold", "safety_reports", "2.0", "op")
+    assert out.kind == config_write.REJECTED
+    _seed(fake_smartsheet, "alerting.max_alerts_per_hour", "global", "15", row_id=2)
+    out2 = apply_edit("alerting.max_alerts_per_hour", "global", "-1", "op")
+    assert out2.kind == config_write.REJECTED
+    assert fake_smartsheet["updates"] == []  # neither reached a write
+
+
+def test_send_poller_first_activation_escalates_not_applied(fake_smartsheet: dict[str, Any]) -> None:
+    _seed(fake_smartsheet, "po_materials.po_send.polling_enabled", "po_materials", "false", row_id=5)
+    out = apply_edit("po_materials.po_send.polling_enabled", "po_materials", "true", "op")
+    assert out.kind == config_write.ESCALATED
+    assert fake_smartsheet["updates"] == []  # NOT applied
+    assert any(a[1] == "config_audit" for a in fake_smartsheet["audits"])  # but audited
+
+
+def test_send_poller_pause_is_applied(fake_smartsheet: dict[str, Any]) -> None:
+    _seed(fake_smartsheet, "po_materials.po_send.polling_enabled", "po_materials", "true", row_id=5)
+    out = apply_edit("po_materials.po_send.polling_enabled", "po_materials", "false", "op")
+    assert out.kind == config_write.APPLIED
+    assert fake_smartsheet["updates"] == [{"_row_id": 5, "Value": "false"}]
+
+
+def test_apply_writes_and_audits(fake_smartsheet: dict[str, Any]) -> None:
+    _seed(fake_smartsheet, "safety_reports.intake.box_filing_enabled", "safety_reports", "false", row_id=9)
+    out = apply_edit("safety_reports.intake.box_filing_enabled", "safety_reports", "true", "op")
+    assert out.kind == config_write.APPLIED
+    assert fake_smartsheet["updates"] == [{"_row_id": 9, "Value": "true"}]
+    audit = [a for a in fake_smartsheet["audits"] if a[1] == "config_audit"]
+    assert audit and "WARN" in audit[0][0]  # durable WARN audit row
+
+
+def test_missing_row_is_not_editable(fake_smartsheet: dict[str, Any]) -> None:
+    # editable key but no seeded ITS_Config row → refuse (seed first), no write
+    out = apply_edit("circuit_breaker.enabled", "global", "false", "op")
+    assert out.kind == config_write.NOT_EDITABLE
+    assert fake_smartsheet["updates"] == []
+
+
+# --------------------------------------------------------------------- auth ----
+def test_verify_pin_fail_closed_when_unprovisioned(monkeypatch: pytest.MonkeyPatch) -> None:
+    import shared.keychain as kc
+
+    def missing(name: str, account: str | None = None) -> str:
+        raise kc.KeychainError("not found")
+
+    monkeypatch.setattr(kc, "get_secret", missing)
+    with pytest.raises(PinError):
+        verify_pin("1234")
+
+
+def test_verify_pin_correct_and_incorrect(monkeypatch: pytest.MonkeyPatch) -> None:
+    import shared.keychain as kc
+
+    monkeypatch.setattr(kc, "get_secret", lambda name, account=None: "s3cr3t")
+    verify_pin("s3cr3t")  # no raise
+    with pytest.raises(PinError):
+        verify_pin("wrong")
+    with pytest.raises(PinError):
+        verify_pin("")
+
+
+def test_check_origin_allowlist() -> None:
+    check_origin(None, None)  # curl / non-browser → allowed (PIN still required)
+    check_origin("http://127.0.0.1:8484", None)  # localhost → allowed
+    with pytest.raises(OriginError):
+        check_origin("https://evil.example", None)  # cross-origin CSRF → refused
+
+
+# ---------------------------------------------------------- HTTP integration ----
+def _client_with_pin(monkeypatch: pytest.MonkeyPatch, pin: str = "1234") -> TestClient:
+    import shared.keychain as kc
+
+    monkeypatch.setattr(kc, "get_secret", lambda name, account=None: pin)
+    return TestClient(create_app())
+
+
+def test_http_apply_flow(fake_smartsheet: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
+    _seed(fake_smartsheet, "circuit_breaker.failure_threshold", "global", "5", row_id=3)
+    client = _client_with_pin(monkeypatch)
+    resp = client.post(
+        "/act/config",
+        data={"setting": "circuit_breaker.failure_threshold", "workstream": "global", "value": "7", "pin": "1234"},
+    )
+    assert resp.status_code == 200
+    assert "outcome-applied" in resp.text
+    assert fake_smartsheet["updates"] == [{"_row_id": 3, "Value": "7"}]
+
+
+def test_http_denylist_refused(fake_smartsheet: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _client_with_pin(monkeypatch)
+    resp = client.post(
+        "/act/config",
+        data={
+            "setting": "safety_reports.external_send_gate",
+            "workstream": "safety_reports",
+            "value": "OFF",
+            "pin": "1234",
+        },
+    )
+    assert "outcome-not_editable" in resp.text
+    assert fake_smartsheet["updates"] == []
+
+
+def test_http_bad_pin_denied_no_write(fake_smartsheet: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
+    _seed(fake_smartsheet, "circuit_breaker.failure_threshold", "global", "5", row_id=3)
+    client = _client_with_pin(monkeypatch, pin="realpin")
+    resp = client.post(
+        "/act/config",
+        data={"setting": "circuit_breaker.failure_threshold", "workstream": "global", "value": "7", "pin": "WRONG"},
+    )
+    assert "outcome-rejected" in resp.text
+    assert "denied" in resp.text
+    assert fake_smartsheet["updates"] == []
+
+
+def test_http_outcome_is_escaped(fake_smartsheet: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
+    # A rejected value containing a script tag must render inert (autoescape).
+    _seed(fake_smartsheet, "circuit_breaker.enabled", "global", "true", row_id=4)
+    client = _client_with_pin(monkeypatch)
+    resp = client.post(
+        "/act/config",
+        data={
+            "setting": "circuit_breaker.enabled",
+            "workstream": "global",
+            "value": "<script>alert(1)</script>",
+            "pin": "1234",
+        },
+    )
+    assert resp.status_code == 200
+    assert "<script>alert(1)</script>" not in resp.text
+    assert "&lt;script&gt;" in resp.text
+    assert fake_smartsheet["updates"] == []
+
+
+def test_http_config_page_renders(fake_smartsheet: dict[str, Any]) -> None:
+    _seed(fake_smartsheet, "circuit_breaker.enabled", "global", "true", row_id=1)
+    client = TestClient(create_app())
+    resp = client.get("/config")
+    assert resp.status_code == 200
+    assert "Class-A config editor" in resp.text
+    assert "circuit_breaker.enabled" in resp.text
+
+
+# ------------------------------------------------ review-hardening regressions ----
+def test_pin_throttle_locks_out_and_pages(monkeypatch: pytest.MonkeyPatch) -> None:
+    import shared.error_log as el
+    import shared.keychain as kc
+    from operator_dashboard import auth
+
+    monkeypatch.setattr(kc, "get_secret", lambda name, account=None: "correcthorse")
+    alerts: list[str | None] = []
+    monkeypatch.setattr(el, "log", lambda sev, script, msg, **kw: alerts.append(kw.get("error_code")))
+    for _ in range(auth._MAX_PIN_FAILS):  # exhaust the allowance with wrong guesses
+        with pytest.raises(PinError):
+            verify_pin("wrong")
+    # now locked out — even the CORRECT PIN is refused during the lockout window
+    with pytest.raises(PinError) as ei:
+        verify_pin("correcthorse")
+    assert "locked out" in str(ei.value)
+    assert "config_pin_lockout" in alerts  # CRITICAL paged on the lockout trip
+
+
+def test_first_activation_escalates_from_blank_state(fake_smartsheet: dict[str, Any]) -> None:
+    # a gated gate whose row exists but Value is BLANK → ->true must escalate (fail-safe)
+    _seed(fake_smartsheet, "po_materials.po_send.polling_enabled", "po_materials", "", row_id=7)
+    out = apply_edit("po_materials.po_send.polling_enabled", "po_materials", "true", "op")
+    assert out.kind == config_write.ESCALATED
+    assert fake_smartsheet["updates"] == []
+
+
+def test_noop_on_canonical_equivalent_no_write_no_audit(fake_smartsheet: dict[str, Any]) -> None:
+    # stored 'TRUE' vs submitted 'true' is a TRUE no-op (not a cosmetic rewrite)
+    _seed(fake_smartsheet, "circuit_breaker.enabled", "global", "TRUE", row_id=3)
+    out = apply_edit("circuit_breaker.enabled", "global", "true", "op")
+    assert out.kind == config_write.NOOP
+    assert fake_smartsheet["updates"] == []
+    assert fake_smartsheet["audits"] == []
+
+
+def test_giant_int_rejected_not_500(fake_smartsheet: dict[str, Any]) -> None:
+    _seed(fake_smartsheet, "alerting.max_alerts_per_hour", "global", "15", row_id=2)
+    out = apply_edit("alerting.max_alerts_per_hour", "global", "9" * 5000, "op")
+    assert out.kind == config_write.REJECTED
+    assert fake_smartsheet["updates"] == []
+
+
+def test_unexpected_validator_error_becomes_rejected(
+    fake_smartsheet: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # a validator raising a non-ConfigValidationError must NOT escape as a 500
+    from operator_dashboard.act.registry import REGISTRY, ConfigEntry
+
+    def boom(value: str) -> str:
+        raise RuntimeError("kaboom")
+
+    monkeypatch.setitem(REGISTRY, ("x.test", "global"), ConfigEntry("x.test", "global", "x", "g", boom))
+    out = apply_edit("x.test", "global", "anything", "op")
+    assert out.kind == config_write.REJECTED
+    assert "RuntimeError" in out.message
+    assert fake_smartsheet["updates"] == []
+
+
+def test_email_list_strips_each_item(fake_smartsheet: dict[str, Any]) -> None:
+    # a smuggled trailing newline in a list item is stripped, not persisted
+    from operator_dashboard.act.validators import v_email_list
+
+    assert v_email_list('["a@b.com\\n"]') == '["a@b.com"]'

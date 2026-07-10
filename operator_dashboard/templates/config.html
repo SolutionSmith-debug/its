@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}Config editor — ITS Operator Dashboard{% endblock %}
+{% block content %}
+<div class="config-editor">
+  <div class="config-head">
+    <h2>Class-A config editor</h2>
+    <a class="backlink" href="/">← dashboard</a>
+  </div>
+  <p class="config-note">
+    Edits write to <code>ITS_Config</code> and take effect on the daemon's next
+    cycle. Every edit is validated server-side and requires the operator PIN.
+    A <span class="gated">⚑</span> gate is a send-poller: turning it <b>on</b> is
+    escalated (not applied); pausing is always available.
+  </p>
+  {% if error %}<div class="config-error">{{ error }}</div>{% endif %}
+  {% for group, rows in groups.items() %}
+  <section class="config-group">
+    <h3>{{ group }}</h3>
+    <table class="config-table">
+      <thead>
+        <tr><th>setting</th><th>workstream</th><th>current</th><th>new value + PIN</th></tr>
+      </thead>
+      <tbody>
+        {% for r in rows %}
+        <tr>
+          <td class="cfg-setting">
+            {{ r.setting }}{% if r.gated %} <span class="gated" title="turning ON escalates">⚑</span>{% endif %}
+            {% if r.note %}<div class="cfg-note">{{ r.note }}</div>{% endif %}
+          </td>
+          <td class="cfg-ws">{{ r.workstream }}</td>
+          <td class="cfg-current">
+            {% if r.present %}{{ r.value }}{% else %}<span class="missing">(no row — seed first)</span>{% endif %}
+          </td>
+          <td>
+            <form hx-post="/act/config" hx-target="#out-{{ r.slug }}" hx-swap="innerHTML" class="cfg-form">
+              <input type="hidden" name="setting" value="{{ r.setting }}">
+              <input type="hidden" name="workstream" value="{{ r.workstream }}">
+              <input type="text" name="value" value="{{ r.value }}" class="cfg-input" autocomplete="off" spellcheck="false">
+              <input type="password" name="pin" placeholder="PIN" class="cfg-pin" autocomplete="off">
+              <button type="submit" class="cfg-btn">apply</button>
+              <span class="cfg-out" id="out-{{ r.slug }}"></span>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+  {% endfor %}
+</div>
+{% endblock %}
