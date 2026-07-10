@@ -12,8 +12,11 @@ Operations docs use `topic-slug.md` filenames (no date prefix); the
 <!-- BEGIN AUTO-INDEX -->
 | Date | Type | Status | Workstream | Title | PRs |
 |------|------|--------|------------|-------|-----|
+| 2026-07-09 | operations | active | _–_ | [Aug-7 Delivery Runbook (on-site install · demo · training · acceptance)](aug7_delivery_runbook.md) | _–_ |
+| 2026-07-09 | operations | active | _–_ | [ITS Cutover Checklist (v2)](cutover_checklist.md) | _–_ |
+| 2026-07-09 | operations | active | infrastructure | [Production-Host Migration Runbook (old MacBook Pro)](host_migration_runbook.md) | _–_ |
+| 2026-07-09 | operations | active | _–_ | [Production Rollback (tenant cutover → mirror)](production_rollback.md) | _–_ |
 | 2026-06-30 | operations | active | _–_ | [Operator Action Checklist — Tech-Debt Cleanup (2026-06-30)](operator_action_checklist_2026-06-30.md) | #363, #365, #366 |
-| 2026-05-29 | operations | active | _–_ | [ITS Cutover Checklist](cutover_checklist.md) | _–_ |
 | 2026-05-29 | operations | active | infrastructure | [Worktree Discipline (parallel CC sessions)](worktree_discipline.md) | _–_ |
 | 2026-05-24 | operations | active | docs | [ITS Doc Conventions](doc_conventions.md) | _–_ |
 | _(no frontmatter)_ | _–_ | _–_ | _–_ | [PR Merge Discipline](pr_merge_discipline.md) | _–_ |

@@ -1,166 +1,288 @@
 ---
 type: operations
-date: 2026-05-29
+date: 2026-07-09
 status: active
 related_prs: []
 workstream: null
-tags: [cutover, delivery, fail_closed, security]
+tags: [cutover, delivery, fail_closed, security, aug7_delivery]
 ---
 
-# ITS Cutover Checklist
+# ITS Cutover Checklist (v2)
 
-Mechanical checklist for the **validation → production** cutover, when the
-build flips off the `evergreenmirror.com` sandbox domain and onto the real
-`evergreenrenewables.com` (California) production identities. This is a
-**tracked delivery deliverable** — the cutover is not done until every item
-below is walked and verified.
+Mechanical checklist for the **validation → production** cutover: the build
+flips off the `evergreenmirror.com` sandbox tenants and onto the real
+`evergreenrenewables.com` identities (target: **Mon Aug 3**, per
+`docs/2026-07-09_aug7_delivery_program.md` WS4). The cutover is **not done
+until every item below is verified AND `python -m scripts.verify_cutover`
+exits 0** (Op Stds v20 §53 — a cutover claim is narrative until mechanically
+verified).
 
-> **Why this doc exists.** F22 (approval-attestation verification) is the first
-> **fail-CLOSED** identity that is domain-specific: the authorized-approver set is
-> the **ITS — Safety Portal workspace's member list** (sharing the workspace IS
-> granting approval authority; read live by `weekly_send_poll` via
-> `smartsheet_client.list_workspace_share_emails`). Because it is fail-closed and
-> matched on **email** (Smartsheet's cell-history `modifiedBy` exposes no stable
-> user ID — see `shared/approval_verification.py`), getting the production
-> workspace sharing wrong at delivery does not error loudly — it **silently blocks
-> every safety-report send** (every approval comes from a non-member email). This
-> checklist makes the workspace re-share mechanical, not from-memory. It will grow
-> as later workstreams add cutover-sensitive config.
+> **v2 rewrite (2026-07-09).** v1 (2026-05-29) had an item-2 numbering
+> collision (two "Cutover item 2" sections) and Safety-Portal-only scope.
+> v2 renumbers every item as `CL-NN`, widens scope to ALL live workstreams
+> (safety, progress, field-ops trackers, PO) + host identity + DNS/mailboxes +
+> Box + D1 hygiene + WAF/Paid plan + rollback + the Day-7 routing gate, and
+> makes every item **mechanically verifiable** — a command or a sheet-cell
+> check, never "confirm X works" prose. Items a machine can check
+> cross-reference a `scripts/verify_cutover.py` check id (`VC-NN`).
+
+## Purpose
+
+One walkable list that turns the tenant cutover from memory into mechanism.
+Companions: `docs/operations/host_migration_runbook.md` (the host must be
+through Phase C go/no-go BEFORE this list starts),
+`docs/operations/production_rollback.md` (every rollback path),
+`docs/operations/aug7_delivery_runbook.md` (the on-site day).
+
+## Checklist-id ↔ verify_cutover mapping
+
+| verify_cutover | covers checklist items |
+|----------------|------------------------|
+| VC-01 `keychain` | CL-02 |
+| VC-02 `launchd` | CL-03 |
+| VC-03 `config` | CL-12 (+ the config half of CL-14) |
+| VC-04 `daemon-health` | CL-24 |
+| VC-05 `review-queue` | CL-25 |
+| VC-06 `alerting` | CL-26 |
+| VC-07 `git` | CL-04 |
+| VC-08 `d1-migrations` | CL-18 |
+| VC-09 `heartbeat-url` | CL-27 |
+| full run (all nine) | CL-30 |
+| (manual-only items) | CL-01, CL-05–CL-11, CL-13, CL-15–CL-17, CL-19–CL-23, CL-28, CL-29, CL-31–CL-33 |
 
 ## Procedure
 
-### Cutover item 1 — F22 approver authority = workspace membership (owned by the F02/F22 PR)
+### Phase 0 — preconditions & host identity
 
-The authorized-approver set is the **ITS — Safety Portal workspace member list** —
-there is **no** `authorized_approvers` ITS_Config row any more (retired 2026-06-06).
-During validation the (sandbox) workspace is shared with the three validation
-accounts. At delivery, on the **production** ITS — Safety Portal workspace:
+- [ ] **CL-01 — burn-in go/no-go recorded.** The Jul-31 host go/no-go verdict
+  exists in a session log (`ls docs/session_logs/2026-07-31*` or later naming
+  it). No-go = the cutover date moves; do not proceed.
+- [ ] **CL-02 — Keychain complete on the production host** (15 secrets: 11
+  non-Box + Box triplet + `ITS_PORTAL_PO_TOKEN`).
+  Verify: `python -m scripts.verify_cutover --only keychain` → PASS. (VC-01)
+- [ ] **CL-03 — the 11 daemons run on the production host only.**
+  Verify: `python -m scripts.verify_cutover --only launchd` → PASS on the
+  production host, AND on the dev box:
+  `launchctl list | grep solutionsmith` prints nothing. (VC-02)
+- [ ] **CL-04 — production host repo at clean origin/main.**
+  Verify: `python -m scripts.verify_cutover --only git` → PASS. Never deploy
+  or migrate from a stale checkout (forensic class #2). (VC-07)
 
-**UNSHARE** the three validation accounts:
+### M365 / DNS / mailboxes
 
-- `daniels@evergreenmirror.com`
-- `seths@evergreenmirror.com`
-- `benf@evergreenmirror.com`
+- [ ] **CL-05 — production app registration live.** Graph client-credentials
+  flow succeeds against the `evergreenrenewables.com` tenant with the
+  re-seeded `ITS_MS_*` triplet.
+  Verify: `python scripts/smoke_test_graph.py` (read-only) exits 0.
+- [ ] **CL-06 — EXO ServicePrincipal + Application Access Policy applied**
+  (PowerShell done in July, before the Sep-1 deprecation).
+  Verify: `Test-ApplicationAccessPolicy -Identity safety@evergreenrenewables.com
+  -AppId <ITS_MS_CLIENT_ID>` → `AccessCheckResult: Granted`, and the same for
+  a non-ITS mailbox → `Denied`.
+- [ ] **CL-07 — production mailboxes exist:** `safety@`, `progress@`,
+  `procurement@` on `evergreenrenewables.com`; `progress@` + `procurement@`
+  also on the mirror (rehearsal path, its#460).
+  Verify: Graph read of each mailbox succeeds (smoke script per mailbox), or
+  EXO `Get-Mailbox safety@evergreenrenewables.com` etc. returns each.
+- [ ] **CL-08 — DKIM/SPF verified for the production sending domain.**
+  Verify: `dig TXT evergreenrenewables.com +short` contains the SPF record
+  including M365 (`include:spf.protection.outlook.com`), and
+  `dig CNAME selector1._domainkey.evergreenrenewables.com +short` resolves to
+  the M365 DKIM host (repeat for `selector2`).
+- [ ] **CL-09 — portal production DNS live.** The production custom domain
+  resolves and serves the Worker.
+  Verify: `curl -sI https://<production-portal-domain>/ | head -1` → `HTTP/2 200`
+  and the response is the portal SPA (content-type text/html — remember the
+  SPA fallback returns 200 for anything; also fetch a known asset and check
+  its content-type).
+- [ ] **CL-10 — Resend sender domain verified** (replaces the
+  `onboarding@resend.dev` sandbox sender).
+  Verify: Resend dashboard → Domains → solutionsmith domain `Verified`, and
+  `grep -rn "onboarding@resend.dev" shared/ ITS_Config-sweep` shows the
+  runtime sender comes from config, not the sandbox default.
 
-**SHARE** the production workspace with the seven real production approvers (any
-access level — membership is the gate; the email must match the approver's
-Smartsheet account exactly):
+### Smartsheet — shares, purge, config sweep
 
-| Email | Person | Role |
-|-------|--------|------|
-| `jacobs@evergreenrenewables.com`   | Jacob Stephens     | CEO |
-| `ezraj@evergreenrenewables.com`    | Ezra Jones         | CFO |
-| `jechiahs@evergreenrenewables.com` | Jechiah Stephens   | Head of Engineering |
-| `benf@evergreenrenewables.com`     | Ben Finkhousen     | Senior PM |
-| `tiffanym@evergreenrenewables.com` | Tiffany Montastirsky | Head of Permitting |
-| `tealap@evergreenrenewables.com`   | Teala Paradise     | Procurement & Subcontracting |
-| `samr@evergreenrenewables.com`     | Sam Rigney         | Head of Field Operations |
+- [ ] **CL-11 — F22 approver authority = workspace membership (all three
+  send-bearing workspaces).** The authorized-approver set is each workspace's
+  **individual USER share list** (`smartsheet_client.list_workspace_share_emails`;
+  GROUP shares do NOT count — a group-only share yields an empty authorized
+  set and silently fail-closes every send). On the production **ITS — Safety
+  Portal**, **ITS — Progress** and **ITS — Purchase Orders** workspaces:
+  UNSHARE the mirror validation accounts (`daniels@` / `seths@` / `benf@`
+  `evergreenmirror.com`) and SHARE the seven production approvers as
+  individual USER shares:
 
-> ⚠️ **Spelling.** The domain is `evergreenrenewables.com` (re-**new**-ables).
-> The original contact sheet carried a typo `renwables` for Ezra — the table
-> above is the corrected spelling. Sharing a non-matching email fail-closes that
-> approver silently.
->
-> ⚠️ **Confirm each is a real Smartsheet user before sharing.** The match is
-> against the email Smartsheet records in cell history; an approver who isn't a
-> real Smartsheet user, or whose Smartsheet email differs, will be blocked
-> fail-closed even when shared.
->
-> ⚠️ **GROUP shares don't count (today).** `list_workspace_share_emails` reads
-> individual (USER) shares only — a workspace shared *only* to a Smartsheet group
-> yields an empty authorized set → all sends blocked. Share with individuals, or
-> track group-membership expansion as a follow-up.
+  | Email | Person | Role |
+  |-------|--------|------|
+  | `jacobs@evergreenrenewables.com`   | Jacob Stephens     | CEO |
+  | `ezraj@evergreenrenewables.com`    | Ezra Jones         | CFO |
+  | `jechiahs@evergreenrenewables.com` | Jechiah Stephens   | Head of Engineering |
+  | `benf@evergreenrenewables.com`     | Ben Finkhousen     | Senior PM |
+  | `tiffanym@evergreenrenewables.com` | Tiffany Montastirsky | Head of Permitting |
+  | `tealap@evergreenrenewables.com`   | Teala Paradise     | Procurement & Subcontracting |
+  | `samr@evergreenrenewables.com`     | Sam Rigney         | Head of Field Operations |
 
-### Cutover item 2 — broader domain flip (enumerate only; NOT this PR's scope)
+  > ⚠️ The domain is `evergreenrenewables.com` (re-**new**-ables) — the
+  > original contact sheet carried a `renwables` typo for Ezra. A non-matching
+  > email fail-closes that approver **silently**. Each approver must be a real
+  > Smartsheet user whose account email matches exactly (cell-history
+  > `modifiedBy` exposes email only).
 
-These surfaces are cutover-sensitive but are **not** changed by the F02/F22
-PR. Audit each at delivery:
+  Verify (mechanical): per workspace, list the USER shares and diff against
+  the seven emails — e.g.
+  `python -c "from shared import smartsheet_client as s; print(sorted(s.list_workspace_share_emails(<workspace_id>)))"`
+  → exactly the expected set, zero `evergreenmirror.com` residue.
+- [ ] **CL-12 — ITS_Config production sweep.** All load-bearing rows point at
+  production: `safety_reports.portal.worker_base_url` (the production custom
+  domain), `from_mailbox` rows (safety + progress; PO's when its send lands),
+  `scheduled_send_local` rows seeded, all `*_enabled` gates true, and **zero
+  `evergreenmirror` residue in any Value cell**.
+  Verify: `python -m scripts.verify_cutover --only config` (NO
+  `--allow-sandbox`) → PASS. (VC-03)
+- [ ] **CL-13 — gate-flip discipline.** Before flipping ANY `*_enabled` row,
+  read its full Description cell — an in-cell precondition ("do NOT set true
+  until …") is doctrine (§44 high-class), not a suggestion.
+  Verify: each flipped row's Description carries no unmet precondition (fetch
+  the row cells, not just the rowId).
+- [ ] **CL-14 — no sandbox residue in code/config.**
+  Verify: `grep -rn "evergreenmirror" --include="*.py" ~/its` → only
+  intentional hits (docs, historical session logs, this checklist); zero in
+  runtime paths. Plus the VC-03 config-value scan above. (VC-03 partial)
+- [ ] **CL-15 — `ITS_Review_Queue` Workstream picklist includes every live
+  workstream** (incl. `progress_reports`, `po_materials`).
+  Verify: read the column's picklist options via
+  `python -c "…get_columns…"` or the Smartsheet UI column editor — options ⊇
+  the live workstream set; `shared/picklist_validation.REGISTRY` parity CI is
+  green on main.
 
-1. **Box auth identity** — currently `seths@evergreenmirror.com` (Keychain
-   `ITS_BOX_*`); flips to the real Evergreen Box identity. See
-   `shared/box_client.py` (refresh-token rotation invariant) and
-   `scripts/setup_box_oauth.py`.
-2. **Intake mailbox(es)** — any `evergreenmirror.com` safety-intake mailbox
-   addresses flip to production. See `safety_reports/weekly_send.py`
-   `DEFAULT_FROM_MAILBOX` (`safety@evergreenmirror.com`) and the
-   `safety_reports.weekly_send.from_mailbox` ITS_Config row.
-3. **Resend sender** — `shared/resend_client.py` `DEFAULT_FROM`
-   (`onboarding@resend.dev` sandbox sender) → operator's verified Resend
-   domain.
-4. **Any other `evergreenmirror.com` reference** — sweep both code and
-   ITS_Config:
+### Box
 
-   ```bash
-   grep -rn "evergreenmirror" --include="*.py" .
-   # plus an ITS_Config sweep for the domain in any Value cell.
-   ```
+- [ ] **CL-16 — dedicated production Box identity.** Box OAuth re-run on the
+  production host as `its@evergreenrenewables.com` (single-host rule — see
+  `host_migration_runbook.md` Hazard 2; sealed mirror-secret backup FIRST per
+  `production_rollback.md`).
+  Verify: `python -c "from shared import box_client; print(box_client.get_client().user().get().login)"`
+  → `its@evergreenrenewables.com`.
+- [ ] **CL-17 — production folder roots + routing reseeded.** `BOX_PROJECT_FOLDERS`
+  overrides / `ITS_Project_Routing` rows / `progress_reports.box.portal_root_folder_id`
+  point at production folder IDs.
+  Verify: a dry read of each configured root resolves
+  (`box_client` `get_folder` per configured id — no 404).
 
-5. **Daniel's role transition** — Daniel (`daniels@`) is the operator's
-   Evergreen contact and the **future maintainer** of this system; at/after
-   cutover he transitions from validation-approver to system steward. Note
-   for handover planning, not a code change.
+### Cloudflare Worker / D1 / WAF
 
-## Validation — confirm the swap took
+- [ ] **CL-18 — remote D1 schema current.**
+  Verify: `python -m scripts.verify_cutover --only d1-migrations` → PASS
+  (runs `wrangler d1 migrations list its-safety-portal-db --remote`; one
+  retry on transient 7403). (VC-08)
+- [ ] **CL-19 — D1 production hygiene: no seed/test rows.** Schema-only on
+  production; seed migrations skipped or their rows deleted.
+  Verify (read-only):
+  `npx wrangler d1 execute its-safety-portal-db --remote --command "SELECT username, disabled FROM users"`
+  lists ONLY real accounts (no `test.pm`);
+  `… --command "SELECT COUNT(*) c FROM submissions"` → 0 or only real rows.
+- [ ] **CL-20 — real PM accounts provisioned** via
+  `safety_reports.portal_admin add-user` (Mac CLI), one per field PM.
+  Verify: the CL-19 users query lists exactly the expected PM set, all
+  `disabled=0`, and one PM login succeeds on the production domain.
+- [ ] **CL-21 — Workers Paid plan confirmed** (bcryptjs cost-10 login exceeds
+  the Free plan's 10 ms CPU cap → Error 1102). If Paid is unavailable, the
+  PBKDF2 swap must have landed BEFORE account provisioning.
+  Verify: a real login on the production domain returns 200 (no 1102), and
+  the Cloudflare dashboard shows the Worker on Paid. Mechanical probe:
+  `curl -s -o /dev/null -w "%{http_code}" -X POST https://<domain>/api/login -d '<real-creds-json>' -H 'content-type: application/json'` → `200`.
+- [ ] **CL-22 — WAF rate-limit on `/api/login`** (~5 req/10s/IP) + blanket
+  `/api/*` rule staged.
+  Verify: 12 rapid bogus-credential POSTs to `/api/login` from one IP → the
+  tail requests return `429` (observe, then stop; do not lock a real
+  account — bogus usernames only).
+- [ ] **CL-23 — branch protection intact on the deploy path:** `main`
+  requires `test` + `portal` + `secrets`.
+  Verify: `gh api repos/SolutionSmith-debug/its/branches/main/protection --jq
+  '.required_status_checks.contexts'` lists all three.
 
-After re-sharing the production workspace (item 1):
+### Workstream enables — safest-first, send paths LAST
 
-1. **Fail-closed smoke (per `prompts/scaffold/manual-smoke.md`).** On the
-   production WSR sheet, create a row approved by one of the seven production
-   approvers (a workspace member) → confirm `weekly_send_poll` dispatches it.
-   Create one approved by an account NOT shared on the workspace → confirm
-   the send is **blocked** and a forensic `approval_unverified` event is
-   recorded in ITS_Errors. This proves the gate end-to-end against
-   production identities.
-2. **No sandbox residue.** Re-run the `grep -rn "evergreenmirror"` sweep
-   above and confirm the only remaining hits are intentional (e.g. this
-   checklist, historical session logs) — zero in live config/runtime paths.
-3. **Each approver resolves.** Spot-check that each of the seven emails is a
-   real, active Smartsheet user in the production workspace.
+Order: intake → mirrors/trackers → compile → **send paths last**.
 
-### Cutover item 2 — Safety Portal production D1 hygiene (owned by the Portal PR)
+- [ ] **CL-24 — daemons healthy end-to-end on production config.**
+  Verify: `python -m scripts.verify_cutover --only daemon-health` → PASS
+  (every Enabled ITS_Daemon_Health row fresh < 2× interval). (VC-04)
+- [ ] **CL-25 — review queue reachable** (triage surface live before any
+  send enables).
+  Verify: `python -m scripts.verify_cutover --only review-queue` → PASS. (VC-05)
+- [ ] **CL-26 — alerting legs shape-valid** (Sentry DSN + Resend key).
+  Verify: `python -m scripts.verify_cutover --only alerting` → PASS. (VC-06)
+- [ ] **CL-27 — UptimeRobot heartbeat configured** (`system.heartbeat_url`).
+  Verify: `python -m scripts.verify_cutover --only heartbeat-url` → PASS;
+  monitor green in the UptimeRobot dashboard. (VC-09)
+- [ ] **CL-28 — fail-closed send smoke, per send-bearing workstream (safety,
+  progress; PO when live).** On the production review sheet: one row approved
+  by a workspace member → `*_send_poll` DISPATCHES it; one row approved by a
+  NON-member account → send **blocked** and a forensic `approval_unverified`
+  event lands in ITS_Errors.
+  Verify: the two rows' `Send Status` cells (SENT vs still PENDING/HELD) +
+  the ITS_Errors row exist. This proves F22 against production identities —
+  run it BEFORE real recipients are wired live.
+- [ ] **CL-29 — real-recipient wiring (Teala-coordinated) recorded.**
+  `ITS_Active_Jobs` safety-reports contact + CC columns (and the progress /
+  PO equivalents) carry the production recipients.
+  Verify: read the contact cells for every Active job — zero
+  `evergreenmirror.com`, zero blanks on active rows (a blank TO = HELD, never
+  silent, but should be zero at cutover).
 
-The sandbox D1 (`its-safety-portal-db`) carries **seed/test rows** that must NOT cross into production:
+### Final gate + Day-7
 
-- The **seed-data migrations** (sample jobs + the `test.pm` / sample `users`) are sandbox-only. On the
-  **production** D1, apply ONLY the schema migrations — **skip the seed migrations**, or immediately
-  `DELETE` the seeded `users` (especially `test.pm`) and any sample `jobs` / `submissions` rows. A
-  stray ENABLED `test.pm` is a live credential on the production portal (and login is now gated on
-  `disabled` — PR-4 — so a disabled stub is safe, but deletion is cleaner).
-- Verify post-cutover: `SELECT username, disabled FROM users` lists ONLY real field-PM accounts;
-  `SELECT COUNT(*) FROM submissions` is 0 (or only real submissions).
+- [ ] **CL-30 — THE GATE:** `python -m scripts.verify_cutover` (full run, no
+  flags) exits **0** on the production host. Paste the output into the
+  cutover session log verbatim. (VC-01…VC-09)
+- [ ] **CL-31 — rollback assets in place BEFORE declaring done:** sealed
+  mirror-secret backup exists (see `production_rollback.md` — made BEFORE any
+  secret was overwritten); mirror Worker still deployed; rollback doc printed
+  for the on-site binder.
+  Verify: `curl -sI https://safety.evergreenmirror.com/ | head -1` → 200 (the
+  mirror rollback target is alive).
+- [ ] **CL-32 — Day-7 routing gate armed.** Alerts (Resend/Sentry/UptimeRobot)
+  stay routed to Seth beyond Day 7 until the Tier-2 clearance milestone
+  (handover v10 amendment, D17).
+  Verify: alert-destination fields in Resend templates / Sentry alert rules /
+  UptimeRobot contacts list Seth's addresses; a dated tech-debt or session-log
+  entry names the Day-7 review date.
+- [ ] **CL-33 — Day-7 review executed (T+7):** zero unexplained CRITICALs,
+  Check-C markers continuous, dedupe summaries reviewed; only THEN disable
+  mirror portal users and (optionally) tear the mirror Worker down per
+  `production_rollback.md` §"Mirror decommission".
+  Verify: session-log entry `docs/session_logs/` dated T+7 with the three
+  observations.
 
-### Cutover item 3 — Worker production guards (owned by the Portal PR)
-
-- **Branch protection** re-verified on the production deploy path: `main` requires `test` + `portal` +
-  `secrets` (the publish daemon merges on all-green — see Gate-0, set 2026-06-10).
-- **Cloudflare rate-limiting / WAF** on the production custom domain (the sandbox runs open) — at a
-  minimum a `/api/login` rate-limit, since that endpoint is unauthenticated and runs bcrypt cost-10.
-- The production Worker runs on the **Paid plan** (a cost-10 bcrypt compare can exceed the FREE plan's
-  10 ms CPU cap → Error 1102 — see `safety_portal/README.md`).
-
-## Daemon (re)install — interval substitution (§43 note)
+## Daemon (re)install — interval substitution (§43 note, carried from v1)
 
 A cutover that (re)installs the launchd daemons uses
 `scripts/launchd/install.sh load <plist> [interval]`. For the **interval**
-daemons (`org.solutionsmith.its.weekly-send`, `…portal-poll`, `…compile-now-poll`) the
-installer substitutes `__POLL_INTERVAL_SECONDS__` in `<integer>StartInterval</integer>`
-from (priority): the optional `[interval]` arg → the daemon's ITS_Config
-poll-interval row (`safety_reports.weekly_send` / `safety_reports.portal_poll` /
-`safety_reports.compile_now_poll` `.poll_interval_seconds`) → a per-daemon default
-(900 / 60 / 90). If the token /
-Smartsheet isn't ready yet at cutover time the read falls back to the default (a
-`note:` line on stderr — harmless). After each load, confirm with
-`install.sh status` and `plutil -lint` the installed copy under
-`~/Library/LaunchAgents/`.
+daemons (`weekly-send`, `portal-poll`, `compile-now-poll`, `progress-send`,
+`fieldops-sync`) the installer substitutes `__POLL_INTERVAL_SECONDS__` from
+(priority): the optional `[interval]` arg → the daemon's ITS_Config
+poll-interval row → a per-daemon default (900 / 60 / 90 / 900 / 90). If the
+token / Smartsheet isn't ready at cutover time the read falls back to the
+default (a `note:` line on stderr — harmless). After each load, confirm with
+`install.sh status` and `plutil -lint` on the installed copy.
 
-**Successor-Operator boundary (Op Stds §43/§44):** running the installer + reading
-a config row is a **low-capability-class** action. But if `install.sh load` fails
-`plutil -lint` with a surviving `__…__` placeholder, **escalate to Seth** — a
-plist or installer change is a **code change** (high-capability-class). (This
-exact gap — install.sh not substituting `__POLL_INTERVAL_SECONDS__` — was the
-2026-06-02 fix; see `docs/tech_debt.md`.)
+**Successor-Operator boundary (Op Stds §43/§44):** running the installer +
+reading a config row is low-capability-class. If `install.sh load` fails
+`plutil -lint` or a `__…__` placeholder survives, **escalate to Seth** — a
+plist or installer change is a code change (high-class).
+
+## Validation
+
+The cutover is done when CL-01 … CL-32 are all checked, CL-30's full
+`verify_cutover` output (exit 0) is pasted in the cutover session log, and
+CL-33 is scheduled with a named date. Anything less is §52
+narrated-not-enforced — not done.
 
 ## Owner
 
-`@solutionsmith`. This checklist is appended to as future workstreams add
-cutover-sensitive config; each addition names the PR that owns the swap.
+`@solutionsmith`. Future workstreams append items here (with a `CL-NN` id and
+a mechanical verify) in the PR that owns the new cutover-sensitive config;
+machine-checkable items also enroll in `scripts/verify_cutover.py` in the
+same PR.
