@@ -13,7 +13,7 @@
           "file": "standard_17_v1.md",
           "sha256": "34a0fc239788683ef455031642dafe9504466a515060b691966c438467b1fac1",
           "tokens": ["purchaser_entity", "seller_name"],
-          "legal_review": "pending"
+          "legal_review": "cleared"
         }
       }
     },
@@ -28,7 +28,7 @@
           "file": "chint_vendor_v1.md",
           "sha256": "f6c148bb84d82a4d198a61c25ecfff5e5e234a08ef918fc38361957b9dea9695",
           "tokens": [],
-          "legal_review": "pending"
+          "legal_review": "cleared"
         }
       }
     },

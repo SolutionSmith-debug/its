@@ -16,6 +16,7 @@ Pure filesystem tests — no Smartsheet, no network.
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -68,6 +69,38 @@ def test_current_version_is_a_declared_version():
         if profile["kind"] != "library":
             continue
         assert str(profile["current_version"]) in profile["versions"], profile_id
+
+
+def test_every_current_version_is_legally_cleared():
+    """Layer B invariant: every library profile's CURRENT version must be legal_review 'cleared'.
+    A manifest that advances current_version onto a pending/rejected version would fence EVERY PO on
+    that profile (Layer A) — this pins the manifest so that mis-bump fails CI, not live rendering."""
+    for profile_id, profile in terms.list_profiles().items():
+        if profile["kind"] != "library":
+            continue
+        cur = str(profile["current_version"])
+        entry = profile["versions"][cur]
+        assert entry.get("legal_review") == "cleared", f"{profile_id} current v{cur} not cleared"
+
+
+def test_pending_version_refuses_to_load(tmp_path, monkeypatch):
+    """Layer A prove-the-control-bites: a version whose legal_review != 'cleared' must NOT render —
+    it raises (fencing that PO) rather than silently emitting un-reviewed contract language. Mirrors
+    the hash-mismatch tamper test, on a copied tree so the live manifest is untouched."""
+    src = terms.TERMS_DIR
+    work = tmp_path / "terms"
+    work.mkdir()
+    for p in src.iterdir():
+        (work / p.name).write_bytes(p.read_bytes())
+    manifest = json.loads((work / "manifest.json").read_text())
+    manifest["profiles"]["standard_17"]["versions"]["1"]["legal_review"] = "pending"
+    (work / "manifest.json").write_text(json.dumps(manifest))
+    monkeypatch.setattr(terms, "TERMS_DIR", work)
+    with pytest.raises(terms.TermsError, match="NOT cleared"):
+        terms.load_terms_text("standard_17")
+    # required_tokens shares the same _version_entry choke point → also fenced.
+    with pytest.raises(terms.TermsError, match="NOT cleared"):
+        terms.required_tokens("standard_17")
 
 
 def test_hash_mismatch_refuses_to_load(tmp_path, monkeypatch):

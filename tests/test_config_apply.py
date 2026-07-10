@@ -308,6 +308,55 @@ def test_terms_add_version_rejects_empty_text(root: Path):
         )
 
 
+# ── terms / set_current (the legal-activation make-current op) ─────────────────────────
+
+
+def test_terms_set_current_clears_and_repoints(root: Path):
+    # mint a new version (pending), then make it current — clears its legal_review + bumps the pointer.
+    config_apply.apply_config(
+        _req("terms", "add_version", {"profile_id": "standard_17", "text": "New clause for {{purchaser_entity}}."},
+             target_version="standard_17_v2"),
+        root,
+    )
+    note = config_apply.apply_config(
+        _req("terms", "set_current", {"profile_id": "standard_17"}, target_version="standard_17_v2"),
+        root,
+    )
+    prof = _read(root, "terms", "manifest.json")["profiles"]["standard_17"]
+    assert prof["current_version"] == "standard_17_v2"
+    assert prof["versions"]["standard_17_v2"]["legal_review"] == "cleared"
+    # The OLD version is untouched (immutable) — only the target's legal_review + current_version move.
+    assert prof["versions"]["1"]["legal_review"] == "pending"
+    assert prof["versions"]["standard_17_v2"]["sha256"]  # immutable fields preserved
+    assert "legal_review cleared" in note
+
+
+def test_terms_set_current_rejects_unknown_version(root: Path):
+    with pytest.raises(ConfigApplyError, match="does not exist"):
+        config_apply.apply_config(
+            _req("terms", "set_current", {"profile_id": "standard_17"}, target_version="nope"), root
+        )
+
+
+def test_terms_set_current_rejects_unknown_profile(root: Path):
+    with pytest.raises(ConfigApplyError, match="unknown profile"):
+        config_apply.apply_config(
+            _req("terms", "set_current", {"profile_id": "field_21"}, target_version="1"), root
+        )
+
+
+def test_terms_set_current_rejects_attach_profile(root: Path):
+    with pytest.raises(ConfigApplyError, match="not a library profile"):
+        config_apply.apply_config(
+            _req("terms", "set_current", {"profile_id": "negotiated_gtc"}, target_version="1"), root
+        )
+
+
+def test_terms_set_current_requires_target_version(root: Path):
+    with pytest.raises(ConfigApplyError, match="target_version is required"):
+        config_apply.apply_config(_req("terms", "set_current", {"profile_id": "standard_17"}), root)
+
+
 # ── dispatch / payload guards ───────────────────────────────────────────────────────
 
 

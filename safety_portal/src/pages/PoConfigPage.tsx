@@ -101,6 +101,7 @@ function FieldTextarea({
 type PurchaserForm = { entity: string; address_lines: string; phone: string; to: string; cc: string };
 type TaxRow = { state: string; name: string; rate: string }; // rate entered as a PERCENT string
 type TermsForm = { profile_id: string; target_version: string; text: string };
+type MakeCurrentForm = { profile_id: string; target_version: string; confirmed: boolean };
 
 export function PoConfigPage({ onBack }: { onBack: () => void }) {
   const { user } = useAuth();
@@ -124,6 +125,10 @@ export function PoConfigPage({ onBack }: { onBack: () => void }) {
   const [taxRows, setTaxRows] = useState<TaxRow[]>([]);
   const [termsOpen, setTermsOpen] = useState(false);
   const [tf, setTf] = useState<TermsForm>({ profile_id: "", target_version: "", text: "" });
+  const [makeCurrentOpen, setMakeCurrentOpen] = useState(false);
+  const [mcf, setMcf] = useState<MakeCurrentForm>({ profile_id: "", target_version: "", confirmed: false });
+  const [mcVersions, setMcVersions] = useState<api.TermsVersionRow[]>([]);
+  const [mcCurrent, setMcCurrent] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -317,6 +322,70 @@ export function PoConfigPage({ onBack }: { onBack: () => void }) {
       setMsg({
         ok: true,
         text: "Queued — the new terms version will be minted with legal_review: pending. Track it below.",
+      });
+      setRefreshSignal((n) => n + 1);
+    } catch (err) {
+      setMsg({ ok: false, text: err instanceof Error ? err.message : "Submit failed." });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // ── Make-current (the legal-activation op: clears legal_review + repoints current_version) ─────
+  async function loadVersions(profileId: string) {
+    try {
+      const v = await api.fetchTermsVersions(profileId);
+      setMcVersions(v.versions);
+      setMcCurrent(v.current_version);
+      // Default the pick to the first NON-current version (the one you'd typically activate).
+      const firstOther = v.versions.find((x) => x.version !== v.current_version)?.version;
+      setMcf({ profile_id: profileId, target_version: firstOther ?? v.current_version ?? "", confirmed: false });
+    } catch {
+      setMcVersions([]);
+      setMcCurrent(null);
+      setMcf({ profile_id: profileId, target_version: "", confirmed: false });
+    }
+  }
+
+  function openMakeCurrent() {
+    const first = libraryTerms[0]?.id ?? "";
+    setMcf({ profile_id: first, target_version: "", confirmed: false });
+    setMcVersions([]);
+    setMcCurrent(null);
+    setMsg(null);
+    setMakeCurrentOpen(true);
+    if (first) void loadVersions(first);
+  }
+
+  async function submitMakeCurrent(e: FormEvent) {
+    e.preventDefault();
+    if (busy) return;
+    if (!mcf.profile_id) {
+      setMsg({ ok: false, text: "Pick a terms profile." });
+      return;
+    }
+    if (!mcf.target_version) {
+      setMsg({ ok: false, text: "Pick a version to make current." });
+      return;
+    }
+    if (!mcf.confirmed) {
+      setMsg({ ok: false, text: "Confirm you have reviewed this version's legal text before making it live." });
+      return;
+    }
+    setBusy(true);
+    setMsg(null);
+    try {
+      await api.submitConfigEdit({
+        workstream: WORKSTREAM,
+        artifact_key: "terms",
+        op: "set_current",
+        payload: { profile_id: mcf.profile_id },
+        target_version: mcf.target_version,
+      });
+      setMakeCurrentOpen(false);
+      setMsg({
+        ok: true,
+        text: "Queued — the version will be cleared and made current after review + deploy. Track it below.",
       });
       setRefreshSignal((n) => n + 1);
     } catch (err) {
@@ -579,10 +648,72 @@ export function PoConfigPage({ onBack }: { onBack: () => void }) {
                     </button>
                   </div>
                 </form>
+              ) : makeCurrentOpen ? (
+                <form className="accounts__editor" onSubmit={submitMakeCurrent}>
+                  <p className="po-config__legal-note" role="note">
+                    <strong>Legal activation.</strong> Making a version current CLEARS its legal review
+                    and points the profile&rsquo;s <code>current_version</code> at it, so new POs render
+                    it. This is the legally-significant step — confirm you have reviewed the exact clause
+                    text before making it live.
+                  </p>
+                  <label className="field">
+                    <span className="field__label">Profile</span>
+                    <select
+                      className="field__input"
+                      aria-label="Make-current profile"
+                      value={mcf.profile_id}
+                      onChange={(e) => void loadVersions(e.target.value)}
+                    >
+                      {libraryTerms.map((t) => (
+                        <option key={t.id} value={t.id}>
+                          {t.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="field">
+                    <span className="field__label">Version to make current</span>
+                    <select
+                      className="field__input"
+                      aria-label="Version to make current"
+                      value={mcf.target_version}
+                      onChange={(e) => setMcf({ ...mcf, target_version: e.target.value })}
+                    >
+                      {mcVersions.map((v) => (
+                        <option key={v.version} value={v.version}>
+                          {v.version} — {v.legal_review}
+                          {v.version === mcCurrent ? " (current)" : ""}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="field">
+                    <span className="field__label">
+                      <input
+                        type="checkbox"
+                        aria-label="I have reviewed this version's legal text"
+                        checked={mcf.confirmed}
+                        onChange={(e) => setMcf({ ...mcf, confirmed: e.target.checked })}
+                      />{" "}
+                      I have reviewed this version&rsquo;s legal text — make it live.
+                    </span>
+                  </label>
+                  <div className="jha__actions">
+                    <button className="btn btn--primary" type="submit" disabled={busy || !mcf.confirmed}>
+                      {busy ? "Working…" : "Make it live"}
+                    </button>
+                    <button className="btn btn--secondary" type="button" onClick={() => setMakeCurrentOpen(false)}>
+                      Cancel
+                    </button>
+                  </div>
+                </form>
               ) : (
                 <div className="jha__actions">
                   <button className="btn btn--edit" type="button" onClick={openTerms}>
                     Add a terms version
+                  </button>
+                  <button className="btn btn--edit" type="button" onClick={openMakeCurrent}>
+                    Make a version current
                   </button>
                 </div>
               ))}
@@ -638,6 +769,7 @@ const CONFIG_TERMINAL = new Set<api.ConfigStatus>(["archived", "failed"]);
 const CONFIG_OP_LABEL: Record<api.ConfigOp, string> = {
   edit: "Edit",
   add_version: "Add version",
+  set_current: "Make current",
 };
 
 function fmtTime(t: number): string {

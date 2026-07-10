@@ -17,6 +17,7 @@ vi.mock("../../lib/po", async () => {
     fetchPoConfig: vi.fn(),
     fetchTerms: vi.fn(),
     fetchTermsText: vi.fn(),
+    fetchTermsVersions: vi.fn(),
     submitConfigEdit: vi.fn(),
     fetchConfigStatus: vi.fn(),
   };
@@ -80,6 +81,14 @@ beforeEach(() => {
     profile_id: "standard_17",
     version: "v1",
     text: "1. The current clause text.",
+  });
+  vi.mocked(api.fetchTermsVersions).mockResolvedValue({
+    profile_id: "standard_17",
+    current_version: "1",
+    versions: [
+      { version: "1", legal_review: "cleared" },
+      { version: "standard_17_v2", legal_review: "pending" },
+    ],
   });
   vi.mocked(api.fetchConfigStatus).mockResolvedValue([]);
   vi.mocked(api.submitConfigEdit).mockResolvedValue({ ok: true, id: 1, status: "queued" });
@@ -212,6 +221,27 @@ describe("PoConfigPage — editors (send-free enqueue)", () => {
       ),
     );
     expect(api.fetchTermsText).toHaveBeenCalledWith("standard_17");
+  });
+
+  it("make-current: submits op:set_current for the chosen version, gated on the confirm checkbox", async () => {
+    const { getByText, getByLabelText } = render(<PoConfigPage onBack={vi.fn()} />);
+    await waitFor(() => expect(getByText("Standard 17-clause")).toBeTruthy());
+    fireEvent.click(getByText("Make a version current"));
+    // versions load; the picker pre-selects the first non-current version (standard_17_v2).
+    await waitFor(() => expect(getByLabelText("Version to make current")).toBeTruthy());
+    // The submit is DISABLED until the operator confirms review — explicit, not a silent toggle.
+    expect((getByText("Make it live") as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(getByLabelText(/I have reviewed this version/i));
+    fireEvent.click(getByText("Make it live"));
+    await waitFor(() =>
+      expect(api.submitConfigEdit).toHaveBeenCalledWith({
+        workstream: "po_materials",
+        artifact_key: "terms",
+        op: "set_current",
+        payload: { profile_id: "standard_17" },
+        target_version: "standard_17_v2",
+      }),
+    );
   });
 
   it("surfaces a Worker rejection verbatim (never silent) — config_edit_in_progress", async () => {

@@ -66,7 +66,7 @@ const CONFIG_REGISTRY: Record<string, WorkstreamSpec> = {
   },
 };
 
-const CONFIG_OPS = new Set(["edit", "add_version"]);
+const CONFIG_OPS = new Set(["edit", "add_version", "set_current"]);
 const TARGET_VERSION_RE = /^[a-z0-9_]+$/;
 const MAX_TARGET_VERSION = 64;
 const MAX_PAYLOAD_BYTES = 100_000; // 100 KB — generous ceiling on a config value / terms version
@@ -148,15 +148,16 @@ export function registerConfigRoutes(app: FieldopsApp, gates: ConfigGates): void
 
     const op = typeof body.op === "string" ? body.op : "";
     if (!CONFIG_OPS.has(op)) return c.json({ error: "invalid_op" }, 400);
-    // The op must match the artifact KIND: a versioned terms artifact only takes `add_version`
-    // (mint a new sha-pinned version); a json artifact only takes `edit` (replace the value). A
-    // mismatch is a structurally-nonsensical request the queue rejects here, not the actuator later.
-    if (artifact.kind === "terms" ? op !== "add_version" : op !== "edit") {
+    // The op must match the artifact KIND: a versioned terms artifact takes `add_version` (mint a new
+    // sha-pinned version) or `set_current` (make a version live + clear its legal review); a json
+    // artifact only takes `edit` (replace the value). A mismatch is a structurally-nonsensical request
+    // the queue rejects here, not the actuator later.
+    if (artifact.kind === "terms" ? op !== "add_version" && op !== "set_current" : op !== "edit") {
       return c.json({ error: "invalid_op" }, 400);
     }
 
     let targetVersion: string | null = null;
-    if (op === "add_version") {
+    if (op === "add_version" || op === "set_current") {
       const tv = typeof body.target_version === "string" ? body.target_version : "";
       if (!TARGET_VERSION_RE.test(tv) || tv.length > MAX_TARGET_VERSION) {
         return c.json({ error: "invalid_target_version" }, 400);

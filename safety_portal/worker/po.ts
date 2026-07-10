@@ -612,6 +612,31 @@ export function registerPoRoutes(app: FieldopsApp, gates: PoGates): void {
     },
   );
 
+  // GET /api/po/terms/:profile_id/versions — the version list for a library profile, so the config
+  // editor's "make current" picker shows every version + its legal_review status + which is current.
+  // CURATED: version id + legal_review only — file names / sha256 stay off the wire (renderer
+  // implementation detail, like the sibling /api/po/terms). cap.po.manage, read-only, no audit.
+  app.get(
+    "/api/po/terms/:profile_id/versions",
+    gates.requireSession,
+    gates.requireCapability(CAP_PO),
+    (c) => {
+      const profileId = c.req.param("profile_id");
+      if (!Object.prototype.hasOwnProperty.call(TERMS_PROFILES, profileId)) {
+        return c.json({ error: "unknown_profile" }, 404);
+      }
+      const p = TERMS_PROFILES[profileId];
+      if (p.kind !== "library" || !p.versions) {
+        return c.json({ error: "no_versions" }, 404);
+      }
+      const versions = Object.entries(p.versions).map(([version, entry]) => ({
+        version,
+        legal_review: entry.legal_review,
+      }));
+      return c.json({ profile_id: profileId, current_version: p.current_version ?? null, versions });
+    },
+  );
+
   // GET /api/po/config — the versioned purchaser identity (D5) + tax table (D8)
   // for the builder UI (entity display, invoice-routing cc chips, tax-state badge).
   // Explicit key picks — the JSON files carry maintainer comment fields that don't

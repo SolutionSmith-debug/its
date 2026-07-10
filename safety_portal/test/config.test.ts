@@ -112,6 +112,46 @@ describe("POST /api/config/requests — enqueue", () => {
     expect(row).toMatchObject({ op: "add_version", target_version: "v2_2026" });
   });
 
+  it("enqueues a terms set_current with a valid target_version (201) + persists it", async () => {
+    await provision("admin.one", "admin");
+    const cookie = await login("admin.one");
+    const res = await post(cookie, "/api/config/requests", {
+      workstream: "po_materials",
+      artifact_key: "terms",
+      op: "set_current",
+      target_version: "standard_17_v2",
+      payload: { profile_id: "standard_17" },
+    });
+    expect(res.status, await res.clone().text()).toBe(201);
+    const row = await env.DB.prepare("SELECT op, target_version FROM config_requests").first();
+    expect(row).toMatchObject({ op: "set_current", target_version: "standard_17_v2" });
+  });
+
+  it("rejects a terms set_current with no target_version (400 invalid_target_version)", async () => {
+    await provision("admin.one", "admin");
+    const cookie = await login("admin.one");
+    const res = await post(cookie, "/api/config/requests", {
+      workstream: "po_materials",
+      artifact_key: "terms",
+      op: "set_current",
+      payload: { profile_id: "standard_17" },
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: "invalid_target_version" });
+  });
+
+  it("rejects set_current on a json artifact (kind mismatch → 400 invalid_op)", async () => {
+    await provision("admin.one", "admin");
+    const cookie = await login("admin.one");
+    const res = await post(
+      cookie,
+      "/api/config/requests",
+      editBody({ op: "set_current", target_version: "purchaser_v2" }),
+    );
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: "invalid_op" });
+  });
+
   it("writes exactly one audit_log row atomically with the insert (W4)", async () => {
     await provision("admin.one", "admin");
     const cookie = await login("admin.one");

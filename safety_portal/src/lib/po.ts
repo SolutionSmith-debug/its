@@ -360,6 +360,21 @@ export async function fetchTermsText(profileId: string): Promise<TermsText> {
   return getJson<TermsText>(`/api/po/terms/${encodeURIComponent(profileId)}/text`);
 }
 
+/** GET /api/po/terms/:id/versions — the version list (id + legal_review) for the make-current picker;
+ *  file names / sha256 stay off the wire. */
+export interface TermsVersionRow {
+  version: string;
+  legal_review: string;
+}
+export interface TermsVersions {
+  profile_id: string;
+  current_version: string | null;
+  versions: TermsVersionRow[];
+}
+export async function fetchTermsVersions(profileId: string): Promise<TermsVersions> {
+  return getJson<TermsVersions>(`/api/po/terms/${encodeURIComponent(profileId)}/versions`);
+}
+
 export async function fetchPoConfig(): Promise<PoConfig> {
   return getJson<PoConfig>("/api/po/config");
 }
@@ -373,9 +388,11 @@ export async function fetchPoConfig(): Promise<PoConfig> {
 // admin watches each edit advance queued→validated→tested→live (or fail, never silently). Both routes
 // are re-gated per-workstream server-side against the resolved artifact's capability (Invariant 2).
 
-/** The two config ops: `edit` replaces a JSON artifact's value (purchaser / tax); `add_version`
- *  mints a new sha-pinned terms version (ships legal_review: pending — the deliberate legal gate). */
-export type ConfigOp = "edit" | "add_version";
+/** The config ops: `edit` replaces a JSON artifact's value (purchaser / tax); `add_version` mints a
+ *  new sha-pinned terms version (ships legal_review: pending — the deliberate legal gate);
+ *  `set_current` makes an existing terms version live (clears its legal_review + repoints
+ *  current_version) — the operator's confirmable legal-activation action. */
+export type ConfigOp = "edit" | "add_version" | "set_current";
 
 /** POST /api/config/requests body (worker/config.ts). `payload` is the full artifact value;
  *  `target_version` rides ONLY an add_version (a lowercase [a-z0-9_] slug, e.g. standard_17_v2). */
