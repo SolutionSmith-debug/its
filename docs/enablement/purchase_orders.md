@@ -143,6 +143,14 @@ past POs are unaffected.
 - **Tax** (decision D8): a ship-to-state table (Illinois 9%, Oregon 0%) in exact integer
   math. `exempt` / `included` / `override` are per-PO toggles for the cases the table doesn't
   cover.
+- **Seeing the current config** — the **PO Configuration** card (Administration, cap.po.manage)
+  shows the live purchaser identity, the full tax table (rates as %), and the terms profiles that
+  print on every PO. It is **read-only**: editing these values is an operator action with a legal
+  review on the terms text, not a portal edit (Op Stds §50; the edit/actuator design is ADR-0002).
+  > **§43 (Successor-Operator):** if the PO Configuration page won't load, it's a display-only
+  > failure — reload / re-check network + session; there is no daemon to restart, config to toggle,
+  > or lock to clear. If it persists after a reload, escalate to Seth. (Nothing on this page can
+  > change a PO or a config value — it only reads.)
 
 ## "Held" states — what they mean and who fixes them
 

@@ -14,7 +14,8 @@ export type HomeNav =
   | "fieldops-personnel"
   | "materials-catalog"
   | "po-builder"
-  | "po-vendors";
+  | "po-vendors"
+  | "po-config";
 
 /** R7 — Home is grouped into three headed sections (it had grown into a 10-card flat wall under
  *  a single "Daily forms" heading, A4). Section membership is presentation only: every card keeps
@@ -126,6 +127,14 @@ const HOME_CARDS: HomeCard[] = [
     badge: "Admin",
     title: "Vendors",
     desc: "The vendor directory behind purchase orders — contacts, regions, supply categories, and terms.",
+    section: "admin",
+  },
+  {
+    key: "po-config",
+    cap: "cap.po.manage",
+    badge: "Admin",
+    title: "PO Configuration",
+    desc: "Read-only view of the purchaser identity, ship-to tax table, and terms profiles that print on every PO.",
     section: "admin",
   },
   {

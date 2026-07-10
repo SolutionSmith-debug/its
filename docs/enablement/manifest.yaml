@@ -68,4 +68,4 @@ docs:
     title: "Purchase Orders in the ITS Portal"
     version: v1
     source: docs/enablement/purchase_orders.md
-    sha256: 7ffd5c2a6340b2569cab186f4118d45bd6b823448bc7c82e29dbd0187a3a247a
+    sha256: f714ecb98bd52eca8f57794e935a53e436ac0c823651ea616f5124e760b55e56
