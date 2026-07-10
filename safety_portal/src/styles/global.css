@@ -1912,3 +1912,39 @@ h3,
   margin: var(--space-2) 0;
   line-height: 1.5;
 }
+/* ── PO Configuration EDITOR (slice 3) — a few edit-form hooks on top of the read view ── */
+/* Terms legal-review gate callout — a gold-bordered note above the clause-text field. */
+.po-config__legal-note {
+  margin: 0 0 var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-left: 3px solid var(--c-gold);
+  background: #fff8e1;
+  border-radius: 4px;
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+}
+.po-config__legal-note code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.9em;
+}
+/* One editable tax row: state | name | rate% | remove — wraps on a narrow viewport. */
+.po-config__tax-edit-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: flex-end;
+  margin-bottom: var(--space-2);
+}
+.po-config__tax-edit-row .field {
+  margin: 0;
+}
+.po-config__tax-edit-row .field--state {
+  max-width: 6rem;
+}
+.po-config__tax-edit-row .field--rate {
+  max-width: 8rem;
+}
+/* The provisioned-but-empty Subcontracts card reads as visibly inactive. */
+.po-config__placeholder {
+  opacity: 0.6;
+}

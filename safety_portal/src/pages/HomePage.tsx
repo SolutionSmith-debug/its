@@ -134,7 +134,7 @@ const HOME_CARDS: HomeCard[] = [
     cap: "cap.po.manage",
     badge: "Admin",
     title: "PO Configuration",
-    desc: "Read-only view of the purchaser identity, ship-to tax table, and terms profiles that print on every PO.",
+    desc: "Edit the purchaser identity, ship-to tax table, and terms versions that print on every PO — each change is queued for the operator's review.",
     section: "admin",
   },
   {

@@ -353,6 +353,79 @@ export async function fetchPoConfig(): Promise<PoConfig> {
   return getJson<PoConfig>("/api/po/config");
 }
 
+// ── Config EDITOR (§50 send-free enqueue + status monitor, slice 1 routes) ─────────────────────────
+//
+// The browser front of the §50 privileged-code-actuation pipeline. `submitConfigEdit` POSTs a config
+// change to the send-free cloud queue (POST /api/config/requests) — the Worker only VALIDATES +
+// ENQUEUES it in D1; the Mac config daemon is the sole actuator that git-commits + deploys the value.
+// The SPA can only queue, never commit (Invariant 1). `fetchConfigStatus` reads the queue back so the
+// admin watches each edit advance queued→validated→tested→live (or fail, never silently). Both routes
+// are re-gated per-workstream server-side against the resolved artifact's capability (Invariant 2).
+
+/** The two config ops: `edit` replaces a JSON artifact's value (purchaser / tax); `add_version`
+ *  mints a new sha-pinned terms version (ships legal_review: pending — the deliberate legal gate). */
+export type ConfigOp = "edit" | "add_version";
+
+/** POST /api/config/requests body (worker/config.ts). `payload` is the full artifact value;
+ *  `target_version` rides ONLY an add_version (a lowercase [a-z0-9_] slug, e.g. standard_17_v2). */
+export interface ConfigEditBody {
+  workstream: string;
+  artifact_key: string;
+  op: ConfigOp;
+  payload: unknown;
+  target_version?: string;
+}
+
+/** 201 enqueue result — the row lands `queued`; the daemon advances it from there. */
+export interface ConfigEnqueueResult {
+  ok: boolean;
+  id: number | null;
+  status: "queued";
+}
+
+/** The config-request lifecycle (LOCKSTEP with worker CONFIG_STATUSES / migration 0045). `merged`
+ *  is a transient stage between tested and live; `archived` is terminal success; `failed` is terminal
+ *  failure and NEVER silent (carries failed_stage + failure_reason, surfaced verbatim). */
+export type ConfigStatus = "queued" | "validated" | "tested" | "merged" | "live" | "archived" | "failed";
+
+/** One row of GET /api/config/requests/status — scoped server-side to the caller's held workstreams. */
+export interface ConfigRequest {
+  id: number;
+  workstream: string;
+  artifact_key: string;
+  op: ConfigOp;
+  status: ConfigStatus;
+  failed_stage: string | null;
+  failure_reason: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+/** Enqueue a config edit (send-free). Throws ApiError on a non-2xx — the page surfaces `.message`
+ *  (human copy from errorCopy) so a rejected edit is never silent. */
+export async function submitConfigEdit(body: ConfigEditBody): Promise<ConfigEnqueueResult> {
+  return postJson<ConfigEnqueueResult>("/api/config/requests", body);
+}
+
+/** Read the config-request queue back (most-recent first, ≤50, scoped to held workstreams). */
+export async function fetchConfigStatus(): Promise<ConfigRequest[]> {
+  const data = await getJson<{ requests: ConfigRequest[] }>("/api/config/requests/status");
+  return data.requests ?? [];
+}
+
+/** "9.25" (percent, ≤2 dp) → 925 integer basis points; null on anything unparseable or >100%.
+ *  String math, NEVER parseFloat×100 (mirrors parseDollarsToCents / the bpToPct display in reverse):
+ *  1 bp = 0.01%, so a percent with >2 decimals would be a non-integer bp and is rejected as a hint.
+ *  The Worker + config actuator re-validate — this is a client-side convenience, never the boundary. */
+export function pctToBp(input: string): number | null {
+  const t = input.trim().replace(/%$/, "");
+  if (!/^\d+(\.\d{1,2})?$/.test(t)) return null;
+  const [d, f = ""] = t.split(".");
+  const bp = parseInt(d, 10) * 100 + (f ? parseInt(f.padEnd(2, "0"), 10) : 0);
+  if (!Number.isSafeInteger(bp) || bp > 10_000) return null; // cap at 100%
+  return bp;
+}
+
 // ── Material catalog picker (GET /api/po/materials) ─────────────────────────────────────────────
 
 /** One active row from GET /api/po/materials — a thin read of the SAME material_catalog TYPE
