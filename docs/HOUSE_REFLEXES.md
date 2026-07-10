@@ -93,6 +93,18 @@ that. Loaded via `@import` from `CLAUDE.md`'s START-HERE block.
 - **Observable config resolution:** log each resolved setting with its source (`ITS_Config` vs `default`) at
   startup and WARN-loud on a missing declared key. A silent fallback to a hardcoded default hides a real
   misconfig — "never silent" applies to config too. (Forensic class #7; `REQUIRED_CONFIG` pass = issue #336.)
+- **Never pin EDITABLE-config CONTENT in a test — assert shape / round-trip / served-equals-source.** The §50
+  config editor auto-merges purchaser/tax/terms edits on green CI, so a test that hard-pins the live content
+  (an entity string, an invoice email, an absolute `config_version`/`current_version`, an exact `rates_bp`
+  table, or cents-math derived from a live rate) RED-lights the instant the operator edits it and permanently
+  strands the edit PR (`_wait_for_ci` never advances). This is a *self-defeating* test class that has now
+  recurred on two §50 actuators (form-publish catalog counts #222/#228, then the config editor #511). Instead:
+  seed FIXED fixtures at a non-1 sentinel and assert versions RELATIVE (`new == seed + 1`); derive Worker-side
+  expectations by importing the SAME bundled JSON (`po.test.ts` → `../../po_materials/config/*.json`) so math
+  tracks the config; and assert served-config EQUALS the imported source (drift check), never a literal.
+  Reference pattern: `tests/test_config_apply.py` fixed fixtures + `tests/test_po_terms.py` shape +
+  `safety_portal/test/po.test.ts` derive-from-source. (SPA config tests stay MOCKED — keep their fixtures
+  hardcoded, never `importActual` the live config.)
 - **`ITS_Config` reads are workstream-scoped** — `get_setting(key, workstream=…)` matches on the Setting name
   AND the Workstream cell. Footgun: the progress intake gate `progress_reports.intake_enabled` is read under
   `Workstream=safety_reports` (intake's own workstream), not `progress_reports`.

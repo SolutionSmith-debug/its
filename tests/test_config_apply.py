@@ -1,11 +1,18 @@
 """Domain-transform tests for po_materials/config_apply.py — the config actuator's Stage-1
 validate-and-write against live HEAD (§50 config editor, slice 2).
 
-Every write is exercised against a TMP root (a copy of the seeded po_materials/config +
-po_materials/terms), never the live tree. Covers: tax integer-bp validation (incl. the
-float-reject money-path guard + bad state code + parity), purchaser required-fields + email
+Every write is exercised against a TMP root seeded with KNOWN FIXED fixtures (NOT copies of the
+live po_materials/config + terms), never the live tree. Covers: tax integer-bp validation (incl.
+the float-reject money-path guard + bad state code + parity), purchaser required-fields + email
 routing, and the terms add_version immutability contract (new file + sha256 + legal_review
-pending + current_version untouched + duplicate-version reject)."""
+pending + current_version untouched + duplicate-version reject).
+
+GUARD (HOUSE REFLEXES §5 — the config-editor merge-blocker class): the fixtures below are FIXED
+and every version assertion is RELATIVE to the seed (``new == SEED_CONFIG_VERSION + 1``). Do NOT
+re-seed by COPYING the live config files, and do NOT assert an absolute ``config_version`` /
+``current_version``. The §50 config editor auto-merges purchaser/tax/terms edits on green CI, so a
+test coupled to the live file's CURRENT content red-lights the moment the operator edits it and
+strands the edit PR (exactly how PR #511 got stuck). Assert shape / relative diffs only."""
 from __future__ import annotations
 
 import hashlib
@@ -17,21 +24,68 @@ import pytest
 from po_materials import config_apply
 from po_materials.config_apply import ConfigApplyError
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+# A NON-1 sentinel: the transforms bump config_version relative to whatever the file holds, so a
+# fixed non-1 seed proves the assertions are version-agnostic (the copies-live fixture this replaced
+# only passed while the live files happened to sit at version 1 — the root of PR #511's stuck edit).
+SEED_CONFIG_VERSION = 5
+
+_SEED_PURCHASER = {
+    "config_version": SEED_CONFIG_VERSION,
+    "comment": "test fixture — deliberately NOT the live purchaser identity",
+    "entity": "Seed Fixture Co.",
+    "address_lines": ["1 Fixture Way", "Testville, CA 90000"],
+    "phone": "000-000-0000",
+    "invoice_routing": {"to": "seed@fixture.test", "cc": ["seed-cc@fixture.test"]},
+}
+_SEED_TAX = {
+    "config_version": SEED_CONFIG_VERSION,
+    "comment": "test fixture — deliberately NOT the live tax table",
+    "rates_bp": {"CA": 725, "NV": 0},
+    "state_names": {"CA": "California", "NV": "Nevada"},
+}
+# Fixed terms manifest: one library profile (standard_17, one immutable version) + one attach
+# profile (negotiated_gtc). NO field_21 (the unknown-profile test relies on its absence) and NO
+# standard_17_v2 (the add_version tests target it, so it must be absent from the seed — copying the
+# live manifest once it gains standard_17_v2 would raise a spurious 'already exists').
+_SEED_MANIFEST = {
+    "manifest_version": 1,
+    "comment": "test fixture — deliberately NOT the live terms manifest",
+    "profiles": {
+        "standard_17": {
+            "kind": "library",
+            "label": "Seed library profile",
+            "current_version": "1",
+            "versions": {
+                "1": {
+                    "file": "standard_17_v1.md",
+                    "sha256": "0" * 64,
+                    "tokens": ["purchaser_entity", "seller_name"],
+                    "legal_review": "pending",
+                },
+            },
+        },
+        "negotiated_gtc": {
+            "kind": "attach",
+            "label": "Seed attach profile",
+            "render_line": "SUBJECT TO THE NEGOTIATED GTC.",
+        },
+    },
+}
+
+
+def _write_json(path: Path, obj: dict) -> None:
+    path.write_text(json.dumps(obj, indent=2) + "\n", encoding="utf-8")
 
 
 @pytest.fixture
 def root(tmp_path: Path) -> Path:
-    """A throwaway repo root seeded with copies of the live PO config + terms manifest."""
+    """A throwaway repo root seeded with KNOWN FIXED config + terms fixtures (never copies of the
+    live files — see the module GUARD)."""
     (tmp_path / "po_materials" / "config").mkdir(parents=True)
     (tmp_path / "po_materials" / "terms").mkdir(parents=True)
-    for name in ("purchaser.json", "tax.json"):
-        (tmp_path / "po_materials" / "config" / name).write_bytes(
-            (REPO_ROOT / "po_materials" / "config" / name).read_bytes()
-        )
-    (tmp_path / "po_materials" / "terms" / "manifest.json").write_bytes(
-        (REPO_ROOT / "po_materials" / "terms" / "manifest.json").read_bytes()
-    )
+    _write_json(tmp_path / "po_materials" / "config" / "purchaser.json", _SEED_PURCHASER)
+    _write_json(tmp_path / "po_materials" / "config" / "tax.json", _SEED_TAX)
+    _write_json(tmp_path / "po_materials" / "terms" / "manifest.json", _SEED_MANIFEST)
     return tmp_path
 
 
@@ -56,9 +110,9 @@ def test_tax_edit_writes_and_bumps_config_version(root: Path):
     )
     tax = _read(root, "config", "tax.json")
     assert tax["rates_bp"] == {"IL": 950, "OR": 0}
-    assert tax["config_version"] == 2  # bumped from the seeded 1
+    assert tax["config_version"] == SEED_CONFIG_VERSION + 1  # RELATIVE bump, not an absolute 2
     assert "comment" in tax  # comment preserved
-    assert "config_version 2" in note
+    assert f"config_version {SEED_CONFIG_VERSION + 1}" in note
 
 
 def test_tax_edit_rejects_float_rate(root: Path):
@@ -122,11 +176,11 @@ def test_purchaser_edit_writes_and_bumps(root: Path):
         root,
     )
     pur = _read(root, "config", "purchaser.json")
-    assert pur["config_version"] == 2
-    assert pur["entity"] == "Evergreen Renewables LLC"
+    assert pur["config_version"] == SEED_CONFIG_VERSION + 1  # RELATIVE bump, not an absolute 2
+    assert pur["entity"] == "Evergreen Renewables LLC"  # the test's OWN payload, round-tripped
     assert pur["invoice_routing"]["cc"] == ["a@evergreen.com", "b@evergreen.com"]
     assert "comment" in pur
-    assert "config_version 2" in note
+    assert f"config_version {SEED_CONFIG_VERSION + 1}" in note
 
 
 def test_purchaser_edit_rejects_bad_to_email(root: Path):
