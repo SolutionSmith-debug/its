@@ -16,6 +16,7 @@ vi.mock("../../lib/po", async (importOriginal) => {
     fetchVendors: vi.fn(),
     fetchTerms: vi.fn(),
     fetchPoConfig: vi.fn(),
+    fetchPoMaterials: vi.fn(),
     fetchPos: vi.fn(),
     fetchPo: vi.fn(),
     createDraft: vi.fn(),
@@ -90,6 +91,11 @@ const VENDORS: api.Vendor[] = [
 
 const JOBS = [{ job_id: "JOB-000001", project_name: "2023.126 Kendall Solar" }];
 
+const CATALOG: api.CatalogMaterial[] = [
+  { id: 11, model_id: "Q.PEAK_DUO_XL-G11.3_BFG", manufacturer: "Qcells", category: "module", key_specs: "570-585Wp bifacial" },
+  { id: 12, model_id: "Generic-Crane", manufacturer: null, category: "other", key_specs: null },
+];
+
 function poRow(overrides: Partial<api.PoListRow>): api.PoListRow {
   return {
     id: 1,
@@ -120,6 +126,7 @@ beforeEach(() => {
   vi.mocked(api.fetchVendors).mockResolvedValue(VENDORS);
   vi.mocked(api.fetchTerms).mockResolvedValue(TERMS);
   vi.mocked(api.fetchPoConfig).mockResolvedValue(CONFIG);
+  vi.mocked(api.fetchPoMaterials).mockResolvedValue(CATALOG);
   vi.mocked(fetchJobs).mockResolvedValue(JOBS);
 });
 
@@ -209,6 +216,27 @@ describe("PoBuilderPage", () => {
     fireEvent.change(r.getByLabelText("Line 1 watts"), { target: { value: "1000" } });
     fireEvent.change(r.getByLabelText("Line 1 price per watt"), { target: { value: "0.35" } });
     expect(r.getByText("$350.00")).toBeTruthy();
+  });
+
+  it("pick from catalog populates a line's part number + description; qty/unit-cost stay operator-entered", async () => {
+    const r = render(<PoBuilderPage onBack={() => {}} />);
+    await waitFor(() => expect(api.fetchPos).toHaveBeenCalled());
+    fireEvent.click(r.getByText("+ New purchase order"));
+    await waitFor(() => expect(api.fetchPoMaterials).toHaveBeenCalled());
+
+    // The per-row picker is present (the catalog loaded); pick a TYPE for line 1.
+    const pick = await waitFor(() => r.getByLabelText("Line 1 pick from catalog") as HTMLSelectElement);
+    fireEvent.change(pick, { target: { value: "11" } });
+
+    // Identity fields populate from the catalog TYPE (catalogLineFields — the REAL fn via
+    // importOriginal): part_number ← model_id, description ← manufacturer + model + key_specs.
+    expect((r.getByLabelText("Line 1 part number") as HTMLInputElement).value).toBe("Q.PEAK_DUO_XL-G11.3_BFG");
+    expect((r.getByLabelText("Line 1 description") as HTMLInputElement).value).toBe(
+      "Qcells Q.PEAK_DUO_XL-G11.3_BFG — 570-585Wp bifacial",
+    );
+    // The catalog carries no price — qty/unit cost are untouched (free-form entry is the fallback).
+    expect((r.getByLabelText("Line 1 quantity") as HTMLInputElement).value).toBe("");
+    expect((r.getByLabelText("Line 1 unit cost") as HTMLInputElement).value).toBe("");
   });
 
   it("generate sends the displayed totals; a totals_mismatch 409 re-renders from `recomputed`", async () => {

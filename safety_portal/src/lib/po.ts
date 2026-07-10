@@ -329,6 +329,41 @@ export async function fetchPoConfig(): Promise<PoConfig> {
   return getJson<PoConfig>("/api/po/config");
 }
 
+// ── Material catalog picker (GET /api/po/materials) ─────────────────────────────────────────────
+
+/** One active row from GET /api/po/materials — a thin read of the SAME material_catalog TYPE
+ *  table the field-ops Materials Catalog admin manages (migration 0019), gated cap.po.manage.
+ *  It's a TYPE vocabulary (manufacturer / model / specs) with NO price, so a pick populates a
+ *  line's IDENTITY only — qty/unit/unit_cost stay per-PO operator entry. */
+export interface CatalogMaterial {
+  id: number;
+  model_id: string;
+  manufacturer: string | null;
+  category: string;
+  key_specs: string | null;
+}
+
+export async function fetchPoMaterials(category?: string): Promise<CatalogMaterial[]> {
+  const q = category ? `?category=${encodeURIComponent(category)}` : "";
+  const data = await getJson<{ materials: CatalogMaterial[] }>(`/api/po/materials${q}`);
+  return data.materials ?? [];
+}
+
+/** Project a catalog TYPE onto a PO line's identity fields. part_number ← model_id;
+ *  description ← "manufacturer model_id — key_specs" (each part optional). Both are sliced to
+ *  the Worker's line bounds (worker/po.ts MAX_SHORT=64 / MAX_LINE_TEXT=512) so a pick can never
+ *  trip a 400 — real seed data is well under, this is a defensive cap. The catalog carries no
+ *  price, so qty/unit/unit_cost are deliberately left for the operator to enter per-PO. */
+export function catalogLineFields(m: CatalogMaterial): { part_number: string; description: string } {
+  const head = [m.manufacturer?.trim(), m.model_id.trim()].filter(Boolean).join(" ");
+  const specs = m.key_specs?.trim();
+  const description = specs ? `${head} — ${specs}` : head;
+  return {
+    part_number: m.model_id.trim().slice(0, 64),
+    description: description.slice(0, 512),
+  };
+}
+
 // ── Shared vendor vocabulary (ITS_Vendors sheet schema — build_its_vendors_sheet.py) ─────────────
 
 /** The 13 supply categories — the ITS_Vendors MULTI_PICKLIST vocabulary. Keys are the wire

@@ -50,7 +50,7 @@ const CARDS: { title: string; cap: string; nav: string; section: string }[] = [
   { title: "Job Tracker", cap: "cap.jobtracker.read", nav: "fieldops-jobs", section: "Field operations" },
   { title: "Equipment", cap: "cap.equipment.field", nav: "fieldops-equipment", section: "Field operations" },
   { title: "Personnel", cap: "cap.personnel.read", nav: "fieldops-personnel", section: "Field operations" },
-  { title: "Materials Catalog", cap: "cap.materials.manage", nav: "materials-catalog", section: "Field operations" },
+  { title: "Materials Catalog", cap: "cap.materials.manage", nav: "materials-catalog", section: "Administration" },
   { title: "Checklists", cap: "cap.checklist.manage", nav: "fieldops-inspections", section: "Administration" },
   { title: "Purchase Orders", cap: "cap.po.manage", nav: "po-builder", section: "Administration" },
   { title: "Vendors", cap: "cap.po.manage", nav: "po-vendors", section: "Administration" },
