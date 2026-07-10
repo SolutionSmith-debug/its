@@ -97,6 +97,7 @@ outside the sentinel block.
 | Date | Type | Status | Workstream | Title | PRs |
 |------|------|--------|------------|-------|-----|
 | 2026-06-10 | session_log | active | safety_portal | [Session — Agent Optimization (Brief 2) + Safety Portal Hardening (Brief 1)](2026-06-10_agent-optimization-and-portal-hardening.md) | #260, #261, #263, #264, #265, #266 |
+| 2026-07-10 | session_log | closed | _–_ | [Session — PO follow-ups (ship-to / catalog / config-view / naming) + the generic §50 config-editor 3-slice vertical (PRs #504–#512, #511 stuck)](2026-07-10_po-followups-and-config-editor-vertical.md) | #504, #505, #506, #507, #508, #509, #510, #511, #512 |
 | 2026-07-09 | session_log | closed | field_ops | [Session — field-ops mirror-suite full activation + items 1–4 close-out batch + §54 secret-leak backstop](2026-07-09_fieldops-activation-plus-items-1-4-closeout-and-section54.md) | #487, #488, #489 |
 | 2026-07-06 | session_log | closed | field_ops | [Session — M3 Slice 2 Material Incidents ledger: build → deploy → activate (PR #483), plus close-out prep](2026-07-06_m3-slice2-material-incidents-build-deploy-activate.md) | #483 |
 | 2026-07-04 | session_log | closed | progress_reporting | [Session — Progress-Reporting go-live (Track 0) + P7 Slice 1 Hours Log up-sync held on §51, cleared via v19.x rider (exec #459/#461/#463, blueprint #58)](2026-07-04_progress-golive-p7-hours-log-and-s51-rider.md) | #459, #461, #463 |
@@ -163,6 +164,7 @@ outside the sentinel block.
 | 2026-05-24 | session_log | closed | docs | [2026-05-24 — CC file-based memory consolidation](2026-05-24_cc-memory-consolidation.md) | _–_ |
 | 2026-05-24 | session_log | closed | docs | [2026-05-24 — Markdown doc conventions + index generation + lint](2026-05-24_doc_conventions.md) | _–_ |
 | 2026-05-24 | session_log | closed | docs | [2026-05-24 — Execution-repo doctrine version drift cleanup](2026-05-24_doctrine-version-drift-cleanup.md) | _–_ |
+| 2026-07-10 | session_log | complete | docs | [Session — WS3 D2-2: enablement content authoring + ITS_Config data dictionary generator (PR #515)](2026-07-10_ws3-docs-d2-2-guides-and-config-dictionary.md) | #515 |
 | 2026-07-06 | session_log | complete | field_ops | [Session 2026-07-06 (extended, operator-driven continuation) — Op Stds v20 consolidation + 2B progress-logging + #336 REQUIRED_CONFIG + M3 Slice 1 (PRs #478–#482, blueprint #62–#63)](2026-07-06_doctrine-v20-2b-progress-log-required-config-m3-slice1.md) | #478, #479, #480, #481, #482 |
 | 2026-07-06 | session_log | complete | field_ops | [Session 2026-07-06 (autonomous) — Recurring checklists per job (#16, PR #476)](2026-07-06_recurring-checklists.md) | #476 |
 | 2026-07-05 | session_log | complete | field_ops | [Session 2026-07-05 (part 2) — Activate shipped-dark trackers + Hours Log Task column + hygiene (PRs #472–#473)](2026-07-05_activate-trackers-hours-task-column-hygiene.md) | #472, #473 |
