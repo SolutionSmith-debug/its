@@ -260,6 +260,24 @@ def test_fieldops_sync_marker_slug_matches_writer_and_window():
     )
 
 
+def test_po_poll_marker_slug_matches_writer_and_window():
+    """Same Check-C consistency guard for the Purchase-Order pull daemon (PO S4):
+    the slug po_poll writes (po_poll.last_run) must match the slug the watchdog
+    tracks, or Check C either watches a marker nothing writes (permanent false
+    WARN) or — worse — a dead PO daemon goes unnoticed. Registered at S4 landing;
+    like the compile-now/progress entries it WARNs until the operator loads the
+    plist AND flips a po_materials.po_poll.* gate (register + activate together).
+    8-min window == ~5 poll cycles at the 90s default — same high-frequency-poller
+    tolerance as fieldops_sync."""
+    from po_materials import po_poll
+
+    assert po_poll.WATCHDOG_JOB_SLUG == "po_poll"
+    assert po_poll.WATCHDOG_JOB_SLUG in watchdog.TRACKED_JOBS
+    assert watchdog.TRACKED_JOB_WINDOWS[po_poll.WATCHDOG_JOB_SLUG] == timedelta(
+        minutes=8
+    )
+
+
 def test_run_picklist_sync_write_marker_round_trips(monkeypatch, tmp_path):
     """C4: run_picklist_sync writes a parseable ISO timestamp to its marker
     (fail-soft path mirrors audit_picklist_drift's, proven elsewhere)."""

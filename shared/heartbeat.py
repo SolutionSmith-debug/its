@@ -54,6 +54,7 @@ Consumers:
 - ``progress_reports.progress_send_poll`` (P5 progress send-dispatch daemon)
 - ``safety_reports.compile_now_poll`` (on-demand compile poller; R4-F1)
 - ``safety_reports.publish_daemon`` (form-publish actuator; R4-F1)
+- ``po_materials.po_poll`` (Purchase-Order pull daemon; PO S4)
 
 Any new polling daemon should construct its own ``HeartbeatReporter`` (passing its
 registration metadata + ``row_state_path=HEARTBEAT_ROW_STATE_PATH``) and add itself

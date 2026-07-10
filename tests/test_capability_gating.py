@@ -137,8 +137,30 @@ GATED_SCRIPTS: list[tuple[str, list[str]]] = [
         ["graph_client", "send_mail", "resend", "smtplib", "email.mime",
          "anthropic", "anthropic_client"],
     ),
-    # ("po_materials/standard_rfq_generate.py", ["graph_client", "send_mail"]),
-    # ("po_materials/racking_module_rfq_generate.py", ["graph_client", "send_mail"]),
+    (
+        # po_poll (PO S4) is the Purchase-Order pull daemon — the ONE multi-pass Mac
+        # half of the PO pipeline (drafts drain + HMAC verify + totals assert + render
+        # + Box/PO_Log/PO_Pending_Review filing + §51 vendor sync + status mirror).
+        # GENERATION-side of the External Send Gate: DETERMINISTIC (no LLM) and
+        # customer-SEND-FREE — the SEPARATE po_send.py/po_send_poll.py (S5) transmit
+        # only after F22-verified human approval. Its egress rides the F02-allowlisted
+        # shared.portal_client (our Worker) + shared.box_client (filing) — this module
+        # imports no raw network library and no send capability.
+        "po_materials/po_poll.py",
+        ["graph_client", "send_mail", "resend", "smtplib", "email.mime",
+         "anthropic", "anthropic_client"],
+    ),
+    (
+        # po_generate (PO S4) is the DETERMINISTIC PO renderer + the Worker-matching
+        # integer-cents money math (the render-time totals assert). Pure data → bytes:
+        # no Graph, no external send, no LLM — the same deterministic-actuation gate
+        # as weekly_generate. (Replaces the reserved standard_rfq_generate /
+        # racking_module_rfq_generate stubs — RFQ is designed-in, built post-delivery
+        # per decision D3.)
+        "po_materials/po_generate.py",
+        ["graph_client", "send_mail", "resend", "smtplib", "email.mime",
+         "anthropic", "anthropic_client"],
+    ),
     # ("subcontracts/subcontract_generate.py", ["graph_client", "send_mail"]),
 ]
 
@@ -181,7 +203,8 @@ SEND_SCRIPTS: list[tuple[str, list[str]]] = [
         "progress_reports/progress_send_poll.py",
         ["anthropic_client", "anthropic"],
     ),
-    # ("po_materials/rfq_send.py", ["anthropic_client", "anthropic"]),
+    # ("po_materials/po_send.py", ["anthropic_client", "anthropic"]),        # S5 — enroll at landing
+    # ("po_materials/po_send_poll.py", ["anthropic_client", "anthropic"]),   # S5 — enroll at landing
     # ("subcontracts/subcontract_send.py", ["anthropic_client", "anthropic"]),
 ]
 
