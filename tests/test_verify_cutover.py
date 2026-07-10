@@ -208,6 +208,57 @@ def test_config_sandbox_value_fails_unless_allowed(monkeypatch):
     assert vc._check_config(vc.Options(allow_sandbox=True)).passed
 
 
+# ---- PO / worker_base_url enrollment (po_send landed, PR #500) -----------------------
+
+
+def test_po_send_from_mailbox_enrolled_and_sandbox_scanned():
+    """po_send landed → its FROM address must be a production-swept, sandbox-scanned row."""
+    row = next(
+        (r for r in vc.CONFIG_ROWS if r.key == "po_materials.po_send.from_mailbox"),
+        None,
+    )
+    assert row is not None, "po_materials.po_send.from_mailbox must be enrolled in CONFIG_ROWS"
+    assert row.workstream == "po_materials"
+    assert row.requirement == "non_empty"
+    assert row.sandbox_scan is True
+
+
+def test_all_three_worker_base_url_copies_enrolled_and_scanned():
+    """worker_base_url is one Setting name under 3 Workstream cells = 3 physical rows; every copy
+    must be sandbox-scanned (previously only the safety_reports copy was)."""
+    copies = {
+        r.workstream
+        for r in vc.CONFIG_ROWS
+        if r.key == "safety_reports.portal.worker_base_url"
+    }
+    assert copies == {"safety_reports", "progress_reports", "po_materials"}, copies
+    for r in vc.CONFIG_ROWS:
+        if r.key == "safety_reports.portal.worker_base_url":
+            assert r.sandbox_scan is True, f"{r.workstream} copy must be sandbox-scanned"
+
+
+def test_po_send_polling_gate_not_enrolled():
+    """Enrolling po_send.polling_enabled='true' would DEMAND a send-enable at cutover — a
+    high-class External-Send-Gate decision (Seth). It must stay OUT until PO send is in scope."""
+    keys = {r.key for r in vc.CONFIG_ROWS}
+    assert "po_materials.po_send.polling_enabled" not in keys
+    assert "po_materials.po_send.scheduled_send_local" not in keys
+
+
+def test_po_from_mailbox_mirror_value_fails_unless_allowed(monkeypatch):
+    """A mirror procurement@evergreenmirror.com residue on the PO FROM address fails the
+    production gate but passes the --allow-sandbox dress rehearsal (the enrollment's teeth)."""
+    monkeypatch.setattr(
+        vc.smartsheet_client,
+        "get_setting",
+        _config_values(
+            {"po_materials.po_send.from_mailbox": "procurement@evergreenmirror.com"}
+        ),
+    )
+    assert not vc._check_config(OPTS).passed
+    assert vc._check_config(vc.Options(allow_sandbox=True)).passed
+
+
 # ---- VC-04 daemon-health --------------------------------------------------
 
 
