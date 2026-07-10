@@ -1,0 +1,45 @@
+{
+  "manifest_version": 1,
+  "comment": "PO terms-library manifest (S3, decision D6). Profile ids are the vocabulary of the ITS_Vendors 'Default Terms Profile' picklist (shared/picklist_validation._VENDOR_TERMS_PROFILE_VALUES — parity test-pinned). Version files are IMMUTABLE and sha256-pinned: a wording change is a NEW _vN file + a new versions entry, never an edit. Drafts pin (profile id, version) at generate time and must render identically forever.",
+  "profiles": {
+    "standard_17": {
+      "kind": "library",
+      "label": "Standard 17-clause (Purchase Order 2019)",
+      "description": "Evergreen's standard domestic equipment/services terms — the 4-item ADDITIONAL INSTRUCTIONS list + the 17-clause block. Default profile for most vendors.",
+      "source": "docs/references/po_samples/Purchase Order 2019.docx",
+      "current_version": "1",
+      "versions": {
+        "1": {
+          "file": "standard_17_v1.md",
+          "sha256": "34a0fc239788683ef455031642dafe9504466a515060b691966c438467b1fac1",
+          "tokens": ["purchaser_entity", "seller_name"],
+          "legal_review": "pending"
+        }
+      }
+    },
+    "chint_vendor": {
+      "kind": "library",
+      "label": "Chint/CPS vendor short terms",
+      "description": "The 8-bullet vendor-specific inline regime used on Chint Power Systems POs (corpus §6.3).",
+      "source": "docs/references/po_samples/2023.126_Oregon_-_Kendall__V4._CPS-Chint__Apricus - chint - Purchase Order.pdf",
+      "current_version": "1",
+      "versions": {
+        "1": {
+          "file": "chint_vendor_v1.md",
+          "sha256": "f6c148bb84d82a4d198a61c25ecfff5e5e234a08ef918fc38361957b9dea9695",
+          "tokens": [],
+          "legal_review": "pending"
+        }
+      }
+    },
+    "negotiated_gtc": {
+      "kind": "attach",
+      "label": "Negotiated GTC (attach-not-generate)",
+      "description": "Vendors with a negotiated multi-page GTC (e.g. VSUN, corpus §6.4): the renderer emits ONLY the reference line below; the GTC document itself is attached at send (fast-follow) or already held by both parties. The vendor's ITS_Vendors 'GTC Reference' cell carries the Box link.",
+      "render_line": "THIS PURCHASE ORDER IS SUBJECT TO THE TERMS AND CONDITIONS OF THE NEGOTIATED GENERAL TERMS AND CONDITIONS AGREEMENT BETWEEN PURCHASER AND SELLER."
+    }
+  },
+  "reserved_profile_ids": {
+    "field_21": "Expanded 21-article ESS Field PO regime + Exhibits A–F (docs/references/po_samples/ESS_Field_Purchase_Order_Terms_and_Conditions.docx) — id reserved, transcription deferred (corpus §6.2). Joins the ITS_Vendors picklist + this manifest when built."
+  }
+}

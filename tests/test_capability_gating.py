@@ -368,8 +368,10 @@ NETWORK_NEEDLES: frozenset[str] = frozenset({
 # checks above must then cover). field_ops joined at P2.5 Slice 5 (the job up-sync daemon
 # fieldops_sync — its egress to OUR Worker rides shared.portal_client, so it imports no raw
 # network library and trips no F02 needle, but the root is walked so a future field_ops module
-# that quietly acquires network capability is caught).
-WALKED_ROOTS: tuple[str, ...] = ("shared", "safety_reports", "progress_reports", "field_ops")
+# that quietly acquires network capability is caught). po_materials joined at S3 (the PO
+# workstream — today only the pure terms/config loader, which imports nothing network-shaped;
+# its gated po_poll/po_send daemons land at S4/S5 with same-PR enrollment above).
+WALKED_ROOTS: tuple[str, ...] = ("shared", "safety_reports", "progress_reports", "field_ops", "po_materials")
 
 
 def _import_matches_needle(imported: str, needle: str) -> bool:
