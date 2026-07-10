@@ -1,0 +1,71 @@
+# ═══════════════════════════════════════════════════════════════════════════════════════
+# §6a enablement manifest — THE build set for the docs → branded-PDF pipeline (WS3 / D2-1)
+# ═══════════════════════════════════════════════════════════════════════════════════════
+# This is the single source of truth for which in-repo enablement guides get rendered to
+# delivery-critical branded PDF manuals (§6 / A8 documentation program). It closes the
+# long-open "§6a enablement-doc DoD owed" tech-debt registration: a new capability guide is
+# "registered" by adding an entry here.
+#
+# Consumers:
+#   * scripts/build_docs_pdfs.py --all      → renders every entry to docs/_build_pdf/<key>.pdf
+#   * scripts/build_docs_pdfs.py --check     → doc-currency: re-hashes each source, flags drift
+#   * docs_pdf/manifest.py                    → the loader (shape-checked, typed error)
+#
+# Each entry:
+#   key      stable slug — matches the source filename stem AND the output PDF stem
+#   title    display title for the PDF masthead + footer provenance line
+#   version  manual version string (bump when the guide is substantively revised)
+#   source   repo-root-relative path to the markdown source
+#   sha256   SHA-256 of the source file's raw bytes — the doc-currency baseline. When a
+#            guide is edited AND re-rendered, re-record its sha here (recompute:
+#            `python -c "import hashlib,pathlib;print(hashlib.sha256(pathlib.Path('<src>').read_bytes()).hexdigest())"`).
+#
+# NOTE (D2-2, not built here): the ITS Owner's Manual + the auto-generated ITS_Config data
+# dictionary + the safety-forms / admin-dashboard guides are named-but-not-yet-authored
+# content; they join this manifest when D2-2 creates them. This D2-1 seed lists ONLY the
+# enablement guides that exist on main today.
+# ═══════════════════════════════════════════════════════════════════════════════════════
+manifest_version: 1
+
+docs:
+  - key: fieldops_checklists
+    title: "Field-Ops Daily Report (SOP form) + Assigned Inspections"
+    version: v1
+    source: docs/enablement/fieldops_checklists.md
+    sha256: c94e99dc3a00562c075de10fc062fe09d6024df53c8e470e872fbc84b60968cb
+
+  - key: manager_tier
+    title: "The Manager Role (crew leads)"
+    version: v1
+    source: docs/enablement/manager_tier.md
+    sha256: 1b69092f49650d1d305a57727d2f9473b1bcbfa83d5f14438db74bc44336dfab
+
+  - key: subcontractor_tier
+    title: "The Subcontractor Tier"
+    version: v1
+    source: docs/enablement/subcontractor_tier.md
+    sha256: b5c527b963679d5a924e93894dddde0e37fe9db3055aa65e422b1eb176026129
+
+  - key: portal_job_creation
+    title: "Office-PM Guide — Creating Jobs in the ITS Portal"
+    version: v1
+    source: docs/enablement/portal_job_creation.md
+    sha256: 0780e84a54c2e1ccf0e97c2714e7c43d322091857b24aa82f18368cf80939c31
+
+  - key: progress_rollup_numbers
+    title: "The Weekly Progress Rollup Numbers"
+    version: v1
+    source: docs/enablement/progress_rollup_numbers.md
+    sha256: e20fa5566999047bc71eb12aef6bf5ece58d0c94844cbfc8df211b54b8cb2c87
+
+  - key: crew_time_corrections
+    title: "Office Guide — Crew Corrections + Time Amendments"
+    version: v1
+    source: docs/enablement/crew_time_corrections.md
+    sha256: d97ba5923321f32787ec000cc247f07036e75ee132b04fe9b3a3a6987f28fdfd
+
+  - key: purchase_orders
+    title: "Purchase Orders in the ITS Portal"
+    version: v1
+    source: docs/enablement/purchase_orders.md
+    sha256: 7ffd5c2a6340b2569cab186f4118d45bd6b823448bc7c82e29dbd0187a3a247a

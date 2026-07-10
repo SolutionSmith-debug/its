@@ -4,6 +4,9 @@ __pycache__/
 *$py.class
 *.egg-info/
 .venv/
+# Per-task worktree venvs (docs/operations/worktree_discipline.md) — never committed.
+.venv-wt/
+.venv-*/
 venv/
 .pytest_cache/
 .mypy_cache/
@@ -21,6 +24,10 @@ htmlcov/
 # Local render output of scripts/generate_form_archive.py (the publish daemon's archive
 # step writes here on every cycle, even in --upload mode; the canonical copy is in Box).
 /form_archive_out/
+
+# Local render output of scripts/build_docs_pdfs.py (the §6a enablement PDF manuals; the
+# canonical distributable copy is the Box "ITS Manuals" upload — D2-3). Never committed.
+/docs/_build_pdf/
 
 # ITS-specific
 logs/*.log
