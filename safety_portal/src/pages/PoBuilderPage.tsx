@@ -41,6 +41,15 @@ import { PageShell } from "../components/PageShell";
 // city/state/zip — those live only on purchase_orders), so those three ride back empty and stay
 // manual. Auto-fill is a CONVENIENCE: every field is editable, and a 404 / read error silently
 // leaves the field blank (never blocks the wizard).
+//
+// MATERIAL CATALOG PICK (line items): each line row carries a "pick from catalog" <select> fed
+// by GET /api/po/materials (cap.po.manage — a thin read of the SAME material_catalog TYPE table
+// the field-ops Materials Catalog admin manages, migration 0019). material_catalog is a TYPE
+// vocabulary (manufacturer / model / specs) with NO price, so a pick populates only the line's
+// IDENTITY — part_number ← model_id, description ← manufacturer + model_id + key_specs
+// (api.catalogLineFields) — while qty/unit/unit_cost stay operator-entered per PO (prices drift,
+// quantities vary). Free-form typing over every field remains the fallback (many lines — steel,
+// crane, shipping — aren't equipment types).
 
 const JOB_NO_RE = /^\d{4}\.\d{3}$/;
 const QTY_RE = /^\d+(\.\d{0,3})?$/; // the Worker normalizes qty to ≤3dp
@@ -191,6 +200,10 @@ export function PoBuilderPage({ onBack }: { onBack: () => void }) {
   const [terms, setTerms] = useState<api.TermsProfile[]>([]);
   const [config, setConfig] = useState<api.PoConfig | null>(null);
   const [jobs, setJobs] = useState<Job[]>([]);
+  // The material_catalog TYPE vocabulary (GET /api/po/materials) — the per-line "pick from
+  // catalog" feed. A pick populates a line's part_number + description; free-form entry stays
+  // the fallback (many PO lines — steel, crane, shipping — aren't equipment types).
+  const [catalog, setCatalog] = useState<api.CatalogMaterial[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
@@ -211,6 +224,7 @@ export function PoBuilderPage({ onBack }: { onBack: () => void }) {
     api.fetchTerms().then(setTerms).catch(() => setTerms([]));
     api.fetchPoConfig().then(setConfig).catch(() => setConfig(null));
     fetchJobs().then(setJobs).catch(() => setJobs([]));
+    api.fetchPoMaterials().then(setCatalog).catch(() => setCatalog([]));
   }, [reloadPos]);
 
   const vendorByKey = useMemo(() => new Map(vendors.map((v) => [v.vendor_key, v])), [vendors]);
@@ -390,6 +404,14 @@ export function PoBuilderPage({ onBack }: { onBack: () => void }) {
   const removeLine = (i: number) => {
     touchMoney();
     setLines((prev) => (prev.length > 1 ? prev.filter((_, idx) => idx !== i) : prev));
+  };
+  /** Pick from the material_catalog TYPE vocabulary: populate line `i`'s part_number +
+   *  description from the chosen type (api.catalogLineFields). qty/unit/unit_cost are left
+   *  untouched — the catalog carries no price, and free-form typing over these fields stays the
+   *  fallback. */
+  const applyCatalog = (i: number, id: number) => {
+    const m = catalog.find((x) => x.id === id);
+    if (m) setLine(i, api.catalogLineFields(m));
   };
 
   // ── Tax badge ──────────────────────────────────────────────────────────────────────────────────
@@ -692,7 +714,29 @@ export function PoBuilderPage({ onBack }: { onBack: () => void }) {
       <tr key={i}>
         <td>{i + 1}</td>
         {variant !== "lump_sum" ? <td>{cell("part_number", "part number", 110)}</td> : null}
-        <td>{cell("description", "description")}</td>
+        <td>
+          {catalog.length > 0 ? (
+            <select
+              className="field__input po-line__catalog"
+              aria-label={`Line ${i + 1} pick from catalog`}
+              value=""
+              onChange={(e) => {
+                const id = parseInt(e.target.value, 10);
+                if (Number.isSafeInteger(id)) applyCatalog(i, id);
+              }}
+            >
+              <option value="">— pick from catalog —</option>
+              {catalog.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.manufacturer ? `${m.manufacturer} · ` : ""}
+                  {m.model_id}
+                  {m.category ? ` (${m.category})` : ""}
+                </option>
+              ))}
+            </select>
+          ) : null}
+          {cell("description", "description")}
+        </td>
         {variant === "per_watt" ? (
           <>
             <td>{cell("watts", "watts", 90)}</td>

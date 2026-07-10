@@ -95,6 +95,9 @@ const PO_PENDING_CAP = 50;
 const PO_STATUS_SYNC_CAP = 200;
 const VENDOR_PENDING_CAP = 200;
 const LIST_CAP = 200;
+// The catalog is a small controlled vocabulary (0019 seeds 36 active types); a single bounded
+// read serves the whole active set to the line-item picker — no keyset pagination needed.
+const MATERIALS_CAP = 500;
 
 const VENDOR_KEY_RE = /^VEN-\d{6}$/;
 const JOB_NO_RE = /^\d{4}\.\d{3}$/; // the Evergreen '{YYYY.NNN}' job number (D7)
@@ -573,6 +576,28 @@ export function registerPoRoutes(app: FieldopsApp, gates: PoGates): void {
       },
     }),
   );
+
+  // GET /api/po/materials — the line-item catalog picker feed. A THIN, read-only view of the
+  // SAME material_catalog TYPE table the field-ops Materials Catalog admin manages (migration
+  // 0019) — deliberately NOT a new po-specific catalog table. Gated cap.po.manage (the PO
+  // builder's own capability) so a PO admin reads the pick-list WITHOUT being granted the
+  // field-ops cap.materials.receive that /api/fieldops/materials requires — the PO builder's
+  // data reads all sit under one cap. material_catalog is a TYPE vocabulary (manufacturer /
+  // model / specs, NO price), so the picker only populates a line's IDENTITY (part_number +
+  // description); qty/unit/unit_cost stay per-PO operator entry. Read-only → no mutation, no W4
+  // audit row; bound params only; active types only, optional ?category= filter, hard-capped.
+  app.get("/api/po/materials", gates.requireSession, gates.requireCapability(CAP_PO), async (c) => {
+    const category = str(c.req.query("category")).slice(0, MAX_SHORT);
+    const { results } = await c.env.DB
+      .prepare(
+        "SELECT id, model_id, manufacturer, category, key_specs FROM material_catalog " +
+          "WHERE active = 1 AND (?1 = '' OR category = ?1) " +
+          "ORDER BY model_id ASC, id ASC LIMIT ?2",
+      )
+      .bind(category, MATERIALS_CAP)
+      .all<Record<string, unknown>>();
+    return c.json({ materials: results ?? [] });
+  });
 
   // GET /api/po/jobs/:job_id/ship-to — the builder's ship-to + delivery auto-fill feed (S6
   // follow-up: closes the "ship-to ADDRESS block stays manual" deviation that PoBuilderPage's

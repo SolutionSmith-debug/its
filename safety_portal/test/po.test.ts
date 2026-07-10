@@ -133,6 +133,7 @@ describe("cap.po.manage gate", () => {
     expect((await g(submitter, "/api/po/pos")).status).toBe(403);
     expect((await g(submitter, "/api/po/terms")).status).toBe(403);
     expect((await g(submitter, "/api/po/config")).status).toBe(403);
+    expect((await g(submitter, "/api/po/materials")).status).toBe(403);
     expect((await p(submitter, "/api/po/drafts", draftBody())).status).toBe(403);
     expect((await p(submitter, "/api/po/vendors", { vendor_name: "X" })).status).toBe(403);
     expect((await g(admin, "/api/po/vendors")).status).toBe(200);
@@ -142,6 +143,54 @@ describe("cap.po.manage gate", () => {
     expect((await call("/api/po/vendors")).status).toBe(401);
     expect((await call("/api/po/terms")).status).toBe(401);
     expect((await call("/api/po/config")).status).toBe(401);
+    expect((await call("/api/po/materials")).status).toBe(401);
+  });
+});
+
+// ── Material catalog picker feed (GET /api/po/materials) ──────────────────────
+// A THIN read of the SAME material_catalog TYPE table (migration 0019, 36 seeded active types)
+// the field-ops Materials Catalog admin manages — gated cap.po.manage so the PO builder reads
+// the pick-list WITHOUT the field-ops cap.materials.receive. Identity projection only (no price).
+describe("GET /api/po/materials", () => {
+  it("serves active types to an admin, projecting id/model_id/manufacturer/category/key_specs only", async () => {
+    const res = await g(admin, "/api/po/materials");
+    expect(res.status, await res.clone().text()).toBe(200);
+    const { materials } = await json<{ materials: Array<Record<string, unknown>> }>(res);
+    expect(materials.length).toBeGreaterThanOrEqual(36); // the 0019 seed
+    const known = materials.find((m) => m.model_id === "Q.PEAK_DUO_XL-G11.3_BFG");
+    expect(known).toBeTruthy();
+    expect(known!.manufacturer).toBe("Qcells");
+    expect(known!.category).toBe("module");
+    // The picker needs identity only — the price/provenance/active columns must NOT leak.
+    expect(Object.keys(known!).sort()).toEqual(["category", "id", "key_specs", "manufacturer", "model_id"]);
+    expect("unit_cost" in known!).toBe(false);
+    expect("source_files" in known!).toBe(false);
+    expect("active" in known!).toBe(false);
+  });
+
+  it("filters by ?category= (bound param) and never returns a soft-retired (active=0) type", async () => {
+    // A distinctive retired row proves active-only; a distinctive active inverter proves the filter.
+    await env.DB.prepare(
+      "INSERT INTO material_catalog (model_id, manufacturer, category, key_specs, active) VALUES (?1,?2,?3,?4,?5)",
+    ).bind("PO-MAT-RETIRED", "Acme", "module", "retired type", 0).run();
+    await env.DB.prepare(
+      "INSERT INTO material_catalog (model_id, manufacturer, category, key_specs, active) VALUES (?1,?2,?3,?4,?5)",
+    ).bind("PO-MAT-ACTIVE-INV", "Acme", "inverter", "active inverter", 1).run();
+    try {
+      const all = await g(admin, "/api/po/materials");
+      const allBody = await json<{ materials: Array<Record<string, unknown>> }>(all);
+      expect(allBody.materials.some((m) => m.model_id === "PO-MAT-RETIRED")).toBe(false); // retired hidden
+      expect(allBody.materials.some((m) => m.model_id === "PO-MAT-ACTIVE-INV")).toBe(true);
+
+      const mods = await g(admin, "/api/po/materials?category=module");
+      expect(mods.status).toBe(200);
+      const modsBody = await json<{ materials: Array<Record<string, unknown>> }>(mods);
+      expect(modsBody.materials.length).toBeGreaterThan(0);
+      expect(modsBody.materials.every((m) => m.category === "module")).toBe(true); // filter honored
+      expect(modsBody.materials.some((m) => m.model_id === "PO-MAT-ACTIVE-INV")).toBe(false); // inverter excluded
+    } finally {
+      await env.DB.prepare("DELETE FROM material_catalog WHERE model_id IN ('PO-MAT-RETIRED','PO-MAT-ACTIVE-INV')").run();
+    }
   });
 });
 

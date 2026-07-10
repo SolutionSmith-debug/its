@@ -91,14 +91,6 @@ const HOME_CARDS: HomeCard[] = [
     section: "field",
   },
   {
-    key: "materials-catalog",
-    cap: "cap.materials.manage",
-    badge: "Admin",
-    title: "Materials Catalog",
-    desc: "The datasheet-backed material type catalog — add, edit, and retire types.",
-    section: "field",
-  },
-  {
     key: "fieldops-inspections",
     cap: "cap.checklist.manage",
     badge: "Admin",
@@ -106,6 +98,18 @@ const HOME_CARDS: HomeCard[] = [
     // Daily Field Report form definition; the default-checklist editor was retired). Key unchanged.
     title: "Checklists",
     desc: "Author reusable inspection checklists and assign them to a manager or subcontractor.",
+    section: "admin",
+  },
+  {
+    key: "materials-catalog",
+    cap: "cap.materials.manage",
+    badge: "Admin",
+    title: "Materials Catalog",
+    // Moved to Administration (2026-07): the datasheet-backed material TYPE catalog now also feeds
+    // the purchase-order line-item picker, so it sits beside the PO cards. Gate unchanged
+    // (cap.materials.manage — admin only); the page's list read still needs cap.materials.receive,
+    // which admin also holds (migration 0013 catch-all), so access neither breaks nor widens.
+    desc: "The datasheet-backed material type catalog behind purchase-order line items — add, edit, and retire types.",
     section: "admin",
   },
   {
