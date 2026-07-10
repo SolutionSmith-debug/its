@@ -271,7 +271,7 @@ def test_happy_path_verifies_files_and_receipts_last(_patch):
     _patch["render"].assert_called_once()
     _patch["upload"].assert_called_once()
     (folder, name, pdf), _ = _patch["upload"].call_args
-    assert folder == "folder-1" and name == "PO 2026.001.2.0.0.pdf" and pdf == b"%PDF-fake"
+    assert folder == "folder-1" and name == "Sunrise Solar_PO_2026.001.2.0.0.pdf" and pdf == b"%PDF-fake"
     _patch["log_append"].assert_called_once()
     _patch["review_add"].assert_called_once()
     _patch["attach"].assert_called_once()

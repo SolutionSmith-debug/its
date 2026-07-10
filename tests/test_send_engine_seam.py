@@ -32,9 +32,11 @@ from shared import active_jobs
 def test_weekly_report_envelope_reproduces_the_legacy_strings_exactly():
     ctx = weekly_send.EnvelopeContext(project_name="Bradley 1", week="2026-05-30", row={})
     subject, attachment = weekly_send.WeeklyReportEnvelope(report_label="Weekly Safety Report")(ctx)
-    # The pre-S5a literals from send_one_row, frozen: any drift is customer-visible.
+    # Subject is the frozen pre-S5a literal. The attachment name is now JOB-PREFIXED
+    # (2026-07 naming convention — the job name in every document's title/name, matching
+    # the Box packet `<Job>_…` style + the PO surfaces); customer-visible, deliberate.
     assert subject == "Weekly Safety Report — Bradley 1 — week of 2026-05-30"
-    assert attachment == "Weekly Safety Report — 2026-05-30.pdf"
+    assert attachment == "Bradley 1_Weekly Safety Report — 2026-05-30.pdf"
 
 
 def test_both_live_configs_bind_the_weekly_envelope_and_their_own_sheet():

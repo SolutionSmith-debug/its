@@ -33,7 +33,9 @@ Invariants (§42 — why a binding, not a clone)
   (``purchaser.json``) so the internal Evergreen distribution (procurement / PM / permitting)
   sees every outbound PO — the corpus's invoice-routing convention.
 - **Envelope carries the contractual number:** subject
-  ``"Purchase Order {po_number} — {project} — {entity}"`` + attachment ``{po_number}.pdf``.
+  ``"Purchase Order {po_number} — {project} — {entity}"`` + the job-prefixed attachment
+  ``<Job>_PO_{po_number}.pdf`` (via ``po_naming.po_pdf_filename`` — the same canonical name
+  the Box file + Smartsheet attachment carry; blank job falls back to ``PO {po_number}.pdf``).
   ``po_number`` is read from the review row's Notes (``po_poll`` seeds it via
   ``po_review.notes_for_review_row``). A row that lost the tag → the envelope returns
   ``None`` → the engine HELDs (``held_missing_envelope``), mirroring the recipient_lookup
@@ -68,7 +70,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, cast
 
-from po_materials import po_review, vendors
+from po_materials import po_naming, po_review, vendors
 from po_materials import terms as terms_lib
 from safety_reports import weekly_send
 from safety_reports.weekly_send import EnvelopeContext, SendConfig, SendResult, _ReviewModule
@@ -125,7 +127,7 @@ class _PoEnvelope:
             return None
         entity = str(terms_lib.load_purchaser_config().get("entity") or "Evergreen Renewables")
         subject = f"Purchase Order {po_number} — {ctx.project_name} — {entity}"
-        return subject, f"{po_number}.pdf"
+        return subject, po_naming.po_pdf_filename(po_number, ctx.project_name)
 
 
 CONFIG = SendConfig(

@@ -58,6 +58,7 @@ from reportlab.platypus import (  # type: ignore[import-untyped]
     TableStyle,
 )
 
+from po_materials import po_naming
 from po_materials import terms as terms_lib
 from po_materials import vendors as vendors_mod
 from po_materials.po_log import format_total_cents as _money
@@ -639,7 +640,7 @@ def render_po_pdf(
     buf = io.BytesIO()
     doc = SimpleDocTemplate(
         buf, pagesize=letter,
-        title=f"Purchase Order {po.get('po_number')}",
+        title=po_naming.po_pdf_title(str(po.get("po_number") or ""), po.get("job_name")),
         leftMargin=_MARGIN, rightMargin=_MARGIN,
         topMargin=_MARGIN, bottomMargin=0.7 * 72,
         # Byte-determinism: pins CreationDate + the document /ID (see docstring).
