@@ -173,10 +173,13 @@ def test_committed_manifest_round_trips() -> None:
     man = load_manifest()
     assert man.manifest_version == 1
     keys = {e.key for e in man.entries}
-    # the seven enablement guides that exist on main today
+    # the seven D2-1 guides + the four D2-2 docs (owner's manual, safety-forms + admin-
+    # dashboard guides, and the generated ITS_Config data dictionary)
     assert keys == {
         "fieldops_checklists", "manager_tier", "subcontractor_tier", "portal_job_creation",
         "progress_rollup_numbers", "crew_time_corrections", "purchase_orders",
+        "its_owners_manual", "safety_reports_guide", "portal_admin_dashboard",
+        "its_config_dictionary",
     }
     # by_key / by_source lookups
     assert man.by_key("manager_tier") is not None

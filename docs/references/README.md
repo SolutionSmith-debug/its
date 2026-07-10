@@ -11,5 +11,6 @@ References use `topic-slug.md` filenames (no date prefix); their
 <!-- BEGIN AUTO-INDEX -->
 | Date | Type | Status | Workstream | Title | PRs |
 |------|------|--------|------------|-------|-----|
+| _–_ | reference | active | _–_ | [ITS_Config Data Dictionary](its_config_dictionary.md) | _–_ |
 | _(no frontmatter)_ | _–_ | _–_ | _–_ | [Picklist Sync — Operations Runbook](picklist_sync.md) | _–_ |
 <!-- END AUTO-INDEX -->
