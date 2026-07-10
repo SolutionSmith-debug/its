@@ -365,6 +365,35 @@ def test_totals_mismatch_fences_never_files(_patch):
     assert persisted == {"7": "totals"}
 
 
+def test_malformed_signed_field_fences_one_row_without_aborting_the_batch(_patch):
+    """Regression (PR #498 review BLOCKER): an HMAC-valid row carrying a malformed
+    numeric field (a Worker bug / schema drift / D1 tampering — the HMAC proves the
+    Worker signed THIS value, not that it is well-typed) must FENCE one-shot, NOT
+    raise. Step 2 (`totals_mismatches`) is the FIRST guard, outside the per-row fence's
+    try, so a raise there would crash the whole batch, skip the heartbeat/marker writes
+    (stale daemon), and re-crash every ~90s. Two-row batch: the malformed row fences,
+    the clean row STILL files, and the cycle completes (heartbeat + marker written)."""
+    bad = _signed_row(id=7, po_uuid="u-1", tax_rate_bp="bad-not-a-number")
+    good = _signed_row(id=8, po_uuid="u-2", po_number="2026.001.2.0.1")
+    _patch["pending"].return_value = [bad, good]
+
+    stats = _run(_patch)
+
+    # One fenced, one filed — the malformed row did NOT abort the batch.
+    assert stats.fenced == 1 and stats.filed == 1
+    # The malformed row fenced permanently (one-shot flag), routed via the totals fence.
+    assert "po_totals_mismatch" in _logged_codes(_patch)
+    (persisted,), _ = _patch["flags_persist"].call_args
+    assert persisted == {"7": "totals"}
+    # The clean row genuinely filed + receipted.
+    assert _patch["upload"].call_count == 1
+    _patch["mark_filed"].assert_called_once()
+    assert _patch["mark_filed"].call_args.kwargs["po_id"] == 8
+    # The cycle COMPLETED — heartbeat + watchdog marker written (a crash would skip them).
+    _patch["hb"].assert_called()
+    _patch["marker"].assert_called()
+
+
 def test_po_number_collision_fences(_patch):
     """A PO_Log row with this number that is NOT ours (hand-issued in transition)
     refuses the filing — never a duplicate contractual number."""

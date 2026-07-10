@@ -185,6 +185,35 @@ def test_totals_mismatches_returns_basis_failure_as_entry() -> None:
     assert any("unknown_tax_state" in p for p in problems)
 
 
+@pytest.mark.parametrize(
+    "field, value",
+    [
+        ("tax_rate_bp", "bad-not-a-number"),
+        ("shipping_cents", "N/A"),
+        ("total_cents", "oops"),
+    ],
+)
+def test_totals_mismatches_fences_malformed_header_field_never_raises(field, value) -> None:
+    """Regression (PR #498 review BLOCKER): a signed-but-malformed numeric header
+    field must be RETURNED as a `totals_basis:` fence entry, NEVER raise. HMAC proves
+    the Worker signed the value, not that it is well-typed — so a Worker bug / schema
+    drift / D1 tampering can present a non-numeric field. A raise here (po_poll Step 2
+    is the FIRST guard, outside the per-row fence's try) would crash the whole batch
+    and re-crash every cycle."""
+    malformed = dict(PO)
+    malformed[field] = value
+    problems = po_generate.totals_mismatches(malformed, LINES, rates_bp=RATES_BP)
+    assert any("totals_basis" in p for p in problems), problems
+
+
+def test_totals_mismatches_fences_malformed_line_field_never_raises() -> None:
+    """The line-loop conversions (extended_cents / qty / watts / unit_cost_cents) are
+    inside the same guard — a malformed line field fences, never raises."""
+    bad_lines = [dict(LINES[0], extended_cents="not-a-number")]
+    problems = po_generate.totals_mismatches(PO, bad_lines, rates_bp=RATES_BP)
+    assert any("totals_basis" in p for p in problems), problems
+
+
 # ---- tax label / terms resolution ------------------------------------------------
 
 

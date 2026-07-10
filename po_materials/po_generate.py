@@ -168,18 +168,28 @@ def totals_mismatches(
     """THE render-time totals assert: recompute everything and diff against the
     SIGNED row. Returns [] when clean; otherwise machine-readable mismatch strings
     (each names the field + both values — integers only, no PII). ANY entry means
-    REFUSE + Review-Queue fence, never file (module docstring). A totals-basis
-    failure (`TotalsError`) is returned as a mismatch, not raised — same fence.
+    REFUSE + Review-Queue fence, never file (module docstring).
+
+    NEVER RAISES. A totals-basis failure is returned as a `totals_basis:` mismatch,
+    not raised — for BOTH an unresolvable tax mode/state (`TotalsError`) AND a
+    non-numeric/mis-typed signed money field (`tax_rate_bp` / `shipping_cents` / a
+    line's `extended_cents` / `qty` / `watts` / `unit_cost_cents` arriving as a
+    non-number). HMAC proves the Worker signed THIS value — it says nothing about the
+    value's TYPE (a Worker bug, schema drift, or direct D1 tampering can sign a
+    malformed field). This call site (po_poll Step 2) is the per-row fence's FIRST
+    guard, so a raise here would abort the whole batch and re-crash every cycle — the
+    exact "one bad row never kills the cycle" invariant this returns-not-raises
+    contract protects. Every conversion below is inside the guard.
     """
     problems: list[str] = []
-    for line in lines:
-        expected = line_extended_cents(line)
-        stored = int(line.get("extended_cents") or 0)
-        if expected != stored:
-            problems.append(
-                f"line{line.get('position')}.extended_cents: recomputed {expected} != signed {stored}"
-            )
     try:
+        for line in lines:
+            expected = line_extended_cents(line)
+            stored = int(line.get("extended_cents") or 0)
+            if expected != stored:
+                problems.append(
+                    f"line{line.get('position')}.extended_cents: recomputed {expected} != signed {stored}"
+                )
         totals = recompute_totals(
             lines,
             str(po.get("tax_mode") or ""),
@@ -188,18 +198,21 @@ def totals_mismatches(
             str(po.get("ship_to_state") or ""),
             rates_bp=rates_bp,
         )
+        for field, recomputed in (
+            ("subtotal_cents", totals.subtotal_cents),
+            ("tax_rate_bp", totals.tax_rate_bp),
+            ("tax_cents", totals.tax_cents),
+            ("total_cents", totals.total_cents),
+        ):
+            signed = int(po.get(field) or 0)
+            if recomputed != signed:
+                problems.append(f"{field}: recomputed {recomputed} != signed {signed}")
     except TotalsError as exc:
         problems.append(f"totals_basis: {exc}")
-        return problems
-    for field, recomputed in (
-        ("subtotal_cents", totals.subtotal_cents),
-        ("tax_rate_bp", totals.tax_rate_bp),
-        ("tax_cents", totals.tax_cents),
-        ("total_cents", totals.total_cents),
-    ):
-        signed = int(po.get(field) or 0)
-        if recomputed != signed:
-            problems.append(f"{field}: recomputed {recomputed} != signed {signed}")
+    except (ValueError, TypeError) as exc:
+        problems.append(
+            f"totals_basis: malformed numeric field ({type(exc).__name__}: {exc})"
+        )
     return problems
 
 
