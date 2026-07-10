@@ -2,6 +2,11 @@ import type { MiddlewareHandler } from "hono";
 import type { FieldopsApp } from "./fieldops_gates";
 import { auditStmt, auditStmtIfChanged, isUniqueViolation } from "./audit";
 import { hmacHex } from "./hmac";
+// S2b wiring — the S3 terms manifest + versioned purchaser/tax config, imported at
+// BUILD time from po_materials/ (the same files the Mac renderer reads at render time).
+import termsManifest from "../../po_materials/terms/manifest.json";
+import purchaserConfig from "../../po_materials/config/purchaser.json";
+import taxConfig from "../../po_materials/config/tax.json";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PO workstream S2 (Aug-7 delivery program WS1) — worker/po.ts
@@ -34,10 +39,9 @@ import { hmacHex } from "./hmac";
 // revision allocated at generate as MAX(revision)+1 within the family, with the
 // UNIQUE index idx_po_family_revision (migration 0043) as the race backstop.
 //
-// TODO seam (S3 — merges separately): GET /api/po/terms + GET /api/po/config are
-// deliberately NOT built here. The terms library (po_materials/terms/) and the
-// versioned purchaser/tax config (po_materials/config/*.json, Worker build-time
-// import) land in S3; until then TAX_RATE_BP below is the temporary local const.
+// S2b wiring: GET /api/po/terms + GET /api/po/config serve the S3 terms manifest +
+// purchaser/tax config (build-time JSON imports above) — one source shared with the
+// Mac-side renderer; the generate-time totals assert catches deploy skew.
 // ─────────────────────────────────────────────────────────────────────────────
 
 export type PoGates = {
@@ -52,12 +56,21 @@ export type PoGates = {
 const CAP_PO = "cap.po.manage";
 const PO_HMAC_DOMAIN = "po:v1";
 
-// ── Tax table (TEMPORARY local const — S3 replaces with po_materials/config/tax.json,
-//    imported at Worker build time; the Python renderer reads the same file, and the
-//    totals assert at generate catches any skew between the two). Basis points (D8):
-//    IL 9.00%, OR 0%. 'auto' mode FAILS CLOSED on a state not in this table — a silent
-//    0% on an unknown state would understate tax on a legal document.
-const TAX_RATE_BP: Record<string, number> = { IL: 900, OR: 0 };
+// ── Tax table — sourced from the S3 versioned config at build time (D8; basis
+//    points). 'auto' mode FAILS CLOSED on a state not in this table — a silent 0%
+//    on an unknown state would understate tax on a legal document.
+const TAX_RATE_BP: Record<string, number> = taxConfig.rates_bp;
+
+// Loose view over the heterogeneous manifest profile shapes (library vs attach).
+type TermsProfileEntry = {
+  kind: string;
+  label: string;
+  description: string;
+  current_version?: string;
+  versions?: Record<string, { file: string; sha256: string; tokens: string[]; legal_review: string }>;
+  render_line?: string;
+};
+const TERMS_PROFILES = termsManifest.profiles as Record<string, TermsProfileEntry>;
 
 // ── Bounds (Invariant 2) ────────────────────────────────────────────────────────
 const MAX_KEY = 64;
@@ -523,6 +536,43 @@ async function loadLines(db: D1Database, poId: number): Promise<PoLine[]> {
 // ── Route registration ──────────────────────────────────────────────────────────
 export function registerPoRoutes(app: FieldopsApp, gates: PoGates): void {
   // ══ Browser surface (session + cap.po.manage) ══════════════════════════════════
+
+  // GET /api/po/terms — the terms-library picker feed (S2b wiring; S3 manifest,
+  // build-time import). Serves the SPA a curated view: profile id/kind/label +
+  // the current version + its tokens (library) or the render line (attach) —
+  // never the raw manifest (hash pins and file names are renderer implementation
+  // detail, not picker data).
+  app.get("/api/po/terms", gates.requireSession, gates.requireCapability(CAP_PO), (c) => {
+    const profiles = Object.entries(TERMS_PROFILES).map(([id, p]) => ({
+      id,
+      kind: p.kind,
+      label: p.label,
+      description: p.description,
+      current_version: p.current_version ?? null,
+      tokens: (p.current_version && p.versions?.[p.current_version]?.tokens) || [],
+      render_line: p.render_line ?? null,
+    }));
+    return c.json({ profiles });
+  });
+
+  // GET /api/po/config — the versioned purchaser identity (D5) + tax table (D8)
+  // for the builder UI (entity display, invoice-routing cc chips, tax-state badge).
+  // Explicit key picks — the JSON files carry maintainer comment fields that don't
+  // belong on the wire.
+  app.get("/api/po/config", gates.requireSession, gates.requireCapability(CAP_PO), (c) =>
+    c.json({
+      purchaser: {
+        entity: purchaserConfig.entity,
+        address_lines: purchaserConfig.address_lines,
+        phone: purchaserConfig.phone,
+        invoice_routing: purchaserConfig.invoice_routing,
+      },
+      tax: {
+        rates_bp: taxConfig.rates_bp,
+        state_names: taxConfig.state_names,
+      },
+    }),
+  );
 
   // GET /api/po/vendors — the vendor picker/management read. Active-only by default;
   // ?include_inactive=1 widens (the management list shows retired vendors greyed).
