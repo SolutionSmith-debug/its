@@ -91,3 +91,61 @@ tr.sev-info td:first-child { color: var(--info); }
 .foot {
   padding: 18px; color: var(--muted); font-size: 12px; text-align: center;
 }
+
+/* --- nav --- */
+.topnav { display: flex; gap: 14px; }
+.topnav a {
+  color: var(--muted); text-decoration: none; font-size: 13px;
+  padding: 3px 8px; border-radius: 4px;
+}
+.topnav a:hover { color: var(--text); background: var(--panel); }
+
+/* --- config editor --- */
+.config-editor { max-width: 1100px; margin: 0 auto; }
+.config-head { display: flex; align-items: baseline; gap: 14px; }
+.config-head h2 { font-size: 16px; margin: 0; }
+.backlink { color: var(--info); text-decoration: none; font-size: 13px; }
+.config-note { color: var(--muted); font-size: 12px; max-width: 780px; }
+.config-note code { color: var(--text); font-family: ui-monospace, monospace; }
+.config-error {
+  color: var(--error); border: 1px solid var(--error); border-radius: 6px;
+  padding: 8px 12px; font-size: 13px; margin: 10px 0;
+}
+.gated { color: var(--warn); }
+.config-group { margin: 18px 0; }
+.config-group h3 {
+  font-size: 13px; color: var(--muted); font-weight: 600;
+  border-bottom: 1px solid var(--border); padding-bottom: 5px;
+}
+.config-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.config-table th, .config-table td {
+  text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+.config-table th { color: var(--muted); font-weight: 600; }
+.cfg-setting { font-family: ui-monospace, SFMono-Regular, monospace; }
+.cfg-ws, .cfg-current { font-family: ui-monospace, SFMono-Regular, monospace; color: var(--muted); }
+.cfg-current { color: var(--text); }
+.cfg-note { color: var(--warn); font-size: 11px; margin-top: 3px; font-family: sans-serif; }
+.missing { color: var(--unavailable); }
+.cfg-form { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.cfg-input {
+  background: var(--bg); color: var(--text); border: 1px solid var(--border);
+  border-radius: 4px; padding: 4px 6px; font-family: ui-monospace, monospace;
+  font-size: 12px; min-width: 160px;
+}
+.cfg-pin {
+  background: var(--bg); color: var(--text); border: 1px solid var(--border);
+  border-radius: 4px; padding: 4px 6px; width: 70px; font-size: 12px;
+}
+.cfg-btn {
+  background: var(--ok); color: #0f1419; border: 1px solid var(--ok);
+  border-radius: 4px; padding: 4px 12px; font-weight: 600; cursor: pointer;
+  font-size: 12px;
+}
+.cfg-btn:hover { filter: brightness(1.1); }
+.outcome { font-size: 12px; }
+.outcome-applied { color: var(--ok); }
+.outcome-noop { color: var(--muted); }
+.outcome-escalated { color: var(--warn); }
+.outcome-rejected, .outcome-not_editable, .outcome-error { color: var(--error); }

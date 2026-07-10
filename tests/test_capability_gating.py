@@ -395,6 +395,12 @@ NETWORK_LIB_ALLOWLIST: frozenset[str] = frozenset({
     "operator_dashboard/sources/runtime_state.py",
     "operator_dashboard/sources/smartsheet_panels.py",
     "operator_dashboard/sources/watchdog_checks.py",
+    # WS2 D1-2 ACT surface: `importlib` lazily resolves INTERNAL modules only
+    # (shared.smartsheet_client / shared.sheet_ids / shared.error_log) so a
+    # broken import degrades the config editor rather than the app; never a
+    # dynamic import of a network lib. It writes ONLY to ITS_Config (internal
+    # SoR), never an external send — no anthropic/graph/resend import here.
+    "operator_dashboard/act/config_write.py",
 })
 
 # Import needles that constitute network-egress or process-spawn capability.
