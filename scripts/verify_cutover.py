@@ -49,10 +49,16 @@ VC-08  d1-migrations  ``wrangler d1 migrations list <db> --remote`` reports none
 VC-09  heartbeat-url  ``system.heartbeat_url`` (UptimeRobot) configured, https
 ====== ============== ==============================================================
 
-PO enrollment note (WS1): the Python send side of the Purchase-Order workstream
-(``po_materials`` gates + ``po_send`` from_mailbox rows) enrolls in ``CONFIG_ROWS``
-when those daemons land — the keychain check already requires the
-``ITS_PORTAL_PO_TOKEN`` bearer (provisioned with WS1 S2; see the checklist).
+PO enrollment note (WS1): ``po_send`` has LANDED (PR #500, ships dark via a seeded
+``po_materials.po_send.polling_enabled=false`` row), so its production-address surface is
+now enrolled below — ``po_materials.po_send.from_mailbox`` (VC-03 sandbox-scanned) plus the
+two previously-unscanned ``worker_base_url`` copies (the ``progress_reports`` + ``po_materials``
+Workstream rows of ``safety_reports.portal.worker_base_url``), closing the mechanical gap the
+manual CL-14 grep used to backstop. The keychain check already requires the
+``ITS_PORTAL_PO_TOKEN`` bearer. DEFERRED (NOT enrolled): ``po_send.polling_enabled`` /
+``scheduled_send_local`` — enrolling ``polling_enabled`` as ``"true"`` would DEMAND PO send be
+live at cutover, and first-enabling a send path is a FIXED high-capability External-Send-Gate
+decision (Seth). Enroll them only once PO send is confirmed in the Aug-7 send scope.
 
 Usage::
 
@@ -166,6 +172,29 @@ CONFIG_ROWS: tuple[ConfigRow, ...] = (
     ),
     ConfigRow(
         "progress_reports.progress_send.from_mailbox", "progress_reports", "non_empty",
+        sandbox_scan=True,
+    ),
+    # The two previously-unscanned worker_base_url copies. `safety_reports.portal.worker_base_url`
+    # is ONE Setting name read under THREE Workstream cells = 3 physical ITS_Config rows
+    # (registry.py) — the safety_reports copy is scanned above; these are the progress_reports copy
+    # (progress_weekly_generate.py) + the po_materials copy (config_actuator.py). All three MUST be
+    # the production custom domain at cutover; enrolling them replaces the manual CL-14 grep backstop
+    # with a mechanical sandbox scan.
+    ConfigRow(
+        "safety_reports.portal.worker_base_url", "progress_reports", "non_empty",
+        sandbox_scan=True,
+    ),
+    ConfigRow(
+        "safety_reports.portal.worker_base_url", "po_materials", "non_empty",
+        sandbox_scan=True,
+    ),
+    # po_send LANDED (PR #500, dark). Its FROM address must be production regardless of whether
+    # sending is enabled at cutover — enroll it (sandbox-scanned) so a mirror procurement@ residue
+    # is caught. NOT enrolling po_send.polling_enabled / scheduled_send_local: demanding
+    # polling_enabled="true" would force a send-enable (a high-class External-Send-Gate decision —
+    # Seth); add them only once PO send is confirmed in the Aug-7 send scope. (docstring PO note.)
+    ConfigRow(
+        "po_materials.po_send.from_mailbox", "po_materials", "non_empty",
         sandbox_scan=True,
     ),
     ConfigRow("safety_reports.weekly_send.scheduled_send_local", "safety_reports", "non_empty"),
