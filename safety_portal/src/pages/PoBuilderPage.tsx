@@ -10,7 +10,6 @@ import {
   computeDisplayTotals,
 } from "../lib/po";
 import { fetchJobs, type Job } from "../lib/api";
-import { fetchJobDetail } from "../lib/fieldops_jobtracker";
 import { errorText } from "../lib/errorCopy";
 import { useAuth } from "../lib/auth";
 import { PageShell } from "../components/PageShell";
@@ -33,13 +32,15 @@ import { PageShell } from "../components/PageShell";
 // in force until the successor is actually sent (the Worker flips it at status-sync). A
 // `supersede_in_progress` 409 opens the existing successor instead of minting a sibling.
 //
-// AUTO-FILL SCOPE (documented S6 deviation): the browser job reads are /api/jobs (id + name)
-// and — when the viewer holds cap.jobtracker.read — /api/fieldops/jobs/:id, which serves the
-// CLIENT contact block but NOT the routing SoR (address/stakeholder live only on the internal
-// token tier, worker/index.ts /api/internal/fieldops/pending-jobs). So job select auto-fills
-// job name/number/ship-to-name + delivery contact from the client block, and the ship-to
-// ADDRESS block stays manual until a session-tier routing read exists (frontend-only slice —
-// no Worker changes here).
+// AUTO-FILL SCOPE (S6 deviation now RESOLVED): job select fills the whole ship-to step from the
+// routing SoR. /api/jobs (id + name) drives the dropdown; GET /api/po/jobs/:job_id/ship-to
+// (worker/po.ts, session + cap.po.manage — the cap the whole page already holds) returns the
+// same routing row the internal-token tier serves (jobs.address + stakeholder_*), so the builder
+// auto-fills job name/number, the ship-to name + address line, and the delivery contact WITHOUT
+// the internal token. The routing SoR carries a single free-text `address` line (no structured
+// city/state/zip — those live only on purchase_orders), so those three ride back empty and stay
+// manual. Auto-fill is a CONVENIENCE: every field is editable, and a 404 / read error silently
+// leaves the field blank (never blocks the wizard).
 
 const JOB_NO_RE = /^\d{4}\.\d{3}$/;
 const QTY_RE = /^\d+(\.\d{0,3})?$/; // the Worker normalizes qty to ≤3dp
@@ -183,7 +184,6 @@ export function PoBuilderPage({ onBack }: { onBack: () => void }) {
   const { user } = useAuth();
   const caps = user?.capabilities ?? [];
   const canManage = caps.includes("cap.po.manage"); // UI affordance only — the Worker re-gates
-  const canReadJobs = caps.includes("cap.jobtracker.read"); // gates the client-contact auto-fill read
 
   // ── Shared data ────────────────────────────────────────────────────────────────────────────────
   const [pos, setPos] = useState<api.PoListRow[]>([]);
@@ -330,25 +330,30 @@ export function PoBuilderPage({ onBack }: { onBack: () => void }) {
     setJobId(id);
     const job = jobs.find((j) => j.job_id === id);
     if (!job) return;
+    // Immediate fills from the /api/jobs dropdown row (always present).
     setJobName(job.project_name);
     // Suggest job_no from a YYYY.NNN project-name prefix (the Evergreen convention) — editable.
     const m = /^(\d{4}\.\d{3})/.exec(job.project_name.trim());
     setJobNo(m ? m[1] : "");
     setShipToName(job.project_name);
-    // Best-effort delivery-contact auto-fill from the job's CLIENT block (see the AUTO-FILL
-    // SCOPE note atop this file). Silent degrade — the fields stay editable either way.
-    if (canReadJobs) {
-      try {
-        const detail = await fetchJobDetail(id);
-        const c = detail.job.client;
-        if (c) {
-          if (c.contact) setDeliveryName(c.contact);
-          if (c.phone) setDeliveryPhone(c.phone);
-          if (c.email) setDeliveryEmail(c.email);
-        }
-      } catch {
-        /* auto-fill only — never blocks the wizard */
+    // Full ship-to + delivery auto-fill from the routing SoR (session + cap.po.manage — see the
+    // AUTO-FILL SCOPE note atop this file). Convenience only: every field stays editable, and a
+    // 404 / read error silently leaves the fields blank — never blocks the wizard.
+    try {
+      const s = await api.fetchJobShipTo(id);
+      if (s.ship_to_name) setShipToName(s.ship_to_name);
+      if (s.ship_to_address) setShipToAddress(s.ship_to_address);
+      if (s.ship_to_city) setShipToCity(s.ship_to_city);
+      if (s.ship_to_state) {
+        setShipToState(s.ship_to_state.toUpperCase());
+        touchMoney(); // the ship-to state is the 'auto' tax basis — invalidate saved totals
       }
+      if (s.ship_to_zip) setShipToZip(s.ship_to_zip);
+      if (s.delivery_contact_name) setDeliveryName(s.delivery_contact_name);
+      if (s.delivery_contact_phone) setDeliveryPhone(s.delivery_contact_phone);
+      if (s.delivery_contact_email) setDeliveryEmail(s.delivery_contact_email);
+    } catch {
+      /* auto-fill only — never blocks the wizard */
     }
   }
 

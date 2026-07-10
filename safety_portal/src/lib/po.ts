@@ -232,6 +232,30 @@ export async function updateVendor(vendorKey: string, fields: VendorFields): Pro
   await postJson(`/api/po/vendors/${encodeURIComponent(vendorKey)}/update`, fields);
 }
 
+// ── Job ship-to auto-fill (S6 follow-up) ───────────────────────────────────────────────────────────
+
+/** The builder's ship-to + delivery auto-fill block for a job, from the routing SoR under
+ *  session + cap.po.manage (GET /api/po/jobs/:job_id/ship-to). city/state/zip come back empty
+ *  today (the SoR carries a single `address` line — see the Worker route). */
+export interface JobShipTo {
+  job_id: string;
+  job_no: string;
+  ship_to_name: string;
+  ship_to_address: string;
+  ship_to_city: string;
+  ship_to_state: string;
+  ship_to_zip: string;
+  delivery_contact_name: string;
+  delivery_contact_phone: string;
+  delivery_contact_email: string;
+}
+
+/** Fetch a job's ship-to auto-fill block. Throws ApiError on 404/non-2xx; the builder catches
+ *  and silently degrades — auto-fill is a convenience, every field stays operator-editable. */
+export async function fetchJobShipTo(jobId: string): Promise<JobShipTo> {
+  return getJson<JobShipTo>(`/api/po/jobs/${encodeURIComponent(jobId)}/ship-to`);
+}
+
 // ── POs ──────────────────────────────────────────────────────────────────────────────────────────
 
 export async function fetchPos(status?: PoStatus): Promise<PoListRow[]> {

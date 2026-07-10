@@ -18,6 +18,7 @@ vi.mock("../../lib/po", async (importOriginal) => {
     fetchPoConfig: vi.fn(),
     fetchPos: vi.fn(),
     fetchPo: vi.fn(),
+    fetchJobShipTo: vi.fn(),
     createDraft: vi.fn(),
     updateDraft: vi.fn(),
     generateDraft: vi.fn(),
@@ -26,7 +27,6 @@ vi.mock("../../lib/po", async (importOriginal) => {
   };
 });
 vi.mock("../../lib/api", () => ({ fetchJobs: vi.fn() }));
-vi.mock("../../lib/fieldops_jobtracker", () => ({ fetchJobDetail: vi.fn() }));
 vi.mock("../../lib/auth", () => ({ useAuth: vi.fn() }));
 
 import * as api from "../../lib/po";
@@ -90,6 +90,21 @@ const VENDORS: api.Vendor[] = [
 
 const JOBS = [{ job_id: "JOB-000001", project_name: "2023.126 Kendall Solar" }];
 
+/** A ship-to auto-fill block with all fields empty — the default so a job select in the
+ *  existing fixtures auto-fills NOTHING (the fixtures set ship-to state manually). */
+const EMPTY_SHIPTO: api.JobShipTo = {
+  job_id: "JOB-000001",
+  job_no: "",
+  ship_to_name: "",
+  ship_to_address: "",
+  ship_to_city: "",
+  ship_to_state: "",
+  ship_to_zip: "",
+  delivery_contact_name: "",
+  delivery_contact_phone: "",
+  delivery_contact_email: "",
+};
+
 function poRow(overrides: Partial<api.PoListRow>): api.PoListRow {
   return {
     id: 1,
@@ -120,6 +135,7 @@ beforeEach(() => {
   vi.mocked(api.fetchVendors).mockResolvedValue(VENDORS);
   vi.mocked(api.fetchTerms).mockResolvedValue(TERMS);
   vi.mocked(api.fetchPoConfig).mockResolvedValue(CONFIG);
+  vi.mocked(api.fetchJobShipTo).mockResolvedValue(EMPTY_SHIPTO);
   vi.mocked(fetchJobs).mockResolvedValue(JOBS);
 });
 
@@ -321,5 +337,73 @@ describe("PoBuilderPage", () => {
     // The clone draft opened in the builder, carrying the supersession marker.
     await waitFor(() => expect(r.getByText("Supersedes PO #3")).toBeTruthy());
     expect(r.getByText("Editing draft #9")).toBeTruthy();
+  });
+});
+
+describe("PoBuilderPage — ship-to auto-fill (S6 follow-up)", () => {
+  // The routing SoR carries a single `address` line (no structured city/state/zip), so those
+  // three come back empty from the Worker — matching the real GET /api/po/jobs/:id/ship-to shape.
+  const FILLED: api.JobShipTo = {
+    job_id: "JOB-000001",
+    job_no: "2023.126",
+    ship_to_name: "2023.126 Kendall Solar",
+    ship_to_address: "742 Panel Way",
+    ship_to_city: "",
+    ship_to_state: "",
+    ship_to_zip: "",
+    delivery_contact_name: "Riley Receiver",
+    delivery_contact_phone: "555-0142",
+    delivery_contact_email: "riley@site.example",
+  };
+
+  async function openBuilder(r: ReturnType<typeof render>): Promise<void> {
+    await waitFor(() => expect(api.fetchPos).toHaveBeenCalled());
+    fireEvent.click(r.getByText("+ New purchase order"));
+  }
+
+  it("populates the ship-to address + delivery contact from the routing SoR on job select", async () => {
+    vi.mocked(api.fetchJobShipTo).mockResolvedValue(FILLED);
+    const r = render(<PoBuilderPage onBack={() => {}} />);
+    await openBuilder(r);
+    fireEvent.change(r.getByLabelText("Job"), { target: { value: "JOB-000001" } });
+    await waitFor(() => expect(api.fetchJobShipTo).toHaveBeenCalledWith("JOB-000001"));
+    await waitFor(() => expect((r.getByLabelText("Address") as HTMLInputElement).value).toBe("742 Panel Way"));
+    expect((r.getByLabelText("Site / receiving name") as HTMLInputElement).value).toBe("2023.126 Kendall Solar");
+    expect((r.getByLabelText("Name") as HTMLInputElement).value).toBe("Riley Receiver");
+    expect((r.getByLabelText("Phone") as HTMLInputElement).value).toBe("555-0142");
+    expect((r.getByLabelText("Email") as HTMLInputElement).value).toBe("riley@site.example");
+    // City/State/ZIP aren't in the SoR → left blank for the operator to fill.
+    expect((r.getByLabelText("City") as HTMLInputElement).value).toBe("");
+    expect((r.getByLabelText("Ship-to state") as HTMLInputElement).value).toBe("");
+    expect((r.getByLabelText("ZIP") as HTMLInputElement).value).toBe("");
+  });
+
+  it("keeps auto-filled fields editable (auto-fill is a convenience, not a lock)", async () => {
+    vi.mocked(api.fetchJobShipTo).mockResolvedValue(FILLED);
+    const r = render(<PoBuilderPage onBack={() => {}} />);
+    await openBuilder(r);
+    fireEvent.change(r.getByLabelText("Job"), { target: { value: "JOB-000001" } });
+    await waitFor(() => expect((r.getByLabelText("Address") as HTMLInputElement).value).toBe("742 Panel Way"));
+    // Override the auto-filled address; the input accepts the edit.
+    fireEvent.change(r.getByLabelText("Address"), { target: { value: "1 Override Rd" } });
+    expect((r.getByLabelText("Address") as HTMLInputElement).value).toBe("1 Override Rd");
+    // And type the city/state the SoR didn't supply (state upper-cases, drives auto tax).
+    fireEvent.change(r.getByLabelText("City"), { target: { value: "Rockford" } });
+    fireEvent.change(r.getByLabelText("Ship-to state"), { target: { value: "il" } });
+    expect((r.getByLabelText("City") as HTMLInputElement).value).toBe("Rockford");
+    expect((r.getByLabelText("Ship-to state") as HTMLInputElement).value).toBe("IL");
+  });
+
+  it("degrades silently when the ship-to read fails (list-derived fills stand, no crash)", async () => {
+    vi.mocked(api.fetchJobShipTo).mockRejectedValue(new Error("403"));
+    const r = render(<PoBuilderPage onBack={() => {}} />);
+    await openBuilder(r);
+    fireEvent.change(r.getByLabelText("Job"), { target: { value: "JOB-000001" } });
+    await waitFor(() => expect(api.fetchJobShipTo).toHaveBeenCalled());
+    // The /api/jobs-derived fills still applied; the SoR-only fields stay blank; nothing threw.
+    expect((r.getByLabelText("Site / receiving name") as HTMLInputElement).value).toBe("2023.126 Kendall Solar");
+    expect((r.getByLabelText("Job number (YYYY.NNN)") as HTMLInputElement).value).toBe("2023.126");
+    expect((r.getByLabelText("Address") as HTMLInputElement).value).toBe("");
+    expect((r.getByLabelText("Name") as HTMLInputElement).value).toBe("");
   });
 });
