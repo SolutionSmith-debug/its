@@ -1,0 +1,325 @@
+/**
+ * PO Builder page (S6) — SPA render-smoke for the wizard + tracker. Covers: cap-gated
+ * affordances, the live integer-cents math mirror (2-line fixture → exact $ display), the
+ * line-column variant toggle, the job_no suggestion parse, and the totals_mismatch error
+ * path (the panel re-renders from the Worker's `recomputed` — the server is authoritative).
+ * Lib fns + auth are mocked (importOriginal keeps the REAL money math — formatCents /
+ * computeDisplayTotals / lineExtendedCents are the code under test here).
+ */
+import { cleanup, fireEvent, render, waitFor, within } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("../../lib/po", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../lib/po")>();
+  return {
+    ...actual,
+    fetchVendors: vi.fn(),
+    fetchTerms: vi.fn(),
+    fetchPoConfig: vi.fn(),
+    fetchPos: vi.fn(),
+    fetchPo: vi.fn(),
+    createDraft: vi.fn(),
+    updateDraft: vi.fn(),
+    generateDraft: vi.fn(),
+    supersedePo: vi.fn(),
+    cancelPo: vi.fn(),
+  };
+});
+vi.mock("../../lib/api", () => ({ fetchJobs: vi.fn() }));
+vi.mock("../../lib/fieldops_jobtracker", () => ({ fetchJobDetail: vi.fn() }));
+vi.mock("../../lib/auth", () => ({ useAuth: vi.fn() }));
+
+import * as api from "../../lib/po";
+import { fetchJobs } from "../../lib/api";
+import { useAuth } from "../../lib/auth";
+import { PoBuilderPage } from "../PoBuilderPage";
+
+function authWith(capabilities: string[]) {
+  return {
+    user: { username: "office", role: "admin" as const, capabilities },
+    loading: false,
+    login: vi.fn(),
+    logout: vi.fn(),
+  };
+}
+
+const CONFIG: api.PoConfig = {
+  purchaser: {
+    entity: "Evergreen Renewables LLC",
+    address_lines: ["100 Spectrum Center Dr. STE 570", "Irvine, CA. 92618"],
+    phone: "888-303-6424",
+    invoice_routing: { to: "invoices@evergreenrenewables.com", cc: ["teala@evergreenrenewables.com"] },
+  },
+  tax: {
+    rates_bp: { IL: 900, OR: 0 },
+    state_names: { IL: "Illinois", OR: "Oregon" },
+  },
+};
+
+const TERMS: api.TermsProfile[] = [
+  {
+    id: "standard_17",
+    kind: "library",
+    label: "Standard 17-clause (Purchase Order 2019)",
+    description: "Evergreen's standard domestic terms.",
+    current_version: "1",
+    tokens: [],
+    render_line: null,
+  },
+];
+
+const VENDORS: api.Vendor[] = [
+  {
+    vendor_key: "VEN-000001",
+    vendor_name: "Apex Racking",
+    address: "1 Steel Way",
+    contact_name: "Sam Orders",
+    contact_email: "orders@apexracking.com",
+    contact_phone: "555-0101",
+    region: "West",
+    supply_categories: ["racking"],
+    default_terms_profile: "standard_17",
+    gtc_reference: "",
+    active: 1,
+    notes: "",
+    origin: "portal",
+    sync_state: "synced",
+    mirror_version: 1,
+  },
+];
+
+const JOBS = [{ job_id: "JOB-000001", project_name: "2023.126 Kendall Solar" }];
+
+function poRow(overrides: Partial<api.PoListRow>): api.PoListRow {
+  return {
+    id: 1,
+    po_number: null,
+    job_no: "2023.126",
+    site_phase: 0,
+    supersede_seq: 0,
+    revision: null,
+    vendor_key: "VEN-000001",
+    job_id: "JOB-000001",
+    job_name: "2023.126 Kendall Solar",
+    status: "draft",
+    total_cents: 4046,
+    supersedes_po_id: null,
+    box_file_id: null,
+    created_by: "office",
+    created_at: 1_780_000_000,
+    updated_at: 1_780_000_000,
+    ...overrides,
+  };
+}
+
+afterEach(cleanup);
+beforeEach(() => {
+  vi.resetAllMocks();
+  vi.mocked(useAuth).mockReturnValue(authWith(["cap.po.manage"]));
+  vi.mocked(api.fetchPos).mockResolvedValue([]);
+  vi.mocked(api.fetchVendors).mockResolvedValue(VENDORS);
+  vi.mocked(api.fetchTerms).mockResolvedValue(TERMS);
+  vi.mocked(api.fetchPoConfig).mockResolvedValue(CONFIG);
+  vi.mocked(fetchJobs).mockResolvedValue(JOBS);
+});
+
+/** Open the builder and fill the 2-line fixture: 3 × $12.34 + 2 × $0.05, ship-to IL (auto tax). */
+async function openBuilderWithFixture(r: ReturnType<typeof render>) {
+  const { getByText, getByLabelText } = r;
+  await waitFor(() => expect(api.fetchPos).toHaveBeenCalled());
+  fireEvent.click(getByText("+ New purchase order"));
+
+  fireEvent.change(getByLabelText("Job"), { target: { value: "JOB-000001" } });
+  fireEvent.change(getByLabelText("Ship-to state"), { target: { value: "IL" } });
+  await waitFor(() => expect(getByText(/Illinois — 9\.00% sales tax/)).toBeTruthy());
+
+  // Vendor select (the picker row button carries the vendor name).
+  fireEvent.click(r.getByRole("button", { name: /Apex Racking/ }));
+
+  // Two lines: 3 × $12.34 = $37.02 and 2 × $0.05 = $0.10.
+  fireEvent.change(getByLabelText("Line 1 description"), { target: { value: "Rail 208in" } });
+  fireEvent.change(getByLabelText("Line 1 quantity"), { target: { value: "3" } });
+  fireEvent.change(getByLabelText("Line 1 unit cost"), { target: { value: "12.34" } });
+  fireEvent.click(getByText("+ Add a line"));
+  fireEvent.change(getByLabelText("Line 2 description"), { target: { value: "Hardware kit" } });
+  fireEvent.change(getByLabelText("Line 2 quantity"), { target: { value: "2" } });
+  fireEvent.change(getByLabelText("Line 2 unit cost"), { target: { value: "0.05" } });
+}
+
+describe("PoBuilderPage", () => {
+  it("renders the tracker under cap.po.manage; write affordances hidden without the cap", async () => {
+    vi.mocked(api.fetchPos).mockResolvedValue([poRow({})]);
+    const withCap = render(<PoBuilderPage onBack={() => {}} />);
+    await waitFor(() => expect(withCap.getByText("Draft #1")).toBeTruthy());
+    expect(withCap.getByText("+ New purchase order")).toBeTruthy();
+    expect(withCap.getByText("Open")).toBeTruthy();
+    withCap.unmount();
+
+    vi.mocked(useAuth).mockReturnValue(authWith([]));
+    const withoutCap = render(<PoBuilderPage onBack={() => {}} />);
+    await waitFor(() => expect(withoutCap.getByText("Draft #1")).toBeTruthy());
+    expect(withoutCap.queryByText("+ New purchase order")).toBeNull();
+    expect(withoutCap.queryByText("Open")).toBeNull();
+    expect(withoutCap.queryByText("Cancel PO")).toBeNull();
+  });
+
+  it("mirrors the Worker's integer-cents math for display: 2-line fixture totals exactly", async () => {
+    const r = render(<PoBuilderPage onBack={() => {}} />);
+    await openBuilderWithFixture(r);
+
+    // Per-row extended: round(3 × 1234) = 3702, round(2 × 5) = 10.
+    expect(r.getByText("$37.02")).toBeTruthy();
+    expect(r.getByText("$0.10")).toBeTruthy();
+
+    // Panel: subtotal 3712 · tax round(3712×900/10000)=334 · total 4046.
+    const panel = r.getByLabelText("Totals panel") as HTMLElement;
+    expect(within(panel).getByText("$37.12")).toBeTruthy();
+    expect(within(panel).getByText("Tax (9.00%)")).toBeTruthy();
+    expect(within(panel).getByText("$3.34")).toBeTruthy();
+    expect(within(panel).getByText("$40.46")).toBeTruthy();
+  });
+
+  it("suggests the job number from the YYYY.NNN project-name prefix (editable)", async () => {
+    const r = render(<PoBuilderPage onBack={() => {}} />);
+    await waitFor(() => expect(api.fetchPos).toHaveBeenCalled());
+    fireEvent.click(r.getByText("+ New purchase order"));
+    fireEvent.change(r.getByLabelText("Job"), { target: { value: "JOB-000001" } });
+    const jobNo = r.getByLabelText("Job number (YYYY.NNN)") as HTMLInputElement;
+    expect(jobNo.value).toBe("2023.126");
+    fireEvent.change(jobNo, { target: { value: "bogus" } });
+    expect(r.getByText(/must look like 2023\.126/)).toBeTruthy();
+  });
+
+  it("the variant toggle swaps the line-grid column set (default ↔ per-watt)", async () => {
+    const r = render(<PoBuilderPage onBack={() => {}} />);
+    await waitFor(() => expect(api.fetchPos).toHaveBeenCalled());
+    fireEvent.click(r.getByText("+ New purchase order"));
+
+    expect(r.getByRole("columnheader", { name: "Unit cost" })).toBeTruthy();
+    expect(r.queryByRole("columnheader", { name: "$/W" })).toBeNull();
+
+    fireEvent.click(r.getByRole("button", { name: "Per watt" }));
+    expect(r.getByRole("columnheader", { name: "$/W" })).toBeTruthy();
+    expect(r.getByRole("columnheader", { name: "Watts" })).toBeTruthy();
+    expect(r.getByRole("columnheader", { name: "Pallets" })).toBeTruthy();
+    expect(r.queryByRole("columnheader", { name: "Unit cost" })).toBeNull();
+
+    // Per-watt extended: round(1000 W × 350000 µ¢/W ÷ 1e6) = 350 cents.
+    fireEvent.change(r.getByLabelText("Line 1 description"), { target: { value: "Modules" } });
+    fireEvent.change(r.getByLabelText("Line 1 watts"), { target: { value: "1000" } });
+    fireEvent.change(r.getByLabelText("Line 1 price per watt"), { target: { value: "0.35" } });
+    expect(r.getByText("$350.00")).toBeTruthy();
+  });
+
+  it("generate sends the displayed totals; a totals_mismatch 409 re-renders from `recomputed`", async () => {
+    const savedTotals: api.PoTotals = { subtotal_cents: 3712, tax_rate_bp: 900, tax_cents: 334, total_cents: 4046 };
+    vi.mocked(api.createDraft).mockResolvedValue({ id: 7, totals: savedTotals });
+    vi.mocked(api.generateDraft).mockResolvedValue({
+      ok: false,
+      error: "totals_mismatch",
+      recomputed: { subtotal_cents: 9999, tax_rate_bp: 900, tax_cents: 900, total_cents: 10899 },
+    });
+    const r = render(<PoBuilderPage onBack={() => {}} />);
+    await openBuilderWithFixture(r);
+
+    fireEvent.click(r.getByText("Generate PO"));
+
+    // Save-then-generate: the draft persists first, then generate carries the DISPLAYED cents
+    // (the Worker's own totals for that snapshot).
+    await waitFor(() => expect(api.createDraft).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(api.generateDraft).toHaveBeenCalledWith(
+        7,
+        expect.objectContaining({ subtotal_cents: 3712, tax_cents: 334, total_cents: 4046 }),
+      ),
+    );
+
+    // The refusal banner + the panel re-rendered from the server's recomputed money.
+    await waitFor(() => expect(r.getByText(/recomputed totals differ/)).toBeTruthy());
+    const panel = r.getByLabelText("Totals panel") as HTMLElement;
+    expect(within(panel).getByText("$99.99")).toBeTruthy(); // recomputed subtotal
+    expect(within(panel).getByText("$108.99")).toBeTruthy(); // recomputed total
+  });
+
+  it("a successful generate returns to the tracker with the PO number", async () => {
+    const savedTotals: api.PoTotals = { subtotal_cents: 3712, tax_rate_bp: 900, tax_cents: 334, total_cents: 4046 };
+    vi.mocked(api.createDraft).mockResolvedValue({ id: 7, totals: savedTotals });
+    vi.mocked(api.generateDraft).mockResolvedValue({
+      ok: true,
+      id: 7,
+      po_number: "2023.126.0.0",
+      revision: 0,
+      totals: savedTotals,
+    });
+    const r = render(<PoBuilderPage onBack={() => {}} />);
+    await openBuilderWithFixture(r);
+
+    fireEvent.click(r.getByText("Generate PO"));
+    await waitFor(() => expect(r.getByText(/PO 2023\.126\.0\.0 generated/)).toBeTruthy());
+    expect(r.getByText("+ New purchase order")).toBeTruthy(); // back on the tracker
+  });
+
+  it("tracker actions follow the state machine: sent → Supersede (opens the clone draft)", async () => {
+    vi.mocked(api.fetchPos).mockResolvedValue([
+      poRow({ id: 3, status: "sent", po_number: "2023.126.0.0" }),
+      poRow({ id: 4, status: "queued" }),
+    ]);
+    vi.mocked(api.supersedePo).mockResolvedValue({ ok: true, id: 9 });
+    vi.mocked(api.fetchPo).mockResolvedValue({
+      po: {
+        ...poRow({ id: 9, status: "draft", supersedes_po_id: 3 }),
+        ship_to_name: "Kendall Solar",
+        ship_to_address: "",
+        ship_to_city: "",
+        ship_to_state: "IL",
+        ship_to_zip: "",
+        delivery_contact_name: "",
+        delivery_contact_phone: "",
+        delivery_contact_email: "",
+        sow_text: "",
+        delivery_instructions: "",
+        payment_terms_text: "",
+        terms_profile_id: "standard_17",
+        terms_version: "1",
+        subtotal_cents: 3712,
+        tax_mode: "auto",
+        tax_rate_bp: 900,
+        tax_cents: 334,
+        shipping_cents: 0,
+        line_column_variant: "default",
+        approver_name: "",
+        approver_title: "",
+      } as api.PoDetail,
+      line_items: [
+        {
+          position: 1,
+          part_number: "",
+          description: "Rail 208in",
+          qty: 3,
+          unit: "EA",
+          unit_cost_cents: 1234,
+          extended_cents: 3702,
+          watts: null,
+          panels: null,
+          pallets: null,
+          price_per_watt_microcents: null,
+        },
+      ],
+    });
+    const r = render(<PoBuilderPage onBack={() => {}} />);
+    await waitFor(() => expect(r.getByText("2023.126.0.0")).toBeTruthy());
+
+    // The queued row offers Cancel (two-step), never Supersede; the sent row the reverse.
+    const queuedCard = r.getByText("Draft #4").closest(".card") as HTMLElement;
+    expect(within(queuedCard).getByText("Cancel PO")).toBeTruthy();
+    expect(within(queuedCard).queryByText("Supersede")).toBeNull();
+    const sentCard = r.getByText("2023.126.0.0").closest(".card") as HTMLElement;
+    expect(within(sentCard).queryByText("Cancel PO")).toBeNull();
+
+    fireEvent.click(within(sentCard).getByText("Supersede"));
+    await waitFor(() => expect(api.supersedePo).toHaveBeenCalledWith(3));
+    // The clone draft opened in the builder, carrying the supersession marker.
+    await waitFor(() => expect(r.getByText("Supersedes PO #3")).toBeTruthy());
+    expect(r.getByText("Editing draft #9")).toBeTruthy();
+  });
+});

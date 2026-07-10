@@ -204,6 +204,13 @@ TRACKED_JOBS: list[str] = [
     # (sync_enabled=true, running each ~90s), so it will NOT WARN spuriously — its marker is
     # fresh. Check C surfaces a silent death of this live daemon.
     "fieldops_sync",
+    # Purchase-Order pull daemon (po_materials.po_poll, PO S4). Writes a
+    # po_poll.last_run marker each cycle once ACTIVE. Like the compile-now / progress
+    # entries this WARNs until the operator both LOADS the plist (`install.sh load
+    # org.solutionsmith.its.po-poll`) AND flips at least one po_materials.po_poll.*
+    # gate — a loaded daemon whose gates are all false is a pre-lock no-op and writes
+    # NO marker (an intentional dark state, not a fault). Register + activate together.
+    "po_poll",
 ]
 
 # Per-job freshness windows. Jobs not in this map use the default 24h
@@ -246,6 +253,11 @@ TRACKED_JOB_WINDOWS: dict[str, timedelta] = {
     # operator who raises it well above 90s should widen this window to match; 8 min fits the
     # default 90s cadence.
     "fieldops_sync": timedelta(minutes=8),
+    # po_poll runs every 90s (default). 8 min == ~5 cycles — same high-frequency-poller
+    # tolerance as fieldops_sync/safety_compile_now_poll, scaled to the 90s cadence.
+    # Same tunable-interval caveat as fieldops_sync (po_materials.po_poll.
+    # poll_interval_seconds / the install.sh arg — widen this window if raised).
+    "po_poll": timedelta(minutes=8),
 }
 DEFAULT_TRACKED_JOB_WINDOW = timedelta(hours=24)
 

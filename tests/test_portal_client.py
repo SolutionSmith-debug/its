@@ -795,3 +795,94 @@ def test_get_fieldops_equipment_snapshot_401_raises_auth_without_retry(mocker):
     with pytest.raises(PortalAuthError):
         portal_client.get_fieldops_equipment_snapshot(BASE, TOKEN)
     assert req.call_count == 1  # a 401 is NOT retried
+
+
+# ---- Purchase-order internal tier (PO S4) ---------------------------------
+
+
+def test_get_pending_pos_returns_rows_and_sends_bearer_and_limit(mocker):
+    rows = [{"id": 7, "po_number": "2026.001.2.0.0", "hmac": "abc", "line_items": []}]
+    req = _patch_requests(mocker, _mock_response(json_body={"pending": rows}))
+    out = portal_client.get_pending_pos(BASE, TOKEN, limit=10)
+    assert out == rows
+    args, kwargs = req.call_args
+    assert args == ("GET", "https://portal.example.com/api/po/internal/pending")
+    assert kwargs["headers"]["Authorization"] == "Bearer fake-bearer"
+    assert kwargs["params"] == {"limit": 10}
+
+
+def test_get_pending_pos_drops_non_dict_rows_and_raises_on_bad_shape(mocker):
+    _patch_requests(
+        mocker, _mock_response(json_body={"pending": [{"id": 1}, "junk", 3]})
+    )
+    assert portal_client.get_pending_pos(BASE, TOKEN) == [{"id": 1}]
+    _patch_requests(mocker, _mock_response(json_body={"pending": "nope"}))
+    with pytest.raises(PortalTransportError, match="pending"):
+        portal_client.get_pending_pos(BASE, TOKEN)
+
+
+def test_mark_po_filed_posts_receipt_and_returns_found(mocker):
+    req = _patch_requests(mocker, _mock_response(json_body={"ok": True, "found": True}))
+    assert portal_client.mark_po_filed(BASE, TOKEN, po_id=7, box_file_id="f-9") is True
+    args, kwargs = req.call_args
+    assert args == ("POST", "https://portal.example.com/api/po/internal/mark-filed")
+    assert kwargs["json"] == {"po_id": 7, "box_file_id": "f-9"}
+
+
+def test_mark_po_filed_replay_returns_found_false(mocker):
+    _patch_requests(mocker, _mock_response(json_body={"ok": True, "found": False}))
+    assert portal_client.mark_po_filed(BASE, TOKEN, po_id=7, box_file_id=None) is False
+
+
+def test_po_status_sync_posts_ordered_updates(mocker):
+    req = _patch_requests(mocker, _mock_response(json_body={"ok": True, "updated": 2}))
+    updates = [{"po_id": 7, "status": "approved"}, {"po_id": 7, "status": "sent"}]
+    out = portal_client.po_status_sync(BASE, TOKEN, updates)
+    assert out == {"ok": True, "updated": 2}
+    args, kwargs = req.call_args
+    assert args == ("POST", "https://portal.example.com/api/po/internal/status-sync")
+    assert kwargs["json"] == {"updates": updates}  # order preserved verbatim
+
+
+def test_vendors_sync_posts_vendor_array(mocker):
+    req = _patch_requests(
+        mocker, _mock_response(json_body={"ok": True, "upserted": 1, "skipped_dirty": 0})
+    )
+    payload = [{"vendor_key": "VEN-000001", "vendor_name": "Chint", "active": 1}]
+    out = portal_client.vendors_sync(BASE, TOKEN, payload)
+    assert out["upserted"] == 1
+    args, kwargs = req.call_args
+    assert args == ("POST", "https://portal.example.com/api/po/internal/vendors/sync")
+    assert kwargs["json"] == {"vendors": payload}
+
+
+def test_get_pending_vendors_returns_rows_and_raises_on_bad_shape(mocker):
+    rows = [{"vendor_key": "VEN-000002", "mirror_version": 3}]
+    req = _patch_requests(mocker, _mock_response(json_body={"vendors": rows}))
+    assert portal_client.get_pending_vendors(BASE, TOKEN) == rows
+    args, _ = req.call_args
+    assert args == ("GET", "https://portal.example.com/api/po/internal/vendors/pending")
+    _patch_requests(mocker, _mock_response(json_body={"vendors": None}))
+    with pytest.raises(PortalTransportError, match="vendors"):
+        portal_client.get_pending_vendors(BASE, TOKEN)
+
+
+def test_mark_vendors_mirrored_posts_watermarked_updates(mocker):
+    req = _patch_requests(
+        mocker, _mock_response(json_body={"ok": True, "flipped": 1, "stale": 0})
+    )
+    updates = [{"vendor_key": "VEN-000002", "mirrored_version": 3}]
+    out = portal_client.mark_vendors_mirrored(BASE, TOKEN, updates)
+    assert out["flipped"] == 1
+    args, kwargs = req.call_args
+    assert args == ("POST", "https://portal.example.com/api/po/internal/vendors/mark-mirrored")
+    assert kwargs["json"] == {"updates": updates}
+
+
+def test_po_tier_401_raises_auth_without_retry(mocker):
+    """The PO bearer tier propagates a 401 as PortalAuthError with NO retry — the
+    daemon's cycle-stop signal."""
+    req = _patch_requests(mocker, _mock_response(status=401))
+    with pytest.raises(PortalAuthError):
+        portal_client.get_pending_pos(BASE, TOKEN)
+    assert req.call_count == 1

@@ -12,7 +12,9 @@ export type HomeNav =
   | "fieldops-inspections"
   | "fieldops-equipment"
   | "fieldops-personnel"
-  | "materials-catalog";
+  | "materials-catalog"
+  | "po-builder"
+  | "po-vendors";
 
 /** R7 — Home is grouped into three headed sections (it had grown into a 10-card flat wall under
  *  a single "Daily forms" heading, A4). Section membership is presentation only: every card keeps
@@ -104,6 +106,22 @@ const HOME_CARDS: HomeCard[] = [
     // Daily Field Report form definition; the default-checklist editor was retired). Key unchanged.
     title: "Checklists",
     desc: "Author reusable inspection checklists and assign them to a manager or subcontractor.",
+    section: "admin",
+  },
+  {
+    key: "po-builder",
+    cap: "cap.po.manage",
+    badge: "Admin",
+    title: "Purchase Orders",
+    desc: "Build a vendor PO — line items, tax, and terms — then track it from draft to sent.",
+    section: "admin",
+  },
+  {
+    key: "po-vendors",
+    cap: "cap.po.manage",
+    badge: "Admin",
+    title: "Vendors",
+    desc: "The vendor directory behind purchase orders — contacts, regions, supply categories, and terms.",
     section: "admin",
   },
   {

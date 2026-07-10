@@ -53,6 +53,9 @@ STATE_WRITE_ALLOWLIST: dict[str, str] = {
         "writes the ~/its/.watchdog liveness marker (NOT ~/its/state/)",
     "safety_reports/publish_daemon.py":
         "writes the git-source forms catalog/definitions under safety_portal/forms/ (NOT ~/its/state/)",
+    "po_materials/po_poll.py":
+        "writes the ~/its/.watchdog/po_poll.last_run liveness marker (NOT ~/its/state/) — "
+        "its ~/its/state/ writes (po_poll_flagged.json + heartbeat files) all ride state_io",
 }
 
 

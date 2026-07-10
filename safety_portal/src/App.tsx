@@ -22,9 +22,9 @@ import {
 } from "./lib/router";
 
 // ── Admin-only route chunks (optimization #8) ────────────────────────────────────────────────────
-// Exactly the three ADMIN-ONLY views are code-split: Forms (which pulls the whole FormEditor /
-// editorValidation / PublishMonitor stack into its chunk), Accounts, and Materials Catalog —
-// ~office-desk surfaces a field phone never opens, previously ~90 kB of the single 595 kB chunk.
+// Exactly the ADMIN-ONLY views are code-split: Forms (which pulls the whole FormEditor /
+// editorValidation / PublishMonitor stack into its chunk), Accounts, Materials Catalog, and the
+// two PO pages (S6 — builder + vendors) — office-desk surfaces a field phone never opens.
 // Every FIELD-CRITICAL view (FormFillPage, My Tasks / DailyReportTab, Job Tracker, Equipment,
 // Personnel, Inspections, Form Request) stays EAGER on purpose: a chunk-load failure mid-shift on
 // a flaky cell connection must never take down the daily path. The Suspense fallback below is the
@@ -35,6 +35,12 @@ const AccountsPage = lazy(() =>
 const FormsPage = lazy(() => import("./pages/FormsPage").then((m) => ({ default: m.FormsPage })));
 const MaterialsCatalogPage = lazy(() =>
   import("./pages/MaterialsCatalogPage").then((m) => ({ default: m.MaterialsCatalogPage })),
+);
+const PoBuilderPage = lazy(() =>
+  import("./pages/PoBuilderPage").then((m) => ({ default: m.PoBuilderPage })),
+);
+const PoVendorsPage = lazy(() =>
+  import("./pages/PoVendorsPage").then((m) => ({ default: m.PoVendorsPage })),
 );
 
 // Never-silent for the lazy admin chunks (ops review): a chunk-load failure (offline / deploy skew)
@@ -329,6 +335,10 @@ export function App() {
     page = <FieldOpsPersonnel onBack={home} />;
   } else if (route.view === "materials-catalog" && allowed) {
     page = <MaterialsCatalogPage onBack={home} />;
+  } else if (route.view === "po-builder" && allowed) {
+    page = <PoBuilderPage onBack={home} />;
+  } else if (route.view === "po-vendors" && allowed) {
+    page = <PoVendorsPage onBack={home} />;
   } else {
     page = (
       <HomePage
@@ -343,7 +353,7 @@ export function App() {
   return (
     <>
       {user.role === "admin" && <AdminSessionGuard editing={editing} />}
-      {/* Only the three lazy admin views ever suspend; eager field views render straight through. */}
+      {/* Only the five lazy admin views ever suspend; eager field views render straight through. */}
       <ChunkBoundary>
         <Suspense fallback={<div className="centered muted">Loading…</div>}>{page}</Suspense>
       </ChunkBoundary>
