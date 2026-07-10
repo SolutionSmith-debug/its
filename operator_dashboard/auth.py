@@ -1,24 +1,21 @@
-"""ACT-surface auth for the operator dashboard (WS2 D1-2).
+"""ACT-surface auth for the operator dashboard (WS2 D1-2 + D1-3).
 
-Two controls, both BUILT here (D1-1 shipped none; no reusable Python prior art
-existed — only the TS Worker patterns to mirror):
+Controls (all BUILT here — D1-1 shipped none):
 
-1. Operator PIN — the primary control. Read from Keychain `ITS_OPERATOR_PIN`,
-   compared in constant time (SHA-256 both sides, then hmac.compare_digest, so
-   there's no length oracle). It FAILS CLOSED: a missing or locked keychain
-   DENIES the action (unlike the fail-OPEN kill switch — that is an operator
-   convenience, this is a security boundary). The PIN is also the real CSRF
-   defense: a cross-origin page cannot forge it.
+1. Operator PIN (Class A) — read from Keychain `ITS_OPERATOR_PIN`, constant-time
+   (SHA-256 both sides, then hmac.compare_digest, no length oracle). FAILS
+   CLOSED: a missing/locked keychain DENIES. Brute-force throttled → 60s lockout
+   after 5 fails → CRITICAL page.
 
-2. Origin/Referer allowlist — defense-in-depth on top of the PIN. A browser
-   request carrying an Origin/Referer NOT on the allowlist is refused (the CSRF
-   case). A non-browser client (curl; no Origin AND no Referer) is allowed
-   through to the PIN check. The allowlist is localhost:PORT plus any origins in
-   the `ITS_DASH_ALLOWED_ORIGINS` env var (comma-separated — set it to your
-   Tailscale-served origin, e.g. https://<host>.<tailnet>.ts.net).
+2. Elevated confirm (D1-3, Class B/C) — the "weight" for actions that change
+   trust, identity, credentials, or the global brake: the operator RE-ENTERS the
+   PIN AND types an exact confirmation phrase (the target's name). Both must
+   match; fail-closed. It SHARES the PIN throttle bucket (same secret → one
+   guess budget across both ceremonies, not doubled).
 
-This surface must work while the system is PAUSED/MAINTENANCE, so it is NOT
-gated behind @require_active.
+3. Origin/Referer allowlist — CSRF defense-in-depth on top of the PIN.
+
+Not gated behind @require_active (works while PAUSED/MAINTENANCE).
 """
 from __future__ import annotations
 
@@ -34,37 +31,10 @@ from operator_dashboard.config import PORT
 PIN_KEYCHAIN_KEY = "ITS_OPERATOR_PIN"
 ALLOWED_ORIGINS_ENV = "ITS_DASH_ALLOWED_ORIGINS"
 
-# Brute-force throttle. The PIN is the primary control and, on a Tailscale
-# deployment, any tailnet device can POST — so a wrong-PIN guess is rate-limited
-# and, after a burst, the endpoint locks out and pages the operator (CRITICAL).
-# Provision a STRONG PIN (not a 4-digit) before any Tailscale exposure.
+# Brute-force throttle. Provision a STRONG PIN before any Tailscale exposure.
 _MAX_PIN_FAILS = 5
 _LOCKOUT_SECONDS = 60.0
 _FAIL_SLEEP_SECONDS = 0.5  # monkeypatched to 0 in tests
-_throttle_lock = threading.Lock()
-_pin_fails: dict[str, float] = {"count": 0.0, "locked_until": 0.0}
-
-
-def reset_pin_throttle() -> None:
-    with _throttle_lock:
-        _pin_fails["count"] = 0.0
-        _pin_fails["locked_until"] = 0.0
-
-
-def _alert_lockout() -> None:
-    # Best-effort CRITICAL page on lockout (possible brute-force).
-    try:
-        import shared.error_log as el
-
-        el.log(
-            el.Severity.CRITICAL,
-            "operator_dashboard.config_editor",
-            f"config editor PIN lockout: {_MAX_PIN_FAILS}+ consecutive failed attempts "
-            "on /act/config — possible brute-force",
-            error_code="config_pin_lockout",
-        )
-    except Exception:
-        pass
 
 
 class AuthError(Exception):
@@ -72,52 +42,114 @@ class AuthError(Exception):
 
 
 class PinError(AuthError):
-    """The operator PIN is missing, wrong, or cannot be read (fail-closed)."""
+    """The PIN / elevated confirmation is missing, wrong, or unreadable (fail-closed)."""
 
 
 class OriginError(AuthError):
     """The request Origin/Referer is not on the allowlist (CSRF defense)."""
 
 
-def verify_pin(submitted: str | None) -> None:
-    """Raise PinError unless `submitted` matches the provisioned operator PIN.
+class _Throttle:
+    """A per-ceremony failed-attempt counter with a temporary lockout."""
 
-    Fail-closed: an absent/locked keychain or unprovisioned PIN DENIES.
-    """
-    if not submitted:
-        raise PinError("PIN required")
-    # refuse while locked out (anti-brute-force)
-    with _throttle_lock:
-        if _pin_fails["locked_until"] > time.monotonic():
-            raise PinError("too many failed attempts — temporarily locked out; wait and retry")
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self._lock = threading.Lock()
+        self.count = 0.0
+        self.locked_until = 0.0
+
+    def check(self) -> None:
+        with self._lock:
+            if self.locked_until > time.monotonic():
+                raise PinError("too many failed attempts — temporarily locked out; wait and retry")
+
+    def reset(self) -> None:
+        with self._lock:
+            self.count = 0.0
+            self.locked_until = 0.0
+
+    def record_failure(self) -> bool:
+        with self._lock:
+            self.count += 1
+            if self.count >= _MAX_PIN_FAILS:
+                self.locked_until = time.monotonic() + _LOCKOUT_SECONDS
+                return True
+        return False
+
+
+# ONE shared throttle guards both the Class-A PIN and the elevated re-PIN — they
+# verify the SAME secret, so the failed-guess budget is SHARED across both
+# ceremonies (5 total, not 5-per-route).
+_pin_throttle = _Throttle("pin")
+
+
+def reset_pin_throttle() -> None:
+    _pin_throttle.reset()
+
+
+def _alert_lockout(bucket: str) -> None:
+    try:
+        import shared.error_log as el
+
+        el.log(
+            el.Severity.CRITICAL,
+            "operator_dashboard.config_editor",
+            f"config editor {bucket} lockout: {_MAX_PIN_FAILS}+ consecutive failed attempts — possible brute-force",
+            error_code="config_pin_lockout",
+        )
+    except Exception:
+        pass
+
+
+def _read_stored_pin() -> str:
     try:
         from shared.keychain import KeychainError, KeychainLockedError, get_secret
     except Exception as exc:  # keychain module unavailable → deny (fail closed)
         raise PinError("keychain unavailable — denying") from exc
     try:
-        stored = get_secret(PIN_KEYCHAIN_KEY)
+        return get_secret(PIN_KEYCHAIN_KEY)
     except KeychainLockedError as exc:
         raise PinError("keychain is locked — run `security unlock-keychain`, then retry") from exc
     except KeychainError as exc:
-        # No PIN provisioned → deny (fail CLOSED). Provision with:
-        #   security add-generic-password -a "$USER" -s ITS_OPERATOR_PIN -w
         raise PinError("operator PIN not provisioned (ITS_OPERATOR_PIN) — denying") from exc
-    submitted_digest = hashlib.sha256(submitted.encode("utf-8")).digest()
-    stored_digest = hashlib.sha256(stored.encode("utf-8")).digest()
-    if hmac.compare_digest(submitted_digest, stored_digest):
-        reset_pin_throttle()  # a correct PIN clears the failure streak
+
+
+def _pin_matches(submitted: str, stored: str) -> bool:
+    a = hashlib.sha256(submitted.encode("utf-8")).digest()
+    b = hashlib.sha256(stored.encode("utf-8")).digest()
+    return hmac.compare_digest(a, b)
+
+
+def _verify_pin_throttled(submitted: str | None, throttle: _Throttle) -> None:
+    if not submitted:
+        raise PinError("PIN required")
+    throttle.check()  # refuse while locked out
+    stored = _read_stored_pin()
+    if _pin_matches(submitted, stored):
+        throttle.reset()
         return
-    # wrong PIN — rate-limit, count, and lock out + page on a burst
     time.sleep(_FAIL_SLEEP_SECONDS)
-    tripped = False
-    with _throttle_lock:
-        _pin_fails["count"] += 1
-        if _pin_fails["count"] >= _MAX_PIN_FAILS:
-            _pin_fails["locked_until"] = time.monotonic() + _LOCKOUT_SECONDS
-            tripped = True
-    if tripped:
-        _alert_lockout()
+    if throttle.record_failure():
+        _alert_lockout(throttle.name)
     raise PinError("incorrect PIN")
+
+
+def verify_pin(submitted: str | None) -> None:
+    """Class-A gate: raise PinError unless `submitted` matches the operator PIN."""
+    _verify_pin_throttled(submitted, _pin_throttle)
+
+
+def verify_elevated(pin: str | None, typed_confirm: str | None, expected: str) -> None:
+    """Elevated-confirm ceremony (Class B/C): the operator RE-ENTERS the PIN AND
+    types `expected` exactly. Both must match — fail-closed. Separate throttle."""
+    # 1. the typed confirmation must exactly match the target (constant-time)
+    matches_confirm = bool(typed_confirm) and hmac.compare_digest(
+        (typed_confirm or "").strip().encode("utf-8"), expected.strip().encode("utf-8")
+    )
+    if not matches_confirm:
+        raise PinError(f"type the exact confirmation phrase to proceed: {expected!r}")
+    # 2. re-enter the PIN (SHARED throttle bucket — one guess budget across ceremonies)
+    _verify_pin_throttled(pin, _pin_throttle)
 
 
 def allowed_origins() -> set[str]:

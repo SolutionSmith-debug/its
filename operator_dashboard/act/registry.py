@@ -36,7 +36,10 @@ from operator_dashboard.act.validators import (
     v_id,
     v_int,
     v_keychain_key,
+    v_reviewer_chain,
     v_schedule,
+    v_sender_list,
+    v_state,
     v_url,
 )
 
@@ -52,6 +55,10 @@ class ConfigEntry:
     # Send-poller gate: a false->true edit escalates (dark->live first
     # activation) instead of applying; true->false (pause) applies normally.
     first_activation_gated: bool = False
+    # Weight tier (D1-3): "A" = plain PIN gate (Class-A); "B" = weighted edit,
+    # requires the elevated-confirm ceremony (re-PIN + typed confirmation).
+    tier: str = "A"
+    elevated_confirm: bool = False
 
 
 def _e(
@@ -63,6 +70,8 @@ def _e(
     note: str = "",
     first_activation_gated: bool = False,
     label: str | None = None,
+    tier: str = "A",
+    elevated_confirm: bool = False,
 ) -> ConfigEntry:
     return ConfigEntry(
         setting=setting,
@@ -72,6 +81,8 @@ def _e(
         validator=validator,
         note=note,
         first_activation_gated=first_activation_gated,
+        tier=tier,
+        elevated_confirm=elevated_confirm,
     )
 
 
@@ -186,22 +197,92 @@ for _job in ("bradley_1", "bradley_2", "brimfield_1", "brimfield_2", "huntley", 
         _e(f"safety_reports.recipients.{_job}", "safety_reports", _DATA, v_email_list, note=_RECIPIENTS_NOTE)
     )
 
+# --- Class-B weighted edits (D1-3) — require the elevated-confirm ceremony -----
+# Identity / trust / endpoint / global-brake changes: same weight as a credential
+# change. tier="B", elevated_confirm=True. Editing them via the plain Class-A
+# route is refused; they go through re-PIN + typed confirmation.
+_IDENTITY = "Identity — sent-from / read mailbox (Class B · elevated)"
+_TRUST = "Trust allowlists (Class B · elevated)"
+_ENDPOINT = "Worker endpoint (Class B · elevated)"
+_BRAKE = "Global brake + privileged daemon (Class B · elevated)"
+
+
+def _b(
+    setting: str,
+    workstream: str,
+    group: str,
+    validator: Validator,
+    *,
+    note: str = "",
+    first_activation_gated: bool = False,
+) -> ConfigEntry:
+    return _e(
+        setting,
+        workstream,
+        group,
+        validator,
+        tier="B",
+        elevated_confirm=True,
+        note=note,
+        first_activation_gated=first_activation_gated,
+    )
+
+
+_ENTRIES += [
+    _b(
+        "system.state",
+        "global",
+        _BRAKE,
+        v_state,
+        note="the GLOBAL brake — ACTIVE|PAUSED|MAINTENANCE; high blast radius (halts scheduled daemons)",
+    ),
+    _b(
+        "po_materials.config_actuator.polling_enabled",
+        "po_materials",
+        _BRAKE,
+        v_bool,
+        first_activation_gated=True,  # code-actuation: dark->live activation needs the go-live attestation
+        note="gates a code-COMMITTING/DEPLOYING daemon — elevated + go-live attestation to activate",
+    ),
+    _b(
+        "safety_reports.intake.allowed_senders",
+        "safety_reports",
+        _TRUST,
+        v_sender_list,
+        note="ingress trust allowlist (emails or @domain patterns)",
+    ),
+    _b(
+        "safety_reports.reviewer_chain",
+        "safety_reports",
+        _TRUST,
+        v_reviewer_chain,
+        note="reviewer escalation JSON (primary/secondary/tertiary + delay hours)",
+    ),
+    _b("safety_reports.weekly_send.from_mailbox", "safety_reports", _IDENTITY, v_email),
+    _b("po_materials.po_send.from_mailbox", "po_materials", _IDENTITY, v_email),
+    _b("progress_reports.progress_send.from_mailbox", "progress_reports", _IDENTITY, v_email),
+    _b("safety_reports.intake.mailbox", "safety_reports", _IDENTITY, v_email),
+    _b(
+        "safety_reports.portal.worker_base_url",
+        "safety_reports",
+        _ENDPOINT,
+        v_url,
+        note="redirect target if wrong — validate scheme/host (this pair is one of 3 copies)",
+    ),
+    _b("safety_reports.portal.worker_base_url", "progress_reports", _ENDPOINT, v_url),
+    _b("safety_reports.portal.worker_base_url", "po_materials", _ENDPOINT, v_url),
+]
+
 REGISTRY: dict[tuple[str, str], ConfigEntry] = {(e.setting, e.workstream): e for e in _ENTRIES}
 
-# Keys that are DELIBERATELY not editable here — asserted absent by the
-# denylist test. Editing these is out of Class-A scope:
-#   - external_send_gate / system.state : Class E (would disable Invariant 1 /
-#     the kill switch) — read-only display only, never here.
-#   - config_actuator.polling_enabled   : gates a code-committing/deploying
-#     daemon — Class B (D1-3), high-capability.
-#   - *.poll_interval_seconds           : read at INSTALL time, not runtime;
-#     editing the cell does NOT hot-reload — deferred to D1-3 alongside the
-#     launchctl reinstall action (never imply immediate effect).
+# Keys DELIBERATELY not editable on ANY route — asserted absent by the denylist
+# test. `external_send_gate` is Class E (editing it would disable Invariant 1) —
+# read-only display only, never editable. `system.state` and
+# `config_actuator.polling_enabled` moved to Class B (elevated) in D1-3.
+# `*.poll_interval_seconds` is install-time (no hot-reload) and stays out.
 NON_EDITABLE_SETTINGS: frozenset[str] = frozenset(
     {
         "safety_reports.external_send_gate",
-        "system.state",
-        "po_materials.config_actuator.polling_enabled",
     }
 )
 
@@ -212,3 +293,75 @@ def is_editable(setting: str, workstream: str) -> bool:
 
 def get_entry(setting: str, workstream: str) -> ConfigEntry | None:
     return REGISTRY.get((setting, workstream))
+
+
+# --- Class C: the FIXED rotatable-credential registry (D1-3) -------------------
+# Write-only rotation over a fixed list — NOT a free-form secret store. An
+# attempt to rotate an unlisted credential is refused. kind:
+#   'keychain'    — pasteable secret; write-through via shared.keychain.set_secret
+#   'worker'      — a Worker bearer; `wrangler secret put` + dual-write the
+#                   byte-equal Keychain mirror from the SAME pasted value
+#   'box_guided'  — the Box refresh token: NOT pasteable (only setup_box_oauth.py
+#                   may write it); the dashboard guides quiesce, never accepts a value
+@dataclass(frozen=True)
+class SecretEntry:
+    key: str
+    label: str
+    kind: str
+    note: str = ""
+    worker_mirror: str = ""  # kind='worker' only: the Keychain mirror to dual-write
+
+
+_SECRETS: list[SecretEntry] = [
+    SecretEntry("ITS_SMARTSHEET_TOKEN", "Smartsheet API token", "keychain"),
+    SecretEntry("ITS_RESEND_API_KEY", "Resend API key (operator alerts)", "keychain"),
+    SecretEntry("ITS_SENTRY_DSN", "Sentry DSN", "keychain"),
+    SecretEntry("ITS_BOX_CLIENT_ID", "Box OAuth client id", "keychain"),
+    SecretEntry("ITS_BOX_CLIENT_SECRET", "Box OAuth client secret", "keychain"),
+    SecretEntry(
+        "ITS_BOX_REFRESH_TOKEN",
+        "Box OAuth refresh token",
+        "box_guided",
+        note="single-consumer + rotates on every use — rotate ONLY via the guided quiesce→setup_box_oauth→smoke flow; never paste a value here",
+    ),
+    SecretEntry("PORTAL_PO_API_TOKEN", "Worker PO bearer", "worker", worker_mirror="ITS_PORTAL_PO_TOKEN"),
+    SecretEntry(
+        "PORTAL_CONFIG_API_TOKEN", "Worker config bearer", "worker", worker_mirror="ITS_PORTAL_CONFIG_TOKEN"
+    ),
+    SecretEntry("PORTAL_ADMIN_API_TOKEN", "Worker admin bearer", "worker", worker_mirror="ITS_PORTAL_ADMIN_TOKEN"),
+]
+
+SECRETS: dict[str, SecretEntry] = {s.key: s for s in _SECRETS}
+
+
+def is_rotatable(key: str) -> bool:
+    return key in SECRETS
+
+
+def get_secret_entry(key: str) -> SecretEntry | None:
+    return SECRETS.get(key)
+
+
+# --- Class E: read-only display rows (NEVER an edit control) -------------------
+@dataclass(frozen=True)
+class DisplayEntry:
+    setting: str
+    workstream: str
+    label: str
+    note: str
+
+
+CLASS_E_DISPLAY: list[DisplayEntry] = [
+    DisplayEntry(
+        "safety_reports.external_send_gate",
+        "safety_reports",
+        "External Send Gate — Invariant 1 mode",
+        "Class E — read-only. Changing this off would disable the External Send Gate; it is NEVER editable on any surface.",
+    ),
+    DisplayEntry(
+        "safety_reports.authorized_approvers",
+        "safety_reports",
+        "F22 authorized approvers (legacy row)",
+        "⚠ Legacy — the LIVE F22 approval authority is the §46 workspace-SHARE membership (list_workspace_share_emails), NOT this ITS_Config row. Shown for reference; editing it would not change who can approve a send.",
+    ),
+]

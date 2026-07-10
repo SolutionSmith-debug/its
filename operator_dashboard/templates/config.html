@@ -3,35 +3,35 @@
 {% block content %}
 <div class="config-editor">
   <div class="config-head">
-    <h2>Class-A config editor</h2>
+    <h2>Config editor</h2>
     <a class="backlink" href="/">← dashboard</a>
   </div>
   <p class="config-note">
-    Edits write to <code>ITS_Config</code> and take effect on the daemon's next
-    cycle. Every edit is validated server-side and requires the operator PIN.
-    A <span class="gated">⚑</span> gate is a send-poller: turning it <b>on</b> is
-    escalated (not applied); pausing is always available.
+    Edits write to <code>ITS_Config</code> and take effect on the daemon's next cycle.
+    <b>Class-A</b> = operator PIN. <b>Class-B</b> (<span class="tier-b">B</span> weighted:
+    identity, trust, endpoint, global brake) = re-enter the PIN <em>and</em> type the exact
+    setting name. <b>Class-C</b> = write-only secret rotation. Class-D/E are read-only.
   </p>
   {% if error %}<div class="config-error">{{ error }}</div>{% endif %}
+
   {% for group, rows in groups.items() %}
   <section class="config-group">
     <h3>{{ group }}</h3>
     <table class="config-table">
       <thead>
-        <tr><th>setting</th><th>workstream</th><th>current</th><th>new value + PIN</th></tr>
+        <tr><th>setting</th><th>workstream</th><th>current</th><th>new value{% if rows[0].tier != 'A' %} + re-PIN + confirm{% else %} + PIN{% endif %}</th></tr>
       </thead>
       <tbody>
         {% for r in rows %}
         <tr>
           <td class="cfg-setting">
-            {{ r.setting }}{% if r.gated %} <span class="gated" title="turning ON escalates">⚑</span>{% endif %}
+            {{ r.setting }}{% if r.gated %} <span class="gated" title="send-poller">⚑</span>{% endif %}{% if r.tier != 'A' %} <span class="tier-b">B</span>{% endif %}
             {% if r.note %}<div class="cfg-note">{{ r.note }}</div>{% endif %}
           </td>
           <td class="cfg-ws">{{ r.workstream }}</td>
-          <td class="cfg-current">
-            {% if r.present %}{{ r.value }}{% else %}<span class="missing">(no row — seed first)</span>{% endif %}
-          </td>
+          <td class="cfg-current">{% if r.present %}{{ r.value }}{% else %}<span class="missing">(no row — seed first)</span>{% endif %}</td>
           <td>
+            {% if r.tier == 'A' %}
             <form hx-post="/act/config" hx-target="#out-{{ r.slug }}" hx-swap="innerHTML" class="cfg-form">
               <input type="hidden" name="setting" value="{{ r.setting }}">
               <input type="hidden" name="workstream" value="{{ r.workstream }}">
@@ -40,6 +40,18 @@
               <button type="submit" class="cfg-btn">apply</button>
               <span class="cfg-out" id="out-{{ r.slug }}"></span>
             </form>
+            {% else %}
+            <form hx-post="/act/config/elevated" hx-target="#out-{{ r.slug }}" hx-swap="innerHTML" class="cfg-form">
+              <input type="hidden" name="setting" value="{{ r.setting }}">
+              <input type="hidden" name="workstream" value="{{ r.workstream }}">
+              <input type="text" name="value" value="{{ r.value }}" class="cfg-input" autocomplete="off" spellcheck="false">
+              <input type="password" name="pin" placeholder="re-PIN" class="cfg-pin" autocomplete="off">
+              <input type="text" name="confirm" placeholder="type: {{ r.setting }}" class="cfg-confirm" autocomplete="off" spellcheck="false">
+              {% if r.gated %}<label class="attest"><input type="checkbox" name="attest" value="yes"> go-live preconditions met</label>{% endif %}
+              <button type="submit" class="cfg-btn elevated">apply (elevated)</button>
+              <span class="cfg-out" id="out-{{ r.slug }}"></span>
+            </form>
+            {% endif %}
           </td>
         </tr>
         {% endfor %}
@@ -47,5 +59,69 @@
     </table>
   </section>
   {% endfor %}
+
+  <section class="config-group">
+    <h3>Secret rotation (Class C · write-only · elevated)</h3>
+    <p class="config-note">
+      Values are <b>write-only</b> — never displayed or read back. Rotating a Worker bearer also
+      writes its byte-equal Keychain mirror. The Box refresh token rotates <b>only</b> via the guided
+      quiesce → <code>setup_box_oauth.py</code> → smoke flow (see the runbook).
+    </p>
+    <table class="config-table">
+      <thead><tr><th>credential</th><th>kind</th><th>new value + re-PIN + confirm</th></tr></thead>
+      <tbody>
+        {% for s in secrets %}
+        <tr>
+          <td class="cfg-setting">
+            {{ s.key }}{% if s.mirror %} <span class="cfg-note">mirror {{ s.mirror }}</span>{% endif %}
+            {% if s.note %}<div class="cfg-note">{{ s.note }}</div>{% endif %}
+          </td>
+          <td class="cfg-ws">{{ s.kind }}</td>
+          <td>
+            {% if s.kind == 'box_guided' %}
+            <span class="guided-note">guided — quiesce → setup_box_oauth.py → smoke (runbook)</span>
+            {% else %}
+            <form hx-post="/act/secret/rotate" hx-target="#sec-{{ s.key }}" hx-swap="innerHTML" class="cfg-form">
+              <input type="hidden" name="key" value="{{ s.key }}">
+              <input type="password" name="value" placeholder="new secret" class="cfg-input" autocomplete="off">
+              <input type="password" name="pin" placeholder="re-PIN" class="cfg-pin" autocomplete="off">
+              <input type="text" name="confirm" placeholder="type: {{ s.key }}" class="cfg-confirm" autocomplete="off" spellcheck="false">
+              <button type="submit" class="cfg-btn elevated">rotate</button>
+              <span class="cfg-out" id="sec-{{ s.key }}"></span>
+            </form>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+
+  <section class="config-group">
+    <h3>Build-time settings (Class D · hand-off)</h3>
+    <p class="config-note">
+      Settings that take effect only by re-bundling/deploying the Worker (the terms library; today
+      purchaser/tax too) are edited via the <b>§50 config editor in the Safety Portal</b> — it enqueues
+      to <code>config_requests</code> and the <code>config_actuator</code> daemon does the privileged
+      commit → CI → merge → deploy. This dashboard <b>never</b> deploys. Actuator faults surface there
+      and escalate per <code>docs/runbooks/config_actuator.md</code>.
+    </p>
+  </section>
+
+  <section class="config-group">
+    <h3>Read-only (Class E)</h3>
+    <table class="config-table">
+      <thead><tr><th>setting</th><th>value</th><th>note</th></tr></thead>
+      <tbody>
+        {% for d in display %}
+        <tr>
+          <td class="cfg-setting">{{ d.label }}<div class="cfg-note">{{ d.setting }} [{{ d.workstream }}]</div></td>
+          <td class="cfg-current">{{ d.value }}</td>
+          <td class="cfg-note">{{ d.note }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
 </div>
 {% endblock %}

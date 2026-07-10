@@ -77,11 +77,51 @@ def read_registry_state() -> list[dict[str, Any]]:
                 "present": present,
                 "note": entry.note,
                 "gated": entry.first_activation_gated,
+                "tier": entry.tier,
+                "elevated": entry.elevated_confirm,
                 "slug": slug,
             }
         )
-    out.sort(key=lambda d: (d["group"], d["setting"]))
+    out.sort(key=lambda d: (d["tier"], d["group"], d["setting"]))
     return out
+
+
+def read_display_state() -> list[dict[str, Any]]:
+    """Class-E read-only rows (external_send_gate mode, legacy approvers) with
+    their current values — no edit control is ever rendered for these."""
+    from operator_dashboard.act.registry import CLASS_E_DISPLAY
+
+    out: list[dict[str, Any]] = []
+    for d in CLASS_E_DISPLAY:
+        try:
+            _, val, _ = read_row_full(d.setting, d.workstream)
+        except Exception:
+            val = None
+        out.append(
+            {
+                "setting": d.setting,
+                "workstream": d.workstream,
+                "label": d.label,
+                "note": d.note,
+                "value": val if val is not None else "(unavailable)",
+            }
+        )
+    return out
+
+
+def read_row_full(setting: str, workstream: str) -> tuple[int | None, str | None, str]:
+    """Like read_current but ALSO returns the Description cell (where a
+    send-poller gate's go-live preconditions live). Description column may be
+    absent → returns "". Read-only."""
+    ss = _load("shared.smartsheet_client")
+    sid = _load("shared.sheet_ids")
+    rows = ss.get_rows(sid.SHEET_CONFIG, filters={"Setting": setting, "Workstream": workstream})
+    if not rows:
+        return None, None, ""
+    row = rows[0]
+    val = row.get("Value")
+    desc = row.get("Description")
+    return row.get("_row_id"), (val if isinstance(val, str) else None), (desc if isinstance(desc, str) else "")
 
 
 def apply_edit(setting: str, workstream: str, new_value: str, operator: str) -> Outcome:
@@ -89,6 +129,15 @@ def apply_edit(setting: str, workstream: str, new_value: str, operator: str) -> 
     if entry is None:
         return Outcome(
             NOT_EDITABLE, f"{setting} [{workstream}] is not an editable Class-A key", setting, workstream
+        )
+    # Class-A route: a tier-B entry must NOT be edited here — it requires the
+    # elevated-confirm ceremony (re-PIN + typed confirmation) via the elevated route.
+    if entry.tier != "A":
+        return Outcome(
+            NOT_EDITABLE,
+            f"{setting} [{workstream}] is a Class-{entry.tier} weighted edit — use the elevated action",
+            setting,
+            workstream,
         )
     # 1. validate + normalize — the checkpoint. A bad value never reaches ITS_Config.
     try:
@@ -183,6 +232,95 @@ def audit_denied(operator: str, setting: str, workstream: str, reason: str) -> N
             "operator_dashboard.config_editor",
             f"config edit DENIED ({reason}): {setting} [{workstream}] by {operator} at {ts}",
             error_code="config_denied",
+            alert=False,
+        )
+    except Exception:
+        pass
+
+
+def apply_elevated_edit(
+    setting: str, workstream: str, new_value: str, operator: str, *, attested: bool = False
+) -> Outcome:
+    """Class-B weighted edit (elevated-confirm already verified by the router).
+    Handles tier-B entries AND a send-poller first-activation self-apply (the
+    false->true flip D1-2 escalates) — the latter requires `attested=True`
+    (the operator has seen the go-live preconditions and attests them met)."""
+    entry = get_entry(setting, workstream)
+    if entry is None:
+        return Outcome(NOT_EDITABLE, f"{setting} [{workstream}] is not an editable key", setting, workstream)
+    is_send_activation = entry.first_activation_gated
+    if entry.tier != "B" and not is_send_activation:
+        return Outcome(
+            NOT_EDITABLE,
+            f"{setting} [{workstream}] is not an elevated (Class-B) edit — use the standard action",
+            setting,
+            workstream,
+        )
+    # 1. validate (checkpoint) — backstop any non-ConfigValidationError as rejected
+    try:
+        normalized = entry.validator(new_value)
+    except ConfigValidationError as exc:
+        return Outcome(REJECTED, str(exc), setting, workstream)
+    except Exception as exc:
+        return Outcome(REJECTED, f"invalid value ({type(exc).__name__})", setting, workstream)
+    # 2. locate row + current
+    try:
+        row_id, current = read_current(setting, workstream)
+    except Exception as exc:
+        return Outcome(ERROR, f"could not read current value: {type(exc).__name__}: {exc}", setting, workstream)
+    if row_id is None:
+        return Outcome(NOT_EDITABLE, f"no ITS_Config row for {setting} [{workstream}] — seed it first", setting, workstream)
+    # 3. no-op
+    if current is not None:
+        try:
+            current_norm: str | None = entry.validator(current)
+        except Exception:
+            current_norm = None
+        if current_norm is not None and current_norm == normalized:
+            return Outcome(NOOP, f"already {normalized!r} — no change made", setting, workstream)
+    # 4. a send-poller ACTIVATION (->true from a non-truthy state) requires the
+    #    operator's go-live attestation; without it, refuse (still not applied).
+    activating = (
+        is_send_activation
+        and normalized == "true"
+        and (current or "").strip().lower() not in ("true", "1", "yes", "on")
+    )
+    if activating and not attested:
+        # audit the refused activation — the most security-relevant denial should
+        # not be the one that goes unrecorded.
+        audit_denied(operator, setting, workstream, "attestation")
+        return Outcome(
+            REJECTED,
+            "activation requires attesting the go-live preconditions are met",
+            setting,
+            workstream,
+        )
+    # 5. write LAST
+    try:
+        ss = _load("shared.smartsheet_client")
+        sid = _load("shared.sheet_ids")
+        ss.update_rows(sid.SHEET_CONFIG, [{"_row_id": row_id, "Value": normalized}])
+    except Exception as exc:
+        return Outcome(ERROR, f"write failed: {type(exc).__name__}: {exc}", setting, workstream)
+    # 6. audit (records the elevated ceremony + attestation for an activation)
+    _audit_elevated(operator, setting, workstream, current, normalized, activating=activating)
+    verb = "ACTIVATED (attested)" if activating else "applied (elevated)"
+    return Outcome(APPLIED, f"{verb}: {setting} [{workstream}]: {current!r} → {normalized!r}", setting, workstream)
+
+
+def _audit_elevated(
+    operator: str, setting: str, workstream: str, old: str | None, new: str, *, activating: bool
+) -> None:
+    try:
+        el = _load("shared.error_log")
+        ts = datetime.now(UTC).isoformat()
+        verb = "send-poller ACTIVATION (go-live attested)" if activating else "elevated edit"
+        el.log(
+            el.Severity.WARN,
+            "operator_dashboard.config_editor",
+            f"config {verb} applied: {setting} [{workstream}] {old!r} -> {new!r} by {operator} "
+            f"(elevated-confirm) at {ts}",
+            error_code="config_audit_elevated",
             alert=False,
         )
     except Exception:
