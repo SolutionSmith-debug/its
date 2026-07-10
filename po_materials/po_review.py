@@ -74,6 +74,9 @@ WORKSTREAM_TAG = "po_materials"
 SHEET_ID = sheet_ids.SHEET_PO_PENDING_REVIEW
 
 _PO_ID_RE = re.compile(r"(?:^|;\s*)po_id=(\d+)(?:;|$)")
+# po_number is a contractual id ({YYYY.NNN}.{site}.{supersede}.{rev}); match up to the
+# next '; ' tag boundary or end so a reviewer's appended prose can't bleed in.
+_PO_NUMBER_RE = re.compile(r"(?:^|;\s*)po_number=([^;]+?)(?:;|$)")
 
 __all__ = [
     "COL_APPROVE_SCHEDULED",
@@ -105,6 +108,8 @@ __all__ = [
     "notes_for_review_row",
     "po_email_body_template",
     "row_po_id",
+    "row_po_number",
+    "row_supersedes_po_id",
     "to_wsr_datetime",
 ]
 
@@ -143,6 +148,17 @@ def row_po_id(row: dict[str, Any]) -> int | None:
     never guessed)."""
     m = _PO_ID_RE.search(str(row.get(COL_NOTES) or ""))
     return int(m.group(1)) if m else None
+
+
+def row_po_number(row: dict[str, Any]) -> str | None:
+    """Extract the Notes-encoded contractual PO number, or None. THE source the S5 PO
+    send envelope reads for the vendor-facing subject + attachment name (the sheet has
+    no dedicated po_number column — it is a WSR schema twin). po_poll seeds it via
+    `notes_for_review_row`; the reviewer edits only the Email Body, never Notes. A row
+    whose Notes lost the tag cannot name its PO — po_send REFUSES to send a numberless
+    PO rather than guess (a legal document must carry its number)."""
+    m = _PO_NUMBER_RE.search(str(row.get(COL_NOTES) or ""))
+    return m.group(1).strip() if m else None
 
 
 def row_supersedes_po_id(row: dict[str, Any]) -> int | None:

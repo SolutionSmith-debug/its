@@ -121,6 +121,7 @@ SendStatus = Literal[
     "held_missing_pdf",
     "held_oversized_packet",
     "held_workstream_mismatch",
+    "held_missing_envelope",
     "row_not_found",
     "send_failed",
     "invalid_recipients",
@@ -241,8 +242,12 @@ class SendConfig:
     # COL_JOB_ID cell value → (TO, CC) or None for an unknown key (→ HELD, fail toward
     # not-sending). Required, no default — the recipient source IS the workstream binding.
     recipient_lookup: Callable[[str], tuple[str, Sequence[str]] | None]
-    # (subject, attachment_name) for the outgoing mail. Required, no default.
-    envelope_builder: Callable[[EnvelopeContext], tuple[str, str]]
+    # (subject, attachment_name) for the outgoing mail, or None when the workstream's
+    # envelope DECLINES to build (a required field is missing — e.g. a PO row whose Notes
+    # lost its po_number). None → HELD (held_missing_envelope), mirroring recipient_lookup's
+    # None→HELD convention: fail toward not-sending rather than mail a malformed envelope.
+    # Required, no default.
+    envelope_builder: Callable[[EnvelopeContext], tuple[str, str] | None]
     from_mailbox_cfg_key: str
     from_mailbox_default: str
     max_send_retries: int
@@ -515,9 +520,21 @@ def send_one_row(row_id: int, cfg: SendConfig) -> SendResult:
     # WeeklyReportEnvelope reproduces the pre-seam week-based strings byte-for-byte.
     body = str(row.get(cfg.review.COL_EMAIL_BODY) or "")
     week = _coerce_week(row.get(cfg.review.COL_WEEK_OF))
-    subject, attachment_name = cfg.envelope_builder(
+    envelope = cfg.envelope_builder(
         EnvelopeContext(project_name=project_name, week=week, row=row)
     )
+    if envelope is None:
+        # The workstream's envelope DECLINED to build — a required field is missing (e.g.
+        # a PO row whose Notes lost its po_number). Mirror the recipient_lookup None→HELD
+        # convention: HELD (operator-visible, skipped by the SENT/HELD gate so it never
+        # re-dispatches) rather than mail a malformed envelope. Checked BEFORE the
+        # write-ahead SENDING marker — fail toward not-sending, never a partial/double send.
+        return _mark_held(
+            row_id, project_name, notes,
+            "envelope builder declined (a required field is missing — e.g. no PO number)",
+            "held_missing_envelope", cfg,
+        )
+    subject, attachment_name = envelope
     from_mailbox = _read_str_setting(cfg.from_mailbox_cfg_key, cfg.from_mailbox_default, workstream=cfg.config_workstream)
     attachment = {
         "name": attachment_name,

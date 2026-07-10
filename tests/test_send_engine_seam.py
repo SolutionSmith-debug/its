@@ -167,3 +167,15 @@ def test_po_shaped_binding_still_hard_helds_contamination(po_stub):
     result = weekly_send.send_one_row(90, _po_config())
     assert result.status == "held_workstream_mismatch"
     po_stub["send_mail"].assert_not_called()
+
+
+def test_envelope_returning_none_helds_never_sends(po_stub):
+    # The S5b-review engine change: an envelope_builder that returns None (a required
+    # field is missing) → HELD (held_missing_envelope), mirroring recipient_lookup's
+    # None→HELD convention — operator-visible, never a malformed external send, and the
+    # HELD is set BEFORE the write-ahead SENDING marker (no partial/double send).
+    import dataclasses
+    cfg = dataclasses.replace(_po_config(), envelope_builder=lambda ctx: None)
+    result = weekly_send.send_one_row(90, cfg)
+    assert result.status == "held_missing_envelope"
+    po_stub["send_mail"].assert_not_called()
