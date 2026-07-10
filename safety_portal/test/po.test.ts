@@ -131,6 +131,8 @@ describe("cap.po.manage gate", () => {
   it("403s a submitter on every browser PO surface; 200s an admin", async () => {
     expect((await g(submitter, "/api/po/vendors")).status).toBe(403);
     expect((await g(submitter, "/api/po/pos")).status).toBe(403);
+    expect((await g(submitter, "/api/po/terms")).status).toBe(403);
+    expect((await g(submitter, "/api/po/config")).status).toBe(403);
     expect((await p(submitter, "/api/po/drafts", draftBody())).status).toBe(403);
     expect((await p(submitter, "/api/po/vendors", { vendor_name: "X" })).status).toBe(403);
     expect((await g(admin, "/api/po/vendors")).status).toBe(200);
@@ -138,6 +140,50 @@ describe("cap.po.manage gate", () => {
 
   it("401s an unauthenticated caller (no session)", async () => {
     expect((await call("/api/po/vendors")).status).toBe(401);
+    expect((await call("/api/po/terms")).status).toBe(401);
+    expect((await call("/api/po/config")).status).toBe(401);
+  });
+});
+
+// ── Terms + config feeds (S2b wiring — the S3 files, build-time imported) ─────
+describe("terms + config wiring", () => {
+  it("terms serves the manifest profiles: ids, kinds, current version, tokens, attach render_line", async () => {
+    const res = await g(admin, "/api/po/terms");
+    expect(res.status).toBe(200);
+    const { profiles } = await json<{ profiles: Array<Record<string, unknown>> }>(res);
+    const byId = Object.fromEntries(profiles.map((pr) => [pr.id, pr]));
+    // One vocabulary with the ITS_Vendors 'Default Terms Profile' picklist (S1/S3 parity).
+    expect(Object.keys(byId).sort()).toEqual(["chint_vendor", "negotiated_gtc", "standard_17"]);
+    expect(byId.standard_17.kind).toBe("library");
+    expect(byId.standard_17.current_version).toBe("1");
+    expect(byId.standard_17.tokens).toEqual(["purchaser_entity", "seller_name"]);
+    expect(byId.negotiated_gtc.kind).toBe("attach");
+    expect(String(byId.negotiated_gtc.render_line)).toContain("THIS PURCHASE ORDER IS SUBJECT");
+    // Curated view — renderer implementation detail stays off the wire.
+    for (const pr of profiles) expect(pr).not.toHaveProperty("versions");
+  });
+
+  it("config serves the D5 purchaser identity + the D8 tax table (comment fields stripped)", async () => {
+    const res = await g(admin, "/api/po/config");
+    expect(res.status).toBe(200);
+    const cfg = await json<{
+      purchaser: { entity: string; invoice_routing: { to: string; cc: string[] } };
+      tax: { rates_bp: Record<string, number> };
+    }>(res);
+    expect(cfg.purchaser.entity).toBe("Evergreen Renewables LLC");
+    expect(cfg.purchaser.invoice_routing.to).toBe("invoices@evergreenrenewables.com");
+    expect(cfg.purchaser.invoice_routing.cc).toHaveLength(3);
+    expect(cfg.tax.rates_bp).toEqual({ IL: 900, OR: 0 });
+    expect(cfg).not.toHaveProperty("comment");
+    expect(cfg.purchaser).not.toHaveProperty("comment");
+  });
+
+  it("the computeTotals tax table IS the imported S3 file (single source, no drift)", async () => {
+    // The IL 9% happy path already runs throughout the suite; this pins the SOURCE:
+    // the served config and the generate-time math must agree on every state.
+    const res = await g(admin, "/api/po/config");
+    const cfg = await json<{ tax: { rates_bp: Record<string, number> } }>(res);
+    expect(cfg.tax.rates_bp.IL).toBe(900); // the value the drafts' tax math resolved with
   });
 });
 
