@@ -11,8 +11,9 @@ here only checks env prereqs + the two cross-workstream-contamination guards a c
 typo would trip:
 
   - the from-mailbox key resolves under the PROGRESS workstream (not safety);
-  - recipients would resolve from ITS_Active_Jobs_Progress (CONFIG.active_jobs_config),
-    NOT ITS_Active_Jobs — the P4-Slice-1 trap;
+  - recipients would resolve from ITS_Active_Jobs_Progress (the S5a
+    CONFIG.recipient_lookup.active_jobs_config binding), NOT ITS_Active_Jobs — the
+    P4-Slice-1 trap;
   - the F22 approver authority is the Progress Reporting workspace's membership
     (§46 re-share) — an EMPTY approver set fails CLOSED (no progress send can dispatch).
 
@@ -64,14 +65,19 @@ def main() -> int:
     problems: list[str] = []
     if cfg.workstream_tag != "progress":
         problems.append(f"workstream_tag={cfg.workstream_tag!r}, expected 'progress'")
-    if cfg.active_jobs_config is not active_jobs.PROGRESS_ACTIVE_JOBS_CONFIG:
+    lookup = cfg.recipient_lookup
+    bound_ajc = getattr(lookup, "active_jobs_config", None)
+    if bound_ajc is not active_jobs.PROGRESS_ACTIVE_JOBS_CONFIG:
         problems.append(
-            "active_jobs_config is NOT PROGRESS_ACTIVE_JOBS_CONFIG (would resolve "
-            "recipients from the SAFETY sheet — the P4-Slice-1 trap)"
+            "recipient_lookup.active_jobs_config is NOT PROGRESS_ACTIVE_JOBS_CONFIG "
+            + ("(attribute missing — a non-Active-Jobs lookup is bound; wrong binding "
+               "for the PROGRESS sender)" if bound_ajc is None else
+               "(would resolve recipients from the SAFETY sheet — the P4-Slice-1 trap)")
         )
-    if cfg.active_jobs_config.sheet_id != sheet_ids.SHEET_ACTIVE_JOBS_PROGRESS:
+    if bound_ajc is None or bound_ajc.sheet_id != sheet_ids.SHEET_ACTIVE_JOBS_PROGRESS:
         problems.append(
-            f"active_jobs_config.sheet_id={cfg.active_jobs_config.sheet_id}, "
+            f"recipient_lookup.active_jobs_config.sheet_id="
+            f"{getattr(bound_ajc, 'sheet_id', None)}, "
             f"expected SHEET_ACTIVE_JOBS_PROGRESS={sheet_ids.SHEET_ACTIVE_JOBS_PROGRESS}"
         )
     if progress_send_poll.CONFIG.f22_workspace_id != sheet_ids.WORKSPACE_PROGRESS_REPORTING:
