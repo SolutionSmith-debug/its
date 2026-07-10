@@ -24,6 +24,48 @@ From the slice-2 (`config_actuator`) build + adversarial review (PR #509):
   flag and are effectively un-cleared. Trigger: backfill the shipped versions to `legal_review:"cleared"` FIRST,
   then add the loader refusal so a mis-bumped `current_version` can't render an un-reviewed version. Until then
   the operator legal-clear + `current_version`-bump is a §44 high-class action gated by the §43 runbook.
+- **CE-3 (HIGH, blocks the editor entirely) — self-defeating CI test class recurs: CI hard-pins the live
+  editable config content, so a legitimate purchaser/tax edit cannot merge.** Discovered 2026-07-10 during
+  the first live activation smoke: the operator edited the purchaser's `invoice_routing.to`, the actuator
+  queued → committed → opened **PR #511** (`chore(po-config): purchaser: Evergreen Renewables LLC ->
+  config_version 2 (req 1)`) — and CI red-lit at the `tested` stage, so the daemon's `_wait_for_ci` never
+  advances it past `validated`/`tested` and the edit is permanently stuck (verified live: PR #511 is
+  `state: OPEN`, `mergeable: UNKNOWN`, both `test` and `portal` checks `FAILURE`; nothing on main broke —
+  the edit simply never merged). Root cause: `safety_portal/test/po.test.ts:222-223` asserts the exact
+  live-bundled purchaser entity + `invoice_routing.to` value, and `tests/test_config_apply.py` asserts an
+  absolute `config_version == 2` plus a pinned preserved field — both couple to the CURRENT content of the
+  file being edited rather than its shape. This is the **identical class** already named in
+  `claude-code-info-gap.md` §5 "Self-defeating CI test class" (2026-06-09, PR #222/#228, form-publish
+  catalog counts) — it just recurred on a second §50-actuator instantiation (config editor vs. form
+  publish), confirming the class needed a written guard, not a one-off fix. **Fix:** rewrite both tests to
+  assert shape/round-trip (dynamic field presence, type, routing invariants) against a FIXED FIXTURE or a
+  relative diff, never the live file's current value — same remedy pattern as PR #222/#228. **Land the fix
+  on main FIRST, then re-submit the purchaser edit** (or close #511 and let the next edit attempt retest
+  clean). **Any future test asserting purchaser/tax/terms content is the same trap** — this needs a written
+  rule (a comment at the top of `po.test.ts`/`test_config_apply.py`, or a CI-level lint) so a THIRD
+  instantiation of the §50 pattern doesn't hit it again blind. **Tag:** `po_materials`, `config-editor`,
+  `ci`, `self-defeating-test`, `blocker`. **Revisit when:** picked up as the first item of the next PO/
+  config-editor session (full brief was captured in auto-memory `project_config-editor-build.md`).
+
+## Doc-conventions workstream taxonomy is missing `po_materials`/`purchase_orders` [OPEN 2026-07-10]
+
+The blueprint workstream `workstreams/purchase-orders/` has been fully built out in this repo since
+`S1` (PR #492, 2026-07-09) through this session's #504–#512 — 20+ PRs, live daemons (`po_poll`, `po_send`,
+`config_actuator`), and an `ITS_Config` workstream tag (`po_materials.*`) in real production use — but
+`scripts/lint_doc_conventions.py`'s `CANONICAL_WORKSTREAMS` closed set (and its companion table in
+`docs/operations/doc_conventions.md` §"Workstream taxonomy") was never updated to add it. Concretely:
+`docs/runbooks/po_poll.md` and `docs/runbooks/po_send.md` (PR #501) both had to set `workstream: null` in
+frontmatter and stash `purchase_orders`/`po_poll`/`po_send` into the free-text `tags` list instead — the
+canonical-workstream lint would reject `workstream: po_materials` or `workstream: purchase_orders` today.
+Low-severity (the lint is warn-only in CI per its own doc, and the workaround is harmless), but it's the
+exact "zero taxonomy acknowledgment" gap the session-close cross-repo supersession check watches for — code
+massively acknowledges the workstream, the doc-conventions closed set doesn't. **Fix:** add `po_materials`
+(matching the runtime `ITS_Config` tag, mirroring `field_ops`/`progress_reports`'s pattern of naming the
+code-level tag, not the blueprint folder name) to both `CANONICAL_WORKSTREAMS` in
+`scripts/lint_doc_conventions.py` and the table in `docs/operations/doc_conventions.md`, then re-point the
+two PO runbooks' `workstream:` field from `null` to `po_materials`. **Tag:** `po_materials`, `docs`,
+`doc-conventions`, `low-severity`. **Revisit when:** next touching either PO runbook, or doing a
+doc-conventions taxonomy sweep.
 
 ## Smartsheet-wiring audit findings — daemon-health + capacity hygiene [OPEN 2026-07-04]
 
