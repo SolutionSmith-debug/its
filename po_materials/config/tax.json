@@ -1,0 +1,12 @@
+{
+  "config_version": 1,
+  "comment": "Ship-to-state sales-tax table (decision D8) in BASIS POINTS (900 = 9%) — integer math only, no floats anywhere in the money path. The Worker's generate handler and the Mac-side render/totals-assert both consume this vocabulary; the render-time totals assert catches version skew between them. tax_mode auto resolves through this table; exempt/included/override are per-draft toggles that bypass it. IL rate is an operator-owned assertion (plan risk register) — the override toggle is the valve if a job's actual rate differs.",
+  "rates_bp": {
+    "IL": 900,
+    "OR": 0
+  },
+  "state_names": {
+    "IL": "Illinois",
+    "OR": "Oregon"
+  }
+}
