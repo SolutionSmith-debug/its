@@ -161,6 +161,20 @@ GATED_SCRIPTS: list[tuple[str, list[str]]] = [
         ["graph_client", "send_mail", "resend", "smtplib", "email.mime",
          "anthropic", "anthropic_client"],
     ),
+    (
+        # config_actuator (§50 config editor, slice 2) is the privileged PO-config actuator:
+        # the twin of safety_reports/publish_daemon.py against the config_requests queue. It
+        # COMMITS + DEPLOYS config (purchaser/tax/terms) but performs ZERO external customer
+        # transmission and no LLM step. Forbid the send substrings + graph_client (a pure
+        # actuator needs no Graph) + anthropic (deterministic actuation). Its HTTP egress to
+        # OUR Worker is shared/portal_client.py (F02-allowlisted, below); the git/gh/wrangler/
+        # npm ops are subprocess to the operator's toolchain, not Python send imports. NOTE:
+        # named *_actuator.py, NOT a convention suffix, so the enrollment meta-test does NOT
+        # auto-flag it — this explicit entry IS the enrollment.
+        "po_materials/config_actuator.py",
+        ["graph_client", "send_mail", "resend", "smtplib", "email.mime",
+         "anthropic", "anthropic_client"],
+    ),
     # ("subcontracts/subcontract_generate.py", ["graph_client", "send_mail"]),
 ]
 
@@ -354,6 +368,13 @@ NETWORK_LIB_ALLOWLIST: frozenset[str] = frozenset({
     "shared/anthropic_client.py",
     "shared/sentry_client.py",
     "safety_reports/publish_daemon.py",
+    # config_actuator (§50 config editor, slice 2) is the privileged PO-config ACTUATOR — the
+    # publish_daemon twin against config_requests. `subprocess` is its whole purpose (it runs
+    # the operator's own git / gh / wrangler / npm to commit + deploy a config edit; the CF
+    # credential never leaves the Mac). `socket.gethostname()` builds the per-host lease owner.
+    # Its Worker HTTP egress goes through the audited shared.portal_client (above), not
+    # `requests`, and it stays in GATED_SCRIPTS (no customer send, no LLM).
+    "po_materials/config_actuator.py",
     # photo_screen's §34 Layer-3 lazily imports `pyclamd` (a needle below) to scan
     # uploaded portal photos against the LOCAL clamd daemon. config-gated OFF by default;
     # the scan is local-only AV, not customer egress. It stays in GATED_SCRIPTS (no send,

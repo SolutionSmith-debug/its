@@ -4,6 +4,27 @@ Items deliberately deferred. Each carries the rationale for deferral and the tri
 
 When to add an entry: a session deliberately chooses preservation-over-refactor (per Op Stds v11 §14), discovers an external-API constraint that forced a workaround, or defers a non-trivial cleanup that's larger than the current session can absorb. When to mark CLOSED: the underlying item is resolved in a commit; preserve the entry with resolution detail rather than deleting (history is cheap, context is expensive).
 
+## Config editor (§50) — deferred follow-ups [OPEN 2026-07-10]
+
+From the slice-2 (`config_actuator`) build + adversarial review (PR #509):
+
+- **CE-1 (LOW, defense-in-depth) — §54 redact parity on the daemon `_fail` stamp legs.** `config_actuator._fail`
+  now `redact()`s the `reason` before it reaches `portal_client.stamp_config` (the failure_reason lands on the
+  portal Status Monitor, a sink that BYPASSES error_log's redact choke point — §54 damage-ceiling reasoning
+  applied to a new surface). `safety_reports/publish_daemon._fail` has the byte-identical UNREDACTED pattern
+  (`stamp_publish(..., failure_reason=reason)` fed by the same `_exc_reason` subprocess-stderr tail). Bring
+  publish_daemon to parity (same one-line `redact(reason)`), OR — cleaner — redact at the
+  `portal_client.stamp_publish`/`stamp_config` call sites so every future daemon inherits it. Trigger: any
+  §54 sweep, or before publish_daemon's failure_reason gets a portal-facing monitor.
+- **CE-2 (LOW, legal-gate depth) — render-side `legal_review` refusal (Layer A).** `config_apply` writes a new
+  terms version with `legal_review:"pending"` and never bumps `current_version` (the pointer IS the gate — a
+  pending version is inert because `terms._version_entry` defaults to `current_version`). The Layer-A *code*
+  refusal (make `terms._version_entry` / the render path REFUSE a version whose `legal_review != "cleared"`) is
+  deferred: turning it on now would fence every live PO, because the two SHIPPED terms versions predate the
+  flag and are effectively un-cleared. Trigger: backfill the shipped versions to `legal_review:"cleared"` FIRST,
+  then add the loader refusal so a mis-bumped `current_version` can't render an un-reviewed version. Until then
+  the operator legal-clear + `current_version`-bump is a §44 high-class action gated by the §43 runbook.
+
 ## Smartsheet-wiring audit findings — daemon-health + capacity hygiene [OPEN 2026-07-04]
 
 From `docs/audits/2026-07-04_smartsheet-wiring-audit.md` (Task B — the SoR is wired correctly; these are hygiene/observability items, **no correctness breaks**):
