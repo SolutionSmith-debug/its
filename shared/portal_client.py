@@ -76,6 +76,12 @@ FIELDOPS_MATERIAL_LIST_SNAPSHOT_PATH = "/api/internal/fieldops/material-list-sna
 FIELDOPS_MATERIAL_INCIDENTS_PATH = "/api/internal/fieldops/material-incidents"
 PROGRESS_ROLLUP_PATH = "/api/internal/progress-rollup"
 PRUNE_STATUS_PATH = "/api/internal/prune-status"
+PO_PENDING_PATH = "/api/po/internal/pending"
+PO_MARK_FILED_PATH = "/api/po/internal/mark-filed"
+PO_STATUS_SYNC_PATH = "/api/po/internal/status-sync"
+PO_VENDORS_SYNC_PATH = "/api/po/internal/vendors/sync"
+PO_VENDORS_PENDING_PATH = "/api/po/internal/vendors/pending"
+PO_VENDORS_MARK_MIRRORED_PATH = "/api/po/internal/vendors/mark-mirrored"
 
 
 # ---- Typed exceptions ----------------------------------------------------
@@ -791,6 +797,151 @@ def get_prune_status(base_url: str, token: str) -> dict[str, Any] | None:
             f"(got {type(prune).__name__})"
         )
     return prune
+
+
+# ---- Purchase-order internal tier (PO S4 — the po_poll daemon's queue I/O) ----------
+#
+# All six calls ride the SEPARATE PO bearer tier (`requirePoToken`, Worker
+# PORTAL_PO_API_TOKEN / Mac Keychain ITS_PORTAL_PO_TOKEN) — privilege-separated from the
+# poller / field-ops / admin tokens; none of the sibling bearers is accepted on these
+# routes (pinned by safety_portal/test/po.test.ts). Every one is a control-plane
+# read/write of OUR OWN Worker, NOT a customer-facing send — outside the External Send
+# Gate (Invariant 1). Same typed-error contract as `get_pending`.
+
+
+def get_pending_pos(base_url: str, token: str, *, limit: int = 50) -> list[dict[str, Any]]:
+    """Drain the queued-PO queue: GET /api/po/internal/pending (oldest-first).
+
+    Returns the `pending` list verbatim — each row a full `purchase_orders` D1 row
+    (id, po_number, the canonical header fields, status='queued', hmac, ...) with its
+    `line_items` array attached. The Worker caps `limit` at 50. Rows are UNTRUSTED
+    until the caller recomputes the po:v1 canonical HMAC (`shared.portal_hmac.verify_po`
+    — the same verify-before-anything contract as `get_pending`); the canonical JSON is
+    REBUILT from these values, so they must be handed to `po_canonical_json` VERBATIM.
+
+    Raises `PortalAuthError` (401) / `PortalRateLimitError` (429/503 exhausted) /
+    `PortalTransportError` (any other failure, incl. a non-object / missing-array body).
+    """
+    data = _request("GET", base_url, PO_PENDING_PATH, token, params={"limit": limit})
+    pending = data.get("pending")
+    if not isinstance(pending, list):
+        raise PortalTransportError(
+            f"GET {PO_PENDING_PATH} missing/invalid 'pending' array "
+            f"(got {type(pending).__name__})"
+        )
+    # Defensive: keep only dict rows; a non-dict element is malformed transport.
+    return [row for row in pending if isinstance(row, dict)]
+
+
+def mark_po_filed(
+    base_url: str, token: str, *, po_id: int, box_file_id: str | None
+) -> bool:
+    """Post the filing receipt: POST /api/po/internal/mark-filed → returns `found`.
+
+    Called ONLY after the daemon has verified the HMAC, re-asserted the totals,
+    rendered, filed to Box, appended PO_Log, and added the PO_Pending_Review row —
+    the Worker flips queued→pending_review + stores `box_file_id`. Idempotent: a
+    replay (already pending_review) returns `found=False`, which the caller treats
+    as benign (exactly like `mark_filed`).
+
+    Raises the typed `PortalTransportError` hierarchy on failure.
+    """
+    data = _request(
+        "POST", base_url, PO_MARK_FILED_PATH, token,
+        json_body={"po_id": po_id, "box_file_id": box_file_id},
+    )
+    return bool(data.get("found"))
+
+
+def po_status_sync(
+    base_url: str, token: str, updates: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """Report Mac-side status-machine outcomes: POST /api/po/internal/status-sync.
+
+    `updates` is a non-empty list of `{po_id, status}` with status ∈
+    {approved, sent, superseded} (the Worker's SYNCABLE_STATUSES — draft/queued/
+    pending_review/canceled are Worker-owned transitions). ORDER MATTERS: the Worker
+    executes the updates as ordered statements in one batch and each is guarded on the
+    predecessor state (approved only from pending_review; sent only from approved), so
+    a row going straight to SENT must send its `approved` update BEFORE its `sent`
+    update in the SAME call. A `sent` PO carrying `supersedes_po_id` also flips its
+    predecessor to superseded in the same Worker batch. D1 status is a display CACHE
+    of the Mac/Smartsheet-side authoritative state; the guards prevent regression, not
+    approval — F22 stays Mac-side. Worker cap: 200 updates. Empty list is a Worker 400
+    — the caller must never send one.
+
+    Returns the Worker's `{ok, updated}` dict; raises the typed hierarchy on failure.
+    """
+    return _request(
+        "POST", base_url, PO_STATUS_SYNC_PATH, token, json_body={"updates": updates}
+    )
+
+
+def vendors_sync(
+    base_url: str, token: str, vendors: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """Full-replace vendor down-sync: POST /api/po/internal/vendors/sync (§51 rider).
+
+    `vendors` is the COMPLETE ITS_Vendors SoR projection — each row the Worker's
+    vendor shape (`vendor_key` VEN-######, `vendor_name`, `address`, `contact_name`,
+    `contact_email`, `contact_phone`, `region`, `supply_categories` as a LIST,
+    `default_terms_profile`, `gtc_reference`, `active` 0/1, `notes`). The Worker
+    upserts every row EXCEPT dirty ones (`sync_state='pending'` — THE dirty-row
+    fence: an un-mirrored portal edit is never clobbered), rejects an EMPTY payload
+    (a Smartsheet read-miss must never wipe the cache — the caller must also refuse
+    to send one), rejects the WHOLE batch on any malformed row, and NEVER deletes —
+    a sheet-retired vendor arrives with active=0.
+
+    Returns the Worker's `{ok, upserted, skipped_dirty}` dict; raises the typed
+    hierarchy on failure.
+    """
+    return _request(
+        "POST", base_url, PO_VENDORS_SYNC_PATH, token, json_body={"vendors": vendors}
+    )
+
+
+def get_pending_vendors(base_url: str, token: str) -> list[dict[str, Any]]:
+    """Pull portal-edited (dirty) vendors to mirror UP: GET /api/po/internal/vendors/pending.
+
+    Returns the `vendors` list verbatim — each a dict with the full vendor payload
+    (`supply_categories` already parsed to a list by the Worker) + the version vector
+    (`mirror_version`, `mirrored_version`). The daemon bridge-key find-or-creates the
+    ITS_Vendors row by `vendor_key`, then commits via `mark_vendors_mirrored`. The
+    Worker caps the page at 200 rows server-side; the daemon drains across cycles.
+
+    Raises `PortalAuthError` (401) / `PortalRateLimitError` (429/503 exhausted) /
+    `PortalTransportError` (any other failure, incl. a non-object / missing-array body).
+    """
+    data = _request("GET", base_url, PO_VENDORS_PENDING_PATH, token)
+    vendors = data.get("vendors")
+    if not isinstance(vendors, list):
+        raise PortalTransportError(
+            f"GET {PO_VENDORS_PENDING_PATH} missing/invalid 'vendors' array "
+            f"(got {type(vendors).__name__})"
+        )
+    # Defensive: keep only dict rows; a non-dict element is malformed transport.
+    return [row for row in vendors if isinstance(row, dict)]
+
+
+def mark_vendors_mirrored(
+    base_url: str, token: str, updates: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """Vendor up-sync commit point: POST /api/po/internal/vendors/mark-mirrored.
+
+    `updates` is a non-empty list of `{vendor_key, mirrored_version}` where
+    `mirrored_version` is the `mirror_version` the daemon READ on the pending pull.
+    The Worker flips pending→synced ONLY IF `mirror_version` is UNCHANGED (the
+    watermark guard, bound in-WHERE): a portal edit racing the mirror bumps the
+    version, the guard fails, the row STAYS pending and re-up-syncs next cycle.
+    Idempotent — a replay of a satisfied update is a no-op (`stale`). The Worker
+    rejects an EMPTY list (400) — the caller must never send one.
+
+    Returns the Worker's `{ok, flipped, stale}` dict; raises the typed hierarchy.
+    """
+    return _request(
+        "POST", base_url, PO_VENDORS_MARK_MIRRORED_PATH, token,
+        json_body={"updates": updates},
+    )
 
 
 # ---- Form-editor publish pipeline (slice 3b — the Mac publish daemon's queue I/O) ----

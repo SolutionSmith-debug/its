@@ -1,0 +1,1168 @@
+"""Purchase-Order pull daemon — the ONE multi-pass Mac half of the PO pipeline (S4).
+
+Purpose
+-------
+The Worker (safety_portal/worker/po.ts) validates/computes/signs/queues each generated
+PO SEND-FREE in D1; this launchd daemon (90s, `org.solutionsmith.its.po-poll`) is the
+Mac-side consumer — the `fieldops_sync` multi-pass model (one host, one lock, one
+heartbeat; per-pass ITS_Config gates, ALL shipped false):
+
+  ① **Drafts pass** (`po_materials.po_poll.polling_enabled`): GET
+     /api/po/internal/pending → per row: recompute the po:v1 canonical string +
+     constant-time HMAC verify (`shared.portal_hmac.verify_po`) → totals recompute +
+     assert vs the SIGNED values (`po_generate.totals_mismatches`) → PO_Log collision
+     double-check (`numbering.check_collision` — hand-issued POs in transition) →
+     ITS_Vendors SoR vendor snapshot (#494) → terms/purchaser resolution →
+     DETERMINISTIC render → Box file (§45 find-or-create ROOT→job→"Purchase Orders";
+     §47 version-on-conflict) → PO_Log append + PO_Pending_Review row (+ inline PDF
+     attach, best-effort) → mark-filed receipt WITH box_file_id. The receipt is
+     LAST: a crash anywhere before it re-pulls the row and every prior step is
+     idempotent (version-on-conflict upload; PO_Log/review-row dedupe by d1_id /
+     po_id). A bad-HMAC or totals-mismatch row is ONE-SHOT-FLAGGED (CRITICAL +
+     security Review-Queue row on first sighting, then skipped) — NEVER rendered,
+     NEVER filed, NEVER marked; the row stays queued in D1 for forensics (the PO
+     internal tier has no mark-rejected route by design).
+  ② **Vendor down-sync pass** (`.vendors_sync_enabled`): full ITS_Vendors projection
+     → POST vendors/sync (full-replace; the Worker's dirty-row fence protects
+     un-mirrored portal edits; an EMPTY projection is REFUSED here too — a read-miss
+     must never wipe the cache).
+  ③ **Vendor up-sync pass** (same gate): GET vendors/pending → per vendor: bridge-key
+     find-or-create into ITS_Vendors (`vendors.upsert_vendor`, column-scoped
+     non-clobber) → mark-mirrored with the READ watermark (the Worker's in-WHERE
+     version guard makes a racing portal edit win).
+  ④ **Status pass** (`.status_sync_enabled`): read PO_Pending_Review approve/SENT
+     state → POST status-sync (approved BEFORE sent per PO — the Worker's guarded
+     batch walks the machine in order) → mirror the stamps into PO_Log (sent + Sent
+     At; the superseded flip onto the predecessor row, resolved via the Notes d1_id
+     join). D1 status is a display cache; F22 approval verification stays with the
+     S5 send poller — this pass reports, it does not authorize.
+
+Invariants
+----------
+- GENERATION-side of the External Send Gate (FM Invariant 1): AI-FREE and
+  customer-SEND-FREE — no `anthropic*`, no `graph_client`/`send_mail`/`resend`/
+  `smtplib`/`email.mime` (enrolled in tests/test_capability_gating.py GATED_SCRIPTS).
+  All egress rides the F02-allowlisted `shared.portal_client` (our Worker) +
+  `shared.box_client` (filing) + `shared.smartsheet_client` (SoR/ledger writes).
+- Invariant 2: a /pending row is UNTRUSTED until its HMAC verifies; the money on the
+  legal document is re-derived and asserted, never taken on faith; the vendor
+  identity embedded in the PDF comes from the Smartsheet SoR, never the D1 cache.
+- Kill-switch first (`@require_active`) + `@its_error_log`; observable config
+  resolution (`REQUIRED_CONFIG` + `resolve_and_log`, #336); bearer privilege
+  separation (`ITS_PORTAL_PO_TOKEN` — the Worker's `requirePoToken` tier accepts no
+  sibling token).
+
+Failure modes
+-------------
+- PAUSED/MAINTENANCE → `@require_active` exits cleanly. ALL gates false (the shipped
+  default) → pure no-op (no per-cycle log spam; the seeded ITS_Config rows are the
+  operator's switches — scripts/migrations/seed_po_materials_config.py).
+- Missing base URL / bearer / HMAC secret → FAIL-CLOSED: no pass runs; CRITICAL
+  (won't self-heal) + ERROR heartbeat.
+- 401 anywhere → the SAME bearer fails every PO route, so the cycle STOPS: CRITICAL
+  (`po_bearer_rejected`) + ERROR heartbeat; everything stays queued/dirty.
+- Per-item fences: PERMANENT (bad HMAC / totals mismatch / collision / unknown
+  vendor / TermsError / picklist / HTTP-400 validation) → Review-Queue row +
+  one-shot flag (state `po_poll_flagged.json` — delete an entry to retry after
+  fixing the cause); TRANSIENT (SmartsheetError / BoxError / PortalTransportError)
+  → ERROR-logged, row left queued/dirty, next cycle retries. One bad row never
+  kills the cycle.
+
+Consumers
+---------
+- launchd `org.solutionsmith.its.po-poll` (StartInterval 90s default; RunAtLoad).
+- Watchdog Check C marker (`po_poll`) + ITS_Daemon_Health row (shared.heartbeat).
+"""
+from __future__ import annotations
+
+import fcntl
+import json
+import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+from zoneinfo import ZoneInfo
+
+from po_materials import numbering, po_generate, po_log, po_review, vendors
+from po_materials import terms as terms_lib
+from safety_reports import safety_naming
+from shared import (
+    anomaly_logger,
+    box_client,
+    circuit_breaker,
+    error_log,
+    keychain,
+    picklist_validation,
+    portal_client,
+    portal_hmac,
+    review_queue,
+    smartsheet_client,
+    state_io,
+)
+from shared.error_log import Severity, its_error_log
+from shared.heartbeat import HeartbeatReporter, HeartbeatStatus
+from shared.kill_switch import require_active
+from shared.required_config import ConfigKey, resolve_and_log
+
+SCRIPT_NAME = "po_materials.po_poll"
+WORKSTREAM = "po_materials"
+
+# ITS_Config keys (all read under Workstream='po_materials' except the two SHARED
+# safety_reports-owned keys — same ownership pattern as fieldops_sync).
+CFG_POLLING_ENABLED = "po_materials.po_poll.polling_enabled"
+CFG_VENDORS_SYNC_ENABLED = "po_materials.po_poll.vendors_sync_enabled"
+CFG_STATUS_SYNC_ENABLED = "po_materials.po_poll.status_sync_enabled"
+CFG_WORKER_BASE_URL = "safety_reports.portal.worker_base_url"  # shared with portal_poll
+CFG_WORKER_BASE_URL_WORKSTREAM = "safety_reports"
+
+# Keychain entry names (NOT secrets). The PO bearer mirrors the Worker's
+# PORTAL_PO_API_TOKEN (privilege-separated from every sibling tier); the HMAC secret
+# is the SAME payload secret the Worker signs with (domain separation, not key
+# separation, isolates the po:v1 protocol).
+KC_PO_TOKEN = "ITS_PORTAL_PO_TOKEN"  # noqa: S105 — Keychain entry NAME, not a secret
+KC_HMAC_SECRET = "ITS_PORTAL_HMAC_SECRET"  # noqa: S105 — Keychain entry NAME, not a secret
+
+DEFAULT_POLLING_ENABLED = False       # ships dark; the operator flips the seeded row
+DEFAULT_VENDORS_SYNC_ENABLED = False  # ships dark
+DEFAULT_STATUS_SYNC_ENABLED = False   # ships dark
+POLL_INTERVAL_SECONDS = 90  # registration metadata; mirrors the launchd StartInterval
+
+# The Box subfolder every PO PDF files into, under the job's mirror-tree folder
+# (§45 find-or-create at every level; the S1 report's ROOT→job→"Purchase Orders").
+PO_BOX_SUBFOLDER = "Purchase Orders"
+
+_PACIFIC = ZoneInfo("America/Los_Angeles")  # the PO date is operator wall-clock
+
+# #336 — every ITS_Config key this daemon resolves at RUNTIME. The declared-but-not-
+# runtime-read *.poll_interval_seconds key is deliberately EXCLUDED (install.sh bakes
+# it into the plist; the daemon never reads it) — same posture as fieldops_sync.
+REQUIRED_CONFIG: list[ConfigKey] = [
+    ConfigKey(CFG_POLLING_ENABLED, WORKSTREAM, DEFAULT_POLLING_ENABLED, "bool"),
+    ConfigKey(CFG_VENDORS_SYNC_ENABLED, WORKSTREAM, DEFAULT_VENDORS_SYNC_ENABLED, "bool"),
+    ConfigKey(CFG_STATUS_SYNC_ENABLED, WORKSTREAM, DEFAULT_STATUS_SYNC_ENABLED, "bool"),
+    ConfigKey(
+        CFG_WORKER_BASE_URL, CFG_WORKER_BASE_URL_WORKSTREAM, "", "str",
+        description="Shared Worker base URL; owned by safety_reports, read here too.",
+    ),
+    ConfigKey(
+        safety_naming.CFG_BOX_PORTAL_ROOT, CFG_WORKER_BASE_URL_WORKSTREAM, "", "str",
+        description=(
+            "Shared Box mirror-tree root; owned by safety_reports. The drafts pass "
+            "files PO PDFs under ROOT→<job>→'Purchase Orders'."
+        ),
+    ),
+]
+
+# State paths. HEARTBEAT_ROW_STATE_PATH is the SHARED row-id cache (ARCH-2).
+STATE_DIR = Path.home() / "its" / "state"
+HEARTBEAT_PATH = STATE_DIR / "po_poll_heartbeat.txt"
+LOCK_PATH = STATE_DIR / "po_poll.lock"
+HEARTBEAT_ROW_STATE_PATH = STATE_DIR / "heartbeat_row_ids.json"
+# One-shot flag state for PERMANENTLY-refused pending rows (`{po_id: reason}`).
+# A flagged row is skipped every subsequent cycle (no 90s Review-Queue spam); the
+# operator remediates by fixing the cause and deleting the entry (or the file).
+PO_FLAGGED_PATH = STATE_DIR / "po_poll_flagged.json"
+MAX_PO_FLAGS = 500  # drained/settled entries are dead weight only — cap the file
+
+DAEMON_NAME = "po_materials.po_poll"
+_REGISTRATION_SOURCE_ID = "Safety Portal Worker /api/po/internal/pending"
+
+_heartbeat_reporter = HeartbeatReporter(
+    script_name=SCRIPT_NAME,
+    daemon_name=DAEMON_NAME,
+    workstream=WORKSTREAM,
+    liveness_path=HEARTBEAT_PATH,
+    interval_seconds=POLL_INTERVAL_SECONDS,
+    source_id=_REGISTRATION_SOURCE_ID,
+    row_state_path=HEARTBEAT_ROW_STATE_PATH,  # shared file — make the contract explicit
+)
+
+WATCHDOG_MARKER_DIR = Path.home() / "its" / ".watchdog"
+WATCHDOG_JOB_SLUG = "po_poll"
+
+
+@dataclass(frozen=True)
+class PoPollStats:
+    """Summary of one poll_once() invocation."""
+
+    skipped_disabled: bool = False
+    skipped_locked: bool = False
+    halted_no_creds: bool = False
+    bearer_rejected: bool = False
+    # ① drafts pass
+    drafts_scanned: int = 0
+    filed: int = 0        # POs fully filed + receipted this cycle
+    rejected: int = 0     # bad-HMAC refusals (first sighting)
+    fenced: int = 0       # permanent Review-Queue fences (totals/collision/vendor/terms/…)
+    skipped_flagged: int = 0  # rows already one-shot-flagged in a prior cycle
+    draft_errors: int = 0     # transient failures (left queued)
+    # ②③ vendor passes
+    vendors_downsynced: int = 0
+    vendors_upsynced: int = 0
+    vendors_reviewed: int = 0
+    vendor_errors: int = 0
+    # ④ status pass
+    status_synced: int = 0
+    status_errors: int = 0
+
+
+class _BearerRejectedError(Exception):
+    """Internal: a 401 anywhere — the SAME bearer fails every PO route, stop the cycle."""
+
+
+@dataclass(frozen=True)
+class _PoCreds:
+    """Resolved credentials with NAMED fields (the portal_poll CodeQL taint rationale:
+    named fields keep the bearer/secret taint off base_url and everything logged)."""
+
+    base_url: str
+    bearer: str
+    secret: str
+
+
+# ---- Config readers (replicated per preservation, mirror fieldops_sync) --------
+
+
+def _read_str_setting(key: str, fallback: str, workstream: str | None = None) -> str:
+    try:
+        raw = smartsheet_client.get_setting(
+            key, workstream=workstream if workstream is not None else WORKSTREAM
+        )
+    except smartsheet_client.SmartsheetNotFoundError:
+        return fallback
+    except smartsheet_client.SmartsheetCircuitOpenError:
+        return fallback
+    return raw if isinstance(raw, str) and raw else fallback
+
+
+def _read_bool_setting(key: str, fallback: bool) -> bool:
+    raw = _read_str_setting(key, str(fallback).lower())
+    return raw.strip().lower() in ("true", "1", "yes", "on")
+
+
+def _polling_enabled() -> bool:
+    return _read_bool_setting(CFG_POLLING_ENABLED, DEFAULT_POLLING_ENABLED)
+
+
+def _vendors_sync_enabled() -> bool:
+    return _read_bool_setting(CFG_VENDORS_SYNC_ENABLED, DEFAULT_VENDORS_SYNC_ENABLED)
+
+
+def _status_sync_enabled() -> bool:
+    return _read_bool_setting(CFG_STATUS_SYNC_ENABLED, DEFAULT_STATUS_SYNC_ENABLED)
+
+
+# ---- Lock + heartbeat + marker seams (mirror fieldops_sync) ---------------------
+
+
+@contextmanager
+def _file_lock(path: Path) -> Iterator[bool]:
+    """Acquire exclusive non-blocking lock; yield True on success, False if held."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = path.open("w")
+    try:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            acquired = True
+        except BlockingIOError:
+            acquired = False
+        yield acquired
+    finally:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+        except Exception:  # noqa: BLE001 — cleanup best-effort
+            pass
+        handle.close()
+
+
+def _write_heartbeat() -> None:
+    """Liveness file touch — thin delegator to the shared HeartbeatReporter (the
+    canonical test mock seam; see shared/heartbeat.py §42)."""
+    _heartbeat_reporter.write_liveness()
+
+
+def _write_heartbeat_row(
+    *,
+    status: HeartbeatStatus,
+    items_processed: int,
+    error_summary: str | None = None,
+    correlation_id: str | None = None,
+    notes: str | None = None,
+) -> None:
+    """ITS_Daemon_Health per-cycle row update — thin delegator to the shared
+    HeartbeatReporter (the canonical test mock seam)."""
+    _heartbeat_reporter.write_row(
+        status=status,
+        items_processed=items_processed,
+        error_summary=error_summary,
+        correlation_id=correlation_id,
+        notes=notes,
+    )
+
+
+def _write_watchdog_marker() -> None:
+    """Touch the Check C freshness marker for this run (mirror fieldops_sync)."""
+    try:
+        WATCHDOG_MARKER_DIR.mkdir(parents=True, exist_ok=True)
+        marker = WATCHDOG_MARKER_DIR / f"{WATCHDOG_JOB_SLUG}.last_run"
+        marker.write_text(datetime.now(UTC).isoformat())
+    except OSError as exc:
+        error_log.log(
+            Severity.WARN, SCRIPT_NAME,
+            f"watchdog marker write failed: {exc!r}",
+            error_code="watchdog_marker_failed",
+        )
+
+
+# ---- One-shot flag state (the item-photo flag pattern, portal_poll) -------------
+
+
+def _load_flags() -> dict[str, str]:
+    """Load the one-shot flag set `{po_id: reason}`. {} on any read error (fail-open:
+    the only cost is one redundant re-flag, never a missed alert)."""
+    if not PO_FLAGGED_PATH.exists():
+        return {}
+    try:
+        parsed = json.loads(PO_FLAGGED_PATH.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _persist_flags(flags: dict[str, str]) -> None:
+    """Atomically persist the flag set (capped). Lock-timeout fails OPEN with a WARN —
+    a lost flag set costs a duplicate Review-Queue flag next cycle, never a missed one."""
+    if len(flags) > MAX_PO_FLAGS:
+        flags = dict(list(flags.items())[-MAX_PO_FLAGS:])
+    PO_FLAGGED_PATH.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with state_io.with_path_lock(PO_FLAGGED_PATH):
+            state_io.atomic_write_json(PO_FLAGGED_PATH, flags)
+    except state_io.StateLockTimeoutError:
+        error_log.log(
+            Severity.WARN, SCRIPT_NAME,
+            f"could not acquire lock on {PO_FLAGGED_PATH} after retries; "
+            f"PO flag set not persisted",
+            error_code="po_flags_persist_failed",
+        )
+
+
+# ---- Credential resolution (fail-CLOSED) -----------------------------------------
+
+
+def _resolve_credentials() -> _PoCreds | None:
+    """Resolve (base_url, bearer, secret) fail-CLOSED. None if any is absent."""
+    base_url = _read_str_setting(
+        CFG_WORKER_BASE_URL, "", workstream=CFG_WORKER_BASE_URL_WORKSTREAM
+    )
+    try:
+        bearer = keychain.get_secret(KC_PO_TOKEN)
+    except keychain.KeychainError:
+        bearer = ""
+    try:
+        secret = keychain.get_secret(KC_HMAC_SECRET)
+    except keychain.KeychainError:
+        secret = ""
+    if not (base_url and bearer and secret):
+        return None
+    return _PoCreds(base_url=base_url, bearer=bearer, secret=secret)
+
+
+# ---- Public API -------------------------------------------------------------------
+
+
+@its_error_log(SCRIPT_NAME)
+@require_active
+def poll_once() -> PoPollStats:
+    """Run one multi-pass PO cycle. launchd invokes this once per StartInterval;
+    idempotent across crashes (see the module docstring's receipt-is-last design)."""
+    # #336 startup observability (after @require_active, fail-open — never blocks).
+    resolve_and_log(SCRIPT_NAME, REQUIRED_CONFIG)
+
+    drafts_on = _polling_enabled()
+    vendors_on = _vendors_sync_enabled()
+    status_on = _status_sync_enabled()
+    if not (drafts_on or vendors_on or status_on):
+        # Shipped default (ALL gates false) — an intentional dark state, not an
+        # anomaly: no heartbeat/marker/log spam every 90s. The seeded ITS_Config
+        # rows are the operator's switches.
+        return PoPollStats(skipped_disabled=True)
+
+    with _file_lock(LOCK_PATH) as acquired:
+        if not acquired:
+            error_log.log(
+                Severity.INFO, SCRIPT_NAME,
+                "another poll cycle holds the lock; skipping this cycle",
+                error_code="po_poll_lock_held",
+            )
+            return PoPollStats(skipped_locked=True)
+        return _poll_inside_lock(drafts_on, vendors_on, status_on)
+
+
+def _poll_inside_lock(drafts_on: bool, vendors_on: bool, status_on: bool) -> PoPollStats:
+    """Body of poll_once running under the file lock."""
+    creds = _resolve_credentials()
+    if creds is None:
+        error_log.log(
+            Severity.CRITICAL, SCRIPT_NAME,
+            (
+                # Deliberately does NOT interpolate the ITS_Config key or the Keychain
+                # entry NAMES (secret-store names in a log are a CodeQL clear-text trip).
+                "fail-closed: missing PO portal credentials — the Worker base URL "
+                "(ITS_Config) and/or the PO bearer + HMAC-secret Keychain entries are "
+                "unset; NOT polling until fixed"
+            ),
+            error_code="po_creds_missing",
+        )
+        _write_heartbeat()
+        _write_heartbeat_row(status="ERROR", items_processed=0,
+                             error_summary="fail-closed: PO portal credentials missing")
+        return PoPollStats(halted_no_creds=True)
+
+    counters: dict[str, int] = {
+        "drafts_scanned": 0, "filed": 0, "rejected": 0, "fenced": 0,
+        "skipped_flagged": 0, "draft_errors": 0,
+        "vendors_downsynced": 0, "vendors_upsynced": 0, "vendors_reviewed": 0,
+        "vendor_errors": 0, "status_synced": 0, "status_errors": 0,
+    }
+    bearer_rejected = False
+    try:
+        if drafts_on:
+            _drafts_pass(creds, counters)
+        if vendors_on:
+            _vendor_down_sync_pass(creds, counters)
+            _vendor_up_sync_pass(creds, counters)
+        if status_on:
+            _status_pass(creds, counters)
+    except _BearerRejectedError:
+        # A 401 anywhere: the SAME bearer fails every PO route, so nothing else can
+        # work this cycle. A bad/rotated bearer will NOT self-heal → page.
+        bearer_rejected = True
+        error_log.log(
+            Severity.CRITICAL, SCRIPT_NAME,
+            "PO bearer UNAUTHORIZED (401) — rejected by the Worker's requirePoToken "
+            "tier; cycle STOPPED until the token is fixed (everything stays "
+            "queued/dirty — safe re-attempt)",
+            error_code="po_bearer_rejected",
+        )
+
+    _write_heartbeat()
+    total_errors = counters["draft_errors"] + counters["vendor_errors"] + counters["status_errors"]
+    total_flagged = counters["rejected"] + counters["fenced"] + counters["vendors_reviewed"]
+    if bearer_rejected:
+        cycle_status: HeartbeatStatus = "ERROR"
+    elif total_errors > 0:
+        cycle_status = "DEGRADED"
+    elif total_flagged > 0:
+        cycle_status = "WARN"
+    else:
+        cycle_status = "OK"
+    if circuit_breaker.is_open():
+        cycle_status = "CIRCUIT_OPEN"
+    if total_errors == 0 and total_flagged == 0 and not bearer_rejected:
+        error_summary = None
+    else:
+        error_summary = (
+            f"errors={total_errors} flagged={total_flagged}"
+            + (" bearer_rejected" if bearer_rejected else "")
+        )
+    try:
+        _write_heartbeat_row(
+            status=cycle_status,
+            items_processed=(
+                counters["filed"] + counters["vendors_upsynced"] + counters["status_synced"]
+            ),
+            error_summary=error_summary,
+        )
+    except Exception as exc:  # noqa: BLE001 — heartbeat must never block
+        error_log.log(
+            Severity.WARN, SCRIPT_NAME,
+            f"heartbeat write outer-catch tripped: {exc!r}",
+            error_code="daemon_health_write_failed",
+        )
+    _write_watchdog_marker()
+
+    error_log.log(
+        Severity.INFO, SCRIPT_NAME,
+        (
+            f"po cycle: drafts scanned={counters['drafts_scanned']} filed={counters['filed']} "
+            f"rejected={counters['rejected']} fenced={counters['fenced']} "
+            f"flag-skipped={counters['skipped_flagged']} errors={counters['draft_errors']}; "
+            f"vendors down={counters['vendors_downsynced']} up={counters['vendors_upsynced']} "
+            f"reviewed={counters['vendors_reviewed']} errors={counters['vendor_errors']}; "
+            f"status synced={counters['status_synced']} errors={counters['status_errors']}"
+        ),
+        error_code="po_cycle_summary",
+    )
+    return PoPollStats(
+        bearer_rejected=bearer_rejected,
+        drafts_scanned=counters["drafts_scanned"],
+        filed=counters["filed"],
+        rejected=counters["rejected"],
+        fenced=counters["fenced"],
+        skipped_flagged=counters["skipped_flagged"],
+        draft_errors=counters["draft_errors"],
+        vendors_downsynced=counters["vendors_downsynced"],
+        vendors_upsynced=counters["vendors_upsynced"],
+        vendors_reviewed=counters["vendors_reviewed"],
+        vendor_errors=counters["vendor_errors"],
+        status_synced=counters["status_synced"],
+        status_errors=counters["status_errors"],
+    )
+
+
+# ---- ① Drafts pass ----------------------------------------------------------------
+
+
+def _drafts_pass(creds: _PoCreds, counters: dict[str, int]) -> None:
+    """Drain the queued-PO queue: verify → assert → render → file → receipt."""
+    try:
+        pending = portal_client.get_pending_pos(creds.base_url, creds.bearer)
+    except portal_client.PortalAuthError as exc:
+        raise _BearerRejectedError from exc
+    except portal_client.PortalTransportError as exc:
+        counters["draft_errors"] += 1
+        error_log.log(
+            Severity.ERROR, SCRIPT_NAME,
+            f"failed to GET po pending (rows left queued for next cycle): {exc!r}",
+            error_code="po_pending_fetch_failed",
+        )
+        return
+    if not pending:
+        return
+
+    # Per-CYCLE config resolution: purchaser identity + tax table (versioned files,
+    # D5/D8). A broken config file is a deploy defect — abort the pass loudly, leave
+    # every row queued.
+    try:
+        purchaser = terms_lib.load_purchaser_config()
+        tax_config = terms_lib.load_tax_config()
+    except terms_lib.TermsError as exc:
+        counters["draft_errors"] += 1
+        error_log.log(
+            Severity.CRITICAL, SCRIPT_NAME,
+            f"purchaser/tax config unreadable — drafts pass ABORTED (rows left "
+            f"queued): {exc}",
+            error_code="po_config_unreadable",
+        )
+        return
+
+    flags = _load_flags()
+    flags_dirty = False
+    for row in pending:
+        counters["drafts_scanned"] += 1
+        if _process_pending_po(row, creds, counters, flags, purchaser, tax_config):
+            flags_dirty = True
+    if flags_dirty:
+        _persist_flags(flags)
+
+
+def _process_pending_po(
+    row: dict[str, Any],
+    creds: _PoCreds,
+    counters: dict[str, int],
+    flags: dict[str, str],
+    purchaser: dict[str, Any],
+    tax_config: dict[str, Any],
+) -> bool:
+    """Verify + assert + render + file + receipt ONE pending PO. Returns True iff
+    the one-shot flag set was mutated (the caller persists once per cycle)."""
+    raw_id = row.get("id")
+    if not isinstance(raw_id, int) or isinstance(raw_id, bool) or raw_id <= 0:
+        counters["draft_errors"] += 1
+        error_log.log(
+            Severity.ERROR, SCRIPT_NAME,
+            f"pending PO row has a missing/malformed id ({raw_id!r}); skipping",
+            error_code="po_row_no_id",
+        )
+        return False
+    po_id = raw_id
+    key = str(po_id)
+    if key in flags:
+        counters["skipped_flagged"] += 1
+        return False
+
+    po_number = str(row.get("po_number") or "")
+    # Split the HMAC off the row IMMEDIATELY (the portal_poll hygiene: an integrity
+    # tag has no business traveling into render/filing/logs).
+    provided_hmac = str(row.get("hmac") or "")
+    po = {k: v for k, v in row.items() if k != "hmac"}
+    raw_lines = po.get("line_items")
+    line_items = [ln for ln in raw_lines if isinstance(ln, dict)] if isinstance(raw_lines, list) else []
+    correlation_id = uuid.uuid4().hex[:12]
+
+    # 1 — HMAC verify (Invariant 2 downgrade defense; constant-time).
+    try:
+        canonical = portal_hmac.po_canonical_json(po, line_items)
+    except ValueError as exc:
+        # NaN/Infinity in a money field — malformed beyond what the Worker could
+        # ever have signed. Permanent.
+        counters["fenced"] += 1
+        _fence_po(po_id, po_number, f"canonical serialization failed: {exc}",
+                  "po_canonical_invalid", correlation_id, flags, "canonical")
+        return True
+    if not portal_hmac.verify_po(
+        creds.secret, provided_hmac,
+        po_id=po_id, po_number=po_number, canonical_json=canonical,
+    ):
+        counters["rejected"] += 1
+        _handle_po_hmac_failure(po_id, po_number, po, correlation_id, flags)
+        return True
+
+    # 2 — totals recompute + assert vs the SIGNED values (never render a number we
+    # did not re-derive).
+    mismatches = po_generate.totals_mismatches(
+        po, line_items, rates_bp=tax_config["rates_bp"]
+    )
+    if mismatches:
+        counters["fenced"] += 1
+        _fence_po(
+            po_id, po_number,
+            f"totals recompute disagrees with the signed values: {mismatches}",
+            "po_totals_mismatch", correlation_id, flags, "totals",
+            reason=review_queue.ReviewReason.MISMATCHED_REFERENCE,
+        )
+        return True
+
+    try:
+        # 3 — PO_Log collision double-check (hand-issued POs in transition).
+        collision = numbering.check_collision(po_number, po_id)
+        if collision is not None:
+            counters["fenced"] += 1
+            _fence_po(
+                po_id, po_number,
+                f"PO number already in PO_Log and not ours ({collision}) — a "
+                f"hand-issued PO or ledger defect; NOT filing a duplicate number",
+                "po_number_collision", correlation_id, flags, "collision",
+                reason=review_queue.ReviewReason.MISMATCHED_REFERENCE,
+            )
+            return True
+
+        # 4 — vendor snapshot from the ITS_Vendors SoR at render time (#494).
+        vendor_key = str(po.get("vendor_key") or "")
+        vendor = vendors.get_vendor_by_key(vendor_key)
+        if vendor is None:
+            counters["fenced"] += 1
+            _fence_po(
+                po_id, po_number,
+                f"vendor {vendor_key!r} not found in ITS_Vendors (the SoR) — cannot "
+                f"embed a Seller identity; fix the vendor row, then clear this PO's "
+                f"entry from {PO_FLAGGED_PATH.name} to retry",
+                "po_vendor_unknown", correlation_id, flags, "vendor",
+            )
+            return True
+        vendor_name = str(vendor.get(vendors.COL_VENDOR_NAME) or "")
+
+        # 5 — terms resolution (strict token fill; TermsError → permanent fence).
+        terms = po_generate.resolve_terms(
+            str(po.get("terms_profile_id") or ""),
+            str(po.get("terms_version") or ""),
+            purchaser_entity=str(purchaser.get("entity") or ""),
+            seller_name=vendor_name,
+        )
+
+        # 6 — predecessor number for the supersession clause + ledger display.
+        supersedes_po_id = po.get("supersedes_po_id")
+        supersedes_display: str | None = None
+        if isinstance(supersedes_po_id, int) and not isinstance(supersedes_po_id, bool):
+            supersedes_display = po_log.find_po_number_by_d1_id(supersedes_po_id)
+
+        # 7 — deterministic render (the PO date = the filing date, Pacific).
+        po_date = datetime.now(_PACIFIC).date()
+        pdf = po_generate.render_po_pdf(
+            po, line_items, vendor, purchaser, terms,
+            po_date=po_date,
+            supersedes_po_number=supersedes_display,
+            state_names=tax_config["state_names"],
+        )
+
+        # 8 — Box filing: §45 find-or-create ROOT→job→"Purchase Orders", §47
+        # version-on-conflict under the deterministic name.
+        folder_id = _resolve_po_box_folder(str(po.get("job_name") or ""))
+        if folder_id is None:
+            counters["draft_errors"] += 1
+            error_log.log(
+                Severity.ERROR, SCRIPT_NAME,
+                f"Box portal root unresolved (ITS_Config "
+                f"{safety_naming.CFG_BOX_PORTAL_ROOT} unset) — PO {po_number} left "
+                f"queued until the root is configured",
+                error_code="po_box_root_unresolved",
+                correlation_id=correlation_id,
+            )
+            return False
+        file_info = box_client.upload_bytes_or_new_version(
+            folder_id, f"PO {po_number}.pdf", pdf
+        )
+        box_file_id = str(file_info["id"])
+        box_link = f"https://app.box.com/file/{box_file_id}"
+
+        # 9 — PO_Log append (idempotent: the collision check above proved any
+        # existing row is OURS — a crash-retry — so only append when absent).
+        if po_log.find_row_by_po_number(po_number) is None:
+            po_log.append_filed_row(
+                po_number=po_number,
+                job_project=f"{po.get('job_no')} — {po.get('job_name')}",
+                job_id=str(po.get("job_id") or ""),
+                vendor_name=vendor_name,
+                vendor_key=vendor_key,
+                total_cents=int(po.get("total_cents") or 0),
+                pdf_link=box_link,
+                supersedes_display=supersedes_display or "",
+                terms_profile=str(po.get("terms_profile_id") or ""),
+                created_by=str(po.get("created_by") or ""),
+                created_at_iso=po_date.isoformat(),
+                notes=po_log.notes_for_filed_row(po_id),
+            )
+
+        # 10 — PO_Pending_Review row (idempotent via the Notes po_id join) + the
+        # inline PDF attach (best-effort — Box is the SoR).
+        if po_review.find_row_by_po_id(po_id) is None:
+            email_body = po_review.po_email_body_template(
+                contact_name=str(vendor.get(vendors.COL_CONTACT_NAME) or ""),
+                po_number=po_number,
+                job_name=str(po.get("job_name") or ""),
+                purchaser_entity=str(purchaser.get("entity") or ""),
+            )
+            routing = purchaser.get("invoice_routing") or {}
+            cc_display = ", ".join(str(c) for c in routing.get("cc", []))
+            review_row_id = po_review.add_po_review_row(
+                job_project=f"{po.get('job_no')} — {po.get('job_name')}",
+                vendor_key=vendor_key,
+                po_date=po_date,
+                pdf_link=box_link,
+                recipient_to=str(vendor.get(vendors.COL_CONTACT_EMAIL) or ""),
+                cc_display=cc_display,
+                email_body=email_body,
+                notes=po_review.notes_for_review_row(
+                    po_id, po_number,
+                    supersedes_po_id=supersedes_po_id
+                    if isinstance(supersedes_po_id, int) and not isinstance(supersedes_po_id, bool)
+                    else None,
+                ),
+            )
+            _attach_pdf_best_effort(review_row_id, f"PO {po_number}.pdf", pdf, correlation_id)
+
+        # 11 — the receipt, LAST (queued→pending_review; a crash before this line
+        # re-pulls the row and every step above is idempotent).
+        portal_client.mark_po_filed(
+            creds.base_url, creds.bearer, po_id=po_id, box_file_id=box_file_id
+        )
+        counters["filed"] += 1
+        error_log.log(
+            Severity.INFO, SCRIPT_NAME,
+            f"filed PO {po_number} (po_id={po_id}) → Box + PO_Log + PO_Pending_Review",
+            error_code="po_filed",
+            correlation_id=correlation_id,
+        )
+        return False
+    except portal_client.PortalAuthError as exc:
+        raise _BearerRejectedError from exc
+    except terms_lib.TermsError as exc:
+        counters["fenced"] += 1
+        _fence_po(po_id, po_number, f"terms resolution failed: {exc}",
+                  "po_terms_error", correlation_id, flags, "terms")
+        return True
+    except (
+        picklist_validation.PicklistViolationError,
+        smartsheet_client.SmartsheetValidationError,
+    ) as exc:
+        counters["fenced"] += 1
+        _fence_po(po_id, po_number,
+                  f"permanent write reject ({type(exc).__name__}): {exc}",
+                  "po_permanent_reject", correlation_id, flags, "permanent")
+        return True
+    except (
+        smartsheet_client.SmartsheetError,
+        box_client.BoxError,
+        portal_client.PortalTransportError,
+    ) as exc:
+        counters["draft_errors"] += 1
+        error_log.log(
+            Severity.ERROR, SCRIPT_NAME,
+            f"transient failure filing PO {po_number} (po_id={po_id}; left queued "
+            f"for next cycle): {type(exc).__name__}: {exc!r}",
+            error_code="po_filing_transient",
+            correlation_id=correlation_id,
+        )
+        return False
+    except Exception as exc:  # noqa: BLE001 — per-row fence; one bad PO never kills the cycle
+        counters["draft_errors"] += 1
+        error_log.log(
+            Severity.ERROR, SCRIPT_NAME,
+            f"unexpected failure filing PO {po_number} (po_id={po_id}; left queued): "
+            f"{type(exc).__name__}: {exc!r}",
+            error_code="po_filing_unexpected",
+            correlation_id=correlation_id,
+        )
+        return False
+
+
+def _handle_po_hmac_failure(
+    po_id: int, po_number: str, po: dict[str, Any],
+    correlation_id: str, flags: dict[str, str],
+) -> None:
+    """Reject a bad-HMAC PO row — the PO twin of portal_poll._handle_hmac_failure.
+
+    NEVER rendered, NEVER filed, NEVER mark-filed (the downgrade defense; the row
+    stays queued in D1 for forensics — the PO tier has no mark-rejected route by
+    design). One-shot: anomaly-log + security Review-Queue row + CRITICAL fire only
+    on the FIRST sighting; the flag set suppresses per-cycle re-flag spam."""
+    # Tripwire (Invariant 2, Layer 5) — record the suspicious pattern.
+    anomaly_logger.check({"po_hmac_failure": po_id, "po_number": po_number})
+    review_queue.add(
+        workstream=WORKSTREAM,
+        summary=(
+            f"po: HMAC verification FAILED for PO {po_number or po_id} — rejected, "
+            f"NOT rendered or filed"
+        ),
+        payload={
+            "po_id": po_id,
+            "po_number": po_number,
+            "job_no": po.get("job_no"),
+            "vendor_key": po.get("vendor_key"),
+            # The HMAC value is deliberately NOT recorded (signature material —
+            # same posture as the submission twin); the raw row stays in D1.
+        },
+        sla_tier=review_queue.SlaTier.RFQ_DRAFT,
+        reason=review_queue.ReviewReason.SECURITY_TRIGGER,
+        severity=Severity.CRITICAL,
+        source_file=f"po:{po_id}",
+        security_flag=True,
+    )
+    error_log.log(
+        Severity.CRITICAL, SCRIPT_NAME,
+        (
+            f"po HMAC FAIL po_id={po_id} po_number={po_number!r} — rejected, not "
+            f"rendered or filed (downgrade defense)"
+        ),
+        error_code="po_hmac_failure",
+        correlation_id=correlation_id,
+    )
+    flags[str(po_id)] = "hmac"
+
+
+def _fence_po(
+    po_id: int,
+    po_number: str,
+    detail: str,
+    error_code: str,
+    correlation_id: str,
+    flags: dict[str, str],
+    flag_reason: str,
+    *,
+    reason: review_queue.ReviewReason = review_queue.ReviewReason.POLICY_EDGE,
+) -> None:
+    """Route a PERMANENTLY-refused pending PO to the Review Queue + one-shot flag it.
+
+    The row is never filed and never mark-filed; it stays queued in D1. Remediation:
+    fix the cause, then delete the po_id entry from `po_poll_flagged.json` (the
+    daemon retries it the next cycle)."""
+    review_queue.add(
+        workstream=WORKSTREAM,
+        summary=f"po: PO {po_number or po_id} refused before filing — {detail}",
+        payload={"po_id": po_id, "po_number": po_number, "detail": detail},
+        sla_tier=review_queue.SlaTier.RFQ_DRAFT,
+        reason=reason,
+        severity=Severity.WARN,
+        source_file=f"po:{po_id}",
+    )
+    error_log.log(
+        Severity.WARN, SCRIPT_NAME,
+        f"po fenced (permanent, {error_code}) po_id={po_id} po_number={po_number!r}: {detail}",
+        error_code=error_code,
+        correlation_id=correlation_id,
+    )
+    flags[str(po_id)] = flag_reason
+
+
+def _resolve_po_box_folder(job_name: str) -> str | None:
+    """§45 find-or-create the PO filing folder: mirror-tree ROOT → per-job folder
+    (the SAME `safety_naming.job_folder_name` as every other portal artifact) →
+    'Purchase Orders'. None when the shared root is unconfigured (the caller leaves
+    the PO queued + ERRORs — a config gap, not a per-PO defect)."""
+    root = _read_str_setting(
+        safety_naming.CFG_BOX_PORTAL_ROOT, "",
+        workstream=CFG_WORKER_BASE_URL_WORKSTREAM,
+    ).strip()
+    if not root:
+        return None
+    job_folder = box_client.get_or_create_folder(
+        root, safety_naming.job_folder_name(job_name)
+    )
+    return box_client.get_or_create_folder(job_folder, PO_BOX_SUBFOLDER)
+
+
+def _attach_pdf_best_effort(
+    row_id: int, filename: str, pdf_bytes: bytes, correlation_id: str
+) -> None:
+    """Attach the rendered PDF inline on the review row, BEST-EFFORT (Box is the
+    SoR; a failure is a WARN that never fails the filing — mirror intake)."""
+    try:
+        smartsheet_client.attach_pdf_to_row(po_review.SHEET_ID, row_id, filename, pdf_bytes)
+    except Exception as exc:  # noqa: BLE001 — supplementary inline copy; Box is the SoR
+        error_log.log(
+            Severity.WARN, SCRIPT_NAME,
+            f"review-row PDF attach failed (row {row_id}, {filename!r}): "
+            f"{type(exc).__name__}: {exc!r}",
+            error_code="po_row_pdf_attach_failed",
+            correlation_id=correlation_id,
+        )
+
+
+# ---- ② Vendor down-sync pass --------------------------------------------------------
+
+
+def _vendor_down_sync_pass(creds: _PoCreds, counters: dict[str, int]) -> None:
+    """Project the FULL ITS_Vendors SoR into the Worker's D1 cache (full-replace;
+    the Worker's dirty-row fence protects un-mirrored portal edits)."""
+    try:
+        payload = vendors.build_down_sync_payload()
+    except smartsheet_client.SmartsheetError as exc:
+        counters["vendor_errors"] += 1
+        error_log.log(
+            Severity.ERROR, SCRIPT_NAME,
+            f"ITS_Vendors read failed — down-sync skipped this cycle: {exc!r}",
+            error_code="po_vendors_read_failed",
+        )
+        return
+    for row_id, skip_reason in payload.skipped:
+        error_log.log(
+            Severity.WARN, SCRIPT_NAME,
+            f"ITS_Vendors row {row_id} excluded from down-sync: {skip_reason}",
+            error_code="po_vendor_row_skipped",
+        )
+    if not payload.vendors:
+        # NEVER POST an empty set — an empty projection (fresh sheet, mass read
+        # miss) must not wipe the portal cache (the Worker refuses it too).
+        error_log.log(
+            Severity.WARN, SCRIPT_NAME,
+            "ITS_Vendors projected EMPTY — refusing to down-sync an empty vendor set",
+            error_code="po_vendors_empty_projection",
+        )
+        return
+    try:
+        result = portal_client.vendors_sync(creds.base_url, creds.bearer, payload.vendors)
+    except portal_client.PortalAuthError as exc:
+        raise _BearerRejectedError from exc
+    except portal_client.PortalTransportError as exc:
+        counters["vendor_errors"] += 1
+        error_log.log(
+            Severity.ERROR, SCRIPT_NAME,
+            f"vendors down-sync POST failed (retries next cycle): {exc!r}",
+            error_code="po_vendors_sync_failed",
+        )
+        return
+    counters["vendors_downsynced"] = len(payload.vendors)
+    skipped_dirty = result.get("skipped_dirty")
+    if isinstance(skipped_dirty, int) and skipped_dirty > 0:
+        error_log.log(
+            Severity.INFO, SCRIPT_NAME,
+            f"vendors down-sync: {skipped_dirty} dirty portal row(s) fenced (un-mirrored "
+            f"portal edits preserved — the up-sync converges them)",
+            error_code="po_vendors_dirty_fenced",
+        )
+
+
+# ---- ③ Vendor up-sync pass ----------------------------------------------------------
+
+
+def _vendor_up_sync_pass(creds: _PoCreds, counters: dict[str, int]) -> None:
+    """Mirror portal-edited (dirty) vendors UP into ITS_Vendors, per-vendor commit."""
+    try:
+        pending = portal_client.get_pending_vendors(creds.base_url, creds.bearer)
+    except portal_client.PortalAuthError as exc:
+        raise _BearerRejectedError from exc
+    except portal_client.PortalTransportError as exc:
+        counters["vendor_errors"] += 1
+        error_log.log(
+            Severity.ERROR, SCRIPT_NAME,
+            f"failed to GET pending vendors (left dirty for next cycle): {exc!r}",
+            error_code="po_vendors_pending_fetch_failed",
+        )
+        return
+    for vendor in pending:
+        vendor_key = str(vendor.get("vendor_key") or "")
+        mirror_version = vendor.get("mirror_version")
+        if not isinstance(mirror_version, int) or isinstance(mirror_version, bool):
+            counters["vendor_errors"] += 1
+            error_log.log(
+                Severity.WARN, SCRIPT_NAME,
+                f"pending vendor {vendor_key!r} has a malformed mirror_version "
+                f"({mirror_version!r}); skipping (stays dirty)",
+                error_code="po_vendor_version_malformed",
+            )
+            continue
+        try:
+            vendors.upsert_vendor(vendor)
+            portal_client.mark_vendors_mirrored(
+                creds.base_url, creds.bearer,
+                [{"vendor_key": vendor_key, "mirrored_version": mirror_version}],
+            )
+            counters["vendors_upsynced"] += 1
+        except portal_client.PortalAuthError as exc:
+            raise _BearerRejectedError from exc
+        except (
+            ValueError,
+            picklist_validation.PicklistViolationError,
+            smartsheet_client.SmartsheetValidationError,
+        ) as exc:
+            # PERMANENT — the row will never succeed as-is; ticket the operator,
+            # leave the vendor dirty (the Worker keeps serving it; the ticket is
+            # the de-dup — same posture as fieldops' permanent job fence).
+            counters["vendors_reviewed"] += 1
+            review_queue.add(
+                workstream=WORKSTREAM,
+                summary=(
+                    f"po: vendor up-sync PERMANENT failure for {vendor_key!r} "
+                    f"({type(exc).__name__}) — portal edit not mirrored to ITS_Vendors"
+                ),
+                payload={
+                    "vendor_key": vendor_key,
+                    "mirror_version": mirror_version,
+                    "error": f"{type(exc).__name__}: {exc}",
+                },
+                sla_tier=review_queue.SlaTier.RFQ_DRAFT,
+                reason=review_queue.ReviewReason.POLICY_EDGE,
+                severity=Severity.WARN,
+                source_file=vendor_key or "vendor",
+            )
+            error_log.log(
+                Severity.WARN, SCRIPT_NAME,
+                f"vendor up-sync fenced (permanent) {vendor_key!r}: "
+                f"{type(exc).__name__}: {exc!r}",
+                error_code="po_vendor_upsert_permanent",
+            )
+        except (smartsheet_client.SmartsheetError, portal_client.PortalTransportError) as exc:
+            counters["vendor_errors"] += 1
+            error_log.log(
+                Severity.ERROR, SCRIPT_NAME,
+                f"transient vendor up-sync failure for {vendor_key!r} (left dirty): "
+                f"{type(exc).__name__}: {exc!r}",
+                error_code="po_vendor_upsert_transient",
+            )
+
+
+# ---- ④ Status pass ------------------------------------------------------------------
+
+
+def _status_pass(creds: _PoCreds, counters: dict[str, int]) -> None:
+    """Mirror review-sheet approve/SENT stamps → Worker status-sync + PO_Log.
+
+    Candidates are bounded by the PO_Log ledger state (a settled row generates no
+    update), so the steady-state cycle POSTs nothing. Updates for one PO are ordered
+    approved-then-sent — the Worker's guarded batch walks the machine forward and a
+    replay no-ops. PO_Log stamps apply ONLY after a successful POST (D1 first, then
+    the mirror; a lost POST retries whole next cycle)."""
+    try:
+        review_rows = smartsheet_client.get_rows(po_review.SHEET_ID)
+        ledger_rows = smartsheet_client.get_rows(po_log.SHEET_ID)
+    except smartsheet_client.SmartsheetError as exc:
+        counters["status_errors"] += 1
+        error_log.log(
+            Severity.ERROR, SCRIPT_NAME,
+            f"status pass sheet read failed (retries next cycle): {exc!r}",
+            error_code="po_status_read_failed",
+        )
+        return
+    ledger_status: dict[str, str] = {}
+    for row in ledger_rows:
+        number = str(row.get(po_log.COL_PO_NUMBER) or "").strip()
+        if number:
+            ledger_status[number] = str(row.get(po_log.COL_STATUS) or "").strip()
+
+    updates: list[dict[str, Any]] = []
+    # Deferred PO_Log stamps: (kind, po_number, sent_at_iso, supersedes_po_id).
+    stamps: list[tuple[str, str, str | None, int | None]] = []
+    for row in review_rows:
+        tag = str(row.get(po_review.COL_WORKSTREAM) or "").strip()
+        if tag and tag != po_review.WORKSTREAM_TAG:
+            # Contamination signal (P1b) — a foreign-workstream row on the PO review
+            # sheet is never status-synced; the send guard owns the HARD-HELD.
+            error_log.log(
+                Severity.WARN, SCRIPT_NAME,
+                f"PO review row {row.get('_row_id')} carries foreign workstream tag "
+                f"{tag!r}; ignored by the status pass",
+                error_code="po_status_foreign_tag",
+            )
+            continue
+        po_id = po_review.row_po_id(row)
+        if po_id is None:
+            continue  # a row without the Notes join (hand row) — nothing to sync
+        note_match = str(row.get(po_review.COL_NOTES) or "")
+        po_number = ""
+        for part in note_match.split(";"):
+            part = part.strip()
+            if part.startswith("po_number="):
+                po_number = part[len("po_number="):].strip()
+        if not po_number:
+            continue
+        current = ledger_status.get(po_number, "")
+        if current in (po_log.STATUS_SENT, po_log.STATUS_SUPERSEDED, po_log.STATUS_CANCELED):
+            continue  # settled — nothing to move forward
+
+        sent = str(row.get(po_review.COL_SEND_STATUS) or "") == po_review.STATUS_SENT
+        approved = bool(
+            row.get(po_review.COL_APPROVE_SCHEDULED)
+            or row.get(po_review.COL_SEND_NOW)
+            or row.get(po_review.COL_APPROVED_BY)
+        )
+        supersedes_po_id = po_review.row_supersedes_po_id(row)
+        if sent:
+            # Walk the D1 machine forward in ONE ordered pair — approved (guarded
+            # from pending_review) THEN sent (guarded from approved); replays no-op.
+            updates.append({"po_id": po_id, "status": "approved"})
+            updates.append({"po_id": po_id, "status": "sent"})
+            sent_at = str(row.get(po_review.COL_SENT_AT) or "")[:10] or None
+            stamps.append(("sent", po_number, sent_at, supersedes_po_id))
+        elif approved and current == po_log.STATUS_PENDING_REVIEW:
+            updates.append({"po_id": po_id, "status": "approved"})
+            stamps.append(("approved", po_number, None, None))
+
+    if not updates:
+        return
+    try:
+        portal_client.po_status_sync(creds.base_url, creds.bearer, updates)
+    except portal_client.PortalAuthError as exc:
+        raise _BearerRejectedError from exc
+    except portal_client.PortalTransportError as exc:
+        counters["status_errors"] += 1
+        error_log.log(
+            Severity.ERROR, SCRIPT_NAME,
+            f"status-sync POST failed (stamps deferred to next cycle): {exc!r}",
+            error_code="po_status_sync_failed",
+        )
+        return
+
+    for kind, po_number, sent_at_iso, supersedes_po_id in stamps:
+        try:
+            if kind == "sent":
+                po_log.stamp_status(po_number, po_log.STATUS_SENT, sent_at_iso=sent_at_iso)
+                if supersedes_po_id is not None:
+                    predecessor = po_log.find_po_number_by_d1_id(supersedes_po_id)
+                    if predecessor:
+                        # The ledger mirror of the Worker's superseded flip (D7).
+                        po_log.stamp_status(
+                            predecessor, po_log.STATUS_SUPERSEDED,
+                            superseded_by=po_number,
+                        )
+            else:
+                po_log.stamp_status(po_number, po_log.STATUS_APPROVED)
+            counters["status_synced"] += 1
+        except (
+            picklist_validation.PicklistViolationError,
+            smartsheet_client.SmartsheetError,
+        ) as exc:
+            counters["status_errors"] += 1
+            error_log.log(
+                Severity.ERROR, SCRIPT_NAME,
+                f"PO_Log stamp failed for {po_number} ({kind}; D1 already synced — "
+                f"the ledger self-heals next cycle): {type(exc).__name__}: {exc!r}",
+                error_code="po_log_stamp_failed",
+            )
+
+
+if __name__ == "__main__":
+    poll_once()
