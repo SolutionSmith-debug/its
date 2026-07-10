@@ -236,6 +236,77 @@ describe("terms + config wiring", () => {
   });
 });
 
+// ── Ship-to auto-fill feed (S6 follow-up: GET /api/po/jobs/:job_id/ship-to) ───
+describe("ship-to auto-fill feed", () => {
+  // Seed a routing-SoR job row (address + stakeholder). The jobs table isn't touched by the
+  // file-level beforeEach, so this describe cleans + seeds it itself.
+  async function seedRoutingJob(): Promise<void> {
+    await env.DB.batch([env.DB.prepare("DELETE FROM jobs")]);
+    await env.DB
+      .prepare(
+        "INSERT INTO jobs (job_id, project_name, active, address, stakeholder_name, stakeholder_phone, stakeholder_email) " +
+          "VALUES (?1,?2,1,?3,?4,?5,?6)",
+      )
+      .bind(
+        "JOB-000017",
+        "2026.001 Sunrise Solar",
+        "100 Array Rd, Rockford IL",
+        "Dana Stakeholder",
+        "555-0100",
+        "dana@example.com",
+      )
+      .run();
+  }
+  beforeEach(seedRoutingJob);
+
+  it("401s an unauthenticated caller (no session)", async () => {
+    expect((await call("/api/po/jobs/JOB-000017/ship-to")).status).toBe(401);
+  });
+
+  it("403s a caller without cap.po.manage (prove-the-control-bites)", async () => {
+    expect((await g(submitter, "/api/po/jobs/JOB-000017/ship-to")).status).toBe(403);
+  });
+
+  it("200s an admin with the routing-SoR ship-to block; city/state/zip empty (single address line)", async () => {
+    const res = await g(admin, "/api/po/jobs/JOB-000017/ship-to");
+    expect(res.status, await res.clone().text()).toBe(200);
+    const body = await json<Record<string, unknown>>(res);
+    expect(body).toEqual({
+      job_id: "JOB-000017",
+      job_no: "2026.001", // parsed YYYY.NNN prefix of the project name
+      ship_to_name: "2026.001 Sunrise Solar",
+      ship_to_address: "100 Array Rd, Rockford IL",
+      ship_to_city: "",
+      ship_to_state: "",
+      ship_to_zip: "",
+      delivery_contact_name: "Dana Stakeholder",
+      delivery_contact_phone: "555-0100",
+      delivery_contact_email: "dana@example.com",
+    });
+  });
+
+  it("job_no is '' when the project name has no YYYY.NNN prefix", async () => {
+    await env.DB.prepare("UPDATE jobs SET project_name=?1 WHERE job_id=?2")
+      .bind("Sunrise Solar (no number)", "JOB-000017")
+      .run();
+    const res = await g(admin, "/api/po/jobs/JOB-000017/ship-to");
+    const body = await json<{ job_no: string; ship_to_name: string }>(res);
+    expect(body.job_no).toBe("");
+    expect(body.ship_to_name).toBe("Sunrise Solar (no number)");
+  });
+
+  it("404s an unknown job_id", async () => {
+    const res = await g(admin, "/api/po/jobs/JOB-999999/ship-to");
+    expect(res.status).toBe(404);
+    expect(await json<{ error: string }>(res)).toEqual({ error: "not_found" });
+  });
+
+  it("bound SQL: a SQL-ish job_id is treated as a literal → 404, no injection/error", async () => {
+    const res = await g(admin, `/api/po/jobs/${encodeURIComponent("JOB-000017' OR '1'='1")}/ship-to`);
+    expect(res.status).toBe(404); // the param binds as a literal; it matches no row
+  });
+});
+
 // ── Vendors CRUD (portal side of the §51 rider) ───────────────────────────────
 describe("vendors create/update", () => {
   it("create allocates VEN-###### and stamps origin=portal, sync_state=pending, mirror_version=1", async () => {

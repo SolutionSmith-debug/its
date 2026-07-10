@@ -599,6 +599,51 @@ export function registerPoRoutes(app: FieldopsApp, gates: PoGates): void {
     return c.json({ materials: results ?? [] });
   });
 
+  // GET /api/po/jobs/:job_id/ship-to — the builder's ship-to + delivery auto-fill feed (S6
+  // follow-up: closes the "ship-to ADDRESS block stays manual" deviation that PoBuilderPage's
+  // header comment documents). It reads the SAME routing SoR row the internal-token tier serves
+  // over GET /api/internal/fieldops/pending-jobs (jobs.address + stakeholder_*), but under the
+  // BROWSER session + cap.po.manage gate — so the office can auto-fill without ever exposing the
+  // internal token. READ-ONLY, bound SQL, single-PK lookup, no mutation. These are Evergreen's
+  // OWN job/site addresses (the purchaser's routing data, not third-party PII); the block returned
+  // is exactly the fields the builder's ship-to step already collects, no more. The routing SoR
+  // carries a single free-text `address` line (NOT a structured city/state/zip — those columns
+  // exist only on purchase_orders, 0043), so city/state/zip ride back empty and stay operator-
+  // editable; a future structured-address SoR just fills them. Auto-fill is a CONVENIENCE only:
+  // every field is editable in the UI, and a 404 / absent field silently leaves it blank.
+  app.get("/api/po/jobs/:job_id/ship-to", gates.requireSession, gates.requireCapability(CAP_PO), async (c) => {
+    const jobId = c.req.param("job_id");
+    const row = await c.env.DB
+      .prepare(
+        "SELECT job_id, project_name, address, stakeholder_name, stakeholder_phone, stakeholder_email " +
+          "FROM jobs WHERE job_id = ?1",
+      )
+      .bind(jobId)
+      .first<{
+        job_id: string;
+        project_name: string;
+        address: string;
+        stakeholder_name: string;
+        stakeholder_phone: string;
+        stakeholder_email: string;
+      }>();
+    if (!row) return c.json({ error: "not_found" }, 404);
+    // job_no suggestion: the YYYY.NNN prefix of the project name (Evergreen convention), or "".
+    const jobNoMatch = /^(\d{4}\.\d{3})/.exec((row.project_name ?? "").trim());
+    return c.json({
+      job_id: row.job_id,
+      job_no: jobNoMatch ? jobNoMatch[1] : "",
+      ship_to_name: row.project_name ?? "",
+      ship_to_address: row.address ?? "",
+      ship_to_city: "", // not structured in the routing SoR (single `address` line)
+      ship_to_state: "", // "
+      ship_to_zip: "", // "
+      delivery_contact_name: row.stakeholder_name ?? "",
+      delivery_contact_phone: row.stakeholder_phone ?? "",
+      delivery_contact_email: row.stakeholder_email ?? "",
+    });
+  });
+
   // GET /api/po/vendors — the vendor picker/management read. Active-only by default;
   // ?include_inactive=1 widens (the management list shows retired vendors greyed).
   app.get("/api/po/vendors", gates.requireSession, gates.requireCapability(CAP_PO), async (c) => {
