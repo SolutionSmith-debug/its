@@ -64,6 +64,7 @@ from shared import (
 from shared.error_log import Severity, its_error_log
 from shared.heartbeat import HeartbeatReporter, HeartbeatStatus
 from shared.kill_switch import require_active
+from shared.redact import redact
 from shared.required_config import ConfigKey, resolve_and_log
 
 SCRIPT_NAME = "config_actuator"
@@ -397,7 +398,12 @@ def _stamp(creds: _Creds, request_id: int, status: str) -> None:
 def _fail(creds: _Creds, request_id: int, stage: str, reason: str) -> None:
     """Terminal failure: stamp failed(stage, reason) + an operator CRITICAL (detect-and-alert).
     Both best-effort — a stamp/log failure must not mask the original error."""
-    reason = reason[:1800]
+    # §54 backstop: `reason` can carry a raw git/gh/wrangler stderr tail (see `_exc_reason`), and the
+    # stamp_config leg lands `failure_reason` on the portal Status Monitor — a sink that BYPASSES
+    # error_log's own redact choke point. Redact here so neither leg egresses an accidental token/PII.
+    # (redact() is idempotent, so the error_log leg re-redacting is harmless.) publish_daemon._fail has
+    # the identical unredacted pattern — bringing it to parity is a tracked follow-up (docs/tech_debt.md).
+    reason = redact(reason[:1800])
     try:
         portal_client.stamp_config(
             creds.base_url, creds.bearer, request_id=request_id,
