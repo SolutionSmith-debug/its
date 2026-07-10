@@ -349,6 +349,17 @@ export async function fetchTerms(): Promise<TermsProfile[]> {
   return data.profiles ?? [];
 }
 
+/** GET /api/po/terms/:id/text — a library profile's CURRENT version clause body (header-stripped),
+ *  for the editor's edit-text pre-fill. Attach/unknown profiles 404. */
+export interface TermsText {
+  profile_id: string;
+  version: string;
+  text: string;
+}
+export async function fetchTermsText(profileId: string): Promise<TermsText> {
+  return getJson<TermsText>(`/api/po/terms/${encodeURIComponent(profileId)}/text`);
+}
+
 export async function fetchPoConfig(): Promise<PoConfig> {
   return getJson<PoConfig>("/api/po/config");
 }

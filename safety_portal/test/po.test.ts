@@ -268,6 +268,30 @@ describe("terms + config wiring", () => {
   });
 });
 
+// ── Terms edit-text pre-fill (GET /api/po/terms/:profile_id/text) ─────────────
+describe("terms edit-text pre-fill", () => {
+  it("serves the current library version's body, header-stripped, derived from the manifest", async () => {
+    const res = await g(admin, "/api/po/terms/standard_17/text");
+    expect(res.status, await res.clone().text()).toBe(200);
+    const body = await json<{ profile_id: string; version: string; text: string }>(res);
+    expect(body.profile_id).toBe("standard_17");
+    expect(body.version).toBe(termsManifest.profiles.standard_17.current_version); // derived, not pinned
+    expect(typeof body.text).toBe("string");
+    expect(body.text.length).toBeGreaterThan(0);
+    expect(body.text.startsWith("<!--")).toBe(false); // provenance header stripped (matches the Mac renderer)
+  });
+
+  it("404s an attach profile (no versioned text) and an unknown profile", async () => {
+    expect((await g(admin, "/api/po/terms/negotiated_gtc/text")).status).toBe(404);
+    expect((await g(admin, "/api/po/terms/does_not_exist/text")).status).toBe(404);
+  });
+
+  it("401s no session; 403s without cap.po.manage (prove-the-control-bites)", async () => {
+    expect((await call("/api/po/terms/standard_17/text")).status).toBe(401);
+    expect((await g(submitter, "/api/po/terms/standard_17/text")).status).toBe(403);
+  });
+});
+
 // ── Ship-to auto-fill feed (S6 follow-up: GET /api/po/jobs/:job_id/ship-to) ───
 describe("ship-to auto-fill feed", () => {
   // Seed a routing-SoR job row (address + stakeholder). The jobs table isn't touched by the

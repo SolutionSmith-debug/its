@@ -1,3 +1,4 @@
+/// <reference types="vite/client" />
 import type { MiddlewareHandler } from "hono";
 import type { FieldopsApp } from "./fieldops_gates";
 import { auditStmt, auditStmtIfChanged, isUniqueViolation } from "./audit";
@@ -71,6 +72,28 @@ type TermsProfileEntry = {
   render_line?: string;
 };
 const TERMS_PROFILES = termsManifest.profiles as Record<string, TermsProfileEntry>;
+
+// Raw terms clause bodies bundled at BUILD time so the config editor can PRE-FILL a version's
+// current text for editing. import.meta.glob auto-discovers every terms *.md, so a version added
+// by an add_version actuation is picked up on the next deploy (a static per-file ?raw import would
+// silently miss it). Keyed by module path; looked up by the manifest entry's file name.
+const TERMS_RAW = import.meta.glob<string>("../../po_materials/terms/*.md", {
+  query: "?raw",
+  import: "default",
+  eager: true,
+});
+
+// Port of po_materials/terms.py::_strip_header_comment — drop a leading <!-- ... --> provenance
+// block (maintainer docs that must never reach a rendered PO or the editor textarea). Only a
+// comment at the very top is stripped; a malformed unterminated one is served raw (this editor
+// pre-fill is a convenience — the Mac renderer's strict loader is the authority and hard-raises).
+function stripTermsHeader(text: string): string {
+  const s = text.replace(/^\s+/, "");
+  if (!s.startsWith("<!--")) return text;
+  const end = s.indexOf("-->");
+  if (end === -1) return text;
+  return s.slice(end + 3).replace(/^\n+/, "");
+}
 
 // ── Bounds (Invariant 2) ────────────────────────────────────────────────────────
 const MAX_KEY = 64;
@@ -557,6 +580,37 @@ export function registerPoRoutes(app: FieldopsApp, gates: PoGates): void {
     }));
     return c.json({ profiles });
   });
+
+  // GET /api/po/terms/:profile_id/text — the CURRENT version's clause BODY (header-stripped), for
+  // the config editor's "edit text" pre-fill so the operator edits from the live wording, then saves
+  // it as a NEW version (add_version). Library profiles only — attach profiles render a fixed
+  // render_line and have no versioned text. Read-only: cap.po.manage, no mutation, no audit row.
+  app.get(
+    "/api/po/terms/:profile_id/text",
+    gates.requireSession,
+    gates.requireCapability(CAP_PO),
+    (c) => {
+      const profileId = c.req.param("profile_id");
+      // Own-property lookup only — a path param like __proto__/constructor must not resolve to an
+      // Object.prototype built-in (defense-in-depth; the kind check below already 404s such keys).
+      if (!Object.prototype.hasOwnProperty.call(TERMS_PROFILES, profileId)) {
+        return c.json({ error: "unknown_profile" }, 404);
+      }
+      const p = TERMS_PROFILES[profileId];
+      if (p.kind !== "library" || !p.current_version || !p.versions) {
+        return c.json({ error: "no_editable_text" }, 404);
+      }
+      const entry = p.versions[p.current_version];
+      if (!entry) return c.json({ error: "no_current_version" }, 404);
+      const key = Object.keys(TERMS_RAW).find((k) => k.endsWith("/" + entry.file));
+      if (key === undefined) return c.json({ error: "text_unavailable" }, 404);
+      return c.json({
+        profile_id: profileId,
+        version: p.current_version,
+        text: stripTermsHeader(TERMS_RAW[key]),
+      });
+    },
+  );
 
   // GET /api/po/config — the versioned purchaser identity (D5) + tax table (D8)
   // for the builder UI (entity display, invoice-routing cc chips, tax-state badge).

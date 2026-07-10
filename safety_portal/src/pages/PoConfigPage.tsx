@@ -179,10 +179,27 @@ export function PoConfigPage({ onBack }: { onBack: () => void }) {
     setTaxOpen(true);
   }
 
+  // Only library profiles have versioned, editable text (attach profiles render a fixed line).
+  const libraryTerms = terms.filter((t) => t.kind === "library");
+
+  // Pre-fill the textarea with a profile's CURRENT version text so the operator edits from the live
+  // wording rather than a blank box (they then save it as a NEW version via add_version). A failed
+  // fetch / no-editable-text profile leaves the box empty — the operator can still type from scratch.
+  async function loadTermsText(profileId: string) {
+    try {
+      const { text } = await api.fetchTermsText(profileId);
+      setTf((cur) => ({ ...cur, profile_id: profileId, text }));
+    } catch {
+      setTf((cur) => ({ ...cur, profile_id: profileId, text: "" }));
+    }
+  }
+
   function openTerms() {
-    setTf({ profile_id: terms[0]?.id ?? "", target_version: "", text: "" });
+    const first = libraryTerms[0]?.id ?? "";
+    setTf({ profile_id: first, target_version: "", text: "" });
     setMsg(null);
     setTermsOpen(true);
+    if (first) void loadTermsText(first);
   }
 
   // ── Editor submit (the 5-step envelope: guard → busy → await → reload+bump → catch → finally) ─────
@@ -531,9 +548,9 @@ export function PoConfigPage({ onBack }: { onBack: () => void }) {
                       className="field__input"
                       aria-label="Profile"
                       value={tf.profile_id}
-                      onChange={(e) => setTf({ ...tf, profile_id: e.target.value })}
+                      onChange={(e) => void loadTermsText(e.target.value)}
                     >
-                      {terms.map((t) => (
+                      {libraryTerms.map((t) => (
                         <option key={t.id} value={t.id}>
                           {t.label}
                         </option>
