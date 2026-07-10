@@ -1,5 +1,5 @@
 {
-  "config_version": 1,
+  "config_version": 2,
   "comment": "Versioned Purchaser identity (decision D5) — printed on every PO's brand header, invoice-routing line, and Purchaser signature block, and substituted into terms tokens ({{purchaser_entity}}). NEVER hard-code these values in render code. Entity + STE 570 address are pending Evergreen written confirmation (Day-1 external request item 8; pre-cutover checklist line) — bump config_version on any change.",
   "entity": "Evergreen Renewables LLC",
   "address_lines": [
@@ -8,9 +8,9 @@
   ],
   "phone": "888-303-6424",
   "invoice_routing": {
-    "to": "invoices@evergreenrenewables.com",
+    "to": "tealap@evergreenrenewables.com",
     "cc": [
-      "tealap@evergreenrenewables.com",
+      "jacobs@evergreenrenewables.com",
       "benf@evergreenrenewables.com",
       "tiffanym@evergreenrenewables.com"
     ]
