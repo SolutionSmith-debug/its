@@ -36,6 +36,7 @@ const ALL_CAPS = [
   "cap.personnel.read",
   "cap.materials.manage",
   "cap.checklist.manage",
+  "cap.po.manage",
   "cap.admin.accounts",
   "cap.admin.formbuilder",
 ];
@@ -51,6 +52,8 @@ const CARDS: { title: string; cap: string; nav: string; section: string }[] = [
   { title: "Personnel", cap: "cap.personnel.read", nav: "fieldops-personnel", section: "Field operations" },
   { title: "Materials Catalog", cap: "cap.materials.manage", nav: "materials-catalog", section: "Field operations" },
   { title: "Checklists", cap: "cap.checklist.manage", nav: "fieldops-inspections", section: "Administration" },
+  { title: "Purchase Orders", cap: "cap.po.manage", nav: "po-builder", section: "Administration" },
+  { title: "Vendors", cap: "cap.po.manage", nav: "po-vendors", section: "Administration" },
   { title: "Accounts", cap: "cap.admin.accounts", nav: "accounts", section: "Administration" },
   { title: "Forms", cap: "cap.admin.formbuilder", nav: "forms", section: "Administration" },
 ];
