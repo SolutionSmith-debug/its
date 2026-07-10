@@ -33,7 +33,9 @@ Invariants (§42 — why a binding, not a clone)
   (``purchaser.json``) so the internal Evergreen distribution (procurement / PM / permitting)
   sees every outbound PO — the corpus's invoice-routing convention.
 - **Envelope carries the contractual number:** subject
-  ``"Purchase Order {po_number} — {project} — {entity}"`` + attachment ``{po_number}.pdf``.
+  ``"Purchase Order {po_number} — {project} — {entity}"`` + the job-prefixed attachment
+  ``<Job>_PO_{po_number}.pdf`` (via ``po_naming.po_pdf_filename`` — the same canonical name
+  the Box file + Smartsheet attachment carry; blank job falls back to ``PO {po_number}.pdf``).
   ``po_number`` is read from the review row's Notes (``po_poll`` seeds it via
   ``po_review.notes_for_review_row``). A row that lost the tag → the envelope returns
   ``None`` → the engine HELDs (``held_missing_envelope``), mirroring the recipient_lookup

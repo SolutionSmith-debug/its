@@ -693,6 +693,11 @@ def _process_pending_po(
                 correlation_id=correlation_id,
             )
             return False
+        # The Box filename is the version-on-conflict idempotency key (upload_bytes_or_new_version
+        # resolves the existing file BY NAME in the folder). It embeds the job name, which is treated
+        # as STABLE per PO — a PO's job is fixed once allocated. A job rename in the crash→retry window
+        # would (very narrowly) yield a second Box file rather than a new version; the folder is already
+        # the job folder, so it's a recoverable duplicate, never data loss (§47).
         file_info = box_client.upload_bytes_or_new_version(
             folder_id, po_naming.po_pdf_filename(po_number, po.get("job_name")), pdf
         )

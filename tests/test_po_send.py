@@ -124,6 +124,16 @@ def test_envelope_carries_po_number_and_entity(mocker):
     assert attachment == "2026.001 — Sunrise Solar_PO_2026.001.2.0.0.pdf"
 
 
+def test_envelope_blank_project_falls_back_to_number_only_attachment(mocker):
+    # A job-scoped PO always has a project, but a blank Job/Project cell must degrade, not crash:
+    # the attachment unifies onto the SAME fallback the Box/Smartsheet surfaces use (`PO <n>.pdf`),
+    # NOT po_send's pre-2026-07 bare `<n>.pdf` (the intended fix of the old 3-vs-1 name drift).
+    mocker.patch.object(po_send.terms_lib, "load_purchaser_config", return_value=_PURCHASER)
+    ctx = EnvelopeContext(project_name="", week="2026-07-09", row=_row())
+    _subject, attachment = po_send._PoEnvelope()(ctx)
+    assert attachment == "PO 2026.001.2.0.0.pdf"
+
+
 def test_envelope_returns_none_for_a_numberless_po(mocker):
     # None → the engine HELDs (held_missing_envelope), mirroring recipient_lookup's
     # None→HELD convention — never a numberless PO to a vendor, never a raise.
