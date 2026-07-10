@@ -1031,6 +1031,8 @@ h3 {
   border-color: var(--c-danger);
 }
 .form-editor__req-time { margin-left: auto; font-size: var(--fs-sm); }
+/* Soft-dismiss (clear) a terminal config request from the monitor — compact, sits after the time. */
+.form-editor__req-clear { padding: 2px 12px; font-size: var(--fs-sm); }
 
 /* Stepper. */
 .form-editor__stepper {

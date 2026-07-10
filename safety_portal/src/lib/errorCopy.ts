@@ -214,6 +214,7 @@ export const ERROR_COPY: Record<string, string> = {
   invalid_target_version: "The version name must be lowercase letters, numbers, and underscores (e.g. standard_17_v2).",
   invalid_payload: "The change was empty or couldn't be read — check the fields and try again.",
   payload_too_large: "That change is too large to submit — shorten it and try again.",
+  config_not_terminal: "That change is still being processed — you can clear it once it's live, archived, or failed.",
 };
 
 /** Humanize an unknown wire code: 'some_new_code' → 'some new code'. */
