@@ -16,14 +16,16 @@ From the slice-2 (`config_actuator`) build + adversarial review (PR #509):
   publish_daemon to parity (same one-line `redact(reason)`), OR — cleaner — redact at the
   `portal_client.stamp_publish`/`stamp_config` call sites so every future daemon inherits it. Trigger: any
   §54 sweep, or before publish_daemon's failure_reason gets a portal-facing monitor.
-- **CE-2 (LOW, legal-gate depth) — render-side `legal_review` refusal (Layer A).** `config_apply` writes a new
-  terms version with `legal_review:"pending"` and never bumps `current_version` (the pointer IS the gate — a
-  pending version is inert because `terms._version_entry` defaults to `current_version`). The Layer-A *code*
-  refusal (make `terms._version_entry` / the render path REFUSE a version whose `legal_review != "cleared"`) is
-  deferred: turning it on now would fence every live PO, because the two SHIPPED terms versions predate the
-  flag and are effectively un-cleared. Trigger: backfill the shipped versions to `legal_review:"cleared"` FIRST,
-  then add the loader refusal so a mis-bumped `current_version` can't render an un-reviewed version. Until then
-  the operator legal-clear + `current_version`-bump is a §44 high-class action gated by the §43 runbook.
+- **CE-2 (legal-gate depth) — render-side `legal_review` refusal (Layer A). RESOLVED 2026-07-10 (slice T2).**
+  `terms._version_entry` now REFUSES a library version whose `legal_review != "cleared"` — the single choke
+  point shared by `load_terms_text` + `required_tokens`, firing on an explicit pin OR the `current_version`
+  default. A mis-bumped `current_version` can no longer render an un-reviewed version; it raises + fences the PO
+  (`po_poll` → Review Queue). Shipped with the two required predecessors, in lockstep: (1) the two shipped
+  versions (`standard_17_v1`, `chint_vendor_v1`) were backfilled to `legal_review:"cleared"` in the same change
+  (operator-confirmed clearance), so no live PO fences; (2) the `set_current` make-current op + a confirmable
+  portal control ("I've reviewed this — make it live") is the activation path (clears legal_review + advances
+  `current_version` through the config actuator). The **legal judgment** it encodes stays a §44 high-class call
+  (Seth / legal), training-enforced per the §43 runbook — the control is the mechanism, not a re-delegation.
 - **CE-3 (HIGH, blocks the editor entirely) — self-defeating CI test class recurs: CI hard-pins the live
   editable config content, so a legitimate purchaser/tax edit cannot merge.** Discovered 2026-07-10 during
   the first live activation smoke: the operator edited the purchaser's `invoice_routing.to`, the actuator

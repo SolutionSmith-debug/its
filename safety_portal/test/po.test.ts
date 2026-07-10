@@ -292,6 +292,33 @@ describe("terms edit-text pre-fill", () => {
   });
 });
 
+// ── Terms versions feed (GET /api/po/terms/:profile_id/versions) — the make-current picker ─────
+describe("terms versions feed", () => {
+  it("serves the curated version list (id + legal_review only), derived from the manifest", async () => {
+    const res = await g(admin, "/api/po/terms/standard_17/versions");
+    expect(res.status, await res.clone().text()).toBe(200);
+    const body = await json<{
+      profile_id: string;
+      current_version: string;
+      versions: Array<Record<string, unknown>>;
+    }>(res);
+    expect(body.profile_id).toBe("standard_17");
+    expect(body.current_version).toBe(termsManifest.profiles.standard_17.current_version); // derived
+    expect(body.versions.length).toBeGreaterThanOrEqual(1);
+    const cur = body.versions.find((v) => v.version === body.current_version)!;
+    expect(cur.legal_review).toBe("cleared"); // Layer B invariant: the current version is cleared
+    // Curated — file names + sha256 hashes must NOT leak (renderer implementation detail).
+    for (const v of body.versions) expect(Object.keys(v).sort()).toEqual(["legal_review", "version"]);
+  });
+
+  it("404s an attach profile + an unknown profile; 401/403 gated", async () => {
+    expect((await g(admin, "/api/po/terms/negotiated_gtc/versions")).status).toBe(404);
+    expect((await g(admin, "/api/po/terms/does_not_exist/versions")).status).toBe(404);
+    expect((await call("/api/po/terms/standard_17/versions")).status).toBe(401);
+    expect((await g(submitter, "/api/po/terms/standard_17/versions")).status).toBe(403);
+  });
+});
+
 // ── Ship-to auto-fill feed (S6 follow-up: GET /api/po/jobs/:job_id/ship-to) ───
 describe("ship-to auto-fill feed", () => {
   // Seed a routing-SoR job row (address + stakeholder). The jobs table isn't touched by the

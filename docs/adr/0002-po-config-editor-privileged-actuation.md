@@ -81,10 +81,13 @@ Build the edit as a **§50 privileged code-actuation** reusing the established f
    so an edit MINTS A NEW VERSION file (`standard_17_v2.md`), never mutates `_v1`. **Layer B (built):**
    the actuator writes the new version with `legal_review: "pending"` and **leaves `current_version`
    UNCHANGED** — the new text is inert; no PO renders it until an operator both clears legal review and
-   repoints `current_version`. **Layer A (deferred, CE-2):** the render-side loader refusal for an
-   un-cleared version is a documented follow-up (`docs/tech_debt.md` CE-2) — deferred because both
-   live versions are still `pending` and enabling it now would fence every live PO. Purchaser + tax are
-   lower-sensitivity and rely on the two validation layers + green CI.
+   repoints `current_version`. **Layer A (BUILT, slice T2):** the render-side loader refusal is now
+   enforced in `terms._version_entry` — a version whose `legal_review != "cleared"` raises at render
+   (fencing the PO via the Review Queue), so a mis-bumped `current_version` can't render un-cleared
+   text. Both shipped versions were backfilled to `cleared` in the same change (the spec's activation
+   order — gate + backfill ship together, else every live PO would fence). The `set_current`
+   make-current op (confirmable "I've reviewed this — make it live") is the activation path. Purchaser
+   + tax are lower-sensitivity and rely on the two validation layers + green CI.
 4. **Ships dark-gated.** `ITS_Config` gate `po_materials.config_actuator.polling_enabled`, seeded
    `false` in the same change (the "seed the gate row" reflex), so activation is a visible cell-flip.
 
@@ -108,8 +111,9 @@ class. Fully-automatic is the *steady-state* mode; the operator-present requirem
   (0045), the send-free Worker request-queue routes (cap.po.manage), the `config_actuator.py`
   fully-automatic daemon, the terms new-version + legal-review-pending machinery (Layer B), the dark
   gates, tests, adversarial review, and the §43 successor-remediation runbook entries.
-- **Follow-ups:** CE-1 (`publish_daemon._fail` redact parity with the actuator's §54 redaction) and
-  CE-2 (the render-side Layer-A legal_review refusal) — both tracked in `docs/tech_debt.md`.
+- **Follow-ups:** CE-1 (`publish_daemon._fail` redact parity with the actuator's §54 redaction) —
+  tracked in `docs/tech_debt.md`. (CE-2, the render-side Layer-A legal_review refusal, is now BUILT —
+  slice T2 — together with the `set_current` make-current activation flow.)
 - **Guardrails preserved:** integer-bp money math, sha256 terms immutability, the legal-review gate,
   two-layer hard validation, green-CI-before-auto-merge, never-silent validation.
 

@@ -48,6 +48,7 @@ its migration fail-closes `resolveCapabilities` → the universal-lockout class 
 | `0043_purchase_orders` | PO S2 drafts + line items + numbering backstop — [section](#purchase-orders--d1--worker-po-slice-s2--00420044) | (PO S2) | ☐ pending |
 | `0044_po_capability` | PO S2 `cap.po.manage` → admin — [section](#purchase-orders--d1--worker-po-slice-s2--00420044) | (PO S2) | ☐ pending |
 | `0045_create_config_requests` | Config-editor send-free queue — [section](#config-editor-queue--d1--worker-configts-slice-1--0045) | (config S1) | ☐ pending |
+| `0046_config_requests_set_current_op` | Terms make-current: widen `config_requests.op` CHECK for `set_current` — [section](#terms-make-current--layer-a-legal-gate--0046) | (config T2) | ☐ pending |
 
 Canonical apply-and-deploy sequence (applies **all** pending migrations, in order — never a
 subset):
@@ -1190,3 +1191,27 @@ of the table):
    the SAME value into the macOS Keychain as `ITS_PORTAL_CONFIG_TOKEN` (the slice-2 daemon side —
    `config_actuator` reads it fail-closed). The internal `/api/internal/config/*` routes are
    fail-closed on the missing secret, so they 401 until this is provisioned.
+
+### Terms make-current + Layer-A legal gate — 0046
+
+**What ships:** the terms LEGAL-ACTIVATION flow (config editor slice T2). `terms._version_entry` now
+REFUSES a library version whose `legal_review != "cleared"` (Layer A — an un-cleared version can't
+render onto a PO); the two shipped versions (`standard_17_v1`, `chint_vendor_v1`) are backfilled to
+`cleared` in the same change so no live PO fences. A new `set_current` config op
+(`config_apply` + `worker/config.ts`) plus a confirmable **"Make a version current"** portal control
+clears a version's legal review + repoints `current_version` through the actuator. Migration `0046`
+widens the `config_requests.op` CHECK to allow `set_current` (SQLite table-recreate; in LOCKSTEP with
+`config.ts` `CONFIG_OPS` + `config_apply`). A new read-only `GET /api/po/terms/:id/versions` feeds the
+make-current picker.
+
+**Shipped DARK** — like the rest of the config editor, gated behind `config_actuator.polling_enabled`.
+
+#### Activation (operator — deploy boundary; escalates to the Developer-Operator)
+Apply-before-deploy (0046 widens a CHECK the Worker's new `set_current` INSERT depends on — a
+make-current submit 500s if the Worker deploys ahead of the migration):
+1. From a fresh `~/its` (`git pull origin main` FIRST — the stale-migrations-list lockout class):
+   `cd safety_portal && npx wrangler d1 migrations apply its-safety-portal-db --remote` (applies
+   **all** pending, in order), then `npm run deploy`.
+2. No new secret. Smoke (live): admin → PO Configuration → **"Make a version current"** lists the
+   terms versions with their `legal_review`; the confirm checkbox gates "Make it live"; submitting
+   queues an `op:set_current` config request (track it in the status monitor).

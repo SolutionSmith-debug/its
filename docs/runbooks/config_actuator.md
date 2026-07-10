@@ -82,7 +82,7 @@ moves are the three low-class ones in Symptom A/B/C below.
 
 **Boundary — escalate to Seth (FIXED high-capability class) when:**
 - the failure is at **`failed.tested`** (CI red / merge blocked) or **`failed.live`** (deploy/wrangler error) — a git/CI/deploy fault is a code change, always high-class;
-- the failure touches **terms legal review** — a new terms version ships `legal_review: "pending"` and `current_version` is left unchanged **on purpose** (the version is inert until legal clears it and points `current_version` at it). Clearing legal review + advancing `current_version` is **doctrine/legal**, a FIXED high-class category — **never** a Tier-2 flip;
+- the failure touches **terms legal review** — a new terms version ships `legal_review: "pending"`, `current_version` is left unchanged **on purpose**, and (since slice T2) the render path **refuses an un-cleared version outright** (`terms._version_entry` raises → the PO fences). Clearing legal review + advancing `current_version` — whether via the config editor's **"Make a version current"** control or by a hand git-edit — is **doctrine/legal**, a FIXED high-class **judgment** (Seth / legal), **never** a Tier-2 flip. The control is only the mechanism; the legal attestation it records ("I've reviewed this version's legal text") stays high-class;
 - anything **novel** (a symptom not listed here) — novel OR high-class always escalates.
 
 ---
@@ -98,8 +98,9 @@ moves are the three low-class ones in Symptom A/B/C below.
 | `config_actuator.failed.validated` | bad edit data (reason names it) | Tier-2 re-do edit in portal |
 | `config_actuator.failed.tested` / `.failed.live` | CI/merge or deploy fault | Seth (code/deploy — high-class) |
 | `config_actuator.stale_reclaimed` | a prior cycle died mid-actuation; artifact unwedged | Tier-2 re-submit if still wanted |
-| new terms version won't render (legal) | `legal_review` pending by design | Seth (legal/doctrine — high-class) |
+| new terms version won't render (legal) | `legal_review` pending — Layer A refuses it; activate via the "Make a version current" control | Seth (legal judgment — high-class) |
 
 **Never (Successor-Operator):** run `git`, `gh`, `wrangler`, or `npm run deploy`; apply a D1
 migration; touch Keychain / `ITS_PORTAL_CONFIG_TOKEN`; clear a terms `legal_review` flag or
-bump `current_version`; edit `config_apply.py`. All are FIXED high-capability class → Seth.
+bump `current_version` — by hand OR via the "Make a version current" control (the legal attestation
+is high-class either way); edit `config_apply.py`. All are FIXED high-capability class → Seth.

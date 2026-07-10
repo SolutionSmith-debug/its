@@ -16,16 +16,18 @@ into one call against ``root`` keeps the transform + its file I/O in one auditab
 The actuator's per-cycle ``_reset_to_main`` discards ``po_materials/config`` +
 ``po_materials/terms`` before each actuation, so an interrupted write never leaks.
 
-Three (artifact, op) domain transforms — kept in LOCKSTEP with the Worker's
-``worker/config.ts`` validation (the two C3 layers must agree; a new rule must land in BOTH):
+Four (artifact, op) domain transforms — kept in LOCKSTEP with the Worker's ``worker/config.ts``
+validation AND the ``config_requests.op`` CHECK migration (the three fan-out surfaces must agree; a
+new op lands in all three):
   * ``tax`` / ``edit``       — integer-basis-point tax table (NO floats in the money path).
   * ``purchaser`` / ``edit`` — the Purchaser identity + invoice routing (email-ish routing).
   * ``terms`` / ``add_version`` — append a NEW immutable, sha256-pinned terms version file
     with ``legal_review: "pending"``; NEVER mutates an existing version, NEVER bumps
-    ``current_version`` (the un-changed pointer + the pending flag are the legal gate —
-    Layer B of terms-versioning; the render-side Layer-A loader gate is a documented
-    follow-up, deferred because both live versions are still ``pending`` and turning it on
-    now would fence every live PO — see the runbook).
+    ``current_version`` (the un-changed pointer + the pending flag are Layer B of the legal
+    gate; the render-side Layer-A loader refusal is now ENFORCED in ``terms._version_entry``).
+  * ``terms`` / ``set_current`` — the legal-activation op: set an existing version's
+    ``legal_review: "cleared"`` AND repoint ``current_version`` to it (the operator's confirmable
+    make-current action); mutates ONLY those two fields, never the immutable file/sha256/tokens.
 
 No network, no Smartsheet, no git/deploy — pure filesystem + validation. Safe to import
 anywhere; the actuator does the git/CI/deploy around it.
@@ -276,6 +278,59 @@ def _apply_terms_add_version(
     )
 
 
+def _apply_terms_set_current(
+    payload: dict[str, Any], target_version: str | None, root: Path
+) -> str:
+    """Make an existing terms version the profile's CURRENT version and CLEAR its legal review — the
+    operator's confirmable "I've reviewed this — make it live" action (the legal-activation step).
+
+    Sets ``legal_review: "cleared"`` on the target version AND repoints ``current_version`` to it in a
+    SINGLE manifest rewrite (both fields together, never a partial two-step). This is the only writer
+    that advances ``current_version`` and the
+    only permitted mutation of an existing version's ``legal_review`` — the immutable fields
+    (``file``/``sha256``/``tokens``) are NEVER touched, so the render-time hash contract still holds.
+    The render-side Layer-A gate (``terms._version_entry``) then lets the now-cleared version render;
+    an un-cleared version stays fenced. Blank-pinned drafts resolve the new current version; drafts
+    that pinned the OLD explicit version keep rendering the old (immutable) text."""
+    if not isinstance(target_version, str) or not target_version:
+        raise ConfigApplyError("terms set_current: target_version is required")
+    profile_id = payload.get("profile_id")
+    if not isinstance(profile_id, str) or not profile_id:
+        raise ConfigApplyError("terms set_current: profile_id is required")
+    manifest_path = _terms_dir(root) / "manifest.json"
+    manifest = _load_json_file(manifest_path, "terms/manifest.json")
+    profiles = manifest.get("profiles")
+    if not isinstance(profiles, dict) or profile_id not in profiles:
+        raise ConfigApplyError(
+            f"terms set_current: unknown profile {profile_id!r} "
+            f"(known: {sorted(profiles) if isinstance(profiles, dict) else '?'})"
+        )
+    profile = profiles[profile_id]
+    if not isinstance(profile, dict) or profile.get("kind") != "library":
+        raise ConfigApplyError(
+            f"terms set_current: profile {profile_id!r} is not a library profile "
+            "(only library profiles have versioned text to make current)"
+        )
+    versions = profile.get("versions")
+    if not isinstance(versions, dict) or target_version not in versions:
+        raise ConfigApplyError(
+            f"terms set_current: version {target_version!r} does not exist for {profile_id!r} "
+            f"(known: {sorted(versions) if isinstance(versions, dict) else '?'}) — mint it first"
+        )
+    entry = versions[target_version]
+    if not isinstance(entry, dict) or "file" not in entry or "sha256" not in entry:
+        raise ConfigApplyError(
+            f"terms set_current: version {target_version!r} of {profile_id!r} is malformed "
+            "(missing file/sha256) — refusing to make a corrupt version current"
+        )
+    # The confirmable make-current action IS the legal clearance. Repoint current_version + clear the
+    # target's legal_review; leave every other version (and all immutable fields) untouched.
+    entry["legal_review"] = "cleared"
+    profile["current_version"] = target_version
+    manifest_path.write_text(_dump(manifest), encoding="utf-8")
+    return f"terms: {profile_id} current_version -> {target_version} (legal_review cleared)"
+
+
 def apply_config(request: dict[str, Any], root: Path) -> str:
     """Validate + WRITE the config request's artifact against live HEAD under ``root``.
 
@@ -296,7 +351,9 @@ def apply_config(request: dict[str, Any], root: Path) -> str:
             raise ConfigApplyError(f"purchaser takes op 'edit', got {op!r}")
         return _apply_purchaser_edit(payload, root)
     if artifact == "terms":
-        if op != "add_version":
-            raise ConfigApplyError(f"terms takes op 'add_version', got {op!r}")
-        return _apply_terms_add_version(payload, request.get("target_version"), root)
+        if op == "add_version":
+            return _apply_terms_add_version(payload, request.get("target_version"), root)
+        if op == "set_current":
+            return _apply_terms_set_current(payload, request.get("target_version"), root)
+        raise ConfigApplyError(f"terms takes op 'add_version' or 'set_current', got {op!r}")
     raise ConfigApplyError(f"unknown config artifact {artifact!r}")

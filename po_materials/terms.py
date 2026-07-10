@@ -93,7 +93,22 @@ def _version_entry(profile_id: str, version: str | None) -> tuple[str, dict[str,
             f"terms profile {profile_id!r} has no version {resolved!r} "
             f"(known: {sorted(versions)})"
         )
-    return resolved, versions[resolved]
+    entry = versions[resolved]
+    # Layer A legal-review gate (§50 terms-versioning): a version renders on a live PO only once the
+    # operator has cleared its legal review (config editor "make this version current" -> set_current
+    # sets legal_review "cleared"). A minted-but-un-cleared version (add_version leaves it "pending")
+    # must NOT render contract language — it raises here, the single choke point shared by
+    # load_terms_text AND required_tokens, whether the version was reached by an explicit pin or the
+    # current_version default. TermsError propagates as a per-PO fence (po_poll step 5 -> Review
+    # Queue), never a silent skip.
+    if not isinstance(entry, dict) or str(entry.get("legal_review")) != "cleared":
+        got = entry.get("legal_review") if isinstance(entry, dict) else "?"
+        raise TermsError(
+            f"terms profile {profile_id!r} v{resolved} is legal_review={got!r} — NOT cleared for "
+            "live use; a PO must not render un-cleared contract language. Clear it via the config "
+            "editor (make it current) or keep current_version on the last cleared version."
+        )
+    return resolved, entry
 
 
 def load_terms_text(profile_id: str, version: str | None = None) -> str:
