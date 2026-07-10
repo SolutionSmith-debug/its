@@ -2748,7 +2748,9 @@ The `safety_portal/worker/src/styles/` tree contains a `.dash-section` utility c
 
 Surfaced: 2026-06-28 Progress-Reporting program session.
 
-## [OPEN 2026-06-28] §6a enablement-doc DoD owed per Progress-Reporting slice
+## [PARTIALLY_MITIGATED 2026-07-09] §6a enablement-doc DoD owed per Progress-Reporting slice
+
+**Update 2026-07-09 (WS3 / D2-1, `feat/docs-pdf-pipeline`):** the §6a manifest artifact NOW EXISTS — `docs/enablement/manifest.yaml`, loaded by `docs_pdf/manifest.py`, rendered to branded PDF manuals by `scripts/build_docs_pdfs.py` (the md→PDF pipeline in the new `docs_pdf/` package). It is seeded with all seven enablement guides that exist on main today (`fieldops_checklists`, `manager_tier`, `subcontractor_tier`, `portal_job_creation`, `progress_rollup_numbers`, `crew_time_corrections`, `purchase_orders`). "Registration" is now a concrete action: add an entry (key/title/version/source/sha256) to that YAML. Doc-currency is enforced by `build_docs_pdfs.py --check` (SHA-256 drift; warn-only-friendly, mirrors `regen_doc_indexes --check`). Residual work keeping this open: (a) the in-doc `TODO(operator): register this doc in the §6a manifest` comments in each enablement guide are now actionable and can be retired when those docs are next touched (deferred — editing them triggers a frontmatter retrofit; `crew_time_corrections.md` also lacks conforming `type`/`date` frontmatter); (b) `material_catalog` (M1) still has no capability-guide entry (no guide authored yet); (c) the D2-2 content (ITS Owner's Manual, generated ITS_Config data dictionary) + the D2-3 Box publish leg are not built. See `docs/2026-07-09_aug7_delivery_program.md` WS3.
 
 Per the approved plan (`~/.claude/plans/let-s-go-with-option-greedy-fiddle.md`), every progress-workstream slice that creates a sheet, compiles, or adds a daemon ships a **§43 successor-remediation runbook skeleton + §6a manifest registration in the same PR** (definition-of-done, not a follow-up). The polished distributable PDF (A8 documentation program) is a pre-20-job-cutover requirement.
 

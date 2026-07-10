@@ -51,6 +51,14 @@ dependencies = [
     # stable across 10–12 (the removed Image.ANTIALIAS/LINEAR constants are not used).
     # Upper-bounded <13 so a future major can't silently introduce a breaking change.
     "Pillow>=10.0,<13.0",
+    # Pure-Python CommonMark parser (WS3 docs pipeline, docs_pdf/md_render.py). We
+    # consume its flat TOKEN STREAM (not the HTML render) and translate tokens →
+    # reportlab Platypus flowables to produce branded PDF manuals from the in-repo
+    # markdown enablement guides. DELIBERATELY the only new dep for the pipeline — no
+    # weasyprint / pandoc / LaTeX (all carry heavyweight/native toolchains); reportlab
+    # is already pinned for the safety-PDF renderer. The GFM table rule is enabled
+    # explicitly (`.enable("table")`); linkify-it-py is NOT required (we never linkify).
+    "markdown-it-py>=3.0,<4.0",
 ]
 
 [project.optional-dependencies]
@@ -68,7 +76,7 @@ dev = [
 [tool.setuptools]
 # Python packages that ship with the project.
 # Asset directories (schemas, prompts, scripts, logs) are NOT Python packages.
-packages = ["shared", "safety_reports", "field_ops", "progress_reports", "po_materials"]
+packages = ["shared", "safety_reports", "field_ops", "progress_reports", "po_materials", "docs_pdf"]
 
 [tool.ruff]
 line-length = 100
