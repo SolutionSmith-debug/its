@@ -1,0 +1,1254 @@
+import { useState, useEffect, useCallback, useMemo } from "react";
+import * as api from "../lib/po";
+import {
+  SUPPLY_CATEGORIES,
+  REGIONS,
+  categoryLabel,
+  formatCents,
+  parseDollarsToCents,
+  parseDollarsToMicrocents,
+  computeDisplayTotals,
+} from "../lib/po";
+import { fetchJobs, type Job } from "../lib/api";
+import { fetchJobDetail } from "../lib/fieldops_jobtracker";
+import { errorText } from "../lib/errorCopy";
+import { useAuth } from "../lib/auth";
+import { PageShell } from "../components/PageShell";
+
+// PO workstream S6 — the builder + status tracker (Aug-7 delivery program WS1). One page, two
+// faces: the TRACKER (every PO from GET /api/po/pos with per-status actions) and the BUILDER
+// (a single-page wizard: job → vendor → line items → totals → scope/delivery/payment → terms →
+// review → Generate). cap.po.manage gates the whole view (router VIEW_CAPS) AND every write
+// affordance in-page; the Worker re-gates every call (Invariant 2 — SPA gating is convenience,
+// never the boundary).
+//
+// MONEY (D8): all values are integer cents. The page mirrors the Worker's integer math for the
+// LIVE display (src/lib/po.ts computeDisplayTotals — the same rounding worker/po.ts signs), but
+// the Worker is authoritative: the save response's `totals` replace the client mirror, generate
+// sends exactly the DISPLAYED cents, and a `totals_mismatch` 409 re-renders the panel from the
+// server's `recomputed` numbers — the client never argues with the Worker about money.
+//
+// SUPERSESSION (D7): a sent PO is superseded through POST /api/po/:id/supersede, which CLONES
+// it into a fresh draft (supersede_seq+1) — the builder then opens that clone. The old PO stays
+// in force until the successor is actually sent (the Worker flips it at status-sync). A
+// `supersede_in_progress` 409 opens the existing successor instead of minting a sibling.
+//
+// AUTO-FILL SCOPE (documented S6 deviation): the browser job reads are /api/jobs (id + name)
+// and — when the viewer holds cap.jobtracker.read — /api/fieldops/jobs/:id, which serves the
+// CLIENT contact block but NOT the routing SoR (address/stakeholder live only on the internal
+// token tier, worker/index.ts /api/internal/fieldops/pending-jobs). So job select auto-fills
+// job name/number/ship-to-name + delivery contact from the client block, and the ship-to
+// ADDRESS block stays manual until a session-tier routing read exists (frontend-only slice —
+// no Worker changes here).
+
+const JOB_NO_RE = /^\d{4}\.\d{3}$/;
+const QTY_RE = /^\d+(\.\d{0,3})?$/; // the Worker normalizes qty to ≤3dp
+const INT_RE = /^\d+$/;
+const STATE_RE = /^[A-Z]{2}$/;
+
+const STATUS_LABEL: Record<api.PoStatus, string> = {
+  draft: "Draft",
+  queued: "Queued for render",
+  pending_review: "Pending review",
+  approved: "Approved",
+  sent: "Sent",
+  superseded: "Superseded",
+  canceled: "Canceled",
+};
+const STATUS_PILL: Record<api.PoStatus, string> = {
+  draft: "dash-pill",
+  queued: "dash-pill dash-pill--warn",
+  pending_review: "dash-pill dash-pill--warn",
+  approved: "dash-pill dash-pill--ok",
+  sent: "dash-pill dash-pill--ok",
+  superseded: "dash-pill",
+  canceled: "dash-pill dash-pill--danger",
+};
+
+const VARIANTS: [api.LineColumnVariant, string][] = [
+  ["default", "Standard"],
+  ["lump_sum", "Lump sum"],
+  ["per_watt", "Per watt"],
+];
+
+const TAX_MODES: [api.TaxMode, string][] = [
+  ["auto", "Automatic (by ship-to state)"],
+  ["exempt", "Exempt"],
+  ["included", "Included in line prices"],
+  ["override", "Override rate"],
+];
+
+/** One editable line row — everything a string (controlled inputs); parsed per keystroke for
+ *  the live extended/subtotal mirror. */
+interface LineForm {
+  part_number: string;
+  description: string;
+  qty: string;
+  unit: string;
+  unit_cost: string; // dollars
+  watts: string;
+  panels: string;
+  pallets: string;
+  ppw: string; // dollars per watt
+}
+const EMPTY_LINE: LineForm = {
+  part_number: "",
+  description: "",
+  qty: "",
+  unit: "",
+  unit_cost: "",
+  watts: "",
+  panels: "",
+  pallets: "",
+  ppw: "",
+};
+
+/** Parse one row per the active variant. Returns the wire line, or null while the row is
+ *  incomplete/invalid (the grid shows "—" for its extended and Generate blocks). */
+function parseLine(l: LineForm, variant: api.LineColumnVariant): api.DraftLine | null {
+  const description = l.description.trim();
+  if (!description) return null;
+  if (variant === "per_watt") {
+    if (!INT_RE.test(l.watts.trim())) return null;
+    const ppw = parseDollarsToMicrocents(l.ppw);
+    if (ppw === null || l.ppw.trim() === "") return null;
+    const panels = l.panels.trim() === "" ? null : INT_RE.test(l.panels.trim()) ? parseInt(l.panels, 10) : undefined;
+    const pallets = l.pallets.trim() === "" ? null : INT_RE.test(l.pallets.trim()) ? parseInt(l.pallets, 10) : undefined;
+    if (panels === undefined || pallets === undefined) return null;
+    return {
+      part_number: l.part_number.trim(),
+      description,
+      qty: 1,
+      unit: l.unit.trim(),
+      watts: parseInt(l.watts, 10),
+      panels,
+      pallets,
+      price_per_watt_microcents: ppw,
+    };
+  }
+  const cost = parseDollarsToCents(l.unit_cost);
+  if (cost === null || l.unit_cost.trim() === "") return null;
+  if (variant === "lump_sum") {
+    return { description, qty: 1, unit: l.unit.trim(), unit_cost_cents: cost };
+  }
+  if (!QTY_RE.test(l.qty.trim())) return null;
+  return {
+    part_number: l.part_number.trim(),
+    description,
+    qty: Number(l.qty),
+    unit: l.unit.trim(),
+    unit_cost_cents: cost,
+  };
+}
+
+/** Integer cents → a plain editable input value ("1234.56"). */
+function centsToInput(c: number | null): string {
+  if (c === null || c === undefined) return "";
+  return `${Math.floor(c / 100)}.${String(c % 100).padStart(2, "0")}`;
+}
+/** Microcents/W → dollars-per-watt input ("0.35"), trailing zeros trimmed. */
+function microToInput(m: number | null): string {
+  if (m === null || m === undefined) return "";
+  const whole = Math.floor(m / 100_000_000);
+  const frac = String(m % 100_000_000).padStart(8, "0").replace(/0+$/, "");
+  return frac ? `${whole}.${frac}` : String(whole);
+}
+/** Basis points → percent input ("9.00"). Same digits relationship as cents→dollars. */
+const bpToInput = centsToInput;
+
+function fmtDate(epochSeconds: number): string {
+  return new Date(epochSeconds * 1000).toLocaleString();
+}
+
+function FieldInput({
+  label,
+  value,
+  onChange,
+  maxLength,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  maxLength?: number;
+}) {
+  return (
+    <label className="field">
+      <span className="field__label">{label}</span>
+      <input className="field__input" value={value} maxLength={maxLength} onChange={(e) => onChange(e.target.value)} />
+    </label>
+  );
+}
+
+export function PoBuilderPage({ onBack }: { onBack: () => void }) {
+  const { user } = useAuth();
+  const caps = user?.capabilities ?? [];
+  const canManage = caps.includes("cap.po.manage"); // UI affordance only — the Worker re-gates
+  const canReadJobs = caps.includes("cap.jobtracker.read"); // gates the client-contact auto-fill read
+
+  // ── Shared data ────────────────────────────────────────────────────────────────────────────────
+  const [pos, setPos] = useState<api.PoListRow[]>([]);
+  const [vendors, setVendors] = useState<api.Vendor[]>([]);
+  const [terms, setTerms] = useState<api.TermsProfile[]>([]);
+  const [config, setConfig] = useState<api.PoConfig | null>(null);
+  const [jobs, setJobs] = useState<Job[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const reloadPos = useCallback((status?: api.PoStatus) => {
+    setLoading(true);
+    api
+      .fetchPos(status)
+      .then(setPos)
+      .catch(() => setError("Failed to load purchase orders."))
+      .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => {
+    reloadPos();
+    api.fetchVendors().then(setVendors).catch(() => setError("Failed to load the vendor list."));
+    api.fetchTerms().then(setTerms).catch(() => setTerms([]));
+    api.fetchPoConfig().then(setConfig).catch(() => setConfig(null));
+    fetchJobs().then(setJobs).catch(() => setJobs([]));
+  }, [reloadPos]);
+
+  const vendorByKey = useMemo(() => new Map(vendors.map((v) => [v.vendor_key, v])), [vendors]);
+
+  // ── Tracker state ──────────────────────────────────────────────────────────────────────────────
+  const [view, setView] = useState<"tracker" | "builder">("tracker");
+  const [statusFilter, setStatusFilter] = useState<"all" | api.PoStatus>("all");
+  const [armedCancelId, setArmedCancelId] = useState<number | null>(null);
+
+  // ── Builder form state ─────────────────────────────────────────────────────────────────────────
+  const [draftId, setDraftId] = useState<number | null>(null);
+  const [supersedesPoId, setSupersedesPoId] = useState<number | null>(null);
+  const [jobId, setJobId] = useState("");
+  const [jobName, setJobName] = useState("");
+  const [jobNo, setJobNo] = useState("");
+  const [sitePhase, setSitePhase] = useState("0");
+  const [shipToName, setShipToName] = useState("");
+  const [shipToAddress, setShipToAddress] = useState("");
+  const [shipToCity, setShipToCity] = useState("");
+  const [shipToState, setShipToState] = useState("");
+  const [shipToZip, setShipToZip] = useState("");
+  const [deliveryName, setDeliveryName] = useState("");
+  const [deliveryPhone, setDeliveryPhone] = useState("");
+  const [deliveryEmail, setDeliveryEmail] = useState("");
+  const [vendorKey, setVendorKey] = useState("");
+  const [regionFilter, setRegionFilter] = useState<string | null>(null);
+  const [categoryFilter, setCategoryFilter] = useState<string | null>(null);
+  const [variant, setVariant] = useState<api.LineColumnVariant>("default");
+  const [lines, setLines] = useState<LineForm[]>([{ ...EMPTY_LINE }]);
+  const [taxMode, setTaxMode] = useState<api.TaxMode>("auto");
+  const [taxOverridePct, setTaxOverridePct] = useState("");
+  const [shipping, setShipping] = useState("");
+  const [sow, setSow] = useState("");
+  const [deliveryInstructions, setDeliveryInstructions] = useState("");
+  const [paymentTerms, setPaymentTerms] = useState("");
+  const [termsProfileId, setTermsProfileId] = useState("");
+  const [approverName, setApproverName] = useState("");
+  const [approverTitle, setApproverTitle] = useState("");
+  /** The Worker's totals for the CURRENT saved snapshot (save response / generate 409
+   *  `recomputed`). Displayed over the client mirror when present; any money-affecting edit
+   *  clears it back to the live mirror. */
+  const [serverTotals, setServerTotals] = useState<api.PoTotals | null>(null);
+
+  function resetForm() {
+    setDraftId(null);
+    setSupersedesPoId(null);
+    setJobId("");
+    setJobName("");
+    setJobNo("");
+    setSitePhase("0");
+    setShipToName("");
+    setShipToAddress("");
+    setShipToCity("");
+    setShipToState("");
+    setShipToZip("");
+    setDeliveryName("");
+    setDeliveryPhone("");
+    setDeliveryEmail("");
+    setVendorKey("");
+    setRegionFilter(null);
+    setCategoryFilter(null);
+    setVariant("default");
+    setLines([{ ...EMPTY_LINE }]);
+    setTaxMode("auto");
+    setTaxOverridePct("");
+    setShipping("");
+    setSow("");
+    setDeliveryInstructions("");
+    setPaymentTerms(seedPaymentTerms(config));
+    setTermsProfileId("");
+    setApproverName("");
+    setApproverTitle("");
+    setServerTotals(null);
+  }
+
+  /** Seed the payment-terms textarea with the invoice-routing line from the versioned
+   *  purchaser config (D5) — the admin adds the commercial terms wording around it. */
+  function seedPaymentTerms(cfg: api.PoConfig | null): string {
+    if (!cfg) return "";
+    const { to, cc } = cfg.purchaser.invoice_routing;
+    return `Send invoices to ${to}${cc.length ? ` (cc: ${cc.join(", ")})` : ""}.`;
+  }
+
+  // ── Live money mirror (display only — the Worker recomputes and is authoritative) ────────────
+  const parsedLines = useMemo(() => lines.map((l) => parseLine(l, variant)), [lines, variant]);
+  const validLines = useMemo(() => parsedLines.filter((l): l is api.DraftLine => l !== null), [parsedLines]);
+  const taxOverrideBp = taxMode === "override" ? parseDollarsToCents(taxOverridePct) : 0; // %→bp shares the ×100 digit shift
+  const shippingCents = shipping.trim() === "" ? 0 : parseDollarsToCents(shipping);
+  const ratesBp = config?.tax.rates_bp ?? {};
+  const stateNames = config?.tax.state_names ?? {};
+  const stateUpper = shipToState.trim().toUpperCase();
+
+  const clientTotals = useMemo(() => {
+    if (shippingCents === null || (taxMode === "override" && (taxOverrideBp === null || taxOverrideBp > 10_000))) return null;
+    return computeDisplayTotals(
+      validLines.map((l) => ({
+        qty: l.qty,
+        unit_cost_cents: l.unit_cost_cents ?? null,
+        watts: l.watts ?? null,
+        price_per_watt_microcents: l.price_per_watt_microcents ?? null,
+      })),
+      taxMode,
+      taxOverrideBp ?? 0,
+      shippingCents,
+      stateUpper,
+      ratesBp,
+    );
+  }, [validLines, taxMode, taxOverrideBp, shippingCents, stateUpper, ratesBp]);
+
+  const displayTotals = serverTotals ?? clientTotals;
+
+  /** Any money-affecting edit invalidates the saved server totals — back to the live mirror. */
+  const touchMoney = () => setServerTotals(null);
+
+  // ── Job select + auto-fill ─────────────────────────────────────────────────────────────────────
+  async function onJobSelect(id: string) {
+    setJobId(id);
+    const job = jobs.find((j) => j.job_id === id);
+    if (!job) return;
+    setJobName(job.project_name);
+    // Suggest job_no from a YYYY.NNN project-name prefix (the Evergreen convention) — editable.
+    const m = /^(\d{4}\.\d{3})/.exec(job.project_name.trim());
+    setJobNo(m ? m[1] : "");
+    setShipToName(job.project_name);
+    // Best-effort delivery-contact auto-fill from the job's CLIENT block (see the AUTO-FILL
+    // SCOPE note atop this file). Silent degrade — the fields stay editable either way.
+    if (canReadJobs) {
+      try {
+        const detail = await fetchJobDetail(id);
+        const c = detail.job.client;
+        if (c) {
+          if (c.contact) setDeliveryName(c.contact);
+          if (c.phone) setDeliveryPhone(c.phone);
+          if (c.email) setDeliveryEmail(c.email);
+        }
+      } catch {
+        /* auto-fill only — never blocks the wizard */
+      }
+    }
+  }
+
+  // ── Vendor picker ──────────────────────────────────────────────────────────────────────────────
+  const activeVendors = useMemo(() => vendors.filter((v) => v.active === 1), [vendors]);
+  const filteredVendors = useMemo(
+    () =>
+      activeVendors.filter(
+        (v) =>
+          (regionFilter === null || v.region === regionFilter) &&
+          (categoryFilter === null || v.supply_categories.includes(categoryFilter)),
+      ),
+    [activeVendors, regionFilter, categoryFilter],
+  );
+  const selectedVendor = vendorByKey.get(vendorKey) ?? null;
+
+  function onVendorSelect(v: api.Vendor) {
+    setVendorKey(v.vendor_key);
+    // The vendor's default terms profile is PRESELECTED (D6); the picker below can override.
+    if (v.default_terms_profile) setTermsProfileId(v.default_terms_profile);
+  }
+
+  const selectedTerms = terms.find((t) => t.id === termsProfileId) ?? null;
+
+  // ── Line grid ──────────────────────────────────────────────────────────────────────────────────
+  const setLine = (i: number, patch: Partial<LineForm>) => {
+    touchMoney();
+    setLines((prev) => prev.map((l, idx) => (idx === i ? { ...l, ...patch } : l)));
+  };
+  const addLine = () => {
+    touchMoney();
+    setLines((prev) => [...prev, { ...EMPTY_LINE }]);
+  };
+  const removeLine = (i: number) => {
+    touchMoney();
+    setLines((prev) => (prev.length > 1 ? prev.filter((_, idx) => idx !== i) : prev));
+  };
+
+  // ── Tax badge ──────────────────────────────────────────────────────────────────────────────────
+  let taxBadge: { cls: string; text: string } | null = null;
+  if (taxMode === "auto") {
+    if (!stateUpper) {
+      taxBadge = { cls: "dash-pill", text: "Enter the ship-to state for automatic tax" };
+    } else if (ratesBp[stateUpper] !== undefined) {
+      const bp = ratesBp[stateUpper];
+      taxBadge = {
+        cls: "dash-pill dash-pill--ok",
+        text: `${stateNames[stateUpper] ?? stateUpper} — ${bpToInput(bp)}% sales tax`,
+      };
+    } else {
+      taxBadge = {
+        cls: "dash-pill dash-pill--warn",
+        text: `No tax-table entry for ${stateUpper} — automatic tax will be refused (use exempt or override)`,
+      };
+    }
+  }
+
+  // ── Draft save / generate / open ───────────────────────────────────────────────────────────────
+  function validate(): string | null {
+    if (!vendorKey) return "Pick a vendor.";
+    if (!JOB_NO_RE.test(jobNo.trim())) return "The job number must look like 2023.126 (year.number).";
+    if (!INT_RE.test(sitePhase.trim()) || parseInt(sitePhase, 10) > 9999) {
+      return "The site/phase must be a whole number from 0 to 9999.";
+    }
+    if (parsedLines.some((l) => l === null)) return "Every line needs a description and valid amounts.";
+    if (validLines.length === 0) return "Add at least one line item.";
+    if (taxMode === "auto") {
+      if (!STATE_RE.test(stateUpper)) return "Enter the 2-letter ship-to state (required for automatic tax).";
+      if (ratesBp[stateUpper] === undefined) {
+        return `There's no tax-table entry for ${stateUpper} — use the exempt or override tax mode.`;
+      }
+    }
+    if (taxMode === "override" && (taxOverrideBp === null || taxOverrideBp > 10_000)) {
+      return "The tax override must be a percentage from 0 to 100.";
+    }
+    if (shippingCents === null) return "The shipping amount isn't valid.";
+    return null;
+  }
+
+  function buildBody(): api.DraftBody {
+    const body: api.DraftBody = {
+      vendor_key: vendorKey,
+      job_no: jobNo.trim(),
+      site_phase: parseInt(sitePhase, 10),
+      job_id: jobId,
+      job_name: jobName.trim(),
+      ship_to_name: shipToName.trim(),
+      ship_to_address: shipToAddress.trim(),
+      ship_to_city: shipToCity.trim(),
+      ship_to_state: stateUpper,
+      ship_to_zip: shipToZip.trim(),
+      delivery_contact_name: deliveryName.trim(),
+      delivery_contact_phone: deliveryPhone.trim(),
+      delivery_contact_email: deliveryEmail.trim(),
+      sow_text: sow,
+      delivery_instructions: deliveryInstructions,
+      payment_terms_text: paymentTerms,
+      terms_profile_id: termsProfileId,
+      terms_version: selectedTerms?.current_version ?? "",
+      tax_mode: taxMode,
+      shipping_cents: shippingCents ?? 0,
+      line_column_variant: variant,
+      approver_name: approverName.trim(),
+      approver_title: approverTitle.trim(),
+      line_items: validLines,
+    };
+    if (taxMode === "override") body.tax_rate_bp = taxOverrideBp ?? 0;
+    return body;
+  }
+
+  /** Persist the draft (create or full-replace update). Returns the saved id + the WORKER's
+   *  totals — the numbers the review panel then displays and generate asserts against. */
+  async function saveDraft(): Promise<{ id: number; totals: api.PoTotals } | null> {
+    const problem = validate();
+    if (problem) {
+      setMsg({ ok: false, text: problem });
+      return null;
+    }
+    const body = buildBody();
+    try {
+      const res = draftId === null ? await api.createDraft(body) : await api.updateDraft(draftId, body);
+      setDraftId(res.id);
+      setServerTotals(res.totals);
+      return res;
+    } catch (err) {
+      setMsg({ ok: false, text: err instanceof Error ? err.message : "Save failed." });
+      return null;
+    }
+  }
+
+  async function onSaveDraft() {
+    if (busy) return;
+    setBusy(true);
+    setMsg(null);
+    const saved = await saveDraft();
+    if (saved) {
+      setMsg({ ok: true, text: `Draft saved (#${saved.id}) — totals confirmed by the server.` });
+      reloadPos(statusFilter === "all" ? undefined : statusFilter);
+    }
+    setBusy(false);
+  }
+
+  async function onGenerate() {
+    if (busy) return;
+    setBusy(true);
+    setMsg(null);
+    // Save first so the stored draft is exactly what's on screen, then generate against the
+    // Worker's own totals for that snapshot — the anti-skew assert (D8) sees the displayed cents.
+    const saved = await saveDraft();
+    if (!saved) {
+      setBusy(false);
+      return;
+    }
+    try {
+      const r = await api.generateDraft(saved.id, saved.totals);
+      if (r.ok) {
+        setMsg({ ok: true, text: `PO ${r.po_number} generated — queued for rendering and review.` });
+        resetForm();
+        setView("tracker");
+        reloadPos(statusFilter === "all" ? undefined : statusFilter);
+      } else if (r.error === "totals_mismatch") {
+        // The Worker's recomputed money is authoritative — re-render the panel from it.
+        setServerTotals(r.recomputed);
+        setMsg({ ok: false, text: errorText("totals_mismatch") });
+      } else {
+        setMsg({ ok: false, text: errorText(r.error) });
+      }
+    } catch (err) {
+      setMsg({ ok: false, text: err instanceof Error ? err.message : "Generate failed." });
+    }
+    setBusy(false);
+  }
+
+  /** Open an existing draft in the builder (tracker "Open", supersede clones). */
+  async function openDraft(id: number) {
+    setBusy(true);
+    setMsg(null);
+    try {
+      const { po, line_items } = await api.fetchPo(id);
+      setDraftId(po.id);
+      setSupersedesPoId(po.supersedes_po_id);
+      setJobId(po.job_id);
+      setJobName(po.job_name);
+      setJobNo(po.job_no);
+      setSitePhase(String(po.site_phase));
+      setShipToName(po.ship_to_name);
+      setShipToAddress(po.ship_to_address);
+      setShipToCity(po.ship_to_city);
+      setShipToState(po.ship_to_state);
+      setShipToZip(po.ship_to_zip);
+      setDeliveryName(po.delivery_contact_name);
+      setDeliveryPhone(po.delivery_contact_phone);
+      setDeliveryEmail(po.delivery_contact_email);
+      setVendorKey(po.vendor_key);
+      setVariant((po.line_column_variant as api.LineColumnVariant) || "default");
+      setTaxMode((po.tax_mode as api.TaxMode) || "auto");
+      setTaxOverridePct(po.tax_mode === "override" ? bpToInput(po.tax_rate_bp) : "");
+      setShipping(po.shipping_cents ? centsToInput(po.shipping_cents) : "");
+      setSow(po.sow_text);
+      setDeliveryInstructions(po.delivery_instructions);
+      setPaymentTerms(po.payment_terms_text);
+      setTermsProfileId(po.terms_profile_id);
+      setApproverName(po.approver_name);
+      setApproverTitle(po.approver_title);
+      setLines(
+        line_items.length === 0
+          ? [{ ...EMPTY_LINE }]
+          : line_items.map((l) => ({
+              part_number: l.part_number,
+              description: l.description,
+              qty: String(l.qty),
+              unit: l.unit,
+              unit_cost: centsToInput(l.unit_cost_cents),
+              watts: l.watts === null ? "" : String(l.watts),
+              panels: l.panels === null ? "" : String(l.panels),
+              pallets: l.pallets === null ? "" : String(l.pallets),
+              ppw: microToInput(l.price_per_watt_microcents),
+            })),
+      );
+      setServerTotals({
+        subtotal_cents: po.subtotal_cents,
+        tax_rate_bp: po.tax_rate_bp,
+        tax_cents: po.tax_cents,
+        total_cents: po.total_cents,
+      });
+      setView("builder");
+    } catch (err) {
+      setMsg({ ok: false, text: err instanceof Error ? err.message : "Could not open the draft." });
+    }
+    setBusy(false);
+  }
+
+  /** Supersede a SENT PO: the Worker clones it into a new draft, which opens in the builder.
+   *  A successor already in flight (409) opens instead — never a sibling. */
+  async function onSupersede(id: number) {
+    if (busy) return;
+    setBusy(true);
+    setMsg(null);
+    try {
+      const r = await api.supersedePo(id);
+      if (r.ok) {
+        setMsg({ ok: true, text: "A replacement draft was created from the sent PO — review and generate it." });
+        await openDraft(r.id);
+      } else {
+        setMsg({ ok: false, text: errorText("supersede_in_progress") });
+        await openDraft(r.existing_id);
+      }
+      reloadPos(statusFilter === "all" ? undefined : statusFilter);
+    } catch (err) {
+      setMsg({ ok: false, text: err instanceof Error ? err.message : "Supersede failed." });
+    }
+    setBusy(false);
+  }
+
+  async function onCancel(id: number) {
+    if (busy) return;
+    setBusy(true);
+    setMsg(null);
+    setArmedCancelId(null);
+    try {
+      await api.cancelPo(id);
+      if (draftId === id) resetForm();
+      setMsg({ ok: true, text: "Purchase order canceled." });
+      reloadPos(statusFilter === "all" ? undefined : statusFilter);
+    } catch (err) {
+      setMsg({ ok: false, text: err instanceof Error ? err.message : "Cancel failed." });
+    }
+    setBusy(false);
+  }
+
+  // ── Render: line grid columns per variant ──────────────────────────────────────────────────────
+  function lineHeaders() {
+    if (variant === "per_watt") {
+      return (
+        <tr>
+          <th>#</th>
+          <th>Part #</th>
+          <th>Description</th>
+          <th>Watts</th>
+          <th>Panels</th>
+          <th>Pallets</th>
+          <th>$/W</th>
+          <th>Extended</th>
+          <th />
+        </tr>
+      );
+    }
+    if (variant === "lump_sum") {
+      return (
+        <tr>
+          <th>#</th>
+          <th>Description</th>
+          <th>Amount</th>
+          <th>Extended</th>
+          <th />
+        </tr>
+      );
+    }
+    return (
+      <tr>
+        <th>#</th>
+        <th>Part #</th>
+        <th>Description</th>
+        <th>Qty</th>
+        <th>Unit</th>
+        <th>Unit cost</th>
+        <th>Extended</th>
+        <th />
+      </tr>
+    );
+  }
+
+  function lineRow(l: LineForm, i: number) {
+    const parsed = parsedLines[i];
+    const extended =
+      parsed !== null
+        ? formatCents(
+            api.lineExtendedCents({
+              qty: parsed.qty,
+              unit_cost_cents: parsed.unit_cost_cents ?? null,
+              watts: parsed.watts ?? null,
+              price_per_watt_microcents: parsed.price_per_watt_microcents ?? null,
+            }),
+          )
+        : "—";
+    const cell = (field: keyof LineForm, label: string, width?: number) => (
+      <input
+        className="field__input"
+        aria-label={`Line ${i + 1} ${label}`}
+        value={l[field]}
+        style={width ? { width } : undefined}
+        onChange={(e) => setLine(i, { [field]: e.target.value })}
+      />
+    );
+    return (
+      <tr key={i}>
+        <td>{i + 1}</td>
+        {variant !== "lump_sum" ? <td>{cell("part_number", "part number", 110)}</td> : null}
+        <td>{cell("description", "description")}</td>
+        {variant === "per_watt" ? (
+          <>
+            <td>{cell("watts", "watts", 90)}</td>
+            <td>{cell("panels", "panels", 80)}</td>
+            <td>{cell("pallets", "pallets", 80)}</td>
+            <td>{cell("ppw", "price per watt", 90)}</td>
+          </>
+        ) : variant === "lump_sum" ? (
+          <td>{cell("unit_cost", "amount", 110)}</td>
+        ) : (
+          <>
+            <td>{cell("qty", "quantity", 80)}</td>
+            <td>{cell("unit", "unit", 70)}</td>
+            <td>{cell("unit_cost", "unit cost", 110)}</td>
+          </>
+        )}
+        <td className="dash-table__name">{extended}</td>
+        <td>
+          <button
+            type="button"
+            className="btn btn--secondary"
+            aria-label={`Remove line ${i + 1}`}
+            disabled={lines.length === 1}
+            onClick={() => removeLine(i)}
+          >
+            ✕
+          </button>
+        </td>
+      </tr>
+    );
+  }
+
+  // ── Render: the tracker ────────────────────────────────────────────────────────────────────────
+  const sentPos = useMemo(() => pos.filter((p) => p.status === "sent"), [pos]);
+
+  function trackerRow(p: api.PoListRow) {
+    const vendor = vendorByKey.get(p.vendor_key);
+    return (
+      <section key={p.id} className="card">
+        <div className="dash-card__head">
+          <h3 className="dash-card__title">{p.po_number ?? `Draft #${p.id}`}</h3>
+          <span className={STATUS_PILL[p.status] ?? "dash-pill"}>{STATUS_LABEL[p.status] ?? p.status}</span>
+        </div>
+        <div className="dash-card__sub">
+          {p.job_no} · {p.job_name || p.job_id || "—"} · {vendor?.vendor_name ?? p.vendor_key}
+        </div>
+        <div className="dash-card__row">
+          <div className="dash-chips">
+            <span className="dash-chip">{formatCents(p.total_cents)}</span>
+            <span className="dash-chip">Updated {fmtDate(p.updated_at)}</span>
+            {p.supersedes_po_id !== null ? <span className="dash-chip">Supersedes #{p.supersedes_po_id}</span> : null}
+          </div>
+        </div>
+        {canManage ? (
+          <div className="dash-row">
+            {p.status === "draft" ? (
+              <button className="btn btn--edit" disabled={busy} onClick={() => void openDraft(p.id)}>
+                Open
+              </button>
+            ) : null}
+            {p.status === "draft" || p.status === "queued" || p.status === "pending_review" ? (
+              armedCancelId === p.id ? (
+                <button className="btn btn--retire" disabled={busy} onClick={() => void onCancel(p.id)}>
+                  Confirm cancel
+                </button>
+              ) : (
+                <button className="btn btn--retire" disabled={busy} onClick={() => setArmedCancelId(p.id)}>
+                  Cancel PO
+                </button>
+              )
+            ) : null}
+            {p.status === "sent" ? (
+              <button className="btn btn--primary" disabled={busy} onClick={() => void onSupersede(p.id)}>
+                Supersede
+              </button>
+            ) : null}
+          </div>
+        ) : null}
+      </section>
+    );
+  }
+
+  const tracker = (
+    <>
+      {canManage ? (
+        <section className="card dash-section">
+          <button
+            className="btn btn--primary"
+            onClick={() => {
+              resetForm();
+              setView("builder");
+            }}
+          >
+            + New purchase order
+          </button>
+        </section>
+      ) : null}
+
+      <label className="field">
+        <span className="field__label">Status</span>
+        <select
+          className="field__input"
+          aria-label="Status filter"
+          value={statusFilter}
+          onChange={(e) => {
+            const s = e.target.value as "all" | api.PoStatus;
+            setStatusFilter(s);
+            reloadPos(s === "all" ? undefined : s);
+          }}
+        >
+          <option value="all">All</option>
+          {(Object.keys(STATUS_LABEL) as api.PoStatus[]).map((s) => (
+            <option key={s} value={s}>
+              {STATUS_LABEL[s]}
+            </option>
+          ))}
+        </select>
+      </label>
+
+      {loading && pos.length === 0 ? (
+        <p className="muted">Loading…</p>
+      ) : pos.length === 0 ? (
+        <div className="dash-empty">No purchase orders yet.</div>
+      ) : (
+        <div className="dash-grid">{pos.map(trackerRow)}</div>
+      )}
+    </>
+  );
+
+  // ── Render: the builder wizard ─────────────────────────────────────────────────────────────────
+  const builder = (
+    <>
+      <div className="dash-row">
+        <button
+          className="btn btn--secondary"
+          onClick={() => {
+            setView("tracker");
+            setMsg(null);
+          }}
+        >
+          ← Back to the list
+        </button>
+        {draftId !== null ? <span className="dash-pill">Editing draft #{draftId}</span> : null}
+        {supersedesPoId !== null ? <span className="dash-pill dash-pill--warn">Supersedes PO #{supersedesPoId}</span> : null}
+      </div>
+
+      {/* 1 — Job */}
+      <section className="card dash-section" aria-label="Step 1 — Job">
+        <h3 className="jha__section-title">1 · Job</h3>
+        <label className="field">
+          <span className="field__label">Job</span>
+          <select className="field__input" aria-label="Job" value={jobId} onChange={(e) => void onJobSelect(e.target.value)}>
+            <option value="">— job —</option>
+            {jobs.map((j) => (
+              <option key={j.job_id} value={j.job_id}>
+                {j.project_name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <div className="jha__grid">
+          <FieldInput label="Job number (YYYY.NNN)" value={jobNo} onChange={(v) => setJobNo(v)} maxLength={8} />
+          <FieldInput label="Site / phase" value={sitePhase} onChange={(v) => setSitePhase(v)} maxLength={4} />
+        </div>
+        {jobNo && !JOB_NO_RE.test(jobNo.trim()) ? (
+          <p className="muted">The job number must look like 2023.126 (year.number).</p>
+        ) : null}
+        <h4 className="dash-card__label">Ship to</h4>
+        <FieldInput label="Site / receiving name" value={shipToName} onChange={setShipToName} maxLength={256} />
+        <FieldInput label="Address" value={shipToAddress} onChange={setShipToAddress} maxLength={512} />
+        <div className="jha__grid">
+          <FieldInput label="City" value={shipToCity} onChange={setShipToCity} maxLength={256} />
+          <label className="field">
+            <span className="field__label">State (2-letter)</span>
+            <input
+              className="field__input"
+              aria-label="Ship-to state"
+              value={shipToState}
+              maxLength={2}
+              onChange={(e) => {
+                touchMoney();
+                setShipToState(e.target.value.toUpperCase());
+              }}
+            />
+          </label>
+          <FieldInput label="ZIP" value={shipToZip} onChange={setShipToZip} maxLength={16} />
+        </div>
+        {taxBadge ? <span className={taxBadge.cls}>{taxBadge.text}</span> : null}
+        <h4 className="dash-card__label">Delivery contact</h4>
+        <div className="jha__grid">
+          <FieldInput label="Name" value={deliveryName} onChange={setDeliveryName} maxLength={256} />
+          <FieldInput label="Phone" value={deliveryPhone} onChange={setDeliveryPhone} maxLength={40} />
+          <FieldInput label="Email" value={deliveryEmail} onChange={setDeliveryEmail} maxLength={320} />
+        </div>
+      </section>
+
+      {/* 2 — Vendor */}
+      <section className="card dash-section" aria-label="Step 2 — Vendor">
+        <h3 className="jha__section-title">2 · Vendor</h3>
+        <div className="mats-cat-filter" role="group" aria-label="Filter vendors by region">
+          {REGIONS.map((r) => (
+            <button
+              key={r}
+              type="button"
+              className={`mats-cat-filter__chip${regionFilter === r ? " mats-cat-filter__chip--active" : ""}`}
+              aria-pressed={regionFilter === r}
+              onClick={() => setRegionFilter(regionFilter === r ? null : r)}
+            >
+              {r}
+            </button>
+          ))}
+        </div>
+        <div className="mats-cat-filter" role="group" aria-label="Filter vendors by supply category">
+          {SUPPLY_CATEGORIES.map(([key, label]) => (
+            <button
+              key={key}
+              type="button"
+              className={`mats-cat-filter__chip${categoryFilter === key ? " mats-cat-filter__chip--active" : ""}`}
+              aria-pressed={categoryFilter === key}
+              onClick={() => setCategoryFilter(categoryFilter === key ? null : key)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        {filteredVendors.length === 0 ? (
+          <div className="dash-empty">No active vendors match the filters.</div>
+        ) : (
+          <div className="po-vendor-pick">
+            {filteredVendors.map((v) => (
+              <div
+                key={v.vendor_key}
+                className={`dash-row dash-row--click${v.vendor_key === vendorKey ? " po-vendor-pick__row--selected" : ""}`}
+              >
+                <button
+                  type="button"
+                  className="po-vendor-pick__btn"
+                  aria-pressed={v.vendor_key === vendorKey}
+                  onClick={() => onVendorSelect(v)}
+                >
+                  <span className="dash-table__name">{v.vendor_name}</span>{" "}
+                  {v.region ? <span className="dash-chip">{v.region}</span> : null}
+                  {v.supply_categories.slice(0, 4).map((c) => (
+                    <span key={c} className="dash-chip">
+                      {categoryLabel(c)}
+                    </span>
+                  ))}
+                  {v.vendor_key === vendorKey ? <span className="dash-pill dash-pill--ok">Selected</span> : null}
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+
+      {/* 3 — Line items */}
+      <section className="card dash-section" aria-label="Step 3 — Line items">
+        <h3 className="jha__section-title">3 · Line items</h3>
+        <div className="mats-cat-filter" role="group" aria-label="Line-item layout">
+          {VARIANTS.map(([key, label]) => (
+            <button
+              key={key}
+              type="button"
+              className={`mats-cat-filter__chip${variant === key ? " mats-cat-filter__chip--active" : ""}`}
+              aria-pressed={variant === key}
+              onClick={() => {
+                touchMoney();
+                setVariant(key);
+              }}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <table className="dash-table po-lines">
+          <thead>{lineHeaders()}</thead>
+          <tbody>{lines.map(lineRow)}</tbody>
+        </table>
+        <div className="jha__actions">
+          <button type="button" className="btn btn--secondary" onClick={addLine}>
+            + Add a line
+          </button>
+        </div>
+      </section>
+
+      {/* 4 — Totals */}
+      <section className="card dash-section" aria-label="Step 4 — Totals">
+        <h3 className="jha__section-title">4 · Totals</h3>
+        <div className="jha__grid">
+          <label className="field">
+            <span className="field__label">Tax</span>
+            <select
+              className="field__input"
+              aria-label="Tax mode"
+              value={taxMode}
+              onChange={(e) => {
+                touchMoney();
+                setTaxMode(e.target.value as api.TaxMode);
+              }}
+            >
+              {TAX_MODES.map(([key, label]) => (
+                <option key={key} value={key}>
+                  {label}
+                </option>
+              ))}
+            </select>
+          </label>
+          {taxMode === "override" ? (
+            <label className="field">
+              <span className="field__label">Override rate (%)</span>
+              <input
+                className="field__input"
+                aria-label="Tax override percent"
+                value={taxOverridePct}
+                maxLength={6}
+                onChange={(e) => {
+                  touchMoney();
+                  setTaxOverridePct(e.target.value);
+                }}
+              />
+            </label>
+          ) : null}
+          <label className="field">
+            <span className="field__label">Shipping ($)</span>
+            <input
+              className="field__input"
+              aria-label="Shipping dollars"
+              value={shipping}
+              maxLength={14}
+              onChange={(e) => {
+                touchMoney();
+                setShipping(e.target.value);
+              }}
+            />
+          </label>
+        </div>
+        <div className="po-totals" aria-label="Totals panel">
+          {displayTotals ? (
+            <>
+              <div className="dash-card__row">
+                <span className="dash-card__label">Subtotal</span>
+                <span className="dash-table__name">{formatCents(displayTotals.subtotal_cents)}</span>
+              </div>
+              <div className="dash-card__row">
+                <span className="dash-card__label">Tax ({bpToInput(displayTotals.tax_rate_bp)}%)</span>
+                <span className="dash-table__name">{formatCents(displayTotals.tax_cents)}</span>
+              </div>
+              <div className="dash-card__row">
+                <span className="dash-card__label">Shipping</span>
+                <span className="dash-table__name">{formatCents(shippingCents ?? 0)}</span>
+              </div>
+              <div className="dash-card__row">
+                <span className="dash-card__label">Total</span>
+                <span className="dash-table__name">{formatCents(displayTotals.total_cents)}</span>
+              </div>
+              {serverTotals ? <p className="muted">Totals confirmed by the server for the saved draft.</p> : null}
+            </>
+          ) : (
+            <p className="muted">Totals appear once every line and the tax basis are valid.</p>
+          )}
+        </div>
+      </section>
+
+      {/* 5 — Scope, delivery, payment */}
+      <section className="card dash-section" aria-label="Step 5 — Scope and delivery">
+        <h3 className="jha__section-title">5 · Scope of work, delivery, payment</h3>
+        <label className="field">
+          <span className="field__label">Scope of work</span>
+          <textarea className="field__textarea" aria-label="Scope of work" value={sow} maxLength={8000} rows={5} onChange={(e) => setSow(e.target.value)} />
+        </label>
+        <label className="field">
+          <span className="field__label">Delivery instructions</span>
+          <textarea
+            className="field__textarea"
+            aria-label="Delivery instructions"
+            value={deliveryInstructions}
+            maxLength={4000}
+            rows={3}
+            onChange={(e) => setDeliveryInstructions(e.target.value)}
+          />
+        </label>
+        <label className="field">
+          <span className="field__label">Payment terms (invoice routing pre-filled)</span>
+          <textarea
+            className="field__textarea"
+            aria-label="Payment terms"
+            value={paymentTerms}
+            maxLength={2000}
+            rows={3}
+            onChange={(e) => setPaymentTerms(e.target.value)}
+          />
+        </label>
+      </section>
+
+      {/* 6 — Terms */}
+      <section className="card dash-section" aria-label="Step 6 — Terms">
+        <h3 className="jha__section-title">6 · Terms &amp; conditions</h3>
+        <label className="field">
+          <span className="field__label">Terms profile{selectedVendor?.default_terms_profile ? " (vendor default preselected)" : ""}</span>
+          <select
+            className="field__input"
+            aria-label="Terms profile"
+            value={termsProfileId}
+            onChange={(e) => setTermsProfileId(e.target.value)}
+          >
+            <option value="">— terms profile —</option>
+            {terms.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.label}
+                {t.current_version ? ` (v${t.current_version})` : ""}
+              </option>
+            ))}
+          </select>
+        </label>
+        {selectedTerms ? (
+          <>
+            <p className="muted">{selectedTerms.description}</p>
+            {selectedTerms.kind === "attach" && selectedTerms.render_line ? (
+              <div className="dash-card__row">
+                <span className="dash-card__label">Rendered reference line</span>
+                <span>{selectedTerms.render_line}</span>
+              </div>
+            ) : null}
+            {selectedTerms.kind === "attach" && selectedVendor?.gtc_reference ? (
+              <div className="dash-card__row">
+                <span className="dash-card__label">Vendor GTC</span>
+                <span>{selectedVendor.gtc_reference}</span>
+              </div>
+            ) : null}
+          </>
+        ) : null}
+      </section>
+
+      {/* 7 — Supersedes (optional) */}
+      <section className="card dash-section" aria-label="Step 7 — Supersedes">
+        <h3 className="jha__section-title">7 · Supersedes (optional)</h3>
+        {supersedesPoId !== null ? (
+          <p className="muted">This draft supersedes PO #{supersedesPoId} — the old PO stays in force until this one is sent.</p>
+        ) : sentPos.length === 0 ? (
+          <p className="muted">No sent POs to supersede.</p>
+        ) : (
+          <label className="field">
+            <span className="field__label">Replace a sent PO (clones it into a fresh draft)</span>
+            <select
+              className="field__input"
+              aria-label="Supersede a sent PO"
+              value=""
+              onChange={(e) => {
+                const id = parseInt(e.target.value, 10);
+                if (Number.isSafeInteger(id)) void onSupersede(id);
+              }}
+            >
+              <option value="">— sent PO —</option>
+              {sentPos.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.po_number ?? `#${p.id}`} · {p.job_name || p.job_no} · {formatCents(p.total_cents)}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+      </section>
+
+      {/* 8 — Review & generate */}
+      <section className="card dash-section" aria-label="Step 8 — Review and generate">
+        <h3 className="jha__section-title">8 · Review &amp; generate</h3>
+        <div className="dash-card__row">
+          <span className="dash-card__label">Job</span>
+          <span>
+            {jobName || "—"} · {jobNo || "—"} · phase {sitePhase || "—"}
+          </span>
+        </div>
+        <div className="dash-card__row">
+          <span className="dash-card__label">Ship to</span>
+          <span>
+            {[shipToName, shipToAddress, shipToCity, stateUpper, shipToZip].filter(Boolean).join(", ") || "—"}
+          </span>
+        </div>
+        <div className="dash-card__row">
+          <span className="dash-card__label">Delivery contact</span>
+          <span>{[deliveryName, deliveryPhone, deliveryEmail].filter(Boolean).join(" · ") || "—"}</span>
+        </div>
+        <div className="dash-card__row">
+          <span className="dash-card__label">Vendor</span>
+          <span>{selectedVendor ? `${selectedVendor.vendor_name} (${selectedVendor.vendor_key})` : "—"}</span>
+        </div>
+        <div className="dash-card__row">
+          <span className="dash-card__label">Line items</span>
+          <span>
+            {validLines.length} of {lines.length} valid · {VARIANTS.find(([k]) => k === variant)?.[1]}
+          </span>
+        </div>
+        <div className="dash-card__row">
+          <span className="dash-card__label">Tax</span>
+          <span>
+            {TAX_MODES.find(([k]) => k === taxMode)?.[1]}
+            {displayTotals ? ` — ${bpToInput(displayTotals.tax_rate_bp)}%` : ""}
+            {taxMode === "auto" && stateNames[stateUpper] ? ` (${stateNames[stateUpper]})` : ""}
+          </span>
+        </div>
+        <div className="dash-card__row">
+          <span className="dash-card__label">Totals</span>
+          <span className="dash-table__name">
+            {displayTotals
+              ? `${formatCents(displayTotals.subtotal_cents)} + tax ${formatCents(displayTotals.tax_cents)} + shipping ${formatCents(shippingCents ?? 0)} = ${formatCents(displayTotals.total_cents)}`
+              : "—"}
+          </span>
+        </div>
+        <div className="dash-card__row">
+          <span className="dash-card__label">Terms</span>
+          <span>{selectedTerms ? `${selectedTerms.label}${selectedTerms.current_version ? ` v${selectedTerms.current_version}` : ""}` : "—"}</span>
+        </div>
+        {sow ? (
+          <div className="dash-card__row">
+            <span className="dash-card__label">Scope of work</span>
+            <span>{sow}</span>
+          </div>
+        ) : null}
+        {deliveryInstructions ? (
+          <div className="dash-card__row">
+            <span className="dash-card__label">Delivery instructions</span>
+            <span>{deliveryInstructions}</span>
+          </div>
+        ) : null}
+        {paymentTerms ? (
+          <div className="dash-card__row">
+            <span className="dash-card__label">Payment terms</span>
+            <span>{paymentTerms}</span>
+          </div>
+        ) : null}
+        <div className="jha__grid">
+          <FieldInput label="Approver name" value={approverName} onChange={setApproverName} maxLength={256} />
+          <FieldInput label="Approver title" value={approverTitle} onChange={setApproverTitle} maxLength={256} />
+        </div>
+        {canManage ? (
+          <div className="jha__actions">
+            <button className="btn btn--secondary" disabled={busy} onClick={() => void onSaveDraft()}>
+              {busy ? "Working…" : "Save draft"}
+            </button>
+            <button className="btn btn--primary" disabled={busy} onClick={() => void onGenerate()}>
+              {busy ? "Working…" : "Generate PO"}
+            </button>
+          </div>
+        ) : null}
+      </section>
+    </>
+  );
+
+  return (
+    <PageShell onHome={onBack}>
+      <h2 className="page__heading">Purchase Orders</h2>
+      <p className="dash__intro">
+        Build a vendor purchase order — line items, tax, and terms — then track it from draft through
+        render, review, and send. Generated POs queue for the Mac-side renderer; sending always goes
+        through human approval.
+      </p>
+
+      {msg && <div className={`banner ${msg.ok ? "banner--ok" : "banner--err"}`}>{msg.text}</div>}
+      {error && <div className="banner banner--err">{error}</div>}
+
+      {view === "tracker" ? tracker : builder}
+    </PageShell>
+  );
+}

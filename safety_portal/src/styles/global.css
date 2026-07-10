@@ -1831,3 +1831,56 @@ h3,
 .mats-cat-heading__count {
   text-transform: none;
 }
+
+/* ── Purchase Orders (S6) — the few page-specific hooks; everything else reuses the dash system ── */
+/* Inactive vendor card — greyed but readable (the "Show inactive" list). */
+.po-vendor--inactive {
+  opacity: 0.6;
+}
+/* Builder vendor picker — a bounded, scrollable row list (vendor sets can grow). */
+.po-vendor-pick {
+  max-height: 340px;
+  overflow-y: auto;
+  border: 1px solid var(--c-line);
+  border-radius: var(--radius-sm);
+}
+.po-vendor-pick__btn {
+  /* A full-row select target: unstyled button, row padding, chips inline. */
+  appearance: none;
+  background: none;
+  border: none;
+  width: 100%;
+  text-align: left;
+  padding: 10px 12px;
+  font: inherit;
+  cursor: pointer;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-height: var(--tap);
+}
+.po-vendor-pick__row--selected {
+  background: var(--c-surface-2);
+  box-shadow: inset 3px 0 0 var(--c-gold); /* gold-as-decoration on the selected row */
+}
+/* Line-item grid — numeric columns tighten; the table scrolls inside its card on phones. */
+.po-lines {
+  display: block;
+  overflow-x: auto;
+}
+.po-lines input.field__input {
+  min-width: 64px;
+}
+/* Totals panel — right-rail alignment of the money rows. */
+.po-totals {
+  margin-top: var(--space-3);
+  border-top: 1px solid var(--c-line);
+  padding-top: var(--space-3);
+  max-width: 420px;
+}
+.po-totals .dash-card__row {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
