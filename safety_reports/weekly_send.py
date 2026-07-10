@@ -66,7 +66,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from typing import Any, Literal, Protocol, cast
 
-from safety_reports import wsr_review
+from safety_reports import safety_naming, wsr_review
 from shared import (
     active_jobs,
     box_client,
@@ -217,9 +217,18 @@ class WeeklyReportEnvelope:
     report_label: str            # subject + attachment label ("Weekly Safety Report")
 
     def __call__(self, ctx: EnvelopeContext) -> tuple[str, str]:
+        # Job-prefix the attachment name (matching the Box packet's `<Job>_…` style +
+        # the PO convention) so a saved weekly PDF names its job; falls back to the
+        # legacy name only when the project is unknown. Subject is unchanged.
+        job = safety_naming.job_folder_name(ctx.project_name).strip()
+        attachment = (
+            f"{job}_{self.report_label} — {ctx.week}.pdf"
+            if job
+            else f"{self.report_label} — {ctx.week}.pdf"
+        )
         return (
             f"{self.report_label} — {ctx.project_name} — week of {ctx.week}",
-            f"{self.report_label} — {ctx.week}.pdf",
+            attachment,
         )
 
 

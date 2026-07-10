@@ -86,7 +86,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from po_materials import numbering, po_generate, po_log, po_review, vendors
+from po_materials import numbering, po_generate, po_log, po_naming, po_review, vendors
 from po_materials import terms as terms_lib
 from safety_reports import safety_naming
 from shared import (
@@ -694,7 +694,7 @@ def _process_pending_po(
             )
             return False
         file_info = box_client.upload_bytes_or_new_version(
-            folder_id, f"PO {po_number}.pdf", pdf
+            folder_id, po_naming.po_pdf_filename(po_number, po.get("job_name")), pdf
         )
         box_file_id = str(file_info["id"])
         box_link = f"https://app.box.com/file/{box_file_id}"
@@ -743,7 +743,12 @@ def _process_pending_po(
                     else None,
                 ),
             )
-            _attach_pdf_best_effort(review_row_id, f"PO {po_number}.pdf", pdf, correlation_id)
+            _attach_pdf_best_effort(
+                review_row_id,
+                po_naming.po_pdf_filename(po_number, po.get("job_name")),
+                pdf,
+                correlation_id,
+            )
 
         # 11 — the receipt, LAST (queued→pending_review; a crash before this line
         # re-pulls the row and every step above is idempotent).
