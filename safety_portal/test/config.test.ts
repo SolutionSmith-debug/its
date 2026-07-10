@@ -295,6 +295,14 @@ describe("POST /api/config/requests — create_profile (mint a new terms profile
     expect(JSON.parse(row!.payload)).toMatchObject({ profile_id: "vendor_acme", kind: "library" });
   });
 
+  it("records profile_id + kind in the create_profile audit row (forensic parity with target_version)", async () => {
+    await provision("admin.one", "admin");
+    const cookie = await login("admin.one");
+    await post(cookie, "/api/config/requests", createLibBody());
+    const detail = (await env.DB.prepare("SELECT detail FROM audit_log WHERE action='config_edit'").first<{ detail: string }>())!.detail;
+    expect(JSON.parse(detail)).toMatchObject({ op: "create_profile", profile_id: "vendor_acme", kind: "library" });
+  });
+
   it("enqueues a valid attach create_profile (201) with a render_line", async () => {
     await provision("admin.one", "admin");
     const cookie = await login("admin.one");

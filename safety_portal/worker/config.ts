@@ -70,6 +70,9 @@ const CONFIG_REGISTRY: Record<string, WorkstreamSpec> = {
 };
 
 const CONFIG_OPS = new Set(["edit", "add_version", "set_current", "create_profile"]);
+// The ops a versioned `terms` artifact accepts (a json artifact takes only `edit`). Module-level so
+// it is allocated once, not per request.
+const TERMS_OPS = new Set(["add_version", "set_current", "create_profile"]);
 const TARGET_VERSION_RE = /^[a-z0-9_]+$/;
 const MAX_TARGET_VERSION = 64;
 const MAX_PAYLOAD_BYTES = 100_000; // 100 KB — generous ceiling on a config value / terms version
@@ -217,7 +220,6 @@ export function registerConfigRoutes(app: FieldopsApp, gates: ConfigGates): void
     // sha-pinned version), `set_current` (make a version live + clear its legal review), or
     // `create_profile` (mint a brand-new profile); a json artifact only takes `edit` (replace the
     // value). A mismatch is a structurally-nonsensical request the queue rejects here, not later.
-    const TERMS_OPS = new Set(["add_version", "set_current", "create_profile"]);
     if (artifact.kind === "terms" ? !TERMS_OPS.has(op) : op !== "edit") {
       return c.json({ error: "invalid_op" }, 400);
     }
@@ -234,9 +236,15 @@ export function registerConfigRoutes(app: FieldopsApp, gates: ConfigGates): void
     // create_profile carries its new-profile fields (id, kind, label, and per-kind version+text /
     // render_line) INSIDE `payload` — target_version stays NULL. Validate the shape here (the SHAPE
     // gate); config_apply.py re-checks against live HEAD (duplicate id, manifest write) as the boundary.
+    // Audit metadata beyond {workstream, artifact_key, op}: create_profile surfaces the new profile
+    // id + kind so an auditor reading audit_log alone (without joining the request row) sees WHAT was
+    // created — parity with add_version/set_current's target_version.
+    let opMeta: Record<string, unknown> = {};
     if (op === "create_profile") {
       const err = validateCreateProfile(body.payload);
       if (err) return c.json({ error: err }, err === "profile_exists" ? 409 : 400);
+      const p = body.payload as Record<string, unknown>;
+      opMeta = { profile_id: p.profile_id, kind: p.kind };
     }
 
     if (!isNonEmptyJson(body.payload)) return c.json({ error: "invalid_payload" }, 400);
@@ -267,6 +275,7 @@ export function registerConfigRoutes(app: FieldopsApp, gates: ConfigGates): void
         artifact_key: artifactKey,
         op,
         ...(targetVersion !== null ? { target_version: targetVersion } : {}),
+        ...opMeta,
       }),
     ]);
     return c.json({ ok: true, id: res[0]?.meta?.last_row_id ?? null, status: "queued" }, 201);
