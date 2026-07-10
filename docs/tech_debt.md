@@ -26,28 +26,61 @@ From the slice-2 (`config_actuator`) build + adversarial review (PR #509):
   portal control ("I've reviewed this — make it live") is the activation path (clears legal_review + advances
   `current_version` through the config actuator). The **legal judgment** it encodes stays a §44 high-class call
   (Seth / legal), training-enforced per the §43 runbook — the control is the mechanism, not a re-delegation.
-- **CE-3 (HIGH, blocks the editor entirely) — self-defeating CI test class recurs: CI hard-pins the live
-  editable config content, so a legitimate purchaser/tax edit cannot merge.** Discovered 2026-07-10 during
-  the first live activation smoke: the operator edited the purchaser's `invoice_routing.to`, the actuator
-  queued → committed → opened **PR #511** (`chore(po-config): purchaser: Evergreen Renewables LLC ->
-  config_version 2 (req 1)`) — and CI red-lit at the `tested` stage, so the daemon's `_wait_for_ci` never
-  advances it past `validated`/`tested` and the edit is permanently stuck (verified live: PR #511 is
-  `state: OPEN`, `mergeable: UNKNOWN`, both `test` and `portal` checks `FAILURE`; nothing on main broke —
-  the edit simply never merged). Root cause: `safety_portal/test/po.test.ts:222-223` asserts the exact
-  live-bundled purchaser entity + `invoice_routing.to` value, and `tests/test_config_apply.py` asserts an
-  absolute `config_version == 2` plus a pinned preserved field — both couple to the CURRENT content of the
-  file being edited rather than its shape. This is the **identical class** already named in
+- **CE-3 (was HIGH, blocked the editor entirely) — self-defeating CI test class recurs: CI hard-pins the
+  live editable config content, so a legitimate purchaser/tax edit cannot merge. RESOLVED 2026-07-10
+  (session 2) — PR #514 (`ca9c776`).** Discovered 2026-07-10 during the first live activation smoke: the
+  operator edited the purchaser's `invoice_routing.to`, the actuator queued → committed → opened
+  **PR #511** (`chore(po-config): purchaser: Evergreen Renewables LLC -> config_version 2 (req 1)`) — and CI
+  red-lit at the `tested` stage, so the daemon's `_wait_for_ci` never advanced it past `validated`/`tested`
+  and the edit was permanently stuck. Root cause: `safety_portal/test/po.test.ts:222-223` asserted the exact
+  live-bundled purchaser entity + `invoice_routing.to` value, and `tests/test_config_apply.py` asserted an
+  absolute `config_version == 2` plus a pinned preserved field — both coupled to the CURRENT content of the
+  file being edited rather than its shape. This was the **identical class** already named in
   `claude-code-info-gap.md` §5 "Self-defeating CI test class" (2026-06-09, PR #222/#228, form-publish
-  catalog counts) — it just recurred on a second §50-actuator instantiation (config editor vs. form
-  publish), confirming the class needed a written guard, not a one-off fix. **Fix:** rewrite both tests to
-  assert shape/round-trip (dynamic field presence, type, routing invariants) against a FIXED FIXTURE or a
-  relative diff, never the live file's current value — same remedy pattern as PR #222/#228. **Land the fix
-  on main FIRST, then re-submit the purchaser edit** (or close #511 and let the next edit attempt retest
-  clean). **Any future test asserting purchaser/tax/terms content is the same trap** — this needs a written
-  rule (a comment at the top of `po.test.ts`/`test_config_apply.py`, or a CI-level lint) so a THIRD
-  instantiation of the §50 pattern doesn't hit it again blind. **Tag:** `po_materials`, `config-editor`,
-  `ci`, `self-defeating-test`, `blocker`. **Revisit when:** picked up as the first item of the next PO/
-  config-editor session (full brief was captured in auto-memory `project_config-editor-build.md`).
+  catalog counts) recurring on a second §50-actuator instantiation. **Fix landed (PR #514):** rewrote
+  `tests/test_config_apply.py` (fixture seeded at a non-1 sentinel `SEED_CONFIG_VERSION=5` + relative
+  `new == seed+1` asserts), `tests/test_po_terms.py` (shape asserts — non-empty, email-shaped, integer-bp in
+  range, key parity — a second blocker the initial brief missed), and `safety_portal/test/po.test.ts`
+  (imports the same bundled config the worker uses; derives `EXPECTED` tax math from `taxConfig.rates_bp.IL`;
+  asserts served-config == imported source; terms wiring derives from the manifest) — all now assert
+  shape/round-trip instead of pinning live content. A guard against a THIRD instantiation hitting this blind
+  is now in `docs/HOUSE_REFLEXES.md` §5 ("never pin editable-config content; assert shape/round-trip/
+  served-equals-source"). **PR #511 itself did NOT merge — it is `state: CLOSED`, not `MERGED`** (verified
+  via `gh pr view 511`); the next purchaser/tax edit retests clean against the fixed suites, but #511's
+  specific `invoice_routing.to` edit needed resubmission through the SPA, it did not auto-resume. **Tag:**
+  `po_materials`, `config-editor`, `ci`, `self-defeating-test`, `resolved`. See CE-4 below for a residual the
+  same PR flagged, not fixed.
+- **CE-4 (LOW, out of scope of CE-3's fix) — `po.test.ts`'s `draftBody` hard-codes `ship_to_state:"IL"`.**
+  Flagged by PR #514 as a known residual: CE-3's fix makes the test track a tax-RATE edit to IL (or an
+  additional state) correctly, but a tax edit that **removes or renames the IL entry entirely** would still
+  break `po.test.ts`, because `draftBody` assumes an IL ship-to unconditionally. Pre-existing, not introduced
+  by PR #514. Low real-world risk while IL is the only active job state. **Trigger:** revisit if/when a
+  second ship-to state goes live, or the next time `po.test.ts` is touched for an unrelated reason. **Tag:**
+  `po_materials`, `config-editor`, `ci`, `low-severity`.
+- **CE-5 (MEDIUM, pre-activation decision) — terms "Make a version current" attests legal clearance; the
+  attesting population isn't yet decided.** Terms editing shipped in two slices this session (T1 #518 —
+  edit-text pre-fill; T2 #520 — make-current + the Layer-A `legal_review != "cleared"` render-side refusal,
+  **CE-2 RESOLVED**). The portal's confirmable "Make a version current" control (`cap.po.manage`) both clears
+  `legal_review` and advances `current_version` in one action — i.e. checking that box IS the legal
+  attestation ("I've reviewed this version's legal text"). `docs/runbooks/config_actuator.md` and this
+  session's memory keep that judgment a FIXED §44 high-class call (Seth/legal, training-enforced, never a
+  Tier-2 flip) — but the control itself only checks `cap.po.manage`, not a narrower "is this person actually
+  Seth or legal" capability. **Decide before activation:** whether any `cap.po.manage` holder may attest, or
+  whether the control needs a narrower capability / a second confirmation step. **Trigger:** before flipping
+  `po_materials.config_actuator.polling_enabled` live for terms editing (the editor as a whole is already
+  gated on this flag; this is a use-of-capability question, not a code gap). **Tag:** `po_materials`,
+  `config-editor`, `terms`, `authorization`, `pre-activation`.
+- **CE-6 (LOW, doc-currency) — `docs/enablement/purchase_orders.md:148-149` still says PO config is
+  "read-only … not a portal edit," which has been false since the config editor's 3-slice vertical (#508–
+  #510/#512) shipped and terms editing (T1/T2, #518/#520) completed it.** Deliberately deferred at write
+  time: editing an enablement doc trips the `docs/enablement/manifest.yaml` sha256 recompute (see auto-memory
+  `reference_enablement-doc-sha-manifest-coupling.md`) and the doc-currency CI gate (`test_docs_pdf --check`)
+  goes RED until the new hash is hand-recorded — not a blocker to skip, just a two-step edit rather than a
+  one-liner. **Trigger:** next time `docs/enablement/purchase_orders.md` is touched for any reason, or as a
+  dedicated small PR; update the "Configuration" section to describe the actual editable surfaces (purchaser/
+  tax/terms via the portal, fully-automatic actuation) and re-run `scripts/generate_config_dictionary.py` /
+  re-record the sha in the manifest per the existing coupling pattern. **Tag:** `po_materials`,
+  `config-editor`, `docs`, `enablement`, `low-severity`.
 
 ## Doc-conventions workstream taxonomy is missing `po_materials`/`purchase_orders` [OPEN 2026-07-10]
 
