@@ -1884,3 +1884,31 @@ h3,
   justify-content: space-between;
   gap: var(--space-4);
 }
+
+/* ── PO Configuration (read-only admin view) — a few hooks; everything else reuses the dash system ── */
+.po-config__intro {
+  margin: calc(-1 * var(--space-2)) 0 var(--space-4);
+  max-width: 60ch;
+}
+.po-config__block + .po-config__block {
+  margin-top: var(--space-3);
+}
+.po-config__entity {
+  font-weight: 600;
+  font-size: 1.1rem;
+}
+.po-config__line {
+  line-height: 1.5;
+}
+/* Tax card — the rate reads as the headline number, state chips beneath. */
+.po-config__tax-rate {
+  font-weight: 700;
+  font-size: 1.35rem;
+}
+.po-config__terms-head {
+  margin-bottom: var(--space-2);
+}
+.po-config__terms-desc {
+  margin: var(--space-2) 0;
+  line-height: 1.5;
+}

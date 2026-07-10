@@ -24,7 +24,8 @@ import {
 // ── Admin-only route chunks (optimization #8) ────────────────────────────────────────────────────
 // Exactly the ADMIN-ONLY views are code-split: Forms (which pulls the whole FormEditor /
 // editorValidation / PublishMonitor stack into its chunk), Accounts, Materials Catalog, and the
-// two PO pages (S6 — builder + vendors) — office-desk surfaces a field phone never opens.
+// three PO pages (builder + vendors + the read-only config view) — office-desk surfaces a field
+// phone never opens.
 // Every FIELD-CRITICAL view (FormFillPage, My Tasks / DailyReportTab, Job Tracker, Equipment,
 // Personnel, Inspections, Form Request) stays EAGER on purpose: a chunk-load failure mid-shift on
 // a flaky cell connection must never take down the daily path. The Suspense fallback below is the
@@ -41,6 +42,9 @@ const PoBuilderPage = lazy(() =>
 );
 const PoVendorsPage = lazy(() =>
   import("./pages/PoVendorsPage").then((m) => ({ default: m.PoVendorsPage })),
+);
+const PoConfigPage = lazy(() =>
+  import("./pages/PoConfigPage").then((m) => ({ default: m.PoConfigPage })),
 );
 
 // Never-silent for the lazy admin chunks (ops review): a chunk-load failure (offline / deploy skew)
@@ -339,6 +343,8 @@ export function App() {
     page = <PoBuilderPage onBack={home} />;
   } else if (route.view === "po-vendors" && allowed) {
     page = <PoVendorsPage onBack={home} />;
+  } else if (route.view === "po-config" && allowed) {
+    page = <PoConfigPage onBack={home} />;
   } else {
     page = (
       <HomePage
@@ -353,7 +359,7 @@ export function App() {
   return (
     <>
       {user.role === "admin" && <AdminSessionGuard editing={editing} />}
-      {/* Only the five lazy admin views ever suspend; eager field views render straight through. */}
+      {/* Only the six lazy admin views ever suspend; eager field views render straight through. */}
       <ChunkBoundary>
         <Suspense fallback={<div className="centered muted">Loading…</div>}>{page}</Suspense>
       </ChunkBoundary>
