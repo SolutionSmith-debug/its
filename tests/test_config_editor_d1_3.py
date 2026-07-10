@@ -206,7 +206,9 @@ def test_rotate_keychain_write_through_no_value_leak(env: dict[str, Any]) -> Non
     assert audit and all("s3cr3t-value" not in a[2] for a in audit)  # never in the audit
 
 
-def test_rotate_worker_value_on_stdin_and_mirror(env: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
+def test_rotate_worker_value_on_stdin_and_mirror(
+    env: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
     calls: dict[str, Any] = {}
 
     class _Proc:
@@ -219,6 +221,8 @@ def test_rotate_worker_value_on_stdin_and_mirror(env: dict[str, Any], monkeypatc
         calls["input"] = kw.get("input")
         return _Proc()
 
+    # hermetic: ~/its/safety_portal may not exist in CI — point at a real temp dir
+    monkeypatch.setattr(secret_rotate, "_SAFETY_PORTAL", tmp_path)
     monkeypatch.setattr(secret_rotate.subprocess, "run", fake_run)
     out = rotate_secret("PORTAL_PO_API_TOKEN", "newtok", "op")
     assert out.kind == "rotated"
@@ -280,7 +284,9 @@ def test_reviewer_chain_canonicalizes_and_drops_extras() -> None:
     assert "EXTRA" not in out  # extra top-level key dropped
 
 
-def test_worker_mirror_desync_is_audited(env: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
+def test_worker_mirror_desync_is_audited(
+    env: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
     import shared.keychain as kc
 
     class _Proc:
@@ -288,6 +294,7 @@ def test_worker_mirror_desync_is_audited(env: dict[str, Any], monkeypatch: pytes
         stdout = ""
         stderr = ""
 
+    monkeypatch.setattr(secret_rotate, "_SAFETY_PORTAL", tmp_path)  # hermetic (CI has no ~/its/safety_portal)
     monkeypatch.setattr(secret_rotate.subprocess, "run", lambda argv, **kw: _Proc())
 
     def failing_set(service: str, value: str, account: str | None = None) -> None:
