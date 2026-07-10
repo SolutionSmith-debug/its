@@ -358,6 +358,10 @@ describe("POST /api/config/requests/:id/clear — forensic-safe soft-dismiss", (
     expect(await second.json()).toMatchObject({ ok: true, cleared: false });
     const ts2 = (await env.DB.prepare("SELECT cleared_at FROM config_requests WHERE id=?").bind(id).first<{ cleared_at: number }>())!.cleared_at;
     expect(ts2).toBe(ts1); // no re-stamp on the no-op
+    // And NO second "config_clear" audit row — the no-op re-clear is forensically silent
+    // (auditStmtIfChanged: the audit lands only for the clear that actually flips cleared_at).
+    const n = (await env.DB.prepare("SELECT COUNT(*) n FROM audit_log WHERE action='config_clear'").first<{ n: number }>())!.n;
+    expect(n).toBe(1);
   });
 
   it("writes exactly one audit_log row for the clear (W4 atomic)", async () => {

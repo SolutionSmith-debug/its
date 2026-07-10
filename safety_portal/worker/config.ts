@@ -1,6 +1,6 @@
 import type { MiddlewareHandler } from "hono";
 import type { FieldopsApp } from "./fieldops_gates";
-import { auditStmt } from "./audit";
+import { auditStmt, auditStmtIfChanged } from "./audit";
 import type { Env, Vars } from "./types";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -254,21 +254,25 @@ export function registerConfigRoutes(app: FieldopsApp, gates: ConfigGates): void
       .first<{ workstream: string; artifact_key: string; op: string; status: string; cleared_at: number | null }>();
     if (!row) return c.json({ error: "not_found" }, 404);
     const spec = CONFIG_REGISTRY[row.workstream];
-    if (!spec || !c.get("capabilities").has(spec.cap)) return c.json({ error: "forbidden" }, 403);
+    // A placeholder workstream (subcontracts) holds no rows today; exclude it explicitly for parity
+    // with the monitor's read-side scoping (`!s.placeholder` above) — belt for a future backfill/bug.
+    if (!spec || spec.placeholder || !c.get("capabilities").has(spec.cap)) return c.json({ error: "forbidden" }, 403);
     // Already cleared → idempotent no-op (never re-audit, never re-stamp the timestamp).
     if (row.cleared_at !== null) return c.json({ ok: true, cleared: false });
     // Terminal-only: refuse to dismiss an in-flight request.
     if (!CONFIG_CLEARABLE_STATUSES.has(row.status)) return c.json({ error: "config_not_terminal" }, 409);
     const actor = c.get("session").username;
     // W4: the soft-dismiss + its audit row batch atomically. The UPDATE re-guards cleared_at IS NULL AND
-    // status IN (terminal) in the WHERE, so a concurrent clear / an actuator advance cannot double-apply.
+    // status IN (terminal) in the WHERE, so a concurrent clear / an actuator advance cannot double-apply;
+    // the audit uses auditStmtIfChanged (INSERT … WHERE changes()=1, placed directly after the UPDATE) so
+    // a lost race writes NO lying "config_clear" row — the forensic-safe property this feature exists for.
     const res = await c.env.DB.batch([
       c.env.DB
         .prepare(
           `UPDATE config_requests SET cleared_at=unixepoch() WHERE id=? AND cleared_at IS NULL AND status IN ${CONFIG_CLEARABLE_STATUSES_SQL}`,
         )
         .bind(id),
-      auditStmt(c, actor, "config_clear", `${row.workstream}/${row.artifact_key}`, {
+      auditStmtIfChanged(c, actor, "config_clear", `${row.workstream}/${row.artifact_key}`, {
         id,
         op: row.op,
         prev_status: row.status,
