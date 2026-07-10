@@ -380,6 +380,21 @@ NETWORK_LIB_ALLOWLIST: frozenset[str] = frozenset({
     # the scan is local-only AV, not customer egress. It stays in GATED_SCRIPTS (no send,
     # no LLM) — gating and the network allowlist are orthogonal (cf. publish_daemon).
     "safety_reports/photo_screen.py",
+    # WS2 operator dashboard (D1-1, read-only observability app) — the root is
+    # walked (below) so a future dashboard module that quietly acquires network
+    # capability is caught. These four legitimately import a tracked needle, all
+    # benign + non-egress:
+    #   daemons.py      — `subprocess` runs read-only `launchctl list` (fixed
+    #                     argv, no shell, bounded timeout) to list daemon status.
+    #   runtime_state.py / smartsheet_panels.py / watchdog_checks.py — `importlib`
+    #                     lazily resolves INTERNAL modules only (shared.* /
+    #                     watchdog) so a broken import degrades one panel; never a
+    #                     dynamic import of a network lib. The app is read-only
+    #                     (no customer send, no LLM) — not in GATED/SEND lists.
+    "operator_dashboard/sources/daemons.py",
+    "operator_dashboard/sources/runtime_state.py",
+    "operator_dashboard/sources/smartsheet_panels.py",
+    "operator_dashboard/sources/watchdog_checks.py",
 })
 
 # Import needles that constitute network-egress or process-spawn capability.
@@ -427,7 +442,13 @@ NETWORK_NEEDLES: frozenset[str] = frozenset({
 # that quietly acquires network capability is caught). po_materials joined at S3 (the PO
 # workstream — today only the pure terms/config loader, which imports nothing network-shaped;
 # its gated po_poll/po_send daemons land at S4/S5 with same-PR enrollment above).
-WALKED_ROOTS: tuple[str, ...] = ("shared", "safety_reports", "progress_reports", "field_ops", "po_materials")
+# operator_dashboard joined at WS2 D1-1 (the read-only observability app — its
+# subprocess/importlib importers are allowlisted above; the root is walked so a
+# later dashboard module, e.g. the D1-2 ACT surface, that acquires network
+# capability is caught).
+WALKED_ROOTS: tuple[str, ...] = (
+    "shared", "safety_reports", "progress_reports", "field_ops", "po_materials", "operator_dashboard",
+)
 
 
 def _import_matches_needle(imported: str, needle: str) -> bool:
