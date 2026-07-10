@@ -1,17 +1,24 @@
 ---
 type: reference
 date: 2026-07-10
-status: proposed
-related_prs: [506]
+status: active
+related_prs: [506, 508, 509, 510, 512]
 workstream: po_materials
-tags: [adr, purchase-orders, config, terms, tax, purchaser, section-50, privileged-actuation, legal-guardrail, deferred]
+tags: [adr, purchase-orders, config, terms, tax, purchaser, section-50, privileged-actuation, legal-guardrail, fully-automatic]
 ---
 
-# ADR-0002 — PO config editor as a §50 privileged code-actuation (deferred, propose-mode)
+# ADR-0002 — PO config editor as a §50 privileged code-actuation (fully-automatic, C12 = A)
 
-**Status:** Proposed — the read-only view shipped (PR #506); the EDIT/actuator is deliberately
-deferred to an operator-present session (see "Why deferred"). This ADR records the intended design
-so that session builds it, not reinvents it.
+**Status:** Accepted / in force. The read-only view shipped first (PR #506), then the full edit
+vertical shipped and was activated on the mirror the same day (2026-07-10): the send-free cloud queue
+(#508), the Mac `config_actuator` daemon (#509), the generic SPA editor (#510), and the activation
+fixes (#512). **The actuator runs FULLY-AUTOMATIC — the form-editor's "C12 = A": validate → commit to
+a branch → open a PR → auto-merge on green CI → auto-deploy.** This **supersedes this ADR's own initial
+recommendation of propose-mode** (actuator opens a PR, a human merges it): the operator's live
+2026-07-10 decision selected fully-automatic actuation with high guard-rails for all three artifacts
+(purchaser, tax, terms), matching the form-editor precedent (`decision_phase2-form-editor`). The
+superseded propose-mode design is preserved below so the record shows what was recommended and why it
+changed.
 
 ## Context
 
@@ -29,8 +36,8 @@ directly in version-controlled files:
   T&C text.
 
 PR #506 added a **read-only** admin view (`PoConfigPage`, cap.po.manage) that renders all three from
-the existing `GET /api/po/config` + `GET /api/po/terms` routes. That closes the *visibility* gap.
-The open question is the **edit** path: the operator asked for a "terms/purchaser/tax editor" and
+the existing `GET /api/po/config` + `GET /api/po/terms` routes. That closed the *visibility* gap.
+The open question was the **edit** path: the operator asked for a "terms/purchaser/tax editor" and
 approved it as a §50 privileged-code-actuation with legal guardrails.
 
 ## Decision
@@ -39,49 +46,79 @@ Build the edit as a **§50 privileged code-actuation** reusing the established f
 (`decision_phase2-form-editor`: git-source + manifest, Mac-daemon actuator), with these bindings:
 
 1. **Portal side is send-free and actuation-free.** The SPA edit form POSTs a *change request* that
-   the Worker writes to a new D1 queue table (e.g. `po_config_requests`) — exactly like the PO
+   the Worker writes to a D1 queue table (`config_requests`, migration 0045) — exactly like the PO
    queue. The Worker performs **no git, no deploy, no file write**. Body-shape guards + bound SQL as
    for every write route.
-2. **Mac-side actuator validates, then commits to a BRANCH and opens a PR — it does NOT auto-deploy
-   (propose-mode default).** A new daemon (`po_materials/config_actuator.py`) pulls pending change
-   requests, validates hard (tax: integer bp `0..10000`, valid 2-letter state codes; purchaser:
-   required fields, RFC-ish email on routing), writes the JSON, **bumps `config_version`**, commits
-   to a `po-config/req-<id>` branch, and opens a PR. **The operator merging that PR is the
-   human-in-loop review point** — the legal/money change is never live until a human merges + the
-   deploy runs. (Auto-merge/auto-deploy — the form-editor's "C12 = A" fully-automatic mode — is a
-   later operator opt-in per class, NOT the default here, because legal T&C and money-path tax carry
-   more downside than a form definition.)
-3. **Terms text is the hardest guardrail.** A terms `.md` is sha256-immutable, so an edit MINTS A
-   NEW VERSION file (`standard_17_v2.md`), never mutates `_v1`. The new version is **not usable on a
-   PO until an explicit operator legal-review flag** clears it (a manifest field the generate path
-   checks). Purchaser + tax are lower-sensitivity and need only the propose-mode PR review.
-4. **Ships dark-gated.** New `ITS_Config` gate(s) under `po_materials.config_actuator.*`, seeded
+2. **Mac-side actuator runs FULLY-AUTOMATIC (C12 = A).** The `po_materials/config_actuator.py` daemon
+   pulls pending change requests, **re-validates hard against live HEAD** (tax: integer bp `0..10000`,
+   valid 2-letter state codes; purchaser: required fields + RFC-ish routing email; terms: immutable
+   new-version rules — the same rules the Worker enqueue gate applied, re-checked because HEAD may have
+   moved since enqueue), writes the JSON / new terms file, **bumps `config_version`**, commits to a
+   `config/req-<id>` branch, opens a PR, and — **on green CI** — **auto-merges and auto-deploys**. No
+   human merges the PR.
+
+   > **Superseded initial recommendation — propose-mode.** This ADR first recommended that the
+   > actuator STOP at "open a PR" and make **the operator merging that PR the human-in-loop review
+   > point**, reserving fully-automatic (C12 = A) as a later per-class opt-in because legal T&C and
+   > money-path tax carry more downside than a form definition. The operator's live 2026-07-10
+   > decision superseded this: fully-automatic for all three, because the human-in-loop and the
+   > guard-rails below are load-bearing **without** a human PR-merge.
+
+   **What carries the safety instead of a human PR-merge (the "high guard-rails" of C12 = A):**
+   - The operator **initiates** every edit in the portal (nothing actuates unsolicited), the
+     cap.po.manage capability is required, and the dark `ITS_Config` gate must be on.
+   - **Two independent hard-validation layers** — the Worker enqueue gate (`worker/config.ts`) AND the
+     actuator's authoritative live-HEAD re-validation (`config_apply.py`), kept in lockstep.
+   - **Auto-merge only on GREEN CI** — the full test gate (integer-bp money math, terms immutability,
+     capability gating) must pass, exactly as a human-reviewed PR would require. *(This is precisely
+     why a CI test that hard-pins the live config content is a merge-blocker for the edit path, and
+     why such pins are converted to shape/round-trip assertions — the fix that carries this ADR's PR.)*
+   - **Money path:** the render-time totals assert catches any tax version skew between the Worker and
+     the Mac renderer (defense in depth on a tax edit).
+   - **Terms:** the legal-review gate (item 3) keeps a new clause version INERT until an operator
+     explicitly clears it — so an auto-merged terms edit cannot reach a live PO on its own.
+3. **Terms text is the hardest guardrail (two-layer legal gate).** A terms `.md` is sha256-immutable,
+   so an edit MINTS A NEW VERSION file (`standard_17_v2.md`), never mutates `_v1`. **Layer B (built):**
+   the actuator writes the new version with `legal_review: "pending"` and **leaves `current_version`
+   UNCHANGED** — the new text is inert; no PO renders it until an operator both clears legal review and
+   repoints `current_version`. **Layer A (deferred, CE-2):** the render-side loader refusal for an
+   un-cleared version is a documented follow-up (`docs/tech_debt.md` CE-2) — deferred because both
+   live versions are still `pending` and enabling it now would fence every live PO. Purchaser + tax are
+   lower-sensitivity and rely on the two validation layers + green CI.
+4. **Ships dark-gated.** `ITS_Config` gate `po_materials.config_actuator.polling_enabled`, seeded
    `false` in the same change (the "seed the gate row" reflex), so activation is a visible cell-flip.
 
-## Why deferred (the §44 boundary)
+## Why the build waited for an operator-present session (the §44 boundary)
 
-The actuator **git-commits legal T&C and money-path tax config**. Code changes are one of the four
-FIXED high-capability-class categories (§44) that co-resolve with the developer, and the first live
+The actuator **git-commits legal T&C and money-path tax config**, and code changes are one of the four
+FIXED high-capability-class categories (§44) that co-resolve with the developer. The first live
 actuation of a new code-deploy category is exactly where the form-editor precedent ("first ITS
-per-category code-deploy clearance") says the operator should be present. Autonomously shipping a
-portal→git→deploy path for legal/money content overnight, with no one watching the first commit,
-would cross that line. The **read-only** view has none of that exposure and delivers the majority of
-the value now; the actuator waits for an operator-present build.
+per-category code-deploy clearance") says the operator should be present — so at PR #506 only the
+**read-only** view shipped, and the edit/actuator waited. That operator-present build then happened on
+2026-07-10: the Developer-Operator watched the first live actuation on the mirror (token provisioned,
+daemon loaded via `install.sh`, gate flipped true), which is what cleared fully-automatic for this
+class. Fully-automatic is the *steady-state* mode; the operator-present requirement was about the
+*first* clearance, now satisfied.
 
 ## Consequences
 
-- **Now:** the office can *see* every PO's identity/tax/terms and catch a wrong value by eye (#506).
-- **Next (operator-present):** build items 1–4 above — the D1 request table + migration, the Worker
-  request-queue route (cap.po.manage, send-free), the `config_actuator.py` daemon (propose-mode),
-  the terms new-version + legal-review-flag machinery, the dark gates, tests, adversarial review, and
-  the §43 successor-remediation runbook entry.
-- **Guardrails preserved:** integer-bp money math, sha256 terms immutability, legal review gate,
-  human-merge before deploy, never-silent validation.
+- **Read-only (done, #506):** the office can *see* every PO's identity/tax/terms and catch a wrong
+  value by eye.
+- **Edit vertical (done, #508–#510; activated on the mirror #512):** the D1 request table + migration
+  (0045), the send-free Worker request-queue routes (cap.po.manage), the `config_actuator.py`
+  fully-automatic daemon, the terms new-version + legal-review-pending machinery (Layer B), the dark
+  gates, tests, adversarial review, and the §43 successor-remediation runbook entries.
+- **Follow-ups:** CE-1 (`publish_daemon._fail` redact parity with the actuator's §54 redaction) and
+  CE-2 (the render-side Layer-A legal_review refusal) — both tracked in `docs/tech_debt.md`.
+- **Guardrails preserved:** integer-bp money math, sha256 terms immutability, the legal-review gate,
+  two-layer hard validation, green-CI-before-auto-merge, never-silent validation.
 
 ## Alternatives considered
 
+- **Propose-mode (actuator opens a PR; a human merges it).** This ADR's **initial recommendation**,
+  **superseded** by the operator's live 2026-07-10 decision (see Decision item 2). Fully-automatic with
+  high guard-rails + the terms legal gate was chosen instead, matching the form-editor C12 = A
+  precedent; the human-in-loop is the operator initiating the edit + the legal gate, not a PR merge.
 - **Direct D1 config store (no git).** Rejected: the render/totals path and the terms renderer read
   from the git tree; a D1-only store would fork the source of truth and lose the sha256 pinning + PR
   review that make the terms/money change auditable.
-- **Fully-automatic actuation (form-editor "C12 = A").** Rejected as the *default* for legal/money
-  content; left as a per-class operator opt-in once the propose-mode path has a track record.

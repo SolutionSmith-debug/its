@@ -163,29 +163,38 @@ def test_standard_17_renders_clean_with_tokens_filled():
         {"purchaser_entity": purchaser["entity"], "seller_name": "Chint Power Systems (CPS)"},
     )
     assert "{{" not in rendered
-    assert "Evergreen Renewables LLC" in rendered
+    assert purchaser["entity"] in rendered  # single-source the needle we fed the token, not a literal
 
 
 # ---- Config validation ------------------------------------------------------
 
 
 def test_purchaser_config_carries_the_d5_identity():
+    # SHAPE, not pinned values — the purchaser identity is operator-editable via the §50 config
+    # editor (entity/address/phone/routing all mutate + bump config_version). Pinning the live
+    # values here would red-light the editor's auto-merge-on-green the instant the operator edits
+    # them (the config-editor merge-blocker; HOUSE REFLEXES §5). Assert structure instead.
     config = terms.load_purchaser_config()
-    assert config["entity"] == "Evergreen Renewables LLC"
-    assert any("STE 570" in line for line in config["address_lines"])
-    assert config["phone"] == "888-303-6424"
-    assert config["invoice_routing"]["to"] == "invoices@evergreenrenewables.com"
-    assert config["invoice_routing"]["cc"] == [
-        "tealap@evergreenrenewables.com",
-        "benf@evergreenrenewables.com",
-        "tiffanym@evergreenrenewables.com",
-    ]
+    assert isinstance(config["entity"], str) and config["entity"].strip()
+    assert isinstance(config["address_lines"], list) and config["address_lines"]
+    assert all(isinstance(line, str) and line.strip() for line in config["address_lines"])
+    assert isinstance(config["phone"], str) and config["phone"].strip()
+    routing = config["invoice_routing"]
+    assert "@" in routing["to"]
+    assert isinstance(routing["cc"], list)
+    assert all(isinstance(addr, str) and "@" in addr for addr in routing["cc"])
 
 
 def test_tax_config_is_integer_basis_points():
+    # Assert the integer-bp SHAPE + state_names parity, never the exact table — the rate VALUES are
+    # operator-editable via the §50 tax editor (HOUSE REFLEXES §5).
     config = terms.load_tax_config()
-    assert config["rates_bp"] == {"IL": 900, "OR": 0}
-    assert all(isinstance(v, int) for v in config["rates_bp"].values())
+    assert config["rates_bp"], "rates_bp must be non-empty"
+    # int, never bool, in range — the money-path invariant (matches config_apply's validation).
+    assert all(
+        isinstance(v, int) and not isinstance(v, bool) and 0 <= v <= 10_000
+        for v in config["rates_bp"].values()
+    )
     assert set(config["state_names"]) == set(config["rates_bp"])
 
 

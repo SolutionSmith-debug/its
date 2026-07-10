@@ -4,6 +4,15 @@ import { call, provision, login, p, g, json } from "./helpers";
 import { hmacHex } from "../worker/hmac";
 import { canonicalPoJson, poCanonicalString, computeTotals, lineExtendedCents } from "../worker/po";
 import type { PoRow, PoLine } from "../worker/po";
+// The versioned PO config the WORKER bundles at build time (worker/po.ts:7-9). Import the SAME
+// files so every assertion about served/computed config tracks the live values instead of pinning
+// them. GUARD (HOUSE REFLEXES §5 — the config-editor merge-blocker class): never hard-code
+// purchaser/tax/terms CONTENT here. The §50 config editor auto-merges edits on green CI, so a
+// pinned entity/email/rate/version red-lights the instant the operator edits it and strands the
+// edit PR (exactly how PR #511 got stuck). Assert derived/served-equals-source/shape only.
+import taxConfig from "../../po_materials/config/tax.json";
+import purchaserConfig from "../../po_materials/config/purchaser.json";
+import termsManifest from "../../po_materials/terms/manifest.json";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PO workstream S2 — worker/po.ts + migrations 0042/0043/0044.
@@ -77,9 +86,20 @@ function draftBody(over: Record<string, unknown> = {}): Record<string, unknown> 
     ...over,
   };
 }
-// Expected server math for draftBody(): 10×12345=123450; 2.5×1000=2500 → subtotal 125950;
-// IL auto 900bp → round(125950×900/10000)=11336; total = 125950+11336+10000 = 147286.
-const EXPECTED = { subtotal_cents: 125_950, tax_cents: 11_336, total_cents: 147_286 };
+// Server math for draftBody(): 10×12345=123450; 2.5×1000=2500 → subtotal 125950 (pure line math,
+// config-independent). draftBody ships to IL with tax_mode "auto", so the resolved rate is the
+// bundled tax.json IL rate — derive tax/total from it (mirroring computeTotals'
+// round(subtotal*bp/10000)) so the math is still independently checked but TRACKS any tax edit
+// instead of pinning 900bp. subtotal_cents stays a literal (it is qty×unit_cost line math).
+const SUBTOTAL_CENTS = 125_950;
+const SHIPPING_CENTS = 10_000; // == draftBody().shipping_cents
+const IL_BP = taxConfig.rates_bp.IL;
+const EXPECTED_TAX_CENTS = Math.round((SUBTOTAL_CENTS * IL_BP) / 10_000);
+const EXPECTED = {
+  subtotal_cents: SUBTOTAL_CENTS,
+  tax_cents: EXPECTED_TAX_CENTS,
+  total_cents: SUBTOTAL_CENTS + EXPECTED_TAX_CENTS + SHIPPING_CENTS,
+};
 
 async function poRow(id: number): Promise<Record<string, unknown>> {
   return (await env.DB.prepare("SELECT * FROM purchase_orders WHERE id=?1").bind(id).first())!;
@@ -202,10 +222,15 @@ describe("terms + config wiring", () => {
     const { profiles } = await json<{ profiles: Array<Record<string, unknown>> }>(res);
     const byId = Object.fromEntries(profiles.map((pr) => [pr.id, pr]));
     // One vocabulary with the ITS_Vendors 'Default Terms Profile' picklist (S1/S3 parity).
-    expect(Object.keys(byId).sort()).toEqual(["chint_vendor", "negotiated_gtc", "standard_17"]);
+    expect(Object.keys(byId).sort()).toEqual(Object.keys(termsManifest.profiles).sort());
     expect(byId.standard_17.kind).toBe("library");
-    expect(byId.standard_17.current_version).toBe("1");
-    expect(byId.standard_17.tokens).toEqual(["purchaser_entity", "seller_name"]);
+    // current_version + tokens tracked from the source manifest (a terms add_version leaves these
+    // unchanged; a future current_version promote must be free to merge — never pin the literal).
+    const s17 = termsManifest.profiles.standard_17;
+    expect(byId.standard_17.current_version).toBe(s17.current_version);
+    expect(byId.standard_17.tokens).toEqual(
+      (s17.versions as Record<string, { tokens: string[] }>)[s17.current_version].tokens,
+    );
     expect(byId.negotiated_gtc.kind).toBe("attach");
     expect(String(byId.negotiated_gtc.render_line)).toContain("THIS PURCHASE ORDER IS SUBJECT");
     // Curated view — renderer implementation detail stays off the wire.
@@ -219,20 +244,27 @@ describe("terms + config wiring", () => {
       purchaser: { entity: string; invoice_routing: { to: string; cc: string[] } };
       tax: { rates_bp: Record<string, number> };
     }>(res);
-    expect(cfg.purchaser.entity).toBe("Evergreen Renewables LLC");
-    expect(cfg.purchaser.invoice_routing.to).toBe("invoices@evergreenrenewables.com");
-    expect(cfg.purchaser.invoice_routing.cc).toHaveLength(3);
-    expect(cfg.tax.rates_bp).toEqual({ IL: 900, OR: 0 });
+    // Served config must MATCH the bundled source (single source, no drift) — never pinned literals.
+    expect(cfg.purchaser.entity).toBe(purchaserConfig.entity);
+    expect(cfg.purchaser.invoice_routing.to).toBe(purchaserConfig.invoice_routing.to);
+    expect(cfg.purchaser.invoice_routing.cc).toEqual(purchaserConfig.invoice_routing.cc);
+    expect(cfg.tax.rates_bp).toEqual(taxConfig.rates_bp);
+    // Shape sanity that survives ANY edit: routing 'to' is email-shaped, rates are non-neg integer bp.
+    expect(cfg.purchaser.invoice_routing.to).toContain("@");
+    expect(Object.values(cfg.tax.rates_bp).every((v) => Number.isInteger(v) && v >= 0)).toBe(true);
     expect(cfg).not.toHaveProperty("comment");
     expect(cfg.purchaser).not.toHaveProperty("comment");
   });
 
   it("the computeTotals tax table IS the imported S3 file (single source, no drift)", async () => {
-    // The IL 9% happy path already runs throughout the suite; this pins the SOURCE:
-    // the served config and the generate-time math must agree on every state.
+    // Robust single-source check: the served config, the generate-time math, and the bundled
+    // source file must all agree on the IL rate — assert the RELATIONSHIPS, never a literal 900.
     const res = await g(admin, "/api/po/config");
     const cfg = await json<{ tax: { rates_bp: Record<string, number> } }>(res);
-    expect(cfg.tax.rates_bp.IL).toBe(900); // the value the drafts' tax math resolved with
+    expect(cfg.tax.rates_bp.IL).toBe(taxConfig.rates_bp.IL); // served == bundled source
+    const created = await p(admin, "/api/po/drafts", draftBody()); // ship_to IL, tax_mode auto
+    const { totals } = await json<{ totals: { tax_rate_bp: number } }>(created);
+    expect(totals.tax_rate_bp).toBe(cfg.tax.rates_bp.IL); // generate math == served config
   });
 });
 
@@ -361,7 +393,7 @@ describe("draft → generate", () => {
     expect(res.status, await res.clone().text()).toBe(201);
     const { id, totals } = await json<{ id: number; totals: Record<string, number> }>(res);
     expect(totals.subtotal_cents).toBe(EXPECTED.subtotal_cents);
-    expect(totals.tax_rate_bp).toBe(900); // resolved IL auto rate
+    expect(totals.tax_rate_bp).toBe(IL_BP); // resolved IL auto rate (from bundled tax.json)
     expect(totals.tax_cents).toBe(EXPECTED.tax_cents);
     expect(totals.total_cents).toBe(EXPECTED.total_cents);
     const row = await poRow(id);
