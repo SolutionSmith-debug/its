@@ -1,0 +1,458 @@
+---
+type: operations
+date: 2026-07-11
+status: active
+related_prs: []
+workstream: null
+tags: [runbook, successor-remediation, subcontracts, subcontract_poll, generation, hmac, tier-2, tier-3]
+---
+
+# Runbook — Subcontract generation path (`subcontract_poll`) (a queued subcontract stuck / fenced / dark) (Successor-Remediation, Op Stds §43)
+
+A §43 successor-remediation entry, written for the **Successor-Operator**: a trained
+operator who runs Claude Code and reads Smartsheet rows + alert emails, but does **not**
+read code. Claude loads the relevant block to drive a Tier-2 repair; the operator sees the
+ITS_Errors / ITS_Review_Queue / ITS_Daemon_Health evidence and approves. The §42
+code-reader rationale lives in the module docstring of `subcontracts/subcontract_poll.py`
+(the four-pass design + the receipt-is-last idempotency) and the sibling module docstrings
+(`subcontracts/subcontract_docx.py`, `subcontracts/subcontract_generate.py`,
+`subcontracts/terms.py`).
+
+`subcontracts/subcontract_poll.py` is the **generation half of the External Send Gate** (FM
+v11 Invariant 1) for subcontracts — it is AI-free **and** customer-send-free. The Cloudflare
+Worker (`safety_portal/worker/subcontract.ts`) validates + computes + HMAC-signs (`sub:v1`)
++ queues each generated subcontract **send-free** in D1; this launchd daemon
+(`org.solutionsmith.its.subcontract-poll`, every 120 s) is the Mac-side consumer. It renders
+**two files** per subcontract — `Subcontract.docx` (the editable contract the operator wet-signs
+in Word) and `Annex C - Schedule of Values.xlsx` — and files BOTH to Box. It runs **four
+passes**, each behind its own ITS_Config gate:
+
+1. **Drafts pass** (`subcontracts.subcontract_poll.polling_enabled`) — pull queued
+   subcontracts, HMAC-verify, double-check the SC number against `Subcontract_Log`, snapshot
+   the subcontractor identity from `ITS_Subcontractors`, render the deterministic package
+   (`Subcontract.docx` + `Annex C - Schedule of Values.xlsx`), file both to Box, append
+   `Subcontract_Log` + `Subcontract_Pending_Review` (inline-attaching both files), then receipt
+   back to the Worker (`mark-filed`) **last**.
+2. **Subcontractor down-sync pass** (`subcontracts.subcontract_poll.subcontractors_sync_enabled`)
+   — project the full `ITS_Subcontractors` SoR into the Worker's D1 cache (full-replace; the
+   Worker's dirty-row fence protects un-mirrored portal edits).
+3. **Subcontractor up-sync pass** (same gate) — mirror portal-edited subcontractors back up into
+   `ITS_Subcontractors` by Sub Key (never-delete; the `Archived` carve-out is non-clobbered).
+4. **Status pass** (`subcontracts.subcontract_poll.status_sync_enabled`) — mirror approve/SENT
+   stamps from `Subcontract_Pending_Review` into the Worker's status cache + `Subcontract_Log`.
+
+> **The both-rule (FM v11 / Op Stds §44).** A fault is Tier-2-eligible (the Successor-Operator
+> may self-repair) only if it is **documented here AND low-capability-class**. Anything
+> touching the **External Send Gate, secrets/auth, doctrine, or code** is FIXED high-class →
+> escalate to Seth (the Developer-Operator) regardless of documentation. For `subcontract_poll`
+> the most common escalations are an **HMAC mismatch** (secrets/security), a **render/SOV
+> mismatch** (code/security), and **missing/rejected credentials** (secrets/auth).
+
+## The one-shot flag file — how PERMANENT fences are retried
+
+Several failure modes below **permanently fence** a queued subcontract: the daemon routes it
+to `ITS_Review_Queue`, records the reason in `state/subcontract_poll_flagged.json` as
+`{sc_id: reason}`, and then **skips that subcontract every subsequent cycle** (so a single bad
+row does not re-spam the Review Queue every 120 s). The subcontract is **never rendered, never
+filed, never marked-filed** — it stays queued in D1 for forensics.
+
+**Retry after fixing the cause = delete the subcontract's entry from
+`state/subcontract_poll_flagged.json`** (or delete the whole file to retry all of them). The
+next cycle re-pulls the row and re-runs the pass. This is the canonical low-class remediation
+for the fence cases whose cause is operator-fixable (unknown subcontractor, terms, some
+collisions). It is **not** appropriate for HMAC / canonical / render / permanent-reject fences —
+those escalate to Seth (see below).
+
+---
+
+## Symptom 1 — fail-closed: missing subcontract credentials (`subcontract_creds_missing`, CRITICAL)
+
+### Symptom
+
+- A CRITICAL alert + ITS_Errors row `Error = subcontract_creds_missing`: *"fail-closed: missing
+  subcontract portal credentials … NOT polling until fixed."*
+- The `subcontracts.subcontract_poll` **ITS_Daemon_Health** row shows **ERROR**. No pass runs.
+
+### What it means
+
+The daemon resolves three things fail-CLOSED and refuses to run if **any** is absent: the Worker
+base URL (ITS_Config `safety_reports.portal.worker_base_url`), the subcontract bearer (Keychain
+`ITS_PORTAL_SUB_TOKEN`), and the HMAC secret (Keychain `ITS_PORTAL_HMAC_SECRET`, shared with the
+PO tier, domain-separated via `sub:v1`). This is correct fail-closed behaviour, not a crash.
+(The alert never prints the secret names/values — CodeQL clear-text discipline.)
+
+### Escalate-to-Seth condition — **secrets/auth = FIXED high-class → Seth**
+
+The Successor-Operator **touches no Keychain secrets**. The one operator-checkable low-class
+part: confirm the **ITS_Config `safety_reports.portal.worker_base_url`** row is present and
+non-blank (a documented config value — the same key `portal_poll` / `po_poll` use). If the base
+URL is set and the alert persists, the missing item is a **Keychain token** → **escalate to
+Seth** (seeding `ITS_PORTAL_SUB_TOKEN` / confirming `ITS_PORTAL_HMAC_SECRET` is secrets/auth work).
+
+---
+
+## Symptom 2 — subcontract bearer UNAUTHORIZED (`subcontract_bearer_rejected`, CRITICAL)
+
+### Symptom
+
+- CRITICAL + ITS_Errors `Error = subcontract_bearer_rejected`: *"rejected by the Worker's
+  requireSubToken tier (401) … cycle STOPPED until the token is fixed."* Daemon-health row →
+  **ERROR**. Everything stays queued/dirty (a safe re-attempt).
+
+### What it means
+
+The Worker rejected the subcontract bearer with a 401. The **same** bearer authorises every
+subcontract route, so the whole cycle stops rather than half-running. A bad/rotated bearer will
+**not** self-heal.
+
+### Escalate-to-Seth condition — **secrets/auth = FIXED high-class → Seth**
+
+The Keychain `ITS_PORTAL_SUB_TOKEN` and the Worker's `PORTAL_SUB_API_TOKEN` secret have diverged
+(a rotation on one side, a bad seed). **Escalate to Seth.** The operator does not re-seed tokens.
+(A single transient blip self-heals; a **persistent** `subcontract_bearer_rejected` is the
+escalation.)
+
+---
+
+## Symptom 3 — a subcontract's HMAC verification FAILED (`subcontract_hmac_failure`, CRITICAL, one-shot-flagged)
+
+### Symptom
+
+- CRITICAL + ITS_Errors `Error = subcontract_hmac_failure` naming an `sc_id` / `sc_number`, and a
+  **security-flagged** `ITS_Review_Queue` row (Reason `security_trigger`): *"HMAC verification
+  FAILED … rejected, NOT rendered or filed."*
+- The subcontract is flagged in `state/subcontract_poll_flagged.json` with reason `"hmac"` — never
+  rendered, never filed.
+
+### What it means
+
+The signed payload the Worker queued did not verify against the shared HMAC secret. Two causes:
+the D1 row was **tampered with**, or the **HMAC secret mismatched** between the Worker and the
+Mac. Both are trust-boundary events.
+
+### Escalate-to-Seth condition — **secrets/security = FIXED high-class → Seth (always)**
+
+Do **NOT** delete the flag entry to "retry" — a genuine HMAC failure re-rejects, and a secret
+mismatch or tampering is not operator-fixable. **Escalate to Seth** with the `sc_id` /
+`sc_number`. (Repeated HMAC failures across many subcontracts signal probing or a wholesale secret
+mismatch — same escalation, more urgent.) The signature value is never recorded.
+
+---
+
+## Symptom 4 — a subcontract failed to render (`subcontract_render_failed` / `subcontract_canonical_invalid`, fenced)
+
+### Symptom
+
+- ITS_Errors `Error = subcontract_render_failed` (flagged `"render"`) or
+  `subcontract_canonical_invalid` (flagged `"canonical"`), + a Review-Queue row. The subcontract
+  was **never filed**.
+
+### What it means
+
+`subcontract_render_failed` is the single fence for every gate `render_package` enforces: a
+**Schedule-of-Values that does not sum to the contract price**, a **bad payload shape**, an
+**unfilled substitution token**, **uncleared Layer-A terms**, or an **unknown governing-law
+state**. The money on a legal document is re-derived inside the render (never taken on faith), so
+an SOV/price disagreement surfaces here. `subcontract_canonical_invalid` is the extreme case — a
+`NaN`/`Infinity` in a money field the Worker could never legitimately have signed.
+
+### Escalate-to-Seth condition — **code/security = FIXED high-class → Seth**
+
+A signed-but-unrenderable subcontract (SOV mismatch, canonical-invalid, unfilled token) is not a
+data typo the operator corrects — it is a code or security defect. Do **NOT** delete the flag
+entry. **Escalate to Seth** with the Review-Queue row. The exception: if the Review-Queue detail
+names an **operator-chosen input** (e.g. an unknown terms profile the draft picked, or a
+governing-law state the portal let through) the low-class fix is to **re-draft the subcontract in
+the portal** with a valid value, then delete the flag entry. Anything about the render math, the
+terms files, or the SOV logic is code → Seth.
+
+---
+
+## Symptom 5 — SC number collision (`subcontract_number_collision`, fenced)
+
+### Symptom
+
+- ITS_Errors `Error = subcontract_number_collision` + a Review-Queue row (Reason
+  `mismatched-reference`): the SC number already exists on a `Subcontract_Log` row that is **not**
+  this subcontract's own. Flagged `"collision"`.
+
+### What it means
+
+The number the Worker allocated already exists on a `Subcontract_Log` row that is **not** this
+subcontract's own (a hand-issued subcontract keyed in during the transition, or a stale/wrong
+ledger row). The daemon refuses to file a **duplicate legal subcontract number**.
+
+### What the Successor-Operator checks / does (low-class reconciliation)
+
+1. Open `Subcontract_Log` and find the existing row with that SC number. Is it a **genuine
+   hand-issued subcontract** or a **stale/duplicate ledger row**?
+2. **Stale/wrong ledger row** → correct or remove that `Subcontract_Log` row (a data fix), then
+   delete the subcontract's entry from `state/subcontract_poll_flagged.json` so the next cycle
+   files it.
+3. **Genuine hand-issued subcontract already carries that number** → the queued draft must not
+   reuse it. **Cancel the draft in the portal** or coordinate a re-draft under a new number, then
+   delete the flag entry (a canceled draft drops off the Worker's `/pending` queue on its own).
+
+### Escalate-to-Seth condition
+
+If the collision is neither a hand-issued subcontract nor a correctable ledger row (the numbering
+itself looks wrong), that is a **numbering/code** question → **escalate to Seth**.
+
+---
+
+## Symptom 6 — subcontractor not found (`subcontract_sub_unknown`, fenced)
+
+### Symptom
+
+- ITS_Errors `Error = subcontract_sub_unknown` + a Review-Queue row: *"subcontractor '…' not found
+  in ITS_Subcontractors (the SoR) — cannot embed a Subcontractor identity; fix the row then clear
+  this entry from subcontract_poll_flagged.json."* Flagged `"subcontractor"`.
+
+### What it means
+
+The draft references a Sub Key that has no row in `ITS_Subcontractors` (the subcontractor SoR). The
+subcontract embeds the subcontractor identity from the sheet at render time (the D1 row carries
+only `sub_key`), so it cannot render without it.
+
+### What the Successor-Operator checks / does (low-class data fix)
+
+1. Open `ITS_Subcontractors`. Confirm no row carries that Sub Key.
+2. Add or fix the subcontractor row (Sub Name + Sub Key + Contact Email at minimum). If the
+   subcontractor was edited in the portal, confirm the up-sync pass ran (Symptom 10).
+3. **Delete the subcontract's entry from `state/subcontract_poll_flagged.json`** → the next cycle
+   re-renders and files it.
+
+### Escalate-to-Seth condition
+
+Only if the subcontractor exists but still won't resolve (a schema/code problem) → Seth.
+
+---
+
+## Symptom 7 — terms resolution failed (`subcontract_terms_error`, fenced)
+
+### Symptom
+
+- ITS_Errors `Error = subcontract_terms_error` + a Review-Queue row: *"terms resolution failed
+  …"*. Flagged `"terms"`.
+
+### What it means
+
+The draft pinned a terms profile/version that the terms library can't produce — an **unknown
+profile id**, a **missing/edited terms file** (the immutable version files are sha256-verified on
+every load), or an **unfilled substitution token**. A subcontract must never go out with an
+unfilled blank, so it fences. (An uncleared Layer-A legal clause can also surface as
+`subcontract_render_failed` — Symptom 4.)
+
+### What the Successor-Operator checks / does
+
+1. Read the error detail on the Review-Queue row. An **unknown profile** the draft picked →
+   re-draft the subcontract in the portal with a valid terms profile, then delete the flag entry.
+2. A **hash mismatch / missing terms file**, or an "unfilled token" the operator did not cause →
+   this is a **deploy/code defect** (someone edited an immutable version file, or a terms file
+   didn't ship) → **escalate to Seth**. Do not edit terms files.
+
+---
+
+## Symptom 8 — permanent write reject (`subcontract_permanent_reject`, fenced)
+
+### Symptom
+
+- ITS_Errors `Error = subcontract_permanent_reject` + a Review-Queue row: *"permanent write reject
+  (PicklistViolationError / SmartsheetValidationError) …"*. Flagged `"permanent"`.
+
+### What it means
+
+A `Subcontract_Log` or `Subcontract_Pending_Review` write was rejected by a picklist / validation
+rule (a value not in the allowed set, or a field the sheet won't accept). This is usually a
+**schema or picklist-registry drift** between the code and the live sheet.
+
+### Escalate-to-Seth condition — **code/schema = FIXED high-class → Seth**
+
+The operator does not hand-edit picklists to satisfy the writer. **Escalate to Seth** with the
+Review-Queue detail. (If it is obviously a single bad **data** value the operator entered, fixing
+that value and clearing the flag is low-class; anything about the picklist *definition* is code.)
+
+---
+
+## Symptom 9 — Box portal root unresolved (`subcontract_box_root_unresolved`, left queued, NOT flagged)
+
+### Symptom
+
+- ITS_Errors `Error = subcontract_box_root_unresolved`: *"Box portal root unresolved (ITS_Config …
+  unset) — subcontract <number> left queued until the root is configured."* The subcontract is
+  **left queued** (retried automatically) — it is **not** fenced/flagged.
+
+### What it means
+
+The shared Box mirror-tree root (ITS_Config, `safety_reports.box.portal_root_folder_id`) is unset,
+so the daemon can't find the folder to file the two subcontract files into (ROOT → `<job>` →
+"Subcontracts"). This is the same key the submission mirror tree, item-photo screening, and
+`po_poll` all use.
+
+### The low-class Tier-2 action
+
+**Set the documented ITS_Config value** `safety_reports.box.portal_root_folder_id` (workstream
+`safety_reports`) to the Box mirror-tree root folder ID. Setting a documented ITS_Config value is
+the canonical Tier-2 action. No flag to clear — the next cycle files the queued subcontract
+automatically.
+
+> "Claude, subcontracts are logging `subcontract_box_root_unresolved`. Confirm the ITS_Config
+> `safety_reports.box.portal_root_folder_id` row and walk me through setting it to the mirror-tree
+> root."
+
+### Escalate-to-Seth condition
+
+If the root is set correctly and the error persists → novel/code → Seth.
+
+---
+
+## Symptom 10 — subcontractor sync issues (down-sync / up-sync passes)
+
+These come from passes ② and ③ (gate `subcontracts.subcontract_poll.subcontractors_sync_enabled`).
+None blocks the drafts pass.
+
+- **`subcontract_subs_empty_projection` (WARN)** — `ITS_Subcontractors` projected **empty**, so
+  the daemon **refused** to down-sync (an empty set would wipe the portal cache). If the sheet
+  genuinely has subcontractors, this is a transient read miss (self-heals). If `ITS_Subcontractors`
+  is genuinely empty, it needs seeding (`scripts/migrations/seed_its_subcontractors.py`) — an
+  **activation step**, coordinate per the checklist below.
+- **`subcontract_sub_row_skipped` (WARN)** — a specific `ITS_Subcontractors` row was excluded from
+  down-sync (malformed Sub Key or blank Sub Name). **Low-class data fix:** correct that row's Sub
+  Key / Sub Name.
+- **`subcontract_sub_upsert_permanent` (WARN)** — a portal-edited subcontractor could not be
+  written up into `ITS_Subcontractors` (a bad picklist value); a Review-Queue row names the Sub Key
+  + the error. **Low-class:** correct the offending value. If the value looks valid but still
+  rejects → picklist/schema code → Seth.
+- **`subcontract_subs_read_failed` / `subcontract_subs_sync_failed` /
+  `subcontract_subs_pending_fetch_failed` / `subcontract_sub_upsert_transient` (ERROR)** —
+  transient Smartsheet/Box/transport failures; the work is left dirty and retried next cycle. Only
+  a **persistent** repeat matters → check daemon health, the Box token
+  (`box_token_freshness.md`), and the Smartsheet circuit breaker (`circuit_breaker.md`).
+
+---
+
+## Symptom 11 — status pass issues (`subcontract_status_*` / `subcontract_log_stamp_failed`)
+
+From pass ④ (gate `subcontracts.subcontract_poll.status_sync_enabled`). This pass only **reports**
+state — it never authorises a send.
+
+- **`subcontract_status_foreign_tag` (WARN)** — a row on `Subcontract_Pending_Review` carries a
+  non-`subcontracts` Workstream tag; the status pass ignores it. A foreign tag on the subcontract
+  sheet is a routing/code signal → note it and **escalate to Seth** if it recurs.
+- **`subcontract_status_read_failed` / `subcontract_status_sync_failed` /
+  `subcontract_log_stamp_failed` (ERROR)** — transient read/POST/stamp failures; the ledger
+  self-heals next cycle. Persistent repeats → check daemon health + the circuit breaker.
+
+> **The `executed` terminal is operator-driven, not auto-synced.** The review sheet exposes no
+> "countersigned / executed" signal, so the status pass mirrors only pending_review → approved →
+> sent. When a subcontract is wet-signed by both parties, the operator sets `executed` on the
+> `Subcontract_Log` row directly. An `executed` row generates no status-pass churn (it is in the
+> settled-skip set). This is a documented low-class Subcontract_Log data action, not a send.
+
+---
+
+## Symptom 12 — the daemon runs but does NOTHING (all gates false — expected pre-activation)
+
+### Symptom
+
+- Watchdog **Check C** WARNs that the `subcontract_poll` marker is stale (past its window),
+  **and/or** there is no `subcontracts.subcontract_poll` activity at all. No errors.
+
+### What it means
+
+`subcontract_poll` **ships dark**: all three pass gates
+(`subcontracts.subcontract_poll.polling_enabled` / `.subcontractors_sync_enabled` /
+`.status_sync_enabled`) seed to **`false`**. With every gate false the daemon is a deliberate
+**no-op** — it writes no heartbeat/marker each cycle, so Check C correctly WARNs *until at least
+one gate is flipped at go-live*. This is expected, not a fault (the register-and-activate-together
+pattern — the plist is loaded before the gate flip).
+
+### The low-class Tier-2 action — the go-live activation (read the gate Description FIRST)
+
+Follow the **deploy-activation checklist** below. Before flipping any gate, **read its ITS_Config
+Description cell** — each gate row spells out its preconditions (Worker deployed with the
+subcontract routes + `PORTAL_SUB_API_TOKEN`, Keychain tokens seeded, the partial live smoke
+passed). Flipping a capability whose Description names an unmet precondition is a doctrine-divergent
+flip (**HOUSE_REFLEXES §5**) — satisfy the preconditions first, or if a Description says "do NOT
+flip until X," treat it as a doctrine precondition and **do not flip unilaterally → coordinate with
+Seth**.
+
+### Escalate-to-Seth condition
+
+If a gate is flipped `true` and the daemon still no-ops (or Check C still WARNs after the plist is
+loaded and a gate is on) → novel/code → Seth.
+
+---
+
+## Other quiet failure modes (low-severity, self-healing)
+
+- **`subcontract_pending_fetch_failed` / `subcontract_filing_transient` /
+  `subcontract_filing_unexpected` (ERROR)** — transient failures fetching or filing; the
+  subcontract is **left queued** and retried next cycle. One bad subcontract never kills the cycle.
+  Persistent repeats → daemon health + Box/Smartsheet health.
+- **`subcontract_config_unreadable` (CRITICAL, drafts pass aborted)** — the contractor config file
+  is unreadable/broken. This is a **deploy/code defect** (a bad config file shipped) → **escalate
+  to Seth**; the operator does not edit these files.
+- **`subcontract_flags_persist_failed` (WARN)** — the flag file couldn't be written (a lock
+  timeout). Fail-open: at worst a duplicate Review-Queue flag next cycle. No action unless
+  persistent.
+
+---
+
+## Daemon won't run / appears stale
+
+- The daemon is the launchd job **`org.solutionsmith.its.subcontract-poll`** (interval 120 s,
+  RunAtLoad). Confirm it is loaded:
+  `scripts/launchd/install.sh status org.solutionsmith.its.subcontract-poll`.
+- **Staleness monitoring:** if the marker slug `subcontract_poll` is in `watchdog.TRACKED_JOBS`
+  (Check C), it WARNs until the daemon is both loaded **and** at least one gate is flipped (register
+  + activate together) — that WARN is expected pre-cutover, not a fault.
+- Runtime gates (all default `false`): `subcontracts.subcontract_poll.polling_enabled` /
+  `.subcontractors_sync_enabled` / `.status_sync_enabled`. The interval lives in
+  `subcontracts.subcontract_poll.poll_interval_seconds` (read at **install** time, baked into the
+  plist — not hot; re-load after changing it).
+- **Verify a cycle directly** (until an SC-S8 generation-side smoke lands): from a worktree venv off
+  `origin/main`, unload the daemon, run
+  `python -c "from subcontracts import subcontract_poll; print(subcontract_poll.poll_once())"`
+  against the mirror, inspect the result, then reload (the find-or-create-key live-smoke pattern).
+- **Reload discipline:** never reload the daemon from a feature-branch worktree — reload only
+  against `~/its` on `main` (the live tree), per `docs/operations/worktree_discipline.md`.
+
+## Deploy-activation checklist (register + activate together)
+
+Run in order; each gate row's ITS_Config Description restates its own preconditions.
+
+1. **`git -C ~/its pull origin main`** to latest (never migrate/deploy from a stale checkout).
+2. **D1 migrations + Worker deploy:** apply the subcontract D1 migrations, deploy
+   `safety_portal/worker` with the subcontract routes (`requireSubToken` tier), and set the Worker
+   secret **`PORTAL_SUB_API_TOKEN`**.
+3. **Keychain (Seth — secrets/auth):** seed **`ITS_PORTAL_SUB_TOKEN`** (byte-equal to the Worker's
+   `PORTAL_SUB_API_TOKEN`) and confirm the shared **`ITS_PORTAL_HMAC_SECRET`** matches the Worker's
+   payload secret (domain-separated via `sub:v1` — do **not** reuse the PO bearer).
+4. **Config + data:** confirm the 4 `subcontracts.subcontract_poll.*` rows are seeded
+   (`scripts/migrations/seed_subcontracts_config.py` — the three gates `false`); seed
+   `ITS_Subcontractors` (`scripts/migrations/seed_its_subcontractors.py`); set ITS_Config
+   `safety_reports.box.portal_root_folder_id` (the Box mirror-tree root). Confirm `"subcontracts"`
+   is a legal Workstream picklist value on ITS_Review_Queue / ITS_Errors / ITS_Daemon_Health.
+5. **Install + load** the plist
+   (`scripts/launchd/install.sh load org.solutionsmith.its.subcontract-poll`).
+6. **Partial live smoke:** run one `subcontract_poll.poll_once()` cycle from a worktree venv
+   (above) and confirm a mirror draft renders → both files file to Box + Subcontract_Log +
+   Subcontract_Pending_Review → receipts (`mark-filed`).
+7. **Flip the gates** (read each Description first): `subcontractors_sync_enabled` may go first (the
+   subcontractor passes are independent); flip `polling_enabled` **and** `status_sync_enabled`
+   together once the drafts path is verified. Flipping `polling_enabled` enables **filing only** —
+   the subcontractor **send** stays dark until SC-S4/S5's own gate flips.
+
+## Why the daemon is shaped this way (pointer to §42)
+
+The code-reader rationale lives in the `subcontracts/subcontract_poll.py` module docstring: the
+four-pass structure, the receipt-is-last idempotency (a crash anywhere before `mark-filed`
+re-pulls the row; every prior step is idempotent), the per-item fence vs the whole-cycle stop on a
+401, the SoR subcontractor-identity snapshot at render, and the one-shot flag set. Companion
+enablement guide (when it lands): `../enablement/subcontracts.md`.
+
+## Owner
+
+`@solutionsmith`. New `subcontract_poll` failure modes that become Tier-2-reachable should be added
+here as additional Symptom → checks → action → escalate blocks, per Op Stds §43.

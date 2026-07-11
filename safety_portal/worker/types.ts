@@ -60,6 +60,15 @@ export interface Env {
    */
   PORTAL_CONFIG_API_TOKEN: string;
   /**
+   * Bearer token the Mac-side subcontract daemon (subcontracts/subcontract_poll.py, SC-S3c/S4)
+   * presents to /api/subcontracts/internal/* — SEPARATE from the portal_poll / admin / fieldops /
+   * PO / config tokens (privilege separation): the subcontract daemon's token must NOT drain the
+   * submission queue, provision users, touch the job/hours mirror, or read the PO / config queues —
+   * and none of those tokens may read the subcontract queue. Mirrored into the Keychain as
+   * ITS_PORTAL_SUB_TOKEN. Workers Secret / .dev.vars — never committed.
+   */
+  PORTAL_SUB_API_TOKEN: string;
+  /**
    * Feature flag (a plain Worker `var`, NOT a secret) gating "recurring checklists per job" (#16).
    * "true" arms the scheduled() cron's cadence-generation pass AND lets POST /checklist/assign accept
    * a recurrence block; anything else (incl. absent) keeps the feature DARK — the cron no-ops and the

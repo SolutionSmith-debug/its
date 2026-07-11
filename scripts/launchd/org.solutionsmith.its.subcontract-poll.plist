@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Subcontract pull daemon (SC-S3c, subcontract-generation workstream). The ONE
+  multi-pass Mac half of the subcontract pipeline: drains queued subcontracts from
+  the Cloudflare Worker (GET /api/subcontracts/internal/pending, bearer = the SEPARATE
+  subcontract token tier), HMAC-verifies (sub:v1) each row, renders the deterministic
+  package (Subcontract.docx + Annex C - Schedule of Values.xlsx), files BOTH to Box
+  (§45/§47 + Subcontract_Log + Subcontract_Pending_Review), receipts via mark-filed;
+  plus the §51 subcontractor down-/up-sync passes and the status-sync mirror pass.
+  AI-free + customer-send-free (External Send Gate, FM Invariant 1; enrolled in
+  tests/test_capability_gating.py GATED_SCRIPTS). Fail-closed on missing creds.
+  ALL passes gated OFF by the subcontracts.subcontract_poll.* ITS_Config rows
+  (scripts/migrations/seed_subcontracts_config.py seeds them false).
+
+  Install:
+    scripts/launchd/install.sh load org.solutionsmith.its.subcontract-poll
+
+  StartInterval is PARAMETERIZED (install.sh __POLL_INTERVAL_SECONDS__): resolution is
+  [interval] arg > ITS_Config subcontracts.subcontract_poll.poll_interval_seconds >
+  default 120s. Default 120s staggers off po-poll (90s) and portal-poll (60s) and suits
+  the low subcontract volume; the resolved value is BAKED into the installed plist, so a
+  later change needs a re-load.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>org.solutionsmith.its.subcontract-poll</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__ITS_HOME__/.venv/bin/python</string>
+        <string>-m</string>
+        <string>subcontracts.subcontract_poll</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__ITS_HOME__</string>
+
+    <key>StandardOutPath</key>
+    <string>__ITS_HOME__/logs/launchd/subcontract_poll.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>__ITS_HOME__/logs/launchd/subcontract_poll.err.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>LANG</key>
+        <string>en_US.UTF-8</string>
+    </dict>
+
+    <key>StartInterval</key>
+    <integer>__POLL_INTERVAL_SECONDS__</integer>
+
+    <!-- A2 (single-host resilience): RunAtLoad=true so this interval daemon RESUMES
+         immediately when launchd loads the agent after a reboot/OS-update, then
+         StartInterval re-fires on cadence. KeepAlive is intentionally absent: ITS daemons
+         are one-shot-per-fire, so KeepAlive=true would restart on exit and destroy the
+         interval cadence. -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>

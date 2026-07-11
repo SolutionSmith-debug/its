@@ -193,6 +193,17 @@ GATED_SCRIPTS: list[tuple[str, list[str]]] = [
         ["graph_client", "send_mail", "resend", "smtplib", "email.mime",
          "anthropic", "anthropic_client"],
     ),
+    (
+        # subcontract_poll (SC-S3c) is the subcontract pull daemon — the ONE multi-pass
+        # Mac half of the subcontract pipeline (drafts verify+render+file, subcontractor
+        # down/up-sync, status mirror). GENERATION-side of the External Send Gate: it
+        # renders + files + reports, but never transmits to a customer and runs no LLM
+        # (all egress rides the F02-allowlisted portal_client / box_client /
+        # smartsheet_client). subcontract_review is transitively covered (imported here).
+        "subcontracts/subcontract_poll.py",
+        ["graph_client", "send_mail", "resend", "smtplib", "email.mime",
+         "anthropic", "anthropic_client"],
+    ),
 ]
 
 # Send scripts: must NOT import any AI capability.
@@ -474,8 +485,14 @@ NETWORK_NEEDLES: frozenset[str] = frozenset({
 # subprocess/importlib importers are allowlisted above; the root is walked so a
 # later dashboard module, e.g. the D1-2 ACT surface, that acquires network
 # capability is caught).
+# subcontracts joined at SC-S3c (the subcontract workstream — its gated
+# subcontract_generate/_docx renderers and the subcontract_poll daemon rely on
+# portal_client / box_client for egress and import no raw network library, so they
+# trip no F02 needle; the root is walked so a future subcontracts module that quietly
+# acquires network capability is caught — the po_materials / field_ops precedent).
 WALKED_ROOTS: tuple[str, ...] = (
-    "shared", "safety_reports", "progress_reports", "field_ops", "po_materials", "operator_dashboard",
+    "shared", "safety_reports", "progress_reports", "field_ops", "po_materials",
+    "operator_dashboard", "subcontracts",
 )
 
 
