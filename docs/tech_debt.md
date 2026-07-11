@@ -4,6 +4,36 @@ Items deliberately deferred. Each carries the rationale for deferral and the tri
 
 When to add an entry: a session deliberately chooses preservation-over-refactor (per Op Stds v11 §14), discovers an external-API constraint that forced a workaround, or defers a non-trivial cleanup that's larger than the current session can absorb. When to mark CLOSED: the underlying item is resolved in a commit; preserve the entry with resolution detail rather than deleting (history is cheap, context is expensive).
 
+## Subcontracts — SC-S3c adversarial-review follow-ups (non-blocking) [OPEN 2026-07-11]
+
+From the SC-S3c verify phase (portal-worker-security-reviewer + ops-stds-enforcer + completeness critic;
+all three verdicts CLEAN/WARN, no BLOCK). Deferred deliberately — none blocks the dark ship:
+
+- **SC3c-1 (LOW, shared with PO) — supersede double-submit dup-guard is check-then-act, not atomic-in-WHERE.**
+  `worker/subcontract.ts` `POST /:id/supersede` pre-`SELECT`s for an in-flight successor (`WHERE
+  supersedes_sc_id=?1 AND status!='canceled'`) then acts — a tight double-click / replay by a
+  `cap.subcontracts.manage` holder could mint two live successors for the same slot (each still passes
+  its own SOV/HMAC/F22 gates, so it's a business-logic idempotency race, not an auth/money bypass; damage
+  ceiling = a human cancels one draft). This is **verbatim inherited from `worker/po.ts:1113-1119`** — SC-S3c
+  faithfully mirrors the reviewed PO pattern rather than diverging. **Fix belongs to BOTH** (fold the dup
+  check into the clone `INSERT…SELECT`'s WHERE via `AND NOT EXISTS (SELECT 1 FROM <t> WHERE
+  supersedes_*_id=?1 AND status!='canceled')`, then a post-insert SELECT only to disambiguate the 409
+  message) — a shared po.ts+subcontract.ts change with its own PO re-review, out of SC-S3c's scope.
+- **SC3c-2 (COSMETIC) — `migrations/0050_subcontracts.sql` header comment overstates a Worker gate.** It
+  credits the Worker with asserting the §2.1 spelled-out price WORDS match the figure; that check is
+  actually the Python render step (`subcontract_generate` via num2words), not a pre-queue Worker gate.
+  Not a hole (the check exists in the pipeline), but a stale comment on a money/legal boundary. 0050 is a
+  merged+applied migration — fix the comment only alongside a genuine 0050 touch (editing an applied
+  migration file in isolation risks the migration-tracking / doc-currency sha).
+- **SC3c-3 (LOW, forward-looking for SC-S4) — the SOV `.xlsx` Box file id is discarded.** `subcontract_poll`
+  files both `.docx`+`.xlsx` but only tracks the `.docx` id as `box_file_id`; the `.xlsx` lives in Box under
+  its deterministic `sc_xlsx_filename` with no ledger/D1 handle. Correct for S3c (the reviewer gets both via
+  the inline attach); SC-S4's send — which will attach BOTH — must re-derive `sc_xlsx_filename` to locate it.
+- **SC3c-4 (LOW, shared) — the daemon-scaffold subprocess-AST guard doesn't cover `subcontracts/`** (nor
+  `po_materials/`; `tests/test_daemon_scaffold.py` `DAEMON_ROOT = safety_reports` only). Zero current
+  exposure (`subcontract_poll` spawns no subprocess). Widen `DAEMON_ROOT` to a root LIST covering the
+  daemon-bearing packages if/when that guard is generalized — a shared change, matches the existing PO gap.
+
 ## Subcontracts — SC-S3b Exhibit A blocked on the `exhibit_trade_templates` config artifact [OPEN 2026-07-11]
 
 ADR-0003 scopes the subcontract package as Subcontract body + **Exhibit A** (Art I/III/IV/VI fixed +

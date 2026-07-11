@@ -218,6 +218,13 @@ TRACKED_JOBS: list[str] = [
     # a pre-lock no-op and writes NO marker (intentional dark state). Register + activate
     # together.
     "po_send_poll",
+    # Subcontract pull daemon (subcontracts.subcontract_poll, SC-S3c). Writes a
+    # subcontract_poll.last_run marker each cycle once ACTIVE. Like po_poll it WARNs until the
+    # operator both LOADS the plist (`install.sh load org.solutionsmith.its.subcontract-poll`)
+    # AND flips at least one subcontracts.subcontract_poll.* gate — a loaded daemon whose gates
+    # are all false is a pre-lock no-op and writes NO marker (intentional dark state). Register +
+    # activate together.
+    "subcontract_poll",
 ]
 
 # Per-job freshness windows. Jobs not in this map use the default 24h
@@ -269,6 +276,9 @@ TRACKED_JOB_WINDOWS: dict[str, timedelta] = {
     # safety_weekly_send_poll / progress_send_poll (a single missed cycle tolerated; two
     # consecutive fire). It is an approval poller, not a fast puller.
     "po_send_poll": timedelta(minutes=30),
+    # subcontract_poll runs every 120s (default). 10 min == ~5 cycles — same high-frequency-poller
+    # tolerance as po_poll (8 min at 90s), scaled to the 120s cadence.
+    "subcontract_poll": timedelta(minutes=10),
 }
 DEFAULT_TRACKED_JOB_WINDOW = timedelta(hours=24)
 

@@ -3,7 +3,7 @@
 <!--
   Subcontract pull daemon (SC-S3c, subcontract-generation workstream). The ONE
   multi-pass Mac half of the subcontract pipeline: drains queued subcontracts from
-  the Cloudflare Worker (GET /api/subcontract/internal/pending, bearer = the SEPARATE
+  the Cloudflare Worker (GET /api/subcontracts/internal/pending, bearer = the SEPARATE
   subcontract token tier), HMAC-verifies (sub:v1) each row, renders the deterministic
   package (Subcontract.docx + Annex C - Schedule of Values.xlsx), files BOTH to Box
   (§45/§47 + Subcontract_Log + Subcontract_Pending_Review), receipts via mark-filed;
