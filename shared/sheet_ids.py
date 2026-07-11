@@ -201,6 +201,19 @@ SHEET_ITS_VENDORS = 5404286845407108        # ITS_Vendors — vendor SoR (create
 SHEET_PO_LOG = 3152487031721860             # PO_Log — operator-visible ledger mirror of D1 (created 2026-07-09 by build_po_log_sheet.py)
 SHEET_PO_PENDING_REVIEW = 1816168087113604  # PO_Pending_Review — PO review/approve/send surface (created 2026-07-09 by build_po_pending_review_sheet.py)
 
+# Subcontracts workstream (S1) — mirrors the PO trio in a standalone ITS — Subcontracts workspace
+# (§46 workspace-membership = approval authority). ITS_Subcontractors is the party SoR (supersedes the
+# legacy SHEET_SUBCONTRACTOR_DB two-column stub above, retired-in-place like the old Vendor DB);
+# Subcontract_Log MIRRORS the authoritative D1 `subcontracts` store; Subcontract_Pending_Review is a
+# WSR schema twin (the shared weekly_send engine binds by title). Placeholder 0 until the operator runs
+# each builder (FLIP precedes SEED — the seeder refuses to run while the ID is 0; picklist_validation
+# registers these sheets only when non-zero, the same guard as the PO/vendor sheets).
+WORKSPACE_SUBCONTRACTS = 0            # ITS — Subcontracts (build_subcontracts_workspace.py)
+FOLDER_SC_CONTROL = 0                 # ITS — Subcontracts / Control
+SHEET_ITS_SUBCONTRACTORS = 0         # ITS_Subcontractors — subcontractor SoR (build_its_subcontractors_sheet.py)
+SHEET_SUBCONTRACT_LOG = 0            # Subcontract_Log — operator-visible ledger mirror of D1 (build_subcontract_log_sheet.py)
+SHEET_SUBCONTRACT_PENDING_REVIEW = 0  # Subcontract_Pending_Review — review/approve/send surface (build_subcontract_pending_review_sheet.py)
+
 
 # ---- Reverse-lookup maps ------------------------------------------------
 
