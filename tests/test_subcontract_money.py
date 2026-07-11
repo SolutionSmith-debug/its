@@ -92,3 +92,25 @@ def test_sov_rejects_bad_price_and_bad_unit():
     assert money.sov_mismatches(-1, [{"extended_cents": 0}])[0].startswith("contract_price_cents")
     problems = money.sov_mismatches(100, [{"qty": 1, "unit_price_cents": True}])
     assert any("unit_price_cents" in p for p in problems)
+
+
+def test_js_round_edge_case_matches_ecma_not_floor_plus_half():
+    # The largest double < 0.5 must round DOWN to 0 (ECMA Math.round), NOT up as floor(x + 0.5) would
+    # (float addition mis-rounds this edge). This is the exact divergence po_generate._js_round exists
+    # to avoid — sov_extended_cents must stay byte-identical for JS/Python HMAC agreement with the
+    # future TS Worker, so this edge is pinned.
+    assert money._js_round(0.49999999999999994) == 0
+    assert money.sov_extended_cents(0.49999999999999994, 1) == 0
+    # Half rounds UP (ECMA), never banker's-to-even.
+    assert money._js_round(0.5) == 1
+    assert money._js_round(2.5) == 3            # JS Math.round(2.5) == 3; Python round(2.5) == 2
+    assert money.sov_extended_cents(2.5, 1) == 3
+
+
+@pytest.mark.parametrize("bad_qty", [None, "abc", float("nan"), float("inf"), float("-inf"), True])
+def test_sov_mismatches_fences_malformed_qty_never_raises(bad_qty):
+    # A malformed qty on a unit-priced line must be RETURNED as a mismatch string, never raised — a
+    # raise would abort the whole daemon cycle (mirror of po_generate.totals_mismatches' contract).
+    lines = [{"qty": bad_qty, "unit_price_cents": 100, "extended_cents": 100}]
+    problems = money.sov_mismatches(100, lines)  # must not raise
+    assert problems and any("sov line 0" in p for p in problems)

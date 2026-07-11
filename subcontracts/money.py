@@ -119,39 +119,68 @@ def contract_price_clause(cents: int, price_basis: str = "fixed") -> str:
     return f"NOT TO EXCEED {body}" if price_basis == "not_to_exceed" else body
 
 
+def _js_round(x: float) -> int:
+    """ECMA-262 `Math.round` for the non-negative domain: half rounds UP.
+
+    VERBATIM copy of `po_materials.po_generate._js_round` (ADR-0003 "REUSE-AS-IS: `_js_round`") —
+    copied, NOT imported, because `po_generate` pulls the reportlab render stack (`form_pdf`) into
+    what must stay a lean, capability-gated money module. Must stay byte-identical to that original
+    AND to the future TS Worker's `Math.round`, or JS/Python HMAC agreement breaks — if one changes,
+    change all. Implemented as floor + fractional-part compare (NOT `floor(x + 0.5)`, whose float
+    addition mis-rounds the largest-double-below-.5 edge JS handles per spec)."""
+    f = math.floor(x)
+    return int(f) + (1 if x - f >= 0.5 else 0)
+
+
 def sov_extended_cents(qty: float, unit_price_cents: int) -> int:
     """A single SOV line's extended value = round(qty × unit_price_cents), ECMA half-up (never
-    banker's round), mirroring po_generate._js_round for JS/Python HMAC agreement."""
-    return int(math.floor(qty * unit_price_cents + 0.5))
+    banker's round), via `_js_round` — mirroring po_generate for JS/Python HMAC agreement."""
+    return _js_round(qty * unit_price_cents)
 
 
 def sov_mismatches(contract_price_cents: int, sov_lines: Sequence[Mapping[str, Any]]) -> list[str]:
     """RETURN (not raise) machine-readable mismatch strings when the SOV doesn't reconcile to the
     §2.1 Contract Price — mirror of po_generate.totals_mismatches. An empty list == clean. The caller
     (the render/generate) fences a non-empty result to the Review Queue and NEVER files a contract
-    whose numbers don't re-derive. Each line's extended is server-recomputed (never client-trusted)."""
+    whose numbers don't re-derive. Each line's extended is server-recomputed (never client-trusted).
+
+    NEVER RAISES. A malformed line-money field (a non-numeric / non-finite `qty`, a bad `unit_price`)
+    is RETURNED as a `sov line N:` mismatch, not raised — mirroring po_generate.totals_mismatches'
+    returns-not-raises contract. This is the per-subcontract fence's FIRST guard; a raise here would
+    abort the whole daemon cycle and re-crash it every run when a single operator-editable SOV row
+    (from JSON/D1) carries a `qty: null` / `"abc"` / `Infinity`. Every numeric conversion below is
+    inside the explicit type guard + the (ValueError, TypeError) backstop."""
     problems: list[str] = []
     if not isinstance(contract_price_cents, int) or isinstance(contract_price_cents, bool) or contract_price_cents < 0:
         return [f"contract_price_cents must be a non-negative integer (got {contract_price_cents!r})"]
     total = 0
     for i, line in enumerate(sov_lines):
-        qty = line.get("qty", 1)
-        unit = line.get("unit_price_cents")
-        stated = line.get("extended_cents")
-        if unit is None:
-            # a lump-sum line carries extended_cents directly (no unit price)
-            recomputed = stated if isinstance(stated, int) and not isinstance(stated, bool) else None
-            if recomputed is None:
-                problems.append(f"sov line {i}: no unit_price_cents and no integer extended_cents")
-                continue
-        else:
-            if not isinstance(unit, int) or isinstance(unit, bool) or unit < 0:
-                problems.append(f"sov line {i}: unit_price_cents must be a non-negative integer (got {unit!r})")
-                continue
-            recomputed = sov_extended_cents(float(qty), unit)
-            if isinstance(stated, int) and not isinstance(stated, bool) and stated != recomputed:
-                problems.append(f"sov line {i}: extended_cents {stated} != recomputed {recomputed}")
-        total += recomputed
+        try:
+            qty = line.get("qty", 1)
+            unit = line.get("unit_price_cents")
+            stated = line.get("extended_cents")
+            if unit is None:
+                # a lump-sum line carries extended_cents directly (no unit price)
+                recomputed = stated if isinstance(stated, int) and not isinstance(stated, bool) else None
+                if recomputed is None:
+                    problems.append(f"sov line {i}: no unit_price_cents and no integer extended_cents")
+                    continue
+            else:
+                if not isinstance(unit, int) or isinstance(unit, bool) or unit < 0:
+                    problems.append(f"sov line {i}: unit_price_cents must be a non-negative integer (got {unit!r})")
+                    continue
+                # qty must be a real, finite number — reject None/str/bool/NaN/Inf deterministically
+                # (before float() would raise or math.floor(inf) would OverflowError).
+                if not isinstance(qty, (int, float)) or isinstance(qty, bool) or not math.isfinite(qty):
+                    problems.append(f"sov line {i}: qty must be a finite number (got {qty!r})")
+                    continue
+                recomputed = sov_extended_cents(float(qty), unit)
+                if isinstance(stated, int) and not isinstance(stated, bool) and stated != recomputed:
+                    problems.append(f"sov line {i}: extended_cents {stated} != recomputed {recomputed}")
+            total += recomputed
+        except (ValueError, TypeError) as exc:
+            problems.append(f"sov line {i}: malformed numeric field ({type(exc).__name__}: {exc})")
+            continue
     if not problems and total != contract_price_cents:
         problems.append(
             f"SOV total {total} != Contract Price {contract_price_cents} "
