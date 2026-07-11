@@ -361,7 +361,8 @@ def test_terms_set_current_requires_target_version(root: Path):
 
 
 def test_unknown_artifact_rejected(root: Path):
-    with pytest.raises(ConfigApplyError, match="unknown config artifact"):
+    # The message now names the workstream (config_apply is workstream-aware, SC-S2).
+    with pytest.raises(ConfigApplyError, match="unknown po_materials config artifact"):
         config_apply.apply_config(_req("gremlins", "edit", {"x": 1}), root)
 
 
@@ -465,3 +466,141 @@ def test_terms_create_profile_rejects_reserved_id(root: Path):
         config_apply.apply_config(
             _req("terms", "create_profile", {"profile_id": "field_21", "kind": "library",
                                              "label": "x", "version_id": "v1", "text": "y"}), root)
+
+
+# ── subcontracts workstream (SC-S2) — workstream-aware dispatch + new json artifacts ─────
+
+
+_SC_SEED_CONTRACTOR = {
+    "config_version": SEED_CONFIG_VERSION,
+    "comment": "test fixture — NOT the live contractor identity",
+    "entity": "Seed Contractor LLC",
+    "address_lines": ["1 Seed Way", "Testville, CA 90000"],
+    "phone": "000-000-0000",
+    "signature_entity": "Seed Contractor LLC",
+    "prime_contractor_default": "Seed Contractor of Virginia LLC",
+}
+_SC_SEED_PAYMENT = {
+    "config_version": SEED_CONFIG_VERSION,
+    "comment": "test fixture — NOT the live payment terms",
+    "retainage_bp": 1000,
+    "retainage_reduced_bp": 500,
+    "retainage_reduction_at_pct": 50,
+    "application_for_payment_day": 25,
+    "progress_payment_day": 24,
+}
+_SC_SEED_MANIFEST = {
+    "manifest_version": 1,
+    "comment": "test fixture — NOT the live subcontract manifest",
+    "profiles": {
+        "standard_subcontract": {
+            "kind": "library",
+            "label": "Seed body",
+            "current_version": "v1",
+            "versions": {"v1": {"file": "standard_subcontract_v1.md", "sha256": "0" * 64,
+                                "tokens": ["contractor_entity"], "legal_review": "pending"}},
+        },
+    },
+}
+
+
+@pytest.fixture
+def sc_root(root: Path) -> Path:
+    """`root` (po_materials seeded) PLUS the subcontracts config + terms fixtures — so the
+    workstream-dir isolation is testable (a subcontracts edit must never touch po_materials/)."""
+    (root / "subcontracts" / "config").mkdir(parents=True)
+    (root / "subcontracts" / "terms").mkdir(parents=True)
+    _write_json(root / "subcontracts" / "config" / "contractor.json", _SC_SEED_CONTRACTOR)
+    _write_json(root / "subcontracts" / "config" / "payment_terms.json", _SC_SEED_PAYMENT)
+    _write_json(root / "subcontracts" / "terms" / "manifest.json", _SC_SEED_MANIFEST)
+    return root
+
+
+def _sc_req(artifact: str, op: str, payload: dict, target_version: str | None = None) -> dict:
+    return {
+        "id": 1, "workstream": "subcontracts", "artifact_key": artifact, "op": op,
+        "target_version": target_version, "payload": json.dumps(payload), "status": "queued",
+    }
+
+
+def _sc_read(root: Path, *parts: str) -> dict:
+    return json.loads((root.joinpath("subcontracts", *parts)).read_text())
+
+
+def test_sc_contractor_edit_writes_and_bumps_version(sc_root: Path):
+    note = config_apply.apply_config(
+        _sc_req("contractor", "edit", {
+            "entity": "Evergreen Renewables LLC", "address_lines": ["100 Spectrum", "Irvine CA"],
+            "phone": "888-303-6424", "signature_entity": "Evergreen Renewables LLC",
+            "prime_contractor_default": "Evergreen Renewables of Oregon LLC",
+        }),
+        sc_root,
+    )
+    c = _sc_read(sc_root, "config", "contractor.json")
+    assert c["entity"] == "Evergreen Renewables LLC"
+    assert c["config_version"] == SEED_CONFIG_VERSION + 1  # RELATIVE bump
+    assert f"config_version {SEED_CONFIG_VERSION + 1}" in note
+
+
+def test_sc_contractor_edit_requires_signature_entity(sc_root: Path):
+    with pytest.raises(config_apply.ConfigApplyError, match="signature_entity"):
+        config_apply.apply_config(
+            _sc_req("contractor", "edit", {"entity": "X", "address_lines": ["a"], "phone": "1"}), sc_root)
+
+
+def test_sc_payment_terms_edit_integer_bp_only(sc_root: Path):
+    note = config_apply.apply_config(
+        _sc_req("payment_terms", "edit", {
+            "retainage_bp": 1000, "retainage_reduced_bp": 500, "retainage_reduction_at_pct": 50,
+            "application_for_payment_day": 25, "progress_payment_day": 24,
+        }),
+        sc_root,
+    )
+    p = _sc_read(sc_root, "config", "payment_terms.json")
+    assert p["retainage_bp"] == 1000
+    assert p["config_version"] == SEED_CONFIG_VERSION + 1
+    assert "retainage 1000bp" in note
+    # float / bool / out-of-range reject
+    for bad in ({"retainage_bp": 10.0}, {"retainage_bp": True}, {"retainage_bp": 20000}):
+        payload = {"retainage_bp": 1000, "retainage_reduced_bp": 500, "retainage_reduction_at_pct": 50,
+                   "application_for_payment_day": 25, "progress_payment_day": 24, **bad}
+        with pytest.raises(config_apply.ConfigApplyError, match="INTEGER"):
+            config_apply.apply_config(_sc_req("payment_terms", "edit", payload), sc_root)
+
+
+def test_sc_payment_terms_reduced_bp_cannot_exceed_retainage(sc_root: Path):
+    with pytest.raises(config_apply.ConfigApplyError, match="retainage_reduced_bp"):
+        config_apply.apply_config(
+            _sc_req("payment_terms", "edit", {
+                "retainage_bp": 500, "retainage_reduced_bp": 1000, "retainage_reduction_at_pct": 50,
+                "application_for_payment_day": 25, "progress_payment_day": 24,
+            }), sc_root)
+
+
+def test_sc_terms_add_version_writes_to_subcontracts_dir_not_po(sc_root: Path):
+    """The workstream-dir isolation: a subcontracts terms edit writes subcontracts/terms, and the
+    po_materials manifest is byte-untouched."""
+    po_manifest_before = _read(sc_root, "terms", "manifest.json")
+    config_apply.apply_config(
+        _sc_req("terms", "add_version", {"profile_id": "standard_subcontract", "text": "new clause {{contractor_entity}}"},
+                target_version="v2"),
+        sc_root,
+    )
+    sc_manifest = _sc_read(sc_root, "terms", "manifest.json")
+    assert "v2" in sc_manifest["profiles"]["standard_subcontract"]["versions"]
+    assert sc_manifest["profiles"]["standard_subcontract"]["versions"]["v2"]["legal_review"] == "pending"
+    assert (sc_root / "subcontracts" / "terms" / "v2.md").exists()
+    # po_materials manifest untouched.
+    assert _read(sc_root, "terms", "manifest.json") == po_manifest_before
+
+
+def test_sc_unknown_artifact_rejected(sc_root: Path):
+    with pytest.raises(config_apply.ConfigApplyError, match="unknown subcontracts config artifact"):
+        config_apply.apply_config(_sc_req("gremlins", "edit", {"x": 1}), sc_root)
+
+
+def test_unknown_workstream_rejected(sc_root: Path):
+    req = {"id": 1, "workstream": "nope", "artifact_key": "contractor", "op": "edit",
+           "target_version": None, "payload": json.dumps({"x": 1}), "status": "queued"}
+    with pytest.raises(config_apply.ConfigApplyError, match="unknown config workstream"):
+        config_apply.apply_config(req, sc_root)

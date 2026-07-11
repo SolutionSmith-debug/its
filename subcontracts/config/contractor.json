@@ -1,0 +1,12 @@
+{
+  "config_version": 1,
+  "comment": "Versioned Contractor identity (ADR-0003, SC-S2) — the Evergreen prime entity printed in the subcontract preamble ({{contractor_entity}}), the signature block ({{signature_entity}}), and the default {{prime_contractor}}. NEVER hard-code these in render code; bump config_version on any change. The prime-contractor default is overridable per subcontract; subcontract_generate may derive an of-<state> form from the job-site state.",
+  "entity": "Evergreen Renewables LLC",
+  "address_lines": [
+    "100 Spectrum Center Dr. STE 570",
+    "Irvine, CA. 92618"
+  ],
+  "phone": "888-303-6424",
+  "signature_entity": "Evergreen Renewables LLC",
+  "prime_contractor_default": "Evergreen Renewables of Virginia LLC"
+}

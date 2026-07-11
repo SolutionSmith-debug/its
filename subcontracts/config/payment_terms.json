@@ -1,0 +1,9 @@
+{
+  "config_version": 1,
+  "comment": "Versioned subcontract payment terms (ADR-0003, SC-S2) — the §2.5 retention model + payment-application cadence. Integer basis points, no floats. These are the DEFAULTS a new subcontract inherits (retainage_bp lands on the subcontracts row); the fixed §2.5 clause language lives in the terms body (a different retention requires a new subcontract_body version, not a config edit here). Bump config_version on any change.",
+  "retainage_bp": 1000,
+  "retainage_reduced_bp": 500,
+  "retainage_reduction_at_pct": 50,
+  "application_for_payment_day": 25,
+  "progress_payment_day": 24
+}

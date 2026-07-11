@@ -110,7 +110,10 @@ _heartbeat_reporter = HeartbeatReporter(
 
 _ROOT = Path(__file__).resolve().parent.parent
 # The daemon-managed worktree paths (discarded in _reset_to_main, staged in _commit_test_merge).
-_MANAGED_PATHS = ("po_materials/config", "po_materials/terms")
+_MANAGED_PATHS = (
+    "po_materials/config", "po_materials/terms",
+    "subcontracts/config", "subcontracts/terms",  # SC-S2: the config editor is workstream-generic
+)
 
 # CI poll cadence for the config merge (auto-merge is DISABLED — the daemon waits for CI then
 # merges synchronously, bounded so one stuck CI run can't wedge the daemon).

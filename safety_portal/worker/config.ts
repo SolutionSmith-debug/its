@@ -64,8 +64,11 @@ const CONFIG_REGISTRY: Record<string, WorkstreamSpec> = {
   },
   subcontracts: {
     cap: "cap.subcontracts.manage",
-    placeholder: true, // provisioned tier, NO artifacts yet — a future workflow adds them here
-    artifacts: {},
+    artifacts: {
+      contractor: { kind: "json" }, // the Evergreen prime identity (SC-S2)
+      payment_terms: { kind: "json" }, // the §2.5 retention defaults
+      terms: { kind: "terms" }, // the 27-article subcontract body library (subcontracts/terms manifest)
+    },
   },
 };
 

@@ -176,12 +176,23 @@ describe("POST /api/config/requests — enqueue", () => {
     expect(await res.json()).toMatchObject({ error: "invalid_artifact" });
   });
 
-  it("rejects the placeholder workstream (subcontracts → 400 invalid_artifact: cap held, but no artifacts yet)", async () => {
-    // SC-S1 GRANTED cap.subcontracts.manage to admin (migration 0051 — the "real subcontract workflow
-    // registers it" the placeholder was waiting for). So an admin now PASSES the cap check and falls
-    // through to the artifact lookup, which fails closed for a placeholder workstream (empty artifacts
-    // map) → 400 invalid_artifact. Until SC-S2 fills the subcontracts artifacts map, every subcontracts
-    // config edit is rejected here, one layer past the cap check.
+  it("enqueues a valid subcontracts config edit (contractor → 201 queued) — SC-S2 filled the tier", async () => {
+    // SC-S2 filled the subcontracts artifacts map (contractor/payment_terms/terms), so it is no longer
+    // a placeholder: an admin holding cap.subcontracts.manage (granted by 0051) can queue a real edit.
+    await provision("admin.one", "admin");
+    const cookie = await login("admin.one");
+    const res = await post(cookie, "/api/config/requests", {
+      workstream: "subcontracts", artifact_key: "contractor", op: "edit",
+      payload: { entity: "Evergreen Renewables LLC" },
+    });
+    expect(res.status, await res.clone().text()).toBe(201);
+    const row = await env.DB.prepare("SELECT workstream, artifact_key FROM config_requests").first();
+    expect(row).toMatchObject({ workstream: "subcontracts", artifact_key: "contractor" });
+  });
+
+  it("rejects an unknown subcontracts artifact (400 invalid_artifact)", async () => {
+    // The cap is held (admin), so this falls through to the artifact lookup — 'anything' is not one of
+    // {contractor, payment_terms, terms}, so it fails closed at 400 invalid_artifact.
     await provision("admin.one", "admin");
     const cookie = await login("admin.one");
     const res = await post(cookie, "/api/config/requests", editBody({ workstream: "subcontracts", artifact_key: "anything" }));
@@ -189,12 +200,12 @@ describe("POST /api/config/requests — enqueue", () => {
     expect(await res.json()).toMatchObject({ error: "invalid_artifact" });
   });
 
-  it("a submitter is still rejected on the placeholder workstream by the cap gate (403)", async () => {
+  it("a submitter is rejected on the subcontracts workstream by the cap gate (403)", async () => {
     // The cap gate stays load-bearing: a non-admin without cap.subcontracts.manage is refused at the
     // cap check (authorization-before-work), never reaching the artifact lookup.
     await provision("pm.bob", "submitter");
     const cookie = await login("pm.bob");
-    const res = await post(cookie, "/api/config/requests", editBody({ workstream: "subcontracts", artifact_key: "anything" }));
+    const res = await post(cookie, "/api/config/requests", editBody({ workstream: "subcontracts", artifact_key: "contractor" }));
     expect(res.status).toBe(403);
     expect(await res.json()).toMatchObject({ error: "forbidden" });
   });
