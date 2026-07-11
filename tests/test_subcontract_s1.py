@@ -32,16 +32,31 @@ import build_wpr_human_review_sheet as wpr_mig  # noqa: E402
 
 from safety_reports import wsr_review  # noqa: E402
 from shared import picklist_validation, sheet_ids  # noqa: E402
-from subcontracts import subcontract_log  # noqa: E402
+from subcontracts import governing_law, subcontract_log  # noqa: E402
 
 # ---- Builder ↔ REGISTRY option parity -------------------------------------
 
 
 def test_subcontractors_builder_options_match_registry_sets():
-    assert set(subs_mig.REGION_OPTIONS) == picklist_validation._SUBCONTRACTOR_REGION_VALUES
+    assert set(subs_mig.STATE_OPTIONS) == picklist_validation._SUBCONTRACTOR_STATE_VALUES
     assert set(subs_mig.TRADE_OPTIONS) == picklist_validation._SUBCONTRACTOR_TRADE_VALUES
     assert set(subs_mig.TERMS_PROFILE_OPTIONS) == picklist_validation._SUBCONTRACTOR_TERMS_PROFILE_VALUES
     assert set(subs_mig.ACTIVE_OPTIONS) == picklist_validation._ACTIVE_LIFECYCLE_VALUES
+
+
+def test_subcontractor_state_axis_three_way_parity_with_governing_law():
+    """The State grouping axis MUST be set-equal across all three surfaces: the sheet builder's
+    STATE_OPTIONS, the write-gate's _SUBCONTRACTOR_STATE_VALUES, AND the governing-law resolver's
+    _STATE_NAMES keys. A State on the sheet that governing_law rejects would fence EVERY subcontract
+    for that subcontractor (render raises GoverningLawError) — so a drift in any one surface is a
+    latent contract-blocking bug the mocks can't catch. Locks the multi-surface fan-out."""
+    builder_states = set(subs_mig.STATE_OPTIONS)
+    gate_states = set(picklist_validation._SUBCONTRACTOR_STATE_VALUES)
+    law_states = set(governing_law._STATE_NAMES)
+    assert builder_states == gate_states == law_states
+    # And every value actually resolves through the public resolver (not just key-equality).
+    for st in sorted(builder_states):
+        assert governing_law.resolve(st)["governing_law_state_name"]
 
 
 def test_subcontract_log_builder_status_options_match_registry_and_module():

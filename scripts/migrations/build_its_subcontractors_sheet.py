@@ -16,11 +16,12 @@ join identity: `sc_send` resolves the subcontractor recipient (TO = Contact Emai
 from this sheet BY KEY at send time — a blank Contact Email HOLDs the send
 (`held_no_recipient`), never silently drops it.
 
-Option-set parity: Region / Trades / Default Terms Profile / Active option lists
+Option-set parity: State / Trades / Default Terms Profile / Active option lists
 here MUST stay set-equal to the matching frozensets in
 shared/picklist_validation.py (REGISTRY gates every add_rows/update_rows write to
-this sheet once SHEET_ITS_SUBCONTRACTORS is flipped). tests/test_sc_s1_sheets.py
-pins the parity.
+this sheet once SHEET_ITS_SUBCONTRACTORS is flipped). The State list additionally
+MUST equal subcontracts.governing_law._STATE_NAMES so every value resolves to a
+governing-law jurisdiction. tests/test_subcontract_s1.py pins the parity.
 
 Trades is MULTI_PICKLIST (the subcontractor analog of ITS_Vendors' Supply
 Categories). Creation via POST /sheets is expected to work on SDK 3.9
@@ -53,9 +54,18 @@ WORKSPACE = sheet_ids.WORKSPACE_SUBCONTRACTS
 FOLDER_NAME = "Control"
 SHEET_NAME = "ITS_Subcontractors"
 
-# Ordered for the dropdown UI; set-parity with shared/picklist_validation.py is
-# test-pinned (tests/test_sc_s1_sheets.py).
-REGION_OPTIONS = ["West", "Midwest", "East", "National"]
+# Ordered for the dropdown UI; set-parity with shared/picklist_validation.py AND
+# subcontracts.governing_law._STATE_NAMES is test-pinned (tests/test_sc_s1_sheets.py) —
+# every State on the sheet MUST resolve to a governing-law jurisdiction, or the
+# subcontract render fences. The 50 states + DC (2-letter USPS), the jurisdiction
+# grouping/filter axis (replaces the coarse vendor West/Midwest/East region — a
+# subcontract's governing law is per-state, so the registry groups by state).
+STATE_OPTIONS = [
+    "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "DC", "FL", "GA", "HI", "ID",
+    "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD", "MA", "MI", "MN", "MS", "MO",
+    "MT", "NE", "NV", "NH", "NJ", "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA",
+    "RI", "SC", "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY",
+]
 TRADE_OPTIONS = [
     "Surveying", "Civil", "Fencing", "Post Installation", "Mechanical",
     "AC Electrical", "MV Electrical", "DC Electrical", "Specialty",
@@ -84,9 +94,10 @@ COLUMN_SCHEMA: list[dict[str, Any]] = [
      "description": "THE send-time recipient (TO) — sc_send resolves it from this sheet by Sub Key at "
                     "dispatch. Blank → the send is HELD (held_no_recipient), never silently dropped."},
     {"title": "Contact Phone", "type": "TEXT_NUMBER"},
-    {"title": "Region", "type": "PICKLIST", "options": REGION_OPTIONS,
-     "description": "Service region — the SPA subcontractor-picker filter chip axis (corpus: Oregon/West, "
-                    "Illinois/Midwest, PA-MD-VA/East jobs)."},
+    {"title": "State", "type": "PICKLIST", "options": STATE_OPTIONS,
+     "description": "Job-site state (2-letter USPS) — the SPA subcontractor-picker grouping/filter axis "
+                    "and the subcontract's governing-law jurisdiction (corpus: OR, IL, MD/PA/VA). "
+                    "Set-equal to subcontracts.governing_law._STATE_NAMES so every value resolves."},
     {"title": "Trades", "type": "MULTI_PICKLIST", "options": TRADE_OPTIONS,
      "description": "What the subcontractor performs — the second SPA filter axis. Multi-select."},
     {"title": "Default Terms Profile", "type": "PICKLIST", "options": TERMS_PROFILE_OPTIONS,

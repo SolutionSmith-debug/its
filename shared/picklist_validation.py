@@ -322,7 +322,17 @@ _SUBCONTRACT_LOG_STATUS_VALUES: frozenset[str] = frozenset({
 })
 _SUBCONTRACT_SEND_STATUS_VALUES: frozenset[str] = _WSR_SEND_STATUS_VALUES
 _SUBCONTRACT_WORKSTREAM_VALUES: frozenset[str] = frozenset({"subcontracts"})
-_SUBCONTRACTOR_REGION_VALUES: frozenset[str] = _VENDOR_REGION_VALUES
+# The subcontractor grouping/filter axis is the 2-letter USPS STATE (not the coarse vendor
+# region): a subcontract's governing law is jurisdiction-specific, so the registry groups by
+# state. MUST stay set-equal to subcontracts.governing_law._STATE_NAMES keys AND the builder's
+# STATE_OPTIONS — a sheet State value the governing-law resolver rejects would fence every
+# subcontract for that subcontractor (three-way parity is test-pinned).
+_SUBCONTRACTOR_STATE_VALUES: frozenset[str] = frozenset({
+    "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "DC", "FL", "GA", "HI", "ID",
+    "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD", "MA", "MI", "MN", "MS", "MO",
+    "MT", "NE", "NV", "NH", "NJ", "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA",
+    "RI", "SC", "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY",
+})
 _SUBCONTRACTOR_TRADE_VALUES: frozenset[str] = frozenset({
     "Surveying", "Civil", "Fencing", "Post Installation", "Mechanical",
     "AC Electrical", "MV Electrical", "DC Electrical", "Specialty",
@@ -352,7 +362,7 @@ _SUBCONTRACTOR_TERMS_PROFILE_VALUES: frozenset[str] = _derive_subcontractor_term
 if sheet_ids.SHEET_ITS_SUBCONTRACTORS:
     REGISTRY[sheet_ids.SHEET_ITS_SUBCONTRACTORS] = {
         "Active": _ACTIVE_LIFECYCLE_VALUES,
-        "Region": _SUBCONTRACTOR_REGION_VALUES,
+        "State": _SUBCONTRACTOR_STATE_VALUES,
         "Trades": _SUBCONTRACTOR_TRADE_VALUES,
         "Default Terms Profile": _SUBCONTRACTOR_TERMS_PROFILE_VALUES,
     }

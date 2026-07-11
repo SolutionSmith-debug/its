@@ -25,7 +25,7 @@ existing 'Archived' row stays 'Archived' when the portal says inactive — 'Arch
 is an operator-only distinction the 0/1 portal vocabulary cannot express, and
 clobbering it to 'Inactive' would lose it (non-clobber, §51).
 
-Failure modes (typed, never silent): `PicklistViolationError` (bad Region/
+Failure modes (typed, never silent): `PicklistViolationError` (bad State/
 trade/profile value) and `SmartsheetValidationError` propagate as PERMANENT;
 any other `SmartsheetError` as TRANSIENT. The daemon (`subcontract_poll`) fences per subcontractor.
 """
@@ -44,7 +44,7 @@ COL_ADDRESS = "Address"
 COL_CONTACT_NAME = "Contact Name"
 COL_CONTACT_EMAIL = "Contact Email"  # THE send-time recipient (TO) — the send resolves it here
 COL_CONTACT_PHONE = "Contact Phone"
-COL_REGION = "Region"              # PICKLIST
+COL_STATE = "State"                # PICKLIST — 2-letter USPS (jurisdiction grouping)
 COL_TRADES = "Trades"              # MULTI_PICKLIST
 COL_TERMS_PROFILE = "Default Terms Profile"  # PICKLIST — terms-manifest profile ids
 COL_MSA_REFERENCE = "MSA Reference"
@@ -135,7 +135,7 @@ def build_down_sync_payload() -> DownSyncPayload:
             "contact_name": _cell_str(row, COL_CONTACT_NAME),
             "contact_email": _cell_str(row, COL_CONTACT_EMAIL),
             "contact_phone": _cell_str(row, COL_CONTACT_PHONE),
-            "region": _cell_str(row, COL_REGION),
+            "state": _cell_str(row, COL_STATE),
             "trades": _trades_list(row),
             "default_terms_profile": _cell_str(row, COL_TERMS_PROFILE),
             "msa_reference": _cell_str(row, COL_MSA_REFERENCE),
@@ -191,7 +191,7 @@ def upsert_subcontractor(subcontractor: dict[str, Any]) -> int:
         COL_CONTACT_NAME: str(subcontractor.get("contact_name") or "").strip(),
         COL_CONTACT_EMAIL: str(subcontractor.get("contact_email") or "").strip(),
         COL_CONTACT_PHONE: str(subcontractor.get("contact_phone") or "").strip(),
-        COL_REGION: str(subcontractor.get("region") or "").strip(),
+        COL_STATE: str(subcontractor.get("state") or "").strip(),
         COL_TRADES: (
             [str(t).strip() for t in trades if str(t).strip()]
             if isinstance(trades, (list, tuple)) else []
@@ -206,7 +206,7 @@ def upsert_subcontractor(subcontractor: dict[str, Any]) -> int:
     # Blank picklist scalars must not be WRITTEN as '' (the REGISTRY would reject a
     # non-member ''); dropping the key leaves the cell untouched on update and blank
     # on create — the picklist analogue of a None cell.
-    for col in (COL_REGION, COL_TERMS_PROFILE):
+    for col in (COL_STATE, COL_TERMS_PROFILE):
         if not cells[col]:
             del cells[col]
 

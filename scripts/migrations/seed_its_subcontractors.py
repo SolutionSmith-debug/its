@@ -1,12 +1,12 @@
 """Seed ITS_Subcontractors from the extracted subcontractor roster (SC S2).
 
 One source — `subcontracts/data/subcontractor_roster.json` (the `subcontractors`
-array: name, trades, region, notes), the 24 firms canonicalized from the
+array: name, trades, state, notes), the 24 firms canonicalized from the
 05_Subcontracts corpus subcontract preambles (ADR-0003). The roster is READ from
 disk, never hardcoded here, so an operator edit to the roster never requires a code
 change to reseed. Contact / email / phone / COI / license / MSA are intentionally
 left BLANK (filled later per the parked-COI decision); the seed only carries the
-name, trades, region, and notes the corpus preambles established.
+name, trades, state, and notes the corpus preambles established.
 
 This is the subcontractor analog of `seed_its_vendors.py`, with one deliberate
 difference: rows are written through the §51 up-sync writer
@@ -32,9 +32,9 @@ FLIP precedes SEED: refuses to run while SHEET_ITS_SUBCONTRACTORS is 0 (run
 build_its_subcontractors_sheet.py first and flip the printed id).
 
 Writes go through `upsert_subcontractor` → `smartsheet_client.add_rows/update_rows`,
-which the picklist REGISTRY gates on Region / Trades / Default Terms Profile / Active.
-The roster's region and trade strings are set-subsets of the sheet's picklist options
-(build_its_subcontractors_sheet.py REGION_OPTIONS / TRADE_OPTIONS); a blank region
+which the picklist REGISTRY gates on State / Trades / Default Terms Profile / Active.
+The roster's state and trade strings are set-subsets of the sheet's picklist options
+(build_its_subcontractors_sheet.py STATE_OPTIONS / TRADE_OPTIONS); a blank state
 (one unresolved corpus firm) is dropped by the upsert rather than written as '' — the
 picklist analogue of a None cell.
 
@@ -117,7 +117,7 @@ def build_seed_payloads(
     allocates Sub Keys sequentially past the sheet's highest existing key. Each payload
     is the Worker `subcontractors/pending` shape `upsert_subcontractor` consumes (the
     roster→upsert adapter): name→sub_name, minted sub_key, trades passed through as the
-    MULTI_PICKLIST list, region→region, notes→notes with provenance, active=1;
+    MULTI_PICKLIST list, state→state, notes→notes with provenance, active=1;
     contact / address / COI / license / MSA omitted (→ left blank by the upsert)."""
     skips: list[str] = []
     to_add: list[dict[str, Any]] = []
@@ -146,7 +146,7 @@ def build_seed_payloads(
         payload: dict[str, Any] = {
             "sub_key": format_key(serial),
             "sub_name": name,
-            "region": str(firm.get("region") or "").strip(),
+            "state": str(firm.get("state") or "").strip(),
             "trades": trades,
             "notes": notes,
             "active": 1,
@@ -188,7 +188,7 @@ def main() -> int:
     for payload in to_add:
         trades = ",".join(payload.get("trades") or []) or "-"
         print(f"[plan] {payload['sub_key']}  {payload['sub_name']!r}"
-              f"  region={payload.get('region') or '-'}  trades={trades}")
+              f"  state={payload.get('state') or '-'}  trades={trades}")
 
     if not to_add:
         print("\n[ok] Nothing to seed — all candidates already present.")
