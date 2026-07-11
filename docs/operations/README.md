@@ -12,6 +12,8 @@ Operations docs use `topic-slug.md` filenames (no date prefix); the
 <!-- BEGIN AUTO-INDEX -->
 | Date | Type | Status | Workstream | Title | PRs |
 |------|------|--------|------------|-------|-----|
+| 2026-07-10 | operations | active | _–_ | [Cutover operator punch-list — the on-site-binder walk (ordered by calendar)](cutover_operator_punchlist.md) | _–_ |
+| 2026-07-10 | operations | active | _–_ | [Production repoint change-set (CL-12 ITS_Config sweep) — STAGED, NOT APPLIED](production_repoint_changeset.md) | _–_ |
 | 2026-07-09 | operations | active | _–_ | [Aug-7 Delivery Runbook (on-site install · demo · training · acceptance)](aug7_delivery_runbook.md) | _–_ |
 | 2026-07-09 | operations | active | _–_ | [ITS Cutover Checklist (v2)](cutover_checklist.md) | _–_ |
 | 2026-07-09 | operations | active | infrastructure | [Production-Host Migration Runbook (old MacBook Pro)](host_migration_runbook.md) | _–_ |

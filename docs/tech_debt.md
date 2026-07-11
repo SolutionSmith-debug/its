@@ -82,6 +82,37 @@ From the slice-2 (`config_actuator`) build + adversarial review (PR #509):
   re-record the sha in the manifest per the existing coupling pattern. **Tag:** `po_materials`,
   `config-editor`, `docs`, `enablement`, `low-severity`.
 
+## Aug-7 cutover readiness — deferred code follow-ups [OPEN 2026-07-10]
+
+Surfaced during the cutover-readiness drive (PR #525); each is a real code follow-up not blocking
+the merged work, tracked so it isn't lost. The operator-gated cutover items live in
+`docs/operations/cutover_operator_punchlist.md`, not here.
+
+- **CO-1 (LOW, belt-and-suspenders) — `po_send_poll.py:77 DEFAULT_POLLING_ENABLED = True` diverges from
+  HOUSE_REFLEXES §5 (dark-ship default-False).** PO send ships dark via a seeded
+  `po_materials.po_send.polling_enabled=false` row, so the seeded row is load-bearing (a MISSING row would
+  default the SEND poller ENABLED). Flip the code default to `False` so a lost/absent row fails safe (a
+  send-gate should never fail-open to sending). **Deliberately NOT landed autonomously** — it touches a
+  `SEND_SCRIPTS`-enrolled send daemon, and the External Send Gate is a FIXED high-capability class; even a
+  fail-safe tightening on that surface is Seth's call. **Trigger:** any PO send-path session, or a §5 sweep.
+  **Tag:** `po_materials`, `po_send`, `external-send-gate`, `low-severity`.
+- **CO-2 (MEDIUM, prove-the-control-bites) — no live-clamd EICAR end-to-end smoke for portal-upload
+  ClamAV.** `safety_reports/photo_screen._clamav_scan` is wired into every portal upload path and ships
+  default-OFF (`safety_reports.photo_screen.clamav_enabled`); the EICAR test (`test_photo_screen.py`) PATCHES
+  `_clamav_scan`, so no live clamd ever runs. Per HOUSE_REFLEXES §2, add a live EICAR-through-clamd smoke
+  (construct the EICAR string at runtime — do NOT commit a malicious file — feed it through
+  `screen_photo(..., clamav_enabled=True)`, assert disposition=malicious; skip-if-no-clamd). CI cannot run
+  clamd, so it's an operator-run Phase-C smoke (clamd installs in host-migration Phase A2). **Trigger:**
+  Phase-C hardening gate, when the operator enables `clamav_enabled`. **Tag:** `security`, `safety_reports`,
+  `clamav`, `prove-the-control-bites`.
+- **CO-3 (LOW, mechanical coverage) — VC-03 does not sandbox-scan every mirror-bearing config row.** PR #525
+  enrolled the 2 extra `worker_base_url` copies + `po_send.from_mailbox`, but `system.operator_email` (global,
+  mirror-domain fallback) and the 2 Box `portal_root_folder_id` rows remain outside VC-03 — the manual CL-14
+  grep + the CL-12 sweep are their backstop. Enrolling `operator_email` (sandbox-scanned) would close another
+  gap. Deferred because it changes gate behaviour and the Box roots are numeric IDs (no `evergreenmirror`
+  marker to scan). **Trigger:** the next verify_cutover hardening pass. **Tag:** `cutover`, `verify_cutover`,
+  `low-severity`.
+
 ## Doc-conventions workstream taxonomy is missing `po_materials`/`purchase_orders` [OPEN 2026-07-10]
 
 The blueprint workstream `workstreams/purchase-orders/` has been fully built out in this repo since

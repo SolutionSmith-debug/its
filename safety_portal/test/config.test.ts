@@ -176,11 +176,24 @@ describe("POST /api/config/requests — enqueue", () => {
     expect(await res.json()).toMatchObject({ error: "invalid_artifact" });
   });
 
-  it("rejects the placeholder workstream (subcontracts → 403: nobody holds cap.subcontracts.manage)", async () => {
-    // The cap check runs FIRST (authorization-before-work); subcontracts' cap is unheld until a
-    // real subcontract workflow registers it, so an admin with only cap.po.manage gets 403 here.
+  it("rejects the placeholder workstream (subcontracts → 400 invalid_artifact: cap held, but no artifacts yet)", async () => {
+    // SC-S1 GRANTED cap.subcontracts.manage to admin (migration 0051 — the "real subcontract workflow
+    // registers it" the placeholder was waiting for). So an admin now PASSES the cap check and falls
+    // through to the artifact lookup, which fails closed for a placeholder workstream (empty artifacts
+    // map) → 400 invalid_artifact. Until SC-S2 fills the subcontracts artifacts map, every subcontracts
+    // config edit is rejected here, one layer past the cap check.
     await provision("admin.one", "admin");
     const cookie = await login("admin.one");
+    const res = await post(cookie, "/api/config/requests", editBody({ workstream: "subcontracts", artifact_key: "anything" }));
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: "invalid_artifact" });
+  });
+
+  it("a submitter is still rejected on the placeholder workstream by the cap gate (403)", async () => {
+    // The cap gate stays load-bearing: a non-admin without cap.subcontracts.manage is refused at the
+    // cap check (authorization-before-work), never reaching the artifact lookup.
+    await provision("pm.bob", "submitter");
+    const cookie = await login("pm.bob");
     const res = await post(cookie, "/api/config/requests", editBody({ workstream: "subcontracts", artifact_key: "anything" }));
     expect(res.status).toBe(403);
     expect(await res.json()).toMatchObject({ error: "forbidden" });

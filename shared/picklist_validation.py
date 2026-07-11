@@ -311,6 +311,43 @@ if sheet_ids.SHEET_PO_PENDING_REVIEW:
         "Workstream": _PO_WORKSTREAM_VALUES,
     }
 
+# Subcontracts sheets (ITS — Subcontracts / Control; SC-S1). Same placeholder-0 guard. The value sets are
+# the write-gate side of the S1 builders — the builder option lists MUST stay set-equal to these
+# (tests/test_subcontract_s1.py pins the parity; the #247→#253 lesson). Subcontract_Log Status mirrors the
+# D1 subcontracts.status vocabulary MINUS draft/queued (the ledger row is first written at filing).
+# Subcontract_Pending_Review reuses the WSR SENDING-inclusive Send Status set + gates the P1b Workstream
+# tag to {subcontracts}. Trades are the 8 canonical solar-construction trade slots + a specialty catch-all.
+_SUBCONTRACT_LOG_STATUS_VALUES: frozenset[str] = frozenset({
+    "pending_review", "approved", "sent", "executed", "superseded", "canceled",
+})
+_SUBCONTRACT_SEND_STATUS_VALUES: frozenset[str] = _WSR_SEND_STATUS_VALUES
+_SUBCONTRACT_WORKSTREAM_VALUES: frozenset[str] = frozenset({"subcontracts"})
+_SUBCONTRACTOR_REGION_VALUES: frozenset[str] = _VENDOR_REGION_VALUES
+_SUBCONTRACTOR_TRADE_VALUES: frozenset[str] = frozenset({
+    "Surveying", "Civil", "Fencing", "Post Installation", "Mechanical",
+    "AC Electrical", "MV Electrical", "DC Electrical", "Specialty",
+})
+# The subcontract-body terms-profile vocabulary. Hardcoded for S1 (the builder pins the same set);
+# becomes manifest-DERIVED in S2 when the subcontracts terms library lands (mirroring the PO
+# _VENDOR_TERMS_PROFILE_VALUES → manifest-derivation path). Parity-pinned to the builder in tests.
+_SUBCONTRACTOR_TERMS_PROFILE_VALUES: frozenset[str] = frozenset({
+    "standard_subcontract", "negotiated_msa",
+})
+if sheet_ids.SHEET_ITS_SUBCONTRACTORS:
+    REGISTRY[sheet_ids.SHEET_ITS_SUBCONTRACTORS] = {
+        "Active": _ACTIVE_LIFECYCLE_VALUES,
+        "Region": _SUBCONTRACTOR_REGION_VALUES,
+        "Trades": _SUBCONTRACTOR_TRADE_VALUES,
+        "Default Terms Profile": _SUBCONTRACTOR_TERMS_PROFILE_VALUES,
+    }
+if sheet_ids.SHEET_SUBCONTRACT_LOG:
+    REGISTRY[sheet_ids.SHEET_SUBCONTRACT_LOG] = {"Status": _SUBCONTRACT_LOG_STATUS_VALUES}
+if sheet_ids.SHEET_SUBCONTRACT_PENDING_REVIEW:
+    REGISTRY[sheet_ids.SHEET_SUBCONTRACT_PENDING_REVIEW] = {
+        "Send Status": _SUBCONTRACT_SEND_STATUS_VALUES,
+        "Workstream": _SUBCONTRACT_WORKSTREAM_VALUES,
+    }
+
 REGISTRY.update(_build_per_project_entries())
 
 # Re-export StrEnum members so callers can introspect the registry's source

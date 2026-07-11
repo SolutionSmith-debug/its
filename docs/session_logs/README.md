@@ -96,9 +96,13 @@ outside the sentinel block.
 <!-- BEGIN AUTO-INDEX -->
 | Date | Type | Status | Workstream | Title | PRs |
 |------|------|--------|------------|-------|-----|
+| 2026-07-11 | session_log | active | subcontracts | [Subcontract generation workstream — SC-S1 foundation (deterministic, PO-mirror)](2026-07-11_subcontracts-s1-foundation.md) | #529 |
+| 2026-07-10 | session_log | active | _–_ | [Cutover readiness gap — CL-01…CL-33 disposition + verify_cutover baseline (2026-07-10)](2026-07-10_cutover-gap.md) | _–_ |
+| 2026-07-10 | session_log | active | _–_ | [Overnight (autonomous): §50 config-editor Features 1 & 2 + Aug-7 cutover readiness](2026-07-10_overnight-config-editor-features-and-cutover-readiness.md) | #524, #525, #526 |
 | 2026-06-10 | session_log | active | safety_portal | [Session — Agent Optimization (Brief 2) + Safety Portal Hardening (Brief 1)](2026-06-10_agent-optimization-and-portal-hardening.md) | #260, #261, #263, #264, #265, #266 |
 | 2026-07-10 | session_log | closed | _–_ | [Session — Config-editor follow-ups (fix the self-defeating CI test, CE-3) + terms editing (Step 2, slices T1/T2)](2026-07-10_config-editor-followups-terms-editing.md) | #514, #511, #518, #520 |
 | 2026-07-10 | session_log | closed | _–_ | [Session — PO follow-ups (ship-to / catalog / config-view / naming) + the generic §50 config-editor 3-slice vertical (PRs #504–#512, #511 stuck)](2026-07-10_po-followups-and-config-editor-vertical.md) | #504, #505, #506, #507, #508, #509, #510, #511, #512 |
+| 2026-07-10 | session_log | closed | _–_ | [Session — WS2 Operator Dashboard: D1-1 read-only core + D1-2 Class-A config editor + D1-3 sensitive tier (PRs #516, #519, #523)](2026-07-10_ws2-operator-dashboard-d1-1-d1-2-d1-3.md) | #516, #519, #523 |
 | 2026-07-09 | session_log | closed | field_ops | [Session — field-ops mirror-suite full activation + items 1–4 close-out batch + §54 secret-leak backstop](2026-07-09_fieldops-activation-plus-items-1-4-closeout-and-section54.md) | #487, #488, #489 |
 | 2026-07-06 | session_log | closed | field_ops | [Session — M3 Slice 2 Material Incidents ledger: build → deploy → activate (PR #483), plus close-out prep](2026-07-06_m3-slice2-material-incidents-build-deploy-activate.md) | #483 |
 | 2026-07-04 | session_log | closed | progress_reporting | [Session — Progress-Reporting go-live (Track 0) + P7 Slice 1 Hours Log up-sync held on §51, cleared via v19.x rider (exec #459/#461/#463, blueprint #58)](2026-07-04_progress-golive-p7-hours-log-and-s51-rider.md) | #459, #461, #463 |

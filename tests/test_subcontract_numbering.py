@@ -1,0 +1,81 @@
+"""Tests for subcontracts/numbering.py — the 5-segment sc_number parse/format +
+the Subcontract_Log collision double-check (mirror of tests/test_po_numbering.py).
+Smartsheet is mocked (the collision check reads Subcontract_Log through
+subcontracts.subcontract_log).
+
+Run with: pytest -q tests/test_subcontract_numbering.py
+"""
+from __future__ import annotations
+
+import pytest
+
+from subcontracts import numbering, subcontract_log
+
+# ---- parse / format --------------------------------------------------------
+
+
+def test_format_matches_worker_template() -> None:
+    assert numbering.format_sc_number("2026.001", 2, 0, 0) == "2026.001.2.0.0"
+    assert numbering.format_sc_number("2025.358", 1, 2, 11) == "2025.358.1.2.11"
+
+
+@pytest.mark.parametrize("value", [
+    "2025.364.1.0.2",
+    "2025.358.1.2.11",
+    "2023.126.2.0.20",
+    "2026.001.9999.0.0",
+])
+def test_parse_round_trips(value: str) -> None:
+    parsed = numbering.parse_sc_number(value)
+    assert numbering.format_sc_number(*parsed) == value
+
+
+def test_parse_components() -> None:
+    parsed = numbering.parse_sc_number("2025.358.1.2.11")
+    assert parsed.job_no == "2025.358"
+    assert parsed.site_phase == 1
+    assert parsed.supersede_seq == 2
+    assert parsed.revision == 11
+
+
+@pytest.mark.parametrize("bad", [
+    "",
+    "2025.358",              # job_no only
+    "2025.358.1.2",          # four segments — missing revision
+    "25.358.1.2.11",         # 2-digit year
+    "2025.35.1.2.11",        # NNN too short
+    "2025.358.1.2.11.4",     # six segments
+    "2025.358.a.2.11",       # non-numeric segment
+    "folder-2025.364",       # a filename tag, not a number (corpus collision warning)
+])
+def test_parse_rejects_malformed(bad: str) -> None:
+    with pytest.raises(numbering.ScNumberError):
+        numbering.parse_sc_number(bad)
+
+
+# ---- collision double-check -------------------------------------------------
+
+
+def test_no_ledger_row_is_clean(mocker) -> None:
+    mocker.patch.object(subcontract_log, "find_row_by_sc_number", return_value=None)
+    assert numbering.check_collision("2026.001.2.0.0", 7) is None
+
+
+def test_own_retry_row_is_clean(mocker) -> None:
+    """A ledger row carrying OUR d1_id is a crash-retry of a partial filing — the
+    caller resumes idempotently, never fences."""
+    row = {"_row_id": 1, subcontract_log.COL_NOTES: "d1_id=7"}
+    mocker.patch.object(subcontract_log, "find_row_by_sc_number", return_value=row)
+    assert numbering.check_collision("2026.001.2.0.0", 7) is None
+
+
+def test_foreign_row_is_a_collision(mocker) -> None:
+    """A row with a DIFFERENT d1_id — or none at all (a hand-issued subcontract keyed
+    in during the transition) — is a collision: fence, never file."""
+    other = {"_row_id": 1, subcontract_log.COL_NOTES: "d1_id=9"}
+    mocker.patch.object(subcontract_log, "find_row_by_sc_number", return_value=other)
+    assert numbering.check_collision("2026.001.2.0.0", 7) == "sc_number_collision"
+
+    hand_issued = {"_row_id": 2, subcontract_log.COL_NOTES: "keyed in by operator"}
+    mocker.patch.object(subcontract_log, "find_row_by_sc_number", return_value=hand_issued)
+    assert numbering.check_collision("2026.001.2.0.0", 7) == "sc_number_collision"
