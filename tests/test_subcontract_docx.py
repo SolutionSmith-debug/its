@@ -178,7 +178,7 @@ def test_deterministic_core_property_timestamp(tmp_path, monkeypatch):
 def test_byte_identical_across_renders_both_formats(tmp_path, monkeypatch):
     """§47-readiness: a re-render of the SAME record must be BYTE-identical for BOTH formats — this is
     what lets SC-S3c skip a redundant Box upload on an unchanged recompile. The .xlsx is the one that
-    regressed (openpyxl stamps zip members from wall-clock); _normalize_zip_timestamps fixes it. Guards
+    regressed (openpyxl stamps zip members from wall-clock); _normalize_ooxml_clock fixes it. Guards
     against silent regression of that guarantee."""
     _cleared(tmp_path, monkeypatch)
     docx1 = sd.render_subcontract_docx(_record(), _SOV)
