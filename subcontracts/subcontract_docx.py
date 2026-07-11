@@ -9,15 +9,22 @@ Layer-A legal-review, strict token fill) BEFORE any bytes are produced — a bad
 un-cleared terms version, or an unfilled contract blank RAISES and no document is written. The .xlsx
 render independently re-runs the SOV guard.
 
-DETERMINISTIC: no clock reads. Both Office formats embed core-property timestamps; we pin them to the
-subcontract's own agreement date (constructed from the record's `agreement_ymd`, never `datetime.now()`)
-so a re-render of the same record is stable — the analogue of the PO PDF's `invariant=1` CreationDate
-pin that makes §47 version-on-conflict Box filing idempotent.
+DETERMINISTIC — byte-identical output for a fixed record, which is what §47 version-on-conflict Box
+filing relies on (SC-S3c skips a redundant upload when the recompiled bytes are unchanged, mirroring
+the PO PDF's reportlab `invariant=1` CreationDate pin). No clock reads. `_normalize_ooxml_clock` pins BOTH
+wall-clock sources an OOXML package carries to the record's agreement date (`agreement_ymd`, never
+`datetime.now()`):
+  1. `docProps/core.xml`'s `<dcterms:created>`/`<dcterms:modified>` CONTENT (openpyxl overwrites
+     `modified` with `now()` at save time, ignoring the `wb.properties` override); and
+  2. every ZIP member's local-header `date_time` (openpyxl stamps these from wall-clock too).
+Both formats are normalized so the byte-determinism guarantee is uniform (python-docx alone is already
+stable, but is normalized identically).
 """
 from __future__ import annotations
 
 import io
 import re
+import zipfile
 from datetime import datetime
 from typing import Any
 
@@ -53,6 +60,40 @@ def _agreement_datetime(subcontract: dict[str, Any]) -> datetime:
         return datetime(int(ymd[0]), int(ymd[1]), int(ymd[2]))
     except (ValueError, TypeError) as exc:
         raise SubcontractDocxError(f"invalid agreement_ymd {ymd!r}: {exc}") from exc
+
+
+_CORE_DT_RE = re.compile(rb"(<dcterms:(created|modified)[^>]*>)[^<]+(</dcterms:\2>)")
+
+
+def _normalize_ooxml_clock(data: bytes, stamp: datetime) -> bytes:
+    """Rebuild an OOXML (.docx/.xlsx) ZIP with BOTH wall-clock sources pinned to `stamp` (the agreement
+    date), so a re-render of the same record is byte-identical — what §47 idempotent Box filing needs:
+
+      1. every member's ZIP local-header `date_time` (openpyxl's `wb.save()` stamps these from
+         wall-clock, independent of any property override); and
+      2. `docProps/core.xml`'s `<dcterms:created>` / `<dcterms:modified>` CONTENT — openpyxl overwrites
+         `modified` with `now()` at save time regardless of `wb.properties.modified`, so the property
+         pin alone is insufficient; we rewrite the element text to the stamp.
+
+    Member order + all other content are preserved. Deterministic: same input → same output (zlib
+    deflate is deterministic for a fixed level)."""
+    # ZIP dates are bounded to [1980, 2107]; clamp defensively (agreement dates are contemporary).
+    dt = (min(2107, max(1980, stamp.year)), stamp.month, stamp.day, 0, 0, 0)
+    iso = f"{stamp.year:04d}-{stamp.month:02d}-{stamp.day:02d}T00:00:00Z".encode()
+    out = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(data), "r") as src, \
+            zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as dst:
+        for item in src.infolist():
+            content = src.read(item.filename)
+            if item.filename == "docProps/core.xml":
+                content = _CORE_DT_RE.sub(rb"\g<1>" + iso + rb"\g<3>", content)
+            zi = zipfile.ZipInfo(item.filename, date_time=dt)
+            zi.compress_type = item.compress_type
+            zi.external_attr = item.external_attr
+            zi.internal_attr = item.internal_attr
+            zi.create_system = item.create_system
+            dst.writestr(zi, content)
+    return out.getvalue()
 
 
 def render_subcontract_docx(
@@ -121,7 +162,7 @@ def render_subcontract_docx(
 
     buf = io.BytesIO()
     doc.save(buf)
-    return buf.getvalue()
+    return _normalize_ooxml_clock(buf.getvalue(), stamp)
 
 
 def _dollars(cents: int) -> float:
@@ -216,7 +257,7 @@ def render_sov_xlsx(subcontract: dict[str, Any], sov_lines: list[dict[str, Any]]
 
     buf = io.BytesIO()
     wb.save(buf)
-    return buf.getvalue()
+    return _normalize_ooxml_clock(buf.getvalue(), stamp)
 
 
 def render_package(

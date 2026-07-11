@@ -26,7 +26,10 @@ dependencies = [
     "python-docx>=1.1.0",
     # Renders the editable Annex C Schedule-of-Values workbook (subcontracts SC-S3b): the
     # operator wanted the SOV as an editable .xlsx (not a flat PDF) so line values can be
-    # adjusted by hand. openpyxl writes .xlsx with no native toolchain. Deterministic output.
+    # adjusted by hand. openpyxl writes .xlsx with no native toolchain. Output is made
+    # byte-deterministic by subcontract_docx._normalize_zip_timestamps (openpyxl's own save
+    # stamps zip members from wall-clock). §41: latest upstream 3.1.5 (2026); no breaking
+    # changes 3.1.0→3.1.5 (minor/patch lineage) — floor pin, matching this file's convention.
     "openpyxl>=3.1.0",
     "python-dateutil>=2.9.0",
     "holidays>=0.50",

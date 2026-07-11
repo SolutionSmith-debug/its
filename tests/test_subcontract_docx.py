@@ -173,3 +173,26 @@ def test_deterministic_core_property_timestamp(tmp_path, monkeypatch):
     assert d1.core_properties.created == d2.core_properties.created
     assert str(d1.core_properties.created).startswith("2026-07-11")
     assert [p.text for p in d1.paragraphs] == [p.text for p in d2.paragraphs]
+
+
+def test_byte_identical_across_renders_both_formats(tmp_path, monkeypatch):
+    """§47-readiness: a re-render of the SAME record must be BYTE-identical for BOTH formats — this is
+    what lets SC-S3c skip a redundant Box upload on an unchanged recompile. The .xlsx is the one that
+    regressed (openpyxl stamps zip members from wall-clock); _normalize_zip_timestamps fixes it. Guards
+    against silent regression of that guarantee."""
+    _cleared(tmp_path, monkeypatch)
+    docx1 = sd.render_subcontract_docx(_record(), _SOV)
+    docx2 = sd.render_subcontract_docx(_record(), _SOV)
+    xlsx1 = sd.render_sov_xlsx(_record(), _SOV)
+    xlsx2 = sd.render_sov_xlsx(_record(), _SOV)
+    assert docx1 == docx2, "subcontract .docx render is not byte-deterministic"
+    assert xlsx1 == xlsx2, "SOV .xlsx render is not byte-deterministic"
+    # And both still open as valid OOXML after the clock normalization.
+    assert Document(io.BytesIO(docx1)).paragraphs[0].text == "SUBCONTRACT AGREEMENT"
+    assert load_workbook(io.BytesIO(xlsx1)).active["A1"].value == "SCHEDULE OF VALUES (Annex C)"
+    # Directly assert NO wall-clock leak (equality alone can false-pass if two renders hit the same
+    # second): docProps/core.xml's dcterms:modified must be the PINNED agreement date, not a clock time.
+    import zipfile
+    for data in (docx1, xlsx1):
+        core = zipfile.ZipFile(io.BytesIO(data)).read("docProps/core.xml").decode()
+        assert "2026-07-11T00:00:00Z</dcterms:modified>" in core, core
