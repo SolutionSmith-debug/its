@@ -49,6 +49,12 @@ its migration fail-closes `resolveCapabilities` → the universal-lockout class 
 | `0044_po_capability` | PO S2 `cap.po.manage` → admin — [section](#purchase-orders--d1--worker-po-slice-s2--00420044) | (PO S2) | ☐ pending |
 | `0045_create_config_requests` | Config-editor send-free queue — [section](#config-editor-queue--d1--worker-configts-slice-1--0045) | (config S1) | ☐ pending |
 | `0046_config_requests_set_current_op` | Terms make-current: widen `config_requests.op` CHECK for `set_current` — [section](#terms-make-current--layer-a-legal-gate--0046) | (config T2) | ☐ pending |
+| `0047_config_requests_cleared_at` | Config status-monitor forensic-safe Clear: `config_requests.cleared_at` | (config F1, #524) | ☐ pending |
+| `0048_config_requests_create_profile_op` | New-terms-profile op: widen `config_requests.op` CHECK for `create_profile` | (config F2, #526) | ☐ pending |
+| `0049_subcontractors` | Subcontracts S1: `subcontractors` D1 cache (§51 mirror of ITS_Subcontractors) + counter | (SC-S1, #529) | ☐ pending |
+| `0050_subcontracts` | Subcontracts S1: `subcontracts` + `sov_lines` (D1-authoritative drafts) | (SC-S1, #529) | ☐ pending |
+| `0051_subcontracts_capability` | Subcontracts S1: `cap.subcontracts.manage` → admin | (SC-S1, #529) | ☐ pending |
+| `0052_subcontractors_state` | Subcontractors grouped by STATE not region: `subcontractors` region→state rebuild | (SC group-by-state, #533) | ☐ pending |
 
 Canonical apply-and-deploy sequence (applies **all** pending migrations, in order — never a
 subset):
