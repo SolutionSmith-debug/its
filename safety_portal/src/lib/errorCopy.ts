@@ -215,6 +215,9 @@ export const ERROR_COPY: Record<string, string> = {
   invalid_payload: "The change was empty or couldn't be read — check the fields and try again.",
   payload_too_large: "That change is too large to submit — shorten it and try again.",
   config_not_terminal: "That change is still being processed — you can clear it once it's live, archived, or failed.",
+  invalid_profile_id: "The profile id must be lowercase letters, numbers, and underscores (e.g. vendor_acme).",
+  profile_exists: "A terms profile with that id already exists — add a new version to it instead of creating a new profile.",
+  invalid_profile_kind: "Pick a profile kind — Library (versioned text) or Attach (a reference line to a negotiated GTC).",
 };
 
 /** Humanize an unknown wire code: 'some_new_code' → 'some new code'. */

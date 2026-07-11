@@ -42,6 +42,35 @@ def test_profile_ids_match_vendors_picklist_vocabulary():
         assert reserved not in picklist_validation._VENDOR_TERMS_PROFILE_VALUES
 
 
+def test_vendor_terms_picklist_is_derived_from_manifest(tmp_path):
+    """§50 create_profile auto-registration: the picklist vocabulary is DERIVED from the manifest, so a
+    NEW manifest profile joins the ITS_Vendors 'Default Terms Profile' options with no separate
+    frozenset edit / shared-module commit — reserved ids stay out (only `profiles` keys join)."""
+    manifest = {
+        "manifest_version": 1,
+        "profiles": {"standard_17": {"kind": "library"}, "brand_new_vendor": {"kind": "library"}},
+        "reserved_profile_ids": {"field_21": "reserved — must NOT join the picklist"},
+    }
+    p = tmp_path / "manifest.json"
+    p.write_text(json.dumps(manifest), encoding="utf-8")
+    derived = picklist_validation._derive_vendor_terms_profile_values(p)
+    assert derived == frozenset({"standard_17", "brand_new_vendor"})
+    assert "field_21" not in derived  # reserved ids never join
+
+
+def test_vendor_terms_picklist_derivation_falls_back_when_manifest_unreadable(tmp_path):
+    """A missing/corrupt manifest must NEVER break the import — fall back to the seeded set."""
+    missing = tmp_path / "does_not_exist.json"
+    assert picklist_validation._derive_vendor_terms_profile_values(missing) == frozenset(
+        {"standard_17", "chint_vendor", "negotiated_gtc"}
+    )
+    bad = tmp_path / "bad.json"
+    bad.write_text("{not json", encoding="utf-8")
+    assert picklist_validation._derive_vendor_terms_profile_values(bad) == frozenset(
+        {"standard_17", "chint_vendor", "negotiated_gtc"}
+    )
+
+
 def test_every_declared_version_file_exists_and_hash_matches():
     for profile_id, profile in terms.list_profiles().items():
         if profile["kind"] != "library":

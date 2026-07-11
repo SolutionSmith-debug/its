@@ -392,7 +392,7 @@ export async function fetchPoConfig(): Promise<PoConfig> {
  *  new sha-pinned terms version (ships legal_review: pending — the deliberate legal gate);
  *  `set_current` makes an existing terms version live (clears its legal_review + repoints
  *  current_version) — the operator's confirmable legal-activation action. */
-export type ConfigOp = "edit" | "add_version" | "set_current";
+export type ConfigOp = "edit" | "add_version" | "set_current" | "create_profile";
 
 /** POST /api/config/requests body (worker/config.ts). `payload` is the full artifact value;
  *  `target_version` rides ONLY an add_version (a lowercase [a-z0-9_] slug, e.g. standard_17_v2). */

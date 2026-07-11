@@ -26,8 +26,10 @@ remain free-form by design.
 """
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
 from . import sheet_ids
@@ -267,9 +269,33 @@ _VENDOR_SUPPLY_CATEGORY_VALUES: frozenset[str] = frozenset({
     "combiners", "transformers", "fencing", "aggregate", "concrete",
     "tools_rentals", "other",
 })
-_VENDOR_TERMS_PROFILE_VALUES: frozenset[str] = frozenset({
-    "standard_17", "chint_vendor", "negotiated_gtc",
-})
+def _derive_vendor_terms_profile_values(manifest_path: Path | None = None) -> frozenset[str]:
+    """The ITS_Vendors 'Default Terms Profile' vocabulary IS the terms manifest's profile ids — the
+    manifest (``po_materials/terms/manifest.json``) is the single source of truth (its own comment says
+    so; ``tests/test_po_terms.py`` pins the parity). DERIVING here — rather than hand-maintaining a
+    parallel frozenset — means a ``create_profile`` actuation that commits a new manifest profile
+    AUTO-registers this picklist value with NO separate shared-module edit or commit (the actuator
+    commits only ``po_materials/``). Reads the file directly (NO ``po_materials`` import — ``shared/``
+    must not depend on a workstream module); falls back to the seeded set if the manifest is unreadable,
+    so this import can NEVER break. Only the manifest's ``profiles`` keys (never ``reserved_profile_ids``)
+    join the vocabulary, so reserved ids stay out of the picklist. §50 config-editor create_profile."""
+    if manifest_path is None:
+        manifest_path = Path(__file__).resolve().parent.parent / "po_materials" / "terms" / "manifest.json"
+    fallback = frozenset({"standard_17", "chint_vendor", "negotiated_gtc"})
+    try:
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        profiles = data.get("profiles")
+        if isinstance(profiles, dict) and profiles:
+            return frozenset(str(k) for k in profiles)
+    except Exception:  # noqa: BLE001 — a bad/missing manifest must NEVER break this import
+        LOGGER.warning(
+            "picklist_validation: could not derive terms profile ids from the manifest; "
+            "using the seeded fallback set"
+        )
+    return fallback
+
+
+_VENDOR_TERMS_PROFILE_VALUES: frozenset[str] = _derive_vendor_terms_profile_values()
 if sheet_ids.SHEET_ITS_VENDORS:
     REGISTRY[sheet_ids.SHEET_ITS_VENDORS] = {
         "Active": _ACTIVE_LIFECYCLE_VALUES,
