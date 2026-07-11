@@ -1,0 +1,30 @@
+{
+  "manifest_version": 1,
+  "comment": "Subcontract terms library (ADR-0003, SC-S2). Profile ids are the vocabulary of the ITS_Subcontractors 'Default Terms Profile' picklist (shared/picklist_validation._SUBCONTRACTOR_TERMS_PROFILE_VALUES — DERIVED from this manifest, mirroring the PO terms picklist). Version files are IMMUTABLE and sha256-pinned: a wording change is a NEW _vN file, never an edit. The 27-article body carries {{tokens}} filled per-deal by subcontract_generate; legal_review gates live rendering (Layer A — the operator clears a version via the config editor's 'make current').",
+  "profiles": {
+    "standard_subcontract": {
+      "kind": "library",
+      "label": "Standard 27-article subcontract (2020)",
+      "description": "Evergreen's standard solar-construction subcontract body — the 27-article legal instrument (preamble + Articles 1-27 + signature block). The single most-used form (6 of 7 corpus projects).",
+      "source": "05_Subcontracts/Blank/Subcontract Template 2-10-20.docx",
+      "current_version": "v1",
+      "versions": {
+        "v1": {
+          "file": "standard_subcontract_v1.md",
+          "sha256": "52bb4a6ddab83da42074631d7067b623136a8cff5998ae6c065aa99993054b48",
+          "tokens": ["agreement_date", "contract_price_clause", "contractor_entity", "governing_law_state_name", "governing_law_venue", "owner_entity", "prime_contractor", "project_name", "signature_entity", "subcontractor_entity"],
+          "legal_review": "pending"
+        }
+      }
+    },
+    "negotiated_msa": {
+      "kind": "attach",
+      "label": "Negotiated MSA (attach-not-generate)",
+      "description": "Subcontractors with a negotiated Master Subcontract Agreement: the renderer emits ONLY the reference line below; the MSA document is attached at send (fast-follow) or already held by both parties. The subcontractor's ITS_Subcontractors 'MSA Reference' cell carries the Box link.",
+      "render_line": "THE WORK DESCRIBED HEREIN IS PERFORMED UNDER, AND SUBJECT TO, THE NEGOTIATED MASTER SUBCONTRACT AGREEMENT BETWEEN CONTRACTOR AND SUBCONTRACTOR."
+    }
+  },
+  "reserved_profile_ids": {
+    "short_form": "The 4-article Short Form Contract (KSI monthly/recurring subs, corpus 2025.201) — id reserved, transcription deferred to a later slice. Joins the picklist + this manifest when built."
+  }
+}

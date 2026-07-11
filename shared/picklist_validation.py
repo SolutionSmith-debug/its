@@ -327,12 +327,28 @@ _SUBCONTRACTOR_TRADE_VALUES: frozenset[str] = frozenset({
     "Surveying", "Civil", "Fencing", "Post Installation", "Mechanical",
     "AC Electrical", "MV Electrical", "DC Electrical", "Specialty",
 })
-# The subcontract-body terms-profile vocabulary. Hardcoded for S1 (the builder pins the same set);
-# becomes manifest-DERIVED in S2 when the subcontracts terms library lands (mirroring the PO
-# _VENDOR_TERMS_PROFILE_VALUES → manifest-derivation path). Parity-pinned to the builder in tests.
-_SUBCONTRACTOR_TERMS_PROFILE_VALUES: frozenset[str] = frozenset({
-    "standard_subcontract", "negotiated_msa",
-})
+# The subcontract-body terms-profile vocabulary — now manifest-DERIVED (SC-S2), mirroring the PO
+# _VENDOR_TERMS_PROFILE_VALUES path: a create_profile actuation committing a new subcontracts/terms
+# manifest profile AUTO-registers this picklist value with no separate shared edit. Reads the file
+# directly (no subcontracts import); falls back to the seeded set if unreadable; reserved ids excluded.
+def _derive_subcontractor_terms_profile_values(manifest_path: Path | None = None) -> frozenset[str]:
+    if manifest_path is None:
+        manifest_path = Path(__file__).resolve().parent.parent / "subcontracts" / "terms" / "manifest.json"
+    fallback = frozenset({"standard_subcontract", "negotiated_msa"})
+    try:
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        profiles = data.get("profiles")
+        if isinstance(profiles, dict) and profiles:
+            return frozenset(str(k) for k in profiles)
+    except Exception:  # noqa: BLE001 — a bad/missing manifest must NEVER break this import
+        LOGGER.warning(
+            "picklist_validation: could not derive subcontract terms profile ids from the manifest; "
+            "using the seeded fallback set"
+        )
+    return fallback
+
+
+_SUBCONTRACTOR_TERMS_PROFILE_VALUES: frozenset[str] = _derive_subcontractor_terms_profile_values()
 if sheet_ids.SHEET_ITS_SUBCONTRACTORS:
     REGISTRY[sheet_ids.SHEET_ITS_SUBCONTRACTORS] = {
         "Active": _ACTIVE_LIFECYCLE_VALUES,

@@ -64,12 +64,25 @@ class ConfigApplyError(Exception):
     as ``failure_reason``; the config is NOT published."""
 
 
-def _config_dir(root: Path) -> Path:
-    return root / "po_materials" / "config"
+# The §50 config editor is GENERIC over workstreams (worker/config.ts CONFIG_REGISTRY). Each
+# workstream's versioned config lives under `<workstream>/config` + `<workstream>/terms`. The default
+# is `po_materials` so every existing PO call site + test is byte-identical; `subcontracts` (SC-S2)
+# threads its workstream explicitly. An unknown workstream fails closed here (never writes a stray dir).
+_WORKSTREAM_SUBDIR = {"po_materials": "po_materials", "subcontracts": "subcontracts"}
 
 
-def _terms_dir(root: Path) -> Path:
-    return root / "po_materials" / "terms"
+def _subdir(workstream: str) -> str:
+    if workstream not in _WORKSTREAM_SUBDIR:
+        raise ConfigApplyError(f"unknown config workstream {workstream!r}")
+    return _WORKSTREAM_SUBDIR[workstream]
+
+
+def _config_dir(root: Path, workstream: str = "po_materials") -> Path:
+    return root / _subdir(workstream) / "config"
+
+
+def _terms_dir(root: Path, workstream: str = "po_materials") -> Path:
+    return root / _subdir(workstream) / "terms"
 
 
 def _dump(obj: Any) -> str:
@@ -208,7 +221,8 @@ def _apply_purchaser_edit(payload: dict[str, Any], root: Path) -> str:
 
 
 def _apply_terms_add_version(
-    payload: dict[str, Any], target_version: str | None, root: Path
+    payload: dict[str, Any], target_version: str | None, root: Path,
+    workstream: str = "po_materials",
 ) -> str:
     if not isinstance(target_version, str) or not target_version:
         raise ConfigApplyError("terms add_version: target_version is required")
@@ -227,7 +241,7 @@ def _apply_terms_add_version(
         raise ConfigApplyError(
             f"terms add_version: text is {len(text)} chars (> {_MAX_TERMS_TEXT} limit)"
         )
-    manifest_path = _terms_dir(root) / "manifest.json"
+    manifest_path = _terms_dir(root, workstream) / "manifest.json"
     manifest = _load_json_file(manifest_path, "terms/manifest.json")
     profiles = manifest.get("profiles")
     if not isinstance(profiles, dict) or profile_id not in profiles:
@@ -251,7 +265,7 @@ def _apply_terms_add_version(
             "— version files are immutable; pick a new version id"
         )
     file_name = f"{target_version}.md"
-    file_path = _terms_dir(root) / file_name
+    file_path = _terms_dir(root, workstream) / file_name
     if file_path.exists():
         raise ConfigApplyError(
             f"terms add_version: {file_name} already exists on disk — refusing to overwrite "
@@ -281,7 +295,8 @@ def _apply_terms_add_version(
 
 
 def _apply_terms_set_current(
-    payload: dict[str, Any], target_version: str | None, root: Path
+    payload: dict[str, Any], target_version: str | None, root: Path,
+    workstream: str = "po_materials",
 ) -> str:
     """Make an existing terms version the profile's CURRENT version and CLEAR its legal review — the
     operator's confirmable "I've reviewed this — make it live" action (the legal-activation step).
@@ -299,7 +314,7 @@ def _apply_terms_set_current(
     profile_id = payload.get("profile_id")
     if not isinstance(profile_id, str) or not profile_id:
         raise ConfigApplyError("terms set_current: profile_id is required")
-    manifest_path = _terms_dir(root) / "manifest.json"
+    manifest_path = _terms_dir(root, workstream) / "manifest.json"
     manifest = _load_json_file(manifest_path, "terms/manifest.json")
     profiles = manifest.get("profiles")
     if not isinstance(profiles, dict) or profile_id not in profiles:
@@ -333,7 +348,7 @@ def _apply_terms_set_current(
     return f"terms: {profile_id} current_version -> {target_version} (legal_review cleared)"
 
 
-def _apply_terms_create_profile(payload: dict[str, Any], root: Path) -> str:
+def _apply_terms_create_profile(payload: dict[str, Any], root: Path, workstream: str = "po_materials") -> str:
     """Mint a BRAND-NEW terms profile in the manifest — a ``library`` profile (a manifest entry + an
     immutable sha256-pinned initial version file, ``legal_review: "pending"``) or an ``attach`` profile
     (a manifest entry with only a ``render_line``). The NEW profile id is validated against live HEAD
@@ -367,7 +382,7 @@ def _apply_terms_create_profile(payload: dict[str, Any], root: Path) -> str:
     if description is not None and (not isinstance(description, str) or len(description) > 1000):
         raise ConfigApplyError("terms create_profile: description must be a string <= 1000 chars")
 
-    manifest_path = _terms_dir(root) / "manifest.json"
+    manifest_path = _terms_dir(root, workstream) / "manifest.json"
     manifest = _load_json_file(manifest_path, "terms/manifest.json")
     profiles = manifest.get("profiles")
     if not isinstance(profiles, dict):
@@ -403,7 +418,7 @@ def _apply_terms_create_profile(payload: dict[str, Any], root: Path) -> str:
             )
         # Namespace the file by profile id so two profiles' version ids can't collide on disk.
         file_name = f"{profile_id}_{version_id}.md"
-        file_path = _terms_dir(root) / file_name
+        file_path = _terms_dir(root, workstream) / file_name
         if file_path.exists():
             raise ConfigApplyError(
                 f"terms create_profile: {file_name} already exists on disk — refusing to overwrite"
@@ -439,33 +454,127 @@ def _apply_terms_create_profile(payload: dict[str, Any], root: Path) -> str:
     return note
 
 
+# ── subcontracts / contractor (json edit) ──────────────────────────────────────────────
+
+
+def _apply_contractor_edit(payload: dict[str, Any], root: Path) -> str:
+    """The Evergreen Contractor identity (ADR-0003) — entity, address, phone, the signature entity,
+    and the default prime-contractor. Mirrors _apply_purchaser_edit; NO invoice-routing (a subcontract
+    has no invoice-to). Writes subcontracts/config/contractor.json + bumps config_version."""
+    entity = payload.get("entity")
+    if not isinstance(entity, str) or not entity.strip() or len(entity) > _MAX_TEXT_FIELD:
+        raise ConfigApplyError("contractor edit: entity must be a non-empty string")
+    address_lines = payload.get("address_lines")
+    if not isinstance(address_lines, list) or not address_lines:
+        raise ConfigApplyError("contractor edit: address_lines must be a non-empty list")
+    for line in address_lines:
+        if not isinstance(line, str) or not line.strip() or len(line) > _MAX_TEXT_FIELD:
+            raise ConfigApplyError("contractor edit: every address line must be a non-empty string")
+    phone = payload.get("phone")
+    if not isinstance(phone, str) or not phone.strip() or len(phone) > _MAX_TEXT_FIELD:
+        raise ConfigApplyError("contractor edit: phone must be a non-empty string")
+    sig = payload.get("signature_entity")
+    if not isinstance(sig, str) or not sig.strip() or len(sig) > _MAX_TEXT_FIELD:
+        raise ConfigApplyError("contractor edit: signature_entity must be a non-empty string")
+    prime = payload.get("prime_contractor_default")
+    if not isinstance(prime, str) or not prime.strip() or len(prime) > _MAX_TEXT_FIELD:
+        raise ConfigApplyError("contractor edit: prime_contractor_default must be a non-empty string")
+    path = _config_dir(root, "subcontracts") / "contractor.json"
+    current = _load_json_file(path, "contractor.json")
+    new = dict(current)
+    new["config_version"] = _next_config_version(current)
+    new["entity"] = entity
+    new["address_lines"] = list(address_lines)
+    new["phone"] = phone
+    new["signature_entity"] = sig
+    new["prime_contractor_default"] = prime
+    path.write_text(_dump(new), encoding="utf-8")
+    return f"contractor: {entity} -> config_version {new['config_version']}"
+
+
+# ── subcontracts / payment_terms (json edit) ────────────────────────────────────────────
+
+
+def _apply_payment_terms_edit(payload: dict[str, Any], root: Path) -> str:
+    """The §2.5 retention model defaults (ADR-0003) — integer basis points, no floats. The fixed §2.5
+    clause language lives in the terms body; this only sets the defaults a new subcontract inherits."""
+    def _bp(key: str, lo: int, hi: int) -> int:
+        v = payload.get(key)
+        if isinstance(v, bool) or not isinstance(v, int) or v < lo or v > hi:
+            raise ConfigApplyError(f"payment_terms edit: {key} must be an INTEGER in [{lo}, {hi}] (got {v!r})")
+        return v
+    retainage_bp = _bp("retainage_bp", 0, _MAX_BP)
+    retainage_reduced_bp = _bp("retainage_reduced_bp", 0, retainage_bp)
+    reduction_at_pct = _bp("retainage_reduction_at_pct", 0, 100)
+    app_day = _bp("application_for_payment_day", 1, 31)
+    pay_day = _bp("progress_payment_day", 1, 31)
+    path = _config_dir(root, "subcontracts") / "payment_terms.json"
+    current = _load_json_file(path, "payment_terms.json")
+    new = dict(current)
+    new["config_version"] = _next_config_version(current)
+    new["retainage_bp"] = retainage_bp
+    new["retainage_reduced_bp"] = retainage_reduced_bp
+    new["retainage_reduction_at_pct"] = reduction_at_pct
+    new["application_for_payment_day"] = app_day
+    new["progress_payment_day"] = pay_day
+    path.write_text(_dump(new), encoding="utf-8")
+    return f"payment_terms: retainage {retainage_bp}bp -> config_version {new['config_version']}"
+
+
 def apply_config(request: dict[str, Any], root: Path) -> str:
     """Validate + WRITE the config request's artifact against live HEAD under ``root``.
 
-    Returns a human note for the commit message. Raises ``ConfigApplyError`` on any
-    validation failure (the actuator stamps failed('validated')). Dispatches on
-    (artifact_key, op); the (artifact, op) pairing itself is re-checked (the Worker's
-    ``config.ts`` is the first gate, this is the authoritative live-HEAD re-check)."""
+    Returns a human note for the commit message. Raises ``ConfigApplyError`` on any validation
+    failure (the actuator stamps failed('validated')). Dispatches on (WORKSTREAM, artifact_key, op) —
+    the config editor is generic over workstreams (worker/config.ts CONFIG_REGISTRY); po_materials and
+    subcontracts each have their own artifact set under their own <workstream>/config + /terms dirs.
+    The (workstream, artifact, op) pairing is re-checked here (the Worker's config.ts is the first
+    gate; this is the authoritative live-HEAD re-check)."""
+    workstream = request.get("workstream") or "po_materials"
     artifact = request.get("artifact_key")
     op = request.get("op")
     payload = _parse_payload(request)
 
-    if artifact == "tax":
-        if op != "edit":
-            raise ConfigApplyError(f"tax takes op 'edit', got {op!r}")
-        return _apply_tax_edit(payload, root)
-    if artifact == "purchaser":
-        if op != "edit":
-            raise ConfigApplyError(f"purchaser takes op 'edit', got {op!r}")
-        return _apply_purchaser_edit(payload, root)
-    if artifact == "terms":
-        if op == "add_version":
-            return _apply_terms_add_version(payload, request.get("target_version"), root)
-        if op == "set_current":
-            return _apply_terms_set_current(payload, request.get("target_version"), root)
-        if op == "create_profile":
-            return _apply_terms_create_profile(payload, root)
-        raise ConfigApplyError(
-            f"terms takes op 'add_version', 'set_current' or 'create_profile', got {op!r}"
-        )
-    raise ConfigApplyError(f"unknown config artifact {artifact!r}")
+    if workstream == "po_materials":
+        if artifact == "tax":
+            if op != "edit":
+                raise ConfigApplyError(f"tax takes op 'edit', got {op!r}")
+            return _apply_tax_edit(payload, root)
+        if artifact == "purchaser":
+            if op != "edit":
+                raise ConfigApplyError(f"purchaser takes op 'edit', got {op!r}")
+            return _apply_purchaser_edit(payload, root)
+        if artifact == "terms":
+            if op == "add_version":
+                return _apply_terms_add_version(payload, request.get("target_version"), root)
+            if op == "set_current":
+                return _apply_terms_set_current(payload, request.get("target_version"), root)
+            if op == "create_profile":
+                return _apply_terms_create_profile(payload, root)
+            raise ConfigApplyError(
+                f"terms takes op 'add_version', 'set_current' or 'create_profile', got {op!r}"
+            )
+        raise ConfigApplyError(f"unknown po_materials config artifact {artifact!r}")
+
+    if workstream == "subcontracts":
+        if artifact == "contractor":
+            if op != "edit":
+                raise ConfigApplyError(f"contractor takes op 'edit', got {op!r}")
+            return _apply_contractor_edit(payload, root)
+        if artifact == "payment_terms":
+            if op != "edit":
+                raise ConfigApplyError(f"payment_terms takes op 'edit', got {op!r}")
+            return _apply_payment_terms_edit(payload, root)
+        if artifact == "terms":
+            if op == "add_version":
+                return _apply_terms_add_version(payload, request.get("target_version"), root, "subcontracts")
+            if op == "set_current":
+                return _apply_terms_set_current(payload, request.get("target_version"), root, "subcontracts")
+            if op == "create_profile":
+                return _apply_terms_create_profile(payload, root, "subcontracts")
+            raise ConfigApplyError(
+                f"terms takes op 'add_version', 'set_current' or 'create_profile', got {op!r}"
+            )
+        raise ConfigApplyError(f"unknown subcontracts config artifact {artifact!r}")
+
+    raise ConfigApplyError(f"unknown config workstream {workstream!r}")
