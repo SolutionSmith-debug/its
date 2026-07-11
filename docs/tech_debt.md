@@ -4,6 +4,19 @@ Items deliberately deferred. Each carries the rationale for deferral and the tri
 
 When to add an entry: a session deliberately chooses preservation-over-refactor (per Op Stds v11 §14), discovers an external-API constraint that forced a workaround, or defers a non-trivial cleanup that's larger than the current session can absorb. When to mark CLOSED: the underlying item is resolved in a commit; preserve the entry with resolution detail rather than deleting (history is cheap, context is expensive).
 
+## Subcontracts — SC-S3b Exhibit A blocked on the `exhibit_trade_templates` config artifact [OPEN 2026-07-11]
+
+ADR-0003 scopes the subcontract package as Subcontract body + **Exhibit A** (Art I/III/IV/VI fixed +
+operator-authored trade-templated Art II) + SOV + fixed annex kit. SC-S3b (#534) shipped the **body .docx +
+SOV .xlsx** render (`subcontracts/subcontract_docx.py`), but **Exhibit A is not rendered** because SC-S2
+(#531) did not ship the `exhibit_trade_templates` config artifact its Art II needs (only `contractor.json`
++ `payment_terms.json` + the body `terms/manifest.json` landed). Building Exhibit A ad-hoc would mean
+inventing legal Art I/III/IV/VI text + trade scaffolds not sourced from the corpus — deliberately deferred.
+**Trigger:** ship the `exhibit_trade_templates` config (transcribe Art I/III/IV/VI from the corpus
+`Blank/` Exhibit A templates; scaffold Art II per trade from `scratchpad/subk_seed/01_exhibit_a_general`
++ `02_exhibit_a_electrical`), then add `render_exhibit_a_docx` to `subcontract_docx.py`. See
+`project_subcontracts-workflow` memory + the 2026-07-11_subcontracts-s3a-s3b session log.
+
 ## Config editor (§50) — deferred follow-ups [OPEN 2026-07-10]
 
 From the slice-2 (`config_actuator`) build + adversarial review (PR #509):
