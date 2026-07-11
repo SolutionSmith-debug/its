@@ -185,6 +185,14 @@ GATED_SCRIPTS: list[tuple[str, list[str]]] = [
         ["graph_client", "send_mail", "resend", "smtplib", "email.mime",
          "anthropic", "anthropic_client"],
     ),
+    (
+        # subcontract_docx (SC-S3b) layers the EDITABLE .docx/.xlsx render on the S3a text core —
+        # still pure data → document bytes (python-docx / openpyxl), runs the same gate chain before
+        # emitting bytes, and has zero send / zero LLM (operator directive — no AI in generation).
+        "subcontracts/subcontract_docx.py",
+        ["graph_client", "send_mail", "resend", "smtplib", "email.mime",
+         "anthropic", "anthropic_client"],
+    ),
 ]
 
 # Send scripts: must NOT import any AI capability.

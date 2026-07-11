@@ -24,6 +24,10 @@ dependencies = [
     "msal>=1.28.0",
     "requests>=2.32.0",
     "python-docx>=1.1.0",
+    # Renders the editable Annex C Schedule-of-Values workbook (subcontracts SC-S3b): the
+    # operator wanted the SOV as an editable .xlsx (not a flat PDF) so line values can be
+    # adjusted by hand. openpyxl writes .xlsx with no native toolchain. Deterministic output.
+    "openpyxl>=3.1.0",
     "python-dateutil>=2.9.0",
     "holidays>=0.50",
     "sentry-sdk>=2.0,<3.0",
@@ -125,5 +129,5 @@ markers = [
 # no maintained stubs upstream as of 2026-05.
 [[tool.mypy.overrides]]
 module = ["msal", "msal.*", "smartsheet", "smartsheet.*", "boxsdk", "boxsdk.*", "reportlab", "reportlab.*",
-          "PIL", "PIL.*", "pyclamd", "pyclamd.*"]
+          "PIL", "PIL.*", "pyclamd", "pyclamd.*", "docx", "docx.*", "openpyxl", "openpyxl.*"]
 ignore_missing_imports = true
