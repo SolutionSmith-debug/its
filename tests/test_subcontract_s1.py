@@ -50,6 +50,25 @@ def test_subcontract_log_builder_status_options_match_registry_and_module():
     assert subcontract_log.LEGAL_STATUSES == picklist_validation._SUBCONTRACT_LOG_STATUS_VALUES
 
 
+def test_subcontract_log_module_col_titles_match_builder_columns():
+    """Every subcontract_log.COL_* constant must be an ACTUAL Subcontract_Log column title — the
+    ledger writes rows keyed by these titles through smartsheet_client (a title the sheet lacks
+    KeyErrors the FIRST filing). Ops-stds-enforcer caught the 'SC PDF' vs 'Subcontract PDF' fork
+    drift here; this test red-lights that class automatically. (Mirror of the WSR-twin title test.)"""
+    builder_titles = {c["title"] for c in sc_log_mig.COLUMN_SCHEMA}
+    module_titles = {
+        v for n, v in vars(subcontract_log).items()
+        if n.startswith("COL_") and isinstance(v, str)
+    }
+    assert module_titles, "no COL_* constants found in subcontract_log — test wiring broke"
+    missing = module_titles - builder_titles
+    assert not missing, (
+        f"subcontract_log COL_* {sorted(missing)} are not real Subcontract_Log columns — the "
+        f"builder titles are {sorted(builder_titles)}. A ledger write keyed on a missing title "
+        "KeyErrors the first filing."
+    )
+
+
 def test_subcontract_review_builder_options_match_registry_sets():
     assert set(sc_review_mig.SEND_STATUS_OPTIONS) == picklist_validation._SUBCONTRACT_SEND_STATUS_VALUES
     assert set(sc_review_mig.WORKSTREAM_OPTIONS) == picklist_validation._SUBCONTRACT_WORKSTREAM_VALUES
