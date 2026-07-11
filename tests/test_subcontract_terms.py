@@ -19,10 +19,14 @@ def _manifest() -> dict:
     return json.loads((_TERMS_DIR / "manifest.json").read_text(encoding="utf-8"))
 
 
-def test_manifest_declares_expected_profiles():
+def test_manifest_contains_the_seeded_profiles():
+    # SUBSET, not equality: the operator can create_profile (add more) via the config editor, so an
+    # exact-set pin would RED the moment a profile is added and strand the actuation PR (HOUSE_REFLEXES
+    # §5 / PR-511). Assert the seeded profiles are PRESENT + the map is non-empty.
     m = _manifest()
     assert m["manifest_version"] == 1
-    assert set(m["profiles"]) == {"standard_subcontract", "negotiated_msa"}
+    assert isinstance(m["profiles"], dict) and m["profiles"]
+    assert {"standard_subcontract", "negotiated_msa"} <= set(m["profiles"])
 
 
 def test_standard_body_file_hash_and_tokens_match_manifest():
@@ -42,11 +46,11 @@ def test_standard_body_carries_no_residual_specimen_data():
         assert leak not in raw, f"residual specimen data leaked: {leak!r}"
 
 
-def test_standard_body_is_legal_review_pending_until_operator_clears():
-    """Seeded pending: the render-side Layer-A gate fences it until the operator makes it current
-    (the legal attestation). A smoke requires that one-click make-current first."""
-    v = _manifest()["profiles"]["standard_subcontract"]["versions"]["v1"]
-    assert v["legal_review"] == "pending"
+# NOTE: no `legal_review == "pending"` assertion here. That flips to "cleared" the instant the
+# operator does make-current on the body (the intended first smoke step), so pinning it live would be
+# a self-defeating landmine (HOUSE_REFLEXES §5). The seed's ships-pending property is a one-time fact,
+# not a permanent invariant; add_version's pending-default is covered in test_config_apply.py on a tmp
+# fixture. The Layer-A render gate itself is enforced + tested where the subcontracts renderer lands (S3).
 
 
 def test_picklist_is_derived_from_the_subcontract_manifest():

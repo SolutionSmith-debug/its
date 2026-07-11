@@ -227,16 +227,22 @@ def _gh(*args: str) -> str:
     return subprocess.run(["gh", *args], cwd=_ROOT, check=True, capture_output=True, text=True).stdout
 
 
+# The terms dirs among _MANAGED_PATHS — derived so a new workstream can't reintroduce the git-clean
+# gap: every managed `<ws>/terms` must be cleaned of orphaned _vN.md, not just po_materials's.
+_MANAGED_TERMS_DIRS = tuple(p for p in _MANAGED_PATHS if p.endswith("/terms"))
+
+
 def _reset_to_main() -> None:
     """Start each actuation from a CLEAN, current main — recover from any interrupted prior
     cycle (a leftover branch + uncommitted config/terms edits, or a stray new terms _vN.md).
-    Discards ONLY the daemon-managed paths (po_materials/config + po_materials/terms); the
+    Discards ONLY the daemon-managed paths (po_materials + subcontracts config/terms); the
     operator's untracked files elsewhere in ~/its are never touched."""
     _git("checkout", "--", *_MANAGED_PATHS)
-    # terms/ holds only the tracked manifest + shipped version files, so any UNTRACKED file
-    # here is a stray new _vN.md from an interrupted add_version — clean it so it can't ride
-    # into the next commit.
-    _git("clean", "-fd", "po_materials/terms")
+    # Each managed terms/ dir holds only the tracked manifest + shipped version files, so any
+    # UNTRACKED file there is a stray new _vN.md from an interrupted add_version/create_profile —
+    # clean EVERY managed terms dir so an orphan can't ride into an unrelated request's next commit
+    # (§50 per-request actuation integrity; the clean must cover the same dirs `git add` sweeps).
+    _git("clean", "-fd", *_MANAGED_TERMS_DIRS)
     _git("checkout", "main")
     _git("pull", "--ff-only", "origin", "main")
 

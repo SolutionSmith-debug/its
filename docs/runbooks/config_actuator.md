@@ -34,6 +34,14 @@ privileged actuator that makes it real. Per claimed request it:
 
 Any stage failure stamps `failed(stage, reason)` and fires an operator **CRITICAL**.
 
+**Also actuates SUBCONTRACTS config (as of SC-S2).** This SAME `po_materials.config_actuator` daemon —
+same gate (`po_materials.config_actuator.polling_enabled`), same daemon identity, NO separate switch —
+now actuates `subcontracts` config requests too (the `contractor` / `payment_terms` JSON artifacts + the
+`terms` subcontract-body library under `subcontracts/config` + `subcontracts/terms`). The config editor
+is workstream-generic; `config_apply.apply_config` dispatches per `(workstream, artifact)`. So a stuck
+SUBCONTRACTS config edit is diagnosed + repaired exactly like a PO one below (same `error_code`s, same
+Tier-2 boundary) — there is no subcontracts-specific daemon or runbook.
+
 **Status-monitor "Clear" (portal-side dismissal — NOT an actuation).** The PO Config status monitor
 has a **Clear** button on each *terminal* row (`live` / `archived` / `failed`). It is a browser-only
 soft-dismiss (`POST /api/config/requests/:id/clear`, session + `cap.po.manage`, **no** config token):
