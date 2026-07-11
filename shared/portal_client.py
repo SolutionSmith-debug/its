@@ -86,6 +86,12 @@ PO_STATUS_SYNC_PATH = "/api/po/internal/status-sync"
 PO_VENDORS_SYNC_PATH = "/api/po/internal/vendors/sync"
 PO_VENDORS_PENDING_PATH = "/api/po/internal/vendors/pending"
 PO_VENDORS_MARK_MIRRORED_PATH = "/api/po/internal/vendors/mark-mirrored"
+SUB_PENDING_PATH = "/api/subcontracts/internal/pending"
+SUB_MARK_FILED_PATH = "/api/subcontracts/internal/mark-filed"
+SUB_STATUS_SYNC_PATH = "/api/subcontracts/internal/status-sync"
+SUB_SUBCONTRACTORS_SYNC_PATH = "/api/subcontracts/internal/subcontractors/sync"
+SUB_SUBCONTRACTORS_PENDING_PATH = "/api/subcontracts/internal/subcontractors/pending"
+SUB_SUBCONTRACTORS_MARK_MIRRORED_PATH = "/api/subcontracts/internal/subcontractors/mark-mirrored"
 
 
 # ---- Typed exceptions ----------------------------------------------------
@@ -944,6 +950,156 @@ def mark_vendors_mirrored(
     """
     return _request(
         "POST", base_url, PO_VENDORS_MARK_MIRRORED_PATH, token,
+        json_body={"updates": updates},
+    )
+
+
+# ---- Subcontract internal tier (SC-S3c — the subcontract_poll daemon's queue I/O) ----
+#
+# Faithful mirror of the PO internal tier (above) — same typed-error contract, same
+# control-plane-read/write semantics. All six calls ride the SEPARATE subcontract bearer
+# tier (`requireSubToken`, Worker PORTAL_SUB_API_TOKEN / Mac Keychain ITS_PORTAL_SUB_TOKEN)
+# — privilege-separated from the poller / field-ops / admin / PO tokens; none of the
+# sibling bearers is accepted on these routes (pinned by safety_portal/test/subcontract.test.ts).
+# Every one is a control-plane read/write of OUR OWN Worker, NOT a customer-facing send —
+# outside the External Send Gate (Invariant 1). Same typed-error contract as get_pending.
+
+
+def get_pending_subcontracts(
+    base_url: str, token: str, *, limit: int = 50
+) -> list[dict[str, Any]]:
+    """Drain the queued-subcontract queue: GET /api/subcontracts/internal/pending (oldest-first).
+
+    Returns the `pending` list verbatim — each row a full `subcontracts` D1 row
+    (id, sc_number, the canonical header fields, status='queued', hmac, ...) with its
+    `sov_lines` array attached. The Worker caps `limit` at 50. Rows are UNTRUSTED
+    until the caller recomputes the sub:v1 canonical HMAC (`shared.portal_hmac.verify_sub`
+    — the same verify-before-anything contract as `get_pending`); the canonical JSON is
+    REBUILT from these values, so they must be handed to `sub_canonical_json` VERBATIM.
+
+    Raises `PortalAuthError` (401) / `PortalRateLimitError` (429/503 exhausted) /
+    `PortalTransportError` (any other failure, incl. a non-object / missing-array body).
+    """
+    data = _request("GET", base_url, SUB_PENDING_PATH, token, params={"limit": limit})
+    pending = data.get("pending")
+    if not isinstance(pending, list):
+        raise PortalTransportError(
+            f"GET {SUB_PENDING_PATH} missing/invalid 'pending' array "
+            f"(got {type(pending).__name__})"
+        )
+    # Defensive: keep only dict rows; a non-dict element is malformed transport.
+    return [row for row in pending if isinstance(row, dict)]
+
+
+def mark_subcontract_filed(
+    base_url: str, token: str, *, sc_id: int, box_file_id: str | None
+) -> bool:
+    """Post the filing receipt: POST /api/subcontracts/internal/mark-filed → returns `found`.
+
+    Called ONLY after the daemon has verified the HMAC, rendered, filed to Box, appended
+    Subcontract_Log, and added the Subcontract_Pending_Review row — the Worker flips
+    queued→pending_review + stores `box_file_id`. Idempotent: a replay (already
+    pending_review) returns `found=False`, which the caller treats as benign (exactly
+    like `mark_filed`).
+
+    Raises the typed `PortalTransportError` hierarchy on failure.
+    """
+    data = _request(
+        "POST", base_url, SUB_MARK_FILED_PATH, token,
+        json_body={"sc_id": sc_id, "box_file_id": box_file_id},
+    )
+    return bool(data.get("found"))
+
+
+def subcontract_status_sync(
+    base_url: str, token: str, updates: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """Report Mac-side status-machine outcomes: POST /api/subcontracts/internal/status-sync.
+
+    `updates` is a non-empty list of `{sc_id, status}` with status ∈
+    {approved, sent, executed, superseded} (the Worker's SYNCABLE_SUB_STATUSES —
+    draft/queued/pending_review/canceled are Worker-owned transitions). ORDER MATTERS:
+    the Worker executes the updates as ordered statements in one batch and each is
+    guarded on the predecessor state (approved only from pending_review; sent only from
+    approved; executed only from sent), so a row going straight to SENT must send its
+    `approved` update BEFORE its `sent` update in the SAME call. A `sent` subcontract
+    carrying `supersedes_sc_id` also flips its predecessor to superseded in the same
+    Worker batch (the predecessor guard admits status IN ('sent','executed')). D1 status
+    is a display CACHE of the Mac/Smartsheet-side authoritative state; the guards prevent
+    regression, not approval — F22 stays Mac-side. Worker cap: 200 updates. Empty list is
+    a Worker 400 — the caller must never send one.
+
+    Returns the Worker's `{ok, updated}` dict; raises the typed hierarchy on failure.
+    """
+    return _request(
+        "POST", base_url, SUB_STATUS_SYNC_PATH, token, json_body={"updates": updates}
+    )
+
+
+def subcontractors_sync(
+    base_url: str, token: str, subcontractors: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """Full-replace subcontractor down-sync: POST /api/subcontracts/internal/subcontractors/sync.
+
+    `subcontractors` is the COMPLETE ITS_Subcontractors SoR projection — each row the
+    Worker's subcontractor shape (`sub_key` SUB-######, `sub_name`, `address`,
+    `contact_name`, `contact_email`, `contact_phone`, `state`, `trades` as a LIST,
+    `default_terms_profile`, `msa_reference`, `coi_reference`, `license_number`,
+    `active` 0/1, `notes`). The Worker upserts every row EXCEPT dirty ones
+    (`sync_state='pending'` — THE dirty-row fence: an un-mirrored portal edit is never
+    clobbered), rejects an EMPTY payload (a Smartsheet read-miss must never wipe the
+    cache — the caller must also refuse to send one), rejects the WHOLE batch on any
+    malformed row, and NEVER deletes — a sheet-retired subcontractor arrives with active=0.
+
+    Returns the Worker's `{ok, upserted, skipped_dirty}` dict; raises the typed
+    hierarchy on failure.
+    """
+    return _request(
+        "POST", base_url, SUB_SUBCONTRACTORS_SYNC_PATH, token,
+        json_body={"subcontractors": subcontractors},
+    )
+
+
+def get_pending_subcontractors(base_url: str, token: str) -> list[dict[str, Any]]:
+    """Pull portal-edited (dirty) subcontractors to mirror UP: GET /api/subcontracts/internal/subcontractors/pending.
+
+    Returns the `subcontractors` list verbatim — each a dict with the full subcontractor
+    payload (`trades` already parsed to a list by the Worker) + the version vector
+    (`mirror_version`, `mirrored_version`). The daemon bridge-key find-or-creates the
+    ITS_Subcontractors row by `sub_key`, then commits via `mark_subcontractors_mirrored`.
+    The Worker caps the page at 200 rows server-side; the daemon drains across cycles.
+
+    Raises `PortalAuthError` (401) / `PortalRateLimitError` (429/503 exhausted) /
+    `PortalTransportError` (any other failure, incl. a non-object / missing-array body).
+    """
+    data = _request("GET", base_url, SUB_SUBCONTRACTORS_PENDING_PATH, token)
+    subcontractors = data.get("subcontractors")
+    if not isinstance(subcontractors, list):
+        raise PortalTransportError(
+            f"GET {SUB_SUBCONTRACTORS_PENDING_PATH} missing/invalid 'subcontractors' array "
+            f"(got {type(subcontractors).__name__})"
+        )
+    # Defensive: keep only dict rows; a non-dict element is malformed transport.
+    return [row for row in subcontractors if isinstance(row, dict)]
+
+
+def mark_subcontractors_mirrored(
+    base_url: str, token: str, updates: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """Subcontractor up-sync commit point: POST /api/subcontracts/internal/subcontractors/mark-mirrored.
+
+    `updates` is a non-empty list of `{sub_key, mirrored_version}` where
+    `mirrored_version` is the `mirror_version` the daemon READ on the pending pull.
+    The Worker flips pending→synced ONLY IF `mirror_version` is UNCHANGED (the
+    watermark guard, bound in-WHERE): a portal edit racing the mirror bumps the
+    version, the guard fails, the row STAYS pending and re-up-syncs next cycle.
+    Idempotent — a replay of a satisfied update is a no-op (`stale`). The Worker
+    rejects an EMPTY list (400) — the caller must never send one.
+
+    Returns the Worker's `{ok, flipped, stale}` dict; raises the typed hierarchy.
+    """
+    return _request(
+        "POST", base_url, SUB_SUBCONTRACTORS_MARK_MIRRORED_PATH, token,
         json_body={"updates": updates},
     )
 

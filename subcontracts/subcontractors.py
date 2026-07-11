@@ -6,8 +6,8 @@ module owns the three Mac-side halves of that contract:
 
 * **SoR read at render time** — `get_subcontractor_by_key` resolves the subcontractor
   whose fields are EMBEDDED in the rendered subcontract (the #494 security-review
-  decision: the PDF snapshots the Smartsheet SoR at render time, not the D1 cache — see
-  `subcontract_generate.render_subcontract_pdf`). Also the send-time recipient source.
+  decision: the rendered document snapshots the Smartsheet SoR at render time, not the D1
+  cache — see `subcontract_docx.render_package`). Also the send-time recipient source.
 * **Down-sync payload builder** — `build_down_sync_payload` projects the FULL sheet
   into the Worker's subcontractors/sync shape (full-replace; the Worker's dirty-row
   fence protects un-mirrored portal edits). Malformed rows are SKIPPED-with-reason

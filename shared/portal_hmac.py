@@ -100,6 +100,36 @@ Purchase-order protocol (PO S4)
     `verify_po` is the Mac-side recompute `po_materials.po_poll`'s drafts pass
     runs before any render/Box-file/mark-filed (the downgrade defense, mirroring
     the submission drain).
+
+Subcontract protocol (SC S3c)
+-----------------------------
+    A generated subcontract (`subcontracts`, migration 0050) is signed by the
+    Worker at /api/subcontracts/drafts/:id/generate with the SAME key + MAC over
+    its own domain-separated canonical string (safety_portal/worker/subcontract.ts
+    `subCanonicalString` + `canonicalSubJson`):
+
+        canonical = "sub:v1" \\n <sc_id (decimal)> \\n <sc_number> \\n <canonical_json>
+
+    * The `"sub:v1"` literal domain-separates this protocol from submission HMACs
+      (uuid-first), item-photo ("item_photo:v1"), daily-photo ("daily_photo:v1"),
+      and PO ("po:v1") HMACs — cross-protocol signature confusion is structurally
+      impossible — and versions the string.
+    * `sc_id` + `sc_number` bind the signature to one allocated subcontract identity
+      (a signed body cannot be replayed under a different subcontract number or D1
+      row), exactly as PO binds `po_id` + `po_number`.
+    * `canonical_json` is REBUILT on both sides from the row's fields in a FIXED key
+      order (`canonicalSubJson`'s insertion order, mirrored by
+      `SUB_CANONICAL_HEADER_KEYS` + `SUB_CANONICAL_LINE_KEYS` below) and serialized
+      with JSON.stringify semantics (`json.dumps(..., ensure_ascii=False,
+      separators=(",", ":"), allow_nan=False)`) — byte-matching depends on key order,
+      compact separators, raw non-ASCII, and verbatim wire values, identical to the
+      PO protocol. The `sov_lines` nest key (NOT PO's `line_items`) matches the D1
+      table + the /pending row key. The cross-language vector is pinned in
+      tests/test_portal_hmac_sub.py.
+
+    `verify_sub` is the Mac-side recompute `subcontracts.subcontract_poll`'s drafts
+    pass runs before any render/Box-file/mark-filed (the downgrade defense,
+    mirroring the submission drain).
 """
 from __future__ import annotations
 
@@ -303,4 +333,114 @@ def verify_po(
     Constant-time; never raises (False on any mismatch — the caller refuses the row:
     one-shot flag + CRITICAL, never rendered, never filed, never marked)."""
     expected = sign_po(secret, po_id=po_id, po_number=po_number, canonical_json=canonical_json)
+    return _hmac.compare_digest(expected, provided_hmac or "")
+
+
+# ---- Subcontract protocol (SC S3c — see module docstring) --------------------------
+
+# The subcontract protocol's domain-separation literal — MUST match the Worker's
+# SUB_HMAC_DOMAIN (safety_portal/worker/subcontract.ts) byte-for-byte.
+SUB_DOMAIN = "sub:v1"
+
+# The FIXED header-field order of the Worker's canonicalSubJson (subcontract.ts) —
+# insertion order is the serialization order on both sides; any reorder breaks every
+# signature. All 31 canonical-signed business fields (migration 0050) ride here,
+# frozen at draft; stored-but-not-currently-rendered columns (retainage_bp,
+# subtotal_cents, site_name, site_address, trade, scope_summary, the exhibit_a_*
+# trio, template_family) stay in the tuple so a draft edit to them is signature-
+# covered — do NOT drop them.
+SUB_CANONICAL_HEADER_KEYS: tuple[str, ...] = (
+    "sc_number",
+    "job_no",
+    "site_phase",
+    "supersede_seq",
+    "revision",
+    "sub_key",
+    "trade",
+    "job_id",
+    "job_name",
+    "project_name",
+    "owner_entity",
+    "prime_contractor",
+    "site_name",
+    "site_address",
+    "governing_law_state",
+    "exhibit_a_template_id",
+    "exhibit_a_template_version",
+    "exhibit_a_work_text",
+    "scope_summary",
+    "price_basis",
+    "contract_price_cents",
+    "retainage_bp",
+    "subtotal_cents",
+    "start_date",
+    "completion_date",
+    "terms_profile_id",
+    "terms_version",
+    "template_family",
+    "supersedes_sc_id",
+    "approver_name",
+    "approver_title",
+)
+
+# The FIXED per-line key order of canonicalSubJson's sov_lines mapper (subcontract.ts).
+# Delta vs PO_CANONICAL_LINE_KEYS: part_number→item_number, unit_cost_cents→
+# unit_price_cents; the per-watt quartet (watts/panels/pallets/price_per_watt_
+# microcents) is DROPPED (no per-watt module for subcontracts). `extended_cents` is
+# ALWAYS server-computed = round(qty × unit_price_cents).
+SUB_CANONICAL_LINE_KEYS: tuple[str, ...] = (
+    "position",
+    "item_number",
+    "description",
+    "qty",
+    "unit",
+    "unit_price_cents",
+    "extended_cents",
+)
+
+
+def sub_canonical_json(sub: Mapping[str, Any], sov_lines: Sequence[Mapping[str, Any]]) -> str:
+    """Rebuild the Worker's canonicalSubJson byte-for-byte from a /pending row.
+
+    Values pass through VERBATIM (no coercion): the row arrived as JSON the Worker
+    serialized, so `json.dumps` over the parsed values reproduces the exact bytes —
+    `ensure_ascii=False` (JSON.stringify never \\u-escapes non-ASCII), compact
+    separators, and the FIXED key orders above. A key absent from the row serializes
+    as null exactly like a D1 NULL would; if that differs from what the Worker signed,
+    the verify simply fails (fail-closed — the drift IS the signal, never a file).
+    Line items nest under `sov_lines` (NOT PO's `line_items`), matching the D1 table.
+
+    `allow_nan=False`: NaN/Infinity are not JSON — a row carrying one is malformed
+    transport and the resulting ValueError surfaces to the caller's per-row fence
+    rather than minting a canonical string the Worker could never have signed.
+    """
+    obj: dict[str, Any] = {key: sub.get(key) for key in SUB_CANONICAL_HEADER_KEYS}
+    obj["sov_lines"] = [
+        {key: line.get(key) for key in SUB_CANONICAL_LINE_KEYS} for line in sov_lines
+    ]
+    return json.dumps(obj, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+
+
+def sub_canonical_string(sc_id: int, sc_number: str, canonical_json: str) -> str:
+    """The exact string the Worker signs for one generated subcontract
+    (subcontract.ts subCanonicalString — order + ``\\n`` separator load-bearing).
+    sc_id + sc_number bind the signature to one allocated subcontract identity."""
+    return "\n".join([SUB_DOMAIN, str(sc_id), sc_number, canonical_json])
+
+
+def sign_sub(secret: str, *, sc_id: int, sc_number: str, canonical_json: str) -> str:
+    """HMAC-SHA256(secret, subcontract canonical) → lowercase hex — identical to the
+    Worker's hmacHex over subCanonicalString. `canonical_json` comes from
+    `sub_canonical_json`."""
+    msg = sub_canonical_string(sc_id, sc_number, canonical_json).encode("utf-8")
+    return _hmac.new(secret.encode("utf-8"), msg, hashlib.sha256).hexdigest()
+
+
+def verify_sub(
+    secret: str, provided_hmac: str | None, *, sc_id: int, sc_number: str, canonical_json: str
+) -> bool:
+    """True iff `provided_hmac` matches the recomputed subcontract signature.
+    Constant-time; never raises (False on any mismatch — the caller refuses the row:
+    one-shot flag + CRITICAL, never rendered, never filed, never marked)."""
+    expected = sign_sub(secret, sc_id=sc_id, sc_number=sc_number, canonical_json=canonical_json)
     return _hmac.compare_digest(expected, provided_hmac or "")

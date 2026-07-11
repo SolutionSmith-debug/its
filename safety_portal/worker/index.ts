@@ -33,6 +33,7 @@ import {
 import { registerProgressRollupRoutes } from "./fieldops_rollup";
 import { registerPoRoutes } from "./po";
 import { registerConfigRoutes } from "./config";
+import { registerSubcontractRoutes } from "./subcontract";
 import {
   validateUser,
   newSessionClaims,
@@ -243,6 +244,24 @@ const requireConfigToken = createMiddleware<{ Bindings: Env; Variables: Vars }>(
   const auth = c.req.header("Authorization") ?? "";
   const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
   if (!token || !c.env.PORTAL_CONFIG_API_TOKEN || !(await safeTokenEqual(token, c.env.PORTAL_CONFIG_API_TOKEN))) {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+  await next();
+});
+
+/**
+ * Bearer-token gate for /api/subcontracts/internal/* — the Mac-side subcontract daemon
+ * (subcontracts/subcontract_poll.py, SC-S3c/S4). SEPARATE secret from the portal_poll / admin /
+ * fieldops / PO / config tokens (privilege separation): the subcontract daemon's token must NOT be
+ * able to drain the submission queue, provision users, touch the job/hours mirror, or read the PO
+ * or config queues — and none of those tokens may read the subcontract queue or write subcontract
+ * status / subcontractor state. Same fail-closed-on-missing-secret + constant-time posture as
+ * requireInternalToken. Passed into registerSubcontractRoutes (worker/subcontract.ts).
+ */
+const requireSubToken = createMiddleware<{ Bindings: Env; Variables: Vars }>(async (c, next) => {
+  const auth = c.req.header("Authorization") ?? "";
+  const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+  if (!token || !c.env.PORTAL_SUB_API_TOKEN || !(await safeTokenEqual(token, c.env.PORTAL_SUB_API_TOKEN))) {
     return c.json({ error: "unauthorized" }, 401);
   }
   await next();
@@ -473,6 +492,11 @@ registerPoRoutes(app, { requireSession, requireCapability, requirePoToken });
 //   the /api/internal/config/* queue under the NEW requireConfigToken tier. SEND-FREE — the Mac
 //   config daemon (built LATER) is the sole privileged git-commit/deploy actuator. —
 registerConfigRoutes(app, { requireSession, requireCapability, requireConfigToken });
+// — Subcontracts workstream SC-S3c: subcontractor cache + drafts/generate/supersede/cancel
+//   (session + cap.subcontracts.manage) + the /api/subcontracts/internal/* queue under the NEW
+//   requireSubToken tier. SEND-FREE (Invariant 1) — signs the sub:v1 body + queues in D1; the Mac
+//   subcontract_poll daemon pulls/renders (.docx/.xlsx)/files; execution approval stays Mac-side (F22). —
+registerSubcontractRoutes(app, { requireSession, requireCapability, requireSubToken });
 
 /** GET /api/session — who am I (used by the SPA on load to restore session). Returns
  *  the live role (from requireSession's per-request D1 read), so a demotion drops the
