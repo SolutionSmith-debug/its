@@ -175,7 +175,16 @@ GATED_SCRIPTS: list[tuple[str, list[str]]] = [
         ["graph_client", "send_mail", "resend", "smtplib", "email.mime",
          "anthropic", "anthropic_client"],
     ),
-    # ("subcontracts/subcontract_generate.py", ["graph_client", "send_mail"]),
+    (
+        # subcontract_generate (SC-S3) is the DETERMINISTIC subcontract renderer — the record →
+        # filled contract-body text + (S3b) the .docx/.xlsx render, with the num2words price WORDS,
+        # the SOV-sums-to-price guard, and the Layer-A legal gate. Pure data → document bytes: no
+        # Graph, no external send, no LLM (the operator directive — no AI in the generation path),
+        # the same gate as po_generate / weekly_generate.
+        "subcontracts/subcontract_generate.py",
+        ["graph_client", "send_mail", "resend", "smtplib", "email.mime",
+         "anthropic", "anthropic_client"],
+    ),
 ]
 
 # Send scripts: must NOT import any AI capability.
