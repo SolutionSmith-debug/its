@@ -32,8 +32,8 @@ passes**, each behind its own ITS_Config gate:
    subcontracts, HMAC-verify, double-check the SC number against `Subcontract_Log`, snapshot
    the subcontractor identity from `ITS_Subcontractors`, render the deterministic package
    (`Subcontract.docx` + `Exhibit A.docx` + `Annex C - Schedule of Values.xlsx`), file all three
-   to Box, append `Subcontract_Log` + `Subcontract_Pending_Review` (inline-attaching the contract
-   `.docx`), then receipt back to the Worker (`mark-filed`) **last**.
+   to Box, append `Subcontract_Log` + `Subcontract_Pending_Review` (inline-attaching all three
+   files), then receipt back to the Worker (`mark-filed`) **last**.
 2. **Subcontractor down-sync pass** (`subcontracts.subcontract_poll.subcontractors_sync_enabled`)
    — project the full `ITS_Subcontractors` SoR into the Worker's D1 cache (full-replace; the
    Worker's dirty-row fence protects un-mirrored portal edits).

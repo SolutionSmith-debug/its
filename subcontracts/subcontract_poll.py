@@ -18,7 +18,7 @@ shipped false):
      Subcontract body `.docx` + the Exhibit A `.docx` + the Annex C Schedule-of-Values
      `.xlsx`) → Box (**three** uploads; §45 find-or-create ROOT→job→"Subcontracts"; §47
      version-on-conflict) → Subcontract_Log append + Subcontract_Pending_Review row (+ inline
-     attach of the contract `.docx`, best-effort) → mark-filed receipt WITH box_file_id (the
+     attach of all three files, best-effort) → mark-filed receipt WITH box_file_id (the
      contract `.docx` id). The
      receipt is LAST: a crash anywhere before it re-pulls the row and every prior step
      is idempotent (version-on-conflict upload; Subcontract_Log/review-row dedupe by
@@ -790,7 +790,7 @@ def _process_pending_subcontract(
             )
 
         # 10 — Subcontract_Pending_Review row (idempotent via the Notes sc_id join) + the
-        # inline attach of BOTH files (best-effort — Box is the SoR).
+        # inline attach of ALL THREE files (best-effort — Box is the SoR).
         if subcontract_review.find_row_by_sc_id(sc_id) is None:
             email_body = subcontract_review.sc_email_body_template(
                 contact_name=str(subcontractor.get(subcontractors.COL_CONTACT_NAME) or ""),
@@ -815,7 +815,7 @@ def _process_pending_subcontract(
             )
             _attach_files_best_effort(
                 review_row_id,
-                [(docx_name, docx_bytes), (xlsx_name, xlsx_bytes)],
+                [(docx_name, docx_bytes), (exhibit_name, exhibit_bytes), (xlsx_name, xlsx_bytes)],
                 correlation_id,
             )
 
@@ -993,8 +993,8 @@ def _attach_files_best_effort(
     row_id: int, files: list[tuple[str, bytes]], correlation_id: str
 ) -> None:
     """Attach the rendered package files inline on the review row, BEST-EFFORT (Box is
-    the SoR; a failure is a WARN that never fails the filing — mirror po_poll). Both the
-    Subcontract .docx and the Annex C .xlsx attach.
+    the SoR; a failure is a WARN that never fails the filing — mirror po_poll). All three —
+    the Subcontract .docx, the Exhibit A .docx, and the Annex C .xlsx — attach.
 
     Caveat: `attach_pdf_to_row` hardcodes an application/pdf MIME type — the .docx/.xlsx
     bytes attach but are MIME-mislabeled (a supplementary inline copy; Box carries the
