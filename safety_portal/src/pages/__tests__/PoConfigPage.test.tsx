@@ -1,13 +1,14 @@
 /**
- * PO Configuration admin page — the EDITABLE editor (slice 3). Confirms the read view still renders
- * the three config classes, that each editor POSTs the right send-free change-request body (incl. the
- * tax percent→basis-points conversion and the terms new-version body), that the status monitor renders
- * pills for each request — never silent on a FAILED row (its failure_reason prints verbatim) — and that
- * the provisioned Subcontracts card is present + disabled. Read-only accounts (no cap.po.manage) see no
- * editors or monitor. Mirrors the admin-page test idiom: mock the lib (keep the real pctToBp via
- * importActual) + auth, resetAllMocks, drive with fireEvent, expect-inside-waitFor.
+ * PO/SC Configuration admin page — the EDITABLE editor. Confirms the read view still renders the PO
+ * config classes, that each editor POSTs the right send-free change-request body (incl. the tax
+ * percent→basis-points conversion and the terms new-version body via the shared TermsProfilesEditor),
+ * that the status monitor renders pills for each request — never silent on a FAILED row — and that the
+ * SUBCONTRACT editors (Contractor + the same TermsProfilesEditor under workstream=subcontracts) POST
+ * under the subcontracts workstream. Read-only accounts see no editors or monitor. Mirrors the
+ * admin-page test idiom: mock the libs (keep the real pctToBp via importActual) + auth, resetAllMocks,
+ * drive with fireEvent, expect-inside-waitFor.
  */
-import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../lib/po", async () => {
@@ -22,9 +23,16 @@ vi.mock("../../lib/po", async () => {
     fetchConfigStatus: vi.fn(),
   };
 });
+vi.mock("../../lib/subcontracts", () => ({
+  fetchSubcontractConfig: vi.fn(),
+  fetchTerms: vi.fn(),
+  fetchTermsText: vi.fn(),
+  fetchTermsVersions: vi.fn(),
+}));
 vi.mock("../../lib/auth", () => ({ useAuth: vi.fn() }));
 
 import * as api from "../../lib/po";
+import * as sub from "../../lib/subcontracts";
 import { useAuth } from "../../lib/auth";
 import { PoConfigPage } from "../PoConfigPage";
 
@@ -62,6 +70,39 @@ const TERMS: api.TermsProfile[] = [
   },
 ];
 
+const SUB_CONFIG: sub.SubcontractConfig = {
+  contractor: {
+    entity: "Evergreen Renewables LLC",
+    address_lines: ["100 Spectrum Center Dr. STE 570", "Irvine, CA. 92618"],
+    phone: "888-303-6424",
+    signature_entity: "Evergreen Renewables LLC",
+    prime_contractor_default: "Evergreen Renewables of Virginia LLC",
+  },
+  payment_terms: { retainage_bp: 1000, retainage_reduced_bp: 500, retainage_reduction_at_pct: 50 },
+  governing_law_states: ["VA", "OR"],
+};
+
+const SUB_TERMS: sub.TermsProfile[] = [
+  {
+    id: "standard_subcontract",
+    kind: "library",
+    label: "Standard 27-article subcontract",
+    description: "The default subcontract terms.",
+    current_version: "v1",
+    tokens: ["{{contract_price_clause}}"],
+    render_line: null,
+  },
+  {
+    id: "negotiated_msa",
+    kind: "attach",
+    label: "Negotiated MSA",
+    description: "Attach-not-generate.",
+    current_version: null,
+    tokens: [],
+    render_line: "THE WORK IS UNDER, AND SUBJECT TO, THE NEGOTIATED MSA.",
+  },
+];
+
 function authWith(capabilities: string[] = ["cap.po.manage"]) {
   return {
     user: { username: "admin", role: "admin" as const, capabilities },
@@ -92,6 +133,19 @@ beforeEach(() => {
   });
   vi.mocked(api.fetchConfigStatus).mockResolvedValue([]);
   vi.mocked(api.submitConfigEdit).mockResolvedValue({ ok: true, id: 1, status: "queued" });
+  // Subcontract config loads independently (best-effort in load()); seed it so the subcontract group
+  // renders for a cap.subcontracts.manage account.
+  vi.mocked(sub.fetchSubcontractConfig).mockResolvedValue(SUB_CONFIG);
+  vi.mocked(sub.fetchTerms).mockResolvedValue(SUB_TERMS);
+  vi.mocked(sub.fetchTermsText).mockResolvedValue({ profile_id: "standard_subcontract", version: "v1", text: "1. Current subcontract clause." });
+  vi.mocked(sub.fetchTermsVersions).mockResolvedValue({
+    profile_id: "standard_subcontract",
+    current_version: "v1",
+    versions: [
+      { version: "v1", legal_review: "cleared" },
+      { version: "standard_v2", legal_review: "pending" },
+    ],
+  });
 });
 
 describe("PoConfigPage — read view", () => {
@@ -286,10 +340,71 @@ describe("PoConfigPage — capability gating", () => {
     expect(api.fetchConfigStatus).not.toHaveBeenCalled();
   });
 
-  it("shows the provisioned Subcontracts placeholder as present + disabled", async () => {
-    const { getByText } = render(<PoConfigPage onBack={vi.fn()} />);
-    await waitFor(() => expect(getByText("Subcontracts")).toBeTruthy());
-    const btn = getByText("Edit subcontracts (coming soon)") as HTMLButtonElement;
-    expect(btn.disabled).toBe(true);
+  it("a PO-only admin (no cap.subcontracts.manage) does NOT see the subcontract group", async () => {
+    // Default authWith is cap.po.manage only.
+    const { getByText, queryByText } = render(<PoConfigPage onBack={vi.fn()} />);
+    await waitFor(() => expect(getByText("Evergreen Renewables LLC")).toBeTruthy());
+    expect(queryByText("Contractor (subcontracts)")).toBeNull();
+    expect(queryByText("Subcontract terms profiles")).toBeNull();
+  });
+});
+
+describe("PoConfigPage — subcontract config (workstream=subcontracts)", () => {
+  const bothCaps = () => vi.mocked(useAuth).mockReturnValue(authWith(["cap.po.manage", "cap.subcontracts.manage"]));
+
+  it("an admin with cap.subcontracts.manage sees the Contractor + subcontract terms editors", async () => {
+    bothCaps();
+    const { getByText, getByLabelText } = render(<PoConfigPage onBack={vi.fn()} />);
+    await waitFor(() => expect(getByText("Contractor (subcontracts)")).toBeTruthy());
+    expect(getByText("Subcontract terms profiles")).toBeTruthy();
+    expect(getByText("Standard 27-article subcontract")).toBeTruthy();
+    // The contractor editor opens seeded from the served subcontract config.
+    fireEvent.click(getByText("Edit contractor"));
+    expect((getByLabelText("Entity (required)") as HTMLInputElement).value).toBe("Evergreen Renewables LLC");
+  });
+
+  it("a subcontract contractor edit POSTs op:edit under workstream=subcontracts with the full payload", async () => {
+    bothCaps();
+    const { getByText, getByLabelText } = render(<PoConfigPage onBack={vi.fn()} />);
+    await waitFor(() => expect(getByText("Contractor (subcontracts)")).toBeTruthy());
+    fireEvent.click(getByText("Edit contractor"));
+    fireEvent.change(getByLabelText("Entity (required)"), { target: { value: "Evergreen Renewables Holdings LLC" } });
+    fireEvent.click(getByText("Queue change"));
+    await waitFor(() =>
+      expect(api.submitConfigEdit).toHaveBeenCalledWith(
+        expect.objectContaining({
+          workstream: "subcontracts",
+          artifact_key: "contractor",
+          op: "edit",
+          payload: expect.objectContaining({
+            entity: "Evergreen Renewables Holdings LLC",
+            address_lines: ["100 Spectrum Center Dr. STE 570", "Irvine, CA. 92618"],
+            signature_entity: "Evergreen Renewables LLC",
+            prime_contractor_default: "Evergreen Renewables of Virginia LLC",
+          }),
+        }),
+      ),
+    );
+  });
+
+  it("a subcontract terms make-current POSTs op:set_current under workstream=subcontracts", async () => {
+    bothCaps();
+    const { container, getByText } = render(<PoConfigPage onBack={vi.fn()} />);
+    await waitFor(() => expect(getByText("Subcontract terms profiles")).toBeTruthy());
+    // Two TermsProfilesEditor instances render (PO + subcontract) — scope to the subcontract section.
+    const subSection = container.querySelector('[aria-label="Subcontract terms profiles"]') as HTMLElement;
+    fireEvent.click(within(subSection).getByText("Make a version current"));
+    await waitFor(() => expect(within(subSection).getByLabelText("Version to make current")).toBeTruthy());
+    fireEvent.click(within(subSection).getByLabelText(/I have reviewed this version/i));
+    fireEvent.click(within(subSection).getByText("Make it live"));
+    await waitFor(() =>
+      expect(api.submitConfigEdit).toHaveBeenCalledWith({
+        workstream: "subcontracts",
+        artifact_key: "terms",
+        op: "set_current",
+        payload: { profile_id: "standard_subcontract" },
+        target_version: "standard_v2",
+      }),
+    );
   });
 });
