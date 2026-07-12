@@ -15,7 +15,9 @@ export type HomeNav =
   | "materials-catalog"
   | "po-builder"
   | "po-vendors"
-  | "po-config";
+  | "po-config"
+  | "subcontractors"
+  | "subcontract-builder";
 
 /** R7 — Home is grouped into three headed sections (it had grown into a 10-card flat wall under
  *  a single "Daily forms" heading, A4). Section membership is presentation only: every card keeps
@@ -135,6 +137,22 @@ const HOME_CARDS: HomeCard[] = [
     badge: "Admin",
     title: "PO Configuration",
     desc: "Edit the purchaser identity, ship-to tax table, and terms versions that print on every PO — each change is queued for the operator's review.",
+    section: "admin",
+  },
+  {
+    key: "subcontract-builder",
+    cap: "cap.subcontracts.manage",
+    badge: "Admin",
+    title: "Subcontracts",
+    desc: "Build a subcontract package — scope, schedule of values, and terms — then track it from draft to executed.",
+    section: "admin",
+  },
+  {
+    key: "subcontractors",
+    cap: "cap.subcontracts.manage",
+    badge: "Admin",
+    title: "Subcontractors",
+    desc: "The subcontractor directory behind subcontracts — contacts, trades, state, licenses, and terms.",
     section: "admin",
   },
   {
