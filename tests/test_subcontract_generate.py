@@ -77,16 +77,27 @@ def _seed_terms(tmp_path, legal_review="cleared"):
     body = (b"SUBCONTRACT AGREEMENT\n\nby and between {{contractor_entity}} and {{subcontractor_entity}} "
             b"for {{project_name}}.\n2.1 The Contract Price is {{contract_price_clause}}.\n"
             b"governed by the laws of {{governing_law_state_name}}.\n")
+    # An attach-kind reference body for the negotiated_msa path (the tokens the attach render fills;
+    # {{render_line}} is where the manifest reference line lands).
+    attach = (b"SUBCONTRACT AGREEMENT\n\nby and between {{contractor_entity}} and {{subcontractor_entity}} "
+              b"for {{project_name}}.\n2.1 The Contract Price is {{contract_price_clause}}.\n{{render_line}}\n"
+              b"{{signature_entity}} SUBCONTRACTOR\n")
     tdir = tmp_path / "terms"
     tdir.mkdir()
     (tdir / "b_v1.md").write_bytes(body)
+    (tdir / "attach_reference.md").write_bytes(attach)
     (tdir / "manifest.json").write_text(json.dumps({
-        "manifest_version": 1, "profiles": {"standard_subcontract": {
-            "kind": "library", "current_version": "v1",
-            "versions": {"v1": {"file": "b_v1.md", "sha256": hashlib.sha256(body).hexdigest(),
-                                "tokens": ["contractor_entity", "subcontractor_entity", "project_name",
-                                           "contract_price_clause", "governing_law_state_name"],
-                                "legal_review": legal_review}}}}}), encoding="utf-8")
+        "manifest_version": 1, "profiles": {
+            "standard_subcontract": {
+                "kind": "library", "current_version": "v1",
+                "versions": {"v1": {"file": "b_v1.md", "sha256": hashlib.sha256(body).hexdigest(),
+                                    "tokens": ["contractor_entity", "subcontractor_entity", "project_name",
+                                               "contract_price_clause", "governing_law_state_name"],
+                                    "legal_review": legal_review}}},
+            "negotiated_msa": {
+                "kind": "attach",
+                "render_line": "THE WORK IS UNDER, AND SUBJECT TO, THE NEGOTIATED MSA."},
+        }}), encoding="utf-8")
     cdir = tmp_path / "config"
     cdir.mkdir()
     (cdir / "contractor.json").write_text(json.dumps({**_CONTRACTOR}), encoding="utf-8")
@@ -121,3 +132,25 @@ def test_render_body_text_fences_a_pending_body(tmp_path, monkeypatch):
     sov = [{"extended_cents": 27401850}]
     with pytest.raises(terms.TermsError, match="NOT cleared"):
         gen.render_body_text(_record(), sov)
+
+
+def test_render_body_text_attach_renders_reference(tmp_path, monkeypatch):
+    """An attach-kind profile (negotiated MSA) renders the one-page REFERENCE body — the manifest
+    render_line + the deal facts, STRICT-filled — instead of fencing on 'attach-kind has no text'."""
+    tdir, cdir = _seed_terms(tmp_path)
+    monkeypatch.setattr(terms, "TERMS_DIR", tdir)
+    monkeypatch.setattr(terms, "CONFIG_DIR", cdir)
+    monkeypatch.setattr(
+        terms, "_ATTACH_REFERENCE_SHA256",
+        hashlib.sha256((tdir / "attach_reference.md").read_bytes()).hexdigest(),
+    )
+    sov = [{"extended_cents": 27401850}]
+    text = gen.render_body_text(_record(), sov, terms_profile_id="negotiated_msa")
+    # The manifest render_line is present (DERIVED from the manifest, not pinned — HOUSE_REFLEXES §5).
+    assert terms.render_line("negotiated_msa") in text
+    # Deal facts STRICT-filled; no unfilled contract blank survives.
+    assert "D.E.L. Electric OR, Inc." in text
+    assert "Two hundred seventy-four thousand eighteen dollars and fifty cents ($274,018.50)" in text
+    assert "{{" not in text
+    # negotiated_msa carries NO versions/legal_review — that it rendered (did not raise) proves the
+    # attach branch skipped the library load + Layer-A gate entirely.

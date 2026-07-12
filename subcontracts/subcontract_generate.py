@@ -7,8 +7,10 @@ The transform, in order (any failure fences to Review — never files a wrong co
   1. shape-validate the subcontract record (required fields present);
   2. SOV-sums-to-price guard (money.sov_mismatches) — the Schedule of Values must reconcile to §2.1;
   3. load the Contractor identity config;
-  4. load the body text via subcontracts.terms (sha-verified + Layer-A legal gate — a pending body
-     RAISES, fencing the subcontract until the operator make-currents it);
+  4. load the body text via subcontracts.terms, branching on the profile KIND: a ``library`` profile
+     loads the sha-verified + Layer-A-gated 27-article body (a pending body RAISES, fencing the
+     subcontract until the operator make-currents it); an ``attach`` profile (negotiated MSA) loads
+     the sha-pinned one-page reference body (no version gate) — its binding terms are the external MSA;
   5. build the 10 body tokens (parties/date + the num2words price clause + governing-law-from-state);
   6. STRICT token substitution → the filled body text (an unfilled contract blank RAISES).
 """
@@ -88,9 +90,12 @@ def render_body_text(
     terms_profile_id: str = "standard_subcontract",
     terms_version: str | None = None,
 ) -> str:
-    """The filled 27-article body TEXT for a subcontract record — the deterministic core the .docx
-    render (S3b) turns into a document. Runs the SOV guard, the Layer-A legal gate (via terms), and
-    STRICT token substitution. Raises on any failure (the daemon fences it, never files)."""
+    """The filled contract-body TEXT for a subcontract record — the deterministic core the .docx
+    render (S3b) turns into a document. Runs the SOV guard, then branches on the terms profile KIND:
+    a ``library`` profile renders the sha-verified + Layer-A-gated 27-article body; an ``attach``
+    profile (a negotiated MSA) renders the one-page reference body (preamble + §2.1 price + the
+    profile's manifest render_line + signature) INSTEAD of fencing. Both paths STRICT-fill tokens.
+    Raises on any failure (the daemon fences it, never files)."""
     price_cents = subcontract.get("contract_price_cents")
     if not isinstance(price_cents, int) or isinstance(price_cents, bool):
         raise SubcontractGenerateError(f"contract_price_cents must be an integer (got {price_cents!r})")
@@ -100,7 +105,17 @@ def render_body_text(
         raise SubcontractGenerateError("SOV does not reconcile to the Contract Price: " + "; ".join(problems))
 
     contractor = terms.load_contractor_config()
-    # Layer-A legal gate + sha-verify happen inside load_terms_text (pending body RAISES here).
-    body = terms.load_terms_text(terms_profile_id, terms_version)
     tokens = build_body_tokens(subcontract, contractor)
+    kind = terms.get_profile(terms_profile_id).get("kind")
+    if kind == "attach":
+        # Attach-kind (a negotiated MSA): render the one-page REFERENCE body — NOT the 27-article
+        # library, and NO library-text load / Layer-A version gate (an attach profile carries no
+        # versioned body language; the binding terms are the externally-negotiated MSA the render_line
+        # points to). The reference body's {{render_line}} is filled from the manifest render_line;
+        # Exhibit A (scope) + Annex C (SOV) still render as their own package files.
+        tokens["render_line"] = terms.render_line(terms_profile_id)
+        body = terms.load_attach_reference()
+    else:
+        # Library: sha-verified + Layer-A-gated body (a pending/un-cleared version RAISES here).
+        body = terms.load_terms_text(terms_profile_id, terms_version)
     return terms.substitute_tokens(body, tokens)
