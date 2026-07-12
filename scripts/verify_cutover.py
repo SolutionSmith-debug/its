@@ -30,13 +30,15 @@ Checks (each independently selectable via ``--only`` / ``--skip``):
 ====== ============== ==============================================================
 id     slug           what it proves
 ====== ============== ==============================================================
-VC-01  keychain       all required Keychain secrets present (15: 11 non-Box + Box
-                      triplet + ``ITS_PORTAL_PO_TOKEN``)
+VC-01  keychain       all required Keychain secrets present (18: 11 non-Box + Box
+                      triplet + ``ITS_PORTAL_PO_TOKEN`` + the config-actuator /
+                      subcontract-poll daemon bearers + the operator-dashboard PIN)
 VC-02  launchd        loaded ``org.solutionsmith.its.*`` label set == the plist set
                       shipped in ``scripts/launchd/`` (no missing, no orphans)
 VC-03  config         load-bearing ITS_Config rows present + non-default
                       (worker_base_url, from_mailbox rows, scheduled_send_local,
-                      the polling/sync/intake gates) and — unless
+                      the polling/sync/intake gates, ``system.operator_email``,
+                      the subcontract-poll gate rows) and — unless
                       ``--allow-sandbox`` — free of the mirror domain
 VC-04  daemon-health  every Enabled ITS_Daemon_Health row has a heartbeat fresher
                       than 2 x its Interval Seconds (the schema's documented
@@ -59,6 +61,22 @@ manual CL-14 grep used to backstop. The keychain check already requires the
 ``scheduled_send_local`` — enrolling ``polling_enabled`` as ``"true"`` would DEMAND PO send be
 live at cutover, and first-enabling a send path is a FIXED high-capability External-Send-Gate
 decision (Seth). Enroll them only once PO send is confirmed in the Aug-7 send scope.
+
+Dark-daemon-bearer + dashboard-PIN enrollment (WS2 / config editor / subcontracts,
+operator directive 2026-07-12): three more Keychain secrets are now cutover-required
+even though their consumers ship dark — same "provision-even-while-dark" rationale as
+``ITS_PORTAL_PO_TOKEN``. ``ITS_PORTAL_CONFIG_TOKEN`` (the §50 ``config_actuator`` daemon
+bearer) and ``ITS_PORTAL_SUB_TOKEN`` (the ``subcontract_poll`` daemon bearer) both back
+LOADED-but-runtime-gated daemons, so their tokens must be present at cutover for the
+activation cell-flip to work. ``ITS_OPERATOR_PIN`` gates the operator dashboard
+(``operator_dashboard/auth.py``, manual-start, no plist yet); it is enrolled so the
+operator ACT surface is usable at cutover. VC-03 additionally now scans
+``system.operator_email`` (the last-resort Resend page recipient, must be off the mirror
+domain — CO-3) and asserts the three ``subcontracts.subcontract_poll.*`` gate rows are
+seeded present (``non_empty``, NOT forced ``true`` — the dark-ship reflex: a missing gate
+row leaves the operator no switch to flip). DEFERRED (NOT enrolled) until the SC-S4
+subcontract SEND half is built: the subcontract ``from_mailbox`` / ``scheduled_send_local`` /
+send ``polling_enabled`` rows — those daemons + rows do not exist yet.
 
 Usage::
 
@@ -108,7 +126,8 @@ WRANGLER_TIMEOUT_SECONDS = 180
 DAEMON_HEALTH_STALE_MULTIPLIER = 2.0
 
 # Keychain service names, verified against live HEAD (shared/*, safety_reports/*,
-# field_ops/fieldops_sync.py, safety_portal/worker/po.ts). Presence-only check —
+# progress_reports/*, field_ops/fieldops_sync.py, po_materials/*, subcontracts/*,
+# operator_dashboard/auth.py, safety_portal/worker/*.ts). Presence-only check —
 # values are NEVER printed (§54).
 NON_BOX_SECRETS: tuple[str, ...] = (
     "ITS_SMARTSHEET_TOKEN",
@@ -134,8 +153,23 @@ BOX_SECRETS: tuple[str, ...] = (
 # Provisioned with WS1 S2; REQUIRED at cutover. Pre-provisioning runs of the
 # keychain check will FAIL naming it — that is correct, not noise.
 PO_SECRETS: tuple[str, ...] = ("ITS_PORTAL_PO_TOKEN",)
+# Dark-but-loaded daemon bearers (config-actuator §50 + subcontract-poll). Same
+# provision-even-while-dark rationale as ITS_PORTAL_PO_TOKEN: both daemons are LOADED
+# and runtime-gated false, so their bearer tokens must be present at cutover for the
+# activation cell-flip to work. ITS_PORTAL_CONFIG_TOKEN = po_materials/config_actuator.py
+# KC_BEARER; ITS_PORTAL_SUB_TOKEN = subcontracts/subcontract_poll.py KC_SUB_TOKEN.
+DARK_BEARER_SECRETS: tuple[str, ...] = (
+    "ITS_PORTAL_CONFIG_TOKEN",
+    "ITS_PORTAL_SUB_TOKEN",
+)
+# Operator-dashboard PIN (operator_dashboard/auth.py PIN_KEYCHAIN_KEY). The dashboard
+# ships dark + manual-start (no launchd plist), but the PIN is REQUIRED at cutover so the
+# operator ACT surface is usable (operator directive 2026-07-12). Not a Worker bearer.
+OPERATOR_SECRETS: tuple[str, ...] = ("ITS_OPERATOR_PIN",)
 
-REQUIRED_SECRETS: tuple[str, ...] = NON_BOX_SECRETS + BOX_SECRETS + PO_SECRETS
+REQUIRED_SECRETS: tuple[str, ...] = (
+    NON_BOX_SECRETS + BOX_SECRETS + PO_SECRETS + DARK_BEARER_SECRETS + OPERATOR_SECRETS
+)
 
 
 @dataclass(frozen=True)
@@ -204,6 +238,25 @@ CONFIG_ROWS: tuple[ConfigRow, ...] = (
     ConfigRow("progress_reports.progress_send.polling_enabled", "progress_reports", "true"),
     ConfigRow("progress_reports.intake_enabled", "safety_reports", "true"),
     ConfigRow("field_ops.fieldops_sync.sync_enabled", "field_ops", "true"),
+    # system.operator_email (CO-3): the last-resort Resend page recipient
+    # (shared/resend_client.py) resolved when ITS_Config can't be read. Must be a
+    # production address at cutover, so sandbox-scanned — a mirror residue
+    # (seths@evergreenmirror.com) fails the gate. Global workstream. Closes the CL-12
+    # manual-grep backstop with a mechanical scan.
+    ConfigRow("system.operator_email", "global", "non_empty", sandbox_scan=True),
+    # Subcontracts (operator scoped fully-in incl. send, 2026-07-12). subcontract_poll
+    # reuses the safety_reports.portal.worker_base_url row (scanned above), so no new
+    # worker_base_url row here. Assert the three subcontract_poll gate rows are SEEDED
+    # PRESENT (non_empty, NOT forced 'true' — dark-ship reflex: a missing gate row leaves
+    # no switch to flip; seed_subcontracts_config.py must have run). The gates ship false;
+    # activation is a later operator cell-flip once the SC-S3c live smoke passes.
+    ConfigRow("subcontracts.subcontract_poll.polling_enabled", "subcontracts", "non_empty"),
+    ConfigRow("subcontracts.subcontract_poll.subcontractors_sync_enabled", "subcontracts", "non_empty"),
+    ConfigRow("subcontracts.subcontract_poll.status_sync_enabled", "subcontracts", "non_empty"),
+    # DEFERRED (NOT enrolled) until the SC-S4 subcontract SEND half is built: the
+    # subcontract from_mailbox / scheduled_send_local / send polling_enabled rows — no
+    # send daemon or rows exist yet. Same External-Send-Gate posture as po_send's deferred
+    # polling_enabled: forcing a send gate 'true' is a FIXED high-class decision (Seth).
 )
 
 

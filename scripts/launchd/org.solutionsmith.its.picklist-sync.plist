@@ -1,20 +1,20 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  Picklist sync — every 15 minutes.
+  Picklist sync — hourly (StartInterval 3600; see the operator-decision note below).
 
   Reads enabled mappings from Picklist_Sync_Config; for each, syncs
   source-master-DB unique values into the target sheet's PICKLIST
   options. Idempotent via last_run_hash on each mapping row.
 
-  Install:
-    cp scripts/launchd/org.solutionsmith.its.picklist-sync.plist ~/Library/LaunchAgents/
-    launchctl load -w ~/Library/LaunchAgents/org.solutionsmith.its.picklist-sync.plist
+  Install (renders the __ITS_HOME__ placeholder via install.sh — do NOT `cp`
+  this file directly; a raw copy would install an unresolved placeholder path):
+    cd scripts/launchd && ./install.sh load org.solutionsmith.its.picklist-sync
 
-  This file uses literal paths instead of template placeholders because
-  the operator's $HOME is known at deployment time. If forking to a new
-  customer repo, scripts/launchd/install.sh handles substitution from
-  scripts/launchd/template.plist if you prefer the template flow.
+  This file uses the __ITS_HOME__ template placeholder like every other daemon
+  plist (install.sh substitutes $HOME/its at render time). It was the last plist
+  carrying literal /Users/sethsmith paths; templatized 2026-07-12 so the fleet is
+  uniform and portable to a new host/username (host-migration robustness).
 
   See docs/picklist_sync.md for the full operations runbook.
 -->
@@ -25,18 +25,18 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/sethsmith/its/.venv/bin/python</string>
-        <string>/Users/sethsmith/its/scripts/run_picklist_sync.py</string>
+        <string>__ITS_HOME__/.venv/bin/python</string>
+        <string>__ITS_HOME__/scripts/run_picklist_sync.py</string>
     </array>
 
     <key>WorkingDirectory</key>
-    <string>/Users/sethsmith/its</string>
+    <string>__ITS_HOME__</string>
 
     <key>StandardOutPath</key>
-    <string>/Users/sethsmith/its/logs/launchd/run_picklist_sync.out.log</string>
+    <string>__ITS_HOME__/logs/launchd/run_picklist_sync.out.log</string>
 
     <key>StandardErrorPath</key>
-    <string>/Users/sethsmith/its/logs/launchd/run_picklist_sync.err.log</string>
+    <string>__ITS_HOME__/logs/launchd/run_picklist_sync.err.log</string>
 
     <key>EnvironmentVariables</key>
     <dict>
