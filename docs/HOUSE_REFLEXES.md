@@ -29,6 +29,17 @@ that. Loaded via `@import` from `CLAUDE.md`'s START-HERE block.
   incomplete-fan-out bug: a PDF name lives in the Box file + the Smartsheet attachment + the Worker
   `Content-Disposition`; a status value lives in the writer const + `picklist_validation.REGISTRY`. `grep` the
   datum everywhere and **live-test** before claiming done. (Multi-surface fan-out.)
+- **Adding a package / daemon / secret / config-row / workstream-tag reconciles ALL its registries in the SAME
+  PR (definition-of-done).** The recurring "added the thing, forgot a registry" miss. A new **package** → a
+  CLAUDE.md "What's stubbed vs. real" row + `generate_config_dictionary._SCAN_ROOTS` (then regen the config dict
+  + re-record its enablement-manifest sha256). A new **secret** → `verify_cutover` VC-01 + the host-migration A5
+  table. A new **load-bearing ITS_Config row** → `verify_cutover` VC-03 (`non_empty`/sandbox-scan; never forced
+  `true` for a dark gate). A new **daemon** → a plist + `install.sh` + `TRACKED_JOBS` + `ITS_Daemon_Health`. A
+  new **workstream tag** lives in **THREE** copies — `docs/operations/doc_conventions.md`,
+  `docs/doctrine_manifest.yaml workstream_tags`, AND `scripts/lint_doc_conventions.CANONICAL_WORKSTREAMS` (the
+  2026-07-12 WP1 pass updated the first two and MISSED the third — this reflex exists because of it). A new
+  `StrEnum` value → `picklist_validation.REGISTRY`. A new generation/send script → the capability-gating lists.
+  `grep` the datum across every surface before claiming done.
 - **Don't deploy / migrate / audit from a stale checkout.** `git -C ~/its pull origin main` before any
   `wrangler deploy`, `wrangler d1 migrations apply/list`, or cross-repo drift audit — a 25-commit-behind tree
   reported "No migrations to apply" while the live Worker expected the new tables → universal lockout.

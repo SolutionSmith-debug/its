@@ -277,6 +277,14 @@ Phase 1 → 1.5 gate, then again at Florida → customer-site hardware shipment.
 9. **Ship the §43 successor-remediation runbook entry** for any capability with a Tier-2-reachable
    failure mode (Op Stds v20 §43) — symptom, low-class repair steps, and escalate-to-Seth boundary.
    This is part of definition-of-done, not a follow-up. See "Maintenance & successor-operator model".
+10. **Reconcile every registry in the SAME PR (definition-of-done).** A new package / daemon / secret /
+    load-bearing config-row / workstream-tag updates ALL its surfaces in one PR: the "What's stubbed vs. real"
+    table row; `scripts/generate_config_dictionary._SCAN_ROOTS` (+ regen the config dict + re-record its
+    enablement-manifest sha256); `scripts/verify_cutover.py` VC-01 (secrets) / VC-03 (load-bearing config rows,
+    `non_empty` for dark gates, never forced `true`); `scripts/watchdog.TRACKED_JOBS` + a launchd plist; the
+    workstream tag in **all three** copies (`docs/operations/doc_conventions.md`, `docs/doctrine_manifest.yaml`
+    `workstream_tags`, `scripts/lint_doc_conventions.CANONICAL_WORKSTREAMS`); `shared/picklist_validation.REGISTRY`
+    for new `StrEnum` values. `grep` the datum across every surface before claiming done. (HOUSE_REFLEXES §1.)
 
 ## Model selection
 
