@@ -222,6 +222,12 @@ export function PoConfigPage({ onBack }: { onBack: () => void }) {
       setMsg({ ok: false, text: "The invoice-routing To address is required." });
       return;
     }
+    if (!pf.phone.trim()) {
+      // The actuator (_apply_purchaser_edit) rejects an empty phone — guard client-side so the
+      // operator never queues an avoidably-failing §50 request.
+      setMsg({ ok: false, text: "The purchaser phone is required." });
+      return;
+    }
     const payload = {
       entity,
       address_lines: pf.address_lines.split("\n").map((s) => s.trim()).filter(Boolean),
@@ -307,6 +313,11 @@ export function PoConfigPage({ onBack }: { onBack: () => void }) {
     }
     if (!prime) {
       setMsg({ ok: false, text: "The default prime contractor is required." });
+      return;
+    }
+    if (!cf.phone.trim()) {
+      // _apply_contractor_edit rejects an empty phone — guard client-side (parity with purchaser).
+      setMsg({ ok: false, text: "The contractor phone is required." });
       return;
     }
     const address_lines = cf.address_lines.split("\n").map((s) => s.trim()).filter(Boolean);
