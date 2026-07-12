@@ -200,9 +200,12 @@ export const ERROR_COPY: Record<string, string> = {
   draft_changed: "This draft changed while you were working — the latest version was reloaded; review and generate again.",
   po_number_conflict: "A PO number collision occurred — generate again to get the next revision.",
   not_draft: "That PO is no longer a draft — refresh the list.",
-  not_supersedable: "Only a sent PO can be superseded.",
-  supersede_in_progress: "A replacement for that PO is already in progress — it was opened instead.",
-  not_cancelable: "That PO can't be canceled from its current status.",
+  // Reworded workstream-neutral (S5 FLAG-2): these three wire codes are shared by the PO and the
+  // subcontract supersede/cancel routes (worker reuses the codes), but the code→copy map is global —
+  // so the copy must read correctly for both. A subcontract supersedes from sent OR executed.
+  not_supersedable: "That record can't be superseded from its current status.",
+  supersede_in_progress: "A replacement for that record is already in progress — it was opened instead.",
+  not_cancelable: "That record can't be canceled from its current status.",
   invalid_approver: "The approver name/title is too long.",
   hmac_secret_missing: "The server isn't fully configured to sign POs — contact the operator.",
 
@@ -218,6 +221,50 @@ export const ERROR_COPY: Record<string, string> = {
   invalid_profile_id: "The profile id must be lowercase letters, numbers, and underscores (e.g. vendor_acme).",
   profile_exists: "A terms profile with that id already exists — add a new version to it instead of creating a new profile.",
   invalid_profile_kind: "Pick a profile kind — Library (versioned text) or Attach (a reference line to a negotiated GTC).",
+
+  // ── subcontracts (worker/subcontract.ts vocabulary — SC-S5) ────────────────────────────────────────
+  // Codes a cap.subcontracts.manage user can trigger. Codes already present above are reused as-is
+  // (invalid_job_id, invalid_job_no, invalid_site_phase, invalid_project_name, invalid_trade,
+  // invalid_notes, invalid_address, invalid_contact_name, invalid_active, invalid_terms_profile,
+  // invalid_terms_version, invalid_description, invalid_unit, invalid_qty, invalid_approver,
+  // invalid_id, counter_unavailable, invalid_default_terms_profile, line_total_overflow,
+  // subtotal_overflow, draft_changed, not_draft, hmac_secret_missing).
+  // Subcontractor directory:
+  invalid_sub_name: "Enter a subcontractor name (up to 256 characters).",
+  invalid_contact_email: "Enter a valid contact email address.",
+  invalid_contact_phone: "The contact phone number is too long.",
+  invalid_state: "Enter the state as a 2-letter code (e.g. CA).",
+  invalid_trades: "The trade selection isn't valid — up to 20 trades, each up to 64 characters.",
+  invalid_msa_reference: "The master subcontract agreement reference is too long.",
+  invalid_coi_reference: "The certificate-of-insurance reference is too long.",
+  invalid_license_number: "The license number is too long (up to 64 characters).",
+  subcontractor_exists: "That subcontractor already exists.",
+  unknown_subcontractor: "That subcontractor doesn't exist or is inactive — pick another.",
+  invalid_sub_key: "That subcontractor reference isn't valid — refresh and pick again.",
+  // Subcontract draft / builder:
+  invalid_job_name: "The job name is too long (up to 256 characters).",
+  invalid_owner_entity: "The owner entity is too long (up to 256 characters).",
+  invalid_prime_contractor: "The prime contractor is too long (up to 256 characters).",
+  invalid_site_name: "The site name is too long (up to 256 characters).",
+  invalid_site_address: "The site address is too long (up to 512 characters).",
+  invalid_governing_law_state: "Pick a governing-law state — a subcontract can't be generated without one.",
+  invalid_exhibit_a_template_id: "That Exhibit A template reference isn't valid.",
+  invalid_exhibit_a_template_version: "That Exhibit A template version isn't valid.",
+  invalid_exhibit_a_work_text: "The Exhibit A scope of work is too long (up to 8000 characters).",
+  invalid_scope_summary: "The scope summary is too long (up to 512 characters).",
+  invalid_price_basis: "Pick a price basis — Fixed or Not-to-exceed.",
+  invalid_contract_price: "Enter a valid contract price.",
+  invalid_retainage_bp: "The retainage must be between 0% and 100%.",
+  invalid_start_date: "The start date isn't valid.",
+  invalid_completion_date: "The completion date isn't valid.",
+  invalid_template_family: "That isn't a valid subcontract template.",
+  invalid_sov_lines: "The schedule of values didn't come through correctly — check each line.",
+  invalid_item_number: "An item number is too long (up to 64 characters).",
+  unit_price_required: "Every schedule-of-values line needs a unit price.",
+  invalid_unit_price_cents: "A unit price isn't valid.",
+  no_sov_lines: "Add at least one schedule-of-values line before generating.",
+  sov_mismatch: "The schedule of values doesn't add up to the contract price — review the refreshed numbers and generate again.",
+  sc_number_conflict: "A subcontract number collision occurred — generate again to get the next revision.",
 };
 
 /** Humanize an unknown wire code: 'some_new_code' → 'some new code'. */
