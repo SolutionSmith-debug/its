@@ -251,7 +251,7 @@ describe("SubcontractBuilderPage", () => {
     expect(r.getByText("+ New subcontract")).toBeTruthy(); // back on the tracker
   });
 
-  it("selecting a trade with a blank Exhibit A pre-fills Article II from the trade template", async () => {
+  it("selecting a trade with a blank Exhibit A fills Article II from the trade template", async () => {
     vi.mocked(api.fetchExhibitTemplate).mockResolvedValue({
       trade: "AC Electrical",
       template_key: "electrical",
@@ -273,31 +273,61 @@ describe("SubcontractBuilderPage", () => {
         "ARTICLE II — THE WORK (electrical scope).",
       ),
     );
-    expect(r.getByText(/Article II pre-filled from the AC Electrical template/)).toBeTruthy();
+    expect(r.getByText(/set from the AC Electrical template/)).toBeTruthy();
   });
 
-  it("selecting a trade does NOT clobber Exhibit A text the operator already wrote", async () => {
+  it("selecting a trade OVERWRITES existing Exhibit A text with the trade template (operator directive)", async () => {
     vi.mocked(api.fetchExhibitTemplate).mockResolvedValue({
       trade: "Civil",
       template_key: "civil",
-      article_ii: "TEMPLATE BODY — should never overwrite operator text.",
+      article_ii: "TEMPLATE BODY — replaces whatever was there.",
     });
     const r = render(<SubcontractBuilderPage onBack={() => {}} />);
     await waitFor(() => expect(api.fetchSubDrafts).toHaveBeenCalled());
     fireEvent.click(r.getByText("+ New subcontract"));
 
-    // Operator authors Exhibit A first, THEN picks a trade.
+    // Operator authors Exhibit A first, THEN switches trade — the trade must REPLACE their text
+    // (2026-07-12 directive: changing the dropdown overwrites whatever is in the Work box).
     fireEvent.change(r.getByLabelText("Exhibit A work text"), {
       target: { value: "Operator's bespoke scope." },
     });
     fireEvent.change(r.getByLabelText("Trade"), { target: { value: "Civil" } });
 
-    // No template fetch is issued and the operator's text stands — no pre-fill hint.
-    expect(api.fetchExhibitTemplate).not.toHaveBeenCalled();
+    // The template IS fetched and overwrites the prior text; the source hint shows.
+    await waitFor(() => expect(api.fetchExhibitTemplate).toHaveBeenCalledWith("Civil"));
+    await waitFor(() =>
+      expect((r.getByLabelText("Exhibit A work text") as HTMLTextAreaElement).value).toBe(
+        "TEMPLATE BODY — replaces whatever was there.",
+      ),
+    );
+    expect(r.getByText(/set from the Civil template/)).toBeTruthy();
+  });
+
+  it("a failed trade-template fetch does NOT clobber existing Exhibit A text (no destructive empty overwrite)", async () => {
+    vi.mocked(api.fetchExhibitTemplate).mockRejectedValue(new Error("unknown trade"));
+    const r = render(<SubcontractBuilderPage onBack={() => {}} />);
+    await waitFor(() => expect(api.fetchSubDrafts).toHaveBeenCalled());
+    fireEvent.click(r.getByText("+ New subcontract"));
+
+    fireEvent.change(r.getByLabelText("Exhibit A work text"), {
+      target: { value: "Operator's bespoke scope." },
+    });
+    fireEvent.change(r.getByLabelText("Trade"), { target: { value: "Civil" } });
+
+    // The fetch failed → no template to write → the operator's text stands, and no stale hint.
+    await waitFor(() => expect(api.fetchExhibitTemplate).toHaveBeenCalledWith("Civil"));
     expect((r.getByLabelText("Exhibit A work text") as HTMLTextAreaElement).value).toBe(
       "Operator's bespoke scope.",
     );
-    expect(r.queryByText(/Article II pre-filled/)).toBeNull();
+    expect(r.queryByText(/set from the/)).toBeNull();
+  });
+
+  it("start and completion dates are native date pickers (type=date), not free text (C3)", async () => {
+    const r = render(<SubcontractBuilderPage onBack={() => {}} />);
+    await waitFor(() => expect(api.fetchSubDrafts).toHaveBeenCalled());
+    fireEvent.click(r.getByText("+ New subcontract"));
+    expect((r.getByLabelText("Start date") as HTMLInputElement).type).toBe("date");
+    expect((r.getByLabelText("Completion date") as HTMLInputElement).type).toBe("date");
   });
 
   it("tracker state machine: sent AND executed both offer Supersede; queued offers Cancel", async () => {

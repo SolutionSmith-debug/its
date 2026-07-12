@@ -122,16 +122,25 @@ function FieldInput({
   value,
   onChange,
   maxLength,
+  type = "text",
 }: {
   label: string;
   value: string;
   onChange: (v: string) => void;
   maxLength?: number;
+  /** Native input type — "date" gives a calendar picker whose value is ISO YYYY-MM-DD. */
+  type?: string;
 }) {
   return (
     <label className="field">
       <span className="field__label">{label}</span>
-      <input className="field__input" value={value} maxLength={maxLength} onChange={(e) => onChange(e.target.value)} />
+      <input
+        className="field__input"
+        type={type}
+        value={value}
+        maxLength={maxLength}
+        onChange={(e) => onChange(e.target.value)}
+      />
     </label>
   );
 }
@@ -194,8 +203,9 @@ export function SubcontractBuilderPage({ onBack }: { onBack: () => void }) {
   const [trade, setTrade] = useState("");
   const [scopeSummary, setScopeSummary] = useState("");
   const [exhibitAWorkText, setExhibitAWorkText] = useState("");
-  /** The trade whose Exhibit A template last pre-filled the Work text (for the "pre-filled from X"
-   *  hint); null when the Work text was authored/opened manually, so the hint is always truthful. */
+  /** The trade whose Exhibit A template last OVERWROTE the Work text (drives the "set from X" hint);
+   *  null when the Work text was authored/opened manually or the last trade fetch failed, so the hint
+   *  never goes stale. */
   const [articleIiPrefillTrade, setArticleIiPrefillTrade] = useState<string | null>(null);
   const [startDate, setStartDate] = useState("");
   const [completionDate, setCompletionDate] = useState("");
@@ -304,14 +314,17 @@ export function SubcontractBuilderPage({ onBack }: { onBack: () => void }) {
     if (s.default_terms_profile) setTermsProfileId(s.default_terms_profile);
   }
 
-  // ── Trade select → Exhibit A Article II pre-fill ─────────────────────────────────────────────────
-  /** On a trade pick, pre-fill Exhibit A ("the Work") from that trade's standard Article II template —
-   *  but ONLY when the operator hasn't authored Exhibit A yet (never clobber operator edits). An
-   *  unknown trade or a degraded fetch leaves the textarea untouched. The hint tracks the source trade
-   *  and is cleared whenever we don't successfully pre-fill, so it never goes stale. */
+  // ── Trade select → Exhibit A Article II (OVERWRITE) ──────────────────────────────────────────────
+  /** On a trade pick, OVERWRITE Exhibit A ("the Work") with that trade's standard Article II template
+   *  (operator directive 2026-07-12: changing the trade REPLACES whatever is in the Work box, so the
+   *  boilerplate always tracks the selected trade — the old "only when empty" guard is gone). Selecting
+   *  the blank option clears the source hint but leaves the text. An unknown trade / degraded fetch does
+   *  NOT clobber existing text — there is no template to write, so we leave the box and clear the hint
+   *  (never destroy the operator's work with an empty overwrite). Re-picking the SAME trade fires no
+   *  onChange, so a heavily-edited box is only replaced on a deliberate switch to a different trade. */
   async function onTradeSelect(t: string) {
     setTrade(t);
-    if (!t || exhibitAWorkText.trim() !== "") {
+    if (!t) {
       setArticleIiPrefillTrade(null);
       return;
     }
@@ -320,7 +333,7 @@ export function SubcontractBuilderPage({ onBack }: { onBack: () => void }) {
       setExhibitAWorkText(tpl.article_ii);
       setArticleIiPrefillTrade(t);
     } catch {
-      // Unknown trade / degraded /exhibit-templates — leave Exhibit A blank for the operator to author.
+      // Unknown trade / degraded /exhibit-templates — no template to write; leave the box untouched.
       setArticleIiPrefillTrade(null);
     }
   }
@@ -933,11 +946,14 @@ export function SubcontractBuilderPage({ onBack }: { onBack: () => void }) {
           />
         </label>
         {articleIiPrefillTrade ? (
-          <p className="muted">Article II pre-filled from the {articleIiPrefillTrade} template; edit as needed.</p>
+          <p className="muted">
+            Exhibit A set from the {articleIiPrefillTrade} template — edit as needed, or pick another
+            trade to replace it.
+          </p>
         ) : null}
         <div className="jha__grid">
-          <FieldInput label="Start date" value={startDate} onChange={setStartDate} maxLength={32} />
-          <FieldInput label="Completion date" value={completionDate} onChange={setCompletionDate} maxLength={32} />
+          <FieldInput label="Start date" value={startDate} onChange={setStartDate} type="date" />
+          <FieldInput label="Completion date" value={completionDate} onChange={setCompletionDate} type="date" />
         </div>
       </section>
 
