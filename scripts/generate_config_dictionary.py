@@ -76,7 +76,7 @@ JSON_SCHEMA_VERSION = 1
 
 # Top-level roots scanned for daemon modules that declare ``REQUIRED_CONFIG``. Bounded to
 # the Python source roots so the scan never walks ``node_modules`` / ``.git`` / venvs.
-_SCAN_ROOTS = ("field_ops", "po_materials", "progress_reports", "safety_reports", "scripts")
+_SCAN_ROOTS = ("field_ops", "po_materials", "progress_reports", "safety_reports", "scripts", "subcontracts")
 _EXCLUDE_PARTS = frozenset({".claude", "__pycache__", ".venv", ".venv-wt"})
 # ``shared/required_config.py`` DEFINES ConfigKey/REQUIRED_CONFIG; this generator merely
 # names the marker string — neither is a consumer, so both are skipped explicitly.
@@ -161,6 +161,10 @@ PURPOSE_OVERRIDES: dict[str, str] = {
                              "cannot be read — the last-resort page recipient during a Smartsheet outage.",
     "system.heartbeat_url": "The external UptimeRobot heartbeat URL the watchdog pings each run so a "
                             "total MacBook-death (the watchdog can't alert about itself) is caught.",
+    "subcontracts.subcontract_poll.subcontractors_sync_enabled":
+        "Gate for subcontract_poll's §51 subcontractor-sync passes: the ITS_Subcontractors "
+        "full-replace down-sync into the Worker's D1 cache AND the dirty-subcontractor up-sync "
+        "back into ITS_Subcontractors (bridge-key find-or-create by Sub Key). Ships dark.",
     "alerting.dedupe_window_minutes": "How long (minutes) a repeated CRITICAL alert is suppressed on "
                                       "the push legs (email + Sentry) before it can fire again. The "
                                       "per-occurrence ITS_Errors record is never suppressed.",

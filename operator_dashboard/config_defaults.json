@@ -456,7 +456,8 @@
         "po_materials.po_poll",
         "safety_reports.intake",
         "safety_reports.portal_poll",
-        "safety_reports.weekly_generate"
+        "safety_reports.weekly_generate",
+        "subcontracts.subcontract_poll"
       ],
       "origin": "daemon"
     },
@@ -571,6 +572,7 @@
         "po_materials.po_poll",
         "safety_reports.portal_poll",
         "safety_reports.publish_daemon",
+        "subcontracts.subcontract_poll",
         "watchdog"
       ],
       "origin": "daemon"
@@ -650,6 +652,39 @@
       "purpose": "Local-time window (e.g. `MON 07:00`) at/after which a row approved with **Approve for Scheduled Send** may dispatch on the safety_reports.weekly_send path.",
       "read_by": [
         "safety_reports.weekly_send_poll"
+      ],
+      "origin": "daemon"
+    },
+    {
+      "setting": "subcontracts.subcontract_poll.polling_enabled",
+      "workstream": "subcontracts",
+      "kind": "bool",
+      "default": false,
+      "purpose": "Runtime on/off gate for the subcontracts.subcontract_poll daemon. False pauses it without unloading its launchd job (the canonical runtime gate, distinct from the report-filter Enabled checkbox).",
+      "read_by": [
+        "subcontracts.subcontract_poll"
+      ],
+      "origin": "daemon"
+    },
+    {
+      "setting": "subcontracts.subcontract_poll.status_sync_enabled",
+      "workstream": "subcontracts",
+      "kind": "bool",
+      "default": false,
+      "purpose": "Sub-gate for subcontracts.subcontract_poll: sync statuses back to the portal.",
+      "read_by": [
+        "subcontracts.subcontract_poll"
+      ],
+      "origin": "daemon"
+    },
+    {
+      "setting": "subcontracts.subcontract_poll.subcontractors_sync_enabled",
+      "workstream": "subcontracts",
+      "kind": "bool",
+      "default": false,
+      "purpose": "Gate for subcontract_poll's §51 subcontractor-sync passes: the ITS_Subcontractors full-replace down-sync into the Worker's D1 cache AND the dirty-subcontractor up-sync back into ITS_Subcontractors (bridge-key find-or-create by Sub Key). Ships dark.",
+      "read_by": [
+        "subcontracts.subcontract_poll"
       ],
       "origin": "daemon"
     }
