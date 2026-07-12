@@ -14,11 +14,12 @@ shipped false):
      recompute + assert vs the SIGNED §2.1 Contract Price (`money.sov_mismatches`) →
      Subcontract_Log collision double-check (`numbering.check_collision` — hand-issued
      subcontracts in transition) → ITS_Subcontractors SoR subcontractor snapshot (#494) →
-     DETERMINISTIC render (`subcontract_docx.render_package` → **two** files: the
-     Subcontract body `.docx` + the Annex C Schedule-of-Values `.xlsx`) → Box (**two**
-     uploads; §45 find-or-create ROOT→job→"Subcontracts"; §47 version-on-conflict) →
-     Subcontract_Log append + Subcontract_Pending_Review row (+ inline attach of **both**
-     files, best-effort) → mark-filed receipt WITH box_file_id (the `.docx` id). The
+     DETERMINISTIC render (`subcontract_docx.render_package` → **three** files: the
+     Subcontract body `.docx` + the Exhibit A `.docx` + the Annex C Schedule-of-Values
+     `.xlsx`) → Box (**three** uploads; §45 find-or-create ROOT→job→"Subcontracts"; §47
+     version-on-conflict) → Subcontract_Log append + Subcontract_Pending_Review row (+ inline
+     attach of all three files, best-effort) → mark-filed receipt WITH box_file_id (the
+     contract `.docx` id). The
      receipt is LAST: a crash anywhere before it re-pulls the row and every prior step
      is idempotent (version-on-conflict upload; Subcontract_Log/review-row dedupe by
      sc_number / sc_id). A bad-HMAC or SOV-mismatch row is ONE-SHOT-FLAGGED (CRITICAL +
@@ -735,11 +736,12 @@ def _process_pending_subcontract(
             terms_profile_id=terms_profile_id, terms_version=terms_version,
         )
         docx_bytes = package["Subcontract.docx"]
+        exhibit_bytes = package["Exhibit A.docx"]
         xlsx_bytes = package["Annex C - Schedule of Values.xlsx"]
 
         # 8 — Box filing: §45 find-or-create ROOT→job→"Subcontracts", §47 version-on-
-        # conflict under the deterministic name. TWO uploads (the .docx contract + the
-        # .xlsx SOV); the .docx id is the primary receipt (the contract itself).
+        # conflict under the deterministic name. THREE uploads (the .docx contract + the
+        # Exhibit A .docx + the .xlsx SOV); the contract .docx id is the primary receipt.
         folder_id = _resolve_subcontract_box_folder(str(subcontract.get("job_name") or ""))
         if folder_id is None:
             counters["draft_errors"] += 1
@@ -761,8 +763,10 @@ def _process_pending_subcontract(
         # version — a recoverable duplicate, never data loss (§47).
         job_name = subcontract.get("job_name")
         docx_name = subcontract_naming.sc_docx_filename(sc_number, job_name)
+        exhibit_name = subcontract_naming.sc_exhibit_filename(sc_number, job_name)
         xlsx_name = subcontract_naming.sc_xlsx_filename(sc_number, job_name)
         docx_info = box_client.upload_bytes_or_new_version(folder_id, docx_name, docx_bytes)
+        box_client.upload_bytes_or_new_version(folder_id, exhibit_name, exhibit_bytes)
         box_client.upload_bytes_or_new_version(folder_id, xlsx_name, xlsx_bytes)
         box_file_id = str(docx_info["id"])
         box_link = f"https://app.box.com/file/{box_file_id}"
@@ -786,7 +790,7 @@ def _process_pending_subcontract(
             )
 
         # 10 — Subcontract_Pending_Review row (idempotent via the Notes sc_id join) + the
-        # inline attach of BOTH files (best-effort — Box is the SoR).
+        # inline attach of ALL THREE files (best-effort — Box is the SoR).
         if subcontract_review.find_row_by_sc_id(sc_id) is None:
             email_body = subcontract_review.sc_email_body_template(
                 contact_name=str(subcontractor.get(subcontractors.COL_CONTACT_NAME) or ""),
@@ -811,7 +815,7 @@ def _process_pending_subcontract(
             )
             _attach_files_best_effort(
                 review_row_id,
-                [(docx_name, docx_bytes), (xlsx_name, xlsx_bytes)],
+                [(docx_name, docx_bytes), (exhibit_name, exhibit_bytes), (xlsx_name, xlsx_bytes)],
                 correlation_id,
             )
 
@@ -989,8 +993,8 @@ def _attach_files_best_effort(
     row_id: int, files: list[tuple[str, bytes]], correlation_id: str
 ) -> None:
     """Attach the rendered package files inline on the review row, BEST-EFFORT (Box is
-    the SoR; a failure is a WARN that never fails the filing — mirror po_poll). Both the
-    Subcontract .docx and the Annex C .xlsx attach.
+    the SoR; a failure is a WARN that never fails the filing — mirror po_poll). All three —
+    the Subcontract .docx, the Exhibit A .docx, and the Annex C .xlsx — attach.
 
     Caveat: `attach_pdf_to_row` hardcodes an application/pdf MIME type — the .docx/.xlsx
     bytes attach but are MIME-mislabeled (a supplementary inline copy; Box carries the

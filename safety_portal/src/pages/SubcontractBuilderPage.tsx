@@ -194,6 +194,9 @@ export function SubcontractBuilderPage({ onBack }: { onBack: () => void }) {
   const [trade, setTrade] = useState("");
   const [scopeSummary, setScopeSummary] = useState("");
   const [exhibitAWorkText, setExhibitAWorkText] = useState("");
+  /** The trade whose Exhibit A template last pre-filled the Work text (for the "pre-filled from X"
+   *  hint); null when the Work text was authored/opened manually, so the hint is always truthful. */
+  const [articleIiPrefillTrade, setArticleIiPrefillTrade] = useState<string | null>(null);
   const [startDate, setStartDate] = useState("");
   const [completionDate, setCompletionDate] = useState("");
   const [lines, setLines] = useState<SovLineForm[]>([{ ...EMPTY_LINE }]);
@@ -227,6 +230,7 @@ export function SubcontractBuilderPage({ onBack }: { onBack: () => void }) {
     setTrade("");
     setScopeSummary("");
     setExhibitAWorkText("");
+    setArticleIiPrefillTrade(null);
     setStartDate("");
     setCompletionDate("");
     setLines([{ ...EMPTY_LINE }]);
@@ -298,6 +302,27 @@ export function SubcontractBuilderPage({ onBack }: { onBack: () => void }) {
     setSubKey(s.sub_key);
     // The subcontractor's default terms profile is PRESELECTED; the picker below can override.
     if (s.default_terms_profile) setTermsProfileId(s.default_terms_profile);
+  }
+
+  // ── Trade select → Exhibit A Article II pre-fill ─────────────────────────────────────────────────
+  /** On a trade pick, pre-fill Exhibit A ("the Work") from that trade's standard Article II template —
+   *  but ONLY when the operator hasn't authored Exhibit A yet (never clobber operator edits). An
+   *  unknown trade or a degraded fetch leaves the textarea untouched. The hint tracks the source trade
+   *  and is cleared whenever we don't successfully pre-fill, so it never goes stale. */
+  async function onTradeSelect(t: string) {
+    setTrade(t);
+    if (!t || exhibitAWorkText.trim() !== "") {
+      setArticleIiPrefillTrade(null);
+      return;
+    }
+    try {
+      const tpl = await api.fetchExhibitTemplate(t);
+      setExhibitAWorkText(tpl.article_ii);
+      setArticleIiPrefillTrade(t);
+    } catch {
+      // Unknown trade / degraded /exhibit-templates — leave Exhibit A blank for the operator to author.
+      setArticleIiPrefillTrade(null);
+    }
   }
 
   const selectedTerms = terms.find((t) => t.id === termsProfileId) ?? null;
@@ -454,6 +479,7 @@ export function SubcontractBuilderPage({ onBack }: { onBack: () => void }) {
       setTrade(sc.trade);
       setScopeSummary(sc.scope_summary);
       setExhibitAWorkText(sc.exhibit_a_work_text);
+      setArticleIiPrefillTrade(null);
       setStartDate(sc.start_date);
       setCompletionDate(sc.completion_date);
       setContractPrice(centsToInput(sc.contract_price_cents));
@@ -868,7 +894,22 @@ export function SubcontractBuilderPage({ onBack }: { onBack: () => void }) {
       {/* 5 — Exhibit A & scope */}
       <section className="card dash-section" aria-label="Step 5 — Exhibit A and scope">
         <h3 className="jha__section-title">5 · Exhibit A &amp; scope</h3>
-        <FieldInput label="Trade" value={trade} onChange={setTrade} maxLength={64} />
+        <label className="field">
+          <span className="field__label">Trade</span>
+          <select
+            className="field__input"
+            aria-label="Trade"
+            value={trade}
+            onChange={(e) => void onTradeSelect(e.target.value)}
+          >
+            <option value="">— trade —</option>
+            {api.TRADES.map((t) => (
+              <option key={t} value={t}>
+                {t}
+              </option>
+            ))}
+          </select>
+        </label>
         <label className="field">
           <span className="field__label">Scope summary</span>
           <textarea
@@ -891,6 +932,9 @@ export function SubcontractBuilderPage({ onBack }: { onBack: () => void }) {
             onChange={(e) => setExhibitAWorkText(e.target.value)}
           />
         </label>
+        {articleIiPrefillTrade ? (
+          <p className="muted">Article II pre-filled from the {articleIiPrefillTrade} template; edit as needed.</p>
+        ) : null}
         <div className="jha__grid">
           <FieldInput label="Start date" value={startDate} onChange={setStartDate} maxLength={32} />
           <FieldInput label="Completion date" value={completionDate} onChange={setCompletionDate} maxLength={32} />

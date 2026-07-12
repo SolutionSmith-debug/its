@@ -202,6 +202,16 @@ export interface TermsVersions {
   versions: TermsVersionRow[];
 }
 
+/** GET /api/subcontracts/exhibit-templates?trade= — the Exhibit A Article II ("The Work") pre-fill for
+ *  a chosen Trade. `template_key` is the manifest body a Trade fans onto (AC/MV/DC Electrical all →
+ *  'electrical'); `article_ii` is that trade's standard Art II body, the editable exhibit_a_work_text
+ *  starting point. An unknown Trade 400s (invalid_trade → ApiError). */
+export interface ExhibitTemplate {
+  trade: string;
+  template_key: string;
+  article_ii: string;
+}
+
 /** GET /api/subcontracts/config — versioned contractor identity + §2.5 payment-terms defaults +
  *  the governing-law state list. NO tax table (subcontracts have no tax). */
 export interface SubcontractConfig {
@@ -363,6 +373,12 @@ export async function fetchTermsVersions(profileId: string): Promise<TermsVersio
 
 export async function fetchSubcontractConfig(): Promise<SubcontractConfig> {
   return getJson<SubcontractConfig>("/api/subcontracts/config");
+}
+
+/** Pre-fill Article II ("The Work") for the operator-picked Trade. Resolves the Trade → its art2
+ *  template body server-side; an unknown Trade throws ApiError('invalid_trade', 400). */
+export async function fetchExhibitTemplate(trade: string): Promise<ExhibitTemplate> {
+  return getJson<ExhibitTemplate>(`/api/subcontracts/exhibit-templates?trade=${encodeURIComponent(trade)}`);
 }
 
 // ── Surface-line name aliases ──────────────────────────────────────────────────────────────────────

@@ -12,8 +12,8 @@ import pytest
 from docx import Document
 from openpyxl import load_workbook
 
+from subcontracts import exhibit, terms
 from subcontracts import subcontract_docx as sd
-from subcontracts import terms
 from subcontracts.subcontract_docx import SubcontractDocxError
 
 _CONTRACTOR = {
@@ -28,6 +28,10 @@ def _record(**over):
         "subcontractor_entity": "D.E.L. Electric OR, Inc.", "project_name": "Kendall Solar",
         "owner_entity": "Kendall Solar, LLC", "governing_law_state": "OR",
         "contract_price_cents": 27401850, "price_basis": "fixed", "agreement_ymd": [2026, 7, 11],
+        # Exhibit A fields (D1 migration-0050 columns) — needed so render_package's Exhibit A render
+        # (strict token fill) has non-blank values. Extra keys are harmless to the body/SOV renders.
+        "trade": "Civil", "site_address": "123 Field Rd, County, OR",
+        "completion_date": "December 31, 2026", "exhibit_a_work_text": "",
     }
     base.update(over)
     return base
@@ -117,6 +121,94 @@ def test_render_subcontract_docx_fences_sov_mismatch(tmp_path, monkeypatch):
         sd.render_subcontract_docx(_record(), [{"extended_cents": 9999}])  # != price
 
 
+# ── Exhibit A .docx render ───────────────────────────────────────────────────
+
+# Exhibit A takes the contractor as a param (not the terms config dir) — no terms monkeypatch needed;
+# it loads the LIVE sha-pinned exhibit config. Corpus markers are DERIVED from exhibit.load_trade_art2
+# (never pinned as literals), mirroring test_subcontract_exhibit.py's HOUSE_REFLEXES §5 discipline.
+
+
+def _exhibit_record(**over):
+    base = {
+        "subcontractor_entity": "D.E.L. Electric OR, Inc.", "contractor_entity": "Evergreen Renewables LLC",
+        "trade": "Civil", "project_name": "Kendall Solar", "owner_entity": "Kendall Solar, LLC",
+        "site_address": "123 Field Rd, County, OR", "completion_date": "December 31, 2026",
+        "agreement_ymd": [2026, 7, 11],
+    }
+    base.update(over)
+    return base
+
+
+def _exhibit_text(data: bytes) -> str:
+    return "\n".join(p.text for p in Document(io.BytesIO(data)).paragraphs)
+
+
+def _civil_marker() -> str:
+    # A distinctive clause line from the Civil trade template, derived from source (not a literal pin).
+    return exhibit.load_trade_art2("Civil").strip().splitlines()[1][:30]
+
+
+def test_render_exhibit_a_docx_fills_tokens_and_trade_fallback():
+    data = sd.render_exhibit_a_docx(_exhibit_record(), _CONTRACTOR)
+    assert isinstance(data, bytes) and data[:2] == b"PK"
+    joined = _exhibit_text(data)
+    # Skeleton tokens all filled.
+    assert "D.E.L. Electric OR, Inc." in joined
+    assert "Evergreen Renewables LLC" in joined
+    assert "Kendall Solar" in joined
+    assert "Kendall Solar, LLC" in joined
+    assert "123 Field Rd, County, OR" in joined
+    assert "December 31, 2026" in joined
+    assert "{{" not in joined  # no unfilled token survived to the document
+    # exhibit_a_work_text blank → the trade's standard Article II body was substituted.
+    assert _civil_marker() in joined
+
+
+def test_render_exhibit_a_docx_uses_operator_work_text_when_provided():
+    sentinel = "Bespoke operator-authored scope clause ZZZ-42."
+    data = sd.render_exhibit_a_docx(_exhibit_record(exhibit_a_work_text=sentinel), _CONTRACTOR)
+    joined = _exhibit_text(data)
+    assert sentinel in joined                 # the operator's Article II text is used
+    assert _civil_marker() not in joined      # the trade-template fallback was NOT used
+
+
+def test_render_exhibit_a_docx_bolds_article_headings():
+    doc = Document(io.BytesIO(sd.render_exhibit_a_docx(_exhibit_record(), _CONTRACTOR)))
+    bold_texts = [p.text for p in doc.paragraphs if p.runs and p.runs[0].bold]
+    # At least one `Article <ROMAN>:` / `ARTICLE <ROMAN>:` skeleton heading is bold.
+    assert any(t.lower().startswith("article ") for t in bold_texts)
+
+
+def test_render_exhibit_a_docx_fences_unknown_trade():
+    with pytest.raises(SubcontractDocxError, match="exhibit render gate failed"):
+        sd.render_exhibit_a_docx(_exhibit_record(trade="Underwater Basket Weaving"), _CONTRACTOR)
+
+
+def test_render_exhibit_a_docx_fences_blank_required_token():
+    # A blank REQUIRED party token (project_name) is a strict-fill failure, fenced as
+    # SubcontractDocxError. (site_address / completion_date are optional-tolerant — see below.)
+    with pytest.raises(SubcontractDocxError, match="exhibit render gate failed"):
+        sd.render_exhibit_a_docx(_exhibit_record(project_name=""), _CONTRACTOR)
+
+
+def test_render_exhibit_a_docx_tolerates_blank_optional_fields():
+    # A blank optional site_address / completion_date renders with an editable bracketed placeholder
+    # (never fences the whole package — the operator fills it in the .docx).
+    data = sd.render_exhibit_a_docx(_exhibit_record(site_address="", completion_date=""), _CONTRACTOR)
+    text = "\n".join(p.text for p in Document(io.BytesIO(data)).paragraphs)
+    assert "[site address]" in text and "[completion date to be confirmed]" in text
+
+
+def test_render_exhibit_a_docx_byte_deterministic():
+    d1 = sd.render_exhibit_a_docx(_exhibit_record(), _CONTRACTOR)
+    d2 = sd.render_exhibit_a_docx(_exhibit_record(), _CONTRACTOR)  # same record, re-render
+    assert d1 == d2, "Exhibit A .docx render is not byte-deterministic"
+    # And the OOXML clock is pinned to the agreement date, not a wall-clock read.
+    import zipfile
+    core = zipfile.ZipFile(io.BytesIO(d1)).read("docProps/core.xml").decode()
+    assert "2026-07-11T00:00:00Z</dcterms:modified>" in core, core
+
+
 # ── .xlsx SOV render ─────────────────────────────────────────────────────────
 
 
@@ -158,10 +250,10 @@ def test_render_sov_xlsx_fences_on_mismatch(tmp_path, monkeypatch):
 # ── package + determinism ────────────────────────────────────────────────────
 
 
-def test_render_package_returns_both_artifacts(tmp_path, monkeypatch):
+def test_render_package_returns_three_artifacts(tmp_path, monkeypatch):
     _cleared(tmp_path, monkeypatch)
     pkg = sd.render_package(_record(), _SOV)
-    assert set(pkg) == {"Subcontract.docx", "Annex C - Schedule of Values.xlsx"}
+    assert set(pkg) == {"Subcontract.docx", "Exhibit A.docx", "Annex C - Schedule of Values.xlsx"}
     assert all(isinstance(v, bytes) and v[:2] == b"PK" and len(v) > 500 for v in pkg.values())
 
 

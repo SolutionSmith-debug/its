@@ -23,16 +23,17 @@ v11 Invariant 1) for subcontracts — it is AI-free **and** customer-send-free. 
 Worker (`safety_portal/worker/subcontract.ts`) validates + computes + HMAC-signs (`sub:v1`)
 + queues each generated subcontract **send-free** in D1; this launchd daemon
 (`org.solutionsmith.its.subcontract-poll`, every 120 s) is the Mac-side consumer. It renders
-**two files** per subcontract — `Subcontract.docx` (the editable contract the operator wet-signs
-in Word) and `Annex C - Schedule of Values.xlsx` — and files BOTH to Box. It runs **four
+**three files** per subcontract — `Subcontract.docx` (the editable contract the operator wet-signs
+in Word), `Exhibit A.docx` (the scope of work — Article II pre-filled per trade), and
+`Annex C - Schedule of Values.xlsx` — and files ALL THREE to Box. It runs **four
 passes**, each behind its own ITS_Config gate:
 
 1. **Drafts pass** (`subcontracts.subcontract_poll.polling_enabled`) — pull queued
    subcontracts, HMAC-verify, double-check the SC number against `Subcontract_Log`, snapshot
    the subcontractor identity from `ITS_Subcontractors`, render the deterministic package
-   (`Subcontract.docx` + `Annex C - Schedule of Values.xlsx`), file both to Box, append
-   `Subcontract_Log` + `Subcontract_Pending_Review` (inline-attaching both files), then receipt
-   back to the Worker (`mark-filed`) **last**.
+   (`Subcontract.docx` + `Exhibit A.docx` + `Annex C - Schedule of Values.xlsx`), file all three
+   to Box, append `Subcontract_Log` + `Subcontract_Pending_Review` (inline-attaching all three
+   files), then receipt back to the Worker (`mark-filed`) **last**.
 2. **Subcontractor down-sync pass** (`subcontracts.subcontract_poll.subcontractors_sync_enabled`)
    — project the full `ITS_Subcontractors` SoR into the Worker's D1 cache (full-replace; the
    Worker's dirty-row fence protects un-mirrored portal edits).
@@ -285,7 +286,7 @@ that value and clearing the flag is low-class; anything about the picklist *defi
 ### What it means
 
 The shared Box mirror-tree root (ITS_Config, `safety_reports.box.portal_root_folder_id`) is unset,
-so the daemon can't find the folder to file the two subcontract files into (ROOT → `<job>` →
+so the daemon can't find the folder to file the three subcontract files into (ROOT → `<job>` →
 "Subcontracts"). This is the same key the submission mirror tree, item-photo screening, and
 `po_poll` all use.
 
@@ -437,7 +438,7 @@ Run in order; each gate row's ITS_Config Description restates its own preconditi
 5. **Install + load** the plist
    (`scripts/launchd/install.sh load org.solutionsmith.its.subcontract-poll`).
 6. **Partial live smoke:** run one `subcontract_poll.poll_once()` cycle from a worktree venv
-   (above) and confirm a mirror draft renders → both files file to Box + Subcontract_Log +
+   (above) and confirm a mirror draft renders → all three files file to Box + Subcontract_Log +
    Subcontract_Pending_Review → receipts (`mark-filed`).
 7. **Flip the gates** (read each Description first): `subcontractors_sync_enabled` may go first (the
    subcontractor passes are independent); flip `polling_enabled` **and** `status_sync_enabled`

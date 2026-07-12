@@ -1,0 +1,59 @@
+{
+  "manifest_version": 1,
+  "comment": "Exhibit A trade templates (ADR-0003, SC-S3b Exhibit A). Article I (General) + Article III/IV/V/VI are the FIXED skeleton (skeleton.md, tokenized preamble); Article II 'The Work' is trade-templated \u2014 the operator picks a trade, gets that trade's standard Art II as an editable starting point (pre-fills exhibit_a_work_text), and refines it. Art II bodies are VERBATIM from the 05_Subcontracts corpus per-trade templates (Kendall 2025.112 / Steger 2025.364, canonical + project-identical); AC/MV/DC Electrical share the detailed electrical scope (the corpus does not distinguish them at template level); Specialty has no corpus template (operator-authored). Skeleton + version files are sha256-pinned + immutable \u2014 a wording change is a NEW version, never an edit. NOTE: the Article I 'Contract Documents include:' recital is the verbatim corpus header; project-specific drawing/plan names are operator-filled in the editable .docx (no record field), analogous to the operator-authored Article II \u2014 never fabricated in the template.",
+  "skeleton": {
+    "file": "skeleton.md",
+    "sha256": "1b15c3d6484f261c9798ed9763ee5b3604186b994034a13b74eb2540ac7a74e4",
+    "tokens": [
+      "subcontractor_entity",
+      "contractor_entity",
+      "trade",
+      "project_name",
+      "site_address",
+      "owner_entity",
+      "completion_date",
+      "article_ii"
+    ]
+  },
+  "trade_templates": {
+    "civil": {
+      "file": "art2/civil.md",
+      "sha256": "419565add9b7cbd91f21488b123e266ce2bd01f27cc7e9b1f25b2c6bc879416e"
+    },
+    "electrical": {
+      "file": "art2/electrical.md",
+      "sha256": "e0f4dedab6fbf6e5f846217206c4160d5b0de8f698cc7c8a5111a54ea49bc66c"
+    },
+    "fencing": {
+      "file": "art2/fencing.md",
+      "sha256": "81266d22bcf787f596eedbdf986b44c1ccd7eb711efcc6678bc60e865025fe37"
+    },
+    "mechanical": {
+      "file": "art2/mechanical.md",
+      "sha256": "61f45706e2f600f10a7126b42867e3bae920b3c02f7a809310e84a49fd39bfc2"
+    },
+    "post_installation": {
+      "file": "art2/post_installation.md",
+      "sha256": "be6729e56b65a4b84df61011a9a0a20f6af46ad3ca6f772d683f1a54a011950b"
+    },
+    "specialty": {
+      "file": "art2/specialty.md",
+      "sha256": "42b429b8775f0d6a20b78fc384d9c806fec054db75b10a540cf6940051244663"
+    },
+    "surveying": {
+      "file": "art2/surveying.md",
+      "sha256": "27d1bbf96cbfdf911b057f150ace4c4e847558e8ff52dd5574d858da5672e722"
+    }
+  },
+  "trade_map": {
+    "Surveying": "surveying",
+    "Civil": "civil",
+    "Fencing": "fencing",
+    "Post Installation": "post_installation",
+    "Mechanical": "mechanical",
+    "AC Electrical": "electrical",
+    "MV Electrical": "electrical",
+    "DC Electrical": "electrical",
+    "Specialty": "specialty"
+  }
+}
