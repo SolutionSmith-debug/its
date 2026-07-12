@@ -31,8 +31,9 @@ flipped, plists ⑤ loaded, Box folder ① made, **box-root config ② set (row 
   Graph access policy).
 - ③ **§46 re-share** workspace `5988851429730180` to approver identities (else every send fails-closed HELD).
 - ④ add `progress_reports` to the `ITS_Review_Queue` Workstream picklist.
-- **Wire progress Compile-Now:** generalize `safety_reports/compile_now_poll.py` (§14) to iterate BOTH
-  safety + progress week configs — same existing daemon, no new plist. Worktree + tests + §43 runbook.
+- **Wire progress Compile-Now — LANDED.** `safety_reports/compile_now_poll.py` already iterates BOTH
+  safety + progress week configs via `COMPILE_CONFIGS` (one per workstream; per-workstream
+  `<ws>.compile_now_poll.polling_enabled` gate) — same daemon, no new plist.
 - Validate: manual `progress_weekly_generate` → weekly progress packet under the Box root + a `WPR_human_review`
   row (no Review-Queue drain, rollup page present). Then clean up this session's smoke test data.
 
@@ -48,6 +49,12 @@ Deploy confirmed (migrations 0028→0037 applied). Remaining operator work:
 The design: **job = folder; weekly sheets = the per-week flow; standing per-job sheets = the running state.**
 Build the cumulative, one-per-job (NOT per-week) Smartsheets, one-way-up mirrored from D1 (send/AI-free per §51;
 period-split + archive-on-closure; find-or-create + capacity margin-check; never `delete_rows`):
+
+> **Update 2026-07-09 — the P7/M2/M3 mirror suite is LANDED + live.** `progress_reports/equipment_status.py`,
+> `material_list.py`, and `material_incidents.py` shipped (hours/equipment/materials/incidents FULLY LIVE per the
+> field-ops program file). Slices 2/3 + M2/M3 below are BUILT and their OPEN DECISIONs were resolved in the build —
+> retained here for the design record; each ships dark behind its `field_ops.fieldops_sync.*_enabled` gate.
+
 - **P7 Slice 1 — Hours Log: LANDED + live-smoked (2026-07-04).** `progress_reports/hours_log.py` mirrors
   `time_entries` into a per-job standing `<Job> — Hours Log` sheet (PR #461); **archive-on-closure LANDED**
   (`smartsheet_client.move_sheet_to_folder` + the `fieldops_sync` archive hook — PR #465 / its#462) — the last §51
@@ -72,7 +79,9 @@ sheet_capacity wiring, GS2 prune heartbeat + Check V, Sentry reclassification, D
   **The 2026-07-04 audit found `smartsheet.sheet_count_ceiling` + `_margin` are ABSENT from `ITS_Config`** → the
   capacity guard runs on the hardcoded default (1500/50) SILENTLY (forensic class #7); set the real plan cap under `Workstream=global`.
 - **meta-002 Tier-3 backup / escalation SLA** before the 20-job cutover (operator).
-- `REQUIRED_CONFIG` startup logging (#336) · host-log prune (time-bomb #14) · watchdog hang-killer · confirm
+- ~~`REQUIRED_CONFIG` startup logging (#336)~~ **DONE** — implemented fleet-wide (`tests/test_required_config.py`;
+  #336 CLOSED, though its GitHub title is actually "[P1] Hardening PR-6" — a citation mismatch; remaining adoption
+  slice is `po_materials`/`subcontracts`). host-log prune (time-bomb #14) · watchdog hang-killer · confirm
   the installed plists' `RunAtLoad` is actually active · `brief-validator` scaffold-wiring (#341).
 
 ### Track 4 — Operator PDF documentation program (P1 / A8) — *delivery-critical subset by Aug 7*
@@ -102,7 +111,8 @@ WS4 operator artifacts (landed): `docs/operations/host_migration_runbook.md` · 
   Seth gains read access to the canonical Evergreen schema. (ITS-owned SoR write-back is *not* blocked — §50/§51.)
 - **Doctrine** §23/§24 seven-workspace topology text + any §-adds — Seth-owned, version-bump.
 - **Future workstreams:** URS-Marine (Customer 2, active — briefs B1–B5); ~~Purchase Orders~~ → **promoted to
-  Track 5** (Aug-7 program WS1; the RFQ stage + Subcontracts remain future — first post-delivery builds); Email
+  Track 5** (Aug-7 program WS1; the RFQ stage remains future, but **Subcontracts is now BUILT** — SC-S1→S3c,
+  ADR-0003, ships dark; send half SC-S4 unbuilt, operator scoped fully-in incl. send 2026-07-12); Email
   Triage (owns Invariant-2 Layer 6 — preserve the email code seed); AI Employee (Phase 3+; vector store → Phase 4).
 - **Small feature / tech-debt:** publish rollback-UI picker; form-editor S1 per-item authoring; HTML email for
   weekly_send; time-entry personnel picker; finish `jobs.progress` %-removal (D1 column drop); `recipient_health`

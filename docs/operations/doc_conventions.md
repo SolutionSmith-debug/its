@@ -32,7 +32,7 @@ type: session_log | brief | audit | report | operations | reference | sample | r
 date: YYYY-MM-DD
 status: draft | active | superseded | archived | closed
 related_prs: [123, 124]       # optional, list of PR numbers
-workstream: safety_reports | safety_portal | box | ci | security | docs | infrastructure | null
+workstream: safety_reports | safety_portal | progress_reports | field_ops | po_materials | subcontracts | operator_dashboard | box | ci | security | docs | infrastructure | null
 supersedes: docs/path/to/old-doc.md  # optional; omit when first version
 tags: [phase_1.4, security]   # optional
 ---
@@ -220,6 +220,9 @@ opening a small PR before the value is used elsewhere.
 | `safety_portal`   | Cloudflare-hosted portal, sync Worker, email shim, form schemas, prune Worker, intake.py portal-marker branch |
 | `progress_reports`| Progress Reporting workstream — WPR_human_review, ITS_Active_Jobs_Progress, progress compile/send, materials |
 | `field_ops`       | Field-ops portal capture surface, job tracker, personnel/equipment, the job-tracker→Active-Jobs SoR mirror |
+| `po_materials`    | Purchase-Order workstream — deterministic po_generate / po_poll / po_send, §50 config actuator, §51 vendor sync |
+| `subcontracts`    | Subcontract-package generation (ADR-0003) — deterministic render, docx/xlsx, subcontract_poll, review twin |
+| `operator_dashboard` | WS2 operator dashboard — localhost obs panels + PIN-gated ACT surface (ITS_Config editor, secret rotation) |
 | `box`             | 1111A/1111B, migrations, parse_job_v3 |
 | `ci`              | CI workflows, verification discipline, conftest |
 | `security`        | picklist hardening, header forgery, attachment screening |

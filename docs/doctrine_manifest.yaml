@@ -38,7 +38,7 @@
 meta:
   manifest_version: 1
   generated: "2026-06-07"
-  its_head: 44370e1              # ~/its origin/main this manifest was validated against (2026-06-12 photo/download/Form-Request program, PRs #271–#276 + #279/#280/#281; refreshed from f3ad814 at the blueprint mission-v5 sync). Exec code unchanged by the 2026-06-17 B5 blueprint doctrine cascade (blueprint-only) — Op Stds v18 / FM v11 / Handover v9 / V&R v9 / Excellence v5.
+  its_head: e242074              # ~/its origin/main this manifest was validated against (2026-07-12 documentation-reconciliation pass: subcontracts SC-S1→S3c + PO / progress / field-ops / operator-dashboard / docs-pdf reconciled to as-built; taxonomy + workstream_tags refreshed to live HEAD in that pass). Prior: 44370e1 (2026-06-12 photo/download/Form-Request program).
   blueprint_head: ad8f563        # ~/its-blueprint main this manifest is synced against (refreshed on doctrine bump, per UPDATE DISCIPLINE above); ad8f563 = 2026-06-17 B5 doctrine cascade — Excellence Roadmap v5 (Track 3.4 platform fork-source / portal-template), tag excellence-roadmap-v5; other doctrine unchanged (Op Stds v18 / Handover v9 / FM v11 / V&R v9)
   seeded_by: "doc-reconciliation series PR 2 (manifest)"
 
@@ -240,7 +240,7 @@ doc_conventions:
   source: "docs/operations/doc_conventions.md"
   types: [session_log, brief, audit, report, operations, reference, sample, readme]
   statuses: [draft, active, superseded, archived, closed]
-  workstream_tags: [safety_reports, safety_portal, progress_reports, field_ops, box, ci, security, docs, infrastructure, "null"]
+  workstream_tags: [safety_reports, safety_portal, progress_reports, field_ops, po_materials, subcontracts, operator_dashboard, box, ci, security, docs, infrastructure, "null"]
   tech_debt_statuses: [OPEN, PARTIALLY_MITIGATED, CLOSED, DEFERRED, DELIVERED]
 
 # --- Model strings — VERIFY-REQUIRED, NOT asserted-current ---------------------

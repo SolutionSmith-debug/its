@@ -66,6 +66,8 @@ Four workstreams compose the delivery:
 
 Subcontracts: **design-in, build-later** — the PO data model, terms library, and review/send
 pattern stay reusable for it; zero subcontract code before Aug 7.
+**[SUPERSEDED 2026-07-12 — see D18 Amendment A1 below: subcontract generation was built
+deterministic/no-AI (ADR-0003) and subcontracts is now IN Aug-7 scope, fully in incl. send.]**
 
 ## Decisions already resolved
 
@@ -90,7 +92,16 @@ Locked via operator grilling 2026-07-09 (do not reopen without operator say-so):
 | D15 | Docs scope | Delivery-critical PDF set by Aug 7 via repeatable md→PDF pipeline; full A8 continues post-delivery |
 | D16 | Hardware | Older MacBook Pro becomes production host, installed at Evergreen Aug 7; provision early + burn in |
 | D17 | Operator gate | Handover pre-cutover condition #5 deliberately softened: Seth remains operator; Tier-2 clearance = named post-delivery milestone (recorded handover v10 amendment) |
-| D18 | Subcontracts | Design-in, build later — first post-delivery workstream |
+| D18 | Subcontracts | Design-in, build later — first post-delivery workstream **→ SUPERSEDED 2026-07-12 (Amendment A1)** |
+
+> **Amendment A1 (2026-07-12) — Subcontracts reversed INTO Aug-7 scope.** Per operator directive, D18's
+> "design-in, build later" is superseded (history preserved above): subcontract-package **generation** was built
+> deterministic + **NO AI** (ADR-0003; SC-S1→S3c; PRs #529–#540) and ships **dark**, ahead of Aug 7 rather than
+> post-delivery. The operator scoped subcontracts **fully in incl. send** (2026-07-12), so the **SEND half (SC-S4)**
+> — `subcontract_send.py` + F22 + executed-countersign + send-poller plist — is a *remaining build dependency*
+> (not yet built; commented stub only), tracked as cutover item **CL-38** and escalated to Seth as a separate SC-S4
+> engineering brief. Calendar impact: ≥2 buffer days consumed by the generation build. **Subcontracts is IN Aug-7
+> scope; subcontract SEND enters the Aug-7 *send* scope only once SC-S4 ships + live-smokes.**
 
 ## Foundation invariants
 
@@ -238,7 +249,7 @@ dictionary (1.25d) → D2-3 Box publish (0.5d).
   `scheduled_send_local`, Box user, publish_daemon watchdog slug, meta-002 SLA doc).
 - **Aug-7 runbook** (`docs/operations/aug7_delivery_runbook.md`): MAINTENANCE + UptimeRobot
   window transport; on-site install gates (network → Tailscale reverse-access over hotspot →
-  11 daemons healthy → verify_cutover re-run); 40-min demo arc (field submit → **PO built
+  15 daemons healthy → verify_cutover re-run); 40-min demo arc (field submit → **PO built
   live** → F22 approval → send lands in supplier-stand-in inbox → dashboard tour → manuals
   handoff; pre-empt the Friday 14:00 cycle with Compile Now, rehearsed); 60-min training (PM
   track + owner Step-8 drills demonstrated BY them); acceptance sign-off with v10 amendment
@@ -280,7 +291,7 @@ ClamAV); the S8 golden-sample render-fidelity gate against a real corpus PO.
 ## Out of scope
 
 RFQ stage (multi-supplier drafting, quote intake via Email Triage, award→PO linkage) ·
-Subcontractor contract workstream (first post-delivery build) · GTC attach-at-send +
+Subcontractor contract workstream (~~first post-delivery build~~ — GENERATION built pre-Aug-7 per Amendment A1; SC-S4 send half remains) · GTC attach-at-send +
 drawn-signature on POs · material-catalog line-item picking · dashboard guarded-update flow
 (§50) + menu-bar mini · full A8 every-function doc coverage · formal Tier-2 Successor-Operator
 clearance (named date in handover v10) · boxsdk→box_sdk_gen, Check E, hang-killer (pre-existing
