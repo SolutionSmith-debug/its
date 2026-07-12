@@ -4,7 +4,7 @@ This Subcontract Agreement between {{subcontractor_entity}} (hereafter referred 
 
 The intent of this subcontract agreement/scope is that {{subcontractor_entity}} furnishes and installs all {{trade}} work per the Contract Documents. The omission, whether intentional or inadvertent, of specific work by name or description on either the draw schedule or this Exhibit A shall not relieve Subcontractor from its obligation to complete the Work generally described herein and as required to satisfy the Contractor and/or appropriate governing agencies, and as indicated in the Contract Documents.
 
-The Contract Documents include the project construction plans, the project schedule, and the following:
+The Contract Documents include:
 Annex D - Insurance Requirements
 Annex F - Lien Waivers
 Annex G - Verified List of Subcontractor and Suppliers

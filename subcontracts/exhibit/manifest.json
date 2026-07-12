@@ -1,9 +1,9 @@
 {
   "manifest_version": 1,
-  "comment": "Exhibit A trade templates (ADR-0003, SC-S3b Exhibit A). Article I (General) + Article III/IV/V/VI are the FIXED skeleton (skeleton.md, tokenized preamble); Article II 'The Work' is trade-templated \u2014 the operator picks a trade, gets that trade's standard Art II as an editable starting point (pre-fills exhibit_a_work_text), and refines it. Art II bodies are VERBATIM from the 05_Subcontracts corpus per-trade templates (Kendall 2025.112 / Steger 2025.364, canonical + project-identical); AC/MV/DC Electrical share the detailed electrical scope (the corpus does not distinguish them at template level); Specialty has no corpus template (operator-authored). Skeleton + version files are sha256-pinned + immutable \u2014 a wording change is a NEW version, never an edit.",
+  "comment": "Exhibit A trade templates (ADR-0003, SC-S3b Exhibit A). Article I (General) + Article III/IV/V/VI are the FIXED skeleton (skeleton.md, tokenized preamble); Article II 'The Work' is trade-templated \u2014 the operator picks a trade, gets that trade's standard Art II as an editable starting point (pre-fills exhibit_a_work_text), and refines it. Art II bodies are VERBATIM from the 05_Subcontracts corpus per-trade templates (Kendall 2025.112 / Steger 2025.364, canonical + project-identical); AC/MV/DC Electrical share the detailed electrical scope (the corpus does not distinguish them at template level); Specialty has no corpus template (operator-authored). Skeleton + version files are sha256-pinned + immutable \u2014 a wording change is a NEW version, never an edit. NOTE: the Article I 'Contract Documents include:' recital is the verbatim corpus header; project-specific drawing/plan names are operator-filled in the editable .docx (no record field), analogous to the operator-authored Article II \u2014 never fabricated in the template.",
   "skeleton": {
     "file": "skeleton.md",
-    "sha256": "6ac6089880696de1332887ffb01499db043b9029e7e27ddd34eb2fdd1ea696bc",
+    "sha256": "1b15c3d6484f261c9798ed9763ee5b3604186b994034a13b74eb2540ac7a74e4",
     "tokens": [
       "subcontractor_entity",
       "contractor_entity",
