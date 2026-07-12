@@ -646,7 +646,12 @@ def _push_active_jobs(base_url: str, bearer: str) -> None:
     if not all_jobs:
         return  # read miss / genuinely-empty sheet → skip, never wipe the dropdown
     payload = [
-        {"job_id": j.job_id, "project_name": j.project_name, "active": 1 if j.is_active else 0}
+        # `address` (C1): the ITS_Active_Jobs "Address" — auto-fills the subcontract builder's Site
+        # address from the Smartsheet SoR. A Worker that predates the `address` sync field ignores the
+        # extra key (it validates only job_id/project_name/active), so daemon-first and worker-first
+        # deploy orders are both safe.
+        {"job_id": j.job_id, "project_name": j.project_name, "active": 1 if j.is_active else 0,
+         "address": j.address}
         for j in all_jobs
     ]
     result = portal_client.push_jobs(base_url, bearer, payload)

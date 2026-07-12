@@ -26,6 +26,7 @@ vi.mock("../../lib/subcontracts", async (importOriginal) => {
     supersedeSubcontract: vi.fn(),
     cancelSubcontract: vi.fn(),
     fetchExhibitTemplate: vi.fn(),
+    fetchJobSiteAddress: vi.fn(),
   };
 });
 vi.mock("../../lib/api", () => ({ fetchJobs: vi.fn() }));
@@ -127,6 +128,7 @@ beforeEach(() => {
   vi.mocked(api.fetchSubTerms).mockResolvedValue(TERMS);
   vi.mocked(api.fetchSubConfig).mockResolvedValue(CONFIG);
   vi.mocked(fetchJobs).mockResolvedValue(JOBS);
+  vi.mocked(api.fetchJobSiteAddress).mockResolvedValue({ job_id: "JOB-000001", site_address: "500 Solar Way, Kendall CA" });
 });
 
 /** Open the builder and fill a valid 2-line fixture: 3 × $12.34 + 2 × $0.05 = $37.12, job CA,
@@ -328,6 +330,30 @@ describe("SubcontractBuilderPage", () => {
     fireEvent.click(r.getByText("+ New subcontract"));
     expect((r.getByLabelText("Start date") as HTMLInputElement).type).toBe("date");
     expect((r.getByLabelText("Completion date") as HTMLInputElement).type).toBe("date");
+  });
+
+  it("selecting a job auto-fills the Site address from the Smartsheet SoR (C1)", async () => {
+    const r = render(<SubcontractBuilderPage onBack={() => {}} />);
+    await waitFor(() => expect(api.fetchSubDrafts).toHaveBeenCalled());
+    fireEvent.click(r.getByText("+ New subcontract"));
+    expect((r.getByLabelText("Site address") as HTMLInputElement).value).toBe(""); // blank pre-select
+    fireEvent.change(r.getByLabelText("Job"), { target: { value: "JOB-000001" } });
+    await waitFor(() => expect(api.fetchJobSiteAddress).toHaveBeenCalledWith("JOB-000001"));
+    await waitFor(() =>
+      expect((r.getByLabelText("Site address") as HTMLInputElement).value).toBe("500 Solar Way, Kendall CA"),
+    );
+  });
+
+  it("a blank SoR site address does NOT clobber an operator-typed Site address (C1 degrade-to-manual)", async () => {
+    vi.mocked(api.fetchJobSiteAddress).mockResolvedValue({ job_id: "JOB-000001", site_address: "" });
+    const r = render(<SubcontractBuilderPage onBack={() => {}} />);
+    await waitFor(() => expect(api.fetchSubDrafts).toHaveBeenCalled());
+    fireEvent.click(r.getByText("+ New subcontract"));
+    fireEvent.change(r.getByLabelText("Site address"), { target: { value: "operator typed" } });
+    fireEvent.change(r.getByLabelText("Job"), { target: { value: "JOB-000001" } });
+    await waitFor(() => expect(api.fetchJobSiteAddress).toHaveBeenCalledWith("JOB-000001"));
+    // Blank SoR → the operator's text stands (no empty overwrite).
+    expect((r.getByLabelText("Site address") as HTMLInputElement).value).toBe("operator typed");
   });
 
   it("tracker state machine: sent AND executed both offer Supersede; queued offers Cancel", async () => {

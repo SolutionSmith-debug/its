@@ -265,7 +265,7 @@ def push_jobs(base_url: str, token: str, jobs: list[dict[str, Any]]) -> dict[str
     """Full-replace job sync: POST /api/internal/sync → {ok, upserted, deactivated}.
 
     `jobs` is the COMPLETE ITS_Active_Jobs set, each row
-    `{job_id, project_name, active}` (active 1/0). The Worker upserts each and
+    `{job_id, project_name, active, address}` (active 1/0). The Worker upserts each and
     deactivates any job_id absent from the set — so this is a full-replace sync,
     NOT an incremental add. The caller MUST refuse to push an empty list (an empty
     set would deactivate the whole dropdown); the Worker also rejects it (400

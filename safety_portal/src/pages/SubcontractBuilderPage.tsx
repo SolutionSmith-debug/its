@@ -276,13 +276,24 @@ export function SubcontractBuilderPage({ onBack }: { onBack: () => void }) {
     const job = jobs.find((j) => j.job_id === id);
     if (!job) return;
     // Immediate fills from the /api/jobs dropdown row (always present). project/job/site name all
-    // derive from project_name; site_address/owner_entity stay manual (no site auto-fill route here).
+    // derive from project_name; owner_entity stays manual.
     setProjectName(job.project_name);
     setJobName(job.project_name);
     setSiteName(job.project_name);
     // Suggest job_no from a YYYY.NNN project-name prefix (the Evergreen convention) — editable.
     const m = /^(\d{4}\.\d{3})/.exec(job.project_name.trim());
     setJobNo(m ? m[1] : "");
+    // Site address auto-fills from the Smartsheet ITS_Active_Jobs "Address" SoR (C1) when available —
+    // a CONVENIENCE only: a blank / 404 / degraded fetch leaves the operator-editable Site-address
+    // field alone (never clobbers it with an empty on a job whose SoR address is unset).
+    void api
+      .fetchJobSiteAddress(id)
+      .then(({ site_address }) => {
+        if (site_address.trim()) setSiteAddress(site_address);
+      })
+      .catch(() => {
+        /* no site-address SoR row / degraded route — leave the Site-address field manual */
+      });
   }
 
   // ── Subcontractor picker (grouped by STATE) ────────────────────────────────────────────────────────

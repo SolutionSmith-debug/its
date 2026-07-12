@@ -381,6 +381,16 @@ export async function fetchExhibitTemplate(trade: string): Promise<ExhibitTempla
   return getJson<ExhibitTemplate>(`/api/subcontracts/exhibit-templates?trade=${encodeURIComponent(trade)}`);
 }
 
+/** Site-address auto-fill for the operator-picked job (C1). Reads the Smartsheet ITS_Active_Jobs
+ *  "Address" the Worker syncs down (jobs.address). A 404 / blank leaves the field operator-editable. */
+export interface JobSiteAddress {
+  job_id: string;
+  site_address: string;
+}
+export async function fetchJobSiteAddress(jobId: string): Promise<JobSiteAddress> {
+  return getJson<JobSiteAddress>(`/api/subcontracts/jobs/${encodeURIComponent(jobId)}/site-address`);
+}
+
 // ── Surface-line name aliases ──────────────────────────────────────────────────────────────────────
 // The S5 build spec (lib_routing.md) names these fetchSubcontracts / fetchSubcontract / createDraft /
 // updateDraft / generateDraft / fetchTerms / fetchSubcontractConfig; the task surface line names them

@@ -319,6 +319,57 @@ describe("exhibit-templates Article II pre-fill", () => {
   });
 });
 
+// ── Job site-address auto-fill (C1 — GET /api/subcontracts/jobs/:job_id/site-address) ─
+describe("job site-address auto-fill feed", () => {
+  // Seed a job row with a synced Smartsheet address. The jobs table isn't touched by the file-level
+  // beforeEach, so this describe cleans + seeds it itself (mirrors PO's ship-to test).
+  async function seedJob(): Promise<void> {
+    await env.DB.prepare("DELETE FROM jobs").run();
+    await env.DB
+      .prepare("INSERT INTO jobs (job_id, project_name, active, address) VALUES (?1,?2,1,?3)")
+      .bind("JOB-000017", "2026.001 Sunrise Solar", "100 Array Rd, Rockford IL")
+      .run();
+  }
+  beforeEach(seedJob);
+
+  it("401s an unauthenticated caller (no session)", async () => {
+    expect((await call("/api/subcontracts/jobs/JOB-000017/site-address")).status).toBe(401);
+  });
+
+  it("403s a caller without cap.subcontracts.manage (prove-the-control-bites)", async () => {
+    expect((await g(submitter, "/api/subcontracts/jobs/JOB-000017/site-address")).status).toBe(403);
+  });
+
+  it("200s the SoR site_address for an admin", async () => {
+    const res = await g(admin, "/api/subcontracts/jobs/JOB-000017/site-address");
+    expect(res.status, await res.clone().text()).toBe(200);
+    expect(await json<Record<string, unknown>>(res)).toEqual({
+      job_id: "JOB-000017",
+      site_address: "100 Array Rd, Rockford IL",
+    });
+  });
+
+  it("returns an empty site_address when the SoR address is blank (degrade to manual)", async () => {
+    await env.DB.prepare("UPDATE jobs SET address='' WHERE job_id='JOB-000017'").run();
+    const res = await g(admin, "/api/subcontracts/jobs/JOB-000017/site-address");
+    expect(await json<{ job_id: string; site_address: string }>(res)).toEqual({
+      job_id: "JOB-000017",
+      site_address: "",
+    });
+  });
+
+  it("404s an unknown job_id", async () => {
+    const res = await g(admin, "/api/subcontracts/jobs/JOB-999999/site-address");
+    expect(res.status).toBe(404);
+    expect(await json<{ error: string }>(res)).toEqual({ error: "not_found" });
+  });
+
+  it("bound SQL: a SQL-ish job_id binds as a literal → 404, no injection/error", async () => {
+    const res = await g(admin, `/api/subcontracts/jobs/${encodeURIComponent("JOB-000017' OR '1'='1")}/site-address`);
+    expect(res.status).toBe(404);
+  });
+});
+
 // ── Subcontractors CRUD (portal side of the §51 rider) ────────────────────────
 describe("subcontractors create/update", () => {
   it("create allocates SUB-###### and stamps origin=portal, sync_state=pending, mirror_version=1", async () => {
