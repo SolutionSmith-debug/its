@@ -96,10 +96,14 @@ outside the sentinel block.
 <!-- BEGIN AUTO-INDEX -->
 | Date | Type | Status | Workstream | Title | PRs |
 |------|------|--------|------------|-------|-----|
+| 2026-07-12 | session_log | active | subcontracts | [Subcontract generator COMPLETE — SC-S3c (backend) + SC-S5 (UI) + SC-S3b Exhibit A](2026-07-12_subcontract-generator-complete-s3c-s5-exhibit-a.md) | #536, #537, #538 |
 | 2026-07-11 | session_log | active | subcontracts | [Subcontract generation workstream — SC-S1 foundation (deterministic, PO-mirror)](2026-07-11_subcontracts-s1-foundation.md) | #529 |
+| 2026-07-11 | session_log | active | subcontracts | [Subcontract generation — SC-S3a render core + SC-S3b editable .docx/.xlsx + group-by-state](2026-07-11_subcontracts-s3a-s3b-render-and-state.md) | #532, #533, #534 |
 | 2026-07-10 | session_log | active | _–_ | [Cutover readiness gap — CL-01…CL-33 disposition + verify_cutover baseline (2026-07-10)](2026-07-10_cutover-gap.md) | _–_ |
 | 2026-07-10 | session_log | active | _–_ | [Overnight (autonomous): §50 config-editor Features 1 & 2 + Aug-7 cutover readiness](2026-07-10_overnight-config-editor-features-and-cutover-readiness.md) | #524, #525, #526 |
 | 2026-06-10 | session_log | active | safety_portal | [Session — Agent Optimization (Brief 2) + Safety Portal Hardening (Brief 1)](2026-06-10_agent-optimization-and-portal-hardening.md) | #260, #261, #263, #264, #265, #266 |
+| 2026-07-12 | session_log | closed | docs | [Documentation reconciliation — reconcile every doc to the as-built system (6 WPs)](2026-07-12_documentation-reconciliation.md) | #543, #545, #547, #549 |
+| 2026-07-12 | session_log | closed | subcontracts | [Session — Office Operations nav + PO/SC Configuration subcontract editors (PRs #541/#542/#546 landed; #544/#548 held for operator; PR-B2 mapped, not started)](2026-07-12_office-ops-nav-and-po-sc-config.md) | #541, #542, #546, #544, #548 |
 | 2026-07-10 | session_log | closed | _–_ | [Session — Config-editor follow-ups (fix the self-defeating CI test, CE-3) + terms editing (Step 2, slices T1/T2)](2026-07-10_config-editor-followups-terms-editing.md) | #514, #511, #518, #520 |
 | 2026-07-10 | session_log | closed | _–_ | [Session — PO follow-ups (ship-to / catalog / config-view / naming) + the generic §50 config-editor 3-slice vertical (PRs #504–#512, #511 stuck)](2026-07-10_po-followups-and-config-editor-vertical.md) | #504, #505, #506, #507, #508, #509, #510, #511, #512 |
 | 2026-07-10 | session_log | closed | _–_ | [Session — WS2 Operator Dashboard: D1-1 read-only core + D1-2 Class-A config editor + D1-3 sensitive tier (PRs #516, #519, #523)](2026-07-10_ws2-operator-dashboard-d1-1-d1-2-d1-3.md) | #516, #519, #523 |

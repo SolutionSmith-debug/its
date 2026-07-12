@@ -38,6 +38,64 @@ all three verdicts CLEAN/WARN, no BLOCK). Deferred deliberately — none blocks 
   exposure (`subcontract_poll` spawns no subprocess). Widen `DAEMON_ROOT` to a root LIST covering the
   daemon-bearing packages if/when that guard is generalized — a shared change, matches the existing PO gap.
 
+## Subcontracts — PO/SC Configuration + builder follow-ups [OPEN 2026-07-12]
+
+From the Office Operations nav / PO-SC Configuration session (PRs #541/#542/#546, plus the HELD PRs
+#544/#548). None blocks the dark ship; PR-B2 below is the remaining operator-directed build item, not a
+bug.
+
+- **SC-CFG-1 (INFORMATIONAL, non-blocking) — `attach_reference.md` won't auto-flag as diverged if a
+  future `standard_subcontract_v2` ever changes the preamble/§2.1 wording.** PR #544 (HELD for operator
+  merge — touches ADR-0003 + the manifest description) fixed a real fence: an `attach`-kind terms profile
+  (`negotiated_msa`) had no library text to load, so `render_body_text` raised and a valid negotiated-MSA
+  subcontract could never file. Fix renders a one-page reference body from a new sha-pinned
+  `subcontracts/terms/attach_reference.md` — PURE VERBATIM fragments lifted from the `standard_subcontract`
+  body's preamble + §2.1 + signature block (an earlier draft with paraphrased/invented clauses was BLOCKED
+  by ops-stds review and rewritten to pure-verbatim before re-review cleared it), so it correctly carries no
+  independent legal-review gate of its own. **The residual:** `attach_reference.md` is pinned by its own
+  `terms._ATTACH_REFERENCE_SHA256` module constant, frozen at v1-era wording. If `standard_subcontract` is
+  ever bumped to a v2 with different preamble/§2.1 text, nothing re-checks `attach_reference.md` against the
+  new wording — it just keeps rendering the frozen v1 fragments, consistent with the existing
+  immutable-pin-per-version pattern elsewhere in the manifest, but silently so for this one file. **Trigger:**
+  only relevant the day a `standard_subcontract_v2` is minted — worth an ADR-0003 note or a cross-check at
+  that point, not before. **Tag:** `subcontracts`, `terms`, `legal-gate`, `informational`.
+- **SC-CFG-2 (COSMETIC) — `worker/index.ts`'s `/api/internal/sync` address bound hardcodes the literal
+  `512` instead of importing the shared `MAX_ADDRESS` constant.** PR #548 (HELD for operator deploy +
+  live-smoke — touches the Worker) added `address` to the `ITS_Active_Jobs` down-sync payload and bounds it
+  at `address.length > 512` inline in `index.ts`. The same `512` value is already defined as `MAX_ADDRESS`
+  independently in three other Worker files (`po.ts`, `subcontract.ts`, `fieldops_job_write.ts`) —
+  duplicated, not shared, across all four sites. Zero behavioral drift today (all four agree at 512), but a
+  future bump to any one site without the others is a latent inconsistency. **Fix:** hoist `MAX_ADDRESS` into
+  a shared Worker constants module and import it at all four call sites (a small, contained refactor — no
+  functional change). **Tag:** `subcontracts`, `worker`, `cosmetic`, `low-severity`.
+- **PR-B2 (the remaining Exhibit-A + payment-terms build, operator-directed, NOT started) — Exhibit-A
+  versioned+gated editing + subcontract payment-terms editing + a `config.ts` comment fix.** Mapped this
+  session (Explore agent) as one LARGE, atomic Python+worker+SPA change, deliberately left for the operator's
+  presence because it needs a worker deploy AND a Layer-A legal-attestation seed:
+  1. Restructure `subcontracts/exhibit/manifest.json` `trade_templates` from flat `{file,sha256}` to
+     versioned `{current_version, versions:{vN:{file,sha256,legal_review}}}` — requires seeding the 7
+     existing trade templates `legal_review=cleared` (an operator Layer-A attestation, the same pattern used
+     for `standard_subcontract` v1, `95a01cb`).
+  2. `exhibit.py`'s loader + the `subcontract_docx` renderer's pin-resolution add a legal gate to the LIVE
+     render path (currently exhibit.py has no such gate — a known WARN from PR #538's review, intentional at
+     the time since Exhibit A is operator-authored per-trade Article II, not independently-drafted legal
+     text like the standard body).
+  3. `config_apply.py` gains `_apply_exhibit_*` handlers reusing the existing `add_version`/`set_current`/
+     `create_profile` op shapes — no new D1 migration needed.
+  4. `config_actuator.py`'s `_MANAGED_PATHS` + `_MANAGED_TERMS_DIRS` add `subcontracts/exhibit`.
+  5. Worker `config.ts` gains an `exhibit` artifact kind + registry entry + a kind→op branch rework (new
+     `EXHIBIT_OPS`); `worker/subcontract.ts` gains new serve routes (list template keys + get text by
+     key/version) — **atomic with the manifest schema change**, because the worker build-imports
+     `exhibitManifest` directly (the same "Worker bundles config at build time" constraint noted throughout
+     this doc).
+  6. `subcontracts.ts` SPA fetchers + a NEW exhibit-editor block in `PoConfigPage` — NOT the shared
+     `TermsProfilesEditor` (exhibit is keyed per-trade, not per-profile).
+  7. Payment-terms editing (CE-7 above) folds in here too, once the served `/api/subcontracts/config` route
+     exposes the day-fields.
+  **Trigger:** next dedicated subcontracts-config session, operator present for the deploy + the
+  legal-attestation seed. **Tag:** `subcontracts`, `config-editor`, `exhibit-a`, `deploy-gated`,
+  `legal-gate`, `not-started`.
+
 ## Config editor (§50) — deferred follow-ups [OPEN 2026-07-10]
 
 From the slice-2 (`config_actuator`) build + adversarial review (PR #509):
@@ -115,6 +173,20 @@ From the slice-2 (`config_actuator`) build + adversarial review (PR #509):
   tax/terms via the portal, fully-automatic actuation) and re-run `scripts/generate_config_dictionary.py` /
   re-record the sha in the manifest per the existing coupling pattern. **Tag:** `po_materials`,
   `config-editor`, `docs`, `enablement`, `low-severity`.
+- **CE-7 (LOW, blocks a SPA feature not a live edit) — subcontract payment-terms editing deferred to
+  PR-B2: the actuator needs day-fields the served config doesn't expose yet.** PR #546 ("PO/SC
+  Configuration — subcontract Contractor + terms editors (v1)") built the Contractor identity editor + the
+  extracted shared `TermsProfilesEditor` for subcontracts, but deliberately left payment-terms editing
+  unbuilt: `po_materials/config_apply._apply_payment_terms_edit` (the actuator handler — it is workstream-
+  generic, not subcontracts-specific, despite living under `po_materials/`) validates+writes
+  `application_for_payment_day` / `progress_payment_day` (`_bp(..., 1, 31)`), but the served
+  `/api/subcontracts/config` route does not yet expose those fields to the SPA. Building the editor now
+  would let the operator POST a payload the actuator can validate but the SPA can't pre-fill/round-trip
+  correctly (no source of truth for the current values). **Fix:** extend the subcontracts-config Worker
+  route to serve the two day-fields (small, deploy-gated — the same "Worker bundles config at build time"
+  pattern as purchaser/tax/terms), then build the SPA editor. Folds into **PR-B2** alongside Exhibit-A
+  versioned+gated editing (see the Subcontracts — PO/SC Configuration section below for the full PR-B2
+  scope). **Tag:** `subcontracts`, `config-editor`, `deferred`, `low-severity`.
 
 ## [CUTOVER-BLOCKING] Aug-7 cutover readiness — deferred code follow-ups [OPEN 2026-07-10]
 
