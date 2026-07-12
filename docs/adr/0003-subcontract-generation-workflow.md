@@ -86,6 +86,18 @@ commented capability-gating stubs) — this fills that frame.
    Fully-Executed marker) — a subcontract is countersigned, unlike a PO. E-signature is out of scope
    (generate-for-signature).
 
+9. **Attach-kind (negotiated-MSA) profiles render a one-page reference, not a fence.** A subcontractor
+   on a negotiated Master Subcontract Agreement uses an `attach`-kind terms profile (`negotiated_msa`).
+   Its `Subcontract.docx` is a **one-page reference** — the standard body's VERBATIM preamble + §2.1
+   Contract Price + the profile's fixed manifest `render_line` + the standard signature block
+   (`subcontracts/terms/attach_reference.md`, sha-pinned) — rendered IN PLACE OF the 27-article body,
+   with Exhibit A + Annex C still rendered as their own package files (the package stays 3 files).
+   Because the reference body is built from ONLY verbatim standard fragments + the fixed render_line
+   (no independently-drafted terms), it carries **no per-version legal_review gate** — the render_line
+   and the reference scaffold are legally reviewed once at ADR/PR time, and the binding terms live in
+   the external MSA. This SUPERSEDES the initial "emit ONLY the reference line" stub framing (operator
+   directive, 2026-07-12): the generated document is self-describing rather than a bare line.
+
 ## Invariants preserved
 - **External Send Gate (Invariant 1):** two-process — `subcontract_generate` has zero send, `subcontract_send`
   has zero AI. Ships dark. Send/execution approval = §46 workspace membership + F22, Mac-side.

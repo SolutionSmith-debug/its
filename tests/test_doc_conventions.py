@@ -49,6 +49,15 @@ def _write_doc(
     else:
         frontmatter = ""
     body = f"# {title}\n\nBody.\n"
+    if doc_type == "session_log":
+        # Session logs must carry the four-part verify block (WP5 convention).
+        body += (
+            "\n## Landing verify\n"
+            "- pytest: 1 passed\n"
+            "- mypy: 0 errors\n"
+            "- ruff: clean\n"
+            "- main-branch CI on merge commit: SUCCESS\n"
+        )
     path.write_text(frontmatter + body)
 
 
@@ -81,6 +90,9 @@ def test_canonical_workstreams_match_spec():
         "safety_portal",
         "progress_reports",
         "field_ops",
+        "po_materials",
+        "subcontracts",
+        "operator_dashboard",
         "box",
         "ci",
         "security",
@@ -188,6 +200,34 @@ def test_lint_session_log_missing_date(tmp_path: Path, monkeypatch):
     violations = lint_file(doc.relative_to(tmp_path))
     rules = [v.rule for v in violations]
     assert "date-required" in rules
+
+
+def test_lint_session_log_missing_verify_block(tmp_path: Path, monkeypatch):
+    """A NEW session log without the four-part verify block flags (WP5)."""
+    monkeypatch.setattr(lint_mod, "REPO_ROOT", tmp_path)
+    docs_dir = tmp_path / "docs" / "session_logs"
+    docs_dir.mkdir(parents=True)
+    doc = docs_dir / "2026-07-12_thing.md"
+    doc.write_text(
+        "---\ntype: session_log\ndate: 2026-07-12\nstatus: closed\nworkstream: docs\n---\n"
+        "# X\n\nDid work. No verify block.\n"
+    )
+    rules = [v.rule for v in lint_file(doc.relative_to(tmp_path))]
+    assert "session-log-verify-block" in rules
+
+
+def test_lint_plans_citation_flagged(tmp_path: Path, monkeypatch):
+    """A doc citing ~/.claude/plans/ as authoritative flags (WP5)."""
+    monkeypatch.setattr(lint_mod, "REPO_ROOT", tmp_path)
+    docs_dir = tmp_path / "docs" / "operations"
+    docs_dir.mkdir(parents=True)
+    doc = docs_dir / "cites-plans.md"
+    doc.write_text(
+        "---\ntype: operations\nstatus: active\nworkstream: docs\n---\n"
+        "# X\n\nThe authoritative spec is `~/.claude/plans/foo.md`.\n"
+    )
+    rules = [v.rule for v in lint_file(doc.relative_to(tmp_path))]
+    assert "plans-citation" in rules
 
 
 # ---- Exempt list --------------------------------------------------------

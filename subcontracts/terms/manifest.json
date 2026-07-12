@@ -20,7 +20,7 @@
     "negotiated_msa": {
       "kind": "attach",
       "label": "Negotiated MSA (attach-not-generate)",
-      "description": "Subcontractors with a negotiated Master Subcontract Agreement: the renderer emits ONLY the reference line below; the MSA document is attached at send (fast-follow) or already held by both parties. The subcontractor's ITS_Subcontractors 'MSA Reference' cell carries the Box link.",
+      "description": "Subcontractors with a negotiated Master Subcontract Agreement: the renderer emits a ONE-PAGE reference Subcontract (the standard body's verbatim preamble + §2.1 Contract Price + this reference line + signature block, via subcontracts/terms/attach_reference.md) IN PLACE OF the 27-article body — it carries no independently-drafted terms, so no legal_review gate applies. The negotiated MSA supplies the binding terms and is attached at send (fast-follow) or already held by both parties. Exhibit A + Annex C still render as their own package files. The subcontractor's ITS_Subcontractors 'MSA Reference' cell carries the Box link.",
       "render_line": "THE WORK DESCRIBED HEREIN IS PERFORMED UNDER, AND SUBJECT TO, THE NEGOTIATED MASTER SUBCONTRACT AGREEMENT BETWEEN CONTRACTOR AND SUBCONTRACTOR."
     }
   },

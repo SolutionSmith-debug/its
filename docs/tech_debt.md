@@ -2,7 +2,11 @@
 
 Items deliberately deferred. Each carries the rationale for deferral and the trigger for revisiting. The repo-side companion to Master Checklist §6 (planning project) — this file holds execution-layer tech debt; the Master Checklist holds owner-decision tech debt.
 
-When to add an entry: a session deliberately chooses preservation-over-refactor (per Op Stds v11 §14), discovers an external-API constraint that forced a workaround, or defers a non-trivial cleanup that's larger than the current session can absorb. When to mark CLOSED: the underlying item is resolved in a commit; preserve the entry with resolution detail rather than deleting (history is cheap, context is expensive).
+When to add an entry: a session deliberately chooses preservation-over-refactor (per Op Stds v11 §14), discovers an external-API constraint that forced a workaround, or defers a non-trivial cleanup that's larger than the current session can absorb.
+
+**Split 2026-07-12:** resolved/closed/delivered/superseded entries now live in [`docs/tech_debt_closed.md`](tech_debt_closed.md) (archive) so this file stays under the 256 KB cap — this file holds only OPEN items. When an entry closes, **move** it to the archive with resolution detail (don't delete — history is cheap, context is expensive).
+
+**Cutover triage:** every open entry below is **post-delivery** unless its header is prefixed **`[CUTOVER-BLOCKING]`** (must resolve before the Aug-7 production cutover). The authoritative cutover gate is `docs/operations/cutover_checklist.md` (CL-01…CL-39) + `scripts/verify_cutover.py`, not these tags — the tags are prioritization only.
 
 ## Subcontracts — SC-S3c adversarial-review follow-ups (non-blocking) [OPEN 2026-07-11]
 
@@ -34,23 +38,63 @@ all three verdicts CLEAN/WARN, no BLOCK). Deferred deliberately — none blocks 
   exposure (`subcontract_poll` spawns no subprocess). Widen `DAEMON_ROOT` to a root LIST covering the
   daemon-bearing packages if/when that guard is generalized — a shared change, matches the existing PO gap.
 
-## [RESOLVED 2026-07-12 — #538] Subcontracts — SC-S3b Exhibit A blocked on the `exhibit_trade_templates` config artifact [OPEN 2026-07-11]
+## Subcontracts — PO/SC Configuration + builder follow-ups [OPEN 2026-07-12]
 
-ADR-0003 scopes the subcontract package as Subcontract body + **Exhibit A** (Art I/III/IV/VI fixed +
-operator-authored trade-templated Art II) + SOV + fixed annex kit. SC-S3b (#534) shipped the **body .docx +
-SOV .xlsx** render; Exhibit A was deferred because no `exhibit_trade_templates` config existed and building
-it ad-hoc would mean inventing legal text.
+From the Office Operations nav / PO-SC Configuration session (PRs #541/#542/#546, plus the HELD PRs
+#544/#548). None blocks the dark ship; PR-B2 below is the remaining operator-directed build item, not a
+bug.
 
-**RESOLVED (#538, `eb6fe9d`):** the corpus turned out to already contain canonical per-trade Exhibit A
-templates (`05_Subcontracts` Kendall 2025.112 / Steger 2025.364, `Sub Name - Project Name_<trade>` files —
-project-identical). Built `subcontracts/exhibit/` (manifest + tokenized skeleton + 7 verbatim per-trade Art II
-bodies, sha-pinned), `exhibit.py` loader, `render_exhibit_a_docx` (render_package now emits the 3-file
-package), the poll's 3-file Box filing + inline attach, a cap-gated serve route, and the SPA builder pre-fill.
-Reviews CLEAN/CONFIRMED-RESOLVED (an ops-stds BLOCK on a fabricated recital was caught + reverted to verbatim
-corpus). The subcontract generator is now 100% built. Only NON-CORPUS trade = Specialty (honest operator
-placeholder — no corpus template). Residual (deferred, minor, non-blocking): `exhibit.py` has no Layer-A
-`legal_review` gate like the body's `terms.py` — intentional (verbatim-corpus skeleton + operator-authored
-Art II), pending a one-line Seth confirmation.
+- **SC-CFG-1 (INFORMATIONAL, non-blocking) — `attach_reference.md` won't auto-flag as diverged if a
+  future `standard_subcontract_v2` ever changes the preamble/§2.1 wording.** PR #544 (HELD for operator
+  merge — touches ADR-0003 + the manifest description) fixed a real fence: an `attach`-kind terms profile
+  (`negotiated_msa`) had no library text to load, so `render_body_text` raised and a valid negotiated-MSA
+  subcontract could never file. Fix renders a one-page reference body from a new sha-pinned
+  `subcontracts/terms/attach_reference.md` — PURE VERBATIM fragments lifted from the `standard_subcontract`
+  body's preamble + §2.1 + signature block (an earlier draft with paraphrased/invented clauses was BLOCKED
+  by ops-stds review and rewritten to pure-verbatim before re-review cleared it), so it correctly carries no
+  independent legal-review gate of its own. **The residual:** `attach_reference.md` is pinned by its own
+  `terms._ATTACH_REFERENCE_SHA256` module constant, frozen at v1-era wording. If `standard_subcontract` is
+  ever bumped to a v2 with different preamble/§2.1 text, nothing re-checks `attach_reference.md` against the
+  new wording — it just keeps rendering the frozen v1 fragments, consistent with the existing
+  immutable-pin-per-version pattern elsewhere in the manifest, but silently so for this one file. **Trigger:**
+  only relevant the day a `standard_subcontract_v2` is minted — worth an ADR-0003 note or a cross-check at
+  that point, not before. **Tag:** `subcontracts`, `terms`, `legal-gate`, `informational`.
+- **SC-CFG-2 (COSMETIC) — `worker/index.ts`'s `/api/internal/sync` address bound hardcodes the literal
+  `512` instead of importing the shared `MAX_ADDRESS` constant.** PR #548 (HELD for operator deploy +
+  live-smoke — touches the Worker) added `address` to the `ITS_Active_Jobs` down-sync payload and bounds it
+  at `address.length > 512` inline in `index.ts`. The same `512` value is already defined as `MAX_ADDRESS`
+  independently in three other Worker files (`po.ts`, `subcontract.ts`, `fieldops_job_write.ts`) —
+  duplicated, not shared, across all four sites. Zero behavioral drift today (all four agree at 512), but a
+  future bump to any one site without the others is a latent inconsistency. **Fix:** hoist `MAX_ADDRESS` into
+  a shared Worker constants module and import it at all four call sites (a small, contained refactor — no
+  functional change). **Tag:** `subcontracts`, `worker`, `cosmetic`, `low-severity`.
+- **PR-B2 (the remaining Exhibit-A + payment-terms build, operator-directed, NOT started) — Exhibit-A
+  versioned+gated editing + subcontract payment-terms editing + a `config.ts` comment fix.** Mapped this
+  session (Explore agent) as one LARGE, atomic Python+worker+SPA change, deliberately left for the operator's
+  presence because it needs a worker deploy AND a Layer-A legal-attestation seed:
+  1. Restructure `subcontracts/exhibit/manifest.json` `trade_templates` from flat `{file,sha256}` to
+     versioned `{current_version, versions:{vN:{file,sha256,legal_review}}}` — requires seeding the 7
+     existing trade templates `legal_review=cleared` (an operator Layer-A attestation, the same pattern used
+     for `standard_subcontract` v1, `95a01cb`).
+  2. `exhibit.py`'s loader + the `subcontract_docx` renderer's pin-resolution add a legal gate to the LIVE
+     render path (currently exhibit.py has no such gate — a known WARN from PR #538's review, intentional at
+     the time since Exhibit A is operator-authored per-trade Article II, not independently-drafted legal
+     text like the standard body).
+  3. `config_apply.py` gains `_apply_exhibit_*` handlers reusing the existing `add_version`/`set_current`/
+     `create_profile` op shapes — no new D1 migration needed.
+  4. `config_actuator.py`'s `_MANAGED_PATHS` + `_MANAGED_TERMS_DIRS` add `subcontracts/exhibit`.
+  5. Worker `config.ts` gains an `exhibit` artifact kind + registry entry + a kind→op branch rework (new
+     `EXHIBIT_OPS`); `worker/subcontract.ts` gains new serve routes (list template keys + get text by
+     key/version) — **atomic with the manifest schema change**, because the worker build-imports
+     `exhibitManifest` directly (the same "Worker bundles config at build time" constraint noted throughout
+     this doc).
+  6. `subcontracts.ts` SPA fetchers + a NEW exhibit-editor block in `PoConfigPage` — NOT the shared
+     `TermsProfilesEditor` (exhibit is keyed per-trade, not per-profile).
+  7. Payment-terms editing (CE-7 above) folds in here too, once the served `/api/subcontracts/config` route
+     exposes the day-fields.
+  **Trigger:** next dedicated subcontracts-config session, operator present for the deploy + the
+  legal-attestation seed. **Tag:** `subcontracts`, `config-editor`, `exhibit-a`, `deploy-gated`,
+  `legal-gate`, `not-started`.
 
 ## Config editor (§50) — deferred follow-ups [OPEN 2026-07-10]
 
@@ -129,8 +173,22 @@ From the slice-2 (`config_actuator`) build + adversarial review (PR #509):
   tax/terms via the portal, fully-automatic actuation) and re-run `scripts/generate_config_dictionary.py` /
   re-record the sha in the manifest per the existing coupling pattern. **Tag:** `po_materials`,
   `config-editor`, `docs`, `enablement`, `low-severity`.
+- **CE-7 (LOW, blocks a SPA feature not a live edit) — subcontract payment-terms editing deferred to
+  PR-B2: the actuator needs day-fields the served config doesn't expose yet.** PR #546 ("PO/SC
+  Configuration — subcontract Contractor + terms editors (v1)") built the Contractor identity editor + the
+  extracted shared `TermsProfilesEditor` for subcontracts, but deliberately left payment-terms editing
+  unbuilt: `po_materials/config_apply._apply_payment_terms_edit` (the actuator handler — it is workstream-
+  generic, not subcontracts-specific, despite living under `po_materials/`) validates+writes
+  `application_for_payment_day` / `progress_payment_day` (`_bp(..., 1, 31)`), but the served
+  `/api/subcontracts/config` route does not yet expose those fields to the SPA. Building the editor now
+  would let the operator POST a payload the actuator can validate but the SPA can't pre-fill/round-trip
+  correctly (no source of truth for the current values). **Fix:** extend the subcontracts-config Worker
+  route to serve the two day-fields (small, deploy-gated — the same "Worker bundles config at build time"
+  pattern as purchaser/tax/terms), then build the SPA editor. Folds into **PR-B2** alongside Exhibit-A
+  versioned+gated editing (see the Subcontracts — PO/SC Configuration section below for the full PR-B2
+  scope). **Tag:** `subcontracts`, `config-editor`, `deferred`, `low-severity`.
 
-## Aug-7 cutover readiness — deferred code follow-ups [OPEN 2026-07-10]
+## [CUTOVER-BLOCKING] Aug-7 cutover readiness — deferred code follow-ups [OPEN 2026-07-10]
 
 Surfaced during the cutover-readiness drive (PR #525); each is a real code follow-up not blocking
 the merged work, tracked so it isn't lost. The operator-gated cutover items live in
@@ -191,167 +249,7 @@ From `docs/audits/2026-07-04_smartsheet-wiring-audit.md` (Task B — the SoR is 
 
 **Tag:** `smartsheet`, `daemon-health`, `config`, `capacity`, `audit`, `field_ops`.
 
-## Config gates ship dark by ROW-ABSENCE, not just row-value [RESOLVED 2026-07-05 for equipment_enabled; materials_enabled stays visibly gated on §51]
-
-**Operator-reported blocker, root-caused 2026-07-05 (session part 2).** The operator went looking for
-`field_ops.fieldops_sync.equipment_enabled` / `.materials_enabled` rows in `ITS_Config` (sheet
-`3072320166907780`) to flip them and found **no row at all** — not a row set to `false`. Root cause:
-`fieldops_sync._read_bool_setting(key, default)` (see `_equipment_enabled`/`_materials_enabled`,
-`field_ops/fieldops_sync.py:226-231`) defaults to `DEFAULT_EQUIPMENT_ENABLED = False` /
-`DEFAULT_MATERIALS_ENABLED = False` when the row is **absent**, same as when it exists and is set
-`false` — the two states are behaviorally identical but only one of them is operator-visible in the
-Smartsheet UI. Only `field_ops.fieldops_sync.sync_enabled` and `.hours_enabled` had ever been seeded;
-Equipment (#468) and Material List (#470) both shipped dark-by-design but nobody created the config
-rows those PRs' own text promised to gate on. **There is no row to "flip" — the operator (or CC) must
-CREATE the row first**, then set it.
-
-**Fix applied this session:** created both rows via MCP — `equipment_enabled=true` (ACTIVATED) and
-`materials_enabled=false` (still §51-blocked per the M2 entry below, but now a **visible, intentional**
-`false` rather than a silent absence). Each row carries a descriptive `Description` cell. Worker deploy
-independently confirmed via unauthenticated 401 probes on `/api/internal/fieldops/{equipment,material-list}-snapshot`
-(a genuinely-deployed gated route 401s `application/json`; a missing route SPA-falls-back to `200
-text/html` per [[reference_worker-spa-fallback-200-on-deleted-asset]] — same diagnostic shape, new
-context). Equipment activation **live-smoked GREEN**: the 90s `fieldops_sync` cycle picked up the flip
-and reported `equipment upserted=1 errors=0` steadily over ~45 minutes; the `Portal create test 2 —
-Equipment` sheet exists in the progress workspace as the SoR artifact. Materials stayed at
-`upserted=0` (dark, as intended).
-
-**General lesson (not field-ops-specific):** any `ITS_Config`-gated boolean whose code defaults to a
-safe value (`False`/off) on a missing row will silently ship dark, and — unlike a hardcoded-fallback
-WARN (the `REQUIRED_CONFIG` #336 class) — there's no wrong VALUE to notice, just an absent row a
-human has to know to go create. Worth a `REQUIRED_CONFIG`-style startup enumeration that logs "this
-declared gate key has NO row" distinctly from "this key's row is set to the default," so a future
-gate doesn't strand an operator hunting for a row that was never seeded. Not built; folds into the
-existing #336 tracked pass rather than a new one.
-
-**Tag:** `field_ops`, `fieldops_sync`, `config`, `its_config`, `row-absence`, `equipment`, `materials`.
-
-### M3 Slice 2 — Material Incidents pass: activation queue [ACTIVATED 2026-07-06 — LIVE]
-
-**ACTIVATED 2026-07-06 (afternoon).** Worker deployed (route probes `401 application/json`);
-`incidents_enabled` seeded then flipped `→ true`; the daemon incidents pass ran clean post-flip
-(`incidents upserted=0 reviewed=0 errors=0` — 0 = no filed incidents on active sandbox jobs yet,
-`errors=0` proves the daemon→endpoint→mirror path is healthy end-to-end). Also seeded the four
-`progress_reports.*.row_cap_warn_threshold`=15000 rows that the #336 startup pass was WARNing as
-NO-ROW every cycle. The original activation checklist (kept for provenance / production cutover):
-
-The per-job Material Incidents ledger pass (`field_ops.fieldops_sync` material-incidents pass +
-`progress_reports/material_incidents.py` + Worker `GET /api/internal/fieldops/material-incidents`)
-shipped **dark** (gate `field_ops.fieldops_sync.incidents_enabled`, `DEFAULT_INCIDENTS_ENABLED=False`).
-Activation checklist (Developer-Operator / Seth), same shape as Equipment/Material List above:
-
-1. **Deploy the Worker** — the new read route must exist before the gate flips. **No D1 migration**
-   (the endpoint is a read-only `SELECT` over the existing `submissions` table + `json_extract` of
-   `payload_json` + a LEFT JOIN to `job_expected_materials` for the live `Line Status`). Confirm the
-   deploy with an unauthenticated 401 probe on `/api/internal/fieldops/material-incidents` (a deployed
-   gated route 401s `application/json`; a missing route SPA-falls-back to `200 text/html`).
-2. **Seed the ITS_Config row** `incidents_enabled = false` (Workstream `field_ops`, sheet
-   `3072320166907780`) — a MISSING row reads identically to `false` (the row-absence lesson above), so
-   the operator has nothing to flip until it EXISTS. `incidents_enabled` IS now enumerated in
-   `fieldops_sync.REQUIRED_CONFIG` (#481), so startup logs it with its source — but `resolve_and_log`
-   still can't distinguish "row absent" from "row=false" (both log as `default`), so seed the visible
-   row anyway.
-3. **Flip it to `true`** — a cell-flip is the only activation. The 90 s cycle then reports
-   `incidents upserted=N …` in the `sync_cycle_summary` INFO line; the per-job `<Job> — Material
-   Incidents` sheet find-or-creates beside the other trackers.
-
-Unlike Equipment/Material List there is **no zero-drop concern** (append-only ledger — no retire path)
-and the Material Incidents sheet is added to the §51 archive-on-closure move. The end-to-end live smoke
-(deployed Worker → daemon → Smartsheet) is the operator's cutover step; the merge-time gate was the
-mocked-plus-vitest-against-real-D1 suite + a live Smartsheet write smoke of the sheet schema (GREEN,
-sandbox, cleaned up). See `docs/runbooks/fieldops_sync.md` Symptom F.
-
-**Tag:** `field_ops`, `fieldops_sync`, `material-incidents`, `M3`, `config`, `activation`, `dark-ship`.
-
-## Hours Log — replace Started/Ended columns with a Task column [BUILT 2026-07-05 — live-sheet migration is the remaining operator step]
-
-**BUILT 2026-07-05 (PR #472, merged `9aada583`, four-part verify CLEAN — state=MERGED, mergedAt non-null, mergeCommit present, main-branch CI on the merge commit = SUCCESS; branch `feat/hours-log-task-column`) — all code + tests landed:** worker `/hours-pending`
-`LEFT JOIN task_assignments ta ON ta.id = t.task_id AND ta.job_id = t.job_id` projecting `ta.description AS
-task` (job-scoped per the security review) with `work_started_at/_ended_at` dropped from THAT projection
-only (the D1 columns stay — rollup/personnel/jobtracker still read them); `progress_reports/hours_log.py`
-`COL_TASK`; `field_ops/fieldops_sync.py` hours-pass mapping (`work_date` from `created_at`);
-`shared/portal_client.py` docstring; `scripts/migrations/hours_log_task_column.py` (two-phase, name-guarded,
-idempotent) + its unit test; runbook **Fault M** (`docs/runbooks/hours_log_sync.md`). **Remaining operator
-step:** run the two-phase live-sheet migration on the existing `Portal create test 2 — Hours Log` sheet —
-`--phase add --commit` BEFORE the `git -C ~/its pull` + `npm run deploy`, `--phase drop --commit` AFTER (the
-order is KeyError-critical; see the script docstring + Fault M). Original request below (kept as the
-multi-surface fan-out record).
-
-**Operator-requested 2026-07-05 (log-only; NOT built in the M2 PR).** The per-job `<Job> — Hours Log`
-Smartsheet carries `Started` / `Ended` columns that are, in practice, **always empty**: the portal
-time-log form captures neither a start nor an end wall-clock time (`time_entries.work_started_at` /
-`work_ended_at` are effectively unpopulated) — it captures `hours` + a `task_id`. Meanwhile the portal
-time log ALREADY records `time_entries.task_id` (→ `task_assignments.description`), which is the field
-crews actually want to see on the Hours Log. **Change:** drop the two always-empty `Started`/`Ended`
-columns and add a single **`Task`** column resolved from `task_assignments.description`.
-
-Multi-surface fan-out (enumerate ALL before claiming done — the recurring incomplete-fan-out bug):
-- **Worker `/hours-pending` route** (`safety_portal/worker/index.ts`): add `LEFT JOIN task_assignments
-  ta ON ta.id = t.task_id` and project `ta.description AS task`; DROP `t.work_started_at` /
-  `t.work_ended_at` from the SELECT. This is a trust-boundary read route → adversarial review required.
-- **`progress_reports/hours_log.py`**: drop `COL_STARTED` / `COL_ENDED` (columns + styles + the
-  `_TRACKED_COLS` change-set), add `COL_TASK`; update `upsert_entry_row` signature + cells.
-- **`field_ops/fieldops_sync.py` `_mirror_hours_pass`**: drop the `started=` / `ended=` mapping (and
-  the `_fmt_epoch_time` calls), add `task=str(e.get("task") or "").strip()`.
-- **`shared/portal_client.py`**: update the `get_fieldops_pending_hours` docstring shape (add `task`,
-  drop the two work-time fields).
-- **Tests**: `test_hours_log.py`, `test_fieldops_sync.py` hours-pass, the worker `fieldops-hours-mirror`
-  vitest.
-- **One-time live sheet-schema migration** for the EXISTING live `Portal create test 2 — Hours Log`
-  sheet (and any other already-created Hours Log sheets): the code change only affects NEW sheets, so
-  existing sheets need `Started`/`Ended` deleted + `Task` added via a name-guarded `update_column` /
-  `add_columns` / `delete_column` one-shot (Developer-Operator).
-
-**Tag:** `field_ops`, `hours-log`, `smartsheet`, `ux`.
-
-## M2 Material List — one-way-up MVP diverges from §51's bidirectional model [RESOLVED 2026-07-06 — ratified into Op Stds v20]
-
-**Verified 2026-07-06:** the §51 divergence is reconciled — Op Stds **v20** folds the Material List as **one-way-up (phased delivery; M2b bidirectional receive deferred)**, blessing the shipped MVP as strictly-more-conservative (never writes operator-owned columns, never reads operator edits back). See `operational-standards.md` §51 body (~line 859) + the v20 changelog. `field_ops.fieldops_sync.materials_enabled` is now doctrine-UNBLOCKED (flipped live 2026-07-06). The original divergence note (below) is superseded — Path B (reconfirm one-way-up) was the outcome.
-
-
-**Surfaced by ops-stds-enforcer on PR #470 (WARN, not a BLOCK — merged with the divergence flagged).**
-Operational Standards §51 (`~/its-blueprint/doctrine/operational-standards.md`, canonical line ~847)
-names the Material List explicitly as **"bidirectional with split column ownership — the operator
-owns content columns, the field owns delivery columns, neither side's write overwrites the other's."**
-The Progress-Reporting mission (`~/its-blueprint/workstreams/progress-reporting/mission.md`) carries
-the same bidirectional framing. PR #470 shipped a **one-way-up-only** MVP instead — portal is the sole
-author of every line (`job_expected_materials`, migration 0031 extended with `line_uuid` + `unplanned`
-0039), `progress_reports/material_list.py` mirrors it up as a structural clone of the Equipment
-tracker (#468); there is **no `smartsheet_row_id` column and no down-sync path** — an operator editing
-the Smartsheet Material List directly has no mechanism to write back to D1. This was an **operator
-ratification of Option A** made in-session (see `project_fieldops-portal-program.md` memory,
-"SESSION CONTINUED 2026-07-05"), not a doctrine change.
-
-**This is NOT yet reconciled with doctrine.** Two paths, either resolves the drift:
-- **A — v19.x rider** (the Sentry-leg / Hours-Log-period-split precedent) noting the Material List
-  ships in a **phased delivery**: one-way-up MVP now, bidirectional split-column-ownership as a later
-  slice — provided the rider can show the one-way phase doesn't change §51's protective claim to a
-  degree that's bump-worthy (unlike those two precedents, this changes WHAT the mechanism promises —
-  the operator can no longer edit the sheet as an input — so this may in fact cross the v20-trigger
-  "recharacterization of a mechanism's protective claim" bar; Seth's call, not a rubber-stamp).
-- **B — reconfirm one-way-up as the permanent model** and revise §51 + the Progress-Reporting mission
-  to drop "bidirectional" for the Material List, replacing it with the same one-way-up-plus-retire-in-
-  place model used for Hours Log / Equipment.
-
-**Gate: this reconciliation MUST land before `field_ops.fieldops_sync.materials_enabled` is flipped
-live** — the tracker ships DARK today specifically so this doesn't need to block the merge, but going
-live on an undecided doctrine question would mean training an operator workflow around a data model
-that might later need a breaking migration (adding `smartsheet_row_id` + down-sync after operators
-have already been editing the sheet as if it were read-only-mirror). See blueprint
-`references/memory-archive.md` §G54 for the full write-up (session-close 2026-07-05).
-
-**2026-07-05 (session part 2) update:** the `materials_enabled` ITS_Config row now EXISTS (created
-this session, set explicitly `false` — see "Config gates ship dark by ROW-ABSENCE" above), so the
-gate is visible and intentional rather than silently absent; this does not change the reconciliation
-requirement above, it only removes a separate, unrelated confusion (an operator hunting for a row
-that was never seeded). A **ratification-ready rider draft** for Path A (phased-delivery v19.x rider)
-and a revision draft for Path B (reconfirm one-way-up, drop "bidirectional" from §51 + the mission)
-were prepared this session — see blueprint `references/memory-archive.md` §G55 and the info-gap doc's
-"Awaiting approval" note for both drafts' full text. Still Seth's call; neither is applied.
-
-**Tag:** `field_ops`, `progress-reports`, `material-list`, `doctrine`, `§51`, `seth-decision`.
-
-## its#460 — create `progress@evergreenmirror.com` mailbox + Entra Application Access Policy (Mail.Send) [OPEN 2026-07-04, operator action]
+## [CUTOVER-BLOCKING] its#460 — create `progress@evergreenmirror.com` mailbox + Entra Application Access Policy (Mail.Send) [OPEN 2026-07-04, operator action]
 
 **Tracked as a GitHub issue (`its#460`), cross-referenced here per convention.** `progress_reports.progress_send.from_mailbox` is already set to `progress@evergreenmirror.com` in `ITS_Config` (live) and matches the code default (`progress_send.DEFAULT_FROM_MAILBOX`) — but the mailbox itself does not exist yet in the `evergreenmirror.com` M365 sandbox tenant. **Operator action:** (1) create the mailbox; (2) add it to the Entra app registration's Application Access Policy with `Mail.Send` on the resource (mirrors the existing `safety@evergreenmirror.com` setup). Until then, progress weekly-report sends are **HELD at approval** (Invariant 1 human-in-loop) — nothing sends silently; this blocks only the final external send of progress packets, not compile/review. Flip to the production mailbox at the Phase 1.5 tenant cutover. Everything else in the progress go-live (routing, config, picklist, compile, WSR/WPR review) has been live since PR #459.
 
@@ -383,42 +281,6 @@ D1 query-shape issue.
 
 **Tag:** `field_ops`, `fieldops_sync`, `transport`, `cloudflare`, `diagnose`.
 
-## `FormFillPage.r3.test.tsx` "R3 dirty guard" flaky last-call assertion [RESOLVED 2026-07-06 — stale entry, fixed by #473]
-
-**Verified 2026-07-06:** #473 (`86bfab0`) already landed the recommended `await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(false))` fix (`FormFillPage.r3.test.tsx:154`). The entry below was stale.
-
-
-**Flaked once during PR #470's (M2) 4th-gate portal CI check; cleared on unmodified re-run.** The
-test `"touching a field reports dirty + arms beforeunload; submit clears both"` asserts, immediately
-after a `waitFor` on the "Submitted ✓" text:
-
-```ts
-await waitFor(() => expect(getByText("Submitted ✓")).toBeTruthy());
-expect(onDirtyChange).toHaveBeenLastCalledWith(false);
-```
-
-`toHaveBeenLastCalledWith` reads the `vi.fn()` call history synchronously the instant the "Submitted ✓"
-text appears — but nothing guarantees `onDirtyChange(false)` (fired from the form's post-submit
-dirty-clear effect) has landed by that exact tick relative to the submitted-screen render. If the two
-state updates land in separate React commits, the assertion can race and see a stale last call.
-Every other multi-step assertion in this file wraps the final check in its own `waitFor` (see
-`onDirtyChange).toHaveBeenLastCalledWith(true)` a few lines above, which IS `waitFor`-wrapped) — this
-one line is the odd one out.
-
-**Not yet root-caused as a real ordering bug vs. a test-only assertion-timing gap** — the feature
-itself (dirty-guard clears on submit) has never been observed wrong in the app; only the test flaked,
-once, in CI. **Fix:** wrap the assertion in its own `waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(false))`
-to match the file's own pattern above it, removing the race regardless of which commit order React
-chooses.
-
-**Tag:** `field_ops`, `spa`, `test-flake`, `ci`, `low`.
-
-## Job routing form — "Same as stakeholder" copy button on the Safety block [RESOLVED 2026-07-06]
-
-**Built 2026-07-06 (this PR):** the "Same as stakeholder" button (copies Stakeholder name/email → the Safety contact) is on the Safety block in `RoutingFields`, mirroring the existing "Same as safety" handler; SPA test added in `FieldOpsJobTracker.test.tsx`. Gives the chain Stakeholder → Safety → Progress. The entry below is superseded.
-
-**Operator-parked 2026-07-01 (was mid-build, deferred).** The job-creation routing form (`safety_portal/src/pages/FieldOpsJobTracker.tsx`, `RoutingFields`) has a "Same as safety" copy button on the **Progress** contact block (copies Safety → Progress, ~line 179). Add a parallel **"Same as stakeholder"** button on the **Safety** contact block (~:158-161) that copies the Stakeholder name/email into the Safety contact, and KEEP "Same as safety" on Progress — giving the chain Stakeholder → Safety → Progress for the common single-contact case. Small SPA change: mirror the existing copy handler + an SPA test. **Tag:** `field_ops`, `job-tracker`, `spa`, `ux`.
-
 ## Remove the progress-% estimate system-wide [OPEN 2026-07-06 — SPA+route done; code-cleanup + column-drop DEFERRED as operator-reviewed]
 
 **Ready spec (verified against live main 2026-07-06; all refs = the `jobs.progress` %-estimate, NOT the sync-mirror `progress`/`progress_report`/`progress_contact`):** the SPA slider/bar + the `POST /:job_id/progress` route/handler are already gone (#403, 2026-07-03); the client create call no longer sends `progress`. **Remaining:** (1) `worker/fieldops_job_write.ts` — stop honoring `body.progress`: delete `const progress` (~L171) + the `clampPct` helper (~L46), bind `0` in the INSERT (~L238, keeps the column/shape → no positional renumber); (2) dead read surfaces (zero consumers): `worker/wire-types.ts` `JobRow.progress` (~L50) + `JobDetail.progress` (~L133), `worker/fieldops_jobtracker.ts` the two `SELECT j.progress` (~L48/L162) + row types (~L64/L173) + response maps (~L136/L338); (3) `src/lib/fieldops_jobtracker.ts` `progress?: number` in the createJob body type (~L107); (4) `src/lib/errorCopy.ts` dead `invalid_progress` (~L95); (5) `test/fieldops-job-write.test.ts` drop the `progress: 40` create + change the assert to `toBe(0)`. **DEFERRED (2026-07-06):** touches the worker CREATE-route INSERT (a trust boundary — `portal-worker-security-reviewer` DoD) + the destructive `ALTER TABLE jobs DROP COLUMN progress` (`0014`) migration is deploy-coupled; dead-code removal on a `NOT NULL DEFAULT 0` dormant column is low-value / moderate-risk, so it's parked for a supervised worker-reviewed PR rather than an autonomous one (the column is harmless left in place). Original note below.
@@ -429,24 +291,6 @@ chooses.
 - D1: the `jobs.progress` column (`0014`) — leave the column vs. drop via migration (decide; a drop needs care).
 - Any read route/response surfacing `progress`.
 Grep `progress` across worker + SPA and distinguish `jobs.progress` (the %-estimate to remove) from the unrelated `sync_state` mirror progress. **Tag:** `field_ops`, `job-tracker`, `cleanup`, `multi-surface`.
-
-## Unified job-creation flow — bundle task creation + crew assign + equipment assign [RESOLVED 2026-07-06 — stale entry, built by #402]
-
-**Verified 2026-07-06:** #402 (`d6c5323`) shipped it — `FieldOpsJobTracker.tsx` imports `assignPersonnel` + `moveEquipment`, gates on `cap.crew.assign`/`cap.equipment.field`, and crew converges on `personnel.current_job` (worker `fieldops_jobtracker.ts:86-95`, migration `0024`). The entry below was stale.
-
-
-**Operator-locked 2026-07-01** (concretizes the plan's "unified create-flow extension"). The portal "New job" workflow should let the office PM, AT creation time, also **create tasks/deliverables**, **assign crew**, and **assign equipment** to the job — not just set routing/contacts. All three ride EXISTING §50-ungated field-ops write routes (tasks `fieldops_task_write.ts` #314; equipment `fieldops_equipment_write.ts` #315–#316; crew-assign = the P2.6 `POST /api/fieldops/personnel/:id/assign` route, LANDED PR #398). So it is primarily **multi-step create-UX wiring** (a wizard/stepper in `FieldOpsJobTracker.tsx`) — no new daemon/doctrine surface beyond P2.6's crew-assign route. **P2.6 Manager tier landed 2026-07-01 (PR #398)** — this item's dependency is satisfied.
-
-**Build-ready spec written 2026-07-01: `~/.claude/plans/spec_unified-job-create-flow.md`.** Supersedes the two earlier exploratory plans below as the execution artifact — read the spec first. Locks: shape = detail-view controls (reusable) + create-flow auto-open-detail nudge; **crew CONVERGES on `personnel.current_job`, NOT `task_assignments`** (a real data-model gap found while scoping this — see `memory-archive.md` §G49.6 — requires a worker query change in `fieldops_jobtracker.ts` on BOTH the job-list and job-detail routes, plus a new `idx_personnel_current_job` index migration); materials deferred to M2; per-control capability gating (`cap.crew.assign` / `cap.equipment.field` / `cap.jobtracker.manage`) so a manager can assign crew without creating tasks. 3 slices, DoD, and adversarial-review assignment all specified. **NOT built** — execute in a fresh session per the spec's own instructions (worktree off latest `origin/main`, fresh venv, verify every file/line claim against live HEAD first).
-
-Earlier exploratory plans (context only, spec above is now canonical): `~/.claude/plans/ok-we-are-going-scalable-flamingo.md`, `~/.claude/plans/what-happened-to-my-floating-porcupine.md`. **Tag:** `field_ops`, `job-tracker`, `unified-create`, `stage-2`, `p2.6`.
-
-## Time entries can't attribute hours to a specific crew member (UI gap) [RESOLVED 2026-07-06 — stale entry, built by #403/#421]
-
-**Verified 2026-07-06:** #403 (`bad30f0`) added the time-log "For" person picker (`personnel_id` in the `logTime` body); #421 (`c350f09`) added the worker-resolved `"Me (<name>)"` default. The entry below was stale.
-
-
-**Operator-reported 2026-07-01.** A logged time entry records the submitting ACCOUNT (`actor_username` + optional `submitted_as`) but in practice can't record WHICH personnel/crew member the hours are FOR. The **data model already supports it** — `time_entries.personnel_id INTEGER REFERENCES personnel(id)` (`0015:36`) AND the write route accepts + inserts it (`fieldops_time_write.ts:50,102-107`). The gap is that the **time-logging UI has no personnel selector**, so `personnel_id` is never set and hours can't attribute to a roster crew member. Fix = add a personnel picker to the time-log form (+ confirm the SPA time lib passes `personnel_id` through). Relates to **P2.6 Manager tier** (crew time logging via `personnel_id`; time entries stay ORTHOGONAL to job assignment). **Tag:** `field_ops`, `time-entries`, `personnel`, `spa`, `p2.6`.
 
 ## P2.5 Slice 6 — portal-owned canonical number: residual redundancy [OPEN 2026-06-30]
 
@@ -480,75 +324,11 @@ The actual per-daemon resolution logic (`poll_interval_config_key()` + `poll_int
 
 **Tag:** `field_ops`, `progress_reports`, `launchd`, `docs`. **Revisit when:** next `install.sh` touch, or opportunistically.
 
-## Watchdog Check-C staleness + Check-I catch-up not wired to `progress_weekly_generate` slug [CLOSED 2026-06-30]
-
-**P4 Slice 2 (PR #376).** `progress_weekly_generate` wrote a marker that nothing read — `scripts/watchdog.py` tracked only `safety_weekly_generate`, so a stale/skipped progress compile fired no alert.
-
-**Resolution (PR #381, P5 watchdog slice):** `TRACKED_JOBS` + `TRACKED_JOB_WINDOWS` now include both `progress_weekly_generate` (8-day) and `progress_send_poll` (30-min) for Check-C staleness; Check-I was generalized via a `_CatchupTarget` so a missed `progress_weekly_generate` Friday run is auto-recovered (the safety wrapper stays byte-identical). Both progress slugs WARN until the operator loads their plists at cutover (register + load together). Also fixed a pre-existing Check-I summary bug surfaced during the generalization (it read `drafts_written`/`aborted_empty_chain`, keys `run_generate` never produces).
-
-**Tag:** `progress_reports`, `watchdog`.
-
-## P5 progress_send must use `job.reports_contact_email` alias and pass `PROGRESS_ACTIVE_JOBS_CONFIG` [CLOSED 2026-06-30]
-
-**P4 Slice 1 (PR #375).** Forward-note: a P5 progress send that omitted the config or passed `SAFETY_ACTIVE_JOBS_CONFIG` would silently route progress reports to the safety contact (no runtime error — a different column in a different sheet).
-
-**Resolution (PR #379, P5 core):** `progress_send.CONFIG` binds `active_jobs_config=PROGRESS_ACTIVE_JOBS_CONFIG`; the resolver reads the neutral `reports_contact_email` alias; the trap is named explicitly in `docs/runbooks/progress_send.md` Symptom B; and `tests/test_progress_send.py` asserts `get_job` is called with the progress config. The `weekly_send.SendConfig.active_jobs_config` field is required no-default (a missing binding is a construction-time error, not a silent safety inheritance). *(A duplicate OPEN copy of this entry — the original P4 forward-note — sat further down this file; collapsed into this one 2026-07-03 after re-verifying the resolution against `progress_reports/progress_send.py` at HEAD: the resolver reads `job.reports_contact_email` and `CONFIG` binds `active_jobs.PROGRESS_ACTIVE_JOBS_CONFIG`.)*
-
-**Tag:** `progress_reports`.
-
 ## Progress (and safety) no-recipient HELD surfaces a record, not an operator page [OPEN 2026-06-30]
 
 **P5 (PR #380).** `shared/recipient_health.report_unhealthy_recipient` files an `ITS_Review_Queue` RECORD on a no-recipient HELD (visible in the operator review queue; watchdog Check A WARNs if it sits past 2× SLA; watchdog Check T WARNs on a HELD older than 24h). It deliberately does **not** fire an operator PAGE — per Op Stds §3.1 the only §3.1-compliant push leg `alert_dedupe` may gate is a `Severity.CRITICAL`, and a missing-contact config issue was judged not CRITICAL-class (consistent with `_mark_held`'s existing WARN treatment of HELDs).
 
 **Revisit when:** the operator decides a blocked customer-facing weekly send warrants an active page rather than a queue item — at which point add a dedicated CRITICAL push leg (a Send-Gate severity-posture decision, Seth-owned). **Tag:** `progress_reports`, `safety_reports`, `external-send-gate`.
-
-## Doctrine drift M6 — FM v8 cites in `safety_reports/intake.py` + `weekly_summary.py` docstrings [RESOLVED 2026-07-06]
-
-**Fixed 2026-07-06:** `safety_reports/intake.py`'s two `Foundation Mission v8` docstring cites bumped to `v11` (this PR). `safety_reports/weekly_summary.py` no longer needs a fix — it was **DELETED 2026-07-03** (superseded by the `weekly_generate` + `weekly_send` two-process split). The original entry (below) is superseded.
-
-
-**Pre-existing (not introduced this session).** `safety_reports/intake.py` and `safety_reports/weekly_summary.py` contain module-level docstrings citing "Foundation Mission v8"; the canonical version is FM v11. This is the doctrine-drift class M6 pattern (stale in-code version pin) surfaced in `docs/audits/2026-06-29_forensic-retrospective.md`. The CI doctrine-drift check (`scripts/check_doctrine_drift.py --strict`) does not catch in-code comment/docstring version pins — it checks YAML frontmatter and cited-section numbers.
-
-**Fix (trivial):** update the module docstrings to cite FM v11. No behavior change. Two files: `safety_reports/intake.py` + `safety_reports/weekly_summary.py`.
-
-**Tag:** `safety_reports`, `docs`, `doctrine`. **Revisit when:** next safety_reports maintenance pass.
-
-## `docs/session_logs/README.md` index missing the #370 session-log row [RESOLVED 2026-07-06 — moot, log present + correctly indexed]
-
-**Verified 2026-07-06 (stale premise):** the session log for that pass EXISTS and IS indexed — `docs/session_logs/2026-06-30_tech-debt-cleanup-alongside-phase2.md` (`related_prs: [363, 364, 365, 366, 367, 368]`); `scripts/regen_doc_indexes.py` confirms the auto-index is current (no changes). There is no separate "#370 row" by design — a session log's `related_prs` lists the PRs the session *covered* (#363–368), not the PR that *committed* the log (#370). Nothing to regen. The original entry (below) misread the committing-PR as a missing index row.
-
-
-**Pre-existing (not introduced this session).** The session-log index at `docs/session_logs/README.md` is missing the row for PR #370 (`eb110c1`), which committed the session log for the tech-debt cleanup pass alongside Phase-2 (#363–#368, 2026-06-30). The `scripts/regen_doc_indexes.py` script regenerates the index correctly; `--check` is warn-only in CI, so this does not block merges.
-
-**Fix (trivial):** run `python scripts/regen_doc_indexes.py` and commit the updated `README.md`. Warn-only in CI so acceptable as a standalone trivial commit.
-
-**Tag:** `docs`. **Revisit when:** next session log is written — verify index currency before committing.
-
-## §23/§24 topology text + version bump owed for the 7th workspace (ITS — Progress Reporting) [RESOLVED 2026-07-06 — ratified into Op Stds v20]
-
-**Verified 2026-07-06:** Op Stds **v20** syncs §23's enumeration and records the seventh standalone workspace (`ITS — Progress Reporting`) as the workspace-topology change the bump carries (the v17 sixth-workspace precedent). See `operational-standards.md` §23 (~line 168 + the workspace enumeration ~line 174: `Progress Reporting 5988851429730180`). The original owed-fix note (below) is superseded.
-
-
-**P2 (PR #362).** Standing up the `ITS — Progress Reporting` workspace makes it the **7th** standalone Smartsheet workspace. Op Stds **v19 §51** already names "the ITS — Progress Reporting workspace" explicitly (so its existence is doctrine-contemplated), but §23's topology *enumeration* still lists six and was not synced — the same gap the v17 bump closed when the Safety Portal (the 6th) was added. The `ops-stds-enforcer` review flagged this as a pre-merge gate; the operator approved (2026-06-29) landing P2 on §51's basis and deferring the §23 text-sync as a fast-follow.
-
-**Fix (doctrine — Seth's):** add `ITS — Progress Reporting` to §23/§24 as a standalone, §46-governed workspace exception (mirror the v17 Safety Portal paragraph), bump Op Stds → v20, propagate `docs/doctrine_manifest.yaml` (`current: 20`; the blueprint `workstreams.slugs`/`count` if the canonical set is updated), re-verify the exec tree. The mechanical doctrine-drift check (M1/M4/M7) does NOT catch this (a semantic enumeration gap); `doc-reconciliation-auditor` / `ops-stds-enforcer` do.
-
-**Tag:** `docs`, `doctrine`, `progress_reports`. **Revisit when:** the next doctrine pass (before/with P5 progress-send — the mission's draft→canonical promotion trigger).
-
-**Re-flagged, still open (2026-07-04).** P5 (`progress_send`/`progress_send_poll`) landed 2026-06-30 (PR #379) — P7 Slice 1 (Hours Log up-sync, PR #461) then touched §51 doctrine again this session (a v19.x amendment rider, blueprint PR #58, clarifying period-split for low-volume accumulating logs) without addressing this §23/§24 enumeration gap — the rider was scoped narrowly to §51 only, correctly, since a topology-enumeration fix is a separate v20-class change per this entry's own fix note. Still Seth-gated; the "next doctrine pass" trigger has now fired twice (P5, P7 Slice 1) without picking this up — worth bundling into whichever doctrine pass handles the mission's eventual draft→canonical promotion, rather than opening a third one-off rider.
-
-## P7 archive-on-closure — `smartsheet_client` needs a move-sheet method (its#462, §51 committed follow-up) [RESOLVED 2026-07-06 — built by #465; close its#462]
-
-**Verified 2026-07-06:** #465 (`185ca86`) built it — `smartsheet_client.move_sheet_to_folder` (`:1255`) + `_archive_closed_job_trackers` (`fieldops_sync.py:756`) wired into the mirror path (fires on `lifecycle=="archived"`, `:706`), moving trackers to `FOLDER_ARCHIVE_CLOSED_PROJECTS`; 5 tests at `test_fieldops_sync.py:622-697` (incl. the M3-updated 4-tracker move). **GitHub issue #462 is still OPEN and should be closed** (operator). The entry below was stale.
-
-
-**P7 Slice 1 (exec PR #461, blueprint #58 v19.x rider).** Op Stds v20 §51 requires ITS-owned accumulating-log SoR sheets to be archived-on-closure (never `delete_rows`). The Hours Log up-sync ships never-delete + the SoR-safe row-cap WARN watchdog (`progress_reports/hours_log.check_row_cap`), but **archive-on-closure is deferred** — filed as GitHub issue `its#462`, not a vague someday-item — because `shared/smartsheet_client.py` has no move-sheet primitive, and it's only exercised at a job's lifecycle → `archived` (no job archives imminently). The `archived` lifecycle write itself is already live (portal admin), so until this lands the exposure is a **bounded, recoverable** stranded (never-deleted) sheet, not data loss — but it must land before the first job actually archives.
-
-**Fix (dev, low-class per §44 but needs new code):**
-- `smartsheet_client.move_sheet_to_folder(sheet_id, folder_id)` + a §30 integration test (per `sdk-integration-test-scaffold`).
-- A trigger in `fieldops_sync`'s job-mirror pass: when a job's lifecycle flips to `archived`, move that job's standing tracker sheets (Hours Log now; Equipment/Materials in later P7 slices) to `FOLDER_ARCHIVE_CLOSED_PROJECTS` (`1034553964947332`, workspace `WORKSPACE_ARCHIVE=5528280611743620`). Idempotent — an already-archived sheet is a no-op, never a duplicate move or delete.
-
-**Tag:** `progress_reports`, `field_ops`, `smartsheet-upsync`, `p7`, `its462`, `§51`. **Revisit when:** before any job's lifecycle is flipped to `archived` in the live tenant — this is a hard prerequisite, not a nice-to-have.
 
 ## `hours_log.find_entry_row` does a full client-side scan of the sheet on every upsert/supersede call [OPEN 2026-07-04]
 
@@ -565,34 +345,6 @@ Not urgent today (a new job's Hours Log starts empty and low-volume by design �
 **Fix (low-class):** change `build_wsr_human_review_sheet.py`'s two columns to `DATE` (matching live) — OR, if Date/Time (time-of-day) display is actually wanted, add a create-as-DATE-then-`update_column`-retype step to BOTH builders + a retype migration for the live WSR + WPR sheets, and correct the `wsr_review.py` comment. Today's behavior is correct (DATE accepts `to_wsr_datetime`'s naive string end-to-end); this is cleanup + a comment-accuracy fix.
 
 **Tag:** `safety_reports`, `progress_reports`, `smartsheet`, `migration`. **Revisit when:** the safety build migrations are next touched, or if time-of-day display is desired on the approval/sent stamps.
-
-## Portal D1 test-job dropdown not cleared by empty-sync [CLOSED 2026-06-18]
-
-**Resolved 2026-06-18 (tech-debt easy-wins pass):** PR #292 — pruneOldData now deletes inactive+empty jobs + a new purge-job admin endpoint/CLI; the clean-slate purge cleared the D1 jobs table. ITS_Active_Jobs + D1 jobs now 0.
-
-**2026-06-17 test-artifact cleanup session.** After clearing all rows from `ITS_Active_Jobs` (id `6223950341164932`), the portal job dropdown still shows test job entries. Root cause: `portal_poll.push_jobs` calls `POST /api/internal/sync` with the list of active jobs from Smartsheet — but the Worker rejects a sync payload with an empty `jobs` array (guard: `jobs.length === 0` → 400). So an empty `ITS_Active_Jobs` does NOT clear the D1 `jobs` table, and the portal dropdown retains stale test entries.
-
-**Operator repair options:** (a) direct D1: `wrangler d1 execute its-safety-portal --remote --command "DELETE FROM jobs WHERE job_id IN ('bradley-1', 'teala-test', ...);"` (target test slugs explicitly — do NOT delete production job rows); (b) alternatively, seed one real production job in `ITS_Active_Jobs`, which will push-sync and override stale entries on the next poll cycle. Option (b) is safer if production jobs are ready.
-
-**Not a code bug per se** — the empty-sync guard exists to prevent accidental dropdown wipes. The gap is that there is no supported "clear all test entries" operator path. A future improvement could be a `DELETE /api/internal/jobs/:slug` endpoint or a `wrangler` script target.
-
-**Tag:** `safety-portal`, `d1`, `operator-manual`. **Revisit when:** production jobs are ready to seed, or a D1 management endpoint is added.
-
-## Portal D1 historical test submissions + filed-PDF cache not pruned [CLOSED 2026-06-18]
-
-**Resolved 2026-06-18 (tech-debt easy-wins pass):** PR #292 + the clean-slate purge — all test submissions / filed_pdfs / pdf_requests removed (now 0); pruneOldData self-cleans inactive-job rows going forward.
-
-**2026-06-17 test-artifact cleanup session.** The Smartsheet and Box test artifacts were deleted, but the corresponding D1 rows were not touched. Residue in the Worker D1 (`its-safety-portal` remote):
-
-- `submissions` table: rows for test submissions (e.g., `teala test`, `ZZ Portal Proof` / JOB-000008 runs, etc.) — filed as `box_verified=1`, payload stripped at 90d lifecycle, but rows remain as browse-visible entries.
-- `filed_pdfs` table: chunked base64 PDF cache rows for any submission whose filed PDF was requested via the `FormRequestPage` download flow — keyed by `(submission_uuid, chunk_index)`.
-- `pdf_requests` table: rows for the 24h-window PDF-request grants associated with those submissions.
-
-The two-stage D1 prune lifecycle (`submissions`: payload stripped at 90d, row deleted at 30d after job-inactive; `filed_pdfs`/`pdf_requests`: pruned on `mark_filed` pass) will eventually clear these, but the job-inactive trigger requires the job rows to go inactive, which also requires the D1 `jobs` table to be updated (see "Portal D1 test-job dropdown not cleared" above).
-
-**Operator repair (if desired before natural prune):** direct D1 operations — identify test `submission_uuid` values (e.g., via `wrangler d1 execute ... --command "SELECT submission_uuid, job_id, form_type FROM submissions WHERE job_id IN ('jha-test', 'rockford', ...)"`), then `DELETE FROM submissions WHERE submission_uuid IN (...)`, `DELETE FROM filed_pdfs WHERE submission_uuid IN (...)`, `DELETE FROM pdf_requests WHERE submission_uuid IN (...)`. Low operational urgency — D1 space is not constrained at current volume; no capability impact.
-
-**Tag:** `safety-portal`, `d1`, `operator-manual`. **Revisit when:** D1 space becomes a concern, or a D1 test-fixture management story is added.
 
 ## Orphan per-job Smartsheet folder from the JOB-000013 50-char-cap incident [OPEN 2026-06-13]
 
@@ -622,40 +374,6 @@ The two-stage D1 prune lifecycle (`submissions`: payload stripped at 90d, row de
 
 **Tag:** `safety-reports`, `graph`, `upload-session`, `retry`. **Revisit when:** live telemetry shows recurring mid-upload failures on large packets (then add cross-cycle session resume + an explicit cancel), or packet sizes grow toward the 150 MB ceiling where restart-from-zero becomes expensive.
 
-## [RESOLVED 2026-06-12 — folded into mission v5] Mission v4→v5 delta — weekly-send transport now has two modes (inline ≤2.5 MB / upload-session >2.5 MB)
-
-**Resolution (blueprint v5 reconciliation, 2026-06-12):** folded into `its-blueprint/workstreams/safety-portal/mission.md` v5 §7 (Invariant 1, "the transport changed, the gate did not") + the v5 Authority block. Gate unchanged. No further blueprint action; the flag is closed.
-
-**PR-3 (photo workstream tail).** Adding photos to the weekly packet means a packet can exceed Graph's ~3 MB inline `sendMail` ceiling, so `weekly_send` now sends via **one of two transports** chosen by packet size: **inline base64** (`send_mail`) at ≤2.5 MB, or the Graph **upload-session** (`send_mail_large_attachment`: draft → chunked PUT → send) above it, with an **oversized-HELD** refusal above Graph's ~150 MB hard ceiling. This is a behavioral change to the External-Send-Gate **send half** (the *transport*, not the gate: still human-approved, still two-process, still recipients-resolved-at-send-time, still capability-gated send-only). The Safety Portal / Safety Reports mission (v4) describes the weekly send as a single attached-PDF email; the **two-mode transport + the oversized-HELD terminal state** are a **planning-layer / Seth-owned** mission note, not made here. Proposed mission v4→v5 amendment: *"the weekly safety report is emailed with its compiled PDF attached — inline for small packets, via a Graph chunked upload-session for large (photo-bearing) packets, and **HELD** (operator-actionable, never silently dropped) for a packet beyond Graph's attachment ceiling."* Flagged for blueprint co-resolution **alongside the PR-4 receipt-cache delta + the PR-5 mission note** (fold them together).
-
-**Tag:** `safety-reports`, `doctrine`, `mission-delta`, `planning-layer`, `send-gate`.
-
-**Revisit when:** next blueprint mission-doctrine pass (fold the PR-3 transport delta + the PR-4 receipt-cache delta + PR-5 together).
-
-Surfaced: 2026-06-12 PR-3 implementation.
-
-## Safety Portal — 2026-06-08 adversarial security audit: 11 findings remediated [CLOSED 2026-06-08]
-
-**Closed by the post-audit hardening PR (this session).** A grey-box adversarial audit of the live mirror Worker (`safety.evergreenmirror.com`) confirmed the core posture HELD — injection 0/4 (bound params), no auth bypass (HMAC cookie unforgeable), no privilege escalation, and the atomic last-admin guard survived the TOCTOU race — and surfaced 11 perimeter findings, all remediated:
-
-- **#1 (med)** null/non-object JSON body → unhandled TypeError → bare 500 on every handler (unauth on `/api/login`). Fixed: a per-handler body-shape guard (`typeof!=='object' || null || Array.isArray` → 400) on all 12 handlers + a global `app.onError` (clean JSON, no stack leak, NOT Sentry-paged on unauth noise).
-- **#4 (low)** `values:[]` slipped the `typeof==='object'` check in `/api/submit` → added `|| Array.isArray(values)`.
-- **#2/#3/#8–11** security headers via Hono `secureHeaders()` + `run_worker_first:true` (so they reach the SPA document + assets): `X-Frame-Options:DENY`, `nosniff`, `Referrer-Policy`, `HSTS`, `Cache-Control:no-store` on `/api/*`, and **CSP shipped REPORT-ONLY** (loosened for React inline styles + the logo/inline-SVG signature) — the enforce-flip is the operator's post-deploy step.
-- **#5 (low)** create/rename UNIQUE-race → 500 → mapped to 409 via an `isUniqueViolation` catch (the cheap pre-check stays; this is the race backstop).
-- **#6 (low)** delete/demote `changes()==0` was overloaded (guard-block vs already-gone) → re-check existence → 404 vs 409 `last_admin`. The atomic guard itself is unchanged (audit-confirmed TOCTOU-safe).
-
-Worker stays SEND-FREE; no migration. 42 vitest tests (real workerd + D1). Rider in the same PR: the AccountsPage edit-login editor now closes on a no-change Submit. **Activation operator-gated:** `npm run deploy` + a live re-probe of the audit vectors + the **CSP enforce-flip after a signature-capture smoke**.
-
-**Tag:** `safety-portal`, `security`, `audit`.
-
-## Safety Portal — session-epoch revocation + role-aware idle timeout (audit #7) [CLOSED 2026-06-30]
-
-**Resolved 2026-06-30 (tech-debt currency sweep):** BUILT. `users.session_epoch` column (migration 0009) embedded in cookie claims (`safety_portal/worker/auth.ts:32,42,63,123`); `requireSession` rejects a cookie whose `epoch` is below the live `session_epoch`; logout AND password-change bump the epoch. Role-aware lifetime shipped: admins idle out at a **30-min** server-enforced sliding window (`safety_portal/worker/index.ts:69-73`), submitters keep 90-day. NOTE: landed at 30-min idle, not the brief's original 5-min — the only delta from the spec. Verified @HEAD via grep (lesson #1).
-
-**Deferred from the 2026-06-08 audit hardening; carried to the Phase-2 Session Hardening bundle** (needs a migration + a session epoch). Today logout (`/api/logout`) is client-side only — a captured cookie stays valid to `iat+90d`; `requireSession` re-checks only `users.disabled` (a user-level kill, not per-session / logout revocation). Phase-2 fix (resolved in the form-editor grill): a per-user **session epoch** (D1 column, embedded in cookie claims, checked in `requireSession`; logout AND password-change bump it) + **role-aware lifetime** — submitters keep 90-day, **admins get a 5-min idle timeout** (client activity-detection + a server-enforced sliding window). Specced in the Phase-2 form-editor + session-hardening design brief (lands via Session B / the brief PR).
-
-**Tag:** `safety-portal`, `auth`, `session`, `phase-2`.
-
 ## Smartsheet API constraint: column FORMAT must be set via model attribute, not dict constructor [OPEN 2026-06-07]
 
 **Verified live (PR #187, 2026-06-07).** When using the Smartsheet Python SDK to create or update a column, the column **format string** (font, size, bold, color, etc.) must be assigned via the model **attribute** (`column.format = "..."`) — passing `format` as a key in the dict constructor (`smartsheet.models.Column({"format": "..."})`) silently drops the value. Column **width** works via either path (dict or attribute). The same per-cell format DOES work via the `Cell` dict constructor (`_resolve_cells` attaches it via the `_formats` meta-key extension).
@@ -665,38 +383,6 @@ Worker stays SEND-FREE; no migration. 42 vitest tests (real workerd + D1). Rider
 **Impact:** code that sets a column format via the dict constructor silently succeeds (200) but the column stays unformatted. Always use the attribute path for column format.
 
 **Tag:** `smartsheet`, `sdk-vs-live`, `styling`. **Revisit when:** any new column-format code; `smartsheet_client.apply_column_styles` already uses the attribute path.
-
-## Safety Portal — admin route (PR-H) blocked on operator CodeQL dismissal [CLOSED 2026-06-08]
-
-**Resolved + ACTIVATED on the mirror (2026-06-08).** PR-H (#185) merged (`f3ad814`, four-part verify clean: MERGED / mergedAt set / mergeCommit f3ad814 / main-CI SUCCESS), then activated this session: the 2 CodeQL FPs were dismissed; `PORTAL_ADMIN_API_TOKEN` (Worker) + `ITS_PORTAL_ADMIN_TOKEN` (Keychain) set **byte-equal** (via a paste-safe script — `security -w VALUE` argv form, because the bare `-w` flag reads the TTY and ignores piped stdin in an interactive shell → silently stored a 6-char garbage value twice; root cause of an early `list-users` 401); migration 0006 applied to live D1 **before** `npm run deploy`; admin route confirmed `401`-not-`404`; revocation **proven live** (`portal_admin disable-user test.pm` → the user's existing session 401'd `revoked` off `/api/jobs` on the next request). One follow-on finding surfaced during the revocation proof — see "`/api/login` does not gate on `users.disabled`" below. Original entry preserved:
-
-PR-H (#185) adds the admin route (user provision/reset/disable/enable/list + per-request D1 session revocation + migration 0006 `users.disabled` + `shared/portal_client.admin_request` + `safety_reports/portal_admin.py` CLI). CI is GREEN except 2 CodeQL `py/clear-text-logging` alerts (alert #11 `portal_admin.py:52`, alert #13 `portal_admin.py:148`) that are FALSE POSITIVES — interprocedural imprecision: the bearer token taints `admin_request`'s return value; `list-users` and `_fail` print that return; CodeQL flags all prints of it. The refactor already cleared 1 of 3 (stopped echoing the raw response dict); the remaining 2 are unfixable without contorting correct code.
-
-**Resolution required (operator):** dismiss alerts #11 + #13 in the GitHub code-scanning UI as "False positive" (CC is hook-blocked from dismissing) → `gh pr update-branch 185` → merge. **Note:** migration 0006 MUST apply to the live D1 BEFORE the Worker redeploy: `wrangler d1 migrations apply` → `npm run deploy` → `portal_admin add-user`.
-
-**Tag:** `safety-portal`, `phase-7`, `auth`, `codeql`.
-
-## Safety Portal — `/api/login` does not gate on `users.disabled` [CLOSED 2026-06-18]
-
-**Resolved 2026-06-18 (tech-debt easy-wins pass):** Shipped: safety_portal/worker/auth.ts validateUser now SELECTs `disabled` and returns null when disabled (login fails closed).
-
-PR-H's per-request revocation (`requireSession` → `SELECT disabled FROM users` → 401 `revoked`, `safety_portal/worker/index.ts:179-189`) locks a disabled user out of **every** protected endpoint (`/api/jobs`, `/api/recent`, `/api/submit`, `/api/session`). But `/api/login` → `validateUser` (`safety_portal/worker/auth.ts:50-67`) selects only `id, username, password_hash` and checks `!row || !ok` — it **never reads `disabled`**. So a disabled user with a valid password can still LOG IN and mint a fresh session cookie. That cookie is useless (every protected call 401s), so there is **no capability bypass** — the security boundary holds at `requireSession` — but login *appears* to succeed (misleading UX) and it's a defense-in-depth gap.
-
-**Observed live (2026-06-08 mirror revocation proof):** disabled `test.pm` → operator saw "could not load jobs" (the `requireSession` 401) but "could still login".
-
-**Proposed fix (small):** add `disabled` to the `validateUser` SELECT and return `null` when `row.disabled` (login fails closed, identical to a wrong password) — or a dedicated 403 "account disabled". ~15 min + a test.
-
-**Revisit when:** next Safety Portal hardening pass, or before a real PM is provisioned on a live tenant.
-
-## Safety Portal — `custom_domain` route disables the `workers.dev` URL on deploy [CLOSED 2026-06-30]
-
-**Resolved 2026-06-30 (tech-debt currency sweep):** The active incident was resolved 2026-06-08 (daemon `worker_base_url` repointed to `safety.evergreenmirror.com`). The residual is now documented as **intentional known-behavior**, not debt: `safety_portal/wrangler.jsonc:38-50` records that `custom_domain:true` disables the `*.workers.dev` URL on deploy (error 1042) unless `workers_dev:true` is also set, and the portal is deliberately custom-domain-only. Captured in memory `reference_cloudflare-custom-domain-disables-workers-dev`. No code change owed.
-
-PR-J (#188) added `routes: [{ pattern: "safety.evergreenmirror.com", custom_domain: true }]` to `safety_portal/wrangler.jsonc` with **no `workers_dev` key**. On `npm run deploy`, wrangler warns *"Because 'workers_dev' is not in your Wrangler file, it will be disabled for this deployment by default"* and **turns off the `*.workers.dev` URL** — so `https://its-safety-portal.sethsmithusmc.workers.dev` then returns 404 with Cloudflare **`error code: 1042`** ("No Workers script was found for this host on workers.dev"). This is NOT a broken worker (the deploy succeeded; `@cloudflare/vite-plugin` correctly redirects `wrangler deploy` to its generated `dist/its_safety_portal/wrangler.json`); it's the workers.dev route being disabled. It stranded `portal_poll` + `portal_admin`, which read the base URL from ITS_Config `safety_reports.portal.worker_base_url` (then still the workers.dev URL) → ~15 `portal_pending_fetch_failed` ERRORs in ITS_Errors (2026-06-07).
-
-**Resolution applied (2026-06-08):** repointed `safety_reports.portal.worker_base_url` → `https://safety.evergreenmirror.com` (the proper end-state — per PR-J the portal lives on the custom domain). `portal_poll` recovered on its next cycle.
-
-**Residual / decision:** if BOTH the workers.dev URL and the custom domain are ever wanted live, add `"workers_dev": true` to `wrangler.jsonc` (a checked-in change that must be committed, else every future deploy re-disables workers.dev). For the custom-domain-only end-state (mirror + cutover), no change is needed. **Revisit when:** next Safety Portal deploy, or if a non-custom-domain access path is required.
 
 ## Safety Portal — `scheduled_send_local` not seeded + silent fail-open on malformed value [OPEN 2026-06-08]
 
@@ -728,122 +414,6 @@ mirror tree simply files NEW submissions into the new tree once activated.
 to leave or hand-move the handful of pre-activation PDFs. **Revisit when:** the Box
 root is activated for a live customer tenant.
 
-## Orphan Smartsheet week sheet from the pre-relocation smoke [CLOSED 2026-06-18]
-
-**Resolved 2026-06-18:** deleted via the repo SDK (`smartsheet_client.delete_sheet(1966431334780804)`, name-guarded). Verified orphan first (zero code refs; not the clone template `7282977254887300`; the legacy Field Reports "Bradley 1" folder is a different workspace from the live portal filing path). The enclosing folder was left intact.
-
-The 2026-06-06 deploy smoke filed one test JHA (Bradley 1 / JOB-000001) through the pre-relocation `week_sheet.ensure_week_sheet`, creating week sheet **`1966431334780804`** in the legacy Field Reports "Bradley 1" folder (Forefront Portfolio workspace) instead of the ITS — Safety Portal workspace. PR-C (filing relocation) moved portal filing to auto-provisioned per-job folders under `WORKSPACE_SAFETY_PORTAL`, so that sheet is now an **orphan** — nothing reads or writes it. Harmless but stray.
-
-**Repair (operator, manual):** delete sheet `1966431334780804`. Leave the enclosing Field Reports "Bradley 1" folder — the dormant Monday-ISO email path (`week_folder.py`) still maps it.
-
-**Revisit when:** any workspace-tidy pass.
-
-## `scripts/launchd/install.sh` did not substitute `__POLL_INTERVAL_SECONDS__` [CLOSED 2026-06-02]
-
-The generic launchd installer `scripts/launchd/install.sh` substituted ONLY `__ITS_HOME__`, but the `safety-intake` and `weekly-send` plists carry `__POLL_INTERVAL_SECONDS__` in `<integer>StartInterval</integer>`. So `install.sh load` of either left the literal placeholder → `plutil -lint` failed → the daemon would not load. The **documented** install path (the picklist/weekly-send plists point at `install.sh load …`) was therefore broken for interval daemons; `intake` was running only because it has a **dedicated** installer (`scripts/install_safety_intake_daemon.sh`) that already reads the interval from ITS_Config and substitutes both placeholders.
-
-**Resolved by** the install.sh fix (branch `fix-installsh-poll-interval`): `load`/`dry-run` now resolve `__POLL_INTERVAL_SECONDS__` from `[interval]` arg > the daemon's ITS_Config poll-interval row (read via the venv python, mirroring `install_safety_intake_daemon.sh`) > a per-daemon default (60 / 900), substituting it alongside `__ITS_HOME__`. Verified: `dry-run` + `plutil -lint` clean for safety-intake / weekly-send (with default + override) and unchanged for the non-interval plists; a non-integer interval is rejected. **Audit of `~/Library/LaunchAgents/` found the installed copies CLEAN** (no surviving placeholder — they were hand-substituted via the workaround), so no live remediation was needed.
-
-**Residual (low):** `scripts/install_safety_intake_daemon.sh` is now largely redundant with `install.sh load org.solutionsmith.its.safety-intake [interval]` (both read ITS_Config + substitute). Consolidating to the generic installer (the dedicated script also creates `~/its/state/`, so confirm that is covered first) is a small future cleanup, not done here.
-
-## F21 — numeric `maximum` bounds + anomaly-logger range check [CLOSED 2026-06-02]
-
-**Resolved by** B1 (#144, merge `c200914`): added `"maximum": 1000` to each of the 6 incident-count fields (Layer-4 structured-output ceiling) and a numeric-range branch in `shared/anomaly_logger._walk` (`NUMERIC_ANOMALY_THRESHOLD=1000`, overridable per call; `bool` excluded as an `int` subclass) that flags an out-of-range int/float → routes the extraction to `ITS_Review_Queue` with `security_flag=True` (the Layer-5 detection backstop). Schema `version` bumped `0.1.0`→`0.2.0` with `weekly_generate._EXPECTED_SCHEMA_VERSION` in lockstep (F20); a new test (`test_incident_count_fields_carry_numeric_bounds`) locks both the per-field bounds and the version-lockstep against the real schema. Original analysis kept below.
-
-`schemas/safety_weekly_generate.json` defines 6 integer incident-count fields (`lost_time_accidents`, `lost_work_days`, `job_transfer_or_restriction`, `near_misses`, `other_recordable_cases`, `first_aid_cases`), each with `"minimum": 0` but **no `"maximum"`**. `shared/anomaly_logger._walk` branches on `dict` / `list` / `str` only — it has no numeric branch, so integers and floats fall through unchecked, and a prompt-injected count like `99999` passes extraction silently. (Contrast: the `confidence` field already carries both `minimum` and `maximum` in the same schema, so the pattern is established — it just wasn't applied to the incident counts.)
-
-**Proposed fix:** add a sane `"maximum"` to each of the 6 integer fields in the schema, and add a numeric-range branch to `anomaly_logger._walk` that emits a sentinel anomaly when an int/float value exceeds a configurable threshold — so an out-of-range count routes to `ITS_Review_Queue` with `security_flag=True` rather than being trusted.
-
-**Effort:** ~1 hour. **Phase target:** 1.4 pre-Customer-1 hardening.
-
-**Revisit when:** the next `safety_reports/` hardening session, or before Customer-1 launch. The F20 session (schema-version enforcement, PR #129) deliberately scoped F21 out to keep the PR focused; `brief-validator` confirmed the half-bounded fields + the missing numeric check live this turn.
-
-Surfaced: 2026-05-29 F20 session close. Session log: `docs/session_logs/2026-05-29_f20-schema-version.md`. Audit finding F21.
-
-## Invariant 2 Layer 5 prose: "defense layer" framing vs FM v9 tripwire reframe [CLOSED 2026-06-18]
-
-**Resolved 2026-06-18 (tech-debt easy-wins pass):** CLAUDE.md's Invariant 2 section intro + the Layer 5 bullet already carry the FM v9 detection-tripwire reframe.
-
-FM v9 (blueprint, audit F13) reframed Invariant 2's Layer 5 (anomaly logging on extraction output) from a co-equal defense layer to a post-hoc **detection tripwire** — an honest characterization of a trivially-evadable substring matcher; the mechanism is unchanged and stays in production. The OBS-1 citation sweep (PR #127) recorded this reframe in CLAUDE.md's *governing-version block*, but the **Invariant 2 section itself** (the "Six-layer defense:" list) still describes Layer 5 as "Output validation and anomaly logging" — the pre-v9 framing — and still labels the whole set a "Six-layer defense."
-
-This is a doc-characterization reword (relabel Layer 5 as a detection tripwire inside the Invariant 2 list, and soften "Six-layer defense" to acknowledge Layer 5 is detection-not-prevention), deliberately scoped OUT of OBS-1 — that PR was citation-version reconciliation only, and no version string lives in the Layer 5 bullet, so `check_doctrine_drift.py` does not flag it. No code or behavior is affected; `shared/anomaly_logger.py` is untouched. The blueprint FM v9 and the doctrine manifest are the canonical source for the new wording.
-
-**Revisit when:** the next session that has a natural reason to touch the Invariant 2 section of CLAUDE.md — a security-review pass, the Email-Triage Layer-6 build, or a `doc-reconciliation-auditor` semantic-tier sweep. Mirror FM v9: Layer 5 is a detection tripwire, not a barrier.
-
-## Invariant 2 Layer 6 (attachment screening) for safety reports — superseded by portal pivot [SUPERSEDED 2026-05-28; PARTIALLY REVERSED 2026-06-12]
-
-**Update 2026-06-12 (PRs #271/#272) — the "no Layer 6 build for safety reports" conclusion below is now partly reversed.** The portal *did* gain a file-attachment capability — a constrained **image class** (header-level JPEG/PNG photos). Per the 2026-05-28 reasoning ("Layer 6 would apply only if the portal ever added file-attachment capability"), that capability now exists, and §34 **is** realized for safety reports as `safety_reports/photo_screen.py` (magic → Pillow verify/bomb-cap/forced metadata-destroying re-encode → ClamAV-on-raw, config-gated default OFF; MALICIOUS pages + refuses before filing). Two stale specifics in the body below are also corrected: (1) the "HMAC-verified **email shim** (`portal-noreply@` → unified `safety@`)" was **retired 2026-06-05** in favor of the Python PULL model (`portal_poll.py`); (2) "for safety reports there is no Layer 6 build to do" no longer holds — see blueprint `its-blueprint/workstreams/safety-portal/mission.md` §15 + §7 Layer 6. **Email Triage still carries the arbitrary-file (PDF/Office/executable) attachment surface** — that part is unchanged. The historical 2026-05-28 record is preserved below for provenance.
-
-The 2026-05-28 forensic audit (HIGH-2) flagged FM v8 Invariant 2 Layer 6 (attachment screening, Op Stds v11 §34) as doctrine-only for the safety-reports PDF-email intake, and this entry originally tracked an Option A (build) vs Option B (documented exception) decision. **That is superseded by the Safety Portal pivot**, already canonical in the blueprint (`its-blueprint/workstreams/safety-portal/mission.md` v1, 2026-05-25 canonical; `brief.md`).
-
-Why Layer 6 is no longer a safety-reports gate:
-- Safety-report submission is moving from inbox-and-PDF to a form-fill **Safety Portal**. Signatures are SVG `<path>` vector data (not raster, no executable file format) and **PMs cannot attach arbitrary files** — safety-portal mission §7 explicitly rules Invariant 2 Layer 6 **N/A** for the portal (it would apply only if the portal ever added file-attachment capability).
-- The portal feeds the *same* `safety_reports` intake via an **HMAC-verified email shim** (`portal-noreply@` → unified `safety@` inbox; the `X-ITS-Portal-HMAC` header is the load-bearing trust boundary — brief §8 Step 3 + Step 4 Stage 1.5). The payload is structured JSON, not an arbitrary attachment.
-
-So the four-sub-layer attachment screen is **not** a safety-reports cutover gate. The genuine arbitrary-attachment surface is **Email Triage** (ingests arbitrary inbound mail with arbitrary attachments); FM v8 names Email Triage a Layer 6 consumer, and Layer 6 is reassigned there — see `its-blueprint/workstreams/email-triage/`. The clamd operator prerequisite and the VirusTotal-Phase-2 deferral move with it.
-
-The NOT-WIRED `shared/attachment_screening.py` stub committed with the audit (#96) is **deleted** in this session (its docstring instructed deletion if not built for safety reports). The legacy PDF-email intake path remains the documented fallback during the portal transition; the portal-marker intake branches (brief §8 Step 4: Stage 1.5 HMAC gate, Stage 8' JSON parse, Stage 13' rollup) are PLANNED, not built.
-
-**Revisit when:** the Email Triage workstream build begins — the **arbitrary-file** Layer 6 implementation lands there (see its mission/brief). *(2026-06-12: the safety-reports **image-class** Layer 6 was built — `photo_screen.py`, PRs #271/#272 — see the Update at the top of this entry; the arbitrary-file surface remains Email-Triage-bound.)*
-
-## State-file atomic-write + concurrent-writer lock [CLOSED 2026-05-25]
-
-`safety_reports/intake_poll.py` (seen-set + heartbeat-row state) and `safety_reports/weekly_send_poll.py` (heartbeat-row state) used raw `Path.write_text`; the heartbeat-row file (`~/its/state/heartbeat_row_ids.json`) is shared between the two daemons with no locking. Failure modes: mid-write crash leaves a truncated file; concurrent read-modify-write between the two daemons can clobber an entry (intake_poll writes its row_id while weekly_send_poll holds a stale read, then weekly_send_poll writes back, erasing intake_poll's update).
-
-Closed by `shared/state_io.py` with `atomic_write_json` / `atomic_write_text` / `with_path_lock` (sidecar-flock pattern: lock lives at `{path}.lock`, never replaced by `os.replace`). Seven callsites migrated — one seen-set + two local-heartbeat + four heartbeat-row read-modify-write triples. The two heartbeat-row triples per daemon are wrapped under `with_path_lock`; lock-timeout fails open per the heartbeat-never-blocks-daemon contract (`error_log.log` WARN with `error_code="daemon_health_write_failed"` + skip the cycle's write — next cycle re-tries).
-
-Audit findings F19 + F23 (atomic-write seen-set + heartbeat-row state + concurrent-writer lock) in `its-blueprint/audits/2026-05-25_forensic-audit.md`. `shared/alert_dedupe.py` migration to the same helper **landed in PR #104** (2026-05-28, PR 2 of the Phase 1.4 hardening cluster): its five state-file callsites (`should_fire` / `record_fire` / `mark_summarized` / `delete_entry` read-modify-write under `state_io.with_path_lock` + `atomic_write_json`; `list_expired_summaries` intentionally lock-free) replace the old same-FD-flock `_acquire_lock` / `_dump_state` pattern. All three `~/its/state/` consumers (intake_poll, weekly_send_poll, alert_dedupe) are now compliant with the CLAUDE.md "no direct `Path.write_text` under `~/its/state/`" rule. `shared/heartbeat.py` consolidation tech-debt entry remains open below — PR #88 was the correctness floor.
-
-## `error_log.log(Severity.CRITICAL, ...)` does not fire the triple-fire alert path [CLOSED 2026-06-02]
-
-**Resolved by** the A3 change (branch `a3-log-critical-pages`, Option 1 / full): `log()` gained an `alert: bool = True` parameter and now, for `severity is Severity.CRITICAL and alert`, mints+threads ONE correlation_id and fires `_alert_critical` (Resend + Sentry) AFTER the two record legs — so `log(CRITICAL)` pages by default, closing the sharp edge. The brief's literal one-line fix was **incomplete**: auto-firing alone would double-fire the Sentry leg (no dedupe) at five other sites and page during the watchdog's MAINTENANCE deferral. The full fix therefore: (a) removed the now-redundant explicit `_alert_critical` at the decorator + `weekly_send` ×3 + `picklist_sync` + `weekly_send_poll` (6 sites), preserving each page's exc detail via `exc_info=`; (b) routed the two watchdog checks (Check I catch-up + circuit-breaker prolonged-open) through the new `alert=False` opt-out so their MAINTENANCE deferral + `circuit_breaker.bypass()`-wrapped paging stay intact. **Behavior change (intended):** `weekly_generate`'s empty-reviewer-chain CRITICAL, previously records-only (a latent no-page bug — its docstring already claimed it paged), now pages. Manual live alert-path smoke (Resend + Sentry fire exactly once, not twice) is required before merge. Original analysis kept below for history.
-
-`error_log.log()` writes only the two RECORD legs — `_local_log` (local file) + `_smartsheet_log` (ITS_Errors row). It never calls `_alert_critical`, so a CRITICAL passed to `log()` produces **no Resend operator email and no Sentry event**. The alert path (`_alert_critical` → `_fire_resend_leg` + `_fire_sentry_leg`) is reached ONLY via (a) the `@its_error_log` decorator's unhandled-exception branch — which calls `log(Severity.CRITICAL, …)` for the records AND `_alert_critical(…)` for the alerts as two separate calls threading one correlation_id — or (b) explicit `error_log._alert_critical(...)` calls (`picklist_sync`, `weekly_send`, `weekly_send_poll`). The split is intentional and documented (`log()`'s docstring: "for non-exception events"; `_alert_critical`'s: the ITS_Errors row is "written earlier by `log()` … NOT here"), but it is a sharp edge.
-
-**Failure mode:** a caller does `error_log.log(Severity.CRITICAL, script, message, error_code=…)` reasonably expecting it to page the operator; it silently writes records only. Surfaced live during the F08/F09 §7 manual smoke (B6 F09-cap test): four `log(CRITICAL)` calls wrote four ITS_Errors records but produced zero Resend activity — no email, not even a `[resend-alert-*]` marker — which read as a broken F09 cap until traced to the call shape. `log(CRITICAL)` never enters `_fire_resend_leg`, so none of its gates (recursion guard, dedupe, F09 cap) run.
-
-**Proposed fix (small):** in `log()`, when `severity is Severity.CRITICAL`, also fire `_alert_critical(script, message, exc_info or "", correlation_id, error_code or "critical")`. To avoid a double-fire, also REMOVE the decorator's now-redundant explicit `_alert_critical(...)` call (let its `log(Severity.CRITICAL, …)` carry both records + alerts) — otherwise the decorator path fires `_alert_critical` twice, and the `_in_resend_alert` recursion guard only blocks NESTED re-entry, not two sequential calls. Tests: `log(CRITICAL)` fires `_alert_critical` exactly once; `log(WARN/ERROR/INFO)` fires it zero times; the decorator path still fires it exactly once with the shared correlation_id.
-
-**Effort:** ~1–2 hours incl. the decorator de-dup + tests.
-
-**Phase target:** 1.4 hardening (alert-path correctness), or whenever a workstream needs an explicit (non-exception) CRITICAL to page. No current production caller relies on it — every real CRITICAL today goes through the decorator or a direct `_alert_critical` (the F08/F09 triple-fire sites).
-
-**Revisit when:** a caller wants an explicit CRITICAL log to page the operator, OR the next time someone is surprised that `log(CRITICAL)` didn't alert.
-
-Surfaced: 2026-06-02 F08/F09 PR-1 §7 manual smoke (B6); diagnosed to the `error_log.log` records-only call shape vs the `_alert_critical` triple-fire entry point.
-
-## Graph client calls have no request timeout → a stalled call hangs a daemon cycle indefinitely [CLOSED 2026-06-02]
-
-**Resolved by** the A2 timeout change (branch `pr1-tier-a-reliability`): `_request` now passes `timeout=REQUEST_TIMEOUT` (`(10s connect, 30s read)`) to the single `requests.request` call (covers all seven Mail wrappers) and the MSAL token path passes `timeout=TOKEN_TIMEOUT_SECONDS` (30s) to `ConfidentialClientApplication` (MSAL's own HTTP client — a separate surface). A `requests.Timeout` is translated to a new `GraphTimeoutError(GraphError)` and other `requests.RequestException` to `GraphError`, so a hang lands in callers' existing `except GraphError` soft-fail fence (e.g. `intake.process_message`) instead of escaping raw — and the per-cycle fence releases the fcntl lock. **Fail-fast**: a timeout does NOT consume retries (no multiplied wall time). The `requests` read timeout is an inactivity timeout, so steady large `$value` attachment downloads are unaffected; only a stalled server trips it.
-
-**Cross-client audit (fix part b) conclusions:** `smartsheet_client` direct-REST helpers already pass `timeout=30` (NOT a gap). `anthropic_client` is **SDK-bounded** — the Anthropic SDK default is `Timeout(connect=5, read=600, …)`, a finite ceiling, not the indefinite-hang class; an explicit tighter timeout for daemon use is an optional low-priority follow-up, not done here (preservation-over-refactor — no demonstrated need). `box_client` IS a real indefinite-hang gap (boxsdk `DefaultNetwork.request` passes no timeout) — see the dedicated entry below. Fix part (c), the watchdog/launchd hang-killer, remains OPEN as a separate design item — see below. Original analysis kept for history.
-
-`shared/graph_client.py`'s Mail API wrappers (`list_inbox`, `get_message`, `list_attachments`, `download_attachment`, `mark_read`, `move_message`, `send_mail`) issue their underlying `requests` / MSAL HTTP calls with **no `timeout=`**. A stalled TCP connection (network blip, M365 throttle, half-open socket) therefore blocks the call — and the entire daemon cycle — **indefinitely**. Under launchd `StartInterval`, a hung cycle holds the daemon's fcntl lock and starves every subsequent interval, so the daemon silently stops cycling while launchd believes it is still running.
-
-**Failure mode (observed live 2026-06-02):** a `safety_reports.intake_poll` cycle started `17:24:23`, hung with no `poll cycle` / `completed` log line (stuck *before* processing — i.e. inside `list_inbox`), and held the lock for ~88 minutes until a manual `launchctl kickstart -k`. The heartbeat froze at 17:23 the whole time. **Only the watchdog's Check C marker-staleness floor surfaced it** (`safety_intake stale`) — there is no in-process detection, and no self-recovery. The F08 Smartsheet circuit breaker does **not** cover this: it guards Smartsheet (not Graph), and a *hang* is not a counting failure that trips it (the failure counter only advances on a returned exception, never on a call that never returns). Tier-1 self-heal recovers *crashes* (launchd re-invoke on the next interval) but **not hangs** — a hang defeats the one-shot-per-interval model by never releasing the slot.
-
-**Proposed fix:** (a) add `timeout=(connect, read)` to every `requests` call in `graph_client.py`, converting an indefinite hang into a catchable `requests.Timeout` that the per-cycle fence already handles; (b) audit `shared/box_client.py`, `shared/anthropic_client.py`, and the direct-REST helpers in `shared/smartsheet_client.py` for the same missing-timeout gap; (c) consider a watchdog/launchd hard-kill of any daemon process whose elapsed time exceeds N× its expected cycle duration — a hang-specific recovery net complementary to Check C's staleness floor (which only *detects*, it does not *recover*).
-
-**Effort:** ~half-day for the `graph_client` timeout sweep + the cross-client audit + tests; the hang-killer is a larger watchdog/launchd design decision (separate item if pursued).
-
-**Phase target:** 1.4 hardening (reliability) — a silently-stalled daemon is precisely the never-silent-failure the system is built to avoid.
-
-**Revisit when:** the next reliability pass, OR the next time a daemon hangs (the watchdog staleness WARN is the trigger signal).
-
-Surfaced: 2026-06-02 F08/F09 live deploy + post-deploy sanity-check — a pre-existing hung `intake_poll` cycle (old code) was blocking the daemon, found while verifying the heartbeat advanced onto the new circuit-breaker code.
-
-## `box_client` has no network timeout → boxsdk call can hang a consumer indefinitely [CLOSED 2026-06-30]
-
-**Resolved 2026-06-30 (tech-debt currency sweep):** The A2 single-host-resilience timeout this entry predates has landed. `shared/box_client.py:79` defines `BOX_NETWORK_TIMEOUT = (10, 30)`, applied at `:238` via the `Client(... default_network_request_kwargs={"timeout": BOX_NETWORK_TIMEOUT})` so every boxsdk call carries a bounded connect/read timeout. Verified @HEAD via grep (lesson #1). (Any *further* box_client A2/A3 hardening — refresh-lock, idle marker — is Phase-2-owned; this specific hang-forever gap is closed.)
-
-`shared/box_client.py` calls go through boxsdk's `Client` / OAuth2, and boxsdk's `DefaultNetwork.request` issues its underlying `requests` call with **no `timeout=`** (verified by inspecting the installed boxsdk source). Same indefinite-hang class as the (now-fixed) graph_client gap: a stalled connection blocks the calling cycle forever. Lower urgency than graph_client because box_client is not yet on a 60-second polling daemon's hot path (its consumers are weekly/migration-cadence), but it is a real gap once a box-reading daemon ships.
-
-**Proposed fix:** boxsdk does not expose a simple per-call `timeout=` the way `requests`/MSAL/Anthropic do — it requires supplying a custom network layer (subclass `DefaultNetwork` / `DefaultNetworkResponse`, or pass a pre-configured `requests.Session`) to the `Client`. Non-trivial; scope it as its own PR. Until then, box hangs are caught only by the watchdog staleness floor (detect, not recover).
-
-**Phase target:** 1.4 hardening (reliability), before any box-reading polling daemon goes on a tight interval.
-
-Surfaced: 2026-06-02 A2 cross-client timeout audit (the graph_client timeout fix's "audit box/anthropic/smartsheet" follow-through).
-
 ## Watchdog/launchd hang-killer: hard-kill a daemon exceeding N× expected cycle duration [OPEN 2026-06-02]
 
 Fix part (c) carved out of the now-closed graph_client-timeout entry. The graph + (future) box timeouts convert *known* network surfaces' hangs into finite errors, but a hang from any *other* cause (a future un-timed call, a CPU spin, a deadlock) still defeats the launchd one-shot-per-interval model: the hung process holds the fcntl lock and every later interval no-ops on `poll_lock_held`. Check C's marker-staleness floor only **detects** this (after the staleness window); it does not **recover** it (the 2026-06-02 incident needed a manual `launchctl kickstart -k`).
@@ -854,24 +424,6 @@ Fix part (c) carved out of the now-closed graph_client-timeout entry. The graph 
 
 Surfaced: 2026-06-02 A2 graph_client timeout work (the indefinite-hang incident motivated detection→recovery, not just per-call timeouts).
 
-## `weekly_send_poll` has no `ITS_Daemon_Health` row → its heartbeat (incl. F08 `CIRCUIT_OPEN`) cannot surface [CLOSED 2026-06-02]
-
-**Resolved by** the A1 self-provision change (branch `pr1-tier-a-reliability`): the shared heartbeat helper `_resolve_heartbeat_row_id` now **find-or-creates** the daemon's `ITS_Daemon_Health` row on first-seen-missing (new `_create_heartbeat_row` + the ID-keyed `smartsheet_client.add_row_by_id` primitive), mirroring `week_folder.py`'s find-after-create race handling (`daemon_health_race_duplicate` WARN, adopt first match). Applied to **both** daemons (helpers stay logic-identical; AST-verified). Heartbeat-never-blocks contract preserved (create failure → `daemon_health_write_failed` WARN + continue). So `weekly_send_poll` self-provisions its row on the next cycle — no manual seed. §43 runbook: `docs/runbooks/daemon_health_self_provision.md`. Original analysis kept below for history.
-
-`safety_reports.weekly_send_poll`'s heartbeat write resolves its row in `ITS_Daemon_Health` (sheet 4529351700729732) by primary key (`safety_reports.weekly_send_poll`) — but **no such row exists**. Every heartbeat write logs a `daemon_health_write_failed` WARN ("no row with this primary key — seeder needed") and skips. So weekly_send_poll's `Last Cycle Status` — including the F08 `CIRCUIT_OPEN` surfacing added in PR #137, plus any OK / WARN / DEGRADED — never lands on the operator-visibility surface; the daemon is invisible there.
-
-**Failure mode (observed live during the F08 PR-1 §7 smoke):** a `weekly_send_poll` cycle with the breaker OPEN logged "seeder needed" instead of surfacing `CIRCUIT_OPEN`. The shared `~/its/state/heartbeat_row_ids.json` caches only `safety_reports.intake_poll`, and the sheet has no weekly_send_poll row. PR #137's Bug-2 fix (scan-failure short-circuit surfaces `CIRCUIT_OPEN` instead of a bare `ERROR`) is correct in code but **inert until the row exists**.
-
-**Proposed fix:** provision the `safety_reports.weekly_send_poll` row in `ITS_Daemon_Health` (one-time seed — mirror the `intake_poll` row's 12 columns per `shared.sheet_ids.DAEMON_HEALTH_COLUMNS`). Then consider whether the shared heartbeat helper should **find-or-create** the row on first-seen-missing (like the week-folder scaffold pattern) rather than log-and-skip, so a newly-added daemon self-provisions its visibility row. (The find-after-create race is already a tracked pattern — reuse that handling.) The heartbeat-never-blocks-daemon contract still holds: a create failure logs `daemon_health_write_failed` and the daemon continues.
-
-**Effort:** ~15 min for the one-time row seed; ~1–2 h if implementing self-provisioning find-or-create + a regression test.
-
-**Phase target:** 1.4 — operator-visibility completeness; `weekly_send_poll` is a live daemon whose status is currently dark.
-
-**Revisit when:** the `weekly_send_poll` daemon is next exercised, OR the operator notices it is missing from `ITS_Daemon_Health`.
-
-Surfaced: 2026-06-02 F08/F09 PR-1 §7 manual smoke (weekly_send_poll `CIRCUIT_OPEN` live-verify) + the PR-2 / live-deploy follow-up.
-
 ## Conftest mock surface coverage [OPEN 2026-05-23]
 
 `tests/conftest.py` (PR #74) autouse-mocks `shared.keychain.get_secret` and `shared.kill_switch.check_system_state`. The keychain mock at the source attribute covers all 7 credentialed surfaces transitively (smartsheet_client / graph_client / box_client / resend_client / sentry_client / anthropic_client / alert_dedupe). Two opt-out lists guard test files that exercise these surfaces directly (`test_keychain.py` + `test_helpers.py` for keychain; `test_kill_switch.py` for kill_switch).
@@ -879,12 +431,6 @@ Surfaced: 2026-06-02 F08/F09 PR-1 §7 manual smoke (weekly_send_poll `CIRCUIT_OP
 Latent risk: future credentialed surfaces (a new client wrapper for a new external service) might need parallel opt-outs if a corresponding `tests/test_<service>_client.py` lands. Action trigger: any new Linux-CI failure with a `*Error: macOS-only` signature, OR a CI-fix follow-on PR that adds a fixture beyond the keychain + kill_switch pair, OR a new credentialed client module added to `shared/`.
 
 **Revisit when:** next CI-hygiene pass, or any of the above triggers.
-
-## Pre-conftest-fix unit-test network leak to Smartsheet sandbox [CLOSED 2026-05-23]
-
-Between PR #68 merge (2026-05-23T02:02:33Z; Run #229) and PR #73 merge (2026-05-23T15:00:02Z; Run #251), unit tests on macOS dev machines were making live API calls against the sandbox Smartsheet tenant via the unmocked `kill_switch.smartsheet_client.get_setting` path. On macOS the keychain returned a real token, so `_get_client()` built a working SDK client and the kill_switch's `check_system_state` made a real network call on EVERY test that exercised `@require_active`. Volume small (one ITS_Config read per affected test invocation) and benign (read-only against a sandbox tenant).
-
-Closed by `tests/conftest.py` keychain + kill_switch fixtures in PR #74.
 
 ## Structural fix: lazy keychain loading + DI-injected kill_switch [OPEN 2026-05-23]
 
@@ -896,12 +442,6 @@ The conftest fix (PR #74) closes the immediate CI hole. A durable structural fix
 Both are non-trivial refactors with cross-call-site impact. Deferred from PR #74 to keep scope focused on the CI fix. Trigger: next session that touches either module for an unrelated reason, fold the refactor in.
 
 **Revisit when:** smartsheet_client or kill_switch refactor session lands.
-
-## parse_job_v3.py:656 — `existing_keys` dead code [CLOSED 2026-05-17]
-
-Resolved in commit **`1fd6751`**. The unfinished de-dup attempt was removed and F841 came off the `box_migration/*` per-file-ignores. Originating commit (which suppressed it) was `8dfc6e8`; ground was tracked in `docs/session_logs/2026-05-17_ruff_and_doc_refresh.md`.
-
-The fix was a deliberate departure from Op Stds v11 §14 (preservation-over-refactor) because the F841 was real dead code rather than a stylistic false positive, and the cleanup was five lines with zero behavior change. The preservation rule remains in effect for the rest of `box_migration/*`.
 
 ## Smartsheet API constraint: DATETIME columns require system column type [OPEN]
 
@@ -924,111 +464,6 @@ Discovered same session. `systemColumnType: AUTO_NUMBER` is rejected at the "Cre
 **Mitigation:** Code-side row references use the Smartsheet row ID (returned in every API response). The human-readable primary column gives operators a meaningful label in the UI without needing auto-numbering.
 
 **Revisit when:** A workstream requires user-visible auto-IDs (e.g., a customer-facing ticket number) and the code-populated label pattern is insufficient. Likely never — the intrinsic row IDs cover the technical need and labels cover the human need.
-
-## parse_job_v3: V/S vendor-sub enumeration unclaimed [CLOSED 2026-05-19]
-
-Resolved by adding `parse_vendor_sub(raw) -> Optional[VendorSubParse]` to `box_migration/parse_job_v3.py` and inserting it into the reconcile harness's claim chain between `subsubject` and `canonical_non_job`. Regex shape `^(?P<letter>[VS])(?P<index>\d{2})\.\s+(?P<name>.+?)\s*$` — capped at two digits so single-digit V1./S1. stay in `SUBJOB_LETTER_UC`'s domain.
-
-Coverage delta when re-running the reconcile against the live 10-portfolio listings: **212 unique names** moved from unclaimed to `vendor_sub` (the original tech_debt estimate of 60–90 was an under-count; estimate was based on unique-occurrence math but the actual unique-name count is higher). Unclaimed share dropped 54.9% → 51.1%. Full 33-test coverage in `tests/test_parse_vendor_sub.py`.
-
-Resolution: see commit on the `feature/vendor-sub-parser` branch (squash-merged), and `docs/session_logs/2026-05-19_chore_sweep_and_mypy_lockdown.md`.
-
-## parse_job_v3: ISO date prefix (YYYY-MM-DD) unclaimed [CLOSED 2026-05-19]
-
-Resolved by extending `parse_date_prefix` in-place with a new `DATE_PREFIX_ISO` regex (`^(?P<date>\d{4}-\d{2}-\d{2})\s+(?P<topic>.+?)\s*$`). ISO matches return `DatePrefixParse` with `direction='ISO'`, joining the existing `R` / `S` discriminators in the same `direction` field. R./S. behavior is preserved unchanged; covered by regression tests in `tests/test_parse_date_prefix.py`.
-
-Reconcile claim chain extended with a new `date_prefix` claim between `vendor_sub` and `canonical_non_job` — needed because the existing chain had no date-prefix claim at all, so ISO matches wouldn't have shown up in reconcile output otherwise. Side effect: existing uppercase R./S. and chaos-flagged lowercase r./s. forms now also get claimed structurally (chaos detection is orthogonal — same name can be both `date_prefix` claimed AND `date_prefix_lowercase` chaos-flagged).
-
-Coverage delta when re-running the reconcile: **11 unique names** in the new `date_prefix` claim (mix of ISO + R./S. + lowercase r./s. forms; tech_debt entry estimated ~13 ISO uniques, close enough). Unclaimed share dropped 51.1% → 50.9%.
-
-24 tests cover the new ISO form, R./S. regression, lowercase r./s. warning preservation, direction discriminator, and negatives. Tests at `tests/test_parse_date_prefix.py`.
-
-Resolution: see commit on the `feature/iso-date-prefix` branch (squash-merged), and `docs/session_logs/2026-05-19_chore_sweep_and_mypy_lockdown.md`.
-
-## parse_job_v3: person_tag_in_subject chaos over-match [CLOSED 2026-05-20]
-
-Resolved by adopting **Direction (A)** from `docs/audits/person_tag_audit_2026-05-19.md`: the third alternation (`-\s*[A-Z][a-z]+\s*$`, "trailing-capitalized-word after dash") was removed from `PERSON_TAG_IN_SUBJECT` in `box_migration/parse_job_v3.py`. The refined regex keeps the two alternations that the audit confirmed as high-precision:
-
-```python
-PERSON_TAG_IN_SUBJECT = re.compile(
-    r'(\bfor\s+[A-Z]{3,}\b|'                            # "for ZACK"
-    r'^[A-Z][a-z]+\s+(Organize|Cleanup|Notes|Files)\b)'  # "Teala Organize folder"
-)
-```
-
-Consumer path (`detect_chaos` in the same file) is unchanged — the chaos flag still surfaces for alt-1 / alt-2 matches; alt-3 over-matches no longer fire. `m.group(0)` is the only match-object accessor downstream, so removing one alternation has no group-index ripple.
-
-**Coverage delta (projection from the 2026-05-19 audit; live listings under `~/Downloads/Box_listings_for_Seth/` not present locally to re-measure):** ~138 person_tag chaos hits → ~2–4 hits across the 10-portfolio corpus. The 2–4 retained hits are alt-1 / alt-2 forms only (explicit "for XXX" and "First Organize/Cleanup/Notes/Files"); the ~95% noise from alt 3 is gone. A few real-or-leaning-real person-tag cases from the audit (samples #15–#20: `Structural - Bowman`, `R. Bowman-Pungo`, etc.) lose their flag by design — operator triages those visually in the folder tree. The audit doc has the full FP-vs-TP tradeoff analysis.
-
-27 tests cover the refinement in `tests/test_person_tag.py`:
-- Group A (7 tests): alt 1 + alt 2 positive-regression coverage across the audit's TPs.
-- Group B (13 tests): every confirmed FP from the audit (rows #1–#12 + sample #19) — negative locks so reintroducing alt 3 fails the suite.
-- Group C (5 tests): `KNOWN_TP_LOSSES_NO_LONGER_FLAGGED` acceptance lock — audit samples #15, #16, #17, #18, #20. The list and its comment block point a future maintainer back to the audit doc before they "re-add the missing coverage."
-- Consumer-path integration (2 tests): `detect_chaos()` surfaces the flag for a TP and skips it for the most-common audit FP (`-Tracking` suffix).
-
-**Redo history:** an earlier attempt (PR #34) implemented this same change but was closed-without-merge during a 2026-05-20 branch-cleanup pass where the head branch was deleted before verifying the merge had actually landed. The chore PR #37 explicitly preserved this entry's `[OPEN]` status; the present resolution comes from the redo PR. The cleanup-pass mistake is captured as a private feedback memory (`feedback_verify_merge_before_branch_delete`): always `gh pr view <N> --json mergedAt` before `git push origin --delete`, do not infer merge from "I saw CI green."
-
-Resolution: see commit on the `feature/person-tag-regex-refinement-redo` branch (squash-merged), and `docs/session_logs/2026-05-20_person_tag_regex_refinement_redo.md`. Audit context preserved at `docs/audits/person_tag_audit_2026-05-19.md` (not modified by this PR).
-
-## smartsheet_migration: import-time side effects in three scripts [CLOSED 2026-05-19]
-
-Resolved by wrapping each script's top-level API work in a `main()` function behind `if __name__ == "__main__":`. Module-level constants (`SOURCE`, `DEST`, `SRC_TO_DEST_TITLE`) stay at module scope (cheap and pure). Imports refactored from `import os, sys` to PEP 8 form. No behavior change when invoked from the shell.
-
-`tests/test_migration_import_hygiene.py` (new) locks the regression in: parametrized test imports each of the three modules with `SMARTSHEET_TOKEN` un-set; all 3 pass. If a future edit accidentally puts API-calling code back at module scope, the test will catch it.
-
-The per-file-ignores `["E401", "I001", "F401", "B007", "UP035"]` in `pyproject.toml` for `smartsheet_migration/*` were NOT removed — 3 other files in the directory (`build_human_review.py`, `classify_closeout.py`, `migrate_schedule.py`) still use `import os, sys` and need the E401 ignore. Documented this in the session log so the ignores aren't mistaken for unnecessary on a future audit.
-
-Resolution: see commit on the `fix/smartsheet-migration-import-time` branch (squash-merged), and `docs/session_logs/2026-05-19_chore_sweep_and_mypy_lockdown.md`.
-
-## mypy: import-untyped noise from vendor SDKs without stubs [CLOSED 2026-05-19]
-
-Resolved by adding the proper stub package for `requests` (`types-requests` added to dev dependencies in `pyproject.toml`) and a `[[tool.mypy.overrides]]` block silencing missing-stub errors for `msal` and `smartsheet` (neither publishes type information upstream as of 2026-05).
-
-After applying, `mypy .` reports **zero errors** across all 64 source files. Brought the baseline from 4 → 0.
-
-Locked in by adding mypy as a **blocking CI step** in `.github/workflows/ci.yml` — silent type drift across PRs is no longer possible. Mypy now runs in parallel with ruff and pytest; failure of any step blocks merge.
-
-Resolution: see commit on the `feature/mypy-zero-and-ci` branch (squash-merged), and `docs/session_logs/2026-05-19_chore_sweep_and_mypy_lockdown.md`.
-
-## parse_job_v3.py: matched needs type annotation [CLOSED 2026-05-18]
-
-Resolved by adding the explicit annotation `matched: dict[Schema, list[str]] = {...}` in `classify_schema()`. Inferred type from `_V3_SIGNATURES` keys (Schema enum members) and the `.append(name)` call site where `name` is a `str`. One-line annotation change; zero behavior change. Preservation-over-refactor §14 honored — only the annotation line was modified.
-
-Resolution: see commit on the `fix/parse-job-v3-matched-annotation` branch (squash-merged), and `docs/session_logs/2026-05-18_alert_critical_and_mypy_closure.md`.
-
-Originally surfaced 2026-05-18 in the mypy baseline reconciliation; see `docs/reports/2026-05-18_mypy_baseline.md` for the lifecycle context.
-
-## smartsheet_migration/ss_api.py: api body arg type mismatch [CLOSED 2026-05-18]
-
-Resolved by widening the `body` parameter annotation on `api()` from `dict | None` to `dict | list | None`. Single-character-class edit on the signature line; all existing call sites continue to type-check (the `add_rows()` caller that passed `list[dict]` now matches). Real-bug carve-out under Op Stds v11 §14.
-
-Resolution: see commit on the `fix/ss-api-body-arg-type` branch (squash-merged), and `docs/session_logs/2026-05-18_alert_critical_and_mypy_closure.md`.
-
-Originally surfaced 2026-05-18 in the mypy baseline reconciliation; see `docs/reports/2026-05-18_mypy_baseline.md` for the lifecycle context.
-
-## smartsheet_migration/migrate_fl.py: warnings list type annotation [CLOSED 2026-05-18]
-
-Resolved by adding the explicit annotation `warnings: list[str] = []` in `derive_payment_method()`. Element type inferred from the `.append(...)` call sites which pass string literals describing payment-method derivation warnings. One-line annotation change; zero behavior change.
-
-Resolution: see commit on the `fix/migrate-fl-warnings-annotation` branch (squash-merged), and `docs/session_logs/2026-05-18_alert_critical_and_mypy_closure.md`.
-
-Originally surfaced 2026-05-18 in the mypy baseline reconciliation; see `docs/reports/2026-05-18_mypy_baseline.md` for the lifecycle context.
-
-## Mail.app rule silent disable on macOS updates [CLOSED 2026-06-30]
-
-**Resolved 2026-06-30 (tech-debt currency sweep):** The surface no longer exists. Mail.app rules are deprecated; the polling-daemon pattern is canonical (Op Stds v20 §31). Check F mailbox routing was removed (`scripts/watchdog.py:201`) and Check F itself RETIRED 2026-06-05 (`scripts/watchdog.py:454`); `safety_reports/intake_poll.py` is a retirement tombstone. There is no Mail.app rule left to silently disable. Verified @HEAD via grep (lesson #1).
-
-macOS updates have a known pattern of silently disabling Mail.app rules without warning. Affects any workstream whose intake depends on Mail.app rules routing messages to the Claude Code script.
-
-**Mitigation in place (Watchdog Check F, PR #36):** Watchdog has an inbound-mail-activity check across all intake-bearing workstreams, surfacing WARN when no recent intake activity is observed.
-
-**Architectural cutover (safety_reports, PR #59, 2026-05-22):** safety_reports migrated off the Mail.app rule trigger to a launchd-driven Graph polling daemon (`safety_reports/intake_poll.py`). This eliminates the silent-disable risk for safety_reports specifically — no Mail.app rule exists in the trigger path anymore. Future workstreams should use the same polling pattern rather than Mail.app rules; this tech-debt entry stays OPEN until that becomes the documented standard for new intake-bearing workstreams (likely Email Triage Brief v5 update + a shared/runner.py abstraction at PR #60 when the second polling consumer ships).
-
-Watchdog Check F still polls mailbox-idle as a proxy for trigger health — works unchanged for safety_reports after PR #59 because the inbox-activity signal is the same regardless of trigger mechanism. A cleaner heartbeat-based replacement (read `~/its/state/safety_intake_heartbeat.txt`) is queued as a follow-up PR after PR #60.
-
-Resolves fully when: every intake-bearing workstream is on a polling daemon (no Mail.app rule trigger remains anywhere in ITS), and Watchdog Check F is repurposed to read the per-daemon heartbeat files instead of mailbox-idle.
-
-Originally captured in Foundation Scaffold v4 "Outstanding Gotchas"; carried forward through v5; re-surfaced via Cascade Audit Errata 2026-05-19; mitigation lifecycle landed via PR #36 (Watchdog Check F) + PR #59 (safety_reports cutover).
 
 ## PowerShell macOS Gatekeeper deprecation 2026-09-01 [OPEN]
 
@@ -1078,18 +513,6 @@ Captured 2026-05-20 during M365 sandbox re-verification while validating the `IT
 ## Stale Anthropic Service Account `svac_…SR7vDMJ` for archival [OPEN 2026-05-20]
 
 Stale Anthropic Service Account `svac_…SR7vDMJ` (created during R2 Watchdog Check E investigation 2026-05-20) flagged for archival. The associated workspace API key has already been deleted from macOS Keychain. No urgency; clean up when next in the Anthropic Console (Settings → Service Accounts → Archive). Captured here so the cleanup isn't forgotten at the next Anthropic-Console visit.
-
-## Remove unused `[jwt]` extra from boxsdk dependency [CLOSED 2026-05-28]
-
-`pyproject.toml` currently pins `boxsdk[jwt]>=3.10.0,<4.0.0`. The `[jwt]` extra pulls in `PyJWT` and `cryptography` transitively. ITS uses OAuth 2.0 User Authentication (per PR #39, commit `2ce6ece`) and never exercises the JWT auth path; the extra dependencies are dead weight in the install tree.
-
-**Action:** change to plain `boxsdk>=3.10.0,<4.0.0`. Run `scripts/smoke_test_box.py` after the change to confirm the OAuth path still works.
-
-**Urgency:** low. No functional impact, just install-tree hygiene.
-
-Surfaced: PR #39 review, 2026-05-20.
-
-**Closed:** PR #96 (LOW-1 of the 2026-05-28 forensic-evaluation hygiene batch) changed the pin to `boxsdk>=3.10.0,<4.0.0`. Verified at HEAD `c5cc456`: `pyproject.toml:18` reads `"boxsdk>=3.10.0,<4.0.0"` (no `[jwt]` extra), and `[tool.mypy].overrides` still ignores missing `boxsdk` imports as before. See `docs/audits/2026-05-28_forensic-evaluation.md` §LOW-1.
 
 ## Eventually migrate from legacy boxsdk to `box_sdk_gen` (Gen API) [OPEN 2026-05-20]
 
@@ -1191,16 +614,6 @@ Surfaced: PR α (alert-dedupe-core) brief, 2026-05-20.
 **Urgency:** low. Phase 1 through Phase 3 is single-host on a designated MacBook. Multi-host is a Phase 4+ blueprint-generalization decision.
 
 Surfaced: PR α (alert-dedupe-core) brief, 2026-05-20.
-
-## Alert-dedupe state file grows unboundedly until PR β lands [CLOSED 2026-05-21]
-
-PR α (#42) wrote one entry per `(script, error_code)` key to `~/its/state/alert_dedupe.json` and never deleted. The follow-up PR β (watchdog summary sweep) was queued to delete entries once their summary email had fired and `summarized=true` had been set. Until PR β landed, the file grew (one entry per distinct dedupe key across the ITS lifetime — operationally acceptable bound).
-
-**Closed by PR #44 (PR β — watchdog Check G — alert-dedupe summary sweep).** Two-phase deletion landed: phase 1 (sweep N) fires the summary email + `mark_summarized`; phase 2 (sweep N+1) deletes the now-`summarized=true` entry. State-file growth bound improved to ≤1 day per `(script, error_code)` key pair (further detailed in the successor entry below). Crash-safe: a crash between Resend send and `mark_summarized` causes the next sweep to re-fire (duplicate email is acceptable; silent loss is not).
-
-Subsequent V1 fix (PR #52) added MAINTENANCE-aware defer behavior — phase-1 fires defer during the MAINTENANCE window, phase-2 deletion proceeds regardless. Bounded delay = MAINTENANCE window + one watchdog cadence.
-
-Surfaced: PR α (alert-dedupe-core) brief, 2026-05-20. Closed by PR #44 + #52, 2026-05-21.
 
 ## Smoke harness pattern divergence between dedupe smoke and Resend/Sentry smokes [OPEN 2026-05-20]
 
@@ -1329,72 +742,6 @@ The helper detects the duplicate on a post-create find: if the post-create looku
 
 Surfaced: R3 foundation PR brief, 2026-05-21.
 
-## Daily Reports schema gap — no Box Link column [CLOSED 2026-06-18]
-
-**Resolved 2026-06-18 (tech-debt easy-wins pass):** Superseded by the portal pivot — intake.py writes Box URLs into structured columns via box_link + update_row_with_box_links, not embedded in Notes.
-
-The `Daily Reports — Week of <date>` sheet schema (cloned forward by `safety_reports/week_folder.ensure_current_week_folder` from the Bradley 1 / Week of 2026-03-09 template, sheet ID 7282977254887300) has no explicit column for the filed Box document URL.
-
-When `safety_reports/intake.py` lands in R3 session 1, each inbound safety email will be filed to Box; the Box URL is the audit trail back to the source document. Without a dedicated column, intake.py will embed the URL inside the existing `Notes / Action Items` cell — workable but harder to query and prone to cell-truncation as notes grow.
-
-**Action at R3 session 1:** the session's brief should include a schema edit adding a `Box Link` (TEXT_NUMBER) column to the Bradley 1 / Week of 2026-03-09 template sheet (the canonical source for clones). The auto-gen helper will then carry the column forward into every new week's clone. Until that lands, intake.py embeds the URL in `Notes / Action Items`.
-
-**Workaround in the interim:** intake.py's notes-embedding pattern. Once the column lands, the migration is a one-pass extraction of URLs from existing notes into the new column for any rows written between R3 session 1 start and the schema edit.
-
-**Resolves at:** R3 session 1 (the intake.py wiring brief).
-
-Surfaced: R3 foundation PR brief, 2026-05-21.
-
-## `find_sheet_by_name_in_folder` switched from SDK to REST [CLOSED 2026-05-21]
-
-Original PR #45 implementation used `smartsheet.Folders.get_folder()` — deprecated upstream AND returns stale folder data within a single SDK client session. A sheet created via the SDK's `create_sheet_in_folder()` does not appear in a subsequent `get_folder()` from the same client; direct REST sees it immediately.
-
-PR #51 swapped the helper to direct REST. Unit tests updated to mock `requests.get` instead of the SDK shape. Removes the DeprecationWarning AND fixes the same-session-create-then-find bug. The picklist sync migration script's earlier success was a happy accident: it didn't exercise back-to-back create + find in the same Python process, so the SDK cache never tripped.
-
-Closed by PR #51.
-
-## Picklist-hardening pre-Customer-1 [CODE DELIVERED 2026-05-23 / operator UI work tracked in docs/audits/picklist_hardening_audit.md]
-
-Code side shipped on `feat/picklist-hardening` branch:
-
-- `shared/picklist_validation.py` — `PicklistViolationError` + `REGISTRY` (composed from `Severity`/`ReviewReason`/`SlaTier`/`ReviewStatus`/`QuarantineReason`/`ContactStatus` StrEnums) + `validate_cell` / `validate_row`. Opt-in semantics: unregistered (sheet, column) pairs pass-through; None and bool values bypass picklist check.
-- `shared/smartsheet_client.py::add_rows` + `update_rows` — late-import `picklist_validation` (circular-import safe) and call `validate_row` BEFORE any payload construction. Invalid values raise `PicklistViolationError` pre-API-call.
-- `scripts/audit_picklist_drift.py` — programmatic registry-vs-live drift audit; `--update-audit-doc` placeholder; writes `~/its/.watchdog/safety_picklist_audit.last_run` marker.
-- `scripts/watchdog.py::TRACKED_JOBS` — added `safety_picklist_audit` with 8-day freshness window (weekly cadence).
-- `docs/audits/picklist_hardening_audit.md` — operator's UI conversion checklist; one row per bounded-enum column with conversion status emojis (⬜ ✅ ⚠️ 🟦).
-
-`shared/kill_switch.py` Phase 3 was a no-op: existing `SystemState` StrEnum + try/except fail-open (returns ACTIVE on unknown value per Op Stds v11 §1 — never silently halt) IS the per-key registry pattern. The brief's suggested change to return PAUSED would have inverted the fail-open behavior; preserved existing.
-
-Tests: 949 → 1004 (+55: 20 validation + 8 smartsheet integration + 8 drift audit + transitive coverage). mypy 0, ruff clean. Capability gating intact.
-
-Operator-side conversion items remain in `docs/audits/picklist_hardening_audit.md` — ~21 UI passes (toggle "Restrict to picklist values only" + add 3 PR #72 ReviewReason values + add ITS_Quarantine Disposition + Reason columns + 6 per-project template conversions). Audit doc IS the operator's checklist; after each batch, run `python -m scripts.audit_picklist_drift --update-audit-doc` to refresh status emojis.
-
-Subsumes PR #72 leftover step #2 — the three new ITS_Review_Queue.Reason picklist values are now part of this audit's checklist.
-
-**Closes when:** all rows in `docs/audits/picklist_hardening_audit.md` show ✅. At that point the watchdog's drift WARN-threshold can flip to ERROR.
-
-## ITS_Trusted_Contacts sheet replaces ITS_Config JSON allowlists [DELIVERED 2026-05-23]
-
-Code shipped on `feat/its-trusted-contacts` branch:
-
-- `shared/trusted_contacts.py` — TrustedContact / ScopeVerdict / ContactStatus + 60s-TTL cache (`lookup`, `check_scope`).
-- `shared/header_forgery.py` — Authentication-Results parser + Return-Path-vs-From mismatch (PASS / SOFT_FAIL / HARD_FAIL verdicts; trusts inbound MTA's DKIM — no local re-validation).
-- `shared/graph_client.py::get_message` — opt-in `include_headers=True` projects `internetMessageHeaders` via `$select`.
-- `safety_reports/intake.py` — Stage 2 refactored to `check_trusted_sender` (routing matrix); Stage 4b project-scope re-check after project resolves. Old `check_sender_allowlist` removed; legacy ITS_Config `allowed_senders` JSON list survives as the dead-fallback path (`trusted_contacts.fallback_to_its_config` INFO once per process) until operator deletes the row.
-- `shared/quarantine.py` — `QuarantineReason` StrEnum added; `log_quarantined_message` accepts `reason=`, writes `[reason: <code>]` into Notes (no Reason column on live sheet).
-- `shared/review_queue.py::ReviewReason` — three new picklist values (header-soft-fail-trusted / sender-pending-verification / project-out-of-scope) awaiting operator UI add.
-
-Migrations: `scripts/migrations/build_its_trusted_contacts_sheet.py` (idempotent sheet create), `scripts/migrations/seed_its_trusted_contacts.py` (legacy → sheet seed, `--dry-run`).
-
-Tests: +46 (12 trusted_contacts, 14 header_forgery, 10 intake_stage2_refactor, 2 graph_client include_headers, 3 quarantine reason, 1 integration, +4 regression deltas across test_intake / test_review_queue) — baseline 903 → 949.
-
-Operator-side cutover items, all required before legacy fallback removal:
-1. Run `build_its_trusted_contacts_sheet.py`, paste sheet ID into `shared/sheet_ids.py::SHEET_TRUSTED_CONTACTS`.
-2. Add the 3 ITS_Review_Queue.Reason picklist values via UI.
-3. Run `seed_its_trusted_contacts.py`, adjust seeded rows.
-4. Live smoke against sandbox message.
-5. After one Friday cycle clean, delete the ITS_Config `safety_reports.intake.allowed_senders` row.
-
 ## Fallback path removal after ITS_Config cutover [OPEN 2026-05-23]
 
 Per the ITS_Trusted_Contacts delivery above, the legacy ITS_Config allowed_senders fallback stays in `safety_reports/intake.py` (`_check_legacy_allowlist` + the `sheet_contacts` branch in `_run_pipeline`) until the operator confirms one full Friday cycle clean post-cutover. Then:
@@ -1473,28 +820,6 @@ Smartsheet MCP has no delete-sheet primitive; operator UI is the only path.
 
 **Revisit when:** next operator Smartsheet UI session; not blocking any code or workflow.
 
-## 1 empty duplicate ITS_Daemon_Health sheet [CLOSED 2026-06-18]
-
-**Resolved 2026-06-18:** the duplicate sheet `3717381690969988` is already gone (a live fetch returned 404 — it was cleaned up in a past workspace restructure; this entry was stale). Canonical `ITS_Daemon_Health` `4529351700729732` (shared/sheet_ids.py SHEET_DAEMON_HEALTH) is the live heartbeat surface, untouched. The "operator UI delete required / MCP has no delete-sheet primitive" note was also stale — `smartsheet_client.delete_sheet` exists.
-
-Parallel chat build of ITS_Daemon_Health surface created an extra empty sheet 3717381690969988 in System / 04 — Daemons. Canonical sheet is 4529351700729732. Empty duplicate requires operator UI delete (Smartsheet MCP no delete-sheet primitive).
-
-**Revisit when:** next operator Smartsheet UI session.
-
-## Watchdog Check F retirement [CLOSED 2026-06-30]
-
-**Resolved 2026-06-30 (tech-debt currency sweep):** Retirement is complete — `scripts/watchdog.py:454` reads `# ---- Check F: RETIRED 2026-06-05 (safety mail-intake silent-disable) ----` and the mailbox-routing logic is removed (`:201`). The partial-mitigation is now full. Verified @HEAD via grep (lesson #1).
-
-Check F (Mail.app rule silent disable, PR #36) polls safety@evergreenmirror.com mailbox idle hours as a proxy for Mail.app-rule trigger health. Post-PR-#59, safety_reports is on a polling daemon and writes a heartbeat to ITS_Daemon_Health every 60 seconds. The mailbox-idle proxy is now redundant for safety_reports.
-
-**Check-H reframe (2026-06-01).** This entry originally proposed a "Check H heartbeat-staleness successor" that would "read ITS_Daemon_Health for every Enabled=true daemon; flag rows where Last Heartbeat is older than 2 × Interval Seconds." That mechanism was **never built and is superseded** — the staleness floor doctrine called "Check H" is, and always was, the **Check C marker-file** check (`scripts/watchdog.py`), which already covers all four tracked daemons (`safety_intake`, `safety_weekly_send_poll`, `safety_picklist_audit`, `safety_weekly_generate`) with per-job freshness windows. The blueprint doctrine carrying the stale "Check H unimplemented / 2-of-3 heartbeat-pending" framing is corrected in the 2026-06-01 doctrine pass (FM v11.x / Op Stds v16.x / V&R v9.x / Handover v8.x / Excellence Roadmap v4). The companion residual this entry's "revisit when" anticipated — the weekly_generate catch-up — is now **built** as watchdog **Check I** (`_check_weekly_generate_catchup`, this PR), closing the one daemon launchd could not self-recover (calendar-scheduled, Friday).
-
-**Remaining open leg:** the *Check F retirement itself*. Retire Check F when (a) the Check C marker-file floor covers all daemons [done] and (b) no remaining workstream depends on Mail.app rules. Leg (b) is the live gate.
-
-**Effort:** ~1 hour session (delete Check F + its tests once Mail.app rules are fully gone).
-
-**Revisit when:** the last Mail.app-rule-dependent workstream is migrated to a polling daemon (then leg (b) is satisfied and Check F can be deleted). The `shared/runner.py` marker-helper consolidation remains a separate opportunity at the next polling-daemon consumer ship.
-
 ## audit_picklist_drift.py marker writer is not wired to a launchd plist [OPEN 2026-06-01]
 
 Surfaced during the Check I (weekly_generate catch-up) build. `scripts/watchdog.py` Check C tracks `safety_picklist_audit` (8-day window), and the **only** writer of the `safety_picklist_audit.last_run` marker is `scripts/audit_picklist_drift.py`. But the picklist launchd plist (`scripts/launchd/org.solutionsmith.its.picklist-sync.plist`) invokes `scripts/run_picklist_sync.py` (the hourly option-SYNC job), **not** `audit_picklist_drift.py` (the drift-AUDIT job) — and `run_picklist_sync.py` writes no watchdog marker. So either (a) the operator schedules `audit_picklist_drift.py` via a plist outside `scripts/launchd/`, or (b) the `safety_picklist_audit` marker is never written → a permanent stale Check C WARN. Separately, `run_picklist_sync.py` (the actually-scheduled hourly job) is not in TRACKED_JOBS at all, so its silent death is invisible to Check C.
@@ -1502,34 +827,6 @@ Surfaced during the Check I (weekly_generate catch-up) build. `scripts/watchdog.
 **Out of scope** for the Check I PR (no behavior changed here — recording the finding only). Per Op Stds "silent fail-open hazards must become watchdog-detectable signals," this should be reconciled: confirm where `audit_picklist_drift.py` is scheduled (or wire it), and consider tracking `run_picklist_sync.py`.
 
 **Revisit when:** the picklist scheduling/Tranche-0 work is next touched, or the first time a `safety_picklist_audit` stale WARN fires with no underlying cause.
-
-## Integration-test marker isolation — weekly_generate live test pollutes the shared watchdog marker [CLOSED 2026-06-18]
-
-**Resolved 2026-06-18 (tech-debt easy-wins pass):** This PR: an autouse fixture in test_weekly_generate_integration.py monkeypatches weekly_generate.WATCHDOG_MARKER_DIR to a tmp dir, so the live compile no longer touches the real marker.
-
-Surfaced during the Check I (weekly_generate catch-up) live smoke. The `@pytest.mark.integration` `weekly_generate` test (`tests/test_weekly_generate_integration.py`) runs real `weekly_generate` against the live Smartsheet sandbox, which writes the **real** shared `~/its/.watchdog/safety_weekly_generate.last_run` Check C marker (via `weekly_generate._write_watchdog_marker`). Unlike the unit tests, the integration test does NOT redirect `WATCHDOG_MARKER_DIR` to a tmp dir, so an operator running `pytest -m integration` refreshes the production marker for a *disposable* week.
-
-Interaction with watchdog Check I (`_check_weekly_generate_catchup`, PR #133): Check I deliberately treats a fresh marker as "the week ran" (so it never regenerates reviewer-deleted rows). A marker refreshed by the integration test *after* the Friday trigger can therefore **mask a genuine catch-up for that window** — a false-negative that degrades safely to Check C's 8-day WARN / a human, but is non-obvious. Observed live during the PR #133 catch-up smoke: the integration test (run earlier in the session) had refreshed the marker, pre-empting the fire path until the marker was removed.
-
-**Fix:** redirect `WATCHDOG_MARKER_DIR` to a temp dir inside `tests/test_weekly_generate_integration.py` (mirror the autouse `monkeypatch.setattr("watchdog.WATCHDOG_MARKER_DIR", …)` pattern from `tests/test_watchdog.py`), so the live test never touches the production marker. Same isolation discipline already applied to the watchdog unit tests.
-
-**Revisit when:** `tests/test_weekly_generate_integration.py` is next touched, or an operator reports a missed `weekly_generate` catch-up that coincides with an integration-test run.
-
-## safety_weekly_generate prompt v0.1.0 calibration [CLOSED 2026-06-30]
-
-**Resolved 2026-06-30 (tech-debt currency sweep):** Obsolete by design change. `safety_reports/weekly_generate.py` is now the **DETERMINISTIC** weekly compile — the Anthropic narrative core was retired — so there is no generation prompt to calibrate; `prompts/safety_weekly_generate.md` does not exist. Verified @HEAD (file absent + capability-gating AST-forbids `anthropic` in `weekly_generate`). Closed as not-applicable.
-
-Initial WPR generation prompt (`prompts/safety_weekly_generate.md` v0.1.0) anchors on the 2016-03-12 Gates Solar legacy WPR captured at `prompts/samples/legacy_wpr_gates_solar_2016-03-12.md`. Per Safety Reports Brief v6.1, calibrate v0.2.0 after the first 30 days of real Evergreen cycles — areas to watch:
-
-- Whether reviewers consistently keep the [REVIEWER TO FILL] sentinels (vs. editing them out), suggesting prompt should drop or move those sections.
-- Confidence threshold tuning. Default 0.85 was inherited from intake.py extraction; generation may warrant a different threshold once we see real distribution.
-- Subcontractor-list extraction quality — currently derived from `Crew or Subcontractor` column values; might miss subs mentioned only in `Summary of Events` narrative.
-- `narrative_summary` length tuning — model defaults to one paragraph but reviewer feedback may push for terser or denser summaries.
-- Anomaly self-report sentinel coverage — current set (`apparent_injection_attempt`, `inconsistent_dates`, `crew_name_special_chars`) may need expansion.
-
-**Effort:** ~half-day session including reviewer-feedback synthesis + v0.2.0 prompt edit + before/after diff documentation.
-
-**Revisit when:** ~30 days of real Friday cycles have run (2026-06-22 plus or minus a week).
 
 ## Smartsheet transient 404 on first-project sheet/folder create [PARTIALLY MITIGATED 2026-05-22]
 
@@ -1558,22 +855,6 @@ Mobilization Date is project-scoped not week-scoped — better captured as a pro
 
 **Revisit when:** Phase 1.4 security hardening cluster ships and operator feedback drives WPR template v0.2.0 calibration.
 
-## `shared/heartbeat.py` + `shared/runner.py` extraction [CLOSED 2026-07-03]
-
-**Resolved 2026-07-03 (CS Slice 3, R4-F1 — split-close):** the **heartbeat half is DONE.** The extraction LANDED as `shared/heartbeat.py` (`HeartbeatReporter`, PR #344 `334ea9e`) — the eight replicated helpers consolidated with the A1 self-provision metadata as constructor config; consumers migrated to thin `_write_heartbeat`/`_write_heartbeat_row` delegators (the canonical test mock seams). Six consumers at close: `portal_poll`, `weekly_send_poll`, `fieldops_sync`, `progress_send_poll`, and — added by CS Slice 3 — `compile_now_poll` + `publish_daemon` (the two designed-for daemons that lacked it). Split remainders, both deliberate non-debt: (a) `_write_watchdog_marker` stays replicated per-daemon (a 10-line marker touch with per-daemon write-condition policy — the exact API-churn risk this entry's own "risk of premature extraction" paragraph predicted; §14 says leave it); (b) **`shared/runner.py` was never built and is dropped** — no consumer ever demanded a shared runner loop (launchd one-shot-per-`StartInterval` IS the runner), so building it would violate §14 preservation-over-refactor.
-
-R3 Session 3 (`weekly_send_poll.py`) is the 2nd polling-daemon consumer that triggers the polling-daemon doctrine's 2nd-consumer extraction signal (Op Stds v11 §14). The heartbeat helpers (`_load_heartbeat_row_state`, `_persist_heartbeat_row_state`, `_invalidate_heartbeat_row_state`, `_resolve_heartbeat_row_id`, `_write_heartbeat`, `_write_heartbeat_row`, `_log_heartbeat_failure`) were copied VERBATIM from `safety_reports/intake_poll.py` into `weekly_send_poll.py` rather than extracted, to keep the R3 Session 3 ship focused on the send-capability code.
-
-**Update 2026-05-28 (PR #113, F17):** a 3rd copy of the watchdog-marker helper pattern was added to `intake_poll.py` as `_write_watchdog_marker()`. The heartbeat-row helpers (ITS_Daemon_Health write) and the watchdog-marker helper (`.watchdog/<slug>.last_run` write) are related patterns that both belong in `shared/heartbeat.py`. The 3rd copy strengthens the extraction signal from Op Stds §14: we now have 3 consumers sharing the same pattern across 2 helpers. The extraction trigger condition from the original entry (2nd consumer) has been met and exceeded.
-
-Both heartbeat consumers share the same state file at `~/its/state/heartbeat_row_ids.json` (keyed by daemon_name) so the file format is already shape-compatible. Extraction is mechanical: pull the seven heartbeat helpers + `_write_watchdog_marker` into `shared/heartbeat.py`, parameterize on `daemon_name` + `state_path` + `slug`, replace inline copies with imports.
-
-**Effort:** ~half-day session including +8-12 unit tests for the new shared module + migration of both `intake_poll` and `weekly_send_poll` to use it.
-
-**Risk of premature extraction:** if the watchdog-marker shape diverges per-daemon (e.g. different marker content, conditional write logic per §42 rationale), the API churns. The `intake_poll` deliberate divergence (marker only on completed cycle, not on skip paths) is the exact kind of per-daemon policy that the shared helper's API needs to accommodate. Parameterize the write-condition as a callable or flag.
-
-**Revisit when:** weekly_send has completed 1-2 real Friday cycles (≥ ~2 weeks of production traffic), OR a 3rd polling daemon with heartbeat needs is queued (Email Triage is the likely trigger).
-
 ## HTML email rendering for weekly_send [OPEN 2026-05-23]
 
 `weekly_send.py` v0.1.0 sends `Draft Body` as inline text via `content_type="Text"`. Sponsors may prefer HTML formatting (paragraph breaks, bullet lists, the WPR layout's table structure rendered properly). Calibrate with Teala after the first 30 days of real Friday cycles — same 30-day window as the `safety_weekly_generate` prompt v0.1.0 calibration entry.
@@ -1583,31 +864,6 @@ Implementation: render `Draft Body` (currently plain text with `[REVIEWER TO FIL
 **Effort:** ~half-day session including +2-4 unit tests for the rendering function + a smoke run.
 
 **Revisit when:** Teala provides feedback on the v0.1.0 inline-text format (after first 30 days of real cycles).
-
-## Word-doc / PDF attachment generation for weekly_send [CLOSED 2026-06-30]
-
-**Resolved 2026-06-30 (tech-debt currency sweep):** The PDF-attachment ask shipped. `safety_reports/weekly_send.py` downloads the compiled Box packet PDF and attaches it (`weekly_send.py:33-42`), with two-mode transport (inline ≤2.5 MB / Graph upload-session above; PR-3). The never-requested DOCX variant is an **accepted skip**, not debt. Verified @HEAD via grep (lesson #1).
-
-Legacy WPRs (the Gates Solar 2016-03-12 anchor in `prompts/samples/`) were Word documents. Current `weekly_send` v0.1.0 sends `Draft Body` as inline text — no attachment. Sponsors who archive correspondence as document attachments may explicitly request a formatted attachment.
-
-Phase 1.4+ extension: render `Draft Body` to PDF (via reportlab or similar) or DOCX (via python-docx), attach via the existing `graph_client.send_mail(..., attachments=[...])` signature. Box upload + Smartsheet link-update for the sent PDF could ride alongside.
-
-**Effort:** 1-2 sessions depending on which format(s) sponsors want and whether Box archival ships in the same PR.
-
-**Revisit when:** explicit sponsor feedback requesting formatted attachment.
-
-## Automated mailbox cleanup for weekly_send integration smoke [CLOSED 2026-06-30 — premise obsolete]
-
-**Closed 2026-06-30 (verified against HEAD, lesson #1):** the premise is gone. This entry assumed `tests/test_weekly_send_integration.py` "sends a real email to `seths@evergreenmirror.com` per run" that lingers in the inbox. The **Phase-5 rewrite** repointed `weekly_send` `WPR_Pending_Review` → `WSR_human_review` and the integration test now exercises **only the HELD path** — its docstring states it "sends NO email and hits NO Box" (the unknown-job `held_no_recipient` refusal); the real end-to-end send is the operator's manual deploy smoke, not this automated file. With no automated send, there is **no inbox clutter to clean up**, so the proposed `graph_client.delete_message` + teardown would be unused code wired into a non-sending test (a §14 preservation violation). A `delete_message` Graph primitive is deferred to a **real consumer** (Email Triage mailbox hygiene), not added speculatively here. `graph_client.py` is unchanged.
-
-
-`tests/test_weekly_send_integration.py` test seed sends a real email to `seths@evergreenmirror.com` per run. Cleanup currently deletes the `WPR_Pending_Review` row in `finally`, but the email itself sits in the recipient's inbox until manually deleted. Acceptable for first few integration runs (rare; operator-driven) but eventually deserves programmatic cleanup.
-
-Implementation: after assert SENT, use `graph_client.list_inbox` + `graph_client.delete_message` (would need to add `delete_message` to `graph_client.py` — currently not exposed) to remove the ITS-SMOKE-tagged message from the sandbox inbox.
-
-**Effort:** ~hour or two including a new `delete_message` helper in `graph_client.py` + the test wire-up.
-
-**Revisit when:** integration runs accumulate noticeable smoke clutter in the sandbox mailbox (estimate: after ~10-20 runs).
 
 ## Doc-conventions lint strict-mode flip after retrofit window closes [OPEN 2026-05-24]
 
@@ -1636,28 +892,6 @@ Trigger conditions:
 **Effort:** ~30 min.
 
 **Revisit when:** operator notes drift between local doc state and CI's view, OR a third polling daemon ships and the watchdog wiring patterns are being touched anyway.
-
-## Hardcoded BOX_PROJECT_FOLDERS dict requires code change per project [RESOLVED 2026-06-02]
-
-**Resolved-by (E1):** `shared/project_routing.py` (TTL-cached `ITS_Project_Routing` sheet reader, `get_folder_id`), `scripts/migrations/build_its_project_routing_sheet.py` + `seed_its_project_routing.py`, `SHEET_PROJECT_ROUTING` in `shared/sheet_ids.py`, `safety_reports/intake.py::upload_attachments_to_box` now resolves via `project_routing.get_folder_id` (BOX_PROJECT_FOLDERS retained as the warn-not-crash fallback), `tests/test_project_routing.py` + `tests/test_project_routing_integration.py`, and `docs/runbooks/project_routing_onboarding.md` (§43). Pre-cutover (`SHEET_PROJECT_ROUTING == 0`) every lookup falls through to the unchanged hardcoded dict, so this lands with zero behavior change until the operator runs the two migrations and fills the sheet id.
-
-**Deferred sub-items (NOT closed by E1, tracked separately below):** (1) startup Box-API folder-ID resolution validation — see "Daemon startup config validation" entry (the §989 reconciliation check); (2) post-cutover removal/empty-out of `BOX_PROJECT_FOLDERS` is an operator step after parity verification, not a code change here.
-
-Original (for reference) ▸ `shared/defaults.py:73` defines `BOX_PROJECT_FOLDERS: dict[str, str]` — a hardcoded mapping from project name to Box folder ID. Every new project added to Box requires editing this file and redeploying. `shared/defaults.py` is also the documented fallback layer for ITS_Config (per existing convention in the module — `BOX_PROJECT_FOLDERS` references "1111B-derived clones post-cutover" suggesting it gets manually edited at each Box cutover).
-
-**Failure mode:** non-developer operator cannot onboard a new project without CC involvement (code edit + PR + deploy). Risk of typo in folder ID silently routing uploads to the wrong project. Stale entries accumulate as projects close out. Project-onboarding is a routine ops task that should not require a deploy cycle.
-
-**Proposed fix:** migrate to a Smartsheet lookup (suggest a dedicated `ITS_Project_Routing` sheet with columns `Project Name`, `Box Folder ID`, `Active` bool, `Notes`). Code reads at daemon startup, caches in-process, refreshes on interval. Add startup validation that every active row's folder ID resolves via Box API — warn (don't fail) on resolution miss so a single bad row doesn't crash the daemon. Once live, `BOX_PROJECT_FOLDERS` becomes the empty-dict fallback or is removed entirely.
-
-**Effort:** ~half-day session (new sheet schema + `ITS_Project_Routing` migration script + reader in `shared/defaults.py` or new `shared/project_routing.py` + tests + Box resolution validation helper + operator runbook).
-
-**Phase target:** 1.5 — blocks first-customer onboarding cleanliness; every new customer's project set is different.
-
-**Tag:** `config-migration`.
-
-**Revisit when:** Phase 1.5 hardening cluster, or operator hits the "I need to add a project but can't without a code change" friction.
-
-Surfaced: 2026-05-24 hardcoded-values audit brief, §A2.
 
 ## Hardcoded BOX_SUBPATH_BY_CATEGORY in safety_reports/intake.py [OPEN 2026-05-24]
 
@@ -1785,20 +1019,6 @@ Phase 1.5 work introduces PDF-form-field extraction (and possibly free-text rege
 
 Surfaced: 2026-05-24 hardcoded-values audit brief, §B3. Cross-ref Op Stds v11 §35 (confidence-scored extraction → review queue routing pattern).
 
-## No retry / backoff / circuit-breaker layer across Smartsheet call sites [CLOSED 2026-06-01]
-
-Smartsheet API calls across `shared/smartsheet_client.py` and its consumers (intake_poll, weekly_send_poll, weekly_generate, watchdog, picklist_sync) had point-by-point exception catches but no aggregate "Smartsheet is degraded — back off the whole loop" signal. During an incident (5xx / timeout / rate-limit) each call site degraded independently: the daemon kept hammering the degraded service, ITS_Errors filled with one row per failed call, and a flapping failure could fan out unbounded operator email.
-
-Closed by the **F08/F09** Phase 1.4 hardening PR, with a design that **differs from the originally-proposed one in two deliberate ways**:
-
-1. **The circuit breaker is a separate, domain-agnostic module** (`shared/circuit_breaker.py`) — NOT "a simple counter in `smartsheet_client` state" as first sketched. It exposes a parameterized `guard(open_exc, count, ignore, …)` decorator + `bypass()` + lock-free `is_open()`; `smartsheet_client` decorates its **16 network-issuing methods** (leaving `get_setting` / `get_settings_with_prefix` undecorated — transitive via `get_rows`, no double-count) and injects the Smartsheet exception set + a bypass-wrapped, process-cached config loader. **One global breaker, persisted** to `~/its/state/circuit_breaker.json` (launchd daemons are fresh-process-per-cycle, so the consecutive-failure count + OPEN deadline must outlive the process). N consecutive counting-eligible failures (429/5xx/transport; **401/403/404 ignored** — deterministic/routine) trip OPEN → short-circuit with `SmartsheetCircuitOpenError` (a `SmartsheetError` subclass, so every existing consumer catch handles it unchanged); cooldown → single HALF_OPEN probe → CLOSED/OPEN. Surfaced via the daemons' `CIRCUIT_OPEN` heartbeat status and (PR 2) a watchdog prolonged-open check that reads the local file (works during a total Smartsheet outage).
-
-2. **No retry-with-backoff decorator was built — deliberately.** Per Op Stds §14 (wrap, don't reimplement), the SDK's own HTTP retry/backoff already handles the transient/per-call layer; the breaker sits strictly *above* the typed-exception layer for the sustained/cross-call (and cross-process) case. `weekly_generate._process_with_retry`'s narrow NotFound-only retry stays as-is (it is not the transient-5xx retry this item imagined, and circuit-open deliberately does not trigger it). No `is_retryable` property and no `SS_API_UNAVAILABLE` error code were needed — `SmartsheetCircuitOpenError` is the typed signal.
-
-The "ITS_Errors / dedupe state fills + unbounded email" half is addressed by **F09's global alerts-per-hour cap** (`alert_dedupe.check_hourly_cap` gating the Resend leg in `error_log._fire_resend_leg`): records still fire every time (Op Stds v16 §3.1 push-vs-record), only the operator email fan-out is bounded.
-
-§43 successor-remediation runbook shipped at `docs/runbooks/circuit_breaker.md` (circuit-open + rate-cap-hit). §30 integration coverage at `tests/test_circuit_breaker_integration.py` (live trip/reset against the sandbox, CI-skipped). Surfaced: 2026-05-24 hardcoded-values audit brief, §B4.
-
 ## Configuration validation at daemon startup [OPEN 2026-05-24]
 
 Once items A2 / A3 / A5 (and the existing trusted-contacts work) migrate config into Smartsheet, daemons fetch config at startup with no formal validation step. A malformed row, missing key, or unresolvable folder ID can let the daemon enter its main loop with broken config — it'll fail per-cycle at unpredictable points instead of failing loud at startup.
@@ -1844,73 +1064,6 @@ Once configuration lives in Smartsheet (ITS_Config rows + future `ITS_Trusted_Co
 
 Surfaced: 2026-05-24 hardcoded-values audit brief, §C2.
 
-## CLAUDE.md doctrine version citations lag v14/v9 [CLOSED 2026-06-18]
-
-**Resolved 2026-06-18 (tech-debt easy-wins pass):** CLAUDE.md cites Op Stds v18 / FM v11 throughout; docs/doctrine_manifest.yaml matches. No lagging v13/v8 (v14/v9) refs remain.
-
-Blueprint bumped Operational Standards v13 → v14 and Foundation Mission v8 → v9 on 2026-05-29 (blueprint PR #23, `29000f1`). This repo's `CLAUDE.md` still cites the old versions throughout:
-- `"Operational Standards v13"` / `"canonically at v13"` — ~9 occurrences in CLAUDE.md
-- `"Foundation Mission v8"` — 3 occurrences in CLAUDE.md (lines 37, 149, 151, 359)
-- Recently-landed docs: session log `2026-05-29_f02-f22-capability-approval.md` + `docs/operations/cutover_checklist.md` cite v13/v8
-
-The F02/F22 session deliberately scoped doctrine reconciliation out; the version strings were not swept.
-
-**Failure mode:** a fresh CC session reading CLAUDE.md's `Op Stds §N` / `FM §N` citations will resolve them against v13/v8 text when v14/v9 are canonical. Both bumps are additive/reframe-only (no code changes), so the practical impact is low. But the cross-repo supersession drift check exists precisely to catch and track this.
-
-**Proposed fix:** `grep -r "Operational Standards v13\|Op Stds v13\|canonically at v13\|Foundation Mission v8\|FM v8" ~/its/CLAUDE.md ~/its/docs/operations/` and sweep non-historical hits to v14/v9. Also bump `docs/doctrine_manifest.yaml`: `operational_standards: 14`, `foundation_mission: 9`. Exclude grandfathered historical entries (older session logs, tech-debt entries citing at their original surfacing date — correct by policy).
-
-**Effort:** <1 hour. Mechanical string sweep + manifest version bump.
-
-**Phase target:** next doctrine-reconciliation pass (low urgency — both bumps are additive/reframe only).
-
-**Revisit when:** any session that touches CLAUDE.md for another reason, or before drafting a new workstream brief.
-
-Surfaced: 2026-05-29 F02/F22 session close (cross-repo supersession check). Session log: `docs/session_logs/2026-05-29_f02-f22-capability-approval.md`.
-
-## Remote branch `f02-f22` not auto-deleted after merge (worktree quirk) [CLOSED 2026-06-18]
-
-**Resolved 2026-06-18:** both merged orphan refs deleted (`origin/session-log-f02-f22` + `origin/f02-f22`, both via `gh api -X DELETE …/git/refs/heads/…`; PRs #118/#119 were MERGED, neither base/head of an open PR). `git ls-remote --heads origin` confirms both gone.
-
-When merging a PR from a git worktree (e.g., `~/its-f02-f22` on branch `f02-f22`), `gh pr merge --squash --delete-branch` successfully lands the squash merge on GitHub but cannot execute the post-merge local `checkout main` (main lives in `~/its`, not the worktree). As a side effect, `origin/f02-f22` is NOT deleted. The four-part verify still passes (GitHub-side merge is clean); the stale remote branch is cosmetic but should be cleaned up.
-
-**Fix:** `gh api -X DELETE repos/SolutionSmith-debug/its/git/refs/heads/f02-f22` (the git-guardrail hook blocks `git push origin --delete` syntax, so use the GitHub REST API directly).
-
-**Broader pattern:** any worktree-based session faces this; the fix is always the `gh api -X DELETE` route. Consider noting it in the post-merge checklist in `docs/operations/pr_merge_discipline.md`.
-
-**Effort:** 2-minute manual cleanup per occurrence.
-
-**Phase target:** immediate cleanup (cosmetic).
-
-**Revisit when:** `git branch -r | grep origin/f02-f22` still shows it.
-
-Surfaced: 2026-05-29 F02/F22 session close. Session log: `docs/session_logs/2026-05-29_f02-f22-capability-approval.md`.
-
-## Integration tests silently broken by autouse keychain stub [RESOLVED 2026-05-29]
-
-Both Smartsheet integration files (`tests/test_smartsheet_client_integration.py`, `tests/test_approval_verification_integration.py`) — and in fact ALL ~10 `@pytest.mark.integration` files — lacked any opt-out from the autouse `_mock_keychain` fixture that landed in **PR #74** (the CI-fix follow-up to the macOS-`security`-CLI breakage PR #68 introduced; the fixture was authored in #74, NOT #68). The stub fed `get_client()` a fake `"test-ITS_SMARTSHEET_TOKEN"`, so the first live call (`create_sheet_in_folder` → `get_client()`) hit `SmartsheetAuthError: HTTP 401 (code 1002)` even though the real token was valid and read-write. The module-scoped `_token_available` fixture saw the real token (module setup runs before the function-scoped stub), but `get_client()` inside the test body saw the stub — the confusing "fixture has the real token but the call 401s" signature. The conftest docstring always *claimed* integration tests opt out ("they re-mock or override via test-level fixtures") but the opt-out was never implemented. Silently broken since PR #74 because nobody re-ran the integration suite after the stub landed.
-
-**Resolved (this PR):** added a **marker-based auto-opt-out** to `_mock_keychain` — `if request.node.get_closest_marker("integration") is not None: return`. Evaluated against the filename-list alternative the brief proposed and chose the marker approach because (a) it auto-covers all ~10 current integration files plus any future one with zero maintenance, and (b) it resolves at PER-TEST granularity, which is REQUIRED for mixed files like `tests/test_intake_poll.py` (per-test `@pytest.mark.integration` decorators at lines 730/1132 alongside unit tests that must keep the stub) — a filename list would wrongly disable the stub for that file's unit tests. The two non-integration filename entries (`test_keychain.py`, `test_helpers.py`) stay in `_KEYCHAIN_OPT_OUT_FILES` since they need the real keychain but are not integration-marked.
-
-**Lesson:** any new integration test now opts out automatically via the marker — no list to remember. The durable fix is in place; this entry is the incident record.
-
-Surfaced + resolved: 2026-05-29 integration-keychain-stub fix session.
-
-## No startup token-scope / write-capability validation [CLOSED 2026-06-30]
-
-**Resolved 2026-06-30 (tech-debt currency sweep):** Exactly the proposed probe was built. `shared/smartsheet_client.py:1293` `verify_write_capability()` does a create-then-delete probe write into the System/Config folder; a 401/403 raises `SmartsheetWriteCapabilityError` (`:101`); wired to watchdog **Check L**. A write-disabled or misscoped token surfaces loudly instead of silently failing at first write. Verified @HEAD via grep (lesson #1).
-
-A read-only or otherwise-invalid `ITS_SMARTSHEET_TOKEN` fails **silently at the first daemon write** rather than loudly at boot. The keychain-stub session above burned significant operator time precisely because the failure mode was a confusing per-call `401 (code 1002)` deep in a test, not a loud boot-time "this token cannot write." A daemon in production with a mis-scoped token after a rotation would behave the same way: reads succeed, the first write 401s mid-cycle.
-
-**Proposed fix:** a cheap write-capability probe at daemon init (and/or a watchdog check) that CRITICAL-alerts if `ITS_SMARTSHEET_TOKEN` cannot write — e.g. create-then-delete a throwaway sheet in a sandbox folder, or call a low-cost write that the API rejects distinguishably for a read-only token. Fail loud at boot, not silent at first write.
-
-**Effort:** ~half-day (probe + watchdog wiring + a typed "token cannot write" error class + test).
-
-**Phase target:** 1.4 pre-Customer-1 hardening (reliability gap, not a launch blocker for Customer 0).
-
-**Revisit when:** the next token rotation, or any session that touches `shared/keychain.py` / `shared/smartsheet_client.py` auth.
-
-Surfaced: 2026-05-29 integration-keychain-stub fix session.
-
 ## Single-token blast radius for Smartsheet [OPEN 2026-05-29]
 
 One PAT (`ITS_SMARTSHEET_TOKEN`) does ALL Smartsheet read + write across the whole system. A scope mistake on rotation (e.g. accidentally minting a read-only or viewer-scoped token) breaks every daemon at once, and — per the entry above — does so silently at first write. There is no blast-radius reduction (no separate read vs write tokens, no per-workstream tokens).
@@ -1920,33 +1073,6 @@ One PAT (`ITS_SMARTSHEET_TOKEN`) does ALL Smartsheet read + write across the who
 **Phase target:** 2+ (revisit alongside multi-customer secrets).
 
 **Revisit when:** a rotation incident actually causes a system-wide outage, OR multi-customer secret management lands.
-
-Surfaced: 2026-05-29 integration-keychain-stub fix session.
-
-## Smartsheet integration tests flake on create→read/write eventual consistency [RESOLVED 2026-06-30]
-
-**Resolved 2026-06-30 (package B) via approach 1 (test-level reruns; no SUT churn).** Added `pytest-rerunfailures` (dev dep) + a registered `flaky` marker, and applied module-level `pytestmark = [integration, flaky(reruns=3, reruns_delay=2)]` to `tests/test_smartsheet_client_integration.py` — each rerun re-runs the whole test against a FRESH sheet, so a transient create→read 404/1006 clears; `reruns_delay` lets the lagging replica catch up. A real assertion failure still surfaces after the reruns exhaust. **Deliberately NOT approach 2** (no retry pushed into `shared/smartsheet_client.py` — a 404 must still surface in production, e.g. the heartbeat-cache 404-invalidation path; `test_update_row_cells_by_id_raises_not_found_on_missing_row` is unaffected because reruns fire only on FAILURE, and that test passes by raising the expected 404). Prove-the-control-bites: a synthetic fail-then-pass test confirmed the rerun fires (`1 passed, 1 rerun`). The separate `delete_sheet_settling` B2 mitigation is unchanged. **Operator note:** the reruns take effect only after the worktree/CI venv reinstalls dev deps (`pip install -e '.[dev]'`) — the dep was newly declared.
-
-
-Once the keychain-stub fix (above) let the Smartsheet integration tests reach the live API for the first time since PR #74, they were found to flake intermittently (~40–60% of full-suite runs had ≥1 failure) on Smartsheet's **create→read/write eventual consistency**. Every observed failure is a transient `errorCode 1006` / HTTP 404 "Not Found" (or a `find_*_by_name_in_folder` returning `None`) — there were **zero** stale-*value* assertion failures. Diagnosis: `create_sheet_in_folder` returns a `sheet_id` before Smartsheet finishes propagating the new sheet across its read replicas, and the 404s **flap** — a successful read does NOT guarantee the next read/write (which may route to a lagging replica) succeeds, for a window of several seconds after create. Confirmed live: a run where `list_columns` succeeded, then `add_rows` → `_fetch_column_map` → `get_sheet` 404'd a moment later (different replica).
-
-This is **pre-existing** (tests authored PRs #47/#48/#49/#51/F22) and was merely **unmasked** by the keychain fix — it is NOT the keychain bug and NOT caused by that fix; the fake-token 401 previously killed every one of these tests at `create_sheet` before they could reach the racy ops.
-
-**Scoped out of the keychain-fix PR by operator decision (2026-05-29):** that PR ships the keychain opt-out + token-leak redaction + `_client` reset + the *deterministic* `NO_HISTORY` cell-history poll (`_wait_for_history`), and leaves this separate eventual-consistency hardening to a dedicated follow-up. A partial create→read settle (`_settle_sheet` / `_wait_until_listed`) was prototyped and **deliberately reverted** because it reduced but could not eliminate the flapping (a single settle read can't guarantee the next op's replica is caught up).
-
-**Proposed fix (follow-up PR), two viable approaches:**
-1. **Test-level reruns** — add the `pytest-rerunfailures` dev-dep and mark the integration tests (or run with `--reruns 3 --reruns-delay 2`). Cleanest, no test-body churn; the whole test re-runs against a fresh sheet so a transient 404 clears. Downsides: new dev dependency; masks rather than handles.
-2. **Retry-on-not-found wrapper** — a `_retry_nf(callable)` helper wrapping every post-create operation (`add_rows`, `update_rows`, `update_column_options`, `list_columns_with_options`, `find_*`, `get_cell_history`) to retry on `SmartsheetNotFoundError` / `None`. No new dep; deterministic (all flakiness is not-found-flapping). Downsides: larger diff touching ~16 call sites; MUST NOT wrap `test_update_row_cells_by_id_raises_not_found_on_missing_row`'s bogus-row update (which legitimately expects a 404). Retrying writes is safe here because a 404 means the write did not apply.
-
-Do NOT push the retry into the SUT (`shared/smartsheet_client.py`): a 404 must surface in production (e.g. the heartbeat-cache 404-invalidation path in `intake_poll`, regression-guarded by `test_update_row_cells_by_id_raises_not_found_on_missing_row`).
-
-**Related — create→DELETE variant (B2, 2026-06-02):** the same eventual-consistency flake surfaced live on the B2 token write-capability probe's IMMEDIATE cleanup — a delete issued right after create returned `errorCode 5036` / 404 ("not yet propagated"). Handled by a **scoped** `smartsheet_client.delete_sheet_settling` (retry-on-not-found, ~3 attempts, short backoff) used ONLY by the probe-cleanup path (`verify_write_capability` / watchdog Check L); the general `delete_sheet` still fails fast, honoring the rule above. This is a targeted mitigation for that ONE op — NOT the suite-wide create→read hardening this entry still tracks.
-
-**Effort:** ~1 hour for approach 1; ~half-day for approach 2 (+ multi-run verification).
-
-**Phase target:** next integration-test-maintenance pass; not a launch blocker (these tests are operator-run pre-deployment, NOT in CI).
-
-**Revisit when:** the operator next runs `pytest -m integration` and is annoyed by a transient 404, or before relying on the integration suite as a release gate.
 
 Surfaced: 2026-05-29 integration-keychain-stub fix session.
 
@@ -1982,83 +1108,6 @@ Two things a future normalization pass should resolve:
 
 Surfaced: 2026-06-01 Tranche 0 doctrine-citation reconciliation (PR #132). Related: PR #132 body "Flags & operator decisions" §2; CLAUDE.md §23.3→§19 correction.
 
-## Picklist drift Phase 3a — two DORMANT registry-over-declares (Workstream / Disposition) [RESOLVED — columns added 2026-06-03]
-
-**Resolved (D1 = ADD, 2026-06-03):** Seth chose option 2 (add the empty columns).
-Both live (sandbox) columns were created as PICKLIST seeded with their `REGISTRY`
-allowed sets, so the weekly audit is now clean (`audit_picklist_drift --no-emit`
-→ "No drift findings"):
-
-- **ITS_Errors · `Workstream`** — new column_id `368377473568644` (6 `_WORKSTREAM_VALUES_GLOBAL` options).
-- **ITS_Quarantine · `Disposition`** — new column_id `8535753050328964` (RELEASE / DELETE / ESCALATE).
-
-Mechanism: new additive `shared/smartsheet_client.create_picklist_column`
-(§42 docstring; unit-tested + §30 live round-trip in
-`tests/test_smartsheet_client_integration.py`) + idempotent migration
-`scripts/migrations/add_dormant_picklist_columns.py` (preview-default, `--commit`
-to write, options sourced from `REGISTRY` so they can't drift). Re-run is a clean
-skip. The columns sit empty — the **writers** (error_log `Workstream`, quarantine
-`Disposition`) remain a separate, out-of-scope feature; an empty column is fine.
-Server-side restrict-to-dropdown (validation) was intentionally left off (the
-separate hardening sweep, `docs/audits/picklist_hardening_audit.md`).
-
-Original (for reference) ▸ The first `scripts/audit_picklist_drift.py` run surfaced three findings. Phase 1 (`docs/audits/picklist_drift_2026-06-02_classification.md`) classified two as **dormant** — the `picklist_validation.REGISTRY` declares a column the live sheet lacks AND no code writes it:
-
-- **ITS_Errors · `Workstream`** — `REGISTRY` registers `SHEET_ERRORS → "Workstream" → _WORKSTREAM_VALUES_GLOBAL` (`shared/picklist_validation.py:147`), but the live sheet has no `Workstream` column and `shared/error_log.py:130-138` builds the row dict with no `Workstream` key. (Wiring a `Workstream` *writer* into error_log is a separate feature, explicitly out of scope.)
-- **ITS_Quarantine · `Disposition`** — `REGISTRY` registers `SHEET_QUARANTINE → "Disposition" → _QUARANTINE_DISPOSITION_VALUES` (RELEASE/DELETE/ESCALATE, `picklist_validation.py:158/96-98`), but the live sheet has no `Disposition` column and `shared/quarantine.py::log_quarantined_message` writes `QuarantineReason`→Notes, never a `Disposition`. The value set is registered for a future write path that does not exist yet (tied to attachment-screening Layers 1–3, Phase 1.4).
-
-**Failure mode:** the weekly `safety_picklist_audit` WARNs on both every Sunday. Accurate, but a chronically-warning audit risks alarm fatigue for a ship-and-leave system.
-
-**DECISION (Seth — deferred from the 2026-06-02 picklist-reconcile session, three options on the table):**
-1. **Trim the registry entries** so `REGISTRY` declares only what's actually written → audit goes quiet, registry stays honest; re-add when the writer is built. (Canonical-ish edit; route via `doc-reconciliation-auditor`.)
-2. **Add the empty columns** to the live sandbox sheets now → audit clean, sheets ready for the future writer. Downside: premature schema for unbuilt features (YAGNI).
-3. **Defer — keep the WARN** until a writer is wired (lowest touch; audit stays noisy).
-
-CC recommendation was (1) trim-registry (honest + quiet + no premature live schema). **Not executed — Seth decides.**
-
-**Effort:** (1) ~30 min + a `doc-reconciliation-auditor` pass; (2) ~30 min two live column-adds; (3) zero.
-
-**Tag:** `picklist-drift`, `config-migration`.
-
-**Revisit when:** next session (picked up 2026-06-03), OR whenever the Disposition / error-Workstream writer is actually built (then option 2 lands naturally with that feature).
-
-Surfaced: 2026-06-02 picklist-drift reconcile (PR #150, Phase 3a). Related: classification doc `docs/audits/picklist_drift_2026-06-02_classification.md`; `docs/runbooks/picklist_drift_reconcile.md`.
-
-## Picklist drift Phase 3b — no automated registry→live apply (systemic ship-and-leave gap) [RESOLVED — automated 2026-06-03]
-
-**Resolved (D2 = AUTOMATE, 2026-06-03):** added an additive `--apply` mode to
-`scripts/audit_picklist_drift.py`, built on `ensure_picklist_options`. For each
-registered `(sheet_id, column → values)` it pushes the MISSING options into the
-live picklist. **Dry-run is the default** (`--apply` previews; `--apply --commit`
-writes). **Additive + option-only**: never removes an option, and a
-missing/wrong-typed column is logged + skipped (column creation is the Phase 3a
-schema decision, not this command). `--commit` without `--apply` is a CLI error.
-This removes the developer-memory dependency and gives the Successor-Operator a
-clean Tier-2 command. Coverage: unit tests in `tests/test_audit_picklist_drift.py`
-(dry-run/commit/no-op/skip/CLI-guard) + a §30 live round-trip in
-`tests/test_audit_picklist_drift_integration.py`; the `docs/runbooks/picklist_drift_reconcile.md`
-`--apply` flow + §43 note are now real (no longer "contingent"). Live-smoked
-this session: `--apply` preview against the real registry reports 0 adds / 0
-skips (all sheets reconciled). **Prune/removal mode remains out of scope** (v1
-additive-only, parity with `ensure_picklist_options`); if ever added it goes
-behind an explicit flag with `picklist_sync.py`'s reference-check guard.
-
-Original (for reference) ▸ There is **no automated path that pushes `picklist_validation.REGISTRY` additions into the live Smartsheet picklists.** `picklist_sync.py` is sheet→sheet (reads a source sheet column's values, not the code registry); the audit is read-only (no `--apply`). So a `REGISTRY`/enum addition reaches live sheets only via a **human remembering a manual step** (`review_queue.py:84-96` documents exactly this for the three `Reason` values — and that step went undone until the 2026-06-02 reconcile). The weekly audit only **WARNs after the fact**. This is the real ship-and-leave finding: the loop depends on developer memory.
-
-Phase 2 of the reconcile landed the additive primitive `shared/smartsheet_client.ensure_picklist_options` (additive, idempotent, dry-run, no-removal, never-creates-columns; live-validated), but it is invoked today only by a hand-written Python snippet (developer action), not an operator-friendly command.
-
-**DECISION (Seth — deferred from 2026-06-02, two options):**
-- **(a) Automate:** add an additive, dry-run-previewed, reference-checked `--apply` mode to `scripts/audit_picklist_drift.py` (or a sibling) built on `ensure_picklist_options` — additive-only by default, removals behind an explicit flag mirroring `picklist_sync.py`'s guard. Removes the human-memory dependency; gives the Successor-Operator a clean Tier-2 command (`docs/runbooks/picklist_drift_reconcile.md` already describes the operator flow contingent on this landing). **CC recommendation for ship-and-leave.**
-- **(b) Document only (minimum bar):** keep it manual — add "any `picklist_validation.REGISTRY` change → apply to live sheets" to `docs/operations/cutover_checklist.md` + a release checklist, plus the §43 note already in `picklist_drift_reconcile.md`. No new code; human-memory dependency remains.
-
-**Do not build (a) without Seth's sign-off** (per the brief). If (a): ~half-day (the `--apply` mode + dry-run preview + reference-check guard + §30 test + the §43 runbook's `--apply` path becomes real). If (b): ~1 hour (checklist entries).
-
-**Tag:** `picklist-drift`, `ship-and-leave`.
-
-**Revisit when:** next session (picked up 2026-06-03) — this is the higher-leverage of the two Phase 3 decisions.
-
-Surfaced: 2026-06-02 picklist-drift reconcile (PR #150, Phase 3b). Related: `ensure_picklist_options` (`shared/smartsheet_client.py`); `docs/runbooks/picklist_drift_reconcile.md`; classification doc Phase 3b.
-
 ## ITS_Active_Jobs Address cells blank — office PM fill required [OPEN 2026-06-03]
 
 The 6 rows seeded into ITS_Active_Jobs (PR #155) have blank Address values. Real addresses were not invented (§4 — adversarial input / data fidelity; no structured live source exists). The Safety Portal's Work Location auto-fill path will return empty strings until these cells are populated.
@@ -2072,44 +1121,6 @@ The 6 rows seeded into ITS_Active_Jobs (PR #155) have blank Address values. Real
 **Revisit when:** Safety Portal goes live (before activating Work Location auto-fill).
 
 Surfaced: 2026-06-03 Safety Portal config sheets session (PR #155). Related: `docs/runbooks/safety_portal_config_sheets.md`.
-
-## `scripts/lint_doc_conventions.py` missing `safety_portal` workstream tag [CLOSED 2026-06-18]
-
-**Resolved 2026-06-18 (tech-debt easy-wins pass):** This PR: added safety_portal to CANONICAL_WORKSTREAMS (lint_doc_conventions.py) + the test's expected set (doctrine_manifest + doc_conventions already listed it).
-
-`docs/doctrine_manifest.yaml` lists `safety_portal` as a valid `doc_conventions.workstream_tags` entry, but `scripts/lint_doc_conventions.py`'s canonical workstream set does not include it. Any doc tagged `workstream: safety_portal` (including `docs/runbooks/safety_portal_config_sheets.md`) will produce a lint warning in CI.
-
-**Fix:** add `"safety_portal"` to the canonical workstream set in `scripts/lint_doc_conventions.py` (one-line change). Lint is warn-only in CI today so this does not block merges.
-
-**Tag:** `lint`, `safety-portal`, `doc-conventions`.
-
-**Effort:** ~5 minutes.
-
-**Revisit when:** next session touching `lint_doc_conventions.py`, or when the CI warn noise becomes distracting.
-
-Surfaced: 2026-06-03 Safety Portal config sheets session (PR #155 + PR #156 audit).
-
-## `ops-stds-enforcer` agent pinned at "Op Stds v13" — 3 majors behind v16 [CLOSED 2026-06-18]
-
-**Resolved 2026-06-18 (tech-debt easy-wins pass):** `.claude/agents/ops-stds-enforcer.md` re-synced to v18 (2026-06-09) and incorporates §§43–49; the v13 pin no longer exists. (The file is a symlink from `~/its-blueprint`, so the agent content is a blueprint artifact — but the documented gap is gone.)
-
-The `ops-stds-enforcer` subagent's system prompt (`.claude/agents/ops-stds-enforcer.md`, symlinked from `~/its-blueprint/.claude/agents/`) cites "Op Stds v13". The canonical version is v16. The agent is blind to:
-
-- §43 (successor-remediation documentation as definition-of-done)
-- §44 (Tier-2 Claude-assisted repair model; Developer-Operator / Successor-Operator split)
-- v14 reframe: §1 kill switch as operator-convenience pause, NOT a security control (F07)
-- v15 additions: §43/§44 initial draft
-- v16 reframe: §44 Tier-2 boundary as training-bounded co-resolution (no structural enforcement layer)
-
-**Fix:** update the version string and incorporate the §43/§44 enforcement brief into the agent's review criteria. This is a blueprint edit (`.claude/agents/ops-stds-enforcer.md`); requires doctrine-edit approval per the session-close-maintainer boundary rule.
-
-**Risk:** any PR review by `ops-stds-enforcer` that ships without a §43 runbook entry passes the agent but fails the actual DoD. The gap is silent.
-
-**Tag:** `agent`, `doctrine-drift`, `ops-stds`.
-
-**Revisit when:** next session that runs `ops-stds-enforcer` on a PR touching a new capability, or when a §43 entry is required as DoD and the agent misses it.
-
-Surfaced: 2026-06-03 unifying alignment audit (PR #156, DR-E1 / OPEN-1). Related: `docs/audits/2026-06-03_unifying-alignment-audit.md`.
 
 ## Safety Portal — deploy + provisioning deferred [OPEN 2026-06-04]
 
@@ -2181,38 +1192,6 @@ Surfaced: 2026-06-04 Safety Portal Phase 2 session (PR #158).
 
 Surfaced: 2026-06-04 Safety Portal Phase 2 session (PR #158).
 
-## Safety Portal — form-catalog corpus mismatch with blueprint (pre-Phase-4) [CLOSED 2026-06-05]
-
-The 10 PDF reference forms committed to `safety_portal/worker/public/forms/` did not match the 4 forms named in blueprint `workstreams/safety-portal/mission.md` and the ITS_Forms_Catalog sheet seeded in PR #155. Specifically:
-- ITS_Forms_Catalog had: `jha-v1`, `daily-site-safety-v1`, `equipment-preinspection-v1`, `toolbox-talk-v1`.
-- The PDF corpus added: HSS&E Work Observation, Visitor Sign-In, and several others not named in the blueprint.
-- "Daily Site Safety Worksheet" (named in the brief) was absent from the committed PDFs.
-
-**Resolved by PR #164 (2026-06-05):** The v1 catalog was confirmed via the PDF corpus. ITS_Forms_Catalog migrated to the parent/variant model (5 parents + 7 variants = 12 rows). Daily Site Safety removed (not a form-fill candidate); Visitor + HSS&E added. All 11 form definitions transcribed faithfully from the 10 reference PDFs and validated against the meta-schema (49 tests). The mismatch is fully resolved; Phase 4 form rendering may proceed.
-
-**Tag:** `safety-portal`, `data-gap`, `form-catalog`.
-
-Surfaced: 2026-06-04 Safety Portal Phase 2 session (PR #158). Closed: PR #164, 2026-06-05.
-
-## Safety Portal — frontend build/lint CI step missing [CLOSED 2026-06-18]
-
-**Resolved 2026-06-18 (tech-debt easy-wins pass):** CI has a blocking `portal` job: npm ci + `npm run typecheck` (SPA+Worker tsc) + vitest-pool-workers + SPA vitest. (An explicit vite-build step is still absent — minor.)
-
-PR #158 added the `safety_portal/` TypeScript/Node tree. The existing GitHub Actions CI (`ruff` + `pytest`) covers only Python. The TS tree has no CI job for `tsc --noEmit` (typecheck), `npm run build` (Vite bundle), or a lint step. Errors in the TS tree are invisible to CI until a developer manually runs `npm run build` locally.
-
-**Proposed fix:** add a `.github/workflows/frontend-ci.yml` job:
-1. `npm ci` in `safety_portal/worker/`
-2. `npm run build`
-3. `tsc --noEmit`
-
-**Tag:** `safety-portal`, `ci`, `frontend`.
-
-**Effort:** ~30 minutes.
-
-**Revisit when:** next session touching `safety_portal/` — or proactively before Phase 3 portal hardening.
-
-Surfaced: 2026-06-04 Safety Portal Phase 2 session (PR #158).
-
 ## ITS_Active_Jobs AUTO_NUMBER `Job ID` column — manual operator UI step pending [OPEN 2026-06-05]
 
 The Smartsheet REST API cannot create `AUTO_NUMBER` columns (verified: bare `type:AUTO_NUMBER` → `errorCode 1008`; UI-only type). The Phase 3 migration (PR #160) did the API-doable parts (4 contact columns + rename `Job ID`→`Job Slug`, freeing the title) and detects-or-instructs if the `Job ID` AUTO_NUMBER column is missing. Operator must add the `Job ID` AUTO_NUMBER column in the Smartsheet UI to complete the schema: prefix `JOB-`, 4-digit fill, start 1. `shared/active_jobs.py` reads it the moment it exists.
@@ -2246,20 +1225,6 @@ Smartsheet forms are UI-configured (not API-creatable). A "New Job" form on ITS_
 **Revisit when:** deploy session, after the AUTO_NUMBER column entry above is complete.
 
 Surfaced: 2026-06-05 Safety Portal Phase 3 session (PR #160). Related: `docs/tech_debt.md` AUTO_NUMBER entry above.
-
-## Safety Portal D1 dropdown sync (Phase-3 A.1.4) deferred to deploy session [CLOSED 2026-06-18]
-
-**Resolved 2026-06-18 (tech-debt easy-wins pass):** Live: portal_poll does the ITS_Active_Jobs -> D1 full-replace sync via POST /api/internal/sync (live-validated 2026-06-08).
-
-The Phase 3 architecture (PR #160) populates the Worker's D1 `active_jobs` table from ITS_Active_Jobs so the portal form's Job dropdown stays current. This sync step requires the portal D1 database (Phase 2 deploy deferred) plus a Python→D1 write mechanism (options: a Worker `/api/sync` HMAC-authed endpoint vs Cloudflare D1 HTTP API directly). The decision and implementation are deferred to the deploy session.
-
-**Decision required at deploy:** Worker `/api/sync` (POST, HMAC-authed, Worker writes to D1 from request body) vs direct Cloudflare D1 HTTP API from Python (`shared/active_jobs.py` writes to D1 via REST). The Worker approach keeps D1 write capability server-side; the D1 HTTP API approach is simpler but requires a D1 API token in the Python environment.
-
-**Tag:** `safety-portal`, `deploy`, `d1-sync`.
-
-**Revisit when:** Safety Portal deploy session. Blocked on D1 creation (see deploy entry above).
-
-Surfaced: 2026-06-05 Safety Portal Phase 3 session (PR #160).
 
 ## Phase 5 manual week-sheet additions [OPEN 2026-06-05]
 
@@ -2302,22 +1267,6 @@ Surfaced: 2026-06-05 Safety Portal Phase 3 session (PR #160).
 **Revisit when:** building Phase 5 `weekly_send` recipient resolution.
 
 Surfaced: 2026-06-05 Safety Portal Phase 3 contacts amendment (ops-stds-enforcer W1).
-
-## Safety Portal Phase 4 PR 2 — TS display runtime [CLOSED 2026-06-05]
-
-**Resolved by PR #166 (`23af65f`, four-part-verify clean):** definition-driven TS display runtime landed. 3 archetype renderers (rows+signatures, grouped-checklist, sectioned-assessment) in `safety_portal/src/forms/`; form-type + variant dropdowns; multi-row SVG signature capture via `signature_pad`; amend/prefill from a prior submission; structured-data emit to the Worker; 3 new Worker endpoints (`/api/jobs`, `/api/forms`, `/api/submissions`); D1 `jobs` + `submissions` tables (migration 0004). Session log: `docs/session_logs/2026-06-05_safety-portal-phase4-runtime-renderer-phase5-foundation-transport.md`.
-
-**Tag:** `safety-portal`, `typescript`, `phase-4`.
-
-Surfaced: 2026-06-05 Safety Portal Phase 4 PR 1 session (PR #164). Closed: PR #166, 2026-06-05.
-
-## Safety Portal Phase 4 PR 3 — Python reportlab PDF renderer [CLOSED 2026-06-05]
-
-**Resolved by PR #167 (`2946184`, four-part-verify clean):** Python Option-B reportlab renderer landed. `safety_reports/form_pdf.py`: reads `safety_portal/forms/*.json` + a structured submission → deterministic print-parity PDF (Evergreen header, table/checklist/section layout, legal invariants in code, embedded SVG signatures); equipment checklist items are tri-state OK / NOT OK / N/A (N/A distinct from blank); `merge_pdfs()` primitive added; `+reportlab` + `+pypdf` to `pyproject.toml`. Session log same as above.
-
-**Tag:** `safety-portal`, `python`, `phase-4`, `reportlab`.
-
-Surfaced: 2026-06-05 Safety Portal Phase 4 PR 1 session (PR #164). Closed: PR #167, 2026-06-05.
 
 ## Safety Portal — toolbox talk header context missing from form definitions [OPEN 2026-06-05, low]
 
@@ -2363,47 +1312,7 @@ equivalent of `test_capability_gating.py`. Surfaced by `ops-stds-enforcer` (W2).
 
 Surfaced: 2026-06-05 Safety Portal Phase 5 PR 2 (transport queue).
 
-## Safety Portal Phase 5 — `portal_poll.py` Mac-side puller daemon [CLOSED 2026-06-18]
-
-**Resolved 2026-06-18 (tech-debt easy-wins pass):** Built + live-validated (2026-06-08 mirror); launchd plist org.solutionsmith.its.portal-poll present.
-
-The Phase 5 pull model (decision: `decision_phase5-portal-transport.md`) requires a new Mac-side polling daemon `portal_poll.py` (modeled on `safety_reports/intake_poll.py`). It polls the Worker's `/api/internal/pending` endpoint (bearer auth: `ITS_PORTAL_INTERNAL_TOKEN` from Keychain), iterates unprocessed submissions, verifies the `X-ITS-Portal-HMAC` using `shared/portal_hmac.py`, hands each to intake, then POSTs `/api/internal/mark-filed` with the receipt. Standard daemon contract: heartbeat to `ITS_Daemon_Health`, kill-switch gate, fcntl lock, `@its_error_log`. Locally testable on `wrangler dev --local`. launchd plist needed.
-
-**Tag:** `safety-portal`, `phase-5`, `daemon`.
-
-**Revisit when:** Phase 5 daemon-build session. Blocked on: deploy (Worker must be up; `wrangler dev --local` for local testing).
-
-Surfaced: 2026-06-05 Safety Portal Phase 5 session. Session log: `docs/session_logs/2026-06-05_safety-portal-phase4-runtime-renderer-phase5-foundation-transport.md`.
-
-## Safety Portal Phase 5 — intake portal-marker branch (HMAC verify → file → receipt) [CLOSED 2026-06-18]
-
-**Resolved 2026-06-18 (tech-debt easy-wins pass):** Built + live: intake.process_portal_submission — HMAC verify -> UUID dedupe -> Box file -> mark-filed receipt.
-
-`safety_reports/intake.py` needs portal-marker branches (PLANNED, not built) for the pull-model flow: HMAC verify → submission UUID dedupe → Sat→Fri Job-ID week key via `safety_week` → `active_jobs` lookup → `form_pdf.render` (Option B) → per-job/week Box tree via `week_folder` (box_client needs a `get_or_create_folder` primitive — `canonical_job_path` is currently a stub) → file PDF → write week-sheet row → receipt POST back to Worker. `box_client.canonical_job_path()` is a stub (format unconfirmed with owner; see existing tech-debt entry). UUID idempotency guard needed (duplicate POST from the Worker must not double-file).
-
-**Tag:** `safety-portal`, `phase-5`, `intake`, `box`.
-
-**Revisit when:** Phase 5 intake-branch build session. Blocked on: `portal_poll.py` + `box_client` get-or-create primitive.
-
-Surfaced: 2026-06-05 Safety Portal Phase 5 session.
-
-## Safety Portal Phase 5 — weekly generate/send rewire for WSR (narrative→PDF-merge + dual-write + gated send) [CLOSED 2026-06-18]
-
-**Resolved 2026-06-18 (tech-debt easy-wins pass):** Built + live: weekly_generate is the deterministic WSR dual-write + merge_pdfs compile; weekly_send reads WSR; watchdog Check I catch-up landed.
-
-Three pieces:
-
-1. **`weekly_generate.py` (compile step):** on Friday 14:00 (or `Compile Now` checkbox trigger), merge all Sat→Fri submission PDFs via `form_pdf.merge_pdfs` + generate the narrative summary; dual-write to the per-job week sheet (read-only snapshot) and to `WSR_human_review` row (`SHEET_WSR_HUMAN_REVIEW = 5035670127988612`) with editable email body + resolved recipients (TO from `safety_reports_contact_email`, CC from `cc_emails`). Skip compile if already compiled and no new docs since last compile. Late arrivals → next uncompiled week + Review-Queue flag.
-2. **`weekly_send.py` (Phase 5 send step):** reads approved `WSR_human_review` rows; attaches merged PDF; resolves TO + CC from the row (not hardcoded); logs full resolved TO+CC list at send; refuses on blank recipients or GENERATION_FAILED tag; Pacific-Monday 7 AM cadence from `ITS_Config`.
-3. **Watchdog catch-up (Check I):** retries missed Friday compile on Saturday if marker stale.
-
-**Tag:** `safety-portal`, `phase-5`, `weekly-generate`, `weekly-send`.
-
-**Revisit when:** Phase 5 generate/send rewire session. Blocked on: intake portal-branch + `WSR_human_review` row format (built in PR #168).
-
-Surfaced: 2026-06-05 Safety Portal Phase 5 session.
-
-## Safety Portal Phase 5 — deploy prerequisites (Cloudflare secrets + D1 + wrangler.jsonc IDs) [OPEN 2026-06-05]
+## [CUTOVER-BLOCKING] Safety Portal Phase 5 — deploy prerequisites (Cloudflare secrets + D1 + wrangler.jsonc IDs) [OPEN 2026-06-05]
 
 Additional prerequisites surfaced by Phase 5 PR 2 (transport queue, PR #169) beyond the base deploy entry above:
 
@@ -2507,31 +1416,7 @@ The `hsse` form uses `scale` and `comment` item-level attributes. These survive 
 
 Surfaced: 2026-06-09 Phase-2 Form Manager build (PRs #203–#218).
 
-## [CLOSED 2026-06-18] `~/its` stranded on `publish/req-5-incident-report` branch
-
-**Resolved 2026-06-18 (tech-debt easy-wins pass):** ~/its is on main; the idle self-heal (_unstrand_if_needed at the top of publish_once) fixed the root cause.
-
-The publish daemon left `~/its` on branch `publish/req-5-incident-report` after a failed pre-`_reset_to_main` cycle. The launchd job is not loaded (RunAtLoad false, operator-gated), so automatic recovery has not run. **Operator action:** either load the publish-daemon launchd job (which will `_reset_to_main` on startup) OR run manually: `git -C ~/its checkout main && git pull origin main`.
-
-**Tag:** `safety-portal`, `publish-daemon`, `operator-action`, `high`.
-
-**Revisit when:** next session start, or when the publish daemon launchd job is loaded.
-
-Surfaced: 2026-06-09 Phase-2 Form Manager build session.
-
-_Update 2026-06-09 (Part-D session): the tree was recovered manually (`git checkout main`) and the **root cause** — the self-defeating publish CI gate (hardcoded form-count assertions that red-CI'd the new-form publish) — is fixed in the Part-D PR. Residual: the daemon's idle self-heal gap below._
-
-## [CLOSED 2026-06-09] Publish daemon: stranded tree only self-heals during an actuation, not when idle
-
-`_reset_to_main` (the recover-from-an-interrupted-cycle step) ran **inside `_actuate`**, i.e. only when a queued request was claimed. So a daemon that fails a publish and then has nothing to actuate left `~/its` stranded on the `publish/req-*` branch **indefinitely** — the "self-heal" fired only on the *next* publish, which may never come, and the operator's tree stayed stuck until a manual `git checkout main`. This is exactly what stranded the tree on `publish/req-5-incident-report` (the resolved entry above; recovered manually 2026-06-09).
-
-**Resolved 2026-06-09:** added `_unstrand_if_needed()`, called at the **top of `publish_once`** (after the kill-switch / `polling_enabled` gate, before creds) — a failed-then-idle daemon un-strands itself on the next tick. Chose the **lighter guard** over a blind per-cycle `_reset_to_main`: a single `rev-parse` (no network pull) when already on `main`; only the genuinely-stranded case pays the full reset. A recovery failure is loud (`publish_daemon.unstrand_failed` ERROR) + halts the cycle — it never actuates from a stranded tree. Tests: `test_unstrand_recovers_a_stray_branch`, `test_unstrand_is_a_noop_on_main`, `test_publish_once_unstrands_before_actuating`, `test_publish_once_halts_loud_when_unstrand_fails`.
-
-**Tag:** `safety-portal`, `publish-daemon`, `resilience`.
-
-Surfaced: 2026-06-09 Part-D publish-CI-gate session (operator flag). Resolved same session.
-
-## [OPEN 2026-06-09] Safety Portal — no rate limiting on `/api/login` or `/api/*` (Part-A A2)
+## [CUTOVER-BLOCKING] [OPEN 2026-06-09] Safety Portal — no rate limiting on `/api/login` or `/api/*` (Part-A A2)
 
 Nothing throttles the portal Worker: `/api/login` runs `bcrypt.compare` at cost 10 per attempt (brute-force + a CPU-cost amplification vector), and `/api/submit` + all routes are unbounded.
 
@@ -2542,20 +1427,6 @@ Nothing throttles the portal Worker: `/api/login` runs `bcrypt.compare` at cost 
 **Revisit when:** Evergreen production cutover, or when the `ratelimit` binding is confirmed GA.
 
 Surfaced: 2026-06-09 Part-A production-hardening session (A2).
-
-## [CLOSED 2026-07-03] compile_now_poll — ITS_Daemon_Health self-provision row deferred (Part-B B3)
-
-**Resolved 2026-07-03 (CS Slice 3, R4-F1):** exactly the fix this entry prescribed — folded in **together with** the `shared/heartbeat.py` extraction (which landed as `HeartbeatReporter`, PR #344), so no third verbatim copy was ever made. `compile_now_poll` now constructs its own module-level reporter (daemon `safety_reports.compile_now_poll`, 90s interval, shared `heartbeat_row_ids.json` ARCH-2 state) and writes the per-cycle row at the end of `_poll_inside_lock` (OK / DEGRADED-on-per-job-errors / CIRCUIT_OPEN), broad-except fenced so a heartbeat failure never blocks a compile. `publish_daemon` gained the same reporter in the same slice. Self-provision (A1) rides the shared reporter's find-or-create. Operator live smoke (first real cycle self-provisions the two new rows) rides the PR per the mandatory-live-smoke rule.
-
-`safety_reports/compile_now_poll.py` (Part B) registers a watchdog Check-C liveness marker (`safety_compile_now_poll`, `scripts/watchdog.py`) — the LIVENESS safety net — but does NOT yet write an **ITS_Daemon_Health** operator-visibility row (the per-daemon update-in-place heartbeat the other pollers self-provision). Deferred to keep the Part-B PR focused: the daemon-health row is observability, not correctness, and the heartbeat-row machinery is ~150 lines replicated **verbatim** per daemon (`portal_poll` / `weekly_send_poll`) pending the already-tracked `shared/heartbeat.py` extraction — adding it here would replicate that machinery a third time.
-
-**Fix:** fold compile_now_poll's daemon-health heartbeat in **together with** the `shared/heartbeat.py` extraction (so all daemons share one implementation), or replicate the helpers if the extraction is still pending at the time. Self-provision a `safety_reports.compile_now_poll` row in ITS_Daemon_Health, update-in-place per cycle (ARCH-1/2/3 conventions).
-
-**Tag:** `safety-portal`, `compile-now-poll`, `observability`.
-
-**Revisit when:** the `shared/heartbeat.py` extraction lands, or before compile_now_poll's production activation.
-
-Surfaced: 2026-06-09 Part-B on-demand-compile session (B3 divergence — watchdog liveness done, daemon-health row deferred).
 
 ## [OPEN 2026-06-09, low] Orphaned Reports sheet — column styling not applied (Part-C C1 cosmetic)
 
@@ -2568,48 +1439,6 @@ Surfaced: 2026-06-09 Part-B on-demand-compile session (B3 divergence — watchdo
 **Revisit when:** the operator finds the default widths inconvenient, or a styling pass is run across the Safety Portal sheets.
 
 Surfaced: 2026-06-09 Part-C session (functional done; cosmetic styling deferred).
-
-## [CLOSED 2026-06-18] Portal admin still offers "Retire" on an already-retired form (frontend)
-
-**Resolved 2026-06-18 (tech-debt easy-wins pass):** Not reachable: registry.formCatalog() filters to status==='active', so a retired form drops from the picker; the backend also rejects a duplicate retire.
-
-`FormsPage.tsx` / `FormEditor.tsx` display the Retire action for all forms with status `live` OR `retired`. The backend (`apply_publish` in `publish_manifest.py`) now rejects a duplicate-retire cleanly at the validate stage ("is already retired"), but the UI should not offer it in the first place — offering a disabled/grayed-out action (or hiding it entirely) would prevent operator confusion.
-
-**Fix:** in `FormsPage.tsx` (and the editor's action menu), gate the Retire button on `status === 'live'` only — hide or disable it for `status === 'retired'`.
-
-**Tag:** `safety-portal`, `form-editor`, `ux`, `low`.
-
-**Revisit when:** a form editor polish pass is done, or an operator trips over the misleading UI.
-
-Surfaced: 2026-06-09 WSR/publish-pipeline session (PR #244 — backend rejects cleanly; frontend UX gap noted).
-
-## [CLOSED 2026-06-18] `README.md:111` documents weekly-send idempotency key as "Sent At non-empty" — code keys on `Send Status == SENT`
-
-**Resolved 2026-06-18 (tech-debt easy-wins pass):** This PR: README.md updated — the guard keys on `Send Status == SENT` (authoritative); Sent At is stamped atomically with the status.
-
-`safety_reports/README.md` line 111 (approximately) says the weekly-send idempotency guard keys on a non-empty "Sent At" column. The actual implementation in `weekly_send.py` keys on `Send Status == SENT`. These diverge when a send fails mid-way — "Sent At" may be empty while "Send Status" is FAILED, or vice versa. The doc-drift was caught during the WSR ABSTRACT_DATETIME sweep (PR #245).
-
-**Fix:** update `safety_reports/README.md` to describe the actual guard (`Send Status == SENT`) and note that "Sent At" is set atomically with the status change (so they should always agree, but the code's authoritative check is the status column).
-
-**Tag:** `safety-portal`, `weekly-send`, `doc-drift`, `low`.
-
-**Revisit when:** next doc-accuracy pass on `safety_reports/README.md`.
-
-Surfaced: 2026-06-09 WSR ABSTRACT_DATETIME session (PR #245 sweep caught the mismatch).
-
-## [CLOSED 2026-06-18] `publish_daemon._regenerate_archive` writes `form_archive_out/` into `~/its`
-
-**Resolved 2026-06-18 (tech-debt easy-wins pass):** This PR: _regenerate_archive renders into a tempfile.mkdtemp --out-dir + shutil.rmtree cleanup; the live ~/its tree no longer accrues form_archive_out/.
-
-`safety_reports/publish_daemon.py` `_regenerate_archive` runs `generate_form_archive.py` as a subprocess, which writes its output to `form_archive_out/` inside the `~/its` working tree. This directory is now `.gitignore`d (PR #241 fix: added `form_archive_out/` to `.gitignore`), so it does not pollute commits. However, writing to a temp dir (e.g., `tempfile.mkdtemp()` and passing the path as an argument to `generate_form_archive.py`) would be cleaner and avoid any race with a concurrent process reading the working tree.
-
-**Fix:** add a `--output-dir <path>` flag to `generate_form_archive.py` and pass `tempfile.mkdtemp()` from `_regenerate_archive`; clean up the temp dir after the Box upload.
-
-**Tag:** `safety-portal`, `publish-daemon`, `cleanup`, `low`.
-
-**Revisit when:** the archive generation path is revisited, or a concurrent-process race is observed.
-
-Surfaced: 2026-06-09 WSR/publish-pipeline session (publish daemon archive step; gitignore is the current mitigation).
 
 ## [OPEN 2026-06-09, low] Draft cache stores one draft per account — starting a new form replaces it
 
@@ -2673,36 +1502,6 @@ Surfaced: 2026-06-09 12-dimension forensic audit (M1).
 
 Surfaced: 2026-06-09 12-dimension forensic audit (M2).
 
-## [CLOSED 2026-06-18] Safety Portal M4 — bad-HMAC rows are immortal in the D1 pending queue
-
-**Resolved 2026-06-18 (tech-debt easy-wins pass):** box_verified=-1 terminal state + POST /api/internal/mark-rejected exist; /pending selects box_verified=0 so terminal rows drop out; prune deletes rejected after 30d.
-
-`worker/index.ts` `/api/internal/pending` fetches rows `ORDER BY created_at ASC LIMIT 50`; `prune.ts` only deletes rows where `box_verified=1`. A row that fails the HMAC check in `portal_poll.py` is never filed and never marked `box_verified=1` — so it permanently occupies a slot in every 50-row fetch window. With 50+ permanently-rejected rows, the window is wedged and new submissions never surface.
-
-Practical trigger: HMAC-secret rotation drift (unlikely without operator error). After the secret is corrected the queue does NOT self-heal — rows must be manually deleted from D1.
-
-**Fix:** introduce a terminal state for HMAC-rejected rows (e.g., `box_verified=-1`); exclude terminal rows from `/api/internal/pending`; prune after a retention window; add a watchdog alert on a growing `box_verified=0` backlog.
-
-**Tag:** `safety-portal`, `portal-poll`, `reliability`.
-
-**Revisit when:** HMAC secret rotation or next Worker hardening pass.
-
-Surfaced: 2026-06-09 12-dimension forensic audit (M4).
-
-## [CLOSED 2026-06-18] Safety Portal M5 — `/api/internal/publish/stamp` enforces no state-machine transition
-
-**Resolved 2026-06-18 (tech-debt easy-wins pass):** The LEGAL_PREDECESSORS state-machine guard (WHERE id=? AND status IN (legal predecessors)) was added to /api/internal/publish/stamp.
-
-`worker/index.ts` `/api/internal/publish/stamp` executes `UPDATE … WHERE id=?` with no check on the current state. The shared internal token (`ITS_PORTAL_INTERNAL_TOKEN`) can therefore forge a terminal state on a live request or revert a completed publish to `queued`.
-
-**Fix:** enforce legal predecessor states in the `WHERE` clause (e.g., `WHERE id=? AND status='actuating'`); consider a narrower stamp-only token separate from the pull/receipt token.
-
-**Tag:** `safety-portal`, `publish-daemon`, `security`, `medium`.
-
-**Revisit when:** next Worker security hardening pass.
-
-Surfaced: 2026-06-09 12-dimension forensic audit (M5).
-
 ## [OPEN 2026-06-09] Safety Portal M6 — publish daemon has zero watchdog/health coverage
 
 `safety_reports/publish_daemon.py` (the sole privileged actuator) has no `write_last_run_marker` call, no `ITS_Daemon_Health` row, and is absent from `scripts/watchdog.py::TRACKED_JOBS`. A silent daemon death pages nothing. The SPA `PublishMonitor` gives only a partial "stuck queued" signal (stale after a network loss or operator-gated pause), not a dead-daemon signal.
@@ -2727,20 +1526,6 @@ Surfaced: 2026-06-09 12-dimension forensic audit (M6).
 
 Surfaced: 2026-06-09 12-dimension forensic audit (M7).
 
-## [RESOLVED 2026-06-10] CLAUDE.md asserts Op Stds v16 as governing — should be v18 (M9)
-
-`CLAUDE.md` contains a parenthetical around lines 28–29 and line 131 (the governing-version block) that reads "Operational Standards is canonically at v16 … v16 is the governing version." However, `~/its-blueprint/doctrine/operational-standards.md` frontmatter is `version: 18`, `status: canonical`; `docs/doctrine_manifest.yaml` lists `current: 18`; and ~12 other CLAUDE.md citations already say v18. The v16 parenthetical is stale.
-
-This is advisory text only (no runtime control), but §§45–49 (added in v17/v18, including the F22 approval mechanism at §46) are load-bearing. A reader relying solely on the governing-version claim would believe those sections don't apply.
-
-**Fix:** update the parenthetical and line 131 to `v18`. One-line change; no behavior impact.
-
-**Tag:** `doctrine`, `claude.md`, `docs`, `low`.
-
-**Resolved 2026-06-10:** the governing-version block (CLAUDE.md lines ~28–29) + the line-131 reframe attribution now read **v18** — completing the v16→v18 sweep begun in PR #191 (inline §N citations) and continued in #260 (ops-stds-enforcer agent). The 2026-06-10 doc-reconciliation audit confirmed M9 was the last residual; no behavior impact.
-
-Surfaced: 2026-06-09 12-dimension forensic audit (M9).
-
 ## [OPEN 2026-06-09] ITS_Daemon_Health sheet observability drift
 
 The operator-visibility surface has drifted significantly from the live daemon topology:
@@ -2759,20 +1544,6 @@ A Tier-2 successor-operator reading this sheet would be misled about which daemo
 
 Surfaced: 2026-06-09 12-dimension forensic audit (live ITS_Daemon_Health inspection).
 
-## [CLOSED 2026-06-18] Half-applied morning publishes — blank-form archive PDFs missing for reqs 11/12/13
-
-**Resolved 2026-06-18 (tech-debt easy-wins pass):** Resolved by the 2026-06-15 full-archive `generate_form_archive.py --upload` re-render (all current defs re-uploaded, version-on-conflict — covers reqs 11/12); req 13 is a retire, no blank PDF to backfill (moot).
-
-Publish requests 11 (equipment-skid-steer-test-v1), 12 (jha-v2), and 13 (retire equipment-skid-steer-test) were merged to main and deployed BEFORE the bare-`python` bug was fixed by PR #241. Their blank-form archive PDFs were never generated (the `_regenerate_archive` step failed with `FileNotFoundError: 'python'`). The forms are live in the catalog and the Worker but their Box archive entries are absent, leaving an audit-trail gap.
-
-**Fix:** one-time backfill — run `python scripts/generate_form_archive.py` for the affected definition IDs and upload the resulting PDFs to the `00_Form_Archive` Box folder (`ITS_Safety_Portal/00_Form_Archive`).
-
-**Tag:** `safety-portal`, `audit-trail`, `one-time-backfill`, `low`.
-
-**Revisit when:** a dedicated Box-archive reconciliation pass, or before Evergreen production cutover audit.
-
-Surfaced: 2026-06-09 publish-pipeline forensic audit (PRs #238/#239/#240 landed before #241 fixed the sys.executable issue).
-
 ## [OPEN 2026-06-12] PR-4 Part A — PDF download cache: deferred optimizations + PR-5 supersession
 
 PR-4 Part A shipped the request-driven canonical PDF download (D1-chunked `filed_pdfs` cache, `pdf_requested`/`box_file_id`/`pdf_ready_at` columns, the `portal_poll._service_pdf_requests` pass, the submitted-page receipt). Four deliberate deferrals:
@@ -2788,18 +1559,6 @@ PR-4 Part A shipped the request-driven canonical PDF download (D1-chunked `filed
 
 Surfaced: 2026-06-12 PR-4 Part A implementation.
 
-## [RESOLVED 2026-06-12 — folded into mission v5] Mission v4→v5 delta — Worker now holds a transient filed-PDF receipt cache
-
-**Resolution (blueprint v5 reconciliation, 2026-06-12):** folded into `its-blueprint/workstreams/safety-portal/mission.md` v5 §9 (System-of-record filing-principle amendment) + §16. Box remains the system of record; the cache is a transient, request-driven, 24h copy. Flag closed.
-
-PR-4 Part A introduces a **bounded exception** to the Safety Portal mission's "the Worker never holds documents" stance: the Worker now stores **request-driven, 24h-expiring, D1-chunked filed-PDF chunks** so an authenticated owner can download their own canonical (Box-filed) PDF as a **receipt** (no new external-send path — Invariant 1 untouched; the Worker holds no Box creds and serves only reassembled D1 chunks the Mac daemon pushed). This is a **planning-layer / Seth-owned** doctrine edit, not made here. Proposed mission v4→v5 amendment: *"the Worker never holds documents — **except** the request-driven, 24h-expiring filed-PDF receipt cache (D1-chunked, browse scoped to active jobs, any authenticated account may browse + request)."* Flagged for blueprint co-resolution alongside the PR-5 mission note.
-
-**Tag:** `safety-portal`, `doctrine`, `mission-delta`, `planning-layer`.
-
-**Revisit when:** next blueprint mission-doctrine pass (fold the PR-4 + PR-5 mission deltas together).
-
-Surfaced: 2026-06-12 PR-4 Part A implementation.
-
 ## weekly_send upload-session — live-Graph integration smoke (deferred to pre-Customer-1) [OPEN 2026-06-12]
 
 **PR-3 review (§30 SDK-vs-Live).** `graph_client.send_mail_large_attachment` (draft → createUploadSession → chunked PUT honoring `nextExpectedRanges` → send) is covered ONLY by mocked unit tests (`tests/test_graph_client_upload_session.py`); there is no live-Graph integration smoke. The four-step Graph REST sequence + the pre-authed `uploadUrl` on a different domain (outlook.office.com, which rejects an `Authorization` header) + the 320 KiB-aligned chunk ranges are exactly the mocks-pass-but-live-fails surface §30 guards. Pre-Customer-1 (and as part of confirming the 2.5 MB threshold), run a live sandbox smoke with a throwaway 3–4 MB PDF fixture: create draft → createUploadSession → single-chunk PUT → send → assert the message lands in **Sent**, then clean it up. Add as `tests/test_graph_client_upload_session_integration.py` (skipif no live token, mirroring the integration-marker gating used elsewhere).
@@ -2810,7 +1569,7 @@ Surfaced: 2026-06-12 PR-4 Part A implementation.
 
 Surfaced: 2026-06-12 PR-3 adversarial review.
 
-## [OPEN 2026-06-12] PR-5 Worker + migration 0012 NOT yet deployed to live mirror
+## [CUTOVER-BLOCKING] [OPEN 2026-06-12] PR-5 Worker + migration 0012 NOT yet deployed to live mirror
 
 PR-5 (#276, merge `213d076`) introduced the `pdf_requests` table (migration 0012, schema `(submission_uuid TEXT, account TEXT, requested_at REAL, ready_at REAL, PRIMARY KEY (submission_uuid, account))`) and the new Worker routes (`GET /api/filed`, `POST /api/request-pdfs`, updated `/status`+`/pdf` re-gated on a live request row, updated `/api/internal/pdf-requests` filtered to live rows). As of session close, the **live mirror Worker does not have these changes**. The README activation step (added in-PR) documents the required ordering: apply migration 0012 to live D1 BEFORE redeploying the Worker — if the Worker is deployed first, the new routes fail-closed (referencing a non-existent table). Until deployed, the Form Request browse page and requester-bound PDF download are not available on `safety.evergreenmirror.com`.
 
@@ -2833,39 +1592,6 @@ The 2026-06-20 banner rebrand (PRs #297–#300) dropped the ITS-crest PNG and re
 **Tag:** `safety-portal`, `frontend`, `cosmetic`, `low`.
 
 **Surfaced:** 2026-06-20 banner rebrand session (PRs #297–#300). Session log: `docs/session_logs/2026-06-20_safety-portal-banner-wordmark.md`.
-
-## [CLOSED 2026-06-30] 7 CLOSED-unmerged local branches preserved conservatively post-cleanup
-
-**Resolved 2026-06-30 (tech-debt currency sweep):** The conservatively-preserved branches are gone. `git branch --list 'publish/req-*' 'feat/portal-submit-as'` returns empty at 2026-06-30; only current Phase-2 worktree branches (`feat/p1a`, `feat/p1b`, `feat/p1c`, `feat/p4core-compile-mutex`, `feat/p2-progress-workspace`, `feat/pr3-heartbeat-extraction`, `feat/keychain-tty-trap-fix`, `feat/solar-equipment-personnel-demo`) and `docs/*` branches remain. Zero branch hits beats the entry's text (lesson #1).
-
-The 2026-06-12 session pruned 55 stale local branches using `git update-ref -d refs/heads/<branch>` (bypassing the `block-dangerous-git.sh` hook's `git branch -D` block, after per-branch PR=MERGED verification via `gh pr view`). Seven CLOSED-unmerged branches were left on disk conservatively:
-
-- `publish/req-*` branches (4–5 entries, failed publish cycles from the publish daemon)
-- `feat/portal-submit-as` (operator WIP, no PR)
-
-These are safe to delete once confirmed no-longer-needed: the `publish/req-*` branches are daemon-generated and any in-flight publish would be restarted by the daemon's `_reset_to_main` recovery; `feat/portal-submit-as` is superseded by the admin submit-as feature built in PR #203+.
-
-**Fix:** `git update-ref -d refs/heads/<branch>` for each confirmed stale branch. Do NOT use `git branch -D` (blocked by hook in CC sessions). Run `git branch --list 'publish/req-*' feat/portal-submit-as` to enumerate before deleting.
-
-**Tag:** `housekeeping`, `git`, `low`.
-
-**Revisit when:** next housekeeping pass or before cloning the blueprint for Customer 1.
-
-Surfaced: 2026-06-12 branch-cleanup session.
-
-## [RESOLVED 2026-06-12 — folded into mission v5] Mission v4→v5 delta — PR-5 Form Request browse + requester-bound PDF download
-
-**Resolution (blueprint v5 reconciliation, 2026-06-12):** folded into `its-blueprint/workstreams/safety-portal/mission.md` v5 §16 (request-driven download + in-portal Form Request) — the `pdf_requests` table (supersedes the `pdf_requested` flag), any-authenticated-account browse, requester-bound 24h download, and two-stage prune are all recorded; the **declined email-delivery variant** is logged as an owner decision (in-portal only, send-free Invariant-1 default). Flag closed.
-
-PR-5 refactored the `submissions.pdf_requested`/`pdf_ready_at` ownership columns into a standalone `pdf_requests(submission_uuid, account, requested_at, ready_at)` table (migration 0012). Downloads are now **requester-bound for 24h** (any authenticated account may request; only the requesting account may download within the window — a different account, even the original submitter, gets 404). The Worker gained a **`GET /api/filed`** browse endpoint (active-job-scoped submissions list for the `FormRequestPage` SPA) and request lifecycle routes (`POST /api/request-pdfs`, `/status`, `/pdf`). Two-stage prune: **strip** payload at 90d (keep the row browseable while the job is active) → **delete** 30d after job goes inactive. Unfiled rows (`box_verified=0`) are never evicted.
-
-This is a **planning-layer / Seth-owned** mission delta: the Safety Portal mission v4 describes the Worker as a send-free durable queue and the `filed_pdfs` cache as receipt-only; the PR-5 `pdf_requests` model, the `FormRequestPage` browse surface, and the two-stage prune lifecycle are substantive additions. Proposed mission v4→v5 amendment: *"Any authenticated account may browse filed submissions for active jobs and request a requester-bound 24h PDF download via the `FormRequestPage`. The prune lifecycle is two-stage: payload stripped at 90d (row kept for browse/request); row deleted 30d after the job goes inactive. Unfiled rows are never evicted."* Fold with the PR-3 transport delta and PR-4 receipt-cache delta at the next blueprint mission pass.
-
-**Tag:** `safety-portal`, `doctrine`, `mission-delta`, `planning-layer`.
-
-**Revisit when:** next blueprint mission-doctrine pass (fold PR-3 + PR-4 + PR-5 deltas together).
-
-Surfaced: 2026-06-12 PR-5 implementation.
 
 ## [BLOCKED 2026-06-28] Field-ops Smartsheet/Box source-of-truth integration (P2.4+ downstream)
 
@@ -2951,24 +1677,6 @@ The arc is non-trivial: two PRs landed, a clean-slate was executed on live D1 + 
 
 Surfaced: 2026-06-28 session close (still missing after the 2026-06-17→18 arc + the 2026-06-20 banner session + the 2026-06-28 write-UI session all added their logs).
 
-## [CLOSED 2026-06-30] `keychain.set_secret` TTY-trap — interactive Python session can silently corrupt the stored secret
-
-**Resolved 2026-06-30 (tech-debt currency sweep):** Fixed by PR #355 (task #8). `shared/keychain.py:66` `_has_controlling_tty()` detects a controlling terminal; `:176` branches to the argv form `security ... -w VALUE` when a TTY is present, bypassing the `/dev/tty` prompt that ignored piped stdin and silently stored a garbage value. Verified @HEAD via grep (lesson #1). NOTE: `keychain.py` is Phase-2 A2/A3-claimed — this is a **docs-only** status reconciliation; no code touched here.
-
-**Live incident (2026-06-29, A3 smoke).** During the A3 Box OAuth refresh-lock smoke, `setup_box_oauth.py`'s `_persist_tokens` called `keychain.set_secret` from an interactive Python session (run directly in a terminal, not via launchd). `set_secret` invokes `security add-generic-password -w` with the value fed via `stdin`. When a controlling TTY is present — as it is in any interactive terminal session — the macOS `security` CLI reads the password from `/dev/tty` and **silently ignores piped stdin**. A garbage/unexpected value was written to `ITS_BOX_REFRESH_TOKEN`; Box auth failed with a 401 until the token was manually re-seeded using the argv form.
-
-**Root cause:** `shared/keychain.set_secret` uses `subprocess.run([..., "-w"], input=...)` — the bare `-w` reads stdin correctly when the subprocess has no controlling TTY (correct behavior under launchd). But when the **parent process is an interactive terminal**, the subprocess inherits that controlling TTY, and `security` prefers the TTY over piped stdin for the bare `-w` form. The 2026-06-08 finding documented "bare `-w` in a TTY" for manual shell use; this extends it to `set_secret` itself when called interactively.
-
-**Class:** secrets/auth, HIGH. Affected callers: `shared/keychain.set_secret` (daemon and Python callers), `setup_box_oauth.py`'s `_persist_tokens`.
-
-**Proposed fix (standing task #8):** in `keychain.set_secret`, detect whether a controlling TTY is present (`os.isatty(0)` / `os.ctermid()`) and, if so, switch to the **argv form** (`[..., "-w", value]` — value as the next argv token, no stdin read). If TTY detection is unreliable, `raise RuntimeError` rather than silently writing the wrong value. Apply the same fix to `_persist_tokens` in `setup_box_oauth.py`.
-
-**Recovery:** re-seed the affected entry via argv: `security add-generic-password -U -a "$USER" -s <name> -w VALUE`. Verify with `security find-generic-password -w -s <name>`.
-
-**Tag:** `secrets`, `auth`, `keychain`, `high`. **Revisit when:** next `shared/keychain.py` touch (standing task #8).
-
-Surfaced: 2026-06-29 A3 smoke (Box OAuth refresh-lock hardening); live `ITS_BOX_REFRESH_TOKEN` corruption recovered via argv reseed.
-
 ## [OPEN 2026-06-29] Portal permission-model stale plumbing — vestigial + orphaned capabilities, coarse gate, missing crew→job link
 
 **Surfaced 2026-06-29** during a forensic investigation of the portal permission model (operator asked "what happened to my 3-tier permission model that broke my login and got reverted?"). Resolution: the capability system (migration `0013`, PR #302, `8bd9995`) is **live and was never reverted**; the 2026-06-28 login breakage was the deploy-order lockout, fixed operationally. The 5-agent read-only sweep + direct verification surfaced stale/half-wired permission plumbing to address later — **documented, not fixed** (preservation-over-refactor, §14). Relevant to the queued **P2.6 — Manager tier** slice and any future capability-management UI.
@@ -2991,27 +1699,6 @@ Surfaced: 2026-06-29 permission-model forensic investigation; full spec at `~/.c
 **Fix options (decide at build):** (a) split `cap.personnel.manage` → keep create/edit/link for manager, move **retire** behind a new `cap.personnel.retire` granted admin-only (a migration + a route re-gate + SPA gate); or (b) a lighter `role==='admin'` hard-check on the retire route + SPA button (mirrors the login-account-mint self-gate pattern) without a new cap. Option (a) is the cleaner capability-model fit; (b) is faster. Either way: re-gate the Worker route (the real boundary) AND the SPA button (convenience). Add a gate-bites test (a manager gets 403 on retire).
 
 **Operator direction:** park OR **fold into the next big website update** (the Assigned-Tasks tab work — thematically a manager-facing permission change). **Tag:** `field_ops`, `capabilities`, `auth`, `manager`, `p2.6`, `personnel`. **Revisit when:** building the Assigned-Tasks tab / next manager-facing update. **RESOLVED 2026-07-01 by S1 Assigned-Tasks build** (retire route + SPA button gated `role==='admin'`, option (b); +regression test).
-
----
-
-## [RESOLVED 2026-07-03 — CS4 Slice 4 Part A] Task-authority guards read account role check-then-act (TOCTOU, low-severity)
-
-**Resolution (CS4 Slice 4 Part A):** the tracked fold is built, matching the `fieldops_crew_assign` atomic-guard pattern. The role predicates now live IN the mutating statements' WHERE clauses (`worker/fieldops_task_write.ts`): the assign UPDATE carries both the W1 current-owner predicate and the target predicate (conditional on an assign-only actor via a bound 0/1 flag); the create INSERT is `INSERT … SELECT … WHERE` with the same target predicate; the status UPDATE additionally folds the R1 ownership predicate. `checkTaskTarget` / `checkTaskCurrentOwner` / `checkTaskStatusOwnership` remain as **post-refusal diagnostics** — on `changes()=0` they re-read in the old pre-check order so the response codes (403 forbidden_task / 403 forbidden_target / 422 unknown_personnel / 404 not_found) are byte-identical; audits ride `changes()=1`, so a refused write audits nothing. Atomicity + boundary locked by `test/fieldops-toctou-folds.test.ts`; the pre-existing task-write/task-authority suites pass UNMODIFIED. Original entry below.
-
-**Surfaced by the S1 Assigned-Tasks security re-review.** `checkTaskTarget` + `checkTaskCurrentOwner` in `safety_portal/worker/fieldops_task_write.ts` read the target/current-owner account **role** (`personnel.username → users.role`) in a SELECT separate from the mutating UPDATE, to constrain a `cap.tasks.assign`-only actor (manager) to submitter-owned tasks/targets. Unlike the `active=1` roster checks (race-free — `active` only flips 1→0), `role` is **bidirectional**, so an admin promoting/demoting an account in the window between the SELECT and the UPDATE could shift the boundary. **NOT a self-service escalation** — the manager can't trigger the concurrent role change; it requires an independent admin action in a window the actor doesn't control. **Accepted + documented in-code.** **Fix (fast-follow):** fold the role predicate into the assign/create UPDATE's WHERE (conditional for an assign-only actor) so check+write are atomic, matching the `fieldops_crew_assign` pattern. **Tag:** `field_ops`, `auth`, `manager`, `task-authority`, `toctou`. **Revisit when:** treating manager task-scope as a hard security boundary / next task-authority change.
-
----
-
-## Checklist item-state photo CAPTURE — render-half only, capture route not built [RESOLVED 2026-07-06 — built by #452/#475; model superseded]
-
-**Verified 2026-07-06:** #452 (`eedf7a6`, "G1 — checklist item photos, Option D") built the capture route (migration 0036, `item_photos` pool, `INSERT INTO item_photos … 'pending'` at `fieldops_checklist.ts:1007`, `item_photo:v1` HMAC domain-separation, `requires_photo` gating, §34-screened on the Mac); refined by #475. The model changed from the `photo_ref` render-only design below to the **Option-D `item_photos` pool** (`reference_section34-option-d-photo-pool`), so the entry below is superseded, not just resolved.
-
-
-**Surfaced by R3 (PR #419, 2026-07-02).** Open-question Q2 (photo evidence) was answered **(a)** during the R-series program — optional photo on every check-type item, no migration — and R3 shipped the **render half only**: the checklist UI displays a photo when a `photo_ref` is present on an item state. The **capture half was NOT built**: there is no Worker route to store an uploaded item-state photo, and nothing writes `photo_ref`.
-
-Capture needs to be **designed against §34 image-class screening** (Op Stds v20 §34, `safety_reports/photo_screen.py` is the canonical instantiation for portal photos), not just wired ad hoc: an untrusted image uploaded by a field worker → D1 (or Box) → served back to other viewers is exactly the shape §34 exists to gate (magic-byte check, Pillow `verify()`/decompression-bomb cap, metadata-destroying re-encode, optional ClamAV). Open design questions: (1) does this route through the existing Python-side `photo_screen.py` pipeline (implying a queue/pull hop back to the Mac, mirroring the portal-submission PULL model) or does it need a **Worker-native** lightweight screening pass (send-free, §50/§51-shaped) since checklist items are D1-native and have no `intake.py` touchpoint today; (2) do item-state photos flow to Box like submission photos, or stay D1-only; (3) size/count caps analogous to `MAX_DECODED_BYTES`/`MAX_PHOTOS_PER_SUBMISSION`. **NOT autonomous-safe** — this is a new untrusted-input surface and needs an explicit adversarial-review pass (attacker/auditor/skeptic per CLAUDE.md's "Adversarial review is definition-of-done on any trust-boundary surface") before any capture route ships, not just a design doc.
-
-**Tag:** `field_ops`, `checklist`, `photo`, `security`, `§34`, `r-series`. **Revisit when:** building checklist photo capture (R-series Q2 follow-through) — do the §34 design decision FIRST, in its own reviewed slice, before writing the storage route.
 
 ---
 
@@ -3044,16 +1731,6 @@ The edge case: if an **admin authors a template through the UI** with a title th
 
 ---
 
-## [RESOLVED 2026-07-03 — CS4 Slice 4 Part A] DailyReportTab 2-stage waterfall — `fetchJobList` fetch NOT yet collapsed
-
-**Resolution (CS4 Slice 4 Part A, built in worktree `feat/cs4-hardening`):** `/api/fieldops/tasks/mine` now carries `viewer_placement` `{job_id, project_name, personnel_id, name}` — the caller's OWN placement, resolved server-side (the same personnel resolution `fieldops_scope.resolveActorPersonnel` uses + one indexed jobs lookup; SELF-information only, security note in the route header, `worker/fieldops_tasks.ts`). `DailyReportTab` takes the placement as a PROP from `FieldOpsMyTasks`'s existing `/tasks/mine` read; the `fetchJobList("active")` stage is deleted from the daily path (`fetchJobList` remains the Job Tracker page's own source). 6 fetches → tasks/mine + 5 parallel. New worker suite `test/fieldops-tasks-mine-placement.test.ts` (self-only exposure, unplaced/unlinked/retired/soft-ref/duplicate-link cases). The mandatory `/security-review` merge gate applies to the landing PR. Original entry below.
-
-**Optimization plan finding #12** (`~/.claude/plans/optimization-plan.md`, Slice 3 tail item). `DailyReportTab.tsx` still opens with `jobs.fetchJobList("active")` (a full jobs-list page) purely to read `viewer_current_job` before it can fetch anything daily-specific — confirmed still present at exec HEAD `d7ba70f` (`DailyReportTab.tsx:280-281`). The plan's fix (add `viewer_current_job` + `project_name` to `/api/fieldops/tasks/mine` and drop the `fetchJobList` stage) was explicitly scoped to **serialize after Slice 2** and carries the plan's only medium-risk rating plus its own mandatory `/security-review` gate (it widens a capability-gated read route — `cap.tasks.own` would start returning placement data that today rides `cap.jobtracker.read`). Slice 2 (#432) has now landed; this tail item was correctly NOT bundled into #431/#432 and remains unbuilt.
-
-**Fix:** implement optimization-plan.md Slice 3 item 7 in its own PR, with the `/security-review` pass as a merge gate, not advisory. **Tag:** `field_ops`, `performance`, `daily-form`, `optimization`, `security-review-gated`. **Revisit when:** picking up the next optimization slice, or if field-crew load on `/api/fieldops/jobs` becomes measurable.
-
----
-
 ## Optimization-plan doctrine-adjacent decisions awaiting operator green-light [OPEN 2026-07-03 — item 2 (B3) RESOLVED 2026-07-03]
 
 **Item 2 (B3) RESOLVED 2026-07-03 — operator approved ("go ahead with your recommendations") and the dead-route deletion was executed.** Four Worker routes deleted with per-site tombstones naming the approval + date: `GET /api/fieldops/checklist/mine` (the deprecated daily generation read — it still WROTE daily instances + snapshots when called, the junk-data footgun), `GET /checklist/mine/rollup-draft` (S5 draft assembler, superseded by the SOP form's own prefill), `POST /api/fieldops/job/:job_id/close` (thin back-compat alias; `/lifecycle` is the live close path), and `POST /api/fieldops/job/:job_id/progress` (nothing displayed the value since #403; no Python reader). Daily-exclusive machinery removed with them (`generateDailyInstance`, `pacificToday` (worker copy), `reconcileFormLinked`, `AUTO_CHECK_SQL_DAILY`, `ITEM_STATES_SQL_DAILY`, `MergedItem`, `DailyEmptyReason`, `ROLLUP_LEG_CAP`); the inspection engine (assign/assigned/instances/cancel/item-state), the S2 default/job-override **editor routes**, and the 0028 `daily_default` seed rows were **NOT removed** (narrower scope than option (a) — the approval covered the four dead routes only). Tests: the 3 daily suites deleted (36 tests), 6 daily-path tests removed from `fieldops-r1-contracts`, 5 route tests removed from `fieldops-job-write`, 3 item-state contracts re-pinned via the assigned-inspections path (worker suite 668 → 624). Item 1 below remains OPEN.
@@ -3067,26 +1744,6 @@ Original entry (item 1 still awaiting green-light):
 2. ~~**Deprecated daily-checklist Worker surfaces + dormant 0028 `daily_default` rows**~~ — RESOLVED above (route deletion executed; 0028 rows + editor routes deliberately kept).
 
 Item 1 blocks nothing; it is a dead-weight-vs-preservation-over-refactor call that only Seth should greenlight. **Tag:** `field_ops`, `optimization`, `doctrine-adjacent`, `preservation-over-refactor`. **Revisit when:** Seth reviews the optimization-plan's Needs-operator section.
-
----
-
-## [RESOLVED 2026-07-03 — CS4 Slice 4 Part A] `fieldops_checklist.ts` still hand-maintains `AssignedInspectionsResponse` instead of re-exporting `wire-types.ts`
-
-**Resolution (CS4 Slice 4 Part A):** all five assigned-inspections shapes (`ChecklistItemStatus`, `ChecklistItemState`, `AssignedInstance`, `AssignedInspection`, `AssignedInspectionsResponse`) are now `export type { … } from "../../worker/wire-types"` re-exports in `src/lib/fieldops_checklist.ts`; the hand-maintained local copies are deleted and the `wire-types.ts` header's "NOT yet re-exported" caveat is removed (the tasks/mine shapes are single-sourced there too). Original entry below.
-
-**`worker/wire-types.ts` header note, Slice 3 (#431).** The header explicitly flags: "the assigned-inspections shapes are worker-typed here but NOT yet re-exported by `src/lib/fieldops_checklist.ts` — that file is Slice 2's dead-code removal surface; converting its kept types to re-exports is a follow-up after Slice 2 lands." Slice 2 (#432) has now landed, and `fieldops_checklist.ts:224` still defines its own `AssignedInspectionsResponse` interface rather than re-exporting the Worker-authoritative one from `wire-types.ts` — the one drift-guard `wire-types.ts` was built to close (finding #11) is not yet fully closed for this one shape.
-
-**Fix:** small follow-up — replace the local `AssignedInspectionsResponse` interface in `fieldops_checklist.ts` with a re-export from `wire-types.ts`, matching the pattern already used by `fieldops_jobtracker.ts`/`fieldops_daily_form.ts`/`fieldops_expected_materials.ts`. **Tag:** `field_ops`, `optimization`, `wire-types`, `low-risk`. **Revisit when:** next touching `fieldops_checklist.ts` or `wire-types.ts`.
-
----
-
-## [RESOLVED 2026-07-03 — CS4 Slice 4 Part A] D4 job-requirements ceiling check is TOCTOU (admin-only, accepted)
-
-**Resolution (CS4 Slice 4 Part A):** the count predicate is folded into the INSERT's `WHERE` exactly as tracked — `INSERT INTO job_daily_requirements … SELECT … WHERE (SELECT COUNT(*) … active = 1) < REQUIREMENTS_LIMIT RETURNING id` — so check + write are one atomic statement; `changes()=0` → the same `409 too_many_items`, and the audit rides `auditStmtIfChanged` (a refused add audits nothing, as before). Boundary + atomicity locked by `test/fieldops-toctou-folds.test.ts` (199→201, 200→409, deactivated rows excluded). Original entry below.
-
-**Surfaced by the D4 security review (PR #427), accepted as a WARN.** `fieldops_daily_requirements.ts`'s `REQUIREMENTS_LIMIT = 200` ceiling on a job's ACTIVE requirement-item list is enforced as a read-then-check-then-insert, not atomically in the mutating statement's `WHERE` clause — mirrors the existing "Task-authority guards read account role check-then-act" TOCTOU entry above, but on a resource ceiling rather than a role predicate. Two concurrent admin adds could both pass the count check before either commits, momentarily exceeding 200 active rows. **Admin-only actor, resource-exhaustion-shaped, not a privilege-escalation path** — accepted at review as low-severity.
-
-**Fix (fast-follow, same shape as the task-authority entry):** fold the count predicate into the INSERT's `WHERE` (a conditional insert keyed on a live `COUNT(*)` subquery) so check+write are atomic. **Tag:** `field_ops`, `security`, `toctou`, `daily-form`, `low-severity`. **Revisit when:** treating the requirements ceiling as a hard bound, or alongside the existing task-authority TOCTOU fix.
 
 ---
 

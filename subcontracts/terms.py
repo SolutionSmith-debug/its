@@ -29,6 +29,14 @@ from typing import Any
 TERMS_DIR = Path(__file__).resolve().parent / "terms"
 CONFIG_DIR = Path(__file__).resolve().parent / "config"
 
+# The shared attach-kind reference body (a one-page MSA reference: preamble + Contract Price §2.1 +
+# the profile's manifest render_line + signature). Unlike the versioned library bodies (each pinned
+# per manifest version), this is a single cross-profile STRUCTURAL template — not operator-editable,
+# and deliberately NOT a config-editor artifact — pinned here by a module constant and hash-verified
+# on every load. A wording change edits the .md AND updates this sha in the SAME commit.
+_ATTACH_REFERENCE_FILE = "attach_reference.md"
+_ATTACH_REFERENCE_SHA256 = "3c68deb22cd0f1ed3e7b986110aa4248b52e2e4a05eb7bf141523dc8ee049091"
+
 _TOKEN_RE = re.compile(r"\{\{([a-z_]+)\}\}")
 
 
@@ -151,6 +159,29 @@ def render_line(profile_id: str) -> str:
     if not isinstance(line, str) or not line.strip():
         raise TermsError(f"attach profile {profile_id!r} has no render_line")
     return line
+
+
+def load_attach_reference() -> str:
+    """The sha256-pinned attach-kind reference body TEXT (leading provenance header stripped). Raises
+    TermsError on a missing file or a hash mismatch (the file is immutable; a wording change updates
+    the pinned sha in terms.py in the same commit). This is the attach-kind analogue of
+    ``load_terms_text`` — there is NO manifest version and NO Layer-A library gate, because an attach
+    profile carries no versioned body language of its own: its binding terms are the externally-
+    negotiated MSA that the profile's ``render_line`` references (the caller fills the body's
+    ``{{render_line}}`` token from ``render_line(profile_id)``)."""
+    path = TERMS_DIR / _ATTACH_REFERENCE_FILE
+    try:
+        raw = path.read_bytes()
+    except FileNotFoundError as e:
+        raise TermsError(f"attach-kind reference body missing: {path}") from e
+    digest = hashlib.sha256(raw).hexdigest()
+    if digest != _ATTACH_REFERENCE_SHA256:
+        raise TermsError(
+            f"attach-kind reference body HASH MISMATCH ({path.name}): terms.py pins "
+            f"{_ATTACH_REFERENCE_SHA256} but the file is {digest} — the reference body is immutable; "
+            "a wording change must update _ATTACH_REFERENCE_SHA256 in the same commit"
+        )
+    return _strip_header_comment(raw.decode("utf-8"))
 
 
 def required_tokens(profile_id: str, version: str | None = None) -> list[str]:
