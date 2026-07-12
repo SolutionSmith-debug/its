@@ -11,6 +11,11 @@ import { hmacHex } from "./hmac";
 import termsManifest from "../../subcontracts/terms/manifest.json";
 import contractorConfig from "../../subcontracts/config/contractor.json";
 import paymentTermsConfig from "../../subcontracts/config/payment_terms.json";
+// SC-S3b Exhibit A — the trade-templated Article II "The Work" config (manifest + per-trade bodies),
+// imported at BUILD time so the builder can PRE-FILL Article II from the operator's chosen trade. The
+// skeleton (Art I/III/IV/V/VI) is the Mac renderer's concern; the Worker serves only the Art II body a
+// Trade maps to. Mirror of the terms edit-text pre-fill pattern below (import.meta.glob + strip header).
+import exhibitManifest from "../../subcontracts/exhibit/manifest.json";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Subcontracts workstream SC-S3c — worker/subcontract.ts
@@ -83,6 +88,20 @@ const TERMS_RAW = import.meta.glob<string>("../../subcontracts/terms/*.md", {
   import: "default",
   eager: true,
 });
+
+// Exhibit A per-trade Article II bodies, bundled at BUILD time (same mechanism as TERMS_RAW). Keyed by
+// module path; looked up by the manifest trade_template entry's file name — a body added by a new-trade
+// actuation is auto-discovered on the next deploy (a static per-file ?raw import would silently miss it).
+const EXHIBIT_RAW = import.meta.glob<string>("../../subcontracts/exhibit/art2/*.md", {
+  query: "?raw",
+  import: "default",
+  eager: true,
+});
+
+// Trade (the ITS_Subcontractors Trade picklist value) → art2 template key. The manifest fans several
+// Trades onto one body (AC/MV/DC Electrical all → 'electrical'); an unknown Trade is invalid_trade.
+const EXHIBIT_TRADE_MAP = exhibitManifest.trade_map as Record<string, string>;
+const EXHIBIT_TEMPLATES = exhibitManifest.trade_templates as Record<string, { file: string; sha256: string }>;
 
 // Port of subcontracts/terms.py header-comment stripping — drop a leading <!-- ... --> provenance
 // block (maintainer docs that must never reach a rendered subcontract or the editor textarea). Only
@@ -629,6 +648,33 @@ export function registerSubcontractRoutes(app: FieldopsApp, gates: SubcontractGa
       governing_law_states: GOVERNING_LAW_STATE_CODES,
     }),
   );
+
+  // GET /api/subcontracts/exhibit-templates?trade=<Trade> — the Exhibit A Article II ("The Work")
+  // pre-fill: resolve the operator-picked Trade through the manifest trade_map to its art2 template key,
+  // return that trade's standard Art II body (header-stripped) as an editable starting point for
+  // exhibit_a_work_text. Several Trades fan onto one body (AC/MV/DC Electrical → 'electrical'); an
+  // unknown Trade is 400 invalid_trade. Read-only, no audit — same session + cap gate as the browser
+  // routes above. The Mac renderer's strict loader is the authority; this is a builder convenience.
+  app.get("/api/subcontracts/exhibit-templates", gates.requireSession, gates.requireCapability(CAP_SUB), (c) => {
+    const trade = str(c.req.query("trade"));
+    // Own-property lookup only — a query like __proto__/constructor must not resolve to an
+    // Object.prototype built-in (defense-in-depth; the resolved key is re-checked below).
+    if (!trade || !Object.prototype.hasOwnProperty.call(EXHIBIT_TRADE_MAP, trade)) {
+      return c.json({ error: "invalid_trade" }, 400);
+    }
+    const templateKey = EXHIBIT_TRADE_MAP[trade];
+    const entry = Object.prototype.hasOwnProperty.call(EXHIBIT_TEMPLATES, templateKey)
+      ? EXHIBIT_TEMPLATES[templateKey]
+      : undefined;
+    if (!entry) return c.json({ error: "invalid_trade" }, 400);
+    const key = Object.keys(EXHIBIT_RAW).find((k) => k.endsWith("/" + entry.file));
+    if (key === undefined) return c.json({ error: "template_unavailable" }, 404);
+    return c.json({
+      trade,
+      template_key: templateKey,
+      article_ii: stripTermsHeader(EXHIBIT_RAW[key]),
+    });
+  });
 
   // GET /api/subcontracts/subcontractors — the subcontractor picker/management read. Active-only by
   // default; ?include_inactive=1 widens (the management list shows retired subcontractors greyed).

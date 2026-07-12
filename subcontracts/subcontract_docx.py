@@ -35,12 +35,18 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font
 from openpyxl.utils import get_column_letter
 
-from subcontracts import governing_law, money, subcontract_generate, terms
+from subcontracts import exhibit, governing_law, money, subcontract_generate, terms
 
 # A top-level article heading is `<n>.<TAB>TITLE:` — a SINGLE number, a dot, then a tab (the corpus
 # body's structure). Sub-clauses are `<n>.<m>` (a second number right after the dot), so this pattern
 # cleanly discriminates the 27 article headers from their sub-clauses without a hand-kept list.
 _ARTICLE_HEADING_RE = re.compile(r"^\d+\.\t")
+# Exhibit A uses a DIFFERENT heading convention than the subcontract body: `Article <ROMAN>:` /
+# `ARTICLE <ROMAN>:` lines (e.g. "Article I: General", "ARTICLE V: PAYMENT REQUIREMENTS"). The Exhibit
+# title ("Exhibit A: Scope of Work") is handled separately as the centered document title, so it never
+# reaches this pattern. Trade Article II bodies use clause ids (e.g. "C2.0", "1.") — deliberately NOT
+# matched, they render as justified paragraphs.
+_EXHIBIT_HEADING_RE = re.compile(r"^Article\s+[IVXLCDM]+\b", re.IGNORECASE)
 # The document title line (verbatim first content line of the body).
 _TITLE_TEXT = "SUBCONTRACT AGREEMENT"
 
@@ -165,6 +171,91 @@ def render_subcontract_docx(
     return _normalize_ooxml_clock(buf.getvalue(), stamp)
 
 
+def render_exhibit_a_docx(subcontract: dict[str, Any], contractor: dict[str, Any]) -> bytes:
+    """Exhibit A (Scope of Work) as an EDITABLE .docx (bytes). Loads the FIXED, sha256-pinned skeleton
+    (``exhibit.load_skeleton`` — Article I General + a ``{{article_ii}}`` marker + Articles III/IV/V/VI)
+    and fills its eight tokens from the record. ``{{article_ii}}`` is the OPERATOR-authored
+    ``exhibit_a_work_text`` when non-blank, else the trade's standard Article II "The Work" body
+    (``exhibit.load_trade_art2`` — the trade-template fallback).
+
+    Token fill is STRICT (``exhibit.substitute_tokens`` raises on a blank/missing contract token — a
+    subcontract must never render with an unfilled blank). Any ``exhibit.ExhibitError`` (unknown trade,
+    sha drift, unfilled token) is fenced as ``SubcontractDocxError`` so the daemon catches one type and
+    never files a wrong Exhibit. Deterministic like the body render: the OOXML clock is pinned to the
+    record's agreement date (``_normalize_ooxml_clock``), so a re-render of the same record is
+    byte-identical — the §47 idempotent-Box-filing guarantee. The Exhibit title is a centered heading;
+    every ``Article <ROMAN>:`` line is bolded; every other line is a justified paragraph the operator
+    edits from."""
+    try:
+        skeleton = exhibit.load_skeleton()
+        work_text = subcontract.get("exhibit_a_work_text")
+        if isinstance(work_text, str) and work_text.strip():
+            article_ii = work_text
+        else:
+            article_ii = exhibit.load_trade_art2(str(subcontract["trade"]))
+        values = {
+            "subcontractor_entity": str(subcontract["subcontractor_entity"]),
+            "contractor_entity": str(contractor["entity"]),
+            "trade": str(subcontract["trade"]),
+            "project_name": str(subcontract["project_name"]),
+            # site_address / completion_date are OPTIONAL D1 columns (0050 DEFAULT ''). A blank one
+            # gets an editable bracketed placeholder rather than fencing the WHOLE package (the
+            # operator fills it in the editable .docx) — only the required PARTY/trade tokens are
+            # strict. owner_entity is required by the body's _REQUIRED_FIELDS, so it is always present.
+            "site_address": str(subcontract.get("site_address") or "").strip() or "[site address]",
+            "owner_entity": str(subcontract["owner_entity"]),
+            "completion_date": str(subcontract.get("completion_date") or "").strip()
+            or "[completion date to be confirmed]",
+            "article_ii": article_ii,
+        }
+        text = exhibit.substitute_tokens(skeleton, values)
+    except exhibit.ExhibitError as exc:
+        raise SubcontractDocxError(
+            f"exhibit render gate failed: {type(exc).__name__}: {exc}"
+        ) from exc
+
+    doc = Document()
+    # Base style: a serif legal body at 11pt (mirrors the subcontract body render).
+    normal = doc.styles["Normal"]
+    normal.font.name = "Times New Roman"
+    normal.font.size = Pt(11)
+
+    first_line = True
+    for raw in text.split("\n"):
+        line = raw.rstrip()
+        if not line.strip():
+            continue
+        # The very first content line is the Exhibit title → centered heading, once.
+        if first_line:
+            p = doc.add_paragraph()
+            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            run = p.add_run(line)
+            run.bold = True
+            run.font.size = Pt(14)
+            first_line = False
+            continue
+        if _EXHIBIT_HEADING_RE.match(line):
+            p = doc.add_paragraph()
+            run = p.add_run(line)
+            run.bold = True
+        else:
+            p = doc.add_paragraph(line)
+            p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+
+    # Pin core-property timestamps to the agreement date (deterministic; no clock read).
+    stamp = _agreement_datetime(subcontract)
+    doc.core_properties.created = stamp
+    doc.core_properties.modified = stamp
+    doc.core_properties.author = str(
+        contractor.get("entity") or subcontract.get("contractor_entity") or "Evergreen Renewables LLC"
+    )
+    doc.core_properties.title = f"Exhibit A — {subcontract.get('project_name', '')}".strip(" —")
+
+    buf = io.BytesIO()
+    doc.save(buf)
+    return _normalize_ooxml_clock(buf.getvalue(), stamp)
+
+
 def _dollars(cents: int) -> float:
     """Integer cents → a dollars float for a SPREADSHEET CELL only (presentation, not the money path —
     the SOV guard reconciles in integer cents). Kept isolated so no float touches the correctness gate."""
@@ -267,15 +358,18 @@ def render_package(
     terms_profile_id: str = "standard_subcontract",
     terms_version: str | None = None,
 ) -> dict[str, bytes]:
-    """The editable subcontract package (SC-S3b core): the Subcontract body .docx + the Annex C
-    Schedule-of-Values .xlsx, keyed by filename. Both gates run; either failure raises
-    SubcontractDocxError (the daemon fences, never files a partial/wrong package). Exhibit A is a
-    follow-on sub-slice (needs the exhibit_trade_templates config artifact, not yet shipped)."""
+    """The editable subcontract package (SC-S3b core): the Subcontract body .docx + the Exhibit A
+    Scope-of-Work .docx + the Annex C Schedule-of-Values .xlsx, keyed by filename. Every gate runs; any
+    failure raises SubcontractDocxError (the daemon fences, never files a partial/wrong package). The
+    Exhibit A render loads the sha-pinned trade-template config and fills the operator's Article II (or
+    the trade fallback)."""
     docx_bytes = render_subcontract_docx(
         subcontract, sov_lines, terms_profile_id=terms_profile_id, terms_version=terms_version
     )
+    exhibit_bytes = render_exhibit_a_docx(subcontract, terms.load_contractor_config())
     xlsx_bytes = render_sov_xlsx(subcontract, sov_lines)
     return {
         "Subcontract.docx": docx_bytes,
+        "Exhibit A.docx": exhibit_bytes,
         "Annex C - Schedule of Values.xlsx": xlsx_bytes,
     }

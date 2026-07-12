@@ -1,3 +1,4 @@
+/// <reference types="vite/client" />
 import { env } from "cloudflare:test";
 import { describe, it, expect, beforeEach } from "vitest";
 import { call, provision, login, p, g, json } from "./helpers";
@@ -13,6 +14,13 @@ import type { SubcontractRow, SovLine } from "../worker/subcontract";
 // legal_review "pending" BY DESIGN (Layer-A gate) — derive that assertion from the source, never pin.
 import termsManifest from "../../subcontracts/terms/manifest.json";
 import contractorConfig from "../../subcontracts/config/contractor.json";
+// SC-S3b Exhibit A — the raw per-trade Article II bodies the WORKER bundles (worker/subcontract.ts
+// EXHIBIT_RAW). Import the SAME files so the served-equals-source drift check tracks the corpus instead
+// of pinning a substring (HOUSE_REFLEXES §5). These art2 bodies carry NO provenance header, so the
+// route's stripTermsHeader is a no-op → served === raw. Also import the manifest for the trade_map.
+import exhibitManifest from "../../subcontracts/exhibit/manifest.json";
+import fencingArt2 from "../../subcontracts/exhibit/art2/fencing.md?raw";
+import electricalArt2 from "../../subcontracts/exhibit/art2/electrical.md?raw";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Subcontracts workstream SC-S3c — worker/subcontract.ts + migrations 0049-0052.
@@ -266,6 +274,48 @@ describe("terms versions feed", () => {
     expect((await g(admin, "/api/subcontracts/terms/does_not_exist/versions")).status).toBe(404);
     expect((await call("/api/subcontracts/terms/standard_subcontract/versions")).status).toBe(401);
     expect((await g(submitter, "/api/subcontracts/terms/standard_subcontract/versions")).status).toBe(403);
+  });
+});
+
+// ── Exhibit A Article II pre-fill (GET /api/subcontracts/exhibit-templates?trade=) ─
+describe("exhibit-templates Article II pre-fill", () => {
+  it("resolves a Trade → its art2 body (served EQUALS the bundled source, derived not pinned)", async () => {
+    const res = await g(admin, "/api/subcontracts/exhibit-templates?trade=Fencing");
+    expect(res.status, await res.clone().text()).toBe(200);
+    const body = await json<{ trade: string; template_key: string; article_ii: string }>(res);
+    expect(body.trade).toBe("Fencing");
+    // template_key is DERIVED from the manifest trade_map, never pinned.
+    expect(body.template_key).toBe(exhibitManifest.trade_map.Fencing);
+    // served-equals-source drift check — no provenance header on these bodies, so strip is a no-op.
+    expect(body.article_ii).toBe(fencingArt2);
+  });
+
+  it("fans several electrical Trades onto the shared 'electrical' body (AC Electrical → electrical)", async () => {
+    const res = await g(admin, "/api/subcontracts/exhibit-templates?trade=AC%20Electrical");
+    expect(res.status, await res.clone().text()).toBe(200);
+    const body = await json<{ trade: string; template_key: string; article_ii: string }>(res);
+    expect(body.trade).toBe("AC Electrical");
+    expect(body.template_key).toBe("electrical");
+    expect(body.template_key).toBe(exhibitManifest.trade_map["AC Electrical"]);
+    expect(body.article_ii).toBe(electricalArt2);
+    // Distinct trades map to distinct bodies (fencing ≠ electrical) — no accidental single-body serve.
+    expect(electricalArt2).not.toBe(fencingArt2);
+  });
+
+  it("400s an unknown Trade (invalid_trade); a prototype-pollution key does not resolve", async () => {
+    const bad = await g(admin, "/api/subcontracts/exhibit-templates?trade=Plumbing");
+    expect(bad.status).toBe(400);
+    expect((await json<{ error: string }>(bad)).error).toBe("invalid_trade");
+    // A missing ?trade is also invalid_trade (not a 500).
+    expect((await g(admin, "/api/subcontracts/exhibit-templates")).status).toBe(400);
+    // Own-property guard: __proto__ / constructor must not resolve to an Object.prototype built-in.
+    expect((await g(admin, "/api/subcontracts/exhibit-templates?trade=__proto__")).status).toBe(400);
+    expect((await g(admin, "/api/subcontracts/exhibit-templates?trade=constructor")).status).toBe(400);
+  });
+
+  it("401s no session; 403s without cap.subcontracts.manage (prove-the-control-bites)", async () => {
+    expect((await call("/api/subcontracts/exhibit-templates?trade=Fencing")).status).toBe(401);
+    expect((await g(submitter, "/api/subcontracts/exhibit-templates?trade=Fencing")).status).toBe(403);
   });
 });
 

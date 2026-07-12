@@ -25,6 +25,7 @@ vi.mock("../../lib/subcontracts", async (importOriginal) => {
     generateSubcontract: vi.fn(),
     supersedeSubcontract: vi.fn(),
     cancelSubcontract: vi.fn(),
+    fetchExhibitTemplate: vi.fn(),
   };
 });
 vi.mock("../../lib/api", () => ({ fetchJobs: vi.fn() }));
@@ -248,6 +249,55 @@ describe("SubcontractBuilderPage", () => {
     fireEvent.click(r.getByText("Generate subcontract"));
     await waitFor(() => expect(r.getByText(/Subcontract 2023\.126\.0\.0 generated/)).toBeTruthy());
     expect(r.getByText("+ New subcontract")).toBeTruthy(); // back on the tracker
+  });
+
+  it("selecting a trade with a blank Exhibit A pre-fills Article II from the trade template", async () => {
+    vi.mocked(api.fetchExhibitTemplate).mockResolvedValue({
+      trade: "AC Electrical",
+      template_key: "electrical",
+      article_ii: "ARTICLE II — THE WORK (electrical scope).",
+    });
+    const r = render(<SubcontractBuilderPage onBack={() => {}} />);
+    await waitFor(() => expect(api.fetchSubDrafts).toHaveBeenCalled());
+    fireEvent.click(r.getByText("+ New subcontract"));
+
+    // Exhibit A starts blank — the pre-fill precondition.
+    expect((r.getByLabelText("Exhibit A work text") as HTMLTextAreaElement).value).toBe("");
+
+    fireEvent.change(r.getByLabelText("Trade"), { target: { value: "AC Electrical" } });
+
+    // The trade resolves to its Article II body; the textarea fills and the source hint shows.
+    await waitFor(() => expect(api.fetchExhibitTemplate).toHaveBeenCalledWith("AC Electrical"));
+    await waitFor(() =>
+      expect((r.getByLabelText("Exhibit A work text") as HTMLTextAreaElement).value).toBe(
+        "ARTICLE II — THE WORK (electrical scope).",
+      ),
+    );
+    expect(r.getByText(/Article II pre-filled from the AC Electrical template/)).toBeTruthy();
+  });
+
+  it("selecting a trade does NOT clobber Exhibit A text the operator already wrote", async () => {
+    vi.mocked(api.fetchExhibitTemplate).mockResolvedValue({
+      trade: "Civil",
+      template_key: "civil",
+      article_ii: "TEMPLATE BODY — should never overwrite operator text.",
+    });
+    const r = render(<SubcontractBuilderPage onBack={() => {}} />);
+    await waitFor(() => expect(api.fetchSubDrafts).toHaveBeenCalled());
+    fireEvent.click(r.getByText("+ New subcontract"));
+
+    // Operator authors Exhibit A first, THEN picks a trade.
+    fireEvent.change(r.getByLabelText("Exhibit A work text"), {
+      target: { value: "Operator's bespoke scope." },
+    });
+    fireEvent.change(r.getByLabelText("Trade"), { target: { value: "Civil" } });
+
+    // No template fetch is issued and the operator's text stands — no pre-fill hint.
+    expect(api.fetchExhibitTemplate).not.toHaveBeenCalled();
+    expect((r.getByLabelText("Exhibit A work text") as HTMLTextAreaElement).value).toBe(
+      "Operator's bespoke scope.",
+    );
+    expect(r.queryByText(/Article II pre-filled/)).toBeNull();
   });
 
   it("tracker state machine: sent AND executed both offer Supersede; queued offers Cancel", async () => {

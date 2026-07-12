@@ -42,6 +42,14 @@ def sc_xlsx_filename(sc_number: str, job_name: str | None) -> str:
     )
 
 
+def sc_exhibit_filename(sc_number: str, job_name: str | None) -> str:
+    """The Exhibit A ``.docx`` file name: ``<Job>_Exhibit A_<sc_number>.docx`` (job-prefixed,
+    matching the Safety ``<job>_<...>`` file style). Falls back to ``Exhibit A <sc_number>.docx``
+    when the job name is empty (the number-only name)."""
+    job = safety_naming.job_folder_name(job_name or "").strip()
+    return f"{job}_Exhibit A_{sc_number}.docx" if job else f"Exhibit A {sc_number}.docx"
+
+
 def sc_pdf_filename(sc_number: str, job_name: str | None) -> str:
     """The Subcontract PDF file name: ``<Job>_Subcontract_<sc_number>.pdf`` (job-prefixed,
     matching the Safety ``<job>_<...>.pdf`` file style). Falls back to
