@@ -210,9 +210,9 @@ SHEET_PO_PENDING_REVIEW = 1816168087113604  # PO_Pending_Review — PO review/ap
 # registers these sheets only when non-zero, the same guard as the PO/vendor sheets).
 WORKSPACE_SUBCONTRACTS = 6073264716965764            # ITS — Subcontracts (build_subcontracts_workspace.py)
 FOLDER_SC_CONTROL = 5896629078255492                 # ITS — Subcontracts / Control
-SHEET_ITS_SUBCONTRACTORS = 0         # ITS_Subcontractors — subcontractor SoR (build_its_subcontractors_sheet.py)
-SHEET_SUBCONTRACT_LOG = 0            # Subcontract_Log — operator-visible ledger mirror of D1 (build_subcontract_log_sheet.py)
-SHEET_SUBCONTRACT_PENDING_REVIEW = 0  # Subcontract_Pending_Review — review/approve/send surface (build_subcontract_pending_review_sheet.py)
+SHEET_ITS_SUBCONTRACTORS = 2107762140991364          # ITS_Subcontractors — subcontractor SoR (build_its_subcontractors_sheet.py)
+SHEET_SUBCONTRACT_LOG = 1195034345951108             # Subcontract_Log — operator-visible ledger mirror of D1 (build_subcontract_log_sheet.py)
+SHEET_SUBCONTRACT_PENDING_REVIEW = 7950433787006852  # Subcontract_Pending_Review — review/approve/send surface (build_subcontract_pending_review_sheet.py)
 
 
 # ---- Reverse-lookup maps ------------------------------------------------
