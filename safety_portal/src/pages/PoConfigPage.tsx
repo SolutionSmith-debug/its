@@ -1,34 +1,39 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import type { FormEvent } from "react";
 import * as api from "../lib/po";
+import * as sub from "../lib/subcontracts";
 import { useAuth } from "../lib/auth";
 import { PageShell } from "../components/PageShell";
+import { TermsProfilesEditor } from "../components/TermsProfilesEditor";
 
-// PO Configuration (Administration) — the browser EDITOR for the three config classes that print on
-// every purchase order: the Purchaser identity (D5), the ship-to-state tax table (D8), and the
-// terms-library profiles (D6/S3). It reads the current values from the SAME session + cap.po.manage
-// routes the builder uses — GET /api/po/config (purchaser + tax) and GET /api/po/terms (the curated
-// profile view) — and, for an admin holding cap.po.manage, edits them through the §50 send-free queue.
+// PO/SC Configuration (Administration) — the browser EDITOR for the config classes that print on every
+// purchase order AND every subcontract. PO: the Purchaser identity (D5), the ship-to-state tax table
+// (D8), and the terms-library profiles (D6/S3). Subcontracts: the Contractor identity (SC-S2) and the
+// subcontract terms-library. It reads current values from the same cap-gated routes the builders use —
+// GET /api/po/config + /api/po/terms (cap.po.manage) and GET /api/subcontracts/config + /terms
+// (cap.subcontracts.manage) — and edits them through the §50 send-free queue.
 //
-// THE §50 BOUNDARY (made visible in the UI): purchaser/tax/terms live in version-controlled config
-// (po_materials/config/*.json) and sha256-PINNED terms files (po_materials/terms/*.md). Editing them
-// is a privileged code-actuation (Operational Standards §50) with a legal-review gate on terms text.
-// This editor NEVER writes those files directly — it POSTs a change to the cloud queue
-// (POST /api/config/requests, send-free), the Mac config daemon is the sole actuator that validates →
-// git-commits → auto-deploys the value. So the SPA can only QUEUE; the change goes live (or fails,
-// never silently) through the status monitor below. A new terms version ships legal_review: pending
-// and is NOT used on a PO until the operator clears it + points current_version at it — the editor
-// mints the version; activation is a separate operator step (the deliberate legal gate).
+// THE §50 BOUNDARY (made visible in the UI): these values live in version-controlled config
+// (po_materials|subcontracts/config/*.json) and sha256-PINNED terms files. Editing them is a privileged
+// code-actuation (Operational Standards §50) with a legal-review gate on terms text. This editor NEVER
+// writes those files directly — it POSTs a change to the cloud queue (POST /api/config/requests,
+// send-free), the Mac config daemon is the sole actuator that validates → git-commits → auto-deploys.
+// So the SPA can only QUEUE; the change goes live (or fails, never silently) through the status monitor
+// below. A new terms version ships legal_review: pending and is NOT used until the operator clears it +
+// points current_version at it — the editor mints the version; activation is a separate operator step.
 //
-// The read affordances are ungated (visibility for the office); ONLY the edit forms are wrapped in
-// {canManage} — and the Worker re-gates every write per-workstream (Invariant 2), so the SPA gating
-// is convenience, never the boundary.
+// The read affordances are visibility for the office; the edit forms are wrapped in {canManage} (PO,
+// cap.po.manage) / {canManageSub} (subcontracts, cap.subcontracts.manage). The Worker re-gates every
+// write per-workstream (Invariant 2), so the SPA gating is convenience, never the boundary. (Subcontract
+// Payment-terms editing is a fast-follow — the actuator needs the payment-cadence day fields the served
+// /api/subcontracts/config does not yet expose.)
 //
 // VISUAL: the same URS-Marine dash look as the Materials Catalog / Vendors admin pages — `.card
 // dash-section` blocks, gold-underlined `.jha__section-title` heads, `.dash-chip` chips, the shared
 // `.field` edit-form idiom, and the `.form-editor__*` status-monitor stepper reused from PublishMonitor.
 
 const WORKSTREAM = "po_materials";
+const SUB_WORKSTREAM = "subcontracts";
 
 /** Basis points → a fixed 2-decimal percent string (900 → "9.00%"). Integer-safe display. */
 function bpToPct(bp: number): string {
@@ -100,47 +105,35 @@ function FieldTextarea({
 // ── Editor form buffers (flat all-strings, per the admin edit-form idiom) ──────────────────────────
 type PurchaserForm = { entity: string; address_lines: string; phone: string; to: string; cc: string };
 type TaxRow = { state: string; name: string; rate: string }; // rate entered as a PERCENT string
-type TermsForm = { profile_id: string; target_version: string; text: string };
-type MakeCurrentForm = { profile_id: string; target_version: string; confirmed: boolean };
-type NewProfileForm = {
-  profile_id: string;
-  kind: "library" | "attach";
-  label: string;
-  description: string;
-  version_id: string; // library only
-  text: string; // library only
-  render_line: string; // attach only
-};
+// Subcontract Contractor identity (SC-S2). The terms editors own their own buffers in TermsProfilesEditor.
+type ContractorForm = { entity: string; address_lines: string; phone: string; signature_entity: string; prime_contractor_default: string };
 
 export function PoConfigPage({ onBack }: { onBack: () => void }) {
   const { user } = useAuth();
   const caps = user?.capabilities ?? [];
-  const canManage = caps.includes("cap.po.manage"); // UI affordance only — the Worker re-gates every write
+  const canManage = caps.includes("cap.po.manage"); // PO edit affordance — the Worker re-gates every write
+  const canManageSub = caps.includes("cap.subcontracts.manage"); // subcontract edit affordance
 
   const [config, setConfig] = useState<api.PoConfig | null>(null);
   const [terms, setTerms] = useState<api.TermsProfile[]>([]);
+  const [subConfig, setSubConfig] = useState<sub.SubcontractConfig | null>(null);
+  const [subTerms, setSubTerms] = useState<sub.TermsProfile[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // Write feedback (shared across the three editors) + a bump that re-polls the status monitor.
+  // Write feedback (shared across all editors) + a bump that re-polls the status monitor.
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [refreshSignal, setRefreshSignal] = useState(0);
+  const bumpRefresh = () => setRefreshSignal((n) => n + 1);
 
-  // Which editor is open + its buffer.
+  // Which JSON editor is open + its buffer (the terms editors own their own state in TermsProfilesEditor).
   const [purchaserOpen, setPurchaserOpen] = useState(false);
   const [pf, setPf] = useState<PurchaserForm>({ entity: "", address_lines: "", phone: "", to: "", cc: "" });
   const [taxOpen, setTaxOpen] = useState(false);
   const [taxRows, setTaxRows] = useState<TaxRow[]>([]);
-  const [termsOpen, setTermsOpen] = useState(false);
-  const [tf, setTf] = useState<TermsForm>({ profile_id: "", target_version: "", text: "" });
-  const [makeCurrentOpen, setMakeCurrentOpen] = useState(false);
-  const [mcf, setMcf] = useState<MakeCurrentForm>({ profile_id: "", target_version: "", confirmed: false });
-  const [mcVersions, setMcVersions] = useState<api.TermsVersionRow[]>([]);
-  const [mcCurrent, setMcCurrent] = useState<string | null>(null);
-  const [newProfileOpen, setNewProfileOpen] = useState(false);
-  const emptyNpf: NewProfileForm = { profile_id: "", kind: "library", label: "", description: "", version_id: "v1", text: "", render_line: "" };
-  const [npf, setNpf] = useState<NewProfileForm>(emptyNpf);
+  const [contractorOpen, setContractorOpen] = useState(false);
+  const [cf, setCf] = useState<ContractorForm>({ entity: "", address_lines: "", phone: "", signature_entity: "", prime_contractor_default: "" });
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -154,6 +147,10 @@ export function PoConfigPage({ onBack }: { onBack: () => void }) {
     } finally {
       setLoading(false);
     }
+    // Subcontract config loads independently — a degraded /subcontracts route (or an operator without
+    // cap.subcontracts.manage) must NOT blank the PO view; it just hides the subcontract group.
+    void sub.fetchSubcontractConfig().then(setSubConfig).catch(() => setSubConfig(null));
+    void sub.fetchTerms().then(setSubTerms).catch(() => setSubTerms([]));
   }, []);
 
   useEffect(() => {
@@ -196,27 +193,19 @@ export function PoConfigPage({ onBack }: { onBack: () => void }) {
     setTaxOpen(true);
   }
 
-  // Only library profiles have versioned, editable text (attach profiles render a fixed line).
-  const libraryTerms = terms.filter((t) => t.kind === "library");
-
-  // Pre-fill the textarea with a profile's CURRENT version text so the operator edits from the live
-  // wording rather than a blank box (they then save it as a NEW version via add_version). A failed
-  // fetch / no-editable-text profile leaves the box empty — the operator can still type from scratch.
-  async function loadTermsText(profileId: string) {
-    try {
-      const { text } = await api.fetchTermsText(profileId);
-      setTf((cur) => ({ ...cur, profile_id: profileId, text }));
-    } catch {
-      setTf((cur) => ({ ...cur, profile_id: profileId, text: "" }));
-    }
-  }
-
-  function openTerms() {
-    const first = libraryTerms[0]?.id ?? "";
-    setTf({ profile_id: first, target_version: "", text: "" });
+  // ── Contractor identity (SC-S2) editor open (seed the buffer from the current subcontract config) ─
+  function openContractor() {
+    if (!subConfig) return;
+    const c = subConfig.contractor;
+    setCf({
+      entity: c.entity,
+      address_lines: c.address_lines.join("\n"),
+      phone: c.phone,
+      signature_entity: c.signature_entity,
+      prime_contractor_default: c.prime_contractor_default,
+    });
     setMsg(null);
-    setTermsOpen(true);
-    if (first) void loadTermsText(first);
+    setContractorOpen(true);
   }
 
   // ── Editor submit (the 5-step envelope: guard → busy → await → reload+bump → catch → finally) ─────
@@ -302,166 +291,37 @@ export function PoConfigPage({ onBack }: { onBack: () => void }) {
     }
   }
 
-  async function submitTerms(e: FormEvent) {
+  async function submitContractor(e: FormEvent) {
     e.preventDefault();
     if (busy) return;
-    const profile_id = tf.profile_id.trim();
-    const targetVersion = tf.target_version.trim();
-    const text = tf.text.trim();
-    if (!profile_id) {
-      setMsg({ ok: false, text: "Pick a terms profile." });
+    const entity = cf.entity.trim();
+    const signature_entity = cf.signature_entity.trim();
+    const prime = cf.prime_contractor_default.trim();
+    if (!entity) {
+      setMsg({ ok: false, text: "The contractor entity is required." });
       return;
     }
-    if (!/^[a-z0-9_]+$/.test(targetVersion) || targetVersion.length > 64) {
-      setMsg({ ok: false, text: "The version name must be lowercase letters, numbers, and underscores (e.g. standard_17_v2)." });
+    if (!signature_entity) {
+      setMsg({ ok: false, text: "The signature entity is required." });
       return;
     }
-    if (!text) {
-      setMsg({ ok: false, text: "Enter the clause text for this version." });
+    if (!prime) {
+      setMsg({ ok: false, text: "The default prime contractor is required." });
       return;
     }
+    const address_lines = cf.address_lines.split("\n").map((s) => s.trim()).filter(Boolean);
+    if (address_lines.length === 0) {
+      setMsg({ ok: false, text: "Enter at least one address line." });
+      return;
+    }
+    const payload = { entity, address_lines, phone: cf.phone.trim(), signature_entity, prime_contractor_default: prime };
     setBusy(true);
     setMsg(null);
     try {
-      await api.submitConfigEdit({
-        workstream: WORKSTREAM,
-        artifact_key: "terms",
-        op: "add_version",
-        payload: { profile_id, text },
-        target_version: targetVersion,
-      });
-      setTermsOpen(false);
-      setMsg({
-        ok: true,
-        text: "Queued — the new terms version will be minted with legal_review: pending. Track it below.",
-      });
-      setRefreshSignal((n) => n + 1);
-    } catch (err) {
-      setMsg({ ok: false, text: err instanceof Error ? err.message : "Submit failed." });
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  // ── Make-current (the legal-activation op: clears legal_review + repoints current_version) ─────
-  async function loadVersions(profileId: string) {
-    try {
-      const v = await api.fetchTermsVersions(profileId);
-      setMcVersions(v.versions);
-      setMcCurrent(v.current_version);
-      // Default the pick to the first NON-current version (the one you'd typically activate).
-      const firstOther = v.versions.find((x) => x.version !== v.current_version)?.version;
-      setMcf({ profile_id: profileId, target_version: firstOther ?? v.current_version ?? "", confirmed: false });
-    } catch {
-      setMcVersions([]);
-      setMcCurrent(null);
-      setMcf({ profile_id: profileId, target_version: "", confirmed: false });
-    }
-  }
-
-  function openMakeCurrent() {
-    const first = libraryTerms[0]?.id ?? "";
-    setMcf({ profile_id: first, target_version: "", confirmed: false });
-    setMcVersions([]);
-    setMcCurrent(null);
-    setMsg(null);
-    setMakeCurrentOpen(true);
-    if (first) void loadVersions(first);
-  }
-
-  async function submitMakeCurrent(e: FormEvent) {
-    e.preventDefault();
-    if (busy) return;
-    if (!mcf.profile_id) {
-      setMsg({ ok: false, text: "Pick a terms profile." });
-      return;
-    }
-    if (!mcf.target_version) {
-      setMsg({ ok: false, text: "Pick a version to make current." });
-      return;
-    }
-    if (!mcf.confirmed) {
-      setMsg({ ok: false, text: "Confirm you have reviewed this version's legal text before making it live." });
-      return;
-    }
-    setBusy(true);
-    setMsg(null);
-    try {
-      await api.submitConfigEdit({
-        workstream: WORKSTREAM,
-        artifact_key: "terms",
-        op: "set_current",
-        payload: { profile_id: mcf.profile_id },
-        target_version: mcf.target_version,
-      });
-      setMakeCurrentOpen(false);
-      setMsg({
-        ok: true,
-        text: "Queued — the version will be cleared and made current after review + deploy. Track it below.",
-      });
-      setRefreshSignal((n) => n + 1);
-    } catch (err) {
-      setMsg({ ok: false, text: err instanceof Error ? err.message : "Submit failed." });
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  // ── New terms profile (create_profile — mint a brand-new profile) ─────────────────────────────
-  function openNewProfile() {
-    setNpf(emptyNpf);
-    setMsg(null);
-    setNewProfileOpen(true);
-  }
-
-  async function submitNewProfile(e: FormEvent) {
-    e.preventDefault();
-    if (busy) return;
-    const profile_id = npf.profile_id.trim();
-    const label = npf.label.trim();
-    if (!/^[a-z0-9_]+$/.test(profile_id) || profile_id.length > 64) {
-      setMsg({ ok: false, text: "The profile id must be lowercase letters, numbers, and underscores (e.g. vendor_acme)." });
-      return;
-    }
-    if (!label) {
-      setMsg({ ok: false, text: "Enter a short label for the profile." });
-      return;
-    }
-    const description = npf.description.trim();
-    let payload: Record<string, unknown>;
-    if (npf.kind === "library") {
-      const version_id = npf.version_id.trim();
-      const text = npf.text.trim();
-      if (!/^[a-z0-9_]+$/.test(version_id) || version_id.length > 64) {
-        setMsg({ ok: false, text: "The initial version id must be lowercase letters, numbers, and underscores (e.g. v1)." });
-        return;
-      }
-      if (!text) {
-        setMsg({ ok: false, text: "Enter the clause text for the initial version." });
-        return;
-      }
-      payload = { profile_id, kind: "library", label, version_id, text, ...(description ? { description } : {}) };
-    } else {
-      const render_line = npf.render_line.trim();
-      if (!render_line) {
-        setMsg({ ok: false, text: "Enter the reference line for the attached (negotiated) GTC." });
-        return;
-      }
-      payload = { profile_id, kind: "attach", label, render_line, ...(description ? { description } : {}) };
-    }
-    setBusy(true);
-    setMsg(null);
-    try {
-      await api.submitConfigEdit({ workstream: WORKSTREAM, artifact_key: "terms", op: "create_profile", payload });
-      setNewProfileOpen(false);
-      setMsg({
-        ok: true,
-        text:
-          npf.kind === "library"
-            ? "Queued — the new profile will be minted with its first version legal_review: pending, and cannot render on a PO until you make it current. Track it below."
-            : "Queued — the new attach profile will be minted. Track it below.",
-      });
-      setRefreshSignal((n) => n + 1);
+      await api.submitConfigEdit({ workstream: SUB_WORKSTREAM, artifact_key: "contractor", op: "edit", payload });
+      setContractorOpen(false);
+      setMsg({ ok: true, text: "Queued — the contractor change will go live after review. Track it below." });
+      bumpRefresh();
     } catch (err) {
       setMsg({ ok: false, text: err instanceof Error ? err.message : "Submit failed." });
     } finally {
@@ -471,12 +331,12 @@ export function PoConfigPage({ onBack }: { onBack: () => void }) {
 
   return (
     <PageShell onHome={onBack}>
-      <h2 className="page__heading">PO Configuration</h2>
+      <h2 className="page__heading">PO/SC Configuration</h2>
       <p className="muted po-config__intro">
-        The identity, tax, and terms values that print on every purchase order. An admin can edit
-        them here — each change is queued for review and takes effect (or fails, never silently) once
-        the operator&rsquo;s config actuator validates and deploys it. Editing terms text mints a new
-        version behind a legal-review gate; it is not used on a PO until the operator clears it.
+        The identity, tax, and terms values that print on every purchase order and subcontract. An
+        admin can edit them here — each change is queued for review and takes effect (or fails, never
+        silently) once the operator&rsquo;s config actuator validates and deploys it. Editing terms
+        text mints a new version behind a legal-review gate; it is not used until the operator clears it.
       </p>
 
       {msg && <div className={`banner ${msg.ok ? "banner--ok" : "banner--err"}`}>{msg.text}</div>}
@@ -638,243 +498,109 @@ export function PoConfigPage({ onBack }: { onBack: () => void }) {
               ))}
           </section>
 
-          {/* ── Terms-library profiles (D6/S3) ──────────────────────────────────────── */}
-          <section className="card dash-section" aria-label="Terms profiles">
-            <h3 className="jha__section-title">
-              Terms &amp; conditions profiles <span className="dash-pill">{terms.length}</span>
-            </h3>
-            {terms.length === 0 ? (
-              <p className="muted">No terms profiles configured.</p>
-            ) : (
-              <div className="dash-grid">
-                {terms.map((t) => (
-                  <section key={t.id} className="card" aria-label={`${t.label} terms profile`}>
-                    <div className="po-config__terms-head">
-                      <strong>{t.label}</strong>
-                    </div>
-                    <div className="dash-chips">
-                      <span className="dash-chip">{t.kind === "attach" ? "Attached" : "Library"}</span>
-                      {t.current_version && <span className="dash-chip">v: {t.current_version}</span>}
-                    </div>
-                    {t.description && <p className="muted po-config__terms-desc">{t.description}</p>}
-                    {t.kind === "attach" && t.render_line ? (
-                      <p className="muted po-config__line">{t.render_line}</p>
-                    ) : t.tokens.length > 0 ? (
-                      <div className="po-config__block">
-                        <div className="field__label">Substituted tokens</div>
-                        <div className="dash-chips">
-                          {t.tokens.map((tok) => (
-                            <span key={tok} className="dash-chip">
-                              {tok}
-                            </span>
-                          ))}
+          {/* ── PO terms-library profiles (D6/S3) — the SHARED editor, parameterized to po_materials ── */}
+          <TermsProfilesEditor
+            workstream={WORKSTREAM}
+            heading="Terms & conditions profiles"
+            terms={terms}
+            canManage={canManage}
+            busy={busy}
+            setBusy={setBusy}
+            fetchTermsText={api.fetchTermsText}
+            fetchTermsVersions={api.fetchTermsVersions}
+            submitConfigEdit={api.submitConfigEdit}
+            setMsg={setMsg}
+            onQueued={bumpRefresh}
+          />
+
+          {/* ── Subcontract config (SC-S2): Contractor identity + the subcontract terms library. Gated
+               on cap.subcontracts.manage (the read routes require it too). Payment-terms editing is a
+               fast-follow — the actuator needs payment-cadence day fields /subcontracts/config omits. ── */}
+          {canManageSub && (
+            <>
+              <section className="card dash-section" aria-label="Contractor identity">
+                <h3 className="jha__section-title">Contractor (subcontracts)</h3>
+                {subConfig ? (
+                  <>
+                    <div className="po-config__block">
+                      <div className="po-config__entity">{subConfig.contractor.entity}</div>
+                      {subConfig.contractor.address_lines.map((line, i) => (
+                        <div key={i} className="po-config__line muted">
+                          {line}
                         </div>
+                      ))}
+                      {subConfig.contractor.phone && (
+                        <div className="po-config__line muted">{subConfig.contractor.phone}</div>
+                      )}
+                    </div>
+                    <div className="po-config__block">
+                      <div className="field__label">Signature &amp; prime</div>
+                      <div className="dash-chips">
+                        <span className="dash-chip">Signs as: {subConfig.contractor.signature_entity}</span>
+                        <span className="dash-chip">Default prime: {subConfig.contractor.prime_contractor_default}</span>
                       </div>
-                    ) : null}
-                  </section>
-                ))}
-              </div>
-            )}
+                    </div>
+                    {contractorOpen ? (
+                      <form className="accounts__editor" onSubmit={submitContractor}>
+                        <FieldInput label="Entity (required)" value={cf.entity} onChange={(v) => setCf({ ...cf, entity: v })} />
+                        <FieldTextarea
+                          label="Address lines (one per line)"
+                          value={cf.address_lines}
+                          rows={3}
+                          maxLength={1000}
+                          onChange={(v) => setCf({ ...cf, address_lines: v })}
+                        />
+                        <FieldInput label="Phone" value={cf.phone} onChange={(v) => setCf({ ...cf, phone: v })} />
+                        <FieldInput
+                          label="Signature entity (required)"
+                          value={cf.signature_entity}
+                          onChange={(v) => setCf({ ...cf, signature_entity: v })}
+                        />
+                        <FieldInput
+                          label="Default prime contractor (required)"
+                          value={cf.prime_contractor_default}
+                          onChange={(v) => setCf({ ...cf, prime_contractor_default: v })}
+                        />
+                        <div className="jha__actions">
+                          <button className="btn btn--primary" type="submit">
+                            {busy ? "Working…" : "Queue change"}
+                          </button>
+                          <button className="btn btn--secondary" type="button" onClick={() => setContractorOpen(false)}>
+                            Cancel
+                          </button>
+                        </div>
+                      </form>
+                    ) : (
+                      <div className="jha__actions">
+                        <button className="btn btn--edit" type="button" onClick={openContractor}>
+                          Edit contractor
+                        </button>
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <p className="muted">Loading the subcontract contractor identity…</p>
+                )}
+              </section>
 
-            {canManage &&
-              (termsOpen ? (
-                <form className="accounts__editor" onSubmit={submitTerms}>
-                  <p className="po-config__legal-note" role="note">
-                    <strong>Legal-review gate.</strong> This mints a NEW terms version with{" "}
-                    <code>legal_review: pending</code>. It is NOT used on any PO until the operator
-                    clears the legal review and points the profile&rsquo;s <code>current_version</code>{" "}
-                    at it — the editor mints the version; activation is a separate operator step.
-                  </p>
-                  <label className="field">
-                    <span className="field__label">Profile</span>
-                    <select
-                      className="field__input"
-                      aria-label="Profile"
-                      value={tf.profile_id}
-                      onChange={(e) => void loadTermsText(e.target.value)}
-                    >
-                      {libraryTerms.map((t) => (
-                        <option key={t.id} value={t.id}>
-                          {t.label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <FieldInput
-                    label="New version name (lowercase, e.g. standard_17_v2)"
-                    value={tf.target_version}
-                    placeholder="standard_17_v2"
-                    onChange={(v) => setTf({ ...tf, target_version: v })}
-                  />
-                  <FieldTextarea
-                    label="Terms clause text"
-                    value={tf.text}
-                    rows={8}
-                    maxLength={8000}
-                    onChange={(v) => setTf({ ...tf, text: v })}
-                  />
-                  <div className="jha__actions">
-                    <button className="btn btn--primary" type="submit">
-                      {busy ? "Working…" : "Queue new version"}
-                    </button>
-                    <button className="btn btn--secondary" type="button" onClick={() => setTermsOpen(false)}>
-                      Cancel
-                    </button>
-                  </div>
-                </form>
-              ) : makeCurrentOpen ? (
-                <form className="accounts__editor" onSubmit={submitMakeCurrent}>
-                  <p className="po-config__legal-note" role="note">
-                    <strong>Legal activation.</strong> Making a version current CLEARS its legal review
-                    and points the profile&rsquo;s <code>current_version</code> at it, so new POs render
-                    it. This is the legally-significant step — confirm you have reviewed the exact clause
-                    text before making it live.
-                  </p>
-                  <label className="field">
-                    <span className="field__label">Profile</span>
-                    <select
-                      className="field__input"
-                      aria-label="Make-current profile"
-                      value={mcf.profile_id}
-                      onChange={(e) => void loadVersions(e.target.value)}
-                    >
-                      {libraryTerms.map((t) => (
-                        <option key={t.id} value={t.id}>
-                          {t.label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="field">
-                    <span className="field__label">Version to make current</span>
-                    <select
-                      className="field__input"
-                      aria-label="Version to make current"
-                      value={mcf.target_version}
-                      onChange={(e) => setMcf({ ...mcf, target_version: e.target.value })}
-                    >
-                      {mcVersions.map((v) => (
-                        <option key={v.version} value={v.version}>
-                          {v.version} — {v.legal_review}
-                          {v.version === mcCurrent ? " (current)" : ""}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="field">
-                    <span className="field__label">
-                      <input
-                        type="checkbox"
-                        aria-label="I have reviewed this version's legal text"
-                        checked={mcf.confirmed}
-                        onChange={(e) => setMcf({ ...mcf, confirmed: e.target.checked })}
-                      />{" "}
-                      I have reviewed this version&rsquo;s legal text — make it live.
-                    </span>
-                  </label>
-                  <div className="jha__actions">
-                    <button className="btn btn--primary" type="submit" disabled={busy || !mcf.confirmed}>
-                      {busy ? "Working…" : "Make it live"}
-                    </button>
-                    <button className="btn btn--secondary" type="button" onClick={() => setMakeCurrentOpen(false)}>
-                      Cancel
-                    </button>
-                  </div>
-                </form>
-              ) : newProfileOpen ? (
-                <form className="accounts__editor" onSubmit={submitNewProfile}>
-                  <p className="po-config__legal-note" role="note">
-                    <strong>New terms profile.</strong> This mints a brand-new profile. A{" "}
-                    <strong>Library</strong> profile ships its first version with{" "}
-                    <code>legal_review: pending</code> — it is selectable but does NOT render on a PO
-                    until the operator makes a version current. An <strong>Attach</strong> profile is a
-                    fixed reference line to an externally-negotiated GTC.
-                  </p>
-                  <FieldInput
-                    label="Profile id (lowercase, e.g. vendor_acme)"
-                    value={npf.profile_id}
-                    placeholder="vendor_acme"
-                    onChange={(v) => setNpf({ ...npf, profile_id: v })}
-                  />
-                  <label className="field">
-                    <span className="field__label">Kind</span>
-                    <select
-                      className="field__input"
-                      aria-label="Profile kind"
-                      value={npf.kind}
-                      onChange={(e) => setNpf({ ...npf, kind: e.target.value === "attach" ? "attach" : "library" })}
-                    >
-                      <option value="library">Library — versioned clause text</option>
-                      <option value="attach">Attach — reference line to a negotiated GTC</option>
-                    </select>
-                  </label>
-                  <FieldInput label="Label" value={npf.label} placeholder="ACME vendor terms" onChange={(v) => setNpf({ ...npf, label: v })} />
-                  <FieldInput label="Description (optional)" value={npf.description} onChange={(v) => setNpf({ ...npf, description: v })} />
-                  {npf.kind === "library" ? (
-                    <>
-                      <FieldInput
-                        label="Initial version id (lowercase, e.g. v1)"
-                        value={npf.version_id}
-                        placeholder="v1"
-                        onChange={(v) => setNpf({ ...npf, version_id: v })}
-                      />
-                      <FieldTextarea
-                        label="Initial version clause text"
-                        value={npf.text}
-                        rows={8}
-                        maxLength={8000}
-                        onChange={(v) => setNpf({ ...npf, text: v })}
-                      />
-                    </>
-                  ) : (
-                    <FieldTextarea
-                      label="Reference line (rendered verbatim on the PO)"
-                      value={npf.render_line}
-                      rows={3}
-                      maxLength={2000}
-                      onChange={(v) => setNpf({ ...npf, render_line: v })}
-                    />
-                  )}
-                  <div className="jha__actions">
-                    <button className="btn btn--primary" type="submit">
-                      {busy ? "Working…" : "Queue new profile"}
-                    </button>
-                    <button className="btn btn--secondary" type="button" onClick={() => setNewProfileOpen(false)}>
-                      Cancel
-                    </button>
-                  </div>
-                </form>
-              ) : (
-                <div className="jha__actions">
-                  <button className="btn btn--edit" type="button" onClick={openTerms}>
-                    Add a terms version
-                  </button>
-                  <button className="btn btn--edit" type="button" onClick={openMakeCurrent}>
-                    Make a version current
-                  </button>
-                  <button className="btn btn--edit" type="button" onClick={openNewProfile}>
-                    New terms profile
-                  </button>
-                </div>
-              ))}
-          </section>
-
-          {/* ── Subcontracts (provisioned placeholder — the SAME editor serves it later) ─────── */}
-          <section className="card dash-section po-config__placeholder" aria-label="Subcontracts (coming soon)">
-            <h3 className="jha__section-title">Subcontracts</h3>
-            <p className="muted">
-              Coming with the subcontract workflow — this editor already supports it; its artifacts
-              appear here once that workflow is built. No new page is needed.
-            </p>
-            <div className="jha__actions">
-              <button className="btn btn--secondary" type="button" disabled aria-disabled="true">
-                Edit subcontracts (coming soon)
-              </button>
-            </div>
-          </section>
+              <TermsProfilesEditor
+                workstream={SUB_WORKSTREAM}
+                heading="Subcontract terms profiles"
+                terms={subTerms}
+                canManage={canManageSub}
+                busy={busy}
+                setBusy={setBusy}
+                fetchTermsText={sub.fetchTermsText}
+                fetchTermsVersions={sub.fetchTermsVersions}
+                submitConfigEdit={api.submitConfigEdit}
+                setMsg={setMsg}
+                onQueued={bumpRefresh}
+              />
+            </>
+          )}
 
           {/* ── Status monitor — each queued change advances queued→validated→tested→live ─── */}
-          {canManage && <ConfigStatusMonitor refreshSignal={refreshSignal} />}
+          {(canManage || canManageSub) && <ConfigStatusMonitor refreshSignal={refreshSignal} />}
         </>
       )}
     </PageShell>
