@@ -77,15 +77,19 @@ CANONICAL_STATUS = frozenset({
 CANONICAL_WORKSTREAMS = frozenset({
     "safety_reports",
     "safety_portal",
-    "progress_reports",  # Progress Reporting workstream (P2+)
-    "field_ops",         # field-ops portal capture + job-tracker→Active-Jobs SoR mirror
+    "progress_reports",   # Progress Reporting workstream (P2+)
+    "field_ops",          # field-ops portal capture + job-tracker→Active-Jobs SoR mirror
+    "po_materials",       # Purchase-Order workstream (WS1; deterministic po_generate/po_poll/po_send)
+    "subcontracts",       # Subcontract-package generation (ADR-0003, deterministic)
+    "operator_dashboard", # WS2 operator dashboard (localhost obs + PIN-gated ACT surface)
     "box",
     "ci",
     "security",
     "docs",
     "infrastructure",
 })  # `null` is also valid (as Python None in YAML). Keep in sync with the table in
-# docs/operations/doc_conventions.md (#workstream-taxonomy).
+# docs/operations/doc_conventions.md (#workstream-taxonomy) AND doctrine_manifest.yaml
+# workstream_tags — this frozenset is the THIRD copy of that taxonomy (multi-surface).
 
 # Types that require a `date` field.
 DATE_REQUIRED_TYPES = frozenset({"session_log", "brief", "report"})
@@ -291,6 +295,16 @@ def lint_file(rel_path: Path) -> list[LintViolation]:
     if filename_violation is not None:
         violations.append(filename_violation)
 
+    # Session-log four-part verify block (landing evidence)
+    verify_block_violation = _check_session_log_verify_block(rel_path, doc_type, text)
+    if verify_block_violation is not None:
+        violations.append(verify_block_violation)
+
+    # Ephemeral ~/.claude/plans/ citation
+    plans_violation = _check_plans_citation(rel_path, text)
+    if plans_violation is not None:
+        violations.append(plans_violation)
+
     return violations
 
 
@@ -326,6 +340,64 @@ def _check_filename(rel_path: Path, doc_type: str | None) -> LintViolation | Non
             rule="filename-slug-case",
             severity="warn",
             message=f"slug should be lowercase; found {slug!r}",
+        )
+    return None
+
+
+# Markers of the canonical four-part verify block (docs/session_logs/README.md):
+# pytest / mypy / ruff / main-branch CI on the merge commit.
+VERIFY_BLOCK_MARKERS = ("pytest", "mypy", "ruff", "main-branch CI")
+
+# Ephemeral planning-file path that must NOT be cited as authoritative in a
+# committed doc — a fresh CC session cannot reach `~/.claude/plans/`.
+_PLANS_CITATION = re.compile(r"\.claude/plans/")
+
+
+def _strip_frontmatter(text: str) -> str:
+    """Return the body — everything after the closing frontmatter delimiter."""
+    if not (text.startswith("---\n") or text.startswith("---\r\n")):
+        return text
+    match = re.search(r"^---\s*$", text[4:], flags=re.MULTILINE)
+    return text[4 + match.end():] if match is not None else text
+
+
+def _check_session_log_verify_block(
+    rel_path: Path, doc_type: str | None, text: str
+) -> LintViolation | None:
+    """A session log must carry the four-part verify block (pytest / mypy / ruff /
+    main-branch CI on the merge commit) — the landing evidence a fresh session relies
+    on. Warn-only; grandfathered logs are skipped."""
+    if doc_type != "session_log" or _doc_likely_grandfathered(rel_path):
+        return None
+    body = _strip_frontmatter(text).lower()
+    missing = [m for m in VERIFY_BLOCK_MARKERS if m.lower() not in body]
+    if missing:
+        return LintViolation(
+            path=rel_path,
+            rule="session-log-verify-block",
+            severity="warn",
+            message=(
+                f"session log missing four-part verify marker(s) {missing} "
+                "(pytest / mypy / ruff / main-branch CI on merge commit; "
+                "see docs/session_logs/README.md)"
+            ),
+        )
+    return None
+
+
+def _check_plans_citation(rel_path: Path, text: str) -> LintViolation | None:
+    """Flag a committed doc that cites `~/.claude/plans/` (an ephemeral, uncommitted
+    planning file) as a source of truth — reference the committed doc that superseded
+    it instead. Warn-only."""
+    if _PLANS_CITATION.search(_strip_frontmatter(text)):
+        return LintViolation(
+            path=rel_path,
+            rule="plans-citation",
+            severity="warn",
+            message=(
+                "cites `~/.claude/plans/` (ephemeral, uncommitted) — reference the "
+                "committed doc that superseded it instead (a fresh CC session can't reach it)"
+            ),
         )
     return None
 
