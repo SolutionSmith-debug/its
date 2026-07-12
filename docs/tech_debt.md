@@ -34,18 +34,23 @@ all three verdicts CLEAN/WARN, no BLOCK). Deferred deliberately — none blocks 
   exposure (`subcontract_poll` spawns no subprocess). Widen `DAEMON_ROOT` to a root LIST covering the
   daemon-bearing packages if/when that guard is generalized — a shared change, matches the existing PO gap.
 
-## Subcontracts — SC-S3b Exhibit A blocked on the `exhibit_trade_templates` config artifact [OPEN 2026-07-11]
+## [RESOLVED 2026-07-12 — #538] Subcontracts — SC-S3b Exhibit A blocked on the `exhibit_trade_templates` config artifact [OPEN 2026-07-11]
 
 ADR-0003 scopes the subcontract package as Subcontract body + **Exhibit A** (Art I/III/IV/VI fixed +
 operator-authored trade-templated Art II) + SOV + fixed annex kit. SC-S3b (#534) shipped the **body .docx +
-SOV .xlsx** render (`subcontracts/subcontract_docx.py`), but **Exhibit A is not rendered** because SC-S2
-(#531) did not ship the `exhibit_trade_templates` config artifact its Art II needs (only `contractor.json`
-+ `payment_terms.json` + the body `terms/manifest.json` landed). Building Exhibit A ad-hoc would mean
-inventing legal Art I/III/IV/VI text + trade scaffolds not sourced from the corpus — deliberately deferred.
-**Trigger:** ship the `exhibit_trade_templates` config (transcribe Art I/III/IV/VI from the corpus
-`Blank/` Exhibit A templates; scaffold Art II per trade from `scratchpad/subk_seed/01_exhibit_a_general`
-+ `02_exhibit_a_electrical`), then add `render_exhibit_a_docx` to `subcontract_docx.py`. See
-`project_subcontracts-workflow` memory + the 2026-07-11_subcontracts-s3a-s3b session log.
+SOV .xlsx** render; Exhibit A was deferred because no `exhibit_trade_templates` config existed and building
+it ad-hoc would mean inventing legal text.
+
+**RESOLVED (#538, `eb6fe9d`):** the corpus turned out to already contain canonical per-trade Exhibit A
+templates (`05_Subcontracts` Kendall 2025.112 / Steger 2025.364, `Sub Name - Project Name_<trade>` files —
+project-identical). Built `subcontracts/exhibit/` (manifest + tokenized skeleton + 7 verbatim per-trade Art II
+bodies, sha-pinned), `exhibit.py` loader, `render_exhibit_a_docx` (render_package now emits the 3-file
+package), the poll's 3-file Box filing + inline attach, a cap-gated serve route, and the SPA builder pre-fill.
+Reviews CLEAN/CONFIRMED-RESOLVED (an ops-stds BLOCK on a fabricated recital was caught + reverted to verbatim
+corpus). The subcontract generator is now 100% built. Only NON-CORPUS trade = Specialty (honest operator
+placeholder — no corpus template). Residual (deferred, minor, non-blocking): `exhibit.py` has no Layer-A
+`legal_review` gate like the body's `terms.py` — intentional (verbatim-corpus skeleton + operator-authored
+Art II), pending a one-line Seth confirmation.
 
 ## Config editor (§50) — deferred follow-ups [OPEN 2026-07-10]
 
