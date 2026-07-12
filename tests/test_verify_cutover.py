@@ -245,6 +245,57 @@ def test_po_send_polling_gate_not_enrolled():
     assert "po_materials.po_send.scheduled_send_local" not in keys
 
 
+def test_operator_email_enrolled_and_sandbox_scanned():
+    """CO-3: system.operator_email (the last-resort Resend page recipient) must be a
+    production, sandbox-scanned global row — a mirror residue fails the cutover gate."""
+    row = next(
+        (r for r in vc.CONFIG_ROWS if r.key == "system.operator_email"),
+        None,
+    )
+    assert row is not None, "system.operator_email must be enrolled in CONFIG_ROWS"
+    assert row.workstream == "global"
+    assert row.requirement == "non_empty"
+    assert row.sandbox_scan is True
+
+
+def test_operator_email_mirror_value_fails_unless_allowed(monkeypatch):
+    """A mirror seths@evergreenmirror.com residue on the operator email fails the
+    production gate but passes the --allow-sandbox dress rehearsal."""
+    monkeypatch.setattr(
+        vc.smartsheet_client,
+        "get_setting",
+        _config_values({"system.operator_email": "seths@evergreenmirror.com"}),
+    )
+    assert not vc._check_config(OPTS).passed
+    assert vc._check_config(vc.Options(allow_sandbox=True)).passed
+
+
+def test_subcontract_gate_rows_enrolled_present_not_forced_true():
+    """Subcontracts scoped fully-in (2026-07-12). The three subcontract_poll gate rows are
+    asserted SEEDED PRESENT (non_empty — the dark-ship reflex), never forced 'true' (that
+    would demand the dark daemon go live). subcontract_poll reuses the safety_reports
+    worker_base_url row, so no new worker_base_url copy is enrolled."""
+    by_key = {r.key: r for r in vc.CONFIG_ROWS}
+    for gate in (
+        "subcontracts.subcontract_poll.polling_enabled",
+        "subcontracts.subcontract_poll.subcontractors_sync_enabled",
+        "subcontracts.subcontract_poll.status_sync_enabled",
+    ):
+        assert gate in by_key, f"{gate} must be enrolled in CONFIG_ROWS"
+        assert by_key[gate].workstream == "subcontracts"
+        assert by_key[gate].requirement == "non_empty", f"{gate} must be non_empty, not forced-true"
+
+
+def test_subcontract_send_rows_deferred_until_sc_s4():
+    """The SC-S4 subcontract SEND half is NOT built — its from_mailbox / scheduled_send_local /
+    send polling_enabled rows must NOT be enrolled yet (no daemon or rows exist; forcing a send
+    gate is a FIXED high-class External-Send-Gate decision)."""
+    keys = {r.key for r in vc.CONFIG_ROWS}
+    assert "subcontracts.subcontract_send.from_mailbox" not in keys
+    assert "subcontracts.subcontract_send.polling_enabled" not in keys
+    assert "subcontracts.subcontract_send.scheduled_send_local" not in keys
+
+
 def test_po_from_mailbox_mirror_value_fails_unless_allowed(monkeypatch):
     """A mirror procurement@evergreenmirror.com residue on the PO FROM address fails the
     production gate but passes the --allow-sandbox dress rehearsal (the enrollment's teeth)."""
@@ -399,7 +450,8 @@ def test_check_ids_unique_and_sequential():
 
 
 def test_required_secrets_cover_program_list():
-    # The 11 non-Box + Box triplet + PO token (docs/2026-07-09_aug7_delivery_program.md WS4).
+    # 11 non-Box + Box triplet + PO token + 2 dark-daemon bearers + operator PIN = 18
+    # (docs/2026-07-09_aug7_delivery_program.md WS4; +3 per operator directive 2026-07-12).
     assert len(vc.NON_BOX_SECRETS) == 11
     assert set(vc.BOX_SECRETS) == {
         "ITS_BOX_CLIENT_ID",
@@ -407,4 +459,12 @@ def test_required_secrets_cover_program_list():
         "ITS_BOX_REFRESH_TOKEN",
     }
     assert "ITS_PORTAL_PO_TOKEN" in vc.REQUIRED_SECRETS
-    assert len(vc.REQUIRED_SECRETS) == 15
+    assert len(vc.REQUIRED_SECRETS) == 18
+
+
+def test_dark_daemon_bearers_and_operator_pin_enrolled():
+    """Operator directive 2026-07-12: the config-actuator + subcontract-poll daemon
+    bearers and the operator-dashboard PIN are cutover-required even though their
+    consumers ship dark (same provision-even-while-dark rationale as ITS_PORTAL_PO_TOKEN)."""
+    for name in ("ITS_PORTAL_CONFIG_TOKEN", "ITS_PORTAL_SUB_TOKEN", "ITS_OPERATOR_PIN"):
+        assert name in vc.REQUIRED_SECRETS, f"{name} must be enrolled in REQUIRED_SECRETS"

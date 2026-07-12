@@ -40,7 +40,7 @@ through Phase C go/no-go BEFORE this list starts),
 |----------------|------------------------|
 | VC-01 `keychain` | CL-02 |
 | VC-02 `launchd` | CL-03 |
-| VC-03 `config` | CL-12 (+ the config half of CL-14) |
+| VC-03 `config` | CL-12, CL-36 (+ the config half of CL-14) |
 | VC-04 `daemon-health` | CL-24 |
 | VC-05 `review-queue` | CL-25 |
 | VC-06 `alerting` | CL-26 |
@@ -48,7 +48,7 @@ through Phase C go/no-go BEFORE this list starts),
 | VC-08 `d1-migrations` | CL-18 |
 | VC-09 `heartbeat-url` | CL-27 |
 | full run (all nine) | CL-30 |
-| (manual-only items) | CL-01, CL-05–CL-11, CL-13, CL-15–CL-17, CL-19–CL-23, CL-28, CL-29, CL-31–CL-33 |
+| (manual-only items) | CL-01, CL-05–CL-11, CL-13, CL-15–CL-17, CL-19–CL-23, CL-28, CL-29, CL-31–CL-35, CL-37–CL-39 |
 
 ## Procedure
 
@@ -57,10 +57,15 @@ through Phase C go/no-go BEFORE this list starts),
 - [ ] **CL-01 — burn-in go/no-go recorded.** The Jul-31 host go/no-go verdict
   exists in a session log (`ls docs/session_logs/2026-07-31*` or later naming
   it). No-go = the cutover date moves; do not proceed.
-- [ ] **CL-02 — Keychain complete on the production host** (15 secrets: 11
-  non-Box + Box triplet + `ITS_PORTAL_PO_TOKEN`).
+- [ ] **CL-02 — Keychain complete on the production host** (18 secrets: 11
+  non-Box + Box triplet + `ITS_PORTAL_PO_TOKEN` + the config-actuator (`ITS_PORTAL_CONFIG_TOKEN`)
+  and subcontract-poll (`ITS_PORTAL_SUB_TOKEN`) daemon bearers + the operator-dashboard
+  PIN (`ITS_OPERATOR_PIN`)).
   Verify: `python -m scripts.verify_cutover --only keychain` → PASS. (VC-01)
-- [ ] **CL-03 — the 11 daemons run on the production host only.**
+- [ ] **CL-03 — the 15 daemons run on the production host only** (po-send +
+  subcontract-poll load but stay runtime-dark via their `polling_enabled=false`
+  ITS_Config gates — loaded, not sending, so VC-02's shipped==loaded set-equality
+  passes).
   Verify: `python -m scripts.verify_cutover --only launchd` → PASS on the
   production host, AND on the dev box:
   `launchctl list | grep solutionsmith` prints nothing. (VC-02)
@@ -232,6 +237,45 @@ Order: intake → mirrors/trackers → compile → **send paths last**.
   `evergreenmirror.com`, zero blanks on active rows (a blank TO = HELD, never
   silent, but should be zero at cutover).
 
+### Subcontracts (operator-scoped fully in-scope incl. send, 2026-07-12)
+
+- [ ] **CL-34 — subcontract Worker deployed + D1 migrations 0049–0052 applied.**
+  The `worker/subcontract.ts` routes are live and D1 migrations 0049 (subcontractors),
+  0050 (subcontracts + sov_lines), 0051 (`cap.subcontracts.manage`), 0052 (region→state)
+  are applied on production D1 **before** the Worker deploys (deploy-order-critical,
+  forensic class #2).
+  Verify: `wrangler d1 migrations list <db> --remote` → none pending (VC-08 covers this
+  fleet-wide); a subcontract internal route returns 401 without its bearer.
+- [ ] **CL-35 — subcontract Worker secret + Keychain twin.** `PORTAL_SUB_API_TOKEN`
+  (wrangler secret) set on the production Worker, and its Keychain twin `ITS_PORTAL_SUB_TOKEN`
+  seeded (named by CL-02 / VC-01). The shared `ITS_PORTAL_HMAC_SECRET` must equal the Worker
+  payload secret (domain-separated `sub:v1`, not key-separated).
+- [ ] **CL-36 — subcontract poll gate rows seeded** (`seed_subcontracts_config.py` ran):
+  the three `subcontracts.subcontract_poll.{polling_enabled,subcontractors_sync_enabled,status_sync_enabled}`
+  rows exist (seeded `false`, dark). Verify: VC-03 asserts presence. The daemon ships dark —
+  activation is a later operator cell-flip after the SC-S3c live smoke.
+- [ ] **CL-37 — subcontract review + registry shares (F22 = §46 membership).** The
+  `Subcontract_Pending_Review` review-twin sheet and the `ITS — Subcontracts` workspace
+  share list carry the production approver identities (send/execute approval authority is
+  workspace membership, not a portal capability). `ITS_Subcontractors` seeded
+  (`seed_its_subcontractors.py`).
+- [ ] **CL-38 — subcontract SEND half (SC-S4) — BUILD DEPENDENCY, not yet built (deferred — do NOT check for Aug-7).**
+  Subcontracts is scoped fully-in incl. send, but the send half (`subcontract_send.py` +
+  F22 approval + executed-countersign + send-poller plist) is **NOT built** (only a commented
+  stub in `tests/test_capability_gating.py`). Its send-config rows
+  (`subcontract_send.from_mailbox` / `scheduled_send_local` / `polling_enabled`) are
+  deliberately NOT enrolled in VC-03 until SC-S4 lands. **SC-S4 must ship + live-smoke before
+  subcontract SEND is in the Aug-7 send scope — a separate SC-S4 engineering brief (Seth);
+  this docs pass does not build it.**
+
+### Production Worker topology
+
+- [ ] **CL-39 — production Worker is a SECOND Worker + D1** (not a route-swap on the mirror
+  Worker), so the mirror Worker (`safety.evergreenmirror.com`) and rollback **R1** stay intact
+  (operator decision 2026-07-12; see `docs/operations/production_worker_route_decision.md`).
+  Verify: the production `wrangler` env/route points at the production custom domain; the mirror
+  Worker is untouched (still resolves + serves).
+
 ### Final gate + Day-7
 
 - [ ] **CL-30 — THE GATE:** `python -m scripts.verify_cutover` (full run, no
@@ -275,9 +319,10 @@ plist or installer change is a code change (high-class).
 
 ## Validation
 
-The cutover is done when CL-01 … CL-32 are all checked, CL-30's full
-`verify_cutover` output (exit 0) is pasted in the cutover session log, and
-CL-33 is scheduled with a named date. Anything less is §52
+The cutover is done when CL-01 … CL-32, CL-34–CL-37, and CL-39 are all checked,
+CL-30's full `verify_cutover` output (exit 0) is pasted in the cutover session log,
+and CL-33 is scheduled with a named date. (CL-38 is a deferred SC-S4 build
+dependency — explicitly NOT required for Aug-7 done.) Anything less is §52
 narrated-not-enforced — not done.
 
 ## Owner

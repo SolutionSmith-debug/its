@@ -51,13 +51,13 @@ Teala recipient + vendor lists, the 7 approver accounts, Box production account,
 
 ## ② Jul 13 — Phase B one-way flip (~30-min ORDERED window; do NOT parallelize)
 Ref: `host_migration_runbook.md` Phase B. #1 hazard = daemon double-run. **Must not slip past Jul 14.**
-- [ ] (1) dev box: unload all 11 daemons.
+- [ ] (1) dev box: unload all 15 daemons.
 - [ ] (2) verify `launchctl list | grep solutionsmith` prints **nothing** on the dev box.
 - [ ] (3) verify plists REMOVED from `~/Library/LaunchAgents`.
 - [ ] (4) rsync `state/` + `.watchdog/` markers to the new host.
 - [ ] (5) Box re-auth via a fresh `setup_box_oauth.py` on the **new host ONLY** — never run Box code
   on the dev box again.
-- [ ] (6) `git pull origin main` on the new host, then load all 11.
+- [ ] (6) `git pull origin main` on the new host, then load all 15.
 - [ ] (7) verification gate: labels loaded, fresh Check-C markers, ITS_Daemon_Health advancing, portal
   round-trip, **and the UptimeRobot prove-it-bites** (unload watchdog → wait 35 min → alert must
   ARRIVE → reload).
@@ -128,7 +128,7 @@ Ref: `aug7_delivery_runbook.md`. Thu Aug 6 = T-1 buffer (no build work). HARD CO
 - [ ] Transport window: enter `system.state=MAINTENANCE` + UptimeRobot maintenance window; graceful
   shutdown after portal_poll quiets.
 - [ ] On-site: the **7 ordered install gates** (do not demo past a red gate) — power/placement, network
-  (outbound 443), boot+login → `launchctl list | grep -c solutionsmith` = **11**, Tailscale reverse
+  (outbound 443), boot+login → `launchctl list | grep -c solutionsmith` = **15**, Tailscale reverse
   access over hotspot, clear MAINTENANCE→ACTIVE, `verify_cutover` re-run on-site (exit 0, paste to log),
   fresh Check-C markers.
 - [ ] Demo (~40 min, mind the Friday-14:00 `weekly_generate` rule — narrate it live or pre-empt via
