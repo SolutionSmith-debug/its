@@ -13,7 +13,7 @@
           "file": "standard_subcontract_v1.md",
           "sha256": "52bb4a6ddab83da42074631d7067b623136a8cff5998ae6c065aa99993054b48",
           "tokens": ["agreement_date", "contract_price_clause", "contractor_entity", "governing_law_state_name", "governing_law_venue", "owner_entity", "prime_contractor", "project_name", "signature_entity", "subcontractor_entity"],
-          "legal_review": "pending"
+          "legal_review": "cleared"
         }
       }
     },
