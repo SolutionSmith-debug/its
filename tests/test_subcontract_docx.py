@@ -50,16 +50,34 @@ def _seed_terms(tmp_path, legal_review="cleared"):
         b"2.1\tThe Contract Price is {{contract_price_clause}}, governed by the laws of "
         b"{{governing_law_state_name}}.\n"
     )
+    # An attach-kind reference body (title + a heading + the price/render_line/signature tokens) for
+    # the negotiated_msa render_package path.
+    attach = (
+        b"SUBCONTRACT AGREEMENT\n\n"
+        b"THIS AGREEMENT by and between {{contractor_entity}} and {{subcontractor_entity}} "
+        b"for {{project_name}}.\n"
+        b"2.\tCONTRACT PRICE:\n"
+        b"2.1\tThe Contract Price is {{contract_price_clause}}.\n"
+        b"3.\tGOVERNING TERMS:\n"
+        b"3.1\t{{render_line}}\n"
+        b"{{signature_entity}} SUBCONTRACTOR\n"
+    )
     tdir = tmp_path / "terms"
     tdir.mkdir()
     (tdir / "b_v1.md").write_bytes(body)
+    (tdir / "attach_reference.md").write_bytes(attach)
     (tdir / "manifest.json").write_text(json.dumps({
-        "manifest_version": 1, "profiles": {"standard_subcontract": {
-            "kind": "library", "current_version": "v1",
-            "versions": {"v1": {"file": "b_v1.md", "sha256": hashlib.sha256(body).hexdigest(),
-                                "tokens": ["contractor_entity", "subcontractor_entity", "project_name",
-                                           "contract_price_clause", "governing_law_state_name"],
-                                "legal_review": legal_review}}}}}), encoding="utf-8")
+        "manifest_version": 1, "profiles": {
+            "standard_subcontract": {
+                "kind": "library", "current_version": "v1",
+                "versions": {"v1": {"file": "b_v1.md", "sha256": hashlib.sha256(body).hexdigest(),
+                                    "tokens": ["contractor_entity", "subcontractor_entity", "project_name",
+                                               "contract_price_clause", "governing_law_state_name"],
+                                    "legal_review": legal_review}}},
+            "negotiated_msa": {
+                "kind": "attach",
+                "render_line": "THE WORK IS UNDER, AND SUBJECT TO, THE NEGOTIATED MSA."},
+        }}), encoding="utf-8")
     cdir = tmp_path / "config"
     cdir.mkdir()
     (cdir / "contractor.json").write_text(json.dumps({**_CONTRACTOR}), encoding="utf-8")
@@ -255,6 +273,22 @@ def test_render_package_returns_three_artifacts(tmp_path, monkeypatch):
     pkg = sd.render_package(_record(), _SOV)
     assert set(pkg) == {"Subcontract.docx", "Exhibit A.docx", "Annex C - Schedule of Values.xlsx"}
     assert all(isinstance(v, bytes) and v[:2] == b"PK" and len(v) > 500 for v in pkg.values())
+
+
+def test_render_package_attach_profile_renders_reference_not_fence(tmp_path, monkeypatch):
+    """A negotiated_msa (attach) subcontract renders a THREE-file package — the one-page reference body
+    (render_line present) + Exhibit A + Annex C — instead of fencing on 'attach-kind has no text'."""
+    _cleared(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        terms, "_ATTACH_REFERENCE_SHA256",
+        hashlib.sha256((terms.TERMS_DIR / "attach_reference.md").read_bytes()).hexdigest(),
+    )
+    pkg = sd.render_package(_record(), _SOV, terms_profile_id="negotiated_msa")
+    assert set(pkg) == {"Subcontract.docx", "Exhibit A.docx", "Annex C - Schedule of Values.xlsx"}
+    assert all(isinstance(v, bytes) and v[:2] == b"PK" and len(v) > 500 for v in pkg.values())
+    joined = "\n".join(p.text for p in Document(io.BytesIO(pkg["Subcontract.docx"])).paragraphs)
+    assert terms.render_line("negotiated_msa") in joined  # the MSA reference line rendered
+    assert "{{" not in joined
 
 
 def test_deterministic_core_property_timestamp(tmp_path, monkeypatch):

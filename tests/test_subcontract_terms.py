@@ -10,6 +10,7 @@ import re
 from pathlib import Path
 
 from shared import picklist_validation
+from subcontracts import terms
 
 _TERMS_DIR = Path(__file__).resolve().parents[1] / "subcontracts" / "terms"
 _TOKEN_RE = re.compile(r"\{\{([a-z_]+)\}\}")
@@ -27,6 +28,17 @@ def test_manifest_contains_the_seeded_profiles():
     assert m["manifest_version"] == 1
     assert isinstance(m["profiles"], dict) and m["profiles"]
     assert {"standard_subcontract", "negotiated_msa"} <= set(m["profiles"])
+
+
+def test_attach_reference_body_is_sha_pinned_and_loads():
+    # The committed attach_reference.md matches the module sha-pin — load_attach_reference RAISES on
+    # any drift (immutable-file contract), so a clean load IS the pin-matches proof. Assert shape /
+    # presence, not the pinned prose (HOUSE_REFLEXES §5).
+    text = terms.load_attach_reference()
+    assert "SUBCONTRACT AGREEMENT" in text
+    assert "{{render_line}}" in text  # the marker the attach render fills from the manifest
+    # The attach profile carries a usable render_line (attach-kind, no versioned body).
+    assert terms.render_line("negotiated_msa").strip()
 
 
 def test_standard_body_file_hash_and_tokens_match_manifest():
