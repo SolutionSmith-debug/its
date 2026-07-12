@@ -1946,7 +1946,3 @@ h3,
 .po-config__tax-edit-row .field--rate {
   max-width: 8rem;
 }
-/* The provisioned-but-empty Subcontracts card reads as visibly inactive. */
-.po-config__placeholder {
-  opacity: 0.6;
-}

@@ -86,7 +86,7 @@ This is the operator reference for **ITS_Config** — the Smartsheet sheet where
 | Setting | Type | Default | Purpose | Read by |
 |---|---|---|---|---|
 | `progress_reports.intake_enabled` | bool | false | FOOTGUN: the progress-intake gate is read under Workstream='safety_reports' (intake's own workstream), NOT 'progress_reports' — seed it there. | safety_reports.intake |
-| `safety_reports.box.portal_root_folder_id` | str | *(unset)* | Shared Box mirror-tree root; owned by safety_reports. The drafts pass files PO PDFs under ROOT→<job>→'Purchase Orders'. | po_materials.po_poll, safety_reports.intake, safety_reports.portal_poll, safety_reports.weekly_generate |
+| `safety_reports.box.portal_root_folder_id` | str | *(unset)* | Shared Box mirror-tree root; owned by safety_reports. The drafts pass files PO PDFs under ROOT→<job>→'Purchase Orders'. | po_materials.po_poll, safety_reports.intake, safety_reports.portal_poll, safety_reports.weekly_generate, subcontracts.subcontract_poll |
 | `safety_reports.compile_now_poll.polling_enabled` | bool | true | Runtime on/off gate for the safety_reports.compile_now_poll daemon. False pauses it without unloading its launchd job (the canonical runtime gate, distinct from the report-filter Enabled checkbox). | safety_reports.compile_now_poll |
 | `safety_reports.evergreen_contact_name` | str | the Evergreen Renewables office | The name ITS uses for the Evergreen Renewables office/contact in this workstream's report copy. | safety_reports.weekly_generate |
 | `safety_reports.intake.allowed_senders` | str | *(unset)* | Comma-separated sender allowlist for the intake extraction path (the retired email-PDF intake; the live path is the portal PULL). Empty = none set. | safety_reports.intake |
@@ -96,7 +96,7 @@ This is the operator reference for **ITS_Config** — the Smartsheet sheet where
 | `safety_reports.intake.mailbox` | str | safety@evergreenmirror.com | The mailbox the (now-dormant, legacy) safety email-intake path read from. The live path is the portal PULL model; this remains for the retired email caller. | safety_reports.intake |
 | `safety_reports.intake.review_queue_on_low_confidence` | bool | true | Whether a below-threshold extraction is routed to the Review Queue (true) rather than dropped. | safety_reports.intake |
 | `safety_reports.photo_screen.clamav_enabled` | bool | false | Turns on the ClamAV leg of the §34 photo screen (magic + Pillow verify + re-encode always run; this adds the AV scan). Default OFF. | safety_reports.intake, safety_reports.portal_poll |
-| `safety_reports.portal.worker_base_url` | str | *(unset)* | Shared Worker base URL; owned by safety_reports, read here too. | field_ops.fieldops_sync, po_materials.po_poll, safety_reports.portal_poll, safety_reports.publish_daemon, watchdog |
+| `safety_reports.portal.worker_base_url` | str | *(unset)* | Shared Worker base URL; owned by safety_reports, read here too. | field_ops.fieldops_sync, po_materials.po_poll, safety_reports.portal_poll, safety_reports.publish_daemon, subcontracts.subcontract_poll, watchdog |
 | `safety_reports.portal_poll.polling_enabled` | bool | true | Runtime on/off gate for the safety_reports.portal_poll daemon. False pauses it without unloading its launchd job (the canonical runtime gate, distinct from the report-filter Enabled checkbox). | safety_reports.portal_poll |
 | `safety_reports.publish_daemon.polling_enabled` | bool | false | Runtime on/off gate for the safety_reports.publish_daemon daemon. False pauses it without unloading its launchd job (the canonical runtime gate, distinct from the report-filter Enabled checkbox). | safety_reports.publish_daemon |
 | `safety_reports.weekly_generate.job_timeout_seconds` | int | 600 | Per-job wall-clock ceiling (seconds) for the safety_reports.weekly_generate weekly compile; a job exceeding it is fenced to the Review Queue, not left to hang. | safety_reports.weekly_generate |
@@ -104,6 +104,14 @@ This is the operator reference for **ITS_Config** — the Smartsheet sheet where
 | `safety_reports.weekly_send.from_mailbox` | str | safety@evergreenmirror.com | The M365 mailbox the safety_reports.weekly_send send daemon sends approved email FROM. | safety_reports.weekly_send, safety_reports.weekly_send_poll |
 | `safety_reports.weekly_send.polling_enabled` | bool | true | Runtime on/off gate for the safety_reports.weekly_send daemon. False pauses it without unloading its launchd job (the canonical runtime gate, distinct from the report-filter Enabled checkbox). | safety_reports.weekly_send_poll |
 | `safety_reports.weekly_send.scheduled_send_local` | str | MON 07:00 | Local-time window (e.g. `MON 07:00`) at/after which a row approved with **Approve for Scheduled Send** may dispatch on the safety_reports.weekly_send path. | safety_reports.weekly_send_poll |
+
+## subcontracts
+
+| Setting | Type | Default | Purpose | Read by |
+|---|---|---|---|---|
+| `subcontracts.subcontract_poll.polling_enabled` | bool | false | Runtime on/off gate for the subcontracts.subcontract_poll daemon. False pauses it without unloading its launchd job (the canonical runtime gate, distinct from the report-filter Enabled checkbox). | subcontracts.subcontract_poll |
+| `subcontracts.subcontract_poll.status_sync_enabled` | bool | false | Sub-gate for subcontracts.subcontract_poll: sync statuses back to the portal. | subcontracts.subcontract_poll |
+| `subcontracts.subcontract_poll.subcontractors_sync_enabled` | bool | false | Gate for subcontract_poll's §51 subcontractor-sync passes: the ITS_Subcontractors full-replace down-sync into the Worker's D1 cache AND the dirty-subcontractor up-sync back into ITS_Subcontractors (bridge-key find-or-create by Sub Key). Ships dark. | subcontracts.subcontract_poll |
 
 ## Where this comes from
 

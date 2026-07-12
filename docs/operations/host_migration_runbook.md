@@ -52,7 +52,7 @@ tenant cutover lands on the same machine (no second migration).
    `~/Library/LaunchAgents/` would come alive at the next login. Therefore
    **Phase A does not install plists at all** — it only renders + lints via
    `scripts/launchd/install.sh dry-run <name>` and verifies no `__…__`
-   placeholder survives. The actual `load` of all 11 happens in **Phase B**,
+   placeholder survives. The actual `load` of all 15 happens in **Phase B**,
    AFTER the dev box is verified empty.
    > **Program-doc amendment (explicit):** the program doc's Phase-A line
    > "plists installed UNLOADED" is **amended by this runbook** — there is no
@@ -136,7 +136,7 @@ All three green = the host can run ITS code. Any failure here is a
 provisioning defect — fix before proceeding (do not carry a red gate into
 Phase B).
 
-### A5 — Keychain re-seed: the 11 non-Box secrets (+ 1 pending)
+### A5 — Keychain re-seed: the 11 non-Box secrets (+ 4 pending)
 
 Seed each with the interactive form (Hazard 1):
 
@@ -158,8 +158,12 @@ security add-generic-password -a "$USER" -s ITS_SMARTSHEET_TOKEN -w
 | 10 | `ITS_PORTAL_ADMIN_TOKEN` | portal admin CLI |
 | 11 | `ITS_PORTAL_FIELDOPS_TOKEN` | fieldops_sync bearer |
 | — | `ITS_PORTAL_PO_TOKEN` | **PENDING** — seed once the operator provisions it (WS1 S2); required by cutover day (`verify_cutover` VC-01 names it until then) |
+| — | `ITS_PORTAL_CONFIG_TOKEN` | **PENDING** — config-actuator (§50) daemon bearer; loaded-but-runtime-dark, required by cutover (VC-01) |
+| — | `ITS_PORTAL_SUB_TOKEN` | **PENDING** — subcontract-poll daemon bearer; loaded-but-runtime-dark, required by cutover (VC-01) |
+| — | `ITS_OPERATOR_PIN` | **PENDING** — operator-dashboard ACT-surface PIN (manual-start, no plist); required by cutover (VC-01) |
 
-**Box triplet deliberately absent** (Hazard 2).
+**Box triplet deliberately absent** (Hazard 2). Total VC-01 required = **18** (11
+core non-Box seeded here + Box triplet in Phase B + 4 pending above).
 
 Verify loop — presence + plausible length, values never printed:
 
@@ -186,7 +190,7 @@ loop run on the dev box (a truncated paste shows up as a length mismatch).
 
 ### A6 — launchd render + lint ONLY (no load — Hazard 3)
 
-For each of the 11 plists in `scripts/launchd/`:
+For each of the 15 daemon plists in `scripts/launchd/`:
 
 ```bash
 cd ~/its/scripts/launchd
@@ -235,7 +239,7 @@ The #1 program hazard is a **daemon double-run**: Box refresh-token rotation
 is single-consumer, double polls double-write, and two watchdogs mask one
 dead heartbeat. The order below is non-negotiable; do not parallelize.
 
-1. **Dev box — unload all 11:**
+1. **Dev box — unload all 15:**
 
    ```bash
    cd ~/its/scripts/launchd
@@ -269,13 +273,13 @@ dead heartbeat. The order below is non-negotiable; do not parallelize.
    `ITS_BOX_CLIENT_ID` / `ITS_BOX_CLIENT_SECRET` / `ITS_BOX_REFRESH_TOKEN`).
    From this moment, **never run Box-consuming code on the dev box again** —
    the first refresh on the new host invalidates the dev box's token lineage.
-6. **New host — bring the repo current, then load all 11:**
+6. **New host — bring the repo current, then load all 15:**
 
    ```bash
    git -C ~/its pull origin main   # never load from a stale checkout
    cd ~/its/scripts/launchd
    for p in org.solutionsmith.its.*.plist; do ./install.sh load "${p%.plist}"; done
-   ./install.sh status             # all 11 listed
+   ./install.sh status             # all 15 listed (po-send + subcontract-poll loaded, runtime-dark)
    ```
 
 7. **Verification gates (all must pass before declaring the flip done):**
@@ -316,8 +320,9 @@ Per the program master calendar:
 
 ## Validation
 
-- Phase A done = A4 three-gate green + A5 verify loop 11/11 + A6 loop prints
-  11 `ok:` lines + A7 smokes green.
+- Phase A done = A4 three-gate green + A5 verify loop 11/11 (the 11 core non-Box
+  secrets; the 4 pending are provisioned separately) + A6 loop prints 15 `ok:`
+  lines + A7 smokes green.
 - Phase B done = step-7 table fully green, **including** the UptimeRobot
   prove-it-bites.
 - Phase C done = Jul-31 go/no-go recorded (session log), zero unexplained
