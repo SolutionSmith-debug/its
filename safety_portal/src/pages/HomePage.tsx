@@ -19,10 +19,11 @@ export type HomeNav =
   | "subcontractors"
   | "subcontract-builder";
 
-/** R7 — Home is grouped into three headed sections (it had grown into a 10-card flat wall under
- *  a single "Daily forms" heading, A4). Section membership is presentation only: every card keeps
- *  its exact capability gate and view key. */
-type HomeSectionKey = "forms" | "field" | "admin";
+/** R7 — Home is grouped into headed sections (it had grown into a 10-card flat wall under a single
+ *  "Daily forms" heading, A4; the office-facing management cards split into their own "Office
+ *  operations" section 2026-07). Section membership is presentation only: every card keeps its
+ *  exact capability gate and view key. */
+type HomeSectionKey = "forms" | "field" | "office" | "admin";
 
 interface HomeCard {
   key: HomeNav;
@@ -37,6 +38,7 @@ interface HomeCard {
 const HOME_SECTIONS: { key: HomeSectionKey; heading: string }[] = [
   { key: "forms", heading: "Daily forms" },
   { key: "field", heading: "Field operations" },
+  { key: "office", heading: "Office operations" },
   { key: "admin", heading: "Administration" },
 ];
 
@@ -93,6 +95,25 @@ const HOME_CARDS: HomeCard[] = [
     desc: "Who is where, and per-person hour history.",
     section: "field",
   },
+  // ── Office operations (2026-07): the office-facing management cards — POs, subcontracts, and the
+  //    catalogs/directories/checklists behind them. Array order here IS the two-wide display order.
+  //    Every card keeps its exact capability gate + view key; this is a presentation regrouping only.
+  {
+    key: "po-builder",
+    cap: "cap.po.manage",
+    badge: "Admin",
+    title: "Purchase Orders",
+    desc: "Build a vendor PO — line items, tax, and terms — then track it from draft to sent.",
+    section: "office",
+  },
+  {
+    key: "subcontract-builder",
+    cap: "cap.subcontracts.manage",
+    badge: "Admin",
+    title: "Subcontracts",
+    desc: "Build a subcontract package — scope, schedule of values, and terms — then track it from draft to executed.",
+    section: "office",
+  },
   {
     key: "fieldops-inspections",
     cap: "cap.checklist.manage",
@@ -101,27 +122,19 @@ const HOME_CARDS: HomeCard[] = [
     // Daily Field Report form definition; the default-checklist editor was retired). Key unchanged.
     title: "Checklists",
     desc: "Author reusable inspection checklists and assign them to a manager or subcontractor.",
-    section: "admin",
+    section: "office",
   },
   {
     key: "materials-catalog",
     cap: "cap.materials.manage",
     badge: "Admin",
     title: "Materials Catalog",
-    // Moved to Administration (2026-07): the datasheet-backed material TYPE catalog now also feeds
-    // the purchase-order line-item picker, so it sits beside the PO cards. Gate unchanged
+    // Office operations (2026-07): the datasheet-backed material TYPE catalog also feeds the
+    // purchase-order line-item picker, so it sits beside the PO cards. Gate unchanged
     // (cap.materials.manage — admin only); the page's list read still needs cap.materials.receive,
     // which admin also holds (migration 0013 catch-all), so access neither breaks nor widens.
     desc: "The datasheet-backed material type catalog behind purchase-order line items — add, edit, and retire types.",
-    section: "admin",
-  },
-  {
-    key: "po-builder",
-    cap: "cap.po.manage",
-    badge: "Admin",
-    title: "Purchase Orders",
-    desc: "Build a vendor PO — line items, tax, and terms — then track it from draft to sent.",
-    section: "admin",
+    section: "office",
   },
   {
     key: "po-vendors",
@@ -129,23 +142,7 @@ const HOME_CARDS: HomeCard[] = [
     badge: "Admin",
     title: "Vendors",
     desc: "The vendor directory behind purchase orders — contacts, regions, supply categories, and terms.",
-    section: "admin",
-  },
-  {
-    key: "po-config",
-    cap: "cap.po.manage",
-    badge: "Admin",
-    title: "PO Configuration",
-    desc: "Edit the purchaser identity, ship-to tax table, and terms versions that print on every PO — each change is queued for the operator's review.",
-    section: "admin",
-  },
-  {
-    key: "subcontract-builder",
-    cap: "cap.subcontracts.manage",
-    badge: "Admin",
-    title: "Subcontracts",
-    desc: "Build a subcontract package — scope, schedule of values, and terms — then track it from draft to executed.",
-    section: "admin",
+    section: "office",
   },
   {
     key: "subcontractors",
@@ -153,14 +150,16 @@ const HOME_CARDS: HomeCard[] = [
     badge: "Admin",
     title: "Subcontractors",
     desc: "The subcontractor directory behind subcontracts — contacts, trades, state, licenses, and terms.",
-    section: "admin",
+    section: "office",
   },
+  // ── Administration: the config/identity + account cards. PO/SC Configuration leads (it edits both
+  //    the PO and subcontract config), then the form catalog, then portal accounts.
   {
-    key: "accounts",
-    cap: "cap.admin.accounts",
+    key: "po-config",
+    cap: "cap.po.manage",
     badge: "Admin",
-    title: "Accounts",
-    desc: "Create, edit, disable, and set roles/capabilities on portal accounts.",
+    title: "PO/SC Configuration",
+    desc: "Edit the purchaser identity, ship-to tax table, and terms versions that print on every PO — each change is queued for the operator's review.",
     section: "admin",
   },
   {
@@ -169,6 +168,14 @@ const HOME_CARDS: HomeCard[] = [
     badge: "Admin",
     title: "Forms",
     desc: "Manage the form catalog and publish new versions.",
+    section: "admin",
+  },
+  {
+    key: "accounts",
+    cap: "cap.admin.accounts",
+    badge: "Admin",
+    title: "Accounts",
+    desc: "Create, edit, disable, and set roles/capabilities on portal accounts.",
     section: "admin",
   },
 ];

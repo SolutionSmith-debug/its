@@ -1,9 +1,11 @@
 /**
- * HomePage (R7) — three headed sections (Daily forms / Field operations / Administration) replacing
- * the flat card wall. Section membership is presentation ONLY: every card keeps its exact
+ * HomePage — headed sections (Daily forms / Field operations / Office operations / Administration)
+ * replacing the flat card wall. Section membership is presentation ONLY: every card keeps its exact
  * capability gate and view key (proven per-card below), an empty section renders no heading, and
  * the named copy edits landed (My Tasks mentions the daily checklist; the admin card is
- * "Checklists", renamed from "Inspection checklists").
+ * "Checklists", renamed from "Inspection checklists"). The office-facing management cards (POs,
+ * subcontracts, catalogs) live under "Office operations" (2026-07); Administration keeps the
+ * config/identity + account cards.
  */
 import { cleanup, fireEvent, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -37,12 +39,14 @@ const ALL_CAPS = [
   "cap.materials.manage",
   "cap.checklist.manage",
   "cap.po.manage",
+  "cap.subcontracts.manage",
   "cap.admin.accounts",
   "cap.admin.formbuilder",
 ];
 
 // Every card: its title, gating cap, view key, and section heading. Gating must be UNCHANGED by
-// the R7 regrouping — this table IS the regression net.
+// the regrouping — this table IS the regression net. The six management cards moved to "Office
+// operations" (2026-07); Administration keeps PO/SC Configuration, Forms, Accounts.
 const CARDS: { title: string; cap: string; nav: string; section: string }[] = [
   { title: "Submit a form", cap: "cap.form.submit", nav: "fill", section: "Daily forms" },
   { title: "Form Request", cap: "cap.form.request", nav: "request", section: "Daily forms" },
@@ -50,12 +54,15 @@ const CARDS: { title: string; cap: string; nav: string; section: string }[] = [
   { title: "Job Tracker", cap: "cap.jobtracker.read", nav: "fieldops-jobs", section: "Field operations" },
   { title: "Equipment", cap: "cap.equipment.field", nav: "fieldops-equipment", section: "Field operations" },
   { title: "Personnel", cap: "cap.personnel.read", nav: "fieldops-personnel", section: "Field operations" },
-  { title: "Materials Catalog", cap: "cap.materials.manage", nav: "materials-catalog", section: "Administration" },
-  { title: "Checklists", cap: "cap.checklist.manage", nav: "fieldops-inspections", section: "Administration" },
-  { title: "Purchase Orders", cap: "cap.po.manage", nav: "po-builder", section: "Administration" },
-  { title: "Vendors", cap: "cap.po.manage", nav: "po-vendors", section: "Administration" },
-  { title: "Accounts", cap: "cap.admin.accounts", nav: "accounts", section: "Administration" },
+  { title: "Purchase Orders", cap: "cap.po.manage", nav: "po-builder", section: "Office operations" },
+  { title: "Subcontracts", cap: "cap.subcontracts.manage", nav: "subcontract-builder", section: "Office operations" },
+  { title: "Checklists", cap: "cap.checklist.manage", nav: "fieldops-inspections", section: "Office operations" },
+  { title: "Materials Catalog", cap: "cap.materials.manage", nav: "materials-catalog", section: "Office operations" },
+  { title: "Vendors", cap: "cap.po.manage", nav: "po-vendors", section: "Office operations" },
+  { title: "Subcontractors", cap: "cap.subcontracts.manage", nav: "subcontractors", section: "Office operations" },
+  { title: "PO/SC Configuration", cap: "cap.po.manage", nav: "po-config", section: "Administration" },
   { title: "Forms", cap: "cap.admin.formbuilder", nav: "forms", section: "Administration" },
+  { title: "Accounts", cap: "cap.admin.accounts", nav: "accounts", section: "Administration" },
 ];
 
 function cardTitles(container: HTMLElement): string[] {
@@ -66,10 +73,15 @@ function sectionHeadings(container: HTMLElement): string[] {
 }
 
 describe("HomePage — R7 sections", () => {
-  it("an all-caps admin sees the three headed sections with the cards grouped under them", () => {
+  it("an all-caps admin sees the four headed sections with the cards grouped under them", () => {
     vi.mocked(useAuth).mockReturnValue(authWith(ALL_CAPS));
     const { container } = render(<HomePage onNavigate={() => {}} />);
-    expect(sectionHeadings(container)).toEqual(["Daily forms", "Field operations", "Administration"]);
+    expect(sectionHeadings(container)).toEqual([
+      "Daily forms",
+      "Field operations",
+      "Office operations",
+      "Administration",
+    ]);
     for (const c of CARDS) {
       const section = container.querySelector(`section[aria-label="${c.section}"]`)!;
       const titles = Array.from(section.querySelectorAll(".form-card__title")).map((el) => el.textContent);
@@ -77,12 +89,32 @@ describe("HomePage — R7 sections", () => {
     }
   });
 
-  it("a submitter (no admin caps) gets NO Administration heading — empty sections render nothing", () => {
+  it("Office operations holds the six management cards in the operator's order; Administration keeps three", () => {
+    vi.mocked(useAuth).mockReturnValue(authWith(ALL_CAPS));
+    const { container } = render(<HomePage onNavigate={() => {}} />);
+    const titlesIn = (heading: string) =>
+      Array.from(
+        container.querySelector(`section[aria-label="${heading}"]`)!.querySelectorAll(".form-card__title"),
+      ).map((el) => el.textContent);
+    // Array order in HOME_CARDS IS the two-wide display order — pin the exact sequence the operator asked for.
+    expect(titlesIn("Office operations")).toEqual([
+      "Purchase Orders",
+      "Subcontracts",
+      "Checklists",
+      "Materials Catalog",
+      "Vendors",
+      "Subcontractors",
+    ]);
+    expect(titlesIn("Administration")).toEqual(["PO/SC Configuration", "Forms", "Accounts"]);
+  });
+
+  it("a submitter (no admin caps) gets NO Office/Administration heading — empty sections render nothing", () => {
     vi.mocked(useAuth).mockReturnValue(
       authWith(["cap.form.submit", "cap.form.request", "cap.tasks.own", "cap.jobtracker.read"]),
     );
     const { container } = render(<HomePage onNavigate={() => {}} />);
     expect(sectionHeadings(container)).toEqual(["Daily forms", "Field operations"]);
+    expect(container.textContent ?? "").not.toContain("Office operations");
     expect(container.textContent ?? "").not.toContain("Administration");
     expect(cardTitles(container)).toEqual(["Submit a form", "Form Request", "My Tasks", "Job Tracker"]);
   });
