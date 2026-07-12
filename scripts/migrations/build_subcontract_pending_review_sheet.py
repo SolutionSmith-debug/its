@@ -63,10 +63,10 @@ WORKSTREAM_OPTIONS = ["subcontracts"]  # P1b guard; this is the subcontract revi
 COLUMN_SCHEMA: list[dict[str, Any]] = [
     {"title": "Job / Project", "type": "TEXT_NUMBER", "primary": True},
     {"title": "Job ID", "type": "TEXT_NUMBER",
-     "description": "PROTOCOL SLOT — for subcontracts this carries the SUB KEY (SUB-######), the "
-                    "ITS_Subcontractors join key subcontract_send resolves the subcontractor "
-                    "recipient (TO) from at send time. Title kept as 'Job ID' so the shared send "
-                    "engine binds without surgery (S1 schema-twin contract)."},
+     "description": "PROTOCOL SLOT — for subcontracts carries the SUB KEY (SUB-######), the "
+                    "ITS_Subcontractors join key subcontract_send resolves the recipient (TO) at "
+                    "send time. Title kept 'Job ID' so the shared send engine binds without "
+                    "surgery (schema-twin)."},
     {"title": "Week Of", "type": "DATE",
      "description": "PROTOCOL SLOT — for subcontracts this carries the SUBCONTRACT DATE. Title kept "
                     "as 'Week Of' for the engine bind (S1 schema-twin contract)."},
