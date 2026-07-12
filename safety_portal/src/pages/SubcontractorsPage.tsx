@@ -375,7 +375,7 @@ export function SubcontractorsPage({ onBack }: { onBack: () => void }) {
           </button>
           {s.active ? (
             armedKey === s.sub_key ? (
-              <button className="btn btn--retire" onClick={() => void setActive(s, 0)}>
+              <button className="btn btn--retire" disabled={busy} onClick={() => void setActive(s, 0)}>
                 Confirm deactivate
               </button>
             ) : (
@@ -384,7 +384,7 @@ export function SubcontractorsPage({ onBack }: { onBack: () => void }) {
               </button>
             )
           ) : (
-            <button className="btn btn--edit" onClick={() => void setActive(s, 1)}>
+            <button className="btn btn--edit" disabled={busy} onClick={() => void setActive(s, 1)}>
               Reactivate
             </button>
           )}
@@ -395,7 +395,7 @@ export function SubcontractorsPage({ onBack }: { onBack: () => void }) {
         <div className="accounts__editor">
           <SubcontractorFormFields f={ef} set={setEf} terms={terms} />
           <div className="jha__actions">
-            <button className="btn btn--primary" onClick={() => void saveEdit(s)}>
+            <button className="btn btn--primary" disabled={busy} onClick={() => void saveEdit(s)}>
               {busy ? "Saving…" : "Save"}
             </button>
             <button className="btn btn--secondary" onClick={() => setEditKey(null)}>
@@ -442,7 +442,7 @@ export function SubcontractorsPage({ onBack }: { onBack: () => void }) {
               <h3 className="dash-detail__h2">Add a subcontractor</h3>
               <SubcontractorFormFields f={cf} set={setCf} terms={terms} />
               <div className="jha__actions">
-                <button className="btn btn--primary" type="submit">
+                <button className="btn btn--primary" type="submit" disabled={busy}>
                   {busy ? "Working…" : "Add subcontractor"}
                 </button>
                 <button className="btn btn--secondary" type="button" onClick={() => setCreateOpen(false)}>

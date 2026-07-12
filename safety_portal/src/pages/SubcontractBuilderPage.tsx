@@ -232,7 +232,9 @@ export function SubcontractBuilderPage({ onBack }: { onBack: () => void }) {
     setLines([{ ...EMPTY_LINE }]);
     setContractPrice("");
     setPriceBasis("fixed");
-    setRetainageBp(config ? bpToInput(config.payment_terms.retainage_bp) : "");
+    // Prefill from config; fall back to 10% (1000 bp — the standard §2.5 retention) if the config
+    // fetch failed, so a degraded /config never leaves retainage empty and blocks generate.
+    setRetainageBp(bpToInput(config?.payment_terms.retainage_bp ?? 1000));
     setTemplateFamily("long_form");
     setTermsProfileId("");
     setApproverName("");
@@ -285,7 +287,10 @@ export function SubcontractBuilderPage({ onBack }: { onBack: () => void }) {
       if (bucket) bucket.push(s);
       else byState.set(key, [s]);
     }
-    return [...byState.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+    // Blank-state ("Unassigned") collates LAST — consistent with SubcontractorsPage's directory grouping.
+    return [...byState.entries()].sort((a, b) =>
+      a[0] === "" ? 1 : b[0] === "" ? -1 : a[0].localeCompare(b[0]),
+    );
   }, [activeSubs, stateFilter]);
   const selectedSub = subByKey.get(subKey) ?? null;
 
