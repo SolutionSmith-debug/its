@@ -539,24 +539,24 @@ def test_pending_fetch_auth_failure_is_critical_immediately(_patch_all):
 # ---- job-sync push leg ----------------------------------------------------
 
 
-def _job(job_id="JOB-000001", project_name="Bradley 1", *, is_active=True):
-    return SimpleNamespace(job_id=job_id, project_name=project_name, is_active=is_active)
+def _job(job_id="JOB-000001", project_name="Bradley 1", *, is_active=True, address=""):
+    return SimpleNamespace(job_id=job_id, project_name=project_name, is_active=is_active, address=address)
 
 
 def test_job_sync_pushes_full_set_after_drain(_patch_all):
     _patch_all["list_all_jobs"].return_value = [
-        _job("JOB-000001", "Bradley 1", is_active=True),
+        _job("JOB-000001", "Bradley 1", is_active=True, address="100 Array Rd"),
         _job("JOB-000007", "Atlantis", is_active=False),
     ]
     result = _poll_inside_lock()
     assert result.halted_no_creds is False
     _patch_all["push_jobs"].assert_called_once()
     args = _patch_all["push_jobs"].call_args.args
-    # (base_url, bearer, payload) — the full set with active flags 1/0.
+    # (base_url, bearer, payload) — the full set with active flags 1/0 + the C1 job address.
     assert args[0] == "https://portal.example.com" and args[1] == "bearer"
     assert args[2] == [
-        {"job_id": "JOB-000001", "project_name": "Bradley 1", "active": 1},
-        {"job_id": "JOB-000007", "project_name": "Atlantis", "active": 0},
+        {"job_id": "JOB-000001", "project_name": "Bradley 1", "active": 1, "address": "100 Array Rd"},
+        {"job_id": "JOB-000007", "project_name": "Atlantis", "active": 0, "address": ""},
     ]
 
 
@@ -1401,3 +1401,34 @@ def test_record_pending_backlog_failsoft_on_write_error(monkeypatch, tmp_path, m
     log = mocker.patch.object(portal_poll.error_log, "log")
     portal_poll._record_pending_backlog(portal_poll.PENDING_LIMIT, 0)  # must not raise
     assert log.called
+
+
+# ── C1: job address in the down-sync payload ──────────────────────────────────
+
+
+def test_push_active_jobs_includes_address(mocker):
+    """_push_active_jobs projects the ITS_Active_Jobs `address` into the sync payload (C1) so the
+    Worker can auto-fill the subcontract builder's Site address."""
+    jobs = [
+        SimpleNamespace(job_id="JOB-1", project_name="2026.001 Kendall", is_active=True, address="100 Array Rd"),
+        SimpleNamespace(job_id="JOB-2", project_name="Idle Job", is_active=False, address=""),
+    ]
+    mocker.patch.object(portal_poll.active_jobs, "list_all_jobs", return_value=jobs)
+    mocker.patch.object(portal_poll.error_log, "log")
+    push = mocker.patch.object(
+        portal_poll.portal_client, "push_jobs", return_value={"upserted": 2, "deactivated": 0}
+    )
+    portal_poll._push_active_jobs("https://base", "bearer")
+    payload = push.call_args.args[2]  # push_jobs(base_url, bearer, payload)
+    assert payload == [
+        {"job_id": "JOB-1", "project_name": "2026.001 Kendall", "active": 1, "address": "100 Array Rd"},
+        {"job_id": "JOB-2", "project_name": "Idle Job", "active": 0, "address": ""},
+    ]
+
+
+def test_push_active_jobs_empty_set_is_noop(mocker):
+    """A Smartsheet read miss (list_all_jobs → []) never pushes — it must not wipe the dropdown."""
+    mocker.patch.object(portal_poll.active_jobs, "list_all_jobs", return_value=[])
+    push = mocker.patch.object(portal_poll.portal_client, "push_jobs")
+    portal_poll._push_active_jobs("https://base", "bearer")
+    push.assert_not_called()

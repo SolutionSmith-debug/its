@@ -1652,7 +1652,7 @@ app.post("/api/internal/daily-photos/:id/result", requireInternalToken, async (c
  * Bearer-token gated. This is the write-leg counterpart to GET /api/jobs (which
  * the SPA reads): Smartsheet is the source of truth, D1 is the dropdown cache.
  *
- * Body: { jobs: [{ job_id, project_name, active }] } — the complete ITS_Active_Jobs
+ * Body: { jobs: [{ job_id, project_name, active, address }] } — the complete ITS_Active_Jobs
  * set, each row carrying its own active flag (1/0). The payload is AUTHORITATIVE:
  * any D1 job_id ABSENT from it is deactivated (active=0) so a job removed/archived
  * in Smartsheet drops off the dropdown. We never DELETE (submissions reference
@@ -1685,7 +1685,7 @@ app.post("/api/internal/sync", requireInternalToken, async (c) => {
 
   // Validate + normalize every row up front; reject the WHOLE batch on any bad row
   // (a partial sync would silently desync the dropdown).
-  const jobs: { job_id: string; project_name: string; active: number }[] = [];
+  const jobs: { job_id: string; project_name: string; active: number; address: string }[] = [];
   const seen = new Set<string>();
   for (const r of raw) {
     if (typeof r !== "object" || r === null) return c.json({ error: "invalid_row" }, 400);
@@ -1693,12 +1693,16 @@ app.post("/api/internal/sync", requireInternalToken, async (c) => {
     const job_id = typeof row.job_id === "string" ? row.job_id : "";
     const project_name = typeof row.project_name === "string" ? row.project_name : "";
     const active = row.active === 1 || row.active === true ? 1 : 0;
-    if (!job_id || job_id.length > 64 || !project_name || project_name.length > 256) {
+    // `address` (C1): OPTIONAL — a Mac daemon that predates it omits the field (→ ""). Bound it like
+    // the other free-text columns; it only auto-fills the subcontract builder's Site address, so a
+    // blank is fine (the field stays operator-editable).
+    const address = typeof row.address === "string" ? row.address : "";
+    if (!job_id || job_id.length > 64 || !project_name || project_name.length > 256 || address.length > 512) {
       return c.json({ error: "invalid_row" }, 400);
     }
     if (seen.has(job_id)) return c.json({ error: "duplicate_job_id" }, 400);
     seen.add(job_id);
-    jobs.push({ job_id, project_name, active });
+    jobs.push({ job_id, project_name, active, address });
   }
 
   // P2.5 canonical-aware pre-pass: once the mirror daemon promotes a portal job, the SAFETY sheet
@@ -1721,9 +1725,10 @@ app.post("/api/internal/sync", requireInternalToken, async (c) => {
   const statements = [
     ...toUpsert.map((j) =>
       c.env.DB.prepare(
-        "INSERT INTO jobs (job_id, project_name, active) VALUES (?,?,?) " +
-          "ON CONFLICT(job_id) DO UPDATE SET project_name=excluded.project_name, active=excluded.active",
-      ).bind(j.job_id, j.project_name, j.active),
+        "INSERT INTO jobs (job_id, project_name, active, address) VALUES (?,?,?,?) " +
+          "ON CONFLICT(job_id) DO UPDATE SET project_name=excluded.project_name, active=excluded.active, " +
+          "address=excluded.address",
+      ).bind(j.job_id, j.project_name, j.active, j.address),
     ),
     c.env.DB.prepare(
       // origin fence (migration 0017): only smartsheet-origin jobs participate in the

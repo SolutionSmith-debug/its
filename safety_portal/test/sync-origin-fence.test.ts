@@ -81,4 +81,46 @@ describe("/api/internal/sync — origin fence (migration 0017)", () => {
     const ss2 = await env.DB.prepare("SELECT project_name FROM jobs WHERE job_id='SS-2'").first<{ project_name: string }>();
     expect(ss2?.project_name).toBe("Real Smartsheet Job");
   });
+
+  it("C1: stores the job address from the sync payload; a row that omits address defaults to ''", async () => {
+    const res = await call("/api/internal/sync", {
+      method: "POST",
+      bearer: INTERNAL_BEARER,
+      body: JSON.stringify({
+        jobs: [
+          { job_id: "SS-A", project_name: "Job A", active: 1, address: "100 Array Rd, Rockford IL" },
+          { job_id: "SS-B", project_name: "Job B", active: 1 }, // address omitted → "" (older daemon)
+        ],
+      }),
+    });
+    expect(res.status, await res.clone().text()).toBe(200);
+    const a = await env.DB.prepare("SELECT address FROM jobs WHERE job_id='SS-A'").first<{ address: string }>();
+    const b = await env.DB.prepare("SELECT address FROM jobs WHERE job_id='SS-B'").first<{ address: string }>();
+    expect(a?.address).toBe("100 Array Rd, Rockford IL");
+    expect(b?.address).toBe("");
+  });
+
+  it("C1: an ON CONFLICT re-sync updates a smartsheet job's address", async () => {
+    await env.DB.prepare(
+      "INSERT INTO jobs (job_id, project_name, active, address, origin) VALUES ('SS-C','Job C',1,'old addr','smartsheet')",
+    ).run();
+    const res = await call("/api/internal/sync", {
+      method: "POST",
+      bearer: INTERNAL_BEARER,
+      body: JSON.stringify({ jobs: [{ job_id: "SS-C", project_name: "Job C", active: 1, address: "new addr" }] }),
+    });
+    expect(res.status, await res.clone().text()).toBe(200);
+    const c = await env.DB.prepare("SELECT address FROM jobs WHERE job_id='SS-C'").first<{ address: string }>();
+    expect(c?.address).toBe("new addr");
+  });
+
+  it("C1: rejects the whole batch on an over-length address (invalid_row, >512)", async () => {
+    const res = await call("/api/internal/sync", {
+      method: "POST",
+      bearer: INTERNAL_BEARER,
+      body: JSON.stringify({ jobs: [{ job_id: "SS-A", project_name: "Job A", active: 1, address: "x".repeat(513) }] }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "invalid_row" });
+  });
 });

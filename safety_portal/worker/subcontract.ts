@@ -676,6 +676,27 @@ export function registerSubcontractRoutes(app: FieldopsApp, gates: SubcontractGa
     });
   });
 
+  // GET /api/subcontracts/jobs/:job_id/site-address — the builder's Site-address auto-fill (C1),
+  // mirroring PO's /api/po/jobs/:job_id/ship-to. Reads the SAME jobs.address the Smartsheet
+  // ITS_Active_Jobs "Address" SoR syncs down (portal_poll → /api/internal/sync). Under the browser
+  // session + cap.subcontracts.manage gate; READ-ONLY, bound single-PK lookup, no mutation. These are
+  // Evergreen's OWN job-site addresses (not third-party PII). Auto-fill is a CONVENIENCE — a 404 /
+  // absent / blank address silently leaves the operator-editable Site-address field alone.
+  app.get(
+    "/api/subcontracts/jobs/:job_id/site-address",
+    gates.requireSession,
+    gates.requireCapability(CAP_SUB),
+    async (c) => {
+      const jobId = c.req.param("job_id");
+      const row = await c.env.DB
+        .prepare("SELECT job_id, address FROM jobs WHERE job_id = ?1")
+        .bind(jobId)
+        .first<{ job_id: string; address: string }>();
+      if (!row) return c.json({ error: "not_found" }, 404);
+      return c.json({ job_id: row.job_id, site_address: row.address ?? "" });
+    },
+  );
+
   // GET /api/subcontracts/subcontractors — the subcontractor picker/management read. Active-only by
   // default; ?include_inactive=1 widens (the management list shows retired subcontractors greyed).
   app.get("/api/subcontracts/subcontractors", gates.requireSession, gates.requireCapability(CAP_SUB), async (c) => {
