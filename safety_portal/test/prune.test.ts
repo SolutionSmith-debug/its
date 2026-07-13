@@ -90,34 +90,36 @@ describe("pruneOldData (A3 D1 housekeeping)", () => {
   });
 
   it("prunes DRAFT + CANCELED subcontract/PO rows (and their lines) after 90d; keeps on-path + recent", async () => {
-    const seedSc = async (uuid: string, status: string, updatedAt: number) => {
+    const seedSc = async (uuid: string, status: string, updatedAt: number, scNumber: string | null = null) => {
       await env.DB
-        .prepare("INSERT INTO subcontracts (sc_uuid, job_no, sub_key, created_by, status, updated_at) VALUES (?,?,?,?,?,?)")
-        .bind(uuid, "2026.001", "SUB-1", "admin", status, updatedAt)
+        .prepare("INSERT INTO subcontracts (sc_uuid, job_no, sub_key, created_by, status, updated_at, sc_number) VALUES (?,?,?,?,?,?,?)")
+        .bind(uuid, "2026.001", "SUB-1", "admin", status, updatedAt, scNumber)
         .run();
       const id = (await env.DB.prepare("SELECT id FROM subcontracts WHERE sc_uuid=?").bind(uuid).first<{ id: number }>())!.id;
       await env.DB.prepare("INSERT INTO sov_lines (subcontract_id, position) VALUES (?, 1)").bind(id).run();
       return id;
     };
-    const seedPo = async (uuid: string, status: string, updatedAt: number) => {
+    const seedPo = async (uuid: string, status: string, updatedAt: number, poNumber: string | null = null) => {
       await env.DB
-        .prepare("INSERT INTO purchase_orders (po_uuid, job_no, site_phase, vendor_key, created_by, status, updated_at) VALUES (?,?,?,?,?,?,?)")
-        .bind(uuid, "2026.001", 0, "V-1", "admin", status, updatedAt)
+        .prepare("INSERT INTO purchase_orders (po_uuid, job_no, site_phase, vendor_key, created_by, status, updated_at, po_number) VALUES (?,?,?,?,?,?,?,?)")
+        .bind(uuid, "2026.001", 0, "V-1", "admin", status, updatedAt, poNumber)
         .run();
       const id = (await env.DB.prepare("SELECT id FROM purchase_orders WHERE po_uuid=?").bind(uuid).first<{ id: number }>())!.id;
       await env.DB.prepare("INSERT INTO po_line_items (po_id, position) VALUES (?, 1)").bind(id).run();
       return id;
     };
     const scDraftOld = await seedSc("sc-draft-old", "draft", NOW - 100 * DAY);
-    const scCancelOld = await seedSc("sc-cancel-old", "canceled", NOW - 100 * DAY);
-    const scQueuedOld = await seedSc("sc-queued-old", "queued", NOW - 100 * DAY); // ON-PATH → never pruned
+    const scCancelOld = await seedSc("sc-cancel-old", "canceled", NOW - 100 * DAY); // canceled-from-draft, no number
+    const scCancelGen = await seedSc("sc-cancel-gen", "canceled", NOW - 100 * DAY, "2026.001.9.0.0"); // GENERATED-then-canceled → KEEP
+    const scQueuedOld = await seedSc("sc-queued-old", "queued", NOW - 100 * DAY, "2026.001.8.0.0"); // ON-PATH → never pruned
     const scDraftRecent = await seedSc("sc-draft-recent", "draft", NOW - 10 * DAY);
     const poDraftOld = await seedPo("po-draft-old", "draft", NOW - 100 * DAY);
-    const poQueuedOld = await seedPo("po-queued-old", "queued", NOW - 100 * DAY); // ON-PATH → never pruned
+    const poCancelGen = await seedPo("po-cancel-gen", "canceled", NOW - 100 * DAY, "2026.001.9.0.0"); // GENERATED-then-canceled → KEEP
+    const poQueuedOld = await seedPo("po-queued-old", "queued", NOW - 100 * DAY, "2026.001.8.0.0"); // ON-PATH → never pruned
 
     const res = await pruneOldData(env.DB, NOW);
 
-    expect(res.subcontractDrafts).toBe(2); // draftOld + cancelOld (queued/recent excluded)
+    expect(res.subcontractDrafts).toBe(2); // draftOld + cancelOld (queued/recent/generated-canceled excluded)
     expect(res.poDrafts).toBe(1); // poDraftOld only
     const gone = async (tbl: string, id: number) => (await env.DB.prepare(`SELECT id FROM ${tbl} WHERE id=?`).bind(id).first()) === null;
     const scLines = async (id: number) => (await env.DB.prepare("SELECT COUNT(*) n FROM sov_lines WHERE subcontract_id=?").bind(id).first<{ n: number }>())!.n;
@@ -134,6 +136,12 @@ describe("pruneOldData (A3 D1 housekeeping)", () => {
     expect(await gone("subcontracts", scDraftRecent)).toBe(false);
     expect(await gone("purchase_orders", poQueuedOld)).toBe(false);
     expect(await poLines(poQueuedOld)).toBe(1);
+    // GENERATED-then-canceled rows (number allocated) are KEPT — deleting them would free the
+    // sc_number/po_number + revision slot for a collision-reuse by a later generate.
+    expect(await gone("subcontracts", scCancelGen)).toBe(false);
+    expect(await scLines(scCancelGen)).toBe(1);
+    expect(await gone("purchase_orders", poCancelGen)).toBe(false);
+    expect(await poLines(poCancelGen)).toBe(1);
   });
 
   it("prunes REJECTED (box_verified=-1) rows after 30d, keeps recent + never the unfiled (M4/PR-4)", async () => {
