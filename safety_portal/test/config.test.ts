@@ -97,6 +97,44 @@ describe("POST /api/config/requests — enqueue", () => {
     });
   });
 
+  it("enqueues a delivery_contacts edit (201 queued) + persists the row — Feature C registry round-trip", async () => {
+    await provision("admin.one", "admin");
+    const cookie = await login("admin.one");
+    const payload = { contacts: [{ name: "Riley Receiver", phone: "555-0142", email: "riley@site.example" }] };
+    const res = await post(cookie, "/api/config/requests", {
+      workstream: "po_materials",
+      artifact_key: "delivery_contacts",
+      op: "edit",
+      payload,
+    });
+    expect(res.status, await res.clone().text()).toBe(201);
+    const row = await env.DB
+      .prepare("SELECT workstream, artifact_key, op, target_version, status, payload FROM config_requests")
+      .first<{ payload: string }>();
+    expect(row).toMatchObject({
+      workstream: "po_materials",
+      artifact_key: "delivery_contacts",
+      op: "edit",
+      target_version: null,
+      status: "queued",
+    });
+    expect(JSON.parse(row!.payload)).toEqual(payload); // the queued payload round-trips intact
+  });
+
+  it("rejects a versioned op on delivery_contacts (json artifact → 400 invalid_op)", async () => {
+    await provision("admin.one", "admin");
+    const cookie = await login("admin.one");
+    const res = await post(cookie, "/api/config/requests", {
+      workstream: "po_materials",
+      artifact_key: "delivery_contacts",
+      op: "add_version",
+      target_version: "v2",
+      payload: { contacts: [] },
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: "invalid_op" });
+  });
+
   it("enqueues an add_version with a valid target_version (201) + persists it", async () => {
     await provision("admin.one", "admin");
     const cookie = await login("admin.one");

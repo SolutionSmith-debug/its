@@ -1,0 +1,5 @@
+{
+  "config_version": 1,
+  "comment": "Configured delivery contacts (Feature C) — the suggestion list behind the PO builder's delivery-contact NAME <datalist>: picking (or typing) a name that EXACTLY matches an entry auto-fills its phone + email into the draft. SUGGESTIONS ONLY — free-text delivery contacts are always accepted on a PO, the field stays optional (no render-required gate), and the job-stakeholder ship-to auto-fill is untouched. Edited via the §50 config editor (PoConfigPage → config_requests queue → config_apply._apply_delivery_contacts_edit); the Worker bundles this file at BUILD time, so an edit goes live on the actuator's deploy. Entry shape: { name (required, ≤256), phone (optional, ≤40), email (optional, ≤320, email-shaped) } — exactly the three delivery_contact_* fields on purchase_orders (migration 0043). Seeded EMPTY — the operator populates the list through the editor.",
+  "contacts": []
+}

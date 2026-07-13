@@ -8,6 +8,7 @@ import { hmacHex } from "./hmac";
 import termsManifest from "../../po_materials/terms/manifest.json";
 import purchaserConfig from "../../po_materials/config/purchaser.json";
 import taxConfig from "../../po_materials/config/tax.json";
+import deliveryContactsConfig from "../../po_materials/config/delivery_contacts.json";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PO workstream S2 (Aug-7 delivery program WS1) — worker/po.ts
@@ -637,8 +638,9 @@ export function registerPoRoutes(app: FieldopsApp, gates: PoGates): void {
     },
   );
 
-  // GET /api/po/config — the versioned purchaser identity (D5) + tax table (D8)
-  // for the builder UI (entity display, invoice-routing cc chips, tax-state badge).
+  // GET /api/po/config — the versioned purchaser identity (D5) + tax table (D8) +
+  // delivery-contact suggestion list (Feature C) for the builder UI (entity display,
+  // invoice-routing cc chips, tax-state badge, delivery-contact <datalist>).
   // Explicit key picks — the JSON files carry maintainer comment fields that don't
   // belong on the wire.
   app.get("/api/po/config", gates.requireSession, gates.requireCapability(CAP_PO), (c) =>
@@ -653,6 +655,9 @@ export function registerPoRoutes(app: FieldopsApp, gates: PoGates): void {
         rates_bp: taxConfig.rates_bp,
         state_names: taxConfig.state_names,
       },
+      // Suggestions for the builder's delivery-contact name <datalist> — free text always
+      // stays accepted (the list never gates a draft; §50-edited, bundled at build time).
+      delivery_contacts: deliveryContactsConfig.contacts,
     }),
   );
 

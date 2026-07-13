@@ -43,6 +43,13 @@ _SEED_TAX = {
     "rates_bp": {"CA": 725, "NV": 0},
     "state_names": {"CA": "California", "NV": "Nevada"},
 }
+_SEED_DELIVERY_CONTACTS = {
+    "config_version": SEED_CONFIG_VERSION,
+    "comment": "test fixture — deliberately NOT the live delivery-contact list",
+    "contacts": [
+        {"name": "Seed Contact", "phone": "000-000-0000", "email": "seed-contact@fixture.test"},
+    ],
+}
 # Fixed terms manifest: one library profile (standard_17, one immutable version) + one attach
 # profile (negotiated_gtc). NO field_21 (the unknown-profile test relies on its absence) and NO
 # standard_17_v2 (the add_version tests target it, so it must be absent from the seed — copying the
@@ -85,6 +92,9 @@ def root(tmp_path: Path) -> Path:
     (tmp_path / "po_materials" / "terms").mkdir(parents=True)
     _write_json(tmp_path / "po_materials" / "config" / "purchaser.json", _SEED_PURCHASER)
     _write_json(tmp_path / "po_materials" / "config" / "tax.json", _SEED_TAX)
+    _write_json(
+        tmp_path / "po_materials" / "config" / "delivery_contacts.json", _SEED_DELIVERY_CONTACTS
+    )
     _write_json(tmp_path / "po_materials" / "terms" / "manifest.json", _SEED_MANIFEST)
     return tmp_path
 
@@ -223,6 +233,117 @@ def test_purchaser_edit_requires_nonempty_address(root: Path):
                 "entity": "X", "address_lines": [], "phone": "1",
                 "invoice_routing": {"to": "ok@x.com", "cc": []},
             }),
+            root,
+        )
+
+
+# ── delivery_contacts / edit (Feature C) ─────────────────────────────────────────────
+# Version assertions stay RELATIVE to the seed (HOUSE REFLEXES §5) — the §50 editor
+# auto-merges operator edits to the live delivery_contacts.json, so nothing here may pin
+# live content or an absolute config_version.
+
+
+def test_delivery_contacts_edit_writes_normalizes_and_bumps(root: Path):
+    note = config_apply.apply_config(
+        _req("delivery_contacts", "edit", {"contacts": [
+            {"name": "  Riley Receiver  ", "phone": " 555-0142 ", "email": " riley@site.example "},
+            {"name": "Gate Guard"},  # phone/email optional — normalized to ""
+        ]}),
+        root,
+    )
+    written = _read(root, "config", "delivery_contacts.json")
+    assert written["config_version"] == SEED_CONFIG_VERSION + 1  # RELATIVE, never absolute
+    assert written["contacts"] == [
+        {"name": "Riley Receiver", "phone": "555-0142", "email": "riley@site.example"},
+        {"name": "Gate Guard", "phone": "", "email": ""},
+    ]
+    # The maintainer comment field survives the whole-value replace (dict(current) carry-over).
+    assert "comment" in written
+    assert "2 contact(s)" in note
+
+
+def test_delivery_contacts_edit_accepts_empty_list_clearing_all(root: Path):
+    config_apply.apply_config(_req("delivery_contacts", "edit", {"contacts": []}), root)
+    written = _read(root, "config", "delivery_contacts.json")
+    assert written["contacts"] == []
+    assert written["config_version"] == SEED_CONFIG_VERSION + 1
+
+
+def test_delivery_contacts_edit_rejects_non_list_contacts(root: Path):
+    with pytest.raises(ConfigApplyError, match="must be a list"):
+        config_apply.apply_config(
+            _req("delivery_contacts", "edit", {"contacts": {"name": "X"}}), root
+        )
+
+
+def test_delivery_contacts_edit_rejects_non_object_entry(root: Path):
+    with pytest.raises(ConfigApplyError, match=r"contacts\[0\] must be an object"):
+        config_apply.apply_config(
+            _req("delivery_contacts", "edit", {"contacts": ["Riley"]}), root
+        )
+
+
+def test_delivery_contacts_edit_requires_name(root: Path):
+    for bad in ({"phone": "555"}, {"name": ""}, {"name": "   "}, {"name": 7}):
+        with pytest.raises(ConfigApplyError, match="name"):
+            config_apply.apply_config(
+                _req("delivery_contacts", "edit", {"contacts": [bad]}), root
+            )
+
+
+def test_delivery_contacts_edit_bounds_each_field(root: Path):
+    # Mirrors the Worker's PO draft gates (po.ts MAX_NAME=256 / MAX_PHONE=40 / MAX_EMAIL=320):
+    # an entry the draft would reject must never be storable in the suggestion list.
+    with pytest.raises(ConfigApplyError, match="name"):
+        config_apply.apply_config(
+            _req("delivery_contacts", "edit", {"contacts": [{"name": "x" * 257}]}), root
+        )
+    with pytest.raises(ConfigApplyError, match="phone"):
+        config_apply.apply_config(
+            _req("delivery_contacts", "edit",
+                 {"contacts": [{"name": "X", "phone": "5" * 41}]}),
+            root,
+        )
+    with pytest.raises(ConfigApplyError, match="email"):
+        config_apply.apply_config(
+            _req("delivery_contacts", "edit",
+                 {"contacts": [{"name": "X", "email": "a@" + "b" * 320 + ".com"}]}),
+            root,
+        )
+
+
+def test_delivery_contacts_edit_rejects_bad_email_shape(root: Path):
+    for bad in ("not-an-email", "a@b", "two words@x.com"):
+        with pytest.raises(ConfigApplyError, match="email"):
+            config_apply.apply_config(
+                _req("delivery_contacts", "edit", {"contacts": [{"name": "X", "email": bad}]}),
+                root,
+            )
+
+
+def test_delivery_contacts_edit_rejects_duplicate_names_case_insensitive(root: Path):
+    with pytest.raises(ConfigApplyError, match="duplicate"):
+        config_apply.apply_config(
+            _req("delivery_contacts", "edit", {"contacts": [
+                {"name": "Riley Receiver"}, {"name": "riley receiver"},
+            ]}),
+            root,
+        )
+
+
+def test_delivery_contacts_edit_rejects_oversized_list(root: Path):
+    contacts = [{"name": f"Contact {i}"} for i in range(201)]
+    with pytest.raises(ConfigApplyError, match="at most 200"):
+        config_apply.apply_config(
+            _req("delivery_contacts", "edit", {"contacts": contacts}), root
+        )
+
+
+def test_delivery_contacts_rejects_non_edit_op(root: Path):
+    with pytest.raises(ConfigApplyError, match="takes op 'edit'"):
+        config_apply.apply_config(
+            _req("delivery_contacts", "add_version", {"contacts": []},
+                 target_version="v2"),
             root,
         )
 

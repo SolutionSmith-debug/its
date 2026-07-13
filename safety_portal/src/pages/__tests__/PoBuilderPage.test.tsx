@@ -59,6 +59,11 @@ const CONFIG: api.PoConfig = {
     rates_bp: { IL: 900, OR: 0 },
     state_names: { IL: "Illinois", OR: "Oregon" },
   },
+  // MOCKED fixture (HOUSE REFLEXES §5 — SPA tests never importActual the live config).
+  delivery_contacts: [
+    { name: "Pat Yardman", phone: "555-0177", email: "pat@yard.example" },
+    { name: "Dana Dockside", phone: "555-0188", email: "" }, // no email configured
+  ],
 };
 
 const TERMS: api.TermsProfile[] = [
@@ -452,6 +457,105 @@ describe("PoBuilderPage — ship-to auto-fill (S6 follow-up)", () => {
     expect((r.getByLabelText("Job number (YYYY.NNN)") as HTMLInputElement).value).toBe("2023.126");
     expect((r.getByLabelText("Address") as HTMLInputElement).value).toBe("");
     expect((r.getByLabelText("Name") as HTMLInputElement).value).toBe("");
+  });
+});
+
+describe("PoBuilderPage — configured delivery-contact suggestions (Feature C)", () => {
+  async function openBuilder(r: ReturnType<typeof render>): Promise<void> {
+    await waitFor(() => expect(api.fetchPos).toHaveBeenCalled());
+    fireEvent.click(r.getByText("+ New purchase order"));
+  }
+
+  it("attaches a <datalist> option per configured contact to the delivery-contact name input", async () => {
+    const r = render(<PoBuilderPage onBack={() => {}} />);
+    await openBuilder(r);
+    await waitFor(() => expect(api.fetchPoConfig).toHaveBeenCalled());
+    const name = r.getByLabelText("Name") as HTMLInputElement;
+    await waitFor(() => expect(name.getAttribute("list")).toBe("po-delivery-contact-options"));
+    const options = r.container.querySelectorAll("#po-delivery-contact-options option");
+    expect(Array.from(options).map((o) => (o as HTMLOptionElement).value)).toEqual([
+      "Pat Yardman",
+      "Dana Dockside",
+    ]);
+  });
+
+  it("a configured-name entry auto-fills phone + email; free text never blocked, never filled", async () => {
+    const r = render(<PoBuilderPage onBack={() => {}} />);
+    await openBuilder(r);
+    await waitFor(() => expect(api.fetchPoConfig).toHaveBeenCalled());
+    // Free text first: no fill happens, the value stands (suggestion-only, never a gate).
+    fireEvent.change(r.getByLabelText("Name"), { target: { value: "Somebody Unlisted" } });
+    expect((r.getByLabelText("Name") as HTMLInputElement).value).toBe("Somebody Unlisted");
+    expect((r.getByLabelText("Phone") as HTMLInputElement).value).toBe("");
+    expect((r.getByLabelText("Email") as HTMLInputElement).value).toBe("");
+    // A match (as a datalist pick produces) fills phone + email from the entry.
+    fireEvent.change(r.getByLabelText("Name"), { target: { value: "Pat Yardman" } });
+    expect((r.getByLabelText("Phone") as HTMLInputElement).value).toBe("555-0177");
+    expect((r.getByLabelText("Email") as HTMLInputElement).value).toBe("pat@yard.example");
+    // The filled values stay operator-editable (convenience, not a lock).
+    fireEvent.change(r.getByLabelText("Phone"), { target: { value: "555-9999" } });
+    expect((r.getByLabelText("Phone") as HTMLInputElement).value).toBe("555-9999");
+  });
+
+  it("the match is case-INSENSITIVE (aligns with the config editor's case-insensitive dedupe)", async () => {
+    const r = render(<PoBuilderPage onBack={() => {}} />);
+    await openBuilder(r);
+    await waitFor(() => expect(api.fetchPoConfig).toHaveBeenCalled());
+    // A saved "Pat Yardman" must still autofill on a differing-case typed "pat yardman" —
+    // the list can't hold two entries differing only by case, so this is unambiguous.
+    fireEvent.change(r.getByLabelText("Name"), { target: { value: "  pat YARDMAN  " } });
+    expect((r.getByLabelText("Phone") as HTMLInputElement).value).toBe("555-0177");
+    expect((r.getByLabelText("Email") as HTMLInputElement).value).toBe("pat@yard.example");
+  });
+
+  it("a configured contact with an empty field never wipes an already-entered value", async () => {
+    const r = render(<PoBuilderPage onBack={() => {}} />);
+    await openBuilder(r);
+    await waitFor(() => expect(api.fetchPoConfig).toHaveBeenCalled());
+    // Operator (or the job-stakeholder auto-fill) already entered an email.
+    fireEvent.change(r.getByLabelText("Email"), { target: { value: "kept@site.example" } });
+    // "Dana Dockside" is configured with a phone but NO email — the empty field must not wipe.
+    fireEvent.change(r.getByLabelText("Name"), { target: { value: "Dana Dockside" } });
+    expect((r.getByLabelText("Phone") as HTMLInputElement).value).toBe("555-0188");
+    expect((r.getByLabelText("Email") as HTMLInputElement).value).toBe("kept@site.example");
+  });
+
+  it("renders no datalist when no contacts are configured", async () => {
+    vi.mocked(api.fetchPoConfig).mockResolvedValue({ ...CONFIG, delivery_contacts: [] });
+    const r = render(<PoBuilderPage onBack={() => {}} />);
+    await openBuilder(r);
+    await waitFor(() => expect(api.fetchPoConfig).toHaveBeenCalled());
+    expect(r.container.querySelector("#po-delivery-contact-options")).toBeNull();
+    expect((r.getByLabelText("Name") as HTMLInputElement).getAttribute("list")).toBeNull();
+    // Free text still works with an empty list.
+    fireEvent.change(r.getByLabelText("Name"), { target: { value: "Anyone At All" } });
+    expect((r.getByLabelText("Name") as HTMLInputElement).value).toBe("Anyone At All");
+  });
+
+  it("the job-stakeholder auto-fill stays as-is alongside the configured suggestions (additive)", async () => {
+    vi.mocked(api.fetchJobShipTo).mockResolvedValue({
+      job_id: "JOB-000001",
+      job_no: "2023.126",
+      ship_to_name: "2023.126 Kendall Solar",
+      ship_to_address: "742 Panel Way",
+      ship_to_city: "",
+      ship_to_state: "",
+      ship_to_zip: "",
+      delivery_contact_name: "Stakeholder Sam", // NOT a configured contact
+      delivery_contact_phone: "555-0100",
+      delivery_contact_email: "sam@stakeholder.example",
+    });
+    const r = render(<PoBuilderPage onBack={() => {}} />);
+    await openBuilder(r);
+    fireEvent.change(r.getByLabelText("Job"), { target: { value: "JOB-000001" } });
+    await waitFor(() => expect((r.getByLabelText("Name") as HTMLInputElement).value).toBe("Stakeholder Sam"));
+    // The stakeholder fill landed untouched by the config list…
+    expect((r.getByLabelText("Phone") as HTMLInputElement).value).toBe("555-0100");
+    expect((r.getByLabelText("Email") as HTMLInputElement).value).toBe("sam@stakeholder.example");
+    // …and the configured suggestions remain available on top (additive, not a replacement).
+    expect(r.container.querySelectorAll("#po-delivery-contact-options option").length).toBe(2);
+    fireEvent.change(r.getByLabelText("Name"), { target: { value: "Pat Yardman" } });
+    expect((r.getByLabelText("Phone") as HTMLInputElement).value).toBe("555-0177");
   });
 });
 

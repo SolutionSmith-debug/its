@@ -9,7 +9,8 @@ import { ExhibitTemplatesEditor } from "../components/ExhibitTemplatesEditor";
 
 // PO/SC Configuration (Administration) — the browser EDITOR for the config classes that print on every
 // purchase order AND every subcontract. PO: the Purchaser identity (D5), the ship-to-state tax table
-// (D8), and the terms-library profiles (D6/S3). Subcontracts: the Contractor identity (SC-S2) and the
+// (D8), the delivery-contact suggestion list (Feature C — the builder's <datalist>; free text always
+// still accepted), and the terms-library profiles (D6/S3). Subcontracts: the Contractor identity (SC-S2) and the
 // subcontract terms-library. It reads current values from the same cap-gated routes the builders use —
 // GET /api/po/config + /api/po/terms (cap.po.manage) and GET /api/subcontracts/config + /terms
 // (cap.subcontracts.manage) — and edits them through the §50 send-free queue.
@@ -103,9 +104,14 @@ function FieldTextarea({
   );
 }
 
+// Light client-side email shape — mirrors the actuator's _EMAIL_RE (config_apply.py) so the
+// operator never queues an avoidably-failing §50 request over a malformed contact email.
+const EMAIL_SHAPE_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+
 // ── Editor form buffers (flat all-strings, per the admin edit-form idiom) ──────────────────────────
 type PurchaserForm = { entity: string; address_lines: string; phone: string; to: string; cc: string };
 type TaxRow = { state: string; name: string; rate: string }; // rate entered as a PERCENT string
+type DeliveryRow = { name: string; phone: string; email: string }; // Feature C — the builder's <datalist> suggestions
 // Subcontract Contractor identity (SC-S2). The terms editors own their own buffers in TermsProfilesEditor.
 type ContractorForm = { entity: string; address_lines: string; phone: string; signature_entity: string; prime_contractor_default: string };
 
@@ -135,6 +141,8 @@ export function PoConfigPage({ onBack }: { onBack: () => void }) {
   const [pf, setPf] = useState<PurchaserForm>({ entity: "", address_lines: "", phone: "", to: "", cc: "" });
   const [taxOpen, setTaxOpen] = useState(false);
   const [taxRows, setTaxRows] = useState<TaxRow[]>([]);
+  const [deliveryOpen, setDeliveryOpen] = useState(false);
+  const [deliveryRows, setDeliveryRows] = useState<DeliveryRow[]>([]);
   const [contractorOpen, setContractorOpen] = useState(false);
   const [cf, setCf] = useState<ContractorForm>({ entity: "", address_lines: "", phone: "", signature_entity: "", prime_contractor_default: "" });
 
@@ -194,6 +202,20 @@ export function PoConfigPage({ onBack }: { onBack: () => void }) {
     );
     setMsg(null);
     setTaxOpen(true);
+  }
+
+  // ── Delivery-contacts (Feature C) editor open (seed the buffer from the served list) ──────────────
+  function openDelivery() {
+    if (!config) return;
+    setDeliveryRows(
+      config.delivery_contacts.map((ct) => ({
+        name: ct.name,
+        phone: ct.phone ?? "",
+        email: ct.email ?? "",
+      })),
+    );
+    setMsg(null);
+    setDeliveryOpen(true);
   }
 
   // ── Contractor identity (SC-S2) editor open (seed the buffer from the current subcontract config) ─
@@ -293,6 +315,52 @@ export function PoConfigPage({ onBack }: { onBack: () => void }) {
       setTaxOpen(false);
       setMsg({ ok: true, text: "Queued — the tax-table change will go live after review. Track it below." });
       setRefreshSignal((n) => n + 1);
+    } catch (err) {
+      setMsg({ ok: false, text: err instanceof Error ? err.message : "Submit failed." });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function submitDelivery(e: FormEvent) {
+    e.preventDefault();
+    if (busy) return;
+    // Client-side guards mirror _apply_delivery_contacts_edit (name required, email shape,
+    // unique names) so the operator never queues an avoidably-failing §50 request. An EMPTY
+    // list is valid — that clears every suggestion.
+    const contacts: { name: string; phone: string; email: string }[] = [];
+    const seen = new Set<string>();
+    for (const row of deliveryRows) {
+      const name = row.name.trim();
+      const phone = row.phone.trim();
+      const email = row.email.trim();
+      if (!name) {
+        setMsg({ ok: false, text: "Every delivery contact needs a name (remove empty rows)." });
+        return;
+      }
+      if (seen.has(name.toLowerCase())) {
+        setMsg({ ok: false, text: `"${name}" is listed twice — contact names must be unique.` });
+        return;
+      }
+      seen.add(name.toLowerCase());
+      if (email && !EMAIL_SHAPE_RE.test(email)) {
+        setMsg({ ok: false, text: `"${email}" doesn't look like an email address.` });
+        return;
+      }
+      contacts.push({ name, phone, email });
+    }
+    setBusy(true);
+    setMsg(null);
+    try {
+      await api.submitConfigEdit({
+        workstream: WORKSTREAM,
+        artifact_key: "delivery_contacts",
+        op: "edit",
+        payload: { contacts },
+      });
+      setDeliveryOpen(false);
+      setMsg({ ok: true, text: "Queued — the delivery-contact change will go live after review. Track it below." });
+      bumpRefresh();
     } catch (err) {
       setMsg({ ok: false, text: err instanceof Error ? err.message : "Submit failed." });
     } finally {
@@ -530,6 +598,92 @@ export function PoConfigPage({ onBack }: { onBack: () => void }) {
                 <div className="jha__actions">
                   <button className="btn btn--edit" type="button" onClick={openTax}>
                     Edit tax table
+                  </button>
+                </div>
+              ))}
+          </section>
+
+          {/* ── Delivery contacts (Feature C) — the builder's <datalist> suggestion list ── */}
+          <section className="card dash-section" aria-label="Delivery contacts">
+            <h3 className="jha__section-title">
+              Delivery contacts <span className="dash-pill">{config.delivery_contacts.length}</span>
+            </h3>
+            <p className="muted">
+              Suggested in the PO builder&rsquo;s delivery-contact field — picking a name fills its
+              phone and email. Free-text contacts are always still accepted on a PO.
+            </p>
+            {config.delivery_contacts.length === 0 ? (
+              <p className="muted">No delivery contacts configured.</p>
+            ) : (
+              <div className="dash-grid">
+                {config.delivery_contacts.map((ct) => (
+                  <section key={ct.name} className="card po-config__tax-card">
+                    <div className="po-config__entity">{ct.name}</div>
+                    <div className="dash-chips">
+                      {ct.phone && <span className="dash-chip">{ct.phone}</span>}
+                      {ct.email && <span className="dash-chip">{ct.email}</span>}
+                    </div>
+                  </section>
+                ))}
+              </div>
+            )}
+
+            {canManage &&
+              (deliveryOpen ? (
+                <form className="accounts__editor" onSubmit={submitDelivery}>
+                  <p className="muted">Name is required; phone and email are optional (an exact name pick fills them in the builder).</p>
+                  {deliveryRows.map((row, i) => (
+                    <div className="po-config__tax-edit-row" key={i}>
+                      <FieldInput
+                        label="Name"
+                        value={row.name}
+                        placeholder="Riley Receiver"
+                        onChange={(v) => setDeliveryRows(deliveryRows.map((r, j) => (j === i ? { ...r, name: v } : r)))}
+                      />
+                      <FieldInput
+                        label="Phone"
+                        value={row.phone}
+                        placeholder="555-0142"
+                        onChange={(v) => setDeliveryRows(deliveryRows.map((r, j) => (j === i ? { ...r, phone: v } : r)))}
+                      />
+                      <FieldInput
+                        label="Email"
+                        value={row.email}
+                        placeholder="riley@site.example"
+                        onChange={(v) => setDeliveryRows(deliveryRows.map((r, j) => (j === i ? { ...r, email: v } : r)))}
+                      />
+                      <button
+                        className="btn btn--retire"
+                        type="button"
+                        aria-label={`Remove ${row.name || "contact"}`}
+                        onClick={() => setDeliveryRows(deliveryRows.filter((_, j) => j !== i))}
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  ))}
+                  <div className="jha__actions">
+                    <button
+                      className="btn btn--secondary"
+                      type="button"
+                      onClick={() => setDeliveryRows([...deliveryRows, { name: "", phone: "", email: "" }])}
+                    >
+                      + Add contact
+                    </button>
+                  </div>
+                  <div className="jha__actions">
+                    <button className="btn btn--primary" type="submit">
+                      {busy ? "Working…" : "Queue change"}
+                    </button>
+                    <button className="btn btn--secondary" type="button" onClick={() => setDeliveryOpen(false)}>
+                      Cancel
+                    </button>
+                  </div>
+                </form>
+              ) : (
+                <div className="jha__actions">
+                  <button className="btn btn--edit" type="button" onClick={openDelivery}>
+                    Edit delivery contacts
                   </button>
                 </div>
               ))}
