@@ -513,6 +513,22 @@ def sc_root(root: Path) -> Path:
     _write_json(root / "subcontracts" / "config" / "contractor.json", _SC_SEED_CONTRACTOR)
     _write_json(root / "subcontracts" / "config" / "payment_terms.json", _SC_SEED_PAYMENT)
     _write_json(root / "subcontracts" / "terms" / "manifest.json", _SC_SEED_MANIFEST)
+    # exhibit: one versioned trade-template key (civil v1 cleared). config_apply's exhibit handlers only
+    # touch the manifest's trade_templates, so the skeleton entry is a placeholder (never read here).
+    (root / "subcontracts" / "exhibit" / "art2").mkdir(parents=True)
+    _sc_art2 = b"Civil:\nC0.1 - do the work.\n"
+    (root / "subcontracts" / "exhibit" / "art2" / "civil.md").write_bytes(_sc_art2)
+    _write_json(root / "subcontracts" / "exhibit" / "manifest.json", {
+        "manifest_version": 1,
+        "skeleton": {"file": "skeleton.md", "sha256": "0" * 64, "tokens": ["article_ii"]},
+        "trade_templates": {
+            "civil": {"current_version": "v1", "versions": {
+                "v1": {"file": "art2/civil.md", "sha256": hashlib.sha256(_sc_art2).hexdigest(),
+                       "legal_review": "cleared"},
+            }},
+        },
+        "trade_map": {"Civil": "civil"},
+    })
     return root
 
 
@@ -604,3 +620,78 @@ def test_unknown_workstream_rejected(sc_root: Path):
            "target_version": None, "payload": json.dumps({"x": 1}), "status": "queued"}
     with pytest.raises(config_apply.ConfigApplyError, match="unknown config workstream"):
         config_apply.apply_config(req, sc_root)
+
+
+# ── exhibit / add_version + set_current (PR-B2 — versioned per-trade Article II templates) ────────
+
+
+def test_sc_exhibit_add_version_writes_new_file_pending_current_untouched(sc_root: Path):
+    note = config_apply.apply_config(
+        _sc_req("exhibit", "add_version", {"template_key": "civil", "text": "Civil v2 scope."},
+                target_version="v2"),
+        sc_root,
+    )
+    new_file = sc_root / "subcontracts" / "exhibit" / "art2" / "civil_v2.md"
+    assert new_file.exists() and new_file.read_text() == "Civil v2 scope."
+    tmpl = _sc_read(sc_root, "exhibit", "manifest.json")["trade_templates"]["civil"]
+    entry = tmpl["versions"]["v2"]
+    assert entry["file"] == "art2/civil_v2.md"
+    assert entry["sha256"] == hashlib.sha256(b"Civil v2 scope.").hexdigest()
+    assert entry["legal_review"] == "pending"
+    assert tmpl["current_version"] == "v1"  # UNTOUCHED — Layer-A: the new version is inert
+    assert "legal_review pending" in note
+
+
+def test_sc_exhibit_add_version_rejects_embedded_tokens(sc_root: Path):
+    with pytest.raises(config_apply.ConfigApplyError, match="must not contain"):
+        config_apply.apply_config(
+            _sc_req("exhibit", "add_version",
+                    {"template_key": "civil", "text": "scope for {{project_name}}"}, target_version="v2"),
+            sc_root,
+        )
+
+
+def test_sc_exhibit_add_version_rejects_unknown_key(sc_root: Path):
+    with pytest.raises(config_apply.ConfigApplyError, match="unknown template key"):
+        config_apply.apply_config(
+            _sc_req("exhibit", "add_version", {"template_key": "nope", "text": "x"}, target_version="v2"),
+            sc_root,
+        )
+
+
+def test_sc_exhibit_add_version_rejects_duplicate_version(sc_root: Path):
+    with pytest.raises(config_apply.ConfigApplyError, match="already exists"):
+        config_apply.apply_config(
+            _sc_req("exhibit", "add_version", {"template_key": "civil", "text": "x"}, target_version="v1"),
+            sc_root,
+        )
+
+
+def test_sc_exhibit_set_current_clears_and_repoints(sc_root: Path):
+    config_apply.apply_config(
+        _sc_req("exhibit", "add_version", {"template_key": "civil", "text": "Civil v2 scope."},
+                target_version="v2"),
+        sc_root,
+    )
+    note = config_apply.apply_config(
+        _sc_req("exhibit", "set_current", {"template_key": "civil"}, target_version="v2"),
+        sc_root,
+    )
+    tmpl = _sc_read(sc_root, "exhibit", "manifest.json")["trade_templates"]["civil"]
+    assert tmpl["current_version"] == "v2"
+    assert tmpl["versions"]["v2"]["legal_review"] == "cleared"
+    assert tmpl["versions"]["v1"]["legal_review"] == "cleared"  # other versions untouched
+    assert "cleared" in note
+
+
+def test_sc_exhibit_set_current_rejects_unknown_version(sc_root: Path):
+    with pytest.raises(config_apply.ConfigApplyError, match="does not exist"):
+        config_apply.apply_config(
+            _sc_req("exhibit", "set_current", {"template_key": "civil"}, target_version="v99"),
+            sc_root,
+        )
+
+
+def test_sc_exhibit_rejects_bad_op(sc_root: Path):
+    with pytest.raises(config_apply.ConfigApplyError, match="exhibit takes op"):
+        config_apply.apply_config(_sc_req("exhibit", "edit", {"template_key": "civil"}), sc_root)

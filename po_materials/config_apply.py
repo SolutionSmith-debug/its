@@ -85,6 +85,10 @@ def _terms_dir(root: Path, workstream: str = "po_materials") -> Path:
     return root / _subdir(workstream) / "terms"
 
 
+def _exhibit_dir(root: Path, workstream: str = "subcontracts") -> Path:
+    return root / _subdir(workstream) / "exhibit"
+
+
 def _dump(obj: Any) -> str:
     """Canonical on-disk JSON: indent=2 + a trailing newline (matches the seeded files)."""
     return json.dumps(obj, indent=2, ensure_ascii=False) + "\n"
@@ -348,6 +352,113 @@ def _apply_terms_set_current(
     return f"terms: {profile_id} current_version -> {target_version} (legal_review cleared)"
 
 
+# ── exhibit (per-trade Article II templates) — versioned + Layer-A gated, mirrors terms ─────────────
+
+
+def _apply_exhibit_add_version(
+    payload: dict[str, Any], target_version: str | None, root: Path,
+    workstream: str = "subcontracts",
+) -> str:
+    """Mint a NEW Article II version for a trade-template KEY (legal_review 'pending'; current_version
+    UNTOUCHED — the Layer-A gate keeps it inert until the operator make-currents it). Mirrors
+    _apply_terms_add_version, keyed by ``template_key`` on the exhibit manifest's ``trade_templates``."""
+    if not isinstance(target_version, str) or not target_version:
+        raise ConfigApplyError("exhibit add_version: target_version is required")
+    if not _TARGET_VERSION_RE.match(target_version) or len(target_version) > _MAX_TARGET_VERSION:
+        raise ConfigApplyError(
+            f"exhibit add_version: target_version {target_version!r} must match /^[a-z0-9_]+$/ and be "
+            f"<= {_MAX_TARGET_VERSION} chars"
+        )
+    template_key = payload.get("template_key")
+    text = payload.get("text")
+    if not isinstance(template_key, str) or not template_key:
+        raise ConfigApplyError("exhibit add_version: template_key is required")
+    if not isinstance(text, str) or not text.strip():
+        raise ConfigApplyError("exhibit add_version: text must be non-empty")
+    if len(text) > _MAX_TERMS_TEXT:
+        raise ConfigApplyError(f"exhibit add_version: text is {len(text)} chars (> {_MAX_TERMS_TEXT} limit)")
+    # The Article II body IS the literal ``article_ii`` value the skeleton renders (not a template) — a
+    # stray {{token}} would become an unfillable blank at render (the skeleton fill is STRICT). Refuse it.
+    if _TOKEN_RE.search(text):
+        raise ConfigApplyError(
+            "exhibit add_version: Article II text must not contain {{tokens}} — it is the literal scope "
+            "body the skeleton renders, not a template"
+        )
+    manifest_path = _exhibit_dir(root, workstream) / "manifest.json"
+    manifest = _load_json_file(manifest_path, "exhibit/manifest.json")
+    templates = manifest.get("trade_templates")
+    if not isinstance(templates, dict) or template_key not in templates:
+        raise ConfigApplyError(
+            f"exhibit add_version: unknown template key {template_key!r} "
+            f"(known: {sorted(templates) if isinstance(templates, dict) else '?'})"
+        )
+    tmpl = templates[template_key]
+    versions = tmpl.get("versions") if isinstance(tmpl, dict) else None
+    if not isinstance(versions, dict):
+        raise ConfigApplyError(f"exhibit add_version: template {template_key!r} has no versions map")
+    if target_version in versions:
+        raise ConfigApplyError(
+            f"exhibit add_version: version {target_version!r} already exists for {template_key!r} "
+            "— version files are immutable; pick a new version id"
+        )
+    file_rel = f"art2/{template_key}_{target_version}.md"
+    file_path = _exhibit_dir(root, workstream) / file_rel
+    if file_path.exists():
+        raise ConfigApplyError(
+            f"exhibit add_version: {file_rel} already exists on disk — refusing to overwrite a "
+            "(possibly sha-pinned) template file"
+        )
+    file_bytes = text.encode("utf-8")
+    digest = hashlib.sha256(file_bytes).hexdigest()
+    file_path.write_bytes(file_bytes)  # NEW immutable version file (never touch an existing one)
+    versions[target_version] = {"file": file_rel, "sha256": digest, "legal_review": "pending"}
+    # current_version UNTOUCHED — Layer-A: the new version is inert until make-current clears it.
+    manifest_path.write_text(_dump(manifest), encoding="utf-8")
+    return (
+        f"exhibit: {template_key} + version {target_version} "
+        f"(legal_review pending; current_version unchanged)"
+    )
+
+
+def _apply_exhibit_set_current(
+    payload: dict[str, Any], target_version: str | None, root: Path,
+    workstream: str = "subcontracts",
+) -> str:
+    """Make an existing Article II version the trade-template KEY's CURRENT version and CLEAR its legal
+    review — the operator's confirmable Layer-A activation. Sets legal_review 'cleared' + repoints
+    current_version in a SINGLE manifest rewrite; the immutable file/sha256 are never touched."""
+    if not isinstance(target_version, str) or not target_version:
+        raise ConfigApplyError("exhibit set_current: target_version is required")
+    template_key = payload.get("template_key")
+    if not isinstance(template_key, str) or not template_key:
+        raise ConfigApplyError("exhibit set_current: template_key is required")
+    manifest_path = _exhibit_dir(root, workstream) / "manifest.json"
+    manifest = _load_json_file(manifest_path, "exhibit/manifest.json")
+    templates = manifest.get("trade_templates")
+    if not isinstance(templates, dict) or template_key not in templates:
+        raise ConfigApplyError(
+            f"exhibit set_current: unknown template key {template_key!r} "
+            f"(known: {sorted(templates) if isinstance(templates, dict) else '?'})"
+        )
+    tmpl = templates[template_key]
+    versions = tmpl.get("versions") if isinstance(tmpl, dict) else None
+    if not isinstance(versions, dict) or target_version not in versions:
+        raise ConfigApplyError(
+            f"exhibit set_current: version {target_version!r} does not exist for {template_key!r} "
+            f"(known: {sorted(versions) if isinstance(versions, dict) else '?'}) — mint it first"
+        )
+    entry = versions[target_version]
+    if not isinstance(entry, dict) or "file" not in entry or "sha256" not in entry:
+        raise ConfigApplyError(
+            f"exhibit set_current: version {target_version!r} of {template_key!r} is malformed "
+            "(missing file/sha256) — refusing to make a corrupt version current"
+        )
+    entry["legal_review"] = "cleared"
+    tmpl["current_version"] = target_version
+    manifest_path.write_text(_dump(manifest), encoding="utf-8")
+    return f"exhibit: {template_key} current_version -> {target_version} (legal_review cleared)"
+
+
 def _apply_terms_create_profile(payload: dict[str, Any], root: Path, workstream: str = "po_materials") -> str:
     """Mint a BRAND-NEW terms profile in the manifest — a ``library`` profile (a manifest entry + an
     immutable sha256-pinned initial version file, ``legal_review: "pending"``) or an ``attach`` profile
@@ -575,6 +686,12 @@ def apply_config(request: dict[str, Any], root: Path) -> str:
             raise ConfigApplyError(
                 f"terms takes op 'add_version', 'set_current' or 'create_profile', got {op!r}"
             )
+        if artifact == "exhibit":
+            if op == "add_version":
+                return _apply_exhibit_add_version(payload, request.get("target_version"), root, "subcontracts")
+            if op == "set_current":
+                return _apply_exhibit_set_current(payload, request.get("target_version"), root, "subcontracts")
+            raise ConfigApplyError(f"exhibit takes op 'add_version' or 'set_current', got {op!r}")
         raise ConfigApplyError(f"unknown subcontracts config artifact {artifact!r}")
 
     raise ConfigApplyError(f"unknown config workstream {workstream!r}")

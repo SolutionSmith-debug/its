@@ -41,12 +41,11 @@ export type ConfigGates = {
 };
 
 // ── The generic workstream → artifact registry ───────────────────────────────────
-// A future workflow adds its artifacts here with ZERO route changes. `subcontracts` is a
-// PROVISIONED PLACEHOLDER — declared so the tier exists, but it carries NO artifacts yet
-// (placeholder:true); a future subcontract config workflow fills in its `artifacts` map and
-// this same enqueue/claim/stamp machinery serves it unchanged.
+// A future workflow adds its artifacts here with ZERO route changes. `subcontracts` is LIVE (SC-S2 +
+// PR-B2): `contractor`/`payment_terms` (json), `terms` (the versioned body library), and `exhibit` (the
+// versioned per-trade Article II templates) — this same enqueue/claim/stamp machinery serves them all.
 interface ArtifactSpec {
-  kind: "json" | "terms";
+  kind: "json" | "terms" | "exhibit";
 }
 interface WorkstreamSpec {
   cap: string;
@@ -68,6 +67,7 @@ const CONFIG_REGISTRY: Record<string, WorkstreamSpec> = {
       contractor: { kind: "json" }, // the Evergreen prime identity (SC-S2)
       payment_terms: { kind: "json" }, // the §2.5 retention defaults
       terms: { kind: "terms" }, // the 27-article subcontract body library (subcontracts/terms manifest)
+      exhibit: { kind: "exhibit" }, // the versioned per-trade Exhibit A Article II templates (PR-B2)
     },
   },
 };
@@ -76,6 +76,9 @@ const CONFIG_OPS = new Set(["edit", "add_version", "set_current", "create_profil
 // The ops a versioned `terms` artifact accepts (a json artifact takes only `edit`). Module-level so
 // it is allocated once, not per request.
 const TERMS_OPS = new Set(["add_version", "set_current", "create_profile"]);
+// The ops a versioned `exhibit` artifact accepts — a per-trade Article II template is versioned like
+// terms, but the KEY vocabulary is fixed (the trades), so there is no `create_profile`.
+const EXHIBIT_OPS = new Set(["add_version", "set_current"]);
 const TARGET_VERSION_RE = /^[a-z0-9_]+$/;
 const MAX_TARGET_VERSION = 64;
 const MAX_PAYLOAD_BYTES = 100_000; // 100 KB — generous ceiling on a config value / terms version
@@ -173,6 +176,20 @@ function validateCreateProfile(payload: unknown): string | null {
   return null;
 }
 
+/** Shape-gate an `exhibit` config edit (PR-B2). add_version needs {template_key, text}; set_current
+ *  needs {template_key}. The Mac actuator (config_apply._apply_exhibit_*) is the live-HEAD boundary
+ *  (unknown key, duplicate version, embedded {{tokens}}). */
+function validateExhibit(op: string, payload: unknown): string | null {
+  if (!isPlainObject(payload)) return "invalid_payload";
+  const templateKey = typeof payload.template_key === "string" ? payload.template_key : "";
+  if (!templateKey || templateKey.length > MAX_PROFILE_ID) return "invalid_template_key";
+  if (op === "add_version") {
+    const text = typeof payload.text === "string" ? payload.text : "";
+    if (!text.trim()) return "invalid_payload";
+  }
+  return null;
+}
+
 /** True if `v` is a non-empty JSON value: a non-null/undefined value that, when it is an
  *  object/array/string, carries at least one key/element/char. Numbers/booleans are accepted
  *  as-is (a valid config scalar). Blocks an empty {} / [] / "" that carries no real edit. */
@@ -223,7 +240,13 @@ export function registerConfigRoutes(app: FieldopsApp, gates: ConfigGates): void
     // sha-pinned version), `set_current` (make a version live + clear its legal review), or
     // `create_profile` (mint a brand-new profile); a json artifact only takes `edit` (replace the
     // value). A mismatch is a structurally-nonsensical request the queue rejects here, not later.
-    if (artifact.kind === "terms" ? !TERMS_OPS.has(op) : op !== "edit") {
+    const opAllowed =
+      artifact.kind === "terms"
+        ? TERMS_OPS.has(op)
+        : artifact.kind === "exhibit"
+          ? EXHIBIT_OPS.has(op)
+          : op === "edit";
+    if (!opAllowed) {
       return c.json({ error: "invalid_op" }, 400);
     }
 
@@ -248,6 +271,11 @@ export function registerConfigRoutes(app: FieldopsApp, gates: ConfigGates): void
       if (err) return c.json({ error: err }, err === "profile_exists" ? 409 : 400);
       const p = body.payload as Record<string, unknown>;
       opMeta = { profile_id: p.profile_id, kind: p.kind };
+    }
+    if (artifact.kind === "exhibit") {
+      const err = validateExhibit(op, body.payload);
+      if (err) return c.json({ error: err }, 400);
+      opMeta = { template_key: (body.payload as Record<string, unknown>).template_key };
     }
 
     if (!isNonEmptyJson(body.payload)) return c.json({ error: "invalid_payload" }, 400);

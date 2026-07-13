@@ -391,6 +391,42 @@ export async function fetchJobSiteAddress(jobId: string): Promise<JobSiteAddress
   return getJson<JobSiteAddress>(`/api/subcontracts/jobs/${encodeURIComponent(jobId)}/site-address`);
 }
 
+// ── Exhibit A per-trade Article II templates — the config editor's read surface (PR-B2) ────────────
+export interface ExhibitVersionRow {
+  version: string;
+  legal_review: string;
+}
+export interface ExhibitTemplateSummary {
+  template_key: string;
+  current_version: string;
+  trades: string[];
+  versions: ExhibitVersionRow[];
+}
+export interface ExhibitKeyText {
+  template_key: string;
+  version: string;
+  article_ii: string;
+}
+export interface ExhibitKeyVersions {
+  template_key: string;
+  current_version: string;
+  versions: ExhibitVersionRow[];
+}
+/** Every trade-template key + its current_version, versions (legal_review), and mapped Trades. */
+export async function fetchExhibitTemplateKeys(): Promise<ExhibitTemplateSummary[]> {
+  const data = await getJson<{ templates: ExhibitTemplateSummary[] }>("/api/subcontracts/exhibit-keys");
+  return data.templates;
+}
+/** A key's Article II body at its current (or an explicit) version — the 'edit from live' pre-fill. */
+export async function fetchExhibitKeyText(key: string, version?: string): Promise<ExhibitKeyText> {
+  const q = version ? `?version=${encodeURIComponent(version)}` : "";
+  return getJson<ExhibitKeyText>(`/api/subcontracts/exhibit-keys/${encodeURIComponent(key)}/text${q}`);
+}
+/** A key's versions + current_version (the make-current picker). */
+export async function fetchExhibitKeyVersions(key: string): Promise<ExhibitKeyVersions> {
+  return getJson<ExhibitKeyVersions>(`/api/subcontracts/exhibit-keys/${encodeURIComponent(key)}/versions`);
+}
+
 // ── Surface-line name aliases ──────────────────────────────────────────────────────────────────────
 // The S5 build spec (lib_routing.md) names these fetchSubcontracts / fetchSubcontract / createDraft /
 // updateDraft / generateDraft / fetchTerms / fetchSubcontractConfig; the task surface line names them

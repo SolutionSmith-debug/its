@@ -28,6 +28,9 @@ vi.mock("../../lib/subcontracts", () => ({
   fetchTerms: vi.fn(),
   fetchTermsText: vi.fn(),
   fetchTermsVersions: vi.fn(),
+  fetchExhibitTemplateKeys: vi.fn(),
+  fetchExhibitKeyText: vi.fn(),
+  fetchExhibitKeyVersions: vi.fn(),
 }));
 vi.mock("../../lib/auth", () => ({ useAuth: vi.fn() }));
 
@@ -144,6 +147,24 @@ beforeEach(() => {
     versions: [
       { version: "v1", legal_review: "cleared" },
       { version: "standard_v2", legal_review: "pending" },
+    ],
+  });
+  vi.mocked(sub.fetchExhibitTemplateKeys).mockResolvedValue([
+    { template_key: "civil", current_version: "v1", trades: ["Civil"], versions: [{ version: "v1", legal_review: "cleared" }] },
+    {
+      template_key: "electrical",
+      current_version: "v1",
+      trades: ["AC Electrical", "MV Electrical", "DC Electrical"],
+      versions: [{ version: "v1", legal_review: "cleared" }],
+    },
+  ]);
+  vi.mocked(sub.fetchExhibitKeyText).mockResolvedValue({ template_key: "civil", version: "v1", article_ii: "Civil scope text." });
+  vi.mocked(sub.fetchExhibitKeyVersions).mockResolvedValue({
+    template_key: "civil",
+    current_version: "v1",
+    versions: [
+      { version: "v1", legal_review: "cleared" },
+      { version: "v2", legal_review: "pending" },
     ],
   });
 });
@@ -404,6 +425,58 @@ describe("PoConfigPage — subcontract config (workstream=subcontracts)", () => 
         op: "set_current",
         payload: { profile_id: "standard_subcontract" },
         target_version: "standard_v2",
+      }),
+    );
+  });
+
+  it("an exhibit add_version POSTs op:add_version under workstream=subcontracts, artifact=exhibit", async () => {
+    bothCaps();
+    const { container, getByText } = render(<PoConfigPage onBack={vi.fn()} />);
+    await waitFor(() => expect(getByText("Exhibit A — Article II templates")).toBeTruthy());
+    const exSection = container.querySelector('[aria-label="Exhibit A trade templates"]') as HTMLElement;
+    await waitFor(() => expect(within(exSection).getByText("civil")).toBeTruthy()); // templates loaded
+    fireEvent.click(within(exSection).getByText("Add an Article II version"));
+    // The scope textarea pre-fills from the current version's text.
+    await waitFor(() =>
+      expect((within(exSection).getByLabelText("Article II scope text") as HTMLTextAreaElement).value).toBe(
+        "Civil scope text.",
+      ),
+    );
+    fireEvent.change(within(exSection).getByLabelText("New version name (lowercase, e.g. v2)"), {
+      target: { value: "v2" },
+    });
+    fireEvent.change(within(exSection).getByLabelText("Article II scope text"), {
+      target: { value: "Civil v2 scope." },
+    });
+    fireEvent.click(within(exSection).getByText("Queue new version"));
+    await waitFor(() =>
+      expect(api.submitConfigEdit).toHaveBeenCalledWith({
+        workstream: "subcontracts",
+        artifact_key: "exhibit",
+        op: "add_version",
+        payload: { template_key: "civil", text: "Civil v2 scope." },
+        target_version: "v2",
+      }),
+    );
+  });
+
+  it("an exhibit make-current POSTs op:set_current under workstream=subcontracts, artifact=exhibit", async () => {
+    bothCaps();
+    const { container, getByText } = render(<PoConfigPage onBack={vi.fn()} />);
+    await waitFor(() => expect(getByText("Exhibit A — Article II templates")).toBeTruthy());
+    const exSection = container.querySelector('[aria-label="Exhibit A trade templates"]') as HTMLElement;
+    await waitFor(() => expect(within(exSection).getByText("civil")).toBeTruthy()); // templates loaded
+    fireEvent.click(within(exSection).getByText("Make a version current"));
+    await waitFor(() => expect(within(exSection).getByLabelText("Version to make current")).toBeTruthy());
+    fireEvent.click(within(exSection).getByLabelText(/I have reviewed this version/i));
+    fireEvent.click(within(exSection).getByText("Make it live"));
+    await waitFor(() =>
+      expect(api.submitConfigEdit).toHaveBeenCalledWith({
+        workstream: "subcontracts",
+        artifact_key: "exhibit",
+        op: "set_current",
+        payload: { template_key: "civil" },
+        target_version: "v2",
       }),
     );
   });
