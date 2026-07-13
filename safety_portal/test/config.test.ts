@@ -215,6 +215,58 @@ describe("POST /api/config/requests — enqueue", () => {
     expect(await res.json()).toMatchObject({ error: "invalid_template_key" });
   });
 
+  it("enqueues an exhibit create_profile (new trade + template) 201 + records template_key/trade in audit", async () => {
+    await provision("admin.one", "admin");
+    const cookie = await login("admin.one");
+    const res = await post(cookie, "/api/config/requests", {
+      workstream: "subcontracts",
+      artifact_key: "exhibit",
+      op: "create_profile",
+      payload: { template_key: "battery_storage", trade: "Battery Storage", text: "Battery Storage scope." },
+    });
+    expect(res.status, await res.clone().text()).toBe(201);
+    const row = await env.DB
+      .prepare("SELECT op, target_version FROM config_requests")
+      .first<{ op: string; target_version: string | null }>();
+    expect(row!.op).toBe("create_profile");
+    expect(row!.target_version).toBeNull(); // create carries version v1 IN payload, not the column
+    const detail = (await env.DB.prepare("SELECT detail FROM audit_log WHERE action='config_edit'").first<{ detail: string }>())!.detail;
+    expect(JSON.parse(detail)).toMatchObject({ op: "create_profile", template_key: "battery_storage", trade: "Battery Storage" });
+  });
+
+  it("rejects an exhibit create_profile for an EXISTING template key (409 template_exists → add_version, not create)", async () => {
+    await provision("admin.one", "admin");
+    const cookie = await login("admin.one");
+    const res = await post(cookie, "/api/config/requests", {
+      workstream: "subcontracts", artifact_key: "exhibit", op: "create_profile",
+      payload: { template_key: "civil", trade: "New Civil", text: "x" },
+    });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ error: "template_exists" });
+  });
+
+  it("rejects an exhibit create_profile for an EXISTING trade (409 trade_exists → a re-map, not create)", async () => {
+    await provision("admin.one", "admin");
+    const cookie = await login("admin.one");
+    const res = await post(cookie, "/api/config/requests", {
+      workstream: "subcontracts", artifact_key: "exhibit", op: "create_profile",
+      payload: { template_key: "civil_two", trade: "Civil", text: "x" },
+    });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ error: "trade_exists" });
+  });
+
+  it("rejects an exhibit create_profile with a missing trade (400 invalid_trade)", async () => {
+    await provision("admin.one", "admin");
+    const cookie = await login("admin.one");
+    const res = await post(cookie, "/api/config/requests", {
+      workstream: "subcontracts", artifact_key: "exhibit", op: "create_profile",
+      payload: { template_key: "battery_storage", text: "no trade" },
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: "invalid_trade" });
+  });
+
   it("writes exactly one audit_log row atomically with the insert (W4)", async () => {
     await provision("admin.one", "admin");
     const cookie = await login("admin.one");
