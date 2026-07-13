@@ -744,12 +744,35 @@ def test_attachment_clean_filed_to_box_and_log(_patch):
     assert stats.attachments_refused == 0
     _patch["att_claim"].assert_called_once()
     args, kwargs = _patch["upload"].call_args
-    assert args[1] == po_poll.po_naming.po_attachment_filename("2026.001.2.0.0", "spec.pdf")
+    assert args[1] == po_poll.po_naming.po_attachment_filename("2026.001.2.0.0", 41, "spec.pdf")
     assert args[2] == _MINIMAL_PDF  # the ORIGINAL bytes, not a re-encode
     _patch["att_log_attach"].assert_called_once()
     _patch["att_result"].assert_called_once()
     assert _patch["att_result"].call_args.kwargs["status"] == "filed"
     assert _patch["att_result"].call_args.kwargs["box_file_id"] == "f-att-1"
+
+
+def test_attachment_same_named_uploads_file_under_distinct_names(_patch):
+    """REVIEW BLOCKER regression: two attachments on ONE PO sharing an original
+    filename must land as TWO distinct Box files + TWO distinct PO_Log attachments —
+    the attachment id disambiguates the filed name. Without it the 2nd upload
+    versions-over the 1st in Box AND replaces its PO_Log inline copy (silent loss).
+    Remove the id from po_attachment_filename and this test fails."""
+    _patch["att_pending"].return_value = [
+        _att_row(_MINIMAL_PDF, id=41),
+        _att_row(_MINIMAL_PDF, id=42),  # same filename "spec.pdf", same PO
+    ]
+    _patch["att_chunks"].return_value = _one_chunk(_MINIMAL_PDF)
+    _patch["upload"].return_value = {"id": "f-att-x", "name": "x", "size": 1}
+
+    stats = _run(_patch)
+    assert stats.attachments_filed == 2
+    box_names = [call.args[1] for call in _patch["upload"].call_args_list]
+    log_names = [call.args[1] for call in _patch["att_log_attach"].call_args_list]
+    assert len(box_names) == 2 and len(set(box_names)) == 2, box_names
+    assert len(log_names) == 2 and len(set(log_names)) == 2, log_names
+    for names in (box_names, log_names):
+        assert all("spec.pdf" in n and "2026.001.2.0.0" in n for n in names)
 
 
 def test_attachment_malicious_refused_never_filed(_patch):
@@ -773,6 +796,39 @@ def test_attachment_malicious_refused_never_filed(_patch):
     assert rq["severity"] == po_poll.Severity.CRITICAL
     assert "office.admin" in rq["summary"]  # CRITICAL names the uploading account
     assert "po_attachment_malicious" in _logged_codes(_patch)
+    # One-shot flag set + persisted (review fix #3): a later transient failure can
+    # never re-fire this CRITICAL / duplicate the Review-Queue row every cycle.
+    persisted = _patch["flags_persist"].call_args.args[0]
+    assert persisted.get("att-41") == "refused"
+
+
+def test_attachment_refused_postback_failure_flags_once_no_alert_storm(_patch):
+    """Review fix #3: when the refused-disposition POST-BACK fails transiently AFTER
+    the CRITICAL + Review-Queue row fired, the one-shot flag still persists — the
+    next cycle SKIPS the row instead of re-screening + re-firing (the ~90s alert
+    storm on the cap-sensitive sheets)."""
+    docx = _macro_docx()
+    _patch["att_pending"].return_value = [
+        _att_row(docx, filename="specs.docx", declared_mime=_DOCX_MIME)
+    ]
+    _patch["att_chunks"].return_value = _one_chunk(docx)
+    _patch["att_result"].side_effect = portal_client.PortalTransportError("worker 500")
+
+    stats = _run(_patch)
+    assert stats.attachments_refused == 1
+    assert stats.attachment_errors == 1  # the failed post-back is still surfaced
+    assert "po_attachment_result_post_failed" in _logged_codes(_patch)
+    persisted = _patch["flags_persist"].call_args.args[0]
+    assert persisted.get("att-41") == "refused"
+    assert _patch["review_q"].call_count == 1  # exactly ONE Review-Queue record
+
+    # Next cycle: the flagged row is skipped silently — no re-screen, no re-alert.
+    _patch["flags_load"].return_value = dict(persisted)
+    _patch["review_q"].reset_mock()
+    _patch["att_result"].reset_mock()
+    _run(_patch)
+    _patch["review_q"].assert_not_called()
+    _patch["att_result"].assert_not_called()
 
 
 def test_attachment_suspicious_pdf_active_content_security_flagged(_patch):

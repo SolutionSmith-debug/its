@@ -381,9 +381,14 @@ plist is loaded and a gate is on) → novel/code → Seth.
   refused as SUSPICIOUS`, `po: MALICIOUS attachment …`, or `po: attachment INTEGRITY
   FAILURE …`, **and/or**
 - ITS_Errors shows `po_attachment_suspicious` (WARN), `po_attachment_transient` /
-  `po_attachment_service_failed` (ERROR), `po_attachment_malicious` /
-  `po_attachment_integrity_failure` (CRITICAL), or `po_attachment_log_attach_failed` /
-  `po_attachment_log_row_missing` (WARN).
+  `po_attachment_service_failed` / `po_attachment_result_post_failed` (ERROR),
+  `po_attachment_malicious` / `po_attachment_integrity_failure` (CRITICAL), or
+  `po_attachment_log_attach_failed` / `po_attachment_log_row_missing` (WARN).
+  (`po_attachment_result_post_failed` means the refusal ALERT already fired once and
+  is one-shot-flagged — the disposition post-back is what failed; the row stays
+  claimed in D1 and the flag prevents an alert storm. Clearing the row's `att-<id>`
+  entry from `po_poll_flagged.json` retries the whole service after the transport
+  recovers.)
 
 ### What it means
 

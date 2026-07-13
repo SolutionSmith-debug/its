@@ -1169,7 +1169,12 @@ def _service_one_attachment(
                     correlation_id=correlation_id,
                 )
                 return False
-            filed_name = po_naming.po_attachment_filename(po_number, filename)
+            # The attachment ID disambiguates the filed name (review BLOCKER fix):
+            # two same-named uploads on one PO are DISTINCT documents — without the
+            # id the 2nd would version-over the 1st in Box AND replace its PO_Log
+            # inline copy (attach replace=True). A crash-retry of THIS attachment
+            # keeps its id → same name → idempotent §47 version, as intended.
+            filed_name = po_naming.po_attachment_filename(po_number, att_id, filename)
             file_info = box_client.upload_bytes_or_new_version(folder_id, filed_name, data)
             box_file_id = str(file_info["id"])
             _attach_bytes_to_po_log_best_effort(
@@ -1245,15 +1250,39 @@ def _service_one_attachment(
                 error_code="po_attachment_suspicious",
                 correlation_id=correlation_id,
             )
+        # ONE-SHOT FLAG the content rejection BEFORE the disposition post-back
+        # (review SHOULD-FIX #3): the CRITICAL/WARN + Review-Queue row above already
+        # fired; if the post below fails transiently, the row would otherwise
+        # re-serve + re-screen + RE-FIRE every ~90s — duplicate CRITICALs + duplicate
+        # Review-Queue rows on the cap-sensitive sheets. Mirrors _fence_po /
+        # _handle_po_hmac_failure / _handle_attachment_integrity_failure: every
+        # permanent-rejection path flags. On a successful post the flag is benign
+        # residue (the refused row never re-serves); on a failed post the flag IS the
+        # dedupe — remediation is the documented flag-file entry delete.
+        flags[flag_key] = "refused"
         # Disposition post-back LAST: the Worker flips the row + deletes the chunks
-        # (delete-on-disposition). A crash before this re-serves the claimed row and
-        # every step above is idempotent (dedup by att_id flag / Review-Queue record).
-        portal_client.post_po_attachment_result(
-            creds.base_url, creds.bearer,
-            attachment_id=att_id, status="refused", detail=detail[:200],
-        )
+        # (delete-on-disposition). Handled LOCALLY (not the outer transient fence) so
+        # a failed post still persists the flag mutation via return True.
+        try:
+            portal_client.post_po_attachment_result(
+                creds.base_url, creds.bearer,
+                attachment_id=att_id, status="refused", detail=detail[:200],
+            )
+        except portal_client.PortalAuthError as exc:
+            raise _BearerRejectedError from exc
+        except portal_client.PortalTransportError as exc:
+            counters["attachment_errors"] += 1
+            error_log.log(
+                Severity.ERROR, SCRIPT_NAME,
+                f"refused-disposition post-back failed for attachment {att_id} "
+                f"(PO {po_number}; row stays claimed in D1, one-shot flag prevents "
+                f"re-alert; clear 'att-{att_id}' from {PO_FLAGGED_PATH.name} to "
+                f"retry after the transport recovers): {exc!r}",
+                error_code="po_attachment_result_post_failed",
+                correlation_id=correlation_id,
+            )
         counters["attachments_refused"] += 1
-        return False
+        return True
     except portal_client.PortalAuthError as exc:
         raise _BearerRejectedError from exc
     except (

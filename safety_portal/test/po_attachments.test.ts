@@ -109,6 +109,21 @@ async function makeFiled(admin: string): Promise<number> {
   return id;
 }
 
+/** draft → upload → queued → pending_review: the FULL flow producing a serviceable
+ *  attachment on a FILED parent (attachments only ride the DRAFT, and the internal
+ *  routes only service FILED parents — the W5 guard). */
+async function makeFiledWithAttachment(admin: string): Promise<{ poId: number; attId: number }> {
+  const poId = await makeDraft(admin);
+  const att = await json<{ id: number }>(await upload(admin, poId));
+  const gen = await p(admin, `/api/po/drafts/${poId}/generate`, EXPECTED);
+  expect(gen.status, await gen.clone().text()).toBe(200);
+  const filed = await call("/api/po/internal/mark-filed", {
+    method: "POST", bearer: PO_BEARER, body: JSON.stringify({ po_id: poId, box_file_id: `bx-${poId}` }),
+  });
+  expect(filed.status).toBe(200);
+  return { poId, attId: att.id };
+}
+
 function upload(
   admin: string, poId: number,
   over: { filename?: string; mime?: string; data_b64?: string } = {},
@@ -250,7 +265,7 @@ describe("upload bounds", () => {
     expect(await auditCount("po_attachment_upload")).toBe(MAX_ATTACHMENTS_PER_PO);
   });
 
-  it("bounds the filename: overlong, path separators, control chars, leading dot", async () => {
+  it("bounds the filename: overlong, path separators, control chars, leading dot, bidi/zero-width", async () => {
     const id = await makeDraft(admin);
     for (const filename of [
       `${"a".repeat(121)}.pdf`,
@@ -260,6 +275,13 @@ describe("upload bounds", () => {
       "ctrlbell.pdf",
       ".hidden.pdf",
       "",
+      // W8/attacker#4 — Unicode display-spoofing characters (an RTLO name renders
+      // reversed in the SPA table / Box / PO_Log list surfaces).
+      "spec\u202Efdp.pdf", // RTLO
+      "zero\u200Bwidth.pdf", // zero-width space
+      "iso\u2066late.pdf", // bidi isolate
+      "line\u2028sep.pdf", // line separator
+      "bom\uFEFFmark.pdf", // ZWNBSP/BOM
     ]) {
       const res = await upload(admin, id, { filename });
       expect(res.status, `filename=${JSON.stringify(filename)}`).toBe(400);
@@ -457,19 +479,67 @@ describe("internal surface", () => {
     expect((await json<{ attachments: unknown[] }>(pending)).attachments.length).toBe(1);
   });
 
-  it("chunks serve bytes Mac-ward for live rows only", async () => {
-    const id = await makeDraft(admin);
-    const att = await json<{ id: number }>(await upload(admin, id));
-    const res = await call(`/api/po/internal/attachments/${att.id}/chunks`, { bearer: PO_BEARER });
+  it("chunks serve bytes Mac-ward for live rows on a FILED parent only", async () => {
+    const { attId } = await makeFiledWithAttachment(admin);
+    const res = await call(`/api/po/internal/attachments/${attId}/chunks`, { bearer: PO_BEARER });
     expect(res.status).toBe(200);
     const { chunks } = await json<{ chunks: { chunk_index: number; chunk_total: number; chunk_b64: string }[] }>(res);
     expect(chunks.length).toBe(1);
     expect(atob(chunks[0].chunk_b64).length).toBe(PDF_BYTES.length);
   });
 
-  it("result 'filed' flips status + stores box_file_id + DELETES chunks atomically; replay found:false", async () => {
+  it("W5: draft-parent attachments are NOT serviceable by hitting claim/chunks/result directly", async () => {
+    // The parent-status invariant must hold at every MUTATION/byte route, not just
+    // the /pending listing (review SHOULD-FIX #2).
     const id = await makeDraft(admin);
     const att = await json<{ id: number }>(await upload(admin, id));
+
+    const claim = await call(`/api/po/internal/attachments/${att.id}/claim`, {
+      method: "POST", bearer: PO_BEARER, body: "{}",
+    });
+    expect((await json<{ found: boolean }>(claim)).found).toBe(false);
+    expect(((await attRow(att.id))!).status).toBe("pending"); // unclaimed
+
+    expect((await call(`/api/po/internal/attachments/${att.id}/chunks`, { bearer: PO_BEARER })).status).toBe(404);
+
+    const result = await call(`/api/po/internal/attachments/${att.id}/result`, {
+      method: "POST", bearer: PO_BEARER,
+      body: JSON.stringify({ status: "filed", box_file_id: "bx-evil" }),
+    });
+    expect((await json<{ found: boolean }>(result)).found).toBe(false);
+    const row = (await attRow(att.id))!;
+    expect(row.status).toBe("pending");
+    expect(row.box_file_id).toBeNull();
+    expect(await chunkCount(att.id)).toBe(1); // bytes untouched
+    expect(await auditCount("po_attachment_result")).toBe(0);
+  });
+
+  it("W5: a PO canceled MID-SCREEN refuses the late disposition at the instant of the flip", async () => {
+    // cancel is legal FROM 'pending_review' (inside the serviceable set) — the
+    // in-WHERE parent guard on /result must stop a disposition that lands after it.
+    const { poId, attId } = await makeFiledWithAttachment(admin);
+    const claim = await call(`/api/po/internal/attachments/${attId}/claim`, {
+      method: "POST", bearer: PO_BEARER, body: "{}",
+    });
+    expect((await json<{ found: boolean }>(claim)).found).toBe(true);
+
+    expect((await p(admin, `/api/po/${poId}/cancel`, {})).status).toBe(200);
+
+    const result = await call(`/api/po/internal/attachments/${attId}/result`, {
+      method: "POST", bearer: PO_BEARER,
+      body: JSON.stringify({ status: "filed", box_file_id: "bx-late" }),
+    });
+    expect((await json<{ found: boolean }>(result)).found).toBe(false);
+    const row = (await attRow(attId))!;
+    expect(row.status).toBe("claimed"); // never disposed
+    expect(row.box_file_id).toBeNull();
+    // The canceled PO's orphaned bytes are the prune's canceled-chunk hygiene's job.
+    expect(await chunkCount(attId)).toBe(1);
+  });
+
+  it("result 'filed' flips status + stores box_file_id + DELETES chunks atomically; replay found:false", async () => {
+    const { attId } = await makeFiledWithAttachment(admin);
+    const att = { id: attId };
     const res = await call(`/api/po/internal/attachments/${att.id}/result`, {
       method: "POST", bearer: PO_BEARER,
       body: JSON.stringify({ status: "filed", box_file_id: "bx-att-1" }),
@@ -495,8 +565,8 @@ describe("internal surface", () => {
   });
 
   it("result contract: filed REQUIRES box_file_id; refused FORBIDS it; refused stores detail", async () => {
-    const id = await makeDraft(admin);
-    const att = await json<{ id: number }>(await upload(admin, id));
+    const { attId } = await makeFiledWithAttachment(admin);
+    const att = { id: attId };
     expect(
       (await call(`/api/po/internal/attachments/${att.id}/result`, {
         method: "POST", bearer: PO_BEARER, body: JSON.stringify({ status: "filed" }),

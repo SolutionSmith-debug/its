@@ -13,19 +13,35 @@ attachments" — THIS module is that layer, realized). Enforced HERE, before
                                   sanity. Re-checked at this trust boundary even
                                   though the Worker sniffed at upload (the Worker
                                   gate could be bypassed by a direct internal call).
-  L2  structural inspection     — format-aware:
-                                  * PDF: bounded byte-scan for ACTIVE-CONTENT
-                                    markers (/JavaScript /JS /OpenAction /AA
-                                    /Launch /EmbeddedFile /RichMedia) → suspicious.
-                                    We cannot sanitize a PDF the way a photo
-                                    re-encode sanitizes pixels, so active content
-                                    is refused-to-review, never auto-filed.
+  L2  structural inspection     — format-aware, BEST-EFFORT (see the honesty note):
+                                  * PDF: raw-byte scan (after #xx name-escape
+                                    normalization) for ACTIVE-CONTENT markers
+                                    (/JavaScript /JS /OpenAction /AA /Launch
+                                    /EmbeddedFile /RichMedia) → suspicious. We
+                                    cannot sanitize a PDF the way a photo re-encode
+                                    sanitizes pixels, so detected active content is
+                                    refused-to-review, never auto-filed. HONESTY:
+                                    this is NOT a PDF parse — markers hidden inside
+                                    compressed object streams (/ObjStm, the DEFAULT
+                                    of modern producers) or compressed xref are
+                                    INVISIBLE to it (accepted limitation, tech_debt
+                                    ATT-5; the operator's posture: PO attachments
+                                    are a limited-blast-radius, limited-access
+                                    workflow — the real control is that boundary
+                                    plus optional ClamAV, not deep parsing).
                                   * OpenXML (.docx/.xlsx): bounded IN-MEMORY zip
                                     walk — entry-count cap + total-decompressed cap
                                     (zip bomb → malicious), macro payload
                                     (vbaProject.bin → malicious), nested executable
-                                    extensions → malicious, container/extension
-                                    mismatch (a .docx carrying xl/) → suspicious.
+                                    extensions → malicious, EXTERNAL relationship
+                                    targets (attachedTemplate/oleObject via *.rels
+                                    TargetMode="External") → suspicious, embedded
+                                    OLE objects (embeddings/oleObject*.bin) →
+                                    suspicious, container/extension mismatch (a
+                                    .docx carrying xl/) → suspicious. HONESTY: DDE
+                                    field codes inside document.xml and other
+                                    content-level vectors are NOT inspected
+                                    (accepted limitation, tech_debt ATT-6).
                                   * images (JPEG/PNG): Pillow verify + the
                                     photo_screen decompression-bomb cap + a forced
                                     re-encode as STRUCTURAL PROOF (full decode must
@@ -36,6 +52,12 @@ attachments" — THIS module is that layer, realized). Enforced HERE, before
                                     the operator's own Box — resolution fidelity
                                     wins; the metadata-egress rationale of the
                                     customer-facing photo path does not apply).
+                                    SECURITY TRADEOFF of filing originals: image
+                                    POLYGLOTS (appended ZIP/HTML/script trailers
+                                    past the codec end-marker) and EXIF metadata
+                                    are NOT neutralized the way photo_screen's
+                                    re-encode destroys them — knowingly accepted
+                                    for this limited-blast-radius surface.
   L3  ClamAV (optional)         — `clamd.scan_stream` on the ORIGINAL bytes,
                                   config-gated (`po_materials.po_attach_screen.
                                   clamav_enabled`, default OFF — seeded false by
@@ -66,6 +88,7 @@ from __future__ import annotations
 
 import io
 import logging
+import re
 import zipfile
 from dataclasses import dataclass
 from typing import Literal
@@ -101,13 +124,21 @@ ALLOWED_MIME: dict[str, tuple[tuple[str, ...], bytes]] = {
 }
 
 # ── L2 — structural constants ───────────────────────────────────────────────────
-# PDF active-content markers (name tokens). Presence anywhere in the raw bytes is
-# treated as suspicious — a legitimate spec/drawing PDF has no reason to carry
-# JavaScript, auto-exec actions, launch actions, or embedded files. Byte-scan is
-# deliberately cruder than a full PDF object parse: a parser can be steered around
-# (object streams, encodings) while a marker that never appears cannot execute via
-# the standard dictionaries; anything obfuscated ALSO trips ClamAV/L1 elsewhere and
-# the disposition is review, not silent pass.
+# PDF active-content markers (name tokens). Presence in the (name-escape-normalized)
+# raw bytes is treated as suspicious — a legitimate spec/drawing PDF has no reason to
+# carry JavaScript, auto-exec actions, launch actions, or embedded files.
+#
+# HONESTY (§55 — review truthful-posture fix): this byte-scan is BEST-EFFORT, not a
+# guarantee. It catches markers in PLAIN object dictionaries plus the cheap #xx
+# hex-name-escape obfuscation (normalized below), but modern PDF producers compress
+# object dictionaries into /ObjStm object streams (flate-compressed) by DEFAULT, and
+# a marker inside one is INVISIBLE to any substring scan — as is anything behind a
+# compressed xref. We deliberately do NOT flag ObjStm-bearing PDFs (that is most
+# legitimate modern PDFs — routing them all to review would break the workflow), and
+# we do NOT build a deep PDF parser here. The operator-accepted posture: PO
+# attachments are a limited-blast-radius, limited-access workflow; the real controls
+# are that boundary + the optional ClamAV layer. Accepted limitation recorded in
+# docs/tech_debt.md ATT-5.
 PDF_ACTIVE_MARKERS: tuple[bytes, ...] = (
     b"/JavaScript",
     b"/JS",
@@ -118,10 +149,18 @@ PDF_ACTIVE_MARKERS: tuple[bytes, ...] = (
     b"/RichMedia",
 )
 
+# PDF name-object hex escapes: /#4A#61vaScript ≡ /JavaScript. Normalizing them before
+# the marker scan closes the CHEAPEST obfuscation (review truthful-posture fix (b));
+# it does nothing for ObjStm-compressed dictionaries (see the honesty note above).
+_PDF_NAME_ESCAPE_RE = re.compile(rb"#([0-9A-Fa-f]{2})")
+
 # OpenXML zip-walk caps (the zip-bomb gate): total decompressed bytes across all
 # entries, and entry count. A real docx/xlsx spec sheet sits far below both.
 MAX_ZIP_TOTAL_UNCOMPRESSED = 100_000_000  # ~100MB decompressed ceiling
 MAX_ZIP_ENTRIES = 1_000
+# Per-entry decompressed read cap for the *.rels relationship parts we actually OPEN
+# (they are tiny XML; a rels part at this size is itself anomalous).
+_RELS_READ_CAP = 65_536
 
 # Nested-executable extensions inside an OpenXML container → malicious (an
 # executable payload has no legitimate place inside a spec document).
@@ -136,6 +175,15 @@ ZIP_EXECUTABLE_EXTS: tuple[str, ...] = (
 MAX_IMAGE_PIXELS = 24_000_000
 
 MAX_FILENAME = 120  # mirror the Worker's MAX_ATTACHMENT_FILENAME
+
+# Filename character gate — MIRRORS the Worker's filenameProblem regex
+# (po_attachments.ts; review W8/attacker#4 — the two sides MUST agree): path
+# separators, C0 controls + DEL, and the Unicode bidi/format controls that render
+# a spoofed name (U+200B\u2013200F zero-widths/LRM/RLM, U+2028/2029 separators,
+# U+202A\u2013202E bidi embeddings incl. RTLO, U+2066\u20132069 bidi isolates, U+FEFF).
+_FILENAME_BAD_RE = re.compile(
+    "[/\\\\\\u0000-\\u001f\\u007f\\u200b-\\u200f\\u2028-\\u202e\\u2066-\\u2069\\ufeff]"
+)
 
 
 class _DecompressionBombError(Exception):
@@ -161,14 +209,26 @@ def _extension_of(filename: str) -> str:
 # ── L2 helpers ───────────────────────────────────────────────────────────────────
 
 
+def _decode_pdf_name_escapes(raw: bytes) -> bytes:
+    """Normalize PDF name-object #xx hex escapes (/#4Aava#53cript → /JavaScript) so
+    the marker scan sees through the cheapest obfuscation. Escape decoding only ADDS
+    detectable text (an unescaped marker survives normalization verbatim), so the
+    scan runs on the NORMALIZED copy alone. Best-effort by design — see the
+    PDF_ACTIVE_MARKERS honesty note for what this deliberately does not reach."""
+    return _PDF_NAME_ESCAPE_RE.sub(lambda m: bytes([int(m.group(1), 16)]), raw)
+
+
 def _scan_pdf(raw: bytes) -> ScreenResult | None:
-    """PDF structural pass: header/EOF sanity + the active-content marker scan.
-    None = passed; a ScreenResult = the verdict (short-circuit)."""
+    """PDF structural pass: header/EOF sanity + the BEST-EFFORT active-content marker
+    scan over the #xx-normalized bytes. None = passed; a ScreenResult = the verdict
+    (short-circuit). NOT a parse — see the PDF_ACTIVE_MARKERS honesty note (ObjStm /
+    compressed-xref content is invisible here; accepted limitation, ATT-5)."""
     if b"%%EOF" not in raw[-4096:]:
         # No trailer in the tail — truncated or not really a document-shaped PDF.
         return ScreenResult("suspicious", "L2", "pdf_no_eof_trailer")
+    normalized = _decode_pdf_name_escapes(raw)
     for marker in PDF_ACTIVE_MARKERS:
-        if marker in raw:
+        if marker in normalized:
             # Active content in a spec/drawing PDF → refuse to review (structural
             # active content — the caller security-flags the Review-Queue row).
             return ScreenResult(
@@ -207,6 +267,29 @@ def _scan_openxml(raw: bytes, declared_mime: str) -> ScreenResult | None:
         ext = _extension_of(name)
         if ext in ZIP_EXECUTABLE_EXTS:
             return ScreenResult("malicious", "L2", f"openxml_nested_executable:{ext}")
+        # Embedded OLE object parts (word/embeddings/oleObject1.bin and kin): a
+        # macro-LESS active-content vector (review attacker#2). Not proven malicious
+        # (some legit docs embed objects) → suspicious, refused-to-review.
+        if "oleobject" in name and name.endswith(".bin"):
+            return ScreenResult("suspicious", "L2", "openxml_ole_object")
+    # Relationship parts (*.rels): an EXTERNAL TargetMode relationship to an
+    # attachedTemplate (remote-template fetch on open — the macro-less template-
+    # injection vector) or an oleObject is refused-to-review. Contains-based check
+    # over the tiny rels XML, read-capped — deliberately not a full XML parse (the
+    # same best-effort posture as the PDF scan; residual content-level vectors like
+    # DDE field codes are the documented ATT-6 accepted limitation).
+    for info in infos:
+        lname = info.filename.lower()
+        if not lname.endswith(".rels") or info.file_size > _RELS_READ_CAP:
+            continue
+        try:
+            rels_xml = zf.read(info.filename)[: _RELS_READ_CAP]
+        except (zipfile.BadZipFile, OSError, ValueError):
+            return ScreenResult("suspicious", "L2", "openxml_unreadable_rels")
+        if b'TargetMode="External"' in rels_xml and (
+            b"attachedTemplate" in rels_xml or b"oleObject" in rels_xml
+        ):
+            return ScreenResult("suspicious", "L2", "openxml_external_relationship")
     if "[content_types].xml" not in lower_names:
         # Every real OpenXML container carries [Content_Types].xml at the root.
         return ScreenResult("suspicious", "L2", "openxml_missing_content_types")
@@ -222,9 +305,17 @@ def _verify_image(raw: bytes) -> None:
     """Image structural pass — MIRRORS safety_reports/photo_screen._verify_and_reencode
     (module-private there, hence the documented copy, §42): header pixel-count cap →
     Pillow verify() → full decode → forced re-encode. The re-encode output is
-    DISCARDED — here it is the structural PROOF that the full pixel pipeline decodes
-    (a truncation/polyglot that survives verify() fails the decode); the ORIGINAL
-    bytes are what the caller files on clean (module docstring, image note).
+    DISCARDED — here it is the structural PROOF that the full pixel pipeline decodes;
+    the ORIGINAL bytes are what the caller files on clean (module docstring, image
+    note).
+
+    SECURITY TRADEOFF of filing the ORIGINAL (review attacker#3 — knowingly
+    accepted): unlike photo_screen, whose re-encode IS the sanitizer, this proof does
+    NOT neutralize image POLYGLOTS (a valid image with an appended ZIP/HTML/script
+    trailer past the codec end-marker decodes fine and is filed with the trailer
+    intact) nor strip EXIF/metadata. Resolution fidelity for the operator's own
+    specs/drawings wins on this limited-blast-radius, limited-access surface; the
+    optional ClamAV layer scans the raw bytes when enabled.
 
     Raises `_DecompressionBombError` on a pixel bomb (caller → malicious) and the
     usual Pillow decode errors on a structurally-bad image (caller → suspicious).
@@ -287,6 +378,11 @@ def screen_attachment(
         return ScreenResult("suspicious", "L1", f"oversize:{len(data)}")
     if not filename or len(filename) > MAX_FILENAME:
         return ScreenResult("suspicious", "L1", "bad_filename")
+    if _FILENAME_BAD_RE.search(filename) or filename.startswith("."):
+        # Path separators / control chars / Unicode bidi+zero-width format controls
+        # (display-spoofing class) — mirrors the Worker gate; re-checked at the trust
+        # boundary because the Worker can be bypassed by a direct internal write.
+        return ScreenResult("suspicious", "L1", "filename_format_controls")
     entry = ALLOWED_MIME.get(declared_mime)
     if entry is None:
         return ScreenResult("suspicious", "L1", f"mime_not_allowed:{declared_mime[:64]}")
@@ -325,9 +421,19 @@ def screen_attachment(
     return ScreenResult("clean", "L3" if clamav_enabled else "L2", "ok")
 
 
+_ACTIVE_CONTENT_DETAILS = (
+    "pdf_active_content:",          # PDF JavaScript / auto-exec / embedded-file markers
+    "openxml_external_relationship",  # external attachedTemplate/oleObject rels target
+    "openxml_ole_object",             # embedded OLE object part
+)
+
+
 def is_structural_active_content(result: ScreenResult) -> bool:
-    """True when a SUSPICIOUS verdict is specifically STRUCTURAL ACTIVE CONTENT
-    (PDF JavaScript/auto-exec/embedded-file markers) — the caller security-flags
-    that Review-Queue row (Invariant 2 posture) while plainer inconsistencies
-    (size/magic/extension/unreadable) stay ordinary review items."""
-    return result.disposition == "suspicious" and result.detail.startswith("pdf_active_content:")
+    """True when a SUSPICIOUS verdict is specifically STRUCTURAL ACTIVE CONTENT —
+    PDF JavaScript/auto-exec/embedded-file markers, an EXTERNAL OpenXML relationship
+    (remote-template/OLE fetch on open), or an embedded OLE object part. The caller
+    security-flags that Review-Queue row (Invariant 2 posture) while plainer
+    inconsistencies (size/magic/extension/unreadable) stay ordinary review items."""
+    return result.disposition == "suspicious" and result.detail.startswith(
+        _ACTIVE_CONTENT_DETAILS
+    )

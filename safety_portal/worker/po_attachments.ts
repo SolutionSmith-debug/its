@@ -96,10 +96,18 @@ function magicMatches(head: Uint8Array, magic: Magic): boolean {
  *  extension must belong to the declared MIME (consistency, not just allowlist). */
 function filenameProblem(filename: string, declaredMime: string): string | null {
   if (filename.length < 1 || filename.length > MAX_ATTACHMENT_FILENAME) return "invalid_filename";
-  // No path separators, no control characters (incl. DEL) — the name lands in Box +
-  // a Smartsheet attachment; traversal/terminal-escape characters never enter D1.
+  // No path separators, no control characters (incl. DEL), and no Unicode
+  // bidi/format controls (review W8/attacker#4): U+200B–200F (zero-widths + LRM/RLM),
+  // U+2028/2029 (line/para separators) + U+202A–202E (bidi embeddings incl. RTLO),
+  // U+2066–2069 (bidi isolates), U+FEFF (ZWNBSP/BOM). An RTLO name (e.g.
+  // "spec<U+202E>txt.exe") still byte-ends in an allowed extension but RENDERS
+  // reversed in the SPA table, the Box name, and the PO_Log attachment — a display
+  // spoof. The name lands on all three surfaces, so spoofing characters never enter
+  // D1. Mirrored in po_attach_screen.py L1 (the Mac side must agree).
   // eslint-disable-next-line no-control-regex
-  if (/[/\\\u0000-\u001f\u007f]/.test(filename)) return "invalid_filename";
+  if (/[/\\\u0000-\u001f\u007f\u200b-\u200f\u2028-\u202e\u2066-\u2069\ufeff]/.test(filename)) {
+    return "invalid_filename";
+  }
   if (filename.startsWith(".")) return "invalid_filename";
   const entry = MIME_ALLOWLIST[declaredMime];
   if (!entry) return "mime_not_allowed";
@@ -367,12 +375,23 @@ export function registerPoAttachmentRoutes(app: FieldopsApp, gates: PoGates): vo
   // semantics): pending→claimed, guarded in-WHERE + changes()-gated audit (W4).
   // Idempotent: found:false when already claimed/disposed — the daemon proceeds on a
   // row it already claimed (crash recovery), and a late replay is benign.
+  //
+  // W5 FAIL-CLOSED AT THE MUTATION (review fix): the parent-status invariant is
+  // re-asserted IN-WHERE here (scalar subquery), not just at the /pending listing —
+  // a draft/queued/canceled parent's attachment cannot be claimed by hitting this
+  // route directly, and a PO canceled between list and claim stops service at the
+  // instant of the state change (D1 serializes statements; the subquery reads the
+  // live parent status at execution time).
   app.post("/api/po/internal/attachments/:id/claim", gates.requirePoToken, async (c) => {
     const attId = parseIdParam(c.req.param("id"));
     if (attId === null) return c.json({ error: "invalid_id" }, 400);
     const res = await c.env.DB.batch([
       c.env.DB
-        .prepare("UPDATE po_attachments SET status='claimed' WHERE id = ?1 AND status = 'pending'")
+        .prepare(
+          "UPDATE po_attachments SET status='claimed' WHERE id = ?1 AND status = 'pending' " +
+            "AND (SELECT status FROM purchase_orders WHERE id = po_attachments.po_id) " +
+            `IN ${SERVICEABLE_PO_STATUSES}`,
+        )
         .bind(attId),
       auditStmtIfChanged(c, SYSTEM_ACTOR, "po_attachment_claim", String(attId), { attachment_id: attId }),
     ]);
@@ -382,11 +401,18 @@ export function registerPoAttachmentRoutes(app: FieldopsApp, gates: PoGates): vo
   // GET /api/po/internal/attachments/:id/chunks — the Mac-ward byte read (the ONLY
   // route that ever serves attachment bytes, bearer-gated). Live rows only: a
   // filed/refused attachment's chunks were deleted at disposition.
+  //
+  // W5 (review fix): the PARENT status is asserted here too — a draft PO's bytes are
+  // not servable by id-guessing this route directly, and a cancel mid-screen cuts
+  // byte service at the read that follows it (same JOIN condition as /pending).
   app.get("/api/po/internal/attachments/:id/chunks", gates.requirePoToken, async (c) => {
     const attId = parseIdParam(c.req.param("id"));
     if (attId === null) return c.json({ error: "invalid_id" }, 400);
     const row = await c.env.DB
-      .prepare("SELECT status FROM po_attachments WHERE id = ?1")
+      .prepare(
+        "SELECT a.status FROM po_attachments a JOIN purchase_orders p ON p.id = a.po_id " +
+          `WHERE a.id = ?1 AND p.status IN ${SERVICEABLE_PO_STATUSES}`,
+      )
       .bind(attId)
       .first<{ status: string }>();
     if (!row || (row.status !== "pending" && row.status !== "claimed")) {
@@ -444,11 +470,18 @@ export function registerPoAttachmentRoutes(app: FieldopsApp, gates: PoGates): vo
       return c.json({ ok: true, found: false, status: row?.status ?? null });
     }
 
+    // W5 (review fix): the disposition UPDATE re-asserts the PARENT status in-WHERE —
+    // a PO canceled mid-screen (cancel is legal from 'pending_review', inside the
+    // serviceable set) refuses the late disposition at the instant of the flip; the
+    // reply is the idempotent found:false the daemon already treats as benign. The
+    // orphaned bytes are the prune's canceled-PO chunk hygiene's job.
     const res = await c.env.DB.batch([
       c.env.DB
         .prepare(
           "UPDATE po_attachments SET status = ?1, box_file_id = ?2, detail = ?3, " +
-            "screened_at = unixepoch() WHERE id = ?4 AND status IN ('pending','claimed')",
+            "screened_at = unixepoch() WHERE id = ?4 AND status IN ('pending','claimed') " +
+            "AND (SELECT status FROM purchase_orders WHERE id = po_attachments.po_id) " +
+            `IN ${SERVICEABLE_PO_STATUSES}`,
         )
         .bind(status, boxFileId, detail, attId),
       auditStmtIfChanged(c, SYSTEM_ACTOR, "po_attachment_result", String(attId), {

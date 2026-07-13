@@ -30,6 +30,23 @@ Box pipeline). None blocks the ship; each is a deliberate scope line:
   updated_at) drops them. The byte-free rows remain as the forensic manifest. Revisit only if
   cancel volume makes 90d of latent bytes a real size concern (the prune's size tripwire now
   samples po_attachment_chunks).
+- **ATT-5 (ACCEPTED LIMITATION, operator posture 2026-07-13) — the PDF active-content scan is
+  blind to /ObjStm compressed object streams + compressed xref.** `po_attach_screen._scan_pdf`
+  is a raw-byte marker scan (plus #xx name-escape normalization) — NOT a PDF parse. Markers
+  inside flate-compressed object streams (the DEFAULT of modern PDF producers) are invisible
+  to it, and we deliberately do NOT flag ObjStm-bearing PDFs (that is most legitimate modern
+  PDFs — flooding the review queue would break the workflow) or build a deep parser. The
+  operator's accepted posture: PO attachments are a limited-blast-radius, limited-access
+  workflow — the real controls are that boundary + the optional ClamAV layer. The in-code
+  honesty note lives on `PDF_ACTIVE_MARKERS`. Trigger: the Phase-2 §34 hardening pass (with
+  ATT-1's VirusTotal), or a widening of who can upload.
+- **ATT-6 (ACCEPTED LIMITATION, operator posture 2026-07-13) — OpenXML content-level vectors
+  beyond macros/rels/OLE-parts are not inspected.** The zip walk now catches vbaProject.bin
+  (malicious), nested executables (malicious), `TargetMode="External"` rels naming an
+  attachedTemplate/oleObject (suspicious), and `embeddings/oleObject*.bin` parts (suspicious)
+  — but DDE field codes inside document.xml (and other in-content constructs) are NOT parsed.
+  Same limited-blast-radius rationale as ATT-5; the in-code note lives in the module docstring
+  + `_scan_openxml`. Trigger: same as ATT-5.
 
 ## Subcontracts — SC-S3c adversarial-review follow-ups (non-blocking) [OPEN 2026-07-11]
 
