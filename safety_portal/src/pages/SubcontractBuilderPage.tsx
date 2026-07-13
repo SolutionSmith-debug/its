@@ -156,6 +156,8 @@ export function SubcontractBuilderPage({ onBack }: { onBack: () => void }) {
   const [terms, setTerms] = useState<api.TermsProfile[]>([]);
   const [config, setConfig] = useState<api.SubcontractConfig | null>(null);
   const [jobs, setJobs] = useState<Job[]>([]);
+  // Live trade vocabulary (manifest-derived); static api.TRADES is the degraded-fetch fallback.
+  const [trades, setTrades] = useState<string[]>(api.TRADES);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
@@ -176,6 +178,8 @@ export function SubcontractBuilderPage({ onBack }: { onBack: () => void }) {
     api.fetchSubTerms().then(setTerms).catch(() => setTerms([]));
     api.fetchSubConfig().then(setConfig).catch(() => setConfig(null));
     fetchJobs().then(setJobs).catch(() => setJobs([]));
+    // Live trades feed the Trade dropdown; a miss degrades to the static api.TRADES (never empty).
+    api.fetchTrades().then((t) => setTrades(t.length ? t : api.TRADES)).catch(() => setTrades(api.TRADES));
   }, [reloadSubs]);
 
   const subByKey = useMemo(() => new Map(subcontractors.map((s) => [s.sub_key, s])), [subcontractors]);
@@ -927,7 +931,7 @@ export function SubcontractBuilderPage({ onBack }: { onBack: () => void }) {
             onChange={(e) => void onTradeSelect(e.target.value)}
           >
             <option value="">— trade —</option>
-            {api.TRADES.map((t) => (
+            {trades.map((t) => (
               <option key={t} value={t}>
                 {t}
               </option>

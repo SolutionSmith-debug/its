@@ -652,6 +652,16 @@ export function registerSubcontractRoutes(app: FieldopsApp, gates: SubcontractGa
     }),
   );
 
+  // GET /api/subcontracts/trades — the operator-selectable Trade vocabulary for the subcontract builder
+  // and the Subcontractors trade-tagging picker. DERIVED from the manifest trade_map keys so a trade added
+  // via the config editor (exhibit create_profile) surfaces here with NO SPA code edit — the manifest is
+  // the single source of truth for "what trades exist" that the renderer also resolves against. Insertion
+  // order preserved (the curated grouping; a newly-created trade appends last). Read-only, no audit; same
+  // session + cap gate as the sibling exhibit routes. The SPA keeps a static fallback for a degraded fetch.
+  app.get("/api/subcontracts/trades", gates.requireSession, gates.requireCapability(CAP_SUB), (c) =>
+    c.json({ trades: Object.keys(EXHIBIT_TRADE_MAP) }),
+  );
+
   // GET /api/subcontracts/exhibit-templates?trade=<Trade> — the Exhibit A Article II ("The Work")
   // pre-fill: resolve the operator-picked Trade through the manifest trade_map to its art2 template key,
   // return that trade's standard Art II body (header-stripped) as an editable starting point for
