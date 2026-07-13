@@ -248,6 +248,11 @@ export const ERROR_COPY: Record<string, string> = {
   invalid_site_name: "The site name is too long (up to 256 characters).",
   invalid_site_address: "The site address is too long (up to 512 characters).",
   invalid_governing_law_state: "Pick a governing-law state — a subcontract can't be generated without one.",
+  // Render-required fields refused at Generate (defense-in-depth behind the in-builder flags).
+  missing_owner_entity: "Enter the Owner entity (the Evergreen contracting SPV) before generating.",
+  missing_project_name: "Enter the project name before generating.",
+  missing_trade: "Pick a trade before generating — the Exhibit A scope can't render without one.",
+  missing_terms_profile: "Pick a terms profile before generating.",
   invalid_exhibit_a_template_id: "That Exhibit A template reference isn't valid.",
   invalid_exhibit_a_template_version: "That Exhibit A template version isn't valid.",
   invalid_exhibit_a_work_text: "The Exhibit A scope of work is too long (up to 100,000 characters).",

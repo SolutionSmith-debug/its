@@ -537,6 +537,23 @@ describe("draft → generate", () => {
     expect((await json<{ error: string }>(res)).error).toBe("invalid_exhibit_a_work_text");
   });
 
+  it("generate REFUSES a blank render-required field (owner/project/trade → 422); the DRAFT still saves", async () => {
+    // The draft-level boundary stays lenient (parseDraftBody length-only), so a partial draft SAVES; the
+    // GENERATE commit refuses the blank — no more silent subcontract_render_failed fence minutes later.
+    for (const [field, code] of [
+      ["owner_entity", "missing_owner_entity"],
+      ["project_name", "missing_project_name"],
+      ["trade", "missing_trade"],
+    ] as const) {
+      const created = await p(admin, "/api/subcontracts/drafts", draftBody({ [field]: "" }));
+      expect(created.status, `${field}: draft should still save`).toBe(201);
+      const { id } = await json<{ id: number }>(created);
+      const gen = await p(admin, `/api/subcontracts/drafts/${id}/generate`, { contract_price_cents: CONTRACT_PRICE_CENTS });
+      expect(gen.status, `${field}: generate should 422`).toBe(422);
+      expect((await json<{ error: string }>(gen)).error).toBe(code);
+    }
+  });
+
   it("generate: happy path allocates the D7 number, signs, and queues", async () => {
     const created = await p(admin, "/api/subcontracts/drafts", draftBody());
     const { id } = await json<{ id: number }>(created);

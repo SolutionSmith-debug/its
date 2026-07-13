@@ -388,6 +388,11 @@ export function SubcontractBuilderPage({ onBack }: { onBack: () => void }) {
     if (!STATE_RE.test(st) || !(config?.governing_law_states ?? []).includes(st)) {
       return "Pick a governing-law state — a subcontract can't be generated without one.";
     }
+    // Render-required party/scope fields (subcontract_generate _REQUIRED_FIELDS + the strict Exhibit
+    // tokens). A blank one used to pass the whole way through and fence PERMANENTLY at render — flag it here.
+    if (!trade) return "Pick a trade — the Exhibit A scope can't render without one.";
+    if (!projectName.trim()) return "Enter the project name.";
+    if (!ownerEntity.trim()) return "Enter the Owner entity (the Evergreen contracting SPV).";
     return null;
   }
 

@@ -1038,6 +1038,10 @@ export function registerPoRoutes(app: FieldopsApp, gates: PoGates): void {
       // integers only, no PII.
       return c.json({ error: "totals_mismatch", recomputed: totals }, 409);
     }
+    // Render-required: po_generate resolve_terms(get_profile) FENCES permanently on a blank terms profile
+    // (reachable when the vendor has no default). parseDraftBody stays length-only (a draft may be
+    // incomplete); GENERATE requires it — refuse a blank here (defense-in-depth behind the SPA flag).
+    if (!po.terms_profile_id.trim()) return c.json({ error: "missing_terms_profile" }, 422);
 
     // MAX(revision)+1 within the family (allocated tuples only — drafts carry NULL).
     const rev = await c.env.DB

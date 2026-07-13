@@ -452,6 +452,9 @@ export function PoBuilderPage({ onBack }: { onBack: () => void }) {
       return "The tax override must be a percentage from 0 to 100.";
     }
     if (shippingCents === null) return "The shipping amount isn't valid.";
+    // Render-required: po_generate resolve_terms(get_profile) fences PERMANENTLY on a blank terms profile
+    // (reachable whenever the vendor has no default terms profile). Flag it here, not silently at render.
+    if (!termsProfileId) return "Pick a terms profile.";
     return null;
   }
 
