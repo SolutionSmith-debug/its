@@ -989,19 +989,27 @@ def _resolve_subcontract_box_folder(job_name: str) -> str | None:
     return box_client.get_or_create_folder(job_folder, SUBCONTRACT_BOX_SUBFOLDER)
 
 
+_ATTACH_CONTENT_TYPES = {
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+}
+
+
 def _attach_files_best_effort(
     row_id: int, files: list[tuple[str, bytes]], correlation_id: str
 ) -> None:
     """Attach the rendered package files inline on the review row, BEST-EFFORT (Box is
     the SoR; a failure is a WARN that never fails the filing — mirror po_poll). All three —
-    the Subcontract .docx, the Exhibit A .docx, and the Annex C .xlsx — attach.
-
-    Caveat: `attach_pdf_to_row` hardcodes an application/pdf MIME type — the .docx/.xlsx
-    bytes attach but are MIME-mislabeled (a supplementary inline copy; Box carries the
-    correctly-typed originals). A `content_type` param is a deferrable follow-up."""
+    the Subcontract .docx, the Exhibit A .docx, and the Annex C .xlsx — attach with the
+    correct OpenXML MIME via `attach_pdf_to_row`'s `content_type` param (the former
+    application/pdf-hardcode caveat, closed by the Feature-B attach-helper fix)."""
     for name, data in files:
+        suffix = name[name.rfind("."):].lower() if "." in name else ""
+        content_type = _ATTACH_CONTENT_TYPES.get(suffix, "application/pdf")
         try:
-            smartsheet_client.attach_pdf_to_row(subcontract_review.SHEET_ID, row_id, name, data)
+            smartsheet_client.attach_pdf_to_row(
+                subcontract_review.SHEET_ID, row_id, name, data, content_type=content_type
+            )
         except Exception as exc:  # noqa: BLE001 — supplementary inline copy; Box is the SoR
             error_log.log(
                 Severity.WARN, SCRIPT_NAME,

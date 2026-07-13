@@ -240,6 +240,11 @@ CONFIG_ROWS: tuple[ConfigRow, ...] = (
         "po_materials.po_send.from_mailbox", "po_materials", "non_empty",
         sandbox_scan=True,
     ),
+    # Feature B (PO document attachments): the §34 screener's ClamAV gate must be
+    # SEEDED PRESENT (non_empty, NOT forced 'true' — dark-ship reflex: it ships false
+    # and stays false until clamd + pyclamd exist on the Mac; the deterministic L1/L2
+    # layers run regardless). seed_po_materials_config.py seeds it.
+    ConfigRow("po_materials.po_attach_screen.clamav_enabled", "po_materials", "non_empty"),
     ConfigRow("safety_reports.weekly_send.scheduled_send_local", "safety_reports", "non_empty"),
     ConfigRow("progress_reports.progress_send.scheduled_send_local", "progress_reports", "non_empty"),
     ConfigRow("safety_reports.portal_poll.polling_enabled", "safety_reports", "true"),

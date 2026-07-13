@@ -98,4 +98,4 @@ docs:
     title: "ITS_Config Data Dictionary"
     version: v1
     source: docs/references/its_config_dictionary.md
-    sha256: c63a2d261ef1c0b4c1d2ff4d693f253d0b2a3cdc918f701e7bf477cb3cfdcaad
+    sha256: fd90845919db959f62bbe74b02dcfd1b46d4bc9dd6617f9f5d71d2fd12cf612e

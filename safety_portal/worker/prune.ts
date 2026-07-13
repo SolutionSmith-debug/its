@@ -361,18 +361,49 @@ export async function pruneOldData(db: Env["DB"], nowSec: number): Promise<Prune
     return r.meta.changes ?? 0;
   });
   const poDrafts = await runStage("po_drafts", failedStages, async () => {
+    // Feature B attachment cascade — children first, chunks before their attachment rows
+    // (chunks resolve through po_attachments; an attachment-first delete would orphan bytes).
+    const agedParents =
+      "(SELECT id FROM purchase_orders WHERE status IN ('draft','canceled') AND po_number IS NULL AND updated_at < ?)";
     await db
       .prepare(
-        "DELETE FROM po_line_items WHERE po_id IN " +
-          "(SELECT id FROM purchase_orders WHERE status IN ('draft','canceled') AND po_number IS NULL AND updated_at < ?)",
+        "DELETE FROM po_attachment_chunks WHERE attachment_id IN " +
+          `(SELECT id FROM po_attachments WHERE po_id IN ${agedParents})`,
       )
+      .bind(draftCancelCutoff)
+      .run();
+    await db
+      .prepare(`DELETE FROM po_attachments WHERE po_id IN ${agedParents}`)
+      .bind(draftCancelCutoff)
+      .run();
+    await db
+      .prepare(`DELETE FROM po_line_items WHERE po_id IN ${agedParents}`)
       .bind(draftCancelCutoff)
       .run();
     const r = await db
       .prepare("DELETE FROM purchase_orders WHERE status IN ('draft','canceled') AND po_number IS NULL AND updated_at < ?")
       .bind(draftCancelCutoff)
       .run();
-    return r.meta.changes ?? 0;
+    const parentDeletes = r.meta.changes ?? 0;
+    // Byte hygiene for the KEPT generated-then-canceled rows (the numbering-reuse guard
+    // preserves those parents forever): their attachments are never serviced (the Mac
+    // serves filed statuses only), so their CHUNKS — the only unbounded bytes — are
+    // dropped at the same 90d cutoff. The byte-free po_attachments rows stay as the
+    // forensic manifest, mirroring delete-on-disposition.
+    await db
+      .prepare(
+        "DELETE FROM po_attachment_chunks WHERE attachment_id IN " +
+          "(SELECT id FROM po_attachments WHERE po_id IN " +
+          "(SELECT id FROM purchase_orders WHERE status = 'canceled' AND updated_at < ?))",
+      )
+      .bind(draftCancelCutoff)
+      .run();
+    // Orphan-chunk belt-and-suspenders (any future deletion path that misses the cascade),
+    // mirroring the filed_pdfs orphan drop.
+    await db
+      .prepare("DELETE FROM po_attachment_chunks WHERE attachment_id NOT IN (SELECT id FROM po_attachments)")
+      .run();
+    return parentDeletes;
   });
 
   const dbSizeBytes = await sampleDbSizeBytes(db);
@@ -486,7 +517,12 @@ async function sampleDbSizeBytes(db: Env["DB"]): Promise<number> {
     const dailyPhotos = await db
       .prepare("SELECT COALESCE(SUM(LENGTH(photo_json)), 0) AS n FROM daily_photo_pool")
       .first<{ n: number }>();
-    return (chunks?.n ?? 0) + (subs?.n ?? 0) + (itemPhotos?.n ?? 0) + (dailyPhotos?.n ?? 0);
+    // Feature B: the PO attachment pool is the fifth payload-bearing table (same
+    // delete-on-disposition property — chunks exist only while pending/claimed).
+    const attChunks = await db
+      .prepare("SELECT COALESCE(SUM(LENGTH(chunk_b64)), 0) AS n FROM po_attachment_chunks")
+      .first<{ n: number }>();
+    return (chunks?.n ?? 0) + (subs?.n ?? 0) + (itemPhotos?.n ?? 0) + (dailyPhotos?.n ?? 0) + (attChunks?.n ?? 0);
   } catch {
     return 0;
   }

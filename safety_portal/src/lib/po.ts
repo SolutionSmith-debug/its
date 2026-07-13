@@ -342,9 +342,57 @@ export async function cancelPo(id: number): Promise<void> {
   await postJson(`/api/po/${id}/cancel`, {});
 }
 
-/** HARD-delete an un-generated DRAFT PO (row + line items). Draft-only; a generated record is 409 not_deletable. */
+/** HARD-delete an un-generated DRAFT PO (row + line items + attachments). Draft-only; a generated record is 409 not_deletable. */
 export async function deletePoDraft(id: number): Promise<void> {
   await postJson(`/api/po/${id}/delete`, {});
+}
+
+// ── Document attachments (Feature B) ─────────────────────────────────────────────────────────────
+
+/** One attachment row as the LIST route projects it — metadata only, never bytes
+ *  (§34 Option D: bytes flow Mac-ward over the internal bearer exclusively). */
+export interface PoAttachment {
+  id: number;
+  filename: string;
+  declared_mime: string;
+  size_bytes: number;
+  status: "pending" | "claimed" | "filed" | "refused";
+  created_at: number;
+}
+
+/** The client-side mirror of the Worker's upload bounds (po_attachments.ts) — HINTS
+ *  only; the Worker re-gates every upload (Invariant 2: SPA gating is convenience). */
+export const ATTACHMENT_MAX_BYTES = 10_000_000;
+export const MAX_ATTACHMENTS_PER_PO = 5;
+export const ATTACHMENT_ACCEPT = ".pdf,.jpg,.jpeg,.png,.docx,.xlsx";
+export const ATTACHMENT_MIME_BY_EXT: Record<string, string> = {
+  ".pdf": "application/pdf",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".png": "image/png",
+  ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+};
+
+export async function fetchPoAttachments(poId: number): Promise<PoAttachment[]> {
+  const data = await getJson<{ attachments: PoAttachment[] }>(`/api/po/pos/${poId}/attachments`);
+  return data.attachments ?? [];
+}
+
+/** Upload one attachment onto a DRAFT (base64 in JSON — the photo wire). The Worker
+ *  bounds-gates (size/count/filename/MIME allowlist + magic sniff) and pools the bytes
+ *  in D1 for the Mac-side §34 screen; nothing reaches Box until the screen passes. */
+export async function uploadPoAttachment(
+  poId: number, filename: string, mime: string, dataB64: string,
+): Promise<{ id: number }> {
+  return postJson<{ ok: boolean; id: number }>(`/api/po/drafts/${poId}/attachments`, {
+    filename, mime, data_b64: dataB64,
+  });
+}
+
+/** Remove an attachment from a DRAFT (row + chunks). Draft-only — 409 once generated. */
+export async function deletePoAttachment(poId: number, attachmentId: number): Promise<void> {
+  await postJson(`/api/po/drafts/${poId}/attachments/${attachmentId}/delete`, {});
 }
 
 // ── Terms + config (S3 read surface, PR #495) ────────────────────────────────────────────────────

@@ -15,7 +15,7 @@ the rows `false` in the same change that adds the gated code makes activation a
 visible cell-flip, and the #336 `resolve_and_log` startup pass stops WARNing
 `config_row_missing`.
 
-What it seeds (8 rows, workstream `po_materials`):
+What it seeds (9 rows, workstream `po_materials`):
 
     po_materials.po_poll.polling_enabled        = false   (drafts pass ①)
     po_materials.po_poll.vendors_sync_enabled   = false   (vendor passes ② ③)
@@ -25,6 +25,9 @@ What it seeds (8 rows, workstream `po_materials`):
     po_materials.po_send.scheduled_send_local   = MON 07:00  (batch window; Send Now is out-of-band)
     po_materials.po_send.poll_interval_seconds  = 900     (install-time cadence)
     po_materials.po_send.from_mailbox           = procurement@evergreenmirror.com
+    po_materials.po_attach_screen.clamav_enabled = false  (Feature B — §34 attachment
+                                                  screener L3; dark until clamd+pyclamd
+                                                  are installed on the Mac)
 
 Auth: ITS_SMARTSHEET_TOKEN from macOS Keychain (same path the runtime SDK uses).
 
@@ -144,6 +147,21 @@ CONFIG_ROWS: list[dict[str, Any]] = [
             "(BAKED in — changes take effect at the next `install.sh load "
             "org.solutionsmith.its.po-send`, not hot). Default 900s (15 min) matches "
             "weekly-send / progress-send — an approval poller, not a fast puller."
+        ),
+    },
+    {
+        "Setting": "po_materials.po_attach_screen.clamav_enabled",
+        "Workstream": WORKSTREAM,
+        "Value": "false",
+        "Description": (
+            "Optional ClamAV layer (L3) of the §34 PO document-attachment screener "
+            "(po_materials/po_attach_screen.py, Feature B). Read at RUNTIME by "
+            "po_poll's attachment pass. Ships FALSE (dark): flipping to 'true' "
+            "REQUIRES a running local clamd daemon + the operator-installed pyclamd "
+            "package — with the gate on and the scanner unavailable, every "
+            "attachment is refused-to-review (fail-closed, never a blind pass). "
+            "The deterministic L1/L2 layers (magic/consistency, PDF active-content, "
+            "OpenXML macro/zip-bomb, image verify) always run regardless."
         ),
     },
     {

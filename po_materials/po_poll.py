@@ -22,6 +22,20 @@ heartbeat; per-pass ITS_Config gates, ALL shipped false):
      security Review-Queue row on first sighting, then skipped) — NEVER rendered,
      NEVER filed, NEVER marked; the row stays queued in D1 for forensics (the PO
      internal tier has no mark-rejected route by design).
+  ①b **Attachment pass** (same `.polling_enabled` gate; Feature B): after the drafts
+     drain, GET /api/po/internal/attachments/pending → per attachment: claim-first →
+     pull chunks → REASSEMBLE + verify (po-att:v1 HMAC + sha256 over the bytes —
+     `shared/portal_hmac.verify_po_attachment`) → §34 doc screen
+     (`po_attach_screen.screen_attachment`: magic/consistency → PDF/OpenXML/image
+     structural → config-gated ClamAV `po_materials.po_attach_screen.clamav_enabled`)
+     → CLEAN files the ORIGINAL bytes to the PO's Box "Purchase Orders" folder +
+     the PO_Log row (content-typed attach) + result post-back (the Worker deletes
+     the D1 chunks); SUSPICIOUS → Review-Queue row (+security flag on structural
+     active content) + refused; MALICIOUS → CRITICAL NAMING THE ACCOUNT +
+     security-flagged Review-Queue row + refused. Integrity failures (bad HMAC /
+     digest mismatch) are one-shot-flagged like a bad-HMAC PO — never screened,
+     never filed, bytes left in D1 for forensics. The WHOLE pass is fenced
+     (`po_attachment_service_failed`) — it can never block PO filing.
   ② **Vendor down-sync pass** (`.vendors_sync_enabled`): full ITS_Vendors projection
      → POST vendors/sync (full-replace; the Worker's dirty-row fence protects
      un-mirrored portal edits; an EMPTY projection is REFUSED here too — a read-miss
@@ -75,7 +89,10 @@ Consumers
 """
 from __future__ import annotations
 
+import base64
+import binascii
 import fcntl
+import hashlib
 import json
 import uuid
 from collections.abc import Iterator
@@ -86,7 +103,15 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from po_materials import numbering, po_generate, po_log, po_naming, po_review, vendors
+from po_materials import (
+    numbering,
+    po_attach_screen,
+    po_generate,
+    po_log,
+    po_naming,
+    po_review,
+    vendors,
+)
 from po_materials import terms as terms_lib
 from safety_reports import safety_naming
 from shared import (
@@ -115,6 +140,9 @@ WORKSTREAM = "po_materials"
 CFG_POLLING_ENABLED = "po_materials.po_poll.polling_enabled"
 CFG_VENDORS_SYNC_ENABLED = "po_materials.po_poll.vendors_sync_enabled"
 CFG_STATUS_SYNC_ENABLED = "po_materials.po_poll.status_sync_enabled"
+# Feature B — the §34 doc-attachment screener's optional ClamAV layer (default OFF;
+# seeded false by scripts/migrations/seed_po_materials_config.py — the dark-gate reflex).
+CFG_ATTACH_CLAMAV = "po_materials.po_attach_screen.clamav_enabled"
 CFG_WORKER_BASE_URL = "safety_reports.portal.worker_base_url"  # shared with portal_poll
 CFG_WORKER_BASE_URL_WORKSTREAM = "safety_reports"
 
@@ -143,6 +171,13 @@ REQUIRED_CONFIG: list[ConfigKey] = [
     ConfigKey(CFG_POLLING_ENABLED, WORKSTREAM, DEFAULT_POLLING_ENABLED, "bool"),
     ConfigKey(CFG_VENDORS_SYNC_ENABLED, WORKSTREAM, DEFAULT_VENDORS_SYNC_ENABLED, "bool"),
     ConfigKey(CFG_STATUS_SYNC_ENABLED, WORKSTREAM, DEFAULT_STATUS_SYNC_ENABLED, "bool"),
+    ConfigKey(
+        CFG_ATTACH_CLAMAV, WORKSTREAM, False, "bool",
+        description=(
+            "Optional ClamAV layer of the §34 PO document-attachment screener "
+            "(po_attach_screen L3). Default OFF; requires clamd + pyclamd on the Mac."
+        ),
+    ),
     ConfigKey(
         CFG_WORKER_BASE_URL, CFG_WORKER_BASE_URL_WORKSTREAM, "", "str",
         description="Shared Worker base URL; owned by safety_reports, read here too.",
@@ -199,6 +234,10 @@ class PoPollStats:
     fenced: int = 0       # permanent Review-Queue fences (totals/collision/vendor/terms/…)
     skipped_flagged: int = 0  # rows already one-shot-flagged in a prior cycle
     draft_errors: int = 0     # transient failures (left queued)
+    # ①b attachment pass (Feature B — runs after the drafts drain, same gate)
+    attachments_filed: int = 0    # clean attachments filed to Box + PO_Log this cycle
+    attachments_refused: int = 0  # suspicious/malicious dispositions posted
+    attachment_errors: int = 0    # transient failures (row stays serviceable)
     # ②③ vendor passes
     vendors_downsynced: int = 0
     vendors_upsynced: int = 0
@@ -253,6 +292,11 @@ def _vendors_sync_enabled() -> bool:
 
 def _status_sync_enabled() -> bool:
     return _read_bool_setting(CFG_STATUS_SYNC_ENABLED, DEFAULT_STATUS_SYNC_ENABLED)
+
+
+def _attach_clamav_enabled() -> bool:
+    """ITS_Config gate `po_materials.po_attach_screen.clamav_enabled` (default OFF)."""
+    return _read_bool_setting(CFG_ATTACH_CLAMAV, False)
 
 
 # ---- Lock + heartbeat + marker seams (mirror fieldops_sync) ---------------------
@@ -425,6 +469,7 @@ def _poll_inside_lock(drafts_on: bool, vendors_on: bool, status_on: bool) -> PoP
     counters: dict[str, int] = {
         "drafts_scanned": 0, "filed": 0, "rejected": 0, "fenced": 0,
         "skipped_flagged": 0, "draft_errors": 0,
+        "attachments_filed": 0, "attachments_refused": 0, "attachment_errors": 0,
         "vendors_downsynced": 0, "vendors_upsynced": 0, "vendors_reviewed": 0,
         "vendor_errors": 0, "status_synced": 0, "status_errors": 0,
     }
@@ -432,6 +477,22 @@ def _poll_inside_lock(drafts_on: bool, vendors_on: bool, status_on: bool) -> PoP
     try:
         if drafts_on:
             _drafts_pass(creds, counters)
+            # Feature B — the attachment pass runs AFTER the drafts drain (a PO filed
+            # this cycle is already pending_review, so its attachments are serviceable
+            # immediately) and is FENCED: an attachment failure must NEVER block or
+            # taint PO filing (mirror portal_poll._service_pdf_requests' fence).
+            try:
+                _attachments_pass(creds, counters)
+            except _BearerRejectedError:
+                raise
+            except Exception as exc:  # noqa: BLE001 — the fence; retries next cycle
+                counters["attachment_errors"] += 1
+                error_log.log(
+                    Severity.ERROR, SCRIPT_NAME,
+                    f"attachment pass failed (never blocks PO filing; retries next "
+                    f"cycle): {type(exc).__name__}: {exc!r}",
+                    error_code="po_attachment_service_failed",
+                )
         if vendors_on:
             _vendor_down_sync_pass(creds, counters)
             _vendor_up_sync_pass(creds, counters)
@@ -450,8 +511,14 @@ def _poll_inside_lock(drafts_on: bool, vendors_on: bool, status_on: bool) -> PoP
         )
 
     _write_heartbeat()
-    total_errors = counters["draft_errors"] + counters["vendor_errors"] + counters["status_errors"]
-    total_flagged = counters["rejected"] + counters["fenced"] + counters["vendors_reviewed"]
+    total_errors = (
+        counters["draft_errors"] + counters["attachment_errors"]
+        + counters["vendor_errors"] + counters["status_errors"]
+    )
+    total_flagged = (
+        counters["rejected"] + counters["fenced"] + counters["attachments_refused"]
+        + counters["vendors_reviewed"]
+    )
     if bearer_rejected:
         cycle_status: HeartbeatStatus = "ERROR"
     elif total_errors > 0:
@@ -473,7 +540,8 @@ def _poll_inside_lock(drafts_on: bool, vendors_on: bool, status_on: bool) -> PoP
         _write_heartbeat_row(
             status=cycle_status,
             items_processed=(
-                counters["filed"] + counters["vendors_upsynced"] + counters["status_synced"]
+                counters["filed"] + counters["attachments_filed"]
+                + counters["vendors_upsynced"] + counters["status_synced"]
             ),
             error_summary=error_summary,
         )
@@ -491,6 +559,8 @@ def _poll_inside_lock(drafts_on: bool, vendors_on: bool, status_on: bool) -> PoP
             f"po cycle: drafts scanned={counters['drafts_scanned']} filed={counters['filed']} "
             f"rejected={counters['rejected']} fenced={counters['fenced']} "
             f"flag-skipped={counters['skipped_flagged']} errors={counters['draft_errors']}; "
+            f"attachments filed={counters['attachments_filed']} "
+            f"refused={counters['attachments_refused']} errors={counters['attachment_errors']}; "
             f"vendors down={counters['vendors_downsynced']} up={counters['vendors_upsynced']} "
             f"reviewed={counters['vendors_reviewed']} errors={counters['vendor_errors']}; "
             f"status synced={counters['status_synced']} errors={counters['status_errors']}"
@@ -505,6 +575,9 @@ def _poll_inside_lock(drafts_on: bool, vendors_on: bool, status_on: bool) -> PoP
         fenced=counters["fenced"],
         skipped_flagged=counters["skipped_flagged"],
         draft_errors=counters["draft_errors"],
+        attachments_filed=counters["attachments_filed"],
+        attachments_refused=counters["attachments_refused"],
+        attachment_errors=counters["attachment_errors"],
         vendors_downsynced=counters["vendors_downsynced"],
         vendors_upsynced=counters["vendors_upsynced"],
         vendors_reviewed=counters["vendors_reviewed"],
@@ -918,6 +991,363 @@ def _attach_pdf_best_effort(
             f"review-row PDF attach failed (row {row_id}, {filename!r}): "
             f"{type(exc).__name__}: {exc!r}",
             error_code="po_row_pdf_attach_failed",
+            correlation_id=correlation_id,
+        )
+
+
+# ---- ①b Attachment pass (Feature B — §34 doc-attachment screen + file) --------------
+
+
+def _reassemble_chunks(chunks: list[dict[str, Any]]) -> bytes:
+    """Concatenate the decoded chunk bytes into the original file.
+
+    STRICT: every chunk must agree on chunk_total, the index set must be exactly
+    {0..n-1} (gap-free — the filed_pdfs completeness rule), and every chunk_b64 must
+    strictly decode. Raises ValueError on ANY malformation — the caller treats that
+    as an INTEGRITY failure (the chunk set was written atomically with the row, so a
+    broken set is tamper or a serving defect, never a benign partial)."""
+    if not chunks:
+        raise ValueError("empty chunk set")
+    totals = {c.get("chunk_total") for c in chunks}
+    if len(totals) != 1:
+        raise ValueError("inconsistent chunk_total")
+    (total,) = totals
+    if not isinstance(total, int) or isinstance(total, bool) or total < 1:
+        raise ValueError("malformed chunk_total")
+    indices = [c.get("chunk_index") for c in chunks]
+    if sorted(indices) != list(range(total)) or len(chunks) != total:  # type: ignore[type-var]
+        raise ValueError("chunk index set not gap-free")
+    by_index = sorted(chunks, key=lambda c: c["chunk_index"])
+    parts: list[bytes] = []
+    for chunk in by_index:
+        b64 = chunk.get("chunk_b64")
+        if not isinstance(b64, str) or not b64:
+            raise ValueError("malformed chunk_b64")
+        try:
+            parts.append(base64.b64decode(b64, validate=True))
+        except (binascii.Error, ValueError) as exc:
+            raise ValueError(f"chunk_b64 decode failed: {exc}") from exc
+    return b"".join(parts)
+
+
+def _attachments_pass(creds: _PoCreds, counters: dict[str, int]) -> None:
+    """Service the PO document-attachment queue (Feature B): claim → pull bytes →
+    verify (po-att:v1 HMAC + sha256) → §34 screen (po_attach_screen) → CLEAN files
+    to the PO's Box folder + the PO_Log row; SUSPICIOUS/MALICIOUS are refused with a
+    Review-Queue record. Runs AFTER the drafts drain under the same polling gate —
+    an attachment can never block or taint the PO filing itself (the caller fences
+    this whole pass with error_code=po_attachment_service_failed)."""
+    try:
+        pending = portal_client.get_po_attachments_pending(creds.base_url, creds.bearer)
+    except portal_client.PortalAuthError as exc:
+        raise _BearerRejectedError from exc
+    except portal_client.PortalTransportError as exc:
+        counters["attachment_errors"] += 1
+        error_log.log(
+            Severity.ERROR, SCRIPT_NAME,
+            f"failed to GET po attachments pending (rows left for next cycle): {exc!r}",
+            error_code="po_attachments_fetch_failed",
+        )
+        return
+    if not pending:
+        return
+    clamav_enabled = _attach_clamav_enabled()
+    flags = _load_flags()
+    flags_dirty = False
+    for row in pending:
+        if _service_one_attachment(row, creds, counters, flags, clamav_enabled):
+            flags_dirty = True
+    if flags_dirty:
+        _persist_flags(flags)
+
+
+def _service_one_attachment(
+    row: dict[str, Any],
+    creds: _PoCreds,
+    counters: dict[str, int],
+    flags: dict[str, str],
+    clamav_enabled: bool,
+) -> bool:
+    """Claim, verify, screen, and disposition ONE pending attachment. Returns True
+    iff the one-shot flag set was mutated (the caller persists once per pass).
+
+    Verify-before-anything (Invariant 2): the po-att:v1 HMAC binds the row's fields
+    AND the content digest; the sha256 recompute over the reassembled chunks extends
+    the signature to the bytes. Either failing → CRITICAL + security Review-Queue
+    row + one-shot flag; the bytes stay in D1 for forensics (no disposition post).
+    """
+    raw_id = row.get("id")
+    if not isinstance(raw_id, int) or isinstance(raw_id, bool) or raw_id <= 0:
+        counters["attachment_errors"] += 1
+        error_log.log(
+            Severity.ERROR, SCRIPT_NAME,
+            f"pending attachment row has a missing/malformed id ({raw_id!r}); skipping",
+            error_code="po_attachment_row_no_id",
+        )
+        return False
+    att_id = raw_id
+    flag_key = f"att-{att_id}"
+    if flag_key in flags:
+        return False
+    att_uuid = str(row.get("att_uuid") or "")
+    po_number = str(row.get("po_number") or "")
+    job_name = str(row.get("job_name") or "")
+    filename = str(row.get("filename") or "")
+    declared_mime = str(row.get("declared_mime") or "")
+    uploaded_by = str(row.get("uploaded_by") or "")
+    provided_hmac = str(row.get("hmac") or "")
+    raw_po_id = row.get("po_id")
+    po_id = raw_po_id if isinstance(raw_po_id, int) and not isinstance(raw_po_id, bool) else 0
+    raw_size = row.get("size_bytes")
+    size_bytes = raw_size if isinstance(raw_size, int) and not isinstance(raw_size, bool) else -1
+    signed_sha256 = str(row.get("sha256") or "")
+    correlation_id = uuid.uuid4().hex[:12]
+
+    try:
+        # 1 — claim FIRST (the photo-pool claim-first semantics): a crash after this
+        # leaves an observable 'claimed' row that re-serves next cycle.
+        portal_client.claim_po_attachment(creds.base_url, creds.bearer, attachment_id=att_id)
+
+        # 2 — pull + reassemble the bytes (the ONLY Mac-ward byte flow).
+        chunks = portal_client.get_po_attachment_chunks(
+            creds.base_url, creds.bearer, attachment_id=att_id
+        )
+        try:
+            data = _reassemble_chunks(chunks)
+        except ValueError as exc:
+            counters["attachments_refused"] += 1
+            _handle_attachment_integrity_failure(
+                att_id, po_number, filename, uploaded_by,
+                f"chunk reassembly failed: {exc}", correlation_id, flags,
+            )
+            return True
+
+        # 3 — verify: the po-att:v1 HMAC over the served fields, then the content
+        # digest + size against the SIGNED values (never screen unverified bytes).
+        if not portal_hmac.verify_po_attachment(
+            creds.secret, provided_hmac,
+            att_uuid=att_uuid, po_id=po_id, filename=filename,
+            declared_mime=declared_mime, size_bytes=size_bytes, sha256=signed_sha256,
+        ):
+            counters["attachments_refused"] += 1
+            _handle_attachment_integrity_failure(
+                att_id, po_number, filename, uploaded_by,
+                "HMAC verification FAILED", correlation_id, flags,
+            )
+            return True
+        if len(data) != size_bytes or hashlib.sha256(data).hexdigest() != signed_sha256:
+            counters["attachments_refused"] += 1
+            _handle_attachment_integrity_failure(
+                att_id, po_number, filename, uploaded_by,
+                "content digest/size disagrees with the signed values", correlation_id, flags,
+            )
+            return True
+
+        # 4 — §34 screen (po_attach_screen: L1 magic/consistency → L2 structural →
+        # L3 config-gated ClamAV on the raw bytes).
+        result = po_attach_screen.screen_attachment(
+            filename, declared_mime, data, clamav_enabled=clamav_enabled
+        )
+
+        if result.disposition == "clean":
+            # 5 — file the ORIGINAL bytes: Box (job folder → "Purchase Orders", §47
+            # version-on-conflict) + the PO_Log row attachment (best-effort), then
+            # the disposition post-back (the Worker deletes the D1 chunks).
+            folder_id = _resolve_po_box_folder(job_name)
+            if folder_id is None:
+                counters["attachment_errors"] += 1
+                error_log.log(
+                    Severity.ERROR, SCRIPT_NAME,
+                    f"Box portal root unresolved — attachment {att_id} for PO "
+                    f"{po_number} left claimed until the root is configured",
+                    error_code="po_box_root_unresolved",
+                    correlation_id=correlation_id,
+                )
+                return False
+            filed_name = po_naming.po_attachment_filename(po_number, filename)
+            file_info = box_client.upload_bytes_or_new_version(folder_id, filed_name, data)
+            box_file_id = str(file_info["id"])
+            _attach_bytes_to_po_log_best_effort(
+                po_number, filed_name, data, declared_mime, correlation_id
+            )
+            portal_client.post_po_attachment_result(
+                creds.base_url, creds.bearer,
+                attachment_id=att_id, status="filed", box_file_id=box_file_id,
+            )
+            counters["attachments_filed"] += 1
+            error_log.log(
+                Severity.INFO, SCRIPT_NAME,
+                f"filed PO attachment {filed_name!r} (att {att_id}, PO {po_number}) "
+                f"→ Box + PO_Log row",
+                error_code="po_attachment_filed",
+                correlation_id=correlation_id,
+            )
+            return False
+
+        detail = f"{result.layer}:{result.detail}"
+        if result.disposition == "malicious":
+            # MALICIOUS → CRITICAL NAMING THE ACCOUNT + security-flagged Review-Queue
+            # row, refused before filing (the photo_screen/intake posture). The PO
+            # itself stays filed — only the attachment is refused.
+            review_queue.add(
+                workstream=WORKSTREAM,
+                summary=(
+                    f"po: MALICIOUS attachment {filename!r} on PO {po_number} "
+                    f"(uploaded by {uploaded_by!r}) — refused before filing ({detail})"
+                ),
+                payload={
+                    "attachment_id": att_id, "po_number": po_number,
+                    "filename": filename, "uploaded_by": uploaded_by, "detail": detail,
+                },
+                sla_tier=review_queue.SlaTier.RFQ_DRAFT,
+                reason=review_queue.ReviewReason.SECURITY_TRIGGER,
+                severity=Severity.CRITICAL,
+                source_file=f"po-att:{att_id}",
+                security_flag=True,
+            )
+            error_log.log(
+                Severity.CRITICAL, SCRIPT_NAME,
+                f"MALICIOUS PO attachment refused (att {att_id}, PO {po_number}, "
+                f"account {uploaded_by!r}): {detail} — review the account before "
+                f"re-enabling uploads",
+                error_code="po_attachment_malicious",
+                correlation_id=correlation_id,
+            )
+        else:  # suspicious
+            security = po_attach_screen.is_structural_active_content(result)
+            review_queue.add(
+                workstream=WORKSTREAM,
+                summary=(
+                    f"po: attachment {filename!r} on PO {po_number} refused as "
+                    f"SUSPICIOUS ({detail}) — not filed; operator review"
+                ),
+                payload={
+                    "attachment_id": att_id, "po_number": po_number,
+                    "filename": filename, "uploaded_by": uploaded_by, "detail": detail,
+                },
+                sla_tier=review_queue.SlaTier.RFQ_DRAFT,
+                reason=(
+                    review_queue.ReviewReason.SECURITY_TRIGGER
+                    if security else review_queue.ReviewReason.POLICY_EDGE
+                ),
+                severity=Severity.WARN,
+                source_file=f"po-att:{att_id}",
+                security_flag=security,
+            )
+            error_log.log(
+                Severity.WARN, SCRIPT_NAME,
+                f"suspicious PO attachment refused (att {att_id}, PO {po_number}): {detail}",
+                error_code="po_attachment_suspicious",
+                correlation_id=correlation_id,
+            )
+        # Disposition post-back LAST: the Worker flips the row + deletes the chunks
+        # (delete-on-disposition). A crash before this re-serves the claimed row and
+        # every step above is idempotent (dedup by att_id flag / Review-Queue record).
+        portal_client.post_po_attachment_result(
+            creds.base_url, creds.bearer,
+            attachment_id=att_id, status="refused", detail=detail[:200],
+        )
+        counters["attachments_refused"] += 1
+        return False
+    except portal_client.PortalAuthError as exc:
+        raise _BearerRejectedError from exc
+    except (
+        smartsheet_client.SmartsheetError,
+        box_client.BoxError,
+        portal_client.PortalTransportError,
+    ) as exc:
+        counters["attachment_errors"] += 1
+        error_log.log(
+            Severity.ERROR, SCRIPT_NAME,
+            f"transient failure servicing attachment {att_id} (PO {po_number}; "
+            f"stays serviceable for next cycle): {type(exc).__name__}: {exc!r}",
+            error_code="po_attachment_transient",
+            correlation_id=correlation_id,
+        )
+        return False
+    except Exception as exc:  # noqa: BLE001 — per-row fence; one attachment never kills the pass
+        counters["attachment_errors"] += 1
+        error_log.log(
+            Severity.ERROR, SCRIPT_NAME,
+            f"unexpected failure servicing attachment {att_id} (PO {po_number}): "
+            f"{type(exc).__name__}: {exc!r}",
+            error_code="po_attachment_unexpected",
+            correlation_id=correlation_id,
+        )
+        return False
+
+
+def _handle_attachment_integrity_failure(
+    att_id: int, po_number: str, filename: str, uploaded_by: str,
+    detail: str, correlation_id: str, flags: dict[str, str],
+) -> None:
+    """Reject an attachment whose transport integrity failed (bad HMAC / digest
+    mismatch / malformed chunk set) — the attachment twin of _handle_po_hmac_failure.
+
+    NEVER screened, NEVER filed, NO disposition post (the bytes stay in D1 for
+    forensics — mirroring the bad-HMAC PO posture). One-shot: anomaly-log + security
+    Review-Queue row + CRITICAL only on the FIRST sighting; the flag set suppresses
+    per-cycle re-flag spam."""
+    anomaly_logger.check({"po_attachment_integrity": att_id, "po_number": po_number})
+    review_queue.add(
+        workstream=WORKSTREAM,
+        summary=(
+            f"po: attachment INTEGRITY FAILURE (att {att_id}, PO {po_number or att_id}, "
+            f"file {filename!r}) — {detail}; rejected, NOT screened or filed"
+        ),
+        payload={
+            "attachment_id": att_id,
+            "po_number": po_number,
+            "filename": filename,
+            "uploaded_by": uploaded_by,
+            "detail": detail,
+            # The HMAC value is deliberately NOT recorded (signature material);
+            # the raw row + chunks stay in D1.
+        },
+        sla_tier=review_queue.SlaTier.RFQ_DRAFT,
+        reason=review_queue.ReviewReason.SECURITY_TRIGGER,
+        severity=Severity.CRITICAL,
+        source_file=f"po-att:{att_id}",
+        security_flag=True,
+    )
+    error_log.log(
+        Severity.CRITICAL, SCRIPT_NAME,
+        f"po attachment integrity FAIL att_id={att_id} po_number={po_number!r}: "
+        f"{detail} (downgrade defense — never screened or filed)",
+        error_code="po_attachment_integrity_failure",
+        correlation_id=correlation_id,
+    )
+    flags[f"att-{att_id}"] = "integrity"
+
+
+def _attach_bytes_to_po_log_best_effort(
+    po_number: str, filed_name: str, data: bytes, content_type: str, correlation_id: str
+) -> None:
+    """Attach the screened file inline on the PO's PO_Log ledger row, BEST-EFFORT
+    (Box is the SoR; a failure is a WARN that never fails the disposition — the
+    _attach_pdf_best_effort posture). Passes the REAL content type through the
+    content_type-aware shared helper (the Feature-B MIME fix)."""
+    try:
+        log_row = po_log.find_row_by_po_number(po_number)
+        if log_row is None:
+            error_log.log(
+                Severity.WARN, SCRIPT_NAME,
+                f"PO_Log row for {po_number} not found — attachment {filed_name!r} "
+                f"filed to Box only",
+                error_code="po_attachment_log_row_missing",
+                correlation_id=correlation_id,
+            )
+            return
+        smartsheet_client.attach_pdf_to_row(
+            po_log.SHEET_ID, int(log_row["_row_id"]), filed_name, data,
+            content_type=content_type,
+        )
+    except Exception as exc:  # noqa: BLE001 — supplementary inline copy; Box is the SoR
+        error_log.log(
+            Severity.WARN, SCRIPT_NAME,
+            f"PO_Log attachment failed ({filed_name!r}, PO {po_number}): "
+            f"{type(exc).__name__}: {exc!r}",
+            error_code="po_attachment_log_attach_failed",
             correlation_id=correlation_id,
         )
 

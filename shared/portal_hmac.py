@@ -130,6 +130,22 @@ Subcontract protocol (SC S3c)
     `verify_sub` is the Mac-side recompute `subcontracts.subcontract_poll`'s drafts
     pass runs before any render/Box-file/mark-filed (the downgrade defense,
     mirroring the submission drain).
+
+PO-attachment protocol (Feature B)
+----------------------------------
+    A draft-time PO document attachment (`po_attachments`, migration 0053) is signed
+    by the Worker at upload (safety_portal/worker/po_attachments.ts
+    `poAttachmentCanonical`) with the SAME key + MAC over its own domain-separated
+    canonical string:
+
+        canonical = "po-att:v1" \\n <att_uuid> \\n <po_id (decimal)> \\n <filename>
+                    \\n <declared_mime> \\n <size_bytes (decimal)> \\n <sha256 hex>
+
+    Unlike the other protocols the CONTENT itself is signature-covered: `sha256` is
+    the Worker-computed digest of the decoded bytes, so the Mac's recompute over the
+    reassembled chunks extends the signature to the bytes. `verify_po_attachment` is
+    the recompute `po_materials.po_poll`'s attachment pass runs before a single byte
+    is §34-screened or filed.
 """
 from __future__ import annotations
 
@@ -443,4 +459,61 @@ def verify_sub(
     Constant-time; never raises (False on any mismatch — the caller refuses the row:
     one-shot flag + CRITICAL, never rendered, never filed, never marked)."""
     expected = sign_sub(secret, sc_id=sc_id, sc_number=sc_number, canonical_json=canonical_json)
+    return _hmac.compare_digest(expected, provided_hmac or "")
+
+
+# ---- PO-attachment protocol (Feature B — the §34 doc-attachment pool) ---------------
+
+# The PO-attachment protocol's domain-separation literal — MUST match the Worker's
+# PO_ATTACH_HMAC_DOMAIN (safety_portal/worker/po_attachments.ts) byte-for-byte.
+# Domain-separates attachment signatures from submission (uuid-first), item-photo
+# ("item_photo:v1"), daily-photo ("daily_photo:v1"), PO ("po:v1"), and subcontract
+# ("sub:v1") signatures — cross-protocol confusion is structurally impossible.
+PO_ATTACH_DOMAIN = "po-att:v1"
+
+
+def po_attachment_canonical(
+    *, att_uuid: str, po_id: int, filename: str, declared_mime: str,
+    size_bytes: int, sha256: str,
+) -> str:
+    """The exact string the Worker signs for one uploaded PO attachment
+    (po_attachments.ts poAttachmentCanonical — order + ``\\n`` separator load-bearing).
+
+    Binds identity (`att_uuid` + `po_id` — a signed attachment cannot be replayed onto
+    a different row or PO), naming (`filename` + `declared_mime` — the values the Mac
+    screener + Box filing consume), and CONTENT (`size_bytes` + `sha256` of the decoded
+    bytes) — so the caller's sha256 recompute over the reassembled chunks extends the
+    signature to the bytes themselves: tampered chunks fail the digest, a tampered
+    digest fails the HMAC.
+    """
+    return "\n".join([
+        PO_ATTACH_DOMAIN, att_uuid, str(po_id), filename, declared_mime,
+        str(size_bytes), sha256,
+    ])
+
+
+def sign_po_attachment(
+    secret: str, *, att_uuid: str, po_id: int, filename: str, declared_mime: str,
+    size_bytes: int, sha256: str,
+) -> str:
+    """HMAC-SHA256(secret, attachment canonical) → lowercase hex — identical to the
+    Worker's hmacHex over poAttachmentCanonical."""
+    msg = po_attachment_canonical(
+        att_uuid=att_uuid, po_id=po_id, filename=filename, declared_mime=declared_mime,
+        size_bytes=size_bytes, sha256=sha256,
+    ).encode("utf-8")
+    return _hmac.new(secret.encode("utf-8"), msg, hashlib.sha256).hexdigest()
+
+
+def verify_po_attachment(
+    secret: str, provided_hmac: str | None, *, att_uuid: str, po_id: int, filename: str,
+    declared_mime: str, size_bytes: int, sha256: str,
+) -> bool:
+    """True iff `provided_hmac` matches the recomputed attachment signature.
+    Constant-time; never raises (False on any mismatch — the caller refuses the
+    attachment: CRITICAL + security Review-Queue row, never screened, never filed)."""
+    expected = sign_po_attachment(
+        secret, att_uuid=att_uuid, po_id=po_id, filename=filename,
+        declared_mime=declared_mime, size_bytes=size_bytes, sha256=sha256,
+    )
     return _hmac.compare_digest(expected, provided_hmac or "")

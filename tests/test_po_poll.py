@@ -142,6 +142,25 @@ def _patch(mocker):
         "mark_filed": mocker.patch(
             "po_materials.po_poll.portal_client.mark_po_filed", return_value=True
         ),
+        # Attachment pass (Feature B) — dark by default (no pending attachments).
+        "att_pending": mocker.patch(
+            "po_materials.po_poll.portal_client.get_po_attachments_pending", return_value=[]
+        ),
+        "att_claim": mocker.patch(
+            "po_materials.po_poll.portal_client.claim_po_attachment", return_value=True
+        ),
+        "att_chunks": mocker.patch(
+            "po_materials.po_poll.portal_client.get_po_attachment_chunks", return_value=[]
+        ),
+        "att_result": mocker.patch(
+            "po_materials.po_poll.portal_client.post_po_attachment_result", return_value=True
+        ),
+        "att_clamav": mocker.patch(
+            "po_materials.po_poll._attach_clamav_enabled", return_value=False
+        ),
+        "att_log_attach": mocker.patch(
+            "po_materials.po_poll._attach_bytes_to_po_log_best_effort", return_value=None
+        ),
         "vendors_sync": mocker.patch(
             "po_materials.po_poll.portal_client.vendors_sync",
             return_value={"ok": True, "upserted": 1, "skipped_dirty": 0},
@@ -656,3 +675,191 @@ def test_status_pass_ignores_foreign_workstream_rows(_patch):
     _run(_patch)
     _patch["status_sync"].assert_not_called()
     assert "po_status_foreign_tag" in _logged_codes(_patch)
+
+
+# ---- ①b attachment pass (Feature B) ----------------------------------------------
+
+import base64  # noqa: E402 — grouped with the attachment-pass tests they serve
+import hashlib  # noqa: E402
+import io  # noqa: E402
+import zipfile  # noqa: E402
+
+_MINIMAL_PDF = b"%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n%%EOF\n"
+
+
+def _macro_docx() -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("[Content_Types].xml", "<Types/>")
+        zf.writestr("word/document.xml", "<doc/>")
+        zf.writestr("word/vbaProject.bin", "macro-bytes")
+    return buf.getvalue()
+
+
+_DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+
+def _att_row(data: bytes, **over: Any) -> dict[str, Any]:
+    filename = str(over.pop("filename", "spec.pdf"))
+    mime = str(over.pop("declared_mime", "application/pdf"))
+    att_id = int(over.pop("id", 41))
+    po_id = int(over.pop("po_id", 7))
+    sha = hashlib.sha256(data).hexdigest()
+    row: dict[str, Any] = {
+        "id": att_id,
+        "att_uuid": f"u-att-{att_id}",
+        "po_id": po_id,
+        "po_number": "2026.001.2.0.0",
+        "job_name": "Sunrise Solar",
+        "filename": filename,
+        "declared_mime": mime,
+        "size_bytes": len(data),
+        "sha256": sha,
+        "status": "pending",
+        "hmac": portal_hmac.sign_po_attachment(
+            SECRET, att_uuid=f"u-att-{att_id}", po_id=po_id, filename=filename,
+            declared_mime=mime, size_bytes=len(data), sha256=sha,
+        ),
+        "uploaded_by": "office.admin",
+        "created_at": 1234,
+    }
+    row.update(over)
+    return row
+
+
+def _one_chunk(data: bytes) -> list[dict[str, Any]]:
+    return [{"chunk_index": 0, "chunk_total": 1,
+             "chunk_b64": base64.b64encode(data).decode()}]
+
+
+def test_attachment_clean_filed_to_box_and_log(_patch):
+    """Clean attachment: claim → verify → screen → Box (original bytes) → PO_Log
+    attach → result 'filed' with the Box id. The filed name is the po_naming helper's."""
+    _patch["att_pending"].return_value = [_att_row(_MINIMAL_PDF)]
+    _patch["att_chunks"].return_value = _one_chunk(_MINIMAL_PDF)
+    _patch["upload"].return_value = {"id": "f-att-1", "name": "x", "size": 1}
+
+    stats = _run(_patch)
+    assert stats.attachments_filed == 1
+    assert stats.attachments_refused == 0
+    _patch["att_claim"].assert_called_once()
+    args, kwargs = _patch["upload"].call_args
+    assert args[1] == po_poll.po_naming.po_attachment_filename("2026.001.2.0.0", "spec.pdf")
+    assert args[2] == _MINIMAL_PDF  # the ORIGINAL bytes, not a re-encode
+    _patch["att_log_attach"].assert_called_once()
+    _patch["att_result"].assert_called_once()
+    assert _patch["att_result"].call_args.kwargs["status"] == "filed"
+    assert _patch["att_result"].call_args.kwargs["box_file_id"] == "f-att-1"
+
+
+def test_attachment_malicious_refused_never_filed(_patch):
+    """PROVE-THE-CONTROL-BITES (wiring): a macro-carrying docx NEVER reaches Box —
+    CRITICAL naming the account + a security-flagged Review-Queue row + a 'refused'
+    disposition. Stub the screener to 'clean' (or skip it) and this test fails."""
+    docx = _macro_docx()
+    _patch["att_pending"].return_value = [
+        _att_row(docx, filename="specs.docx", declared_mime=_DOCX_MIME)
+    ]
+    _patch["att_chunks"].return_value = _one_chunk(docx)
+
+    stats = _run(_patch)
+    assert stats.attachments_filed == 0
+    assert stats.attachments_refused == 1
+    _patch["upload"].assert_not_called()          # never filed to Box
+    _patch["att_log_attach"].assert_not_called()  # never attached to the ledger
+    assert _patch["att_result"].call_args.kwargs["status"] == "refused"
+    rq = _patch["review_q"].call_args.kwargs
+    assert rq["security_flag"] is True
+    assert rq["severity"] == po_poll.Severity.CRITICAL
+    assert "office.admin" in rq["summary"]  # CRITICAL names the uploading account
+    assert "po_attachment_malicious" in _logged_codes(_patch)
+
+
+def test_attachment_suspicious_pdf_active_content_security_flagged(_patch):
+    """A /JavaScript-bearing PDF is refused-to-review with the security flag
+    (structural active content), WARN not CRITICAL; the PO pipeline is untouched."""
+    bad_pdf = b"%PDF-1.4\n<< /JavaScript (app.alert(1)) >>\ntrailer\n%%EOF\n"
+    _patch["att_pending"].return_value = [_att_row(bad_pdf)]
+    _patch["att_chunks"].return_value = _one_chunk(bad_pdf)
+
+    stats = _run(_patch)
+    assert stats.attachments_refused == 1
+    _patch["upload"].assert_not_called()
+    assert _patch["att_result"].call_args.kwargs["status"] == "refused"
+    rq = _patch["review_q"].call_args.kwargs
+    assert rq["security_flag"] is True
+    assert rq["severity"] == po_poll.Severity.WARN
+    assert "po_attachment_suspicious" in _logged_codes(_patch)
+
+
+def test_attachment_bad_hmac_flagged_never_disposed(_patch):
+    """A tampered row (filename flipped after signing) fails verify: CRITICAL +
+    security Review-Queue row + one-shot flag; NO disposition post (bytes stay in
+    D1 for forensics) and nothing reaches Box."""
+    row = _att_row(_MINIMAL_PDF)
+    row["filename"] = "renamed-after-signing.pdf"  # breaks the signature
+    _patch["att_pending"].return_value = [row]
+    _patch["att_chunks"].return_value = _one_chunk(_MINIMAL_PDF)
+
+    stats = _run(_patch)
+    assert stats.attachments_refused == 1
+    _patch["upload"].assert_not_called()
+    _patch["att_result"].assert_not_called()  # never disposed — forensics
+    assert _patch["review_q"].call_args.kwargs["security_flag"] is True
+    assert "po_attachment_integrity_failure" in _logged_codes(_patch)
+    # One-shot flag persisted under the att- key.
+    persisted = _patch["flags_persist"].call_args.args[0]
+    assert persisted.get("att-41") == "integrity"
+
+
+def test_attachment_digest_mismatch_flagged(_patch):
+    """Chunks that reassemble to different bytes than the SIGNED sha256 are an
+    integrity failure — same posture as a bad HMAC."""
+    row = _att_row(_MINIMAL_PDF)
+    _patch["att_pending"].return_value = [row]
+    _patch["att_chunks"].return_value = _one_chunk(b"%PDF-1.4 swapped bytes %%EOF")
+
+    stats = _run(_patch)
+    assert stats.attachments_refused == 1
+    _patch["upload"].assert_not_called()
+    _patch["att_result"].assert_not_called()
+    assert "po_attachment_integrity_failure" in _logged_codes(_patch)
+
+
+def test_attachment_pass_failure_never_blocks_filing(_patch):
+    """The whole attachment pass is FENCED: an unexpected crash inside it is caught
+    at the call site (po_attachment_service_failed) and the cycle — including the
+    already-completed PO filing — finishes normally."""
+    _patch["pending"].return_value = [_signed_row()]
+    _patch["att_pending"].side_effect = RuntimeError("boom")
+
+    stats = _run(_patch)
+    assert stats.filed == 1  # the PO itself still filed + receipted
+    assert stats.attachment_errors == 1
+    assert "po_attachment_service_failed" in _logged_codes(_patch)
+
+
+def test_attachment_transient_box_failure_stays_serviceable(_patch):
+    """A BoxError mid-file is TRANSIENT: no disposition post, the claimed row
+    re-serves next cycle, the cycle completes."""
+    _patch["att_pending"].return_value = [_att_row(_MINIMAL_PDF)]
+    _patch["att_chunks"].return_value = _one_chunk(_MINIMAL_PDF)
+    _patch["upload"].side_effect = BoxError("box down")
+
+    stats = _run(_patch)
+    assert stats.attachment_errors == 1
+    assert stats.attachments_filed == 0
+    _patch["att_result"].assert_not_called()
+    assert "po_attachment_transient" in _logged_codes(_patch)
+
+
+def test_attachment_flagged_row_skipped(_patch):
+    """A previously integrity-flagged attachment is skipped silently (no re-flag spam)."""
+    _patch["flags_load"].return_value = {"att-41": "integrity"}
+    _patch["att_pending"].return_value = [_att_row(_MINIMAL_PDF)]
+
+    stats = _run(_patch)
+    assert stats.attachments_refused == 0
+    assert stats.attachments_filed == 0
+    _patch["att_claim"].assert_not_called()
+    _patch["att_result"].assert_not_called()
