@@ -298,6 +298,10 @@ export function registerConfigRoutes(app: FieldopsApp, gates: ConfigGates): void
         return c.json({ error: err }, status);
       }
       const p = body.payload as Record<string, unknown>;
+      // Normalize the trade IN the enqueued payload so the queued row + audit row record EXACTLY what
+      // config_apply writes to trade_map (it does its own trade.strip() before the manifest write) — no
+      // forensic drift between " Battery Storage " enqueued and "Battery Storage" actuated.
+      if (op === "create_profile" && typeof p.trade === "string") p.trade = p.trade.trim();
       opMeta = op === "create_profile" ? { template_key: p.template_key, trade: p.trade } : { template_key: p.template_key };
     } else if (op === "create_profile") {
       const err = validateCreateProfile(body.payload);

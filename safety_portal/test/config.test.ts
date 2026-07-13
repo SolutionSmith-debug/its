@@ -234,6 +234,20 @@ describe("POST /api/config/requests — enqueue", () => {
     expect(JSON.parse(detail)).toMatchObject({ op: "create_profile", template_key: "battery_storage", trade: "Battery Storage" });
   });
 
+  it("normalizes a padded trade in the enqueued payload + audit (parity with the manifest write)", async () => {
+    await provision("admin.one", "admin");
+    const cookie = await login("admin.one");
+    const res = await post(cookie, "/api/config/requests", {
+      workstream: "subcontracts", artifact_key: "exhibit", op: "create_profile",
+      payload: { template_key: "battery_storage", trade: "  Battery Storage  ", text: "scope." },
+    });
+    expect(res.status, await res.clone().text()).toBe(201);
+    const row = await env.DB.prepare("SELECT payload FROM config_requests").first<{ payload: string }>();
+    expect(JSON.parse(row!.payload).trade).toBe("Battery Storage"); // trimmed in the queued record
+    const detail = (await env.DB.prepare("SELECT detail FROM audit_log WHERE action='config_edit'").first<{ detail: string }>())!.detail;
+    expect(JSON.parse(detail).trade).toBe("Battery Storage"); // and in the audit row
+  });
+
   it("rejects an exhibit create_profile for an EXISTING template key (409 template_exists → add_version, not create)", async () => {
     await provision("admin.one", "admin");
     const cookie = await login("admin.one");
