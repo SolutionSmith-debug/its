@@ -622,7 +622,16 @@ def update_rows(sheet_id: int, updates: list[dict[str, Any]]) -> None:
 
 @_breaker_guard
 def delete_rows(sheet_id: int, row_ids: list[int]) -> None:
-    """Delete rows by ID. Smartsheet caps at 450 IDs per call."""
+    """Delete rows by ID.
+
+    Batch size is the CALLER's job, and the real constraint is URL length,
+    not a documented Smartsheet cap: the SDK passes the IDs in the URL query
+    string, so too many sixteen-digit row IDs per call fails with HTTP 400
+    (the long-claimed "450 IDs per call" limit was disproven live 2026-07-13
+    — 450 blew the URL length; 200 drained 13,815 rows clean). Callers should
+    chunk at shared/defaults.py SHEET_ROW_ROTATION_DELETE_BATCH (200,
+    live-verified).
+    """
     if not row_ids:
         return
     try:
