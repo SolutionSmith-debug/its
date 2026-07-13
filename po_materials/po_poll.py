@@ -1014,10 +1014,15 @@ def _reassemble_chunks(chunks: list[dict[str, Any]]) -> bytes:
     (total,) = totals
     if not isinstance(total, int) or isinstance(total, bool) or total < 1:
         raise ValueError("malformed chunk_total")
-    indices = [c.get("chunk_index") for c in chunks]
-    if sorted(indices) != list(range(total)) or len(chunks) != total:  # type: ignore[type-var]
+    indices: list[int] = []
+    for c in chunks:
+        idx = c.get("chunk_index")
+        if not isinstance(idx, int) or isinstance(idx, bool):
+            raise ValueError("malformed chunk_index")
+        indices.append(idx)
+    if sorted(indices) != list(range(total)) or len(chunks) != total:
         raise ValueError("chunk index set not gap-free")
-    by_index = sorted(chunks, key=lambda c: c["chunk_index"])
+    by_index = sorted(chunks, key=lambda c: int(c["chunk_index"]))
     parts: list[bytes] = []
     for chunk in by_index:
         b64 = chunk.get("chunk_b64")

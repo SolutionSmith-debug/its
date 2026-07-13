@@ -691,12 +691,15 @@ export function PoBuilderPage({ onBack }: { onBack: () => void }) {
   /** Upload the picked files onto the SAVED draft. Client-side size/type checks are
    *  HINTS only — the Worker re-gates every upload (size, count, filename, MIME
    *  allowlist + magic sniff), and the real §34 screen runs on the Mac before Box. */
-  async function onAttachFiles(files: FileList | null) {
-    if (!files || files.length === 0 || draftId === null || attBusy) return;
+  async function onAttachFiles(fileList: FileList | null) {
+    if (!fileList || fileList.length === 0 || draftId === null || attBusy) return;
+    // Snapshot the File references SYNCHRONOUSLY — the change handler resets the
+    // input's value right after this call, which empties the live FileList.
+    const files = Array.from(fileList);
     setAttBusy(true);
     setMsg(null);
     let count = attachments.length;
-    for (const f of Array.from(files)) {
+    for (const f of files) {
       const dot = f.name.lastIndexOf(".");
       const ext = dot >= 0 ? f.name.slice(dot).toLowerCase() : "";
       const mime = api.ATTACHMENT_MIME_BY_EXT[ext];
