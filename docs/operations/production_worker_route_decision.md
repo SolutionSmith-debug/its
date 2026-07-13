@@ -47,34 +47,32 @@ fallback. Declined.
 
 ## Decision 2 — daemon LOAD posture at cutover (so VC-02 exits 0)
 
-**Context.** `scripts/launchd/` ships **15** daemon plists (template excluded). VC-02
-(`_check_launchd`) derives its expected label set by globbing those plists and requires
-**exact set-equality** against `launchctl list` — any shipped-but-unloaded plist FAILs
-the gate. Two daemons ship **dark**: `po-send` and `subcontract-poll` (their
-`*.polling_enabled` ITS_Config rows are seeded `false`).
+**Context.** `scripts/launchd/` ships **15** daemon plists (template excluded). Two daemons
+ship **dark** (their `*.polling_enabled` ITS_Config rows are seeded `false`): `po-send` (a
+SEND daemon) and `subcontract-poll` (a generation daemon).
 
-**Decision.** At cutover, **all 15 plists are LOADED**; the two dark daemons are
-**loaded-but-runtime-gated** — launchd runs them on cadence, but each cycle exits early on
-its `polling_enabled=false` gate, so nothing sends. Dark is enforced at the **ITS_Config
-runtime gate**, not by leaving the plist unloaded.
+**Decision (operator, 2026-07-12 — the send-gate-strict alternative).** At cutover, **14
+daemons are LOADED; `po-send` stays launchd-UNLOADED.** A dark external-SEND path is not even
+running — send-gate defense-in-depth. `subcontract-poll` (and every other generation daemon —
+portal-poll, po-poll, fieldops-sync, …) **loads but is runtime-gated dark**: generation/filing
+daemons transmit nothing, so loaded-but-gated is fine for them; only the SEND daemon is held
+unloaded.
 
-**Why.**
-- Keeps VC-02's shipped==loaded set-equality green without special-casing (no per-plist
-  exclusion list to drift).
-- `subcontract-poll` is already loaded-but-dark today; `po-send` matches that posture.
-- Runtime-gating is the canonical dark-ship mechanism (the `polling_enabled` gate rows),
-  and the External Send Gate stays intact — a loaded-but-gated send daemon transmits
-  nothing until its gate is flipped `true`, which is a FIXED high-class decision (Seth).
+**Code.** VC-02 encodes this with `DARK_UNLOADED_LABELS = {org.solutionsmith.its.po-send}`:
+`_expected_labels()` returns shipped-minus-dark-unloaded (14), and the check **FAILS if a
+dark-unloaded send daemon IS loaded** — a send daemon live at cutover is a distinct, named
+send-gate violation, not a plain orphan. First-enabling PO send = remove `po-send` from
+`DARK_UNLOADED_LABELS` + load its plist + enroll its `polling_enabled` — a FIXED high-class
+External-Send-Gate decision (Seth). A future `subcontract-send` joins `DARK_UNLOADED_LABELS`.
 
-**Consequence for the docs.** `launchctl list | grep -c solutionsmith` → **15** at cutover
-(cutover_checklist CL-03, host_migration_runbook A6, aug7_delivery_runbook gate 3). First
-enabling either send path (`po-send` / a future `subcontract-send`) remains an operator
-External-Send-Gate decision, tracked separately (VC-03 deliberately does NOT enroll their
-`polling_enabled` as `true`).
+**Why the alternative over loaded-but-dark.** It matches the daemon's actual dev-box state
+(`po-send` was already the one unloaded plist), and a send daemon that isn't loaded *cannot*
+transmit even if its runtime gate were flipped by accident — strictly stronger than relying
+on the `polling_enabled` gate alone.
 
-**Operator override.** If the intent is instead to leave `po-send` launchd-**unloaded**
-at cutover, VC-02 needs an explicit exclusion (a code change, Seth) — flag before the
-freeze; this doc's default is loaded-but-runtime-dark.
+**Consequence for the docs.** `launchctl list | grep -c solutionsmith` → **14** at cutover
+(cutover_checklist CL-03, host_migration_runbook A6, aug7_delivery_runbook gate 3); the load
+loop skips `po-send`. VC-03 still does NOT enroll any send `polling_enabled` as `true`.
 
 ## Owner
 

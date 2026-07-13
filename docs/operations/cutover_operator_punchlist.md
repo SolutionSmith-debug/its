@@ -57,7 +57,7 @@ Ref: `host_migration_runbook.md` Phase B. #1 hazard = daemon double-run. **Must 
 - [ ] (4) rsync `state/` + `.watchdog/` markers to the new host.
 - [ ] (5) Box re-auth via a fresh `setup_box_oauth.py` on the **new host ONLY** — never run Box code
   on the dev box again.
-- [ ] (6) `git pull origin main` on the new host, then load all 15.
+- [ ] (6) `git pull origin main` on the new host, then load all daemons but `po-send` (14 loaded; po-send stays unloaded — send-gate).
 - [ ] (7) verification gate: labels loaded, fresh Check-C markers, ITS_Daemon_Health advancing, portal
   round-trip, **and the UptimeRobot prove-it-bites** (unload watchdog → wait 35 min → alert must
   ARRIVE → reload).
@@ -128,7 +128,7 @@ Ref: `aug7_delivery_runbook.md`. Thu Aug 6 = T-1 buffer (no build work). HARD CO
 - [ ] Transport window: enter `system.state=MAINTENANCE` + UptimeRobot maintenance window; graceful
   shutdown after portal_poll quiets.
 - [ ] On-site: the **7 ordered install gates** (do not demo past a red gate) — power/placement, network
-  (outbound 443), boot+login → `launchctl list | grep -c solutionsmith` = **15**, Tailscale reverse
+  (outbound 443), boot+login → `launchctl list | grep -c solutionsmith` = **14** (po-send unloaded — send-gate), Tailscale reverse
   access over hotspot, clear MAINTENANCE→ACTIVE, `verify_cutover` re-run on-site (exit 0, paste to log),
   fresh Check-C markers.
 - [ ] Demo (~40 min, mind the Friday-14:00 `weekly_generate` rule — narrate it live or pre-empt via

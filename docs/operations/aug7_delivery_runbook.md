@@ -59,7 +59,7 @@ leave-behind package.
 |---|------|--------|
 | 1 | Power + placement agreed (owner names the spot; wired power, no shared switch-controlled outlet) | visual |
 | 2 | Network up — creds obtained BEFORE today; outbound 443 suffices (no inbound holes, no public SSH — Tailscale only) | `curl -sI https://api.smartsheet.com | head -1` returns a response |
-| 3 | Boot + login (FileVault posture per `host_migration_runbook.md` A1 — login unlocks the keychain; LaunchAgents start) | `launchctl list \| grep -c solutionsmith` → 15 |
+| 3 | Boot + login (FileVault posture per `host_migration_runbook.md` A1 — login unlocks the keychain; LaunchAgents start) | `launchctl list \| grep -c solutionsmith` → 14 (po-send stays unloaded — send-gate) |
 | 4 | Tailscale reverse-access from Seth's laptop **over the hotspot** (proves Tier-3 access survives Evergreen's NAT) | SSH session opens |
 | 5 | Clear MAINTENANCE → `system.state` → `ACTIVE`; close the UptimeRobot window | config read-back → `ACTIVE`; monitor green |
 | 6 | **`verify_cutover` re-run on-site** | `python -m scripts.verify_cutover` exits 0 — paste output in the session log |
