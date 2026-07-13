@@ -113,6 +113,7 @@ _ROOT = Path(__file__).resolve().parent.parent
 _MANAGED_PATHS = (
     "po_materials/config", "po_materials/terms",
     "subcontracts/config", "subcontracts/terms",  # SC-S2: the config editor is workstream-generic
+    "subcontracts/exhibit",  # PR-B2: the versioned per-trade Exhibit A Article II templates
 )
 
 # CI poll cadence for the config merge (auto-merge is DISABLED — the daemon waits for CI then
@@ -227,9 +228,13 @@ def _gh(*args: str) -> str:
     return subprocess.run(["gh", *args], cwd=_ROOT, check=True, capture_output=True, text=True).stdout
 
 
-# The terms dirs among _MANAGED_PATHS — derived so a new workstream can't reintroduce the git-clean
-# gap: every managed `<ws>/terms` must be cleaned of orphaned _vN.md, not just po_materials's.
-_MANAGED_TERMS_DIRS = tuple(p for p in _MANAGED_PATHS if p.endswith("/terms"))
+# The managed dirs where add_version writes NEW immutable version files — every `<ws>/terms` AND the
+# versioned `subcontracts/exhibit` (PR-B2). Derived so a new workstream can't reintroduce the git-clean
+# gap: each must be swept of an orphaned new version file (a stray from an interrupted add_version),
+# not just po_materials's terms dir.
+_MANAGED_NEW_FILE_DIRS = tuple(
+    p for p in _MANAGED_PATHS if p.endswith("/terms") or p.endswith("/exhibit")
+)
 
 
 def _reset_to_main() -> None:
@@ -242,7 +247,7 @@ def _reset_to_main() -> None:
     # UNTRACKED file there is a stray new _vN.md from an interrupted add_version/create_profile —
     # clean EVERY managed terms dir so an orphan can't ride into an unrelated request's next commit
     # (§50 per-request actuation integrity; the clean must cover the same dirs `git add` sweeps).
-    _git("clean", "-fd", *_MANAGED_TERMS_DIRS)
+    _git("clean", "-fd", *_MANAGED_NEW_FILE_DIRS)
     _git("checkout", "main")
     _git("pull", "--ff-only", "origin", "main")
 

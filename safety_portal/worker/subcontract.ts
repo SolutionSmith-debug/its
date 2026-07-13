@@ -101,7 +101,10 @@ const EXHIBIT_RAW = import.meta.glob<string>("../../subcontracts/exhibit/art2/*.
 // Trade (the ITS_Subcontractors Trade picklist value) → art2 template key. The manifest fans several
 // Trades onto one body (AC/MV/DC Electrical all → 'electrical'); an unknown Trade is invalid_trade.
 const EXHIBIT_TRADE_MAP = exhibitManifest.trade_map as Record<string, string>;
-const EXHIBIT_TEMPLATES = exhibitManifest.trade_templates as Record<string, { file: string; sha256: string }>;
+const EXHIBIT_TEMPLATES = exhibitManifest.trade_templates as Record<
+  string,
+  { current_version: string; versions: Record<string, { file: string; sha256: string; legal_review: string }> }
+>;
 
 // Port of subcontracts/terms.py header-comment stripping — drop a leading <!-- ... --> provenance
 // block (maintainer docs that must never reach a rendered subcontract or the editor textarea). Only
@@ -663,11 +666,14 @@ export function registerSubcontractRoutes(app: FieldopsApp, gates: SubcontractGa
       return c.json({ error: "invalid_trade" }, 400);
     }
     const templateKey = EXHIBIT_TRADE_MAP[trade];
-    const entry = Object.prototype.hasOwnProperty.call(EXHIBIT_TEMPLATES, templateKey)
+    const tmpl = Object.prototype.hasOwnProperty.call(EXHIBIT_TEMPLATES, templateKey)
       ? EXHIBIT_TEMPLATES[templateKey]
       : undefined;
-    if (!entry) return c.json({ error: "invalid_trade" }, 400);
-    const key = Object.keys(EXHIBIT_RAW).find((k) => k.endsWith("/" + entry.file));
+    if (!tmpl) return c.json({ error: "invalid_trade" }, 400);
+    // Resolve the key's CURRENT (legal-cleared) version → its immutable file (PR-B2 versioned schema).
+    const ver = tmpl.versions?.[tmpl.current_version];
+    if (!ver) return c.json({ error: "template_unavailable" }, 404);
+    const key = Object.keys(EXHIBIT_RAW).find((k) => k.endsWith("/" + ver.file));
     if (key === undefined) return c.json({ error: "template_unavailable" }, 404);
     return c.json({
       trade,
@@ -675,6 +681,72 @@ export function registerSubcontractRoutes(app: FieldopsApp, gates: SubcontractGa
       article_ii: stripTermsHeader(EXHIBIT_RAW[key]),
     });
   });
+
+  // ── Config-editor exhibit routes (PR-B2) — the per-trade Article II template picker/editor, keyed by
+  //    template KEY (not Trade). Session + cap.subcontracts.manage; read-only; the Mac config actuator
+  //    is the write path (POST /api/config/requests, artifact 'exhibit').
+  // GET /api/subcontracts/exhibit-keys — every template key + current_version + versions (legal_review)
+  // + the Trades that map to it. Metadata only (no bodies).
+  app.get("/api/subcontracts/exhibit-keys", gates.requireSession, gates.requireCapability(CAP_SUB), (c) => {
+    const tradesFor: Record<string, string[]> = {};
+    for (const [trade, key] of Object.entries(EXHIBIT_TRADE_MAP)) {
+      (tradesFor[key] ??= []).push(trade);
+    }
+    const templates = Object.keys(EXHIBIT_TEMPLATES)
+      .sort()
+      .map((key) => {
+        const tmpl = EXHIBIT_TEMPLATES[key];
+        return {
+          template_key: key,
+          current_version: tmpl.current_version,
+          trades: (tradesFor[key] ?? []).sort(),
+          versions: Object.keys(tmpl.versions ?? {})
+            .sort()
+            .map((v) => ({ version: v, legal_review: tmpl.versions[v]?.legal_review ?? "" })),
+        };
+      });
+    return c.json({ templates });
+  });
+
+  // GET /api/subcontracts/exhibit-keys/:key/text?version=<v> — the Article II body for a KEY at its
+  // current (or an explicit) version, header-stripped, for the editor's 'edit from live' pre-fill.
+  app.get(
+    "/api/subcontracts/exhibit-keys/:key/text",
+    gates.requireSession,
+    gates.requireCapability(CAP_SUB),
+    (c) => {
+      const key = c.req.param("key");
+      const tmpl = Object.prototype.hasOwnProperty.call(EXHIBIT_TEMPLATES, key) ? EXHIBIT_TEMPLATES[key] : undefined;
+      if (!tmpl) return c.json({ error: "unknown_key" }, 404);
+      const version = str(c.req.query("version")) || tmpl.current_version;
+      // Own-property lookup only — a version like __proto__/constructor must not resolve to an
+      // Object.prototype built-in (defense-in-depth, matching the :key / ?trade= lookups in this file).
+      const ver = Object.prototype.hasOwnProperty.call(tmpl.versions ?? {}, version)
+        ? tmpl.versions[version]
+        : undefined;
+      if (!ver) return c.json({ error: "unknown_version" }, 404);
+      const raw = Object.keys(EXHIBIT_RAW).find((k) => k.endsWith("/" + ver.file));
+      if (raw === undefined) return c.json({ error: "text_unavailable" }, 404);
+      return c.json({ template_key: key, version, article_ii: stripTermsHeader(EXHIBIT_RAW[raw]) });
+    },
+  );
+
+  // GET /api/subcontracts/exhibit-keys/:key/versions — a KEY's versions + legal_review + current_version
+  // (the editor's make-current picker source).
+  app.get(
+    "/api/subcontracts/exhibit-keys/:key/versions",
+    gates.requireSession,
+    gates.requireCapability(CAP_SUB),
+    (c) => {
+      const key = c.req.param("key");
+      const tmpl = Object.prototype.hasOwnProperty.call(EXHIBIT_TEMPLATES, key) ? EXHIBIT_TEMPLATES[key] : undefined;
+      if (!tmpl) return c.json({ error: "unknown_key" }, 404);
+      const versions = Object.keys(tmpl.versions ?? {})
+        .sort()
+        .map((v) => ({ version: v, legal_review: tmpl.versions[v]?.legal_review ?? "" }));
+      return c.json({ template_key: key, current_version: tmpl.current_version, versions });
+    },
+  );
 
   // GET /api/subcontracts/jobs/:job_id/site-address — the builder's Site-address auto-fill (C1),
   // mirroring PO's /api/po/jobs/:job_id/ship-to. Reads the SAME jobs.address the Smartsheet

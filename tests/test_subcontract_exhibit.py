@@ -16,8 +16,9 @@ _SKELETON = "Exhibit A\n\nby {{contractor_entity}} and {{subcontractor_entity}}.
 _ART2 = "Civil:\nC0.1 - do the work.\n"
 
 
-def _seed(tmp_path):
-    """Seed a tmp exhibit dir with one skeleton + one trade template, sha-pinned, and return it."""
+def _seed(tmp_path, legal_review="cleared"):
+    """Seed a tmp exhibit dir with one skeleton + one VERSIONED trade template (v1, sha-pinned), and
+    return it. legal_review defaults 'cleared' (renders); pass 'pending' to exercise the Layer-A gate."""
     edir = tmp_path / "exhibit"
     (edir / "art2").mkdir(parents=True)
     skel_raw = _SKELETON.encode("utf-8")
@@ -32,7 +33,16 @@ def _seed(tmp_path):
             "tokens": ["contractor_entity", "subcontractor_entity", "article_ii"],
         },
         "trade_templates": {
-            "civil": {"file": "art2/civil.md", "sha256": hashlib.sha256(art2_raw).hexdigest()},
+            "civil": {
+                "current_version": "v1",
+                "versions": {
+                    "v1": {
+                        "file": "art2/civil.md",
+                        "sha256": hashlib.sha256(art2_raw).hexdigest(),
+                        "legal_review": legal_review,
+                    },
+                },
+            },
         },
         "trade_map": {"Civil": "civil"},
     }
@@ -107,6 +117,31 @@ def test_seeded_tmp_loads_clean(tmp_path, monkeypatch):
     monkeypatch.setattr(exhibit, "EXHIBIT_DIR", _seed(tmp_path))
     assert "{{article_ii}}" in exhibit.load_skeleton()
     assert exhibit.load_trade_art2("Civil").startswith("Civil:")
+
+
+def test_pending_trade_version_fences(tmp_path, monkeypatch):
+    """A trade template whose CURRENT version is legal_review != 'cleared' FENCES the render (Layer-A)."""
+    monkeypatch.setattr(exhibit, "EXHIBIT_DIR", _seed(tmp_path, legal_review="pending"))
+    with pytest.raises(ExhibitError, match="NOT cleared"):
+        exhibit.load_trade_art2("Civil")
+    with pytest.raises(ExhibitError, match="NOT cleared"):
+        exhibit.load_trade_art2_by_key("civil")
+
+
+def test_load_by_key_and_list_trade_templates(tmp_path, monkeypatch):
+    """The config-editor read helpers: load_trade_art2_by_key (direct) + list_trade_templates (metadata)."""
+    monkeypatch.setattr(exhibit, "EXHIBIT_DIR", _seed(tmp_path))
+    assert exhibit.load_trade_art2_by_key("civil").startswith("Civil:")
+    assert exhibit.list_trade_templates() == [
+        {
+            "template_key": "civil",
+            "current_version": "v1",
+            "trades": ["Civil"],
+            "versions": [{"version": "v1", "legal_review": "cleared"}],
+        }
+    ]
+    with pytest.raises(ExhibitError, match="unknown exhibit trade-template key"):
+        exhibit.load_trade_art2_by_key("nonexistent")
 
 
 # --- substitute_tokens strictness ---

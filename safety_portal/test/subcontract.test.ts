@@ -319,6 +319,61 @@ describe("exhibit-templates Article II pre-fill", () => {
   });
 });
 
+// ── Exhibit A config-editor routes (PR-B2 — versioned per-trade Article II templates, keyed) ─
+describe("exhibit-keys config-editor routes", () => {
+  const ROUTES = [
+    "/api/subcontracts/exhibit-keys",
+    "/api/subcontracts/exhibit-keys/civil/text",
+    "/api/subcontracts/exhibit-keys/civil/versions",
+  ];
+
+  it("401s no session / 403s without cap.subcontracts.manage on all three routes", async () => {
+    for (const p of ROUTES) {
+      expect((await call(p)).status, p).toBe(401);
+      expect((await g(submitter, p)).status, p).toBe(403);
+    }
+  });
+
+  it("lists every template key with current_version, versions (legal_review), and its trades", async () => {
+    const res = await g(admin, "/api/subcontracts/exhibit-keys");
+    expect(res.status, await res.clone().text()).toBe(200);
+    const body = await json<{
+      templates: { template_key: string; current_version: string; trades: string[]; versions: { version: string; legal_review: string }[] }[];
+    }>(res);
+    // Derived from the bundled manifest — assert SHAPE/derived, not pinned content (HOUSE_REFLEXES §5).
+    const keys = body.templates.map((t) => t.template_key);
+    expect(keys).toEqual(Object.keys(exhibitManifest.trade_templates).sort());
+    const civil = body.templates.find((t) => t.template_key === "civil")!;
+    expect(civil.trades).toContain("Civil");
+    expect(civil.versions.every((v) => typeof v.legal_review === "string")).toBe(true);
+    // AC/MV/DC Electrical all fan onto the 'electrical' key (the trade_map contract).
+    const electrical = body.templates.find((t) => t.template_key === "electrical")!;
+    expect(electrical.trades).toEqual(expect.arrayContaining(["AC Electrical", "MV Electrical", "DC Electrical"]));
+  });
+
+  it("serves a key's current Article II text (header-stripped) + its versions list", async () => {
+    const txt = await g(admin, "/api/subcontracts/exhibit-keys/civil/text");
+    expect(txt.status, await txt.clone().text()).toBe(200);
+    const tbody = await json<{ template_key: string; version: string; article_ii: string }>(txt);
+    expect(tbody.template_key).toBe("civil");
+    expect(tbody.article_ii.length).toBeGreaterThan(0);
+
+    const ver = await g(admin, "/api/subcontracts/exhibit-keys/civil/versions");
+    const vbody = await json<{ current_version: string; versions: { version: string; legal_review: string }[] }>(ver);
+    expect(vbody.versions.length).toBeGreaterThan(0);
+    expect(vbody.versions.some((v) => v.version === vbody.current_version)).toBe(true);
+  });
+
+  it("404s an unknown template key / unknown version, incl. prototype-pollution keys", async () => {
+    expect((await g(admin, "/api/subcontracts/exhibit-keys/nonexistent/text")).status).toBe(404);
+    expect((await g(admin, "/api/subcontracts/exhibit-keys/civil/text?version=v999")).status).toBe(404);
+    expect((await g(admin, "/api/subcontracts/exhibit-keys/nonexistent/versions")).status).toBe(404);
+    // A __proto__/constructor version must NOT resolve an Object.prototype built-in (own-property guard).
+    expect((await g(admin, "/api/subcontracts/exhibit-keys/civil/text?version=__proto__")).status).toBe(404);
+    expect((await g(admin, "/api/subcontracts/exhibit-keys/civil/text?version=constructor")).status).toBe(404);
+  });
+});
+
 // ── Job site-address auto-fill (C1 — GET /api/subcontracts/jobs/:job_id/site-address) ─
 describe("job site-address auto-fill feed", () => {
   // Seed a job row with a synced Smartsheet address. The jobs table isn't touched by the file-level

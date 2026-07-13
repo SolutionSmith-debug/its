@@ -152,6 +152,69 @@ describe("POST /api/config/requests — enqueue", () => {
     expect(await res.json()).toMatchObject({ error: "invalid_op" });
   });
 
+  // ── exhibit (subcontracts, PR-B2 — the versioned per-trade Article II templates) ──
+  it("enqueues an exhibit add_version with target_version + {template_key, text} (201)", async () => {
+    await provision("admin.one", "admin");
+    const cookie = await login("admin.one");
+    const res = await post(cookie, "/api/config/requests", {
+      workstream: "subcontracts",
+      artifact_key: "exhibit",
+      op: "add_version",
+      target_version: "v2",
+      payload: { template_key: "civil", text: "Civil v2 scope." },
+    });
+    expect(res.status, await res.clone().text()).toBe(201);
+    const row = await env.DB
+      .prepare("SELECT workstream, artifact_key, op, target_version FROM config_requests")
+      .first();
+    expect(row).toMatchObject({
+      workstream: "subcontracts",
+      artifact_key: "exhibit",
+      op: "add_version",
+      target_version: "v2",
+    });
+  });
+
+  it("enqueues an exhibit set_current (201)", async () => {
+    await provision("admin.one", "admin");
+    const cookie = await login("admin.one");
+    const res = await post(cookie, "/api/config/requests", {
+      workstream: "subcontracts",
+      artifact_key: "exhibit",
+      op: "set_current",
+      target_version: "v2",
+      payload: { template_key: "civil" },
+    });
+    expect(res.status, await res.clone().text()).toBe(201);
+  });
+
+  it("rejects an exhibit 'edit' op (versioned artifact → 400 invalid_op)", async () => {
+    await provision("admin.one", "admin");
+    const cookie = await login("admin.one");
+    const res = await post(cookie, "/api/config/requests", {
+      workstream: "subcontracts",
+      artifact_key: "exhibit",
+      op: "edit",
+      payload: { template_key: "civil" },
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: "invalid_op" });
+  });
+
+  it("rejects an exhibit add_version with a missing template_key (400 invalid_template_key)", async () => {
+    await provision("admin.one", "admin");
+    const cookie = await login("admin.one");
+    const res = await post(cookie, "/api/config/requests", {
+      workstream: "subcontracts",
+      artifact_key: "exhibit",
+      op: "add_version",
+      target_version: "v2",
+      payload: { text: "scope with no key" },
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: "invalid_template_key" });
+  });
+
   it("writes exactly one audit_log row atomically with the insert (W4)", async () => {
     await provision("admin.one", "admin");
     const cookie = await login("admin.one");

@@ -5,6 +5,7 @@ import * as sub from "../lib/subcontracts";
 import { useAuth } from "../lib/auth";
 import { PageShell } from "../components/PageShell";
 import { TermsProfilesEditor } from "../components/TermsProfilesEditor";
+import { ExhibitTemplatesEditor } from "../components/ExhibitTemplatesEditor";
 
 // PO/SC Configuration (Administration) — the browser EDITOR for the config classes that print on every
 // purchase order AND every subcontract. PO: the Purchaser identity (D5), the ship-to-state tax table
@@ -603,6 +604,18 @@ export function PoConfigPage({ onBack }: { onBack: () => void }) {
                 setBusy={setBusy}
                 fetchTermsText={sub.fetchTermsText}
                 fetchTermsVersions={sub.fetchTermsVersions}
+                submitConfigEdit={api.submitConfigEdit}
+                setMsg={setMsg}
+                onQueued={bumpRefresh}
+              />
+
+              <ExhibitTemplatesEditor
+                canManage={canManageSub}
+                busy={busy}
+                setBusy={setBusy}
+                fetchKeys={sub.fetchExhibitTemplateKeys}
+                fetchText={sub.fetchExhibitKeyText}
+                fetchVersions={sub.fetchExhibitKeyVersions}
                 submitConfigEdit={api.submitConfigEdit}
                 setMsg={setMsg}
                 onQueued={bumpRefresh}

@@ -3,9 +3,13 @@ effects. A faithful sibling of subcontracts/terms.py against the subcontracts/ex
 
 Exhibit A (ADR-0003) is git-versioned prose: ``exhibit/manifest.json`` pins the FIXED skeleton
 (``skeleton.md`` — Article I General + a ``{{article_ii}}`` marker + Articles III/IV/V/VI) and a set of
-per-trade Article II "The Work" bodies (``art2/<key>.md``), each sha256-verified on every load. The
-skeleton and every trade template are immutable + hash-pinned — a wording change is a NEW file + manifest
-entry, never an edit; a pinned draft renders identically forever.
+per-trade Article II "The Work" template KEYS. The skeleton is a single immutable hash-pinned file; each
+trade-template key is VERSIONED (``current_version`` + a ``versions`` map, each version a sha256-pinned
+immutable ``art2/*.md`` file carrying a ``legal_review`` flag) — the §50 config editor mints new versions
+``pending`` and the operator make-currents one to clear+activate it, exactly like the subcontract terms
+library. A wording change is a NEW version file, never an edit; a pinned draft renders identically forever.
+The render loads a key's CURRENT version through the Layer-A legal gate (``_trade_version_entry`` — a
+non-cleared version fences).
 
 A subcontract's trade (the ITS_Subcontractors "Trade" vocabulary) maps through ``trade_map`` to a
 template key; the three electrical trades (AC/MV/DC) share the single ``electrical`` scope because the
@@ -97,19 +101,84 @@ def template_key_for_trade(trade: str) -> str:
     return trade_map[trade]
 
 
-def load_trade_art2(trade: str) -> str:
-    """The verbatim Article II 'The Work' body for `trade` — resolved through trade_map to a template key
-    and sha256-verified against manifest.trade_templates[key].sha256 on EVERY load."""
-    manifest = load_manifest()
-    key = template_key_for_trade(trade)
-    templates: dict[str, Any] = manifest["trade_templates"]
-    entry = templates.get(key)
+def _trade_version_entry(key: str, version: str | None = None) -> tuple[str, dict[str, Any]]:
+    """Resolve (version, entry) for a trade-template KEY; default = the key's ``current_version``.
+    Enforces the Layer-A legal-review gate — a NON-``cleared`` version RAISES (a subcontract must never
+    render un-attested Article II scope language). Mirrors ``subcontracts.terms._version_entry``, keyed
+    by ``template_key`` on ``trade_templates`` (the versioned schema: each key carries a
+    ``current_version`` + a ``versions`` map, each version ``{file, sha256, legal_review}``)."""
+    templates: dict[str, Any] = load_manifest()["trade_templates"]
+    if key not in templates:
+        raise ExhibitError(f"unknown exhibit trade-template key {key!r} (known: {sorted(templates)})")
+    tmpl = templates[key]
+    if not isinstance(tmpl, dict):
+        raise ExhibitError(f"exhibit trade template {key!r} is malformed (not an object)")
+    versions = tmpl.get("versions")
+    resolved = version if version is not None else str(tmpl.get("current_version"))
+    if not isinstance(versions, dict) or resolved not in versions:
+        raise ExhibitError(
+            f"exhibit trade template {key!r} has no version {resolved!r} "
+            f"(known: {sorted(versions) if isinstance(versions, dict) else '?'})"
+        )
+    entry = versions[resolved]
     if not isinstance(entry, dict) or not entry.get("file") or not entry.get("sha256"):
         raise ExhibitError(
-            f"exhibit trade_map points trade {trade!r} at key {key!r} with no valid trade_templates "
-            f"entry (known keys: {sorted(templates)})"
+            f"exhibit trade template {key!r} v{resolved} is malformed (missing file/sha256)"
         )
-    return _verify_and_read(str(entry["file"]), str(entry["sha256"]), f"trade template {key!r}")
+    # Layer-A legal gate: the render emits Article II scope only from a CLEARED version. A minted-but-
+    # un-cleared version (add_version leaves it 'pending') fences here — the single choke point shared
+    # by load_trade_art2 + load_trade_art2_by_key, whether reached by an explicit pin or current_version.
+    if str(entry.get("legal_review")) != "cleared":
+        raise ExhibitError(
+            f"exhibit trade template {key!r} v{resolved} is legal_review={entry.get('legal_review')!r} — "
+            "NOT cleared for live use; a subcontract must not render un-attested Article II scope. Clear "
+            "it via the config editor (make it current) or keep current_version on the last cleared version."
+        )
+    return resolved, entry
+
+
+def load_trade_art2(trade: str, version: str | None = None) -> str:
+    """The verbatim Article II 'The Work' body for `trade` — resolved through trade_map to a template
+    key, then to that key's CURRENT (legal-review-cleared) version (or an explicit `version`), and
+    sha256-verified on EVERY load. The Layer-A gate lives in ``_trade_version_entry``."""
+    key = template_key_for_trade(trade)
+    resolved, entry = _trade_version_entry(key, version)
+    return _verify_and_read(str(entry["file"]), str(entry["sha256"]), f"trade template {key!r} v{resolved}")
+
+
+def load_trade_art2_by_key(key: str, version: str | None = None) -> str:
+    """Config-editor read: the Article II body for a template KEY directly (not via a Trade), at its
+    current or an explicit version — sha256-verified + legal-gated. Powers the 'edit from live' pre-fill."""
+    resolved, entry = _trade_version_entry(key, version)
+    return _verify_and_read(str(entry["file"]), str(entry["sha256"]), f"trade template {key!r} v{resolved}")
+
+
+def list_trade_templates() -> list[dict[str, Any]]:
+    """Config-editor picker source: every trade-template key with its ``current_version``, its versions
+    (+ each version's ``legal_review``), and the Trades that map to it. Metadata only — no file reads."""
+    manifest = load_manifest()
+    templates: dict[str, Any] = manifest["trade_templates"]
+    trade_map: dict[str, str] = manifest["trade_map"]
+    trades_for: dict[str, list[str]] = {}
+    for trade, mapped_key in trade_map.items():
+        trades_for.setdefault(mapped_key, []).append(trade)
+    out: list[dict[str, Any]] = []
+    for key in sorted(templates):
+        tmpl: dict[str, Any] = templates[key] if isinstance(templates[key], dict) else {}
+        raw_versions = tmpl.get("versions")
+        versions: dict[str, Any] = raw_versions if isinstance(raw_versions, dict) else {}
+        out.append(
+            {
+                "template_key": key,
+                "current_version": tmpl.get("current_version"),
+                "trades": sorted(trades_for.get(key, [])),
+                "versions": [
+                    {"version": v, "legal_review": str((versions[v] or {}).get("legal_review"))}
+                    for v in sorted(versions)
+                ],
+            }
+        )
+    return out
 
 
 def required_tokens() -> list[str]:
