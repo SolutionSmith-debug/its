@@ -1101,6 +1101,13 @@ export function registerSubcontractRoutes(app: FieldopsApp, gates: SubcontractGa
     if (!GOVERNING_LAW_STATES.has(sub.governing_law_state)) {
       return c.json({ error: "invalid_governing_law_state" }, 422);
     }
+    // Render-required party/scope fields (subcontract_generate _REQUIRED_FIELDS + strict Exhibit tokens):
+    // a blank owner_entity / project_name / trade renders to a PERMANENT subcontract_render_failed fence.
+    // parseDraftBody stays length-only (a draft may be incomplete); GENERATE is the commit that requires
+    // completeness — refuse a blank here (defense-in-depth behind the SPA flag; the API is not bypassable).
+    if (!sub.owner_entity?.trim()) return c.json({ error: "missing_owner_entity" }, 422);
+    if (!sub.project_name?.trim()) return c.json({ error: "missing_project_name" }, 422);
+    if (!sub.trade?.trim()) return c.json({ error: "missing_trade" }, 422);
 
     // MAX(revision)+1 within the family (allocated tuples only — drafts carry NULL).
     const rev = await c.env.DB

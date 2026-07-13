@@ -470,6 +470,17 @@ describe("draft → generate", () => {
     expect(row.hmac).toBeTruthy();
   });
 
+  it("generate REFUSES a blank terms_profile_id (422 missing_terms_profile); the DRAFT still saves", async () => {
+    // Same gap class as subcontract owner_entity: blank terms_profile_id used to queue then fence
+    // permanently at po_terms_error. Draft-level stays lenient; generate refuses the blank.
+    const created = await p(admin, "/api/po/drafts", draftBody({ terms_profile_id: "" }));
+    expect(created.status, "blank-terms draft should still save").toBe(201);
+    const { id } = await json<{ id: number }>(created);
+    const gen = await p(admin, `/api/po/drafts/${id}/generate`, EXPECTED);
+    expect(gen.status).toBe(422);
+    expect((await json<{ error: string }>(gen)).error).toBe("missing_terms_profile");
+  });
+
   it("generate: totals mismatch is REJECTED (409) and the draft is untouched", async () => {
     const created = await p(admin, "/api/po/drafts", draftBody());
     const { id } = await json<{ id: number }>(created);

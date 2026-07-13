@@ -140,10 +140,13 @@ async function openBuilderWithFixture(r: ReturnType<typeof render>) {
   await waitFor(() => expect(api.fetchSubDrafts).toHaveBeenCalled());
   fireEvent.click(getByText("+ New subcontract"));
 
-  fireEvent.change(getByLabelText("Job"), { target: { value: "JOB-000001" } });
+  fireEvent.change(getByLabelText("Job"), { target: { value: "JOB-000001" } }); // auto-fills Project name
   // Subcontractor pick (the picker row button carries the subcontractor name).
   fireEvent.click(getByRole("button", { name: /Apex Electrical/ }));
   fireEvent.change(getByLabelText("Governing-law state"), { target: { value: "CA" } });
+  // Render-required party/scope fields (now flagged in validate()).
+  fireEvent.change(getByLabelText("Trade"), { target: { value: "AC Electrical" } });
+  fireEvent.change(getByLabelText("Owner entity"), { target: { value: "Bonacci 1, LLC" } });
 
   // Two lines: 3 × $12.34 = $37.02 and 2 × $0.05 = $0.10 → subtotal $37.12.
   fireEvent.change(getByLabelText("Line 1 description"), { target: { value: "Mobilization" } });
@@ -199,6 +202,17 @@ describe("SubcontractBuilderPage", () => {
     // Generate is blocked client-side — the draft is never saved on a mismatch.
     fireEvent.click(r.getByText("Generate subcontract"));
     await waitFor(() => expect(r.getByText(/must add up to the contract price/)).toBeTruthy());
+    expect(api.createSubDraft).not.toHaveBeenCalled();
+    expect(api.generateSubcontract).not.toHaveBeenCalled();
+  });
+
+  it("blocks generate (client-side) when a render-required field is blank — Owner entity", async () => {
+    const r = render(<SubcontractBuilderPage onBack={() => {}} />);
+    await openBuilderWithFixture(r);
+    // Clear the Owner entity the fixture filled — the render would otherwise permanently fence.
+    fireEvent.change(r.getByLabelText("Owner entity"), { target: { value: "" } });
+    fireEvent.click(r.getByText("Generate subcontract"));
+    await waitFor(() => expect(r.getByText(/Enter the Owner entity/)).toBeTruthy());
     expect(api.createSubDraft).not.toHaveBeenCalled();
     expect(api.generateSubcontract).not.toHaveBeenCalled();
   });
