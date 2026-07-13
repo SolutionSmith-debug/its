@@ -361,10 +361,12 @@ describe("PoConfigPage — capability gating", () => {
     expect(api.fetchConfigStatus).not.toHaveBeenCalled();
   });
 
-  it("a PO-only admin (no cap.subcontracts.manage) does NOT see the subcontract group", async () => {
+  it("a PO-only admin (no cap.subcontracts.manage) sees a no-access message on the Subcontract tab", async () => {
     // Default authWith is cap.po.manage only.
     const { getByText, queryByText } = render(<PoConfigPage onBack={vi.fn()} />);
     await waitFor(() => expect(getByText("Evergreen Renewables LLC")).toBeTruthy());
+    fireEvent.click(getByText("Subcontract")); // switch to the Subcontract tab
+    await waitFor(() => expect(getByText(/don.t have subcontract configuration access/i)).toBeTruthy());
     expect(queryByText("Contractor (subcontracts)")).toBeNull();
     expect(queryByText("Subcontract terms profiles")).toBeNull();
   });
@@ -373,9 +375,25 @@ describe("PoConfigPage — capability gating", () => {
 describe("PoConfigPage — subcontract config (workstream=subcontracts)", () => {
   const bothCaps = () => vi.mocked(useAuth).mockReturnValue(authWith(["cap.po.manage", "cap.subcontracts.manage"]));
 
+  it("tabs switch between PO and Subcontract config (Purchase Order is the default)", async () => {
+    bothCaps();
+    const { getByText, queryByText } = render(<PoConfigPage onBack={vi.fn()} />);
+    // Default = Purchase Order tab: PO sections shown, subcontract sections hidden.
+    await waitFor(() => expect(getByText("Evergreen Renewables LLC")).toBeTruthy());
+    expect(getByText("Terms & conditions profiles")).toBeTruthy(); // PO terms
+    expect(queryByText("Contractor (subcontracts)")).toBeNull();
+    expect(queryByText("Exhibit A — Article II templates")).toBeNull();
+    // Switch to Subcontract: subcontract sections shown, the PO terms editor hidden.
+    fireEvent.click(getByText("Subcontract"));
+    await waitFor(() => expect(getByText("Contractor (subcontracts)")).toBeTruthy());
+    expect(getByText("Exhibit A — Article II templates")).toBeTruthy();
+    expect(queryByText("Terms & conditions profiles")).toBeNull();
+  });
+
   it("an admin with cap.subcontracts.manage sees the Contractor + subcontract terms editors", async () => {
     bothCaps();
     const { getByText, getByLabelText } = render(<PoConfigPage onBack={vi.fn()} />);
+    fireEvent.click(getByText("Subcontract")); // switch to the Subcontract tab
     await waitFor(() => expect(getByText("Contractor (subcontracts)")).toBeTruthy());
     expect(getByText("Subcontract terms profiles")).toBeTruthy();
     expect(getByText("Standard 27-article subcontract")).toBeTruthy();
@@ -387,6 +405,7 @@ describe("PoConfigPage — subcontract config (workstream=subcontracts)", () => 
   it("a subcontract contractor edit POSTs op:edit under workstream=subcontracts with the full payload", async () => {
     bothCaps();
     const { getByText, getByLabelText } = render(<PoConfigPage onBack={vi.fn()} />);
+    fireEvent.click(getByText("Subcontract")); // switch to the Subcontract tab
     await waitFor(() => expect(getByText("Contractor (subcontracts)")).toBeTruthy());
     fireEvent.click(getByText("Edit contractor"));
     fireEvent.change(getByLabelText("Entity (required)"), { target: { value: "Evergreen Renewables Holdings LLC" } });
@@ -411,6 +430,7 @@ describe("PoConfigPage — subcontract config (workstream=subcontracts)", () => 
   it("a subcontract terms make-current POSTs op:set_current under workstream=subcontracts", async () => {
     bothCaps();
     const { container, getByText } = render(<PoConfigPage onBack={vi.fn()} />);
+    fireEvent.click(getByText("Subcontract")); // switch to the Subcontract tab
     await waitFor(() => expect(getByText("Subcontract terms profiles")).toBeTruthy());
     // Two TermsProfilesEditor instances render (PO + subcontract) — scope to the subcontract section.
     const subSection = container.querySelector('[aria-label="Subcontract terms profiles"]') as HTMLElement;
@@ -432,6 +452,7 @@ describe("PoConfigPage — subcontract config (workstream=subcontracts)", () => 
   it("an exhibit add_version POSTs op:add_version under workstream=subcontracts, artifact=exhibit", async () => {
     bothCaps();
     const { container, getByText } = render(<PoConfigPage onBack={vi.fn()} />);
+    fireEvent.click(getByText("Subcontract")); // switch to the Subcontract tab
     await waitFor(() => expect(getByText("Exhibit A — Article II templates")).toBeTruthy());
     const exSection = container.querySelector('[aria-label="Exhibit A trade templates"]') as HTMLElement;
     await waitFor(() => expect(within(exSection).getByText("civil")).toBeTruthy()); // templates loaded
@@ -463,6 +484,7 @@ describe("PoConfigPage — subcontract config (workstream=subcontracts)", () => 
   it("an exhibit make-current POSTs op:set_current under workstream=subcontracts, artifact=exhibit", async () => {
     bothCaps();
     const { container, getByText } = render(<PoConfigPage onBack={vi.fn()} />);
+    fireEvent.click(getByText("Subcontract")); // switch to the Subcontract tab
     await waitFor(() => expect(getByText("Exhibit A — Article II templates")).toBeTruthy());
     const exSection = container.querySelector('[aria-label="Exhibit A trade templates"]') as HTMLElement;
     await waitFor(() => expect(within(exSection).getByText("civil")).toBeTruthy()); // templates loaded

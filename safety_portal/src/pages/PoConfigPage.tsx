@@ -127,6 +127,8 @@ export function PoConfigPage({ onBack }: { onBack: () => void }) {
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [refreshSignal, setRefreshSignal] = useState(0);
   const bumpRefresh = () => setRefreshSignal((n) => n + 1);
+  // Which config workstream tab is shown — Purchase Order or Subcontract (a switch, not a route).
+  const [tab, setTab] = useState<"po" | "sub">("po");
 
   // Which JSON editor is open + its buffer (the terms editors own their own state in TermsProfilesEditor).
   const [purchaserOpen, setPurchaserOpen] = useState(false);
@@ -351,11 +353,34 @@ export function PoConfigPage({ onBack }: { onBack: () => void }) {
         text mints a new version behind a legal-review gate; it is not used until the operator clears it.
       </p>
 
+      {/* Tab bar — cycle between the two config workstreams (a switch, not a route). */}
+      <nav className="admin-tabs" role="tablist" aria-label="Config workstream">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === "po"}
+          className={`admin-tabs__tab${tab === "po" ? " admin-tabs__tab--active" : ""}`}
+          onClick={() => setTab("po")}
+        >
+          Purchase Order
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === "sub"}
+          className={`admin-tabs__tab${tab === "sub" ? " admin-tabs__tab--active" : ""}`}
+          onClick={() => setTab("sub")}
+        >
+          Subcontract
+        </button>
+      </nav>
+
       {msg && <div className={`banner ${msg.ok ? "banner--ok" : "banner--err"}`}>{msg.text}</div>}
       {error && <div className="banner banner--err">{error}</div>}
-      {loading && !config && <div className="centered muted">Loading…</div>}
+      {loading && !config && tab === "po" && <div className="centered muted">Loading…</div>}
 
-      {config && (
+      {/* ── Purchase Order tab: Purchaser identity + tax table + PO terms library ─── */}
+      {tab === "po" && config && (
         <>
           {/* ── Purchaser identity (D5) ─────────────────────────────────────────────── */}
           <section className="card dash-section" aria-label="Purchaser identity">
@@ -524,12 +549,15 @@ export function PoConfigPage({ onBack }: { onBack: () => void }) {
             setMsg={setMsg}
             onQueued={bumpRefresh}
           />
+        </>
+      )}
 
-          {/* ── Subcontract config (SC-S2): Contractor identity + the subcontract terms library. Gated
-               on cap.subcontracts.manage (the read routes require it too). Payment-terms editing is a
-               fast-follow — the actuator needs payment-cadence day fields /subcontracts/config omits. ── */}
-          {canManageSub && (
-            <>
+      {/* ── Subcontract tab: Contractor identity + the subcontract terms library + the per-trade
+           Exhibit A Article II templates. Gated on cap.subcontracts.manage (the read routes require it
+           too). Payment-terms editing is a fast-follow (CE-7). ── */}
+      {tab === "sub" &&
+        (canManageSub ? (
+          <>
               <section className="card dash-section" aria-label="Contractor identity">
                 <h3 className="jha__section-title">Contractor (subcontracts)</h3>
                 {subConfig ? (
@@ -620,13 +648,15 @@ export function PoConfigPage({ onBack }: { onBack: () => void }) {
                 setMsg={setMsg}
                 onQueued={bumpRefresh}
               />
-            </>
-          )}
+          </>
+        ) : (
+          <p className="muted">
+            You don&rsquo;t have subcontract configuration access (cap.subcontracts.manage).
+          </p>
+        ))}
 
-          {/* ── Status monitor — each queued change advances queued→validated→tested→live ─── */}
-          {(canManage || canManageSub) && <ConfigStatusMonitor refreshSignal={refreshSignal} />}
-        </>
-      )}
+      {/* ── Status monitor (shared — tracks queued changes for either workstream) ─── */}
+      {(canManage || canManageSub) && <ConfigStatusMonitor refreshSignal={refreshSignal} />}
     </PageShell>
   );
 }
