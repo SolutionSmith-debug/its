@@ -60,6 +60,10 @@ send.
 | `safety_reports/` | The Safety Portal pull pipeline (Python): `portal_poll` (intake daemon) → `intake` (12-stage filing) → `weekly_generate`/`compile_now_poll` (deterministic weekly compile, generation half of the Send Gate) → `weekly_send`/`weekly_send_poll` (send half). Also `photo_screen` (§34) and the shared `generate_core` engine. |
 | `progress_reports/` | The Progress Reporting workstream — the progress twin of the safety pipeline (`progress_weekly_generate`, `progress_send`/`_poll`, `wpr_review`) + the P7 per-job `hours_log` standing tracker, instantiating the parameterized shared machinery (not cloned). |
 | `field_ops/` | The Field-Ops expansion — `fieldops_sync`, the D1→Smartsheet mirror daemon (job identity + the per-job standing trackers) that makes ITS-owned Smartsheet the downstream SoR (Op Stds v21 §51). |
+| `po_materials/` | The Purchase-Order workstream — a deterministic (no-AI) direct-PO-to-vendor pipeline: `po_generate` (integer-cents render, Worker-parity assert), `po_poll` (pull daemon), `po_send`/`_poll` (F22 send half), plus the §50 **config actuator** (`config_actuator`/`config_apply`) that commits + deploys approved workstream-config edits. Ships dark. |
+| `subcontracts/` | Deterministic subcontract-package generation (ADR-0003, no AI) — `subcontract_generate` (SOV guard → §50 legal gate → token fill), `subcontract_docx` (editable `.docx`/`.xlsx`, not PDF), `subcontract_poll` (pull daemon), a WSR review twin. Generation built + dark; the send half (SC-S4) is a tracked build. |
+| `operator_dashboard/` | The WS2 operator dashboard — a localhost-only FastAPI app (`python -m operator_dashboard` @127.0.0.1:8484, Tailscale-exposed): loginless read-only observability panels + a PIN-gated ACT surface (ITS_Config editor, secret rotation). Writes only ITS_Config; never deploys or sends. Ships dark. |
+| `docs_pdf/` | The branded enablement-PDF generator (markdown → reportlab): `manifest`/`md_render`/`brand`, rendered by `scripts/build_docs_pdfs.py`; `--check` is the CI docs-currency gate. Not a daemon. |
 | `safety_portal/` | The Cloudflare **Worker** (`worker/`, send-free D1 API + capability layer), the React **SPA** (`src/`), D1 **migrations/**, and form definitions. `README.md` there carries the migration punch-list + per-slice activation notes. |
 | `scripts/` | Scheduled entry points + launchd plists — `watchdog.py` (daily; the dead-man's-switch checks), `run_picklist_sync.py` (hourly), `install.sh`, and `migrations/` (operator-run Smartsheet/D1 build scripts). |
 | `schemas/` · `prompts/` | Version-controlled JSON schemas (Anthropic tool-use) and prompt files. |
@@ -73,16 +77,23 @@ error-log-wrapped, and heartbeating to the `ITS_Daemon_Health` sheet:
 
 `portal-poll` (Safety Portal intake) · `weekly-generate` / `weekly-send` · `compile-now-poll`
 (on-demand compile, both safety + progress) · `progress-generate` / `progress-send` ·
-`fieldops-sync` (D1→Smartsheet mirror) · `publish-daemon` (form-editor code actuator, §50) ·
-`picklist-sync` / `picklist-audit` · `watchdog` (staleness floor + catch-up + the external
-UptimeRobot dead-man's switch).
+`fieldops-sync` (D1→Smartsheet mirror) · `po-poll` / `po-send` (Purchase Orders) ·
+`subcontract-poll` (subcontracts) · `config-actuator` (§50 config code-actuator) ·
+`publish-daemon` (form-editor code actuator, §50) · `picklist-sync` / `picklist-audit` ·
+`watchdog` (staleness floor + catch-up + the external UptimeRobot dead-man's switch).
+
+**15** daemon plists ship; **14 load at cutover** — `po-send` (a send daemon) stays
+launchd-**unloaded** (send-gate defense-in-depth, VC-02-enforced), while the dark generation
+daemons load but sit runtime-gated off.
 
 ## Current state
 
 The Safety Portal safety-report pipeline is built and live-validated end-to-end on the mirror
 tenant; the Progress Reporting workstream is going live; and the Field-Ops portal expansion
 (in-portal jobs, personnel, equipment, materials, time, tasks, and a rolling SOP daily form) is
-largely built. The authoritative, always-current picture is **[`CLAUDE.md`](CLAUDE.md)'s
+largely built. The **Purchase-Order** and **subcontract-generation** workstreams (both
+deterministic, no-AI) are built and ship dark, and the **operator dashboard** (WS2) is built
+(dark pending its PIN). The authoritative, always-current picture is **[`CLAUDE.md`](CLAUDE.md)'s
 "What's stubbed vs. real" table**; what's next is **[`docs/ROADMAP.md`](docs/ROADMAP.md)**.
 
 Built in a **sandbox tenant** (`evergreenmirror.com` + matching Smartsheet/Box) before cutover to
