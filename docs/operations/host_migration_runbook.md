@@ -52,7 +52,7 @@ tenant cutover lands on the same machine (no second migration).
    `~/Library/LaunchAgents/` would come alive at the next login. Therefore
    **Phase A does not install plists at all** — it only renders + lints via
    `scripts/launchd/install.sh dry-run <name>` and verifies no `__…__`
-   placeholder survives. The actual `load` of all 15 happens in **Phase B**,
+   placeholder survives. The actual `load` of the 14 (all but the send-gated `po-send`) happens in **Phase B**,
    AFTER the dev box is verified empty.
    > **Program-doc amendment (explicit):** the program doc's Phase-A line
    > "plists installed UNLOADED" is **amended by this runbook** — there is no
@@ -273,13 +273,17 @@ dead heartbeat. The order below is non-negotiable; do not parallelize.
    `ITS_BOX_CLIENT_ID` / `ITS_BOX_CLIENT_SECRET` / `ITS_BOX_REFRESH_TOKEN`).
    From this moment, **never run Box-consuming code on the dev box again** —
    the first refresh on the new host invalidates the dev box's token lineage.
-6. **New host — bring the repo current, then load all 15:**
+6. **New host — bring the repo current, then load all daemons EXCEPT the dark-unloaded send daemon (`po-send`):**
 
    ```bash
    git -C ~/its pull origin main   # never load from a stale checkout
    cd ~/its/scripts/launchd
-   for p in org.solutionsmith.its.*.plist; do ./install.sh load "${p%.plist}"; done
-   ./install.sh status             # all 15 listed (po-send + subcontract-poll loaded, runtime-dark)
+   for p in org.solutionsmith.its.*.plist; do
+     name="${p%.plist}"
+     [ "$name" = "org.solutionsmith.its.po-send" ] && continue   # send-gate: stays UNLOADED
+     ./install.sh load "$name"
+   done
+   ./install.sh status             # 14 loaded (po-send UNLOADED — send-gate; subcontract-poll loaded, runtime-dark)
    ```
 
 7. **Verification gates (all must pass before declaring the flip done):**

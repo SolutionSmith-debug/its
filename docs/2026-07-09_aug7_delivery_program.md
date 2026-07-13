@@ -98,10 +98,10 @@ Locked via operator grilling 2026-07-09 (do not reopen without operator say-so):
 > "design-in, build later" is superseded (history preserved above): subcontract-package **generation** was built
 > deterministic + **NO AI** (ADR-0003; SC-S1→S3c; PRs #529–#540) and ships **dark**, ahead of Aug 7 rather than
 > post-delivery. The operator scoped subcontracts **fully in incl. send** (2026-07-12), so the **SEND half (SC-S4)**
-> — `subcontract_send.py` + F22 + executed-countersign + send-poller plist — is a *remaining build dependency*
-> (not yet built; commented stub only), tracked as cutover item **CL-38** and escalated to Seth as a separate SC-S4
-> engineering brief. Calendar impact: ≥2 buffer days consumed by the generation build. **Subcontracts is IN Aug-7
-> scope; subcontract SEND enters the Aug-7 *send* scope only once SC-S4 ships + live-smokes.**
+> — `subcontract_send.py` + F22 + executed-countersign + send-poller plist — is **not yet built**
+> (commented stub only), tracked as **CL-38** + a separate SC-S4 engineering brief (Seth). **It is a best-effort
+> Aug-7 target — try to build it, but it is NOT a cutover blocker:** if SC-S4 doesn't land, generation ships and
+> subcontract SEND defers gracefully post-delivery. Do not gate Aug-7 done on it.
 
 ## Foundation invariants
 
