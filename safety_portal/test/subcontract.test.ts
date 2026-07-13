@@ -277,6 +277,22 @@ describe("terms versions feed", () => {
   });
 });
 
+// ── Trade vocabulary feed (GET /api/subcontracts/trades) — the config-driven dropdown source ─
+describe("trades vocabulary feed", () => {
+  it("serves the manifest trade_map keys with insertion order preserved (the single SoT)", async () => {
+    const res = await g(admin, "/api/subcontracts/trades");
+    expect(res.status, await res.clone().text()).toBe(200);
+    const body = await json<{ trades: string[] }>(res);
+    // Order-preserving (NOT sorted) so a newly-created trade appends last, not into the curated grouping.
+    expect(body.trades).toEqual(Object.keys(exhibitManifest.trade_map));
+  });
+
+  it("403s a submitter and 401s an unauthenticated caller (same gate as the sibling routes)", async () => {
+    expect((await g(submitter, "/api/subcontracts/trades")).status).toBe(403);
+    expect((await call("/api/subcontracts/trades")).status).toBe(401);
+  });
+});
+
 // ── Exhibit A Article II pre-fill (GET /api/subcontracts/exhibit-templates?trade=) ─
 describe("exhibit-templates Article II pre-fill", () => {
   it("resolves a Trade → its art2 body (served EQUALS the bundled source, derived not pinned)", async () => {

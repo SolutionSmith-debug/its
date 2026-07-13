@@ -18,6 +18,7 @@ vi.mock("../../lib/subcontracts", async (importOriginal) => {
     createSubcontractor: vi.fn(),
     updateSubcontractor: vi.fn(),
     fetchSubTerms: vi.fn(),
+    fetchTrades: vi.fn(),
   };
 });
 vi.mock("../../lib/auth", () => ({ useAuth: vi.fn() }));
@@ -102,6 +103,7 @@ beforeEach(() => {
   vi.mocked(useAuth).mockReturnValue(authWith([]));
   vi.mocked(api.fetchSubcontractors).mockResolvedValue(SUBS);
   vi.mocked(api.fetchSubTerms).mockResolvedValue(TERMS);
+  vi.mocked(api.fetchTrades).mockResolvedValue([...api.TRADES]); // default = the static baseline
 });
 
 describe("SubcontractorsPage", () => {
@@ -166,6 +168,16 @@ describe("SubcontractorsPage", () => {
       ),
     );
     await waitFor(() => expect(api.fetchSubcontractors).toHaveBeenCalledTimes(2)); // reload-after-write
+  });
+
+  it("the trade chips are fed by the served (manifest-derived) trade list, not a hardcoded one", async () => {
+    vi.mocked(useAuth).mockReturnValue(authWith(["cap.subcontracts.manage"]));
+    vi.mocked(api.fetchTrades).mockResolvedValue([...api.TRADES, "Battery Storage"]);
+    const { getByText, getByRole } = render(<SubcontractorsPage onBack={() => {}} />);
+    await waitFor(() => expect(api.fetchTrades).toHaveBeenCalled());
+    fireEvent.click(getByText("+ Add a subcontractor"));
+    // A trade the static baseline does NOT contain renders as a selectable chip (proves the config feed).
+    await waitFor(() => expect(getByRole("button", { name: "Battery Storage" })).toBeTruthy());
   });
 
   it("shows the 'Syncing to Smartsheet' badge only on sync_state='pending' rows (§51 up-sync)", async () => {

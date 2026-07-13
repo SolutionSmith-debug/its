@@ -426,6 +426,13 @@ export async function fetchExhibitKeyText(key: string, version?: string): Promis
 export async function fetchExhibitKeyVersions(key: string): Promise<ExhibitKeyVersions> {
   return getJson<ExhibitKeyVersions>(`/api/subcontracts/exhibit-keys/${encodeURIComponent(key)}/versions`);
 }
+/** The live Trade vocabulary — the manifest trade_map keys, served by the Worker. The single source of
+ *  truth so a trade added via the config editor (exhibit create_profile) appears in the pickers with no
+ *  code edit. Callers fall back to the static {@link TRADES} on a degraded fetch (never an empty picker). */
+export async function fetchTrades(): Promise<string[]> {
+  const data = await getJson<{ trades: string[] }>("/api/subcontracts/trades");
+  return data.trades;
+}
 
 // ── Surface-line name aliases ──────────────────────────────────────────────────────────────────────
 // The S5 build spec (lib_routing.md) names these fetchSubcontracts / fetchSubcontract / createDraft /
@@ -460,11 +467,13 @@ export function computeSubtotal(lines: { qty: number; unit_price_cents: number |
 
 // ── Vocabulary constants ─────────────────────────────────────────────────────────────────────────────
 
-/** The canonical subcontractor trades. The Worker treats `trades` as free-form strings, BUT the §51
- *  up-sync writes them to ITS_Subcontractors, whose Trades picklist is gated by the REGISTRY
- *  (`shared/picklist_validation._SUBCONTRACTOR_TRADE_VALUES` == `build_its_subcontractors_sheet.py`
- *  TRADE_OPTIONS) — a trade outside this set fences the up-sync (PicklistViolationError). So the picker
- *  MUST offer exactly this set. Keep set-equal to the sheet's TRADE_OPTIONS. */
+/** STATIC FALLBACK for the trade pickers — used only when {@link fetchTrades} degrades (a network/
+ *  auth blip), so the picker is never empty. The LIVE source of truth is the manifest trade_map, served
+ *  by GET /api/subcontracts/trades and derived server-side (`_SUBCONTRACTOR_TRADE_VALUES`, also manifest-
+ *  derived). The Worker treats `trades` as free-form strings, BUT the §51 up-sync writes them to
+ *  ITS_Subcontractors, whose Trades picklist is gated by that REGISTRY — a trade outside the manifest set
+ *  fences the up-sync (PicklistViolationError). This literal mirrors the manifest's baseline trades; a
+ *  trade added later via the config editor appears via fetchTrades, not here. */
 export const TRADES: string[] = [
   "Surveying",
   "Civil",
