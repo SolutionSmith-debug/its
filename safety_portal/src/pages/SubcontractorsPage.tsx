@@ -109,10 +109,12 @@ function SubcontractorFormFields({
   f,
   set,
   terms,
+  trades,
 }: {
   f: FormState;
   set: (next: FormState) => void;
   terms: api.TermsProfile[];
+  trades: string[];
 }) {
   const toggleTrade = (t: string) =>
     set({
@@ -140,7 +142,7 @@ function SubcontractorFormFields({
       <div className="field">
         <span className="field__label">Trades</span>
         <div className="mats-cat-filter" role="group" aria-label="Trades">
-          {TRADES.map((t) => (
+          {trades.map((t) => (
             <button
               key={t}
               type="button"
@@ -197,6 +199,8 @@ export function SubcontractorsPage({ onBack }: { onBack: () => void }) {
 
   const [subcontractors, setSubcontractors] = useState<api.Subcontractor[]>([]);
   const [terms, setTerms] = useState<api.TermsProfile[]>([]);
+  // Live trade vocabulary (manifest-derived); static TRADES is the degraded-fetch fallback.
+  const [trades, setTrades] = useState<string[]>(TRADES);
   const [showInactive, setShowInactive] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -231,6 +235,11 @@ export function SubcontractorsPage({ onBack }: { onBack: () => void }) {
       .fetchSubTerms()
       .then(setTerms)
       .catch(() => setTerms([]));
+    // Live trades feed the trade chips; a miss degrades to the static TRADES fallback (never empty).
+    api
+      .fetchTrades()
+      .then((t) => setTrades(t.length ? t : TRADES))
+      .catch(() => setTrades(TRADES));
   }, []);
 
   async function submitCreate(e: FormEvent) {
@@ -393,7 +402,7 @@ export function SubcontractorsPage({ onBack }: { onBack: () => void }) {
 
       {canManage && editKey === s.sub_key ? (
         <div className="accounts__editor">
-          <SubcontractorFormFields f={ef} set={setEf} terms={terms} />
+          <SubcontractorFormFields f={ef} set={setEf} terms={terms} trades={trades} />
           <div className="jha__actions">
             <button className="btn btn--primary" disabled={busy} onClick={() => void saveEdit(s)}>
               {busy ? "Saving…" : "Save"}
@@ -440,7 +449,7 @@ export function SubcontractorsPage({ onBack }: { onBack: () => void }) {
           ) : (
             <form onSubmit={submitCreate}>
               <h3 className="dash-detail__h2">Add a subcontractor</h3>
-              <SubcontractorFormFields f={cf} set={setCf} terms={terms} />
+              <SubcontractorFormFields f={cf} set={setCf} terms={terms} trades={trades} />
               <div className="jha__actions">
                 <button className="btn btn--primary" type="submit" disabled={busy}>
                   {busy ? "Working…" : "Add subcontractor"}
