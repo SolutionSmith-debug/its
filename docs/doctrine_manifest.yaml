@@ -39,22 +39,22 @@ meta:
   manifest_version: 1
   generated: "2026-06-07"
   its_head: e242074              # ~/its origin/main this manifest was validated against (2026-07-12 documentation-reconciliation pass: subcontracts SC-S1→S3c + PO / progress / field-ops / operator-dashboard / docs-pdf reconciled to as-built; taxonomy + workstream_tags refreshed to live HEAD in that pass). Prior: 44370e1 (2026-06-12 photo/download/Form-Request program).
-  blueprint_head: ad8f563        # ~/its-blueprint main this manifest is synced against (refreshed on doctrine bump, per UPDATE DISCIPLINE above); ad8f563 = 2026-06-17 B5 doctrine cascade — Excellence Roadmap v5 (Track 3.4 platform fork-source / portal-template), tag excellence-roadmap-v5; other doctrine unchanged (Op Stds v18 / Handover v9 / FM v11 / V&R v9)
+  blueprint_head: 1e24574        # ~/its-blueprint main this manifest is synced against (refreshed on doctrine bump, per UPDATE DISCIPLINE above); 1e24574 = 2026-07-12 doctrine v21 elevation (Op Stds v21 §55 + reconstructed §§4-22/25-30; Handover v10; FM Invariant-1 + Vision §1.4.3 amended). Op Stds v21 / Handover v10 / FM v11 / V&R v9
   seeded_by: "doc-reconciliation series PR 2 (manifest)"
 
 # --- Doctrine versions (the headline drift class) ------------------------------
 doctrine_versions:
   operational_standards:
-    current: 20
-    # Highest existing §-section. Numbering is append-only since v11; v20 added
-    # §§52-54, so §1..§54 all resolve. The M7 citation-resolver flags any
-    # `Op Stds §N` in current-doctrine prose with N > max_section (a citation that
+    current: 21
+    # Highest existing §-section. Numbering is append-only since v11; v21 added
+    # §55 (v20 added §§52-54), so §1..§55 all resolve. The M7 citation-resolver flags
+    # any `Op Stds §N` in current-doctrine prose with N > max_section (a citation that
     # resolves to no section — a typo or a forward-ref to unbuilt doctrine). Bump
     # this the same PR a new §-section lands in canonical doctrine.
-    max_section: 54
+    max_section: 55
     source: "../its-blueprint/doctrine/operational-standards.md"
     source_field: "frontmatter.version"
-    blueprint_verified_against: 33fce61   # 2026-07-06 Op Stds v20 consolidation (§§52–54 + §31/§43 + §23 7th-ws + fold 3 riders); prior: 7b24cda (v19)
+    blueprint_verified_against: 1e24574   # 2026-07-12 Op Stds v21 elevation (§55 Verification/Truthful-Reporting + reconstruct §§4-22/25-30 + §31/§32/§36 riders); prior: 33fce61 (v20)
     notes: >
       v12 added §§37-41; v13 added §42 (code-level self-documentation discipline);
       v14 reframed the kill switch as an operator-convenience pause that is fail-open
@@ -107,10 +107,10 @@ doctrine_versions:
       "Foundation Mission v11" / "FM v11".
     drift_signal: 'Foundation Mission v([0-9]|10)\b or FM v([0-9]|10)\b in current-doctrine prose'
   handover_plan:
-    current: 9
+    current: 10
     source: "../its-blueprint/doctrine/handover-plan.md"
     source_field: "frontmatter.version"
-    blueprint_verified_against: 0e85a1a   # 2026-06-07 deploy reconciliation (Handover v9); prior: 8c708b9 (v8)
+    blueprint_verified_against: 1e24574   # 2026-07-12 v10 status-fact refresh (Check C=12 jobs, Friday-catch-up closed, 7-workstream roster); prior: 0e85a1a (v9)
     notes: >
       v8 removed the Tier-2 "non-developer-safe enforcement layer" pre-cutover build gap and
       redefined the Successor-Operator as a trained CC operator. v9 (2026-06-07) adds the Safety
