@@ -39,14 +39,67 @@ Idempotency + race safety
 Failure modes
     `SmartsheetError` propagates — the callers (the poll daemons' fenced
     per-job append helpers) classify and WARN; a per-job failure must never
-    fail the filing (Box + the flat Log are the SoR).
+    fail the filing (Box + the flat Log are the SoR). A JUST-CREATED sheet
+    can 404 for a few seconds (Smartsheet create→read eventual consistency,
+    errorCode 1006); the create path absorbs that window with a bounded
+    readiness probe before returning — see `_wait_until_readable`.
 """
 from __future__ import annotations
+
+import time
 
 from shared import error_log, smartsheet_client
 from shared.error_log import Severity
 
 SCRIPT_NAME = "shared.job_sheet"
+
+# Patchable sleep seam — tests stub `job_sheet._sleep` so the readiness probe
+# never wall-clocks a test run.
+_sleep = time.sleep
+
+# Readiness-probe bounds for the CREATE path (§42 — why this exists): the
+# 2026-07-13 live mirror smoke hit Smartsheet's create→read propagation window —
+# `add_rows` against the sheet id returned ~2s earlier by
+# `create_sheet_in_folder_from_template` failed HTTP 404 (errorCode 1006); a
+# retry ~60s later on the SAME id succeeded. Without absorbing that window, a
+# brand-new job's FIRST filing (create-then-append in one daemon pass) can 404,
+# get reduced to the caller's best-effort WARN, and that filing's per-job
+# mirror row is then permanently missing (each filing appends only its own
+# row; the flat Log SoR is unaffected). Probing ONLY on the create path keeps
+# the hot find path zero-cost.
+READY_PROBE_ATTEMPTS = 5
+READY_PROBE_DELAY_SECONDS = 2.0
+
+
+def _wait_until_readable(sheet_id: int) -> None:
+    """Absorb the create→read propagation window on a JUST-CREATED sheet.
+
+    Cheap probe: `get_rows` on the new (empty) sheet — one GET, zero rows.
+    `SmartsheetNotFoundError` = not-ready-yet → sleep + retry, up to
+    `READY_PROBE_ATTEMPTS`; any OTHER error re-raises immediately (a real
+    fault, not propagation lag). Bounded + non-blocking on exhaustion: WARN
+    and return anyway — the caller's fence absorbs a residual 404; a daemon
+    pass must never hang here.
+    """
+    for attempt in range(READY_PROBE_ATTEMPTS):
+        try:
+            smartsheet_client.get_rows(sheet_id)
+            return
+        except smartsheet_client.SmartsheetNotFoundError:
+            if attempt == READY_PROBE_ATTEMPTS - 1:
+                error_log.log(
+                    Severity.WARN,
+                    SCRIPT_NAME,
+                    (
+                        f"just-created sheet {sheet_id} still 404s after "
+                        f"{READY_PROBE_ATTEMPTS} readiness probes — returning "
+                        f"the id anyway; the caller's fence absorbs a residual "
+                        f"404 (create→read eventual consistency, errorCode 1006)."
+                    ),
+                    error_code="job_sheet_ready_probe_exhausted",
+                )
+                return
+            _sleep(READY_PROBE_DELAY_SECONDS)
 
 # Smartsheet sheet-name cap (HTTP 400 errorCode 1041) — same constant as
 # safety_reports.week_sheet.SHEET_NAME_MAX / progress_reports.hours_log. The
@@ -136,5 +189,9 @@ def ensure_job_sheet(
                 error_code="job_sheet_sheet_race_duplicate",
             )
             sheet_id = post_find
+        # CREATE path only (the find path returns above-established sheets that
+        # are long-readable): absorb the create→read 404 window before handing
+        # the id to the caller's add_rows (2026-07-13 live-smoke finding).
+        _wait_until_readable(sheet_id)
 
     return sheet_id

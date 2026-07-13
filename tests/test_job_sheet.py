@@ -15,7 +15,7 @@ import pytest
 
 from shared import job_sheet
 from shared.error_log import Severity
-from shared.smartsheet_client import SmartsheetError
+from shared.smartsheet_client import SmartsheetError, SmartsheetNotFoundError
 
 PARENT = 111
 TEMPLATE = 222
@@ -23,7 +23,11 @@ TEMPLATE = 222
 
 @pytest.fixture
 def stub_smartsheet(mocker) -> dict[str, MagicMock]:
-    """Patch all four smartsheet_client helpers used by job_sheet."""
+    """Patch the five smartsheet_client helpers used by job_sheet.
+
+    `get_rows` is the create-path readiness probe (default: sheet readable
+    immediately); per-test side_effects simulate the 1006 propagation window.
+    """
     return {
         "find_folder": mocker.patch.object(
             job_sheet.smartsheet_client, "find_folder_by_name_in_folder"
@@ -38,7 +42,16 @@ def stub_smartsheet(mocker) -> dict[str, MagicMock]:
             job_sheet.smartsheet_client,
             "create_sheet_in_folder_from_template",
         ),
+        "get_rows": mocker.patch.object(
+            job_sheet.smartsheet_client, "get_rows", return_value=[]
+        ),
     }
+
+
+@pytest.fixture
+def stub_sleep(mocker) -> MagicMock:
+    """Stub the module-level `_sleep` seam so probe tests never wall-clock."""
+    return mocker.patch.object(job_sheet, "_sleep")
 
 
 @pytest.fixture
@@ -165,3 +178,86 @@ def test_smartsheet_error_propagates_to_caller(stub_smartsheet):
     with pytest.raises(SmartsheetError):
         job_sheet.ensure_job_sheet(PARENT, TEMPLATE, "Sunrise Solar", "Subcontracts")
     stub_smartsheet["copy_sheet"].assert_not_called()
+
+
+# ---- create-path readiness probe (2026-07-13 live-smoke 1006 finding) ------
+
+
+def test_create_path_retries_readiness_probe_on_1006_then_succeeds(
+    stub_smartsheet, stub_sleep
+):
+    """The live-smoke class: add_rows-visible 404 (errorCode 1006) for a few
+    seconds after the clone. The probe absorbs it — two not-ready probes, then
+    readable — and the id is returned once the sheet answers."""
+    stub_smartsheet["find_folder"].return_value = 500
+    stub_smartsheet["find_sheet"].side_effect = [None, 4242]
+    stub_smartsheet["copy_sheet"].return_value = 4242
+    stub_smartsheet["get_rows"].side_effect = [
+        SmartsheetNotFoundError("HTTP 404: errorCode 1006"),
+        SmartsheetNotFoundError("HTTP 404: errorCode 1006"),
+        [],  # readable
+    ]
+
+    sid = job_sheet.ensure_job_sheet(PARENT, TEMPLATE, "Sunrise Solar", "Subcontracts")
+
+    assert sid == 4242
+    assert stub_smartsheet["get_rows"].call_count == 3
+    assert all(c.args == (4242,) for c in stub_smartsheet["get_rows"].call_args_list)
+    assert stub_sleep.call_count == 2
+    assert all(
+        c.args == (job_sheet.READY_PROBE_DELAY_SECONDS,)
+        for c in stub_sleep.call_args_list
+    )
+
+
+def test_find_path_never_probes_or_sleeps(stub_smartsheet, stub_sleep):
+    """The probe is CREATE-path only — the hot find path (established sheets,
+    long readable) stays zero-cost: no get_rows, no sleep."""
+    stub_smartsheet["find_folder"].return_value = 500
+    stub_smartsheet["find_sheet"].return_value = 42
+
+    sid = job_sheet.ensure_job_sheet(PARENT, TEMPLATE, "Sunrise Solar", "Subcontracts")
+
+    assert sid == 42
+    stub_smartsheet["get_rows"].assert_not_called()
+    stub_sleep.assert_not_called()
+
+
+def test_readiness_probe_exhaustion_still_returns_id_and_warns(
+    stub_smartsheet, stub_sleep, stub_error_log
+):
+    """Bounded, never hangs: after READY_PROBE_ATTEMPTS not-ready probes the id
+    is returned anyway (the caller's fence absorbs a residual 404) with a WARN
+    naming the stable error_code."""
+    stub_smartsheet["find_folder"].return_value = 500
+    stub_smartsheet["find_sheet"].side_effect = [None, 4242]
+    stub_smartsheet["copy_sheet"].return_value = 4242
+    stub_smartsheet["get_rows"].side_effect = SmartsheetNotFoundError("1006")
+
+    sid = job_sheet.ensure_job_sheet(PARENT, TEMPLATE, "Sunrise Solar", "Subcontracts")
+
+    assert sid == 4242
+    assert stub_smartsheet["get_rows"].call_count == job_sheet.READY_PROBE_ATTEMPTS
+    # Sleeps BETWEEN probes only — never after the final one (no dead wait).
+    assert stub_sleep.call_count == job_sheet.READY_PROBE_ATTEMPTS - 1
+
+    stub_error_log.assert_called_once()
+    call = stub_error_log.call_args
+    assert call.args[0] == Severity.WARN
+    assert call.kwargs.get("error_code") == "job_sheet_ready_probe_exhausted"
+    assert "4242" in call.args[2]
+
+
+def test_readiness_probe_reraises_non_404(stub_smartsheet, stub_sleep):
+    """Only SmartsheetNotFoundError means not-ready-yet; any other error is a
+    real fault and re-raises immediately (no retry, no sleep)."""
+    stub_smartsheet["find_folder"].return_value = 500
+    stub_smartsheet["find_sheet"].side_effect = [None, 4242]
+    stub_smartsheet["copy_sheet"].return_value = 4242
+    stub_smartsheet["get_rows"].side_effect = SmartsheetError("500 server error")
+
+    with pytest.raises(SmartsheetError):
+        job_sheet.ensure_job_sheet(PARENT, TEMPLATE, "Sunrise Solar", "Subcontracts")
+
+    stub_smartsheet["get_rows"].assert_called_once()
+    stub_sleep.assert_not_called()
