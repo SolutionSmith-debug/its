@@ -145,6 +145,9 @@ const MAX_NOTES = 2000;
 // the config-editor's TEMPLATE authoring cap (config.ts MAX_PAYLOAD_BYTES / config_apply _MAX_TERMS_TEXT =
 // 100_000), so any template the operator can author pre-fills + saves as an instance. (The 8000 inherited
 // from PO's MAX_SOW under-sized it: the electrical Article II is ~20k chars and was outright unsaveable.)
+// UNITS: this cap is JS .length (UTF-16 code units); MAX_PAYLOAD_BYTES is UTF-8 bytes; _MAX_TERMS_TEXT is
+// Python code points. They coincide for BMP/Latin legal prose (every real Article II body), and since UTF-8
+// bytes >= UTF-16 code units, a byte-capped authorable template always fits this instance cap.
 const MAX_SCOPE = 100_000;
 const MAX_LICENSE = 64;
 const MAX_CATEGORIES = 20;
