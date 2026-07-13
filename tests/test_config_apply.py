@@ -695,3 +695,70 @@ def test_sc_exhibit_set_current_rejects_unknown_version(sc_root: Path):
 def test_sc_exhibit_rejects_bad_op(sc_root: Path):
     with pytest.raises(config_apply.ConfigApplyError, match="exhibit takes op"):
         config_apply.apply_config(_sc_req("exhibit", "edit", {"template_key": "civil"}), sc_root)
+
+
+# ── exhibit / create_profile — the "New trade + article template" op ─────────────────────
+
+
+def test_sc_exhibit_create_profile_mints_key_trade_and_file_pending(sc_root: Path):
+    note = config_apply.apply_config(
+        _sc_req("exhibit", "create_profile",
+                {"template_key": "battery_storage", "trade": "Battery Storage",
+                 "text": "Battery Storage scope of the Work."}),
+        sc_root,
+    )
+    new_file = sc_root / "subcontracts" / "exhibit" / "art2" / "battery_storage_v1.md"
+    assert new_file.exists() and new_file.read_text() == "Battery Storage scope of the Work."
+    manifest = _sc_read(sc_root, "exhibit", "manifest.json")
+    tmpl = manifest["trade_templates"]["battery_storage"]
+    assert tmpl["current_version"] == "v1"
+    entry = tmpl["versions"]["v1"]
+    assert entry["file"] == "art2/battery_storage_v1.md"
+    assert entry["sha256"] == hashlib.sha256(b"Battery Storage scope of the Work.").hexdigest()
+    assert entry["legal_review"] == "pending"  # fenced until set_current (Layer-A)
+    # the new trade maps to the new key; the pre-existing Civil mapping is UNTOUCHED
+    assert manifest["trade_map"]["Battery Storage"] == "battery_storage"
+    assert manifest["trade_map"]["Civil"] == "civil"
+    assert "NEW trade" in note and "pending" in note
+
+
+def test_sc_exhibit_create_profile_rejects_duplicate_key(sc_root: Path):
+    # A duplicate KEY is really an add_version, not a create.
+    with pytest.raises(config_apply.ConfigApplyError, match="template key 'civil' already exists"):
+        config_apply.apply_config(
+            _sc_req("exhibit", "create_profile",
+                    {"template_key": "civil", "trade": "New Civil", "text": "x"}),
+            sc_root,
+        )
+
+
+def test_sc_exhibit_create_profile_rejects_duplicate_trade(sc_root: Path):
+    # A duplicate TRADE is a re-map (add_version + set_current on the existing key), not a create.
+    with pytest.raises(config_apply.ConfigApplyError, match="trade 'Civil' already exists"):
+        config_apply.apply_config(
+            _sc_req("exhibit", "create_profile",
+                    {"template_key": "civil_two", "trade": "Civil", "text": "x"}),
+            sc_root,
+        )
+    # And the manifest is untouched — no orphan key/file written on the rejected create.
+    assert "civil_two" not in _sc_read(sc_root, "exhibit", "manifest.json")["trade_templates"]
+    assert not (sc_root / "subcontracts" / "exhibit" / "art2" / "civil_two_v1.md").exists()
+
+
+def test_sc_exhibit_create_profile_rejects_embedded_tokens(sc_root: Path):
+    with pytest.raises(config_apply.ConfigApplyError, match="must not contain"):
+        config_apply.apply_config(
+            _sc_req("exhibit", "create_profile",
+                    {"template_key": "battery_storage", "trade": "Battery Storage",
+                     "text": "scope for {{project_name}}"}),
+            sc_root,
+        )
+
+
+def test_sc_exhibit_create_profile_rejects_bad_key_format(sc_root: Path):
+    with pytest.raises(config_apply.ConfigApplyError, match="template_key is required and must match"):
+        config_apply.apply_config(
+            _sc_req("exhibit", "create_profile",
+                    {"template_key": "Battery-Storage!", "trade": "Battery Storage", "text": "x"}),
+            sc_root,
+        )

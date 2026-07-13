@@ -294,3 +294,27 @@ def test_review_queue_workstreams_are_all_registry_allowed():
         f"review_queue workstreams not in the SHEET_REVIEW_QUEUE picklist write-gate: "
         f"{sorted(missing)} — add them to picklist_validation._WORKSTREAM_VALUES_GLOBAL"
     )
+
+
+def test_subcontractor_trade_values_derive_from_exhibit_manifest():
+    """_SUBCONTRACTOR_TRADE_VALUES is DERIVED from the exhibit manifest trade_map keys (no longer a
+    hardcoded parallel), so a config-editor 'New trade + template' actuation — which appends a trade_map
+    key — auto-registers the new trade in the §51 up-sync write-gate with NO separate shared edit."""
+    import json as _json
+    from pathlib import Path as _Path
+
+    manifest = _json.loads(
+        (_Path(picklist_validation.__file__).resolve().parent.parent
+         / "subcontracts" / "exhibit" / "manifest.json").read_text(encoding="utf-8")
+    )
+    assert picklist_validation._SUBCONTRACTOR_TRADE_VALUES == frozenset(manifest["trade_map"].keys())
+
+
+def test_subcontractor_trade_values_derivation_falls_back_on_bad_manifest(tmp_path):
+    """A missing/corrupt exhibit manifest must NEVER break the import — the derivation returns the seeded
+    baseline so picklist_validation still loads."""
+    baseline = frozenset({
+        "Surveying", "Civil", "Fencing", "Post Installation", "Mechanical",
+        "AC Electrical", "MV Electrical", "DC Electrical", "Specialty",
+    })
+    assert picklist_validation._derive_subcontractor_trade_values(tmp_path / "missing.json") == baseline

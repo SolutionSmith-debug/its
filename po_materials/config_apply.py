@@ -459,6 +459,95 @@ def _apply_exhibit_set_current(
     return f"exhibit: {template_key} current_version -> {target_version} (legal_review cleared)"
 
 
+def _apply_exhibit_create_profile(
+    payload: dict[str, Any], root: Path, workstream: str = "subcontracts",
+) -> str:
+    """Mint a BRAND-NEW Article II trade-template KEY *and* a new TRADE that maps to it — the config-editor
+    "New trade + template" op. In ONE manifest rewrite: add ``trade_templates[template_key]`` (a single v1,
+    ``legal_review: "pending"``, ``current_version`` pointing at it) AND ``trade_map[trade] = template_key``.
+    Validated against LIVE HEAD (the manifest may have moved since the Worker's bundled check): a duplicate
+    KEY raises (that is an add_version), a duplicate TRADE raises (that is a re-map, not a create). The v1
+    lands ``pending`` so the render-side Layer-A gate (``exhibit._trade_version_entry``) FENCES it — the new
+    trade is selectable and resolves the key, but the template cannot render on a subcontract until a later
+    ``set_current`` clears the legal review. Never bypasses the gate; never mutates an existing key or trade.
+
+    The new trade AUTO-joins the ITS_Subcontractors "Trades" §51 up-sync gate because
+    ``shared/picklist_validation._SUBCONTRACTOR_TRADE_VALUES`` is DERIVED from this manifest's trade_map (no
+    separate shared edit — the actuator commits only ``subcontracts/``). The LIVE ITS_Subcontractors Trades
+    picklist COLUMN is a SEPARATE surface: adding the option there is a documented §43 operator step (the
+    actuator cannot write live Smartsheet)."""
+    template_key = payload.get("template_key")
+    if (
+        not isinstance(template_key, str)
+        or not _TARGET_VERSION_RE.match(template_key)
+        or len(template_key) > _MAX_TARGET_VERSION
+    ):
+        raise ConfigApplyError(
+            "exhibit create_profile: template_key is required and must match /^[a-z0-9_]+$/"
+        )
+    trade = payload.get("trade")
+    if not isinstance(trade, str) or not trade.strip() or len(trade) > _MAX_TEXT_FIELD:
+        raise ConfigApplyError("exhibit create_profile: trade is required (non-empty, bounded)")
+    trade = trade.strip()
+    text = payload.get("text")
+    if not isinstance(text, str) or not text.strip():
+        raise ConfigApplyError("exhibit create_profile: text must be non-empty")
+    if len(text) > _MAX_TERMS_TEXT:
+        raise ConfigApplyError(
+            f"exhibit create_profile: text is {len(text)} chars (> {_MAX_TERMS_TEXT} limit)"
+        )
+    if _TOKEN_RE.search(text):
+        raise ConfigApplyError(
+            "exhibit create_profile: Article II text must not contain {{tokens}} — it is the literal scope "
+            "body the skeleton renders, not a template"
+        )
+    version_id = payload.get("version_id") or "v1"
+    if (
+        not isinstance(version_id, str)
+        or not _TARGET_VERSION_RE.match(version_id)
+        or len(version_id) > _MAX_TARGET_VERSION
+    ):
+        raise ConfigApplyError("exhibit create_profile: version_id must match /^[a-z0-9_]+$/")
+
+    manifest_path = _exhibit_dir(root, workstream) / "manifest.json"
+    manifest = _load_json_file(manifest_path, "exhibit/manifest.json")
+    templates = manifest.get("trade_templates")
+    if not isinstance(templates, dict):
+        raise ConfigApplyError("exhibit create_profile: manifest has no trade_templates map")
+    if template_key in templates:
+        raise ConfigApplyError(
+            f"exhibit create_profile: template key {template_key!r} already exists — use add_version, "
+            "not create_profile"
+        )
+    trade_map = manifest.get("trade_map")
+    if not isinstance(trade_map, dict):
+        raise ConfigApplyError("exhibit create_profile: manifest has no trade_map")
+    if trade in trade_map:
+        raise ConfigApplyError(
+            f"exhibit create_profile: trade {trade!r} already exists (maps to {trade_map[trade]!r}) — a new "
+            "template for an existing trade is add_version + set_current, not create_profile"
+        )
+    file_rel = f"art2/{template_key}_{version_id}.md"
+    file_path = _exhibit_dir(root, workstream) / file_rel
+    if file_path.exists():
+        raise ConfigApplyError(
+            f"exhibit create_profile: {file_rel} already exists on disk — refusing to overwrite"
+        )
+    file_bytes = text.encode("utf-8")
+    digest = hashlib.sha256(file_bytes).hexdigest()
+    file_path.write_bytes(file_bytes)  # NEW immutable version file
+    templates[template_key] = {
+        "current_version": version_id,
+        "versions": {version_id: {"file": file_rel, "sha256": digest, "legal_review": "pending"}},
+    }
+    trade_map[trade] = template_key
+    manifest_path.write_text(_dump(manifest), encoding="utf-8")
+    return (
+        f"exhibit: NEW trade {trade!r} + template {template_key!r} version {version_id} "
+        f"(legal_review pending — fenced until set_current)"
+    )
+
+
 def _apply_terms_create_profile(payload: dict[str, Any], root: Path, workstream: str = "po_materials") -> str:
     """Mint a BRAND-NEW terms profile in the manifest — a ``library`` profile (a manifest entry + an
     immutable sha256-pinned initial version file, ``legal_review: "pending"``) or an ``attach`` profile
@@ -691,7 +780,11 @@ def apply_config(request: dict[str, Any], root: Path) -> str:
                 return _apply_exhibit_add_version(payload, request.get("target_version"), root, "subcontracts")
             if op == "set_current":
                 return _apply_exhibit_set_current(payload, request.get("target_version"), root, "subcontracts")
-            raise ConfigApplyError(f"exhibit takes op 'add_version' or 'set_current', got {op!r}")
+            if op == "create_profile":
+                return _apply_exhibit_create_profile(payload, root, "subcontracts")
+            raise ConfigApplyError(
+                f"exhibit takes op 'add_version', 'set_current' or 'create_profile', got {op!r}"
+            )
         raise ConfigApplyError(f"unknown subcontracts config artifact {artifact!r}")
 
     raise ConfigApplyError(f"unknown config workstream {workstream!r}")

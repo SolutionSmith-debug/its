@@ -5,6 +5,9 @@ import type { Env, Vars } from "./types";
 // Build-time bundle of the terms manifest (SAME import worker/po.ts uses) — for the create_profile
 // duplicate-id shape check. Bundled at build time, so it re-bundles on every actuator deploy.
 import termsManifest from "../../po_materials/terms/manifest.json";
+// Build-time bundle of the exhibit manifest (SAME import worker/subcontract.ts uses) — for the exhibit
+// create_profile duplicate-key / duplicate-trade shape checks. Re-bundles on every actuator deploy.
+import exhibitManifest from "../../subcontracts/exhibit/manifest.json";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Config-editor queue (§50 privileged code-actuation) — worker/config.ts
@@ -76,9 +79,11 @@ const CONFIG_OPS = new Set(["edit", "add_version", "set_current", "create_profil
 // The ops a versioned `terms` artifact accepts (a json artifact takes only `edit`). Module-level so
 // it is allocated once, not per request.
 const TERMS_OPS = new Set(["add_version", "set_current", "create_profile"]);
-// The ops a versioned `exhibit` artifact accepts — a per-trade Article II template is versioned like
-// terms, but the KEY vocabulary is fixed (the trades), so there is no `create_profile`.
-const EXHIBIT_OPS = new Set(["add_version", "set_current"]);
+// The ops a versioned `exhibit` artifact accepts. Beyond add_version/set_current on an existing template,
+// `create_profile` mints a BRAND-NEW template KEY together with a new TRADE that maps to it (the "New trade
+// + article template" op) — reuses the create_profile op value already in migration 0048's CHECK, so NO new
+// migration. The exhibit create payload is {template_key, trade, text}, NOT the terms {profile_id, kind, ...}.
+const EXHIBIT_OPS = new Set(["add_version", "set_current", "create_profile"]);
 const TARGET_VERSION_RE = /^[a-z0-9_]+$/;
 const MAX_TARGET_VERSION = 64;
 const MAX_PAYLOAD_BYTES = 100_000; // 100 KB — generous ceiling on a config value / terms version
@@ -95,6 +100,11 @@ const PROFILE_KINDS = new Set(["library", "attach"]);
 // JSON). A create_profile for an existing id is really an add_version — reject it early here (belt);
 // config_apply.py re-checks against LIVE HEAD (which may have moved since this bundle) as the boundary.
 const BUNDLED_PROFILE_IDS = new Set(Object.keys(termsManifest.profiles as Record<string, unknown>));
+// The exhibit template KEYS + TRADE names already in the build-time-bundled exhibit manifest — for the
+// exhibit create_profile shape check. A duplicate key is really an add_version; a duplicate trade a re-map.
+// config_apply.py re-checks against LIVE HEAD (which may have moved since this bundle) as the boundary.
+const BUNDLED_EXHIBIT_KEYS = new Set(Object.keys(exhibitManifest.trade_templates as Record<string, unknown>));
+const BUNDLED_TRADES = new Set(Object.keys(exhibitManifest.trade_map as Record<string, unknown>));
 
 
 // ── Internal (daemon) surface constants — LOCKSTEP with migration 0045's CHECK sets ──────────
@@ -176,9 +186,10 @@ function validateCreateProfile(payload: unknown): string | null {
   return null;
 }
 
-/** Shape-gate an `exhibit` config edit (PR-B2). add_version needs {template_key, text}; set_current
- *  needs {template_key}. The Mac actuator (config_apply._apply_exhibit_*) is the live-HEAD boundary
- *  (unknown key, duplicate version, embedded {{tokens}}). */
+/** Shape-gate an `exhibit` config edit. add_version needs {template_key, text}; set_current needs
+ *  {template_key}; create_profile (the "New trade + template" op) needs {template_key (a FRESH key), trade
+ *  (a FRESH trade name), text}. The Mac actuator (config_apply._apply_exhibit_*) is the live-HEAD boundary
+ *  (unknown key, duplicate version/key/trade, embedded {{tokens}}); this is only the send-free shape gate. */
 function validateExhibit(op: string, payload: unknown): string | null {
   if (!isPlainObject(payload)) return "invalid_payload";
   const templateKey = typeof payload.template_key === "string" ? payload.template_key : "";
@@ -186,6 +197,17 @@ function validateExhibit(op: string, payload: unknown): string | null {
   if (op === "add_version") {
     const text = typeof payload.text === "string" ? payload.text : "";
     if (!text.trim()) return "invalid_payload";
+  }
+  if (op === "create_profile") {
+    // A brand-new template KEY (must match the id charset AND be genuinely new) + a new TRADE that maps to
+    // it + the Article II v1 text. config_apply.py re-checks duplicate key/trade vs LIVE HEAD (the boundary).
+    if (!PROFILE_ID_RE.test(templateKey)) return "invalid_template_key";
+    if (BUNDLED_EXHIBIT_KEYS.has(templateKey)) return "template_exists"; // a duplicate key is add_version
+    const trade = typeof payload.trade === "string" ? payload.trade.trim() : "";
+    if (!trade || trade.length > MAX_LABEL) return "invalid_trade";
+    if (BUNDLED_TRADES.has(trade)) return "trade_exists"; // a duplicate trade is a re-map, not a create
+    const text = typeof payload.text === "string" ? payload.text.trim() : "";
+    if (!text) return "invalid_payload";
   }
   return null;
 }
@@ -266,16 +288,26 @@ export function registerConfigRoutes(app: FieldopsApp, gates: ConfigGates): void
     // id + kind so an auditor reading audit_log alone (without joining the request row) sees WHAT was
     // created — parity with add_version/set_current's target_version.
     let opMeta: Record<string, unknown> = {};
-    if (op === "create_profile") {
+    if (artifact.kind === "exhibit") {
+      // exhibit owns ALL its ops (add_version / set_current / create_profile) — validated by validateExhibit,
+      // NOT the terms validateCreateProfile (the exhibit create payload is {template_key, trade, text}, never
+      // {profile_id, kind}). Mutually exclusive with the terms create_profile branch below.
+      const err = validateExhibit(op, body.payload);
+      if (err) {
+        const status = err === "template_exists" || err === "trade_exists" ? 409 : 400;
+        return c.json({ error: err }, status);
+      }
+      const p = body.payload as Record<string, unknown>;
+      // Normalize the trade IN the enqueued payload so the queued row + audit row record EXACTLY what
+      // config_apply writes to trade_map (it does its own trade.strip() before the manifest write) — no
+      // forensic drift between " Battery Storage " enqueued and "Battery Storage" actuated.
+      if (op === "create_profile" && typeof p.trade === "string") p.trade = p.trade.trim();
+      opMeta = op === "create_profile" ? { template_key: p.template_key, trade: p.trade } : { template_key: p.template_key };
+    } else if (op === "create_profile") {
       const err = validateCreateProfile(body.payload);
       if (err) return c.json({ error: err }, err === "profile_exists" ? 409 : 400);
       const p = body.payload as Record<string, unknown>;
       opMeta = { profile_id: p.profile_id, kind: p.kind };
-    }
-    if (artifact.kind === "exhibit") {
-      const err = validateExhibit(op, body.payload);
-      if (err) return c.json({ error: err }, 400);
-      opMeta = { template_key: (body.payload as Record<string, unknown>).template_key };
     }
 
     if (!isNonEmptyJson(body.payload)) return c.json({ error: "invalid_payload" }, 400);

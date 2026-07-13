@@ -502,4 +502,32 @@ describe("PoConfigPage — subcontract config (workstream=subcontracts)", () => 
       }),
     );
   });
+
+  it("an exhibit New-article-template POSTs op:create_profile with {template_key, trade, text}", async () => {
+    bothCaps();
+    const { container, getByText } = render(<PoConfigPage onBack={vi.fn()} />);
+    fireEvent.click(getByText("Subcontract")); // switch to the Subcontract tab
+    await waitFor(() => expect(getByText("Exhibit A — Article II templates")).toBeTruthy());
+    const exSection = container.querySelector('[aria-label="Exhibit A trade templates"]') as HTMLElement;
+    await waitFor(() => expect(within(exSection).getByText("civil")).toBeTruthy()); // templates loaded
+    fireEvent.click(within(exSection).getByText("New article template"));
+    fireEvent.change(within(exSection).getByLabelText("New trade name"), {
+      target: { value: "Battery Storage" },
+    });
+    fireEvent.change(within(exSection).getByLabelText("New template id"), {
+      target: { value: "battery_storage" },
+    });
+    fireEvent.change(within(exSection).getByLabelText("New template Article II scope text"), {
+      target: { value: "Battery Storage scope of the Work." },
+    });
+    fireEvent.click(within(exSection).getByText("Queue new trade + template"));
+    await waitFor(() =>
+      expect(api.submitConfigEdit).toHaveBeenCalledWith({
+        workstream: "subcontracts",
+        artifact_key: "exhibit",
+        op: "create_profile",
+        payload: { template_key: "battery_storage", trade: "Battery Storage", text: "Battery Storage scope of the Work." },
+      }),
+    );
+  });
 });

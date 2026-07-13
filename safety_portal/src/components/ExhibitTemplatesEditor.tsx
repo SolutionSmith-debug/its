@@ -4,21 +4,24 @@ import type { ExhibitTemplateSummary, ExhibitKeyText, ExhibitKeyVersions } from 
 
 /**
  * ExhibitTemplatesEditor (PR-B2) — the config-editor block for the per-trade Exhibit A Article II
- * ("The Work") templates. Keyed by template KEY (the Trades fan onto a fixed set of keys). Two
+ * ("The Work") templates. Keyed by template KEY (the Trades fan onto a set of keys). Three
  * send-free edit forms:
  *  - Add a version — mints a NEW Article II version with legal_review: pending (add_version).
  *  - Make a version current — the Layer-A legal ACTIVATION: clears legal_review + repoints the key's
  *    current_version so new subcontracts render it (set_current). Only QUEUED here — the Mac config
  *    daemon validates + deploys. The Worker re-gates every write (Invariant 2); SPA gating is convenience.
+ *  - New article template — mints a BRAND-NEW template KEY together with a new TRADE that maps to it
+ *    (create_profile), v1 legal_review: pending. The trade joins the config-driven Trade dropdown (it is
+ *    manifest-derived); a §43 operator step adds the option to the live ITS_Subcontractors Trades picklist.
  *
- * Differs from TermsProfilesEditor: keyed by template_key (not a profile id), a FIXED key vocabulary
- * (so NO create), no attach kind. workstream is always "subcontracts", artifact "exhibit".
+ * Differs from TermsProfilesEditor: keyed by template_key (not a profile id), and create mints a KEY +
+ * TRADE pair (not a profile+kind). workstream is always "subcontracts", artifact "exhibit".
  */
 
 interface ExhibitEditBody {
   workstream: string;
   artifact_key: string;
-  op: "add_version" | "set_current";
+  op: "add_version" | "set_current" | "create_profile";
   payload: unknown;
   target_version?: string;
 }
@@ -37,6 +40,7 @@ interface Props {
 
 type AddForm = { template_key: string; target_version: string; text: string };
 type MakeCurrentForm = { template_key: string; target_version: string; confirmed: boolean };
+type CreateForm = { template_key: string; trade: string; text: string };
 
 const TOKEN_RE = /\{\{[a-z_]+\}\}/;
 
@@ -58,6 +62,8 @@ export function ExhibitTemplatesEditor({
   const [mcf, setMcf] = useState<MakeCurrentForm>({ template_key: "", target_version: "", confirmed: false });
   const [mcVersions, setMcVersions] = useState<{ version: string; legal_review: string }[]>([]);
   const [mcCurrent, setMcCurrent] = useState<string | null>(null);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [cf, setCf] = useState<CreateForm>({ template_key: "", trade: "", text: "" });
 
   const load = useCallback(() => {
     fetchKeys()
@@ -83,6 +89,7 @@ export function ExhibitTemplatesEditor({
     setAf({ template_key: first, target_version: "", text: "" });
     setMsg(null);
     setMakeCurrentOpen(false);
+    setCreateOpen(false);
     setAddOpen(true);
     if (first) void loadAddText(first);
   }
@@ -153,6 +160,7 @@ export function ExhibitTemplatesEditor({
     setMcCurrent(null);
     setMsg(null);
     setAddOpen(false);
+    setCreateOpen(false);
     setMakeCurrentOpen(true);
     if (first) void loadMcVersions(first);
   }
@@ -186,6 +194,58 @@ export function ExhibitTemplatesEditor({
       setMsg({
         ok: true,
         text: "Queued — the version will be cleared and made current after review + deploy. Track it below.",
+      });
+      onQueued();
+    } catch (err) {
+      setMsg({ ok: false, text: err instanceof Error ? err.message : "Submit failed." });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function openCreate() {
+    setCf({ template_key: "", trade: "", text: "" });
+    setMsg(null);
+    setAddOpen(false);
+    setMakeCurrentOpen(false);
+    setCreateOpen(true);
+  }
+
+  async function submitCreate(e: FormEvent) {
+    e.preventDefault();
+    if (busy) return;
+    const template_key = cf.template_key.trim();
+    const trade = cf.trade.trim();
+    const text = cf.text;
+    if (!/^[a-z0-9_]+$/.test(template_key) || template_key.length > 64) {
+      setMsg({ ok: false, text: "The template id must be lowercase letters, numbers, and underscores (e.g. battery_storage)." });
+      return;
+    }
+    if (!trade) {
+      setMsg({ ok: false, text: "Enter the new trade name (e.g. Battery Storage)." });
+      return;
+    }
+    if (!text.trim()) {
+      setMsg({ ok: false, text: "Enter the Article II scope text for the new template." });
+      return;
+    }
+    if (TOKEN_RE.test(text)) {
+      setMsg({ ok: false, text: "Article II must not contain {{tokens}} — it is the literal scope body, not a template." });
+      return;
+    }
+    setBusy(true);
+    setMsg(null);
+    try {
+      await submitConfigEdit({
+        workstream: "subcontracts",
+        artifact_key: "exhibit",
+        op: "create_profile",
+        payload: { template_key, trade, text },
+      });
+      setCreateOpen(false);
+      setMsg({
+        ok: true,
+        text: "Queued — the new trade + template will be minted with legal_review: pending. Make it current to activate, and add the trade to the live ITS_Subcontractors Trades picklist (a one-time step).",
       });
       onQueued();
     } catch (err) {
@@ -343,6 +403,54 @@ export function ExhibitTemplatesEditor({
               </button>
             </div>
           </form>
+        ) : createOpen ? (
+          <form className="accounts__editor" onSubmit={submitCreate}>
+            <p className="po-config__legal-note" role="note">
+              <strong>New trade + template.</strong> This mints a BRAND-NEW template keyed to a NEW trade,
+              with <code>legal_review: pending</code> — it is NOT used on any subcontract until you make it
+              current. The trade joins the Trade dropdown automatically; a one-time step adds it to the live
+              ITS_Subcontractors Trades picklist.
+            </p>
+            <label className="field">
+              <span className="field__label">New trade name (e.g. Battery Storage)</span>
+              <input
+                className="field__input"
+                aria-label="New trade name"
+                value={cf.trade}
+                placeholder="Battery Storage"
+                onChange={(e) => setCf({ ...cf, trade: e.target.value })}
+              />
+            </label>
+            <label className="field">
+              <span className="field__label">Template id (lowercase, e.g. battery_storage)</span>
+              <input
+                className="field__input"
+                aria-label="New template id"
+                value={cf.template_key}
+                placeholder="battery_storage"
+                onChange={(e) => setCf({ ...cf, template_key: e.target.value })}
+              />
+            </label>
+            <label className="field">
+              <span className="field__label">Article II — the Work (scope text)</span>
+              <textarea
+                className="field__textarea"
+                aria-label="New template Article II scope text"
+                value={cf.text}
+                rows={10}
+                maxLength={100000}
+                onChange={(e) => setCf({ ...cf, text: e.target.value })}
+              />
+            </label>
+            <div className="jha__actions">
+              <button className="btn btn--primary" type="submit">
+                {busy ? "Working…" : "Queue new trade + template"}
+              </button>
+              <button className="btn btn--secondary" type="button" onClick={() => setCreateOpen(false)}>
+                Cancel
+              </button>
+            </div>
+          </form>
         ) : (
           <div className="jha__actions">
             <button className="btn btn--edit" type="button" onClick={openAdd}>
@@ -350,6 +458,9 @@ export function ExhibitTemplatesEditor({
             </button>
             <button className="btn btn--edit" type="button" onClick={openMakeCurrent}>
               Make a version current
+            </button>
+            <button className="btn btn--edit" type="button" onClick={openCreate}>
+              New article template
             </button>
           </div>
         ))}

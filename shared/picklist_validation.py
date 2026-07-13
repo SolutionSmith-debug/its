@@ -333,10 +333,34 @@ _SUBCONTRACTOR_STATE_VALUES: frozenset[str] = frozenset({
     "MT", "NE", "NV", "NH", "NJ", "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA",
     "RI", "SC", "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY",
 })
-_SUBCONTRACTOR_TRADE_VALUES: frozenset[str] = frozenset({
-    "Surveying", "Civil", "Fencing", "Post Installation", "Mechanical",
-    "AC Electrical", "MV Electrical", "DC Electrical", "Specialty",
-})
+# The subcontractor Trades vocabulary — now manifest-DERIVED (mirrors _SUBCONTRACTOR_TERMS_PROFILE_VALUES
+# below): a create-trade actuation that commits a new subcontracts/exhibit trade_map entry AUTO-registers
+# this picklist value with NO separate shared-module edit (the config actuator commits only subcontracts/).
+# The trade_map KEYS are the trade names. Reads the exhibit manifest directly (no subcontracts import —
+# shared/ must not depend on a workstream module); falls back to the seeded baseline if unreadable, so this
+# import can NEVER break. The live ITS_Subcontractors "Trades" picklist column is a SEPARATE surface (a §43
+# operator step adds a new option there); this set is only ITS's own pre-write §51 up-sync gate.
+def _derive_subcontractor_trade_values(manifest_path: Path | None = None) -> frozenset[str]:
+    if manifest_path is None:
+        manifest_path = Path(__file__).resolve().parent.parent / "subcontracts" / "exhibit" / "manifest.json"
+    fallback = frozenset({
+        "Surveying", "Civil", "Fencing", "Post Installation", "Mechanical",
+        "AC Electrical", "MV Electrical", "DC Electrical", "Specialty",
+    })
+    try:
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        trade_map = data.get("trade_map")
+        if isinstance(trade_map, dict) and trade_map:
+            return frozenset(str(k) for k in trade_map)
+    except Exception:  # noqa: BLE001 — a bad/missing manifest must NEVER break this import
+        LOGGER.warning(
+            "picklist_validation: could not derive subcontractor trades from the exhibit manifest; "
+            "using the seeded fallback set"
+        )
+    return fallback
+
+
+_SUBCONTRACTOR_TRADE_VALUES: frozenset[str] = _derive_subcontractor_trade_values()
 # The subcontract-body terms-profile vocabulary — now manifest-DERIVED (SC-S2), mirroring the PO
 # _VENDOR_TERMS_PROFILE_VALUES path: a create_profile actuation committing a new subcontracts/terms
 # manifest profile AUTO-registers this picklist value with no separate shared edit. Reads the file

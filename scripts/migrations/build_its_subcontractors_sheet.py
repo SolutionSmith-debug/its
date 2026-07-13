@@ -43,6 +43,7 @@ flipped in shared/sheet_ids.py.
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from typing import Any
 
@@ -66,10 +67,31 @@ STATE_OPTIONS = [
     "MT", "NE", "NV", "NH", "NJ", "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA",
     "RI", "SC", "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY",
 ]
-TRADE_OPTIONS = [
-    "Surveying", "Civil", "Fencing", "Post Installation", "Mechanical",
-    "AC Electrical", "MV Electrical", "DC Electrical", "Specialty",
-]
+def _derive_trade_options() -> list[str]:
+    """The Trades picklist options ARE the exhibit manifest's trade_map keys — the SAME source
+    shared/picklist_validation._SUBCONTRACTOR_TRADE_VALUES derives from, so a config-editor "New trade +
+    template" actuation (which appends a trade_map key) grows this option list with NO hand edit and the
+    tests/test_subcontract_s1.py parity stays green. Order-preserving (the curated dropdown order); falls
+    back to the seeded baseline if the manifest is unreadable (this builder must never crash on it)."""
+    manifest_path = (
+        __import__("pathlib").Path(__file__).resolve().parents[2]
+        / "subcontracts" / "exhibit" / "manifest.json"
+    )
+    fallback = [
+        "Surveying", "Civil", "Fencing", "Post Installation", "Mechanical",
+        "AC Electrical", "MV Electrical", "DC Electrical", "Specialty",
+    ]
+    try:
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        trade_map = data.get("trade_map")
+        if isinstance(trade_map, dict) and trade_map:
+            return list(trade_map)
+    except Exception:  # noqa: BLE001 — a bad/missing manifest must never crash this builder
+        pass
+    return fallback
+
+
+TRADE_OPTIONS = _derive_trade_options()
 # Provisional profile vocabulary — the subcontract terms library (SC-S3, the
 # deferred subcontract-generation workflow) has not landed yet, so these are the
 # mechanically-derived analogs of ITS_Vendors' Default Terms Profile set:
