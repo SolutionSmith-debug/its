@@ -27,6 +27,7 @@ vi.mock("../../lib/subcontracts", async (importOriginal) => {
     cancelSubcontract: vi.fn(),
     fetchExhibitTemplate: vi.fn(),
     fetchJobSiteAddress: vi.fn(),
+    fetchTrades: vi.fn(),
   };
 });
 vi.mock("../../lib/api", () => ({ fetchJobs: vi.fn() }));
@@ -129,6 +130,7 @@ beforeEach(() => {
   vi.mocked(api.fetchSubConfig).mockResolvedValue(CONFIG);
   vi.mocked(fetchJobs).mockResolvedValue(JOBS);
   vi.mocked(api.fetchJobSiteAddress).mockResolvedValue({ job_id: "JOB-000001", site_address: "500 Solar Way, Kendall CA" });
+  vi.mocked(api.fetchTrades).mockResolvedValue([...api.TRADES]); // default = the static baseline
 });
 
 /** Open the builder and fill a valid 2-line fixture: 3 × $12.34 + 2 × $0.05 = $37.12, job CA,
@@ -276,6 +278,23 @@ describe("SubcontractBuilderPage", () => {
       ),
     );
     expect(r.getByText(/set from the AC Electrical template/)).toBeTruthy();
+  });
+
+  it("the Trade dropdown is fed by the served (manifest-derived) trade list, not a hardcoded one", async () => {
+    // A trade the static baseline does NOT contain — proves the dropdown reads fetchTrades.
+    vi.mocked(api.fetchTrades).mockResolvedValue([...api.TRADES, "Battery Storage"]);
+    const r = render(<SubcontractBuilderPage onBack={() => {}} />);
+    await waitFor(() => expect(api.fetchTrades).toHaveBeenCalled());
+    fireEvent.click(r.getByText("+ New subcontract"));
+    await waitFor(() => expect(r.getByText("Battery Storage")).toBeTruthy()); // the new option renders
+  });
+
+  it("falls back to the static TRADES when the trades fetch degrades (dropdown never empties)", async () => {
+    vi.mocked(api.fetchTrades).mockRejectedValue(new Error("network"));
+    const r = render(<SubcontractBuilderPage onBack={() => {}} />);
+    await waitFor(() => expect(api.fetchSubDrafts).toHaveBeenCalled());
+    fireEvent.click(r.getByText("+ New subcontract"));
+    await waitFor(() => expect(r.getByText(api.TRADES[0])).toBeTruthy()); // static baseline still populates
   });
 
   it("selecting a trade OVERWRITES existing Exhibit A text with the trade template (operator directive)", async () => {
