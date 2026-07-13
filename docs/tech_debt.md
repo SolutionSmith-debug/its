@@ -8,6 +8,46 @@ When to add an entry: a session deliberately chooses preservation-over-refactor 
 
 **Cutover triage:** every open entry below is **post-delivery** unless its header is prefixed **`[CUTOVER-BLOCKING]`** (must resolve before the Aug-7 production cutover). The authoritative cutover gate is `docs/operations/cutover_checklist.md` (CL-01…CL-39) + `scripts/verify_cutover.py`, not these tags — the tags are prioritization only.
 
+## PO attachments (Feature B) — conscious deferrals [OPEN 2026-07-13]
+
+From the Feature-B build (PO document attachments — the §34 doc-attachment pool → Mac screen →
+Box pipeline). None blocks the ship; each is a deliberate scope line:
+
+- **ATT-1 (doctrine-aligned) — VirusTotal (§34 Layer 4) not wired.** Op Stds §34 defers it to
+  Phase 2+; `po_attach_screen` runs L1–L3 only (ClamAV config-gated OFF). Trigger: the Phase-2
+  §34 hardening pass wires VT hash-lookup for BOTH photo_screen and po_attach_screen together.
+- **ATT-2 (LOW) — encrypted OpenXML containers are not specifically classified.** A
+  password-protected .docx/.xlsx either fails the zip walk (→ suspicious, refused-to-review) or
+  walks by entry NAMES only (macro/executable name detection still holds) with content
+  inspection impossible. Acceptable: the operator's own spec docs are not expected encrypted.
+  Trigger: a real encrypted-attachment workflow.
+- **ATT-3 (LOW) — attachments upload as ONE JSON request (≤10 MB decoded).** The Worker chunks
+  into D1 rows server-side; there is no SPA-side chunked/resumable upload. Fine at the locked
+  10 MB cap; a future cap raise needs an upload-session pattern (mirror filed_pdfs in reverse).
+- **ATT-4 (BY DESIGN) — attachments on a PO canceled BEFORE filing are never screened/filed.**
+  The internal pending route serves only FILED parents (pending_review+); a queued→canceled
+  PO's attachment bytes sit in D1 until the prune's canceled-PO chunk hygiene (90d past
+  updated_at) drops them. The byte-free rows remain as the forensic manifest. Revisit only if
+  cancel volume makes 90d of latent bytes a real size concern (the prune's size tripwire now
+  samples po_attachment_chunks).
+- **ATT-5 (ACCEPTED LIMITATION, operator posture 2026-07-13) — the PDF active-content scan is
+  blind to /ObjStm compressed object streams + compressed xref.** `po_attach_screen._scan_pdf`
+  is a raw-byte marker scan (plus #xx name-escape normalization) — NOT a PDF parse. Markers
+  inside flate-compressed object streams (the DEFAULT of modern PDF producers) are invisible
+  to it, and we deliberately do NOT flag ObjStm-bearing PDFs (that is most legitimate modern
+  PDFs — flooding the review queue would break the workflow) or build a deep parser. The
+  operator's accepted posture: PO attachments are a limited-blast-radius, limited-access
+  workflow — the real controls are that boundary + the optional ClamAV layer. The in-code
+  honesty note lives on `PDF_ACTIVE_MARKERS`. Trigger: the Phase-2 §34 hardening pass (with
+  ATT-1's VirusTotal), or a widening of who can upload.
+- **ATT-6 (ACCEPTED LIMITATION, operator posture 2026-07-13) — OpenXML content-level vectors
+  beyond macros/rels/OLE-parts are not inspected.** The zip walk now catches vbaProject.bin
+  (malicious), nested executables (malicious), `TargetMode="External"` rels naming an
+  attachedTemplate/oleObject (suspicious), and `embeddings/oleObject*.bin` parts (suspicious)
+  — but DDE field codes inside document.xml (and other in-content constructs) are NOT parsed.
+  Same limited-blast-radius rationale as ATT-5; the in-code note lives in the module docstring
+  + `_scan_openxml`. Trigger: same as ATT-5.
+
 ## Subcontracts — SC-S3c adversarial-review follow-ups (non-blocking) [OPEN 2026-07-11]
 
 From the SC-S3c verify phase (portal-worker-security-reviewer + ops-stds-enforcer + completeness critic;

@@ -24,6 +24,26 @@ def po_pdf_filename(po_number: str, job_name: str | None) -> str:
     return f"{job}_PO_{po_number}.pdf" if job else f"PO {po_number}.pdf"
 
 
+def po_attachment_filename(po_number: str, attachment_id: int, original_filename: str) -> str:
+    """The filed name of a PO DOCUMENT ATTACHMENT (Feature B):
+    ``PO_<po_number>_ATT<id>_<original>``. One source for BOTH delivery surfaces (the
+    Box file in the job's "Purchase Orders" folder AND the PO_Log row attachment — the
+    multi-surface fan-out lesson).
+
+    The D1 attachment id is PART OF THE NAME — load-bearing (review BLOCKER fix): a PO
+    carries up to 5 attachments and two uploads can share an original filename (two
+    ``IMG_0001.jpg`` phone photos; two vendors' ``spec.pdf``). Without the id, the
+    second upload would land as a NEW VERSION of the first in Box
+    (`upload_bytes_or_new_version` keys on the name) AND `attach_pdf_to_row
+    (replace=True)` would DELETE the first's PO_Log inline copy — silent loss of the
+    first document on both surfaces. §47 version-on-conflict is for the SAME logical
+    artifact re-filed (a crash-retry of THIS attachment keeps its id → same name →
+    idempotent new version); two independent uploads are DISTINCT documents and get
+    distinct names. The PO number still prefixes the name so attachments group beside
+    their PO PDF; the original name (charset-bounded by the Worker gate) stays visible."""
+    return f"PO_{po_number}_ATT{attachment_id}_{original_filename}"
+
+
 def po_pdf_title(po_number: str, job_name: str | None) -> str:
     """The PDF's internal ``/Title`` metadata: ``Purchase Order <po_number> — <Job>``
     (job appended). Falls back to ``Purchase Order <po_number>`` when the job name is

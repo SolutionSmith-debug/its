@@ -1194,17 +1194,30 @@ export function registerPoRoutes(app: FieldopsApp, gates: PoGates): void {
     return c.json({ ok: true, id });
   });
 
-  // POST /api/po/:id/delete — HARD delete of an un-generated DRAFT (the row + its line items). DRAFT-ONLY:
+  // POST /api/po/:id/delete — HARD delete of an un-generated DRAFT (the row + its line items + its
+  // attachment pool rows/chunks, Feature B). DRAFT-ONLY:
   // a generated/queued/pending_review/approved/sent/superseded/canceled row is a real record (PO number,
   // audit, possibly Box/Smartsheet artifacts) — those exit via cancel/supersede, NEVER a hard delete. Atomic:
-  // the po_line_items delete is subquery-scoped to the parent STILL being a draft (no ON DELETE CASCADE), so
-  // a non-draft leaves BOTH tables untouched (no orphaned lines); the audit lands only if the draft row was
-  // actually removed (changes()=1 on the parent delete, W4).
+  // every child delete is subquery-scoped to the parent STILL being a draft (no ON DELETE CASCADE), so
+  // a non-draft leaves ALL tables untouched (no orphaned lines/attachments/chunks); the audit lands only if
+  // the draft row was actually removed (changes()=1 on the parent delete, W4). CHILD ORDER is load-bearing:
+  // chunks resolve through po_attachments, so they go BEFORE the attachment rows; the parent goes last.
   app.post("/api/po/:id/delete", gates.requireSession, gates.requireCapability(CAP_PO), async (c) => {
     const id = parseIdParam(c.req.param("id"));
     if (id === null) return c.json({ error: "invalid_id" }, 400);
     const actor = c.get("session").username;
     const res = await c.env.DB.batch([
+      c.env.DB
+        .prepare(
+          "DELETE FROM po_attachment_chunks WHERE attachment_id IN " +
+            "(SELECT id FROM po_attachments WHERE po_id IN (SELECT id FROM purchase_orders WHERE id=?1 AND status='draft'))",
+        )
+        .bind(id),
+      c.env.DB
+        .prepare(
+          "DELETE FROM po_attachments WHERE po_id IN (SELECT id FROM purchase_orders WHERE id=?1 AND status='draft')",
+        )
+        .bind(id),
       c.env.DB
         .prepare(
           "DELETE FROM po_line_items WHERE po_id IN (SELECT id FROM purchase_orders WHERE id=?1 AND status='draft')",
@@ -1213,7 +1226,7 @@ export function registerPoRoutes(app: FieldopsApp, gates: PoGates): void {
       c.env.DB.prepare("DELETE FROM purchase_orders WHERE id=?1 AND status='draft'").bind(id),
       auditStmtIfChanged(c, actor, "po_delete", String(id), { po_id: id }),
     ]);
-    if ((res[1].meta.changes ?? 0) === 0) {
+    if ((res[3].meta.changes ?? 0) === 0) {
       const row = await c.env.DB.prepare("SELECT status FROM purchase_orders WHERE id = ?1").bind(id).first();
       return row ? c.json({ error: "not_deletable" }, 409) : c.json({ error: "not_found" }, 404);
     }

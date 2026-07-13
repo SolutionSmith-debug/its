@@ -277,6 +277,10 @@ export function PoBuilderPage({ onBack }: { onBack: () => void }) {
    *  `recomputed`). Displayed over the client mirror when present; any money-affecting edit
    *  clears it back to the live mirror. */
   const [serverTotals, setServerTotals] = useState<api.PoTotals | null>(null);
+  // ── Attachments (Feature B): specs/drawings pooled on the DRAFT, §34-screened on the
+  //    Mac before Box — the list here is metadata only (bytes never come back to the SPA).
+  const [attachments, setAttachments] = useState<api.PoAttachment[]>([]);
+  const [attBusy, setAttBusy] = useState(false);
 
   function resetForm() {
     setDraftId(null);
@@ -308,6 +312,7 @@ export function PoBuilderPage({ onBack }: { onBack: () => void }) {
     setApproverName("");
     setApproverTitle("");
     setServerTotals(null);
+    setAttachments([]);
   }
 
   /** Seed the payment-terms textarea with the invoice-routing line from the versioned
@@ -633,6 +638,8 @@ export function PoBuilderPage({ onBack }: { onBack: () => void }) {
         tax_cents: po.tax_cents,
         total_cents: po.total_cents,
       });
+      // Attachment list is a best-effort convenience read — never blocks the open.
+      api.fetchPoAttachments(po.id).then(setAttachments).catch(() => setAttachments([]));
       setView("builder");
     } catch (err) {
       setMsg({ ok: false, text: err instanceof Error ? err.message : "Could not open the draft." });
@@ -693,6 +700,90 @@ export function PoBuilderPage({ onBack }: { onBack: () => void }) {
     }
     setBusy(false);
   }
+
+  // ── Attachments (Feature B) ────────────────────────────────────────────────────────────────────
+  /** File → base64 (no data: prefix — the wire contract the Worker validates). */
+  function fileToB64(f: File): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const s = String(reader.result ?? "");
+        const comma = s.indexOf(",");
+        resolve(comma >= 0 ? s.slice(comma + 1) : s);
+      };
+      reader.onerror = () => reject(new Error("Could not read the file."));
+      reader.readAsDataURL(f);
+    });
+  }
+
+  /** Upload the picked files onto the SAVED draft. Client-side size/type checks are
+   *  HINTS only — the Worker re-gates every upload (size, count, filename, MIME
+   *  allowlist + magic sniff), and the real §34 screen runs on the Mac before Box. */
+  async function onAttachFiles(fileList: FileList | null) {
+    if (!fileList || fileList.length === 0 || draftId === null || attBusy) return;
+    // Snapshot the File references SYNCHRONOUSLY — the change handler resets the
+    // input's value right after this call, which empties the live FileList.
+    const files = Array.from(fileList);
+    setAttBusy(true);
+    setMsg(null);
+    let count = attachments.length;
+    for (const f of files) {
+      const dot = f.name.lastIndexOf(".");
+      const ext = dot >= 0 ? f.name.slice(dot).toLowerCase() : "";
+      const mime = api.ATTACHMENT_MIME_BY_EXT[ext];
+      if (!mime) {
+        setMsg({ ok: false, text: `"${f.name}" isn't an allowed type — PDF, JPG, PNG, DOCX, or XLSX.` });
+        continue;
+      }
+      if (f.size > api.ATTACHMENT_MAX_BYTES) {
+        setMsg({ ok: false, text: `"${f.name}" is over the 10 MB per-file limit.` });
+        continue;
+      }
+      if (count >= api.MAX_ATTACHMENTS_PER_PO) {
+        setMsg({ ok: false, text: `A purchase order can carry at most ${api.MAX_ATTACHMENTS_PER_PO} attachments.` });
+        break;
+      }
+      try {
+        const b64 = await fileToB64(f);
+        await api.uploadPoAttachment(draftId, f.name, mime, b64);
+        count += 1;
+      } catch (err) {
+        setMsg({ ok: false, text: err instanceof Error ? err.message : `Upload of "${f.name}" failed.` });
+      }
+    }
+    try {
+      setAttachments(await api.fetchPoAttachments(draftId));
+    } catch {
+      /* list refresh is best-effort */
+    }
+    setAttBusy(false);
+  }
+
+  async function onRemoveAttachment(attachmentId: number) {
+    if (draftId === null || attBusy) return;
+    setAttBusy(true);
+    setMsg(null);
+    try {
+      await api.deletePoAttachment(draftId, attachmentId);
+      setAttachments(await api.fetchPoAttachments(draftId));
+    } catch (err) {
+      setMsg({ ok: false, text: err instanceof Error ? err.message : "Could not remove the attachment." });
+    }
+    setAttBusy(false);
+  }
+
+  function formatBytes(n: number): string {
+    if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)} MB`;
+    if (n >= 1_000) return `${Math.round(n / 1_000)} KB`;
+    return `${n} B`;
+  }
+
+  const ATTACHMENT_STATUS_LABEL: Record<api.PoAttachment["status"], string> = {
+    pending: "Awaiting screening",
+    claimed: "Screening…",
+    filed: "Filed ✓",
+    refused: "Refused — see review",
+  };
 
   // ── Render: line grid columns per variant ──────────────────────────────────────────────────────
   function lineHeaders() {
@@ -1276,9 +1367,82 @@ export function PoBuilderPage({ onBack }: { onBack: () => void }) {
         )}
       </section>
 
-      {/* 8 — Review & generate */}
-      <section className="card dash-section" aria-label="Step 8 — Review and generate">
-        <h3 className="jha__section-title">8 · Review &amp; generate</h3>
+      {/* 8 — Attachments (Feature B — the "end of the workflow" attachment field). Files ride
+          the SAVED draft in the send-free D1 pool and are §34-screened on the Mac after the PO
+          files; only CLEAN files reach Box + the PO ledger row. The Worker is the real gate —
+          the checks here are hints. */}
+      <section className="card dash-section" aria-label="Step 8 — Attachments">
+        <h3 className="jha__section-title">8 · Attachments (specs, drawings, docs)</h3>
+        {draftId === null ? (
+          <p className="muted">Save the draft first — attachments ride the saved draft and file with the PO.</p>
+        ) : (
+          <>
+            {attachments.length > 0 ? (
+              <table className="dash-table">
+                <thead>
+                  <tr>
+                    <th>File</th>
+                    <th>Size</th>
+                    <th>Status</th>
+                    <th />
+                  </tr>
+                </thead>
+                <tbody>
+                  {attachments.map((a) => (
+                    <tr key={a.id}>
+                      <td className="dash-table__name">{a.filename}</td>
+                      <td>{formatBytes(a.size_bytes)}</td>
+                      <td>
+                        <span className="dash-pill">{ATTACHMENT_STATUS_LABEL[a.status] ?? a.status}</span>
+                      </td>
+                      <td>
+                        <button
+                          type="button"
+                          className="btn btn--retire"
+                          aria-label={`Remove attachment ${a.filename}`}
+                          disabled={attBusy || busy}
+                          onClick={() => void onRemoveAttachment(a.id)}
+                        >
+                          ✕
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : (
+              <p className="muted">No attachments yet.</p>
+            )}
+            {canManage ? (
+              <label className="field">
+                <span className="field__label">
+                  Add files (PDF, JPG, PNG, DOCX, XLSX — up to 10 MB each, max {api.MAX_ATTACHMENTS_PER_PO})
+                </span>
+                <input
+                  className="field__input"
+                  type="file"
+                  aria-label="Attach files"
+                  accept={api.ATTACHMENT_ACCEPT}
+                  multiple
+                  disabled={attBusy || busy || attachments.length >= api.MAX_ATTACHMENTS_PER_PO}
+                  onChange={(e) => {
+                    void onAttachFiles(e.target.files);
+                    e.target.value = ""; // allow re-picking the same file after a refusal
+                  }}
+                />
+              </label>
+            ) : null}
+            <p className="muted">
+              Attachments are security-screened before filing; clean files land in the job's Box
+              folder beside the PO and on the PO ledger row.
+            </p>
+          </>
+        )}
+      </section>
+
+      {/* 9 — Review & generate */}
+      <section className="card dash-section" aria-label="Step 9 — Review and generate">
+        <h3 className="jha__section-title">9 · Review &amp; generate</h3>
         <div className="dash-card__row">
           <span className="dash-card__label">Job</span>
           <span>
@@ -1324,6 +1488,10 @@ export function PoBuilderPage({ onBack }: { onBack: () => void }) {
         <div className="dash-card__row">
           <span className="dash-card__label">Terms</span>
           <span>{selectedTerms ? `${selectedTerms.label}${selectedTerms.current_version ? ` v${selectedTerms.current_version}` : ""}` : "—"}</span>
+        </div>
+        <div className="dash-card__row">
+          <span className="dash-card__label">Attachments</span>
+          <span>{attachments.length === 0 ? "None" : `${attachments.length} file${attachments.length === 1 ? "" : "s"} (screened before filing)`}</span>
         </div>
         {sow ? (
           <div className="dash-card__row">

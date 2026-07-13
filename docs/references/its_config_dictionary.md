@@ -55,6 +55,7 @@ This is the operator reference for **ITS_Config** — the Smartsheet sheet where
 | Setting | Type | Default | Purpose | Read by |
 |---|---|---|---|---|
 | `po_materials.config_actuator.polling_enabled` | bool | false | Runtime gate for the §50 config actuator daemon (applies approved workstream-config changes on the Mac). | po_materials.config_actuator |
+| `po_materials.po_attach_screen.clamav_enabled` | bool | false | Optional ClamAV layer of the §34 PO document-attachment screener (po_attach_screen L3). Default OFF; requires clamd + pyclamd on the Mac. | po_materials.po_poll |
 | `po_materials.po_poll.polling_enabled` | bool | false | Runtime gate for the PO pull daemon (pulls submitted POs from the Worker). Ships dark. | po_materials.po_poll |
 | `po_materials.po_poll.status_sync_enabled` | bool | false | Sub-gate: sync PO statuses back to the portal. Ships dark. | po_materials.po_poll |
 | `po_materials.po_poll.vendors_sync_enabled` | bool | false | Sub-gate: push the vendor list down to the portal PO dropdown. Ships dark. | po_materials.po_poll |

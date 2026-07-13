@@ -26,7 +26,12 @@ passes**, each behind its own ITS_Config gate:
 1. **Drafts pass** (`po_materials.po_poll.polling_enabled`) — pull queued POs, HMAC-verify,
    recompute + assert totals, double-check the PO number against `PO_Log`, snapshot the
    vendor from `ITS_Vendors`, render the PO PDF, file to Box, append `PO_Log` +
-   `PO_Pending_Review`, then receipt back to the Worker (`mark-filed`) **last**.
+   `PO_Pending_Review`, then receipt back to the Worker (`mark-filed`) **last**. The same
+   gate also drives the **attachment pass** (Feature B): office-uploaded PO documents
+   (specs/drawings) are pulled from the portal pool, §34-screened
+   (`po_materials/po_attach_screen.py`; optional ClamAV layer behind
+   `po_materials.po_attach_screen.clamav_enabled`, seeded `false`), and only CLEAN files
+   land in the job's Box "Purchase Orders" folder + on the `PO_Log` row (Symptom 13).
 2. **Vendor down-sync pass** (`po_materials.po_poll.vendors_sync_enabled`) — project the full
    `ITS_Vendors` SoR into the Worker's D1 cache (full-replace; the Worker's dirty-row fence
    protects un-mirrored portal edits).
@@ -412,6 +417,64 @@ novel/code → Seth.
 
 ---
 
+## Symptom 14 — a PO document attachment missing from Box / the PO_Log row (Feature B)
+
+### Symptom
+
+- A PO filed normally (PDF in Box, `PO_Log` + `PO_Pending_Review` rows exist), but a
+  spec/drawing the office attached in the builder never appeared in the job's Box
+  "Purchase Orders" folder or on the `PO_Log` row, **and/or**
+- an `ITS_Review_Queue` row names the attachment: summary starting `po: attachment …
+  refused as SUSPICIOUS`, `po: MALICIOUS attachment …`, or `po: attachment INTEGRITY
+  FAILURE …`, **and/or**
+- ITS_Errors shows `po_attachment_suspicious` (WARN), `po_attachment_transient` /
+  `po_attachment_service_failed` / `po_attachment_result_post_failed` (ERROR),
+  `po_attachment_malicious` / `po_attachment_integrity_failure` (CRITICAL), or
+  `po_attachment_log_attach_failed` / `po_attachment_log_row_missing` (WARN).
+  (`po_attachment_result_post_failed` means the refusal ALERT already fired once and
+  is one-shot-flagged — the disposition post-back is what failed; the row stays
+  claimed in D1 and the flag prevents an alert storm. Clearing the row's `att-<id>`
+  entry from `po_poll_flagged.json` retries the whole service after the transport
+  recovers.)
+
+### What it means
+
+Attachments are uploaded at DRAFT time into the portal's send-free D1 pool and are
+**security-screened on the Mac** (§34: magic/consistency → PDF active-content /
+Office-macro / zip-bomb / image checks → optional ClamAV) *after* the PO files. Only a
+CLEAN file reaches Box + the ledger row. A missing attachment therefore means one of:
+still queued (the pass runs every cycle — wait ~2 minutes), refused by the screen
+(the Review-Queue row says why), a transient Box/Smartsheet error (self-heals next
+cycle), or an integrity failure (one-shot-flagged, never retried automatically).
+
+### The low-class Tier-2 checks + repair
+
+1. **Wait one cycle** (~90 s) — a `po_attachment_transient` / `po_attachment_service_failed`
+   error retries automatically; the attachment stays serviceable (`pending`/`claimed`).
+2. **`po_attachment_log_attach_failed` / `po_attachment_log_row_missing` (WARN)** — the
+   file IS in Box (Box is the SoR); only the supplementary Smartsheet inline copy failed.
+   Low-class: download from Box and attach to the `PO_Log` row by hand, or leave it.
+3. **A SUSPICIOUS refusal** (`po_attachment_suspicious` + a Review-Queue row) — the file
+   was refused-to-review, not filed. If the operator confirms the file is legitimate
+   (e.g. a vendor PDF that carries JavaScript form fields), the low-class path is:
+   re-export/print the document to a plain PDF and attach it to a NEW PO draft (or hand-file
+   it to Box). **Do not** try to force the original through — the refusal is the control.
+   Close the Review-Queue row once resolved.
+4. **An INTEGRITY failure** (`po_attachment_integrity_failure`) is one-shot-flagged in
+   `~/its/state/po_poll_flagged.json` under `"att-<id>"`. It never retries until the entry
+   is deleted — but an integrity failure means the stored bytes/row no longer match what
+   the Worker signed, so **do not clear it without Seth** (see below).
+
+### Escalate-to-Seth condition
+
+**Anything naming MALICIOUS** (`po_attachment_malicious`, a Review-Queue row with the
+security flag naming the uploading account) or **INTEGRITY FAILURE** is security /
+high-class — escalate immediately with the Review-Queue row; do not clear flags, do not
+re-upload the file, and do not disable the ClamAV gate row as a "fix". Also escalate when
+the same attachment loops transient across many cycles (possible code defect).
+
+---
+
 ## Other quiet failure modes (low-severity, self-healing)
 
 - **`po_pending_fetch_failed` / `po_filing_transient` / `po_filing_unexpected` (ERROR)** —
@@ -465,8 +528,9 @@ Run in order; each gate row's ITS_Config Description restates its own preconditi
 3. **Keychain (Seth — secrets/auth):** seed **`ITS_PORTAL_PO_TOKEN`** (byte-equal to the
    Worker's `PORTAL_PO_API_TOKEN`) and confirm **`ITS_PORTAL_HMAC_SECRET`** matches the
    Worker's payload secret.
-4. **Config + data:** confirm the 8 `po_materials.*` rows are seeded
-   (`scripts/migrations/seed_po_materials_config.py` — all `false`); seed `ITS_Vendors`
+4. **Config + data:** confirm the 9 `po_materials.*` rows are seeded
+   (`scripts/migrations/seed_po_materials_config.py` — gates `false`, incl. the Feature-B
+   `po_attach_screen.clamav_enabled` row); seed `ITS_Vendors`
    (`scripts/migrations/seed_its_vendors.py`); set ITS_Config
    `safety_reports.box.portal_root_folder_id` (the Box mirror-tree root).
 5. **Install + load** the plist (`scripts/launchd/install.sh load org.solutionsmith.its.po-poll`).

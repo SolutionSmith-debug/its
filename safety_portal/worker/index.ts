@@ -32,6 +32,7 @@ import {
 } from "./fieldops_daily_photos";
 import { registerProgressRollupRoutes } from "./fieldops_rollup";
 import { registerPoRoutes } from "./po";
+import { registerPoAttachmentRoutes } from "./po_attachments";
 import { registerConfigRoutes } from "./config";
 import { registerSubcontractRoutes } from "./subcontract";
 import {
@@ -488,6 +489,11 @@ registerProgressRollupRoutes(app, requireInternalToken);
 // — PO workstream S2: vendors cache + drafts/generate/supersede/cancel (session +
 //   cap.po.manage) + the /api/po/internal/* queue under the NEW requirePoToken tier —
 registerPoRoutes(app, { requireSession, requireCapability, requirePoToken });
+// — PO document attachments (Feature B): draft-scoped upload/list/delete (session +
+//   cap.po.manage) + the Mac-ward /api/po/internal/attachments/* byte surface under the
+//   SAME requirePoToken tier. §34 Option-D: the Worker bounds-gates + pools bytes in D1
+//   SEND-FREE; the Mac screens (po_attach_screen) before Box/Smartsheet. —
+registerPoAttachmentRoutes(app, { requireSession, requireCapability, requirePoToken });
 // — Config-editor queue (§50): generic versioned-config editor (session + per-workstream cap) +
 //   the /api/internal/config/* queue under the NEW requireConfigToken tier. SEND-FREE — the Mac
 //   config daemon (built LATER) is the sole privileged git-commit/deploy actuator. —
