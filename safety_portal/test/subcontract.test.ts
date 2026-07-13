@@ -520,6 +520,23 @@ describe("draft → generate", () => {
     expect((await json<{ error: string }>(res)).error).toBe("sov_mismatch");
   });
 
+  it("draft create ACCEPTS a full Article II body larger than the old 8000-char cap (electrical is ~20k)", async () => {
+    // Regression: the electrical Article II template is ~20k chars; the old MAX_SCOPE=8000 (inherited from
+    // PO's MAX_SOW) made an electrical subcontract outright unsaveable. The instance cap is now sized to the
+    // config-editor's template authoring cap (100_000), so any authored template pre-fills AND saves.
+    const bigWork = "A".repeat(20_000);
+    const res = await p(admin, "/api/subcontracts/drafts", draftBody({ exhibit_a_work_text: bigWork }));
+    expect(res.status, await res.clone().text()).toBe(201);
+    const { id } = await json<{ id: number }>(res);
+    expect((await subRow(id)).exhibit_a_work_text).toBe(bigWork); // stored in full, not truncated
+  });
+
+  it("draft create REJECTS an Exhibit A body over the 100_000 cap (400 invalid_exhibit_a_work_text)", async () => {
+    const res = await p(admin, "/api/subcontracts/drafts", draftBody({ exhibit_a_work_text: "A".repeat(100_001) }));
+    expect(res.status).toBe(400);
+    expect((await json<{ error: string }>(res)).error).toBe("invalid_exhibit_a_work_text");
+  });
+
   it("generate: happy path allocates the D7 number, signs, and queues", async () => {
     const created = await p(admin, "/api/subcontracts/drafts", draftBody());
     const { id } = await json<{ id: number }>(created);

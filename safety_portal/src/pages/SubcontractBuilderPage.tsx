@@ -955,7 +955,7 @@ export function SubcontractBuilderPage({ onBack }: { onBack: () => void }) {
             className="field__textarea"
             aria-label="Exhibit A work text"
             value={exhibitAWorkText}
-            maxLength={8000}
+            maxLength={100000}
             rows={5}
             onChange={(e) => setExhibitAWorkText(e.target.value)}
           />

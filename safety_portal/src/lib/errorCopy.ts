@@ -250,7 +250,7 @@ export const ERROR_COPY: Record<string, string> = {
   invalid_governing_law_state: "Pick a governing-law state — a subcontract can't be generated without one.",
   invalid_exhibit_a_template_id: "That Exhibit A template reference isn't valid.",
   invalid_exhibit_a_template_version: "That Exhibit A template version isn't valid.",
-  invalid_exhibit_a_work_text: "The Exhibit A scope of work is too long (up to 8000 characters).",
+  invalid_exhibit_a_work_text: "The Exhibit A scope of work is too long (up to 100,000 characters).",
   invalid_scope_summary: "The scope summary is too long (up to 512 characters).",
   invalid_price_basis: "Pick a price basis — Fixed or Not-to-exceed.",
   invalid_contract_price: "Enter a valid contract price.",

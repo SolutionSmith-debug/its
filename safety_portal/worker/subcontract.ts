@@ -141,7 +141,11 @@ const MAX_PHONE = 40;
 const MAX_EMAIL = 320;
 const MAX_ADDRESS = 512;
 const MAX_NOTES = 2000;
-const MAX_SCOPE = 8000; // Exhibit A "The Work" text (replaces PO's MAX_SOW)
+// Exhibit A "Article II — The Work" is a FULL legal scope body, NOT a PO line-item blurb — it is sized to
+// the config-editor's TEMPLATE authoring cap (config.ts MAX_PAYLOAD_BYTES / config_apply _MAX_TERMS_TEXT =
+// 100_000), so any template the operator can author pre-fills + saves as an instance. (The 8000 inherited
+// from PO's MAX_SOW under-sized it: the electrical Article II is ~20k chars and was outright unsaveable.)
+const MAX_SCOPE = 100_000;
 const MAX_LICENSE = 64;
 const MAX_CATEGORIES = 20;
 const MAX_LINES = 100;
