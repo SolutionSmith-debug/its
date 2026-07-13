@@ -79,11 +79,14 @@ Checks shipped:
        Slice 1). The Smartsheet per-sheet row cap is a verified 20,000 (not
        the eval's 5,000); past it add_rows fails, losing the forensic record
        and blinding Check B. WARN at 15,000; at 16,000 delete TERMINAL rows
-       older than 90d, oldest-first, batches of 450 (thresholds in
-       shared/defaults.py). NEVER deletes open CRITICALs (blank Resolved At)
-       or PENDING / IN_REVIEW / ESCALATED queue rows. Every rotation writes
-       an ITS_Errors summary record (never silent); CRITICAL when over the
-       rotate mark with nothing deletable. `--dry` CLI flag previews.
+       older than 90d, oldest-first, batches of 200 (thresholds in
+       shared/defaults.py). If the 90d pass finds nothing, STORM-MODE
+       re-selects at the 48h storm floor (2026-07-13 incident — retention
+       can exceed the system's age). NEVER deletes open CRITICALs (blank
+       Resolved At) or PENDING / IN_REVIEW / ESCALATED queue rows. Every
+       rotation writes an ITS_Errors summary record (never silent);
+       CRITICAL only when even the storm floor finds nothing deletable.
+       `--dry` CLI flag previews.
 
 Planned (NOT in this file, scheduled for a follow-on PR — the Check E
 shipping PR; see `docs/tech_debt.md`):
@@ -2069,12 +2072,31 @@ def _check_portal_prune_health() -> CheckResult:
 # Mechanism (boring, rides the daily watchdog): count each sheet; WARN at
 # SHEET_ROW_WARN_THRESHOLD (15,000); at SHEET_ROW_ROTATE_THRESHOLD (16,000)
 # delete TERMINAL rows older than SHEET_ROW_ROTATION_RETENTION_DAYS (90d),
-# oldest first, in delete_rows batches of 450 (the Smartsheet per-call cap),
+# oldest first, in delete_rows batches of 200 (NOT a documented Smartsheet
+# cap — the SDK passes row IDs in the URL query string, and 450 sixteen-digit
+# IDs blew the URL length limit with an HTTP 400 when first exercised live,
+# 2026-07-13; 200 is the live-verified working size — see defaults.py),
 # bounded per run — the next daily run re-counts and continues (Smartsheet's
 # eventual-consistency window makes an in-run recount unreliable anyway).
-# Every rotation writes a WARN summary record to ITS_Errors (never silent);
-# over the rotate mark with NOTHING deletable → CRITICAL (paged via
-# _run_check; MAINTENANCE-deferred like every CheckResult page).
+# Every rotation writes a WARN summary record to ITS_Errors (never silent).
+#
+# STORM-MODE fallback (added 2026-07-13 — the day ITS_Errors actually hit the
+# 20,000 cap): the 90d retention structurally exceeds the system's age for
+# its whole first 90 days of life, so during that window NOTHING can ever be
+# age-eligible — the 2026-07-13 config-WARN storm (~1,400–4,500 rows/day from
+# daemons WARNing per-cycle on 5 missing ITS_Config rows) filled the sheet to
+# the hard cap while this check fired CRITICAL "nothing deletable" two days
+# running and deleted nothing (the ~13-day storm arithmetic above played out
+# for real). When a sheet is over the rotate mark and the 90d pass yields
+# ZERO eligible rows, eligibility is RE-SELECTED with the
+# SHEET_ROW_STORM_FLOOR_DAYS (2d = 48h at date granularity) floor — same
+# terminal predicate, same missing/unparseable-date exclusion, same
+# oldest-first order, batching, per-run cap, and partial-failure semantics.
+# A storm-mode rotation is WARN, with a LOUD "STORM-MODE" prefix in the note
+# and the same never-silent row_cap_rotation record naming the overridden
+# retention. Only when even the storm floor finds nothing does the CRITICAL
+# fire (paged via _run_check; MAINTENANCE-deferred like every CheckResult
+# page).
 #
 # "Terminal" is defined from each sheet's REAL columns:
 #   ITS_Errors (written by error_log._smartsheet_log; resolution = operator
@@ -2099,14 +2121,19 @@ def _check_portal_prune_health() -> CheckResult:
 # loop and report a partial rotation — the next run continues.
 #
 # §43 (successor-operator): symptom = daily watchdog WARN "row-cap" naming a
-# sheet, or CRITICAL "nothing deletable". Low-class repair = none needed for
-# WARN (rotation is automatic; verify next-day count fell). For the CRITICAL:
-# the sheet is full of rows the rotation refuses to touch (open CRITICALs /
-# un-drained queue rows younger than 90d) — resolve/drain them in Smartsheet
-# (stamp `Resolved At` on stale CRITICALs after review; drain queue rows),
-# then re-run `python3 scripts/watchdog.py --dry` to preview. Escalate to
-# Seth if the CRITICAL persists after draining (retention/threshold change =
-# a code change, high-class).
+# sheet (a note prefixed "STORM-MODE" means the 90d retention was overridden
+# — the rotation deleted terminal rows older than the 48h storm floor; no
+# action needed, but it signals an active error storm worth investigating),
+# or CRITICAL "nothing deletable". Low-class repair = none needed for WARN
+# (rotation is automatic; verify next-day count fell). For the CRITICAL —
+# which now means even the 48h storm floor found nothing: the sheet is full
+# of rows the rotation refuses to touch (open CRITICALs / un-drained queue
+# rows / rows with unprovable dates, all inside the storm floor or
+# protected) — resolve/drain them in Smartsheet (stamp `Resolved At` on
+# stale CRITICALs after review; drain queue rows), then re-run
+# `python3 scripts/watchdog.py --dry` to preview. Escalate to Seth if the
+# CRITICAL persists after draining (retention/threshold/floor change = a
+# code change, high-class).
 
 
 def _errors_row_is_terminal(row: dict[str, Any]) -> bool:
@@ -2148,6 +2175,36 @@ _ROTATION_POLICIES: list[tuple[str, int, Callable[[dict[str, Any]], bool], str]]
 _SEVERITY_ORDER = {Severity.INFO: 0, Severity.WARN: 1, Severity.CRITICAL: 2}
 
 
+def _select_rotation_eligible(
+    rows: list[dict[str, Any]],
+    is_terminal: Callable[[dict[str, Any]], bool],
+    date_column: str,
+    retention_days: int,
+) -> list[tuple[date, int]]:
+    """TERMINAL rows strictly older than the retention cutoff, oldest-first.
+
+    The single eligibility filter for BOTH the normal 90d pass and the
+    storm-mode re-select — the invariants live here so the storm floor can
+    never widen them: non-terminal rows (open CRITICALs, un-drained queue
+    rows) and rows with a missing/unparseable date are NEVER eligible, at
+    any retention. Sorted (date, row id) for a stable oldest-first order.
+    """
+    cutoff = date.today() - timedelta(days=retention_days)
+    eligible: list[tuple[date, int]] = []
+    for row in rows:
+        row_id = row.get("_row_id")
+        if not isinstance(row_id, int):
+            continue
+        if not is_terminal(row):
+            continue
+        aged = _row_age_date(row, date_column)
+        if aged is None or aged >= cutoff:
+            continue
+        eligible.append((aged, row_id))
+    eligible.sort()
+    return eligible
+
+
 def _rotate_one_sheet(
     label: str,
     sheet_id: int,
@@ -2183,28 +2240,44 @@ def _rotate_one_sheet(
 
     # Over the rotate mark — select eligible rows: TERMINAL and older than
     # the retention window, oldest first (date, then row id for a stable order).
-    cutoff = date.today() - timedelta(days=defaults.SHEET_ROW_ROTATION_RETENTION_DAYS)
-    eligible: list[tuple[date, int]] = []
-    for row in rows:
-        row_id = row.get("_row_id")
-        if not isinstance(row_id, int):
-            continue
-        if not is_terminal(row):
-            continue
-        aged = _row_age_date(row, date_column)
-        if aged is None or aged >= cutoff:
-            continue
-        eligible.append((aged, row_id))
-    eligible.sort()
+    eligible = _select_rotation_eligible(
+        rows, is_terminal, date_column, defaults.SHEET_ROW_ROTATION_RETENTION_DAYS
+    )
+    storm_mode = False
+    if not eligible:
+        # STORM-MODE fallback (2026-07-13 incident — see the rationale block
+        # above): the 90d retention found nothing, which during the system's
+        # first 90 days is STRUCTURAL (retention > system age), so re-select
+        # with the 48h storm floor. Same invariants — only TERMINAL rows with
+        # a provable age are ever deleted, at any floor.
+        eligible = _select_rotation_eligible(
+            rows, is_terminal, date_column, defaults.SHEET_ROW_STORM_FLOOR_DAYS
+        )
+        storm_mode = bool(eligible)
 
     if not eligible:
         return (
             Severity.CRITICAL,
             f"{label}: {count} rows over rotate mark {defaults.SHEET_ROW_ROTATE_THRESHOLD} but "
-            f"NOTHING is deletable (no terminal rows older than "
-            f"{defaults.SHEET_ROW_ROTATION_RETENTION_DAYS}d) — resolve/drain rows or escalate; "
-            f"hard cap {defaults.SHEET_ROW_HARD_CAP} approaching",
+            f"NOTHING is deletable (no terminal rows older than the "
+            f"{defaults.SHEET_ROW_ROTATION_RETENTION_DAYS}d retention, and none older than the "
+            f"{defaults.SHEET_ROW_STORM_FLOOR_DAYS}d storm floor either — the sheet is open "
+            f"CRITICALs / un-drained queue rows / unprovable dates) — resolve/drain rows or "
+            f"escalate; hard cap {defaults.SHEET_ROW_HARD_CAP} approaching",
         )
+
+    effective_retention_days = (
+        defaults.SHEET_ROW_STORM_FLOOR_DAYS
+        if storm_mode
+        else defaults.SHEET_ROW_ROTATION_RETENTION_DAYS
+    )
+    storm_prefix = (
+        f"STORM-MODE — {defaults.SHEET_ROW_ROTATION_RETENTION_DAYS}d retention OVERRIDDEN "
+        f"(nothing was age-eligible; retention exceeds the rows' age — error storm), "
+        f"falling back to the {defaults.SHEET_ROW_STORM_FLOOR_DAYS}d storm floor: "
+        if storm_mode
+        else ""
+    )
 
     batch_size = defaults.SHEET_ROW_ROTATION_DELETE_BATCH
     per_run_cap = batch_size * defaults.SHEET_ROW_ROTATION_MAX_BATCHES_PER_RUN
@@ -2213,7 +2286,7 @@ def _rotate_one_sheet(
     if dry_run:
         return (
             Severity.WARN,
-            f"{label}: DRY RUN — {count} rows over rotate mark; would delete "
+            f"{label}: DRY RUN — {storm_prefix}{count} rows over rotate mark; would delete "
             f"{len(to_delete)} of {len(eligible)} eligible terminal rows "
             f"(oldest-first, batches of {batch_size})",
         )
@@ -2231,9 +2304,9 @@ def _rotate_one_sheet(
         deleted += len(chunk)
 
     note = (
-        f"{label}: rotated {deleted} of {len(eligible)} eligible terminal rows "
+        f"{label}: {storm_prefix}rotated {deleted} of {len(eligible)} eligible terminal rows "
         f"(was {count} rows, rotate mark {defaults.SHEET_ROW_ROTATE_THRESHOLD}, "
-        f"retention {defaults.SHEET_ROW_ROTATION_RETENTION_DAYS}d, oldest-first"
+        f"retention {effective_retention_days}d, oldest-first"
         f"{', per-run cap ' + str(per_run_cap) if len(eligible) > per_run_cap else ''})"
         f"{delete_error}"
     )
@@ -2248,11 +2321,14 @@ def _rotate_one_sheet(
 def _check_row_cap_rotation(dry_run: bool = False) -> CheckResult:
     """Check O (A5): row-cap rotation for ITS_Errors + ITS_Review_Queue.
 
-    See the rationale block above for the terminality definitions and the
-    threshold mechanism. `dry_run=True` (the `--dry` CLI flag) previews the
-    rotation — counts + would-delete numbers, zero deletes, zero rotation
-    records. Rotation itself proceeds during MAINTENANCE (it is a safety
-    measure; only the *page* is deferred, by _run_check's downgrade).
+    See the rationale block above for the terminality definitions, the
+    threshold mechanism, and the STORM-MODE fallback (2026-07-13: when the
+    90d retention yields nothing, re-select at the 48h storm floor before
+    declaring CRITICAL). `dry_run=True` (the `--dry` CLI flag) previews the
+    rotation — counts + would-delete numbers, including whether storm-mode
+    would engage, zero deletes, zero rotation records. Rotation itself
+    proceeds during MAINTENANCE (it is a safety measure; only the *page* is
+    deferred, by _run_check's downgrade).
     """
     severities: list[Severity] = []
     notes: list[str] = []
@@ -2267,7 +2343,10 @@ def _check_row_cap_rotation(dry_run: bool = False) -> CheckResult:
     if worst is Severity.INFO:
         summary = "Row caps healthy for ITS_Errors + ITS_Review_Queue."
     elif worst is Severity.CRITICAL:
-        summary = "Row-cap rotation BLOCKED — sheet(s) over rotate mark with nothing deletable."
+        summary = (
+            "Row-cap rotation BLOCKED — sheet(s) over rotate mark with nothing "
+            "deletable, even at the storm floor."
+        )
     else:
         summary = "Row-cap threshold crossed — see per-sheet rotation notes."
     return CheckResult(severity=worst, summary=summary, details=" | ".join(notes))
@@ -2314,9 +2393,10 @@ CHECKS: list[Callable[..., CheckResult]] = [
     # rotation. Registered before the sheet-consuming letter-neighbors purely
     # by letter order; rotation deletes TERMINAL rows only (never open
     # CRITICALs / PENDING queue rows) and writes a rotation record to
-    # ITS_Errors. Returns a CheckResult (WARN on rotation/approach; CRITICAL
-    # when over-mark with nothing deletable) — paged + MAINTENANCE-deferred
-    # by _run_check.
+    # ITS_Errors. Returns a CheckResult (WARN on rotation/approach — incl.
+    # the STORM-MODE 48h-floor fallback when the 90d retention yields
+    # nothing, 2026-07-13 incident; CRITICAL only when even the storm floor
+    # finds nothing deletable) — paged + MAINTENANCE-deferred by _run_check.
     _check_row_cap_rotation,
     # Check P (A3): Box OAuth refresh-token freshness. Read-only marker read;
     # returns a CheckResult, so its WARN/CRITICAL is paged + MAINTENANCE-deferred

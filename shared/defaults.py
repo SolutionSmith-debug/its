@@ -99,15 +99,38 @@ SHEET_COUNT_MARGIN  = 50
 # and watchdog Check B goes blind. WARN when a sheet crosses
 # SHEET_ROW_WARN_THRESHOLD; at SHEET_ROW_ROTATE_THRESHOLD delete TERMINAL rows
 # older than SHEET_ROW_ROTATION_RETENTION_DAYS, oldest first, in delete_rows
-# batches of SHEET_ROW_ROTATION_DELETE_BATCH (the Smartsheet per-call ID cap),
+# batches of SHEET_ROW_ROTATION_DELETE_BATCH,
 # bounded to SHEET_ROW_ROTATION_MAX_BATCHES_PER_RUN per daily run (the next
 # run re-counts and continues — no retry loop inside one check execution).
 SHEET_ROW_HARD_CAP                     = 20_000  # verified Smartsheet limit (row-bound at these widths)
 SHEET_ROW_WARN_THRESHOLD               = 15_000
 SHEET_ROW_ROTATE_THRESHOLD             = 16_000
 SHEET_ROW_ROTATION_RETENTION_DAYS      = 90
-SHEET_ROW_ROTATION_DELETE_BATCH        = 450
-SHEET_ROW_ROTATION_MAX_BATCHES_PER_RUN = 10
+# 200, NOT 450: the original 450 claimed to be "the Smartsheet per-call ID
+# cap" but FAILED live with HTTP 400 (Bad Request) the first time a rotation
+# actually deleted (2026-07-13 cap-incident drain) — the smartsheet SDK
+# passes row IDs in the URL query string, and 450 sixteen-digit IDs exceed
+# the URL length limit. 200 is live-verified working (13,815 rows drained
+# clean, zero 400s, same day). Mocks-pass-live-fails class: Check O had
+# never deleted before (nothing was ever age-eligible), so the latent bug
+# was never exercised.
+SHEET_ROW_ROTATION_DELETE_BATCH        = 200
+# 23 × 200 = 4,600 rows/run ≈ the original 10 × 450 = 4,500 per-run budget.
+SHEET_ROW_ROTATION_MAX_BATCHES_PER_RUN = 23
+
+# Storm-mode floor (2026-07-13 ITS_Errors cap incident): with the system only
+# ~8 weeks old, the 90d retention exceeded the sheet's ENTIRE age — nothing
+# could ever be age-eligible, so rotation was structurally dead while a
+# config-WARN storm (~1,400–4,500 rows/day from daemons WARNing per-cycle on
+# 5 missing ITS_Config rows) filled ITS_Errors to the 20,000 hard cap and
+# Check O fired CRITICAL "nothing deletable" two days running. When the 90d
+# pass yields ZERO eligible rows on an over-the-rotate-mark sheet,
+# _rotate_one_sheet re-selects with this floor instead (terminal rows older
+# than 2 days — 48h at date granularity; _row_age_date is date-only), so
+# rotation can never again be pinned by a retention window longer than the
+# system's life. Same invariants: open CRITICALs / un-drained queue rows /
+# unprovable dates are NEVER deleted, at any floor.
+SHEET_ROW_STORM_FLOOR_DAYS             = 2
 
 # Weekly-packet size early warning (growth Slice 4b / eval row 7). Graph's
 # upload-session hard ceiling is 150 MB (graph_client.UPLOAD_SESSION_MAX_BYTES)

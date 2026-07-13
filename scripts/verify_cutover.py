@@ -79,6 +79,15 @@ row leaves the operator no switch to flip). DEFERRED (NOT enrolled) until the SC
 subcontract SEND half is built: the subcontract ``from_mailbox`` / ``scheduled_send_local`` /
 send ``polling_enabled`` rows — those daemons + rows do not exist yet.
 
+Daemon-gate seed enrollment (2026-07-13 config-WARN-storm incident): VC-03 also asserts
+the three previously-unenrolled rows from ``seed_daemon_gate_config.py`` are seeded
+present — ``safety_reports.photo_screen.clamav_enabled`` and both
+``<workstream>.compile_now_poll.polling_enabled`` copies (``non_empty``, NOT forced
+``true`` — clamav is a dark security gate and the compile-now passes are operator
+choices). Their ABSENCE caused the per-cycle ``config_row_missing`` WARN storm that
+filled ITS_Errors to the 20k cap. The seed set's two ``progress_send`` rows were already
+enrolled.
+
 Usage::
 
     python -m scripts.verify_cutover                 # full gate (the cutover verdict)
@@ -262,6 +271,17 @@ CONFIG_ROWS: tuple[ConfigRow, ...] = (
     ConfigRow("subcontracts.subcontract_poll.polling_enabled", "subcontracts", "non_empty"),
     ConfigRow("subcontracts.subcontract_poll.subcontractors_sync_enabled", "subcontracts", "non_empty"),
     ConfigRow("subcontracts.subcontract_poll.status_sync_enabled", "subcontracts", "non_empty"),
+    # 2026-07-13 config-WARN-storm seeds (scripts/migrations/seed_daemon_gate_config.py):
+    # the ABSENCE of these rows made daemons WARN config_row_missing per-cycle and filled
+    # ITS_Errors to the 20k cap (the Check O storm-mode incident). Assert them SEEDED
+    # PRESENT (non_empty, NOT forced 'true' — same dark-ship reflex as the subcontract
+    # gates above): clamav_enabled is a dark security gate (stays 'false' until ClamAV is
+    # installed on the Mac) and the compile_now_poll passes are operator-toggleable, so
+    # demanding 'true' would pin an operator choice. The two progress_send rows from the
+    # same seed set were already enrolled above.
+    ConfigRow("safety_reports.photo_screen.clamav_enabled", "safety_reports", "non_empty"),
+    ConfigRow("safety_reports.compile_now_poll.polling_enabled", "safety_reports", "non_empty"),
+    ConfigRow("progress_reports.compile_now_poll.polling_enabled", "progress_reports", "non_empty"),
     # DEFERRED (NOT enrolled) until the SC-S4 subcontract SEND half is built: the
     # subcontract from_mailbox / scheduled_send_local / send polling_enabled rows — no
     # send daemon or rows exist yet. Same External-Send-Gate posture as po_send's deferred
