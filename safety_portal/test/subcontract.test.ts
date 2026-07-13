@@ -364,10 +364,13 @@ describe("exhibit-keys config-editor routes", () => {
     expect(vbody.versions.some((v) => v.version === vbody.current_version)).toBe(true);
   });
 
-  it("404s an unknown template key / unknown version", async () => {
+  it("404s an unknown template key / unknown version, incl. prototype-pollution keys", async () => {
     expect((await g(admin, "/api/subcontracts/exhibit-keys/nonexistent/text")).status).toBe(404);
     expect((await g(admin, "/api/subcontracts/exhibit-keys/civil/text?version=v999")).status).toBe(404);
     expect((await g(admin, "/api/subcontracts/exhibit-keys/nonexistent/versions")).status).toBe(404);
+    // A __proto__/constructor version must NOT resolve an Object.prototype built-in (own-property guard).
+    expect((await g(admin, "/api/subcontracts/exhibit-keys/civil/text?version=__proto__")).status).toBe(404);
+    expect((await g(admin, "/api/subcontracts/exhibit-keys/civil/text?version=constructor")).status).toBe(404);
   });
 });
 

@@ -719,7 +719,11 @@ export function registerSubcontractRoutes(app: FieldopsApp, gates: SubcontractGa
       const tmpl = Object.prototype.hasOwnProperty.call(EXHIBIT_TEMPLATES, key) ? EXHIBIT_TEMPLATES[key] : undefined;
       if (!tmpl) return c.json({ error: "unknown_key" }, 404);
       const version = str(c.req.query("version")) || tmpl.current_version;
-      const ver = tmpl.versions?.[version];
+      // Own-property lookup only — a version like __proto__/constructor must not resolve to an
+      // Object.prototype built-in (defense-in-depth, matching the :key / ?trade= lookups in this file).
+      const ver = Object.prototype.hasOwnProperty.call(tmpl.versions ?? {}, version)
+        ? tmpl.versions[version]
+        : undefined;
       if (!ver) return c.json({ error: "unknown_version" }, 404);
       const raw = Object.keys(EXHIBIT_RAW).find((k) => k.endsWith("/" + ver.file));
       if (raw === undefined) return c.json({ error: "text_unavailable" }, 404);
