@@ -93,10 +93,19 @@ def format_total_cents(total_cents: int) -> str:
     return f"${dollars:,}.{cents:02d}"
 
 
-def find_row_by_po_number(po_number: str) -> dict[str, Any] | None:
+def find_row_by_po_number(
+    po_number: str, *, sheet_id: int | None = None
+) -> dict[str, Any] | None:
     """The ledger row whose PO Number == `po_number`, or None. The identity lookup
-    behind the collision double-check + the status stamps."""
-    rows = smartsheet_client.get_rows(SHEET_ID, filters={COL_PO_NUMBER: po_number})
+    behind the collision double-check + the status stamps.
+
+    `sheet_id` defaults to the flat PO_Log; pass a per-job tracking sheet ID
+    (shared/job_sheet.py) so the per-job append's idempotency guard runs against
+    the TARGET sheet, independent of the flat ledger."""
+    rows = smartsheet_client.get_rows(
+        SHEET_ID if sheet_id is None else sheet_id,
+        filters={COL_PO_NUMBER: po_number},
+    )
     return rows[0] if rows else None
 
 
@@ -130,6 +139,7 @@ def append_filed_row(
     created_by: str,
     created_at_iso: str,
     notes: str,
+    sheet_id: int | None = None,
 ) -> int:
     """APPEND the filing-time ledger row (Status=pending_review); return its row ID.
 
@@ -137,9 +147,14 @@ def append_filed_row(
     `supersedes_display` is the resolved predecessor PO number ('' for a
     non-superseding PO). Caller guarantees no-collision/no-duplicate via
     `numbering.check_collision` first.
+
+    `sheet_id` defaults to the flat PO_Log (the ledger SoR mirror); pass a per-job
+    tracking sheet ID (shared/job_sheet.py — structure-cloned from this very sheet,
+    so the column titles match) to mirror the row there. Callers guard duplicates
+    per target via `find_row_by_po_number(..., sheet_id=...)`.
     """
     [row_id] = smartsheet_client.add_rows(
-        SHEET_ID,
+        SHEET_ID if sheet_id is None else sheet_id,
         [{
             COL_PO_NUMBER: po_number,
             COL_JOB_PROJECT: job_project,

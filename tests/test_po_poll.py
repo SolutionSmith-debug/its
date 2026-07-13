@@ -21,8 +21,9 @@ from typing import Any
 import pytest
 
 from po_materials import po_generate, po_log, po_poll, po_review, vendors
-from shared import picklist_validation, portal_client, portal_hmac
+from shared import picklist_validation, portal_client, portal_hmac, sheet_ids
 from shared.box_client import BoxError
+from shared.smartsheet_client import SmartsheetError
 
 SECRET = "po-test-secret"
 
@@ -230,6 +231,10 @@ def _patch(mocker):
         ),
         "attach": mocker.patch(
             "po_materials.po_poll._attach_pdf_best_effort", return_value=None
+        ),
+        "perjob": mocker.patch(
+            "po_materials.po_poll._append_perjob_row_best_effort",
+            return_value=None,
         ),
         # Fences + observability.
         "review_q": mocker.patch("po_materials.po_poll.review_queue.add", return_value=1),
@@ -919,3 +924,110 @@ def test_attachment_flagged_row_skipped(_patch):
     assert stats.attachments_filed == 0
     _patch["att_claim"].assert_not_called()
     _patch["att_result"].assert_not_called()
+
+
+# ---- per-job tracking sheet mirror (Feature A) -------------------------------------
+
+# The REAL helper, captured at import time (the `_patch` fixture replaces the module
+# attribute) — used by the end-to-end fence test below.
+_REAL_PERJOB = po_poll._append_perjob_row_best_effort
+
+
+def test_happy_path_mirrors_ledger_row_to_perjob_sheet(_patch):
+    """The filing path hands the SAME ledger row kwargs to the per-job mirror,
+    keyed by the job name (the Box per-job folder's name source)."""
+    _patch["pending"].return_value = [_signed_row()]
+
+    _run(_patch)
+
+    _patch["perjob"].assert_called_once()
+    job_name, row_kwargs, _corr = _patch["perjob"].call_args.args
+    assert job_name == "Sunrise Solar"
+    assert row_kwargs["po_number"] == "2026.001.2.0.0"
+    assert row_kwargs["notes"] == "d1_id=7"  # the §19 join rides the mirror row too
+    # The mirror is best-effort ON TOP of the flat append — both fired.
+    _patch["log_append"].assert_called_once()
+
+
+def test_perjob_failure_never_fails_the_filing(_patch, mocker):
+    """END-TO-END fence proof: run the REAL helper with ensure_job_sheet raising —
+    the filing still completes, the receipt still posts, and the stable WARN
+    error_code is logged (Box + the flat PO_Log are the SoR)."""
+    _patch["perjob"].side_effect = _REAL_PERJOB
+    mocker.patch(
+        "po_materials.po_poll.job_sheet.ensure_job_sheet",
+        side_effect=SmartsheetError("boom"),
+    )
+    _patch["pending"].return_value = [_signed_row()]
+
+    stats = _run(_patch)
+
+    assert stats.filed == 1
+    assert stats.fenced == 0 and stats.draft_errors == 0
+    _patch["mark_filed"].assert_called_once()
+    assert "po_perjob_sheet_failed" in _logged_codes(_patch)
+
+
+def test_perjob_helper_ensures_and_appends_to_target_sheet(mocker):
+    """The helper wires FOLDER_PO_JOBS + the flat Log as template + the sanitized
+    job folder name + the fixed sheet name, then appends with sheet_id=<per-job>."""
+    ensure = mocker.patch(
+        "po_materials.po_poll.job_sheet.ensure_job_sheet", return_value=555
+    )
+    find = mocker.patch(
+        "po_materials.po_log.find_row_by_po_number", return_value=None
+    )
+    append = mocker.patch(
+        "po_materials.po_log.append_filed_row", return_value=1
+    )
+    row_kwargs = {"po_number": "2026.001.2.0.0", "job_project": "2026.001 — Sunrise Solar"}
+
+    po_poll._append_perjob_row_best_effort("Sunrise Solar", row_kwargs, "corr-1")
+
+    ensure.assert_called_once_with(
+        sheet_ids.FOLDER_PO_JOBS,
+        sheet_ids.SHEET_PO_LOG,
+        "Sunrise Solar",
+        po_poll.PERJOB_SHEET_NAME,
+        workspace_id=sheet_ids.WORKSPACE_PURCHASE_ORDERS,  # §51 A1 margin-check target
+        workstream=po_poll.WORKSTREAM,
+        correlation_id="corr-1",
+    )
+    find.assert_called_once_with("2026.001.2.0.0", sheet_id=555)
+    append.assert_called_once_with(sheet_id=555, **row_kwargs)
+
+
+def test_perjob_helper_is_idempotent_against_target_sheet(mocker):
+    """A crash between the flat append and the mirror re-runs cleanly: the PO number
+    already present in the TARGET sheet suppresses the duplicate append."""
+    mocker.patch(
+        "po_materials.po_poll.job_sheet.ensure_job_sheet", return_value=555
+    )
+    mocker.patch(
+        "po_materials.po_log.find_row_by_po_number",
+        return_value={"_row_id": 1},
+    )
+    append = mocker.patch("po_materials.po_log.append_filed_row")
+
+    po_poll._append_perjob_row_best_effort(
+        "Sunrise Solar", {"po_number": "2026.001.2.0.0"}, "corr-1"
+    )
+
+    append.assert_not_called()
+
+
+def test_perjob_helper_fences_generic_exception(mocker):
+    """The fence is broad (mirror the best-effort attach idiom): even a non-Smartsheet
+    exception is reduced to the WARN error_code, never raised to the filing path."""
+    mocker.patch(
+        "po_materials.po_poll.job_sheet.ensure_job_sheet",
+        side_effect=RuntimeError("weird"),
+    )
+    log = mocker.patch("po_materials.po_poll.error_log.log")
+
+    po_poll._append_perjob_row_best_effort(
+        "Sunrise Solar", {"po_number": "2026.001.2.0.0"}, "corr-1"
+    )  # must not raise
+
+    codes = [kw.get("error_code") for _, kw in log.call_args_list]
+    assert "po_perjob_sheet_failed" in codes

@@ -370,7 +370,54 @@ plist is loaded and a gate is on) → novel/code → Seth.
 
 ---
 
-## Symptom 13 — a PO document attachment missing from Box / the PO_Log row (Feature B)
+## Symptom 13 — per-job tracking sheet mirror failed (`po_perjob_sheet_failed`, WARN, permanent one-shot miss)
+
+### Symptom
+
+- ITS_Errors `Error = po_perjob_sheet_failed` (WARN): *"per-job tracking sheet append failed
+  (job '<name>', PO '<number>') …"*. The PO itself **filed normally** — Box PDF, flat PO_Log
+  row, PO_Pending_Review row, and the mark-filed receipt all completed. Only the
+  supplementary per-job mirror row (ITS — Purchase Orders / **Jobs** / `<job>` /
+  "Purchase Orders" sheet, `shared/job_sheet.py`) is missing.
+- Related lower-level WARNs from the same helper (`shared.job_sheet` script name):
+  `job_sheet_ready_probe_exhausted` (a just-created sheet still 404'd after ~10s of
+  readiness probes — create→read eventual consistency, errorCode 1006),
+  `job_sheet_folder_race_duplicate` / `job_sheet_sheet_race_duplicate` (a concurrent-create
+  duplicate was adopted; the named orphan needs manual deletion), and
+  `sheet_capacity_*` (the §51 A1 advisory margin-check — see the Review-Queue row it files).
+
+### What it means
+
+The per-job mirror is **best-effort by design**: the receipt fires unconditionally, the row
+never re-serves, and there is **no auto-retry** — a failed mirror append is a **PERMANENT
+one-shot miss** for that filing. The per-job sheet for that job silently lacks exactly that
+one row, forever, unless repaired by hand. **The flat PO_Log + the Box PDF remain the SoR**
+and are complete — nothing contractual or send-path is affected.
+
+### The low-class Tier-2 action
+
+**Manually copy the missing row from the flat PO_Log into the job's per-job sheet** (ITS —
+Purchase Orders workspace → "Jobs" folder → the job's folder → "Purchase Orders" sheet). The
+per-job sheet is a structure-only clone of PO_Log, so **the columns match by construction** —
+find the PO's row in PO_Log (by PO Number), copy it, paste it into the per-job sheet. If the
+job's folder/sheet doesn't exist yet, the next filing for that job creates it automatically
+(or file the row after the next filing lands). For a `*_race_duplicate` WARN, additionally
+delete the named orphan folder/sheet (it is empty).
+
+> "Claude, PO_Log has PO <number> for job <name> but the per-job 'Purchase Orders' sheet is
+> missing it (there was a `po_perjob_sheet_failed` WARN). Walk me through copying that row
+> from PO_Log into the per-job sheet."
+
+### Escalate-to-Seth condition
+
+The **same code recurring across multiple jobs** (not a one-off blip) — e.g. every filing
+logs `po_perjob_sheet_failed` or `job_sheet_ready_probe_exhausted` — indicates a structural
+fault (permissions on the Jobs folder, a deleted parent, a Smartsheet regression) →
+novel/code → Seth.
+
+---
+
+## Symptom 14 — a PO document attachment missing from Box / the PO_Log row (Feature B)
 
 ### Symptom
 

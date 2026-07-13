@@ -2506,7 +2506,7 @@ def test_resolve_prune_creds_happy_path(monkeypatch):
 # check reads them from `watchdog.defaults` at call time.
 
 
-def _shrink_row_caps(mocker, *, warn=5, rotate=8, batch=450, max_batches=10):
+def _shrink_row_caps(mocker, *, warn=5, rotate=8, batch=200, max_batches=10):
     mocker.patch.object(watchdog.defaults, "SHEET_ROW_WARN_THRESHOLD", warn)
     mocker.patch.object(watchdog.defaults, "SHEET_ROW_ROTATE_THRESHOLD", rotate)
     mocker.patch.object(watchdog.defaults, "SHEET_ROW_ROTATION_DELETE_BATCH", batch)
@@ -2787,6 +2787,127 @@ def test_row_caps_breaker_open_is_info_skip(rotation_rows, mock_delete_rows):
     assert result.severity is Severity.INFO
     assert "breaker OPEN" in result.details
     mock_delete_rows.assert_not_called()
+
+
+# -- storm-mode fallback (2026-07-13 ITS_Errors cap incident) ----------------
+#
+# The 90d retention exceeds the system's entire age during its first 90 days,
+# so a config-WARN storm could fill a sheet to the 20k hard cap while the
+# rotation fired CRITICAL "nothing deletable" and deleted nothing. Storm-mode
+# re-selects with the SHEET_ROW_STORM_FLOOR_DAYS (2d) floor when the 90d pass
+# yields zero eligible rows. These tests use the REAL storm floor (2d) and
+# real retention (90d); only the count thresholds are shrunk.
+
+
+def test_row_caps_storm_mode_engages_when_retention_pins_rotation(
+    rotation_rows, mock_delete_rows, mock_log, mocker
+):
+    # The incident shape: over the rotate mark, zero rows older than the 90d
+    # retention (system younger than retention), plenty of terminal storm
+    # debris older than the 2d storm floor. Pre-storm-mode code returned
+    # CRITICAL here and deleted nothing (the prove-it-bites test).
+    _shrink_row_caps(mocker, warn=3, rotate=5)
+    rotation_rows[watchdog.sheet_ids.SHEET_ERRORS] = [
+        _errors_row(1, severity="WARN", days_old=5),
+        _errors_row(2, severity="WARN", days_old=4),
+        _errors_row(3, severity="ERROR", days_old=6),
+        _errors_row(4, severity="CRITICAL", days_old=10),  # OPEN — survives
+        _errors_row(5, severity="WARN", days_old=3),
+        _errors_row(6, severity="WARN", days_old=5),
+    ]
+    result = watchdog._check_row_cap_rotation()
+
+    assert result.severity is Severity.WARN  # storm rotation is WARN, not CRITICAL
+    assert "STORM-MODE" in result.details
+    mock_delete_rows.assert_called_once()
+    sheet_id, deleted_ids = mock_delete_rows.call_args.args
+    assert sheet_id == watchdog.sheet_ids.SHEET_ERRORS
+    # Oldest-first (date, then row id); the OPEN CRITICAL (row 4) survives
+    # despite being the oldest row on the sheet.
+    assert deleted_ids == [3, 1, 6, 2, 5]
+    # The never-silent rotation record landed, LOUD, at WARN.
+    rotation_records = [
+        c for c in mock_log.call_args_list
+        if c.kwargs.get("error_code") == "row_cap_rotation"
+    ]
+    assert len(rotation_records) == 1
+    assert rotation_records[0].args[0] is Severity.WARN
+    assert "STORM-MODE" in rotation_records[0].args[2]
+    assert "OVERRIDDEN" in rotation_records[0].args[2]
+
+
+def test_row_caps_storm_mode_floor_holds_rows_younger_than_floor_survive(
+    rotation_rows, mock_delete_rows, mocker
+):
+    _shrink_row_caps(mocker, warn=3, rotate=5)
+    rotation_rows[watchdog.sheet_ids.SHEET_ERRORS] = [
+        _errors_row(1, severity="WARN", days_old=0),  # today — survives
+        _errors_row(2, severity="WARN", days_old=1),  # yesterday — survives
+        _errors_row(3, severity="WARN", days_old=2),  # AT the floor — survives (strict >)
+        _errors_row(4, severity="WARN", days_old=3),  # older than floor — deleted
+        _errors_row(5, severity="WARN", days_old=4),  # older than floor — deleted
+        _errors_row(6, severity="WARN", ts=None),     # unprovable age — survives even in storm-mode
+    ]
+    watchdog._check_row_cap_rotation()
+    mock_delete_rows.assert_called_once()
+    _, deleted_ids = mock_delete_rows.call_args.args
+    assert deleted_ids == [5, 4]  # oldest-first; nothing at/younger than the floor
+
+
+def test_row_caps_storm_mode_never_deletes_open_criticals(
+    rotation_rows, mock_delete_rows, mocker
+):
+    _shrink_row_caps(mocker, warn=2, rotate=3)
+    rotation_rows[watchdog.sheet_ids.SHEET_ERRORS] = [
+        _errors_row(1, severity="CRITICAL", days_old=30),                   # OPEN — survives
+        _errors_row(2, severity="CRITICAL", days_old=20),                   # OPEN — survives
+        _errors_row(3, severity="CRITICAL", days_old=25, resolved_at="x"),  # resolved — eligible
+        _errors_row(4, severity="WARN", days_old=10),                       # eligible
+    ]
+    watchdog._check_row_cap_rotation()
+    mock_delete_rows.assert_called_once()
+    _, deleted_ids = mock_delete_rows.call_args.args
+    assert deleted_ids == [3, 4]
+    assert 1 not in deleted_ids
+    assert 2 not in deleted_ids
+
+
+def test_row_caps_storm_mode_truly_empty_is_critical_naming_the_floor(
+    rotation_rows, mock_delete_rows, mocker
+):
+    _shrink_row_caps(mocker, warn=3, rotate=5)
+    rotation_rows[watchdog.sheet_ids.SHEET_ERRORS] = [
+        _errors_row(1, severity="CRITICAL", days_old=300),   # open — protected
+        _errors_row(2, severity="CRITICAL", days_old=200),   # open — protected
+        _errors_row(3, severity="CRITICAL", days_old=100),   # open — protected
+        _errors_row(4, severity="WARN", days_old=1),         # terminal but younger than the floor
+        _errors_row(5, severity="WARN", days_old=0),         # terminal but younger than the floor
+        _errors_row(6, severity="WARN", ts="not-a-date"),    # unprovable age
+    ]
+    result = watchdog._check_row_cap_rotation()
+    assert result.severity is Severity.CRITICAL
+    assert "NOTHING is deletable" in result.details
+    assert "storm floor" in result.details
+    mock_delete_rows.assert_not_called()
+
+
+def test_row_caps_storm_mode_dry_run_previews_without_deleting(
+    rotation_rows, mock_delete_rows, mock_log, mocker
+):
+    _shrink_row_caps(mocker, warn=1, rotate=2)
+    rotation_rows[watchdog.sheet_ids.SHEET_ERRORS] = [
+        _errors_row(i, days_old=5) for i in range(1, 5)  # storm-eligible only
+    ]
+    result = watchdog._check_row_cap_rotation(dry_run=True)
+    assert result.severity is Severity.WARN
+    assert "DRY RUN" in result.details
+    assert "STORM-MODE" in result.details
+    assert "would delete 4 of 4" in result.details
+    mock_delete_rows.assert_not_called()
+    assert not [
+        c for c in mock_log.call_args_list
+        if c.kwargs.get("error_code") == "row_cap_rotation"
+    ]
 
 
 def test_compose_summary_plain_resend_key_untagged():
