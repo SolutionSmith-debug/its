@@ -741,6 +741,27 @@ describe("cancel", () => {
 
     expect((await p(admin, "/api/po/999999/cancel")).status).toBe(404);
   });
+
+  it("delete: HARD-removes a DRAFT + its line items; refuses a generated row (no orphan); 404s unknown", async () => {
+    const created = await p(admin, "/api/po/drafts", draftBody());
+    const { id: draftId } = await json<{ id: number }>(created);
+    const nLines = async (id: number) =>
+      (await env.DB.prepare("SELECT COUNT(*) n FROM po_line_items WHERE po_id=?1").bind(id).first<{ n: number }>())!.n;
+    expect(await nLines(draftId)).toBeGreaterThan(0);
+
+    expect((await p(admin, `/api/po/${draftId}/delete`)).status).toBe(200);
+    expect(await env.DB.prepare("SELECT id FROM purchase_orders WHERE id=?1").bind(draftId).first()).toBeNull();
+    expect(await nLines(draftId)).toBe(0);
+
+    const queuedId = await makeQueued(admin);
+    const del = await p(admin, `/api/po/${queuedId}/delete`);
+    expect(del.status).toBe(409);
+    expect((await json<{ error: string }>(del)).error).toBe("not_deletable");
+    expect((await poRow(queuedId)).status).toBe("queued");
+    expect(await nLines(queuedId)).toBeGreaterThan(0);
+
+    expect((await p(admin, "/api/po/999999/delete")).status).toBe(404);
+  });
 });
 
 // ── vendors sync (down-sync fence, empty refusal, watermark) ──────────────────

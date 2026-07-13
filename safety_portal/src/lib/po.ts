@@ -342,6 +342,11 @@ export async function cancelPo(id: number): Promise<void> {
   await postJson(`/api/po/${id}/cancel`, {});
 }
 
+/** HARD-delete an un-generated DRAFT PO (row + line items). Draft-only; a generated record is 409 not_deletable. */
+export async function deletePoDraft(id: number): Promise<void> {
+  await postJson(`/api/po/${id}/delete`, {});
+}
+
 // ── Terms + config (S3 read surface, PR #495) ────────────────────────────────────────────────────
 
 export async function fetchTerms(): Promise<TermsProfile[]> {

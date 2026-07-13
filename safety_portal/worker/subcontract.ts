@@ -1251,6 +1251,32 @@ export function registerSubcontractRoutes(app: FieldopsApp, gates: SubcontractGa
     return c.json({ ok: true, id });
   });
 
+  // POST /api/subcontracts/:id/delete — HARD delete of an un-generated DRAFT (the row + its SOV lines).
+  // DRAFT-ONLY: a generated/queued/pending_review/approved/sent/executed/superseded/canceled row is a real
+  // record (SC number, audit, possibly Box/Smartsheet artifacts) — those exit via cancel/supersede, NEVER a
+  // hard delete. Atomic: the sov_lines delete is subquery-scoped to the parent STILL being a draft (no ON
+  // DELETE CASCADE on the FK), so a non-draft row leaves BOTH tables untouched — no orphaned lines; the audit
+  // lands only if the draft row was actually removed (changes()=1 on the parent delete, W4).
+  app.post("/api/subcontracts/:id/delete", gates.requireSession, gates.requireCapability(CAP_SUB), async (c) => {
+    const id = parseIdParam(c.req.param("id"));
+    if (id === null) return c.json({ error: "invalid_id" }, 400);
+    const actor = c.get("session").username;
+    const res = await c.env.DB.batch([
+      c.env.DB
+        .prepare(
+          "DELETE FROM sov_lines WHERE subcontract_id IN (SELECT id FROM subcontracts WHERE id=?1 AND status='draft')",
+        )
+        .bind(id),
+      c.env.DB.prepare("DELETE FROM subcontracts WHERE id=?1 AND status='draft'").bind(id),
+      auditStmtIfChanged(c, actor, "sc_delete", String(id), { sc_id: id }),
+    ]);
+    if ((res[1].meta.changes ?? 0) === 0) {
+      const row = await c.env.DB.prepare("SELECT status FROM subcontracts WHERE id = ?1").bind(id).first();
+      return row ? c.json({ error: "not_deletable" }, 409) : c.json({ error: "not_found" }, 404);
+    }
+    return c.json({ ok: true, id });
+  });
+
   // ══ Internal surface (requireSubToken — the Mac-side subcontract_poll daemon) ═════
 
   // GET /api/subcontracts/internal/pending — the queue drain: queued subcontracts + SOV lines + hmac +

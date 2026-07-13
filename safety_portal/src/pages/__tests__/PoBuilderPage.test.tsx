@@ -25,6 +25,7 @@ vi.mock("../../lib/po", async (importOriginal) => {
     generateDraft: vi.fn(),
     supersedePo: vi.fn(),
     cancelPo: vi.fn(),
+    deletePoDraft: vi.fn(),
   };
 });
 vi.mock("../../lib/api", () => ({ fetchJobs: vi.fn() }));
@@ -365,6 +366,20 @@ describe("PoBuilderPage", () => {
     // The clone draft opened in the builder, carrying the supersession marker.
     await waitFor(() => expect(r.getByText("Supersedes PO #3")).toBeTruthy());
     expect(r.getByText("Editing draft #9")).toBeTruthy();
+  });
+
+  it("a DRAFT card offers a two-step Delete (not Cancel); confirming calls deletePoDraft + reloads", async () => {
+    vi.mocked(api.fetchPos).mockResolvedValue([poRow({ id: 9, status: "draft" })]);
+    vi.mocked(api.deletePoDraft).mockResolvedValue(undefined);
+    const r = render(<PoBuilderPage onBack={() => {}} />);
+    const card = (await waitFor(() => r.getByText("Draft #9"))).closest(".card") as HTMLElement;
+    // A draft shows Delete (hard delete), NOT the soft Cancel PO.
+    expect(within(card).getByText("Delete")).toBeTruthy();
+    expect(within(card).queryByText("Cancel PO")).toBeNull();
+    fireEvent.click(within(card).getByText("Delete"));
+    fireEvent.click(within(card).getByText("Confirm delete"));
+    await waitFor(() => expect(api.deletePoDraft).toHaveBeenCalledWith(9));
+    await waitFor(() => expect(api.fetchPos).toHaveBeenCalledTimes(2)); // reload-after-delete
   });
 });
 

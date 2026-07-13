@@ -233,6 +233,7 @@ export function PoBuilderPage({ onBack }: { onBack: () => void }) {
   const [view, setView] = useState<"tracker" | "builder">("tracker");
   const [statusFilter, setStatusFilter] = useState<"all" | api.PoStatus>("all");
   const [armedCancelId, setArmedCancelId] = useState<number | null>(null);
+  const [armedDeleteId, setArmedDeleteId] = useState<number | null>(null);
 
   // ── Builder form state ─────────────────────────────────────────────────────────────────────────
   const [draftId, setDraftId] = useState<number | null>(null);
@@ -649,6 +650,22 @@ export function PoBuilderPage({ onBack }: { onBack: () => void }) {
     setBusy(false);
   }
 
+  async function onDelete(id: number) {
+    if (busy) return;
+    setBusy(true);
+    setMsg(null);
+    setArmedDeleteId(null);
+    try {
+      await api.deletePoDraft(id);
+      if (draftId === id) resetForm();
+      setMsg({ ok: true, text: "Draft deleted." });
+      reloadPos(statusFilter === "all" ? undefined : statusFilter);
+    } catch (err) {
+      setMsg({ ok: false, text: err instanceof Error ? err.message : "Delete failed." });
+    }
+    setBusy(false);
+  }
+
   // ── Render: line grid columns per variant ──────────────────────────────────────────────────────
   function lineHeaders() {
     if (variant === "per_watt") {
@@ -800,7 +817,20 @@ export function PoBuilderPage({ onBack }: { onBack: () => void }) {
                 Open
               </button>
             ) : null}
-            {p.status === "draft" || p.status === "queued" || p.status === "pending_review" ? (
+            {/* A DRAFT is un-generated (no PO number / audit weight) → a clear hard delete (row + line items).
+                A generated queued/pending_review record exits via the soft Cancel below, never a hard delete. */}
+            {p.status === "draft" ? (
+              armedDeleteId === p.id ? (
+                <button className="btn btn--retire" disabled={busy} onClick={() => void onDelete(p.id)}>
+                  Confirm delete
+                </button>
+              ) : (
+                <button className="btn btn--retire" disabled={busy} onClick={() => setArmedDeleteId(p.id)}>
+                  Delete
+                </button>
+              )
+            ) : null}
+            {p.status === "queued" || p.status === "pending_review" ? (
               armedCancelId === p.id ? (
                 <button className="btn btn--retire" disabled={busy} onClick={() => void onCancel(p.id)}>
                   Confirm cancel
