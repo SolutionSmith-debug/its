@@ -158,6 +158,24 @@ def test_launchd_missing_and_orphan_fail(monkeypatch):
     assert "ghost" in outcome.details
 
 
+def test_launchd_dark_unloaded_send_daemon_excluded_from_expected():
+    """po-send is a dark-unloaded SEND daemon (operator decision 2026-07-12) — shipped as
+    a plist but NOT required loaded at cutover (send-gate defense-in-depth)."""
+    assert "org.solutionsmith.its.po-send" in vc.DARK_UNLOADED_LABELS
+    assert "org.solutionsmith.its.po-send" not in vc._expected_labels()
+
+
+def test_launchd_dark_send_daemon_loaded_is_send_gate_violation(monkeypatch):
+    """If po-send IS loaded at cutover, VC-02 FAILS — a dark external-send path running
+    is a high-class External-Send-Gate event, distinct from a plain orphan."""
+    loaded = vc._expected_labels() | {"org.solutionsmith.its.po-send"}
+    monkeypatch.setattr(vc, "_launchctl_list", lambda: _fake_launchctl(loaded))
+    outcome = vc._check_launchd(OPTS)
+    assert not outcome.passed
+    assert "send-gate violation" in outcome.details
+    assert "po-send" in outcome.details
+
+
 # ---- VC-03 config ---------------------------------------------------------
 
 

@@ -62,10 +62,10 @@ through Phase C go/no-go BEFORE this list starts),
   and subcontract-poll (`ITS_PORTAL_SUB_TOKEN`) daemon bearers + the operator-dashboard
   PIN (`ITS_OPERATOR_PIN`)).
   Verify: `python -m scripts.verify_cutover --only keychain` → PASS. (VC-01)
-- [ ] **CL-03 — the 15 daemons run on the production host only** (po-send +
-  subcontract-poll load but stay runtime-dark via their `polling_enabled=false`
-  ITS_Config gates — loaded, not sending, so VC-02's shipped==loaded set-equality
-  passes).
+- [ ] **CL-03 — the 14 loaded daemons run on the production host only.** `po-send` (a
+  SEND daemon) stays **UNLOADED** — send-gate defense-in-depth; VC-02 excludes it from the
+  must-load set and FAILS if it IS loaded. `subcontract-poll` and the other generation
+  daemons load but are runtime-dark (`polling_enabled=false`).
   Verify: `python -m scripts.verify_cutover --only launchd` → PASS on the
   production host, AND on the dev box:
   `launchctl list | grep solutionsmith` prints nothing. (VC-02)
@@ -259,14 +259,14 @@ Order: intake → mirrors/trackers → compile → **send paths last**.
   share list carry the production approver identities (send/execute approval authority is
   workspace membership, not a portal capability). `ITS_Subcontractors` seeded
   (`seed_its_subcontractors.py`).
-- [ ] **CL-38 — subcontract SEND half (SC-S4) — BUILD DEPENDENCY, not yet built (deferred — do NOT check for Aug-7).**
-  Subcontracts is scoped fully-in incl. send, but the send half (`subcontract_send.py` +
-  F22 approval + executed-countersign + send-poller plist) is **NOT built** (only a commented
-  stub in `tests/test_capability_gating.py`). Its send-config rows
-  (`subcontract_send.from_mailbox` / `scheduled_send_local` / `polling_enabled`) are
-  deliberately NOT enrolled in VC-03 until SC-S4 lands. **SC-S4 must ship + live-smoke before
-  subcontract SEND is in the Aug-7 send scope — a separate SC-S4 engineering brief (Seth);
-  this docs pass does not build it.**
+- [ ] **CL-38 — subcontract SEND half (SC-S4) — best-effort Aug-7 target, NOT a blocker.**
+  Subcontract *generation* ships dark-ready regardless; the *send* half (`subcontract_send.py`
+  + F22 approval + executed-countersign + send-poller plist) is **not yet built** (only a
+  commented stub in `tests/test_capability_gating.py`). Operator directive 2026-07-12: **try
+  to build SC-S4 before Aug 7, but it does NOT gate cutover** — if it doesn't land, generation
+  ships and subcontract SEND defers gracefully post-delivery. Its send-config rows are
+  deliberately NOT enrolled in VC-03 until SC-S4 lands. (Separate SC-S4 engineering brief,
+  Seth.) **Do NOT gate Aug-7 done on this item.**
 
 ### Production Worker topology
 

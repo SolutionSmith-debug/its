@@ -33,8 +33,9 @@ id     slug           what it proves
 VC-01  keychain       all required Keychain secrets present (18: 11 non-Box + Box
                       triplet + ``ITS_PORTAL_PO_TOKEN`` + the config-actuator /
                       subcontract-poll daemon bearers + the operator-dashboard PIN)
-VC-02  launchd        loaded ``org.solutionsmith.its.*`` label set == the plist set
-                      shipped in ``scripts/launchd/`` (no missing, no orphans)
+VC-02  launchd        every shipped ``org.solutionsmith.its.*`` plist loaded EXCEPT the
+                      dark-unloaded send daemons (``po-send`` — send-gate), which must
+                      NOT be loaded (no missing, no orphans, no dark send daemon running)
 VC-03  config         load-bearing ITS_Config rows present + non-default
                       (worker_base_url, from_mailbox rows, scheduled_send_local,
                       the polling/sync/intake gates, ``system.operator_email``,
@@ -106,6 +107,14 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 LAUNCHD_PLIST_DIR = REPO_ROOT / "scripts" / "launchd"
 LABEL_PREFIX = "org.solutionsmith.its."
+
+# Dark-unloaded SEND daemons: their plist ships in scripts/launchd/ but they stay
+# launchd-UNLOADED at cutover so a dark external-send path is not even running
+# (send-gate defense-in-depth; operator decision 2026-07-12). VC-02 therefore does NOT
+# require them loaded, and FAILS if one IS loaded — a send daemon live at cutover is a
+# FIXED high-class External-Send-Gate event (Seth). A future subcontract-send goes here
+# too. First-enabling a send path = remove its label here + load its plist.
+DARK_UNLOADED_LABELS = frozenset({"org.solutionsmith.its.po-send"})
 
 # The mirror-tenant marker. Any load-bearing config value still containing this
 # after cutover means a daemon is pointed at the sandbox (§53 sandbox-masks-
@@ -318,9 +327,11 @@ def _check_keychain(opts: Options) -> CheckOutcome:
 
 
 def _expected_labels() -> set[str]:
-    """The label set shipped in scripts/launchd/ — derived, so a new daemon
-    plist auto-enrolls in this check with no edit here."""
-    return {p.stem for p in LAUNCHD_PLIST_DIR.glob(f"{LABEL_PREFIX}*.plist")}
+    """The labels that MUST be loaded at cutover — every shipped plist MINUS the
+    dark-unloaded send daemons (DARK_UNLOADED_LABELS). Derived, so a new daemon plist
+    auto-enrolls in this check with no edit here."""
+    shipped = {p.stem for p in LAUNCHD_PLIST_DIR.glob(f"{LABEL_PREFIX}*.plist")}
+    return shipped - DARK_UNLOADED_LABELS
 
 
 def _launchctl_list() -> str:
@@ -331,7 +342,8 @@ def _launchctl_list() -> str:
 
 
 def _check_launchd(opts: Options) -> CheckOutcome:
-    """`launchctl list` shows exactly the shipped ITS label set."""
+    """`launchctl list` shows exactly the must-be-loaded ITS label set: every shipped
+    plist loaded EXCEPT the dark-unloaded send daemons, which must NOT be loaded."""
     expected = _expected_labels()
     loaded: set[str] = set()
     for line in _launchctl_list().splitlines():
@@ -339,21 +351,34 @@ def _check_launchd(opts: Options) -> CheckOutcome:
         if parts and parts[-1].startswith(LABEL_PREFIX):
             loaded.add(parts[-1])
     missing = sorted(expected - loaded)
-    orphans = sorted(loaded - expected)
-    if missing or orphans:
+    orphans = loaded - expected
+    dark_loaded = sorted(orphans & DARK_UNLOADED_LABELS)   # send daemon running = send-gate violation
+    true_orphans = sorted(orphans - DARK_UNLOADED_LABELS)  # loaded but not shipped at all
+    if missing or dark_loaded or true_orphans:
         details: list[str] = []
         if missing:
             details.append("not loaded: " + ", ".join(missing))
-        if orphans:
-            details.append("loaded but not shipped (orphan): " + ", ".join(orphans))
+        if dark_loaded:
+            details.append(
+                "dark-unloaded SEND daemon IS loaded (send-gate violation): "
+                + ", ".join(dark_loaded)
+            )
+        if true_orphans:
+            details.append("loaded but not shipped (orphan): " + ", ".join(true_orphans))
         return CheckOutcome(
             passed=False,
-            summary=f"launchd label set mismatch ({len(missing)} missing, {len(orphans)} orphan).",
+            summary=(
+                f"launchd label set mismatch ({len(missing)} missing, "
+                f"{len(dark_loaded)} dark-loaded, {len(true_orphans)} orphan)."
+            ),
             details="; ".join(details),
         )
     return CheckOutcome(
         passed=True,
-        summary=f"all {len(expected)} ITS launchd labels loaded, no orphans.",
+        summary=(
+            f"all {len(expected)} must-load ITS labels loaded; "
+            f"{len(DARK_UNLOADED_LABELS)} send daemon(s) correctly unloaded (send-gate)."
+        ),
     )
 
 
