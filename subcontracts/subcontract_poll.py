@@ -109,11 +109,13 @@ from shared import (
     box_client,
     circuit_breaker,
     error_log,
+    job_sheet,
     keychain,
     picklist_validation,
     portal_client,
     portal_hmac,
     review_queue,
+    sheet_ids,
     smartsheet_client,
     state_io,
 )
@@ -162,6 +164,12 @@ POLL_INTERVAL_SECONDS = 120  # registration metadata; mirrors the launchd StartI
 # The Box subfolder every subcontract package files into, under the job's mirror-tree
 # folder (§45 find-or-create at every level; the S1 report's ROOT→job→"Subcontracts").
 SUBCONTRACT_BOX_SUBFOLDER = "Subcontracts"
+
+# The per-job Smartsheet tracking sheet name (Feature A) — deliberately the SAME word
+# as the Box subfolder so the operator sees "Subcontracts" in both trees. Lives inside
+# the job's folder under sheet_ids.FOLDER_SC_JOBS; structure-cloned from the flat
+# Subcontract_Log by shared/job_sheet.ensure_job_sheet.
+PERJOB_SHEET_NAME = "Subcontracts"
 
 _PACIFIC = ZoneInfo("America/Los_Angeles")  # the agreement date is Pacific wall-clock
 
@@ -773,21 +781,30 @@ def _process_pending_subcontract(
 
         # 9 — Subcontract_Log append (idempotent: the collision check above proved any
         # existing row is OURS — a crash-retry — so only append when absent).
+        ledger_row_kwargs: dict[str, Any] = {
+            "sc_number": sc_number,
+            "job_project": f"{subcontract.get('job_no')} — {subcontract.get('job_name')}",
+            "job_id": str(subcontract.get("job_id") or ""),
+            "subcontractor_name": subcontractor_name,
+            "sub_key": sub_key,
+            "total_cents": int(subcontract.get("contract_price_cents") or 0),
+            "pdf_link": box_link,
+            "supersedes_display": supersedes_display or "",
+            "terms_profile": terms_profile_id,
+            "created_by": str(subcontract.get("created_by") or ""),
+            "created_at_iso": sc_date.isoformat(),
+            "notes": subcontract_log.notes_for_filed_row(sc_id),
+        }
         if subcontract_log.find_row_by_sc_number(sc_number) is None:
-            subcontract_log.append_filed_row(
-                sc_number=sc_number,
-                job_project=f"{subcontract.get('job_no')} — {subcontract.get('job_name')}",
-                job_id=str(subcontract.get("job_id") or ""),
-                subcontractor_name=subcontractor_name,
-                sub_key=sub_key,
-                total_cents=int(subcontract.get("contract_price_cents") or 0),
-                pdf_link=box_link,
-                supersedes_display=supersedes_display or "",
-                terms_profile=terms_profile_id,
-                created_by=str(subcontract.get("created_by") or ""),
-                created_at_iso=sc_date.isoformat(),
-                notes=subcontract_log.notes_for_filed_row(sc_id),
-            )
+            subcontract_log.append_filed_row(**ledger_row_kwargs)
+
+        # 9b — per-job tracking sheet mirror (Feature A), BEST-EFFORT: the same
+        # ledger row into "<Jobs>/<job>/Subcontracts" (find-or-create; independently
+        # idempotent per target sheet). Fenced inside the helper — a per-job failure
+        # must NEVER fail the filing (Box + the flat Subcontract_Log are the SoR).
+        _append_perjob_row_best_effort(
+            str(subcontract.get("job_name") or ""), ledger_row_kwargs, correlation_id
+        )
 
         # 10 — Subcontract_Pending_Review row (idempotent via the Notes sc_id join) + the
         # inline attach of ALL THREE files (best-effort — Box is the SoR).
@@ -1010,6 +1027,43 @@ def _attach_files_best_effort(
                 error_code="subcontract_row_file_attach_failed",
                 correlation_id=correlation_id,
             )
+
+
+def _append_perjob_row_best_effort(
+    job_name: str, row_kwargs: dict[str, Any], correlation_id: str
+) -> None:
+    """Mirror the freshly-filed ledger row into the job's per-job tracking sheet
+    (Feature A), BEST-EFFORT — a failure is a WARN that never fails the filing
+    (mirror `_attach_files_best_effort`; Box + the flat Subcontract_Log are the SoR).
+
+    Resolves the SAME job folder name the Box per-job folder uses
+    (`safety_naming.job_folder_name`), find-or-creates the folder + "Subcontracts"
+    sheet under sheet_ids.FOLDER_SC_JOBS (structure-cloned from the flat Log, so
+    `append_filed_row` writes it unchanged), then appends unless the SC number is
+    already present in the TARGET sheet (independent idempotency — a crash between
+    the flat append and this mirror re-runs cleanly)."""
+    try:
+        sid = job_sheet.ensure_job_sheet(
+            sheet_ids.FOLDER_SC_JOBS,
+            sheet_ids.SHEET_SUBCONTRACT_LOG,
+            safety_naming.job_folder_name(job_name),
+            PERJOB_SHEET_NAME,
+            workspace_id=sheet_ids.WORKSPACE_SUBCONTRACTS,  # §51 A1 margin-check target
+            workstream=WORKSTREAM,
+            correlation_id=correlation_id,
+        )
+        if subcontract_log.find_row_by_sc_number(
+            str(row_kwargs["sc_number"]), sheet_id=sid
+        ) is None:
+            subcontract_log.append_filed_row(sheet_id=sid, **row_kwargs)
+    except Exception as exc:  # noqa: BLE001 — supplementary per-job mirror; never fail the filing
+        error_log.log(
+            Severity.WARN, SCRIPT_NAME,
+            f"per-job tracking sheet append failed (job {job_name!r}, "
+            f"SC {row_kwargs.get('sc_number')!r}): {type(exc).__name__}: {exc!r}",
+            error_code="subcontract_perjob_sheet_failed",
+            correlation_id=correlation_id,
+        )
 
 
 # ---- ② Subcontractor down-sync pass -------------------------------------------------
