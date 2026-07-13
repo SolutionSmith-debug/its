@@ -151,6 +151,19 @@ GATED_SCRIPTS: list[tuple[str, list[str]]] = [
          "anthropic", "anthropic_client"],
     ),
     (
+        # po_attach_screen (Feature B) is the §34 DOC-attachment trust boundary — the
+        # PDF/OpenXML/image sibling of safety_reports/photo_screen (the first real
+        # §34 Layer-2 document instantiation). It inspects UNTRUSTED inbound file
+        # bytes (magic/consistency → PDF active-content scan → bounded OpenXML zip
+        # walk → Pillow verify → optional ClamAV) and is DETERMINISTIC — no customer
+        # send AND no LLM. Forbid the send substrings + graph_client + anthropic.
+        # Its only egress is the optional, config-gated clamd socket (pyclamd),
+        # allowlisted in NETWORK_LIB_ALLOWLIST exactly like photo_screen.
+        "po_materials/po_attach_screen.py",
+        ["graph_client", "send_mail", "resend", "smtplib", "email.mime",
+         "anthropic", "anthropic_client"],
+    ),
+    (
         # po_generate (PO S4) is the DETERMINISTIC PO renderer + the Worker-matching
         # integer-cents money math (the render-time totals assert). Pure data → bytes:
         # no Graph, no external send, no LLM — the same deterministic-actuation gate
@@ -408,6 +421,11 @@ NETWORK_LIB_ALLOWLIST: frozenset[str] = frozenset({
     # the scan is local-only AV, not customer egress. It stays in GATED_SCRIPTS (no send,
     # no LLM) — gating and the network allowlist are orthogonal (cf. publish_daemon).
     "safety_reports/photo_screen.py",
+    # po_attach_screen (Feature B) — the §34 DOC-attachment sibling of photo_screen:
+    # the SAME lazy, config-gated `pyclamd` L3 against the LOCAL clamd daemon
+    # (po_materials.po_attach_screen.clamav_enabled, default OFF). Local-only AV,
+    # not customer egress; stays in GATED_SCRIPTS (no send, no LLM).
+    "po_materials/po_attach_screen.py",
     # WS2 operator dashboard (D1-1, read-only observability app) — the root is
     # walked (below) so a future dashboard module that quietly acquires network
     # capability is caught. These four legitimately import a tracked needle, all

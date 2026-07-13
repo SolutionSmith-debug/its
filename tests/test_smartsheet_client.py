@@ -1137,6 +1137,21 @@ def test_attach_pdf_to_row_no_replace_skips_listing(mocker):
     client.Attachments.delete_attachment.assert_not_called()
 
 
+def test_attach_pdf_to_row_content_type_passthrough(mocker):
+    """The Feature-B MIME fix: a non-PDF caller passes content_type and the tuple
+    carries it (default unchanged — the two tests above pin application/pdf)."""
+    client = _install_client(mocker)
+    client.Attachments.attach_file_to_row.return_value = SimpleNamespace(
+        result=SimpleNamespace(id=6)
+    )
+    docx = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    smartsheet_client.attach_pdf_to_row(
+        7, 100, "package.docx", b"PK\x03\x04", replace=False, content_type=docx
+    )
+    _, _, file_tuple = client.Attachments.attach_file_to_row.call_args.args
+    assert file_tuple[0] == "package.docx" and file_tuple[2] == docx
+
+
 def test_attach_pdf_to_row_translates_sdk_error(mocker):
     client = _install_client(mocker)
     client.Attachments.list_row_attachments.return_value = SimpleNamespace(data=[])

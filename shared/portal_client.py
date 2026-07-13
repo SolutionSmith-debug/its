@@ -86,6 +86,10 @@ PO_STATUS_SYNC_PATH = "/api/po/internal/status-sync"
 PO_VENDORS_SYNC_PATH = "/api/po/internal/vendors/sync"
 PO_VENDORS_PENDING_PATH = "/api/po/internal/vendors/pending"
 PO_VENDORS_MARK_MIRRORED_PATH = "/api/po/internal/vendors/mark-mirrored"
+PO_ATTACHMENTS_PENDING_PATH = "/api/po/internal/attachments/pending"
+PO_ATTACHMENT_CLAIM_PATH = "/api/po/internal/attachments/{id}/claim"
+PO_ATTACHMENT_CHUNKS_PATH = "/api/po/internal/attachments/{id}/chunks"
+PO_ATTACHMENT_RESULT_PATH = "/api/po/internal/attachments/{id}/result"
 SUB_PENDING_PATH = "/api/subcontracts/internal/pending"
 SUB_MARK_FILED_PATH = "/api/subcontracts/internal/mark-filed"
 SUB_STATUS_SYNC_PATH = "/api/subcontracts/internal/status-sync"
@@ -952,6 +956,110 @@ def mark_vendors_mirrored(
         "POST", base_url, PO_VENDORS_MARK_MIRRORED_PATH, token,
         json_body={"updates": updates},
     )
+
+
+def get_po_attachments_pending(
+    base_url: str, token: str, *, limit: int = 25
+) -> list[dict[str, Any]]:
+    """Pull serviceable PO attachments: GET /api/po/internal/attachments/pending.
+
+    Each row is one `po_attachments` D1 row (Feature B, migration 0053) at
+    status pending|claimed on a FILED parent PO (pending_review+), oldest-first —
+    `{id, att_uuid, po_id, po_number, job_name, filename, declared_mime, size_bytes,
+    sha256, status, hmac, uploaded_by, created_at}`. Rows are UNTRUSTED until the
+    caller recomputes the po-att:v1 canonical HMAC (`shared.portal_hmac.
+    verify_po_attachment`) AND re-derives sha256 over the reassembled chunk bytes —
+    the verify-before-anything contract, extended to content. Claimed rows re-serve
+    (crash recovery); a disposed (filed/refused) row never returns.
+
+    Raises `PortalAuthError` (401) / `PortalRateLimitError` (429/503 exhausted) /
+    `PortalTransportError` (any other failure, incl. a non-object / missing-array body).
+    """
+    data = _request(
+        "GET", base_url, PO_ATTACHMENTS_PENDING_PATH, token, params={"limit": limit}
+    )
+    attachments = data.get("attachments")
+    if not isinstance(attachments, list):
+        raise PortalTransportError(
+            f"GET {PO_ATTACHMENTS_PENDING_PATH} missing/invalid 'attachments' array "
+            f"(got {type(attachments).__name__})"
+        )
+    # Defensive: keep only dict rows; a non-dict element is malformed transport.
+    return [row for row in attachments if isinstance(row, dict)]
+
+
+def claim_po_attachment(base_url: str, token: str, *, attachment_id: int) -> bool:
+    """Claim-first marker: POST /api/po/internal/attachments/:id/claim → `found`.
+
+    Flips pending→claimed (the photo-pool claim semantics) so a crash mid-service
+    leaves an observable claimed row that re-serves next cycle. Idempotent:
+    `found=False` means already claimed/disposed — the caller proceeds (its own read
+    saw the row as serviceable). A control-plane write to OUR OWN Worker (outside
+    the External Send Gate, Invariant 1). Raises the typed hierarchy on failure.
+    """
+    data = _request(
+        "POST", base_url,
+        PO_ATTACHMENT_CLAIM_PATH.format(id=attachment_id), token, json_body={},
+    )
+    return bool(data.get("found"))
+
+
+def get_po_attachment_chunks(
+    base_url: str, token: str, *, attachment_id: int
+) -> list[dict[str, Any]]:
+    """Pull one attachment's bytes: GET /api/po/internal/attachments/:id/chunks.
+
+    Returns the `chunks` list verbatim — `{chunk_index, chunk_total, chunk_b64}`
+    rows, index-ordered (the filed_pdfs chunk shape; each chunk decodes
+    independently, decoded bytes concatenate to the original file). The ONLY route
+    that ever serves attachment bytes, and only Mac-ward over this bearer (Option
+    D). NEVER interpolate `chunk_b64` into a log or error. The caller MUST verify
+    the po-att:v1 HMAC + sha256 over the reassembled bytes before screening.
+
+    Raises `PortalAuthError` (401) / `PortalRateLimitError` (429/503 exhausted) /
+    `PortalTransportError` (any other failure, incl. a 404 for a disposed row).
+    """
+    data = _request(
+        "GET", base_url, PO_ATTACHMENT_CHUNKS_PATH.format(id=attachment_id), token
+    )
+    chunks = data.get("chunks")
+    if not isinstance(chunks, list):
+        raise PortalTransportError(
+            f"GET {PO_ATTACHMENT_CHUNKS_PATH} missing/invalid 'chunks' array "
+            f"(got {type(chunks).__name__})"
+        )
+    # Defensive: keep only dict rows; a non-dict element is malformed transport.
+    return [row for row in chunks if isinstance(row, dict)]
+
+
+def post_po_attachment_result(
+    base_url: str, token: str, *, attachment_id: int, status: str,
+    box_file_id: str | None = None, detail: str | None = None,
+) -> bool:
+    """Post one screening disposition: POST /api/po/internal/attachments/:id/result.
+
+    `status` is `'filed'` (MUST carry `box_file_id` — the Box record already exists;
+    the Worker 400s a filed result without it) or `'refused'` (MUST NOT carry one;
+    optional `detail` rides the audit row — the machine reason, NEVER file bytes).
+    The Worker applies the disposition in ONE atomic batch (W4): status flip +
+    **chunk DELETE (delete-on-disposition — the bytes leave D1)** + audit row.
+
+    Idempotent: `found=False` means the row was already disposed (a re-post after a
+    lost ack) — benign, exactly like `mark_filed`. A control-plane write to OUR OWN
+    Worker (outside the External Send Gate, Invariant 1). Raises the typed
+    `PortalTransportError` hierarchy on failure (an invalid-result 400 surfaces as
+    `PortalTransportError`, never a silent return).
+    """
+    body: dict[str, Any] = {"status": status}
+    if box_file_id is not None:
+        body["box_file_id"] = box_file_id
+    if detail is not None:
+        body["detail"] = detail
+    data = _request(
+        "POST", base_url,
+        PO_ATTACHMENT_RESULT_PATH.format(id=attachment_id), token, json_body=body,
+    )
+    return bool(data.get("found"))
 
 
 # ---- Subcontract internal tier (SC-S3c — the subcontract_poll daemon's queue I/O) ----

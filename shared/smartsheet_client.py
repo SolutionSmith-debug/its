@@ -1547,15 +1547,28 @@ def list_workspace_share_emails(workspace_id: int) -> frozenset[str]:
 
 @_breaker_guard
 def attach_pdf_to_row(
-    sheet_id: int, row_id: int, filename: str, pdf_bytes: bytes, *, replace: bool = True
+    sheet_id: int,
+    row_id: int,
+    filename: str,
+    pdf_bytes: bytes,
+    *,
+    replace: bool = True,
+    content_type: str = "application/pdf",
 ) -> int:
-    """Attach `pdf_bytes` as `filename` (a PDF) to a row; return the attachment ID.
+    """Attach `pdf_bytes` as `filename` to a row; return the attachment ID.
 
     Purpose
         Put the rendered document INLINE on a Smartsheet row — the per-submission
         PDF on its week-sheet Submission row, and the compiled weekly packet on the
         week-sheet Rollup row + the WSR_human_review row — so a reviewer sees it
         without a Box round-trip.
+
+        `content_type` defaults to ``application/pdf`` (the historical hardcode —
+        every pre-existing caller attaches a rendered PDF and is unchanged). Callers
+        attaching non-PDF bytes (subcontract .docx/.xlsx packages, PO document
+        attachments) pass the correct MIME so the Smartsheet attachment is not
+        mislabeled (closes the caveat documented at
+        ``subcontracts.subcontract_poll._attach_files_best_effort``).
 
     Invariants
         - Box stays the System of Record: the row's Box-link cell is UNCHANGED and
@@ -1590,7 +1603,7 @@ def attach_pdf_to_row(
             raise _translate(e) from e
     try:
         result = client.Attachments.attach_file_to_row(
-            sheet_id, row_id, (filename, io.BytesIO(pdf_bytes), "application/pdf")
+            sheet_id, row_id, (filename, io.BytesIO(pdf_bytes), content_type)
         )
     except sdk_exc.SmartsheetException as e:
         raise _translate(e) from e

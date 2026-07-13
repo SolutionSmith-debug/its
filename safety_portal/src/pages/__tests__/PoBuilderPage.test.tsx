@@ -26,6 +26,9 @@ vi.mock("../../lib/po", async (importOriginal) => {
     supersedePo: vi.fn(),
     cancelPo: vi.fn(),
     deletePoDraft: vi.fn(),
+    fetchPoAttachments: vi.fn(),
+    uploadPoAttachment: vi.fn(),
+    deletePoAttachment: vi.fn(),
   };
 });
 vi.mock("../../lib/api", () => ({ fetchJobs: vi.fn() }));
@@ -144,6 +147,7 @@ beforeEach(() => {
   vi.mocked(api.fetchPoConfig).mockResolvedValue(CONFIG);
   vi.mocked(api.fetchPoMaterials).mockResolvedValue(CATALOG);
   vi.mocked(api.fetchJobShipTo).mockResolvedValue(EMPTY_SHIPTO);
+  vi.mocked(api.fetchPoAttachments).mockResolvedValue([]);
   vi.mocked(fetchJobs).mockResolvedValue(JOBS);
 });
 
@@ -448,5 +452,80 @@ describe("PoBuilderPage — ship-to auto-fill (S6 follow-up)", () => {
     expect((r.getByLabelText("Job number (YYYY.NNN)") as HTMLInputElement).value).toBe("2023.126");
     expect((r.getByLabelText("Address") as HTMLInputElement).value).toBe("");
     expect((r.getByLabelText("Name") as HTMLInputElement).value).toBe("");
+  });
+});
+
+describe("PoBuilderPage — attachments (Feature B)", () => {
+  const savedTotals: api.PoTotals = { subtotal_cents: 3712, tax_rate_bp: 900, tax_cents: 334, total_cents: 4046 };
+
+  it("gates the upload on a SAVED draft: save-first hint before, file input + empty list after", async () => {
+    vi.mocked(api.createDraft).mockResolvedValue({ id: 7, totals: savedTotals });
+    const r = render(<PoBuilderPage onBack={() => {}} />);
+    await openBuilderWithFixture(r);
+
+    expect(r.getByText(/Save the draft first/)).toBeTruthy();
+    expect(r.queryByLabelText("Attach files")).toBeNull();
+
+    fireEvent.click(r.getByText("Save draft"));
+    await waitFor(() => expect(r.getByLabelText("Attach files")).toBeTruthy());
+    expect(r.getByText("No attachments yet.")).toBeTruthy();
+  });
+
+  it("uploads a picked file over the base64 wire and renders the refreshed list", async () => {
+    vi.mocked(api.createDraft).mockResolvedValue({ id: 7, totals: savedTotals });
+    vi.mocked(api.uploadPoAttachment).mockResolvedValue({ id: 1 });
+    const r = render(<PoBuilderPage onBack={() => {}} />);
+    await openBuilderWithFixture(r);
+    fireEvent.click(r.getByText("Save draft"));
+    await waitFor(() => expect(r.getByLabelText("Attach files")).toBeTruthy());
+
+    vi.mocked(api.fetchPoAttachments).mockResolvedValue([
+      { id: 1, filename: "spec.pdf", declared_mime: "application/pdf", size_bytes: 4, status: "pending", created_at: 1_780_000_000 },
+    ]);
+    // %PDF header bytes → base64 "JVBERg==" (the no-data:-prefix wire contract).
+    const file = new File([new Uint8Array([0x25, 0x50, 0x44, 0x46])], "spec.pdf", { type: "application/pdf" });
+    fireEvent.change(r.getByLabelText("Attach files"), { target: { files: [file] } });
+    await waitFor(() =>
+      expect(api.uploadPoAttachment).toHaveBeenCalledWith(7, "spec.pdf", "application/pdf", "JVBERg=="),
+    );
+    await waitFor(() => expect(r.getByText("spec.pdf")).toBeTruthy());
+    expect(r.getByText("Awaiting screening")).toBeTruthy();
+  });
+
+  it("refuses a disallowed extension client-side (hint only — the Worker is the real gate)", async () => {
+    vi.mocked(api.createDraft).mockResolvedValue({ id: 7, totals: savedTotals });
+    const r = render(<PoBuilderPage onBack={() => {}} />);
+    await openBuilderWithFixture(r);
+    fireEvent.click(r.getByText("Save draft"));
+    await waitFor(() => expect(r.getByLabelText("Attach files")).toBeTruthy());
+
+    const bad = new File([new Uint8Array([0x4d, 0x5a])], "evil.exe", { type: "application/octet-stream" });
+    fireEvent.change(r.getByLabelText("Attach files"), { target: { files: [bad] } });
+    await waitFor(() => expect(r.getByText(/isn't an allowed type/)).toBeTruthy());
+    expect(api.uploadPoAttachment).not.toHaveBeenCalled();
+  });
+
+  it("removes an attachment from the draft via its remove button", async () => {
+    vi.mocked(api.createDraft).mockResolvedValue({ id: 7, totals: savedTotals });
+    vi.mocked(api.deletePoAttachment).mockResolvedValue(undefined);
+    const r = render(<PoBuilderPage onBack={() => {}} />);
+    await openBuilderWithFixture(r);
+    vi.mocked(api.fetchPoAttachments).mockResolvedValue([
+      { id: 5, filename: "drawing.png", declared_mime: "image/png", size_bytes: 2048, status: "pending", created_at: 1_780_000_000 },
+    ]);
+    fireEvent.click(r.getByText("Save draft"));
+    await waitFor(() => expect(r.getByLabelText("Attach files")).toBeTruthy());
+    // Seed the list through an upload-free path: re-render via remove flow needs rows —
+    // simulate by uploading nothing and refreshing through the remove handler's fetch.
+    // (The list populated on the next fetch; drive it via a file pick.)
+    vi.mocked(api.uploadPoAttachment).mockResolvedValue({ id: 5 });
+    const file = new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], "drawing.png", { type: "image/png" });
+    fireEvent.change(r.getByLabelText("Attach files"), { target: { files: [file] } });
+    await waitFor(() => expect(r.getByText("drawing.png")).toBeTruthy());
+
+    vi.mocked(api.fetchPoAttachments).mockResolvedValue([]);
+    fireEvent.click(r.getByLabelText("Remove attachment drawing.png"));
+    await waitFor(() => expect(api.deletePoAttachment).toHaveBeenCalledWith(7, 5));
+    await waitFor(() => expect(r.getByText("No attachments yet.")).toBeTruthy());
   });
 });

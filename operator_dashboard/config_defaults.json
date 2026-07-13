@@ -214,6 +214,17 @@
       "origin": "daemon"
     },
     {
+      "setting": "po_materials.po_attach_screen.clamav_enabled",
+      "workstream": "po_materials",
+      "kind": "bool",
+      "default": false,
+      "purpose": "Optional ClamAV layer of the §34 PO document-attachment screener (po_attach_screen L3). Default OFF; requires clamd + pyclamd on the Mac.",
+      "read_by": [
+        "po_materials.po_poll"
+      ],
+      "origin": "daemon"
+    },
+    {
       "setting": "po_materials.po_poll.polling_enabled",
       "workstream": "po_materials",
       "kind": "bool",
