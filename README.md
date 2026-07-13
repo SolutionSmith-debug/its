@@ -12,7 +12,7 @@ and design partner; this repo is Evergreen-specific.
 This is the **execution layer**. The **planning layer** lives in a separate Claude.ai project
 ("ITS Foundation & Planning") and in the [`its-blueprint`](https://github.com/SolutionSmith-debug/its-blueprint)
 repo (doctrine + mission files); this repo implements what is decided there. If a claim here
-contradicts the blueprint doctrine (Operational Standards v20, Foundation Mission v11), **the
+contradicts the blueprint doctrine (Operational Standards v21, Foundation Mission v11), **the
 blueprint wins**.
 
 > **New to the codebase?** [`CLAUDE.md`](CLAUDE.md) is the authoritative context (conventions +
@@ -24,7 +24,7 @@ blueprint wins**.
 - **Planning & Foundation** (Claude.ai + `its-blueprint`) — mission files, architectural
   decisions, doctrine, prompt/schema designs. Not in this repo.
 - **Execution** (this repo) — Claude Code and Python on a MacBook, triggered by **launchd
-  polling daemons** (the canonical intake pattern, Op Stds v20 §31). It reads/writes the systems
+  polling daemons** (the canonical intake pattern, Op Stds v21 §31). It reads/writes the systems
   of record over their APIs and calls the Anthropic API for reasoning steps.
 
 Systems of record, unchanged by ITS: **Smartsheet** (structured data), **Box** (documents),
@@ -59,7 +59,7 @@ send.
 | `shared/` | Cross-cutting helpers every workstream reuses — kill switch, error-log + triple-fire alerting, API clients (Anthropic, Box, Graph, Smartsheet, Sentry, Resend, portal), Keychain, untrusted-content tagging, anomaly logger, quarantine, review queue, alert dedupe, atomic state I/O, picklist sync/validation, scheduling, sheet IDs, heartbeat, capacity guards. Start here. |
 | `safety_reports/` | The Safety Portal pull pipeline (Python): `portal_poll` (intake daemon) → `intake` (12-stage filing) → `weekly_generate`/`compile_now_poll` (deterministic weekly compile, generation half of the Send Gate) → `weekly_send`/`weekly_send_poll` (send half). Also `photo_screen` (§34) and the shared `generate_core` engine. |
 | `progress_reports/` | The Progress Reporting workstream — the progress twin of the safety pipeline (`progress_weekly_generate`, `progress_send`/`_poll`, `wpr_review`) + the P7 per-job `hours_log` standing tracker, instantiating the parameterized shared machinery (not cloned). |
-| `field_ops/` | The Field-Ops expansion — `fieldops_sync`, the D1→Smartsheet mirror daemon (job identity + the per-job standing trackers) that makes ITS-owned Smartsheet the downstream SoR (Op Stds v20 §51). |
+| `field_ops/` | The Field-Ops expansion — `fieldops_sync`, the D1→Smartsheet mirror daemon (job identity + the per-job standing trackers) that makes ITS-owned Smartsheet the downstream SoR (Op Stds v21 §51). |
 | `safety_portal/` | The Cloudflare **Worker** (`worker/`, send-free D1 API + capability layer), the React **SPA** (`src/`), D1 **migrations/**, and form definitions. `README.md` there carries the migration punch-list + per-slice activation notes. |
 | `scripts/` | Scheduled entry points + launchd plists — `watchdog.py` (daily; the dead-man's-switch checks), `run_picklist_sync.py` (hourly), `install.sh`, and `migrations/` (operator-run Smartsheet/D1 build scripts). |
 | `schemas/` · `prompts/` | Version-controlled JSON schemas (Anthropic tool-use) and prompt files. |
@@ -142,4 +142,4 @@ Normative summary; the canonical sources are `CLAUDE.md` (execution conventions 
 - [`docs/runbooks/`](docs/runbooks/) — §43 successor-remediation runbooks · [`docs/operations/`](docs/operations/) — PR/merge/worktree/doc procedures.
 - [`docs/session_logs/`](docs/session_logs/) · [`docs/audits/`](docs/audits/) · [`docs/reports/`](docs/reports/) · [`docs/tech_debt.md`](docs/tech_debt.md).
 - Doc conventions (frontmatter/sections/filenames): [`docs/operations/doc_conventions.md`](docs/operations/doc_conventions.md). CI lints new docs + checks the auto-generated indexes.
-- **Doctrine** (canonical, planning-layer): `../its-blueprint/doctrine/` — Operational Standards v20, Foundation Mission v11.
+- **Doctrine** (canonical, planning-layer): `../its-blueprint/doctrine/` — Operational Standards v21, Foundation Mission v11.

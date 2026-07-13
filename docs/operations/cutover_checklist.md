@@ -14,7 +14,7 @@ flips off the `evergreenmirror.com` sandbox tenants and onto the real
 `evergreenrenewables.com` identities (target: **Mon Aug 3**, per
 `docs/2026-07-09_aug7_delivery_program.md` WS4). The cutover is **not done
 until every item below is verified AND `python -m scripts.verify_cutover`
-exits 0** (Op Stds v20 §53 — a cutover claim is narrative until mechanically
+exits 0** (Op Stds v21 §53 — a cutover claim is narrative until mechanically
 verified).
 
 > **v2 rewrite (2026-07-09).** v1 (2026-05-29) had an item-2 numbering
