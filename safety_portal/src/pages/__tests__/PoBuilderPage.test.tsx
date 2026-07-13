@@ -479,7 +479,7 @@ describe("PoBuilderPage — configured delivery-contact suggestions (Feature C)"
     ]);
   });
 
-  it("an EXACT configured-name entry auto-fills phone + email; free text never blocked, never filled", async () => {
+  it("a configured-name entry auto-fills phone + email; free text never blocked, never filled", async () => {
     const r = render(<PoBuilderPage onBack={() => {}} />);
     await openBuilder(r);
     await waitFor(() => expect(api.fetchPoConfig).toHaveBeenCalled());
@@ -488,13 +488,24 @@ describe("PoBuilderPage — configured delivery-contact suggestions (Feature C)"
     expect((r.getByLabelText("Name") as HTMLInputElement).value).toBe("Somebody Unlisted");
     expect((r.getByLabelText("Phone") as HTMLInputElement).value).toBe("");
     expect((r.getByLabelText("Email") as HTMLInputElement).value).toBe("");
-    // An exact match (as a datalist pick produces) fills phone + email from the entry.
+    // A match (as a datalist pick produces) fills phone + email from the entry.
     fireEvent.change(r.getByLabelText("Name"), { target: { value: "Pat Yardman" } });
     expect((r.getByLabelText("Phone") as HTMLInputElement).value).toBe("555-0177");
     expect((r.getByLabelText("Email") as HTMLInputElement).value).toBe("pat@yard.example");
     // The filled values stay operator-editable (convenience, not a lock).
     fireEvent.change(r.getByLabelText("Phone"), { target: { value: "555-9999" } });
     expect((r.getByLabelText("Phone") as HTMLInputElement).value).toBe("555-9999");
+  });
+
+  it("the match is case-INSENSITIVE (aligns with the config editor's case-insensitive dedupe)", async () => {
+    const r = render(<PoBuilderPage onBack={() => {}} />);
+    await openBuilder(r);
+    await waitFor(() => expect(api.fetchPoConfig).toHaveBeenCalled());
+    // A saved "Pat Yardman" must still autofill on a differing-case typed "pat yardman" —
+    // the list can't hold two entries differing only by case, so this is unambiguous.
+    fireEvent.change(r.getByLabelText("Name"), { target: { value: "  pat YARDMAN  " } });
+    expect((r.getByLabelText("Phone") as HTMLInputElement).value).toBe("555-0177");
+    expect((r.getByLabelText("Email") as HTMLInputElement).value).toBe("pat@yard.example");
   });
 
   it("a configured contact with an empty field never wipes an already-entered value", async () => {

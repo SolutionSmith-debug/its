@@ -362,12 +362,16 @@ export function PoBuilderPage({ onBack }: { onBack: () => void }) {
   // exact typed/picked name match — additive, never a replacement).
   const deliveryContacts = config?.delivery_contacts ?? [];
 
-  /** Name edits flow through here: on an EXACT match with a configured contact, fill its phone +
-   *  email (non-empty values only — an empty configured field never wipes an operator-entered or
-   *  stakeholder-auto-filled value). Free text simply sets the name. */
+  /** Name edits flow through here: on a case-INSENSITIVE match with a configured contact, fill its
+   *  phone + email (non-empty values only — an empty configured field never wipes an operator-entered
+   *  or stakeholder-auto-filled value). Free text simply sets the name. The match is case-insensitive
+   *  to align with the config editor's server-side dedupe (config_apply._apply_delivery_contacts_edit
+   *  lowercases for its uniqueness check), so a saved "Pat Yardman" still autofills on a typed
+   *  "pat yardman" — the list can't hold two entries that differ only by case. */
   function onDeliveryNameChange(v: string) {
     setDeliveryName(v);
-    const match = deliveryContacts.find((ct) => ct.name === v.trim());
+    const key = v.trim().toLowerCase();
+    const match = deliveryContacts.find((ct) => ct.name.trim().toLowerCase() === key);
     if (!match) return;
     if (match.phone) setDeliveryPhone(match.phone);
     if (match.email) setDeliveryEmail(match.email);

@@ -60,7 +60,10 @@ _MAX_RENDER_LINE = 2_000  # mirrors the Worker's MAX_RENDER_LINE (config.ts crea
 _MAX_CONTACT_NAME = 256
 _MAX_CONTACT_PHONE = 40
 _MAX_CONTACT_EMAIL = 320
-_MAX_DELIVERY_CONTACTS = 200  # sane list cap — a suggestion <datalist>, not a CRM
+_MAX_DELIVERY_CONTACTS = 200  # sane list cap — a suggestion <datalist>, not a CRM.
+# NOTE: the effective ceiling is the Worker's generic MAX_PAYLOAD_BYTES (config.ts, 100_000)
+# — ~200 max-length entries serialize to ~125-130 KB, so the Worker rejects on payload size
+# BEFORE this count is reachable (fail-closed, not a bug). 200 is the defensive backstop here.
 
 # The terms substitution-token pattern — IDENTICAL to terms._TOKEN_RE so the tokens this module
 # declares in the manifest are exactly the ones terms.substitute_tokens will demand at render.
