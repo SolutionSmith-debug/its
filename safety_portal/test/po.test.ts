@@ -12,6 +12,7 @@ import type { PoRow, PoLine } from "../worker/po";
 // edit PR (exactly how PR #511 got stuck). Assert derived/served-equals-source/shape only.
 import taxConfig from "../../po_materials/config/tax.json";
 import purchaserConfig from "../../po_materials/config/purchaser.json";
+import deliveryContactsConfig from "../../po_materials/config/delivery_contacts.json";
 import termsManifest from "../../po_materials/terms/manifest.json";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -254,6 +255,21 @@ describe("terms + config wiring", () => {
     expect(Object.values(cfg.tax.rates_bp).every((v) => Number.isInteger(v) && v >= 0)).toBe(true);
     expect(cfg).not.toHaveProperty("comment");
     expect(cfg.purchaser).not.toHaveProperty("comment");
+  });
+
+  it("config serves the delivery-contact suggestion list = the bundled source (Feature C, no drift)", async () => {
+    const res = await g(admin, "/api/po/config");
+    expect(res.status).toBe(200);
+    const cfg = await json<{ delivery_contacts: { name: string; phone?: string; email?: string }[] }>(res);
+    // Served-equals-source (HOUSE REFLEXES §5) — the §50 editor may change the CONTENT any time,
+    // so assert against the SAME bundled JSON the Worker imports, never a pinned literal.
+    expect(cfg.delivery_contacts).toEqual(deliveryContactsConfig.contacts);
+    // Shape sanity that survives ANY edit: an array; every entry carries a non-empty string name.
+    expect(Array.isArray(cfg.delivery_contacts)).toBe(true);
+    for (const ct of cfg.delivery_contacts) {
+      expect(typeof ct.name).toBe("string");
+      expect(ct.name.length).toBeGreaterThan(0);
+    }
   });
 
   it("the computeTotals tax table IS the imported S3 file (single source, no drift)", async () => {

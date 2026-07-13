@@ -16,11 +16,13 @@ into one call against ``root`` keeps the transform + its file I/O in one auditab
 The actuator's per-cycle ``_reset_to_main`` discards ``po_materials/config`` +
 ``po_materials/terms`` before each actuation, so an interrupted write never leaks.
 
-Four (artifact, op) domain transforms — kept in LOCKSTEP with the Worker's ``worker/config.ts``
+The (artifact, op) domain transforms — kept in LOCKSTEP with the Worker's ``worker/config.ts``
 validation AND the ``config_requests.op`` CHECK migration (the three fan-out surfaces must agree; a
 new op lands in all three):
   * ``tax`` / ``edit``       — integer-basis-point tax table (NO floats in the money path).
   * ``purchaser`` / ``edit`` — the Purchaser identity + invoice routing (email-ish routing).
+  * ``delivery_contacts`` / ``edit`` — the PO builder's delivery-contact suggestion list
+    (Feature C): name required + bounded, phone/email optional + bounded, unique names.
   * ``terms`` / ``add_version`` — append a NEW immutable, sha256-pinned terms version file
     with ``legal_review: "pending"``; NEVER mutates an existing version, NEVER bumps
     ``current_version`` (the un-changed pointer + the pending flag are Layer B of the legal
@@ -52,6 +54,13 @@ _MAX_TERMS_TEXT = 100_000  # mirrors the Worker's MAX_PAYLOAD_BYTES (config.ts)
 _MAX_TEXT_FIELD = 2_000  # bound on a single scalar config string (entity / phone / address line)
 _MAX_LABEL = 200  # mirrors the Worker's MAX_LABEL (config.ts create_profile)
 _MAX_RENDER_LINE = 2_000  # mirrors the Worker's MAX_RENDER_LINE (config.ts create_profile)
+# delivery_contacts bounds — mirror the Worker's PO draft field gates (po.ts MAX_NAME /
+# MAX_PHONE / MAX_EMAIL): a picked entry is filled verbatim into delivery_contact_* on a draft,
+# so an entry the draft gate would reject must never be storable in the suggestion list.
+_MAX_CONTACT_NAME = 256
+_MAX_CONTACT_PHONE = 40
+_MAX_CONTACT_EMAIL = 320
+_MAX_DELIVERY_CONTACTS = 200  # sane list cap — a suggestion <datalist>, not a CRM
 
 # The terms substitution-token pattern — IDENTICAL to terms._TOKEN_RE so the tokens this module
 # declares in the manifest are exactly the ones terms.substitute_tokens will demand at render.
@@ -219,6 +228,71 @@ def _apply_purchaser_edit(payload: dict[str, Any], root: Path) -> str:
     new["invoice_routing"] = {"to": routing["to"], "cc": list(cc)}
     path.write_text(_dump(new), encoding="utf-8")
     return f"purchaser: {entity} -> config_version {new['config_version']}"
+
+
+# ── delivery_contacts / edit ────────────────────────────────────────────────────────────
+
+
+def _apply_delivery_contacts_edit(payload: dict[str, Any], root: Path) -> str:
+    """The PO builder's delivery-contact suggestion list (Feature C) — {contacts: [{name,
+    phone?, email?}, ...]}. Bounds mirror the Worker's PO delivery_contact_* field gates
+    (po.ts MAX_NAME/MAX_PHONE/MAX_EMAIL) since a picked entry lands verbatim in those draft
+    fields. An EMPTY list is valid (the operator clearing all suggestions); duplicate names
+    are rejected case-insensitively because the builder auto-fills on an EXACT name match —
+    two entries under one name would make the fill ambiguous. Writes
+    po_materials/config/delivery_contacts.json + bumps config_version."""
+    contacts = payload.get("contacts")
+    if not isinstance(contacts, list):
+        raise ConfigApplyError("delivery_contacts edit: contacts must be a list")
+    if len(contacts) > _MAX_DELIVERY_CONTACTS:
+        raise ConfigApplyError(
+            f"delivery_contacts edit: at most {_MAX_DELIVERY_CONTACTS} contacts "
+            f"(got {len(contacts)})"
+        )
+    cleaned: list[dict[str, str]] = []
+    seen_names: set[str] = set()
+    for i, entry in enumerate(contacts):
+        if not isinstance(entry, dict):
+            raise ConfigApplyError(f"delivery_contacts edit: contacts[{i}] must be an object")
+        name = entry.get("name")
+        if not isinstance(name, str) or not name.strip() or len(name) > _MAX_CONTACT_NAME:
+            raise ConfigApplyError(
+                f"delivery_contacts edit: contacts[{i}].name must be a non-empty string "
+                f"of at most {_MAX_CONTACT_NAME} characters"
+            )
+        phone = entry.get("phone", "")
+        if not isinstance(phone, str) or len(phone) > _MAX_CONTACT_PHONE:
+            raise ConfigApplyError(
+                f"delivery_contacts edit: contacts[{i}].phone must be a string of at most "
+                f"{_MAX_CONTACT_PHONE} characters"
+            )
+        email = entry.get("email", "")
+        if not isinstance(email, str) or len(email) > _MAX_CONTACT_EMAIL:
+            raise ConfigApplyError(
+                f"delivery_contacts edit: contacts[{i}].email must be a string of at most "
+                f"{_MAX_CONTACT_EMAIL} characters"
+            )
+        email = email.strip()
+        if email and not _EMAIL_RE.match(email):
+            raise ConfigApplyError(
+                f"delivery_contacts edit: contacts[{i}].email {email!r} is not a valid "
+                "email address"
+            )
+        key = name.strip().lower()
+        if key in seen_names:
+            raise ConfigApplyError(
+                f"delivery_contacts edit: duplicate contact name {name.strip()!r} — the "
+                "builder auto-fills on an exact name match, so names must be unique"
+            )
+        seen_names.add(key)
+        cleaned.append({"name": name.strip(), "phone": phone.strip(), "email": email})
+    path = _config_dir(root) / "delivery_contacts.json"
+    current = _load_json_file(path, "delivery_contacts.json")
+    new = dict(current)
+    new["config_version"] = _next_config_version(current)
+    new["contacts"] = cleaned
+    path.write_text(_dump(new), encoding="utf-8")
+    return f"delivery_contacts: {len(cleaned)} contact(s) -> config_version {new['config_version']}"
 
 
 # ── terms / add_version ─────────────────────────────────────────────────────────────────
@@ -744,6 +818,10 @@ def apply_config(request: dict[str, Any], root: Path) -> str:
             if op != "edit":
                 raise ConfigApplyError(f"purchaser takes op 'edit', got {op!r}")
             return _apply_purchaser_edit(payload, root)
+        if artifact == "delivery_contacts":
+            if op != "edit":
+                raise ConfigApplyError(f"delivery_contacts takes op 'edit', got {op!r}")
+            return _apply_delivery_contacts_edit(payload, root)
         if artifact == "terms":
             if op == "add_version":
                 return _apply_terms_add_version(payload, request.get("target_version"), root)

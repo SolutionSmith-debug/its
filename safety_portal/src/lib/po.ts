@@ -182,7 +182,17 @@ export interface TermsProfile {
   render_line: string | null;
 }
 
-/** GET /api/po/config (PR #495) — versioned purchaser identity + the D8 tax table. */
+/** One configured delivery contact (Feature C) — a suggestion for the builder's
+ *  delivery-contact name <datalist>; an EXACT name match auto-fills phone + email.
+ *  phone/email ride optional on the wire (the config validator normalizes them to ""). */
+export interface DeliveryContact {
+  name: string;
+  phone?: string;
+  email?: string;
+}
+
+/** GET /api/po/config (PR #495) — versioned purchaser identity + the D8 tax table +
+ *  the configured delivery-contact suggestion list (Feature C). */
 export interface PoConfig {
   purchaser: {
     entity: string;
@@ -195,6 +205,8 @@ export interface PoConfig {
     rates_bp: Record<string, number>;
     state_names: Record<string, string>;
   };
+  /** Suggestions only — free-text delivery contacts stay accepted on every draft. */
+  delivery_contacts: DeliveryContact[];
 }
 
 // ── Fetch helpers ────────────────────────────────────────────────────────────────────────────────

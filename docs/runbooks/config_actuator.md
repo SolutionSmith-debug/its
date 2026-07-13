@@ -20,7 +20,8 @@ contract).
 `po_materials/config_actuator.py` is the **§50 privileged config actuator** — the Mac-side
 twin of the form-publish daemon (`safety_reports/publish_daemon.py`), against the
 `config_requests` queue. An office admin edits versioned PO config in the portal (the
-Purchaser identity, the tax table, or a new terms version); the Cloudflare Worker
+Purchaser identity, the tax table, the delivery-contact suggestion list, or a new terms
+version); the Cloudflare Worker
 (`safety_portal/worker/config.ts`) **validates + enqueues** the edit **send-free** in D1;
 this launchd daemon (`org.solutionsmith.its.config-actuator`, every 120 s) is the sole
 privileged actuator that makes it real. Per claimed request it:

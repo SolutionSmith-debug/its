@@ -175,16 +175,25 @@ function FieldInput({
   value,
   onChange,
   maxLength,
+  listId,
 }: {
   label: string;
   value: string;
   onChange: (v: string) => void;
   maxLength?: number;
+  /** Optional <datalist> id — turns the input into a suggest-or-free-text combobox. */
+  listId?: string;
 }) {
   return (
     <label className="field">
       <span className="field__label">{label}</span>
-      <input className="field__input" value={value} maxLength={maxLength} onChange={(e) => onChange(e.target.value)} />
+      <input
+        className="field__input"
+        value={value}
+        maxLength={maxLength}
+        list={listId}
+        onChange={(e) => onChange(e.target.value)}
+      />
     </label>
   );
 }
@@ -339,6 +348,25 @@ export function PoBuilderPage({ onBack }: { onBack: () => void }) {
 
   /** Any money-affecting edit invalidates the saved server totals — back to the live mirror. */
   const touchMoney = () => setServerTotals(null);
+
+  // ── Delivery-contact suggestions (Feature C) ───────────────────────────────────────────────────
+  // The configured list from the served PO config (GET /api/po/config → delivery_contacts, the
+  // §50-edited po_materials/config/delivery_contacts.json bundle) feeds a <datalist> on the
+  // delivery-contact NAME input. SUGGESTIONS ONLY: free text is always accepted, the field stays
+  // optional, and the job-stakeholder auto-fill below is untouched (this fill only fires on an
+  // exact typed/picked name match — additive, never a replacement).
+  const deliveryContacts = config?.delivery_contacts ?? [];
+
+  /** Name edits flow through here: on an EXACT match with a configured contact, fill its phone +
+   *  email (non-empty values only — an empty configured field never wipes an operator-entered or
+   *  stakeholder-auto-filled value). Free text simply sets the name. */
+  function onDeliveryNameChange(v: string) {
+    setDeliveryName(v);
+    const match = deliveryContacts.find((ct) => ct.name === v.trim());
+    if (!match) return;
+    if (match.phone) setDeliveryPhone(match.phone);
+    if (match.email) setDeliveryEmail(match.email);
+  }
 
   // ── Job select + auto-fill ─────────────────────────────────────────────────────────────────────
   async function onJobSelect(id: string) {
@@ -960,10 +988,25 @@ export function PoBuilderPage({ onBack }: { onBack: () => void }) {
         {taxBadge ? <span className={taxBadge.cls}>{taxBadge.text}</span> : null}
         <h4 className="dash-card__label">Delivery contact</h4>
         <div className="jha__grid">
-          <FieldInput label="Name" value={deliveryName} onChange={setDeliveryName} maxLength={256} />
+          <FieldInput
+            label="Name"
+            value={deliveryName}
+            onChange={onDeliveryNameChange}
+            maxLength={256}
+            listId={deliveryContacts.length > 0 ? "po-delivery-contact-options" : undefined}
+          />
           <FieldInput label="Phone" value={deliveryPhone} onChange={setDeliveryPhone} maxLength={40} />
           <FieldInput label="Email" value={deliveryEmail} onChange={setDeliveryEmail} maxLength={320} />
         </div>
+        {/* The configured-contact suggestions (Feature C). A pick fills phone/email via
+            onDeliveryNameChange's exact-match; free text stays fully accepted. */}
+        {deliveryContacts.length > 0 && (
+          <datalist id="po-delivery-contact-options">
+            {deliveryContacts.map((ct) => (
+              <option key={ct.name} value={ct.name} />
+            ))}
+          </datalist>
+        )}
       </section>
 
       {/* 2 — Vendor */}

@@ -61,6 +61,7 @@ const CONFIG_REGISTRY: Record<string, WorkstreamSpec> = {
     artifacts: {
       purchaser: { kind: "json" },
       tax: { kind: "json" },
+      delivery_contacts: { kind: "json" }, // the builder's delivery-contact <datalist> suggestions (Feature C)
       terms: { kind: "terms" },
     },
   },

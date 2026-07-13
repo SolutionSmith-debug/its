@@ -50,6 +50,8 @@ const CONFIG: api.PoConfig = {
     rates_bp: { IL: 900, OR: 0 },
     state_names: { IL: "Illinois", OR: "Oregon" },
   },
+  // MOCKED fixture (HOUSE REFLEXES §5 — SPA tests never importActual the live config).
+  delivery_contacts: [{ name: "Riley Receiver", phone: "555-0142", email: "riley@site.example" }],
 };
 
 const TERMS: api.TermsProfile[] = [
@@ -184,6 +186,13 @@ describe("PoConfigPage — read view", () => {
     expect(getByText("Illinois")).toBeTruthy();
   });
 
+  it("renders the configured delivery contacts (Feature C)", async () => {
+    const { getByText } = render(<PoConfigPage onBack={vi.fn()} />);
+    await waitFor(() => expect(getByText("Riley Receiver")).toBeTruthy());
+    expect(getByText("555-0142")).toBeTruthy();
+    expect(getByText("riley@site.example")).toBeTruthy();
+  });
+
   it("renders both terms profiles with kind and version", async () => {
     const { getByText } = render(<PoConfigPage onBack={vi.fn()} />);
     await waitFor(() => expect(getByText("Standard 17-clause")).toBeTruthy());
@@ -259,6 +268,71 @@ describe("PoConfigPage — editors (send-free enqueue)", () => {
     fireEvent.click(getByText("Queue change"));
     await waitFor(() => expect(getByText(/Enter the IL rate as a percent/)).toBeTruthy());
     expect(api.submitConfigEdit).not.toHaveBeenCalled();
+  });
+
+  it("delivery-contacts edit POSTs op:edit with the full contacts payload (add + edit rows)", async () => {
+    const { container, getByText } = render(<PoConfigPage onBack={vi.fn()} />);
+    await waitFor(() => expect(getByText("Riley Receiver")).toBeTruthy());
+    fireEvent.click(getByText("Edit delivery contacts"));
+    const editor = container.querySelector('[aria-label="Delivery contacts"] .accounts__editor') as HTMLElement;
+    // Row 0 seeded from the served config [name, phone, email]; edit the phone.
+    const row0 = editor.querySelectorAll(".po-config__tax-edit-row")[0];
+    fireEvent.change(row0.querySelectorAll("input.field__input")[1], { target: { value: "555-0199" } });
+    // Add a second contact (name only — phone/email optional).
+    fireEvent.click(getByText("+ Add contact"));
+    const row1 = editor.querySelectorAll(".po-config__tax-edit-row")[1];
+    fireEvent.change(row1.querySelectorAll("input.field__input")[0], { target: { value: "Gate Guard" } });
+    fireEvent.click(getByText("Queue change"));
+    await waitFor(() =>
+      expect(api.submitConfigEdit).toHaveBeenCalledWith({
+        workstream: "po_materials",
+        artifact_key: "delivery_contacts",
+        op: "edit",
+        payload: {
+          contacts: [
+            { name: "Riley Receiver", phone: "555-0199", email: "riley@site.example" },
+            { name: "Gate Guard", phone: "", email: "" },
+          ],
+        },
+      }),
+    );
+    await waitFor(() => expect(getByText(/Queued — the delivery-contact change/)).toBeTruthy());
+  });
+
+  it("delivery-contacts edit guards client-side: blank name and bad email never reach the wire", async () => {
+    const { container, getByText } = render(<PoConfigPage onBack={vi.fn()} />);
+    await waitFor(() => expect(getByText("Riley Receiver")).toBeTruthy());
+    fireEvent.click(getByText("Edit delivery contacts"));
+    const editor = container.querySelector('[aria-label="Delivery contacts"] .accounts__editor') as HTMLElement;
+    // Blank the seeded name → rejected before the wire.
+    const row0 = editor.querySelectorAll(".po-config__tax-edit-row")[0];
+    fireEvent.change(row0.querySelectorAll("input.field__input")[0], { target: { value: "  " } });
+    fireEvent.click(getByText("Queue change"));
+    await waitFor(() => expect(getByText(/needs a name/)).toBeTruthy());
+    expect(api.submitConfigEdit).not.toHaveBeenCalled();
+    // Restore the name, break the email → also rejected before the wire.
+    fireEvent.change(row0.querySelectorAll("input.field__input")[0], { target: { value: "Riley Receiver" } });
+    fireEvent.change(row0.querySelectorAll("input.field__input")[2], { target: { value: "not-an-email" } });
+    fireEvent.click(getByText("Queue change"));
+    await waitFor(() => expect(getByText(/doesn.t look like an email/)).toBeTruthy());
+    expect(api.submitConfigEdit).not.toHaveBeenCalled();
+  });
+
+  it("delivery-contacts edit can clear the whole list (empty contacts is a valid edit)", async () => {
+    const { container, getByText } = render(<PoConfigPage onBack={vi.fn()} />);
+    await waitFor(() => expect(getByText("Riley Receiver")).toBeTruthy());
+    fireEvent.click(getByText("Edit delivery contacts"));
+    const editor = container.querySelector('[aria-label="Delivery contacts"] .accounts__editor') as HTMLElement;
+    fireEvent.click(within(editor).getByLabelText("Remove Riley Receiver"));
+    fireEvent.click(getByText("Queue change"));
+    await waitFor(() =>
+      expect(api.submitConfigEdit).toHaveBeenCalledWith(
+        expect.objectContaining({
+          artifact_key: "delivery_contacts",
+          payload: { contacts: [] },
+        }),
+      ),
+    );
   });
 
   it("terms edit POSTs an op:add_version request with target_version + {profile_id, text}", async () => {
@@ -356,6 +430,7 @@ describe("PoConfigPage — capability gating", () => {
     await waitFor(() => expect(getByText("Evergreen Renewables LLC")).toBeTruthy());
     expect(queryByText("Edit purchaser")).toBeNull();
     expect(queryByText("Edit tax table")).toBeNull();
+    expect(queryByText("Edit delivery contacts")).toBeNull();
     expect(queryByText("Add a terms version")).toBeNull();
     expect(queryByText("Config change status")).toBeNull();
     expect(api.fetchConfigStatus).not.toHaveBeenCalled();

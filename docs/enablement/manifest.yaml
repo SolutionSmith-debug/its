@@ -70,7 +70,7 @@ docs:
     title: "Purchase Orders in the ITS Portal"
     version: v1
     source: docs/enablement/purchase_orders.md
-    sha256: f714ecb98bd52eca8f57794e935a53e436ac0c823651ea616f5124e760b55e56
+    sha256: d7f7320b63b74135f01587105de21b1f6f3d8fb961e67202e7047a54bc99dfcd
 
   # ── D2-2 content (authored 2026-07-10): the owner's manual, the safety-forms + admin-
   #    dashboard guides, and the auto-generated ITS_Config data dictionary. The dictionary
