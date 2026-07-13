@@ -959,6 +959,9 @@ def _append_perjob_row_best_effort(
             sheet_ids.SHEET_PO_LOG,
             safety_naming.job_folder_name(job_name),
             PERJOB_SHEET_NAME,
+            workspace_id=sheet_ids.WORKSPACE_PURCHASE_ORDERS,  # §51 A1 margin-check target
+            workstream=WORKSTREAM,
+            correlation_id=correlation_id,
         )
         if po_log.find_row_by_po_number(
             str(row_kwargs["po_number"]), sheet_id=sid

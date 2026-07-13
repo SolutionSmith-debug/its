@@ -815,6 +815,9 @@ def test_perjob_helper_ensures_and_appends_to_target_sheet(mocker):
         sheet_ids.SHEET_SUBCONTRACT_LOG,
         "Sunrise Solar",
         subcontract_poll.PERJOB_SHEET_NAME,
+        workspace_id=sheet_ids.WORKSPACE_SUBCONTRACTS,  # §51 A1 margin-check target
+        workstream=subcontract_poll.WORKSTREAM,
+        correlation_id="corr-1",
     )
     find.assert_called_once_with("2026.001.2.0.0", sheet_id=555)
     append.assert_called_once_with(sheet_id=555, **row_kwargs)
