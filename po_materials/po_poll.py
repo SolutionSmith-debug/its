@@ -94,11 +94,13 @@ from shared import (
     box_client,
     circuit_breaker,
     error_log,
+    job_sheet,
     keychain,
     picklist_validation,
     portal_client,
     portal_hmac,
     review_queue,
+    sheet_ids,
     smartsheet_client,
     state_io,
 )
@@ -133,6 +135,12 @@ POLL_INTERVAL_SECONDS = 90  # registration metadata; mirrors the launchd StartIn
 # The Box subfolder every PO PDF files into, under the job's mirror-tree folder
 # (§45 find-or-create at every level; the S1 report's ROOT→job→"Purchase Orders").
 PO_BOX_SUBFOLDER = "Purchase Orders"
+
+# The per-job Smartsheet tracking sheet name (Feature A) — deliberately the SAME
+# words as the Box subfolder so the operator sees "Purchase Orders" in both trees.
+# Lives inside the job's folder under sheet_ids.FOLDER_PO_JOBS; structure-cloned
+# from the flat PO_Log by shared/job_sheet.ensure_job_sheet.
+PERJOB_SHEET_NAME = "Purchase Orders"
 
 _PACIFIC = ZoneInfo("America/Los_Angeles")  # the PO date is operator wall-clock
 
@@ -706,21 +714,31 @@ def _process_pending_po(
 
         # 9 — PO_Log append (idempotent: the collision check above proved any
         # existing row is OURS — a crash-retry — so only append when absent).
+        ledger_row_kwargs: dict[str, Any] = {
+            "po_number": po_number,
+            "job_project": f"{po.get('job_no')} — {po.get('job_name')}",
+            "job_id": str(po.get("job_id") or ""),
+            "vendor_name": vendor_name,
+            "vendor_key": vendor_key,
+            "total_cents": int(po.get("total_cents") or 0),
+            "pdf_link": box_link,
+            "supersedes_display": supersedes_display or "",
+            "terms_profile": str(po.get("terms_profile_id") or ""),
+            "created_by": str(po.get("created_by") or ""),
+            "created_at_iso": po_date.isoformat(),
+            "notes": po_log.notes_for_filed_row(po_id),
+        }
         if po_log.find_row_by_po_number(po_number) is None:
-            po_log.append_filed_row(
-                po_number=po_number,
-                job_project=f"{po.get('job_no')} — {po.get('job_name')}",
-                job_id=str(po.get("job_id") or ""),
-                vendor_name=vendor_name,
-                vendor_key=vendor_key,
-                total_cents=int(po.get("total_cents") or 0),
-                pdf_link=box_link,
-                supersedes_display=supersedes_display or "",
-                terms_profile=str(po.get("terms_profile_id") or ""),
-                created_by=str(po.get("created_by") or ""),
-                created_at_iso=po_date.isoformat(),
-                notes=po_log.notes_for_filed_row(po_id),
-            )
+            po_log.append_filed_row(**ledger_row_kwargs)
+
+        # 9b — per-job tracking sheet mirror (Feature A), BEST-EFFORT: the same
+        # ledger row into "<Jobs>/<job>/Purchase Orders" (find-or-create;
+        # independently idempotent per target sheet). Fenced inside the helper — a
+        # per-job failure must NEVER fail the filing (Box + the flat PO_Log are
+        # the SoR).
+        _append_perjob_row_best_effort(
+            str(po.get("job_name") or ""), ledger_row_kwargs, correlation_id
+        )
 
         # 10 — PO_Pending_Review row (idempotent via the Notes po_id join) + the
         # inline PDF attach (best-effort — Box is the SoR).
@@ -918,6 +936,40 @@ def _attach_pdf_best_effort(
             f"review-row PDF attach failed (row {row_id}, {filename!r}): "
             f"{type(exc).__name__}: {exc!r}",
             error_code="po_row_pdf_attach_failed",
+            correlation_id=correlation_id,
+        )
+
+
+def _append_perjob_row_best_effort(
+    job_name: str, row_kwargs: dict[str, Any], correlation_id: str
+) -> None:
+    """Mirror the freshly-filed ledger row into the job's per-job tracking sheet
+    (Feature A), BEST-EFFORT — a failure is a WARN that never fails the filing
+    (mirror `_attach_pdf_best_effort`; Box + the flat PO_Log are the SoR).
+
+    Resolves the SAME job folder name the Box per-job folder uses
+    (`safety_naming.job_folder_name`), find-or-creates the folder + "Purchase
+    Orders" sheet under sheet_ids.FOLDER_PO_JOBS (structure-cloned from the flat
+    Log, so `append_filed_row` writes it unchanged), then appends unless the PO
+    number is already present in the TARGET sheet (independent idempotency — a
+    crash between the flat append and this mirror re-runs cleanly)."""
+    try:
+        sid = job_sheet.ensure_job_sheet(
+            sheet_ids.FOLDER_PO_JOBS,
+            sheet_ids.SHEET_PO_LOG,
+            safety_naming.job_folder_name(job_name),
+            PERJOB_SHEET_NAME,
+        )
+        if po_log.find_row_by_po_number(
+            str(row_kwargs["po_number"]), sheet_id=sid
+        ) is None:
+            po_log.append_filed_row(sheet_id=sid, **row_kwargs)
+    except Exception as exc:  # noqa: BLE001 — supplementary per-job mirror; never fail the filing
+        error_log.log(
+            Severity.WARN, SCRIPT_NAME,
+            f"per-job tracking sheet append failed (job {job_name!r}, "
+            f"PO {row_kwargs.get('po_number')!r}): {type(exc).__name__}: {exc!r}",
+            error_code="po_perjob_sheet_failed",
             correlation_id=correlation_id,
         )
 

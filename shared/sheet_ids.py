@@ -197,6 +197,7 @@ SHEET_ACTIVE_JOBS_PROGRESS = 3079764947455876   # ITS_Active_Jobs_Progress — t
 # precedes SEED — seed_its_vendors.py refuses to run while SHEET_ITS_VENDORS=0).
 WORKSPACE_PURCHASE_ORDERS = 6191118619568004  # ITS — Purchase Orders (created 2026-07-09 by build_purchase_orders_workspace.py)
 FOLDER_PO_CONTROL = 6619259473291140          # ITS — Purchase Orders / Control
+FOLDER_PO_JOBS = 8609175803586436             # ITS — Purchase Orders / Jobs — parent of the DYNAMIC per-job tracking folders (shared/job_sheet.py find-or-creates "<job>/Purchase Orders" sheets under it; created 2026-07-13 by build_job_folders.py)
 SHEET_ITS_VENDORS = 5404286845407108        # ITS_Vendors — vendor SoR (created 2026-07-09 by build_its_vendors_sheet.py)
 SHEET_PO_LOG = 3152487031721860             # PO_Log — operator-visible ledger mirror of D1 (created 2026-07-09 by build_po_log_sheet.py)
 SHEET_PO_PENDING_REVIEW = 1816168087113604  # PO_Pending_Review — PO review/approve/send surface (created 2026-07-09 by build_po_pending_review_sheet.py)
@@ -210,6 +211,7 @@ SHEET_PO_PENDING_REVIEW = 1816168087113604  # PO_Pending_Review — PO review/ap
 # registers these sheets only when non-zero, the same guard as the PO/vendor sheets).
 WORKSPACE_SUBCONTRACTS = 6073264716965764            # ITS — Subcontracts (build_subcontracts_workspace.py)
 FOLDER_SC_CONTROL = 5896629078255492                 # ITS — Subcontracts / Control
+FOLDER_SC_JOBS = 2979676269373316                    # ITS — Subcontracts / Jobs — parent of the DYNAMIC per-job tracking folders (shared/job_sheet.py find-or-creates "<job>/Subcontracts" sheets under it; created 2026-07-13 by build_job_folders.py)
 SHEET_ITS_SUBCONTRACTORS = 2107762140991364          # ITS_Subcontractors — subcontractor SoR (build_its_subcontractors_sheet.py)
 SHEET_SUBCONTRACT_LOG = 1195034345951108             # Subcontract_Log — operator-visible ledger mirror of D1 (build_subcontract_log_sheet.py)
 SHEET_SUBCONTRACT_PENDING_REVIEW = 7950433787006852  # Subcontract_Pending_Review — review/approve/send surface (build_subcontract_pending_review_sheet.py)

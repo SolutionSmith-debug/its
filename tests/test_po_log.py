@@ -54,6 +54,49 @@ def test_append_filed_row_writes_pending_review(mocker) -> None:
     assert cells[po_log.COL_NOTES] == "d1_id=7"
 
 
+def test_append_filed_row_explicit_sheet_id_targets_that_sheet(mocker) -> None:
+    """`sheet_id=` redirects the append to a per-job tracking sheet (Feature A);
+    the default (None) stays the flat PO_Log."""
+    add = mocker.patch(
+        "po_materials.po_log.smartsheet_client.add_rows", return_value=[222]
+    )
+    row_id = po_log.append_filed_row(
+        po_number="2026.001.2.0.0",
+        job_project="2026.001 — Sunrise Solar",
+        job_id="JOB-000017",
+        vendor_name="Chint Power Systems",
+        vendor_key="VEN-000001",
+        total_cents=147_286,
+        pdf_link="https://app.box.com/file/1",
+        supersedes_display="",
+        terms_profile="standard_17",
+        created_by="admin.alex",
+        created_at_iso="2026-07-09",
+        notes=po_log.notes_for_filed_row(7),
+        sheet_id=987_654,
+    )
+    assert row_id == 222
+    (sheet_id, rows), _ = add.call_args
+    assert sheet_id == 987_654
+    [cells] = rows
+    assert cells[po_log.COL_STATUS] == po_log.STATUS_PENDING_REVIEW
+
+
+def test_find_row_by_po_number_targets_requested_sheet(mocker) -> None:
+    """The idempotency guard runs against the TARGET sheet: default = the flat
+    PO_Log; explicit sheet_id = the per-job sheet (independent idempotency)."""
+    get_rows = mocker.patch(
+        "po_materials.po_log.smartsheet_client.get_rows", return_value=[]
+    )
+    assert po_log.find_row_by_po_number("2026.001.2.0.0") is None
+    assert get_rows.call_args.args[0] == po_log.SHEET_ID
+
+    row = {"_row_id": 9, po_log.COL_PO_NUMBER: "2026.001.2.0.0"}
+    get_rows.return_value = [row]
+    assert po_log.find_row_by_po_number("2026.001.2.0.0", sheet_id=987_654) == row
+    assert get_rows.call_args.args[0] == 987_654
+
+
 def test_stamp_status_rejects_illegal_value(mocker) -> None:
     find = mocker.patch("po_materials.po_log.find_row_by_po_number")
     with pytest.raises(ValueError):
