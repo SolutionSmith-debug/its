@@ -26,6 +26,12 @@ export const PDF_CACHE_TTL_S = 86_400;
 // pruned. NON-terminal rows (queued/validated/tested/merged/live) are NEVER touched — the
 // publish daemon / stuck-sweep own those.
 export const PUBLISH_TERMINAL_RETENTION_DAYS = 90;
+// Subcontract + PO DRAFT / CANCELED rows accumulate forever otherwise (a draft is never generated; a
+// cancel is a soft off-path terminal — neither was pruned before). 90d after last activity (updated_at —
+// set on every save/cancel) they are hygiene-evicted with their line-item children. Generated on-path rows
+// (queued/pending_review/approved/sent/executed/superseded) are NEVER touched — those are live commercial
+// records with SC/PO numbers + Box/Smartsheet artifacts; their exit is cancel/supersede, never a prune.
+export const DRAFT_CANCELED_RETENTION_DAYS = 90;
 // WARN above 6GB of D1 usage (Cloudflare's per-DB ceiling is 10GB) so the chunk cache
 // never silently approaches the limit. GS2: no longer console-only — the condition is
 // RECORDED in prune_meta (size_warn) and the Mac watchdog (Check V) escalates it to a
@@ -98,6 +104,8 @@ export interface PruneResult {
   itemPhotos: number;
   dailyPhotos: number;
   jobs: number;
+  subcontractDrafts: number;
+  poDrafts: number;
   dbSizeBytes: number;
   sizeWarn: boolean;
   failedStages: string[];
@@ -324,6 +332,49 @@ export async function pruneOldData(db: Env["DB"], nowSec: number): Promise<Prune
     return r.meta.changes ?? 0;
   });
 
+  // subcontract + PO draft/canceled hygiene (see DRAFT_CANCELED_RETENTION_DAYS): delete the aged
+  // NEVER-GENERATED draft/canceled rows AND their line-item children. Delete the CHILDREN FIRST,
+  // subquery-scoped to the aged parents — sov_lines/po_line_items carry a REFERENCES FK but NO ON DELETE
+  // CASCADE, so an unscoped or parent-first delete would orphan lines. On-path generated statuses
+  // (queued/pending_review/approved/sent/executed/superseded) are excluded by the status filter.
+  //
+  // NUMBERING-REUSE GUARD (`sc_number/po_number IS NULL`): a 'canceled' row is NOT always a never-generated
+  // one — cancel is allowed FROM queued/pending_review, so a generated-then-canceled row RETAINS its
+  // allocated sc_number/po_number + revision (a UNIQUE column + a UNIQUE (job_no,site_phase,supersede_seq,
+  // revision) slot) AND has a real Box PDF + Smartsheet ledger row. Hard-deleting it would FREE that number/
+  // revision slot, and a later /generate for the same family (MAX(revision)+1) could REALLOCATE the identical
+  // number to an unrelated document — an audit collision with the already-filed one. So we prune ONLY rows
+  // whose number was NEVER allocated (canceled straight from 'draft'); a generated-then-canceled row is kept.
+  const draftCancelCutoff = nowSec - DRAFT_CANCELED_RETENTION_DAYS * DAY_S;
+  const subcontractDrafts = await runStage("subcontract_drafts", failedStages, async () => {
+    await db
+      .prepare(
+        "DELETE FROM sov_lines WHERE subcontract_id IN " +
+          "(SELECT id FROM subcontracts WHERE status IN ('draft','canceled') AND sc_number IS NULL AND updated_at < ?)",
+      )
+      .bind(draftCancelCutoff)
+      .run();
+    const r = await db
+      .prepare("DELETE FROM subcontracts WHERE status IN ('draft','canceled') AND sc_number IS NULL AND updated_at < ?")
+      .bind(draftCancelCutoff)
+      .run();
+    return r.meta.changes ?? 0;
+  });
+  const poDrafts = await runStage("po_drafts", failedStages, async () => {
+    await db
+      .prepare(
+        "DELETE FROM po_line_items WHERE po_id IN " +
+          "(SELECT id FROM purchase_orders WHERE status IN ('draft','canceled') AND po_number IS NULL AND updated_at < ?)",
+      )
+      .bind(draftCancelCutoff)
+      .run();
+    const r = await db
+      .prepare("DELETE FROM purchase_orders WHERE status IN ('draft','canceled') AND po_number IS NULL AND updated_at < ?")
+      .bind(draftCancelCutoff)
+      .run();
+    return r.meta.changes ?? 0;
+  });
+
   const dbSizeBytes = await sampleDbSizeBytes(db);
   const sizeWarn = dbSizeBytes > DB_SIZE_WARN_BYTES;
   if (sizeWarn) {
@@ -341,6 +392,8 @@ export async function pruneOldData(db: Env["DB"], nowSec: number): Promise<Prune
     itemPhotos,
     dailyPhotos,
     jobs,
+    subcontractDrafts,
+    poDrafts,
     dbSizeBytes,
     sizeWarn,
     failedStages,
@@ -374,6 +427,8 @@ export async function writePruneMeta(
     itemPhotos: result.itemPhotos,
     dailyPhotos: result.dailyPhotos,
     jobs: result.jobs,
+    subcontractDrafts: result.subcontractDrafts,
+    poDrafts: result.poDrafts,
   };
   try {
     await db

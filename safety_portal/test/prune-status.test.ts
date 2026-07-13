@@ -23,6 +23,8 @@ function result(overrides: Partial<PruneResult> = {}): PruneResult {
     itemPhotos: 0,
     dailyPhotos: 0,
     jobs: 0,
+    subcontractDrafts: 0,
+    poDrafts: 0,
     dbSizeBytes: 1234,
     sizeWarn: false,
     failedStages: [],

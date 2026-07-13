@@ -89,6 +89,61 @@ describe("pruneOldData (A3 D1 housekeeping)", () => {
     expect((await env.DB.prepare("SELECT COUNT(*) n FROM audit_log").first<{ n: number }>())!.n).toBe(1);
   });
 
+  it("prunes DRAFT + CANCELED subcontract/PO rows (and their lines) after 90d; keeps on-path + recent", async () => {
+    const seedSc = async (uuid: string, status: string, updatedAt: number, scNumber: string | null = null) => {
+      await env.DB
+        .prepare("INSERT INTO subcontracts (sc_uuid, job_no, sub_key, created_by, status, updated_at, sc_number) VALUES (?,?,?,?,?,?,?)")
+        .bind(uuid, "2026.001", "SUB-1", "admin", status, updatedAt, scNumber)
+        .run();
+      const id = (await env.DB.prepare("SELECT id FROM subcontracts WHERE sc_uuid=?").bind(uuid).first<{ id: number }>())!.id;
+      await env.DB.prepare("INSERT INTO sov_lines (subcontract_id, position) VALUES (?, 1)").bind(id).run();
+      return id;
+    };
+    const seedPo = async (uuid: string, status: string, updatedAt: number, poNumber: string | null = null) => {
+      await env.DB
+        .prepare("INSERT INTO purchase_orders (po_uuid, job_no, site_phase, vendor_key, created_by, status, updated_at, po_number) VALUES (?,?,?,?,?,?,?,?)")
+        .bind(uuid, "2026.001", 0, "V-1", "admin", status, updatedAt, poNumber)
+        .run();
+      const id = (await env.DB.prepare("SELECT id FROM purchase_orders WHERE po_uuid=?").bind(uuid).first<{ id: number }>())!.id;
+      await env.DB.prepare("INSERT INTO po_line_items (po_id, position) VALUES (?, 1)").bind(id).run();
+      return id;
+    };
+    const scDraftOld = await seedSc("sc-draft-old", "draft", NOW - 100 * DAY);
+    const scCancelOld = await seedSc("sc-cancel-old", "canceled", NOW - 100 * DAY); // canceled-from-draft, no number
+    const scCancelGen = await seedSc("sc-cancel-gen", "canceled", NOW - 100 * DAY, "2026.001.9.0.0"); // GENERATED-then-canceled → KEEP
+    const scQueuedOld = await seedSc("sc-queued-old", "queued", NOW - 100 * DAY, "2026.001.8.0.0"); // ON-PATH → never pruned
+    const scDraftRecent = await seedSc("sc-draft-recent", "draft", NOW - 10 * DAY);
+    const poDraftOld = await seedPo("po-draft-old", "draft", NOW - 100 * DAY);
+    const poCancelGen = await seedPo("po-cancel-gen", "canceled", NOW - 100 * DAY, "2026.001.9.0.0"); // GENERATED-then-canceled → KEEP
+    const poQueuedOld = await seedPo("po-queued-old", "queued", NOW - 100 * DAY, "2026.001.8.0.0"); // ON-PATH → never pruned
+
+    const res = await pruneOldData(env.DB, NOW);
+
+    expect(res.subcontractDrafts).toBe(2); // draftOld + cancelOld (queued/recent/generated-canceled excluded)
+    expect(res.poDrafts).toBe(1); // poDraftOld only
+    const gone = async (tbl: string, id: number) => (await env.DB.prepare(`SELECT id FROM ${tbl} WHERE id=?`).bind(id).first()) === null;
+    const scLines = async (id: number) => (await env.DB.prepare("SELECT COUNT(*) n FROM sov_lines WHERE subcontract_id=?").bind(id).first<{ n: number }>())!.n;
+    const poLines = async (id: number) => (await env.DB.prepare("SELECT COUNT(*) n FROM po_line_items WHERE po_id=?").bind(id).first<{ n: number }>())!.n;
+    // aged draft/canceled + their lines gone
+    expect(await gone("subcontracts", scDraftOld)).toBe(true);
+    expect(await gone("subcontracts", scCancelOld)).toBe(true);
+    expect(await scLines(scDraftOld)).toBe(0);
+    expect(await gone("purchase_orders", poDraftOld)).toBe(true);
+    expect(await poLines(poDraftOld)).toBe(0);
+    // on-path + recent retained WITH their lines (no orphan / no over-prune)
+    expect(await gone("subcontracts", scQueuedOld)).toBe(false);
+    expect(await scLines(scQueuedOld)).toBe(1);
+    expect(await gone("subcontracts", scDraftRecent)).toBe(false);
+    expect(await gone("purchase_orders", poQueuedOld)).toBe(false);
+    expect(await poLines(poQueuedOld)).toBe(1);
+    // GENERATED-then-canceled rows (number allocated) are KEPT — deleting them would free the
+    // sc_number/po_number + revision slot for a collision-reuse by a later generate.
+    expect(await gone("subcontracts", scCancelGen)).toBe(false);
+    expect(await scLines(scCancelGen)).toBe(1);
+    expect(await gone("purchase_orders", poCancelGen)).toBe(false);
+    expect(await poLines(poCancelGen)).toBe(1);
+  });
+
   it("prunes REJECTED (box_verified=-1) rows after 30d, keeps recent + never the unfiled (M4/PR-4)", async () => {
     await seedSub("rej-old", -1, NOW - 40 * DAY);
     await seedSub("rej-recent", -1, NOW - 5 * DAY);
@@ -506,6 +561,8 @@ function syntheticResult(overrides: Partial<PruneResult> = {}): PruneResult {
     itemPhotos: 9,
     dailyPhotos: 10,
     jobs: 8,
+    subcontractDrafts: 9,
+    poDrafts: 10,
     dbSizeBytes: 4096,
     sizeWarn: false,
     failedStages: [],
@@ -534,7 +591,7 @@ describe("writePruneMeta — GS2 heartbeat record", () => {
     expect(JSON.parse(rows[0].counters_json)).toEqual({
       submissions: 1, stripped: 2, rejected: 3, audit: 4,
       pdfRequests: 5, pdfChunks: 6, publishRequests: 7, itemPhotos: 9,
-      dailyPhotos: 10, jobs: 8,
+      dailyPhotos: 10, jobs: 8, subcontractDrafts: 9, poDrafts: 10,
     });
     expect(JSON.parse(rows[0].failed_stages_json)).toEqual(["audit"]);
   });

@@ -25,6 +25,7 @@ vi.mock("../../lib/subcontracts", async (importOriginal) => {
     generateSubcontract: vi.fn(),
     supersedeSubcontract: vi.fn(),
     cancelSubcontract: vi.fn(),
+    deleteSubDraft: vi.fn(),
     fetchExhibitTemplate: vi.fn(),
     fetchJobSiteAddress: vi.fn(),
     fetchTrades: vi.fn(),
@@ -409,5 +410,20 @@ describe("SubcontractBuilderPage", () => {
     const queuedCard = r.getByText("Draft #4").closest(".card") as HTMLElement;
     expect(within(queuedCard).getByText("Cancel SC")).toBeTruthy();
     expect(within(queuedCard).queryByText("Supersede")).toBeNull();
+  });
+
+  it("a DRAFT card offers a two-step Delete (not Cancel); confirming calls deleteSubDraft + reloads", async () => {
+    vi.mocked(api.fetchSubDrafts).mockResolvedValue([scRow({ id: 9, status: "draft" })]);
+    vi.mocked(api.deleteSubDraft).mockResolvedValue(undefined);
+    const r = render(<SubcontractBuilderPage onBack={() => {}} />);
+    const card = (await waitFor(() => r.getByText("Draft #9"))).closest(".card") as HTMLElement;
+    // A draft shows Delete (hard delete), NOT the soft Cancel SC.
+    expect(within(card).getByText("Delete")).toBeTruthy();
+    expect(within(card).queryByText("Cancel SC")).toBeNull();
+    // Two-step armed: Delete → Confirm delete.
+    fireEvent.click(within(card).getByText("Delete"));
+    fireEvent.click(within(card).getByText("Confirm delete"));
+    await waitFor(() => expect(api.deleteSubDraft).toHaveBeenCalledWith(9));
+    await waitFor(() => expect(api.fetchSubDrafts).toHaveBeenCalledTimes(2)); // reload-after-delete
   });
 });

@@ -856,6 +856,29 @@ describe("cancel", () => {
 
     expect((await p(admin, "/api/subcontracts/999999/cancel")).status).toBe(404);
   });
+
+  it("delete: HARD-removes a DRAFT + its SOV lines; refuses a generated row (no orphan); 404s unknown", async () => {
+    const created = await p(admin, "/api/subcontracts/drafts", draftBody());
+    const { id: draftId } = await json<{ id: number }>(created);
+    const nLines = async (id: number) =>
+      (await env.DB.prepare("SELECT COUNT(*) n FROM sov_lines WHERE subcontract_id=?1").bind(id).first<{ n: number }>())!.n;
+    expect(await nLines(draftId)).toBeGreaterThan(0);
+
+    // Hard delete a draft → the row AND its SOV lines are gone.
+    expect((await p(admin, `/api/subcontracts/${draftId}/delete`)).status).toBe(200);
+    expect(await env.DB.prepare("SELECT id FROM subcontracts WHERE id=?1").bind(draftId).first()).toBeNull();
+    expect(await nLines(draftId)).toBe(0);
+
+    // A generated (queued) row is NOT deletable — 409, and its lines are NOT orphaned by the refusal.
+    const queuedId = await makeQueued(admin);
+    const del = await p(admin, `/api/subcontracts/${queuedId}/delete`);
+    expect(del.status).toBe(409);
+    expect((await json<{ error: string }>(del)).error).toBe("not_deletable");
+    expect((await subRow(queuedId)).status).toBe("queued");
+    expect(await nLines(queuedId)).toBeGreaterThan(0);
+
+    expect((await p(admin, "/api/subcontracts/999999/delete")).status).toBe(404);
+  });
 });
 
 // ── subcontractors internal sync (down-sync fence, empty refusal, watermark) ──
