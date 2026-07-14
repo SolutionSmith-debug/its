@@ -19,6 +19,7 @@ from operator_dashboard.sources.base import (
     SEV_ERROR,
     SEV_INFO,
     SEV_OK,
+    SEV_UNAVAILABLE,
     SEV_WARN,
     DataSource,
     PanelResult,
@@ -155,5 +156,93 @@ class ReviewQueueDepthSource(DataSource):
             summary=summary,
             severity=panel_sev,
             columns=["dimension", "key", "count"],
+            rows=rows,
+        )
+
+
+# The review/approve/send surfaces (WSR schema twins). READ-ONLY visibility of the
+# send queue: pending / HELD / SENT / FAILED counts per workstream. This panel
+# NEVER approves / resends / mutates — the send lane stays human-in-loop at the
+# review sheet + the two-process send daemons (D13: the send gate is never a
+# dashboard action; any mutating send-lane verb is a parked Seth decision).
+_SEND_QUEUE_SHEETS = [
+    ("safety", "SHEET_WSR_HUMAN_REVIEW"),
+    ("progress", "SHEET_WPR_HUMAN_REVIEW"),
+    ("po", "SHEET_PO_PENDING_REVIEW"),
+    ("subcontracts", "SHEET_SUBCONTRACT_PENDING_REVIEW"),
+]
+_SEND_STATUS_COL = "Send Status"
+
+
+def _bucket_status(raw: str) -> str:
+    s = (raw or "").strip().lower()
+    if not s:
+        return "(none)"
+    if s.startswith("held"):  # held / held_oversized_packet / held_workstream_mismatch ...
+        return "HELD"
+    if s in ("pending", "sending", "sent", "failed"):
+        return s.upper()
+    return raw.strip().upper()
+
+
+class SendQueueSource(DataSource):
+    panel_id = "send_queue"
+    title = "Send queue — review / approve / send"
+
+    def _load(self) -> dict[str, Any]:
+        ss: Any = importlib.import_module("shared.smartsheet_client")
+        sid: Any = importlib.import_module("shared.sheet_ids")
+        per: list[dict[str, Any]] = []
+        for ws, attr in _SEND_QUEUE_SHEETS:
+            sheet_id = getattr(sid, attr, None)
+            if sheet_id is None:
+                continue
+            try:
+                rows = ss.get_rows(sheet_id)
+            except Exception:
+                per.append({"ws": ws, "unavailable": True, "counts": {}})
+                continue
+            counts: dict[str, int] = {}
+            for r in rows:
+                b = _bucket_status(str(r.get(_SEND_STATUS_COL) or ""))
+                counts[b] = counts.get(b, 0) + 1
+            per.append({"ws": ws, "unavailable": False, "counts": counts})
+        return {"per": per}
+
+    def _fetch(self) -> PanelResult:
+        data = cached("send_queue", SMARTSHEET_TTL_SECONDS, self._load)
+        rows: list[dict[str, str]] = []
+        held = failed = pending = 0
+        any_avail = False
+        for entry in data["per"]:
+            ws = entry["ws"]
+            if entry["unavailable"]:
+                rows.append({"workstream": clean(ws), "status": "(unavailable)", "count": "—", "_sev": SEV_WARN})
+                continue
+            any_avail = True
+            for status, n in sorted(entry["counts"].items(), key=lambda kv: -kv[1]):
+                up = status.upper()
+                if up == "FAILED":
+                    s, failed = SEV_ERROR, failed + n
+                elif up == "HELD":
+                    s, held = SEV_WARN, held + n
+                elif up == "PENDING":
+                    s, pending = SEV_INFO, pending + n
+                elif up == "SENT":
+                    s = SEV_OK
+                else:
+                    s = SEV_INFO
+                rows.append({"workstream": clean(ws), "status": clean(status), "count": clean(n), "_sev": s})
+        parts = [f"{n} {lbl}" for n, lbl in ((pending, "PENDING"), (held, "HELD"), (failed, "FAILED")) if n]
+        summary = " · ".join(parts) if parts else ("all clear" if any_avail else "unavailable")
+        panel_sev = (
+            SEV_ERROR if failed else SEV_WARN if held else SEV_INFO if any_avail else SEV_UNAVAILABLE
+        )
+        return PanelResult(
+            panel_id=self.panel_id,
+            title=self.title,
+            summary=summary,
+            severity=panel_sev,
+            columns=["workstream", "status", "count"],
             rows=rows,
         )

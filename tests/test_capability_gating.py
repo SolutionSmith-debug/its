@@ -458,6 +458,11 @@ NETWORK_LIB_ALLOWLIST: frozenset[str] = frozenset({
     # `importlib` lazily resolves shared.smartsheet_client / shared.error_log. It writes
     # ONLY the ITS_Config poll_interval row + reinstalls the plist — no send, no AI.
     "operator_dashboard/act/daemon_ops.py",
+    # WS2 Block 3 circuit-breaker clear: `importlib` lazily resolves INTERNAL modules
+    # only (shared.circuit_breaker / shared.state_io / shared.error_log) to reset the
+    # breaker state via the canonical state_io atomic writer. No send, no AI, no
+    # subprocess, no network lib.
+    "operator_dashboard/act/state_ops.py",
 })
 
 # Import needles that constitute network-egress or process-spawn capability.

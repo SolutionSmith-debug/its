@@ -105,9 +105,11 @@ def test_untrusted_smartsheet_values_render_inert(
 
 
 def test_mutation_routes_are_the_expected_act_set() -> None:
-    # After D1-3b the app has EXACTLY four mutating routes: Class-A edit, the
-    # elevated Class-B edit, the Class-C secret rotation, and the Class-B interval
-    # edit (plist re-install). Any other non-GET route is a regression.
+    # After Block 3 the app has EXACTLY six mutating routes: Class-A edit, the
+    # elevated Class-B edit, Class-C secret rotation, the Class-B interval edit
+    # (plist re-install), Class-B daemon control (launchctl), and Class-B circuit-
+    # breaker clear. Any other non-GET route is a regression. (The send-queue panel
+    # is a GET-only read, so it does not appear here.)
     app = create_app()
     mutating: list[tuple[str, list[str]]] = []
     for route in app.routes:
@@ -120,8 +122,10 @@ def test_mutation_routes_are_the_expected_act_set() -> None:
     assert sorted(mutating) == [
         ("/act/config", ["POST"]),
         ("/act/config/elevated", ["POST"]),
+        ("/act/daemon/control", ["POST"]),
         ("/act/daemon/interval", ["POST"]),
         ("/act/secret/rotate", ["POST"]),
+        ("/act/state/breaker-clear", ["POST"]),
     ], f"unexpected mutating routes: {mutating}"
 
 
@@ -176,3 +180,41 @@ def test_watchdog_panel_import_available_under_pytest() -> None:
 
     result = WatchdogChecksSource().fetch()
     assert result.available, result.unavailable_reason
+
+
+def test_send_queue_source_rolls_up_status(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Read-only send-queue panel: buckets Send Status across the 4 review sheets,
+    # FAILED drives error severity, HELD from a held_* status, PENDING counted.
+    import shared.sheet_ids as sid
+    import shared.smartsheet_client as ss
+    from operator_dashboard.sources.smartsheet_panels import SendQueueSource
+
+    rowsets = {
+        sid.SHEET_WSR_HUMAN_REVIEW: [{"Send Status": "PENDING"}, {"Send Status": "SENT"}, {"Send Status": "held_oversized_packet"}],
+        sid.SHEET_WPR_HUMAN_REVIEW: [{"Send Status": "FAILED"}],
+        sid.SHEET_PO_PENDING_REVIEW: [],
+        sid.SHEET_SUBCONTRACT_PENDING_REVIEW: [{"Send Status": "PENDING"}],
+    }
+    monkeypatch.setattr(ss, "get_rows", lambda sheet_id, **kw: list(rowsets.get(sheet_id, [])))
+    result = SendQueueSource().fetch()
+    assert result.available
+    joined = " ".join(f"{r.get('status')}={r.get('count')}" for r in result.rows)
+    assert "HELD" in joined and "FAILED" in joined and "PENDING" in joined
+    assert result.severity == "error"  # a FAILED row makes the panel error-severity
+
+
+def test_send_queue_source_fail_soft_per_sheet(monkeypatch: pytest.MonkeyPatch) -> None:
+    # one unreachable sheet degrades to a "(unavailable)" row; the panel still renders
+    import shared.sheet_ids as sid
+    import shared.smartsheet_client as ss
+    from operator_dashboard.sources.smartsheet_panels import SendQueueSource
+
+    def get_rows(sheet_id: int, **kw: object) -> list[dict[str, str]]:
+        if sheet_id == sid.SHEET_WSR_HUMAN_REVIEW:
+            raise RuntimeError("sheet down")
+        return [{"Send Status": "SENT"}]
+
+    monkeypatch.setattr(ss, "get_rows", get_rows)
+    result = SendQueueSource().fetch()
+    assert result.available  # never crashes
+    assert any(r.get("status") == "(unavailable)" for r in result.rows)

@@ -98,6 +98,55 @@
   </section>
 
   <section class="config-group">
+    <h3>Daemon control (Class B · elevated · launchctl)</h3>
+    <p class="config-note">
+      start / stop / kickstart an ITS daemon (label-allowlisted; the dashboard itself is excluded).
+      This is launchctl process management only — the runtime <code>ITS_Config</code> gates still apply,
+      so starting a dark daemon does nothing until its gate is on. Elevated: re-enter the PIN + type the
+      exact daemon label. Live loaded/running state is in the <b>launchd daemons</b> panel.
+    </p>
+    <table class="config-table">
+      <thead><tr><th>daemon</th><th>action + re-PIN + confirm</th></tr></thead>
+      <tbody>
+        {% for c in controls %}
+        <tr>
+          <td class="cfg-setting">{{ c.label }} <span class="tier-b">B</span></td>
+          <td>
+            <form hx-post="/act/daemon/control" hx-target="#ctl-{{ c.slug }}" hx-swap="innerHTML" class="cfg-form">
+              <input type="hidden" name="label" value="{{ c.label }}">
+              <select name="action" class="cfg-input">
+                <option value="kickstart">kickstart</option>
+                <option value="start">start</option>
+                <option value="stop">stop</option>
+              </select>
+              <input type="password" name="pin" placeholder="re-PIN" class="cfg-pin" autocomplete="off">
+              <input type="text" name="confirm" placeholder="type: {{ c.label }}" class="cfg-confirm" autocomplete="off" spellcheck="false">
+              <button type="submit" class="cfg-btn elevated">run</button>
+              <span class="cfg-out" id="ctl-{{ c.slug }}"></span>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+
+  <section class="config-group">
+    <h3>Circuit breaker (Class B · elevated)</h3>
+    <p class="config-note">
+      Reset a stuck-OPEN circuit breaker to CLOSED (skip the cooldown). Read the current state in the
+      <b>circuit breaker</b> panel first. Elevated: re-enter the PIN + type <code>clear-breaker</code>.
+      (Stale state-<em>locks</em> are not clearable — a dead holder's flock auto-releases; see the runbook.)
+    </p>
+    <form hx-post="/act/state/breaker-clear" hx-target="#brk-out" hx-swap="innerHTML" class="cfg-form">
+      <input type="password" name="pin" placeholder="re-PIN" class="cfg-pin" autocomplete="off">
+      <input type="text" name="confirm" placeholder="type: clear-breaker" class="cfg-confirm" autocomplete="off" spellcheck="false">
+      <button type="submit" class="cfg-btn elevated">reset breaker → CLOSED</button>
+      <span class="cfg-out" id="brk-out"></span>
+    </form>
+  </section>
+
+  <section class="config-group">
     <h3>Secret rotation (Class C · write-only · elevated)</h3>
     <p class="config-note">
       Values are <b>write-only</b> — never displayed or read back. Rotating a Worker bearer also

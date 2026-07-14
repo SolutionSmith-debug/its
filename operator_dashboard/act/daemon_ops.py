@@ -25,12 +25,13 @@ ITS_Config). No secret is read or rotated here. Ships DARK behind the ACT surfac
 from __future__ import annotations
 
 import importlib
+import os
 import subprocess
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from operator_dashboard.config import ITS_HOME
+from operator_dashboard.config import ITS_HOME, LAUNCHD_DIR
 
 _INSTALL_SH = ITS_HOME / "scripts" / "launchd" / "install.sh"
 _INSTALL_TIMEOUT = 60
@@ -38,6 +39,12 @@ _INSTALL_TIMEOUT = 60
 # surface: too small hammers the upstream APIs, too large starves the cadence.
 MIN_INTERVAL = 10
 MAX_INTERVAL = 86_400  # 1 day
+
+# --- daemon control (start / stop / kickstart via install.sh / launchctl) ------
+_LABEL_PREFIX = "org.solutionsmith.its."
+DASHBOARD_LABEL = "org.solutionsmith.its.dashboard"  # excluded: a service must not stop itself
+CONTROL_ACTIONS = ("start", "stop", "kickstart")
+_LAUNCHCTL_TIMEOUT = 30
 
 
 @dataclass(frozen=True)
@@ -229,6 +236,111 @@ def _audit_desync(operator: str, label: str, daemon: IntervalDaemon, old: str | 
             f"(exit {rc}) by {operator} at {ts} — the daemon may now be UNLOADED (install.sh does "
             f"bootout-then-bootstrap); verify with `install.sh status {label}` and reload",
             error_code="config_interval_reinstall_desync",
+            alert=False,
+        )
+    except Exception:
+        pass
+
+
+# --- daemon control verb (Class B): start / stop / kickstart -------------------
+@dataclass
+class ControlOutcome:
+    kind: str  # ok | rejected | not_editable | error (also CSS class + test assertion)
+    message: str
+    label: str
+
+
+def controllable_labels() -> set[str]:
+    """ITS daemon labels the operator may start / stop / kickstart: any
+    `org.solutionsmith.its.*.plist` present in scripts/launchd/, MINUS the
+    dashboard's own label (a service must not stop itself via its own UI). This
+    is the allowlist — a label not in it is refused before any launchctl call."""
+    labels: set[str] = set()
+    try:
+        for p in LAUNCHD_DIR.glob(f"{_LABEL_PREFIX}*.plist"):
+            labels.add(p.stem)
+    except Exception:
+        pass
+    labels.discard(DASHBOARD_LABEL)
+    return labels
+
+
+def read_control_state() -> list[dict[str, Any]]:
+    """The controllable daemons (labels) for the control UI. Live loaded/running
+    state is shown by the separate read-only daemons panel; this lists what can
+    be controlled."""
+    return [{"label": lbl, "slug": lbl.replace(".", "-")} for lbl in sorted(controllable_labels())]
+
+
+def control_daemon(label: str, action: str, operator: str) -> ControlOutcome:
+    """start (install.sh load) / stop (install.sh unload) / kickstart (launchctl
+    kickstart -k) an allowlisted ITS daemon. The elevated-confirm ceremony is
+    verified by the router before this runs. No ITS_Config write — pure launchctl
+    process management (the runtime ITS_Config gates still apply on the daemon's
+    next cycle, so starting a dark daemon does nothing until its gate is on)."""
+    if label not in controllable_labels():
+        # allowlist bites — never a non-ITS label, an absent plist, or the dashboard itself
+        return ControlOutcome("not_editable", f"{label!r} is not a controllable ITS daemon", label)
+    if action not in CONTROL_ACTIONS:
+        return ControlOutcome("rejected", f"action must be one of {CONTROL_ACTIONS} (got {action!r})", label)
+    if action == "start":
+        rc, _err = _run_install_sh_cmd("load", label)
+    elif action == "stop":
+        rc, _err = _run_install_sh_cmd("unload", label)
+    else:  # kickstart
+        rc, _err = _run_kickstart(label)
+    ok = rc == 0
+    _audit_control(operator, label, action, rc, ok=ok)
+    if not ok:
+        return ControlOutcome("error", f"{action} {label} failed (exit {rc}) — check install.sh status {label}", label)
+    return ControlOutcome("ok", f"{label}: {action} ok", label)
+
+
+def _run_install_sh_cmd(cmd: str, label: str) -> tuple[int, str]:
+    """`install.sh <cmd> <label>` (load / unload). Returns (rc, short stderr).
+    Never raises."""
+    if not _INSTALL_SH.is_file():
+        return 127, "install.sh not found"
+    try:
+        proc = subprocess.run(
+            [str(_INSTALL_SH), cmd, label],
+            cwd=str(_INSTALL_SH.parent),
+            capture_output=True,
+            text=True,
+            timeout=_INSTALL_TIMEOUT,
+            check=False,
+        )
+    except Exception as exc:
+        return 1, type(exc).__name__
+    return proc.returncode, (proc.stderr or "")[:200]
+
+
+def _run_kickstart(label: str) -> tuple[int, str]:
+    """`launchctl kickstart -k gui/<uid>/<label>` — restart a loaded daemon (kill
+    the running instance, start fresh). Never raises."""
+    try:
+        proc = subprocess.run(
+            ["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{label}"],
+            capture_output=True,
+            text=True,
+            timeout=_LAUNCHCTL_TIMEOUT,
+            check=False,
+        )
+    except Exception as exc:
+        return 1, type(exc).__name__
+    return proc.returncode, (proc.stderr or "")[:200]
+
+
+def _audit_control(operator: str, label: str, action: str, rc: int, *, ok: bool) -> None:
+    try:
+        el = _load("shared.error_log")
+        ts = datetime.now(UTC).isoformat()
+        verb = f"{action} ok" if ok else f"{action} FAILED (exit {rc})"
+        el.log(
+            el.Severity.WARN,
+            "operator_dashboard.config_editor",
+            f"daemon control: {label} {verb} by {operator} (elevated-confirm) at {ts}",
+            error_code="config_daemon_control",
             alert=False,
         )
     except Exception:
