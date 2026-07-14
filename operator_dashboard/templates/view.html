@@ -1,9 +1,13 @@
 {% extends "base.html" %}
 {% block title %}{{ p.title }} — ITS Operator Dashboard{% endblock %}
+{% block subnav %}
+<nav class="subnav" aria-label="Back to dashboard">
+  <a class="subnav__back" href="/">← Back to dashboard</a>
+</nav>
+{% endblock %}
 {% block content %}
 <div class="detail-view">
   <div class="detail-head">
-    <a class="backlink" href="/">← dashboard</a>
     <h2>{{ p.title }}</h2>
     {% if p.summary %}<span class="summary">{{ p.summary }}</span>{% endif %}
   </div>

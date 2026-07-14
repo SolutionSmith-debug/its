@@ -1,10 +1,14 @@
 {% extends "base.html" %}
 {% block title %}Config editor — ITS Operator Dashboard{% endblock %}
+{% block subnav %}
+<nav class="subnav" aria-label="Back to dashboard">
+  <a class="subnav__back" href="/">← Back to dashboard</a>
+</nav>
+{% endblock %}
 {% block content %}
 <div class="config-editor">
   <div class="config-head">
     <h2>Config editor</h2>
-    <a class="backlink" href="/">← dashboard</a>
   </div>
   <p class="config-note">
     Edits write to <code>ITS_Config</code> and take effect on the daemon's next cycle.

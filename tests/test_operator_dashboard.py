@@ -270,7 +270,10 @@ def test_drilldown_view_shows_more_rows_than_panel(client: TestClient, monkeypat
     monkeypatch.setattr(ss, "get_rows", lambda sheet_id, **kw: list(rows))
     detail = client.get("/view/errors_recent")
     assert detail.status_code == 200
-    assert "← dashboard" in detail.text and "rows shown" in detail.text
+    # the banner-extension back nav is the way out of a drill-down (Dock app has
+    # no browser back button)
+    assert "← Back to dashboard" in detail.text and 'class="subnav__back"' in detail.text
+    assert "rows shown" in detail.text
     # detail cap (500) renders all 300; the panel card caps at 25
     assert detail.text.count('<tr class="sev-') == 300
     cache._store.clear()
