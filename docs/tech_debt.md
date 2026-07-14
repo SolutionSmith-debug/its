@@ -13,9 +13,11 @@ When to add an entry: a session deliberately chooses preservation-over-refactor 
 From the dashboard-completion session (Blocks 1-5 landed #567/#570/#574/#576). None blocks the ship; each
 is a deliberate scope line:
 
-- **WS2-1 (operator, cosmetic) — crest is a placeholder.** The topbar crest slot is a typographic "E"
-  monogram, not the real Evergreen crest. Trigger: Seth exports the crest from Canva → drop
-  `operator_dashboard/static/crest.svg` + swap the `.crest` span for `<img>` (the CSS comment marks the spot).
+- **WS2-1 — RESOLVED 2026-07-14.** No Canva export was needed — the Safety Portal brand already had the
+  vector + font. Pulled `evergreen-logo.svg` + `great-vibes.woff2` (+ OFL license) from `safety_portal/public/`
+  into `operator_dashboard/static/` and wired the real lockup into the dashboard header: the Evergreen mark on
+  a gold-bordered white plate + the "Integrated Technical System" gold-gradient Great Vibes script (the
+  portal's exact treatment incl. the WebKit background-clip cap-loop padding fix).
 - **WS2-2 (doc-sync) — CLAUDE.md "stubbed vs real" dashboard row is stale.** It still reads "No launchd plist
   yet (D1-3b)"; the plist + the six §44 verbs now exist. Parked (CLAUDE.md was a high-contention shared file the
   sibling session was also editing) — fold into the next doc-reconciliation pass. Same for the

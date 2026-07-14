@@ -34,23 +34,38 @@ body {
   background: linear-gradient(180deg, var(--brand-green) 0%, var(--brand-green-deep) 100%);
   border-bottom: 2px solid var(--brand-gold);
 }
-/* Crest slot — a typographic monogram PLACEHOLDER. Replace with the real
-   Evergreen crest: drop static/crest.svg in place + swap this span for
-   <img src="/static/crest.svg" class="crest" alt="Evergreen Renewables">. */
-.crest {
-  width: 30px; height: 30px; flex: none; display: grid; place-items: center;
-  border: 1.5px solid var(--brand-gold); border-radius: 50%;
-  color: var(--brand-gold-soft); font-weight: 700; font-size: 13px;
-  font-family: Georgia, "Times New Roman", serif;
+/* Self-hosted gold-script wordmark face — "Great Vibes" (SIL OFL 1.1; license at
+   /static/great-vibes-OFL.txt). The SAME face the Safety Portal uses for the ITS
+   wordmark; served same-origin from /static (no external fetch). */
+@font-face {
+  font-family: "ITS Wordmark";
+  src: url("/static/great-vibes.woff2") format("woff2");
+  font-weight: 400; font-style: normal; font-display: swap;
 }
-.wordmark { display: flex; flex-direction: column; line-height: 1.18; }
-.wordmark .wm-its {
-  font-weight: 700; font-size: 16px; letter-spacing: .06em; color: #fff;
-  font-family: Georgia, "Times New Roman", serif;
+/* Brand lockup — the Evergreen mark on a gold-bordered WHITE plate (Evergreen's
+   brand green ≠ BRG and would clash directly on the green field), then the
+   gold-gradient "Integrated Technical System" wordmark. Mirrors the Safety
+   Portal's AppHeader lockup (safety_portal/src/components/AppHeader.tsx). */
+.brand-lockup { display: flex; align-items: center; gap: 14px; min-width: 0; }
+.logo-plate {
+  background: #fff; border: 2px solid var(--brand-gold);
+  border-radius: 5px; padding: 4px 9px; display: flex; align-items: center; flex: none;
 }
-.wordmark .wm-full { color: var(--brand-gold-soft); font-weight: 500; }
-.wordmark .brand-sub {
-  font-size: 10.5px; color: var(--brand-gold); letter-spacing: .16em; text-transform: uppercase;
+.brand-logo { display: block; height: 26px; width: auto; }
+/* Gold-gradient script wordmark — live text. The gradient is the letterform FILL
+   via background-clip:text; -webkit-text-fill-color makes it transparent on WebKit.
+   The padding-block clears Great Vibes' capital loops (T/I/S swashes overshoot the
+   em box) + descenders — background-clip:text would otherwise shear any ink outside
+   the text paint box, and WebKit IGNORES line-height leading there, so PADDING is
+   the real lever (verified in WebKit + Chromium; see reference_webkit-...-padding). */
+.brand-wordmark {
+  font-family: "ITS Wordmark", "Snell Roundhand", "Apple Chancery", cursive;
+  font-weight: 400; font-size: 28px; line-height: 1.25;
+  padding-block: 0.65em 0.45em; flex: none;
+  background: linear-gradient(180deg, #f6e7b4 0%, #e7c977 24%, #c6a04d 56%, #9b7a33 100%);
+  -webkit-background-clip: text; background-clip: text;
+  color: transparent; -webkit-text-fill-color: transparent;
+  filter: drop-shadow(0 1px 1px rgba(0, 0, 0, .35));
 }
 .badge.readonly {
   font-size: 10px; text-transform: uppercase; letter-spacing: .08em;
