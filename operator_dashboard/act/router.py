@@ -18,7 +18,7 @@ from typing import Any
 from fastapi import FastAPI, Form, Request, Response
 from fastapi.templating import Jinja2Templates
 
-from operator_dashboard.act import config_write, secret_rotate
+from operator_dashboard.act import config_write, daemon_ops, secret_rotate
 from operator_dashboard.act.config_write import (
     apply_edit,
     apply_elevated_edit,
@@ -49,10 +49,15 @@ def register_act_routes(app: FastAPI, templates: Jinja2Templates) -> None:
             {"key": s.key, "label": s.label, "kind": s.kind, "note": s.note, "mirror": s.worker_mirror}
             for s in SECRETS.values()
         ]
+        intervals: list[dict[str, Any]] = []
+        try:
+            intervals = daemon_ops.read_interval_state()
+        except Exception:  # fail-soft: the interval panel degrades, page still renders
+            intervals = []
         return templates.TemplateResponse(
             request,
             "config.html",
-            {"groups": groups, "error": error, "secrets": secrets, "display": display},
+            {"groups": groups, "error": error, "secrets": secrets, "display": display, "intervals": intervals},
         )
 
     @app.post("/act/config")
@@ -128,6 +133,33 @@ def register_act_routes(app: FastAPI, templates: Jinja2Templates) -> None:
             return _outcome(templates, request, "refused", f"denied: {exc}", key, "")
         result = secret_rotate.rotate_secret(key, value, operator)
         return _outcome(templates, request, result.kind, result.message, result.key, "")
+
+    @app.post("/act/daemon/interval")
+    def act_daemon_interval(
+        request: Request,
+        label: str = Form(...),
+        interval: str = Form(...),
+        pin: str = Form(...),
+        confirm: str = Form(""),
+    ) -> Response:
+        # Class-B: change an interval daemon's cadence (ITS_Config row + plist
+        # re-install). Same elevated ceremony as a Class-B config edit — it mutates
+        # launchctl AND ITS_Config. The label is confirmation-typed + allowlisted.
+        operator = getpass.getuser()
+        try:
+            check_origin(request.headers.get("origin"), request.headers.get("referer"))
+        except OriginError as exc:
+            audit_denied(operator, label, "", "origin")
+            return _outcome(templates, request, config_write.NOT_EDITABLE, f"refused: {exc}", label, "")
+        try:
+            verify_elevated(pin, confirm, expected=label)
+        except PinError as exc:
+            audit_denied(operator, label, "", "elevated")
+            return _outcome(templates, request, config_write.REJECTED, f"denied: {exc}", label, "")
+        result = daemon_ops.edit_interval(label, interval, operator)
+        if result.kind == config_write.NOT_EDITABLE:
+            audit_denied(operator, label, "", "not_editable")
+        return _outcome(templates, request, result.kind, result.message, result.label, "")
 
 
 def _outcome(

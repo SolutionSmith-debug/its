@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  ITS Operator Dashboard service (WS2 D1-3b).
+
+  UNLIKE every other ITS plist, this is a LONG-RUNNING SERVER (uvicorn bound to
+  127.0.0.1:8484), NOT a one-shot-per-fire interval/calendar daemon. So this is
+  the ONE ITS plist where KeepAlive=true is CORRECT: if the server process dies,
+  launchd restarts it. The template's "NEVER set KeepAlive=true" rule
+  (scripts/launchd/template.plist) is scoped to the interval/calendar daemons —
+  which this is NOT (there is no StartInterval / StartCalendarInterval here).
+
+  SERVICE, not a tracked interval daemon: it writes no watchdog Check-C marker and
+  is NOT in scripts/watchdog.TRACKED_JOBS. Liveness = launchd KeepAlive + the
+  /healthz endpoint, not marker staleness.
+
+  Localhost-only (the app binds 127.0.0.1). Reach it from other tailnet devices
+  via `tailscale serve 8484` — never a public interface. See
+  operator_dashboard/tailscale_serve.sh + docs/runbooks/operator_dashboard_config_editor.md.
+
+  Ships DARK: the ACT surface is fail-closed until the operator provisions
+  ITS_OPERATOR_PIN. Loading this plist only serves the read-only panels + the
+  (still PIN-gated, therefore inert until the PIN exists) config editor.
+
+  NOT loaded by this repo — the operator installs it (non-interval → the generic
+  install.sh path, no __POLL_INTERVAL_SECONDS__ substitution applies):
+    scripts/launchd/install.sh load org.solutionsmith.its.dashboard
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>org.solutionsmith.its.dashboard</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__ITS_HOME__/.venv/bin/python</string>
+        <string>-m</string>
+        <string>operator_dashboard</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__ITS_HOME__</string>
+
+    <key>StandardOutPath</key>
+    <string>__ITS_HOME__/logs/launchd/dashboard.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>__ITS_HOME__/logs/launchd/dashboard.err.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>LANG</key>
+        <string>en_US.UTF-8</string>
+        <!-- A launchd service does NOT inherit your shell env, so the Tailscale
+             origin allowlist must live HERE (localhost is always allowed even if
+             this is blank). Before exposing the dashboard over Tailscale, set this
+             in the INSTALLED copy (~/Library/LaunchAgents/) to your served origin,
+             e.g. https://macmini.tailXXXX.ts.net, then reload. The helper
+             operator_dashboard/tailscale_serve.sh prints the exact value + patch. -->
+        <key>ITS_DASH_ALLOWED_ORIGINS</key>
+        <string></string>
+    </dict>
+
+    <!-- SERVER, not one-shot: RunAtLoad starts it on load/reboot; KeepAlive
+         restarts it if it exits. This is the one ITS plist where KeepAlive=true is
+         correct (see the header comment) — the daemons' "never KeepAlive" rule is
+         about interval/calendar cadence, which a server does not have. -->
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>

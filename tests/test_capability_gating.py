@@ -452,6 +452,12 @@ NETWORK_LIB_ALLOWLIST: frozenset[str] = frozenset({
     # `importlib` lazily resolves shared.keychain / shared.error_log. Write-only —
     # it never reads a secret back and never logs a value. Not a customer send.
     "operator_dashboard/act/secret_rotate.py",
+    # WS2 D1-3b interval-edit verb: `subprocess` runs `scripts/launchd/install.sh load
+    # <label> <interval>` (label-allowlisted to the 8 interval daemons) to re-render +
+    # re-bootstrap a poll daemon's plist after the operator changes its cadence;
+    # `importlib` lazily resolves shared.smartsheet_client / shared.error_log. It writes
+    # ONLY the ITS_Config poll_interval row + reinstalls the plist — no send, no AI.
+    "operator_dashboard/act/daemon_ops.py",
 })
 
 # Import needles that constitute network-egress or process-spawn capability.
