@@ -3,6 +3,7 @@ import type { MiddlewareHandler } from "hono";
 import type { FieldopsApp } from "./fieldops_gates";
 import { auditStmt, auditStmtIfChanged, isUniqueViolation } from "./audit";
 import { hmacHex } from "./hmac";
+import { MAX_ADDRESS } from "./constants";
 // S2b wiring — the S3 terms manifest + versioned purchaser/tax config, imported at
 // BUILD time from po_materials/ (the same files the Mac renderer reads at render time).
 import termsManifest from "../../po_materials/terms/manifest.json";
@@ -102,7 +103,6 @@ const MAX_NAME = 256;
 const MAX_SHORT = 64;
 const MAX_PHONE = 40;
 const MAX_EMAIL = 320;
-const MAX_ADDRESS = 512;
 const MAX_NOTES = 2000;
 const MAX_SOW = 8000;
 const MAX_INSTRUCTIONS = 4000;
