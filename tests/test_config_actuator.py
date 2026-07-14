@@ -435,3 +435,57 @@ def test_wait_for_ci_raises_on_a_failed_check(mocker):
     }))
     with pytest.raises(RuntimeError, match="CI failed"):
         ca._wait_for_ci("config/req-1-po_materials-tax")
+
+
+# ── _read_str_setting fail-soft (alert-hygiene) ───────────────────────────────────
+# prove-the-control-bites (HOUSE_REFLEXES §2): a transient SmartsheetError USED to escape
+# _read_str_setting → _polling_enabled → @its_error_log as an "unhandled" CRITICAL (paged
+# every cycle during the 2026-07-14 token flap). These assert it is now a fail-soft WARN.
+
+
+def test_read_str_setting_fail_soft_on_transient_smartsheet_error(mocker):
+    log = mocker.patch.object(ca.error_log, "log")
+    mocker.patch.object(
+        ca.smartsheet_client, "get_setting",
+        side_effect=ca.smartsheet_client.SmartsheetError("503 transient"),
+    )
+    # returns the fallback (no raise) ...
+    assert ca._read_str_setting("po_materials.config_actuator.polling_enabled", "false") == "false"
+    # ... and WARNs once with the distinct alert-hygiene code (never CRITICAL)
+    assert log.call_count == 1
+    assert log.call_args.args[0] is ca.Severity.WARN
+    assert log.call_args.kwargs["error_code"] == "config_actuator.config_read_error"
+
+
+def test_read_str_setting_auth_error_does_not_page(mocker):
+    # SmartsheetAuthError (the invalid-token storm) is a SmartsheetError subclass → fail-soft.
+    log = mocker.patch.object(ca.error_log, "log")
+    mocker.patch.object(
+        ca.smartsheet_client, "get_setting",
+        side_effect=ca.smartsheet_client.SmartsheetAuthError("401 invalid api key"),
+    )
+    assert ca._read_str_setting(ca.CFG_WORKER_BASE_URL, "") == ""
+    assert not any(c.args and c.args[0] is ca.Severity.CRITICAL for c in log.call_args_list)
+
+
+def test_polling_enabled_is_false_not_raise_on_transient(mocker):
+    # The load-bearing outcome: a token flap makes the cycle a clean no-op, not a CRITICAL.
+    mocker.patch.object(ca.error_log, "log")
+    mocker.patch.object(
+        ca.smartsheet_client, "get_setting",
+        side_effect=ca.smartsheet_client.SmartsheetError("timeout"),
+    )
+    assert ca._polling_enabled() is False
+
+
+def test_read_str_setting_expected_errors_stay_silent(mocker):
+    # Regression guard: a MISSING row / OPEN breaker still falls back WITHOUT a log line
+    # (resolve_and_log owns the missing-row WARN; the breaker logs when it opens).
+    log = mocker.patch.object(ca.error_log, "log")
+    for exc in (
+        ca.smartsheet_client.SmartsheetNotFoundError("no row"),
+        ca.smartsheet_client.SmartsheetCircuitOpenError("open"),
+    ):
+        mocker.patch.object(ca.smartsheet_client, "get_setting", side_effect=exc)
+        assert ca._read_str_setting("k", "fb") == "fb"
+    assert log.call_count == 0
