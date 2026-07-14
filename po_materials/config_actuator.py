@@ -164,10 +164,27 @@ def _lease_owner() -> str:
 
 
 def _read_str_setting(key: str, fallback: str) -> str:
-    """ITS_Config read, fail-soft to `fallback` (mirrors publish_daemon's reader)."""
+    """ITS_Config read, fail-soft to `fallback` (mirrors publish_daemon's reader).
+
+    A MISSING row and an OPEN breaker are EXPECTED, quiet fallbacks: a missing declared
+    key is already WARNed loudly at startup by ``resolve_and_log`` (this key is in
+    REQUIRED_CONFIG), and the breaker logs when it opens. Any OTHER ``SmartsheetError``
+    (a transient timeout / auth failure / rate-limit — e.g. the 2026-07-14 fleet-wide
+    token flap) is a real hiccup: WARN once with a distinct code and fall back for THIS
+    cycle, rather than letting it escape ``_polling_enabled`` (the first per-cycle caller,
+    before ``@its_error_log``) and page as an ``unhandled`` CRITICAL. Mirrors
+    ``required_config.resolve_and_log``'s transient branch (alert-hygiene)."""
     try:
         raw = smartsheet_client.get_setting(key, workstream=WORKSTREAM)
     except (smartsheet_client.SmartsheetNotFoundError, smartsheet_client.SmartsheetCircuitOpenError):
+        return fallback
+    except smartsheet_client.SmartsheetError as exc:
+        error_log.log(
+            Severity.WARN, SCRIPT_NAME,
+            f"ITS_Config read of {key} [{WORKSTREAM}] failed transiently — using fallback "
+            f"{fallback!r} this cycle (fail-soft, retries next cycle): {type(exc).__name__}",
+            error_code="config_actuator.config_read_error",
+        )
         return fallback
     return raw if isinstance(raw, str) and raw else fallback
 
