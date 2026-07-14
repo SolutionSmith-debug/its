@@ -613,7 +613,10 @@ def test_list_columns_with_options_returns_normalized_dicts(mocker):
         {"id": 2, "title": "Status", "type": "PICKLIST", "options": ["a", "b", "c"]},
         {"id": 3, "title": "Tags", "type": "MULTI_PICKLIST", "options": ["x", "y"]},
     ]
-    client.Sheets.get_sheet.assert_called_once_with(42, include="columns")
+    # level=2 is LOAD-BEARING: without it the API downgrades a MULTI_PICKLIST column to
+    # TEXT_NUMBER, which broke ensure_picklist_options + false-flagged audit_picklist_drift
+    # on live multi-select dropdowns (2026-07-14 — ITS_Subcontractors.Trades / ITS_Vendors).
+    client.Sheets.get_sheet.assert_called_once_with(42, include="columns", level=2)
 
 
 def test_list_columns_with_options_unwraps_enumerated_value_type(mocker):

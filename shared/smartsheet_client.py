@@ -746,6 +746,10 @@ def list_columns_with_options(sheet_id: int) -> list[dict[str, Any]]:
     `shared.picklist_sync` to read current downstream picklist state
     before computing a diff against the source master DB.
 
+    Fetched at `level=2` so a `MULTI_PICKLIST` (multi-select dropdown) column reports its
+    true type — by default the API downgrades it to `TEXT_NUMBER` (see the call-site note),
+    which silently broke option management on live multi-select columns.
+
     Bypasses the column-title cache because picklist sync needs the
     `options` field (the cache only stores `{title: id}` for cell-write
     resolution). A direct `get_sheet` is the right shape here.
@@ -759,7 +763,14 @@ def list_columns_with_options(sheet_id: int) -> list[dict[str, Any]]:
     Surfaced live during the PR #48 re-smoke.
     """
     try:
-        sheet = get_client().Sheets.get_sheet(sheet_id, include="columns")
+        # level=2 is LOAD-BEARING: without it the API DOWNGRADES a MULTI_PICKLIST
+        # (multi-select dropdown) column to TEXT_NUMBER in the response — options still
+        # attached, but type mis-reported. That made `ensure_picklist_options` REFUSE to
+        # manage a live multi-select column (it type-checks for PICKLIST/MULTI_PICKLIST) and
+        # made `audit_picklist_drift` false-flag it as "needs a manual UI conversion". With
+        # level=2 the true MULTI_PICKLIST / MULTI_CONTACT_LIST types come through. (Confirmed
+        # live 2026-07-14 on ITS_Subcontractors.Trades + ITS_Vendors.Supply Categories.)
+        sheet = get_client().Sheets.get_sheet(sheet_id, include="columns", level=2)
     except sdk_exc.SmartsheetException as e:
         raise _translate(e) from e
     out: list[dict[str, Any]] = []
