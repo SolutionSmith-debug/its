@@ -169,7 +169,12 @@ def test_route_fail_closed_without_auth_touches_no_smartsheet(monkeypatch: pytes
     from operator_dashboard.app import create_app
 
     touched: list[str] = []
-    monkeypatch.setattr(ss, "get_rows", lambda *a, **k: touched.append("get") or [])
+
+    def _mark_get(*a: Any, **k: Any) -> list[dict[str, Any]]:
+        touched.append("get")
+        return []
+
+    monkeypatch.setattr(ss, "get_rows", _mark_get)
     monkeypatch.setattr(ss, "delete_rows", lambda *a, **k: touched.append("delete"))
     client = TestClient(create_app())
     resp = client.post("/act/errors/clear", data={"pin": "x", "confirm": "wrong"})
