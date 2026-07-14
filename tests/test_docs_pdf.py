@@ -10,7 +10,8 @@ Covers the three ``docs_pdf`` modules + the ``scripts/build_docs_pdfs.py`` CLI:
     current source bytes); loader rejects malformed manifests; the SHA-256 currency check
     BITES on a drifted / missing source.
   * build CLI: --check is clean on the committed tree, --doc renders one PDF to an out dir,
-    --upload is the D2-3 stub, and run_check returns non-zero on synthetic drift.
+    --upload is the dark-gated D2-3 Box publish leg (mock-only), run_check returns non-zero
+    on synthetic drift.
 
 Deterministic: every render passes an explicit git_sha (no subprocess), and the
 currency-bites tests construct Manifest objects in-memory (no reliance on git state).
@@ -265,9 +266,18 @@ def test_cli_check_clean_on_committed_tree() -> None:
     assert build_docs_pdfs.main(["--check"]) == 0
 
 
-def test_cli_upload_is_d23_stub(capsys: pytest.CaptureFixture[str]) -> None:
+def test_cli_upload_is_dark_when_disabled(
+    mocker, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # CLI-level: `--upload` with no ITS_Config gate is dark — rc 0, a loud message, no Box call.
+    mocker.patch.object(
+        build_docs_pdfs.smartsheet_client, "get_setting",
+        side_effect=build_docs_pdfs.smartsheet_client.SmartsheetNotFoundError("absent"),
+    )
+    upload = mocker.patch.object(build_docs_pdfs.box_client, "upload_bytes_or_new_version")
     assert build_docs_pdfs.main(["--upload"]) == 0
-    assert "D2-3" in capsys.readouterr().out
+    assert "DARK" in capsys.readouterr().out
+    upload.assert_not_called()
 
 
 def test_cli_doc_renders_one_pdf(tmp_path: Path) -> None:
@@ -301,3 +311,90 @@ def test_render_entry_missing_source_raises(tmp_path: Path) -> None:
     ghost = ManifestEntry("ghost", "T", "v1", "docs/enablement/ghost.md", "0" * 64)
     with pytest.raises(FileNotFoundError):
         build_docs_pdfs.render_entry(ghost, tmp_path, "abc1234")
+
+
+# ---- D2-3: Box publish leg (--upload), dark-gated — MOCK-ONLY (no live Box) -----------
+
+
+def _enabled_config(folder_id: str = "999001"):
+    """A get_setting side-effect: enabled=true + the given folder id."""
+    def _gs(key: str, *, workstream: str) -> str:
+        return {
+            build_docs_pdfs.CFG_UPLOAD_ENABLED: "true",
+            build_docs_pdfs.CFG_UPLOAD_FOLDER_ID: folder_id,
+        }[key]
+    return _gs
+
+
+def test_upload_is_dark_and_uploads_nothing_when_disabled(mocker) -> None:
+    # No `docs_pdf.upload.enabled` row → dark. Nothing rendered, nothing uploaded, rc 0.
+    mocker.patch.object(
+        build_docs_pdfs.smartsheet_client, "get_setting",
+        side_effect=build_docs_pdfs.smartsheet_client.SmartsheetNotFoundError("absent"),
+    )
+    upload = mocker.patch.object(build_docs_pdfs.box_client, "upload_bytes_or_new_version")
+    render = mocker.patch.object(build_docs_pdfs, "render_entry")
+    rc = build_docs_pdfs.run_upload(load_manifest(), Path("/nonexistent"), "abc1234")
+    assert rc == 0
+    upload.assert_not_called()
+    render.assert_not_called()
+
+
+def test_upload_refuses_when_enabled_but_folder_unset(mocker) -> None:
+    def _gs(key: str, *, workstream: str) -> str:
+        if key == build_docs_pdfs.CFG_UPLOAD_ENABLED:
+            return "true"
+        raise build_docs_pdfs.smartsheet_client.SmartsheetNotFoundError("no folder")
+    mocker.patch.object(build_docs_pdfs.smartsheet_client, "get_setting", side_effect=_gs)
+    upload = mocker.patch.object(build_docs_pdfs.box_client, "upload_bytes_or_new_version")
+    rc = build_docs_pdfs.run_upload(load_manifest(), Path("/nonexistent"), "abc1234")
+    assert rc == 2
+    upload.assert_not_called()
+
+
+def test_upload_publishes_each_doc_to_the_configured_folder(mocker, tmp_path: Path) -> None:
+    mocker.patch.object(
+        build_docs_pdfs.smartsheet_client, "get_setting", side_effect=_enabled_config()
+    )
+
+    def _fake_render(entry, out_dir, git_sha):  # noqa: ANN001 — mock seam
+        p = tmp_path / f"{entry.key}.pdf"
+        p.write_bytes(f"PDF:{entry.key}".encode())
+        return p
+
+    mocker.patch.object(build_docs_pdfs, "render_entry", side_effect=_fake_render)
+    upload = mocker.patch.object(
+        build_docs_pdfs.box_client, "upload_bytes_or_new_version",
+        return_value={"id": "file-1"},
+    )
+    man = load_manifest()
+    rc = build_docs_pdfs.run_upload(man, tmp_path, "abc1234")
+    assert rc == 0
+    assert upload.call_count == len(man.entries)
+    for call in upload.call_args_list:
+        folder_id, name, content = call.args
+        assert folder_id == "999001"
+        assert name.endswith(".pdf")
+        assert content == f"PDF:{name[:-4]}".encode()  # the rendered bytes, unmodified
+
+
+def test_upload_fences_a_per_doc_box_failure_and_continues(mocker, tmp_path: Path) -> None:
+    mocker.patch.object(
+        build_docs_pdfs.smartsheet_client, "get_setting", side_effect=_enabled_config()
+    )
+    def _fake_render(entry, out_dir, git_sha):  # noqa: ANN001 — mock seam
+        p = tmp_path / f"{entry.key}.pdf"
+        p.write_bytes(b"x")
+        return p
+
+    mocker.patch.object(build_docs_pdfs, "render_entry", side_effect=_fake_render)
+    man = load_manifest()
+    # First upload raises BoxError; the rest succeed — the fence counts it and keeps going.
+    upload = mocker.patch.object(
+        build_docs_pdfs.box_client, "upload_bytes_or_new_version",
+        side_effect=[build_docs_pdfs.box_client.BoxError("boom")]
+        + [{"id": "ok"}] * (len(man.entries) - 1),
+    )
+    rc = build_docs_pdfs.run_upload(man, tmp_path, "abc1234")
+    assert rc == 1
+    assert upload.call_count == len(man.entries)  # every doc still attempted
