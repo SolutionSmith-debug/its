@@ -99,3 +99,18 @@ docs:
     version: v1
     source: docs/references/its_config_dictionary.md
     sha256: fd90845919db959f62bbe74b02dcfd1b46d4bc9dd6617f9f5d71d2fd12cf612e
+
+  # ── Delivery-critical guides added 2026-07-13: the operator dashboard (WS2 D1-x)
+  #    and the subcontracts generator (ADR-0003). Both blockers cleared — the dashboard
+  #    and the subcontract package generator now exist.
+  - key: operator_dashboard
+    title: "The Operator Dashboard"
+    version: v1
+    source: docs/enablement/operator_dashboard.md
+    sha256: cede5c971d235a8f423aa7a5a0916a42fad82d1d854b470ec9942c1f00a44448
+
+  - key: subcontracts
+    title: "Subcontracts — Generating a Subcontract Package"
+    version: v1
+    source: docs/enablement/subcontracts.md
+    sha256: e98392a611edbd4103d84f21f0352e3d165b46c17c8c9b904b10f4d2ffdb216c

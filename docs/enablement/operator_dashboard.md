@@ -1,0 +1,154 @@
+---
+type: operations
+date: 2026-07-13
+status: active
+related_prs: []
+workstream: operator_dashboard
+tags: [enablement, a8, operator-dashboard, config-editor, secret-rotation, pin, external-send-gate, tier-2]
+---
+
+# Enablement — The Operator Dashboard · Op Stds §6/A8
+
+**Audience:** the **operator** (Seth or the trained Successor-Operator) who watches ITS's health and
+occasionally changes a setting. No code knowledge assumed. This is the plain-language companion to the
+successor-operator runbooks [`../runbooks/operator_dashboard_config_editor.md`](../runbooks/operator_dashboard_config_editor.md)
+(the Class-A config editor) and [`../runbooks/operator_dashboard_sensitive_tier.md`](../runbooks/operator_dashboard_sensitive_tier.md)
+(the sensitive tier — weighted edits + secret rotation).
+
+## What it is
+
+The Operator Dashboard is a single web page that shows you, at a glance, whether ITS is healthy — which
+background workers are alive, what's erroring, what's waiting for review — and lets you make a small set
+of approved changes to how ITS runs. It is a **convenience view**: it observes the live ITS on the office
+Mac and changes nothing on its own.
+
+It runs **only on the office Mac, on localhost** (`127.0.0.1:8484`) — it is not on the public internet.
+To reach it from another of your own devices, you expose it over **Tailscale** (your private network),
+never a public interface.
+
+## How to start it
+
+```bash
+python -m operator_dashboard        # serves http://127.0.0.1:8484
+```
+
+To view it from your phone or laptop over Tailscale:
+
+```bash
+tailscale serve 8484
+```
+
+> The dashboard does not yet run as an always-on background job (that install step is a tracked
+> fast-follow) — today you start it by hand when you want to look.
+
+## What you see — the health panels (read-only)
+
+The main page is a set of cards, each reading one live source. Every card is **fail-soft**: if its
+source isn't available, that one card says "unavailable" and the rest of the page still works. Nothing
+here changes anything.
+
+| Panel | What it tells you |
+|---|---|
+| **launchd daemons** | Which background workers are loaded and running. |
+| **Watchdog markers** | The last-run timestamps the watchdog uses to spot a worker that's gone quiet. |
+| **Circuit breaker** | Whether ITS has tripped its Smartsheet safety breaker (and is pausing to recover). |
+| **Daemon liveness** | Each worker's heartbeat — proof it's actually cycling, not just loaded. |
+| **State locks** | Which workers hold a working lock right now (a passive, non-disturbing check). |
+| **Recent log tail** | The newest lines of today's log (secrets/PII redacted before display). |
+| **ITS_Errors — recent** | The latest errors ITS recorded. |
+| **ITS_Review_Queue — depth** | How many items are waiting for human review. |
+
+Everything shown is treated as untrusted and is redacted and escaped before it reaches the screen, so a
+malicious-looking value in a cell or log line renders as harmless text.
+
+## The ACT surface — making a change (PIN-gated)
+
+Below the read-only panels is the **config editor** — the only part of the dashboard that changes
+anything. It edits settings in the **`ITS_Config`** sheet; a change takes effect on the affected
+worker's **next cycle**. There are three kinds of action, in increasing weight:
+
+### Class A — everyday settings (PIN only)
+
+Pause/resume gates, tuning knobs (thresholds, windows), and behavior settings. You pick the setting,
+type the new value, and enter your **operator PIN**. The value is checked against a rule (a bad or
+out-of-range value is refused with **nothing written**).
+
+### Class B — weighted settings (the elevated-confirm ceremony)
+
+Higher-stakes settings — the sent-from and read mailboxes, trust allowlists, the Worker endpoint URLs,
+and the **global brake** (`system.state` = ACTIVE / PAUSED / MAINTENANCE) — require the **elevated-confirm
+ceremony**: you **re-enter your PIN** *and* **type the exact name of the setting** you're changing. Both
+must match, or nothing happens. This is a deliberate anti-fat-finger step for changes that affect trust
+or identity.
+
+> **Turning a send worker ON for the first time** (a "dark → live" activation) is **not something the
+> dashboard applies for you.** A `false → true` edit on a send-poller gate is **routed to the escalate
+> path — surfaced to Seth, never applied here** — because a first activation carries go-live preconditions
+> and, for the **vendor send gate**, the permanent **External Send Gate**, a fixed high-capability action
+> that belongs to Seth. **Pausing** any worker (turning a gate off) is always a plain operator action.
+> (One privileged non-send gate — the code-deploy actuator — instead self-applies after the elevated
+> ceremony *plus* an explicit "go-live preconditions met" attestation; the send gates never do.)
+
+### Class C — secret rotation (write-only)
+
+You can rotate a fixed list of credentials (API tokens, Worker bearers) through the same elevated
+ceremony. Rotation is **write-only by construction**: the dashboard **never displays, reads back, or logs
+a secret value** — it only writes the new value to its destination (macOS Keychain, and for a Worker
+bearer, the Worker plus its Keychain mirror). Only credentials on the fixed list are rotatable; anything
+else is refused. The **Box refresh token is guided-only** — it is never pasted here; the dashboard walks
+you through the separate quiesce → re-authorize → smoke flow instead (a Seth-run, high-class step).
+
+Some settings are shown but **can never be edited** on any surface — most importantly the **External Send
+Gate** itself. It is display-only, by design.
+
+## The hard invariant — what it will NEVER do
+
+The dashboard writes to **`ITS_Config` and nothing else**. That is an internal settings write. It has
+**no ability to send email and no ability to deploy code** — it holds no send capability and no AI. The
+permanent **External Send Gate** stays entirely with the daemons; approving a customer send is done on the
+review sheets, and queuing a code/config deploy is the job of the §50 portal app, not this dashboard. Even
+in the worst case, the dashboard cannot put a message on the wire or push code.
+
+## It ships dark
+
+Out of the box the ACT surface is **fail-closed**: until Seth provisions the **operator PIN**
+(`ITS_OPERATOR_PIN` in the Mac Keychain), every attempted change is denied. The read-only health panels
+work without it. Activating the ACT surface — setting a **strong** PIN and allowlisting the Tailscale
+origin — is a one-time, secrets-class step done by Seth.
+
+## Two things guard every change
+
+1. **The operator PIN** — a shared secret checked in constant time, that **fails closed** (a missing or
+   locked Keychain denies). Wrong guesses are throttled: after 5 failures the endpoint locks out for a
+   minute and fires a CRITICAL alert. Use a **strong** PIN, not a 4-digit one — especially before exposing
+   the page over Tailscale.
+2. **An Origin allowlist** — the page only accepts changes coming from localhost or an approved Tailscale
+   address, as extra protection on top of the PIN.
+
+Every applied change, every denial, and every secret rotation writes a durable audit row to
+**`ITS_Errors`** (naming the setting and who did it — never a secret value).
+
+## If something looks wrong
+
+| What you see | What it means / what to do |
+|---|---|
+| A health card says **"unavailable"** | Its source (a file or daemon) isn't present right now — normal for anything not yet running. |
+| The page won't load or a page errors | Stop it (`Ctrl-C`) and re-run `python -m operator_dashboard`. No data is at risk. |
+| **"operator PIN not provisioned"** | The fail-closed default — the PIN isn't set. This is a **secret**, so **Seth** provisions it (not a Tier-2 step). |
+| **"keychain is locked"** | Common after a reboot. Run `security unlock-keychain` on the Mac, then retry (Tier-2). |
+| **"incorrect PIN"** | Re-enter it. Attempts are audited. |
+| **"too many failed attempts — locked out"** | Wait 60 seconds and retry with the correct PIN. If you did **not** cause it, treat the CRITICAL as a possible attack and **escalate to Seth**. |
+| **"origin … is not allowed"** | The browser's address isn't allowlisted — set the exact Tailscale origin and restart the app (Tier-2). A stranger hitting this is the control working. |
+| **"… is not an editable key"** | The setting is intentionally read-only, or has no seeded row. Seeding a missing row is Seth's. |
+| A **send-worker activation** is blocked/escalated | By design — first dark→live activation and the send gate are Seth's. Pausing is always available to you. |
+| **"rejected: must be …"** | A validator caught a bad value; nothing was written. Fix the value to match the stated rule and retry (Tier-2). |
+| **"write failed …"** | Usually the Smartsheet circuit breaker is open — check the breaker panel; once it closes, retry. A persistent token error is high-class → Seth. |
+
+**Always to Seth:** provisioning or rotating the PIN, any first send-worker activation, editing a Class-B
+setting you're unsure about, seeding a missing config row, and anything touching code or secrets. These
+are the fixed "call the developer" categories (Op Stds §44).
+
+## Owner
+
+`@solutionsmith`. Part of the §6 / A8 documentation program. This in-repo version is the source of truth
+for its content; the polished distributable PDF is rendered from it.
