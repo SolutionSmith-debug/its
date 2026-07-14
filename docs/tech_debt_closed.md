@@ -1430,3 +1430,192 @@ Capture needs to be **designed against §34 image-class screening** (Op Stds v20
 
 ---
 
+## Moved 2026-07-14 (debt-zero triage) — verified resolved/stale
+
+## Doc-conventions workstream taxonomy is missing `po_materials`/`purchase_orders` [RESOLVED 2026-07-13]
+
+**RESOLVED 2026-07-13** (verified across all three surfaces): `po_materials` + `subcontracts` are now present in `scripts/lint_doc_conventions.py` `CANONICAL_WORKSTREAMS`, the `docs/operations/doc_conventions.md` §"Workstream taxonomy" table, AND `docs/doctrine_manifest.yaml` `workstream_tags` (the 2026-07-12 WP1 reconciliation closed the three-copy set — HOUSE_REFLEXES §1). `purchase_orders` is intentionally NOT a doc-tag workstream (the exec package/tag is `po_materials`; `purchase_orders` lives only in the manifest planning-`slugs` vocabulary). Original context below.
+
+The blueprint workstream `workstreams/purchase-orders/` has been fully built out in this repo since
+`S1` (PR #492, 2026-07-09) through this session's #504–#512 — 20+ PRs, live daemons (`po_poll`, `po_send`,
+`config_actuator`), and an `ITS_Config` workstream tag (`po_materials.*`) in real production use — but
+`scripts/lint_doc_conventions.py`'s `CANONICAL_WORKSTREAMS` closed set (and its companion table in
+`docs/operations/doc_conventions.md` §"Workstream taxonomy") was never updated to add it. Concretely:
+`docs/runbooks/po_poll.md` and `docs/runbooks/po_send.md` (PR #501) both had to set `workstream: null` in
+frontmatter and stash `purchase_orders`/`po_poll`/`po_send` into the free-text `tags` list instead — the
+canonical-workstream lint would reject `workstream: po_materials` or `workstream: purchase_orders` today.
+Low-severity (the lint is warn-only in CI per its own doc, and the workaround is harmless), but it's the
+exact "zero taxonomy acknowledgment" gap the session-close cross-repo supersession check watches for — code
+massively acknowledges the workstream, the doc-conventions closed set doesn't. **Fix:** add `po_materials`
+(matching the runtime `ITS_Config` tag, mirroring `field_ops`/`progress_reports`'s pattern of naming the
+code-level tag, not the blueprint folder name) to both `CANONICAL_WORKSTREAMS` in
+`scripts/lint_doc_conventions.py` and the table in `docs/operations/doc_conventions.md`, then re-point the
+two PO runbooks' `workstream:` field from `null` to `po_materials`. **Tag:** `po_materials`, `docs`,
+`doc-conventions`, `low-severity`. **Revisit when:** next touching either PO runbook, or doing a
+doc-conventions taxonomy sweep.
+
+> **Moved from tech_debt.md 2026-07-14 (debt-zero triage):** RESOLVED 2026-07-13 — po_materials+subcontracts present in all three taxonomy surfaces.
+
+## install.sh interval-help-text stale — lists only 3 of 5 interval daemons [RESOLVED 2026-07-13]
+
+**RESOLVED 2026-07-13** (in-code verify): `scripts/launchd/install.sh`'s `usage()` heredoc + header comment + the `poll_interval_config_key()`/`poll_interval_default()` logic now ALL enumerate the SAME **8** interval daemons with matching defaults (weekly-send 900 / portal-poll 60 / compile-now-poll 90 / progress-send 900 / fieldops-sync 90 / po-poll 90 / po-send 900 / subcontract-poll 120) — help and logic are in sync. The "3 of 5" framing below is superseded.
+
+**Surfaced 2026-07-01** during the FF4/FF5/P2.6 session. `scripts/launchd/install.sh`'s `usage()` function and its header comment (top-of-file) both enumerate only 3 interval daemons — `weekly-send` (default 900), `portal-poll` (default 60), `compile-now-poll` (default 90) — and describe the `[interval]` CLI arg as overriding "the poll-interval daemons (weekly-send / portal-poll / compile-now-poll)".
+
+The actual per-daemon resolution logic (`poll_interval_config_key()` + `poll_interval_default()`, both further down the same file) has since grown to **5** daemons: the original 3 plus `progress-send` (`progress_reports.progress_send.poll_interval_seconds`, default 900) and `fieldops-sync` (`field_ops.fieldops_sync.poll_interval_seconds`, default 90). The help text and header comment were never updated when those two were added — an operator reading only `usage()` (or the header) would not know `progress-send`/`fieldops-sync` accept an `[interval]` override or what their defaults are.
+
+**Fix (trivial, docs-only):** update the `usage()` heredoc and the header comment block to list all 5 daemons + their defaults, matching `poll_interval_config_key()`/`poll_interval_default()`. No behavior change — purely a stale-doc-in-code fix, same class as the `docs/session_logs/README.md` index gap above.
+
+**Tag:** `field_ops`, `progress_reports`, `launchd`, `docs`. **Revisit when:** next `install.sh` touch, or opportunistically.
+
+> **Moved from tech_debt.md 2026-07-14 (debt-zero triage):** RESOLVED 2026-07-13 — usage()/header/logic all enumerate the 8 interval daemons.
+
+## build_wsr_human_review_sheet.py would fail on a fresh create (ABSTRACT_DATETIME not API-creatable) [RESOLVED 2026-07-13]
+
+**P2 (PR #362).** Building the progress twin `WPR_human_review` surfaced that `scripts/migrations/build_wsr_human_review_sheet.py` declares `Approved At` / `Sent At` as `type: ABSTRACT_DATETIME`, which the Smartsheet API **rejects on create** (`errorCode 1142`, "reserved for project sheets and may not be manually set on a column"). The build only succeeds today because it is idempotent and the live WSR sheet already exists — masking the bug. The **live** WSR `Approved At`/`Sent At` columns are in fact `type=DATE` (verified 2026-06-29); the ABSTRACT_DATETIME schema in the builder + the detailed ABSTRACT_DATETIME rationale comment in `safety_reports/wsr_review.py` are **doc-vs-live drift** (the intended retype-to-ABSTRACT_DATETIME via `update_column` was never applied to the live WSR sheet). `build_wpr_human_review_sheet.py` was therefore created with `DATE` columns, matching the working live WSR exactly (live WPR-vs-WSR parity verified 2026-06-29).
+
+**Fix (low-class):** change `build_wsr_human_review_sheet.py`'s two columns to `DATE` (matching live) — OR, if Date/Time (time-of-day) display is actually wanted, add a create-as-DATE-then-`update_column`-retype step to BOTH builders + a retype migration for the live WSR + WPR sheets, and correct the `wsr_review.py` comment. Today's behavior is correct (DATE accepts `to_wsr_datetime`'s naive string end-to-end); this is cleanup + a comment-accuracy fix.
+
+**RESOLVED 2026-07-13.** The live WSR `Approved At`/`Sent At` columns were re-confirmed `type=DATE` (live `get_columns` read, 2026-07-14). `build_wsr_human_review_sheet.py`'s two columns are now `DATE` (mirroring `build_wpr_human_review_sheet.py`); the stale ABSTRACT_DATETIME rationale in `safety_reports/wsr_review.py` (the module comment + `to_wsr_datetime` docstring) and in `tests/test_wsr_review.py` (section comment + assert message) were corrected to DATE. Regression-pinned by `tests/test_wsr_review.py::test_build_wsr_datetime_columns_are_creatable_date_not_abstract_datetime` (RED on the pre-fix ABSTRACT_DATETIME schema). Fresh-create-only change — the live sheet (idempotent skip) is untouched. Sweep to `tech_debt_closed.md` in the follow-up doc-hygiene pass.
+
+**Tag:** `safety_reports`, `progress_reports`, `smartsheet`, `migration`. **Revisit when:** the safety build migrations are next touched, or if time-of-day display is desired on the approval/sent stamps.
+
+> **Moved from tech_debt.md 2026-07-14 (debt-zero triage):** RESOLVED 2026-07-13 — columns now DATE, regression-pinned (test_wsr_review.py).
+
+## anomaly_logger: SUSPICIOUS_FIELD_PATTERNS will false-positive on legitimate system_* fields [OPEN 2026-05-20]
+
+`shared/anomaly_logger.py` flags any extraction field name matching `^system_` as a security anomaly (Phase 1 starter sentinel list for prompt-injection detection). The pattern is correct against the threat model — a legitimate workstream extraction schema shouldn't include `system_*` field names, so their presence suggests the AI invented them under injection.
+
+**The risk:** this is a forward-dated FP source. As workstream extraction schemas mature, any legitimate field with a `system_` prefix (e.g., `system_version`, `system_id`, `system_serial_number` on machine pre-inspections) will fire `security_flag=True` on every extraction, polluting `ITS_Review_Queue` with noise and training operators to dismiss the flag.
+
+Tuning belongs to the first 30 days of sandbox operation against real extraction outputs (per Safety Reports Brief v6 — "Phase 1 sentinel list, extend as patterns emerge"). The sentinel list should be re-audited once `safety_reports/weekly_generate.py` has run against the migrated closed-project corpus and produced a representative extraction sample.
+
+**Specific suggested follow-ups when tuning lands:**
+- Narrow `^system_` to specific known-bad names (`system_prompt`, `system_role`, `system_instruction`) rather than the prefix glob.
+- Same audit for `^role_` and `^ignore_` — both have similar FP-on-legitimate-naming risk.
+- Add a `tests/test_anomaly_logger.py` case for any legitimate field name that ends up in a real extraction schema, so the sentinel list and the schemas can't drift apart.
+
+Surfaced 2026-05-20 in a senior-dev audit pass; not yet triggered in practice because no workstream extraction has shipped.
+
+> **Moved from tech_debt.md 2026-07-14 (debt-zero triage):** RESOLVED 2026-07-14 (C5, #586) — prefix globs narrowed to anchored control names; FP + detection tests both directions.
+
+## Add Box refresh-token age check to R2 Watchdog [OPEN 2026-05-20]
+
+`ITS_BOX_REFRESH_TOKEN` rotates on every Box API call and stays valid as long as ITS makes at least one Box call every 60 days. If ITS goes dark for >60 days (extended outage, post-handover period without activity), the refresh token expires and re-running `scripts/setup_box_oauth.py` is required.
+
+A watchdog check would warn the operator before the token expires:
+- **Warn** at 50 days since last rotation
+- **Critical** at 58 days
+
+**Mechanism:** track last-rotation timestamp via either
+- (a) a sidecar Keychain entry `ITS_BOX_REFRESH_TOKEN_LAST_ROTATED` updated by the `store_tokens` callback in `shared/box_client.py`, or
+- (b) a row in `ITS_Config` (`system.box_refresh_token_last_rotated`).
+
+**Implementation venue:** R2 Watchdog Session 2 (planning pass needed first) or later. Not blocking; absence of this check is documented in the handover runbook as a known operator-touch requirement.
+
+**Urgency:** medium. Real risk if ITS goes dark for an extended period post-handover. Pre-handover is fine because ITS runs daily.
+
+Surfaced: PR #39 brief, 2026-05-20.
+
+> **Moved from tech_debt.md 2026-07-14 (debt-zero triage):** CLOSED (stale) 2026-07-14 — built as watchdog Check P (_check_box_token_freshness): WARN 50d / CRITICAL 58d.
+
+## Smartsheet MULTI_PICKLIST type doesn't survive sheet-creation round-trip [RESOLVED 2026-07-14]
+
+**RESOLVED 2026-07-14 — it was NOT a Smartsheet quirk; `list_columns_with_options` read columns without `level=2`.** The Smartsheet API downgrades a `MULTI_PICKLIST` (and `MULTI_CONTACT_LIST`) column to its base type in a `GET …?include=columns` response UNLESS `level=2` is requested — so the round-trip "showed TEXT_NUMBER" purely because the read omitted `level=2`. Fixed by adding `level=2` to the single `get_sheet` in `list_columns_with_options`; a live create→read integration assertion (`test_list_columns_with_options_unwraps_picklist_type`, now with a MULTI_PICKLIST column) proves it. This ALSO unblocked `ensure_picklist_options` (it can now manage live multi-select columns) and cleared the `audit_picklist_drift` false positives on the two live columns. **The "no production mapping uses it" note below is SUPERSEDED** — `ITS_Subcontractors.Trades` + `ITS_Vendors.Supply Categories` are live production MULTI_PICKLIST columns. Original entry (kept for the diagnosis trail):
+
+Creating a sheet with `{"type": "MULTI_PICKLIST", "options": [...]}` via `Folders.create_sheet_in_folder` (or the equivalent REST POST `/folders/{id}/sheets`) returns 200 OK, but a subsequent `GET /sheets/{id}?include=columns` shows the column's type as `TEXT_NUMBER`, not `MULTI_PICKLIST`. The column doesn't behave as MULTI_PICKLIST either.
+
+Probed live during the PR #51 integration-test run. Adding the column via a separate `POST /sheets/{id}/columns` after the sheet exists DOES return `"type": "MULTI_PICKLIST"` in the immediate response — but the subsequent GET still shows TEXT_NUMBER. The discrepancy is consistent enough that "sheet creation with MULTI_PICKLIST" appears to be a Smartsheet API behavior, not a transient race.
+
+**Impact on `shared/picklist_sync.py`:** none today. The picklist sync's only target columns are PICKLIST (master DBs → downstream forms). MULTI_PICKLIST is a defensive code path in `update_column_options` (accepts the type, unit-tested via `test_update_column_options_accepts_multi_picklist`) but no production mapping uses it.
+
+**Action if MULTI_PICKLIST becomes a real use case:** investigate whether the column needs to be created with additional flags (`validation`, `width`, …) or via a different REST endpoint. May require a Smartsheet support ticket — their column-type matrix isn't fully self-documenting.
+
+**Urgency:** none. Tracked for visibility so a future operator looking at the integration test's missing MULTI_PICKLIST coverage understands why.
+
+Surfaced: PR #51 integration test run, 2026-05-21.
+
+> **Moved from tech_debt.md 2026-07-14 (debt-zero triage):** RESOLVED 2026-07-14 — was a missing level=2 read (#582), not a quirk; live-assertion added.
+
+## audit_picklist_drift.py marker writer is not wired to a launchd plist [OPEN 2026-06-01]
+
+Surfaced during the Check I (weekly_generate catch-up) build. `scripts/watchdog.py` Check C tracks `safety_picklist_audit` (8-day window), and the **only** writer of the `safety_picklist_audit.last_run` marker is `scripts/audit_picklist_drift.py`. But the picklist launchd plist (`scripts/launchd/org.solutionsmith.its.picklist-sync.plist`) invokes `scripts/run_picklist_sync.py` (the hourly option-SYNC job), **not** `audit_picklist_drift.py` (the drift-AUDIT job) — and `run_picklist_sync.py` writes no watchdog marker. So either (a) the operator schedules `audit_picklist_drift.py` via a plist outside `scripts/launchd/`, or (b) the `safety_picklist_audit` marker is never written → a permanent stale Check C WARN. Separately, `run_picklist_sync.py` (the actually-scheduled hourly job) is not in TRACKED_JOBS at all, so its silent death is invisible to Check C.
+
+**Out of scope** for the Check I PR (no behavior changed here — recording the finding only). Per Op Stds "silent fail-open hazards must become watchdog-detectable signals," this should be reconciled: confirm where `audit_picklist_drift.py` is scheduled (or wire it), and consider tracking `run_picklist_sync.py`.
+
+**Revisit when:** the picklist scheduling/Tranche-0 work is next touched, or the first time a `safety_picklist_audit` stale WARN fires with no underlying cause.
+
+> **Moved from tech_debt.md 2026-07-14 (debt-zero triage):** CLOSED (stale) 2026-07-14 — picklist-audit.plist now wires the audit job + marker; run_picklist_sync tracked.
+
+## Safety Portal — deploy + provisioning deferred [OPEN 2026-06-04]
+
+Cloudflare D1/R2/Pages-or-Workers resource creation, `wrangler secret put SESSION_SIGNING_SECRET`, `wrangler deploy`, and custom domain `safety.evergreenmirror.com` binding are all deferred. Blocked on operator obtaining a `CLOUDFLARE_API_TOKEN` with the required scopes (Workers / D1 / R2 / Pages, or Workers Static Assets depending on topology decision below). The Safety Portal Phase 2 code (PR #158) was locally validated end-to-end via `wrangler dev --local` + Playwright before deferral.
+
+**Required operator steps (at deploy time):**
+1. `wrangler login` (or set `CLOUDFLARE_API_TOKEN`).
+2. `wrangler d1 create its-safety-portal-db` → copy the returned `database_id` into `wrangler.toml`.
+3. `wrangler d1 migrations apply its-safety-portal-db` (remote).
+4. `wrangler secret put SESSION_SIGNING_SECRET` (≥32-byte random value).
+5. `wrangler deploy` (or Pages upload if Pages topology wins).
+6. Bind custom domain `safety.evergreenmirror.com` → Worker/Pages route.
+
+**Tag:** `safety-portal`, `deploy`, `cloudflare`.
+
+**Revisit when:** operator has CLOUDFLARE_API_TOKEN. Anticipated pre-Phase-3 portal go-live.
+
+Surfaced: 2026-06-04 Safety Portal Phase 2 session (PR #158). Session log: `docs/session_logs/2026-06-04_safety-portal-phase2-cloudflare-scaffold.md`.
+
+> **Moved from tech_debt.md 2026-07-14 (debt-zero triage):** CLOSED (stale) 2026-07-14 — portal LIVE at safety.evergreenmirror.com (Worker + custom_domain, portal_poll live).
+
+## Safety Portal — Pages-vs-Workers Static Assets topology TBD [OPEN 2026-06-04]
+
+Blueprint `workstreams/safety-portal/mission.md` §11 and any DNS/route assumptions were written against a Cloudflare Pages (`*.pages.dev`) topology. Cloudflare's current guidance (confirmed via cloudflare-docs MCP, 2026-06) recommends **Workers Static Assets** as the standard model for serving SPAs from a Worker. The Phase 2 code (`safety_portal/worker/`) is deploy-agnostic (Vite builds to `dist/`; `wrangler.toml` can target either). The decision must be made at deploy time.
+
+**Decision required:** Workers Static Assets (current best-practice; better D1/binding integration) vs Cloudflare Pages (`*.pages.dev` + Pages-native CI). Update blueprint `workstreams/safety-portal/mission.md` §11 and DNS config to match.
+
+**Tag:** `safety-portal`, `cloudflare`, `architecture`.
+
+**Revisit when:** Safety Portal deploy step (above entry). One decision, made once.
+
+Surfaced: 2026-06-04 Safety Portal Phase 2 session (PR #158). Related: `docs/tech_debt.md` "Safety Portal deploy + provisioning deferred" entry above.
+
+> **Moved from tech_debt.md 2026-07-14 (debt-zero triage):** CLOSED (stale) 2026-07-14 — resolved to Workers Static Assets (Hono Worker, custom_domain), deployed live.
+
+## Safety Portal — no server-side session revocation [OPEN 2026-06-04]
+
+`safety_portal/worker/src/worker/middleware/requireSession.ts` validates a HMAC-signed session cookie (iat + 90-day expiry) but does NOT check a server-side session table. A deprovisioned user's cookie remains valid until `iat + 90d`. A stolen cookie cannot be individually invalidated before expiry.
+
+**Proposed fix (Phase 7):** add a D1 `sessions` table (session_id, user_id, created_at, revoked_at); `requireSession` queries it; admin route provides revoke-session capability.
+
+**Tag:** `safety-portal`, `auth`, `security`.
+
+**Revisit when:** Phase 7 admin route build, or earlier if a user is deprovisioned while a live session exists.
+
+Surfaced: 2026-06-04 Safety Portal Phase 2 session (PR #158).
+
+> **Moved from tech_debt.md 2026-07-14 (debt-zero triage):** CLOSED (stale) 2026-07-14 — real revocation built via per-user session_epoch (migration 0009); stale-epoch cookie 401s.
+
+## Worktree discipline for safety_reports edits [OPEN 2026-06-05]
+
+Phase 3 (PR #160) was built in `~/its` directly (not a git worktree) because the `resolve_project()` legacy was retired and nothing was incoming to the sandbox during development. However, any live `safety_reports/` edit in `~/its` goes live in the launchd daemon tree on the next 60s poll cycle. Future `safety_reports/` feature edits should follow `docs/operations/worktree_discipline.md` and use a dedicated worktree to avoid hot-path exposure of WIP code.
+
+**Tag:** `worktree-discipline`, `safety-reports`.
+
+**Revisit when:** next `safety_reports/` edit session.
+
+Surfaced: 2026-06-05 Safety Portal Phase 3 session (PR #160). Related: `docs/operations/worktree_discipline.md`.
+
+> **Moved from tech_debt.md 2026-07-14 (debt-zero triage):** CLOSED (stale) 2026-07-14 — absorbed into canonical worktree discipline (HOUSE_REFLEXES §3 + worktree_discipline.md).
+
+## [OPEN 2026-07-01] Manager tier over-permissioned on personnel — can retire/delete, should only create + assign
+
+**Operator-reported 2026-07-01.** The `manager` role holds `cap.personnel.manage`, which currently bundles **create / edit / link / unlink / retire** of personnel. The operator wants a manager to be able to **create** a person and **assign** them to a job (`cap.crew.assign`, already correct), but **NOT retire/delete** personnel — retire stays admin-only. Today the retire route (`POST /api/fieldops/personnel/:id/retire` in `fieldops_personnel_write.ts`, gated `cap.personnel.manage`) is reachable by a manager, and the SPA renders the Retire button for anyone with `cap.personnel.manage` (`FieldOpsPersonnel.tsx`).
+
+**Fix options (decide at build):** (a) split `cap.personnel.manage` → keep create/edit/link for manager, move **retire** behind a new `cap.personnel.retire` granted admin-only (a migration + a route re-gate + SPA gate); or (b) a lighter `role==='admin'` hard-check on the retire route + SPA button (mirrors the login-account-mint self-gate pattern) without a new cap. Option (a) is the cleaner capability-model fit; (b) is faster. Either way: re-gate the Worker route (the real boundary) AND the SPA button (convenience). Add a gate-bites test (a manager gets 403 on retire).
+
+**Operator direction:** park OR **fold into the next big website update** (the Assigned-Tasks tab work — thematically a manager-facing permission change). **Tag:** `field_ops`, `capabilities`, `auth`, `manager`, `p2.6`, `personnel`. **Revisit when:** building the Assigned-Tasks tab / next manager-facing update. **RESOLVED 2026-07-01 by S1 Assigned-Tasks build** (retire route + SPA button gated `role==='admin'`, option (b); +regression test).
+
+---
+
+> **Moved from tech_debt.md 2026-07-14 (debt-zero triage):** RESOLVED 2026-07-01 (S1) — retire route + SPA button gated role==='admin' + regression test.
+
