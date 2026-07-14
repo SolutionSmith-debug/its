@@ -103,6 +103,49 @@ its interval via the dashboard → confirm `install.sh status <label>` shows the
 confirm the desync path by forcing a reinstall failure (e.g. a deliberately bad interval at the shell)
 and checking a `config_interval_reinstall_desync` WARN row lands.
 
+## Daemon control + circuit-breaker clear (Class B · elevated · Block 3)
+
+**Daemon control** — start / stop / kickstart an ITS daemon (`POST /act/daemon/control`). Allowlisted to
+any `org.solutionsmith.its.*.plist` present in `scripts/launchd/`, **minus the dashboard's own label** (a
+service must not stop itself via its own UI). It is launchctl process management only — the runtime
+`ITS_Config` gates still apply, so **starting a dark daemon does nothing** until its gate is on (no External
+Send Gate bypass). Elevated: re-PIN + type the exact label. Audits `config_daemon_control`.
+
+- `start` = `install.sh load <label>` · `stop` = `install.sh unload <label>` · `kickstart` =
+  `launchctl kickstart -k gui/<uid>/<label>` (restart a loaded daemon).
+- **"… is not a controllable ITS daemon"** — a non-ITS label, an absent plist, or the dashboard itself.
+  The allowlist is working. **Tier-2:** pick a listed daemon.
+- **"<action> <label> failed (exit …)"** — the launchctl op failed. **Tier-2:** run `install.sh status
+  <label>` to see the state; a stuck bootstrap/bootout is usually a plutil or already-booted condition —
+  retry, else **escalate**.
+
+**Circuit-breaker clear** — reset a stuck-OPEN breaker to CLOSED, skipping the cooldown
+(`POST /act/state/breaker-clear`). Read the current state in the **circuit breaker** panel first. Elevated:
+re-PIN + type `clear-breaker`. Audits `config_breaker_cleared`. **noop** if already CLOSED. The breaker also
+self-heals after its cooldown, so a clear is a convenience (skip the wait), not a repair of last resort.
+
+- **"breaker reset failed: …"** — the state-file write (or its lock acquire) failed — a permissions/disk
+  problem, or a `StateLockTimeoutError` because a daemon is mid-cycle writing the breaker. **Tier-2:** retry
+  in a few seconds (a lock contention clears itself); check `~/its/state/` is writable via the State-locks /
+  log-tail panels. If it recurs, **escalate to Seth** (a persistent disk/permissions fault is high-class).
+
+**State-locks are NOT clearable (by design).** The ITS lock model (`state_io.with_path_lock`) is a
+non-blocking `fcntl` flock on a persistent `<path>.lock` sidecar: a dead holder's flock is released by the
+OS instantly, and the sidecar file is intentionally left behind (existence ≠ held). So a lock the **State
+locks** panel shows as HELD is a genuinely-live holder — there is no stale artifact to clear, and
+force-removing a sidecar would not release the flock. If a daemon looks wedged on a lock, the repair is to
+**stop/kickstart that daemon** (above), not to touch its lock.
+
+## Send-queue panel (read-only) — the send lane stays human-in-loop
+
+The **Send queue** panel rolls up `Send Status` across the four review/approve/send sheets (WSR / WPR /
+PO / Subcontract pending-review): PENDING / HELD / SENT / FAILED counts per workstream. It is **read-only
+visibility** — the dashboard **never** approves, re-sends, or mutates a send row. Approving/sending stays at
+the review sheet + the two-process send daemons (the External Send Gate, Invariant 1). A HELD or FAILED
+count is a signal to look at that sheet, not something the dashboard acts on. **Any mutating send-lane verb
+(bulk-approve, resend-FAILED, clear-HELD) is a deliberate Seth decision — parked, not built** (D13: the send
+gate is never a dashboard action).
+
 ## Acceptance smoke (Developer-Operator — the DoD live toggle)
 
 Prove the write path end-to-end on the **mirror** (needs the PIN provisioned above):

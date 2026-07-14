@@ -68,10 +68,18 @@ def env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
 
     fake_sh = tmp_path / "install.sh"
     fake_sh.write_text("#!/bin/sh\n")
+    # A tmp launchd dir with fake ITS plists so controllable_labels() is hermetic
+    # (~/its may be absent on the CI runner). dashboard is present but must be
+    # EXCLUDED from the control allowlist.
+    launchd = tmp_path / "launchd"
+    launchd.mkdir()
+    for name in ("org.solutionsmith.its.po-poll", "org.solutionsmith.its.watchdog", "org.solutionsmith.its.dashboard"):
+        (launchd / f"{name}.plist").write_text("<plist/>")
     monkeypatch.setattr(ss, "get_rows", get_rows)
     monkeypatch.setattr(ss, "update_rows", update_rows)
     monkeypatch.setattr(el, "log", log)
     monkeypatch.setattr(daemon_ops, "_INSTALL_SH", fake_sh)
+    monkeypatch.setattr(daemon_ops, "LAUNCHD_DIR", launchd)
     monkeypatch.setattr(daemon_ops.subprocess, "run", fake_run)
     return state
 
@@ -185,3 +193,54 @@ def test_http_interval_label_allowlist_refused(env: dict[str, Any], monkeypatch:
     )
     assert "outcome-not_editable" in resp.text
     assert env["updates"] == [] and env["install_calls"] == []
+
+
+# ------------------------------------------------- daemon control (Block 3) ----
+def test_control_allowlist_refuses_non_its_absent_and_dashboard(env: dict[str, Any]) -> None:
+    # a non-ITS label, an absent plist, and the dashboard's OWN label are all refused
+    for bad in ("com.evil.daemon", "org.solutionsmith.its.nonexistent", "org.solutionsmith.its.dashboard"):
+        out = daemon_ops.control_daemon(bad, "kickstart", "op")
+        assert out.kind == "not_editable", bad
+    assert env["install_calls"] == []  # nothing shelled out for a refused label
+
+
+def test_control_bad_action_rejected(env: dict[str, Any]) -> None:
+    out = daemon_ops.control_daemon(_PO_POLL, "nuke", "op")
+    assert out.kind == "rejected"
+    assert env["install_calls"] == []
+
+
+def test_control_start_stop_kickstart_invoke_right_command(env: dict[str, Any]) -> None:
+    assert daemon_ops.control_daemon(_PO_POLL, "start", "op").kind == "ok"
+    assert env["install_calls"][-1][1:] == ["load", _PO_POLL]
+    assert daemon_ops.control_daemon(_PO_POLL, "stop", "op").kind == "ok"
+    assert env["install_calls"][-1][1:] == ["unload", _PO_POLL]
+    assert daemon_ops.control_daemon(_PO_POLL, "kickstart", "op").kind == "ok"
+    assert env["install_calls"][-1][0] == "launchctl" and "kickstart" in env["install_calls"][-1]
+    assert any(code == "config_daemon_control" for _, code in env["audits"])
+
+
+def test_control_failure_audited(env: dict[str, Any]) -> None:
+    env["rc"] = 2
+    out = daemon_ops.control_daemon(_PO_POLL, "start", "op")
+    assert out.kind == "error"
+    assert any(code == "config_daemon_control" for _, code in env["audits"])
+
+
+def test_read_control_state_excludes_dashboard(env: dict[str, Any]) -> None:
+    labels = {c["label"] for c in daemon_ops.read_control_state()}
+    assert _PO_POLL in labels and "org.solutionsmith.its.watchdog" in labels
+    assert "org.solutionsmith.its.dashboard" not in labels  # a service can't control itself
+
+
+def test_http_control_requires_elevated_confirm(env: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _client(monkeypatch)
+    # missing typed label → denied, nothing shelled out
+    resp = client.post("/act/daemon/control", data={"label": _PO_POLL, "action": "kickstart", "pin": "1234"})
+    assert "outcome-rejected" in resp.text and env["install_calls"] == []
+    # correct elevated ceremony → ok
+    resp2 = client.post(
+        "/act/daemon/control", data={"label": _PO_POLL, "action": "kickstart", "pin": "1234", "confirm": _PO_POLL}
+    )
+    assert "outcome-ok" in resp2.text
+    assert env["install_calls"][-1][0] == "launchctl"

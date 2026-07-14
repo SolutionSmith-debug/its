@@ -17,6 +17,7 @@ from operator_dashboard.sources.runtime_state import (
 from operator_dashboard.sources.smartsheet_panels import (
     ErrorsRecentSource,
     ReviewQueueDepthSource,
+    SendQueueSource,
 )
 from operator_dashboard.sources.watchdog_checks import WatchdogChecksSource
 
@@ -29,6 +30,7 @@ PANELS: list[DataSource] = [
     LogTailSource(),
     ErrorsRecentSource(),
     ReviewQueueDepthSource(),
+    SendQueueSource(),
 ]
 
 PANELS_BY_ID: dict[str, DataSource] = {p.panel_id: p for p in PANELS}

@@ -18,7 +18,7 @@ from typing import Any
 from fastapi import FastAPI, Form, Request, Response
 from fastapi.templating import Jinja2Templates
 
-from operator_dashboard.act import config_write, daemon_ops, secret_rotate
+from operator_dashboard.act import config_write, daemon_ops, secret_rotate, state_ops
 from operator_dashboard.act.config_write import (
     apply_edit,
     apply_elevated_edit,
@@ -54,10 +54,22 @@ def register_act_routes(app: FastAPI, templates: Jinja2Templates) -> None:
             intervals = daemon_ops.read_interval_state()
         except Exception:  # fail-soft: the interval panel degrades, page still renders
             intervals = []
+        controls: list[dict[str, Any]] = []
+        try:
+            controls = daemon_ops.read_control_state()
+        except Exception:  # fail-soft: the control panel degrades, page still renders
+            controls = []
         return templates.TemplateResponse(
             request,
             "config.html",
-            {"groups": groups, "error": error, "secrets": secrets, "display": display, "intervals": intervals},
+            {
+                "groups": groups,
+                "error": error,
+                "secrets": secrets,
+                "display": display,
+                "intervals": intervals,
+                "controls": controls,
+            },
         )
 
     @app.post("/act/config")
@@ -160,6 +172,54 @@ def register_act_routes(app: FastAPI, templates: Jinja2Templates) -> None:
         if result.kind == config_write.NOT_EDITABLE:
             audit_denied(operator, label, "", "not_editable")
         return _outcome(templates, request, result.kind, result.message, result.label, "")
+
+    @app.post("/act/daemon/control")
+    def act_daemon_control(
+        request: Request,
+        label: str = Form(...),
+        action: str = Form(...),
+        pin: str = Form(...),
+        confirm: str = Form(""),
+    ) -> Response:
+        # Class-B: start / stop / kickstart an allowlisted ITS daemon via launchctl.
+        # Elevated (re-PIN + typed label); the label allowlist + audit are in daemon_ops.
+        operator = getpass.getuser()
+        try:
+            check_origin(request.headers.get("origin"), request.headers.get("referer"))
+        except OriginError as exc:
+            audit_denied(operator, label, "", "origin")
+            return _outcome(templates, request, config_write.NOT_EDITABLE, f"refused: {exc}", label, "")
+        try:
+            verify_elevated(pin, confirm, expected=label)
+        except PinError as exc:
+            audit_denied(operator, label, "", "elevated")
+            return _outcome(templates, request, config_write.REJECTED, f"denied: {exc}", label, "")
+        result = daemon_ops.control_daemon(label, action, operator)
+        if result.kind == config_write.NOT_EDITABLE:
+            audit_denied(operator, label, "", "not_editable")
+        return _outcome(templates, request, result.kind, result.message, result.label, "")
+
+    @app.post("/act/state/breaker-clear")
+    def act_breaker_clear(
+        request: Request,
+        pin: str = Form(...),
+        confirm: str = Form(""),
+    ) -> Response:
+        # Class-B: reset the circuit breaker to CLOSED (skip cooldown). No per-target
+        # name to type, so the fixed confirmation phrase is "clear-breaker".
+        operator = getpass.getuser()
+        try:
+            check_origin(request.headers.get("origin"), request.headers.get("referer"))
+        except OriginError as exc:
+            audit_denied(operator, "circuit_breaker", "", "origin")
+            return _outcome(templates, request, "refused", f"refused: {exc}", "circuit_breaker", "")
+        try:
+            verify_elevated(pin, confirm, expected="clear-breaker")
+        except PinError as exc:
+            audit_denied(operator, "circuit_breaker", "", "elevated")
+            return _outcome(templates, request, config_write.REJECTED, f"denied: {exc}", "circuit_breaker", "")
+        result = state_ops.clear_circuit_breaker(operator)
+        return _outcome(templates, request, result.kind, result.message, "circuit_breaker", "")
 
 
 def _outcome(
