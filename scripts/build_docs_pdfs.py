@@ -3,7 +3,7 @@
 Reads ``docs/enablement/manifest.yaml`` (via ``docs_pdf.manifest``) and renders each
 listed guide to a branded PDF (``docs_pdf.md_render``) under a GITIGNORED build directory
 (default ``docs/_build_pdf/``). The canonical distributable copy is the Box upload (D2-3,
-not built here) — the repo never commits the rendered binaries.
+``--upload``, dark-gated below) — the repo never commits the rendered binaries.
 
 Each manual's footer carries ``title · version · git-SHA · page N of M``; the git SHA is
 ``git rev-parse --short HEAD`` at build time (degrades to ``unknown`` off a git tree), so a
@@ -15,7 +15,7 @@ CLI
     python -m scripts.build_docs_pdfs --all              # render every manifest doc
     python -m scripts.build_docs_pdfs --doc fieldops_checklists   # one doc (key OR source path)
     python -m scripts.build_docs_pdfs --check            # doc-currency: flag drifted sources
-    python -m scripts.build_docs_pdfs --upload           # D2-3 stub (prints, does nothing)
+    python -m scripts.build_docs_pdfs --upload           # D2-3 Box publish (DARK unless enabled)
     python -m scripts.build_docs_pdfs --all --out /tmp/x # override the output directory
 
 ``--check`` recomputes each source's SHA-256 and compares to the manifest's recorded value,
@@ -24,8 +24,11 @@ manifest sha being re-recorded (a re-render + re-seed is owed). Intended to be w
 warn-only in CI (wrap with ``|| echo "::warning::…"`` like the regen step) — the non-zero
 is a signal, not a hard gate, during the docs-program build-out.
 
-Not built here (deliberately, per the D2 slice split): the Box publish leg (``--upload`` is
-a stub) is D2-3; the ITS Owner's Manual + generated ITS_Config data dictionary are D2-2.
+``--upload`` (D2-3) renders every manifest doc then uploads it to the Box folder named by
+``docs_pdf.upload.box_folder_id`` (version-on-conflict, so a re-publish updates rather than
+duplicates) — but only when ``docs_pdf.upload.enabled`` is true in ITS_Config. Both keys
+default to absent → DARK (HOUSE_REFLEXES §5); first activation is the operator's. Still not
+built here (D2-2): the ITS Owner's Manual + generated ITS_Config data dictionary.
 """
 from __future__ import annotations
 
@@ -37,9 +40,21 @@ from pathlib import Path
 from docs_pdf import manifest as _manifest
 from docs_pdf.manifest import Manifest, ManifestEntry, ManifestError
 from docs_pdf.md_render import render_markdown_to_pdf_bytes
+from shared import box_client, smartsheet_client
 
 REPO_ROOT = _manifest.REPO_ROOT
 DEFAULT_OUT_DIR = REPO_ROOT / "docs" / "_build_pdf"
+
+# D2-3 Box publish leg — SHIPS DARK. `--upload` renders every manifest doc then uploads it
+# (version-on-conflict, so a re-publish updates the Box file rather than duplicating) to the
+# folder named by `docs_pdf.upload.box_folder_id`, but ONLY when `docs_pdf.upload.enabled` is
+# true in ITS_Config. Both DEFAULT to absent → dark (HOUSE_REFLEXES §5). First activation is
+# the operator's: seed the folder id, then flip enabled=true. NOT read by any daemon (CLI
+# only), so these keys are intentionally outside the #336 REQUIRED_CONFIG / config-dictionary
+# surface.
+CFG_UPLOAD_WORKSTREAM = "docs_pdf"
+CFG_UPLOAD_ENABLED = "docs_pdf.upload.enabled"
+CFG_UPLOAD_FOLDER_ID = "docs_pdf.upload.box_folder_id"
 
 
 def resolve_git_sha() -> str:
@@ -96,6 +111,66 @@ def build_entries(entries: list[ManifestEntry], out_dir: Path, git_sha: str) -> 
     return 1 if failures else 0
 
 
+def _upload_enabled() -> bool:
+    """True only if `docs_pdf.upload.enabled` is an affirmative ITS_Config value.
+
+    Absent/malformed/unreachable → False (dark). A publish leg must never fail OPEN to an
+    upload; the gate is the operator's deliberate flip.
+    """
+    try:
+        raw = smartsheet_client.get_setting(CFG_UPLOAD_ENABLED, workstream=CFG_UPLOAD_WORKSTREAM)
+    except smartsheet_client.SmartsheetError:
+        return False
+    return isinstance(raw, str) and raw.strip().lower() in ("true", "1", "yes", "on")
+
+
+def _upload_folder_id() -> str | None:
+    """The configured Box folder id for the publish, or None if unset."""
+    try:
+        raw = smartsheet_client.get_setting(CFG_UPLOAD_FOLDER_ID, workstream=CFG_UPLOAD_WORKSTREAM)
+    except smartsheet_client.SmartsheetError:
+        return None
+    return raw.strip() if isinstance(raw, str) and raw.strip() else None
+
+
+def run_upload(man: Manifest, out_dir: Path, git_sha: str) -> int:
+    """D2-3 publish leg: render every manifest doc then upload it to Box (dark-gated).
+
+    Returns a process exit code: 0 when dark (nothing to do, loud message) or all uploaded;
+    2 when enabled-but-misconfigured (no folder id); 1 on any per-doc upload failure.
+    """
+    if not _upload_enabled():
+        print(
+            f"Box upload is DARK — {CFG_UPLOAD_ENABLED} (workstream {CFG_UPLOAD_WORKSTREAM}) is not "
+            "true. Nothing uploaded. To publish: seed "
+            f"{CFG_UPLOAD_FOLDER_ID}=<box folder id> and flip {CFG_UPLOAD_ENABLED}=true in ITS_Config."
+        )
+        return 0
+    folder_id = _upload_folder_id()
+    if not folder_id:
+        print(
+            f"{CFG_UPLOAD_ENABLED} is true but {CFG_UPLOAD_FOLDER_ID} is unset — cannot publish "
+            "without a target Box folder.",
+            file=sys.stderr,
+        )
+        return 2
+
+    failures = 0
+    for entry in man.entries:
+        try:
+            out_path = render_entry(entry, out_dir, git_sha)
+            result = box_client.upload_bytes_or_new_version(
+                folder_id, out_path.name, out_path.read_bytes()
+            )
+            print(f"uploaded {entry.key:24s} → Box file {result.get('id', '?')} ({out_path.name})")
+        except (FileNotFoundError, OSError, ValueError, box_client.BoxError) as exc:
+            failures += 1
+            print(f"FAILED   {entry.key:24s} — {exc}", file=sys.stderr)
+    if failures:
+        print(f"\n{failures} doc(s) failed to upload.", file=sys.stderr)
+    return 1 if failures else 0
+
+
 def run_check(man: Manifest) -> int:
     """Doc-currency check: flag any source that drifted from its recorded SHA-256.
 
@@ -139,15 +214,11 @@ def main(argv: list[str] | None = None) -> int:
     mode.add_argument("--check", action="store_true",
                       help="doc-currency: flag sources drifted from their recorded sha256")
     mode.add_argument("--upload", action="store_true",
-                      help="Box publish leg — stub only (D2-3, not built)")
+                      help="Box publish leg (D2-3) — render + upload every doc; DARK unless "
+                           "docs_pdf.upload.enabled=true in ITS_Config")
     parser.add_argument("--out", metavar="DIR", default=None,
                         help=f"output directory (default: {DEFAULT_OUT_DIR.relative_to(REPO_ROOT)})")
     args = parser.parse_args(argv)
-
-    if args.upload:
-        print("Box upload is D2-3, not built. This slice (D2-1) renders manuals locally to "
-              f"{DEFAULT_OUT_DIR.relative_to(REPO_ROOT)}/ only.")
-        return 0
 
     try:
         man = _manifest.load_manifest()
@@ -160,6 +231,9 @@ def main(argv: list[str] | None = None) -> int:
 
     out_dir = Path(args.out).resolve() if args.out else DEFAULT_OUT_DIR
     git_sha = resolve_git_sha()
+
+    if args.upload:
+        return run_upload(man, out_dir, git_sha)
 
     if args.doc:
         entry = _select_one(man, args.doc)
