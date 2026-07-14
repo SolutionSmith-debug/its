@@ -67,7 +67,13 @@ def create_app() -> FastAPI:
 
     @app.get("/healthz", response_class=PlainTextResponse)
     def healthz() -> str:
-        return "ok"
+        # Enriched so a KeepAlive prober / operator sees something meaningful: the
+        # editable-registry size, rotatable-secret count, and panels loaded. Still
+        # a 200 text/plain — the launchd KeepAlive only needs the process alive,
+        # but the counts confirm the app booted with its registries intact.
+        from operator_dashboard.act.registry import REGISTRY, SECRETS
+
+        return f"ok\nregistry_keys={len(REGISTRY)}\nsecrets={len(SECRETS)}\npanels={len(PANELS)}"
 
     # --- D1-2 ACT surface -------------------------------------------------
     # The Class-A runtime config editor: GET /config (read) + POST /act/config

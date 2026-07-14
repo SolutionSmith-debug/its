@@ -246,3 +246,60 @@ class SendQueueSource(DataSource):
             columns=["workstream", "status", "count"],
             rows=rows,
         )
+
+
+# The ACT audit trail — every config edit / secret rotation / daemon control /
+# denial the dashboard itself performed lands in ITS_Errors under the config
+# editor's own Script name. Surfacing it HERE (read-only) puts accountability
+# where the actions happen. Values are already redacted by error_log at write
+# (secret rotations name the KEY only, never a value); every cell is re-redacted
+# + escaped on render (Invariant 2).
+_ACT_SCRIPT = "operator_dashboard.config_editor"
+MAX_AUDIT_ROWS = 20
+
+
+class AuditTrailSource(DataSource):
+    panel_id = "act_audit"
+    title = "ACT audit — recent config actions"
+
+    def _load(self) -> list[dict[str, Any]]:
+        ss: Any = importlib.import_module("shared.smartsheet_client")
+        sid: Any = importlib.import_module("shared.sheet_ids")
+        rows = ss.get_rows(sid.SHEET_ERRORS)
+        act = [r for r in rows if str(r.get("Script") or "") == _ACT_SCRIPT]
+        return act[-MAX_AUDIT_ROWS:]
+
+    def _fetch(self) -> PanelResult:
+        rows_raw = cached("act_audit", SMARTSHEET_TTL_SECONDS, self._load)
+        if not rows_raw:
+            return PanelResult(
+                panel_id=self.panel_id, title=self.title, summary="no ACT actions yet",
+                severity=SEV_OK, columns=[], rows=[],
+            )
+        keys = list(dict.fromkeys(k for r in rows_raw for k in r))
+        columns: list[str] = [k for k in ("Error", "Message", "Severity") if k in keys] or [
+            k for k in keys if k != "_row_id"
+        ][:3]
+        rows: list[dict[str, str]] = []
+        denials = 0
+        for raw in reversed(rows_raw):  # newest first
+            code = str(raw.get("Error") or "")
+            sev = str(raw.get("Severity") or "").upper()
+            if sev == "CRITICAL":
+                row_sev = SEV_ERROR
+            elif code == "config_denied":
+                row_sev, denials = SEV_WARN, denials + 1
+            else:
+                row_sev = SEV_INFO
+            row: dict[str, str] = {c: clean(raw.get(c)) for c in columns}
+            row["_sev"] = row_sev
+            rows.append(row)
+        summary = f"{len(rows)} recent" + (f" · {denials} denied" if denials else "")
+        return PanelResult(
+            panel_id=self.panel_id,
+            title=self.title,
+            summary=summary,
+            severity=SEV_WARN if denials else SEV_INFO,
+            columns=columns,
+            rows=rows,
+        )

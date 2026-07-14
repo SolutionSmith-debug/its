@@ -1,15 +1,24 @@
 :root {
-  --bg: #0f1419;
-  --panel: #171d26;
-  --panel-head: #1e2631;
-  --border: #2a3441;
-  --text: #d7dee7;
-  --muted: #8a97a6;
-  --ok: #3fb950;
+  /* Evergreen brand — British Racing Green + gold. Chrome (topbar, buttons,
+     wordmark) uses the --brand-* vars; --ok/--warn/--error stay SEMANTIC status
+     colors, kept deliberately distinct so a green "ok" panel never reads as
+     brand chrome. Single fixed dark theme (an operator tool, not a public page). */
+  --brand-green:      #0a3d2c;  /* British Racing Green — topbar, primary buttons */
+  --brand-green-deep: #06281c;  /* deeper — gradient foot, elevated buttons */
+  --brand-gold:       #c9a227;  /* gold — borders, wordmark, accents */
+  --brand-gold-soft:  #e6c86a;  /* lighter gold — text on green */
+
+  --bg: #0b120e;            /* near-black green */
+  --panel: #111a15;
+  --panel-head: #16241c;    /* deep green-grey */
+  --border: #24382c;
+  --text: #e7ede9;          /* warm off-white */
+  --muted: #93a89c;
+  --ok: #3fb950;            /* status green (distinct from the deep brand green) */
   --info: #58a6ff;
-  --warn: #d29922;
-  --error: #f85149;
-  --unavailable: #6e7681;
+  --warn: #d8a92e;          /* status amber/gold */
+  --error: #f0655c;
+  --unavailable: #6e7d74;
 }
 * { box-sizing: border-box; }
 body {
@@ -20,20 +29,37 @@ body {
 }
 .topbar {
   position: sticky; top: 0; z-index: 5;
-  display: flex; align-items: center; gap: 12px;
-  padding: 10px 18px;
-  background: var(--panel-head);
-  border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; gap: 14px;
+  padding: 10px 20px;
+  background: linear-gradient(180deg, var(--brand-green) 0%, var(--brand-green-deep) 100%);
+  border-bottom: 2px solid var(--brand-gold);
 }
-.topbar h1 { font-size: 16px; margin: 0; font-weight: 600; }
+/* Crest slot — a typographic monogram PLACEHOLDER. Replace with the real
+   Evergreen crest: drop static/crest.svg in place + swap this span for
+   <img src="/static/crest.svg" class="crest" alt="Evergreen Renewables">. */
+.crest {
+  width: 30px; height: 30px; flex: none; display: grid; place-items: center;
+  border: 1.5px solid var(--brand-gold); border-radius: 50%;
+  color: var(--brand-gold-soft); font-weight: 700; font-size: 13px;
+  font-family: Georgia, "Times New Roman", serif;
+}
+.wordmark { display: flex; flex-direction: column; line-height: 1.18; }
+.wordmark .wm-its {
+  font-weight: 700; font-size: 16px; letter-spacing: .06em; color: #fff;
+  font-family: Georgia, "Times New Roman", serif;
+}
+.wordmark .wm-full { color: var(--brand-gold-soft); font-weight: 500; }
+.wordmark .brand-sub {
+  font-size: 10.5px; color: var(--brand-gold); letter-spacing: .16em; text-transform: uppercase;
+}
 .badge.readonly {
-  font-size: 11px; text-transform: uppercase; letter-spacing: .05em;
-  color: var(--ok); border: 1px solid var(--ok); border-radius: 4px;
-  padding: 2px 6px;
+  font-size: 10px; text-transform: uppercase; letter-spacing: .08em;
+  color: var(--brand-gold-soft); border: 1px solid var(--brand-gold);
+  border-radius: 4px; padding: 2px 7px; background: rgba(0, 0, 0, .15);
 }
 .topbar .host {
-  margin-left: auto; color: var(--muted);
-  font-family: ui-monospace, SFMono-Regular, monospace; font-size: 12px;
+  margin-left: 14px; color: var(--brand-gold-soft);
+  font-family: ui-monospace, SFMono-Regular, monospace; font-size: 12px; opacity: .85;
 }
 main { padding: 16px; }
 .grid {
@@ -93,12 +119,12 @@ tr.sev-info td:first-child { color: var(--info); }
 }
 
 /* --- nav --- */
-.topnav { display: flex; gap: 14px; }
+.topnav { display: flex; gap: 12px; margin-left: auto; }
 .topnav a {
-  color: var(--muted); text-decoration: none; font-size: 13px;
-  padding: 3px 8px; border-radius: 4px;
+  color: var(--brand-gold-soft); text-decoration: none; font-size: 13px;
+  padding: 4px 10px; border-radius: 4px; border: 1px solid transparent;
 }
-.topnav a:hover { color: var(--text); background: var(--panel); }
+.topnav a:hover { color: #fff; border-color: var(--brand-gold); background: rgba(0, 0, 0, .18); }
 
 /* --- config editor --- */
 .config-editor { max-width: 1100px; margin: 0 auto; }
@@ -141,12 +167,13 @@ tr.sev-info td:first-child { color: var(--info); }
   background: var(--bg); color: var(--text); border: 1px solid var(--border);
   border-radius: 4px; padding: 4px 6px; width: 70px; font-size: 12px;
 }
+/* Primary button — Evergreen standard: green bg + white text + gold border. */
 .cfg-btn {
-  background: var(--ok); color: #0f1419; border: 1px solid var(--ok);
-  border-radius: 4px; padding: 4px 12px; font-weight: 600; cursor: pointer;
-  font-size: 12px;
+  background: var(--brand-green); color: #fff; border: 1px solid var(--brand-gold);
+  border-radius: 5px; padding: 5px 13px; font-weight: 600; cursor: pointer;
+  font-size: 12px; letter-spacing: .01em;
 }
-.cfg-btn:hover { filter: brightness(1.1); }
+.cfg-btn:hover { background: var(--brand-green-deep); border-color: var(--brand-gold-soft); }
 .outcome { font-size: 12px; }
 .outcome-applied, .outcome-rotated, .outcome-ok { color: var(--ok); }
 .outcome-noop { color: var(--muted); }
@@ -155,14 +182,34 @@ tr.sev-info td:first-child { color: var(--info); }
 
 /* --- D1-3 elevated / secret rotation --- */
 .tier-b {
-  font-size: 10px; font-weight: 700; color: var(--warn);
-  border: 1px solid var(--warn); border-radius: 3px; padding: 0 4px; vertical-align: middle;
+  font-size: 10px; font-weight: 700; color: var(--brand-gold-soft);
+  border: 1px solid var(--brand-gold); border-radius: 3px; padding: 0 5px; vertical-align: middle;
+  background: rgba(201, 162, 39, .1);
 }
 .cfg-confirm {
-  background: var(--bg); color: var(--text); border: 1px dashed var(--warn);
-  border-radius: 4px; padding: 4px 6px; font-size: 12px; min-width: 150px;
+  background: rgba(201, 162, 39, .06); color: var(--text); border: 1px dashed var(--brand-gold);
+  border-radius: 4px; padding: 4px 8px; font-size: 12px; min-width: 170px;
   font-family: ui-monospace, monospace;
 }
-.cfg-btn.elevated { background: var(--warn); border-color: var(--warn); }
-.attest { font-size: 11px; color: var(--warn); display: inline-flex; align-items: center; gap: 4px; }
+.cfg-confirm:focus {
+  outline: none; border-style: solid; border-color: var(--brand-gold-soft);
+  box-shadow: 0 0 0 2px rgba(201, 162, 39, .25);
+}
+/* Elevated (Class B/C) button — the ceremony weight: deep green + a thicker gold
+   ring, visibly heavier than the light Class-A apply. The contrast IS the design. */
+.cfg-btn.elevated {
+  background: var(--brand-green-deep); color: var(--brand-gold-soft);
+  border: 2px solid var(--brand-gold); font-weight: 700; padding: 4px 12px;
+}
+.cfg-btn.elevated:hover { background: #000; color: #fff; border-color: var(--brand-gold-soft); }
+.attest { font-size: 11px; color: var(--brand-gold-soft); display: inline-flex; align-items: center; gap: 4px; }
+
+/* Irreversibility note on the Secret-rotation ceremony — unmissable (red rail on
+   a gold-bordered card). Write-only rotation cannot be undone from the dashboard. */
+.rotate-warn {
+  color: var(--brand-gold-soft); border: 1px solid var(--brand-gold);
+  border-left: 3px solid var(--error); border-radius: 6px;
+  background: rgba(240, 101, 92, .06); padding: 8px 12px; font-size: 12px; margin: 10px 0;
+}
+.rotate-warn b { color: var(--error); }
 .guided-note { color: var(--warn); font-size: 12px; }

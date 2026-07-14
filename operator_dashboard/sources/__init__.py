@@ -15,6 +15,7 @@ from operator_dashboard.sources.runtime_state import (
     LocksSource,
 )
 from operator_dashboard.sources.smartsheet_panels import (
+    AuditTrailSource,
     ErrorsRecentSource,
     ReviewQueueDepthSource,
     SendQueueSource,
@@ -31,6 +32,7 @@ PANELS: list[DataSource] = [
     ErrorsRecentSource(),
     ReviewQueueDepthSource(),
     SendQueueSource(),
+    AuditTrailSource(),
 ]
 
 PANELS_BY_ID: dict[str, DataSource] = {p.panel_id: p for p in PANELS}
