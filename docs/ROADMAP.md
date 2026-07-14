@@ -107,6 +107,7 @@ Phase-1.4 residue = Paid-plan-or-PBKDF2 verdict + WAF `/api/login` rate-limit + 
 v10 amendment: Tier-2 clearance moves post-delivery, D17). Attachment screening Layers 1-3 for *email* stays
 Email-Triage-owned (unchanged).
 WS4 operator artifacts (landed): `docs/operations/host_migration_runbook.md` · `cutover_checklist.md` v2 + `scripts/verify_cutover.py` (§53 gate) · `production_rollback.md` · `aug7_delivery_runbook.md`.
+**WS2 operator dashboard — COMPLETE (2026-07-13).** All six completion blocks landed four-part clean: config-registry reconcile to the post-SC/PO surface (#567), D1-3b KeepAlive-service plist + interval-edit verb (#570), daemon-control + breaker-clear verbs + read-only send-queue panel (#574), Evergreen brand pass + audit-panel/lockout-UX/`/healthz` hardening (#576), and the activation kit + close-out. The six §44 actions are built; ships **DARK** pending the operator's one-time PIN + `tailscale_serve.sh` → plist-install activation (`docs/runbooks/operator_dashboard_config_editor.md` quick-start).
 
 ---
 

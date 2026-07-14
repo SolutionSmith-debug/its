@@ -8,6 +8,25 @@ When to add an entry: a session deliberately chooses preservation-over-refactor 
 
 **Cutover triage:** every open entry below is **post-delivery** unless its header is prefixed **`[CUTOVER-BLOCKING]`** (must resolve before the Aug-7 production cutover). The authoritative cutover gate is `docs/operations/cutover_checklist.md` (CL-01…CL-39) + `scripts/verify_cutover.py`, not these tags — the tags are prioritization only.
 
+## WS2 operator dashboard — completion parked items [OPEN 2026-07-13]
+
+From the dashboard-completion session (Blocks 1-5 landed #567/#570/#574/#576). None blocks the ship; each
+is a deliberate scope line:
+
+- **WS2-1 (operator, cosmetic) — crest is a placeholder.** The topbar crest slot is a typographic "E"
+  monogram, not the real Evergreen crest. Trigger: Seth exports the crest from Canva → drop
+  `operator_dashboard/static/crest.svg` + swap the `.crest` span for `<img>` (the CSS comment marks the spot).
+- **WS2-2 (doc-sync) — CLAUDE.md "stubbed vs real" dashboard row is stale.** It still reads "No launchd plist
+  yet (D1-3b)"; the plist + the six §44 verbs now exist. Parked (CLAUDE.md was a high-contention shared file the
+  sibling session was also editing) — fold into the next doc-reconciliation pass. Same for the
+  `scripts/verify_cutover.py` "no plist yet" comment.
+- **WS2-3 (doc-sync) — the enablement guide predates Blocks 2-5.** `docs/enablement/operator_dashboard.md`
+  (#572) documents D1-x only; it needs a delta for the launchd service, the interval-edit / daemon-control /
+  breaker-clear verbs, the send-queue + audit panels, and the brand. Trigger: the next A8 enablement pass.
+- **WS2-4 (Seth decision, by design) — no mutating send-lane verb.** The send-queue panel is read-only;
+  bulk-approve / resend-FAILED / clear-HELD are deliberately NOT built (D13). Trigger: an explicit operator
+  decision to expose a send-lane action (would need its own adversarial review).
+
 ## PO attachments (Feature B) — conscious deferrals [OPEN 2026-07-13]
 
 From the Feature-B build (PO document attachments — the §34 doc-attachment pool → Mac screen →

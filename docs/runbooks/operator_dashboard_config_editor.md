@@ -23,6 +23,38 @@ constant-time compare, **fails closed** — a missing/locked keychain DENIES) an
 **Origin allowlist** (localhost + `ITS_DASH_ALLOWED_ORIGINS`). Every applied edit and every
 escalation writes a durable audit row to `ITS_Errors` (`error_code=config_audit`, WARN).
 
+## Activation quick-start (Developer-Operator — ~10 minutes, one-time)
+
+All four steps are **high-class** (secret + service), so Seth runs them; a Tier-2 operator never does.
+Detail for each is in the sections below.
+
+1. **Provision the PIN** (a STRONG one, not 4-digit):
+   `security add-generic-password -a "$USER" -s ITS_OPERATOR_PIN -w`
+2. **Derive the Tailscale origin + set it in the plist** (a launchd service does NOT inherit shell env):
+   run `operator_dashboard/tailscale_serve.sh` and follow its printed `PlistBuddy` + reload commands (it
+   sets `ITS_DASH_ALLOWED_ORIGINS` in the installed plist for THIS host).
+3. **Install the service** (KeepAlive; non-interval → the generic path):
+   `scripts/launchd/install.sh load org.solutionsmith.its.dashboard`, then confirm
+   `install.sh status org.solutionsmith.its.dashboard` shows it running.
+4. **Expose over Tailscale:** `tailscale serve --bg 8484` (never a public interface).
+
+**Acceptance smokes** (need the PIN + a live write — the DoD; details in the sections below):
+- **Class-A** (D1-2): toggle `safety_reports.intake.box_filing_enabled` off→on → outcome **applied** + the
+  `ITS_Config` cell flip + a `config_audit` WARN row.
+- **Class-B elevated** (D1-3): edit `safety_reports.intake.mailbox` via the elevated form → cell changed +
+  `config_audit_elevated`.
+- **Class-C rotation** (D1-3): rotate a low-stakes Keychain entry → the audit row carries **no value**
+  (`config_secret_rotated`); the Box refresh token goes via the guided quiesce flow only.
+- **Interval verb** (D1-3b): change a low-risk daemon's interval → `install.sh status` shows the new
+  `StartInterval` + a `config_interval_edited` row.
+- **Daemon control** (Block 3): kickstart a daemon → `config_daemon_control`.
+- **Circuit-breaker clear** (Block 3): reset a (test-)OPEN breaker → `config_breaker_cleared`.
+- Confirm the **ACT audit panel** (status page) then shows all of the above.
+
+Expected audit codes (all Script `operator_dashboard.config_editor`, all WARN unless noted): `config_audit`,
+`config_audit_elevated`, `config_secret_rotated`, `config_interval_edited`, `config_daemon_control`,
+`config_breaker_cleared`; denials → `config_denied`; a brute-force lockout → `config_pin_lockout` (CRITICAL).
+
 ## Activation (Developer-Operator, one-time — HIGH-CLASS, not a Tier-2 step)
 
 The PIN is a **secret** → provisioning/rotating it is a FIXED high-capability action (Op Stds
@@ -145,6 +177,11 @@ the review sheet + the two-process send daemons (the External Send Gate, Invaria
 count is a signal to look at that sheet, not something the dashboard acts on. **Any mutating send-lane verb
 (bulk-approve, resend-FAILED, clear-HELD) is a deliberate Seth decision — parked, not built** (D13: the send
 gate is never a dashboard action).
+
+The **ACT audit panel** (status page) is likewise read-only — it shows the dashboard's own recent config
+edits / rotations / daemon controls / denials (ITS_Errors rows for Script `operator_dashboard.config_editor`).
+Like every panel it is **fail-soft**: a missing token / dead read degrades it to "unavailable — &lt;exc&gt;",
+which is **expected and benign**, not a fault to escalate.
 
 ## Acceptance smoke (Developer-Operator — the DoD live toggle)
 
