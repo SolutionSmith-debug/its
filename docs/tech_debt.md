@@ -160,13 +160,95 @@ is a deliberate scope line:
 - **WS2-2 (doc-sync) — CLAUDE.md "stubbed vs real" dashboard row is stale.** It still reads "No launchd plist
   yet (D1-3b)"; the plist + the six §44 verbs now exist. Parked (CLAUDE.md was a high-contention shared file the
   sibling session was also editing) — fold into the next doc-reconciliation pass. Same for the
-  `scripts/verify_cutover.py` "no plist yet" comment.
+  `scripts/verify_cutover.py` "no plist yet" comment. **Re-confirmed still stale 2026-07-14** (session-close
+  maintenance pass): `grep operator_dashboard CLAUDE.md` still shows the "No launchd plist yet (D1-3b)" line,
+  while `launchctl list` shows `org.solutionsmith.its.dashboard` genuinely loaded and running (PID present) —
+  the plist is on disk at `scripts/launchd/org.solutionsmith.its.dashboard.plist` and installed. Not fixed here
+  (doc-only touch is in scope for the next doc-reconciliation pass, not a mid-session edit to a file another
+  session may be concurrently touching).
 - **WS2-3 (doc-sync) — the enablement guide predates Blocks 2-5.** `docs/enablement/operator_dashboard.md`
   (#572) documents D1-x only; it needs a delta for the launchd service, the interval-edit / daemon-control /
   breaker-clear verbs, the send-queue + audit panels, and the brand. Trigger: the next A8 enablement pass.
 - **WS2-4 (Seth decision, by design) — no mutating send-lane verb.** The send-queue panel is read-only;
   bulk-approve / resend-FAILED / clear-HELD are deliberately NOT built (D13). Trigger: an explicit operator
   decision to expose a send-lane action (would need its own adversarial review).
+
+## WS2 dashboard clear-error-log verb (#587/#591/#594) + live error-chase findings [OPEN 2026-07-14]
+
+Session that shipped #587 (back-nav banner-extension), #591 (11-row `ITS_Config` migration seed), and #594
+(the Class-B dashboard clear-error-log verb, `shared/errors_rotation.py`), plus a manual forensic wipe of
+`ITS_Errors` (6,249 → 217: 215 open CRITICALs + 2 `errors_log_cleared` audit rows preserved) and a live
+error-chase over the remainder. Findings from the chase, not yet actioned:
+
+- **DASH-5 (HIGH / P1, Seth) — both out-of-band CRITICAL-alert legs are down.** `ITS_RESEND_API_KEY` is
+  present in Keychain but **invalid** (401 on send) and `ITS_SENTRY_DSN` is present but **empty** (`BadDsn`)
+  — found live during this session's error-chase. `shared/error_log.py`'s triple-fire is therefore
+  **local-`ITS_Errors`-record-only** right now: a real CRITICAL still gets recorded (the forensic leg holds)
+  but does **not** page the operator via Resend and does **not** land in Sentry. This is a secrets/credential
+  surface — one of the four FIXED §44 high-capability classes — so it is **Seth-owned rotation, not
+  autonomously actionable**; flagging rather than touching Keychain. Trigger: next Keychain/secrets session,
+  or before relying on out-of-band paging for anything cutover-adjacent (the watchdog's UptimeRobot dead-man
+  switch is the only alert path currently proven live).
+- **DASH-6 (LOW, operator/dev) — `config_actuator`'s broad `except Exception` sites make root-causing an
+  incident slower than it should be.** `po_materials/config_actuator.py` carries a dozen-plus
+  `except Exception as exc:  # noqa: BLE001` sites (deliberately broad, per their own comments — "any
+  actuation failure is terminal+alerted", "never wedge the cycle"). This session's chase of a
+  `config_actuator`-attributed `ITS_Errors` row needed a source read to conclude it was benign (a gate
+  flipped before its matching Worker secret/route was deployed — see the activation lesson below), rather
+  than being legible from the error message/error_code alone. Not urgent (the incident was genuinely benign
+  and the broad catches are individually justified), but a pass to give each site a more specific
+  `error_code`/message would make the next incident self-diagnosing from the `ITS_Errors` row alone. Trigger:
+  next `config_actuator` touch, or a recurrence of an unlabeled `config_actuator` error.
+- **DASH-7 (Seth, Send-Gate-adjacent) — `po_send`/`po_send_poll` lane needs reconciliation: config-ahead-of-
+  deploy.** The chase found an `ITS_Daemon_Health`/watchdog signal reading "`po_send_poll` (no marker)" —
+  i.e., the daemon has never actually run — while `po_materials.po_send.polling_enabled` reads **`True`**
+  live (diverging from the `false` value `scripts/migrations/seed_po_materials_config.py` seeds and from the
+  `docs/tech_debt.md` CO-1 entry's description of the current state). Independently confirmed via
+  `launchctl list` + `~/Library/LaunchAgents/`: **no `org.solutionsmith.its.po-send*` plist is installed or
+  loaded** — only the template exists on disk at `scripts/launchd/org.solutionsmith.its.po-send.plist`. This
+  matches the intentional `VC-02 DARK_UNLOADED_LABELS` cutover posture (`po-send` stays launchd-unloaded), but
+  if the *config gate* has genuinely drifted to `True` while the daemon stays unloaded, that's a live
+  discrepancy between "what config says should be sending" and "what's actually running" — worth an explicit
+  Seth reconciliation (confirm the live cell value, then either re-flip it to `false` to match the sandbox-dark
+  posture, or install+load the plist if PO send is now intentionally being activated). External Send Gate is a
+  FIXED §44 high-capability class — not actioned autonomously. Trigger: next PO-send-path session, or before
+  any live PO send is expected to actually fire.
+- **DASH-8 (post-delivery, WS2 follow-up) — dashboard has no "mark this CRITICAL resolved" verb.** The new
+  `clear_error_log` (#594) only *deletes* terminal rows (INFO/WARN/ERROR/already-resolved-CRITICAL) — it
+  structurally never touches an open CRITICAL (blank `Resolved At`), by design (Check B's "am I on fire"
+  surface). There is still no dashboard-side way to stamp an open CRITICAL's `Resolved At` after a human
+  confirms it's handled — the only path today is a direct Smartsheet cell edit. A Class-B "mark resolved"
+  verb (single row or bulk, PIN-gated, audit-trailed) is a natural next slice once the operator wants it.
+  Trigger: operator requests a resolve-in-dashboard action, or the open-CRITICAL backlog (see DASH-9) makes
+  manual Smartsheet triage too slow.
+- **DASH-9 (operator) — 215 open-CRITICAL backlog in `ITS_Errors` needs a triage pass.** The forensic wipe
+  correctly preserved every open CRITICAL (never auto-deleted), but that leaves **215 open-CRITICAL rows**
+  sitting in `ITS_Errors` post-wipe — most are believed to be storm-era noise from the 2026-07-13 row-cap
+  incident (the same `config_row_missing` firehose that filled the sheet to its 20k cap), but none have been
+  individually confirmed-benign-and-closed. Watchdog Check B (open-CRITICALs) is reading this backlog as
+  "215 things on fire" every cycle. Trigger: an operator (or DASH-8, once built) pass to review and stamp
+  `Resolved At` on the confirmed-stale rows; don't let this silently normalize "always 215 open" as an
+  ignored baseline.
+- **DASH-10 (on-the-horizon, WS2 follow-up) — dashboard native-app repackaging decision captured, not built.**
+  Operator directed **Option A** for a future session: repackage the dashboard as a native macOS `.app` via
+  `pywebview` + `py2app`, keeping the existing Tailscale-only exposure model unchanged (no new network
+  surface, just a nicer launch/window experience than the current browser-tab + web-app-manifest Dock
+  shortcut from #581). Not scoped or built this session — recorded here so the decision isn't re-litigated
+  next time WS2 polish comes up. Trigger: next WS2 session, operator bandwidth for a UI-shell change.
+- **DASH-11 (LOW, WS2 follow-up) — `picklist-sync` is unreachable via the dashboard's interval-edit verb.**
+  An operator question ("can the dashboard change daemon run intervals?") surfaced that
+  `operator_dashboard/act/daemon_ops.edit_interval` (#570) covers only an 8-daemon label allowlist;
+  `picklist-sync`'s 3600s cadence is a hardcoded `StartInterval` literal in its plist, outside that
+  allowlist, so its interval can't be edited from the dashboard today (confirmed: the daemon itself was
+  healthy, this is a coverage gap, not a bug). Either add it to the allowlist or document the exclusion
+  explicitly so the question doesn't need re-investigating next time. Trigger: next WS2 daemon-control
+  polish pass.
+
+**Activation lesson from this session's chase (not a tech-debt item, a process note):** a daemon's
+`ITS_Config` polling gate should be flipped `True` only **after** its matching Cloudflare Worker
+secret/route is actually deployed — flipping the gate first produces a benign-but-noisy bearer-rejected/401
+CRITICAL storm on every cycle until the deploy catches up. Root-caused this session on a subcontract-lane
+`bearer_rejected` error. Apply this ordering on every future config-actuator/Worker-secret pairing.
 
 ## PO attachments (Feature B) — conscious deferrals [OPEN 2026-07-13]
 
