@@ -5,9 +5,11 @@ patterns that suggest prompt injection succeeded at the AI layer. Items flagged 
 ITS_Review_Queue with security_flag=True; the owner is notified separately.
 
 Sentinels (Phase 1 starter list — extend as patterns emerge):
-- Field names matching: recipient_override, send_to, external_address, ignore_*, role_*,
-  system_*. These are field names a legitimate schema wouldn't include — if they show up
-  the AI invented them, which is a sign of injection.
+- Field names matching injection-control sentinels: recipient_override, send_to,
+  external_address, and the anchored ignore_/role_/system_ control names (e.g.
+  system_prompt, role_override, ignore_previous — NOT legitimate system_version /
+  role_description; §553). These are field names a legitimate schema wouldn't include — if
+  they show up the AI invented them, which is a sign of injection.
 - Field values exceeding 2KB. Suggests injection stuffed extra payload into a field.
 - Well-known injection phrases in any string field value.
 - Numeric values exceeding NUMERIC_ANOMALY_THRESHOLD (F21). An inflated count — e.g. a
@@ -34,13 +36,23 @@ import re
 from typing import Any
 
 # Field-name patterns that should not appear in a legitimate schema response.
+#
+# §553: the broad `^ignore_` / `^role_` / `^system_` PREFIX globs were a forward-dated
+# false-positive source — a legitimate extraction schema can carry `system_version`,
+# `system_id`, `system_serial_number` (machine pre-inspections), `role_description`,
+# `role_name`, etc., every one of which would have fired `security_flag=True` and polluted
+# ITS_Review_Queue. Narrowed to the injection-CONTROL names an extraction would never
+# legitimately invent (system_prompt, role_override, ignore_previous, …), so detection of
+# an AI-invented control field is preserved while the FP source is closed. Layer 5 is a
+# post-hoc tripwire (evadable by paraphrase), so trading prefix breadth for zero-FP is the
+# right call per the tech-debt entry — the real prevention is Layers 2-4 + the Send Gate.
 SUSPICIOUS_FIELD_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"^recipient_override$", re.IGNORECASE),
     re.compile(r"^send_to$", re.IGNORECASE),
     re.compile(r"^external_address$", re.IGNORECASE),
-    re.compile(r"^ignore_", re.IGNORECASE),
-    re.compile(r"^role_", re.IGNORECASE),
-    re.compile(r"^system_", re.IGNORECASE),
+    re.compile(r"^ignore_(previous|prior|above|all|instructions?|prompt|system|rules?)$", re.IGNORECASE),
+    re.compile(r"^role_(override|overwrite|switch|change|escalat\w*|inject\w*|admin|system|prompt)$", re.IGNORECASE),
+    re.compile(r"^system_(prompt|role|instructions?|message|override|command|directive)$", re.IGNORECASE),
 ]
 
 # Substring-match injection phrases, case-insensitive.

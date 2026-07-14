@@ -31,9 +31,29 @@ def test_suspicious_field_name_flagged():
 
 
 def test_suspicious_field_name_case_insensitive():
-    extracted = {"IGNORE_THIS": "value"}
+    extracted = {"IGNORE_PREVIOUS": "value"}
     anomalies = check(extracted)
     assert any("suspicious field name" in a for a in anomalies)
+
+
+def test_legitimate_system_and_role_fields_not_flagged():
+    # §553 FP fix: real extraction fields with these prefixes must NOT trip the sentinel.
+    extracted = {
+        "system_version": "3.1.4",
+        "system_id": "SKID-000123",
+        "system_serial_number": "SN-99887766",
+        "role_description": "Site safety lead",
+        "role_name": "foreman",
+        "ignore_case": True,
+    }
+    assert check(extracted) == []
+
+
+def test_injection_control_field_names_still_flagged():
+    # Detection strength preserved: the AI-invented control names still fire.
+    for name in ("system_prompt", "system_instruction", "role_override", "ignore_previous"):
+        anomalies = check({name: "x"})
+        assert any("suspicious field name" in a for a in anomalies), name
 
 
 def test_send_to_field_flagged():
