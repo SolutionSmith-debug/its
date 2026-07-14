@@ -91,9 +91,17 @@ daemon label). Every edit audits `config_interval_edited`.
 - **"must be 10..86400 seconds"** — out of bounds. **Tier-2:** pick a value in range.
 - **"ITS_Config updated to Ns but plist reinstall failed (exit …)"** — the row was written but
   `install.sh load` failed (a durable `config_interval_reinstall_desync` WARN is recorded). **Tier-2:**
-  re-run the exact command it prints (`install.sh load <label> <interval>`) from `~/its`; if it keeps
-  failing (plutil / launchctl error), **escalate**. The daemon keeps its OLD cadence until the reinstall
-  succeeds.
+  first run **`install.sh status <label>`** — `install.sh load` boots the daemon **out** before
+  re-bootstrapping, so a failed reinstall may have left it **UNLOADED**, not merely on the old cadence.
+  Then re-run the exact command it prints (`install.sh load <label> <interval>`) from `~/its` to reload
+  it; if it keeps failing (plutil / launchctl error), **escalate**.
+
+**Live smoke (Developer-Operator, at activation — the interval verb shells out to `launchctl`, so it
+is mock-tested only in CI):** on the mirror, pick a low-risk daemon (e.g. `subcontract-poll`), change
+its interval via the dashboard → confirm `install.sh status <label>` shows the new `StartInterval`, the
+`ITS_Config` `poll_interval_seconds` row updated, and a `config_interval_edited` WARN row landed; then
+confirm the desync path by forcing a reinstall failure (e.g. a deliberately bad interval at the shell)
+and checking a `config_interval_reinstall_desync` WARN row lands.
 
 ## Acceptance smoke (Developer-Operator — the DoD live toggle)
 

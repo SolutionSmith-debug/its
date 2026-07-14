@@ -165,11 +165,15 @@ def edit_interval(label: str, new_interval_raw: str, operator: str) -> IntervalO
     if rc != 0:
         # ITS_Config is now AHEAD of the live plist — durably audit the desync so
         # the cadence-vs-row mismatch is never silent; the operator retries.
+        # install.sh boots the daemon OUT before re-bootstrapping, so a failed
+        # reinstall may have left it UNLOADED, not merely on the old cadence —
+        # report that honestly (§55) so the operator checks + reloads.
         _audit_desync(operator, label, daemon, current, interval, rc)
         return IntervalOutcome(
             "error",
-            f"ITS_Config updated to {interval}s but plist reinstall failed (exit {rc}) — "
-            f"re-run `install.sh load {label} {interval}` to apply the cadence",
+            f"ITS_Config updated to {interval}s but plist reinstall failed (exit {rc}) — the daemon "
+            f"may now be UNLOADED (install.sh boots it out before re-bootstrapping). Run "
+            f"`install.sh status {label}` to check, then `install.sh load {label} {interval}` to reload.",
             label,
         )
     _audit(operator, label, daemon, current, interval)
@@ -222,7 +226,8 @@ def _audit_desync(operator: str, label: str, daemon: IntervalDaemon, old: str | 
             el.Severity.WARN,
             "operator_dashboard.config_editor",
             f"daemon interval DESYNC: {label} ITS_Config set to {new}s but install.sh reinstall FAILED "
-            f"(exit {rc}) by {operator} at {ts} — plist cadence unchanged until reinstalled",
+            f"(exit {rc}) by {operator} at {ts} — the daemon may now be UNLOADED (install.sh does "
+            f"bootout-then-bootstrap); verify with `install.sh status {label}` and reload",
             error_code="config_interval_reinstall_desync",
             alert=False,
         )
