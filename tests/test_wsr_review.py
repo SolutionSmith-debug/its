@@ -5,12 +5,35 @@ Smartsheet calls mocked. Live coverage: tests/test_wsr_review_integration.py.
 from __future__ import annotations
 
 import re
+import sys
 from datetime import UTC, date, datetime
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 
 from safety_reports import wsr_review
+
+# sys.path-driven import (scripts/ has no __init__.py) — mirrors tests/test_po_s1_sheets.py.
+_MIGRATIONS_DIR = Path(__file__).resolve().parents[1] / "scripts" / "migrations"
+if str(_MIGRATIONS_DIR) not in sys.path:
+    sys.path.insert(0, str(_MIGRATIONS_DIR))
+
+import build_wsr_human_review_sheet as wsr_mig  # noqa: E402
+
+
+def test_build_wsr_datetime_columns_are_creatable_date_not_abstract_datetime():
+    """Fresh-create schema pin: "Approved At"/"Sent At" must be DATE, never ABSTRACT_DATETIME.
+    The user "Date/Time" type is NOT creatable via the API (errorCode 1142, "reserved for
+    project sheets"), so an ABSTRACT_DATETIME column here is a latent fresh-create bug masked
+    by the live sheet's idempotent skip. DATE matches the live WSR (verified) + the WPR twin,
+    and accepts to_wsr_datetime's naive string end-to-end. (tech_debt: build_wsr fresh-create.)"""
+    by_title = {c["title"]: c for c in wsr_mig.COLUMN_SCHEMA}
+    for title in ("Approved At", "Sent At"):
+        assert by_title[title]["type"] == "DATE", (
+            f"{title!r} must be DATE — ABSTRACT_DATETIME is not API-creatable (errorCode 1142); "
+            "the live WSR columns are DATE."
+        )
 
 
 @pytest.fixture
@@ -94,9 +117,9 @@ def test_add_wsr_row_always_appends_never_updates(ss):
     ss["update_rows"].assert_not_called()
 
 
-# ---- to_wsr_datetime (ABSTRACT_DATETIME cell formatting) ------------------
-# ABSTRACT_DATETIME is tz-naive and REJECTS an offset/'Z' (live-verified errorCode 5536),
-# so the value must be naive Pacific wall-clock `YYYY-MM-DDTHH:MM:SS`.
+# ---- to_wsr_datetime (WSR DATE cell formatting) ------------------
+# The WSR "Approved At"/"Sent At" columns are DATE (live-verified); they REJECT an
+# offset/'Z', so the value must be naive Pacific wall-clock `YYYY-MM-DDTHH:MM:SS`.
 
 _NAIVE_RE = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$"  # no offset, no 'Z', no microseconds
 
@@ -105,7 +128,7 @@ def test_to_wsr_datetime_utc_string_to_naive_pacific():
     # The F22 verdict.modified_at shape (UTC + offset). 16:39:18Z -> 09:39:18 PDT (June, UTC-7).
     out = wsr_review.to_wsr_datetime("2026-06-09T16:39:18+00:00")
     assert out == "2026-06-09T09:39:18"
-    assert re.match(_NAIVE_RE, out), "must be naive — ABSTRACT_DATETIME rejects an offset"
+    assert re.match(_NAIVE_RE, out), "must be naive — the WSR DATE columns reject an offset"
 
 
 def test_to_wsr_datetime_aware_datetime_to_naive_pacific():

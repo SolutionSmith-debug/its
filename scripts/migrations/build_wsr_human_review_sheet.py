@@ -57,11 +57,18 @@ COLUMN_SCHEMA: list[dict[str, Any]] = [
      "description": "Human approval gate. A person flips this; MODIFIED_BY auto-captures who; F22 verifies that actor is authorized before the Monday send."},
     {"title": "Send Now", "type": "CHECKBOX", "description": "Approve + dispatch immediately (out-of-band of the scheduled Monday send)."},
     {"title": "Approved By", "type": "CONTACT_LIST", "description": "Auto-stamped approver identity (the send daemon records the cell-history actor of the approve flip)."},
-    {"title": "Approved At", "type": "ABSTRACT_DATETIME",
-     "description": "Naive Pacific wall-clock (ABSTRACT_DATETIME — the user Date/Time type; plain DATETIME is not creatable on a user column). Written via wsr_review.to_wsr_datetime."},
+    # DATE (not ABSTRACT_DATETIME): matches the LIVE WSR_human_review schema (verified
+    # 2026-06-29 + 2026-07-14 — WSR's Approved At/Sent At are type=DATE). ABSTRACT_DATETIME
+    # (the user Date/Time type) is NOT creatable via the API (errorCode 1142, "reserved for
+    # project sheets") — so the prior ABSTRACT_DATETIME schema here was a latent fresh-create
+    # bug, masked because the live sheet already exists (idempotent skip) and was never
+    # re-created. wsr_review.to_wsr_datetime writes a naive Pacific string, which the live WSR
+    # DATE columns accept end-to-end — DATE is exact parity (mirrors build_wpr_human_review_sheet).
+    {"title": "Approved At", "type": "DATE",
+     "description": "Approval date (DATE — mirrors the live WSR schema). Written via wsr_review.to_wsr_datetime (naive Pacific)."},
     {"title": "Send Status", "type": "PICKLIST", "options": SEND_STATUS_OPTIONS},
-    {"title": "Sent At", "type": "ABSTRACT_DATETIME",
-     "description": "Naive Pacific wall-clock (ABSTRACT_DATETIME). Written via wsr_review.to_wsr_datetime."},
+    {"title": "Sent At", "type": "DATE",
+     "description": "Send date (DATE — mirrors the live WSR schema). Written via wsr_review.to_wsr_datetime (naive Pacific)."},
     {"title": "Notes", "type": "TEXT_NUMBER", "description": "Retry state / late-send flags / failure context."},
     {"title": "Workstream", "type": "PICKLIST", "options": WORKSTREAM_OPTIONS,
      "description": "Report-family tag (P1b cross-workstream send guard). WSR is the safety sheet → 'safety'."},

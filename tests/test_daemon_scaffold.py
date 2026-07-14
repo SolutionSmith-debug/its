@@ -30,7 +30,16 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 LAUNCHD_DIR = REPO_ROOT / "scripts" / "launchd"
-DAEMON_ROOT = REPO_ROOT / "safety_reports"
+# Daemon-bearing packages (SC3c-4: the single `safety_reports` root missed the po_materials /
+# subcontracts / progress_reports / field_ops daemons entirely, so their modules were never
+# scanned for the bare-python footgun). Reconciled with
+# scripts/generate_config_dictionary._SCAN_ROOTS, minus `scripts/` — its watchdog / picklist
+# daemons carry their own subprocess tests, and `scripts/` also holds operator-run one-offs that
+# legitimately shell out (a bare-`python` there is not a launchd-daemon footgun).
+DAEMON_ROOTS: tuple[Path, ...] = tuple(
+    REPO_ROOT / pkg
+    for pkg in ("safety_reports", "po_materials", "subcontracts", "progress_reports", "field_ops")
+)
 
 _SUBPROCESS_FUNCS: frozenset[str] = frozenset(
     {"run", "Popen", "call", "check_call", "check_output"}
@@ -114,7 +123,8 @@ def test_no_daemon_spawns_bare_python_subprocess():
     argv[0] (#241 half-committed publish — launchd's PATH has no `python`)."""
     offenders = [
         p.relative_to(REPO_ROOT).as_posix()
-        for p in sorted(DAEMON_ROOT.rglob("*.py"))
+        for root in DAEMON_ROOTS
+        for p in sorted(root.rglob("*.py"))
         if _spawns_bare_python(p)
     ]
     assert not offenders, (
