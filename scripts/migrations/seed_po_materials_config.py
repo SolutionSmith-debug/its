@@ -171,7 +171,7 @@ CONFIG_ROWS: list[dict[str, Any]] = [
         "Description": (
             "The From mailbox for PO sends (decision D10). Read at RUNTIME by "
             "po_send.send_one_row every dispatch (#336 REQUIRED_CONFIG). Mirror value "
-            "here; the production cutover repoints it to procurement@evergreenrenewables.com "
+            "here; the production cutover repoints it to the production procurement@ mailbox "
             "(cutover_checklist). The mailbox must exist + be in the app's Application "
             "Access Policy scope or Graph 403s the send."
         ),

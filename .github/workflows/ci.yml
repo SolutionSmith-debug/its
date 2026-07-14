@@ -128,3 +128,9 @@ jobs:
 
       - name: Scan full git history for secrets (blocking)
         run: gitleaks git . --redact --no-banner --exit-code 1
+
+      - name: Guard against production-identity re-entry in code (working tree, blocking)
+        # Filesystem scan of the CURRENT tree (not history — the production domain is
+        # immutable in past commits). Flags any @evergreenrenewables.com email that
+        # re-enters .py/.ts/.tsx; tests+seeds must use @example.com / mirror addresses.
+        run: gitleaks dir . --config .gitleaks-identity.toml --no-banner --exit-code 1

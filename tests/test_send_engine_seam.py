@@ -77,7 +77,7 @@ def test_active_jobs_lookup_applies_the_bound_resolver(mocker):
 
 # ---- Third-workstream (po_materials-shaped) binding proof -------------------
 
-_VENDORS = {"VEN-000123": ("orders@chint.example", ["invoices@evergreenrenewables.com"])}
+_VENDORS = {"VEN-000123": ("orders@chint.example", ["invoices@example.com"])}
 _PO_NOTES_TAG = re.compile(r"\[PO_NUMBER: ([^\]]+)\]")
 
 
@@ -145,7 +145,7 @@ def test_po_shaped_binding_dispatches_vendor_recipient_and_po_envelope(po_stub):
     assert result.status == "sent"
     kw = po_stub["send_mail"].call_args.kwargs
     assert kw["to"] == ["orders@chint.example"]
-    assert kw["cc"] == ["invoices@evergreenrenewables.com"]
+    assert kw["cc"] == ["invoices@example.com"]
     assert kw["subject"] == "Purchase Order 2026.001.2.0.0 — Bradley 1 — Evergreen Renewables"
     assert kw["attachments"][0]["name"] == "2026.001.2.0.0.pdf"
     assert kw["body"] == "Please see the attached purchase order."

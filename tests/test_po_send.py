@@ -21,8 +21,8 @@ from safety_reports.weekly_send import EnvelopeContext
 _PURCHASER = {
     "entity": "Evergreen Renewables LLC",
     "invoice_routing": {
-        "to": "invoices@evergreenrenewables.com",
-        "cc": ["tealap@evergreenrenewables.com", "benf@evergreenrenewables.com"],
+        "to": "invoices@example.com",
+        "cc": ["ap-lead@example.com", "finance@example.com"],
     },
 }
 _VENDOR = {
@@ -98,7 +98,7 @@ def test_vendor_lookup_resolves_email_and_invoice_cc(mocker):
     mocker.patch.object(po_send.terms_lib, "load_purchaser_config", return_value=_PURCHASER)
     to, cc = po_send._VendorRecipientLookup()("VEN-000001")
     assert to == "orders@chint.example"
-    assert list(cc) == ["tealap@evergreenrenewables.com", "benf@evergreenrenewables.com"]
+    assert list(cc) == ["ap-lead@example.com", "finance@example.com"]
 
 
 def test_vendor_lookup_returns_none_for_unknown_key(mocker):
@@ -151,7 +151,7 @@ def test_send_dispatches_vendor_recipient_and_po_envelope(stub):
     kw = stub["send_mail"].call_args.kwargs
     # Recipient from ITS_Vendors, NOT the stale display columns.
     assert kw["to"] == ["orders@chint.example"]
-    assert kw["cc"] == ["tealap@evergreenrenewables.com", "benf@evergreenrenewables.com"]
+    assert kw["cc"] == ["ap-lead@example.com", "finance@example.com"]
     assert "STALE" not in str(kw["to"]) and "STALE" not in str(kw["cc"])
     # Body = the human-edited Email Body; PO PDF attached with the JOB-PREFIXED filename.
     assert kw["body"] == "Hello Sam — attached PO. Please countersign."
