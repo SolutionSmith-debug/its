@@ -445,3 +445,18 @@ def test_purpose_map_fail_soft_on_bad_path(monkeypatch: pytest.MonkeyPatch) -> N
     assert config_write._purpose_map() == {}
     assert "config_purpose_map_unreadable" in logs  # broken dictionary surfaced, not silent
     config_write._purpose_map.cache_clear()  # restore for other tests
+
+
+def test_lockout_message_shows_remaining_cooldown(monkeypatch: pytest.MonkeyPatch) -> None:
+    # after the bucket locks, the denial surfaces the honest remaining seconds
+    # instead of a bare "locked out" (WS2 Block-5 lockout UX).
+    import shared.keychain as kc
+    from operator_dashboard import auth
+
+    monkeypatch.setattr(kc, "get_secret", lambda name, account=None: "correcthorse")
+    for _ in range(auth._MAX_PIN_FAILS):
+        with pytest.raises(PinError):
+            verify_pin("wrong")
+    with pytest.raises(PinError) as ei:
+        verify_pin("correcthorse")  # locked out — even the correct PIN is refused
+    assert "locked out for ~" in str(ei.value) and "s;" in str(ei.value)

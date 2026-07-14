@@ -42,7 +42,10 @@ def test_index_returns_200_with_all_panel_slots(client: TestClient) -> None:
 def test_healthz(client: TestClient) -> None:
     resp = client.get("/healthz")
     assert resp.status_code == 200
-    assert resp.text == "ok"
+    # enriched: still starts with "ok" (KeepAlive probe) + carries the registry/
+    # secret/panel counts so a booted-with-registries-intact state is visible.
+    assert resp.text.startswith("ok")
+    assert "registry_keys=" in resp.text and "panels=" in resp.text
 
 
 @pytest.mark.parametrize("panel_id", list(PANELS_BY_ID))
@@ -218,3 +221,23 @@ def test_send_queue_source_fail_soft_per_sheet(monkeypatch: pytest.MonkeyPatch) 
     result = SendQueueSource().fetch()
     assert result.available  # never crashes
     assert any(r.get("status") == "(unavailable)" for r in result.rows)
+
+
+def test_audit_trail_source_filters_to_config_editor(monkeypatch: pytest.MonkeyPatch) -> None:
+    # the ACT audit panel shows only the config editor's own rows (accountability
+    # where the actions happen), and surfaces denials in the summary.
+    import shared.smartsheet_client as ss
+    from operator_dashboard.sources.smartsheet_panels import AuditTrailSource
+
+    rows = [
+        {"Script": "operator_dashboard.config_editor", "Error": "config_audit", "Message": "edit", "Severity": "WARN"},
+        {"Script": "some.other.daemon", "Error": "other_noise", "Message": "noise", "Severity": "ERROR"},
+        {"Script": "operator_dashboard.config_editor", "Error": "config_denied", "Message": "denied", "Severity": "WARN"},
+    ]
+    monkeypatch.setattr(ss, "get_rows", lambda sheet_id, **kw: list(rows))
+    result = AuditTrailSource().fetch()
+    assert result.available
+    joined = " ".join(r.get("Error", "") for r in result.rows)
+    assert "config_audit" in joined and "config_denied" in joined
+    assert "other_noise" not in joined  # non-config-editor rows filtered out
+    assert "denied" in result.summary  # a denial is surfaced in the summary

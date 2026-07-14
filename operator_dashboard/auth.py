@@ -60,8 +60,12 @@ class _Throttle:
 
     def check(self) -> None:
         with self._lock:
-            if self.locked_until > time.monotonic():
-                raise PinError("too many failed attempts — temporarily locked out; wait and retry")
+            remaining = self.locked_until - time.monotonic()
+            if remaining > 0:
+                # Surface the honest remaining cooldown instead of a bare denial.
+                raise PinError(
+                    f"too many failed attempts — locked out for ~{int(remaining) + 1}s; wait and retry"
+                )
 
     def reset(self) -> None:
         with self._lock:

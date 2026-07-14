@@ -153,6 +153,11 @@
       writes its byte-equal Keychain mirror. The Box refresh token rotates <b>only</b> via the guided
       quiesce → <code>setup_box_oauth.py</code> → smoke flow (see the runbook).
     </p>
+    <div class="rotate-warn">
+      <b>Irreversible.</b> A rotation takes effect immediately and overwrites the old secret in place —
+      it cannot be undone from here. Confirm the new value is correct <em>before</em> you type the
+      credential name to proceed.
+    </div>
     <table class="config-table">
       <thead><tr><th>credential</th><th>kind</th><th>new value + re-PIN + confirm</th></tr></thead>
       <tbody>
