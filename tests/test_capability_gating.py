@@ -469,6 +469,11 @@ NETWORK_LIB_ALLOWLIST: frozenset[str] = frozenset({
     # breaker state via the canonical state_io atomic writer. No send, no AI, no
     # subprocess, no network lib.
     "operator_dashboard/act/state_ops.py",
+    # WS2 clear-error-log verb: `importlib` lazily resolves INTERNAL modules only
+    # (shared.errors_rotation / shared.smartsheet_client / shared.sheet_ids /
+    # shared.defaults / shared.error_log) to delete TERMINAL ITS_Errors rows (never an
+    # open CRITICAL) via smartsheet_client.delete_rows. No send, no AI, no subprocess.
+    "operator_dashboard/act/errors_ops.py",
 })
 
 # Import needles that constitute network-egress or process-spawn capability.
