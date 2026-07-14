@@ -768,8 +768,11 @@ def list_columns_with_options(sheet_id: int) -> list[dict[str, Any]]:
         # attached, but type mis-reported. That made `ensure_picklist_options` REFUSE to
         # manage a live multi-select column (it type-checks for PICKLIST/MULTI_PICKLIST) and
         # made `audit_picklist_drift` false-flag it as "needs a manual UI conversion". With
-        # level=2 the true MULTI_PICKLIST / MULTI_CONTACT_LIST types come through. (Confirmed
-        # live 2026-07-14 on ITS_Subcontractors.Trades + ITS_Vendors.Supply Categories.)
+        # level=2 MULTI_PICKLIST reports its true type. (Confirmed live 2026-07-14:
+        # ITS_Subcontractors.Trades + ITS_Vendors.Supply Categories read as MULTI_PICKLIST;
+        # single-value CONTACT_LIST columns e.g. Approved By/Modified By are UNAFFECTED —
+        # verified. level=2 also un-downgrades MULTI_CONTACT_LIST, but the ITS schema uses
+        # none today, so that path is unexercised.)
         sheet = get_client().Sheets.get_sheet(sheet_id, include="columns", level=2)
     except sdk_exc.SmartsheetException as e:
         raise _translate(e) from e

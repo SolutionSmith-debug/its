@@ -768,7 +768,9 @@ Class of bug: `SimpleNamespace`-based mocks at the SDK boundary don't enforce th
 
 Surfaced: PR #46 → #47 → #48 → #49 iteration, 2026-05-20/21.
 
-## Smartsheet MULTI_PICKLIST type doesn't survive sheet-creation round-trip [OPEN 2026-05-21]
+## Smartsheet MULTI_PICKLIST type doesn't survive sheet-creation round-trip [RESOLVED 2026-07-14]
+
+**RESOLVED 2026-07-14 — it was NOT a Smartsheet quirk; `list_columns_with_options` read columns without `level=2`.** The Smartsheet API downgrades a `MULTI_PICKLIST` (and `MULTI_CONTACT_LIST`) column to its base type in a `GET …?include=columns` response UNLESS `level=2` is requested — so the round-trip "showed TEXT_NUMBER" purely because the read omitted `level=2`. Fixed by adding `level=2` to the single `get_sheet` in `list_columns_with_options`; a live create→read integration assertion (`test_list_columns_with_options_unwraps_picklist_type`, now with a MULTI_PICKLIST column) proves it. This ALSO unblocked `ensure_picklist_options` (it can now manage live multi-select columns) and cleared the `audit_picklist_drift` false positives on the two live columns. **The "no production mapping uses it" note below is SUPERSEDED** — `ITS_Subcontractors.Trades` + `ITS_Vendors.Supply Categories` are live production MULTI_PICKLIST columns. Original entry (kept for the diagnosis trail):
 
 Creating a sheet with `{"type": "MULTI_PICKLIST", "options": [...]}` via `Folders.create_sheet_in_folder` (or the equivalent REST POST `/folders/{id}/sheets`) returns 200 OK, but a subsequent `GET /sheets/{id}?include=columns` shows the column's type as `TEXT_NUMBER`, not `MULTI_PICKLIST`. The column doesn't behave as MULTI_PICKLIST either.
 

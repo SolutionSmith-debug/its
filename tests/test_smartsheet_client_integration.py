@@ -181,14 +181,14 @@ def test_list_columns_with_options_unwraps_picklist_type(_token_available):
     body without `type` (the SDK strips the wrapped value silently)
     and the API rejects with errorCode 1090.
 
-    MULTI_PICKLIST coverage is NOT exercised here: surfaced live during
-    the PR #51 integration-test run, Smartsheet returns
-    `type=TEXT_NUMBER` for MULTI_PICKLIST columns when read back after
-    sheet creation. Whether that's a render-vs-storage distinction or
-    a separate creation flow (sheet-create vs `add_column` POST) is a
-    Smartsheet API quirk, not a defect in `list_columns_with_options`.
-    Unit-level MULTI_PICKLIST coverage stays in
-    tests/test_smartsheet_client.py::test_update_column_options_accepts_multi_picklist.
+    Also covers MULTI_PICKLIST (multi-select dropdown): earlier notes here claimed
+    Smartsheet returns `type=TEXT_NUMBER` for a MULTI_PICKLIST column read back after
+    creation and dismissed it as an unfixable "API quirk". That was WRONG — the real
+    cause was that `list_columns_with_options` read columns WITHOUT `level=2`, which the
+    API requires to report MULTI_* column types (they downgrade to their base type
+    otherwise). Fixed 2026-07-14 (level=2). This test now creates a MULTI_PICKLIST column
+    and asserts it reads back AS MULTI_PICKLIST — the prove-it-bites for that fix (without
+    level=2 the read-back is TEXT_NUMBER and this assertion fails).
     """
     sheet_id = smartsheet_client.create_sheet_in_folder(
         sheet_ids.FOLDER_SYSTEM_CONFIG,
@@ -196,19 +196,25 @@ def test_list_columns_with_options_unwraps_picklist_type(_token_available):
         [
             {"title": "id_col", "type": "TEXT_NUMBER", "primary": True},
             {"title": "pl_col", "type": "PICKLIST", "options": ["seed"]},
+            {"title": "mpl_col", "type": "MULTI_PICKLIST", "options": ["m-seed"]},
         ],
     )
     try:
         cols = smartsheet_client.list_columns_with_options(sheet_id)
         by_title = {c["title"]: c for c in cols}
 
-        # type must be a plain str for both columns.
+        # type must be a plain str for all columns.
         assert isinstance(by_title["id_col"]["type"], str)
         assert by_title["id_col"]["type"] == "TEXT_NUMBER"
 
         assert isinstance(by_title["pl_col"]["type"], str)
         assert by_title["pl_col"]["type"] == "PICKLIST"
         assert by_title["pl_col"]["options"] == ["seed"]
+
+        # MULTI_PICKLIST must report its TRUE type (level=2), not the TEXT_NUMBER
+        # downgrade — the core of the 2026-07-14 fix.
+        assert by_title["mpl_col"]["type"] == "MULTI_PICKLIST"
+        assert by_title["mpl_col"]["options"] == ["m-seed"]
     finally:
         _delete_sheet_rest(sheet_id, _token_available)
 
@@ -249,13 +255,12 @@ def test_update_column_options_round_trip_picklist(_token_available):
         _delete_sheet_rest(sheet_id, _token_available)
 
 
-# MULTI_PICKLIST round-trip intentionally not exercised at integration
-# level: Smartsheet returns type=TEXT_NUMBER for MULTI_PICKLIST columns
-# read back after sheet creation (live-API quirk; see the unwrap_picklist_type
-# docstring above). Unit-level coverage in
-# tests/test_smartsheet_client.py::test_update_column_options_accepts_multi_picklist
-# verifies the helper's body shape; the round-trip would need a separate
-# `add_column` POST flow to land MULTI_PICKLIST distinguishably, deferred.
+# MULTI_PICKLIST TYPE read-back is now exercised in
+# test_list_columns_with_options_unwraps_picklist_type above (the level=2 fix,
+# 2026-07-14). The old note here — that Smartsheet returns type=TEXT_NUMBER for
+# MULTI_PICKLIST and that it's an unfixable API quirk — was WRONG (missing level=2).
+# A full add/update MULTI_PICKLIST *options* round-trip stays covered at unit level
+# (tests/test_smartsheet_client.py::test_update_column_options_accepts_multi_picklist).
 
 
 def test_update_column_options_replaces_not_appends(_token_available):
