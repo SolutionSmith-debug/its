@@ -10,7 +10,7 @@ from pathlib import Path
 
 import jinja2
 from fastapi import FastAPI, Request, Response
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -74,6 +74,13 @@ def create_app() -> FastAPI:
         from operator_dashboard.act.registry import REGISTRY, SECRETS
 
         return f"ok\nregistry_keys={len(REGISTRY)}\nsecrets={len(SECRETS)}\npanels={len(PANELS)}"
+
+    @app.get("/manifest.json")
+    def manifest() -> Response:
+        # Served with the correct type so Chrome/Edge offer "Install" (Safari
+        # "Add to Dock" uses the apple-touch-icon). Makes the dashboard a first-class
+        # Dock app — a standalone window with the Evergreen-crest icon.
+        return FileResponse(_BASE / "static" / "manifest.json", media_type="application/manifest+json")
 
     # --- D1-2 ACT surface -------------------------------------------------
     # The Class-A runtime config editor: GET /config (read) + POST /act/config

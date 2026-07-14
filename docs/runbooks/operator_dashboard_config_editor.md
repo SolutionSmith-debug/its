@@ -103,6 +103,27 @@ Localhost (`http://127.0.0.1:8484`) is always allowed even if the origin is blan
 Tailscale-served origin needs the env. **Ships dark**: loading the plist serves the read-only
 panels + the (still PIN-gated, inert-until-provisioned) editor.
 
+## Install as a Dock app (macOS)
+
+The dashboard is a localhost server; the KeepAlive service (above) keeps it always-on, so it installs as a
+first-class **Dock app** — a standalone window with the Evergreen-crest icon, no browser chrome (the app
+ships a web-app manifest + apple-touch-icon for this).
+
+**On each Mac (dev and production):**
+1. Load the service: `scripts/launchd/install.sh load org.solutionsmith.its.dashboard`.
+2. **Safari 17+** (Sonoma/Sequoia): open <http://127.0.0.1:8484> → **File → Add to Dock** → keep the name
+   ("ITS Dashboard") + the Evergreen icon → **Add**. Clicking the Dock icon opens the dashboard in its own
+   window. **Chrome/Edge** alternative: open it → the **Install** icon in the address bar → *Install ITS
+   Dashboard*.
+3. Right-click the Dock icon → **Options → Keep in Dock**.
+
+**To watch the PRODUCTION dashboard FROM your laptop** (not the prod Mac's own screen): on the prod Mac run
+`operator_dashboard/tailscale_serve.sh` and follow its `tailscale serve --bg 8484` + `ITS_DASH_ALLOWED_ORIGINS`
+output; then on your laptop open `https://<prodhost>.<tailnet>.ts.net` in Safari → **Add to Dock**. You end up
+with two Dock icons — one for this Mac's dashboard, one for production's.
+
+The read-only panels open immediately; the PIN-gated ACT surface stays dark until the PIN is provisioned.
+
 ## Interval daemon edits (Class B · elevated · D1-3b)
 
 A poll daemon's cadence is **baked into its launchd plist** at install time — not a hot-reload
