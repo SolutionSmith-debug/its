@@ -12,12 +12,10 @@ Design (ratified — §51 v19.x rider, 2026-07-04):
   row-cap WARN watchdog: as the sheet nears the ~20k row cap it WARNs + Review-Queues an operator
   period-split), per the 2026-07-04 v19.x rider — minimizing Smartsheet sheet proliferation (the
   #1 scaling risk) vs. calendar-splitting a low-volume log. NEVER deletes a row (§51 SoR rule).
-  **archive-on-closure** (move the sheet to the Archive workspace when the job archives) is the
-  one §51 guard still a COMMITTED follow-up (its#462 — needs a new `smartsheet_client` move-sheet
-  method, §30). The `archived` lifecycle write is LIVE today (portal admin), so until #462 lands an
-  archived job's Hours Log **strands** in the progress workspace — never-deleted → no data loss,
-  recoverable — but the archive guarantee is skipped; #462 must land before archival activity (and
-  no Hours Log exists at all until `hours_enabled` is flipped).
+  **archive-on-closure LANDED** (its#462 / PR #465): when a job's lifecycle flips to `archived`,
+  `field_ops.fieldops_sync._archive_closed_job_trackers` moves its standing tracker sheets (incl. this
+  Hours Log) into the Archive workspace via `smartsheet_client.move_sheet_to_folder` — the last §51 guard,
+  now live. NEVER deletes a row (§51 SoR rule). (No Hours Log exists at all until `hours_enabled` is flipped.)
 - **Progress workspace only**, single-destination (unlike the dual-sheet job-identity up-sync).
 - find-or-create the sheet (+ the A1 capacity margin-check on the create branch, advisory);
   idempotent upsert by `Entry UUID` (== `time_entries.uuid`); an amend APPENDS its own row and
