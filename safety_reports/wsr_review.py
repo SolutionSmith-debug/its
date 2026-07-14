@@ -62,23 +62,24 @@ STATUS_SENDING = "SENDING"
 
 SHEET_ID = sheet_ids.SHEET_WSR_HUMAN_REVIEW
 
-# The "Approved At" / "Sent At" columns are Smartsheet ABSTRACT_DATETIME (the user-facing
-# "Date/Time" type). ABSTRACT_DATETIME is tz-NAIVE: it stores/displays the literal value and
-# REJECTS any UTC offset or 'Z' suffix (live-verified — a `...-07:00` value returns
-# errorCode 5536). So we write Pacific wall-clock as a naive `YYYY-MM-DDTHH:MM:SS` string and
-# the grid reads in local time (operator decision, 2026-06-09). The legacy plain "DATETIME"
-# type is NOT creatable on a user column (docs/tech_debt.md) — ABSTRACT_DATETIME is.
+# The "Approved At" / "Sent At" columns are Smartsheet DATE (live-verified 2026-06-29 +
+# 2026-07-14; same schema as the WPR twin). We write Pacific wall-clock as a naive
+# `YYYY-MM-DDTHH:MM:SS` string (no UTC offset, no 'Z') and the grid reads it in local time
+# (operator decision, 2026-06-09); an offset-bearing value is rejected, so stripping the
+# offset is load-bearing. DATE is used because the richer user "Date/Time" type
+# (ABSTRACT_DATETIME) and plain "DATETIME" are BOTH non-creatable on a user column via the API
+# (errorCode 1142 / 4000, docs/tech_debt.md) — so build_wsr_human_review_sheet creates these as DATE.
 WSR_DISPLAY_TZ = "America/Los_Angeles"
 
 
 def to_wsr_datetime(value: datetime | str | None) -> str:
-    """Format an instant as a Smartsheet ABSTRACT_DATETIME cell value — naive Pacific
+    """Format an instant as a Smartsheet DATE cell value — naive Pacific
     wall-clock `YYYY-MM-DDTHH:MM:SS` (no offset, no 'Z', no microseconds; see WSR_DISPLAY_TZ).
 
     Accepts an aware/naive datetime, an ISO-8601 string (e.g. the F22 verdict's UTC
     `modified_at` `...+00:00`), or None (→ now). An aware value is converted to Pacific; a
-    naive value is taken as-is. Stripping the offset is load-bearing: ABSTRACT_DATETIME
-    rejects an offset-bearing string outright (errorCode 5536).
+    naive value is taken as-is. Stripping the offset is load-bearing: the WSR DATE columns
+    reject an offset-bearing string (the grid stores the naive wall-clock).
     """
     if value is None:
         dt = datetime.now(ZoneInfo(WSR_DISPLAY_TZ))
