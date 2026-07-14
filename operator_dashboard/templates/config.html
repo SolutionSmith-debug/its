@@ -62,6 +62,42 @@
   {% endfor %}
 
   <section class="config-group">
+    <h3>Interval daemons (Class B · elevated · plist re-install)</h3>
+    <p class="config-note">
+      A poll daemon's interval is <b>baked into its launchd plist</b> (not hot-reloaded), so
+      changing it updates the <code>*.poll_interval_seconds</code> ITS_Config row <em>and</em>
+      re-installs the plist (<code>install.sh load &lt;label&gt; &lt;interval&gt;</code>). Elevated:
+      re-enter the PIN + type the exact daemon label. Seconds; bounds enforced.
+    </p>
+    <table class="config-table">
+      <thead>
+        <tr><th>daemon</th><th>current</th><th>new interval (s) + re-PIN + confirm</th></tr>
+      </thead>
+      <tbody>
+        {% for d in intervals %}
+        <tr>
+          <td class="cfg-setting">
+            {{ d.label }} <span class="tier-b">B</span>
+            <div class="cfg-note">{{ d.config_key }} [{{ d.workstream }}] · default {{ d.default }}s</div>
+          </td>
+          <td class="cfg-current">{% if d.present %}{{ d.value }}s{% else %}<span class="missing">(no row — seed first)</span>{% endif %}</td>
+          <td>
+            <form hx-post="/act/daemon/interval" hx-target="#iv-{{ d.slug }}" hx-swap="innerHTML" class="cfg-form">
+              <input type="hidden" name="label" value="{{ d.label }}">
+              <input type="number" name="interval" value="{{ d.value }}" min="{{ d.min }}" max="{{ d.max }}" class="cfg-input" autocomplete="off">
+              <input type="password" name="pin" placeholder="re-PIN" class="cfg-pin" autocomplete="off">
+              <input type="text" name="confirm" placeholder="type: {{ d.label }}" class="cfg-confirm" autocomplete="off" spellcheck="false">
+              <button type="submit" class="cfg-btn elevated">apply (reinstall)</button>
+              <span class="cfg-out" id="iv-{{ d.slug }}"></span>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+
+  <section class="config-group">
     <h3>Secret rotation (Class C · write-only · elevated)</h3>
     <p class="config-note">
       Values are <b>write-only</b> — never displayed or read back. Rotating a Worker bearer also

@@ -42,6 +42,59 @@ strong PIN + that throttle are a **hard precondition before setting
 `ITS_DASH_ALLOWED_ORIGINS` to any Tailscale origin** (a tailnet device can otherwise reach
 the endpoint directly).
 
+## Run as a launchd service + Tailscale (D1-3b)
+
+The dashboard is a **long-running server**, not an interval daemon — so its plist is the ONE ITS
+plist that sets `KeepAlive=true` (launchd restarts the server if it exits). It writes **no**
+watchdog Check-C marker and is **not** in `TRACKED_JOBS`; liveness is launchd + the `/healthz`
+endpoint. Install it (non-interval → the generic `install.sh` path, no interval arg):
+
+```bash
+scripts/launchd/install.sh load   org.solutionsmith.its.dashboard   # serves 127.0.0.1:8484
+scripts/launchd/install.sh status org.solutionsmith.its.dashboard   # confirm it is running
+```
+
+**Tailscale exposure + the Origin allowlist** — the #1 activation stumble: a launchd service does
+NOT inherit your shell env, so `ITS_DASH_ALLOWED_ORIGINS` must live in the *installed* plist. The
+helper prints the exact commands + the origin for THIS host (it exposes nothing by itself):
+
+```bash
+operator_dashboard/tailscale_serve.sh          # prints: serve cmd + origin + plist patch
+# then, from its output:
+tailscale serve --bg 8484
+/usr/libexec/PlistBuddy -c "Set :EnvironmentVariables:ITS_DASH_ALLOWED_ORIGINS https://<host>.<tailnet>.ts.net" \
+    ~/Library/LaunchAgents/org.solutionsmith.its.dashboard.plist
+scripts/launchd/install.sh load org.solutionsmith.its.dashboard    # reload with the origin set
+```
+
+Localhost (`http://127.0.0.1:8484`) is always allowed even if the origin is blank; only the
+Tailscale-served origin needs the env. **Ships dark**: loading the plist serves the read-only
+panels + the (still PIN-gated, inert-until-provisioned) editor.
+
+## Interval daemon edits (Class B · elevated · D1-3b)
+
+A poll daemon's cadence is **baked into its launchd plist** at install time — not a hot-reload
+`ITS_Config` edit (that is why `*.poll_interval_seconds` is deliberately NOT a Class-A editable
+key). The **Interval daemons** panel changes it correctly: it updates the
+`<ws>.<daemon>.poll_interval_seconds` `ITS_Config` row **and** re-installs the plist
+(`install.sh load <label> <interval>`) so the new cadence takes effect. Label-allowlisted to the 8
+interval daemons; interval bounds-validated (10..86400s); elevated-confirm (re-PIN + type the exact
+daemon label). Every edit audits `config_interval_edited`.
+
+**Symptoms & Tier-2 repairs:**
+
+- **"… is not an editable interval daemon"** — the label is not one of the 8 allowlisted interval
+  daemons (the dashboard itself, `watchdog`, `weekly-generate`, or a typo). The allowlist is working.
+  **Tier-2:** pick a listed daemon; a non-interval daemon's schedule is a plist edit (Seth).
+- **"no ITS_Config row for … — seed it first"** — that daemon has no `poll_interval_seconds` row.
+  Seeding a **missing** row is **high-class → escalate to Seth** (same rule as the config editor).
+- **"must be 10..86400 seconds"** — out of bounds. **Tier-2:** pick a value in range.
+- **"ITS_Config updated to Ns but plist reinstall failed (exit …)"** — the row was written but
+  `install.sh load` failed (a durable `config_interval_reinstall_desync` WARN is recorded). **Tier-2:**
+  re-run the exact command it prints (`install.sh load <label> <interval>`) from `~/its`; if it keeps
+  failing (plutil / launchctl error), **escalate**. The daemon keeps its OLD cadence until the reinstall
+  succeeds.
+
 ## Acceptance smoke (Developer-Operator — the DoD live toggle)
 
 Prove the write path end-to-end on the **mirror** (needs the PIN provisioned above):
