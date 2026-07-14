@@ -1,7 +1,13 @@
-"""Class-B error-log operation for the operator dashboard: CLEAR the ITS_Errors log.
+"""Class-B error-log operations for the operator dashboard: MARK open CRITICALs resolved,
+and CLEAR the ITS_Errors log.
 
-The operator-triggered, no-age-floor complement to watchdog Check O's automatic row-cap
-rotation. It reuses Check O's OWN terminality predicate (`shared.errors_rotation` — the
+Two halves of "solve it → sweep it". `mark_errors_resolved` stamps "Resolved At" on OPEN
+CRITICAL rows matching a Script / Error-code filter, making them TERMINAL; `clear_error_log`
+then deletes terminal rows. Both share `shared.errors_rotation`'s terminality predicate, so a
+row a mark makes terminal is exactly a row a clear may delete — no predicate divergence.
+
+`clear_error_log` is the operator-triggered, no-age-floor complement to watchdog Check O's
+automatic row-cap rotation. It reuses Check O's OWN terminality predicate (`shared.errors_rotation` — the
 single source of truth) so it inherits the never-delete-an-OPEN-CRITICAL invariant: every
 INFO/WARN/ERROR row and every RESOLVED CRITICAL is deletable; an open CRITICAL (blank
 "Resolved At") is the "am I on fire" surface watchdog Check B counts and is NEVER touched.
@@ -24,13 +30,17 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
-# Rows whose error_code is PRESERVED across a clear — the thin who-cleared / what-rotated
-# audit trail, excluded from the eligible set so repeated clears never erase the record of
-# the clears (or Check O's rotations) themselves.
-_PRESERVED_CODES = frozenset({"errors_log_cleared", "row_cap_rotation"})
+# Rows whose error_code is PRESERVED across a clear — the thin who-cleared / what-rotated /
+# what-was-marked audit trail, excluded from the eligible set so repeated clears never erase
+# the record of the clears (Check O's rotations, or the mark-resolved actions) themselves.
+_PRESERVED_CODES = frozenset({"errors_log_cleared", "row_cap_rotation", "errors_resolved_marked"})
 
 # The ITS_Errors date column parsed for the older-than filter.
 _DATE_COLUMN = "Timestamp"
+
+# The ITS_Errors column stamped to make an open CRITICAL terminal (errors_rotation reads it).
+# Stamped with a bare YYYY-MM-DD, matching the sibling "Timestamp" column's proven-good format.
+_RESOLVED_AT_COLUMN = "Resolved At"
 
 
 @dataclass
@@ -127,6 +137,112 @@ def clear_error_log(
     )
 
 
+def mark_errors_resolved(
+    operator: str,
+    *,
+    script: str | None = None,
+    error_code: str | None = None,
+    dry_run: bool = False,
+) -> ErrorsOutcome:
+    """Stamp "Resolved At" on OPEN CRITICAL ITS_Errors rows matching a filter — the "solve it"
+    half; `clear_error_log` is the "sweep it" half.
+
+    A resolved CRITICAL becomes TERMINAL (`errors_rotation.errors_row_is_terminal` reuses the
+    exact "Resolved At" set/blank predicate), so once marked, the sibling clear verb (or
+    watchdog Check O's rotation) can delete it. Only OPEN CRITICALs are touched: already-terminal
+    rows (every INFO/WARN/ERROR, and any already-resolved CRITICAL) are skipped, so re-running is
+    idempotent and this never "un-resolves" or re-stamps anything.
+
+    At least ONE of `script` / `error_code` MUST be given. An unfiltered mass-resolve would
+    empty the entire "am I on fire" working set (watchdog Check B counts open CRITICALs), so it
+    is refused — the operator resolves a KNOWN class (a retired daemon's Script, a fixed Error
+    code), never "everything".
+
+    script: match ITS_Errors "Script" cell exactly.  error_code: match the "Error" cell exactly.
+    dry_run: count the matches + report, stamp nothing (preview / live-smoke).
+    """
+    er = _load("shared.errors_rotation")
+    ss = _load("shared.smartsheet_client")
+    sid = _load("shared.sheet_ids")
+    defaults = _load("shared.defaults")
+
+    script = (script or "").strip()
+    code = (error_code or "").strip()
+    if not script and not code:
+        return ErrorsOutcome(
+            "error",
+            "a Script and/or Error-code filter is required — refusing to mark EVERY open "
+            "CRITICAL resolved (that would empty the 'am I on fire' surface)",
+        )
+
+    # Fenced read — a breaker-open / transient Smartsheet error becomes an error outcome,
+    # never a raise (mirrors clear_error_log + the daemon fences).
+    try:
+        rows = ss.get_rows(sid.SHEET_ERRORS)
+    except Exception as exc:
+        return ErrorsOutcome("error", f"could not read ITS_Errors: {type(exc).__name__}: {exc}")
+
+    matched_ids: list[int] = []
+    for row in rows:
+        if er.errors_row_is_terminal(row):
+            continue  # only OPEN CRITICALs are markable (terminal => already resolved / non-critical)
+        if script and str(row.get("Script") or "").strip() != script:
+            continue
+        if code and str(row.get("Error") or "").strip() != code:
+            continue
+        rid = row.get("_row_id")
+        if isinstance(rid, int):
+            matched_ids.append(rid)
+
+    total = len(matched_ids)
+    filt = ", ".join(
+        p for p in (f"Script={script!r}" if script else "", f"Error={code!r}" if code else "") if p
+    )
+
+    if total == 0:
+        return ErrorsOutcome("noop", f"no OPEN CRITICAL rows match ({filt})")
+
+    batch = defaults.SHEET_ROW_ROTATION_DELETE_BATCH
+    per_run_cap = batch * defaults.SHEET_ROW_ROTATION_MAX_BATCHES_PER_RUN
+    to_mark = matched_ids[:per_run_cap]
+
+    if dry_run:
+        return ErrorsOutcome(
+            "ok",
+            f"DRY RUN — would mark {len(to_mark)} of {total} OPEN CRITICAL row(s) resolved "
+            f"({filt}, batches of {batch})",
+        )
+
+    stamp = datetime.now(UTC).date().isoformat()
+    marked = 0
+    for start in range(0, len(to_mark), batch):
+        chunk = to_mark[start : start + batch]
+        updates = [{"_row_id": rid, _RESOLVED_AT_COLUMN: stamp} for rid in chunk]
+        try:
+            ss.update_rows(sid.SHEET_ERRORS, updates)
+        except Exception as exc:
+            # Partial progress is real + honest — audit what got marked, report, don't raise.
+            _audit_errors_resolved(operator, marked, total, filt, partial=True)
+            return ErrorsOutcome(
+                "error",
+                f"marked {marked} of {total} then FAILED: {type(exc).__name__}: {exc} "
+                f"— run again to continue",
+            )
+        marked += len(chunk)
+
+    _audit_errors_resolved(operator, marked, total, filt, partial=False)
+    remaining = total - marked
+    tail = (
+        "" if remaining == 0
+        else f" — {remaining} remain (cap {per_run_cap}); run again to continue"
+    )
+    return ErrorsOutcome(
+        "ok",
+        f"marked {marked} of {total} OPEN CRITICAL row(s) resolved ({filt}){tail}. They are now "
+        f"terminal — clear them with the clear-error-log button.",
+    )
+
+
 def _audit_errors_clear(
     operator: str, deleted: int, eligible: int, scope: str, *, partial: bool
 ) -> None:
@@ -140,6 +256,25 @@ def _audit_errors_clear(
             f"error log {verb} — deleted {deleted} of {eligible} terminal rows ({scope}) by "
             f"{operator} (elevated-confirm) at {ts}",
             error_code="errors_log_cleared",
+            alert=False,
+        )
+    except Exception:
+        pass
+
+
+def _audit_errors_resolved(
+    operator: str, marked: int, matched: int, filt: str, *, partial: bool
+) -> None:
+    try:
+        el = _load("shared.error_log")
+        ts = datetime.now(UTC).isoformat()
+        verb = "PARTIAL mark-resolved" if partial else "marked resolved"
+        el.log(
+            el.Severity.WARN,
+            "operator_dashboard.errors_resolve",
+            f"open CRITICALs {verb} — stamped {marked} of {matched} matching rows ({filt}) by "
+            f"{operator} (elevated-confirm) at {ts}",
+            error_code="errors_resolved_marked",
             alert=False,
         )
     except Exception:

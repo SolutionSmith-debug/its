@@ -261,6 +261,34 @@ def register_act_routes(app: FastAPI, templates: Jinja2Templates) -> None:
         result = errors_ops.clear_error_log(operator, older_than_days=days)
         return _outcome(templates, request, result.kind, result.message, "ITS_Errors", "")
 
+    @app.post("/act/errors/resolve")
+    def act_errors_resolve(
+        request: Request,
+        pin: str = Form(...),
+        confirm: str = Form(""),
+        script: str = Form(""),
+        error_code: str = Form(""),
+    ) -> Response:
+        # Class-B: stamp "Resolved At" on OPEN CRITICAL ITS_Errors rows matching a Script and/or
+        # Error-code filter, making them terminal so clear-error-log can sweep them (the "solve it"
+        # half). No per-target name to type, so the fixed confirmation phrase is "mark-resolved".
+        # The filter-required guard lives in errors_ops (an unfiltered mass-resolve is refused).
+        operator = getpass.getuser()
+        try:
+            check_origin(request.headers.get("origin"), request.headers.get("referer"))
+        except OriginError as exc:
+            audit_denied(operator, "ITS_Errors", "", "origin")
+            return _outcome(templates, request, "refused", f"refused: {exc}", "ITS_Errors", "")
+        try:
+            verify_elevated(pin, confirm, expected="mark-resolved")
+        except PinError as exc:
+            audit_denied(operator, "ITS_Errors", "", "elevated")
+            return _outcome(templates, request, config_write.REJECTED, f"denied: {exc}", "ITS_Errors", "")
+        result = errors_ops.mark_errors_resolved(
+            operator, script=script.strip() or None, error_code=error_code.strip() or None
+        )
+        return _outcome(templates, request, result.kind, result.message, "ITS_Errors", "")
+
     @app.post("/act/pin/change")
     def act_pin_change(
         request: Request,
