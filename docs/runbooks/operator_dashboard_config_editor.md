@@ -124,6 +124,11 @@ Send Gate bypass). Elevated: re-PIN + type the exact label. Audits `config_daemo
 re-PIN + type `clear-breaker`. Audits `config_breaker_cleared`. **noop** if already CLOSED. The breaker also
 self-heals after its cooldown, so a clear is a convenience (skip the wait), not a repair of last resort.
 
+- **"breaker reset failed: …"** — the state-file write (or its lock acquire) failed — a permissions/disk
+  problem, or a `StateLockTimeoutError` because a daemon is mid-cycle writing the breaker. **Tier-2:** retry
+  in a few seconds (a lock contention clears itself); check `~/its/state/` is writable via the State-locks /
+  log-tail panels. If it recurs, **escalate to Seth** (a persistent disk/permissions fault is high-class).
+
 **State-locks are NOT clearable (by design).** The ITS lock model (`state_io.with_path_lock`) is a
 non-blocking `fcntl` flock on a persistent `<path>.lock` sidecar: a dead holder's flock is released by the
 OS instantly, and the sidecar file is intentionally left behind (existence ≠ held). So a lock the **State

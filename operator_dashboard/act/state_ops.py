@@ -47,14 +47,20 @@ def clear_circuit_breaker(operator: str) -> StateOutcome:
     write through the canonical state_io path)."""
     cb = _load("shared.circuit_breaker")
     sio = _load("shared.state_io")
+    prior: str | None = None
+    # Participate in the SAME serialization circuit_breaker's own transition writers
+    # use (with_path_lock on the sidecar) — a blind UNLOCKED write can be reverted by
+    # a daemon's in-flight locked read-modify-write, silently defeating the reset.
+    # Read prior + write blank as one locked read-modify-write.
     try:
-        raw = json.loads(cb.STATE_FILE.read_text())
-        prior = raw.get("state") if isinstance(raw, dict) else None
-    except Exception:
-        prior = None  # missing / corrupt state file → treated as already-CLOSED
-    try:
-        sio.atomic_write_json(cb.STATE_FILE, cb._blank_state())
-    except Exception as exc:
+        with sio.with_path_lock(cb.STATE_FILE):
+            try:
+                raw = json.loads(cb.STATE_FILE.read_text())
+                prior = raw.get("state") if isinstance(raw, dict) else None
+            except Exception:
+                prior = None  # missing / corrupt state file → treated as already-CLOSED
+            sio.atomic_write_json(cb.STATE_FILE, cb._blank_state())
+    except Exception as exc:  # incl. StateLockTimeoutError (breaker busy) → operator retries
         return StateOutcome("error", f"breaker reset failed: {type(exc).__name__}: {exc}")
     _audit_breaker_clear(operator, prior)
     if prior in (None, cb.CLOSED):
