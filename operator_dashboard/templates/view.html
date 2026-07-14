@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}{{ p.title }} — ITS Operator Dashboard{% endblock %}
+{% block content %}
+<div class="detail-view">
+  <div class="detail-head">
+    <a class="backlink" href="/">← dashboard</a>
+    <h2>{{ p.title }}</h2>
+    {% if p.summary %}<span class="summary">{{ p.summary }}</span>{% endif %}
+  </div>
+  {% if not p.available %}
+  <div class="config-error">unavailable — {{ p.unavailable_reason }}</div>
+  {% elif not p.rows %}
+  <p class="config-note">no data</p>
+  {% else %}
+  <table class="config-table detail-table panel-{{ p.panel_id }}">
+    <thead><tr>{% for c in p.columns %}<th>{{ c }}</th>{% endfor %}</tr></thead>
+    <tbody>
+      {% for row in p.rows %}
+      <tr class="sev-{{ row.get('_sev', 'info') }}">
+        {% for c in p.columns %}<td>{{ row.get(c, '') }}</td>{% endfor %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="config-note">{{ p.rows|length }} rows shown</p>
+  {% endif %}
+</div>
+{% endblock %}

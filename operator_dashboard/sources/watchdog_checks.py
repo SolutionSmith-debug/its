@@ -30,7 +30,7 @@ class WatchdogChecksSource(DataSource):
     panel_id = "watchdog"
     title = "Watchdog markers (Check C)"
 
-    def _fetch(self) -> PanelResult:
+    def _fetch(self, detail: bool = False) -> PanelResult:
         # `scripts/` is not a Python package (no __init__; absent from the
         # editable-install package list), so `import scripts.watchdog` resolves
         # only when a tree root is on sys.path. Pin it to the OBSERVATION root

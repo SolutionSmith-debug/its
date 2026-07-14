@@ -33,7 +33,7 @@ class CircuitBreakerSource(DataSource):
     panel_id = "circuit_breaker"
     title = "Smartsheet circuit breaker"
 
-    def _fetch(self) -> PanelResult:
+    def _fetch(self, detail: bool = False) -> PanelResult:
         cb: Any = importlib.import_module("shared.circuit_breaker")
         path: Path = cb.STATE_FILE
         try:
@@ -81,7 +81,7 @@ class HeartbeatsSource(DataSource):
     panel_id = "heartbeats"
     title = "Daemon liveness (local)"
 
-    def _fetch(self) -> PanelResult:
+    def _fetch(self, detail: bool = False) -> PanelResult:
         hb: Any = importlib.import_module("shared.heartbeat")
         state_dir: Path = hb.STATE_DIR
         row_state_path: Path = hb.HEARTBEAT_ROW_STATE_PATH
@@ -176,7 +176,7 @@ class LocksSource(DataSource):
         finally:
             fh.close()
 
-    def _fetch(self) -> PanelResult:
+    def _fetch(self, detail: bool = False) -> PanelResult:
         rows: list[dict[str, str]] = []
         worst = SEV_OK
         held_count = 0

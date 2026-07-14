@@ -89,12 +89,16 @@ class DataSource:
     panel_id: str = ""
     title: str = ""
 
-    def _fetch(self) -> PanelResult:  # pragma: no cover - abstract
+    def _fetch(self, detail: bool = False) -> PanelResult:  # pragma: no cover - abstract
         raise NotImplementedError
 
-    def fetch(self) -> PanelResult:
+    def fetch(self, detail: bool = False) -> PanelResult:
+        # detail=True is the drill-down (`/view/{panel_id}`) full-page render: the
+        # capped panels (errors / logs / audit) return MORE rows; the rest, which
+        # already show everything, ignore it. Passed as a param (not shared state)
+        # so a concurrent htmx panel-poll and a detail view never race.
         try:
-            return self._fetch()
+            return self._fetch(detail)
         except Exception as exc:  # fail-soft: a panel never crashes the page
             return PanelResult(
                 panel_id=self.panel_id,

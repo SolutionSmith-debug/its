@@ -50,11 +50,11 @@ class LogTailSource(DataSource):
         )
         return candidates[0] if candidates else None
 
-    def _tail_lines(self, path: Path) -> list[str]:
+    def _tail_lines(self, path: Path, tail_bytes: int = TAIL_BYTES) -> list[str]:
         size = path.stat().st_size
         with path.open("rb") as fh:
-            if size > TAIL_BYTES:
-                fh.seek(size - TAIL_BYTES)
+            if size > tail_bytes:
+                fh.seek(size - tail_bytes)
                 fh.readline()  # discard the partial first line
             data = fh.read()
         return data.decode("utf-8", errors="replace").splitlines()
@@ -78,7 +78,7 @@ class LogTailSource(DataSource):
             parsed.append((ts, sev, script, msg))
         return parsed
 
-    def _fetch(self) -> PanelResult:
+    def _fetch(self, detail: bool = False) -> PanelResult:
         path = self._pick_file()
         if path is None:
             return PanelResult(
@@ -89,7 +89,10 @@ class LogTailSource(DataSource):
                 columns=["time (UTC)", "sev", "script", "message"],
                 rows=[],
             )
-        records = self._group(self._tail_lines(path))[-MAX_RECORDS:]
+        # drill-down: read a much larger tail + keep more records
+        tail_bytes = TAIL_BYTES * 8 if detail else TAIL_BYTES
+        cap = MAX_RECORDS * 10 if detail else MAX_RECORDS
+        records = self._group(self._tail_lines(path, tail_bytes))[-cap:]
         rows: list[dict[str, str]] = [
             {
                 "time (UTC)": clean(ts),
