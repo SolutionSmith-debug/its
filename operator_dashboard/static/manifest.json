@@ -1,0 +1,13 @@
+{
+  "name": "ITS — Integrated Technical System",
+  "short_name": "ITS Dashboard",
+  "description": "Operator dashboard for the Integrated Technical System — Evergreen Renewables (localhost).",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "theme_color": "#0a3d2c",
+  "background_color": "#0b120e",
+  "icons": [
+    { "src": "/static/favicon.png", "sizes": "256x256", "type": "image/png", "purpose": "any" }
+  ]
+}

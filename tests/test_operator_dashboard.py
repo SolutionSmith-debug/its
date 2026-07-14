@@ -241,3 +241,16 @@ def test_audit_trail_source_filters_to_config_editor(monkeypatch: pytest.MonkeyP
     assert "config_audit" in joined and "config_denied" in joined
     assert "other_noise" not in joined  # non-config-editor rows filtered out
     assert "denied" in result.summary  # a denial is surfaced in the summary
+
+
+def test_manifest_and_icon_served_for_dock_install(client: TestClient) -> None:
+    # Installable-as-a-Dock-app assets: the web-app manifest (correct content-type)
+    # + the Evergreen-crest icon both serve, so Safari "Add to Dock" / Chrome
+    # "Install" produce a standalone window (and the stray favicon 404 is gone).
+    m = client.get("/manifest.json")
+    assert m.status_code == 200
+    assert "application/manifest+json" in m.headers.get("content-type", "")
+    assert '"display": "standalone"' in m.text and "ITS" in m.text
+    icon = client.get("/static/favicon.png")
+    assert icon.status_code == 200
+    assert icon.headers.get("content-type", "").startswith("image/")
