@@ -26,6 +26,7 @@
         <tr>
           <td class="cfg-setting">
             {{ r.setting }}{% if r.gated %} <span class="gated" title="send-poller">⚑</span>{% endif %}{% if r.tier != 'A' %} <span class="tier-b">B</span>{% endif %}
+            {% if r.purpose %}<div class="cfg-purpose">{{ r.purpose }}</div>{% endif %}
             {% if r.note %}<div class="cfg-note">{{ r.note }}</div>{% endif %}
           </td>
           <td class="cfg-ws">{{ r.workstream }}</td>

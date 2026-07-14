@@ -349,3 +349,99 @@ def test_email_list_strips_each_item(fake_smartsheet: dict[str, Any]) -> None:
     from operator_dashboard.act.validators import v_email_list
 
     assert v_email_list('["a@b.com\\n"]') == '["a@b.com"]'
+
+
+# ---------------------------------------- D1-4 registry reconcile (post-SC/PO) ----
+# The subcontracts workstream + PO Features A/B/C landed AFTER the registry was
+# frozen; these enroll the live-but-unauthorized gate/behaviour keys so the
+# dashboard can pause/resume them. Each is verified LIVE in ITS_Config.
+def test_reconcile_enrolls_live_gate_and_behavior_keys() -> None:
+    # plain Class-A gates/behaviour — editable, NOT first-activation-gated
+    for setting, ws in (
+        ("safety_reports.compile_now_poll.polling_enabled", "safety_reports"),
+        ("progress_reports.compile_now_poll.polling_enabled", "progress_reports"),
+        ("safety_reports.photo_screen.clamav_enabled", "safety_reports"),
+        ("po_materials.po_attach_screen.clamav_enabled", "po_materials"),
+        ("progress_reports.progress_send.scheduled_send_local", "progress_reports"),
+    ):
+        entry = registry.get_entry(setting, ws)
+        assert entry is not None, f"{setting} [{ws}] should be enrolled"
+        assert entry.tier == "A" and not entry.first_activation_gated
+
+    # send-adjacent pollers — Class-A pause, but false->true activation escalates
+    for setting, ws in (
+        ("progress_reports.progress_send.polling_enabled", "progress_reports"),
+        ("subcontracts.subcontract_poll.polling_enabled", "subcontracts"),
+        ("subcontracts.subcontract_poll.subcontractors_sync_enabled", "subcontracts"),
+        ("subcontracts.subcontract_poll.status_sync_enabled", "subcontracts"),
+    ):
+        entry = registry.get_entry(setting, ws)
+        assert entry is not None, f"{setting} [{ws}] should be enrolled"
+        assert entry.tier == "A" and entry.first_activation_gated, f"{setting} must escalate on activation"
+
+
+def test_subcontract_interval_key_still_not_editable() -> None:
+    # the poll-interval is install-time (no hot-reload) — enrolling the gates must
+    # NOT accidentally enroll the interval key.
+    assert not registry.is_editable("subcontracts.subcontract_poll.poll_interval_seconds", "subcontracts")
+
+
+def test_enrolled_clamav_toggle_applies_and_audits(fake_smartsheet: dict[str, Any]) -> None:
+    # a newly-enrolled plain Class-A behaviour key: false->true applies + audits.
+    _seed(fake_smartsheet, "po_materials.po_attach_screen.clamav_enabled", "po_materials", "false", row_id=11)
+    out = apply_edit("po_materials.po_attach_screen.clamav_enabled", "po_materials", "true", "op")
+    assert out.kind == config_write.APPLIED
+    assert fake_smartsheet["updates"] == [{"_row_id": 11, "Value": "true"}]
+    assert any(a[1] == "config_audit" for a in fake_smartsheet["audits"])
+
+
+def test_enrolled_subcontract_gate_activation_escalates_pause_applies(fake_smartsheet: dict[str, Any]) -> None:
+    # a newly-enrolled send-adjacent gate: false->true escalates (NOT applied)...
+    _seed(fake_smartsheet, "subcontracts.subcontract_poll.polling_enabled", "subcontracts", "false", row_id=12)
+    out = apply_edit("subcontracts.subcontract_poll.polling_enabled", "subcontracts", "true", "op")
+    assert out.kind == config_write.ESCALATED
+    assert fake_smartsheet["updates"] == []
+    # ...while pausing an ON gate applies normally.
+    _seed(fake_smartsheet, "subcontracts.subcontract_poll.polling_enabled", "subcontracts", "true", row_id=12)
+    out2 = apply_edit("subcontracts.subcontract_poll.polling_enabled", "subcontracts", "false", "op")
+    assert out2.kind == config_write.APPLIED
+    assert fake_smartsheet["updates"] == [{"_row_id": 12, "Value": "false"}]
+
+
+def test_unknown_key_never_in_registry_refused_no_write(fake_smartsheet: dict[str, Any]) -> None:
+    # a key that is in NO tier (not Class A/B, not a secret, not display) is refused.
+    assert not registry.is_editable("subcontracts.subcontract_send.polling_enabled", "subcontracts")
+    out = apply_edit("subcontracts.subcontract_send.polling_enabled", "subcontracts", "true", "op")
+    assert out.kind == config_write.NOT_EDITABLE
+    assert fake_smartsheet["updates"] == []
+
+
+# ------------------------------------- self-documenting purpose wiring (D1-4) ----
+def test_purpose_map_reads_config_defaults() -> None:
+    # the generated data dictionary supplies human 'purpose' prose per key.
+    pm = config_write._purpose_map()
+    assert pm  # non-empty (the file is present + parseable)
+    assert pm.get(("field_ops.fieldops_sync.sync_enabled", "field_ops"))
+
+
+def test_read_registry_state_carries_purpose(fake_smartsheet: dict[str, Any]) -> None:
+    _seed(fake_smartsheet, "field_ops.fieldops_sync.sync_enabled", "field_ops", "true", row_id=20)
+    rows = {(r["setting"], r["workstream"]): r for r in config_write.read_registry_state()}
+    row = rows[("field_ops.fieldops_sync.sync_enabled", "field_ops")]
+    assert "purpose" in row and row["purpose"]  # self-documenting prose surfaced
+
+
+def test_purpose_map_fail_soft_on_bad_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    # a missing/malformed dictionary file must degrade to an empty map (never raise)
+    # AND log a WARN so a broken data-dictionary is visible, not silent.
+    from pathlib import Path
+
+    import shared.error_log as el
+
+    logs: list[str | None] = []
+    monkeypatch.setattr(el, "log", lambda sev, script, msg, **kw: logs.append(kw.get("error_code")))
+    config_write._purpose_map.cache_clear()
+    monkeypatch.setattr(config_write, "_CONFIG_DEFAULTS_PATH", Path("/nonexistent/config_defaults.json"))
+    assert config_write._purpose_map() == {}
+    assert "config_purpose_map_unreadable" in logs  # broken dictionary surfaced, not silent
+    config_write._purpose_map.cache_clear()  # restore for other tests

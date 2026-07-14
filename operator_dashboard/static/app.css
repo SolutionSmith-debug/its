@@ -127,6 +127,9 @@ tr.sev-info td:first-child { color: var(--info); }
 .cfg-ws, .cfg-current { font-family: ui-monospace, SFMono-Regular, monospace; color: var(--muted); }
 .cfg-current { color: var(--text); }
 .cfg-note { color: var(--warn); font-size: 11px; margin-top: 3px; font-family: sans-serif; }
+/* purpose = neutral "what this setting does" prose (from config_defaults.json);
+   distinct from cfg-note, which is an amber gotcha/caveat. */
+.cfg-purpose { color: var(--muted); font-size: 11px; margin-top: 3px; font-family: sans-serif; max-width: 46ch; }
 .missing { color: var(--unavailable); }
 .cfg-form { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .cfg-input {
