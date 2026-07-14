@@ -1,6 +1,6 @@
 <article class="panel sev-{{ p.severity }} panel-{{ p.panel_id }}">
   <header class="panel-head">
-    <h2>{{ p.title }}</h2>
+    <h2><a class="panel-link" href="/view/{{ p.panel_id }}" title="open full view">{{ p.title }} <span class="drill">↗</span></a></h2>
     {% if p.summary %}<span class="summary">{{ p.summary }}</span>{% endif %}
   </header>
   {% if not p.available %}

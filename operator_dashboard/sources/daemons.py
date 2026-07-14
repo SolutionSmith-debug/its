@@ -49,7 +49,7 @@ class DaemonStatusSource(DataSource):
                 table[label] = (pid, status)
         return table
 
-    def _fetch(self) -> PanelResult:
+    def _fetch(self, detail: bool = False) -> PanelResult:
         live = self._launchctl_table()
         labels = sorted(set(self._plist_labels()) | set(live))
         rows: list[dict[str, str]] = []

@@ -27,6 +27,7 @@ from operator_dashboard.sources.base import (
 )
 
 MAX_ERROR_ROWS = 25
+MAX_ERROR_ROWS_DETAIL = 500  # drill-down (/view/errors_recent) shows far more
 
 
 def _cached_error_rows() -> list[dict[str, Any]]:
@@ -70,11 +71,9 @@ class ErrorsRecentSource(DataSource):
     panel_id = "errors_recent"
     title = "ITS_Errors — recent"
 
-    def _load(self) -> list[dict[str, Any]]:
-        return _cached_error_rows()[-MAX_ERROR_ROWS:]
-
-    def _fetch(self) -> PanelResult:
-        rows_raw = cached("errors_recent", SMARTSHEET_TTL_SECONDS, self._load)
+    def _fetch(self, detail: bool = False) -> PanelResult:
+        cap = MAX_ERROR_ROWS_DETAIL if detail else MAX_ERROR_ROWS
+        rows_raw = _cached_error_rows()[-cap:]
         if not rows_raw:
             return PanelResult(
                 panel_id=self.panel_id,
@@ -138,7 +137,7 @@ class ReviewQueueDepthSource(DataSource):
                 pass
         return {"total": len(pending), "by_ws": by_ws, "by_sev": by_sev, "past_sla": past}
 
-    def _fetch(self) -> PanelResult:
+    def _fetch(self, detail: bool = False) -> PanelResult:
         data = cached("review_queue_depth", SMARTSHEET_TTL_SECONDS, self._load)
         total = int(data["total"])
         past = int(data["past_sla"])
@@ -219,7 +218,7 @@ class SendQueueSource(DataSource):
             per.append({"ws": ws, "unavailable": False, "counts": counts})
         return {"per": per}
 
-    def _fetch(self) -> PanelResult:
+    def _fetch(self, detail: bool = False) -> PanelResult:
         data = cached("send_queue", SMARTSHEET_TTL_SECONDS, self._load)
         rows: list[dict[str, str]] = []
         held = failed = pending = 0
@@ -266,18 +265,17 @@ class SendQueueSource(DataSource):
 # + escaped on render (Invariant 2).
 _ACT_SCRIPT = "operator_dashboard.config_editor"
 MAX_AUDIT_ROWS = 20
+MAX_AUDIT_ROWS_DETAIL = 400  # drill-down (/view/act_audit) shows far more
 
 
 class AuditTrailSource(DataSource):
     panel_id = "act_audit"
     title = "ACT audit — recent config actions"
 
-    def _load(self) -> list[dict[str, Any]]:
+    def _fetch(self, detail: bool = False) -> PanelResult:
         act = [r for r in _cached_error_rows() if str(r.get("Script") or "") == _ACT_SCRIPT]
-        return act[-MAX_AUDIT_ROWS:]
-
-    def _fetch(self) -> PanelResult:
-        rows_raw = cached("act_audit", SMARTSHEET_TTL_SECONDS, self._load)
+        cap = MAX_AUDIT_ROWS_DETAIL if detail else MAX_AUDIT_ROWS
+        rows_raw = act[-cap:]
         if not rows_raw:
             return PanelResult(
                 panel_id=self.panel_id, title=self.title, summary="no ACT actions yet",

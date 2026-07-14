@@ -65,6 +65,24 @@ def create_app() -> FastAPI:
             request, "_panel.html", {"p": result, "refresh": PANEL_REFRESH_SECONDS}
         )
 
+    @app.get("/view/{panel_id}")
+    def view(request: Request, panel_id: str) -> Response:
+        # Drill-down: the same panel rendered FULL-PAGE with detail=True (capped
+        # panels — errors / logs / audit — return far more rows). Read-only, one
+        # more GET; the ACT surface stays on /config.
+        source = PANELS_BY_ID.get(panel_id)
+        if source is None:
+            result = PanelResult(
+                panel_id=panel_id,
+                title=panel_id,
+                available=False,
+                unavailable_reason="unknown panel",
+                severity=SEV_UNAVAILABLE,
+            )
+        else:
+            result = source.fetch(detail=True)
+        return _TEMPLATES.TemplateResponse(request, "view.html", {"p": result})
+
     @app.get("/healthz", response_class=PlainTextResponse)
     def healthz() -> str:
         # Enriched so a KeepAlive prober / operator sees something meaningful: the

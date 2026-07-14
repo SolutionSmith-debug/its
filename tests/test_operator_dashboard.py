@@ -83,7 +83,8 @@ def test_untrusted_smartsheet_values_render_inert(
     # value into ITS_Errors, then prove the rendered HTML neutralizes both:
     # the <script> is HTML-escaped (autoescape) and the secret is redacted
     # (shared.redact) — neither reaches the browser live.
-    from operator_dashboard.sources.smartsheet_panels import ErrorsRecentSource
+    import shared.smartsheet_client as ss
+    from operator_dashboard import cache
 
     poison = [
         {
@@ -94,7 +95,8 @@ def test_untrusted_smartsheet_values_render_inert(
             "Message": "<script>alert('xss')</script> password=hunter2",
         }
     ]
-    monkeypatch.setattr(ErrorsRecentSource, "_load", lambda self: poison)
+    cache._store.clear()  # the ITS_Errors fetch is TTL-cached; force a fresh read
+    monkeypatch.setattr(ss, "get_rows", lambda sheet_id, **kw: list(poison))
 
     resp = client.get("/panels/errors_recent")
     assert resp.status_code == 200
@@ -254,3 +256,26 @@ def test_manifest_and_icon_served_for_dock_install(client: TestClient) -> None:
     icon = client.get("/static/favicon.png")
     assert icon.status_code == 200
     assert icon.headers.get("content-type", "").startswith("image/")
+
+
+def test_drilldown_view_shows_more_rows_than_panel(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Clicking a panel title opens /view/{panel_id} full-page with detail=True: the
+    # capped panels (errors) return far more rows than the 25-row summary card.
+    import shared.smartsheet_client as ss
+    from operator_dashboard import cache
+
+    cache._store.clear()
+    rows = [{"Severity": "WARN", "Message": f"e{i}", "Script": "d"} for i in range(300)]
+    monkeypatch.setattr(ss, "get_rows", lambda sheet_id, **kw: list(rows))
+    detail = client.get("/view/errors_recent")
+    assert detail.status_code == 200
+    assert "← dashboard" in detail.text and "rows shown" in detail.text
+    # detail cap (500) renders all 300; the panel card caps at 25
+    assert detail.text.count('<tr class="sev-') == 300
+    cache._store.clear()
+    monkeypatch.setattr(ss, "get_rows", lambda sheet_id, **kw: list(rows))
+    card = client.get("/panels/errors_recent")
+    assert card.text.count('<tr class="sev-') == 25
+    # the card title is a drill-down link; an unknown panel is fail-soft
+    assert 'href="/view/errors_recent"' in card.text
+    assert client.get("/view/nonexistent").status_code == 200
