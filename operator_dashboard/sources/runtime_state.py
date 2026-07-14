@@ -79,7 +79,7 @@ class CircuitBreakerSource(DataSource):
 
 class HeartbeatsSource(DataSource):
     panel_id = "heartbeats"
-    title = "Daemon liveness (local)"
+    title = "Daemon status (local)"
 
     def _fetch(self, detail: bool = False) -> PanelResult:
         hb: Any = importlib.import_module("shared.heartbeat")

@@ -16,20 +16,25 @@
   <script src="/static/htmx.min.js" defer></script>
 </head>
 <body>
-  <header class="topbar">
-    <span class="brand-lockup">
-      <span class="logo-plate">
-        <img src="/static/evergreen-logo.svg" alt="Evergreen Renewables" class="brand-logo">
+  <div class="chrome">
+    <header class="topbar">
+      <span class="brand-lockup">
+        <span class="logo-plate">
+          <img src="/static/evergreen-logo.svg" alt="Evergreen Renewables" class="brand-logo">
+        </span>
+        <span class="brand-wordmark">Integrated Technical System</span>
       </span>
-      <span class="brand-wordmark">Integrated Technical System</span>
-    </span>
-    <span class="badge readonly">read-only · localhost</span>
-    <nav class="topnav">
-      <a href="/">status</a>
-      <a href="/config">config editor</a>
-    </nav>
-    <span class="host">127.0.0.1:8484</span>
-  </header>
+      <span class="badge readonly">read-only · localhost</span>
+      <nav class="topnav">
+        <a href="/">status</a>
+        <a href="/config">config editor</a>
+      </nav>
+      <span class="host">127.0.0.1:8484</span>
+    </header>
+    {# Banner-extension back nav — inner pages (drill-down / config) fill this
+       with a "← Back to dashboard" control. Empty on the status grid itself. #}
+    {% block subnav %}{% endblock %}
+  </div>
   <main>
     {% block content %}{% endblock %}
   </main>
