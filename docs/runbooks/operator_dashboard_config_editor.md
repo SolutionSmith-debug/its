@@ -189,6 +189,28 @@ locks** panel shows as HELD is a genuinely-live holder — there is no stale art
 force-removing a sidecar would not release the flock. If a daemon looks wedged on a lock, the repair is to
 **stop/kickstart that daemon** (above), not to touch its lock.
 
+## Error-log clear (Class B · elevated · WS2)
+
+Clear **terminal** rows from `ITS_Errors` on demand (`POST /act/errors/clear`) — the operator-triggered,
+no-age-floor complement to the watchdog's automatic row-cap rotation (Check O). It reuses Check O's OWN
+terminality predicate (`shared/errors_rotation.py`, the single source of truth), so it inherits the
+never-delete invariant: every INFO/WARN/ERROR row and every **resolved** CRITICAL is deletable; an **open
+CRITICAL** (blank `Resolved At`) is the "am I on fire" surface and is **NEVER** deleted. The clear/rotation
+audit trail (`errors_log_cleared`, `row_cap_rotation`) is also preserved. Elevated: re-PIN + type
+`clear-error-log`. Optional **older-than-N-days** keeps recent rows (blank = all terminal rows). Bounded to
+4,600 rows/run (same cap as Check O) — re-run to continue a large backlog. Audits `errors_log_cleared` (the
+count deleted + scope + operator, written LAST so it is never in its own delete set).
+
+- **"cleared X of Y … — N remain … run again to continue"** — expected on a large backlog (the 4,600/run
+  cap). **Tier-2:** click again until it reports 0 remaining.
+- **"no terminal rows to clear (…)"** (noop) — nothing eligible in scope (e.g. an older-than filter whose
+  only old rows are open CRITICALs, which are never deleted). Working as intended.
+- **"deleted X of Y then FAILED: … — run again to continue"** — a Smartsheet transient (500 / breaker-open)
+  mid-batch; progress is real + audited. **Tier-2:** wait a few seconds and re-run (it resumes from what
+  remains). If it recurs every run, **escalate to Seth** (a persistent Smartsheet fault is high-class).
+- This deletes from the §3.1 forensic surface, so it is **irreversible** — but open CRITICALs and the audit
+  trail always survive. It never deploys, sends, or writes `ITS_Config`.
+
 ## Change the operator PIN (Class C · elevated)
 
 `POST /act/pin/change` lets the **Developer-Operator** **change** the PIN from the dashboard — it is a

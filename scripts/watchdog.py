@@ -133,6 +133,7 @@ from shared.error_log import (
     its_error_log,
     log,
 )
+from shared.errors_rotation import errors_row_is_terminal, row_age_date
 from shared.kill_switch import SystemState, check_system_state
 from shared.required_config import ConfigKey, resolve_and_log
 from shared.review_queue import ReviewReason, SlaTier
@@ -2136,13 +2137,12 @@ def _check_portal_prune_health() -> CheckResult:
 # code change, high-class).
 
 
-def _errors_row_is_terminal(row: dict[str, Any]) -> bool:
-    """ITS_Errors terminality — see the Check O rationale block above."""
-    severity = str(row.get("Severity") or "").strip()
-    if severity != Severity.CRITICAL.value:
-        return True
-    resolved_at = row.get("Resolved At")
-    return bool(str(resolved_at).strip()) if resolved_at is not None else False
+# ITS_Errors terminality + age parsing now live in shared/errors_rotation.py — the
+# SINGLE SOURCE OF TRUTH shared with the dashboard clear-error-log verb
+# (operator_dashboard/act/errors_ops.py), so the two can never drift. Thin private
+# aliases keep the call sites below + the Check O rationale block above unchanged.
+_errors_row_is_terminal = errors_row_is_terminal
+_row_age_date = row_age_date
 
 
 def _review_queue_row_is_terminal(row: dict[str, Any]) -> bool:
@@ -2150,19 +2150,6 @@ def _review_queue_row_is_terminal(row: dict[str, Any]) -> bool:
     IN_REVIEW / ESCALATED (see the Check O rationale block above)."""
     status = str(row.get("Status") or "").strip()
     return status in {"APPROVED", "REJECTED"}
-
-
-def _row_age_date(row: dict[str, Any], date_column: str) -> date | None:
-    """Parse the row's ISO date cell; None = unprovable age (not eligible)."""
-    raw = row.get(date_column)
-    if not isinstance(raw, str) or not raw.strip():
-        return None
-    try:
-        # Cells are written as date.today().isoformat(); tolerate a datetime
-        # prefix (YYYY-MM-DDTHH:MM:SS) if the column type ever drifts.
-        return date.fromisoformat(raw.strip()[:10])
-    except ValueError:
-        return None
 
 
 # The per-sheet rotation policy table: (label, sheet id, terminal-predicate,

@@ -129,6 +129,7 @@ def test_mutation_routes_are_the_expected_act_set() -> None:
         ("/act/config/elevated", ["POST"]),
         ("/act/daemon/control", ["POST"]),
         ("/act/daemon/interval", ["POST"]),
+        ("/act/errors/clear", ["POST"]),
         ("/act/pin/change", ["POST"]),
         ("/act/secret/rotate", ["POST"]),
         ("/act/state/breaker-clear", ["POST"]),

@@ -151,6 +151,30 @@
   </section>
 
   <section class="config-group">
+    <h3>Error log (Class B · elevated)</h3>
+    <p class="config-note">
+      Clear <b>terminal</b> rows from <code>ITS_Errors</code> on demand — the operator-triggered
+      version of the watchdog's automatic row-cap rotation (Check O), with no 90-day floor.
+      <b>Open CRITICALs are never deleted</b> (they are the <b>open CRITICALs</b> panel's
+      "am I on fire" surface); the clear/rotation audit trail is preserved. Optionally keep recent
+      rows with an <em>older-than</em> day count (blank = every terminal row). Bounded to 4,600
+      rows per run — re-run to continue a large backlog. Elevated: re-enter the PIN + type
+      <code>clear-error-log</code>.
+    </p>
+    <div class="rotate-warn">
+      <b>Irreversible.</b> Cleared rows are gone from the forensic log. Open CRITICALs and the
+      clear/rotation audit trail survive; everything else terminal in scope is permanently removed.
+    </div>
+    <form hx-post="/act/errors/clear" hx-target="#err-out" hx-swap="innerHTML" class="cfg-form">
+      <input type="number" name="older_than_days" placeholder="older than N days (blank = all)" min="0" class="cfg-input" autocomplete="off">
+      <input type="password" name="pin" placeholder="re-PIN" class="cfg-pin" autocomplete="off">
+      <input type="text" name="confirm" placeholder="type: clear-error-log" class="cfg-confirm" autocomplete="off" spellcheck="false">
+      <button type="submit" class="cfg-btn elevated">clear error log</button>
+      <span class="cfg-out" id="err-out"></span>
+    </form>
+  </section>
+
+  <section class="config-group">
     <h3>Secret rotation (Class C · write-only · elevated)</h3>
     <p class="config-note">
       Values are <b>write-only</b> — never displayed or read back. Rotating a Worker bearer also
