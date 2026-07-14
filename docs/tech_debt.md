@@ -140,14 +140,15 @@ bug.
 
 From the slice-2 (`config_actuator`) build + adversarial review (PR #509):
 
-- **CE-1 (LOW, defense-in-depth) — §54 redact parity on the daemon `_fail` stamp legs.** `config_actuator._fail`
-  now `redact()`s the `reason` before it reaches `portal_client.stamp_config` (the failure_reason lands on the
-  portal Status Monitor, a sink that BYPASSES error_log's redact choke point — §54 damage-ceiling reasoning
-  applied to a new surface). `safety_reports/publish_daemon._fail` has the byte-identical UNREDACTED pattern
-  (`stamp_publish(..., failure_reason=reason)` fed by the same `_exc_reason` subprocess-stderr tail). Bring
-  publish_daemon to parity (same one-line `redact(reason)`), OR — cleaner — redact at the
-  `portal_client.stamp_publish`/`stamp_config` call sites so every future daemon inherits it. Trigger: any
-  §54 sweep, or before publish_daemon's failure_reason gets a portal-facing monitor.
+- **CE-1 (LOW, defense-in-depth) — §54 redact parity on the daemon `_fail` stamp legs. RESOLVED 2026-07-13.**
+  `safety_reports/publish_daemon._fail` now applies the byte-identical `redact(reason[:1800])` that
+  `config_actuator._fail` already had, so the `stamp_publish(..., failure_reason=reason)` leg — which lands on
+  the portal Status Monitor, a sink that BYPASSES error_log's redact choke — no longer egresses an accidental
+  token/PII from an `_exc_reason` subprocess-stderr tail. Proven by `tests/test_publish_daemon.py::
+  test_fail_redacts_a_secret_bearing_reason_before_egress` (RED on the pre-fix unredacted line). The stale
+  "tracked follow-up" comment in `config_actuator._fail` was updated to note parity. (The broader "redact at
+  the `portal_client.stamp_*` call sites so every future daemon inherits it" idea is left as a future
+  refactor, not this fix.) Sweep to `tech_debt_closed.md` in the follow-up doc-hygiene pass.
 - **CE-2 (legal-gate depth) — render-side `legal_review` refusal (Layer A). RESOLVED 2026-07-10 (slice T2).**
   `terms._version_entry` now REFUSES a library version whose `legal_review != "cleared"` — the single choke
   point shared by `load_terms_text` + `required_tokens`, firing on an explicit pin OR the `current_version`
