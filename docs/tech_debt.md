@@ -205,7 +205,10 @@ From the slice-2 (`config_actuator`) build + adversarial review (PR #509):
   `config-editor`, `terms`, `authorization`, `pre-activation`.
 - **CE-6 (LOW, doc-currency) — `docs/enablement/purchase_orders.md:148-149` still says PO config is
   "read-only … not a portal edit," which has been false since the config editor's 3-slice vertical (#508–
-  #510/#512) shipped and terms editing (T1/T2, #518/#520) completed it.** Deliberately deferred at write
+  #510/#512) shipped and terms editing (T1/T2, #518/#520) completed it. RESOLVED 2026-07-13 (#506/#566):**
+  the "Configuration" section was rewritten to describe the actual editable surfaces; a grep for the old
+  "read-only"/"not a portal edit" phrasing returns empty and the manifest sha is current (CI green on HEAD).
+  Original context — deferred at write
   time: editing an enablement doc trips the `docs/enablement/manifest.yaml` sha256 recompute (see auto-memory
   `reference_enablement-doc-sha-manifest-coupling.md`) and the doc-currency CI gate (`test_docs_pdf --check`)
   goes RED until the new hash is hand-recorded — not a blocker to skip, just a two-step edit rather than a
@@ -252,7 +255,11 @@ the merged work, tracked so it isn't lost. The operator-gated cutover items live
   clamd, so it's an operator-run Phase-C smoke (clamd installs in host-migration Phase A2). **Trigger:**
   Phase-C hardening gate, when the operator enables `clamav_enabled`. **Tag:** `security`, `safety_reports`,
   `clamav`, `prove-the-control-bites`.
-- **CO-3 (LOW, mechanical coverage) — VC-03 does not sandbox-scan every mirror-bearing config row.** PR #525
+- **CO-3 (LOW, mechanical coverage) — VC-03 does not sandbox-scan every mirror-bearing config row. RESOLVED
+  2026-07-13 (as-designed):** the actionable sub-item is done — `system.operator_email` is enrolled in VC-03
+  with `sandbox_scan=True` (`scripts/verify_cutover.py:264`, comment "CO-3"). The 2 Box
+  `portal_root_folder_id` rows stay intentionally unenrolled (numeric IDs with no `evergreenmirror` marker to
+  scan; CL-14 grep + CL-12 sweep are their backstop). Original context — PR #525
   enrolled the 2 extra `worker_base_url` copies + `po_send.from_mailbox`, but `system.operator_email` (global,
   mirror-domain fallback) and the 2 Box `portal_root_folder_id` rows remain outside VC-03 — the manual CL-14
   grep + the CL-12 sweep are their backstop. Enrolling `operator_email` (sandbox-scanned) would close another
@@ -260,7 +267,9 @@ the merged work, tracked so it isn't lost. The operator-gated cutover items live
   marker to scan). **Trigger:** the next verify_cutover hardening pass. **Tag:** `cutover`, `verify_cutover`,
   `low-severity`.
 
-## Doc-conventions workstream taxonomy is missing `po_materials`/`purchase_orders` [OPEN 2026-07-10]
+## Doc-conventions workstream taxonomy is missing `po_materials`/`purchase_orders` [RESOLVED 2026-07-13]
+
+**RESOLVED 2026-07-13** (verified across all three surfaces): `po_materials` + `subcontracts` are now present in `scripts/lint_doc_conventions.py` `CANONICAL_WORKSTREAMS`, the `docs/operations/doc_conventions.md` §"Workstream taxonomy" table, AND `docs/doctrine_manifest.yaml` `workstream_tags` (the 2026-07-12 WP1 reconciliation closed the three-copy set — HOUSE_REFLEXES §1). `purchase_orders` is intentionally NOT a doc-tag workstream (the exec package/tag is `po_materials`; `purchase_orders` lives only in the manifest planning-`slugs` vocabulary). Original context below.
 
 The blueprint workstream `workstreams/purchase-orders/` has been fully built out in this repo since
 `S1` (PR #492, 2026-07-09) through this session's #504–#512 — 20+ PRs, live daemons (`po_poll`, `po_send`,
@@ -355,7 +364,9 @@ Grep `progress` across worker + SPA and distinguish `jobs.progress` (the %-estim
 
 **Revisit when:** items 1 and 4 (both OPEN) — item 1 when `picklist_sync.py`'s capability-gating enrollment is separately addressed; item 4 opportunistically, or if a live near-simultaneous-cycle duplicate is ever observed. **Tag:** `field_ops`, `job-tracker`, `smartsheet-upsync`, `watchdog`, `capability-gating`.
 
-## install.sh interval-help-text stale — lists only 3 of 5 interval daemons [OPEN 2026-07-01]
+## install.sh interval-help-text stale — lists only 3 of 5 interval daemons [RESOLVED 2026-07-13]
+
+**RESOLVED 2026-07-13** (in-code verify): `scripts/launchd/install.sh`'s `usage()` heredoc + header comment + the `poll_interval_config_key()`/`poll_interval_default()` logic now ALL enumerate the SAME **8** interval daemons with matching defaults (weekly-send 900 / portal-poll 60 / compile-now-poll 90 / progress-send 900 / fieldops-sync 90 / po-poll 90 / po-send 900 / subcontract-poll 120) — help and logic are in sync. The "3 of 5" framing below is superseded.
 
 **Surfaced 2026-07-01** during the FF4/FF5/P2.6 session. `scripts/launchd/install.sh`'s `usage()` function and its header comment (top-of-file) both enumerate only 3 interval daemons — `weekly-send` (default 900), `portal-poll` (default 60), `compile-now-poll` (default 90) — and describe the `[interval]` CLI arg as overriding "the poll-interval daemons (weekly-send / portal-poll / compile-now-poll)".
 

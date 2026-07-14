@@ -14,6 +14,8 @@ convention has no separate `enablement` type; see
 <!-- BEGIN AUTO-INDEX -->
 | Date | Type | Status | Workstream | Title | PRs |
 |------|------|--------|------------|-------|-----|
+| 2026-07-13 | operations | active | operator_dashboard | [Enablement — The Operator Dashboard · Op Stds §6/A8](operator_dashboard.md) | _–_ |
+| 2026-07-13 | operations | active | subcontracts | [Enablement — Subcontracts: generating a subcontract package · Op Stds §6/A8](subcontracts.md) | _–_ |
 | 2026-07-10 | operations | active | _–_ | [Enablement — The ITS Owner's Manual · Op Stds §6/A8](its_owners_manual.md) | _–_ |
 | 2026-07-10 | operations | active | safety_portal | [Enablement — The Portal Admin Dashboard (accounts) · Op Stds §6/A8](portal_admin_dashboard.md) | _–_ |
 | 2026-07-10 | operations | active | safety_reports | [Enablement — Safety Reports: submit → review → weekly packet · Op Stds §6/A8](safety_reports_guide.md) | _–_ |
