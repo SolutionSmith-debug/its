@@ -28,6 +28,19 @@ from operator_dashboard.sources.base import (
 
 MAX_ERROR_ROWS = 25
 
+
+def _cached_error_rows() -> list[dict[str, Any]]:
+    """Single TTL-cached fetch of the (large) ITS_Errors sheet, SHARED by the
+    ErrorsRecent + ACT-audit panels — the sheet is at/near its row cap, so fetch
+    it once per TTL, not once per panel."""
+
+    def _load() -> list[dict[str, Any]]:
+        ss: Any = importlib.import_module("shared.smartsheet_client")
+        sid: Any = importlib.import_module("shared.sheet_ids")
+        return list(ss.get_rows(sid.SHEET_ERRORS))
+
+    return cached("its_errors_raw", SMARTSHEET_TTL_SECONDS, _load)
+
 _ERRORS_PRIORITY = [
     re.compile(r"time|date|when|created", re.IGNORECASE),
     re.compile(r"sever", re.IGNORECASE),
@@ -58,10 +71,7 @@ class ErrorsRecentSource(DataSource):
     title = "ITS_Errors — recent"
 
     def _load(self) -> list[dict[str, Any]]:
-        ss: Any = importlib.import_module("shared.smartsheet_client")
-        sid: Any = importlib.import_module("shared.sheet_ids")
-        rows = ss.get_rows(sid.SHEET_ERRORS)
-        return list(rows)[-MAX_ERROR_ROWS:]
+        return _cached_error_rows()[-MAX_ERROR_ROWS:]
 
     def _fetch(self) -> PanelResult:
         rows_raw = cached("errors_recent", SMARTSHEET_TTL_SECONDS, self._load)
@@ -263,10 +273,7 @@ class AuditTrailSource(DataSource):
     title = "ACT audit — recent config actions"
 
     def _load(self) -> list[dict[str, Any]]:
-        ss: Any = importlib.import_module("shared.smartsheet_client")
-        sid: Any = importlib.import_module("shared.sheet_ids")
-        rows = ss.get_rows(sid.SHEET_ERRORS)
-        act = [r for r in rows if str(r.get("Script") or "") == _ACT_SCRIPT]
+        act = [r for r in _cached_error_rows() if str(r.get("Script") or "") == _ACT_SCRIPT]
         return act[-MAX_AUDIT_ROWS:]
 
     def _fetch(self) -> PanelResult:
