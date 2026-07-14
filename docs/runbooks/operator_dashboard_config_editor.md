@@ -189,6 +189,28 @@ locks** panel shows as HELD is a genuinely-live holder — there is no stale art
 force-removing a sidecar would not release the flock. If a daemon looks wedged on a lock, the repair is to
 **stop/kickstart that daemon** (above), not to touch its lock.
 
+## Change the operator PIN (Class C · elevated)
+
+`POST /act/pin/change` lets the **Developer-Operator** **change** the PIN from the dashboard — it is a
+**change, not a recovery**. This is a sanctioned **Developer-Operator credential self-service** action under
+the Op Stds §44 rider (v21.x, ratified 2026-07-14): rotating a credential you already hold, gated by proof of
+that credential, is Developer-Operator self-service — **not** a Tier-2 action (a Successor-Operator holds no
+secret and never rotates one). The elevated ceremony proves authority: re-enter the **current** PIN + type
+`change-pin`, then enter the **new** PIN **twice** (a typo guard — the write is write-only / never shown, so a
+mistyped PIN would lock you out). Enforced: new-PIN ≥ 8 chars, not all-digits, not blank/all-whitespace, and
+not one character repeated (a STRONG passphrase); on success the lockout throttle is reset and
+`config_pin_changed` is audited (never the value). The new PIN is active immediately.
+
+- **Initial provisioning is still terminal-only** (there is no current PIN to authenticate a change):
+  `security add-generic-password -U -a "$USER" -s ITS_OPERATOR_PIN -w`.
+- **A LOST / forgotten PIN is recovered ONLY from the terminal** (same command, `-U` overwrites in place) —
+  the Keychain (local-machine access) stays the root of trust. The dashboard cannot help you if you don't
+  know the current PIN. This is by design, **not** a Tier-2 fault to escalate.
+- **"do not match" / "at least 8 characters" / "not all digits" / "not blank or all-whitespace" / "not one
+  character repeated"** — validation caught it; fix the value and retry (nothing was written).
+- **"denied: …" on the current-PIN field** — the current PIN was wrong (audited `config_denied`); this is the
+  gate working. If you truly can't recall it, recover via the terminal (above).
+
 ## Send-queue panel (read-only) — the send lane stays human-in-loop
 
 The **Send queue** panel rolls up `Send Status` across the four review/approve/send sheets (WSR / WPR /

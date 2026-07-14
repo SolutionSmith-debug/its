@@ -452,6 +452,11 @@ NETWORK_LIB_ALLOWLIST: frozenset[str] = frozenset({
     # `importlib` lazily resolves shared.keychain / shared.error_log. Write-only —
     # it never reads a secret back and never logs a value. Not a customer send.
     "operator_dashboard/act/secret_rotate.py",
+    # WS2 change-operator-PIN verb: `importlib` lazily resolves INTERNAL modules only
+    # (shared.keychain / shared.error_log / operator_dashboard.auth) to WRITE a new PIN
+    # via shared.keychain.set_secret. Write-only — never reads a PIN back (asserted by
+    # tests/test_pin_change.py). No send, no AI, no subprocess, no network lib.
+    "operator_dashboard/act/pin_change.py",
     # WS2 D1-3b interval-edit + Block-3 daemon-control verbs: `subprocess` runs
     # `scripts/launchd/install.sh load/unload <label> [<interval>]` and (kickstart)
     # `launchctl kickstart -k gui/<uid>/<label>`, all LABEL-ALLOWLISTED to
