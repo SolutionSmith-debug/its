@@ -131,6 +131,23 @@ def test_validation_failure_stamps_failed_and_fires_critical(stub):
     stub["commit"].assert_not_called()  # never reached actuation
 
 
+def test_fail_redacts_a_secret_bearing_reason_before_egress(stub):
+    """CE-1 (§54 parity with config_actuator._fail): `_fail`'s `reason` can carry a raw
+    subprocess stderr tail (`_exc_reason` surfaces `(exc.stderr)[-600:]`), and `stamp_publish`'s
+    `failure_reason` lands on the portal Status Monitor — a sink that BYPASSES error_log's redact
+    choke. The token must be scrubbed on BOTH the stamp leg and the operator CRITICAL message."""
+    secret = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+    pd._fail(pd._Creds("https://portal.test", "tok"), 7, "live",
+             f"wrangler exit 1: fatal: bad credentials, token {secret}")
+    sent = stub["stamp"].call_args.kwargs["failure_reason"]
+    assert secret not in sent          # RED on the pre-CE-1 unredacted `reason[:1800]`
+    assert "<redacted>" in sent
+    crit = [c for c in stub["log"].call_args_list
+            if c.args and c.args[0] == pd.Severity.CRITICAL]
+    assert crit, "expected a CRITICAL to fire"
+    assert secret not in crit[-1].args[2]
+
+
 def test_commit_failure_stamps_failed_tested_and_fires_critical(stub):
     stub["pending"].return_value = [{"id": 4}]
     stub["claim"].return_value = _row("create", "incident", "incident", definition=_create_def(), rid=4)
