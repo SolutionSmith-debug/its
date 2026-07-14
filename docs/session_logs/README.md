@@ -102,6 +102,8 @@ outside the sentinel block.
 | 2026-07-10 | session_log | active | _–_ | [Cutover readiness gap — CL-01…CL-33 disposition + verify_cutover baseline (2026-07-10)](2026-07-10_cutover-gap.md) | _–_ |
 | 2026-07-10 | session_log | active | _–_ | [Overnight (autonomous): §50 config-editor Features 1 & 2 + Aug-7 cutover readiness](2026-07-10_overnight-config-editor-features-and-cutover-readiness.md) | #524, #525, #526 |
 | 2026-06-10 | session_log | active | safety_portal | [Session — Agent Optimization (Brief 2) + Safety Portal Hardening (Brief 1)](2026-06-10_agent-optimization-and-portal-hardening.md) | #260, #261, #263, #264, #265, #266 |
+| 2026-07-13 | session_log | closed | _–_ | [Session — Autonomous delivery + readiness + tech-debt burn (2026-07-13, unattended)](2026-07-13_autonomous-delivery-readiness-and-techdebt-burn.md) | #568, #569, #571, #572, #573 |
+| 2026-07-13 | session_log | closed | _–_ | [2026-07-13 — exec-side of the Op Stds v21 doctrine elevation (#551 / #553 / #555)](2026-07-13_doctrine-elevation-v21-exec.md) | #551, #553, #555 |
 | 2026-07-12 | session_log | closed | docs | [Documentation reconciliation — reconcile every doc to the as-built system (6 WPs)](2026-07-12_documentation-reconciliation.md) | #543, #545, #547, #549 |
 | 2026-07-12 | session_log | closed | subcontracts | [Session — Office Operations nav + PO/SC Configuration subcontract editors (PRs #541/#542/#546 landed; #544/#548 held for operator; PR-B2 mapped, not started)](2026-07-12_office-ops-nav-and-po-sc-config.md) | #541, #542, #546, #544, #548 |
 | 2026-07-10 | session_log | closed | _–_ | [Session — Config-editor follow-ups (fix the self-defeating CI test, CE-3) + terms editing (Step 2, slices T1/T2)](2026-07-10_config-editor-followups-terms-editing.md) | #514, #511, #518, #520 |
@@ -173,6 +175,7 @@ outside the sentinel block.
 | 2026-05-24 | session_log | closed | docs | [2026-05-24 — CC file-based memory consolidation](2026-05-24_cc-memory-consolidation.md) | _–_ |
 | 2026-05-24 | session_log | closed | docs | [2026-05-24 — Markdown doc conventions + index generation + lint](2026-05-24_doc_conventions.md) | _–_ |
 | 2026-05-24 | session_log | closed | docs | [2026-05-24 — Execution-repo doctrine version drift cleanup](2026-05-24_doctrine-version-drift-cleanup.md) | _–_ |
+| 2026-07-13 | _–_ | _–_ | _–_ | [2026-07-13 — PO/SC config + subcontract/PO builder hardening](2026-07-13_po-sc-config-and-builder-hardening.md) | _–_ |
 | 2026-07-10 | session_log | complete | docs | [Session — WS3 D2-2: enablement content authoring + ITS_Config data dictionary generator (PR #515)](2026-07-10_ws3-docs-d2-2-guides-and-config-dictionary.md) | #515 |
 | 2026-07-06 | session_log | complete | field_ops | [Session 2026-07-06 (extended, operator-driven continuation) — Op Stds v20 consolidation + 2B progress-logging + #336 REQUIRED_CONFIG + M3 Slice 1 (PRs #478–#482, blueprint #62–#63)](2026-07-06_doctrine-v20-2b-progress-log-required-config-m3-slice1.md) | #478, #479, #480, #481, #482 |
 | 2026-07-06 | session_log | complete | field_ops | [Session 2026-07-06 (autonomous) — Recurring checklists per job (#16, PR #476)](2026-07-06_recurring-checklists.md) | #476 |
