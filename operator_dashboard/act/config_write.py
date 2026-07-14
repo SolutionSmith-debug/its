@@ -57,7 +57,23 @@ def _purpose_map() -> dict[tuple[str, str], str]:
     is static per deploy."""
     try:
         data = json.loads(_CONFIG_DEFAULTS_PATH.read_text())
-    except Exception:
+    except Exception as exc:
+        # Non-fatal (the editor still renders; the purpose blurb is just omitted),
+        # but NOT silent — a broken/missing data dictionary (e.g. a bad regen from
+        # scripts/generate_config_dictionary.py) should be VISIBLE, not quietly
+        # stop documenting every key. Best-effort WARN; the log leg never breaks
+        # the read.
+        try:
+            el = _load("shared.error_log")
+            el.log(
+                el.Severity.WARN,
+                "operator_dashboard.config_editor",
+                f"config_defaults.json unreadable ({type(exc).__name__}) — editor purpose text omitted",
+                error_code="config_purpose_map_unreadable",
+                alert=False,
+            )
+        except Exception:
+            pass
         return {}
     out: dict[tuple[str, str], str] = {}
     for entry in data.get("keys", []):

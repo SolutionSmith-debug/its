@@ -432,10 +432,16 @@ def test_read_registry_state_carries_purpose(fake_smartsheet: dict[str, Any]) ->
 
 
 def test_purpose_map_fail_soft_on_bad_path(monkeypatch: pytest.MonkeyPatch) -> None:
-    # a missing/malformed dictionary file must degrade to an empty map, never raise.
+    # a missing/malformed dictionary file must degrade to an empty map (never raise)
+    # AND log a WARN so a broken data-dictionary is visible, not silent.
     from pathlib import Path
 
+    import shared.error_log as el
+
+    logs: list[str | None] = []
+    monkeypatch.setattr(el, "log", lambda sev, script, msg, **kw: logs.append(kw.get("error_code")))
     config_write._purpose_map.cache_clear()
     monkeypatch.setattr(config_write, "_CONFIG_DEFAULTS_PATH", Path("/nonexistent/config_defaults.json"))
     assert config_write._purpose_map() == {}
+    assert "config_purpose_map_unreadable" in logs  # broken dictionary surfaced, not silent
     config_write._purpose_map.cache_clear()  # restore for other tests
