@@ -259,7 +259,11 @@ def test_mark_by_error_code_filter(wired_mark: tuple[list[dict[str, Any]], list[
 
 def test_mark_requires_a_filter_and_touches_no_smartsheet(monkeypatch: pytest.MonkeyPatch) -> None:
     touched: list[str] = []
-    monkeypatch.setattr(ss, "get_rows", lambda *a, **k: touched.append("get") or [])
+    def _get(*_a: Any, **_k: Any) -> list[dict[str, Any]]:
+        touched.append("get")
+        return []
+
+    monkeypatch.setattr(ss, "get_rows", _get)
     monkeypatch.setattr(ss, "update_rows", lambda *a, **k: touched.append("update"))
     monkeypatch.setattr(el, "log", lambda *a, **k: None)
     out = errors_ops.mark_errors_resolved("seth")  # no filter
@@ -344,7 +348,11 @@ def test_route_resolve_fail_closed_without_auth_touches_no_smartsheet(monkeypatc
     from operator_dashboard.app import create_app
 
     touched: list[str] = []
-    monkeypatch.setattr(ss, "get_rows", lambda *a, **k: touched.append("get") or [])
+    def _get(*_a: Any, **_k: Any) -> list[dict[str, Any]]:
+        touched.append("get")
+        return []
+
+    monkeypatch.setattr(ss, "get_rows", _get)
     monkeypatch.setattr(ss, "update_rows", lambda *a, **k: touched.append("update"))
     client = TestClient(create_app())
     resp = client.post("/act/errors/resolve", data={"pin": "x", "confirm": "wrong", "script": "intake_poll"})
@@ -367,3 +375,24 @@ def test_route_resolve_happy_path_marks(monkeypatch: pytest.MonkeyPatch) -> None
     resp = client.post("/act/errors/resolve", data={"pin": "x", "confirm": "mark-resolved", "script": "intake_poll"})
     assert resp.status_code == 200
     assert sorted(u["_row_id"] for u in updates) == [10, 11]
+
+
+def test_route_resolve_preview_is_dry_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    # §3.1 safety: mode=preview must count without writing to the forensic surface.
+    from fastapi.testclient import TestClient
+
+    from operator_dashboard.app import create_app
+
+    updates: list[dict[str, Any]] = []
+    monkeypatch.setattr(router_mod, "check_origin", lambda *a, **k: None)
+    monkeypatch.setattr(router_mod, "verify_elevated", lambda *a, **k: None)
+    monkeypatch.setattr(ss, "get_rows", lambda sheet_id, **kw: list(_crit_rows()))
+    monkeypatch.setattr(ss, "update_rows", lambda sheet_id, ups: updates.extend(ups))
+    monkeypatch.setattr(el, "log", lambda *a, **k: None)
+    client = TestClient(create_app())
+    resp = client.post(
+        "/act/errors/resolve",
+        data={"pin": "x", "confirm": "mark-resolved", "script": "intake_poll", "mode": "preview"},
+    )
+    assert resp.status_code == 200
+    assert updates == []  # preview stamps NOTHING (dry run)

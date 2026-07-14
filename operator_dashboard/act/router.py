@@ -268,11 +268,15 @@ def register_act_routes(app: FastAPI, templates: Jinja2Templates) -> None:
         confirm: str = Form(""),
         script: str = Form(""),
         error_code: str = Form(""),
+        mode: str = Form("commit"),
     ) -> Response:
         # Class-B: stamp "Resolved At" on OPEN CRITICAL ITS_Errors rows matching a Script and/or
         # Error-code filter, making them terminal so clear-error-log can sweep them (the "solve it"
         # half). No per-target name to type, so the fixed confirmation phrase is "mark-resolved".
         # The filter-required guard lives in errors_ops (an unfiltered mass-resolve is refused).
+        # mode="preview" runs a DRY RUN (count only, no write) so the operator can see the blast
+        # radius against the §3.1 forensic surface before committing; anything else commits. The
+        # elevated ceremony is required for BOTH (a preview reads the whole sheet; keep one gate).
         operator = getpass.getuser()
         try:
             check_origin(request.headers.get("origin"), request.headers.get("referer"))
@@ -285,7 +289,10 @@ def register_act_routes(app: FastAPI, templates: Jinja2Templates) -> None:
             audit_denied(operator, "ITS_Errors", "", "elevated")
             return _outcome(templates, request, config_write.REJECTED, f"denied: {exc}", "ITS_Errors", "")
         result = errors_ops.mark_errors_resolved(
-            operator, script=script.strip() or None, error_code=error_code.strip() or None
+            operator,
+            script=script.strip() or None,
+            error_code=error_code.strip() or None,
+            dry_run=(mode.strip() == "preview"),
         )
         return _outcome(templates, request, result.kind, result.message, "ITS_Errors", "")
 
