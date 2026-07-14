@@ -49,6 +49,10 @@ def _validate_new_pin(new_pin: str, confirm: str) -> str:
         raise ValueError(f"PIN must be at least {MIN_PIN_LEN} characters (a strong passphrase, not a 4-digit)")
     if new_pin.isdigit():
         raise ValueError("PIN must not be all digits — use a strong passphrase")
+    if not new_pin.strip():
+        raise ValueError("PIN must not be blank or all-whitespace")
+    if len(set(new_pin)) == 1:
+        raise ValueError("PIN must not be one character repeated — use a strong passphrase")
     return new_pin
 
 

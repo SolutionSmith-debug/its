@@ -49,7 +49,13 @@ def env(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
 # ------------------------------------------------------------------ validation ----
 @pytest.mark.parametrize(
     ("new", "conf"),
-    [("longenough1", "different"), ("short", "short"), ("12345678", "12345678")],  # mismatch / short / all-digits
+    [
+        ("longenough1", "different"),  # mismatch
+        ("short", "short"),  # under MIN_PIN_LEN
+        ("12345678", "12345678"),  # all-digits
+        ("        ", "        "),  # all-whitespace (8 spaces): passes len + not-isdigit, still weak
+        ("aaaaaaaa", "aaaaaaaa"),  # one character repeated: passes len, still weak
+    ],
 )
 def test_new_pin_rejected_no_write(env: dict[str, Any], new: str, conf: str) -> None:
     out = pin_change.change_pin(new, conf, "op")

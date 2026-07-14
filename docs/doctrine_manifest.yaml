@@ -39,7 +39,7 @@ meta:
   manifest_version: 1
   generated: "2026-06-07"
   its_head: e242074              # ~/its origin/main this manifest was validated against (2026-07-12 documentation-reconciliation pass: subcontracts SC-S1→S3c + PO / progress / field-ops / operator-dashboard / docs-pdf reconciled to as-built; taxonomy + workstream_tags refreshed to live HEAD in that pass). Prior: 44370e1 (2026-06-12 photo/download/Form-Request program).
-  blueprint_head: 1e24574        # ~/its-blueprint main this manifest is synced against (refreshed on doctrine bump, per UPDATE DISCIPLINE above); 1e24574 = 2026-07-12 doctrine v21 elevation (Op Stds v21 §55 + reconstructed §§4-22/25-30; Handover v10; FM Invariant-1 + Vision §1.4.3 amended). Op Stds v21 / Handover v10 / FM v11 / V&R v9
+  blueprint_head: 0501dc3        # ~/its-blueprint main this manifest is synced against (refreshed on doctrine bump, per UPDATE DISCIPLINE above); 0501dc3 = 2026-07-14 §44 v21.x rider (Developer-Operator credential self-service, current-credential-gated; version UNCHANGED at 21); prior 1e24574 = 2026-07-12 doctrine v21 elevation (Op Stds v21 §55 + reconstructed §§4-22/25-30; Handover v10; FM Invariant-1 + Vision §1.4.3 amended). Op Stds v21 / Handover v10 / FM v11 / V&R v9
   seeded_by: "doc-reconciliation series PR 2 (manifest)"
 
 # --- Doctrine versions (the headline drift class) ------------------------------
@@ -54,7 +54,7 @@ doctrine_versions:
     max_section: 55
     source: "../its-blueprint/doctrine/operational-standards.md"
     source_field: "frontmatter.version"
-    blueprint_verified_against: 1e24574   # 2026-07-12 Op Stds v21 elevation (§55 Verification/Truthful-Reporting + reconstruct §§4-22/25-30 + §31/§32/§36 riders); prior: 33fce61 (v20)
+    blueprint_verified_against: 0501dc3   # 2026-07-14 §44 v21.x rider (Developer-Operator credential self-service; version UNCHANGED at 21); prior: 1e24574 (2026-07-12 v21 elevation §55 + reconstruct §§4-22/25-30); 33fce61 (v20)
     notes: >
       v12 added §§37-41; v13 added §42 (code-level self-documentation discipline);
       v14 reframed the kill switch as an operator-convenience pause that is fail-open

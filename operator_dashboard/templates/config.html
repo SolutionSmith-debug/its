@@ -191,9 +191,11 @@
   <section class="config-group">
     <h3>Change operator PIN (Class C · elevated)</h3>
     <div class="rotate-warn">
-      <b>Change, not recovery.</b> This requires your <em>current</em> PIN. A <b>lost</b> PIN is recovered
-      only from the terminal — <code>security add-generic-password -U -a "$USER" -s ITS_OPERATOR_PIN -w</code>.
-      The new PIN is write-only (never shown), so enter it <b>twice</b>; it takes effect immediately.
+      <b>Change, not recovery.</b> Developer-Operator credential self-service (Op Stds §44 rider). This requires
+      your <em>current</em> PIN. A <b>lost</b> PIN is recovered only from the terminal —
+      <code>security add-generic-password -U -a "$USER" -s ITS_OPERATOR_PIN -w</code>.
+      New PIN: ≥ 8 chars, not all-digits, not blank, not one repeated character; write-only (never shown), so
+      enter it <b>twice</b>; it takes effect immediately.
     </div>
     <form hx-post="/act/pin/change" hx-target="#pin-out" hx-swap="innerHTML" class="cfg-form">
       <input type="password" name="pin" placeholder="current PIN" class="cfg-pin" autocomplete="off">
