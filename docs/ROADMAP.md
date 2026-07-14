@@ -76,8 +76,11 @@ Design source: `progress-reporting/mission.md` §11–§13/§16.
 Most of the 14-row growth time-bomb table (`~/.claude/plans/unbounded-growth-audit.md`) is fixed (GS1 Check O /
 sheet_capacity wiring, GS2 prune heartbeat + Check V, Sentry reclassification, D5 registry split). Remaining:
 - Verify the **2 unverified Smartsheet quotas** (per-plan sheet cap; pooled attachment-storage quota) — one support ticket.
-  **The 2026-07-04 audit found `smartsheet.sheet_count_ceiling` + `_margin` are ABSENT from `ITS_Config`** → the
-  capacity guard runs on the hardcoded default (1500/50) SILENTLY (forensic class #7); set the real plan cap under `Workstream=global`.
+  **Update 2026-07-13:** `smartsheet.sheet_count_ceiling` + `_margin` ARE now present in `ITS_Config`
+  (`Workstream=global`), seeded at the default `1500`/`50` (live read confirmed) — so the guard is no longer a
+  SILENT hardcoded fallback (observable-config resolution now logs them from `ITS_Config`, forensic class #7
+  closed for these two rows). Remaining: set the REAL plan cap once the actual Smartsheet plan sheet quota is
+  known (the support-ticket item above).
 - **meta-002 Tier-3 backup / escalation SLA** before the 20-job cutover (operator).
 - ~~`REQUIRED_CONFIG` startup logging (#336)~~ **DONE** — implemented fleet-wide (`tests/test_required_config.py`;
   #336 CLOSED, though its GitHub title is actually "[P1] Hardening PR-6" — a citation mismatch; remaining adoption
@@ -87,9 +90,10 @@ sheet_capacity wiring, GS2 prune heartbeat + Check V, Sentry reclassification, D
 ### Track 4 — Operator PDF documentation program (P1 / A8) — *delivery-critical subset by Aug 7*
 Near-term scope = the **delivery-critical PDF set** of the Aug-7 program
 (`docs/2026-07-09_aug7_delivery_program.md` WS3): the md→branded-PDF pipeline (`docs_pdf/` +
-`scripts/build_docs_pdfs.py` + the §6a `docs/enablement/manifest.yaml`), 12 PDFs (6 existing guides + safety-forms
-+ admin-dashboard + PO builder + ITS Owner's Manual + auto-generated `ITS_Config` data dictionary + operator-dashboard
-guide), SHA-256 doc-currency check wired into CI (warn) + the cutover checklist. Full every-function A8 coverage
+`scripts/build_docs_pdfs.py` + the §6a `docs/enablement/manifest.yaml`), **13 enablement PDFs as-built**
+(the manifest is the source of truth: the 7 D2-1 guides + ITS Owner's Manual + safety-reports guide +
+admin-dashboard guide + `ITS_Config` data dictionary + the **operator-dashboard** and **subcontracts** guides
+added 2026-07-13), SHA-256 doc-currency check wired into CI (warn) + the cutover checklist. Full every-function A8 coverage
 continues post-delivery on the same pipeline. *(Distinct from the internal CC-session context system — this is
 operator-facing.)*
 
@@ -118,5 +122,8 @@ WS4 operator artifacts (landed): `docs/operations/host_migration_runbook.md` · 
   weekly_send; time-entry personnel picker; finish `jobs.progress` %-removal (D1 column drop); `recipient_health`
   no-recipient severity (Seth); cosmetic tab-title/favicon still "ITS Portal"; `boxsdk`→`box_sdk_gen`;
   `build_wsr_human_review_sheet.py` ABSTRACT_DATETIME fresh-create bug; P2.5 `fieldops_sync` fast-follows (2 of 6).
-- **Verify (likely already built — audit flagged stale memory):** PR-6 Form-Request month filter
-  (`/api/filed/months`); A5/Check-O row-cap rotation (present in `watchdog.py`).
+- ~~**Verify (likely already built):** PR-6 Form-Request month filter (`/api/filed/months`); A5/Check-O
+  row-cap rotation.~~ **CONFIRMED BUILT + CLOSED 2026-07-13:** `/api/filed/months` exists
+  (`safety_portal/worker/index.ts:1127`); Check-O row-cap rotation exists (`scripts/watchdog.py`
+  `_check_row_cap_rotation`) and covers BOTH `ITS_Errors` AND `ITS_Review_Queue` via the shared storm-mode
+  helper (`_ROTATION_POLICIES`, #562). Nothing left to verify.
