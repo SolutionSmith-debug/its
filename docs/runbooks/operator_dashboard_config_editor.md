@@ -168,6 +168,24 @@ locks** panel shows as HELD is a genuinely-live holder — there is no stale art
 force-removing a sidecar would not release the flock. If a daemon looks wedged on a lock, the repair is to
 **stop/kickstart that daemon** (above), not to touch its lock.
 
+## Change the operator PIN (Class C · elevated)
+
+`POST /act/pin/change` lets the operator **change** the PIN from the dashboard — it is a **change, not a
+recovery**. The elevated ceremony proves authority: re-enter the **current** PIN + type `change-pin`, then
+enter the **new** PIN **twice** (a typo guard — the write is write-only / never shown, so a mistyped PIN would
+lock you out). Enforced: new-PIN ≥ 8 chars and not all-digits (a STRONG passphrase); on success the lockout
+throttle is reset and `config_pin_changed` is audited (never the value). The new PIN is active immediately.
+
+- **Initial provisioning is still terminal-only** (there is no current PIN to authenticate a change):
+  `security add-generic-password -U -a "$USER" -s ITS_OPERATOR_PIN -w`.
+- **A LOST / forgotten PIN is recovered ONLY from the terminal** (same command, `-U` overwrites in place) —
+  the Keychain (local-machine access) stays the root of trust. The dashboard cannot help you if you don't
+  know the current PIN. This is by design, **not** a Tier-2 fault to escalate.
+- **"the two new-PIN entries do not match" / "must be at least 8 characters" / "must not be all digits"** —
+  validation caught it; **Tier-2:** fix the value and retry (nothing was written).
+- **"denied: …" on the current-PIN field** — the current PIN was wrong (audited `config_denied`); this is the
+  gate working. If you truly can't recall it, recover via the terminal (above).
+
 ## Send-queue panel (read-only) — the send lane stays human-in-loop
 
 The **Send queue** panel rolls up `Send Status` across the four review/approve/send sheets (WSR / WPR /

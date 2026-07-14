@@ -189,6 +189,23 @@
   </section>
 
   <section class="config-group">
+    <h3>Change operator PIN (Class C · elevated)</h3>
+    <div class="rotate-warn">
+      <b>Change, not recovery.</b> This requires your <em>current</em> PIN. A <b>lost</b> PIN is recovered
+      only from the terminal — <code>security add-generic-password -U -a "$USER" -s ITS_OPERATOR_PIN -w</code>.
+      The new PIN is write-only (never shown), so enter it <b>twice</b>; it takes effect immediately.
+    </div>
+    <form hx-post="/act/pin/change" hx-target="#pin-out" hx-swap="innerHTML" class="cfg-form">
+      <input type="password" name="pin" placeholder="current PIN" class="cfg-pin" autocomplete="off">
+      <input type="text" name="confirm" placeholder="type: change-pin" class="cfg-confirm" autocomplete="off" spellcheck="false">
+      <input type="password" name="new_pin" placeholder="new PIN" class="cfg-input" autocomplete="off">
+      <input type="password" name="confirm_pin" placeholder="retype new PIN" class="cfg-input" autocomplete="off">
+      <button type="submit" class="cfg-btn elevated">change PIN</button>
+      <span class="cfg-out" id="pin-out"></span>
+    </form>
+  </section>
+
+  <section class="config-group">
     <h3>Build-time settings (Class D · hand-off)</h3>
     <p class="config-note">
       Settings that take effect only by re-bundling/deploying the Worker (the terms library; today

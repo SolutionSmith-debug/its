@@ -18,7 +18,7 @@ from typing import Any
 from fastapi import FastAPI, Form, Request, Response
 from fastapi.templating import Jinja2Templates
 
-from operator_dashboard.act import config_write, daemon_ops, secret_rotate, state_ops
+from operator_dashboard.act import config_write, daemon_ops, pin_change, secret_rotate, state_ops
 from operator_dashboard.act.config_write import (
     apply_edit,
     apply_elevated_edit,
@@ -220,6 +220,32 @@ def register_act_routes(app: FastAPI, templates: Jinja2Templates) -> None:
             return _outcome(templates, request, config_write.REJECTED, f"denied: {exc}", "circuit_breaker", "")
         result = state_ops.clear_circuit_breaker(operator)
         return _outcome(templates, request, result.kind, result.message, "circuit_breaker", "")
+
+    @app.post("/act/pin/change")
+    def act_pin_change(
+        request: Request,
+        pin: str = Form(...),
+        confirm: str = Form(""),
+        new_pin: str = Form(...),
+        confirm_pin: str = Form(...),
+    ) -> Response:
+        # Class-C weight: CHANGE the ACT-gate credential itself. The elevated
+        # ceremony (re-enter the CURRENT PIN + type "change-pin") proves authority
+        # and intent; the new PIN is entered twice (typo guard). A LOST PIN is not
+        # recoverable here — that stays terminal-only (pin_change docstring).
+        operator = getpass.getuser()
+        try:
+            check_origin(request.headers.get("origin"), request.headers.get("referer"))
+        except OriginError as exc:
+            audit_denied(operator, "ITS_OPERATOR_PIN", "", "origin")
+            return _outcome(templates, request, "refused", f"refused: {exc}", "ITS_OPERATOR_PIN", "")
+        try:
+            verify_elevated(pin, confirm, expected="change-pin")
+        except PinError as exc:
+            audit_denied(operator, "ITS_OPERATOR_PIN", "", "elevated")
+            return _outcome(templates, request, config_write.REJECTED, f"denied: {exc}", "ITS_OPERATOR_PIN", "")
+        result = pin_change.change_pin(new_pin, confirm_pin, operator)
+        return _outcome(templates, request, result.kind, result.message, "ITS_OPERATOR_PIN", "")
 
 
 def _outcome(
