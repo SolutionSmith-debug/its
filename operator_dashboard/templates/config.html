@@ -153,6 +153,25 @@
   <section class="config-group">
     <h3>Error log (Class B · elevated)</h3>
     <p class="config-note">
+      <b>Mark resolved → then clear.</b> Stamp <code>Resolved At</code> on <b>open CRITICALs</b>
+      matching a <em>Script</em> and/or <em>Error code</em> (e.g. a retired daemon, or a
+      fixed error class) — this makes them <b>terminal</b>, after which the clear button below can
+      remove them. Only open CRITICALs are stamped; a <b>filter is required</b> (an unfiltered
+      mass-resolve is refused — it would empty the "am I on fire" surface). Elevated: re-enter the
+      PIN + type <code>mark-resolved</code>. <b>Click <em>preview</em> first</b> — it counts the
+      matching open CRITICALs without writing, so you can check the blast radius (a Script alone
+      sweeps every Error code under that daemon) before committing.
+    </p>
+    <form hx-post="/act/errors/resolve" hx-target="#err-resolve-out" hx-swap="innerHTML" class="cfg-form">
+      <input type="text" name="script" placeholder="Script (exact, optional)" class="cfg-input" autocomplete="off" spellcheck="false">
+      <input type="text" name="error_code" placeholder="Error code (exact, optional)" class="cfg-input" autocomplete="off" spellcheck="false">
+      <input type="password" name="pin" placeholder="re-PIN" class="cfg-pin" autocomplete="off">
+      <input type="text" name="confirm" placeholder="type: mark-resolved" class="cfg-confirm" autocomplete="off" spellcheck="false">
+      <button type="submit" name="mode" value="preview" class="cfg-btn">preview</button>
+      <button type="submit" name="mode" value="commit" class="cfg-btn elevated">mark resolved</button>
+      <span class="cfg-out" id="err-resolve-out"></span>
+    </form>
+    <p class="config-note">
       Clear <b>terminal</b> rows from <code>ITS_Errors</code> on demand — the operator-triggered
       version of the watchdog's automatic row-cap rotation (Check O), with no 90-day floor.
       <b>Open CRITICALs are never deleted</b> (they are the <b>open CRITICALs</b> panel's

@@ -110,10 +110,11 @@ def test_untrusted_smartsheet_values_render_inert(
 
 
 def test_mutation_routes_are_the_expected_act_set() -> None:
-    # The app has EXACTLY seven mutating routes: Class-A edit, the elevated Class-B
+    # The app has EXACTLY nine mutating routes: Class-A edit, the elevated Class-B
     # edit, Class-C secret rotation, the Class-B interval edit (plist re-install),
-    # Class-B daemon control (launchctl), Class-B circuit-breaker clear, and the
-    # Class-C change-operator-PIN. Any other non-GET route is a regression. (The
+    # Class-B daemon control (launchctl), Class-B circuit-breaker clear, the two
+    # Class-B error-log verbs (mark-resolved + clear), and the Class-C
+    # change-operator-PIN. Any other non-GET route is a regression. (The
     # send-queue/audit panels are GET-only reads, so they do not appear here.)
     app = create_app()
     mutating: list[tuple[str, list[str]]] = []
@@ -130,6 +131,7 @@ def test_mutation_routes_are_the_expected_act_set() -> None:
         ("/act/daemon/control", ["POST"]),
         ("/act/daemon/interval", ["POST"]),
         ("/act/errors/clear", ["POST"]),
+        ("/act/errors/resolve", ["POST"]),
         ("/act/pin/change", ["POST"]),
         ("/act/secret/rotate", ["POST"]),
         ("/act/state/breaker-clear", ["POST"]),

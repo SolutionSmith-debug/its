@@ -197,3 +197,202 @@ def test_route_happy_path_clears(monkeypatch: pytest.MonkeyPatch) -> None:
     resp = client.post("/act/errors/clear", data={"pin": "x", "confirm": "clear-error-log"})
     assert resp.status_code == 200
     assert sorted(deleted) == [1, 2, 4] and 3 not in deleted  # open CRITICAL survives via the route too
+
+
+# ---- mark_errors_resolved (the "solve it" half) ---------------------------
+# prove-the-control-bites (HOUSE_REFLEXES §2): two load-bearing invariants — (1) an
+# unfiltered mass-resolve is REFUSED (it would empty the "am I on fire" surface), and
+# (2) only OPEN CRITICALs are stamped. Each test injects violations and asserts they hold.
+
+
+def _crit_rows() -> list[dict[str, Any]]:
+    return [
+        # open CRITICALs — the markable set
+        {"_row_id": 10, "Severity": "CRITICAL", "Script": "intake_poll", "Error": "graph_fail", "Resolved At": ""},
+        {"_row_id": 11, "Severity": "CRITICAL", "Script": "intake_poll", "Error": "smoke", "Resolved At": None},
+        {"_row_id": 12, "Severity": "CRITICAL", "Script": "po_poll", "Error": "graph_fail", "Resolved At": ""},
+        # already-terminal — NEVER marked
+        {"_row_id": 13, "Severity": "CRITICAL", "Script": "intake_poll", "Error": "graph_fail", "Resolved At": "2026-06-01"},
+        {"_row_id": 14, "Severity": "WARN", "Script": "intake_poll", "Error": "graph_fail"},
+    ]
+
+
+@pytest.fixture
+def wired_mark(monkeypatch: pytest.MonkeyPatch) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    updates: list[dict[str, Any]] = []
+    audits: list[dict[str, Any]] = []
+    monkeypatch.setattr(ss, "get_rows", lambda sheet_id, **kw: list(_crit_rows()))
+    monkeypatch.setattr(ss, "update_rows", lambda sheet_id, ups: updates.extend(ups))
+
+    def _log(severity: Any, script: str, message: str, *, error_code: Any = None, alert: bool = True, **kw: Any) -> None:
+        audits.append({"error_code": error_code, "script": script, "alert": alert})
+
+    monkeypatch.setattr(el, "log", _log)
+    return updates, audits
+
+
+def test_mark_by_script_stamps_only_matching_open_criticals(
+    wired_mark: tuple[list[dict[str, Any]], list[dict[str, Any]]],
+) -> None:
+    updates, audits = wired_mark
+    out = errors_ops.mark_errors_resolved("seth", script="intake_poll")
+    assert out.kind == "ok"
+    ids = sorted(u["_row_id"] for u in updates)
+    # only OPEN CRITICALs with Script=intake_poll (10, 11); 12 wrong script, 13 terminal, 14 WARN
+    assert ids == [10, 11]
+    # every update stamps a non-blank "Resolved At" (=> errors_row_is_terminal flips True)
+    assert all(str(u["Resolved At"]).strip() for u in updates)
+    for u in updates:
+        assert er.errors_row_is_terminal({"Severity": "CRITICAL", **u}) is True
+    # exactly one non-paging audit row
+    assert len(audits) == 1
+    assert audits[0]["error_code"] == "errors_resolved_marked" and audits[0]["alert"] is False
+
+
+def test_mark_by_error_code_filter(wired_mark: tuple[list[dict[str, Any]], list[dict[str, Any]]]) -> None:
+    updates, _ = wired_mark
+    out = errors_ops.mark_errors_resolved("seth", error_code="graph_fail")
+    assert out.kind == "ok"
+    # open CRITICALs with Error=graph_fail: 10, 12 (13 is terminal, 14 is WARN)
+    assert sorted(u["_row_id"] for u in updates) == [10, 12]
+
+
+def test_mark_requires_a_filter_and_touches_no_smartsheet(monkeypatch: pytest.MonkeyPatch) -> None:
+    touched: list[str] = []
+    def _get(*_a: Any, **_k: Any) -> list[dict[str, Any]]:
+        touched.append("get")
+        return []
+
+    monkeypatch.setattr(ss, "get_rows", _get)
+    monkeypatch.setattr(ss, "update_rows", lambda *a, **k: touched.append("update"))
+    monkeypatch.setattr(el, "log", lambda *a, **k: None)
+    out = errors_ops.mark_errors_resolved("seth")  # no filter
+    assert out.kind == "error" and "filter is required" in out.message
+    assert touched == []  # refused BEFORE any Smartsheet read/write
+
+
+def test_mark_dry_run_stamps_nothing(wired_mark: tuple[list[dict[str, Any]], list[dict[str, Any]]]) -> None:
+    updates, audits = wired_mark
+    out = errors_ops.mark_errors_resolved("seth", script="intake_poll", dry_run=True)
+    assert out.kind == "ok" and "DRY RUN" in out.message
+    assert updates == [] and audits == []
+
+
+def test_mark_noop_when_no_open_critical_matches(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[Any] = []
+    monkeypatch.setattr(ss, "get_rows", lambda sheet_id, **kw: list(_crit_rows()))
+    monkeypatch.setattr(ss, "update_rows", lambda sheet_id, ups: calls.append(ups))
+    monkeypatch.setattr(el, "log", lambda *a, **k: None)
+    out = errors_ops.mark_errors_resolved("seth", script="nonexistent_daemon")
+    assert out.kind == "noop"
+    assert calls == []  # never stamps when nothing matches
+
+
+def test_mark_partial_failure_is_honest(monkeypatch: pytest.MonkeyPatch) -> None:
+    audits: list[Any] = []
+    monkeypatch.setattr(ss, "get_rows", lambda sheet_id, **kw: list(_crit_rows()))
+
+    def _boom(sheet_id: int, ups: list[dict[str, Any]]) -> None:
+        raise ss.SmartsheetError("500 boom")
+
+    monkeypatch.setattr(ss, "update_rows", _boom)
+    monkeypatch.setattr(el, "log", lambda *a, **k: audits.append(k.get("error_code")))
+    out = errors_ops.mark_errors_resolved("seth", script="intake_poll")
+    assert out.kind == "error" and "run again to continue" in out.message
+    assert audits == ["errors_resolved_marked"]  # partial-mark still audited
+
+
+def test_mark_read_failure_is_error_not_raise(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(ss, "get_rows", lambda *a, **k: (_ for _ in ()).throw(ss.SmartsheetError("breaker open")))
+    monkeypatch.setattr(ss, "update_rows", lambda *a, **k: None)
+    monkeypatch.setattr(el, "log", lambda *a, **k: None)
+    out = errors_ops.mark_errors_resolved("seth", script="intake_poll")
+    assert out.kind == "error" and "could not read ITS_Errors" in out.message
+
+
+def test_mark_then_clear_roundtrip(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Integration of the two halves: a row a MARK makes terminal is exactly a row a CLEAR deletes.
+    state = list(_crit_rows())
+
+    def _get(sheet_id: int, **kw: Any) -> list[dict[str, Any]]:
+        return [dict(r) for r in state]
+
+    def _update(sheet_id: int, ups: list[dict[str, Any]]) -> None:
+        for u in ups:
+            for r in state:
+                if r["_row_id"] == u["_row_id"]:
+                    r["Resolved At"] = u["Resolved At"]
+
+    deleted: list[int] = []
+    monkeypatch.setattr(ss, "get_rows", _get)
+    monkeypatch.setattr(ss, "update_rows", _update)
+    monkeypatch.setattr(ss, "delete_rows", lambda sheet_id, ids: deleted.extend(ids))
+    monkeypatch.setattr(el, "log", lambda *a, **k: None)
+
+    # before marking, row 10 is an OPEN CRITICAL — clear must NOT delete it
+    errors_ops.clear_error_log("seth")
+    assert 10 not in deleted
+    deleted.clear()
+    # mark it resolved, then clear — now it IS deletable
+    errors_ops.mark_errors_resolved("seth", script="intake_poll")
+    errors_ops.clear_error_log("seth")
+    assert 10 in deleted and 11 in deleted  # both intake_poll open CRITICALs now swept
+    assert 12 not in deleted  # untouched open CRITICAL still survives
+
+
+# ---- router gating (mark) -------------------------------------------------
+
+def test_route_resolve_fail_closed_without_auth_touches_no_smartsheet(monkeypatch: pytest.MonkeyPatch) -> None:
+    from fastapi.testclient import TestClient
+
+    from operator_dashboard.app import create_app
+
+    touched: list[str] = []
+    def _get(*_a: Any, **_k: Any) -> list[dict[str, Any]]:
+        touched.append("get")
+        return []
+
+    monkeypatch.setattr(ss, "get_rows", _get)
+    monkeypatch.setattr(ss, "update_rows", lambda *a, **k: touched.append("update"))
+    client = TestClient(create_app())
+    resp = client.post("/act/errors/resolve", data={"pin": "x", "confirm": "wrong", "script": "intake_poll"})
+    assert resp.status_code == 200
+    assert touched == []  # gate short-circuits BEFORE any Smartsheet read/write
+
+
+def test_route_resolve_happy_path_marks(monkeypatch: pytest.MonkeyPatch) -> None:
+    from fastapi.testclient import TestClient
+
+    from operator_dashboard.app import create_app
+
+    updates: list[dict[str, Any]] = []
+    monkeypatch.setattr(router_mod, "check_origin", lambda *a, **k: None)
+    monkeypatch.setattr(router_mod, "verify_elevated", lambda *a, **k: None)
+    monkeypatch.setattr(ss, "get_rows", lambda sheet_id, **kw: list(_crit_rows()))
+    monkeypatch.setattr(ss, "update_rows", lambda sheet_id, ups: updates.extend(ups))
+    monkeypatch.setattr(el, "log", lambda *a, **k: None)
+    client = TestClient(create_app())
+    resp = client.post("/act/errors/resolve", data={"pin": "x", "confirm": "mark-resolved", "script": "intake_poll"})
+    assert resp.status_code == 200
+    assert sorted(u["_row_id"] for u in updates) == [10, 11]
+
+
+def test_route_resolve_preview_is_dry_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    # §3.1 safety: mode=preview must count without writing to the forensic surface.
+    from fastapi.testclient import TestClient
+
+    from operator_dashboard.app import create_app
+
+    updates: list[dict[str, Any]] = []
+    monkeypatch.setattr(router_mod, "check_origin", lambda *a, **k: None)
+    monkeypatch.setattr(router_mod, "verify_elevated", lambda *a, **k: None)
+    monkeypatch.setattr(ss, "get_rows", lambda sheet_id, **kw: list(_crit_rows()))
+    monkeypatch.setattr(ss, "update_rows", lambda sheet_id, ups: updates.extend(ups))
+    monkeypatch.setattr(el, "log", lambda *a, **k: None)
+    client = TestClient(create_app())
+    resp = client.post(
+        "/act/errors/resolve",
+        data={"pin": "x", "confirm": "mark-resolved", "script": "intake_poll", "mode": "preview"},
+    )
+    assert resp.status_code == 200
+    assert updates == []  # preview stamps NOTHING (dry run)

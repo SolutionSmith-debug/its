@@ -189,6 +189,34 @@ locks** panel shows as HELD is a genuinely-live holder — there is no stale art
 force-removing a sidecar would not release the flock. If a daemon looks wedged on a lock, the repair is to
 **stop/kickstart that daemon** (above), not to touch its lock.
 
+## Mark errors resolved (Class B · elevated · WS2)
+
+The "solve it" half paired with the clear below ("sweep it"). Stamp `Resolved At` on **open
+CRITICAL** `ITS_Errors` rows matching a **Script and/or Error-code** filter (`POST /act/errors/resolve`),
+making them **terminal** (same `shared/errors_rotation.py` predicate the clear + Check O use) — after
+which the clear button removes them. Use it to retire a class of stale open CRITICALs that are no longer
+actionable (a retired daemon's `Script`, a since-fixed `Error` code) so watchdog Check B's open-CRITICAL
+count reflects only live fires. Only open CRITICALs are stamped; already-terminal rows are skipped, so it
+is idempotent (re-running never re-stamps or un-resolves). Elevated: re-PIN + type `mark-resolved`. Audits
+`errors_resolved_marked` (preserved across a later clear). Bounded to 4,600 rows/run (same cap as the clear).
+
+**Always click _preview_ first.** The **preview** button runs a dry run — it counts the matching rows
+and writes nothing — so you can check the blast radius before committing. A **Script alone** sweeps EVERY
+Error code under that daemon (including one that might still be firing for an unrelated reason); an **Error
+code alone** sweeps that error across every Script. Narrow with BOTH fields when in doubt.
+
+- **A filter is required.** With neither Script nor Error code, the verb returns an error and writes
+  nothing — an unfiltered mass-resolve would empty the "am I on fire" surface and is refused by design.
+- **"DRY RUN — would mark N of M … "** — the preview result. No change was made; review N, then commit.
+- **"no OPEN CRITICAL rows match (…)"** (noop) — the filter matched nothing open. Working as intended
+  (the rows may already be terminal, or the Script/Error spelling differs — copy it from the errors panel).
+- **"marked X of Y then FAILED: … — run again to continue"** — a Smartsheet transient mid-batch; progress
+  is real + audited. **Tier-2:** wait a few seconds and re-run (it resumes from what remains). If it recurs
+  every run, **escalate to Seth** (a persistent Smartsheet fault is high-class).
+- Marking a **genuinely-still-open** CRITICAL resolved hides a live fire from Check B. That is not a
+  low-class repair — if you are unsure whether an error class is truly resolved, **escalate to Seth** before
+  marking. It writes only `ITS_Errors` (never deploys, sends, or writes `ITS_Config`).
+
 ## Error-log clear (Class B · elevated · WS2)
 
 Clear **terminal** rows from `ITS_Errors` on demand (`POST /act/errors/clear`) — the operator-triggered,
