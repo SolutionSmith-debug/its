@@ -2,6 +2,7 @@ import type { Context } from "hono";
 import type { FieldopsApp, FieldopsGates } from "./fieldops_gates";
 import type { Env, Vars } from "./types";
 import { auditStmt, auditStmtIfChanged, isUniqueViolation } from "./audit";
+import { MAX_ADDRESS } from "./constants";
 
 // P2.3 Slice 2 + P2.5 Slice 1 — JOB WRITE (create / lifecycle / contacts).
 // cap.jobtracker.manage (admin-only). Send-free (D1 only).
@@ -36,7 +37,6 @@ const MAX_JOB_ID = 64;
 const MAX_NAME = 256;
 const MAX_PHONE = 40;
 const MAX_EMAIL = 320;
-const MAX_ADDRESS = 512;
 const MAX_CC = 5; // mirrors each Active-Jobs sheet's CC 1..5 columns
 // Loose email shape: no whitespace, one @, a dotted domain (matches shared/active_jobs _EMAIL_RE).
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;

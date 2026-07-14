@@ -5,6 +5,7 @@ import { setSignedCookie, getSignedCookie, deleteCookie } from "hono/cookie";
 import type { Env, Role, SessionClaims, Vars } from "./types";
 import type { FieldopsGates } from "./fieldops_gates";
 import { registerPersonnelRoutes } from "./fieldops_personnel";
+import { MAX_ADDRESS } from "./constants";
 import { registerEquipmentRoutes } from "./fieldops_equipment";
 import { registerJobTrackerRoutes } from "./fieldops_jobtracker";
 import { registerMaterialsRoutes } from "./fieldops_materials";
@@ -1703,7 +1704,7 @@ app.post("/api/internal/sync", requireInternalToken, async (c) => {
     // the other free-text columns; it only auto-fills the subcontract builder's Site address, so a
     // blank is fine (the field stays operator-editable).
     const address = typeof row.address === "string" ? row.address : "";
-    if (!job_id || job_id.length > 64 || !project_name || project_name.length > 256 || address.length > 512) {
+    if (!job_id || job_id.length > 64 || !project_name || project_name.length > 256 || address.length > MAX_ADDRESS) {
       return c.json({ error: "invalid_row" }, 400);
     }
     if (seen.has(job_id)) return c.json({ error: "duplicate_job_id" }, 400);

@@ -4,6 +4,7 @@ import type { FieldopsApp } from "./fieldops_gates";
 import type { Env, Vars } from "./types";
 import { auditStmt, auditStmtIfChanged, isUniqueViolation } from "./audit";
 import { hmacHex } from "./hmac";
+import { MAX_ADDRESS } from "./constants";
 // SC-S3c wiring — the SC-S2 terms manifest + versioned contractor/payment-terms config, imported at
 // BUILD time from subcontracts/ (the same files the Mac renderer reads at render time). A subcontract
 // has NO tax table (mirror of po.ts, but the tax.json import is DROPPED); payment_terms.json carries the
@@ -139,7 +140,6 @@ const MAX_NAME = 256;
 const MAX_SHORT = 64;
 const MAX_PHONE = 40;
 const MAX_EMAIL = 320;
-const MAX_ADDRESS = 512;
 const MAX_NOTES = 2000;
 // Exhibit A "Article II — The Work" is a FULL legal scope body, NOT a PO line-item blurb — it is sized to
 // the config-editor's TEMPLATE authoring cap (config.ts MAX_PAYLOAD_BYTES / config_apply _MAX_TERMS_TEXT =
