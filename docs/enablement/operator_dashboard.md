@@ -28,18 +28,27 @@ never a public interface.
 
 ## How to start it
 
+The dashboard runs as an **always-on background service** — a launchd job
+(`org.solutionsmith.its.dashboard`) that keeps a small web server alive on the office Mac and restarts it
+if it ever exits. Once installed it is simply there; you don't start it by hand each time. (Its own health
+is watched by launchd's keep-alive plus a `/healthz` endpoint — not the marker-staleness the other workers
+use.)
+
+```bash
+install.sh load org.solutionsmith.its.dashboard   # install + start the service (one-time)
+```
+
+To reach it from your phone or laptop over **Tailscale** (your private network — never a public interface):
+
+```bash
+tailscale serve --bg 8484
+```
+
+You can also start it **by hand** for a one-off look, without the service:
+
 ```bash
 python -m operator_dashboard        # serves http://127.0.0.1:8484
 ```
-
-To view it from your phone or laptop over Tailscale:
-
-```bash
-tailscale serve 8484
-```
-
-> The dashboard does not yet run as an always-on background job (that install step is a tracked
-> fast-follow) — today you start it by hand when you want to look.
 
 ## What you see — the health panels (read-only)
 
@@ -57,6 +66,7 @@ here changes anything.
 | **Recent log tail** | The newest lines of today's log (secrets/PII redacted before display). |
 | **ITS_Errors — recent** | The latest errors ITS recorded. |
 | **ITS_Review_Queue — depth** | How many items are waiting for human review. |
+| **Send queue** | Customer-send review rows waiting for approval or in flight (read-only — approving a send still happens on the review sheets, never here). |
 
 Everything shown is treated as untrusted and is redacted and escaped before it reaches the screen, so a
 malicious-looking value in a cell or log line renders as harmless text.
@@ -89,6 +99,16 @@ or identity.
 > (One privileged non-send gate — the code-deploy actuator — instead self-applies after the elevated
 > ceremony *plus* an explicit "go-live preconditions met" attestation; the send gates never do.)
 
+Beyond editing settings, the dashboard gives you three guarded **operational controls** — each behind the
+same elevated-confirm ceremony (re-PIN + typed confirmation):
+
+- **Restart / start / stop a worker** — kickstart a wedged daemon, or start/stop one (e.g. after a fix).
+  Only the known ITS daemons are allowlisted, so it can never touch a non-ITS process.
+- **Change a worker's poll interval** — set how often an interval worker runs; the dashboard updates that
+  worker's `ITS_Config` interval row **and reloads the worker** so the new cadence takes effect now.
+- **Clear the circuit breaker** — reset the Smartsheet safety breaker to CLOSED (skip the cooldown) once
+  the underlying issue is resolved.
+
 ### Class C — secret rotation (write-only)
 
 You can rotate a fixed list of credentials (API tokens, Worker bearers) through the same elevated
@@ -103,11 +123,12 @@ Gate** itself. It is display-only, by design.
 
 ## The hard invariant — what it will NEVER do
 
-The dashboard writes to **`ITS_Config` and nothing else**. That is an internal settings write. It has
-**no ability to send email and no ability to deploy code** — it holds no send capability and no AI. The
-permanent **External Send Gate** stays entirely with the daemons; approving a customer send is done on the
-review sheets, and queuing a code/config deploy is the job of the §50 portal app, not this dashboard. Even
-in the worst case, the dashboard cannot put a message on the wire or push code.
+Everything the dashboard can do is a **local, internal control** — edit an `ITS_Config` setting, start /
+stop / restart a worker, change a poll interval, or clear the safety breaker. It has **no ability to send
+email and no ability to deploy code** — it holds no send capability and no AI. The permanent **External Send
+Gate** stays entirely with the daemons; approving a customer send is done on the review sheets, and queuing a
+code/config deploy is the job of the §50 portal app, not this dashboard. Even in the worst case, the
+dashboard cannot put a message on the wire or push code.
 
 ## It ships dark
 
@@ -133,7 +154,7 @@ Every applied change, every denial, and every secret rotation writes a durable a
 | What you see | What it means / what to do |
 |---|---|
 | A health card says **"unavailable"** | Its source (a file or daemon) isn't present right now — normal for anything not yet running. |
-| The page won't load or a page errors | Stop it (`Ctrl-C`) and re-run `python -m operator_dashboard`. No data is at risk. |
+| The page won't load or a page errors | It runs as a launchd service that self-restarts; check it with `install.sh status org.solutionsmith.its.dashboard` (or `/healthz`), and reload with `install.sh load org.solutionsmith.its.dashboard` if needed. No data is at risk. |
 | **"operator PIN not provisioned"** | The fail-closed default — the PIN isn't set. This is a **secret**, so **Seth** provisions it (not a Tier-2 step). |
 | **"keychain is locked"** | Common after a reboot. Run `security unlock-keychain` on the Mac, then retry (Tier-2). |
 | **"incorrect PIN"** | Re-enter it. Attempts are audited. |
