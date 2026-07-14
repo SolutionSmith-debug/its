@@ -74,7 +74,11 @@ CFG_SCHEDULED_SEND_LOCAL = "po_materials.po_send.scheduled_send_local"
 DEFAULT_SCHEDULED_SEND_LOCAL = "MON 07:00"
 SEND_TZ = "America/Los_Angeles"
 
-DEFAULT_POLLING_ENABLED = True
+# CO-1 / HOUSE_REFLEXES §5 (dark-ship default-False): a MISSING/malformed
+# `po_materials.po_send.polling_enabled` row must fail SAFE (send daemon disabled), never
+# fail-open to SENDING. The seeded `false` row is load-bearing for normal dark operation;
+# this default only governs the row-absent case. A send gate never fails open.
+DEFAULT_POLLING_ENABLED = False
 DEFAULT_POLL_INTERVAL = 900  # 15 minutes
 
 # State paths. The heartbeat-row-id cache is the SHARED cross-daemon file (ARCH-2);

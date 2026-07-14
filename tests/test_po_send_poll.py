@@ -38,6 +38,16 @@ def _row(
     }
 
 
+def _get_setting_polling_on(key: str, workstream: str | None = None) -> str:
+    """get_setting stub: enable the polling gate, fall back (NotFound) on every other key.
+
+    Mirrors a live tenant where only ``po_materials.po_send.polling_enabled=true`` is seeded.
+    """
+    if key == po_send_poll.CFG_POLLING_ENABLED:
+        return "true"
+    raise send_poll_core.smartsheet_client.SmartsheetNotFoundError(f"no stub for {key}")
+
+
 @pytest.fixture
 def _patch_all(mocker):
     return {
@@ -46,9 +56,11 @@ def _patch_all(mocker):
             "po_materials.po_send.send_one_row",  # CONFIG.send_fn late-binds here
             return_value=SendResult(status="sent", row_id=0, project_name="Sunrise Solar"),
         ),
+        # polling_enabled now DEFAULTS to False (CO-1 fail-safe), so the dispatch tests must
+        # explicitly enable polling; every OTHER config key still falls back (NotFound).
         "get_setting": mocker.patch(
             "safety_reports.send_poll_core.smartsheet_client.get_setting",
-            side_effect=send_poll_core.smartsheet_client.SmartsheetNotFoundError("default test stub"),
+            side_effect=_get_setting_polling_on,
         ),
         "workspace_shares": mocker.patch(
             "safety_reports.send_poll_core.smartsheet_client.list_workspace_share_emails",
@@ -81,6 +93,27 @@ def test_config_binds_the_po_sheet_and_workspace_not_safety_or_progress():
     # SENDING is excluded from dispatch (no double-send).
     assert po_review.STATUS_SENDING not in cfg.dispatch_statuses
     assert cfg.dispatch_statuses == frozenset({po_review.STATUS_PENDING, po_review.STATUS_FAILED})
+
+
+def test_default_polling_enabled_is_false_fail_safe():
+    # CO-1 / HOUSE_REFLEXES §5: a send daemon's row-absent default must be dark (False),
+    # never fail-open to SENDING. Pins the constant AND its propagation into the DaemonConfig.
+    assert po_send_poll.DEFAULT_POLLING_ENABLED is False
+    assert po_send_poll.CONFIG.default_polling_enabled is False
+
+
+def test_missing_polling_config_skips_the_cycle_without_sending(_patch_all, mocker):
+    # PROVE-IT-BITES: with NO polling_enabled row (get_setting raises NotFound for every key),
+    # the cycle now short-circuits fail-safe (skipped_disabled) instead of dispatching an
+    # approved send_now row. Before the CO-1 flip this row would have SENT.
+    _patch_all["get_setting"].side_effect = (
+        send_poll_core.smartsheet_client.SmartsheetNotFoundError("row absent")
+    )
+    _patch_all["get_rows"].return_value = [_row(row_id=90)]
+    stats = po_send_poll.poll_once()
+    assert stats.skipped_disabled is True
+    assert stats.dispatched == 0 and stats.sent == 0
+    _patch_all["send_one_row"].assert_not_called()
 
 
 def test_poll_dispatches_an_approved_send_now_row_through_po_send(_patch_all):
