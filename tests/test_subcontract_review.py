@@ -66,7 +66,7 @@ def test_add_sc_review_row_maps_protocol_slots(mocker) -> None:
         agreement_date=date(2025, 7, 11),
         package_link="https://app.box.com/file/1",
         recipient_to="ops@acme.example",
-        cc_display="tealap@evergreenrenewables.com",
+        cc_display="ap-lead@example.com",
         email_body="body",
         notes=subcontract_review.notes_for_review_row(7, "2025.364.1.1.2"),
     )

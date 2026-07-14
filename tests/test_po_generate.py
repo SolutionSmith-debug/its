@@ -84,8 +84,8 @@ PURCHASER: dict[str, Any] = {
     "address_lines": ["100 Spectrum Center Dr. STE 570", "Irvine, CA. 92618"],
     "phone": "888-303-6424",
     "invoice_routing": {
-        "to": "invoices@evergreenrenewables.com",
-        "cc": ["tealap@evergreenrenewables.com"],
+        "to": "invoices@example.com",
+        "cc": ["ap-lead@example.com"],
     },
 }
 
@@ -307,7 +307,7 @@ def test_render_contains_key_text() -> None:
     assert "$1,472.86" in text                     # the total
     assert "Alex Approver" in text                 # autofilled Purchaser NAME (D9)
     assert "SUBJECT TO THE TERMS AND CONDITIONS" in text
-    assert "invoices@evergreenrenewables.com" in text  # invoice routing (D5)
+    assert "invoices@example.com" in text  # invoice routing (D5)
     assert "Net 30" in text                        # payment terms
 
 

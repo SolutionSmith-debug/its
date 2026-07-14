@@ -33,8 +33,8 @@ PURCHASER: dict[str, Any] = {
     "address_lines": ["100 Spectrum Center Dr. STE 570", "Irvine, CA. 92618"],
     "phone": "888-303-6424",
     "invoice_routing": {
-        "to": "invoices@evergreenrenewables.com",
-        "cc": ["tealap@evergreenrenewables.com"],
+        "to": "invoices@example.com",
+        "cc": ["ap-lead@example.com"],
     },
 }
 TAX_CONFIG: dict[str, Any] = {
@@ -307,7 +307,7 @@ def test_happy_path_verifies_files_and_receipts_last(_patch):
     _, add_kwargs = _patch["review_add"].call_args
     assert add_kwargs["vendor_key"] == "VEN-000001"
     assert add_kwargs["recipient_to"] == "orders@chint.example"
-    assert "tealap@evergreenrenewables.com" in add_kwargs["cc_display"]
+    assert "ap-lead@example.com" in add_kwargs["cc_display"]
     assert "po_id=7" in add_kwargs["notes"]
     _patch["hb"].assert_called_once()
     _patch["marker"].assert_called_once()

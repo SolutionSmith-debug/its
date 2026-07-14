@@ -64,7 +64,7 @@ def test_add_po_review_row_maps_protocol_slots(mocker) -> None:
         po_date=date(2026, 7, 9),
         pdf_link="https://app.box.com/file/1",
         recipient_to="orders@chint.example",
-        cc_display="tealap@evergreenrenewables.com",
+        cc_display="ap-lead@example.com",
         email_body="body",
         notes=po_review.notes_for_review_row(7, "2026.001.2.0.0"),
     )

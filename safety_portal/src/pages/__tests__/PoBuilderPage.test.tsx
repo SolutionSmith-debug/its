@@ -53,7 +53,7 @@ const CONFIG: api.PoConfig = {
     entity: "Evergreen Renewables LLC",
     address_lines: ["100 Spectrum Center Dr. STE 570", "Irvine, CA. 92618"],
     phone: "888-303-6424",
-    invoice_routing: { to: "invoices@evergreenrenewables.com", cc: ["teala@evergreenrenewables.com"] },
+    invoice_routing: { to: "invoices@example.com", cc: ["ap-lead@example.com"] },
   },
   tax: {
     rates_bp: { IL: 900, OR: 0 },

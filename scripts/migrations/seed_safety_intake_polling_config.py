@@ -68,7 +68,7 @@ CONFIG_ROWS: list[dict[str, Any]] = [
             "Microsoft Graph mailbox address polled by "
             "safety_reports/intake_poll.py. Sandbox value is "
             "safety@evergreenmirror.com; cutover to "
-            "safety@evergreenrenewables.com happens at Phase 1.5 alongside "
+            "the production safety@ mailbox happens at Phase 1.5 alongside "
             "the rest of the sandbox-to-production tenant swap. The mailbox "
             "MUST be covered by the Entra app registration's Application "
             "Access Policy (Mail.ReadWrite on the resource). Post-pivot "

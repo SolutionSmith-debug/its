@@ -1,0 +1,34 @@
+# ITS production-identity re-entry guard — WORKING-TREE scan (gitleaks `dir` mode).
+#
+# The `secrets` CI job runs this via `gitleaks dir . --config .gitleaks-identity.toml`
+# (a filesystem scan of the current tree, NOT a git-history scan). It is deliberately
+# dir-mode and NOT folded into `.gitleaks.toml`'s history pass, because the production
+# Evergreen domain is immutably present in ~hundreds of PAST commits (test/seed fixtures
+# authored before the 2026-07-14 identity scrub) and history cannot be rewritten. A
+# history rule for this pattern would fire on every one of those commits and red-line CI
+# forever. This guard's job is to stop a production identity from RE-ENTERING source code
+# going forward — inherently a current-tree concern.
+#
+# Scope: source code only (.py / .ts / .tsx). Docs (.md) and bundled config (.json — e.g.
+# po_materials/config/purchaser.json, the real invoice-routing) are intentionally out of
+# scope. A bare-domain reference with no local part (e.g. "evergreenrenewables.com" in a
+# doctrinal comment) is NOT matched — only actual @-emails (identities) are.
+#
+# Standalone (no useDefault): this pass checks ONLY for production-identity re-entry; real
+# secret detection stays with the `.gitleaks.toml` full-history pass.
+title = "ITS production-identity re-entry guard"
+
+[[rules]]
+id = "evergreen-production-email"
+description = "A production @evergreenrenewables.com email must not appear in source code — use an @example.com / mirror-domain address in tests and seeds."
+regex = '''[A-Za-z0-9._%+-]+@evergreenrenewables\.com'''
+path = '''\.(py|ts|tsx)$'''
+
+[allowlist]
+description = "Vendored / sibling-worktree / build-output paths are not source-of-truth."
+paths = [
+    '''node_modules/''',
+    '''\.claude/''',
+    '''(^|/)dist/''',
+    '''\.venv''',
+]

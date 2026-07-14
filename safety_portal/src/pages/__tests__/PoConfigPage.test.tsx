@@ -44,7 +44,7 @@ const CONFIG: api.PoConfig = {
     entity: "Evergreen Renewables LLC",
     address_lines: ["100 Spectrum Center Dr. STE 570", "Irvine, CA. 92618"],
     phone: "888-303-6424",
-    invoice_routing: { to: "invoices@evergreenrenewables.com", cc: ["tealap@evergreenrenewables.com"] },
+    invoice_routing: { to: "invoices@example.com", cc: ["ap-lead@example.com"] },
   },
   tax: {
     rates_bp: { IL: 900, OR: 0 },
@@ -176,7 +176,7 @@ describe("PoConfigPage — read view", () => {
     const { getByText } = render(<PoConfigPage onBack={vi.fn()} />);
     await waitFor(() => expect(getByText("Evergreen Renewables LLC")).toBeTruthy());
     expect(getByText("100 Spectrum Center Dr. STE 570")).toBeTruthy();
-    expect(getByText("To: invoices@evergreenrenewables.com")).toBeTruthy();
+    expect(getByText("To: invoices@example.com")).toBeTruthy();
   });
 
   it("renders tax rates as percents (basis points → %)", async () => {
@@ -226,7 +226,7 @@ describe("PoConfigPage — editors (send-free enqueue)", () => {
           payload: expect.objectContaining({
             entity: "Evergreen Renewables Holdings LLC",
             address_lines: ["100 Spectrum Center Dr. STE 570", "Irvine, CA. 92618"],
-            invoice_routing: expect.objectContaining({ to: "invoices@evergreenrenewables.com" }),
+            invoice_routing: expect.objectContaining({ to: "invoices@example.com" }),
           }),
         }),
       ),

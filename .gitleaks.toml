@@ -1,7 +1,10 @@
-# gitleaks configuration for the `secrets` CI gate
-# (.github/workflows runs `gitleaks git . --redact --no-banner --exit-code 1` over the
-# FULL commit history). This EXTENDS the default ruleset — it does not replace it, so all
-# ~100 default secret-detection rules stay active.
+# gitleaks configuration for the `secrets` CI gate — FULL-HISTORY secret scan.
+# The `secrets` CI job runs TWO gitleaks passes:
+#   1. `gitleaks git . --config .gitleaks.toml`          — full commit-history secret scan (THIS file).
+#   2. `gitleaks dir . --config .gitleaks-identity.toml` — working-tree production-identity re-entry
+#      guard (separate config; dir-mode because the production domain is immutable in past commits).
+# This file EXTENDS the default ruleset — it does not replace it, so all ~100 default
+# secret-detection rules stay active.
 [extend]
 useDefault = true
 
@@ -14,8 +17,26 @@ useDefault = true
 # credential. Exempt the definitions directory from secret scanning; nothing secret is
 # ever committed there. (Path-scoped, so a real secret committed ANYWHERE ELSE is still
 # caught — and commit-independent, so it survives squash-merge.)
-[allowlist]
+[[allowlists]]
 description = "Safety Portal form definitions are public field-schema JSON (no secrets)."
 paths = [
     '''safety_portal/forms/.*\.json$''',
+]
+
+# Two SYNTHETIC redaction-test fixtures (fabricated non-credentials proving the §54
+# redaction backstop scrubs secrets before egress). The pinned gitleaks 8.30.1 default
+# ruleset already treats both as example/non-secret values (a full-history scan is CLEAN
+# today, verified 2026-07-14), so this is belt-and-suspenders against a future default-
+# ruleset change. Scoped to the EXACT synthetic strings in their EXACT files (condition
+# = AND) — NOT a blanket tests/ exclusion, so a REAL secret in either file is still caught.
+[[allowlists]]
+description = "Synthetic redaction-test fixtures (fabricated non-credentials)."
+condition = "AND"
+paths = [
+    '''tests/test_publish_daemon\.py''',
+    '''tests/test_error_log_redaction_backstop\.py''',
+]
+regexes = [
+    '''ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789''',
+    '''AKIAIOSFODNN7EXAMPLE''',
 ]
