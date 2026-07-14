@@ -10,13 +10,22 @@ lands in ITS_Errors, auto-redacted, no operator page).
 from __future__ import annotations
 
 import importlib
+import json
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
 from operator_dashboard.act.registry import REGISTRY, get_entry
 from operator_dashboard.act.validators import ConfigValidationError
+
+# The generated data dictionary (operator_dashboard/config_defaults.json) is the
+# self-documentation source: its per-key `purpose` prose is surfaced next to each
+# editable row so a daily operator can read what a setting does without leaving
+# the page. It lives one directory up from act/.
+_CONFIG_DEFAULTS_PATH = Path(__file__).resolve().parent.parent / "config_defaults.json"
 
 # Outcome kinds (also used as CSS status classes + test assertions).
 APPLIED = "applied"
@@ -37,6 +46,27 @@ class Outcome:
 
 def _load(name: str) -> Any:
     return importlib.import_module(name)
+
+
+@lru_cache(maxsize=1)
+def _purpose_map() -> dict[tuple[str, str], str]:
+    """(Setting, Workstream) -> the human `purpose` prose from the generated data
+    dictionary, so the editor is self-documenting for a daily operator. Read-only
+    and fail-soft: a missing file or malformed JSON yields an empty map (the
+    editor still renders; the purpose line is simply omitted). Cached — the file
+    is static per deploy."""
+    try:
+        data = json.loads(_CONFIG_DEFAULTS_PATH.read_text())
+    except Exception:
+        return {}
+    out: dict[tuple[str, str], str] = {}
+    for entry in data.get("keys", []):
+        if not isinstance(entry, dict):
+            continue
+        s, w, p = entry.get("setting"), entry.get("workstream"), entry.get("purpose")
+        if isinstance(s, str) and isinstance(w, str) and isinstance(p, str):
+            out[(s, w)] = p
+    return out
 
 
 def read_current(setting: str, workstream: str) -> tuple[int | None, str | None]:
@@ -62,6 +92,7 @@ def read_registry_state() -> list[dict[str, Any]]:
         val = r.get("Value")
         by_pair[(r.get("Setting"), r.get("Workstream"))] = val if isinstance(val, str) else ""
     out: list[dict[str, Any]] = []
+    purposes = _purpose_map()
     for (setting, ws), entry in REGISTRY.items():
         present = (setting, ws) in by_pair
         # URL/CSS-safe id for the per-row htmx swap target (dots in the pair
@@ -76,6 +107,7 @@ def read_registry_state() -> list[dict[str, Any]]:
                 "value": by_pair.get((setting, ws), ""),
                 "present": present,
                 "note": entry.note,
+                "purpose": purposes.get((setting, ws), ""),
                 "gated": entry.first_activation_gated,
                 "tier": entry.tier,
                 "elevated": entry.elevated_confirm,

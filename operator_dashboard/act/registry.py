@@ -112,6 +112,9 @@ _ENTRIES: list[ConfigEntry] = [
         v_bool,
         note="read under Workstream=safety_reports (intake daemon's workstream), not progress_reports",
     ),
+    # compile-now poll gates (the operator "Compile Now" checkbox pollers) — plain Class-A pause/resume.
+    _e("safety_reports.compile_now_poll.polling_enabled", "safety_reports", _GATES, v_bool),
+    _e("progress_reports.compile_now_poll.polling_enabled", "progress_reports", _GATES, v_bool),
     _e("circuit_breaker.enabled", "global", _GATES, v_bool),
     # --- send-poller gates: pause = Class A; false->true activation escalates ---
     _e(
@@ -154,6 +157,42 @@ _ENTRIES: list[ConfigEntry] = [
         first_activation_gated=True,
         note="pause anytime; turning ON escalates",
     ),
+    # progress-reports send poller — the progress twin of weekly_send (external send path).
+    _e(
+        "progress_reports.progress_send.polling_enabled",
+        "progress_reports",
+        _SEND_GATES,
+        v_bool,
+        first_activation_gated=True,
+        note="the progress-reports send poller (twin of weekly_send); pause anytime; turning ON is a dark->live activation → escalate",
+    ),
+    # subcontracts generation poll — ships dark; SC-S4 send not yet built, but it feeds a
+    # generation→Box-filing pipeline with go-live preconditions, so it mirrors po_poll:
+    # pause = plain Class A, false->true activation escalates.
+    _e(
+        "subcontracts.subcontract_poll.polling_enabled",
+        "subcontracts",
+        _SEND_GATES,
+        v_bool,
+        first_activation_gated=True,
+        note="subcontract generation poll — ships dark; pause anytime; turning ON escalates (go-live preconditions in Description)",
+    ),
+    _e(
+        "subcontracts.subcontract_poll.subcontractors_sync_enabled",
+        "subcontracts",
+        _SEND_GATES,
+        v_bool,
+        first_activation_gated=True,
+        note="§51 subcontractor down/up-sync pass; pause anytime; turning ON escalates",
+    ),
+    _e(
+        "subcontracts.subcontract_poll.status_sync_enabled",
+        "subcontracts",
+        _SEND_GATES,
+        v_bool,
+        first_activation_gated=True,
+        note="pause anytime; turning ON escalates",
+    ),
     # --- tuning knobs / thresholds (int-bounded) ---
     _e("circuit_breaker.failure_threshold", "global", _KNOBS, v_int(1, 100)),
     _e("circuit_breaker.cooldown_seconds", "global", _KNOBS, v_int(1, 86_400)),
@@ -173,9 +212,26 @@ _ENTRIES: list[ConfigEntry] = [
     _e("safety_reports.intake.confidence_threshold", "safety_reports", _BEHAVIOR, v_float01),
     _e("safety_reports.intake.classification_model", "safety_reports", _BEHAVIOR, v_enum(KNOWN_MODELS)),
     _e("safety_reports.intake.review_queue_on_low_confidence", "safety_reports", _BEHAVIOR, v_bool),
+    # §34 attachment/photo ClamAV layer toggles — plain Class-A behavior (a dark security
+    # sub-layer; default off, enabling presumes clamd is running on the host).
+    _e(
+        "safety_reports.photo_screen.clamav_enabled",
+        "safety_reports",
+        _BEHAVIOR,
+        v_bool,
+        note="§34 Layer-6 photo-screener ClamAV pass (default off; enabling requires clamd running on the host)",
+    ),
+    _e(
+        "po_materials.po_attach_screen.clamav_enabled",
+        "po_materials",
+        _BEHAVIOR,
+        v_bool,
+        note="§34 PO doc-attachment-screener ClamAV pass (read by po_poll; default off; enabling requires clamd running)",
+    ),
     # --- scheduled-send windows (runtime-read) ---
     _e("safety_reports.weekly_send.scheduled_send_local", "safety_reports", _WINDOWS, v_schedule),
     _e("po_materials.po_send.scheduled_send_local", "po_materials", _WINDOWS, v_schedule),
+    _e("progress_reports.progress_send.scheduled_send_local", "progress_reports", _WINDOWS, v_schedule),
     # --- data / paths ---
     _e("safety_reports.box.portal_root_folder_id", "safety_reports", _DATA, v_id),
     _e("progress_reports.box.portal_root_folder_id", "progress_reports", _DATA, v_id),
