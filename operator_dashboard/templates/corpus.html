@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Docs — ITS Operator Dashboard{% endblock %}
+{% block subnav %}
+<nav class="subnav" aria-label="Back to dashboard">
+  <a class="subnav__back" href="/">← Back to dashboard</a>
+</nav>
+{% endblock %}
+{% block content %}
+<div class="corpus">
+  <div class="corpus-head">
+    <h2>Documentation</h2>
+    <span class="summary">The ITS documentation corpus (from the local manifest). Open a doc to read it in-dashboard.</span>
+  </div>
+  {% if error %}
+  <div class="config-error">manifest failed to load — {{ error }}</div>
+  {% else %}
+  <p class="ts-legend">
+    Interactive troubleshooter: <a href="/troubleshoot">/troubleshoot</a>.
+    Branded PDFs are published to Box on operator activation (dark by default).
+  </p>
+  <table class="config-table corpus-table">
+    <thead><tr><th>Doc</th><th>Audience</th><th>Version</th><th>Source</th></tr></thead>
+    <tbody>
+      {% for e in entries %}
+      <tr>
+        <td>
+          {% if e.doc_rel %}<a href="/doc/{{ e.doc_rel }}">{{ e.title }}</a>{% else %}{{ e.title }}{% endif %}
+          {% if e.is_index %}<span class="ts-badge ts-solo">index</span>{% endif %}
+        </td>
+        <td>{{ e.audience }}</td>
+        <td><code>{{ e.sha8 }}</code></td>
+        <td class="corpus-src"><code>{{ e.source }}</code></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="config-note">{{ entries|length }} documents. The <code>ITS_Documentation_Index</code> Smartsheet sheet mirrors this (with Box links) once the operator runs the index-sheet builder.</p>
+  {% endif %}
+</div>
+{% endblock %}
