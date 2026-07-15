@@ -40,10 +40,11 @@ files, and ITS never invents contract language.
 4. **Sign & execute** — because this is a wet-signature document, the executed contract is handled
    outside ITS; when both parties have signed, the operator marks the ledger row **`executed`**.
 
-> **Sending is not built yet.** Today ITS **generates and files** subcontract packages and stages them
-> for review — it does **not** email them to the subcontractor. The automated send half (SC-S4) is a
-> remaining build; until it ships, delivering the package to the subcontractor is a manual step, and
-> "send" approval (via workspace membership) is a future control. See *What's not built yet* below.
+> **Sending ships dark.** ITS **generates, files, and stages** subcontract packages for review, and the
+> automated send half (SC-S4) is now built — it emails the package to the subcontractor after a human
+> approves the review row (send approval is by workspace membership, §46). The send lane **ships dark**:
+> it does nothing until the operator flips its `subcontracts.subcontract_send.polling_enabled` gate. Until
+> that gate is on, delivering the package remains a manual step.
 
 ## What ITS adds over the manual process
 
@@ -96,10 +97,6 @@ subcontract won't render from un-reviewed language.
 
 ## What's not built yet
 
-- **Automated sending (SC-S4).** Generation and review are built; the send half — emailing the package to
-  the subcontractor after approval — is **not built yet**. When it ships it will follow the same
-  human-approval, recipients-at-send-time model as safety and PO, with send/execution approval controlled
-  by **workspace membership** (§46). Until then, treat this as a *generate-and-review* workflow.
 - **Short form, insurance/COI compliance gate, AI-assisted scope drafting, and e-signature** are
   designed-for but out of the current build (first-class future slices, not silent gaps).
 

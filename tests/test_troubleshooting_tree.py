@@ -24,6 +24,7 @@ if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
 
 import watchdog  # noqa: E402 — sys.path-driven import
+from build_runbook_xrefs import main as xref_main  # noqa: E402
 from build_troubleshooting_guide import GUIDE_PATH, render_guide  # noqa: E402
 
 from troubleshooting.loader import CLASSES, Tree, load_tree  # noqa: E402
@@ -168,6 +169,14 @@ def test_committed_guide_is_current(tree: Tree) -> None:
     assert committed == render_guide(tree), (
         "troubleshooting_guide.md is stale — regenerate with "
         "`python -m scripts.build_troubleshooting_guide` and re-record its manifest sha256"
+    )
+
+
+def test_runbook_xrefs_are_current() -> None:
+    """Every tree-referenced runbook carries a current cross-link block. Editing the tree (which
+    changes a node title/symptom or a daemon) without re-running the generator RED-lights here."""
+    assert xref_main(["--check"]) == 0, (
+        "runbook xref blocks are stale — run `python -m scripts.build_runbook_xrefs`"
     )
 
 
