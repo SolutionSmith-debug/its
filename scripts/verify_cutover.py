@@ -287,10 +287,20 @@ CONFIG_ROWS: tuple[ConfigRow, ...] = (
     ConfigRow("safety_reports.photo_screen.clamav_enabled", "safety_reports", "non_empty"),
     ConfigRow("safety_reports.compile_now_poll.polling_enabled", "safety_reports", "non_empty"),
     ConfigRow("progress_reports.compile_now_poll.polling_enabled", "progress_reports", "non_empty"),
-    # DEFERRED (NOT enrolled) until the SC-S4 subcontract SEND half is built: the
-    # subcontract from_mailbox / scheduled_send_local / send polling_enabled rows — no
-    # send daemon or rows exist yet. Same External-Send-Gate posture as po_send's deferred
-    # polling_enabled: forcing a send gate 'true' is a FIXED high-class decision (Seth).
+    # Subcontract SEND half (SC-S4, built 2026-07-15). The from_mailbox is production-address
+    # surface (VC-03 sandbox-scanned — it holds the evergreenmirror.com mirror value, flagged
+    # to repoint at cutover), enrolled exactly like po_send.from_mailbox. The send gate +
+    # scheduled window are asserted SEEDED PRESENT (non_empty, NOT forced 'true' — the
+    # dark-ship reflex: seed_subcontracts_send_config.py must have run so there is a switch to
+    # flip). polling_enabled is deliberately NOT forced 'true': turning the subcontract send
+    # gate on is a FIXED high-capability-class External-Send-Gate decision (Seth), same posture
+    # as po_send's polling_enabled.
+    ConfigRow(
+        "subcontracts.subcontract_send.from_mailbox", "subcontracts", "non_empty",
+        sandbox_scan=True,
+    ),
+    ConfigRow("subcontracts.subcontract_send.polling_enabled", "subcontracts", "non_empty"),
+    ConfigRow("subcontracts.subcontract_send.scheduled_send_local", "subcontracts", "non_empty"),
 )
 
 

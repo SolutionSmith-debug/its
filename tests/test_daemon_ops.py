@@ -97,9 +97,10 @@ def test_label_allowlist_refuses_non_interval_and_non_its(env: dict[str, Any]) -
     assert env["updates"] == [] and env["install_calls"] == []
 
 
-def test_all_eight_interval_daemons_registered() -> None:
-    assert len(daemon_ops.INTERVAL_DAEMONS) == 8
+def test_all_nine_interval_daemons_registered() -> None:
+    assert len(daemon_ops.INTERVAL_DAEMONS) == 9
     assert daemon_ops.is_interval_daemon(_PO_POLL)
+    assert daemon_ops.is_interval_daemon("org.solutionsmith.its.subcontract-send")  # SC-S4
     assert not daemon_ops.is_interval_daemon("org.solutionsmith.its.dashboard")
 
 
@@ -150,7 +151,7 @@ def test_reinstall_failure_audits_desync(env: dict[str, Any]) -> None:
 def test_read_interval_state(env: dict[str, Any]) -> None:
     _seed(env, _PO_POLL_KEY, "po_materials", "90", row_id=5)
     state = {d["label"]: d for d in daemon_ops.read_interval_state()}
-    assert len(state) == 8
+    assert len(state) == 9
     assert state[_PO_POLL]["value"] == "90" and state[_PO_POLL]["present"]
     assert state[_PO_POLL]["slug"] == "org-solutionsmith-its-po-poll"  # CSS-safe htmx id
     assert not state["org.solutionsmith.its.weekly-send"]["present"]  # unseeded → False

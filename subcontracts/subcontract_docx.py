@@ -25,7 +25,7 @@ from __future__ import annotations
 import io
 import re
 import zipfile
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 from docx import Document
@@ -373,3 +373,28 @@ def render_package(
         "Exhibit A.docx": exhibit_bytes,
         "Annex C - Schedule of Values.xlsx": xlsx_bytes,
     }
+
+
+def zip_package(package: dict[str, bytes], stamp: datetime | date) -> bytes:
+    """Combine a rendered ``package`` (the keyed files from ``render_package``) into ONE
+    deterministic ZIP — the SC-S4 SEND artifact (2026-07-15 operator decision: the
+    subcontractor receives the whole signable package as a single ``Subcontract Package.zip``,
+    so the shared single-attachment send engine sends it unchanged).
+
+    DETERMINISTIC — byte-identical for a fixed record, so §47 version-on-conflict Box filing
+    still skips a redundant re-upload (the same guarantee ``render_package``'s members carry).
+    Three sources of ZIP non-determinism are pinned: (1) every member's local-header
+    ``date_time`` is set to the record's agreement date (never ``datetime.now()``), mirroring
+    ``_normalize_ooxml_clock``; (2) members are written in sorted-name order; (3) a fixed
+    ``ZIP_DEFLATED`` level (zlib deflate is deterministic for a fixed level). The inner
+    ``.docx``/``.xlsx`` bytes are already deterministic (``render_package`` pinned their OOXML
+    clocks), so the resulting ZIP is stable input-for-input."""
+    dt = (min(2107, max(1980, stamp.year)), stamp.month, stamp.day, 0, 0, 0)
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zf:
+        for name in sorted(package):
+            zi = zipfile.ZipInfo(name, date_time=dt)
+            zi.compress_type = zipfile.ZIP_DEFLATED
+            zi.external_attr = 0o600 << 16  # -rw------- (deterministic member perms)
+            zf.writestr(zi, package[name])
+    return out.getvalue()

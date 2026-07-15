@@ -273,7 +273,7 @@
       "setting": "po_materials.po_send.polling_enabled",
       "workstream": "po_materials",
       "kind": "bool",
-      "default": true,
+      "default": false,
       "purpose": "Runtime on/off gate for the po_materials.po_send daemon. False pauses it without unloading its launchd job (the canonical runtime gate, distinct from the report-filter Enabled checkbox).",
       "read_by": [
         "po_materials.po_send_poll"
@@ -696,6 +696,40 @@
       "purpose": "Gate for subcontract_poll's §51 subcontractor-sync passes: the ITS_Subcontractors full-replace down-sync into the Worker's D1 cache AND the dirty-subcontractor up-sync back into ITS_Subcontractors (bridge-key find-or-create by Sub Key). Ships dark.",
       "read_by": [
         "subcontracts.subcontract_poll"
+      ],
+      "origin": "daemon"
+    },
+    {
+      "setting": "subcontracts.subcontract_send.from_mailbox",
+      "workstream": "subcontracts",
+      "kind": "str",
+      "default": "procurement@evergreenmirror.com",
+      "purpose": "The M365 mailbox the subcontracts.subcontract_send send daemon sends approved email FROM.",
+      "read_by": [
+        "subcontracts.subcontract_send",
+        "subcontracts.subcontract_send_poll"
+      ],
+      "origin": "daemon"
+    },
+    {
+      "setting": "subcontracts.subcontract_send.polling_enabled",
+      "workstream": "subcontracts",
+      "kind": "bool",
+      "default": false,
+      "purpose": "Runtime on/off gate for the subcontracts.subcontract_send daemon. False pauses it without unloading its launchd job (the canonical runtime gate, distinct from the report-filter Enabled checkbox).",
+      "read_by": [
+        "subcontracts.subcontract_send_poll"
+      ],
+      "origin": "daemon"
+    },
+    {
+      "setting": "subcontracts.subcontract_send.scheduled_send_local",
+      "workstream": "subcontracts",
+      "kind": "str",
+      "default": "MON 07:00",
+      "purpose": "Local-time window (e.g. `MON 07:00`) at/after which a row approved with **Approve for Scheduled Send** may dispatch on the subcontracts.subcontract_send path.",
+      "read_by": [
+        "subcontracts.subcontract_send_poll"
       ],
       "origin": "daemon"
     }

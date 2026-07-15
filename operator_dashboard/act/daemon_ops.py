@@ -11,7 +11,7 @@ BOTH:
      the new cadence takes effect now (the EXPLICIT <interval> arg is passed, so
      there is no read-after-write race on the row just written).
 
-LABEL-ALLOWLISTED to the 8 known interval daemons (mirrors install.sh's
+LABEL-ALLOWLISTED to the 9 known interval daemons (mirrors install.sh's
 poll_interval_config_key table) — a label not in the allowlist is refused, so the
 verb can never touch a non-interval service (the dashboard itself, watchdog,
 weekly-generate) or a non-ITS label. The interval is bounds-validated. The
@@ -55,7 +55,7 @@ class IntervalDaemon:
     default: int       # install.sh per-daemon default (for display / reference)
 
 
-# The 8 interval daemons install.sh knows (its poll_interval_config_key table).
+# The 9 interval daemons install.sh knows (its poll_interval_config_key table).
 _DAEMONS: list[IntervalDaemon] = [
     IntervalDaemon("org.solutionsmith.its.weekly-send", "safety_reports.weekly_send.poll_interval_seconds", "safety_reports", 900),
     IntervalDaemon("org.solutionsmith.its.portal-poll", "safety_reports.portal_poll.poll_interval_seconds", "safety_reports", 60),
@@ -65,6 +65,7 @@ _DAEMONS: list[IntervalDaemon] = [
     IntervalDaemon("org.solutionsmith.its.po-poll", "po_materials.po_poll.poll_interval_seconds", "po_materials", 90),
     IntervalDaemon("org.solutionsmith.its.po-send", "po_materials.po_send.poll_interval_seconds", "po_materials", 900),
     IntervalDaemon("org.solutionsmith.its.subcontract-poll", "subcontracts.subcontract_poll.poll_interval_seconds", "subcontracts", 120),
+    IntervalDaemon("org.solutionsmith.its.subcontract-send", "subcontracts.subcontract_send.poll_interval_seconds", "subcontracts", 900),
 ]
 INTERVAL_DAEMONS: dict[str, IntervalDaemon] = {d.label: d for d in _DAEMONS}
 
@@ -85,7 +86,7 @@ def is_interval_daemon(label: str) -> bool:
 
 
 def read_interval_state() -> list[dict[str, Any]]:
-    """The 8 interval daemons + their current poll_interval from ITS_Config, for
+    """The 9 interval daemons + their current poll_interval from ITS_Config, for
     the editor UI. A daemon whose row is unseeded shows present=False. Fail-soft
     per-daemon (a read error degrades that one row to 'unavailable')."""
     from operator_dashboard.act.config_write import read_current

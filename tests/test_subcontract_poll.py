@@ -317,31 +317,41 @@ def test_subcontractor_snapshot_resolved_from_sor_at_render_time(_patch):
     assert render_kwargs["terms_profile_id"] == "standard_subcontract"
 
 
-def test_three_file_box_filing_docx_is_primary(_patch):
-    """render_package returns THREE files → THREE Box uploads (the contract .docx + the Exhibit A
-    .docx + the .xlsx SOV); the contract .docx id is the primary receipt (BUILD_DECISIONS #3)."""
+def test_four_file_box_filing_zip_is_send_artifact_docx_is_primary(_patch):
+    """render_package returns THREE editable files → THREE Box uploads (contract .docx + Exhibit A
+    .docx + .xlsx SOV), PLUS a FOURTH upload: the combined Subcontract Package.zip (SC-S4 send
+    artifact, 2026-07-15). The contract .docx id stays the primary ledger receipt
+    (BUILD_DECISIONS #3), but the review row's "Compiled PDF" link points at the ZIP so the send
+    engine transmits the whole package."""
     _patch["upload"].side_effect = [
         {"id": "docx-1", "name": "x.docx", "size": 9},
         {"id": "exhibit-2", "name": "e.docx", "size": 9},
         {"id": "xlsx-3", "name": "x.xlsx", "size": 9},
+        {"id": "zip-4", "name": "pkg.zip", "size": 20},
     ]
     _patch["pending"].return_value = [_signed_row()]
 
     stats = _run(_patch)
 
     assert stats.filed == 1
-    assert _patch["upload"].call_count == 3
-    (c1, c2, c3) = _patch["upload"].call_args_list
+    assert _patch["upload"].call_count == 4
+    (c1, c2, c3, c4) = _patch["upload"].call_args_list
     (folder1, name1, bytes1), _ = c1
     (_, name2, bytes2), _ = c2
     (_, name3, bytes3), _ = c3
+    (_, name4, bytes4), _ = c4
     assert folder1 == "folder-1" and "Subcontract" in name1 and bytes1 == b"%DOCX-fake"
     assert "Exhibit A" in name2 and bytes2 == b"%EXHIBIT-fake"
     assert name3.endswith(".xlsx") and bytes3 == b"XLSX-fake"
-    assert all("2026.001.2.0.0" in n for n in (name1, name2, name3))
-    # The contract .docx id (FIRST upload) is the receipt.
+    # The 4th upload is the deterministic combined ZIP package (real bytes from zip_package).
+    assert name4.endswith(".zip") and "Subcontract Package" in name4 and bytes4[:2] == b"PK"
+    assert all("2026.001.2.0.0" in n for n in (name1, name2, name3, name4))
+    # The contract .docx id (FIRST upload) is the ledger receipt (unchanged).
     _, mark_kwargs = _patch["mark_filed"].call_args
     assert mark_kwargs["box_file_id"] == "docx-1"
+    # But the review row's "Compiled PDF" (the send source) links the ZIP, not the docx.
+    _, review_kwargs = _patch["review_add"].call_args
+    assert review_kwargs["package_link"] == "https://app.box.com/file/zip-4"
 
 
 def test_agreement_ymd_is_stable_across_re_renders(_patch):

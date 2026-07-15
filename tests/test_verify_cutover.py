@@ -304,14 +304,17 @@ def test_subcontract_gate_rows_enrolled_present_not_forced_true():
         assert by_key[gate].requirement == "non_empty", f"{gate} must be non_empty, not forced-true"
 
 
-def test_subcontract_send_rows_deferred_until_sc_s4():
-    """The SC-S4 subcontract SEND half is NOT built — its from_mailbox / scheduled_send_local /
-    send polling_enabled rows must NOT be enrolled yet (no daemon or rows exist; forcing a send
-    gate is a FIXED high-class External-Send-Gate decision)."""
-    keys = {r.key for r in vc.CONFIG_ROWS}
-    assert "subcontracts.subcontract_send.from_mailbox" not in keys
-    assert "subcontracts.subcontract_send.polling_enabled" not in keys
-    assert "subcontracts.subcontract_send.scheduled_send_local" not in keys
+def test_subcontract_send_rows_enrolled_after_sc_s4():
+    """The SC-S4 subcontract SEND half is BUILT (2026-07-15, ships dark) — its config rows are
+    now enrolled: from_mailbox sandbox-scanned; the gate + window asserted SEEDED PRESENT
+    (non_empty, NOT forced 'true' — flipping the send gate is a FIXED high-class
+    External-Send-Gate decision, so it is never demanded 'true' by VC-03)."""
+    by_key = {r.key: r for r in vc.CONFIG_ROWS}
+    assert "subcontracts.subcontract_send.from_mailbox" in by_key
+    assert by_key["subcontracts.subcontract_send.from_mailbox"].sandbox_scan is True
+    # The gate + window are present-checked, NOT forced true.
+    assert by_key["subcontracts.subcontract_send.polling_enabled"].requirement == "non_empty"
+    assert by_key["subcontracts.subcontract_send.scheduled_send_local"].requirement == "non_empty"
 
 
 def test_po_from_mailbox_mirror_value_fails_unless_allowed(monkeypatch):

@@ -59,6 +59,7 @@ FAILED auto-retries until MAX_SEND_RETRIES.
 from __future__ import annotations
 
 import argparse
+import mimetypes
 import re
 import sys
 from collections.abc import Callable, Sequence
@@ -353,6 +354,27 @@ def _valid_addr(addr: str) -> bool:
     return bool(_ADDR_RE.match(addr or ""))
 
 
+# ---- attachment content-type ---------------------------------------------
+
+
+def _attachment_content_type(name: str) -> str:
+    """The MIME content-type for the outgoing attachment, DERIVED from its filename
+    extension (the envelope's ``attachment_name``). Explicit for the two shipped package
+    types so it is platform-independent — ``.pdf`` → ``application/pdf`` (safety / progress /
+    PO — byte-identical to the pre-2026-07-15 hardcode) and ``.zip`` → ``application/zip``
+    (the subcontract SC-S4 combined package); ``mimetypes`` fallback otherwise, then
+    ``application/octet-stream``. Deriving from the name (vs the old hardcoded
+    ``application/pdf``) is the ONLY engine change SC-S4 needs — it never touches the
+    attachment COUNT or the fetch path, so the single-attachment engine and the three PDF
+    workstreams are unaffected."""
+    lowered = name.strip().lower()
+    if lowered.endswith(".pdf"):
+        return "application/pdf"
+    if lowered.endswith(".zip"):
+        return "application/zip"
+    return mimetypes.guess_type(name)[0] or "application/octet-stream"
+
+
 # ---- Box helper ----------------------------------------------------------
 
 
@@ -545,9 +567,12 @@ def send_one_row(row_id: int, cfg: SendConfig) -> SendResult:
         )
     subject, attachment_name = envelope
     from_mailbox = _read_str_setting(cfg.from_mailbox_cfg_key, cfg.from_mailbox_default, workstream=cfg.config_workstream)
+    # Content-type is DERIVED from the attachment filename (not hardcoded): .pdf → application/pdf
+    # (safety/progress/PO unchanged), .zip → application/zip (subcontract SC-S4 package).
+    attachment_content_type = _attachment_content_type(attachment_name)
     attachment = {
         "name": attachment_name,
-        "contentType": "application/pdf",
+        "contentType": attachment_content_type,
         "contentBytes": pdf_bytes,
     }
 
@@ -595,7 +620,7 @@ def send_one_row(row_id: int, cfg: SendConfig) -> SendResult:
                 from_mailbox=from_mailbox, to=[to_addr], cc=cc_list or None,
                 subject=subject, body=body, content_type="Text",
                 attachment_name=attachment_name, attachment_bytes=pdf_bytes,
-                attachment_content_type="application/pdf",
+                attachment_content_type=attachment_content_type,
             )
         else:
             graph_client.send_mail(

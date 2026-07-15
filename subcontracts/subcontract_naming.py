@@ -50,6 +50,21 @@ def sc_exhibit_filename(sc_number: str, job_name: str | None) -> str:
     return f"{job}_Exhibit A_{sc_number}.docx" if job else f"Exhibit A {sc_number}.docx"
 
 
+def sc_package_zip_filename(sc_number: str, job_name: str | None) -> str:
+    """The combined SEND package ``.zip`` name: ``<Job>_Subcontract Package_<sc_number>.zip``
+    (job-prefixed, matching the Safety ``<job>_<...>`` file style). Falls back to
+    ``Subcontract Package <sc_number>.zip`` when the job name is empty. This is the SC-S4 send
+    artifact (the Subcontract body ``.docx`` + Exhibit A ``.docx`` + Annex C SoV ``.xlsx`` in
+    one ZIP, 2026-07-15 operator decision); its ``.zip`` extension drives the send engine's
+    attachment content-type (``application/zip``)."""
+    job = safety_naming.job_folder_name(job_name or "").strip()
+    return (
+        f"{job}_Subcontract Package_{sc_number}.zip"
+        if job
+        else f"Subcontract Package {sc_number}.zip"
+    )
+
+
 def sc_pdf_filename(sc_number: str, job_name: str | None) -> str:
     """The Subcontract PDF file name: ``<Job>_Subcontract_<sc_number>.pdf`` (job-prefixed,
     matching the Safety ``<job>_<...>.pdf`` file style). Falls back to

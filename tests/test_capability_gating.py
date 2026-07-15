@@ -272,7 +272,20 @@ SEND_SCRIPTS: list[tuple[str, list[str]]] = [
         "po_materials/po_send_poll.py",
         ["anthropic_client", "anthropic"],
     ),
-    # ("subcontracts/subcontract_send.py", ["anthropic_client", "anthropic"]),
+    (
+        # SC-S4: subcontract_send is the subcontract instantiation of the shared send engine —
+        # it imports safety_reports.weekly_send (the dispatch logic, transitively graph_client.
+        # send_mail, the intended send capability for the subcontractor audience). anthropic /
+        # anthropic_client must not appear at all (no LLM in the send half).
+        "subcontracts/subcontract_send.py",
+        ["anthropic_client", "anthropic"],
+    ),
+    (
+        # SC-S4: the subcontract send poller. Imports subcontract_send (→ weekly_send → graph
+        # send) + send_poll_core. anthropic / anthropic_client must not appear at all.
+        "subcontracts/subcontract_send_poll.py",
+        ["anthropic_client", "anthropic"],
+    ),
 ]
 
 

@@ -18,6 +18,7 @@ convention has no separate `runbook` type).
 <!-- BEGIN AUTO-INDEX -->
 | Date | Type | Status | Workstream | Title | PRs |
 |------|------|--------|------------|-------|-----|
+| 2026-07-15 | operations | active | _–_ | [Runbook — Subcontract send daemon (`subcontract_send`) (a subcontract row stuck HELD / blocked / "contamination") (Successor-Remediation, Op Stds §43)](subcontract_send.md) | _–_ |
 | 2026-07-11 | operations | active | _–_ | [Runbook — Subcontract generation path (`subcontract_poll`) (a queued subcontract stuck / fenced / dark) (Successor-Remediation, Op Stds §43)](subcontract_generation_path.md) | _–_ |
 | 2026-07-10 | operations | active | po_materials | [Runbook — Config-editor actuator (`config_actuator`) (a queued config edit stuck / failed / dark) (Successor-Remediation, Op Stds §43)](config_actuator.md) | _–_ |
 | 2026-07-10 | operations | active | global | [Runbook — Operator Dashboard Class-A config editor (Successor-Remediation, Op Stds §43)](operator_dashboard_config_editor.md) | _–_ |
