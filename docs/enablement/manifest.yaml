@@ -114,3 +114,65 @@ docs:
     version: v1
     source: docs/enablement/subcontracts.md
     sha256: e98392a611edbd4103d84f21f0352e3d165b46c17c8c9b904b10f4d2ffdb216c
+
+  # ── Tier-1 system references (documentation-corpus, WS3 / Tranche A, authored 2026-07-14/15).
+  #    Extraction-first operator references — each factual paragraph carries an invisible
+  #    <!-- src: file:line --> comment (stripped from the PDF, auditable in git). `audience`
+  #    tags the intended reader (the loader now carries the optional field; the dashboard docs
+  #    page + ITS_Documentation_Index consume it). Source lives in docs/references/, NOT
+  #    docs/enablement/ — these are references, not how-to guides.
+  - key: system_architecture
+    title: "ITS System Architecture"
+    version: v1
+    source: docs/references/system_architecture.md
+    sha256: 932c5c774504916ab83254bc779d535d9a9c9441ff95e2b967e2eb3be94d485c
+    audience: operator
+
+  - key: daemon_reference
+    title: "ITS Daemon Reference"
+    version: v1
+    source: docs/references/daemon_reference.md
+    sha256: 649312cbb0a3e2dfe1cff9ebe9305b6adc97242dad48b4052d2b92029a49d590
+    audience: operator
+
+  - key: data_model_reference
+    title: "ITS Data Model Reference"
+    version: v1
+    source: docs/references/data_model_reference.md
+    sha256: 6658c24fdad19c758181a6e7a444b9cef35dc23ddc7d1ebaf6c0b33d31c17bbd
+    audience: operator
+
+  - key: integration_reference
+    title: "ITS Integration Reference"
+    version: v1
+    source: docs/references/integration_reference.md
+    sha256: 60bebee330c9b73606b7065d486dfacd2b5ddaf607b17c7a0ac567135e6e2b9b
+    audience: operator
+
+  - key: security_trust_model
+    title: "ITS Security & Trust Model"
+    version: v1
+    source: docs/references/security_trust_model.md
+    sha256: a698c0b5f5a285cefda57a8f8ff5122e9f8ee903b3f2daa209a499dfe4932382
+    audience: operator
+
+  - key: escalation_matrix
+    title: "ITS Escalation Matrix"
+    version: v1
+    source: docs/references/escalation_matrix.md
+    sha256: d74e1c5aabb108c7f11485db78e70dd091300e496c4905c97109ad5b5d246037
+    audience: "operator / successor-operator"
+
+  - key: glossary
+    title: "ITS Glossary"
+    version: v1
+    source: docs/references/glossary.md
+    sha256: 6d565a4d57647704f1b51a0f498dc8b0594eb7507f2808a72fc3b1254e6c0fac
+    audience: all
+
+  - key: documentation_index
+    title: "ITS Documentation Index"
+    version: v1
+    source: docs/references/documentation_index.md
+    sha256: 9af70c8210c1434e733a0f4e64b369e5d5b1c222d929b3ba620bf282a7000842
+    audience: all

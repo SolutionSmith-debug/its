@@ -176,17 +176,22 @@ def test_committed_manifest_round_trips() -> None:
     keys = {e.key for e in man.entries}
     # the seven D2-1 guides + the four D2-2 docs (owner's manual, safety-forms + admin-
     # dashboard guides, and the generated ITS_Config data dictionary) + the two delivery-
-    # critical guides added 2026-07-13 (operator dashboard WS2, subcontracts generator)
+    # critical guides added 2026-07-13 (operator dashboard WS2, subcontracts generator) +
+    # the eight Tier-1 system references (documentation-corpus, Tranche A, 2026-07-14/15)
     assert keys == {
         "fieldops_checklists", "manager_tier", "subcontractor_tier", "portal_job_creation",
         "progress_rollup_numbers", "crew_time_corrections", "purchase_orders",
         "its_owners_manual", "safety_reports_guide", "portal_admin_dashboard",
         "its_config_dictionary", "operator_dashboard", "subcontracts",
+        "system_architecture", "daemon_reference", "data_model_reference",
+        "integration_reference", "security_trust_model", "escalation_matrix",
+        "glossary", "documentation_index",
     }
     # by_key / by_source lookups
     assert man.by_key("manager_tier") is not None
     assert man.by_source("docs/enablement/manager_tier.md") is man.by_key("manager_tier")
     assert man.by_source("purchase_orders.md") is man.by_key("purchase_orders")  # filename fallback
+    assert man.by_source("docs/references/daemon_reference.md") is man.by_key("daemon_reference")
     assert man.by_key("does_not_exist") is None
 
 
@@ -195,6 +200,34 @@ def test_committed_manifest_is_self_consistent() -> None:
     results = check_currency(load_manifest())
     stale = [r.entry.key for r in results if r.status != "ok"]
     assert not stale, f"manifest sha256 drift on committed docs: {stale}"
+
+
+def test_manifest_carries_audience() -> None:
+    """The optional `audience` field loads onto ManifestEntry (Tier-1 docs set it; older
+    guides omit it and default to "")."""
+    man = load_manifest()
+    sysarch = man.by_key("system_architecture")
+    glossary = man.by_key("glossary")
+    manager = man.by_key("manager_tier")
+    assert sysarch is not None and glossary is not None and manager is not None
+    # Tier-1 references carry an audience tag.
+    assert sysarch.audience == "operator"
+    assert glossary.audience == "all"
+    # A guide with no `audience:` key defaults to the empty string, never raises.
+    assert manager.audience == ""
+
+
+def test_manifest_audience_defaults_when_absent(tmp_path: Path) -> None:
+    """A minimal entry with no `audience:` key loads with audience == "" (backward compat)."""
+    p = tmp_path / "m.yaml"
+    p.write_text(
+        "manifest_version: 1\ndocs:\n"
+        "  - key: x\n    title: X\n    version: v1\n    source: docs/enablement/manager_tier.md\n"
+        f"    sha256: {'0' * 64}\n",
+        encoding="utf-8",
+    )
+    entry = load_manifest(p).entries[0]
+    assert entry.audience == ""
 
 
 def test_loader_rejects_bad_version(tmp_path: Path) -> None:
