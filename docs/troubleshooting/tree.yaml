@@ -1,0 +1,845 @@
+# ═══════════════════════════════════════════════════════════════════════════════════════════
+# ITS troubleshooting tree — the single source of truth for the operator troubleshooting guide
+# AND the dashboard /troubleshoot view. Schema + class-assignment rule: docs/troubleshooting/
+# schema.md. Coverage is enforced by tests/test_troubleshooting_tree.py (the completion meter):
+# every daemon, every watchdog check, every HELD send-state, and every runbook must be covered
+# (referenced) or explicitly exempted below. class ∈ {daniel_solo, seth_coresolve}; display is
+# role-based (Operator-resolvable / Escalate to Seth). When unsure → seth_coresolve.
+# ═══════════════════════════════════════════════════════════════════════════════════════════
+
+workflows:
+
+  # ── 1. Safety report ─────────────────────────────────────────────────────────────────────
+  - id: safety_report
+    title: Safety report — portal submission to sent weekly packet
+    summary: >-
+      A field submission enters at the send-free portal, is pulled + filed on the Mac, compiled
+      into a weekly packet, human-approved, and sent. The generation and send halves are
+      separate processes (External Send Gate).
+    steps:
+      - id: portal_submit
+        title: Field user submits the form in the portal
+        what_happens:
+          worker_route: POST /api/submit
+          config_gates: []
+        healthy_signals:
+          - The user sees a success screen; the submission lands in D1 (send-free) with an HMAC signature.
+        failure_modes:
+          - id: submit_401
+            symptom: The portal rejects the submission or the user is bounced to login.
+            signals: ["HTTP 401", "session expired", "capability denied"]
+            checks:
+              - Confirm the user's account is enabled and has the submit capability (portal admin dashboard).
+              - Check the browser is on the current portal origin (a stale bookmark to the old *.workers.dev URL 401s after a custom-domain deploy).
+            resolutions:
+              - Re-share/enable the account or re-issue the login; point the user at the custom-domain URL.
+            class: daniel_solo
+            runbook: docs/runbooks/safety_portal_admin_dashboard.md
+      - id: portal_pull
+        title: portal-poll pulls the submission and hands it to intake
+        what_happens:
+          daemon: portal-poll
+          worker_route: GET /api/internal/pending
+          sheets: [ITS_Review_Queue]
+          config_gates: [safety_reports.portal_poll.polling_enabled, safety_reports.photo_screen.clamav_enabled]
+        healthy_signals:
+          - The portal-poll heartbeat row is fresh (dashboard Daemon status panel).
+          - The D1 pending backlog drains; filed submissions get a mark-filed receipt.
+        failure_modes:
+          - id: pull_fetch_outage
+            symptom: portal-poll cannot reach the Worker; nothing is being pulled.
+            signals: ["sustained pending-fetch failures", "CRITICAL portal_poll fetch", "worker_base_url unset"]
+            checks:
+              - Dashboard Daemon status → is the heartbeat stale / last error set?
+              - Is safety_reports.portal.worker_base_url set to the custom domain (a custom_domain deploy disables *.workers.dev)?
+              - Is the Mac bearer token present in Keychain (fail-closed if absent)?
+            resolutions:
+              - If the base URL is wrong, correct it and let the next cycle recover.
+              - If the outage is a Worker/Cloudflare problem or a token issue, escalate.
+            class: seth_coresolve
+            watchdog_check: _check_portal_poll_fetch_outage
+          - id: pull_backlog
+            symptom: The Worker has pending rows but the backlog is not draining.
+            signals: ["stuck pending backlog", "saturated page draining nothing"]
+            checks:
+              - Is portal-poll running and its gate on (designed-dark check first)?
+              - Are rows failing HMAC verify (one-shot-flagged, never filed) — check the Review Queue for security-flagged rows?
+            resolutions:
+              - Toggle the polling gate on if it is dark by design; otherwise inspect the flagged rows and escalate a systemic HMAC/secret mismatch.
+            class: seth_coresolve
+            watchdog_check: _check_portal_poll_pending_backlog
+          - id: pull_photo_malicious
+            symptom: A submission is refused before filing with a security-flagged Review-Queue row.
+            signals: ["photo MALICIOUS", "security_flag=True", "CRITICAL naming the account"]
+            checks:
+              - Review the flagged item in the Review Queue; note the submitting account.
+            resolutions:
+              - Confirm the disposition with the field user; the item is deliberately not filed. Escalate if it indicates account compromise.
+            class: seth_coresolve
+            runbook: docs/runbooks/safety_photo_path.md
+          - id: pdf_download_404
+            symptom: A user cannot download a filed PDF from the portal (404).
+            signals: ["PDF download 404", "requester-bound 24h", "different account"]
+            checks:
+              - Portal filed-PDF downloads are bound to the REQUESTING account for 24h; a different account gets a 404 by design (not a fault).
+            resolutions:
+              - Have the original requester download it, or re-request the download; see the PDF-download runbook.
+            class: daniel_solo
+            runbook: docs/runbooks/safety_portal_pdf_download.md
+      - id: review
+        title: Below-confidence / flagged items route to human review
+        what_happens:
+          sheets: [ITS_Review_Queue]
+          config_gates: []
+        healthy_signals:
+          - The Review Queue has no long-stale PENDING rows (dashboard Review queue panel).
+        failure_modes:
+          - id: review_stale
+            symptom: Items sit in the Review Queue past their SLA.
+            signals: ["stale review queue", "PENDING past SLA tier"]
+            checks:
+              - Dashboard Review queue panel → which rows are oldest / which workstream?
+            resolutions:
+              - Work the queued items (approve / reject / escalate) per the item's reason.
+            class: daniel_solo
+            watchdog_check: _check_stale_review_queue
+          - id: reviewer_chain_gap
+            symptom: A reviewer-chain assignment is missing or points at an out-of-office reviewer.
+            signals: ["reviewer chain forward gap", "no reviewer for the coming period"]
+            checks:
+              - Confirm the reviewer chain has coverage for the upcoming window.
+            resolutions:
+              - Fill the chain gap / set the PTO override per the scheduling config.
+            class: daniel_solo
+            watchdog_check: _check_reviewer_chain_forward
+          - id: form_miscategorized
+            symptom: A submission landed under the wrong form workflow / category.
+            signals: ["form miscategorized", "wrong workflow", "recategorize needed"]
+            checks:
+              - Confirm the intended form category with the submitter.
+            resolutions:
+              - Recategorize the form per the recategorize runbook (a documented, low-class move).
+            class: daniel_solo
+            runbook: docs/runbooks/form_workflow_recategorize.md
+      - id: weekly_compile
+        title: weekly-generate compiles the Sat→Fri packet (generation half)
+        what_happens:
+          daemon: weekly-generate
+          sheets: [ITS_Active_Jobs, WSR_human_review]
+          config_gates: []
+        healthy_signals:
+          - Friday 14:00 the compile runs; a Rollup snapshot + a PENDING WSR_human_review row appear per job/week.
+        failure_modes:
+          - id: missed_friday_compile
+            symptom: The Friday compile did not run (laptop asleep / crash) and no packet was produced.
+            signals: ["missed weekly-generate", "no Rollup row for the week"]
+            checks:
+              - Dashboard → was the weekly-generate marker written this week?
+              - Did the watchdog catch-up fire on the next wake?
+            resolutions:
+              - The watchdog Check-I catch-up recovers a missed Friday automatically; if it did not, run the documented manual backfill.
+            class: daniel_solo
+            runbook: docs/runbooks/safety_weekly_generate.md
+            watchdog_check: _check_weekly_generate_catchup
+          - id: compile_job_fenced
+            symptom: One job's week failed to compile and was routed to the Review Queue; others compiled fine.
+            signals: ["per-job fence", "ITS_Review_Queue compile failure"]
+            checks:
+              - Inspect the Review-Queue row for the failing job/week (which document / which error).
+            resolutions:
+              - Fix the offending source document and re-trigger the compile for that job (Compile Now), per the runbook.
+            class: daniel_solo
+            runbook: docs/runbooks/safety_weekly_generate.md
+      - id: compile_now
+        title: On-demand "Compile Now" produces a packet without waiting for Friday
+        what_happens:
+          daemon: compile-now-poll
+          sheets: [ITS_Active_Jobs]
+          config_gates: [safety_reports.compile_now_poll.polling_enabled, progress_reports.compile_now_poll.polling_enabled]
+        healthy_signals:
+          - Checking Compile Now on a week's Rollup row produces a packet within a minute or two.
+        failure_modes:
+          - id: compile_now_stuck
+            symptom: Compile Now was checked but no packet appears and the checkbox stays set.
+            signals: ["Compile Now trigger still set", "compile-now-poll heartbeat stale"]
+            checks:
+              - Is compile-now-poll loaded and its gate on? (It is INTENDED to be always-loaded — a stale marker WARNs by design until loaded.)
+              - Did the compile fail and route the job to the Review Queue (the trigger clears only on success)?
+            resolutions:
+              - Load the compile-now-poll plist if unloaded; otherwise inspect the Review-Queue row and fix the source, per the runbook.
+            class: daniel_solo
+            runbook: docs/runbooks/compile_now_poll.md
+      - id: approval_and_send
+        title: Human approves a WSR row; weekly-send transmits it (send half)
+        what_happens:
+          daemon: weekly-send
+          sheets: [WSR_human_review, ITS_Active_Jobs]
+          config_gates: [safety_reports.weekly_send.polling_enabled]
+        healthy_signals:
+          - An approved row (Send Now / Approve for Scheduled Send) is sent; Sent At + Send Status are stamped.
+        failure_modes:
+          - id: send_held_no_recipient
+            symptom: An approved packet is not sent; Send Status shows a HELD reason.
+            signals: ["held_no_recipient", "held_missing_pdf", "held_missing_envelope"]
+            checks:
+              - Dashboard / the WSR row → read the Send Status. Recipients resolve at send time from ITS_Active_Jobs.
+              - held_no_recipient → the job's safety-reports contact is empty; held_missing_pdf → the compiled packet is absent; held_missing_envelope → addressing metadata is missing.
+            resolutions:
+              - Fix the job's contact in ITS_Active_Jobs (held_no_recipient), re-compile the week (held_missing_pdf), or supply the missing envelope field, then re-approve. HELD is an operator-actionable stop, never a silent drop.
+            class: daniel_solo
+            runbook: docs/runbooks/safety_weekly_send.md
+            watchdog_check: _check_stale_held_rows
+          - id: send_held_oversized_or_mismatch
+            symptom: A packet is held for size or a workstream-tag mismatch.
+            signals: ["held_oversized_packet", "held_workstream_mismatch", "held_failed"]
+            checks:
+              - held_oversized_packet → the compiled packet exceeds the upload-session ceiling; held_workstream_mismatch → the row's Workstream tag is not "safety" (contamination guard, fires a CRITICAL); held_failed → transient send failures exhausted retries.
+            resolutions:
+              - For oversized, reduce the packet (fewer/lighter photos) and re-compile. A workstream mismatch is a contamination guard — escalate (it should never happen on a correctly-seeded row). held_failed → investigate the transient error and re-approve.
+            class: seth_coresolve
+            runbook: docs/runbooks/safety_weekly_send.md
+          - id: send_stuck_sending
+            symptom: A row is stuck in the SENDING state (write-ahead marker set, no terminal status).
+            signals: ["stuck SENDING", "SENDING with no Sent At"]
+            checks:
+              - Was there a crash between the SENDING marker and the send completing?
+            resolutions:
+              - Follow the send runbook to clear the stuck marker safely; do not blindly re-send (double-send risk).
+            class: seth_coresolve
+            runbook: docs/runbooks/safety_weekly_send.md
+            watchdog_check: _check_stuck_wsr_send
+          - id: approver_set_drift
+            symptom: Sends are blocked, or the who-may-approve set changed unexpectedly.
+            signals: ["EMPTY_ALLOWLIST", "approver drift", "F22 fail-closed"]
+            checks:
+              - Is the send workspace's share list empty or changed (§46 authorization-by-workspace-share)?
+            resolutions:
+              - Re-share the approver(s) into the send workspace. A change to who-may-approve is auth territory — confirm with Seth.
+            class: seth_coresolve
+            watchdog_check: _check_approver_drift
+
+  # ── 2. Progress report ───────────────────────────────────────────────────────────────────
+  - id: progress_report
+    title: Progress report — intake, routing, compile, send
+    summary: The Safety-Reports twin for weekly progress packets, on its own Active-Jobs sheet.
+    steps:
+      - id: progress_intake
+        title: Progress submissions are ingested and routed
+        what_happens:
+          config_gates: [progress_reports.intake_enabled]
+          sheets: [ITS_Active_Jobs_Progress]
+        healthy_signals:
+          - Progress submissions route to the right job/week; the intake gate is on.
+        failure_modes:
+          - id: progress_intake_dark
+            symptom: No progress items are being ingested.
+            signals: ["progress intake gate off", "designed-dark"]
+            checks:
+              - Read progress_reports.intake_enabled — NOTE it is scoped under Workstream=safety_reports (intake's own workstream), a known footgun.
+            resolutions:
+              - If ingestion is intended, flip the gate (read its Description first); if it is dark by design, this is not a fault.
+            class: daniel_solo
+            runbook: docs/runbooks/progress_intake_routing.md
+      - id: progress_compile
+        title: progress-generate compiles the weekly progress packet
+        what_happens:
+          daemon: progress-generate
+          sheets: [ITS_Active_Jobs_Progress, WPR_human_review]
+          config_gates: []
+        healthy_signals:
+          - Friday 14:30 the progress compile runs (staggered 30 min after safety); a PENDING WPR row appears.
+        failure_modes:
+          - id: progress_missed_compile
+            symptom: The Friday progress compile did not run.
+            signals: ["missed progress-generate", "no WPR row"]
+            checks:
+              - Was the progress-generate marker written this week? Did the catch-up fire on wake?
+            resolutions:
+              - The watchdog progress catch-up recovers a missed Friday; otherwise run the documented manual re-run.
+            class: daniel_solo
+            runbook: docs/runbooks/progress_weekly_generate.md
+            watchdog_check: _check_progress_generate_catchup
+      - id: progress_send
+        title: progress-send transmits an approved WPR row
+        what_happens:
+          daemon: progress-send
+          sheets: [WPR_human_review, ITS_Active_Jobs_Progress]
+          config_gates: [progress_reports.progress_send.polling_enabled]
+        healthy_signals:
+          - An approved WPR row is sent; recipients resolve only from ITS_Active_Jobs_Progress (never safety's set).
+        failure_modes:
+          - id: progress_send_blocked
+            symptom: An approved progress packet is not sent (HELD or blocked).
+            signals: ["held_no_recipient", "EMPTY_ALLOWLIST", "F22 fail-closed"]
+            checks:
+              - Read the WPR Send Status; confirm the progress workspace approver share list is non-empty (§46).
+            resolutions:
+              - Fix the job's progress contact or the approver share, then re-approve. Auth/approver changes → confirm with Seth.
+            class: seth_coresolve
+            runbook: docs/runbooks/progress_send.md
+
+  # ── 3. Field-ops sync ────────────────────────────────────────────────────────────────────
+  - id: field_ops_sync
+    title: Field-ops sync — portal job/hours/materials/equipment/incidents to Smartsheet
+    summary: >-
+      The portal is the writer of record for jobs and field capture; fieldops-sync mirrors dirty
+      portal-origin records UP into the two Active-Jobs sheets and the standing trackers.
+    steps:
+      - id: portal_capture
+        title: A job / hours / materials record is created or edited in the portal
+        what_happens:
+          worker_route: POST /api/fieldops/*
+        healthy_signals:
+          - The record lands in D1 with origin='portal', sync_state='pending', and a bumped mirror_version.
+        failure_modes:
+          - id: capture_attribution
+            symptom: A crew/task record shows a username instead of a display name.
+            signals: ["username shown where a name belongs", "attribution wrong"]
+            checks:
+              - Confirm the WHO field resolves through personnel.name, not users.username.
+            resolutions:
+              - Correct the personnel record / mapping per the job-management runbook.
+            class: daniel_solo
+            runbook: docs/runbooks/safety_portal_job_management.md
+      - id: job_mirror
+        title: fieldops-sync mirrors dirty jobs UP into both Active-Jobs sheets
+        what_happens:
+          daemon: fieldops-sync
+          sheets: [ITS_Active_Jobs, ITS_Active_Jobs_Progress]
+          config_gates: [field_ops.fieldops_sync.sync_enabled]
+        healthy_signals:
+          - The fieldops-sync heartbeat is fresh (this daemon is live); dirty jobs mirror within a cycle.
+        failure_modes:
+          - id: sync_fail_closed
+            symptom: fieldops-sync is not mirroring; a CRITICAL fired.
+            signals: ["fail-closed missing base URL/bearer", "401 on pending-jobs", "ERROR heartbeat"]
+            checks:
+              - Is the Worker base URL set and the field-ops bearer (ITS_PORTAL_FIELDOPS_TOKEN, distinct from portal_poll's token) present?
+              - Do BOTH Active-Jobs sheets have the "Portal Job Key" column (a missing column KeyErrors add_rows)?
+            resolutions:
+              - A missing column is a documented low-class fix (add it); a token/auth failure is auth territory — escalate.
+            class: seth_coresolve
+            runbook: docs/runbooks/fieldops_sync.md
+          - id: job_write_conflict
+            symptom: A job did not mirror or wrote to the wrong row.
+            signals: ["job write conflict", "version-vector mismatch"]
+            checks:
+              - Compare mirror_version vs the safety/progress mirrored-version watermarks for the job.
+            resolutions:
+              - Follow the job-write runbook; the sync is idempotent + crash-safe, so a re-run is safe.
+            class: daniel_solo
+            runbook: docs/runbooks/fieldops_job_write.md
+      - id: standing_trackers
+        title: Hours / equipment / materials / incidents mirror passes
+        what_happens:
+          daemon: fieldops-sync
+          config_gates: [field_ops.fieldops_sync.hours_enabled, field_ops.fieldops_sync.equipment_enabled, field_ops.fieldops_sync.materials_enabled, field_ops.fieldops_sync.incidents_enabled]
+        healthy_signals:
+          - Each enabled pass mirrors its records; the Hours Log is one-way-up (§51).
+        failure_modes:
+          - id: tracker_pass_dark
+            symptom: A tracker (hours/equipment/materials/incidents) is not mirroring.
+            signals: ["per-pass gate off", "designed-dark", "materials gate has a rider precondition"]
+            checks:
+              - Read the per-pass gate row's FULL Description before flipping — some carry an explicit precondition (e.g. materials_enabled's §51-rider block). A dark pass is not a fault.
+            resolutions:
+              - Flip the gate only if its documented precondition is met; a doctrine-preconditioned flip is a §44 high-class action — confirm with Seth.
+            class: seth_coresolve
+            runbook: docs/runbooks/hours_log_sync.md
+          - id: crew_time_correction
+            symptom: A crew time entry needs an office-side correction/amendment.
+            signals: ["time amendment needed", "crew correction"]
+            checks:
+              - Identify the entry and the correct value with the crew lead.
+            resolutions:
+              - Apply the amendment via the documented time-amend procedure.
+            class: daniel_solo
+            runbook: docs/runbooks/fieldops_time_amend.md
+
+  # ── 4. Purchase order ────────────────────────────────────────────────────────────────────
+  - id: purchase_order
+    title: Purchase order — build, config, pull/render/file, send (dark)
+    summary: The deterministic PO pipeline (no AI). Ships dark until its gates are flipped.
+    steps:
+      - id: po_build
+        title: A PO is built + signed in the portal
+        what_happens:
+          worker_route: POST /api/po/submit
+        healthy_signals:
+          - The draft lands in the send-free D1 pool with a po:v1 HMAC binding its cents totals.
+        failure_modes:
+          - id: po_totals_reject
+            symptom: A PO is refused at pull with a totals mismatch.
+            signals: ["totals_mismatch", "one-shot-flagged", "CRITICAL naming the account"]
+            checks:
+              - The Mac recomputes cents totals and asserts them vs the signed values; a mismatch is flagged, never rendered/filed.
+            resolutions:
+              - Inspect the flagged row (kept in D1 for forensics) and confirm whether it is a client error or tampering — escalate a systemic mismatch.
+            class: seth_coresolve
+            runbook: docs/runbooks/po_poll.md
+      - id: po_config
+        title: PO purchaser / tax / terms config drives the render
+        what_happens:
+          config_gates: []
+          sheets: []
+        healthy_signals:
+          - The bundled purchaser/tax/terms JSON matches what the operator edited (served-equals-source).
+        failure_modes:
+          - id: po_config_stale
+            symptom: A PO renders with stale purchaser/tax/terms after an edit.
+            signals: ["config edited but Worker still stale", "redeploy pending"]
+            checks:
+              - Did the §50 config-actuator pipeline re-bundle + redeploy the Worker after the edit (the Worker bundles config at build time)?
+            resolutions:
+              - The config change flows through the config-actuator rail (enqueue → CI → deploy); wait for the deploy, or see the config-change workflow.
+            class: seth_coresolve
+            runbook: docs/runbooks/operator_dashboard_config_editor.md
+      - id: po_pull
+        title: po-poll verifies, renders, files, and logs the PO
+        what_happens:
+          daemon: po-poll
+          worker_route: GET /api/po/internal/pending
+          sheets: [PO_Log, PO_Pending_Review]
+          config_gates: [po_materials.po_poll.polling_enabled, po_materials.po_poll.vendors_sync_enabled, po_materials.po_attach_screen.clamav_enabled]
+        healthy_signals:
+          - With the gate on, drafts render to Box + a PO_Log row + a PO_Pending_Review row; a mark-filed receipt lands last.
+        failure_modes:
+          - id: po_poll_dark
+            symptom: POs are not being pulled/filed.
+            signals: ["po-poll gate off", "designed-dark", "no marker written"]
+            checks:
+              - Is po-poll loaded AND at least one po_materials.po_poll.* gate flipped? A loaded-but-all-dark daemon writes no marker by design.
+            resolutions:
+              - If PO processing is intended, load the plist and flip the gate; otherwise it is dark by design (not a fault).
+            class: daniel_solo
+            runbook: docs/runbooks/po_poll.md
+          - id: po_attach_refused
+            symptom: A PO attachment is refused (SUSPICIOUS/MALICIOUS) or the attachment pass errored.
+            signals: ["po_attachment_service_failed", "attachment refused before filing"]
+            checks:
+              - The attachment pass is fenced and can never block PO filing; inspect the Review-Queue row for a refused attachment.
+            resolutions:
+              - Confirm the attachment with the buyer; a malicious disposition names the account and is refused by design. Escalate suspected compromise.
+            class: seth_coresolve
+            runbook: docs/runbooks/po_poll.md
+      - id: po_send
+        title: po-send transmits an approved PO (dark)
+        what_happens:
+          daemon: po-send
+          sheets: [PO_Pending_Review, ITS_Vendors]
+          config_gates: [po_materials.po_send.polling_enabled]
+        healthy_signals:
+          - An approved PO_Pending_Review row is sent from procurement@; recipients resolve from ITS_Vendors.
+        failure_modes:
+          - id: po_send_blocked
+            symptom: An approved PO is not sent.
+            signals: ["held_no_recipient", "EMPTY_ALLOWLIST", "po-send gate off (fail-safe default false)"]
+            checks:
+              - Is po-send loaded and its gate on? (The gate defaults false so a missing row fails safe.)
+              - Is the ITS — Purchase Orders workspace share list (the §46 approver set) non-empty?
+            resolutions:
+              - Load/flip the gate if sending is intended; re-share approvers. Auth changes → confirm with Seth.
+            class: seth_coresolve
+            runbook: docs/runbooks/po_send.md
+
+  # ── 5. Subcontract ───────────────────────────────────────────────────────────────────────
+  - id: subcontract
+    title: Subcontract — build, legal gate, pull/render, send (dark)
+    summary: The deterministic subcontract-package pipeline (no AI), PO-mirror. Ships dark.
+    steps:
+      - id: sub_build
+        title: A subcontract is built (with Exhibit A / SoV) in the portal
+        what_happens:
+          worker_route: POST /api/subcontracts/submit
+        healthy_signals:
+          - The draft lands in the send-free D1 pool with a sub:v1 HMAC; the SoV sums to the §2.1 Contract Price.
+        failure_modes:
+          - id: sub_sov_reject
+            symptom: A subcontract is refused at pull with an SoV mismatch or fails the legal gate.
+            signals: ["SOV-mismatch", "Layer-A legal gate", "one-shot-flagged"]
+            checks:
+              - The Mac recomputes the SoV and asserts it vs the signed Contract Price; the Layer-A §50 legal gate must pass.
+            resolutions:
+              - Inspect the flagged row (kept in D1 for forensics); a legal-gate failure is doctrine/legal territory — escalate.
+            class: seth_coresolve
+            runbook: docs/runbooks/subcontract_generation_path.md
+      - id: sub_pull
+        title: subcontract-poll verifies and renders the package (three files)
+        what_happens:
+          daemon: subcontract-poll
+          worker_route: GET /api/subcontracts/internal/pending
+          sheets: [Subcontract_Log, Subcontract_Pending_Review]
+          config_gates: [subcontracts.subcontract_poll.polling_enabled]
+        healthy_signals:
+          - With the gate on, the package renders as editable .docx/.xlsx (Subcontract + Exhibit A + Annex C SoV) to Box + logs a row.
+        failure_modes:
+          - id: sub_poll_dark
+            symptom: Subcontracts are not being pulled/rendered.
+            signals: ["subcontract-poll gate off", "designed-dark"]
+            checks:
+              - Is subcontract-poll loaded and its gate flipped? All subcontract gates ship false (dark).
+            resolutions:
+              - Load + flip if intended; otherwise dark by design.
+            class: daniel_solo
+            runbook: docs/runbooks/subcontract_generation_path.md
+      - id: sub_send
+        title: subcontract-send transmits an approved package (dark)
+        what_happens:
+          daemon: subcontract-send
+          sheets: [Subcontract_Pending_Review]
+          config_gates: [subcontracts.subcontract_send.polling_enabled]
+        healthy_signals:
+          - An approved subcontract package is sent through the shared send lane; recipients resolve from ITS_Subcontractors.
+        failure_modes:
+          - id: sub_send_blocked
+            symptom: An approved subcontract package is not sent.
+            signals: ["held_no_recipient", "EMPTY_ALLOWLIST", "subcontract-send gate off"]
+            checks:
+              - Is subcontract-send loaded and its gate on? Is the subcontracts send-workspace approver share non-empty (§46)?
+            resolutions:
+              - Load/flip if intended; re-share approvers. Auth/send-gate territory → confirm with Seth.
+            class: seth_coresolve
+            runbook: docs/runbooks/subcontract_send.md
+
+  # ── 6. Email intake (superseded path) ────────────────────────────────────────────────────
+  - id: email_intake
+    title: Email intake — the superseded safety path (portal PULL is canonical)
+    summary: >-
+      Safety email intake was RETIRED; the Safety Portal PULL model supersedes it. The shared
+      Graph plumbing is preserved for a future Email-Triage workstream.
+    steps:
+      - id: email_arrives
+        title: An email arrives at a former intake address
+        what_happens:
+          config_gates: []
+        healthy_signals:
+          - Nothing is expected to happen — the portal PULL model is the live safety intake path.
+        failure_modes:
+          - id: email_ignored_by_design
+            symptom: An email to the old safety intake address is not processed.
+            signals: ["no safety-intake daemon", "portal PULL supersedes email"]
+            checks:
+              - Confirm there is no loaded safety-intake job (there is not — the poller was retired).
+            resolutions:
+              - Direct the sender to the portal. This is the designed state, not a fault. A future Email-Triage workstream would re-enable an allowlisted email path.
+            class: daniel_solo
+
+  # ── 7. Config change (§50 rail) ──────────────────────────────────────────────────────────
+  - id: config_change
+    title: Config change — the §50 privileged actuation rail
+    summary: >-
+      The cloud can only ENQUEUE a config request (send-free); the config-actuator commits it on
+      the Mac (validate → PR → CI → merge → deploy → stamp live).
+    steps:
+      - id: config_enqueue
+        title: An operator enqueues a config edit (dashboard / portal)
+        what_happens:
+          worker_route: POST /api/internal/config
+          config_gates: []
+        healthy_signals:
+          - The request lands in the config_requests queue (send-free), pending.
+        failure_modes:
+          - id: config_edit_rejected
+            symptom: The config editor rejects an edit.
+            signals: ["validation error", "editor rejected"]
+            checks:
+              - Confirm the edit conforms to the config schema (the editor validates before enqueue).
+            resolutions:
+              - Correct the edit per the config-editor runbook.
+            class: daniel_solo
+            runbook: docs/runbooks/operator_dashboard_config_editor.md
+      - id: config_actuate
+        title: config-actuator validates, PRs, merges, and deploys the change
+        what_happens:
+          daemon: config-actuator
+          worker_route: GET /api/internal/config/pending
+          config_gates: [po_materials.config_actuator.polling_enabled]
+        healthy_signals:
+          - Each request advances validated → tested → live → archived; the Worker re-bundles the config JSON on deploy.
+        failure_modes:
+          - id: config_deploy_gate
+            symptom: A config request is stuck pending / not deploying.
+            signals: ["deploy gate", "unapplied D1 migrations", "main CI red"]
+            checks:
+              - Is main-branch CI green on the latest commit (the four-part step-4 gate)?
+              - Does the deploy gate refuse ahead of unapplied remote D1 migrations (it will not deploy the Worker ahead of the DB)?
+            resolutions:
+              - A red main CI or a needed migration/deploy is code/deploy territory — escalate; the actuator will unblock once the operator applies migrations and CI is green.
+            class: seth_coresolve
+            runbook: docs/runbooks/config_actuator.md
+            watchdog_check: _check_main_branch_ci_green
+
+  # ── 8. Dashboard operations ──────────────────────────────────────────────────────────────
+  - id: dashboard_operations
+    title: Operator dashboard — auth tiers and Class A/B/C actions
+    summary: The localhost-only console; read-only panels plus PIN-gated actions over Tailscale.
+    steps:
+      - id: dashboard_auth
+        title: Operator authenticates (PIN → elevated re-PIN)
+        what_happens:
+          daemon: dashboard
+          config_gates: []
+        healthy_signals:
+          - The dashboard answers on 127.0.0.1:8484 over Tailscale; PIN entry unlocks read panels, an elevated re-PIN + typed confirm unlocks ACT verbs.
+        failure_modes:
+          - id: dashboard_locked_out
+            symptom: The dashboard rejects the PIN or no ACT verb works.
+            signals: ["fail-closed until ITS_OPERATOR_PIN set", "PIN lockout", "elevated confirm required"]
+            checks:
+              - Is ITS_OPERATOR_PIN provisioned in Keychain? (The dashboard ships DARK / fail-closed until it is.)
+              - Is the request coming over an allowed origin (localhost / Tailscale)?
+            resolutions:
+              - Provision or change the PIN via the sensitive-tier procedure (in-dashboard change-PIN is current-PIN-gated). Secrets/PIN are auth territory — coordinate with Seth.
+            class: seth_coresolve
+            runbook: docs/runbooks/operator_dashboard_sensitive_tier.md
+      - id: dashboard_actions
+        title: Class A/B/C actions (config edit, daemon control, secret rotation)
+        what_happens:
+          daemon: dashboard
+          config_gates: []
+        healthy_signals:
+          - Class-A ITS_Config edits enqueue via the §50 rail; Class-B daemon control runs launchctl; Class-C rotates secrets write-only.
+        failure_modes:
+          - id: dashboard_action_no_effect
+            symptom: A daemon-control action ran but the daemon still does nothing.
+            signals: ["launchctl ran but daemon dark", "polling_enabled still false"]
+            checks:
+              - Daemon control is pure process management — starting a dark daemon does nothing until its polling_enabled gate is on.
+            resolutions:
+              - Flip the runtime gate (Class-A config edit) in addition to starting the process; read the gate's Description first.
+            class: daniel_solo
+            runbook: docs/runbooks/operator_dashboard_config_editor.md
+
+  # ── 9. Daemon plane ──────────────────────────────────────────────────────────────────────
+  - id: daemon_plane
+    title: The daemon plane — liveness, breaker, alerts, row-cap, picklists, guards
+    summary: >-
+      The shared infrastructure every workstream rides on: launchd, heartbeats + markers, the
+      circuit breaker, the alert path, row-cap rotation, and the schema/guard sweeps.
+    steps:
+      - id: liveness
+        title: Heartbeats + watchdog Check C keep daemons honest
+        what_happens:
+          daemon: watchdog
+          sheets: [ITS_Daemon_Health, ITS_Errors]
+          config_gates: []
+        healthy_signals:
+          - Every live daemon's heartbeat row is fresh; the daily 07:00 watchdog reports no stale markers and no open CRITICALs.
+        failure_modes:
+          - id: daemon_silently_dead
+            symptom: A daemon stopped running and its marker went stale.
+            signals: ["stale Check-C marker", "TRACKED_JOBS staleness"]
+            checks:
+              - Dashboard Daemon status → which marker is stale? Is the daemon dark by design (a loaded-all-dark daemon writes no marker) or genuinely dead?
+            resolutions:
+              - Re-run / kickstart the daemon if it is genuinely dead (documented, low-class); if it is dark by design, no action.
+            class: daniel_solo
+            watchdog_check: _check_scheduled_jobs
+          - id: open_criticals
+            symptom: There are open CRITICAL errors.
+            signals: ["open CRITICAL", "ITS_Errors CRITICAL not resolved"]
+            checks:
+              - Dashboard Errors panel → read the open CRITICALs and their correlation IDs.
+            resolutions:
+              - Work each CRITICAL to resolution; mark resolved via the dashboard once handled.
+            class: seth_coresolve
+            watchdog_check: _check_open_criticals
+          - id: heartbeat_not_provisioning
+            symptom: A daemon is running but has no ITS_Daemon_Health row.
+            signals: ["missing heartbeat row", "self-provision failed"]
+            checks:
+              - Did the daemon fail to self-provision its health row (heartbeat writes never block primary work)?
+            resolutions:
+              - Follow the self-provision runbook; a heartbeat write failure logs to ITS_Errors and the daemon continues.
+            class: daniel_solo
+            runbook: docs/runbooks/daemon_health_self_provision.md
+      - id: breaker_and_alerts
+        title: Circuit breaker + the alert path
+        what_happens:
+          daemon: watchdog
+          config_gates: []
+        healthy_signals:
+          - The Smartsheet breaker is closed; alerts fire (triple-fire) and dedupe correctly.
+        failure_modes:
+          - id: breaker_open
+            symptom: The Smartsheet circuit breaker is open and writes are paused.
+            signals: ["circuit breaker open", "prolonged-open"]
+            checks:
+              - Is it a transient storm (auto-recovers after cooldown) or a prolonged open with a real underlying cause?
+            resolutions:
+              - For a transient storm past cooldown, clearing the local breaker state file is a documented low-class action. If the root cause is high-class (auth, deploy), escalate.
+            class: daniel_solo
+            runbook: docs/runbooks/circuit_breaker.md
+            watchdog_check: _check_circuit_breaker_prolonged_open
+          - id: alert_rate_capped
+            symptom: Alerts went quiet during what looks like an incident.
+            signals: ["alerts-per-hour cap reached", "rate-cap window"]
+            checks:
+              - Was the per-hour alert cap reached (it self-clears when the hour rolls over)?
+            resolutions:
+              - Diagnose/clear the underlying flapping script per the breaker/alerts runbook.
+            class: daniel_solo
+            runbook: docs/runbooks/circuit_breaker.md
+            watchdog_check: _check_alert_rate_cap_window
+          - id: alert_dedupe_gap
+            symptom: Expected alert-dedupe summaries did not appear.
+            signals: ["alert dedupe summary missing"]
+            checks:
+              - Check the alert-dedupe state/summary (watchdog Check G consumes it).
+            resolutions:
+              - The dedupe path fails open (extra emails OK, missed wake-ups not); investigate a systemic gap and escalate if wake-ups were missed.
+            class: seth_coresolve
+            watchdog_check: _check_alert_dedupe_summaries
+      - id: row_cap
+        title: Sheet row-cap rotation (+ storm mode)
+        what_happens:
+          daemon: watchdog
+          sheets: [ITS_Errors, ITS_Review_Queue]
+          config_gates: []
+        healthy_signals:
+          - The two highest-churn sheets stay under the ~20,000-row wall; rotation deletes only TERMINAL rows.
+        failure_modes:
+          - id: row_cap_approaching
+            symptom: A sheet is approaching / hit the row cap (HTTP 5634 class) and rotation is straining.
+            signals: ["row-cap rotation WARN", "storm-mode 48h floor", "5634"]
+            checks:
+              - Dashboard/watchdog → is rotation keeping up? Did it fall back to the storm-mode 48h floor?
+            resolutions:
+              - Rotation runs automatically (deletes terminal rows, never open CRITICALs/PENDING). A CRITICAL means even the storm floor found nothing deletable — escalate.
+            class: seth_coresolve
+            watchdog_check: _check_row_cap_rotation
+      - id: picklist_sync
+        title: Hourly picklist sync from master DBs
+        what_happens:
+          daemon: picklist-sync
+          config_gates: []
+        healthy_signals:
+          - The hourly sync applies option changes; reference-checked removals block a delete rather than orphan a cell.
+        failure_modes:
+          - id: picklist_sync_failures
+            symptom: Picklist mappings failed to sync.
+            signals: ["≥3 mappings failed (CRITICAL)", "reference-checked removal blocked"]
+            checks:
+              - Read the per-run ITS_Errors summary (examined/applied/skipped/blocked/failed).
+            resolutions:
+              - A blocked removal (live cell usage) is expected — reconcile per the drift runbook; ≥3 failures is a CRITICAL to investigate.
+            class: daniel_solo
+            runbook: docs/runbooks/picklist_drift_reconcile.md
+      - id: picklist_audit
+        title: Weekly picklist-drift audit
+        what_happens:
+          daemon: picklist-audit
+          config_gates: []
+        healthy_signals:
+          - The Sunday audit reports no drift (column type, allowed-set, restrict-to-picklist toggle).
+        failure_modes:
+          - id: picklist_drift_found
+            symptom: The weekly audit reports picklist drift.
+            signals: ["drift finding (exit 1)", "allowed-set mismatch", "restrict toggle off"]
+            checks:
+              - Read the audit output; which column and which drift category?
+            resolutions:
+              - Reconcile additively per the drift runbook (dry-run by default); a registry/sheet disagreement may need a code change — escalate.
+            class: daniel_solo
+            runbook: docs/runbooks/picklist_drift_reconcile.md
+      - id: guards
+        title: Guard sweeps — blueprint symlinks + token write-capability
+        what_happens:
+          daemon: watchdog
+          config_gates: []
+        healthy_signals:
+          - The blueprint .claude guard symlinks resolve; the Smartsheet token can write.
+        failure_modes:
+          - id: token_cannot_write
+            symptom: The Smartsheet token can no longer write.
+            signals: ["token write-capability probe failed", "write scope lost"]
+            checks:
+              - Did the token-write probe fail (a scope/permission change)?
+            resolutions:
+              - Token scope/auth is a fixed high-class category — escalate; the developer re-scopes.
+            class: seth_coresolve
+            runbook: docs/runbooks/token_write_capability.md
+            watchdog_check: _check_token_write_capability
+          - id: guard_symlinks_dangle
+            symptom: The blueprint guard symlinks dangle.
+            signals: ["blueprint guard symlinks WARN"]
+            checks:
+              - Did the .claude guard symlinks fail to resolve (a moved/renamed blueprint checkout)?
+            resolutions:
+              - Restore the symlink targets; a WARN-only signal, but confirm the blueprint checkout with Seth (doctrine adjacency).
+            class: seth_coresolve
+            watchdog_check: _check_blueprint_guard_symlinks
+
+  # ── 10. Publish + Box filing ─────────────────────────────────────────────────────────────
+  - id: publish_and_filing
+    title: Publish + Box filing — form publish, Box token, portal prune
+    summary: >-
+      The form-publish actuator (C12=A), the Box document store the packets file into, and the
+      portal-prune housekeeping.
+    steps:
+      - id: box_filing
+        title: Packets + documents file into Box
+        what_happens:
+          sheets: []
+          config_gates: []
+        healthy_signals:
+          - The Box OAuth token is fresh (rotates every exchange); filings land under the per-job / per-week folders.
+        failure_modes:
+          - id: box_token_stale
+            symptom: Box uploads fail; the token is stale / near expiry.
+            signals: ["Box token stale", "refresh-token freshness WARN", "60-day expiry risk"]
+            checks:
+              - Dashboard/watchdog → the box-token freshness marker. Box is a SINGLE-CONSUMER account — a second consumer (or a failed persist of the rotated token) breaks it within ~60 days.
+              - Never run a second Box consumer against the same account.
+            resolutions:
+              - The refresh token rotates every use and must be persisted; a stale/broken token is auth territory — escalate (re-run the guided OAuth setup).
+            class: seth_coresolve
+            runbook: docs/runbooks/box_token_freshness.md
+            watchdog_check: _check_box_token_freshness
+      - id: form_publish
+        title: publish-daemon actuates a form-publish request
+        what_happens:
+          daemon: publish-daemon
+          worker_route: GET /api/internal/publish/pending
+          config_gates: [safety_reports.publish_daemon.polling_enabled]
+        healthy_signals:
+          - A claimed publish request advances validated → tested → live → archived (PR → CI → merge → deploy → Box blank archive).
+        failure_modes:
+          - id: publish_stuck
+            symptom: A form-publish request is stuck / stamped failed.
+            signals: ["publish deploy gate", "stamped failed(stage)", "unapplied D1 migrations"]
+            checks:
+              - Did the deploy gate refuse ahead of unapplied D1 migrations? Which stage stamped failed?
+            resolutions:
+              - A failed publish stage fires a CRITICAL (never a silent stall); the fix (apply migrations, deploy, code) is code/deploy territory — escalate.
+            class: seth_coresolve
+            runbook: docs/runbooks/safety_portal_forms.md
+      - id: portal_prune
+        title: Portal prune housekeeping
+        what_happens:
+          config_gates: []
+        healthy_signals:
+          - The portal prune keeps the D1 pools bounded; prune health is green.
+        failure_modes:
+          - id: prune_unhealthy
+            symptom: Portal prune is not keeping D1 bounded / prune health is failing.
+            signals: ["portal prune health WARN", "D1 pool growth"]
+            checks:
+              - Dashboard/watchdog → the portal-prune health signal.
+            resolutions:
+              - Follow the prune-health runbook; a systemic prune failure (Worker/D1) is deploy territory — escalate.
+            class: seth_coresolve
+            runbook: docs/runbooks/portal_prune_health.md
+            watchdog_check: _check_portal_prune_health
+
+# ── Runbooks intentionally NOT linked by a failure node (enablement / setup how-tos, not
+#    failure-troubleshooting). Referenced in the Tier-2 enablement corpus + config runbooks. ──
+runbook_exemptions:
+  - manager_tier.md                    # enablement role guide (crew leads), not a failure procedure
+  - subcontractor_tier.md              # enablement role guide (subcontractors), not a failure procedure
+  - fieldops_checklists.md             # enablement: the daily-report SOP form, not a failure procedure
+  - material_catalog_admin.md          # admin how-to: managing the material catalog, not a fault
+  - project_routing_onboarding.md      # onboarding/setup how-to, not a fault
+  - safety_portal_config_sheets.md     # one-time config-sheet setup, not a fault
+  - progress_reporting_config_sheets.md # one-time config-sheet setup, not a fault
+  - week_sheet_config.md               # one-time week-sheet config, not a fault
