@@ -265,3 +265,82 @@ tr.sev-info td:first-child { color: var(--info); }
 .detail-table { font-family: ui-monospace, SFMono-Regular, monospace; font-size: 12px; }
 .detail-table td { white-space: pre-wrap; word-break: break-word; vertical-align: top; }
 .detail-table.panel-logs td:nth-child(2) { text-transform: uppercase; }
+
+/* ── Troubleshooting view ─────────────────────────────────────────────── */
+.ts { max-width: 1100px; margin: 0 auto; }
+.ts-head { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-bottom: 12px; }
+.ts-head h2 { font-size: 16px; margin: 0; }
+.ts-head .summary { color: var(--muted); font-size: 12px; }
+.ts-filter { display: flex; gap: 8px; align-items: center; margin: 6px 0 12px; }
+.ts-filter input[type=search] {
+  flex: 1; max-width: 460px; padding: 7px 10px; background: var(--panel); color: var(--text);
+  border: 1px solid var(--border); border-radius: 6px; font-size: 13px;
+}
+.ts-filter button {
+  padding: 7px 14px; background: var(--brand-green); color: #fff;
+  border: 1px solid var(--brand-gold); border-radius: 6px; cursor: pointer; font-size: 13px;
+}
+.ts-clear { color: var(--brand-gold-soft); font-size: 12px; text-decoration: none; }
+.ts-legend { color: var(--muted); font-size: 12px; margin: 0 0 14px; }
+
+/* class badges — the escalation rule made impossible to miss */
+.ts-badge {
+  display: inline-block; padding: 1px 9px; border-radius: 999px; font-size: 11px;
+  font-weight: 600; white-space: nowrap; text-decoration: none; vertical-align: middle;
+}
+.ts-solo { background: var(--ok); color: #06281c; }
+.ts-escalate { background: transparent; color: var(--brand-gold-soft); border: 1.5px solid var(--brand-gold); }
+a.ts-escalate:hover { background: rgba(201, 162, 39, .14); }
+
+.ts-cards { display: flex; flex-direction: column; gap: 10px; }
+.ts-card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; }
+.ts-card-toggle, .ts-step-toggle, .ts-fm-toggle {
+  display: inline-flex; align-items: center; gap: 8px; background: none; border: none;
+  color: var(--text); cursor: pointer; font-size: 14px; text-align: left; padding: 2px 0;
+}
+.ts-card-title { font-weight: 600; }
+.ts-card-summary { color: var(--muted); font-size: 12px; margin: 4px 0 0; }
+.ts-chevron { color: var(--brand-gold); font-size: 11px; }
+.ts-slot:not(:empty) { margin-top: 10px; border-top: 1px solid var(--border); padding-top: 10px; }
+
+.ts-steps { list-style: none; padding-left: 0; margin: 0; display: flex; flex-direction: column; gap: 8px; }
+.ts-step { padding: 4px 0; }
+.ts-fact { color: var(--muted); font-size: 11px; margin-left: 10px; }
+.ts-fact code, .ts-gates code, .ts-sheets code { color: var(--brand-gold-soft); }
+
+.ts-gates, .ts-sheets { font-size: 12px; color: var(--muted); margin: 4px 0; }
+.ts-gates code { margin-left: 6px; }
+.ts-healthy { font-size: 12px; margin: 8px 0; }
+.ts-healthy ul, .ts-fm-sec ol { margin: 4px 0 4px 18px; padding: 0; }
+.ts-healthy li, .ts-fm-sec li { margin: 2px 0; font-size: 12px; }
+
+.ts-fms { list-style: none; padding-left: 0; margin: 8px 0 0; display: flex; flex-direction: column; gap: 6px; }
+.ts-fm { padding: 2px 0; }
+.ts-fm-detail { background: var(--panel-head); border-left: 3px solid var(--brand-gold); border-radius: 4px; padding: 8px 12px; }
+.ts-fm-symptom { font-weight: 600; margin-bottom: 6px; }
+.ts-fm-sec { font-size: 12px; margin: 6px 0; }
+.ts-fm-sec strong { color: var(--brand-gold-soft); }
+.ts-runbook { color: var(--info); text-decoration: none; }
+.ts-runbook:hover { text-decoration: underline; }
+.ts-watchdog { color: var(--muted); font-size: 11px; }
+.ts-watchdog code { color: var(--brand-gold-soft); }
+
+.ts-workflow-open { margin: 0 0 18px; border-bottom: 1px solid var(--border); padding-bottom: 10px; }
+.ts-workflow-open h3 { font-size: 15px; margin: 0 0 2px; }
+.ts-step-open { margin: 10px 0 0 6px; }
+.ts-step-open h4 { font-size: 13px; margin: 8px 0 4px; color: var(--brand-gold-soft); }
+.ts-boot-error .ts-boot-note { color: var(--muted); font-size: 12px; margin-top: 6px; }
+
+/* ── Runbook / doc viewer ─────────────────────────────────────────────── */
+.doc-view { max-width: 900px; margin: 0 auto; }
+.doc-head { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-bottom: 12px; }
+.doc-head h2 { font-size: 16px; margin: 0; }
+.doc-head .summary { color: var(--muted); font-family: ui-monospace, monospace; font-size: 12px; }
+.doc-body { font-size: 13px; line-height: 1.55; }
+.doc-body h1, .doc-body h2, .doc-body h3, .doc-body h4 { color: var(--brand-gold-soft); margin: 18px 0 8px; }
+.doc-body code { background: var(--panel-head); padding: 1px 5px; border-radius: 3px; font-size: 12px; }
+.doc-body pre { background: var(--panel-head); padding: 10px; border-radius: 6px; overflow-x: auto; }
+.doc-body pre code { background: none; padding: 0; }
+.doc-body table { border-collapse: collapse; margin: 10px 0; }
+.doc-body th, .doc-body td { border: 1px solid var(--border); padding: 4px 8px; font-size: 12px; }
+.doc-body blockquote { border-left: 3px solid var(--brand-gold); margin: 8px 0; padding-left: 12px; color: var(--muted); }

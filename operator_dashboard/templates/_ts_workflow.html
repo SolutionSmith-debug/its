@@ -1,0 +1,21 @@
+{% if error %}
+<div class="config-error">tree error — {{ error }}</div>
+{% elif wf %}
+<ol class="ts-steps">
+  {% for st in wf.steps %}
+  <li class="ts-step">
+    <button class="ts-step-toggle" type="button"
+            hx-get="/troubleshoot/step/{{ wf.id }}/{{ st.id }}"
+            hx-target="#step-{{ wf.id }}-{{ st.id }}" hx-swap="innerHTML"
+            aria-expanded="false">
+      <span class="ts-chevron">▸</span> {{ st.title }}
+    </button>
+    {% if st.what_happens.daemon %}<span class="ts-fact">daemon <code>{{ st.what_happens.daemon }}</code></span>{% endif %}
+    {% if st.what_happens.worker_route %}<span class="ts-fact"><code>{{ st.what_happens.worker_route }}</code></span>{% endif %}
+    <div id="step-{{ wf.id }}-{{ st.id }}" class="ts-slot"></div>
+  </li>
+  {% endfor %}
+</ol>
+{% else %}
+<div class="config-note">unknown workflow</div>
+{% endif %}

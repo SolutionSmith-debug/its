@@ -1,0 +1,43 @@
+{% if error %}
+<div class="config-error">tree error — {{ error }}</div>
+{% elif step %}
+{% if step.what_happens.config_gates %}
+<div class="ts-gates">
+  <strong>Config gates</strong> (check the live value in the
+  <a href="/config">config editor</a> — a dark gate is not a fault):
+  {% for g in step.what_happens.config_gates %}<code>{{ g }}</code>{% endfor %}
+</div>
+{% endif %}
+{% if step.what_happens.sheets %}
+<div class="ts-sheets"><strong>Sheets:</strong> {% for s in step.what_happens.sheets %}<code>{{ s }}</code> {% endfor %}</div>
+{% endif %}
+{% if step.healthy_signals %}
+<div class="ts-healthy"><strong>Healthy signals:</strong>
+  <ul>{% for s in step.healthy_signals %}<li>{{ s }}</li>{% endfor %}</ul>
+</div>
+{% endif %}
+{% if step.failure_modes %}
+<ul class="ts-fms">
+  {% for fm in step.failure_modes %}
+  <li class="ts-fm">
+    <button class="ts-fm-toggle" type="button"
+            hx-get="/troubleshoot/fm/{{ wf_id }}/{{ step.id }}/{{ fm.id }}"
+            hx-target="#fm-{{ step.id }}-{{ fm.id }}" hx-swap="innerHTML"
+            aria-expanded="false">
+      <span class="ts-chevron">▸</span> {{ fm.symptom }}
+    </button>
+    {% if fm.cls == 'daniel_solo' %}
+    <span class="ts-badge ts-solo">Operator-resolvable</span>
+    {% else %}
+    <span class="ts-badge ts-escalate">Escalate to Seth</span>
+    {% endif %}
+    <div id="fm-{{ step.id }}-{{ fm.id }}" class="ts-slot"></div>
+  </li>
+  {% endfor %}
+</ul>
+{% else %}
+<p class="config-note">No failure modes — {{ step.no_failure_modes }}</p>
+{% endif %}
+{% else %}
+<div class="config-note">unknown step</div>
+{% endif %}

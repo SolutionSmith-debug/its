@@ -1,0 +1,25 @@
+{# Renders one failure mode's full detail. Expects `fm`. Used inline (filtered view) and as
+   the htmx swap body (_ts_fm.html). #}
+<div class="ts-fm-detail">
+  <div class="ts-fm-symptom">{{ fm.symptom }}</div>
+  {% if fm.cls == 'daniel_solo' %}
+  <span class="ts-badge ts-solo">Operator-resolvable</span>
+  {% else %}
+  <a class="ts-badge ts-escalate" href="/doc/references/escalation_matrix.md">Escalate to Seth →</a>
+  {% endif %}
+  <div class="ts-fm-sec"><strong>Signals:</strong> {{ fm.signals | join(', ') }}</div>
+  <div class="ts-fm-sec"><strong>Checks (in order):</strong>
+    <ol>{% for c in fm.checks %}<li>{{ c }}</li>{% endfor %}</ol>
+  </div>
+  <div class="ts-fm-sec"><strong>Resolutions (in order):</strong>
+    <ol>{% for r in fm.resolutions %}<li>{{ r }}</li>{% endfor %}</ol>
+  </div>
+  {% if fm.runbook %}
+  <div class="ts-fm-sec">
+    <a class="ts-runbook" href="/doc/{{ fm.runbook.replace('docs/', '', 1) }}">Open runbook: <code>{{ fm.runbook }}</code></a>
+  </div>
+  {% endif %}
+  {% if fm.watchdog_check %}
+  <div class="ts-fm-sec"><span class="ts-watchdog">Caught by watchdog <code>{{ fm.watchdog_check }}</code></span></div>
+  {% endif %}
+</div>
