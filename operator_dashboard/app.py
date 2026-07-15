@@ -18,6 +18,7 @@ from operator_dashboard.act.router import register_act_routes
 from operator_dashboard.config import PANEL_REFRESH_SECONDS
 from operator_dashboard.sources import PANELS, PANELS_BY_ID
 from operator_dashboard.sources.base import SEV_UNAVAILABLE, PanelResult
+from operator_dashboard.troubleshoot import register_troubleshoot_routes
 
 _BASE = Path(__file__).resolve().parent
 # Build the Jinja environment explicitly so autoescape is GUARANTEED on: it is
@@ -108,4 +109,11 @@ def create_app() -> FastAPI:
     # external send; the External Send Gate (Invariant 1) stays with the
     # daemons. Higher-ceremony actions (Class B/C, launchctl, secrets) are D1-3.
     register_act_routes(app, _TEMPLATES)
+
+    # --- Troubleshooting view (read-only) ---------------------------------
+    # GET /troubleshoot (the tree, htmx drill-down) + GET /doc/{path} (a safe,
+    # path-allowlisted markdown viewer for runbooks/enablement/references). NO
+    # mutation routes; the tree loads fail-soft (a TreeError renders a banner,
+    # never crashes the dashboard).
+    register_troubleshoot_routes(app, _TEMPLATES)
     return app

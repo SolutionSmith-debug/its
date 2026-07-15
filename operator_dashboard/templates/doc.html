@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}{{ title }} — ITS Operator Dashboard{% endblock %}
+{% block subnav %}
+<nav class="subnav" aria-label="Back to troubleshoot">
+  <a class="subnav__back" href="/troubleshoot">← Back to troubleshoot</a>
+</nav>
+{% endblock %}
+{% block content %}
+<div class="doc-view">
+  <div class="doc-head"><h2>{{ title }}</h2><span class="summary">{{ rel }}</span></div>
+  {% if body_html is none %}
+  <div class="config-error">
+    That document is not available. The viewer only serves markdown under
+    <code>docs/runbooks/</code>, <code>docs/enablement/</code>, and <code>docs/references/</code>.
+  </div>
+  {% else %}
+  {# body_html is markdown-it output rendered with html=False, so raw HTML in the source was
+     escaped — safe to emit. #}
+  <article class="doc-body">{{ body_html | safe }}</article>
+  {% endif %}
+</div>
+{% endblock %}

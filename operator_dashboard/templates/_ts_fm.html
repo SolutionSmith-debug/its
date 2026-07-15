@@ -1,0 +1,7 @@
+{% if error %}
+<div class="config-error">tree error — {{ error }}</div>
+{% elif fm %}
+{% include "_ts_fm_card.html" %}
+{% else %}
+<div class="config-note">unknown failure mode</div>
+{% endif %}

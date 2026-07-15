@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block title %}Troubleshoot — ITS Operator Dashboard{% endblock %}
+{% block subnav %}
+<nav class="subnav" aria-label="Back to dashboard">
+  <a class="subnav__back" href="/">← Back to dashboard</a>
+</nav>
+{% endblock %}
+{% block content %}
+<div class="ts">
+  <div class="ts-head">
+    <h2>Troubleshoot</h2>
+    <span class="summary">Pick the workflow you are blocked at, then the step, then the symptom.</span>
+  </div>
+
+  {% if error %}
+  <div class="config-error ts-boot-error">
+    The troubleshooting tree failed to load — {{ error }}
+    <div class="ts-boot-note">The rest of the dashboard is unaffected. Fix <code>docs/troubleshooting/tree.yaml</code> and reload.</div>
+  </div>
+  {% else %}
+
+  <form class="ts-filter" method="get" action="/troubleshoot" role="search">
+    <input type="search" name="q" value="{{ q }}" placeholder="Filter by symptom / signal keyword…" aria-label="Filter">
+    <button type="submit">Filter</button>
+    {% if q %}<a class="ts-clear" href="/troubleshoot">clear</a>{% endif %}
+  </form>
+
+  <p class="ts-legend">
+    <span class="ts-badge ts-solo">Operator-resolvable</span> documented + low blast radius ·
+    <span class="ts-badge ts-escalate">Escalate to Seth</span> Send Gate / secrets / doctrine / code — or novel. When unsure, escalate.
+  </p>
+
+  {% if q %}
+    {# Filtered view: matches shown expanded so you can see what matched. #}
+    {% if not view %}<p class="config-note">No symptoms match “{{ q }}”.</p>{% endif %}
+    {% for entry in view %}
+    <section class="ts-workflow-open">
+      <h3>{{ entry.workflow.title }}</h3>
+      <p class="summary">{{ entry.workflow.summary }}</p>
+      {% for s in entry.steps %}
+      <div class="ts-step-open">
+        <h4>{{ s.step.title }}</h4>
+        {% for fm in s.fms %}{% include "_ts_fm_card.html" %}{% endfor %}
+      </div>
+      {% endfor %}
+    </section>
+    {% endfor %}
+  {% else %}
+    {# Collapsed cards → htmx drill-down. #}
+    <div class="ts-cards">
+      {% for entry in view %}
+      <article class="ts-card">
+        <button class="ts-card-toggle" type="button"
+                hx-get="/troubleshoot/wf/{{ entry.workflow.id }}"
+                hx-target="#wf-{{ entry.workflow.id }}" hx-swap="innerHTML"
+                aria-expanded="false">
+          <span class="ts-card-title">{{ entry.workflow.title }}</span>
+          <span class="ts-chevron">▸</span>
+        </button>
+        <p class="ts-card-summary">{{ entry.workflow.summary }}</p>
+        <div id="wf-{{ entry.workflow.id }}" class="ts-slot"></div>
+      </article>
+      {% endfor %}
+    </div>
+  {% endif %}
+  {% endif %}
+</div>
+{% endblock %}
