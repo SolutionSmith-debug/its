@@ -60,7 +60,7 @@ This is the operator reference for **ITS_Config** — the Smartsheet sheet where
 | `po_materials.po_poll.status_sync_enabled` | bool | false | Sub-gate: sync PO statuses back to the portal. Ships dark. | po_materials.po_poll |
 | `po_materials.po_poll.vendors_sync_enabled` | bool | false | Sub-gate: push the vendor list down to the portal PO dropdown. Ships dark. | po_materials.po_poll |
 | `po_materials.po_send.from_mailbox` | str | procurement@evergreenmirror.com | The M365 mailbox the po_materials.po_send send daemon sends approved email FROM. | po_materials.po_send, po_materials.po_send_poll |
-| `po_materials.po_send.polling_enabled` | bool | true | Runtime on/off gate for the po_materials.po_send daemon. False pauses it without unloading its launchd job (the canonical runtime gate, distinct from the report-filter Enabled checkbox). | po_materials.po_send_poll |
+| `po_materials.po_send.polling_enabled` | bool | false | Runtime on/off gate for the po_materials.po_send daemon. False pauses it without unloading its launchd job (the canonical runtime gate, distinct from the report-filter Enabled checkbox). | po_materials.po_send_poll |
 | `po_materials.po_send.scheduled_send_local` | str | MON 07:00 | Local-time window (e.g. `MON 07:00`) at/after which a row approved with **Approve for Scheduled Send** may dispatch on the po_materials.po_send path. | po_materials.po_send_poll |
 | `safety_reports.portal.worker_base_url` | str | *(unset)* | Base URL of the Safety Portal Cloudflare Worker. The portal pull / PO / progress daemons hit its send-free internal API here. Repointed to the custom domain (safety.evergreenmirror.com) after deploy. | po_materials.config_actuator |
 
@@ -113,6 +113,9 @@ This is the operator reference for **ITS_Config** — the Smartsheet sheet where
 | `subcontracts.subcontract_poll.polling_enabled` | bool | false | Runtime on/off gate for the subcontracts.subcontract_poll daemon. False pauses it without unloading its launchd job (the canonical runtime gate, distinct from the report-filter Enabled checkbox). | subcontracts.subcontract_poll |
 | `subcontracts.subcontract_poll.status_sync_enabled` | bool | false | Sub-gate for subcontracts.subcontract_poll: sync statuses back to the portal. | subcontracts.subcontract_poll |
 | `subcontracts.subcontract_poll.subcontractors_sync_enabled` | bool | false | Gate for subcontract_poll's §51 subcontractor-sync passes: the ITS_Subcontractors full-replace down-sync into the Worker's D1 cache AND the dirty-subcontractor up-sync back into ITS_Subcontractors (bridge-key find-or-create by Sub Key). Ships dark. | subcontracts.subcontract_poll |
+| `subcontracts.subcontract_send.from_mailbox` | str | procurement@evergreenmirror.com | The M365 mailbox the subcontracts.subcontract_send send daemon sends approved email FROM. | subcontracts.subcontract_send, subcontracts.subcontract_send_poll |
+| `subcontracts.subcontract_send.polling_enabled` | bool | false | Runtime on/off gate for the subcontracts.subcontract_send daemon. False pauses it without unloading its launchd job (the canonical runtime gate, distinct from the report-filter Enabled checkbox). | subcontracts.subcontract_send_poll |
+| `subcontracts.subcontract_send.scheduled_send_local` | str | MON 07:00 | Local-time window (e.g. `MON 07:00`) at/after which a row approved with **Approve for Scheduled Send** may dispatch on the subcontracts.subcontract_send path. | subcontracts.subcontract_send_poll |
 
 ## Where this comes from
 

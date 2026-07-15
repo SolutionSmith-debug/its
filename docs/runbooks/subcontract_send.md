@@ -1,0 +1,128 @@
+---
+type: operations
+date: 2026-07-15
+status: active
+related_prs: []
+workstream: null
+tags: [runbook, successor-remediation, subcontracts, subcontract_send, external-send-gate, f22, tier-2, tier-3]
+---
+
+# Runbook — Subcontract send daemon (`subcontract_send`) (a subcontract row stuck HELD / blocked / "contamination") (Successor-Remediation, Op Stds §43)
+
+A §43 successor-remediation entry for the **Successor-Operator** (a trained operator who runs
+Claude Code and reads Smartsheet rows + alert emails, not code). The §42 code-reader rationale
+lives in the docstrings of `subcontracts/subcontract_send.py` (the
+`_SubcontractorRecipientLookup` + `_SubcontractEnvelope` bindings) and
+`subcontracts/subcontract_send_poll.py` (the thin poller over `send_poll_core`).
+
+`subcontracts/subcontract_send.py` is the **send half of the External Send Gate** (FM v11
+Invariant 1) for a NEW external audience: the **subcontractor**. It is the subcontract
+instantiation of the shared send engine (`safety_reports.weekly_send.send_one_row`) — the SAME
+dispatch logic as safety weekly-send / progress-send / po-send, a different `SendConfig`. The
+poller `subcontracts/subcontract_send_poll.py` (launchd `org.solutionsmith.its.subcontract-send`,
+every 15 min) discovers approved `Subcontract_Pending_Review` rows, runs the **F22**
+approval-attestation gate against the **ITS — Subcontracts** workspace (§46 — membership =
+subcontract approval authority), stamps the verified approver, then dispatches each to the
+sender. The sender refuses to transmit a half-formed, wrong-workstream, or numberless
+subcontract — it marks the row `Send Status = HELD` instead. From `procurement@`. The recipient
+resolves at send time from `ITS_Subcontractors` by Sub Key (**empty CC** — a subcontract has one
+external recipient), never the display columns. The email attaches ONE combined
+**`Subcontract Package.zip`** (Subcontract body `.docx` + Exhibit A `.docx` + Annex C SoV
+`.xlsx`), filed to Box by `subcontract_poll` and linked in the review row's "Compiled PDF" slot.
+
+> **The both-rule (FM v11 / Op Stds §44).** A fault is Tier-2-eligible (the Successor-Operator
+> may self-repair) only if it is **documented here AND low-capability-class**. Anything touching
+> the **External Send Gate, secrets/auth, doctrine, or code** is FIXED high-class → escalate to
+> Seth regardless of documentation.
+
+> **The External Send Gate boundary — non-negotiable.** The Successor-Operator **NEVER**
+> bypasses the F22 gate, **NEVER** edits the approval columns (`Send Now` / `Approve for
+> Scheduled Send` / `Approved By` / `Approved At`), and **NEVER** enables a send path without the
+> fail-closed smoke (`smoke_test_subcontract_send.py`) + the live e2e. To re-send a HELD row the
+> operator fixes the *underlying data* (a subcontractor email, a Notes tag) and re-approves the
+> row through the normal checkbox flow — the operator never marks a row SENT or forces a send.
+
+## A subcontract row is HELD
+
+The sender HELDs (never transmits) rather than send a bad package. `Send Status = HELD`, with
+the reason in Notes / ITS_Errors. Each is operator-actionable by fixing DATA and re-approving —
+never by forcing the send.
+
+- **`held_no_recipient`** — the Sub Key (the review row's "Job ID" slot) is unknown in
+  `ITS_Subcontractors`, or that subcontractor's `Contact Email` is blank. **Tier-2:** open
+  `ITS_Subcontractors`, find the Sub Key, fill/fix the `Contact Email`, then re-check the
+  approval box. The recipient resolves LIVE at the next dispatch. If the Sub Key itself is wrong
+  on the review row → **escalate to Seth** (the row's Notes/protocol slot is a generation-side
+  defect, not a data typo).
+- **`held_missing_envelope`** — the review row's Notes lost its `sc_number=` tag, so the sender
+  can't name the subcontract. **Tier-2:** none — the reviewer edits only the Email Body, never
+  Notes, so a missing tag is a generation defect → **escalate to Seth**.
+- **`held_missing_pdf`** — the "Compiled PDF" slot is empty or the linked `Subcontract Package.zip`
+  Box file is gone. **Tier-2:** re-run the subcontract draft (the generation daemon re-files the
+  zip); if it recurs → **escalate to Seth**.
+- **`held_oversized_packet`** — the package exceeds Graph's ~150 MB ceiling (implausible for three
+  Office docs). **Escalate to Seth.**
+- **`held_workstream_mismatch` (+ CRITICAL)** — a `Subcontract_Pending_Review` row whose
+  `Workstream` cell is not `subcontracts` (or a `subcontracts` row on WSR/WPR/PO). This is a
+  contamination signal → **escalate to Seth** (do NOT re-tag the row).
+
+## The send gate / daemon won't run / appears stale
+
+- The poller is the launchd job **`org.solutionsmith.its.subcontract-send`** (interval 15 min,
+  RunAtLoad). Confirm it is loaded:
+  `scripts/launchd/install.sh status org.solutionsmith.its.subcontract-send`.
+- **The send gate is the seeded `subcontracts.subcontract_send.polling_enabled = false` row** —
+  subcontracts ship **dark**: NO subcontractor email fires until the operator flips it at
+  go-live. Flipping it is a **FIXED high-capability-class External-Send-Gate decision →
+  escalate to Seth**. **Read the gate row's ITS_Config Description before any flip**
+  (HOUSE_REFLEXES §5) — it names the three go-live preconditions.
+- **Go-live preconditions** (in the gate row's Description; Seth confirms each): (a)
+  `smoke_test_subcontract_send.py` passed on the mirror; (b) `procurement@` exists on the tenant
+  **and is in the app's Application Access Policy scope** (M365 admin — if the operator is not the
+  admin → escalate to Seth); (c) the subcontract approvers are shared into the
+  **ITS — Subcontracts** workspace (an empty share list fails CLOSED — `EMPTY_ALLOWLIST`, all
+  sends HELD).
+- Other gates: `subcontracts.subcontract_send.scheduled_send_local` (the Mon-≥07:00-Pacific batch
+  window for `Approve for Scheduled Send`; `Send Now` dispatches out-of-band),
+  `subcontracts.subcontract_send.from_mailbox`, and `subcontracts.subcontract_send.poll_interval_seconds`
+  (read at install time, baked into the plist — not hot; re-load after changing).
+- **Staleness monitoring:** the marker slug `subcontract_send_poll` **is** in
+  `watchdog.TRACKED_JOBS` (Check C, ~30-minute window). It WARNs until the daemon is loaded
+  **and** the gate is flipped — expected pre-go-live, not a fault.
+- Env prereqs: `python scripts/smoke_test_subcontract_send.py` (kill switch, subcontract config
+  binding, Graph creds, Subcontract_Pending_Review schema, F22 approver set, ITS_Daemon_Health).
+- **Reload discipline:** reload only against `~/its` on `main` (the live tree), never a
+  feature-branch worktree (`docs/operations/worktree_discipline.md`).
+
+## Failing send transport
+
+- **Action — None at Tier 2; escalate to Seth (Tier 3).** A failing send transport is the
+  **External Send Gate** (fixed high-capability-class): do NOT force a send, edit Send Status, or
+  touch the transport. Hand Seth the row + the CRITICAL. **Graph credentials failing** =
+  **secrets/auth = FIXED high-class → Seth**. A `procurement@` mailbox missing from the
+  Application Access Policy scope 403s the send → **escalate to Seth** (the operator is not the
+  M365 admin).
+
+## executed (wet signature)
+
+A subcontract's terminal state is `executed` — the returned, fully-signed copy — AFTER `sent`.
+This send half only takes the row to SENT; the operator records `executed` on `Subcontract_Log`
+and `subcontract_poll`'s status pass mirrors it to D1. `subcontract_send` never touches the
+`executed` state.
+
+## Why the guard is shaped this way (pointer to §42)
+
+The code-reader rationale lives in `subcontracts/subcontract_send.py` (every `SendConfig` field
+is required with no default, so subcontracts cannot silently inherit safety's/progress's/PO's
+sheet, recipients, or tag; `recipient_lookup` resolves TO only from `ITS_Subcontractors` with an
+empty CC; `envelope_builder` returns None → `held_missing_envelope` rather than a numberless
+subcontract) and in `safety_reports/weekly_send.py` (the shared contamination guard, the
+write-ahead SENDING marker that makes a post-send stamp failure non-re-dispatchable — no
+double-send, and `_attachment_content_type` which labels the `.zip` package `application/zip`).
+Companion generation-side runbook: [`subcontract_generation_path.md`](subcontract_generation_path.md).
+Blueprint mission: `workstreams/subcontracts/mission.md`.
+
+## Owner
+
+`@solutionsmith`. New `subcontract_send` failure modes that become Tier-2-reachable should be
+added here as additional Symptom → checks → action → escalate blocks, per Op Stds §43.

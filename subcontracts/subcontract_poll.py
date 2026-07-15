@@ -778,6 +778,17 @@ def _process_pending_subcontract(
         box_client.upload_bytes_or_new_version(folder_id, xlsx_name, xlsx_bytes)
         box_file_id = str(docx_info["id"])
         box_link = f"https://app.box.com/file/{box_file_id}"
+        # SC-S4 send artifact (2026-07-15 operator decision): the whole signable package as ONE
+        # DETERMINISTIC ZIP, filed alongside the editable files (§47 version-on-conflict — a
+        # fixed record re-zips byte-identical, so no redundant upload). The review row's
+        # "Compiled PDF" slot links THIS so the shared single-attachment send engine transmits
+        # the complete package (body + Exhibit A + Annex C SoV) unchanged. The three editable
+        # .docx/.xlsx stay in Box (and inline-attached to the review row below) for the operator
+        # to review / hand-edit before approving; the ledger receipt stays the contract .docx.
+        zip_name = subcontract_naming.sc_package_zip_filename(sc_number, job_name)
+        zip_bytes = subcontract_docx.zip_package(package, sc_date)
+        zip_info = box_client.upload_bytes_or_new_version(folder_id, zip_name, zip_bytes)
+        zip_link = f"https://app.box.com/file/{zip_info['id']}"
 
         # 9 — Subcontract_Log append (idempotent: the collision check above proved any
         # existing row is OURS — a crash-retry — so only append when absent).
@@ -819,7 +830,7 @@ def _process_pending_subcontract(
                 job_project=f"{subcontract.get('job_no')} — {subcontract.get('job_name')}",
                 sub_key=sub_key,
                 agreement_date=sc_date,
-                package_link=box_link,  # "Compiled PDF" slot ← the Subcontract.docx link
+                package_link=zip_link,  # "Compiled PDF" slot ← the Subcontract Package.zip (SC-S4 send artifact)
                 recipient_to=str(subcontractor.get(subcontractors.COL_CONTACT_EMAIL) or ""),
                 cc_display="",  # the SoR has no subcontractor CC list — recipient is one sub
                 email_body=email_body,

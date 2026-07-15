@@ -322,3 +322,39 @@ def test_byte_identical_across_renders_both_formats(tmp_path, monkeypatch):
     for data in (docx1, xlsx1):
         core = zipfile.ZipFile(io.BytesIO(data)).read("docProps/core.xml").decode()
         assert "2026-07-11T00:00:00Z</dcterms:modified>" in core, core
+
+
+# ---- zip_package (SC-S4 send artifact): deterministic combined ZIP ----
+
+
+def test_zip_package_is_a_zip_containing_all_members():
+    import io
+    import zipfile
+    from datetime import date
+
+    from subcontracts import subcontract_docx
+
+    pkg = {
+        "Subcontract.docx": b"%DOCX",
+        "Exhibit A.docx": b"%EXHIBIT",
+        "Annex C - Schedule of Values.xlsx": b"XLSX",
+    }
+    blob = subcontract_docx.zip_package(pkg, date(2026, 7, 9))
+    assert blob[:2] == b"PK"  # ZIP magic
+    with zipfile.ZipFile(io.BytesIO(blob)) as zf:
+        assert set(zf.namelist()) == set(pkg)
+        for name, data in pkg.items():
+            assert zf.read(name) == data
+
+
+def test_zip_package_is_deterministic_for_the_same_stamp():
+    # §47 idempotent-Box-filing relies on a byte-identical re-zip for a fixed record.
+    from datetime import date
+
+    from subcontracts import subcontract_docx
+
+    pkg = {"Subcontract.docx": b"%DOCX", "Exhibit A.docx": b"%EXHIBIT",
+           "Annex C - Schedule of Values.xlsx": b"XLSX"}
+    a = subcontract_docx.zip_package(pkg, date(2026, 7, 9))
+    b = subcontract_docx.zip_package(dict(pkg), date(2026, 7, 9))
+    assert a == b  # no wall-clock, sorted members, fixed deflate → byte-identical

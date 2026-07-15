@@ -8,7 +8,7 @@
 # installed copies have concrete values.
 #
 # __POLL_INTERVAL_SECONDS__ (weekly-send, portal-poll, compile-now-poll, progress-send,
-# fieldops-sync, po-poll, po-send, subcontract-poll): these plists carry the placeholder in <integer>StartInterval</integer>.
+# fieldops-sync, po-poll, po-send, subcontract-poll, subcontract-send): these plists carry the placeholder in <integer>StartInterval</integer>.
 # `load`/`dry-run` resolve it from the optional [interval] arg, else a per-daemon default
 # (900 / 60 / 90 / 900 / 90 / 90 / 900 / 120 respectively, matching the daemon's ITS_Config poll-interval row
 # default — safety_reports.weekly_send / safety_reports.portal_poll /
@@ -48,7 +48,7 @@ usage: $0 {load|unload|status|dry-run} [plist] [interval]
   poll-interval daemons (weekly-send → default 900, portal-poll → default 60,
   compile-now-poll → default 90, progress-send → default 900,
   fieldops-sync → default 90, po-poll → default 90, po-send → default 900,
-  subcontract-poll → default 120).
+  subcontract-poll → default 120, subcontract-send → default 900).
 EOF
     exit 1
 }
@@ -72,6 +72,7 @@ poll_interval_config_key() {
         org.solutionsmith.its.po-poll)       echo "po_materials.po_poll.poll_interval_seconds" ;;
         org.solutionsmith.its.po-send)       echo "po_materials.po_send.poll_interval_seconds" ;;
         org.solutionsmith.its.subcontract-poll) echo "subcontracts.subcontract_poll.poll_interval_seconds" ;;
+        org.solutionsmith.its.subcontract-send) echo "subcontracts.subcontract_send.poll_interval_seconds" ;;
         *) echo "" ;;
     esac
 }
@@ -85,6 +86,7 @@ poll_interval_default() {
         org.solutionsmith.its.po-poll)       echo "90" ;;
         org.solutionsmith.its.po-send)       echo "900" ;;
         org.solutionsmith.its.subcontract-poll) echo "120" ;;
+        org.solutionsmith.its.subcontract-send) echo "900" ;;
         *) echo "" ;;
     esac
 }

@@ -229,6 +229,13 @@ TRACKED_JOBS: list[str] = [
     # are all false is a pre-lock no-op and writes NO marker (intentional dark state). Register +
     # activate together.
     "subcontract_poll",
+    # Subcontract SEND poll daemon (subcontracts.subcontract_send_poll, SC-S4). Writes a
+    # subcontract_send_poll.last_run marker each cycle once ACTIVE. Like po_send_poll it WARNs
+    # until the operator both LOADS the plist (`install.sh load org.solutionsmith.its.subcontract-send`)
+    # AND flips subcontracts.subcontract_send.polling_enabled true — a loaded daemon with the
+    # send gate off is a pre-lock no-op and writes NO marker (intentional dark state, the
+    # External Send Gate). Register + activate together at SC-S4 go-live.
+    "subcontract_send_poll",
 ]
 
 # Per-job freshness windows. Jobs not in this map use the default 24h
@@ -283,6 +290,9 @@ TRACKED_JOB_WINDOWS: dict[str, timedelta] = {
     # subcontract_poll runs every 120s (default). 10 min == ~5 cycles — same high-frequency-poller
     # tolerance as po_poll (8 min at 90s), scaled to the 120s cadence.
     "subcontract_poll": timedelta(minutes=10),
+    # subcontract_send_poll runs every 15 min (default); 30 min == 2 cycles — mirror
+    # po_send_poll / weekly_send_poll (an approval poller, not a fast puller).
+    "subcontract_send_poll": timedelta(minutes=30),
 }
 DEFAULT_TRACKED_JOB_WINDOW = timedelta(hours=24)
 

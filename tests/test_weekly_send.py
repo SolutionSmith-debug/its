@@ -523,3 +523,30 @@ def test_packet_warn_threshold_boundary_exact_size_no_warning(stub, mocker):
     weekly_send.send_one_row(50, weekly_send.CONFIG)
 
     assert _packet_warn_calls(stub) == []
+
+
+# ---- _attachment_content_type (SC-S4: filename-derived, was hardcoded application/pdf) ----
+# The ONLY engine change SC-S4 needs. These pin that the three PDF workstreams are BYTE-
+# IDENTICAL to the old hardcode (.pdf → application/pdf) while .zip → application/zip.
+
+
+def test_attachment_content_type_pdf_unchanged_for_pdf_workstreams():
+    from safety_reports import weekly_send
+
+    # safety/progress/PO all attach a .pdf — must resolve exactly as the old hardcode.
+    assert weekly_send._attachment_content_type("Weekly Safety Report — 2026-07-09.pdf") == "application/pdf"
+    assert weekly_send._attachment_content_type("2026.001 — Job_PO_2026.001.2.0.0.pdf") == "application/pdf"
+    assert weekly_send._attachment_content_type("X.PDF") == "application/pdf"  # case-insensitive
+
+
+def test_attachment_content_type_zip_for_subcontract_package():
+    from safety_reports import weekly_send
+
+    assert weekly_send._attachment_content_type("Job_Subcontract Package_2026.001.OR.0.0.zip") == "application/zip"
+    assert weekly_send._attachment_content_type("X.ZIP") == "application/zip"
+
+
+def test_attachment_content_type_unknown_falls_back_to_octet_stream():
+    from safety_reports import weekly_send
+
+    assert weekly_send._attachment_content_type("mystery.qqq") == "application/octet-stream"

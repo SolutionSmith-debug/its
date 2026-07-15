@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Subcontract SEND poll daemon (SC-S4). The send half of the External Send Gate two-process
+  model for the SUBCONTRACTOR audience: discovers approved Subcontract_Pending_Review rows
+  (Send Now / Approve for Scheduled Send), runs the F22 approval-attestation gate against the
+  ITS — Subcontracts workspace (§46 membership = approval authority), and dispatches each to
+  subcontracts.subcontract_send.send_one_row (→ the shared weekly_send engine → Graph send
+  from procurement@, attaching the combined Subcontract Package.zip). AI-FREE (anthropic /
+  anthropic_client AST-forbidden in tests/test_capability_gating.py SEND_SCRIPTS); the
+  generation side (subcontract-poll) is a SEPARATE process with zero send capability.
+  Recipient resolved at send time from ITS_Subcontractors by Sub Key. Gated OFF by
+  subcontracts.subcontract_send.polling_enabled (scripts/migrations/seed_subcontracts_send_config.py
+  seeds it false).
+
+  Install:
+    scripts/launchd/install.sh load org.solutionsmith.its.subcontract-send
+
+  StartInterval is PARAMETERIZED (install.sh __POLL_INTERVAL_SECONDS__): resolution is
+  [interval] arg > ITS_Config subcontracts.subcontract_send.poll_interval_seconds > default
+  900s (15 min, matching po-send / weekly-send / progress-send — an approval poller, not a
+  fast puller). The resolved value is BAKED into the installed plist, so a later change needs
+  a re-load.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>org.solutionsmith.its.subcontract-send</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__ITS_HOME__/.venv/bin/python</string>
+        <string>-m</string>
+        <string>subcontracts.subcontract_send_poll</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__ITS_HOME__</string>
+
+    <key>StandardOutPath</key>
+    <string>__ITS_HOME__/logs/launchd/subcontract_send.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>__ITS_HOME__/logs/launchd/subcontract_send.err.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>LANG</key>
+        <string>en_US.UTF-8</string>
+    </dict>
+
+    <key>StartInterval</key>
+    <integer>__POLL_INTERVAL_SECONDS__</integer>
+
+    <!-- A2 (single-host resilience): RunAtLoad=true so this interval daemon RESUMES
+         immediately when launchd loads the agent after a reboot/OS-update, then
+         StartInterval re-fires on cadence. KeepAlive is intentionally absent: ITS daemons
+         are one-shot-per-fire, so KeepAlive=true would restart on exit and destroy the
+         interval cadence. -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>
