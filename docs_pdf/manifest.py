@@ -38,6 +38,7 @@ class ManifestEntry:
     version: str      # manual version string (e.g. "v1")
     source: str       # repo-root-relative path to the markdown source
     sha256: str       # recorded SHA-256 of the source file bytes (doc-currency baseline)
+    audience: str = ""  # optional reader tag (operator | office | field crew | …); "" = unset
 
     def source_path(self) -> Path:
         """Absolute path to the source markdown file."""
@@ -106,6 +107,7 @@ def load_manifest(path: Path = MANIFEST_PATH) -> Manifest:
         entries.append(ManifestEntry(
             key=key, title=str(d["title"]), version=str(d["version"]),
             source=str(d["source"]).replace("\\", "/"), sha256=str(d["sha256"]).lower(),
+            audience=str(d.get("audience", "")).strip(),
         ))
     return Manifest(manifest_version=1, entries=entries)
 
