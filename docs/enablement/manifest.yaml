@@ -176,3 +176,14 @@ docs:
     source: docs/references/documentation_index.md
     sha256: 9af70c8210c1434e733a0f4e64b369e5d5b1c222d929b3ba620bf282a7000842
     audience: all
+
+  # ── Troubleshooting guide (documentation-corpus, Tranche B). GENERATED from
+  #    docs/troubleshooting/tree.yaml by scripts/build_troubleshooting_guide.py — after editing
+  #    the tree, regenerate the guide AND re-record this sha256 (tests/test_troubleshooting_tree.py
+  #    ::test_committed_guide_is_current flags the drift; the generator is deterministic).
+  - key: troubleshooting_guide
+    title: "ITS Troubleshooting Guide"
+    version: v1
+    source: docs/troubleshooting/troubleshooting_guide.md
+    sha256: be74c0a4f5d01ad58a9818a210563973e1e591a659f45a68a892ded0590cca44
+    audience: operator

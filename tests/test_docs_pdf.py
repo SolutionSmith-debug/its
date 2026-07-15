@@ -177,7 +177,8 @@ def test_committed_manifest_round_trips() -> None:
     # the seven D2-1 guides + the four D2-2 docs (owner's manual, safety-forms + admin-
     # dashboard guides, and the generated ITS_Config data dictionary) + the two delivery-
     # critical guides added 2026-07-13 (operator dashboard WS2, subcontracts generator) +
-    # the eight Tier-1 system references (documentation-corpus, Tranche A, 2026-07-14/15)
+    # the eight Tier-1 system references (documentation-corpus, Tranche A, 2026-07-14/15) +
+    # the generated troubleshooting guide (Tranche B)
     assert keys == {
         "fieldops_checklists", "manager_tier", "subcontractor_tier", "portal_job_creation",
         "progress_rollup_numbers", "crew_time_corrections", "purchase_orders",
@@ -185,7 +186,7 @@ def test_committed_manifest_round_trips() -> None:
         "its_config_dictionary", "operator_dashboard", "subcontracts",
         "system_architecture", "daemon_reference", "data_model_reference",
         "integration_reference", "security_trust_model", "escalation_matrix",
-        "glossary", "documentation_index",
+        "glossary", "documentation_index", "troubleshooting_guide",
     }
     # by_key / by_source lookups
     assert man.by_key("manager_tier") is not None
