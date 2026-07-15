@@ -113,7 +113,7 @@ docs:
     title: "Subcontracts — Generating a Subcontract Package"
     version: v1
     source: docs/enablement/subcontracts.md
-    sha256: e98392a611edbd4103d84f21f0352e3d165b46c17c8c9b904b10f4d2ffdb216c
+    sha256: 53157bf9924505743fed3f12addf1d409e1c32eb9bcfbca9380aab90ac6882a6
 
   # ── Tier-1 system references (documentation-corpus, WS3 / Tranche A, authored 2026-07-14/15).
   #    Extraction-first operator references — each factual paragraph carries an invisible
@@ -132,7 +132,7 @@ docs:
     title: "ITS Daemon Reference"
     version: v1
     source: docs/references/daemon_reference.md
-    sha256: 649312cbb0a3e2dfe1cff9ebe9305b6adc97242dad48b4052d2b92029a49d590
+    sha256: 027de4bd055831e1e8858982b967cd851d4a846049e930a93f94517e9792f674
     audience: operator
 
   - key: data_model_reference

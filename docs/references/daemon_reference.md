@@ -15,12 +15,13 @@ job that ITS runs on the MacBook. It answers, for each one: what it does, how of
 it fires, where its work comes from, which `ITS_Config` switch turns it on, where its
 liveness is reported, where its logs are, how it fails, and how to restart it.
 
-<!-- src: scripts/launchd/ (16 org.solutionsmith.its.*.plist files enumerated) | verified 2026-07-14 -->
-There are **16 launchd agents**, enumerated directly from `scripts/launchd/*.plist`
-(not from memory). Twelve of them register with watchdog Check C for marker-staleness
-tracking; ten write an ITS_Daemon_Health heartbeat row; the two sets overlap but are
+<!-- src: scripts/launchd/ (17 org.solutionsmith.its.*.plist files enumerated) | verified 2026-07-15 -->
+There are **17 launchd agents**, enumerated directly from `scripts/launchd/*.plist`
+(not from memory). Thirteen of them register with watchdog Check C for marker-staleness
+tracking; eleven write an ITS_Daemon_Health heartbeat row; the two sets overlap but are
 not identical (the roster table below gives the exact split). Use the roster to jump to
-the daemon you care about, then read its H3 block.
+the daemon you care about, then read its H3 block. (The 17th — `subcontract-send`, the
+SC-S4 approval poller — was added after this doc's first cut; see its row + section below.)
 
 If you only need one thing: **to restart a daemon**, the dashboard verb is
 **kickstart** (Class-B ACT, PIN-gated); the shell fallback is
@@ -126,6 +127,7 @@ runtime.
 | `po-poll` | `po_materials.po_poll` | interval, **90s** default | Purchase Orders | yes | `po_poll` |
 | `po-send` | `po_materials.po_send_poll` | interval, **900s** default | Purchase Orders | yes | `po_send_poll` |
 | `subcontract-poll` | `subcontracts.subcontract_poll` | interval, **120s** default | Subcontracts | yes | `subcontract_poll` |
+| `subcontract-send` | `subcontracts.subcontract_send_poll` | interval, **900s** default | Subcontracts | yes | `subcontract_send_poll` |
 | `fieldops-sync` | `field_ops.fieldops_sync` | interval, **90s** default | Field Ops | yes | `fieldops_sync` |
 | `publish-daemon` | `safety_reports.publish_daemon` | interval, **120s** fixed | §50 actuator | yes | (not tracked) |
 | `config-actuator` | `po_materials.config_actuator` | interval, **120s** fixed | §50 actuator | yes | (not tracked) |
@@ -134,9 +136,9 @@ runtime.
 | `watchdog` | `scripts/watchdog.py` | calendar, **daily 07:00** | System | no | (watches others) |
 | `dashboard` | `operator_dashboard` | **server** (KeepAlive) | System | no | (KeepAlive) |
 
-<!-- src: scripts/watchdog.py:174-232 (TRACKED_JOBS — 12 slugs); scripts/launchd/*.plist heartbeat grep | verified 2026-07-14 -->
-Note the two coverage sets do not fully overlap: **12** daemons write Check-C markers
-(the interval pollers plus the four calendar/hourly jobs), and **10** daemons write an
+<!-- src: scripts/watchdog.py:174-238 (TRACKED_JOBS — 13 slugs); scripts/launchd/*.plist heartbeat grep | verified 2026-07-15 -->
+Note the two coverage sets do not fully overlap: **13** daemons write Check-C markers
+(the interval pollers plus the four calendar/hourly jobs), and **11** daemons write an
 ITS_Daemon_Health heartbeat row (the interval pollers plus the two §50 actuators). The
 two actuators (`publish-daemon`, `config-actuator`) heartbeat but are **not** in Check
 C; the calendar/hourly jobs (`weekly-generate`, `progress-generate`, `picklist-sync`,
@@ -296,8 +298,23 @@ the running plist holds the interval.
 | **Config gates** | `subcontracts.subcontract_poll.polling_enabled`; `subcontracts.subcontract_poll.subcontractors_sync_enabled`; `subcontracts.subcontract_poll.status_sync_enabled`. **All ship false (dark).** |
 | **Heartbeat row** | `subcontracts.subcontract_poll` — marker slug `subcontract_poll` (window 10 min) |
 | **Log** | `~/its/logs/launchd/subcontract_poll.out.log` / `.err.log` |
-| **Known failure modes** | A bad-HMAC or SOV-mismatch row is one-shot-flagged (CRITICAL + security Review-Queue row) and never rendered/filed/marked; stays queued in D1 for forensics. Deliverables are editable `.docx`/`.xlsx` (not PDF, operator directive). The **send half is NOT built** (commented stub). §43 tree: `docs/runbooks/subcontract_generation_path.md`. |
+| **Known failure modes** | A bad-HMAC or SOV-mismatch row is one-shot-flagged (CRITICAL + security Review-Queue row) and never rendered/filed/marked; stays queued in D1 for forensics. Deliverables are editable `.docx`/`.xlsx` (not PDF, operator directive). The **send half is now built** (`subcontract-send`, below) and ships dark. §43 tree: `docs/runbooks/subcontract_generation_path.md`. |
 | **Restart** | Dashboard **kickstart**; shell `install.sh load org.solutionsmith.its.subcontract-poll` |
+
+### subcontract-send — `subcontracts.subcontract_send_poll`
+
+<!-- src: subcontracts/subcontract_send_poll.py:50 (gate) + :63-66 (heartbeat); scripts/launchd/install.sh:75,89 (config key / 900s default); scripts/watchdog.py:238 (TRACKED_JOBS slug) | verified 2026-07-15 -->
+
+| Field | Value |
+|---|---|
+| **Purpose** | SEND half of the subcontract two-process model (SC-S4, built by #599) — the subcontract instantiation of the shared send engine. Discovers approved `Subcontract_Pending_Review` rows, runs the **F22** approval gate against the subcontracts send workspace (§46), stamps the verified approver, and dispatches the rendered package. AI-free (capability-gated in `SEND_SCRIPTS`). |
+| **Interval** | `StartInterval`, default **900s** (15 min) (`subcontracts.subcontract_send.poll_interval_seconds`) — an approval poller, mirrors `po-send` / `weekly-send`. |
+| **Source of work** | `Subcontract_Pending_Review` Smartsheet sheet |
+| **Config gates** | `subcontracts.subcontract_send.polling_enabled` (**default False** — dark-ship / CO-1 fail-safe); `subcontracts.subcontract_send.poll_interval_seconds` |
+| **Heartbeat row** | `subcontracts.subcontract_send_poll` — marker slug `subcontract_send_poll` (window 30 min). WARNs until loaded AND the gate flipped (a loaded-but-dark daemon writes no marker). |
+| **Log** | `~/its/logs/launchd/subcontract_send.out.log` / `.err.log` |
+| **Known failure modes** | F22 fail-closed (empty approver set blocks all sends). Per-row fence. `polling_enabled=false` short-circuits (the dark default). §43 tree: `docs/runbooks/subcontract_send.md`. |
+| **Restart** | Dashboard **kickstart**; shell `install.sh load org.solutionsmith.its.subcontract-send` |
 
 ---
 
