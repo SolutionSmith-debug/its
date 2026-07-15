@@ -156,7 +156,7 @@ def run_upload(man: Manifest, out_dir: Path, git_sha: str) -> int:
         return 2
 
     failures = 0
-    for entry in man.entries:
+    for entry in _publish_order(man):
         try:
             out_path = render_entry(entry, out_dir, git_sha)
             result = box_client.upload_bytes_or_new_version(
@@ -169,6 +169,42 @@ def run_upload(man: Manifest, out_dir: Path, git_sha: str) -> int:
     if failures:
         print(f"\n{failures} doc(s) failed to upload.", file=sys.stderr)
     return 1 if failures else 0
+
+
+def _publish_order(man: Manifest) -> list[ManifestEntry]:
+    """Manifest entries in publish order: the corpus INDEX (documentation_index) first, so the
+    operator/reader lands on the map, then the rest in manifest order."""
+    index = man.by_key("documentation_index")
+    rest = [e for e in man.entries if e.key != "documentation_index"]
+    return ([index] if index is not None else []) + rest
+
+
+def run_upload_dry(man: Manifest) -> int:
+    """`--upload --dry-run`: print the exact publish plan and make NO Box call.
+
+    Shows the resolved gate state + target Box folder (fail-soft — an unreachable/unset config
+    reads as '<unset>'), then the ordered file list with each source's sha8 and audience.
+    """
+    enabled = _upload_enabled()
+    folder = _upload_folder_id() or "<unset>"
+    order = _publish_order(man)
+    print("Box publish PLAN (dry-run — no upload performed)")
+    print(f"  gate {CFG_UPLOAD_ENABLED} (ws {CFG_UPLOAD_WORKSTREAM}): "
+          f"{'LIVE' if enabled else 'DARK'}")
+    print(f"  target Box folder ({CFG_UPLOAD_FOLDER_ID}): {folder}")
+    print(f"  {len(order)} file(s), published in this order (INDEX first):")
+    print(f"  {'PDF filename':32s} {'sha8':10s} audience")
+    for e in order:
+        try:
+            sha8 = _manifest.compute_sha256(e.source_path())[:8]
+        except OSError:
+            sha8 = "MISSING"
+        tag = " (INDEX)" if e.key == "documentation_index" else ""
+        print(f"  {e.key + '.pdf':32s} {sha8:10s} {e.audience or '—'}{tag}")
+    if not enabled:
+        print("\n  gate is DARK — a real `--upload` would upload nothing. Seed "
+              f"{CFG_UPLOAD_FOLDER_ID} + flip {CFG_UPLOAD_ENABLED}=true to publish.")
+    return 0
 
 
 def run_check(man: Manifest) -> int:
@@ -218,6 +254,9 @@ def main(argv: list[str] | None = None) -> int:
                            "docs_pdf.upload.enabled=true in ITS_Config")
     parser.add_argument("--out", metavar="DIR", default=None,
                         help=f"output directory (default: {DEFAULT_OUT_DIR.relative_to(REPO_ROOT)})")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="with --upload: print the exact publish plan (folder, files, shas) "
+                             "and make NO Box call")
     args = parser.parse_args(argv)
 
     try:
@@ -233,6 +272,8 @@ def main(argv: list[str] | None = None) -> int:
     git_sha = resolve_git_sha()
 
     if args.upload:
+        if args.dry_run:
+            return run_upload_dry(man)
         return run_upload(man, out_dir, git_sha)
 
     if args.doc:

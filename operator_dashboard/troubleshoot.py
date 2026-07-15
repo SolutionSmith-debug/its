@@ -18,12 +18,13 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from markdown_it import MarkdownIt
 
+from docs_pdf.manifest import ManifestError, compute_sha256, load_manifest
 from troubleshooting.loader import FailureMode, Step, Tree, TreeError, load_tree
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DOCS_ROOT = REPO_ROOT / "docs"
 # The ONLY directories the /doc viewer will serve, and only `.md` files within them.
-ALLOWED_DOC_DIRS = ("runbooks", "enablement", "references")
+ALLOWED_DOC_DIRS = ("runbooks", "enablement", "references", "troubleshooting")
 
 # html=False → raw HTML in the source is ESCAPED (not passed through), so the rendered output is
 # safe to mark |safe in the template. `linkify` off (no auto-linking of bare URLs). Trusted repo
@@ -156,3 +157,48 @@ def register_troubleshoot_routes(app: FastAPI, templates: Jinja2Templates) -> No
             "doc.html",
             {"title": target.name, "body_html": rendered, "rel": doc_path},
         )
+
+    @app.get("/docs")
+    def docs_corpus(request: Request) -> Response:
+        entries, err = _corpus_entries()
+        return templates.TemplateResponse(
+            request, "corpus.html", {"entries": entries, "error": err}
+        )
+
+
+def _doc_rel(source: str) -> str | None:
+    """Map a manifest source (`docs/<dir>/<file>.md`) to a /doc viewer path, or None if the
+    source is not under an allowlisted directory."""
+    if not source.startswith("docs/"):
+        return None
+    rel = source[len("docs/"):]
+    first = rel.split("/", 1)[0]
+    return rel if first in ALLOWED_DOC_DIRS else None
+
+
+def _corpus_entries() -> tuple[list[dict[str, object]], str | None]:
+    """The corpus rows from the local manifest (fail-soft). INDEX (documentation_index) first."""
+    try:
+        man = load_manifest()
+    except ManifestError as e:  # pragma: no cover - defensive
+        return [], str(e)
+    order = [man.by_key("documentation_index")] if man.by_key("documentation_index") else []
+    order += [en for en in man.entries if en.key != "documentation_index"]
+    rows: list[dict[str, object]] = []
+    for entry in order:
+        if entry is None:
+            continue
+        try:
+            sha8 = compute_sha256(entry.source_path())[:8]
+        except OSError:
+            sha8 = "MISSING"
+        rows.append({
+            "key": entry.key,
+            "title": entry.title,
+            "audience": entry.audience or "—",
+            "sha8": sha8,
+            "doc_rel": _doc_rel(entry.source),
+            "source": entry.source,
+            "is_index": entry.key == "documentation_index",
+        })
+    return rows, None

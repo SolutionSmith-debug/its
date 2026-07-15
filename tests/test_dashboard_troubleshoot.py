@@ -136,11 +136,28 @@ def test_markdown_escapes_raw_html() -> None:
     assert "&lt;script&gt;" in out
 
 
-# ── read-only invariant: no mutation route added by the troubleshoot surface ─────────────
+# ── docs corpus page (Tranche E) ─────────────────────────────────────────────────────────
+def test_docs_corpus_page(client: TestClient) -> None:
+    resp = client.get("/docs")
+    assert resp.status_code == 200
+    assert "ITS System Architecture" in resp.text
+    assert "/doc/references/system_architecture.md" in resp.text  # links the viewer
+
+
+def test_nav_has_docs_link(client: TestClient) -> None:
+    assert 'href="/docs"' in client.get("/").text
+
+
+def test_doc_viewer_serves_troubleshooting_guide(client: TestClient) -> None:
+    # the /doc allowlist now includes troubleshooting/ so the generated guide is viewable
+    assert client.get("/doc/troubleshooting/troubleshooting_guide.md").status_code == 200
+
+
+# ── read-only invariant: no mutation route added by the troubleshoot/docs surface ────────
 def test_troubleshoot_surface_is_get_only() -> None:
     app = create_app()
     for route in app.routes:
         path: str = getattr(route, "path", "")
         methods: set[str] = getattr(route, "methods", None) or set()
-        if path.startswith("/troubleshoot") or path.startswith("/doc"):
+        if path.startswith("/troubleshoot") or path.startswith("/doc") or path == "/docs":
             assert methods <= {"GET", "HEAD"}, f"{path} exposes non-GET methods {methods}"
