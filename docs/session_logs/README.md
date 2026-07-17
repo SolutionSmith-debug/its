@@ -96,14 +96,21 @@ outside the sentinel block.
 <!-- BEGIN AUTO-INDEX -->
 | Date | Type | Status | Workstream | Title | PRs |
 |------|------|--------|------------|-------|-----|
+| 2026-07-14 | session_log | active | _–_ | [2026-07-14 — Debt-Zero + Security-Scrub](2026-07-14_debt-zero-and-security-scrub.md) | _–_ |
 | 2026-07-12 | session_log | active | subcontracts | [Subcontract generator COMPLETE — SC-S3c (backend) + SC-S5 (UI) + SC-S3b Exhibit A](2026-07-12_subcontract-generator-complete-s3c-s5-exhibit-a.md) | #536, #537, #538 |
 | 2026-07-11 | session_log | active | subcontracts | [Subcontract generation workstream — SC-S1 foundation (deterministic, PO-mirror)](2026-07-11_subcontracts-s1-foundation.md) | #529 |
 | 2026-07-11 | session_log | active | subcontracts | [Subcontract generation — SC-S3a render core + SC-S3b editable .docx/.xlsx + group-by-state](2026-07-11_subcontracts-s3a-s3b-render-and-state.md) | #532, #533, #534 |
 | 2026-07-10 | session_log | active | _–_ | [Cutover readiness gap — CL-01…CL-33 disposition + verify_cutover baseline (2026-07-10)](2026-07-10_cutover-gap.md) | _–_ |
 | 2026-07-10 | session_log | active | _–_ | [Overnight (autonomous): §50 config-editor Features 1 & 2 + Aug-7 cutover readiness](2026-07-10_overnight-config-editor-features-and-cutover-readiness.md) | #524, #525, #526 |
 | 2026-06-10 | session_log | active | safety_portal | [Session — Agent Optimization (Brief 2) + Safety Portal Hardening (Brief 1)](2026-06-10_agent-optimization-and-portal-hardening.md) | #260, #261, #263, #264, #265, #266 |
+| 2026-07-17 | session_log | closed | subcontracts | [Session — config_actuator fail-soft, dashboard mark-errors-resolved verb, SC-S4 subcontract send lane, and PO + subcontract external-send LIVE (2026-07-14 → 2026-07-17)](2026-07-17_mark-resolved-subcontract-send-lane-and-external-send-go-live.md) | #596, #597, #599 |
+| 2026-07-15 | session_log | closed | docs | [2026-07-15 — Documentation corpus, Tranches B–E (tree · dashboard · currency · distribution)](2026-07-15_docs-corpus-program-b-through-e.md) | #601, #602, #603, #604 |
+| 2026-07-15 | session_log | closed | docs | [2026-07-15 — Documentation corpus, Tranche A (Tier-1 system references)](2026-07-15_docs-corpus-tranche-a-tier1-references.md) | #598 |
+| 2026-07-14 | session_log | closed | _–_ | [Session — Dashboard back-nav, ITS_Config seed, clear-error-log verb, and the out-of-band alerting gap](2026-07-14_dashboard-backnav-configseed-errorclear-alerting-gap.md) | #587, #591, #594 |
 | 2026-07-13 | session_log | closed | _–_ | [Session — Autonomous delivery + readiness + tech-debt burn (2026-07-13, unattended)](2026-07-13_autonomous-delivery-readiness-and-techdebt-burn.md) | #568, #569, #571, #572, #573 |
 | 2026-07-13 | session_log | closed | _–_ | [2026-07-13 — exec-side of the Op Stds v21 doctrine elevation (#551 / #553 / #555)](2026-07-13_doctrine-elevation-v21-exec.md) | #551, #553, #555 |
+| 2026-07-13 | session_log | closed | _–_ | [Session — ITS_Errors row-cap incident (Check O storm-mode fix) + per-job tracking / PO document attachments / delivery-contact autofill (PRs #562, #563, #564, #566)](2026-07-13_row-cap-incident-perjob-tracking-attachments-delivery-contact.md) | #562, #563, #564, #566 |
+| 2026-07-13 | session_log | closed | _–_ | [Session — WS2 Operator Dashboard COMPLETION (Blocks 1-6, PRs #567/#570/#574/#576)](2026-07-13_ws2-operator-dashboard-completion.md) | #567, #570, #574, #576 |
 | 2026-07-12 | session_log | closed | docs | [Documentation reconciliation — reconcile every doc to the as-built system (6 WPs)](2026-07-12_documentation-reconciliation.md) | #543, #545, #547, #549 |
 | 2026-07-12 | session_log | closed | subcontracts | [Session — Office Operations nav + PO/SC Configuration subcontract editors (PRs #541/#542/#546 landed; #544/#548 held for operator; PR-B2 mapped, not started)](2026-07-12_office-ops-nav-and-po-sc-config.md) | #541, #542, #546, #544, #548 |
 | 2026-07-10 | session_log | closed | _–_ | [Session — Config-editor follow-ups (fix the self-defeating CI test, CE-3) + terms editing (Step 2, slices T1/T2)](2026-07-10_config-editor-followups-terms-editing.md) | #514, #511, #518, #520 |

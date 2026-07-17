@@ -36,6 +36,7 @@ filename, frontmatter, and section conventions across every doc type.
 | _–_ | reference | archived | _–_ | [ITS — Tech Debt (CLOSED / DELIVERED archive)](tech_debt_closed.md) | _–_ |
 | _(no frontmatter)_ | _–_ | _–_ | _–_ | [Field-Ops Portal — Next-Session Handoff Brief](cc-brief_fieldops-next-session.md) | _–_ |
 | _(no frontmatter)_ | _–_ | _–_ | _–_ | [P2.2 Field-Ops READ-views — design + build briefs (workflow-authored, scalability-first)](cc-brief_p2.2-readviews.md) | _–_ |
+| _–_ | _–_ | brief | _–_ | [Next-session brief — three features (per-job sheets · PO attachment · PO delivery contact)](cc-brief_per-job-sheets-and-po-enhancements.md) | _–_ |
 | _(no frontmatter)_ | _–_ | _–_ | _–_ | [CC Handoff Brief — ITS Progress-Reporting program + open field-ops items (2026-06-28)](cc-brief_progress-reporting-program_2026-06-28.md) | _–_ |
 | _(no frontmatter)_ | _–_ | _–_ | _–_ | [ITS — Tech Debt](tech_debt.md) | _–_ |
 <!-- END AUTO-INDEX -->
