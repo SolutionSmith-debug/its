@@ -215,16 +215,26 @@ error-chase over the remainder. Findings from the chase, not yet actioned:
   open-CRITICAL rows matching a **required** Script/Error-code filter (unfiltered mass-resolve refused),
   making them terminal so `clear_error_log` (#594) can then sweep them. Wired in one PR: the route
   (`/act/errors/resolve`), the `config.html` form, the mutation-route registry test, and CLAUDE.md.
-- **DASH-9 (operator) — 215 open-CRITICAL backlog in `ITS_Errors` needs a triage pass.** The forensic wipe
-  correctly preserved every open CRITICAL (never auto-deleted), but that leaves **215 open-CRITICAL rows**
-  sitting in `ITS_Errors` post-wipe — most are believed to be storm-era noise from the 2026-07-13 row-cap
-  incident (the same `config_row_missing` firehose that filled the sheet to its 20k cap), but none have been
-  individually confirmed-benign-and-closed. Watchdog Check B (open-CRITICALs) is reading this backlog as
-  "215 things on fire" every cycle. **Partial action 2026-07-16/17:** using the new `mark_errors_resolved`
-  verb (#597), 83 of the 215 were confirmed benign and marked resolved — 50 `intake_poll` (the retired daemon)
-  + 33 smoke/test rows. Backlog is now **132** genuine open-CRITICAL rows, still awaiting individual operator
-  triage. Trigger: an operator pass to review and stamp `Resolved At` on the remaining confirmed-stale rows;
-  don't let 132 silently become the new ignored baseline either.
+- **DASH-9 (near-RESOLVED 2026-07-17) — open-CRITICAL backlog in `ITS_Errors`, down from 215 to 9.** The
+  2026-07-14 forensic wipe correctly preserved every open CRITICAL (never auto-deleted), leaving 215
+  open-CRITICAL rows post-wipe — most believed storm-era noise from the 2026-07-13 row-cap incident (the same
+  `config_row_missing` firehose that filled the sheet to its 20k cap), none individually confirmed-benign at
+  the time. **2026-07-16/17 partial action:** using the new `mark_errors_resolved` verb (#597), 83 of the 215
+  were confirmed benign and marked resolved (50 `intake_poll`/retired-daemon + 33 smoke/test rows) → 132
+  remained. **2026-07-17 full diagnosis pass:** the backlog had grown back to 134 by the time this session's
+  own error-flood diagnosis ran (ongoing transient-Smartsheet-outage-window CRITICALs, ~2026-07-12→07-16,
+  accruing between passes — root-caused LOW severity, the retry→breaker→fail-open stack behaved correctly,
+  no code change needed beyond #608's alert-hygiene fix below; full root-cause narrative in blueprint
+  memory-archive §G69.1); using the same verb,
+  dry-run→live per `(script, error-code)`, audit-stamped `its-diagnosis-2026-07-17`, resolved **92 transient +
+  33 historical** rows → backlog **134→9**. **The 9 residual, individually accounted for:** 7×
+  `safety_reports.intake` / `uncaught_exception` — a REAL, still-open bug (`'tuple' object has no attribute
+  'value'`) on the legacy/dormant email-intake code path (portal-marker is the live transport;
+  `intake.py`'s email-ingestion stages are dormant-but-present and this is firing from within them) — NOT
+  fixed, needs a real code fix or a decision to excise the dormant path entirely; 2× `scripts.watchdog` /
+  `critical` — residue from the already-fixed 2026-07-13 row-cap incident (PR #562's storm-mode fallback has
+  been live since), kept unresolved deliberately as historical record, safe to resolve whenever. Trigger for
+  the remaining 7: next `safety_reports/intake.py` touch, or the dormant-email-path excision decision.
 - **DASH-10 (on-the-horizon, WS2 follow-up) — dashboard native-app repackaging decision captured, not built.**
   Operator directed **Option A** for a future session: repackage the dashboard as a native macOS `.app` via
   `pywebview` + `py2app`, keeping the existing Tailscale-only exposure model unchanged (no new network
@@ -239,6 +249,31 @@ error-chase over the remainder. Findings from the chase, not yet actioned:
   healthy, this is a coverage gap, not a bug). Either add it to the allowlist or document the exclusion
   explicitly so the question doesn't need re-investigating next time. Trigger: next WS2 daemon-control
   polish pass.
+- **DASH-12 (operator, requested for next session) — dashboard Restart-dashboard verb, scoped but NOT
+  built.** No verb exists today to restart the dashboard daemon itself from the dashboard UI (confirmed —
+  `operator_dashboard/act/` has no restart/reload route). Operator wants a PIN-gated Class-B ACT: detached
+  `launchctl kickstart -k` on the dashboard's own launchd label (`org.solutionsmith.its.dashboard`),
+  restart-ONLY — explicitly NOT a git-pull/deploy verb. This deliberately crosses the dashboard's usual "a
+  service must not stop itself via its own UI" self-exclusion invariant; operator has pre-authorized the
+  exception for this specific, narrowly-scoped verb. DoD (operator-specified): PIN-gated; the detached spawn
+  must survive the dashboard process's own SIGTERM (the classic self-restart footgun — a naive
+  `subprocess.run` child dies with its parent unless properly detached, e.g. `start_new_session=True` +
+  closed stdio); tests; a live verify that the dashboard actually comes back up serving. **Immediate practical
+  need this unblocks:** the live dashboard process (pid 55622 as of 2026-07-17) is still running pre-corpus
+  code — `/troubleshoot`, `/docs`, and #609's Open-CRITICALs panel + `-15` fix are all code-complete on
+  `origin/main` but not yet serving until it restarts; today that's a manual `launchctl kickstart -k`, this
+  verb would make it one PIN-gated click. Trigger: next dashboard/WS2 session. See blueprint memory-archive
+  §G69.6.
+- **DASH-13 (operator, requested for next session) — `ITS_Review_Queue` bulk-clear + root cause, scoped but
+  NOT built.** First independent row-count check of `ITS_Review_Queue` (§G65/§G68.3 both flagged this as
+  outstanding) found **294 PENDING rows**, of which **285** are a single recurring flag: "weekly compile: job
+  JOB-XXXXX has no safety-reports contact (TO)," re-raised every Friday `weekly_generate` compile since
+  2026-06-07, overwhelmingly against sandbox/test jobs (Bradley, Brimfield, Huntley, Rockford) that were never
+  given a safety-reports contact. Using `mark_errors_resolved`-style bulk resolution would clear the count,
+  but the same 285 rows re-accrue every Friday unless the root cause is fixed: either populate safety-reports
+  contacts in `ITS_Active_Jobs` for the jobs that are actually live, or deactivate the dead sandbox jobs so
+  weekly compile stops flagging them. Trigger: next dashboard/review-queue session. See blueprint
+  memory-archive §G69.5/§G69.6.
 
 **Activation lesson from this session's chase (not a tech-debt item, a process note):** a daemon's
 `ITS_Config` polling gate should be flipped `True` only **after** its matching Cloudflare Worker
