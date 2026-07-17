@@ -17,6 +17,7 @@ from operator_dashboard.sources.runtime_state import (
 from operator_dashboard.sources.smartsheet_panels import (
     AuditTrailSource,
     ErrorsRecentSource,
+    OpenCriticalsSource,
     ReviewQueueDepthSource,
     SendQueueSource,
 )
@@ -29,6 +30,7 @@ PANELS: list[DataSource] = [
     HeartbeatsSource(),
     LocksSource(),
     LogTailSource(),
+    OpenCriticalsSource(),
     ErrorsRecentSource(),
     ReviewQueueDepthSource(),
     SendQueueSource(),
