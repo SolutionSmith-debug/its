@@ -229,6 +229,53 @@ def test_send_queue_source_fail_soft_per_sheet(monkeypatch: pytest.MonkeyPatch) 
     assert any(r.get("status") == "(unavailable)" for r in result.rows)
 
 
+def test_open_criticals_panel_counts_only_open_criticals(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The fire-surface panel: OPEN CRITICAL = CRITICAL with a blank "Resolved At" (the canonical
+    # errors_rotation predicate). A resolved CRITICAL and every WARN/ERROR are terminal → excluded.
+    import shared.smartsheet_client as ss
+    from operator_dashboard import cache
+    from operator_dashboard.sources.smartsheet_panels import OpenCriticalsSource
+
+    rows = [
+        {"Severity": "CRITICAL", "Resolved At": "", "Script": "a", "Error": "x", "Timestamp": "2026-07-01", "_row_id": 1},
+        {"Severity": "CRITICAL", "Resolved At": "", "Script": "a", "Error": "x", "Timestamp": "2026-07-02", "_row_id": 2},
+        {"Severity": "CRITICAL", "Resolved At": "2026-07-03", "Script": "b", "Error": "y", "Timestamp": "2026-07-01", "_row_id": 3},  # resolved → terminal
+        {"Severity": "WARN", "Resolved At": "", "Script": "c", "Error": "z", "Timestamp": "2026-07-01", "_row_id": 4},  # WARN → terminal
+    ]
+    cache._store.clear()
+    monkeypatch.setattr(ss, "get_rows", lambda sheet_id, **kw: list(rows))
+    p = OpenCriticalsSource().fetch()
+    assert p.severity == "error"
+    assert "2 open CRITICAL" in p.summary
+    assert p.rows == [{"Script": "a", "Error": "x", "Count": "2", "Oldest": "2026-07-01", "_sev": "error"}]
+
+    # a backlog with no OPEN criticals (all resolved / WARN) reads green + "0 open — clear"
+    cache._store.clear()
+    monkeypatch.setattr(ss, "get_rows", lambda sheet_id, **kw: [rows[2], rows[3]])
+    clear = OpenCriticalsSource().fetch()
+    assert clear.severity == "ok" and clear.summary == "0 open — clear" and clear.rows == []
+
+
+def test_daemon_running_with_signal_exit_is_ok_not_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A live pid = healthy NOW; a prior signal exit (-15 SIGTERM = graceful restart) must NOT
+    # paint a RUNNING daemon red. A loaded-but-NOT-running daemon with a bad exit stays ERROR.
+    from operator_dashboard.sources.daemons import DaemonStatusSource
+
+    src = DaemonStatusSource()
+    monkeypatch.setattr(src, "_plist_labels", lambda: [
+        "org.solutionsmith.its.dashboard", "org.solutionsmith.its.foo",
+    ])
+    monkeypatch.setattr(src, "_launchctl_table", lambda: {
+        "org.solutionsmith.its.dashboard": ("55622", "-15"),  # running + SIGTERM last-exit
+        "org.solutionsmith.its.foo": ("-", "1"),              # NOT running + error exit
+    })
+    by = {r["daemon"]: r for r in src.fetch().rows}
+    assert by["dashboard"]["_sev"] == "ok"        # running → OK despite -15
+    assert by["dashboard"]["state"] == "running"
+    assert by["dashboard"]["last exit"] == "-15"  # still shown, informational
+    assert by["foo"]["_sev"] == "error" and "exited 1" in by["foo"]["state"]
+
+
 def test_audit_trail_source_filters_to_config_editor(monkeypatch: pytest.MonkeyPatch) -> None:
     # the ACT audit panel shows only the config editor's own rows (accountability
     # where the actions happen), and surfaces denials in the summary.

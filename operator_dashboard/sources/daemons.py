@@ -60,10 +60,19 @@ class DaemonStatusSource(DataSource):
                 pid, status, state, sev = "—", "—", "NOT LOADED", SEV_WARN
             else:
                 pid, status = live[label]
-                if status != "0":
-                    state, sev = f"exit {status}", SEV_ERROR
-                elif pid not in ("-", ""):
+                if pid not in ("-", ""):
+                    # A live pid = healthy NOW. `status` is the PREVIOUS instance's exit
+                    # and is informational (shown in "last exit") — a graceful restart /
+                    # reboot leaves a signal exit like -15 (SIGTERM), which is NOT a current
+                    # fault. KeepAlive servers (the dashboard) always carry a prior -15 after
+                    # any restart. Running-first: a running daemon is never ERROR on last-exit.
                     state, sev = "running", SEV_OK
+                elif status != "0":
+                    # Loaded but NOT running AND the last run exited non-zero — it exited /
+                    # crashed and did not restart. (An interval/calendar daemon shows this
+                    # between fires until its next clean run; picklist-audit's exit 1 is its
+                    # by-design "drift found" signal, cleared on the next clean audit.)
+                    state, sev = f"exited {status}", SEV_ERROR
                 else:
                     state, sev = "idle", SEV_OK
             worst = worst_sev(worst, sev)

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import importlib
 import re
+from collections import Counter
 from typing import Any
 
 from operator_dashboard.cache import cached
@@ -111,6 +112,62 @@ class ErrorsRecentSource(DataSource):
             summary=summary,
             severity=SEV_WARN if crit else SEV_INFO,
             columns=columns,
+            rows=rows,
+        )
+
+
+class OpenCriticalsSource(DataSource):
+    """The open-CRITICAL 'fire' surface — unresolved CRITICAL ITS_Errors rows, sheet-wide.
+
+    This is the "am I on fire" working set watchdog Check B counts, NOT the recency slice
+    ErrorsRecentSource shows. It reuses the SAME cached ITS_Errors read (no extra Smartsheet
+    call) and the CANONICAL terminality predicate (``shared.errors_rotation.errors_row_is_terminal``)
+    — so "open CRITICAL" means exactly what the dashboard mark-resolved verb and Check O rotation
+    mean: a CRITICAL with a blank "Resolved At". Resolving CRITICALs is therefore visible here
+    immediately, and a clean backlog reads green.
+    """
+
+    panel_id = "open_criticals"
+    title = "Open CRITICALs (fire surface)"
+
+    def _fetch(self, detail: bool = False) -> PanelResult:
+        er: Any = importlib.import_module("shared.errors_rotation")
+        open_crit = [r for r in _cached_error_rows() if not er.errors_row_is_terminal(r)]
+        n = len(open_crit)
+        if n == 0:
+            return PanelResult(
+                panel_id=self.panel_id,
+                title=self.title,
+                summary="0 open — clear",
+                severity=SEV_OK,
+                columns=[],
+                rows=[],
+            )
+        keys = list(dict.fromkeys(k for r in open_crit for k in r))
+        # Resolve the grouping columns from the LIVE titles, defaulting to the real
+        # ITS_Errors column names so these are always `str` (never None).
+        script_k = next((k for k in keys if re.search(r"script|source", k, re.IGNORECASE)), "Script")
+        code_k = next((k for k in keys if re.search(r"^error$|code", k, re.IGNORECASE)), "Error")
+        ts_k = next((k for k in keys if re.search(r"time|date|created", k, re.IGNORECASE)), "Timestamp")
+        groups = Counter((str(r.get(script_k)), str(r.get(code_k))) for r in open_crit)
+        rows: list[dict[str, str]] = []
+        for (s, c), cnt in groups.most_common():
+            oldest = min(
+                (str(r.get(ts_k)) for r in open_crit
+                 if str(r.get(script_k)) == s and str(r.get(code_k)) == c),
+                default="",
+            )
+            rows.append({
+                "Script": clean(s), "Error": clean(c), "Count": str(cnt),
+                "Oldest": clean(oldest), "_sev": SEV_ERROR,
+            })
+        return PanelResult(
+            panel_id=self.panel_id,
+            title=self.title,
+            summary=f"{n} open CRITICAL"
+            + (f" · {len(groups)} class(es)" if len(groups) > 1 else ""),
+            severity=SEV_ERROR,
+            columns=["Script", "Error", "Count", "Oldest"],
             rows=rows,
         )
 
