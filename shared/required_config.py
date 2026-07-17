@@ -139,6 +139,14 @@ def resolve_and_log(
     this can be called unconditionally at daemon startup without risking the run.
     """
     resolved: dict[str, object] = {}
+    # Transient read failures (circuit-open / timeout / 5xx / auth) are COLLECTED and
+    # summarized into ONE WARN per pass rather than logged per key. Rationale: during a
+    # Smartsheet outage the breaker short-circuits every get_setting, so a daemon with N
+    # declared keys would otherwise emit N `config_read_error` WARNs *per cycle* — a flood
+    # across daemons. The missing-ROW WARN stays per-key (each is an individually actionable
+    # "seed this row"); only the transient case is summarized. Fail-open is unchanged (each
+    # failed key still resolves to its default).
+    transient_failures: list[tuple[str, str]] = []
     for key in keys:
         try:
             raw = smartsheet_client.get_setting(
@@ -159,27 +167,13 @@ def resolve_and_log(
             resolved[key.setting] = key.default
             continue
         except SmartsheetError as exc:
-            # Transient / circuit-open / auth — read failed this cycle. Fail-open
-            # to the default; distinguishable WARN (not the missing-row WARN).
-            log(
-                Severity.WARN,
-                script_name,
-                f"config {key.setting} [{key.workstream}]: read error — using "
-                f"default {key.default!r} this cycle (fail-open): "
-                f"{type(exc).__name__}",
-                error_code="config_read_error",
-            )
+            # Transient / circuit-open / auth — read failed this cycle. Fail-open to
+            # the default; COLLECT for the one-per-pass summary (not a per-key WARN).
+            transient_failures.append((key.setting, type(exc).__name__))
             resolved[key.setting] = key.default
             continue
         except Exception as exc:  # noqa: BLE001 — observability must never crash a daemon
-            log(
-                Severity.WARN,
-                script_name,
-                f"config {key.setting} [{key.workstream}]: unexpected read error "
-                f"— using default {key.default!r} this cycle (fail-open): "
-                f"{type(exc).__name__}",
-                error_code="config_read_error",
-            )
+            transient_failures.append((key.setting, type(exc).__name__))
             resolved[key.setting] = key.default
             continue
 
@@ -203,5 +197,20 @@ def resolve_and_log(
             f"(source: ITS_Config)",
         )
         resolved[key.setting] = value
+
+    if transient_failures:
+        # ONE summarized WARN for the whole pass (alert-hygiene): during a breaker-open /
+        # transient-Smartsheet window this replaces the former per-key flood. error_code
+        # stays `config_read_error` so existing rotation/filters/runbooks are unchanged.
+        settings = [s for s, _ in transient_failures]
+        exc_types = sorted({t for _, t in transient_failures})
+        log(
+            Severity.WARN,
+            script_name,
+            f"config read failed for {len(transient_failures)} of {len(keys)} key(s) this "
+            f"cycle — using defaults (fail-open): {', '.join(exc_types)}. Keys: "
+            f"{', '.join(settings)}",
+            error_code="config_read_error",
+        )
 
     return resolved

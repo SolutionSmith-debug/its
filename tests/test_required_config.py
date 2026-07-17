@@ -119,6 +119,54 @@ def test_unexpected_error_never_raises(mock_get_setting, mock_log):
     assert mock_log.call_args.args[0] is Severity.WARN
 
 
+def test_transient_failures_summarized_to_one_warn(mock_get_setting, mock_log):
+    # alert-hygiene: N keys all failing transiently (breaker-open window) must emit exactly
+    # ONE summarized WARN, not one per key — the former per-key flood is the fix's target.
+    mock_get_setting.side_effect = SmartsheetError("circuit open")
+    keys = [ConfigKey(f"k{i}", "po_materials", False, "bool") for i in range(5)]
+    out = resolve_and_log("po.poll", keys)
+    assert out == {f"k{i}": False for i in range(5)}  # fail-open preserved for every key
+    assert mock_log.call_count == 1, "expected ONE summarized WARN, not one per key"
+    severity, script, message = mock_log.call_args.args
+    assert severity is Severity.WARN
+    assert script == "po.poll"
+    assert mock_log.call_args.kwargs["error_code"] == "config_read_error"
+    assert "5 of 5 key(s)" in message
+    assert "SmartsheetError" in message
+    assert "k0" in message and "k4" in message  # names the failed keys
+
+
+def test_missing_row_stays_per_key_but_transient_is_summarized(mock_get_setting, mock_log):
+    # A MISSING row is individually actionable → keeps its own WARN; transient reads collapse
+    # into the single summary. So: 1 per-key config_row_missing + 1 summary = 2 WARNs total.
+    def _side(setting, *, workstream):
+        if setting == "missing":
+            raise SmartsheetNotFoundError("no row")
+        raise SmartsheetError("circuit open")
+
+    mock_get_setting.side_effect = _side
+    out = resolve_and_log(
+        "t",
+        [
+            ConfigKey("missing", "global", "d0", "str"),
+            ConfigKey("t1", "global", "d1", "str"),
+            ConfigKey("t2", "global", "d2", "str"),
+        ],
+    )
+    assert out == {"missing": "d0", "t1": "d1", "t2": "d2"}  # all fail-open to defaults
+    codes = [c.kwargs.get("error_code") for c in mock_log.call_args_list]
+    assert codes.count("config_row_missing") == 1  # the missing row keeps its per-key WARN
+    assert codes.count("config_read_error") == 1  # the two transient reads → ONE summary
+    assert mock_log.call_count == 2
+
+
+def test_no_failures_emits_no_warn(mock_get_setting, mock_log):
+    mock_get_setting.return_value = "v"
+    resolve_and_log("t", [ConfigKey("a", "global", "d", "str"), ConfigKey("b", "global", "d", "str")])
+    warns = [c for c in mock_log.call_args_list if c.args[0] is Severity.WARN]
+    assert warns == []  # all-clean pass emits no WARN (only env-gated INFO)
+
+
 def test_one_key_failing_does_not_block_the_others(mock_get_setting, mock_log):
     def _side(setting, *, workstream):
         if setting == "bad":
