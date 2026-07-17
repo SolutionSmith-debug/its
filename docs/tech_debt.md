@@ -157,15 +157,13 @@ is a deliberate scope line:
   into `operator_dashboard/static/` and wired the real lockup into the dashboard header: the Evergreen mark on
   a gold-bordered white plate + the "Integrated Technical System" gold-gradient Great Vibes script (the
   portal's exact treatment incl. the WebKit background-clip cap-loop padding fix).
-- **WS2-2 (doc-sync) — CLAUDE.md "stubbed vs real" dashboard row is stale.** It still reads "No launchd plist
-  yet (D1-3b)"; the plist + the six §44 verbs now exist. Parked (CLAUDE.md was a high-contention shared file the
-  sibling session was also editing) — fold into the next doc-reconciliation pass. Same for the
-  `scripts/verify_cutover.py` "no plist yet" comment. **Re-confirmed still stale 2026-07-14** (session-close
-  maintenance pass): `grep operator_dashboard CLAUDE.md` still shows the "No launchd plist yet (D1-3b)" line,
-  while `launchctl list` shows `org.solutionsmith.its.dashboard` genuinely loaded and running (PID present) —
-  the plist is on disk at `scripts/launchd/org.solutionsmith.its.dashboard.plist` and installed. Not fixed here
-  (doc-only touch is in scope for the next doc-reconciliation pass, not a mid-session edit to a file another
-  session may be concurrently touching).
+- **WS2-2 (PARTIALLY RESOLVED 2026-07-14, PR #597).** CLAUDE.md's dashboard "stubbed vs real" row was stale
+  ("No launchd plist yet (D1-3b)"); #597 fixed it in the same PR as the `mark_errors_resolved` verb — the row
+  now reads "launchd-managed (`org.solutionsmith.its.dashboard`)" and lists the mark-resolved+clear verbs.
+  (Re-verified 2026-07-17: `grep operator_dashboard CLAUDE.md` no longer contains "No launchd plist yet.")
+  **Residual, still stale (re-verified 2026-07-17):** `scripts/verify_cutover.py:73` still reads
+  `` (``operator_dashboard/auth.py``, manual-start, no plist yet) `` — #597's fix didn't cover this second
+  surface (multi-surface fan-out). Trigger: next `verify_cutover.py` touch or docs-currency pass.
 - **WS2-3 (doc-sync) — the enablement guide predates Blocks 2-5.** `docs/enablement/operator_dashboard.md`
   (#572) documents D1-x only; it needs a delta for the launchd service, the interval-edit / daemon-control /
   breaker-clear verbs, the send-queue + audit panels, and the brand. Trigger: the next A8 enablement pass.
@@ -180,15 +178,17 @@ Session that shipped #587 (back-nav banner-extension), #591 (11-row `ITS_Config`
 `ITS_Errors` (6,249 → 217: 215 open CRITICALs + 2 `errors_log_cleared` audit rows preserved) and a live
 error-chase over the remainder. Findings from the chase, not yet actioned:
 
-- **DASH-5 (HIGH / P1, Seth) — both out-of-band CRITICAL-alert legs are down.** `ITS_RESEND_API_KEY` is
-  present in Keychain but **invalid** (401 on send) and `ITS_SENTRY_DSN` is present but **empty** (`BadDsn`)
-  — found live during this session's error-chase. `shared/error_log.py`'s triple-fire is therefore
-  **local-`ITS_Errors`-record-only** right now: a real CRITICAL still gets recorded (the forensic leg holds)
-  but does **not** page the operator via Resend and does **not** land in Sentry. This is a secrets/credential
-  surface — one of the four FIXED §44 high-capability classes — so it is **Seth-owned rotation, not
-  autonomously actionable**; flagging rather than touching Keychain. Trigger: next Keychain/secrets session,
-  or before relying on out-of-band paging for anything cutover-adjacent (the watchdog's UptimeRobot dead-man
-  switch is the only alert path currently proven live).
+- **DASH-5 (RETRACTED 2026-07-17 — see the 2026-07-15 error-flood diagnosis).** Originally flagged HIGH/P1:
+  both out-of-band alert legs down (`ITS_RESEND_API_KEY` 401, `ITS_SENTRY_DSN` `BadDsn`). **FALSIFIED.** A
+  2026-07-15 forensic read of `ITS_Errors` + `~/its/logs` found the underlying error volume was **phantom
+  pytest pollution**: ~13–15 pytest runs during the 07-14 dev session made REAL network calls against
+  `tests/conftest.py`'s stub creds (`test-{service}`) and their `shared.error_log` writes landed in the LIVE
+  dated log (2,285 Smartsheet 401s + 27 Resend 401 + 27 Sentry BadDsn, all test-generated) alongside 457 clean
+  live daemon cycles. Real CRITICALs alerted successfully both before and after the window (07-14 19:59Z,
+  07-15 08:35Z) — the alert legs were never actually broken. **Do NOT rotate `ITS_RESEND_API_KEY` /
+  `ITS_SENTRY_DSN` on this finding.** The pollution mechanism itself is a genuine, still-open, DIFFERENT
+  tech-debt item — see "pytest live-log/state pollution" below. Detail: auto-memory
+  `project_error-flood-diagnosis-2026-07-15.md`.
 - **DASH-6 (LOW, operator/dev) — `config_actuator`'s broad `except Exception` sites make root-causing an
   incident slower than it should be.** `po_materials/config_actuator.py` carries a dozen-plus
   `except Exception as exc:  # noqa: BLE001` sites (deliberately broad, per their own comments — "any
@@ -199,36 +199,32 @@ error-chase over the remainder. Findings from the chase, not yet actioned:
   and the broad catches are individually justified), but a pass to give each site a more specific
   `error_code`/message would make the next incident self-diagnosing from the `ITS_Errors` row alone. Trigger:
   next `config_actuator` touch, or a recurrence of an unlabeled `config_actuator` error.
-- **DASH-7 (Seth, Send-Gate-adjacent) — `po_send`/`po_send_poll` lane needs reconciliation: config-ahead-of-
-  deploy.** The chase found an `ITS_Daemon_Health`/watchdog signal reading "`po_send_poll` (no marker)" —
-  i.e., the daemon has never actually run — while `po_materials.po_send.polling_enabled` reads **`True`**
-  live (diverging from the `false` value `scripts/migrations/seed_po_materials_config.py` seeds and from the
-  `docs/tech_debt.md` CO-1 entry's description of the current state). Independently confirmed via
-  `launchctl list` + `~/Library/LaunchAgents/`: **no `org.solutionsmith.its.po-send*` plist is installed or
-  loaded** — only the template exists on disk at `scripts/launchd/org.solutionsmith.its.po-send.plist`. This
-  matches the intentional `VC-02 DARK_UNLOADED_LABELS` cutover posture (`po-send` stays launchd-unloaded), but
-  if the *config gate* has genuinely drifted to `True` while the daemon stays unloaded, that's a live
-  discrepancy between "what config says should be sending" and "what's actually running" — worth an explicit
-  Seth reconciliation (confirm the live cell value, then either re-flip it to `false` to match the sandbox-dark
-  posture, or install+load the plist if PO send is now intentionally being activated). External Send Gate is a
-  FIXED §44 high-capability class — not actioned autonomously. Trigger: next PO-send-path session, or before
-  any live PO send is expected to actually fire.
-- **DASH-8 (post-delivery, WS2 follow-up) — dashboard has no "mark this CRITICAL resolved" verb.** The new
-  `clear_error_log` (#594) only *deletes* terminal rows (INFO/WARN/ERROR/already-resolved-CRITICAL) — it
-  structurally never touches an open CRITICAL (blank `Resolved At`), by design (Check B's "am I on fire"
-  surface). There is still no dashboard-side way to stamp an open CRITICAL's `Resolved At` after a human
-  confirms it's handled — the only path today is a direct Smartsheet cell edit. A Class-B "mark resolved"
-  verb (single row or bulk, PIN-gated, audit-trailed) is a natural next slice once the operator wants it.
-  Trigger: operator requests a resolve-in-dashboard action, or the open-CRITICAL backlog (see DASH-9) makes
-  manual Smartsheet triage too slow.
+- **DASH-7 (RESOLVED 2026-07-17 — see the 2026-07-15 error-flood diagnosis + the 07-16/17 live activation).**
+  Originally flagged: `po_send_poll` showing "no marker" (never ran) while `po_materials.po_send.polling_enabled`
+  appeared to read `True` live, diverging from the seeded/documented `false`. **Reconciled, no drift was ever
+  real** — the 07-15 diagnosis confirmed the gate genuinely read `false` as seeded/documented and
+  `po_send_poll` had never been activated (no plist installed, matching the intentional `VC-02
+  DARK_UNLOADED_LABELS` posture); the original chase's "`True`" reading was an artifact of the same
+  pytest-pollution window as DASH-5, not a live config state. **Superseded 2026-07-16/17** — the operator has
+  since deliberately activated BOTH the PO-send and subcontract-send lanes live (plist loaded, gate flipped,
+  Application Access Policy scope confirmed via Exchange Online PowerShell `Test-ApplicationAccessPolicy`,
+  end-to-end Graph self-send from `procurement@` verified) — see memory-archive §G68.3. `po_materials.po_send.
+  polling_enabled` reading `true` today is the intended live state, not drift.
+- **DASH-8 (RESOLVED 2026-07-14, PR #597).** The dashboard had no "mark this CRITICAL resolved" verb — built
+  same day: `mark_errors_resolved` (Class-B, `operator_dashboard/act/errors_ops.py`) stamps `Resolved At` on
+  open-CRITICAL rows matching a **required** Script/Error-code filter (unfiltered mass-resolve refused),
+  making them terminal so `clear_error_log` (#594) can then sweep them. Wired in one PR: the route
+  (`/act/errors/resolve`), the `config.html` form, the mutation-route registry test, and CLAUDE.md.
 - **DASH-9 (operator) — 215 open-CRITICAL backlog in `ITS_Errors` needs a triage pass.** The forensic wipe
   correctly preserved every open CRITICAL (never auto-deleted), but that leaves **215 open-CRITICAL rows**
   sitting in `ITS_Errors` post-wipe — most are believed to be storm-era noise from the 2026-07-13 row-cap
   incident (the same `config_row_missing` firehose that filled the sheet to its 20k cap), but none have been
   individually confirmed-benign-and-closed. Watchdog Check B (open-CRITICALs) is reading this backlog as
-  "215 things on fire" every cycle. Trigger: an operator (or DASH-8, once built) pass to review and stamp
-  `Resolved At` on the confirmed-stale rows; don't let this silently normalize "always 215 open" as an
-  ignored baseline.
+  "215 things on fire" every cycle. **Partial action 2026-07-16/17:** using the new `mark_errors_resolved`
+  verb (#597), 83 of the 215 were confirmed benign and marked resolved — 50 `intake_poll` (the retired daemon)
+  + 33 smoke/test rows. Backlog is now **132** genuine open-CRITICAL rows, still awaiting individual operator
+  triage. Trigger: an operator pass to review and stamp `Resolved At` on the remaining confirmed-stale rows;
+  don't let 132 silently become the new ignored baseline either.
 - **DASH-10 (on-the-horizon, WS2 follow-up) — dashboard native-app repackaging decision captured, not built.**
   Operator directed **Option A** for a future session: repackage the dashboard as a native macOS `.app` via
   `pywebview` + `py2app`, keeping the existing Tailscale-only exposure model unchanged (no new network
@@ -249,6 +245,53 @@ error-chase over the remainder. Findings from the chase, not yet actioned:
 secret/route is actually deployed — flipping the gate first produces a benign-but-noisy bearer-rejected/401
 CRITICAL storm on every cycle until the deploy catches up. Root-caused this session on a subcontract-lane
 `bearer_rejected` error. Apply this ordering on every future config-actuator/Worker-secret pairing.
+
+## 2026-07-15 error-flood diagnosis — open gaps surfaced, not fixed [OPEN 2026-07-17]
+
+Diagnosis-only session (no code changes) that decomposed "today's massive error log" into two unrelated
+storms — see auto-memory `project_error-flood-diagnosis-2026-07-15.md` for full detail; DASH-5/DASH-7 above
+were retracted/resolved from this diagnosis. Four open design gaps surfaced, none fixed:
+
+- **(Seth, observability) — `ITS_Errors` record-writes are lost, not queued, during a Smartsheet outage.**
+  `shared/error_log.py:133` wraps the `ITS_Errors` write in `circuit_breaker.bypass()` with no retry/queue —
+  during the 2026-07-15 08:35–09:36Z real Smartsheet US outage (vendor-side, breaker behaved textbook: tripped
+  at 5 failures, self-closed after 9 failed probes), **1,264 of ~1,368 ITS_Errors record-writes were
+  permanently lost**; `~/its/logs/2026-07-15.log` is the only full record of that window. No business-data
+  loss and every fail-open default collapsed fail-safe, but the forensic leg itself has no durability under
+  exactly the outage it exists to record. Trigger: next alerting/observability hardening pass.
+- **(Seth, alerting) — a total Smartsheet outage by itself pages nobody.** Breaker-open is logged WARN only;
+  watchdog Check J (prolonged-open) is daily-cadence, not real-time. The operator got exactly one page during
+  the 07-15 storm, and only coincidentally (`progress_send_poll` CRITICAL `ReadTimeout` at onset) — a cleaner
+  full-outage window could page zero times. Trigger: same pass as above; needs a severity-posture decision
+  (Seth-owned, Op Stds §3.1 territory).
+- **(operator/dev, recurring) — pytest runs during a live dev session pollute the LIVE dated error log,
+  Keychain-adjacent state, and `~/its/state/*.lock` files.** `tests/conftest.py:138-141`'s stub creds
+  (`test-{service}`) still make REAL network calls that 401/error, and `shared.error_log` appends those to
+  the SAME dated log the live daemons write to — the exact mechanism that produced the DASH-5 false alarm.
+  Confirmed **active/recurring** (re-fired again 2026-07-15 13:41Z, a full diagnosis session after the first
+  occurrence). The existing conftest live-state write guard does not cover this class (tests also touch live
+  `~/its/state/*.lock` via bare `open()`). Trigger: next test-infra hardening session — needs either fully
+  mocked network boundaries in the integration-adjacent tests, or a distinct non-production log path for test
+  runs.
+- **(informational) — host timezone is EDT (UTC-4), not Pacific**, confirmed during the diagnosis; any
+  PDT-based mtime/window math on this host is off by 3h. Not itself a bug, just a fact worth not re-deriving.
+
+## Docs-currency residuals from the 2026-07-15 documentation-corpus program [OPEN 2026-07-17]
+
+- **(LOW, docs) — `docs/enablement/subcontracts.md` has one residual stale line PR #603 (Tranche D) missed.**
+  #603 correctly updated the top callout (line ~43) and removed the "automated sending" bullet from "What's
+  not built yet" to reflect SC-S4 (#599) shipping the send lane. It did NOT catch a second assertion later in
+  the same file: "Turning generation on enables **filing only** — subcontractor **send** stays dark regardless
+  (**there's no send code yet**)" (`docs/enablement/subcontracts.md` around line 109) — factually stale now
+  (send code exists, ships dark pending the gate) though the "stays dark" framing is still directionally true.
+  A second multi-surface-fan-out miss, same class as the CLAUDE.md/verify_cutover.py one above. Deliberately
+  left unedited here (a parallel session owns `docs/enablement/`, per this session's own note). Trigger: next
+  `docs/enablement/subcontracts.md` touch — re-hash the manifest sha256 if edited.
+- **(LOW, docs) — CLAUDE.md's "What's stubbed vs. real" table still frames `po_send`/`subcontract_send` by
+  their dark-ships-by-default posture.** Both lanes are now genuinely **LIVE** (operator-activated 2026-07-16/17,
+  end-to-end Graph send confirmed on both) — the table doesn't yet say so. Not edited here (CLAUDE.md is a
+  high-contention shared file, out of this agent's edit scope per its own boundaries). Trigger: next
+  doc-reconciliation pass or CLAUDE.md touch.
 
 ## PO attachments (Feature B) — conscious deferrals [OPEN 2026-07-13]
 
