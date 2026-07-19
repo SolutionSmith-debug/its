@@ -173,6 +173,13 @@ def test_uneditable_node_gates_are_still_visible_read_only() -> None:
         f"unvalidated extraction tiers became editable: {leaked} — promoting one is gated "
         "on scripts/eval_estimate_ladder.py qualifying a model on the production corpus"
     )
+    # CLASS_E_DISPLAY and REGISTRY must stay DISJOINT: a key listed in both renders
+    # twice on /config — once read-only, once with a live edit form — which reads as
+    # "read-only" while still being writable.
+    dual = sorted(
+        d.setting for d in CLASS_E_DISPLAY if (d.setting, d.workstream) in REGISTRY
+    )
+    assert not dual, f"keys listed BOTH read-only and editable: {dual}"
 
 
 def test_send_queue_panel_covers_every_review_sheet_feeding_a_send_node() -> None:
@@ -221,6 +228,12 @@ def test_error_script_join_covers_the_known_identities() -> None:
         "config_actuator": "config_actuator",
         "scripts.watchdog": "watchdog",
         "field_ops.fieldops_sync": "fieldops_sync",
+        # ADR-0004 lane — rfq_send owns BOTH identities (poller + send module),
+        # mirroring the po_send / subcontract_send shape.
+        "po_materials.estimate_poll": "estimate_poll",
+        "po_materials.rfq_poll": "rfq_poll",
+        "po_materials.rfq_send_poll": "rfq_send",
+        "po_materials.rfq_send": "rfq_send",
     }.items():
         assert NODE_BY_ERROR_SCRIPT.get(script) == node
 

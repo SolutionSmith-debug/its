@@ -341,7 +341,8 @@
         <tr>
           <td class="cfg-setting">{{ d.label }}<div class="cfg-note">{{ d.setting }} [{{ d.workstream }}]</div></td>
           <td class="cfg-current">{{ d.value }}</td>
-          <td class="cfg-note">{{ d.note }}</td>
+          <td class="cfg-note">{{ d.note }}
+            {%- if d.description %}<div class="cfg-note">Description (ITS_Config): {{ d.description }}</div>{% endif %}</td>
         </tr>
         {% endfor %}
       </tbody>

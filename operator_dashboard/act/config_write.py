@@ -135,23 +135,45 @@ def read_registry_state() -> list[dict[str, Any]]:
 
 
 def read_display_state() -> list[dict[str, Any]]:
-    """Class-E read-only rows (external_send_gate mode, legacy approvers) with
-    their current values — no edit control is ever rendered for these."""
+    """Class-E read-only rows with their current values — no edit control is ever
+    rendered for these.
+
+    ONE ITS_Config fetch for the whole set (the `read_registry_state` pattern), not
+    one full-sheet GET per row: this list grew from 2 to 5 when the ADR-0004
+    extraction-ladder gates were surfaced here, and a per-row fetch would have made
+    every /config render N full-sheet reads.
+
+    The row's DESCRIPTION cell is carried through deliberately. For a dark gate the
+    Description is where the go-live PRECONDITION lives ("do not enable until X"),
+    and that is exactly the text an operator needs before acting on a gate the
+    console deliberately refuses to edit.
+    """
     from operator_dashboard.act.registry import CLASS_E_DISPLAY
+
+    by_pair: dict[tuple[str, str], tuple[str, str]] = {}
+    try:
+        ss = _load("shared.smartsheet_client")
+        sid = _load("shared.sheet_ids")
+        for r in ss.get_rows(sid.SHEET_CONFIG):
+            val, desc = r.get("Value"), r.get("Description")
+            by_pair[(r.get("Setting"), r.get("Workstream"))] = (
+                val if isinstance(val, str) else "",
+                desc if isinstance(desc, str) else "",
+            )
+    except Exception:
+        by_pair = {}  # fail-soft: every row degrades to "(unavailable)"
 
     out: list[dict[str, Any]] = []
     for d in CLASS_E_DISPLAY:
-        try:
-            _, val, _ = read_row_full(d.setting, d.workstream)
-        except Exception:
-            val = None
+        hit = by_pair.get((d.setting, d.workstream))
         out.append(
             {
                 "setting": d.setting,
                 "workstream": d.workstream,
                 "label": d.label,
                 "note": d.note,
-                "value": val if val is not None else "(unavailable)",
+                "value": hit[0] if hit else "(unavailable)",
+                "description": hit[1] if hit else "",
             }
         )
     return out

@@ -433,6 +433,18 @@ _SECRETS: list[SecretEntry] = [
         note="single-consumer + rotates on every use — rotate ONLY via the guided quiesce→setup_box_oauth→smoke flow; never paste a value here",
     ),
     SecretEntry("PORTAL_PO_API_TOKEN", "Worker PO bearer", "worker", worker_mirror="ITS_PORTAL_PO_TOKEN"),
+    # ADR-0004 privilege separation: the estimate and RFQ daemons each carry their
+    # OWN bearer, deliberately NOT the PO token — so a compromised extraction daemon
+    # cannot reach the PO or RFQ routes. Rotatable for the same reason the PO bearer
+    # is: an un-rotatable credential is one the operator cannot respond to.
+    SecretEntry(
+        "PORTAL_ESTIMATE_API_TOKEN", "Worker estimate bearer", "worker",
+        worker_mirror="ITS_PORTAL_ESTIMATE_TOKEN",
+    ),
+    SecretEntry(
+        "PORTAL_RFQ_API_TOKEN", "Worker RFQ bearer", "worker",
+        worker_mirror="ITS_PORTAL_RFQ_TOKEN",
+    ),
     SecretEntry(
         "PORTAL_CONFIG_API_TOKEN", "Worker config bearer", "worker", worker_mirror="ITS_PORTAL_CONFIG_TOKEN"
     ),

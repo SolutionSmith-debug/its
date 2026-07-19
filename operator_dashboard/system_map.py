@@ -49,7 +49,7 @@ BANDS: tuple[tuple[str, str], ...] = (
     ("safety", "Safety reports"),
     ("progress", "Progress reports"),
     ("fieldops", "Field ops"),
-    ("po", "Purchase orders"),
+    ("po", "Procurement — POs · vendor estimates · RFQs"),
     ("subcontracts", "Subcontracts"),
     ("machine", "Machine plane"),
 )
@@ -320,7 +320,11 @@ NODES: tuple[MapNode, ...] = (
     MapNode(
         id="sheet_po_pending_review", label="PO_Pending_Review", kind="sheet", lane="records", band="po",
         blurb="The PO approval queue — human approval here releases a PO to its vendor.",
-        sheet_id=1816168087113604, watchdog_checks=("U",),
+        # NOT watchdog_checks=("U",): Check U's _APPROVER_WORKSPACES covers only the
+        # Safety Portal + Progress Reporting workspaces, so approver drift on the
+        # Purchase Orders workspace is UNWATCHED. Claiming the eye chip here would
+        # tell the operator a control is running that is not (docs/tech_debt.md).
+        sheet_id=1816168087113604,
         runbook="docs/runbooks/po_send.md",
     ),
     MapNode(
@@ -341,7 +345,9 @@ NODES: tuple[MapNode, ...] = (
         blurb="The RFQ approval queue — one row per (RFQ, vendor). A PO_Pending_Review schema twin "
               "tagged po_materials_rfq, so the PO and subcontract send daemons can never dispatch "
               "an RFQ row. Human approval here is what releases an RFQ to its vendor.",
-        sheet_id=3555996805844868, watchdog_checks=("U",),
+        # No ("U",) — see sheet_po_pending_review: RFQ approvals are verified against
+        # the Purchase Orders workspace, which Check U does not scan.
+        sheet_id=3555996805844868,
         runbook="docs/runbooks/rfq_send.md",
     ),
     MapNode(
@@ -397,7 +403,9 @@ NODES: tuple[MapNode, ...] = (
         id="sheet_subcontract_pending_review", label="Subcontract_Pending_Review", kind="sheet",
         lane="records", band="subcontracts",
         blurb="The subcontract approval queue — human approval here releases the package.",
-        sheet_id=7950433787006852, watchdog_checks=("U",),
+        # No ("U",) — see sheet_po_pending_review: Check U does not scan the
+        # Subcontracts workspace either.
+        sheet_id=7950433787006852,
         runbook="docs/runbooks/subcontract_send.md",
     ),
     MapNode(
@@ -537,6 +545,9 @@ NODE_BY_HEARTBEAT_STEM: dict[str, str] = {
     n.heartbeat_stem: n.id for n in NODES if n.heartbeat_stem
 }
 
+# watchdog TRACKED_JOBS Check-C marker slug -> node id (marker panel join).
+NODE_BY_MARKER: dict[str, str] = {n.marker: n.id for n in NODES if n.marker}
+
 
 EDGES: tuple[MapEdge, ...] = (
     MapEdge("spa", "worker", "submissions · field capture · PO/subcontract drafts · config edits", "push"),
@@ -584,6 +595,7 @@ EDGES: tuple[MapEdge, ...] = (
     MapEdge("estimate_poll", "sheet_review_queue", "doc-type / §34 refusals + low-confidence disposition", "write"),
     MapEdge("worker", "rfq_poll", "pull composed RFQs — rfq:v1 HMAC re-verify", "pull",
             port="HMAC"),
+    MapEdge("sheet_its_vendors", "rfq_poll", "vendor snapshot per RFQ copy — READ-ONLY", "read"),
     MapEdge("rfq_poll", "box", "file PRICE-FREE RFQ PDFs + xlsx quote forms (per vendor)", "write"),
     MapEdge("rfq_poll", "sheet_rfq_log", "ledger row per (rfq, vendor)", "write"),
     MapEdge("rfq_poll", "sheet_rfq_pending_review", "stage review row (PENDING)", "write"),

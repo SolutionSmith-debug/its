@@ -291,7 +291,11 @@ class SendQueueSource(DataSource):
         per: list[dict[str, Any]] = []
         for ws, attr in _SEND_QUEUE_SHEETS:
             sheet_id = getattr(sid, attr, None)
-            if sheet_id is None:
+            if not sheet_id:
+                # Absent attr OR the `0` unseeded-sheet placeholder. Surface it
+                # rather than silently dropping the lane — a send lane missing
+                # from this panel must never read as "all clear".
+                per.append({"ws": ws, "unavailable": True, "counts": {}})
                 continue
             try:
                 rows = ss.get_rows(sheet_id)

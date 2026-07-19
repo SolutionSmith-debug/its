@@ -15,15 +15,16 @@ job that ITS runs on the MacBook. It answers, for each one: what it does, how of
 it fires, where its work comes from, which `ITS_Config` switch turns it on, where its
 liveness is reported, where its logs are, how it fails, and how to restart it.
 
-<!-- src: scripts/launchd/ (19 org.solutionsmith.its.*.plist files enumerated) | verified 2026-07-19 -->
-There are **19 launchd agents**, enumerated directly from `scripts/launchd/*.plist`
-(not from memory). Fifteen of them register with watchdog Check C for marker-staleness
-tracking; thirteen write an ITS_Daemon_Health heartbeat row; the two sets overlap but are
-not identical (the roster table below gives the exact split). Use the roster to jump to
-the daemon you care about, then read its H3 block. (The 17th — `subcontract-send`, the
-SC-S4 approval poller — the 18th — `estimate-poll`, the ADR-0004 vendor-estimate
-importer — and the 19th — `rfq-poll`, the ADR-0004 outbound-RFQ generation daemon —
-were added after this doc's first cut; see their rows + sections below.)
+<!-- src: scripts/launchd/ (20 org.solutionsmith.its.*.plist files enumerated, template.plist excluded); scripts/watchdog.py:174-262 (TRACKED_JOBS = 16 slugs); HeartbeatReporter( grep — 14 non-test constructors | verified 2026-07-19 -->
+There are **20 launchd agents**, enumerated directly from `scripts/launchd/*.plist`
+(not from memory; `template.plist` is the scaffold, not an agent). Sixteen of them register
+with watchdog Check C for marker-staleness tracking; fourteen write an ITS_Daemon_Health
+heartbeat row; the two sets overlap but are not identical (the roster table below gives the
+exact split). Use the roster to jump to the daemon you care about, then read its H3 block.
+(The 17th — `subcontract-send`, the SC-S4 approval poller — the 18th — `estimate-poll`, the
+ADR-0004 vendor-estimate importer — the 19th — `rfq-poll`, the ADR-0004 outbound-RFQ
+generation daemon — and the 20th — `rfq-send`, the ADR-0004 R3 outbound-RFQ approval poller
+— were added after this doc's first cut; see their rows + sections below.)
 
 If you only need one thing: **to restart a daemon**, the dashboard verb is
 **kickstart** (Class-B ACT, PIN-gated); the shell fallback is
@@ -75,8 +76,8 @@ report its own death:
 
 | Surface | Mechanism | Who writes it | Who reads it |
 |---|---|---|---|
-| **ITS_Daemon_Health** sheet (id `4529351700729732`, System workspace / 04 — Daemons) | One row per daemon, updated in place each cycle via `shared/heartbeat.py` `HeartbeatReporter` | The **12** daemons that construct a `HeartbeatReporter` (see roster) | Operator (obs), dashboard daemons panel, watchdog Check G |
-| **Watchdog marker files** (`~/its/.watchdog/<slug>.last_run`) | ISO timestamp written each cycle | The **14** `TRACKED_JOBS` daemons | Watchdog **Check C** (marker-staleness floor) |
+| **ITS_Daemon_Health** sheet (id `4529351700729732`, System workspace / 04 — Daemons) | One row per daemon, updated in place each cycle via `shared/heartbeat.py` `HeartbeatReporter` | The **14** daemons that construct a `HeartbeatReporter` (see roster) | Operator (obs), dashboard daemons panel, watchdog Check G |
+| **Watchdog marker files** (`~/its/.watchdog/<slug>.last_run`) | ISO timestamp written each cycle | The **16** `TRACKED_JOBS` daemons | Watchdog **Check C** (marker-staleness floor) |
 
 <!-- src: scripts/watchdog.py:408-455 (Check C body); scripts/watchdog.py:240-287 (TRACKED_JOB_WINDOWS) | verified 2026-07-14 -->
 **Check C** (`_check_scheduled_jobs`) runs in the daily 07:00 watchdog pass. For each
@@ -130,6 +131,7 @@ runtime.
 | `po-send` | `po_materials.po_send_poll` | interval, **900s** default | Purchase Orders | yes | `po_send_poll` |
 | `estimate-poll` | `po_materials.estimate_poll` | interval, **120s** default | Purchase Orders | yes | `estimate_poll` |
 | `rfq-poll` | `po_materials.rfq_poll` | interval, **120s** default | Purchase Orders (RFQ) | yes | `rfq_poll` |
+| `rfq-send` | `po_materials.rfq_send_poll` | interval, **900s** default | Purchase Orders (RFQ) | yes | `rfq_send_poll` |
 | `subcontract-poll` | `subcontracts.subcontract_poll` | interval, **120s** default | Subcontracts | yes | `subcontract_poll` |
 | `subcontract-send` | `subcontracts.subcontract_send_poll` | interval, **900s** default | Subcontracts | yes | `subcontract_send_poll` |
 | `fieldops-sync` | `field_ops.fieldops_sync` | interval, **90s** default | Field Ops | yes | `fieldops_sync` |
@@ -140,9 +142,9 @@ runtime.
 | `watchdog` | `scripts/watchdog.py` | calendar, **daily 07:00** | System | no | (watches others) |
 | `dashboard` | `operator_dashboard` | **server** (KeepAlive) | System | no | (KeepAlive) |
 
-<!-- src: scripts/watchdog.py TRACKED_JOBS — 15 slugs (estimate_poll + rfq_poll added); HeartbeatReporter( grep — 13 constructors | verified 2026-07-19 -->
-Note the two coverage sets do not fully overlap: **15** daemons write Check-C markers
-(the interval pollers plus the four calendar/hourly jobs), and **13** daemons write an
+<!-- src: scripts/watchdog.py TRACKED_JOBS — 16 slugs (estimate_poll + rfq_poll + rfq_send_poll added); HeartbeatReporter( grep — 14 non-test constructors | verified 2026-07-19 -->
+Note the two coverage sets do not fully overlap: **16** daemons write Check-C markers
+(the interval pollers plus the four calendar/hourly jobs), and **14** daemons write an
 ITS_Daemon_Health heartbeat row (the interval pollers plus the two §50 actuators). The
 two actuators (`publish-daemon`, `config-actuator`) heartbeat but are **not** in Check
 C; the calendar/hourly jobs (`weekly-generate`, `progress-generate`, `picklist-sync`,
@@ -315,6 +317,21 @@ the running plist holds the interval.
 | **Log** | `~/its/logs/launchd/rfq_poll.out.log` / `.err.log` |
 | **Known failure modes** | A bad-`rfq:v1`-HMAC or malformed-canonical row is one-shot-flagged (`state/rfq_poll_flagged.json`; CRITICAL + security Review-Queue row on first sighting) and never rendered/filed/marked — the row stays queued in D1 for forensics. An unknown vendor is a per-vendor Review-Queue fence (the OTHER vendors proceed); ALL-vendors-fenced withholds the receipt (never a silent drain). A **401** anywhere → `rfq_bearer_rejected` CRITICAL + the cycle STOPS (the RFQ bearer `ITS_PORTAL_RFQ_TOKEN` is privilege-separated from the PO and estimate tiers). Missing base URL / bearer / HMAC secret → fail-closed CRITICAL, nothing polled. §43 tree: `docs/runbooks/rfq_generation_path.md`. |
 | **Restart** | Dashboard **kickstart**; shell `install.sh load org.solutionsmith.its.rfq-poll` |
+
+### rfq-send — `po_materials.rfq_send_poll`
+
+<!-- src: po_materials/rfq_send_poll.py:1-75 (docstring) + :84-92 (config keys) + :105 (heartbeat) + :156-159 (f22 workspace); po_materials/rfq_send.py:1-80 (docstring) + :100-101 (from_mailbox); scripts/launchd/install.sh:80,97 (config key / 900s default); scripts/launchd/org.solutionsmith.its.rfq-send.plist:47-51 (log paths); scripts/watchdog.py:255-262 (TRACKED_JOBS slug) + :335-339 (30-min window) | verified 2026-07-19 -->
+
+| Field | Value |
+|---|---|
+| **Purpose** | SEND half of the RFQ two-process model (ADR-0004 R3) — the RFQ instantiation of the shared `send_poll_core` engine. Discovers `RFQ_Pending_Review` rows with `Send Now` (immediate) OR `Approve for Scheduled Send` (the Monday ≥07:00 Pacific batch) checked, runs the **F22** approval gate against the **ITS — Purchase Orders** workspace (§46 — the SAME procurement approver set as POs), stamps the verified approver, and dispatches to `rfq_send.send_one_row` → the shared `weekly_send.send_one_row` transmitter. Recipient = the vendor's `Contact Email` read LIVE from `ITS_Vendors` by Vendor Key; CC = the versioned invoice-routing list; **TWO attachments** (the price-free RFQ PDF + the fillable `.xlsx` quote form). From `procurement@`. AI-free (capability-gated in `SEND_SCRIPTS` — `anthropic`/`anthropic_client` **and** `ollama_client` AST-forbidden). |
+| **Interval** | `StartInterval`, default **900s** (15 min) (`po_materials.rfq_send.poll_interval_seconds`) — an approval poller, mirrors `po-send` / `subcontract-send` / `weekly-send`. |
+| **Source of work** | `RFQ_Pending_Review` Smartsheet sheet (id `3555996805844868`) |
+| **Config gates** | `po_materials.rfq_send.polling_enabled` (**ships false** — dark; seeded by `scripts/migrations/seed_rfq_send_config.py`); `po_materials.rfq_send.poll_interval_seconds`; `po_materials.rfq_send.scheduled_send_local` (default `MON 07:00`); `po_materials.rfq_send.from_mailbox` (default `procurement@evergreenmirror.com`) |
+| **Heartbeat row** | `po_materials.rfq_send_poll` — marker slug `rfq_send_poll` (window 30 min). WARNs until loaded AND the gate flipped (a loaded-but-dark send daemon writes no marker by design). |
+| **Log** | `~/its/logs/launchd/rfq_send.out.log` / `.err.log` (note: `rfq_send`, not `rfq_send_poll`) |
+| **Known failure modes** | F22 fail-closed (a circuit-open / auth error aborts the cycle with zero sends; an empty approver set = `EMPTY_ALLOWLIST` blocks all — the §46 share list of ITS — Purchase Orders must include the approvers). Per-row fence. The `po_materials_rfq` **contamination guard** HARD-HELDs (`held_workstream_mismatch` + CRITICAL) any row not tagged for this lane, before the write-ahead `SENDING` marker — cross-lane dispatch by `po-send`/`subcontract-send` is structurally impossible. Rows HELD on unknown Vendor Key / blank vendor email (`held_no_recipient`), missing compiled RFQ PDF (`held_missing_pdf`), or a numberless row (`held_missing_envelope`). A transient Box failure fetching the quote form degrades the send to PDF-only (WARN), never HELD. `polling_enabled=false` short-circuits (the dark default — a send gate never fails open). §43 tree: `docs/runbooks/rfq_send.md`. |
+| **Restart** | Dashboard **kickstart**; shell `install.sh load org.solutionsmith.its.rfq-send`. **Go-live is a FIXED high-capability-class External-Send-Gate action** (flip the gate true + load the plist) — escalate to Seth, never a Tier-2 repair. |
 
 ---
 
@@ -546,7 +563,8 @@ the gate is flipped.
   plist at `install.sh load` time. Editing the `poll_interval_seconds` ITS_Config row
   alone does nothing to a running daemon; re-load (or use the dashboard interval edit).
 - **A loaded dark daemon writes no Check-C marker.** `po-poll`, `po-send`,
-  `estimate-poll`, `rfq-poll`, `subcontract-poll`, `progress-*`, and `compile-now-poll` will legitimately WARN in
+  `estimate-poll`, `rfq-poll`, `rfq-send`, `subcontract-poll`, `subcontract-send`,
+  `progress-*`, and `compile-now-poll` will legitimately WARN in
   Check C until the operator BOTH loads the plist AND flips at least one runtime gate.
   Register + activate together; an all-gates-false loaded daemon is an intentional dark
   no-op, not a fault.
@@ -555,9 +573,13 @@ the gate is flipped.
   relies on `KeepAlive`. None of the three has a marker-staleness alert.
 - **Timezones are the Mac's local time.** All `StartCalendarInterval` fire times
   (Fri 14:00 / Fri 14:30 / Sun 15:00 / daily 07:00) are local wall-clock.
-- **`po-send` logs to `po_send.out.log`, not `po_send_poll.out.log`.** The StandardOut
-  path underscores the label's last segment; most match the module, but `po-send` is
-  the one where the log basename differs from the module name.
+<!-- src: scripts/launchd/*.plist StandardOutPath vs ProgramArguments (po-send / subcontract-send / rfq-send) | verified 2026-07-19 -->
+- **The three `*-send` approval pollers log under the label, not the module.** `po-send`
+  writes `po_send.out.log`, `subcontract-send` writes `subcontract_send.out.log`, and
+  `rfq-send` writes `rfq_send.out.log` — none of them `*_poll.out.log`. The StandardOut
+  path underscores the label's last segment; most daemons' basenames match their module,
+  but these three do not. (`weekly-send` and `progress-send` DO match their modules —
+  `weekly_send_poll.out.log` / `progress_send_poll.out.log`.)
 
 ## Related docs
 
