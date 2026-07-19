@@ -132,6 +132,7 @@ def po_stub(mocker):
         "update_rows": mocker.patch.object(weekly_send.smartsheet_client, "update_rows"),
         "download": mocker.patch.object(weekly_send.box_client, "download_file", return_value=b"%PDF-po"),
         "send_mail": mocker.patch.object(weekly_send.graph_client, "send_mail"),
+        "send_large": mocker.patch.object(weekly_send.graph_client, "send_mail_large_attachment"),
         "from_mailbox": mocker.patch.object(weekly_send, "_read_str_setting", return_value="procurement@evergreenmirror.com"),
         "log": mocker.patch.object(weekly_send.error_log, "log"),
         "recipient_health": mocker.patch.object(weekly_send.recipient_health, "report_unhealthy_recipient"),
@@ -181,3 +182,75 @@ def test_envelope_returning_none_helds_never_sends(po_stub):
     result = weekly_send.send_one_row(90, cfg)
     assert result.status == "held_missing_envelope"
     po_stub["send_mail"].assert_not_called()
+
+
+# ---- R3 sequence-attachment seam (the RFQ send lane's ONLY engine change) ----
+#
+# The seam adds an OPTIONAL SendConfig.extra_attachments. These controls prove the
+# single-attachment path (every safety/progress/po/subcontract binding, extra_attachments=
+# None) is byte-identical, and that a bound sequence resolves the correct content types.
+
+
+def test_single_attachment_path_byte_identical_when_no_extra_binding(po_stub):
+    # REGRESSION: a SendConfig with extra_attachments=None produces EXACTLY ONE attachment —
+    # the compiled PDF — as application/pdf, riding the inline send_mail path unchanged.
+    weekly_send.send_one_row(90, _po_config())
+    atts = po_stub["send_mail"].call_args.kwargs["attachments"]
+    assert len(atts) == 1
+    assert atts[0]["contentType"] == "application/pdf"
+    assert atts[0]["contentBytes"] == b"%PDF-po"
+    po_stub["send_large"].assert_not_called()
+
+
+def test_single_large_attachment_still_uses_upload_session(po_stub):
+    # REGRESSION: a single attachment over the threshold still routes to the upload-session
+    # path (send_mail_large_attachment), untouched by the seam.
+    po_stub["download"].return_value = b"x" * (weekly_send.UPLOAD_SESSION_THRESHOLD_BYTES + 1)
+    weekly_send.send_one_row(90, _po_config())
+    po_stub["send_large"].assert_called_once()
+    po_stub["send_mail"].assert_not_called()
+
+
+def _po_config_with_form():
+    import dataclasses
+
+    def _form(ctx: weekly_send.EnvelopeContext):
+        name = "RFQ Quote Form.xlsx"
+        return [(name, weekly_send._attachment_content_type(name), b"PK\x03\x04form")]
+
+    return dataclasses.replace(_po_config(), extra_attachments=_form)
+
+
+def test_sequence_attachment_binding_resolves_both_content_types(po_stub):
+    # The two-element case (RFQ send): the primary PDF + the fillable xlsx form, each with
+    # the content-type DERIVED from its filename (.pdf → application/pdf, .xlsx → the OpenXML
+    # spreadsheet MIME). Both ride the inline send_mail path (Graph multi-fileAttachment).
+    result = weekly_send.send_one_row(90, _po_config_with_form())
+    assert result.status == "sent"
+    atts = po_stub["send_mail"].call_args.kwargs["attachments"]
+    assert len(atts) == 2
+    assert atts[0]["contentType"] == "application/pdf"
+    assert atts[0]["contentBytes"] == b"%PDF-po"
+    assert atts[1]["name"].endswith(".xlsx")
+    assert atts[1]["contentType"] == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    assert atts[1]["contentBytes"] == b"PK\x03\x04form"
+    po_stub["send_large"].assert_not_called()
+
+
+def test_multi_attachment_over_threshold_helds_before_sending(po_stub):
+    # The single-attachment upload-session path carries ONE attachment; a multi-attachment
+    # packet over the inline threshold cannot use it → HELD (held_oversized_packet), BEFORE
+    # the write-ahead SENDING marker (fail toward not-sending). Unreachable for RFQ in
+    # practice (a price-free PDF + a small xlsx form); this pins the guard.
+    import dataclasses
+    big = b"y" * (weekly_send.UPLOAD_SESSION_THRESHOLD_BYTES + 1)
+    cfg = dataclasses.replace(
+        _po_config(),
+        extra_attachments=lambda ctx: [
+            ("big.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", big),
+        ],
+    )
+    result = weekly_send.send_one_row(90, cfg)
+    assert result.status == "held_oversized_packet"
+    po_stub["send_mail"].assert_not_called()
+    po_stub["send_large"].assert_not_called()

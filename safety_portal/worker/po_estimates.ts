@@ -327,7 +327,7 @@ function parseExtraction(raw: unknown): ExtractionBody | string {
 const ROW_COLS =
   "id, est_uuid, job_no, job_name, vendor_key, filename, declared_mime, size_bytes, sha256, " +
   "status, doc_type, detail, uploaded_by, box_file_id, family_key, supersedes_estimate_id, " +
-  "po_id, created_at, screened_at, extracted_at, disposed_at";
+  "po_id, rfq_id, rfq_vendor_key, created_at, screened_at, extracted_at, disposed_at";
 
 // ── Route registration ──────────────────────────────────────────────────────────
 export function registerPoEstimateRoutes(app: FieldopsApp, gates: PoEstimateGates): void {
@@ -434,12 +434,44 @@ export function registerPoEstimateRoutes(app: FieldopsApp, gates: PoEstimateGate
       return c.json({ error: "invalid_result", detail: "extraction_forbidden" }, 400);
     }
 
+    // R4 round-trip auto-bind (additive, ADVISORY — the daemon's verified Tier-0
+    // rfq-form:v1 hint). A shape-bad value is IGNORED (never 400s the whole result —
+    // Invariant 2: the daemon's bind hint is untrusted; a bad hint degrades to "no bind").
+    const rfqNumberHint = optStr(body.rfq_number, MAX_SHORT);
+    const rfqVendorKeyHint = optStr(body.rfq_vendor_key, MAX_SHORT);
+    const rfqHintWellFormed =
+      rfqNumberHint !== null && rfqNumberHint !== "bad" &&
+      rfqVendorKeyHint !== null && rfqVendorKeyHint !== "bad" &&
+      VENDOR_KEY_RE.test(rfqVendorKeyHint);
+
     const row = await c.env.DB
       .prepare("SELECT id, status FROM po_estimates WHERE id = ?1")
       .bind(estId)
       .first<{ id: number; status: string }>();
     if (!row || (row.status !== "pending" && row.status !== "claimed")) {
       return c.json({ ok: true, found: false, status: row?.status ?? null });
+    }
+
+    // Resolve the hint to real rows: bind ONLY when the RFQ number names an rfqs row AND
+    // that rfq has an rfq_vendors row for this vendor. An unknown rfq / vendor → no bind
+    // (stored nothing; recorded in the audit as rfq_bound:false — visible, never silent).
+    let bindRfqId: number | null = null;
+    let bindVendorKey: string | null = null;
+    if (rfqHintWellFormed) {
+      const rfqRow = await c.env.DB
+        .prepare("SELECT id FROM rfqs WHERE rfq_number = ?1")
+        .bind(rfqNumberHint)
+        .first<{ id: number }>();
+      if (rfqRow) {
+        const vRow = await c.env.DB
+          .prepare("SELECT 1 AS x FROM rfq_vendors WHERE rfq_id = ?1 AND vendor_key = ?2")
+          .bind(rfqRow.id, rfqVendorKeyHint)
+          .first<{ x: number }>();
+        if (vRow) {
+          bindRfqId = rfqRow.id;
+          bindVendorKey = rfqVendorKeyHint as string;
+        }
+      }
     }
 
     const stmts = [
@@ -454,6 +486,10 @@ export function registerPoEstimateRoutes(app: FieldopsApp, gates: PoEstimateGate
       auditStmtIfChanged(c, SYSTEM_ACTOR, "po_estimate_result", String(estId), {
         estimate_id: estId, status, box_file_id: boxFileId, detail,
         tier: extraction?.tier ?? null, lines: extraction?.lines.length ?? null,
+        // The rfq-bind observability: whether a hint arrived (well-formed) and whether it
+        // actually resolved to a bind. An unresolved hint is recorded, never silently dropped.
+        rfq_hint: rfqHintWellFormed ? rfqNumberHint : null,
+        rfq_bound: bindRfqId !== null,
       }),
     ];
     if (status === "refused") {
@@ -504,6 +540,32 @@ export function registerPoEstimateRoutes(app: FieldopsApp, gates: PoEstimateGate
               l.unit_cost_cents, l.extended_cents, l.math_ok, l.line_note,
             ),
         ),
+      );
+    }
+    if (bindRfqId !== null && bindVendorKey !== null) {
+      stmts.push(
+        // Bind the estimate to its RFQ (idempotent: rfq_id IS NULL binds once; guarded on
+        // the row now carrying a live result status — same batch, so it sees the flip above).
+        c.env.DB
+          .prepare(
+            "UPDATE po_estimates SET rfq_id = ?2, rfq_vendor_key = ?3 " +
+              "WHERE id = ?1 AND rfq_id IS NULL AND status IN ('needs_review','extracted')",
+          )
+          .bind(estId, bindRfqId, bindVendorKey),
+        // Flip the vendor's rfq_vendors row to responded — FORWARD-ONLY (filed|sent →
+        // responded): a vendor may return the form BEFORE the RFQ email is even sent (office
+        // upload), so BOTH 'filed' and 'sent' are valid predecessors. responded_estimate_id
+        // records the estimate the reply landed as. rfqs.status is deliberately UNTOUCHED
+        // (its CHECK set has no 'responded').
+        c.env.DB
+          .prepare(
+            "UPDATE rfq_vendors SET status='responded', responded_estimate_id=?3 " +
+              "WHERE rfq_id=?1 AND vendor_key=?2 AND status IN ('filed','sent')",
+          )
+          .bind(bindRfqId, bindVendorKey, estId),
+        auditStmtIfChanged(c, SYSTEM_ACTOR, "po_estimate_rfq_bound", String(estId), {
+          estimate_id: estId, rfq_id: bindRfqId, vendor_key: bindVendorKey,
+        }),
       );
     }
     let res;

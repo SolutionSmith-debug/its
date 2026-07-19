@@ -408,10 +408,15 @@ def test_case_variant_workstream_is_mismatch(stub):
 
 
 def test_send_config_has_no_unset_fields():
-    # The contamination property: every SendConfig field is explicitly bound (no silent
-    # default that could let a new workstream inherit a safety value).
+    # The contamination property: every REQUIRED SendConfig field is explicitly bound (no
+    # silent default that could let a new workstream inherit a safety value). The OPTIONAL
+    # `extra_attachments` seam (RFQ R3) is intentionally None for the single-attachment
+    # bindings — that is its correct, non-contaminating default, so it is excluded here.
     import dataclasses
     for f in dataclasses.fields(weekly_send.CONFIG):
+        if f.name == "extra_attachments":
+            assert weekly_send.CONFIG.extra_attachments is None  # single-attachment binding
+            continue
         assert getattr(weekly_send.CONFIG, f.name) not in (None, ""), f"CONFIG.{f.name} is unset"
 
 

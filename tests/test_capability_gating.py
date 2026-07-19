@@ -361,7 +361,7 @@ GATED_SCRIPTS: list[tuple[str, list[str]]] = [
 SEND_SCRIPTS: list[tuple[str, list[str]]] = [
     (
         "safety_reports/weekly_send.py",
-        ["anthropic_client", "anthropic"],
+        ["anthropic_client", "anthropic", "ollama_client"],
     ),
     (
         # weekly_send_poll imports safety_reports.weekly_send which
@@ -370,7 +370,7 @@ SEND_SCRIPTS: list[tuple[str, list[str]]] = [
         # checks THIS file's imports specifically; anthropic / anthropic_client
         # must not appear at all.
         "safety_reports/weekly_send_poll.py",
-        ["anthropic_client", "anthropic"],
+        ["anthropic_client", "anthropic", "ollama_client"],
     ),
     (
         # P1c: the parameterized dispatch core. It dispatches a send via the
@@ -380,7 +380,7 @@ SEND_SCRIPTS: list[tuple[str, list[str]]] = [
         # explicit entry is the enrollment. anthropic / anthropic_client must not
         # appear at all (the core imports no AI surface).
         "safety_reports/send_poll_core.py",
-        ["anthropic_client", "anthropic"],
+        ["anthropic_client", "anthropic", "ollama_client"],
     ),
     (
         # P5: progress_send is the PROGRESS instantiation of the shared send engine —
@@ -388,13 +388,13 @@ SEND_SCRIPTS: list[tuple[str, list[str]]] = [
         # brings in graph_client.send_mail, the intended send capability). anthropic /
         # anthropic_client must not appear at all (no LLM in the send half).
         "progress_reports/progress_send.py",
-        ["anthropic_client", "anthropic"],
+        ["anthropic_client", "anthropic", "ollama_client"],
     ),
     (
         # P5: the progress send poller. Imports progress_send (→ weekly_send → graph
         # send) + send_poll_core. anthropic / anthropic_client must not appear at all.
         "progress_reports/progress_send_poll.py",
-        ["anthropic_client", "anthropic"],
+        ["anthropic_client", "anthropic", "ollama_client"],
     ),
     (
         # S5b: po_send is the PO instantiation of the shared send engine — it imports
@@ -402,13 +402,13 @@ SEND_SCRIPTS: list[tuple[str, list[str]]] = [
         # graph_client.send_mail, the intended send capability for the vendor audience).
         # anthropic / anthropic_client must not appear at all (no LLM in the send half).
         "po_materials/po_send.py",
-        ["anthropic_client", "anthropic"],
+        ["anthropic_client", "anthropic", "ollama_client"],
     ),
     (
         # S5b: the PO send poller. Imports po_send (→ weekly_send → graph send) +
         # send_poll_core. anthropic / anthropic_client must not appear at all.
         "po_materials/po_send_poll.py",
-        ["anthropic_client", "anthropic"],
+        ["anthropic_client", "anthropic", "ollama_client"],
     ),
     (
         # SC-S4: subcontract_send is the subcontract instantiation of the shared send engine —
@@ -416,13 +416,30 @@ SEND_SCRIPTS: list[tuple[str, list[str]]] = [
         # send_mail, the intended send capability for the subcontractor audience). anthropic /
         # anthropic_client must not appear at all (no LLM in the send half).
         "subcontracts/subcontract_send.py",
-        ["anthropic_client", "anthropic"],
+        ["anthropic_client", "anthropic", "ollama_client"],
     ),
     (
         # SC-S4: the subcontract send poller. Imports subcontract_send (→ weekly_send → graph
         # send) + send_poll_core. anthropic / anthropic_client must not appear at all.
         "subcontracts/subcontract_send_poll.py",
-        ["anthropic_client", "anthropic"],
+        ["anthropic_client", "anthropic", "ollama_client"],
+    ),
+    (
+        # ADR-0004 R3: rfq_send is the outbound-RFQ instantiation of the shared send engine —
+        # it imports safety_reports.weekly_send (the dispatch logic, transitively
+        # graph_client.send_mail, the intended send capability for the vendor audience) +
+        # box_client (to fetch the quote form as the second attachment). No AI at all —
+        # anthropic / anthropic_client AND ollama_client (ADR-0004 decision 12: send scripts
+        # are local-AI-free too, so the RFQ round trip's extraction ladder can never leak into
+        # the send half) must not appear.
+        "po_materials/rfq_send.py",
+        ["anthropic_client", "anthropic", "ollama_client"],
+    ),
+    (
+        # ADR-0004 R3: the RFQ send poller. Imports rfq_send (→ weekly_send → graph send) +
+        # send_poll_core. anthropic / anthropic_client AND ollama_client must not appear.
+        "po_materials/rfq_send_poll.py",
+        ["anthropic_client", "anthropic", "ollama_client"],
     ),
 ]
 

@@ -325,6 +325,19 @@ NODES: tuple[MapNode, ...] = (
         watchdog_checks=("C",), script_path="po_materials/po_send_poll.py",
         runbook="docs/runbooks/po_send.md", send_half="send", marker="po_send_poll",
     ),
+    MapNode(
+        id="rfq_send", label="rfq send", kind="daemon", lane="send", band="po",
+        blurb="RFQ send dispatcher (from procurement@, ADR-0004 R3): emails each APPROVED "
+              "request-for-quote to its vendor with TWO attachments — the price-free RFQ PDF "
+              "plus the fillable xlsx quote form — through the shared AI-free send engine. "
+              "Tagged po_materials_rfq so po-send / subcontract-send can never dispatch it. "
+              "Ships dark; go-live is a FIXED External-Send-Gate operator flip.",
+        error_scripts=("po_materials.rfq_send_poll", "po_materials.rfq_send"),
+        launchd_label="org.solutionsmith.its.rfq-send", heartbeat_stem="rfq_send",
+        config_gate="po_materials.rfq_send.polling_enabled",
+        watchdog_checks=("C",), script_path="po_materials/rfq_send_poll.py",
+        runbook="docs/runbooks/rfq_send.md", send_half="send", marker="rfq_send_poll",
+    ),
     # ── subcontracts band ────────────────────────────────────────────────
     MapNode(
         id="subcontract_poll", label="subcontract_poll", kind="daemon", lane="generation", band="subcontracts",
@@ -550,6 +563,8 @@ EDGES: tuple[MapEdge, ...] = (
     MapEdge("sheet_po_pending_review", "po_send", "APPROVED rows only — F22", "read",
             port="human approval"),
     MapEdge("po_send", "graph", "send_mail (from procurement@)", "send"),
+    MapEdge("sheet_its_vendors", "rfq_send", "recipient by Vendor Key", "read"),
+    MapEdge("rfq_send", "graph", "send_mail — RFQ PDF + xlsx form (from procurement@)", "send"),
     # subcontracts
     MapEdge("worker", "subcontract_poll", "pull drafts — sub:v1 HMAC", "pull", port="HMAC"),
     MapEdge("subcontract_poll", "box", "file Subcontract Package.zip", "write"),

@@ -72,6 +72,9 @@ This is the operator reference for **ITS_Config** — the Smartsheet sheet where
 | `po_materials.po_send.polling_enabled` | bool | false | Runtime on/off gate for the po_materials.po_send daemon. False pauses it without unloading its launchd job (the canonical runtime gate, distinct from the report-filter Enabled checkbox). | po_materials.po_send_poll |
 | `po_materials.po_send.scheduled_send_local` | str | MON 07:00 | Local-time window (e.g. `MON 07:00`) at/after which a row approved with **Approve for Scheduled Send** may dispatch on the po_materials.po_send path. | po_materials.po_send_poll |
 | `po_materials.rfq_poll.polling_enabled` | bool | false | Runtime on/off gate for the po_materials.rfq_poll daemon. False pauses it without unloading its launchd job (the canonical runtime gate, distinct from the report-filter Enabled checkbox). | po_materials.rfq_poll |
+| `po_materials.rfq_send.from_mailbox` | str | procurement@evergreenmirror.com | The M365 mailbox the po_materials.rfq_send send daemon sends approved email FROM. | po_materials.rfq_send, po_materials.rfq_send_poll |
+| `po_materials.rfq_send.polling_enabled` | bool | false | Runtime on/off gate for the po_materials.rfq_send daemon. False pauses it without unloading its launchd job (the canonical runtime gate, distinct from the report-filter Enabled checkbox). | po_materials.rfq_send_poll |
+| `po_materials.rfq_send.scheduled_send_local` | str | MON 07:00 | Local-time window (e.g. `MON 07:00`) at/after which a row approved with **Approve for Scheduled Send** may dispatch on the po_materials.rfq_send path. | po_materials.rfq_send_poll |
 | `safety_reports.portal.worker_base_url` | str | *(unset)* | Base URL of the Safety Portal Cloudflare Worker. The portal pull / PO / progress daemons hit its send-free internal API here. Repointed to the custom domain (safety.evergreenmirror.com) after deploy. | po_materials.config_actuator |
 
 ## Progress Reports

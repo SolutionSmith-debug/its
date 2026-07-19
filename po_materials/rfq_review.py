@@ -80,11 +80,27 @@ from shared import sheet_ids, smartsheet_client
 # The DISTINCT RFQ send-lane tag (see module docstring — NOT 'po_materials').
 WORKSTREAM_TAG = "po_materials_rfq"
 
+# SHEET_ID satisfies the shared send engine's `_ReviewModule` protocol
+# (weekly_send reads `cfg.review.SHEET_ID` for the send-side row read/update — po_review /
+# wsr_review expose it the same way). It is the RAW module constant (0 until the operator
+# runs build_rfq_pending_review_sheet.py and flips SHEET_RFQ_PENDING_REVIEW in
+# shared/sheet_ids.py — a code edit re-imported at go-live). The GENERATION-side writers in
+# THIS module (add_rfq_review_row / find_row_by_rfq_vendor / the status pass) use the
+# `sheet_id()` FUNCTION instead, which REFUSES the 0 placeholder loudly (builder-precedes-
+# seed). The send engine only reads SHEET_ID once the send gate is flipped true — which,
+# per the seed row's own precondition, happens only AFTER the sheet is built + the id
+# flipped — so a 0 read is never reached in normal dark operation.
+SHEET_ID = sheet_ids.SHEET_RFQ_PENDING_REVIEW
+
 _RFQ_ID_RE = re.compile(r"(?:^|;\s*)rfq_id=(\d+)(?:;|$)")
 # rfq_number is a contractual id; match up to the next '; ' tag boundary or end so a
 # reviewer's appended prose can't bleed in (the po_review pattern).
 _RFQ_NUMBER_RE = re.compile(r"(?:^|;\s*)rfq_number=([^;]+?)(?:;|$)")
 _VENDOR_KEY_RE = re.compile(r"(?:^|;\s*)vendor_key=([^;]+?)(?:;|$)")
+# form_box_file_id (R4): the Box file id of the vendor's fillable .xlsx quote form,
+# seeded at filing so PR-D's send envelope can attach it as the SECOND attachment.
+# Digits-only (a Box file id) — a reviewer's prose after it can't bleed in.
+_FORM_BOX_FILE_ID_RE = re.compile(r"(?:^|;\s*)form_box_file_id=(\d+)(?:;|$)")
 
 __all__ = [
     "COL_APPROVE_SCHEDULED",
@@ -104,6 +120,7 @@ __all__ = [
     "COL_WORKSTREAM",
     "STATUS_FAILED",
     "STATUS_HELD",
+    "SHEET_ID",
     "STATUS_PENDING",
     "STATUS_SENDING",
     "STATUS_SENT",
@@ -114,6 +131,7 @@ __all__ = [
     "find_row_by_rfq_vendor",
     "notes_for_review_row",
     "rfq_email_body_template",
+    "row_form_box_file_id",
     "row_rfq_id",
     "row_rfq_number",
     "row_vendor_key",
@@ -153,11 +171,20 @@ def rfq_email_body_template(
     )
 
 
-def notes_for_review_row(rfq_id: int, rfq_number: str, vendor_key: str) -> str:
+def notes_for_review_row(
+    rfq_id: int, rfq_number: str, vendor_key: str, form_box_file_id: str = "",
+) -> str:
     """Build the Notes seed: the machine-parsable ``rfq_id=<n>`` prefix (§19) + the
-    RFQ number + the vendor key (the (rfq, vendor) grain — pass ② and PR-D's send
-    both join on it)."""
-    return f"rfq_id={rfq_id}; rfq_number={rfq_number}; vendor_key={vendor_key}"
+    RFQ number + the vendor key (the (rfq, vendor) grain — pass ② and PR-D's send both
+    join on it) + the OPTIONAL ``form_box_file_id`` (R4): the Box file id of the
+    vendor's fillable ``.xlsx`` quote form, seeded at filing so PR-D's send attaches
+    the form as the second attachment. Appended only when non-empty (an RFQ that
+    degraded to PDF-only never carries it → the send goes PDF-only)."""
+    notes = f"rfq_id={rfq_id}; rfq_number={rfq_number}; vendor_key={vendor_key}"
+    fid = (form_box_file_id or "").strip()
+    if fid:
+        notes = f"{notes}; form_box_file_id={fid}"
+    return notes
 
 
 def row_rfq_id(row: dict[str, Any]) -> int | None:
@@ -186,6 +213,14 @@ def row_vendor_key(row: dict[str, Any]) -> str | None:
     if slot and noted:
         return slot if slot == noted else None
     return slot or noted or None
+
+
+def row_form_box_file_id(row: dict[str, Any]) -> str | None:
+    """The Notes-encoded Box file id of the vendor's fillable ``.xlsx`` quote form, or
+    None (an RFQ filed PDF-only, or a pre-R4 row). PR-D's send reads THIS to attach the
+    form as the second attachment; None → the send goes PDF-only (never guesses)."""
+    m = _FORM_BOX_FILE_ID_RE.search(str(row.get(COL_NOTES) or ""))
+    return m.group(1) if m else None
 
 
 def find_row_by_rfq_vendor(rfq_id: int, vendor_key: str) -> dict[str, Any] | None:

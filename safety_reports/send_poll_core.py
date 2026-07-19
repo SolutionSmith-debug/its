@@ -100,13 +100,29 @@ class DaemonConfig:
     # --- the bound sender (heartbeat + the other I/O seams are injected into
     #     poll_once/poll_inside_lock by the entry, not carried here). ---
     send_fn: Callable[[int], SendResult]    # bound send_one_row (cfg already partial'd)
+    # OPT-IN dark-ship allowance (default OFF — strict for every existing daemon). A send
+    # daemon that ships DARK before its review sheet is built (builder-precedes-seed — the
+    # RFQ send lane, whose SHEET_RFQ_PENDING_REVIEW is a 0 placeholder until the operator
+    # runs the builder + flips the id) sets this True so its module-level CONFIG can be
+    # CONSTRUCTED/IMPORTED with poll_sheet_id == 0. This is RUNTIME-SAFE only because
+    # poll_once short-circuits on the `polling_enabled=false` gate BEFORE ever reading the
+    # sheet, so a dark daemon never touches sheet 0; a real id lands at go-live (the operator
+    # builds the sheet + flips the id, the SAME step that flips the send gate). A NEGATIVE id
+    # is never permitted, and the strict positive-id gate stays for every other daemon.
+    allow_placeholder_sheet: bool = False
 
     def __post_init__(self) -> None:
         # Construction-time contamination gate — fail LOUD on a missing binding.
         if not callable(self.send_fn):
             raise TypeError("DaemonConfig.send_fn must be callable (the bound sender).")
-        if not isinstance(self.poll_sheet_id, int) or self.poll_sheet_id <= 0:
-            raise ValueError("DaemonConfig.poll_sheet_id must be a positive sheet id.")
+        if not isinstance(self.poll_sheet_id, int) or self.poll_sheet_id < 0:
+            raise ValueError("DaemonConfig.poll_sheet_id must be a non-negative sheet id.")
+        if self.poll_sheet_id == 0 and not self.allow_placeholder_sheet:
+            raise ValueError(
+                "DaemonConfig.poll_sheet_id must be a positive sheet id (or set "
+                "allow_placeholder_sheet=True for a dark daemon whose review sheet is not "
+                "built yet — the send gate keeps it a no-op until the id is flipped)."
+            )
         if not isinstance(self.f22_workspace_id, int) or self.f22_workspace_id <= 0:
             raise ValueError("DaemonConfig.f22_workspace_id must be a positive workspace id.")
         if "SENDING" in {s.upper() for s in self.dispatch_statuses}:

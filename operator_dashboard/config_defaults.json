@@ -403,6 +403,40 @@
       "origin": "daemon"
     },
     {
+      "setting": "po_materials.rfq_send.from_mailbox",
+      "workstream": "po_materials",
+      "kind": "str",
+      "default": "procurement@evergreenmirror.com",
+      "purpose": "The M365 mailbox the po_materials.rfq_send send daemon sends approved email FROM.",
+      "read_by": [
+        "po_materials.rfq_send",
+        "po_materials.rfq_send_poll"
+      ],
+      "origin": "daemon"
+    },
+    {
+      "setting": "po_materials.rfq_send.polling_enabled",
+      "workstream": "po_materials",
+      "kind": "bool",
+      "default": false,
+      "purpose": "Runtime on/off gate for the po_materials.rfq_send daemon. False pauses it without unloading its launchd job (the canonical runtime gate, distinct from the report-filter Enabled checkbox).",
+      "read_by": [
+        "po_materials.rfq_send_poll"
+      ],
+      "origin": "daemon"
+    },
+    {
+      "setting": "po_materials.rfq_send.scheduled_send_local",
+      "workstream": "po_materials",
+      "kind": "str",
+      "default": "MON 07:00",
+      "purpose": "Local-time window (e.g. `MON 07:00`) at/after which a row approved with **Approve for Scheduled Send** may dispatch on the po_materials.rfq_send path.",
+      "read_by": [
+        "po_materials.rfq_send_poll"
+      ],
+      "origin": "daemon"
+    },
+    {
       "setting": "safety_reports.portal.worker_base_url",
       "workstream": "po_materials",
       "kind": "str",

@@ -18,10 +18,13 @@ model (one host, one lock, one heartbeat) behind ONE gate
      unknown vendor → per-vendor Review-Queue fence, the OTHER vendors proceed) →
      DETERMINISTIC price-free render (`rfq_generate.render_rfq_pdf`) → Box file
      (§45 find-or-create ROOT→job→"Purchase Orders"→"RFQs"; §47
-     version-on-conflict under `rfq_naming.rfq_pdf_filename`) → RFQ_Log (rfq,
-     vendor) row + RFQ_Pending_Review row (PO-twin columns; inline PDF attach
-     best-effort; Send Status PENDING; Workstream 'po_materials_rfq' — the
-     DISTINCT lane tag, see rfq_review) → collect (vendor_key, box_file_id,
+     version-on-conflict under `rfq_naming.rfq_pdf_filename`) → **R4: ALSO render
+     the fillable `.xlsx` quote form (`quote_form.render_quote_form`) → file it to
+     the SAME Box folder (best-effort; PDF-only degrade)** → RFQ_Log (rfq, vendor)
+     row + RFQ_Pending_Review row (PO-twin columns; inline attach of BOTH files
+     best-effort; the form's Box id seeded in the row Notes so PR-D's send attaches
+     it; Send Status PENDING; Workstream 'po_materials_rfq' — the DISTINCT lane tag,
+     see rfq_review) → collect (vendor_key, box_pdf_file_id, box_form_file_id,
      review_row_id) → **mark-filed ONCE per rfq, LAST**. A crash anywhere before
      the receipt re-serves the row and every prior step is find-or-skip idempotent
      (RFQ_Log by RFQ Number+Vendor Key; review rows by the Notes rfq_id+vendor
@@ -140,6 +143,11 @@ POLL_INTERVAL_SECONDS = 120  # registration metadata; mirrors the launchd StartI
 # RFQ-specific leaf (§45 find-or-create at every level).
 PO_BOX_SUBFOLDER = "Purchase Orders"
 RFQS_SUBFOLDER = "RFQs"
+
+# The fillable-quote-form OpenXML MIME (R4) — used for the Smartsheet inline attach so the
+# xlsx is not mislabeled application/pdf (the shared engine derives the same from the
+# filename at send time via weekly_send._attachment_content_type).
+_XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 # #336 — every ITS_Config key this daemon resolves at RUNTIME. The declared-but-not-
 # runtime-read *.poll_interval_seconds key is deliberately EXCLUDED (install.sh bakes
@@ -671,7 +679,7 @@ def _process_pending_rfq(
             outcome = _file_one_vendor(
                 rfq, line_items, vendor_key, purchaser, folder_id,
                 rfq_id=rfq_id, rfq_number=rfq_number,
-                rfq_date=rfq_date, due_date=due_date,
+                rfq_date=rfq_date, due_date=due_date, secret=creds.secret,
                 correlation_id=correlation_id, counters=counters,
             )
             if outcome is not None:
@@ -748,14 +756,23 @@ def _file_one_vendor(
     rfq_number: str,
     rfq_date: date,
     due_date: date | None,
+    secret: str,
     correlation_id: str,
     counters: dict[str, int],
 ) -> dict[str, Any] | None:
     """Render + file + stage ONE vendor's copy. Returns the collected
-    `{vendor_key, box_file_id, review_row_id}` outcome, or None when the vendor is
-    PERMANENTLY fenced (unknown in the SoR — the caller's receipt then excludes it;
-    the other vendors proceed). TRANSIENT failures raise to the caller (whole-rfq
-    retry, no receipt)."""
+    `{vendor_key, box_pdf_file_id, box_form_file_id, review_row_id}` outcome, or None
+    when the vendor is PERMANENTLY fenced (unknown in the SoR — the caller's receipt then
+    excludes it; the other vendors proceed). TRANSIENT failures raise to the caller
+    (whole-rfq retry, no receipt).
+
+    R4 round-trip: alongside the PRICE-FREE RFQ PDF this ALSO renders the vendor's fillable
+    ``.xlsx`` quote form (Tier-0 round-trip form, `quote_form.render_quote_form`), files it
+    to the SAME Box folder, seeds its Box file id into the review row's Notes (so PR-D's
+    ``rfq_send`` attaches it as the second attachment) + the mark-filed vendor_results (→ the
+    Worker's `rfq_vendors.box_form_file_id`), and attaches BOTH to the review row. The form
+    is BEST-EFFORT: a render/upload failure degrades to PDF-only (WARN once/cycle) — the RFQ
+    PDF is the essential document, never blocked on the convenience form."""
     vendor = vendors.get_vendor_by_key(vendor_key)
     if vendor is None:
         counters["vendors_fenced"] += 1
@@ -799,8 +816,15 @@ def _file_one_vendor(
     box_file_id = str(file_info["id"])
     box_link = f"https://app.box.com/file/{box_file_id}"
 
+    # R4 — the fillable xlsx quote form alongside the PDF (best-effort; PDF-only degrade).
+    form_bytes, box_form_file_id = _render_and_file_quote_form(
+        rfq, line_items, vendor_key, vendor_name, folder_id,
+        rfq_number=rfq_number, due_date=due_date, secret=secret,
+        correlation_id=correlation_id, counters=counters,
+    )
+
     # RFQ_Pending_Review row (idempotent via the Notes rfq_id+vendor join) + the
-    # inline PDF attach (best-effort — Box is the SoR).
+    # inline attach of BOTH files (best-effort — Box is the SoR).
     existing = rfq_review.find_row_by_rfq_vendor(rfq_id, vendor_key)
     if existing is not None:
         review_row_id = int(existing["_row_id"])
@@ -823,9 +847,17 @@ def _file_one_vendor(
             recipient_to=str(vendor.get(vendors.COL_CONTACT_EMAIL) or ""),
             cc_display="",
             email_body=email_body,
-            notes=rfq_review.notes_for_review_row(rfq_id, rfq_number, vendor_key),
+            notes=rfq_review.notes_for_review_row(
+                rfq_id, rfq_number, vendor_key, box_form_file_id
+            ),
         )
-        _attach_pdf_best_effort(review_row_id, filename, pdf, correlation_id)
+        _attach_file_best_effort(review_row_id, filename, pdf, correlation_id)
+        if box_form_file_id and form_bytes is not None:
+            _attach_file_best_effort(
+                review_row_id,
+                rfq_naming.rfq_form_filename(rfq_number, vendor_name),
+                form_bytes, correlation_id, content_type=_XLSX_MIME,
+            )
 
     # RFQ_Log (rfq, vendor) row (idempotent by RFQ Number + Vendor Key — the
     # crash-retry find-or-skip the mark-filed replay contract depends on).
@@ -842,13 +874,62 @@ def _file_one_vendor(
         )
 
     counters["vendors_filed"] += 1
-    # The Worker's vendor_results shape (string ids; box_form_file_id is R3's xlsx
-    # quote form — absent in R2, the Worker stores NULL).
+    # The Worker's vendor_results shape (string ids). R4: box_form_file_id is the fillable
+    # xlsx quote form's Box file id — "" when the form degraded to PDF-only (the Worker's
+    # optStr maps "" → NULL, so an absent form stores NULL, unchanged from R2).
     return {
         "vendor_key": vendor_key,
         "box_pdf_file_id": box_file_id,
+        "box_form_file_id": box_form_file_id,
         "review_row_id": str(review_row_id),
     }
+
+
+def _render_and_file_quote_form(
+    rfq: dict[str, Any],
+    line_items: list[dict[str, Any]],
+    vendor_key: str,
+    vendor_name: str,
+    folder_id: str,
+    *,
+    rfq_number: str,
+    due_date: date | None,
+    secret: str,
+    correlation_id: str,
+    counters: dict[str, int],
+) -> tuple[bytes | None, str]:
+    """Render the vendor's fillable ``.xlsx`` quote form (Tier-0 round-trip form) and file
+    it to the SAME Box folder as the RFQ PDF. Returns ``(form_bytes, box_form_file_id)`` —
+    the bytes (for the review-row inline attach) + the Box file id (for the Notes seed +
+    mark-filed vendor_results).
+
+    BEST-EFFORT (R4): any failure — a missing ``quote_form`` module (lazy import), a render
+    crash, or a Box upload error — degrades to PDF-only, returning ``(None, "")``. WARNs
+    ONCE PER CYCLE (a `counters` sentinel suppresses per-vendor spam) — the RFQ PDF is the
+    essential document; the fillable form is a convenience the vendor can also fill on their
+    own letterhead (the review-row body says so). Never raises."""
+    try:
+        from po_materials import quote_form  # noqa: PLC0415 — lazy: not needed while dark
+        form_bytes = quote_form.render_quote_form(
+            rfq_number, vendor_key, str(rfq.get("job_name") or ""), line_items,
+            secret=secret.encode("utf-8"),
+            due_date=due_date.isoformat() if due_date is not None else None,
+        )
+        form_filename = rfq_naming.rfq_form_filename(rfq_number, vendor_name)
+        info = box_client.upload_bytes_or_new_version(folder_id, form_filename, form_bytes)
+        return form_bytes, str(info["id"])
+    except Exception as exc:  # noqa: BLE001 — the form is a convenience; PDF-only degrade, never die
+        if not counters.get("quote_form_warned"):
+            counters["quote_form_warned"] = 1
+            error_log.log(
+                Severity.WARN, SCRIPT_NAME,
+                f"RFQ {rfq_number}: quote-form render/file failed for vendor "
+                f"{vendor_key!r} — this vendor's RFQ files PDF-only (the form is a "
+                f"convenience): {type(exc).__name__}: {exc!r}",
+                error_code="rfq_quote_form_failed",
+                correlation_id=correlation_id,
+            )
+        return None, ""
 
 
 def _handle_rfq_hmac_failure(
@@ -945,21 +1026,24 @@ def _resolve_rfq_box_folder(job_name: str) -> str | None:
     return box_client.get_or_create_folder(po_folder, RFQS_SUBFOLDER)
 
 
-def _attach_pdf_best_effort(
-    row_id: int, filename: str, pdf_bytes: bytes, correlation_id: str
+def _attach_file_best_effort(
+    row_id: int, filename: str, file_bytes: bytes, correlation_id: str,
+    *, content_type: str = "application/pdf",
 ) -> None:
-    """Attach the rendered PDF inline on the review row, BEST-EFFORT (Box is the
-    SoR; a failure is a WARN that never fails the filing — mirror po_poll)."""
+    """Attach the rendered file inline on the review row, BEST-EFFORT (Box is the
+    SoR; a failure is a WARN that never fails the filing — mirror po_poll). Used for
+    BOTH the RFQ PDF (default content-type) and the R4 fillable ``.xlsx`` quote form
+    (OpenXML content-type — so the attachment is not mislabeled)."""
     try:
         smartsheet_client.attach_pdf_to_row(
-            rfq_review.sheet_id(), row_id, filename, pdf_bytes
+            rfq_review.sheet_id(), row_id, filename, file_bytes, content_type=content_type
         )
     except Exception as exc:  # noqa: BLE001 — supplementary inline copy; Box is the SoR
         error_log.log(
             Severity.WARN, SCRIPT_NAME,
-            f"review-row PDF attach failed (row {row_id}, {filename!r}): "
+            f"review-row file attach failed (row {row_id}, {filename!r}): "
             f"{type(exc).__name__}: {exc!r}",
-            error_code="rfq_row_pdf_attach_failed",
+            error_code="rfq_row_file_attach_failed",
             correlation_id=correlation_id,
         )
 
