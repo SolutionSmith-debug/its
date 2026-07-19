@@ -1611,6 +1611,32 @@ GH_MAIN_CI_WORKFLOW = "ci.yml"
 GH_MAIN_CI_TIMEOUT_SECONDS = 30
 
 
+def _resolve_main_head_sha(gh: str) -> str | None:
+    """Resolve origin/main's actual HEAD sha via `gh api` (Check S staleness probe).
+
+    Fail-SAFE like every other Check S probe: any gh/network/parse failure — or an
+    output that is not a full 40-hex sha — returns None, which the caller treats as
+    "probe skipped" (INFO, never WARN). Our OWN inability to resolve HEAD must not
+    page.
+    """
+    try:
+        proc = subprocess.run(
+            [gh, "api", f"repos/{GH_MAIN_CI_REPO}/commits/main", "--jq", ".sha"],
+            capture_output=True,
+            text=True,
+            timeout=GH_MAIN_CI_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if proc.returncode != 0:
+        return None
+    head_sha = (proc.stdout or "").strip()
+    if len(head_sha) != 40 or any(c not in "0123456789abcdef" for c in head_sha.lower()):
+        return None
+    return head_sha
+
+
 def _check_main_branch_ci_green() -> CheckResult:
     """Check S: origin/main's required CI (ci.yml) is green on the latest commit.
 
@@ -1624,6 +1650,15 @@ def _check_main_branch_ci_green() -> CheckResult:
     complete all return INFO — never CRITICAL on our OWN inability to check. Only a
     CONCLUSIVE non-success conclusion pages. The CRITICAL is paged + MAINTENANCE-
     deferred by `_run_check`'s `log(CRITICAL)` (no inline alert).
+
+    HEAD-staleness (2026-07-19): a green LATEST RUN proves nothing about the latest
+    COMMIT — on 2026-07-19 GitHub stopped delivering push events for main merges, so
+    three consecutive merge commits got ZERO ci.yml runs and this check kept reading
+    the older green run as "main-CI green" indefinitely. So a conclusive green run is
+    ALSO compared against origin/main's actual HEAD sha; a mismatch means HEAD is
+    UNVERIFIED → WARN (not CRITICAL — the tree may be verified by other means), with
+    the remediation `gh workflow run ci --ref main` (the workflow_dispatch trigger,
+    PR #619). HEAD-resolution failure stays fail-SAFE INFO, never WARN.
     """
     gh = shutil.which("gh")
     if gh is None:
@@ -1663,6 +1698,25 @@ def _check_main_branch_ci_green() -> CheckResult:
     if status != "completed":
         return CheckResult(Severity.INFO, f"main-CI run on {sha} is {status} (not yet conclusive).")
     if conclusion == "success":
+        # Green — but only for the RUN's sha. Compare against origin/main's actual
+        # HEAD (the 2026-07-19 push-event delivery gap: merges with ZERO runs made
+        # the older green run read as current indefinitely).
+        head_sha = _resolve_main_head_sha(gh)
+        if head_sha is None:
+            return CheckResult(
+                Severity.INFO,
+                f"main-CI green on {sha} (ci.yml: test/portal/secrets); HEAD-staleness "
+                "probe skipped — could not resolve origin/main HEAD.",
+            )
+        run_sha = str(run.get("headSha", ""))
+        if run_sha != head_sha:
+            return CheckResult(
+                Severity.WARN,
+                f"[main-ci-stale] latest green ci.yml run is for {run_sha[:7]} but "
+                f"origin/main HEAD is {head_sha[:7]} — HEAD has NO conclusive CI run "
+                "(push-event delivery gap, 2026-07-19 class). Trigger one: "
+                "gh workflow run ci --ref main",
+            )
         return CheckResult(Severity.INFO, f"main-CI green on {sha} (ci.yml: test/portal/secrets).")
     return CheckResult(
         Severity.CRITICAL,

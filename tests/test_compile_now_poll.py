@@ -293,3 +293,37 @@ def test_reporter_registration_metadata_is_self_provisioning_config(stub):
     assert r.workstream == "safety_reports"
     assert r.interval_seconds == 90
     assert r.row_state_path.name == "heartbeat_row_ids.json"
+
+
+# ---- config-read transient fence (DASH-14 port of PR #613) ----------------
+
+
+def test_read_str_setting_transient_error_falls_open_with_warn(mocker):
+    """A generic SmartsheetError from get_setting (read-timeout / 5xx) must NOT escape
+    to @its_error_log as a spurious CRITICAL — WARN `config_read_error` + fallback,
+    same disposition as the circuit-open branch."""
+    mocker.patch(
+        "safety_reports.compile_now_poll.smartsheet_client.get_setting",
+        side_effect=SmartsheetError("read timeout"),
+    )
+    log = mocker.patch("safety_reports.compile_now_poll.error_log.log")
+
+    result = cnp._read_str_setting(
+        "safety_reports.some_key", "safety_reports", "fallback-val"
+    )  # must not raise
+
+    assert result == "fallback-val"
+    codes = [kw.get("error_code") for _, kw in log.call_args_list]
+    assert "config_read_error" in codes
+
+
+def test_polling_gate_transient_error_resolves_to_default(mocker):
+    """Cycle-entry proof: the per-workstream polling gate read survives a transient and
+    resolves to the default (True) instead of crashing the cycle."""
+    mocker.patch(
+        "safety_reports.compile_now_poll.smartsheet_client.get_setting",
+        side_effect=SmartsheetError("HTTP 502"),
+    )
+    mocker.patch("safety_reports.compile_now_poll.error_log.log")
+
+    assert cnp._polling_enabled(SAFETY_CFG) is cnp.DEFAULT_POLLING_ENABLED
