@@ -123,7 +123,13 @@ LABEL_PREFIX = "org.solutionsmith.its."
 # require them loaded, and FAILS if one IS loaded — a send daemon live at cutover is a
 # FIXED high-class External-Send-Gate event (Seth). A future subcontract-send goes here
 # too. First-enabling a send path = remove its label here + load its plist.
-DARK_UNLOADED_LABELS = frozenset({"org.solutionsmith.its.po-send"})
+DARK_UNLOADED_LABELS = frozenset({
+    "org.solutionsmith.its.po-send",
+    # RFQ send (ADR-0004 R3) ships DARK like po-send: a plist that exists but is NOT
+    # required loaded at cutover. Go-live (flip po_materials.rfq_send.polling_enabled true +
+    # load the plist) is a FIXED high-class External-Send-Gate operator action (Seth).
+    "org.solutionsmith.its.rfq-send",
+})
 
 # The mirror-tenant marker. Any load-bearing config value still containing this
 # after cutover means a daemon is pointed at the sandbox (§53 sandbox-masks-
@@ -331,6 +337,21 @@ CONFIG_ROWS: tuple[ConfigRow, ...] = (
     # what VC-03 asserts, the dark-gate reflex).
     ConfigRow("po_materials.rfq_poll.polling_enabled", "po_materials", "non_empty"),
     ConfigRow("po_materials.rfq_poll.poll_interval_seconds", "po_materials", "non_empty"),
+    # Outbound-RFQ SEND daemon (ADR-0004 R3, built dark). The from_mailbox is production-
+    # address surface (VC-03 sandbox-scanned — it holds the evergreenmirror.com mirror value,
+    # flagged to repoint at cutover), enrolled exactly like po_send / subcontract_send. The
+    # send gate + scheduled window are asserted SEEDED PRESENT (non_empty, NOT forced 'true'
+    # — the dark-ship reflex: seed_rfq_send_config.py must have run so there is a switch to
+    # flip). polling_enabled is deliberately NOT forced 'true': flipping the RFQ send gate on
+    # is a FIXED high-capability-class External-Send-Gate decision (Seth), same posture as
+    # po_send's / subcontract_send's polling_enabled. (The bearer ITS_PORTAL_RFQ_TOKEN is
+    # already in DARK_BEARER_SECRETS from R2 — the send poller reuses it; no new secret.)
+    ConfigRow(
+        "po_materials.rfq_send.from_mailbox", "po_materials", "non_empty",
+        sandbox_scan=True,
+    ),
+    ConfigRow("po_materials.rfq_send.polling_enabled", "po_materials", "non_empty"),
+    ConfigRow("po_materials.rfq_send.scheduled_send_local", "po_materials", "non_empty"),
 )
 
 

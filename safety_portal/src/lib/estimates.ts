@@ -51,6 +51,11 @@ export interface EstimateRow {
   family_key: string | null;
   supersedes_estimate_id: number | null;
   po_id: number | null;
+  // R4 round-trip auto-bind: when a VERIFIED Tier-0 rfq-form:v1 form round-tripped, the
+  // Worker binds these from the daemon's hint (else null). The disposition screen surfaces
+  // them as the "auto-bound to RFQ … — confirm vendor" banner + the requested-vs-quoted panel.
+  rfq_id: number | null;
+  rfq_vendor_key: string | null;
   created_at: number;
   screened_at: number | null;
   extracted_at: number | null;

@@ -163,8 +163,9 @@ def _patch(mocker):
     r_review.add_rfq_review_row.return_value = 9001
     r_review.rfq_email_body_template.return_value = "seed body"
     r_review.notes_for_review_row.side_effect = (
-        lambda rfq_id, rfq_number, vendor_key:
+        lambda rfq_id, rfq_number, vendor_key, form_box_file_id="":
         f"rfq_id={rfq_id}; rfq_number={rfq_number}; vendor_key={vendor_key}"
+        + (f"; form_box_file_id={form_box_file_id}" if form_box_file_id else "")
     )
     r_review.sheet_id.return_value = 555
     r_review.WORKSTREAM_TAG = rfq_review.WORKSTREAM_TAG
@@ -211,6 +212,12 @@ def _patch(mocker):
         "render": mocker.patch(
             "po_materials.rfq_poll.rfq_generate.render_rfq_pdf",
             return_value=b"%PDF-rfq",
+        ),
+        # R4: the fillable xlsx quote form (lazy `from po_materials import quote_form`).
+        # Mocked deterministically so the second Box upload is predictable.
+        "render_form": mocker.patch(
+            "po_materials.quote_form.render_quote_form",
+            return_value=b"PK\x03\x04xlsx-form",
         ),
         "upload": upload,
         "box_folder": mocker.patch(
@@ -383,9 +390,11 @@ def test_happy_path_files_ledger_review_and_receipts_last(_patch):
 
     assert stats.filed == 1 and stats.vendors_filed == 1
     _patch["render"].assert_called_once()
-    _patch["upload"].assert_called_once()
-    upload_values = list(_patch["upload"].call_args.args)
-    assert b"%PDF-rfq" in upload_values
+    _patch["render_form"].assert_called_once()  # R4: the fillable xlsx quote form too
+    # R4: TWO Box uploads per vendor — the RFQ PDF + the quote form.
+    assert _patch["upload"].call_count == 2
+    all_uploaded = [b for call in _patch["upload"].call_args_list for b in call.args]
+    assert b"%PDF-rfq" in all_uploaded and b"PK\x03\x04xlsx-form" in all_uploaded
     _patch["rfq_log"].append_row.assert_called_once()
     log_kwargs = _patch["rfq_log"].append_row.call_args.kwargs
     assert log_kwargs["vendor_key"] == "VEN-000001"
@@ -393,6 +402,9 @@ def test_happy_path_files_ledger_review_and_receipts_last(_patch):
     _patch["rfq_review"].add_rfq_review_row.assert_called_once()
     _patch["mark_filed"].assert_called_once()
     assert _patch["mark_filed"].call_args.kwargs["rfq_id"] == 7
+    # R4: the mark-filed vendor_results carries the form Box file id (→ rfq_vendors.box_form_file_id).
+    vendor_results = _patch["mark_filed"].call_args.kwargs["vendor_results"]
+    assert vendor_results[0]["box_form_file_id"] == "f-rfq-1"
     # No fence, no flag, no security row on the happy path.
     _patch["review_q"].assert_not_called()
     _patch["flags_persist"].assert_not_called()

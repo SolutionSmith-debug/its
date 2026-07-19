@@ -62,10 +62,11 @@ through Phase C go/no-go BEFORE this list starts),
   and subcontract-poll (`ITS_PORTAL_SUB_TOKEN`) daemon bearers + the operator-dashboard
   PIN (`ITS_OPERATOR_PIN`)).
   Verify: `python -m scripts.verify_cutover --only keychain` → PASS. (VC-01)
-- [ ] **CL-03 — the 14 loaded daemons run on the production host only.** `po-send` (a
-  SEND daemon) stays **UNLOADED** — send-gate defense-in-depth; VC-02 excludes it from the
-  must-load set and FAILS if it IS loaded. `subcontract-poll` and the other generation
-  daemons load but are runtime-dark (`polling_enabled=false`).
+- [ ] **CL-03 — the 14 loaded daemons run on the production host only.** `po-send` **and
+  `rfq-send`** (both SEND daemons) stay **UNLOADED** — send-gate defense-in-depth; VC-02
+  excludes them from the must-load set (both in `DARK_UNLOADED_LABELS`) and FAILS if either
+  IS loaded. `subcontract-poll`, `rfq-poll`, and the other generation daemons load but are
+  runtime-dark (`polling_enabled=false`).
   Verify: `python -m scripts.verify_cutover --only launchd` → PASS on the
   production host, AND on the dev box:
   `launchctl list | grep solutionsmith` prints nothing. (VC-02)
@@ -267,6 +268,17 @@ Order: intake → mirrors/trackers → compile → **send paths last**.
   ships and subcontract SEND defers gracefully post-delivery. Its send-config rows are
   deliberately NOT enrolled in VC-03 until SC-S4 lands. (Separate SC-S4 engineering brief,
   Seth.) **Do NOT gate Aug-7 done on this item.**
+- [ ] **CL-38b — RFQ SEND half (ADR-0004 R3-R4) — BUILT, ships DARK, NOT a blocker.** The
+  outbound-RFQ send lane (`rfq_send.py`/`rfq_send_poll.py`, plist `org.solutionsmith.its.rfq-send`)
+  is built and its config rows are seeded present (`seed_rfq_send_config.py`: `from_mailbox`
+  sandbox-scanned, `polling_enabled`/`scheduled_send_local`/`poll_interval_seconds` seeded —
+  VC-03 asserts presence, NEVER forced `true`). `rfq-send` is a **dark-unloaded** SEND daemon
+  (`DARK_UNLOADED_LABELS`, VC-02) — it stays UNLOADED like `po-send`. **Go-live is a FIXED
+  high-capability-class External-Send-Gate operator action (Seth): repoint the `from_mailbox`
+  to production, build + flip `SHEET_RFQ_PENDING_REVIEW`, flip
+  `po_materials.rfq_send.polling_enabled` true, AND `install.sh load org.solutionsmith.its.rfq-send`
+  together.** Uses the existing `ITS_PORTAL_RFQ_TOKEN` bearer — no new secret. **Do NOT gate
+  Aug-7 done on this item.**
 
 ### Production Worker topology
 

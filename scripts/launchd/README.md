@@ -10,6 +10,7 @@ How ITS scheduled scripts get scheduled on macOS. Per **Operational Standards v8
 | `org.solutionsmith.its.watchdog.plist` | Concrete plist for `scripts/watchdog.py`, daily 7:00 AM |
 | `org.solutionsmith.its.estimate-poll.plist` | Vendor-estimate pull daemon (`po_materials/estimate_poll.py`), `StartInterval` 120s (via `__POLL_INTERVAL_SECONDS__` / `po_materials.estimate_poll.poll_interval_seconds`); ships dark — load + gate-flip together |
 | `org.solutionsmith.its.rfq-poll.plist` | Outbound-RFQ generation daemon (`po_materials/rfq_poll.py`), `StartInterval` 120s (via `__POLL_INTERVAL_SECONDS__` / `po_materials.rfq_poll.poll_interval_seconds`); ships dark — load + gate-flip together |
+| `org.solutionsmith.its.rfq-send.plist` | RFQ SEND daemon (`po_materials/rfq_send_poll.py`), `StartInterval` 900s (via `__POLL_INTERVAL_SECONDS__` / `po_materials.rfq_send.poll_interval_seconds`); ships dark — go-live is a FIXED External-Send-Gate flip + load (Seth) |
 | `install.sh` | Load / unload / status / dry-run helper |
 | `README.md` | This file |
 

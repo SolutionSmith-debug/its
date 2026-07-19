@@ -262,6 +262,18 @@ class SendConfig:
     from_mailbox_default: str
     max_send_retries: int
     upload_session_threshold_bytes: int
+    # OPTIONAL sequence-attachment seam (RFQ R3). When set, the engine appends these EXTRA
+    # attachments — each a ``(filename, content_type, bytes)`` triple, already resolved by
+    # the workstream (RFQ downloads the vendor's fillable ``.xlsx`` quote form from Box) —
+    # AFTER the primary compiled-PDF attachment (COL_COMPILED_PDF). None (the default for
+    # safety / progress / PO / subcontract) keeps the single-attachment path byte-identical:
+    # the engine builds a ONE-element attachment list == the pre-seam single attachment,
+    # and the inline-vs-upload-session transport switch is unchanged. The extra resolver is
+    # a workstream binding (frozen, no captured send capability) — it may degrade to ``[]``
+    # (e.g. an RFQ whose form failed to render → PDF-only), so its absence never HELDs.
+    extra_attachments: (
+        Callable[[EnvelopeContext], Sequence[tuple[str, str, bytes]]] | None
+    ) = None
 
 
 def _resolve_safety_recipients(job: Any) -> tuple[str, Sequence[str]]:
@@ -359,19 +371,22 @@ def _valid_addr(addr: str) -> bool:
 
 def _attachment_content_type(name: str) -> str:
     """The MIME content-type for the outgoing attachment, DERIVED from its filename
-    extension (the envelope's ``attachment_name``). Explicit for the two shipped package
-    types so it is platform-independent — ``.pdf`` → ``application/pdf`` (safety / progress /
-    PO — byte-identical to the pre-2026-07-15 hardcode) and ``.zip`` → ``application/zip``
-    (the subcontract SC-S4 combined package); ``mimetypes`` fallback otherwise, then
+    extension (the envelope's ``attachment_name`` or a sequence-attachment name). Explicit
+    for the shipped package types so it is platform-independent — ``.pdf`` →
+    ``application/pdf`` (safety / progress / PO — byte-identical to the pre-2026-07-15
+    hardcode), ``.zip`` → ``application/zip`` (the subcontract SC-S4 combined package), and
+    ``.xlsx`` → the OpenXML spreadsheet MIME (the RFQ R3 fillable quote form — the second
+    attachment in the two-attachment RFQ send); ``mimetypes`` fallback otherwise, then
     ``application/octet-stream``. Deriving from the name (vs the old hardcoded
-    ``application/pdf``) is the ONLY engine change SC-S4 needs — it never touches the
-    attachment COUNT or the fetch path, so the single-attachment engine and the three PDF
-    workstreams are unaffected."""
+    ``application/pdf``) never touches the attachment COUNT or the fetch path, so the
+    single-attachment engine and the three PDF workstreams are unaffected."""
     lowered = name.strip().lower()
     if lowered.endswith(".pdf"):
         return "application/pdf"
     if lowered.endswith(".zip"):
         return "application/zip"
+    if lowered.endswith(".xlsx"):
+        return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     return mimetypes.guess_type(name)[0] or "application/octet-stream"
 
 
@@ -568,13 +583,44 @@ def send_one_row(row_id: int, cfg: SendConfig) -> SendResult:
     subject, attachment_name = envelope
     from_mailbox = _read_str_setting(cfg.from_mailbox_cfg_key, cfg.from_mailbox_default, workstream=cfg.config_workstream)
     # Content-type is DERIVED from the attachment filename (not hardcoded): .pdf → application/pdf
-    # (safety/progress/PO unchanged), .zip → application/zip (subcontract SC-S4 package).
+    # (safety/progress/PO unchanged), .zip → application/zip (subcontract SC-S4 package),
+    # .xlsx → the OpenXML spreadsheet MIME (the RFQ R3 quote form).
     attachment_content_type = _attachment_content_type(attachment_name)
-    attachment = {
+    # The attachment list: the primary compiled-PDF (COL_COMPILED_PDF, downloaded in Stage 4)
+    # is ALWAYS first. A workstream that binds `extra_attachments` (RFQ R3 — the fillable
+    # `.xlsx` quote form) appends more; for EVERY existing binding (extra_attachments=None)
+    # this stays a ONE-element list identical to the pre-seam single attachment, byte-for-byte.
+    attachments: list[dict[str, Any]] = [{
         "name": attachment_name,
         "contentType": attachment_content_type,
         "contentBytes": pdf_bytes,
-    }
+    }]
+    if cfg.extra_attachments is not None:
+        for extra_name, extra_ctype, extra_bytes in cfg.extra_attachments(
+            EnvelopeContext(project_name=project_name, week=week, row=row)
+        ):
+            attachments.append({
+                "name": extra_name,
+                "contentType": extra_ctype,
+                "contentBytes": extra_bytes,
+            })
+    total_attachment_bytes = sum(len(a["contentBytes"]) for a in attachments)
+
+    # Stage 5c: multi-attachment oversized refusal. The single-attachment upload-session
+    # path (Stage 6) transmits exactly ONE large attachment, so a MULTI-attachment packet
+    # over the inline threshold cannot use it (and inline over Graph's ~3 MB ceiling fails)
+    # → HELD (operator-actionable), checked BEFORE the write-ahead SENDING marker (fail
+    # toward not-sending, mirroring Stage 4b). Structurally unreachable for the
+    # single-attachment bindings (len==1) and for RFQ in practice (a price-free PDF + a
+    # small xlsx form are each a few KB).
+    if len(attachments) > 1 and total_attachment_bytes > cfg.upload_session_threshold_bytes:
+        return _mark_held(
+            row_id, project_name, notes,
+            f"multi-attachment packet is {total_attachment_bytes} bytes, over the "
+            f"{cfg.upload_session_threshold_bytes}-byte inline ceiling — the upload-session "
+            f"path carries only ONE attachment; reduce the attachments",
+            "held_oversized_packet", cfg,
+        )
 
     # Stage 6: send. Log the RESOLVED recipients (brief §E).
     error_log.log(
@@ -605,11 +651,15 @@ def send_one_row(row_id: int, cfg: SendConfig) -> SendResult:
             status="send_failed", row_id=row_id, project_name=project_name,
             error=f"pre_send_marker_failed: {exc!r}", retry_count=retry_count,
         )
-    # Transport switch: inline send_mail at/below the threshold; upload-session above
-    # it (a photo-bearing packet can exceed Graph's ~3 MB inline /sendMail ceiling).
-    # Both paths are the SAME send capability (Invariant 1) and share the error fences.
+    # Transport switch: a SINGLE attachment over the threshold sends via the Graph
+    # upload-session (a photo-bearing packet can exceed Graph's ~3 MB inline /sendMail
+    # ceiling); everything else — one OR many attachments at/below the threshold — sends
+    # inline via `send_mail` (Graph accepts multiple fileAttachment parts). For every
+    # existing single-attachment binding this is byte-identical to the pre-seam behavior
+    # (`len(attachments) == 1` → the same two branches on `packet_size`). Both paths are
+    # the SAME send capability (Invariant 1) and share the error fences.
     try:
-        if packet_size > cfg.upload_session_threshold_bytes:
+        if len(attachments) == 1 and packet_size > cfg.upload_session_threshold_bytes:
             error_log.log(
                 Severity.INFO, cfg.script_name,
                 f"row_id={row_id} packet={packet_size}B > {cfg.upload_session_threshold_bytes}B "
@@ -625,7 +675,7 @@ def send_one_row(row_id: int, cfg: SendConfig) -> SendResult:
         else:
             graph_client.send_mail(
                 from_mailbox=from_mailbox, to=[to_addr], cc=cc_list or None,
-                subject=subject, body=body, content_type="Text", attachments=[attachment],
+                subject=subject, body=body, content_type="Text", attachments=attachments,
             )
     except GraphAttachmentTooLargeError as exc:
         # Belt-and-suspenders: Stage 4b already HELDs an over-ceiling packet, but if the

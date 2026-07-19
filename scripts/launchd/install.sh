@@ -8,14 +8,14 @@
 # installed copies have concrete values.
 #
 # __POLL_INTERVAL_SECONDS__ (weekly-send, portal-poll, compile-now-poll, progress-send,
-# fieldops-sync, po-poll, po-send, subcontract-poll, subcontract-send, estimate-poll, rfq-poll): these plists carry the placeholder in <integer>StartInterval</integer>.
+# fieldops-sync, po-poll, po-send, subcontract-poll, subcontract-send, estimate-poll, rfq-poll, rfq-send): these plists carry the placeholder in <integer>StartInterval</integer>.
 # `load`/`dry-run` resolve it from the optional [interval] arg, else a per-daemon default
-# (900 / 60 / 90 / 900 / 90 / 90 / 900 / 120 / 900 / 120 / 120 respectively, matching the daemon's ITS_Config poll-interval row
+# (900 / 60 / 90 / 900 / 90 / 90 / 900 / 120 / 900 / 120 / 120 / 900 respectively, matching the daemon's ITS_Config poll-interval row
 # default — safety_reports.weekly_send / safety_reports.portal_poll /
 # safety_reports.compile_now_poll / progress_reports.progress_send /
 # field_ops.fieldops_sync / po_materials.po_poll / po_materials.po_send /
 # subcontracts.subcontract_poll / subcontracts.subcontract_send /
-# po_materials.estimate_poll / po_materials.rfq_poll .poll_interval_seconds). The interval is BAKED into
+# po_materials.estimate_poll / po_materials.rfq_poll / po_materials.rfq_send .poll_interval_seconds). The interval is BAKED into
 # the installed plist, so a later ITS_Config change needs a re-install (pass the
 # new value as [interval]). WITHOUT this substitution the installed plist keeps
 # the literal placeholder and fails `plutil -lint` → the daemon won't load.
@@ -50,7 +50,7 @@ usage: $0 {load|unload|status|dry-run} [plist] [interval]
   compile-now-poll → default 90, progress-send → default 900,
   fieldops-sync → default 90, po-poll → default 90, po-send → default 900,
   subcontract-poll → default 120, subcontract-send → default 900,
-  estimate-poll → default 120, rfq-poll → default 120).
+  estimate-poll → default 120, rfq-poll → default 120, rfq-send → default 900).
 EOF
     exit 1
 }
@@ -77,6 +77,7 @@ poll_interval_config_key() {
         org.solutionsmith.its.subcontract-send) echo "subcontracts.subcontract_send.poll_interval_seconds" ;;
         org.solutionsmith.its.estimate-poll)    echo "po_materials.estimate_poll.poll_interval_seconds" ;;
         org.solutionsmith.its.rfq-poll)         echo "po_materials.rfq_poll.poll_interval_seconds" ;;
+        org.solutionsmith.its.rfq-send)         echo "po_materials.rfq_send.poll_interval_seconds" ;;
         *) echo "" ;;
     esac
 }
@@ -93,6 +94,7 @@ poll_interval_default() {
         org.solutionsmith.its.subcontract-send) echo "900" ;;
         org.solutionsmith.its.estimate-poll)    echo "120" ;;
         org.solutionsmith.its.rfq-poll)         echo "120" ;;
+        org.solutionsmith.its.rfq-send)         echo "900" ;;
         *) echo "" ;;
     esac
 }

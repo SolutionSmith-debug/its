@@ -57,7 +57,7 @@ Ref: `host_migration_runbook.md` Phase B. #1 hazard = daemon double-run. **Must 
 - [ ] (4) rsync `state/` + `.watchdog/` markers to the new host.
 - [ ] (5) Box re-auth via a fresh `setup_box_oauth.py` on the **new host ONLY** — never run Box code
   on the dev box again.
-- [ ] (6) `git pull origin main` on the new host, then load all daemons but `po-send` (14 loaded; po-send stays unloaded — send-gate).
+- [ ] (6) `git pull origin main` on the new host, then load all daemons but `po-send` **and `rfq-send`** (both SEND daemons stay unloaded — send-gate; both in `DARK_UNLOADED_LABELS`). Their go-live is a FIXED External-Send-Gate flip + load done with Seth, never at cutover.
 - [ ] (7) verification gate: labels loaded, fresh Check-C markers, ITS_Daemon_Health advancing, portal
   round-trip, **and the UptimeRobot prove-it-bites** (unload watchdog → wait 35 min → alert must
   ARRIVE → reload).

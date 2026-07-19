@@ -952,6 +952,9 @@ def _service_one_estimate(
                 creds.base_url, creds.bearer,
                 estimate_id=est_id, status="extracted", box_file_id=box_file_id,
                 detail=ladder.detail, extraction=ladder.payload,
+                # R4 — the verified Tier-0 rfq-form:v1 binding (None for Tiers 1/2).
+                # The Worker auto-binds only when BOTH are present AND resolve.
+                rfq_number=ladder.rfq_number, rfq_vendor_key=ladder.rfq_vendor_key,
             )
             counters["extracted"] += 1
         else:
@@ -1028,13 +1031,19 @@ class _LadderOutcome:
 
     `payload` is the Worker result-route extraction body (parseExtraction
     contract); `detail` the ≤200-char top-level note (for Tier 0 it carries the
-    verified rfq binding — the PR-D TODO documented in the module docstring);
-    `vendor_name`/`quote_number` feed the Estimate_Log identity stamp."""
+    verified rfq binding); `vendor_name`/`quote_number` feed the Estimate_Log identity
+    stamp. `rfq_number`/`rfq_vendor_key` (R4) are populated ONLY for a VERIFIED Tier-0
+    filled-form parse (an `rfq-form:v1` token that matched) — they are promoted to the
+    top-level result-post fields feeding the Worker's `po_estimates.rfq_id` /
+    `rfq_vendor_key` auto-bind (which flips the `rfq_vendors` row to responded). Tiers
+    1/2 leave them None (an ordinary vendor document has no signed RFQ identity)."""
 
     payload: dict[str, Any]
     detail: str
     vendor_name: str
     quote_number: str
+    rfq_number: str | None = None
+    rfq_vendor_key: str | None = None
 
 
 def _xlsx_has_form_meta(data: bytes) -> bool:
@@ -1332,10 +1341,9 @@ def _tier0_filled_form(
 
     payload_json = json.dumps(
         {
-            # PR-D TODO (documented in the module docstring): the verified RFQ
-            # binding rides HERE + the detail note until PR-D adds the additive
-            # Worker result-route fields feeding the 0054 rfq_id /
-            # rfq_vendor_key auto-bind columns. NO Worker edits in PR-B.
+            # The verified RFQ binding rides HERE (the provenance record) AND is
+            # promoted to the top-level result-post fields (R4) feeding the Worker's
+            # 0054 rfq_id / rfq_vendor_key auto-bind — see the _LadderOutcome return.
             "rfq_number": parsed.rfq_number,
             "vendor_key": parsed.vendor_key,
             "form_verified": True,
@@ -1371,6 +1379,10 @@ def _tier0_filled_form(
     return _LadderOutcome(
         payload=payload, detail=detail,
         vendor_name=parsed.vendor_key or "", quote_number=parsed.rfq_number or "",
+        # R4 — promote the VERIFIED rfq-form:v1 binding to the top-level result post so
+        # the Worker auto-binds this estimate to (rfq, vendor). Reached ONLY when
+        # parsed.verified (guarded above), so these are never a spoofed binding.
+        rfq_number=parsed.rfq_number, rfq_vendor_key=parsed.vendor_key,
     )
 
 

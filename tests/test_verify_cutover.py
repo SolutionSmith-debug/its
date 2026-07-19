@@ -317,6 +317,21 @@ def test_subcontract_send_rows_enrolled_after_sc_s4():
     assert by_key["subcontracts.subcontract_send.scheduled_send_local"].requirement == "non_empty"
 
 
+def test_rfq_send_dark_unloaded_and_rows_enrolled_after_r3():
+    """The ADR-0004 R3 RFQ SEND half is BUILT (ships dark): its plist is a dark-unloaded
+    send daemon (excluded from the expected-loaded set, like po-send), and its config rows
+    are enrolled — from_mailbox sandbox-scanned; the gate + window asserted SEEDED PRESENT
+    (non_empty, NOT forced 'true' — flipping the RFQ send gate is a FIXED high-class
+    External-Send-Gate decision, never demanded 'true' by VC-03)."""
+    assert "org.solutionsmith.its.rfq-send" in vc.DARK_UNLOADED_LABELS
+    assert "org.solutionsmith.its.rfq-send" not in vc._expected_labels()
+    by_key = {r.key: r for r in vc.CONFIG_ROWS}
+    assert "po_materials.rfq_send.from_mailbox" in by_key
+    assert by_key["po_materials.rfq_send.from_mailbox"].sandbox_scan is True
+    assert by_key["po_materials.rfq_send.polling_enabled"].requirement == "non_empty"
+    assert by_key["po_materials.rfq_send.scheduled_send_local"].requirement == "non_empty"
+
+
 def test_po_from_mailbox_mirror_value_fails_unless_allowed(monkeypatch):
     """A mirror procurement@evergreenmirror.com residue on the PO FROM address fails the
     production gate but passes the --allow-sandbox dress rehearsal (the enrollment's teeth)."""

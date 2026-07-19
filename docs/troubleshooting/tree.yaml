@@ -497,6 +497,25 @@ workflows:
               - Load/flip the gate if sending is intended; re-share approvers. Auth changes → confirm with Seth.
             class: seth_coresolve
             runbook: docs/runbooks/po_send.md
+      - id: rfq_send
+        title: rfq-send transmits an approved request-for-quote to its vendor (dark)
+        what_happens:
+          daemon: rfq-send
+          sheets: [RFQ_Pending_Review, ITS_Vendors]
+          config_gates: [po_materials.rfq_send.polling_enabled]
+        healthy_signals:
+          - An approved RFQ_Pending_Review row is sent from procurement@ with TWO attachments — the price-free RFQ PDF + the fillable xlsx quote form; the recipient resolves from ITS_Vendors by Vendor Key. Tagged po_materials_rfq so po-send / subcontract-send can never dispatch it.
+        failure_modes:
+          - id: rfq_send_blocked
+            symptom: An approved RFQ is not sent.
+            signals: ["held_no_recipient", "held_missing_envelope", "held_workstream_mismatch", "EMPTY_ALLOWLIST", "rfq-send gate off (fail-safe default false)"]
+            checks:
+              - Is rfq-send loaded and its gate on? (The gate defaults false so a missing row fails safe; go-live is a FIXED External-Send-Gate flip done with Seth.)
+              - Is the ITS — Purchase Orders workspace share list (the §46 approver set, shared with POs) non-empty? Is the vendor's Contact Email present in ITS_Vendors?
+            resolutions:
+              - Fix the vendor email / restore the numberless-row Notes tag, then re-approve; re-share approvers. A contamination HELD or gate flip is Send-Gate class → Seth.
+            class: seth_coresolve
+            runbook: docs/runbooks/rfq_send.md
 
   # ── 5. Subcontract ───────────────────────────────────────────────────────────────────────
   - id: subcontract

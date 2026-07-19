@@ -1158,6 +1158,7 @@ def post_estimate_result(
     base_url: str, token: str, *, estimate_id: int, status: str,
     detail: str | None = None, box_file_id: str | None = None,
     extraction: dict[str, Any] | None = None,
+    rfq_number: str | None = None, rfq_vendor_key: str | None = None,
 ) -> bool:
     """Post one servicing disposition: POST /api/po/estimates/internal/result.
 
@@ -1184,6 +1185,14 @@ def post_estimate_result(
         body["box_file_id"] = box_file_id
     if extraction is not None:
         body["extraction"] = extraction
+    # R4 round-trip auto-bind (additive): the verified Tier-0 rfq-form:v1 binding. The
+    # Worker binds po_estimates.rfq_id/rfq_vendor_key + flips the rfq_vendors row to
+    # responded ONLY when BOTH resolve; a shape-bad / unknown value is IGNORED there (never
+    # 400s the whole result), so passing them is always safe.
+    if rfq_number is not None:
+        body["rfq_number"] = rfq_number
+    if rfq_vendor_key is not None:
+        body["rfq_vendor_key"] = rfq_vendor_key
     data = _request("POST", base_url, EST_RESULT_PATH, token, json_body=body)
     return bool(data.get("found"))
 

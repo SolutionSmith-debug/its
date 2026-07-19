@@ -10,6 +10,7 @@ import {
   type DraftLine,
   type Vendor,
 } from "../lib/po";
+import { fetchRfq, type RfqDetail } from "../lib/rfq";
 import { PageShell } from "../components/PageShell";
 
 // Vendor-estimate DISPOSITION screen (ADR-0004 E3) — the human fidelity control and the
@@ -83,6 +84,10 @@ export function EstimateDispositionPage({
   const [shipToState, setShipToState] = useState("");
   const [armedReject, setArmedReject] = useState(false);
 
+  // R4 round-trip context: when the estimate auto-bound to an RFQ (a verified Tier-0 form
+  // token round-tripped), fetch that RFQ so we can show the requested-vs-quoted compare.
+  const [rfqDetail, setRfqDetail] = useState<RfqDetail | null>(null);
+
   useEffect(() => {
     est
       .fetchEstimate(estimateId)
@@ -94,6 +99,11 @@ export function EstimateDispositionPage({
         // contradicts (mirrors the green-by-default read of a clean quote, but every
         // line stays individually confirmable against the preview).
         setAccepted(new Set(d.lines.map((l) => l.id)));
+        // If auto-bound to an RFQ, load its detail (best-effort — the banner + panel are
+        // context only; a fetch failure never blocks the disposition).
+        if (d.estimate.rfq_id !== null) {
+          fetchRfq(d.estimate.rfq_id).then(setRfqDetail).catch(() => setRfqDetail(null));
+        }
       })
       .catch(() => setError("Failed to load the estimate."));
     fetchVendors().then(setVendors).catch(() => setVendors([]));
@@ -355,6 +365,44 @@ export function EstimateDispositionPage({
         {e.doc_type ? ` · classified ${e.doc_type}` : ""}
         {extraction ? ` · extraction tier ${extraction.tier}` : " · manual entry (no extraction)"}
       </p>
+
+      {/* ── R4 auto-bind banner + requested-vs-quoted compare (red-team #10: the human still
+             CONFIRMS the vendor; the token asserted identity, not truth) ── */}
+      {e.rfq_id !== null ? (
+        <div className="banner banner--ok" role="status">
+          <strong>Auto-bound to RFQ {rfqDetail?.rfq.rfq_number ?? `#${e.rfq_id}`}
+            {e.rfq_vendor_key ? ` / ${e.rfq_vendor_key}` : ""}</strong> via the fillable-form
+          token — <em>confirm the vendor below</em> before importing. The form token asserts
+          the (RFQ, vendor) identity; every quoted price is still untrusted until you verify it
+          against the source.
+          {rfqDetail ? (
+            <details className="rfq-compare">
+              <summary>Requested vs. quoted lines</summary>
+              <div className="table-scroll">
+                <table className="dash-table">
+                  <thead>
+                    <tr><th>#</th><th>Requested (RFQ)</th><th>Qty</th><th>Quoted (this estimate)</th><th>Unit price</th></tr>
+                  </thead>
+                  <tbody>
+                    {rfqDetail.line_items.map((req, i) => {
+                      const quoted = lines[i];
+                      return (
+                        <tr key={req.position}>
+                          <td>{req.position}</td>
+                          <td>{req.description}{req.part_number ? ` (${req.part_number})` : ""}</td>
+                          <td>{req.qty ?? "—"}{req.unit ? ` ${req.unit}` : ""}</td>
+                          <td>{quoted ? quoted.description : "—"}</td>
+                          <td>{quoted && quoted.unit_cost_cents !== null ? formatCents(quoted.unit_cost_cents) : "—"}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </details>
+          ) : null}
+        </div>
+      ) : null}
 
       {msg && <div className={`banner ${msg.ok ? "banner--ok" : "banner--err"}`}>{msg.text}</div>}
 

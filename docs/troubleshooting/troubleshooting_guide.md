@@ -684,6 +684,32 @@ The deterministic PO pipeline (no AI). Ships dark until its gates are flipped.
 
 **See also:** runbook `docs/runbooks/po_send.md`
 
+### rfq-send transmits an approved request-for-quote to its vendor (dark)
+
+| What happens | |
+|---|---|
+| Daemon | `rfq-send` |
+| Sheets | `RFQ_Pending_Review`, `ITS_Vendors` |
+| Config gates | `po_materials.rfq_send.polling_enabled` |
+
+**Healthy signals:**
+- An approved RFQ_Pending_Review row is sent from procurement@ with TWO attachments — the price-free RFQ PDF + the fillable xlsx quote form; the recipient resolves from ITS_Vendors by Vendor Key. Tagged po_materials_rfq so po-send / subcontract-send can never dispatch it.
+
+#### An approved RFQ is not sent.
+
+**Resolution class:** Escalate to Seth (co-resolve)
+
+**Signals:** held_no_recipient, held_missing_envelope, held_workstream_mismatch, EMPTY_ALLOWLIST, rfq-send gate off (fail-safe default false)
+
+**Checks (in order):**
+- Is rfq-send loaded and its gate on? (The gate defaults false so a missing row fails safe; go-live is a FIXED External-Send-Gate flip done with Seth.)
+- Is the ITS — Purchase Orders workspace share list (the §46 approver set, shared with POs) non-empty? Is the vendor's Contact Email present in ITS_Vendors?
+
+**Resolutions (in order):**
+- Fix the vendor email / restore the numberless-row Notes tag, then re-approve; re-share approvers. A contamination HELD or gate flip is Send-Gate class → Seth.
+
+**See also:** runbook `docs/runbooks/rfq_send.md`
+
 ## Subcontract — build, legal gate, pull/render, send (dark)
 
 The deterministic subcontract-package pipeline (no AI), PO-mirror. Ships dark.

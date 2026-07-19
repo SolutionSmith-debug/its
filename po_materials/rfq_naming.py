@@ -26,6 +26,24 @@ def rfq_pdf_filename(rfq_number: str, vendor_name: str | None) -> str:
     return f"{vendor}_RFQ_{rfq_number}.pdf" if vendor else f"RFQ {rfq_number}.pdf"
 
 
+def rfq_form_filename(rfq_number: str, vendor_name: str | None = None) -> str:
+    """The fillable ``.xlsx`` quote-form file name (R3/R4). With a vendor name it is the
+    vendor-suffixed ``<rfq_number> - <Vendor> - Quote Form.xlsx`` (the Box file
+    ``rfq_poll`` writes at filing time, where the vendor disambiguates sibling forms in
+    the same job's ``Purchase Orders/RFQs`` folder); with none it falls back to the
+    number-only ``RFQ <rfq_number> - Quote Form.xlsx`` (the email attachment name
+    ``rfq_send`` uses at dispatch — the vendor name is not carried on the WSR-twin review
+    row, and the attachment filename only needs its ``.xlsx`` extension to drive the
+    engine's content-type). ONE helper so the Box name and the emailed name cannot drift
+    (the multi-surface fan-out lesson). Pure naming — no I/O, no external send."""
+    vendor = (vendor_name or "").strip()
+    return (
+        f"{rfq_number} - {vendor} - Quote Form.xlsx"
+        if vendor
+        else f"RFQ {rfq_number} - Quote Form.xlsx"
+    )
+
+
 def rfq_pdf_title(rfq_number: str, vendor_name: str | None) -> str:
     """The PDF's internal ``/Title`` metadata: ``Request for Quote <rfq_number> —
     <Vendor>`` (vendor appended). Falls back to ``Request for Quote <rfq_number>``
