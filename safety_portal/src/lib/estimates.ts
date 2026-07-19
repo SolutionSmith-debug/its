@@ -115,6 +115,11 @@ export interface DisposeBody {
   action: "imported" | "rejected";
   po_id?: number;
   line_dispositions?: LineDispositionBody[];
+  /** The "No preview available — I verified against the original document" checkbox.
+   *  The Worker enforces the fidelity gate SERVER-SIDE: an import that accepts/edits
+   *  extraction lines with zero rendered preview pages AND no acknowledgment is refused
+   *  422 preview_evidence_required (the SPA gate is UX, never the boundary). */
+  no_preview_verified?: boolean;
 }
 
 // ── Fetch helpers (the src/lib/po.ts idioms) ────────────────────────────────────────────────────

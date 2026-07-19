@@ -23,9 +23,13 @@ import taxConfig from "../../po_materials/config/tax.json";
 // (the PO token must NOT open the estimate pool and vice versa — red-team #1);
 // claim-first in-WHERE; the result post (refused deletes chunks; extracted
 // inserts extraction + lines; contract violations 400); preview upsert + size
-// cap + the session PNG read; dispose (line dispositions, delete-on-disposition,
-// 409 already_disposed on the second call); draft-create 409
-// estimate_already_imported; and estimate_id NEVER entering the po:v1 canonical.
+// cap + the session PNG read; preview LIVENESS (terminal rows refuse the upsert
+// 409 estimate_terminal; refused/rejected rows never serve the session read);
+// dispose (line dispositions, delete-on-disposition, 409 already_disposed on the
+// second call, the SERVER-SIDE preview-evidence gate — 422
+// preview_evidence_required — and the po_id cross-check → 409
+// po_estimate_mismatch); draft-create 409 estimate_already_imported; and
+// estimate_id NEVER entering the po:v1 canonical.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const EST_BEARER = "test-estimate-token";
@@ -124,8 +128,9 @@ async function postResult(body: Record<string, unknown>): Promise<Response> {
   });
 }
 
-/** upload → claim → result 'extracted' (+ a preview page): a reviewable estimate. */
-async function makeExtracted(admin: string, data: Uint8Array = PDF_BYTES): Promise<number> {
+/** upload → claim → result 'extracted' (+ a preview page unless withPreview=false — the
+ *  preview-evidence-gate tests need an extracted estimate with NO rendered page). */
+async function makeExtracted(admin: string, data: Uint8Array = PDF_BYTES, withPreview = true): Promise<number> {
   const res = await upload(admin, { data_b64: b64(data) });
   expect(res.status, await res.clone().text()).toBe(201);
   const { id } = await json<{ id: number }>(res);
@@ -133,10 +138,12 @@ async function makeExtracted(admin: string, data: Uint8Array = PDF_BYTES): Promi
     method: "POST", bearer: EST_BEARER, body: "{}",
   });
   expect((await json<{ found: boolean }>(claim)).found).toBe(true);
-  const pv = await call(`/api/po/estimates/internal/${id}/preview`, {
-    method: "POST", bearer: EST_BEARER, body: JSON.stringify({ page: 1, png_b64: b64(PNG_BYTES) }),
-  });
-  expect(pv.status, await pv.clone().text()).toBe(200);
+  if (withPreview) {
+    const pv = await call(`/api/po/estimates/internal/${id}/preview`, {
+      method: "POST", bearer: EST_BEARER, body: JSON.stringify({ page: 1, png_b64: b64(PNG_BYTES) }),
+    });
+    expect(pv.status, await pv.clone().text()).toBe(200);
+  }
   const result = await postResult({
     estimate_id: id, status: "extracted", box_file_id: `bx-${id}`, extraction: extractionBody(),
   });
@@ -550,6 +557,162 @@ describe("dispose + draft import", () => {
   it("a draft WITHOUT estimate_id is unaffected by the guard (plain creates still work twice)", async () => {
     expect((await p(admin, "/api/po/drafts", draftBody())).status).toBe(201);
     expect((await p(admin, "/api/po/drafts", draftBody())).status).toBe(201);
+  });
+});
+
+// ── F1 — the SERVER-SIDE preview-before-accept fidelity gate ─────────────────
+async function disposeAudit(): Promise<Record<string, unknown>> {
+  const row = await env.DB
+    .prepare("SELECT detail FROM audit_log WHERE action='po_estimate_dispose' ORDER BY id DESC LIMIT 1")
+    .first<{ detail: string }>();
+  expect(row).not.toBeNull();
+  return JSON.parse(row!.detail) as Record<string, unknown>;
+}
+
+describe("dispose preview-evidence gate (server-side)", () => {
+  /** Mint the provenance-carrying draft, then dispose 'imported' ACCEPTING every
+   *  extraction line (the gated shape). `over` merges into the dispose body. */
+  async function acceptedImport(id: number, over: Record<string, unknown> = {}): Promise<Response> {
+    const detail = await json<{ lines: { id: number }[] }>(await g(admin, `/api/po/estimates/${id}`));
+    const created = await p(admin, "/api/po/drafts", draftBody({ estimate_id: id }));
+    expect(created.status, await created.clone().text()).toBe(201);
+    const { id: poId } = await json<{ id: number }>(created);
+    return p(admin, `/api/po/estimates/${id}/dispose`, {
+      action: "imported",
+      po_id: poId,
+      line_dispositions: detail.lines.map((l) => ({ line_id: l.id, disposition: "accepted" })),
+      ...over,
+    });
+  }
+
+  it("422s an import that ACCEPTS extraction lines with zero previews and no acknowledgment — nothing changes", async () => {
+    const id = await makeExtracted(admin, PDF_BYTES, false); // no preview rendered
+    const res = await acceptedImport(id);
+    expect(res.status, await res.clone().text()).toBe(422);
+    expect((await json<{ error: string }>(res)).error).toBe("preview_evidence_required");
+    expect(((await estRow(id))!).status).toBe("extracted"); // NOT disposed
+    expect(await chunkCount(id)).toBe(1); // cleanup did not fire
+    expect(await auditCount("po_estimate_dispose")).toBe(0);
+  });
+
+  it("the explicit no_preview_verified acknowledgment passes the gate; the audit records the path", async () => {
+    const id = await makeExtracted(admin, PDF_BYTES, false);
+    const res = await acceptedImport(id, { no_preview_verified: true });
+    expect(res.status, await res.clone().text()).toBe(200);
+    expect(((await estRow(id))!).status).toBe("imported");
+    const audit = await disposeAudit();
+    expect(audit.no_preview_verified).toBe(true);
+    expect(audit.preview_pages).toBe(0);
+  });
+
+  it("a rendered preview passes the gate; the audit records preview_pages > 0", async () => {
+    const id = await makeExtracted(admin); // preview present
+    const res = await acceptedImport(id);
+    expect(res.status, await res.clone().text()).toBe(200);
+    const audit = await disposeAudit();
+    expect(audit.preview_pages).toBe(1);
+    expect(audit.no_preview_verified).toBe(false);
+  });
+
+  it("manual-only imports (every extraction line REJECTED) are exempt — the SPA gate's exact scope", async () => {
+    const id = await makeExtracted(admin, PDF_BYTES, false); // no preview, no flag
+    const detail = await json<{ lines: { id: number }[] }>(await g(admin, `/api/po/estimates/${id}`));
+    const created = await p(admin, "/api/po/drafts", draftBody({ estimate_id: id }));
+    const { id: poId } = await json<{ id: number }>(created);
+    const res = await p(admin, `/api/po/estimates/${id}/dispose`, {
+      action: "imported",
+      po_id: poId,
+      line_dispositions: detail.lines.map((l) => ({ line_id: l.id, disposition: "rejected" })),
+    });
+    expect(res.status, await res.clone().text()).toBe(200); // no accepted/edited line → exempt
+  });
+
+  it("shape-guards no_preview_verified (a present non-boolean 400s)", async () => {
+    const id = await makeExtracted(admin, PDF_BYTES, false);
+    const res = await p(admin, `/api/po/estimates/${id}/dispose`, {
+      action: "rejected", no_preview_verified: "yes",
+    });
+    expect(res.status).toBe(400);
+    expect((await json<{ error: string }>(res)).error).toBe("invalid_no_preview_verified");
+    expect(((await estRow(id))!).status).toBe("extracted"); // untouched
+  });
+});
+
+// ── F2 — preview liveness (terminal rows refuse the write; refused never serves) ──
+describe("preview liveness", () => {
+  const postPreview = (id: number) =>
+    call(`/api/po/estimates/internal/${id}/preview`, {
+      method: "POST", bearer: EST_BEARER, body: JSON.stringify({ page: 1, png_b64: b64(PNG_BYTES) }),
+    });
+
+  it("preview POST on a refused estimate → 409 estimate_terminal, no row, no audit", async () => {
+    const { id } = await json<{ id: number }>(await upload(admin));
+    await call(`/api/po/estimates/internal/${id}/claim`, { method: "POST", bearer: EST_BEARER, body: "{}" });
+    expect((await postResult({ estimate_id: id, status: "refused", detail: "wrong_doc_type:invoice" })).status).toBe(200);
+    const pv = await postPreview(id);
+    expect(pv.status).toBe(409);
+    expect((await json<{ error: string }>(pv)).error).toBe("estimate_terminal");
+    expect(await previewCount(id)).toBe(0);
+    expect(await auditCount("po_estimate_preview")).toBe(0);
+  });
+
+  it("a preview posted BEFORE refusal stops serving after it (read-side backstop) — 404 on GET", async () => {
+    const { id } = await json<{ id: number }>(await upload(admin));
+    expect((await postPreview(id)).status).toBe(200); // live row: lands
+    expect((await g(admin, `/api/po/estimates/${id}/preview/1`)).status).toBe(200);
+    await call(`/api/po/estimates/internal/${id}/claim`, { method: "POST", bearer: EST_BEARER, body: "{}" });
+    await postResult({ estimate_id: id, status: "refused", detail: "wrong_doc_type:invoice" });
+    // Refusal deletes CHUNKS, not previews — the row lingers (the prune backstop reaps it)…
+    expect(await previewCount(id)).toBe(1);
+    // …but it must never serve.
+    expect((await g(admin, `/api/po/estimates/${id}/preview/1`)).status).toBe(404);
+  });
+
+  it("an IMPORTED row's lingering evidence MAY still serve (operator revisit); a REJECTED row's never", async () => {
+    const id = await makeExtracted(admin);
+    const created = await p(admin, "/api/po/drafts", draftBody({ estimate_id: id }));
+    const { id: poId } = await json<{ id: number }>(created);
+    expect((await p(admin, `/api/po/estimates/${id}/dispose`, { action: "imported", po_id: poId })).status).toBe(200);
+    // dispose deleted the previews; model a backstop-retained page directly.
+    await env.DB
+      .prepare("INSERT INTO estimate_previews (estimate_id, page, png_b64) VALUES (?1, 1, ?2)")
+      .bind(id, b64(PNG_BYTES))
+      .run();
+    expect((await g(admin, `/api/po/estimates/${id}/preview/1`)).status).toBe(200);
+
+    const id2 = await makeExtracted(admin, PDF_BYTES_B);
+    expect((await p(admin, `/api/po/estimates/${id2}/dispose`, { action: "rejected" })).status).toBe(200);
+    await env.DB
+      .prepare("INSERT INTO estimate_previews (estimate_id, page, png_b64) VALUES (?1, 1, ?2)")
+      .bind(id2, b64(PNG_BYTES))
+      .run();
+    expect((await g(admin, `/api/po/estimates/${id2}/preview/1`)).status).toBe(404);
+  });
+});
+
+// ── F4 — the dispose po_id cross-check ───────────────────────────────────────
+describe("dispose po_id cross-check", () => {
+  it("409s po_estimate_mismatch when the supplied po_id does not reference THIS estimate; the row stays reviewable", async () => {
+    const id = await makeExtracted(admin);
+    // A plain draft with NO estimate provenance — a foreign po_id from this dispose's view.
+    const foreign = await p(admin, "/api/po/drafts", draftBody());
+    expect(foreign.status).toBe(201);
+    const { id: foreignPoId } = await json<{ id: number }>(foreign);
+    const res = await p(admin, `/api/po/estimates/${id}/dispose`, { action: "imported", po_id: foreignPoId });
+    expect(res.status).toBe(409);
+    expect((await json<{ error: string }>(res)).error).toBe("po_estimate_mismatch");
+    const row = (await estRow(id))!;
+    expect(row.status).toBe("extracted"); // NOT disposed
+    expect(row.po_id).toBeNull();
+    expect(await chunkCount(id)).toBe(1); // the guarded cleanup did not fire
+    expect(await previewCount(id)).toBe(1);
+    expect(await auditCount("po_estimate_dispose")).toBe(0); // gated audit did not lie
+    // The provenance-carrying draft still imports cleanly afterward.
+    const created = await p(admin, "/api/po/drafts", draftBody({ estimate_id: id }));
+    const { id: poId } = await json<{ id: number }>(created);
+    const ok = await p(admin, `/api/po/estimates/${id}/dispose`, { action: "imported", po_id: poId });
+    expect(ok.status, await ok.clone().text()).toBe(200);
+    expect(((await estRow(id))!).po_id).toBe(poId);
   });
 });
 

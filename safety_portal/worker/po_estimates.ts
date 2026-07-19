@@ -78,6 +78,12 @@ const DOC_TYPES = new Set(["quote", "estimate", "proposal", "invoice", "ap_repor
 // the browser disposition's; never superseded — that is E4's family logic).
 const RESULT_STATUSES = new Set(["refused", "needs_review", "extracted"]);
 const LINE_DISPOSITIONS = new Set(["accepted", "rejected", "edited"]);
+// The statuses a preview page may still LAND on: in-pipeline (pending/claimed — the
+// daemon renders ahead of the result post) or reviewable (needs_review/extracted — a
+// re-render). Terminal rows (refused/rejected/imported/superseded) refuse the write —
+// dispose/refusal already dropped that row's evidence and a late daemon post must not
+// resurrect it.
+const PREVIEW_LIVE_STATUSES = new Set(["pending", "claimed", "needs_review", "extracted"]);
 
 // ── Allowlist: declared MIME ⇄ extension ⇄ magic (the po_attachments set, verbatim —
 // PDF + JPEG/PNG images + Office OpenXML only; NO legacy OLE, NO CAD). The magic sniff
@@ -516,6 +522,10 @@ export function registerPoEstimateRoutes(app: FieldopsApp, gates: PoEstimateGate
   // POST /api/po/estimates/internal/:id/preview — upsert one rendered page PNG (the
   // disposition screen's source-fidelity surface, ADR decision 3). ≤1MB decoded,
   // PNG-magic-checked, page-bounded; upsert + changes()-gated audit in ONE batch (W4).
+  // LIVENESS-GUARDED in-WHERE (the /chunks-read status idiom): the upsert lands only
+  // while the estimate is still live (PREVIEW_LIVE_STATUSES) — a post on a terminal row
+  // is 409 estimate_terminal, and a row that goes terminal BETWEEN the pre-check and the
+  // batch inserts nothing (changes()=0 → no audit → the same 409).
   app.post("/api/po/estimates/internal/:id/preview", gates.requireEstimateToken, async (c) => {
     const estId = parseIdParam(c.req.param("id"));
     if (estId === null) return c.json({ error: "invalid_id" }, 400);
@@ -548,11 +558,19 @@ export function registerPoEstimateRoutes(app: FieldopsApp, gates: PoEstimateGate
       .bind(estId)
       .first<{ status: string }>();
     if (!row) return c.json({ error: "not_found" }, 404);
+    if (!PREVIEW_LIVE_STATUSES.has(row.status)) return c.json({ error: "estimate_terminal" }, 409);
 
+    // The in-WHERE guard is the authority (TOCTOU-safe) — the pre-check above only picks
+    // the error shape. The guarded SELECT satisfies both branches of the upsert: a
+    // terminal status yields zero source rows, so neither the INSERT nor the DO UPDATE
+    // can land.
     const res = await c.env.DB.batch([
       c.env.DB
         .prepare(
-          "INSERT INTO estimate_previews (estimate_id, page, png_b64) VALUES (?1, ?2, ?3) " +
+          "INSERT INTO estimate_previews (estimate_id, page, png_b64) " +
+            "SELECT ?1, ?2, ?3 " +
+            "WHERE (SELECT status FROM po_estimates WHERE id = ?1) " +
+            "IN ('pending','claimed','needs_review','extracted') " +
             "ON CONFLICT(estimate_id, page) DO UPDATE SET png_b64 = excluded.png_b64",
         )
         .bind(estId, page, pngB64),
@@ -560,7 +578,11 @@ export function registerPoEstimateRoutes(app: FieldopsApp, gates: PoEstimateGate
         estimate_id: estId, page, size_b64: pngB64.length,
       }),
     ]);
-    return c.json({ ok: true, found: (res[0].meta.changes ?? 0) > 0 });
+    if ((res[0].meta.changes ?? 0) === 0) {
+      // The row went terminal mid-flight — same refusal as the pre-check.
+      return c.json({ error: "estimate_terminal" }, 409);
+    }
+    return c.json({ ok: true, found: true });
   });
 
   // ══ Browser surface (session + cap.po.manage — the po.ts gate pair) ═════════════
@@ -754,6 +776,19 @@ export function registerPoEstimateRoutes(app: FieldopsApp, gates: PoEstimateGate
       const estId = parseIdParam(c.req.param("id"));
       const page = parseIdParam(c.req.param("page"));
       if (estId === null || page === null) return c.json({ error: "invalid_id" }, 400);
+      // Read-side liveness backstop: a refused/rejected estimate's evidence never serves
+      // (refusal deletes chunks but NOT previews synchronously — a lingering page must
+      // 404 here until the prune backstop reaps it). IMPORTED and SUPERSEDED rows
+      // deliberately MAY still serve: the operator may revisit an imported estimate's
+      // evidence while any backstop-retained page remains (normally none — dispose
+      // deletes previews in the same batch).
+      const est = await c.env.DB
+        .prepare("SELECT status FROM po_estimates WHERE id = ?1")
+        .bind(estId)
+        .first<{ status: string }>();
+      if (!est || est.status === "refused" || est.status === "rejected") {
+        return c.json({ error: "not_found" }, 404);
+      }
       const row = await c.env.DB
         .prepare("SELECT png_b64 FROM estimate_previews WHERE estimate_id = ?1 AND page = ?2")
         .bind(estId, page)
@@ -776,12 +811,24 @@ export function registerPoEstimateRoutes(app: FieldopsApp, gates: PoEstimateGate
 
   // POST /api/po/estimates/:id/dispose — the human exit from the reviewable states.
   // Body: { action: 'imported'|'rejected', po_id? (imported — the draft just minted
-  // through the EXISTING /api/po/drafts route), line_dispositions? }. ONE db.batch (W4):
-  // the guarded status UPDATE (extracted|needs_review only — second call → 409
-  // already_disposed) → audit → line-disposition UPDATEs → previews + chunks DELETE
-  // (bytes leave D1 at disposition). Line/cleanup statements are guarded in-WHERE on the
-  // row now carrying the target status; on a lost same-action double-click race the
+  // through the EXISTING /api/po/drafts route), line_dispositions?,
+  // no_preview_verified? }. ONE db.batch (W4): the guarded status UPDATE
+  // (extracted|needs_review only — second call → 409 already_disposed; for 'imported'
+  // ALSO cross-checked in-WHERE against purchase_orders.estimate_id — a po_id that does
+  // not reference THIS estimate lands 0 rows → 409 po_estimate_mismatch) → audit →
+  // line-disposition UPDATEs → previews + chunks DELETE (bytes leave D1 at disposition).
+  // Line/cleanup statements are guarded in-WHERE on the row now carrying the target
+  // status (?-bound — never interpolated); on a lost same-action double-click race the
   // loser's identical metadata writes are benign and its reply is the 409.
+  //
+  // PREVIEW-EVIDENCE GATE (server-side twin of the SPA's red-team-#2 gate — ADR
+  // decision 3): an 'imported' disposal that ACCEPTS (or edits) extraction lines must
+  // carry evidence the reviewer could see the source — ≥1 rendered preview page for this
+  // estimate OR the explicit no_preview_verified:true acknowledgment; neither → 422
+  // preview_evidence_required. Manual-only disposals (no accepted/edited extraction
+  // lines) are exempt, exactly the SPA gate's scope. The SPA enforces this for UX; THIS
+  // is the boundary (Invariant 2 — the browser is never trusted). Whichever evidence
+  // path passed is recorded in the audit payload (preview_pages / no_preview_verified).
   app.post("/api/po/estimates/:id/dispose", gates.requireSession, gates.requireCapability(CAP_PO), async (c) => {
     const estId = parseIdParam(c.req.param("id"));
     if (estId === null) return c.json({ error: "invalid_id" }, 400);
@@ -831,6 +878,17 @@ export function registerPoEstimateRoutes(app: FieldopsApp, gates: PoEstimateGate
       }
     }
 
+    // The explicit "no preview available — I verified against the original document"
+    // acknowledgment (the disposition screen's checkbox). Shape-guarded: a present
+    // non-boolean is a contract violation.
+    let noPreviewVerified = false;
+    if (body.no_preview_verified !== undefined && body.no_preview_verified !== null) {
+      if (typeof body.no_preview_verified !== "boolean") {
+        return c.json({ error: "invalid_no_preview_verified" }, 400);
+      }
+      noPreviewVerified = body.no_preview_verified;
+    }
+
     const row = await c.env.DB
       .prepare("SELECT status FROM po_estimates WHERE id = ?1")
       .bind(estId)
@@ -840,37 +898,75 @@ export function registerPoEstimateRoutes(app: FieldopsApp, gates: PoEstimateGate
       return c.json({ error: "already_disposed", status: row.status }, 409);
     }
 
+    // ── The preview-evidence fidelity gate (see the route header). Counted BEFORE the
+    // batch below deletes the pages, so the audit records the evidence that existed at
+    // decision time.
+    const acceptsExtraction = lineDispositions.some(
+      (l) => l.disposition === "accepted" || l.disposition === "edited",
+    );
+    const pv = await c.env.DB
+      .prepare("SELECT COUNT(*) AS n FROM estimate_previews WHERE estimate_id = ?1")
+      .bind(estId)
+      .first<{ n: number }>();
+    const previewPages = pv?.n ?? 0;
+    if (action === "imported" && acceptsExtraction && previewPages === 0 && !noPreviewVerified) {
+      return c.json({ error: "preview_evidence_required" }, 422);
+    }
+
     const actor = c.get("session").username;
-    const guard = `(SELECT status FROM po_estimates WHERE id = ?1) = '${action}'`;
     const res = await c.env.DB.batch([
       c.env.DB
         .prepare(
           "UPDATE po_estimates SET status = ?2, po_id = ?3, disposed_at = unixepoch() " +
-            "WHERE id = ?1 AND status IN ('extracted','needs_review')",
+            "WHERE id = ?1 AND status IN ('extracted','needs_review') " +
+            // po_id cross-check: an 'imported' flip must name a draft PO that ACTUALLY
+            // carries this estimate's provenance (purchase_orders.estimate_id, 0055).
+            // ?3 IS NULL is the 'rejected' path (poId is null exactly then); a foreign /
+            // mismatched po_id lands 0 rows → 409 po_estimate_mismatch below.
+            "AND (?3 IS NULL OR EXISTS " +
+            "(SELECT 1 FROM purchase_orders WHERE id = ?3 AND estimate_id = ?1))",
         )
         .bind(estId, action, poId),
       auditStmtIfChanged(c, actor, "po_estimate_dispose", String(estId), {
         estimate_id: estId, action, po_id: poId, line_dispositions: lineDispositions.length,
+        // The fidelity-gate evidence record: which path (rendered pages vs the explicit
+        // acknowledgment) authorized an accepting import.
+        preview_pages: previewPages, no_preview_verified: noPreviewVerified,
       }),
       // The human color-coding record — scoped to THIS estimate's lines and guarded on
-      // the disposition having landed (the ?1-anchored status subquery).
+      // the disposition having landed (the ?1-anchored status subquery, action ?-bound).
       ...lineDispositions.map((l) =>
         c.env.DB
           .prepare(
             "UPDATE estimate_extraction_lines SET disposition = ?2, edited_json = ?3 " +
               "WHERE id = ?4 AND extraction_id IN " +
               "(SELECT id FROM estimate_extractions WHERE estimate_id = ?1) " +
-              `AND ${guard}`,
+              "AND (SELECT status FROM po_estimates WHERE id = ?1) = ?5",
           )
-          .bind(estId, l.disposition, l.edited_json, l.line_id),
+          .bind(estId, l.disposition, l.edited_json, l.line_id, action),
       ),
       // Delete-on-disposition: previews + original bytes leave D1 (byte-free rows stay
       // as the manifest / provenance record).
-      c.env.DB.prepare(`DELETE FROM estimate_previews WHERE estimate_id = ?1 AND ${guard}`).bind(estId),
-      c.env.DB.prepare(`DELETE FROM po_estimate_chunks WHERE estimate_id = ?1 AND ${guard}`).bind(estId),
+      c.env.DB
+        .prepare(
+          "DELETE FROM estimate_previews WHERE estimate_id = ?1 " +
+            "AND (SELECT status FROM po_estimates WHERE id = ?1) = ?2",
+        )
+        .bind(estId, action),
+      c.env.DB
+        .prepare(
+          "DELETE FROM po_estimate_chunks WHERE estimate_id = ?1 " +
+            "AND (SELECT status FROM po_estimates WHERE id = ?1) = ?2",
+        )
+        .bind(estId, action),
     ]);
     if ((res[0].meta.changes ?? 0) === 0) {
       const now = await c.env.DB.prepare("SELECT status FROM po_estimates WHERE id = ?1").bind(estId).first<{ status: string }>();
+      // Still reviewable → the status guard passed and it was the po_id cross-check that
+      // refused the flip: the supplied draft does not reference THIS estimate.
+      if (now && (now.status === "extracted" || now.status === "needs_review")) {
+        return c.json({ error: "po_estimate_mismatch" }, 409);
+      }
       return c.json({ error: "already_disposed", status: now?.status ?? null }, 409);
     }
     return c.json({ ok: true, id: estId, status: action });
