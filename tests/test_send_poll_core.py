@@ -155,3 +155,54 @@ def test_safety_config_binds_safety_values():
     finally:
         ws.send_one_row = orig
     assert rec == [(42, weekly_send.CONFIG)]
+
+
+# ---- config-read transient fence (error-hygiene 2026-07-19) ---------------
+
+
+def test_cycle_config_read_transient_error_falls_open_with_warn(mocker):
+    """A generic SmartsheetError from get_setting (read-timeout / 5xx) during the cycle's
+    scheduled-window config read must NOT escape to @its_error_log as a spurious CRITICAL:
+    WARN `config_read_error` + the fallback spec, same disposition as the circuit-open
+    branch. (_load_authorized_approvers — the F22 security gate — stays fail-CLOSED and is
+    untouched by this fence.)"""
+    cfg = _cfg()
+    mocker.patch(
+        "safety_reports.send_poll_core.smartsheet_client.get_rows",
+        # Approve-scheduled checked (a dispatch candidate), no Send Now → the scheduled
+        # path consults is_scheduled_window with the RESOLVED spec.
+        return_value=[{"_row_id": 1, "P Approve": True, "P Status": "PENDING"}],
+    )
+    mocker.patch(
+        "safety_reports.send_poll_core.smartsheet_client.list_workspace_share_emails",
+        return_value=frozenset({"a@b.com"}),
+    )
+    mocker.patch(
+        "safety_reports.send_poll_core.smartsheet_client.get_setting",
+        side_effect=send_poll_core.smartsheet_client.SmartsheetError("read timeout"),
+    )
+    log = mocker.patch("safety_reports.send_poll_core.error_log.log")
+
+    seen_specs: list[str] = []
+
+    def _window(now, spec):
+        seen_specs.append(spec)
+        return False  # outside the window → row skipped, cycle completes
+
+    result = send_poll_core.poll_inside_lock(
+        cfg,
+        write_liveness=lambda: None,
+        write_row=lambda **k: None,
+        write_watchdog_marker=lambda: None,
+        stamp_approval=lambda rid, v: None,
+        is_scheduled_window=_window,
+    )  # must not raise
+
+    codes = [kw.get("error_code") for _, kw in log.call_args_list]
+    assert "config_read_error" in codes
+    warn_calls = [
+        (a, kw) for a, kw in log.call_args_list if kw.get("error_code") == "config_read_error"
+    ]
+    assert all(a[0] == send_poll_core.Severity.WARN for a, _ in warn_calls)
+    assert seen_specs == [cfg.default_scheduled_send_local]  # fallback used
+    assert result.skipped == 1 and result.errors == 0

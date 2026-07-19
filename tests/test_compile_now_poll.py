@@ -17,6 +17,7 @@ import pytest
 
 import shared.kill_switch as ks
 from safety_reports import compile_now_poll as cnp
+from shared.smartsheet_client import SmartsheetError
 
 SAFETY_CFG = cnp.weekly_generate.SAFETY_GENERATE_CONFIG
 PROGRESS_CFG = cnp.progress_weekly_generate.PROGRESS_GENERATE_CONFIG
@@ -138,6 +139,35 @@ def test_per_job_fence_one_bad_job_does_not_block_others(stub):
     stub["compile"].side_effect = [RuntimeError("boom"), None]  # job A fails, B compiles
     out = cnp.poll_once()
     assert out.errors == 1 and out.compiled == 1  # B still compiled
+
+
+def test_scan_failure_on_untriggered_job_is_scan_failed_no_review_row(stub):
+    """A transient Smartsheet error during the ROUTINE trigger scan (BEFORE the trigger is
+    confirmed set) logs `scan_failed` and does NOT seed a Review-Queue row — mislabeling it
+    compile_failed fed a multi-hundred-row review backlog during Smartsheet outages."""
+    stub["jobs"].return_value = [_job()]
+    stub["rollup"].side_effect = SmartsheetError("read timeout")  # scan-phase blip
+    out = cnp.poll_once()
+    assert out.errors == 1 and out.compiled == 0
+    stub["compile"].assert_not_called()
+    stub["rq"].assert_not_called()  # NO Review-Queue row for a scan blip
+    codes = [kw.get("error_code") for _, kw in stub["log"].call_args_list]
+    assert "compile_now_poll.scan_failed" in codes
+    assert "compile_now_poll.compile_failed" not in codes
+
+
+def test_compile_failure_after_trigger_confirmed_keeps_review_row(stub):
+    """Phase contrast: the SAME transient during the actual compile of a TRIGGERED job keeps
+    today's fail-loud behaviour exactly — compile_failed + Review-Queue row."""
+    stub["jobs"].return_value = [_job()]
+    stub["requested"].return_value = True
+    stub["compile"].side_effect = SmartsheetError("read timeout")
+    out = cnp.poll_once()
+    assert out.errors == 1
+    stub["rq"].assert_called_once()
+    codes = [kw.get("error_code") for _, kw in stub["log"].call_args_list]
+    assert "compile_now_poll.compile_failed" in codes
+    assert "compile_now_poll.scan_failed" not in codes
 
 
 # ---- Cross-workstream iteration (§14 parameterize-not-clone) ---------------

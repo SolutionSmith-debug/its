@@ -562,12 +562,43 @@ def _safe_review_queue(
     config: GenerateConfig, job: ActiveJob, week: safety_week.SafetyWeek, error_class: str,
     correlation_id: str, summary: RunSummary,
 ) -> None:
-    """Surface a per-job compile failure to the Review Queue (never silent)."""
+    """Surface a per-job compile failure to the Review Queue (never silent).
+
+    DEDUPED per (job, week): a stuck Compile-Now retrying every ~90 s during a Smartsheet
+    outage once appended a NEW PENDING row per attempt (189 rows for one job in one day) —
+    if a PENDING row already covers this job-week's compile failure, the add is skipped
+    with a WARN (never silent). FAIL-OPEN: a dedupe-read failure appends anyway — never
+    lose the first signal.
+    """
     short = config.script_name.split(".")[-1]
+    # The summary is built from this prefix so the dedupe match can never drift from the
+    # written row. error_class is OUTSIDE the prefix — a repeat failure of the same
+    # job-week is a duplicate even if the exception class differs between attempts.
+    dedupe_prefix = (
+        f"weekly compile failed for {job.project_name} (job {job.job_id}) week {week.start}"
+    )
+    try:
+        pending = review_queue.get_pending(config.workstream)
+        if any(str(row.get("Summary", "")).startswith(dedupe_prefix) for row in pending):
+            error_log.log(
+                Severity.WARN, config.script_name,
+                f"suppressed duplicate Review-Queue entry for {job.project_name} "
+                f"(job {job.job_id}) week {week.start} ({error_class}) — a PENDING row "
+                f"already covers this compile failure",
+                error_code=f"{short}.review_queue_deduped", correlation_id=correlation_id,
+            )
+            return
+    except Exception as exc:  # noqa: BLE001 — FAIL-OPEN: dedupe is best-effort, the add is not
+        error_log.log(
+            Severity.WARN, config.script_name,
+            f"review-queue dedupe read failed for {job.project_name}: {exc!r} — "
+            f"appending anyway (fail-open)",
+            error_code=f"{short}.review_queue_dedupe_read_failed", correlation_id=correlation_id,
+        )
     try:
         review_queue.add(
             workstream=config.workstream,
-            summary=f"weekly compile failed for {job.project_name} (job {job.job_id}) week {week.start} ({error_class})",
+            summary=f"{dedupe_prefix} ({error_class})",
             payload={
                 "job_id": job.job_id, "project": job.project_name,
                 "week": week.start.isoformat(), "error_class": error_class,

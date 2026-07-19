@@ -562,7 +562,14 @@ def _alert_critical(
         # the raw structured fields (`_fire_sentry_leg` constructs its own
         # SDK payload from `message` + `exc_info` directly), so it doesn't
         # need these.
-        truncated = message
+        #
+        # SUBJECT ONLY: collapse all whitespace runs (incl. \n/\r/\t) to
+        # single spaces BEFORE truncation — Resend rejects any newline in
+        # the subject with HTTP 422 ("The \n is not allowed in the subject
+        # field"), so an unsanitized multi-line message (e.g. an HTML error
+        # body) silently killed the operator wake-up email. The body keeps
+        # the raw (redacted) message.
+        truncated = " ".join(message.split())
         if len(truncated) > _ALERT_SUBJECT_TRUNCATE:
             truncated = truncated[: _ALERT_SUBJECT_TRUNCATE - 1] + "…"
         short_corr = correlation_id[:_CORRELATION_ID_SUBJECT_PREFIX_LEN]

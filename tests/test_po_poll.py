@@ -1031,3 +1031,35 @@ def test_perjob_helper_fences_generic_exception(mocker):
 
     codes = [kw.get("error_code") for _, kw in log.call_args_list]
     assert "po_perjob_sheet_failed" in codes
+
+
+# ---- config-read transient fence (error-hygiene 2026-07-19) ---------------------
+
+
+def test_read_str_setting_transient_error_falls_open_with_warn(mocker):
+    """A generic SmartsheetError from get_setting (read-timeout / 5xx) must NOT escape
+    to @its_error_log as a spurious CRITICAL — WARN `config_read_error` + fallback,
+    same disposition as the circuit-open branch."""
+    mocker.patch(
+        "po_materials.po_poll.smartsheet_client.get_setting",
+        side_effect=SmartsheetError("read timeout"),
+    )
+    log = mocker.patch("po_materials.po_poll.error_log.log")
+
+    result = po_poll._read_str_setting("po_materials.some_key", "fallback-val")  # must not raise
+
+    assert result == "fallback-val"
+    codes = [kw.get("error_code") for _, kw in log.call_args_list]
+    assert "config_read_error" in codes
+
+
+def test_polling_gate_transient_error_resolves_to_default(mocker):
+    """Cycle-entry proof: the polling gate read survives a transient and resolves to the
+    ships-dark default (False) instead of crashing the cycle."""
+    mocker.patch(
+        "po_materials.po_poll.smartsheet_client.get_setting",
+        side_effect=SmartsheetError("HTTP 502"),
+    )
+    mocker.patch("po_materials.po_poll.error_log.log")
+
+    assert po_poll._polling_enabled() is po_poll.DEFAULT_POLLING_ENABLED
