@@ -22,6 +22,8 @@ parser bug cannot corrupt daemon state even in-process.
 Child fn contracts (stdout JSON):
   extract_pages_text [max_pages]  → {"pages": ["page 1 text", ...]}
   render_page_pngs   [max_pages]  → {"pngs": ["<base64 png>", ...]}
+  (plus four harmless _test_* fns — spin / bounded-alloc / crash / echo — dispatched
+  only by tests/test_estimate_sandbox.py to prove the reap contract on REAL children)
 
 Invariants
 ----------
@@ -51,13 +53,14 @@ Consumers
 from __future__ import annotations
 
 import base64
+import hashlib
 import io
 import json
 import resource
 import subprocess
 import sys
 from collections.abc import Sequence
-from typing import Any
+from typing import Any, NoReturn
 
 # Address-space cap for a parse child: generous for a legitimate 10 MB estimate,
 # fatal for an allocation bomb. 2 GiB.
@@ -75,7 +78,13 @@ MAX_CHILD_STDOUT_BYTES = 64 * 1024 * 1024
 PREVIEW_TARGET_WIDTH_PX = 1100
 PREVIEW_MAX_PIXELS = 24_000_000
 
-_ALLOWED_FNS = ("extract_pages_text", "render_page_pngs")
+# TEST-SUPPORT child fns (tests/test_estimate_sandbox.py — the REAL-child-process
+# suite proving the reap/rlimit contract without a hostile document). Deliberately
+# ungated: each is harmless — local CPU/memory inside a child the parent reaps
+# (spin / bounded alloc / crash / echo); nothing in the daemon dispatches them,
+# and invoking one by hand just burns a few seconds of local CPU.
+_TEST_FNS = ("_test_spin", "_test_alloc", "_test_crash", "_test_echo")
+_ALLOWED_FNS = ("extract_pages_text", "render_page_pngs", *_TEST_FNS)
 
 
 def run_sandboxed(
@@ -228,6 +237,41 @@ def _render_one_page(quartz: Any, doc: Any, page_no: int) -> bytes | None:
     return bytes(out_data)
 
 
+# ---- Test-support child fns (REAL-kill proof; see tests/test_estimate_sandbox.py) --
+#
+# _test_alloc BOUNDS its own allocation (_TEST_ALLOC_CAP_BYTES) and then spins:
+# on a platform that enforces a lowered RLIMIT_AS (Linux) it dies mid-allocation;
+# on Darwin (which REJECTS lowering RLIMIT_AS — the module docstring's honesty
+# note) the bound keeps host memory safe until the CPU/wall-clock reap kills it.
+
+_TEST_ALLOC_BLOCK_BYTES = 64 * 1024 * 1024
+_TEST_ALLOC_CAP_BYTES = 512 * 1024 * 1024
+
+
+def _child_test_spin() -> NoReturn:  # pragma: no cover — runs in the child, reaped
+    """CPU-spin forever — killed by RLIMIT_CPU or the parent wall-clock timeout."""
+    while True:
+        pass
+
+
+def _child_test_alloc() -> NoReturn:  # pragma: no cover — runs in the child, reaped
+    """Allocate up to the cap (dies to RLIMIT_AS where enforced), then spin for
+    the reap — never exits cleanly, so the parent always maps this to None."""
+    blocks: list[bytearray] = []
+    total = 0
+    while total < _TEST_ALLOC_CAP_BYTES:
+        blocks.append(bytearray(_TEST_ALLOC_BLOCK_BYTES))  # zero-fill commits pages
+        total += _TEST_ALLOC_BLOCK_BYTES
+    while True:  # cap reached without an enforceable RLIMIT_AS: await the reap
+        pass
+
+
+def _child_test_echo(data: bytes) -> dict[str, Any]:
+    """Happy-path round-trip probe: prove stdin bytes reached the child intact
+    and the JSON-on-stdout contract works end-to-end."""
+    return {"echo_len": len(data), "echo_sha256": hashlib.sha256(data).hexdigest()}
+
+
 def _child_main(argv: list[str]) -> int:
     """Child entry: dispatch `<fn_name> [max_pages]`, data on stdin, JSON on stdout."""
     if len(argv) < 1 or argv[0] not in _ALLOWED_FNS:
@@ -241,8 +285,16 @@ def _child_main(argv: list[str]) -> int:
     data = sys.stdin.buffer.read()
     if fn_name == "extract_pages_text":
         result = _child_extract_pages_text(data, max_pages)
-    else:
+    elif fn_name == "render_page_pngs":
         result = _child_render_page_pngs(data, max_pages)
+    elif fn_name == "_test_echo":
+        result = _child_test_echo(data)
+    elif fn_name == "_test_crash":  # pragma: no cover — child exits nonzero
+        raise RuntimeError("deliberate child crash (_test_crash, test-support)")
+    elif fn_name == "_test_spin":  # pragma: no cover — child never returns
+        _child_test_spin()
+    else:  # pragma: no cover — _test_alloc, the only remaining allowed name
+        _child_test_alloc()
     sys.stdout.write(json.dumps(result, separators=(",", ":")))
     return 0
 

@@ -40,6 +40,7 @@ from typing import Any
 import pytest
 
 from po_materials import estimate_poll, po_attach_screen
+from shared import portal_client
 from shared.error_log import Severity
 from shared.review_queue import ReviewReason
 
@@ -449,3 +450,62 @@ def test_sandbox_timeout_degrades_doc_daemon_survives(_patch):
     _patch["preview_post"].assert_not_called()  # degraded: explicit no-preview path
     assert "estimate_preview_empty" in _logged_codes(_patch)
     assert "estimate_service_failed" not in _logged_codes(_patch)
+
+
+# ---- 9. bearer rejection (401) must STOP the cycle, never be fence-swallowed --------
+
+
+def test_bearer_401_during_refused_post_stops_cycle_and_persists_flag(_patch):
+    """PROVE-THE-CONTROL-BITES (ops-stds review): a 401 while posting the refused
+    disposition is re-raised by _post_refused_result as _BearerRejectedError and
+    must reach the cycle-stop handler — NOT be swallowed by the generic per-row
+    fence as estimate_service_failed (which would leave bearer_rejected False and
+    re-alert every 120s). Also pins the flag-persistence half: the one-shot flag
+    the refusal wrote BEFORE the aborting post still reaches _persist_flags (the
+    finally path), so the row is skipped — not re-alerted — next cycle."""
+    row1 = _est_row(_MINIMAL_PDF, id=41)
+    row2 = _est_row(_MINIMAL_PDF, id=42)
+    _patch["pending"].return_value = [row1, row2]
+    _patch["chunks"].return_value = _one_chunk(_MINIMAL_PDF)
+    _patch["screen"].return_value = MALICIOUS
+    _patch["result"].side_effect = portal_client.PortalAuthError("401 unauthorized")
+
+    stats = _run(_patch)  # must not raise — the cycle stops, the daemon survives
+
+    assert stats.bearer_rejected is True
+    assert "estimate_bearer_rejected" in _logged_codes(_patch)
+    # The control: the 401 never degrades into the generic fence's error code.
+    assert "estimate_service_failed" not in _logged_codes(_patch)
+    # The cycle STOPPED at row 1 — row 2 was never claimed (same bearer, no point).
+    assert _patch["claim"].call_count == 1
+    # Flag-persistence half: the refusal's one-shot flag SURVIVED the abort, so a
+    # later-fixed bearer does not replay this row's CRITICAL/Review-Queue alert.
+    _patch["flags_persist"].assert_called_once()
+    (persisted,), _ = _patch["flags_persist"].call_args
+    assert persisted == {"41": "refused"}
+
+
+def test_bearer_401_during_preview_post_stops_cycle_and_persists_prior_flag(_patch):
+    """Same control through the OTHER helper: a 401 during preview posting (row 2,
+    clean) aborts the cycle via _BearerRejectedError — and the one-shot flag row
+    1's refusal wrote EARLIER in the same cycle still reaches _persist_flags."""
+    row1 = _est_row(_MINIMAL_PDF, id=41)
+    row2 = _est_row(_MINIMAL_PDF, id=42)
+    _patch["pending"].return_value = [row1, row2]
+    _patch["chunks"].return_value = _one_chunk(_MINIMAL_PDF)
+    _patch["screen"].side_effect = [MALICIOUS, CLEAN]  # row 1 refused, row 2 filed
+    _patch["preview_post"].side_effect = portal_client.PortalAuthError("401")
+
+    stats = _run(_patch)  # must not raise
+
+    assert stats.bearer_rejected is True
+    assert "estimate_bearer_rejected" in _logged_codes(_patch)
+    assert "estimate_service_failed" not in _logged_codes(_patch)
+    # Row 2 aborted mid-service: its needs_review result post never happened —
+    # the only result post this cycle is row 1's refused disposition.
+    statuses = [c.kwargs.get("status") for c in _patch["result"].call_args_list]
+    assert statuses == ["refused"]
+    # Row 1's flag persisted despite the abort landing during row 2.
+    _patch["flags_persist"].assert_called_once()
+    (persisted,), _ = _patch["flags_persist"].call_args
+    assert persisted == {"41": "refused"}

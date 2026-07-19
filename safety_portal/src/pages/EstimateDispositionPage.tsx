@@ -216,6 +216,10 @@ export function EstimateDispositionPage({
           line_id: l.id,
           disposition: accepted.has(l.id) ? ("accepted" as const) : ("rejected" as const),
         })),
+        // The checkbox state rides to the Worker so the server-side fidelity gate can
+        // record which evidence path (rendered preview vs acknowledgment) authorized
+        // this import.
+        no_preview_verified: noPreviewVerified,
       });
       if (!disposed.ok) {
         // already_disposed — someone imported it in parallel: DISCARD the duplicate

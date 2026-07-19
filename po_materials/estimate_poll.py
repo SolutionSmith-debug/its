@@ -580,13 +580,23 @@ def _estimates_pass(creds: _EstCreds, counters: dict[str, int]) -> None:
     clamav_enabled = _attach_clamav_enabled()
     max_pages = _max_pages_preview()
     flags = _load_flags()
-    flags_dirty = False
-    for row in pending:
-        counters["scanned"] += 1
-        if _service_one_estimate(row, creds, counters, flags, clamav_enabled, max_pages):
-            flags_dirty = True
-    if flags_dirty:
-        _persist_flags(flags)
+    flags_before = dict(flags)
+    try:
+        for row in pending:
+            counters["scanned"] += 1
+            _service_one_estimate(row, creds, counters, flags, clamav_enabled, max_pages)
+    finally:
+        # Persist-on-mutation via snapshot compare, in a finally — NOT a
+        # loop-exit bool. A bearer abort (_BearerRejectedError out of the
+        # refused-post / preview-post helpers) leaves the loop AFTER
+        # _refuse_*/_handle_integrity_failure already wrote the in-flight row's
+        # one-shot flag, and a return-value protocol cannot see that mutation
+        # (the raise skips the return). The finally guarantees every flag
+        # written this cycle — including the one the aborting row just earned —
+        # reaches disk, so a fixed-later bearer never replays a 120s
+        # CRITICAL/Review-Queue re-alert storm for already-flagged rows.
+        if flags != flags_before:
+            _persist_flags(flags)
 
 
 def _service_one_estimate(
@@ -598,7 +608,9 @@ def _service_one_estimate(
     max_pages: int,
 ) -> bool:
     """Claim, verify, screen, classify, and disposition ONE pool row. Returns True
-    iff the one-shot flag set was mutated (the caller persists once per cycle).
+    iff the one-shot flag set was mutated (informational — the caller persists via
+    a snapshot compare in a finally, so a flag written just before a bearer abort
+    is persisted even though the raise skips this return).
 
     Verify-before-anything (Invariant 2): the est:v1 HMAC binds the row's fields
     AND the content digest; the sha256 recompute over the reassembled chunks
@@ -771,6 +783,14 @@ def _service_one_estimate(
             correlation_id=correlation_id,
         )
         return False
+    except _BearerRejectedError:
+        # Already-translated 401 re-raised by the helpers (_post_refused_result /
+        # _post_previews_best_effort). MUST propagate to _poll_inside_lock's
+        # cycle-stop handler — the generic per-row fence below would otherwise
+        # swallow it as an ordinary estimate_service_failed, leave
+        # stats.bearer_rejected False, and let the dead bearer re-alert every
+        # 120s instead of firing the one estimate_bearer_rejected CRITICAL.
+        raise
     except portal_client.PortalAuthError as exc:
         raise _BearerRejectedError from exc
     except (

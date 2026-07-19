@@ -345,6 +345,24 @@ were retracted/resolved from this diagnosis. Four open design gaps surfaced, non
   high-contention shared file, out of this agent's edit scope per its own boundaries). Trigger: next
   doc-reconciliation pass or CLAUDE.md touch.
 
+## PO-workspace accumulating ledgers have no row-cap/period-split watchdog [OPEN 2026-07-19, low]
+
+The three PO-workspace **append-only ledger sheets** — `PO_Log`, `Subcontract_Log`, and
+`Estimate_Log` (the ADR-0004 estimate importer's ledger) — grow monotonically with no
+row-cap monitor anywhere: watchdog **Check O**'s `_ROTATION_POLICIES` covers only
+`ITS_Errors` + `ITS_Review_Queue` (and rotation-by-delete would be WRONG for a SoR
+ledger anyway), while the progress-reporting standing trackers already carry the
+SoR-safe shape (`material_list.check_row_cap` WARN + operator period-split enqueue;
+`hours_log`/`equipment_status` run `sheet_capacity.check_create_headroom`) — these
+three writers have none (`grep row_cap|sheet_capacity po_log.py estimate_log.py
+subcontract_log.py` = zero hits). At current volumes the Smartsheet ~20k/sheet cap is
+years out (severity **low**), but past it `add_rows` fails and the ledger mirror goes
+silently blind — the same failure class the 2026-07-13 `ITS_Errors` row-cap incident
+proved out. Right fix is the `material_list` pattern replicated (WARN threshold +
+Review-Queue period-split enqueue, NEVER delete), not a Check-O rotation policy.
+**Trigger:** Phase 1.5 hardening pass (bucket with the other phase-1.5 items), or the
+first ledger to cross ~15k rows. **Tag:** `po_materials`, `subcontracts`, `phase-1.5`.
+
 ## PO attachments (Feature B) — conscious deferrals [OPEN 2026-07-13]
 
 From the Feature-B build (PO document attachments — the §34 doc-attachment pool → Mac screen →

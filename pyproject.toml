@@ -89,7 +89,11 @@ dependencies = [
     # design (the execution host is a MacBook — same posture as shared/keychain.py);
     # imported lazily inside the sandbox child, and a missing/failed import degrades
     # to zero previews rather than erroring (ADR-0004 decision 3 no-preview path).
-    "pyobjc-framework-Quartz>=10.0",
+    # §41 version-bump: latest upstream is 12.2.1 (checked 2026-07-19); the CG* /
+    # CGImageDestination* call surface used here is stable across 10.x–12.x.
+    # Upper-bounded <13.0 so a future pyobjc major can't silently break the bridge
+    # (the Pillow/openpyxl risk-bearing-dep convention in this file).
+    "pyobjc-framework-Quartz>=10.0,<13.0",
 ]
 
 [project.optional-dependencies]

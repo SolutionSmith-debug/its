@@ -29,6 +29,11 @@ beforeEach(async () => {
     env.DB.prepare("DELETE FROM equipment"),
     env.DB.prepare("DELETE FROM publish_requests"),
     env.DB.prepare("DELETE FROM prune_meta"),
+    env.DB.prepare("DELETE FROM estimate_extraction_lines"),
+    env.DB.prepare("DELETE FROM estimate_extractions"),
+    env.DB.prepare("DELETE FROM estimate_previews"),
+    env.DB.prepare("DELETE FROM po_estimate_chunks"),
+    env.DB.prepare("DELETE FROM po_estimates"),
     env.DB.prepare("DELETE FROM jobs"),
   ]);
 });
@@ -548,6 +553,112 @@ describe("pruneOldData — DR daily_photo_pool unclaimed/orphan rider", () => {
   });
 });
 
+// ── ADR-0004 E1 — the estimate artifact backstop (terminal-parent previews/chunks +
+// refused/orphan extractions). Dispose/refusal delete these synchronously in the route
+// batch; this stage is the belt-and-suspenders reap, mirroring the filed_pdfs orphan drop. ──
+async function seedEstimate(over: {
+  uuid: string;
+  status: string;
+  disposedAt?: number | null;
+  screenedAt?: number | null;
+  createdAt?: number;
+}): Promise<number> {
+  const r = await env.DB
+    .prepare(
+      "INSERT INTO po_estimates (est_uuid, job_no, filename, declared_mime, size_bytes, sha256, status, hmac, uploaded_by, created_at, screened_at, disposed_at) " +
+        "VALUES (?1,'2026.001','q.pdf','application/pdf',10,?2,?3,'h','admin.one',?4,?5,?6) RETURNING id",
+    )
+    .bind(
+      over.uuid,
+      `sha-${over.uuid}`, // distinct per row — the partial UNIQUE sha256 index covers live rows
+      over.status,
+      over.createdAt ?? NOW - 200 * DAY,
+      over.screenedAt ?? null,
+      over.disposedAt ?? null,
+    )
+    .first<{ id: number }>();
+  return r!.id;
+}
+async function seedEstimateBytes(id: number): Promise<void> {
+  await env.DB.prepare("INSERT INTO estimate_previews (estimate_id, page, png_b64) VALUES (?1,1,'QUJD')").bind(id).run();
+  await env.DB
+    .prepare("INSERT INTO po_estimate_chunks (estimate_id, chunk_index, chunk_total, chunk_b64) VALUES (?1,0,1,'QUJD')")
+    .bind(id)
+    .run();
+}
+async function estimatePreviewN(id: number): Promise<number> {
+  return (await env.DB.prepare("SELECT COUNT(*) n FROM estimate_previews WHERE estimate_id=?1").bind(id).first<{ n: number }>())!.n;
+}
+async function estimateChunkN(id: number): Promise<number> {
+  return (await env.DB.prepare("SELECT COUNT(*) n FROM po_estimate_chunks WHERE estimate_id=?1").bind(id).first<{ n: number }>())!.n;
+}
+
+describe("pruneOldData — estimate artifact backstop (ADR-0004)", () => {
+  it("reaps previews+chunks under TERMINAL parents aged 90d; keeps recent-terminal and NEVER touches LIVE rows", async () => {
+    const oldRejected = await seedEstimate({ uuid: "e-old-rej", status: "rejected", disposedAt: NOW - 100 * DAY });
+    const oldRefused = await seedEstimate({ uuid: "e-old-ref", status: "refused", screenedAt: NOW - 100 * DAY });
+    const recentRejected = await seedEstimate({ uuid: "e-new-rej", status: "rejected", disposedAt: NOW - 10 * DAY });
+    const liveOld = await seedEstimate({ uuid: "e-live", status: "extracted", createdAt: NOW - 400 * DAY });
+    for (const id of [oldRejected, oldRefused, recentRejected, liveOld]) await seedEstimateBytes(id);
+
+    const res = await pruneOldData(env.DB, NOW);
+
+    expect(res.failedStages).toEqual([]);
+    expect(res.estimateArtifacts).toBe(4); // oldRejected + oldRefused, one preview + one chunk each
+    expect(await estimatePreviewN(oldRejected)).toBe(0);
+    expect(await estimateChunkN(oldRejected)).toBe(0);
+    expect(await estimatePreviewN(oldRefused)).toBe(0);
+    expect(await estimateChunkN(oldRefused)).toBe(0);
+    expect(await estimatePreviewN(recentRejected)).toBe(1); // inside the 90d window
+    expect(await estimateChunkN(recentRejected)).toBe(1);
+    expect(await estimatePreviewN(liveOld)).toBe(1); // LIVE rows never reaped, however old
+    expect(await estimateChunkN(liveOld)).toBe(1);
+  });
+
+  it("drops pure ORPHANS (no parent row) and refused-parent extractions with their lines; live extractions survive", async () => {
+    // Orphan preview + chunk: the parent id does not exist (any path that misses the cascade).
+    await env.DB.prepare("INSERT INTO estimate_previews (estimate_id, page, png_b64) VALUES (999999,1,'QUJD')").run();
+    await env.DB
+      .prepare("INSERT INTO po_estimate_chunks (estimate_id, chunk_index, chunk_total, chunk_b64) VALUES (999999,0,1,'QUJD')")
+      .run();
+    // A refused parent that (impossibly via the guarded result post) holds an extraction —
+    // recent, so ONLY the extraction backstop (no age gate) can be what reaps it.
+    const refused = await seedEstimate({ uuid: "e-ref-ext", status: "refused", screenedAt: NOW - 1 * DAY });
+    const live = await seedEstimate({ uuid: "e-live-ext", status: "extracted" });
+    const seedExtraction = async (estimateId: number): Promise<number> => {
+      const r = await env.DB
+        .prepare("INSERT INTO estimate_extractions (estimate_id, tier, schema_version, payload_json) VALUES (?1,3,'1.0.0','{}') RETURNING id")
+        .bind(estimateId)
+        .first<{ id: number }>();
+      await env.DB
+        .prepare("INSERT INTO estimate_extraction_lines (extraction_id, position, description) VALUES (?1,1,'rail')")
+        .bind(r!.id)
+        .run();
+      return r!.id;
+    };
+    await seedExtraction(refused);
+    const liveExt = await seedExtraction(live);
+
+    const res = await pruneOldData(env.DB, NOW);
+
+    expect(res.failedStages).toEqual([]);
+    expect(res.estimateArtifacts).toBe(3); // orphan preview + orphan chunk + the refused-parent extraction
+    const extLeft = await env.DB.prepare("SELECT id FROM estimate_extractions ORDER BY id").all<{ id: number }>();
+    expect(extLeft.results.map((x) => x.id)).toEqual([liveExt]);
+    // Children died with their extraction (no ON DELETE CASCADE — the stage deletes lines first).
+    const linesLeft = await env.DB.prepare("SELECT DISTINCT extraction_id FROM estimate_extraction_lines").all<{ extraction_id: number }>();
+    expect(linesLeft.results.map((x) => x.extraction_id)).toEqual([liveExt]);
+    expect((await env.DB.prepare("SELECT COUNT(*) n FROM estimate_previews").first<{ n: number }>())!.n).toBe(0);
+    expect((await env.DB.prepare("SELECT COUNT(*) n FROM po_estimate_chunks").first<{ n: number }>())!.n).toBe(0);
+  });
+
+  it("a throw in the estimate_artifacts stage is isolated + NAMED (GS2 fence)", async () => {
+    const res = await pruneOldData(poisonedDb(/DELETE FROM estimate_previews/), NOW);
+    expect(res.failedStages).toEqual(["estimate_artifacts"]);
+    expect(res.estimateArtifacts).toBe(0);
+  });
+});
+
 // ── GS2 — the prune_meta heartbeat row (migration 0033 + writePruneMeta). ────────
 function syntheticResult(overrides: Partial<PruneResult> = {}): PruneResult {
   return {
@@ -563,6 +674,7 @@ function syntheticResult(overrides: Partial<PruneResult> = {}): PruneResult {
     jobs: 8,
     subcontractDrafts: 9,
     poDrafts: 10,
+    estimateArtifacts: 11,
     dbSizeBytes: 4096,
     sizeWarn: false,
     failedStages: [],
@@ -592,6 +704,7 @@ describe("writePruneMeta — GS2 heartbeat record", () => {
       submissions: 1, stripped: 2, rejected: 3, audit: 4,
       pdfRequests: 5, pdfChunks: 6, publishRequests: 7, itemPhotos: 9,
       dailyPhotos: 10, jobs: 8, subcontractDrafts: 9, poDrafts: 10,
+      estimateArtifacts: 11,
     });
     expect(JSON.parse(rows[0].failed_stages_json)).toEqual(["audit"]);
   });
