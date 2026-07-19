@@ -277,7 +277,25 @@ error-chase over the remainder. Findings from the chase, not yet actioned:
   keep as test fixtures and populate JOB-000027's blank Safety Reports Contact Email; (b) sweep the 232
   stale rows for deleted jobs via the new verb; (c) the 4 "sheet-count near cap … margin 60" rows expose a
   margin==cap misconfig (`sheet_capacity` margin should be < the 60 cap) — an ITS_Config value fix.
-- **DASH-14 (found 2026-07-19, NOT fixed) — PR #613's config-read fence fix is not ported to 3 replicas.**
+  **2026-07-19 handoff-pass update:** (b) DONE — the remaining 62 stale rows swept via the resolve verb
+  (count-guarded dry-run first; queue now 2 PENDING = the two 'Acme Concrete' picklist mismatched-reference
+  rows, a real pending data decision). (c) RESOLVED-AS-FOSSIL — the live `smartsheet.sheet_count_ceiling/
+  margin` rows read 1500/50 (sane, explicit-seeded 2026-07-06); the four "14/60 (margin 60)" review rows
+  were fired 2026-07-15 under values since corrected/reverted — no config change needed. JOB-000027's blank
+  Safety Reports Contact Email populated (seth@solutionsmith.org, matching the sibling test jobs; audited
+  `active_jobs_contact_populated`). REMAINING operator decisions: (a) deactivate-or-keep the 3 sandbox jobs
+  (portal-side if deactivating), and the Acme Concrete picklist removal. The dashboard upgrade slate is
+  filed at `docs/2026-07-19_dashboard_upgrade_slate.md`.
+- **DASH-14 (found 2026-07-19, FIXED 2026-07-19) — PR #613's config-read fence fix is not ported to 3 replicas.**
+  **FIXED 2026-07-19: all 3 replicas ported** (`safety_reports/compile_now_poll.py`,
+  `field_ops/fieldops_sync.py`, `safety_reports/generate_core.py` — each file's single
+  `_read_str_setting`-style reader now catches base `SmartsheetError` → WARN `config_read_error` +
+  fallback, exactly the #613 shape, with per-reader fence tests). The F22 `_load_authorized_approvers`
+  gate in `send_poll_core.py` remains deliberately fail-CLOSED, untouched. Same PR also closed the
+  watchdog Check S stale-green blind spot: a green latest ci.yml run is now compared against
+  origin/main's actual HEAD sha (the 2026-07-19 push-event delivery gap left merge commits with ZERO
+  runs reading as "green" indefinitely); mismatch → WARN naming both shas + `gh workflow run ci --ref
+  main` (the #619 workflow_dispatch); HEAD-resolution failure stays fail-safe INFO. Original entry:
   PR #613 fixed a class of bug where a daemon-local `_read_str_setting` config-row reader caught only
   `smartsheet_client.SmartsheetNotFoundError` + `SmartsheetCircuitOpenError` before falling back to a
   default — letting a generic single-cycle transient (`SmartsheetError` base: read-timeout, HTTP 500/502)

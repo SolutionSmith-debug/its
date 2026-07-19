@@ -1973,10 +1973,20 @@ def test_cap_window_sweep_deferred_in_maintenance(mocker):
 # ---- Check S: origin/main required CI green (forensic class #13) ---------
 
 
-def _fake_gh(monkeypatch, *, which="/usr/bin/gh", returncode=0, stdout="", stderr=""):
+def _fake_gh(
+    monkeypatch, *, which="/usr/bin/gh", returncode=0, stdout="", stderr="", head_stdout=None
+):
+    """Fake BOTH Check S gh calls: `gh run list` (run-list JSON via stdout) and
+    `gh api .../commits/main` (HEAD-staleness probe via head_stdout). head_stdout=None
+    simulates a HEAD-resolution failure (gh exits 1) — the fail-safe default, so the
+    pre-staleness tests keep exercising the green path unchanged."""
     monkeypatch.setattr(watchdog.shutil, "which", lambda _name: which)
 
-    def _run(*_a, **_k):
+    def _run(cmd, *_a, **_k):
+        if "api" in cmd:
+            if head_stdout is None:
+                return SimpleNamespace(returncode=1, stdout="", stderr="")
+            return SimpleNamespace(returncode=0, stdout=head_stdout, stderr="")
         return SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr)
 
     monkeypatch.setattr(watchdog.subprocess, "run", _run)
@@ -2048,6 +2058,61 @@ def test_check_s_timeout_is_info(monkeypatch):
 
     monkeypatch.setattr(watchdog.subprocess, "run", _boom)
     assert watchdog._check_main_branch_ci_green().severity is Severity.INFO
+
+
+# ---- Check S HEAD-staleness (2026-07-19 push-event delivery gap) ----------
+
+
+def test_check_s_green_and_head_match_is_info(monkeypatch):
+    """Green latest run AND its sha IS origin/main HEAD → INFO (the true green path)."""
+    sha = "a" * 40
+    _fake_gh(
+        monkeypatch,
+        stdout=json.dumps([{"status": "completed", "conclusion": "success", "headSha": sha}]),
+        head_stdout=sha + "\n",
+    )
+    result = watchdog._check_main_branch_ci_green()
+    assert result.severity is Severity.INFO
+    assert "green" in result.summary.lower()
+    assert "[main-ci-stale]" not in result.summary
+
+
+def test_check_s_green_but_stale_head_is_warn(monkeypatch):
+    """Green latest run for a sha that is NOT origin/main HEAD → WARN naming both shas
+    + the workflow_dispatch remediation. (2026-07-19: GitHub stopped delivering push
+    events for main merges — three merge commits got ZERO runs and the older green run
+    read as current indefinitely.) WARN, not CRITICAL — the tree may be verified by
+    other means."""
+    run_sha = "a" * 40
+    head_sha = "b" * 40
+    _fake_gh(
+        monkeypatch,
+        stdout=json.dumps(
+            [{"status": "completed", "conclusion": "success", "headSha": run_sha}]
+        ),
+        head_stdout=head_sha + "\n",
+    )
+    result = watchdog._check_main_branch_ci_green()
+    assert result.severity is Severity.WARN
+    assert "[main-ci-stale]" in result.summary
+    assert run_sha[:7] in result.summary
+    assert head_sha[:7] in result.summary
+    assert "gh workflow run ci --ref main" in result.summary
+
+
+def test_check_s_head_resolution_failure_stays_info(monkeypatch):
+    """HEAD-resolution failure is fail-SAFE: the staleness probe is skipped and the
+    green path stays INFO — our OWN inability to resolve HEAD never pages."""
+    _fake_gh(
+        monkeypatch,
+        stdout=json.dumps(
+            [{"status": "completed", "conclusion": "success", "headSha": "abcdef1234"}]
+        ),
+        head_stdout=None,  # gh api fails → probe skipped
+    )
+    result = watchdog._check_main_branch_ci_green()
+    assert result.severity is Severity.INFO
+    assert "green" in result.summary.lower()
 
 
 # ---- Check P: portal_poll pending-fetch outage escalation (A4) ------------

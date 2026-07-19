@@ -551,3 +551,26 @@ def test_review_row_dedupe_read_failure_appends_anyway(mocker):
     assert summary.review_queue_entries == 1
     codes = [kw.get("error_code") for _, kw in log.call_args_list]
     assert "weekly_generate.review_queue_dedupe_read_failed" in codes
+
+
+# ---- config-read transient fence (DASH-14 port of PR #613) -----------------
+
+
+def test_read_str_setting_transient_error_falls_open_with_warn(mocker):
+    """A generic SmartsheetError from get_setting (read-timeout / 5xx) must NOT escape
+    to @its_error_log as a spurious CRITICAL — WARN `config_read_error` + fallback,
+    same disposition as the circuit-open branch."""
+    from shared.smartsheet_client import SmartsheetError
+    mocker.patch.object(
+        generate_core.smartsheet_client, "get_setting",
+        side_effect=SmartsheetError("read timeout"),
+    )
+    log = mocker.patch.object(generate_core.error_log, "log")
+
+    result = generate_core._read_str_setting(
+        weekly_generate.SAFETY_GENERATE_CONFIG, "safety_reports.some_key", "fallback-val"
+    )  # must not raise
+
+    assert result == "fallback-val"
+    codes = [kw.get("error_code") for _, kw in log.call_args_list]
+    assert "config_read_error" in codes
