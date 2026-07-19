@@ -38,10 +38,19 @@ shipped `false`). Per document it:
 3. **Classifies** the document type. **Invoices and A/P reports are REFUSED from the PO
    path by design** — they are never parsed as purchase line items (Symptom 6 — usually
    not a fault).
-4. **Files** clean documents to Box (`<job>/Purchase Orders/Vendor Quotes/`) + an
+4. **Runs the extraction ladder** (all LOCAL — no cloud AI anywhere in this lane):
+   Tier 0 parses a returned ITS quote form (always on — a deterministic round-trip of
+   our own artifact); Tier 1 (`po_materials.estimate_extract.tier1_enabled`, ships
+   `false`) is a deterministic parse of native-text PDFs; Tier 2 (`.tier2_enabled`,
+   ships `false`, at most ONE document per cycle) is a **local Ollama model on this
+   Mac** (scanned documents OCR first under `.ocr_enabled`). A tier success reports
+   `extracted` with ADVISORY line items; every failure / off-gate / low-confidence
+   document reports `needs_review` instead — never an error.
+5. **Files** clean documents to Box (`<job>/Purchase Orders/Vendor Quotes/`) + an
    `Estimate_Log` row, renders **page previews** for the disposition screen, and reports
-   `needs_review`. A human enters/accepts every dollar in the portal's disposition
-   screen — this daemon extracts nothing and sends nothing.
+   `extracted` or `needs_review`. Either way a human reviews/accepts every dollar in
+   the portal's disposition screen — extraction is advisory only, and this daemon
+   sends nothing.
 
 > **The both-rule (FM v11 / Op Stds §44).** A fault is Tier-2-eligible (the
 > Successor-Operator may self-repair) only if it is **documented here AND
@@ -257,3 +266,85 @@ recovery) — every step before the final result post is idempotent, so a re-run
 Wait 2–3 cycles (≈6 min). If one estimate loops for more than an hour with the same
 error, capture the ITS_Errors lines (Correlation ID column) and escalate with them.
 Never hand-edit D1 or the state files other than the documented flag-entry delete.
+
+---
+
+## Symptom 11 — EVERYTHING lands `needs_review` (no `extracted` results at all)
+
+### Symptom
+Every uploaded estimate files fine but the disposition screen always starts empty
+(status `needs_review`, no prefilled lines); ITS_Errors may show WARNs citing
+`estimate_tier1_failed`, `estimate_tier2_failed`, `estimate_ocr_failed`,
+`estimate_tier2_low_confidence`, or `estimate_tier_module_missing`.
+
+### What it means
+The extraction ladder is dark or degraded — which is **safe by design**: a tier
+failure never blocks filing, it only removes the prefill convenience. The common
+states:
+
+* **All three tier gates are `false` (the shipped default).** ITS_Config
+  `po_materials.estimate_extract.tier1_enabled` / `.tier2_enabled` / `.ocr_enabled`
+  (Workstream `po_materials`) all ship dark; `needs_review`-for-everything is the
+  intended pre-qualification behavior.
+* **Tier-2 is on but the local model is down** (`estimate_tier2_failed` naming the
+  model / base URL): the Ollama service isn't running, or the pinned model was never
+  pulled on this host. Scanned documents additionally need `.ocr_enabled=true` — with
+  it off they always land `needs_review` (by design).
+* **`estimate_tier_module_missing`**: a tier gate is `true` but the extraction-core
+  code isn't installed in the live venv — a deploy-order gap.
+
+### What the Successor-Operator checks / does (low-class)
+1. Read the three gate rows. If they are `false` — working as designed; nothing to do.
+   **Read each row's full Description before any flip** — the tier gates are
+   preconditioned on the offline corpus eval having passed (a doctrine-conditioned
+   flip escalates if the precondition is unmet).
+2. If `.tier2_enabled=true` and WARNs cite `estimate_tier2_failed`: on the Mac run
+   `ollama list`. If the pinned model (ITS_Config
+   `po_materials.estimate_extract.model`, default `qwen3.5:9b`) is absent, pull it:
+   `ollama pull qwen3.5:9b` (substitute the row's exact value). If `ollama` itself
+   isn't running/installed, start it (the Ollama menu-bar app or `ollama serve`).
+   The next cycles extract normally — nothing was lost (the documents already filed).
+3. `estimate_tier_module_missing` = code/venv deploy gap = **code → Seth**.
+
+### Escalate-to-Seth condition
+Flipping any tier gate `true` for the first time (the eval precondition), swapping
+the model row, or anything citing `estimate_tier_module_missing`.
+
+---
+
+## Symptom 12 — extraction discarded by the anomaly tripwire (`estimate_extraction_anomaly`)
+
+### Symptom
+A WARN Review-Queue row (security-flagged) "tripped the anomaly tripwire —
+extraction DISCARDED"; the document itself filed normally and sits `needs_review`.
+
+### What it means
+The Layer-5 sweep over the extraction's STRING fields matched an injection sentinel
+(a document trying to steer the pipeline). The extraction was thrown away; the
+document takes the manual path. The human disposition review IS the control —
+nothing was trusted.
+
+### Escalate-to-Seth condition — **security = FIXED high-class → Seth**
+Review the document with Seth before re-running anything.
+
+---
+
+## Symptom 13 — re-running the offline corpus eval (qualification / model swap)
+
+Not a fault — the standing procedure the tier-gate Descriptions reference. On the
+Mac, from `~/its` with the venv active:
+
+```
+python3 scripts/eval_estimate_ladder.py                 # tiers 0+1 (deterministic)
+python3 scripts/eval_estimate_ladder.py --tier2 --ocr   # full ladder, localhost Ollama
+```
+
+It walks the local corpus (default `~/Desktop/Evergreen project/Z. Quotes 1`),
+prints a per-file + aggregate table, and diffs against
+`tests/fixtures/estimate_corpus_expectations.json` (sha256-keyed expected metadata —
+the corpus bytes never enter the repo). After a **qualified** change (new model, new
+vendor template), snapshot the new baseline with `--write-expectations` and commit
+the fixture. The eval touches NOTHING external — no Worker, no Smartsheet, no Box;
+localhost Ollama only under `--tier2`. Interpreting a regression or accepting a new
+baseline is a **code/doctrine decision → Seth**; *running* the eval read-only is
+low-class.

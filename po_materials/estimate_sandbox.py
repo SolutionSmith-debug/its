@@ -22,6 +22,12 @@ parser bug cannot corrupt daemon state even in-process.
 Child fn contracts (stdout JSON):
   extract_pages_text [max_pages]  → {"pages": ["page 1 text", ...]}
   render_page_pngs   [max_pages]  → {"pngs": ["<base64 png>", ...]}
+  parse_native       [max_pages]  → {"pages": [...], "chars_per_page": [int, ...],
+                                     "words": [[{"text","x0","x1","top","bottom"}...]...],
+                                     "tables": [[table…]…]}  (E4 Tier-1 parse payload;
+                                     per-page word positions bounded by
+                                     PARSE_MAX_WORDS_PER_PAGE, tables by
+                                     PARSE_MAX_TABLES_PER_PAGE × PARSE_MAX_TABLE_ROWS)
   (plus four harmless _test_* fns — spin / bounded-alloc / crash / echo — dispatched
   only by tests/test_estimate_sandbox.py to prove the reap contract on REAL children)
 
@@ -69,6 +75,9 @@ DEFAULT_RLIMIT_BYTES = 2 * 1024 * 1024 * 1024
 # tests share one source).
 TEXT_TIMEOUT_S = 60
 PREVIEW_TIMEOUT_S = 120
+# E4 Tier-1 parse (text + words + tables) does strictly more work than the plain
+# text extraction — its own budget, still bounded well under the daemon interval.
+PARSE_TIMEOUT_S = 90
 # Sanity cap on child stdout — a preview batch of a dozen page PNGs sits far below
 # this; anything larger is a runaway child, treated as a failure.
 MAX_CHILD_STDOUT_BYTES = 64 * 1024 * 1024
@@ -78,13 +87,19 @@ MAX_CHILD_STDOUT_BYTES = 64 * 1024 * 1024
 PREVIEW_TARGET_WIDTH_PX = 1100
 PREVIEW_MAX_PIXELS = 24_000_000
 
+# Child-side output bounds for the E4 parse payload — a hostile PDF that fabricates
+# millions of words/table rows is truncated in the CHILD, keeping stdout bounded.
+PARSE_MAX_WORDS_PER_PAGE = 3000
+PARSE_MAX_TABLES_PER_PAGE = 20
+PARSE_MAX_TABLE_ROWS = 500
+
 # TEST-SUPPORT child fns (tests/test_estimate_sandbox.py — the REAL-child-process
 # suite proving the reap/rlimit contract without a hostile document). Deliberately
 # ungated: each is harmless — local CPU/memory inside a child the parent reaps
 # (spin / bounded alloc / crash / echo); nothing in the daemon dispatches them,
 # and invoking one by hand just burns a few seconds of local CPU.
 _TEST_FNS = ("_test_spin", "_test_alloc", "_test_crash", "_test_echo")
-_ALLOWED_FNS = ("extract_pages_text", "render_page_pngs", *_TEST_FNS)
+_ALLOWED_FNS = ("extract_pages_text", "render_page_pngs", "parse_native", *_TEST_FNS)
 
 
 def run_sandboxed(
@@ -161,6 +176,62 @@ def _child_extract_pages_text(data: bytes, max_pages: int) -> dict[str, Any]:
             except Exception:  # noqa: BLE001 — one bad page degrades to ""
                 pages.append("")
     return {"pages": pages}
+
+
+def _child_parse_native(data: bytes, max_pages: int) -> dict[str, Any]:
+    """E4 Tier-1 parse payload (child-side): per-page text + word positions +
+    pdfplumber table extraction + text-char counts (the parent's is_scanned input).
+
+    Per-page failures degrade that page ('' / [] / 0); a document pdfplumber cannot
+    open raises (→ nonzero exit → parent None, the degrade signal). All list output
+    is bounded by the PARSE_MAX_* caps so a hostile PDF cannot balloon stdout."""
+    import pdfplumber  # noqa: PLC0415 — lazy child-only import by design
+
+    pages: list[str] = []
+    chars_per_page: list[int] = []
+    words: list[list[dict[str, Any]]] = []
+    tables: list[list[list[list[str]]]] = []
+    with pdfplumber.open(io.BytesIO(data)) as pdf:
+        for page in pdf.pages[:max_pages]:
+            try:
+                pages.append(page.extract_text() or "")
+            except Exception:  # noqa: BLE001 — one bad page degrades to ""
+                pages.append("")
+            try:
+                chars_per_page.append(len(page.chars))
+            except Exception:  # noqa: BLE001
+                chars_per_page.append(0)
+            try:
+                page_words = [
+                    {
+                        "text": str(w.get("text", "")),
+                        "x0": round(float(w.get("x0", 0.0)), 2),
+                        "x1": round(float(w.get("x1", 0.0)), 2),
+                        "top": round(float(w.get("top", 0.0)), 2),
+                        "bottom": round(float(w.get("bottom", 0.0)), 2),
+                    }
+                    for w in (page.extract_words() or [])[:PARSE_MAX_WORDS_PER_PAGE]
+                ]
+            except Exception:  # noqa: BLE001
+                page_words = []
+            words.append(page_words)
+            try:
+                page_tables = [
+                    [
+                        ["" if cell is None else str(cell) for cell in row]
+                        for row in (table or [])[:PARSE_MAX_TABLE_ROWS]
+                    ]
+                    for table in (page.extract_tables() or [])[:PARSE_MAX_TABLES_PER_PAGE]
+                ]
+            except Exception:  # noqa: BLE001
+                page_tables = []
+            tables.append(page_tables)
+    return {
+        "pages": pages,
+        "chars_per_page": chars_per_page,
+        "words": words,
+        "tables": tables,
+    }
 
 
 def _child_render_page_pngs(data: bytes, max_pages: int) -> dict[str, Any]:
@@ -285,6 +356,8 @@ def _child_main(argv: list[str]) -> int:
     data = sys.stdin.buffer.read()
     if fn_name == "extract_pages_text":
         result = _child_extract_pages_text(data, max_pages)
+    elif fn_name == "parse_native":
+        result = _child_parse_native(data, max_pages)
     elif fn_name == "render_page_pngs":
         result = _child_render_page_pngs(data, max_pages)
     elif fn_name == "_test_echo":

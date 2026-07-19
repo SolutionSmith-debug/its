@@ -40,7 +40,10 @@ dependencies = [
     "pyyaml>=6.0",
     # Validates safety_portal/forms/*.json against forms/meta-schema.json — the
     # single source of truth both renderers (TS display + Python PDF) consume.
-    "jsonschema>=4.0",
+    # Floor raised to 4.21 for the vendor-estimate lane (ADR-0004 E5):
+    # shared/ollama_client.py validates every schema-constrained local-LLM reply
+    # against schemas/vendor_estimate_extraction.json before returning it.
+    "jsonschema>=4.21",
     # Deterministic render-parity PDF renderer for Safety Portal submissions
     # (safety_reports/form_pdf.py, Option B — intake renders on arrival, Phase 5).
     # No AI; embeds SVG-path signatures + the definition's mandatory/legal text.
@@ -94,6 +97,14 @@ dependencies = [
     # Upper-bounded <13.0 so a future pyobjc major can't silently break the bridge
     # (the Pillow/openpyxl risk-bearing-dep convention in this file).
     "pyobjc-framework-Quartz>=10.0,<13.0; sys_platform == 'darwin'",  # macOS-only: setup shells to sw_vers — env-marked so Linux CI installs (runtime is Darwin; estimate_preview degrades to [] without it)
+    # macOS Vision OCR for SCANNED vendor estimates (ADR-0004 E5,
+    # po_materials/estimate_ocr.py): ocrmac wraps VNRecognizeTextRequest
+    # ('accurate'); pyobjc-framework-Vision is its Vision bridge. macOS-only by
+    # design (same posture as the Quartz pin above); imported LAZILY inside
+    # ocr_pages, and a missing/broken import degrades to [] (no text recovered →
+    # Tier-3 review), never an error. Floor pins per this file's convention.
+    "ocrmac>=1.0; sys_platform == 'darwin'",
+    "pyobjc-framework-Vision>=10.0,<13.0; sys_platform == 'darwin'",
 ]
 
 [project.optional-dependencies]
@@ -149,5 +160,6 @@ markers = [
 [[tool.mypy.overrides]]
 module = ["msal", "msal.*", "smartsheet", "smartsheet.*", "boxsdk", "boxsdk.*", "reportlab", "reportlab.*",
           "PIL", "PIL.*", "pyclamd", "pyclamd.*", "docx", "docx.*", "openpyxl", "openpyxl.*",
-          "pdfplumber", "pdfplumber.*", "Quartz", "Quartz.*"]
+          "pdfplumber", "pdfplumber.*", "Quartz", "Quartz.*", "ocrmac", "ocrmac.*",
+          "Vision", "Vision.*"]
 ignore_missing_imports = true

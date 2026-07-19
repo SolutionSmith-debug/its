@@ -55,6 +55,13 @@ This is the operator reference for **ITS_Config** — the Smartsheet sheet where
 | Setting | Type | Default | Purpose | Read by |
 |---|---|---|---|---|
 | `po_materials.config_actuator.polling_enabled` | bool | false | Runtime gate for the §50 config actuator daemon (applies approved workstream-config changes on the Mac). | po_materials.config_actuator |
+| `po_materials.estimate_extract.confidence_threshold` | float | 0.75 | Minimum extraction confidence to post 'extracted'; below it the doc degrades to needs_review (the disposition screen's manual Tier-3). | po_materials.estimate_poll |
+| `po_materials.estimate_extract.model` | str | qwen3.5:9b | Pinned local Ollama model for Tier-2 extraction; swapping it re-runs the offline corpus eval to re-qualify (ADR-0004 decision 1). | po_materials.estimate_poll |
+| `po_materials.estimate_extract.ocr_enabled` | bool | false | Gate for the macOS-Vision OCR pass (estimate_ocr) feeding Tier-2 on SCANNED documents. Ships FALSE (dark). | po_materials.estimate_poll |
+| `po_materials.estimate_extract.ollama_base_url` | str | http://127.0.0.1:11434 | Local Ollama base URL for Tier-2 extraction (localhost-only — vendor pricing never leaves the machine). | po_materials.estimate_poll |
+| `po_materials.estimate_extract.tier1_enabled` | bool | false | Gate for the Tier-1 deterministic native-text extraction (estimate_parse template→generic ladder). Ships FALSE (dark). | po_materials.estimate_poll |
+| `po_materials.estimate_extract.tier2_enabled` | bool | false | Gate for the Tier-2 LOCAL-Ollama schema-constrained extraction (estimate_extract; at most one Tier-2 doc per cycle). Ships FALSE (dark). | po_materials.estimate_poll |
+| `po_materials.estimate_extract.timeout_seconds` | int | 600 | Wall-clock budget in seconds for one Tier-2 extraction call (keep_alive=0 load-on-demand can make the first call slow). | po_materials.estimate_poll |
 | `po_materials.estimate_poll.max_pages_preview` | int | 12 | Max pages rendered as disposition-screen previews per estimate (Quartz via the estimate_sandbox child). | po_materials.estimate_poll |
 | `po_materials.estimate_poll.polling_enabled` | bool | false | Runtime on/off gate for the po_materials.estimate_poll daemon. False pauses it without unloading its launchd job (the canonical runtime gate, distinct from the report-filter Enabled checkbox). | po_materials.estimate_poll |
 | `po_materials.po_attach_screen.clamav_enabled` | bool | false | Optional ClamAV layer of the §34 doc screener (po_attach_screen L3), SHARED with po_poll's attachment pass. Default OFF. | po_materials.estimate_poll, po_materials.po_poll |

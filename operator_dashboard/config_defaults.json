@@ -214,6 +214,83 @@
       "origin": "daemon"
     },
     {
+      "setting": "po_materials.estimate_extract.confidence_threshold",
+      "workstream": "po_materials",
+      "kind": "float",
+      "default": 0.75,
+      "purpose": "Minimum extraction confidence to post 'extracted'; below it the doc degrades to needs_review (the disposition screen's manual Tier-3).",
+      "read_by": [
+        "po_materials.estimate_poll"
+      ],
+      "origin": "daemon"
+    },
+    {
+      "setting": "po_materials.estimate_extract.model",
+      "workstream": "po_materials",
+      "kind": "str",
+      "default": "qwen3.5:9b",
+      "purpose": "Pinned local Ollama model for Tier-2 extraction; swapping it re-runs the offline corpus eval to re-qualify (ADR-0004 decision 1).",
+      "read_by": [
+        "po_materials.estimate_poll"
+      ],
+      "origin": "daemon"
+    },
+    {
+      "setting": "po_materials.estimate_extract.ocr_enabled",
+      "workstream": "po_materials",
+      "kind": "bool",
+      "default": false,
+      "purpose": "Gate for the macOS-Vision OCR pass (estimate_ocr) feeding Tier-2 on SCANNED documents. Ships FALSE (dark).",
+      "read_by": [
+        "po_materials.estimate_poll"
+      ],
+      "origin": "daemon"
+    },
+    {
+      "setting": "po_materials.estimate_extract.ollama_base_url",
+      "workstream": "po_materials",
+      "kind": "str",
+      "default": "http://127.0.0.1:11434",
+      "purpose": "Local Ollama base URL for Tier-2 extraction (localhost-only — vendor pricing never leaves the machine).",
+      "read_by": [
+        "po_materials.estimate_poll"
+      ],
+      "origin": "daemon"
+    },
+    {
+      "setting": "po_materials.estimate_extract.tier1_enabled",
+      "workstream": "po_materials",
+      "kind": "bool",
+      "default": false,
+      "purpose": "Gate for the Tier-1 deterministic native-text extraction (estimate_parse template→generic ladder). Ships FALSE (dark).",
+      "read_by": [
+        "po_materials.estimate_poll"
+      ],
+      "origin": "daemon"
+    },
+    {
+      "setting": "po_materials.estimate_extract.tier2_enabled",
+      "workstream": "po_materials",
+      "kind": "bool",
+      "default": false,
+      "purpose": "Gate for the Tier-2 LOCAL-Ollama schema-constrained extraction (estimate_extract; at most one Tier-2 doc per cycle). Ships FALSE (dark).",
+      "read_by": [
+        "po_materials.estimate_poll"
+      ],
+      "origin": "daemon"
+    },
+    {
+      "setting": "po_materials.estimate_extract.timeout_seconds",
+      "workstream": "po_materials",
+      "kind": "int",
+      "default": 600,
+      "purpose": "Wall-clock budget in seconds for one Tier-2 extraction call (keep_alive=0 load-on-demand can make the first call slow).",
+      "read_by": [
+        "po_materials.estimate_poll"
+      ],
+      "origin": "daemon"
+    },
+    {
       "setting": "po_materials.estimate_poll.max_pages_preview",
       "workstream": "po_materials",
       "kind": "int",

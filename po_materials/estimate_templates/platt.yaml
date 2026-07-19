@@ -1,0 +1,53 @@
+# Platt Electric Supply distributor quote (ADR-0004 corpus class: green-banner
+# 'PLATT' header, 'Quote #NNNNNNN', 'Updated On:' date, section band rows like
+# 'PV Source Circuits (String Wire)', line rows carrying line-number + product
+# code + '| Item# NNNNN' + description, QTY with thousands commas, 'UNT PR / UOM'
+# like '$0.45 FT' or '$1,098.90 M' (M = per-THOUSAND — see uom_divisors), and a
+# TOTALS column ('$22,500.00'). Free-text stock notes appear between line rows
+# ('MFR:' continuation lines, '*'-prefixed availability notes) — skipped, never
+# parsed as lines or sections.
+#
+# DATA ONLY — see README.md in this directory for the template grammar. Tuned
+# against synthetic replicas in tests/test_estimate_parse.py; re-tune against the
+# real corpus via scripts/eval_estimate_ladder.py (E6) before trusting changes.
+name: platt
+vendor_name: Platt
+doc_type: quote
+
+# ALL must match page-1 text (case-insensitive) for this template to claim the doc.
+match:
+  - 'PLATT'
+  - 'Quote\s*#\s*\d+'
+
+fields:
+  quote_number: 'Quote\s*#\s*(\d+)'
+  quote_date: 'Updated\s+On:\s*(\d{1,2}/\d{1,2}/\d{2,4})'
+
+date_formats:
+  - '%m/%d/%Y'
+  - '%m/%d/%y'
+
+lines:
+  # One line row: line-no, product code, '| Item# NNNNN', description, qty
+  # (thousands commas), '$unit-price UOM', '$extended'. A row without qty +
+  # unit price never reaches this pattern's money groups — section bands and
+  # stock notes fall through to section_pattern / skip below.
+  pattern: '^\s*(?P<line_no>\d+)\s+(?P<part_number>\S+)\s*\|\s*Item#\s*\d+\s+(?P<description>.+?)\s+(?P<qty>[\d,]+(?:\.\d+)?)\s+\$(?P<unit_price>[\d,]+\.\d+)\s+(?P<uom>[A-Z]{1,4})\s+\$(?P<extended>[\d,]+\.\d{2})\s*$'
+  # Section band: a standalone title row (e.g. 'PV Source Circuits (String Wire)').
+  # Checked only for rows the line pattern did not claim.
+  section_pattern: '^\s*(?P<section>[A-Z][A-Za-z0-9 ,&/()''\-]{3,80})\s*$'
+  skip:
+    - '^\s*MFR:'          # manufacturer continuation lines under a line row
+    - '^\s*\*'            # '*'-prefixed stock/availability notes
+    - '(?i)expected\s+(?:stock|arrival)'   # free-text stock notes between rows
+
+uom_divisors:
+  # 'M' pricing is per-THOUSAND: extended = qty / 1000 × unit price.
+  # FT / EA / any unlisted UOM divide by 1 (the default).
+  M: 1000
+
+totals:
+  subtotal: 'SUB\s*TOTAL\s*:?\s*\$([\d,]+\.\d{2})'
+  tax: '(?:SALES\s+)?TAX\s*:?\s*\$([\d,]+\.\d{2})'
+  freight: '(?:FREIGHT|SHIPPING)\s*:?\s*\$([\d,]+\.\d{2})'
+  grand_total: '^\s*TOTALS?\s*:?\s*\$([\d,]+\.\d{2})'
