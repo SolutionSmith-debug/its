@@ -201,9 +201,9 @@ FOLDER_PO_JOBS = 8609175803586436             # ITS — Purchase Orders / Jobs �
 SHEET_ITS_VENDORS = 5404286845407108        # ITS_Vendors — vendor SoR (created 2026-07-09 by build_its_vendors_sheet.py)
 SHEET_PO_LOG = 3152487031721860             # PO_Log — operator-visible ledger mirror of D1 (created 2026-07-09 by build_po_log_sheet.py)
 SHEET_PO_PENDING_REVIEW = 1816168087113604  # PO_Pending_Review — PO review/approve/send surface (created 2026-07-09 by build_po_pending_review_sheet.py)
-SHEET_ESTIMATE_LOG = 0                      # Estimate_Log — vendor-estimate importer ledger (ADR-0004 E2; one row per uploaded estimate). OPERATOR: flip after scripts/migrations/build_estimate_log_sheet.py prints the real ID (builder-precedes-seed, same FLIP-precedes-SEED guard as the PO trio — estimate_log.py refuses writes while 0).
-SHEET_RFQ_LOG = 0                           # RFQ_Log — outbound-RFQ ledger, one row per (rfq, vendor) (ADR-0004 R2). OPERATOR: flip after scripts/migrations/build_rfq_log_sheet.py prints the real ID (builder-precedes-seed — rfq_log.py refuses writes while 0).
-SHEET_RFQ_PENDING_REVIEW = 0                # RFQ_Pending_Review — RFQ review/approve/send surface, one row per (rfq, vendor); PO_Pending_Review schema twin, Workstream tag 'po_materials_rfq' (ADR-0004 R2/decision 12). OPERATOR: flip after scripts/migrations/build_rfq_pending_review_sheet.py prints the real ID (builder-precedes-seed — rfq_review.py refuses writes while 0).
+SHEET_ESTIMATE_LOG = 7639780559900548       # Estimate_Log — vendor-estimate importer ledger (ADR-0004 E2; one row per uploaded estimate). Seeded 2026-07-19 (builder-precedes-seed complete; estimate_log.py refused writes while 0).
+SHEET_RFQ_LOG = 5176650638512004            # RFQ_Log — outbound-RFQ ledger, one row per (rfq, vendor) (ADR-0004 R2). Seeded 2026-07-19 (builder-precedes-seed complete; rfq_log.py refused writes while 0).
+SHEET_RFQ_PENDING_REVIEW = 3555996805844868 # RFQ_Pending_Review — RFQ review/approve/send surface, one row per (rfq, vendor); PO_Pending_Review schema twin, Workstream tag 'po_materials_rfq' (ADR-0004 R2/decision 12). Seeded 2026-07-19 (builder-precedes-seed complete; rfq_review.py refused writes while 0).
 
 # Subcontracts workstream (S1) — mirrors the PO trio in a standalone ITS — Subcontracts workspace
 # (§46 workspace-membership = approval authority). ITS_Subcontractors is the party SoR (supersedes the
