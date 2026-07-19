@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% block title %}System map — ITS Operator Dashboard{% endblock %}
+{% block subnav %}
+<nav class="subnav" aria-label="Back to dashboard">
+  <a class="subnav__back" href="/">← Back to dashboard</a>
+  <span class="sm-legend" aria-hidden="true">
+    <span class="sm-legend-item"><span class="sm-swatch e-pull"></span>pull</span>
+    <span class="sm-legend-item"><span class="sm-swatch e-write"></span>write</span>
+    <span class="sm-legend-item"><span class="sm-swatch e-read"></span>read</span>
+    <span class="sm-legend-item"><span class="sm-swatch e-send"></span>send (gate-crossing)</span>
+    <span class="sm-legend-item"><span class="sm-crit sm-crit-demo">n</span>open CRITICALs</span>
+    <span class="sm-legend-item"><span class="sm-dark sm-dark-demo">dark</span>gate off</span>
+  </span>
+{% endblock %}
+{% block content %}
+<div class="sysmap-page">
+  <div class="sysmap-head">
+    <h2>System map</h2>
+    <span class="summary">
+      Left to right is the trust gradient: field input crosses the ingress wall only after
+      HMAC verification; nothing crosses the Send Gate without a human approval. Click any
+      node for its live state, runbook, and troubleshooting entries.
+    </span>
+  </div>
+
+  <div class="sysmap-layout">
+    <div class="sysmap-scroll">
+      <div class="sysmap" id="sysmap" data-focus="{{ focus }}">
+        <svg class="sm-svg" id="sm-svg" aria-hidden="true"></svg>
+
+        {# lane headers (grid row 1) #}
+        {% for lane_id, lane_label in lanes %}
+        <div class="sm-lane-head lane-{{ lane_id }}" style="grid-column: {{ {'field':1,'cloud':2,'generation':4,'records':5,'send':7,'outside':8}[lane_id] }}; grid-row: 1;">{{ lane_label }}</div>
+        {% endfor %}
+
+        {# band background stripes + labels (rows 2..n+1, all columns) #}
+        {% for band_id, band_label in bands %}
+        <div class="sm-band band-{{ band_id }}" style="grid-column: 1 / -1; grid-row: {{ loop.index + 1 }};">
+          <span class="sm-band-label">{{ band_label }}</span>
+        </div>
+        {% endfor %}
+
+        {# the two walls — the page's thesis, drawn as physical structure #}
+        <div class="sm-wall sm-wall-ingress" id="wall-ingress"
+             style="grid-column: {{ wall_col['wall-ingress'] }}; grid-row: 2 / span {{ n_bands - 1 }};"
+             title="Invariant 2 — untrusted ingress: bearer + HMAC re-verify · §34 screening">
+          <span class="sm-wall-label">untrusted ingress · HMAC verify</span>
+        </div>
+        <div class="sm-wall sm-wall-send" id="wall-send"
+             style="grid-column: {{ wall_col['wall-send'] }}; grid-row: 2 / span {{ n_bands - 1 }};"
+             title="Invariant 1 — the External Send Gate: no external transmission without explicit human approval. Permanent.">
+          <span class="sm-wall-label">EXTERNAL SEND GATE · human approval required</span>
+        </div>
+
+        {# span-1 node cells #}
+        {% for cell in cells %}
+        <div class="sm-cell" style="grid-column: {{ cell.col }}; grid-row: {{ cell.row + 1 }};">
+          {% for n in cell.nodes %}
+          {% include "_system_chip.html" %}
+          {% endfor %}
+        </div>
+        {% endfor %}
+
+        {# tall spanning nodes #}
+        {% for s in spanners %}
+        <div class="sm-cell sm-cell-span" style="grid-column: {{ s.col }}; grid-row: {{ s.row + 1 }} / {{ s.row_end + 1 }};">
+          {% set n = s.node %}
+          {% include "_system_chip.html" %}
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+
+    <aside class="sm-rail" id="sm-rail" aria-label="Node detail"
+           {% if focus %}hx-get="/system/node/{{ focus }}" hx-trigger="load" hx-swap="innerHTML"{% endif %}>
+      <div class="sm-rail-hint">
+        <p class="config-note">Select a node to see its live state, what watches it, its
+        runbook, and where it appears in the troubleshooting tree.</p>
+        {% if wf %}<p class="config-note">Highlighting daemons for workflow <code>{{ wf }}</code>.</p>{% endif %}
+      </div>
+    </aside>
+  </div>
+</div>
+{# |safe is REQUIRED here: script content is not entity-decoded by the browser,
+   so autoescaping would corrupt the JSON. The payload is built solely from the
+   static system_map registry (no request/Smartsheet data) with '<' escaped. #}
+<script type="application/json" id="sm-edge-data">{{ edges_json|safe }}</script>
+<script src="/static/system-map.js" defer></script>
+{% endblock %}

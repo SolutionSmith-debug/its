@@ -1,0 +1,16 @@
+{# One map node chip. Context: n (MapNode), criticals/launchd/gates dicts,
+   focus (node id), highlight (set of node ids from ?wf=). Buttons so the map
+   is keyboard-navigable; htmx loads the detail rail. #}
+<button type="button"
+        class="sm-node kind-{{ n.kind }}{% if n.satellite %} sm-satellite{% endif %}{% if n.id == focus %} is-focus{% endif %}{% if n.id in highlight %} is-highlight{% endif %}{% if criticals.get(n.id) %} has-crit{% endif %}"
+        id="node-{{ n.id }}" data-node="{{ n.id }}"
+        hx-get="/system/node/{{ n.id }}" hx-target="#sm-rail" hx-swap="innerHTML">
+  <span class="sm-node-kind">{{ n.kind }}</span>
+  <span class="sm-node-label">{{ n.label }}</span>
+  <span class="sm-node-badges">
+    {% if criticals.get(n.id) %}<span class="sm-crit" title="{{ criticals[n.id] }} open CRITICAL">{{ criticals[n.id] }}</span>{% endif %}
+    {% if gates.get(n.id) == 'dark' %}<span class="sm-dark" title="runtime gate is OFF ({{ n.config_gate }})">dark</span>{% endif %}
+    {% if launchd.get(n.id) %}<span class="sm-dot state-{{ 'run' if launchd[n.id] == 'running' else ('idle' if launchd[n.id] == 'idle' else 'bad') }}" title="launchd: {{ launchd[n.id] }}"></span>{% endif %}
+    {% if n.watchdog_checks %}<span class="sm-eye" title="watchdog checks: {{ n.watchdog_checks|join(' · ') }}">{{ n.watchdog_checks|join('') }}</span>{% endif %}
+  </span>
+</button>

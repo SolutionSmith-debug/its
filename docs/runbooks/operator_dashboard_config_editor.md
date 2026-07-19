@@ -269,6 +269,60 @@ not one character repeated (a STRONG passphrase); on success the lockout throttl
 - **"denied: …" on the current-PIN field** — the current PIN was wrong (audited `config_denied`); this is the
   gate working. If you truly can't recall it, recover via the terminal (above).
 
+## Restart dashboard (Class B · elevated · DASH-12)
+
+`POST /act/dashboard/restart` restarts the dashboard's **own** launchd daemon so it serves the code
+currently on `~/its` — the one operator-pre-authorized exception to "a service must not stop itself
+via its own UI" (tech-debt DASH-12). **Restart-only:** it never pulls, deploys, or touches any other
+label; the general daemon-control allowlist still excludes the dashboard. Elevated: re-PIN + type
+`restart-dashboard`. The verb audits `dashboard_restart_requested` **before** spawning (the process
+dies moments later), then a detached `sleep 1; launchctl kickstart -k` fires and launchd KeepAlive
+brings the app back within a few seconds.
+
+- **The page drops right after clicking** — that IS the restart. **Tier-2:** wait ~5s, reload, and
+  confirm `/healthz` answers. Panels repopulate on their next poll.
+- **The dashboard does not come back within ~30s** — launchd failed to relaunch it (bad code on
+  `~/its`, port stuck). From a terminal: `launchctl kickstart -k gui/$(id -u)/org.solutionsmith.its.dashboard`;
+  if it still won't serve, **escalate to Seth** (code-level fault, high-class).
+- **"could not spawn the detached restart: …"** — the restart never fired; the app is still up.
+  **Tier-2:** retry once; recurring → escalate.
+- This verb restarts the **UI only** — it cannot restart any other daemon (use Daemon control) and
+  never picks up new code by itself (deploy/pull stays a Developer-Operator action).
+
+## Review-queue resolve (Class B · elevated · DASH-13)
+
+`POST /act/review/resolve` moves **PENDING** `ITS_Review_Queue` rows matching a **Workstream** and/or
+**Summary-prefix** filter to a terminal Status — **REJECTED** (noise / stale) or **APPROVED**
+(handled out-of-band) — stamping `Resolved At` + `Resolution Notes` (which records the operator).
+Nothing is deleted (row rotation stays with watchdog Check O); watchdog **Check A** counts only
+PENDING rows, so resolving a stale class silences its noise while preserving the audit trail. Same
+hardening as the error-log verbs: **filter required** (an unfiltered mass-resolve is refused),
+PENDING-only (idempotent re-runs), 4,600 rows/run cap, dry-run **preview**, audit
+`review_rows_resolved`. Elevated: re-PIN + type `resolve-review`.
+
+- **Click *preview* first** — it reports "would mark N of M" without writing, so you can check the
+  blast radius (a Workstream alone sweeps every class under it).
+- **"marked X of Y … — N remain"** — the per-run cap on a big backlog. **Tier-2:** run again.
+- **"no PENDING review rows match (…)"** (noop) — the filter missed (check exact Workstream
+  spelling + that the Summary prefix matches from the START of the text).
+- **Resolving a class does not stop it recurring** — fix the producer first (deactivate the dead
+  job, land the code fix), then sweep. If the same class re-accrues, that root cause is the fault
+  to chase, not the queue depth. Unsure why a class exists? **Escalate — never blind-resolve.**
+
+## System map (read-only) — `/system`
+
+The live machine-room schematic: every daemon, sheet, store, and external service as a clickable
+node in trust-gradient lanes, with the two walls drawn structurally (untrusted ingress · the
+External Send Gate). Node badges are live joins: a red count = that node's **open CRITICALs**
+(same predicate as the fire-surface panel), `DARK` = its runtime gate is off, the dot = launchd
+state. Click a node for its detail rail: plain-language role, launchd/heartbeat/gate state, its
+flows, the runbook, and its troubleshooting-tree entries. Error rows, the daemons panel, and the
+heartbeats panel deep-link into it (`/system?focus=<node>`); troubleshoot workflow cards highlight
+their daemons on it (`/system?wf=<workflow>`). Read-only, GET-only, every live join fail-soft — an
+unreachable source just drops that decoration. Registry: `operator_dashboard/system_map.py`;
+`tests/test_system_map.py` fails the build if a new daemon/plist/tracked marker lands without a
+node (registry reconciliation).
+
 ## Send-queue panel (read-only) — the send lane stays human-in-loop
 
 The **Send queue** panel rolls up `Send Status` across the four review/approve/send sheets (WSR / WPR /

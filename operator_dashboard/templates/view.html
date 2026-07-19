@@ -10,18 +10,19 @@
   <div class="detail-head">
     <h2>{{ p.title }}</h2>
     {% if p.summary %}<span class="summary">{{ p.summary }}</span>{% endif %}
+    {% if filter_note %}<span class="summary">{{ filter_note }} · <a class="sm-link" href="/view/{{ p.panel_id }}">clear</a></span>{% endif %}
   </div>
   {% if not p.available %}
   <div class="config-error">unavailable — {{ p.unavailable_reason }}</div>
   {% elif not p.rows %}
-  <p class="config-note">no data</p>
+  <p class="config-note">no data{% if filter_note %} ({{ filter_note }}){% endif %}</p>
   {% else %}
   <table class="config-table detail-table panel-{{ p.panel_id }}">
     <thead><tr>{% for c in p.columns %}<th>{{ c }}</th>{% endfor %}</tr></thead>
     <tbody>
       {% for row in p.rows %}
       <tr class="sev-{{ row.get('_sev', 'info') }}">
-        {% for c in p.columns %}<td>{{ row.get(c, '') }}</td>{% endfor %}
+        {% for c in p.columns %}{% set lk = row.get('_link_' ~ c) %}<td>{% if lk %}<a class="cell-link" href="{{ lk }}">{{ row.get(c, '') }}</a>{% else %}{{ row.get(c, '') }}{% endif %}</td>{% endfor %}
       </tr>
       {% endfor %}
     </tbody>

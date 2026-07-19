@@ -18,7 +18,19 @@ from operator_dashboard.act.router import register_act_routes
 from operator_dashboard.config import PANEL_REFRESH_SECONDS
 from operator_dashboard.sources import PANELS, PANELS_BY_ID
 from operator_dashboard.sources.base import SEV_UNAVAILABLE, PanelResult
+from operator_dashboard.system_view import register_system_routes
 from operator_dashboard.troubleshoot import register_troubleshoot_routes
+
+# The pulse strip's one-glance chips: panel id -> short chip name, in display
+# order. Reuses the panels' own fetches (local reads + the shared TTL caches).
+_PULSE_PANELS: list[tuple[str, str]] = [
+    ("daemons", "daemons"),
+    ("watchdog", "watchdog"),
+    ("circuit_breaker", "breaker"),
+    ("open_criticals", "criticals"),
+    ("review_queue", "review"),
+    ("send_queue", "sends"),
+]
 
 _BASE = Path(__file__).resolve().parent
 # Build the Jinja environment explicitly so autoescape is GUARANTEED on: it is
@@ -67,10 +79,13 @@ def create_app() -> FastAPI:
         )
 
     @app.get("/view/{panel_id}")
-    def view(request: Request, panel_id: str) -> Response:
+    def view(request: Request, panel_id: str, col: str = "", eq: str = "") -> Response:
         # Drill-down: the same panel rendered FULL-PAGE with detail=True (capped
         # panels — errors / logs / audit — return far more rows). Read-only, one
-        # more GET; the ACT surface stays on /config.
+        # more GET; the ACT surface stays on /config. Optional ?col=&eq= filters
+        # the rendered rows to those whose displayed cell equals `eq` (used by
+        # the system map's per-node "recent errors" links) — a post-filter on the
+        # already-cleaned display values, never a query pushed to a data source.
         source = PANELS_BY_ID.get(panel_id)
         if source is None:
             result = PanelResult(
@@ -82,7 +97,35 @@ def create_app() -> FastAPI:
             )
         else:
             result = source.fetch(detail=True)
-        return _TEMPLATES.TemplateResponse(request, "view.html", {"p": result})
+        filter_note = ""
+        if col and eq and result.available and col in result.columns:
+            result.rows = [r for r in result.rows if r.get(col, "") == eq]
+            filter_note = f"filtered: {col} = {eq}"
+        return _TEMPLATES.TemplateResponse(
+            request, "view.html", {"p": result, "filter_note": filter_note}
+        )
+
+    @app.get("/pulse")
+    def pulse(request: Request) -> Response:
+        # The one-glance strip above the status grid: one chip per key surface,
+        # each deep-linking to its panel's drill-down. Fail-soft per chip.
+        chips = []
+        for panel_id, name in _PULSE_PANELS:
+            source = PANELS_BY_ID.get(panel_id)
+            if source is None:
+                continue
+            p = source.fetch()
+            chips.append(
+                {
+                    "name": name,
+                    "summary": p.summary if p.available else "unavailable",
+                    "sev": p.severity,
+                    "href": f"/view/{panel_id}",
+                }
+            )
+        return _TEMPLATES.TemplateResponse(
+            request, "_pulse.html", {"chips": chips, "refresh": PANEL_REFRESH_SECONDS}
+        )
 
     @app.get("/healthz", response_class=PlainTextResponse)
     def healthz() -> str:
@@ -116,4 +159,10 @@ def create_app() -> FastAPI:
     # mutation routes; the tree loads fail-soft (a TreeError renders a banner,
     # never crashes the dashboard).
     register_troubleshoot_routes(app, _TEMPLATES)
+
+    # --- System map (read-only) -------------------------------------------
+    # GET /system (the live machine-room schematic) + GET /system/node/{id}
+    # (the htmx detail rail). Deep-linked from error rows, panels, and the
+    # troubleshooting tree; every live join is fail-soft.
+    register_system_routes(app, _TEMPLATES)
     return app

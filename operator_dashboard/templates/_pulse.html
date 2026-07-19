@@ -1,0 +1,9 @@
+{# The one-glance pulse strip (htmx-swapped into .pulse-slot). #}
+<nav class="pulse" aria-label="System pulse">
+  {% for c in chips %}
+  <a class="pulse-chip sev-{{ c.sev }}" href="{{ c.href }}">
+    <span class="pulse-name">{{ c.name }}</span>
+    <span class="pulse-summary">{{ c.summary }}</span>
+  </a>
+  {% endfor %}
+</nav>

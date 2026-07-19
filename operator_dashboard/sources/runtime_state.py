@@ -115,15 +115,25 @@ class HeartbeatsSource(DataSource):
         for f in files:
             stem = f.name[: -len("_heartbeat.txt")]
             last, age = self._read_liveness(f, now)
-            rows.append(
-                {
-                    "daemon": clean(stem),
-                    "last heartbeat (UTC)": clean(last),
-                    "age": clean(age),
-                    "cycles": clean(cycles.get(stem, "—")),
-                    "_sev": SEV_OK,
-                }
-            )
+            # Compact panel: the full ISO timestamp wraps badly — show to the
+            # minute; the drill-down keeps the exact value.
+            if not detail and len(last) >= 16 and last not in ("—",):
+                last_display = last[:16].replace("T", " ")
+            else:
+                last_display = last
+            row = {
+                "daemon": clean(stem),
+                "last heartbeat (UTC)": clean(last_display),
+                "age": clean(age),
+                "cycles": clean(cycles.get(stem, "—")),
+                "_sev": SEV_OK,
+            }
+            from operator_dashboard.system_map import NODE_BY_HEARTBEAT_STEM
+
+            node_id = NODE_BY_HEARTBEAT_STEM.get(stem)
+            if node_id:
+                row["_link_daemon"] = f"/system?focus={node_id}"
+            rows.append(row)
         # Freshness is judged by watchdog Check C (per-daemon windows), not
         # here — a bare liveness timestamp without the daemon's expected
         # interval can't be classified stale without false positives, so the

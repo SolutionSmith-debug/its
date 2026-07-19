@@ -249,31 +249,28 @@ error-chase over the remainder. Findings from the chase, not yet actioned:
   healthy, this is a coverage gap, not a bug). Either add it to the allowlist or document the exclusion
   explicitly so the question doesn't need re-investigating next time. Trigger: next WS2 daemon-control
   polish pass.
-- **DASH-12 (operator, requested for next session) — dashboard Restart-dashboard verb, scoped but NOT
-  built.** No verb exists today to restart the dashboard daemon itself from the dashboard UI (confirmed —
-  `operator_dashboard/act/` has no restart/reload route). Operator wants a PIN-gated Class-B ACT: detached
-  `launchctl kickstart -k` on the dashboard's own launchd label (`org.solutionsmith.its.dashboard`),
-  restart-ONLY — explicitly NOT a git-pull/deploy verb. This deliberately crosses the dashboard's usual "a
-  service must not stop itself via its own UI" self-exclusion invariant; operator has pre-authorized the
-  exception for this specific, narrowly-scoped verb. DoD (operator-specified): PIN-gated; the detached spawn
-  must survive the dashboard process's own SIGTERM (the classic self-restart footgun — a naive
-  `subprocess.run` child dies with its parent unless properly detached, e.g. `start_new_session=True` +
-  closed stdio); tests; a live verify that the dashboard actually comes back up serving. **Immediate practical
-  need this unblocks:** the live dashboard process (pid 55622 as of 2026-07-17) is still running pre-corpus
-  code — `/troubleshoot`, `/docs`, and #609's Open-CRITICALs panel + `-15` fix are all code-complete on
-  `origin/main` but not yet serving until it restarts; today that's a manual `launchctl kickstart -k`, this
-  verb would make it one PIN-gated click. Trigger: next dashboard/WS2 session. See blueprint memory-archive
-  §G69.6.
-- **DASH-13 (operator, requested for next session) — `ITS_Review_Queue` bulk-clear + root cause, scoped but
-  NOT built.** First independent row-count check of `ITS_Review_Queue` (§G65/§G68.3 both flagged this as
-  outstanding) found **294 PENDING rows**, of which **285** are a single recurring flag: "weekly compile: job
-  JOB-XXXXX has no safety-reports contact (TO)," re-raised every Friday `weekly_generate` compile since
-  2026-06-07, overwhelmingly against sandbox/test jobs (Bradley, Brimfield, Huntley, Rockford) that were never
-  given a safety-reports contact. Using `mark_errors_resolved`-style bulk resolution would clear the count,
-  but the same 285 rows re-accrue every Friday unless the root cause is fixed: either populate safety-reports
-  contacts in `ITS_Active_Jobs` for the jobs that are actually live, or deactivate the dead sandbox jobs so
-  weekly compile stops flagging them. Trigger: next dashboard/review-queue session. See blueprint
-  memory-archive §G69.5/§G69.6.
+- **DASH-12 (BUILT 2026-07-19) — dashboard Restart-dashboard verb.** Shipped as
+  `operator_dashboard/act/dashboard_ops.py` + `POST /act/dashboard/restart` (Class B, elevated-confirm
+  `restart-dashboard`): audit row written BEFORE the spawn, then a detached
+  `/bin/sh -c 'sleep 1; exec launchctl kickstart -k gui/<uid>/org.solutionsmith.its.dashboard'` with
+  `start_new_session=True` + closed stdio (survives the dashboard's own SIGTERM). Restart-ONLY — never a
+  pull/deploy, never another label; `daemon_ops.controllable_labels()` still excludes the dashboard
+  (`tests/test_dashboard_restart.py` locks all of this, incl. the restart-only command allowlist). §43
+  entry in `docs/runbooks/operator_dashboard_config_editor.md`. The operator-pre-authorized self-exclusion
+  exception is documented in the verb's module docstring.
+- **DASH-13 (verb BUILT 2026-07-19; disposition pending operator) — `ITS_Review_Queue` backlog.** The
+  2026-07-17 characterization ("285× no-safety-contact re-raised every Friday") was STALE — the 2026-07-19
+  live read found **296 PENDING: 277× "weekly compile failed" (189 of them a one-day 06-13 storm for the
+  since-deleted JOB-000013), only 6× no-contact (all 2026-06-07, jobs since deleted, cannot recur), 13
+  misc**. Root causes fixed in PR #613: compile_now_poll scan-phase transients no longer mislabeled +
+  review-row dedupe caps a stuck-Compile-Now retry at ONE PENDING row per (job, week). The bulk-resolve
+  verb shipped as `operator_dashboard/act/review_ops.py` + `POST /act/review/resolve` (Class B, elevated
+  `resolve-review`, filter-required, preview mode, nothing deleted). REMAINING (operator decisions):
+  (a) the 3 surviving jobs (JOB-000017/-018/-027) are sandbox fixtures — deactivate portal-side (D1
+  lifecycle → inactive; a sheet-side flip gets overwritten by fieldops_sync on the next portal edit) or
+  keep as test fixtures and populate JOB-000027's blank Safety Reports Contact Email; (b) sweep the 232
+  stale rows for deleted jobs via the new verb; (c) the 4 "sheet-count near cap … margin 60" rows expose a
+  margin==cap misconfig (`sheet_capacity` margin should be < the 60 cap) — an ITS_Config value fix.
 
 **Activation lesson from this session's chase (not a tech-debt item, a process note):** a daemon's
 `ITS_Config` polling gate should be flipped `True` only **after** its matching Cloudflare Worker

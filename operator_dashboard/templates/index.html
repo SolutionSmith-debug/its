@@ -1,5 +1,8 @@
 {% extends "base.html" %}
 {% block content %}
+{# The pulse strip: one-glance chips for the six load-bearing surfaces, each
+   deep-linking to its drill-down. Same refresh cadence as the panels. #}
+<div class="pulse-slot" hx-get="/pulse" hx-trigger="load, every {{ refresh }}s" hx-swap="innerHTML"></div>
 <div class="grid">
   {% for panel in panels %}
   <div class="panel-slot"
