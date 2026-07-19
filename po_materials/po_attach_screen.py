@@ -275,14 +275,17 @@ def _scan_openxml(raw: bytes, declared_mime: str) -> ScreenResult | None:
     # Relationship parts (*.rels): ANY relationship that reaches OUTSIDE the
     # package is refused-to-review (ADR-0004 red-team #3 — WIDENED from the
     # original attachedTemplate|oleObject-only gate): a `TargetMode="External"`
-    # relationship (remote fetch/reference on open — hyperlinks included: a
-    # vendor-returned quote form has no legitimate external reference), an
-    # `externalLink` (the xlsx external-workbook reference vector — a formula-free
-    # cell can still pull remote workbook data through one), or an
-    # `externalReference` pointer. Contains-based check over the tiny rels XML,
-    # read-capped — deliberately not a full XML parse (the same best-effort
-    # posture as the PDF scan; residual content-level vectors like DDE field
-    # codes are the documented ATT-6 accepted limitation).
+    # relationship. Scope (ADR-0004 decision 10, review F2): flag the xlsx
+    # remote-data vectors — an `externalLink` (a formula-free cell can still pull
+    # remote workbook data through one) or an `externalReference` — OR the
+    # original active-content case (a `TargetMode="External"` template/OLE
+    # relationship). Deliberately NOT a bare `TargetMode="External"`: ordinary
+    # hyperlinks (website/email links) are External too, and this screener is
+    # SHARED with the live PO attachment pass — flagging every hyperlink-bearing
+    # vendor doc would flood the Review Queue without a security gain. Contains-
+    # based over the read-capped rels XML — best-effort like the PDF scan;
+    # residual content-level vectors (DDE field codes) are the accepted ATT-6
+    # limitation.
     for info in infos:
         lname = info.filename.lower()
         if not lname.endswith(".rels") or info.file_size > _RELS_READ_CAP:
@@ -292,9 +295,12 @@ def _scan_openxml(raw: bytes, declared_mime: str) -> ScreenResult | None:
         except (zipfile.BadZipFile, OSError, ValueError):
             return ScreenResult("suspicious", "L2", "openxml_unreadable_rels")
         if (
-            b'TargetMode="External"' in rels_xml
-            or b"externalLink" in rels_xml
+            b"externalLink" in rels_xml
             or b"externalReference" in rels_xml
+            or (
+                b'TargetMode="External"' in rels_xml
+                and (b"attachedTemplate" in rels_xml or b"oleObject" in rels_xml)
+            )
         ):
             return ScreenResult("suspicious", "L2", "openxml_external_relationship")
     if "[content_types].xml" not in lower_names:

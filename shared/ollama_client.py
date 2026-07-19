@@ -118,9 +118,21 @@ def generate_structured(
         "options": {"temperature": 0},
     }
     try:
-        resp = requests.post(f"{base}/api/chat", json=payload, timeout=timeout_s)
+        # allow_redirects=False: the localhost gate validates only the INITIAL
+        # base_url. A 3xx from a compromised/squatting loopback responder would
+        # otherwise re-issue this request (carrying the full vendor-quote prompt)
+        # off-box, defeating the "vendor pricing never leaves the machine"
+        # invariant. Any redirect is a hard error, not a follow. (Review F1.)
+        resp = requests.post(
+            f"{base}/api/chat", json=payload, timeout=timeout_s, allow_redirects=False
+        )
     except requests.RequestException as exc:
         raise OllamaClientError(f"Ollama transport failure: {exc}") from exc
+    if resp.is_redirect or 300 <= resp.status_code < 400:
+        raise OllamaClientError(
+            f"Ollama /api/chat attempted a redirect (HTTP {resp.status_code}) — refused "
+            "(a local endpoint must never redirect extraction off-box)"
+        )
     if resp.status_code != 200:
         raise OllamaClientError(
             f"Ollama /api/chat returned HTTP {resp.status_code}: {resp.text[:300]}"
@@ -158,7 +170,9 @@ def is_available(base_url: str) -> bool:
     """
     base = _require_local(base_url)
     try:
-        resp = requests.get(f"{base}/api/tags", timeout=_AVAILABILITY_TIMEOUT_S)
+        resp = requests.get(
+            f"{base}/api/tags", timeout=_AVAILABILITY_TIMEOUT_S, allow_redirects=False
+        )
     except requests.RequestException:
         return False
     return resp.status_code == 200

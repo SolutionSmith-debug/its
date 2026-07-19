@@ -29,10 +29,14 @@ LOCAL = "http://127.0.0.1:11434"
 
 
 class _FakeResp:
-    def __init__(self, status_code: int = 200, envelope: Any = None, text: str = ""):
+    def __init__(
+        self, status_code: int = 200, envelope: Any = None, text: str = "",
+        is_redirect: bool = False,
+    ):
         self.status_code = status_code
         self._envelope = envelope
         self.text = text
+        self.is_redirect = is_redirect
 
     def json(self) -> Any:
         if self._envelope is None:
@@ -50,8 +54,8 @@ def post_capture(monkeypatch):
     calls: list[dict[str, Any]] = []
     state = {"resp": _FakeResp(200, _envelope(json.dumps({"a": 3})))}
 
-    def fake_post(url, *, json=None, timeout=None):  # noqa: A002 — mirror requests kwarg
-        calls.append({"url": url, "json": json, "timeout": timeout})
+    def fake_post(url, *, json=None, timeout=None, allow_redirects=None):  # noqa: A002 — mirror requests kwarg
+        calls.append({"url": url, "json": json, "timeout": timeout, "allow_redirects": allow_redirects})
         resp = state["resp"]
         if isinstance(resp, Exception):
             raise resp
@@ -134,6 +138,17 @@ def test_red_schema_nonconforming_reply_rejected(post_capture):
     set_resp(_FakeResp(200, _envelope(json.dumps({"a": 999}))))  # maximum 10
     with pytest.raises(OllamaClientError):
         generate_structured(prompt="p", schema=SCHEMA, model="m", base_url=LOCAL)
+
+
+def test_red_redirect_refused_never_followed(post_capture):
+    """Review F1: the localhost gate validates only the INITIAL url. A 3xx from a
+    squatting loopback responder would re-issue the prompt off-box, so a redirect
+    is a hard error — and allow_redirects=False is passed so requests never follows."""
+    calls, set_resp = post_capture
+    set_resp(_FakeResp(307, envelope=None, text="Location: https://evil/ingest", is_redirect=True))
+    with pytest.raises(OllamaClientError, match="redirect"):
+        generate_structured(prompt="secret vendor quote", schema=SCHEMA, model="m", base_url=LOCAL)
+    assert calls[0]["allow_redirects"] is False  # requests told NOT to follow
     set_resp(_FakeResp(200, _envelope(json.dumps({"b": 1}))))  # missing required
     with pytest.raises(OllamaClientError):
         generate_structured(prompt="p", schema=SCHEMA, model="m", base_url=LOCAL)
@@ -179,13 +194,14 @@ def test_transport_failure_raises(post_capture):
 
 def test_is_available_true_on_200(monkeypatch):
     monkeypatch.setattr(
-        ollama_client.requests, "get", lambda url, timeout: _FakeResp(200, {})
+        ollama_client.requests, "get",
+        lambda url, timeout, allow_redirects=None: _FakeResp(200, {}),
     )
     assert is_available(LOCAL) is True
 
 
 def test_is_available_false_on_unreachable(monkeypatch):
-    def _refuse(url, timeout):
+    def _refuse(url, timeout, allow_redirects=None):
         raise requests.ConnectionError("refused")
 
     monkeypatch.setattr(ollama_client.requests, "get", _refuse)

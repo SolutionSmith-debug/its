@@ -252,9 +252,14 @@ def test_external_link_rel_is_suspicious_via_the_new_gate():
     assert po_attach_screen.is_structural_active_content(r)
 
 
-def test_external_reference_and_target_mode_also_flag():
+def test_external_reference_and_active_content_external_flag():
+    """externalReference still flags; a TargetMode=External relationship flags
+    ONLY when it is active-content (attachedTemplate/oleObject), per review F2 —
+    the ADR-authorized scope, not every External target."""
     for marker in (
-        b'<Relationship Id="r1" Type="x" Target="book2.xlsx" TargetMode="External"/>',
+        b'<Relationship Id="r1" Type="http://schemas.openxmlformats.org/'
+        b'officeDocument/2006/relationships/attachedTemplate" '
+        b'Target="evil.dotx" TargetMode="External"/>',
         b'<externalReference r:id="rId1"/>',
     ):
         rels = b"<Relationships>" + marker + b"</Relationships>"
@@ -264,6 +269,25 @@ def test_external_reference_and_target_mode_also_flag():
         assert (r.disposition, r.detail) == (
             "suspicious", "openxml_external_relationship"
         ), marker
+
+
+def test_bare_hyperlink_external_stays_clean():
+    """Review F2: an ordinary hyperlink (website/email link) is TargetMode=External
+    too. This screener is SHARED with the live PO attachment pass, so flagging every
+    hyperlink-bearing vendor doc would flood the Review Queue for no security gain —
+    a bare External hyperlink, with no externalLink/externalReference/attachedTemplate/
+    oleObject, must stay clean."""
+    rels = (
+        b'<?xml version="1.0"?><Relationships>'
+        b'<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/'
+        b'officeDocument/2006/relationships/hyperlink" '
+        b'Target="https://vendor.example.com" TargetMode="External"/>'
+        b"</Relationships>"
+    )
+    r = po_attach_screen.screen_attachment(
+        "q.xlsx", po_attach_screen.MIME_XLSX, _xlsx_with_rels(rels)
+    )
+    assert r.disposition == "clean", r
 
 
 def test_internal_rels_control_fixture_stays_clean():
