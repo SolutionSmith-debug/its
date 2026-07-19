@@ -131,7 +131,7 @@ _ENTRIES: list[ConfigEntry] = [
         _SEND_GATES,
         v_bool,
         first_activation_gated=True,
-        note="the vendor External Send Gate — currently dark; turning ON escalates (D1-3)",
+        note="the vendor PO External Send Gate — turning ON escalates (D1-3); pausing is immediate",
     ),
     _e(
         "po_materials.po_poll.polling_enabled",
@@ -166,7 +166,7 @@ _ENTRIES: list[ConfigEntry] = [
         first_activation_gated=True,
         note="the progress-reports send poller (twin of weekly_send); pause anytime; turning ON is a dark->live activation → escalate",
     ),
-    # subcontracts generation poll — ships dark; it feeds a generation→Box-filing pipeline
+    # subcontracts generation poll — it feeds a generation→Box-filing pipeline
     # with go-live preconditions, so it mirrors po_poll: pause = plain Class A, false->true
     # activation escalates. (The SC-S4 SEND half shipped 2026-07-16 — its gate is below.)
     _e(
@@ -175,7 +175,7 @@ _ENTRIES: list[ConfigEntry] = [
         _SEND_GATES,
         v_bool,
         first_activation_gated=True,
-        note="subcontract generation poll — ships dark; pause anytime; turning ON escalates (go-live preconditions in Description)",
+        note="subcontract generation poll — pause anytime; turning ON escalates (go-live preconditions in Description)",
     ),
     _e(
         "subcontracts.subcontract_poll.subcontractors_sync_enabled",
@@ -212,7 +212,7 @@ _ENTRIES: list[ConfigEntry] = [
         _SEND_GATES,
         v_bool,
         first_activation_gated=True,
-        note="vendor-estimate importer (ADR-0004 Lane 1) — ships dark; pause anytime; turning ON escalates (go-live preconditions in Description)",
+        note="vendor-estimate importer (ADR-0004 Lane 1) — pause anytime; turning ON escalates (go-live preconditions in Description)",
     ),
     _e(
         "po_materials.rfq_poll.polling_enabled",
@@ -220,7 +220,7 @@ _ENTRIES: list[ConfigEntry] = [
         _SEND_GATES,
         v_bool,
         first_activation_gated=True,
-        note="outbound-RFQ generation (ADR-0004 Lane 2) — ships dark; pause anytime; turning ON escalates",
+        note="outbound-RFQ generation (ADR-0004 Lane 2) — pause anytime; turning ON escalates",
     ),
     # rfq_send is the RFQ External Send Gate. Posture is deliberately IDENTICAL to
     # po_send / subcontract_send rather than elevated_confirm: `first_activation_gated`
@@ -234,7 +234,11 @@ _ENTRIES: list[ConfigEntry] = [
         _SEND_GATES,
         v_bool,
         first_activation_gated=True,
-        note="the vendor RFQ External Send Gate — currently dark; turning ON is a FIXED high-class decision (Seth) → escalate; pausing is immediate",
+        # NOTE deliberately asserts no live state: the editor renders the row's
+        # CURRENT value beside this text, and a hardcoded "currently dark" goes
+        # stale the moment the gate is flipped (it already had — this gate reads
+        # 'true' on the mirror host as of 2026-07-19).
+        note="the vendor RFQ External Send Gate — turning ON is a FIXED high-class decision (Seth) → escalate; pausing is immediate",
     ),
     # --- tuning knobs / thresholds (int-bounded) ---
     _e("circuit_breaker.failure_threshold", "global", _KNOBS, v_int(1, 100)),

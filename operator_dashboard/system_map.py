@@ -366,7 +366,7 @@ NODES: tuple[MapNode, ...] = (
               "request-for-quote to its vendor with TWO attachments — the price-free RFQ PDF "
               "plus the fillable xlsx quote form — through the shared AI-free send engine. "
               "Tagged po_materials_rfq so po-send / subcontract-send can never dispatch it. "
-              "Ships dark; go-live is a FIXED External-Send-Gate operator flip.",
+              "Turning its gate ON is a FIXED External-Send-Gate decision; the live gate state is the badge above, not this text.",
         error_scripts=("po_materials.rfq_send_poll", "po_materials.rfq_send"),
         launchd_label="org.solutionsmith.its.rfq-send", heartbeat_stem="rfq_send",
         config_gate="po_materials.rfq_send.polling_enabled",

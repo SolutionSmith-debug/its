@@ -423,6 +423,29 @@ def test_unknown_key_never_in_registry_refused_no_write(fake_smartsheet: dict[st
 
 
 # ------------------------------------- self-documenting purpose wiring (D1-4) ----
+def test_no_registry_note_asserts_a_live_gate_state() -> None:
+    """A static note must never claim what a gate is CURRENTLY set to.
+
+    The editor renders each row's live value right beside its note, so a
+    hardcoded "currently dark" is redundant on the day it is written and a lie
+    afterwards. It became one: po_send, subcontract_poll and the whole ADR-0004
+    lane all read 'true' on the mirror host on 2026-07-19 while their notes still
+    said "currently dark" / "ships dark". Notes describe SEMANTICS (what pausing
+    and activating mean); the value column describes state (§55).
+    """
+    banned = ("currently dark", "ships dark", "currently on", "currently off", "currently live")
+    offenders = [
+        f"{e.setting} [{e.workstream}]: {phrase!r}"
+        for e in registry.REGISTRY.values()
+        for phrase in banned
+        if phrase in e.note.lower()
+    ]
+    assert not offenders, (
+        "config-editor notes assert a live gate state, which goes stale: "
+        f"{offenders} — describe what the edit MEANS; the value column shows the state"
+    )
+
+
 def test_display_state_carries_description_and_reads_the_sheet_once(
     fake_smartsheet: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
