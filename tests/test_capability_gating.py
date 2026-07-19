@@ -276,6 +276,18 @@ GATED_SCRIPTS: list[tuple[str, list[str]]] = [
          "anthropic", "anthropic_client"],
     ),
     (
+        # rfq_poll (ADR-0004 Lane 2, PR-C) is the outbound-RFQ generation daemon —
+        # verify (rfq:v1) → per-vendor price-free render → Box → RFQ_Log +
+        # RFQ_Pending_Review → mark-filed → status mirror. GENERATION-side of the
+        # External Send Gate: DETERMINISTIC (no LLM, cloud or local) and
+        # customer-SEND-FREE — the vendor send is PR-D's rfq_send. Egress rides the
+        # F02-allowlisted portal_client (our Worker, ITS_PORTAL_RFQ_TOKEN — the
+        # lane's OWN bearer, decision 4) + box_client + smartsheet_client.
+        "po_materials/rfq_poll.py",
+        ["graph_client", "send_mail", "resend", "smtplib", "email.mime",
+         "anthropic", "anthropic_client"],
+    ),
+    (
         # estimate_extract (ADR-0004 E5, PR-B) is the Tier-2 LOCAL-LLM extraction —
         # local Ollama ONLY (shared/ollama_client, localhost-refusing, allowlisted
         # below); `anthropic*` is forbidden here so the lane can NEVER escalate to
@@ -288,11 +300,27 @@ GATED_SCRIPTS: list[tuple[str, list[str]]] = [
          "anthropic", "anthropic_client"],
     ),
     (
+        # rfq_generate (PR-C) is the deterministic PRICE-FREE RFQ PDF renderer
+        # (reportlab invariant=1; every string through form_pdf's escaping path).
+        # Pure data → document bytes — no Graph, no send, no LLM.
+        "po_materials/rfq_generate.py",
+        ["graph_client", "send_mail", "resend", "smtplib", "email.mime",
+         "anthropic", "anthropic_client"],
+    ),
+    (
         # estimate_ocr (ADR-0004 E5, PR-B) recovers text from SCANNED estimates via
         # the sandboxed Quartz render (estimate_preview's laundered PNGs) + the
         # LOCAL macOS Vision framework (ocrmac, lazy import, degrades to []).
         # Pure local bytes → text — no Graph, no send, no LLM.
         "po_materials/estimate_ocr.py",
+        ["graph_client", "send_mail", "resend", "smtplib", "email.mime",
+         "anthropic", "anthropic_client"],
+    ),
+    (
+        # rfq_naming (PR-C) is the pure RFQ filename/title helper (the po_naming
+        # twin) — no I/O at all; enrolled so the naming surface every delivery
+        # path shares can never quietly grow a capability.
+        "po_materials/rfq_naming.py",
         ["graph_client", "send_mail", "resend", "smtplib", "email.mime",
          "anthropic", "anthropic_client"],
     ),
@@ -318,6 +346,14 @@ GATED_SCRIPTS: list[tuple[str, list[str]]] = [
         ["graph_client", "send_mail", "resend", "smtplib", "email.mime",
          "anthropic", "anthropic_client", "portal_client", "box_client",
          "smartsheet_client", "review_queue", "heartbeat"],
+    ),
+    (
+        # rfq_log (PR-C) is the RFQ_Log (rfq, vendor) ledger writer (the
+        # estimate_log twin). Pure Smartsheet-write helper via the audited shared
+        # clients — no Graph, no send, no LLM.
+        "po_materials/rfq_log.py",
+        ["graph_client", "send_mail", "resend", "smtplib", "email.mime",
+         "anthropic", "anthropic_client"],
     ),
 ]
 

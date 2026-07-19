@@ -450,6 +450,34 @@ workflows:
               - Wrong-doc-type on a real invoice → resolve the row and route the document to accounts; a misclassified quote is re-uploaded. MALICIOUS or integrity failures escalate (security, FIXED high-class).
             class: seth_coresolve
             runbook: docs/runbooks/estimate_import_path.md
+      - id: rfq_generation
+        title: rfq-poll renders and files a composed request-for-quote per vendor (dark)
+        what_happens:
+          daemon: rfq-poll
+          worker_route: GET /api/po/rfqs/internal/pending
+          sheets: [RFQ_Log, RFQ_Pending_Review, ITS_Vendors, ITS_Review_Queue]
+          config_gates: [po_materials.rfq_poll.polling_enabled]
+        healthy_signals:
+          - With the gate on, a composed RFQ is rfq:v1 HMAC-verified, rendered once per vendor as a PRICE-FREE PDF (ITS_Vendors snapshot), filed to Box (job → Purchase Orders → RFQs) + an RFQ_Log (rfq, vendor) row, staged on RFQ_Pending_Review (PENDING, Workstream po_materials_rfq), and receipted back once; SENT stamps mirror back via status-sync.
+        failure_modes:
+          - id: rfq_poll_dark
+            symptom: Composed RFQs are not being pulled/filed.
+            signals: ["rfq-poll gate off", "designed-dark", "no marker written"]
+            checks:
+              - Is rfq-poll loaded AND po_materials.rfq_poll.polling_enabled flipped? A loaded-but-dark daemon writes no marker by design (ships dark until the R2 go-live).
+            resolutions:
+              - If RFQ generation is intended, build the two RFQ sheets, load the plist, and flip the gate (go-live is done with Seth); otherwise it is dark by design (not a fault).
+            class: daniel_solo
+            runbook: docs/runbooks/rfq_generation_path.md
+          - id: rfq_refused_or_vendor_fenced
+            symptom: An RFQ (or one vendor's copy) is refused / missing.
+            signals: ["rfq_hmac_failure", "rfq_vendor_unknown", "rfq_all_vendors_fenced", "one-shot-flagged"]
+            checks:
+              - An unknown-vendor fence names the Vendor Key in its Review-Queue row (the other vendors still filed); an HMAC failure is a security event with a CRITICAL + security-flagged row.
+            resolutions:
+              - Unknown vendor → fix/add the ITS_Vendors row, then re-issue that vendor's copy (or unflag an all-vendors-fenced RFQ). HMAC failures escalate (security, FIXED high-class).
+            class: seth_coresolve
+            runbook: docs/runbooks/rfq_generation_path.md
       - id: po_send
         title: po-send transmits an approved PO (dark)
         what_happens:

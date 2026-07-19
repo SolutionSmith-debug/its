@@ -61,6 +61,17 @@ export interface Env {
    */
   PORTAL_ESTIMATE_API_TOKEN: string;
   /**
+   * Bearer token the Mac-side RFQ daemons (po_materials/rfq_poll.py + rfq_send_poll.py,
+   * ADR-0004 R2/R3) present to /api/po/rfqs/internal/* — SEPARATE from BOTH
+   * PORTAL_PO_API_TOKEN and PORTAL_ESTIMATE_API_TOKEN and every other tier (ADR-0004
+   * decision 4 / red-team #1): a compromised extraction daemon (the highest-exposure
+   * process) must NOT reach the RFQ send-lane control surface, so the RFQ tier mints its
+   * OWN token scoped ONLY to the RFQ queue — and none of the sibling tokens may
+   * read/advance it. Mirrored into the Keychain as ITS_PORTAL_RFQ_TOKEN. Workers Secret /
+   * .dev.vars — never committed.
+   */
+  PORTAL_RFQ_API_TOKEN: string;
+  /**
    * Bearer token the Mac-side config daemon (config_editor/config_poll.py, §50 — built LATER)
    * presents to /api/internal/config/* — SEPARATE from the portal_poll / admin / fieldops / PO
    * tokens (privilege separation): the config daemon's token must NOT be able to drain the

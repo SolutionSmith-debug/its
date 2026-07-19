@@ -12,6 +12,7 @@ Operations docs use `topic-slug.md` filenames (no date prefix); the
 <!-- BEGIN AUTO-INDEX -->
 | Date | Type | Status | Workstream | Title | PRs |
 |------|------|--------|------------|-------|-----|
+| 2026-07-18 | operations | active | _–_ | [Evergreen Cutover Brief — What We Need to Go Live](evergreen_cutover_brief.md) | _–_ |
 | 2026-07-12 | operations | active | _–_ | [Production Worker route + daemon-load posture decision (cutover)](production_worker_route_decision.md) | _–_ |
 | 2026-07-10 | operations | active | _–_ | [Cutover operator punch-list — the on-site-binder walk (ordered by calendar)](cutover_operator_punchlist.md) | _–_ |
 | 2026-07-10 | operations | active | _–_ | [Production repoint change-set (CL-12 ITS_Config sweep) — STAGED, NOT APPLIED](production_repoint_changeset.md) | _–_ |

@@ -191,6 +191,48 @@ RFQ quote-form protocol (ADR-0004 decision 10, E6/PR-B)
     `quote_form.parse_quote_form` runs; an absent/tampered token degrades the
     upload to an ORDINARY ladder document (verified=False, no auto-bind) — never
     an error, never a file refusal by itself.
+
+RFQ protocol (ADR-0004 R2)
+--------------------------
+    A composed request-for-quote (`rfqs`, migration 0056) is signed by the Worker at
+    /api/po/rfqs/:id/generate with the SAME key + MAC over its own
+    domain-separated canonical string (safety_portal/worker/rfq.ts
+    `rfqCanonicalString` + `canonicalRfqJson`):
+
+        canonical = "rfq:v1" \\n <rfq_id (decimal)> \\n <rfq_number> \\n <canonical_json>
+
+    * The `"rfq:v1"` literal domain-separates this protocol from every sibling
+      (submission uuid-first, "item_photo:v1", "daily_photo:v1", "po:v1", "sub:v1",
+      "po-att:v1", "est:v1") — cross-protocol signature confusion is structurally
+      impossible — and versions the string.
+    * `rfq_id` + `rfq_number` bind the signature to one allocated RFQ identity (a
+      signed body cannot be replayed under a different RFQ number or D1 row),
+      exactly as PO binds `po_id` + `po_number`.
+    * `canonical_json` is REBUILT on both sides from the row's fields in a FIXED key
+      order (`RFQ_CANONICAL_HEADER_KEYS` + a `line_items` nest of
+      `RFQ_CANONICAL_LINE_KEYS` + a SORTED `vendor_keys` array LAST, mirroring the
+      Worker's `canonicalRfqJson` insertion order exactly) and serialized with
+      JSON.stringify semantics (`json.dumps(..., ensure_ascii=False,
+      separators=(",", ":"), allow_nan=False)`). **Why recompute-from-fields and not
+      a verbatim stored string:** this MIRRORS the po:v1 / sub:v1 pattern EXACTLY —
+      `po_poll` re-canonicalizes from the served fields (`po_canonical_json`)
+      because (a) the Worker does not store the canonical string, and (b) the
+      rebuild pattern signature-covers the exact served fields the Mac renders
+      from, so a D1/serving-layer tamper of ANY rendered field fails the verify
+      (a verbatim-string design would only cover the stored blob, not the sibling
+      row fields the renderer actually consumes). The submission-payload verbatim
+      pattern (`payload_json`) applies only where the signed string IS the stored
+      artifact.
+    * `vendor_keys` (the RFQ's vendor fan-out list) is signature-covered as a JSON
+      array INSIDE canonical_json, SORTED ascending on both sides (vendor-row read
+      order must never change the signature) — a tampered vendor list (recipient
+      poisoning's only remaining surface after ADR-0004 decision 9) fails the verify.
+    * The RFQ is PRICE-FREE by design: NO money field participates in the canonical
+      (and none is served) — a request for quote carries no dollars.
+
+    `verify_rfq` is the Mac-side recompute `po_materials.rfq_poll`'s pass ① runs
+    before any render/Box-file/mark-filed (the downgrade defense, mirroring the PO
+    drafts pass). The cross-language vector is pinned in tests/test_rfq_hmac_parity.py.
 """
 from __future__ import annotations
 
@@ -660,3 +702,102 @@ def verify_rfq_form_token(
     upload to an ORDINARY ladder document: verified=False, no RFQ auto-bind)."""
     expected = rfq_form_token(secret, rfq_number, vendor_key)
     return _hmac.compare_digest(expected, provided_token or "")
+
+
+# ---- RFQ protocol (ADR-0004 R2 — the outbound request-for-quote lane) ---------------
+
+# The RFQ protocol's domain-separation literal — MUST match the Worker's
+# RFQ_HMAC_DOMAIN (safety_portal/worker/rfq.ts) byte-for-byte.
+# Domain-separates RFQ signatures from submission (uuid-first), item-photo
+# ("item_photo:v1"), daily-photo ("daily_photo:v1"), PO ("po:v1"), subcontract
+# ("sub:v1"), PO-attachment ("po-att:v1"), and estimate ("est:v1") signatures —
+# cross-protocol confusion is structurally impossible.
+RFQ_DOMAIN = "rfq:v1"
+
+# The FIXED header-field order of the Worker's canonicalRfqJson (rfq.ts) — insertion
+# order is the serialization order on both sides; any reorder breaks every signature.
+# PRICE-FREE by design: no money key exists in an RFQ (the Worker's vitest suite
+# red-lines any *_cents/price/cost key ever appearing; tests/test_rfq_hmac_parity.py
+# pins the same on this side).
+RFQ_CANONICAL_HEADER_KEYS: tuple[str, ...] = (
+    "rfq_number",
+    "job_no",
+    "job_name",
+    "ship_to_name",
+    "ship_to_address",
+    "ship_to_city",
+    "ship_to_state",
+    "ship_to_zip",
+    "delivery_contact_name",
+    "delivery_contact_phone",
+    "delivery_contact_email",
+    "scope_text",
+    "due_date",
+)
+
+# The FIXED per-line key order of canonicalRfqJson's line_items mapper (rfq.ts).
+# Delta vs PO_CANONICAL_LINE_KEYS: NO unit_cost_cents / extended_cents / per-watt
+# quartet (the RFQ line table is price-free); `line_note` is the per-line free-text
+# column the vendor quotes against; qty is a ≤3dp double OR null ("quote per unit").
+RFQ_CANONICAL_LINE_KEYS: tuple[str, ...] = (
+    "position",
+    "part_number",
+    "description",
+    "qty",
+    "unit",
+    "line_note",
+)
+
+
+def rfq_canonical_json(
+    rfq: Mapping[str, Any],
+    line_items: Sequence[Mapping[str, Any]],
+    vendor_keys: Sequence[str],
+) -> str:
+    """Rebuild the Worker's canonicalRfqJson byte-for-byte from a /pending row.
+
+    Values pass through VERBATIM (no coercion): the row arrived as JSON the Worker
+    serialized, so `json.dumps` over the parsed values reproduces the exact bytes —
+    `ensure_ascii=False` (JSON.stringify never \\u-escapes non-ASCII), compact
+    separators, and the FIXED key orders above (recompute-from-fields, the po:v1 /
+    sub:v1 pattern — see the module docstring for why NOT a stored verbatim string).
+    A key absent from the row serializes as null exactly like a D1 NULL would; if
+    that differs from what the Worker signed, the verify simply fails (fail-closed —
+    the drift IS the signal, never a file). Line items nest under `line_items`;
+    `vendor_keys` nests LAST and is SORTED ascending on BOTH sides (rfq.ts sorts at
+    signing — vendor-row read order must never change the signature).
+
+    `allow_nan=False`: NaN/Infinity are not JSON — a row carrying one is malformed
+    transport and the resulting ValueError surfaces to the caller's per-row fence
+    rather than minting a canonical string the Worker could never have signed.
+    """
+    obj: dict[str, Any] = {key: rfq.get(key) for key in RFQ_CANONICAL_HEADER_KEYS}
+    obj["line_items"] = [
+        {key: line.get(key) for key in RFQ_CANONICAL_LINE_KEYS} for line in line_items
+    ]
+    obj["vendor_keys"] = sorted(str(k) for k in vendor_keys)
+    return json.dumps(obj, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+
+
+def rfq_canonical(rfq_id: int, rfq_number: str, canonical_json: str) -> str:
+    """The exact string the Worker signs for one composed RFQ
+    (rfq.ts rfqCanonicalString — order + ``\\n`` separator load-bearing).
+    rfq_id + rfq_number bind the signature to one allocated RFQ identity."""
+    return "\n".join([RFQ_DOMAIN, str(rfq_id), rfq_number, canonical_json])
+
+
+def sign_rfq(secret: str, *, rfq_id: int, rfq_number: str, canonical_json: str) -> str:
+    """HMAC-SHA256(secret, RFQ canonical) → lowercase hex — identical to the Worker's
+    hmacHex over rfqCanonicalString. `canonical_json` comes from `rfq_canonical_json`."""
+    msg = rfq_canonical(rfq_id, rfq_number, canonical_json).encode("utf-8")
+    return _hmac.new(secret.encode("utf-8"), msg, hashlib.sha256).hexdigest()
+
+
+def verify_rfq(
+    secret: str, provided_hmac: str | None, *, rfq_id: int, rfq_number: str, canonical_json: str
+) -> bool:
+    """True iff `provided_hmac` matches the recomputed RFQ signature.
+    Constant-time; never raises (False on any mismatch — the caller refuses the row:
+    one-shot flag + CRITICAL, never rendered, never filed, never marked)."""
+    expected = sign_rfq(secret, rfq_id=rfq_id, rfq_number=rfq_number, canonical_json=canonical_json)
+    return _hmac.compare_digest(expected, provided_hmac or "")

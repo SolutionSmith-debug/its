@@ -17,6 +17,7 @@ export type HomeNav =
   | "po-vendors"
   | "po-config"
   | "po-estimates"
+  | "po-rfqs"
   | "subcontractors"
   | "subcontract-builder";
 
@@ -113,6 +114,14 @@ const HOME_CARDS: HomeCard[] = [
     badge: "Admin",
     title: "Vendor Estimates",
     desc: "Upload vendor quotes and estimates, review them line-by-line against the source, and import accepted lines into a draft PO.",
+    section: "office",
+  },
+  {
+    key: "po-rfqs",
+    cap: "cap.po.manage",
+    badge: "Admin",
+    title: "RFQs",
+    desc: "Compose a price-free Request for Quote for multiple vendors at once, then track each vendor's package from filed to responded.",
     section: "office",
   },
   {

@@ -35,6 +35,7 @@ import { registerProgressRollupRoutes } from "./fieldops_rollup";
 import { registerPoRoutes } from "./po";
 import { registerPoAttachmentRoutes } from "./po_attachments";
 import { registerPoEstimateRoutes } from "./po_estimates";
+import { registerRfqRoutes } from "./rfq";
 import { registerConfigRoutes } from "./config";
 import { registerSubcontractRoutes } from "./subcontract";
 import {
@@ -251,6 +252,27 @@ const requireEstimateToken = createMiddleware<{ Bindings: Env; Variables: Vars }
   const auth = c.req.header("Authorization") ?? "";
   const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
   if (!token || !c.env.PORTAL_ESTIMATE_API_TOKEN || !(await safeTokenEqual(token, c.env.PORTAL_ESTIMATE_API_TOKEN))) {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+  await next();
+});
+
+/**
+ * Bearer-token gate for /api/po/rfqs/internal/* — the Mac-side RFQ daemons
+ * (po_materials/rfq_poll.py + rfq_send_poll.py, ADR-0004 R2/R3). SEPARATE secret from BOTH
+ * the PO token and the estimate token and every other tier (privilege separation — ADR-0004
+ * decision 4 / red-team #1): the estimate daemon is the highest-exposure process in the
+ * system (it decodes hostile PDF/xlsx bytes), and a compromise of it must NOT reach the RFQ
+ * send-lane control surface — so the RFQ tier mints its OWN token that scopes ONLY
+ * /api/po/rfqs/internal/*; it must NOT be able to read the PO queue, the estimate pool,
+ * drain the submission queue, provision users, or touch the mirrors — and none of those
+ * tokens may read/advance the RFQ queue. Same fail-closed-on-missing-secret + constant-time
+ * posture as requireInternalToken. Passed into registerRfqRoutes (worker/rfq.ts).
+ */
+const requireRfqToken = createMiddleware<{ Bindings: Env; Variables: Vars }>(async (c, next) => {
+  const auth = c.req.header("Authorization") ?? "";
+  const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+  if (!token || !c.env.PORTAL_RFQ_API_TOKEN || !(await safeTokenEqual(token, c.env.PORTAL_RFQ_API_TOKEN))) {
     return c.json({ error: "unauthorized" }, 401);
   }
   await next();
@@ -523,6 +545,12 @@ registerPoAttachmentRoutes(app, { requireSession, requireCapability, requirePoTo
 //   AI: the Worker bounds-gates, signs est:v1, and pools bytes in D1; the Mac screens/classifies/
 //   extracts, and every dollar re-enters through the human disposition + the EXISTING draft route. —
 registerPoEstimateRoutes(app, { requireSession, requireCapability, requireEstimateToken });
+// — RFQ composer R1 (ADR-0004): multi-vendor price-free RFQ drafts/generate/cancel (session +
+//   cap.po.manage) + the /api/po/rfqs/internal/* queue under the NEW requireRfqToken tier (its
+//   OWN bearer, separate from BOTH the PO and estimate tokens — red-team #1). SEND-FREE, zero
+//   AI: signs rfq:v1 + queues in D1; the Mac rfq_poll daemon (R2) renders/files per vendor;
+//   the separate rfq_send lane (R3) transmits only after F22-verified human approval. —
+registerRfqRoutes(app, { requireSession, requireCapability, requireRfqToken });
 // — Config-editor queue (§50): generic versioned-config editor (session + per-workstream cap) +
 //   the /api/internal/config/* queue under the NEW requireConfigToken tier. SEND-FREE — the Mac
 //   config daemon (built LATER) is the sole privileged git-commit/deploy actuator. —

@@ -392,6 +392,17 @@
       "origin": "daemon"
     },
     {
+      "setting": "po_materials.rfq_poll.polling_enabled",
+      "workstream": "po_materials",
+      "kind": "bool",
+      "default": false,
+      "purpose": "Runtime on/off gate for the po_materials.rfq_poll daemon. False pauses it without unloading its launchd job (the canonical runtime gate, distinct from the report-filter Enabled checkbox).",
+      "read_by": [
+        "po_materials.rfq_poll"
+      ],
+      "origin": "daemon"
+    },
+    {
       "setting": "safety_reports.portal.worker_base_url",
       "workstream": "po_materials",
       "kind": "str",
@@ -566,6 +577,7 @@
       "read_by": [
         "po_materials.estimate_poll",
         "po_materials.po_poll",
+        "po_materials.rfq_poll",
         "safety_reports.intake",
         "safety_reports.portal_poll",
         "safety_reports.weekly_generate",
@@ -683,6 +695,7 @@
         "field_ops.fieldops_sync",
         "po_materials.estimate_poll",
         "po_materials.po_poll",
+        "po_materials.rfq_poll",
         "safety_reports.portal_poll",
         "safety_reports.publish_daemon",
         "subcontracts.subcontract_poll",

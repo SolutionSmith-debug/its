@@ -618,6 +618,46 @@ The deterministic PO pipeline (no AI). Ships dark until its gates are flipped.
 
 **See also:** runbook `docs/runbooks/estimate_import_path.md`
 
+### rfq-poll renders and files a composed request-for-quote per vendor (dark)
+
+| What happens | |
+|---|---|
+| Daemon | `rfq-poll` |
+| Worker route | `GET /api/po/rfqs/internal/pending` |
+| Sheets | `RFQ_Log`, `RFQ_Pending_Review`, `ITS_Vendors`, `ITS_Review_Queue` |
+| Config gates | `po_materials.rfq_poll.polling_enabled` |
+
+**Healthy signals:**
+- With the gate on, a composed RFQ is rfq:v1 HMAC-verified, rendered once per vendor as a PRICE-FREE PDF (ITS_Vendors snapshot), filed to Box (job → Purchase Orders → RFQs) + an RFQ_Log (rfq, vendor) row, staged on RFQ_Pending_Review (PENDING, Workstream po_materials_rfq), and receipted back once; SENT stamps mirror back via status-sync.
+
+#### Composed RFQs are not being pulled/filed.
+
+**Resolution class:** Operator-resolvable (solo)
+
+**Signals:** rfq-poll gate off, designed-dark, no marker written
+
+**Checks (in order):**
+- Is rfq-poll loaded AND po_materials.rfq_poll.polling_enabled flipped? A loaded-but-dark daemon writes no marker by design (ships dark until the R2 go-live).
+
+**Resolutions (in order):**
+- If RFQ generation is intended, build the two RFQ sheets, load the plist, and flip the gate (go-live is done with Seth); otherwise it is dark by design (not a fault).
+
+**See also:** runbook `docs/runbooks/rfq_generation_path.md`
+
+#### An RFQ (or one vendor's copy) is refused / missing.
+
+**Resolution class:** Escalate to Seth (co-resolve)
+
+**Signals:** rfq_hmac_failure, rfq_vendor_unknown, rfq_all_vendors_fenced, one-shot-flagged
+
+**Checks (in order):**
+- An unknown-vendor fence names the Vendor Key in its Review-Queue row (the other vendors still filed); an HMAC failure is a security event with a CRITICAL + security-flagged row.
+
+**Resolutions (in order):**
+- Unknown vendor → fix/add the ITS_Vendors row, then re-issue that vendor's copy (or unflag an all-vendors-fenced RFQ). HMAC failures escalate (security, FIXED high-class).
+
+**See also:** runbook `docs/runbooks/rfq_generation_path.md`
+
 ### po-send transmits an approved PO (dark)
 
 | What happens | |

@@ -287,6 +287,19 @@ NODES: tuple[MapNode, ...] = (
         runbook="docs/runbooks/estimate_import_path.md", send_half="generation", marker="estimate_poll",
     ),
     MapNode(
+        id="rfq_poll", label="rfq_poll", kind="daemon", lane="generation", band="po",
+        blurb="The 120s outbound-RFQ generation daemon (ADR-0004 Lane 2): pulls composed "
+              "requests-for-quote from the Worker, re-verifies the rfq:v1 HMAC, and per vendor "
+              "renders a PRICE-FREE RFQ PDF (ITS_Vendors snapshot), files it to Box, and stages "
+              "an RFQ_Log + RFQ_Pending_Review row (tagged po_materials_rfq so po_send can never "
+              "dispatch it). Deterministic, send-free, no AI; the vendor send is the PR-D lane.",
+        error_scripts=("po_materials.rfq_poll",),
+        launchd_label="org.solutionsmith.its.rfq-poll", heartbeat_stem="rfq_poll",
+        config_gate="po_materials.rfq_poll.polling_enabled",
+        watchdog_checks=("C",), script_path="po_materials/rfq_poll.py",
+        runbook="docs/runbooks/rfq_generation_path.md", send_half="generation", marker="rfq_poll",
+    ),
+    MapNode(
         id="sheet_its_vendors", label="ITS_Vendors", kind="sheet", lane="records", band="po",
         blurb="The vendor roster (§51 down/up-sync with the portal's vendor picker).",
         sheet_id=5404286845407108,
@@ -526,6 +539,10 @@ EDGES: tuple[MapEdge, ...] = (
             port="HMAC"),
     MapEdge("estimate_poll", "box", "file CLEAN screened quote docs", "write"),
     MapEdge("estimate_poll", "sheet_review_queue", "doc-type / §34 refusals + low-confidence disposition", "write"),
+    MapEdge("worker", "rfq_poll", "pull composed RFQs — rfq:v1 HMAC re-verify", "pull",
+            port="HMAC"),
+    MapEdge("rfq_poll", "box", "file PRICE-FREE RFQ PDFs (per vendor)", "write"),
+    MapEdge("rfq_poll", "sheet_review_queue", "unknown-vendor fences + bad-HMAC refusals", "write"),
     MapEdge("po_poll", "sheet_po_log", "ledger row + per-job mirror", "write"),
     MapEdge("po_poll", "sheet_po_pending_review", "stage review row (PENDING)", "write"),
     MapEdge("po_poll", "sheet_its_vendors", "§51 vendor down/up-sync", "write"),
