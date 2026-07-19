@@ -25,6 +25,7 @@ export default defineConfig(async () => {
             PORTAL_ADMIN_API_TOKEN: "test-admin-token",
             PORTAL_FIELDOPS_API_TOKEN: "test-fieldops-token",
             PORTAL_PO_API_TOKEN: "test-po-token",
+            PORTAL_ESTIMATE_API_TOKEN: "test-estimate-token",
             PORTAL_CONFIG_API_TOKEN: "test-config-token",
             PORTAL_SUB_API_TOKEN: "test-sub-token",
           },

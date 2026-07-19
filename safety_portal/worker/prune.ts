@@ -56,6 +56,17 @@ export const ITEM_PHOTO_STUCK_PENDING_DAYS = 7;
 // whose submission uuid does not exist in `submissions` (the crashed-insert / compensated-
 // claim tail, or a manifest whose submission was itself pruned) — dead linkage, deleted.
 export const DAILY_PHOTO_UNCLAIMED_DAYS = 7;
+// ADR-0004 E1 (vendor-estimate importer, migrations 0054/0055): dispose/refusal delete an
+// estimate's preview pages + original-byte chunks SYNCHRONOUSLY in the route batch, so a
+// TERMINAL po_estimates row (refused/rejected/imported/superseded) normally holds no bytes.
+// This rider is the BACKSTOP for anything that slipped that path (a pre-guard deploy, a
+// failed batch leg): previews + chunks whose parent went terminal ≥90d ago (the PO-family
+// standard window) are reaped. LIVE rows (pending/claimed/needs_review/extracted) are NEVER
+// touched — their bytes ARE the pipeline. The same stage drops pure orphans (no parent row)
+// and the refused-parent/orphan extraction backstop (the guarded result-post INSERT means an
+// extraction can't coexist with a refused parent via the routes — dead advisory data if one
+// ever does).
+export const ESTIMATE_TERMINAL_RETENTION_DAYS = 90;
 
 /**
  * Prune aged rows from the D1 store (A3 housekeeping). Pure on (db, nowSec) so it is
@@ -106,6 +117,7 @@ export interface PruneResult {
   jobs: number;
   subcontractDrafts: number;
   poDrafts: number;
+  estimateArtifacts: number;
   dbSizeBytes: number;
   sizeWarn: boolean;
   failedStages: string[];
@@ -406,6 +418,56 @@ export async function pruneOldData(db: Env["DB"], nowSec: number): Promise<Prune
     return parentDeletes;
   });
 
+  // po_estimates artifact backstop (ADR-0004 — see ESTIMATE_TERMINAL_RETENTION_DAYS):
+  //   1. previews + chunks under a TERMINAL parent aged ≥90d. Terminal stamp:
+  //      disposed_at (imported/rejected), else screened_at (refused), else created_at
+  //      (superseded — E4 stamps nothing yet). The delete-on-disposition/refusal backstop.
+  //   2. pure ORPHANS: previews/chunks whose parent row no longer exists (mirroring the
+  //      filed_pdfs / po_attachment_chunks orphan drops — no age guard needed; a parent
+  //      is never deleted mid-upload, the est_uuid-guarded chunk INSERT is atomic with it).
+  //   3. extraction backstop: extractions (and their LINES — children first, no ON DELETE
+  //      CASCADE) whose parent estimate is refused or gone. The guarded result-post
+  //      INSERT means these can't arise via the routes — dead advisory data if one does.
+  //   Counter = previews + chunks + extractions deleted (lines ride uncounted, the
+  //   child-cascade convention).
+  const estimateCutoff = nowSec - ESTIMATE_TERMINAL_RETENTION_DAYS * DAY_S;
+  const estimateArtifacts = await runStage("estimate_artifacts", failedStages, async () => {
+    const terminalAged =
+      "(SELECT id FROM po_estimates WHERE status IN ('refused','rejected','imported','superseded') " +
+        "AND COALESCE(disposed_at, screened_at, created_at) < ?)";
+    const pvAged = await db
+      .prepare(`DELETE FROM estimate_previews WHERE estimate_id IN ${terminalAged}`)
+      .bind(estimateCutoff)
+      .run();
+    const chAged = await db
+      .prepare(`DELETE FROM po_estimate_chunks WHERE estimate_id IN ${terminalAged}`)
+      .bind(estimateCutoff)
+      .run();
+    const pvOrphan = await db
+      .prepare("DELETE FROM estimate_previews WHERE estimate_id NOT IN (SELECT id FROM po_estimates)")
+      .run();
+    const chOrphan = await db
+      .prepare("DELETE FROM po_estimate_chunks WHERE estimate_id NOT IN (SELECT id FROM po_estimates)")
+      .run();
+    const deadExtractions =
+      "estimate_id IN (SELECT id FROM po_estimates WHERE status = 'refused') " +
+        "OR estimate_id NOT IN (SELECT id FROM po_estimates)";
+    await db
+      .prepare(
+        "DELETE FROM estimate_extraction_lines WHERE extraction_id IN " +
+          `(SELECT id FROM estimate_extractions WHERE ${deadExtractions})`,
+      )
+      .run();
+    const exDead = await db
+      .prepare(`DELETE FROM estimate_extractions WHERE ${deadExtractions}`)
+      .run();
+    return (
+      (pvAged.meta.changes ?? 0) + (chAged.meta.changes ?? 0) +
+      (pvOrphan.meta.changes ?? 0) + (chOrphan.meta.changes ?? 0) +
+      (exDead.meta.changes ?? 0)
+    );
+  });
+
   const dbSizeBytes = await sampleDbSizeBytes(db);
   const sizeWarn = dbSizeBytes > DB_SIZE_WARN_BYTES;
   if (sizeWarn) {
@@ -425,6 +487,7 @@ export async function pruneOldData(db: Env["DB"], nowSec: number): Promise<Prune
     jobs,
     subcontractDrafts,
     poDrafts,
+    estimateArtifacts,
     dbSizeBytes,
     sizeWarn,
     failedStages,
@@ -460,6 +523,7 @@ export async function writePruneMeta(
     jobs: result.jobs,
     subcontractDrafts: result.subcontractDrafts,
     poDrafts: result.poDrafts,
+    estimateArtifacts: result.estimateArtifacts,
   };
   try {
     await db

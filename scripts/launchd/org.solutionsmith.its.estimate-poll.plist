@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Vendor-estimate pull daemon (ADR-0004 E2, RFQ/estimate sub-lane of po_materials).
+  The Mac half of the estimate importer: drains uploaded vendor estimates from the
+  Cloudflare Worker pool (GET /api/po/estimates/internal/pending, bearer = the
+  SEPARATE estimate token tier — red-team #1 privilege separation), est:v1
+  HMAC-verifies + sha256-recomputes each doc, §34-screens it (po_attach_screen),
+  doc-type-classifies it (invoices/AP reports REFUSED from the PO path), files
+  clean docs to Box (job → "Purchase Orders" → "Vendor Quotes") + Estimate_Log,
+  posts disposition-screen page previews, and reports needs_review. Every hostile
+  parse (pdfplumber / Quartz) runs in a killable rlimited child
+  (po_materials/estimate_sandbox.py) — a hostile document can never kill the
+  daemon. AI-free (cloud AND local) + customer-send-free (External Send Gate,
+  FM Invariant 1; enroll in tests/test_capability_gating.py GATED_SCRIPTS).
+  Fail-closed on missing creds. Gated OFF by
+  po_materials.estimate_poll.polling_enabled
+  (scripts/migrations/seed_estimates_config.py seeds it false).
+
+  Install:
+    scripts/launchd/install.sh load org.solutionsmith.its.estimate-poll
+
+  StartInterval is PARAMETERIZED (install.sh __POLL_INTERVAL_SECONDS__): resolution is
+  [interval] arg > ITS_Config po_materials.estimate_poll.poll_interval_seconds >
+  default 120s. Default 120s staggers off portal-poll (60s) and po-poll (90s); the
+  resolved value is BAKED into the installed plist, so a later change needs a re-load.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>org.solutionsmith.its.estimate-poll</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__ITS_HOME__/.venv/bin/python</string>
+        <string>-m</string>
+        <string>po_materials.estimate_poll</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__ITS_HOME__</string>
+
+    <key>StandardOutPath</key>
+    <string>__ITS_HOME__/logs/launchd/estimate_poll.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>__ITS_HOME__/logs/launchd/estimate_poll.err.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>LANG</key>
+        <string>en_US.UTF-8</string>
+    </dict>
+
+    <key>StartInterval</key>
+    <integer>__POLL_INTERVAL_SECONDS__</integer>
+
+    <!-- A2 (single-host resilience): RunAtLoad=true so this interval daemon RESUMES
+         immediately when launchd loads the agent after a reboot/OS-update, then
+         StartInterval re-fires on cadence. KeepAlive is intentionally absent: ITS daemons
+         are one-shot-per-fire, so KeepAlive=true would restart on exit and destroy the
+         interval cadence. -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>

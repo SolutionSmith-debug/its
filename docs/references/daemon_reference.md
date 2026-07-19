@@ -15,13 +15,14 @@ job that ITS runs on the MacBook. It answers, for each one: what it does, how of
 it fires, where its work comes from, which `ITS_Config` switch turns it on, where its
 liveness is reported, where its logs are, how it fails, and how to restart it.
 
-<!-- src: scripts/launchd/ (17 org.solutionsmith.its.*.plist files enumerated) | verified 2026-07-15 -->
-There are **17 launchd agents**, enumerated directly from `scripts/launchd/*.plist`
-(not from memory). Thirteen of them register with watchdog Check C for marker-staleness
-tracking; eleven write an ITS_Daemon_Health heartbeat row; the two sets overlap but are
+<!-- src: scripts/launchd/ (18 org.solutionsmith.its.*.plist files enumerated) | verified 2026-07-19 -->
+There are **18 launchd agents**, enumerated directly from `scripts/launchd/*.plist`
+(not from memory). Fourteen of them register with watchdog Check C for marker-staleness
+tracking; twelve write an ITS_Daemon_Health heartbeat row; the two sets overlap but are
 not identical (the roster table below gives the exact split). Use the roster to jump to
 the daemon you care about, then read its H3 block. (The 17th — `subcontract-send`, the
-SC-S4 approval poller — was added after this doc's first cut; see its row + section below.)
+SC-S4 approval poller — and the 18th — `estimate-poll`, the ADR-0004 vendor-estimate
+importer — were added after this doc's first cut; see their rows + sections below.)
 
 If you only need one thing: **to restart a daemon**, the dashboard verb is
 **kickstart** (Class-B ACT, PIN-gated); the shell fallback is
@@ -73,8 +74,8 @@ report its own death:
 
 | Surface | Mechanism | Who writes it | Who reads it |
 |---|---|---|---|
-| **ITS_Daemon_Health** sheet (id `4529351700729732`, System workspace / 04 — Daemons) | One row per daemon, updated in place each cycle via `shared/heartbeat.py` `HeartbeatReporter` | The **10** daemons that construct a `HeartbeatReporter` (see roster) | Operator (obs), dashboard daemons panel, watchdog Check G |
-| **Watchdog marker files** (`~/its/.watchdog/<slug>.last_run`) | ISO timestamp written each cycle | The **12** `TRACKED_JOBS` daemons | Watchdog **Check C** (marker-staleness floor) |
+| **ITS_Daemon_Health** sheet (id `4529351700729732`, System workspace / 04 — Daemons) | One row per daemon, updated in place each cycle via `shared/heartbeat.py` `HeartbeatReporter` | The **12** daemons that construct a `HeartbeatReporter` (see roster) | Operator (obs), dashboard daemons panel, watchdog Check G |
+| **Watchdog marker files** (`~/its/.watchdog/<slug>.last_run`) | ISO timestamp written each cycle | The **14** `TRACKED_JOBS` daemons | Watchdog **Check C** (marker-staleness floor) |
 
 <!-- src: scripts/watchdog.py:408-455 (Check C body); scripts/watchdog.py:240-287 (TRACKED_JOB_WINDOWS) | verified 2026-07-14 -->
 **Check C** (`_check_scheduled_jobs`) runs in the daily 07:00 watchdog pass. For each
@@ -126,6 +127,7 @@ runtime.
 | `progress-send` | `progress_reports.progress_send_poll` | interval, **900s** default | Progress | yes | `progress_send_poll` |
 | `po-poll` | `po_materials.po_poll` | interval, **90s** default | Purchase Orders | yes | `po_poll` |
 | `po-send` | `po_materials.po_send_poll` | interval, **900s** default | Purchase Orders | yes | `po_send_poll` |
+| `estimate-poll` | `po_materials.estimate_poll` | interval, **120s** default | Purchase Orders | yes | `estimate_poll` |
 | `subcontract-poll` | `subcontracts.subcontract_poll` | interval, **120s** default | Subcontracts | yes | `subcontract_poll` |
 | `subcontract-send` | `subcontracts.subcontract_send_poll` | interval, **900s** default | Subcontracts | yes | `subcontract_send_poll` |
 | `fieldops-sync` | `field_ops.fieldops_sync` | interval, **90s** default | Field Ops | yes | `fieldops_sync` |
@@ -136,9 +138,9 @@ runtime.
 | `watchdog` | `scripts/watchdog.py` | calendar, **daily 07:00** | System | no | (watches others) |
 | `dashboard` | `operator_dashboard` | **server** (KeepAlive) | System | no | (KeepAlive) |
 
-<!-- src: scripts/watchdog.py:174-238 (TRACKED_JOBS — 13 slugs); scripts/launchd/*.plist heartbeat grep | verified 2026-07-15 -->
-Note the two coverage sets do not fully overlap: **13** daemons write Check-C markers
-(the interval pollers plus the four calendar/hourly jobs), and **11** daemons write an
+<!-- src: scripts/watchdog.py TRACKED_JOBS — 14 slugs (estimate_poll added); HeartbeatReporter( grep — 12 constructors | verified 2026-07-19 -->
+Note the two coverage sets do not fully overlap: **14** daemons write Check-C markers
+(the interval pollers plus the four calendar/hourly jobs), and **12** daemons write an
 ITS_Daemon_Health heartbeat row (the interval pollers plus the two §50 actuators). The
 two actuators (`publish-daemon`, `config-actuator`) heartbeat but are **not** in Check
 C; the calendar/hourly jobs (`weekly-generate`, `progress-generate`, `picklist-sync`,
@@ -281,6 +283,21 @@ the running plist holds the interval.
 | **Log** | `~/its/logs/launchd/po_send.out.log` / `.err.log` (note: `po_send`, not `po_send_poll`) |
 | **Known failure modes** | F22 fail-closed (empty approver set = `EMPTY_ALLOWLIST` — the §46 share list of ITS — Purchase Orders must include the approvers). Per-row fence isolates a row with no parseable `po_number`. `polling_enabled=false` short-circuits. §43 tree: `docs/runbooks/po_send.md`. |
 | **Restart** | Dashboard **kickstart**; shell `install.sh load org.solutionsmith.its.po-send` |
+
+### estimate-poll — `po_materials.estimate_poll`
+
+<!-- src: po_materials/estimate_poll.py:1-75 (docstring), :120-137 (gate/defaults); scripts/launchd/install.sh:93 (120s default); scripts/watchdog.py (estimate_poll slug, 10-min window) | verified 2026-07-19 -->
+
+| Field | Value |
+|---|---|
+| **Purpose** | Vendor-estimate pull daemon (ADR-0004 E2) — the Mac half of the estimate importer. A SINGLE pass behind one gate: claim FIRST (crash recovery) → chunk pull + STRICT reassembly → `est:v1` HMAC verify + sha256/size recompute vs the SIGNED values → §34 doc screen (the SAME `po_attach_screen` as PO attachments) → deterministic doc-type gate (pdfplumber inside the killable rlimited `estimate_sandbox` child; invoice/ap_report REFUSED from the PO path, visibly) → surviving docs file the ORIGINAL bytes to Box (ROOT→job→"Purchase Orders"→"Vendor Quotes") → `Estimate_Log` row → disposition-screen page previews (Quartz via the sandbox, best-effort) → result post LAST (`needs_review` + `box_file_id`). AI-FREE (capability-gated in `GATED_SCRIPTS`). |
+| **Interval** | `StartInterval`, default **120s** (`po_materials.estimate_poll.poll_interval_seconds`) |
+| **Source of work** | `GET /api/po/estimates/internal/pending` on the Cloudflare Worker (via `shared.portal_client`) |
+| **Config gates** | `po_materials.estimate_poll.polling_enabled` (**ships false** — dark); `po_materials.estimate_poll.max_pages_preview`; `po_materials.po_attach_screen.clamav_enabled` (SHARED with po_poll's attachment pass, default **OFF**) |
+| **Heartbeat row** | `po_materials.estimate_poll` — marker slug `estimate_poll` (window 10 min). WARNs until loaded AND the gate flipped (a loaded-but-dark daemon writes no marker by design). |
+| **Log** | `~/its/logs/launchd/estimate_poll.out.log` / `.err.log` |
+| **Known failure modes** | **Fail-CLOSED** on missing Worker base URL / estimate bearer / HMAC secret (CRITICAL + ERROR heartbeat, nothing polled). The bearer is the **dedicated** Keychain `ITS_PORTAL_ESTIMATE_TOKEN` (privilege-separated — scopes ONLY `/api/po/estimates/internal/*`; ADR-0004 red-team #1); a **401 anywhere stops the whole cycle** (`estimate_bearer_rejected` CRITICAL — a bad/rotated token never self-heals). Integrity failures (bad HMAC / digest / chunk set) and screen/doc-type refusals are one-shot-flagged (`~/its/state/estimate_poll_flagged.json` — delete an entry to retry after fixing the cause); transient Smartsheet/Box/transport errors leave the row claimed and retried next cycle. A hostile document can never kill the daemon — every hostile parse runs in the killable `estimate_sandbox` child and a wedged parse degrades the doc, not the cycle. §43 tree: `docs/runbooks/estimate_import_path.md`. |
+| **Restart** | Dashboard **kickstart**; shell `install.sh load org.solutionsmith.its.estimate-poll` |
 
 ---
 
@@ -512,7 +529,7 @@ the gate is flipped.
   plist at `install.sh load` time. Editing the `poll_interval_seconds` ITS_Config row
   alone does nothing to a running daemon; re-load (or use the dashboard interval edit).
 - **A loaded dark daemon writes no Check-C marker.** `po-poll`, `po-send`,
-  `subcontract-poll`, `progress-*`, and `compile-now-poll` will legitimately WARN in
+  `estimate-poll`, `subcontract-poll`, `progress-*`, and `compile-now-poll` will legitimately WARN in
   Check C until the operator BOTH loads the plist AND flips at least one runtime gate.
   Register + activate together; an all-gates-false loaded daemon is an intentional dark
   no-op, not a fault.

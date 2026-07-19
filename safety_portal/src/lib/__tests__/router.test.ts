@@ -122,6 +122,7 @@ describe("router — VIEW_CAPS gate map", () => {
       "po-builder": "cap.po.manage",
       "po-vendors": "cap.po.manage",
       "po-config": "cap.po.manage",
+      "po-estimates": "cap.po.manage",
       subcontractors: "cap.subcontracts.manage",
       "subcontract-builder": "cap.subcontracts.manage",
       "fieldops-jobs": "cap.jobtracker.read",

@@ -422,6 +422,34 @@ workflows:
               - Confirm the attachment with the buyer; a malicious disposition names the account and is refused by design. Escalate suspected compromise.
             class: seth_coresolve
             runbook: docs/runbooks/po_poll.md
+      - id: estimate_import
+        title: estimate-poll screens, classifies, and files an uploaded vendor estimate (dark)
+        what_happens:
+          daemon: estimate-poll
+          worker_route: GET /api/po/estimates/internal/pending
+          sheets: [Estimate_Log, ITS_Review_Queue]
+          config_gates: [po_materials.estimate_poll.polling_enabled, po_materials.po_attach_screen.clamav_enabled]
+        healthy_signals:
+          - With the gate on, an office-uploaded estimate is HMAC-verified, §34-screened, doc-type-classified, filed to Box (job → Purchase Orders → Vendor Quotes) + an Estimate_Log row, and lands needs_review with page previews for the disposition screen.
+        failure_modes:
+          - id: estimate_poll_dark
+            symptom: Uploaded estimates are not being pulled/filed.
+            signals: ["estimate-poll gate off", "designed-dark", "no marker written"]
+            checks:
+              - Is estimate-poll loaded AND po_materials.estimate_poll.polling_enabled flipped? A loaded-but-dark daemon writes no marker by design (ships dark until the E2 go-live).
+            resolutions:
+              - If estimate import is intended, load the plist and flip the gate (go-live is done with Seth); otherwise it is dark by design (not a fault).
+            class: daniel_solo
+            runbook: docs/runbooks/estimate_import_path.md
+          - id: estimate_refused
+            symptom: An uploaded estimate is refused (wrong doc type, SUSPICIOUS/MALICIOUS screen, or an integrity failure).
+            signals: ["wrong_doc_type", "screen refused before filing", "estimate_integrity_failure", "one-shot-flagged"]
+            checks:
+              - An invoice/A/P report refusal is BY DESIGN (never parsed as PO line items) — verify the document really is one; a screen/integrity refusal has a Review-Queue row naming the reason.
+            resolutions:
+              - Wrong-doc-type on a real invoice → resolve the row and route the document to accounts; a misclassified quote is re-uploaded. MALICIOUS or integrity failures escalate (security, FIXED high-class).
+            class: seth_coresolve
+            runbook: docs/runbooks/estimate_import_path.md
       - id: po_send
         title: po-send transmits an approved PO (dark)
         what_happens:

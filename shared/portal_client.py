@@ -90,6 +90,11 @@ PO_ATTACHMENTS_PENDING_PATH = "/api/po/internal/attachments/pending"
 PO_ATTACHMENT_CLAIM_PATH = "/api/po/internal/attachments/{id}/claim"
 PO_ATTACHMENT_CHUNKS_PATH = "/api/po/internal/attachments/{id}/chunks"
 PO_ATTACHMENT_RESULT_PATH = "/api/po/internal/attachments/{id}/result"
+EST_PENDING_PATH = "/api/po/estimates/internal/pending"
+EST_CLAIM_PATH = "/api/po/estimates/internal/{id}/claim"
+EST_CHUNKS_PATH = "/api/po/estimates/internal/{id}/chunks"
+EST_RESULT_PATH = "/api/po/estimates/internal/result"
+EST_PREVIEW_PATH = "/api/po/estimates/internal/{id}/preview"
 SUB_PENDING_PATH = "/api/subcontracts/internal/pending"
 SUB_MARK_FILED_PATH = "/api/subcontracts/internal/mark-filed"
 SUB_STATUS_SYNC_PATH = "/api/subcontracts/internal/status-sync"
@@ -1058,6 +1063,144 @@ def post_po_attachment_result(
     data = _request(
         "POST", base_url,
         PO_ATTACHMENT_RESULT_PATH.format(id=attachment_id), token, json_body=body,
+    )
+    return bool(data.get("found"))
+
+
+# ---- Vendor-estimate internal tier (ADR-0004 E1/E2 — the estimate_poll daemon's I/O) ----
+#
+# Faithful mirror of the PO-attachment pool client (above) — same typed-error contract,
+# same control-plane read/write semantics — against the estimate pool routes. All five
+# calls ride the SEPARATE estimate bearer tier (`requireEstimateToken`, Worker
+# PORTAL_ESTIMATE_API_TOKEN / Mac Keychain ITS_PORTAL_ESTIMATE_TOKEN — resolved by the
+# caller, `po_materials.estimate_poll`; this module stays stateless). Red-team finding 1
+# (ADR-0004 decision 4): the estimate lane holds the highest-exposure process (it decodes
+# hostile PDF bytes), so its bearer scopes ONLY /api/po/estimates/internal/* — none of
+# the sibling bearers is accepted on these routes and this bearer opens no other tier.
+# Every call is a control-plane read/write of OUR OWN Worker, NOT a customer-facing send
+# — outside the External Send Gate (Invariant 1).
+
+
+def get_estimates_pending(
+    base_url: str, token: str, *, limit: int = 10
+) -> list[dict[str, Any]]:
+    """Pull serviceable vendor estimates: GET /api/po/estimates/internal/pending.
+
+    Each row is one `po_estimates` D1 row (migration 0054) at status pending|claimed,
+    oldest-first — `{id, est_uuid, job_no, job_name, filename, declared_mime,
+    size_bytes, sha256, status, hmac, uploaded_by, created_at}`. Rows are UNTRUSTED
+    until the caller recomputes the est:v1 canonical HMAC
+    (`shared.portal_hmac.verify_po_estimate`) AND re-derives sha256 over the
+    reassembled chunk bytes — the verify-before-anything contract, extended to
+    content. Claimed rows re-serve (crash recovery); a disposed row never returns.
+
+    Raises `PortalAuthError` (401) / `PortalRateLimitError` (429/503 exhausted) /
+    `PortalTransportError` (any other failure, incl. a non-object / missing-array body).
+    """
+    data = _request("GET", base_url, EST_PENDING_PATH, token, params={"limit": limit})
+    pending = data.get("pending")
+    if not isinstance(pending, list):
+        raise PortalTransportError(
+            f"GET {EST_PENDING_PATH} missing/invalid 'pending' array "
+            f"(got {type(pending).__name__})"
+        )
+    # Defensive: keep only dict rows; a non-dict element is malformed transport.
+    return [row for row in pending if isinstance(row, dict)]
+
+
+def claim_estimate(base_url: str, token: str, *, estimate_id: int) -> bool:
+    """Claim-first marker: POST /api/po/estimates/internal/:id/claim → `found`.
+
+    Flips pending→claimed (the attachment-pool claim semantics) so a crash
+    mid-service leaves an observable claimed row that re-serves next cycle.
+    Idempotent: `found=False` means already claimed/disposed — the caller proceeds
+    (its own read saw the row as serviceable). A control-plane write to OUR OWN
+    Worker (outside the External Send Gate, Invariant 1). Raises the typed
+    hierarchy on failure.
+    """
+    data = _request(
+        "POST", base_url, EST_CLAIM_PATH.format(id=estimate_id), token, json_body={}
+    )
+    return bool(data.get("found"))
+
+
+def get_estimate_chunks(
+    base_url: str, token: str, *, estimate_id: int
+) -> list[dict[str, Any]]:
+    """Pull one estimate's bytes: GET /api/po/estimates/internal/:id/chunks.
+
+    Returns the `chunks` list verbatim — `{chunk_index, chunk_total, chunk_b64}`
+    rows, index-ordered (the po_attachments chunk shape). The ONLY route that ever
+    serves estimate bytes, and only Mac-ward over this bearer. NEVER interpolate
+    `chunk_b64` into a log or error. The caller MUST verify the est:v1 HMAC +
+    sha256 over the reassembled bytes before screening or parsing.
+
+    Raises `PortalAuthError` (401) / `PortalRateLimitError` (429/503 exhausted) /
+    `PortalTransportError` (any other failure, incl. a 404 for a disposed row).
+    """
+    data = _request(
+        "GET", base_url, EST_CHUNKS_PATH.format(id=estimate_id), token
+    )
+    chunks = data.get("chunks")
+    if not isinstance(chunks, list):
+        raise PortalTransportError(
+            f"GET {EST_CHUNKS_PATH} missing/invalid 'chunks' array "
+            f"(got {type(chunks).__name__})"
+        )
+    # Defensive: keep only dict rows; a non-dict element is malformed transport.
+    return [row for row in chunks if isinstance(row, dict)]
+
+
+def post_estimate_result(
+    base_url: str, token: str, *, estimate_id: int, status: str,
+    detail: str | None = None, box_file_id: str | None = None,
+    extraction: dict[str, Any] | None = None,
+) -> bool:
+    """Post one servicing disposition: POST /api/po/estimates/internal/result.
+
+    `status` is `'refused'` (screen/doc-type rejection; `detail` carries the machine
+    reason, e.g. `wrong_doc_type:invoice` — NEVER file bytes), `'needs_review'`
+    (filed to Box awaiting the disposition screen — carries `box_file_id`), or
+    `'extracted'` (PR-B: carries the tiered `extraction` payload — tier /
+    schema_version / doc_type / header cents fields / `lines`; PR-A posts only
+    refused/needs_review with NO extraction, but the shape is accepted here so the
+    PR-B daemon change is additive). The Worker applies the disposition in ONE
+    atomic batch (W4): status flip + chunk handling (refused → chunk DELETE) +
+    audit row.
+
+    Idempotent: `found=False` means the row was already disposed (a re-post after a
+    lost ack) — benign, exactly like `mark_filed`. A control-plane write to OUR OWN
+    Worker (outside the External Send Gate, Invariant 1). Raises the typed
+    `PortalTransportError` hierarchy on failure (an invalid-result 400 surfaces as
+    `PortalTransportError`, never a silent return).
+    """
+    body: dict[str, Any] = {"estimate_id": estimate_id, "status": status}
+    if detail is not None:
+        body["detail"] = detail
+    if box_file_id is not None:
+        body["box_file_id"] = box_file_id
+    if extraction is not None:
+        body["extraction"] = extraction
+    data = _request("POST", base_url, EST_RESULT_PATH, token, json_body=body)
+    return bool(data.get("found"))
+
+
+def post_estimate_preview(
+    base_url: str, token: str, *, estimate_id: int, page: int, png_b64: str
+) -> bool:
+    """Upsert one page preview: POST /api/po/estimates/internal/:id/preview.
+
+    `page` is 1-based; `png_b64` is the base64 of one Pillow-re-encoded PNG the
+    Worker decodes into `estimate_previews` (decoded cap 1_000_000 bytes — the
+    caller keeps each preview under it; an oversize preview is a Worker 400).
+    Previews are the fidelity control's source panel (ADR-0004 decision 3): the
+    disposition screen blocks accept until the page's preview is loaded. Idempotent
+    per (estimate, page) — the Worker upserts. Raises the typed hierarchy on
+    failure.
+    """
+    data = _request(
+        "POST", base_url, EST_PREVIEW_PATH.format(id=estimate_id), token,
+        json_body={"page": page, "png_b64": png_b64},
     )
     return bool(data.get("found"))
 

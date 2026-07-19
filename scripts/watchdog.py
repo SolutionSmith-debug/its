@@ -236,6 +236,14 @@ TRACKED_JOBS: list[str] = [
     # send gate off is a pre-lock no-op and writes NO marker (intentional dark state, the
     # External Send Gate). Register + activate together at SC-S4 go-live.
     "subcontract_send_poll",
+    # Vendor-estimate pull daemon (po_materials.estimate_poll, ADR-0004 Lane 1 PR-A).
+    # Writes an estimate_poll.last_run marker each cycle once ACTIVE. Like po_poll /
+    # subcontract_poll it WARNs until the operator both LOADS the plist (`install.sh
+    # load org.solutionsmith.its.estimate-poll`) AND flips
+    # po_materials.estimate_poll.polling_enabled true — a loaded daemon with the gate
+    # false is a pre-lock no-op and writes NO marker (intentional dark state, the
+    # lane ships dark). Register + activate together.
+    "estimate_poll",
 ]
 
 # Per-job freshness windows. Jobs not in this map use the default 24h
@@ -293,6 +301,11 @@ TRACKED_JOB_WINDOWS: dict[str, timedelta] = {
     # subcontract_send_poll runs every 15 min (default); 30 min == 2 cycles — mirror
     # po_send_poll / weekly_send_poll (an approval poller, not a fast puller).
     "subcontract_send_poll": timedelta(minutes=30),
+    # estimate_poll runs every 120s (default). 10 min == ~5 cycles — same
+    # high-frequency-poller tolerance as subcontract_poll (identical 120s cadence).
+    # Same tunable-interval caveat as po_poll (po_materials.estimate_poll.
+    # poll_interval_seconds / the install.sh arg — widen this window if raised).
+    "estimate_poll": timedelta(minutes=10),
 }
 DEFAULT_TRACKED_JOB_WINDOW = timedelta(hours=24)
 

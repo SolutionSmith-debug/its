@@ -217,6 +217,53 @@ GATED_SCRIPTS: list[tuple[str, list[str]]] = [
         ["graph_client", "send_mail", "resend", "smtplib", "email.mime",
          "anthropic", "anthropic_client"],
     ),
+    (
+        # estimate_poll (ADR-0004 Lane 1, PR-A) is the vendor-estimate pull daemon —
+        # the highest-exposure process in the estimate lane (it decodes HOSTILE
+        # vendor-document bytes). GENERATION-side of the External Send Gate:
+        # DETERMINISTIC (no LLM — the ADR's local-only ladder lands later and is
+        # local Ollama, never cloud) and customer-SEND-FREE. Egress rides the
+        # F02-allowlisted portal_client (our Worker, ITS_PORTAL_ESTIMATE_TOKEN) +
+        # box_client (filing) — no raw network library, no send capability.
+        "po_materials/estimate_poll.py",
+        ["graph_client", "send_mail", "resend", "smtplib", "email.mime",
+         "anthropic", "anthropic_client"],
+    ),
+    (
+        # estimate_log (PR-A) is the Estimate_Log ledger writer (the po_log twin
+        # for the estimate lane). Pure Smartsheet-write helper via the audited
+        # shared clients — no Graph, no send, no LLM.
+        "po_materials/estimate_log.py",
+        ["graph_client", "send_mail", "resend", "smtplib", "email.mime",
+         "anthropic", "anthropic_client"],
+    ),
+    (
+        # estimate_classify (PR-A) is the deterministic doc-type gate over UNTRUSTED
+        # vendor-document text (keyword/regex scoring; its pdfplumber extract runs
+        # inside the estimate_sandbox child, never in-process here). No Graph, no
+        # send, no LLM — the invoice/ap_report refusal must stay deterministic.
+        "po_materials/estimate_classify.py",
+        ["graph_client", "send_mail", "resend", "smtplib", "email.mime",
+         "anthropic", "anthropic_client"],
+    ),
+    (
+        # estimate_preview (PR-A) renders source-page PNG previews (Quartz, inside
+        # the estimate_sandbox child) for the disposition screen's side-by-side
+        # fidelity check. Pure bytes → bytes — no Graph, no send, no LLM.
+        "po_materials/estimate_preview.py",
+        ["graph_client", "send_mail", "resend", "smtplib", "email.mime",
+         "anthropic", "anthropic_client"],
+    ),
+    (
+        # estimate_sandbox (PR-A, red-team #5) is the KILLABLE child-process runner
+        # every hostile-input parse goes through (RLIMIT_AS cap + wall-clock
+        # timeout; a wedged parse is reaped, the doc degrades, the daemon lives).
+        # Its `subprocess` use is allowlisted in NETWORK_LIB_ALLOWLIST below; it
+        # must still be send-free + LLM-free like every module touching hostile bytes.
+        "po_materials/estimate_sandbox.py",
+        ["graph_client", "send_mail", "resend", "smtplib", "email.mime",
+         "anthropic", "anthropic_client"],
+    ),
 ]
 
 # Send scripts: must NOT import any AI capability.
@@ -482,6 +529,13 @@ NETWORK_LIB_ALLOWLIST: frozenset[str] = frozenset({
     # breaker state via the canonical state_io atomic writer. No send, no AI, no
     # subprocess, no network lib.
     "operator_dashboard/act/state_ops.py",
+    # estimate_sandbox (ADR-0004 red-team #5): `subprocess` IS the control — it
+    # re-invokes `python -m po_materials.estimate_sandbox <fn>` as a KILLABLE child
+    # with an RLIMIT_AS memory cap (preexec_fn) + wall-clock timeout, so a hostile
+    # vendor document that wedges/OOMs pdfplumber or the Quartz render is reaped
+    # and the doc degrades instead of killing estimate_poll. Local process spawn
+    # only — never network egress; stays in GATED_SCRIPTS (no send, no LLM).
+    "po_materials/estimate_sandbox.py",
     # WS2 clear-error-log verb: `importlib` lazily resolves INTERNAL modules only
     # (shared.errors_rotation / shared.smartsheet_client / shared.sheet_ids /
     # shared.defaults / shared.error_log) to delete TERMINAL ITS_Errors rows (never an

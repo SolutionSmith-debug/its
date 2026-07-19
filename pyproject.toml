@@ -78,6 +78,22 @@ dependencies = [
     # WS2 D1-2 ACT surface: FastAPI form parsing for the PIN-gated config-edit
     # POST (operator_dashboard/act/router.py uses fastapi.Form).
     "python-multipart>=0.0.9",
+    # Vendor-estimate importer (ADR-0004 E2, po_materials/estimate_classify.py):
+    # deterministic per-page text extraction for the doc-type gate. Imported ONLY
+    # inside the killable rlimited estimate_sandbox child (red-team #5) — the
+    # daemon process never loads it, so a parser wedge/OOM on a hostile PDF dies
+    # in the child. Floor pin per this file's convention.
+    "pdfplumber>=0.11",
+    # Quartz (CoreGraphics/ImageIO) bridge for the disposition-screen page-preview
+    # render (po_materials/estimate_preview.py via estimate_sandbox). macOS-only by
+    # design (the execution host is a MacBook — same posture as shared/keychain.py);
+    # imported lazily inside the sandbox child, and a missing/failed import degrades
+    # to zero previews rather than erroring (ADR-0004 decision 3 no-preview path).
+    # §41 version-bump: latest upstream is 12.2.1 (checked 2026-07-19); the CG* /
+    # CGImageDestination* call surface used here is stable across 10.x–12.x.
+    # Upper-bounded <13.0 so a future pyobjc major can't silently break the bridge
+    # (the Pillow/openpyxl risk-bearing-dep convention in this file).
+    "pyobjc-framework-Quartz>=10.0,<13.0; sys_platform == 'darwin'",  # macOS-only: setup shells to sw_vers — env-marked so Linux CI installs (runtime is Darwin; estimate_preview degrades to [] without it)
 ]
 
 [project.optional-dependencies]
@@ -132,5 +148,6 @@ markers = [
 # no maintained stubs upstream as of 2026-05.
 [[tool.mypy.overrides]]
 module = ["msal", "msal.*", "smartsheet", "smartsheet.*", "boxsdk", "boxsdk.*", "reportlab", "reportlab.*",
-          "PIL", "PIL.*", "pyclamd", "pyclamd.*", "docx", "docx.*", "openpyxl", "openpyxl.*"]
+          "PIL", "PIL.*", "pyclamd", "pyclamd.*", "docx", "docx.*", "openpyxl", "openpyxl.*",
+          "pdfplumber", "pdfplumber.*", "Quartz", "Quartz.*"]
 ignore_missing_imports = true

@@ -214,12 +214,35 @@
       "origin": "daemon"
     },
     {
+      "setting": "po_materials.estimate_poll.max_pages_preview",
+      "workstream": "po_materials",
+      "kind": "int",
+      "default": 12,
+      "purpose": "Max pages rendered as disposition-screen previews per estimate (Quartz via the estimate_sandbox child).",
+      "read_by": [
+        "po_materials.estimate_poll"
+      ],
+      "origin": "daemon"
+    },
+    {
+      "setting": "po_materials.estimate_poll.polling_enabled",
+      "workstream": "po_materials",
+      "kind": "bool",
+      "default": false,
+      "purpose": "Runtime on/off gate for the po_materials.estimate_poll daemon. False pauses it without unloading its launchd job (the canonical runtime gate, distinct from the report-filter Enabled checkbox).",
+      "read_by": [
+        "po_materials.estimate_poll"
+      ],
+      "origin": "daemon"
+    },
+    {
       "setting": "po_materials.po_attach_screen.clamav_enabled",
       "workstream": "po_materials",
       "kind": "bool",
       "default": false,
-      "purpose": "Optional ClamAV layer of the §34 PO document-attachment screener (po_attach_screen L3). Default OFF; requires clamd + pyclamd on the Mac.",
+      "purpose": "Optional ClamAV layer of the §34 doc screener (po_attach_screen L3), SHARED with po_poll's attachment pass. Default OFF.",
       "read_by": [
+        "po_materials.estimate_poll",
         "po_materials.po_poll"
       ],
       "origin": "daemon"
@@ -462,8 +485,9 @@
       "workstream": "safety_reports",
       "kind": "str",
       "default": "",
-      "purpose": "Shared Box mirror-tree root; owned by safety_reports. The drafts pass files PO PDFs under ROOT→<job>→'Purchase Orders'.",
+      "purpose": "Shared Box mirror-tree root; owned by safety_reports. Clean estimates file under ROOT→<job>→'Purchase Orders'→'Vendor Quotes'.",
       "read_by": [
+        "po_materials.estimate_poll",
         "po_materials.po_poll",
         "safety_reports.intake",
         "safety_reports.portal_poll",
@@ -580,6 +604,7 @@
       "purpose": "Shared Worker base URL; owned by safety_reports, read here too.",
       "read_by": [
         "field_ops.fieldops_sync",
+        "po_materials.estimate_poll",
         "po_materials.po_poll",
         "safety_reports.portal_poll",
         "safety_reports.publish_daemon",

@@ -578,6 +578,46 @@ The deterministic PO pipeline (no AI). Ships dark until its gates are flipped.
 
 **See also:** runbook `docs/runbooks/po_poll.md`
 
+### estimate-poll screens, classifies, and files an uploaded vendor estimate (dark)
+
+| What happens | |
+|---|---|
+| Daemon | `estimate-poll` |
+| Worker route | `GET /api/po/estimates/internal/pending` |
+| Sheets | `Estimate_Log`, `ITS_Review_Queue` |
+| Config gates | `po_materials.estimate_poll.polling_enabled`, `po_materials.po_attach_screen.clamav_enabled` |
+
+**Healthy signals:**
+- With the gate on, an office-uploaded estimate is HMAC-verified, §34-screened, doc-type-classified, filed to Box (job → Purchase Orders → Vendor Quotes) + an Estimate_Log row, and lands needs_review with page previews for the disposition screen.
+
+#### Uploaded estimates are not being pulled/filed.
+
+**Resolution class:** Operator-resolvable (solo)
+
+**Signals:** estimate-poll gate off, designed-dark, no marker written
+
+**Checks (in order):**
+- Is estimate-poll loaded AND po_materials.estimate_poll.polling_enabled flipped? A loaded-but-dark daemon writes no marker by design (ships dark until the E2 go-live).
+
+**Resolutions (in order):**
+- If estimate import is intended, load the plist and flip the gate (go-live is done with Seth); otherwise it is dark by design (not a fault).
+
+**See also:** runbook `docs/runbooks/estimate_import_path.md`
+
+#### An uploaded estimate is refused (wrong doc type, SUSPICIOUS/MALICIOUS screen, or an integrity failure).
+
+**Resolution class:** Escalate to Seth (co-resolve)
+
+**Signals:** wrong_doc_type, screen refused before filing, estimate_integrity_failure, one-shot-flagged
+
+**Checks (in order):**
+- An invoice/A/P report refusal is BY DESIGN (never parsed as PO line items) — verify the document really is one; a screen/integrity refusal has a Review-Queue row naming the reason.
+
+**Resolutions (in order):**
+- Wrong-doc-type on a real invoice → resolve the row and route the document to accounts; a misclassified quote is re-uploaded. MALICIOUS or integrity failures escalate (security, FIXED high-class).
+
+**See also:** runbook `docs/runbooks/estimate_import_path.md`
+
 ### po-send transmits an approved PO (dark)
 
 | What happens | |
