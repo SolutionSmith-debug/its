@@ -4,6 +4,11 @@ on:
   push:
   pull_request:
     branches: [main]
+  # Manual trigger — the escape hatch for the 2026-07-19 gap where GitHub
+  # delivered no push event for two consecutive main merges (#617/#618),
+  # leaving them with zero CI runs (watchdog Check S would page on it the
+  # next morning). `gh workflow run ci --ref main` re-covers main HEAD.
+  workflow_dispatch:
 
 # Cancel superseded in-flight runs for the same ref (overlapping pushes to a
 # branch). main-branch CI on merge commits is unaffected — distinct refs.
