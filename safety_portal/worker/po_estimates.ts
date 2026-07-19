@@ -445,22 +445,25 @@ export function registerPoEstimateRoutes(app: FieldopsApp, gates: PoEstimateGate
       VENDOR_KEY_RE.test(rfqVendorKeyHint);
 
     const row = await c.env.DB
-      .prepare("SELECT id, status FROM po_estimates WHERE id = ?1")
+      .prepare("SELECT id, status, job_no FROM po_estimates WHERE id = ?1")
       .bind(estId)
-      .first<{ id: number; status: string }>();
+      .first<{ id: number; status: string; job_no: string }>();
     if (!row || (row.status !== "pending" && row.status !== "claimed")) {
       return c.json({ ok: true, found: false, status: row?.status ?? null });
     }
 
-    // Resolve the hint to real rows: bind ONLY when the RFQ number names an rfqs row AND
-    // that rfq has an rfq_vendors row for this vendor. An unknown rfq / vendor → no bind
-    // (stored nothing; recorded in the audit as rfq_bound:false — visible, never silent).
+    // Resolve the hint to real rows: bind ONLY when the RFQ number names an rfqs row FOR THIS
+    // ESTIMATE'S OWN JOB (job_no cross-check — a vendor is routinely on RFQs for several
+    // concurrent jobs, and rfq_vendors.vendor_key is per-RFQ, not global; without this a
+    // cross-job hint would bind cleanly) AND that rfq has an rfq_vendors row for this vendor.
+    // An unknown / cross-job rfq / vendor → no bind (stored nothing; recorded in the audit as
+    // rfq_bound:false — visible, never silent).
     let bindRfqId: number | null = null;
     let bindVendorKey: string | null = null;
     if (rfqHintWellFormed) {
       const rfqRow = await c.env.DB
-        .prepare("SELECT id FROM rfqs WHERE rfq_number = ?1")
-        .bind(rfqNumberHint)
+        .prepare("SELECT id FROM rfqs WHERE rfq_number = ?1 AND job_no = ?2")
+        .bind(rfqNumberHint, row.job_no)
         .first<{ id: number }>();
       if (rfqRow) {
         const vRow = await c.env.DB
@@ -556,11 +559,15 @@ export function registerPoEstimateRoutes(app: FieldopsApp, gates: PoEstimateGate
         // responded): a vendor may return the form BEFORE the RFQ email is even sent (office
         // upload), so BOTH 'filed' and 'sent' are valid predecessors. responded_estimate_id
         // records the estimate the reply landed as. rfqs.status is deliberately UNTOUCHED
-        // (its CHECK set has no 'responded').
+        // (its CHECK set has no 'responded'). GATED on the estimate's OWN status being a
+        // genuine result (same batch, sees the flip above) — mirrors the po_estimates bind
+        // guard so a `refused` result post carrying rfq hints can NEVER forge a 'responded'
+        // pill for an unbound (garbage/invoice) upload.
         c.env.DB
           .prepare(
             "UPDATE rfq_vendors SET status='responded', responded_estimate_id=?3 " +
-              "WHERE rfq_id=?1 AND vendor_key=?2 AND status IN ('filed','sent')",
+              "WHERE rfq_id=?1 AND vendor_key=?2 AND status IN ('filed','sent') " +
+              "AND (SELECT status FROM po_estimates WHERE id=?3) IN ('needs_review','extracted')",
           )
           .bind(bindRfqId, bindVendorKey, estId),
         auditStmtIfChanged(c, SYSTEM_ACTOR, "po_estimate_rfq_bound", String(estId), {

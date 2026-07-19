@@ -831,6 +831,43 @@ describe("rfq round-trip auto-bind", () => {
     expect((await vendorRow(rfqId))!.status).toBe("pending");
   });
 
+  it("a 'refused' result carrying real rfq hints does NOT flip the vendor row or audit a bind (review F1)", async () => {
+    // The estimate daemon is the highest-exposure bearer; a refused (garbage/invoice) result
+    // must never be able to forge a 'responded' pill for a real in-flight RFQ vendor.
+    const rfqId = await seedRfq("filed");
+    const res = await upload(admin);
+    const { id } = await json<{ id: number }>(res);
+    await call(`/api/po/estimates/internal/${id}/claim`, { method: "POST", bearer: EST_BEARER, body: "{}" });
+    const result = await postResult({
+      estimate_id: id, status: "refused", detail: "wrong_doc_type:invoice",
+      rfq_number: RFQ_NUMBER, rfq_vendor_key: VENDOR_KEY,
+    });
+    expect(result.status, await result.clone().text()).toBe(200);
+    expect((await estRow(id))!.rfq_id).toBeNull();            // po_estimates never bound
+    expect((await vendorRow(rfqId))!.status).toBe("filed");   // vendor row NOT flipped
+    expect(await auditCount("po_estimate_rfq_bound")).toBe(0); // no lying bind audit
+  });
+
+  it("ignores a cross-job rfq hint (real RFQ + vendor, but a different job) — no bind (review F2)", async () => {
+    // The estimate's job is "2026.001" (the upload default); seed a real RFQ+vendor for a
+    // DIFFERENT job. Without the job_no cross-check this would bind cleanly.
+    const otherRfqNumber = "RFQ-2026.002-001";
+    const rfqRow = await env.DB
+      .prepare(
+        "INSERT INTO rfqs (rfq_uuid, rfq_number, job_no, status, created_by) " +
+          "VALUES (?1,?2,'2026.002','generated','admin.est') RETURNING id",
+      )
+      .bind(`uuid-${otherRfqNumber}`, otherRfqNumber)
+      .first<{ id: number }>();
+    await env.DB
+      .prepare("INSERT INTO rfq_vendors (rfq_id, vendor_key, status) VALUES (?1,?2,'filed')")
+      .bind(rfqRow!.id, VENDOR_KEY)
+      .run();
+    const estId = await extractedWithBind({ rfq_number: otherRfqNumber, rfq_vendor_key: VENDOR_KEY });
+    expect((await estRow(estId))!.rfq_id).toBeNull(); // estimate job ≠ RFQ job → no bind
+    expect(await auditCount("po_estimate_rfq_bound")).toBe(0);
+  });
+
   it("a shape-bad rfq_vendor_key is ignored, never a 400", async () => {
     await seedRfq("filed");
     const estId = await extractedWithBind({ rfq_number: RFQ_NUMBER, rfq_vendor_key: "not-a-vendor-key" });
