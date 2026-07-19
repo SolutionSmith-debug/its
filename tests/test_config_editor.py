@@ -409,9 +409,15 @@ def test_enrolled_subcontract_gate_activation_escalates_pause_applies(fake_smart
 
 
 def test_unknown_key_never_in_registry_refused_no_write(fake_smartsheet: dict[str, Any]) -> None:
-    # a key that is in NO tier (not Class A/B, not a secret, not display) is refused.
-    assert not registry.is_editable("subcontracts.subcontract_send.polling_enabled", "subcontracts")
-    out = apply_edit("subcontracts.subcontract_send.polling_enabled", "subcontracts", "true", "op")
+    # A key that is in NO tier (not Class A/B, not a secret, not display) is refused.
+    # `*.poll_interval_seconds` is the PRINCIPLED example: it is install-time (baked
+    # into the plist, no hot-reload), so it stays out of the config registry forever
+    # and is retuned only through the Class-B interval verb (daemon_ops.edit_interval).
+    # This previously used subcontracts.subcontract_send.polling_enabled — a key that
+    # merely happened to be unregistered before the SC-S4 send lane shipped, never a
+    # policy statement; it is now a registered send gate.
+    assert not registry.is_editable("safety_reports.weekly_send.poll_interval_seconds", "safety_reports")
+    out = apply_edit("safety_reports.weekly_send.poll_interval_seconds", "safety_reports", "120", "op")
     assert out.kind == config_write.NOT_EDITABLE
     assert fake_smartsheet["updates"] == []
 

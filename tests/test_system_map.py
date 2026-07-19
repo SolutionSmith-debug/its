@@ -91,6 +91,112 @@ def test_every_tracked_job_marker_has_a_node() -> None:
     )
 
 
+def test_every_send_half_node_has_an_inbound_human_approval_edge() -> None:
+    """The Send Gate must be DRAWN, not merely implied.
+
+    Invariant 1 says nothing transmits without a human approving that exact
+    packet. On the map that contract IS the `port="human approval"` edge from a
+    review sheet into the send-half node. A send node without one renders as a
+    transmitter fed by nothing a human touched — the map would misrepresent the
+    gate. (rfq_send shipped with only its ITS_Vendors recipient-lookup edge.)
+    """
+    approved = {e.dst for e in EDGES if e.port == "human approval"}
+    missing = sorted(n.id for n in NODES if n.send_half == "send" and n.id not in approved)
+    assert not missing, (
+        f"send-half nodes with no inbound human-approval edge: {missing} — add the "
+        'MapEdge(<review sheet>, <node>, "APPROVED rows only — F22", "read", '
+        'port="human approval") so the map draws the External Send Gate crossing'
+    )
+
+
+def test_every_node_config_gate_is_reachable_in_the_config_editor() -> None:
+    """A gate the map advertises must be a gate the operator can actually reach.
+
+    Every `config_gate` / `extra_gates` key on a node is an ITS_Config row the
+    operator is told controls that capability. If it is absent from the Class-A
+    ACT registry the editor refuses to write it, so the map points at a switch
+    that does not exist on the console — the "phantom gate" failure mode.
+    Deliberate omissions go in gate_not_editable with a stated reason.
+    """
+    from operator_dashboard.act.registry import REGISTRY
+    from operator_dashboard.system_map import gate_workstream
+
+    # Gates deliberately NOT editable from the dashboard (each needs a reason).
+    # These are surfaced READ-ONLY instead (registry.CLASS_E_DISPLAY), which the
+    # companion test below asserts — "not editable" must never mean "invisible".
+    gate_not_editable: dict[str, str] = {
+        "po_materials.estimate_extract.tier1_enabled": "ADR-0004 extraction ladder — dark + unvalidated",
+        "po_materials.estimate_extract.tier2_enabled": "ADR-0004 extraction ladder — dark + unvalidated",
+        "po_materials.estimate_extract.ocr_enabled": "ADR-0004 extraction ladder — dark + unvalidated",
+    }
+
+    missing: list[str] = []
+    for n in NODES:
+        for gate in ([n.config_gate] if n.config_gate else []) + list(n.extra_gates):
+            if gate in gate_not_editable:
+                continue
+            if (gate, gate_workstream(gate)) not in REGISTRY:
+                missing.append(f"{n.id} -> {gate}")
+    assert not missing, (
+        f"system-map gates absent from the ACT config registry: {sorted(missing)} — add a "
+        "ConfigEntry in operator_dashboard/act/registry.py (registry reconciliation, "
+        "HOUSE_REFLEXES §1), or record a reason in gate_not_editable"
+    )
+
+
+def test_uneditable_node_gates_are_still_visible_read_only() -> None:
+    """"Not editable" must never degrade into "invisible".
+
+    A gate withheld from the config editor (an unvalidated AI extraction tier) is
+    still state the operator must be able to READ — otherwise the console silently
+    hides a capability switch. Every such gate has to appear in CLASS_E_DISPLAY,
+    which renders the LIVE value with no edit control.
+    """
+    from operator_dashboard.act.registry import CLASS_E_DISPLAY
+
+    displayed = {d.setting for d in CLASS_E_DISPLAY}
+    ladder = [
+        "po_materials.estimate_extract.tier1_enabled",
+        "po_materials.estimate_extract.tier2_enabled",
+        "po_materials.estimate_extract.ocr_enabled",
+    ]
+    missing = [g for g in ladder if g not in displayed]
+    assert not missing, (
+        f"gates withheld from the editor but not surfaced read-only: {missing} — add a "
+        "DisplayEntry to CLASS_E_DISPLAY in operator_dashboard/act/registry.py"
+    )
+    # and they must NOT have leaked into the editable registry
+    from operator_dashboard.act.registry import REGISTRY
+
+    leaked = [g for g in ladder if (g, "po_materials") in REGISTRY]
+    assert not leaked, (
+        f"unvalidated extraction tiers became editable: {leaked} — promoting one is gated "
+        "on scripts/eval_estimate_ladder.py qualifying a model on the production corpus"
+    )
+
+
+def test_send_queue_panel_covers_every_review_sheet_feeding_a_send_node() -> None:
+    """The send-queue panel must show EVERY lane's approval backlog.
+
+    Its sheet list is hardcoded; a new send lane whose review sheet is omitted
+    makes that lane's PENDING / HELD / FAILED rows invisible on the console while
+    the panel still reads "all clear" — a silent blind spot, not an obvious gap.
+    """
+    import operator_dashboard.sources.smartsheet_panels as sp
+    from shared import sheet_ids
+
+    covered = {getattr(sheet_ids, attr, None) for _ws, attr in sp._SEND_QUEUE_SHEETS}
+    missing = sorted(
+        f"{NODES_BY_ID[e.src].label} (feeds {e.dst})"
+        for e in EDGES
+        if e.port == "human approval" and NODES_BY_ID[e.src].sheet_id not in covered
+    )
+    assert not missing, (
+        f"review sheets feeding a send node but absent from the send-queue panel: {missing} "
+        "— add them to _SEND_QUEUE_SHEETS in operator_dashboard/sources/smartsheet_panels.py"
+    )
+
+
 def test_runbook_paths_exist() -> None:
     for n in NODES:
         if n.runbook:

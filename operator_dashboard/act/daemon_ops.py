@@ -55,7 +55,10 @@ class IntervalDaemon:
     default: int       # install.sh per-daemon default (for display / reference)
 
 
-# The 9 interval daemons install.sh knows (its poll_interval_config_key table).
+# The interval daemons install.sh knows (its poll_interval_config_key table).
+# tests/test_daemon_ops.py::test_interval_daemons_match_install_sh_table PARSES
+# that table and asserts exact parity, so a daemon added there can never silently
+# become un-retunable from here (how the ADR-0004 lane drifted out).
 _DAEMONS: list[IntervalDaemon] = [
     IntervalDaemon("org.solutionsmith.its.weekly-send", "safety_reports.weekly_send.poll_interval_seconds", "safety_reports", 900),
     IntervalDaemon("org.solutionsmith.its.portal-poll", "safety_reports.portal_poll.poll_interval_seconds", "safety_reports", 60),
@@ -66,6 +69,12 @@ _DAEMONS: list[IntervalDaemon] = [
     IntervalDaemon("org.solutionsmith.its.po-send", "po_materials.po_send.poll_interval_seconds", "po_materials", 900),
     IntervalDaemon("org.solutionsmith.its.subcontract-poll", "subcontracts.subcontract_poll.poll_interval_seconds", "subcontracts", 120),
     IntervalDaemon("org.solutionsmith.its.subcontract-send", "subcontracts.subcontract_send.poll_interval_seconds", "subcontracts", 900),
+    # RFQ / vendor-estimate lane (ADR-0004). All three ship dark; retuning the
+    # CADENCE is a plain Class-B interval edit and is independent of the runtime
+    # gate — a dark daemon just runs its (still gated-off) cycle on the new cadence.
+    IntervalDaemon("org.solutionsmith.its.estimate-poll", "po_materials.estimate_poll.poll_interval_seconds", "po_materials", 120),
+    IntervalDaemon("org.solutionsmith.its.rfq-poll", "po_materials.rfq_poll.poll_interval_seconds", "po_materials", 120),
+    IntervalDaemon("org.solutionsmith.its.rfq-send", "po_materials.rfq_send.poll_interval_seconds", "po_materials", 900),
 ]
 INTERVAL_DAEMONS: dict[str, IntervalDaemon] = {d.label: d for d in _DAEMONS}
 

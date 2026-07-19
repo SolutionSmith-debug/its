@@ -166,9 +166,9 @@ _ENTRIES: list[ConfigEntry] = [
         first_activation_gated=True,
         note="the progress-reports send poller (twin of weekly_send); pause anytime; turning ON is a dark->live activation → escalate",
     ),
-    # subcontracts generation poll — ships dark; SC-S4 send not yet built, but it feeds a
-    # generation→Box-filing pipeline with go-live preconditions, so it mirrors po_poll:
-    # pause = plain Class A, false->true activation escalates.
+    # subcontracts generation poll — ships dark; it feeds a generation→Box-filing pipeline
+    # with go-live preconditions, so it mirrors po_poll: pause = plain Class A, false->true
+    # activation escalates. (The SC-S4 SEND half shipped 2026-07-16 — its gate is below.)
     _e(
         "subcontracts.subcontract_poll.polling_enabled",
         "subcontracts",
@@ -193,6 +193,49 @@ _ENTRIES: list[ConfigEntry] = [
         first_activation_gated=True,
         note="pause anytime; turning ON escalates",
     ),
+    # subcontract SEND poller (SC-S4, built dark 2026-07-15). The subcontractor External
+    # Send Gate — same posture as po_send: pause is a fast Class-A brake, activation escalates.
+    _e(
+        "subcontracts.subcontract_send.polling_enabled",
+        "subcontracts",
+        _SEND_GATES,
+        v_bool,
+        first_activation_gated=True,
+        note="the subcontractor External Send Gate; pause anytime; turning ON is a FIXED high-class activation → escalate (D1-3)",
+    ),
+    # --- RFQ / vendor-estimate lane (ADR-0004), all shipped dark ------------------
+    # estimate_poll + rfq_poll are generation-half daemons that file to Box and write
+    # ITS-owned ledgers, exactly like po_poll: pause = plain Class A, activation escalates.
+    _e(
+        "po_materials.estimate_poll.polling_enabled",
+        "po_materials",
+        _SEND_GATES,
+        v_bool,
+        first_activation_gated=True,
+        note="vendor-estimate importer (ADR-0004 Lane 1) — ships dark; pause anytime; turning ON escalates (go-live preconditions in Description)",
+    ),
+    _e(
+        "po_materials.rfq_poll.polling_enabled",
+        "po_materials",
+        _SEND_GATES,
+        v_bool,
+        first_activation_gated=True,
+        note="outbound-RFQ generation (ADR-0004 Lane 2) — ships dark; pause anytime; turning ON escalates",
+    ),
+    # rfq_send is the RFQ External Send Gate. Posture is deliberately IDENTICAL to
+    # po_send / subcontract_send rather than elevated_confirm: `first_activation_gated`
+    # REFUSES the dangerous direction outright (false->true escalates to Seth as a FIXED
+    # high-capability-class decision), while leaving true->false a fast one-step brake.
+    # Putting the elevated ceremony on this row would slow the EMERGENCY STOP without
+    # making activation any harder than "already refused".
+    _e(
+        "po_materials.rfq_send.polling_enabled",
+        "po_materials",
+        _SEND_GATES,
+        v_bool,
+        first_activation_gated=True,
+        note="the vendor RFQ External Send Gate — currently dark; turning ON is a FIXED high-class decision (Seth) → escalate; pausing is immediate",
+    ),
     # --- tuning knobs / thresholds (int-bounded) ---
     _e("circuit_breaker.failure_threshold", "global", _KNOBS, v_int(1, 100)),
     _e("circuit_breaker.cooldown_seconds", "global", _KNOBS, v_int(1, 86_400)),
@@ -208,6 +251,13 @@ _ENTRIES: list[ConfigEntry] = [
     _e("progress_reports.equipment_status.row_cap_warn_threshold", "progress_reports", _KNOBS, v_int(1, 1_000_000)),
     _e("progress_reports.material_list.row_cap_warn_threshold", "progress_reports", _KNOBS, v_int(1, 1_000_000)),
     _e("progress_reports.material_incidents.row_cap_warn_threshold", "progress_reports", _KNOBS, v_int(1, 1_000_000)),
+    _e(
+        "po_materials.estimate_poll.max_pages_preview",
+        "po_materials",
+        _KNOBS,
+        v_int(1, 100),
+        note="how many estimate pages the importer renders as disposition previews (ADR-0004 E3)",
+    ),
     # --- behavior config ---
     _e("safety_reports.intake.confidence_threshold", "safety_reports", _BEHAVIOR, v_float01),
     _e("safety_reports.intake.classification_model", "safety_reports", _BEHAVIOR, v_enum(KNOWN_MODELS)),
@@ -232,6 +282,7 @@ _ENTRIES: list[ConfigEntry] = [
     _e("safety_reports.weekly_send.scheduled_send_local", "safety_reports", _WINDOWS, v_schedule),
     _e("po_materials.po_send.scheduled_send_local", "po_materials", _WINDOWS, v_schedule),
     _e("progress_reports.progress_send.scheduled_send_local", "progress_reports", _WINDOWS, v_schedule),
+    _e("po_materials.rfq_send.scheduled_send_local", "po_materials", _WINDOWS, v_schedule),
     # --- data / paths ---
     _e("safety_reports.box.portal_root_folder_id", "safety_reports", _DATA, v_id),
     _e("progress_reports.box.portal_root_folder_id", "progress_reports", _DATA, v_id),
@@ -317,6 +368,7 @@ _ENTRIES += [
     _b("safety_reports.weekly_send.from_mailbox", "safety_reports", _IDENTITY, v_email),
     _b("po_materials.po_send.from_mailbox", "po_materials", _IDENTITY, v_email),
     _b("progress_reports.progress_send.from_mailbox", "progress_reports", _IDENTITY, v_email),
+    _b("po_materials.rfq_send.from_mailbox", "po_materials", _IDENTITY, v_email),
     _b("safety_reports.intake.mailbox", "safety_reports", _IDENTITY, v_email),
     _b(
         "safety_reports.portal.worker_base_url",
@@ -419,5 +471,41 @@ CLASS_E_DISPLAY: list[DisplayEntry] = [
         "safety_reports",
         "F22 authorized approvers (legacy row)",
         "⚠ Legacy — the LIVE F22 approval authority is the §46 workspace-SHARE membership (list_workspace_share_emails), NOT this ITS_Config row. Shown for reference; editing it would not change who can approve a send.",
+    ),
+]
+
+# The ADR-0004 estimate-extraction ladder (E4-E6). These three gates are DARK and
+# UNVALIDATED: no model has been qualified against the production corpus yet, and
+# turning one on would let an unqualified extractor put numbers in front of an
+# operator as if they were read off the vendor's document. They are surfaced
+# read-only ON PURPOSE — the operator can SEE the state (and that it is off) from
+# the estimate_poll node rail, but the console offers no control that invites a
+# flip. Promoting one to an editable ConfigEntry is gated on
+# `scripts/eval_estimate_ladder.py` qualifying a model on the production M2; until
+# then the flip is a Developer-Operator action against ITS_Config directly.
+_LADDER_NOTE = (
+    "Class E — read-only. DARK + UNVALIDATED extraction tier (ADR-0004 E4-E6): no model is "
+    "qualified yet. Do NOT enable until scripts/eval_estimate_ladder.py qualifies a model on "
+    "the production corpus (M2); until then this is a Developer-Operator (Seth) action, not a "
+    "console flip. Human accept-with-preview remains the fidelity control either way."
+)
+CLASS_E_DISPLAY += [
+    DisplayEntry(
+        "po_materials.estimate_extract.tier1_enabled",
+        "po_materials",
+        "Estimate extraction — Tier 1 (deterministic templates)",
+        _LADDER_NOTE,
+    ),
+    DisplayEntry(
+        "po_materials.estimate_extract.tier2_enabled",
+        "po_materials",
+        "Estimate extraction — Tier 2 (local Ollama)",
+        _LADDER_NOTE,
+    ),
+    DisplayEntry(
+        "po_materials.estimate_extract.ocr_enabled",
+        "po_materials",
+        "Estimate extraction — OCR pass",
+        _LADDER_NOTE,
     ),
 ]

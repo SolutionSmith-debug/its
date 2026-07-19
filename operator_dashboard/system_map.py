@@ -283,6 +283,14 @@ NODES: tuple[MapNode, ...] = (
         error_scripts=("po_materials.estimate_poll",),
         launchd_label="org.solutionsmith.its.estimate-poll", heartbeat_stem="estimate_poll",
         config_gate="po_materials.estimate_poll.polling_enabled",
+        # The extraction ladder (E4-E6). Surfaced so the operator can SEE these are
+        # off; they are Class-E READ-ONLY on the config page (dark + unvalidated —
+        # no model qualified yet), deliberately not editable from the console.
+        extra_gates=(
+            "po_materials.estimate_extract.tier1_enabled",
+            "po_materials.estimate_extract.tier2_enabled",
+            "po_materials.estimate_extract.ocr_enabled",
+        ),
         watchdog_checks=("C",), script_path="po_materials/estimate_poll.py",
         runbook="docs/runbooks/estimate_import_path.md", send_half="generation", marker="estimate_poll",
     ),
@@ -314,6 +322,27 @@ NODES: tuple[MapNode, ...] = (
         blurb="The PO approval queue — human approval here releases a PO to its vendor.",
         sheet_id=1816168087113604, watchdog_checks=("U",),
         runbook="docs/runbooks/po_send.md",
+    ),
+    MapNode(
+        id="sheet_estimate_log", label="Estimate_Log", kind="sheet", lane="records", band="po",
+        blurb="The vendor-estimate ledger (ADR-0004 E2) — one row per uploaded quote/estimate "
+              "document, carrying its screening disposition and the Box link to the filed original.",
+        sheet_id=7639780559900548, runbook="docs/runbooks/estimate_import_path.md",
+    ),
+    MapNode(
+        id="sheet_rfq_log", label="RFQ_Log", kind="sheet", lane="records", band="po",
+        blurb="The outbound-RFQ ledger (ADR-0004 R2) — one row per (RFQ, vendor), mirroring each "
+              "price-free RFQ PDF filed to Box.",
+        sheet_id=5176650638512004, runbook="docs/runbooks/rfq_generation_path.md",
+    ),
+    MapNode(
+        id="sheet_rfq_pending_review", label="RFQ_Pending_Review", kind="sheet",
+        lane="records", band="po",
+        blurb="The RFQ approval queue — one row per (RFQ, vendor). A PO_Pending_Review schema twin "
+              "tagged po_materials_rfq, so the PO and subcontract send daemons can never dispatch "
+              "an RFQ row. Human approval here is what releases an RFQ to its vendor.",
+        sheet_id=3555996805844868, watchdog_checks=("U",),
+        runbook="docs/runbooks/rfq_send.md",
     ),
     MapNode(
         id="po_send", label="po send", kind="daemon", lane="send", band="po",
@@ -551,10 +580,13 @@ EDGES: tuple[MapEdge, ...] = (
     MapEdge("worker", "estimate_poll", "pull uploaded estimates — est:v1 HMAC + digest re-verify", "pull",
             port="HMAC"),
     MapEdge("estimate_poll", "box", "file CLEAN screened quote docs", "write"),
+    MapEdge("estimate_poll", "sheet_estimate_log", "ledger row per uploaded estimate", "write"),
     MapEdge("estimate_poll", "sheet_review_queue", "doc-type / §34 refusals + low-confidence disposition", "write"),
     MapEdge("worker", "rfq_poll", "pull composed RFQs — rfq:v1 HMAC re-verify", "pull",
             port="HMAC"),
-    MapEdge("rfq_poll", "box", "file PRICE-FREE RFQ PDFs (per vendor)", "write"),
+    MapEdge("rfq_poll", "box", "file PRICE-FREE RFQ PDFs + xlsx quote forms (per vendor)", "write"),
+    MapEdge("rfq_poll", "sheet_rfq_log", "ledger row per (rfq, vendor)", "write"),
+    MapEdge("rfq_poll", "sheet_rfq_pending_review", "stage review row (PENDING)", "write"),
     MapEdge("rfq_poll", "sheet_review_queue", "unknown-vendor fences + bad-HMAC refusals", "write"),
     MapEdge("po_poll", "sheet_po_log", "ledger row + per-job mirror", "write"),
     MapEdge("po_poll", "sheet_po_pending_review", "stage review row (PENDING)", "write"),
@@ -563,7 +595,10 @@ EDGES: tuple[MapEdge, ...] = (
     MapEdge("sheet_po_pending_review", "po_send", "APPROVED rows only — F22", "read",
             port="human approval"),
     MapEdge("po_send", "graph", "send_mail (from procurement@)", "send"),
+    MapEdge("sheet_rfq_pending_review", "rfq_send", "APPROVED rows only — F22 approver verify", "read",
+            port="human approval"),
     MapEdge("sheet_its_vendors", "rfq_send", "recipient by Vendor Key", "read"),
+    MapEdge("box", "rfq_send", "RFQ PDF + xlsx quote form attachments", "read"),
     MapEdge("rfq_send", "graph", "send_mail — RFQ PDF + xlsx form (from procurement@)", "send"),
     # subcontracts
     MapEdge("worker", "subcontract_poll", "pull drafts — sub:v1 HMAC", "pull", port="HMAC"),
