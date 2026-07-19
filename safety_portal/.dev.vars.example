@@ -19,6 +19,16 @@ PORTAL_INTERNAL_API_TOKEN="replace-with-output-of-openssl-rand-base64-48"
 # Keychain as ITS_PORTAL_PO_TOKEN. In a DEPLOYED Worker: `wrangler secret put …`.
 PORTAL_PO_API_TOKEN="replace-with-output-of-openssl-rand-base64-48"
 
+# Vendor-estimate importer (ADR-0004 E1/E2). The Mac-side estimate_poll daemon mirrors this
+# into the macOS Keychain as ITS_PORTAL_ESTIMATE_TOKEN. Its OWN tier — separate from the PO
+# and RFQ tokens (red-team #1). In a DEPLOYED Worker: `wrangler secret put …`.
+PORTAL_ESTIMATE_API_TOKEN="replace-with-output-of-openssl-rand-base64-48"
+
+# RFQ composer (ADR-0004 R1/R2/R3). The Mac-side rfq_poll / rfq_send_poll daemons mirror this
+# into the macOS Keychain as ITS_PORTAL_RFQ_TOKEN. Its OWN tier — separate from BOTH the PO
+# and estimate tokens (red-team #1). In a DEPLOYED Worker: `wrangler secret put …`.
+PORTAL_RFQ_API_TOKEN="replace-with-output-of-openssl-rand-base64-48"
+
 # Config-editor queue (§50). The Mac-side config daemon (built LATER) mirrors this into
 # the macOS Keychain as ITS_PORTAL_CONFIG_TOKEN. In a DEPLOYED Worker: `wrangler secret put …`.
 PORTAL_CONFIG_API_TOKEN="replace-with-output-of-openssl-rand-base64-48"

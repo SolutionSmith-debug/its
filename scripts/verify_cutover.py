@@ -179,11 +179,15 @@ PO_SECRETS: tuple[str, ...] = ("ITS_PORTAL_PO_TOKEN",)
 # subcontracts/subcontract_poll.py KC_SUB_TOKEN; ITS_PORTAL_ESTIMATE_TOKEN =
 # po_materials/estimate_poll.py (ADR-0004 red-team #1 — the estimate lane's OWN
 # bearer, scoping only /api/po/estimates/internal/*, held by the highest-exposure
-# process and deliberately separate from the future RFQ token).
+# process and deliberately separate from the RFQ token); ITS_PORTAL_RFQ_TOKEN =
+# po_materials/rfq_poll.py KC_RFQ_TOKEN (ADR-0004 decision 4 — the RFQ lane's OWN
+# bearer, scoping only /api/po/rfqs/internal/*; a compromised extraction daemon
+# must never reach the RFQ send-lane control surface).
 DARK_BEARER_SECRETS: tuple[str, ...] = (
     "ITS_PORTAL_CONFIG_TOKEN",
     "ITS_PORTAL_SUB_TOKEN",
     "ITS_PORTAL_ESTIMATE_TOKEN",
+    "ITS_PORTAL_RFQ_TOKEN",
 )
 # Operator-dashboard PIN (operator_dashboard/auth.py PIN_KEYCHAIN_KEY). The dashboard
 # ships dark + manual-start (no launchd plist), but the PIN is REQUIRED at cutover so the
@@ -322,6 +326,11 @@ CONFIG_ROWS: tuple[ConfigRow, ...] = (
     ConfigRow("po_materials.estimate_extract.tier1_enabled", "po_materials", "non_empty"),
     ConfigRow("po_materials.estimate_extract.tier2_enabled", "po_materials", "non_empty"),
     ConfigRow("po_materials.estimate_extract.ocr_enabled", "po_materials", "non_empty"),
+    # Outbound-RFQ generation daemon (ADR-0004 Lane 2, R2). Both rfq_poll rows are
+    # `non_empty` (never forced true — the gate ships dark; the row's PRESENCE is
+    # what VC-03 asserts, the dark-gate reflex).
+    ConfigRow("po_materials.rfq_poll.polling_enabled", "po_materials", "non_empty"),
+    ConfigRow("po_materials.rfq_poll.poll_interval_seconds", "po_materials", "non_empty"),
 )
 
 

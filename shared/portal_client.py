@@ -95,6 +95,9 @@ EST_CLAIM_PATH = "/api/po/estimates/internal/{id}/claim"
 EST_CHUNKS_PATH = "/api/po/estimates/internal/{id}/chunks"
 EST_RESULT_PATH = "/api/po/estimates/internal/result"
 EST_PREVIEW_PATH = "/api/po/estimates/internal/{id}/preview"
+RFQ_PENDING_PATH = "/api/po/rfqs/internal/pending"
+RFQ_MARK_FILED_PATH = "/api/po/rfqs/internal/mark-filed"
+RFQ_STATUS_SYNC_PATH = "/api/po/rfqs/internal/status-sync"
 SUB_PENDING_PATH = "/api/subcontracts/internal/pending"
 SUB_MARK_FILED_PATH = "/api/subcontracts/internal/mark-filed"
 SUB_STATUS_SYNC_PATH = "/api/subcontracts/internal/status-sync"
@@ -1534,3 +1537,94 @@ def admin_request(
         return response.status_code, data if isinstance(data, dict) else {}
     # Unreachable: every loop branch returns or raises on the last attempt.
     raise PortalTransportError(f"{method} {path} exhausted retries: {last_detail}")
+
+
+# ---- RFQ internal tier (ADR-0004 R2 — the rfq_poll daemon's I/O) --------------------
+#
+# Faithful mirror of the PO internal-tier client (get_pending_pos / mark_po_filed /
+# po_status_sync) — same typed-error contract, same control-plane read/write
+# semantics — against the RFQ routes. All three calls ride the SEPARATE RFQ bearer
+# tier (`requireRfqToken`, Worker PORTAL_RFQ_API_TOKEN / Mac Keychain
+# ITS_PORTAL_RFQ_TOKEN — resolved by the caller, `po_materials.rfq_poll`; this module
+# stays stateless). Red-team finding 1 (ADR-0004 decision 4): the RFQ lane's bearer is
+# DELIBERATELY separate from the estimate lane's (the highest-exposure hostile-PDF
+# decoder must not reach the RFQ send-lane control surface) and from the PO tier —
+# it scopes ONLY /api/po/rfqs/internal/*. Every call is a control-plane read/write of
+# OUR OWN Worker, NOT a customer-facing send — outside the External Send Gate
+# (Invariant 1); the actual vendor send is PR-D's rfq_send half.
+
+
+def get_rfqs_pending(base_url: str, token: str, *, limit: int = 25) -> list[dict[str, Any]]:
+    """Pull queued RFQs: GET /api/po/rfqs/internal/pending.
+
+    Each row is one `rfqs` D1 row (migration 0056) at status queued, oldest-first —
+    the full row (`id, rfq_uuid, rfq_number, job_no, job_name, ship_to_*,
+    delivery_contact_*, scope_text, due_date, status, hmac, …`) plus the Worker-
+    joined `line_items` (the PRICE-FREE position-ordered grid, `line_note` per
+    line) and `vendors` (the per-vendor `rfq_vendors` rows — `{vendor_key, status,
+    box_pdf_file_id, box_form_file_id, review_row_id, …}`; the fan-out list the
+    caller derives `vendor_keys` from). Rows are UNTRUSTED until the caller
+    rebuilds the rfq:v1 canonical (`shared.portal_hmac.rfq_canonical_json` — sorted
+    vendor_keys) and constant-time-verifies the HMAC (`verify_rfq`) — the
+    verify-before-anything contract. A generated (all-filed) row never returns.
+
+    Raises `PortalAuthError` (401) / `PortalRateLimitError` (429/503 exhausted) /
+    `PortalTransportError` (any other failure, incl. a non-object / missing-array body).
+    """
+    data = _request("GET", base_url, RFQ_PENDING_PATH, token, params={"limit": limit})
+    pending = data.get("pending")
+    if not isinstance(pending, list):
+        raise PortalTransportError(
+            f"GET {RFQ_PENDING_PATH} missing/invalid 'pending' array "
+            f"(got {type(pending).__name__})"
+        )
+    # Defensive: keep only dict rows; a non-dict element is malformed transport.
+    return [row for row in pending if isinstance(row, dict)]
+
+
+def post_rfq_mark_filed(
+    base_url: str, token: str, *, rfq_id: int, vendor_results: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """Post the filing receipt ONCE per RFQ: POST /api/po/rfqs/internal/mark-filed.
+
+    Called ONLY after pass ① has HMAC-verified the row and, per vendor, rendered the
+    price-free RFQ PDF, filed it to Box, appended the RFQ_Log row, and added the
+    RFQ_Pending_Review row. `vendor_results` is the collected per-vendor outcome
+    list — `{vendor_key, box_pdf_file_id, review_row_id[, box_form_file_id]}`
+    (string ids; the form file is R3's xlsx quote form, absent in R2). The Worker
+    applies it as ONE batch (W4): each vendor row flips pending→filed in-WHERE, then
+    the rfq flips queued→generated ONLY when no pending vendor row remains — so a
+    partial fan-out (some vendors fenced) leaves the rfq queued and a re-served pass
+    finishes idempotently; a replayed vendor result no-ops in-WHERE.
+
+    Returns the Worker's `{ok, filed, replayed, all_filed}` dict; raises the typed
+    `PortalTransportError` hierarchy on failure.
+    """
+    return _request(
+        "POST", base_url, RFQ_MARK_FILED_PATH, token,
+        json_body={"rfq_id": rfq_id, "vendor_results": vendor_results},
+    )
+
+
+def post_rfq_status_sync(
+    base_url: str, token: str, *, rfq_id: int, vendor_key: str, status: str,
+    responded_estimate_id: int | None = None,
+) -> dict[str, Any]:
+    """Report ONE (rfq, vendor) send outcome: POST /api/po/rfqs/internal/status-sync.
+
+    Body is a SINGLE update `{rfq_id, vendor_key, status}` (NOT a batch — the Worker
+    contract) with status ∈ {sent, responded}; `responded_estimate_id` rides only
+    with `responded` (the R4 round-trip close). FORWARD-ONLY, in-WHERE guarded:
+    `sent` only from `filed`, `responded` only from `sent` — a replay or regression
+    no-ops (`found=False`, benign). The Worker derives the rfq's own sent/
+    partially_sent status in the same batch. D1 status is a display CACHE of the
+    Mac/Smartsheet-side authoritative state; F22 approval verification stays with
+    the PR-D send poller — this call reports, it does not authorize.
+
+    Returns the Worker's `{ok, found, rfq_status}` dict; raises the typed hierarchy
+    on failure.
+    """
+    body: dict[str, Any] = {"rfq_id": rfq_id, "vendor_key": vendor_key, "status": status}
+    if responded_estimate_id is not None:
+        body["responded_estimate_id"] = responded_estimate_id
+    return _request("POST", base_url, RFQ_STATUS_SYNC_PATH, token, json_body=body)

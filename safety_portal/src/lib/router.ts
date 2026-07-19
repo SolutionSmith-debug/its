@@ -48,6 +48,7 @@ export type AppRoute =
   | { view: "po-vendors" }
   | { view: "po-config" }
   | { view: "po-estimates" }
+  | { view: "po-rfqs" }
   | { view: "subcontractors" }
   | { view: "subcontract-builder" }
   | { view: "fieldops-jobs"; jobId?: string }
@@ -77,6 +78,7 @@ export const VIEW_CAPS: Record<AppRoute["view"], string | null> = {
   "po-vendors": "cap.po.manage",
   "po-config": "cap.po.manage",
   "po-estimates": "cap.po.manage",
+  "po-rfqs": "cap.po.manage",
   subcontractors: "cap.subcontracts.manage",
   "subcontract-builder": "cap.subcontracts.manage",
   "fieldops-jobs": "cap.jobtracker.read",
@@ -98,6 +100,7 @@ const SIMPLE_PATHS: [Extract<AppRoute, { view: string }>["view"], string][] = [
   ["po-vendors", "/vendors"],
   ["po-config", "/po-config"],
   ["po-estimates", "/estimates"],
+  ["po-rfqs", "/rfqs"],
   ["subcontract-builder", "/subcontracts"],
   ["subcontractors", "/subcontractors"],
   ["fieldops-inspections", "/checklists"],

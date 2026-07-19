@@ -9,6 +9,7 @@ How ITS scheduled scripts get scheduled on macOS. Per **Operational Standards v8
 | `template.plist` | Generic starter — copy, rename, fill in placeholders |
 | `org.solutionsmith.its.watchdog.plist` | Concrete plist for `scripts/watchdog.py`, daily 7:00 AM |
 | `org.solutionsmith.its.estimate-poll.plist` | Vendor-estimate pull daemon (`po_materials/estimate_poll.py`), `StartInterval` 120s (via `__POLL_INTERVAL_SECONDS__` / `po_materials.estimate_poll.poll_interval_seconds`); ships dark — load + gate-flip together |
+| `org.solutionsmith.its.rfq-poll.plist` | Outbound-RFQ generation daemon (`po_materials/rfq_poll.py`), `StartInterval` 120s (via `__POLL_INTERVAL_SECONDS__` / `po_materials.rfq_poll.poll_interval_seconds`); ships dark — load + gate-flip together |
 | `install.sh` | Load / unload / status / dry-run helper |
 | `README.md` | This file |
 

@@ -52,6 +52,11 @@ const PoConfigPage = lazy(() =>
 const EstimatesPage = lazy(() =>
   import("./pages/EstimatesPage").then((m) => ({ default: m.EstimatesPage })),
 );
+// RFQ composer (ADR-0004 R1): the multi-vendor price-free RFQ builder + tracker — an
+// office-desk surface, code-split with its PO siblings.
+const RfqBuilderPage = lazy(() =>
+  import("./pages/RfqBuilderPage").then((m) => ({ default: m.RfqBuilderPage })),
+);
 const SubcontractorsPage = lazy(() =>
   import("./pages/SubcontractorsPage").then((m) => ({ default: m.SubcontractorsPage })),
 );
@@ -359,6 +364,8 @@ export function App() {
     page = <PoConfigPage onBack={home} />;
   } else if (route.view === "po-estimates" && allowed) {
     page = <EstimatesPage onBack={home} />;
+  } else if (route.view === "po-rfqs" && allowed) {
+    page = <RfqBuilderPage onBack={home} />;
   } else if (route.view === "subcontractors" && allowed) {
     page = <SubcontractorsPage onBack={home} />;
   } else if (route.view === "subcontract-builder" && allowed) {
@@ -377,7 +384,7 @@ export function App() {
   return (
     <>
       {user.role === "admin" && <AdminSessionGuard editing={editing} />}
-      {/* Only the eight lazy admin views ever suspend; eager field views render straight through. */}
+      {/* Only the lazy admin views ever suspend; eager field views render straight through. */}
       <ChunkBoundary>
         <Suspense fallback={<div className="centered muted">Loading…</div>}>{page}</Suspense>
       </ChunkBoundary>

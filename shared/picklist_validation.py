@@ -422,6 +422,34 @@ if sheet_ids.SHEET_ESTIMATE_LOG:
         "Workstream": _PO_WORKSTREAM_VALUES,
     }
 
+# RFQ sheets (outbound-RFQ lane, ADR-0004 R2 / decision 12) — the same
+# builder-precedes-seed placeholder-0 guard (SHEET_RFQ_LOG /
+# SHEET_RFQ_PENDING_REVIEW land 0 until their builders run). RFQ_Log Status is the
+# lowercase D1 rfqs vocabulary at the (rfq, vendor) grain; its Workstream keeps the
+# parent 'po_materials' tag (a ledger, mirroring Estimate_Log). RFQ_Pending_Review
+# reuses the WSR SENDING-inclusive Send Status set (shared send engine, PR-D) and
+# gates the P1b Workstream tag to the DISTINCT send-lane value {'po_materials_rfq'}
+# — deliberately NOT 'po_materials': po_send's Stage-2b contamination guard passes
+# a matching tag, so an RFQ row tagged 'po_materials' that ever reached po_send's
+# dispatch path would sail through; the distinct value makes cross-lane dispatch
+# structurally impossible (po_materials/rfq_review.py module docstring; PR-D's
+# rfq_send MUST bind workstream_tag='po_materials_rfq').
+_RFQ_LOG_STATUS_VALUES: frozenset[str] = frozenset({
+    "queued", "filed", "sent", "responded", "closed", "canceled",
+})
+_RFQ_SEND_STATUS_VALUES: frozenset[str] = _WSR_SEND_STATUS_VALUES
+_RFQ_WORKSTREAM_VALUES: frozenset[str] = frozenset({"po_materials_rfq"})
+if sheet_ids.SHEET_RFQ_LOG:
+    REGISTRY[sheet_ids.SHEET_RFQ_LOG] = {
+        "Status": _RFQ_LOG_STATUS_VALUES,
+        "Workstream": _PO_WORKSTREAM_VALUES,
+    }
+if sheet_ids.SHEET_RFQ_PENDING_REVIEW:
+    REGISTRY[sheet_ids.SHEET_RFQ_PENDING_REVIEW] = {
+        "Send Status": _RFQ_SEND_STATUS_VALUES,
+        "Workstream": _RFQ_WORKSTREAM_VALUES,
+    }
+
 REGISTRY.update(_build_per_project_entries())
 
 # Re-export StrEnum members so callers can introspect the registry's source

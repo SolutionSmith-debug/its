@@ -63,6 +63,9 @@ STATE_WRITE_ALLOWLIST: dict[str, str] = {
     "po_materials/estimate_poll.py":
         "writes the ~/its/.watchdog/estimate_poll.last_run liveness marker (NOT ~/its/state/) — "
         "its ~/its/state/ writes (estimate_poll_flagged.json + heartbeat files) all ride state_io",
+    "po_materials/rfq_poll.py":
+        "writes the ~/its/.watchdog/rfq_poll.last_run liveness marker (NOT ~/its/state/) — "
+        "its ~/its/state/ writes (rfq_poll_flagged.json + heartbeat files) all ride state_io",
 }
 
 

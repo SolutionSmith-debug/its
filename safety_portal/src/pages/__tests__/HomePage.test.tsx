@@ -55,6 +55,8 @@ const CARDS: { title: string; cap: string; nav: string; section: string }[] = [
   { title: "Equipment", cap: "cap.equipment.field", nav: "fieldops-equipment", section: "Field operations" },
   { title: "Personnel", cap: "cap.personnel.read", nav: "fieldops-personnel", section: "Field operations" },
   { title: "Purchase Orders", cap: "cap.po.manage", nav: "po-builder", section: "Office operations" },
+  { title: "Vendor Estimates", cap: "cap.po.manage", nav: "po-estimates", section: "Office operations" },
+  { title: "RFQs", cap: "cap.po.manage", nav: "po-rfqs", section: "Office operations" },
   { title: "Subcontracts", cap: "cap.subcontracts.manage", nav: "subcontract-builder", section: "Office operations" },
   { title: "Checklists", cap: "cap.checklist.manage", nav: "fieldops-inspections", section: "Office operations" },
   { title: "Materials Catalog", cap: "cap.materials.manage", nav: "materials-catalog", section: "Office operations" },
@@ -89,7 +91,7 @@ describe("HomePage — R7 sections", () => {
     }
   });
 
-  it("Office operations holds the seven management cards in the operator's order; Administration keeps three", () => {
+  it("Office operations holds the nine management cards in the operator's order; Administration keeps three", () => {
     vi.mocked(useAuth).mockReturnValue(authWith(ALL_CAPS));
     const { container } = render(<HomePage onNavigate={() => {}} />);
     const titlesIn = (heading: string) =>
@@ -100,6 +102,7 @@ describe("HomePage — R7 sections", () => {
     expect(titlesIn("Office operations")).toEqual([
       "Purchase Orders",
       "Vendor Estimates",
+      "RFQs",
       "Subcontracts",
       "Checklists",
       "Materials Catalog",
