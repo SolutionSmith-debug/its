@@ -110,12 +110,14 @@ def test_untrusted_smartsheet_values_render_inert(
 
 
 def test_mutation_routes_are_the_expected_act_set() -> None:
-    # The app has EXACTLY nine mutating routes: Class-A edit, the elevated Class-B
-    # edit, Class-C secret rotation, the Class-B interval edit (plist re-install),
-    # Class-B daemon control (launchctl), Class-B circuit-breaker clear, the two
-    # Class-B error-log verbs (mark-resolved + clear), and the Class-C
-    # change-operator-PIN. Any other non-GET route is a regression. (The
-    # send-queue/audit panels are GET-only reads, so they do not appear here.)
+    # The app has EXACTLY eleven mutating routes: Class-A edit, the elevated
+    # Class-B edit, Class-C secret rotation, the Class-B interval edit (plist
+    # re-install), Class-B daemon control (launchctl), the Class-B dashboard
+    # self-restart (DASH-12), Class-B circuit-breaker clear, the two Class-B
+    # error-log verbs (mark-resolved + clear), the Class-B review-queue resolve
+    # (DASH-13), and the Class-C change-operator-PIN. Any other non-GET route is
+    # a regression. (The send-queue/audit panels and the system map are GET-only
+    # reads, so they do not appear here.)
     app = create_app()
     mutating: list[tuple[str, list[str]]] = []
     for route in app.routes:
@@ -130,9 +132,11 @@ def test_mutation_routes_are_the_expected_act_set() -> None:
         ("/act/config/elevated", ["POST"]),
         ("/act/daemon/control", ["POST"]),
         ("/act/daemon/interval", ["POST"]),
+        ("/act/dashboard/restart", ["POST"]),
         ("/act/errors/clear", ["POST"]),
         ("/act/errors/resolve", ["POST"]),
         ("/act/pin/change", ["POST"]),
+        ("/act/review/resolve", ["POST"]),
         ("/act/secret/rotate", ["POST"]),
         ("/act/state/breaker-clear", ["POST"]),
     ], f"unexpected mutating routes: {mutating}"

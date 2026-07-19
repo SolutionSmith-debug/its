@@ -30,12 +30,17 @@
     <span class="ts-badge ts-escalate">Escalate to Seth</span> Send Gate / secrets / doctrine / code — or novel. When unsure, escalate.
   </p>
 
-  {% if q %}
-    {# Filtered view: matches shown expanded so you can see what matched. #}
-    {% if not view %}<p class="config-note">No symptoms match “{{ q }}”.</p>{% endif %}
+  {% if q or deep %}
+    {# Filtered / deep-linked view: matches shown expanded so you can see what
+       matched. Deep links (?wf=…&step=…&fm=…) come from the system map and
+       other pages. #}
+    {% if deep %}<p class="ts-legend"><a class="ts-clear" href="/troubleshoot">← all workflows</a></p>{% endif %}
+    {% if not view %}<p class="config-note">{% if deep %}Nothing matches that link — <a class="ts-clear" href="/troubleshoot">show all workflows</a>.{% else %}No symptoms match “{{ q }}”.{% endif %}</p>{% endif %}
     {% for entry in view %}
     <section class="ts-workflow-open">
-      <h3>{{ entry.workflow.title }}</h3>
+      <h3>{{ entry.workflow.title }}
+        <a class="ts-map-link" href="/system?wf={{ entry.workflow.id }}" title="highlight this workflow's daemons on the system map">map ↗</a>
+      </h3>
       <p class="summary">{{ entry.workflow.summary }}</p>
       {% for s in entry.steps %}
       <div class="ts-step-open">
@@ -57,6 +62,7 @@
           <span class="ts-card-title">{{ entry.workflow.title }}</span>
           <span class="ts-chevron">▸</span>
         </button>
+        <a class="ts-map-link" href="/system?wf={{ entry.workflow.id }}" title="highlight this workflow's daemons on the system map">map ↗</a>
         <p class="ts-card-summary">{{ entry.workflow.summary }}</p>
         <div id="wf-{{ entry.workflow.id }}" class="ts-slot"></div>
       </article>

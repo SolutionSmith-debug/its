@@ -76,15 +76,20 @@ class DaemonStatusSource(DataSource):
                 else:
                     state, sev = "idle", SEV_OK
             worst = worst_sev(worst, sev)
-            rows.append(
-                {
-                    "daemon": clean(short),
-                    "pid": clean(pid),
-                    "last exit": clean(status),
-                    "state": clean(state),
-                    "_sev": sev,
-                }
-            )
+            row = {
+                "daemon": clean(short),
+                "pid": clean(pid),
+                "last exit": clean(status),
+                "state": clean(state),
+                "_sev": sev,
+            }
+            # Deep link into the system map when this label has a node there.
+            from operator_dashboard.system_map import NODE_BY_LAUNCHD_LABEL
+
+            node_id = NODE_BY_LAUNCHD_LABEL.get(label)
+            if node_id:
+                row["_link_daemon"] = f"/system?focus={node_id}"
+            rows.append(row)
         return PanelResult(
             panel_id=self.panel_id,
             title=self.title,

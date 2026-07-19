@@ -71,6 +71,23 @@ here changes anything.
 Everything shown is treated as untrusted and is redacted and escaped before it reaches the screen, so a
 malicious-looking value in a cell or log line renders as harmless text.
 
+Above the panels, a one-glance **pulse strip** summarizes the six load-bearing surfaces — workers
+loaded, watchdog freshness, the breaker, open CRITICALs, review-queue depth, and pending sends —
+each chip linking to its full view.
+
+## The system map — `/system`
+
+The **System map** page draws the whole machine as one clickable schematic. Reading left to right is
+the trust gradient: field input, the send-free cloud queue, the wall where every submission's
+signature is re-verified, the Mac's generation workers, the record sheets where a **human approves**
+each outgoing packet, the **External Send Gate** (drawn as a literal gold wall — nothing crosses it
+without that approval), the send workers, and finally the outside world. Each node shows its live
+state: a red count means open CRITICALs, `DARK` means that capability's switch is off, and the dot
+shows whether its worker is running. Click any node for a plain-language explanation, its current
+state, and direct links to its runbook and its troubleshooting entries. Error rows and worker names
+elsewhere in the dashboard link straight to their node on the map — so "what is this thing and where
+does it sit?" is always one click.
+
 ## The ACT surface — making a change (PIN-gated)
 
 Below the read-only panels is the **config editor** — the only part of the dashboard that changes
@@ -104,10 +121,15 @@ same elevated-confirm ceremony (re-PIN + typed confirmation):
 
 - **Restart / start / stop a worker** — kickstart a wedged daemon, or start/stop one (e.g. after a fix).
   Only the known ITS daemons are allowlisted, so it can never touch a non-ITS process.
+- **Restart the dashboard itself** — the one sanctioned self-restart, so the console picks up newly
+  landed code without a trip to the terminal. Restart only — it never pulls or deploys anything.
 - **Change a worker's poll interval** — set how often an interval worker runs; the dashboard updates that
   worker's `ITS_Config` interval row **and reloads the worker** so the new cadence takes effect now.
 - **Clear the circuit breaker** — reset the Smartsheet safety breaker to CLOSED (skip the cooldown) once
   the underlying issue is resolved.
+- **Resolve review-queue backlog** — move a stale, understood class of PENDING review rows to a
+  terminal status (with a stamped note; nothing deleted), once its cause is fixed or moot. A filter
+  is required and a **preview** shows the count before anything is written.
 
 ### Class C — secret rotation (write-only)
 

@@ -14,7 +14,9 @@
       <tbody>
         {% for row in p.rows %}
         <tr class="sev-{{ row.get('_sev', 'info') }}">
-          {% for c in p.columns %}<td>{{ row.get(c, '') }}</td>{% endfor %}
+          {# A row may carry per-column deep links as '_link_<column>' keys
+             (e.g. a Script cell → its system-map node). #}
+          {% for c in p.columns %}{% set lk = row.get('_link_' ~ c) %}<td>{% if lk %}<a class="cell-link" href="{{ lk }}">{{ row.get(c, '') }}</a>{% else %}{{ row.get(c, '') }}{% endif %}</td>{% endfor %}
         </tr>
         {% endfor %}
       </tbody>

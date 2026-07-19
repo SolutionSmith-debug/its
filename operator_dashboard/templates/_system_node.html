@@ -1,0 +1,69 @@
+{# The detail rail for one map node (htmx-swapped into #sm-rail). #}
+{% if node is none %}
+<div class="sm-rail-hint"><p class="config-error">unknown node — {{ node_id }}</p></div>
+{% else %}
+<div class="sm-rail-body" data-rail-node="{{ node.id }}">
+  <header class="sm-rail-head">
+    <span class="sm-node-kind">{{ node.kind }}</span>
+    <h3>{{ node.label }}</h3>
+    {% if node.send_half %}<span class="sm-half sm-half-{{ node.send_half }}">{{ 'generation half — no send capability' if node.send_half == 'generation' else 'send half — no AI' }}</span>{% endif %}
+  </header>
+  <p class="sm-blurb">{{ node.blurb }}</p>
+
+  <dl class="sm-facts">
+    {% if launchd_state %}<dt>launchd</dt><dd class="{% if launchd_state.startswith('exited') or launchd_state == 'NOT LOADED' %}sm-fact-bad{% endif %}">{{ launchd_state }}{% if node.launchd_label %} <code>{{ node.launchd_label }}</code>{% endif %}</dd>{% endif %}
+    {% if heartbeat_age %}<dt>heartbeat</dt><dd>{{ heartbeat_age }} ago</dd>{% endif %}
+    {% if node.config_gate %}<dt>runtime gate</dt><dd>
+      {% if gate_state == 'dark' %}<b class="sm-fact-dark">OFF</b>{% elif gate_state == 'on' %}<span class="sm-fact-on">on</span>{% else %}?{% endif %}
+      <a class="sm-link" href="/config?f={{ node.config_gate }}"><code>{{ node.config_gate }}</code></a>
+    </dd>{% endif %}
+    {% for g in node.extra_gates %}<dt>pass gate</dt><dd><a class="sm-link" href="/config?f={{ g }}"><code>{{ g }}</code></a></dd>{% endfor %}
+    {% if node.watchdog_checks %}<dt>watched by</dt><dd>watchdog {{ node.watchdog_checks|join(' · ') }}</dd>{% endif %}
+    {% if node.script_path %}<dt>code</dt><dd><code>{{ node.script_path }}</code></dd>{% endif %}
+    {% if node.sheet_id %}<dt>sheet id</dt><dd><code>{{ node.sheet_id }}</code></dd>{% endif %}
+  </dl>
+
+  {% if criticals %}
+  <div class="sm-rail-crit">
+    <h4>{{ criticals }} open CRITICAL{{ 's' if criticals != 1 else '' }}</h4>
+    <ul>
+      {% for script, count in per_script.items() %}
+      <li><a class="sm-link" href="/view/errors_recent?col=Script&eq={{ script }}"><code>{{ script }}</code></a> × {{ count }}</li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+
+  {% if edges %}
+  <div class="sm-rail-edges">
+    <h4>Flows</h4>
+    <ul>
+      {% for e in edges %}
+      <li>
+        {% if e.src == node.id %}
+        <span class="sm-edge-dir">→</span>
+        <a class="sm-link" href="/system?focus={{ e.dst }}">{{ nodes_by_id[e.dst].label }}</a>
+        {% else %}
+        <span class="sm-edge-dir">←</span>
+        <a class="sm-link" href="/system?focus={{ e.src }}">{{ nodes_by_id[e.src].label }}</a>
+        {% endif %}
+        <span class="sm-edge-label">{{ e.label }}</span>
+      </li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+
+  <div class="sm-rail-links">
+    {% if node.runbook %}
+    <a class="sm-link" href="/doc/{{ node.runbook.replace('docs/', '', 1) }}">runbook — {{ node.runbook.split('/')[-1] }}</a>
+    {% endif %}
+    {% for j in ts_joins %}
+    <a class="sm-link" href="/troubleshoot?wf={{ j.wf }}&step={{ j.step }}">troubleshoot — {{ j.wf_title }} → {{ j.step_title }}</a>
+    {% endfor %}
+    {% if node.error_scripts %}
+    <a class="sm-link" href="/view/errors_recent?col=Script&eq={{ node.error_scripts[0] }}">recent errors for this node</a>
+    {% endif %}
+  </div>
+</div>
+{% endif %}

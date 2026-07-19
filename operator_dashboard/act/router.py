@@ -21,8 +21,10 @@ from fastapi.templating import Jinja2Templates
 from operator_dashboard.act import (
     config_write,
     daemon_ops,
+    dashboard_ops,
     errors_ops,
     pin_change,
+    review_ops,
     secret_rotate,
     state_ops,
 )
@@ -295,6 +297,67 @@ def register_act_routes(app: FastAPI, templates: Jinja2Templates) -> None:
             dry_run=(mode.strip() == "preview"),
         )
         return _outcome(templates, request, result.kind, result.message, "ITS_Errors", "")
+
+    @app.post("/act/dashboard/restart")
+    def act_dashboard_restart(
+        request: Request,
+        pin: str = Form(...),
+        confirm: str = Form(""),
+    ) -> Response:
+        # Class-B: detached self-restart of the dashboard's OWN daemon (DASH-12) —
+        # the operator-pre-authorized exception to the self-exclusion invariant.
+        # Restart-only; never a pull or deploy. Fixed confirmation phrase
+        # "restart-dashboard"; the audit row is written BEFORE the spawn because
+        # this process dies moments later.
+        operator = getpass.getuser()
+        try:
+            check_origin(request.headers.get("origin"), request.headers.get("referer"))
+        except OriginError as exc:
+            audit_denied(operator, dashboard_ops.DASHBOARD_LABEL, "", "origin")
+            return _outcome(templates, request, "refused", f"refused: {exc}", dashboard_ops.DASHBOARD_LABEL, "")
+        try:
+            verify_elevated(pin, confirm, expected="restart-dashboard")
+        except PinError as exc:
+            audit_denied(operator, dashboard_ops.DASHBOARD_LABEL, "", "elevated")
+            return _outcome(templates, request, config_write.REJECTED, f"denied: {exc}", dashboard_ops.DASHBOARD_LABEL, "")
+        result = dashboard_ops.restart_dashboard(operator)
+        return _outcome(templates, request, result.kind, result.message, dashboard_ops.DASHBOARD_LABEL, "")
+
+    @app.post("/act/review/resolve")
+    def act_review_resolve(
+        request: Request,
+        pin: str = Form(...),
+        confirm: str = Form(""),
+        workstream: str = Form(""),
+        summary_prefix: str = Form(""),
+        resolution: str = Form("REJECTED"),
+        note: str = Form(""),
+        mode: str = Form("commit"),
+    ) -> Response:
+        # Class-B: move PENDING ITS_Review_Queue rows matching a Workstream and/or
+        # Summary-prefix filter to a terminal Status (DASH-13). Filter-required +
+        # PENDING-only guards live in review_ops; mode="preview" is a dry run.
+        # Fixed confirmation phrase "resolve-review".
+        operator = getpass.getuser()
+        try:
+            check_origin(request.headers.get("origin"), request.headers.get("referer"))
+        except OriginError as exc:
+            audit_denied(operator, "ITS_Review_Queue", "", "origin")
+            return _outcome(templates, request, "refused", f"refused: {exc}", "ITS_Review_Queue", "")
+        try:
+            verify_elevated(pin, confirm, expected="resolve-review")
+        except PinError as exc:
+            audit_denied(operator, "ITS_Review_Queue", "", "elevated")
+            return _outcome(templates, request, config_write.REJECTED, f"denied: {exc}", "ITS_Review_Queue", "")
+        result = review_ops.resolve_review_rows(
+            operator,
+            workstream=workstream.strip() or None,
+            summary_prefix=summary_prefix.strip() or None,
+            resolution=resolution.strip().upper() or "REJECTED",
+            note=note,
+            dry_run=(mode.strip() == "preview"),
+        )
+        return _outcome(templates, request, result.kind, result.message, "ITS_Review_Queue", "")
 
     @app.post("/act/pin/change")
     def act_pin_change(

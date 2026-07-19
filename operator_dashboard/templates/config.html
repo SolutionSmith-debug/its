@@ -6,7 +6,23 @@
 </nav>
 {% endblock %}
 {% block content %}
-<div class="config-editor">
+<div class="config-layout">
+  <nav class="config-rail" aria-label="Config sections">
+    {% for group in groups %}
+    <a href="#grp-{{ loop.index }}">{{ group }}</a>
+    {% endfor %}
+    <a href="#grp-intervals">Interval daemons</a>
+    <a href="#grp-control">Daemon control</a>
+    <a href="#grp-restart" class="rail-danger">Restart dashboard</a>
+    <a href="#grp-breaker">Circuit breaker</a>
+    <a href="#grp-errors" class="rail-danger">Error log</a>
+    <a href="#grp-review">Review queue</a>
+    <a href="#grp-secrets" class="rail-danger">Secret rotation</a>
+    <a href="#grp-pin" class="rail-danger">Operator PIN</a>
+    <a href="#grp-buildtime">Build-time (§50)</a>
+    <a href="#grp-readonly">Read-only</a>
+  </nav>
+  <div class="config-editor">
   <div class="config-head">
     <h2>Config editor</h2>
   </div>
@@ -16,10 +32,15 @@
     identity, trust, endpoint, global brake) = re-enter the PIN <em>and</em> type the exact
     setting name. <b>Class-C</b> = write-only secret rotation. Class-D/E are read-only.
   </p>
+  <div class="config-filter">
+    <input type="search" id="config-filter-input" placeholder="Filter settings — key, purpose, note…"
+           aria-label="Filter settings" autocomplete="off" spellcheck="false">
+    <span class="config-filter-count" id="config-filter-count"></span>
+  </div>
   {% if error %}<div class="config-error">{{ error }}</div>{% endif %}
 
   {% for group, rows in groups.items() %}
-  <section class="config-group">
+  <section class="config-group" id="grp-{{ loop.index }}">
     <h3>{{ group }}</h3>
     <table class="config-table">
       <thead>
@@ -65,7 +86,7 @@
   </section>
   {% endfor %}
 
-  <section class="config-group">
+  <section class="config-group" id="grp-intervals">
     <h3>Interval daemons (Class B · elevated · plist re-install)</h3>
     <p class="config-note">
       A poll daemon's interval is <b>baked into its launchd plist</b> (not hot-reloaded), so
@@ -101,7 +122,7 @@
     </table>
   </section>
 
-  <section class="config-group">
+  <section class="config-group" id="grp-control">
     <h3>Daemon control (Class B · elevated · launchctl)</h3>
     <p class="config-note">
       start / stop / kickstart an ITS daemon (label-allowlisted; the dashboard itself is excluded).
@@ -135,7 +156,25 @@
     </table>
   </section>
 
-  <section class="config-group">
+
+  <section class="config-group" id="grp-restart">
+    <h3>Restart dashboard (Class B · elevated · self-restart)</h3>
+    <p class="config-note">
+      Restart the dashboard's <b>own</b> daemon so it picks up the code currently on
+      <code>~/its</code> — the one deliberate exception to "a service must not stop itself"
+      (operator-authorized, DASH-12). Restart <b>only</b>: this never pulls or deploys anything.
+      The page drops for a few seconds while launchd brings it back; reload afterwards and
+      check <code>/healthz</code>. Elevated: re-enter the PIN + type <code>restart-dashboard</code>.
+    </p>
+    <form hx-post="/act/dashboard/restart" hx-target="#dash-restart-out" hx-swap="innerHTML" class="cfg-form">
+      <input type="password" name="pin" placeholder="re-PIN" class="cfg-pin" autocomplete="off">
+      <input type="text" name="confirm" placeholder="type: restart-dashboard" class="cfg-confirm" autocomplete="off" spellcheck="false">
+      <button type="submit" class="cfg-btn elevated">restart dashboard</button>
+      <span class="cfg-out" id="dash-restart-out"></span>
+    </form>
+  </section>
+
+  <section class="config-group" id="grp-breaker">
     <h3>Circuit breaker (Class B · elevated)</h3>
     <p class="config-note">
       Reset a stuck-OPEN circuit breaker to CLOSED (skip the cooldown). Read the current state in the
@@ -150,7 +189,7 @@
     </form>
   </section>
 
-  <section class="config-group">
+  <section class="config-group" id="grp-errors">
     <h3>Error log (Class B · elevated)</h3>
     <p class="config-note">
       <b>Mark resolved → then clear.</b> Stamp <code>Resolved At</code> on <b>open CRITICALs</b>
@@ -193,7 +232,35 @@
     </form>
   </section>
 
-  <section class="config-group">
+
+  <section class="config-group" id="grp-review">
+    <h3>Review queue (Class B · elevated)</h3>
+    <p class="config-note">
+      Resolve <b>PENDING</b> <code>ITS_Review_Queue</code> rows matching a <em>Workstream</em>
+      and/or <em>Summary prefix</em> — for clearing a stale recurring class (e.g. a removed
+      sandbox job's compile-failure backlog) once its cause is fixed or moot. Rows move to
+      <b>REJECTED</b> (noise / stale) or <b>APPROVED</b> (handled out-of-band) with a stamped
+      date + note; nothing is deleted, and a <b>filter is required</b>. <b>Click
+      <em>preview</em> first</b> — it counts the matches without writing. Elevated: re-enter
+      the PIN + type <code>resolve-review</code>.
+    </p>
+    <form hx-post="/act/review/resolve" hx-target="#review-resolve-out" hx-swap="innerHTML" class="cfg-form">
+      <input type="text" name="workstream" placeholder="Workstream (exact, optional)" class="cfg-input" autocomplete="off" spellcheck="false">
+      <input type="text" name="summary_prefix" placeholder="Summary starts with… (optional)" class="cfg-input" autocomplete="off" spellcheck="false">
+      <select name="resolution" class="cfg-input">
+        <option value="REJECTED">REJECTED (noise / stale)</option>
+        <option value="APPROVED">APPROVED (handled out-of-band)</option>
+      </select>
+      <input type="text" name="note" placeholder="note (optional)" class="cfg-input" autocomplete="off">
+      <input type="password" name="pin" placeholder="re-PIN" class="cfg-pin" autocomplete="off">
+      <input type="text" name="confirm" placeholder="type: resolve-review" class="cfg-confirm" autocomplete="off" spellcheck="false">
+      <button type="submit" name="mode" value="preview" class="cfg-btn">preview</button>
+      <button type="submit" name="mode" value="commit" class="cfg-btn elevated">resolve rows</button>
+      <span class="cfg-out" id="review-resolve-out"></span>
+    </form>
+  </section>
+
+  <section class="config-group" id="grp-secrets">
     <h3>Secret rotation (Class C · write-only · elevated)</h3>
     <p class="config-note">
       Values are <b>write-only</b> — never displayed or read back. Rotating a Worker bearer also
@@ -235,7 +302,7 @@
     </table>
   </section>
 
-  <section class="config-group">
+  <section class="config-group" id="grp-pin">
     <h3>Change operator PIN (Class C · elevated)</h3>
     <div class="rotate-warn">
       <b>Change, not recovery.</b> Developer-Operator credential self-service (Op Stds §44 rider). This requires
@@ -254,7 +321,7 @@
     </form>
   </section>
 
-  <section class="config-group">
+  <section class="config-group" id="grp-buildtime">
     <h3>Build-time settings (Class D · hand-off)</h3>
     <p class="config-note">
       Settings that take effect only by re-bundling/deploying the Worker (the terms library; today
@@ -265,7 +332,7 @@
     </p>
   </section>
 
-  <section class="config-group">
+  <section class="config-group" id="grp-readonly">
     <h3>Read-only (Class E)</h3>
     <table class="config-table">
       <thead><tr><th>setting</th><th>value</th><th>note</th></tr></thead>
@@ -281,4 +348,6 @@
     </table>
   </section>
 </div>
+</div>
+<script src="/static/config-filter.js" defer></script>
 {% endblock %}

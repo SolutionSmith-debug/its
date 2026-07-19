@@ -31,6 +31,16 @@ MAX_ERROR_ROWS = 25
 MAX_ERROR_ROWS_DETAIL = 500  # drill-down (/view/errors_recent) shows far more
 
 
+def _map_link(script: str) -> str | None:
+    """A Script cell's system-map deep link, or None when the script has no node
+    (rendered as plain text; the map registry deliberately omits retired /
+    test-only identities)."""
+    from operator_dashboard.system_map import NODE_BY_ERROR_SCRIPT
+
+    node_id = NODE_BY_ERROR_SCRIPT.get(script.strip())
+    return f"/system?focus={node_id}" if node_id else None
+
+
 def _cached_error_rows() -> list[dict[str, Any]]:
     """Single TTL-cached fetch of the (large) ITS_Errors sheet, SHARED by the
     ErrorsRecent + ACT-audit panels — the sheet is at/near its row cap, so fetch
@@ -90,6 +100,8 @@ class ErrorsRecentSource(DataSource):
         keys = list(dict.fromkeys(k for r in rows_raw for k in r))
         columns = _pick_error_columns(keys)
         sev_col = next((k for k in keys if re.search(r"sever", k, re.IGNORECASE)), None)
+        script_col = next((k for k in keys if re.search(r"script|source", k, re.IGNORECASE)), None)
+        corr_col = next((k for k in keys if re.search(r"correlation", k, re.IGNORECASE)), None)
         rows: list[dict[str, str]] = []
         crit = 0
         for raw in reversed(rows_raw):  # newest first
@@ -103,6 +115,14 @@ class ErrorsRecentSource(DataSource):
             if sev_val == "CRITICAL":
                 crit += 1
             row: dict[str, str] = {c: clean(raw.get(c)) for c in columns}
+            # Compact panel: a full UUID correlation id wraps badly at panel
+            # width — show the first 8 chars (the drill-down keeps the whole id).
+            if not detail and corr_col and len(row.get(corr_col, "")) > 12:
+                row[corr_col] = row[corr_col][:8] + "…"
+            if script_col:
+                link = _map_link(row.get(script_col, ""))
+                if link:
+                    row[f"_link_{script_col}"] = link
             row["_sev"] = row_sev
             rows.append(row)
         summary = f"{len(rows)} recent" + (f" · {crit} CRITICAL" if crit else "")
@@ -157,10 +177,14 @@ class OpenCriticalsSource(DataSource):
                  if str(r.get(script_k)) == s and str(r.get(code_k)) == c),
                 default="",
             )
-            rows.append({
+            row = {
                 "Script": clean(s), "Error": clean(c), "Count": str(cnt),
                 "Oldest": clean(oldest), "_sev": SEV_ERROR,
-            })
+            }
+            link = _map_link(row["Script"])
+            if link:
+                row["_link_Script"] = link
+            rows.append(row)
         return PanelResult(
             panel_id=self.panel_id,
             title=self.title,

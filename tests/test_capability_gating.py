@@ -487,6 +487,23 @@ NETWORK_LIB_ALLOWLIST: frozenset[str] = frozenset({
     # shared.defaults / shared.error_log) to delete TERMINAL ITS_Errors rows (never an
     # open CRITICAL) via smartsheet_client.delete_rows. No send, no AI, no subprocess.
     "operator_dashboard/act/errors_ops.py",
+    # DASH-12 restart-dashboard verb: `subprocess` spawns ONE detached
+    # `/bin/sh -c 'sleep 1; exec launchctl kickstart -k gui/<uid>/<dashboard-label>'`
+    # on the dashboard's OWN fixed label (restart-only — never a pull/deploy, never
+    # another label; asserted by tests/test_dashboard_restart.py); `importlib` lazily
+    # resolves shared.error_log for the pre-spawn audit. No send, no AI.
+    "operator_dashboard/act/dashboard_ops.py",
+    # DASH-13 review-queue resolve verb: `importlib` lazily resolves INTERNAL modules
+    # only (shared.smartsheet_client / shared.sheet_ids / shared.defaults /
+    # shared.error_log) to stamp PENDING ITS_Review_Queue rows terminal via
+    # update_rows (filter-required; nothing deleted). No send, no AI, no subprocess.
+    "operator_dashboard/act/review_ops.py",
+    # System map (/system) live joins: `importlib` lazily resolves INTERNAL modules
+    # only (operator_dashboard.sources.* / shared.errors_rotation / shared.heartbeat /
+    # shared.smartsheet_client / shared.sheet_ids / troubleshooting.loader) so any
+    # broken join degrades to an undecorated map. Read-only — no send, no AI, no
+    # subprocess (launchctl state comes via the daemons panel source).
+    "operator_dashboard/system_view.py",
 })
 
 # Import needles that constitute network-egress or process-spawn capability.

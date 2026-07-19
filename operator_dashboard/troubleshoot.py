@@ -94,15 +94,41 @@ def _safe_doc_target(rel: str) -> Path | None:
     return target
 
 
+def _deep_view(tree: Tree, wf_id: str, step_id: str, fm_id: str) -> list[dict[str, object]]:
+    """The pre-expanded view for a `/troubleshoot?wf=…[&step=…[&fm=…]]` deep link
+    (the system map and other pages link straight to a workflow/step/failure
+    mode). Unknown ids fail soft to an empty view — the page renders its normal
+    'no match' note, never an error."""
+    wf = next((w for w in tree.workflows if w.id == wf_id), None)
+    if wf is None:
+        return []
+    kept_steps: list[dict[str, object]] = []
+    for st in wf.steps:
+        if step_id and st.id != step_id:
+            continue
+        fms = [f for f in st.failure_modes if not fm_id or f.id == fm_id]
+        if fm_id and not fms:
+            continue
+        kept_steps.append({"step": st, "fms": fms})
+    return [{"workflow": wf, "steps": kept_steps}] if kept_steps else []
+
+
 def register_troubleshoot_routes(app: FastAPI, templates: Jinja2Templates) -> None:
     @app.get("/troubleshoot")
-    def troubleshoot(request: Request, q: str = "") -> Response:
+    def troubleshoot(
+        request: Request, q: str = "", wf: str = "", step: str = "", fm: str = ""
+    ) -> Response:
         tree, err = _load()
-        view = _filter_tree(tree, q) if tree is not None else []
+        if tree is None:
+            view: list[dict[str, object]] = []
+        elif wf:
+            view = _deep_view(tree, wf, step, fm)
+        else:
+            view = _filter_tree(tree, q)
         return templates.TemplateResponse(
             request,
             "troubleshoot.html",
-            {"view": view, "q": q, "error": err},
+            {"view": view, "q": q, "deep": bool(wf), "wf": wf, "error": err},
         )
 
     @app.get("/troubleshoot/wf/{workflow_id}")
