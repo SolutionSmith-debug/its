@@ -337,3 +337,25 @@ def test_drilldown_view_shows_more_rows_than_panel(client: TestClient, monkeypat
     # the card title is a drill-down link; an unknown panel is fail-soft
     assert 'href="/view/errors_recent"' in card.text
     assert client.get("/view/nonexistent").status_code == 200
+
+
+def test_asset_urls_are_content_versioned_and_html_is_no_cache() -> None:
+    # Regression for the Safari Dock-app blank-page failure: a cached HTML shell
+    # paired with a stale stylesheet. Every stylesheet/script URL must carry the
+    # content-hash version (so an asset change busts the cache), and page HTML
+    # must always revalidate.
+    from operator_dashboard.app import ASSET_VERSION
+
+    assert len(ASSET_VERSION) == 10 and all(c in "0123456789abcdef" for c in ASSET_VERSION)
+    client = TestClient(create_app())
+    r = client.get("/")
+    assert f"/static/app.css?v={ASSET_VERSION}" in r.text
+    assert f"/static/htmx.min.js?v={ASSET_VERSION}" in r.text
+    assert r.headers["cache-control"] == "no-cache"
+    r = client.get("/system")
+    assert f"/static/system-map.js?v={ASSET_VERSION}" in r.text
+    assert r.headers["cache-control"] == "no-cache"
+    # Static assets are exempt — their URLs are versioned, so they may cache.
+    r = client.get(f"/static/app.css?v={ASSET_VERSION}")
+    assert r.status_code == 200
+    assert r.headers.get("cache-control") != "no-cache"

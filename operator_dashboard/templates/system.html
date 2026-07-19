@@ -85,5 +85,5 @@
    so autoescaping would corrupt the JSON. The payload is built solely from the
    static system_map registry (no request/Smartsheet data) with '<' escaped. #}
 <script type="application/json" id="sm-edge-data">{{ edges_json|safe }}</script>
-<script src="/static/system-map.js" defer></script>
+<script src="/static/system-map.js?v={{ asset_v }}" defer></script>
 {% endblock %}

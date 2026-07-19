@@ -6,6 +6,7 @@ the marked mount point below.
 """
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 import jinja2
@@ -33,6 +34,27 @@ _PULSE_PANELS: list[tuple[str, str]] = [
 ]
 
 _BASE = Path(__file__).resolve().parent
+
+
+def _asset_version() -> str:
+    """Content hash over the CSS/JS assets, computed once at boot.
+
+    Templates append `?v=<this>` to every stylesheet/script URL so a browser
+    cache can never pair NEW HTML with an OLD stylesheet — the failure mode
+    that made a Safari Dock app render the post-#614 pages blank (web apps
+    keep their own cache store, and unversioned subresource URLs are served
+    from it without revalidation). The URL only changes when the asset content
+    changes, so caching stays effective between deploys."""
+    digest = hashlib.sha256()
+    static = _BASE / "static"
+    for path in sorted(static.glob("*.css")) + sorted(static.glob("*.js")):
+        digest.update(path.name.encode())
+        digest.update(path.read_bytes())
+    return digest.hexdigest()[:10]
+
+
+ASSET_VERSION = _asset_version()
+
 # Build the Jinja environment explicitly so autoescape is GUARANTEED on: it is
 # the load-bearing XSS defense over every rendered value (Smartsheet cells and
 # raw local log lines are untrusted/adversarial content).
@@ -40,6 +62,7 @@ _ENV = jinja2.Environment(
     loader=jinja2.FileSystemLoader(str(_BASE / "templates")),
     autoescape=True,
 )
+_ENV.globals["asset_v"] = ASSET_VERSION
 _TEMPLATES = Jinja2Templates(env=_ENV)
 
 
@@ -51,6 +74,17 @@ def create_app() -> FastAPI:
         openapi_url=None,
     )
     app.mount("/static", StaticFiles(directory=str(_BASE / "static")), name="static")
+
+    @app.middleware("http")
+    async def _html_no_store(request: Request, call_next):  # type: ignore[no-untyped-def]
+        # Pages must always revalidate: a cached HTML shell paired with live
+        # htmx fragments (or a newer deploy) renders wrong. Static assets are
+        # exempt — their URLs are content-versioned (?v=ASSET_VERSION), so they
+        # may cache freely and bust naturally on change.
+        response = await call_next(request)
+        if not request.url.path.startswith("/static"):
+            response.headers.setdefault("Cache-Control", "no-cache")
+        return response
 
     # Sync `def` endpoints run in Starlette's threadpool, so the blocking
     # Smartsheet SDK / launchctl subprocess calls never stall the event loop.
