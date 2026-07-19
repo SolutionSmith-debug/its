@@ -1,0 +1,3 @@
+{
+  "_README": "sha256-keyed EXPECTED METADATA for the offline estimate-ladder eval (scripts/eval_estimate_ladder.py). The corpus bytes NEVER enter the repo — each key is a corpus file's sha256; each value is the expected {doc_type, tier_reached, line_count, math_pass, field_coverage}. Empty until the operator runs --write-expectations against the local corpus (~/Desktop/'Evergreen project'/'Z. Quotes 1') to snapshot a qualified baseline; a tier gate flips true only after this eval passes against it (ADR-0004 E6)."
+}

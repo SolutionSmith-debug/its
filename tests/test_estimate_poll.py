@@ -147,6 +147,17 @@ def _patch(mocker):
         "max_pages": mocker.patch(
             "po_materials.estimate_poll._max_pages_preview", return_value=12
         ),
+        # PR-B: the per-cycle extraction-ladder config snapshot — pinned DARK here
+        # (all tier gates false) so this suite keeps asserting the PR-A pipeline;
+        # the ladder's own behavior is covered by tests/test_estimate_ladder_wiring.py.
+        "tiers": mocker.patch(
+            "po_materials.estimate_poll._resolve_tier_config",
+            return_value=estimate_poll._TierConfig(
+                tier1_enabled=False, tier2_enabled=False, ocr_enabled=False,
+                model="qwen3.5:9b", ollama_base_url="http://127.0.0.1:11434",
+                confidence_threshold=0.75, timeout_seconds=600,
+            ),
+        ),
         # Worker I/O (the pinned portal_client contract functions).
         "pending": mocker.patch(
             "po_materials.estimate_poll.portal_client.get_estimates_pending",

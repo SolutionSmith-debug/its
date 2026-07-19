@@ -315,6 +315,13 @@ CONFIG_ROWS: tuple[ConfigRow, ...] = (
     ConfigRow("po_materials.estimate_poll.polling_enabled", "po_materials", "non_empty"),
     ConfigRow("po_materials.estimate_poll.poll_interval_seconds", "po_materials", "non_empty"),
     ConfigRow("po_materials.estimate_poll.max_pages_preview", "po_materials", "non_empty"),
+    # Extraction-ladder tier gates (ADR-0004 E4-E6, PR-B). Asserted SEEDED PRESENT
+    # (non_empty, NEVER forced 'true' — the dark-ship reflex: all three seed 'false'
+    # via seed_estimates_config.py so activation is a visible operator cell-flip
+    # gated on the offline corpus eval, never a phantom hunt).
+    ConfigRow("po_materials.estimate_extract.tier1_enabled", "po_materials", "non_empty"),
+    ConfigRow("po_materials.estimate_extract.tier2_enabled", "po_materials", "non_empty"),
+    ConfigRow("po_materials.estimate_extract.ocr_enabled", "po_materials", "non_empty"),
 )
 
 

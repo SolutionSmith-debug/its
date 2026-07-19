@@ -12,11 +12,21 @@ dark" without a seeded row has NO visible switch at all. Seeding the row `false`
 in the same change that adds the gated code makes activation a visible cell-flip,
 and the #336 `resolve_and_log` startup pass stops WARNing `config_row_missing`.
 
-What it seeds (3 rows, workstream `po_materials`):
+What it seeds (10 rows, workstream `po_materials`):
 
-    po_materials.estimate_poll.polling_enabled       = false  (the ONE gate — dark)
+    po_materials.estimate_poll.polling_enabled       = false  (the ONE daemon gate — dark)
     po_materials.estimate_poll.poll_interval_seconds = 120    (install-time cadence)
     po_materials.estimate_poll.max_pages_preview     = 12     (runtime preview cap)
+
+  Extraction-ladder rows (PR-B, ADR-0004 E4-E6 — the three tier gates dark):
+
+    po_materials.estimate_extract.tier1_enabled        = false
+    po_materials.estimate_extract.tier2_enabled        = false
+    po_materials.estimate_extract.ocr_enabled          = false
+    po_materials.estimate_extract.model                = qwen3.5:9b
+    po_materials.estimate_extract.ollama_base_url      = http://127.0.0.1:11434
+    po_materials.estimate_extract.confidence_threshold = 0.75
+    po_materials.estimate_extract.timeout_seconds      = 600
 
 The §34 screener's ClamAV layer deliberately gets NO new row — estimate_poll
 REUSES the existing `po_materials.po_attach_screen.clamav_enabled` gate
@@ -89,6 +99,89 @@ CONFIG_ROWS: list[dict[str, Any]] = [
             "RUNTIME by estimate_poll each cycle; clamped 1-50. Pages beyond the "
             "cap simply have no preview — the disposition screen's no-preview "
             "acknowledgment path covers them."
+        ),
+    },
+    {
+        "Setting": "po_materials.estimate_extract.tier1_enabled",
+        "Workstream": WORKSTREAM,
+        "Value": "false",
+        "Description": (
+            "Gate for the Tier-1 DETERMINISTIC extraction (estimate_parse "
+            "template→generic ladder over native-text PDF pages; no AI). Ships "
+            "FALSE (dark). Flip to 'true' ONLY after the extraction-core modules "
+            "have landed AND the offline corpus eval "
+            "(scripts/eval_estimate_ladder.py) qualifies Tier-1 quality against "
+            "tests/fixtures/estimate_corpus_expectations.json. Gate off → every "
+            "native-text doc lands needs_review (manual Tier-3), exactly the "
+            "PR-A behavior."
+        ),
+    },
+    {
+        "Setting": "po_materials.estimate_extract.tier2_enabled",
+        "Workstream": WORKSTREAM,
+        "Value": "false",
+        "Description": (
+            "Gate for the Tier-2 LOCAL-Ollama schema-constrained extraction "
+            "(estimate_extract; localhost only — vendor pricing never leaves the "
+            "machine, ADR-0004 decision 1; at most ONE Tier-2 document per "
+            "cycle). Ships FALSE (dark). Flip to 'true' ONLY after (a) the "
+            "pinned model is pulled on this host (`ollama pull <model row>`), "
+            "(b) the offline corpus eval qualifies Tier-2 quality "
+            "(scripts/eval_estimate_ladder.py --tier2), and (c) Tier-1 is "
+            "already live. NO cloud AI — this gate never enables any "
+            "network-egress inference."
+        ),
+    },
+    {
+        "Setting": "po_materials.estimate_extract.ocr_enabled",
+        "Workstream": WORKSTREAM,
+        "Value": "false",
+        "Description": (
+            "Gate for the macOS-Vision OCR pass (estimate_ocr) that feeds "
+            "SCANNED documents into Tier-2. Ships FALSE (dark); meaningful only "
+            "with tier2_enabled=true. Off → scanned docs (no native text) land "
+            "needs_review for manual Tier-3 entry."
+        ),
+    },
+    {
+        "Setting": "po_materials.estimate_extract.model",
+        "Workstream": WORKSTREAM,
+        "Value": "qwen3.5:9b",
+        "Description": (
+            "Pinned local Ollama model for Tier-2 extraction. SWAPPING IT "
+            "RE-RUNS THE OFFLINE CORPUS EVAL to re-qualify (ADR-0004 decision "
+            "1) — change the row only alongside an eval run. The model must be "
+            "pulled on this host before tier2_enabled flips true."
+        ),
+    },
+    {
+        "Setting": "po_materials.estimate_extract.ollama_base_url",
+        "Workstream": WORKSTREAM,
+        "Value": "http://127.0.0.1:11434",
+        "Description": (
+            "Local Ollama base URL for Tier-2 extraction. LOCALHOST ONLY by "
+            "doctrine — vendor pricing never leaves the machine (ADR-0004 "
+            "decision 1); never point this at a remote host."
+        ),
+    },
+    {
+        "Setting": "po_materials.estimate_extract.confidence_threshold",
+        "Workstream": WORKSTREAM,
+        "Value": "0.75",
+        "Description": (
+            "Minimum Tier-2 extraction confidence (0-1) to post 'extracted'; "
+            "below it the document degrades to needs_review (the disposition "
+            "screen's manual Tier-3). Read at runtime each cycle."
+        ),
+    },
+    {
+        "Setting": "po_materials.estimate_extract.timeout_seconds",
+        "Workstream": WORKSTREAM,
+        "Value": "600",
+        "Description": (
+            "Wall-clock budget in seconds for one Tier-2 extraction call "
+            "(keep_alive=0 load-on-demand makes the first call slow — the model "
+            "loads from disk). On timeout the document degrades to needs_review."
         ),
     },
 ]
@@ -179,7 +272,9 @@ def main() -> int:
     print(f"[info] ITS_Config sheet = {sheet_ids.SHEET_CONFIG}")
     print(f"[info] Workstream = {WORKSTREAM!r}")
     print(f"[info] Seeding {len(CONFIG_ROWS)} rows (estimate_poll: gate false + "
-          f"interval + preview cap; ClamAV reuses the existing po_attach_screen row)")
+          f"interval + preview cap; estimate_extract: three tier gates false + "
+          f"model/base-url/threshold/timeout pins; ClamAV reuses the existing "
+          f"po_attach_screen row)")
     print()
 
     row_results = seed_config_rows()

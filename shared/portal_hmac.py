@@ -164,6 +164,33 @@ Vendor-estimate protocol (ADR-0004 E1/E2)
     signature to the bytes themselves. `verify_po_estimate` is the recompute
     `po_materials.estimate_poll` runs before a single hostile byte is §34-screened,
     classified, or filed (the downgrade defense).
+
+RFQ quote-form protocol (ADR-0004 decision 10, E6/PR-B)
+-------------------------------------------------------
+    The Tier-0 fillable `.xlsx` quote form (`po_materials/quote_form.py`) carries a
+    hidden `_ITS_META` sheet whose `ITS_FORM_TOKEN` defined name holds a MAC over
+    its own domain-separated canonical string:
+
+        canonical = "rfq-form:v1" \\n <rfq_number> \\n <vendor_key>
+
+    * The `"rfq-form:v1"` literal domain-separates this protocol from every other
+      protocol above — cross-protocol signature confusion is structurally
+      impossible — and versions the string.
+    * `rfq_number` + `vendor_key` bind the token to one (RFQ, vendor) identity: a
+      valid token cannot be replayed onto a different RFQ or vendor without
+      failing verification, so a VERIFIED round-tripped form may auto-bind the
+      upload to its RFQ (the ADR decision-10 auto-bind; the disposition UI still
+      shows the binding for human confirmation).
+    * UNLIKE the content-covered protocols (po-att:v1 / est:v1) the token
+      deliberately does NOT cover the form's cell contents — the vendor is
+      SUPPOSED to fill the price cells. The token asserts identity only; every
+      filled value stays untrusted data (Invariant 2) and re-enters the trusted
+      path through parse hardening + the human disposition accept.
+
+    `verify_rfq_form_token` is the constant-time recompute
+    `quote_form.parse_quote_form` runs; an absent/tampered token degrades the
+    upload to an ORDINARY ladder document (verified=False, no auto-bind) — never
+    an error, never a file refusal by itself.
 """
 from __future__ import annotations
 
@@ -594,3 +621,42 @@ def verify_po_estimate(
         declared_mime=declared_mime, size_bytes=size_bytes, sha256=sha256,
     )
     return _hmac.compare_digest(expected, provided_hmac or "")
+
+
+# ---- RFQ quote-form protocol (ADR-0004 decision 10 — the Tier-0 form identity) ------
+
+# The quote-form protocol's domain-separation literal — versioned; MUST match what
+# po_materials/quote_form.py embeds byte-for-byte. Domain-separates form-identity
+# tokens from every other protocol in this module (see the module docstring).
+RFQ_FORM_DOMAIN = "rfq-form:v1"
+
+
+def _as_secret_bytes(secret: str | bytes) -> bytes:
+    """The Keychain secret is stored as a str; quote_form callers may hold bytes.
+    Both encode to the same MAC key (utf-8)."""
+    return secret.encode("utf-8") if isinstance(secret, str) else secret
+
+
+def rfq_form_canonical(*, rfq_number: str, vendor_key: str) -> str:
+    """The exact string the form token signs (order + ``\\n`` separator load-bearing).
+    rfq_number + vendor_key bind the token to one (RFQ, vendor) identity."""
+    return "\n".join([RFQ_FORM_DOMAIN, rfq_number, vendor_key])
+
+
+def rfq_form_token(secret: str | bytes, rfq_number: str, vendor_key: str) -> str:
+    """HMAC-SHA256(secret, rfq-form canonical) → lowercase hex — the value embedded
+    in the hidden `_ITS_META` sheet's `ITS_FORM_TOKEN` defined name at render time
+    and recomputed at parse time. Identity-only: the form's fillable CONTENT is
+    deliberately outside the MAC (see the module docstring)."""
+    msg = rfq_form_canonical(rfq_number=rfq_number, vendor_key=vendor_key).encode("utf-8")
+    return _hmac.new(_as_secret_bytes(secret), msg, hashlib.sha256).hexdigest()
+
+
+def verify_rfq_form_token(
+    secret: str | bytes, provided_token: str | None, *, rfq_number: str, vendor_key: str
+) -> bool:
+    """True iff `provided_token` matches the recomputed form-identity token.
+    Constant-time; never raises (False on any mismatch — the caller degrades the
+    upload to an ORDINARY ladder document: verified=False, no RFQ auto-bind)."""
+    expected = rfq_form_token(secret, rfq_number, vendor_key)
+    return _hmac.compare_digest(expected, provided_token or "")

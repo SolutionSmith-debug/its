@@ -264,6 +264,61 @@ GATED_SCRIPTS: list[tuple[str, list[str]]] = [
         ["graph_client", "send_mail", "resend", "smtplib", "email.mime",
          "anthropic", "anthropic_client"],
     ),
+    (
+        # estimate_parse (ADR-0004 E4, PR-B) is the Tier-1 DETERMINISTIC parse of
+        # hostile vendor-document bytes: sandbox-routed pdfplumber payloads, data-
+        # driven YAML vendor templates (never exec'd), the generic-table tier, and
+        # the _js_round math gate. Pure local parsing — no Graph, no send, no LLM
+        # (Tier-1 must stay deterministic; the ONLY AI in the lane is the LOCAL
+        # Tier-2 in estimate_extract).
+        "po_materials/estimate_parse.py",
+        ["graph_client", "send_mail", "resend", "smtplib", "email.mime",
+         "anthropic", "anthropic_client"],
+    ),
+    (
+        # estimate_extract (ADR-0004 E5, PR-B) is the Tier-2 LOCAL-LLM extraction —
+        # local Ollama ONLY (shared/ollama_client, localhost-refusing, allowlisted
+        # below); `anthropic*` is forbidden here so the lane can NEVER escalate to
+        # cloud AI (the "sole live Anthropic consumer is intake.py" invariant).
+        # GENERATION-side: untrusted pages are wrapped (Invariant 2), output is
+        # schema-gated + math-checked + string-field anomaly-checked, and remains
+        # ADVISORY until the human disposition accept. No Graph, no send.
+        "po_materials/estimate_extract.py",
+        ["graph_client", "send_mail", "resend", "smtplib", "email.mime",
+         "anthropic", "anthropic_client"],
+    ),
+    (
+        # estimate_ocr (ADR-0004 E5, PR-B) recovers text from SCANNED estimates via
+        # the sandboxed Quartz render (estimate_preview's laundered PNGs) + the
+        # LOCAL macOS Vision framework (ocrmac, lazy import, degrades to []).
+        # Pure local bytes → text — no Graph, no send, no LLM.
+        "po_materials/estimate_ocr.py",
+        ["graph_client", "send_mail", "resend", "smtplib", "email.mime",
+         "anthropic", "anthropic_client"],
+    ),
+    (
+        # quote_form (ADR-0004 decision 10 / E6, PR-B) renders the Tier-0 fillable
+        # RFQ quote form and parses the RETURNED (hostile) form — pure bytes→bytes
+        # openpyxl work over §34-screened input, with the red-team #3 formula
+        # rejection. No Graph, no send, no LLM (cloud OR local — the Tier-0
+        # round-trip is deterministic by doctrine). NOTE: not a convention suffix —
+        # this explicit entry IS the enrollment.
+        "po_materials/quote_form.py",
+        ["graph_client", "send_mail", "resend", "smtplib", "email.mime",
+         "anthropic", "anthropic_client"],
+    ),
+    (
+        # eval_estimate_ladder (E6, PR-B) is the OPERATOR-RUN OFFLINE corpus eval —
+        # by contract ZERO Worker/Smartsheet/Box egress (localhost Ollama only,
+        # and only under --tier2, via the gated estimate_extract). Beyond the
+        # send/AI forbids, ALSO forbid every egress client the daemons use: the
+        # corpus replay must stay a pure local read forever. NOTE: scripts/ is
+        # outside the convention meta-test — this explicit entry IS the enrollment.
+        "scripts/eval_estimate_ladder.py",
+        ["graph_client", "send_mail", "resend", "smtplib", "email.mime",
+         "anthropic", "anthropic_client", "portal_client", "box_client",
+         "smartsheet_client", "review_queue", "heartbeat"],
+    ),
 ]
 
 # Send scripts: must NOT import any AI capability.
@@ -558,6 +613,13 @@ NETWORK_LIB_ALLOWLIST: frozenset[str] = frozenset({
     # broken join degrades to an undecorated map. Read-only — no send, no AI, no
     # subprocess (launchctl state comes via the daemons panel source).
     "operator_dashboard/system_view.py",
+    # shared/ollama_client.py (ADR-0004 E5): localhost-only Ollama inference — the
+    # Tier-2 vendor-estimate extraction's ONLY egress. Imports `requests`, but
+    # REFUSES any base_url whose host is not 127.0.0.1/localhost (OllamaClientError,
+    # RED-tested in tests/test_ollama_client.py) — vendor pricing never leaves the
+    # machine, and the client can never become a generic HTTP egress. Send scripts
+    # must never import it (the send half is local-AI-free too, ADR-0004 dec. 12).
+    "shared/ollama_client.py",
 })
 
 # Import needles that constitute network-egress or process-spawn capability.

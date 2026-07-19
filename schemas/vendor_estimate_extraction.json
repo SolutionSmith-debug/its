@@ -1,0 +1,59 @@
+{
+  "version": "1.0.0",
+  "name": "vendor_estimate_extraction",
+  "description": "Corpus-union schema for the vendor-estimate Tier-2 local-LLM extraction (ADR-0004 decision 8). Drives BOTH Ollama format= constrained decoding AND post-hoc jsonschema.validate in shared/ollama_client.py. Explicit numeric maxima everywhere — the schema IS the value gate (red-team #6). All money is integer cents; qty is a number (fractional footage is real). Loaded via shared/schema_loader.load_schema('vendor_estimate_extraction', expected_version='1.0.0').",
+  "json_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["doc_type", "confidence", "line_items"],
+    "properties": {
+      "doc_type": {
+        "type": "string",
+        "enum": ["quote", "estimate", "proposal", "invoice", "ap_report", "other"]
+      },
+      "vendor_name": {"type": ["string", "null"], "maxLength": 200},
+      "quote_number": {"type": ["string", "null"], "maxLength": 64},
+      "revision_label": {"type": ["string", "null"], "maxLength": 64},
+      "quote_date": {
+        "type": ["string", "null"],
+        "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+      },
+      "valid_until": {
+        "type": ["string", "null"],
+        "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+      },
+      "subtotal_cents": {"type": ["integer", "null"], "minimum": 0, "maximum": 2000000000},
+      "tax_cents": {"type": ["integer", "null"], "minimum": 0, "maximum": 2000000000},
+      "freight_cents": {"type": ["integer", "null"], "minimum": 0, "maximum": 2000000000},
+      "misc_cents": {"type": ["integer", "null"], "minimum": 0, "maximum": 2000000000},
+      "grand_total_cents": {"type": ["integer", "null"], "minimum": 0, "maximum": 2000000000},
+      "not_to_exceed_cap_cents": {"type": ["integer", "null"], "minimum": 0, "maximum": 2000000000},
+      "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+      "payment_terms": {"type": ["string", "null"], "maxLength": 300},
+      "notes": {
+        "type": "array",
+        "maxItems": 20,
+        "items": {"type": "string", "maxLength": 500}
+      },
+      "line_items": {
+        "type": "array",
+        "maxItems": 200,
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["description"],
+          "properties": {
+            "section": {"type": ["string", "null"], "maxLength": 120},
+            "part_number": {"type": ["string", "null"], "maxLength": 64},
+            "description": {"type": "string", "minLength": 1, "maxLength": 500},
+            "qty": {"type": ["number", "null"], "minimum": 0, "maximum": 1000000},
+            "unit": {"type": ["string", "null"], "maxLength": 16},
+            "unit_cost_cents": {"type": ["integer", "null"], "minimum": 0, "maximum": 2000000000},
+            "extended_cents": {"type": ["integer", "null"], "minimum": 0, "maximum": 2000000000},
+            "line_note": {"type": ["string", "null"], "maxLength": 300}
+          }
+        }
+      }
+    }
+  }
+}
