@@ -51,6 +51,16 @@ export interface Env {
    */
   PORTAL_PO_API_TOKEN: string;
   /**
+   * Bearer token the Mac-side estimate daemon (po_materials/estimate_poll.py, ADR-0004 E2)
+   * presents to /api/po/estimates/internal/* — SEPARATE from PORTAL_PO_API_TOKEN and every
+   * other tier (ADR-0004 decision 4 / red-team #1): the highest-exposure process (it decodes
+   * hostile PDF/xlsx bytes) holds a token scoped ONLY to the estimate pool; it must NOT reach
+   * the PO queue, the mirrors, user provisioning, or any send-lane control surface — and none
+   * of those tokens may read the estimate pool. Mirrored into the Keychain as
+   * ITS_PORTAL_ESTIMATE_TOKEN. Workers Secret / .dev.vars — never committed.
+   */
+  PORTAL_ESTIMATE_API_TOKEN: string;
+  /**
    * Bearer token the Mac-side config daemon (config_editor/config_poll.py, §50 — built LATER)
    * presents to /api/internal/config/* — SEPARATE from the portal_poll / admin / fieldops / PO
    * tokens (privilege separation): the config daemon's token must NOT be able to drain the

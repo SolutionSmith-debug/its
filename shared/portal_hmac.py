@@ -146,6 +146,24 @@ PO-attachment protocol (Feature B)
     reassembled chunks extends the signature to the bytes. `verify_po_attachment` is
     the recompute `po_materials.po_poll`'s attachment pass runs before a single byte
     is §34-screened or filed.
+
+Vendor-estimate protocol (ADR-0004 E1/E2)
+-----------------------------------------
+    An office-uploaded vendor estimate (`po_estimates`, migration 0054) is signed
+    by the Worker at upload (safety_portal/worker/po_estimates.ts
+    `estimateCanonical`) with the SAME key + MAC over its own domain-separated
+    canonical string:
+
+        canonical = "est:v1" \\n <est_uuid> \\n <job_no> \\n <filename>
+                    \\n <declared_mime> \\n <size_bytes (decimal)> \\n <sha256 hex>
+
+    The shape is the po-att:v1 contract with the binding identity swapped: an
+    estimate is bound to a JOB (`job_no` — it exists BEFORE any PO), not a PO row.
+    Like po-att:v1 the CONTENT is signature-covered (`size_bytes` + `sha256` of the
+    decoded bytes), so the Mac's recompute over the reassembled chunks extends the
+    signature to the bytes themselves. `verify_po_estimate` is the recompute
+    `po_materials.estimate_poll` runs before a single hostile byte is §34-screened,
+    classified, or filed (the downgrade defense).
 """
 from __future__ import annotations
 
@@ -514,6 +532,65 @@ def verify_po_attachment(
     attachment: CRITICAL + security Review-Queue row, never screened, never filed)."""
     expected = sign_po_attachment(
         secret, att_uuid=att_uuid, po_id=po_id, filename=filename,
+        declared_mime=declared_mime, size_bytes=size_bytes, sha256=sha256,
+    )
+    return _hmac.compare_digest(expected, provided_hmac or "")
+
+
+# ---- Vendor-estimate protocol (ADR-0004 E1/E2 — the estimate upload pool) -----------
+
+# The vendor-estimate protocol's domain-separation literal — MUST match the Worker's
+# EST_HMAC_DOMAIN (safety_portal/worker/po_estimates.ts) byte-for-byte.
+# Domain-separates estimate signatures from submission (uuid-first), item-photo
+# ("item_photo:v1"), daily-photo ("daily_photo:v1"), PO ("po:v1"), subcontract
+# ("sub:v1"), and PO-attachment ("po-att:v1") signatures — cross-protocol confusion
+# is structurally impossible.
+EST_DOMAIN = "est:v1"
+
+
+def est_canonical(
+    *, est_uuid: str, job_no: str, filename: str, declared_mime: str,
+    size_bytes: int, sha256: str,
+) -> str:
+    """The exact string the Worker signs for one uploaded vendor estimate
+    (po_estimates.ts estimateCanonical — order + ``\\n`` separator load-bearing).
+
+    Binds identity (`est_uuid` + `job_no` — a signed estimate cannot be replayed onto
+    a different row or job), naming (`filename` + `declared_mime` — the values the Mac
+    screener + classifier + Box filing consume), and CONTENT (`size_bytes` + `sha256`
+    of the decoded bytes) — so the caller's sha256 recompute over the reassembled
+    chunks extends the signature to the bytes themselves: tampered chunks fail the
+    digest, a tampered digest fails the HMAC. The po-att:v1 shape with the binding
+    identity swapped from PO row to job.
+    """
+    return "\n".join([
+        EST_DOMAIN, est_uuid, job_no, filename, declared_mime,
+        str(size_bytes), sha256,
+    ])
+
+
+def sign_po_estimate(
+    secret: str, *, est_uuid: str, job_no: str, filename: str, declared_mime: str,
+    size_bytes: int, sha256: str,
+) -> str:
+    """HMAC-SHA256(secret, estimate canonical) → lowercase hex — identical to the
+    Worker's hmacHex over estimateCanonical."""
+    msg = est_canonical(
+        est_uuid=est_uuid, job_no=job_no, filename=filename, declared_mime=declared_mime,
+        size_bytes=size_bytes, sha256=sha256,
+    ).encode("utf-8")
+    return _hmac.new(secret.encode("utf-8"), msg, hashlib.sha256).hexdigest()
+
+
+def verify_po_estimate(
+    secret: str, provided_hmac: str | None, *, est_uuid: str, job_no: str, filename: str,
+    declared_mime: str, size_bytes: int, sha256: str,
+) -> bool:
+    """True iff `provided_hmac` matches the recomputed estimate signature.
+    Constant-time; never raises (False on any mismatch — the caller refuses the
+    estimate: CRITICAL + security Review-Queue row, never screened, never filed)."""
+    expected = sign_po_estimate(
+        secret, est_uuid=est_uuid, job_no=job_no, filename=filename,
         declared_mime=declared_mime, size_bytes=size_bytes, sha256=sha256,
     )
     return _hmac.compare_digest(expected, provided_hmac or "")

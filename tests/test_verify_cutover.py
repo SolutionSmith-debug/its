@@ -471,8 +471,9 @@ def test_check_ids_unique_and_sequential():
 
 
 def test_required_secrets_cover_program_list():
-    # 11 non-Box + Box triplet + PO token + 2 dark-daemon bearers + operator PIN = 18
-    # (docs/2026-07-09_aug7_delivery_program.md WS4; +3 per operator directive 2026-07-12).
+    # 11 non-Box + Box triplet + PO token + 3 dark-daemon bearers + operator PIN = 19
+    # (docs/2026-07-09_aug7_delivery_program.md WS4; +3 per operator directive 2026-07-12;
+    # + ITS_PORTAL_ESTIMATE_TOKEN with the ADR-0004 estimate lane, PR-A).
     assert len(vc.NON_BOX_SECRETS) == 11
     assert set(vc.BOX_SECRETS) == {
         "ITS_BOX_CLIENT_ID",
@@ -480,12 +481,19 @@ def test_required_secrets_cover_program_list():
         "ITS_BOX_REFRESH_TOKEN",
     }
     assert "ITS_PORTAL_PO_TOKEN" in vc.REQUIRED_SECRETS
-    assert len(vc.REQUIRED_SECRETS) == 18
+    assert len(vc.REQUIRED_SECRETS) == 19
 
 
 def test_dark_daemon_bearers_and_operator_pin_enrolled():
     """Operator directive 2026-07-12: the config-actuator + subcontract-poll daemon
     bearers and the operator-dashboard PIN are cutover-required even though their
-    consumers ship dark (same provision-even-while-dark rationale as ITS_PORTAL_PO_TOKEN)."""
-    for name in ("ITS_PORTAL_CONFIG_TOKEN", "ITS_PORTAL_SUB_TOKEN", "ITS_OPERATOR_PIN"):
+    consumers ship dark (same provision-even-while-dark rationale as ITS_PORTAL_PO_TOKEN).
+    ITS_PORTAL_ESTIMATE_TOKEN joined at ADR-0004 PR-A (red-team #1 — the estimate
+    lane's OWN bearer, deliberately separate from the future RFQ token)."""
+    for name in (
+        "ITS_PORTAL_CONFIG_TOKEN",
+        "ITS_PORTAL_SUB_TOKEN",
+        "ITS_PORTAL_ESTIMATE_TOKEN",
+        "ITS_OPERATOR_PIN",
+    ):
         assert name in vc.REQUIRED_SECRETS, f"{name} must be enrolled in REQUIRED_SECRETS"

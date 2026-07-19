@@ -46,6 +46,12 @@ const PoVendorsPage = lazy(() =>
 const PoConfigPage = lazy(() =>
   import("./pages/PoConfigPage").then((m) => ({ default: m.PoConfigPage })),
 );
+// Vendor-estimate importer (ADR-0004 E1/E3): the upload/tracker page owns the disposition
+// screen as its second face (EstimateDispositionPage rides in the same lazy chunk) — an
+// office-desk surface, code-split with its PO siblings.
+const EstimatesPage = lazy(() =>
+  import("./pages/EstimatesPage").then((m) => ({ default: m.EstimatesPage })),
+);
 const SubcontractorsPage = lazy(() =>
   import("./pages/SubcontractorsPage").then((m) => ({ default: m.SubcontractorsPage })),
 );
@@ -351,6 +357,8 @@ export function App() {
     page = <PoVendorsPage onBack={home} />;
   } else if (route.view === "po-config" && allowed) {
     page = <PoConfigPage onBack={home} />;
+  } else if (route.view === "po-estimates" && allowed) {
+    page = <EstimatesPage onBack={home} />;
   } else if (route.view === "subcontractors" && allowed) {
     page = <SubcontractorsPage onBack={home} />;
   } else if (route.view === "subcontract-builder" && allowed) {

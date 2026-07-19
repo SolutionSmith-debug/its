@@ -89,7 +89,7 @@ describe("HomePage — R7 sections", () => {
     }
   });
 
-  it("Office operations holds the six management cards in the operator's order; Administration keeps three", () => {
+  it("Office operations holds the seven management cards in the operator's order; Administration keeps three", () => {
     vi.mocked(useAuth).mockReturnValue(authWith(ALL_CAPS));
     const { container } = render(<HomePage onNavigate={() => {}} />);
     const titlesIn = (heading: string) =>
@@ -99,6 +99,7 @@ describe("HomePage — R7 sections", () => {
     // Array order in HOME_CARDS IS the two-wide display order — pin the exact sequence the operator asked for.
     expect(titlesIn("Office operations")).toEqual([
       "Purchase Orders",
+      "Vendor Estimates",
       "Subcontracts",
       "Checklists",
       "Materials Catalog",

@@ -368,6 +368,11 @@ interface DraftFields {
   approver_name: string;
   approver_title: string;
   vendor_key: string;
+  /** ADR-0004 red-team #4 — estimate-import PROVENANCE (which po_estimates row this draft
+   *  was imported from). STORE-ONLY: consumed by the create route's idempotency guard and
+   *  the stored column; it must NEVER enter canonicalPoJson / the po:v1 HMAC string (the
+   *  Python-side recompute would break). null = an ordinary hand-built draft. */
+  estimate_id: number | null;
   lines: PoLine[];
   totals: PoTotals;
 }
@@ -431,6 +436,14 @@ function parseDraftBody(body: Record<string, unknown>): DraftFields | string {
   const approver_name = str(body.approver_name);
   const approver_title = str(body.approver_title);
   if (approver_name.length > MAX_NAME || approver_title.length > MAX_NAME) return "invalid_approver";
+  // Optional estimate-import provenance (ADR-0004): a positive integer or absent.
+  let estimate_id: number | null = null;
+  if (body.estimate_id !== undefined && body.estimate_id !== null) {
+    if (typeof body.estimate_id !== "number" || !Number.isSafeInteger(body.estimate_id) || body.estimate_id <= 0) {
+      return "invalid_estimate_id";
+    }
+    estimate_id = body.estimate_id;
+  }
   // 'auto' needs a resolvable tax basis at DRAFT time already — failing early beats a
   // draft that can never generate.
   if (tax_mode === "auto" && !ship_to_state) return "invalid_ship_to_state";
@@ -447,7 +460,7 @@ function parseDraftBody(body: Record<string, unknown>): DraftFields | string {
     sow_text, delivery_instructions, payment_terms_text,
     terms_profile_id, terms_version,
     tax_mode, shipping_cents, line_column_variant,
-    approver_name, approver_title, vendor_key, lines, totals,
+    approver_name, approver_title, vendor_key, estimate_id, lines, totals,
   };
 }
 
@@ -887,9 +900,17 @@ export function registerPoRoutes(app: FieldopsApp, gates: PoGates): void {
 
     const actor = c.get("session").username;
     const poUuid = crypto.randomUUID();
-    // Parent + all lines + audit in ONE batch (W4). The line INSERTs resolve po_id via a
+    // Parent + audit + all lines in ONE batch (W4). The line INSERTs resolve po_id via a
     // scalar subquery on po_uuid — constant during each statement (the parent row landed in
     // statement 1); last_insert_rowid() would MOVE per inserted row and is deliberately avoided.
+    //
+    // ESTIMATE-IMPORT IDEMPOTENCY (ADR-0004 red-team #4): when the draft carries an
+    // estimate_id, the parent INSERT is guarded IN-WHERE on no non-canceled PO already
+    // referencing that estimate — evaluated at execution time (D1 serializes statements), so
+    // a double-import race writes exactly one draft. A refused insert writes NOTHING: the
+    // audit is changes()-gated directly after the parent, and every line INSERT is guarded
+    // on the parent row existing. estimate_id is STORE-ONLY provenance — it is deliberately
+    // NOT in canonicalPoJson / the po:v1 HMAC (the Python recompute would break).
     const stmts = [
       c.env.DB
         .prepare(
@@ -898,8 +919,10 @@ export function registerPoRoutes(app: FieldopsApp, gates: PoGates): void {
             "delivery_contact_name, delivery_contact_phone, delivery_contact_email, " +
             "sow_text, delivery_instructions, payment_terms_text, terms_profile_id, terms_version, " +
             "subtotal_cents, tax_mode, tax_rate_bp, tax_cents, shipping_cents, total_cents, " +
-            "line_column_variant, status, approver_name, approver_title, vendor_key, created_by) " +
-            "VALUES (?1,?2,?3,0,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,'draft',?26,?27,?28,?29) " +
+            "line_column_variant, status, approver_name, approver_title, vendor_key, created_by, estimate_id) " +
+            "SELECT ?1,?2,?3,0,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,'draft',?26,?27,?28,?29,?30 " +
+            "WHERE (?30 IS NULL OR NOT EXISTS " +
+            "(SELECT 1 FROM purchase_orders WHERE estimate_id = ?30 AND status != 'canceled')) " +
             "RETURNING id",
         )
         .bind(
@@ -909,25 +932,33 @@ export function registerPoRoutes(app: FieldopsApp, gates: PoGates): void {
           d.sow_text, d.delivery_instructions, d.payment_terms_text, d.terms_profile_id, d.terms_version,
           d.totals.subtotal_cents, d.tax_mode, d.totals.tax_rate_bp, d.totals.tax_cents, d.shipping_cents,
           d.totals.total_cents, d.line_column_variant, d.approver_name, d.approver_title, d.vendor_key, actor,
+          d.estimate_id,
         ),
+      // Directly after the parent (changes() reads the immediately preceding statement) —
+      // a guard-refused create writes no lying audit row.
+      auditStmtIfChanged(c, actor, "po_draft_create", poUuid, {
+        po_uuid: poUuid, job_no: d.job_no, site_phase: d.site_phase, vendor_key: d.vendor_key,
+        total_cents: d.totals.total_cents, estimate_id: d.estimate_id,
+      }),
       ...d.lines.map((l) =>
         c.env.DB
           .prepare(
             `INSERT INTO po_line_items (po_id, ${LINE_COLS}) ` +
-              "SELECT (SELECT id FROM purchase_orders WHERE po_uuid = ?1), ?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12",
+              "SELECT (SELECT id FROM purchase_orders WHERE po_uuid = ?1), ?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12 " +
+              "WHERE EXISTS (SELECT 1 FROM purchase_orders WHERE po_uuid = ?1)",
           )
           .bind(
             poUuid, l.position, l.part_number, l.description, l.qty, l.unit, l.unit_cost_cents,
             l.extended_cents, l.watts, l.panels, l.pallets, l.price_per_watt_microcents,
           ),
       ),
-      auditStmt(c, actor, "po_draft_create", poUuid, {
-        po_uuid: poUuid, job_no: d.job_no, site_phase: d.site_phase, vendor_key: d.vendor_key,
-        total_cents: d.totals.total_cents,
-      }),
     ];
     const res = await c.env.DB.batch(stmts);
     const id = (res[0].results?.[0] as { id: number } | undefined)?.id ?? null;
+    if (id === null) {
+      // The only in-WHERE guard on this INSERT is the estimate-import idempotency check.
+      return c.json({ error: "estimate_already_imported" }, 409);
+    }
     return c.json({ ok: true, id, totals: d.totals }, 201);
   });
 
