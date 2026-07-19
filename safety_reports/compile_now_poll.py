@@ -244,6 +244,15 @@ def _write_watchdog_marker() -> None:
 # ---- Per-job on-demand compile ------------------------------------------
 
 
+class _ScanFailedError(Exception):
+    """Internal: the routine trigger scan (ensure_week_sheet / list_rollup_rows) failed
+    BEFORE the Compile-Now trigger was confirmed set. Raised so the caller's per-job fence
+    can distinguish a transient blip while scanning an (almost always) UNTRIGGERED job from
+    a real failure of an operator-requested compile — the former logs `scan_failed` and does
+    NOT seed a Review-Queue row (it was feeding a review backlog); the latter keeps the
+    fail-loud `compile_failed` + Review-Queue behaviour."""
+
+
 def _compile_triggered_job(
     config: generate_core.GenerateConfig,
     job: ActiveJob,
@@ -254,17 +263,27 @@ def _compile_triggered_job(
     """Compile ONE job's current week IFF its Rollup Compile-Now trigger is set, for the given
     workstream `config`. Returns True if a compile ran, False if the job was skipped (no trigger).
     Raises on a compile failure — the caller's per-job fence routes it to the Review Queue
-    (fail-loud)."""
-    sheet_id = week_sheet.ensure_week_sheet(
-        config.week_sheet_config, job.project_name, week.start
-    )
-    # The Compile-Now trigger lives on a Rollup row; the placeholder Rollup is pre-created at
-    # sheet creation so the checkbox exists even before the first compile. With append-only
-    # Rollups (one immutable snapshot per compile), the operator may check the trigger on the
-    # latest (or any) Rollup row, so we look across ALL of them.
-    rollup_rows = week_sheet.list_rollup_rows(sheet_id)
-    if not week_sheet.any_compile_now_requested(rollup_rows):
+    (fail-loud). A failure BEFORE the trigger is confirmed set raises `_ScanFailedError`
+    instead (scan phase — no Review-Queue row)."""
+    # SCAN PHASE — reads that happen for EVERY Active job each cycle, before we know whether
+    # this job is triggered at all. Fenced separately: a transient Smartsheet error here is a
+    # routine-scan blip, not a failed operator-requested compile.
+    try:
+        sheet_id = week_sheet.ensure_week_sheet(
+            config.week_sheet_config, job.project_name, week.start
+        )
+        # The Compile-Now trigger lives on a Rollup row; the placeholder Rollup is pre-created at
+        # sheet creation so the checkbox exists even before the first compile. With append-only
+        # Rollups (one immutable snapshot per compile), the operator may check the trigger on the
+        # latest (or any) Rollup row, so we look across ALL of them.
+        rollup_rows = week_sheet.list_rollup_rows(sheet_id)
+        triggered = week_sheet.any_compile_now_requested(rollup_rows)
+    except Exception as exc:  # noqa: BLE001 — re-raised typed; the caller fences per job
+        raise _ScanFailedError(f"trigger scan failed: {exc!r}") from exc
+    if not triggered:
         return False  # on-demand only — an unchecked job is NOT auto-compiled
+    # TRIGGER CONFIRMED — from here on, any failure is a real un-run compile (fail-loud:
+    # compile_failed + Review-Queue row, trigger stays set).
 
     submissions = week_sheet.list_submission_rows(sheet_id, active_only=True)
     selection = week_sheet.selected_submission_row_ids(submissions)
@@ -300,6 +319,20 @@ def _poll_inside_lock(
                 if _compile_triggered_job(config, job, week, summary, correlation_id):
                     stats.triggered += 1
                     stats.compiled += 1
+            except _ScanFailedError as exc:
+                # Scan-phase failure — the trigger was NEVER confirmed set. A transient blip
+                # while routinely scanning an (almost always) untriggered job: log it, but do
+                # NOT seed a Review-Queue row (there is no un-run operator request to review;
+                # the next ~90 s cycle rescans). Mislabeling this as compile_failed fed a
+                # multi-hundred-row review backlog during Smartsheet outages.
+                stats.errors += 1
+                error_log.log(
+                    Severity.ERROR, SCRIPT_NAME,
+                    f"[{config.workstream}] compile-now trigger scan failed for "
+                    f"{job.project_name} (job {job.job_id}) week {week.start}: {exc}",
+                    error_code="compile_now_poll.scan_failed",
+                    correlation_id=correlation_id,
+                )
             except Exception as exc:  # noqa: BLE001 — per-job fence; one bad job never blocks the rest
                 stats.errors += 1
                 error_log.log(

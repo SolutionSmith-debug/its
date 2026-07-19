@@ -282,6 +282,16 @@ def _read_str_setting(key: str, fallback: str, workstream: str | None = None) ->
         return fallback
     except smartsheet_client.SmartsheetCircuitOpenError:
         return fallback
+    except smartsheet_client.SmartsheetError as exc:
+        # Transient read failure (timeout / 5xx) — a single-cycle blip must not
+        # escape to @its_error_log as a spurious CRITICAL. WARN + fall open to
+        # the fallback, same disposition as the circuit-open branch above.
+        error_log.log(
+            Severity.WARN, SCRIPT_NAME,
+            f"config read failed for {key}: {exc!r} — using fallback {fallback!r}",
+            error_code="config_read_error",
+        )
+        return fallback
     return raw if isinstance(raw, str) and raw else fallback
 
 

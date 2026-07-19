@@ -68,6 +68,8 @@ def stub(mocker) -> dict[str, MagicMock]:
         "wsr": mocker.patch.object(weekly_generate.wsr_review, "add_wsr_row", return_value=123),
         "evergreen": mocker.patch.object(generate_core, "_read_str_setting", return_value="the office"),
         "review": mocker.patch.object(generate_core.review_queue, "add"),
+        # Dedupe read inside _safe_review_queue (2026-07-19): no PENDING rows by default.
+        "pending": mocker.patch.object(generate_core.review_queue, "get_pending", return_value=[]),
         "marker": mocker.patch.object(generate_core, "_write_watchdog_marker"),
         "log": mocker.patch.object(generate_core.error_log, "log"),
     }
@@ -480,3 +482,72 @@ def test_compile_mutex_contended_safety_compiles_anyway(stub, tmp_path, mocker):
     run_per_job.assert_called_once()  # fail-open: the compile ran despite contention
     assert mutex_warn.call_count == 1
     assert mutex_warn.call_args.kwargs["error_code"] == "compile_mutex.contended"
+
+
+# ---- review-row dedupe in _safe_review_queue (error-hygiene 2026-07-19) ----
+
+
+def _dedupe_args():
+    week = generate_core.safety_week.week_bounds(ANCHOR)
+    return weekly_generate.SAFETY_GENERATE_CONFIG, _job(), week, generate_core.RunSummary()
+
+
+def test_review_row_dedupe_suppresses_duplicate_pending(mocker):
+    """A stuck Compile-Now retrying every ~90 s once appended a NEW PENDING row per attempt
+    (189 rows for one job-week in one day) — a matching PENDING row suppresses the add, with
+    a WARN (never silent). The match is per (job, week), NOT per error class: the pending
+    row's SmartsheetError vs this attempt's BoxError is still a duplicate."""
+    config, job, week, summary = _dedupe_args()
+    pending = [{
+        "Summary": f"weekly compile failed for {job.project_name} (job {job.job_id}) "
+                   f"week {week.start} (SmartsheetError)",
+    }]
+    get_pending = mocker.patch.object(
+        generate_core.review_queue, "get_pending", return_value=pending
+    )
+    add = mocker.patch.object(generate_core.review_queue, "add")
+    log = mocker.patch.object(generate_core.error_log, "log")
+
+    generate_core._safe_review_queue(config, job, week, "BoxError", "cid-1", summary)
+
+    get_pending.assert_called_once_with(config.workstream)
+    add.assert_not_called()
+    assert summary.review_queue_entries == 0
+    codes = [kw.get("error_code") for _, kw in log.call_args_list]
+    assert "weekly_generate.review_queue_deduped" in codes
+
+
+def test_review_row_appended_when_no_matching_pending(mocker):
+    """NOT suppressed: a PENDING row for a DIFFERENT job does not match — the add proceeds."""
+    config, job, week, summary = _dedupe_args()
+    pending = [{
+        "Summary": f"weekly compile failed for Other Job (job JOB-9) week {week.start} (X)",
+    }]
+    mocker.patch.object(generate_core.review_queue, "get_pending", return_value=pending)
+    add = mocker.patch.object(generate_core.review_queue, "add")
+    mocker.patch.object(generate_core.error_log, "log")
+
+    generate_core._safe_review_queue(config, job, week, "BoxError", "cid-1", summary)
+
+    add.assert_called_once()
+    assert summary.review_queue_entries == 1
+
+
+def test_review_row_dedupe_read_failure_appends_anyway(mocker):
+    """FAIL-OPEN: a dedupe-read error must never lose the first signal — append anyway."""
+    from shared.smartsheet_client import SmartsheetError
+
+    config, job, week, summary = _dedupe_args()
+    mocker.patch.object(
+        generate_core.review_queue, "get_pending",
+        side_effect=SmartsheetError("read timeout"),
+    )
+    add = mocker.patch.object(generate_core.review_queue, "add")
+    log = mocker.patch.object(generate_core.error_log, "log")
+
+    generate_core._safe_review_queue(config, job, week, "BoxError", "cid-1", summary)
+
+    add.assert_called_once()
+    assert summary.review_queue_entries == 1
+    codes = [kw.get("error_code") for _, kw in log.call_args_list]
+    assert "weekly_generate.review_queue_dedupe_read_failed" in codes

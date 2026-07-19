@@ -512,6 +512,28 @@ def test_alert_critical_truncates_long_message_in_subject(log_dir, send_alert_mo
     assert "…" in subject
 
 
+def test_alert_critical_sanitizes_whitespace_in_subject(log_dir, send_alert_mock):
+    # Resend rejects any newline in the subject field (HTTP 422 "The \n is
+    # not allowed in the subject field") — a message with \n/\r/\t in its
+    # first 80 chars (e.g. an HTML error body) must have ALL whitespace runs
+    # collapsed to single spaces in the SUBJECT before truncation. The body
+    # keeps the raw message.
+    messy = "HTTP 502: <html>\n<body>\terror\r\npage</body>"
+
+    log(Severity.CRITICAL, "s", messy)
+
+    subject, body = send_alert_mock.call_args.args
+    assert "\n" not in subject
+    assert "\r" not in subject
+    assert "\t" not in subject
+    # Exact sanitized form — asserting the collapsed text (not just the
+    # absence of control chars) proves the fix bites: the old code passed
+    # the raw message straight into the subject.
+    assert "HTTP 502: <html> <body> error page</body>" in subject
+    # Body keeps the raw (redacted) message untouched.
+    assert messy in body
+
+
 def test_alert_critical_resend_failure_does_not_raise(log_dir, send_alert_mock):
     # Any exception from the Resend path must be swallowed — the underlying
     # CRITICAL event was already captured by _local_log + _smartsheet_log.

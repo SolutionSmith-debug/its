@@ -141,6 +141,19 @@ def _read_str_setting(config: DaemonConfig, key: str, fallback: str) -> str:
         # Fail OPEN to the fallback so a degraded Smartsheet cannot crash the cycle
         # BEFORE it surfaces CIRCUIT_OPEN in its heartbeat. (Op Stds §3.1.)
         return fallback
+    except smartsheet_client.SmartsheetError as exc:
+        # Transient read failure (timeout / 5xx) — a single-cycle blip must not
+        # escape to @its_error_log as a spurious CRITICAL. WARN + fail OPEN to
+        # the fallback, same disposition as the circuit-open branch above.
+        # (Contrast _load_authorized_approvers below — the F22 SECURITY gate —
+        # which stays deliberately fail-CLOSED.)
+        error_log.log(
+            Severity.WARN,
+            config.script_name,
+            f"config read failed for {key}: {exc!r} — using fallback {fallback!r}",
+            error_code="config_read_error",
+        )
+        return fallback
     return raw if isinstance(raw, str) and raw else fallback
 
 
