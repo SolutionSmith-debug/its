@@ -235,6 +235,12 @@ error-chase over the remainder. Findings from the chase, not yet actioned:
   `critical` — residue from the already-fixed 2026-07-13 row-cap incident (PR #562's storm-mode fallback has
   been live since), kept unresolved deliberately as historical record, safe to resolve whenever. Trigger for
   the remaining 7: next `safety_reports/intake.py` touch, or the dormant-email-path excision decision.
+  **2026-07-19 correction (forensics pass): the "7× `safety_reports.intake` `uncaught_exception`, believed a
+  REAL still-open tuple bug" residual is FALSIFIED.** All 7 rows are pytest pollution from a single 9-minute
+  window on 2026-05-21 — the tracebacks contain mock frames and pytest tmpdir paths, and the production
+  `kill_switch` code cannot produce the `'tuple' object has no attribute 'value'` shape. No dormant-path code
+  fix or excision decision is needed for these rows. The 2× `scripts.watchdog` row-cap CRITICALs are likewise
+  confirmed stale (fix live since 2026-07-13, zero recurrence). Both classes cleared as benign.
 - **DASH-10 (on-the-horizon, WS2 follow-up) — dashboard native-app repackaging decision captured, not built.**
   Operator directed **Option A** for a future session: repackage the dashboard as a native macOS `.app` via
   `pywebview` + `py2app`, keeping the existing Tailscale-only exposure model unchanged (no new network
