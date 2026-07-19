@@ -277,6 +277,20 @@ error-chase over the remainder. Findings from the chase, not yet actioned:
   keep as test fixtures and populate JOB-000027's blank Safety Reports Contact Email; (b) sweep the 232
   stale rows for deleted jobs via the new verb; (c) the 4 "sheet-count near cap … margin 60" rows expose a
   margin==cap misconfig (`sheet_capacity` margin should be < the 60 cap) — an ITS_Config value fix.
+- **DASH-14 (found 2026-07-19, NOT fixed) — PR #613's config-read fence fix is not ported to 3 replicas.**
+  PR #613 fixed a class of bug where a daemon-local `_read_str_setting` config-row reader caught only
+  `smartsheet_client.SmartsheetNotFoundError` + `SmartsheetCircuitOpenError` before falling back to a
+  default — letting a generic single-cycle transient (`SmartsheetError` base: read-timeout, HTTP 500/502)
+  escape uncaught to `@its_error_log` as a full spurious CRITICAL instead of a WARN+fallback. The fix landed
+  in `po_materials/po_poll.py`, `subcontracts/subcontract_poll.py`, and `safety_reports/send_poll_core.py`
+  only. **Confirmed live via `grep` this session, the identical shape remains unfixed in 3 more readers:**
+  `safety_reports/compile_now_poll.py`'s own `_read_str_setting`, `field_ops/fieldops_sync.py`, and
+  `safety_reports/generate_core.py` — all three still catch only the two named exception types. This is a
+  direct 3-file port of PR #613's fix pattern, not a design question. **Deliberately NOT the same as** the
+  F22 `_load_authorized_approvers` gate in `send_poll_core.py`, which PR #613 correctly left untouched
+  (fail-closed on a config-read failure feeding an approval-authority list is the intended behavior, not a
+  bug). Trigger: next error-hygiene pass, or immediately if any of the three fires a spurious CRITICAL
+  again. See blueprint memory-archive §G70.3.
 
 **Activation lesson from this session's chase (not a tech-debt item, a process note):** a daemon's
 `ITS_Config` polling gate should be flipped `True` only **after** its matching Cloudflare Worker
