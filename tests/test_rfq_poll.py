@@ -398,6 +398,44 @@ def test_happy_path_files_ledger_review_and_receipts_last(_patch):
     _patch["flags_persist"].assert_not_called()
 
 
+# ---- bearer 401 (cycle-stop + catch-order; the PR-A downgrade bug class) ------------
+
+
+def test_bearer_401_mid_cycle_stops_and_persists_earned_flag(_patch):
+    """PROVE-THE-CONTROL-BITES: a 401 (PortalAuthError) raised mid-cycle — here on
+    the mark-filed POST of a LATER row, after an EARLIER (tampered) row already
+    earned a one-shot flag — STOPS the cycle (rfq_bearer_rejected CRITICAL; the
+    status pass never runs) AND still persists the earned flag (the finally-persist,
+    FIX 2). Everything stays queued in D1 for a safe re-attempt once the token is
+    fixed.
+
+    This RED-lights two ways: (a) if the flag-persist moved back out of the finally
+    into a return-value dirty bool, the mid-loop raise would skip it → a duplicate
+    CRITICAL/Review-Queue re-alert next cycle for the already-flagged row; (b) if
+    _rfq_pass (or _process_pending_rfq) caught PortalTransportError BEFORE
+    PortalAuthError, the 401 — a PortalTransportError SUBCLASS — would be swallowed
+    as a per-row transient: no _BearerRejectedError, no cycle-stop, no
+    rfq_bearer_rejected, and the status pass would run. The load-bearing catch order
+    is PortalAuthError first."""
+    tampered = _rfq_row(id=8, scope_text="tampered after signing")  # bad HMAC → flag "hmac"
+    clean = _rfq_row(id=7)  # verifies + files, then the mark-filed receipt 401s
+    _patch["pending"].return_value = [tampered, clean]
+    _patch["mark_filed"].side_effect = rfq_poll.portal_client.PortalAuthError("401")
+
+    stats = _run(_patch)
+
+    # Cycle STOPPED on the 401.
+    assert stats.bearer_rejected is True
+    assert "rfq_bearer_rejected" in _logged_codes(_patch)
+    # The whole cycle aborted — not just one row — so the status pass never ran.
+    _patch["status_sync"].assert_not_called()
+    # FIX 2: the flag the EARLIER (tampered) row earned this cycle still reached disk
+    # despite the mid-loop bearer abort (finally-persist, not a return-value bool).
+    _patch["flags_persist"].assert_called_once()
+    (persisted,), _ = _patch["flags_persist"].call_args
+    assert persisted == {"8": "hmac"}
+
+
 # ---- status pass (forward-only SENT mirror) -----------------------------------------
 
 

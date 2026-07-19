@@ -15,14 +15,15 @@ job that ITS runs on the MacBook. It answers, for each one: what it does, how of
 it fires, where its work comes from, which `ITS_Config` switch turns it on, where its
 liveness is reported, where its logs are, how it fails, and how to restart it.
 
-<!-- src: scripts/launchd/ (18 org.solutionsmith.its.*.plist files enumerated) | verified 2026-07-19 -->
-There are **18 launchd agents**, enumerated directly from `scripts/launchd/*.plist`
-(not from memory). Fourteen of them register with watchdog Check C for marker-staleness
-tracking; twelve write an ITS_Daemon_Health heartbeat row; the two sets overlap but are
+<!-- src: scripts/launchd/ (19 org.solutionsmith.its.*.plist files enumerated) | verified 2026-07-19 -->
+There are **19 launchd agents**, enumerated directly from `scripts/launchd/*.plist`
+(not from memory). Fifteen of them register with watchdog Check C for marker-staleness
+tracking; thirteen write an ITS_Daemon_Health heartbeat row; the two sets overlap but are
 not identical (the roster table below gives the exact split). Use the roster to jump to
 the daemon you care about, then read its H3 block. (The 17th — `subcontract-send`, the
-SC-S4 approval poller — and the 18th — `estimate-poll`, the ADR-0004 vendor-estimate
-importer — were added after this doc's first cut; see their rows + sections below.)
+SC-S4 approval poller — the 18th — `estimate-poll`, the ADR-0004 vendor-estimate
+importer — and the 19th — `rfq-poll`, the ADR-0004 outbound-RFQ generation daemon —
+were added after this doc's first cut; see their rows + sections below.)
 
 If you only need one thing: **to restart a daemon**, the dashboard verb is
 **kickstart** (Class-B ACT, PIN-gated); the shell fallback is
@@ -128,6 +129,7 @@ runtime.
 | `po-poll` | `po_materials.po_poll` | interval, **90s** default | Purchase Orders | yes | `po_poll` |
 | `po-send` | `po_materials.po_send_poll` | interval, **900s** default | Purchase Orders | yes | `po_send_poll` |
 | `estimate-poll` | `po_materials.estimate_poll` | interval, **120s** default | Purchase Orders | yes | `estimate_poll` |
+| `rfq-poll` | `po_materials.rfq_poll` | interval, **120s** default | Purchase Orders (RFQ) | yes | `rfq_poll` |
 | `subcontract-poll` | `subcontracts.subcontract_poll` | interval, **120s** default | Subcontracts | yes | `subcontract_poll` |
 | `subcontract-send` | `subcontracts.subcontract_send_poll` | interval, **900s** default | Subcontracts | yes | `subcontract_send_poll` |
 | `fieldops-sync` | `field_ops.fieldops_sync` | interval, **90s** default | Field Ops | yes | `fieldops_sync` |
@@ -138,9 +140,9 @@ runtime.
 | `watchdog` | `scripts/watchdog.py` | calendar, **daily 07:00** | System | no | (watches others) |
 | `dashboard` | `operator_dashboard` | **server** (KeepAlive) | System | no | (KeepAlive) |
 
-<!-- src: scripts/watchdog.py TRACKED_JOBS — 14 slugs (estimate_poll added); HeartbeatReporter( grep — 12 constructors | verified 2026-07-19 -->
-Note the two coverage sets do not fully overlap: **14** daemons write Check-C markers
-(the interval pollers plus the four calendar/hourly jobs), and **12** daemons write an
+<!-- src: scripts/watchdog.py TRACKED_JOBS — 15 slugs (estimate_poll + rfq_poll added); HeartbeatReporter( grep — 13 constructors | verified 2026-07-19 -->
+Note the two coverage sets do not fully overlap: **15** daemons write Check-C markers
+(the interval pollers plus the four calendar/hourly jobs), and **13** daemons write an
 ITS_Daemon_Health heartbeat row (the interval pollers plus the two §50 actuators). The
 two actuators (`publish-daemon`, `config-actuator`) heartbeat but are **not** in Check
 C; the calendar/hourly jobs (`weekly-generate`, `progress-generate`, `picklist-sync`,
@@ -298,6 +300,21 @@ the running plist holds the interval.
 | **Log** | `~/its/logs/launchd/estimate_poll.out.log` / `.err.log` |
 | **Known failure modes** | **Fail-CLOSED** on missing Worker base URL / estimate bearer / HMAC secret (CRITICAL + ERROR heartbeat, nothing polled). The bearer is the **dedicated** Keychain `ITS_PORTAL_ESTIMATE_TOKEN` (privilege-separated — scopes ONLY `/api/po/estimates/internal/*`; ADR-0004 red-team #1); a **401 anywhere stops the whole cycle** (`estimate_bearer_rejected` CRITICAL — a bad/rotated token never self-heals). Integrity failures (bad HMAC / digest / chunk set) and screen/doc-type refusals are one-shot-flagged (`~/its/state/estimate_poll_flagged.json` — delete an entry to retry after fixing the cause); transient Smartsheet/Box/transport errors leave the row claimed and retried next cycle. A hostile document can never kill the daemon — every hostile parse runs in the killable `estimate_sandbox` child and a wedged parse degrades the doc, not the cycle. §43 tree: `docs/runbooks/estimate_import_path.md`. |
 | **Restart** | Dashboard **kickstart**; shell `install.sh load org.solutionsmith.its.estimate-poll` |
+
+### rfq-poll — `po_materials.rfq_poll`
+
+<!-- src: po_materials/rfq_poll.py:1-79 (docstring) + :125,147-160 (gates/REQUIRED_CONFIG); scripts/launchd/install.sh:79,95 (config key / 120s default); scripts/watchdog.py:247-254 (TRACKED_JOBS slug) + :317-320 (10-min window) | verified 2026-07-19 -->
+
+| Field | Value |
+|---|---|
+| **Purpose** | Outbound-RFQ generation daemon (ADR-0004 Lane 2 R2 — the `po_poll` multi-pass model, one host / lock / heartbeat). ① **RFQ pass**: `GET /api/po/rfqs/internal/pending` → per row recompute the `rfq:v1` HMAC + constant-time verify → per PENDING vendor in the signed, sorted fan-out: resolve from the `ITS_Vendors` SoR (read-only, ADR decision 9) → deterministic **PRICE-FREE** render → Box file (§45 ROOT→job→"Purchase Orders"→"RFQs"; §47 version-on-conflict) → `RFQ_Log` + `RFQ_Pending_Review` row → `mark-filed` receipt (LAST, once per rfq — any earlier crash re-pulls the row and every step find-or-skips). ② **Status pass**: `RFQ_Pending_Review` SENT markers → `status-sync` (forward-only). SEND-FREE + AI-free; the actual vendor send is PR-D's `rfq_send`/`rfq_send_poll`. |
+| **Interval** | `StartInterval`, default **120s** (`po_materials.rfq_poll.poll_interval_seconds`) — staggers off `portal-poll` (60s) / `po-poll` (90s) |
+| **Source of work** | `GET /api/po/rfqs/internal/pending` (queued RFQs + lines + vendor rows + the `rfq:v1` hmac) |
+| **Config gates** | `po_materials.rfq_poll.polling_enabled` — **ships false (dark)**; the seeded ITS_Config row (`scripts/migrations/seed_rfq_config.py`) is the operator's switch. |
+| **Heartbeat row** | `po_materials.rfq_poll` — marker slug `rfq_poll` (window 10 min). WARNs until loaded AND the gate flipped (a loaded-but-dark daemon writes no marker by design). |
+| **Log** | `~/its/logs/launchd/rfq_poll.out.log` / `.err.log` |
+| **Known failure modes** | A bad-`rfq:v1`-HMAC or malformed-canonical row is one-shot-flagged (`state/rfq_poll_flagged.json`; CRITICAL + security Review-Queue row on first sighting) and never rendered/filed/marked — the row stays queued in D1 for forensics. An unknown vendor is a per-vendor Review-Queue fence (the OTHER vendors proceed); ALL-vendors-fenced withholds the receipt (never a silent drain). A **401** anywhere → `rfq_bearer_rejected` CRITICAL + the cycle STOPS (the RFQ bearer `ITS_PORTAL_RFQ_TOKEN` is privilege-separated from the PO and estimate tiers). Missing base URL / bearer / HMAC secret → fail-closed CRITICAL, nothing polled. §43 tree: `docs/runbooks/rfq_generation_path.md`. |
+| **Restart** | Dashboard **kickstart**; shell `install.sh load org.solutionsmith.its.rfq-poll` |
 
 ---
 
@@ -529,7 +546,7 @@ the gate is flipped.
   plist at `install.sh load` time. Editing the `poll_interval_seconds` ITS_Config row
   alone does nothing to a running daemon; re-load (or use the dashboard interval edit).
 - **A loaded dark daemon writes no Check-C marker.** `po-poll`, `po-send`,
-  `estimate-poll`, `subcontract-poll`, `progress-*`, and `compile-now-poll` will legitimately WARN in
+  `estimate-poll`, `rfq-poll`, `subcontract-poll`, `progress-*`, and `compile-now-poll` will legitimately WARN in
   Check C until the operator BOTH loads the plist AND flips at least one runtime gate.
   Register + activate together; an all-gates-false loaded daemon is an intentional dark
   no-op, not a fault.

@@ -395,7 +395,8 @@ export function registerRfqRoutes(app: FieldopsApp, gates: RfqGates): void {
       c.env.DB
         .prepare(
           "UPDATE rfq_vendors SET status='filed', box_pdf_file_id=?3, box_form_file_id=?4, " +
-            "review_row_id=?5 WHERE rfq_id=?1 AND vendor_key=?2 AND status='pending'",
+            "review_row_id=?5 WHERE rfq_id=?1 AND vendor_key=?2 AND status='pending' " +
+            "AND (SELECT status FROM rfqs WHERE id=?1)='queued'",
         )
         .bind(rfqId, u.vendor_key, u.box_pdf_file_id, u.box_form_file_id, u.review_row_id),
       auditStmtIfChanged(c, SYSTEM_ACTOR, "rfq_vendor_filed", `${rfqId}:${u.vendor_key}`, {
@@ -679,6 +680,14 @@ export function registerRfqRoutes(app: FieldopsApp, gates: RfqGates): void {
     const vendorRows = await loadVendorRows(c.env.DB, id);
     const vendorKeys = vendorRows.map((v) => v.vendor_key as string);
     if (vendorKeys.length === 0) return c.json({ error: "no_vendors" }, 422);
+
+    // TOCTOU re-check (ADR decision 9): findUnknownVendor (active=1) runs only at
+    // draft create/update. A vendor DEACTIVATED between the last draft-save and this
+    // generate must never be signed, queued, or filed — re-validate every vendor's
+    // active-status HERE and sign NOTHING on a miss. The draft is left untouched
+    // (the operator re-activates the vendor or drops it from the draft, then retries).
+    const inactive = await findUnknownVendor(c.env.DB, vendorKeys);
+    if (inactive !== null) return c.json({ error: "vendor_inactive", vendor_key: inactive }, 409);
 
     // MAX(seq)+1 over the job's ALLOCATED numbers. The number format is fixed
     // ('RFQ-' + job_no + '-' + NNN), so the seq starts at a computed offset; seq > 999

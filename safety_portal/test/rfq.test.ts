@@ -296,6 +296,24 @@ describe("generate", () => {
     expect(row.rfq_number).toBeNull();
     expect(row.hmac).toBeNull();
   });
+
+  it("re-checks vendor active-status at generate (TOCTOU): a vendor deactivated after the last draft-save → 409 vendor_inactive, nothing signed", async () => {
+    // Draft passes the draft-time findUnknownVendor(active=1) check with both vendors.
+    const created = await json<{ id: number }>(await p(admin, "/api/po/rfqs", draftBody()));
+    // Now DEACTIVATE one of them — the window generate must re-close (draft-time check is stale).
+    await env.DB.prepare("UPDATE po_vendors SET active=0 WHERE vendor_key='VEN-000002'").run();
+    const gen = await p(admin, `/api/po/rfqs/${created.id}/generate`, {});
+    expect(gen.status, await gen.clone().text()).toBe(409);
+    const body = await json<{ error: string; vendor_key: string }>(gen);
+    expect(body.error).toBe("vendor_inactive");
+    expect(body.vendor_key).toBe("VEN-000002");
+    // Nothing signed/queued — the draft is untouched (client re-activates the vendor and retries).
+    const row = (await rfqRow(created.id))!;
+    expect(row.status).toBe("draft");
+    expect(row.rfq_number).toBeNull();
+    expect(row.hmac).toBeNull();
+    expect(await auditCount("rfq_generate")).toBe(0);
+  });
 });
 
 // ── Bearer tier isolation, THREE ways (red-team #1) ───────────────────────────
@@ -396,6 +414,22 @@ describe("internal surface", () => {
     expect(((await rfqRow(id))!).status).toBe("generated");
     expect(await auditCount("rfq_vendor_filed")).toBe(2);
     expect(await auditCount("rfq_all_filed")).toBe(1);
+  });
+
+  it("mark-filed cannot flip a DRAFT rfq's vendor rows to filed (the vendor UPDATE is scoped on the parent being queued)", async () => {
+    // A draft (never generated) carries pending vendor rows, but a spoofed/replayed
+    // receipt against its id must never file them — the vendor UPDATE is parent-status
+    // scoped, so a non-queued rfq no-ops in-WHERE.
+    const created = await json<{ id: number }>(await p(admin, "/api/po/rfqs", draftBody()));
+    const res = await markFiled({
+      rfq_id: created.id,
+      vendor_results: [{ vendor_key: "VEN-000001", box_pdf_file_id: "bx-p1", review_row_id: "row-1" }],
+    });
+    expect(res.status, await res.clone().text()).toBe(200);
+    expect((await json<{ filed: number }>(res)).filed).toBe(0); // nothing flipped
+    expect(((await rfqRow(created.id))!).status).toBe("draft"); // still a draft
+    expect((await vendorRows(created.id)).every((v) => v.status === "pending")).toBe(true);
+    expect(await auditCount("rfq_vendor_filed")).toBe(0);
   });
 
   it("status-sync is forward-only: 'filed' is not syncable, responded-before-sent refuses, sent/responded derive the rfq status", async () => {

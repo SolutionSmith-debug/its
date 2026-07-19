@@ -534,13 +534,23 @@ def _rfq_pass(creds: _RfqCreds, counters: dict[str, int]) -> None:
         return
 
     flags = _load_flags()
-    flags_dirty = False
-    for row in pending:
-        counters["scanned"] += 1
-        if _process_pending_rfq(row, creds, counters, flags, purchaser):
-            flags_dirty = True
-    if flags_dirty:
-        _persist_flags(flags)
+    flags_before = dict(flags)
+    try:
+        for row in pending:
+            counters["scanned"] += 1
+            _process_pending_rfq(row, creds, counters, flags, purchaser)
+    finally:
+        # Persist-on-mutation via snapshot compare, in a finally — NOT a
+        # return-value dirty bool. A bearer abort (_BearerRejectedError raised out
+        # of the per-vendor fan-out / mark-filed post) leaves the loop AFTER
+        # _fence_rfq / _handle_rfq_hmac_failure already wrote the in-flight row's
+        # one-shot flag, and a return-value protocol cannot see that mutation (the
+        # raise skips the return). The finally guarantees every flag written this
+        # cycle — including the one the aborting row just earned — reaches disk, so
+        # a fixed-later bearer never replays a 120s CRITICAL/Review-Queue re-alert
+        # storm for already-flagged rows. (Mirrors estimate_poll, PR-A.)
+        if flags != flags_before:
+            _persist_flags(flags)
 
 
 def _process_pending_rfq(
