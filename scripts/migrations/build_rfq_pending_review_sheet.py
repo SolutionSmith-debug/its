@@ -66,9 +66,9 @@ COLUMN_SCHEMA: list[dict[str, Any]] = [
     {"title": "Job / Project", "type": "TEXT_NUMBER", "primary": True},
     {"title": "Job ID", "type": "TEXT_NUMBER",
      "description": "PROTOCOL SLOT — for RFQs this carries the VENDOR KEY (VEN-######), the "
-                    "ITS_Vendors join key rfq_send (PR-D) resolves the vendor recipient (TO) "
-                    "from at send time. Title kept as 'Job ID' so the shared send engine binds "
-                    "without surgery (the schema-twin contract)."},
+                    "ITS_Vendors join key rfq_send resolves the recipient (TO) from at send "
+                    "time. Title kept 'Job ID' so the shared send engine binds unchanged "
+                    "(schema-twin contract)."},
     {"title": "Week Of", "type": "DATE",
      "description": "PROTOCOL SLOT — for RFQs this carries the RFQ DATE. Title kept as 'Week "
                     "Of' for the engine bind (the schema-twin contract)."},
@@ -104,10 +104,9 @@ COLUMN_SCHEMA: list[dict[str, Any]] = [
      "description": "Machine join (rfq_id=<n>; rfq_number=<s>; vendor_key=<k>) + retry state / "
                     "hold reasons. The reviewer edits Email Body, never this."},
     {"title": "Workstream", "type": "PICKLIST", "options": WORKSTREAM_OPTIONS,
-     "description": "Report-family tag (P1b cross-workstream send guard). This is the RFQ review "
-                    "sheet → 'po_materials_rfq' (DELIBERATELY distinct from the PO lane's "
-                    "'po_materials' so po_send can never dispatch an RFQ row); any other tag is "
-                    "contamination the send guard HARD-HELDs."},
+     "description": "Report-family tag (P1b send guard) → 'po_materials_rfq', DELIBERATELY "
+                    "distinct from the PO lane's 'po_materials' so po_send can never dispatch an "
+                    "RFQ row; any other tag is contamination the send guard HARD-HELDs."},
     {"title": "Last Modified", "type": "DATETIME", "systemColumnType": "MODIFIED_DATE"},
     {"title": "Modified By", "type": "CONTACT_LIST", "systemColumnType": "MODIFIED_BY"},
 ]
