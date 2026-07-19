@@ -168,6 +168,10 @@ export interface DraftBody {
   line_column_variant?: LineColumnVariant;
   approver_name?: string;
   approver_title?: string;
+  /** ADR-0004 estimate-import provenance: the po_estimates row this draft was imported
+   *  from. STORE-ONLY server-side (never enters the po:v1 HMAC); the draft route refuses
+   *  409 `estimate_already_imported` when a non-canceled PO already carries it. */
+  estimate_id?: number;
   line_items: DraftLine[];
 }
 

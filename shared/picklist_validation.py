@@ -398,6 +398,30 @@ if sheet_ids.SHEET_SUBCONTRACT_PENDING_REVIEW:
         "Workstream": _SUBCONTRACT_WORKSTREAM_VALUES,
     }
 
+# Estimate_Log (vendor-estimate importer, ADR-0004 Lane 1 / PR-A) — the ITS-owned
+# ledger po_materials/estimate_poll.py writes (built by
+# scripts/migrations/build_estimate_log_sheet.py; the builder-precedes-seed pattern:
+# SHEET_ESTIMATE_LOG lands in shared/sheet_ids.py seeded 0 until the builder runs,
+# so the same placeholder-0 guard as Trusted Contacts / PO_Log applies). Status
+# mirrors the D1 po_estimates.status machine verbatim PLUS `received` (the ledger's
+# intake stamp); Doc Type is the deterministic classifier vocabulary
+# (estimate_classify.classify_doc_type) plus `filled_form` (the Tier-0 xlsx
+# round-trip class, E6); Workstream reuses the tight {po_materials} set — the
+# estimate lane is a po_materials sub-lane, not a new workstream.
+_ESTIMATE_LOG_STATUS_VALUES: frozenset[str] = frozenset({
+    "received", "refused", "needs_review", "extracted", "imported", "rejected",
+    "superseded",
+})
+_ESTIMATE_DOC_TYPE_VALUES: frozenset[str] = frozenset({
+    "quote", "estimate", "proposal", "invoice", "ap_report", "filled_form", "other",
+})
+if sheet_ids.SHEET_ESTIMATE_LOG:
+    REGISTRY[sheet_ids.SHEET_ESTIMATE_LOG] = {
+        "Status": _ESTIMATE_LOG_STATUS_VALUES,
+        "Doc Type": _ESTIMATE_DOC_TYPE_VALUES,
+        "Workstream": _PO_WORKSTREAM_VALUES,
+    }
+
 REGISTRY.update(_build_per_project_entries())
 
 # Re-export StrEnum members so callers can introspect the registry's source

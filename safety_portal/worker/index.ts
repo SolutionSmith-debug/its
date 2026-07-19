@@ -34,6 +34,7 @@ import {
 import { registerProgressRollupRoutes } from "./fieldops_rollup";
 import { registerPoRoutes } from "./po";
 import { registerPoAttachmentRoutes } from "./po_attachments";
+import { registerPoEstimateRoutes } from "./po_estimates";
 import { registerConfigRoutes } from "./config";
 import { registerSubcontractRoutes } from "./subcontract";
 import {
@@ -229,6 +230,27 @@ const requirePoToken = createMiddleware<{ Bindings: Env; Variables: Vars }>(asyn
   const auth = c.req.header("Authorization") ?? "";
   const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
   if (!token || !c.env.PORTAL_PO_API_TOKEN || !(await safeTokenEqual(token, c.env.PORTAL_PO_API_TOKEN))) {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+  await next();
+});
+
+/**
+ * Bearer-token gate for /api/po/estimates/internal/* — the Mac-side estimate daemon
+ * (po_materials/estimate_poll.py, ADR-0004 E2). SEPARATE secret from the PO token and every
+ * other tier (privilege separation — ADR-0004 decision 4 / red-team #1): estimate_poll is the
+ * highest-exposure process in the system (it decodes hostile PDF/xlsx bytes through
+ * pdfplumber/Pillow/Quartz), so its token scopes ONLY the estimate pool — it must NOT be able
+ * to read the PO queue, write PO status/vendor state, drain the submission queue, provision
+ * users, touch the mirrors, or reach any send-lane control surface (including the future RFQ
+ * tier, which mints its OWN token) — and none of those tokens may read the estimate pool.
+ * Same fail-closed-on-missing-secret + constant-time posture as requireInternalToken.
+ * Passed into registerPoEstimateRoutes (worker/po_estimates.ts).
+ */
+const requireEstimateToken = createMiddleware<{ Bindings: Env; Variables: Vars }>(async (c, next) => {
+  const auth = c.req.header("Authorization") ?? "";
+  const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+  if (!token || !c.env.PORTAL_ESTIMATE_API_TOKEN || !(await safeTokenEqual(token, c.env.PORTAL_ESTIMATE_API_TOKEN))) {
     return c.json({ error: "unauthorized" }, 401);
   }
   await next();
@@ -495,6 +517,12 @@ registerPoRoutes(app, { requireSession, requireCapability, requirePoToken });
 //   SAME requirePoToken tier. §34 Option-D: the Worker bounds-gates + pools bytes in D1
 //   SEND-FREE; the Mac screens (po_attach_screen) before Box/Smartsheet. —
 registerPoAttachmentRoutes(app, { requireSession, requireCapability, requirePoToken });
+// — Vendor-estimate importer E1 (ADR-0004): office upload pool + disposition surface (session +
+//   cap.po.manage) + the Mac-ward /api/po/estimates/internal/* pool under the NEW
+//   requireEstimateToken tier (the extraction daemon's OWN bearer — red-team #1). SEND-FREE, zero
+//   AI: the Worker bounds-gates, signs est:v1, and pools bytes in D1; the Mac screens/classifies/
+//   extracts, and every dollar re-enters through the human disposition + the EXISTING draft route. —
+registerPoEstimateRoutes(app, { requireSession, requireCapability, requireEstimateToken });
 // — Config-editor queue (§50): generic versioned-config editor (session + per-workstream cap) +
 //   the /api/internal/config/* queue under the NEW requireConfigToken tier. SEND-FREE — the Mac
 //   config daemon (built LATER) is the sole privileged git-commit/deploy actuator. —

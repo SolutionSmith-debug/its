@@ -201,6 +201,7 @@ FOLDER_PO_JOBS = 8609175803586436             # ITS — Purchase Orders / Jobs �
 SHEET_ITS_VENDORS = 5404286845407108        # ITS_Vendors — vendor SoR (created 2026-07-09 by build_its_vendors_sheet.py)
 SHEET_PO_LOG = 3152487031721860             # PO_Log — operator-visible ledger mirror of D1 (created 2026-07-09 by build_po_log_sheet.py)
 SHEET_PO_PENDING_REVIEW = 1816168087113604  # PO_Pending_Review — PO review/approve/send surface (created 2026-07-09 by build_po_pending_review_sheet.py)
+SHEET_ESTIMATE_LOG = 0                      # Estimate_Log — vendor-estimate importer ledger (ADR-0004 E2; one row per uploaded estimate). OPERATOR: flip after scripts/migrations/build_estimate_log_sheet.py prints the real ID (builder-precedes-seed, same FLIP-precedes-SEED guard as the PO trio — estimate_log.py refuses writes while 0).
 
 # Subcontracts workstream (S1) — mirrors the PO trio in a standalone ITS — Subcontracts workspace
 # (§46 workspace-membership = approval authority). ITS_Subcontractors is the party SoR (supersedes the

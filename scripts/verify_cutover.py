@@ -171,14 +171,19 @@ BOX_SECRETS: tuple[str, ...] = (
 # Provisioned with WS1 S2; REQUIRED at cutover. Pre-provisioning runs of the
 # keychain check will FAIL naming it — that is correct, not noise.
 PO_SECRETS: tuple[str, ...] = ("ITS_PORTAL_PO_TOKEN",)
-# Dark-but-loaded daemon bearers (config-actuator §50 + subcontract-poll). Same
-# provision-even-while-dark rationale as ITS_PORTAL_PO_TOKEN: both daemons are LOADED
-# and runtime-gated false, so their bearer tokens must be present at cutover for the
-# activation cell-flip to work. ITS_PORTAL_CONFIG_TOKEN = po_materials/config_actuator.py
-# KC_BEARER; ITS_PORTAL_SUB_TOKEN = subcontracts/subcontract_poll.py KC_SUB_TOKEN.
+# Dark-but-loaded daemon bearers (config-actuator §50 + subcontract-poll + the
+# estimate lane). Same provision-even-while-dark rationale as ITS_PORTAL_PO_TOKEN:
+# the daemons are LOADED and runtime-gated false, so their bearer tokens must be
+# present at cutover for the activation cell-flip to work. ITS_PORTAL_CONFIG_TOKEN =
+# po_materials/config_actuator.py KC_BEARER; ITS_PORTAL_SUB_TOKEN =
+# subcontracts/subcontract_poll.py KC_SUB_TOKEN; ITS_PORTAL_ESTIMATE_TOKEN =
+# po_materials/estimate_poll.py (ADR-0004 red-team #1 — the estimate lane's OWN
+# bearer, scoping only /api/po/estimates/internal/*, held by the highest-exposure
+# process and deliberately separate from the future RFQ token).
 DARK_BEARER_SECRETS: tuple[str, ...] = (
     "ITS_PORTAL_CONFIG_TOKEN",
     "ITS_PORTAL_SUB_TOKEN",
+    "ITS_PORTAL_ESTIMATE_TOKEN",
 )
 # Operator-dashboard PIN (operator_dashboard/auth.py PIN_KEYCHAIN_KEY). The dashboard
 # ships dark + manual-start (no launchd plist), but the PIN is REQUIRED at cutover so the
@@ -301,6 +306,15 @@ CONFIG_ROWS: tuple[ConfigRow, ...] = (
     ),
     ConfigRow("subcontracts.subcontract_send.polling_enabled", "subcontracts", "non_empty"),
     ConfigRow("subcontracts.subcontract_send.scheduled_send_local", "subcontracts", "non_empty"),
+    # Vendor-estimate importer (ADR-0004 Lane 1, PR-A). All three estimate_poll rows are
+    # asserted SEEDED PRESENT (non_empty, NEVER forced 'true' — the dark-ship reflex: the
+    # lane ships dark; polling_enabled seeds 'false' so activation is a visible operator
+    # cell-flip, not a phantom hunt). poll_interval_seconds (default 120) + max_pages_preview
+    # (default 12) are seeded alongside so the daemon's observable-config resolution reads
+    # ITS_Config, not a silent hardcoded fallback.
+    ConfigRow("po_materials.estimate_poll.polling_enabled", "po_materials", "non_empty"),
+    ConfigRow("po_materials.estimate_poll.poll_interval_seconds", "po_materials", "non_empty"),
+    ConfigRow("po_materials.estimate_poll.max_pages_preview", "po_materials", "non_empty"),
 )
 
 
