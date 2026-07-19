@@ -93,7 +93,7 @@ dependencies = [
     # CGImageDestination* call surface used here is stable across 10.x–12.x.
     # Upper-bounded <13.0 so a future pyobjc major can't silently break the bridge
     # (the Pillow/openpyxl risk-bearing-dep convention in this file).
-    "pyobjc-framework-Quartz>=10.0,<13.0",
+    "pyobjc-framework-Quartz>=10.0,<13.0; sys_platform == 'darwin'",  # macOS-only: setup shells to sw_vers — env-marked so Linux CI installs (runtime is Darwin; estimate_preview degrades to [] without it)
 ]
 
 [project.optional-dependencies]
