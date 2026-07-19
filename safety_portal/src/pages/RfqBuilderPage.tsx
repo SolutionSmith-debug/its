@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import * as rfq from "../lib/rfq";
-import { fetchVendors, fetchJobShipTo, type Vendor } from "../lib/po";
+import { fetchVendors, fetchJobShipTo, fetchPoMaterials, catalogLineFields, type Vendor, type CatalogMaterial } from "../lib/po";
 import { fetchJobs, type Job } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { PageShell } from "../components/PageShell";
@@ -74,6 +74,10 @@ export function RfqBuilderPage({ onBack }: { onBack: () => void }) {
   const [lines, setLines] = useState<LineDraft[]>([emptyLine()]);
   const [vendorKeys, setVendorKeys] = useState<string[]>([]);
   const [vendorPick, setVendorPick] = useState("");
+  // Material-catalog TYPE vocabulary (the SAME price-free picker the PO builder uses —
+  // GET /api/po/materials, cap.po.manage; identity only, no price). Selecting a type fills a
+  // line's Part # + Description; free text over those fields stays the fallback for non-catalog items.
+  const [catalog, setCatalog] = useState<CatalogMaterial[]>([]);
 
   const reload = useCallback((status?: rfq.RfqStatus) => {
     setLoading(true);
@@ -88,6 +92,7 @@ export function RfqBuilderPage({ onBack }: { onBack: () => void }) {
     reload();
     fetchVendors().then(setVendors).catch(() => setVendors([]));
     fetchJobs().then(setJobs).catch(() => setJobs([]));
+    fetchPoMaterials().then(setCatalog).catch(() => setCatalog([]));
   }, [reload]);
 
   const vendorByKey = useMemo(() => new Map(vendors.map((v) => [v.vendor_key, v])), [vendors]);
@@ -269,6 +274,15 @@ export function RfqBuilderPage({ onBack }: { onBack: () => void }) {
     setLines((ls) => ls.map((l, j) => (j === i ? { ...l, ...patch } : l)));
   }
 
+  /** Pick from the material_catalog TYPE vocabulary: populate line `i`'s Part # + Description
+   *  from the chosen type (catalogLineFields — model_id + manufacturer/key_specs, sliced to the
+   *  64/512 caps). Qty/Unit/Note are left untouched, and typing over Part #/Description stays the
+   *  free-text fallback. Mirrors PoBuilderPage.applyCatalog (price-free — the route carries no cost). */
+  const applyCatalog = (i: number, id: number) => {
+    const m = catalog.find((x) => x.id === id);
+    if (m) setLine(i, catalogLineFields(m));
+  };
+
   // ── Builder face ───────────────────────────────────────────────────────────────────────────────
   if (editingId !== null) {
     return (
@@ -346,6 +360,29 @@ export function RfqBuilderPage({ onBack }: { onBack: () => void }) {
           <h3 className="jha__section-title">Line items (no prices — the vendor quotes them)</h3>
           {lines.map((l, i) => (
             <div key={i} className="jha__grid">
+              {catalog.length > 0 && (
+                <label className="field">
+                  <span className="field__label">Catalog</span>
+                  <select
+                    className="field__input"
+                    aria-label={`Line ${i + 1} pick from catalog`}
+                    value=""
+                    onChange={(e) => {
+                      const id = parseInt(e.target.value, 10);
+                      if (Number.isSafeInteger(id)) applyCatalog(i, id);
+                    }}
+                  >
+                    <option value="">— pick from catalog —</option>
+                    {catalog.map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.manufacturer ? `${m.manufacturer} · ` : ""}
+                        {m.model_id}
+                        {m.category ? ` (${m.category})` : ""}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
               <label className="field">
                 <span className="field__label">Part #</span>
                 <input className="field__input" value={l.part_number} maxLength={64} onChange={(e) => setLine(i, { part_number: e.target.value })} />
