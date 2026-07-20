@@ -104,9 +104,16 @@ def read_registry_state() -> list[dict[str, Any]]:
     ss = _load("shared.smartsheet_client")
     sid = _load("shared.sheet_ids")
     by_pair: dict[tuple[str, str], str] = {}
+    # The DESCRIPTION cell is carried alongside the value: for a
+    # `first_activation_gated` row it holds the go-live PRECONDITION list, and the
+    # activation ceremony asks the operator to ATTEST those preconditions are met.
+    # Attesting to text the page never showed is not an attestation.
+    descs: dict[tuple[str, str], str] = {}
     for r in ss.get_rows(sid.SHEET_CONFIG):
-        val = r.get("Value")
-        by_pair[(r.get("Setting"), r.get("Workstream"))] = val if isinstance(val, str) else ""
+        val, desc = r.get("Value"), r.get("Description")
+        key = (r.get("Setting"), r.get("Workstream"))
+        by_pair[key] = val if isinstance(val, str) else ""
+        descs[key] = desc if isinstance(desc, str) else ""
     out: list[dict[str, Any]] = []
     purposes = _purpose_map()
     for (setting, ws), entry in REGISTRY.items():
@@ -124,6 +131,7 @@ def read_registry_state() -> list[dict[str, Any]]:
                 "present": present,
                 "note": entry.note,
                 "purpose": purposes.get((setting, ws), ""),
+                "description": descs.get((setting, ws), ""),
                 "gated": entry.first_activation_gated,
                 "tier": entry.tier,
                 "elevated": entry.elevated_confirm,

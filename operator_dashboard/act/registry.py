@@ -223,11 +223,19 @@ _ENTRIES: list[ConfigEntry] = [
         note="outbound-RFQ generation (ADR-0004 Lane 2) — pause anytime; turning ON escalates",
     ),
     # rfq_send is the RFQ External Send Gate. Posture is deliberately IDENTICAL to
-    # po_send / subcontract_send rather than elevated_confirm: `first_activation_gated`
-    # REFUSES the dangerous direction outright (false->true escalates to Seth as a FIXED
-    # high-capability-class decision), while leaving true->false a fast one-step brake.
-    # Putting the elevated ceremony on this row would slow the EMERGENCY STOP without
-    # making activation any harder than "already refused".
+    # po_send / subcontract_send: `first_activation_gated=True`, tier "A".
+    #
+    # What that ACTUALLY does — stated precisely, because it is easy to overclaim:
+    #   - the PLAIN route (`apply_edit`) refuses a false->true flip and returns
+    #     ESCALATED; it never writes.
+    #   - the ELEVATED route (`apply_elevated_edit`, POST /act/config/elevated) CAN
+    #     complete that flip — but only with re-PIN + the typed setting name + an
+    #     explicit go-live ATTESTATION (`attested=True`). That harder ceremony IS the
+    #     D1-3 "escalate path"; activation is NOT code-blocked, and per §44 this
+    #     boundary is training-bounded, not structurally enforced.
+    #   - true->false (PAUSE) stays a fast one-step Class-A brake.
+    # Setting elevated_confirm=True would add ceremony to the EMERGENCY STOP without
+    # adding any to activation, which already carries the attestation.
     _e(
         "po_materials.rfq_send.polling_enabled",
         "po_materials",

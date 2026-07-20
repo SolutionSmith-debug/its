@@ -2096,5 +2096,8 @@ a control is running when it is not is worse than the gap itself (§55 truthful 
 per-workspace fail-soft), seed the baselines on first run, then restore `watchdog_checks=("U",)` on
 all three review-sheet nodes in `operator_dashboard/system_map.py`.
 
-**Revisit when:** the RFQ or PO send gate is flipped live — approver drift on an ACTIVE external send
-lane is materially higher-risk than on a dark one.
+**Urgency — the trigger is ALREADY met.** This was filed expecting "revisit when a procurement send
+gate goes live". Live-checking `ITS_Config` on 2026-07-19 found `po_materials.po_send`,
+`po_materials.rfq_send` and `subcontracts.subcontract_send` **all `polling_enabled = true`** on the
+mirror host. So all three procurement send lanes are ACTIVE with **no approver-drift detection on the
+workspaces whose share lists authorize their sends**. Treat as an open gap, not backlog.
