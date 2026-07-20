@@ -63,6 +63,22 @@ finding refuter-verified 2×) confirmed 5 findings, all fixed in the second comm
    handoff.
 5. Stacked `h2.page__heading` elements — RFQ builder + disposition sub-faces demoted to `h3`.
 
+- **Evening follow-ups (operator asks, all merged + ACTIVATED):**
+  - **#635 (`8bc582e`) sustained pending-fetch ERROR→CRITICAL escalation.** Answers "why did
+    the dashboard show nothing during the 21h estimate outage": the daemons ARE fully wired
+    (system-map nodes, watchdog markers, daemon-health rows all present for estimate/rfq/
+    rfq-send) — but the storm logged per-cycle ERROR and every fire surface keys on CRITICAL.
+    NEW `shared/sustained_failure.py` (the fieldops_sync/portal_poll counter extracted, §14:
+    four live consumers) wired into estimate/rfq/po/subcontract polls: 5 consecutive failing
+    cycles → `<lane>_pending_fetch_sustained` CRITICAL (fire surfaces + triple-fire push).
+  - **#636 (`8f41338`) full edit-job page, DEPLOYED.** The tracker's editor is now "Edit job
+    details": project name (seeded; visible hint that per-job folders are keyed by name, so a
+    rename affects FUTURE filings), Evergreen #, structured address, all contacts. Worker
+    /contacts gained OPTIONAL project_name (absent=unchanged via COALESCE — never blankable).
+  - **Coker filled** (operator request): job_no 2026.123 + 2160 Coker Butte Rd / Medford /
+    OR / 97504 (split from the one-line RFQ entry), written mirror-safe (version bump +
+    sync_state pending) directly in D1; the up-sync mirrors it to ITS_Active_Jobs.
+
 ## Verification
 
 - pytest: not run locally (SPA-only change; `test` job green on main CI)
