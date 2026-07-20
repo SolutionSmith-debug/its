@@ -99,8 +99,8 @@ const SIMPLE_PATHS: [Extract<AppRoute, { view: string }>["view"], string][] = [
   ["po-builder", "/purchase-orders"],
   ["po-vendors", "/vendors"],
   ["po-config", "/po-config"],
-  ["po-estimates", "/estimates"],
-  ["po-rfqs", "/rfqs"],
+  ["po-estimates", "/purchase-orders/estimates"],
+  ["po-rfqs", "/purchase-orders/rfqs"],
   ["subcontract-builder", "/subcontracts"],
   ["subcontractors", "/subcontractors"],
   ["fieldops-inspections", "/checklists"],
@@ -109,6 +109,12 @@ const SIMPLE_PATHS: [Extract<AppRoute, { view: string }>["view"], string][] = [
 ];
 const PATH_TO_VIEW = new Map(SIMPLE_PATHS.map(([v, p]) => [p, v]));
 const VIEW_TO_PATH = new Map(SIMPLE_PATHS.map(([v, p]) => [v, p]));
+// Legacy pre-fold paths: RFQs and Vendor Estimates were top-level pages before they became
+// Purchase-Orders tabs. Parse-only aliases (never in SIMPLE_PATHS — formatRoute must keep
+// emitting the canonical nested path); App's entry normalization rewrites a cold-loaded
+// legacy URL to the canonical one, so pre-fold bookmarks keep landing on the right tab.
+PATH_TO_VIEW.set("/estimates", "po-estimates");
+PATH_TO_VIEW.set("/rfqs", "po-rfqs");
 
 /** Hygiene cap on URL-borne params (untrusted input; the server is the real boundary). */
 const MAX_PARAM = 256;

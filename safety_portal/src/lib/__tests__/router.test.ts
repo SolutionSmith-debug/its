@@ -67,6 +67,12 @@ describe("router — round-trip law", () => {
   it("the shared-link URL for a job detail is the documented shape", () => {
     expect(formatRoute({ view: "fieldops-jobs", jobId: "JOB-000018" })).toBe("/jobs/JOB-000018");
   });
+
+  it("the PO-hub tab routes are the documented nested shape (2026-07 fold)", () => {
+    expect(formatRoute({ view: "po-builder" })).toBe("/purchase-orders");
+    expect(formatRoute({ view: "po-rfqs" })).toBe("/purchase-orders/rfqs");
+    expect(formatRoute({ view: "po-estimates" })).toBe("/purchase-orders/estimates");
+  });
 });
 
 describe("router — parse tolerance + canonicalization", () => {
@@ -74,6 +80,15 @@ describe("router — parse tolerance + canonicalization", () => {
     expect(parseRoute(loc("/"))).toEqual(HOME_ROUTE);
     expect(parseRoute(loc("/tasks/"))).toEqual({ view: "fieldops-tasks" });
     expect(parseRoute(loc("/jobs/JOB-1/"))).toEqual({ view: "fieldops-jobs", jobId: "JOB-1" });
+  });
+
+  it("legacy pre-fold /estimates and /rfqs still parse to the folded tabs (parse-only aliases)", () => {
+    expect(parseRoute(loc("/estimates"))).toEqual({ view: "po-estimates" });
+    expect(parseRoute(loc("/rfqs"))).toEqual({ view: "po-rfqs" });
+    // formatRoute never emits the legacy shape — the round-trip law stays on the canonical
+    // nested paths; App's entry normalization rewrites a cold-loaded legacy URL.
+    expect(formatRoute({ view: "po-estimates" })).toBe("/purchase-orders/estimates");
+    expect(formatRoute({ view: "po-rfqs" })).toBe("/purchase-orders/rfqs");
   });
 
   it("unknown query params on /submit are dropped; known ones survive", () => {

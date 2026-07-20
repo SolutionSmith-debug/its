@@ -11,7 +11,6 @@ import {
   type Vendor,
 } from "../lib/po";
 import { fetchRfq, type RfqDetail } from "../lib/rfq";
-import { PageShell } from "../components/PageShell";
 
 // Vendor-estimate DISPOSITION screen (ADR-0004 E3) — the human fidelity control and the
 // first-class replacement for the estimator's highlight color-coding. Left: the rendered
@@ -56,12 +55,12 @@ function lineUnitCostCents(l: est.ExtractionLine): number | null {
 export function EstimateDispositionPage({
   estimateId,
   onClose,
-  onHome,
 }: {
   estimateId: number;
-  /** Leave the screen; an optional notice rides back to the tracker's banner. */
-  onClose: (notice?: { ok: boolean; text: string }) => void;
-  onHome: () => void;
+  /** Leave the screen; an optional notice rides back to the tracker's banner. A successful
+   *  import ALSO carries the minted draft-PO id structurally (not just in copy), so the
+   *  Purchase-Orders hub can flip to the Orders tab and open the draft for editing. */
+  onClose: (notice?: { ok: boolean; text: string }, importedPoId?: number) => void;
 }) {
   const [detail, setDetail] = useState<est.EstimateDetail | null>(null);
   const [vendors, setVendors] = useState<Vendor[]>([]);
@@ -244,7 +243,9 @@ export function EstimateDispositionPage({
         return;
       }
       setBusy(false);
-      onClose({ ok: true, text: `Imported into draft PO #${poId} — finish it in Purchase Orders.` });
+      // The hub consumes the structural poId: flips to the Orders tab and opens the draft
+      // for editing. The notice is the fallback banner if no hand-off is wired.
+      onClose({ ok: true, text: `Imported into draft PO #${poId} — finish it on the Purchase Orders tab.` }, poId);
     } catch (err) {
       setMsg({
         ok: false,
@@ -277,20 +278,16 @@ export function EstimateDispositionPage({
   // ── Render ────────────────────────────────────────────────────────────────────────────────────
   if (error) {
     return (
-      <PageShell onHome={onHome}>
+      <>
         <div className="banner banner--err">{error}</div>
         <button className="btn btn--secondary" onClick={() => onClose()}>
           ← Back to estimates
         </button>
-      </PageShell>
+      </>
     );
   }
   if (detail === null) {
-    return (
-      <PageShell onHome={onHome}>
-        <p className="muted">Loading…</p>
-      </PageShell>
-    );
+    return <p className="muted">Loading…</p>;
   }
 
   const e = detail.estimate;
@@ -352,7 +349,7 @@ export function EstimateDispositionPage({
   );
 
   return (
-    <PageShell onHome={onHome}>
+    <>
       <div className="dash-row">
         <button className="btn btn--secondary" onClick={() => onClose()}>
           ← Back to estimates
@@ -638,6 +635,6 @@ export function EstimateDispositionPage({
           </section>
         </>
       )}
-    </PageShell>
+    </>
   );
 }

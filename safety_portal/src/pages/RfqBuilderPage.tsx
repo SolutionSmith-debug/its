@@ -3,9 +3,11 @@ import * as rfq from "../lib/rfq";
 import { fetchVendors, fetchJobShipTo, fetchPoMaterials, catalogLineFields, type Vendor, type CatalogMaterial } from "../lib/po";
 import { fetchJobs, type Job } from "../lib/api";
 import { useAuth } from "../lib/auth";
-import { PageShell } from "../components/PageShell";
 
 // RFQ composer R1 (ADR-0004) — the office multi-vendor Request-for-Quote builder + tracker.
+// FOLDED (2026-07): renders as the "RFQs" TAB PANEL inside PurchaseOrdersPage (the hub owns
+// the PageShell + tab strip beside the Orders / Vendor Estimates panels); the panel stays
+// mounted across tab flips, so a half-composed RFQ survives a glance at the other tabs.
 // One page, two faces (the EstimatesPage/PoBuilderPage shape): the TRACKER (every RFQ from
 // GET /api/po/rfqs with per-vendor status badges) and the BUILDER (job pick with the PO
 // ship-to autofill, scope, due date, a PRICE-FREE line grid, and the multi-vendor chip
@@ -47,7 +49,7 @@ interface LineDraft {
 }
 const emptyLine = (): LineDraft => ({ part_number: "", description: "", qty: "", unit: "", line_note: "" });
 
-export function RfqBuilderPage({ onBack }: { onBack: () => void }) {
+export function RfqBuilderPage() {
   const { user } = useAuth();
   const caps = user?.capabilities ?? [];
   const canManage = caps.includes("cap.po.manage"); // UI affordance only — the Worker re-gates
@@ -286,7 +288,7 @@ export function RfqBuilderPage({ onBack }: { onBack: () => void }) {
   // ── Builder face ───────────────────────────────────────────────────────────────────────────────
   if (editingId !== null) {
     return (
-      <PageShell onHome={onBack}>
+      <>
         <h2 className="page__heading">{editingId > 0 ? "Edit RFQ draft" : "New RFQ"}</h2>
         {msg && <div className={`banner ${msg.ok ? "banner--ok" : "banner--err"}`}>{msg.text}</div>}
 
@@ -491,15 +493,14 @@ export function RfqBuilderPage({ onBack }: { onBack: () => void }) {
             {busy ? "Working…" : "Generate RFQ"}
           </button>
         </div>
-      </PageShell>
+      </>
     );
   }
 
   // ── Tracker face ───────────────────────────────────────────────────────────────────────────────
   const STATUSES = Object.keys(rfq.RFQ_STATUS_LABEL) as rfq.RfqStatus[];
   return (
-    <PageShell onHome={onBack}>
-      <h2 className="page__heading">RFQs</h2>
+    <>
       <p className="dash__intro">
         Compose a price-free Request for Quote for up to {rfq.MAX_RFQ_VENDORS} vendors at once. Generate
         queues it for per-vendor rendering (an RFQ PDF plus a fillable quote form each); sending happens
@@ -590,6 +591,6 @@ export function RfqBuilderPage({ onBack }: { onBack: () => void }) {
           ))}
         </div>
       )}
-    </PageShell>
+    </>
   );
 }

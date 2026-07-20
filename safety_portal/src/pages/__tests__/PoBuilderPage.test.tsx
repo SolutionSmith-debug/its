@@ -182,14 +182,14 @@ async function openBuilderWithFixture(r: ReturnType<typeof render>) {
 describe("PoBuilderPage", () => {
   it("renders the tracker under cap.po.manage; write affordances hidden without the cap", async () => {
     vi.mocked(api.fetchPos).mockResolvedValue([poRow({})]);
-    const withCap = render(<PoBuilderPage onBack={() => {}} />);
+    const withCap = render(<PoBuilderPage onReviewEstimate={() => {}} onOpenEstimatesTab={() => {}} />);
     await waitFor(() => expect(withCap.getByText("Draft #1")).toBeTruthy());
     expect(withCap.getByText("+ New purchase order")).toBeTruthy();
     expect(withCap.getByText("Open")).toBeTruthy();
     withCap.unmount();
 
     vi.mocked(useAuth).mockReturnValue(authWith([]));
-    const withoutCap = render(<PoBuilderPage onBack={() => {}} />);
+    const withoutCap = render(<PoBuilderPage onReviewEstimate={() => {}} onOpenEstimatesTab={() => {}} />);
     await waitFor(() => expect(withoutCap.getByText("Draft #1")).toBeTruthy());
     expect(withoutCap.queryByText("+ New purchase order")).toBeNull();
     expect(withoutCap.queryByText("Open")).toBeNull();
@@ -197,7 +197,7 @@ describe("PoBuilderPage", () => {
   });
 
   it("mirrors the Worker's integer-cents math for display: 2-line fixture totals exactly", async () => {
-    const r = render(<PoBuilderPage onBack={() => {}} />);
+    const r = render(<PoBuilderPage onReviewEstimate={() => {}} onOpenEstimatesTab={() => {}} />);
     await openBuilderWithFixture(r);
 
     // Per-row extended: round(3 × 1234) = 3702, round(2 × 5) = 10.
@@ -213,7 +213,7 @@ describe("PoBuilderPage", () => {
   });
 
   it("suggests the job number from the YYYY.NNN project-name prefix (editable)", async () => {
-    const r = render(<PoBuilderPage onBack={() => {}} />);
+    const r = render(<PoBuilderPage onReviewEstimate={() => {}} onOpenEstimatesTab={() => {}} />);
     await waitFor(() => expect(api.fetchPos).toHaveBeenCalled());
     fireEvent.click(r.getByText("+ New purchase order"));
     fireEvent.change(r.getByLabelText("Job"), { target: { value: "JOB-000001" } });
@@ -224,7 +224,7 @@ describe("PoBuilderPage", () => {
   });
 
   it("the variant toggle swaps the line-grid column set (default ↔ per-watt)", async () => {
-    const r = render(<PoBuilderPage onBack={() => {}} />);
+    const r = render(<PoBuilderPage onReviewEstimate={() => {}} onOpenEstimatesTab={() => {}} />);
     await waitFor(() => expect(api.fetchPos).toHaveBeenCalled());
     fireEvent.click(r.getByText("+ New purchase order"));
 
@@ -245,7 +245,7 @@ describe("PoBuilderPage", () => {
   });
 
   it("pick from catalog populates a line's part number + description; qty/unit-cost stay operator-entered", async () => {
-    const r = render(<PoBuilderPage onBack={() => {}} />);
+    const r = render(<PoBuilderPage onReviewEstimate={() => {}} onOpenEstimatesTab={() => {}} />);
     await waitFor(() => expect(api.fetchPos).toHaveBeenCalled());
     fireEvent.click(r.getByText("+ New purchase order"));
     await waitFor(() => expect(api.fetchPoMaterials).toHaveBeenCalled());
@@ -273,7 +273,7 @@ describe("PoBuilderPage", () => {
       error: "totals_mismatch",
       recomputed: { subtotal_cents: 9999, tax_rate_bp: 900, tax_cents: 900, total_cents: 10899 },
     });
-    const r = render(<PoBuilderPage onBack={() => {}} />);
+    const r = render(<PoBuilderPage onReviewEstimate={() => {}} onOpenEstimatesTab={() => {}} />);
     await openBuilderWithFixture(r);
 
     fireEvent.click(r.getByText("Generate PO"));
@@ -305,7 +305,7 @@ describe("PoBuilderPage", () => {
       revision: 0,
       totals: savedTotals,
     });
-    const r = render(<PoBuilderPage onBack={() => {}} />);
+    const r = render(<PoBuilderPage onReviewEstimate={() => {}} onOpenEstimatesTab={() => {}} />);
     await openBuilderWithFixture(r);
 
     fireEvent.click(r.getByText("Generate PO"));
@@ -360,7 +360,7 @@ describe("PoBuilderPage", () => {
         },
       ],
     });
-    const r = render(<PoBuilderPage onBack={() => {}} />);
+    const r = render(<PoBuilderPage onReviewEstimate={() => {}} onOpenEstimatesTab={() => {}} />);
     await waitFor(() => expect(r.getByText("2023.126.0.0")).toBeTruthy());
 
     // The queued row offers Cancel (two-step), never Supersede; the sent row the reverse.
@@ -380,7 +380,7 @@ describe("PoBuilderPage", () => {
   it("a DRAFT card offers a two-step Delete (not Cancel); confirming calls deletePoDraft + reloads", async () => {
     vi.mocked(api.fetchPos).mockResolvedValue([poRow({ id: 9, status: "draft" })]);
     vi.mocked(api.deletePoDraft).mockResolvedValue(undefined);
-    const r = render(<PoBuilderPage onBack={() => {}} />);
+    const r = render(<PoBuilderPage onReviewEstimate={() => {}} onOpenEstimatesTab={() => {}} />);
     const card = (await waitFor(() => r.getByText("Draft #9"))).closest(".card") as HTMLElement;
     // A draft shows Delete (hard delete), NOT the soft Cancel PO.
     expect(within(card).getByText("Delete")).toBeTruthy();
@@ -415,7 +415,7 @@ describe("PoBuilderPage — ship-to auto-fill (S6 follow-up)", () => {
 
   it("populates the ship-to address + delivery contact from the routing SoR on job select", async () => {
     vi.mocked(api.fetchJobShipTo).mockResolvedValue(FILLED);
-    const r = render(<PoBuilderPage onBack={() => {}} />);
+    const r = render(<PoBuilderPage onReviewEstimate={() => {}} onOpenEstimatesTab={() => {}} />);
     await openBuilder(r);
     fireEvent.change(r.getByLabelText("Job"), { target: { value: "JOB-000001" } });
     await waitFor(() => expect(api.fetchJobShipTo).toHaveBeenCalledWith("JOB-000001"));
@@ -432,7 +432,7 @@ describe("PoBuilderPage — ship-to auto-fill (S6 follow-up)", () => {
 
   it("keeps auto-filled fields editable (auto-fill is a convenience, not a lock)", async () => {
     vi.mocked(api.fetchJobShipTo).mockResolvedValue(FILLED);
-    const r = render(<PoBuilderPage onBack={() => {}} />);
+    const r = render(<PoBuilderPage onReviewEstimate={() => {}} onOpenEstimatesTab={() => {}} />);
     await openBuilder(r);
     fireEvent.change(r.getByLabelText("Job"), { target: { value: "JOB-000001" } });
     await waitFor(() => expect((r.getByLabelText("Address") as HTMLInputElement).value).toBe("742 Panel Way"));
@@ -448,7 +448,7 @@ describe("PoBuilderPage — ship-to auto-fill (S6 follow-up)", () => {
 
   it("degrades silently when the ship-to read fails (list-derived fills stand, no crash)", async () => {
     vi.mocked(api.fetchJobShipTo).mockRejectedValue(new Error("403"));
-    const r = render(<PoBuilderPage onBack={() => {}} />);
+    const r = render(<PoBuilderPage onReviewEstimate={() => {}} onOpenEstimatesTab={() => {}} />);
     await openBuilder(r);
     fireEvent.change(r.getByLabelText("Job"), { target: { value: "JOB-000001" } });
     await waitFor(() => expect(api.fetchJobShipTo).toHaveBeenCalled());
@@ -467,7 +467,7 @@ describe("PoBuilderPage — configured delivery-contact suggestions (Feature C)"
   }
 
   it("attaches a <datalist> option per configured contact to the delivery-contact name input", async () => {
-    const r = render(<PoBuilderPage onBack={() => {}} />);
+    const r = render(<PoBuilderPage onReviewEstimate={() => {}} onOpenEstimatesTab={() => {}} />);
     await openBuilder(r);
     await waitFor(() => expect(api.fetchPoConfig).toHaveBeenCalled());
     const name = r.getByLabelText("Name") as HTMLInputElement;
@@ -480,7 +480,7 @@ describe("PoBuilderPage — configured delivery-contact suggestions (Feature C)"
   });
 
   it("a configured-name entry auto-fills phone + email; free text never blocked, never filled", async () => {
-    const r = render(<PoBuilderPage onBack={() => {}} />);
+    const r = render(<PoBuilderPage onReviewEstimate={() => {}} onOpenEstimatesTab={() => {}} />);
     await openBuilder(r);
     await waitFor(() => expect(api.fetchPoConfig).toHaveBeenCalled());
     // Free text first: no fill happens, the value stands (suggestion-only, never a gate).
@@ -498,7 +498,7 @@ describe("PoBuilderPage — configured delivery-contact suggestions (Feature C)"
   });
 
   it("the match is case-INSENSITIVE (aligns with the config editor's case-insensitive dedupe)", async () => {
-    const r = render(<PoBuilderPage onBack={() => {}} />);
+    const r = render(<PoBuilderPage onReviewEstimate={() => {}} onOpenEstimatesTab={() => {}} />);
     await openBuilder(r);
     await waitFor(() => expect(api.fetchPoConfig).toHaveBeenCalled());
     // A saved "Pat Yardman" must still autofill on a differing-case typed "pat yardman" —
@@ -509,7 +509,7 @@ describe("PoBuilderPage — configured delivery-contact suggestions (Feature C)"
   });
 
   it("a configured contact with an empty field never wipes an already-entered value", async () => {
-    const r = render(<PoBuilderPage onBack={() => {}} />);
+    const r = render(<PoBuilderPage onReviewEstimate={() => {}} onOpenEstimatesTab={() => {}} />);
     await openBuilder(r);
     await waitFor(() => expect(api.fetchPoConfig).toHaveBeenCalled());
     // Operator (or the job-stakeholder auto-fill) already entered an email.
@@ -522,7 +522,7 @@ describe("PoBuilderPage — configured delivery-contact suggestions (Feature C)"
 
   it("renders no datalist when no contacts are configured", async () => {
     vi.mocked(api.fetchPoConfig).mockResolvedValue({ ...CONFIG, delivery_contacts: [] });
-    const r = render(<PoBuilderPage onBack={() => {}} />);
+    const r = render(<PoBuilderPage onReviewEstimate={() => {}} onOpenEstimatesTab={() => {}} />);
     await openBuilder(r);
     await waitFor(() => expect(api.fetchPoConfig).toHaveBeenCalled());
     expect(r.container.querySelector("#po-delivery-contact-options")).toBeNull();
@@ -545,7 +545,7 @@ describe("PoBuilderPage — configured delivery-contact suggestions (Feature C)"
       delivery_contact_phone: "555-0100",
       delivery_contact_email: "sam@stakeholder.example",
     });
-    const r = render(<PoBuilderPage onBack={() => {}} />);
+    const r = render(<PoBuilderPage onReviewEstimate={() => {}} onOpenEstimatesTab={() => {}} />);
     await openBuilder(r);
     fireEvent.change(r.getByLabelText("Job"), { target: { value: "JOB-000001" } });
     await waitFor(() => expect((r.getByLabelText("Name") as HTMLInputElement).value).toBe("Stakeholder Sam"));
@@ -564,7 +564,7 @@ describe("PoBuilderPage — attachments (Feature B)", () => {
 
   it("gates the upload on a SAVED draft: save-first hint before, file input + empty list after", async () => {
     vi.mocked(api.createDraft).mockResolvedValue({ id: 7, totals: savedTotals });
-    const r = render(<PoBuilderPage onBack={() => {}} />);
+    const r = render(<PoBuilderPage onReviewEstimate={() => {}} onOpenEstimatesTab={() => {}} />);
     await openBuilderWithFixture(r);
 
     expect(r.getByText(/Save the draft first/)).toBeTruthy();
@@ -578,7 +578,7 @@ describe("PoBuilderPage — attachments (Feature B)", () => {
   it("uploads a picked file over the base64 wire and renders the refreshed list", async () => {
     vi.mocked(api.createDraft).mockResolvedValue({ id: 7, totals: savedTotals });
     vi.mocked(api.uploadPoAttachment).mockResolvedValue({ id: 1 });
-    const r = render(<PoBuilderPage onBack={() => {}} />);
+    const r = render(<PoBuilderPage onReviewEstimate={() => {}} onOpenEstimatesTab={() => {}} />);
     await openBuilderWithFixture(r);
     fireEvent.click(r.getByText("Save draft"));
     await waitFor(() => expect(r.getByLabelText("Attach files")).toBeTruthy());
@@ -598,7 +598,7 @@ describe("PoBuilderPage — attachments (Feature B)", () => {
 
   it("refuses a disallowed extension client-side (hint only — the Worker is the real gate)", async () => {
     vi.mocked(api.createDraft).mockResolvedValue({ id: 7, totals: savedTotals });
-    const r = render(<PoBuilderPage onBack={() => {}} />);
+    const r = render(<PoBuilderPage onReviewEstimate={() => {}} onOpenEstimatesTab={() => {}} />);
     await openBuilderWithFixture(r);
     fireEvent.click(r.getByText("Save draft"));
     await waitFor(() => expect(r.getByLabelText("Attach files")).toBeTruthy());
@@ -612,7 +612,7 @@ describe("PoBuilderPage — attachments (Feature B)", () => {
   it("removes an attachment from the draft via its remove button", async () => {
     vi.mocked(api.createDraft).mockResolvedValue({ id: 7, totals: savedTotals });
     vi.mocked(api.deletePoAttachment).mockResolvedValue(undefined);
-    const r = render(<PoBuilderPage onBack={() => {}} />);
+    const r = render(<PoBuilderPage onReviewEstimate={() => {}} onOpenEstimatesTab={() => {}} />);
     await openBuilderWithFixture(r);
     vi.mocked(api.fetchPoAttachments).mockResolvedValue([
       { id: 5, filename: "drawing.png", declared_mime: "image/png", size_bytes: 2048, status: "pending", created_at: 1_780_000_000 },
