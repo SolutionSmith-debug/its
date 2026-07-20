@@ -999,3 +999,57 @@ def test_get_config_stuck_missing_key_raises(mocker):
     _patch_requests(mocker, _mock_response(json_body={"unexpected": 1}))
     with pytest.raises(PortalTransportError, match="stuck"):
         portal_client.get_config_stuck(BASE, TOKEN, older_than=2700)
+
+
+# ---- get_estimates_pending (the estimates-key wire contract, 2026-07-20) ---------
+
+
+def test_get_estimates_pending_reads_the_estimates_key(mocker):
+    """The estimate tier's pending route serves `{estimates: [...]}` — the ONE
+    internal pending route whose key differs from `pending`. The client shipped
+    expecting `pending`; the drift was invisible to mocks on both sides and
+    surfaced live as every upload stuck at `pending` (629 failed cycles). This
+    test pins the CLIENT side to the deployed Worker's real shape."""
+    rows = [{"id": 1, "est_uuid": "u-1", "filename": "q.xlsx", "hmac": "h", "status": "pending"}]
+    req = _patch_requests(mocker, _mock_response(json_body={"estimates": rows}))
+
+    out = portal_client.get_estimates_pending(BASE, TOKEN, limit=10)
+
+    assert out == rows
+    args, kwargs = req.call_args
+    assert args == ("GET", "https://portal.example.com/api/po/estimates/internal/pending")
+    assert kwargs["headers"]["Authorization"] == "Bearer fake-bearer"
+
+
+def test_get_estimates_pending_rejects_a_pending_keyed_body(mocker):
+    """RED for the exact live failure: a `pending`-keyed body (the pre-fix client's
+    own expectation) is malformed transport for THIS route — loud, never silent."""
+    _patch_requests(mocker, _mock_response(json_body={"pending": []}))
+    with pytest.raises(portal_client.PortalTransportError, match="'estimates' array"):
+        portal_client.get_estimates_pending(BASE, TOKEN)
+
+
+def test_estimates_pending_wire_key_parity():
+    """CROSS-RUNTIME PIN: the Worker route and this client must agree on the
+    response key. Reads BOTH sources so neither side can drift alone again —
+    the failure class here (each side's mocks matching its own assumption) is
+    exactly what unit tests structurally cannot catch without this pin."""
+    import inspect
+    import re
+    from pathlib import Path
+
+    worker_src = (
+        Path(__file__).resolve().parent.parent
+        / "safety_portal" / "worker" / "po_estimates.ts"
+    ).read_text(encoding="utf-8")
+    # The pending route's success body in the Worker source.
+    route_block = worker_src.split("/api/po/estimates/internal/pending", 1)[1][:1200]
+    m = re.search(r"c\.json\(\{\s*(\w+):", route_block)
+    assert m is not None, "pending route success body not found in po_estimates.ts"
+    worker_key = m.group(1)
+
+    client_src = inspect.getsource(portal_client.get_estimates_pending)
+    assert f'data.get("{worker_key}")' in client_src, (
+        f"wire-key drift: worker serves {worker_key!r} but "
+        f"get_estimates_pending does not read it"
+    )
