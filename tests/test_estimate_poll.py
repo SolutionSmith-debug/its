@@ -289,6 +289,46 @@ def test_polling_gate_false_is_total_noop(_patch):
     _patch["marker"].assert_not_called()
 
 
+# ---- 7. credential resolution: transient-vs-absent ---------------------------------
+
+
+def test_no_creds_fail_closed_still_pages(_patch):
+    # The COMPANION to the transient test below, and the reason both must exist:
+    # the transient fix must not silence the REAL misconfig it was hiding behind.
+    # A genuinely absent base URL / bearer / secret does not self-heal, so it must
+    # still stop the daemon AND page CRITICAL.
+    _patch["creds"].return_value = None
+    stats = _run(_patch)
+    assert stats.halted_no_creds is True
+    assert stats.halted_transient is False
+    _patch["pending"].assert_not_called()
+    assert "estimate_creds_missing" in _logged_codes(_patch)
+    _, hb_kwargs = _patch["hb_row"].call_args
+    assert hb_kwargs["status"] == "ERROR"
+
+
+def test_transient_base_url_warns_and_skips_without_paging(_patch):
+    # A Smartsheet blip on the base-URL read is NOT a missing credential. Live on
+    # 2026-07-20 04:42Z a single GET failure in po_poll fell back to "" and fired a
+    # CRITICAL saying PO credentials were unset; both Keychain entries were fine and
+    # the daemon self-healed 90s later. That page was false, and it aimed the §43
+    # repair at re-provisioning secrets (a high-capability-class action) at a
+    # condition needing none. Every puller shared the flaw.
+    # Transient => WARN + skip, never the misconfig CRITICAL.
+    _patch["creds"].return_value = estimate_poll.TransientUnavailable(
+        reason="SmartsheetError: (<PreparedRequest [GET]>, None)"
+    )
+    stats = _run(_patch)
+    assert stats.halted_transient is True
+    assert stats.halted_no_creds is False
+    _patch["pending"].assert_not_called()  # still FAIL-CLOSED — it does not poll
+    codes = _logged_codes(_patch)
+    assert "estimate_creds_transient" in codes
+    assert "estimate_creds_missing" not in codes, "a transient read failure must NOT page"
+    _, hb_kwargs = _patch["hb_row"].call_args
+    assert hb_kwargs["status"] == "WARN"  # not ERROR — nothing is misconfigured
+
+
 # ---- 1./2. integrity path (tampered bytes / malformed chunks) ----------------------
 
 

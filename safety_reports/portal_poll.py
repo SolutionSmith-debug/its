@@ -71,6 +71,7 @@ from shared import (
     anomaly_logger,
     box_client,
     circuit_breaker,
+    creds_resolution,
     error_log,
     keychain,
     portal_client,
@@ -79,6 +80,8 @@ from shared import (
     smartsheet_client,
     state_io,
 )
+from shared.creds_resolution import CREDS_TRANSIENT as _CREDS_TRANSIENT
+from shared.creds_resolution import TransientUnavailable
 from shared.error_log import Severity, its_error_log
 from shared.heartbeat import HeartbeatReporter, HeartbeatStatus
 from shared.kill_switch import require_active
@@ -562,20 +565,15 @@ class _PortalCreds:
     secret: str
 
 
-class _TransientUnavailable:
-    """Sentinel distinct from None: credentials couldn't be resolved because Smartsheet was
-    TEMPORARILY unreachable (circuit OPEN, or a raw rate-limit/5xx blip before the breaker
-    trips) when reading the Worker base URL — NOT a misconfig. The ITS_Config row is fine;
-    Smartsheet is just briefly down. Self-heals when the backend recovers, so the caller
-    WARNs + skips the cycle instead of paging (CRITICAL). ``reason`` names the specific
-    transient condition for the WARN log / heartbeat summary."""
-
-    def __init__(self, reason: str = "Smartsheet circuit OPEN") -> None:
-        self.reason = reason
-
-
-# Singleton sentinel (compared via isinstance, so the exact identity is not load-bearing).
-CREDS_TRANSIENT = _TransientUnavailable()
+# The transient-vs-absent sentinel + its exception taxonomy were FIRST written here,
+# then hoisted verbatim into `shared/creds_resolution.py` so the other five pullers
+# (po_poll, rfq_poll, estimate_poll, subcontract_poll, fieldops_sync) stop repeating
+# the bug this module already fixed — each of them was still collapsing a failed
+# config READ into "credential absent" and paging falsely on every Smartsheet blip.
+# Re-exported under the original private names so every call site and test here is
+# unchanged; `shared.creds_resolution` is now the single implementation.
+_TransientUnavailable = TransientUnavailable
+CREDS_TRANSIENT = _CREDS_TRANSIENT
 
 
 def _resolve_credentials() -> _PortalCreds | _TransientUnavailable | None:
@@ -597,27 +595,14 @@ def _resolve_credentials() -> _PortalCreds | _TransientUnavailable | None:
     only the base-URL read distinguishes transient-vs-absent. `SmartsheetNotFoundError` (the row is
     genuinely absent) falls through to `None`, NOT transient.
     """
-    try:
-        raw = smartsheet_client.get_setting(CFG_WORKER_BASE_URL, workstream=WORKSTREAM)
-    except smartsheet_client.SmartsheetCircuitOpenError:
-        return CREDS_TRANSIENT
-    except smartsheet_client.SmartsheetNotFoundError:
-        raw = None
-    except (smartsheet_client.SmartsheetAuthError, smartsheet_client.SmartsheetPermissionError):
-        # Deterministic misconfig (revoked API token / lost share) — will NOT self-heal, so
-        # it must PAGE, not read as transient. Propagate → @its_error_log CRITICAL. Mirrors
-        # the circuit breaker's own ignore-list; must precede the generic catch below.
-        raise
-    except smartsheet_client.SmartsheetError as exc:
-        # TRANSIENT (non-circuit-open) Smartsheet failure — a rate-limit/5xx blip BEFORE the
-        # breaker trips: the breaker needs `failure_threshold` consecutive failures, so the
-        # first cycles of any outage (and every one-cycle blip) raise the raw error class,
-        # not SmartsheetCircuitOpenError. Same self-healing condition → same transient
-        # sentinel; previously this propagated → a misleading CRITICAL `uncaught_exception`
-        # (with no heartbeat row) while the creds were fine. Genuinely-absent config
-        # (NotFoundError above) still resolves to None → CRITICAL.
-        return _TransientUnavailable(reason=f"{type(exc).__name__}: {exc!r}")
-    base_url = raw if isinstance(raw, str) and raw else ""
+    # The exception taxonomy that used to be inlined here now lives in
+    # shared/creds_resolution.py — hoisted unchanged, so all six pullers classify a
+    # failed read identically instead of five of them repeating the bug this module
+    # had already fixed. Behaviour here is byte-for-byte what it was.
+    resolved = creds_resolution.read_base_url(CFG_WORKER_BASE_URL, WORKSTREAM)
+    if isinstance(resolved, TransientUnavailable):
+        return resolved
+    base_url = resolved or ""
     try:
         bearer = keychain.get_secret(KC_BEARER)
         secret = keychain.get_secret(KC_HMAC_SECRET)

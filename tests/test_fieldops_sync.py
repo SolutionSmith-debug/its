@@ -359,6 +359,31 @@ def test_fail_closed_when_credentials_missing(_patch):
     _patch["marker"].assert_not_called()
 
 
+def test_transient_base_url_warns_and_skips_without_paging(_patch):
+    # A Smartsheet blip on the base-URL read is NOT a missing credential. Live on
+    # 2026-07-20 04:42Z a single GET failure fell back to "" and fired a CRITICAL
+    # saying portal credentials were unset; the Keychain entry was fine and the
+    # daemon self-healed on the next cycle. That page was false, and it aimed the
+    # §43 repair at re-provisioning secrets (a high-capability-class action) at a
+    # condition needing none. Transient => WARN + skip, never the misconfig CRITICAL.
+    _patch["creds"].return_value = fieldops_sync.TransientUnavailable(
+        reason="SmartsheetError: (<PreparedRequest [GET]>, None)"
+    )
+
+    stats = fieldops_sync._sync_inside_lock()
+
+    assert stats.halted_transient is True
+    assert stats.halted_no_creds is False
+    _patch["pending"].assert_not_called()  # still FAIL-CLOSED — it does not sync
+    codes = [c.kwargs.get("error_code") for c in _patch["log"].call_args_list]
+    assert "fieldops_creds_transient" in codes
+    assert "fieldops_creds_missing" not in codes, "a transient read failure must NOT page"
+    assert _patch["hb_row"].call_args.kwargs["status"] == "WARN"  # not ERROR — nothing misconfigured
+    # No watchdog marker, exactly like the no-creds halt — a SUSTAINED outage must still
+    # surface via the Check-C staleness floor.
+    _patch["marker"].assert_not_called()
+
+
 def test_pending_auth_error_pages_and_writes_error_heartbeat(_patch):
     _patch["pending"].side_effect = fieldops_sync.portal_client.PortalAuthError("401")
 
