@@ -104,7 +104,8 @@ describe("RfqBuilderPage — materials-catalog line picker", () => {
 describe("RfqBuilderPage — Evergreen job-number autofill (0057)", () => {
   it("selecting a job fills the STORED job_no even when the name has no YYYY.NNN prefix", async () => {
     vi.mocked(fetchJobs).mockResolvedValue([
-      { job_id: "JOB-000028", project_name: "Coker", job_no: "2026.123" },
+      // CONFLICTING name prefix: the STORED number must win over the parse (precedence teeth).
+      { job_id: "JOB-000028", project_name: "2020.999 Coker", job_no: "2026.123" },
     ]);
     vi.mocked(po.fetchJobShipTo).mockResolvedValue({
       job_id: "JOB-000028", job_no: "", ship_to_name: "", ship_to_address: "",

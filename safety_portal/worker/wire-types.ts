@@ -152,7 +152,9 @@ export interface JobDetail {
   progress: number;
   /** The Evergreen YYYY.NNN tracking number ('' when unassigned) — 0057. */
   job_no: string;
-  routing: JobRoutingBlock;
+  /** The routing/SoR seed block — cap.jobtracker.manage ONLY; null for read-tier callers
+   *  (least-privilege: these are the external-send recipient/CC sets). */
+  routing: JobRoutingBlock | null;
   client: JobClient | null;
   crew: DetailCrewMember[];
   tasks: Task[];

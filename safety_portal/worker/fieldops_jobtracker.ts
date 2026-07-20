@@ -323,6 +323,12 @@ export function registerJobTrackerRoutes(app: FieldopsApp, gates: FieldopsGates)
 
       const caps = c.get("capabilities");
       const canSeeRoles = caps.has("cap.tasks.assign") || caps.has("cap.jobtracker.manage");
+      // The routing SoR block (stakeholder + the WSR/WPR send-recipient/CC emails) is
+      // served ONLY to the capability that can EDIT it (the seed block's sole consumer) —
+      // read-tier submitter/subcontractor accounts get null (adversarial review 2026-07-20:
+      // serving it unconditionally was a least-privilege regression; pre-0057 this data was
+      // reachable in-browser only at cap.po.manage / the internal token tier).
+      const canSeeRouting = caps.has("cap.jobtracker.manage");
       const [tasksRes, crewRes, timeRes, equipRes, inspRes, viewerRes] = await c.env.DB.batch([
         c.env.DB.prepare(sqlTasks).bind(...taskParams),
         c.env.DB.prepare(sqlCrew).bind(jobId, LEG_CAP),
@@ -371,7 +377,7 @@ export function registerJobTrackerRoutes(app: FieldopsApp, gates: FieldopsGates)
           // 0057 + routing SoR: display + edit-form seeding. CC arrays are stored as
           // JSON text; parse defensively (a malformed cell yields [] — never a throw).
           job_no: header.job_no ?? "",
-          routing: {
+          routing: !canSeeRouting ? null : {
             address: header.address ?? "",
             address_city: header.address_city ?? "",
             address_state: header.address_state ?? "",

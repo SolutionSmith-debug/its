@@ -294,6 +294,40 @@ describe("0057 — job_no + structured address", () => {
     ).toBe(400);
   });
 
+  it("the detail routing block is cap.jobtracker.manage-ONLY — read tier gets null (job_no still served)", async () => {
+    const jobId = await createOk(admin, {
+      project_name: "Coker",
+      job_no: "2026.123",
+      stakeholder_email: "owner@client.example",
+    });
+    // submitter holds cap.jobtracker.read (0013) but NOT manage — the send-recipient/CC
+    // block must be withheld (least-privilege; adversarial review 2026-07-20).
+    const asSubmitter = (await (
+      await call(`/api/fieldops/jobs/${jobId}`, { headers: { Cookie: submitter } })
+    ).json()) as any;
+    expect(asSubmitter.job.routing).toBeNull();
+    expect(asSubmitter.job.job_no).toBe("2026.123"); // the document-facing number stays visible
+    expect(JSON.stringify(asSubmitter)).not.toContain("owner@client.example");
+    const asAdmin = (await (
+      await call(`/api/fieldops/jobs/${jobId}`, { headers: { Cookie: admin } })
+    ).json()) as any;
+    expect(asAdmin.job.routing.stakeholder_email).toBe("owner@client.example");
+  });
+
+  it("/contacts is a FULL OVERWRITE: an ABSENT key clears the stored value (the SPA's clear gesture)", async () => {
+    const jobId = await createOk(admin, {
+      project_name: "X",
+      job_no: "2026.123",
+      address_city: "Rockford",
+    });
+    const res = await j(admin, `/api/fieldops/job/${jobId}/contacts`, { address: "1 Main St" });
+    expect(res.status).toBe(200);
+    const row = await jobRow(jobId);
+    expect(row.address).toBe("1 Main St");
+    expect(row.job_no).toBe("");        // absent → '' — the documented clear semantics
+    expect(row.address_city).toBe("");
+  });
+
   it("/contacts round-trips the 0057 fields (edit is how a legacy job gains its number)", async () => {
     const jobId = await createOk(admin, { project_name: "Legacy Job" });
     const res = await j(admin, `/api/fieldops/job/${jobId}/contacts`, {
