@@ -913,21 +913,28 @@ def _file_one_vendor(
         "review_row_id": str(review_row_id),
         "detail": f"due {due_date.isoformat()}" if due_date is not None else "",
     }
-    if rfq_log.find_row(rfq_number, vendor_key) is None:
+    existing_log = rfq_log.find_row(rfq_number, vendor_key)
+    if existing_log is None:
         log_row_id = rfq_log.append_row(**ledger_row_kwargs)
-        # Inline attach of BOTH files on the fresh ledger row (PO-lane parity, operator
-        # ask 2026-07-20 — the review row already carried them; the ledger row now does
-        # too). Fresh-append only: a crash-retried filing must not stack duplicates.
+    else:
+        log_row_id = int(existing_log["_row_id"])
+    # Inline attach of BOTH files on the ledger row (PO-lane parity, operator ask
+    # 2026-07-20 — the review row already carried them; the ledger row now does too).
+    # On EVERY service, not fresh-append-only (adversarial review 2026-07-20):
+    # attach_pdf_to_row REPLACES a same-filename attachment and both filenames are
+    # deterministic per (rfq, vendor), so this is duplicate-free — and an attach that
+    # failed in a cycle whose receipt also failed SELF-HEALS on the re-serve (the
+    # po_poll reference posture; a fresh-append-only guard made that miss permanent).
+    _attach_file_best_effort(
+        log_row_id, filename, pdf, correlation_id, sheet_id=rfq_log.sheet_id(),
+    )
+    if box_form_file_id and form_bytes is not None:
         _attach_file_best_effort(
-            log_row_id, filename, pdf, correlation_id, sheet_id=rfq_log.sheet_id(),
+            log_row_id,
+            rfq_naming.rfq_form_filename(rfq_number, vendor_name),
+            form_bytes, correlation_id,
+            content_type=_XLSX_MIME, sheet_id=rfq_log.sheet_id(),
         )
-        if box_form_file_id and form_bytes is not None:
-            _attach_file_best_effort(
-                log_row_id,
-                rfq_naming.rfq_form_filename(rfq_number, vendor_name),
-                form_bytes, correlation_id,
-                content_type=_XLSX_MIME, sheet_id=rfq_log.sheet_id(),
-            )
 
     # Per-job tracking sheet mirror (Feature A parity, operator ask 2026-07-20):
     # the SAME ledger row into "<Jobs>/<job>/RFQs" beside the job's "Purchase
