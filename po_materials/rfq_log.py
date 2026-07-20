@@ -86,17 +86,27 @@ def _sheet_id() -> int:
     return sheet_id
 
 
+def sheet_id() -> int:
+    """Public accessor for the flat RFQ_Log sheet id (the rfq_review.sheet_id()
+    shape) — rfq_poll's ledger-row inline attach targets it."""
+    return _sheet_id()
+
+
 def created_at_now() -> str:
     """Naive Pacific wall-clock 'YYYY-MM-DD HH:MM:SS' for the Created At cell."""
     return datetime.now(_PACIFIC).strftime("%Y-%m-%d %H:%M:%S")
 
 
-def find_row(rfq_number: str, vendor_key: str) -> dict[str, Any] | None:
+def find_row(
+    rfq_number: str, vendor_key: str, *, sheet_id: int | None = None
+) -> dict[str, Any] | None:
     """The ledger row for this (rfq_number, vendor_key), or None — the caller-side
     idempotency guard for crash-retried filings (a re-served RFQ must find-or-skip,
-    never duplicate a vendor's row)."""
+    never duplicate a vendor's row). `sheet_id` retargets a per-job tracking sheet
+    (Feature A mirror — structure-cloned from this Log, so the columns match);
+    None = the flat RFQ_Log."""
     rows = smartsheet_client.get_rows(
-        _sheet_id(),
+        sheet_id if sheet_id is not None else _sheet_id(),
         filters={COL_RFQ_NUMBER: rfq_number, COL_VENDOR_KEY: vendor_key},
     )
     return rows[0] if rows else None
@@ -113,20 +123,23 @@ def append_row(
     review_row_id: str = "",
     detail: str = "",
     created_at: str | None = None,
+    sheet_id: int | None = None,
 ) -> int:
     """APPEND one (rfq, vendor) ledger row; return its Smartsheet row ID.
 
     `status` must be REGISTRY-legal (`LEGAL_STATUSES`); the Workstream cell is
     hard-populated `po_materials` (the red-team #8 posture — a brand-new sheet has
     no pre-backfill excuse for an absent tag). Caller guards duplicates via
-    `find_row` first.
+    `find_row` first. `sheet_id` retargets a per-job tracking sheet (Feature A
+    mirror — structure-cloned from this Log by shared/job_sheet, so this writes
+    it unchanged); None = the flat RFQ_Log.
     """
     if status not in LEGAL_STATUSES:
         raise ValueError(
             f"illegal RFQ_Log status {status!r} (legal: {sorted(LEGAL_STATUSES)})"
         )
     [row_id] = smartsheet_client.add_rows(
-        _sheet_id(),
+        sheet_id if sheet_id is not None else _sheet_id(),
         [{
             COL_RFQ_NUMBER: rfq_number,
             COL_JOB_NO: job_no,

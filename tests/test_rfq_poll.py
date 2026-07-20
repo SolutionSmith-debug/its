@@ -153,6 +153,7 @@ def _patch(mocker):
     r_log.find_row.return_value = None
     r_log.append_row.return_value = 1
     r_log.update_status.return_value = True
+    r_log.sheet_id.return_value = 777  # the flat RFQ_Log (ledger-attach target)
     r_log.STATUS_FILED = "filed"
     r_log.STATUS_SENT = "sent"
     r_log.COL_STATUS = "Status"
@@ -232,6 +233,11 @@ def _patch(mocker):
         ),
         "rfq_log": r_log,
         "rfq_review": r_review,
+        # Per-job mirror (Feature A parity) — mocked here; dedicated tests below run the
+        # REAL helper with job_sheet mocked (the test_po_poll idiom).
+        "perjob": mocker.patch(
+            "po_materials.rfq_poll._append_perjob_rfq_row_best_effort", return_value=None
+        ),
         "review_q": mocker.patch("po_materials.rfq_poll.review_queue.add", return_value=1),
         "anomaly": mocker.patch(
             "po_materials.rfq_poll.anomaly_logger.check", return_value=None
@@ -622,3 +628,130 @@ def test_rfq_filename_and_title_are_vendor_scoped():
     )
     assert rfq_naming.rfq_pdf_filename("RFQ-1", None) == "RFQ RFQ-1.pdf"
     assert "Platt" in rfq_naming.rfq_pdf_title("RFQ-1", "Platt Electric Supply")
+
+
+# ---- RFQ_Log inline attachments + per-job mirror (PO-lane parity, 2026-07-20) ------
+
+# The REAL per-job helper, captured at import time (the fixture replaces the module
+# attribute) — used by the end-to-end fence test below (the test_po_poll idiom).
+_REAL_RFQ_PERJOB = rfq_poll._append_perjob_rfq_row_best_effort
+
+
+def test_filed_ledger_row_carries_both_inline_attachments(_patch):
+    """A FRESH RFQ_Log append attaches the RFQ PDF and the xlsx quote form to the
+    ledger row too (sheet_id=RFQ_Log) — the review row already carried them; the
+    operator's 'attached in the Smartsheet row' parity ask."""
+    _patch["pending"].return_value = [_rfq_row()]
+
+    _run(_patch)
+
+    ledger_calls = [
+        c for c in _patch["attach"].call_args_list if c.args[0] == 777
+    ]
+    assert len(ledger_calls) == 2
+    names = [c.args[2] for c in ledger_calls]
+    assert any(n.endswith(".pdf") for n in names)
+    assert any(n.endswith(".xlsx") for n in names)
+    # The review row keeps its own two attachments (sheet 555) — parity, not a move.
+    review_calls = [c for c in _patch["attach"].call_args_list if c.args[0] == 555]
+    assert len(review_calls) == 2
+
+
+def test_crash_retried_filing_self_heals_attachments_without_reappending(_patch):
+    """A re-served RFQ whose ledger row already exists (crash between append and
+    mark-filed) does NOT re-append the row — but the ledger attaches DO re-fire on
+    the existing row (replace-safe deterministic filenames), so an attach that
+    failed alongside a lost receipt SELF-HEALS on the retry. The per-job mirror
+    also still runs (its own find-or-skip is the duplicate guard)."""
+    _patch["rfq_log"].find_row.return_value = {"_row_id": "42"}
+    _patch["rfq_review"].find_row_by_rfq_vendor.return_value = {"_row_id": "9001"}
+    _patch["pending"].return_value = [_rfq_row()]
+
+    _run(_patch)
+
+    _patch["rfq_log"].append_row.assert_not_called()
+    ledger_calls = [c for c in _patch["attach"].call_args_list if c.args[0] == 777]
+    assert len(ledger_calls) == 2  # PDF + form, retargeted at the EXISTING row
+    assert all(c.args[1] == 42 for c in ledger_calls)
+    _patch["perjob"].assert_called_once()  # the mirror's self-heal path stays live
+
+
+def test_happy_path_mirrors_ledger_row_to_perjob_sheet(_patch):
+    """The filing path hands the SAME ledger-row kwargs to the per-job mirror,
+    keyed by the job name (the Box/PO per-job folder's name source)."""
+    _patch["pending"].return_value = [_rfq_row()]
+
+    _run(_patch)
+
+    _patch["perjob"].assert_called_once()
+    job_name, row_kwargs, _corr = _patch["perjob"].call_args.args
+    assert job_name == "Sunrise Solar"
+    assert row_kwargs["rfq_number"].startswith("RFQ-2026.001")
+    assert row_kwargs["vendor_key"] == "VEN-000001"
+    assert row_kwargs["status"] == "filed"
+
+
+def test_perjob_failure_never_fails_the_filing(_patch, mocker):
+    """END-TO-END fence proof: run the REAL helper with ensure_job_sheet raising —
+    the filing still completes, the receipt still posts, and the stable WARN
+    error_code is logged (Box + the flat RFQ_Log are the SoR)."""
+    _patch["perjob"].side_effect = _REAL_RFQ_PERJOB
+    mocker.patch(
+        "po_materials.rfq_poll.job_sheet.ensure_job_sheet",
+        side_effect=RuntimeError("boom"),
+    )
+    _patch["pending"].return_value = [_rfq_row()]
+
+    _run(_patch)
+
+    _patch["mark_filed"].assert_called_once()
+    assert "rfq_perjob_sheet_failed" in _logged_codes(_patch)
+
+
+def test_perjob_helper_ensures_and_appends_to_target_sheet(mocker):
+    """The helper wires FOLDER_PO_JOBS + the flat RFQ_Log as template + the
+    sanitized job folder name + the fixed "RFQs" sheet name, then appends with
+    sheet_id=<per-job> (independently idempotent per target sheet)."""
+    from shared import sheet_ids as si
+
+    ensure = mocker.patch(
+        "po_materials.rfq_poll.job_sheet.ensure_job_sheet", return_value=666
+    )
+    find = mocker.patch("po_materials.rfq_log.find_row", return_value=None)
+    append = mocker.patch("po_materials.rfq_log.append_row", return_value=1)
+    row_kwargs = {
+        "rfq_number": "RFQ-2026.001-001", "vendor_key": "VEN-000001",
+        "job_no": "2026.001", "vendor_name": "Platt", "status": "filed",
+    }
+
+    rfq_poll._append_perjob_rfq_row_best_effort("Sunrise Solar", row_kwargs, "corr-1")
+
+    ensure.assert_called_once_with(
+        si.FOLDER_PO_JOBS,
+        si.SHEET_RFQ_LOG,
+        "Sunrise Solar",
+        rfq_poll.PERJOB_RFQ_SHEET_NAME,
+        workspace_id=si.WORKSPACE_PURCHASE_ORDERS,
+        workstream="po_materials",
+        correlation_id="corr-1",
+    )
+    find.assert_called_once_with("RFQ-2026.001-001", "VEN-000001", sheet_id=666)
+    append.assert_called_once_with(sheet_id=666, **row_kwargs)
+
+
+def test_perjob_helper_is_idempotent_against_target_sheet(mocker):
+    """The (rfq, vendor) already present in the TARGET sheet → appends NOTHING —
+    the duplicate guard behind the 'independently idempotent' claim (a crash
+    between the flat append and the mirror re-runs cleanly). Mutation-proven:
+    dropping the None-check ships silent duplicate rows into a §51 sheet."""
+    mocker.patch("po_materials.rfq_poll.job_sheet.ensure_job_sheet", return_value=666)
+    mocker.patch("po_materials.rfq_log.find_row", return_value={"_row_id": "1"})
+    append = mocker.patch("po_materials.rfq_log.append_row", return_value=1)
+
+    rfq_poll._append_perjob_rfq_row_best_effort(
+        "Sunrise Solar",
+        {"rfq_number": "RFQ-2026.001-001", "vendor_key": "VEN-000001"},
+        "corr-1",
+    )
+
+    append.assert_not_called()

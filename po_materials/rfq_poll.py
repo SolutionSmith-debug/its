@@ -109,10 +109,12 @@ from shared import (
     circuit_breaker,
     creds_resolution,
     error_log,
+    job_sheet,
     keychain,
     portal_client,
     portal_hmac,
     review_queue,
+    sheet_ids,
     smartsheet_client,
     state_io,
 )
@@ -899,18 +901,49 @@ def _file_one_vendor(
             )
 
     # RFQ_Log (rfq, vendor) row (idempotent by RFQ Number + Vendor Key — the
-    # crash-retry find-or-skip the mark-filed replay contract depends on).
-    if rfq_log.find_row(rfq_number, vendor_key) is None:
-        rfq_log.append_row(
-            rfq_number=rfq_number,
-            job_no=str(rfq.get("job_no") or ""),
-            vendor_key=vendor_key,
-            vendor_name=vendor_name,
-            status=rfq_log.STATUS_FILED,
-            box_pdf_file_id=box_file_id,
-            review_row_id=str(review_row_id),
-            detail=f"due {due_date.isoformat()}" if due_date is not None else "",
+    # crash-retry find-or-skip the mark-filed replay contract depends on). The kwargs
+    # dict is shared with the per-job mirror below (the po_poll ledger_row_kwargs shape).
+    ledger_row_kwargs: dict[str, Any] = {
+        "rfq_number": rfq_number,
+        "job_no": str(rfq.get("job_no") or ""),
+        "vendor_key": vendor_key,
+        "vendor_name": vendor_name,
+        "status": rfq_log.STATUS_FILED,
+        "box_pdf_file_id": box_file_id,
+        "review_row_id": str(review_row_id),
+        "detail": f"due {due_date.isoformat()}" if due_date is not None else "",
+    }
+    existing_log = rfq_log.find_row(rfq_number, vendor_key)
+    if existing_log is None:
+        log_row_id = rfq_log.append_row(**ledger_row_kwargs)
+    else:
+        log_row_id = int(existing_log["_row_id"])
+    # Inline attach of BOTH files on the ledger row (PO-lane parity, operator ask
+    # 2026-07-20 — the review row already carried them; the ledger row now does too).
+    # On EVERY service, not fresh-append-only (adversarial review 2026-07-20):
+    # attach_pdf_to_row REPLACES a same-filename attachment and both filenames are
+    # deterministic per (rfq, vendor), so this is duplicate-free — and an attach that
+    # failed in a cycle whose receipt also failed SELF-HEALS on the re-serve (the
+    # po_poll reference posture; a fresh-append-only guard made that miss permanent).
+    _attach_file_best_effort(
+        log_row_id, filename, pdf, correlation_id, sheet_id=rfq_log.sheet_id(),
+    )
+    if box_form_file_id and form_bytes is not None:
+        _attach_file_best_effort(
+            log_row_id,
+            rfq_naming.rfq_form_filename(rfq_number, vendor_name),
+            form_bytes, correlation_id,
+            content_type=_XLSX_MIME, sheet_id=rfq_log.sheet_id(),
         )
+
+    # Per-job tracking sheet mirror (Feature A parity, operator ask 2026-07-20):
+    # the SAME ledger row into "<Jobs>/<job>/RFQs" beside the job's "Purchase
+    # Orders" sheet. BEST-EFFORT — fenced inside the helper; a per-job failure
+    # must NEVER fail the filing (Box + the flat RFQ_Log are the SoR).
+    _append_perjob_rfq_row_best_effort(
+        str(rfq.get("job_name") or "") or str(rfq.get("job_no") or ""),
+        ledger_row_kwargs, correlation_id,
+    )
 
     counters["vendors_filed"] += 1
     # The Worker's vendor_results shape (string ids). R4: box_form_file_id is the fillable
@@ -1067,22 +1100,71 @@ def _resolve_rfq_box_folder(job_name: str) -> str | None:
 
 def _attach_file_best_effort(
     row_id: int, filename: str, file_bytes: bytes, correlation_id: str,
-    *, content_type: str = "application/pdf",
+    *, content_type: str = "application/pdf", sheet_id: int | None = None,
 ) -> None:
-    """Attach the rendered file inline on the review row, BEST-EFFORT (Box is the
+    """Attach the rendered file inline on a Smartsheet row, BEST-EFFORT (Box is the
     SoR; a failure is a WARN that never fails the filing — mirror po_poll). Used for
     BOTH the RFQ PDF (default content-type) and the R4 fillable ``.xlsx`` quote form
-    (OpenXML content-type — so the attachment is not mislabeled)."""
+    (OpenXML content-type — so the attachment is not mislabeled). `sheet_id` picks
+    the target sheet: None = the review sheet (the original R2 surface); the filing
+    pass ALSO passes the flat RFQ_Log's id (PO-lane parity, operator ask
+    2026-07-20 — the ledger row carries the same inline copies)."""
     try:
         smartsheet_client.attach_pdf_to_row(
-            rfq_review.sheet_id(), row_id, filename, file_bytes, content_type=content_type
+            sheet_id if sheet_id is not None else rfq_review.sheet_id(),
+            row_id, filename, file_bytes, content_type=content_type,
         )
     except Exception as exc:  # noqa: BLE001 — supplementary inline copy; Box is the SoR
         error_log.log(
             Severity.WARN, SCRIPT_NAME,
-            f"review-row file attach failed (row {row_id}, {filename!r}): "
+            f"row file attach failed (row {row_id}, {filename!r}, "
+            f"sheet {'review' if sheet_id is None else sheet_id}): "
             f"{type(exc).__name__}: {exc!r}",
             error_code="rfq_row_file_attach_failed",
+            correlation_id=correlation_id,
+        )
+
+
+# The per-job tracking sheet's name inside the job folder — sits beside po_poll's
+# "Purchase Orders" sheet in the SAME "<Jobs>/<job>" folder (Feature A).
+PERJOB_RFQ_SHEET_NAME = "RFQs"
+
+
+def _append_perjob_rfq_row_best_effort(
+    job_name: str, row_kwargs: dict[str, Any], correlation_id: str
+) -> None:
+    """Mirror the freshly-filed ledger row into the job's per-job "RFQs" tracking
+    sheet (Feature A parity with po_poll._append_perjob_row_best_effort),
+    BEST-EFFORT — a failure is a WARN that never fails the filing (Box + the flat
+    RFQ_Log are the SoR).
+
+    Resolves the SAME job folder name the Box + PO per-job folders use
+    (`safety_naming.job_folder_name`), find-or-creates the folder + "RFQs" sheet
+    under sheet_ids.FOLDER_PO_JOBS (structure-cloned from the flat RFQ_Log, so
+    `append_row` writes it unchanged), then appends unless the (rfq, vendor) is
+    already present in the TARGET sheet (independent idempotency — a crash between
+    the flat append and this mirror re-runs cleanly)."""
+    try:
+        sid = job_sheet.ensure_job_sheet(
+            sheet_ids.FOLDER_PO_JOBS,
+            sheet_ids.SHEET_RFQ_LOG,
+            safety_naming.job_folder_name(job_name),
+            PERJOB_RFQ_SHEET_NAME,
+            workspace_id=sheet_ids.WORKSPACE_PURCHASE_ORDERS,  # §51 A1 margin-check target
+            workstream=WORKSTREAM,
+            correlation_id=correlation_id,
+        )
+        if rfq_log.find_row(
+            str(row_kwargs["rfq_number"]), str(row_kwargs["vendor_key"]), sheet_id=sid
+        ) is None:
+            rfq_log.append_row(sheet_id=sid, **row_kwargs)
+    except Exception as exc:  # noqa: BLE001 — supplementary per-job mirror; never fail the filing
+        error_log.log(
+            Severity.WARN, SCRIPT_NAME,
+            f"per-job RFQ tracking sheet append failed (job {job_name!r}, "
+            f"RFQ {row_kwargs.get('rfq_number')!r} / "
+            f"{row_kwargs.get('vendor_key')!r}): {type(exc).__name__}: {exc!r}",
+            error_code="rfq_perjob_sheet_failed",
             correlation_id=correlation_id,
         )
 
