@@ -103,6 +103,7 @@ outside the sentinel block.
 | 2026-07-10 | session_log | active | _–_ | [Cutover readiness gap — CL-01…CL-33 disposition + verify_cutover baseline (2026-07-10)](2026-07-10_cutover-gap.md) | _–_ |
 | 2026-07-10 | session_log | active | _–_ | [Overnight (autonomous): §50 config-editor Features 1 & 2 + Aug-7 cutover readiness](2026-07-10_overnight-config-editor-features-and-cutover-readiness.md) | #524, #525, #526 |
 | 2026-06-10 | session_log | active | safety_portal | [Session — Agent Optimization (Brief 2) + Safety Portal Hardening (Brief 1)](2026-06-10_agent-optimization-and-portal-hardening.md) | #260, #261, #263, #264, #265, #266 |
+| 2026-07-20 | session_log | closed | po_materials | [2026-07-20 — Fold RFQs + Vendor Estimates into a Purchase-Orders tab hub (#629)](2026-07-20_po-hub-tab-fold.md) | #629 |
 | 2026-07-19 | session_log | closed | operator_dashboard | [2026-07-19 — Error-hygiene forensic survey + dashboard system-map build (DASH-12/DASH-13)](2026-07-19_error-hygiene-and-dashboard-system-map.md) | #613, #614 |
 | 2026-07-19 | session_log | closed | po_materials | [2026-07-19 — RFQ / vendor-estimate lane: design → build (E1–E6 / R1–R4) → mirror go-live](2026-07-19_rfq-estimate-lane-build-and-mirror-golive.md) | #618, #620, #621, #623, #624, #625 |
 | 2026-07-17 | session_log | closed | infrastructure | [2026-07-17 — Error-flood triage + dashboard hardening](2026-07-17_error-triage-and-dashboard-hardening.md) | #608, #609 |
