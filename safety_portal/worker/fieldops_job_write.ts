@@ -324,6 +324,19 @@ export function registerJobWriteRoutes(app: FieldopsApp, gates: FieldopsGates): 
       const routed = parseRouting(body);
       if (!routed.ok) return c.json({ error: routed.error }, 400);
       const r = routed.routing;
+      // Optional project_name edit (the "edit ALL job information" surface, 2026-07-20):
+      // ABSENT = unchanged (a name can never be blanked through omission — unlike the
+      // routing block's documented full-overwrite); present → 1..MAX_NAME or 400. NOTE
+      // the operational consequence carried to the SPA copy: per-job Smartsheet/Box
+      // folders are find-or-create BY NAME at filing time, so a rename means FUTURE
+      // filings open a new folder — visible in the UI hint, never silent.
+      let projectName: string | null = null;
+      if (body.project_name !== undefined) {
+        projectName = typeof body.project_name === "string" ? body.project_name.trim() : "";
+        if (projectName.length < 1 || projectName.length > MAX_NAME) {
+          return c.json({ error: "invalid_project_name" }, 400);
+        }
+      }
       const actor = c.get("session").username;
       // Bump the version + re-dirty in the same batch; conditional audit logs only on a real row.
       const res = await c.env.DB.batch([
@@ -336,6 +349,7 @@ export function registerJobWriteRoutes(app: FieldopsApp, gates: FieldopsGates): 
                safety_contact_name=?6, safety_contact_email=?7, safety_cc=?8,
                progress_contact_name=?9, progress_contact_email=?10, progress_cc=?11,
                job_no=?12, address_city=?13, address_state=?14, address_zip=?15,
+               project_name=COALESCE(?16, project_name),
                mirror_version=mirror_version+1, sync_state='pending'
              WHERE job_id=?1 AND origin='portal'`,
           )
@@ -345,6 +359,7 @@ export function registerJobWriteRoutes(app: FieldopsApp, gates: FieldopsGates): 
             r.safety_contact_name, r.safety_contact_email, JSON.stringify(r.safety_cc),
             r.progress_contact_name, r.progress_contact_email, JSON.stringify(r.progress_cc),
             r.job_no, r.address_city, r.address_state, r.address_zip,
+            projectName,
           ),
         auditStmtIfChanged(c, actor, "job_contacts", jobId, { job_id: jobId }),
       ]);

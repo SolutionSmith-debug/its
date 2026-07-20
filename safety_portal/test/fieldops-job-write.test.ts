@@ -294,6 +294,21 @@ describe("0057 — job_no + structured address", () => {
     ).toBe(400);
   });
 
+  it("/contacts optional project_name: present renames, ABSENT leaves it unchanged, blank is 400", async () => {
+    const jobId = await createOk(admin, { project_name: "Old Name", job_no: "2026.123" });
+    // Absent → unchanged (the routing full-overwrite does NOT extend to the name).
+    expect((await j(admin, `/api/fieldops/job/${jobId}/contacts`, { address: "1 Main St" })).status).toBe(200);
+    let row = await jobRow(jobId);
+    expect(row.project_name).toBe("Old Name");
+    // Present → renamed (+ still re-dirtied for the mirror).
+    expect((await j(admin, `/api/fieldops/job/${jobId}/contacts`, { project_name: "New Name" })).status).toBe(200);
+    row = await jobRow(jobId);
+    expect(row.project_name).toBe("New Name");
+    expect(row.sync_state).toBe("pending");
+    // Blank/whitespace → 400 (a name can never be blanked).
+    expect((await j(admin, `/api/fieldops/job/${jobId}/contacts`, { project_name: "  " })).status).toBe(400);
+  });
+
   it("the detail routing block is cap.jobtracker.manage-ONLY — read tier gets null (job_no still served)", async () => {
     const jobId = await createOk(admin, {
       project_name: "Coker",
