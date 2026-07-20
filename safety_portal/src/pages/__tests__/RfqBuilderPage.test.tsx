@@ -15,6 +15,7 @@ vi.mock("../../lib/po", async (importOriginal) => {
     fetchVendors: vi.fn(),
     fetchJobShipTo: vi.fn(),
     fetchPoMaterials: vi.fn(),
+    createVendor: vi.fn(),
   };
 });
 vi.mock("../../lib/rfq", async (importOriginal) => {
@@ -97,5 +98,50 @@ describe("RfqBuilderPage — materials-catalog line picker", () => {
     const part = r.getByLabelText("Part #") as HTMLInputElement;
     fireEvent.change(part, { target: { value: "CUSTOM-123" } });
     expect(part.value).toBe("CUSTOM-123"); // free-text entry still works with no catalog
+  });
+});
+
+describe("RfqBuilderPage — quick-add vendor (free text, 2026-07-20)", () => {
+  it("typing a new vendor creates a DIRECTORY row through the existing route and joins it to the RFQ", async () => {
+    vi.mocked(po.createVendor).mockResolvedValue({ vendor_key: "VEN-000042" });
+    const r = render(<RfqBuilderPage />);
+    await waitFor(() => expect(rfq.fetchRfqs).toHaveBeenCalled());
+    fireEvent.click(r.getByText("New RFQ"));
+
+    fireEvent.click(r.getByText("+ New vendor (not in the list)"));
+    const addBtn = r.getByText("Add vendor") as HTMLButtonElement;
+    expect(addBtn.disabled).toBe(true); // name + valid email required BEFORE the route is hit
+    fireEvent.change(r.getByLabelText("New vendor name"), { target: { value: "Prairie Steel Co" } });
+    fireEvent.change(r.getByLabelText("New vendor contact email"), { target: { value: "quotes@prairiesteel.example" } });
+    expect(addBtn.disabled).toBe(false);
+    fireEvent.click(addBtn);
+
+    // The EXISTING vendor-create route is the write path (never a keyless free-text vendor —
+    // the send lane resolves the recipient from the directory by Vendor Key).
+    await waitFor(() =>
+      expect(po.createVendor).toHaveBeenCalledWith({
+        vendor_name: "Prairie Steel Co",
+        contact_email: "quotes@prairiesteel.example",
+        contact_name: undefined,
+      }),
+    );
+    // The minted key joined THIS RFQ: the vendor chip shows the typed name immediately.
+    await waitFor(() => expect(r.getByText(/Vendor added to the directory and this RFQ/)).toBeTruthy());
+    expect(r.getByLabelText("Remove Prairie Steel Co")).toBeTruthy();
+  });
+
+  it("a create failure surfaces in the banner and joins nothing", async () => {
+    vi.mocked(po.createVendor).mockRejectedValue(new Error("vendor_exists"));
+    const r = render(<RfqBuilderPage />);
+    await waitFor(() => expect(rfq.fetchRfqs).toHaveBeenCalled());
+    fireEvent.click(r.getByText("New RFQ"));
+
+    fireEvent.click(r.getByText("+ New vendor (not in the list)"));
+    fireEvent.change(r.getByLabelText("New vendor name"), { target: { value: "Prairie Steel Co" } });
+    fireEvent.change(r.getByLabelText("New vendor contact email"), { target: { value: "quotes@prairiesteel.example" } });
+    fireEvent.click(r.getByText("Add vendor"));
+
+    await waitFor(() => expect(r.getByText("vendor_exists")).toBeTruthy());
+    expect(r.getByText("No vendors picked yet.")).toBeTruthy();
   });
 });
