@@ -16,8 +16,6 @@ export type HomeNav =
   | "po-builder"
   | "po-vendors"
   | "po-config"
-  | "po-estimates"
-  | "po-rfqs"
   | "subcontractors"
   | "subcontract-builder";
 
@@ -104,24 +102,10 @@ const HOME_CARDS: HomeCard[] = [
     key: "po-builder",
     cap: "cap.po.manage",
     badge: "Admin",
+    // 2026-07 fold: RFQs + Vendor Estimates are TABS inside the Purchase Orders hub now
+    // (one card, one view entry) — their old standalone cards are gone, gate unchanged.
     title: "Purchase Orders",
-    desc: "Build a vendor PO — line items, tax, and terms — then track it from draft to sent.",
-    section: "office",
-  },
-  {
-    key: "po-estimates",
-    cap: "cap.po.manage",
-    badge: "Admin",
-    title: "Vendor Estimates",
-    desc: "Upload vendor quotes and estimates, review them line-by-line against the source, and import accepted lines into a draft PO.",
-    section: "office",
-  },
-  {
-    key: "po-rfqs",
-    cap: "cap.po.manage",
-    badge: "Admin",
-    title: "RFQs",
-    desc: "Compose a price-free Request for Quote for multiple vendors at once, then track each vendor's package from filed to responded.",
+    desc: "Build vendor POs — line items, tax, and terms — request quotes with price-free RFQs, and import vendor estimates into editable draft POs, all tracked from draft to sent.",
     section: "office",
   },
   {

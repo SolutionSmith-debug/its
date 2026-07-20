@@ -10,9 +10,9 @@ import {
   computeDisplayTotals,
 } from "../lib/po";
 import { fetchJobs, type Job } from "../lib/api";
+import * as est from "../lib/estimates";
 import { errorText } from "../lib/errorCopy";
 import { useAuth } from "../lib/auth";
-import { PageShell } from "../components/PageShell";
 
 // PO workstream S6 — the builder + status tracker (Aug-7 delivery program WS1). One page, two
 // faces: the TRACKER (every PO from GET /api/po/pos with per-status actions) and the BUILDER
@@ -20,6 +20,14 @@ import { PageShell } from "../components/PageShell";
 // review → Generate). cap.po.manage gates the whole view (router VIEW_CAPS) AND every write
 // affordance in-page; the Worker re-gates every call (Invariant 2 — SPA gating is convenience,
 // never the boundary).
+//
+// FOLDED (2026-07): this renders as the "Purchase Orders" TAB PANEL inside PurchaseOrdersPage
+// (which owns the PageShell + tab strip beside the RFQs / Vendor Estimates panels). The panel
+// stays mounted across tab flips (hub `hidden` pattern), so wizard state survives a mid-build
+// glance at the other tabs. Two cross-tab hooks: `onReviewEstimate` sends a picked reviewable
+// estimate to the DISPOSITION screen (the ADR-0004 §3 fidelity gate — the ONLY estimate→PO
+// path, deliberately not shortcut here), and `openDraftRequest` receives the freshly-imported
+// draft back so it opens in the builder still fully editable (lines, attachments, terms).
 //
 // MONEY (D8): all values are integer cents. The page mirrors the Worker's integer math for the
 // LIVE display (src/lib/po.ts computeDisplayTotals — the same rounding worker/po.ts signs), but
@@ -198,7 +206,18 @@ function FieldInput({
   );
 }
 
-export function PoBuilderPage({ onBack }: { onBack: () => void }) {
+export function PoBuilderPage({
+  onReviewEstimate,
+  onOpenEstimatesTab,
+  openDraftRequest,
+}: {
+  /** Open the disposition screen for a reviewable estimate (hub flips to the Estimates tab). */
+  onReviewEstimate: (estimateId: number) => void;
+  /** Jump to the Vendor Estimates tab (the "none ready — upload one" affordance). */
+  onOpenEstimatesTab: () => void;
+  /** Nonce-keyed one-shot from the hub: open this just-imported draft in the builder. */
+  openDraftRequest?: { id: number; nonce: number } | null;
+}) {
   const { user } = useAuth();
   const caps = user?.capabilities ?? [];
   const canManage = caps.includes("cap.po.manage"); // UI affordance only — the Worker re-gates
@@ -243,6 +262,26 @@ export function PoBuilderPage({ onBack }: { onBack: () => void }) {
   const [statusFilter, setStatusFilter] = useState<"all" | api.PoStatus>("all");
   const [armedCancelId, setArmedCancelId] = useState<number | null>(null);
   const [armedDeleteId, setArmedDeleteId] = useState<number | null>(null);
+
+  // ── "New PO from a vendor estimate" picker ─────────────────────────────────────────────────────
+  // On-demand list of reviewable estimates (extracted / needs_review). Picking one routes to the
+  // DISPOSITION screen (onReviewEstimate) — the human side-by-side accept is the only fidelity
+  // control (ADR-0004 decision 3), so this picker never imports lines itself. Refetched on every
+  // open (an import over on the Estimates tab goes stale otherwise); null = not loaded yet.
+  const [fromEstOpen, setFromEstOpen] = useState(false);
+  const [fromEstRows, setFromEstRows] = useState<est.EstimateRow[] | null>(null);
+
+  async function onOpenFromEstimate() {
+    setFromEstOpen(true);
+    setFromEstRows(null);
+    try {
+      const all = await est.fetchEstimates();
+      setFromEstRows(all.filter((r) => r.status === "extracted" || r.status === "needs_review"));
+    } catch {
+      setFromEstOpen(false);
+      setMsg({ ok: false, text: "Could not load the vendor-estimates list." });
+    }
+  }
 
   // ── Builder form state ─────────────────────────────────────────────────────────────────────────
   const [draftId, setDraftId] = useState<number | null>(null);
@@ -590,8 +629,9 @@ export function PoBuilderPage({ onBack }: { onBack: () => void }) {
     setBusy(false);
   }
 
-  /** Open an existing draft in the builder (tracker "Open", supersede clones). */
-  async function openDraft(id: number) {
+  /** Open an existing draft in the builder (tracker "Open", supersede clones, estimate
+   *  imports). Returns whether the open succeeded (callers layering a success banner). */
+  async function openDraft(id: number): Promise<boolean> {
     setBusy(true);
     setMsg(null);
     try {
@@ -645,11 +685,55 @@ export function PoBuilderPage({ onBack }: { onBack: () => void }) {
       // Attachment list is a best-effort convenience read — never blocks the open.
       api.fetchPoAttachments(po.id).then(setAttachments).catch(() => setAttachments([]));
       setView("builder");
+      setBusy(false);
+      return true;
     } catch (err) {
       setMsg({ ok: false, text: err instanceof Error ? err.message : "Could not open the draft." });
+      setBusy(false);
+      return false;
     }
-    setBusy(false);
   }
+
+  // Cross-tab one-shot: a disposition import over on the Estimates tab minted a draft PO and
+  // the hub handed it back here — open it in the builder, still fully editable, and refresh
+  // the tracker so the new draft row is visible when the user backs out. Two guards from the
+  // 2026-07-20 adversarial review: (a) the picker that started the round-trip closes (its
+  // list is stale the moment the import lands); (b) if the builder face is mid-edit on
+  // ANOTHER PO, opening the import would silently wipe that unsaved work — confirm first
+  // (the R3 discard-guard precedent), and on decline leave the import findable in the
+  // tracker, never silently dropped.
+  useEffect(() => {
+    if (!openDraftRequest) return;
+    const { id } = openDraftRequest;
+    setFromEstOpen(false);
+    setFromEstRows(null);
+    void (async () => {
+      if (
+        view === "builder" &&
+        !window.confirm(
+          `Open imported draft #${id} now? The purchase order you were editing will be replaced (unsaved changes are lost).`,
+        )
+      ) {
+        setMsg({
+          ok: true,
+          text: `Estimate imported into draft #${id} — open it from the list when you're ready.`,
+        });
+        reloadPos(statusFilter === "all" ? undefined : statusFilter);
+        return;
+      }
+      const ok = await openDraft(id);
+      if (ok) {
+        setMsg({
+          ok: true,
+          text: `Estimate imported into draft #${id} — adjust lines, attachments, and terms below, then Generate.`,
+        });
+      }
+      reloadPos(statusFilter === "all" ? undefined : statusFilter);
+    })();
+    // Deliberately keyed on the request nonce alone: openDraft/reloadPos are stable-enough
+    // in-component closures, and re-running on their identity would replay the open.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openDraftRequest]);
 
   /** Supersede a SENT PO: the Worker clones it into a new draft, which opens in the builder.
    *  A successor already in flight (409) opens instead — never a sibling. */
@@ -975,19 +1059,70 @@ export function PoBuilderPage({ onBack }: { onBack: () => void }) {
     );
   }
 
+  /** One reviewable estimate in the from-estimate picker. */
+  function fromEstimateRow(r: est.EstimateRow) {
+    const vendor = r.vendor_key ? vendorByKey.get(r.vendor_key) : undefined;
+    return (
+      <div key={r.id} className="dash-row">
+        <span className="dash-table__name">{r.filename}</span>
+        <span className="dash-chip">{r.job_no}</span>
+        {r.job_name ? <span className="dash-chip">{r.job_name}</span> : null}
+        <span className="dash-chip">{vendor?.vendor_name ?? r.vendor_key ?? "vendor unconfirmed"}</span>
+        <span className="dash-pill dash-pill--warn">{est.ESTIMATE_STATUS_LABEL[r.status] ?? r.status}</span>
+        <button className="btn btn--primary" disabled={busy} onClick={() => onReviewEstimate(r.id)}>
+          Review &amp; import
+        </button>
+      </div>
+    );
+  }
+
   const tracker = (
     <>
       {canManage ? (
-        <section className="card dash-section">
-          <button
-            className="btn btn--primary"
-            onClick={() => {
-              resetForm();
-              setView("builder");
-            }}
-          >
-            + New purchase order
-          </button>
+        <section className="card dash-section" aria-label="Start a purchase order">
+          <div className="jha__actions">
+            <button
+              className="btn btn--primary"
+              onClick={() => {
+                resetForm();
+                setView("builder");
+              }}
+            >
+              + New purchase order
+            </button>
+            {fromEstOpen ? (
+              <button className="btn btn--secondary" onClick={() => setFromEstOpen(false)}>
+                Hide vendor estimates
+              </button>
+            ) : (
+              <button className="btn btn--secondary" onClick={() => void onOpenFromEstimate()}>
+                New PO from a vendor estimate
+              </button>
+            )}
+          </div>
+          {fromEstOpen ? (
+            fromEstRows === null ? (
+              <p className="muted">Loading estimates…</p>
+            ) : fromEstRows.length === 0 ? (
+              <>
+                <p className="muted">
+                  No estimates are ready to import. Upload a vendor quote on the Vendor Estimates
+                  tab — once screened, it appears here for review.
+                </p>
+                <button className="btn btn--secondary" onClick={onOpenEstimatesTab}>
+                  Open Vendor Estimates
+                </button>
+              </>
+            ) : (
+              <>
+                <p className="muted">
+                  Pick an estimate to review side-by-side against the source document — accepted
+                  lines become an editable draft PO that opens right back here.
+                </p>
+                {fromEstRows.map(fromEstimateRow)}
+              </>
+            )
+          ) : null}
         </section>
       ) : null}
 
@@ -1534,8 +1669,7 @@ export function PoBuilderPage({ onBack }: { onBack: () => void }) {
   );
 
   return (
-    <PageShell onHome={onBack}>
-      <h2 className="page__heading">Purchase Orders</h2>
+    <>
       <p className="dash__intro">
         Build a vendor purchase order — line items, tax, and terms — then track it from draft through
         render, review, and send. Generated POs queue for the Mac-side renderer; sending always goes
@@ -1546,6 +1680,6 @@ export function PoBuilderPage({ onBack }: { onBack: () => void }) {
       {error && <div className="banner banner--err">{error}</div>}
 
       {view === "tracker" ? tracker : builder}
-    </PageShell>
+    </>
   );
 }

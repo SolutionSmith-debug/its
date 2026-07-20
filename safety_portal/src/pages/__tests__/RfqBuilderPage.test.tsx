@@ -65,7 +65,7 @@ beforeEach(() => {
 
 describe("RfqBuilderPage — materials-catalog line picker", () => {
   it("pick from catalog fills a line's Part # + Description; Qty/Unit/Note stay free-text (price-free)", async () => {
-    const r = render(<RfqBuilderPage onBack={() => {}} />);
+    const r = render(<RfqBuilderPage />);
     await waitFor(() => expect(rfq.fetchRfqs).toHaveBeenCalled());
     fireEvent.click(r.getByText("New RFQ"));
     await waitFor(() => expect(po.fetchPoMaterials).toHaveBeenCalled());
@@ -88,7 +88,7 @@ describe("RfqBuilderPage — materials-catalog line picker", () => {
 
   it("with an empty catalog, no picker renders and Part #/Description stay free-text", async () => {
     vi.mocked(po.fetchPoMaterials).mockResolvedValue([]);
-    const r = render(<RfqBuilderPage onBack={() => {}} />);
+    const r = render(<RfqBuilderPage />);
     await waitFor(() => expect(rfq.fetchRfqs).toHaveBeenCalled());
     fireEvent.click(r.getByText("New RFQ"));
     await waitFor(() => expect(po.fetchPoMaterials).toHaveBeenCalled());

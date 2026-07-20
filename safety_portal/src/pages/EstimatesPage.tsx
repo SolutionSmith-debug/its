@@ -3,7 +3,6 @@ import * as est from "../lib/estimates";
 import { fetchVendors, type Vendor } from "../lib/po";
 import { fetchJobs, type Job } from "../lib/api";
 import { useAuth } from "../lib/auth";
-import { PageShell } from "../components/PageShell";
 import { EstimateDispositionPage } from "./EstimateDispositionPage";
 
 // Vendor-estimate importer E1/E3 (ADR-0004) — the office upload form + status tracker.
@@ -12,6 +11,12 @@ import { EstimateDispositionPage } from "./EstimateDispositionPage";
 // DISPOSITION screen (EstimateDispositionPage) for a reviewable row. cap.po.manage gates
 // the whole view (router VIEW_CAPS) AND every write affordance; the Worker re-gates every
 // call (Invariant 2 — SPA gating is convenience, never the boundary).
+//
+// FOLDED (2026-07): renders as the "Vendor Estimates" TAB PANEL inside PurchaseOrdersPage
+// (the hub owns the PageShell + tab strip). Cross-tab hooks: `reviewRequest` opens the
+// disposition screen for an estimate picked over on the Orders tab ("New PO from a vendor
+// estimate"), and a successful import hands the minted draft-PO id up via `onImported` so
+// the hub flips back to Orders with the draft open for editing.
 //
 // The upload pools UNTRUSTED bytes send-free in D1; the Mac daemon screens (§34),
 // classifies the doc type (invoices/AP reports are REFUSED from the PO path — visible,
@@ -45,7 +50,18 @@ function fileToB64(f: File): Promise<string> {
   });
 }
 
-export function EstimatesPage({ onBack }: { onBack: () => void }) {
+export function EstimatesPage({
+  reviewRequest,
+  onImported,
+  onOpenPoTab,
+}: {
+  /** Nonce-keyed one-shot from the hub: open the disposition screen for this estimate. */
+  reviewRequest?: { id: number; nonce: number } | null;
+  /** A disposition import minted this draft PO — the hub flips to Orders and opens it. */
+  onImported: (poId: number) => void;
+  /** Jump to the Purchase Orders tab (the imported-row cross-link). */
+  onOpenPoTab: () => void;
+}) {
   const { user } = useAuth();
   const caps = user?.capabilities ?? [];
   const canManage = caps.includes("cap.po.manage"); // UI affordance only — the Worker re-gates
@@ -86,6 +102,16 @@ export function EstimatesPage({ onBack }: { onBack: () => void }) {
     fetchVendors().then(setVendors).catch(() => setVendors([]));
     fetchJobs().then(setJobs).catch(() => setJobs([]));
   }, [reload]);
+
+  // Cross-tab one-shot: the Orders tab picked a reviewable estimate ("New PO from a vendor
+  // estimate") — open its disposition screen here. Nonce-keyed so the same estimate can be
+  // re-requested after backing out.
+  useEffect(() => {
+    if (reviewRequest) {
+      setMsg(null);
+      setOpenId(reviewRequest.id);
+    }
+  }, [reviewRequest]);
 
   const vendorByKey = useMemo(() => new Map(vendors.map((v) => [v.vendor_key, v])), [vendors]);
 
@@ -145,14 +171,25 @@ export function EstimatesPage({ onBack }: { onBack: () => void }) {
   // ── Disposition face ───────────────────────────────────────────────────────────────────────────
   if (openId !== null) {
     return (
+      // key IS LOAD-BEARING (adversarial review, 2026-07-20): the cross-tab reviewRequest can
+      // retarget openId while a disposition is already mounted (panel keep-alive). Without a
+      // remount, estimate A's loaded-preview evidence, manual Tier-3 lines, ship-to state, and
+      // site phase would carry into estimate B's import — bypassing the ADR-0004 decision-3
+      // fidelity gate. The key forces a fresh instance (and a fresh gate) per estimate.
       <EstimateDispositionPage
+        key={openId}
         estimateId={openId}
-        onClose={(notice) => {
+        onClose={(notice, importedPoId) => {
           setOpenId(null);
-          if (notice) setMsg(notice);
           reload(statusFilter === "all" ? undefined : statusFilter);
+          if (importedPoId !== undefined) {
+            // A draft PO was minted — hand off to the hub (flips to Orders, opens the draft).
+            // The local banner is skipped: the Orders tab shows its own imported banner.
+            onImported(importedPoId);
+          } else if (notice) {
+            setMsg(notice);
+          }
         }}
-        onHome={onBack}
       />
     );
   }
@@ -175,7 +212,12 @@ export function EstimatesPage({ onBack }: { onBack: () => void }) {
         </div>
         {r.detail ? <div className="dash-card__row muted">{r.detail}</div> : null}
         {r.po_id !== null ? (
-          <div className="dash-card__row muted">Imported into PO draft #{r.po_id}</div>
+          <div className="dash-card__row">
+            <span className="muted">Imported into PO draft #{r.po_id}</span>{" "}
+            <button className="btn btn--secondary" onClick={onOpenPoTab}>
+              Open Purchase Orders
+            </button>
+          </div>
         ) : null}
         {canManage && reviewable ? (
           <div className="dash-card__row">
@@ -191,8 +233,7 @@ export function EstimatesPage({ onBack }: { onBack: () => void }) {
   const STATUSES = Object.keys(est.ESTIMATE_STATUS_LABEL) as est.EstimateStatus[];
 
   return (
-    <PageShell onHome={onBack}>
-      <h2 className="page__heading">Vendor Estimates</h2>
+    <>
       <p className="dash__intro">
         Upload vendor quotes and estimates received at the office. Each document is screened and
         classified on the Mac (invoices and AP reports are refused from the PO path), then reviewed
@@ -298,6 +339,6 @@ export function EstimatesPage({ onBack }: { onBack: () => void }) {
       ) : (
         <div className="dash-grid">{rows.map(row)}</div>
       )}
-    </PageShell>
+    </>
   );
 }
