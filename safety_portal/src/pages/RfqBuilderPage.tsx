@@ -141,6 +141,16 @@ export function RfqBuilderPage() {
     const vendor_name = nvName.trim();
     const contact_email = nvEmail.trim();
     if (nvBusy || !vendor_name || !EMAIL_RE.test(contact_email)) return;
+    // Cap check BEFORE the create (adversarial review 2026-07-20): the select can join the
+    // 12th vendor while this form sits open, and creating-then-silently-not-joining with a
+    // success banner would be an affirmative false claim — refuse visibly instead.
+    if (vendorKeys.length >= rfq.MAX_RFQ_VENDORS) {
+      setMsg({
+        ok: false,
+        text: `This RFQ already has the maximum ${rfq.MAX_RFQ_VENDORS} vendors — remove one before adding another.`,
+      });
+      return;
+    }
     setNvBusy(true);
     setMsg(null);
     try {
@@ -169,9 +179,10 @@ export function RfqBuilderPage() {
           mirror_version: 1,
         },
       ]);
-      setVendorKeys((ks) =>
-        ks.length < rfq.MAX_RFQ_VENDORS && !ks.includes(vendor_key) ? [...ks, vendor_key] : ks,
-      );
+      // Dedupe-only join: the cap was refused BEFORE the create, and the "Add a vendor"
+      // select is disabled while nvBusy, so vendorKeys cannot reach the cap during the
+      // in-flight create — the join (and the success banner's "and this RFQ") always holds.
+      setVendorKeys((ks) => (ks.includes(vendor_key) ? ks : [...ks, vendor_key]));
       setNvOpen(false);
       setNvName("");
       setNvEmail("");
@@ -532,6 +543,7 @@ export function RfqBuilderPage() {
             <select
               className="field__input"
               aria-label="Add a vendor"
+              disabled={nvBusy}
               value={vendorPick}
               onChange={(e) => {
                 const k = e.target.value;
@@ -580,7 +592,7 @@ export function RfqBuilderPage() {
                   <span className="field__label">Quote contact email</span>
                   <input
                     className="field__input"
-                    aria-label="New vendor contact email"
+                    aria-label="New vendor quote contact email"
                     type="email"
                     value={nvEmail}
                     maxLength={320}
