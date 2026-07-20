@@ -23,6 +23,17 @@ const STATUS_VALUES = new Set(["active", "closed", "on_hold", "all"]);
 const NESTED_CAP = 20; // crew / open-tasks cap per job on the LIST card
 const LEG_CAP = 200; // crew / equipment-on-site cap on the DETAIL (non-paginated legs)
 
+/** JSON-text CC cell → string[]; malformed → [] (the po.ts twin — never a throw). */
+function parseJsonArray(v: unknown): string[] {
+  if (typeof v !== "string" || !v) return [];
+  try {
+    const a = JSON.parse(v);
+    return Array.isArray(a) ? a.filter((x) => typeof x === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
 function parseLimit(raw: string | undefined): number {
   const n = parseInt(raw || "50");
   return Math.min(Math.max(isNaN(n) ? 50 : n, 1), 200);
@@ -158,8 +169,15 @@ export function registerJobTrackerRoutes(app: FieldopsApp, gates: FieldopsGates)
       const jobId = c.req.param("job_id");
 
       // Header by PK + client join (jobs.client_id → clients).
+      // 0057 + the routing SoR block ride the header so the SPA can DISPLAY the job's
+      // Evergreen number / structured address and SEED the routing editor with current
+      // values (pre-0057 the editor opened blank and a save re-sent only what was typed).
       const sqlHeader = `
         SELECT j.job_id, j.project_name, j.status, j.progress,
+               j.job_no, j.address, j.address_city, j.address_state, j.address_zip,
+               j.stakeholder_name, j.stakeholder_email, j.stakeholder_phone,
+               j.safety_contact_name, j.safety_contact_email, j.safety_cc,
+               j.progress_contact_name, j.progress_contact_email, j.progress_cc,
                c.name AS client_name, c.contact AS client_contact,
                c.phone AS client_phone, c.email AS client_email
         FROM jobs j
@@ -171,6 +189,20 @@ export function registerJobTrackerRoutes(app: FieldopsApp, gates: FieldopsGates)
         project_name: string;
         status: string;
         progress: number;
+        job_no: string;
+        address: string;
+        address_city: string;
+        address_state: string;
+        address_zip: string;
+        stakeholder_name: string;
+        stakeholder_email: string;
+        stakeholder_phone: string;
+        safety_contact_name: string;
+        safety_contact_email: string;
+        safety_cc: string;
+        progress_contact_name: string;
+        progress_contact_email: string;
+        progress_cc: string;
         client_name: string | null;
         client_contact: string | null;
         client_phone: string | null;
@@ -336,6 +368,24 @@ export function registerJobTrackerRoutes(app: FieldopsApp, gates: FieldopsGates)
           project_name: header.project_name,
           status: header.status,
           progress: header.progress,
+          // 0057 + routing SoR: display + edit-form seeding. CC arrays are stored as
+          // JSON text; parse defensively (a malformed cell yields [] — never a throw).
+          job_no: header.job_no ?? "",
+          routing: {
+            address: header.address ?? "",
+            address_city: header.address_city ?? "",
+            address_state: header.address_state ?? "",
+            address_zip: header.address_zip ?? "",
+            stakeholder_name: header.stakeholder_name ?? "",
+            stakeholder_email: header.stakeholder_email ?? "",
+            stakeholder_phone: header.stakeholder_phone ?? "",
+            safety_contact_name: header.safety_contact_name ?? "",
+            safety_contact_email: header.safety_contact_email ?? "",
+            safety_cc: parseJsonArray(header.safety_cc),
+            progress_contact_name: header.progress_contact_name ?? "",
+            progress_contact_email: header.progress_contact_email ?? "",
+            progress_cc: parseJsonArray(header.progress_cc),
+          },
           client: header.client_name
             ? {
                 name: header.client_name,

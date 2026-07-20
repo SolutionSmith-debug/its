@@ -93,6 +93,9 @@ export async function logout(): Promise<void> {
 export interface Job {
   job_id: string;
   project_name: string;
+  /** The Evergreen YYYY.NNN tracking number ('' when unassigned) — 0057. Builders
+   *  auto-fill from this on a dropdown pick, falling back to the name-prefix parse. */
+  job_no: string;
 }
 
 export async function fetchJobs(): Promise<Job[]> {

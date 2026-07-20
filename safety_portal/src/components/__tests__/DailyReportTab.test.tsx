@@ -78,6 +78,13 @@ const DETAIL: jobs.JobDetailResponse = {
     project_name: "Alpha",
     status: "active",
     progress: 0,
+    job_no: "",
+    routing: {
+      address: "", address_city: "", address_state: "", address_zip: "",
+      stakeholder_name: "", stakeholder_email: "", stakeholder_phone: "",
+      safety_contact_name: "", safety_contact_email: "", safety_cc: [],
+      progress_contact_name: "", progress_contact_email: "", progress_cc: [],
+    },
     client: null,
     crew: [
       { id: 1, name: "Sam", trade: "electrician", account_role: null },

@@ -712,7 +712,8 @@ export function registerPoRoutes(app: FieldopsApp, gates: PoGates): void {
     const jobId = c.req.param("job_id");
     const row = await c.env.DB
       .prepare(
-        "SELECT job_id, project_name, address, stakeholder_name, stakeholder_phone, stakeholder_email " +
+        "SELECT job_id, project_name, address, stakeholder_name, stakeholder_phone, stakeholder_email, " +
+          "job_no, address_city, address_state, address_zip " +
           "FROM jobs WHERE job_id = ?1",
       )
       .bind(jobId)
@@ -723,18 +724,25 @@ export function registerPoRoutes(app: FieldopsApp, gates: PoGates): void {
         stakeholder_name: string;
         stakeholder_phone: string;
         stakeholder_email: string;
+        job_no: string;
+        address_city: string;
+        address_state: string;
+        address_zip: string;
       }>();
     if (!row) return c.json({ error: "not_found" }, 404);
-    // job_no suggestion: the YYYY.NNN prefix of the project name (Evergreen convention), or "".
+    // job_no: the STORED Evergreen number (0057) first; the YYYY.NNN name-prefix parse
+    // stays as the legacy fallback for jobs that predate the structured field.
     const jobNoMatch = /^(\d{4}\.\d{3})/.exec((row.project_name ?? "").trim());
     return c.json({
       job_id: row.job_id,
-      job_no: jobNoMatch ? jobNoMatch[1] : "",
+      job_no: (row.job_no ?? "") || (jobNoMatch ? jobNoMatch[1] : ""),
       ship_to_name: row.project_name ?? "",
       ship_to_address: row.address ?? "",
-      ship_to_city: "", // not structured in the routing SoR (single `address` line)
-      ship_to_state: "", // "
-      ship_to_zip: "", // "
+      // 0057: the structured address block (street stays in `address`); '' when the job
+      // predates the fields — the builder inputs stay operator-editable either way.
+      ship_to_city: row.address_city ?? "",
+      ship_to_state: row.address_state ?? "",
+      ship_to_zip: row.address_zip ?? "",
       delivery_contact_name: row.stakeholder_name ?? "",
       delivery_contact_phone: row.stakeholder_phone ?? "",
       delivery_contact_email: row.stakeholder_email ?? "",

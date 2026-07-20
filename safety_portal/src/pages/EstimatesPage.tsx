@@ -120,8 +120,9 @@ export function EstimatesPage({
     const job = jobs.find((j) => j.job_id === id);
     if (!job) return;
     setJobName(job.project_name);
+    // Stored Evergreen number (0057) first; name-prefix parse stays the fallback.
     const m = /^(\d{4}\.\d{3})/.exec((job.project_name ?? "").trim());
-    if (m) setJobNo(m[1]);
+    setJobNo(job.job_no || (m ? m[1] : ""));
   }
 
   async function onUpload() {

@@ -609,11 +609,13 @@ app.post("/api/logout", async (c) => {
   return c.json({ ok: true });
 });
 
-/** GET /api/jobs — Active jobs for the dropdown (from D1; the portal never reads Smartsheet). */
+/** GET /api/jobs — Active jobs for the dropdown (from D1; the portal never reads Smartsheet).
+ *  job_no (0057) rides along so a dropdown pick auto-fills the Evergreen YYYY.NNN number in
+ *  every builder ('' when unassigned — the builders fall back to the name-prefix parse). */
 app.get("/api/jobs", requireSession, async (c) => {
   const { results } = await c.env.DB
-    .prepare("SELECT job_id, project_name FROM jobs WHERE active = 1 ORDER BY project_name")
-    .all<{ job_id: string; project_name: string }>();
+    .prepare("SELECT job_id, project_name, job_no FROM jobs WHERE active = 1 ORDER BY project_name")
+    .all<{ job_id: string; project_name: string; job_no: string }>();
   return c.json({ jobs: results });
 });
 
