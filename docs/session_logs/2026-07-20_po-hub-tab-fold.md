@@ -79,7 +79,24 @@ finding refuter-verified 2×) confirmed 5 findings, all fixed in the second comm
 - main-branch CI on merge commit `bd4c0e3`: SUCCESS (four-part verify clean — state=MERGED ·
   mergedAt non-null · mergeCommit present · main CI green)
 
-## Deploy note
+## Same-day follow-ups (operator-driven)
 
-Ships with the still-pending RFQ/estimate-lane runtime deploy — `npm run deploy` (step 4 of
-the topic memory's deploy list) picks the folded SPA up automatically; no extra steps.
+- **"Changes not visible after deploy" (operator report):** diagnosed, NOT a deploy failure.
+  The operator's 11:26 `npm run deploy` landed (Cloudflare version list + live asset hashes
+  proved it); the visible staleness was the short post-deploy edge-propagation window — the
+  Cloudflare edge serves a cached HTML `HIT` for ~a minute after deploy (a `no-cache` request
+  gets fresh HTML immediately; plain requests converge on their own). Reproduced and watched
+  it converge after the second deploy below. Practical guidance: after `npm run deploy`, give
+  the edge a minute (or hard-refresh, which sends `no-cache`) before concluding anything.
+- **RFQ vendor quick-add (PR #630, squash `8309d5d`, four-part clean, DEPLOYED live):**
+  operator ask — "the RFQ needs vendor, free text not just a pick list." Shipped as free-text
+  ENTRY that lands as a REAL directory row: the RFQ builder's "+ New vendor (not in the
+  list)" (name + required quote-contact email) calls the EXISTING `POST /api/po/vendors`
+  (atomic key mint, `origin=portal`, §51 up-sync) and joins the minted key to the RFQ — never
+  a keyless vendor, because the send lane resolves recipients from `ITS_Vendors` by Vendor
+  Key (ADR-0004 decision 9). Adversarial review (12-agent) confirmed + fixed: a never-silent
+  violation at the 12-vendor cap (create-then-silently-not-join under a success banner — now
+  refused BEFORE the create, select frozen while in flight, locked by a proven-to-bite test),
+  a rejecting-side email test gap, and a WCAG 2.5.3 aria-label mismatch. Process note: a
+  `git checkout <file>` after a prove-it-bites injection wiped the uncommitted fixes (the
+  documented footgun — re-applied; use cp-backups or patch-revert next time).
