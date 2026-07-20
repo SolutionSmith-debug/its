@@ -88,6 +88,31 @@ finding refuter-verified 2×) confirmed 5 findings, all fixed in the second comm
   gets fresh HTML immediately; plain requests converge on their own). Reproduced and watched
   it converge after the second deploy below. Practical guidance: after `npm run deploy`, give
   the edge a minute (or hard-refresh, which sends `no-cache`) before concluding anything.
+- **Live-demo punch-list (operator-driven, all four-part-verified + activated same day):**
+  - **#632 (`6d2b9f3`) estimate pending-key wire fix** — the operator's quote-form upload sat
+    stuck at `pending` for ~21h (629 `estimate_pending_fetch_failed` cycles): worker/po_estimates.ts
+    serves `{estimates: []}` while `portal_client.get_estimates_pending` read `{pending: []}` —
+    both sides' mocks matched their own assumption (mocks-pass-live-fails). Client adapted to the
+    deployed Worker + a CROSS-RUNTIME wire-key parity test now reads BOTH sources (proven to bite).
+    Post-pull the upload processed within a cycle: `extracted`, `filled_form`, **auto-bound to
+    RFQ-2026.123-001/VEN-000005** — the first live R4 round-trip.
+  - **#633 (`533f523`) RFQ filing parity** — RFQ_Log ledger rows now carry the RFQ PDF + quote
+    form inline (self-healing attach-on-every-service — review caught that fresh-append-only made
+    a coincident attach+receipt failure a permanent miss) + the per-job "<Jobs>/<job>/RFQs" mirror
+    sheet (job_sheet Feature A; fenced `rfq_perjob_sheet_failed`; runbook Symptom 5b). Review also
+    forced the perjob idempotency-twin test (mutation-proven gap) + the CLAUDE.md job_sheet
+    consumers row. One-shot backfill repaired the existing RFQ-2026.123-001 row (both attachments
+    live) + created the Coker/RFQs per-job sheet with its mirror row.
+  - **#634 (`f34b826`) structured Evergreen job number + structured address (migration 0057,
+    MIGRATED + DEPLOYED on operator go-ahead)** — jobs.job_no (YYYY.NNN — the Evergreen number,
+    NOT the internal JOB-######) + address_city/state/zip; auto-fill on the job dropdown in all
+    four builders (stored-first, name-prefix fallback); Job Tracker create/edit forms carry the
+    fields and the routing editor now opens SEEDED (the blank-editor silent-wipe hazard is gone);
+    ship-to serves the structured block (closes the "city/state/zip stay manual" deviation).
+    Review caught a MAJOR least-privilege regression pre-merge: the detail route would have served
+    the WSR/WPR send-recipient/CC email lists to read-tier accounts — now cap.jobtracker.manage-
+    only, locked by a submitter-tier test. NOTE: existing jobs (e.g. Coker) have empty job_no /
+    city/state/zip until the office fills them via Edit routing/contacts.
 - **RFQ vendor quick-add (PR #630, squash `8309d5d`, four-part clean, DEPLOYED live):**
   operator ask — "the RFQ needs vendor, free text not just a pick list." Shipped as free-text
   ENTRY that lands as a REAL directory row: the RFQ builder's "+ New vendor (not in the
