@@ -401,7 +401,7 @@ describe("FieldOpsJobTracker — write UI", () => {
     expect((container.textContent ?? "").includes("Close job")).toBe(false);
     expect(container.querySelector('[aria-label="Set job lifecycle"]')).not.toBeNull();
     expect(container.querySelector('[aria-label="Job lifecycle"]')).not.toBeNull();
-    expect((container.textContent ?? "").includes("Edit routing / contacts")).toBe(true);
+    expect((container.textContent ?? "").includes("Edit job details")).toBe(true);
     // Progress % is removed everywhere: no set-progress control, no progress bar, no "Progress —" label.
     expect(container.querySelector('[aria-label="Update job progress"]')).toBeNull();
     expect(container.querySelector(".dash-progress")).toBeNull();
@@ -427,9 +427,25 @@ describe("FieldOpsJobTracker — write UI", () => {
     await waitFor(() => expect(api.setLifecycle).toHaveBeenCalledWith("JOB-A", "archived"));
   });
 
+  it("the edit-job form seeds + sends the project name (rename via the edit page)", async () => {
+    vi.mocked(api.editContacts).mockResolvedValue({ job_id: "JOB-A" });
+    const { container, getByText, getByLabelText } = await openManagedDetail(["cap.jobtracker.manage"]);
+    fireEvent.click(getByText("Edit job details"));
+    const name = getByLabelText("Project name") as HTMLInputElement;
+    expect(name.value).toBe("Alpha"); // seeded from the current job
+    fireEvent.change(name, { target: { value: "Alpha Solar II" } });
+    fireEvent.submit(container.querySelector('[aria-label="Edit routing and contacts"]')!);
+    await waitFor(() =>
+      expect(api.editContacts).toHaveBeenCalledWith(
+        "JOB-A",
+        expect.objectContaining({ project_name: "Alpha Solar II" }),
+      ),
+    );
+  });
+
   it("the routing editor opens SEEDED with the job's current values (0057 — no silent wipe)", async () => {
     const { getByText, getByLabelText, getByPlaceholderText } = await openManagedDetail(["cap.jobtracker.manage"]);
-    fireEvent.click(getByText("Edit routing / contacts"));
+    fireEvent.click(getByText("Edit job details"));
     expect((getByLabelText("Evergreen job number") as HTMLInputElement).value).toBe("2026.123");
     expect((getByPlaceholderText("Street address (optional)") as HTMLInputElement).value).toBe("100 Coker Rd");
     expect((getByLabelText("Job city") as HTMLInputElement).value).toBe("Rockford");
@@ -440,7 +456,7 @@ describe("FieldOpsJobTracker — write UI", () => {
   it("manager can edit routing / contacts on the open job", async () => {
     vi.mocked(api.editContacts).mockResolvedValue({ job_id: "JOB-A" });
     const { container, getByText, getByPlaceholderText } = await openManagedDetail(["cap.jobtracker.manage"]);
-    fireEvent.click(getByText("Edit routing / contacts"));
+    fireEvent.click(getByText("Edit job details"));
     fireEvent.change(getByPlaceholderText("Safety contact email"), { target: { value: "new@ex.com" } });
     fireEvent.submit(container.querySelector('[aria-label="Edit routing and contacts"]')!);
     await waitFor(() =>
@@ -468,7 +484,7 @@ describe("FieldOpsJobTracker — write UI", () => {
     // The lifecycle selector + routing editor are manage-only, gated on cap.jobtracker.manage.
     expect(container.querySelector('[aria-label="Set job lifecycle"]')).toBeNull();
     expect(container.querySelector('[aria-label="Job lifecycle"]')).toBeNull();
-    expect((container.textContent ?? "").includes("Edit routing / contacts")).toBe(false);
+    expect((container.textContent ?? "").includes("Edit job details")).toBe(false);
   });
 
   it("a manager (cap.tasks.assign, no jobtracker.manage) sees add-task + per-task assign but NOT job-create/lifecycle", async () => {
@@ -491,7 +507,7 @@ describe("FieldOpsJobTracker — write UI", () => {
     // …but lifecycle + routing are withheld (admin-only).
     expect(container.querySelector('[aria-label="Set job lifecycle"]')).toBeNull();
     expect(container.querySelector('[aria-label="Job lifecycle"]')).toBeNull();
-    expect((container.textContent ?? "").includes("Edit routing / contacts")).toBe(false);
+    expect((container.textContent ?? "").includes("Edit job details")).toBe(false);
   });
 
   it("cap.time.log renders the Log time form and posts hours + task against the open job", async () => {
