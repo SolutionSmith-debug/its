@@ -107,6 +107,7 @@ from shared import (
     anomaly_logger,
     box_client,
     circuit_breaker,
+    creds_resolution,
     error_log,
     keychain,
     portal_client,
@@ -115,6 +116,7 @@ from shared import (
     smartsheet_client,
     state_io,
 )
+from shared.creds_resolution import TransientUnavailable
 from shared.error_log import Severity, its_error_log
 from shared.heartbeat import HeartbeatReporter, HeartbeatStatus
 from shared.kill_switch import require_active
@@ -204,6 +206,9 @@ class RfqPollStats:
     skipped_disabled: bool = False
     skipped_locked: bool = False
     halted_no_creds: bool = False
+    # base URL temporarily unreadable (Smartsheet blip / circuit OPEN) — transient,
+    # distinct from halted_no_creds, which is a genuine misconfig that pages.
+    halted_transient: bool = False
     bearer_rejected: bool = False
     # ① RFQ pass
     scanned: int = 0
@@ -355,11 +360,26 @@ def _persist_flags(flags: dict[str, str]) -> None:
 # ---- Credential resolution (fail-CLOSED) -------------------------------------------
 
 
-def _resolve_credentials() -> _RfqCreds | None:
-    """Resolve (base_url, bearer, secret) fail-CLOSED. None if any is absent."""
-    base_url = _read_str_setting(
-        CFG_WORKER_BASE_URL, "", workstream=CFG_WORKER_BASE_URL_WORKSTREAM
+def _resolve_credentials() -> _RfqCreds | TransientUnavailable | None:
+    """Resolve (base_url, bearer, secret) fail-CLOSED, three ways.
+
+    `TransientUnavailable` means the base-URL row could not be READ this cycle
+    (Smartsheet blip / circuit open) — self-heals, so the caller WARNs and skips.
+    `None` means a credential is genuinely absent — a misconfig that pages.
+
+    The base-URL read deliberately does NOT go through `_read_str_setting`: that
+    helper swallows both circuit-open and transient errors into its fallback, so
+    a one-cycle Smartsheet blip arrived here as `""` and was indistinguishable
+    from an unset row — which is exactly how a network hiccup produced a CRITICAL
+    blaming *credentials* that were never missing (this bit po_poll live on
+    2026-07-20 04:42Z; every puller shared the flaw).
+    """
+    resolved = creds_resolution.read_base_url(
+        CFG_WORKER_BASE_URL, CFG_WORKER_BASE_URL_WORKSTREAM
     )
+    if isinstance(resolved, TransientUnavailable):
+        return resolved
+    base_url = resolved or ""
     try:
         bearer = keychain.get_secret(KC_RFQ_TOKEN)
     except keychain.KeychainError:
@@ -405,6 +425,25 @@ def poll_once() -> RfqPollStats:
 def _poll_inside_lock() -> RfqPollStats:
     """Body of poll_once running under the file lock."""
     creds = _resolve_credentials()
+    if isinstance(creds, TransientUnavailable):
+        # Smartsheet was TEMPORARILY unreachable when reading the Worker base URL —
+        # NOT a misconfig, and it self-heals next cycle. WARN + skip; do NOT page
+        # (paging here was a false CRITICAL blaming credentials on every blip).
+        # Skip the watchdog freshness marker exactly like the no-creds path, so a
+        # SUSTAINED outage still surfaces via the Check-C staleness floor — just
+        # without per-cycle CRITICAL spam.
+        error_log.log(
+            Severity.WARN, SCRIPT_NAME,
+            f"RFQ Worker base URL temporarily unreadable ({creds.reason}) — skipping "
+            f"this cycle; will retry next interval (transient, self-heals)",
+            error_code="rfq_creds_transient",
+        )
+        _write_heartbeat()
+        _write_heartbeat_row(
+            status="WARN", items_processed=0,
+            error_summary=f"base URL unreadable ({creds.reason}) — transient",
+        )
+        return RfqPollStats(halted_transient=True)
     if creds is None:
         error_log.log(
             Severity.CRITICAL, SCRIPT_NAME,

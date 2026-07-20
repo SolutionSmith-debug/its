@@ -554,6 +554,27 @@ def test_no_creds_fail_closed(_patch):
     assert hb_kwargs["status"] == "ERROR"
 
 
+def test_transient_base_url_warns_and_skips_without_paging(_patch):
+    # A Smartsheet blip on the base-URL read is NOT a missing credential. Live on
+    # 2026-07-20 04:42Z a single GET failure fell back to "" and fired a CRITICAL
+    # saying portal credentials were unset; both Keychain entries were fine and the
+    # daemon self-healed a cycle later. That page was false, and it aimed the §43
+    # repair at re-provisioning secrets (a high-capability-class action) at a
+    # condition needing none. Transient => WARN + skip, never the misconfig CRITICAL.
+    _patch["creds"].return_value = subcontract_poll.TransientUnavailable(
+        reason="SmartsheetError: (<PreparedRequest [GET]>, None)"
+    )
+    stats = _run(_patch)
+    assert stats.halted_transient is True
+    assert stats.halted_no_creds is False
+    _patch["pending"].assert_not_called()  # still FAIL-CLOSED — it does not poll
+    codes = _logged_codes(_patch)
+    assert "subcontract_creds_transient" in codes
+    assert "subcontract_creds_missing" not in codes, "a transient read failure must NOT page"
+    _, hb_kwargs = _patch["hb_row"].call_args
+    assert hb_kwargs["status"] == "WARN"  # not ERROR — nothing is misconfigured
+
+
 def test_bearer_rejected_stops_cycle(_patch):
     _patch["gate_subs"].return_value = True  # would run after drafts — must not
     _patch["pending"].side_effect = portal_client.PortalAuthError("401")
