@@ -2071,3 +2071,28 @@ Cost at 20×20 ≈ **$610–$2,410/mo hard ≈ the Smartsheet tier decision** + 
 
 **Revisit when:** the 20-job ramp is scheduled (start with A1's read-only cap verification), or any Tier-A item is picked up for implementation.
 
+## Converge `fieldops_sync`/`portal_poll` onto the shared `shared/sustained_failure.py` counter [OPEN 2026-07-20]
+
+PR #635 extracted `SustainedFailureCounter` FROM `fieldops_sync`/`portal_poll`'s existing private
+per-daemon sustained-failure counters and wired the shared version into the four newer
+`po_materials`/`subcontracts` poll daemons (`estimate_poll`/`rfq_poll`/`po_poll`/`subcontract_poll`) —
+answering "why did nothing fire during the #632 21h estimate-pending-fetch outage" (every fire surface
+keys on CRITICAL; a per-cycle ERROR storm was invisible until 5 consecutive cycles escalate). The two
+original daemons (`field_ops/fieldops_sync.py`, `safety_reports/portal_poll.py`) were deliberately left on
+their own pre-existing copies this session (§14 preservation-over-refactor — no live bug in either, pure
+duplication, not worth touching mid-feature-session). Migrating both onto the shared module removes the
+last duplicated copies of this pattern. Trigger: next touch to either daemon, or a dedicated
+observability-consolidation pass. See `docs/session_logs/2026-07-20_po-hub-tab-fold.md`;
+`shared/sustained_failure.py` CLAUDE.md row already documents the gap.
+
+## Legacy jobs missing structured `job_no`/address after migration 0057 — per-job manual backfill only [OPEN 2026-07-20]
+
+Migration 0057 (PR #634) added `jobs.job_no` (the Evergreen `YYYY.NNN` number) and structured
+`address_city`/`address_state`/`address_zip` columns to the jobs SoR, but existing rows are backfilled only
+when an operator edits that specific job via the tracker's "Edit job details" page (#636) — there is no
+bulk-backfill script. Only Coker (JOB-000028) is filled so far (operator request, this session). Any report
+or builder feature that assumes `job_no`/address is populated fleet-wide will see blanks for every
+unedited job. Trigger: before any feature that reads `job_no`/address across ALL jobs (not just the
+per-job dropdown autofill, which already degrades gracefully to a name-prefix fallback); or a dedicated
+data-entry pass by the office.
+
