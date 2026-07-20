@@ -85,7 +85,12 @@ export interface NewJobClient {
 export type JobLifecycle = "active" | "inactive" | "archived";
 
 export interface JobRouting {
+  /** The Evergreen YYYY.NNN tracking number (0057) — '' clears it. */
+  job_no?: string;
   address?: string;
+  address_city?: string;
+  address_state?: string;
+  address_zip?: string;
   stakeholder_name?: string;
   stakeholder_email?: string;
   stakeholder_phone?: string;

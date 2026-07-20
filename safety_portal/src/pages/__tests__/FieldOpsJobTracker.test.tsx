@@ -121,6 +121,13 @@ const DETAIL: api.JobDetail = {
   project_name: "Alpha",
   status: "active",
   progress: 60,
+  job_no: "2026.123",
+  routing: {
+    address: "100 Coker Rd", address_city: "Rockford", address_state: "IL", address_zip: "61101",
+    stakeholder_name: "", stakeholder_email: "", stakeholder_phone: "",
+    safety_contact_name: "", safety_contact_email: "", safety_cc: [],
+    progress_contact_name: "", progress_contact_email: "", progress_cc: [],
+  },
   client: { name: "Acme Co", contact: "Pat", phone: "555-0100", email: "pat@example.com" },
   crew: [{ id: 1, name: "Alice Chen", trade: "operator", account_role: "submitter" }],
   tasks: [{ id: 1, description: "Dig footings", status: "open", created_at: 100, personnel_id: 1, personnel_name: "Alice Chen", due_date: null }],
@@ -304,7 +311,7 @@ describe("FieldOpsJobTracker — write UI", () => {
 
     fireEvent.click(getByText("+ New job"));
     fireEvent.change(getByPlaceholderText("Project name"), { target: { value: "Charlie" } });
-    fireEvent.change(getByPlaceholderText("Job address (optional)"), { target: { value: "1 Main St" } });
+    fireEvent.change(getByPlaceholderText("Street address (optional)"), { target: { value: "1 Main St" } });
     fireEvent.change(getByPlaceholderText("Stakeholder name"), { target: { value: "Dana Owner" } });
     fireEvent.change(getByPlaceholderText("Stakeholder email"), { target: { value: "dana@ex.com" } });
     fireEvent.change(getByPlaceholderText("Stakeholder phone"), { target: { value: "555-0101" } });
@@ -418,6 +425,16 @@ describe("FieldOpsJobTracker — write UI", () => {
     expect(select.value).toBe("active"); // seeded from the active job's status
     fireEvent.change(select, { target: { value: "archived" } });
     await waitFor(() => expect(api.setLifecycle).toHaveBeenCalledWith("JOB-A", "archived"));
+  });
+
+  it("the routing editor opens SEEDED with the job's current values (0057 — no silent wipe)", async () => {
+    const { getByText, getByLabelText, getByPlaceholderText } = await openManagedDetail(["cap.jobtracker.manage"]);
+    fireEvent.click(getByText("Edit routing / contacts"));
+    expect((getByLabelText("Evergreen job number") as HTMLInputElement).value).toBe("2026.123");
+    expect((getByPlaceholderText("Street address (optional)") as HTMLInputElement).value).toBe("100 Coker Rd");
+    expect((getByLabelText("Job city") as HTMLInputElement).value).toBe("Rockford");
+    expect((getByLabelText("Job state") as HTMLInputElement).value).toBe("IL");
+    expect((getByLabelText("Job ZIP") as HTMLInputElement).value).toBe("61101");
   });
 
   it("manager can edit routing / contacts on the open job", async () => {

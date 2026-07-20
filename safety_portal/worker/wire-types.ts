@@ -126,11 +126,35 @@ export interface JobClient {
   email: string | null;
 }
 
+/** 0057 — the routing/SoR block served on the detail header: display + the routing
+ *  editor's seed values (pre-0057 the editor opened blank). Street stays in `address`;
+ *  city/state/zip are the structured columns. */
+export interface JobRoutingBlock {
+  address: string;
+  address_city: string;
+  address_state: string;
+  address_zip: string;
+  stakeholder_name: string;
+  stakeholder_email: string;
+  stakeholder_phone: string;
+  safety_contact_name: string;
+  safety_contact_email: string;
+  safety_cc: string[];
+  progress_contact_name: string;
+  progress_contact_email: string;
+  progress_cc: string[];
+}
+
 export interface JobDetail {
   job_id: string;
   project_name: string;
   status: string;
   progress: number;
+  /** The Evergreen YYYY.NNN tracking number ('' when unassigned) — 0057. */
+  job_no: string;
+  /** The routing/SoR seed block — cap.jobtracker.manage ONLY; null for read-tier callers
+   *  (least-privilege: these are the external-send recipient/CC sets). */
+  routing: JobRoutingBlock | null;
   client: JobClient | null;
   crew: DetailCrewMember[];
   tasks: Task[];

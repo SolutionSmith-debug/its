@@ -81,7 +81,17 @@ const TODAY = pacificToday();
 // a minimal job detail for the best-effort prefill leg.
 const PLACED_VIEWER: api.ViewerTaskPlacement = { job_id: "JOB-A", project_name: "Alpha", personnel_id: 1, name: "Mo Manager" };
 const JOB_DETAIL: jobtracker.JobDetailResponse = {
-  job: { job_id: "JOB-A", project_name: "Alpha", status: "active", progress: 0, client: null, crew: [], tasks: [], time_entries: [], equipment_on_site: [], inspections: [] },
+  job: {
+    job_id: "JOB-A", project_name: "Alpha", status: "active", progress: 0, client: null,
+    crew: [], tasks: [], time_entries: [], equipment_on_site: [], inspections: [],
+    job_no: "",
+    routing: {
+      address: "", address_city: "", address_state: "", address_zip: "",
+      stakeholder_name: "", stakeholder_email: "", stakeholder_phone: "",
+      safety_contact_name: "", safety_contact_email: "", safety_cc: [],
+      progress_contact_name: "", progress_contact_email: "", progress_cc: [],
+    },
+  },
   cursors: { tasks: null, time: null, insp: null },
   viewer_personnel: { id: 1, name: "Mo Manager" },
 };

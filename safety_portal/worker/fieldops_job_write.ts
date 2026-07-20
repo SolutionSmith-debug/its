@@ -78,7 +78,11 @@ async function allocateJobNumber(db: D1Database): Promise<string | null> {
 // ---- routing-block validation (shared by create + contacts edit) ----------
 
 interface Routing {
+  job_no: string;
   address: string;
+  address_city: string;
+  address_state: string;
+  address_zip: string;
   stakeholder_name: string;
   stakeholder_email: string;
   stakeholder_phone: string;
@@ -115,7 +119,18 @@ type RoutingResult = { ok: true; routing: Routing } | { ok: false; error: string
 /** Parse the SoR/routing block from a request body. All fields optional (default ''); a present
  *  contact email must be email-shaped; CC arrays bounded. Used by create (full) + contacts (edit). */
 function parseRouting(body: Record<string, unknown>): RoutingResult {
+  // 0057 — the Evergreen YYYY.NNN tracking number + the structured address block.
+  // job_no: empty (not yet assigned) or the exact Evergreen shape; the builders'
+  // dropdown autofill reads it back, so a malformed value is refused loudly here.
+  const job_no = str(body.job_no);
+  if (job_no && !/^\d{4}\.\d{3}$/.test(job_no)) return { ok: false, error: "invalid_job_no" };
   const address = str(body.address);
+  const address_city = str(body.address_city);
+  if (address_city.length > MAX_NAME) return { ok: false, error: "invalid_address_city" };
+  const address_state = str(body.address_state).toUpperCase();
+  if (address_state && !/^[A-Z]{2}$/.test(address_state)) return { ok: false, error: "invalid_address_state" };
+  const address_zip = str(body.address_zip);
+  if (address_zip.length > 16) return { ok: false, error: "invalid_address_zip" };
   const stakeholder_name = str(body.stakeholder_name);
   const stakeholder_email = str(body.stakeholder_email);
   const stakeholder_phone = str(body.stakeholder_phone);
@@ -140,7 +155,8 @@ function parseRouting(body: Record<string, unknown>): RoutingResult {
   return {
     ok: true,
     routing: {
-      address, stakeholder_name, stakeholder_email, stakeholder_phone,
+      job_no, address, address_city, address_state, address_zip,
+      stakeholder_name, stakeholder_email, stakeholder_phone,
       safety_contact_name, safety_contact_email, safety_cc,
       progress_contact_name, progress_contact_email, progress_cc,
     },
@@ -226,19 +242,22 @@ export function registerJobWriteRoutes(app: FieldopsApp, gates: FieldopsGates): 
                  address, stakeholder_name, stakeholder_email, stakeholder_phone,
                  safety_contact_name, safety_contact_email, safety_cc,
                  progress_contact_name, progress_contact_email, progress_cc,
-                 lifecycle, mirror_version)
+                 lifecycle, mirror_version,
+                 job_no, address_city, address_state, address_zip)
                VALUES (?1, ?2, 1, 'active', ?3, ?4, unixepoch(),
                        'portal', 'pending', ?1,
                        ?5, ?6, ?7, ?8,
                        ?9, ?10, ?11,
                        ?12, ?13, ?14,
-                       'active', 1)`,
+                       'active', 1,
+                       ?15, ?16, ?17, ?18)`,
             )
             .bind(
               jobId, projectName, progress, clientId,
               r.address, r.stakeholder_name, r.stakeholder_email, r.stakeholder_phone,
               r.safety_contact_name, r.safety_contact_email, JSON.stringify(r.safety_cc),
               r.progress_contact_name, r.progress_contact_email, JSON.stringify(r.progress_cc),
+              r.job_no, r.address_city, r.address_state, r.address_zip,
             ),
           auditStmt(c, actor, "job_create", jobId, { job_id: jobId, client_id: clientId, origin: "portal" }),
         ]);
@@ -316,6 +335,7 @@ export function registerJobWriteRoutes(app: FieldopsApp, gates: FieldopsGates): 
                address=?2, stakeholder_name=?3, stakeholder_email=?4, stakeholder_phone=?5,
                safety_contact_name=?6, safety_contact_email=?7, safety_cc=?8,
                progress_contact_name=?9, progress_contact_email=?10, progress_cc=?11,
+               job_no=?12, address_city=?13, address_state=?14, address_zip=?15,
                mirror_version=mirror_version+1, sync_state='pending'
              WHERE job_id=?1 AND origin='portal'`,
           )
@@ -324,6 +344,7 @@ export function registerJobWriteRoutes(app: FieldopsApp, gates: FieldopsGates): 
             r.address, r.stakeholder_name, r.stakeholder_email, r.stakeholder_phone,
             r.safety_contact_name, r.safety_contact_email, JSON.stringify(r.safety_cc),
             r.progress_contact_name, r.progress_contact_email, JSON.stringify(r.progress_cc),
+            r.job_no, r.address_city, r.address_state, r.address_zip,
           ),
         auditStmtIfChanged(c, actor, "job_contacts", jobId, { job_id: jobId }),
       ]);

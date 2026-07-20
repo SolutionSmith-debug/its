@@ -98,7 +98,7 @@ const VENDORS: api.Vendor[] = [
   },
 ];
 
-const JOBS = [{ job_id: "JOB-000001", project_name: "2023.126 Kendall Solar" }];
+const JOBS = [{ job_id: "JOB-000001", project_name: "2023.126 Kendall Solar", job_no: "" }];
 
 const CATALOG: api.CatalogMaterial[] = [
   { id: 11, model_id: "Q.PEAK_DUO_XL-G11.3_BFG", manufacturer: "Qcells", category: "module", key_specs: "570-585Wp bifacial" },

@@ -229,3 +229,117 @@ describe("P2.5 — SoR create + lifecycle + contacts (version vector)", () => {
     expect((await j(admin, `/api/fieldops/job/${id}/lifecycle`, null)).status).toBe(400);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 0057 — the Evergreen YYYY.NNN job number + structured address (2026-07-20).
+// ─────────────────────────────────────────────────────────────────────────────
+describe("0057 — job_no + structured address", () => {
+  it("create persists job_no + city/state/zip; /api/jobs + ship-to + detail serve them", async () => {
+    const jobId = await createOk(admin, {
+      project_name: "Coker",
+      job_no: "2026.123",
+      address: "100 Coker Rd",
+      address_city: "Rockford",
+      address_state: "il", // normalized to uppercase server-side
+      address_zip: "61101",
+    });
+    const row = await jobRow(jobId);
+    expect(row.job_no).toBe("2026.123");
+    expect(row.address).toBe("100 Coker Rd");
+    expect(row.address_city).toBe("Rockford");
+    expect(row.address_state).toBe("IL");
+    expect(row.address_zip).toBe("61101");
+
+    // The dropdown feed carries job_no (the builders' autofill source).
+    const jobs = ((await (await call("/api/jobs", { headers: { Cookie: admin } })).json()) as any).jobs;
+    const mine = jobs.find((x: any) => x.job_id === jobId);
+    expect(mine.job_no).toBe("2026.123");
+
+    // The detail header serves job_no + the routing block (the editor's seed).
+    const detail = (await (
+      await call(`/api/fieldops/jobs/${jobId}`, { headers: { Cookie: admin } })
+    ).json()) as any;
+    expect(detail.job.job_no).toBe("2026.123");
+    expect(detail.job.routing.address_city).toBe("Rockford");
+    expect(detail.job.routing.address_state).toBe("IL");
+  });
+
+  it("ship-to serves the STORED number + structured city/state/zip (prefix parse stays the fallback)", async () => {
+    await provision("po.admin", "password123", "admin");
+    const poAdmin = await login("po.admin", "password123");
+    const jobId = await createOk(admin, {
+      project_name: "Coker", // NO prefix in the name — the stored field must win
+      job_no: "2026.123",
+      address: "100 Coker Rd",
+      address_city: "Rockford",
+      address_state: "IL",
+      address_zip: "61101",
+    });
+    const s = (await (
+      await call(`/api/po/jobs/${jobId}/ship-to`, { headers: { Cookie: poAdmin } })
+    ).json()) as any;
+    expect(s.job_no).toBe("2026.123");
+    expect(s.ship_to_address).toBe("100 Coker Rd");
+    expect(s.ship_to_city).toBe("Rockford");
+    expect(s.ship_to_state).toBe("IL");
+    expect(s.ship_to_zip).toBe("61101");
+  });
+
+  it("a malformed job_no or state is refused loudly (400), never stored mangled", async () => {
+    expect(
+      (await j(admin, "/api/fieldops/job", { project_name: "X", job_no: "26.123" })).status,
+    ).toBe(400);
+    expect(
+      (await j(admin, "/api/fieldops/job", { project_name: "X", address_state: "Illinois" })).status,
+    ).toBe(400);
+  });
+
+  it("the detail routing block is cap.jobtracker.manage-ONLY — read tier gets null (job_no still served)", async () => {
+    const jobId = await createOk(admin, {
+      project_name: "Coker",
+      job_no: "2026.123",
+      stakeholder_email: "owner@client.example",
+    });
+    // submitter holds cap.jobtracker.read (0013) but NOT manage — the send-recipient/CC
+    // block must be withheld (least-privilege; adversarial review 2026-07-20).
+    const asSubmitter = (await (
+      await call(`/api/fieldops/jobs/${jobId}`, { headers: { Cookie: submitter } })
+    ).json()) as any;
+    expect(asSubmitter.job.routing).toBeNull();
+    expect(asSubmitter.job.job_no).toBe("2026.123"); // the document-facing number stays visible
+    expect(JSON.stringify(asSubmitter)).not.toContain("owner@client.example");
+    const asAdmin = (await (
+      await call(`/api/fieldops/jobs/${jobId}`, { headers: { Cookie: admin } })
+    ).json()) as any;
+    expect(asAdmin.job.routing.stakeholder_email).toBe("owner@client.example");
+  });
+
+  it("/contacts is a FULL OVERWRITE: an ABSENT key clears the stored value (the SPA's clear gesture)", async () => {
+    const jobId = await createOk(admin, {
+      project_name: "X",
+      job_no: "2026.123",
+      address_city: "Rockford",
+    });
+    const res = await j(admin, `/api/fieldops/job/${jobId}/contacts`, { address: "1 Main St" });
+    expect(res.status).toBe(200);
+    const row = await jobRow(jobId);
+    expect(row.address).toBe("1 Main St");
+    expect(row.job_no).toBe("");        // absent → '' — the documented clear semantics
+    expect(row.address_city).toBe("");
+  });
+
+  it("/contacts round-trips the 0057 fields (edit is how a legacy job gains its number)", async () => {
+    const jobId = await createOk(admin, { project_name: "Legacy Job" });
+    const res = await j(admin, `/api/fieldops/job/${jobId}/contacts`, {
+      job_no: "2025.007",
+      address: "1 Main St",
+      address_city: "Peoria",
+      address_state: "IL",
+      address_zip: "61602",
+    });
+    expect(res.status).toBe(200);
+    const row = await jobRow(jobId);
+    expect(row.job_no).toBe("2025.007");
+    expect(row.address_city).toBe("Peoria");
+  });
+});

@@ -285,9 +285,10 @@ export function SubcontractBuilderPage({ onBack }: { onBack: () => void }) {
     setProjectName(job.project_name);
     setJobName(job.project_name);
     setSiteName(job.project_name);
-    // Suggest job_no from a YYYY.NNN project-name prefix (the Evergreen convention) — editable.
+    // The STORED Evergreen number (0057) first; the YYYY.NNN name-prefix parse stays
+    // the fallback for jobs that predate the structured field. Editable either way.
     const m = /^(\d{4}\.\d{3})/.exec(job.project_name.trim());
-    setJobNo(m ? m[1] : "");
+    setJobNo(job.job_no || (m ? m[1] : ""));
     // Site address auto-fills from the Smartsheet ITS_Active_Jobs "Address" SoR (C1) when available —
     // a CONVENIENCE only: a blank / 404 / degraded fetch leaves the operator-editable Site-address
     // field alone (never clobbers it with an empty on a job whose SoR address is unset).
