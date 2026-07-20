@@ -129,6 +129,7 @@ from shared import (
     sheet_ids,
     smartsheet_client,
     state_io,
+    sustained_failure,
 )
 from shared.creds_resolution import TransientUnavailable
 from shared.error_log import Severity, its_error_log
@@ -205,6 +206,11 @@ REQUIRED_CONFIG: list[ConfigKey] = [
 STATE_DIR = Path.home() / "its" / "state"
 HEARTBEAT_PATH = STATE_DIR / "po_poll_heartbeat.txt"
 LOCK_PATH = STATE_DIR / "po_poll.lock"
+# Sustained pending-fetch escalation (2026-07-20 forensic: a 21h every-cycle ERROR storm
+# was invisible on every CRITICAL-keyed fire surface — shared/sustained_failure.py).
+_FETCH_FAILS = sustained_failure.SustainedFailureCounter(
+    STATE_DIR / "po_pending_fetch_failures.json", SCRIPT_NAME, "po_pending_fetch_counter_failed",
+)
 HEARTBEAT_ROW_STATE_PATH = STATE_DIR / "heartbeat_row_ids.json"
 # One-shot flag state for PERMANENTLY-refused pending rows (`{po_id: reason}`).
 # A flagged row is skipped every subsequent cycle (no 90s Review-Queue spam); the
@@ -652,12 +658,24 @@ def _drafts_pass(creds: _PoCreds, counters: dict[str, int]) -> None:
         raise _BearerRejectedError from exc
     except portal_client.PortalTransportError as exc:
         counters["draft_errors"] += 1
-        error_log.log(
-            Severity.ERROR, SCRIPT_NAME,
-            f"failed to GET po pending (rows left queued for next cycle): {exc!r}",
+        n = _FETCH_FAILS.record()
+        if n >= sustained_failure.DEFAULT_CRITICAL_THRESHOLD:
+            # SUSTAINED outage: escalate to CRITICAL (the triple-fire push path + the
+            # dashboard fire surfaces key on CRITICAL — per-cycle ERROR alone is invisible).
+            error_log.log(
+                Severity.CRITICAL, SCRIPT_NAME,
+                f"pending fetch failing for {n} consecutive cycles — SUSTAINED intake outage "
+                f"(rows left queued; see docs/runbooks/po_poll.md): {exc!r}",
+                error_code="po_pending_fetch_sustained",
+            )
+        else:
+            error_log.log(
+                Severity.ERROR, SCRIPT_NAME,
+                f"failed to GET po pending (rows left queued for next cycle); {n} consecutive: {exc!r}",
             error_code="po_pending_fetch_failed",
-        )
+            )
         return
+    _FETCH_FAILS.reset()  # a successful fetch clears the sustained-outage counter
     if not pending:
         return
 
