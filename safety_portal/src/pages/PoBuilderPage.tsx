@@ -696,11 +696,31 @@ export function PoBuilderPage({
 
   // Cross-tab one-shot: a disposition import over on the Estimates tab minted a draft PO and
   // the hub handed it back here — open it in the builder, still fully editable, and refresh
-  // the tracker so the new draft row is visible when the user backs out.
+  // the tracker so the new draft row is visible when the user backs out. Two guards from the
+  // 2026-07-20 adversarial review: (a) the picker that started the round-trip closes (its
+  // list is stale the moment the import lands); (b) if the builder face is mid-edit on
+  // ANOTHER PO, opening the import would silently wipe that unsaved work — confirm first
+  // (the R3 discard-guard precedent), and on decline leave the import findable in the
+  // tracker, never silently dropped.
   useEffect(() => {
     if (!openDraftRequest) return;
     const { id } = openDraftRequest;
+    setFromEstOpen(false);
+    setFromEstRows(null);
     void (async () => {
+      if (
+        view === "builder" &&
+        !window.confirm(
+          `Open imported draft #${id} now? The purchase order you were editing will be replaced (unsaved changes are lost).`,
+        )
+      ) {
+        setMsg({
+          ok: true,
+          text: `Estimate imported into draft #${id} — open it from the list when you're ready.`,
+        });
+        reloadPos(statusFilter === "all" ? undefined : statusFilter);
+        return;
+      }
       const ok = await openDraft(id);
       if (ok) {
         setMsg({

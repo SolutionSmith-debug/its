@@ -124,6 +124,58 @@ const ESTIMATE_ROW: est.EstimateRow = {
   disposed_at: null,
 };
 
+/** A second reviewable estimate WITH advisory extraction lines + a rendered preview — the
+ *  fixture for the retarget-resets-the-fidelity-gate test. */
+const ESTIMATE_ROW_B: est.EstimateRow = {
+  ...ESTIMATE_ROW,
+  id: 6,
+  est_uuid: "e-6",
+  filename: "beta-quote.pdf",
+  status: "extracted",
+};
+const EXTRACTION_DETAIL = (row: est.EstimateRow): est.EstimateDetail => ({
+  estimate: row,
+  extraction: {
+    id: row.id * 10,
+    estimate_id: row.id,
+    tier: 1,
+    schema_version: "1.0.0",
+    doc_type: "quote",
+    vendor_name: "Apex Racking",
+    quote_number: `Q-${row.id}`,
+    revision_label: null,
+    quote_date: null,
+    valid_until: null,
+    subtotal_cents: 1000,
+    tax_cents: 0,
+    freight_cents: null,
+    misc_cents: null,
+    grand_total_cents: 1000,
+    math_ok: 1,
+    confidence: 0.95,
+    anomalies: null,
+    created_at: 1,
+  },
+  lines: [
+    {
+      id: row.id * 100,
+      position: 1,
+      section: null,
+      part_number: null,
+      description: `Extracted line of ${row.filename}`,
+      qty: 1,
+      unit: "EA",
+      unit_cost_cents: 1000,
+      extended_cents: 1000,
+      math_ok: 1,
+      line_note: null,
+      disposition: "pending",
+      edited_json: null,
+    },
+  ],
+  preview_count: 1,
+});
+
 const PO_DETAIL = {
   po: {
     id: 77,
@@ -252,7 +304,7 @@ describe("PurchaseOrdersPage — the estimate→PO fold", () => {
     vi.mocked(api.fetchPo).mockResolvedValue(PO_DETAIL);
     vi.mocked(api.fetchPoAttachments).mockResolvedValue([]);
 
-    const { container, getByRole, getByText, getByLabelText } = render(<Harness />);
+    const { getByRole, getByText, getByLabelText, queryByText } = render(<Harness />);
     await waitFor(() => expect(api.fetchPos).toHaveBeenCalled());
 
     // 1 — the Orders tracker offers "New PO from a vendor estimate"; opening it lists the
@@ -296,6 +348,93 @@ describe("PurchaseOrdersPage — the estimate→PO fold", () => {
     expect(getByText("Editing draft #77")).toBeTruthy();
     // The imported line is sitting in the editable grid, not a read-only view.
     expect((getByLabelText("Line 1 description") as HTMLInputElement).value).toBe("Rail 208in");
+
+    // 6 — the round-trip closed the from-estimate picker (its list went stale the moment the
+    //     import landed) — back on the tracker it offers a fresh open, not a stale list.
+    fireEvent.click(getByText("← Back to the list"));
+    expect(getByText("New PO from a vendor estimate")).toBeTruthy();
+    expect(queryByText("Hide vendor estimates")).toBeNull();
+  });
+
+  it("retargeting the disposition to another estimate RESETS the fidelity gate and manual lines (key={openId})", async () => {
+    // Both estimates are reviewable and carry ADVISORY extraction lines + 1 preview page.
+    vi.mocked(est.fetchEstimates).mockResolvedValue([ESTIMATE_ROW, ESTIMATE_ROW_B]);
+    vi.mocked(est.fetchEstimate).mockImplementation(async (id: number) =>
+      EXTRACTION_DETAIL(id === 5 ? ESTIMATE_ROW : ESTIMATE_ROW_B),
+    );
+
+    const { getByRole, getByText, getByLabelText, getByAltText } = render(
+      <Harness initialTab="estimates" />,
+    );
+    await waitFor(() => expect(getByText("apex-quote.pdf")).toBeTruthy());
+
+    // Open estimate A's disposition, LOAD its preview page (the gate's evidence), and type a
+    // manual Tier-3 line — the state the retarget must NOT carry over.
+    fireEvent.click(within(getByText("apex-quote.pdf").closest("section")!).getByText("Review & disposition"));
+    await waitFor(() => expect(est.fetchEstimate).toHaveBeenCalledWith(5));
+    await waitFor(() => expect(getByText(/Extracted line of apex-quote\.pdf/)).toBeTruthy());
+    fireEvent.load(getByAltText("Estimate page 1"));
+    fireEvent.change(getByLabelText("Manual line 1 description"), { target: { value: "Carried line" } });
+
+    // Cross-tab retarget: Orders picker → "Review & import" on estimate B.
+    fireEvent.click(getByRole("tab", { name: "Purchase Orders" }));
+    await waitFor(() => expect(api.fetchPos).toHaveBeenCalled());
+    fireEvent.click(getByText("New PO from a vendor estimate"));
+    await waitFor(() => expect(getByText("beta-quote.pdf")).toBeTruthy());
+    fireEvent.click(within(getByText("beta-quote.pdf").closest("div")!).getByText("Review & import"));
+    await waitFor(() => expect(est.fetchEstimate).toHaveBeenCalledWith(6));
+    await waitFor(() => expect(getByText(/Extracted line of beta-quote\.pdf/)).toBeTruthy());
+
+    // The FRESH mount (key={openId}) means estimate B starts with ZERO preview evidence: the
+    // ADR-0004 decision-3 gate blocks import until B's own preview loads, and A's manual line
+    // did not ride along. Without the key, A's loadedPages/manualLines would leak in — the
+    // exact fidelity-gate bypass the 2026-07-20 adversarial review confirmed.
+    expect(getByText(/Load a source preview page/)).toBeTruthy();
+    expect((getByLabelText("Manual line 1 description") as HTMLInputElement).value).toBe("");
+  });
+
+  it("an import while the builder is mid-edit asks before clobbering; declining keeps the work", async () => {
+    vi.mocked(est.fetchEstimates).mockResolvedValue([ESTIMATE_ROW]);
+    vi.mocked(est.fetchEstimate).mockResolvedValue({
+      estimate: ESTIMATE_ROW,
+      extraction: null,
+      lines: [],
+      preview_count: 0,
+    });
+    vi.mocked(api.createDraft).mockResolvedValue({
+      id: 88,
+      totals: { subtotal_cents: 1234, tax_rate_bp: 900, tax_cents: 111, total_cents: 1345 },
+    });
+    vi.mocked(est.disposeEstimate).mockResolvedValue({ ok: true, status: "imported" });
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+
+    const { getByRole, getByText, getByLabelText } = render(<Harness />);
+    await waitFor(() => expect(api.fetchPos).toHaveBeenCalled());
+
+    // Start a blank PO and type into it — the unsaved work at stake.
+    fireEvent.click(getByText("+ New purchase order"));
+    fireEvent.change(getByLabelText("Line 1 description"), { target: { value: "Half-built line" } });
+
+    // Import an estimate over on the Estimates tab (manual-entry doc, gate inapplicable).
+    fireEvent.click(getByRole("tab", { name: "Vendor Estimates" }));
+    await waitFor(() => expect(getByText("apex-quote.pdf")).toBeTruthy());
+    fireEvent.click(getByText("Review & disposition"));
+    await waitFor(() => expect(getByText("Confirm & import")).toBeTruthy());
+    fireEvent.change(getByLabelText("Manual line 1 description"), { target: { value: "Imported" } });
+    fireEvent.change(getByLabelText("Manual line 1 quantity"), { target: { value: "1" } });
+    fireEvent.change(getByLabelText("Manual line 1 unit cost"), { target: { value: "9.99" } });
+    fireEvent.change(getByLabelText("Vendor"), { target: { value: "VEN-000001" } });
+    fireEvent.change(getByLabelText("Ship-to state (2 letters — drives tax)"), { target: { value: "IL" } });
+    fireEvent.click(getByText("Create draft PO"));
+    await waitFor(() => expect(est.disposeEstimate).toHaveBeenCalled());
+
+    // Declined: the import is announced + findable in the tracker, the half-built PO survives,
+    // and the imported draft was NOT force-opened over it.
+    await waitFor(() => expect(getByText(/open it from the list when you're ready/)).toBeTruthy());
+    expect(confirmSpy).toHaveBeenCalledTimes(1);
+    expect(api.fetchPo).not.toHaveBeenCalled();
+    expect((getByLabelText("Line 1 description") as HTMLInputElement).value).toBe("Half-built line");
+    confirmSpy.mockRestore();
   });
 
   it("with nothing reviewable, the picker points at the Vendor Estimates tab", async () => {

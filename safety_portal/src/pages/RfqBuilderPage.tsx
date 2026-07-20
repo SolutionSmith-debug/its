@@ -289,7 +289,8 @@ export function RfqBuilderPage() {
   if (editingId !== null) {
     return (
       <>
-        <h2 className="page__heading">{editingId > 0 ? "Edit RFQ draft" : "New RFQ"}</h2>
+        {/* h3: the hub's "Purchase Orders" h2 is the page heading — sub-faces nest under it. */}
+        <h3 className="page__heading">{editingId > 0 ? "Edit RFQ draft" : "New RFQ"}</h3>
         {msg && <div className={`banner ${msg.ok ? "banner--ok" : "banner--err"}`}>{msg.text}</div>}
 
         <section className="card dash-section" aria-label="Job">

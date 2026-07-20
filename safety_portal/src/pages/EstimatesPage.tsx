@@ -171,7 +171,13 @@ export function EstimatesPage({
   // ── Disposition face ───────────────────────────────────────────────────────────────────────────
   if (openId !== null) {
     return (
+      // key IS LOAD-BEARING (adversarial review, 2026-07-20): the cross-tab reviewRequest can
+      // retarget openId while a disposition is already mounted (panel keep-alive). Without a
+      // remount, estimate A's loaded-preview evidence, manual Tier-3 lines, ship-to state, and
+      // site phase would carry into estimate B's import — bypassing the ADR-0004 decision-3
+      // fidelity gate. The key forces a fresh instance (and a fresh gate) per estimate.
       <EstimateDispositionPage
+        key={openId}
         estimateId={openId}
         onClose={(notice, importedPoId) => {
           setOpenId(null);

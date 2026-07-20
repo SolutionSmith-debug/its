@@ -356,7 +356,8 @@ export function EstimateDispositionPage({
         </button>
         <span className="dash-pill">{est.ESTIMATE_STATUS_LABEL[e.status] ?? e.status}</span>
       </div>
-      <h2 className="page__heading">{e.filename}</h2>
+      {/* h3: the hub's "Purchase Orders" h2 is the page heading — sub-faces nest under it. */}
+      <h3 className="page__heading">{e.filename}</h3>
       <p className="dash__intro">
         {e.job_no} · {e.job_name || "—"} · uploaded by {e.uploaded_by}
         {e.doc_type ? ` · classified ${e.doc_type}` : ""}
