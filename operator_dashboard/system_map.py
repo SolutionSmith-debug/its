@@ -320,11 +320,7 @@ NODES: tuple[MapNode, ...] = (
     MapNode(
         id="sheet_po_pending_review", label="PO_Pending_Review", kind="sheet", lane="records", band="po",
         blurb="The PO approval queue — human approval here releases a PO to its vendor.",
-        # NOT watchdog_checks=("U",): Check U's _APPROVER_WORKSPACES covers only the
-        # Safety Portal + Progress Reporting workspaces, so approver drift on the
-        # Purchase Orders workspace is UNWATCHED. Claiming the eye chip here would
-        # tell the operator a control is running that is not (docs/tech_debt.md).
-        sheet_id=1816168087113604,
+        sheet_id=1816168087113604, watchdog_checks=("U",),
         runbook="docs/runbooks/po_send.md",
     ),
     MapNode(
@@ -345,9 +341,7 @@ NODES: tuple[MapNode, ...] = (
         blurb="The RFQ approval queue — one row per (RFQ, vendor). A PO_Pending_Review schema twin "
               "tagged po_materials_rfq, so the PO and subcontract send daemons can never dispatch "
               "an RFQ row. Human approval here is what releases an RFQ to its vendor.",
-        # No ("U",) — see sheet_po_pending_review: RFQ approvals are verified against
-        # the Purchase Orders workspace, which Check U does not scan.
-        sheet_id=3555996805844868,
+        sheet_id=3555996805844868, watchdog_checks=("U",),
         runbook="docs/runbooks/rfq_send.md",
     ),
     MapNode(
@@ -403,9 +397,7 @@ NODES: tuple[MapNode, ...] = (
         id="sheet_subcontract_pending_review", label="Subcontract_Pending_Review", kind="sheet",
         lane="records", band="subcontracts",
         blurb="The subcontract approval queue — human approval here releases the package.",
-        # No ("U",) — see sheet_po_pending_review: Check U does not scan the
-        # Subcontracts workspace either.
-        sheet_id=7950433787006852,
+        sheet_id=7950433787006852, watchdog_checks=("U",),
         runbook="docs/runbooks/subcontract_send.md",
     ),
     MapNode(
