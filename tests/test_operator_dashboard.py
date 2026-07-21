@@ -6,8 +6,10 @@ method, and untrusted panel values render inert (HTML-escaped + redacted).
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
+import subprocess
+from collections.abc import Callable, Iterator
 from pathlib import Path
+from types import ModuleType, SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -283,11 +285,231 @@ def test_daemon_running_with_signal_exit_is_ok_not_error(monkeypatch: pytest.Mon
         "org.solutionsmith.its.dashboard": ("55622", "-15"),  # running + SIGTERM last-exit
         "org.solutionsmith.its.foo": ("-", "1"),              # NOT running + error exit
     })
+    monkeypatch.setattr(src, "_uptime_by_pid", lambda pids: {})
     by = {r["daemon"]: r for r in src.fetch().rows}
     assert by["dashboard"]["_sev"] == "ok"        # running → OK despite -15
     assert by["dashboard"]["state"] == "running"
-    assert by["dashboard"]["last exit"] == "-15"  # still shown, informational
+    # The raw "-15" is alarming and meaningless to an operator: a RUNNING daemon's
+    # last-exit describes the PREVIOUS instance. Render a neutral signal label and
+    # keep the raw truth in the tooltip.
+    assert by["dashboard"]["last exit"] == "signal (SIGTERM)"
+    assert "-15" in by["dashboard"]["_title_last exit"]
     assert by["foo"]["_sev"] == "error" and "exited 1" in by["foo"]["state"]
+
+
+def test_daemon_last_exit_label_variants(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Only a RUNNING daemon's NEGATIVE (signal) last-exit is relabelled. A positive
+    # exit code stays raw (it is a real prior failure), a stopped daemon keeps its
+    # red "exited -15" (a genuine did-not-restart signal), and an unknown signal
+    # number degrades to a generic label rather than raising.
+    from operator_dashboard.sources.daemons import DaemonStatusSource
+
+    src = DaemonStatusSource()
+    monkeypatch.setattr(src, "_plist_labels", lambda: [])
+    monkeypatch.setattr(src, "_launchctl_table", lambda: {
+        "org.solutionsmith.its.pos": ("101", "2"),       # running + positive prior exit
+        "org.solutionsmith.its.stopped": ("-", "-15"),   # loaded, NOT running, signal exit
+        "org.solutionsmith.its.weird": ("102", "-99"),   # running + unknown signal number
+        "org.solutionsmith.its.clean": ("103", "0"),     # running + clean prior exit
+    })
+    monkeypatch.setattr(src, "_uptime_by_pid", lambda pids: {})
+    by = {r["daemon"]: r for r in src.fetch().rows}
+
+    assert by["pos"]["last exit"] == "2" and "_title_last exit" not in by["pos"]
+    assert by["stopped"]["last exit"] == "-15"
+    assert by["stopped"]["state"] == "exited -15" and by["stopped"]["_sev"] == "error"
+    assert "_title_last exit" not in by["stopped"]
+    assert by["weird"]["last exit"] == "signal (99)"
+    assert "-99" in by["weird"]["_title_last exit"]
+    assert by["clean"]["last exit"] == "0" and "_title_last exit" not in by["clean"]
+
+
+def _patch_ps(
+    monkeypatch: pytest.MonkeyPatch, dmod: ModuleType, run: Callable[..., object]
+) -> None:
+    # Patch the module attribute the daemons panel actually calls through
+    # (`daemons.subprocess`), NOT `subprocess.run` on the shared stdlib module
+    # object — the latter swaps `run` process-wide for every other importer.
+    # `SubprocessError` rides along because the narrowed except-clause in
+    # `_uptime_by_pid` resolves it off this same attribute.
+    monkeypatch.setattr(
+        dmod,
+        "subprocess",
+        SimpleNamespace(run=run, SubprocessError=subprocess.SubprocessError),
+    )
+    # The shared stdlib module object stays untouched — this RED-lights if the
+    # patch is ever widened back to `setattr(dmod.subprocess, "run", ...)`.
+    assert subprocess.run is not run
+
+
+@pytest.mark.parametrize(
+    ("etime", "expected"),
+    [
+        ("00:00", "0s"),
+        ("12:34", "12m 34s"),
+        ("01:02:03", "1h 2m"),
+        ("03-17:08:42", "3d 17h"),
+    ],
+)
+def test_parse_etime_forms(etime: str, expected: str) -> None:
+    # `ps -o etime=` renders [[dd-]hh:]mm:ss — a just-respawned interval daemon
+    # shows mm:ss, a same-day KeepAlive server hh:mm:ss, and only a long-lived
+    # one dd-hh:mm:ss. All three forms must parse or the column silently
+    # degrades to raw ps strings for most rows.
+    from operator_dashboard.sources.base import fmt_timedelta
+    from operator_dashboard.sources.daemons import _parse_etime
+
+    td = _parse_etime(etime)
+    assert td is not None
+    assert fmt_timedelta(td) == expected
+
+
+def test_parse_etime_rejects_garbage() -> None:
+    from operator_dashboard.sources.daemons import _parse_etime
+
+    assert _parse_etime("not-an-etime") is None
+    assert _parse_etime("") is None
+
+
+def test_daemon_uptime_column(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Uptime comes from ONE batched ps call covering EVERY running pid (two
+    # here, so a per-row implementation would make two calls and fail the
+    # single-call assertion); idle / not-loaded rows show a dash.
+    from operator_dashboard.sources import daemons as dmod
+
+    src = dmod.DaemonStatusSource()
+    monkeypatch.setattr(src, "_plist_labels", lambda: ["org.solutionsmith.its.gone"])
+    monkeypatch.setattr(src, "_launchctl_table", lambda: {
+        "org.solutionsmith.its.up": ("101", "0"),
+        "org.solutionsmith.its.up2": ("102", "0"),
+        "org.solutionsmith.its.idle": ("-", "0"),
+    })
+    seen: list[list[str]] = []
+
+    def _fake_run(argv: list[str], **kw: object) -> object:
+        seen.append(argv)
+        return SimpleNamespace(stdout="  101 03-17:08:42\n  102 12:34\n", returncode=0)
+
+    _patch_ps(monkeypatch, dmod, _fake_run)
+    result = src.fetch()
+    by = {r["daemon"]: r for r in result.rows}
+    assert "uptime" in result.columns
+    assert by["up"]["uptime"] == "3d 17h"
+    assert by["up2"]["uptime"] == "12m 34s"
+    assert by["idle"]["uptime"] == "—"
+    assert by["gone"]["uptime"] == "—"
+    assert len(seen) == 1 and seen[0][0] == "ps" and seen[0][-1] == "101,102"
+
+
+def test_daemon_uptime_unparseable_and_empty_and_failsoft(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # An unparseable etime degrades to the raw string; a ps failure yields no
+    # uptimes but still renders the panel; and with NO running pids the
+    # subprocess is skipped entirely (`ps -p` with an empty list errors — on
+    # this host it writes non-UTF8 bytes and raises UnicodeDecodeError).
+    from operator_dashboard.sources import daemons as dmod
+
+    src = dmod.DaemonStatusSource()
+    monkeypatch.setattr(src, "_plist_labels", lambda: [])
+    monkeypatch.setattr(src, "_launchctl_table", lambda: {
+        "org.solutionsmith.its.up": ("101", "0"),
+    })
+    _patch_ps(
+        monkeypatch,
+        dmod,
+        lambda argv, **kw: SimpleNamespace(stdout="101 not-an-etime\n", returncode=0),
+    )
+    by = {r["daemon"]: r for r in src.fetch().rows}
+    assert by["up"]["uptime"] == "not-an-etime"
+
+    def _boom(*args: object, **kwargs: object) -> object:
+        raise OSError("ps unavailable")
+
+    _patch_ps(monkeypatch, dmod, _boom)
+    by = {r["daemon"]: r for r in src.fetch().rows}
+    assert by["up"]["uptime"] == "—" and by["up"]["state"] == "running"
+
+
+def test_daemon_uptime_parse_bug_is_visible_not_silent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The subprocess guard must NOT swallow the parse path: a programming bug
+    # there would otherwise render as a permanent silent "—" with no trace on a
+    # panel whose whole job is "never silent". It must surface as a visibly
+    # unavailable panel via DataSource.fetch()'s fail-soft wrapper instead.
+    from operator_dashboard.sources import daemons as dmod
+
+    src = dmod.DaemonStatusSource()
+    monkeypatch.setattr(src, "_plist_labels", lambda: [])
+    monkeypatch.setattr(src, "_launchctl_table", lambda: {
+        "org.solutionsmith.its.up": ("101", "0"),
+    })
+    _patch_ps(
+        monkeypatch,
+        dmod,
+        lambda argv, **kw: SimpleNamespace(stdout="101 03-17:08:42\n", returncode=0),
+    )
+
+    def _bug(etime: str) -> object:
+        raise TypeError("signature changed")
+
+    monkeypatch.setattr(dmod, "_parse_etime", _bug)
+    result = src.fetch()
+    assert result.available is False
+    assert "TypeError" in (result.unavailable_reason or "")
+
+
+def test_daemon_uptime_no_running_pids_skips_subprocess(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The empty-pid guard is load-bearing, so prove the SKIP directly: a
+    # call-recording fake that would happily succeed must record ZERO calls.
+    # (Without `if not pids: return {}` this records one call and RED-lights.)
+    from operator_dashboard.sources import daemons as dmod
+
+    src = dmod.DaemonStatusSource()
+    calls: list[list[str]] = []
+
+    def _recording_run(argv: list[str], **kw: object) -> object:
+        calls.append(argv)
+        return SimpleNamespace(stdout="", returncode=0)
+
+    _patch_ps(monkeypatch, dmod, _recording_run)
+    assert src._uptime_by_pid([]) == {}
+    assert calls == []
+
+    # And end-to-end: an all-idle table never reaches ps either.
+    monkeypatch.setattr(src, "_plist_labels", lambda: [])
+    monkeypatch.setattr(src, "_launchctl_table", lambda: {
+        "org.solutionsmith.its.idle": ("-", "0"),
+    })
+    by = {r["daemon"]: r for r in src.fetch().rows}
+    assert by["idle"]["uptime"] == "—"
+    assert calls == []
+
+
+def test_daemon_panel_renders_last_exit_tooltip(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # End-to-end: the per-column '_title_<column>' convention reaches the HTML as a
+    # quoted title attribute carrying the raw launchctl value.
+    from operator_dashboard.sources import PANELS_BY_ID
+    from operator_dashboard.sources.daemons import DaemonStatusSource
+
+    src = PANELS_BY_ID["daemons"]
+    assert isinstance(src, DaemonStatusSource)
+    monkeypatch.setattr(src, "_plist_labels", lambda: [])
+    monkeypatch.setattr(src, "_launchctl_table", lambda: {
+        "org.solutionsmith.its.dashboard": ("55622", "-15"),
+    })
+    monkeypatch.setattr(src, "_uptime_by_pid", lambda pids: {"55622": "2h 5m"})
+
+    resp = client.get("/panels/daemons")
+    assert resp.status_code == 200
+    assert 'title="raw launchctl last-exit -15' in resp.text
+    assert "signal (SIGTERM)" in resp.text
+    assert "2h 5m" in resp.text
 
 
 def test_audit_trail_source_filters_to_config_editor(monkeypatch: pytest.MonkeyPatch) -> None:

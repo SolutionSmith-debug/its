@@ -14,9 +14,12 @@
       <tbody>
         {% for row in p.rows %}
         <tr class="sev-{{ row.get('_sev', 'info') }}">
-          {# A row may carry per-column deep links as '_link_<column>' keys
-             (e.g. a Script cell → its system-map node). #}
-          {% for c in p.columns %}{% set lk = row.get('_link_' ~ c) %}<td>{% if lk %}<a class="cell-link" href="{{ lk }}">{{ row.get(c, '') }}</a>{% else %}{{ row.get(c, '') }}{% endif %}</td>{% endfor %}
+          {# A row may carry two per-column extras, keyed by column name:
+             '_link_<column>'  → the cell becomes a deep link (e.g. a Script cell
+                                 → its system-map node);
+             '_title_<column>' → a hover tooltip holding the raw/underlying value
+                                 a humanised cell replaced. #}
+          {% for c in p.columns %}{% set lk = row.get('_link_' ~ c) %}{% set ti = row.get('_title_' ~ c) %}<td{% if ti %} title="{{ ti }}"{% endif %}>{% if lk %}<a class="cell-link" href="{{ lk }}">{{ row.get(c, '') }}</a>{% else %}{{ row.get(c, '') }}{% endif %}</td>{% endfor %}
         </tr>
         {% endfor %}
       </tbody>

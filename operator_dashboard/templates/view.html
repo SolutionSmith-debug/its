@@ -22,7 +22,9 @@
     <tbody>
       {% for row in p.rows %}
       <tr class="sev-{{ row.get('_sev', 'info') }}">
-        {% for c in p.columns %}{% set lk = row.get('_link_' ~ c) %}<td>{% if lk %}<a class="cell-link" href="{{ lk }}">{{ row.get(c, '') }}</a>{% else %}{{ row.get(c, '') }}{% endif %}</td>{% endfor %}
+        {# Same per-column '_link_<column>' / '_title_<column>' row-key conventions
+           as the panel card — see templates/_panel.html. #}
+        {% for c in p.columns %}{% set lk = row.get('_link_' ~ c) %}{% set ti = row.get('_title_' ~ c) %}<td{% if ti %} title="{{ ti }}"{% endif %}>{% if lk %}<a class="cell-link" href="{{ lk }}">{{ row.get(c, '') }}</a>{% else %}{{ row.get(c, '') }}{% endif %}</td>{% endfor %}
       </tr>
       {% endfor %}
     </tbody>
