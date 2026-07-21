@@ -1494,6 +1494,235 @@ def test_the_real_create_helpers_do_not_raise_a_retry_safe_error(mocker, helper,
     assert smartsheet_client.is_transient_error(exc_info.value) is False
 
 
+@pytest.mark.parametrize(
+    "helper, kwargs",
+    [
+        ("create_folder_in_folder", {"parent_folder_id": 1, "name": "X"}),
+        ("create_folder_in_workspace", {"workspace_id": 1, "name": "X"}),
+        (
+            "create_sheet_in_folder_from_template",
+            {"folder_id": 1, "name": "X", "template_sheet_id": 2},
+        ),
+    ],
+)
+def test_a_timeout_on_a_rest_create_is_never_classified_retry_safe(mocker, helper, kwargs):
+    """The TIMEOUT half of the same defect, which round 3 left behind on these three POSTs.
+
+    A `requests.ReadTimeout` on a create is strictly WORSE than a 5xx: the request was
+    fully transmitted and only the response was lost, so the folder/sheet may well exist.
+    These arms minted `SmartsheetTransientError` while the 5xx arm one line below already
+    refused to."""
+    mocker.patch.object(smartsheet_client, "get_client")
+    mocker.patch.object(
+        smartsheet_client.requests, "post",
+        side_effect=requests.exceptions.ReadTimeout("timed out"),
+    )
+
+    with pytest.raises(SmartsheetError) as exc_info:
+        getattr(smartsheet_client, helper)(**kwargs)
+
+    assert smartsheet_client.is_transient_error(exc_info.value) is False
+    assert "NON-IDEMPOTENT" in str(exc_info.value)
+
+
+# ---- the SDK path: a WRITE is never retry-safe either (round-4 finding) ---
+#
+# Round 3 threaded `idempotent` through `_translate_smartsheet_error`, fixing the four
+# raw-REST helpers — but `_translate` (the SDK path) still classified by STATUS ALONE, so
+# an `add_rows` that 500s or times out yielded `SmartsheetTransientError` and the PUBLIC
+# `is_transient_error()` answered True for it, flatly contradicting its own contract. It is
+# load-bearing, not cosmetic: `sustained_failure.TransientFence` consults that predicate, so
+# a failed WRITE at a fenced pass boundary was softened to a counted ERROR ("retrying next
+# cycle") as though it were a safe-to-reissue read.
+
+#: (SDK method path, a call to the REAL helper that reaches it). Every ITS Smartsheet WRITE
+#: that goes through the SDK rather than raw REST.
+_SDK_WRITE_HELPERS = [
+    ("Sheets.add_rows", lambda: smartsheet_client.add_rows(999, [{"A": 1}])),
+    ("Sheets.update_rows",
+     lambda: smartsheet_client.update_rows(999, [{"_row_id": 1, "A": 2}])),
+    ("Sheets.delete_rows", lambda: smartsheet_client.delete_rows(999, [1])),
+    ("Sheets.update_column",
+     lambda: smartsheet_client.update_column_options(
+         999, 1, ["a"], column_type="PICKLIST")),
+    ("Sheets.add_columns",
+     lambda: smartsheet_client.create_picklist_column(999, "T", ["a"], index=0)),
+    ("Sheets.delete_sheet", lambda: smartsheet_client.delete_sheet(999)),
+    ("Sheets.move_sheet", lambda: smartsheet_client.move_sheet_to_folder(999, 7)),
+    ("Folders.create_sheet_in_folder",
+     lambda: smartsheet_client.create_sheet_in_folder(
+         7, "X", [{"title": "p", "type": "TEXT_NUMBER", "primary": True}])),
+    ("Attachments.attach_file_to_row",
+     lambda: smartsheet_client.attach_pdf_to_row(
+         999, 1, "f.pdf", b"%PDF-1.4", replace=False)),
+]
+
+#: The two SDK failure shapes that used to be softened. A timeout is the worse of the two
+#: for a write: the request was transmitted and only the RESPONSE was lost.
+_SDK_UNKNOWN_OUTCOME_FAILURES = [
+    ("5xx", lambda: _api_error(500, code=4000, message="Internal Server Error")),
+    ("timeout", lambda: sdk_exc.UnexpectedRequestError(
+        requests.exceptions.ReadTimeout("timed out"), None)),
+]
+
+
+def _arm(client, dotted: str, exc) -> None:
+    target = client
+    parts = dotted.split(".")
+    for part in parts[:-1]:
+        target = getattr(target, part)
+    getattr(target, parts[-1]).side_effect = exc
+
+
+@pytest.mark.parametrize("shape, make_exc", _SDK_UNKNOWN_OUTCOME_FAILURES,
+                         ids=[s for s, _ in _SDK_UNKNOWN_OUTCOME_FAILURES])
+@pytest.mark.parametrize("sdk_path, call", _SDK_WRITE_HELPERS,
+                         ids=[p for p, _ in _SDK_WRITE_HELPERS])
+def test_no_sdk_write_helper_is_ever_classified_retry_safe(
+    mocker, sdk_path, call, shape, make_exc
+):
+    """Through the REAL helper, not just the translator: `is_transient_error()` must answer
+    False for a 5xx and for a timeout on every SDK write, and the message must say the
+    outcome is UNKNOWN rather than implying a harmless blip."""
+    client = _install_client(mocker)
+    # Column resolution is a READ that would otherwise need its own sheet fixture; the
+    # write itself is what is under test.
+    mocker.patch.object(smartsheet_client, "_resolve_cells", return_value=[])
+    _arm(client, sdk_path, make_exc())
+
+    with pytest.raises(SmartsheetError) as exc_info:
+        call()
+
+    assert not isinstance(exc_info.value, SmartsheetTransientError)
+    assert smartsheet_client.is_transient_error(exc_info.value) is False, (
+        f"a {shape} on {sdk_path} was reported retry-safe — the fence would soften a "
+        "possibly-COMMITTED write into 'retrying next cycle'"
+    )
+    assert "UNKNOWN whether the write COMMITTED" in str(exc_info.value)
+
+
+@pytest.mark.parametrize("shape, make_exc", _SDK_UNKNOWN_OUTCOME_FAILURES,
+                         ids=[s for s, _ in _SDK_UNKNOWN_OUTCOME_FAILURES])
+def test_sdk_reads_are_still_classified_retry_safe(mocker, shape, make_exc):
+    """The other direction — narrowing the writes must not blunt the read path the whole
+    branch exists to soften (`get_setting`/`get_rows` at a daemon's pass boundary)."""
+    client = _install_client(mocker)
+    client.Sheets.get_sheet.side_effect = make_exc()
+
+    with pytest.raises(SmartsheetTransientError) as exc_info:
+        smartsheet_client.get_rows(123)
+
+    assert smartsheet_client.is_transient_error(exc_info.value) is True
+    assert "UNKNOWN whether the write COMMITTED" not in str(exc_info.value)
+
+
+def test_the_fence_cannot_soften_a_write_failure(mocker, tmp_path):
+    """The consequence, asserted against the REAL fence rather than by inspection: this
+    predicate is not an academic contract, it is what decides whether a failed write gets
+    its immediate `uncaught_exception` CRITICAL or is quietly counted as a blip."""
+    from shared import sustained_failure
+
+    client = _install_client(mocker)
+    mocker.patch.object(smartsheet_client, "_resolve_cells", return_value=[])
+    logged: list = []
+    mocker.patch("shared.error_log.log", side_effect=lambda *a, **kw: logged.append(a))
+    fence = sustained_failure.TransientFence(
+        "test_daemon",
+        state_path=tmp_path / "fence.json",
+        transient_error_code="test_daemon.read_transient",
+        sustained_error_code="test_daemon.read_sustained",
+    )
+
+    client.Sheets.add_rows.side_effect = sdk_exc.UnexpectedRequestError(
+        requests.exceptions.ReadTimeout("timed out"), None
+    )
+    with pytest.raises(SmartsheetError) as write_exc:
+        smartsheet_client.add_rows(999, [{"A": 1}])
+    assert fence.handle(write_exc.value) is False, (
+        "the fence must RE-RAISE a failed write (→ CRITICAL), never halt-and-count it"
+    )
+    assert logged == []
+    assert not (tmp_path / "fence.json").exists()
+
+    # …while the read it was built for is still softened, exactly as before.
+    client.Sheets.get_sheet.side_effect = sdk_exc.UnexpectedRequestError(
+        requests.exceptions.ReadTimeout("timed out"), None
+    )
+    with pytest.raises(SmartsheetTransientError) as read_exc:
+        smartsheet_client.get_rows(123)
+    assert fence.handle(read_exc.value) is True
+
+
+#: Every function in `shared/smartsheet_client.py` that translates an SDK exception, and
+#: the `idempotent=` literals it passes. Held as DATA so the AST walk below can assert SET
+#: EQUALITY: adding an SDK helper — or flipping one of these to True — forces a deliberate
+#: edit here, which is the review moment where "is this a read?" actually gets asked. mypy
+#: already forces the keyword to be PRESENT (it is required and keyword-only); this guards
+#: the value, which is the half a type checker cannot see.
+_TRANSLATE_IDEMPOTENCY = {
+    # reads / lookups — safe to re-issue, so the self-healing type is correct
+    "_fetch_column_map": {True},
+    "get_sheet": {True},
+    "get_row": {True},
+    "get_rows": {True},
+    "get_cell_history": {True},
+    "find_row_by_primary": {True},
+    "list_columns_with_options": {True},
+    # writes — a 5xx/timeout leaves the outcome UNKNOWN, so never the retry-safe type
+    "add_rows": {False},
+    "update_rows": {False},
+    "delete_rows": {False},
+    "update_row_cells_by_id": {False},
+    "add_row_by_id": {False},
+    "update_column_options": {False},
+    "create_picklist_column": {False},
+    "create_sheet_in_folder": {False},
+    "delete_sheet": {False},
+    "move_sheet_to_folder": {False},
+    "attach_pdf_to_row": {False},
+    # reads the live column list (True), then UPDATEs each column (False) — the one helper
+    # that legitimately does both, which is why the table holds a SET per function.
+    "apply_column_styles": {True, False},
+}
+
+
+def test_every_sdk_translation_site_declares_its_idempotency_deliberately():
+    """PROVE-IT-BITES anchor for the round-4 fix: a new SDK helper that copy-pastes
+    `idempotent=True` onto a WRITE RED-lights here rather than silently re-teaching
+    `is_transient_error()` to lie about a possibly-committed mutation."""
+    import ast
+    import inspect
+
+    tree = ast.parse(inspect.getsource(smartsheet_client))
+    found: dict[str, set[bool]] = {}
+    for fn in ast.walk(tree):
+        if not isinstance(fn, ast.FunctionDef):
+            continue
+        for node in ast.walk(fn):
+            if not isinstance(node, ast.Call):
+                continue
+            name = node.func.id if isinstance(node.func, ast.Name) else ""
+            if name != "_translate":
+                continue
+            literals = {
+                kw.value.value for kw in node.keywords
+                if kw.arg == "idempotent" and isinstance(kw.value, ast.Constant)
+            }
+            assert literals, (
+                f"{fn.name}: `_translate` must be called with a LITERAL `idempotent=` — a "
+                "computed value hides the read/write decision from review"
+            )
+            found.setdefault(fn.name, set()).update(literals)
+
+    assert found == _TRANSLATE_IDEMPOTENCY, (
+        "the SDK translation sites drifted from the declared read/write classification. "
+        f"missing={set(_TRANSLATE_IDEMPOTENCY) - set(found)} "
+        f"unexpected={set(found) - set(_TRANSLATE_IDEMPOTENCY)} "
+        f"changed={ {k: (v, _TRANSLATE_IDEMPOTENCY.get(k)) for k, v in found.items()
+                     if _TRANSLATE_IDEMPOTENCY.get(k) != v} }"
+    )
+
+
 # ---- find_row_by_primary + update_row_cells_by_id (PR #59.5) -------------
 
 

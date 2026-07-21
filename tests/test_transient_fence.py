@@ -315,12 +315,102 @@ def test_the_whole_fleet_pages_under_one_alert_dedupe_key(tmp_path, logged, flee
     assert {(p["script"], p["error_code"]) for p in pages} == {
         (sustained_failure.CIRCUIT_OPEN_SCRIPT, sustained_failure.CIRCUIT_OPEN_ERROR_CODE)
     }
+    # Every row carries the one fixed pair; the LADDER decides which of them are CRITICAL
+    # (matured observations 1, 2 and 4 here — see the ladder tests below).
+    assert [p["severity"] for p in pages] == [
+        Severity.CRITICAL, Severity.CRITICAL, Severity.ERROR,
+        Severity.CRITICAL, Severity.ERROR,
+    ]
     # And NO per-daemon *_sustained code fired — one root cause, one dedupe key.
     per_daemon = {
         c["error_code"] for c in logged
         if (c["error_code"] or "").endswith(".read_sustained")
     }
     assert per_daemon == set()
+
+
+# ---- the FLEET ladder ----------------------------------------------------
+#
+# THE GAP THESE LOCK (2026-07-21 re-review). `record_circuit_open` was the ONE escalation on
+# this branch not on `is_escalation_cycle`: it fired CRITICAL on EVERY observation once the
+# window matured. During a sustained outage the live observers are publish_daemon (120 s)
+# plus weekly_send_poll and progress_send_poll (15 min), so publish_daemon ALONE minted ~30
+# CRITICALs/h, ~720/day. An open CRITICAL is NEVER terminal per `errors_rotation`, so those
+# rows are unrotatable at every floor — the exact unbounded growth that took ITS_Errors to
+# 19,975 of its 20,000 hard cap on 2026-07-13 and fired a "NOTHING is deletable" lockout
+# twice.
+
+
+def _fleet_severities(calls):
+    return [c["severity"] for c in _fleet_pages(calls)]
+
+
+def _observe_n_times(tmp_path, mocker, n: int, *, matured: bool = True):
+    """Drive `n` consecutive fleet observations, all past the sustained window."""
+    base = 1_000_000.0
+    offset = sustained_failure.CIRCUIT_OPEN_SUSTAINED_SECONDS + 1 if matured else 1
+    # Observation 0 opens the window at t=base; every later one lands past the window but
+    # well inside CIRCUIT_OPEN_WINDOW_STALE_SECONDS of its predecessor, so one window holds.
+    mocker.patch.object(
+        sustained_failure.time, "time",
+        side_effect=[base] + [base + offset + i for i in range(n)],
+    )
+    fence = _fence(tmp_path)
+    exc = smartsheet_client.SmartsheetCircuitOpenError("breaker OPEN")
+    for _ in range(n + 1):
+        fence.handle(exc)
+
+
+def test_a_long_fleet_outage_mints_a_bounded_number_of_unrotatable_criticals(
+    tmp_path, logged, mocker
+):
+    """500 consecutive observations — a ~13 h outage at the live 3-observer rate.
+
+    Before the fix this produced 500 CRITICALs, every one of them permanently unrotatable.
+    """
+    _observe_n_times(tmp_path, mocker, 500)
+
+    severities = _fleet_severities(logged)
+    assert len(severities) == 500, "every matured observation still writes its row (§3.1)"
+    criticals = [i + 1 for i, s in enumerate(severities) if s == Severity.CRITICAL]
+
+    # 1 (the crossing observation), 2, 4, 8, 16, 32, then every 48 forever.
+    assert criticals == [1, 2, 4, 8, 16, 32, 48, 96, 144, 192, 240, 288, 336, 384, 432, 480]
+    assert criticals[0] == 1, "the FIRST CRITICAL must land on the CROSSING observation"
+    assert len(criticals) <= 20, "bounded and small — this is the unbounded-growth fix"
+    # Everything that is not a rung is an ERROR: the per-occurrence record leg survives.
+    assert set(severities) == {Severity.CRITICAL, Severity.ERROR}
+    assert len([s for s in severities if s == Severity.ERROR]) == 500 - len(criticals)
+
+
+def test_every_non_rung_fleet_row_is_terminal_and_therefore_rotatable(
+    tmp_path, logged, mocker
+):
+    """The property the ladder exists to preserve, asserted against the REAL predicate."""
+    from shared import errors_rotation
+
+    _observe_n_times(tmp_path, mocker, 500)
+
+    reclaimable = [
+        r for r in _fleet_pages(logged)
+        if errors_rotation.errors_row_is_terminal(
+            {"Severity": r["severity"].value, "Resolved At": None}
+        )
+    ]
+    assert len(reclaimable) == 484, (
+        "an open CRITICAL is never terminal — firing one on every observation re-opens the "
+        "2026-07-13 ITS_Errors hard-cap lockout by a route rotation cannot rescue"
+    )
+
+
+def test_the_fleet_ladder_is_driven_by_the_shared_helper(tmp_path, logged, mocker):
+    """Not a re-implementation: patching the ONE helper changes THIS path too, so the two
+    cadences structurally cannot drift apart."""
+    mocker.patch.object(sustained_failure, "is_escalation_cycle", return_value=False)
+
+    _observe_n_times(tmp_path, mocker, 12)
+
+    assert _fleet_severities(logged) == [Severity.ERROR] * 12
 
 
 def test_a_fence_reset_must_not_close_the_fleet_window(tmp_path, logged, fleet_clock):

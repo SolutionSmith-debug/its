@@ -192,8 +192,43 @@ def get_client() -> smartsheet.Smartsheet:
     return _client
 
 
-def _translate(exc: sdk_exc.SmartsheetException) -> SmartsheetError:
-    """Map an SDK exception onto our typed hierarchy."""
+#: Appended to a 5xx/timeout raised out of a NON-IDEMPOTENT call. The wording is the whole
+#: point: the operator — and any future retry consumer — must be told the outcome is
+#: genuinely UNKNOWN, not merely that the call "failed".
+_NON_IDEMPOTENT_SUFFIX = (
+    " — NON-IDEMPOTENT operation: the request left this process, so it is UNKNOWN whether "
+    "the write COMMITTED. Smartsheet has no idempotency key. Do NOT auto-retry; re-read "
+    "the sheet to establish the truth, then re-issue only if it did not commit."
+)
+
+
+def _translate(exc: sdk_exc.SmartsheetException, *, idempotent: bool) -> SmartsheetError:
+    """Map an SDK exception onto our typed hierarchy.
+
+    ``idempotent`` — REQUIRED and keyword-only, the exact contract
+    ``_translate_smartsheet_error`` already carries for the raw-REST helpers, so a new SDK
+    helper must DECIDE rather than inherit retry-safety from whichever branch it lands in.
+    It gates the self-healing classification ONLY (5xx, non-JSON 5xx, and the
+    ``UnexpectedRequestError`` timeout/connection fallthrough):
+
+      * ``True``  (a GET / lookup) → ``SmartsheetTransientError``, which
+        ``is_transient_error()`` reports as retry-safe and ``_transient_retry`` re-issues.
+      * ``False`` (add_rows / update_rows / delete_rows / add_columns / update_column /
+        attach / create / move / delete sheet) → base ``SmartsheetError`` carrying
+        ``_NON_IDEMPOTENT_SUFFIX``.
+
+    WHY (the round-4 finding this closes, 2026-07-21). Round 3 threaded ``idempotent``
+    through ``_translate_smartsheet_error``, which fixed the four raw-REST helpers — but
+    THIS path still classified by STATUS ALONE, so an ``add_rows`` that 500s or times out
+    yielded ``SmartsheetTransientError`` and ``is_transient_error()`` answered True for it.
+    That is a PUBLIC predicate contradicting its own contract, and it is load-bearing:
+    ``sustained_failure.TransientFence`` consults exactly this predicate, so a failed WRITE
+    reaching a fenced pass boundary was softened from an immediate CRITICAL to a counted
+    ERROR as though it were a safe-to-reissue read. A timed-out ``add_rows`` may well have
+    COMMITTED; labelling that "transient" is a claim of retry-safety no caller can honour.
+    Narrowed at the raise site — the one place the read/write fact is actually known —
+    rather than asking every future consumer to know which helpers are writes.
+    """
     if isinstance(exc, sdk_exc.ApiError):
         result = exc.error.result
         status = result.status_code
@@ -211,7 +246,9 @@ def _translate(exc: sdk_exc.SmartsheetException) -> SmartsheetError:
             # NOT transient: the SDK already spent its full retry budget on 4003.
             return SmartsheetRateLimitError(detail)
         if status >= 500:
-            return SmartsheetTransientError(detail)
+            if idempotent:
+                return SmartsheetTransientError(detail)
+            return SmartsheetError(detail + _NON_IDEMPOTENT_SUFFIX)
         return SmartsheetError(detail)
     if isinstance(exc, sdk_exc.HttpError):
         # Non-JSON error body. GATE ON STATUS exactly like the ApiError branch above —
@@ -221,12 +258,18 @@ def _translate(exc: sdk_exc.SmartsheetException) -> SmartsheetError:
         # hide a real, deterministic access problem behind a "blip" label.
         http_detail = f"HTTP {exc.status_code}: {exc.body!r}"
         if isinstance(exc.status_code, int) and exc.status_code >= 500:
-            return SmartsheetTransientError(http_detail)
+            if idempotent:
+                return SmartsheetTransientError(http_detail)
+            return SmartsheetError(http_detail + _NON_IDEMPOTENT_SUFFIX)
         return SmartsheetError(http_detail)
     # Fallthrough is dominated by UnexpectedRequestError, which the SDK raises from
     # `_request` for every `requests` exception (ReadTimeout / ConnectionError) BEFORE
-    # its retry loop can see it — see SmartsheetTransientError's docstring.
-    return SmartsheetTransientError(str(exc))
+    # its retry loop can see it — see SmartsheetTransientError's docstring. A timeout is
+    # the WORST case for a write: the request was fully transmitted and only the RESPONSE
+    # was lost, so "it may have committed" is not hypothetical.
+    if idempotent:
+        return SmartsheetTransientError(str(exc))
+    return SmartsheetError(str(exc) + _NON_IDEMPOTENT_SUFFIX)
 
 
 # ---- Circuit breaker wiring (F08) ---------------------------------------
@@ -607,12 +650,29 @@ _TRANSIENT_RETRY_ENROLLED: frozenset[str] = frozenset({
 def is_transient_error(exc: BaseException) -> bool:
     """True iff ``exc`` is the precisely-typed self-healing Smartsheet class.
 
+    THE CONTRACT, stated as a promise the code keeps rather than an aspiration: True means
+    "re-issuing the SAME call is safe". It is therefore NEVER True for a failed WRITE. Both
+    translation paths enforce that at the raise site — ``_translate(…, idempotent=…)`` for
+    the SDK helpers and ``_translate_smartsheet_error(…, idempotent=…)`` for the raw-REST
+    ones — because only the raise site knows whether the call was a read. A 5xx or a
+    timeout on ``add_rows`` / ``update_rows`` / ``delete_rows`` / an attach / a create
+    carries NO information about whether it committed, and Smartsheet has no idempotency
+    key to settle it, so those raise base ``SmartsheetError`` and this answers False.
+    ``tests/test_smartsheet_client.py::test_no_sdk_write_helper_is_ever_classified_retry_safe``
+    holds the line for helpers added later.
+
     Defined in terms of the TYPE, never as "not one of the deterministic subclasses":
     a future subclass must be classified deliberately at its definition site, not
     inherit transience by omission from one mechanism and determinism from another.
 
     SmartsheetCircuitOpenError and SmartsheetRateLimitError are deliberately EXCLUDED
     and handled explicitly by `sustained_failure.TransientFence` — see its docstring.
+
+    WHY IT MATTERS. ``sustained_failure.TransientFence.handle`` consults this predicate to
+    decide whether a pass-boundary failure is SOFTENED (halt + counted ERROR) or left to
+    ``@its_error_log``'s immediate ``uncaught_exception`` CRITICAL. A write must never be
+    softened: "cycle halted, retrying next cycle" is the wrong story for an operation that
+    may already have committed.
     """
     return isinstance(exc, SmartsheetTransientError)
 
@@ -647,7 +707,7 @@ def _fetch_column_map(sheet_id: int) -> dict[str, int]:
     try:
         sheet = get_client().Sheets.get_sheet(sheet_id, include="columns")
     except sdk_exc.SmartsheetException as e:
-        raise _translate(e) from e
+        raise _translate(e, idempotent=True) from e
     return {col.title: col.id for col in sheet.columns}
 
 
@@ -731,7 +791,7 @@ def get_sheet(sheet_id: int):
     try:
         return get_client().Sheets.get_sheet(sheet_id)
     except sdk_exc.SmartsheetException as e:
-        raise _translate(e) from e
+        raise _translate(e, idempotent=True) from e
 
 
 @_breaker_guard
@@ -747,7 +807,7 @@ def get_row(sheet_id: int, row_id: int) -> dict[str, Any]:
     try:
         sheet = get_client().Sheets.get_sheet(sheet_id)
     except sdk_exc.SmartsheetException as e:
-        raise _translate(e) from e
+        raise _translate(e, idempotent=True) from e
     title_by_id = {col.id: col.title for col in sheet.columns}
     for row in sheet.rows:
         if row.id != row_id:
@@ -779,7 +839,7 @@ def get_rows(
     try:
         sheet = get_client().Sheets.get_sheet(sheet_id)
     except sdk_exc.SmartsheetException as e:
-        raise _translate(e) from e
+        raise _translate(e, idempotent=True) from e
 
     title_by_id = {col.id: col.title for col in sheet.columns}
     out: list[dict[str, Any]] = []
@@ -915,7 +975,7 @@ def get_cell_history(
             sheet_id, row_id, column_id, include_all=True
         )
     except sdk_exc.SmartsheetException as e:
-        raise _translate(e) from e
+        raise _translate(e, idempotent=True) from e
 
     events: list[CellHistoryEvent] = []
     for item in result.data:
@@ -966,7 +1026,7 @@ def add_rows(sheet_id: int, rows: list[dict[str, Any]]) -> list[int]:
     try:
         result = get_client().Sheets.add_rows(sheet_id, sdk_rows)
     except sdk_exc.SmartsheetException as e:
-        raise _translate(e) from e
+        raise _translate(e, idempotent=False) from e
     return [r.id for r in result.result]
 
 
@@ -998,7 +1058,7 @@ def update_rows(sheet_id: int, updates: list[dict[str, Any]]) -> None:
     try:
         get_client().Sheets.update_rows(sheet_id, sdk_rows)
     except sdk_exc.SmartsheetException as e:
-        raise _translate(e) from e
+        raise _translate(e, idempotent=False) from e
 
 
 @_breaker_guard
@@ -1009,7 +1069,7 @@ def delete_rows(sheet_id: int, row_ids: list[int]) -> None:
     try:
         get_client().Sheets.delete_rows(sheet_id, row_ids)
     except sdk_exc.SmartsheetException as e:
-        raise _translate(e) from e
+        raise _translate(e, idempotent=False) from e
 
 
 @_breaker_guard
@@ -1034,7 +1094,7 @@ def find_row_by_primary(
     try:
         sheet = get_client().Sheets.get_sheet(sheet_id)
     except sdk_exc.SmartsheetException as e:
-        raise _translate(e) from e
+        raise _translate(e, idempotent=True) from e
 
     title_by_id = {col.id: col.title for col in sheet.columns}
     for row in sheet.rows:
@@ -1080,7 +1140,7 @@ def update_row_cells_by_id(
     try:
         get_client().Sheets.update_rows(sheet_id, [row])
     except sdk_exc.SmartsheetException as e:
-        raise _translate(e) from e
+        raise _translate(e, idempotent=False) from e
 
 
 @_breaker_guard
@@ -1111,7 +1171,7 @@ def add_row_by_id(sheet_id: int, cells_by_column_id: dict[int, Any]) -> int:
     try:
         result = get_client().Sheets.add_rows(sheet_id, [row])
     except sdk_exc.SmartsheetException as e:
-        raise _translate(e) from e
+        raise _translate(e, idempotent=False) from e
     return result.result[0].id
 
 
@@ -1157,7 +1217,7 @@ def list_columns_with_options(sheet_id: int) -> list[dict[str, Any]]:
         # none today, so that path is unexercised.)
         sheet = get_client().Sheets.get_sheet(sheet_id, include="columns", level=2)
     except sdk_exc.SmartsheetException as e:
-        raise _translate(e) from e
+        raise _translate(e, idempotent=True) from e
     out: list[dict[str, Any]] = []
     for col in sheet.columns:
         opts = getattr(col, "options", None) or []
@@ -1214,7 +1274,7 @@ def update_column_options(
         })
         get_client().Sheets.update_column(sheet_id, column_id, body)
     except sdk_exc.SmartsheetException as e:
-        raise _translate(e) from e
+        raise _translate(e, idempotent=False) from e
     invalidate_column_cache(sheet_id)
 
 
@@ -1415,7 +1475,7 @@ def create_picklist_column(
     try:
         result = get_client().Sheets.add_columns(sheet_id, [body])
     except sdk_exc.SmartsheetException as e:
-        raise _translate(e) from e
+        raise _translate(e, idempotent=False) from e
     invalidate_column_cache(sheet_id)
     added = result.result
     # `add_columns` returns the created Column(s) under `.result` (a list even
@@ -1633,7 +1693,7 @@ def create_sheet_in_folder(
     try:
         result = get_client().Folders.create_sheet_in_folder(folder_id, sheet_model)
     except sdk_exc.SmartsheetException as e:
-        raise _translate(e) from e
+        raise _translate(e, idempotent=False) from e
     return int(result.result.id)
 
 
@@ -1658,7 +1718,7 @@ def apply_column_styles(sheet_id: int, styles: list[dict[str, Any]]) -> None:
     try:
         cols = get_client().Sheets.get_columns(sheet_id, include_all=True).data
     except sdk_exc.SmartsheetException as e:
-        raise _translate(e) from e
+        raise _translate(e, idempotent=True) from e
     by_title = {c.title: c for c in cols}
     for style in styles:
         title = style["title"]
@@ -1676,7 +1736,7 @@ def apply_column_styles(sheet_id: int, styles: list[dict[str, Any]]) -> None:
         try:
             get_client().Sheets.update_column(sheet_id, col.id, model)
         except sdk_exc.SmartsheetException as e:
-            raise _translate(e) from e
+            raise _translate(e, idempotent=False) from e
 
 
 @_breaker_guard
@@ -1690,7 +1750,7 @@ def delete_sheet(sheet_id: int) -> None:
     try:
         get_client().Sheets.delete_sheet(sheet_id)
     except sdk_exc.SmartsheetException as e:
-        raise _translate(e) from e
+        raise _translate(e, idempotent=False) from e
 
 
 @_breaker_guard
@@ -1715,7 +1775,7 @@ def move_sheet_to_folder(sheet_id: int, folder_id: int) -> None:
     try:
         get_client().Sheets.move_sheet(sheet_id, dest)
     except sdk_exc.SmartsheetException as e:
-        raise _translate(e) from e
+        raise _translate(e, idempotent=False) from e
 
 
 def delete_sheet_settling(
@@ -1820,7 +1880,10 @@ def create_folder_in_folder(parent_folder_id: int, name: str) -> int:
             timeout=30,
         )
     except requests.RequestException as e:
-        raise SmartsheetTransientError(f"{context}: {e!r}") from e
+        # A timeout/connection drop on a POST is the SAME unknown-commit case the 5xx arm
+        # below handles — the request was transmitted and only the response was lost. It
+        # must NOT wear the retry-safe type (round-4 finding, 2026-07-21).
+        raise SmartsheetError(f"{context}: {e!r}" + _NON_IDEMPOTENT_SUFFIX) from e
     _translate_smartsheet_error(response, context=context, idempotent=False)
     body = response.json()
     return int(body["result"]["id"])
@@ -1913,7 +1976,10 @@ def create_folder_in_workspace(workspace_id: int, name: str) -> int:
             timeout=30,
         )
     except requests.RequestException as e:
-        raise SmartsheetTransientError(f"{context}: {e!r}") from e
+        # A timeout/connection drop on a POST is the SAME unknown-commit case the 5xx arm
+        # below handles — the request was transmitted and only the response was lost. It
+        # must NOT wear the retry-safe type (round-4 finding, 2026-07-21).
+        raise SmartsheetError(f"{context}: {e!r}" + _NON_IDEMPOTENT_SUFFIX) from e
     _translate_smartsheet_error(response, context=context, idempotent=False)
     body = response.json()
     return int(body["result"]["id"])
@@ -2026,13 +2092,13 @@ def attach_pdf_to_row(
                 if att.name == filename:
                     client.Attachments.delete_attachment(sheet_id, att.id)
         except sdk_exc.SmartsheetException as e:
-            raise _translate(e) from e
+            raise _translate(e, idempotent=False) from e
     try:
         result = client.Attachments.attach_file_to_row(
             sheet_id, row_id, (filename, io.BytesIO(pdf_bytes), content_type)
         )
     except sdk_exc.SmartsheetException as e:
-        raise _translate(e) from e
+        raise _translate(e, idempotent=False) from e
     return int(result.result.id)
 
 
@@ -2093,7 +2159,10 @@ def create_sheet_in_folder_from_template(
             timeout=30,
         )
     except requests.RequestException as e:
-        raise SmartsheetTransientError(f"{context}: {e!r}") from e
+        # A timeout/connection drop on a POST is the SAME unknown-commit case the 5xx arm
+        # below handles — the request was transmitted and only the response was lost. It
+        # must NOT wear the retry-safe type (round-4 finding, 2026-07-21).
+        raise SmartsheetError(f"{context}: {e!r}" + _NON_IDEMPOTENT_SUFFIX) from e
     _translate_smartsheet_error(response, context=context, idempotent=False)
     body = response.json()
     return int(body["result"]["id"])
