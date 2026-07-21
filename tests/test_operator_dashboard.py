@@ -146,12 +146,22 @@ def test_config_paths_mirror_live_shared_constants() -> None:
     # Drift guard: the dashboard's observation roots must equal the constants
     # owned by the shared modules (which resolve to ~/its/...). If those move,
     # this fails loudly instead of the panels silently reading the wrong tree.
-    import shared.error_log as el
+    #
+    # The LOGS side is compared to the genuine live path rather than to
+    # `error_log.LOG_DIR`: the autouse `_redirect_live_log_dir` fixture repoints
+    # that WRITE constant at tmp (so unit tests never append to the operator's
+    # log), which would make an attribute-vs-attribute assert compare tmp to tmp.
+    # The dashboard constant is deliberately NOT redirected — it is read-only —
+    # so asserting it still resolves under ~/its is exactly the drift this guards.
     import shared.heartbeat as hb
     from operator_dashboard import config as dash_config
 
+    # STATE_DIR is not redirected by any fixture, so the module-to-module compare
+    # still bites directly.
     assert dash_config.STATE_DIR == hb.STATE_DIR
-    assert dash_config.LOGS_DIR == el.LOG_DIR
+    # LOGS_DIR is, so compare both roots to the genuine live locations instead.
+    assert dash_config.STATE_DIR.resolve() == (Path.home() / "its" / "state").resolve()
+    assert dash_config.LOGS_DIR.resolve() == (Path.home() / "its" / "logs").resolve()
 
 
 def test_heartbeats_cycles_join_survives_poll_suffix_mismatch(
