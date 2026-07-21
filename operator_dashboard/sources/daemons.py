@@ -1,7 +1,10 @@
 """Panel: launchd daemon status via `launchctl list` (read-only)."""
 from __future__ import annotations
 
+import re
+import signal
 import subprocess
+from datetime import timedelta
 
 from operator_dashboard.config import LAUNCHCTL_TIMEOUT_SECONDS, LAUNCHD_DIR
 from operator_dashboard.sources.base import (
@@ -11,10 +14,56 @@ from operator_dashboard.sources.base import (
     DataSource,
     PanelResult,
     clean,
+    fmt_timedelta,
     worst_sev,
 )
 
 LABEL_PREFIX = "org.solutionsmith.its."
+
+# `ps -o etime=` renders [[dd-]hh:]mm:ss.
+_ETIME_RE = re.compile(r"^(?:(?:(\d+)-)?(\d+):)?(\d+):(\d+)$")
+
+
+def _signal_name(num: int) -> str:
+    try:
+        return signal.Signals(num).name
+    except ValueError:
+        # A signal number this Python doesn't know (or a non-signal negative
+        # status) still gets a label rather than an exception.
+        return str(num)
+
+
+def _last_exit_display(status: str, running: bool) -> tuple[str, str]:
+    """Return (cell text, tooltip) for the 'last exit' column.
+
+    A RUNNING daemon's last-exit describes the PREVIOUS instance, so a raw
+    negative value ("-15") reads as an alarm when it is only "the prior run was
+    signalled". Relabel it neutrally — the label deliberately does NOT claim the
+    signal was a deliberate restart, since an external or accidental SIGTERM is
+    indistinguishable here — and keep the raw number in the tooltip. A positive
+    exit code is a real prior failure and stays raw.
+    """
+    if not running:
+        return status, ""
+    try:
+        code = int(status)
+    except ValueError:
+        return status, ""
+    if code >= 0:
+        return status, ""
+    name = _signal_name(-code)
+    return (
+        f"signal ({name})",
+        f"raw launchctl last-exit {code} (previous instance, killed by {name})",
+    )
+
+
+def _parse_etime(etime: str) -> timedelta | None:
+    m = _ETIME_RE.match(etime.strip())
+    if not m:
+        return None
+    days, hours, mins, secs = (int(g or 0) for g in m.groups())
+    return timedelta(days=days, hours=hours, minutes=mins, seconds=secs)
 
 
 class DaemonStatusSource(DataSource):
@@ -49,8 +98,44 @@ class DaemonStatusSource(DataSource):
                 table[label] = (pid, status)
         return table
 
+    def _uptime_by_pid(self, pids: list[str]) -> dict[str, str]:
+        # ONE batched call for every running pid — this panel is htmx-polled every
+        # few seconds, so a per-row subprocess would be a fork storm. Read-only:
+        # fixed argv, no shell, bounded timeout. `ps -p` with an empty list is an
+        # error on Darwin, so skip the call entirely when nothing is running.
+        if not pids:
+            return {}
+        # The guard covers ONLY the subprocess boundary (`ps` missing, timing
+        # out, or writing non-UTF8 bytes). Uptime is decoration, so a broken
+        # `ps` must never cost the panel its real content — but a programming
+        # bug in the parse loop below must NOT be swallowed into a permanent
+        # silent "—" on a panel whose whole job is "never silent";
+        # DataSource.fetch() already fails the panel soft AND visibly for that.
+        try:
+            proc = subprocess.run(
+                ["ps", "-o", "pid=,etime=", "-p", ",".join(pids)],
+                capture_output=True,
+                text=True,
+                timeout=LAUNCHCTL_TIMEOUT_SECONDS,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError, UnicodeDecodeError):
+            return {}
+        out: dict[str, str] = {}
+        for line in proc.stdout.splitlines():
+            parts = line.split()
+            if len(parts) != 2:
+                continue
+            pid, etime = parts
+            td = _parse_etime(etime)
+            out[pid] = fmt_timedelta(td) if td is not None else etime
+        return out
+
     def _fetch(self, detail: bool = False) -> PanelResult:
         live = self._launchctl_table()
+        uptimes = self._uptime_by_pid(
+            [pid for pid, _ in live.values() if pid not in ("-", "")]
+        )
         labels = sorted(set(self._plist_labels()) | set(live))
         rows: list[dict[str, str]] = []
         worst = SEV_OK
@@ -76,13 +161,17 @@ class DaemonStatusSource(DataSource):
                 else:
                     state, sev = "idle", SEV_OK
             worst = worst_sev(worst, sev)
+            exit_text, exit_title = _last_exit_display(status, state == "running")
             row = {
                 "daemon": clean(short),
                 "pid": clean(pid),
-                "last exit": clean(status),
+                "uptime": clean(uptimes.get(pid, "—")),
+                "last exit": clean(exit_text),
                 "state": clean(state),
                 "_sev": sev,
             }
+            if exit_title:
+                row["_title_last exit"] = clean(exit_title)
             # Deep link into the system map when this label has a node there.
             from operator_dashboard.system_map import NODE_BY_LAUNCHD_LABEL
 
@@ -95,6 +184,6 @@ class DaemonStatusSource(DataSource):
             title=self.title,
             summary=f"{len(live)}/{len(labels)} loaded",
             severity=worst,
-            columns=["daemon", "pid", "last exit", "state"],
+            columns=["daemon", "pid", "uptime", "last exit", "state"],
             rows=rows,
         )
