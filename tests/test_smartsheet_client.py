@@ -1415,7 +1415,7 @@ def test_translate_smartsheet_error_passes_through_2xx(mocker):
     response = _rest_get_folder_response([], status=200)
 
     result = smartsheet_client._translate_smartsheet_error(
-        response, context="anything goes here"
+        response, context="anything goes here", idempotent=True
     )
     assert result is None
 
@@ -1429,7 +1429,7 @@ def test_translate_smartsheet_error_raises_with_context_on_4xx(mocker):
 
     with pytest.raises(SmartsheetValidationError) as exc_info:
         smartsheet_client._translate_smartsheet_error(
-            response, context="copying sheet 99 into folder 42 as 'X'"
+            response, context="copying sheet 99 into folder 42 as 'X'", idempotent=False
         )
 
     msg = str(exc_info.value)
@@ -1438,19 +1438,60 @@ def test_translate_smartsheet_error_raises_with_context_on_4xx(mocker):
     assert "errorCode 1008" in msg  # body excerpt
 
 
-def test_translate_smartsheet_error_raises_on_5xx(mocker):
-    """A 5xx is the SELF-HEALING class → SmartsheetTransientError (still a
+def test_translate_smartsheet_error_raises_on_5xx_for_an_idempotent_lookup(mocker):
+    """A 5xx on a READ is the SELF-HEALING class → SmartsheetTransientError (still a
     SmartsheetError, so every existing consumer and the breaker are unchanged)."""
     response = _rest_get_folder_response(None, status=500)
     response.text = "Internal Server Error"
 
     with pytest.raises(SmartsheetError) as exc_info:
         smartsheet_client._translate_smartsheet_error(
-            response, context="finding folder 'X' in folder 7"
+            response, context="finding folder 'X' in folder 7", idempotent=True
         )
 
     assert type(exc_info.value) is smartsheet_client.SmartsheetTransientError
     assert "HTTP 500" in str(exc_info.value)
+
+
+def test_a_5xx_on_a_create_is_never_classified_retry_safe(mocker):
+    """`is_transient_error()` is a PUBLIC predicate meaning "safe to re-issue the SAME
+    call". A 5xx on a create carries NO information about whether the folder/sheet
+    committed, and there is no idempotency key to settle it — so a future fence/retry
+    consumer trusting the predicate would DUPLICATE a created folder. Nothing retries
+    creates today; the classification is narrowed at the raise site so it cannot start."""
+    response = _rest_get_folder_response(None, status=503)
+    response.text = "Service Unavailable"
+
+    with pytest.raises(SmartsheetError) as exc_info:
+        smartsheet_client._translate_smartsheet_error(
+            response, context="creating folder 'X' in parent 7", idempotent=False
+        )
+
+    assert type(exc_info.value) is SmartsheetError  # NOT the transient subclass
+    assert smartsheet_client.is_transient_error(exc_info.value) is False
+    assert "NON-IDEMPOTENT" in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    "helper, kwargs",
+    [
+        ("create_folder_in_folder", {"parent_folder_id": 1, "name": "X"}),
+        ("create_folder_in_workspace", {"workspace_id": 1, "name": "X"}),
+    ],
+)
+def test_the_real_create_helpers_do_not_raise_a_retry_safe_error(mocker, helper, kwargs):
+    """End-to-end through the REAL helper, not just the translator: a 5xx from a live
+    create must not reach a caller wearing the retry-safe type."""
+    mocker.patch.object(smartsheet_client, "get_client")
+    mocker.patch.object(smartsheet_client.keychain, "get_secret", return_value="tok")
+    response = _rest_get_folder_response(None, status=500)
+    response.text = "Internal Server Error"
+    mocker.patch.object(smartsheet_client.requests, "post", return_value=response)
+
+    with pytest.raises(SmartsheetError) as exc_info:
+        getattr(smartsheet_client, helper)(**kwargs)
+
+    assert smartsheet_client.is_transient_error(exc_info.value) is False
 
 
 # ---- find_row_by_primary + update_row_cells_by_id (PR #59.5) -------------

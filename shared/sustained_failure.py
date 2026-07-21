@@ -52,6 +52,56 @@ DEFAULT_CRITICAL_THRESHOLD = 5
 #: still absorbing an isolated blip (operator decision D2, 2026-07-21).
 SLOW_CADENCE_CRITICAL_THRESHOLD = 3
 
+#: The geometric ladder stops doubling here and repeats at a FIXED interval of
+#: ``threshold × LADDER_MAX_MULTIPLIER`` cycles. Purely geometric would take a
+#: multi-day outage from a 10 h gap to a 21 h gap to a 42 h gap — eventually the
+#: escalation stops being a notification at all. 8 keeps the steady-state re-notify at
+#: 40 cycles (~80 min) for the 120 s intake daemons and 24 cycles (~6 h) for the
+#: 15-minute send pollers, both of which have ALREADY paged at the crossing cycle.
+LADDER_MAX_MULTIPLIER = 8
+
+
+def is_escalation_cycle(count: int, threshold: int) -> bool:
+    """Should THIS consecutive-failure cycle be logged CRITICAL rather than ERROR?
+
+    THE ONE PLACE the cadence is decided (§14: seven live callers — this module's
+    `TransientFence` plus the six daemons that each hand-rolled ``n >= threshold``), so
+    the compare cannot drift lane by lane.
+
+    WHY NOT ``n >= threshold`` (the shape this replaces, 2026-07-21 re-review). An open
+    CRITICAL is NEVER terminal — `shared/errors_rotation.errors_row_is_terminal` returns
+    False for a CRITICAL without a "Resolved At" stamp — so a CRITICAL row is UNROTATABLE
+    at every floor, including watchdog Check O's storm floor. Firing one on every cycle
+    past the threshold turns a 21 h outage on a 120 s daemon into ~626 PERMANENT rows.
+    ITS_Errors reached 19,975 of its 20,000 hard cap on 2026-07-13 and twice fired a
+    "NOTHING is deletable" lockout; this path re-opens that lockout by a route rotation
+    cannot rescue, and buries the genuinely-open CRITICALs that watchdog Check B and the
+    dashboard's Open-CRITICALs panel exist to surface. The path had never yet run in
+    production (zero ``*_sustained`` rows live), so it was fixed while still latent.
+
+    THE LADDER: fire on the threshold-CROSSING cycle, then at 2×, 4×, 8× … the threshold,
+    capping the step at ``threshold × LADDER_MAX_MULTIPLIER`` so a long outage keeps
+    re-notifying on a fixed interval instead of going quiet. Every other cycle past the
+    threshold still writes its per-occurrence row — at Severity.ERROR, which IS terminal
+    and therefore reclaimable. Both doctrine requirements hold: a real sustained outage
+    escalates to CRITICAL (§3.1 push legs wake the operator), and nothing is silent.
+
+    TOTAL by construction: this runs inside an error-handling path, so a nonsense
+    threshold (0 / negative, e.g. a typo'd override) escalates rather than raising.
+    """
+    if count < 1:
+        return False
+    if threshold < 1:
+        return True  # degenerate config: escalate rather than crash inside error handling
+    if count < threshold:
+        return False
+    cap = threshold * LADDER_MAX_MULTIPLIER
+    if count >= cap:
+        return count % cap == 0
+    quotient, remainder = divmod(count, threshold)
+    # A power of two → the count sits exactly on a rung of the doubling ladder.
+    return remainder == 0 and quotient & (quotient - 1) == 0
+
 
 # ---- Fleet-level circuit-open escalation ---------------------------------
 #
@@ -76,13 +126,33 @@ SLOW_CADENCE_CRITICAL_THRESHOLD = 3
 # the first observation; the page fires on the first observation at or after
 # CIRCUIT_OPEN_SUSTAINED_SECONDS.
 #
-# RESULTING WALL-CLOCK TIME-TO-PAGE (state this, don't hand-wave it):
-#   * publish_daemon (120 s cadence) observing → ~10-12 min after the breaker opens.
-#   * only the 15-minute send pollers observing → the second observation lands 15 min
-#     after the first, so ~15 min (worst case ~30 min if the fleet's only live observer
-#     is a single 15-minute poller and its first observation lands just as the breaker
-#     opens). Both are comfortably sub-hour and both are dramatically better than the
-#     up-to-24 h that watchdog Check J alone provided.
+# WHO ACTUALLY OBSERVES (verified against live code, 2026-07-21 — an earlier revision of
+# this comment overstated it, and a false operator-facing claim is an Op Stds §55
+# violation, not a rounding error). Only a daemon that REACHES a fenced site during the
+# outage contributes an observation. There are exactly two fenced call sites —
+# `publish_daemon` (its polling-gate + base-URL reads) and `send_poll_core`'s
+# review-sheet + approver reads, which the five send pollers share. Of those five,
+# `po_send_poll`, `rfq_send_poll` and `subcontract_send_poll` carry
+# DEFAULT_POLLING_ENABLED=False, so `send_poll_core._polling_enabled` fail-opens to False
+# during circuit-open and `poll_inside_lock` — where both fences live — is never entered.
+# They never observe. The honest live observer set is therefore THREE:
+#   * publish_daemon        — 120 s cadence (StartInterval 120)
+#   * weekly_send_poll      — 15 min
+#   * progress_send_poll    — 15 min
+# publish_daemon is only in that set because its gate read PROPAGATES circuit-open to the
+# fence instead of collapsing it into a fail-open "false" (see `_read_str_setting`). If
+# that ever regresses, the observer set silently drops to the two 15-minute pollers and
+# this comment is wrong again — `tests/test_publish_daemon.py` pins it.
+#
+# RESULTING WALL-CLOCK TIME-TO-PAGE, given that set:
+#   * with publish_daemon observing → the window matures on its first 120 s cycle at or
+#     after 600 s, i.e. ~10-12 min after the breaker opens.
+#   * publish_daemon down / gated off, only the two 15-minute pollers observing →
+#     ~10-25 min (the first observation at or after 600 s lands on whichever poller's
+#     cycle falls next; worst case ~25 min if a single poller's first observation lands
+#     just as the breaker opens).
+# Both are sub-hour and both are dramatically better than the up-to-24 h that watchdog
+# Check J alone provided.
 # The alerting path does not depend on Smartsheet being up: `error_log.log(CRITICAL)`
 # triple-fires, and the Resend + Sentry legs are independent of the failing backend.
 #: Fixed script/code pair — the whole POINT is that every daemon pages under ONE
@@ -94,6 +164,14 @@ CIRCUIT_OPEN_ERROR_CODE = "smartsheet_circuit_open_sustained"
 #: `defaults.CIRCUIT_BREAKER_PROLONGED_OPEN_ALERT_SECONDS` — the SAME definition of
 #: "prolonged" the watchdog uses, just delivered sub-daily instead of at 07:00.
 CIRCUIT_OPEN_SUSTAINED_SECONDS = 600
+
+#: A window with no observation for this long is ABANDONED — the next observation opens a
+#: fresh one instead of inheriting an ancient `first_seen_epoch` and paging instantly.
+#: Closing the window (see `clear_circuit_open`) is best-effort by design, so the counter
+#: must also be self-healing if a close is ever missed. MUST exceed the slowest observer's
+#: cadence (900 s, the send pollers) or a slow observer could never accumulate; 3600 s
+#: gives 4× headroom over that while still expiring a forgotten window within the hour.
+CIRCUIT_OPEN_WINDOW_STALE_SECONDS = 3600
 
 STATE_DIR = Path.home() / "its" / "state"
 #: Shared across every process that observes circuit-open (module-level so the suite can
@@ -122,6 +200,15 @@ def record_circuit_open(observer: str, detail: str) -> None:
                         state = loaded
                 except (OSError, json.JSONDecodeError, ValueError):
                     state = {}
+            raw_last = state.get("last_seen_epoch")
+            # A window nobody has touched in CIRCUIT_OPEN_WINDOW_STALE_SECONDS is stale:
+            # the outage ended and the close was missed (it is best-effort). Inheriting
+            # its `first_seen_epoch` would page on the FIRST observation of the NEXT
+            # outage, which reads to the operator as a 6-hour-old fault. Start over.
+            last_seen = float(raw_last) if isinstance(raw_last, int | float) else None
+            stale = last_seen is None or (now - last_seen) > CIRCUIT_OPEN_WINDOW_STALE_SECONDS
+            if stale:
+                state = {}
             raw_first = state.get("first_seen_epoch")
             first_seen = float(raw_first) if isinstance(raw_first, int | float) else now
             observations = state.get("observations")
@@ -160,7 +247,22 @@ def record_circuit_open(observer: str, detail: str) -> None:
 
 
 def clear_circuit_open() -> None:
-    """Close the fleet circuit-open window after any daemon's successful Smartsheet read.
+    """Close the fleet circuit-open window — on PROOF the backend answered, nothing less.
+
+    WHO MAY CALL THIS (the 2026-07-21 re-review lesson). Exactly one caller:
+    `circuit_breaker`'s recovery transition, reached only when a real Smartsheet call
+    SUCCEEDED after the breaker had left the closed/zero state. That is the single event
+    in the system which actually proves reachability.
+
+    It is emphatically NOT `TransientFence.reset()`. A daemon calls `reset()` at a site it
+    BELIEVES follows a successful read, and that belief is unverifiable from here: several
+    readers fail OPEN, returning a fallback value with no exception (publish_daemon's own
+    `_read_str_setting` did exactly that with circuit-open before this change). Wiring the
+    clear into `reset()` therefore let the 120 s publish daemon wipe a fleet-wide window
+    every 2 minutes during an outage — the window could never mature to
+    CIRCUIT_OPEN_SUSTAINED_SECONDS, and the escalation was unreachable in production while
+    every unit test stayed green. A fail-open fallback is not evidence of anything, and
+    fleet-scoped state must never be cleared on one process's local belief.
 
     Short-circuits when no state file exists, so a healthy fleet does ZERO state I/O per
     cycle (one `stat`) — the same posture as `TransientFence.reset`.
@@ -173,6 +275,14 @@ def clear_circuit_open() -> None:
     except AssertionError:  # a control firing, not a state glitch — see record()
         raise
     except Exception:  # noqa: BLE001 — best-effort clear (risks one late page, never a missed one)
+        return
+    # Remove the sidecar too, OUTSIDE the lock (with_path_lock holds an flock on it, and
+    # unlinking a file you hold open drops the inode the next waiter would contend on).
+    # Left behind, it is a permanent orphan in ~/its/state after every outage — the exact
+    # litter class the state-write discipline exists to prevent.
+    try:
+        state_io.lock_path_for(CIRCUIT_OPEN_STATE_PATH).unlink(missing_ok=True)
+    except OSError:  # noqa: S110 — cosmetic cleanup; never worth disturbing a caller
         pass
 
 
@@ -324,7 +434,7 @@ class TransientFence:
             return
         n = self._counter.record()
         where = f" See {self._runbook}." if self._runbook else ""
-        if n >= self._threshold:
+        if is_escalation_cycle(n, self._threshold):
             error_log.log(
                 Severity.CRITICAL, self._script,
                 f"Smartsheet read failing for {n} consecutive cycles — SUSTAINED outage, "
@@ -332,22 +442,26 @@ class TransientFence:
                 error_code=self._sustained_error_code,
             )
         else:
+            still = "still " if n > self._threshold else ""
             error_log.log(
                 Severity.ERROR, self._script,
-                f"transient Smartsheet failure — cycle halted, retrying next cycle "
+                f"transient Smartsheet failure — cycle halted, {still}retrying next cycle "
                 f"({n} consecutive, CRITICAL at {self._threshold}).{where} {detail}",
                 error_code=self._transient_error_code,
             )
 
     def reset(self) -> None:
-        """Clear the consecutive count after a successful pre-work read.
+        """Clear THIS daemon's consecutive count after a successful pre-work read.
 
-        ALSO closes the shared fleet circuit-open window: a read that SUCCEEDED is proof
-        the backend is reachable again, whichever daemon observed it. Both halves
-        short-circuit when their state file is absent, so a healthy daemon does ZERO state
-        I/O per cycle (two `stat`s) — the breaker's same posture.
+        Deliberately does NOT touch the shared fleet circuit-open window. A caller
+        reaches `reset()` on the strength of its own belief that a read succeeded, and
+        readers that fail OPEN reach it having proved nothing at all — see
+        `clear_circuit_open`'s docstring for the regression that taught us this. The fleet
+        window is closed only by the breaker's own recovery transition.
+
+        Short-circuits when the state file is absent, so a healthy daemon does ZERO state
+        I/O per cycle (one `stat`) — the breaker's same posture.
         """
-        clear_circuit_open()
         if not self._state_path.exists():
             return
         self._counter.reset()

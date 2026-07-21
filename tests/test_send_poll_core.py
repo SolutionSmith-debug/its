@@ -381,6 +381,41 @@ def test_non_transient_review_read_now_propagates(approver_scenario, mocker):
     assert s["sent"] == []
 
 
+@pytest.mark.parametrize("site", ["review_read", "approver_read"])
+def test_a_propagating_read_failure_still_reports_liveness_first(
+    approver_scenario, mocker, site
+):
+    """One root cause must yield ONE alert, not two.
+
+    On origin/main every SmartsheetError at these sites refreshed the Check-C watchdog
+    marker and wrote an ITS_Daemon_Health row before returning. Re-raising ahead of those
+    writes means a persistent 404 / revoked token ALSO trips watchdog Check C (marker
+    staleness) and leaves the health row stale — so the operator gets a second,
+    MISLEADING "this daemon is dead" CRITICAL layered on the real one, aiming the §43
+    repair at a daemon that is alive and correctly refusing to work."""
+    s = approver_scenario
+    exc = send_poll_core.smartsheet_client.SmartsheetNotFoundError("404")
+    if site == "review_read":
+        mocker.patch(
+            "safety_reports.send_poll_core.smartsheet_client.get_rows", side_effect=exc
+        )
+    else:
+        s["shares"].side_effect = exc
+    marker = mocker.Mock()
+    rows = mocker.Mock()
+    liveness = mocker.Mock()
+
+    with pytest.raises(send_poll_core.smartsheet_client.SmartsheetNotFoundError):
+        _run(s["cfg"], write_liveness=liveness, write_row=rows,
+             write_watchdog_marker=marker)
+
+    liveness.assert_called_once()
+    marker.assert_called_once()
+    rows.assert_called_once()
+    assert rows.call_args.kwargs["status"] == "ERROR"
+    assert s["sent"] == []  # fail-closed is untouched
+
+
 def test_recovered_retries_are_summarized_once_per_pass(approver_scenario, mocker):
     s = approver_scenario
     s["shares"].return_value = frozenset({"a@b.com"})

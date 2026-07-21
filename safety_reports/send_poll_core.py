@@ -445,8 +445,15 @@ def poll_inside_lock(
         # absorbed as a same-shaped ERROR forever, because it will not self-heal.
         # The single hardcoded `weekly_send_poll.read_failed` code (which all five bound
         # daemons wrote, including progress) is replaced by per-script codes.
-        if not read_fence.handle(exc):
-            raise
+        #
+        # LIVENESS IS WRITTEN IN BOTH BRANCHES, before any re-raise. On origin/main every
+        # SmartsheetError here refreshed the Check-C marker and wrote an ERROR heartbeat
+        # row; re-raising ahead of them would make one root cause (a persistent 404 /
+        # revoked token on the review sheet) ALSO trip watchdog Check C and leave
+        # ITS_Daemon_Health stale — a second, misleading "this daemon is dead" CRITICAL
+        # pointing the §43 repair at the wrong fault. The daemon is alive and correctly
+        # refusing to work; say exactly that, then let the real cause propagate.
+        transient = read_fence.handle(exc)
         write_liveness()
         breaker_open = circuit_breaker.is_open()
         read_fail_status: HeartbeatStatus = "CIRCUIT_OPEN" if breaker_open else "ERROR"
@@ -456,6 +463,8 @@ def poll_inside_lock(
             error_summary=(None if breaker_open else f"read failed: {type(exc).__name__}: {exc!r}"),
         )
         write_watchdog_marker()
+        if not transient:
+            raise
         return PollStats(errors=1)
     read_fence.reset()
 
@@ -467,8 +476,8 @@ def poll_inside_lock(
     try:
         authorized_actors = _load_authorized_approvers(config)
     except Exception as exc:  # noqa: BLE001 — classified by the fence; non-transient re-raises
-        if not approver_fence.handle(exc):
-            raise
+        # Liveness in BOTH branches, before any re-raise — see the review-read site above.
+        transient = approver_fence.handle(exc)
         write_liveness()
         breaker_open = circuit_breaker.is_open()
         approver_fail_status: HeartbeatStatus = "CIRCUIT_OPEN" if breaker_open else "ERROR"
@@ -481,6 +490,8 @@ def poll_inside_lock(
             ),
         )
         write_watchdog_marker()
+        if not transient:
+            raise
         return PollStats(rows_scanned=len(rows), errors=1)
     approver_fence.reset()
 

@@ -46,6 +46,7 @@ The conftest fix is the immediate hole-closer. A durable structural fix
 from __future__ import annotations
 
 import builtins
+import io
 import os
 import socket
 from pathlib import Path
@@ -559,3 +560,9 @@ def _forbid_live_state_writes(
     monkeypatch.setattr(os, "replace", _guarded_os_replace)
     monkeypatch.setattr(Path, "open", _guarded_path_open)
     monkeypatch.setattr(builtins, "open", _guarded_builtin_open)
+    # `io.open` is a SEPARATE module attribute bound to the same original callable, so
+    # patching `builtins.open` alone leaves `io.open(path, "w")` unguarded — VERIFIED by
+    # removing this line and watching a scratch `io.open(<live state>, "w")` test go GREEN
+    # while creating a real file under ~/its/state. Nothing in the tree writes state that
+    # way today; this closes the IDIOM, not a known caller.
+    monkeypatch.setattr(io, "open", _guarded_builtin_open)
