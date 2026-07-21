@@ -53,8 +53,12 @@ FOLDER_FIELD_REPORTS = 705799988242308
 FOLDER_OPERATIONS_MASTER_DBS = 471604011526020
 # Safety Portal folder — MOVED 2026-06-05 to the standalone ITS –– Safety Portal
 # workspace (WORKSPACE_SAFETY_PORTAL); folder ID preserved (amendment b).
-FOLDER_SAFETY_PORTAL = 6663869084002180  # ITS –– Safety Portal / Safety Portal (ITS_Active_Jobs, ITS_Forms_Catalog, WSR_human_review)
+FOLDER_SAFETY_PORTAL = 6663869084002180  # ITS –– Safety Portal / 00_Safety Portal (ITS_Active_Jobs, WSR_human_review, Orphaned Reports)
 FOLDER_OPERATIONS_SAFETY_PORTAL = FOLDER_SAFETY_PORTAL  # back-compat alias (name retains the pre-move location)
+# ITS_Forms_Catalog does NOT live beside the three sheets above — it has its own
+# second folder in the same workspace (browsed live 2026-07-21; both folders are
+# provisioned by scripts/migrations/build_safety_portal_workspace.py).
+FOLDER_FORM_CATALOG = 3559329820370820  # ITS –– Safety Portal / 00_Form Catalog (ITS_Forms_Catalog)
 # "Closed Projects" folder lives in the ITS — Archive workspace (WORKSPACE_ARCHIVE),
 # verified live 2026-07-04; the §51 archive-on-closure path moves closed-job tracker
 # sheets here. (Earlier comment placed it in WORKSPACE_SAFETY_PORTAL — that was wrong.)

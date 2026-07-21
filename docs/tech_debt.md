@@ -710,8 +710,29 @@ the merged work, tracked so it isn't lost. The operator-gated cutover items live
   mirror-domain fallback) and the 2 Box `portal_root_folder_id` rows remain outside VC-03 — the manual CL-14
   grep + the CL-12 sweep are their backstop. Enrolling `operator_email` (sandbox-scanned) would close another
   gap. Deferred because it changes gate behaviour and the Box roots are numeric IDs (no `evergreenmirror`
-  marker to scan). **Trigger:** the next verify_cutover hardening pass. **Tag:** `cutover`, `verify_cutover`,
+  marker to scan). **SUPERSEDED IN PART 2026-07-21 (gap-builder PR):** the 2 Box `portal_root_folder_id`
+  rows ARE now enrolled in VC-03 as `non_empty` (no `sandbox_scan`). CO-3 conflated two separate
+  assertions: **sandbox_scan**, which stays correctly N/A (a numeric Box folder id carries no
+  `evergreenmirror` marker — CO-3's reasoning holds), and **presence**, which was never the reason to
+  abstain and is now worth asserting because that PR adds `scripts/migrations/build_box_roots.py` — a
+  create-only builder that writes no config row, so its two printed ids reach ITS_Config only via a manual
+  operator paste at cutover. VC-03 now catches a skipped/fat-fingered paste. **Trigger:** the next
+  verify_cutover hardening pass. **Tag:** `cutover`, `verify_cutover`,
   `low-severity`.
+- **CO-4 (HIGH, stale target) — `build_its_active_jobs_sheet.py` + `build_its_forms_catalog_sheet.py` still
+  target the pre-2026-06-05 Safety-Portal location.** Both hardcode `WORKSPACE = sheet_ids.WORKSPACE_OPERATIONS`
+  with `FOLDER_NAME = "Safety Portal"` (`build_its_active_jobs_sheet.py:50-51`,
+  `build_its_forms_catalog_sheet.py:52-53`), which is stale against the 2026-06-05 move to
+  `WORKSPACE_SAFETY_PORTAL` (whose live folders are `00_Safety Portal` + `00_Form Catalog`). **Failure
+  scenario at a fresh production tenant:** each script find-or-creates a THIRD, wrongly-named `Safety Portal`
+  folder under ITS — Operations, builds ITS_Active_Jobs + ITS_Forms_Catalog into it — orphaned from every
+  runtime constant, so no daemon can see either sheet — and its `[bootstrap]` line prints that folder's id
+  for `FOLDER_OPERATIONS_SAFETY_PORTAL`, an ALIAS of `FOLDER_SAFETY_PORTAL`, so pasting it overwrites the
+  real Safety-Portal folder id with the wrong one. Deliberately NOT fixed in the gap-builder PR (explicitly
+  out of its scope); recorded here rather than left silent. **Fix:** repoint both to `WORKSPACE_SAFETY_PORTAL`
+  + the live folder names (`00_Safety Portal` and `00_Form Catalog` respectively — they are two DIFFERENT
+  folders), and stop emitting the aliased bootstrap constant. **Trigger:** Phase-1 cutover, before running
+  the Safety-Portal sheet builders. **Tag:** `cutover`, `migrations`, `safety_reports`, `high-severity`.
 
 ## Smartsheet-wiring audit findings — daemon-health + capacity hygiene [OPEN 2026-07-04]
 

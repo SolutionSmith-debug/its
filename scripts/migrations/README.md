@@ -7,6 +7,29 @@ target state already in place makes zero writes and exits 0.
 
 ## Scripts
 
+### Phase-1 cutover builder sequence
+
+The four gap-builders that stand up a fresh PRODUCTION tenant run in this order.
+No individual docstring states the cross-script ordering, so it lives here:
+
+1. `build_system_workspace.py` — the "ITS — System" workspace + its four folders.
+2. **FLIP** the printed WORKSPACE/FOLDER ids into `shared/sheet_ids.py` (FLIP precedes
+   SEED — the seeders read those constants).
+3. `build_system_sheets.py` — the five System sheets. It resolves its folders by NAME,
+   so it is order-independent with the flip, but run it after step 1 either way: the
+   folders must exist.
+4. `build_safety_portal_workspace.py` — the "ITS –– Safety Portal" workspace +
+   `00_Safety Portal` / `00_Form Catalog`, then flip those ids too.
+5. `build_box_roots.py` — the two Box mirror-tree roots. **Its output does NOT go into
+   `shared/sheet_ids.py`**: the two folder ids are pasted into the ITS_Config rows
+   `safety_reports.box.portal_root_folder_id` and
+   `progress_reports.box.portal_root_folder_id` (consumers read them at runtime via
+   `get_setting`). Requires Box OAuth as the dedicated ITS identity first
+   (`scripts/setup_box_oauth.py`).
+
+Each builder is create-only, idempotent, live-by-default with a y/N confirmation, and
+takes `--dry-run`. Reconcile any `[WARN]` duplicate-name ambiguity BEFORE flipping an id.
+
 ### `box_clone_1111a_to_projects.py`
 
 Clones the `1111A (Copy for new projects)` Box template into the 6 Forefront
