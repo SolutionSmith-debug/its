@@ -224,7 +224,10 @@ def _resolve_creds() -> _Creds | TransientUnavailable | None:
     divergence predates this change and is deliberately NOT altered here: a missing row
     still resolves to None and halts loudly exactly as it does today.
     """
-    base_url = _read_str_setting(CFG_WORKER_BASE_URL, "").strip()
+    resolved = creds_resolution.read_base_url(CFG_WORKER_BASE_URL, WORKSTREAM)
+    if isinstance(resolved, TransientUnavailable):
+        return resolved
+    base_url = (resolved or "").strip()
     if not base_url:
         return None
     try:
