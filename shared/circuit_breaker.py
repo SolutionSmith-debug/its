@@ -318,6 +318,20 @@ def bypass() -> Iterator[None]:
         _bypass_depth -= 1
 
 
+def in_bypass() -> bool:
+    """True while a ``bypass()`` context is active anywhere up the call stack.
+
+    Public because the layer BELOW the guard needs it too. ``smartsheet_client``'s
+    bounded transient retry sits INSIDE the guard, so without this it also wraps the
+    guard's own bypass-protected config read: on a failing backend a cold bootstrap went
+    from 3 SDK calls to 12, plus ~21 s of backoff — on the one path that exists precisely
+    so an OPEN breaker cannot block it, and re-run on every launchd fire because each
+    cycle is a fresh process. A bypass-wrapped call is control-plane, not work: it gets
+    exactly one attempt.
+    """
+    return _bypass_depth > 0
+
+
 # ---- transitions (the only lock-acquiring paths) --------------------------
 
 

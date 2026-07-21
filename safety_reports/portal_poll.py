@@ -79,6 +79,7 @@ from shared import (
     review_queue,
     smartsheet_client,
     state_io,
+    sustained_failure,
 )
 from shared.creds_resolution import CREDS_TRANSIENT as _CREDS_TRANSIENT
 from shared.creds_resolution import TransientUnavailable
@@ -545,7 +546,13 @@ def poll_once() -> PollStats:
                 error_code="poll_lock_held",
             )
             return PollStats(skipped_locked=True)
-        return _poll_inside_lock()
+        try:
+            return _poll_inside_lock()
+        finally:
+            # D3 — one summarized WARN row if any Smartsheet call in this pass RECOVERED
+            # on retry. In `finally` so a raising pass still reports its recoveries
+            # instead of silently rolling them into the next cycle's row.
+            sustained_failure.flush_retry_recovery(SCRIPT_NAME)
 
 
 @dataclass(frozen=True)

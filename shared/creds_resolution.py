@@ -51,11 +51,29 @@ class TransientUnavailable:
     sustained-failure counter (`sustained_failure.TransientFence`): a circuit-OPEN skip
     must NOT be counted, because the breaker already owns that page and counting it would
     turn one outage into a per-daemon CRITICAL storm on separate alert-dedupe keys. Every
-    other transient IS counted."""
+    other transient IS counted.
 
-    def __init__(self, reason: str = "Smartsheet circuit OPEN", *, circuit_open: bool = True) -> None:
+    ``exc`` carries the ORIGINAL exception so a caller can re-classify more strictly than
+    this module does. That matters because "transient" here is deliberately BROAD — it
+    covers 429 and any other `SmartsheetError` with a body, which for the five portal
+    pullers is the right skip-and-retry disposition. A caller that previously PAGED on
+    those must be able to keep doing so: `publish_daemon`'s base-URL read did (its own
+    reader caught only NotFound + CircuitOpen, so a 429/400 propagated to CRITICAL), and
+    routing it through this sentinel would otherwise have SOFTENED it to an ERROR by
+    accident. Narrow with `smartsheet_client.is_transient_error(exc)` at the call site.
+    Silently widening a fail-closed disposition is exactly the bug class this module
+    exists to prevent."""
+
+    def __init__(
+        self,
+        reason: str = "Smartsheet circuit OPEN",
+        *,
+        circuit_open: bool = True,
+        exc: BaseException | None = None,
+    ) -> None:
         self.reason = reason
         self.circuit_open = circuit_open
+        self.exc = exc
 
 
 # Singleton sentinel (compared via isinstance, so the exact identity is not load-bearing).
@@ -87,5 +105,7 @@ def read_base_url(setting: str, workstream: str) -> str | TransientUnavailable |
         # trips: the breaker needs `failure_threshold` CONSECUTIVE failures, so the first
         # cycles of any outage (and every one-cycle blip) raise the raw error class, not
         # SmartsheetCircuitOpenError. Same self-healing condition → same sentinel.
-        return TransientUnavailable(reason=f"{type(exc).__name__}: {exc!r}", circuit_open=False)
+        return TransientUnavailable(
+            reason=f"{type(exc).__name__}: {exc!r}", circuit_open=False, exc=exc
+        )
     return raw if isinstance(raw, str) and raw else None

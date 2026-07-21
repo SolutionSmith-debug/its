@@ -118,6 +118,41 @@ def _build_seed_rows() -> list[dict[str, str]]:
             "Workstream": "global",
             "Description": "PR-2 watchdog alerts if the breaker has been OPEN longer than this.",
         },
+        # Bounded transient retry (shared/smartsheet_client.py `_transient_retry`) — all
+        # global. Seeded for the same reason as circuit_breaker.* above AND because
+        # docs/runbooks/circuit_breaker.md tells the Successor-Operator to turn retry off
+        # from the dashboard's config editor: `config_write` refuses with "seed the row
+        # before editing" when there is no row, so an unseeded gate is a phantom switch —
+        # a documented repair the operator cannot actually perform (HOUSE_REFLEXES §5).
+        {
+            "Setting": "smartsheet.retry.enabled",
+            "Value": "true",
+            "Workstream": "global",
+            "Description": (
+                "Re-issue a Smartsheet READ that failed with a 5xx or a network timeout "
+                "(the two classes the SDK does not retry itself). Writes are NEVER "
+                "retried. false = pure pass-through escape hatch."
+            ),
+        },
+        {
+            "Setting": "smartsheet.retry.max_extra_attempts",
+            "Value": "2",
+            "Workstream": "global",
+            "Description": (
+                "Extra attempts a failed Smartsheet read gets before the error reaches "
+                "the caller (0 = no retry). Allowed 0-5; higher values are clamped."
+            ),
+        },
+        {
+            "Setting": "smartsheet.retry.backoff_seconds",
+            "Value": "2.0,5.0",
+            "Workstream": "global",
+            "Description": (
+                "Comma-separated wait (seconds) before each extra attempt. The last "
+                "value repeats if there are more attempts than entries; the summed "
+                "backoff is capped at 30s."
+            ),
+        },
         {
             # F09 global alerts-per-hour cap (shared/alert_dedupe.py).
             "Setting": "alerting.max_alerts_per_hour",

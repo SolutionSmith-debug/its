@@ -69,11 +69,29 @@ CIRCUIT_BREAKER_PROLONGED_OPEN_ALERT_SECONDS = 600    # circuit_breaker.prolonge
 # 500 carrying errorCode 4000 (absent from the SDK's should_retry lookup) and any
 # requests-level ReadTimeout/ConnectionError (raised before the SDK's retry loop runs).
 # Operator-tunable via ITS_Config rows (workstream="global"); `enabled=false` is a pure
-# pass-through escape hatch. Two extra attempts over ~7 s stays well inside every
-# daemon's launchd cadence (the shortest enrolled cadence is 60 s).
+# pass-through escape hatch.
+#
+# HONEST WALL-CLOCK COST (do not quote the backoff alone — it is the smaller half).
+# Two extra attempts add ~7 s of backoff, but each attempt also re-spends the SDK's
+# 30 s network timeout (`SDK_NETWORK_TIMEOUT`) when the failure is a hang rather than a
+# fast 5xx. So per failing enrolled READ:
+#   * fast-failing 5xx  → ~7 s added (3 attempts, negligible request time);
+#   * timeout/hang      → up to ~67 s added, i.e. ~97 s total vs ~30 s before.
+# That worst case exceeds the shortest enrolled launchd cadence (portal_poll, 60 s).
+# It is accepted rather than tuned down because launchd runs these daemons one-shot per
+# StartInterval and will not start a second instance while one is in flight: the effect
+# is a SKIPPED fire, not overlapping cycles or a queue. A daemon that cannot absorb that
+# should set `smartsheet.retry.enabled=false` (or 1 extra attempt) for its host.
 SMARTSHEET_RETRY_ENABLED             = True         # smartsheet.retry.enabled
 SMARTSHEET_RETRY_MAX_EXTRA_ATTEMPTS  = 2            # smartsheet.retry.max_extra_attempts
 SMARTSHEET_RETRY_BACKOFF_SECONDS     = (2.0, 5.0)   # smartsheet.retry.backoff_seconds
+# HARD CEILINGS, not defaults — an operator typo in the ITS_Config row is clamped to
+# these (with a WARN) rather than hanging every daemon. A config surface without bounds
+# is an outage surface; these are the same bounds the dashboard's validators enforce, so
+# the editor rejects out-of-range up front and the client clamps anything that got in by
+# another path (a hand-edited sheet cell).
+SMARTSHEET_RETRY_MAX_ATTEMPTS_CEILING   = 5     # max value accepted for max_extra_attempts
+SMARTSHEET_RETRY_MAX_TOTAL_BACKOFF_SECS = 30.0  # cap on the SUMMED backoff of one sequence
 
 # Picklist sync — size guardrails for shared/picklist_sync.py. Two-stage:
 # WARN at >200 options, HARD-HALT-that-mapping at >400. Both values are

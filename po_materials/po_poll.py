@@ -486,7 +486,11 @@ def poll_once() -> PoPollStats:
                 error_code="po_poll_lock_held",
             )
             return PoPollStats(skipped_locked=True)
-        return _poll_inside_lock(drafts_on, vendors_on, status_on)
+        try:
+            return _poll_inside_lock(drafts_on, vendors_on, status_on)
+        finally:
+            # D3 — see portal_poll: one summarized WARN row per pass that recovered on retry.
+            sustained_failure.flush_retry_recovery(SCRIPT_NAME)
 
 
 def _poll_inside_lock(drafts_on: bool, vendors_on: bool, status_on: bool) -> PoPollStats:

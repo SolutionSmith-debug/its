@@ -23,7 +23,7 @@ import pytest
 import requests
 import smartsheet.exceptions as sdk_exc
 
-from shared import circuit_breaker, smartsheet_client
+from shared import circuit_breaker, defaults, smartsheet_client
 from shared.smartsheet_client import (
     RetryConfig,
     SmartsheetAuthError,
@@ -467,6 +467,125 @@ def test_exactly_the_enrolled_functions_carry_the_decorator():
         and getattr(obj, "__its_transient_retry__", False)
     }
     assert decorated == set(APPROVED_RETRY_ENROLLMENT)
+
+
+def test_the_real_module_applies_the_guard_outside_and_retry_inside():
+    """The PLACEMENT invariant, bound against `shared/smartsheet_client.py` ITSELF.
+
+    Every other ordering test in this file composes its OWN local stack via `_composed()`
+    or an inline guard, so swapping the two decorators in the module would leave the whole
+    suite green — including `test_exactly_the_enrolled_functions_carry_the_decorator`,
+    because `functools.wraps` copies `__dict__` (hence `__its_transient_retry__`) in BOTH
+    directions. This reads the decorator list off the real source.
+
+    Order matters twice: retry OUTSIDE the guard would record 3 breaker failures per
+    logical call (tripping it 3× sooner than `failure_threshold` says) AND would
+    catch-and-sleep on SmartsheetCircuitOpenError, hammering the very short-circuit.
+    """
+    tree = ast.parse(CLIENT_SRC.read_text())
+    decorators = {
+        node.name: [ast.unparse(d) for d in node.decorator_list]
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name in APPROVED_RETRY_ENROLLMENT
+    }
+    assert set(decorators) == set(APPROVED_RETRY_ENROLLMENT)
+    wrong = {
+        name: decs for name, decs in sorted(decorators.items())
+        if decs != ["_breaker_guard", "_transient_retry"]
+    }
+    assert wrong == {}, (
+        "enrolled reads must be decorated `@_breaker_guard` then `@_transient_retry` "
+        f"(guard outermost, retry innermost). Wrong: {wrong}"
+    )
+
+
+def test_runtime_wrapper_chain_puts_retry_inside_the_guard():
+    """Runtime companion to the AST check: unwrap the real `get_rows` one layer.
+
+    `functools.wraps` copies `__dict__` outward, so the OUTERMOST wrapper carries
+    `__its_transient_retry__` either way — but the layer directly beneath it does not. If
+    retry sat outside, `get_rows.__wrapped__` would be the guard wrapper, whose `__dict__`
+    came from the bare function and therefore lacks the marker.
+    """
+    one_layer_in = smartsheet_client.get_rows.__wrapped__  # type: ignore[attr-defined]
+    assert getattr(one_layer_in, "__its_transient_retry__", False) is True
+    assert getattr(one_layer_in.__wrapped__, "__its_transient_retry__", False) is False
+
+
+def test_bypassed_control_plane_reads_get_exactly_one_attempt(mocker, retry_enabled, sleeps):
+    """A `circuit_breaker.bypass()` call is plumbing (the breaker's own config read, the
+    ITS_Errors forensic write, the CIRCUIT_OPEN heartbeat), not the daemon's work.
+
+    Without this short-circuit, retry wrapped the breaker's bypass-protected config
+    bootstrap: on a failing backend a cold start went from 3 SDK calls to 12 plus ~21 s of
+    sleeps, on the ONE path that exists so an OPEN breaker cannot block it — re-run every
+    launchd fire, because each cycle is a fresh process.
+    """
+    client = _client(mocker)
+    client.Sheets.get_sheet.side_effect = _api_error(500, code=4000)
+
+    with circuit_breaker.bypass(), pytest.raises(SmartsheetTransientError):
+        smartsheet_client.get_rows(123)
+
+    assert client.Sheets.get_sheet.call_count == 1
+    sleeps.assert_not_called()
+
+
+# ---- knob clamping (a config surface without bounds is an outage surface) --
+
+
+def test_out_of_range_attempts_is_clamped_not_obeyed(mocker):
+    """A typo'd `200` would hold every daemon on one failing read for ~100 min."""
+    mocker.patch.object(smartsheet_client, "_retry_config_cache", None)
+    warn = mocker.patch("shared.error_log.local_log")
+    mocker.patch.object(
+        smartsheet_client, "_read_global_setting",
+        side_effect=lambda key: "200" if key.endswith("max_extra_attempts") else None,
+    )
+
+    cfg = smartsheet_client._load_retry_config()
+
+    assert cfg.max_extra_attempts == defaults.SMARTSHEET_RETRY_MAX_ATTEMPTS_CEILING
+    assert any("CLAMPED" in c.args[2] for c in warn.call_args_list)
+
+
+def test_negative_attempts_clamps_to_zero(mocker):
+    mocker.patch.object(smartsheet_client, "_retry_config_cache", None)
+    mocker.patch("shared.error_log.local_log")
+    mocker.patch.object(
+        smartsheet_client, "_read_global_setting",
+        side_effect=lambda key: "-3" if key.endswith("max_extra_attempts") else None,
+    )
+
+    assert smartsheet_client._load_retry_config().max_extra_attempts == 0
+
+
+def test_backoff_over_the_total_cap_is_truncated(mocker):
+    """Capping the SUM is the load-bearing half: three individually-plausible 20 s waits
+    are a minute of sleep inside every failing read."""
+    mocker.patch.object(smartsheet_client, "_retry_config_cache", None)
+    warn = mocker.patch("shared.error_log.local_log")
+    mocker.patch.object(
+        smartsheet_client, "_read_global_setting",
+        side_effect=lambda key: "20,20,20" if key.endswith("backoff_seconds") else None,
+    )
+
+    cfg = smartsheet_client._load_retry_config()
+
+    assert cfg.backoff_seconds == (20.0,)
+    assert sum(cfg.backoff_seconds) <= defaults.SMARTSHEET_RETRY_MAX_TOTAL_BACKOFF_SECS
+    assert any("TRUNCATED" in c.args[2] for c in warn.call_args_list)
+
+
+def test_negative_backoff_entry_is_floored_not_slept_backwards(mocker):
+    mocker.patch.object(smartsheet_client, "_retry_config_cache", None)
+    mocker.patch("shared.error_log.local_log")
+    mocker.patch.object(
+        smartsheet_client, "_read_global_setting",
+        side_effect=lambda key: "-5,2" if key.endswith("backoff_seconds") else None,
+    )
+
+    assert smartsheet_client._load_retry_config().backoff_seconds == (0.0, 2.0)
 
 
 def _reachable_names(fn: ast.FunctionDef) -> set[str]:

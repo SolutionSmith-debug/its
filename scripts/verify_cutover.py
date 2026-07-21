@@ -88,16 +88,25 @@ choices). Their ABSENCE caused the per-cycle ``config_row_missing`` WARN storm t
 filled ITS_Errors to the 20k cap. The seed set's two ``progress_send`` rows were already
 enrolled.
 
-DEFERRED (deliberately NOT enrolled) — ``smartsheet.retry.enabled`` /
+DEFERRED (deliberately NOT enrolled in VC-03) — ``smartsheet.retry.enabled`` /
 ``.max_extra_attempts`` / ``.backoff_seconds`` (2026-07-21, the bounded transient retry in
-``shared/smartsheet_client.py``). Same class as ``circuit_breaker.*``, which is likewise
-absent here: a shared-infrastructure TUNABLE whose ``shared/defaults.py`` values ARE the
-intended production behaviour, resolved under ``circuit_breaker.bypass()`` and reported by
-source in every recovery log line. An absent row is not a missing switch and causes no
-per-cycle WARN storm (``_read_global_setting`` swallows the 404 by contract), so enrolling
-it as ``non_empty`` would turn a benign absence into a RED cutover verdict — the opposite
-of what VC-03 is for. Enroll only if the operator ever needs the rows pre-seeded to tune
-without a code change; the ``circuit_breaker.*`` precedent says they do not.
+``shared/smartsheet_client.py``). They follow the ``circuit_breaker.*`` precedent EXACTLY,
+and that precedent is a three-part shape — be precise about which part is which, because
+an earlier draft of this note read the omission as "circuit_breaker is absent everywhere",
+which is false:
+
+  * SEEDED by ``scripts/seed_its_config.py``            — yes, both families.
+  * REGISTERED in the dashboard's editable registry     — yes, both families.
+  * ENROLLED in VC-03 here                              — no, neither family.
+
+The third is the deliberate one. VC-03 asserts a row that MUST exist for cutover to be
+sane; a shared-infrastructure tunable whose ``shared/defaults.py`` values ARE the intended
+production behaviour does not qualify. Its read is resolved under
+``circuit_breaker.bypass()``, ``_read_global_setting`` swallows a 404 by contract (so an
+absent row causes no per-cycle WARN storm), and the resolved source rides every recovery
+log line. Enrolling it as ``non_empty`` would turn a benign absence into a RED cutover
+verdict — the opposite of what VC-03 is for. The rows ARE seeded so the operator has
+something to edit; that is the phantom-switch fix, not a cutover assertion.
 
 Usage::
 

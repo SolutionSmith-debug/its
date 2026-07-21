@@ -157,8 +157,25 @@ def test_http_error_translated(mocker):
     client = _install_client(mocker)
     client.Sheets.get_sheet.side_effect = sdk_exc.HttpError(502, b"bad gateway")
 
-    with pytest.raises(SmartsheetError, match="502"):
+    with pytest.raises(SmartsheetTransientError, match="502"):
         smartsheet_client.get_sheet(123)
+
+
+@pytest.mark.parametrize("status", [400, 401, 403, 407])
+def test_non_5xx_http_error_is_not_transient(mocker, status):
+    """A non-JSON error body is NOT by itself evidence of a self-healing fault: a captive
+    portal / corporate proxy / Cloudflare challenge answers 4xx with an HTML page. Gating
+    on status keeps that deterministic access problem paging, instead of being retried 3×
+    and then softened to an ERROR by the pass-boundary fence."""
+    client = _install_client(mocker)
+    client.Sheets.get_sheet.side_effect = sdk_exc.HttpError(
+        status, b"<html>proxy authentication required</html>"
+    )
+
+    with pytest.raises(SmartsheetError) as exc_info:
+        smartsheet_client.get_sheet(123)
+
+    assert not isinstance(exc_info.value, SmartsheetTransientError)
 
 
 # ---- Column-map cache ----------------------------------------------------
