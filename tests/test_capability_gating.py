@@ -355,6 +355,42 @@ GATED_SCRIPTS: list[tuple[str, list[str]]] = [
         ["graph_client", "send_mail", "resend", "smtplib", "email.mime",
          "anthropic", "anthropic_client"],
     ),
+    # --- the OLDER twins of everything above -------------------------------
+    # The RFQ/estimate lane (the newest) enrolled its naming / ledger / review /
+    # reference helpers carefully. Their structural twins in the PO, subcontract,
+    # safety and progress lanes — same job, same trust position, most of them
+    # OLDER and more heavily used — were never enrolled, so nothing structurally
+    # stopped any of them growing a send or AI import. None carries a convention
+    # suffix (`_generate.py` / `_send.py` / `_poll.py`), so the enrollment
+    # meta-test never demanded them either: they fell through BOTH nets.
+    # Same standard forbid list as their enrolled twins.
+    *(
+        (
+            path,
+            ["graph_client", "send_mail", "resend", "smtplib", "email.mime",
+             "anthropic", "anthropic_client"],
+        )
+        for path in (
+            # naming + ledger writers (twins of rfq_naming / rfq_log / estimate_log)
+            "po_materials/po_naming.py",
+            "po_materials/po_log.py",
+            # review-row writers — these stage the very rows the SEND daemons
+            # dispatch, so a send or AI import here would sit directly on the gate
+            # boundary
+            "po_materials/po_review.py",
+            "po_materials/rfq_review.py",
+            "subcontracts/subcontract_review.py",
+            "safety_reports/wsr_review.py",
+            "progress_reports/wpr_review.py",
+            # reference / computation helpers the delivery paths share
+            "po_materials/vendors.py",
+            "po_materials/terms.py",
+            "subcontracts/money.py",
+            "subcontracts/terms.py",
+            "subcontracts/exhibit.py",
+            "subcontracts/governing_law.py",
+        )
+    ),
 ]
 
 # Send scripts: must NOT import any AI capability.
