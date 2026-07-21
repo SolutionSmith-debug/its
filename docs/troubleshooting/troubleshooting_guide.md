@@ -17,8 +17,8 @@ Pick the workflow you are blocked at, then the step, then the symptom that match
 - **Safety report — portal submission to sent weekly packet** — A field submission enters at the send-free portal, is pulled + filed on the Mac, compiled into a weekly packet, human-approved, and sent. The generation and send halves are separate processes (External Send Gate).
 - **Progress report — intake, routing, compile, send** — The Safety-Reports twin for weekly progress packets, on its own Active-Jobs sheet.
 - **Field-ops sync — portal job/hours/materials/equipment/incidents to Smartsheet** — The portal is the writer of record for jobs and field capture; fieldops-sync mirrors dirty portal-origin records UP into the two Active-Jobs sheets and the standing trackers.
-- **Purchase order — build, config, pull/render/file, send (dark)** — The deterministic PO pipeline (no AI). Ships dark until its gates are flipped.
-- **Subcontract — build, legal gate, pull/render, send (dark)** — The deterministic subcontract-package pipeline (no AI), PO-mirror. Ships dark.
+- **Purchase order — build, config, pull/render/file, send** — The deterministic PO pipeline (no AI). Ships dark until its gates are flipped.
+- **Subcontract — build, legal gate, pull/render, send** — The deterministic subcontract-package pipeline (no AI), PO-mirror. Ships dark.
 - **Email intake — the superseded safety path (portal PULL is canonical)** — Safety email intake was RETIRED; the Safety Portal PULL model supersedes it. The shared Graph plumbing is preserved for a future Email-Triage workstream.
 - **Config change — the §50 privileged actuation rail** — The cloud can only ENQUEUE a config request (send-free); the config-actuator commits it on the Mac (validate → PR → CI → merge → deploy → stamp live).
 - **Operator dashboard — auth tiers and Class A/B/C actions** — The localhost-only console; read-only panels plus PIN-gated actions over Tailscale.
@@ -492,7 +492,7 @@ The portal is the writer of record for jobs and field capture; fieldops-sync mir
 
 **See also:** runbook `docs/runbooks/fieldops_time_amend.md`
 
-## Purchase order — build, config, pull/render/file, send (dark)
+## Purchase order — build, config, pull/render/file, send
 
 The deterministic PO pipeline (no AI). Ships dark until its gates are flipped.
 
@@ -578,7 +578,7 @@ The deterministic PO pipeline (no AI). Ships dark until its gates are flipped.
 
 **See also:** runbook `docs/runbooks/po_poll.md`
 
-### estimate-poll screens, classifies, and files an uploaded vendor estimate (dark)
+### estimate-poll screens, classifies, and files an uploaded vendor estimate
 
 | What happens | |
 |---|---|
@@ -618,7 +618,7 @@ The deterministic PO pipeline (no AI). Ships dark until its gates are flipped.
 
 **See also:** runbook `docs/runbooks/estimate_import_path.md`
 
-### rfq-poll renders and files a composed request-for-quote per vendor (dark)
+### rfq-poll renders and files a composed request-for-quote per vendor
 
 | What happens | |
 |---|---|
@@ -658,7 +658,7 @@ The deterministic PO pipeline (no AI). Ships dark until its gates are flipped.
 
 **See also:** runbook `docs/runbooks/rfq_generation_path.md`
 
-### po-send transmits an approved PO (dark)
+### po-send transmits an approved PO
 
 | What happens | |
 |---|---|
@@ -684,7 +684,7 @@ The deterministic PO pipeline (no AI). Ships dark until its gates are flipped.
 
 **See also:** runbook `docs/runbooks/po_send.md`
 
-### rfq-send transmits an approved request-for-quote to its vendor (dark)
+### rfq-send transmits an approved request-for-quote to its vendor
 
 | What happens | |
 |---|---|
@@ -710,7 +710,7 @@ The deterministic PO pipeline (no AI). Ships dark until its gates are flipped.
 
 **See also:** runbook `docs/runbooks/rfq_send.md`
 
-## Subcontract — build, legal gate, pull/render, send (dark)
+## Subcontract — build, legal gate, pull/render, send
 
 The deterministic subcontract-package pipeline (no AI), PO-mirror. Ships dark.
 
@@ -756,14 +756,14 @@ The deterministic subcontract-package pipeline (no AI), PO-mirror. Ships dark.
 **Signals:** subcontract-poll gate off, designed-dark
 
 **Checks (in order):**
-- Is subcontract-poll loaded and its gate flipped? All subcontract gates ship false (dark).
+- Is subcontract-poll loaded and its gate flipped? Check the CURRENT value of subcontracts.subcontract_poll.polling_enabled — do not assume; these gates shipped false but are flipped as each lane goes live.
 
 **Resolutions (in order):**
-- Load + flip if intended; otherwise dark by design.
+- Load + flip if intended; if the gate is deliberately off, leave it.
 
 **See also:** runbook `docs/runbooks/subcontract_generation_path.md`
 
-### subcontract-send transmits an approved package (dark)
+### subcontract-send transmits an approved package
 
 | What happens | |
 |---|---|

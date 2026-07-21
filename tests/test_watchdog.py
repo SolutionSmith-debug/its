@@ -497,23 +497,44 @@ def test_open_critical_under_cap(mock_get_rows):
 # ---- Group N: _check_stuck_wsr_send (write-ahead-marker safety net) -------
 
 
-def test_no_wsr_rows_stuck_in_sending(mock_get_rows):
+def test_no_rows_stuck_in_sending(mock_get_rows):
     mock_get_rows.return_value = []
 
     result = watchdog._check_stuck_wsr_send()
 
     assert result.severity is Severity.INFO
-    assert "No WSR rows stuck in SENDING" in result.summary
+    assert "No review rows stuck in SENDING" in result.summary
 
 
-def test_wsr_rows_stuck_in_sending_warn(mock_get_rows):
+def test_rows_stuck_in_sending_warn_across_every_lane(mock_get_rows):
+    # The mock answers for EVERY review sheet, so a check that still scanned only
+    # one lane would report 2 rows; scanning all five reports 10, each labelled.
     mock_get_rows.return_value = [{"_row_id": 50}, {"_row_id": 51}]
 
     result = watchdog._check_stuck_wsr_send()
 
     assert result.severity is Severity.WARN
-    assert "2 WSR row(s) stuck in SENDING" in result.summary
-    assert "50" in result.details and "51" in result.details
+    assert "10 review row(s) stuck in SENDING" in result.summary
+    for label in ("WSR", "WPR", "PO", "RFQ", "SUB"):
+        assert f"{label}:50" in result.details, f"{label} lane not scanned"
+
+
+def test_stuck_sending_scan_is_per_sheet_fail_soft(mocker):
+    # One lane's read blowing up must not hide the other four — the Check-T pattern.
+    calls = {"n": 0}
+
+    def flaky(sheet_id, filters=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("smartsheet boom")
+        return [{"_row_id": 77}]
+
+    mocker.patch("watchdog.smartsheet_client.get_rows", side_effect=flaky)
+    result = watchdog._check_stuck_wsr_send()
+
+    assert result.severity is Severity.WARN
+    assert "4 review row(s) stuck in SENDING" in result.summary  # 5 lanes, 1 failed
+    assert "read errors" in result.details and "smartsheet boom" in result.details
 
 
 def test_open_critical_over_cap(mock_get_rows):
@@ -2383,6 +2404,43 @@ def _approver_state(monkeypatch, tmp_path):
 @pytest.fixture
 def mock_share_emails(mocker):
     return mocker.patch("watchdog.smartsheet_client.list_workspace_share_emails")
+
+
+def test_review_scan_covers_every_send_lane():
+    """PARITY TOOTH: Checks N and T must scan every lane's review sheet.
+
+    Both are backstops for the SHARED send engine, which writes its SENDING
+    write-ahead marker and every HELD disposition to `cfg.review.SHEET_ID` — i.e.
+    whichever review sheet the lane's SendConfig names. So the set of review sheets
+    the send lanes use IS the set these checks must scan.
+
+    They fell behind: Check N scanned only WSR and Check T only WSR+WPR, leaving the
+    three vendor-facing procurement lanes with no stuck-SENDING alarm at all and no
+    24h stale-HELD backstop. Derived from the SendConfigs rather than pinned, because
+    a pinned list is exactly how that happened.
+    """
+    from po_materials import po_send, rfq_send
+    from progress_reports import progress_send
+    from safety_reports import weekly_send
+    from subcontracts import subcontract_send
+
+    required: dict[int, str] = {}
+    for name, mod in {
+        "weekly_send": weekly_send, "progress_send": progress_send,
+        "po_send": po_send, "rfq_send": rfq_send, "subcontract_send": subcontract_send,
+    }.items():
+        cfg = next(v for v in vars(mod).values() if getattr(v, "review", None) is not None)
+        required[cfg.review.SHEET_ID] = name
+
+    for table, label in ((watchdog._REVIEW_SHEETS, "Check N/T review scan"),
+                         (watchdog._HELD_SCAN_SHEETS, "Check T _HELD_SCAN_SHEETS")):
+        scanned = {row[1] for row in table}
+        missing = {sid: lane for sid, lane in required.items() if sid not in scanned}
+        assert not missing, (
+            f"{label} does not cover these live send lanes: {missing} — add them to "
+            "_REVIEW_SHEETS in scripts/watchdog.py, or a row stuck SENDING/HELD on "
+            "that lane is never reported"
+        )
 
 
 def test_approver_workspaces_cover_every_send_lane():

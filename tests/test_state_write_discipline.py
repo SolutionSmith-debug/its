@@ -12,7 +12,8 @@ mutation: double external send, corruption races, audit-record clobber; worst
 instance: an approved WSR emailed to the customer every 15 minutes on a transient
 post-send write failure). This promotes it to a CI gate, mirroring the
 capability-gating allowlist idiom in tests/test_capability_gating.py: NO module on
-the runtime surface (shared/ + safety_reports/) may call .write_text()/.write_bytes()
+the runtime surface (the F02 WALKED_ROOTS, imported below — shared/ plus every
+first-party workstream package) may call .write_text()/.write_bytes()
 directly unless it is on STATE_WRITE_ALLOWLIST WITH a one-line rationale confirming
 it is the sanctioned atomic-writer OR writes a NON-state path (a liveness marker,
 a git-source artifact).
@@ -24,13 +25,19 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-
 # Runtime surface walked — the same untrusted-content / daemon surface as the F02
 # network allowlist (shared/ helpers + the workstream packages). scripts/ is
-# operator-run and writes only ~/its/.watchdog markers (not state). progress_reports
-# joined at P2 (kept in sync with the F02 WALKED_ROOTS in test_capability_gating.py).
-WALKED_ROOTS: tuple[str, ...] = ("shared", "safety_reports", "progress_reports", "po_materials")
+# operator-run and writes only ~/its/.watchdog markers (not state).
+#
+# This used to be a hand-maintained COPY of the F02 list, with a comment claiming it was
+# "kept in sync with the F02 WALKED_ROOTS in test_capability_gating.py" — it wasn't: it
+# sat at 4 roots while F02 had grown to 7, leaving subcontracts/, field_ops/ and
+# operator_dashboard/ (all live, all state-touching) walked by NEITHER guard. It is now
+# IMPORTED from the F02 gate, so the claimed parity is structural and the two guards
+# cannot drift again. (Coverage-gap audit, 2026-07-21.)
+from tests.test_capability_gating import WALKED_ROOTS
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 _WRITE_METHODS: frozenset[str] = frozenset({"write_text", "write_bytes"})
 
@@ -66,6 +73,18 @@ STATE_WRITE_ALLOWLIST: dict[str, str] = {
     "po_materials/rfq_poll.py":
         "writes the ~/its/.watchdog/rfq_poll.last_run liveness marker (NOT ~/its/state/) — "
         "its ~/its/state/ writes (rfq_poll_flagged.json + heartbeat files) all ride state_io",
+    # The two below were surfaced by the 2026-07-21 widening (field_ops/ + subcontracts/
+    # had never been walked). Both verified: single `_write_watchdog_marker()` writing
+    # WATCHDOG_MARKER_DIR = ~/its/.watchdog, and every ~/its/state/ write in each module
+    # already goes through state_io.with_path_lock + atomic_write_json.
+    "field_ops/fieldops_sync.py":
+        "writes the ~/its/.watchdog/<job>.last_run liveness marker (NOT ~/its/state/) — "
+        "its ~/its/state/ writes (the pending-fetch-fail counter + heartbeat files) all "
+        "ride state_io",
+    "subcontracts/subcontract_poll.py":
+        "writes the ~/its/.watchdog/<job>.last_run liveness marker (NOT ~/its/state/) — "
+        "its ~/its/state/ writes (subcontract_flagged.json + heartbeat files) all ride "
+        "state_io",
 }
 
 
