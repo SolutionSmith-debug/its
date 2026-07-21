@@ -111,12 +111,28 @@ entry, do not purge the D1 row.
 
 ## Symptom 5 — "RFQ filed but the review row / ledger row is missing or duplicated"
 
-- Missing review-row PDF attachment with WARN `rfq_row_pdf_attach_failed` → cosmetic;
-  the Box link on the row is the SoR copy. Low-class: ignore or re-attach by hand.
+- Missing review-row or ledger-row file attachment with WARN `rfq_row_file_attach_failed`
+  → cosmetic; the Box link on the row is the SoR copy. Low-class: ignore or re-attach by
+  hand (both the review row AND the flat RFQ_Log row carry the RFQ PDF + quote form
+  inline — PO-lane parity, 2026-07-20).
 - A transient Smartsheet/Box failure (`rfq_filing_transient`) leaves the RFQ queued —
   it self-heals next cycle; duplicates are prevented by find-or-skip (RFQ Number +
   Vendor Key on the ledger; the Notes `rfq_id`/`vendor_key` join on the review sheet).
 - A genuinely duplicated row (should not happen) → escalate with the row links.
+
+## Symptom 5b — per-job RFQ tracking sheet mirror failed (`rfq_perjob_sheet_failed`, WARN, permanent one-shot miss)
+
+The po_poll Symptom-13 class, RFQ edition. The RFQ itself **filed normally** (Box PDF +
+quote form, flat RFQ_Log row with inline attachments, review row, mark-filed receipt);
+only the supplementary per-job mirror row (ITS — Purchase Orders / **Jobs** / `<job>` /
+**"RFQs"** sheet, `shared/job_sheet.py`) is missing. Best-effort by design — **no
+auto-retry; a failed mirror append is a PERMANENT one-shot miss** unless repaired by hand.
+**Low-class Tier-2 repair:** find the (RFQ Number, Vendor Key) row in the flat RFQ_Log,
+copy it into the job's "RFQs" sheet (a structure-only clone — the columns match by
+construction). The flat RFQ_Log + Box remain the SoR; nothing send-path is affected.
+Related lower-level WARNs (`shared.job_sheet` script name): `job_sheet_ready_probe_exhausted`,
+`job_sheet_folder_race_duplicate` / `job_sheet_sheet_race_duplicate`, `sheet_capacity_*` —
+see `docs/runbooks/po_poll.md` Symptom 13 for their handling; they are identical here.
 
 ## Symptom 6 — "A SENT RFQ still shows `filed` in RFQ_Log"
 

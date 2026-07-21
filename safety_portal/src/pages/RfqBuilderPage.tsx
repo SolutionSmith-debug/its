@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import * as rfq from "../lib/rfq";
-import { fetchVendors, fetchJobShipTo, fetchPoMaterials, catalogLineFields, type Vendor, type CatalogMaterial } from "../lib/po";
+import { createVendor, fetchVendors, fetchJobShipTo, fetchPoMaterials, catalogLineFields, type Vendor, type CatalogMaterial } from "../lib/po";
 import { fetchJobs, type Job } from "../lib/api";
 import { useAuth } from "../lib/auth";
-import { PageShell } from "../components/PageShell";
 
 // RFQ composer R1 (ADR-0004) — the office multi-vendor Request-for-Quote builder + tracker.
+// FOLDED (2026-07): renders as the "RFQs" TAB PANEL inside PurchaseOrdersPage (the hub owns
+// the PageShell + tab strip beside the Orders / Vendor Estimates panels); the panel stays
+// mounted across tab flips, so a half-composed RFQ survives a glance at the other tabs.
 // One page, two faces (the EstimatesPage/PoBuilderPage shape): the TRACKER (every RFQ from
 // GET /api/po/rfqs with per-vendor status badges) and the BUILDER (job pick with the PO
 // ship-to autofill, scope, due date, a PRICE-FREE line grid, and the multi-vendor chip
@@ -36,6 +38,8 @@ const VENDOR_PILL: Record<rfq.RfqVendorStatus, string> = {
 };
 
 const JOB_NO_RE = /^\d{4}\.\d{3}$/;
+// UI hint only — worker/po.ts parseVendorFields re-validates with the same shape (Invariant 2).
+const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 
 /** One editable line-grid row (qty stays a string while typing; parsed at save). */
 interface LineDraft {
@@ -47,7 +51,7 @@ interface LineDraft {
 }
 const emptyLine = (): LineDraft => ({ part_number: "", description: "", qty: "", unit: "", line_note: "" });
 
-export function RfqBuilderPage({ onBack }: { onBack: () => void }) {
+export function RfqBuilderPage() {
   const { user } = useAuth();
   const caps = user?.capabilities ?? [];
   const canManage = caps.includes("cap.po.manage"); // UI affordance only — the Worker re-gates
@@ -74,6 +78,19 @@ export function RfqBuilderPage({ onBack }: { onBack: () => void }) {
   const [lines, setLines] = useState<LineDraft[]>([emptyLine()]);
   const [vendorKeys, setVendorKeys] = useState<string[]>([]);
   const [vendorPick, setVendorPick] = useState("");
+  // ── Quick-add vendor (operator ask 2026-07-20: "free text, not just a pick list") ──────────────
+  // Free-TEXT ENTRY that lands as a real DIRECTORY row: the RFQ send lane resolves the
+  // recipient live from ITS_Vendors by Vendor Key (ADR-0004 decision 9 — the recipient-
+  // poisoning closure), so a keyless free-text vendor could never be sent to. The quick-add
+  // calls the EXISTING POST /api/po/vendors (PoVendorsPage's create route: atomic VEN-######
+  // allocation, origin='portal', immediately dirty for the §51 up-sync) and joins the new key
+  // to this RFQ on success. Email is REQUIRED here (the route allows blank, but a blank
+  // Contact Email makes the send HOLD) — required now beats held later.
+  const [nvOpen, setNvOpen] = useState(false);
+  const [nvName, setNvName] = useState("");
+  const [nvEmail, setNvEmail] = useState("");
+  const [nvContact, setNvContact] = useState("");
+  const [nvBusy, setNvBusy] = useState(false);
   // Material-catalog TYPE vocabulary (the SAME price-free picker the PO builder uses —
   // GET /api/po/materials, cap.po.manage; identity only, no price). Selecting a type fills a
   // line's Part # + Description; free text over those fields stays the fallback for non-catalog items.
@@ -111,6 +128,81 @@ export function RfqBuilderPage({ onBack }: { onBack: () => void }) {
     setLines([emptyLine()]);
     setVendorKeys([]);
     setVendorPick("");
+    setNvOpen(false);
+    setNvName("");
+    setNvEmail("");
+    setNvContact("");
+  }
+
+  /** Create the typed vendor through the existing directory route, then join it to the RFQ.
+   *  Optimistically appended to the local vendor list (full shape, sync_state pending) so the
+   *  chip shows the NAME immediately; a quiet refetch then converges on the server row. */
+  async function onQuickAddVendor() {
+    const vendor_name = nvName.trim();
+    const contact_email = nvEmail.trim();
+    if (nvBusy || !vendor_name || !EMAIL_RE.test(contact_email)) return;
+    // Cap check BEFORE the create (adversarial review 2026-07-20): the select can join the
+    // 12th vendor while this form sits open, and creating-then-silently-not-joining with a
+    // success banner would be an affirmative false claim — refuse visibly instead.
+    if (vendorKeys.length >= rfq.MAX_RFQ_VENDORS) {
+      setMsg({
+        ok: false,
+        text: `This RFQ already has the maximum ${rfq.MAX_RFQ_VENDORS} vendors — remove one before adding another.`,
+      });
+      return;
+    }
+    setNvBusy(true);
+    setMsg(null);
+    try {
+      const { vendor_key } = await createVendor({
+        vendor_name,
+        contact_email,
+        contact_name: nvContact.trim() || undefined,
+      });
+      setVendors((vs) => [
+        ...vs,
+        {
+          vendor_key,
+          vendor_name,
+          address: "",
+          contact_name: nvContact.trim(),
+          contact_email,
+          contact_phone: "",
+          region: "",
+          supply_categories: [],
+          default_terms_profile: "",
+          gtc_reference: "",
+          active: 1,
+          notes: "",
+          origin: "portal",
+          sync_state: "pending",
+          mirror_version: 1,
+        },
+      ]);
+      // Dedupe-only join: the cap was refused BEFORE the create, and the "Add a vendor"
+      // select is disabled while nvBusy, so vendorKeys cannot reach the cap during the
+      // in-flight create — the join (and the success banner's "and this RFQ") always holds.
+      setVendorKeys((ks) => (ks.includes(vendor_key) ? ks : [...ks, vendor_key]));
+      setNvOpen(false);
+      setNvName("");
+      setNvEmail("");
+      setNvContact("");
+      setMsg({ ok: true, text: `Vendor added to the directory and this RFQ (${vendor_key}).` });
+      // Convergence read, MERGE-safe: never let a response missing the just-created row
+      // (a stale read) clobber the optimistic entry — locally-known keys are kept.
+      fetchVendors()
+        .then((server) =>
+          setVendors((vs) => {
+            const known = new Set(server.map((v) => v.vendor_key));
+            return [...server, ...vs.filter((v) => !known.has(v.vendor_key))];
+          }),
+        )
+        .catch(() => {});
+    } catch (err) {
+      setMsg({ ok: false, text: err instanceof Error ? err.message : "Vendor create failed." });
+    } finally {
+      setNvBusy(false);
+    }
   }
 
   // Job pick → ship-to/delivery autofill (the PO builder's convenience feed; a 404 or
@@ -120,8 +212,9 @@ export function RfqBuilderPage({ onBack }: { onBack: () => void }) {
     const job = jobs.find((j) => j.job_id === id);
     if (job) {
       setJobName(job.project_name);
+      // Stored Evergreen number (0057) first; name-prefix parse stays the fallback.
       const m = /^(\d{4}\.\d{3})/.exec((job.project_name ?? "").trim());
-      if (m) setJobNo(m[1]);
+      setJobNo(job.job_no || (m ? m[1] : ""));
     }
     if (!id) return;
     fetchJobShipTo(id)
@@ -286,8 +379,9 @@ export function RfqBuilderPage({ onBack }: { onBack: () => void }) {
   // ── Builder face ───────────────────────────────────────────────────────────────────────────────
   if (editingId !== null) {
     return (
-      <PageShell onHome={onBack}>
-        <h2 className="page__heading">{editingId > 0 ? "Edit RFQ draft" : "New RFQ"}</h2>
+      <>
+        {/* h3: the hub's "Purchase Orders" h2 is the page heading — sub-faces nest under it. */}
+        <h3 className="page__heading">{editingId > 0 ? "Edit RFQ draft" : "New RFQ"}</h3>
         {msg && <div className={`banner ${msg.ok ? "banner--ok" : "banner--err"}`}>{msg.text}</div>}
 
         <section className="card dash-section" aria-label="Job">
@@ -450,6 +544,7 @@ export function RfqBuilderPage({ onBack }: { onBack: () => void }) {
             <select
               className="field__input"
               aria-label="Add a vendor"
+              disabled={nvBusy}
               value={vendorPick}
               onChange={(e) => {
                 const k = e.target.value;
@@ -469,6 +564,82 @@ export function RfqBuilderPage({ onBack }: { onBack: () => void }) {
                 ))}
             </select>
           </label>
+          {/* Quick-add: type a vendor that isn't in the directory yet. It becomes a REAL
+              directory row (the send lane emails the directory's Contact Email — never a
+              free-floating name), then joins this RFQ immediately. */}
+          {!nvOpen ? (
+            <button
+              type="button"
+              className="btn btn--secondary"
+              disabled={nvBusy || vendorKeys.length >= rfq.MAX_RFQ_VENDORS}
+              onClick={() => setNvOpen(true)}
+            >
+              + New vendor (not in the list)
+            </button>
+          ) : (
+            <>
+              <div className="jha__grid">
+                <label className="field">
+                  <span className="field__label">Vendor name</span>
+                  <input
+                    className="field__input"
+                    aria-label="New vendor name"
+                    value={nvName}
+                    maxLength={256}
+                    onChange={(e) => setNvName(e.target.value)}
+                  />
+                </label>
+                <label className="field">
+                  <span className="field__label">Quote contact email</span>
+                  <input
+                    className="field__input"
+                    aria-label="New vendor quote contact email"
+                    type="email"
+                    value={nvEmail}
+                    maxLength={320}
+                    onChange={(e) => setNvEmail(e.target.value)}
+                  />
+                </label>
+                <label className="field">
+                  <span className="field__label">Contact name (optional)</span>
+                  <input
+                    className="field__input"
+                    aria-label="New vendor contact name"
+                    value={nvContact}
+                    maxLength={256}
+                    onChange={(e) => setNvContact(e.target.value)}
+                  />
+                </label>
+              </div>
+              <p className="muted">
+                Joins the vendor directory (and syncs to the vendor sheet) plus this RFQ — the
+                quote request is emailed to this contact after operator approval.
+              </p>
+              <div className="jha__actions">
+                <button
+                  type="button"
+                  className="btn btn--primary"
+                  disabled={nvBusy || !nvName.trim() || !EMAIL_RE.test(nvEmail.trim())}
+                  onClick={() => void onQuickAddVendor()}
+                >
+                  {nvBusy ? "Adding…" : "Add vendor"}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn--secondary"
+                  disabled={nvBusy}
+                  onClick={() => {
+                    setNvOpen(false);
+                    setNvName("");
+                    setNvEmail("");
+                    setNvContact("");
+                  }}
+                >
+                  Cancel
+                </button>
+              </div>
+            </>
+          )}
         </section>
 
         <div className="jha__actions">
@@ -491,15 +662,14 @@ export function RfqBuilderPage({ onBack }: { onBack: () => void }) {
             {busy ? "Working…" : "Generate RFQ"}
           </button>
         </div>
-      </PageShell>
+      </>
     );
   }
 
   // ── Tracker face ───────────────────────────────────────────────────────────────────────────────
   const STATUSES = Object.keys(rfq.RFQ_STATUS_LABEL) as rfq.RfqStatus[];
   return (
-    <PageShell onHome={onBack}>
-      <h2 className="page__heading">RFQs</h2>
+    <>
       <p className="dash__intro">
         Compose a price-free Request for Quote for up to {rfq.MAX_RFQ_VENDORS} vendors at once. Generate
         queues it for per-vendor rendering (an RFQ PDF plus a fillable quote form each); sending happens
@@ -590,6 +760,6 @@ export function RfqBuilderPage({ onBack }: { onBack: () => void }) {
           ))}
         </div>
       )}
-    </PageShell>
+    </>
   );
 }

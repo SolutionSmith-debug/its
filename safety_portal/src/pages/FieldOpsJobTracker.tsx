@@ -55,7 +55,12 @@ const MAX_CC = 5; // mirrors each Active-Jobs sheet's CC 1..5 columns (worker re
 // trims + drops empties so an UNTOUCHED routing block adds no keys to the create body (keeping the
 // minimal-create contract byte-identical) and is the full intended routing for an edit.
 interface RoutingForm {
+  project_name: string;
+  job_no: string;
   address: string;
+  address_city: string;
+  address_state: string;
+  address_zip: string;
   stakeholder_name: string;
   stakeholder_email: string;
   stakeholder_phone: string;
@@ -68,7 +73,12 @@ interface RoutingForm {
 }
 
 const EMPTY_ROUTING: RoutingForm = {
+  project_name: "",
+  job_no: "",
   address: "",
+  address_city: "",
+  address_state: "",
+  address_zip: "",
   stakeholder_name: "",
   stakeholder_email: "",
   stakeholder_phone: "",
@@ -83,7 +93,12 @@ const EMPTY_ROUTING: RoutingForm = {
 function routingPayload(r: RoutingForm): api.JobRouting {
   const out: Record<string, unknown> = {};
   const scalars: [string, string][] = [
+    ["project_name", r.project_name],
+    ["job_no", r.job_no],
     ["address", r.address],
+    ["address_city", r.address_city],
+    ["address_state", r.address_state],
+    ["address_zip", r.address_zip],
     ["stakeholder_name", r.stakeholder_name],
     ["stakeholder_email", r.stakeholder_email],
     ["stakeholder_phone", r.stakeholder_phone],
@@ -101,6 +116,30 @@ function routingPayload(r: RoutingForm): api.JobRouting {
   if (safetyCc.length) out.safety_cc = safetyCc;
   if (progressCc.length) out.progress_cc = progressCc;
   return out as api.JobRouting;
+}
+
+/** Seed the routing editor from the job detail's served routing block (0057) — the
+ *  editor opens showing CURRENT values, so a save re-sends what's really there and an
+ *  un-retyped field no longer silently wipes. */
+function routingFormFromJob(job: api.JobDetail): RoutingForm {
+  const r = job.routing;
+  return {
+    project_name: job.project_name ?? "",
+    job_no: job.job_no ?? "",
+    address: r?.address ?? "",
+    address_city: r?.address_city ?? "",
+    address_state: r?.address_state ?? "",
+    address_zip: r?.address_zip ?? "",
+    stakeholder_name: r?.stakeholder_name ?? "",
+    stakeholder_email: r?.stakeholder_email ?? "",
+    stakeholder_phone: r?.stakeholder_phone ?? "",
+    safety_contact_name: r?.safety_contact_name ?? "",
+    safety_contact_email: r?.safety_contact_email ?? "",
+    safety_cc: r?.safety_cc ?? [],
+    progress_contact_name: r?.progress_contact_name ?? "",
+    progress_contact_email: r?.progress_contact_email ?? "",
+    progress_cc: r?.progress_cc ?? [],
+  };
 }
 
 // CC editor: up to MAX_CC email rows, each independently editable / removable.
@@ -139,16 +178,77 @@ function CcEditor({ label, ccs, onChange }: { label: string; ccs: string[]; onCh
 // The full routing block: address, stakeholder, a Safety Reports block + a Progress Reports block
 // (each contact name/email + CC editor), and a "Same as safety" copy button. After a copy the
 // progress block stays INDEPENDENTLY editable (it's plain form state).
-function RoutingFields({ routing, onChange }: { routing: RoutingForm; onChange: (next: RoutingForm) => void }) {
+function RoutingFields({
+  routing,
+  onChange,
+  showName = true,
+}: {
+  routing: RoutingForm;
+  onChange: (next: RoutingForm) => void;
+  /** false on the CREATE form, which owns its dedicated Project-name field. */
+  showName?: boolean;
+}) {
   const set = (patch: Partial<RoutingForm>) => onChange({ ...routing, ...patch });
   return (
     <>
+      {showName && (
+        <>
+          <div className="dash-row">
+            <input
+              aria-label="Project name"
+              value={routing.project_name}
+              onChange={(e) => set({ project_name: e.target.value })}
+              placeholder="Project name"
+              maxLength={256}
+            />
+          </div>
+          <p className="muted">
+            Renaming a job changes which per-job folder future filings open (folders are keyed
+            by name) — existing folders keep the old name.
+          </p>
+        </>
+      )}
       <div className="dash-row">
         <input
+          aria-label="Evergreen job number"
+          value={routing.job_no}
+          onChange={(e) => set({ job_no: e.target.value })}
+          placeholder="Evergreen job # (YYYY.NNN, e.g. 2026.123)"
+          maxLength={8}
+        />
+      </div>
+      {/* 0057 — structured address: street stays in `address`; city/state/zip are their own
+          columns so the PO/RFQ ship-to autofill stops dumping everything into one line. */}
+      <div className="dash-row">
+        <input
+          aria-label="Job street address"
           value={routing.address}
           onChange={(e) => set({ address: e.target.value })}
-          placeholder="Job address (optional)"
+          placeholder="Street address (optional)"
           maxLength={512}
+        />
+      </div>
+      <div className="dash-row">
+        <input
+          aria-label="Job city"
+          value={routing.address_city}
+          onChange={(e) => set({ address_city: e.target.value })}
+          placeholder="City"
+          maxLength={256}
+        />{" "}
+        <input
+          aria-label="Job state"
+          value={routing.address_state}
+          onChange={(e) => set({ address_state: e.target.value.toUpperCase() })}
+          placeholder="State (2-letter)"
+          maxLength={2}
+        />{" "}
+        <input
+          aria-label="Job ZIP"
+          value={routing.address_zip}
+          onChange={(e) => set({ address_zip: e.target.value })}
+          placeholder="ZIP"
+          maxLength={16}
         />
       </div>
       <fieldset className="dash-section" aria-label="Stakeholder">
@@ -1053,8 +1153,15 @@ export function FieldOpsJobTracker({
                       </div>
                     </form>
                   ) : (
-                    <button type="button" onClick={() => setEditContactsOpen(true)} className="btn--edit">
-                      Edit routing / contacts
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditRouting(routingFormFromJob(job));
+                        setEditContactsOpen(true);
+                      }}
+                      className="btn--edit"
+                    >
+                      Edit job details
                     </button>
                   )}
                 </div>
@@ -1509,7 +1616,7 @@ export function FieldOpsJobTracker({
                   maxLength={256}
                 />
               </div>
-              <RoutingFields routing={createRouting} onChange={setCreateRouting} />
+              <RoutingFields routing={createRouting} onChange={setCreateRouting} showName={false} />
               <div className="dash-row">
                 <button type="submit" disabled={actionBusy} className="btn--primary">Create</button>{" "}
                 <button

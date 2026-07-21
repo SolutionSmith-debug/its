@@ -26,6 +26,7 @@ filename, frontmatter, and section conventions across every doc type.
 <!-- BEGIN AUTO-INDEX -->
 | Date | Type | Status | Workstream | Title | PRs |
 |------|------|--------|------------|-------|-----|
+| 2026-07-19 | brief | active | operator_dashboard | [Operator-Dashboard Upgrade Slate — 2026-07-19](2026-07-19_dashboard_upgrade_slate.md) | #613, #614 |
 | 2026-07-12 | brief | active | safety_portal | [Next-session brief — "Office Operations" nav section + "PO/SC Configuration" (subcontract terms/legalese editor)](cc-brief_office-ops-nav-and-po-sc-config.md) | _–_ |
 | 2026-07-09 | brief | active | _–_ | [Aug-7 Evergreen Delivery Program — PO Workstream, Operator Dashboard, Docs Program, Production Cutover](2026-07-09_aug7_delivery_program.md) | _–_ |
 | _–_ | reference | active | docs | [ITS House Reflexes — the standards that keep us honest](HOUSE_REFLEXES.md) | _–_ |

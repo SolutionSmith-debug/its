@@ -54,9 +54,8 @@ const CARDS: { title: string; cap: string; nav: string; section: string }[] = [
   { title: "Job Tracker", cap: "cap.jobtracker.read", nav: "fieldops-jobs", section: "Field operations" },
   { title: "Equipment", cap: "cap.equipment.field", nav: "fieldops-equipment", section: "Field operations" },
   { title: "Personnel", cap: "cap.personnel.read", nav: "fieldops-personnel", section: "Field operations" },
+  // 2026-07 fold: RFQs + Vendor Estimates are TABS inside the Purchase Orders hub — one card.
   { title: "Purchase Orders", cap: "cap.po.manage", nav: "po-builder", section: "Office operations" },
-  { title: "Vendor Estimates", cap: "cap.po.manage", nav: "po-estimates", section: "Office operations" },
-  { title: "RFQs", cap: "cap.po.manage", nav: "po-rfqs", section: "Office operations" },
   { title: "Subcontracts", cap: "cap.subcontracts.manage", nav: "subcontract-builder", section: "Office operations" },
   { title: "Checklists", cap: "cap.checklist.manage", nav: "fieldops-inspections", section: "Office operations" },
   { title: "Materials Catalog", cap: "cap.materials.manage", nav: "materials-catalog", section: "Office operations" },
@@ -91,18 +90,18 @@ describe("HomePage — R7 sections", () => {
     }
   });
 
-  it("Office operations holds the nine management cards in the operator's order; Administration keeps three", () => {
+  it("Office operations holds the six management cards in the operator's order; Administration keeps three", () => {
     vi.mocked(useAuth).mockReturnValue(authWith(ALL_CAPS));
     const { container } = render(<HomePage onNavigate={() => {}} />);
     const titlesIn = (heading: string) =>
       Array.from(
         container.querySelector(`section[aria-label="${heading}"]`)!.querySelectorAll(".form-card__title"),
       ).map((el) => el.textContent);
-    // Array order in HOME_CARDS IS the two-wide display order — pin the exact sequence the operator asked for.
+    // Array order in HOME_CARDS IS the two-wide display order — pin the exact sequence the
+    // operator asked for. 2026-07 fold: the Vendor Estimates + RFQs cards are gone — both
+    // live as tabs inside the Purchase Orders hub now (the card copy below names them).
     expect(titlesIn("Office operations")).toEqual([
       "Purchase Orders",
-      "Vendor Estimates",
-      "RFQs",
       "Subcontracts",
       "Checklists",
       "Materials Catalog",
@@ -110,6 +109,18 @@ describe("HomePage — R7 sections", () => {
       "Subcontractors",
     ]);
     expect(titlesIn("Administration")).toEqual(["PO/SC Configuration", "Forms", "Accounts"]);
+  });
+
+  it("the folded lanes stay discoverable: the PO card copy names RFQs and vendor estimates", () => {
+    vi.mocked(useAuth).mockReturnValue(authWith(ALL_CAPS));
+    const { container } = render(<HomePage onNavigate={() => {}} />);
+    const poCard = Array.from(container.querySelectorAll(".form-card")).find(
+      (el) => el.querySelector(".form-card__title")?.textContent === "Purchase Orders",
+    )!;
+    expect(poCard.textContent ?? "").toContain("RFQs");
+    expect(poCard.textContent ?? "").toContain("vendor estimates");
+    expect(cardTitles(container)).not.toContain("Vendor Estimates");
+    expect(cardTitles(container)).not.toContain("RFQs");
   });
 
   it("a submitter (no admin caps) gets NO Office/Administration heading — empty sections render nothing", () => {

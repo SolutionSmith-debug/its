@@ -118,6 +118,7 @@ from shared import (
     anomaly_logger,
     box_client,
     circuit_breaker,
+    creds_resolution,
     error_log,
     job_sheet,
     keychain,
@@ -128,7 +129,9 @@ from shared import (
     sheet_ids,
     smartsheet_client,
     state_io,
+    sustained_failure,
 )
+from shared.creds_resolution import TransientUnavailable
 from shared.error_log import Severity, its_error_log
 from shared.heartbeat import HeartbeatReporter, HeartbeatStatus
 from shared.kill_switch import require_active
@@ -203,6 +206,11 @@ REQUIRED_CONFIG: list[ConfigKey] = [
 STATE_DIR = Path.home() / "its" / "state"
 HEARTBEAT_PATH = STATE_DIR / "po_poll_heartbeat.txt"
 LOCK_PATH = STATE_DIR / "po_poll.lock"
+# Sustained pending-fetch escalation (2026-07-20 forensic: a 21h every-cycle ERROR storm
+# was invisible on every CRITICAL-keyed fire surface — shared/sustained_failure.py).
+_FETCH_FAILS = sustained_failure.SustainedFailureCounter(
+    STATE_DIR / "po_pending_fetch_failures.json", SCRIPT_NAME, "po_pending_fetch_counter_failed",
+)
 HEARTBEAT_ROW_STATE_PATH = STATE_DIR / "heartbeat_row_ids.json"
 # One-shot flag state for PERMANENTLY-refused pending rows (`{po_id: reason}`).
 # A flagged row is skipped every subsequent cycle (no 90s Review-Queue spam); the
@@ -234,6 +242,9 @@ class PoPollStats:
     skipped_disabled: bool = False
     skipped_locked: bool = False
     halted_no_creds: bool = False
+    # base URL temporarily unreadable (Smartsheet blip / circuit OPEN) — transient,
+    # distinct from halted_no_creds, which is a genuine misconfig that pages.
+    halted_transient: bool = False
     bearer_rejected: bool = False
     # ① drafts pass
     drafts_scanned: int = 0
@@ -415,11 +426,25 @@ def _persist_flags(flags: dict[str, str]) -> None:
 # ---- Credential resolution (fail-CLOSED) -----------------------------------------
 
 
-def _resolve_credentials() -> _PoCreds | None:
-    """Resolve (base_url, bearer, secret) fail-CLOSED. None if any is absent."""
-    base_url = _read_str_setting(
-        CFG_WORKER_BASE_URL, "", workstream=CFG_WORKER_BASE_URL_WORKSTREAM
+def _resolve_credentials() -> _PoCreds | TransientUnavailable | None:
+    """Resolve (base_url, bearer, secret) fail-CLOSED, three ways.
+
+    `TransientUnavailable` means the base-URL row could not be READ this cycle
+    (Smartsheet blip / circuit open) — self-heals, so the caller WARNs and skips.
+    `None` means a credential is genuinely absent — a misconfig that pages.
+
+    The base-URL read deliberately does NOT go through `_read_str_setting`: that
+    helper swallows both circuit-open and transient errors into its fallback, so
+    a one-cycle Smartsheet blip arrived here as `""` and was indistinguishable
+    from an unset row — which is exactly how a network hiccup produced a CRITICAL
+    blaming PO *credentials* that were never missing (live, 2026-07-20 04:42Z).
+    """
+    resolved = creds_resolution.read_base_url(
+        CFG_WORKER_BASE_URL, CFG_WORKER_BASE_URL_WORKSTREAM
     )
+    if isinstance(resolved, TransientUnavailable):
+        return resolved
+    base_url = resolved or ""
     try:
         bearer = keychain.get_secret(KC_PO_TOKEN)
     except keychain.KeychainError:
@@ -467,6 +492,23 @@ def poll_once() -> PoPollStats:
 def _poll_inside_lock(drafts_on: bool, vendors_on: bool, status_on: bool) -> PoPollStats:
     """Body of poll_once running under the file lock."""
     creds = _resolve_credentials()
+    if isinstance(creds, TransientUnavailable):
+        # Smartsheet was TEMPORARILY unreachable when reading the Worker base URL —
+        # NOT a misconfig, and it self-heals next cycle. WARN + skip; do NOT page
+        # (paging here was a false CRITICAL blaming credentials on every blip).
+        # Skip the watchdog freshness marker exactly like the no-creds path, so a
+        # SUSTAINED outage still surfaces via the Check-C staleness floor — just
+        # without per-cycle CRITICAL spam.
+        error_log.log(
+            Severity.WARN, SCRIPT_NAME,
+            f"PO Worker base URL temporarily unreadable ({creds.reason}) — skipping "
+            f"this cycle; will retry next interval (transient, self-heals)",
+            error_code="po_creds_transient",
+        )
+        _write_heartbeat()
+        _write_heartbeat_row(status="WARN", items_processed=0,
+                             error_summary=f"base URL unreadable ({creds.reason}) — transient")
+        return PoPollStats(halted_transient=True)
     if creds is None:
         error_log.log(
             Severity.CRITICAL, SCRIPT_NAME,
@@ -616,12 +658,24 @@ def _drafts_pass(creds: _PoCreds, counters: dict[str, int]) -> None:
         raise _BearerRejectedError from exc
     except portal_client.PortalTransportError as exc:
         counters["draft_errors"] += 1
-        error_log.log(
-            Severity.ERROR, SCRIPT_NAME,
-            f"failed to GET po pending (rows left queued for next cycle): {exc!r}",
+        n = _FETCH_FAILS.record()
+        if n >= sustained_failure.DEFAULT_CRITICAL_THRESHOLD:
+            # SUSTAINED outage: escalate to CRITICAL (the triple-fire push path + the
+            # dashboard fire surfaces key on CRITICAL — per-cycle ERROR alone is invisible).
+            error_log.log(
+                Severity.CRITICAL, SCRIPT_NAME,
+                f"pending fetch failing for {n} consecutive cycles — SUSTAINED intake outage "
+                f"(rows left queued; see docs/runbooks/po_poll.md): {exc!r}",
+                error_code="po_pending_fetch_sustained",
+            )
+        else:
+            error_log.log(
+                Severity.ERROR, SCRIPT_NAME,
+                f"failed to GET po pending (rows left queued for next cycle); {n} consecutive: {exc!r}",
             error_code="po_pending_fetch_failed",
-        )
+            )
         return
+    _FETCH_FAILS.reset()  # a successful fetch clears the sustained-outage counter
     if not pending:
         return
 

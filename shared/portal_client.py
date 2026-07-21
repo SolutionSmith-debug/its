@@ -1099,16 +1099,25 @@ def get_estimates_pending(
 
     Raises `PortalAuthError` (401) / `PortalRateLimitError` (429/503 exhausted) /
     `PortalTransportError` (any other failure, incl. a non-object / missing-array body).
+
+    WIRE SHAPE: the response array rides under the key **`estimates`** — the ONE
+    internal pending route that differs from the `pending` key the rfq/subcontract/
+    safety tiers use (worker/po_estimates.ts:352 `c.json({ estimates: ... })`). This
+    client shipped expecting `pending` and the drift was invisible to both sides'
+    mocks — it surfaced only live, as 629 `estimate_pending_fetch_failed` cycles with
+    every upload stuck at `pending` (2026-07-19→20). The deployed Worker is the
+    contract; `tests/test_portal_client.py::test_estimates_pending_wire_key_parity`
+    now pins BOTH sides so neither can drift alone again.
     """
     data = _request("GET", base_url, EST_PENDING_PATH, token, params={"limit": limit})
-    pending = data.get("pending")
-    if not isinstance(pending, list):
+    estimates = data.get("estimates")
+    if not isinstance(estimates, list):
         raise PortalTransportError(
-            f"GET {EST_PENDING_PATH} missing/invalid 'pending' array "
-            f"(got {type(pending).__name__})"
+            f"GET {EST_PENDING_PATH} missing/invalid 'estimates' array "
+            f"(got {type(estimates).__name__})"
         )
     # Defensive: keep only dict rows; a non-dict element is malformed transport.
-    return [row for row in pending if isinstance(row, dict)]
+    return [row for row in estimates if isinstance(row, dict)]
 
 
 def claim_estimate(base_url: str, token: str, *, estimate_id: int) -> bool:

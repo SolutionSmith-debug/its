@@ -85,7 +85,15 @@ export interface NewJobClient {
 export type JobLifecycle = "active" | "inactive" | "archived";
 
 export interface JobRouting {
+  /** OPTIONAL rename (edit page, 2026-07-20): absent = unchanged; never blankable.
+   *  A rename changes which per-job folder FUTURE filings open (find-or-create by name). */
+  project_name?: string;
+  /** The Evergreen YYYY.NNN tracking number (0057) — '' clears it. */
+  job_no?: string;
   address?: string;
+  address_city?: string;
+  address_state?: string;
+  address_zip?: string;
   stakeholder_name?: string;
   stakeholder_email?: string;
   stakeholder_phone?: string;

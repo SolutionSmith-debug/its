@@ -107,14 +107,19 @@ from shared import (
     anomaly_logger,
     box_client,
     circuit_breaker,
+    creds_resolution,
     error_log,
+    job_sheet,
     keychain,
     portal_client,
     portal_hmac,
     review_queue,
+    sheet_ids,
     smartsheet_client,
     state_io,
+    sustained_failure,
 )
+from shared.creds_resolution import TransientUnavailable
 from shared.error_log import Severity, its_error_log
 from shared.heartbeat import HeartbeatReporter, HeartbeatStatus
 from shared.kill_switch import require_active
@@ -171,6 +176,11 @@ REQUIRED_CONFIG: list[ConfigKey] = [
 STATE_DIR = Path.home() / "its" / "state"
 HEARTBEAT_PATH = STATE_DIR / "rfq_poll_heartbeat.txt"
 LOCK_PATH = STATE_DIR / "rfq_poll.lock"
+# Sustained pending-fetch escalation (2026-07-20 forensic: a 21h every-cycle ERROR storm
+# was invisible on every CRITICAL-keyed fire surface — shared/sustained_failure.py).
+_FETCH_FAILS = sustained_failure.SustainedFailureCounter(
+    STATE_DIR / "rfq_pending_fetch_failures.json", SCRIPT_NAME, "rfq_pending_fetch_counter_failed",
+)
 HEARTBEAT_ROW_STATE_PATH = STATE_DIR / "heartbeat_row_ids.json"
 # One-shot flag state for PERMANENTLY-refused pending rows (`{rfq_id: reason}`).
 # A flagged row is skipped every subsequent cycle (no 120s Review-Queue spam); the
@@ -204,6 +214,9 @@ class RfqPollStats:
     skipped_disabled: bool = False
     skipped_locked: bool = False
     halted_no_creds: bool = False
+    # base URL temporarily unreadable (Smartsheet blip / circuit OPEN) — transient,
+    # distinct from halted_no_creds, which is a genuine misconfig that pages.
+    halted_transient: bool = False
     bearer_rejected: bool = False
     # ① RFQ pass
     scanned: int = 0
@@ -355,11 +368,26 @@ def _persist_flags(flags: dict[str, str]) -> None:
 # ---- Credential resolution (fail-CLOSED) -------------------------------------------
 
 
-def _resolve_credentials() -> _RfqCreds | None:
-    """Resolve (base_url, bearer, secret) fail-CLOSED. None if any is absent."""
-    base_url = _read_str_setting(
-        CFG_WORKER_BASE_URL, "", workstream=CFG_WORKER_BASE_URL_WORKSTREAM
+def _resolve_credentials() -> _RfqCreds | TransientUnavailable | None:
+    """Resolve (base_url, bearer, secret) fail-CLOSED, three ways.
+
+    `TransientUnavailable` means the base-URL row could not be READ this cycle
+    (Smartsheet blip / circuit open) — self-heals, so the caller WARNs and skips.
+    `None` means a credential is genuinely absent — a misconfig that pages.
+
+    The base-URL read deliberately does NOT go through `_read_str_setting`: that
+    helper swallows both circuit-open and transient errors into its fallback, so
+    a one-cycle Smartsheet blip arrived here as `""` and was indistinguishable
+    from an unset row — which is exactly how a network hiccup produced a CRITICAL
+    blaming *credentials* that were never missing (this bit po_poll live on
+    2026-07-20 04:42Z; every puller shared the flaw).
+    """
+    resolved = creds_resolution.read_base_url(
+        CFG_WORKER_BASE_URL, CFG_WORKER_BASE_URL_WORKSTREAM
     )
+    if isinstance(resolved, TransientUnavailable):
+        return resolved
+    base_url = resolved or ""
     try:
         bearer = keychain.get_secret(KC_RFQ_TOKEN)
     except keychain.KeychainError:
@@ -405,6 +433,25 @@ def poll_once() -> RfqPollStats:
 def _poll_inside_lock() -> RfqPollStats:
     """Body of poll_once running under the file lock."""
     creds = _resolve_credentials()
+    if isinstance(creds, TransientUnavailable):
+        # Smartsheet was TEMPORARILY unreachable when reading the Worker base URL —
+        # NOT a misconfig, and it self-heals next cycle. WARN + skip; do NOT page
+        # (paging here was a false CRITICAL blaming credentials on every blip).
+        # Skip the watchdog freshness marker exactly like the no-creds path, so a
+        # SUSTAINED outage still surfaces via the Check-C staleness floor — just
+        # without per-cycle CRITICAL spam.
+        error_log.log(
+            Severity.WARN, SCRIPT_NAME,
+            f"RFQ Worker base URL temporarily unreadable ({creds.reason}) — skipping "
+            f"this cycle; will retry next interval (transient, self-heals)",
+            error_code="rfq_creds_transient",
+        )
+        _write_heartbeat()
+        _write_heartbeat_row(
+            status="WARN", items_processed=0,
+            error_summary=f"base URL unreadable ({creds.reason}) — transient",
+        )
+        return RfqPollStats(halted_transient=True)
     if creds is None:
         error_log.log(
             Severity.CRITICAL, SCRIPT_NAME,
@@ -518,12 +565,24 @@ def _rfq_pass(creds: _RfqCreds, counters: dict[str, int]) -> None:
         raise _BearerRejectedError from exc
     except portal_client.PortalTransportError as exc:
         counters["errors"] += 1
-        error_log.log(
-            Severity.ERROR, SCRIPT_NAME,
-            f"failed to GET rfqs pending (rows left queued for next cycle): {exc!r}",
+        n = _FETCH_FAILS.record()
+        if n >= sustained_failure.DEFAULT_CRITICAL_THRESHOLD:
+            # SUSTAINED outage: escalate to CRITICAL (the triple-fire push path + the
+            # dashboard fire surfaces key on CRITICAL — per-cycle ERROR alone is invisible).
+            error_log.log(
+                Severity.CRITICAL, SCRIPT_NAME,
+                f"pending fetch failing for {n} consecutive cycles — SUSTAINED intake outage "
+                f"(rows left queued; see docs/runbooks/rfq_generation_path.md): {exc!r}",
+                error_code="rfq_pending_fetch_sustained",
+            )
+        else:
+            error_log.log(
+                Severity.ERROR, SCRIPT_NAME,
+                f"failed to GET rfqs pending (rows left queued for next cycle); {n} consecutive: {exc!r}",
             error_code="rfq_pending_fetch_failed",
-        )
+            )
         return
+    _FETCH_FAILS.reset()  # a successful fetch clears the sustained-outage counter
     if not pending:
         return
 
@@ -860,18 +919,49 @@ def _file_one_vendor(
             )
 
     # RFQ_Log (rfq, vendor) row (idempotent by RFQ Number + Vendor Key — the
-    # crash-retry find-or-skip the mark-filed replay contract depends on).
-    if rfq_log.find_row(rfq_number, vendor_key) is None:
-        rfq_log.append_row(
-            rfq_number=rfq_number,
-            job_no=str(rfq.get("job_no") or ""),
-            vendor_key=vendor_key,
-            vendor_name=vendor_name,
-            status=rfq_log.STATUS_FILED,
-            box_pdf_file_id=box_file_id,
-            review_row_id=str(review_row_id),
-            detail=f"due {due_date.isoformat()}" if due_date is not None else "",
+    # crash-retry find-or-skip the mark-filed replay contract depends on). The kwargs
+    # dict is shared with the per-job mirror below (the po_poll ledger_row_kwargs shape).
+    ledger_row_kwargs: dict[str, Any] = {
+        "rfq_number": rfq_number,
+        "job_no": str(rfq.get("job_no") or ""),
+        "vendor_key": vendor_key,
+        "vendor_name": vendor_name,
+        "status": rfq_log.STATUS_FILED,
+        "box_pdf_file_id": box_file_id,
+        "review_row_id": str(review_row_id),
+        "detail": f"due {due_date.isoformat()}" if due_date is not None else "",
+    }
+    existing_log = rfq_log.find_row(rfq_number, vendor_key)
+    if existing_log is None:
+        log_row_id = rfq_log.append_row(**ledger_row_kwargs)
+    else:
+        log_row_id = int(existing_log["_row_id"])
+    # Inline attach of BOTH files on the ledger row (PO-lane parity, operator ask
+    # 2026-07-20 — the review row already carried them; the ledger row now does too).
+    # On EVERY service, not fresh-append-only (adversarial review 2026-07-20):
+    # attach_pdf_to_row REPLACES a same-filename attachment and both filenames are
+    # deterministic per (rfq, vendor), so this is duplicate-free — and an attach that
+    # failed in a cycle whose receipt also failed SELF-HEALS on the re-serve (the
+    # po_poll reference posture; a fresh-append-only guard made that miss permanent).
+    _attach_file_best_effort(
+        log_row_id, filename, pdf, correlation_id, sheet_id=rfq_log.sheet_id(),
+    )
+    if box_form_file_id and form_bytes is not None:
+        _attach_file_best_effort(
+            log_row_id,
+            rfq_naming.rfq_form_filename(rfq_number, vendor_name),
+            form_bytes, correlation_id,
+            content_type=_XLSX_MIME, sheet_id=rfq_log.sheet_id(),
         )
+
+    # Per-job tracking sheet mirror (Feature A parity, operator ask 2026-07-20):
+    # the SAME ledger row into "<Jobs>/<job>/RFQs" beside the job's "Purchase
+    # Orders" sheet. BEST-EFFORT — fenced inside the helper; a per-job failure
+    # must NEVER fail the filing (Box + the flat RFQ_Log are the SoR).
+    _append_perjob_rfq_row_best_effort(
+        str(rfq.get("job_name") or "") or str(rfq.get("job_no") or ""),
+        ledger_row_kwargs, correlation_id,
+    )
 
     counters["vendors_filed"] += 1
     # The Worker's vendor_results shape (string ids). R4: box_form_file_id is the fillable
@@ -1028,22 +1118,71 @@ def _resolve_rfq_box_folder(job_name: str) -> str | None:
 
 def _attach_file_best_effort(
     row_id: int, filename: str, file_bytes: bytes, correlation_id: str,
-    *, content_type: str = "application/pdf",
+    *, content_type: str = "application/pdf", sheet_id: int | None = None,
 ) -> None:
-    """Attach the rendered file inline on the review row, BEST-EFFORT (Box is the
+    """Attach the rendered file inline on a Smartsheet row, BEST-EFFORT (Box is the
     SoR; a failure is a WARN that never fails the filing — mirror po_poll). Used for
     BOTH the RFQ PDF (default content-type) and the R4 fillable ``.xlsx`` quote form
-    (OpenXML content-type — so the attachment is not mislabeled)."""
+    (OpenXML content-type — so the attachment is not mislabeled). `sheet_id` picks
+    the target sheet: None = the review sheet (the original R2 surface); the filing
+    pass ALSO passes the flat RFQ_Log's id (PO-lane parity, operator ask
+    2026-07-20 — the ledger row carries the same inline copies)."""
     try:
         smartsheet_client.attach_pdf_to_row(
-            rfq_review.sheet_id(), row_id, filename, file_bytes, content_type=content_type
+            sheet_id if sheet_id is not None else rfq_review.sheet_id(),
+            row_id, filename, file_bytes, content_type=content_type,
         )
     except Exception as exc:  # noqa: BLE001 — supplementary inline copy; Box is the SoR
         error_log.log(
             Severity.WARN, SCRIPT_NAME,
-            f"review-row file attach failed (row {row_id}, {filename!r}): "
+            f"row file attach failed (row {row_id}, {filename!r}, "
+            f"sheet {'review' if sheet_id is None else sheet_id}): "
             f"{type(exc).__name__}: {exc!r}",
             error_code="rfq_row_file_attach_failed",
+            correlation_id=correlation_id,
+        )
+
+
+# The per-job tracking sheet's name inside the job folder — sits beside po_poll's
+# "Purchase Orders" sheet in the SAME "<Jobs>/<job>" folder (Feature A).
+PERJOB_RFQ_SHEET_NAME = "RFQs"
+
+
+def _append_perjob_rfq_row_best_effort(
+    job_name: str, row_kwargs: dict[str, Any], correlation_id: str
+) -> None:
+    """Mirror the freshly-filed ledger row into the job's per-job "RFQs" tracking
+    sheet (Feature A parity with po_poll._append_perjob_row_best_effort),
+    BEST-EFFORT — a failure is a WARN that never fails the filing (Box + the flat
+    RFQ_Log are the SoR).
+
+    Resolves the SAME job folder name the Box + PO per-job folders use
+    (`safety_naming.job_folder_name`), find-or-creates the folder + "RFQs" sheet
+    under sheet_ids.FOLDER_PO_JOBS (structure-cloned from the flat RFQ_Log, so
+    `append_row` writes it unchanged), then appends unless the (rfq, vendor) is
+    already present in the TARGET sheet (independent idempotency — a crash between
+    the flat append and this mirror re-runs cleanly)."""
+    try:
+        sid = job_sheet.ensure_job_sheet(
+            sheet_ids.FOLDER_PO_JOBS,
+            sheet_ids.SHEET_RFQ_LOG,
+            safety_naming.job_folder_name(job_name),
+            PERJOB_RFQ_SHEET_NAME,
+            workspace_id=sheet_ids.WORKSPACE_PURCHASE_ORDERS,  # §51 A1 margin-check target
+            workstream=WORKSTREAM,
+            correlation_id=correlation_id,
+        )
+        if rfq_log.find_row(
+            str(row_kwargs["rfq_number"]), str(row_kwargs["vendor_key"]), sheet_id=sid
+        ) is None:
+            rfq_log.append_row(sheet_id=sid, **row_kwargs)
+    except Exception as exc:  # noqa: BLE001 — supplementary per-job mirror; never fail the filing
+        error_log.log(
+            Severity.WARN, SCRIPT_NAME,
+            f"per-job RFQ tracking sheet append failed (job {job_name!r}, "
+            f"RFQ {row_kwargs.get('rfq_number')!r} / "
+            f"{row_kwargs.get('vendor_key')!r}): {type(exc).__name__}: {exc!r}",
+            error_code="rfq_perjob_sheet_failed",
             correlation_id=correlation_id,
         )
 

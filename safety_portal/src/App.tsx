@@ -11,6 +11,7 @@ import { FieldOpsInspections } from "./pages/FieldOpsInspections";
 import { FieldOpsEquipment } from "./pages/FieldOpsEquipment";
 import { FieldOpsPersonnel } from "./pages/FieldOpsPersonnel";
 import { BackHomeNav } from "./components/BackHomeNav";
+import type { PoTab } from "./pages/PurchaseOrdersPage";
 import { useIdleLogout } from "./lib/useIdleLogout";
 import {
   HOME_ROUTE,
@@ -37,25 +38,17 @@ const FormsPage = lazy(() => import("./pages/FormsPage").then((m) => ({ default:
 const MaterialsCatalogPage = lazy(() =>
   import("./pages/MaterialsCatalogPage").then((m) => ({ default: m.MaterialsCatalogPage })),
 );
-const PoBuilderPage = lazy(() =>
-  import("./pages/PoBuilderPage").then((m) => ({ default: m.PoBuilderPage })),
+// Purchase-Orders hub (2026-07 fold): ONE lazy chunk carrying the three tab panels — the PO
+// builder/tracker, the RFQ composer (ADR-0004 R1), and the vendor-estimate importer +
+// disposition screen (ADR-0004 E1/E3) — office-desk surfaces, code-split together.
+const PurchaseOrdersPage = lazy(() =>
+  import("./pages/PurchaseOrdersPage").then((m) => ({ default: m.PurchaseOrdersPage })),
 );
 const PoVendorsPage = lazy(() =>
   import("./pages/PoVendorsPage").then((m) => ({ default: m.PoVendorsPage })),
 );
 const PoConfigPage = lazy(() =>
   import("./pages/PoConfigPage").then((m) => ({ default: m.PoConfigPage })),
-);
-// Vendor-estimate importer (ADR-0004 E1/E3): the upload/tracker page owns the disposition
-// screen as its second face (EstimateDispositionPage rides in the same lazy chunk) — an
-// office-desk surface, code-split with its PO siblings.
-const EstimatesPage = lazy(() =>
-  import("./pages/EstimatesPage").then((m) => ({ default: m.EstimatesPage })),
-);
-// RFQ composer (ADR-0004 R1): the multi-vendor price-free RFQ builder + tracker — an
-// office-desk surface, code-split with its PO siblings.
-const RfqBuilderPage = lazy(() =>
-  import("./pages/RfqBuilderPage").then((m) => ({ default: m.RfqBuilderPage })),
 );
 const SubcontractorsPage = lazy(() =>
   import("./pages/SubcontractorsPage").then((m) => ({ default: m.SubcontractorsPage })),
@@ -90,6 +83,20 @@ class ChunkBoundary extends Component<{ children: ReactNode }, { failed: boolean
 }
 
 const DISCARD_PROMPT = "Discard this form? Your entries haven't been submitted.";
+
+// Purchase-Orders hub: the routed view ↔ tab mapping (three routes, one component — the
+// shared branch below keeps the hub instance alive across tab navigation). Tab flips use
+// REPLACE semantics (the My Tasks precedent: a flip is within-page state, not a deeper step).
+const PO_TAB_BY_VIEW = {
+  "po-builder": "orders",
+  "po-rfqs": "rfqs",
+  "po-estimates": "estimates",
+} as const satisfies Record<string, PoTab>;
+const PO_VIEW_BY_TAB = {
+  orders: "po-builder",
+  rfqs: "po-rfqs",
+  estimates: "po-estimates",
+} as const;
 
 /** Current pathname+search — what formatRoute() output is compared against for push dedupe. */
 const currentUrl = () => window.location.pathname + window.location.search;
@@ -356,16 +363,24 @@ export function App() {
     page = <FieldOpsPersonnel onBack={home} />;
   } else if (route.view === "materials-catalog" && allowed) {
     page = <MaterialsCatalogPage onBack={home} />;
-  } else if (route.view === "po-builder" && allowed) {
-    page = <PoBuilderPage onBack={home} />;
+  } else if (
+    (route.view === "po-builder" || route.view === "po-rfqs" || route.view === "po-estimates") &&
+    allowed
+  ) {
+    // One SHARED branch for the three PO-hub routes: React sees the same element type at the
+    // same position across tab navigation, so the hub instance (and its mounted-panel wizard
+    // state) survives — a per-view branch would remount and wipe a half-built PO on tab flip.
+    page = (
+      <PurchaseOrdersPage
+        tab={PO_TAB_BY_VIEW[route.view]}
+        onTabChange={(t) => navigate({ view: PO_VIEW_BY_TAB[t] }, true)}
+        onBack={home}
+      />
+    );
   } else if (route.view === "po-vendors" && allowed) {
     page = <PoVendorsPage onBack={home} />;
   } else if (route.view === "po-config" && allowed) {
     page = <PoConfigPage onBack={home} />;
-  } else if (route.view === "po-estimates" && allowed) {
-    page = <EstimatesPage onBack={home} />;
-  } else if (route.view === "po-rfqs" && allowed) {
-    page = <RfqBuilderPage onBack={home} />;
   } else if (route.view === "subcontractors" && allowed) {
     page = <SubcontractorsPage onBack={home} />;
   } else if (route.view === "subcontract-builder" && allowed) {

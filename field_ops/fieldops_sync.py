@@ -76,6 +76,7 @@ from progress_reports import equipment_status, hours_log, material_incidents, ma
 from shared import (
     active_jobs_writer,
     circuit_breaker,
+    creds_resolution,
     error_log,
     keychain,
     picklist_validation,
@@ -85,6 +86,7 @@ from shared import (
     smartsheet_client,
     state_io,
 )
+from shared.creds_resolution import TransientUnavailable
 from shared.error_log import Severity, its_error_log
 from shared.heartbeat import HeartbeatReporter, HeartbeatStatus
 from shared.kill_switch import require_active
@@ -217,6 +219,9 @@ class SyncStats:
     skipped_disabled: bool = False
     skipped_locked: bool = False
     halted_no_creds: bool = False
+    # base URL temporarily unreadable (Smartsheet blip / circuit OPEN) — transient,
+    # distinct from halted_no_creds, which is a genuine misconfig that pages.
+    halted_transient: bool = False
     scanned: int = 0
     mirrored: int = 0   # jobs whose BOTH sheets committed this cycle
     reviewed: int = 0   # jobs routed to the Review Queue (permanent failure)
@@ -362,11 +367,26 @@ def _write_watchdog_marker() -> None:
 # ---- Credential resolution (fail-CLOSED) ---------------------------------------
 
 
-def _resolve_credentials() -> tuple[str, str] | None:
-    """Resolve (base_url, bearer) fail-CLOSED. None if either is absent."""
-    base_url = _read_str_setting(
-        CFG_WORKER_BASE_URL, "", workstream=CFG_WORKER_BASE_URL_WORKSTREAM
+def _resolve_credentials() -> tuple[str, str] | TransientUnavailable | None:
+    """Resolve (base_url, bearer) fail-CLOSED, three ways.
+
+    `TransientUnavailable` means the base-URL row could not be READ this cycle
+    (Smartsheet blip / circuit open) — self-heals, so the caller WARNs and skips.
+    `None` means a credential is genuinely absent — a misconfig that pages.
+
+    The base-URL read deliberately does NOT go through `_read_str_setting`: that
+    helper swallows both circuit-open and transient errors into its fallback, so
+    a one-cycle Smartsheet blip arrived here as `""` and was indistinguishable
+    from an unset row — which is exactly how a network hiccup produced a CRITICAL
+    blaming *credentials* that were never missing (this bit po_poll live on
+    2026-07-20 04:42Z; every puller shared the flaw).
+    """
+    resolved = creds_resolution.read_base_url(
+        CFG_WORKER_BASE_URL, CFG_WORKER_BASE_URL_WORKSTREAM
     )
+    if isinstance(resolved, TransientUnavailable):
+        return resolved
+    base_url = resolved or ""
     try:
         bearer = keychain.get_secret(KC_FIELDOPS_TOKEN)
     except keychain.KeychainError:
@@ -453,6 +473,23 @@ def _reset_pending_fetch_failures() -> None:
 def _sync_inside_lock() -> SyncStats:
     """Body of sync_once running under the file lock."""
     creds = _resolve_credentials()
+    if isinstance(creds, TransientUnavailable):
+        # Smartsheet was TEMPORARILY unreachable when reading the Worker base URL —
+        # NOT a misconfig, and it self-heals next cycle. WARN + skip; do NOT page
+        # (paging here was a false CRITICAL blaming credentials on every blip).
+        # Skip the watchdog freshness marker exactly like the no-creds path, so a
+        # SUSTAINED outage still surfaces via the Check-C staleness floor — just
+        # without per-cycle CRITICAL spam.
+        error_log.log(
+            Severity.WARN, SCRIPT_NAME,
+            f"field-ops Worker base URL temporarily unreadable ({creds.reason}) — skipping "
+            f"this cycle; will retry next interval (transient, self-heals)",
+            error_code="fieldops_creds_transient",
+        )
+        _write_heartbeat()
+        _write_heartbeat_row(status="WARN", items_processed=0,
+                             error_summary=f"base URL unreadable ({creds.reason}) — transient")
+        return SyncStats(halted_transient=True)
     if creds is None:
         # FAIL-CLOSED: missing base URL / bearer → do NOT sync. A MISCONFIG that will NOT
         # self-heal (unset ITS_Config base URL or a removed/rotated Keychain entry) → page
