@@ -515,7 +515,9 @@ NODES: tuple[MapNode, ...] = (
     MapNode(
         id="registry_sheets", label="registry sheets", kind="sheet", lane="records", band="machine",
         blurb="The supporting registries: ITS_Quarantine, ITS_Time_Off, Picklist_Sync_Config, "
-              "ITS_Project_Routing.",
+              "ITS_Project_Routing, the Forms Catalog, and the master DBs picklist_sync reads "
+              "from (Vendor, Subcontractor, Equipment). Aggregated deliberately — each is a "
+              "lookup table, not a lane surface.",
         watchdog_checks=("D",),
     ),
     MapNode(
