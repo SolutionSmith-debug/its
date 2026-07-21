@@ -32,7 +32,9 @@ See its class docstring.
 Once the breaker trips, every fenced read raises circuit-open, which each daemon
 deliberately leaves out of its own counter — so without a shared counter nothing escalated
 at all and the only page left was the 07:00 watchdog. This is one window, one fixed
-`(script, error_code)` pair, one page for the fleet. See the section comment above it.
+`(script, error_code)` pair, one page for the fleet — and, since the 2026-07-21 re-review,
+on the SAME `is_escalation_cycle` ladder as everything else here rather than firing CRITICAL
+on every observation. See the section comment above it.
 """
 from __future__ import annotations
 
@@ -61,12 +63,21 @@ SLOW_CADENCE_CRITICAL_THRESHOLD = 3
 LADDER_MAX_MULTIPLIER = 8
 
 
-def is_escalation_cycle(count: int, threshold: int) -> bool:
+def is_escalation_cycle(
+    count: int, threshold: int, *, max_multiplier: int = LADDER_MAX_MULTIPLIER
+) -> bool:
     """Should THIS consecutive-failure cycle be logged CRITICAL rather than ERROR?
 
-    THE ONE PLACE the cadence is decided (§14: seven live callers — this module's
-    `TransientFence` plus the six daemons that each hand-rolled ``n >= threshold``), so
-    the compare cannot drift lane by lane.
+    THE ONE PLACE the cadence is decided (§14: eight live callers — this module's
+    `TransientFence` and `record_circuit_open`, plus the six daemons that each hand-rolled
+    ``n >= threshold``), so the compare cannot drift lane by lane.
+
+    ``max_multiplier`` exists ONLY so the fleet circuit-open ladder can pick a
+    steady-state interval appropriate to ITS clock (it counts OBSERVATIONS arriving from
+    several daemons at once, not one daemon's cycles — see `record_circuit_open`). Same
+    function, same arithmetic, one declared knob: the alternative was a second ladder
+    implementation, which is precisely the drift this helper exists to prevent. Every
+    per-cycle caller takes the default, so their cadence is unchanged.
 
     WHY NOT ``n >= threshold`` (the shape this replaces, 2026-07-21 re-review). An open
     CRITICAL is NEVER terminal — `shared/errors_rotation.errors_row_is_terminal` returns
@@ -80,7 +91,7 @@ def is_escalation_cycle(count: int, threshold: int) -> bool:
     production (zero ``*_sustained`` rows live), so it was fixed while still latent.
 
     THE LADDER: fire on the threshold-CROSSING cycle, then at 2×, 4×, 8× … the threshold,
-    capping the step at ``threshold × LADDER_MAX_MULTIPLIER`` so a long outage keeps
+    capping the step at ``threshold × max_multiplier`` so a long outage keeps
     re-notifying on a fixed interval instead of going quiet. Every other cycle past the
     threshold still writes its per-occurrence row — at Severity.ERROR, which IS terminal
     and therefore reclaimable. Both doctrine requirements hold: a real sustained outage
@@ -95,7 +106,7 @@ def is_escalation_cycle(count: int, threshold: int) -> bool:
         return True  # degenerate config: escalate rather than crash inside error handling
     if count < threshold:
         return False
-    cap = threshold * LADDER_MAX_MULTIPLIER
+    cap = threshold * max(1, max_multiplier)
     if count >= cap:
         return count % cap == 0
     quotient, remainder = divmod(count, threshold)
@@ -165,6 +176,40 @@ CIRCUIT_OPEN_ERROR_CODE = "smartsheet_circuit_open_sustained"
 #: "prolonged" the watchdog uses, just delivered sub-daily instead of at 07:00.
 CIRCUIT_OPEN_SUSTAINED_SECONDS = 600
 
+#: THE FLEET LADDER (2026-07-21 re-review — the one escalation that was NOT on the ladder).
+#: This path used to fire CRITICAL on EVERY observation once the window matured, which is
+#: the exact unbounded-growth shape `is_escalation_cycle` was introduced to remove: an open
+#: CRITICAL is never terminal (`errors_rotation.errors_row_is_terminal`), so those rows are
+#: unrotatable at every floor, and ITS_Errors reached 19,975 of its 20,000 hard cap on
+#: 2026-07-13 and twice fired a "NOTHING is deletable" lockout. With the honest 3-observer
+#: set (publish_daemon 120 s + weekly_send_poll 15 min + progress_send_poll 15 min ≈ 38
+#: observations/h) publish_daemon ALONE minted ~30 permanent CRITICALs/h, ~720/day.
+#:
+#: KEYED ON OBSERVATIONS, NOT CYCLES. The counter below advances once per observation from
+#: ANY daemon, so a "rung" is not a fixed wall-clock step the way a single daemon's cycle
+#: count is — the interval shortens as more observers participate and lengthens as they
+#: drop out. Two consequences are deliberate:
+#:   * THRESHOLD 1 — the first rung IS the crossing observation, so the fleet still pages
+#:     the moment the window matures (~10-12 min after the breaker opens, unchanged).
+#:   * A LARGER CAP than the per-cycle ladders. `LADDER_MAX_MULTIPLIER` (8) is tuned to a
+#:     daemon's own cadence: 40 cycles ≈ 80 min for a 120 s daemon. Applied to a threshold
+#:     of 1 against a ~38/h observation stream it would re-notify every 8 observations
+#:     ≈ every 13 min — ~110 unrotatable rows/day, still the growth problem. 48 puts the
+#:     steady-state re-notify at ~76 min with the full observer set, i.e. the SAME ~80 min
+#:     band the per-cycle ladders chose.
+#: Resulting rungs (observations past the window) and their wall clock at ~38 obs/h, one
+#: observation per ~95 s, measured from the crossing observation:
+#:     1 (the crossing observation, ~10-12 min after the breaker opened) · 2 (+~1.5 min) ·
+#:     4 (+~5 min) · 8 (+~11 min) · 16 (+~24 min) · 32 (+~49 min) · then every 48
+#:     (~76 min apart) forever.
+#: A 24 h total outage therefore mints ~25 CRITICAL rows instead of ~912, and every other
+#: observation still writes its per-occurrence row at Severity.ERROR — terminal, and so
+#: reclaimable by row-cap rotation. If publish_daemon is down and only the two 15-minute
+#: pollers observe (8 obs/h) the same rungs stretch to ~6 h apart in steady state, which
+#: is the correct direction: fewer observers means less evidence, not more paging.
+CIRCUIT_OPEN_LADDER_THRESHOLD = 1
+CIRCUIT_OPEN_LADDER_MAX_MULTIPLIER = 48
+
 #: A window with no observation for this long is ABANDONED — the next observation opens a
 #: fresh one instead of inheriting an ancient `first_seen_epoch` and paging instantly.
 #: Closing the window (see `clear_circuit_open`) is best-effort by design, so the counter
@@ -180,16 +225,33 @@ CIRCUIT_OPEN_STATE_PATH = STATE_DIR / "smartsheet_circuit_open.json"
 
 
 def record_circuit_open(observer: str, detail: str) -> None:
-    """Record one fleet-level circuit-open observation; CRITICAL once it is sustained.
+    """Record one fleet-level circuit-open observation; CRITICAL on the LADDER once sustained.
 
     Called by every `TransientFence` on the circuit-open branch. All access goes through
     `state_io.with_path_lock` because MULTIPLE daemons genuinely contend here — that is
     the point of a shared counter, not an accident.
 
+    THREE outcomes, mirroring `TransientFence.note_transient` so the fleet path is on the
+    SAME ladder as every other escalation (see CIRCUIT_OPEN_LADDER_THRESHOLD above for the
+    observation-vs-cycle reasoning and the wall clock of each rung):
+
+      1. inside the window (< CIRCUIT_OPEN_SUSTAINED_SECONDS) → nothing logged here. The
+         observing daemon has already written its own WARN row for this cycle, so the
+         "never silent" invariant is satisfied without a second row per observation.
+      2. a LADDER rung → Severity.CRITICAL under the fixed
+         ``(shared.smartsheet_client, smartsheet_circuit_open_sustained)`` pair, so
+         `alert_dedupe` still collapses the whole fleet into ONE operator push per window.
+      3. any other matured observation → the SAME message and error code at
+         Severity.ERROR. One error code deliberately, not a second "_repeat" code: the
+         whole point of this path is ONE fixed pair for one root cause, and an ERROR is
+         terminal (`errors_rotation.errors_row_is_terminal`) and therefore reclaimable, so
+         the record leg is preserved without minting unrotatable rows.
+
     Best-effort like every other counter in this module: a state error logs a WARN and
     returns rather than paging off a filesystem glitch.
     """
     now = time.time()
+    matured = 0
     try:
         with state_io.with_path_lock(CIRCUIT_OPEN_STATE_PATH):
             state: dict[str, object] = {}
@@ -213,12 +275,23 @@ def record_circuit_open(observer: str, detail: str) -> None:
             first_seen = float(raw_first) if isinstance(raw_first, int | float) else now
             observations = state.get("observations")
             count = observations + 1 if isinstance(observations, int) else 1
+            # The ladder counts only observations at or PAST the window, so rung 1 is the
+            # crossing observation. Held in the shared file (not derived from `count`)
+            # because the observation rate varies with how many daemons are alive —
+            # deriving it would silently re-date the rungs when an observer drops out.
+            # A pre-ladder state file has no key: absent → 0, so an in-flight window
+            # simply starts its ladder at the next matured observation.
+            escalations = state.get("escalations")
+            matured = escalations if isinstance(escalations, int) and escalations > 0 else 0
+            if (now - first_seen) >= CIRCUIT_OPEN_SUSTAINED_SECONDS:
+                matured += 1
             state_io.atomic_write_json(
                 CIRCUIT_OPEN_STATE_PATH,
                 {
                     "first_seen_epoch": first_seen,
                     "last_seen_epoch": now,
                     "observations": count,
+                    "escalations": matured,
                     "last_observer": observer,
                 },
             )
@@ -235,8 +308,17 @@ def record_circuit_open(observer: str, detail: str) -> None:
     open_for = now - first_seen
     if open_for < CIRCUIT_OPEN_SUSTAINED_SECONDS:
         return
+    severity = (
+        Severity.CRITICAL
+        if is_escalation_cycle(
+            matured,
+            CIRCUIT_OPEN_LADDER_THRESHOLD,
+            max_multiplier=CIRCUIT_OPEN_LADDER_MAX_MULTIPLIER,
+        )
+        else Severity.ERROR
+    )
     error_log.log(
-        Severity.CRITICAL, CIRCUIT_OPEN_SCRIPT,
+        severity, CIRCUIT_OPEN_SCRIPT,
         f"Smartsheet circuit breaker has been OPEN for {open_for / 60:.0f} min "
         f"({count} observations across the daemon fleet, most recently {observer}). "
         "Every Smartsheet-backed daemon is short-circuiting: approved sends are FROZEN "

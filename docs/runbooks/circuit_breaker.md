@@ -80,6 +80,17 @@ observation in a **shared, fleet-wide** window, and the first observation at or 
   `(shared.smartsheet_client, smartsheet_circuit_open_sustained)` pair, so the alert-dedupe
   window collapses the whole fleet into a single wake-up. ITS_Errors still records one row
   per observation — that is the forensic trail, not extra pages.
+- **Only a handful of those rows are CRITICAL — the rest are ERROR, deliberately.** The
+  escalation rides the same geometric ladder as every other sustained-failure escalation in
+  ITS (`sustained_failure.is_escalation_cycle`): the first observation at or past the
+  10-minute window is CRITICAL, then the 2nd, 4th, 8th, 16th and 32nd, then every 48th —
+  roughly a re-notify every ~75 min while the outage lasts. Every observation in between
+  still writes its row, at **ERROR**. Reason: an open CRITICAL is never *terminal*, so it
+  can never be reclaimed by ITS_Errors row-cap rotation at any floor. Firing one on every
+  observation put ~720 permanently-unrotatable rows a day into a sheet with a 20,000-row
+  hard cap — the same cap that produced the 2026-07-13 "NOTHING is deletable" lockout. When
+  reading the ITS_Errors trail during an outage, filter on the **error code**, not on
+  Severity, or you will see only the ladder rungs.
 - **It clears itself.** The window is closed by the **breaker's own recovery** — the first
   real Smartsheet call that succeeds after the breaker left its healthy state. No operator
   action is needed. (It is deliberately *not* closed by a daemon deciding its own read
