@@ -13,6 +13,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+import requests
 import smartsheet
 import smartsheet.exceptions as sdk_exc
 
@@ -24,6 +25,7 @@ from shared.smartsheet_client import (
     SmartsheetNotFoundError,
     SmartsheetPermissionError,
     SmartsheetRateLimitError,
+    SmartsheetTransientError,
     SmartsheetValidationError,
     SmartsheetWriteCapabilityError,
 )
@@ -121,7 +123,11 @@ def test_timeout_adapter_injects_default_timeout_when_absent(mocker):
         (403, SmartsheetPermissionError),
         (404, SmartsheetNotFoundError),
         (429, SmartsheetRateLimitError),
-        (500, SmartsheetError),
+        # 5xx is the SELF-HEALING class the SDK does NOT retry when the body carries
+        # errorCode 4000 — it must translate to the transient type or neither the
+        # bounded retry nor the pass-boundary fence can recognise it.
+        (500, SmartsheetTransientError),
+        (503, SmartsheetTransientError),
     ],
 )
 def test_api_error_translated_by_status(mocker, status, expected):
@@ -129,6 +135,21 @@ def test_api_error_translated_by_status(mocker, status, expected):
     client.Sheets.get_sheet.side_effect = _api_error(status, message="nope")
 
     with pytest.raises(expected, match="nope"):
+        smartsheet_client.get_sheet(123)
+    # Every typed class stays a SmartsheetError so existing consumers + the breaker's
+    # `count=SmartsheetError` are untouched by the new subclass.
+    assert issubclass(expected, SmartsheetError)
+
+
+def test_unexpected_request_error_translated_as_transient(mocker):
+    """A requests-level ReadTimeout surfaces as UnexpectedRequestError from the SDK's
+    `_request` BEFORE its retry loop can see it — the 2026-07-21 CRITICAL signature."""
+    client = _install_client(mocker)
+    client.Sheets.get_sheet.side_effect = sdk_exc.UnexpectedRequestError(
+        requests.exceptions.ReadTimeout("timed out"), None
+    )
+
+    with pytest.raises(SmartsheetTransientError):
         smartsheet_client.get_sheet(123)
 
 
@@ -1401,8 +1422,8 @@ def test_translate_smartsheet_error_raises_with_context_on_4xx(mocker):
 
 
 def test_translate_smartsheet_error_raises_on_5xx(mocker):
-    """Untyped 5xx falls through to base SmartsheetError (not the typed
-    Auth/Permission/NotFound/RateLimit subclasses)."""
+    """A 5xx is the SELF-HEALING class → SmartsheetTransientError (still a
+    SmartsheetError, so every existing consumer and the breaker are unchanged)."""
     response = _rest_get_folder_response(None, status=500)
     response.text = "Internal Server Error"
 
@@ -1411,8 +1432,7 @@ def test_translate_smartsheet_error_raises_on_5xx(mocker):
             response, context="finding folder 'X' in folder 7"
         )
 
-    # Exact subclass: base SmartsheetError, not Auth/Permission/NotFound/RateLimit.
-    assert type(exc_info.value) is SmartsheetError
+    assert type(exc_info.value) is smartsheet_client.SmartsheetTransientError
     assert "HTTP 500" in str(exc_info.value)
 
 

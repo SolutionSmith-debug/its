@@ -88,6 +88,17 @@ choices). Their ABSENCE caused the per-cycle ``config_row_missing`` WARN storm t
 filled ITS_Errors to the 20k cap. The seed set's two ``progress_send`` rows were already
 enrolled.
 
+DEFERRED (deliberately NOT enrolled) — ``smartsheet.retry.enabled`` /
+``.max_extra_attempts`` / ``.backoff_seconds`` (2026-07-21, the bounded transient retry in
+``shared/smartsheet_client.py``). Same class as ``circuit_breaker.*``, which is likewise
+absent here: a shared-infrastructure TUNABLE whose ``shared/defaults.py`` values ARE the
+intended production behaviour, resolved under ``circuit_breaker.bypass()`` and reported by
+source in every recovery log line. An absent row is not a missing switch and causes no
+per-cycle WARN storm (``_read_global_setting`` swallows the 404 by contract), so enrolling
+it as ``non_empty`` would turn a benign absence into a RED cutover verdict — the opposite
+of what VC-03 is for. Enroll only if the operator ever needs the rows pre-seeded to tune
+without a code change; the ``circuit_breaker.*`` precedent says they do not.
+
 Usage::
 
     python -m scripts.verify_cutover                 # full gate (the cutover verdict)

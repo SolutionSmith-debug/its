@@ -132,3 +132,43 @@ If the split halves are STILL over 150 MB (a truly photo-saturated mega-week), o
 job re-HELDs week after week and the customer needs a durable fix (photo-count policy,
 compression, or a link-instead-of-attach delivery change) → **escalate to Seth** — those are
 code/policy changes (high-class).
+
+## Symptom E — `<daemon>.approver_read_transient` / `_sustained` or `<daemon>.review_read_transient` / `_sustained`
+
+**Applies to all five send pollers** — `weekly_send_poll` (safety), `progress_send_poll`,
+`po_send_poll`, `rfq_send_poll`, `subcontract_send_poll`. They share one dispatch core
+(`safety_reports/send_poll_core.py`), so the symptom and the repair are identical; only the
+Script name on the row differs.
+
+**What it means.** Before dispatching anything, a send poller does two Smartsheet reads: the
+review sheet (which rows are approved) and the workspace share list (who is allowed to
+approve — the F22 gate). If either read fails with a network timeout or an HTTP 5xx, the
+cycle **stops before the dispatch loop**:
+
+- **ZERO emails go out.** That is the fail-closed guarantee and it is unchanged — the poller
+  will not send on a guessed or empty approver list, ever.
+- Nothing is lost. Approved rows stay approved and are picked up on the next 15-minute cycle.
+
+The first two occurrences log **ERROR** (`*_transient`). The **third consecutive** one
+escalates to **CRITICAL** (`*_sustained`) — 3, not 5, because these run every 15 minutes.
+Before 2026-07-21 the very first timeout paged CRITICAL `uncaught_exception`; that fired for
+real on `progress_send_poll` at 05:36Z on 2026-07-21 for a blip that had healed by the next
+cycle.
+
+**Low-class repair (Successor-Operator can do).**
+
+1. If you see only `*_transient` ERRORs and they stop, **no action** — that is the design.
+2. On a `*_sustained` CRITICAL, work
+   `docs/runbooks/circuit_breaker.md` → "a `*_sustained` CRITICAL from a daemon". **Read the
+   caveat there:** ITS cannot distinguish a Smartsheet outage from a sheet or workspace that
+   errors on *every* read, so a `*_sustained` page can also mean something is permanently
+   wrong with that one sheet.
+3. Confirm recovery by watching the poller's `Last Cycle Status` in ITS_Daemon_Health return
+   to OK and the approved row actually send.
+
+**Escalate to Seth (Tier 3) — always, for these two:**
+
+- `*_approver_read_sustained` where the workspace share list looks wrong or empty. The share
+  list IS the External Send Gate's approval authority — a FIXED high-capability class.
+  **Do not add or edit workspace shares to "fix" it.**
+- Any 401/403 in the same window (auth/secrets — also FIXED high-class).

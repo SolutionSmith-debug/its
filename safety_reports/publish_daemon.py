@@ -67,6 +67,7 @@ from shared import (
     keychain,
     portal_client,
     smartsheet_client,
+    sustained_failure,
 )
 from shared.creds_resolution import TransientUnavailable
 from shared.error_log import Severity, its_error_log
@@ -160,6 +161,20 @@ _MIGRATIONS_DIR = _ROOT / "safety_portal" / "migrations"
 ERR_PENDING_MIGRATIONS = "publish_daemon.deploy_blocked_pending_migrations"
 ERR_MIGRATION_CHECK = "publish_daemon.migration_check_failed"
 
+# Pre-work Smartsheet-read fence (2026-07-21). A 30 s ReadTimeout inside `get_setting`
+# (via `_resolve_creds`) escaped the pass at 14:37Z and `@its_error_log` stamped it
+# CRITICAL `uncaught_exception`; the daemon was healthy again 120 s later. Threshold 5 —
+# the plist StartInterval is 120 s (fast cadence, operator decision D2), so the page still
+# arrives ~10 min into a genuine outage.
+_CONFIG_READ_FENCE = sustained_failure.TransientFence(
+    SCRIPT_NAME,
+    state_path=STATE_DIR / "publish_daemon_config_read_failures.json",
+    transient_error_code="publish_daemon.config_read_transient",
+    sustained_error_code="publish_daemon.config_read_sustained",
+    threshold=sustained_failure.DEFAULT_CRITICAL_THRESHOLD,
+    runbook="docs/runbooks/safety_portal_forms.md",
+)
+
 
 class PendingMigrationsError(RuntimeError):
     """A deploy would ship the Worker ahead of unapplied remote D1 migrations (refused)."""
@@ -190,7 +205,13 @@ def _lease_owner() -> str:
 
 
 def _read_str_setting(key: str, fallback: str) -> str:
-    """ITS_Config read, fail-soft to `fallback` (mirrors portal_poll's reader)."""
+    """ITS_Config read, fail-soft to `fallback` (mirrors portal_poll's reader).
+
+    A TRANSIENT failure deliberately PROPAGATES rather than collapsing into `fallback`:
+    silently reading the polling gate as "false" during a Smartsheet blip is the
+    unobservable-config-resolution anti-pattern. `publish_once` fences it instead, so the
+    halt is an ERROR row naming the real cause (and a CRITICAL once it is sustained).
+    """
     try:
         raw = smartsheet_client.get_setting(key, workstream=WORKSTREAM)
     except (smartsheet_client.SmartsheetNotFoundError, smartsheet_client.SmartsheetCircuitOpenError):
@@ -228,7 +249,21 @@ def _resolve_creds() -> _Creds | TransientUnavailable | None:
         return None
     if not bearer:
         return None
-    return _Creds(base_url=base_url, bearer=bearer)
+    return _Creds(base_url=base_url.strip(), bearer=bearer)
+
+
+def _halt_transient(stats: PublishStats, what: str) -> None:
+    """Common tail for a transient-read halt: heartbeat + typed halted marker.
+
+    Defined AFTER the fence has already logged the ERROR/CRITICAL row, so this only
+    records liveness — the daemon is alive and deliberately idle, not wedged.
+    """
+    _write_heartbeat()
+    _write_heartbeat_row(
+        status="ERROR", items_processed=0,
+        error_summary=f"halted: transient Smartsheet failure {what}",
+    )
+    stats.halted = "smartsheet_transient"
 
 
 def _write_heartbeat() -> None:
@@ -680,7 +715,14 @@ def publish_once() -> PublishStats:
     resolve_and_log(SCRIPT_NAME, REQUIRED_CONFIG)
 
     stats = PublishStats()
-    if not _polling_enabled():
+    try:
+        enabled = _polling_enabled()
+    except Exception as exc:  # noqa: BLE001 — classified by the fence; non-transient re-raises
+        if not _CONFIG_READ_FENCE.handle(exc):
+            raise
+        _halt_transient(stats, "reading the polling gate")
+        return stats
+    if not enabled:
         stats.halted = "polling_disabled"
         return stats
     # Recover an idle-stranded tree BEFORE doing anything else this cycle (after the kill-
@@ -699,7 +741,15 @@ def publish_once() -> PublishStats:
                              error_summary="halted: could not recover stranded tree to main")
         stats.halted = "unstrand_failed"
         return stats
-    creds = _resolve_creds()
+    try:
+        creds = _resolve_creds()
+    except Exception as exc:  # noqa: BLE001 — classified by the fence; non-transient re-raises
+        # read_base_url already absorbs the transient classes into its sentinel and
+        # re-raises only auth/permission, so this arm is the defensive one.
+        if not _CONFIG_READ_FENCE.handle(exc):
+            raise
+        _halt_transient(stats, "reading the Worker base URL")
+        return stats
     if isinstance(creds, TransientUnavailable):
         # Smartsheet was TEMPORARILY unreachable when reading the Worker base URL — NOT a
         # misconfig, and it self-heals next cycle. WARN + skip; do NOT report unresolved
@@ -707,17 +757,26 @@ def publish_once() -> PublishStats:
         # high-capability-class action — for a condition needing none). Skip the watchdog
         # freshness marker exactly like the no-creds path, so a SUSTAINED outage still
         # surfaces via the Check-C staleness floor, just without per-cycle alert spam.
+        #
+        # The fence ALSO counts it (unless the breaker is open, which it excludes) so a
+        # sustained outage escalates ERROR→CRITICAL on the ladder instead of staying a
+        # per-cycle WARN nobody reads. The WARN above stays: it is the lane-specific
+        # "not a credentials problem" copy the §43 runbook points at.
         error_log.log(
             Severity.WARN, SCRIPT_NAME,
             f"publish Worker base URL temporarily unreadable ({creds.reason}) — skipping "
             f"this cycle; will retry next interval (transient, self-heals)",
             error_code="publish_daemon.creds_transient",
         )
+        _CONFIG_READ_FENCE.note_transient(
+            f"could not read the Worker base URL ({creds.reason})", count=not creds.circuit_open,
+        )
         _write_heartbeat()
         _write_heartbeat_row(status="WARN", items_processed=0,
                              error_summary=f"base URL unreadable ({creds.reason}) — transient")
         stats.halted = "creds_transient"
         return stats
+    _CONFIG_READ_FENCE.reset()
     if creds is None:
         # Fail-closed + loud: a missing bearer/URL must not silently drop publishes.
         error_log.log(
@@ -832,6 +891,7 @@ def publish_once() -> PublishStats:
     # / absent creds, migration gate) deliberately leaves the marker untouched — a cycle that
     # never polled must let Check C go stale rather than fake freshness (po_poll's semantics).
     _write_watchdog_marker()
+    _CONFIG_READ_FENCE.flush_retry_recovery()
     return stats
 
 

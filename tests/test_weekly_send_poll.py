@@ -22,7 +22,11 @@ from safety_reports.weekly_send_poll import (
     poll_once,
 )
 from shared.approval_verification import ApprovalVerdict, VerdictReason
-from shared.smartsheet_client import SmartsheetError, SmartsheetNotFoundError
+from shared.smartsheet_client import (
+    SmartsheetError,
+    SmartsheetNotFoundError,
+    SmartsheetTransientError,
+)
 
 
 def _row(
@@ -247,7 +251,10 @@ def test_watchdog_marker_written(_patch_all):
 
 
 def test_get_rows_failure_writes_error_heartbeat(_patch_all):
-    _patch_all["get_rows"].side_effect = SmartsheetError("HTTP 500")
+    # A 5xx/timeout is the TRANSIENT class → halted cycle + ERROR heartbeat (unchanged).
+    # A non-transient SmartsheetError now re-raises to CRITICAL instead — see
+    # tests/test_send_poll_core.py::test_review_read_*.
+    _patch_all["get_rows"].side_effect = SmartsheetTransientError("HTTP 500")
     result = _poll_inside_lock()
     assert result.errors == 1
     assert _patch_all["write_heartbeat_row"].call_args.kwargs["status"] == "ERROR"

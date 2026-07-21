@@ -148,6 +148,39 @@
       "origin": "daemon"
     },
     {
+      "setting": "smartsheet.retry.backoff_seconds",
+      "workstream": "global",
+      "kind": "str",
+      "default": "2.0,5.0",
+      "purpose": "Comma-separated wait (seconds) before each extra attempt, e.g. '2.0,5.0'. The last value repeats if there are more attempts than entries.",
+      "read_by": [
+        "shared.smartsheet_client"
+      ],
+      "origin": "shared-infra"
+    },
+    {
+      "setting": "smartsheet.retry.enabled",
+      "workstream": "global",
+      "kind": "bool",
+      "default": true,
+      "purpose": "Whether ITS re-issues a Smartsheet READ that failed with a 5xx or a network timeout — the two classes the Smartsheet SDK does not retry itself. Writes are never retried. Set false for a pure pass-through escape hatch.",
+      "read_by": [
+        "shared.smartsheet_client"
+      ],
+      "origin": "shared-infra"
+    },
+    {
+      "setting": "smartsheet.retry.max_extra_attempts",
+      "workstream": "global",
+      "kind": "int",
+      "default": 2,
+      "purpose": "How many EXTRA attempts a failed Smartsheet read gets before the error is raised to the caller (0 = no retry).",
+      "read_by": [
+        "shared.smartsheet_client"
+      ],
+      "origin": "shared-infra"
+    },
+    {
       "setting": "smartsheet.sheet_count_ceiling",
       "workstream": "global",
       "kind": "int",

@@ -248,6 +248,77 @@ def test_halted_cycles_never_fake_check_c_freshness(stub, arrange, expected_halt
     stub["marker"].assert_not_called()
 
 
+# ── transient Smartsheet fence (2026-07-21) ──────────────────────────────────────
+
+
+@pytest.fixture
+def fence_state(mocker, tmp_path):
+    """Point the module-level fence at a per-test state file (never live state)."""
+    fence = pd.sustained_failure.TransientFence(
+        pd.SCRIPT_NAME,
+        state_path=tmp_path / "publish_config_read.json",
+        transient_error_code="publish_daemon.config_read_transient",
+        sustained_error_code="publish_daemon.config_read_sustained",
+        threshold=pd.sustained_failure.DEFAULT_CRITICAL_THRESHOLD,
+        runbook="docs/runbooks/safety_portal_forms.md",
+    )
+    mocker.patch.object(pd, "_CONFIG_READ_FENCE", fence)
+    return fence
+
+
+def test_transient_gate_read_halts_without_paging(stub, fence_state):
+    """The 14:37Z signature: a ReadTimeout inside get_setting escaped the pass and landed
+    as CRITICAL uncaught_exception. Now: halted, ERROR, no page, recovered next cycle."""
+    stub["enabled"].side_effect = pd.smartsheet_client.SmartsheetTransientError("ReadTimeout")
+    out = pd.publish_once()
+    assert out.halted == "smartsheet_transient"
+    assert not _critical_fired(stub)
+    stub["pending"].assert_not_called()
+    stub["hb_row"].assert_called_once()
+    assert stub["hb_row"].call_args.kwargs["status"] == "ERROR"
+
+
+def test_transient_base_url_read_halts_without_naming_credentials(stub, fence_state):
+    """A failed READ must not be reported as a MISSING credential — that misdirects the
+    §43 repair at a high-capability-class secrets action."""
+    stub["creds"].return_value = pd.creds_resolution.TransientUnavailable(
+        reason="SmartsheetTransientError: HTTP 500", circuit_open=False
+    )
+    out = pd.publish_once()
+    assert out.halted == "creds_transient"
+    assert not _critical_fired(stub)
+    messages = [c.args[2] for c in stub["log"].call_args_list if len(c.args) > 2]
+    assert not any("bearer" in m or "credential" in m for m in messages)
+    # …but it IS counted, so a sustained base-URL outage still escalates on the ladder.
+    assert "publish_daemon.config_read_transient" in _codes(stub)
+
+
+def test_circuit_open_base_url_read_halts_uncounted(stub, fence_state, tmp_path):
+    stub["creds"].return_value = pd.creds_resolution.CREDS_TRANSIENT
+    out = pd.publish_once()
+    assert out.halted == "creds_transient"
+    assert not (tmp_path / "publish_config_read.json").exists()
+
+
+def test_sustained_transient_gate_read_escalates_to_critical(stub, fence_state):
+    stub["enabled"].side_effect = pd.smartsheet_client.SmartsheetTransientError("HTTP 500")
+    for _ in range(pd.sustained_failure.DEFAULT_CRITICAL_THRESHOLD):
+        pd.publish_once()
+    sustained = [c for c in stub["log"].call_args_list
+                 if c.kwargs.get("error_code") == "publish_daemon.config_read_sustained"]
+    assert len(sustained) == 1
+    assert sustained[0].args[0] == pd.Severity.CRITICAL
+
+
+def test_non_transient_gate_read_still_propagates(stub, fence_state):
+    """Unwrapped so the propagation is visible: `publish_once` is @its_error_log-wrapped,
+    and a propagated exception there IS the CRITICAL uncaught_exception path. Nothing
+    about a real misconfig or bug got softened."""
+    stub["enabled"].side_effect = pd.smartsheet_client.SmartsheetAuthError("401")
+    with pytest.raises(pd.smartsheet_client.SmartsheetAuthError):
+        pd.publish_once()
+
+
 def test_already_leased_row_is_skipped(stub):
     stub["pending"].return_value = [{"id": 6}]
     stub["claim"].return_value = None  # a concurrent run already leased it

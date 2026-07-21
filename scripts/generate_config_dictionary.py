@@ -146,6 +146,11 @@ def shared_infra_keys() -> list[RawKey]:
         rk("picklist_sync.size_hard_halt_threshold", d.PICKLIST_SIZE_HARD_HALT_THRESHOLD, "int", "shared.picklist_sync"),
         rk("smartsheet.sheet_count_ceiling", d.SHEET_COUNT_CEILING, "int", "shared.sheet_capacity"),
         rk("smartsheet.sheet_count_margin", d.SHEET_COUNT_MARGIN, "int", "shared.sheet_capacity"),
+        rk("smartsheet.retry.enabled", d.SMARTSHEET_RETRY_ENABLED, "bool", "shared.smartsheet_client"),
+        rk("smartsheet.retry.max_extra_attempts", d.SMARTSHEET_RETRY_MAX_EXTRA_ATTEMPTS, "int",
+           "shared.smartsheet_client"),
+        rk("smartsheet.retry.backoff_seconds", ",".join(str(s) for s in d.SMARTSHEET_RETRY_BACKOFF_SECONDS),
+           "str", "shared.smartsheet_client"),
     ]
 
 
@@ -184,6 +189,13 @@ PURPOSE_OVERRIDES: dict[str, str] = {
     "smartsheet.sheet_count_ceiling": "Per-workspace sheet-count ceiling; a new week/period sheet that would land "
                                       "past it routes to the Review Queue instead of being created silently.",
     "smartsheet.sheet_count_margin": "Headroom below the ceiling at which the sheet-capacity guard starts warning.",
+    "smartsheet.retry.enabled": "Whether ITS re-issues a Smartsheet READ that failed with a 5xx or a network "
+                                "timeout — the two classes the Smartsheet SDK does not retry itself. Writes are "
+                                "never retried. Set false for a pure pass-through escape hatch.",
+    "smartsheet.retry.max_extra_attempts": "How many EXTRA attempts a failed Smartsheet read gets before the error "
+                                           "is raised to the caller (0 = no retry).",
+    "smartsheet.retry.backoff_seconds": "Comma-separated wait (seconds) before each extra attempt, e.g. '2.0,5.0'. "
+                                        "The last value repeats if there are more attempts than entries.",
     "safety_reports.portal.worker_base_url": "Base URL of the Safety Portal Cloudflare Worker. The portal pull / "
                                              "PO / progress daemons hit its send-free internal API here. Repointed "
                                              "to the custom domain (safety.evergreenmirror.com) after deploy.",

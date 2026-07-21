@@ -11,10 +11,15 @@ is extracted here parameterized by a required **no-default** ``DaemonConfig``; t
 thin per-workstream entry (``weekly_send_poll`` for safety) binds the one config.
 
 §42 — load-bearing invariants PRESERVED byte-equivalent across the extraction:
-  * ``_load_authorized_approvers`` keeps its **NO try/except, fail-CLOSED** posture
-    (a membership-read infra failure propagates → @its_error_log CRITICAL, cycle
-    aborts, zero sends — never fail-open). It is the F08 contrast to the
-    config-read fail-open.
+  * ``_load_authorized_approvers`` is **fail-CLOSED**: any membership-read failure aborts
+    the cycle before dispatch, ZERO sends — never fail-open, never a fallback-to-empty
+    that would let an unverified row through. It is the F08 contrast to the config-read
+    fail-open. AMENDED 2026-07-21 (operator decision D1): the read is now wrapped by a
+    ``sustained_failure.TransientFence`` so a *precisely-typed transient* infra failure
+    (5xx / timeout) logs ERROR and halts instead of paging CRITICAL, escalating to
+    CRITICAL only once it is SUSTAINED. Fail-closed is untouched — only the severity of
+    the halt changed. Auth / permission / rate-limit / any unrecognised exception still
+    propagate immediately to CRITICAL. Do NOT add a fallback-to-empty catch.
   * ``DaemonConfig.dispatch_statuses`` EXCLUDES the SENDING write-ahead marker — a
     row left SENDING (post-send stamp failure) must NEVER be re-dispatched or the
     customer is double-sent. The safety bind passes ``{PENDING, FAILED}``.
@@ -51,6 +56,7 @@ from shared import (
     circuit_breaker,
     error_log,
     smartsheet_client,
+    sustained_failure,
 )
 from shared.error_log import Severity
 from shared.heartbeat import HeartbeatStatus
@@ -185,15 +191,51 @@ def _polling_enabled(config: DaemonConfig) -> bool:
 def _load_authorized_approvers(config: DaemonConfig) -> frozenset[str]:
     """F22 authorized-approver set = membership of the config's workspace.
 
-    F08 CONTRAST — deliberately NO try/except. Unlike ``_read_str_setting`` (which
-    catches SmartsheetCircuitOpenError and fails OPEN to a scheduling fallback),
-    this is the SECURITY gate: a circuit-open / auth / 500 reading the approver set
-    MUST propagate (→ @its_error_log CRITICAL, cycle aborts, zero sends) —
-    fail-CLOSED. Do NOT add a fallback-to-empty / fail-open catch. An empty set
-    (no individual shares) is the legitimate fail-closed case (verify_approval →
+    F08 CONTRAST — deliberately NO try/except HERE. Unlike ``_read_str_setting`` (which
+    catches SmartsheetCircuitOpenError and fails OPEN to a scheduling fallback), this is
+    the SECURITY gate: every failure propagates, the cycle aborts, ZERO sends —
+    fail-CLOSED. Do NOT add a fallback-to-empty / fail-open catch. An empty set (no
+    individual shares) is the legitimate fail-closed case (verify_approval →
     EMPTY_ALLOWLIST → block all sends).
+
+    CONTRACT AMENDED 2026-07-21 (operator decision D1) — what changed, and what did NOT.
+    The CALLER (`poll_inside_lock`) now classifies the propagated exception through a
+    ``sustained_failure.TransientFence`` instead of letting every class land as
+    ``@its_error_log`` CRITICAL ``uncaught_exception``:
+
+      * a precisely-typed transient (5xx / ReadTimeout / ConnectionError — the class that
+        paged progress_send_poll at 05:36Z on 2026-07-21 and had self-healed by the next
+        cycle) → ERROR + a consecutive counter, escalating to CRITICAL at 3 consecutive
+        cycles, so a REAL sustained outage still wakes the operator;
+      * circuit-OPEN → WARN, uncounted (the breaker's own prolonged-open CRITICAL owns
+        that page; counting it would storm one outage into N daemon pages);
+      * auth / permission / rate-limit / ANY unrecognised exception → re-raised unchanged,
+        immediate CRITICAL. A transient blip is not a security event; a revoked token or a
+        genuine bug still is.
+
+    FAIL-CLOSED IS UNCHANGED in every branch: the cycle returns before the dispatch loop,
+    so ZERO sends happen on any approver-load failure. `tests/test_send_poll_core.py`
+    proves that per failure class rather than by inspection.
     """
     return smartsheet_client.list_workspace_share_emails(config.f22_workspace_id)
+
+
+def _transient_fence(config: DaemonConfig, *, kind: str) -> sustained_failure.TransientFence:
+    """Build the per-daemon, per-call-site transient fence.
+
+    State lives beside the daemon's own lock file so the five bound send pollers keep
+    INDEPENDENT counters (a flaky safety workspace must never page for progress).
+    Threshold 3, not the shared 5: every send poller runs a 15-minute cadence, so 5
+    consecutive cycles would be ~75 min of silence before the page (operator decision D2).
+    """
+    return sustained_failure.TransientFence(
+        config.script_name,
+        state_path=config.lock_path.parent / f"{config.script_name}_{kind}_failures.json",
+        transient_error_code=f"{config.script_name}.{kind}_transient",
+        sustained_error_code=f"{config.script_name}.{kind}_sustained",
+        threshold=sustained_failure.SLOW_CADENCE_CRITICAL_THRESHOLD,
+        runbook="docs/runbooks/safety_weekly_send.md",
+    )
 
 
 # ---- State / lock helpers ------------------------------------------------
@@ -392,14 +434,19 @@ def poll_inside_lock(
     is_scheduled_window: Callable[[datetime, str], bool],
 ) -> PollStats:
     """Body of poll_once running under the file lock."""
+    read_fence = _transient_fence(config, kind="review_read")
     try:
         rows = smartsheet_client.get_rows(config.poll_sheet_id)
     except smartsheet_client.SmartsheetError as exc:
-        error_log.log(
-            Severity.ERROR, config.script_name,
-            f"failed to read review sheet: {exc!r}",
-            error_code="weekly_send_poll.read_failed",
-        )
+        # Already loud + halting before 2026-07-21. The fence adds the two things this
+        # site lacked: (a) sustained-outage escalation — an every-cycle ERROR is invisible
+        # on every CRITICAL-keyed fire surface; (b) a split by class — a NON-transient
+        # (auth / 404-sheet-gone / rate-limit) now re-raises to CRITICAL instead of being
+        # absorbed as a same-shaped ERROR forever, because it will not self-heal.
+        # The single hardcoded `weekly_send_poll.read_failed` code (which all five bound
+        # daemons wrote, including progress) is replaced by per-script codes.
+        if not read_fence.handle(exc):
+            raise
         write_liveness()
         breaker_open = circuit_breaker.is_open()
         read_fail_status: HeartbeatStatus = "CIRCUIT_OPEN" if breaker_open else "ERROR"
@@ -410,9 +457,33 @@ def poll_inside_lock(
         )
         write_watchdog_marker()
         return PollStats(errors=1)
+    read_fence.reset()
 
     candidates = _filter_dispatch_candidates(config, rows)
-    authorized_actors = _load_authorized_approvers(config)
+
+    # F22 approver load — fail-CLOSED. EVERY branch below returns BEFORE the dispatch
+    # loop, so an approver-load failure of any class performs ZERO sends.
+    approver_fence = _transient_fence(config, kind="approver_read")
+    try:
+        authorized_actors = _load_authorized_approvers(config)
+    except Exception as exc:  # noqa: BLE001 — classified by the fence; non-transient re-raises
+        if not approver_fence.handle(exc):
+            raise
+        write_liveness()
+        breaker_open = circuit_breaker.is_open()
+        approver_fail_status: HeartbeatStatus = "CIRCUIT_OPEN" if breaker_open else "ERROR"
+        write_row(
+            status=approver_fail_status,
+            items_processed=0,
+            error_summary=(
+                None if breaker_open
+                else f"approver read failed: {type(exc).__name__}: {exc!r} (zero sends)"
+            ),
+        )
+        write_watchdog_marker()
+        return PollStats(rows_scanned=len(rows), errors=1)
+    approver_fence.reset()
+
     counters = {"dispatched": 0, "sent": 0, "skipped": 0, "failed": 0, "errors": 0, "blocked": 0}
 
     now_local = datetime.now(ZoneInfo(config.send_tz))
@@ -507,6 +578,9 @@ def poll_inside_lock(
         f"failed={counters['failed']} errors={counters['errors']} blocked={counters['blocked']}",
         error_code="poll_cycle_summary",
     )
+    # D3 — one summarized WARN row if any Smartsheet call in this pass RECOVERED on retry,
+    # so a chronically flaky backend is visible on the dashboard and not silently absorbed.
+    approver_fence.flush_retry_recovery()
     return PollStats(
         rows_scanned=len(rows),
         dispatched=counters["dispatched"],
