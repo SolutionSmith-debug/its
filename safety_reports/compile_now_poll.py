@@ -41,6 +41,17 @@ Lifecycle (single-flight + fail-loud, reusing the existing compile's own behavio
     raises BEFORE the trigger clears, so the trigger + selection stay VISIBLY set (fail-loud)
     and the job routes to the Review Queue.
 
+Scan-failure reporting (2026-07-21)
+-----------------------------------
+The trigger scan runs ~3 Smartsheet calls for EVERY Active job in EVERY served workstream every
+~90 s, so a flaky sheet used to write one ERROR row per job per cycle. It now emits AT MOST ONE
+summarized row per pass, with two escalations layered on: a CYCLE counter
+(`compile_now_scan_sustained`) fires CRITICAL once a majority-failing cycle repeats, and a per-JOB
+ledger (`compile_now_job_scan_sustained`) fires CRITICAL for a single job whose sheet stays
+unreachable while the others scan fine. A failed ITS_Active_Jobs read — which contributes zero
+scanned jobs and used to leave a clean OK heartbeat — counts as a failing cycle and is named in
+the summary row (`shared.active_jobs.last_read_failed`). See `_record_scan_outcome`.
+
 Per-workstream on/off gate: `<workstream>.compile_now_poll.polling_enabled` (default True), read
 under that workstream. Safety's key is the pre-existing
 `safety_reports.compile_now_poll.polling_enabled` (backward-compatible); progress adds
@@ -57,6 +68,7 @@ dual-write as the scheduled runs, so it NEVER touches WSR/WPR approval / email-b
 from __future__ import annotations
 
 import fcntl
+import json
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -67,7 +79,15 @@ from zoneinfo import ZoneInfo
 
 from progress_reports import progress_weekly_generate
 from safety_reports import generate_core, week_sheet, weekly_generate
-from shared import active_jobs, circuit_breaker, error_log, safety_week, smartsheet_client
+from shared import (
+    active_jobs,
+    circuit_breaker,
+    error_log,
+    safety_week,
+    smartsheet_client,
+    state_io,
+    sustained_failure,
+)
 from shared.active_jobs import ActiveJob
 from shared.error_log import Severity, its_error_log
 from shared.heartbeat import HeartbeatReporter, HeartbeatStatus
@@ -146,6 +166,129 @@ class CompileStats:
     compiled: int = 0
     errors: int = 0
     halted: str = ""
+    # Scan-phase failures only (the routine per-job trigger scan) — the subset of `errors`
+    # the per-pass summary + the sustained-outage predicate below are computed from.
+    scan_failures: int = 0
+    # Served workstreams whose ITS_Active_Jobs read FAILED this cycle. Those workstreams
+    # contribute zero scanned jobs, so without this the cycle looks clean.
+    active_jobs_read_failures: int = 0
+
+
+# ---- Scan-failure summarization + sustained-outage escalation ------------
+#
+# WHY (2026-07-21 forensic): the per-job `except _ScanFailedError` branch wrote ONE
+# Severity.ERROR ITS_Errors row PER JOB PER FAILING CYCLE — 31 rows in a day at 10-20 jobs
+# every 90s — with no dedupe, no summarization, and no escalation, so a real sustained
+# outage looked exactly like flake and never reached a CRITICAL-keyed fire surface.
+
+#: A cycle counts as FAILING once at least this fraction of the jobs it SCANNED failed their
+#: trigger scan. Deliberately a fraction, not all-or-any: an all-jobs-failed predicate never
+#: fires during a sustained PARTIAL outage (18 of 20 jobs failing forever) and structurally
+#: cannot fire when jobs_scanned == 0; an any-job-failed predicate makes essentially every
+#: cycle failing under a mild 1-in-3 flake and would escalate to CRITICAL in ~7.5 minutes
+#: because one sheet is slow.
+SCAN_FAILURE_CYCLE_FRACTION = 0.5
+
+#: Failing jobs named individually in the pass summary before it degrades to "…and N more".
+SCAN_SUMMARY_SAMPLE = 5
+
+#: Consecutive failing cycles ONE job must accumulate before its own CRITICAL — ~30 min at
+#: the 90s cadence, well past any transient. This covers the case the cycle-level fraction
+#: cannot see: a single job's week sheet 500ing for hours while every other job scans fine.
+JOB_SCAN_CRITICAL_THRESHOLD = 20
+
+# Cycle-level escalation, on the shared 5-consecutive-cycles threshold (~7.5 min at 90s —
+# the fast-daemon cadence class).
+_SCAN_FAILS = sustained_failure.SustainedFailureCounter(
+    STATE_DIR / "compile_now_scan_failures.json",
+    SCRIPT_NAME,
+    "compile_now_scan_counter_failed",
+)
+
+
+@dataclass(frozen=True)
+class _ScanFailure:
+    """One job whose routine trigger scan failed this cycle (collected, not logged inline)."""
+
+    workstream: str
+    project_name: str
+    job_id: str
+    detail: str
+
+    @property
+    def key(self) -> str:
+        """Ledger key — workstream-qualified because the two Active-Jobs sheets number
+        their Job IDs independently, so a bare job_id can collide across workstreams."""
+        return f"{self.workstream}:{self.job_id}"
+
+    @property
+    def label(self) -> str:
+        return f"[{self.workstream}] {self.project_name} ({self.job_id})"
+
+
+class _JobScanLedger:
+    """Per-job consecutive scan-failure counts, one JSON map under ``~/its/state/``.
+
+    Deliberately PRIVATE to this daemon instead of a `shared/` abstraction:
+    `shared/sustained_failure.py` was extracted with FOUR immediate consumers, and a keyed
+    variant with one consumer is thin against preservation-over-refactor (§14). Convergence
+    candidates if a second daemon ever needs per-item escalation: `estimate_poll._load_flags`
+    (its one-shot per-row refusal map) and `portal_poll`'s bad-HMAC flagging.
+
+    ONE locked read-modify-write per cycle rather than a per-key record/reset/sweep API: this
+    daemon scans 10-20 jobs every 90s, so per-key calls would take the sidecar flock and
+    rewrite the file N times a cycle to express what one write expresses.
+
+    Only CURRENTLY-FAILING keys are persisted, which makes reset-on-success and
+    sweep-of-departed-jobs both structural (a key absent from `failed_keys` does not survive
+    the write) and bounds the file to the failing set. Tradeoff: a cycle that scanned nothing
+    (its ITS_Active_Jobs read failed) clears the per-job counts — precisely the case the
+    CYCLE-level counter covers.
+    """
+
+    def __init__(self, path: Path, script_name: str, counter_error_code: str) -> None:
+        self._path = path
+        self._script = script_name
+        self._counter_error_code = counter_error_code
+
+    def apply(self, failed_keys: set[str]) -> dict[str, int]:
+        """Bump each failing key, drop every other key; return the new per-key counts.
+
+        A state error degrades every failing key to 1 with a WARN — never page off a state
+        glitch (mirrors `SustainedFailureCounter.record`).
+        """
+        try:
+            with state_io.with_path_lock(self._path):
+                previous = self._read()
+                counts = {key: previous.get(key, 0) + 1 for key in failed_keys}
+                state_io.atomic_write_json(self._path, {"counts": counts})
+                return counts
+        except Exception as exc:  # noqa: BLE001 — ledger is best-effort, like the shared counter
+            error_log.log(
+                Severity.WARN, self._script,
+                f"per-job scan ledger write failed (treating each as #1): {exc!r}",
+                error_code=self._counter_error_code,
+            )
+            return dict.fromkeys(failed_keys, 1)
+
+    def _read(self) -> dict[str, int]:
+        """Load the persisted counts; ANY unusable state reads as empty (never raises)."""
+        if not self._path.exists():
+            return {}
+        try:
+            raw = json.loads(self._path.read_text()).get("counts")
+        except (OSError, json.JSONDecodeError, ValueError, TypeError, AttributeError):
+            return {}
+        if not isinstance(raw, dict):
+            return {}
+        return {str(k): v for k, v in raw.items() if isinstance(v, int)}
+
+
+_JOB_LEDGER = _JobScanLedger(
+    STATE_DIR / "compile_now_job_scan_failures.json",
+    SCRIPT_NAME,
+    "compile_now_job_scan_ledger_failed",
+)
 
 
 # ---- Config readers (replicated per preservation) -----------------------
@@ -314,6 +457,106 @@ def _compile_triggered_job(
     return True
 
 
+def _cycle_is_failing(stats: CompileStats) -> bool:
+    """Whether this cycle counts toward the sustained-outage counter (see
+    SCAN_FAILURE_CYCLE_FRACTION for why the predicate is a fraction)."""
+    if stats.active_jobs_read_failures:
+        # A workstream whose job list could not be read scanned nothing at all — the
+        # fraction below cannot express that, and it is the worse outage of the two.
+        return True
+    if stats.jobs_scanned == 0:
+        return False
+    return stats.scan_failures / stats.jobs_scanned >= SCAN_FAILURE_CYCLE_FRACTION
+
+
+def _scan_summary_message(
+    stats: CompileStats,
+    failures: list[_ScanFailure],
+    week: safety_week.SafetyWeek,
+    consecutive: int,
+) -> str:
+    named = ", ".join(f.label for f in failures[:SCAN_SUMMARY_SAMPLE])
+    if len(failures) > SCAN_SUMMARY_SAMPLE:
+        named += f", …and {len(failures) - SCAN_SUMMARY_SAMPLE} more"
+    parts = [
+        f"compile-now trigger scan failed for {stats.scan_failures}/{stats.jobs_scanned} "
+        f"scanned jobs, week {week.start}"
+    ]
+    if named:
+        parts.append(f"failing: {named}")
+    if stats.active_jobs_read_failures:
+        parts.append(
+            f"ITS_Active_Jobs read FAILED for {stats.active_jobs_read_failures} served "
+            "workstream(s) — those jobs were never scanned"
+        )
+    parts.append(f"{consecutive} consecutive failing cycle(s)")
+    return "; ".join(parts)
+
+
+def _record_scan_outcome(
+    stats: CompileStats,
+    failures: list[_ScanFailure],
+    week: safety_week.SafetyWeek,
+    correlation_id: str,
+) -> None:
+    """Emit AT MOST ONE ITS_Errors row per pass for the routine trigger scan, plus the two
+    sustained-outage escalations.
+
+    Summarizing is the PR #608 pattern: §3.1's per-occurrence record mandate governs
+    CRITICALs (each of which still gets its own row here, every cycle past threshold — the
+    push legs, not the record leg, own dedupe), while collapsing per-item non-CRITICAL noise
+    into one per-pass row is what keeps a chronically flaky sheet legible instead of burying
+    the log. The cost is forensic granularity above SCAN_SUMMARY_SAMPLE failing jobs: the row
+    names the first few and counts the rest.
+    """
+    failing_cycle = _cycle_is_failing(stats)
+    if failing_cycle:
+        consecutive = _SCAN_FAILS.record()
+    else:
+        _SCAN_FAILS.reset()
+        consecutive = 0
+    sustained = failing_cycle and consecutive >= sustained_failure.DEFAULT_CRITICAL_THRESHOLD
+
+    if failures or stats.active_jobs_read_failures:
+        message = _scan_summary_message(stats, failures, week, consecutive)
+        if sustained:
+            error_log.log(
+                Severity.CRITICAL, SCRIPT_NAME,
+                f"{message} — SUSTAINED compile-now scan outage; triggered weeks are NOT "
+                "compiling. See docs/runbooks/compile_now_poll.md",
+                error_code="compile_now_scan_sustained",
+                correlation_id=correlation_id,
+            )
+        else:
+            error_log.log(
+                Severity.ERROR, SCRIPT_NAME, message,
+                error_code="compile_now_poll.scan_failed",
+                correlation_id=correlation_id,
+            )
+
+    counts = _JOB_LEDGER.apply({f.key for f in failures})
+    if sustained:
+        # The pass row above already names a majority outage covering these same jobs; a
+        # per-job CRITICAL for each would be a duplicate storm. This also BOUNDS the per-job
+        # rows: reaching JOB_SCAN_CRITICAL_THRESHOLD on most jobs at once implies the cycle
+        # counter is already escalated, so the many-jobs case can only fire here below the
+        # fraction — a genuine minority outage nothing else reports.
+        return
+    for failure in sorted(failures, key=lambda f: f.key):
+        count = counts.get(failure.key, 0)
+        if count < JOB_SCAN_CRITICAL_THRESHOLD:
+            continue
+        error_log.log(
+            Severity.CRITICAL, SCRIPT_NAME,
+            f"{failure.label} compile-now trigger scan has failed {count} consecutive "
+            f"cycles (week {week.start}) while other jobs scan fine — this job's week sheet "
+            f"is unreachable and a Compile Now on it will never run. See "
+            f"docs/runbooks/compile_now_poll.md: {failure.detail}",
+            error_code="compile_now_job_scan_sustained",
+            correlation_id=correlation_id,
+        )
+
+
 def _poll_inside_lock(
     active_configs: tuple[generate_core.GenerateConfig, ...],
 ) -> CompileStats:
@@ -321,9 +564,18 @@ def _poll_inside_lock(
     stats = CompileStats()
     summary = generate_core.RunSummary()
     week = safety_week.week_bounds(datetime.now(ZoneInfo(DEFAULT_TZ)).date())
+    scan_failures: list[_ScanFailure] = []
 
     for config in active_configs:
-        for job in active_jobs.list_active_jobs(config.active_jobs_config):
+        jobs = active_jobs.list_active_jobs(config.active_jobs_config)
+        if active_jobs.last_read_failed(config.active_jobs_config):
+            # `_load_jobs` turns a read failure into a stdlib WARN + an empty (cached) list,
+            # so this workstream's jobs are silently absent from the whole cycle — the
+            # daemon's worst failure mode, and previously invisible in ITS_Errors (a clean
+            # OK heartbeat through an ITS_Active_Jobs outage).
+            stats.active_jobs_read_failures += 1
+            stats.errors += 1
+        for job in jobs:
             stats.jobs_scanned += 1
             try:
                 if _compile_triggered_job(config, job, week, summary, correlation_id):
@@ -331,17 +583,15 @@ def _poll_inside_lock(
                     stats.compiled += 1
             except _ScanFailedError as exc:
                 # Scan-phase failure — the trigger was NEVER confirmed set. A transient blip
-                # while routinely scanning an (almost always) untriggered job: log it, but do
-                # NOT seed a Review-Queue row (there is no un-run operator request to review;
-                # the next ~90 s cycle rescans). Mislabeling this as compile_failed fed a
-                # multi-hundred-row review backlog during Smartsheet outages.
+                # while routinely scanning an (almost always) untriggered job: collected for
+                # the ONE per-pass summary row below (never logged per job — that was 31 rows
+                # a day), and NOT seeded to the Review Queue (there is no un-run operator
+                # request to review; the next ~90 s cycle rescans). Mislabeling this as
+                # compile_failed fed a multi-hundred-row review backlog during outages.
                 stats.errors += 1
-                error_log.log(
-                    Severity.ERROR, SCRIPT_NAME,
-                    f"[{config.workstream}] compile-now trigger scan failed for "
-                    f"{job.project_name} (job {job.job_id}) week {week.start}: {exc}",
-                    error_code="compile_now_poll.scan_failed",
-                    correlation_id=correlation_id,
+                stats.scan_failures += 1
+                scan_failures.append(
+                    _ScanFailure(config.workstream, job.project_name, job.job_id, str(exc))
                 )
             except Exception as exc:  # noqa: BLE001 — per-job fence; one bad job never blocks the rest
                 stats.errors += 1
@@ -358,6 +608,8 @@ def _poll_inside_lock(
                 generate_core._safe_review_queue(
                     config, job, week, type(exc).__name__, correlation_id, summary
                 )
+
+    _record_scan_outcome(stats, scan_failures, week, correlation_id)
 
     _write_heartbeat()
     if stats.errors > 0:

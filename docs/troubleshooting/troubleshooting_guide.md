@@ -242,6 +242,43 @@ A field submission enters at the send-free portal, is pulled + filed on the Mac,
 
 **See also:** runbook `docs/runbooks/compile_now_poll.md`
 
+#### A CRITICAL says the compile-now trigger scan is failing for most jobs (or the Active-Jobs read itself failed) several cycles running.
+
+**Resolution class:** Operator-resolvable (solo)
+
+**Signals:** compile_now_scan_sustained, compile_now_poll.scan_failed, ITS_Active_Jobs read FAILED, compile-now-poll heartbeat DEGRADED
+
+**Checks (in order):**
+- Read the CRITICAL message — how many of how many scanned jobs, and does it name an ITS_Active_Jobs read failure?
+- Can you open ITS_Active_Jobs and a week sheet in the Smartsheet browser? A broad Smartsheet incident is the usual cause.
+- Are other daemons erroring in ITS_Errors in the same window (platform-wide, not this daemon)?
+- ITS_Daemon_Health safety_reports.compile_now_poll — Last Cycle At still advancing means the daemon is alive and retrying.
+
+**Resolutions (in order):**
+- Wait and watch; this self-heals. Nothing is lost — the Compile Now checkbox stays set and the daemon retries every ~90s, so the packet compiles once Smartsheet reads recover.
+- Mark the CRITICAL resolved once new ones stop appearing. Do NOT disable the daemon to silence it (that hides the outage and stops the recovery retries).
+- Still firing after ~30 minutes with Smartsheet reachable → hand Claude the Correlation_ID to diagnose.
+
+**See also:** runbook `docs/runbooks/compile_now_poll.md`
+
+#### A CRITICAL names ONE job whose compile-now trigger scan has failed for many consecutive cycles while every other job scans fine.
+
+**Resolution class:** Escalate to Seth (co-resolve)
+
+**Signals:** compile_now_job_scan_sustained, this job's week sheet is unreachable
+
+**Checks (in order):**
+- The row names the workstream, project, job ID and week — confirm that week sheet exists in that project's Jobs folder in the matching workspace.
+- Compare the Project Name in ITS_Active_Jobs / ITS_Active_Jobs_Progress against the Smartsheet folder name; a rename is the usual cause.
+- Confirm there is no compile_now_scan_sustained CRITICAL in the same window (that would mean a broad outage instead).
+
+**Resolutions (in order):**
+- If a folder or week sheet was renamed, rename it back to match ITS_Active_Jobs; if the job row's Project Name was edited by mistake, restore it. The CRITICAL stops on the next successful scan (~90s).
+- Never set the job Inactive to silence it — that silently stops its reports.
+- A missing or deleted week sheet, or anything that looks like sharing/permissions, escalates to Seth.
+
+**See also:** runbook `docs/runbooks/compile_now_poll.md`
+
 ### Human approves a WSR row; weekly-send transmits it (send half)
 
 | What happens | |
