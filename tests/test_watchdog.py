@@ -2385,6 +2385,55 @@ def mock_share_emails(mocker):
     return mocker.patch("watchdog.smartsheet_client.list_workspace_share_emails")
 
 
+def test_approver_workspaces_cover_every_send_lane():
+    """PARITY TOOTH: Check U must watch every workspace that authorizes a send.
+
+    F22 resolves a lane's approver set from the membership of ONE workspace —
+    `send_poll_core.DaemonConfig.f22_workspace_id`. Whatever set of workspaces the
+    send daemons verify against is exactly the set Check U has to watch, or a lane's
+    approval authority can change with nothing reporting it.
+
+    Derived from the send daemons rather than pinned, because a pinned list is how
+    this drifted: `_APPROVER_WORKSPACES` carried only the safety + progress
+    workspaces while po_send, rfq_send and subcontract_send went live against the
+    procurement workspaces — the three lanes that transmit to outside VENDORS.
+
+    The derivation lives HERE and not in watchdog.py on purpose: importing the send
+    daemons into the watchdog would give a monitoring process `send_mail` capability
+    (Invariant 1). A test process has no such constraint.
+    """
+    from po_materials import po_send_poll, rfq_send_poll
+    from progress_reports import progress_send_poll
+    from safety_reports import weekly_send_poll
+    from subcontracts import subcontract_send_poll
+
+    send_daemons = {
+        "weekly_send": weekly_send_poll,
+        "progress_send": progress_send_poll,
+        "po_send": po_send_poll,
+        "rfq_send": rfq_send_poll,
+        "subcontract_send": subcontract_send_poll,
+    }
+    required: dict[int, list[str]] = {}
+    for name, mod in send_daemons.items():
+        cfg = next(
+            v for v in vars(mod).values()
+            if isinstance(getattr(v, "f22_workspace_id", None), int)
+        )
+        required.setdefault(cfg.f22_workspace_id, []).append(name)
+
+    watched = {ws_id for _label, ws_id in watchdog._APPROVER_WORKSPACES}
+    missing = {
+        ws: lanes for ws, lanes in required.items() if ws not in watched
+    }
+    assert not missing, (
+        "send lanes whose F22 approver workspace Check U does NOT watch: "
+        f"{ {ws: lanes for ws, lanes in missing.items()} } — add the workspace to "
+        "_APPROVER_WORKSPACES in scripts/watchdog.py, or approver drift on that "
+        "send authority goes unreported (Op Stds §46)"
+    )
+
+
 def test_check_u_empty_approver_set_warns(mock_share_emails, _approver_state):
     mock_share_emails.return_value = frozenset()  # no approvers shared anywhere
     result = watchdog._check_approver_drift()

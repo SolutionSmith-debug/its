@@ -1899,17 +1899,31 @@ def _check_stale_held_rows() -> CheckResult:
 # ---- Check U: send-workspace approver-set drift (F22 authority; P5) ------
 #
 # The F22 approver set for a workstream's external sends IS the membership of its send
-# workspace (Op Stds §46): WSR sends → Safety Portal workspace, WPR sends → Progress Reporting
-# workspace. Two failure modes this surfaces: (a) an EMPTY set → every send for that workstream
-# fail-closed-blocks (EMPTY_ALLOWLIST) — silent until someone notices nothing sent; (b) a CHANGE
-# to who-may-approve since the last run — a security-relevant event (someone added/removed from
-# the send-approval authority) the operator should confirm was intentional. There is no stored
-# "intended" approver list (membership IS the source of truth), so "drift" = change-vs-baseline;
-# the first run seeds the baseline (no drift reported).
+# workspace (Op Stds §46). Two failure modes this surfaces: (a) an EMPTY set → every send for
+# that workstream fail-closed-blocks (EMPTY_ALLOWLIST) — silent until someone notices nothing
+# sent; (b) a CHANGE to who-may-approve since the last run — a security-relevant event (someone
+# added/removed from the send-approval authority) the operator should confirm was intentional.
+# There is no stored "intended" approver list (membership IS the source of truth), so "drift" =
+# change-vs-baseline; the first run seeds the baseline (no drift reported).
+#
+# SCOPE = every workspace some send daemon verifies approvals against, i.e. the distinct set of
+# `send_poll_core.DaemonConfig.f22_workspace_id` across all five send lanes. This list carried
+# only the two SAFETY/PROGRESS workspaces until 2026-07-21, so approver drift on the PROCUREMENT
+# workspaces went unwatched even after po_send, subcontract_send and rfq_send went live — the
+# three lanes that transmit to outside VENDORS. Someone added to the Purchase Orders workspace
+# silently gained authority to release a PO or an RFQ, and nothing reported it.
+#
+# Deliberately a literal rather than derived-by-import: importing the send daemons here would
+# pull `graph_client.send_mail` into the watchdog process, giving a monitoring script send
+# capability (Invariant 1). `tests/test_watchdog.py::test_approver_workspaces_cover_every_send_lane`
+# does the derivation instead — in the test process, where importing is free — and fails if a new
+# send lane's workspace is missing here.
 APPROVER_BASELINE_PATH = STATE_DIR / "approver_set_baseline.json"
 _APPROVER_WORKSPACES: list[tuple[str, int]] = [
     ("Safety Portal", sheet_ids.WORKSPACE_SAFETY_PORTAL),
     ("Progress Reporting", sheet_ids.WORKSPACE_PROGRESS_REPORTING),
+    ("Purchase Orders", sheet_ids.WORKSPACE_PURCHASE_ORDERS),  # po_send + rfq_send
+    ("Subcontracts", sheet_ids.WORKSPACE_SUBCONTRACTS),
 ]
 
 
