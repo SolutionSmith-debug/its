@@ -109,6 +109,7 @@ from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
 
+from po_materials import po_review, rfq_review
 from progress_reports import progress_weekly_generate, wpr_review
 from safety_reports import generate_core, portal_poll, weekly_generate, wsr_review
 from shared import (
@@ -138,6 +139,7 @@ from shared.kill_switch import SystemState, check_system_state
 from shared.required_config import ConfigKey, resolve_and_log
 from shared.review_queue import ReviewReason, SlaTier
 from shared.scheduling import TimeOffClient, is_federal_holiday, resolve_chain
+from subcontracts import subcontract_review
 
 _SCRIPT = "scripts.watchdog"
 
@@ -171,6 +173,38 @@ WATCHDOG_MARKER_DIR = Path.home() / "its" / ".watchdog"
 # Watchdog state dir (first-seen / baseline snapshots for the P5 operability checks T/U).
 # All writes go through shared.state_io (atomic + path-locked) per the state-write discipline.
 STATE_DIR = Path.home() / "its" / "state"
+
+# ---- The review sheets every send lane stages rows on -----------------------
+#
+# (label, sheet id, send-status column, HELD value, SENDING value) for all FIVE
+# send lanes. Checks N (stuck SENDING) and T (stale HELD) are both backstops for
+# the SHARED send engine — the engine writes its write-ahead SENDING marker and
+# every HELD disposition to `cfg.review.SHEET_ID`, i.e. whichever review sheet the
+# lane's SendConfig names — so both checks must scan every lane, not just safety.
+#
+# They did not. Until 2026-07-21 Check N scanned ONLY WSR_human_review and Check T
+# only WSR + WPR, so on the three PROCUREMENT lanes (po_send, rfq_send,
+# subcontract_send — the ones that transmit to outside vendors) a row stuck in
+# SENDING was never reported at all, and a row stuck HELD had no 24h backstop.
+# A stuck SENDING row is the worst case: by design it is never re-dispatched (to
+# avoid a double-send), so it sits silently unsent forever.
+#
+# Both checks now derive from this ONE table, so they can never again drift apart
+# or fall behind a lane. `tests/test_watchdog.py::test_review_scan_covers_every_send_lane`
+# derives the required set from the send daemons themselves and fails if a lane is
+# missing here.
+_REVIEW_SHEETS: list[tuple[str, int, str, str, str]] = [
+    ("WSR", wsr_review.SHEET_ID, wsr_review.COL_SEND_STATUS,
+     wsr_review.STATUS_HELD, wsr_review.STATUS_SENDING),
+    ("WPR", wpr_review.SHEET_ID, wpr_review.COL_SEND_STATUS,
+     wpr_review.STATUS_HELD, wpr_review.STATUS_SENDING),
+    ("PO", po_review.SHEET_ID, po_review.COL_SEND_STATUS,
+     po_review.STATUS_HELD, po_review.STATUS_SENDING),
+    ("RFQ", rfq_review.SHEET_ID, rfq_review.COL_SEND_STATUS,
+     rfq_review.STATUS_HELD, rfq_review.STATUS_SENDING),
+    ("SUB", subcontract_review.SHEET_ID, subcontract_review.COL_SEND_STATUS,
+     subcontract_review.STATUS_HELD, subcontract_review.STATUS_SENDING),
+]
 TRACKED_JOBS: list[str] = [
     "safety_weekly_generate",
     "safety_weekly_send_poll",
@@ -1406,9 +1440,9 @@ WSR_SENDING_ITEM_CAP = 10
 
 
 def _check_stuck_wsr_send() -> CheckResult:
-    """Check N: WSR_human_review rows stuck in Send Status=SENDING.
+    """Check N: review rows stuck in Send Status=SENDING, across ALL send lanes.
 
-    weekly_send writes a SENDING write-ahead marker immediately BEFORE the
+    The shared send engine writes a SENDING write-ahead marker immediately BEFORE the
     irreversible Graph send, then flips it to SENT (Stage 7). A row that stays in
     SENDING means that SENT-stamp failed (the report WAS sent but not recorded) or
     the daemon died mid-send. By design such a row is NOT re-dispatched — no
@@ -1417,30 +1451,47 @@ def _check_stuck_wsr_send() -> CheckResult:
     sub-second, so any row this (hourly) check catches is effectively stuck → WARN
     (operator: confirm delivery, then mark SENT; or set back to PENDING to re-send).
 
-    READ-ONLY: never writes a WSR row and never sends — its only effect is the
+    Scans every lane in `_REVIEW_SHEETS` (it scanned only WSR until 2026-07-21, so a
+    stuck row on the three vendor-facing procurement lanes was never reported).
+    Per-sheet fail-soft: one lane's read error cannot hide the other four.
+
+    READ-ONLY: never writes a review row and never sends — its only effect is the
     returned CheckResult. A Smartsheet read failure is caught by the `_run_check`
     fence (logged ERROR, other checks unaffected), so this check cannot break the
     run, cause a send, or cause a missed send. WARN is paged-deferred during
     MAINTENANCE and never triggers the CRITICAL-only Resend/Sentry legs.
     """
-    rows = smartsheet_client.get_rows(
-        sheet_ids.SHEET_WSR_HUMAN_REVIEW,
-        filters={wsr_review.COL_SEND_STATUS: wsr_review.STATUS_SENDING},
-    )
-    if not rows:
-        return CheckResult(
-            severity=Severity.INFO,
-            summary="No WSR rows stuck in SENDING.",
-        )
-    row_ids = [str(r.get("_row_id")) for r in rows]
-    capped = row_ids[:WSR_SENDING_ITEM_CAP]
-    details = f"Row IDs: {', '.join(capped)}"
-    if len(row_ids) > WSR_SENDING_ITEM_CAP:
-        details += f" (showing first {WSR_SENDING_ITEM_CAP} of {len(row_ids)})"
+    stuck: list[str] = []  # "LABEL:row_id" per stuck row, across every lane
+    read_errors: list[str] = []
+    for label, sheet_id, col, _held, sending in _REVIEW_SHEETS:
+        try:
+            rows = smartsheet_client.get_rows(sheet_id, filters={col: sending})
+        except Exception as exc:  # noqa: BLE001 — per-sheet fail-soft
+            # One lane's read failure must not hide the other four (the Check-T
+            # pattern): record it and keep scanning.
+            read_errors.append(f"{label}: {exc!r}")
+            continue
+        stuck.extend(f"{label}:{r.get('_row_id')}" for r in rows)
+
+    if not stuck:
+        if read_errors:
+            return CheckResult(
+                severity=Severity.INFO,
+                summary=f"No review rows stuck in SENDING ({len(read_errors)} sheet read(s) failed).",
+                details="; ".join(read_errors),
+            )
+        return CheckResult(severity=Severity.INFO, summary="No review rows stuck in SENDING.")
+
+    capped = stuck[:WSR_SENDING_ITEM_CAP]
+    details = f"Rows: {', '.join(capped)}"
+    if len(stuck) > WSR_SENDING_ITEM_CAP:
+        details += f" (showing first {WSR_SENDING_ITEM_CAP} of {len(stuck)})"
+    if read_errors:
+        details += f" | read errors: {'; '.join(read_errors)}"
     return CheckResult(
         severity=Severity.WARN,
         summary=(
-            f"{len(rows)} WSR row(s) stuck in SENDING (sent-but-not-stamped, or daemon "
+            f"{len(stuck)} review row(s) stuck in SENDING (sent-but-not-stamped, or daemon "
             f"died mid-send) — confirm delivery + mark SENT, or set PENDING to re-send."
         ),
         details=details,
@@ -1770,9 +1821,9 @@ HELD_ROW_FIRST_SEEN_PATH = STATE_DIR / "held_row_first_seen.json"
 HELD_ROW_ITEM_CAP = 10
 
 # (label, sheet id, send-status column, HELD value) for each review sheet.
+# Derived from _REVIEW_SHEETS so Checks N and T can never scan different lane sets.
 _HELD_SCAN_SHEETS: list[tuple[str, int, str, str]] = [
-    ("WSR", sheet_ids.SHEET_WSR_HUMAN_REVIEW, wsr_review.COL_SEND_STATUS, wsr_review.STATUS_HELD),
-    ("WPR", sheet_ids.SHEET_WPR_HUMAN_REVIEW, wpr_review.COL_SEND_STATUS, wpr_review.STATUS_HELD),
+    (label, sheet_id, col, held) for label, sheet_id, col, held, _sending in _REVIEW_SHEETS
 ]
 
 

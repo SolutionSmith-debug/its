@@ -729,9 +729,21 @@ NETWORK_NEEDLES: frozenset[str] = frozenset({
 # portal_client / box_client for egress and import no raw network library, so they
 # trip no F02 needle; the root is walked so a future subcontracts module that quietly
 # acquires network capability is caught — the po_materials / field_ops precedent).
+# troubleshooting + docs_pdf joined 2026-07-21 (coverage-gap audit): both are live
+# first-party packages that had silently sat OUTSIDE this walk. Neither imports a needle
+# today (troubleshooting/loader.py is a yaml tree loader; docs_pdf is a reportlab /
+# markdown-it renderer), so enrolling them costs nothing now — but a guard that walks a
+# hardcoded root list is only honest if the list tracks the packages that actually exist,
+# and both are plausible future acquirers of network capability (a docs publisher that
+# uploads, a troubleshooting loader that fetches).
+#
+# INVARIANT: this tuple is the SINGLE source of the walked runtime surface.
+# tests/test_state_write_discipline.py IMPORTS it rather than re-declaring it, so the two
+# guards cannot drift apart — they did drift: that file's private copy sat at 4 roots
+# while its own comment claimed it was "kept in sync with the F02 WALKED_ROOTS".
 WALKED_ROOTS: tuple[str, ...] = (
     "shared", "safety_reports", "progress_reports", "field_ops", "po_materials",
-    "operator_dashboard", "subcontracts",
+    "operator_dashboard", "subcontracts", "troubleshooting", "docs_pdf",
 )
 
 
@@ -784,7 +796,7 @@ def test_no_unallowlisted_network_imports():
     assert not violations, (
         "Network/subprocess import outside the allowlist (audit F02):\n"
         + "\n".join(f"  {rel} imports {needles}" for rel, needles in violations)
-        + "\n\nA module under shared/ or safety_reports/ acquired network or "
+        + "\n\nA module on the walked runtime surface (WALKED_ROOTS) acquired network or "
         "process-spawn capability. Either (a) remove the import and route the "
         "call through an audited shared/*_client.py, or (b) if the capability "
         "is genuinely legitimate, add the file to NETWORK_LIB_ALLOWLIST WITH a "

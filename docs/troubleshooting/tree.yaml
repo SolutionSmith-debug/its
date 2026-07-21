@@ -358,7 +358,7 @@ workflows:
 
   # ── 4. Purchase order ────────────────────────────────────────────────────────────────────
   - id: purchase_order
-    title: Purchase order — build, config, pull/render/file, send (dark)
+    title: Purchase order — build, config, pull/render/file, send
     summary: The deterministic PO pipeline (no AI). Ships dark until its gates are flipped.
     steps:
       - id: po_build
@@ -423,7 +423,7 @@ workflows:
             class: seth_coresolve
             runbook: docs/runbooks/po_poll.md
       - id: estimate_import
-        title: estimate-poll screens, classifies, and files an uploaded vendor estimate (dark)
+        title: estimate-poll screens, classifies, and files an uploaded vendor estimate
         what_happens:
           daemon: estimate-poll
           worker_route: GET /api/po/estimates/internal/pending
@@ -451,7 +451,7 @@ workflows:
             class: seth_coresolve
             runbook: docs/runbooks/estimate_import_path.md
       - id: rfq_generation
-        title: rfq-poll renders and files a composed request-for-quote per vendor (dark)
+        title: rfq-poll renders and files a composed request-for-quote per vendor
         what_happens:
           daemon: rfq-poll
           worker_route: GET /api/po/rfqs/internal/pending
@@ -479,7 +479,7 @@ workflows:
             class: seth_coresolve
             runbook: docs/runbooks/rfq_generation_path.md
       - id: po_send
-        title: po-send transmits an approved PO (dark)
+        title: po-send transmits an approved PO
         what_happens:
           daemon: po-send
           sheets: [PO_Pending_Review, ITS_Vendors]
@@ -498,7 +498,7 @@ workflows:
             class: seth_coresolve
             runbook: docs/runbooks/po_send.md
       - id: rfq_send
-        title: rfq-send transmits an approved request-for-quote to its vendor (dark)
+        title: rfq-send transmits an approved request-for-quote to its vendor
         what_happens:
           daemon: rfq-send
           sheets: [RFQ_Pending_Review, ITS_Vendors]
@@ -519,7 +519,7 @@ workflows:
 
   # ── 5. Subcontract ───────────────────────────────────────────────────────────────────────
   - id: subcontract
-    title: Subcontract — build, legal gate, pull/render, send (dark)
+    title: Subcontract — build, legal gate, pull/render, send
     summary: The deterministic subcontract-package pipeline (no AI), PO-mirror. Ships dark.
     steps:
       - id: sub_build
@@ -552,13 +552,15 @@ workflows:
             symptom: Subcontracts are not being pulled/rendered.
             signals: ["subcontract-poll gate off", "designed-dark"]
             checks:
-              - Is subcontract-poll loaded and its gate flipped? All subcontract gates ship false (dark).
+              - Is subcontract-poll loaded and its gate flipped? Check the CURRENT value of
+                subcontracts.subcontract_poll.polling_enabled — do not assume; these gates
+                shipped false but are flipped as each lane goes live.
             resolutions:
-              - Load + flip if intended; otherwise dark by design.
+              - Load + flip if intended; if the gate is deliberately off, leave it.
             class: daniel_solo
             runbook: docs/runbooks/subcontract_generation_path.md
       - id: sub_send
-        title: subcontract-send transmits an approved package (dark)
+        title: subcontract-send transmits an approved package
         what_happens:
           daemon: subcontract-send
           sheets: [Subcontract_Pending_Review]
