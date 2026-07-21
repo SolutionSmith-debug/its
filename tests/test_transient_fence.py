@@ -172,6 +172,50 @@ def test_is_escalation_cycle_keeps_re_notifying_forever():
     assert all(b - a == cap for a, b in zip(tail, tail[1:], strict=False))
 
 
+def test_next_escalation_cycle_always_names_a_rung_the_ladder_really_fires():
+    """The between-rungs ERROR row quotes this number ("next CRITICAL at N"), so a value the
+    ladder does NOT fire on is a false operator-facing promise (§55)."""
+    for threshold in (1, 3, 5, 20):
+        for n in range(0, 400):
+            nxt = sustained_failure.next_escalation_cycle(n, threshold)
+            assert nxt > n
+            assert sustained_failure.is_escalation_cycle(nxt, threshold)
+            # …and it is the FIRST such rung — nothing between n and it fires
+            assert not any(
+                sustained_failure.is_escalation_cycle(m, threshold)
+                for m in range(n + 1, nxt)
+            )
+
+
+def test_next_escalation_cycle_honours_the_same_cap_knob():
+    """Capped, not doubling forever: past the cap the next rung is one fixed step away, and
+    the fleet ladder's larger `max_multiplier` moves it in lockstep."""
+    cap = 5 * sustained_failure.LADDER_MAX_MULTIPLIER          # 40
+    assert sustained_failure.next_escalation_cycle(80, 5) == 80 + cap
+    assert sustained_failure.next_escalation_cycle(cap, 5) == 2 * cap
+    assert sustained_failure.next_escalation_cycle(80, 5, max_multiplier=48) == 160
+
+
+def test_has_crossed_threshold_is_the_ladders_own_first_rung():
+    """The three predicates must agree: a count that has "already escalated" is exactly a
+    count at or past the first rung, so no cycle can be both below the threshold and on a
+    rung. This is the split `compile_now_poll` needs for its THREE-way row decision."""
+    for threshold in (1, 3, 5, 20):
+        for n in range(0, 200):
+            crossed = sustained_failure.has_crossed_threshold(n, threshold)
+            assert crossed == (n >= threshold)
+            if sustained_failure.is_escalation_cycle(n, threshold):
+                assert crossed
+
+
+def test_has_crossed_threshold_is_total_on_a_nonsense_threshold():
+    """Same posture as the rest of the module: never crash inside an error-handling path."""
+    assert sustained_failure.has_crossed_threshold(0, 5) is False
+    assert sustained_failure.has_crossed_threshold(-3, 5) is False
+    assert sustained_failure.has_crossed_threshold(1, 0) is True
+    assert sustained_failure.next_escalation_cycle(7, 0) == 8
+
+
 def test_is_escalation_cycle_is_total_on_a_nonsense_threshold():
     """A misconfigured threshold must not wedge the escalation decision (never silent, but
     also never a crash inside an error-handling path)."""
@@ -612,7 +656,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 #: Every first-party module that escalates a PER-CYCLE consecutive-failure counter to
 #: CRITICAL. Each must route the decision through `is_escalation_cycle`, or a 21 h outage
 #: mints unrotatable rows again. Derived from disk below, so this list is the CLAIM and
-#: the walk is the check — adding a seventh escalation site RED-lights until enrolled.
+#: the walk is the check — adding a ninth escalation site RED-lights until enrolled.
 LADDER_CONSUMERS = frozenset({
     "shared/sustained_failure.py",        # TransientFence (publish_daemon + 5 send pollers)
     "po_materials/po_poll.py",
@@ -621,6 +665,11 @@ LADDER_CONSUMERS = frozenset({
     "subcontracts/subcontract_poll.py",
     "field_ops/fieldops_sync.py",
     "safety_reports/portal_poll.py",
+    # TWO escalations (the cycle counter + the per-job ledger). It carried a PRIVATE copy of
+    # this ladder for one day — deliberately, to avoid a cross-branch dependency while both
+    # landed — and converged onto the shared trio on 2026-07-21. See the ladder note above
+    # `_cause_clause` in that module.
+    "safety_reports/compile_now_poll.py",
 })
 
 #: `scripts/watchdog.py` Check Q compares the SAME counter with `>=`, correctly: it is the

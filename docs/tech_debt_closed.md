@@ -1619,3 +1619,34 @@ Surfaced: 2026-06-05 Safety Portal Phase 3 session (PR #160). Related: `docs/ope
 
 > **Moved from tech_debt.md 2026-07-14 (debt-zero triage):** RESOLVED 2026-07-01 (S1) — retire route + SPA button gated role==='admin' + regression test.
 
+## [RESOLVED 2026-07-21] Converge `compile_now_poll._is_escalation_cycle` onto the shared escalation ladder [OPEN 2026-07-21]
+
+`safety_reports/compile_now_poll.py` carries a PRIVATE geometric re-notify ladder
+(`_is_escalation_cycle` / `_next_escalation_cycle`, `ESCALATION_LADDER_FACTOR`): past its threshold a
+failure streak re-fires CRITICAL only at threshold × 2ⁿ, and records its per-occurrence row at ERROR on
+every other cycle. It exists because a per-occurrence CRITICAL on a 90 s daemon is thousands of rows a
+day and an open CRITICAL is NEVER terminal per `shared/errors_rotation.errors_row_is_terminal`, so no
+rotation floor can reclaim them (`ITS_Errors` hit 19,975 of its 20,000-row cap on 2026-07-13 and locked
+out twice) — the same latent shape a fleet-wide analysis found across the other sustained-failure
+consumers. An IDENTICAL helper is landing in `shared/sustained_failure.py` on a parallel branch; it was
+implemented privately here only to avoid a cross-branch dependency. **Trigger: once both land, delete the
+private pair and bind the shared one** — the semantics were written to match exactly (fire on the
+threshold-crossing cycle, then 2×/4×/8×, all threshold-relative). Same convergence bucket as the
+`fieldops_sync`/`portal_poll` entry above.
+
+> **Moved from tech_debt.md 2026-07-21:** RESOLVED the day it was filed, on the branch that landed the
+> shared ladder. `safety_reports/compile_now_poll.py` now calls `sustained_failure.is_escalation_cycle`
+> for both escalations; the private `_is_escalation_cycle` / `_next_escalation_cycle` /
+> `ESCALATION_LADDER_FACTOR` are DELETED. Two shared predicates were added beside the ladder so
+> compile-now's THREE-way decision needs no raw threshold compare: `has_crossed_threshold` (has it ever
+> escalated) and `next_escalation_cycle` (the rung quoted in the between-rungs ERROR rows, derived by
+> searching the same predicate so the promise and the page cannot disagree).
+>
+> **Deliberate behaviour change:** the private ladder was UNCAPPED (5, 10, 20, 40, 80, 160, 320, 640 …), so
+> a long outage went quiet for exponentially longer stretches. The shared ladder caps the step at
+> `threshold × LADDER_MAX_MULTIPLIER` (8), so the cycle escalation now pages at 5, 10, 20, 40, 80, then
+> every 40 (~1 h at the 90 s cadence) and the per-job one at 20, 40, 80, 160, then every 160. Bound
+> re-checked at 500 consecutive failing cycles: 15 CRITICALs (cycle) / 6 (per-job), first page still
+> exactly on the threshold-crossing cycle — `tests/test_compile_now_poll.py` pins both rung sequences
+> literally, and `docs/runbooks/compile_now_poll.md` + `docs/troubleshooting/tree.yaml` were updated to
+> quote the capped numbers.

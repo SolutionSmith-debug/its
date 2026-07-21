@@ -655,14 +655,88 @@ def test_cycle_ladder_bounds_the_criticals_over_a_long_outage(stub):
     assert "next CRITICAL at 10 consecutive failing cycle(s)" in past[0]
 
 
+#: THE RUNG SEQUENCE THIS DAEMON PAGES ON, pinned literally rather than recomputed from
+#: `LADDER_MAX_MULTIPLIER`. The daemon converged off a PRIVATE uncapped ladder (5, 10, 20, 40,
+#: 80, 160, 320, 640 …) onto the shared capped one on 2026-07-21, which deliberately CHANGED
+#: this sequence past 80 — so a literal is the point: a future change to the shared cap must
+#: RED-light here and be re-decided for compile-now's operator copy
+#: (`docs/runbooks/compile_now_poll.md` quotes these numbers), not silently re-date the pages.
+CYCLE_LADDER_RUNGS = [5, 10, 20, 40, 80, 120, 160, 200, 240, 280, 320, 360, 400, 440, 480]
+JOB_LADDER_RUNGS = [20, 40, 80, 160, 320, 480]
+
+
 def test_escalation_ladder_rungs():
-    """Unit-level pin on the rung predicate itself."""
-    assert [n for n in range(1, 101) if cnp._is_escalation_cycle(n, 5)] == [5, 10, 20, 40, 80]
-    assert [n for n in range(1, 101) if cnp._is_escalation_cycle(n, 20)] == [20, 40, 80]
-    assert cnp._is_escalation_cycle(4, 5) is False        # below the threshold never fires
-    assert cnp._next_escalation_cycle(5, 5) == 10
-    assert cnp._next_escalation_cycle(6, 5) == 10
-    assert cnp._next_escalation_cycle(0, 5) == 5
+    """Unit-level pin on the SHARED rung predicate at this daemon's two thresholds."""
+    esc = cnp.sustained_failure.is_escalation_cycle
+    nxt = cnp.sustained_failure.next_escalation_cycle
+    crossed = cnp.sustained_failure.has_crossed_threshold
+    cycle_t = cnp.sustained_failure.DEFAULT_CRITICAL_THRESHOLD
+    job_t = cnp.JOB_SCAN_CRITICAL_THRESHOLD
+
+    assert [n for n in range(1, 501) if esc(n, cycle_t)] == CYCLE_LADDER_RUNGS
+    assert [n for n in range(1, 501) if esc(n, job_t)] == JOB_LADDER_RUNGS
+    assert esc(4, cycle_t) is False                    # below the threshold never fires
+    assert nxt(5, cycle_t) == 10
+    assert nxt(6, cycle_t) == 10
+    assert nxt(0, cycle_t) == 5
+    assert nxt(80, cycle_t) == 120                     # CAPPED — the private ladder said 160
+    assert nxt(160, job_t) == 320
+    # the three predicates agree: the "already escalated" branch is exactly the past-threshold
+    # non-rung counts, so no count can be both "never escalated" and on a rung.
+    assert crossed(4, cycle_t) is False and crossed(5, cycle_t) is True
+    assert all(crossed(n, cycle_t) for n in CYCLE_LADDER_RUNGS)
+
+
+def test_cycle_ladder_stays_bounded_over_a_very_long_outage(stub):
+    """THE BOUND CHECK, re-run at 500 consecutive failing cycles (~12½ h at the 90 s cadence).
+
+    The private ladder this converged off was UNCAPPED, so it went quiet for exponentially
+    longer stretches (after 320 the next page was 640 — 8 h away, and growing). The shared
+    ladder caps the step, which re-pages on a FIXED interval instead; the count must still be
+    bounded and small, and the FIRST CRITICAL must still land exactly on the threshold-crossing
+    cycle, or the cap has traded one failure mode for the other."""
+    stub["jobs"].return_value = [_job("A", "JOB-A"), _job("B", "JOB-B")]
+    stub["rollup"].side_effect = SmartsheetError("HTTP 503")
+    stub["scan_record"].side_effect = list(range(1, 501))
+
+    for _ in range(500):
+        cnp.poll_once()
+
+    crit = _coded(stub["log"], "compile_now_scan_sustained")
+    err = _coded(stub["log"], "compile_now_poll.scan_failed")
+    assert _streak_counts(crit, r"failing cycle\(s\)") == CYCLE_LADDER_RUNGS
+    assert len(crit) == 15                       # bounded and small — not 496
+    assert crit[0][0] == cnp.Severity.CRITICAL
+    assert _streak_counts(crit, r"failing cycle\(s\)")[0] == (
+        cnp.sustained_failure.DEFAULT_CRITICAL_THRESHOLD
+    )                                            # the crossing cycle still pages, unchanged
+    assert all(r[0] == cnp.Severity.CRITICAL for r in crit)
+    assert len(crit) + len(err) == 500            # every cycle still records (§3.1)
+    assert all(r[0] == cnp.Severity.ERROR for r in err)
+    # the quoted next-rung tracks the CAP, so the promise matches the page that follows
+    past = [r[2] for r in err if "ALREADY escalated" in r[2]]
+    assert "next CRITICAL at 120 consecutive failing cycle(s)" in " ".join(past)
+    assert "next CRITICAL at 160 consecutive failing cycle(s)" in " ".join(past)
+
+
+def test_per_job_ladder_stays_bounded_over_a_very_long_outage(stub):
+    """Same 500-cycle bound on the per-JOB escalation (threshold 20, so a wider ladder)."""
+    stub["jobs"].return_value = [_job("Dead", "JOB-D"), _job("Fine", "JOB-F")]
+    stub["rollup"].side_effect = [SmartsheetError("500"), ROLLUP_OK] * 500
+    stub["ledger"].side_effect = [{"safety_reports:JOB-D": n} for n in range(1, 501)]
+
+    for _ in range(500):
+        cnp.poll_once()
+
+    crit = _coded(stub["log"], "compile_now_job_scan_sustained")
+    err = _coded(stub["log"], "compile_now_poll.job_scan_failed")
+    assert _streak_counts(crit, "cycles") == JOB_LADDER_RUNGS
+    assert len(crit) == 6                        # bounded and small — not 481
+    assert _streak_counts(crit, "cycles")[0] == cnp.JOB_SCAN_CRITICAL_THRESHOLD
+    assert all(r[0] == cnp.Severity.CRITICAL for r in crit)
+    # every past-threshold cycle still wrote exactly one row (§3.1), the rest at ERROR
+    assert len(crit) + len(err) == 500 - cnp.JOB_SCAN_CRITICAL_THRESHOLD + 1
+    assert all(r[0] == cnp.Severity.ERROR for r in err)
 
 
 def test_per_job_message_does_not_claim_other_jobs_are_fine_during_a_broad_outage(stub):
