@@ -117,6 +117,7 @@ export interface PruneResult {
   jobs: number;
   subcontractDrafts: number;
   poDrafts: number;
+  rfqDrafts: number;
   estimateArtifacts: number;
   dbSizeBytes: number;
   sizeWarn: boolean;
@@ -372,6 +373,31 @@ export async function pruneOldData(db: Env["DB"], nowSec: number): Promise<Prune
       .run();
     return r.meta.changes ?? 0;
   });
+  // ADR-0004 R2: the RFQ lane is the deliberate structural twin of purchase_orders
+  // (migration 0056's own header says so) but had NO prune stage at all — abandoned
+  // drafts and never-generated cancels, plus their line items and up to 12 rfq_vendors
+  // rows each, accumulated in D1 permanently with no automatic OR manual removal path.
+  // Same 90d draft/canceled cutoff, same numbering-reuse guard (`rfq_number IS NULL`
+  // keeps every generated row, so an issued RFQ number is never recycled).
+  const rfqDrafts = await runStage("rfq_drafts", failedStages, async () => {
+    const agedParents =
+      "(SELECT id FROM rfqs WHERE status IN ('draft','canceled') AND rfq_number IS NULL AND updated_at < ?)";
+    // Children before the parent, mirroring po_drafts.
+    await db
+      .prepare(`DELETE FROM rfq_vendors WHERE rfq_id IN ${agedParents}`)
+      .bind(draftCancelCutoff)
+      .run();
+    await db
+      .prepare(`DELETE FROM rfq_line_items WHERE rfq_id IN ${agedParents}`)
+      .bind(draftCancelCutoff)
+      .run();
+    const r = await db
+      .prepare("DELETE FROM rfqs WHERE status IN ('draft','canceled') AND rfq_number IS NULL AND updated_at < ?")
+      .bind(draftCancelCutoff)
+      .run();
+    return r.meta.changes ?? 0;
+  });
+
   const poDrafts = await runStage("po_drafts", failedStages, async () => {
     // Feature B attachment cascade — children first, chunks before their attachment rows
     // (chunks resolve through po_attachments; an attachment-first delete would orphan bytes).
@@ -487,6 +513,7 @@ export async function pruneOldData(db: Env["DB"], nowSec: number): Promise<Prune
     jobs,
     subcontractDrafts,
     poDrafts,
+    rfqDrafts,
     estimateArtifacts,
     dbSizeBytes,
     sizeWarn,
@@ -523,6 +550,7 @@ export async function writePruneMeta(
     jobs: result.jobs,
     subcontractDrafts: result.subcontractDrafts,
     poDrafts: result.poDrafts,
+    rfqDrafts: result.rfqDrafts,
     estimateArtifacts: result.estimateArtifacts,
   };
   try {
@@ -586,7 +614,21 @@ async function sampleDbSizeBytes(db: Env["DB"]): Promise<number> {
     const attChunks = await db
       .prepare("SELECT COALESCE(SUM(LENGTH(chunk_b64)), 0) AS n FROM po_attachment_chunks")
       .first<{ n: number }>();
-    return (chunks?.n ?? 0) + (subs?.n ?? 0) + (itemPhotos?.n ?? 0) + (dailyPhotos?.n ?? 0) + (attChunks?.n ?? 0);
+    // ADR-0004: the estimate lane's two byte pools are the SIXTH and SEVENTH
+    // payload-bearing tables (0054 chunk_b64, 0055 png_b64 — both ≤1MB/row, both able
+    // to grow while uploads sit pending). They were omitted, so the 6 GB WARN tripwire
+    // — the only guard against silently reaching Cloudflare's 10 GB per-DB ceiling —
+    // systematically under-read the true size.
+    const estChunks = await db
+      .prepare("SELECT COALESCE(SUM(LENGTH(chunk_b64)), 0) AS n FROM po_estimate_chunks")
+      .first<{ n: number }>();
+    const estPreviews = await db
+      .prepare("SELECT COALESCE(SUM(LENGTH(png_b64)), 0) AS n FROM estimate_previews")
+      .first<{ n: number }>();
+    return (
+      (chunks?.n ?? 0) + (subs?.n ?? 0) + (itemPhotos?.n ?? 0) + (dailyPhotos?.n ?? 0) +
+      (attChunks?.n ?? 0) + (estChunks?.n ?? 0) + (estPreviews?.n ?? 0)
+    );
   } catch {
     return 0;
   }

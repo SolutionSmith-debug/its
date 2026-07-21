@@ -62,6 +62,10 @@ def stub(mocker):
         # two thin-delegator seams so no test touches live state / Smartsheet.
         "hb": mocker.patch.object(pd, "_write_heartbeat"),
         "hb_row": mocker.patch.object(pd, "_write_heartbeat_row"),
+        # MUST be patched: the real one touches ~/its/.watchdog/publish_daemon.last_run on
+        # the LIVE host, so an unpatched suite run would fake Check-C freshness for a daemon
+        # that never ran.
+        "marker": mocker.patch.object(pd, "_write_watchdog_marker"),
         "circuit": mocker.patch.object(pd.circuit_breaker, "is_open", return_value=False),
         "log": mocker.patch.object(pd.error_log, "log"),
     }
@@ -188,6 +192,60 @@ def test_unresolved_creds_halts_loud(stub):
     assert out.halted == "creds_unresolved"
     assert any(c.args and c.args[0] == pd.Severity.ERROR for c in stub["log"].call_args_list)
     stub["pending"].assert_not_called()
+
+
+def _codes(stub) -> list[str]:
+    return [c.kwargs.get("error_code") for c in stub["log"].call_args_list]
+
+
+def test_transient_base_url_warns_and_skips_without_paging(stub):
+    # A Smartsheet blip on the base-URL read is NOT a missing credential. The live po_poll
+    # instance of this bug (2026-07-20 04:42Z) fell back to "" and alerted that credentials
+    # were unset while both Keychain entries were fine — a false alarm that aimed the §43
+    # repair at re-provisioning the internal bearer, a high-capability-class action, for a
+    # condition needing none. Transient => WARN + skip, never the misconfig report.
+    stub["creds"].return_value = pd.TransientUnavailable(
+        reason="SmartsheetError: (<PreparedRequest [GET]>, None)"
+    )
+    out = pd.publish_once()
+    assert out.halted == "creds_transient"
+    stub["pending"].assert_not_called()  # still FAIL-CLOSED — it does not publish
+    codes = _codes(stub)
+    assert "publish_daemon.creds_transient" in codes
+    assert "publish_daemon.creds_unresolved" not in codes, (
+        "a transient read failure must NOT report unresolved credentials"
+    )
+    assert not _critical_fired(stub)
+    _, hb_kwargs = stub["hb_row"].call_args
+    assert hb_kwargs["status"] == "WARN"  # not ERROR — nothing is misconfigured
+    # The marker is the load-bearing half: a cycle that never polled must let Check C go
+    # stale, so a SUSTAINED outage still surfaces instead of being masked by fake freshness.
+    stub["marker"].assert_not_called()
+
+
+def test_completed_cycle_writes_the_watchdog_marker(stub):
+    stub["pending"].return_value = [{"id": 1}]
+    stub["claim"].return_value = _row("create", "incident", "incident", definition=_create_def())
+    assert pd.publish_once().actuated == 1
+    stub["marker"].assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "arrange, expected_halt",
+    [
+        (lambda s: s["enabled"].configure_mock(return_value=False), "polling_disabled"),
+        (lambda s: s["creds"].configure_mock(return_value=None), "creds_unresolved"),
+        (lambda s: s["unstrand"].configure_mock(side_effect=RuntimeError("stranded")),
+         "unstrand_failed"),
+    ],
+)
+def test_halted_cycles_never_fake_check_c_freshness(stub, arrange, expected_halt):
+    # Check C's whole value is noticing that this daemon stopped doing its job. A cycle that
+    # bailed before the pull did NOT do its job, so it must not touch the marker — otherwise
+    # a permanently gated-off / miscredentialed / stranded actuator looks eternally healthy.
+    arrange(stub)
+    assert pd.publish_once().halted == expected_halt
+    stub["marker"].assert_not_called()
 
 
 def test_already_leased_row_is_skipped(stub):

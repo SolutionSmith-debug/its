@@ -454,6 +454,7 @@ NODES: tuple[MapNode, ...] = (
         config_gate="safety_reports.publish_daemon.polling_enabled",
         script_path="safety_reports/publish_daemon.py",
         runbook="docs/runbooks/safety_portal_forms.md",
+        watchdog_checks=("C",), marker="publish_daemon",
     ),
     MapNode(
         id="config_actuator", label="config_actuator", kind="daemon", lane="generation", band="machine",
@@ -465,6 +466,7 @@ NODES: tuple[MapNode, ...] = (
         config_gate="po_materials.config_actuator.polling_enabled",
         script_path="po_materials/config_actuator.py",
         runbook="docs/runbooks/config_actuator.md",
+        watchdog_checks=("C",), marker="config_actuator",
     ),
     MapNode(
         id="dashboard", label="operator dashboard", kind="ui", lane="generation", band="machine",
