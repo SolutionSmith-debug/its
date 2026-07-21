@@ -45,10 +45,17 @@ class TransientUnavailable:
     breaker trips) — NOT a misconfig. The row is fine; Smartsheet is briefly down.
     Self-heals when the backend recovers, so the caller WARNs + skips the cycle
     instead of paging (CRITICAL). ``reason`` names the specific transient condition
-    for the WARN log / heartbeat summary."""
+    for the WARN log / heartbeat summary.
 
-    def __init__(self, reason: str = "Smartsheet circuit OPEN") -> None:
+    ``circuit_open`` distinguishes the two transient sub-cases for a caller that keeps a
+    sustained-failure counter (`sustained_failure.TransientFence`): a circuit-OPEN skip
+    must NOT be counted, because the breaker already owns that page and counting it would
+    turn one outage into a per-daemon CRITICAL storm on separate alert-dedupe keys. Every
+    other transient IS counted."""
+
+    def __init__(self, reason: str = "Smartsheet circuit OPEN", *, circuit_open: bool = True) -> None:
         self.reason = reason
+        self.circuit_open = circuit_open
 
 
 # Singleton sentinel (compared via isinstance, so the exact identity is not load-bearing).
@@ -80,5 +87,5 @@ def read_base_url(setting: str, workstream: str) -> str | TransientUnavailable |
         # trips: the breaker needs `failure_threshold` CONSECUTIVE failures, so the first
         # cycles of any outage (and every one-cycle blip) raise the raw error class, not
         # SmartsheetCircuitOpenError. Same self-healing condition → same sentinel.
-        return TransientUnavailable(reason=f"{type(exc).__name__}: {exc!r}")
+        return TransientUnavailable(reason=f"{type(exc).__name__}: {exc!r}", circuit_open=False)
     return raw if isinstance(raw, str) and raw else None

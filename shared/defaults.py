@@ -64,6 +64,17 @@ CIRCUIT_BREAKER_FAILURE_THRESHOLD            = 5      # circuit_breaker.failure_
 CIRCUIT_BREAKER_COOLDOWN_SECONDS             = 300    # circuit_breaker.cooldown_seconds
 CIRCUIT_BREAKER_PROLONGED_OPEN_ALERT_SECONDS = 600    # circuit_breaker.prolonged_open_alert_seconds (PR-2 watchdog)
 
+# Bounded transient retry — fallbacks for shared/smartsheet_client.py's reads-only
+# `_transient_retry`. Covers the two gaps the Smartsheet SDK does NOT retry: an HTTP
+# 500 carrying errorCode 4000 (absent from the SDK's should_retry lookup) and any
+# requests-level ReadTimeout/ConnectionError (raised before the SDK's retry loop runs).
+# Operator-tunable via ITS_Config rows (workstream="global"); `enabled=false` is a pure
+# pass-through escape hatch. Two extra attempts over ~7 s stays well inside every
+# daemon's launchd cadence (the shortest enrolled cadence is 60 s).
+SMARTSHEET_RETRY_ENABLED             = True         # smartsheet.retry.enabled
+SMARTSHEET_RETRY_MAX_EXTRA_ATTEMPTS  = 2            # smartsheet.retry.max_extra_attempts
+SMARTSHEET_RETRY_BACKOFF_SECONDS     = (2.0, 5.0)   # smartsheet.retry.backoff_seconds
+
 # Picklist sync — size guardrails for shared/picklist_sync.py. Two-stage:
 # WARN at >200 options, HARD-HALT-that-mapping at >400. Both values are
 # operator-tunable via ITS_Config rows picklist_sync.size_warn_threshold

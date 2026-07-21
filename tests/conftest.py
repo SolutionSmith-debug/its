@@ -1,6 +1,7 @@
 """Suite-wide test fixtures.
 
-Two autouse fixtures, both default-applied to every test under `tests/`:
+Two of the autouse fixtures below are the long-standing pair, default-applied to every
+test under `tests/`:
 
 1. `_mock_keychain` — replaces `shared.keychain.get_secret` with a stub
    that returns deterministic test tokens (`f"test-{service}"`).
@@ -157,6 +158,37 @@ def _neutralize_circuit_breaker(
         _sc,
         "_circuit_config_cache",
         _cb.CircuitConfig(enabled=False, failure_threshold=5, cooldown_seconds=300),
+    )
+
+
+@pytest.fixture(autouse=True)
+def _neutralize_smartsheet_retry(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Keep `smartsheet_client._transient_retry` out of the way of unit tests.
+
+    Same reasoning as `_neutralize_circuit_breaker` above, one layer down: with the
+    shipped defaults a test that makes an enrolled read raise a 5xx/timeout would
+    genuinely `time.sleep(2)` then `time.sleep(5)` before the expected raise — real
+    wall-clock in a hermetic suite, plus three SDK calls where the assertion expects one.
+    Pre-caching a DISABLED config makes the decorator a pure pass-through AND stops it
+    issuing its own config read.
+
+    `tests/test_smartsheet_retry.py` installs its own RetryConfig per test, which
+    overwrites this cache — that is the deliberate opt-in. Integration tests opt out and
+    exercise the real resolution path.
+    """
+    if request.node.get_closest_marker("integration") is not None:
+        return
+    import shared.smartsheet_client as _sc
+
+    monkeypatch.setattr(
+        _sc,
+        "_retry_config_cache",
+        _sc.RetryConfig(
+            enabled=False, max_extra_attempts=0, backoff_seconds=(),
+            source_summary="test-neutralized",
+        ),
     )
 
 

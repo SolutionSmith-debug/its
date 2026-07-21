@@ -184,8 +184,114 @@ Re-enable the breaker (`circuit_breaker.enabled = true`, or just leave the
 default) once the investigation is done; disabling it removes the
 incident-protection it exists to provide.
 
+## Procedure — "Smartsheet transient failures RECOVERED on retry" (Tier-2, usually no action)
+
+### Symptom
+
+A **WARN** row in ITS_Errors with `Error` = `smartsheet_retry_recovered`, e.g.
+*"Smartsheet transient failures RECOVERED on retry this cycle: get_rows×2 (3 extra
+attempts)"*. It is a WARN, never a page.
+
+### What it means
+
+Since 2026-07-21 ITS re-issues a Smartsheet **read** that failed with an HTTP 5xx or a
+network timeout — the two classes the Smartsheet SDK does *not* retry on its own. When a
+re-issue succeeds the cycle carries on normally, and this WARN is the only trace. **Writes
+are never retried** (a timed-out write may already have committed, and Smartsheet has no
+way to say "only do this once"), so this line always names a read.
+
+One or two of these a week is normal cloud weather. **No action.**
+
+### What the Successor-Operator checks
+
+1. **How often?** Filter ITS_Errors on `Error = smartsheet_retry_recovered`. If it appears
+   on most cycles for hours, the backend is chronically flaky rather than blipping.
+2. **Is anything actually failing?** Look for `*_transient` / `*_sustained` rows from the
+   same daemon in the same window. Recoveries alone mean ITS absorbed the problem; paired
+   failures mean it did not.
+3. **Check Smartsheet's own status page** if the pattern is sustained.
+
+### The Claude prompt or UI action
+
+> "Show me every `smartsheet_retry_recovered` row in the last 24 hours grouped by Script,
+> and any `_transient` or `_sustained` rows from the same daemons."
+
+If recoveries are constant AND the extra latency is a problem, retry can be turned off from
+the dashboard's ITS_Config editor: `smartsheet.retry.enabled` (workstream `global`) →
+`false`. That makes reads fail fast again — it does not fix Smartsheet, it just stops
+waiting. Prefer leaving it on.
+
+### Escalate-to-Seth condition
+
+- Recoveries are constant for **more than a day** (an infrastructure question, not a repair).
+- You are considering changing `smartsheet.retry.max_extra_attempts` or `.backoff_seconds`
+  — tuning retry against a live backend is a Seth call.
+
+## Procedure — a `*_sustained` CRITICAL from a daemon (Tier-2 → Seth if it persists)
+
+### Symptom
+
+A **CRITICAL** page whose `Error` ends in `_sustained` — e.g.
+`publish_daemon.config_read_sustained`, `<daemon>.approver_read_sustained`,
+`<daemon>.review_read_sustained`. The message reads *"Smartsheet read failing for N
+consecutive cycles — SUSTAINED outage, not a blip"*.
+
+### What it means
+
+That daemon could not complete a Smartsheet read it does **before** any real work, on N
+cycles in a row (5 for the fast 60–120 s daemons, 3 for the 15-minute send pollers). Each of
+those cycles **halted safely and did nothing** — in particular **no email was sent**, because
+the send pollers abort before dispatch whenever they cannot load the approver list. Nothing
+is lost; the work is waiting.
+
+A single such failure is only an ERROR (`*_transient`) and is expected occasionally. The
+CRITICAL means it stopped self-healing.
+
+### THE IMPORTANT CAVEAT
+
+ITS **cannot tell the difference** between "Smartsheet is having a bad hour" and "this
+particular sheet returns a 500 every single time" — both look like the same transient error.
+So a `*_sustained` CRITICAL can mean either:
+
+- **a genuine outage** (most common — check the Smartsheet status page), or
+- **something permanently wrong with one sheet or one workspace** (e.g. a corrupted sheet
+  that errors on every read).
+
+Before 2026-07-21 the second case paged immediately; now it pages a few minutes later. If
+Smartsheet is otherwise healthy, assume the second case.
+
+### What the Successor-Operator checks
+
+1. **Is Smartsheet reachable at all?** Load ITS_Config in the web UI. If the whole service
+   is down this is an outage — wait; the daemons resume on their own and the CRITICAL stops.
+2. **Are OTHER daemons fine?** If exactly one daemon is failing while the rest are healthy,
+   the problem is that daemon's *specific* sheet or workspace, not Smartsheet.
+3. **Open the sheet that daemon reads** (named in the runbook the CRITICAL points at) in the
+   web UI. Does it load?
+4. **Is the breaker OPEN too?** If yes, work the circuit-breaker procedure above first —
+   that is the same root cause, and circuit-open deliberately does *not* count toward these
+   `_sustained` counters.
+
+### The Claude prompt or UI action
+
+> "Show me the `*_transient` and `*_sustained` rows for `<daemon>` over the last 6 hours,
+> and whether any other daemon logged Smartsheet errors in the same window."
+
+If Smartsheet has recovered, **no action** — the next successful cycle clears the counter
+automatically. To confirm recovery, watch the daemon's `Last Cycle Status` in
+ITS_Daemon_Health return to OK.
+
+### Escalate-to-Seth condition
+
+- Smartsheet is healthy in the browser but ONE daemon keeps failing → a sheet- or
+  permission-level fault; **escalate**.
+- The CRITICAL is `*_approver_read_sustained` **and** the workspace share list looks wrong
+  or empty → approver membership is the External Send Gate's authority, a FIXED
+  high-capability class. **Escalate; do not edit shares.**
+- Any 401/403 in the same window → auth/secrets, a FIXED high-capability class. **Escalate.**
+
 ## Owner
 
-`@solutionsmith`. New circuit-breaker / alert-cap failure modes that become
-Tier-2-reachable should be added here as additional Symptom → checks → action →
+`@solutionsmith`. New circuit-breaker / alert-cap / transient-retry failure modes that
+become Tier-2-reachable should be added here as additional Symptom → checks → action →
 escalate blocks, per Op Stds §43.

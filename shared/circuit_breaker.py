@@ -3,11 +3,21 @@
 Purpose:
     Stop daemons from hammering a sustained-degraded backend (Smartsheet
     today; Box/Graph reuse the same generic guard with their own exception
-    sets). The breaker sits STRICTLY ABOVE the typed-exception layer of an
-    SDK wrapper: the SDK's own HTTP retry/backoff handles transient/per-call
-    failures; this breaker handles SUSTAINED, CROSS-CALL — and, because state
-    is persisted, CROSS-PROCESS — failure. It does NOT re-implement retry
-    (Op Stds v16 §14: wrap, don't reimplement).
+    sets). The breaker sits STRICTLY ABOVE the per-call retry layer of an SDK
+    wrapper: per-call transients are somebody else's job; this breaker handles
+    SUSTAINED, CROSS-CALL — and, because state is persisted, CROSS-PROCESS —
+    failure.
+
+    CORRECTION (2026-07-21, verified against the installed smartsheet-python-sdk
+    3.9.0): this docstring used to claim "the SDK's own HTTP retry/backoff handles
+    transient/per-call failures". It demonstrably does NOT for the two classes seen
+    live — an HTTP 500 carrying errorCode 4000 is absent from the SDK's should_retry
+    lookup, and a requests-level ReadTimeout/ConnectionError raises out of the SDK's
+    `_request` before its retry loop can evaluate should_retry. Both got ZERO SDK
+    retries and escaped as `uncaught_exception` CRITICALs. That gap is now covered by
+    `smartsheet_client._transient_retry`, which sits INSIDE this guard (so an exhausted
+    sequence is exactly ONE breaker failure and the consecutive-failure semantics below
+    are preserved). This module still re-implements no retry of its own (Op Stds §14).
 
     Wire it by decorating the wrapper's network-issuing methods:
 
@@ -501,6 +511,6 @@ def _warn(message: str) -> None:
     try:
         from . import error_log
 
-        error_log._local_log(error_log.Severity.WARN, "shared.circuit_breaker", message)
+        error_log.local_log(error_log.Severity.WARN, "shared.circuit_breaker", message)
     except Exception:  # noqa: BLE001 — logging must never break the breaker
         pass
